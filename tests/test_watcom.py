@@ -532,3 +532,25 @@ def test_defaults_are_under_repo():
     assert watcom.DEFAULT_MEDIA.parts[-2:] == ("third_party", "watcom-media")
     assert watcom.DEFAULT_INSTALL.parts[-2:] == ("third_party", "watcom")
     assert "proprietary" in watcom.MEDIA_NOTICE
+
+
+# 8. pinned key files in the default manifest -------------------------------------------------
+
+
+def _key(version: str, path: str) -> KeyFile:
+    return next(k for k in load_watcom_manifest()[version].key_files if k.path == path)
+
+
+def test_default_manifest_pins_key_files():
+    for version, media in load_watcom_manifest().items():
+        assert len(media.key_files) >= 8, version
+
+
+def test_default_manifest_pinned_values():
+    assert _key("10.6", "BINW/WCC386.EXE").size == 567698
+    k = _key("10.5", "BINW/WCC386.EXE")
+    assert k.size == 65536
+    assert k.known_bad is True
+    assert _key("11.0", "BINNT/WCCD386.DLL").size == 659968
+    assert _key("10.6", "BINW/WCC386.EXE").sha1 == "183433f959d6071fd00ea1917effd9085066d227"
+    assert _key("10.6", "LIB386/DOS/CLIB3R.LIB").sha1 == "57250829673b7849ce70bf0e288e61ff98231de7"
