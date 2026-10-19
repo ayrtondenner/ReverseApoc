@@ -1,0 +1,59 @@
+# Original Watcom C/C++ CD images used to rebuild the game's compiler environment.
+#
+# The media is proprietary and is never committed to this repository. `uv run reverseapoc
+# fetch-watcom` downloads it from the Internet Archive on explicit request, at the user's own
+# responsibility, and verifies it against the hashes below (size, MD5, SHA-1, CRC32 when known).
+#
+# Mirrors with byte-identical ISOs:
+#   WinWorld: https://winworldpc.com/product/watcom-c-c/105 , /106 , /110b
+#     (25 downloads/day limit; the ISOs are inside .7z archives)
+#   archive.org item `watcom-c-cpp-compilers-collection`: also holds the 11.0a/11.0b ISOs,
+#     the 10.5a patch c105_a.zip and the 11.0c update.
+# Download URL pattern: https://archive.org/download/<item>/<file>
+#
+# `file` may contain a sub-path inside the archive.org item; the local file name is its basename.
+# `[[media.key_files]]` (path, size, md5, sha1, optional crc32, known_bad, note) lists files to
+# verify after `install-watcom`; `path` is POSIX with the exact on-disc case.
+
+[[media]]
+version = "10.5"
+item = "Watcom_C_10.5"
+file = "Watcom_C++_10.5.iso"
+size = 515213312
+crc32 = 0x6BE5E3F6
+md5 = "3200b70ba399c840775e9bfa2fe19875"
+sha1 = "0722e7494647cd5e9a66bd106aa80a620f7ee999"
+
+[[media]]
+version = "10.6"
+item = "Watcom_C_10.6"
+file = "Watcom_C++_10.6.iso"
+size = 664373248
+crc32 = 0xE154C2DE
+md5 = "5a252e04e3a9fd5c802d1d3fd33f458e"
+sha1 = "211f4e7acecf89cf8af26e12099e1aec5a255f65"
+
+[[media]]
+version = "11.0"
+item = "Watcom_C_11.0"
+file = "Watcom_C++_11.0.iso"
+size = 669603840
+crc32 = 0xC4FF34AB
+md5 = "aa6ee011958dd0371f95ac0bbaa50026"
+sha1 = "1708a29f7209b9d29aff18aba8923a0ddd5d97cc"
+
+[[media]]
+version = "11.0a"
+item = "watcom-c-cpp-compilers-collection"
+file = "watcom-11.0a/WatcomC11a.iso"
+size = 670785536
+md5 = "a72d0cdd049a9119b46ad70846590a28"
+sha1 = "8361779a2c7fb395eedff82d4f6207a819292f87"
+
+[[media]]
+version = "11.0b"
+item = "watcom-c-cpp-compilers-collection"
+file = "watcom-11.0b/WATCOM_C11B.iso"
+size = 649111552
+md5 = "28e3660f972860c77cf3804eb2e0177d"
+sha1 = "da67b5b249357b120e20d8580043ead319f2a91b"
