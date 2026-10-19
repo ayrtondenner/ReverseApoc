@@ -26,7 +26,7 @@ docker compose build && docker compose run --rm test
 
 ## Done gate
 
-Tooling: tests and ruff green, in the container too. Decompiled code (from Phase 2 on): the
+Tooling: tests and ruff green, in the container too. Decompiled code (from Phase 3 on): the
 rebuilt EXE is SHA-1 identical to the original and objdiff reports 100% for the function.
 
 ## Workflow

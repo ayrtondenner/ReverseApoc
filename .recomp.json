@@ -51,5 +51,5 @@
     "dos4gw",
     "ai-assisted"
   ],
-  "notes": "Hybrid pipeline: own matching oracle (KKND-Decomp and Theme Hospital decomp tooling, retrokit for Ghidra) plus decomp.wtf fork mode as the agent layer. Progress percentages arrive once an objdiff-shaped report exists (Phase 4-5)."
+  "notes": "Hybrid pipeline: own matching oracle (KKND-Decomp and Theme Hospital decomp tooling, retrokit for Ghidra) plus decomp.wtf fork mode as the agent layer. Progress percentages arrive once an objdiff-shaped report exists (Phase 5-6)."
 }

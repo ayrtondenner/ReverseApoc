@@ -2,7 +2,7 @@
 
 The project's record of how Watcom turns C into the bytes in UFO2P.EXE and TACP.EXE: flags, idioms and traps that we have **verified on our own binaries**. Each entry says where it was seen (function address, EXE) and when.
 
-**Nothing recorded yet.** Phase 3 fills in compilers and flags; Phase 4 and later fill in the rest. Raw observations go to [learnings.md](learnings.md) first and move here once confirmed. Hypotheses and evidence from the research live in [toolchain.md](toolchain.md).
+**Nothing recorded yet.** Phase 4 fills in compilers and flags; Phase 5 and later fill in the rest. Raw observations go to [learnings.md](learnings.md) first and move here once confirmed. Hypotheses and evidence from the research live in [toolchain.md](toolchain.md).
 
 ## Compiler and flags per module
 
@@ -40,7 +40,7 @@ Nothing recorded yet. Known limit: objdiff compares at most one relocation per x
 
 How relocations in our compiled object must line up with the LE fixups of the original.
 
-Nothing recorded yet. Starting rules from KKND's build gate, to be confirmed in Phase 4:
+Nothing recorded yet. Starting rules from KKND's build gate, to be confirmed in Phase 5:
 
 - every non-relocated byte identical, and the function length equal;
 - every `call rel32` hits the same function;

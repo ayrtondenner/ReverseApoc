@@ -6,12 +6,12 @@ This is a description of how the project handles copyrighted material, not legal
 
 - No original executables, data files, CD images, extracted assets or disassembly are committed, now or later.
 - Hashes (md5, SHA-1, CRC32) of the original files are committed. They identify the files without containing them.
-- `.gitignore` and `.dockerignore` exclude `orig/`, `third_party/`, `asm/`, `build/`, `.env` and executable and image file types. Phase 0's gate checks that `git ls-files` contains no game file, no `.env` and no key.
+- `.gitignore` and `.dockerignore` exclude `orig/`, `third_party/`, `asm/`, `build/`, `.env` and executable and image file types. Phase 1's gate checks that `git ls-files` contains no game file, no `.env` and no key.
 - Never attach game files, executables or disassembly to issues or pull requests.
 
 ## You supply the game and the compiler
 
-- **Game:** your own Steam or GOG copy. `uv run reverseapoc ingest` (Phase 1) copies the executables from the paths in your `.env` into the gitignored `orig/` and checks them against the hash manifest.
+- **Game:** your own Steam or GOG copy. `uv run reverseapoc ingest` (Phase 2) copies the executables from the paths in your `.env` into the gitignored `orig/` and checks them against the hash manifest.
 - **Compiler:** the original Watcom C/C++ 10.x (and 11.0 for the version probe) is proprietary. Its current IP owner was not verified during research. You place your own copy under the gitignored `third_party/watcom/`. It is mounted read-only into the container at run time and never baked into an image layer, so no image built from this repo carries it.
 - Open Watcom v2 is redistributable under its own licence and is installed in the image, but only for auxiliary tools (`wdis`, `wlink`, `wlib`). It cannot produce matching code.
 
