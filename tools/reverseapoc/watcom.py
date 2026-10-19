@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import os
 import shutil
+import time
 import tomllib
 import urllib.parse
 import urllib.request
@@ -359,6 +360,26 @@ def check_watcom(
 # ---- install -------------------------------------------------------------------------------
 
 
+def _replace_with_retry(
+    src: Path,
+    dst: Path,
+    *,
+    attempts: int = 8,
+    delay: float = 0.25,
+    sleep: Callable[[float], None] | None = None,
+) -> None:
+    """os.replace, retrying PermissionError (Windows scanners briefly lock fresh files)."""
+    sleep = sleep if sleep is not None else time.sleep
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts:
+                raise
+            sleep(delay * attempt)
+
+
 def install_version(
     media: WatcomMedia,
     media_dir: Path | str,
@@ -388,7 +409,13 @@ def install_version(
             raise WatcomError(f"cannot extract Watcom {media.version} from {iso}: {exc}") from exc
         if target.exists():
             shutil.rmtree(target)
-        os.replace(partial, target)
+        try:
+            _replace_with_retry(partial, target)
+        except PermissionError as exc:
+            raise WatcomError(
+                f"cannot move Watcom {media.version} into place ({exc}); "
+                "something is holding the files (antivirus or indexer?), re-run the install"
+            ) from exc
     finally:
         if partial.exists():
             shutil.rmtree(partial, ignore_errors=True)
