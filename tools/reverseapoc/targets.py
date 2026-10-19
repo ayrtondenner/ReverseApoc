@@ -42,31 +42,42 @@ class Target:
     description: str = ""
 
 
-def _parse_target(i: int, entry: dict) -> Target:
-    where = f"targets[{i}] ({entry.get('name', '?')})"
+def _text(entry: dict, where: str, key: str, *, required: bool = True) -> str | None:
+    value = entry.get(key)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ManifestError(f"{where}: '{key}' must be a non-empty string")
+    return value
 
-    def text(key: str, *, required: bool = True) -> str | None:
-        value = entry.get(key)
-        if value is None and not required:
-            return None
-        if not isinstance(value, str) or not value:
-            raise ManifestError(f"{where}: '{key}' must be a non-empty string")
-        return value
 
-    def digest(key: str, length: int) -> str:
-        value = text(key).lower()
-        if len(value) != length or not set(value) <= _HEX:
-            raise ManifestError(f"{where}: '{key}' must be {length} hex digits")
-        return value
+def _digest(entry: dict, where: str, key: str, length: int) -> str:
+    value = _text(entry, where, key).lower()
+    if len(value) != length or not set(value) <= _HEX:
+        raise ManifestError(f"{where}: '{key}' must be {length} hex digits")
+    return value
 
-    name, path = text("name"), text("path")
+
+def _size(entry: dict, where: str) -> int:
     size = entry.get("size")
     if not isinstance(size, int) or isinstance(size, bool) or size < 0:
         raise ManifestError(f"{where}: 'size' must be a non-negative integer")
-    md5, sha1 = digest("md5", 32), digest("sha1", 40)
+    return size
+
+
+def _crc32(entry: dict, where: str) -> int | None:
     crc32 = entry.get("crc32")
     if crc32 is not None and (not isinstance(crc32, int) or not 0 <= crc32 <= 0xFFFFFFFF):
         raise ManifestError(f"{where}: 'crc32' must be a 32-bit integer")
+    return crc32
+
+
+def _parse_target(i: int, entry: dict) -> Target:
+    where = f"targets[{i}] ({entry.get('name', '?')})"
+    name, path = _text(entry, where, "name"), _text(entry, where, "path")
+    size = _size(entry, where)
+    md5, sha1 = _digest(entry, where, "md5", 32), _digest(entry, where, "sha1", 40)
+    crc32 = _crc32(entry, where)
     return Target(
         name=name,
         path=path,
@@ -74,7 +85,7 @@ def _parse_target(i: int, entry: dict) -> Target:
         md5=md5,
         sha1=sha1,
         crc32=crc32,
-        module=text("module", required=False),
+        module=_text(entry, where, "module", required=False),
         description=entry.get("description", ""),
     )
 
