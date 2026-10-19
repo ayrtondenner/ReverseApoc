@@ -1,6 +1,6 @@
 # Toolchain
 
-What the targets are, what built them, and what each part of our toolchain does. Facts marked "local scan" come from read-only Python scans of the Steam install on 2026-10-19. Everything else cites the research notes in [research/](research/). Items marked **to be confirmed in Phase 3** (or another phase) are hypotheses, not facts.
+What the targets are, what built them, and what each part of our toolchain does. Facts marked "local scan" come from read-only Python scans of the Steam install on 2026-10-19. Everything else cites the research notes in [research/](research/). Items marked **to be confirmed in Phase 4** (or another phase) are hypotheses, not facts.
 
 ## Targets
 
@@ -13,7 +13,7 @@ Steam and GOG installs are byte-identical for the game executables (local scan).
 | `UFOEXE/SMKP.EXE` | 271,436 | `2d7933f255348a60536d811391b461ba` | `SMKP` | TBD | TBD | Deferred (Smacker player) |
 | `XCOMAPOC.EXE` | 18,171 | `867f7997fae1714313b873f15359c4fb` | n/a | TBD | n/a | Out of scope (16-bit launcher) |
 
-- SHA-1 values: TBD, recorded in `config/targets.toml` in Phase 1.
+- SHA-1 values: TBD, recorded in `config/targets.toml` in Phase 2.
 - `SETUP.EXE` is Borland C++ 1991 and out of scope.
 - The two targets have separate module names, which suggests separate link scripts. Expect two decomp targets with largely shared engine code, possibly compiled with slightly different flags.
 
@@ -31,7 +31,7 @@ OpenApoc's extractor expects UFO2P.EXE CRC32 `0x4749ffc1` ("the crc32 of the ufo
 SMKP.EXE and XCOMAPOC.EXE are identical in both places. The Steam ISO and the GOG disc image contain byte-identical files. The disc's README.TXT says "Version 1.00, 11th June 1997"; the installed executables are a later build applied by the store installers (the exact patch level is TBD). Consequences:
 
 - OpenApoc's table offsets and the `FUN_` addresses in its PRs describe the **CD build**. They are not valid for the installed build without re-deriving them.
-- The project's primary target stays the **installed build** (what players run, what `uv run reverseapoc ingest` collects). The CD build is recorded in `config/targets.toml` under `[[cd_builds]]` for cross-reference and as a second, smaller matching target once the pipeline exists. Which build becomes primary is an owner decision to revisit after Phase 4.
+- The project's primary target stays the **installed build** (what players run, what `uv run reverseapoc ingest` collects). The CD build is recorded in `config/targets.toml` under `[[cd_builds]]` for cross-reference and as a second, smaller matching target once the pipeline exists. Which build becomes primary is an owner decision to revisit after Phase 5.
 - A build-to-build diff (same compiler, small source delta) is a cheap source of matching evidence in later phases.
 
 ## LE layout
@@ -53,8 +53,8 @@ All three 32-bit EXEs are LE executables bound with DOS/4GW Professional (local 
 - SMKP.EXE differs: stub at 0x26654 (157,268 bytes of extender), LE header at 0x292E4, obj1 base 0x10000 (vsize 0x11380), obj2 base 0x30000 (vsize 0xFA70). Its DOS/4GW blob has a different size, so it was bound separately.
 - No symbol names come for free. Naming relies on RE, OpenApoc knowledge and string references.
 - Mapping objects at their preferred bases keeps community Ghidra addresses (`FUN_000xxxxx`, `0x0016xxxx`) usable, once the build question above is settled.
-- Not yet checked: iterated or zero pages, non-internal fixups, 16:16 fixups. KKND's and Theme Hospital's readers both raise on these. **To be confirmed in Phase 1/2.**
-- The lx-loader README lists "X-Com: Apocalypse (UFO2P.EXE - DOS/16 LE and unbound LE-style)" as tested (a line inherited from upstream). That conflicts with the local scan, which shows a bound DOS/4GW Pro file. **To be checked in Phase 4.**
+- Not yet checked: iterated or zero pages, non-internal fixups, 16:16 fixups. KKND's and Theme Hospital's readers both raise on these. **To be confirmed in Phase 2/3.**
+- The lx-loader README lists "X-Com: Apocalypse (UFO2P.EXE - DOS/16 LE and unbound LE-style)" as tested (a line inherited from upstream). That conflicts with the local scan, which shows a bound DOS/4GW Pro file. **To be checked in Phase 5.**
 
 ## Compiler
 
@@ -76,7 +76,7 @@ All three 32-bit EXEs are LE executables bound with DOS/4GW Professional (local 
 
 ### Hypothesis
 
-**Watcom C 10.6, with 10.5 as an equivalent.** 11.0 is less likely but not excluded by the banner. Open Watcom will not match and is used only for auxiliary tools. **To be confirmed in Phase 3** by:
+**Watcom C 10.6, with 10.5 as an equivalent.** 11.0 is less likely but not excluded by the banner. Open Watcom will not match and is used only for auxiliary tools. **To be confirmed in Phase 4** by:
 
 1. compiling the mosura probe with owner-supplied 10.5, 10.6 and 11.0 and looking for its idioms in UFO2P's code object;
 2. matching the linked CLIB3R/MATH3R runtime modules byte for byte against each version's `LIB386`, NHL95PC-style ([NHL95PC](https://github.com/abdulahmad/NHL95PC)).
@@ -85,7 +85,7 @@ Modules may mix versions (Theme Hospital used 10.0a for some CRT modules), so th
 
 ### Flags
 
-TBD, recorded here in Phase 3. References from other Watcom games, not evidence for ours:
+TBD, recorded here in Phase 4. References from other Watcom games, not evidence for ours:
 
 | Project | Compiler | Flags |
 |---|---|---|
@@ -103,13 +103,13 @@ All evidence points to C compiled with `wcc386` (local scan):
 - Neither binary contains Watcom C++ mangling (`W?...`), `__wcpp_` runtime symbols, "pure virtual" strings or RTTI strings.
 - The `assertion "%s" failed` string lives in the DOS/4GW extender region, not the game.
 
-The binaries are stripped, so missing symbols alone are weak evidence. **To be confirmed in Phase 4:** scan obj2 for vtables, obj1 for `__wcpp_` routines and for XI/YI static-init segments. Keep `wpp386` available per file, because Theme Hospital found that `wcc386` "generates different code for the same source" when the original was C++.
+The binaries are stripped, so missing symbols alone are weak evidence. **To be confirmed in Phase 5:** scan obj2 for vtables, obj1 for `__wcpp_` routines and for XI/YI static-init segments. Keep `wpp386` available per file, because Theme Hospital found that `wcc386` "generates different code for the same source" when the original was C++.
 
 ## What the Docker image contains, and what you supply
 
 The image is built locally and never pushed with proprietary bytes in it.
 
-| In the image (Phase 1) | Supplied by you (gitignored, mounted read-only) | Outside the container |
+| In the image (Phase 2) | Supplied by you (gitignored, mounted read-only) | Outside the container |
 |---|---|---|
 | Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5/10.6 (and 11.0 for the probe), mounted at `/work/watcom:ro` | Ghidra 12.1.4 + JDK 21 in WSL2 Ubuntu |
 | ninja | `orig/`: UFO2P.EXE and TACP.EXE from your install, mounted at `/work/orig:ro` | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
@@ -132,7 +132,7 @@ decomp.me's `msdos` platform offers `wcc10.0a`, `wcc10.5`, `wcc10.5a`, `wcc10.6`
 - **Ghidra 12.1.4** (2026-09-21). Stock Ghidra has no LE loader and no `__watcall` ([ghidra#532](https://github.com/NationalSecurityAgency/ghidra/issues/532), [ghidra#156](https://github.com/NationalSecurityAgency/ghidra/issues/156)).
 - **lastonesky ghidra-lx-loader v12.1.4-1** (2026-10-10): supports 12.1.x and ships a Watcom cspec with `__watcall` ([release](https://github.com/lastonesky/ghidra-lx-loader/releases/tag/v12.1.4-1)). Upstream yetmorecode v12.0.1 targets 12.0 and breaks on the 12.1 loader API.
 - **retrokit** (Apache-2.0): its own LE loader, `watcom`/`watcomreg` cspec auto-detection, Open Watcom library signatures, function export and an MCP server ([nemo22/retrokit](https://github.com/nemo22/retrokit)). Exported sizes are Ghidra body counts and need post-processing into contiguous ranges.
-- Pick one loader per Ghidra install. Neither has been tested on UFO2P or TACP. **Decided in Phase 4.**
+- Pick one loader per Ghidra install. Neither has been tested on UFO2P or TACP. **Decided in Phase 5.**
 
 ### GhidraMCP
 
@@ -143,12 +143,12 @@ LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less
 - objdiff cannot read OMF. Issue [#97](https://github.com/encounter/objdiff/issues/97) has been open since 2024-08-19; a WIP `omf` branch dates from 2025-09-25; v3.8.2 (2026-09-29) reads ELF and COFF only.
 - Bridge: Theme Hospital's `omf2elf.py` (GPLv3, about 590 lines) converts Watcom OMF to ELF32, including COMDAT, LIDATA, FIXUPP threads and BAKPAT. Theme Hospital runs objdiff-cli 3.8.1 through it.
 - objdiff compares at most one relocation per x86 instruction, so Theme Hospital's `elfrelocs.py`/`verify.py` check the rest.
-- Target objects for objdiff are cut from the LE, with relocations built from LE fixups (Phase 4).
-- Fallback: KKND-style compare (cut each function from its OMF object, mask relocations, check their targets), which avoids objdiff entirely. **The Phase 4 spike decides.**
+- Target objects for objdiff are cut from the LE, with relocations built from LE fixups (Phase 5).
+- Fallback: KKND-style compare (cut each function from its OMF object, mask relocations, check their targets), which avoids objdiff entirely. **The Phase 5 spike decides.**
 
 ### wibo
 
-wibo 1.2.0 runs the Win32-hosted `BINNT\wcc386.exe` on Linux ([decompals/wibo](https://github.com/decompals/wibo)). Older wibo (nixpkgs 0.6.14) cannot run Watcom ("Unhandled function LocalAlloc"). Watcom treats `/` as an option switch and splits paths on spaces: decomp.me rewrites `/` to `\`, and KKND compiles from relative paths under `build/tmp`. The BINNT binaries also run natively on the Windows host, which helps debugging. **Running every 10.x version under wibo in Docker is a Phase 3 spike.**
+wibo 1.2.0 runs the Win32-hosted `BINNT\wcc386.exe` on Linux ([decompals/wibo](https://github.com/decompals/wibo)). Older wibo (nixpkgs 0.6.14) cannot run Watcom ("Unhandled function LocalAlloc"). Watcom treats `/` as an option switch and splits paths on spaces: decomp.me rewrites `/` to `\`, and KKND compiles from relative paths under `build/tmp`. The BINNT binaries also run natively on the Windows host, which helps debugging. **Running every 10.x version under wibo in Docker is a Phase 4 spike.**
 
 ### Open Watcom v2
 
@@ -162,13 +162,13 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 
 | Component | Version | Status |
 |---|---|---|
-| Python | 3.14 (`.python-version`) | Phase 1 |
-| uv | host 0.12.23; image tag TBD | Phase 1 |
-| wibo | 1.2.0 | Phase 1 |
-| objdiff-cli | TBD (v3.8.2 was latest on 2026-10-19) | Phase 1 |
-| Open Watcom v2 | build TBD | Phase 1 |
-| Watcom C | 10.6 / 10.5 hypothesis | Phase 3 |
-| Ghidra | 12.1.4 + JDK 21 | Phase 4 |
-| ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 4 |
-| GhidraMCP | 2.0, headless, Python 3.13 | Phase 4 |
-| decomp.wtf | v0.10.6 (archived) | Phase 5 |
+| Python | 3.14 (`.python-version`) | Phase 2 |
+| uv | host 0.12.23; image tag TBD | Phase 2 |
+| wibo | 1.2.0 | Phase 2 |
+| objdiff-cli | TBD (v3.8.2 was latest on 2026-10-19) | Phase 2 |
+| Open Watcom v2 | build TBD | Phase 2 |
+| Watcom C | 10.6 / 10.5 hypothesis | Phase 4 |
+| Ghidra | 12.1.4 + JDK 21 | Phase 5 |
+| ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 5 |
+| GhidraMCP | 2.0, headless, Python 3.13 | Phase 5 |
+| decomp.wtf | v0.10.6 (archived) | Phase 6 |

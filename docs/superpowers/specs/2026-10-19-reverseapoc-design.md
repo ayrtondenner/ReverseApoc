@@ -1,7 +1,7 @@
 # ReverseApoc design
 
 - **Date:** 2026-10-19
-- **Status:** approved plan for Milestone 1; Phases 0-1 detailed, Phases 2-5 planned later with GSD.
+- **Status:** approved plan for Milestone 1; Phases 1-2 detailed, Phases 3-6 planned later with GSD.
 - **Sources:** the [kickoff research report](../../research/2026-10-19-kickoff-research-report.md), the eight research notes in [docs/research/](../../research/), the owner's kickoff brief and the approved plan.
 
 Every decision below is tagged:
@@ -21,10 +21,10 @@ Why:
 
 ## Goals
 
-1. A reproducible, containerized build that rebuilds both executables byte-identically from the user's own files (Phases 1-2).
-2. The exact compiler version and flags, proven by library and codegen matching (Phase 3).
-3. Matched C functions, each verified by objdiff, relocation checks and a whole-EXE SHA-1, readable and commented for OpenApoc readers (Phase 4 onward).
-4. A per-function agent loop that matches easy functions unattended with zero regressions (Phase 5 pilot: 10 functions).
+1. A reproducible, containerized build that rebuilds both executables byte-identically from the user's own files (Phases 2-3).
+2. The exact compiler version and flags, proven by library and codegen matching (Phase 4).
+3. Matched C functions, each verified by objdiff, relocation checks and a whole-EXE SHA-1, readable and commented for OpenApoc readers (Phase 5 onward).
+4. A per-function agent loop that matches easy functions unattended with zero regressions (Phase 6 pilot: 10 functions).
 5. Public, self-hosted progress (mosaic, badge, raw JSON) and directory listings (recomp.fyi, decomphub.com).
 
 ## Non-goals
@@ -59,13 +59,13 @@ Things the project must actively avoid:
 | Decision | Tag | Rationale |
 |---|---|---|
 | **Hybrid pipeline:** our own matching oracle (Watcom 10.x under wibo in Docker, `configure.py` + ninja, LE splitter, in-place page splice, whole-EXE SHA-1, OMF-to-ELF for objdiff) plus decomp.wtf v0.10.6 fork mode as the agent layer | [Owner] | decomp.wtf has no LE/Watcom path, but its fork mode accepts any `configure.py` + ninja + `objdiff.json` repo; the hybrid buys its agent layer for about 3-7 extra days instead of 12-24 to build one |
-| Fallback if objdiff cannot diff OMF-converted ELF cleanly: own pipeline plus a minimal agent layer (MCP, claims, guardrails, Claude Code only) | [Default] | Decided by the Phase 4 spike |
+| Fallback if objdiff cannot diff OMF-converted ELF cleanly: own pipeline plus a minimal agent layer (MCP, claims, guardrails, Claude Code only) | [Default] | Decided by the Phase 5 spike |
 | Reuse KKND-Decomp (CC0) for LE reading, splice and discovery; Theme Hospital (GPLv3) for `omf2elf.py` and the build pattern; retrokit (Apache-2.0) as an external analysis tool | [Default] | Closest existing Watcom/DOS/4GW pipelines; about 13-24 developer-days for the oracle |
-| **GSD for milestones and phases**, Milestone 1 = Phases 0-5 below, each with a verification gate | [Owner] | Durable phase state, `VERIFICATION.md` gates, `/gsd-spike` |
+| **GSD for milestones and phases**, Milestone 1 = Phases 1-6 below, each with a verification gate | [Owner] | Durable phase state, `VERIFICATION.md` gates, `/gsd-spike` |
 | **superpowers inside phases** (brainstorming, TDD on tooling, verification before completion); GSD's files are the record when both prescribe a step | [Owner] | Avoids two systems giving competing instructions |
 | Install the enabled plugins at project scope rather than trimming the list | [Owner] | Settings enabled seven plugins but only one was installed |
-| **Phases 0-5 with gates** (hygiene, container and ingest, round trip, compiler ID, split and first matches, reporting and pilot) | [Owner] (structure), [Default] (gate wording) | Byte-identical rebuild before any decompiling (Abahbob; Theme Hospital's final `cmp`) |
-| Watcom 10.6 (10.5 equivalent) as the compiler hypothesis; Open Watcom only for `wdis`/`wlink`/`wlib` | [Default] | Banner and codegen evidence; settled in Phase 3 |
+| **Phases 1-6 with gates** (hygiene, container and ingest, round trip, compiler ID, split and first matches, reporting and pilot) | [Owner] (structure), [Default] (gate wording) | Byte-identical rebuild before any decompiling (Abahbob; Theme Hospital's final `cmp`) |
+| Watcom 10.6 (10.5 equivalent) as the compiler hypothesis; Open Watcom only for `wdis`/`wlink`/`wlib` | [Default] | Banner and codegen evidence; settled in Phase 4 |
 | C89 with `wcc386` by default; `wpp386` per file if a module proves to be C++ | [Default] | Source-file strings and no C++ runtime traces |
 | In-place page splice for the MVP instead of a full LE rewrite | [Default] | Byte-identical by construction for unmatched bytes; 1-3 days instead of 10-20+ |
 | **Progress self-hosted**: treemap SVG, shields endpoint JSON and `progress.json` on GitHub Pages, built by Actions on push to `main` | [Default] | decomp.dev closed to new projects; recomp.fyi renders no badge |
@@ -94,10 +94,10 @@ GitHub Actions --> progress.svg / progress.json / shield JSON on Pages, report a
 
 These were deliberately not decided; the phase that needs each one decides it, using GSD's discuss and plan steps.
 
-- **Exact LE writer strategy (Phase 2).** In-place splice is the default, but how to verify headers, page map and fixup tables, and whether a full Theme Hospital style rewrite is ever needed (for shiftable or relinkable builds), is open. Unknowns: iterated or zero pages and non-internal fixups in UFO2P/TACP, both of which the borrowed readers reject today.
-- **OMF-to-ELF details (Phase 4).** How to cut per-unit target ELF objects from the LE with relocations built from LE fixups; section and symbol naming that objdiff and decomp.wtf fork mode accept; handling of COMDAT, FLAT-group fixups and Watcom inline switch tables; how the extra-relocation check is wired in.
-- **Scorer design (Phase 5).** Features and weights for easiest-first, when to switch to similarity-first, how twin functions between the two EXEs and library-matched runtime functions are prioritised, and how the difficult list is re-queued.
-- **Hook implementation (Phase 5).** Which Claude Code hook events, the exact path and pattern lists (hash manifests, build scripts, `orig/`, inline asm and code-emitting pragmas), how decomp.wtf's own guardrails and ours coexist, and how the driver detects usage limits and backs off.
+- **Exact LE writer strategy (Phase 3).** In-place splice is the default, but how to verify headers, page map and fixup tables, and whether a full Theme Hospital style rewrite is ever needed (for shiftable or relinkable builds), is open. Unknowns: iterated or zero pages and non-internal fixups in UFO2P/TACP, both of which the borrowed readers reject today.
+- **OMF-to-ELF details (Phase 5).** How to cut per-unit target ELF objects from the LE with relocations built from LE fixups; section and symbol naming that objdiff and decomp.wtf fork mode accept; handling of COMDAT, FLAT-group fixups and Watcom inline switch tables; how the extra-relocation check is wired in.
+- **Scorer design (Phase 6).** Features and weights for easiest-first, when to switch to similarity-first, how twin functions between the two EXEs and library-matched runtime functions are prioritised, and how the difficult list is re-queued.
+- **Hook implementation (Phase 6).** Which Claude Code hook events, the exact path and pattern lists (hash manifests, build scripts, `orig/`, inline asm and code-emitting pragmas), how decomp.wtf's own guardrails and ours coexist, and how the driver detects usage limits and backs off.
 - **Also open:** the stub convention for unmatched functions in Watcom units (decomp.wtf expects GNU-asm `INCLUDE_ASM`); the compat header path and `__WATCOMC__` value; the progress file names on Pages; whether Nigel or a Python driver wins.
 
 ## Risks to watch

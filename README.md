@@ -11,7 +11,7 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-*Placeholder. The mosaic, the badge and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) will be generated on push to `main` and published to GitHub Pages, coming in Phase 5. One cell per function, grouped by module, sized by bytes, coloured matched, partial or unmatched. File names are final once Phase 5 lands.*
+*Placeholder. The mosaic, the badge and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) will be generated on push to `main` and published to GitHub Pages, coming in Phase 6. One cell per function, grouped by module, sized by bytes, coloured matched, partial or unmatched. File names are final once Phase 6 lands.*
 
 ## Supported versions
 
@@ -24,7 +24,7 @@ Only the DOS release is supported. Steam and GOG ship byte-identical game execut
 | `UFOEXE/SMKP.EXE` | Smacker video player | 271,436 | `2d7933f255348a60536d811391b461ba` | Deferred |
 | `XCOMAPOC.EXE` | 16-bit launcher | 18,171 | `867f7997fae1714313b873f15359c4fb` | Out of scope |
 
-SHA-1 values go into the hash manifest in Phase 1. `SETUP.EXE` (Borland C++, 1991) is out of scope. The disc image that both stores ship (`cd.iso` on Steam, `CD/XCOM.BIN` on GOG, byte-identical) contains the original v1.00 builds: UFO2P.EXE 1,702,206 bytes with CRC32 `0x4749FFC1`, the value OpenApoc's extractors expect, and TACP.EXE 3,170,298 bytes. The installed files above are a later build. OpenApoc reads from the disc image, so its offsets describe the CD build; this project targets the installed build first and records both ([docs/toolchain.md](docs/toolchain.md#openapoc-crc-mismatch-resolved-2026-10-19)).
+SHA-1 values go into the hash manifest in Phase 2. `SETUP.EXE` (Borland C++, 1991) is out of scope. The disc image that both stores ship (`cd.iso` on Steam, `CD/XCOM.BIN` on GOG, byte-identical) contains the original v1.00 builds: UFO2P.EXE 1,702,206 bytes with CRC32 `0x4749FFC1`, the value OpenApoc's extractors expect, and TACP.EXE 3,170,298 bytes. The installed files above are a later build. OpenApoc reads from the disc image, so its offsets describe the CD build; this project targets the installed build first and records both ([docs/toolchain.md](docs/toolchain.md#openapoc-crc-mismatch-resolved-2026-10-19)).
 
 A Windows 95 release also existed. On what it contains, OpenApoc community member FilmBoy84 recalls:
 
@@ -49,7 +49,7 @@ The agent layer:
 
 - [decomp.wtf](https://github.com/i12bp8/decomp.wtf) v0.10.6 in fork mode, pinned and lightly patched, installed in WSL2 and run as a separate tool (a subprocess, never imported). Fork mode accepts a local repo that builds with `configure.py` + ninja and produces `objdiff.json`. It judges candidates with objdiff and brings function claims, MCP tools, guardrails and a dashboard.
 - Our driver re-verifies the bytes before any commit. An agent never judges its own match.
-- If objdiff cannot diff the converted objects cleanly (a Phase 4 spike), the fallback is our own minimal agent layer: an MCP server, claims and guardrails, Claude Code only.
+- If objdiff cannot diff the converted objects cleanly (a Phase 5 spike), the fallback is our own minimal agent layer: an MCP server, claims and guardrails, Claude Code only.
 
 The order of work follows Abahbob's rule: get a byte-identical rebuild of raw bytes first, decompile second.
 
@@ -66,7 +66,7 @@ Files copied from Theme Hospital keep their copyright headers. That is why `tool
 
 ## Toolchain summary
 
-- **Compiler:** Watcom C 10.5/10.6 is the working hypothesis (10.5 and 10.6 emit identical code on the published probes). The exact version is settled in Phase 3.
+- **Compiler:** Watcom C 10.5/10.6 is the working hypothesis (10.5 and 10.6 emit identical code on the published probes). The exact version is settled in Phase 4.
 - **Extender:** DOS/4GW Professional, bound into each EXE (LE format, two objects, no debug info).
 - **Analysis:** Ghidra 12.1.4 with [ghidra-lx-loader](https://github.com/lastonesky/ghidra-lx-loader) (or retrokit), in WSL2.
 - **Diff and reports:** objdiff, behind an OMF-to-ELF converter.
@@ -83,7 +83,7 @@ Bring your own files. Nothing below downloads the game or the compiler for you.
 3. `docker compose build`
 4. `docker compose run --rm build uv run pytest`
 
-These commands land in Phase 1 and do not exist yet. The Watcom compiler goes into the gitignored `third_party/watcom/` once Phase 3 starts.
+`docker compose run --rm test` runs the test suite in the container in one step. The Watcom compiler goes into the gitignored `third_party/watcom/` once Phase 4 starts.
 
 ## Workflow and ceremonies
 

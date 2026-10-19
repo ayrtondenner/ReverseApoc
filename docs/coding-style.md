@@ -19,11 +19,11 @@ If a module turns out to be C++, it is compiled with `wpp386` per file and gets 
 ## Watcom specifics
 
 - **Calling convention.** The default is Watcom's register convention (`__watcall`): arguments in `eax`, `edx`, `ebx`, `ecx`, then the stack. C function symbols get a trailing underscore (`name_`) and data symbols a leading one (`_name`).
-- **`#pragma aux`** declares calling conventions, register parameters, return registers and clobbered registers for a function. Put pragmas in headers next to the prototype. Pragma bodies that emit code bytes are not allowed in `src/` (see [workflow.md](workflow.md#hooks-guardrails-phase-5)).
+- **`#pragma aux`** declares calling conventions, register parameters, return registers and clobbered registers for a function. Put pragmas in headers next to the prototype. Pragma bodies that emit code bytes are not allowed in `src/` (see [workflow.md](workflow.md#hooks-guardrails-phase-6)).
 - **`__near` / `__far`**: the program is flat 32-bit, so expect them only around DOS/4GW, interrupt or real-mode interfaces. Keep them where the original needs them.
-- **Struct packing** is set with `-zp` (`-zp1` in KKND and NHL95PC). Ours is TBD, recorded in [matching.md](matching.md) in Phase 3. Struct layouts and offset comments must follow it.
+- **Struct packing** is set with `-zp` (`-zp1` in KKND and NHL95PC). Ours is TBD, recorded in [matching.md](matching.md) in Phase 4. Struct layouts and offset comments must follow it.
 - **Enums** take the smallest signed type that fits under Watcom; a field that holds an enum value keeps its original integer type.
-- **Compat header.** clang and clangd do not understand Watcom keywords. A compat header defines `__far`, `__near`, `__interrupt`, `__cdecl` and `__watcall` as empty for clang only, alongside `-D__386__ -D__FLAT__` and a `__WATCOMC__` value (TBD, set to match the version found in Phase 3). Its path is decided in Phase 4.
+- **Compat header.** clang and clangd do not understand Watcom keywords. A compat header defines `__far`, `__near`, `__interrupt`, `__cdecl` and `__watcall` as empty for clang only, alongside `-D__386__ -D__FLAT__` and a `__WATCOMC__` value (TBD, set to match the version found in Phase 4). Its path is decided in Phase 5.
 
 ## Naming
 

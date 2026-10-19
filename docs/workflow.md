@@ -4,13 +4,13 @@ Work runs at three levels:
 
 1. **Milestone**: a set of gated phases, tracked by GSD in `.planning/`.
 2. **Phase**: GSD's discuss, plan, execute, verify loop, with superpowers skills inside it.
-3. **Function**: the per-function matching loop, from Phase 4 on.
+3. **Function**: the per-function matching loop, from Phase 5 on.
 
 The rule that ties them together: deterministic checks decide what is done. An agent never judges its own result. Every documented failure in the research (false match claims, rewritten hashes, permuter overfitting) came from letting the agent judge itself ([report](research/2026-10-19-kickoff-research-report.md)).
 
 ## The per-function loop
 
-Starts in Phase 4 (by hand) and becomes unattended in Phase 5.
+Starts in Phase 5 (by hand) and becomes unattended in Phase 6.
 
 ```
 select function -> decompile attempt -> compile (Watcom under wibo)
@@ -38,7 +38,7 @@ select function -> decompile attempt -> compile (Watcom under wibo)
 - Evaluate [Nigel](https://github.com/cdlewis/nigel) first: its `candidate_source`, `verify_command`, `success_command` and `reset_command` map almost one-to-one onto this loop. The alternative is about 200 lines of Python.
 - In the hybrid pipeline, decomp.wtf's fork mode supplies claims (so parallel agents do not collide), MCP tools, a dashboard and undo when a change breaks an existing match. Our build stays the final judge.
 
-### Hooks (guardrails, Phase 5)
+### Hooks (guardrails, Phase 6)
 
 Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" and worked around a blocked `make` (Lewis); an agent tried to fork its compiler (Macabeus). Prose rules are not enough, so hooks enforce these:
 
@@ -50,7 +50,7 @@ Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" an
 | Inline assembly in `src/` (`_asm`, `__asm`, and `#pragma aux` bodies that emit code bytes) | Matching must come from C; calling-convention pragmas stay allowed |
 | Builds that bypass the verify script, and edits to generated files (`asm/`, `build/`) | Same oracle for everyone |
 
-The exact hook implementation is left to Phase 5 (see the [design spec](superpowers/specs/2026-10-19-reverseapoc-design.md#what-is-left-to-the-builder)).
+The exact hook implementation is left to Phase 6 (see the [design spec](superpowers/specs/2026-10-19-reverseapoc-design.md#what-is-left-to-the-builder)).
 
 ## The GSD phase loop
 
@@ -80,15 +80,17 @@ When both systems prescribe a step, GSD's phase files are the record. `.claude/r
 
 ## Milestone 1 roadmap
 
-Copied from the approved plan. Phases 0-1 are implemented first; 2-5 are planned later with `/gsd-plan-phase N`.
+Copied from the approved plan. Phases 1-2 are implemented first; 3-6 are planned later with `/gsd-plan-phase N`.
+
+The phases were numbered 0-5 until 2026-10-19, when they were renumbered 1-6 because GSD reserves phase 0. The research notes in [research/](research/) and commits before the renumbering use the old numbers (old N = new N+1).
 
 | Phase | Goal | Verification gate (`VERIFICATION.md` must pass) | Spike (`/gsd-spike`) |
 |---|---|---|---|
-| 0 Hygiene and safety | GSD + plugins installed, `.gitignore`, key externalized, lean CLAUDE.md, docs skeleton, README, `.recomp.json`, design spec | `git ls-files` has no game file/key/`.env`; `/plugin` and `/gsd-health` clean; CLAUDE.md < 150 lines | none |
-| 1 Container and target ingest | Docker image (uv, ninja, objdiff-cli, wibo, OW v2), hash manifest, Python LE parser with pytest | pytest green in container; parser reproduces the scanned layout of both EXEs | none |
-| 2 Byte-identical round trip | KKND-style in-place page splice and whole-EXE rebuild | `cmp`/SHA-1 identical for UFO2P.EXE and TACP.EXE | iterated pages / fixup edge cases on the real files |
-| 3 Compiler identification | mosura codegen probe + CLIB3R library match with owner-supplied Watcom 10.5/10.6/11.0 under wibo | version and default flags recorded in `docs/toolchain.md`, runtime modules match byte-for-byte | wibo 1.2.0 runs `wcc386.exe` for each version in Docker |
-| 4 Split and first matches | Ghidra 12.1.4 + LE loader (lastonesky or retrokit) in WSL2, `omf2elf.py`, function split, `configure.py` -> ninja + `objdiff.json` + target ELF objects | one function per EXE compiles, matches (relocations checked), splices back, whole EXE still identical; objdiff shows 100% | objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback) |
-| 5 Reporting and agent pilot | `progress.py` + Pages + badge, `watcom-decomp` skill, hooks, decomp.wtf fork mode pinned at v0.10.6 with light patches, 3-5 attempt cap, driver-side re-verification | mosaic and badge live; 10 easy functions matched unattended, zero regressions, EXE identical; recomp.fyi and decomphub submissions done | decomp.wtf fork mode accepts the repo's stub convention |
+| 1 Hygiene and safety | GSD + plugins installed, `.gitignore`, key externalized, lean CLAUDE.md, docs skeleton, README, `.recomp.json`, design spec | `git ls-files` has no game file/key/`.env`; `/plugin` and `/gsd-health` clean; CLAUDE.md < 150 lines | none |
+| 2 Container and target ingest | Docker image (uv, ninja, objdiff-cli, wibo, OW v2), hash manifest, Python LE parser with pytest | pytest green in container; parser reproduces the scanned layout of both EXEs | none |
+| 3 Byte-identical round trip | KKND-style in-place page splice and whole-EXE rebuild | `cmp`/SHA-1 identical for UFO2P.EXE and TACP.EXE | iterated pages / fixup edge cases on the real files |
+| 4 Compiler identification | mosura codegen probe + CLIB3R library match with owner-supplied Watcom 10.5/10.6/11.0 under wibo | version and default flags recorded in `docs/toolchain.md`, runtime modules match byte-for-byte | wibo 1.2.0 runs `wcc386.exe` for each version in Docker |
+| 5 Split and first matches | Ghidra 12.1.4 + LE loader (lastonesky or retrokit) in WSL2, `omf2elf.py`, function split, `configure.py` -> ninja + `objdiff.json` + target ELF objects | one function per EXE compiles, matches (relocations checked), splices back, whole EXE still identical; objdiff shows 100% | objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback) |
+| 6 Reporting and agent pilot | `progress.py` + Pages + badge, `watcom-decomp` skill, hooks, decomp.wtf fork mode pinned at v0.10.6 with light patches, 3-5 attempt cap, driver-side re-verification | mosaic and badge live; 10 easy functions matched unattended, zero regressions, EXE identical; recomp.fyi and decomphub submissions done | decomp.wtf fork mode accepts the repo's stub convention |
 
-Cross-cutting task, opened as a GitHub issue in Phase 0: ask OpenApoc which build has UFO2P CRC32 `0x4749ffc1` (current Steam/GOG is `0xDBD3B41D`) before reusing any of their offsets.
+Cross-cutting task, opened as a GitHub issue in Phase 1: ask OpenApoc which build has UFO2P CRC32 `0x4749ffc1` (current Steam/GOG is `0xDBD3B41D`) before reusing any of their offsets.

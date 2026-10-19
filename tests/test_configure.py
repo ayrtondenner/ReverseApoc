@@ -5,7 +5,7 @@ from __future__ import annotations
 import configure
 
 
-def test_render_has_phony_targets_and_phase4_note():
+def test_render_has_phony_targets_and_phase5_note():
     text = configure.render(["orig/UFO2P.EXE", "orig/TACP.EXE"])
     assert "build check-orig: phony" in text
     assert "build parse-le: phony" in text
@@ -13,7 +13,7 @@ def test_render_has_phony_targets_and_phase4_note():
     assert "uv run reverseapoc parse-le $in" in text
     assert "parse_le orig/UFO2P.EXE" in text
     assert "parse_le orig/TACP.EXE" in text
-    assert "Phase 4" in text
+    assert "Phase 5" in text
     assert "builddir = build" in text
 
 
