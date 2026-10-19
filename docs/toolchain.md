@@ -111,7 +111,7 @@ The image is built locally and never pushed with proprietary bytes in it.
 
 | In the image (Phase 2) | Supplied by you (gitignored, mounted read-only) | Outside the container |
 |---|---|---|
-| Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5/10.6 (and 11.0 for the probe), mounted at `/work/watcom:ro` | Ghidra 12.1.4 + JDK 21 in WSL2 Ubuntu |
+| Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5, 10.6, 11.0, 11.0a and 11.0b trees, mounted at `/work/watcom:ro` (see [Getting the Watcom compilers](#getting-the-watcom-compilers)) | Ghidra 12.1.4 + JDK 21 in WSL2 Ubuntu |
 | ninja | `orig/`: UFO2P.EXE and TACP.EXE from your install, mounted at `/work/orig:ro` | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
 | clang-format, clangd | `.env`: install paths and API keys | GhidraMCP under `uvx --python 3.13` |
 | binutils (`as`) | | retrokit via pipx (if chosen over lastonesky's loader) |
@@ -120,6 +120,50 @@ The image is built locally and never pushed with proprietary bytes in it.
 | Open Watcom v2 Linux build (`wdis`, `wlink`, `wlib` only) | | |
 
 Watcom 10.x/11.0 is proprietary and its current IP owner was not verified, so it is never baked into an image layer. Open Watcom's licence permits redistribution, but it cannot match.
+
+## Getting the Watcom compilers
+
+The original compilers are not distributed here. Three opt-in commands fetch, install and check them on your machine. They are never run by the Dockerfile or CI.
+
+### Sources
+
+- **Internet Archive (preferred).** Uploader cdroms@textfiles.com, 2018: [Watcom_C_10.5](https://archive.org/details/Watcom_C_10.5), [Watcom_C_10.6](https://archive.org/details/Watcom_C_10.6), [Watcom_C_11.0](https://archive.org/details/Watcom_C_11.0).
+- **Collection item.** [watcom-c-cpp-compilers-collection](https://archive.org/details/watcom-c-cpp-compilers-collection) holds 11.0a (`watcom-11.0a/WatcomC11a.iso`) and 11.0b (`watcom-11.0b/WATCOM_C11B.iso`). It publishes SHA256SUMS and cross-verification notes. It also holds files Phase 4 may need: the 10.5a patch (`watcom-10.5/patches/c105_a.zip`), the 11.0c update, 10.6a and the QNX 10.6b patches. Its 10.5, 10.6 and 11.0 ISOs are byte-identical to the three items above.
+- **WinWorld (mirror).** [10.5](https://winworldpc.com/product/watcom-c-c/105), [10.6](https://winworldpc.com/product/watcom-c-c/106), [11.0b](https://winworldpc.com/product/watcom-c-c/110b). The same ISO bytes inside `.7z` archives, but WinWorld caps downloads at 25 a day.
+
+### ISOs
+
+| Version | File | Size (bytes) | SHA-1 |
+|---|---|---:|---|
+| 10.5 | `Watcom_C++_10.5.iso` | 515,213,312 | `0722e7494647cd5e9a66bd106aa80a620f7ee999` |
+| 10.6 | `Watcom_C++_10.6.iso` | 664,373,248 | `211f4e7acecf89cf8af26e12099e1aec5a255f65` |
+| 11.0 | `Watcom_C++_11.0.iso` | 669,603,840 | `1708a29f7209b9d29aff18aba8923a0ddd5d97cc` |
+| 11.0a | `WatcomC11a.iso` | 670,785,536 | `8361779a2c7fb395eedff82d4f6207a819292f87` |
+| 11.0b | `WATCOM_C11B.iso` | 649,111,552 | `da67b5b249357b120e20d8580043ead319f2a91b` |
+
+`config/watcom.toml` is the source of truth: md5, CRC32 and key-file hashes live there.
+
+### Commands
+
+`VERSION` is one or more of the versions above; with none given, a command acts on all five.
+
+- `uv run reverseapoc fetch-watcom [VERSION ...]` downloads the ISOs into `third_party/watcom-media/` and verifies them. An already-verified file is skipped, so copying your own ISOs there first works too.
+- `uv run reverseapoc install-watcom [VERSION ...] [--force]` extracts each verified ISO verbatim (original upper-case names) into `third_party/watcom/<version>/`, using the repo's stdlib ISO9660 reader. `--force` replaces an existing installation.
+- `uv run reverseapoc check-watcom [VERSION ...]` verifies the key files (compiler, linker, CLIB3R/CLIB3S, MATH3R/MATH387R, STDIO.H) against the manifest.
+
+### Layout
+
+- `third_party/watcom-media/`: the ISOs. Outside the container's compiler mount.
+- `third_party/watcom/<version>/BINNT, BINW, H, LIB386, ...`: the extracted trees, mounted read-only at `/work/watcom`.
+
+Both are gitignored.
+
+### What is on the discs
+
+- **10.5 and 10.6:** `BINNT/WCC386.EXE` is a 9,216-byte Win32 loader stub ("32-bit DOS programs require the BINW directory to be in your path before BINNT"). The real compiler is the LE program `BINW/WCC386.EXE` (567,698 bytes in 10.6). Running the 10.x compiler under wibo therefore needs `BINW` next to `BINNT`. **To be confirmed in Phase 4.**
+- **11.0, 11.0a, 11.0b:** `BINNT` is native Win32 (`WCC386.EXE` driver plus `WCCD386.DLL`).
+- **10.5:** `BINW/WCC386.EXE` on the CD is a damaged 65,536-byte stub. The real 567,558-byte binary is packed in `DISKIMGS/DISK02/PCK00017.1` and `DISKIMGS/DISK03/PCK00017.2` (wpack). `check-watcom` reports it as KNOWN BAD. Decoding it is Phase 4 work.
+- **11.0b:** the only public dump has one damaged directory sector (353) for the 3-file sample folder `SAMPLES/WIN/DATACTL/WIN16`. 7-Zip cannot open the image. `install-watcom` skips that folder (manifest `skip_dirs`). The compiler, headers and libraries are unaffected.
 
 ## Tools in detail
 
