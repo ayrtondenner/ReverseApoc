@@ -1,0 +1,38 @@
+# Hash manifest of the original X-COM Apocalypse executables.
+#
+# The executables are never committed: bring your own copy and run `uv run reverseapoc ingest`,
+# which copies them into orig/ (gitignored) and checks them against this file. The Steam and GOG
+# releases are byte-identical. `path` is the location inside the game folder in the GOG layout;
+# the Steam layout puts the same tree under an extra XCOMA/ folder.
+#
+# All three are Watcom C/C++ 32-bit programs bound with DOS/4GW Professional (LE format).
+# crc32 is the whole-file CRC32, as OpenApoc and other tools report it.
+
+[[targets]]
+name = "UFO2P.EXE"
+path = "UFOEXE/UFO2P.EXE"
+module = "ufo24"
+description = "Cityscape (strategy layer)"
+size = 1705790
+crc32 = 0xDBD3B41D
+md5 = "d2e874a76344cb9c48afce57357aab31"
+sha1 = "e7488bf3de2efeaa3c1c72d3763eeeb35f727c56"
+
+[[targets]]
+name = "TACP.EXE"
+path = "TACEXE/TACP.EXE"
+module = "tac4"
+description = "Tactical combat"
+size = 3161594
+crc32 = 0x3EC9C268
+md5 = "644382a6caa787cff613c50a170b5152"
+sha1 = "48ef00969d8880a0a152de1b652853fa7ac27393"
+
+[[targets]]
+name = "SMKP.EXE"
+path = "UFOEXE/SMKP.EXE"
+description = "Smacker video player (deferred)"
+size = 271436
+crc32 = 0x93A0E620
+md5 = "2d7933f255348a60536d811391b461ba"
+sha1 = "efdcf2a5adf50a8d0e4fb6a5796a663f6a48e8bc"

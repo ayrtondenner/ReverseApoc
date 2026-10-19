@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Refuse tracked game files, disc images and .env
+        run: |
+          tracked="$(git ls-files | grep -Ei '\.(exe|iso|bin)$|(^|/)\.env$' || true)"
+          if [ -n "$tracked" ]; then
+            echo "::error::These files must never be committed:"
+            echo "$tracked"
+            exit 1
+          fi
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          version: "0.12.23"
+          enable-cache: true
+
+      - name: Install (Python version from .python-version)
+        run: uv sync --locked
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Test (real-file tests skip, orig/ is never present in CI)
+        run: uv run pytest -q

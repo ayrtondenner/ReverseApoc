@@ -1,0 +1,4 @@
+# Lets `docker compose ...` work from the repo root. Real definitions live in
+# docker/compose.yaml.
+include:
+  - docker/compose.yaml

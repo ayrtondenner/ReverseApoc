@@ -1,0 +1,37 @@
+# Paths below are relative to this file's directory (docker/); `..` is the
+# repo root. Run from the repo root: `docker compose run --rm build`.
+#
+# Host directories that must exist (both are gitignored, create them yourself;
+# Docker would otherwise create them as root-owned empty dirs):
+#   orig/              your own X-COM Apocalypse executables
+#   third_party/watcom/  your own Watcom 10.x install (not distributed here)
+x-common: &common
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+  image: reverseapoc-build:local
+  working_dir: /work
+  volumes:
+    - ..:/work
+    - ../orig:/work/orig:ro
+    - ../third_party/watcom:/work/watcom:ro
+    # Linux venv and uv cache live in named volumes, not in the checkout.
+    - uv-venv:/opt/venv
+    - uv-cache:/home/dev/.cache/uv
+  env_file:
+    - path: ../.env
+      required: false
+
+services:
+  build:
+    <<: *common
+    tty: true
+    stdin_open: true
+
+  test:
+    <<: *common
+    command: ["bash", "-lc", "uv sync --locked && uv run pytest -q"]
+
+volumes:
+  uv-venv:
+  uv-cache:
