@@ -64,7 +64,12 @@ def _cmd_install_watcom(args: argparse.Namespace) -> int:
     chosen = select(load_watcom_manifest(args.manifest), args.versions)
     ok = True
     for media in chosen:
-        result = install_version(media, args.media, args.dest, force=args.force)
+        try:
+            result = install_version(media, args.media, args.dest, force=args.force)
+        except WatcomError as exc:
+            print(f"reverseapoc install-watcom: {media.version}: {exc}", file=sys.stderr)
+            ok = False
+            continue
         print(result.format())
         ok = ok and result.ok
     return 0 if ok else 1
