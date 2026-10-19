@@ -24,6 +24,65 @@ crc32 = 0x6BE5E3F6
 md5 = "3200b70ba399c840775e9bfa2fe19875"
 sha1 = "0722e7494647cd5e9a66bd106aa80a620f7ee999"
 
+[[media.key_files]]
+path = "BINNT/WCC386.EXE"
+size = 9216
+crc32 = 0x8BB81BDD
+md5 = "5fad82c3afb9ea9a115580ed8a53f68b"
+sha1 = "712fb9a73ec7a61fc6635516825292a265b5a028"
+note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LE compiler)"
+
+[[media.key_files]]
+path = "BINW/WCC386.EXE"
+size = 65536
+crc32 = 0xFC61DB61
+md5 = "fbf78c355af4442ad554d9e74086bb1b"
+sha1 = "97118b186b7bfdc3835afbb73d7ac47afda41d51"
+known_bad = true
+note = "damaged 65,536-byte stub on the CD; the real 567,558-byte compiler is packed in DISKIMGS/DISK02/PCK00017.1 + DISK03/PCK00017.2 (wpack), not decoded yet"
+
+[[media.key_files]]
+path = "BINNT/WLINK.EXE"
+size = 271961
+crc32 = 0x29FCF407
+md5 = "9b29f72b1a9c81eae0840987d17d9f38"
+sha1 = "a049ee88f4e4406e136c4d16250dec554d7277ec"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3R.LIB"
+size = 260096
+crc32 = 0xB3725264
+md5 = "1f47cc675ec1fea8acc67c6c5d6b929c"
+sha1 = "fd141a9bb9fbc725dc6a9f20379582e59ddf7770"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3S.LIB"
+size = 266240
+crc32 = 0x49B5593B
+md5 = "b3565f0eecc8d80efc65d1ab4b048a46"
+sha1 = "8f8fbf6b3573a0cdd8fe92eb9cd7a1635bcdf5b3"
+
+[[media.key_files]]
+path = "LIB386/MATH3R.LIB"
+size = 57856
+crc32 = 0x7EED5724
+md5 = "a0c4aba663a5d52d7b331d4c4c1fb97d"
+sha1 = "db95fb0d81730218964838ad4f9157d9b33f8b55"
+
+[[media.key_files]]
+path = "LIB386/MATH387R.LIB"
+size = 48640
+crc32 = 0x661727F8
+md5 = "05b8becad8808a8a23c8c3b4f5116b8f"
+sha1 = "4f1754eebabe9c7af79d428077599fb2f42c8483"
+
+[[media.key_files]]
+path = "H/STDIO.H"
+size = 9884
+crc32 = 0xD53AA67F
+md5 = "3b0ebe04d250c5b3dbb1993063737dee"
+sha1 = "a0eb851a725fe24fe71adfaf79a15811e4e0b072"
+
 [[media]]
 version = "10.6"
 item = "Watcom_C_10.6"
@@ -32,6 +91,63 @@ size = 664373248
 crc32 = 0xE154C2DE
 md5 = "5a252e04e3a9fd5c802d1d3fd33f458e"
 sha1 = "211f4e7acecf89cf8af26e12099e1aec5a255f65"
+
+[[media.key_files]]
+path = "BINNT/WCC386.EXE"
+size = 9216
+crc32 = 0xD2507E2F
+md5 = "54ae8406f438c84e9a1272f98697d01d"
+sha1 = "ff50c91d70a9cc65913a0a4f0b4a11a794e9de6e"
+note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LE compiler)"
+
+[[media.key_files]]
+path = "BINW/WCC386.EXE"
+size = 567698
+crc32 = 0x25F1296B
+md5 = "51c3d1536ab125299793ad9b517aabef"
+sha1 = "183433f959d6071fd00ea1917effd9085066d227"
+
+[[media.key_files]]
+path = "BINNT/WLINK.EXE"
+size = 266843
+crc32 = 0x1B646FD8
+md5 = "946d0fe90d682b56d33920e57679d901"
+sha1 = "665790c2f930aff2d03d4e468093046a13e6f758"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3R.LIB"
+size = 262144
+crc32 = 0x21483E86
+md5 = "656a13e0eaed0b77a9a827a6a8dd759f"
+sha1 = "57250829673b7849ce70bf0e288e61ff98231de7"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3S.LIB"
+size = 268288
+crc32 = 0xE648FA1B
+md5 = "17a45af7fd65e47971ff339d91b2a2cc"
+sha1 = "4c3663c001248643db8196545bc6304af5cc8ab9"
+
+[[media.key_files]]
+path = "LIB386/MATH3R.LIB"
+size = 69120
+crc32 = 0x6F2E8859
+md5 = "93e1abc46fb8fe969c4cb2e9b7459658"
+sha1 = "36c95cc2b073ab9872c84da423e912c08f4bbc45"
+
+[[media.key_files]]
+path = "LIB386/MATH387R.LIB"
+size = 55808
+crc32 = 0xFA05B3D1
+md5 = "567bc63615734ffd527bfb147f51ca34"
+sha1 = "fe7f1595372f6c214ddf638bb6f6114870ee7b6b"
+
+[[media.key_files]]
+path = "H/STDIO.H"
+size = 9888
+crc32 = 0xAABD28CD
+md5 = "2566c72ceaa112654e936f9442a7ab1d"
+sha1 = "7fbee7cf8ccb74fd708209b6beded5d913a9f793"
 
 [[media]]
 version = "11.0"
@@ -42,6 +158,77 @@ crc32 = 0xC4FF34AB
 md5 = "aa6ee011958dd0371f95ac0bbaa50026"
 sha1 = "1708a29f7209b9d29aff18aba8923a0ddd5d97cc"
 
+[[media.key_files]]
+path = "BINNT/WCC386.EXE"
+size = 24064
+crc32 = 0xC23ECEF1
+md5 = "3054d0d5d8d220fa00308619122100d4"
+sha1 = "94daebab3a8e2b2a94661f5feff6e3d5444e77a3"
+note = "native Win32 driver; loads BINNT/WCCD386.DLL"
+
+[[media.key_files]]
+path = "BINW/WCC386.EXE"
+size = 653342
+crc32 = 0x9239B593
+md5 = "bdf54f34ce9b885584b89c6ac60c63f8"
+sha1 = "5bcb504508135320d8f4e67a7f4cce15aaaf5b2b"
+
+[[media.key_files]]
+path = "BINNT/WLINK.EXE"
+size = 25088
+crc32 = 0x6FB7BF0B
+md5 = "a3c91427a1f16a0775e518a0f66c8f1a"
+sha1 = "73cdc7daae46b7957585f1f225cc756a62d0e55e"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3R.LIB"
+size = 467968
+crc32 = 0x3B7406C4
+md5 = "295bfd54df81db3f08e37c1e0f0e4612"
+sha1 = "e61a9b1d218ef74972c64289b2be29f36a2b2d5a"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3S.LIB"
+size = 477696
+crc32 = 0x0D7F34A1
+md5 = "67942f2da51de3ea491546f4ee004b40"
+sha1 = "fcf1f76f7ede603b60426ec29119c8fbbdf3fb30"
+
+[[media.key_files]]
+path = "LIB386/MATH3R.LIB"
+size = 66048
+crc32 = 0x3EE91D91
+md5 = "11e880b726dbdda9ccd9a4398b6db221"
+sha1 = "ff2180f46b688186b698ec11ab9fb6f805fcfb74"
+
+[[media.key_files]]
+path = "LIB386/MATH387R.LIB"
+size = 53248
+crc32 = 0xE915A3A4
+md5 = "da8e751d3bd660fa4b4804ab16eeb399"
+sha1 = "a7574bd112899230196d1d74e5ceb04ac941c3a0"
+
+[[media.key_files]]
+path = "H/STDIO.H"
+size = 12950
+crc32 = 0x8A74445D
+md5 = "48828dfc6add6b8b4ccb21a9a54cbb26"
+sha1 = "e7796ac83247777c378c51defcbcadf7b621fd45"
+
+[[media.key_files]]
+path = "BINNT/WCCD386.DLL"
+size = 659968
+crc32 = 0x4BE05192
+md5 = "132b9bd49b58fb4affd81e54db1931c8"
+sha1 = "d2eac767cf60e1a631820467302eb508ecdc63af"
+
+[[media.key_files]]
+path = "BINNT/WLINK.DLL"
+size = 322134
+crc32 = 0x2B37FC6F
+md5 = "bb504078dbf8f151b814eb0bdaaf6835"
+sha1 = "a9f7fd364221df2656911d47b000219c062ead69"
+
 [[media]]
 version = "11.0a"
 item = "watcom-c-cpp-compilers-collection"
@@ -49,6 +236,77 @@ file = "watcom-11.0a/WatcomC11a.iso"
 size = 670785536
 md5 = "a72d0cdd049a9119b46ad70846590a28"
 sha1 = "8361779a2c7fb395eedff82d4f6207a819292f87"
+
+[[media.key_files]]
+path = "BINNT/WCC386.EXE"
+size = 24576
+crc32 = 0xE8D12295
+md5 = "44982544f5c7f871a111ddefc7ac1d08"
+sha1 = "dbafd05d7956bbf393ec6dcb175cc34d02678a7f"
+note = "native Win32 driver; loads BINNT/WCCD386.DLL"
+
+[[media.key_files]]
+path = "BINW/WCC386.EXE"
+size = 659300
+crc32 = 0xE22E2C84
+md5 = "2e994b04141d18e3d434f5e70e6a095f"
+sha1 = "6d5f2d4c135b67c044c73d71a59bbdece9db37cf"
+
+[[media.key_files]]
+path = "BINNT/WLINK.EXE"
+size = 25600
+crc32 = 0x2077D09F
+md5 = "f0662b75df27c391d248d3f9213727fd"
+sha1 = "6d4c24db270ecc185fd2804a1004097dfdfeabfd"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3R.LIB"
+size = 480256
+crc32 = 0x1C6DCD7D
+md5 = "79355535de5ba5a2807fdb4a6b44b6ea"
+sha1 = "b4508881b9e4292621ad65b17def05acbeb17436"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3S.LIB"
+size = 490496
+crc32 = 0x7A8C22DA
+md5 = "7206ee2d0a0cfc9a2e6403896eff5fc7"
+sha1 = "9a1d2219309d49f41ed5b71621fb85ec3d85d91f"
+
+[[media.key_files]]
+path = "LIB386/MATH3R.LIB"
+size = 66560
+crc32 = 0x641EB0F0
+md5 = "72229aab1ee0b72ae1ef2390c1d2919e"
+sha1 = "c34b9002f7afcd174134795bdf8f1b0c35a3fa46"
+
+[[media.key_files]]
+path = "LIB386/MATH387R.LIB"
+size = 53248
+crc32 = 0x2D202C74
+md5 = "b6375105d95bc0afd9207dee8614b64e"
+sha1 = "f8c46fcdf6b104a5cad408b367d19f4073417bf4"
+
+[[media.key_files]]
+path = "H/STDIO.H"
+size = 12950
+crc32 = 0x8A74445D
+md5 = "48828dfc6add6b8b4ccb21a9a54cbb26"
+sha1 = "e7796ac83247777c378c51defcbcadf7b621fd45"
+
+[[media.key_files]]
+path = "BINNT/WCCD386.DLL"
+size = 666624
+crc32 = 0x702901AD
+md5 = "fb5d56c4a681fc68af4761e348939784"
+sha1 = "9e18f069d31845ff35a8e1dbc12d8c0120321447"
+
+[[media.key_files]]
+path = "BINNT/WLINK.DLL"
+size = 323670
+crc32 = 0x23A6A2E7
+md5 = "428995b48a573810a1c5021851e993af"
+sha1 = "4167e8c4095d5984be34addbfbe8d1fab9e1d5e1"
 
 [[media]]
 version = "11.0b"
@@ -62,3 +320,74 @@ sha1 = "da67b5b249357b120e20d8580043ead319f2a91b"
 # extent of SAMPLES/WIN/DATACTL/WIN16, holding data instead of directory records.
 skip_dirs = ["SAMPLES/WIN/DATACTL/WIN16"]
 note = "The only public dump has a damaged directory sector (353) for the 3-file sample folder SAMPLES/WIN/DATACTL/WIN16; install-watcom skips it. 7-Zip cannot open this image."
+
+[[media.key_files]]
+path = "BINNT/WCC386.EXE"
+size = 25088
+crc32 = 0x31854447
+md5 = "0b60ab3640183531fbcfe0fc94840cd1"
+sha1 = "34db8e2e71d21c8e87c11b6fa7fd0ac6527290eb"
+note = "native Win32 driver; loads BINNT/WCCD386.DLL"
+
+[[media.key_files]]
+path = "BINW/WCC386.EXE"
+size = 660850
+crc32 = 0x1B197201
+md5 = "5ada6514d3d2890fd9e7d86627265ec1"
+sha1 = "49acf0203f7f83f9de64cf1db4689365989bab0a"
+
+[[media.key_files]]
+path = "BINNT/WLINK.EXE"
+size = 25600
+crc32 = 0xBF751E32
+md5 = "364354f4b87d2a6a272922d829a1ca11"
+sha1 = "1366db2d054f27a93b55ec4d71bd21371c48a60d"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3R.LIB"
+size = 481280
+crc32 = 0x1F7DD98A
+md5 = "b8bdc09abc86f87768638de2a50901a8"
+sha1 = "0dd43e9db3860be7f679f627827ff674b0f556f6"
+
+[[media.key_files]]
+path = "LIB386/DOS/CLIB3S.LIB"
+size = 491520
+crc32 = 0x2685BF26
+md5 = "fc9d6d0b15033c5f1bd894923f01fd81"
+sha1 = "a13b254b4c2780933dafde1c1220ac565217bcaa"
+
+[[media.key_files]]
+path = "LIB386/MATH3R.LIB"
+size = 67584
+crc32 = 0x2EE28CD2
+md5 = "7bafa34594e2821272f58568b80635d6"
+sha1 = "fbcc89aa5af95db09fec502d71168aafbfdc8f95"
+
+[[media.key_files]]
+path = "LIB386/MATH387R.LIB"
+size = 54784
+crc32 = 0x47B2B699
+md5 = "d7d909c921b31006a9a3847625e34f4f"
+sha1 = "b03d348e121b1a289cdbaf8a17eb90f191072c2a"
+
+[[media.key_files]]
+path = "H/STDIO.H"
+size = 12950
+crc32 = 0x8A74445D
+md5 = "48828dfc6add6b8b4ccb21a9a54cbb26"
+sha1 = "e7796ac83247777c378c51defcbcadf7b621fd45"
+
+[[media.key_files]]
+path = "BINNT/WCCD386.DLL"
+size = 668160
+crc32 = 0x50FB7F2D
+md5 = "20f988e8971671e402515f4622f2499a"
+sha1 = "432c5cd6d675dbda5f18b7956e777de3b0bd6d7f"
+
+[[media.key_files]]
+path = "BINNT/WLINK.DLL"
+size = 325206
+crc32 = 0x19F0E87B
+md5 = "dda75127c1e12c823ffc6d2e52298560"
+sha1 = "4e3e1fdd8c359b61bf7b6c57d1d5d4a25196a0af"
