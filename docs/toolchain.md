@@ -129,7 +129,7 @@ The original compilers are not distributed here. Three opt-in commands fetch, in
 
 - **Internet Archive (preferred).** Uploader cdroms@textfiles.com, 2018: [Watcom_C_10.5](https://archive.org/details/Watcom_C_10.5), [Watcom_C_10.6](https://archive.org/details/Watcom_C_10.6), [Watcom_C_11.0](https://archive.org/details/Watcom_C_11.0).
 - **Collection item.** [watcom-c-cpp-compilers-collection](https://archive.org/details/watcom-c-cpp-compilers-collection) holds 11.0a (`watcom-11.0a/WatcomC11a.iso`) and 11.0b (`watcom-11.0b/WATCOM_C11B.iso`). It publishes SHA256SUMS and cross-verification notes. It also holds files Phase 4 may need: the 10.5a patch (`watcom-10.5/patches/c105_a.zip`), the 11.0c update, 10.6a and the QNX 10.6b patches. Its 10.5, 10.6 and 11.0 ISOs are byte-identical to the three items above.
-- **WinWorld (mirror).** [10.5](https://winworldpc.com/product/watcom-c-c/105), [10.6](https://winworldpc.com/product/watcom-c-c/106), [11.0b](https://winworldpc.com/product/watcom-c-c/110b). The same ISO bytes inside `.7z` archives, but WinWorld caps downloads at 25 a day.
+- **WinWorld (mirror).** [10.5](https://winworldpc.com/product/watcom-c-c/105), [10.6](https://winworldpc.com/product/watcom-c-c/106), [11.0, 11.0a, 11.0b](https://winworldpc.com/product/watcom-c-c/110b). The same ISO bytes inside `.7z` archives, but WinWorld caps downloads at 25 a day. To use them, extract the ISO from the `.7z`, rename it to the file name in the table below (WinWorld's 10.6 archive, for example, calls it `watcom10.6.iso`) and put it in `third_party/watcom-media/`; `fetch-watcom` then verifies it and skips the download.
 
 ### ISOs
 
