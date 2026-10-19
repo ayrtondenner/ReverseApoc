@@ -26,11 +26,11 @@ Only the DOS release is supported. Steam and GOG ship byte-identical game execut
 
 SHA-1 values go into the hash manifest in Phase 1. `SETUP.EXE` (Borland C++, 1991) is out of scope. The disc image that both stores ship (`cd.iso` on Steam, `CD/XCOM.BIN` on GOG, byte-identical) contains the original v1.00 builds: UFO2P.EXE 1,702,206 bytes with CRC32 `0x4749FFC1`, the value OpenApoc's extractors expect, and TACP.EXE 3,170,298 bytes. The installed files above are a later build. OpenApoc reads from the disc image, so its offsets describe the CD build; this project targets the installed build first and records both ([docs/toolchain.md](docs/toolchain.md#openapoc-crc-mismatch-resolved-2026-10-19)).
 
-A Windows 95 release also existed. On what it contains, OpenApoc community member filmboy84 recalls:
+A Windows 95 release also existed. On what it contains, OpenApoc community member FilmBoy84 recalls:
 
 > Yeah, IIRC the Win9x version is just an installer wrapper. Game beneath is identical and just uses DOS 7.x that's part of Win9x instead of DOS 6.2x that was the last packaged version of MS-DOS
 >
-> (OpenApoc Discord, [filmboy84](https://discord.com/users/383602459076984835), [message link](https://discord.com/channels/142798944970211328/691788237865353236/1560376052843413545))
+> (OpenApoc Discord, [FilmBoy84](https://discord.com/users/383602459076984835), 2026-10-15, [message link](https://discord.com/channels/142798944970211328/691788237865353236/1560376052843413545))
 
 This is a recollection, not a verified fact. Hashing a retail Win9x executable against the DOS one is welcome future work.
 
