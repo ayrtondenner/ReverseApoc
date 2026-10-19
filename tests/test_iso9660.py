@@ -168,3 +168,32 @@ def test_multi_extent_file_is_rejected():
     image[off + 25] |= 0x80
     with pytest.raises(ISOError, match="multi-extent"):
         list(open_image(bytes(image)).walk())
+
+
+def _image_with_bad_dir() -> bytes:
+    """SUB/BAD's directory sector overwritten with garbage, as in the real 11.0b image."""
+    image = bytearray(build_iso({"SUB/BAD/X.TXT": b"x", "SUB/OK.TXT": b"ok", "TOP.TXT": b"top"}))
+    extent = next(e.extent for e in open_image(bytes(image)).walk() if e.path == "SUB/BAD")
+    garbage = bytes([0x97] + [(7 * i) % 251 for i in range(SECTOR - 1)])
+    image[extent * SECTOR : (extent + 1) * SECTOR] = garbage
+    return bytes(image)
+
+
+def test_corrupt_directory_names_its_path():
+    with pytest.raises(ISOError, match="SUB/BAD"):
+        list(open_image(_image_with_bad_dir()).walk())
+
+
+def test_walk_skip_dirs_omits_directory_and_children():
+    iso = open_image(_image_with_bad_dir())
+    assert [e.path for e in iso.walk(skip_dirs={"SUB/BAD"})] == ["SUB", "SUB/OK.TXT", "TOP.TXT"]
+
+
+def test_extract_all_skip_dirs(tmp_path):
+    path = tmp_path / "bad.iso"
+    path.write_bytes(_image_with_bad_dir())
+    extract_all(path, tmp_path / "out", skip_dirs=["SUB/BAD"])
+    assert (tmp_path / "out" / "SUB" / "OK.TXT").read_bytes() == b"ok"
+    assert not (tmp_path / "out" / "SUB" / "BAD").exists()
+    with pytest.raises(ISOError, match="SUB/BAD"):
+        extract_all(path, tmp_path / "out2")
