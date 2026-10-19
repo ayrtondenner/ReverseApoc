@@ -140,6 +140,31 @@ def test_install_and_check_watcom(tmp_path, capsys):
     assert "MISMATCH" in capsys.readouterr().out
 
 
+def test_install_watcom_continues_after_a_failed_version(tmp_path, capsys):
+    key = b"compiler bytes"
+    iso = build_iso({"BIN/KEY.EXE": key})
+    media = tmp_path / "media"
+    media.mkdir()
+    (media / "SECOND.iso").write_bytes(iso)  # FIRST.iso is deliberately missing
+    entries = []
+    for version, name in (("1.1", "FIRST.iso"), ("2.2", "SECOND.iso")):
+        entries.append(
+            "[[media]]\n"
+            f'version = "{version}"\nitem = "item"\nfile = "{name}"\n'
+            f"size = {len(iso)}\n"
+            f'md5 = "{hashlib.md5(iso).hexdigest()}"\n'
+            f'sha1 = "{hashlib.sha1(iso).hexdigest()}"\n'
+        )
+    manifest = tmp_path / "w.toml"
+    manifest.write_text("".join(entries), encoding="utf-8")
+    dest = tmp_path / "dest"
+    args = ["install-watcom", "--manifest", str(manifest), "--media", str(media)]
+    assert main([*args, "--dest", str(dest)]) == 1
+    err = capsys.readouterr().err
+    assert "reverseapoc install-watcom: 1.1:" in err
+    assert (dest / "2.2" / "BIN" / "KEY.EXE").read_bytes() == key
+
+
 def test_watcom_unknown_version(tmp_path, capsys):
     manifest = tmp_path / "w.toml"
     _watcom_manifest(manifest, b"x", b"y")

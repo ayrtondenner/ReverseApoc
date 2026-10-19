@@ -10,6 +10,7 @@ import time
 import tomllib
 import urllib.parse
 import urllib.request
+import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -162,7 +163,9 @@ def select(manifest: dict[str, WatcomMedia], versions: Sequence[str]) -> list[Wa
     return [manifest[v] for v in versions]
 
 
-def _media_problems(media: WatcomMedia, size: int, md5: str, sha1: str) -> list[str]:
+def _media_problems(
+    media: WatcomMedia, size: int, md5: str, sha1: str, crc32: int
+) -> list[str]:
     problems = []
     if size != media.size:
         problems.append(f"size: expected {media.size}, got {size}")
@@ -170,12 +173,14 @@ def _media_problems(media: WatcomMedia, size: int, md5: str, sha1: str) -> list[
         problems.append(f"md5: expected {media.md5}, got {md5}")
     if sha1 != media.sha1:
         problems.append(f"sha1: expected {media.sha1}, got {sha1}")
+    if media.crc32 is not None and crc32 != media.crc32:
+        problems.append(f"crc32: expected {media.crc32:08x}, got {crc32:08x}")
     return problems
 
 
 def _file_problems(media: WatcomMedia, path: Path) -> list[str]:
     got = hash_file(path)
-    return _media_problems(media, got.size, got.md5, got.sha1)
+    return _media_problems(media, got.size, got.md5, got.sha1, got.crc32)
 
 
 # ---- fetch ---------------------------------------------------------------------------------
@@ -198,7 +203,7 @@ def fetch_media(
     chunk: int = 1 << 20,
 ) -> MediaResult:
     """Download one ISO into `media_dir` unless a verified copy is already there. Streams into
-    `<file>.part` and only renames it over the final name once size, MD5 and SHA-1 match."""
+    `<file>.part` and only renames it over the final name once size, MD5, SHA-1 and CRC32 match."""
     media_dir = Path(media_dir)
     media_dir.mkdir(parents=True, exist_ok=True)
     dest = media_dir / media.local_name
@@ -206,9 +211,9 @@ def fetch_media(
     if dest.is_file() and not _file_problems(media, dest):
         return MediaResult(media, dest, "present")
 
-    req = urllib.request.Request(media.url(base), headers={"User-Agent": "reverseapoc"})
-    md5, sha1, total = hashlib.md5(), hashlib.sha1(), 0
+    md5, sha1, crc, total = hashlib.md5(), hashlib.sha1(), 0, 0
     try:
+        req = urllib.request.Request(media.url(base), headers={"User-Agent": "reverseapoc"})
         with opener(req, timeout=60) as resp:
             length = resp.headers.get("Content-Length")
             if length is not None and str(length).strip() != str(media.size):
@@ -222,13 +227,14 @@ def fetch_media(
                     out.write(block)
                     md5.update(block)
                     sha1.update(block)
-    except (OSError, http.client.HTTPException) as exc:
+                    crc = zlib.crc32(block, crc)
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         return MediaResult(media, dest, "mismatch", (f"download failed: {exc}",))
     if total > media.size:
         part.unlink(missing_ok=True)
         problem = f"size: more than the expected {media.size} bytes were sent"
         return MediaResult(media, dest, "mismatch", (problem,))
-    problems = _media_problems(media, total, md5.hexdigest(), sha1.hexdigest())
+    problems = _media_problems(media, total, md5.hexdigest(), sha1.hexdigest(), crc)
     if problems:
         return MediaResult(media, dest, "mismatch", tuple(problems))
     os.replace(part, dest)

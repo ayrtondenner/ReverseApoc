@@ -94,13 +94,26 @@ def test_gitignore_excludes_the_compiler_media_and_installs():
     assert "/watcom/" in patterns
 
 
-@pytest.mark.parametrize(
-    "needle", ["fetch-watcom", "install-watcom", "archive.org", "watcom-media"]
-)
+_FETCH_NEEDLES = ["fetch-watcom", "install-watcom", "archive.org", "watcom-media"]
+_WORKFLOWS = sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml"))
+
+
+@pytest.mark.parametrize("needle", _FETCH_NEEDLES)
 def test_dockerfile_never_fetches_the_compiler(needle):
     # The proprietary compiler is user-supplied at run time, never baked into an image layer.
     text = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
     assert needle not in text
+
+
+def test_ci_workflows_exist():
+    assert _WORKFLOWS
+
+
+@pytest.mark.parametrize("needle", _FETCH_NEEDLES)
+@pytest.mark.parametrize("workflow", _WORKFLOWS, ids=lambda p: p.name)
+def test_ci_never_fetches_the_compiler(workflow, needle):
+    # docs/legal.md: CI never downloads or installs the compiler either.
+    assert needle not in workflow.read_text(encoding="utf-8")
 
 
 @pytest.mark.skipif(not Path("/.dockerenv").exists(), reason="only inside the container")

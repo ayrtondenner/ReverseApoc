@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import http.client
 import io
@@ -258,6 +259,28 @@ def test_fetch_opener_oserror_is_mismatch(tmp_path):
     r = fetch_media(_media(b"x" * 10), tmp_path, opener=opener)
     assert r.action == "mismatch" and r.problems[0].startswith("download failed")
     assert not (tmp_path / "Test.iso").exists()
+
+
+def test_fetch_crc32_mismatch_is_mismatch(tmp_path):
+    data = b"x" * 100
+    media = dataclasses.replace(_media(data), crc32=zlib.crc32(data) ^ 1)
+    r = fetch_media(media, tmp_path, opener=FakeOpener(data))
+    assert r.action == "mismatch"
+    assert any(p.startswith("crc32: expected") for p in r.problems)
+    assert not (tmp_path / "Test.iso").exists()
+
+
+def test_install_crc32_mismatch_is_rejected(tmp_path):
+    media, media_dir, install_dir = _iso_media(tmp_path)
+    media = dataclasses.replace(media, crc32=(media.crc32 or 0) ^ 1)
+    with pytest.raises(WatcomError, match="crc32: expected"):
+        install_version(media, media_dir, install_dir)
+
+
+def test_fetch_bad_base_url_is_mismatch(tmp_path):
+    data = b"x" * 10
+    r = fetch_media(_media(data), tmp_path, base="foo", opener=FakeOpener(data))
+    assert r.action == "mismatch" and r.problems[0].startswith("download failed")
 
 
 def test_fetch_redownloads_corrupt_dest(tmp_path):
