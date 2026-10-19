@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import os
 import shutil
 import tomllib
@@ -12,7 +13,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .iso9660 import extract_all
+from .iso9660 import ISOError, extract_all
 from .targets import (
     REPO_ROOT,
     ManifestError,
@@ -72,6 +73,8 @@ class WatcomMedia:
     sha1: str
     crc32: int | None = None
     key_files: tuple[KeyFile, ...] = ()
+    skip_dirs: tuple[str, ...] = ()  # damaged directories that install leaves out
+    note: str = ""
 
     @property
     def local_name(self) -> str:
@@ -109,7 +112,15 @@ def _parse_media(i: int, entry: dict) -> WatcomMedia:
     key_files = tuple(
         _parse_key_file(f"{where} key_files[{j}]", kf) for j, kf in enumerate(raw_keys)
     )
+    skip_dirs = entry.get("skip_dirs", [])
+    if not isinstance(skip_dirs, list) or not all(isinstance(d, str) and d for d in skip_dirs):
+        raise ManifestError(f"{where}: 'skip_dirs' must be a list of non-empty strings")
+    note = entry.get("note", "")
+    if not isinstance(note, str):
+        raise ManifestError(f"{where}: 'note' must be a string")
     return WatcomMedia(
+        skip_dirs=tuple(skip_dirs),
+        note=note,
         version=_text(entry, where, "version"),
         item=_text(entry, where, "item"),
         file=_text(entry, where, "file"),
@@ -210,7 +221,7 @@ def fetch_media(
                     out.write(block)
                     md5.update(block)
                     sha1.update(block)
-    except OSError as exc:
+    except (OSError, http.client.HTTPException) as exc:
         return MediaResult(media, dest, "mismatch", (f"download failed: {exc}",))
     if total > media.size:
         part.unlink(missing_ok=True)
@@ -286,6 +297,8 @@ class VersionCheck:
 
     def format(self) -> str:
         lines = [f"Watcom {self.media.version}: {self.root}"]
+        if self.media.note:
+            lines.append(f"  note: {self.media.note}")
         if not self.results:
             lines.append("  no key files recorded")
             return "\n".join(lines)
@@ -369,7 +382,10 @@ def install_version(
     if partial.exists():
         shutil.rmtree(partial)
     try:
-        extract_all(iso, partial)
+        try:
+            extract_all(iso, partial, skip_dirs=media.skip_dirs)
+        except ISOError as exc:
+            raise WatcomError(f"cannot extract Watcom {media.version} from {iso}: {exc}") from exc
         if target.exists():
             shutil.rmtree(target)
         os.replace(partial, target)

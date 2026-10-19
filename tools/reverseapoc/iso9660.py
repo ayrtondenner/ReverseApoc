@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import struct
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -116,7 +116,7 @@ class ISO9660:
         if flags & 0x80:
             raise ISOError("multi-extent files are not supported")
         if 33 + name_len > len(rec):
-            raise ISOError("directory record name runs past the record")
+            raise ISOError(f"directory record name runs past the record in {parent or '/'!r}")
         name = clean_name(rec[33 : 33 + name_len])
         extent, size = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0]
         return IsoEntry(
@@ -127,11 +127,15 @@ class ISO9660:
             _decode_date(rec[18:25]),
         )
 
-    def walk(self) -> Iterator[IsoEntry]:
-        """Every directory and file, depth-first, parents before children."""
-        yield from self._walk_dir(self._root, {self._root.extent})
+    def walk(self, skip_dirs: Collection[str] = ()) -> Iterator[IsoEntry]:
+        """Every directory and file, depth-first, parents before children. A directory whose
+        path is in `skip_dirs` is neither yielded nor read."""
+        yield from self._walk_dir(self._root, {self._root.extent}, frozenset(skip_dirs))
 
-    def _walk_dir(self, directory: IsoEntry, visiting: set[int]) -> Iterator[IsoEntry]:
+    def _walk_dir(
+        self, directory: IsoEntry, visiting: set[int], skip: frozenset[str]
+    ) -> Iterator[IsoEntry]:
+        where = repr(directory.path or "/")
         data = self._read_at(directory.extent * SECTOR, directory.size)
         for start in range(0, len(data), SECTOR):
             sector = data[start : start + SECTOR]
@@ -141,20 +145,27 @@ class ISO9660:
                 if length == 0:
                     break  # the rest of this sector is padding
                 if length < 34 or pos + length > len(sector):
-                    raise ISOError("corrupt directory record")
+                    raise ISOError(f"corrupt directory record in {where}")
                 rec = sector[pos : pos + length]
                 pos += length
                 if rec[32] == 1 and rec[33] in (0, 1):  # `.` and `..`
                     continue
                 if rec[25] & 4:  # associated file
                     continue
-                entry = self._parse_record(directory.path, rec)
-                self._check_bounds(entry)
+                try:
+                    entry = self._parse_record(directory.path, rec)
+                    if entry.is_dir and entry.path in skip:
+                        continue
+                    self._check_bounds(entry)
+                except ISOError as exc:
+                    if where in str(exc):
+                        raise
+                    raise ISOError(f"{exc} (in {where})") from exc
                 yield entry
                 if entry.is_dir:
                     if entry.extent in visiting:
                         raise ISOError(f"directory loop at {entry.path!r}")
-                    yield from self._walk_dir(entry, visiting | {entry.extent})
+                    yield from self._walk_dir(entry, visiting | {entry.extent}, skip)
 
     def find(self, path: str) -> IsoEntry:
         """The entry at an exact-case POSIX path."""
@@ -179,16 +190,21 @@ class ISO9660:
 
 
 def extract_all(
-    iso_path: Path | str, dest: Path | str, *, timestamps: bool = True
+    iso_path: Path | str,
+    dest: Path | str,
+    *,
+    timestamps: bool = True,
+    skip_dirs: Collection[str] = (),
 ) -> list[IsoEntry]:
-    """Unpack the whole image under `dest`; refuse any target that would land outside it."""
+    """Unpack the whole image under `dest`; refuse any target that would land outside it.
+    Directories listed in `skip_dirs` (damaged ones) are left out together with their children."""
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     root = dest.resolve()
     extracted: list[tuple[IsoEntry, Path]] = []
     with ISO9660.open(iso_path) as iso:
-        for entry in iso.walk():
-            target = (root / entry.path).resolve()
+        for entry in iso.walk(skip_dirs):
+            target =(root / entry.path).resolve()
             if not target.is_relative_to(root) or target == root:
                 raise ISOError(f"{entry.path!r} would be written outside {root}")
             if entry.is_dir:

@@ -57,3 +57,8 @@ file = "watcom-11.0b/WATCOM_C11B.iso"
 size = 649111552
 md5 = "28e3660f972860c77cf3804eb2e0177d"
 sha1 = "da67b5b249357b120e20d8580043ead319f2a91b"
+# Optional per media: `skip_dirs` (damaged directories that install-watcom leaves out) and `note`.
+# The only public 11.0b dump (WinWorld's copy is byte-identical) has sector 353, the directory
+# extent of SAMPLES/WIN/DATACTL/WIN16, holding data instead of directory records.
+skip_dirs = ["SAMPLES/WIN/DATACTL/WIN16"]
+note = "The only public dump has a damaged directory sector (353) for the 3-file sample folder SAMPLES/WIN/DATACTL/WIN16; install-watcom skips it. 7-Zip cannot open this image."
