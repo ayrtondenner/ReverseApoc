@@ -66,15 +66,15 @@ Superpowers is already installed and has the shortest path: brainstorm, then a w
 - Installed v7.0.0 (also cached at commit bb92a7774141). Source `obra/superpowers` via claude-plugins-official, MIT, ~302k stars, last push 2026-10-10.
 - Skills include brainstorming, writing-plans, executing-plans, subagent-driven-development, test-driven-development, systematic-debugging, verification-before-completion, using-git-worktrees, dispatching-parallel-agents and requesting/receiving-code-review. — local `~/.claude/plugins/cache/claude-plugins-official/superpowers/7.0.0/skills/`; GitHub API
 
-**Suggested first-milestone phase list (GSD-style ROADMAP format, usable without GSD)**
+**Suggested first-milestone steps (GSD-style ROADMAP format, usable without GSD).** A research proposal, superseded by the adopted Milestone 1 roadmap in `docs/workflow.md`; the steps are named, not numbered, so they are not confused with its phases.
 
-| Phase | Goal | Verification gate | Spike candidates |
+| Step | Goal | Verification gate | Spike candidates |
 |---|---|---|---|
-| 1. Toolchain reproduction | Dockerised Watcom compiler that reproduces the original codegen | A known hand-written C function compiles byte-identically against a disassembled target | Which Watcom version and flags (10.x, 11.0, OW 1.9, OW 2.0)? Can OW2 reproduce 10.x/11.0 output? |
-| 2. Binary split | Parse the DOS/4GW LE executable into per-function asm plus a symbol/address map (decomp config file) | Round-trip: split, reassemble, byte-identical | LE/LX parser choice; data/code boundary detection |
-| 3. First matched function | One C function at 100% match in the diff tool | objdiff (or equivalent) reports 100% | Can objdiff consume Watcom objects (see Q4: OMF not supported; objconv conversion)? |
-| 4. Progress reporting | Per-function and overall % matched, emitted as JSON/Markdown | Report regenerates in CI and in a Docker container | objdiff `report` vs reccmp-style annotations |
-| 5. Loop automation | Agent loop: pick function, draft, compile, diff, iterate | N functions matched unattended with no regressions | Ketbome/decomp-skills `dk.py` and mizuchi designs as references |
+| Toolchain reproduction | Dockerised Watcom compiler that reproduces the original codegen | A known hand-written C function compiles byte-identically against a disassembled target | Which Watcom version and flags (10.x, 11.0, OW 1.9, OW 2.0)? Can OW2 reproduce 10.x/11.0 output? |
+| Binary split | Parse the DOS/4GW LE executable into per-function asm plus a symbol/address map (decomp config file) | Round-trip: split, reassemble, byte-identical | LE/LX parser choice; data/code boundary detection |
+| First matched function | One C function at 100% match in the diff tool | objdiff (or equivalent) reports 100% | Can objdiff consume Watcom objects (see Q4: OMF not supported; objconv conversion)? |
+| Progress reporting | Per-function and overall % matched, emitted as JSON/Markdown | Report regenerates in CI and in a Docker container | objdiff `report` vs reccmp-style annotations |
+| Loop automation | Agent loop: pick function, draft, compile, diff, iterate | N functions matched unattended with no regressions | Ketbome/decomp-skills `dk.py` and mizuchi designs as references |
 
 ### Inferences
 - Speed to first match: superpowers needs zero new installs. Its TDD red/green loop maps directly onto decomp: the failing test is a "diff ≠ 100%" check against the target object. Of the three frameworks, it is the fastest path.
@@ -206,10 +206,10 @@ Decomp-specific skills do exist: Ketbome/decomp-skills (Claude plugin), madpai/g
 | cpp-pro | **skip** | C++11–23 advice (RAII, smart pointers, concepts) would push the agent away from Watcom-compatible code. |
 | Mindrally cpp | **skip** | Same problem: it tells the agent to replace C arrays and `NULL`, which is wrong for byte-matching 1997 code. |
 | Qt agent-skills (qt-cpp-review, qt-cpp-docs) | **skip** | Qt-specific rules. The docs-generation idea could inspire a project-specific "OpenApoc docs" skill later. |
-| clangd-lsp | **use (after Phase 1)** | Go-to-definition and diagnostics help on a large C codebase, but clang won't parse Watcom extensions (`#pragma aux`, `__far`/`__near`, `_Packed`, `__watcall`) without a shim header and `compile_flags.txt` (e.g. `--target=i386-pc-none -m32 -std=c89 -D__WATCOMC__=1100`). This is an inference, not verified. |
-| Ketbome/decomp-skills | **later (reference)** | Best-shaped Claude plugin for a per-function loop, but MIPS-centric and only 1 star. Borrow `dk.py`'s state and rescue ideas for Phase 5. |
+| clangd-lsp | **use (after toolchain reproduction)** | Go-to-definition and diagnostics help on a large C codebase, but clang won't parse Watcom extensions (`#pragma aux`, `__far`/`__near`, `_Packed`, `__watcall`) without a shim header and `compile_flags.txt` (e.g. `--target=i386-pc-none -m32 -std=c89 -D__WATCOMC__=1100`). This is an inference, not verified. |
+| Ketbome/decomp-skills | **later (reference)** | Best-shaped Claude plugin for a per-function loop, but MIPS-centric and only 1 star. Borrow `dk.py`'s state and rescue ideas for loop automation. |
 | game-decomp-compendium | **later (reference)** | Its reccmp and MSVC idioms are the nearest analogue to x86 Watcom. It installs at user scope only, so read it and don't install it. |
-| trailofbits ghidra-headless / mitsuhiko ghidra | **later (Phase 2–3)** | Useful for initial function discovery and pseudo-C drafts from the LE binary, if Ghidra is used. |
+| trailofbits ghidra-headless / mitsuhiko ghidra | **later (binary split, first matched function)** | Useful for initial function discovery and pseudo-C drafts from the LE binary, if Ghidra is used. |
 | A project-local custom "watcom-decomp" skill | **use (write one)** | No marketplace skill covers Watcom or DOS/4GW. Capture toolchain flags and codegen idioms as they are discovered, for example with superpowers' writing-skills or GSD `--wrap-up`. |
 
 ### Gaps
@@ -264,14 +264,14 @@ Plan a Phase-1/3 spike for "OMF → COFF/ELF via objconv, then objdiff". The mos
 ### Inferences (fit verdicts)
 | Tool | Verdict | Reason (decomp-specific) |
 |---|---|---|
-| objdiff (+ CLI report) | **use, gated on a spike** | The de facto diff and progress engine with x86 support, but Watcom OMF needs conversion (objconv fork) or a wait for the OMF branch. A Phase 1/3 spike is needed. |
+| objdiff (+ CLI report) | **use, gated on a spike** | The de facto diff and progress engine with x86 support, but Watcom OMF needs conversion (objconv fork) or a wait for the OMF branch. A spike is needed during toolchain reproduction or the first matched function. |
 | objdiff VS Code ext | **later** | WIP, 207 installs. Use the objdiff GUI or CLI first. |
 | asm-differ | **later (fallback)** | Limited x86. Relies on objdump, which would need the OMF binutils fork. A fallback if objdiff + objconv fails. |
 | m2c | **skip** | No x86. |
 | decomp-permuter | **skip** (maybe later via hack) | No x86 scoring support documented. |
 | decomp_settings / decomp.yaml | **later** | Low adoption (7 stars). A good neutral config to adopt if coddog or other tools are used. |
 | coddog | **later** | Could find duplicated Watcom runtime and library functions, or code shared with other MicroProse/Mythos titles. x86 support unverified. |
-| Mizuchi | **later (reference design for Phase 5)** | The Claude + compile + objdiff loop is architecture-agnostic, but its m2c and permuter stages are dead on x86, and it costs API tokens. |
+| Mizuchi | **later (reference design for loop automation)** | The Claude + compile + objdiff loop is architecture-agnostic, but its m2c and permuter stages are dead on x86, and it costs API tokens. |
 | Kappa | **skip for now** | Copilot-centred, its m2c and permuter features don't work on x86, and the last commit was Feb 2026. Port AddOffsetCommentsPlugin's idea (struct offset and size comments) into a Python or ast-grep script. Watcom alignment (`-zp` setting) must replace the hard-coded 8. |
 | reccmp | **later (reference)** | MSVC-only, but its source-annotation convention and match % reporting suit a readable, OpenApoc-facing codebase. |
 | vscode-clangd | **use** | Same caveats as clangd-lsp: needs a clang-parsable shim config. |

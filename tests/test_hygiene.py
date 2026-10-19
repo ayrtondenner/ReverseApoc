@@ -75,6 +75,19 @@ def test_live_docs_carry_no_bare_tbd_markers():
     assert not hits
 
 
+def test_no_doc_mentions_a_phase_zero():
+    # Milestone phases are numbered from 1 (GSD reserves the zero id); a "Phase 0" anywhere,
+    # research notes and planning records included, would point at a phase that does not exist.
+    docs = [*(REPO_ROOT / "docs").rglob("*.md"), *(REPO_ROOT / ".planning").rglob("*.md")]
+    hits = [
+        f"{path.relative_to(REPO_ROOT)}:{n}"
+        for path in [*docs, REPO_ROOT / "README.md", REPO_ROOT / "CLAUDE.md"]
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.search(r"\bphases? 0\b|^\| 0\. ", line, re.I)
+    ]
+    assert not hits
+
+
 @pytest.mark.skipif(not Path("/.dockerenv").exists(), reason="only inside the container")
 @pytest.mark.parametrize("path", ["/work/orig", "/work/third_party", "/work/watcom"])
 def test_protected_paths_are_not_writable_in_the_container(path):
