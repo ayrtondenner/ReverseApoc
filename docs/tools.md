@@ -23,7 +23,7 @@ Every tool, skill and framework considered at kickoff, with the verdict from the
 | [coddog](https://github.com/ethteck/coddog) | **Later** (reimplement the idea now) | x86 unverified; opcode Levenshtein is easy in Python and powers UFO2P-to-TACP twin matching | n/a (Python reimplementation) | Later (after Phase 5) |
 | [mizuchi](https://github.com/macabeus/mizuchi) | **Later** (reference design) | Targets gba/n64/ps1; its m2c and permuter stages are dead on x86; benchmark and report design is worth copying | n/a | Later |
 | [decomp_settings](https://github.com/ethteck/decomp_settings) | **Later** | Only if coddog, frogress or decomp.me presets are adopted | n/a | Later |
-| [Nigel](https://github.com/cdlewis/nigel) | **Use** (evaluate first) | Contract maps onto build/verify/commit/reset; Go binary needs a build step | Go build (WSL2 or Docker), TBD | Phase 6 |
+| [Nigel](https://github.com/cdlewis/nigel) | **Use** (evaluate first) | Contract maps onto build/verify/commit/reset; Go binary needs a build step | Go build (WSL2 or Docker), decided with AGT-01 | Phase 6 |
 | [Ralph Loop](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/ralph-loop) | **Later** (prototype only) | Same-session context growth, single promise string, Windows bash path issue | plugin at project scope | Later |
 | [/goal](https://code.claude.com/docs/en/goal) | **Use**, one `claude -p` per function | Independent judge per function; the driver re-verifies because the evaluator cannot run tools | n/a (built into Claude Code) | Phase 6 |
 | [autoresearch](https://github.com/karpathy/autoresearch) | **Use the pattern only** | `program.md` + fixed harness + one metric + keep/discard; no GPU | n/a | Phase 6 (pattern) |
@@ -43,7 +43,7 @@ Every tool, skill and framework considered at kickoff, with the verdict from the
 | clangd-lsp | **Later** for real use (after Phase 5); plugin installed now by owner decision | Needs `clangd` on PATH (the container has it) plus a generated `compile_commands.json` and a Watcom compat header | plugin at project scope | installed, project scope (useful after Phase 5) |
 | [clang-format](https://clang.llvm.org/docs/ClangFormat.html) | **Use**, with pragma masking | Build-neutral only with `SortIncludes: Never` and a pragma mask | Docker | Phase 2 (image), Phase 5 (use) |
 | clang-tidy | **Skip** | `modernize-*` checks fight byte matching; use clang `-Werror=declaration-after-statement` instead | n/a | skipped |
-| [ast-grep](https://ast-grep.github.io/) | **Use** | Structural search and rewrite across C; Macabeus chose it over clangd for unopened files | TBD (Docker or pipx) | Phase 5 |
+| [ast-grep](https://ast-grep.github.io/) | **Use** | Structural search and rewrite across C; Macabeus chose it over clangd for unopened files | Docker or pipx, decided in Phase 5 | Phase 5 |
 | [file-search-skill](https://github.com/netresearch/file-search-skill) | **Skip** | Redundant with the built-in ripgrep-based Grep | n/a | skipped |
 | [Understand-Anything](https://github.com/Egonex-AI/Understand-Anything) | **Later** | Token-heavy first run; useful once subsystems are named | plugin at project scope | Later (after Milestone 1) |
 | [Groma](https://github.com/MrLesk/groma.md) | **Later** | Offline C4 Markdown in git suits OpenApoc handoff docs; C support "Experimental" | npm global CLI | Later (after Milestone 1) |
@@ -82,8 +82,8 @@ Not rows in the report's table, but evaluated in the research notes. How they ar
 |---|---|---|
 | [vscode-clangd](https://github.com/clangd/vscode-clangd) | Use, after Phase 5 | Same shim requirements as clangd-lsp |
 | [objdiff VS Code extension](https://marketplace.visualstudio.com/items?itemName=decomp-dev.objdiff) | Later | WIP, few installs; use the CLI or GUI first |
-| [Clang-Format VS Code extension](https://marketplace.visualstudio.com/items?itemName=xaver.clang-format) | TBD | Not evaluated; format-on-save must stay off for C because formatting has to be proven build-neutral |
-| [deep-codebase-search](https://mcpmarket.com/tools/skills/deep-codebase-search), [intelligent-file-search](https://mcpmarket.com/tools/skills/intelligent-file-search) | TBD | Not fetched during research; likely redundant with built-in search, like file-search-skill |
+| [Clang-Format VS Code extension](https://marketplace.visualstudio.com/items?itemName=xaver.clang-format) | Not evaluated | Not evaluated; format-on-save must stay off for C because formatting has to be proven build-neutral |
+| [deep-codebase-search](https://mcpmarket.com/tools/skills/deep-codebase-search), [intelligent-file-search](https://mcpmarket.com/tools/skills/intelligent-file-search) | Not evaluated | Not fetched during research; likely redundant with built-in search, like file-search-skill |
 | [Ketbome/decomp-skills](https://github.com/Ketbome/decomp-skills), [game-decomp-compendium](https://github.com/madpai/game-decomp-compendium) | Later (reference) | MIPS/MSVC-centred; no Watcom or DOS coverage |
 | [reccmp](https://github.com/isledecomp/reccmp) | Later (reference) | MSVC-only matcher; its annotation convention is worth studying |
 | ghidra-headless (trailofbits), ghidra (mitsuhiko) skills | Later | Useful for function discovery drafts if Ghidra automation needs a skill |
