@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import http.client
 import io
 import zlib
 from pathlib import Path
@@ -11,6 +12,7 @@ import pytest
 
 from isoimage import build_iso
 from reverseapoc import watcom
+from reverseapoc.iso9660 import ISO9660, ISOError
 from reverseapoc.targets import ManifestError
 from reverseapoc.watcom import (
     KeyFile,
@@ -34,8 +36,17 @@ def _sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def _media(data: bytes, version: str = "9.0", file: str = "Test.iso", key_files=()) -> WatcomMedia:
+def _media(
+    data: bytes,
+    version: str = "9.0",
+    file: str = "Test.iso",
+    key_files=(),
+    skip_dirs=(),
+    note: str = "",
+) -> WatcomMedia:
     return WatcomMedia(
+        skip_dirs=skip_dirs,
+        note=note,
         version=version,
         item="Item",
         file=file,
@@ -224,6 +235,29 @@ def test_fetch_oversize_body(tmp_path):
     r = fetch_media(_media(data), tmp_path, opener=FakeOpener(data + b"x" * 500), chunk=64)
     assert r.action == "mismatch"
     assert not (tmp_path / "Test.iso").exists()
+    assert not (tmp_path / "Test.iso.part").exists()
+
+
+class RaisingResponse(FakeResponse):
+    def read(self, n: int = -1) -> bytes:
+        raise http.client.IncompleteRead(b"")
+
+
+def test_fetch_incomplete_read_is_mismatch(tmp_path):
+    def opener(req, timeout=None):
+        return RaisingResponse(b"")
+
+    r = fetch_media(_media(b"x" * 10), tmp_path, opener=opener)
+    assert r.action == "mismatch" and r.problems[0].startswith("download failed")
+
+
+def test_fetch_opener_oserror_is_mismatch(tmp_path):
+    def opener(req, timeout=None):
+        raise OSError("network down")
+
+    r = fetch_media(_media(b"x" * 10), tmp_path, opener=opener)
+    assert r.action == "mismatch" and r.problems[0].startswith("download failed")
+    assert not (tmp_path / "Test.iso").exists()
 
 
 def test_fetch_redownloads_corrupt_dest(tmp_path):
@@ -245,13 +279,11 @@ def test_fetch_mismatch_leaves_existing_dest(tmp_path):
 
 def test_fetch_watcom_report(tmp_path):
     data = b"x" * 50
-    media = _media(data, version="9.0")
     manifest = tmp_path / "w.toml"
     manifest.write_text(
         '[[media]]\nversion = "9.0"\nitem = "Item"\nfile = "Test.iso"\n'
         f'size = {len(data)}\nmd5 = "{_md5(data)}"\nsha1 = "{_sha1(data)}"\n'
     )
-    assert media.version == "9.0"
     report = fetch_watcom(
         ["9.0"], manifest=manifest, media_dir=tmp_path / "m", opener=FakeOpener(data)
     )
@@ -315,6 +347,63 @@ def test_install_wrong_hash(tmp_path):
     with pytest.raises(WatcomError, match="fetch-watcom"):
         install_version(media, media_dir, install_dir)
     assert not install_dir.exists() or not any(install_dir.iterdir())
+
+
+def test_install_extract_failure_is_wrapped_and_leaves_install_intact(tmp_path, monkeypatch):
+    media, media_dir, install_dir = _iso_media(tmp_path)
+    install_version(media, media_dir, install_dir)
+
+    def boom(iso, dest, **kw):
+        (Path(dest) / "half").mkdir(parents=True)
+        raise ISOError("bad sector")
+
+    monkeypatch.setattr(watcom, "extract_all", boom)
+    with pytest.raises(WatcomError, match=r"9\.0.*bad sector"):
+        install_version(media, media_dir, install_dir, force=True)
+    assert [p.name for p in install_dir.iterdir()] == ["9.0"]
+    assert (install_dir / "9.0" / "README.TXT").read_bytes() == b"hi"
+
+
+def test_install_skips_listed_corrupt_directory(tmp_path):
+    image = bytearray(build_iso({"SUB/BAD/X.TXT": b"x", "SUB/OK.TXT": b"ok"}))
+    iso_path = tmp_path / "t.iso"
+    iso_path.write_bytes(bytes(image))
+    with ISO9660.open(iso_path) as iso:
+        extent = next(e.extent for e in iso.walk() if e.path == "SUB/BAD")
+    garbage = bytes([0x97] + [(7 * i) % 251 for i in range(2047)])
+    image[extent * 2048 : (extent + 1) * 2048] = garbage
+    media_dir, install_dir = tmp_path / "media", tmp_path / "install"
+    media_dir.mkdir()
+    (media_dir / "Test.iso").write_bytes(bytes(image))
+    media = _media(bytes(image), skip_dirs=("SUB/BAD",))
+    with pytest.raises(WatcomError, match="SUB/BAD"):
+        install_version(_media(bytes(image)), media_dir, install_dir)
+    install_version(media, media_dir, install_dir)
+    assert (install_dir / "9.0" / "SUB" / "OK.TXT").read_bytes() == b"ok"
+    assert not (install_dir / "9.0" / "SUB" / "BAD").exists()
+
+
+def test_media_fields_skip_dirs_and_note(tmp_path):
+    path = tmp_path / "w.toml"
+    path.write_text(GOOD + 'skip_dirs = ["A/B"]\nnote = "damaged"\n')
+    m = load_watcom_manifest(path)["1.0"]
+    assert m.skip_dirs == ("A/B",) and m.note == "damaged"
+    for bad in ('skip_dirs = "A/B"\n', 'skip_dirs = [""]\n', "skip_dirs = [1]\n", "note = 3\n"):
+        path.write_text(GOOD + bad)
+        with pytest.raises(ManifestError):
+            load_watcom_manifest(path)
+
+
+def test_default_11_0b_skips_damaged_sample_dir():
+    m = load_watcom_manifest()["11.0b"]
+    assert m.skip_dirs == ("SAMPLES/WIN/DATACTL/WIN16",)
+    assert "sector (353)" in m.note
+    assert load_watcom_manifest()["10.5"].skip_dirs == ()
+
+
+def test_check_format_prints_media_note(tmp_path):
+    media = _media(b"x", note="damaged sector")
+    assert "damaged sector" in check_version(media, tmp_path).format()
 
 
 # 6. check ------------------------------------------------------------------------------------
