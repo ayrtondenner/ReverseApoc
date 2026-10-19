@@ -5,7 +5,7 @@
 **Scope:** Milestone 1 Phases 3-6 (round trip, compiler ID, split and first matches, reporting and agent pilot). Phases 1-2 (hygiene, Docker image, hash manifest, LE parser) already exist and are not re-researched.
 **Confidence:** MEDIUM overall. Versions are pinned in the repo or recorded in `docs/toolchain.md` / `docs/research/` (HIGH for the fact of the pin). Fitness for UFO2P/TACP is mostly MEDIUM, because no borrowed tool has been run on our binaries yet.
 
-> Numbering: research notes use the old phase numbers 0-5. Old N = new N+1. This file uses the new numbers only (3 = round trip, 4 = compiler ID, 5 = split and first matches, 6 = reporting and pilot).
+> Phases: 3 = round trip, 4 = compiler ID, 5 = split and first matches, 6 = reporting and pilot (ROADMAP.md).
 
 Confidence tiers in this file, assigned by hand because web providers were out of scope:
 - **HIGH**: pinned or present in the repo (Dockerfile, `pyproject.toml`, `uv.lock`, CI), or a fact measured by a local scan.
@@ -106,7 +106,8 @@ The project has **zero runtime Python dependencies** today (`dependencies = []`)
 docker compose build && docker compose run --rm test
 
 # Phase 4: user-supplied compilers, never baked into an image layer
-#   third_party/watcom/<version>/binnt/wcc386.exe, h/, lib386/ (CLIB3R.LIB, MATH3R.LIB)
+#   third_party/watcom/<version>/binnt/wcc386.exe, binw/wcc386.exe (10.x: BINNT is a loader for the LE
+#   compiler in BINW; 11.0 BINNT is native: reported by session reverseapoc-f2 on 2026-10-19, to confirm in Phase 4), h/, lib386/ (CLIB3R.LIB, MATH3R.LIB)
 #   mounted read-only at /work/watcom by docker/compose.yaml
 # Invocation pattern (decomp.me cromper / Theme Hospital cc.py):
 #   wibo /work/watcom/10.6/binnt/wcc386.exe -zq -i="Z:\work\watcom\10.6\h" <flags> -fo"Z:\..." "Z:\..."

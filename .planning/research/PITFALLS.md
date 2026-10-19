@@ -5,7 +5,7 @@
 **Scope:** Milestone 1 Phases 3-6 (Phases 1-2 are done). These phases cover the in-place page splice round trip, compiler identification, split + OMF-to-ELF + objdiff + first matches, and reporting + the unattended agent pilot.
 **Confidence:** MEDIUM-HIGH overall. Facts measured on our own binaries are HIGH. Lessons from comparable projects (KKND, Theme Hospital, NHL95PC, Lewis, Macabeus) are MEDIUM: they are documented in the research notes, but nobody has run that code against UFO2P/TACP. Points marked *(inference)* are this researcher's reasoning and are LOW until a phase proves them.
 
-**Sources:** local files only, as the source restriction requires. They are listed at the end. **Phase numbering:** the research notes use the old numbers (old N = new N+1). Below, everything uses the new numbers. When a note says "Phase 4 spike (OMF)" it means new Phase 5, and "Phase 3 probe" means new Phase 4.
+**Sources:** local files only, as the source restriction requires. They are listed at the end. Phase numbers match ROADMAP.md (1-6).
 
 **New local-scan facts the docs do not have yet** (supplied with this task, 2026-10-19):
 - Both EXEs have **27 bytes after the last LE page**, starting `64 00 9B FF`. This contradicts `docs/toolchain.md` ("page data runs exactly to EOF") and the kickoff report.
@@ -399,9 +399,9 @@ Theme Hospital's `lewrite.py` regenerates headers, fixup records ("packed into 5
 
 **Prevention:** Write hooks and the driver in Python (`uv run`), not bash. Keep one long-running build container and `exec` into it per attempt. Measure one compile-verify cycle and put the number in the plan. Watch line endings on generated files (`.gitattributes` exists). **Phase:** 4 (wibo in Docker), 6 (driver/hooks). Confidence: MEDIUM.
 
-### Pitfall 23: Phase-number confusion when reading the research
-The research notes and the kickoff report use the old numbers 0-5. "Phase 4 spike: OMF-to-ELF" there is **new Phase 5**; "Phase 3 probe" is **new Phase 4**. `docs/toolchain.md` also still says "To be confirmed in Phase 2/3" for LE quirks, and "Phase 4" for the compiler. Some of these were written before the renumbering, so the planner cannot tell which numbering a given line uses.
-**Prevention:** When planning a phase, translate every cited note reference to the new number explicitly in RESEARCH.md. Fix the remaining old-number references in `docs/toolchain.md` during Phase 3. **Phase:** 3-6 planning. Confidence: HIGH.
+### Pitfall 23: Phase references drift from the roadmap
+Docs, research notes and plans cite phase numbers in prose ("settled in Phase 4"). When a phase is split, merged or reordered, those citations silently point at the wrong phase.
+**Prevention:** Check every cited phase number against ROADMAP.md when planning a phase, and cite requirement IDs (CID-05, SPL-08) where possible, since they survive reordering. **Phase:** 3-6 planning. Confidence: MEDIUM.
 
 ## Minor Pitfalls
 
@@ -536,13 +536,13 @@ decomp.wtf was archived and decomp.dev closed, both citing AI-driven behaviour.
 | 20 Formatting changes the build | Phases 5-6 | Format, rebuild, compare recorded |
 | 21 Full-rewrite scope creep | Phase 3 | CONTEXT.md decision with reopen trigger |
 | 22 Docker/Windows friction | Phases 4, 6 | Python hooks; measured compile-verify cycle time |
-| 23 Phase-number confusion | Phase 3-6 planning | RESEARCH.md translates old to new numbers |
+| 23 Phase references drift | Phase 3-6 planning | Cite requirement IDs; check phase numbers against ROADMAP.md |
 | 24-27 Minor | Phases 4-6 | As listed |
 
 ## Sources
 
 All local, read 2026-10-19:
-- `docs/research/2026-10-19-kickoff-research-report.md`: risk table, phase table (old numbering), objdiff/OMF, decomp.wtf archival, reward hacking, community reception
+- `docs/research/2026-10-19-kickoff-research-report.md`: risk table, phase table, objdiff/OMF, decomp.wtf archival, reward hacking, community reception
 - `docs/research/notes-own-pipeline-reuse-inventory.md`: KKND in-place splice and verify rules, Theme Hospital `lewrite.py`/`split.py`/`omf2elf.py` limits, retrokit size semantics, effort and main risks (Q1-Q8)
 - `docs/research/notes-target-binary-and-toolchain.md`: banner limits, mosura probe, damaged 10.5 stub, Theme Hospital mixed CRT versions, NHL95PC libmatch and flag statistics, KKND flag evidence, CRC mismatch
 - `docs/research/notes-automation-loops.md`: Lewis incidents (SHA-1 rewrite, bypassed `make`, Python edit of a forbidden file), `/goal` evaluator limits, Mizuchi results (false claims, duplicates, timeouts), Ralph Windows bash issue, quota exhaustion

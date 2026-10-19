@@ -14,8 +14,8 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 
 ### Validated
 
-- ✓ Repo hygiene: game files, disassembly, build output and secrets never tracked; plugins at project scope; lean CLAUDE.md; docs skeleton, README, `.recomp.json`, design spec — Phase 1 (built before GSD as "Phase 0", commits up to `e50784f`)
-- ✓ Container and target ingest: Docker image (uv, ninja, objdiff-cli, wibo, Open Watcom v2 tools), hash manifest `config/targets.toml`, `reverseapoc ingest | check-orig | parse-le`, LE parser with 75 pytest tests green on host, in the container and in CI — Phase 2 (built before GSD as "Phase 1", commit `29f9327`)
+- ✓ Repo hygiene: game files, disassembly, build output and secrets never tracked; plugins at project scope; lean CLAUDE.md; docs skeleton, README, `.recomp.json`, design spec — Phase 1 (built before GSD was set up, commits `d7d4d65`…`e50784f`)
+- ✓ Container and target ingest: Docker image (uv, ninja, objdiff-cli, wibo, Open Watcom v2 tools), hash manifest `config/targets.toml`, `reverseapoc ingest | check-orig | parse-le`, LE parser with 75 pytest tests green on host, in the container and in CI — Phase 2 (built before GSD was set up, commits `29f9327` and `8418027`)
 
 ### Active
 
@@ -41,7 +41,6 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 - **Compiler hypothesis:** Watcom C 10.6 (10.5 equivalent), C not C++ (`wcc386`); 11.0 not excluded by the banner. Open Watcom does not match classic 10.x and is used only for `wdis`/`wlink`/`wlib`.
 - **Reuse:** KKND-Decomp (CC0) for LE reading, in-place splice, discovery; Theme Hospital decomp (GPLv3) for `omf2elf.py` and the configure/ninja pattern; retrokit (Apache-2.0) as an external analysis tool. `tools/` is GPLv3.
 - **Prior art for the oracle-first design:** every successful AI decomp in the research stood on a deterministic verifier; every documented failure (rewritten hashes, false match claims, permuter overfitting) came from an agent judging itself.
-- **Numbering:** Milestone 1 phases were numbered 0-5 until 2026-10-19 and are now 1-6 (GSD reserves phase 0). Research notes and commits before the renumbering use the old numbers.
 
 ## Constraints
 
@@ -75,7 +74,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Similarity retrieval without ML first (opcode Levenshtein, UFO2P-TACP twins) [Default] | Corpus is a few thousand functions | — Pending |
 | Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default] | Only maintained LE loaders for Ghidra 12.1 | — Pending |
 | Primary target is the installed build; CD v1.00 build recorded for cross-reference [Default] | What players run; OpenApoc offsets describe the CD build; revisit after Phase 5 | — Pending |
-| Renumber Milestone 1 phases 0-5 to 1-6 [Owner, 2026-10-19] | GSD 1.18.0 reserves phase 0 | ✓ Good |
+| Milestone 1 phases numbered 1-6 [Owner, 2026-10-19] | GSD phase ids start at 1 | ✓ Good |
 
 ## Left to the builder (decided in the phase that needs it)
 
@@ -102,4 +101,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-19 after initialization (GSD bootstrapped retroactively for Phases 1-2)*
+*Last updated: 2026-10-19 after initialization (GSD set up after Phases 1-2 were built; both verified retroactively)*

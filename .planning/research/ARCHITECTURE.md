@@ -4,7 +4,7 @@
 **Researched:** 2026-10-19
 **Confidence:** HIGH for the oracle (splice, compile, compare, SHA-1): it copies two working Watcom/LE pipelines (KKND-Decomp, Theme Hospital) that the local research inventoried file by file. MEDIUM for the OMF-to-ELF/objdiff seam and the decomp.wtf fork-mode seam: they are documented but untested on these binaries, and the Phase 5 and Phase 6 spikes exist to settle them.
 
-**Sources:** local files only, as the brief requires. No web lookups were made. Phase numbers are the new ones (old N = new N+1).
+**Sources:** local files only, as the brief requires. No web lookups were made. Phase numbers follow ROADMAP.md (1-6).
 
 ---
 

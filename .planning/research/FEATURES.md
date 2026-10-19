@@ -4,7 +4,7 @@
 **Researched:** 2026-10-19
 **Confidence:** MEDIUM-HIGH. Every claim comes from the project's own research notes. Those notes cite primary sources (repos, blogs, docs) that were read on 2026-10-19, but none of the reference tooling has been run against UFO2P/TACP. Effort figures are the notes' estimates, not measurements.
 
-**Source restriction:** this file uses local sources only: `docs/research/*`, `docs/workflow.md`, the design spec, `docs/toolchain.md` and the repo. No web lookups. The research notes use the **old** phase numbers (old N = new N+1). Every phase number below is a **new** number and matches `docs/workflow.md`.
+**Source restriction:** this file uses local sources only: `docs/research/*`, `docs/workflow.md`, the design spec, `docs/toolchain.md` and the repo. No web lookups. Phase numbers match `docs/workflow.md` and ROADMAP.md (1-6).
 
 **Users of this pipeline:** (1) the owner, working by hand from Phase 5 on; (2) the unattended per-function agent driver from Phase 6 on; (3) OpenApoc developers who read matched C; (4) outside observers who look at progress and directory listings. "Table stakes" means a pipeline that lacks the feature is not a credible matching decomp, or cannot pass its phase gate.
 
@@ -290,7 +290,7 @@ decomp.wtf fork mode ──conflicts──> KKND-style fallback compare (only on
 
 All local and read on 2026-10-19. Research notes use the old phase numbers.
 
-- `docs/research/2026-10-19-kickoff-research-report.md`: pipeline shape, the milestone table (old numbering), the Use/Skip/Later verdicts, the risk table, and the twin-matching conclusion.
+- `docs/research/2026-10-19-kickoff-research-report.md`: pipeline shape, the milestone table, the Use/Skip/Later verdicts, the risk table, and the twin-matching conclusion.
 - `docs/research/notes-own-pipeline-reuse-inventory.md`: KKND, Theme Hospital and retrokit tool inventories with line counts and licences, in-place vs full rewrite, the OMF readers, discovery, and effort estimates (Q1-Q8).
 - `docs/research/notes-automation-loops.md`: autoresearch, Bilevel, Ralph, `/goal`, Lewis/Nigel, Mizuchi attempt curves, and the driver recommendation matrix (Q1-Q9).
 - `docs/research/notes-progress-reporting-recompfyi.md`: the AnyPS5 and sa3 Pages patterns, the decomp.dev closure, the objdiff report proto, the OMF gap, and the `.recomp.json` spec and artifact ingestion.

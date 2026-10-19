@@ -5,7 +5,7 @@
 **Researched:** 2026-10-19 (local sources only; no web/MCP lookups)
 **Confidence:** MEDIUM (HIGH for repo pins and locally-measured facts; MEDIUM for borrowed tooling never yet run on UFO2P/TACP)
 
-> **Phase numbering:** Milestone 1 phases were renumbered 0-5 -> 1-6 on 2026-10-19 (commit c52d2b9) because GSD reserves phase 0. Research notes under `docs/research/` still use the OLD numbers (old N = new N+1); this summary and the four research files use the NEW numbers only. The phase structure is fixed by the owner in `docs/workflow.md`: 1 Hygiene and safety (done), 2 Container and target ingest (done), 3 Byte-identical round trip, 4 Compiler identification, 5 Split and first matches, 6 Reporting and agent pilot.
+> **Phases:** the phase structure is fixed by the owner in `docs/workflow.md`: 1 Hygiene and safety (done), 2 Container and target ingest (done), 3 Byte-identical round trip, 4 Compiler identification, 5 Split and first matches, 6 Reporting and agent pilot.
 
 ## Executive Summary
 
@@ -87,7 +87,7 @@ The six-phase structure is fixed; Phases 1-2 are complete. Research maps onto Ph
 **Delivers:** C3 region map (blob, MZ/LE stub, header, loader/fixup tables, pages, 27-byte trailer, coverage assertion); C4 `splice(exe, {va: bytes})` with guards (no writes outside page data, no length change); C5 rebuild + SHA-1 gate as a CLI verb and `ninja verify` edge for both EXEs.
 **Addresses:** RT-01..05.
 **Avoids:** Pitfalls 1, 2, 3, 21 (record "in-place only; full rewrite deferred" in CONTEXT.md with reopen trigger "a matched function changes size").
-**Docs:** `docs/toolchain.md` phase references were already renumbered in commit c52d2b9; the only content update due is the stale "To be confirmed in Phase 2/3" LE-quirks line, which must now state the measured facts (physical pages only, 14/11 straddling fixups, 27-byte trailer instead of "runs exactly to EOF"). Have `parse-le` report bytes-after-last-page.
+**Docs:** the content update due in `docs/toolchain.md` is the stale "To be confirmed in Phase 2/3" LE-quirks line, which must now state the measured facts (physical pages only, 14/11 straddling fixups, 27-byte trailer instead of "runs exactly to EOF"). Have `parse-le` report bytes-after-last-page.
 
 ### Phase 4: Compiler identification
 **Rationale:** no match is possible without the version and default flags; the wibo wrapper built here is the Phase 5 compile path.
@@ -149,7 +149,6 @@ Phases with standard patterns (skip research-phase):
 - **capstone cp314 wheels:** check before `uv lock` in Phase 5.
 - **Nigel:** Go build step needs owner approval; ~200-line Python fallback.
 - **Bind-mount I/O speed on Docker Desktop:** measure one compile->verify cycle in Phase 4; consider a named volume for `build/` or a WSL2-filesystem clone.
-- **Correction to PITFALLS.md (Pitfall 23):** `docs/toolchain.md` phase references were already renumbered in commit c52d2b9; only the stale "To be confirmed in Phase 2/3" LE-quirks line needs a content update, in Phase 3.
 
 ## Sources
 
