@@ -22,4 +22,4 @@ Entry format:
 ## 2026-10-19: the OpenApoc CRC mismatch is two builds on the same disc
 
 - **What we found.** OpenApoc reads `ufo2p.exe` from the CD image, and the Steam `cd.iso` / GOG `XCOM.BIN` carry the v1.00 CD build (UFO2P.EXE 1,702,206 bytes, CRC32 `0x4749FFC1`; TACP.EXE 3,170,298 bytes). The installed `XCOMA/` tree holds a later build (1,705,790 / 3,161,594 bytes). Verified with pycdlib on both disc images; SMKP.EXE and XCOMAPOC.EXE are identical in both.
-- **Why it matters.** OpenApoc's offsets and `FUN_` addresses only apply to the CD build. We keep the installed build as primary target, record the CD build in `config/targets.toml`, and treat the build-to-build diff as free matching evidence later. Patch level of the installed build is still TBD.
+- **Why it matters.** OpenApoc's offsets and `FUN_` addresses only apply to the CD build. We keep the installed build as primary target, record the CD build in `config/targets.toml`, and treat the build-to-build diff as free matching evidence later. Patch level of the installed build is unknown; a build-to-build diff after Phase 5 may date it.

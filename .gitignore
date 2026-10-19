@@ -3,6 +3,13 @@ orig/
 third_party/
 asm/
 build/
+/watcom/
+*.img
+*.IMG
+*.cue
+*.CUE
+*.mdf
+*.MDF
 *.EXE
 *.exe
 *.iso

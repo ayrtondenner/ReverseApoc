@@ -81,9 +81,9 @@ These rules still apply to new, non-matching code such as test harnesses and the
 | Standard | What we take |
 |---|---|
 | [Google C++ Style Guide](https://google.github.io/styleguide/cppguide.html) | Header guard form and self-contained headers; its scoping rules are rejected for matched code |
-| [C++ Best Practices](https://github.com/cpp-best-practices/cppbestpractices) | "Use the tools available": lint and format in CI. Only the chapter list was reviewed; contents TBD |
+| [C++ Best Practices](https://github.com/cpp-best-practices/cppbestpractices) | "Use the tools available": lint and format in CI. Only the chapter list was reviewed; the chapters themselves were not |
 | [micro-os-plus naming conventions](https://micro-os-plus.github.io/develop/naming-conventions/) | `snake_case`, `_t` typedefs, `_s` struct tags, `is_`/`has_` booleans, units in names |
 | [Imperial College C Style](https://www.doc.ic.ac.uk/lab/cplus/cstyle.html) | Always brace bodies, `ALL_CAPS` macros and constants, module prefixes for globals, parenthesized macro parameters, comment fall-through. Applied where the binary allows |
 | [OpenSSF Compiler Hardening Guide](https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html) | Host-side tooling only (any C built with gcc or clang for tests); never the Watcom matching build |
 | [SEI CERT C](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/) | Sections INT, ARR, STR, MEM and EXP as lenses for spotting and documenting original bugs (overflow, bounds, termination, allocation, evaluation order), not for rewriting |
-| [oodlescoop C best practices](https://www.oodlescoop.com/tutorials/c-programming/best-practices-and-coding-standards-for-c-programming) | TBD: listed in the kickoff, but the research could not locate its content |
+| [oodlescoop C best practices](https://www.oodlescoop.com/tutorials/c-programming/best-practices-and-coding-standards-for-c-programming) | Not used: listed in the kickoff, but the research could not locate its content |
