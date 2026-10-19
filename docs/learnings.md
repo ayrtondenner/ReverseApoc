@@ -11,6 +11,13 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-19: what is actually on the Watcom CDs
+
+- **BINNT is a stub on 10.5 and 10.6.** `BINNT/WCC386.EXE` is a 9,216-byte Win32 loader that tells you to put `BINW` in your path first; the real compiler is the LE program `BINW/WCC386.EXE` (567,698 bytes in 10.6). Running 10.x under wibo needs `BINW` next to `BINNT` (to be confirmed in Phase 4). 11.0 and later ship a native Win32 `BINNT`.
+- **The 10.5 disc has a damaged compiler.** `BINW/WCC386.EXE` is a 65,536-byte stub; the real 567,558-byte binary is wpack-packed in `DISKIMGS/DISK02/PCK00017.1` + `DISK03/PCK00017.2`. `check-watcom` reports it as KNOWN BAD; decoding is Phase 4 work.
+- **The 11.0b dump has a damaged directory sector (353)** covering the 3-file `SAMPLES/WIN/DATACTL/WIN16` folder. 7-Zip cannot open the image; our reader installs it and skips that folder (manifest `skip_dirs`). The compiler, headers and libraries are fine.
+- **The archive.org and WinWorld copies are byte-identical** (10.5, 10.6, 11.0), so the collection item's SHA256SUMS and cross-verification notes corroborate our SHA-1s in `config/watcom.toml`.
+
 ## 2026-10-19: kickoff research outcome
 
 - **Targets are clean and fixed.** Steam and GOG ship byte-identical UFO2P.EXE (`ufo24`) and TACP.EXE (`tac4`): Watcom LE executables bound with DOS/4GW Professional, two objects each, no debug info, almost certainly C rather than C++. OpenApoc expects a different UFO2P build (CRC32 `0x4749ffc1` vs our `0xDBD3B41D`): resolved the same day, see below.

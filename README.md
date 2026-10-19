@@ -76,14 +76,14 @@ Details, evidence and pinned versions: [docs/toolchain.md](docs/toolchain.md).
 
 ## Getting started
 
-Bring your own files. Nothing below downloads the game or the compiler for you.
+Bring your own files. Nothing below downloads the game, and the compiler download is a separate opt-in command (see the end of this section).
 
 1. Copy `.env.example` to `.env` and point `APOC_STEAM_FOLDER` (or `APOC_GOG_FOLDER`) at your install.
 2. `uv run reverseapoc ingest` copies the executables into the gitignored `orig/` and checks their hashes.
 3. `docker compose build`
 4. `docker compose run --rm build uv run pytest`
 
-`docker compose run --rm test` runs the test suite in the container in one step. The Watcom compiler goes into the gitignored `third_party/watcom/` once Phase 4 starts.
+`docker compose run --rm test` runs the test suite in the container in one step. To get the original Watcom compilers, run `uv run reverseapoc fetch-watcom` and then `uv run reverseapoc install-watcom` (opt-in, at your own responsibility); they land in the gitignored `third_party/watcom/`. Sources and details: [Getting the Watcom compilers](docs/toolchain.md#getting-the-watcom-compilers).
 
 ## Workflow and ceremonies
 

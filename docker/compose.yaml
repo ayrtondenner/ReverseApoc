@@ -4,7 +4,7 @@
 # Host directories that must exist (both are gitignored, create them yourself;
 # Docker would otherwise create them as root-owned empty dirs):
 #   orig/              your own X-COM Apocalypse executables
-#   third_party/watcom/  your own Watcom 10.x install (not distributed here)
+#   third_party/watcom/  your own Watcom 10.5-11.0b trees (`uv run reverseapoc install-watcom`; not distributed here)
 x-common: &common
   build:
     context: ..
