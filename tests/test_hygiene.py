@@ -58,6 +58,23 @@ def test_every_mount_of_a_protected_dir_is_read_only():
             assert mode == "ro", f"{host} -> {target} is mounted {mode}"
 
 
+def _live_docs() -> list[Path]:
+    # docs/research/ holds dated research snapshots and is left as written.
+    docs = [p for p in (REPO_ROOT / "docs").rglob("*.md") if "research" not in p.parts]
+    return [*docs, REPO_ROOT / "README.md", REPO_ROOT / "CLAUDE.md"]
+
+
+def test_live_docs_carry_no_bare_tbd_markers():
+    # Unknowns are written as "not known yet; <requirement or phase> records it", never "TBD".
+    hits = [
+        f"{path.relative_to(REPO_ROOT)}:{n}"
+        for path in _live_docs()
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if re.search(r"\bTBD\b", line)
+    ]
+    assert not hits
+
+
 @pytest.mark.skipif(not Path("/.dockerenv").exists(), reason="only inside the container")
 @pytest.mark.parametrize("path", ["/work/orig", "/work/third_party", "/work/watcom"])
 def test_protected_paths_are_not_writable_in_the_container(path):

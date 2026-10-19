@@ -10,10 +10,10 @@ Steam and GOG installs are byte-identical for the game executables (local scan).
 |---|---:|---|---|---|---|---|
 | `UFOEXE/UFO2P.EXE` | 1,705,790 | `d2e874a76344cb9c48afce57357aab31` | `ufo24` | `0xDBD3B41D` | obj1:0xB0784 | Target |
 | `TACEXE/TACP.EXE` | 3,161,594 | `644382a6caa787cff613c50a170b5152` | `tac4` | `0x3EC9C268` | obj1:0xB28B0 | Target |
-| `UFOEXE/SMKP.EXE` | 271,436 | `2d7933f255348a60536d811391b461ba` | `SMKP` | TBD | TBD | Deferred (Smacker player) |
-| `XCOMAPOC.EXE` | 18,171 | `867f7997fae1714313b873f15359c4fb` | n/a | TBD | n/a | Out of scope (16-bit launcher) |
+| `UFOEXE/SMKP.EXE` | 271,436 | `2d7933f255348a60536d811391b461ba` | `SMKP` | `0x93A0E620` | obj1:0x6CB0 | Deferred (Smacker player, v2 requirement SMKP-01) |
+| `XCOMAPOC.EXE` | 18,171 | `867f7997fae1714313b873f15359c4fb` | n/a | n/a (not ingested) | n/a | Out of scope (16-bit launcher) |
 
-- SHA-1 values: TBD, recorded in `config/targets.toml` in Phase 2.
+- SHA-1 values are recorded in `config/targets.toml` (Phase 2).
 - `SETUP.EXE` is Borland C++ 1991 and out of scope.
 - The two targets have separate module names, which suggests separate link scripts. Expect two decomp targets with largely shared engine code, possibly compiled with slightly different flags.
 
@@ -28,7 +28,7 @@ OpenApoc's extractor expects UFO2P.EXE CRC32 `0x4749ffc1` ("the crc32 of the ufo
 | Installed (`XCOMA/` on Steam, root on GOG) | UFO2P.EXE | 1,705,790 | `0xDBD3B41D` | `d2e874a76344cb9c48afce57357aab31` | `e7488bf3de2efeaa3c1c72d3763eeeb35f727c56` |
 | Installed | TACP.EXE | 3,161,594 | `0x3EC9C268` | `644382a6caa787cff613c50a170b5152` | `48ef00969d8880a0a152de1b652853fa7ac27393` |
 
-SMKP.EXE and XCOMAPOC.EXE are identical in both places. The Steam ISO and the GOG disc image contain byte-identical files. The disc's README.TXT says "Version 1.00, 11th June 1997"; the installed executables are a later build applied by the store installers (the exact patch level is TBD). Consequences:
+SMKP.EXE and XCOMAPOC.EXE are identical in both places. The Steam ISO and the GOG disc image contain byte-identical files. The disc's README.TXT says "Version 1.00, 11th June 1997"; the installed executables are a later build applied by the store installers (the exact patch level is unknown; a build-to-build diff after Phase 5 may date it). Consequences:
 
 - OpenApoc's table offsets and the `FUN_` addresses in its PRs describe the **CD build**. They are not valid for the installed build without re-deriving them.
 - The project's primary target stays the **installed build** (what players run, what `uv run reverseapoc ingest` collects). The CD build is recorded in `config/targets.toml` under `[[cd_builds]]` for cross-reference and as a second, smaller matching target once the pipeline exists. Which build becomes primary is an owner decision to revisit after Phase 5.
@@ -85,7 +85,7 @@ Modules may mix versions (Theme Hospital used 10.0a for some CRT modules), so th
 
 ### Flags
 
-TBD, recorded here in Phase 4. References from other Watcom games, not evidence for ours:
+Not known yet; CID-05 (Phase 4) records them here. References from other Watcom games, not evidence for ours:
 
 | Project | Compiler | Flags |
 |---|---|---|
@@ -163,10 +163,10 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 | Component | Version | Status |
 |---|---|---|
 | Python | 3.14 (`.python-version`) | Phase 2 |
-| uv | host 0.12.23; image tag TBD | Phase 2 |
+| uv | 0.12.23 on the host and in the image (`ghcr.io/astral-sh/uv:0.12.23`) | Phase 2 |
 | wibo | 1.2.0 | Phase 2 |
-| objdiff-cli | TBD (v3.8.2 was latest on 2026-10-19) | Phase 2 |
-| Open Watcom v2 | build TBD | Phase 2 |
+| objdiff-cli | v3.8.2 (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
+| Open Watcom v2 | `2026-10-01-Build` (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Watcom C | 10.6 / 10.5 hypothesis | Phase 4 |
 | Ghidra | 12.1.4 + JDK 21 | Phase 5 |
 | ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 5 |
