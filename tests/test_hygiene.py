@@ -88,6 +88,21 @@ def test_no_doc_mentions_a_phase_zero():
     assert not hits
 
 
+def test_gitignore_excludes_the_compiler_media_and_installs():
+    patterns = _ignore_patterns(REPO_ROOT / ".gitignore")
+    assert "third_party/" in patterns
+    assert "/watcom/" in patterns
+
+
+@pytest.mark.parametrize(
+    "needle", ["fetch-watcom", "install-watcom", "archive.org", "watcom-media"]
+)
+def test_dockerfile_never_fetches_the_compiler(needle):
+    # The proprietary compiler is user-supplied at run time, never baked into an image layer.
+    text = (REPO_ROOT / "docker" / "Dockerfile").read_text(encoding="utf-8")
+    assert needle not in text
+
+
 @pytest.mark.skipif(not Path("/.dockerenv").exists(), reason="only inside the container")
 @pytest.mark.parametrize("path", ["/work/orig", "/work/third_party", "/work/watcom"])
 def test_protected_paths_are_not_writable_in_the_container(path):
