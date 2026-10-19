@@ -36,3 +36,24 @@ size = 271436
 crc32 = 0x93A0E620
 md5 = "2d7933f255348a60536d811391b461ba"
 sha1 = "efdcf2a5adf50a8d0e4fb6a5796a663f6a48e8bc"
+
+# --- CD v1.00 builds (inside the disc image both stores ship: Steam cd.iso, GOG CD/XCOM.BIN) ---
+# Documentation only: check-orig and ingest read [[targets]] above. These are the builds OpenApoc's
+# extractors describe (expected_ufo2p_crc32 = 0x4749ffc1). Path is inside the ISO9660 image.
+# Verified 2026-10-19 on both the Steam ISO and the GOG image (converted from MODE1/2352).
+
+[[cd_builds]]
+name = "UFO2P.EXE"
+path = "XCOM3/UFOEXE/UFO2P.EXE"
+size = 1702206
+crc32 = 0x4749FFC1
+md5 = "2345cd4d39807fadaff36792f622466d"
+sha1 = "6be861d611548f5a00b0b3bc49a82ed29d25fd4a"
+
+[[cd_builds]]
+name = "TACP.EXE"
+path = "XCOM3/TACEXE/TACP.EXE"
+size = 3170298
+crc32 = 0xFEBBE39E
+md5 = "cf329277d52968ec26b408caa2856600"
+sha1 = "af32ccc371c153c514fb8e3cc80e765de380aef9"

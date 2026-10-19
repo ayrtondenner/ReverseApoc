@@ -17,11 +17,22 @@ Steam and GOG installs are byte-identical for the game executables (local scan).
 - `SETUP.EXE` is Borland C++ 1991 and out of scope.
 - The two targets have separate module names, which suggests separate link scripts. Expect two decomp targets with largely shared engine code, possibly compiled with slightly different flags.
 
-### OpenApoc CRC mismatch
+### OpenApoc CRC mismatch (resolved 2026-10-19)
 
-OpenApoc's extractor expects UFO2P.EXE CRC32 `0x4749ffc1` ("the crc32 of the ufo2p.exe found on my steam version", [ufo2p.cpp](https://github.com/OpenApoc/OpenApoc/blob/master/tools/extractors/common/ufo2p.cpp)). Today's Steam/GOG UFO2P.EXE is `0xDBD3B41D` (local scan). So at least two UFO2P builds exist. UFOpaedia also documents DOS and Pentium ("P") builds in the wild ([Known Bugs](https://www.ufopaedia.org/Known_Bugs_(Apocalypse))).
+OpenApoc's extractor expects UFO2P.EXE CRC32 `0x4749ffc1` ("the crc32 of the ufo2p.exe found on my steam version", [ufo2p.cpp](https://github.com/OpenApoc/OpenApoc/blob/master/tools/extractors/common/ufo2p.cpp), added 2016-11-05). OpenApoc reads game files from the CD image (`data/cd.iso`, see its [README](https://github.com/OpenApoc/OpenApoc/blob/master/README.md)), not from the installed folder. Hashing the executables inside the Steam `cd.iso` and the GOG `CD/XCOM.BIN` (MODE1/2352, converted to 2048-byte sectors) shows two builds of each program, both available to every Steam and GOG owner:
 
-Until OpenApoc confirms which build `0x4749ffc1` is, do not reuse their extractor offsets or the `FUN_` addresses from [OpenApoc PR #1685](https://github.com/OpenApoc/OpenApoc/pull/1685) without diffing them against the current build. This is a cross-cutting GitHub issue opened in Phase 0.
+| Build | File | Size (bytes) | CRC32 | md5 | sha1 |
+|---|---|---:|---|---|---|
+| CD v1.00 (inside the disc image, `XCOM3/UFOEXE/`) | UFO2P.EXE | 1,702,206 | `0x4749FFC1` | `2345cd4d39807fadaff36792f622466d` | `6be861d611548f5a00b0b3bc49a82ed29d25fd4a` |
+| CD v1.00 (`XCOM3/TACEXE/`) | TACP.EXE | 3,170,298 | `0xFEBBE39E` | `cf329277d52968ec26b408caa2856600` | `af32ccc371c153c514fb8e3cc80e765de380aef9` |
+| Installed (`XCOMA/` on Steam, root on GOG) | UFO2P.EXE | 1,705,790 | `0xDBD3B41D` | `d2e874a76344cb9c48afce57357aab31` | `e7488bf3de2efeaa3c1c72d3763eeeb35f727c56` |
+| Installed | TACP.EXE | 3,161,594 | `0x3EC9C268` | `644382a6caa787cff613c50a170b5152` | `48ef00969d8880a0a152de1b652853fa7ac27393` |
+
+SMKP.EXE and XCOMAPOC.EXE are identical in both places. The Steam ISO and the GOG disc image contain byte-identical files. The disc's README.TXT says "Version 1.00, 11th June 1997"; the installed executables are a later build applied by the store installers (the exact patch level is TBD). Consequences:
+
+- OpenApoc's table offsets and the `FUN_` addresses in its PRs describe the **CD build**. They are not valid for the installed build without re-deriving them.
+- The project's primary target stays the **installed build** (what players run, what `uv run reverseapoc ingest` collects). The CD build is recorded in `config/targets.toml` under `[[cd_builds]]` for cross-reference and as a second, smaller matching target once the pipeline exists. Which build becomes primary is an owner decision to revisit after Phase 4.
+- A build-to-build diff (same compiler, small source delta) is a cheap source of matching evidence in later phases.
 
 ## LE layout
 
