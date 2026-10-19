@@ -8,7 +8,7 @@ UFO2P.EXE and TACP.EXE) to document the original engine for OpenApoc. Not a port
 
 - Never commit game files, disassembly, or build output: `orig/`, `asm/`, `build/`, `third_party/`
   are gitignored. Never modify `orig/`, the hash manifests under `config/`, or the build scripts to
-  make a check pass. No secrets in tracked files (`.mcp.json` uses `${TAVILY_API_KEY}` from `.env`).
+  make a check pass. No secrets in tracked files or in `.env` (`.mcp.json` expands `${TAVILY_API_KEY}` from the user environment, set as a Windows user variable).
 - The Watcom 10.x compiler and the game are user-supplied; they are never baked into the Docker image.
 - A matched function is byte-identical and stays that way: no restructuring, no "modernizing",
   no inline assembly to force a match. Rules per path live in `.claude/rules/`.
