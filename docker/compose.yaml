@@ -15,6 +15,9 @@ x-common: &common
     - ..:/work
     - ../orig:/work/orig:ro
     - ../third_party/watcom:/work/watcom:ro
+    # The rw repo mount would otherwise expose the same host folder writable at
+    # /work/third_party; overlay it read-only (tests/test_hygiene.py checks this).
+    - ../third_party:/work/third_party:ro
     # Linux venv and uv cache live in named volumes, not in the checkout.
     - uv-venv:/opt/venv
     - uv-cache:/home/dev/.cache/uv

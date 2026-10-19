@@ -10,5 +10,14 @@ build/
 __pycache__/
 .pytest_cache/
 .ruff_cache/
+# Executables and disc images anywhere in the context (a bare *.exe only matches the root)
+**/*.exe
+**/*.EXE
+**/*.iso
+**/*.ISO
+**/*.bin
+**/*.BIN
+**/*.img
+**/*.cue
 .ua/
 groma/

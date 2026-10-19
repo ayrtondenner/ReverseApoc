@@ -20,6 +20,7 @@ Not in the image: the Watcom 10.x compiler, the game files, the project source.
 | `.` (repo) | `/work` | rw |
 | `./orig` | `/work/orig` | ro (your game executables) |
 | `./third_party/watcom` | `/work/watcom` | ro (your Watcom 10.x install) |
+| `./third_party` | `/work/third_party` | ro (overlays the rw repo mount so the compiler is never writable) |
 | `.env` | environment | optional |
 
 `orig/` and `third_party/watcom/` are gitignored. Create them yourself before the first run
