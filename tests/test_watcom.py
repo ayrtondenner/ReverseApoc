@@ -364,6 +364,49 @@ def test_install_extract_failure_is_wrapped_and_leaves_install_intact(tmp_path, 
     assert (install_dir / "9.0" / "README.TXT").read_bytes() == b"hi"
 
 
+def _flaky_replace(monkeypatch, failures, exc=PermissionError):
+    """Patch os.replace (as used by watcom) to fail `failures` times, then work; record sleeps."""
+    real, calls, sleeps = watcom.os.replace, [], []
+
+    def replace(src, dst):
+        calls.append((src, dst))
+        if failures is None or len(calls) <= failures:
+            raise exc(5, "Access denied")
+        real(src, dst)
+
+    monkeypatch.setattr(watcom.os, "replace", replace)
+    monkeypatch.setattr(watcom.time, "sleep", sleeps.append)
+    return calls, sleeps
+
+
+def test_install_retries_transient_permission_error(tmp_path, monkeypatch):
+    media, media_dir, install_dir = _iso_media(tmp_path)
+    calls, sleeps = _flaky_replace(monkeypatch, 2)
+    install_version(media, media_dir, install_dir)
+    assert len(calls) == 3 and len(sleeps) == 2
+    assert (install_dir / "9.0" / "BINW" / "WCC386.EXE").read_bytes() == b"compiler"
+    assert [p.name for p in install_dir.iterdir()] == ["9.0"]
+
+
+def test_install_gives_up_after_bounded_retries(tmp_path, monkeypatch):
+    media, media_dir, install_dir = _iso_media(tmp_path)
+    calls, sleeps = _flaky_replace(monkeypatch, None)
+    with pytest.raises(WatcomError, match=r"9\.0.*re-run"):
+        install_version(media, media_dir, install_dir)
+    assert len(calls) == 8 and len(sleeps) == 7
+    assert not (install_dir / ".9.0.partial").exists()
+    assert not (install_dir / "9.0").exists()
+
+
+def test_install_does_not_retry_other_oserror(tmp_path, monkeypatch):
+    media, media_dir, install_dir = _iso_media(tmp_path)
+    calls, sleeps = _flaky_replace(monkeypatch, None, exc=OSError)
+    with pytest.raises(OSError):
+        install_version(media, media_dir, install_dir)
+    assert len(calls) == 1 and sleeps == []
+    assert not (install_dir / ".9.0.partial").exists()
+
+
 def test_install_skips_listed_corrupt_directory(tmp_path):
     image = bytearray(build_iso({"SUB/BAD/X.TXT": b"x", "SUB/OK.TXT": b"ok"}))
     iso_path = tmp_path / "t.iso"
