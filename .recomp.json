@@ -1,0 +1,55 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "X-COM: Apocalypse",
+  "system": "PC (DOS)",
+  "type": "decomp",
+  "original": [
+    {
+      "region": "World",
+      "revision": "DOS (Steam/GOG, byte-identical)",
+      "serial": "UFO2P.EXE",
+      "sha1": "e7488bf3de2efeaa3c1c72d3763eeeb35f727c56"
+    },
+    {
+      "region": "World",
+      "revision": "DOS (Steam/GOG, byte-identical)",
+      "serial": "TACP.EXE",
+      "sha1": "48ef00969d8880a0a152de1b652853fa7ac27393"
+    }
+  ],
+  "project": "ReverseApoc",
+  "status": "exploring",
+  "targets": [],
+  "toolchain": [
+    "Watcom C/C++ 10.x",
+    "DOS/4GW Professional",
+    "Ghidra",
+    "objdiff"
+  ],
+  "approach": "Byte-matching decompilation of the DOS executables (UFO2P.EXE, TACP.EXE) with the original Watcom compiler, to document the original engine for OpenApoc. Not a port.",
+  "maintainers": [
+    {
+      "name": "ayrtondenner",
+      "link": "https://github.com/ayrtondenner"
+    }
+  ],
+  "links": [
+    {
+      "label": "OpenApoc",
+      "url": "https://github.com/openapoc/openapoc"
+    }
+  ],
+  "help": [
+    "Watcom 10.x codegen knowledge",
+    "LE/OMF tooling",
+    "X-COM Apocalypse internals"
+  ],
+  "tags": [
+    "x-com",
+    "dos",
+    "watcom",
+    "dos4gw",
+    "ai-assisted"
+  ],
+  "notes": "Hybrid pipeline: own matching oracle (KKND-Decomp and Theme Hospital decomp tooling, retrokit for Ghidra) plus decomp.wtf fork mode as the agent layer. Progress percentages arrive once an objdiff-shaped report exists (Phase 4-5)."
+}
