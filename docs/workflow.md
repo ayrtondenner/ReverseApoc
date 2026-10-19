@@ -82,8 +82,6 @@ When both systems prescribe a step, GSD's phase files are the record. `.claude/r
 
 Copied from the approved plan. Phases 1-2 are implemented first; 3-6 are planned later with `/gsd-plan-phase N`.
 
-The phases were numbered 0-5 until 2026-10-19, when they were renumbered 1-6 because GSD reserves phase 0. The research notes in [research/](research/) and commits before the renumbering use the old numbers (old N = new N+1).
-
 | Phase | Goal | Verification gate (`VERIFICATION.md` must pass) | Spike (`/gsd-spike`) |
 |---|---|---|---|
 | 1 Hygiene and safety | GSD + plugins installed, `.gitignore`, key externalized, lean CLAUDE.md, docs skeleton, README, `.recomp.json`, design spec | `git ls-files` has no game file/key/`.env`; `/plugin` and `/gsd-health` clean; CLAUDE.md < 150 lines | none |
