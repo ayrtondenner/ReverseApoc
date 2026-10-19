@@ -7,14 +7,14 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ## v1 Requirements (Milestone 1)
 
-### Hygiene and safety (Phase 1, built before GSD as "Phase 0")
+### Hygiene and safety (Phase 1, built before GSD was set up)
 
 - [x] **HYG-01**: `git ls-files` contains no game file, disassembly, build output, compiler binary, `.env` or API key; `.gitignore`/`.dockerignore` exclude `orig/`, `third_party/`, `asm/`, `build/`, `.env` and executable/image types
 - [x] **HYG-02**: All plugins enabled in `.claude/settings.json` are installed at project scope (`claude plugin list`) and GSD is installed project-local for Claude Code only, with `/gsd-health` clean
 - [x] **HYG-03**: `CLAUDE.md` stays under 150 lines and states the hard rules, commands and done gate; per-path rules live in `.claude/rules/`
 - [x] **HYG-04**: Docs skeleton exists (`docs/toolchain.md`, `coding-style.md`, `matching.md`, `learnings.md`, `tools.md`, `legal.md`, `workflow.md`, `ceremonies.md`), plus README, `.recomp.json` and the approved design spec
 
-### Container and target ingest (Phase 2, built before GSD as "Phase 1")
+### Container and target ingest (Phase 2, built before GSD was set up)
 
 - [x] **ING-01**: A contributor can build a Docker image with Python 3.14 + uv, ninja, objdiff-cli, wibo 1.2.0 and the Open Watcom v2 tools, with `orig/` and `third_party/watcom/` mounted read-only and never baked in
 - [x] **ING-02**: A contributor can run `uv run reverseapoc ingest` to copy their EXEs into `orig/` and `uv run reverseapoc check-orig` to verify them against `config/targets.toml` (size, CRC32, md5, sha1)
@@ -32,7 +32,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Compiler identification (Phase 4)
 
-- [ ] **CID-01**: The original `BINNT\wcc386.exe` runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/`
+- [ ] **CID-01**: The original Watcom compiler runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/` (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` loads the LE `BINW\WCC386.EXE`, so `binw/` is required too)
 - [ ] **CID-02**: A compiler wrapper keyed by `compiler@version` plus a per-file flags table (`config/cflags.txt`) selects the compiler and flags per source file
 - [ ] **CID-03**: The mosura codegen probe compiled with each version locates its idioms in both code objects (non-library code)
 - [ ] **CID-04**: Linked CLIB3R/MATH3R runtime modules match byte for byte (masked) against one version's `LIB386`

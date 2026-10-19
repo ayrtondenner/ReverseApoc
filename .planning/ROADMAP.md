@@ -1,9 +1,5 @@
 # Roadmap: ReverseApoc
 
-> **Numbering:** Milestone 1 phases were renumbered 0-5 -> 1-6 on 2026-10-19 because GSD reserves
-> phase 0 (old N = new N+1). Research notes under `docs/research/` and commits before that date use
-> the old numbers.
->
 > **Done rule:** a phase is complete only when its `VERIFICATION.md` passes. The checkboxes and the
 > progress table below are annotations, not proof.
 >
@@ -34,8 +30,8 @@ every match.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD as "Phase 0"; retroactive verification)
-- [ ] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD as "Phase 1"; retroactive verification)
+- [ ] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD was set up; retroactive verification)
+- [ ] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD was set up; retroactive verification)
 - [ ] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail
 - [ ] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match
 - [ ] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE
@@ -54,7 +50,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   4. `docs/toolchain.md`, `coding-style.md`, `matching.md`, `learnings.md`, `tools.md`, `legal.md`, `workflow.md` and `ceremonies.md` exist, together with `README.md`, `.recomp.json` and the approved design spec under `docs/superpowers/specs/` (HYG-04)
 **Spike**: none
 **Plans**: TBD
-**Note**: Built before GSD existed as "Phase 0" (commits up to `e50784f`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
+**Note**: Built before GSD was set up (commits `d7d4d65`…`e50784f`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 2: Container and target ingest
 **Goal**: A contributor with their own game files can build the container, ingest and verify both executables against the hash manifest, and reproduce their scanned LE layout, with tests and ruff green on the host, in the container and in CI.
@@ -68,7 +64,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. The CI workflow (`.github/workflows/ci.yml`) runs tests and ruff on push and passes with no game file present (ING-05)
 **Spike**: none
 **Plans**: TBD
-**Note**: Built before GSD existed as "Phase 1" (commit `29f9327`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
+**Note**: Built before GSD was set up (commits `29f9327` and `8418027`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 3: Byte-identical round trip
 **Goal**: Both EXEs are rebuilt from decomposed parts through a KKND-style in-place page splice and proven SHA-1 identical to the originals, by a gate that demonstrably fails on any one-byte change.
@@ -87,9 +83,9 @@ Decimal phases appear between their surrounding integers in numeric order.
 **Goal**: The exact Watcom version and default flags that built each EXE are known and proven: runtime library modules match byte for byte, and the codegen probe locates its idioms in the game's own code.
 **Depends on**: Phase 3
 **Requirements**: CID-01, CID-02, CID-03, CID-04, CID-05, CID-06
-**Prerequisite**: The owner supplies Watcom 10.5, 10.6 and 11.0 under the gitignored `third_party/watcom/` before the phase starts; they are mounted read-only and never baked into the image.
+**Prerequisite**: Met 2026-10-19: Watcom 10.5, 10.6 and 11.0 media are in the gitignored `third_party/watcom-media/` (hash-verified); extracted trees go to `third_party/watcom/<ver>/`, mounted read-only and never baked into the image.
 **Success Criteria** (what must be TRUE):
-  1. For each owner-supplied version (10.5, 10.6, 11.0), the original `BINNT\wcc386.exe` runs under wibo 1.2.0 inside `docker compose run`, mounted read-only from `third_party/watcom/`, and compiles a test source to an object file; each compiler binary's hash and banner are logged (CID-01)
+  1. For each owner-supplied version (10.5, 10.6, 11.0), the original compiler runs under wibo 1.2.0 (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` is a loader for the LE `BINW\WCC386.EXE`, so both directories are installed) inside `docker compose run`, mounted read-only from `third_party/watcom/`, and compiles a test source to an object file; each compiler binary's hash and banner are logged (CID-01)
   2. A compiler wrapper keyed by `compiler@version` reads `config/cflags.txt`, and a test shows two source files compiled with the version and flags the table assigns to each (CID-02)
   3. Linked CLIB3R/MATH3R runtime modules from one version's `LIB386` match the code objects byte for byte with fixups masked, and the mosura codegen probe compiled with each version locates its idioms in non-library code of both EXEs' code objects (CID-03, CID-04)
   4. `docs/toolchain.md` records the compiler version and default flags per EXE with per-flag evidence, replacing its "To be confirmed in Phase 4" line (CID-05)
