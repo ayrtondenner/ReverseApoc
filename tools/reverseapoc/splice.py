@@ -49,9 +49,11 @@ from .le import (
     LEUnsupportedError,
 )
 from .targets import (
+    DEFAULT_MANIFEST,
     DEFAULT_ORIG,
     REPO_ROOT,
     FileHashes,
+    ManifestError,
     Target,
     check_target,
     hash_file,
@@ -636,17 +638,34 @@ def rebuild_target(
     return RebuildResult(target, "mismatch", out_path, hashes, masked_fields=masked, **diff)
 
 
+def _select(targets: list[Target], exe: str | None, manifest: Path) -> list[Target]:
+    """All targets, or the one named `exe` (case-insensitive). `exe` only selects among the
+    manifest's names; it never becomes part of a path."""
+    if exe is None:
+        return targets
+    target = next((t for t in targets if t.name.casefold() == exe.casefold()), None)
+    if target is None:
+        known = ", ".join(t.name for t in targets)
+        raise ManifestError(f"{manifest}: no target named {exe!r}; known targets: {known}")
+    return [target]
+
+
 def rebuild(
     orig_dir: Path | str | None = None,
     out_dir: Path | str | None = None,
     manifest: Path | str | None = None,
+    *,
+    exe: str | None = None,
 ) -> RebuildReport:
-    """Rebuild every [[targets]] entry of the manifest (default: config/targets.toml) from
-    orig_dir (default: orig/) into out_dir (default: build/)."""
+    """Rebuild every [[targets]] entry of the manifest (default: config/targets.toml), or only
+    the one named `exe` (case-insensitive), from orig_dir (default: orig/) into out_dir
+    (default: build/). An unknown `exe` raises ManifestError before anything is written."""
     orig_dir = Path(orig_dir) if orig_dir is not None else DEFAULT_ORIG
     out_dir = Path(out_dir) if out_dir is not None else DEFAULT_OUT
+    manifest = Path(manifest) if manifest is not None else DEFAULT_MANIFEST
     _refuse_inside_orig(out_dir, orig_dir)
     targets = load_manifest(manifest)
     for target in targets:
         _check_bare_name(target)
+    targets = _select(targets, exe, manifest)
     return RebuildReport(out_dir, [rebuild_target(t, orig_dir, out_dir) for t in targets])
