@@ -1,6 +1,6 @@
 # Coding style
 
-Rules for the decompiled C under `src/` and `include/`. Python tooling under `tools/` follows ruff's defaults and is tested with pytest; it is not covered here.
+Rules for the decompiled C under `src/` and `include/`. Python tooling under `tools/` has its own short section at the end: [Python tooling](#python-tooling).
 
 The order of authority: **the binary first, readability second.** When a style rule and the original codegen disagree, the codegen wins and a comment explains why.
 
@@ -87,3 +87,14 @@ These rules still apply to new, non-matching code such as test harnesses and the
 | [OpenSSF Compiler Hardening Guide](https://best.openssf.org/Compiler-Hardening-Guides/Compiler-Options-Hardening-Guide-for-C-and-C++.html) | Host-side tooling only (any C built with gcc or clang for tests); never the Watcom matching build |
 | [SEI CERT C](https://cmu-sei.github.io/secure-coding-standards/sei-cert-c-coding-standard/) | Sections INT, ARR, STR, MEM and EXP as lenses for spotting and documenting original bugs (overflow, bounds, termination, allocation, evaluation order), not for rewriting |
 | [oodlescoop C best practices](https://www.oodlescoop.com/tutorials/c-programming/best-practices-and-coding-standards-for-c-programming) | Not used: listed in the kickoff, but the research could not locate its content |
+
+## Python tooling
+
+Tooling under `tools/` and `tests/` follows ruff (rules E, F, I, UP and B, line length 100) and is written test first with pytest ([.claude/rules/tools.md](../.claude/rules/tools.md)). The rules below came out of reviewing the Watcom media tooling in PR #1:
+
+- **Keep nesting shallow.** A loop inside a loop inside a `try`, with `if`s nested under it, is a sign to split. Move the inner loop into a small generator or helper, and skip cases with an early `continue` instead of another `if` level. In `iso9660.py`, `_records` yields raw directory records, `_entries` filters and checks them, and `_walk_dir` only recurses. In `watcom.py`, `fetch_media` hands the download to `_download` and `_copy_hashed`.
+- **Name binary-format offsets after the spec.** No bare offsets such as `rec[33]` or `desc[1:6]`. Each one becomes a module constant named after its field, with the spec section cited (ECMA-119 for ISO9660). Derive related values instead of writing a second literal: `_MIN_RECORD = _REC_NAME + 1`. Test helpers that build fixtures, such as `tests/isoimage.py`, keep their own literals, so the tests check the reader against the format rather than against its own constants.
+- **Use `next(..., None)` for a first-match lookup** instead of a `for` loop with an early `return`.
+- **Add error context in one place.** Wrap once, where the context is known (`raise ISOError(f"{exc} (in {where!r})") from exc`), instead of checking whether a message already names it.
+- **Reuse the shapes that exist.** If a dataclass already carries the values, pass it instead of a parallel list of arguments: `_media_problems` takes the `targets.FileHashes` that `hash_file` returns.
+- **A refactor keeps behaviour, laziness and side effects included.** Before restructuring, pin the behaviour you are about to move with tests, and prove each one can fail by breaking the code temporarily. Watch for quiet changes: turning a generator into a list changes when errors surface, and moving a cleanup step can delete a file the new code never created.

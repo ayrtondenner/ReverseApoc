@@ -13,3 +13,10 @@ paths:
 - Tooling under `tools/` is GPLv3 (see `docs/legal.md`); keep copyright headers of files derived
   from KKND-Decomp (CC0) and Theme Hospital decomp (GPLv3).
 - Tests never embed game bytes; real-file tests skip unless `orig/` is present.
+- Keep nesting shallow: split nested loops into small generators or helpers and skip cases
+  with an early `continue`.
+- No bare binary-format offsets: name each one after its spec field (e.g. `_REC_NAME = 33`)
+  and derive related values from it (`_MIN_RECORD = _REC_NAME + 1`).
+- A refactor keeps behaviour: pin it with tests first, prove they fail when the code is
+  broken, and run `/code-review` again after `/simplify` or `code-simplifier`.
+- Details and examples: `docs/coding-style.md#python-tooling`.
