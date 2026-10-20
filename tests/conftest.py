@@ -1,8 +1,14 @@
-"""Shared fixtures. The LE images here are synthetic and tiny: no game bytes are ever committed."""
+"""Shared fixtures. The LE images here are synthetic and tiny: no game bytes are ever committed.
+
+`ORIG_DIR` is the orig/ the real-file tests read. The environment variable REVERSEAPOC_ORIG
+overrides it, so those tests can run from a git worktree that has no orig/ of its own (point it
+at the main checkout's orig/; the tests only read it). Docker and CI leave it unset.
+"""
 
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 import zlib
 from dataclasses import dataclass, field
@@ -11,7 +17,9 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-ORIG_DIR = REPO_ROOT / "orig"
+ORIG_DIR = (
+    Path(os.environ["REVERSEAPOC_ORIG"]) if "REVERSEAPOC_ORIG" in os.environ else REPO_ROOT / "orig"
+)
 
 PAGE_SIZE = 0x1000
 LAST_PAGE_SIZE = 0x200
@@ -26,6 +34,7 @@ OBJECTS = [
 ]
 ENTRY = (1, 0x123)
 STACK = (2, 0x3000)
+SYNTHETIC_TRAILER = b"SYNTHETIC-TRAILER-27-BYTES!"  # 27 synthetic bytes after the last page
 
 
 def fixup_record(
@@ -98,6 +107,9 @@ class SyntheticLE:
     le_offset: int
     data_pages_offset: int
     page_offsets: list[int] = field(default_factory=list)
+    trailer_offset: int = 0  # file offset just past the last page
+    fixup_start: int = 0  # file offset of the fixup page table (start of the fixup section)
+    fixup_end: int = 0  # file offset just past the fixup section
 
 
 def build_le_image(
@@ -106,16 +118,31 @@ def build_le_image(
     fixups: list[bytes] | None = None,
     page_flags: tuple[int, ...] = (0, 0, 0),
     entry: tuple[int, int] = ENTRY,
+    page_numbers: tuple[int, ...] | None = None,
+    trailer: bytes = b"",
+    extra_header_fields: dict[int, int] | None = None,
+    objects: list[tuple[int, int, int, int, int]] | None = None,
 ) -> SyntheticLE:
-    """Build a minimal LE executable: [fake extender MZ] + MZ stub + LE header + tables + pages.
+    """Build a minimal LE executable: [fake extender MZ] + MZ stub + LE header + tables + pages
+    [+ trailer].
 
     With `bound=True` the first MZ's e_lfanew does not point at the LE header (like a bound
     DOS/4GW executable), so the parser has to find the owning MZ by scanning. A decoy "LE\0\0"
     in the extender checks that the scan does not stop at the first signature it sees.
+
+    `page_numbers` gives the physical page number of each logical page (identity by default);
+    pages are always written in physical order, each filled with `page_fill(physical number)`,
+    the short page last. `trailer` is appended after the last page. `extra_header_fields`
+    (LE header offset -> u32) is merged over the header fields before packing. `objects`
+    replaces OBJECTS for this image.
     """
     fixups = DEFAULT_FIXUPS if fixups is None else fixups
     num_pages = len(page_flags)
     assert len(fixups) == num_pages
+    if page_numbers is None:
+        page_numbers = tuple(range(1, num_pages + 1))
+    assert len(page_numbers) == num_pages
+    objects = OBJECTS if objects is None else objects
 
     prefix = b""
     if bound:
@@ -130,10 +157,10 @@ def build_le_image(
     inner[0:2] = b"MZ"
     struct.pack_into("<I", inner, 0x3C, INNER_LFANEW)
 
-    obj_table = b"".join(struct.pack("<6I", *obj, 0) for obj in OBJECTS)
+    obj_table = b"".join(struct.pack("<6I", *obj, 0) for obj in objects)
     page_map = b"".join(
         bytes([(n >> 16) & 0xFF, (n >> 8) & 0xFF, n & 0xFF, flags])
-        for n, flags in enumerate(page_flags, start=1)
+        for n, flags in zip(page_numbers, page_flags, strict=True)
     )
     fixup_page_table = b""
     pos = 0
@@ -164,7 +191,7 @@ def build_le_image(
         0x30: len(fixup_page_table) + len(fixup_records),
         0x38: loader_end - rel_obj,
         0x40: rel_obj,
-        0x44: len(OBJECTS),
+        0x44: len(objects),
         0x48: rel_map,
         0x68: rel_fpt,
         0x6C: rel_frt,
@@ -172,6 +199,7 @@ def build_le_image(
         0x78: loader_end,
         0x94: 2,
     }
+    fields.update(extra_header_fields or {})
     for off, value in fields.items():
         struct.pack_into("<I", header, off, value)
 
@@ -189,12 +217,17 @@ def build_le_image(
         page_offsets.append(len(image))
         size = LAST_PAGE_SIZE if n == num_pages else PAGE_SIZE
         image += bytes([page_fill(n)]) * size
+    trailer_offset = len(image)
+    image += trailer
     return SyntheticLE(
         data=bytes(image),
         stub_offset=stub_offset,
         le_offset=stub_offset + le_rel,
         data_pages_offset=stub_offset + data_pages_rel,
         page_offsets=page_offsets,
+        trailer_offset=trailer_offset,
+        fixup_start=stub_offset + le_rel + rel_fpt,
+        fixup_end=stub_offset + le_rel + loader_end,
     )
 
 

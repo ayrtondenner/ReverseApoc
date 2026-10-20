@@ -25,11 +25,22 @@ SHA-1s only, never file bytes.
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .le import LE, LEError, LEObject, LEPage
+from .le import (
+    _HDR_DEBUG_INFO_LENGTH,
+    _HDR_DEBUG_INFO_OFFSET,
+    _HDR_NONRES_NAME_TABLE_LENGTH,
+    _HDR_NONRES_NAME_TABLE_OFFSET,
+    LE,
+    LEError,
+    LEObject,
+    LEPage,
+    LEUnsupportedError,
+)
 from .targets import (
     DEFAULT_ORIG,
     REPO_ROOT,
@@ -50,6 +61,23 @@ REGION_FIXUPS = "fixups"
 REGION_PADDING = "padding"
 REGION_PAGE = "page"
 REGION_TRAILER = "trailer"
+REGION_LABELS = {
+    REGION_EXTENDER: "DOS/4GW extender",
+    REGION_STUB: "MZ stub",
+    REGION_HEADER: "LE header",
+    REGION_LOADER: "loader tables",
+    REGION_FIXUPS: "fixup section",
+    REGION_PADDING: "padding",
+    REGION_TRAILER: "trailer",
+}
+
+# LE header tables the region map has no region for: (LE attribute, header field, field name).
+_UNMAPPED_TABLES = (
+    ("nonres_name_table_offset", _HDR_NONRES_NAME_TABLE_OFFSET, "non-resident name table offset"),
+    ("nonres_name_table_length", _HDR_NONRES_NAME_TABLE_LENGTH, "non-resident name table length"),
+    ("debug_info_offset", _HDR_DEBUG_INFO_OFFSET, "debug info offset"),
+    ("debug_info_length", _HDR_DEBUG_INFO_LENGTH, "debug info length"),
+)
 
 
 class SpliceError(LEError):
@@ -68,8 +96,39 @@ class Region:
     page: LEPage | None = field(default=None, compare=False)
     va: int | None = field(default=None, compare=False)
 
+    def va_at(self, offset: int) -> int | None:
+        """Linear address of file offset `offset` inside a page region, else None."""
+        return None if self.va is None else self.va + offset - self.start
+
+    def describe(self, offset: int) -> str:
+        """Where `offset` lies, e.g. "page 3 of object 1, VA 0x00012010" or "trailer"."""
+        if self.kind != REGION_PAGE:
+            return REGION_LABELS[self.kind]
+        text = f"page {self.page.logical} of object {self.obj.index}, VA {self.va_at(offset):#010x}"
+        if self.page.number != self.page.logical:
+            text += f" (physical page {self.page.number})"
+        return text
+
 
 # ---- region map ---------------------------------------------------------------------------------
+
+
+def _check_mappable(le: LE) -> None:
+    """Refuse header layouts whose bytes the region map would mis-label rather than tile."""
+    for attr, header_field, name in _UNMAPPED_TABLES:
+        value = getattr(le, attr)
+        if value:
+            raise LEUnsupportedError(
+                f"LE header field {header_field:#x} ({name}) is {value:#x}; the region map has "
+                "no region for it"
+            )
+    loader_end = le.object_table_offset + le.loader_section_size
+    fixups_end = le.fixup_page_table_offset + le.fixup_section_size
+    if loader_end != fixups_end:
+        raise LEUnsupportedError(
+            f"loader section ends at {loader_end:#x}, which does not end where the fixup "
+            f"section ends ({fixups_end:#x})"
+        )
 
 
 def _owner(le: LE, page: LEPage) -> LEObject:
@@ -91,7 +150,12 @@ def _page_regions(le: LE) -> Iterator[Region]:
 
 
 def layout(le: LE) -> list[Region]:
-    """The regions of `le`'s file, sorted by start. Zero-length regions are left out."""
+    """The regions of `le`'s file, sorted by start. Zero-length regions are left out.
+
+    Raises LEUnsupportedError for a non-resident name table or debug info (D-19), a loader
+    section that does not end where the fixup section ends, and any page that is not a
+    physical page inside the file (le.check_loadable)."""
+    _check_mappable(le)
     fixups_end = le.fixup_page_table_offset + le.fixup_section_size
     # The declared loader section of wlink output includes the fixup section, so the loader
     # tables end where the fixup section starts.
@@ -120,6 +184,15 @@ def check_tiling(regions: Iterable[Region], size: int) -> None:
         pos, prev = r.end, r.kind
     if pos != size:
         raise SpliceError(f"regions end at {pos:#x}, file is {size:#x} bytes")
+
+
+def region_at(regions: list[Region], offset: int) -> Region:
+    """The region of sorted, half-open `regions` that holds file offset `offset`."""
+    i = bisect_right(regions, offset, key=lambda r: r.start) - 1
+    if i < 0 or offset >= regions[i].end:
+        end = regions[-1].end if regions else 0
+        raise SpliceError(f"offset {offset:#x} lies outside the file regions [0, {end:#x})")
+    return regions[i]
 
 
 # ---- reassembly ---------------------------------------------------------------------------------

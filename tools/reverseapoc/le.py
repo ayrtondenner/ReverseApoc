@@ -70,6 +70,13 @@ TGT_CHAIN = 0x08
 TGT_OFF32 = 0x10
 TGT_OBJ16 = 0x40
 
+# LE header fields that place data outside the loader and fixup sections (offsets relative to
+# the LE header). Read only so that a file using them can be refused instead of mis-tiled.
+_HDR_NONRES_NAME_TABLE_OFFSET = 0x88  # u32: non-resident name table offset
+_HDR_NONRES_NAME_TABLE_LENGTH = 0x8C  # u32: non-resident name table length in bytes
+_HDR_DEBUG_INFO_OFFSET = 0x98  # u32: debug information offset
+_HDR_DEBUG_INFO_LENGTH = 0x9C  # u32: debug information length in bytes
+
 PAGE_PHYSICAL = 0x00
 PAGE_FLAG_NAMES = {0: "physical", 1: "iterated", 2: "invalid", 3: "zero-filled", 4: "range"}
 
@@ -207,6 +214,11 @@ class LE:
         # Unlike the other table offsets, the data-pages offset is relative to the MZ stub that
         # owns this LE header (0x352A4 in UFO2P/TACP, behind the bound DOS/4GW loader).
         self.data_pages_offset = self.stub_offset + h(0x80)
+        # Raw values; a reader that tiles the file refuses them when non-zero.
+        self.nonres_name_table_offset = h(_HDR_NONRES_NAME_TABLE_OFFSET)
+        self.nonres_name_table_length = h(_HDR_NONRES_NAME_TABLE_LENGTH)
+        self.debug_info_offset = h(_HDR_DEBUG_INFO_OFFSET)
+        self.debug_info_length = h(_HDR_DEBUG_INFO_LENGTH)
 
         if self.page_size == 0 or self.page_size & (self.page_size - 1):
             raise LEError(f"page size {self.page_size:#x} is not a power of two")
