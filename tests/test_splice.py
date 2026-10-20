@@ -6,14 +6,24 @@ under pytest's tmp_path.
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
-from conftest import LE_HEADER_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
+from conftest import (
+    LE_HEADER_SIZE,
+    PAGE_SIZE,
+    SYNTHETIC_TRAILER,
+    build_le_image,
+    page_fill,
+    write_manifest,
+)
 from reverseapoc import splice
 from reverseapoc.le import LE, LEUnsupportedError
 from reverseapoc.splice import (
     Region,
     SpliceError,
+    assemble,
     check_tiling,
     decompose,
     layout,
@@ -212,3 +222,97 @@ def test_layout_is_pure(synthetic_le):
     assert facts(layout(le)) == facts(layout(le))
     assert le.data is before
     assert le.data == synthetic_le.data
+
+
+# ---- Task 3: rebuilt, not copied (D-16) -------------------------------------------------------
+# Each test below is proven to fail against one wrong reassembly: a copy of the input, object
+# images cut at vsize, or page offsets computed from the logical page number.
+
+MARKER = 0xA5  # differs from every page_fill() value of the 3-page fixture
+
+
+def test_reassemble_sources_pages_from_images():
+    img = build_le_image(trailer=SYNTHETIC_TRAILER)
+    le = LE(img.data)
+    d = decompose(le)
+    for image in d.images.values():
+        image[:] = bytes([MARKER]) * len(image)
+    out = reassemble(le, d)
+    assert len(out) == len(img.data)
+    wrong = []
+    for r in d.regions:
+        if r.kind == "page":
+            expected = bytes([MARKER]) * (r.end - r.start)
+        else:
+            expected = img.data[r.start : r.end]
+        if out[r.start : r.end] != expected:
+            wrong.append((r.kind, hex(r.start)))
+    assert wrong == []
+
+
+def test_reassemble_places_pages_through_permuted_map():
+    img = build_le_image(page_numbers=(2, 1, 3))
+    le = LE(img.data)
+    d = decompose(le)
+    d.images[1][0x10] = page_fill(2) ^ 0xFF  # logical page 1 holds physical page 2's bytes
+    out = reassemble(le, d)
+    assert len(out) == len(img.data)
+    diffs = [i for i, (a, b) in enumerate(zip(out, img.data, strict=True)) if a != b]
+    assert diffs == [img.page_offsets[1] + 0x10]
+
+
+def test_round_trip_keeps_page_tail_past_vsize(synthetic_le):
+    # obj1: vsize 0x1800 over two pages, so VA 0x11800..0x12000 is page data past vsize
+    le = LE(synthetic_le.data)
+    out = reassemble(le, decompose(le))
+    page2 = synthetic_le.page_offsets[1]
+    assert out[page2 + 0x800 : page2 + PAGE_SIZE] == bytes([page_fill(2)]) * 0x800
+
+
+ROUND_TRIP_VARIANTS = {
+    "bound": {},
+    "unbound": {"bound": False},
+    "trailer": {"trailer": SYNTHETIC_TRAILER},
+    "permuted": {"page_numbers": (2, 1, 3)},
+    "contiguous": {
+        "objects": [(0x2000, 0x10000, 0x2045, 1, 2), (0x3000, 0x12000, 0x2043, 3, 1)],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "options", list(ROUND_TRIP_VARIANTS.values()), ids=list(ROUND_TRIP_VARIANTS)
+)
+def test_round_trip_variants(options):
+    data = build_le_image(**options).data
+    le = LE(data)
+    out = reassemble(le, decompose(le))
+    assert out == data
+    assert hashlib.sha1(out).hexdigest() == hashlib.sha1(data).hexdigest()
+
+
+def test_assemble_accepts_pieces_in_any_order():
+    assert assemble(6, [(4, b"ef"), (0, b"ab"), (2, b"cd")]) == b"abcdef"
+
+
+def test_assemble_accepts_touching_pieces():
+    assert assemble(4, [(0, b"ab"), (2, b"cd")]) == b"abcd"
+    assert assemble(0, []) == b""
+
+
+@pytest.mark.parametrize(
+    ("second", "message"),
+    [(0x11, r"gap .*at 0x10\b"), (0xF, r"overlapping .*at 0xf\b")],
+    ids=["gap", "overlap"],
+)
+def test_assemble_rejects_gap_and_overlap(second, message):
+    pieces = [(0, bytes(0x10)), (second, bytes(0x20 - second))]
+    with pytest.raises(SpliceError, match=message):
+        assemble(0x20, pieces)
+
+
+def test_assemble_rejects_wrong_end():
+    with pytest.raises(SpliceError, match=r"end at 0x10\b.*0x20\b"):
+        assemble(0x20, [(0, bytes(0x10))])
+    with pytest.raises(SpliceError, match=r"end at 0x21\b.*0x20\b"):
+        assemble(0x20, [(0, bytes(0x21))])
