@@ -3,22 +3,10 @@ phase: 03
 review: 03-REVIEW.md
 titles: json
 findings:
-  - id: WR-01
-    severity: warning
-    disposition: deferred
-    title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
   - id: WR-02
     severity: warning
     disposition: fixed
     title: "The `masked_fields` count is per (patch, field), not per field, so the report over-counts"
-  - id: WR-03
-    severity: warning
-    disposition: deferred
-    title: "The output write is checked by path only, not by file identity, and is not atomic; the input is read twice"
-  - id: WR-04
-    severity: warning
-    disposition: deferred
-    title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
   - id: WR-05
     severity: warning
     disposition: fixed
@@ -27,6 +15,34 @@ findings:
     severity: warning
     disposition: fixed
     title: "`parse_le` passes `$in` to the shell unquoted (this predates Phase 3)"
+  - id: WR-07
+    severity: warning
+    disposition: open
+    title: "A file name that cannot be encoded as UTF-8 truncates `build.ninja` and escapes as a traceback"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "The `--orig` allowlist accepts a leading `-`, which argparse reads as an option"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "Rule descriptions and header comments still say `orig/` after `--orig` points elsewhere"
+  - id: IN-11
+    severity: info
+    disposition: open
+    title: "`--output` does not reach the rebuild output directory, so `verify` writes `<repo>/build` whatever `builddir` says"
+  - id: WR-01
+    severity: warning
+    disposition: deferred
+    title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
+  - id: WR-03
+    severity: warning
+    disposition: deferred
+    title: "The output write is checked by path only, not by file identity, and is not atomic; the input is read twice"
+  - id: WR-04
+    severity: warning
+    disposition: deferred
+    title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
   - id: IN-01
     severity: info
     disposition: open
@@ -59,21 +75,25 @@ findings:
     severity: info
     disposition: open
     title: "`configure.py` still calls itself a \"Phase 2 skeleton\""
-open: 8
-total: 14
-recorded: 2026-10-20T21:58:54.790Z
+open: 12
+total: 18
+recorded: 2026-10-20T23:13:08.458Z
 ---
 
 # Phase 03: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
 | WR-02 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
-| WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
-| WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
 | WR-05 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
 | WR-06 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
+| WR-07 | warning | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
+| IN-11 | info | open | - |
+| WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
+| WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
+| WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
