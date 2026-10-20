@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import struct
 
@@ -187,6 +188,40 @@ def test_format_summary_is_aligned_text(synthetic_le):
     assert "R-X preload big" in text
     assert "fixups" in text and "11" in text
     assert "entry" in text and "0x00010123" in text
+
+
+def test_summary_reports_trailer():
+    img = build_le_image(trailer=SYNTHETIC_TRAILER)
+    assert LE(img.data).summary()["trailer"] == {
+        "offset": img.trailer_offset,
+        "length": len(SYNTHETIC_TRAILER),
+        "sha1": hashlib.sha1(SYNTHETIC_TRAILER).hexdigest(),
+    }
+
+
+def test_summary_trailer_absent_is_zero_length(synthetic_le):
+    trailer = LE(synthetic_le.data).summary()["trailer"]
+    assert trailer == {
+        "offset": synthetic_le.page_offsets[-1] + LAST_PAGE_SIZE,
+        "length": 0,
+        "sha1": hashlib.sha1(b"").hexdigest(),
+    }
+
+
+def test_summary_trailer_clamped_on_truncated_file(synthetic_le):
+    trailer = LE(synthetic_le.data[:-0x100]).summary()["trailer"]
+    assert trailer["length"] == 0
+    assert trailer["sha1"] == hashlib.sha1(b"").hexdigest()
+
+
+def test_format_summary_trailer_row():
+    img = build_le_image(trailer=SYNTHETIC_TRAILER)
+    text = format_summary(LE(img.data).summary())
+    rows = [line for line in text.splitlines() if line.startswith("trailer")]
+    assert len(rows) == 1
+    assert f"{len(SYNTHETIC_TRAILER)} bytes" in rows[0]
+    assert f"{img.trailer_offset:#010x}" in rows[0]
+    assert hashlib.sha1(SYNTHETIC_TRAILER).hexdigest() in rows[0]
 
 
 def test_no_le_header():

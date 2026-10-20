@@ -7,7 +7,7 @@ import json
 
 import pytest
 
-from conftest import OUTER_STUB_SIZE, build_le_image, write_manifest
+from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
 from isoimage import build_iso
 from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
@@ -28,6 +28,28 @@ def test_parse_le_json(synthetic_le_path, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["stub_size"] == OUTER_STUB_SIZE
     assert [o["base"] for o in summary["objects"]] == [0x10000, 0x20000]
+
+
+def test_parse_le_reports_trailer_without_bytes(tmp_path, capsys):
+    img = build_le_image(trailer=SYNTHETIC_TRAILER)
+    path = tmp_path / "TRAILED.EXE"
+    path.write_bytes(img.data)
+    sha1 = hashlib.sha1(SYNTHETIC_TRAILER).hexdigest()
+    leaked = ("SYNTHETIC", SYNTHETIC_TRAILER.hex(), SYNTHETIC_TRAILER.hex().upper())
+
+    assert main(["parse-le", str(path)]) == 0
+    text = capsys.readouterr().out
+    (row,) = [line for line in text.splitlines() if line.startswith("trailer")]
+    assert f"{len(SYNTHETIC_TRAILER)} bytes at {img.trailer_offset:#010x}" in row
+    assert sha1 in row
+
+    assert main(["parse-le", str(path), "--json"]) == 0
+    raw = capsys.readouterr().out
+    trailer = json.loads(raw)["trailer"]
+    assert trailer == {"offset": img.trailer_offset, "length": len(SYNTHETIC_TRAILER), "sha1": sha1}
+
+    for output in (text, raw):
+        assert not any(marker in output for marker in leaked)
 
 
 def test_parse_le_rejects_non_le(tmp_path, capsys):
