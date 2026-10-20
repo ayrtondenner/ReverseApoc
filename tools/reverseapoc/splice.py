@@ -18,6 +18,9 @@ sees the original file, so a rebuild cannot pass by returning a copy of its inpu
 `build_kknd.py` copies the original and overwrites it in place; that form passes every round
 trip trivially, which is why this module does not use it.
 
+`splice(le, patches)` writes linear-address patches into the object images before reassembly.
+Writable bytes are page data clipped to each object's vsize; everything else is refused.
+
 `rebuild(...)` runs this for every target in config/targets.toml, writes build/<NAME>, and checks
 the SHA-1 of the file it wrote against the manifest. Messages carry offsets, lengths, names and
 SHA-1s only, never file bytes.
@@ -26,7 +29,7 @@ SHA-1s only, never file bytes.
 from __future__ import annotations
 
 from bisect import bisect_right
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -256,6 +259,79 @@ def reassemble(le: LE, d: Decomposition) -> bytes:
     return assemble(len(le.data), _pieces(le, d))
 
 
+# ---- splice -------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Span:
+    """Writable linear addresses [va_start, va_end) of one page of an object: the page's data
+    clipped to the object's vsize, found at image_offset in the object's page-backed image."""
+
+    va_start: int
+    va_end: int
+    obj: LEObject
+    page: LEPage
+    image_offset: int
+
+
+def _object_spans(le: LE, obj: LEObject) -> Iterator[_Span]:
+    for off, page in _object_pages(le, obj):
+        va_start = obj.base + off
+        va_end = min(va_start + page.size, obj.end)
+        if va_end > va_start:
+            yield _Span(va_start, va_end, obj, page, off)
+
+
+def _writable_spans(le: LE) -> list[_Span]:
+    """Every writable span of `le`, sorted by linear address."""
+    spans = [span for obj in le.objects for span in _object_spans(le, obj)]
+    return sorted(spans, key=lambda span: span.va_start)
+
+
+def _runs(
+    spans: list[_Span], starts: list[int], va: int, length: int
+) -> Iterator[tuple[_Span, int, int]]:
+    """(span, lo, hi) runs covering [va, va + length) in address order. Raises SpliceError at
+    the first address that no writable span holds."""
+    end = va + length
+    i = bisect_right(starts, va) - 1
+    pos = va
+    while pos < end:
+        if not 0 <= i < len(spans) or not spans[i].va_start <= pos < spans[i].va_end:
+            raise SpliceError(f"{pos:#x} is not writable page data")
+        hi = min(end, spans[i].va_end)
+        yield spans[i], pos, hi
+        pos, i = hi, i + 1
+
+
+@dataclass(frozen=True)
+class SpliceResult:
+    data: bytes  # the rebuilt file
+    regions: list[Region]  # its region map
+
+
+def _write(d: Decomposition, runs: Iterable[tuple[_Span, int, int]], va: int, data: bytes) -> None:
+    """Write the bytes of the patch at `va` into the object images, run by run."""
+    for span, lo, hi in runs:
+        dst = span.image_offset + lo - span.va_start
+        d.images[span.obj.index][dst : dst + hi - lo] = data[lo - va : hi - va]
+
+
+def splice(le: LE, patches: Mapping[int, bytes]) -> SpliceResult:
+    """Rebuild `le`'s file with every patch {linear address: bytes} written into the page data
+    of its object (D-01). The output is reassembled into a fresh buffer of the input's length;
+    `le.data` is never written. An empty mapping is the plain round trip."""
+    d = decompose(le)
+    spans = _writable_spans(le)
+    starts = [span.va_start for span in spans]
+    for va, data in sorted(patches.items()):
+        try:
+            _write(d, list(_runs(spans, starts, va, len(data))), va, data)
+        except SpliceError as exc:
+            raise SpliceError(f"{exc} (patch at {va:#x}, {len(data)} bytes)") from exc
+    return SpliceResult(reassemble(le, d), d.regions)
+
+
 # ---- rebuild ------------------------------------------------------------------------------------
 
 
@@ -265,6 +341,10 @@ class RebuildResult:
     status: str  # "ok", "mismatch", "missing" or "refused"
     output: Path | None
     hashes: FileHashes | None = None
+    first_diff: int | None = None  # first file offset where the output differs from orig/
+    first_diff_region: str | None = None  # the region holding it, e.g. "page 1 of object 1, ..."
+    first_diff_va: int | None = None  # its linear address when it lies in a page
+    diff_bytes: int = 0  # how many bytes differ
 
     @property
     def ok(self) -> bool:
@@ -275,7 +355,13 @@ class RebuildResult:
         if self.status == "ok":
             return f"OK        {name}  sha1 {self.hashes.sha1} == manifest"
         if self.status == "mismatch":
-            return f"MISMATCH  {name}  sha1 {self.hashes.sha1} != manifest {self.target.sha1}"
+            line = f"MISMATCH  {name}  sha1 {self.hashes.sha1} != manifest {self.target.sha1}"
+            if self.first_diff is not None:
+                line += (
+                    f"; first difference at {self.first_diff:#x} ({self.first_diff_region}), "
+                    f"{self.diff_bytes} bytes differ"
+                )
+            return line
         if self.status == "missing":
             return (
                 f"MISSING   {name}  (orig/{self.target.name} not found; "
@@ -312,9 +398,39 @@ def _refuse_inside_orig(path: Path, orig_dir: Path) -> None:
         raise SpliceError(f"refusing to write {path}: it lies inside orig/ ({orig_dir})")
 
 
-def rebuild_target(target: Target, orig_dir: Path, out_dir: Path) -> RebuildResult:
-    """Rebuild orig_dir/<name> from its regions into out_dir/<name> and compare its SHA-1 with
-    the manifest. Nothing is written when the input is missing or does not match the manifest."""
+def _first_difference(a: bytes, b: bytes) -> int | None:
+    return next((i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y), None)
+
+
+def _count_differences(a: bytes, b: bytes) -> int:
+    return sum(x != y for x, y in zip(a, b, strict=True))
+
+
+def _mismatch(result: SpliceResult, orig: bytes) -> dict[str, int | str | None]:
+    """Where the rebuilt file first differs from the original (D-08): offsets, a region label
+    and a count, never byte values."""
+    offset = _first_difference(result.data, orig)
+    if offset is None:
+        return {}
+    region = region_at(result.regions, offset)
+    return {
+        "first_diff": offset,
+        "first_diff_region": region.describe(offset),
+        "first_diff_va": region.va_at(offset),
+        "diff_bytes": _count_differences(result.data, orig),
+    }
+
+
+def rebuild_target(
+    target: Target,
+    orig_dir: Path,
+    out_dir: Path,
+    patches: Mapping[int, bytes] | None = None,
+) -> RebuildResult:
+    """Rebuild orig_dir/<name> from its regions, with `patches` spliced in, into out_dir/<name>
+    and compare its SHA-1 with the manifest. A mismatch names the first differing file offset,
+    its region and the count of differing bytes. Nothing is written when the input is missing
+    or does not match the manifest."""
     _check_bare_name(target)
     out_path = out_dir / target.name
     _refuse_inside_orig(out_path, orig_dir)
@@ -325,14 +441,15 @@ def rebuild_target(target: Target, orig_dir: Path, out_dir: Path) -> RebuildResu
         return RebuildResult(target, "refused", None)
     try:
         le = LE(check.path)
-        data = reassemble(le, decompose(le))
+        result = splice(le, patches or {})
     except LEError as exc:
         raise type(exc)(f"{target.name}: {exc}") from exc
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(data)
+    out_path.write_bytes(result.data)
     hashes = hash_file(out_path)
-    status = "ok" if hashes.sha1 == target.sha1 else "mismatch"
-    return RebuildResult(target, status, out_path, hashes)
+    if hashes.sha1 == target.sha1:
+        return RebuildResult(target, "ok", out_path, hashes)
+    return RebuildResult(target, "mismatch", out_path, hashes, **_mismatch(result, le.data))
 
 
 def rebuild(
