@@ -14,6 +14,8 @@ from conftest import (
     OBJECTS,
     OUTER_STUB_SIZE,
     PAGE_SIZE,
+    SYNTHETIC_TRAILER,
+    build_le_image,
     fixup_record,
     page_fill,
 )
@@ -80,6 +82,31 @@ def test_page_map(synthetic_le):
     assert le.page_va(3) == 0x20000
     with pytest.raises(LEError):
         le.page_va(4)
+
+
+def test_pages_end(synthetic_le):
+    assert LE(synthetic_le.data).pages_end == synthetic_le.page_offsets[-1] + LAST_PAGE_SIZE
+    trailed = build_le_image(trailer=SYNTHETIC_TRAILER)
+    le = LE(trailed.data)
+    assert le.pages_end == trailed.page_offsets[-1] + LAST_PAGE_SIZE == trailed.trailer_offset
+    assert len(le.data) - le.pages_end == len(SYNTHETIC_TRAILER)
+
+
+def test_check_loadable_is_public(le_builder):
+    le = LE(le_builder(page_flags=(0, 0, 2)).data)
+    le.check_loadable(le.objects[0], le.pages[0])  # physical: no error
+    with pytest.raises(LEUnsupportedError, match="invalid"):
+        le.check_loadable(le.objects[1], le.pages[2])
+
+
+def test_header_table_fields(synthetic_le):
+    le = LE(synthetic_le.data)
+    names = ("nonres_name_table_offset", "nonres_name_table_length")
+    names += ("debug_info_offset", "debug_info_length")
+    assert [getattr(le, n) for n in names] == [0, 0, 0, 0]
+    values = {0x88: 0x11, 0x8C: 0x22, 0x98: 0x33, 0x9C: 0x44}
+    le = LE(build_le_image(extra_header_fields=values).data)
+    assert [getattr(le, n) for n in names] == [0x11, 0x22, 0x33, 0x44]
 
 
 def test_fixups_decoded_deduplicated_and_sorted(synthetic_le):
