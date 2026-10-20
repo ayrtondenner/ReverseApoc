@@ -15,12 +15,24 @@ from __future__ import annotations
 import filecmp
 import hashlib
 from bisect import bisect_left, bisect_right
+from collections import Counter
 
 import pytest
 
 from conftest import ORIG_DIR
-from reverseapoc.le import LE, SRC_SIZE, Fixup, LEObject
+from reverseapoc.le import (
+    LE,
+    PAGE_PHYSICAL,
+    SRC_OFF32,
+    SRC_PTR1632,
+    SRC_REL32,
+    SRC_SEL16,
+    SRC_SIZE,
+    Fixup,
+    LEObject,
+)
 from reverseapoc.splice import (
+    REGION_PADDING,
     REGION_TRAILER,
     check_tiling,
     layout,
@@ -43,6 +55,51 @@ PARAMS = [
 ]
 MAX_FIELD = max(SRC_SIZE.values())
 
+# Measured layout facts per target, as spikes 001 (pages and fixups) and 002 (region tiling)
+# confirmed them with an independent raw reader, and spike 003 the trailer (D-10): offsets,
+# lengths and counts only. "trailer" is (offset, length), or None when the pages run to EOF.
+FACTS = {
+    "UFO2P.EXE": {
+        "pages": 303,
+        "extender_end": 0x352A4,
+        "data_pages": 0x724A4,
+        "padding": 362,
+        "obj1_tail_past_vsize": 0x523,
+        "trailer": (0x1A0723, 27),
+        "straddlers": (
+            0x1EFFD, 0x28FFD, 0x36FFE, 0x62FFF, 0x67FFE, 0x6AFFE, 0x7FFFF,
+            0x98FFF, 0x9FFFF, 0xA3FFE, 0xB0FFD, 0xB4FFF, 0xC6FFD, 0xC8FFF,
+        ),
+        "cut_fields": ((0x13E27C, 3),),
+        "kinds": {SRC_OFF32: 28_183, SRC_SEL16: 10, SRC_PTR1632: 4, SRC_REL32: 0},
+    },
+    "TACP.EXE": {
+        "pages": 666,
+        "extender_end": 0x352A4,
+        "data_pages": 0x6A8A4,
+        "padding": 403,
+        "obj1_tail_past_vsize": 0xAB1,
+        "trailer": (0x303DDF, 27),
+        "straddlers": (
+            0x39FFD, 0x3BFFF, 0x42FFD, 0x43FFE, 0x52FFD, 0x6DFFE,
+            0x89FFD, 0x8AFFF, 0x9EFFD, 0xA8FFD, 0xB8FFD,
+        ),
+        "cut_fields": ((0x2B6538, 3),),
+        "kinds": {SRC_OFF32: 24_424, SRC_SEL16: 10, SRC_PTR1632: 4, SRC_REL32: 0},
+    },
+    "SMKP.EXE": {
+        "pages": 21,
+        "extender_end": 0x26654,
+        "data_pages": 0x2D454,
+        "padding": 223,
+        "obj1_tail_past_vsize": 0xC80,
+        "trailer": None,
+        "straddlers": (0x11FFD, 0x1CFFE),
+        "cut_fields": ((0x32FF6, 2),),
+        "kinds": {SRC_OFF32: 2_297, SRC_SEL16: 0, SRC_PTR1632: 0, SRC_REL32: 0},
+    },
+}
+
 
 @pytest.fixture(scope="module", params=PARAMS)
 def real(request):
@@ -60,11 +117,16 @@ def _object(le: LE, va: int) -> LEObject:
     return obj
 
 
-def _file_offset(le: LE, va: int) -> int:
-    """File offset of linear address `va`, through the object's page and LEPage.file_offset."""
-    obj = _object(le, va)
+def _page_offset(le: LE, obj: LEObject, va: int) -> int:
+    """File offset of linear address `va` in a page of `obj` (also past its vsize), through
+    the object's page and LEPage.file_offset, never recomputed from the logical number."""
     k, rest = divmod(va - obj.base, le.page_size)
     return le.pages[obj.page_index + k - 1].file_offset + rest
+
+
+def _file_offset(le: LE, va: int) -> int:
+    """File offset of linear address `va` inside an object."""
+    return _page_offset(le, _object(le, va), va)
 
 
 def _page_backed_end(le: LE, obj: LEObject) -> int:
@@ -219,3 +281,44 @@ def test_fields_cut_by_page_data_are_clipped(real):
         assert field is not None, f"{fx.src_va:#x} not reported as masked"
         assert field.clipped
         assert field.backed_end == _backed_end(le, fx)
+
+
+# ---- measured facts (RT-05) ---------------------------------------------------------------------
+
+
+def _region(le: LE, kind: str) -> tuple[int, int] | None:
+    """(start, length) of the region of `kind`, or None when the file has none."""
+    r = next((r for r in layout(le) if r.kind == kind), None)
+    return None if r is None else (r.start, r.end - r.start)
+
+
+def _obj1_tail(le: LE) -> list[int]:
+    """File offsets of object 1's page bytes past its vsize."""
+    obj = le.objects[0]
+    return [_page_offset(le, obj, va) for va in range(obj.end, _page_backed_end(le, obj))]
+
+
+def test_measured_facts(real):
+    target, le = real
+    facts = FACTS[target.name]
+
+    assert len(le.pages) == facts["pages"]
+    assert [p.logical for p in le.pages if p.flags != PAGE_PHYSICAL] == []
+    assert [p.logical for p in le.pages if p.number != p.logical] == []
+    assert (le.stub_offset, le.data_pages_offset) == (facts["extender_end"], facts["data_pages"])
+
+    start, length = _region(le, REGION_PADDING)
+    assert length == facts["padding"]
+    assert not any(le.data[start : start + length])  # all-zero padding, as a boolean
+    tail = _obj1_tail(le)
+    assert len(tail) == facts["obj1_tail_past_vsize"]
+    assert not any(le.data[off] for off in tail)
+
+    assert _region(le, REGION_TRAILER) == facts["trailer"]
+    trailer = le.summary()["trailer"]
+    assert (trailer["offset"], trailer["length"]) == (facts["trailer"] or (le.pages_end, 0))
+
+    assert _straddlers(le) == facts["straddlers"]
+    assert _cut_fields(le) == facts["cut_fields"]
+    kinds = Counter(fx.kind for fx in le.fixups())
+    assert {kind: kinds[kind] for kind in facts["kinds"]} == facts["kinds"]
