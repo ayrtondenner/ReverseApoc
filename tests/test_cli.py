@@ -1,4 +1,4 @@
-"""Command line: ingest, check-orig, parse-le."""
+"""Command line: ingest, check-orig, parse-le, rebuild, and the Watcom media commands."""
 
 from __future__ import annotations
 
@@ -7,9 +7,10 @@ import json
 
 import pytest
 
-from conftest import OUTER_STUB_SIZE, write_manifest
+from conftest import OUTER_STUB_SIZE, build_le_image, write_manifest
 from isoimage import build_iso
 from reverseapoc.cli import main
+from reverseapoc.le import LE
 from reverseapoc.watcom import MEDIA_NOTICE
 
 
@@ -78,6 +79,101 @@ def test_subcommand_required():
     with pytest.raises(SystemExit) as exc:
         main([])
     assert exc.value.code == 2
+
+
+# ---- rebuild ------------------------------------------------------------------------------------
+
+
+def _rebuild_setup(tmp_path, *, name: str = "SYNTH.EXE", orig_data: bytes | None = None):
+    """A synthetic LE described by a manifest under `name`; orig/ holds `orig_data` (default:
+    the same bytes) as SYNTH.EXE, or nothing when orig_data is b""."""
+    data = build_le_image().data
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    orig_data = data if orig_data is None else orig_data
+    if orig_data:
+        (orig / "SYNTH.EXE").write_bytes(orig_data)
+    manifest = write_manifest(tmp_path / "m.toml", {name: data})
+    out = tmp_path / "build"
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest), "--out", str(out)]
+    return data, orig, out, args
+
+
+def test_rebuild_ok_line_and_exit_code(tmp_path, capsys):
+    data, _, out, args = _rebuild_setup(tmp_path)
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    line = lines[0]
+    assert line.startswith("OK")
+    assert "SYNTH.EXE" in line
+    assert f"sha1 {hashlib.sha1(data).hexdigest()}" in line
+    assert line.endswith("== manifest")
+    assert (out / "SYNTH.EXE").read_bytes() == data
+
+
+def test_rebuild_missing_target_exits_1(tmp_path, capsys):
+    _, _, out, args = _rebuild_setup(tmp_path, orig_data=b"")
+    assert main(args) == 1
+    assert capsys.readouterr().out.startswith("MISSING")
+    assert not (out / "SYNTH.EXE").exists()
+
+
+def test_rebuild_refuses_orig_that_fails_the_manifest(tmp_path, capsys):
+    data = build_le_image().data
+    changed = bytearray(data)
+    changed[-1] ^= 0xFF
+    _, _, out, args = _rebuild_setup(tmp_path, orig_data=bytes(changed))
+    assert main(args) == 1
+    line = capsys.readouterr().out
+    assert line.startswith("REFUSED")
+    assert "check-orig" in line
+    assert not (out / "SYNTH.EXE").exists()
+
+
+@pytest.mark.parametrize("inside", [False, True], ids=["equal", "subdirectory"])
+def test_rebuild_refuses_out_inside_orig(tmp_path, capsys, inside):
+    _, orig, _, args = _rebuild_setup(tmp_path)
+    out = orig / "sub" if inside else orig
+    args[args.index("--out") + 1] = str(out)
+    assert main(args) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "orig" in err
+    assert sorted(p.name for p in orig.iterdir()) == ["SYNTH.EXE"]
+
+
+def test_rebuild_refuses_target_name_with_a_path(tmp_path, capsys):
+    _, _, out, args = _rebuild_setup(tmp_path, name="SUB/SYNTH.EXE")
+    assert main(args) == 1
+    err = capsys.readouterr().err
+    assert "error:" in err
+    assert "SUB/SYNTH.EXE" in err
+    assert not out.exists()
+
+
+def test_rebuild_mismatch_exits_1(tmp_path, capsys, monkeypatch):
+    import reverseapoc.splice as splice
+
+    data, _, _, args = _rebuild_setup(tmp_path)
+    flip_at = LE(data).pages[0].file_offset + 0x10
+    real_reassemble = splice.reassemble
+
+    def flipped(le, decomposition):
+        out = bytearray(real_reassemble(le, decomposition))
+        out[flip_at] ^= 0xFF
+        return bytes(out)
+
+    monkeypatch.setattr(splice, "reassemble", flipped)
+    assert main(args) == 1
+    line = capsys.readouterr().out
+    expected = hashlib.sha1(data).hexdigest()
+    mutated = bytearray(data)
+    mutated[flip_at] ^= 0xFF
+    got = hashlib.sha1(bytes(mutated)).hexdigest()
+    assert line.startswith("MISMATCH")
+    assert f"sha1 {got}" in line
+    assert f"manifest {expected}" in line
 
 
 # ---- fetch-watcom / install-watcom / check-watcom ----------------------------------------------

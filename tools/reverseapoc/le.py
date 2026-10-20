@@ -70,6 +70,13 @@ TGT_CHAIN = 0x08
 TGT_OFF32 = 0x10
 TGT_OBJ16 = 0x40
 
+# LE header fields that place data outside the loader and fixup sections (offsets relative to
+# the LE header). Read only so that a file using them can be refused instead of mis-tiled.
+_HDR_NONRES_NAME_TABLE_OFFSET = 0x88  # u32: non-resident name table offset
+_HDR_NONRES_NAME_TABLE_LENGTH = 0x8C  # u32: non-resident name table length in bytes
+_HDR_DEBUG_INFO_OFFSET = 0x98  # u32: debug information offset
+_HDR_DEBUG_INFO_LENGTH = 0x9C  # u32: debug information length in bytes
+
 PAGE_PHYSICAL = 0x00
 PAGE_FLAG_NAMES = {0: "physical", 1: "iterated", 2: "invalid", 3: "zero-filled", 4: "range"}
 
@@ -207,6 +214,11 @@ class LE:
         # Unlike the other table offsets, the data-pages offset is relative to the MZ stub that
         # owns this LE header (0x352A4 in UFO2P/TACP, behind the bound DOS/4GW loader).
         self.data_pages_offset = self.stub_offset + h(0x80)
+        # Raw values; a reader that tiles the file refuses them when non-zero.
+        self.nonres_name_table_offset = h(_HDR_NONRES_NAME_TABLE_OFFSET)
+        self.nonres_name_table_length = h(_HDR_NONRES_NAME_TABLE_LENGTH)
+        self.debug_info_offset = h(_HDR_DEBUG_INFO_OFFSET)
+        self.debug_info_length = h(_HDR_DEBUG_INFO_LENGTH)
 
         if self.page_size == 0 or self.page_size & (self.page_size - 1):
             raise LEError(f"page size {self.page_size:#x} is not a power of two")
@@ -290,6 +302,13 @@ class LE:
         if self.eip_obj == 0:
             return None
         return self.objects[self.eip_obj - 1].base + self.eip
+
+    @property
+    def pages_end(self) -> int:
+        """File offset just past the last data page (the short last page included)."""
+        if self.num_pages == 0:
+            return self.data_pages_offset
+        return self.data_pages_offset + (self.num_pages - 1) * self.page_size + self.last_page_size
 
     @property
     def stack_va(self) -> int | None:
@@ -393,7 +412,7 @@ class LE:
                 if dst >= obj.vsize:
                     break
                 page = self.pages[obj.page_index + k - 1]
-                self._check_loadable(obj, page)
+                self.check_loadable(obj, page)
                 n = min(page.size, obj.vsize - dst)
                 flat[obj.base + dst : obj.base + dst + n] = self.data[
                     page.file_offset : page.file_offset + n
@@ -402,7 +421,8 @@ class LE:
             self._relocate(flat)
         return flat
 
-    def _check_loadable(self, obj: LEObject, page: LEPage) -> None:
+    def check_loadable(self, obj: LEObject, page: LEPage) -> None:
+        """Raise unless `page` of `obj` is a physical page whose bytes lie inside the file."""
         if page.flags != PAGE_PHYSICAL:
             name = PAGE_FLAG_NAMES.get(page.flags, "unknown")
             raise LEUnsupportedError(
