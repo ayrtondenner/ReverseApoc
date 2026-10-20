@@ -83,7 +83,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
 
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
-**Plans:** 3/5 plans executed
+**Plans:** 4/5 plans executed
 
 Plans:
 **Wave 1**
@@ -94,7 +94,7 @@ Plans:
 - [x] 03-03-PLAN.md — Wave 2: linear-address splice API, refusals, overlap, fixup masking, D-13 negative suite (RT-02, RT-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03-04-PLAN.md — Wave 3: `rebuild --json`/`--exe`, CLI mismatch path, parse-le trailer (RT-03, RT-05)
+- [x] 03-04-PLAN.md — Wave 3: `rebuild --json`/`--exe`, CLI mismatch path, parse-le trailer (RT-03, RT-05)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 03-05-PLAN.md — Wave 4: real-file round trip and control, post-spike facts, docs/toolchain.md correction, phase gate (RT-01..RT-05)
@@ -154,7 +154,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
-| 3. Byte-identical round trip | 3/5 | In Progress | - |
+| 3. Byte-identical round trip | 4/5 | In Progress | - |
 | 4. Compiler identification | 0/TBD | Not started | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
