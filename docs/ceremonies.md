@@ -44,7 +44,7 @@ clang-format rewrites the inside of `#pragma aux` (`parm [eax]` becomes `parm[ea
 ## When to run them
 
 - **After a batch of matches** (or the end of a plan inside a phase): the comment pass on the new functions, `/code-review` on the diff, rebuild and compare.
-- **After tooling changes:** `/code-review`, `/simplify`, ruff, pytest; `/security-review` when Docker, CI or file-reading code changed.
+- **After tooling changes:** `/code-review`, `/simplify`, ruff, pytest; `/security-review` when Docker, CI or file-reading code changed. A refactor made by `/simplify` or the `code-simplifier` agent gets its own `/code-review` afterwards. On PR #1 that second pass caught two behaviour changes the refactors had introduced: a directory walk that stopped being lazy, and a cleanup that deleted an older `.part` file.
 - **At the end of a phase**, before `/gsd-verify-work`: `/claude-md-management:revise-claude-md` to capture what the session learned, then `/claude-md-management:claude-md-improver` to audit CLAUDE.md. Keep CLAUDE.md under 150 lines and move detail into `docs/`.
 
 ## Evaluated and skipped

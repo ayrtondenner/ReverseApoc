@@ -11,6 +11,12 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-20: refactors need their own review (PR #1, Python tooling)
+
+- **Flattening changed behaviour twice.** In the `code-simplifier` refactor of the ISO9660 walk, a lazy generator became a list, so `find()` failed on a bad record that came after the match. In the `fetch_media` refactor, a Content-Length refusal started deleting an older `.part` file. Both were caught by a `/code-review` run after the refactor, not by the existing tests, and both are now pinned by tests.
+- **Characterize first, then prove the tests bite.** Before moving code, add tests for the behaviour being moved, then break the code briefly to watch each one fail. Two tests written this way (the associated-file skip and directory-named errors) had no coverage before.
+- **Named offsets read better than comments.** The bare `25`, `32`, `33` and `34` in the ISO reader became constants named after their ECMA-119 fields. The rules now live in [coding-style.md](coding-style.md#python-tooling).
+
 ## 2026-10-19: what is actually on the Watcom CDs
 
 - **BINNT is a stub on 10.5 and 10.6.** `BINNT/WCC386.EXE` is a 9,216-byte Win32 loader that tells you to put `BINW` in your path first; the real compiler is the LE program `BINW/WCC386.EXE` (567,698 bytes in 10.6). Running 10.x under wibo needs `BINW` next to `BINNT` (to be confirmed in Phase 4). 11.0 and later ship a native Win32 `BINNT`.
