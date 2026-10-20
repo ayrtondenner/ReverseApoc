@@ -67,6 +67,10 @@ Requirements: RT-01..RT-05 (`.planning/REQUIREMENTS.md`).
   - reuse existing dataclasses (`LEPage`, `LEObject`, `Fixup`, `targets.FileHashes`);
   - TDD with tests proven to fail; `/code-review` again after any `/simplify` pass.
 
+### Decided after research (owner, 2026-10-20)
+- **D-18:** A patch may only write page bytes that lie inside its object: writable = page data clipped to the object's vsize. The page tail past vsize (0x523 UFO2P / 0xAB1 TACP / 0xC80 SMKP bytes in each code object's last page, all zero) is refused, like BSS. That tail is still carried into the output unchanged, because object images are built from full pages, not from vsize. This is stricter than D-03's literal list.
+- **D-19:** `layout()` refuses, with `LEUnsupportedError` naming the field, an LE file whose non-resident name table (header 0x88/0x8C) or debug-info (0x98/0x9C) fields are non-zero. It never folds unknown data into the trailer or padding regions. The header offsets become named constants in `le.py`, per D-17.
+
 ### Claude's Discretion
 - Exact names of the region and patch dataclasses, the masked-field report shape, the internal layout of `splice.py`, and how the region map is exposed (a function on `LE` or in `splice.py`).
 - Whether the region map distinguishes padding between the loader/fixup sections and the data pages as its own region (it must tile the file either way).
