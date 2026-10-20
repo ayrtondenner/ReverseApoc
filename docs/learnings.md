@@ -11,6 +11,11 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-20: ninja quotes $in, nothing else (Phase 3 review WR-05, WR-06)
+
+- **ninja already shell-quotes `$in` and `$out`** (single quotes on POSIX, double quotes on Windows only where needed), so quoting them in a rule double-quotes them. `configure.py` keeps `parse-le $in` unquoted, and a test pins the rule line.
+- **Literal text in a rule command reaches /bin/sh or CreateProcess as written**, so `configure.py` accepts only letters, digits and `. _ - / :` in the `--orig` path it writes. ninja 1.11.1 has no escape for `|`, LF or CR in a build path, so `configure.py` refuses such executable names with an error instead of writing a broken `build.ninja`.
+
 ## 2026-10-20: refactors need their own review (PR #1, Python tooling)
 
 - **Flattening changed behaviour twice.** In the `code-simplifier` refactor of the ISO9660 walk, a lazy generator became a list, so `find()` failed on a bad record that came after the match. In the `fetch_media` refactor, a Content-Length refusal started deleting an older `.part` file. Both were caught by a `/code-review` run after the refactor, not by the existing tests, and both are now pinned by tests.
