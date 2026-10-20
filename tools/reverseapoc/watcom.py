@@ -14,10 +14,12 @@ import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from .iso9660 import ISOError, extract_all
 from .targets import (
     REPO_ROOT,
+    FileHashes,
     ManifestError,
     Target,
     _crc32,
@@ -163,24 +165,21 @@ def select(manifest: dict[str, WatcomMedia], versions: Sequence[str]) -> list[Wa
     return [manifest[v] for v in versions]
 
 
-def _media_problems(
-    media: WatcomMedia, size: int, md5: str, sha1: str, crc32: int
-) -> list[str]:
+def _media_problems(media: WatcomMedia, got: FileHashes) -> list[str]:
     problems = []
-    if size != media.size:
-        problems.append(f"size: expected {media.size}, got {size}")
-    if md5 != media.md5:
-        problems.append(f"md5: expected {media.md5}, got {md5}")
-    if sha1 != media.sha1:
-        problems.append(f"sha1: expected {media.sha1}, got {sha1}")
-    if media.crc32 is not None and crc32 != media.crc32:
-        problems.append(f"crc32: expected {media.crc32:08x}, got {crc32:08x}")
+    if got.size != media.size:
+        problems.append(f"size: expected {media.size}, got {got.size}")
+    if got.md5 != media.md5:
+        problems.append(f"md5: expected {media.md5}, got {got.md5}")
+    if got.sha1 != media.sha1:
+        problems.append(f"sha1: expected {media.sha1}, got {got.sha1}")
+    if media.crc32 is not None and got.crc32 != media.crc32:
+        problems.append(f"crc32: expected {media.crc32:08x}, got {got.crc32:08x}")
     return problems
 
 
 def _file_problems(media: WatcomMedia, path: Path) -> list[str]:
-    got = hash_file(path)
-    return _media_problems(media, got.size, got.md5, got.sha1, got.crc32)
+    return _media_problems(media, hash_file(path))
 
 
 # ---- fetch ---------------------------------------------------------------------------------
@@ -192,6 +191,38 @@ class MediaResult:
     path: Path
     action: str  # "present", "downloaded" or "mismatch"
     problems: tuple[str, ...] = ()
+
+
+class _SizeMismatch(Exception):
+    """The server announced or sent a size other than the manifest's."""
+
+
+def _copy_hashed(src: BinaryIO, part: Path, limit: int, chunk: int) -> FileHashes:
+    """Stream `src` into `part`, hashing as it goes. More than `limit` bytes discards `part`."""
+    md5, sha1, crc, total = hashlib.md5(), hashlib.sha1(), 0, 0
+    with part.open("wb") as out:
+        while block := src.read(chunk):
+            total += len(block)
+            if total > limit:
+                break
+            out.write(block)
+            md5.update(block)
+            sha1.update(block)
+            crc = zlib.crc32(block, crc)
+    if total > limit:
+        part.unlink()
+        raise _SizeMismatch(f"size: more than the expected {limit} bytes were sent")
+    return FileHashes(total, crc, md5.hexdigest(), sha1.hexdigest())
+
+
+def _download(url: str, part: Path, size: int, opener: Callable, chunk: int) -> FileHashes:
+    """Fetch `url` into `part`; a wrong Content-Length is refused before `part` is created."""
+    req = urllib.request.Request(url, headers={"User-Agent": "reverseapoc"})
+    with opener(req, timeout=60) as resp:
+        length = resp.headers.get("Content-Length")
+        if length is not None and str(length).strip() != str(size):
+            raise _SizeMismatch(f"Content-Length: expected {size}, server says {length}")
+        return _copy_hashed(resp, part, size, chunk)
 
 
 def fetch_media(
@@ -211,30 +242,13 @@ def fetch_media(
     if dest.is_file() and not _file_problems(media, dest):
         return MediaResult(media, dest, "present")
 
-    md5, sha1, crc, total = hashlib.md5(), hashlib.sha1(), 0, 0
     try:
-        req = urllib.request.Request(media.url(base), headers={"User-Agent": "reverseapoc"})
-        with opener(req, timeout=60) as resp:
-            length = resp.headers.get("Content-Length")
-            if length is not None and str(length).strip() != str(media.size):
-                problem = f"Content-Length: expected {media.size}, server says {length}"
-                return MediaResult(media, dest, "mismatch", (problem,))
-            with part.open("wb") as out:
-                while block := resp.read(chunk):
-                    total += len(block)
-                    if total > media.size:
-                        break
-                    out.write(block)
-                    md5.update(block)
-                    sha1.update(block)
-                    crc = zlib.crc32(block, crc)
+        got = _download(media.url(base), part, media.size, opener, chunk)
+    except _SizeMismatch as exc:
+        return MediaResult(media, dest, "mismatch", (str(exc),))
     except (OSError, ValueError, http.client.HTTPException) as exc:
         return MediaResult(media, dest, "mismatch", (f"download failed: {exc}",))
-    if total > media.size:
-        part.unlink(missing_ok=True)
-        problem = f"size: more than the expected {media.size} bytes were sent"
-        return MediaResult(media, dest, "mismatch", (problem,))
-    problems = _media_problems(media, total, md5.hexdigest(), sha1.hexdigest(), crc)
+    problems = _media_problems(media, got)
     if problems:
         return MediaResult(media, dest, "mismatch", tuple(problems))
     os.replace(part, dest)
