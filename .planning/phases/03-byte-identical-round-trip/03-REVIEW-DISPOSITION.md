@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
   - id: WR-02
     severity: warning
@@ -13,11 +13,11 @@ findings:
     title: "The `masked_fields` count is per (patch, field), not per field, so the report over-counts"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "The output write is checked by path only, not by file identity, and is not atomic; the input is read twice"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
   - id: WR-05
     severity: warning
@@ -59,7 +59,7 @@ findings:
     severity: info
     disposition: open
     title: "`configure.py` still calls itself a \"Phase 2 skeleton\""
-open: 14
+open: 11
 total: 14
 recorded: 2026-10-20T21:58:54.790Z
 ---
@@ -68,12 +68,12 @@ recorded: 2026-10-20T21:58:54.790Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
-| WR-06 | warning | open | - |
+| WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
+| WR-02 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
+| WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
+| WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
+| WR-05 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
+| WR-06 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
