@@ -384,3 +384,175 @@ def test_mutation_report_names_offset_without_bytes(tmp_path):
     assert "1 bytes differ" in line
     assert f"{PATCH_BYTE:#x}" not in line  # the patch byte
     assert f"{page_fill(1):#x}" not in line  # the original page byte
+
+
+# ---- Plan 03-03 Task 2: refusals and the D-13 page edges ---------------------------------------
+# Every refusal test also splices the same fixture with no patch and checks that it round-trips
+# (_assert_control), so none of them can pass because splice() always fails.
+
+
+def _assert_control(img) -> None:
+    out = splice.splice(LE(img.data), {}).data
+    assert _sha1(out) == _sha1(img.data)
+
+
+def _refused(img, patches) -> str:
+    with pytest.raises(SpliceError) as exc:
+        splice.splice(LE(img.data), patches)
+    _assert_control(img)
+    return str(exc.value)
+
+
+PAGE_EDGES = {
+    "last-byte-of-page-1": (0x10FFF, 1, lambda p: [p[0] + 0xFFF]),
+    "first-byte-of-page-2": (0x11000, 1, lambda p: [p[1]]),
+    "across-the-boundary": (0x10FFE, 4, lambda p: [p[0] + 0xFFE, p[0] + 0xFFF, p[1], p[1] + 1]),
+}
+
+
+@pytest.mark.parametrize(("va", "n", "offsets"), list(PAGE_EDGES.values()), ids=list(PAGE_EDGES))
+def test_mutation_page_edges(va, n, offsets):
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), {va: bytes([PATCH_BYTE]) * n}).data
+    assert _changed(out, img.data) == offsets(img.page_offsets)
+    assert _sha1(out) != _sha1(img.data)
+    _assert_control(img)
+
+
+def test_mutation_spanning_permuted_map():
+    img = _no_fixups(page_numbers=(2, 1, 3))
+    out = splice.splice(LE(img.data), {0x10FFE: bytes([PATCH_BYTE]) * 4}).data
+    p = img.page_offsets
+    # logical page 1 lives in physical page 2, logical page 2 in physical page 1
+    assert _changed(out, img.data) == [p[0], p[0] + 1, p[1] + 0xFFE, p[1] + 0xFFF]
+    _assert_control(img)
+
+
+def test_short_page_last_byte_ok():
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), {0x201FF: bytes([PATCH_BYTE])}).data
+    assert _changed(out, img.data) == [img.page_offsets[2] + 0x1FF]
+    _assert_control(img)
+
+
+def test_refuse_bss_past_short_page():
+    message = _refused(_no_fixups(), {0x20200: bytes([PATCH_BYTE])})
+    assert "0x20200" in message
+    assert "BSS of object 2" in message
+
+
+@pytest.mark.parametrize(("va", "n"), [(0x11800, 1), (0x117FF, 2)])
+def test_refuse_past_vsize_tail(va, n):
+    message = _refused(_no_fixups(), {va: bytes([PATCH_BYTE]) * n})
+    assert f"patch at {va:#x}, {n} bytes" in message
+    assert "0x11800 is past the end of object 1" in message
+
+
+@pytest.mark.parametrize("va", [0x0FFFF, 0x30000])
+def test_refuse_unmapped_va(va):
+    message = _refused(_no_fixups(), {va: bytes([PATCH_BYTE])})
+    assert f"{va:#x} is not in any object" in message
+
+
+def test_refuse_cross_object():
+    img = _no_fixups(objects=[(0x2000, 0x10000, 0x2045, 1, 2), (0x3000, 0x12000, 0x2043, 3, 1)])
+    message = _refused(img, {0x11FFF: bytes([PATCH_BYTE]) * 2})
+    assert "crosses from object 1 into object 2 at 0x12000" in message
+    assert "patch at 0x11fff" in message
+
+
+@pytest.mark.parametrize("second", [b"\x5b\x5c\x5d\x5e", b"\x5a\x5a\x5a\x5a"], ids=["diff", "same"])
+def test_refuse_overlap(second):
+    message = _refused(_no_fixups(), {0x10800: b"\x5a\x5a\x5a\x5a", 0x10802: second})
+    assert "0x10800 (4 bytes)" in message
+    assert "0x10802 (4 bytes)" in message
+    assert "overlap at 0x10802" in message
+
+
+def test_refuse_empty_patch():
+    message = _refused(_no_fixups(), {0x10800: b""})
+    assert "0x10800" in message
+    assert "empty patch" in message
+
+
+def test_refuse_non_bytes_patch():
+    message = _refused(_no_fixups(), {0x10800: "AB"})
+    assert "0x10800" in message
+    assert "str" in message
+    assert "AB" not in message
+
+
+@pytest.mark.parametrize("key", [-1, "0x10800", True], ids=["negative", "str", "bool"])
+def test_refuse_bad_va(key):
+    message = _refused(_no_fixups(), {key: bytes([PATCH_BYTE])})
+    assert repr(key) in message
+    assert "linear address" in message
+
+
+WHOLE_OBJECTS = {0x10000: bytes([PATCH_BYTE]) * 0x1800, 0x20000: bytes([PATCH_BYTE]) * 0x200}
+
+
+def test_splice_keeps_file_length():
+    img = _no_fixups(trailer=SYNTHETIC_TRAILER)
+    assert len(splice.splice(LE(img.data), WHOLE_OBJECTS).data) == len(img.data)
+    _assert_control(img)
+
+
+def test_whole_object_patch():
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), WHOLE_OBJECTS).data
+    p = img.page_offsets
+    assert out[p[0] : p[0] + PAGE_SIZE] == bytes([PATCH_BYTE]) * PAGE_SIZE
+    assert out[p[1] : p[1] + 0x800] == bytes([PATCH_BYTE]) * 0x800
+    assert out[p[1] + 0x800 : p[1] + PAGE_SIZE] == bytes([page_fill(2)]) * 0x800  # past vsize
+    assert out[p[2] : p[2] + 0x200] == bytes([PATCH_BYTE]) * 0x200
+    _assert_control(img)
+
+
+def test_non_page_regions_untouched_by_patches():
+    img = _no_fixups(trailer=SYNTHETIC_TRAILER)
+    result = splice.splice(LE(img.data), WHOLE_OBJECTS)
+    others = [r for r in result.regions if r.kind != "page"]
+    assert others[-1].kind == "trailer"
+    changed = [r.kind for r in others if result.data[r.start : r.end] != img.data[r.start : r.end]]
+    assert changed == []
+    _assert_control(img)
+
+
+def test_splice_refuses_non_physical_page():
+    img = build_le_image(page_flags=(0, 1, 0))
+    with pytest.raises(LEUnsupportedError, match="page 2"):
+        splice.splice(LE(img.data), {})
+    _assert_control(_no_fixups())
+
+
+@pytest.mark.parametrize("kind", [bytes, bytearray, memoryview])
+def test_splice_accepts_bytes_like(kind):
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), {0x10800: kind(b"\x5a\x5b")}).data
+    start = img.page_offsets[0] + 0x800
+    assert _changed(out, img.data) == [start, start + 1]
+    assert out[start : start + 2] == b"\x5a\x5b"
+
+
+def test_splice_does_not_mutate_input():
+    img = _no_fixups()
+    le = LE(img.data)
+    value = bytearray(b"\x5a\x5b")
+    splice.splice(le, {0x10800: value})
+    assert value == bytearray(b"\x5a\x5b")
+    assert le.data == img.data
+    first = splice.splice(le, {0x10800: b"\x5a"}).data
+    second = splice.splice(le, {0x10900: b"\x5a"}).data
+    assert _changed(first, img.data) == [img.page_offsets[0] + 0x800]
+    assert _changed(second, img.data) == [img.page_offsets[0] + 0x900]
+
+
+ORDERED_PATCHES = [(0x10800, b"\x5a"), (0x10FFE, b"\x5b\x5c\x5d\x5e"), (0x20010, b"\x5f")]
+
+
+def test_patch_order_independent(synthetic_le):
+    le = LE(synthetic_le.data)
+    forward = splice.splice(le, dict(ORDERED_PATCHES))
+    backward = splice.splice(le, dict(reversed(ORDERED_PATCHES)))
+    assert forward.data == backward.data
