@@ -71,6 +71,10 @@ Requirements: RT-01..RT-05 (`.planning/REQUIREMENTS.md`).
 - **D-18:** A patch may only write page bytes that lie inside its object: writable = page data clipped to the object's vsize. The page tail past vsize (0x523 UFO2P / 0xAB1 TACP / 0xC80 SMKP bytes in each code object's last page, all zero) is refused, like BSS. That tail is still carried into the output unchanged, because object images are built from full pages, not from vsize. This is stricter than D-03's literal list.
 - **D-19:** `layout()` refuses, with `LEUnsupportedError` naming the field, an LE file whose non-resident name table (header 0x88/0x8C) or debug-info (0x98/0x9C) fields are non-zero. It never folds unknown data into the trailer or padding regions. The header offsets become named constants in `le.py`, per D-17.
 
+### Decided at plan review (owner, 2026-10-20)
+- **D-20:** Real-file tests take a test-only `REVERSEAPOC_ORIG` override in `tests/conftest.py` (`ORIG_DIR`), so GSD executors in git worktrees can read the main checkout's gitignored `orig/`. They only ever read it, never write. Any real-file verify that shows a skip counts as a failure. The final gate (plan 03-05 Task 3) runs on the main checkout and records its logs under `build/gate/`.
+- **D-21:** D-15's "no manifest hash copied into tests" guard exempts exactly one file, `tests/test_targets.py`. It is the manifest's own regression test from Phase 2 and fails if someone edits `config/targets.toml`. Every other test, all Phase 3 tests included, reads hashes through `targets.load_manifest`.
+
 ### Claude's Discretion
 - Exact names of the region and patch dataclasses, the masked-field report shape, the internal layout of `splice.py`, and how the region map is exposed (a function on `LE` or in `splice.py`).
 - Whether the region map distinguishes padding between the loader/fixup sections and the data pages as its own region (it must tile the file either way).

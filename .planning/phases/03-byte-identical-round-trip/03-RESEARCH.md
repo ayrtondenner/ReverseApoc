@@ -520,15 +520,18 @@ Measured on the default (bound) fixture this session: extender [0, 0x180), stub 
 | A4 | Case-insensitive `--exe` matching is wanted | Pattern 4 | Cosmetic |
 | A5 | Rebuild should refuse an `orig/` file that fails the manifest check rather than rebuild it | Pattern 4 | Owner may prefer rebuild-then-report; affects the mismatch message only |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **Writes into the obj1 page tail past vsize.**
    - What we know: those bytes are page-backed (D-03's criterion says "backed by file page bytes"), all zero, outside the object (`obj_of_va` returns None).
    - What's unclear: whether D-03 intends them writable.
    - Recommendation: refuse ("past the end of object M"), carry them unchanged; record it in the plan as a stricter-than-D-03 choice for owner confirmation at plan review.
+   - RESOLVED by D-18 (owner, 2026-10-20): writable bytes are page data clipped to the object's vsize; the tail is refused like BSS and still carried into the output unchanged. Plan 03-01 carries the tail, plan 03-03 refuses writes into it (`test_refuse_past_vsize_tail`).
 2. **Should `layout()` refuse non-zero non-resident-name/debug fields?**
    - Recommendation: yes (LEUnsupportedError), via named constants in le.py; costs a few lines and keeps "trailer" honest. Optional if the planner wants le.py untouched beyond `check_loadable`/trailer.
+   - RESOLVED by D-19 (owner, 2026-10-20): `layout()` refuses them with `LEUnsupportedError` naming the field, and the header offsets become named constants in `le.py` (plan 03-01 Task 2).
 3. **Spike-confirmed facts the plan should treat as provisional:** all-physical pages and counts (303/666/21), identity page map, no iterated map, 14/11/2 straddlers (and their VAs), the one BSS-cut field per file, loader section including the fixup section, zero padding sizes, trailer offsets/lengths. Write tests so the generic properties (tiling, round trip, masking) do not depend on them, and put the specific numbers in `tests/test_splice_real.py` regression tests only after the spike's verdict.
+   - RESOLVED by the spike gate: both `/gsd-spike` runs (LE edge cases, 27-byte trailer) happen after planning and before `/gsd-execute-phase 3`. Plans 03-01..03-04 and plan 03-05 Task 1 do not depend on these numbers (they use synthetic fixtures, or values computed from the parsed file); plan 03-05 Task 2's precondition pins only the values the spike READMEs confirm and stops for plan revision when one is invalidated (threat T-03-17).
 
 ## Environment Availability
 
