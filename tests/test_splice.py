@@ -538,6 +538,30 @@ def test_splice_accepts_bytes_like(kind):
     assert out[start : start + 2] == b"\x5a\x5b"
 
 
+def test_touching_patches_are_not_an_overlap():
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), {0x10800: b"\x5a\x5a", 0x10802: b"\x5b\x5b"}).data
+    start = img.page_offsets[0] + 0x800
+    assert _changed(out, img.data) == [start, start + 1, start + 2, start + 3]
+
+
+def test_splice_output_is_reassembled(monkeypatch):
+    # The patched file must be the fresh buffer from reassemble(), not a copy of the input with
+    # pages overwritten: a byte flipped by reassemble() in the LE header must reach the output.
+    img = _no_fixups()
+    flip_at = img.le_offset + 4
+    real_reassemble = splice.reassemble
+
+    def flipped(le, decomposition):
+        out = bytearray(real_reassemble(le, decomposition))
+        out[flip_at] ^= 0xFF
+        return bytes(out)
+
+    monkeypatch.setattr(splice, "reassemble", flipped)
+    out = splice.splice(LE(img.data), {0x10800: bytes([PATCH_BYTE])}).data
+    assert _changed(out, img.data) == [flip_at, img.page_offsets[0] + 0x800]
+
+
 def test_splice_does_not_mutate_input():
     img = _no_fixups()
     le = LE(img.data)
