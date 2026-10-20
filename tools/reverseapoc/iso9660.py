@@ -6,6 +6,7 @@ field is read.
 
 from __future__ import annotations
 
+import itertools
 import os
 import struct
 from collections.abc import Collection, Iterator
@@ -20,9 +21,33 @@ _FORBIDDEN = frozenset("/\\:\x00")
 _RESERVED = frozenset(["CON", "PRN", "AUX", "NUL"]) | frozenset(
     f"{dev}{n}" for dev in ("COM", "LPT") for n in range(1, 10)
 )
+
+# Directory record layout (ECMA-119 9.1). Both-endian fields: only the little-endian half is read.
+_REC_EXTENT = 2  # u32: first sector of the file or directory
+_REC_SIZE = 10  # u32: data length in bytes
+_REC_DATE = slice(18, 25)  # 7-byte recording date
+_REC_FLAGS = 25
+_REC_NAME_LEN = 32
+_REC_NAME = 33  # the fixed part of a record ends here; the name follows
+_MIN_RECORD = _REC_NAME + 1  # shortest record: a one-byte name (`.`, `..` or the root)
+
 _FLAG_DIR = 0x02
 _FLAG_ASSOCIATED = 0x04
 _FLAG_MULTI_EXTENT = 0x80
+
+# Volume descriptors (ECMA-119 8.1): one per sector from sector 16 up to the terminator.
+_VD_FIRST_SECTOR = 16
+_VD_TYPE = 0
+_VD_ID = slice(1, 6)
+_VD_MAGIC = b"CD001"
+_VD_VERSION = 6
+_VD_PRIMARY = 1
+_VD_TERMINATOR = 255
+
+# Primary volume descriptor layout (ECMA-119 8.4).
+_PVD_VOLUME_ID = slice(40, 72)
+_PVD_BLOCK_SIZE = 128  # u16
+_PVD_ROOT = 156  # the root directory's record, _MIN_RECORD bytes long
 
 
 class ISOError(ValueError):
@@ -58,7 +83,14 @@ def clean_name(raw: bytes) -> str:
 
 def _is_dot_record(rec: bytes) -> bool:
     """`.` or `..`: a one-byte name of 0x00 or 0x01."""
-    return rec[32] == 1 and rec[33] in (0, 1)
+    return rec[_REC_NAME_LEN] == 1 and rec[_REC_NAME] in (0, 1)
+
+
+def _extent_and_size(rec: bytes) -> tuple[int, int]:
+    """A directory record's first sector and data length."""
+    (extent,) = struct.unpack_from("<I", rec, _REC_EXTENT)
+    (size,) = struct.unpack_from("<I", rec, _REC_SIZE)
+    return extent, size
 
 
 def _decode_date(raw: bytes) -> datetime | None:
@@ -101,38 +133,33 @@ class ISO9660:
         return self._fh.read(length)
 
     def _read_pvd(self) -> IsoEntry:
-        sector = 16
-        while True:
+        for sector in itertools.count(_VD_FIRST_SECTOR):
             desc = self._read_at(sector * SECTOR, SECTOR)
-            if desc[1:6] != b"CD001":
+            if desc[_VD_ID] != _VD_MAGIC:
                 raise ISOError("not an ISO9660 image (no CD001 volume descriptor)")
-            if desc[0] == 1 and desc[6] == 1:
+            if desc[_VD_TYPE] == _VD_PRIMARY and desc[_VD_VERSION] == 1:
                 break
-            if desc[0] == 255:
+            if desc[_VD_TYPE] == _VD_TERMINATOR:
                 raise ISOError("no primary volume descriptor found")
-            sector += 1
-        self.volume_id = desc[40:72].decode("ascii", "replace").strip()
-        (block,) = struct.unpack_from("<H", desc, 128)
+        self.volume_id = desc[_PVD_VOLUME_ID].decode("ascii", "replace").strip()
+        (block,) = struct.unpack_from("<H", desc, _PVD_BLOCK_SIZE)
         if block != SECTOR:
             raise ISOError(f"unsupported logical block size {block} (need {SECTOR})")
-        rec = desc[156:190]
-        extent, size = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0]
-        return IsoEntry("", True, extent, size, _decode_date(rec[18:25]))
+        rec = desc[_PVD_ROOT : _PVD_ROOT + _MIN_RECORD]
+        return IsoEntry("", True, *_extent_and_size(rec), _decode_date(rec[_REC_DATE]))
 
     def _parse_record(self, parent: str, rec: bytes) -> IsoEntry:
-        flags, name_len = rec[25], rec[32]
+        flags, name_len = rec[_REC_FLAGS], rec[_REC_NAME_LEN]
         if flags & _FLAG_MULTI_EXTENT:
             raise ISOError("multi-extent files are not supported")
-        if 33 + name_len > len(rec):
+        if _REC_NAME + name_len > len(rec):
             raise ISOError("directory record name runs past the record")
-        name = clean_name(rec[33 : 33 + name_len])
-        extent, size = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0]
+        name = clean_name(rec[_REC_NAME : _REC_NAME + name_len])
         return IsoEntry(
             f"{parent}/{name}" if parent else name,
             bool(flags & _FLAG_DIR),
-            extent,
-            size,
-            _decode_date(rec[18:25]),
+            *_extent_and_size(rec),
+            _decode_date(rec[_REC_DATE]),
         )
 
     def walk(self, skip_dirs: Collection[str] = ()) -> Iterator[IsoEntry]:
@@ -156,7 +183,7 @@ class ISO9660:
         or skipped directories. Any error in this directory's records names the directory."""
         try:
             for rec in self._records(directory):
-                if _is_dot_record(rec) or rec[25] & _FLAG_ASSOCIATED:
+                if _is_dot_record(rec) or rec[_REC_FLAGS] & _FLAG_ASSOCIATED:
                     continue
                 entry = self._parse_record(directory.path, rec)
                 if entry.is_dir and entry.path in skip:
@@ -174,17 +201,17 @@ class ISO9660:
             sector = data[start : start + SECTOR]
             pos = 0
             while pos < len(sector) and (length := sector[pos]):
-                if length < 34 or pos + length > len(sector):
+                if length < _MIN_RECORD or pos + length > len(sector):
                     raise ISOError("corrupt directory record")
                 yield sector[pos : pos + length]
                 pos += length
 
     def find(self, path: str) -> IsoEntry:
-        """The entry at an exact-case POSIX path."""
-        for entry in self.walk():
-            if entry.path == path:
-                return entry
-        raise ISOError(f"{path!r} not found in image")
+        """The entry at an exact-case POSIX path; the walk stops at the first match."""
+        entry = next((e for e in self.walk() if e.path == path), None)
+        if entry is None:
+            raise ISOError(f"{path!r} not found in image")
+        return entry
 
     def copy_to(self, entry: IsoEntry, out: BinaryIO, chunk: int = 1 << 20) -> None:
         """Stream a file's bytes to `out`."""
