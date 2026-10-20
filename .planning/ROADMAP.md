@@ -30,8 +30,8 @@ every match.
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD was set up; retroactive verification)
-- [ ] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD was set up; retroactive verification)
+- [x] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD was set up; retroactive verification) (completed 2026-10-20)
+- [x] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD was set up; retroactive verification) (completed 2026-10-20)
 - [ ] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail
 - [ ] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match
 - [ ] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE
@@ -40,6 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Hygiene and safety
+
 **Goal**: The repository is safe to publish and to run agents in: no game file, disassembly, build output or secret is tracked, every enabled plugin and GSD are installed at project scope for Claude Code only, CLAUDE.md is lean and states the hard rules, and the docs skeleton exists.
 **Depends on**: Nothing (first phase)
 **Requirements**: HYG-01, HYG-02, HYG-03, HYG-04
@@ -48,11 +49,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. `claude plugin list` shows every plugin enabled in `.claude/settings.json` installed at project scope, and `/gsd-health` is clean for a project-local GSD install that targets Claude Code only (HYG-02)
   3. `wc -l CLAUDE.md` reports fewer than 150 lines, the file states the hard rules, the commands and the done gate, and per-path rules live in `.claude/rules/` (HYG-03)
   4. `docs/toolchain.md`, `coding-style.md`, `matching.md`, `learnings.md`, `tools.md`, `legal.md`, `workflow.md` and `ceremonies.md` exist, together with `README.md`, `.recomp.json` and the approved design spec under `docs/superpowers/specs/` (HYG-04)
+
 **Spike**: none
 **Plans**: TBD
 **Note**: Built before GSD was set up (commits `d7d4d65`…`e50784f`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 2: Container and target ingest
+
 **Goal**: A contributor with their own game files can build the container, ingest and verify both executables against the hash manifest, and reproduce their scanned LE layout, with tests and ruff green on the host, in the container and in CI.
 **Depends on**: Phase 1
 **Requirements**: ING-01, ING-02, ING-03, ING-04, ING-05
@@ -62,11 +65,13 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. `uv run reverseapoc parse-le orig/UFO2P.EXE` and `uv run reverseapoc parse-le orig/TACP.EXE` report the MZ stub at 0x352A4, the LE header at 0x37F34, two objects at their scanned bases, and internal fixups only (ING-03)
   4. `uv run pytest -q` and `uv run ruff check .` pass on the host and `docker compose run --rm test` passes in the container; real-file tests are skipped unless `orig/` exists (ING-04)
   5. The CI workflow (`.github/workflows/ci.yml`) runs tests and ruff on push and passes with no game file present (ING-05)
+
 **Spike**: none
 **Plans**: TBD
 **Note**: Built before GSD was set up (commits `29f9327` and `8418027`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 3: Byte-identical round trip
+
 **Goal**: Both EXEs are rebuilt from decomposed parts through a KKND-style in-place page splice and proven SHA-1 identical to the originals, by a gate that demonstrably fails on any one-byte change.
 **Depends on**: Phase 2
 **Requirements**: RT-01, RT-02, RT-03, RT-04, RT-05
@@ -76,10 +81,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Negative tests show the gate can fail: a one-byte mutation mid-page, at a page edge, in the short last page and across a page boundary each changes the SHA-1, and the failure names the file offset; the splice API refuses writes outside page data and any change of file length, and writes page-straddling fields correctly in flat address space (RT-02, RT-04)
   4. A byte-region map tiles every byte of each file (extender, MZ stub, LE header/loader section, fixup section, padding, pages, 27-byte trailer), and a coverage test fails if any byte is unassigned or assigned twice (RT-05)
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
+
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
 **Plans**: TBD
 
 ### Phase 4: Compiler identification
+
 **Goal**: The exact Watcom version and default flags that built each EXE are known and proven: runtime library modules match byte for byte, and the codegen probe locates its idioms in the game's own code.
 **Depends on**: Phase 3
 **Requirements**: CID-01, CID-02, CID-03, CID-04, CID-05, CID-06
@@ -90,10 +97,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Linked CLIB3R/MATH3R runtime modules from one version's `LIB386` match the code objects byte for byte with fixups masked, and the mosura codegen probe compiled with each version locates its idioms in non-library code of both EXEs' code objects (CID-03, CID-04)
   4. `docs/toolchain.md` records the compiler version and default flags per EXE with per-flag evidence, replacing its "To be confirmed in Phase 4" line (CID-05)
   5. A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) reports its result per EXE and confirms `wcc386`, or names the modules that need `wpp386` (CID-06)
+
 **Spike**: wibo 1.2.0 runs `wcc386.exe` for each version (10.5, 10.6, 11.0) in Docker.
 **Plans**: TBD
 
 ### Phase 5: Split and first matches
+
 **Goal**: The matching pipeline works end to end: functions are found and grouped into units, C compiles with the identified compiler, objdiff and an independent relocation check compare it to the target cut from the LE, and one hand-matched function per EXE splices back with both EXEs still SHA-1 identical.
 **Depends on**: Phase 3, Phase 4
 **Requirements**: SPL-01, SPL-02, SPL-03, SPL-04, SPL-05, SPL-06, SPL-07, SPL-08, SPL-09, SPL-10, SPL-11, SPL-12, SPL-13
@@ -102,10 +111,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. `configure.py` writes `build.ninja`, `objdiff.json` and `compile_commands.json`; `ninja` compiles units with the Phase 4 compiler under wibo, every unmatched function keeps its original bytes through the stub convention, per-function asm is generated into gitignored `asm/` by script, and the C89 lint gate (`clang -fsyntax-only -std=gnu89 -Werror=declaration-after-statement` with the Watcom compat header) passes on `src/` (SPL-04, SPL-05, SPL-06, SPL-12)
   3. `omf2elf.py` converts Watcom OMF (COMDAT, LIDATA, FIXUPP threads, BAKPAT, CEXTDEF) to ELF32 with its pytest suite green, and target ELF objects cut from the LE carry relocations rebuilt from the LE fixups (SPL-07, SPL-08)
   4. For one function per EXE, the single-unit `check` tool prints objdiff 100%, a passing relocation check (every non-relocated byte, equal length, every `call rel32` target, every absolute fixup target) and, after splicing with the original link-time value kept at each fixup site, both rebuilt EXEs SHA-1 identical to `config/targets.toml`; a negative test with a wrong call or fixup target makes the relocation check fail even where objdiff reports 100% (SPL-09, SPL-10, SPL-11, SPL-13)
+
 **Spike**: objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback: if INVALIDATED, the KKND-style compare stays the oracle and Phase 6 uses a minimal own agent layer).
 **Plans**: TBD
 
 ### Phase 6: Reporting and agent pilot
+
 **Goal**: Progress is published from gate-written data, and an unattended per-function driver matches easy functions under guardrails, with the build, never the agent, deciding each match.
 **Depends on**: Phase 5
 **Requirements**: RPT-01, RPT-02, RPT-03, RPT-04, RPT-05, AGT-01, AGT-02, AGT-03, AGT-04, AGT-05, AGT-06, AGT-07, AGT-08, AGT-09, AGT-10, AGT-11
@@ -115,6 +126,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. Guardrail hooks, tested with pytest, block edits to `orig/`, hash manifests and build/verify scripts during matching sessions, inline asm and code-emitting `#pragma aux` in `src/`, and builds that bypass the verify script (AGT-05)
   4. The driver runs one fresh `claude -p "/goal ..."` session per function chosen by the easiest-first scorer, supplies the context pack and the `watcom-decomp` skill, re-verifies compile/compare/splice/SHA-1 itself, caps attempts at 3-5 with re-queue of capped functions, logs a MATCHED / PARTIAL / GAVE_UP outcome with turns, tokens, time and verifier output, and backs off on usage limits and auth/credit errors with a per-night cap (AGT-01, AGT-02, AGT-03, AGT-04, AGT-07, AGT-08, AGT-09)
   5. An unattended pilot run matches 10 easy functions, one function per commit, with zero regressions: every previously matched function still matches and both EXEs stay SHA-1 identical after every commit; agent work runs through decomp.wtf v0.10.6 fork mode pinned in WSL2 as a subprocess if the spike passes, otherwise through a minimal own agent layer (AGT-06, AGT-10, AGT-11)
+
 **Spike**: decomp.wtf fork mode accepts the repo's stub convention.
 **Plans**: TBD
 **UI hint**: yes
@@ -126,8 +138,8 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Hygiene and safety | 0/TBD | Not started | - |
-| 2. Container and target ingest | 0/TBD | Not started | - |
+| 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
+| 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 0/TBD | Not started | - |
 | 4. Compiler identification | 0/TBD | Not started | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
