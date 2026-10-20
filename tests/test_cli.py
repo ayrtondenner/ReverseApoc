@@ -7,10 +7,11 @@ import json
 
 import pytest
 
-from conftest import OUTER_STUB_SIZE, build_le_image, write_manifest
+from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
 from isoimage import build_iso
-from reverseapoc.cli import main
+from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
+from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
 
 
@@ -27,6 +28,28 @@ def test_parse_le_json(synthetic_le_path, capsys):
     summary = json.loads(capsys.readouterr().out)
     assert summary["stub_size"] == OUTER_STUB_SIZE
     assert [o["base"] for o in summary["objects"]] == [0x10000, 0x20000]
+
+
+def test_parse_le_reports_trailer_without_bytes(tmp_path, capsys):
+    img = build_le_image(trailer=SYNTHETIC_TRAILER)
+    path = tmp_path / "TRAILED.EXE"
+    path.write_bytes(img.data)
+    sha1 = hashlib.sha1(SYNTHETIC_TRAILER).hexdigest()
+    leaked = ("SYNTHETIC", SYNTHETIC_TRAILER.hex(), SYNTHETIC_TRAILER.hex().upper())
+
+    assert main(["parse-le", str(path)]) == 0
+    text = capsys.readouterr().out
+    (row,) = [line for line in text.splitlines() if line.startswith("trailer")]
+    assert f"{len(SYNTHETIC_TRAILER)} bytes at {img.trailer_offset:#010x}" in row
+    assert sha1 in row
+
+    assert main(["parse-le", str(path), "--json"]) == 0
+    raw = capsys.readouterr().out
+    trailer = json.loads(raw)["trailer"]
+    assert trailer == {"offset": img.trailer_offset, "length": len(SYNTHETIC_TRAILER), "sha1": sha1}
+
+    for output in (text, raw):
+        assert not any(marker in output for marker in leaked)
 
 
 def test_parse_le_rejects_non_le(tmp_path, capsys):
@@ -174,6 +197,118 @@ def test_rebuild_mismatch_exits_1(tmp_path, capsys, monkeypatch):
     assert line.startswith("MISMATCH")
     assert f"sha1 {got}" in line
     assert f"manifest {expected}" in line
+
+
+JSON_KEYS = {
+    "name",
+    "status",
+    "output",
+    "sha1",
+    "expected_sha1",
+    "first_diff",
+    "diff_bytes",
+    "masked_fields",
+}
+
+
+def test_rebuild_json_output(tmp_path, capsys):
+    _, _, out, args = _rebuild_setup(tmp_path)
+    assert main([*args, "--json"]) == 0
+    results = json.loads(capsys.readouterr().out)
+    assert isinstance(results, list)
+    assert len(results) == 1
+    (obj,) = results
+    assert set(obj) == JSON_KEYS
+    expected = load_manifest(tmp_path / "m.toml")[0].sha1
+    assert obj["name"] == "SYNTH.EXE"
+    assert obj["status"] == "ok"
+    assert obj["output"] == str(out / "SYNTH.EXE")
+    assert obj["sha1"] == obj["expected_sha1"] == expected
+    assert obj["first_diff"] is None
+    assert obj["diff_bytes"] == 0
+    assert obj["masked_fields"] == 0
+
+
+def test_rebuild_json_missing(tmp_path, capsys):
+    _, _, _, args = _rebuild_setup(tmp_path, orig_data=b"")
+    assert main([*args, "--json"]) == 1
+    (obj,) = json.loads(capsys.readouterr().out)
+    assert set(obj) == JSON_KEYS
+    assert obj["status"] == "missing"
+    assert obj["output"] is None
+    assert obj["sha1"] is None
+    assert obj["expected_sha1"] == load_manifest(tmp_path / "m.toml")[0].sha1
+
+
+def _two_target_setup(tmp_path):
+    """SYNTH.EXE (bound fixture) and OTHER.EXE (unbound fixture), both in orig/ and the
+    manifest."""
+    files = {"SYNTH.EXE": build_le_image().data, "OTHER.EXE": build_le_image(bound=False).data}
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    for name, data in files.items():
+        (orig / name).write_bytes(data)
+    manifest = write_manifest(tmp_path / "m.toml", files)
+    out = tmp_path / "build"
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest), "--out", str(out)]
+    return out, args
+
+
+def test_rebuild_exe_filter_case_insensitive(tmp_path, capsys):
+    out, args = _two_target_setup(tmp_path)
+    assert main([*args, "--exe", "synth.exe"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("OK")
+    assert "SYNTH.EXE" in lines[0]
+    assert sorted(p.name for p in out.iterdir()) == ["SYNTH.EXE"]
+
+
+def test_rebuild_unknown_exe_lists_known_names(tmp_path, capsys):
+    out, args = _two_target_setup(tmp_path)
+    assert main([*args, "--exe", "NOPE.EXE"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    for name in ("NOPE.EXE", "SYNTH.EXE", "OTHER.EXE"):
+        assert name in captured.err
+    assert not out.exists()
+
+
+def test_rebuild_mismatch_line_and_json(tmp_path, capsys, monkeypatch):
+    import reverseapoc.splice as splice
+
+    img = build_le_image(fixups=[b"", b"", b""])
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / "SYNTH.EXE").write_bytes(img.data)
+    manifest = write_manifest(tmp_path / "m.toml", {"SYNTH.EXE": img.data})
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest)]
+    args += ["--out", str(tmp_path / "build")]
+    real_splice = splice.splice
+    monkeypatch.setattr(splice, "splice", lambda le, _patches: real_splice(le, {0x10800: b"\x5a"}))
+    offset = img.page_offsets[0] + 0x800
+    region = "page 1 of object 1, VA 0x00010800"
+
+    assert main(args) == 1
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("MISMATCH")
+    assert f"first difference at {offset:#x} ({region})" in line
+    assert "1 bytes differ" in line
+
+    assert main([*args, "--json"]) == 1
+    (obj,) = json.loads(capsys.readouterr().out)
+    assert obj["status"] == "mismatch"
+    assert obj["first_diff"] == {"offset": offset, "region": region, "va": 0x10800}
+    assert obj["diff_bytes"] == 1
+
+
+def test_rebuild_default_options():
+    args = build_parser().parse_args(["rebuild"])
+    assert args.orig == DEFAULT_ORIG
+    assert args.manifest == DEFAULT_MANIFEST
+    assert args.out == REPO_ROOT / "build"
+    assert args.exe is None
+    assert args.json is False
 
 
 # ---- fetch-watcom / install-watcom / check-watcom ----------------------------------------------

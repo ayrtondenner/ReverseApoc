@@ -21,6 +21,7 @@ matching wants; `load_flat(relocate=True)` applies the linear fixups like the lo
 
 from __future__ import annotations
 
+import hashlib
 import os
 import struct
 from collections import Counter
@@ -482,6 +483,16 @@ class LE:
             ],
             "fixup_count": len(fixups),
             "fixup_kinds": {SRC_NAME[k]: kinds[k] for k in sorted(kinds)},
+            "trailer": self._trailer(),
+        }
+
+    def _trailer(self) -> dict[str, Any]:
+        """The bytes after the last page as offset, length and SHA-1, never the bytes (D-11).
+        A truncated file reports length 0 instead of raising."""
+        return {
+            "offset": self.pages_end,
+            "length": max(0, len(self.data) - self.pages_end),
+            "sha1": hashlib.sha1(self.data[self.pages_end :]).hexdigest(),
         }
 
 
@@ -501,6 +512,8 @@ def format_summary(s: dict[str, Any]) -> str:
             f"data at {_hex(s['data_pages_offset'])}",
         ),
     ]
+    t = s["trailer"]
+    rows.append(("trailer", f"{t['length']} bytes at {_hex(t['offset'])}, sha1 {t['sha1']}"))
     for key in ("entry", "stack"):
         e = s[key]
         rows.append((key, f"object {e['object']} + {_hex(e['offset'])} = {_hex(e['linear'])}"))

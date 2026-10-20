@@ -50,8 +50,11 @@ def _cmd_parse_le(args: argparse.Namespace) -> int:
 
 
 def _cmd_rebuild(args: argparse.Namespace) -> int:
-    report = rebuild(args.orig, args.out, args.manifest)
-    print(report.format())
+    report = rebuild(args.orig, args.out, args.manifest, exe=args.exe)
+    if args.json:
+        print(json.dumps(report.to_json(), indent=2))
+    else:
+        print(report.format())
     return 0 if report.ok else 1
 
 
@@ -156,11 +159,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser(
         "rebuild",
-        help="rebuild every target from orig/ into build/ and check its SHA-1 against "
-        "config/targets.toml",
+        help="rebuild every target (or only --exe NAME) from orig/ into build/ and check its "
+        "SHA-1 against config/targets.toml",
     )
     orig_and_manifest(p)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="default: %(default)s")
+    p.add_argument(
+        "--exe",
+        metavar="NAME",
+        help="rebuild only this target from the manifest (case-insensitive)",
+    )
+    p.add_argument("--json", action="store_true", help="print the results as JSON")
     p.set_defaults(func=_cmd_rebuild)
 
     _add_watcom_commands(sub)

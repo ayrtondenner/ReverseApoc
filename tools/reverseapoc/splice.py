@@ -33,6 +33,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice, pairwise
 from pathlib import Path
+from typing import Any
 
 from .le import (
     _HDR_DEBUG_INFO_LENGTH,
@@ -48,9 +49,11 @@ from .le import (
     LEUnsupportedError,
 )
 from .targets import (
+    DEFAULT_MANIFEST,
     DEFAULT_ORIG,
     REPO_ROOT,
     FileHashes,
+    ManifestError,
     Target,
     check_target,
     hash_file,
@@ -528,6 +531,27 @@ class RebuildResult:
             "run uv run reverseapoc check-orig"
         )
 
+    def to_json(self) -> dict[str, Any]:
+        """The result as plain JSON data (D-08): names, a status, a path, numbers, a region
+        label and SHA-1s, never file bytes."""
+        first_diff = None
+        if self.first_diff is not None:
+            first_diff = {
+                "offset": self.first_diff,
+                "region": self.first_diff_region,
+                "va": self.first_diff_va,
+            }
+        return {
+            "name": self.target.name,
+            "status": self.status,
+            "output": str(self.output) if self.output is not None else None,
+            "sha1": self.hashes.sha1 if self.hashes is not None else None,
+            "expected_sha1": self.target.sha1,
+            "first_diff": first_diff,
+            "diff_bytes": self.diff_bytes,
+            "masked_fields": self.masked_fields,
+        }
+
 
 @dataclass(frozen=True)
 class RebuildReport:
@@ -541,6 +565,10 @@ class RebuildReport:
     def format(self) -> str:
         width = max((len(r.target.name) for r in self.results), default=0)
         return "\n".join(r.format(width) for r in self.results)
+
+    def to_json(self) -> list[dict[str, Any]]:
+        """One RebuildResult.to_json() object per target, in manifest order."""
+        return [r.to_json() for r in self.results]
 
 
 def _check_bare_name(target: Target) -> None:
@@ -610,17 +638,34 @@ def rebuild_target(
     return RebuildResult(target, "mismatch", out_path, hashes, masked_fields=masked, **diff)
 
 
+def _select(targets: list[Target], exe: str | None, manifest: Path) -> list[Target]:
+    """All targets, or the one named `exe` (case-insensitive). `exe` only selects among the
+    manifest's names; it never becomes part of a path."""
+    if exe is None:
+        return targets
+    target = next((t for t in targets if t.name.casefold() == exe.casefold()), None)
+    if target is None:
+        known = ", ".join(t.name for t in targets)
+        raise ManifestError(f"{manifest}: no target named {exe!r}; known targets: {known}")
+    return [target]
+
+
 def rebuild(
     orig_dir: Path | str | None = None,
     out_dir: Path | str | None = None,
     manifest: Path | str | None = None,
+    *,
+    exe: str | None = None,
 ) -> RebuildReport:
-    """Rebuild every [[targets]] entry of the manifest (default: config/targets.toml) from
-    orig_dir (default: orig/) into out_dir (default: build/)."""
+    """Rebuild every [[targets]] entry of the manifest (default: config/targets.toml), or only
+    the one named `exe` (case-insensitive), from orig_dir (default: orig/) into out_dir
+    (default: build/). An unknown `exe` raises ManifestError before anything is written."""
     orig_dir = Path(orig_dir) if orig_dir is not None else DEFAULT_ORIG
     out_dir = Path(out_dir) if out_dir is not None else DEFAULT_OUT
+    manifest = Path(manifest) if manifest is not None else DEFAULT_MANIFEST
     _refuse_inside_orig(out_dir, orig_dir)
     targets = load_manifest(manifest)
     for target in targets:
         _check_bare_name(target)
+    targets = _select(targets, exe, manifest)
     return RebuildReport(out_dir, [rebuild_target(t, orig_dir, out_dir) for t in targets])
