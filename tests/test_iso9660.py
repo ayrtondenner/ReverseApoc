@@ -170,6 +170,19 @@ def test_multi_extent_file_is_rejected():
         list(open_image(bytes(image)).walk())
 
 
+def test_associated_file_records_are_skipped():
+    image = bytearray(build_iso({"A.TXT": b"a", "B.TXT": b"b"}))
+    image[record_offset(bytes(image), b"A.TXT;1") + 25] |= 0x04
+    assert [e.path for e in open_image(bytes(image)).walk()] == ["B.TXT"]
+
+
+def test_record_errors_name_the_directory_they_are_in():
+    image = bytearray(build_iso({"SUB/A.BIN": b"x"}))
+    image[record_offset(bytes(image), b"A.BIN;1") + 25] |= 0x80
+    with pytest.raises(ISOError, match=r"multi-extent.*'SUB'"):
+        list(open_image(bytes(image)).walk())
+
+
 def _image_with_bad_dir() -> bytes:
     """SUB/BAD's directory sector overwritten with garbage, as in the real 11.0b image."""
     image = bytearray(build_iso({"SUB/BAD/X.TXT": b"x", "SUB/OK.TXT": b"ok", "TOP.TXT": b"top"}))
