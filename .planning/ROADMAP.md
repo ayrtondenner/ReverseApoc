@@ -83,7 +83,21 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
 
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
-**Plans**: TBD
+**Plans:** 5 plans
+
+Plans:
+**Wave 1**
+- [ ] 03-01-PLAN.md — Wave 1: `reverseapoc rebuild` tracer, byte-region map with D-19 refusals, "rebuilt, not copied" mutant proofs (RT-01, RT-03, RT-05)
+- [ ] 03-02-PLAN.md — Wave 1: ninja `verify` edge and the D-15 manifest-hash guard (RT-03)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-03-PLAN.md — Wave 2: linear-address splice API, refusals, overlap, fixup masking, D-13 negative suite (RT-02, RT-04)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-04-PLAN.md — Wave 3: `rebuild --json`/`--exe`, CLI mismatch path, parse-le trailer (RT-03, RT-05)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 03-05-PLAN.md — Wave 4: real-file round trip and control, post-spike facts, docs/toolchain.md correction, phase gate (RT-01..RT-05)
 
 ### Phase 4: Compiler identification
 
