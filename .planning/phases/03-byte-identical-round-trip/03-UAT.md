@@ -1,14 +1,20 @@
 ---
-status: diagnosed
+status: testing
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-20T22:36:53Z
+updated: 2026-10-20T23:19:34Z
 ---
 
 ## Current Test
 
-[testing complete]
+number: 4
+name: 03-06 changed nothing outside WR-02, WR-05 and WR-06 (judgment-tier prohibition)
+expected: |
+  `git diff 9158a03 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the
+  masked-count line (splice.py:635) and two comments; cli.py is unchanged; configure.py's HEADER
+  comments and descriptions are byte-identical apart from the two `--orig {orig}` command lines.
+awaiting: user response
 
 ## Tests
 
@@ -26,12 +32,24 @@ result: issue
 reported: "Can we do the following: Fix now: 02, 05, 06 / 01 and 03: fix during Phase 5 / 04: fix during phase 6"
 severity: major
 
+### 4. 03-06 changed nothing outside WR-02, WR-05 and WR-06 (judgment-tier prohibition)
+expected: `git diff 9158a03 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the masked-count line (splice.py:635) and two comments; cli.py unchanged; configure.py HEADER comments/descriptions byte-identical apart from the two `--orig {orig}` command lines (verifier's non-authoritative check: holds)
+result: [pending]
+
+### 5. 03-06 did not edit orig/, config/ or the Docker files, nor configure.py during the gate (judgment-tier prohibition)
+expected: no commit after 918b4f9 touches configure.py; gate logs stamped after it; `git diff 9158a03 HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest (verifier's non-authoritative check: holds)
+result: [pending]
+
+### 6. Triage of the open review findings after the re-review (03-REVIEW-DISPOSITION.md)
+expected: WR-07, IN-09, IN-10, IN-11 (and the still-open IN-01..IN-08) each set to fix now, deferred (with phase/reason) or skipped; verifier judgment: none breaks a Phase 3 must-have; WR-07 is a real hole next to the WR-06 contract but cannot occur with the three ASCII-named targets
+result: [pending]
+
 ## Summary
 
-total: 3
+total: 6
 passed: 2
 issues: 1
-pending: 0
+pending: 3
 skipped: 0
 blocked: 0
 
@@ -39,10 +57,12 @@ blocked: 0
 
 - gap_id: G-03-3
   truth: "Code-review warnings WR-02, WR-05 and WR-06 are fixed in Phase 3 (owner triage, UAT test 3)"
-  status: failed
+  status: resolved
   reason: "User reported: Can we do the following: Fix now: 02, 05, 06 / 01 and 03: fix during Phase 5 / 04: fix during phase 6"
   severity: major
   test: 3
+  resolved_by: 03-06-PLAN.md
+  resolved_at: 2026-10-20
   root_cause: "WR-02: splice.py:634 counts len(result.masked), one MaskedField per (patch, fixup), so a field split by k touching patches counts k in the text line and JSON masked_fields. WR-05: configure.py render() has no orig parameter and the check_orig/rebuild rule commands are constant text without --orig, so --orig reaches only parse-le. WR-06 (mechanism corrected by diagnosis): not shell injection, ninja shell-quotes $in; configure.py ninja_path escapes only $, space and colon and find_executables accepts any *.exe name, so a name with |, LF or CR (unrepresentable in ninja 1.11) corrupts build.ninja; WR-05 fix adds a literal --orig dir that ninja does not quote."
   artifacts:
     - path: "tools/reverseapoc/splice.py"
