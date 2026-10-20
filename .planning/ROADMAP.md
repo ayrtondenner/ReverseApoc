@@ -72,11 +72,11 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 ### Phase 3: Byte-identical round trip
 
-**Goal**: Both EXEs are rebuilt from decomposed parts through a KKND-style in-place page splice and proven SHA-1 identical to the originals, by a gate that demonstrably fails on any one-byte change.
+**Goal**: UFO2P.EXE and TACP.EXE (plus SMKP.EXE, as a second layout without a trailer) are rebuilt from decomposed parts through a KKND-style in-place page splice and proven SHA-1 identical to the originals, by a gate that demonstrably fails on any one-byte change.
 **Depends on**: Phase 2
 **Requirements**: RT-01, RT-02, RT-03, RT-04, RT-05
 **Success Criteria** (what must be TRUE):
-  1. After the rebuild CLI verb (name settled in planning, e.g. `uv run reverseapoc rebuild`) writes `build/UFO2P.EXE` and `build/TACP.EXE`, `cmp orig/UFO2P.EXE build/UFO2P.EXE` and `cmp orig/TACP.EXE build/TACP.EXE` are silent and each whole-file SHA-1 equals its `sha1` in `config/targets.toml`; the output is reassembled from untouched prefix regions plus per-object images re-paged through the LE page map, not copied from the original (RT-01, RT-03)
+  1. After `uv run reverseapoc rebuild` writes `build/UFO2P.EXE`, `build/TACP.EXE` and `build/SMKP.EXE`, `cmp` of each against `orig/` is silent and each whole-file SHA-1 equals its `sha1` in `config/targets.toml`; the output is reassembled from untouched prefix regions plus per-object images re-paged through the LE page map, not copied from the original (RT-01, RT-03)
   2. A pytest proves the round trip for both EXEs, is skipped unless `orig/` exists, and passes on the host and in `docker compose run --rm test` (RT-03)
   3. Negative tests show the gate can fail: a one-byte mutation mid-page, at a page edge, in the short last page and across a page boundary each changes the SHA-1, and the failure names the file offset; the splice API refuses writes outside page data and any change of file length, and writes page-straddling fields correctly in flat address space (RT-02, RT-04)
   4. A byte-region map tiles every byte of each file (extender, MZ stub, LE header/loader section, fixup section, padding, pages, 27-byte trailer), and a coverage test fails if any byte is unassigned or assigned twice (RT-05)
