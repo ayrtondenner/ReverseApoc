@@ -51,7 +51,10 @@ def _cmd_parse_le(args: argparse.Namespace) -> int:
 
 def _cmd_rebuild(args: argparse.Namespace) -> int:
     report = rebuild(args.orig, args.out, args.manifest)
-    print(report.format())
+    if args.json:
+        print(json.dumps(report.to_json(), indent=2))
+    else:
+        print(report.format())
     return 0 if report.ok else 1
 
 
@@ -161,6 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     orig_and_manifest(p)
     p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="default: %(default)s")
+    p.add_argument("--json", action="store_true", help="print the results as JSON")
     p.set_defaults(func=_cmd_rebuild)
 
     _add_watcom_commands(sub)
