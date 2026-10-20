@@ -51,3 +51,41 @@ def test_main_writes_build_ninja(tmp_path):
     assert configure.main(["--orig", str(orig), "--output", str(out)]) == 0
     text = out.read_text(encoding="utf-8")
     assert "UFO2P.EXE" in text and "build check-orig: phony" in text
+
+
+def _rule_block(text: str, name: str) -> list[str]:
+    """The indented lines that follow `rule <name>` in build.ninja text."""
+    lines = text.splitlines()
+    start = lines.index(f"rule {name}") + 1
+    block = []
+    for line in lines[start:]:
+        if not line.startswith("  "):
+            break
+        block.append(line.strip())
+    return block
+
+
+def test_render_has_verify_edge():
+    # D-09 / RT-03: `ninja verify` runs the `rebuild` verb next to check-orig and parse-le.
+    text = configure.render(["orig/UFO2P.EXE"])
+    assert "rule rebuild" in text
+    block = _rule_block(text, "rebuild")
+    assert "command = uv run reverseapoc rebuild" in block
+    assert "description = REBUILD build/" in block
+    assert "pool = console" in block
+    assert "build $builddir/always/verify: rebuild" in text
+    assert "build verify: phony $builddir/always/verify" in text
+    header_comment = [line for line in text.splitlines() if line.startswith("#")]
+    assert any("ninja verify" in line for line in header_comment)
+
+
+def test_render_without_executables_still_defines_verify():
+    assert "build verify: phony" in configure.render([])
+
+
+def test_main_writes_verify_edge(tmp_path):
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    out = tmp_path / "build.ninja"
+    assert configure.main(["--orig", str(orig), "--output", str(out)]) == 0
+    assert "build verify: phony" in out.read_text(encoding="utf-8")
