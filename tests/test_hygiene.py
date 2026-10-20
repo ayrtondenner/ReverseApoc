@@ -89,15 +89,36 @@ def test_no_doc_mentions_a_phase_zero():
     assert not hits
 
 
+_HASH_PREFIX_DIGITS = 8
+
+
+def _manifest_hash_needles() -> set[str]:
+    """Every [[targets]] md5 and sha1 of config/targets.toml, in full and as its first eight hex
+    digits. Read at test time, so no hash is written down in this file."""
+    digests = [digest for t in load_manifest() for digest in (t.md5, t.sha1)]
+    return {*digests, *(digest[:_HASH_PREFIX_DIGITS] for digest in digests)}
+
+
 def _files_with_manifest_hashes(root: Path, needles: set[str], exclude: set[str]) -> list[str]:
-    return []
+    """Sorted POSIX paths, relative to `root`, of the *.py files under `root` whose text holds
+    any needle (case-insensitive). Paths in `exclude` and anything under __pycache__ are
+    skipped."""
+    hits = []
+    for path in root.rglob("*.py"):
+        rel = path.relative_to(root)
+        if "__pycache__" in rel.parts or rel.as_posix() in exclude:
+            continue
+        text = path.read_text(encoding="utf-8").lower()
+        if any(needle in text for needle in needles):
+            hits.append(rel.as_posix())
+    return sorted(hits)
 
 
 def test_manifest_hashes_scan_detects_a_planted_hash(tmp_path):
     # The guard below is only worth something if it can fail: plant a manifest SHA-1 (and,
     # separately, its 8-digit prefix) in throwaway files and expect the scan to name both.
     sha1 = load_manifest()[0].sha1
-    needles = {sha1, sha1[:8]}
+    needles = _manifest_hash_needles()
     (tmp_path / "test_full.py").write_text(f'EXPECTED = "{sha1}"\n', encoding="utf-8")
     (tmp_path / "sub").mkdir()
     (tmp_path / "sub" / "test_prefix.py").write_text(f"# {sha1[:8]}\n", encoding="utf-8")
@@ -107,6 +128,16 @@ def test_manifest_hashes_scan_detects_a_planted_hash(tmp_path):
     (tmp_path / "__pycache__" / "cached.py").write_text(f"# {sha1}\n", encoding="utf-8")
     found = _files_with_manifest_hashes(tmp_path, needles, exclude={"test_pinned.py"})
     assert found == ["sub/test_prefix.py", "test_full.py"]
+
+
+# D-15: expected SHA-1s reach round-trip tests only through load_manifest, never as copied
+# strings. D-21 exempts tests/test_targets.py alone: it pins the manifest itself, so an edit to
+# config/targets.toml to make a gate pass still fails the suite.
+def test_round_trip_tests_never_copy_manifest_hashes():
+    found = _files_with_manifest_hashes(
+        REPO_ROOT / "tests", _manifest_hash_needles(), exclude={"test_targets.py"}
+    )
+    assert found == []
 
 
 def test_gitignore_excludes_the_compiler_media_and_installs():
