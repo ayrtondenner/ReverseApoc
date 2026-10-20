@@ -403,7 +403,8 @@ class MaskedField:
 class SpliceResult:
     data: bytes  # the rebuilt file
     regions: list[Region]  # its region map
-    masked: tuple[MaskedField, ...] = ()  # sorted by (patch_va, fixup.src_va)
+    # sorted by (patch_va, fixup.src_va); a field split by several patches appears once per patch
+    masked: tuple[MaskedField, ...] = ()
 
 
 def _covered_fixups(fixups: list[Fixup], srcs: list[int], lo: int, hi: int) -> Iterator[Fixup]:
@@ -500,7 +501,7 @@ class RebuildResult:
     first_diff_region: str | None = None  # the region holding it, e.g. "page 1 of object 1, ..."
     first_diff_va: int | None = None  # its linear address when it lies in a page
     diff_bytes: int = 0  # how many bytes differ
-    masked_fields: int = 0  # fixup fields the patches covered and left unchanged (D-02)
+    masked_fields: int = 0  # distinct fixup fields the patches covered and left unchanged (D-02)
 
     @property
     def ok(self) -> bool:
@@ -631,7 +632,7 @@ def rebuild_target(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(result.data)
     hashes = hash_file(out_path)
-    masked = len(result.masked)
+    masked = len({m.fixup for m in result.masked})  # distinct fields (WR-02)
     if hashes.sha1 == target.sha1:
         return RebuildResult(target, "ok", out_path, hashes, masked_fields=masked)
     diff = _mismatch(result, le.data)
