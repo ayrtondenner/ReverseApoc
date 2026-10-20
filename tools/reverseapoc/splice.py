@@ -28,10 +28,10 @@ SHA-1s only, never file bytes.
 
 from __future__ import annotations
 
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
-from itertools import pairwise
+from itertools import islice, pairwise
 from pathlib import Path
 
 from .le import (
@@ -40,6 +40,8 @@ from .le import (
     _HDR_NONRES_NAME_TABLE_LENGTH,
     _HDR_NONRES_NAME_TABLE_OFFSET,
     LE,
+    SRC_SIZE,
+    Fixup,
     LEError,
     LEObject,
     LEPage,
@@ -56,6 +58,10 @@ from .targets import (
 )
 
 DEFAULT_OUT = REPO_ROOT / "build"
+
+# The longest fixup field (ptr16:32): a field covering a patch's first byte starts at most this
+# many bytes minus one before it.
+MAX_FIELD = max(SRC_SIZE.values())
 
 REGION_EXTENDER = "extender"
 REGION_STUB = "stub"
@@ -368,9 +374,77 @@ def _checked_patches(patches: Mapping[int, bytes]) -> list[tuple[int, bytes]]:
 
 
 @dataclass(frozen=True)
+class MaskedField:
+    """A fixup field a patch covered (D-02). Its bytes in [start, end) kept their original
+    link-time values. Addresses only: never the bytes of the field or of the patch."""
+
+    fixup: Fixup
+    patch_va: int  # the patch that covered it
+    start: int  # masked linear addresses [start, end)
+    end: int
+    backed_end: int  # just past the field's page-backed bytes
+    straddles_page: bool  # first and last backed byte lie in different pages of the object
+
+    @property
+    def clipped(self) -> bool:
+        """The field runs past the page data of its object (cut by the short last page)."""
+        return self.backed_end < self.fixup.src_va + self.fixup.size
+
+    @property
+    def partial(self) -> bool:
+        """The patch covered only part of the field's backed bytes."""
+        return self.start > self.fixup.src_va or self.end < self.backed_end
+
+
+@dataclass(frozen=True)
 class SpliceResult:
     data: bytes  # the rebuilt file
     regions: list[Region]  # its region map
+    masked: tuple[MaskedField, ...] = ()  # sorted by (patch_va, fixup.src_va)
+
+
+def _covered_fixups(fixups: list[Fixup], srcs: list[int], lo: int, hi: int) -> Iterator[Fixup]:
+    """Fixups (sorted by src_va, with `srcs` their addresses) whose field overlaps [lo, hi)."""
+    for fx in islice(fixups, bisect_left(srcs, lo - MAX_FIELD + 1), None):
+        if fx.src_va >= hi:
+            return
+        if fx.src_va + fx.size > lo:
+            yield fx
+
+
+def _masked_fields(
+    le: LE, obj: LEObject, fixups: list[Fixup], srcs: list[int], va: int, end: int
+) -> Iterator[MaskedField]:
+    """The fields the patch [va, end) in `obj` covers, each clipped to the page data."""
+    backed = _page_backed_end(le, obj)
+    for fx in _covered_fixups(fixups, srcs, va, end):
+        backed_end = min(fx.src_va + fx.size, backed)
+        first_page = (fx.src_va - obj.base) // le.page_size
+        last_page = (backed_end - 1 - obj.base) // le.page_size
+        start, stop = max(va, fx.src_va), min(end, backed_end)
+        yield MaskedField(fx, va, start, stop, backed_end, first_page != last_page)
+
+
+def _unmasked(lo: int, hi: int, masked: Iterable[MaskedField]) -> Iterator[tuple[int, int]]:
+    """The parts of [lo, hi) outside every masked range (`masked` sorted by start)."""
+    pos = lo
+    for m in masked:
+        start, end = max(m.start, lo), min(m.end, hi)
+        if start >= end:
+            continue
+        if start > pos:
+            yield pos, start
+        pos = max(pos, end)
+    if pos < hi:
+        yield pos, hi
+
+
+def _unmasked_runs(
+    runs: Iterable[tuple[_Span, int, int]], masked: list[MaskedField]
+) -> Iterator[tuple[_Span, int, int]]:
+    for span, lo, hi in runs:
+        for start, end in _unmasked(lo, hi, masked):
+            yield span, start, end
 
 
 def _write(d: Decomposition, runs: Iterable[tuple[_Span, int, int]], va: int, data: bytes) -> None:
@@ -387,17 +461,27 @@ def splice(le: LE, patches: Mapping[int, bytes]) -> SpliceResult:
 
     Raises SpliceError for a patch that is not {non-negative int: non-empty bytes-like}, for
     overlapping patches, and for any byte outside page data clipped to its object's vsize: BSS,
-    the page tail past vsize, no object, or a run into the next object (D-03, D-04, D-18)."""
+    the page tail past vsize, no object, or a run into the next object (D-03, D-04, D-18).
+
+    Patch bytes on a fixup field are not written: the field keeps its original bytes, both
+    halves of a page-straddling field included, and is listed in `masked` (D-02)."""
     checked = _checked_patches(patches)
     d = decompose(le)
     spans = _writable_spans(le)
     starts = [span.va_start for span in spans]
+    fixups = le.fixups() if checked else []  # sorted, a straddling field listed once
+    srcs = [fx.src_va for fx in fixups]
+    masked: list[MaskedField] = []
     for va, data in checked:
         try:
-            _write(d, list(_runs(le, spans, starts, va, len(data))), va, data)
+            runs = list(_runs(le, spans, starts, va, len(data)))
         except SpliceError as exc:
             raise SpliceError(f"{exc} (patch at {va:#x}, {len(data)} bytes)") from exc
-    return SpliceResult(reassemble(le, d), d.regions)
+        covered = list(_masked_fields(le, runs[0][0].obj, fixups, srcs, va, va + len(data)))
+        _write(d, _unmasked_runs(runs, covered), va, data)
+        masked.extend(covered)
+    masked.sort(key=lambda m: (m.patch_va, m.fixup.src_va))
+    return SpliceResult(reassemble(le, d), d.regions, tuple(masked))
 
 
 # ---- rebuild ------------------------------------------------------------------------------------
@@ -413,15 +497,19 @@ class RebuildResult:
     first_diff_region: str | None = None  # the region holding it, e.g. "page 1 of object 1, ..."
     first_diff_va: int | None = None  # its linear address when it lies in a page
     diff_bytes: int = 0  # how many bytes differ
+    masked_fields: int = 0  # fixup fields the patches covered and left unchanged (D-02)
 
     @property
     def ok(self) -> bool:
         return self.status == "ok"
 
+    def _masked_note(self) -> str:
+        return f"; masked {self.masked_fields} fixup fields" if self.masked_fields else ""
+
     def format(self, width: int) -> str:
         name = self.target.name.ljust(width)
         if self.status == "ok":
-            return f"OK        {name}  sha1 {self.hashes.sha1} == manifest"
+            return f"OK        {name}  sha1 {self.hashes.sha1} == manifest{self._masked_note()}"
         if self.status == "mismatch":
             line = f"MISMATCH  {name}  sha1 {self.hashes.sha1} != manifest {self.target.sha1}"
             if self.first_diff is not None:
@@ -429,7 +517,7 @@ class RebuildResult:
                     f"; first difference at {self.first_diff:#x} ({self.first_diff_region}), "
                     f"{self.diff_bytes} bytes differ"
                 )
-            return line
+            return line + self._masked_note()
         if self.status == "missing":
             return (
                 f"MISSING   {name}  (orig/{self.target.name} not found; "
@@ -515,9 +603,11 @@ def rebuild_target(
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(result.data)
     hashes = hash_file(out_path)
+    masked = len(result.masked)
     if hashes.sha1 == target.sha1:
-        return RebuildResult(target, "ok", out_path, hashes)
-    return RebuildResult(target, "mismatch", out_path, hashes, **_mismatch(result, le.data))
+        return RebuildResult(target, "ok", out_path, hashes, masked_fields=masked)
+    diff = _mismatch(result, le.data)
+    return RebuildResult(target, "mismatch", out_path, hashes, masked_fields=masked, **diff)
 
 
 def rebuild(
