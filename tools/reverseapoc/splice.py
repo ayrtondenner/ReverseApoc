@@ -31,6 +31,7 @@ from __future__ import annotations
 from bisect import bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
+from itertools import pairwise
 from pathlib import Path
 
 from .le import (
@@ -288,20 +289,82 @@ def _writable_spans(le: LE) -> list[_Span]:
     return sorted(spans, key=lambda span: span.va_start)
 
 
+def _page_backed_end(le: LE, obj: LEObject) -> int:
+    """Linear address just past the last page-backed byte of `obj` (its base without pages)."""
+    if obj.page_count == 0:
+        return obj.base
+    last = le.pages[obj.page_index + obj.page_count - 2]
+    return obj.base + (obj.page_count - 1) * le.page_size + last.size
+
+
+def _unwritable_reason(le: LE, addr: int) -> str:
+    """Why linear address `addr` lies outside every writable span (D-03, D-18)."""
+    obj = le.obj_of_va(addr)
+    if obj is not None:
+        return f"{addr:#x} is in the BSS of object {obj.index} (past its page data)"
+    obj = next((o for o in le.objects if o.base <= addr < _page_backed_end(le, o)), None)
+    if obj is not None:
+        return (
+            f"{addr:#x} is past the end of object {obj.index} (vsize {obj.vsize:#x}) "
+            "in its last page"
+        )
+    return f"{addr:#x} is not in any object"
+
+
+def _span_at(spans: list[_Span], i: int, addr: int) -> _Span | None:
+    if 0 <= i < len(spans) and spans[i].va_start <= addr < spans[i].va_end:
+        return spans[i]
+    return None
+
+
 def _runs(
-    spans: list[_Span], starts: list[int], va: int, length: int
+    le: LE, spans: list[_Span], starts: list[int], va: int, length: int
 ) -> Iterator[tuple[_Span, int, int]]:
-    """(span, lo, hi) runs covering [va, va + length) in address order. Raises SpliceError at
-    the first address that no writable span holds."""
+    """(span, lo, hi) runs covering [va, va + length) in address order, all inside the object
+    of the first byte. Raises SpliceError at the first address that no writable span of that
+    object holds."""
     end = va + length
     i = bisect_right(starts, va) - 1
-    pos = va
+    pos, obj = va, None
     while pos < end:
-        if not 0 <= i < len(spans) or not spans[i].va_start <= pos < spans[i].va_end:
-            raise SpliceError(f"{pos:#x} is not writable page data")
-        hi = min(end, spans[i].va_end)
-        yield spans[i], pos, hi
-        pos, i = hi, i + 1
+        span = _span_at(spans, i, pos)
+        if span is None:
+            raise SpliceError(_unwritable_reason(le, pos))
+        if obj is not None and span.obj is not obj:
+            raise SpliceError(
+                f"crosses from object {obj.index} into object {span.obj.index} at {pos:#x}"
+            )
+        hi = min(end, span.va_end)
+        yield span, pos, hi
+        pos, i, obj = hi, i + 1, span.obj
+
+
+def _checked_patch(va: object, value: object) -> tuple[int, bytes]:
+    """One patch as (linear address, a private copy of its bytes). Messages name the address
+    and the value's type, never the value."""
+    if not isinstance(va, int) or isinstance(va, bool) or va < 0:
+        raise SpliceError(f"patch address {va!r} is not a non-negative int linear address")
+    if not isinstance(value, bytes | bytearray | memoryview):
+        raise SpliceError(f"patch at {va:#x}: value is {type(value).__name__}, not bytes-like")
+    data = bytes(value)
+    if not data:
+        raise SpliceError(f"patch at {va:#x}: empty patch")
+    return va, data
+
+
+def _checked_patches(patches: Mapping[int, bytes]) -> list[tuple[int, bytes]]:
+    """The patches sorted by address, validated, copied, and refused when any two overlap,
+    even with identical bytes (D-04)."""
+    checked = sorted(
+        (_checked_patch(va, value) for va, value in patches.items()), key=lambda p: p[0]
+    )
+    for (a, a_data), (b, b_data) in pairwise(checked):
+        if a + len(a_data) > b:
+            raise SpliceError(
+                f"patches at {a:#x} ({len(a_data)} bytes) and {b:#x} ({len(b_data)} bytes) "
+                f"overlap at {b:#x}"
+            )
+    return checked
 
 
 @dataclass(frozen=True)
@@ -320,13 +383,18 @@ def _write(d: Decomposition, runs: Iterable[tuple[_Span, int, int]], va: int, da
 def splice(le: LE, patches: Mapping[int, bytes]) -> SpliceResult:
     """Rebuild `le`'s file with every patch {linear address: bytes} written into the page data
     of its object (D-01). The output is reassembled into a fresh buffer of the input's length;
-    `le.data` is never written. An empty mapping is the plain round trip."""
+    `le.data` and the patch values are never written. An empty mapping is the plain round trip.
+
+    Raises SpliceError for a patch that is not {non-negative int: non-empty bytes-like}, for
+    overlapping patches, and for any byte outside page data clipped to its object's vsize: BSS,
+    the page tail past vsize, no object, or a run into the next object (D-03, D-04, D-18)."""
+    checked = _checked_patches(patches)
     d = decompose(le)
     spans = _writable_spans(le)
     starts = [span.va_start for span in spans]
-    for va, data in sorted(patches.items()):
+    for va, data in checked:
         try:
-            _write(d, list(_runs(spans, starts, va, len(data))), va, data)
+            _write(d, list(_runs(le, spans, starts, va, len(data))), va, data)
         except SpliceError as exc:
             raise SpliceError(f"{exc} (patch at {va:#x}, {len(data)} bytes)") from exc
     return SpliceResult(reassemble(le, d), d.regions)
