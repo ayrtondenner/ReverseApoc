@@ -9,9 +9,9 @@ import pytest
 
 from conftest import OUTER_STUB_SIZE, build_le_image, write_manifest
 from isoimage import build_iso
-from reverseapoc.cli import main
+from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
-from reverseapoc.targets import load_manifest
+from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
 
 
@@ -216,6 +216,77 @@ def test_rebuild_json_missing(tmp_path, capsys):
     assert obj["output"] is None
     assert obj["sha1"] is None
     assert obj["expected_sha1"] == load_manifest(tmp_path / "m.toml")[0].sha1
+
+
+def _two_target_setup(tmp_path):
+    """SYNTH.EXE (bound fixture) and OTHER.EXE (unbound fixture), both in orig/ and the
+    manifest."""
+    files = {"SYNTH.EXE": build_le_image().data, "OTHER.EXE": build_le_image(bound=False).data}
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    for name, data in files.items():
+        (orig / name).write_bytes(data)
+    manifest = write_manifest(tmp_path / "m.toml", files)
+    out = tmp_path / "build"
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest), "--out", str(out)]
+    return out, args
+
+
+def test_rebuild_exe_filter_case_insensitive(tmp_path, capsys):
+    out, args = _two_target_setup(tmp_path)
+    assert main([*args, "--exe", "synth.exe"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("OK")
+    assert "SYNTH.EXE" in lines[0]
+    assert sorted(p.name for p in out.iterdir()) == ["SYNTH.EXE"]
+
+
+def test_rebuild_unknown_exe_lists_known_names(tmp_path, capsys):
+    out, args = _two_target_setup(tmp_path)
+    assert main([*args, "--exe", "NOPE.EXE"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    for name in ("NOPE.EXE", "SYNTH.EXE", "OTHER.EXE"):
+        assert name in captured.err
+    assert not out.exists()
+
+
+def test_rebuild_mismatch_line_and_json(tmp_path, capsys, monkeypatch):
+    import reverseapoc.splice as splice
+
+    img = build_le_image(fixups=[b"", b"", b""])
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / "SYNTH.EXE").write_bytes(img.data)
+    manifest = write_manifest(tmp_path / "m.toml", {"SYNTH.EXE": img.data})
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest)]
+    args += ["--out", str(tmp_path / "build")]
+    real_splice = splice.splice
+    monkeypatch.setattr(splice, "splice", lambda le, _patches: real_splice(le, {0x10800: b"\x5a"}))
+    offset = img.page_offsets[0] + 0x800
+    region = "page 1 of object 1, VA 0x00010800"
+
+    assert main(args) == 1
+    line = capsys.readouterr().out.strip()
+    assert line.startswith("MISMATCH")
+    assert f"first difference at {offset:#x} ({region})" in line
+    assert "1 bytes differ" in line
+
+    assert main([*args, "--json"]) == 1
+    (obj,) = json.loads(capsys.readouterr().out)
+    assert obj["status"] == "mismatch"
+    assert obj["first_diff"] == {"offset": offset, "region": region, "va": 0x10800}
+    assert obj["diff_bytes"] == 1
+
+
+def test_rebuild_default_options():
+    args = build_parser().parse_args(["rebuild"])
+    assert args.orig == DEFAULT_ORIG
+    assert args.manifest == DEFAULT_MANIFEST
+    assert args.out == REPO_ROOT / "build"
+    assert args.exe is None
+    assert args.json is False
 
 
 # ---- fetch-watcom / install-watcom / check-watcom ----------------------------------------------
