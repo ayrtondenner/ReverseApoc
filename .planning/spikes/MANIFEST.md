@@ -25,3 +25,4 @@ edge-case spike" named in that task's precondition, and spike 003 is "the 27-byt
 | # | Idea | Name | Type | Validates | Verdict | Tags |
 |---|------|------|------|-----------|---------|------|
 | 001 | le-round-trip-facts | le-pages-and-fixups | standard | Given the three EXEs, when every page-map entry and fixup record is walked raw, then pages are physical/identity, fixups internal, 14/11/2 straddlers on both pages, one off32 per file cut into BSS, le.fixups() agrees | VALIDATED | le, fixups, page-map, straddlers, dos4gw |
+| 002 | le-round-trip-facts | le-region-tiling | standard | Given the LE header fields, when each file is cut into extender/stub/header/loader/fixups/padding/pages/trailer, then the regions tile [0, size), loader section ends at fixup end, padding is zero, and reassembly reproduces the load_manifest() SHA-1 | VALIDATED | le, region-map, tiling, reassembly, sha1 |
