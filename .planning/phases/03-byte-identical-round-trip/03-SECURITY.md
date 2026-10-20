@@ -53,7 +53,12 @@ created: "2026-10-20"
 | T-03-19 | Information disclosure | real-file test failures | medium | mitigate | no raw-slice equality assertion in `tests/test_splice_real.py` (0 matches); offsets, VAs, counts, booleans and filecmp only | closed |
 | T-03-20 | Information disclosure | gate logs under build/gate/ and the SUMMARY's gate section | low | mitigate | build/ is gitignored; cmp ran without `-l`; logs hold summaries, OK lines with manifest SHA-1s, exit lines | closed |
 | T-03-21 | Repudiation | phase gate claim | medium | mitigate | six logs each ending `exit=0`, reproduced verbatim under `## Phase gate output` in 03-05-SUMMARY.md; verification step 7 passed | closed |
-| T-03-SC | Tampering | package installs | low | accept | no dependency change in the phase (`git diff 547faf8..HEAD -- uv.lock pyproject.toml` is empty) | closed |
+| T-03-22 | Elevation of privilege | configure.py render(): --orig path written unquoted into check_orig and rebuild commands | medium | mitigate | `_SAFE_ORIG` allowlist and `_check_orig_dir` (configure.py:65, :79) raise ConfigureError; main() writes nothing; `test_render_refuses_an_unsafe_orig_dir`, `test_main_refuses_an_unsafe_orig_dir`; supersedes T-03-07's fixed-string acceptance | closed |
+| T-03-23 | Tampering | configure.py ninja_path(): executable names in build lines | medium | mitigate | `\|`/LF/CR names raise ConfigureError (`test_render_refuses_names_ninja_cannot_represent`, `test_main_refuses_*names_ninja_cannot_represent`, run without skip in the container); `parse-le $in` stays unquoted, pinned at tests/test_configure.py:120 | closed |
+| T-03-24 | Repudiation | rebuild report masked_fields (text and --json) | low | mitigate | `len({m.fixup ...})` at splice.py:635; `test_mask_count_counts_distinct_fields` (5 cases); key and 8-key contract unchanged (tests/test_cli.py untouched) | closed |
+| T-03-25 | Tampering | gate step 7 (container, non-default --orig) | low | mitigate | orig/ mounted `:ro` (docker/compose.yaml:16); /tmp/alt-orig holds symlinks only; default build.ninja regenerated (`--orig orig` after the gate) | closed |
+| T-03-26 | Information disclosure | gate logs build/gate/03-06/ and 03-06-SUMMARY gate section | low | mitigate | build/ gitignored; cmp without -l; 0 runs of 5+ hex bytes in the seven logs | closed |
+| T-03-SC | Tampering | package installs | low | accept | no dependency change in the phase (`git diff 547faf8..HEAD -- uv.lock pyproject.toml` is empty; 03-06 adds only the stdlib `re` and `sys`) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -77,6 +82,7 @@ created: "2026-10-20"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-20 | 22 | 22 | 0 | /gsd-secure-phase 3 (orchestrator, L1 grep-depth short-circuit) |
+| 2026-10-20 | 27 | 27 | 0 | gap closure 03-06 re-audit (orchestrator, L1, T-03-22..26 added) |
 
 ---
 
@@ -88,3 +94,11 @@ created: "2026-10-20"
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-10-20
+
+## Security Audit 2026-10-20
+
+| Metric | Count |
+|---|---|
+| Threats found | 27 |
+| Closed | 27 |
+| Open | 0 |

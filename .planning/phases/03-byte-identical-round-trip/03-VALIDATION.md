@@ -59,6 +59,9 @@ Requirement-level map (task IDs are bound by the planner; every task that touche
 | 03-04-T3 | 03-04 | 3 | RT-05 | T-03-13 | trailer reported as offset, length, sha1 only; never bytes | unit | `uv run pytest -q tests/test_le.py tests/test_cli.py -k trailer` | ✅ | ✅ green |
 | 03-05-T2 | 03-05 | 4 | RT-05 | T-03-16 | docs record trailer as offset, length, first 4 bytes, sha1 (D-12) | doc check | `uv run pytest -q tests/test_hygiene.py -k toolchain` | ✅ | ✅ green |
 | 03-02-T2 | 03-02 | 1 | D-15 | T-03-06 | no manifest md5/sha1 (or 8-digit prefix) under tests/ except the manifest's own pin in tests/test_targets.py | hygiene | `uv run pytest -q tests/test_hygiene.py -k manifest_hashes` | ✅ | ✅ green |
+| 03-06-T1 | 03-06 | gap | RT-03 | T-03-22, T-03-23 | --orig reaches check-orig/verify; unsafe --orig and \|/LF/CR names refused before any write; parse-le $in unquoted; names with spaces work (WR-05, WR-06) | unit + integration | `uv run pytest -q tests/test_configure.py -k "orig or represent or spaces"` | ✅ | ✅ green |
+| 03-06-T2 | 03-06 | gap | RT-02 | T-03-24 | masked_fields counts distinct fixup fields (touching, three-patch, straddling, two-field, mixed) (WR-02) | unit | `uv run pytest -q tests/test_splice.py -k distinct_fields` | ✅ | ✅ green |
+| 03-06-T3 | 03-06 | gap | RT-03 | T-03-25, T-03-26 | gate re-run on the main checkout incl. ninja verify through a non-default --orig; logs under build/gate/03-06/, reproduced in 03-06-SUMMARY.md | gate (real-file, host + container) | `test "$(tail -qn 1 build/gate/03-06/0[1-7]-*.log \| sort -u)" = "exit=0"` | ✅ | ✅ green |
 
 Real-file rows skip in a worktree without orig/; executors run them with `REVERSEAPOC_ORIG="$(git rev-parse --path-format=absolute --git-common-dir)/../orig"` prefixed (plan 03-01 adds the override to tests/conftest.py).
 
@@ -103,3 +106,12 @@ Real-file rows skip in a worktree without orig/; executors run them with `REVERS
 | Gaps found | 0 |
 | Resolved | 0 |
 | Escalated | 0 |
+
+## Validation Audit 2026-10-20
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Rows added (03-06) | 3 |
