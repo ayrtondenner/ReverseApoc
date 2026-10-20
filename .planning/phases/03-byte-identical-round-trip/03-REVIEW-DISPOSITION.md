@@ -9,7 +9,7 @@ findings:
     title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The `masked_fields` count is per (patch, field), not per field, so the report over-counts"
   - id: WR-03
     severity: warning
@@ -21,11 +21,11 @@ findings:
     title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`configure.py --orig` reaches only `parse-le`; the new `verify` edge and `check-orig` still use the default `orig/`"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`parse_le` passes `$in` to the shell unquoted (this predates Phase 3)"
   - id: IN-01
     severity: info
@@ -59,7 +59,7 @@ findings:
     severity: info
     disposition: open
     title: "`configure.py` still calls itself a \"Phase 2 skeleton\""
-open: 11
+open: 8
 total: 14
 recorded: 2026-10-20T21:58:54.790Z
 ---
@@ -69,11 +69,11 @@ recorded: 2026-10-20T21:58:54.790Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
-| WR-02 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
+| WR-02 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
 | WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
 | WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
-| WR-05 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
-| WR-06 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3) |
+| WR-05 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
+| WR-06 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
