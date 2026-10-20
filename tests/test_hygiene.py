@@ -89,6 +89,15 @@ def test_no_doc_mentions_a_phase_zero():
     assert not hits
 
 
+def test_toolchain_records_the_confirmed_le_layout():
+    # RT-05: the LE layout section carries the spike-confirmed facts, the trailer after the last
+    # page of UFO2P and TACP included, instead of the old EOF claim and the open question.
+    text = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    stale = ("runs exactly to EOF", "To be confirmed in Phase 2/3")
+    assert [claim for claim in stale if claim in text] == []
+    assert [needle for needle in ("0x1A0723", "0x303DDF", "trailer") if needle not in text] == []
+
+
 _HASH_PREFIX_DIGITS = 8
 
 

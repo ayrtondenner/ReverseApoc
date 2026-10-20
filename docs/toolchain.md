@@ -36,24 +36,45 @@ SMKP.EXE and XCOMAPOC.EXE are identical in both places. The Steam ISO and the GO
 
 ## LE layout
 
-All three 32-bit EXEs are LE executables bound with DOS/4GW Professional (local scan).
+All three 32-bit EXEs are LE executables bound with DOS/4GW Professional (local scan). The facts below were confirmed on 2026-10-20 with an independent raw reader by the LE edge-case spike ([`.planning/spikes/001-le-pages-and-fixups/`](../.planning/spikes/001-le-pages-and-fixups/README.md) and [`.planning/spikes/002-le-region-tiling/`](../.planning/spikes/002-le-region-tiling/README.md)) and the trailer spike ([`.planning/spikes/003-trailer/`](../.planning/spikes/003-trailer/README.md)). `tests/test_splice_real.py` pins them as real-file tests.
 
-| Fact | UFO2P.EXE | TACP.EXE |
-|---|---|---|
-| Bound DOS/4GW Pro kernel | first 217,764 bytes (LE program's MZ stub at 0x352A4) | same |
-| LE header offset | 0x37F34 | 0x37F34 |
-| Objects | 2 | 2 |
-| obj1 (code) | base 0x10000, vsize 0xBFADD, flags 0x2045 | base 0x10000, vsize 0xC254F |
-| obj2 (data, includes BSS) | base 0xD0000, vsize 0x181E20, flags 0x2043 | base 0xE0000, vsize 0x25F0B0 |
-| Page size | 4096 | 4096 |
-| Debug info | none (offset and length 0) | none |
-| Non-resident name table | empty | empty |
-| Overlays | none; page data runs exactly to EOF | same |
+| Fact | UFO2P.EXE | TACP.EXE | SMKP.EXE |
+|---|---|---|---|
+| Bound DOS/4GW Pro kernel | first 217,764 bytes (LE program's MZ stub at 0x352A4): an MZ loader followed by two BW modules | same | first 157,268 bytes (stub at 0x26654): an MZ loader followed by one BW module |
+| LE header offset | 0x37F34 | 0x37F34 | 0x292E4 |
+| Objects | 2 | 2 | 2 |
+| obj1 (code) | base 0x10000, vsize 0xBFADD, flags 0x2045 | base 0x10000, vsize 0xC254F | base 0x10000, vsize 0x11380 |
+| obj2 (data, includes BSS) | base 0xD0000, vsize 0x181E20, flags 0x2043 | base 0xE0000, vsize 0x25F0B0 | base 0x30000, vsize 0xFA70 |
+| Page size | 4096 | 4096 | 4096 |
+| Pages | 303, all physical, identity page map | 666, all physical, identity page map | 21, all physical, identity page map |
+| Fixups (off32 / sel16 / ptr16:32 / rel32) | 28,183 / 10 / 4 / 0, all internal | 24,424 / 10 / 4 / 0, all internal | 2,297 / 0 / 0 / 0, all internal |
+| Page-straddling fields | 14 off32, all in obj1 | 11 off32, all in obj1 | 2 off32, all in obj1 |
+| Field cut by the end of page data | off32 at 0x13E27C in obj2: 3 bytes backed, 1 in BSS | off32 at 0x2B6538 in obj2: 3 backed, 1 in BSS | off32 at 0x32FF6 in obj2: 2 backed, 2 in BSS |
+| obj1 page bytes past vsize | 0x523, all zero | 0xAB1, all zero | 0xC80, all zero |
+| Debug info | none (offset and length 0) | none | none |
+| Non-resident name table | empty | empty | empty |
+| Bytes after the last page | 27 bytes at 0x1A0723, starts `64 00 9B FF`, sha1 `33a69cacf0a929fa9a104844a933273b4d0e4ee0` | 27 bytes at 0x303DDF, starts `64 00 9B FF`, sha1 `28ad5c4593a0080fd58cd8a627a996472e68fa34` | none (the pages run to the end of the file) |
 
-- SMKP.EXE differs: stub at 0x26654 (157,268 bytes of extender), LE header at 0x292E4, obj1 base 0x10000 (vsize 0x11380), obj2 base 0x30000 (vsize 0xFA70). Its DOS/4GW blob has a different size, so it was bound separately.
+- SMKP.EXE's DOS/4GW blob has a different size (one BW module instead of two), so it was bound separately.
 - No symbol names come for free. Naming relies on RE, OpenApoc knowledge and string references.
 - Mapping objects at their preferred bases keeps community Ghidra addresses (`FUN_000xxxxx`, `0x0016xxxx`) usable, once the build question above is settled.
-- Not yet checked: iterated or zero pages, non-internal fixups, 16:16 fixups. KKND's and Theme Hospital's readers both raise on these. **To be confirmed in Phase 2/3.**
+- Edge cases (LE edge-case spike): every page is physical and the page map is the identity (303 / 666 / 21 pages), so the iterated and zero pages that KKND's and Theme Hospital's readers raise on do not occur. Every fixup is internal: off32 / sel16 / ptr16:32 counts are 28,183 / 10 / 4, 24,424 / 10 / 4 and 2,297 / 0 / 0, with no rel32, no other kind (no byte, off16 or 16:16 fixups) and no import, additive or chained records. 14 / 11 / 2 off32 fields straddle a 4 KiB page boundary and are listed on both pages. One off32 field per file is cut by the short last page of obj2, with 3 / 3 / 2 bytes backed by the page and the rest in BSS. The declared loader section includes the fixup section (both end at the same offset). 362 / 403 / 223 bytes of zero padding sit between the fixup section and the pages. obj1's page bytes past its vsize (0x523 / 0xAB1 / 0xC80) are all zero, and the rebuild carries them anyway.
+- The 27 bytes after the last page (trailer spike, verdict partial): they are a structured record, with u16 value/complement pairs at trailer offsets 0, 4 and 8, and the 1997 CD builds carry one too. They are not any tested checksum or CRC of the file, pages or objects, not a DOS/4GW bind record (SMKP.EXE is bound the same way and has none) and not an install-time stamp. What they mean is unknown. The table gives their offset, length, first 4 bytes and SHA-1 only. The rebuild carries them unchanged as their own region, and nothing regenerates them.
+
+Byte-region map. Every byte of each file lies in exactly one region; the boundaries come from the file's own LE header (half-open file offsets):
+
+| Region | UFO2P.EXE (1,705,790 bytes) | TACP.EXE (3,161,594 bytes) | SMKP.EXE (271,436 bytes) |
+|---|---|---|---|
+| extender (MZ loader + BW modules) | [0x0, 0x352A4) | [0x0, 0x352A4) | [0x0, 0x26654) |
+| MZ stub | [0x352A4, 0x37F34), 11,408 bytes | [0x352A4, 0x37F34), 11,408 bytes | [0x26654, 0x292E4), 11,408 bytes |
+| LE header | [0x37F34, 0x37FF8), 196 bytes | [0x37F34, 0x37FF8), 196 bytes | [0x292E4, 0x293A8), 196 bytes |
+| loader tables | [0x37FF8, 0x384EE), 1,270 bytes | [0x37FF8, 0x38A99), 2,721 bytes | [0x293A8, 0x29435), 141 bytes |
+| fixup section | [0x384EE, 0x7233A), 237,132 bytes | [0x38A99, 0x6A711), 203,896 bytes | [0x29435, 0x2D375), 16,192 bytes |
+| padding (all zero) | [0x7233A, 0x724A4), 362 bytes | [0x6A711, 0x6A8A4), 403 bytes | [0x2D375, 0x2D454), 223 bytes |
+| pages 1..N | [0x724A4, 0x1A0723) | [0x6A8A4, 0x303DDF) | [0x2D454, 0x4244C) |
+| trailer | [0x1A0723, 0x1A073E), 27 bytes | [0x303DDF, 0x303DFA), 27 bytes | none |
+
+`uv run reverseapoc rebuild` (or `ninja verify` in the container) rebuilds `build/<NAME>` from exactly these regions, with each page placed through the page map, and checks the whole-file SHA-1 against `config/targets.toml`.
 - The lx-loader README lists "X-Com: Apocalypse (UFO2P.EXE - DOS/16 LE and unbound LE-style)" as tested (a line inherited from upstream). That conflicts with the local scan, which shows a bound DOS/4GW Pro file. **To be checked in Phase 5.**
 
 ## Compiler
