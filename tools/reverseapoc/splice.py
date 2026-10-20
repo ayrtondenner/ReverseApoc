@@ -33,6 +33,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from itertools import islice, pairwise
 from pathlib import Path
+from typing import Any
 
 from .le import (
     _HDR_DEBUG_INFO_LENGTH,
@@ -528,6 +529,27 @@ class RebuildResult:
             "run uv run reverseapoc check-orig"
         )
 
+    def to_json(self) -> dict[str, Any]:
+        """The result as plain JSON data (D-08): names, a status, a path, numbers, a region
+        label and SHA-1s, never file bytes."""
+        first_diff = None
+        if self.first_diff is not None:
+            first_diff = {
+                "offset": self.first_diff,
+                "region": self.first_diff_region,
+                "va": self.first_diff_va,
+            }
+        return {
+            "name": self.target.name,
+            "status": self.status,
+            "output": str(self.output) if self.output is not None else None,
+            "sha1": self.hashes.sha1 if self.hashes is not None else None,
+            "expected_sha1": self.target.sha1,
+            "first_diff": first_diff,
+            "diff_bytes": self.diff_bytes,
+            "masked_fields": self.masked_fields,
+        }
+
 
 @dataclass(frozen=True)
 class RebuildReport:
@@ -541,6 +563,10 @@ class RebuildReport:
     def format(self) -> str:
         width = max((len(r.target.name) for r in self.results), default=0)
         return "\n".join(r.format(width) for r in self.results)
+
+    def to_json(self) -> list[dict[str, Any]]:
+        """One RebuildResult.to_json() object per target, in manifest order."""
+        return [r.to_json() for r in self.results]
 
 
 def _check_bare_name(target: Target) -> None:
