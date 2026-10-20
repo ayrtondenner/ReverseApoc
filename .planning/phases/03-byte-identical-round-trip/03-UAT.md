@@ -1,9 +1,9 @@
 ---
-status: complete
+status: diagnosed
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-20T22:25:35.440Z
+updated: 2026-10-20T22:36:53Z
 ---
 
 ## Current Test
@@ -43,8 +43,21 @@ blocked: 0
   reason: "User reported: Can we do the following: Fix now: 02, 05, 06 / 01 and 03: fix during Phase 5 / 04: fix during phase 6"
   severity: major
   test: 3
-  artifacts: []
-  missing: []
+  root_cause: "WR-02: splice.py:634 counts len(result.masked), one MaskedField per (patch, fixup), so a field split by k touching patches counts k in the text line and JSON masked_fields. WR-05: configure.py render() has no orig parameter and the check_orig/rebuild rule commands are constant text without --orig, so --orig reaches only parse-le. WR-06 (mechanism corrected by diagnosis): not shell injection, ninja shell-quotes $in; configure.py ninja_path escapes only $, space and colon and find_executables accepts any *.exe name, so a name with |, LF or CR (unrepresentable in ninja 1.11) corrupts build.ninja; WR-05 fix adds a literal --orig dir that ninja does not quote."
+  artifacts:
+    - path: "tools/reverseapoc/splice.py"
+      issue: "rebuild_target masked count (line 634) counts (patch, field) entries, not distinct fields"
+    - path: "configure.py"
+      issue: "render() lacks the orig dir; HEADER rule commands omit --orig; ninja_path/find_executables accept names ninja cannot represent"
+    - path: "tests/test_splice.py"
+      issue: "no case where one fixup field is touched by several patches"
+    - path: "tests/test_configure.py"
+      issue: "line 73 pins the WR-05 bug (exact unqualified rebuild command); no test for --orig reaching the rules or for unrepresentable names"
+  missing:
+    - "Count distinct fixups for masked_fields (key name and SpliceResult.masked shape unchanged) with touching-patch, three-patch, straddling and two-field control tests"
+    - "Pass the orig dir into render() and emit --orig <dir> in check_orig and rebuild commands; update test_configure.py:73 deliberately"
+    - "Refuse exe names containing |, LF or CR and an --orig dir with characters unsafe on host and container, with a clear configure error; keep parse-le $in unquoted and names with spaces working"
+  debug_session: ".planning/debug/phase3-wr02-wr05-wr06.md"
 
 ## Deferred Follow-Ups
 
