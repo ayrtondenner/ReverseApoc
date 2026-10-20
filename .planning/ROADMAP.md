@@ -83,7 +83,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
 
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
-**Plans:** 5/5 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 **Wave 1**
@@ -98,6 +98,9 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [x] 03-05-PLAN.md — Wave 4: real-file round trip and control, post-spike facts, docs/toolchain.md correction, phase gate (RT-01..RT-05)
+
+**Gap closure (G-03-3, UAT test 3)**
+- [ ] 03-06-PLAN.md — Wave 1: fix review warnings WR-05/WR-06 (`configure.py --orig` reaches check-orig and verify; refuse paths ninja or the shell would misread) and WR-02 (masked_fields counts distinct fields); re-run the phase gate on the main checkout (RT-02, RT-03)
 
 ### Phase 4: Compiler identification
 
