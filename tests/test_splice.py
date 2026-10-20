@@ -7,14 +7,17 @@ under pytest's tmp_path.
 from __future__ import annotations
 
 import hashlib
+from dataclasses import fields
 
 import pytest
 
 from conftest import (
+    LAST_PAGE_SIZE,
     LE_HEADER_SIZE,
     PAGE_SIZE,
     SYNTHETIC_TRAILER,
     build_le_image,
+    fixup_record,
     page_fill,
     write_manifest,
 )
@@ -353,8 +356,8 @@ def test_splice_empty_mapping_is_round_trip(synthetic_le):
     assert _sha1(out) == _sha1(synthetic_le.data)
 
 
-def _mutated_rebuild(tmp_path, patches):
-    img = _no_fixups()
+def _mutated_rebuild(tmp_path, patches, img=None):
+    img = _no_fixups() if img is None else img
     orig, manifest = _orig(tmp_path, img.data)
     (target,) = load_manifest(manifest)
     return img, target, rebuild_target(target, orig, tmp_path / "build", patches=patches)
@@ -556,3 +559,133 @@ def test_patch_order_independent(synthetic_le):
     forward = splice.splice(le, dict(ORDERED_PATCHES))
     backward = splice.splice(le, dict(reversed(ORDERED_PATCHES)))
     assert forward.data == backward.data
+    assert [m.fixup.src_va for m in forward.masked] == [0x10FFE]  # the straddling off32
+    assert forward.masked == backward.masked
+
+
+# ---- Plan 03-03 Task 3: fixup fields keep their link-time bytes (D-02) -------------------------
+# The default fixture carries the fixups of DEFAULT_DECODED. Its pages are filled with one value
+# each, so "kept" means the page fill and "changed" means PATCH_BYTE.
+
+
+def _file_offset(le: LE, va: int) -> int:
+    """File offset of page-backed linear address `va`, through the page map."""
+    obj = next(o for o in le.objects if o.base <= va < o.base + o.page_count * le.page_size)
+    k, rest = divmod(va - obj.base, le.page_size)
+    return le.pages[obj.page_index + k - 1].file_offset + rest
+
+
+def _masked_splice(img, patches):
+    """Splice `patches` (VA -> length, filled with PATCH_BYTE) and return the result and the
+    linear addresses whose file bytes changed."""
+    le = LE(img.data)
+    result = splice.splice(le, {va: bytes([PATCH_BYTE]) * n for va, n in patches.items()})
+    patched = (va for start, n in patches.items() for va in range(start, start + n))
+    by_offset = {_file_offset(le, va): va for va in patched}
+    changed = sorted(by_offset[off] for off in _changed(result.data, img.data))
+    _assert_control(img)
+    return result, changed
+
+
+def test_mask_straddling_off32(synthetic_le):
+    result, changed = _masked_splice(synthetic_le, {0x10FFC: 8})
+    assert changed == [0x10FFC, 0x10FFD, 0x11002, 0x11003]
+    (m,) = result.masked
+    assert (m.fixup.src_va, m.fixup.kind_name, m.patch_va) == (0x10FFE, "off32", 0x10FFC)
+    assert (m.start, m.end, m.backed_end) == (0x10FFE, 0x11002, 0x11002)
+    assert (m.straddles_page, m.partial, m.clipped) == (True, False, False)
+
+
+def test_mask_permuted_straddler():
+    img = build_le_image(page_numbers=(2, 1, 3))
+    result, _ = _masked_splice(img, {0x10FFC: 8})
+    p = img.page_offsets
+    # logical page 1 is physical page 2 and logical page 2 is physical page 1
+    assert _changed(result.data, img.data) == [p[0] + 2, p[0] + 3, p[1] + 0xFFC, p[1] + 0xFFD]
+    assert [m.fixup.src_va for m in result.masked] == [0x10FFE]
+
+
+def test_mask_ptr1632(synthetic_le):
+    result, changed = _masked_splice(synthetic_le, {0x1101F: 8})
+    assert changed == [0x1101F, 0x11026]
+    (m,) = result.masked
+    assert m.fixup.kind_name == "ptr16:32"
+    assert (m.start, m.end, m.partial) == (0x11020, 0x11026, False)
+
+
+def test_mask_sel16_and_rel32(synthetic_le):
+    result, changed = _masked_splice(synthetic_le, {0x1002E: 8, 0x1100E: 6})
+    assert changed == [0x1002E, 0x1002F, 0x10034, 0x10035, 0x1100E, 0x1100F, 0x11012, 0x11013]
+    assert [m.fixup.kind_name for m in result.masked] == ["rel32", "sel16"]
+
+
+def test_mask_partial_field(synthetic_le):
+    result, changed = _masked_splice(synthetic_le, {0x10010: 2})
+    assert changed == []
+    assert result.data == synthetic_le.data
+    (m,) = result.masked
+    assert (m.fixup.src_va, m.start, m.end, m.partial) == (0x10010, 0x10010, 0x10012, True)
+
+
+def test_mask_field_starting_before_patch(synthetic_le):
+    # the last byte of the 6-byte ptr16:32 at 0x11020: the field starts MAX_FIELD - 1 bytes back
+    result, changed = _masked_splice(synthetic_le, {0x11025: 1})
+    assert changed == []
+    (m,) = result.masked
+    assert (m.fixup.src_va, m.start, m.end, m.partial) == (0x11020, 0x11025, 0x11026, True)
+
+
+def test_mask_bss_cut_field_clipped():
+    img = build_le_image(fixups=[b"", b"", fixup_record(7, LAST_PAGE_SIZE - 2, 1, 0x10)])
+    result, changed = _masked_splice(img, {0x201FC: 4})
+    assert changed == [0x201FC, 0x201FD]
+    (m,) = result.masked
+    assert (m.fixup.src_va, m.start, m.end, m.backed_end) == (0x201FE, 0x201FE, 0x20200, 0x20200)
+    assert (m.clipped, m.partial, m.straddles_page) == (True, False, False)
+
+
+def test_mask_reported_even_when_bytes_equal(synthetic_le):
+    le = LE(synthetic_le.data)
+    result = splice.splice(le, {0x10010: bytes([page_fill(1)]) * 4})
+    assert result.data == synthetic_le.data
+    masked = [(m.fixup.src_va, m.start, m.end) for m in result.masked]
+    assert masked == [(0x10010, 0x10010, 0x10014)]
+
+
+def test_mask_count_in_rebuild_result(tmp_path, synthetic_le):
+    img, target, result = _mutated_rebuild(
+        tmp_path, {0x1000E: bytes([PATCH_BYTE]) * 8}, img=synthetic_le
+    )
+    assert result.status == "mismatch"
+    assert result.masked_fields == 1
+    assert result.diff_bytes == 4  # 8 patched bytes minus the 4 of the off32 at 0x10010
+    assert result.first_diff == img.page_offsets[0] + 0xE
+    assert "masked 1 fixup fields" in result.format(len(target.name))
+
+    only_field = rebuild_target(
+        target, tmp_path / "orig", tmp_path / "only", patches={0x10010: bytes([PATCH_BYTE]) * 4}
+    )
+    assert (only_field.status, only_field.masked_fields) == ("ok", 1)
+    assert "masked 1 fixup fields" in only_field.format(len(target.name))
+    control = rebuild_target(target, tmp_path / "orig", tmp_path / "control")
+    assert (control.status, control.masked_fields) == ("ok", 0)
+    assert "masked" not in control.format(len(target.name))
+
+
+def test_mask_report_has_no_bytes(tmp_path, synthetic_le):
+    patches = {0x10FFC: 8, 0x1101F: 8, 0x10010: 2}
+    result, _ = _masked_splice(synthetic_le, patches)
+    assert len(result.masked) == 3
+    markers = [PATCH_BYTE, page_fill(1), page_fill(2)]
+    byte_types = bytes | bytearray | memoryview
+    for m in result.masked:
+        assert not any(isinstance(getattr(m, f.name), byte_types) for f in fields(m))
+        text = repr(m)
+        assert "b'" not in text and 'b"' not in text
+        assert not any(f"{b:#x}" in text or f"\\x{b:02x}" in text for b in markers)
+    _, target, rebuilt = _mutated_rebuild(
+        tmp_path, {va: bytes([PATCH_BYTE]) * n for va, n in patches.items()}, img=synthetic_le
+    )
+    line = rebuilt.format(len(target.name))
+    assert "masked 3 fixup fields" in line
+    assert not any(f"{b:#x}" in line for b in markers)
