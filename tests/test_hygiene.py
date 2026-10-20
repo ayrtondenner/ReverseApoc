@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
+from reverseapoc.targets import load_manifest
 
 # Every host directory that holds user-supplied, never-committed bytes.
 PROTECTED_DIRS = ("orig", "third_party")
@@ -86,6 +87,26 @@ def test_no_doc_mentions_a_phase_zero():
         if re.search(r"\bphases? 0\b|^\| 0\. ", line, re.I)
     ]
     assert not hits
+
+
+def _files_with_manifest_hashes(root: Path, needles: set[str], exclude: set[str]) -> list[str]:
+    return []
+
+
+def test_manifest_hashes_scan_detects_a_planted_hash(tmp_path):
+    # The guard below is only worth something if it can fail: plant a manifest SHA-1 (and,
+    # separately, its 8-digit prefix) in throwaway files and expect the scan to name both.
+    sha1 = load_manifest()[0].sha1
+    needles = {sha1, sha1[:8]}
+    (tmp_path / "test_full.py").write_text(f'EXPECTED = "{sha1}"\n', encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "test_prefix.py").write_text(f"# {sha1[:8]}\n", encoding="utf-8")
+    (tmp_path / "test_pinned.py").write_text(f'PIN = "{sha1}"\n', encoding="utf-8")
+    (tmp_path / "test_clean.py").write_text("EXPECTED = load_manifest()\n", encoding="utf-8")
+    (tmp_path / "__pycache__").mkdir()
+    (tmp_path / "__pycache__" / "cached.py").write_text(f"# {sha1}\n", encoding="utf-8")
+    found = _files_with_manifest_hashes(tmp_path, needles, exclude={"test_pinned.py"})
+    assert found == ["sub/test_prefix.py", "test_full.py"]
 
 
 def test_gitignore_excludes_the_compiler_media_and_installs():
