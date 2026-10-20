@@ -176,11 +176,25 @@ def test_associated_file_records_are_skipped():
     assert [e.path for e in open_image(bytes(image)).walk()] == ["B.TXT"]
 
 
+def test_walk_yields_entries_before_a_bad_sibling_record():
+    image = bytearray(build_iso({"A.TXT": b"a", "B.BIN": b"b"}))
+    image[record_offset(bytes(image), b"B.BIN;1") + 25] |= 0x80
+    assert open_image(bytes(image)).find("A.TXT").size == 1
+    with pytest.raises(ISOError, match="multi-extent"):
+        list(open_image(bytes(image)).walk())
+
+
 def test_record_errors_name_the_directory_they_are_in():
     image = bytearray(build_iso({"SUB/A.BIN": b"x"}))
     image[record_offset(bytes(image), b"A.BIN;1") + 25] |= 0x80
-    with pytest.raises(ISOError, match=r"multi-extent.*'SUB'"):
+    with pytest.raises(ISOError, match=r"^multi-extent files are not supported \(in 'SUB'\)$"):
         list(open_image(bytes(image)).walk())
+
+
+def test_truncated_directory_extent_names_the_directory():
+    iso = open_image(build_iso({"A.TXT": b"a"})[: 18 * SECTOR])  # root directory sector cut off
+    with pytest.raises(ISOError, match=r"truncated.*\(in '/'\)$"):
+        list(iso.walk())
 
 
 def _image_with_bad_dir() -> bytes:
