@@ -20,6 +20,9 @@ _FORBIDDEN = frozenset("/\\:\x00")
 _RESERVED = frozenset(["CON", "PRN", "AUX", "NUL"]) | frozenset(
     f"{dev}{n}" for dev in ("COM", "LPT") for n in range(1, 10)
 )
+_FLAG_DIR = 0x02
+_FLAG_ASSOCIATED = 0x04
+_FLAG_MULTI_EXTENT = 0x80
 
 
 class ISOError(ValueError):
@@ -51,6 +54,11 @@ def clean_name(raw: bytes) -> str:
     if name.split(".", 1)[0].upper() in _RESERVED:
         raise ISOError(f"file name {raw!r} is a reserved Windows device name")
     return name
+
+
+def _is_dot_record(rec: bytes) -> bool:
+    """`.` or `..`: a one-byte name of 0x00 or 0x01."""
+    return rec[32] == 1 and rec[33] in (0, 1)
 
 
 def _decode_date(raw: bytes) -> datetime | None:
@@ -113,15 +121,15 @@ class ISO9660:
 
     def _parse_record(self, parent: str, rec: bytes) -> IsoEntry:
         flags, name_len = rec[25], rec[32]
-        if flags & 0x80:
+        if flags & _FLAG_MULTI_EXTENT:
             raise ISOError("multi-extent files are not supported")
         if 33 + name_len > len(rec):
-            raise ISOError(f"directory record name runs past the record in {parent or '/'!r}")
+            raise ISOError("directory record name runs past the record")
         name = clean_name(rec[33 : 33 + name_len])
         extent, size = struct.unpack_from("<I", rec, 2)[0], struct.unpack_from("<I", rec, 10)[0]
         return IsoEntry(
             f"{parent}/{name}" if parent else name,
-            bool(flags & 2),
+            bool(flags & _FLAG_DIR),
             extent,
             size,
             _decode_date(rec[18:25]),
@@ -135,37 +143,41 @@ class ISO9660:
     def _walk_dir(
         self, directory: IsoEntry, visiting: set[int], skip: frozenset[str]
     ) -> Iterator[IsoEntry]:
-        where = repr(directory.path or "/")
+        for entry in self._entries(directory, skip):
+            yield entry
+            if not entry.is_dir:
+                continue
+            if entry.extent in visiting:
+                raise ISOError(f"directory loop at {entry.path!r}")
+            yield from self._walk_dir(entry, visiting | {entry.extent}, skip)
+
+    def _entries(self, directory: IsoEntry, skip: frozenset[str]) -> Iterator[IsoEntry]:
+        """Each bounds-checked entry of a directory, lazily, without `.`, `..`, associated files
+        or skipped directories. Any error in this directory's records names the directory."""
+        try:
+            for rec in self._records(directory):
+                if _is_dot_record(rec) or rec[25] & _FLAG_ASSOCIATED:
+                    continue
+                entry = self._parse_record(directory.path, rec)
+                if entry.is_dir and entry.path in skip:
+                    continue
+                self._check_bounds(entry)
+                yield entry
+        except ISOError as exc:
+            raise ISOError(f"{exc} (in {directory.path or '/'!r})") from exc
+
+    def _records(self, directory: IsoEntry) -> Iterator[bytes]:
+        """Each raw record in a directory's extent. Records never cross a sector; a zero length
+        byte pads out the rest of the sector."""
         data = self._read_at(directory.extent * SECTOR, directory.size)
         for start in range(0, len(data), SECTOR):
             sector = data[start : start + SECTOR]
             pos = 0
-            while pos < len(sector):
-                length = sector[pos]
-                if length == 0:
-                    break  # the rest of this sector is padding
+            while pos < len(sector) and (length := sector[pos]):
                 if length < 34 or pos + length > len(sector):
-                    raise ISOError(f"corrupt directory record in {where}")
-                rec = sector[pos : pos + length]
+                    raise ISOError("corrupt directory record")
+                yield sector[pos : pos + length]
                 pos += length
-                if rec[32] == 1 and rec[33] in (0, 1):  # `.` and `..`
-                    continue
-                if rec[25] & 4:  # associated file
-                    continue
-                try:
-                    entry = self._parse_record(directory.path, rec)
-                    if entry.is_dir and entry.path in skip:
-                        continue
-                    self._check_bounds(entry)
-                except ISOError as exc:
-                    if where in str(exc):
-                        raise
-                    raise ISOError(f"{exc} (in {where})") from exc
-                yield entry
-                if entry.is_dir:
-                    if entry.extent in visiting:
-                        raise ISOError(f"directory loop at {entry.path!r}")
-                    yield from self._walk_dir(entry, visiting | {entry.extent}, skip)
 
     def find(self, path: str) -> IsoEntry:
         """The entry at an exact-case POSIX path."""
