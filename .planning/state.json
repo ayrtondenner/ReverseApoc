@@ -1,0 +1,43 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v1.0 — Milestone 1",
+  "phases": [
+    {
+      "number": "1",
+      "name": "Hygiene and safety",
+      "status": "complete"
+    },
+    {
+      "number": "2",
+      "name": "Container and target ingest",
+      "status": "complete"
+    },
+    {
+      "number": "3",
+      "name": "Byte-identical round trip",
+      "status": "pending"
+    },
+    {
+      "number": "4",
+      "name": "Compiler identification",
+      "status": "pending"
+    },
+    {
+      "number": "5",
+      "name": "Split and first matches",
+      "status": "pending"
+    },
+    {
+      "number": "6",
+      "name": "Reporting and agent pilot",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step (plan phase 3)",
+    "reason": "Phase 3 of 6 — needs a plan"
+  },
+  "updated_at": "2026-10-20T14:37:44.327Z"
+}
