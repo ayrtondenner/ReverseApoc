@@ -6,15 +6,15 @@ current_phase: 03
 current_phase_name: Byte-identical round trip
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-10-20T20:33:47.506Z"
+last_updated: "2026-10-20T22:27:18.245Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 03 execution started
-state_head: 0eb58d6fab08caa1f672ef7a6630d8712c292474
+state_head: af8541c590e74c7c30b23665c0af398c46a1a655
 progress:
   total_phases: 6
   completed_phases: 2
   total_plans: 9
-  completed_plans: 4
+  completed_plans: 9
 ---
 
 # Project State
@@ -78,12 +78,15 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 3]: `docs/toolchain.md` still says "page data runs exactly to EOF"; both EXEs carry a 27-byte trailer after the last LE page and 14/11 page-straddling fixups
+- [Phase 3]: RESOLVED 2026-10-20: `docs/toolchain.md` LE layout now records the 27-byte trailer, the 14/11/2 page-straddling fixups and the byte-region map (plan 03-05, spikes 001-003)
 - [Phase 4]: RESOLVED 2026-10-19: Watcom 10.5, 10.6 and 11.0 media are supplied in gitignored `third_party/watcom-media/` (archive.org items Watcom_C_10.5/10.6/11.0; ISO SHA-1s 0722e749…, 211f4e7a…, 1708a29f…, re-checked in this session). Extracted trees go to `third_party/watcom/<ver>/`. Still open: the 10.5 `BINW/WCC386.EXE` is a damaged 64 KiB stub (the real one is in DISKIMGS PCK00017.1/.2); hash every compiler binary
 - [Phase 4]: For 10.5/10.6, `BINNT\WCC386.EXE` is a 9,216-byte Win32 loader for the LE compiler `BINW\WCC386.EXE`, so the layout needs `binw/` as well as `binnt/`; 11.0's BINNT is native (WCC386.EXE + WCCD386.DLL) (reported by session reverseapoc-f2 on 2026-10-19, to confirm in Phase 4)
 - [Phase 5]: `clang` (C89 lint gate) is missing from the Docker image; capstone cp314 wheels are unverified
 - [Phase 6]: Repo visibility must be settled before Pages and listings (Pages on a private repo needs a paid plan)
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
+- [Cross-cutting]: Spike 003 found the installed UFO2P.EXE/TACP.EXE are byte-identical to the CD's `XCOM3/UFOEXE/UFO2P4.EXE`/`XCOM3/TACEXE/TACP4.EXE`; docs/toolchain.md "OpenApoc CRC mismatch" still says the store installers applied a later build. Owner decision pending on correcting it
+- [Phase 5]: Close Phase 3 review findings WR-01 (layout() must refuse shared logical pages and overlapping objects; today a patch into the second owner is silently dropped and rebuild reports OK) and WR-03 (samefile guard against a hardlink into orig/, atomic write, single read of the input) before splice() lands real patches (owner triage 2026-10-20; .planning/phases/03-byte-identical-round-trip/03-REVIEW.md)
+- [Phase 6]: Close Phase 3 review finding WR-04 (rebuild --json must always print, with a per-target error status, so the driver never loses results) (owner triage 2026-10-20)
 
 ## Deferred Items
 
