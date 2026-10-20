@@ -26,7 +26,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 - [ ] **RT-01**: The rebuild reassembles each EXE from decomposed parts (untouched prefix regions plus per-object images re-paged through the LE page map), not from a file copy
 - [ ] **RT-02**: A splice API writes bytes at a linear address into a copy of the original and refuses writes outside page data and any change of file length; straddling fields are handled in flat address space
-- [ ] **RT-03**: A CLI verb rebuilds UFO2P.EXE and TACP.EXE into `build/` and checks the whole-EXE SHA-1 against `config/targets.toml`; `cmp` against `orig/` is silent
+- [ ] **RT-03**: A CLI verb rebuilds UFO2P.EXE, TACP.EXE and SMKP.EXE into `build/` and checks the whole-EXE SHA-1 against `config/targets.toml`; `cmp` against `orig/` is silent
 - [ ] **RT-04**: Negative tests prove the gate can fail: a one-byte mutation (mid-page, page edge, short last page, across a page boundary) changes the SHA-1 and the failure names the offset
 - [ ] **RT-05**: A byte-region map tiles every byte of each file (extender, MZ stub, LE header/loader section, fixup section, padding, pages, 27-byte trailer) and the LE edge cases on the real files are confirmed and documented (page types, straddling fixups, trailer)
 
