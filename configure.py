@@ -21,6 +21,7 @@ HEADER = """\
 # Phase 2 skeleton: verification targets only.
 #   ninja check-orig   verify orig/ against config/targets.toml (size, CRC32, MD5, SHA-1)
 #   ninja parse-le     print the LE layout of every EXE found in orig/ at configure time
+#   ninja verify       rebuild every target into build/ and check its SHA-1 (config/targets.toml)
 #
 # Compilation rules arrive in Phase 5: wcc386 (Watcom 10.x, user-supplied) under wibo,
 # OMF -> ELF conversion, objdiff, page splice back into the LE image, whole-EXE SHA-1 check.
@@ -38,8 +39,13 @@ rule parse_le
   description = PARSE-LE $in
   pool = console
 
+rule rebuild
+  command = uv run reverseapoc rebuild
+  description = REBUILD build/
+  pool = console
+
 # Outputs under $builddir/always/ are never written, so these edges run every time they are
-# requested; check-orig and parse-le are phony aliases for them.
+# requested; check-orig, verify and parse-le are phony aliases for them.
 """
 
 
@@ -62,6 +68,8 @@ def render(exes: list[str]) -> str:
         HEADER,
         "build $builddir/always/check-orig: check_orig",
         "build check-orig: phony $builddir/always/check-orig",
+        "build $builddir/always/verify: rebuild",
+        "build verify: phony $builddir/always/verify",
         "",
     ]
     outputs = []
