@@ -11,6 +11,7 @@ from conftest import OUTER_STUB_SIZE, build_le_image, write_manifest
 from isoimage import build_iso
 from reverseapoc.cli import main
 from reverseapoc.le import LE
+from reverseapoc.targets import load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
 
 
@@ -174,6 +175,47 @@ def test_rebuild_mismatch_exits_1(tmp_path, capsys, monkeypatch):
     assert line.startswith("MISMATCH")
     assert f"sha1 {got}" in line
     assert f"manifest {expected}" in line
+
+
+JSON_KEYS = {
+    "name",
+    "status",
+    "output",
+    "sha1",
+    "expected_sha1",
+    "first_diff",
+    "diff_bytes",
+    "masked_fields",
+}
+
+
+def test_rebuild_json_output(tmp_path, capsys):
+    _, _, out, args = _rebuild_setup(tmp_path)
+    assert main([*args, "--json"]) == 0
+    results = json.loads(capsys.readouterr().out)
+    assert isinstance(results, list)
+    assert len(results) == 1
+    (obj,) = results
+    assert set(obj) == JSON_KEYS
+    expected = load_manifest(tmp_path / "m.toml")[0].sha1
+    assert obj["name"] == "SYNTH.EXE"
+    assert obj["status"] == "ok"
+    assert obj["output"] == str(out / "SYNTH.EXE")
+    assert obj["sha1"] == obj["expected_sha1"] == expected
+    assert obj["first_diff"] is None
+    assert obj["diff_bytes"] == 0
+    assert obj["masked_fields"] == 0
+
+
+def test_rebuild_json_missing(tmp_path, capsys):
+    _, _, _, args = _rebuild_setup(tmp_path, orig_data=b"")
+    assert main([*args, "--json"]) == 1
+    (obj,) = json.loads(capsys.readouterr().out)
+    assert set(obj) == JSON_KEYS
+    assert obj["status"] == "missing"
+    assert obj["output"] is None
+    assert obj["sha1"] is None
+    assert obj["expected_sha1"] == load_manifest(tmp_path / "m.toml")[0].sha1
 
 
 # ---- fetch-watcom / install-watcom / check-watcom ----------------------------------------------
