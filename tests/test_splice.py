@@ -696,6 +696,29 @@ def test_mask_count_in_rebuild_result(tmp_path, synthetic_le):
     assert "masked" not in control.format(len(target.name))
 
 
+@pytest.mark.parametrize(
+    ("patches", "fields", "entries"),
+    [
+        ({0x10010: 2, 0x10012: 2}, 1, 2),
+        ({0x10010: 1, 0x10011: 2, 0x10013: 1}, 1, 3),
+        ({0x10FFE: 2, 0x11000: 2}, 1, 2),  # the page-straddling off32, split at the boundary
+        ({0x10010: 4, 0x10020: 4}, 2, 2),
+        ({0x10010: 2, 0x10012: 2, 0x10020: 4}, 2, 3),
+    ],
+    ids=["touching", "three-patches", "straddling", "two-fields", "mixed"],
+)
+def test_mask_count_counts_distinct_fields(tmp_path, synthetic_le, patches, fields, entries):
+    # WR-02: masked_fields counts each fixup field once, however many patches split it;
+    # SpliceResult.masked keeps one entry per (patch, field).
+    data = {va: bytes([PATCH_BYTE]) * n for va, n in patches.items()}
+    assert len(splice.splice(LE(synthetic_le.data), data).masked) == entries
+    _, target, result = _mutated_rebuild(tmp_path, data, img=synthetic_le)
+    assert result.status == "ok"  # every patched byte lies on a masked field
+    assert result.masked_fields == fields
+    assert f"masked {fields} fixup fields" in result.format(len(target.name))
+    assert result.to_json()["masked_fields"] == fields
+
+
 def test_mask_report_has_no_bytes(tmp_path, synthetic_le):
     patches = {0x10FFC: 8, 0x1101F: 8, 0x10010: 2}
     result, _ = _masked_splice(synthetic_le, patches)
