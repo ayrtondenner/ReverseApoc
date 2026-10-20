@@ -316,3 +316,71 @@ def test_assemble_rejects_wrong_end():
         assemble(0x20, [(0, bytes(0x10))])
     with pytest.raises(SpliceError, match=r"end at 0x21\b.*0x20\b"):
         assemble(0x20, [(0, bytes(0x21))])
+
+
+# ---- Plan 03-03 Task 1: linear-address patches and the mismatch report -------------------------
+# Patches here never hold a value the fixture pages are filled with, so a changed byte is visible.
+
+NO_FIXUPS = [b"", b"", b""]
+PATCH_BYTE = 0x5A  # no page of the 3-page fixture is filled with it
+
+
+def _no_fixups(**options):
+    return build_le_image(fixups=NO_FIXUPS, **options)
+
+
+def _changed(a: bytes, b: bytes) -> list[int]:
+    """File offsets where `a` and `b` differ (equal lengths)."""
+    assert len(a) == len(b)
+    return [i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y]
+
+
+def _sha1(data: bytes) -> str:
+    return hashlib.sha1(data).hexdigest()
+
+
+def test_splice_patch_lands_at_mapped_offset():
+    img = _no_fixups()
+    out = splice.splice(LE(img.data), {0x10800: bytes([PATCH_BYTE])}).data
+    assert len(out) == len(img.data)
+    assert _changed(out, img.data) == [img.page_offsets[0] + 0x800]
+    assert _sha1(out) != _sha1(img.data)
+
+
+def test_splice_empty_mapping_is_round_trip(synthetic_le):
+    out = splice.splice(LE(synthetic_le.data), {}).data
+    assert out == synthetic_le.data
+    assert _sha1(out) == _sha1(synthetic_le.data)
+
+
+def _mutated_rebuild(tmp_path, patches):
+    img = _no_fixups()
+    orig, manifest = _orig(tmp_path, img.data)
+    (target,) = load_manifest(manifest)
+    return img, target, rebuild_target(target, orig, tmp_path / "build", patches=patches)
+
+
+def test_rebuild_target_reports_mutation(tmp_path):
+    img, target, result = _mutated_rebuild(tmp_path, {0x10800: bytes([PATCH_BYTE])})
+    assert result.status == "mismatch"
+    assert not result.ok
+    assert result.first_diff == img.page_offsets[0] + 0x800
+    assert result.first_diff_region == "page 1 of object 1, VA 0x00010800"
+    assert result.first_diff_va == 0x10800
+    assert result.diff_bytes == 1
+    assert result.hashes.sha1 != target.sha1
+
+    control = rebuild_target(target, tmp_path / "orig", tmp_path / "control")
+    assert control.status == "ok"
+    assert control.hashes.sha1 == target.sha1
+
+
+def test_mutation_report_names_offset_without_bytes(tmp_path):
+    img, _, result = _mutated_rebuild(tmp_path, {0x10800: bytes([PATCH_BYTE])})
+    line = result.format(len(result.target.name))
+    assert line.startswith("MISMATCH")
+    assert f"first difference at {img.page_offsets[0] + 0x800:#x}" in line
+    assert "page 1 of object 1, VA 0x00010800" in line
+    assert "1 bytes differ" in line
+    assert f"{PATCH_BYTE:#x}" not in line  # the patch byte
+    assert f"{page_fill(1):#x}" not in line  # the original page byte
