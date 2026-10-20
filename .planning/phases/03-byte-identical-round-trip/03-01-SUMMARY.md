@@ -224,6 +224,10 @@ None - no external service configuration required.
 - Plans 03-03 (linear-address splice API), 03-04 (`--exe`/`--json`, parse-le trailer, diff report) and 03-05 (real-file round-trip tests, docs) can build on `layout`, `region_at`/`describe`, `decompose`/`reassemble`, `rebuild_target` and the `objects=`/`page_numbers=`/`trailer=` fixture options.
 - The MISMATCH line carries both SHA-1s; the first-differing-offset/region/count report (D-08) belongs to plan 03-04.
 
+## Self-Check: PASSED
+
+All 8 key files exist on disk; all 5 task commits (41bf5f5, 6b39282, 7a7498b, b7a325d, 72f15b4) are ancestors of HEAD; tests/test_hygiene.py passes with this SUMMARY present (24 passed, 3 container-only skips).
+
 ---
 *Phase: 03-byte-identical-round-trip*
 *Completed: 2026-10-20*
