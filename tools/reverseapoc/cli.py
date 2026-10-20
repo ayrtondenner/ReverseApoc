@@ -1,5 +1,5 @@
-"""`reverseapoc` command line: ingest, check-orig, parse-le, fetch-watcom, install-watcom,
-check-watcom."""
+"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, fetch-watcom,
+install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from pathlib import Path
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
+from .splice import DEFAULT_OUT, rebuild
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig
 from .watcom import (
     ARCHIVE_BASE,
@@ -46,6 +47,12 @@ def _cmd_parse_le(args: argparse.Namespace) -> int:
     else:
         print(format_summary(summary))
     return 0
+
+
+def _cmd_rebuild(args: argparse.Namespace) -> int:
+    report = rebuild(args.orig, args.out, args.manifest)
+    print(report.format())
+    return 0 if report.ok else 1
 
 
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
@@ -146,6 +153,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("file", type=Path)
     p.add_argument("--json", action="store_true", help="print the summary as JSON")
     p.set_defaults(func=_cmd_parse_le)
+
+    p = sub.add_parser(
+        "rebuild",
+        help="rebuild every target from orig/ into build/ and check its SHA-1 against "
+        "config/targets.toml",
+    )
+    orig_and_manifest(p)
+    p.add_argument("--out", type=Path, default=DEFAULT_OUT, help="default: %(default)s")
+    p.set_defaults(func=_cmd_rebuild)
 
     _add_watcom_commands(sub)
     return parser

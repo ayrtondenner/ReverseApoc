@@ -292,6 +292,13 @@ class LE:
         return self.objects[self.eip_obj - 1].base + self.eip
 
     @property
+    def pages_end(self) -> int:
+        """File offset just past the last data page (the short last page included)."""
+        if self.num_pages == 0:
+            return self.data_pages_offset
+        return self.data_pages_offset + (self.num_pages - 1) * self.page_size + self.last_page_size
+
+    @property
     def stack_va(self) -> int | None:
         if self.esp_obj == 0:
             return None
@@ -393,7 +400,7 @@ class LE:
                 if dst >= obj.vsize:
                     break
                 page = self.pages[obj.page_index + k - 1]
-                self._check_loadable(obj, page)
+                self.check_loadable(obj, page)
                 n = min(page.size, obj.vsize - dst)
                 flat[obj.base + dst : obj.base + dst + n] = self.data[
                     page.file_offset : page.file_offset + n
@@ -402,7 +409,8 @@ class LE:
             self._relocate(flat)
         return flat
 
-    def _check_loadable(self, obj: LEObject, page: LEPage) -> None:
+    def check_loadable(self, obj: LEObject, page: LEPage) -> None:
+        """Raise unless `page` of `obj` is a physical page whose bytes lie inside the file."""
         if page.flags != PAGE_PHYSICAL:
             name = PAGE_FLAG_NAMES.get(page.flags, "unknown")
             raise LEUnsupportedError(
