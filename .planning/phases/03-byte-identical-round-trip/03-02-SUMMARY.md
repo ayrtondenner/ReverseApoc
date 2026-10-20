@@ -189,6 +189,13 @@ None. No external service configuration is required.
 - The `verify` edge calls `uv run reverseapoc rebuild`, which plan 03-01 adds. After both plans merge, `python configure.py && ninja verify` in the container is the RT-03 end-to-end check for plan 03-05.
 - From now on, any new test under tests/ that hard-codes a manifest hash fails the suite. Round-trip tests must read expected SHA-1s through `load_manifest`.
 
+## Self-Check: PASSED
+
+- Files present: configure.py, tests/test_configure.py, tests/test_hygiene.py, this SUMMARY.
+- Commits on this branch: `ffddbff`, `700c6bd`, `db20946`, `dd00383`, and the SUMMARY commit `00c8421`.
+- `uv run pytest -q tests/test_hygiene.py` after the SUMMARY was written: 26 passed, 3 skipped (container-only). The phase-zero and TBD doc checks still pass with this file in .planning/.
+- Working tree clean after the commits.
+
 ---
 *Phase: 03-byte-identical-round-trip*
 *Completed: 2026-10-20*
