@@ -231,6 +231,14 @@ def test_fetch_content_length_mismatch(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_fetch_content_length_mismatch_keeps_an_earlier_part(tmp_path):
+    data = b"x" * 100
+    (tmp_path / "Test.iso.part").write_bytes(b"kept from an earlier hash mismatch")
+    r = fetch_media(_media(data), tmp_path, opener=FakeOpener(data, {"Content-Length": "99"}))
+    assert r.action == "mismatch"
+    assert (tmp_path / "Test.iso.part").read_bytes() == b"kept from an earlier hash mismatch"
+
+
 def test_fetch_oversize_body(tmp_path):
     data = b"x" * 100
     r = fetch_media(_media(data), tmp_path, opener=FakeOpener(data + b"x" * 500), chunk=64)
