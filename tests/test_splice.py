@@ -749,3 +749,110 @@ def test_rebuild_target_refuses_a_non_bare_name(tmp_path, name):
         rebuild_target(target, tmp_path / "orig", tmp_path / "build")
     assert repr(name) in str(exc.value)
     assert not (tmp_path / "build").exists()
+
+
+# ---- Plan 03-08 Task 2 (IN-01, IN-02, VN-01): pages counted within their object ----------------
+
+
+def test_region_labels_count_pages_within_the_object(synthetic_le):
+    off = synthetic_le.page_offsets[2] + 0x10  # object 2 starts at logical page 3
+    region = region_at(layout(LE(synthetic_le.data)), off)
+    assert region.describe(off) == "page 1 of object 2 (logical page 3), VA 0x00020010"
+    assert region.va_at(off) == 0x20010
+
+    img = _no_fixups(page_numbers=(3, 2, 1))  # physical page 1 holds logical page 3
+    regions = layout(LE(img.data))
+    offsets = [start + 0x10 for start in img.page_offsets]
+    labels = [region_at(regions, off).describe(off) for off in offsets]
+    assert labels == [
+        "page 1 of object 2 (logical page 3), VA 0x00020010 (physical page 1)",
+        "page 2 of object 1, VA 0x00011010",
+        "page 1 of object 1, VA 0x00010010 (physical page 3)",
+    ]
+
+
+def test_mismatch_label_in_a_later_object(tmp_path):
+    img, _, result = _mutated_rebuild(tmp_path, {0x20010: bytes([PATCH_BYTE])})
+    label = "page 1 of object 2 (logical page 3), VA 0x00020010"
+    assert result.status == "mismatch"
+    assert result.first_diff == img.page_offsets[2] + 0x10
+    assert result.first_diff_va == 0x20010
+    assert result.first_diff_region == label
+    assert result.to_json()["first_diff"]["region"] == label
+
+
+ONE_PAGE_PAST_VSIZE = [(0x800, 0x10000, 0x2045, 1, 2), (0x3000, 0x20000, 0x2043, 3, 1)]
+TWO_PAGE_SECOND_OBJECT = [(0x1000, 0x10000, 0x2045, 1, 1), (0x1100, 0x20000, 0x2043, 2, 2)]
+
+UNWRITABLE_REASONS = [
+    pytest.param(
+        {"page_numbers": (3, 2, 1)},
+        0x10400,
+        "0x10400 is past the page data of page 1 of object 1",
+        "BSS",
+        id="short-page-hole",
+    ),
+    pytest.param(
+        {"objects": ONE_PAGE_PAST_VSIZE},
+        0x10800,
+        "0x10800 is past the end of object 1 (vsize 0x800) in page 1 of object 1",
+        "last page",
+        id="past-vsize-page-1",
+    ),
+    pytest.param(
+        {"objects": ONE_PAGE_PAST_VSIZE},
+        0x11000,
+        "0x11000 is past the end of object 1 (vsize 0x800) in page 2 of object 1",
+        "last page",
+        id="past-vsize-page-2",
+    ),
+    pytest.param(
+        {"objects": TWO_PAGE_SECOND_OBJECT},
+        0x21100,
+        "0x21100 is past the end of object 2 (vsize 0x1100) in page 2 of object 2 (logical page 3)",
+        "last page",
+        id="later-object",
+    ),
+]
+
+
+@pytest.mark.parametrize(("options", "va", "expected", "absent"), UNWRITABLE_REASONS)
+def test_unwritable_reason_names_the_page(options, va, expected, absent):
+    message = _refused(_no_fixups(**options), {va: bytes([PATCH_BYTE])})
+    assert expected in message
+    assert absent not in message
+
+
+def test_rebuild_result_names_the_input_path(tmp_path):
+    data = build_le_image().data
+    manifest = write_manifest(tmp_path / "custom.toml", {"SYNTH.EXE": data})
+    (target,) = load_manifest(manifest)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    path = elsewhere / "SYNTH.EXE"
+    out = tmp_path / "out"
+
+    missing = rebuild_target(target, elsewhere, out)
+    assert missing.status == "missing"
+    assert missing.source == path
+    assert str(path) in missing.format(9)
+
+    changed = bytearray(data)
+    changed[-1] ^= 0xFF
+    path.write_bytes(bytes(changed))
+    refused = rebuild_target(target, elsewhere, out)
+    assert refused.status == "refused"
+    assert refused.source == path
+    line = refused.format(9)
+    assert str(path) in line
+    assert "the manifest" in line
+    report = rebuild(elsewhere, out, manifest).format()
+    assert str(path) in report
+    assert str(manifest) in report
+    assert "config/targets.toml" not in report
+
+    as_json = refused.to_json()
+    assert len(as_json) == 8
+    assert "source" not in as_json
+    assert "manifest" not in as_json
+    assert not out.exists()
