@@ -44,7 +44,8 @@ Facts the research established:
    `WIBO_DEBUG=1` it calls `GetModuleFileNameA` and then opens `..\BINW\WCC386.EXE` relative to
    its own path. PATH, `WATCOM`, DOS4GW and W32RUN are not needed; a tree needs `BINNT/`,
    `BINW/` and `H/`. 11.0's BINNT compiler is native (`WCC386.EXE` + `WCCD386.DLL`). The 10.6
-   BINW compiler is an LE program; the decoded 10.5 one is an LX image (plan 04-03).
+   BINW compiler is an LX image, as are the 10.5 and 11.0 ones (`LX` at e_lfanew 0xE38 in all
+   three; plan 04-03 decoded the 10.5 one first).
 2. **Paths.** wibo maps `Z:\` to `/` and resolves relative paths against the cwd. Forward slashes
    break the command line (Watcom reads `/` as an option switch).
 3. **Headers.** Without `-i=` or `INCLUDE`, `#include <stdio.h>` fails. `-i=<tree>\H` works;
