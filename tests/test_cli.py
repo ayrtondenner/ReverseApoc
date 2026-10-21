@@ -175,6 +175,28 @@ def test_rebuild_refuses_target_name_with_a_path(tmp_path, capsys):
     assert not out.exists()
 
 
+INVALID_TOML = '[[targets]\nname = "A.EXE"\n'
+
+
+@pytest.mark.parametrize(
+    "verb",
+    [["check-orig"], ["rebuild"], ["rebuild", "--json"]],
+    ids=["check-orig", "rebuild", "rebuild-json"],
+)
+def test_malformed_manifest_is_an_error_line(tmp_path, capsys, verb):
+    # IN-06: one error line and exit 1, not a traceback (no JSON error status: WR-04, Phase 6)
+    bad = tmp_path / "bad.toml"
+    bad.write_text(INVALID_TOML, encoding="utf-8")
+    args = [*verb, "--orig", str(tmp_path / "orig"), "--manifest", str(bad)]
+    if verb[0] == "rebuild":
+        args += ["--out", str(tmp_path / "build")]
+    assert main(args) == 1
+    err = capsys.readouterr().err
+    assert f"reverseapoc {verb[0]}: error:" in err
+    assert str(bad) in err
+    assert not (tmp_path / "build").exists()
+
+
 def test_rebuild_mismatch_exits_1(tmp_path, capsys, monkeypatch):
     import reverseapoc.splice as splice
 

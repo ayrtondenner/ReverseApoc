@@ -35,7 +35,7 @@ from reverseapoc.splice import (
     rebuild_target,
     region_at,
 )
-from reverseapoc.targets import load_manifest
+from reverseapoc.targets import ManifestError, Target, load_manifest
 
 
 def _orig(tmp_path, data: bytes, name: str = "SYNTH.EXE"):
@@ -736,3 +736,16 @@ def test_mask_report_has_no_bytes(tmp_path, synthetic_le):
     line = rebuilt.format(len(target.name))
     assert "masked 3 fixup fields" in line
     assert not any(f"{b:#x}" in line for b in markers)
+
+
+# ---- Plan 03-08 Task 1 (IN-07): rebuild_target refuses a hand-built non-bare name ---------------
+
+
+@pytest.mark.parametrize("name", ["NUL", "SUB/X.EXE", "A:B"])
+def test_rebuild_target_refuses_a_non_bare_name(tmp_path, name):
+    # built directly, so load_manifest never saw it; the digests are placeholders, not hashes
+    target = Target(name=name, path="SUB/X", size=1, md5="0" * 32, sha1="0" * 40)
+    with pytest.raises(ManifestError) as exc:
+        rebuild_target(target, tmp_path / "orig", tmp_path / "build")
+    assert repr(name) in str(exc.value)
+    assert not (tmp_path / "build").exists()
