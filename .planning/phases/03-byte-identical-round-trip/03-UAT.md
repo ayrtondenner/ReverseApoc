@@ -3,17 +3,16 @@ status: testing
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-20T23:19:34Z
+updated: 2026-10-21T01:38:16Z
 ---
 
 ## Current Test
 
-number: 4
-name: 03-06 changed nothing outside WR-02, WR-05 and WR-06 (judgment-tier prohibition)
+number: 6
+name: Triage of the open review findings after the re-review (03-REVIEW-DISPOSITION.md)
 expected: |
-  `git diff 9158a03 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the
-  masked-count line (splice.py:635) and two comments; cli.py is unchanged; configure.py's HEADER
-  comments and descriptions are byte-identical apart from the two `--orig {orig}` command lines.
+  WR-07, IN-09, IN-10, IN-11 (and the still-open IN-01..IN-08) each set to fix now, deferred
+  (with phase/reason) or skipped; verifier judgment: none breaks a Phase 3 must-have.
 awaiting: user response
 
 ## Tests
@@ -34,22 +33,24 @@ severity: major
 
 ### 4. 03-06 changed nothing outside WR-02, WR-05 and WR-06 (judgment-tier prohibition)
 expected: `git diff 9158a03 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the masked-count line (splice.py:635) and two comments; cli.py unchanged; configure.py HEADER comments/descriptions byte-identical apart from the two `--orig {orig}` command lines (verifier's non-authoritative check: holds)
-result: [pending]
+result: pass
 
 ### 5. 03-06 did not edit orig/, config/ or the Docker files, nor configure.py during the gate (judgment-tier prohibition)
 expected: no commit after 918b4f9 touches configure.py; gate logs stamped after it; `git diff 9158a03 HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest (verifier's non-authoritative check: holds)
-result: [pending]
+result: pass
 
 ### 6. Triage of the open review findings after the re-review (03-REVIEW-DISPOSITION.md)
 expected: WR-07, IN-09, IN-10, IN-11 (and the still-open IN-01..IN-08) each set to fix now, deferred (with phase/reason) or skipped; verifier judgment: none breaks a Phase 3 must-have; WR-07 is a real hole next to the WR-06 contract but cannot occur with the three ASCII-named targets
-result: [pending]
+result: issue
+reported: "Fix now for them all"
+severity: major
 
 ## Summary
 
 total: 6
-passed: 2
-issues: 1
-pending: 3
+passed: 4
+issues: 2
+pending: 0
 skipped: 0
 blocked: 0
 
@@ -78,6 +79,15 @@ blocked: 0
     - "Pass the orig dir into render() and emit --orig <dir> in check_orig and rebuild commands; update test_configure.py:73 deliberately"
     - "Refuse exe names containing |, LF or CR and an --orig dir with characters unsafe on host and container, with a clear configure error; keep parse-le $in unquoted and names with spaces working"
   debug_session: ".planning/debug/phase3-wr02-wr05-wr06.md"
+
+- gap_id: G-03-6
+  truth: "Every open review finding after the 03-06 re-review is fixed in Phase 3: WR-07, IN-01..IN-11, and the verifier's note that REFUSED/MISSING lines always say orig/<NAME> (owner triage, UAT test 6)"
+  status: failed
+  reason: "User reported: Fix now for them all"
+  severity: major
+  test: 6
+  artifacts: []
+  missing: []
 
 ## Deferred Follow-Ups
 
