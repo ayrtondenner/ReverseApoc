@@ -199,11 +199,11 @@ calibration skipped: 10.5
 ### Reading the verdict, and what plan 04-11 must look at
 
 - **Research claims that hold** (asserted in `test_exe_consistent_cells`): no `-3r` cell is consistent (setcc;and with no movzx), no 11.0 `-5` cell is consistent (11.0 branches at `-5`), and 10.6 `-5r` cells are consistent.
-- **Research claims that do not hold:** "no 11.0" and "no `-4r`". The rep movsd hits keep both versions' `-4r` cells, which emit setcc;and plus `mov ecx,5 .. rep movsd`. The decisive families cannot separate 10.6 `-4r` from 11.0 `-4r`. Ties: none, because no two consistent cells share flags with equal hashes. Per D-07/D-10 this stays a mix and is not voted apart. The loop shapes favour rotation (10.x) in both EXEs, but they are not decisive and the rule does not read them. The runtime-library evidence (11 modules match only 10.6, 04-07) is separate evidence for 04-11 to weigh.
+- **Research claims that do not hold:** "no 11.0" and "no `-4r`". The rep movsd hits keep both versions' `-4r` cells, which emit setcc;and plus `mov ecx,5 .. rep movsd`. The decisive families cannot separate 10.6 `-4r` from 11.0 `-4r`. Ties: none, because no two consistent cells share flags with equal hashes. Per D-07/D-10 this stays a mix and is not voted apart. The loop shapes favour rotation (10.x) in both EXEs, but they are not decisive and the rule does not read them. The runtime-library evidence (11 modules match only 10.6, 04-07) is separate evidence for 04-11 to weigh. *(Review fix round 1, 2026-10-21: the struct_copy family removes no cell, so the ten consistent cells are exactly the cells that emit setcc;and, and the list is not checked against the convention and fpu lines, which contradict two of its cells. See "Review fix round 1" below.)*
 - **Struct-copy size (throwaway experiment, nothing committed; counts only).** The probe calibrates only a 5-dword copy. I compiled 4, 6, 8 and 16-dword struct copies (`build/probe-exp/`, gitignored) with 10.6 and 11.0 at `-4r -s`, `-5r -s` and `-5r -s -ox`:
   - 4 dwords: movsd_unrolled 1, rep_movsd_small 0 in every cell.
   - 6, 8 and 16 dwords: movsd_unrolled 0, rep_movsd_small 1 in every cell.
-  So only the 5-dword size separates `-4` (rep) from `-5` (unrolled). In the game, every unrolled run is 2 to 4 movsd long (UFO2P 48/13/14, TACP 26/8/1 runs of length 2/3/4), which `-4r` emits too. Of the rep hits, UFO2P's 4 all copy 6 to 16 dwords, consistent with `-4` and `-5` alike. TACP has 1 rep copy of 6 to 16 dwords and **1 of exactly 5 dwords**, the calibrated `-4`-style copy (at `-5` it would be unrolled). The research's "unrolled movsd = -5 struct copy" therefore does not follow from these counts. The struct-copy family decides little beyond the 5-dword size, and TACP's one 5-dword rep copy points to at least one `-4` (or `-3`) module. I did not change the counters, the rule or the calibration; this is for 04-11 (and possibly a sized struct-copy probe).
+  So only the 5-dword size separates `-4` (rep) from `-5` (unrolled). In the game, every unrolled run is 2 to 4 movsd long (UFO2P 48/13/14, TACP 26/8/1 runs of length 2/3/4), which `-4r` emits too. Of the rep hits, UFO2P's 4 all copy 6 to 16 dwords, consistent with `-4` and `-5` alike. TACP has 1 rep copy of 6 to 16 dwords and **1 of exactly 5 dwords**, the calibrated `-4`-style copy (at `-5` it would be unrolled). The research's "unrolled movsd = -5 struct copy" therefore does not follow from these counts. The struct-copy family decides little beyond the 5-dword size, and TACP's one 5-dword rep copy points to at least one `-4` (or `-3`) module. I did not change the counters, the rule or the calibration; this is for 04-11 (and possibly a sized struct-copy probe). *(Review fix round 1, 2026-10-21: this reading understated the `-4` evidence. rep_movsd_small sees only register-to-register moves between `mov ecx` and `rep movsd`, so it misses most rep copies. With a sized count (`probe scan` now prints it), UFO2P's struct copies are not neutral: it has two 22-byte rep copies (5 dwords, then a movsw), a size every `-5r` option unrolls. TACP has five 20-byte and one 21-byte rep copies. Neither EXE has an unrolled 5-dword run. See "Review fix round 1" below.)*
 - **Calling convention:** no row matches only 3S libraries in either EXE. The 18 rows listing CLIB3S also list CLIB3R (the shared asm modules), so the line reads register convention.
 - **FPU:** one EMU387 row and no NOEMU387 row, so some object requested emu387 (`-fpi`). The A3 caveat stays in the line.
 - **Stack checks:** the 40/32 calls sit in the 0x10000 and 0xB0000 blocks, below `_cstart_` (research A6). Phase 5 maps them to translation units.
@@ -304,7 +304,7 @@ None.
 ## Next Phase Readiness
 
 - Plan 04-11 can cite `uv run reverseapoc probe calibrate` and `uv run reverseapoc probe scan <EXE> --calibration build/probe/calibration.json` verbatim. Both outputs hold counts, block addresses and library or module names only.
-- 04-11 must weigh the struct-copy size finding and the `-4r` mix above, together with the runtime-library evidence, before writing the version and flags into docs/toolchain.md. Once 10.5 is reinstalled, `probe calibrate` adds the 10.5 cells and the ties among the consistent ones.
+- 04-11 must weigh the struct-copy size finding and the `-4r` mix above, together with the runtime-library evidence, before writing the version and flags into docs/toolchain.md. Once 10.5 is reinstalled, `probe calibrate` adds the 10.5 cells and the ties among the consistent ones. *(Review fix round 1: for the CPU option, read "What 04-11 should conclude" below.)*
 
 ## Self-Check: PASSED
 
@@ -318,6 +318,78 @@ None.
 - Plan verification:
   - Real file (overrides set): 50 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused"; there is no skip for 10.6, 11.0, the runner or orig.
   - `uv run pytest -q`: 818 passed, 135 skipped. `uv run ruff check .`: All checks passed!
+
+## Review fix round 1 (2026-10-21)
+
+The 04-10 review found that the struct-copy reading 04-11 would use understates the `-4` evidence (Important I-1), and that the `consistent:` header does not say what filtered the cells (Minor M1). Under the controller's ruling, the calibrated counters, the consistency rule and the calibration are unchanged. Instead, `probe scan` now also prints a sized struct-copy count. It is labelled as `-4`/`-5` evidence, not as a calibrated idiom, and `consistent_cells` never reads it. The other minors (M2-M5) are left as they were.
+
+| Commit | Change |
+|---|---|
+| `0fe2dfc` test(04-10) | Failing tests first: synthetic encodings for the run-length histogram and the sized rep-copy recogniser, the sibling evidence line, the scan JSON key and the new header. Real tests pin the measured breakdown per EXE and check the breakdown on the probe's own objects. Seen failing against the pre-fix code: 16 failed (missing `copy_sizes`, JSON key, line and header), every older test passed. |
+| `ca2486f` fix(04-10) | `probe.copy_sizes` and `CopySizes`; `ExeScan.copy_sizes`; `struct_copy_sizes` in the scan JSON; a `struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):` line right after the `cpu:` line; the header `consistent (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines): N of M calibration cells`. |
+
+### What the sized count recognises
+
+- **Size keys.** `n` is n dwords. `n+k` means k more bytes follow at once, by movsw (2), movsb (1) or both (3), so the struct is 4n+k bytes. Unrolled runs of 6 or more movsd share the key `>=6` (`RUN_LONG`). A rep count outside 1..16 is `other`.
+- **Runs** are exactly the movsd_unrolled runs (their sum equals movsd_unrolled, which a real test asserts), now split by length and tail.
+- **Rep copies** start at `mov ecx,imm32` (count 1..16 by value) and are followed, within `REP_COPY_WINDOW` = 24 bytes, by `rep movsd`. Every byte between must belong to a setup instruction: `mov r32,r/m32` (8B), `mov r/m32,r32` (89), `lea r32,m` (8D) or `mov r32,imm32` (B8+r), in any addressing form, writing any register but ecx. That covers the esi/edi loads and the loads or stores of other registers the compiler schedules between. The longest setup measured in the game is 15 bytes. One copy is counted per `rep movsd`.
+- **Masking and exclusion.** These follow count_idioms' rules. The pieces are `mov ecx,imm32` (its count is read), the opcode, ModRM and SIB bytes of each setup instruction, `rep movsd` and the tail. A masked byte in any piece drops the copy. A setup's displacement or immediate lies between pieces and may be a fixup, such as `mov esi,offset global`: only its length is used. A copy touching a runtime row by one byte is dropped. A masked byte after the copy is an operand, never a movsw or movsb tail.
+- **Not recognised.** These are counted neither way:
+  - any other instruction between the count and the copy (arithmetic, byte or word moves, push/pop, calls, prefixed instructions);
+  - a count loaded another way;
+  - `sub esp,imm` between (a by-value argument);
+  - a `jmp` into a `rep movsd` that another function shares (cross-function tail merging, seen in a one-file clean-room build).
+  Measured in non-library code (counts only): no copy of the last two forms in either EXE. A loose window (`mov ecx,1..16`, then `rep movsd` within 24 bytes) finds 32 (UFO2P) and 30 (TACP); the recogniser takes 16 and 19 of them. Of the loose 5-dword pairs it leaves out, UFO2P's 3 have no mov/lea load ending at the `rep movsd`, so they are not read as copies. TACP's 2 have a 2-byte arithmetic instruction after `mov ecx,5` and three loads ending at the rep, so they are likely 5-dword copies; they would add to TACP's `-4` count, not change it.
+
+### The breakdown per EXE (host, `uv run reverseapoc probe scan <EXE> --calibration build/probe/calibration.json`)
+
+```
+UFO2P: struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled movsd runs by length 2: 18, 2+1: 16, 2+2: 14, 3: 2, 3+1: 1, 3+2: 5, 3+3: 5, 4: 7, 4+1: 5, 4+2: 2; mov ecx,n .. rep movsd by n 5+2: 2, 7: 8, 10: 2, 11+2: 1, 12: 3, other: 14 (source: ...)
+TACP:  struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled movsd runs by length 2: 19, 2+2: 6, 2+3: 1, 3: 6, 3+2: 1, 3+3: 1, 4: 1; mov ecx,n .. rep movsd by n 5: 5, 5+1: 1, 9: 1, 10: 6, 10+2: 1, 11+2: 1, 12: 2, 14: 2, other: 30 (source: ...)
+```
+
+- Runs by length (all tails): UFO2P 48 / 13 / 14 of 2 / 3 / 4 movsd, TACP 26 / 8 / 1. This is the review's count. Neither EXE has a run of 5 or more, with or without a tail.
+- Five-dword rep copies: UFO2P 2, both `5+2` (22 bytes). TACP 6: five `5` (20 bytes) and one `5+1` (21 bytes).
+- Every rep_movsd_small hit (4 / 2) is also a sized copy (UFO2P `7` ×3 and `11+2`, TACP `5` and `11+2`).
+
+### Which sizes separate `-4` from `-5` (probe calibration, part B)
+
+- **On the probe itself** (committed real test `test_calibration_copy_sizes`): pr_copy's 5-dword copy reads as one rep copy `5` in every `-3r`/`-4r` cell and as one unrolled run `5` in every `-5r`/`-5s` cell, for 10.6 and 11.0 (20 cells).
+- **Throwaway sizes experiment.** This is our own C89, built under `build/probe-sizes*/` (gitignored); nothing is committed and only counts are recorded. Each size was copied five ways: `*d = *s`, into a global, into an array element, into a local, and passed by value. Each struct used `#pragma pack(1)` and a compile-time size check, so it is exactly 4n+k bytes. Compiler: 10.6 and 11.0, read-only trees.
+  - The table is from the second run: one construct per source, 2, 3, 4, 5, 6, 8 and 16 dwords with tails 0 and 2, plus 4-6 dwords with tails 1 and 3, over the seven flag sets shown.
+  - The first run put all five constructs in one file (2-8 and 16 dwords, every tail, plus `-3r -s`). It agrees for the pointer and local copies. Its global and array copies jumped to another function's shared `rep movsd` (tail merging), so the second run separated them.
+  - The table is the same for both versions. Letters are per construct (pointer, global, array, local, by-value): R is one rep copy of exactly that size, U one unrolled run of that size, `-` neither shape.
+
+| size (bytes) | `-4r -s` | `-4r -s -ox` | `-5r -s` | `-5r -s -ox` | `-5r -s -oneatx` | `-5r -s -os` | `-5r` |
+|---|---|---|---|---|---|---|---|
+| 2, 2+2, 3, 3+2, 4 (8, 10, 12, 14, 16) | UUUU- | UUUU- | UUUU- | UUUU- | UUUU- | UUUU- | UUUU- |
+| 4+1, 4+2, 4+3 (17-19) | UUUUU | UUUUU | UUUUU | UUUUU | UUUUU | UUUUU | UUUUU |
+| **5, 5+1, 5+2, 5+3 (20-23)** | **RRRR-** | **RRRR-** | **UUUUU** | **UUUUU** | **UUUUU** | **UUUUU** | **UUUUU** |
+| 6, 6+1, 6+2 (24-26) | RRRR- | RRRR- | RRRR- | RRRR- | RRRR- | UUUUU | RRRR- |
+| 6+3, 8+2, 16+2 (27, 34, 66) | RRRR- | RRRR- | RRRR- | RRRR- | RRRR- | ----- | RRRR- |
+| 8, 16 (32, 64) | RRRR- | RRRR- | RRRR- | RRRR- | RR-R- | RRRR- | RRRR- |
+
+- **Only 5 dwords, with any 0-3 byte tail (20-23 bytes), separate `-4` from `-5`.** They use rep at `-4r` and `-4r -ox`, and are unrolled at `-5r` under every option tried (`-s`, `-ox`, `-oneatx`, `-os`, no `-s`). That holds for all five constructs: the by-value copy unrolls at `-5r`, and at `-4r` it is the unrecognised `sub esp` form. Sizes 2-4 unroll at both. Sizes 6 and up use rep at both, except that `-os` also unrolls 6 dwords, and 7 in the first run.
+- The first (one-file) run adds `-3r`: 4 dwords with any tail use rep at `-3r` but are unrolled at `-4r`/`-5r`. So the game's unrolled 4-dword runs (UFO2P 14, TACP 1) also say "not `-3r`", which agrees with setcc;and.
+
+### Corrected readings
+
+1. **The counted rep idiom misses most rep copies.** rep_movsd_small allows only register-to-register moves between `mov ecx` and `rep movsd`. It reads 0 for a copy into a global, an array element or a local whose esi/edi come from `lea` or a memory load. The game has 32 / 30 loose `mov ecx,1..16 .. rep movsd` pairs against 4 / 2 counted; the sized recogniser takes 16 / 19, plus 14 / 30 with a count above 16.
+2. **Both EXEs lean `-4` on struct copies.** Both have 5-dword rep copies (UFO2P 2, TACP 6) and no 5-dword unrolled run, while `-5r` unrolls every 5-dword copy tried. UFO2P's struct copies are not "consistent with `-4` and `-5` alike": its two copies of 5 dwords plus a movsw are the `-4` form.
+3. **The struct_copy family is inert.** Every calibration cell emits exactly one of rep_movsd_small and movsd_unrolled, and both EXEs show both, so the family removes no cell. The ten consistent cells are exactly the cells that emit setcc;and. The list reflects only the decisive idiom families (the header now says so). The calling-convention line contradicts `10.6 -5s -s` (0 rows only in 3S libraries). The fpu line contradicts `10.6 -5r -s -fpi87` (one EMU387 row, modulo A3).
+
+### What 04-11 should conclude for `-4r` vs `-5r`
+
+- **UFO2P: `-4r`.** The struct copies give only `-4` evidence: two 22-byte rep copies (a size `-5r` unrolls under every option tried) and no unrolled 5-dword run. Byte compares (setcc;and 30, movzx 0) fit `-4r` and 10.6 `-5r` alike, rule out `-3r`, and rule out 11.0 `-5` (which branches). So no idiom supports `-5r` in UFO2P, and the functions holding the two copies contradict it. The evidence is two sites, so record it as the measured reading, with the caveat below.
+- **TACP: `-4r`.** Six recognised 5-dword rep copies (five 20-byte, one 21-byte), two more likely ones not recognised, and no unrolled 5-dword run. The byte-compare reading is the same as UFO2P's. This is stronger evidence than UFO2P's.
+- **Both.** Write `-4r`, not `-5r`, for both EXEs. Per D-09 this is a per-EXE finding, not an assumption. The caveat: struct copies speak only for the modules that copy a 5-dword struct, so a module built at `-5` that copies none would not show. State this as "no `-5` evidence", not "no `-5` modules"; Phase 5 matches confirm it. The struct-copy shapes are the same on 10.6 and 11.0 at every size tried, so they do not decide the version. That stays with the runtime-library and loop-shape evidence. The consistent-cell list keeps 10.6 `-5r` cells only because the struct_copy family is inert; it is not support for `-5r`.
+
+### Verification (fix round 1)
+
+- `uv run pytest -q tests/test_probe.py tests/test_cli.py`: 138 passed. A mutation check broke 15 parts of the new code one at a time (ecx writes allowed, setup pieces dropped, the window one byte wider, no dedupe, the tail mask ignored, the two disp32 ModRM forms, lea with a register operand, a memory store read as a register write, runs or reps not excluded, the `other` and `>=6` buckets, the tail not a piece, no sibling line). Each one failed a test; probe.py was restored after each.
+- `REVERSEAPOC_ORIG=../../../orig REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom uv run pytest -q -rs tests/test_probe_real.py`: 53 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused"; there is no skip for 10.6, 11.0 or orig.
+- `uv run pytest -q`: 826 passed, 138 skipped. `uv run ruff check .`: All checks passed!
+- `uv run reverseapoc probe calibrate --versions 10.6 11.0 --watcom-dir ../../../third_party/watcom` and `probe scan UFO2P.EXE` / `TACP.EXE --orig ../../../orig --calibration build/probe/calibration.json` (text and `--json`) print the lines above. The `consistent` list is the same ten cells, under the new header. Output holds counts, size keys, addresses and names only.
 
 ---
 *Phase: 04-compiler-identification*

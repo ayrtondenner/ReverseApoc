@@ -8,6 +8,7 @@ object or the game.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -635,6 +636,7 @@ EVIDENCE_PREFIXES = (
     "calling convention:",
     "fpu:",
     "cpu:",
+    "struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):",
     "stack checks:",
     "memory model:",
     "shapes (not decisive):",
@@ -668,7 +670,7 @@ def test_flag_evidence_lines():
                           switch_ascending=2)  # fmt: skip
     lines = probe.flag_evidence(_scan_le({}), rows, scan)
     assert tuple(line.split(":")[0] + ":" for line in lines) == EVIDENCE_PREFIXES
-    convention, fpu, cpu, stack, memory, shapes = lines
+    convention, fpu, cpu, _sizes, stack, memory, shapes = lines
     assert "3R only 4 rows" in convention and "3S only 1 row" in convention
     assert "both 1 row" in convention and "(source: runtime rows)" in convention
     assert "mixed" in convention  # a mix is reported as a mix, never voted apart (D-07)
@@ -688,7 +690,7 @@ def test_flag_evidence_lines():
 
 def test_flag_evidence_without_rows():
     scan = _evidence_scan()
-    convention, fpu, _cpu, stack, *_ = probe.flag_evidence(_scan_le({}), [], scan)
+    convention, fpu, _cpu, _sizes, stack, *_ = probe.flag_evidence(_scan_le({}), [], scan)
     assert "no evidence" in convention
     assert "EMU387 0 rows" in fpu
     assert "no runtime row publishes __CHK" in stack
@@ -771,3 +773,156 @@ def test_calibration_from_json_refuses_malformed_shapes(change, problem):
     data = change(_hand_calibration().to_json())
     with pytest.raises(probe.ProbeError, match=problem):
         Calibration.from_json(data)
+
+
+# ---- plan 04-10 review fix round 1: struct copies by size (cpu -4/-5 evidence, not calibrated) ---
+
+MOV_ECX_7 = b"\xb9\x07\x00\x00\x00"  # mov ecx,7
+LEA_EDI_EBP = b"\x8d\x7d\xec"  # lea edi,[ebp-14h] (ModRM mod=01: disp8)
+MOV_ESI_IMM32 = b"\xbe\x00\x10\x02\x00"  # mov esi,offset 21000h (B8+6 id)
+LEA_ESI_ESP = b"\x8d\xb4\x24\x00\x01\x00\x00"  # lea esi,[esp+100h] (mod=10, SIB, disp32)
+MOV_EDI_TABLE = b"\x8b\x3c\x85\x00\x00\x02\x00"  # mov edi,[eax*4+20000h] (SIB, no base: disp32)
+MOV_EDI_ABS = b"\x8b\x3d\x00\x00\x02\x00"  # mov edi,[20000h] (mod=00, rm=101: disp32)
+MOV_EAX_ARG = b"\x8b\x45\x08"  # mov eax,[ebp+8]: a load of another register
+MOV_LOCAL_EAX = b"\x89\x45\xfc"  # mov [ebp-4],eax: a store to memory
+MOVSW = b"\x66\xa5"  # movsw
+MOVSB = b"\xa4"  # movsb
+# A copy into a global: mov ecx,5 (0-4); lea edi,[ebp-14h] (5-7); mov esi,offset (8-12, the
+# imm32 at 9-12); rep movsd (13-14).
+COPY_GLOBAL = MOV_ECX_5 + LEA_EDI_EBP + MOV_ESI_IMM32 + REP_MOVSD
+COPY_GLOBAL_IMM32 = frozenset(range(9, 13))  # the relocated address of mov esi,offset
+
+
+def _sizes(code: bytes, **kwargs) -> tuple[dict[str, int], dict[str, int]]:
+    sizes = probe.copy_sizes(code, **kwargs)
+    return sizes.runs, sizes.reps
+
+
+def test_copy_sizes_runs_by_length():
+    code = b"\xa5" * 2 + b"\x90" + b"\xa5" * 3 + b"\x90" + b"\xa5" * 5 + b"\x90" + b"\xa5" * 7
+    assert _sizes(code) == ({"2": 1, "3": 1, "5": 1, ">=6": 1}, {})
+    # the same runs as movsd_unrolled: one per run, a rep movsd is none, a fixup byte splits
+    assert sum(_sizes(code)[0].values()) == count_idioms(code)["movsd_unrolled"]
+    assert _sizes(b"\xf3\xa5\xa5") == ({}, {})  # rep movsd; movsd
+    assert _sizes(b"\xa5" * 5, mask=frozenset({2})) == ({"2": 2}, {})
+    base = 0x10000
+    assert _sizes(code, base=base, exclude=[(base, base + 1)]) == ({"3": 1, "5": 1, ">=6": 1}, {})
+
+
+def test_copy_sizes_run_tails():
+    # n+k: n movsd, then k bytes by movsw (2), movsb (1) or both (3), right after the run
+    assert _sizes(b"\xa5" * 5 + MOVSW) == ({"5+2": 1}, {})
+    assert _sizes(b"\xa5" * 2 + MOVSB) == ({"2+1": 1}, {})
+    assert _sizes(b"\xa5" * 4 + MOVSW + MOVSB) == ({"4+3": 1}, {})
+    assert _sizes(b"\xa5" * 6 + MOVSW) == ({">=6": 1}, {})  # long runs share one key
+    # a masked tail byte is an operand, never movsw or movsb
+    assert _sizes(b"\xa5" * 5 + MOVSW, mask=frozenset({5})) == ({"5": 1}, {})
+    assert _sizes(b"\xa5" * 2 + MOVSB, mask=frozenset({2})) == ({"2": 1}, {})
+
+
+def test_copy_sizes_rep_by_count():
+    assert _sizes(REP_MOVSD_5) == ({}, {"5": 1})  # adjacent
+    assert _sizes(REP_MOVSD_GAPPED) == ({}, {"5": 1})  # the probe's register moves
+    assert _sizes(COPY_GLOBAL) == ({}, {"5": 1})  # lea edi; mov esi,offset
+    # esi/edi from every mov/lea form, and loads or stores of other registers scheduled between
+    for setup in (
+        LEA_ESI_ESP + MOV_EDI_TABLE,
+        MOV_EDI_ABS + MOV_EAX_ARG + MOV_ESI_EDX,
+        MOV_EDI_EAX + MOV_LOCAL_EAX + LEA_ESI_ESP,
+        b"\x8b\xf8\x8b\xf2",  # mov edi,eax; mov esi,edx as 8B /r
+        MOV_EDI_EAX + b"\x89\x01" + MOV_ESI_EDX,  # mov [ecx],eax stores through ecx, keeps it
+    ):
+        assert _sizes(MOV_ECX_7 + setup + REP_MOVSD) == ({}, {"7": 1}), setup
+    # the count: 1..16 by value, anything else (0, 17, a count above 255) is "other"
+    for count, key in ((1, "1"), (16, "16"), (0, "other"), (17, "other"), (0x105, "other")):
+        code = b"\xb9" + count.to_bytes(4, "little") + MOV_EDI_EAX + REP_MOVSD
+        assert _sizes(code) == ({}, {key: 1}), count
+    # tails after rep movsd, as for the runs
+    assert _sizes(COPY_GLOBAL + MOVSW) == ({}, {"5+2": 1})
+    assert _sizes(COPY_GLOBAL + MOVSB) == ({}, {"5+1": 1})
+    assert _sizes(COPY_GLOBAL + MOVSW + MOVSB) == ({}, {"5+3": 1})
+    assert _sizes(COPY_GLOBAL + MOVSW, mask=frozenset({len(COPY_GLOBAL)})) == ({}, {"5": 1})
+
+
+def test_copy_sizes_rep_window():
+    # up to REP_COPY_WINDOW = 24 setup bytes between mov ecx and rep movsd, not 25
+    assert probe.REP_COPY_WINDOW == 24
+    setup_24 = MOV_ESI_IMM32 * 4 + MOV_EDI_EAX * 2
+    assert _sizes(MOV_ECX_5 + setup_24 + REP_MOVSD) == ({}, {"5": 1})
+    setup_25 = MOV_ESI_IMM32 * 5
+    assert _sizes(MOV_ECX_5 + setup_25 + REP_MOVSD) == ({}, {})
+
+
+def test_copy_sizes_rep_setup_must_be_mov_or_lea_leaving_ecx():
+    for between in (
+        b"\x01\xd0",  # add eax,edx
+        b"\x56",  # push esi
+        b"\x90",  # nop
+        b"\xe8\x00\x00\x00\x00",  # call rel32: ecx may not survive it
+        b"\x89\xc1",  # mov ecx,eax (89 /r writes the r/m register)
+        b"\x8b\x4d\x08",  # mov ecx,[ebp+8]
+        b"\x8d\x48\x04",  # lea ecx,[eax+4]
+        b"\x8d\xf8",  # lea with a register operand is no instruction
+        b"\x66\x8b\xf8",  # mov di,ax: an operand-size prefix
+    ):
+        assert _sizes(MOV_ECX_5 + MOV_EDI_EAX + between + REP_MOVSD) == ({}, {}), between
+    # a later mov ecx,imm32 is the count: it starts its own copy
+    assert _sizes(MOV_ECX_5 + MOV_ECX_7 + REP_MOVSD) == ({}, {"7": 1})
+    # one copy per rep movsd: the B9 inside mov edi,[ecx+5] (8B B9 05 00 00 00) reads as a
+    # second mov ecx,5 reaching the same rep movsd, and is not counted again
+    assert _sizes(MOV_ECX_7 + b"\x8b\xb9\x05\x00\x00\x00" + REP_MOVSD) == ({}, {"7": 1})
+
+
+def test_copy_sizes_rep_mask_and_exclude():
+    # the displacement or immediate of a setup instruction may be a fixup: only its length is read
+    assert _sizes(COPY_GLOBAL, mask=COPY_GLOBAL_IMM32) == ({}, {"5": 1})
+    disp32 = frozenset(range(len(MOV_ECX_7) + 3, len(MOV_ECX_7) + len(LEA_ESI_ESP)))
+    assert _sizes(MOV_ECX_7 + LEA_ESI_ESP + REP_MOVSD, mask=disp32) == ({}, {"7": 1})
+    # a masked count, opcode, ModRM, SIB or rep movsd byte is never read: no copy
+    for offset in (0, 1, 4, 5, 6, 8, 13, 14):
+        assert _sizes(COPY_GLOBAL, mask=frozenset({offset})) == ({}, {}), offset
+    sib = len(MOV_ECX_7) + 2
+    assert _sizes(MOV_ECX_7 + LEA_ESI_ESP + REP_MOVSD, mask=frozenset({sib})) == ({}, {})
+    # an excluded range over any byte from mov ecx to rep movsd drops the copy
+    base = 0x10000
+    for offset in (0, 9, len(COPY_GLOBAL) - 1):
+        excluded = [(base + offset, base + offset + 1)]
+        assert _sizes(COPY_GLOBAL, base=base, exclude=excluded) == ({}, {}), offset
+    assert _sizes(b"\x90" + COPY_GLOBAL, base=base, exclude=[(base, base + 1)]) == ({}, {"5": 1})
+    # the tail is read too: an excluded range over it drops the copy (run or rep) ...
+    tail = base + len(COPY_GLOBAL)
+    assert _sizes(COPY_GLOBAL + MOVSW, base=base, exclude=[(tail, tail + 1)]) == ({}, {})
+    assert _sizes(b"\xa5" * 5 + MOVSW, base=base, exclude=[(base + 5, base + 6)]) == ({}, {})
+    # ... one starting after it does not
+    after = [(tail + len(MOVSW), tail + len(MOVSW) + 1)]
+    assert _sizes(COPY_GLOBAL + MOVSW, base=base, exclude=after) == ({}, {"5+2": 1})
+
+
+def test_scan_exe_struct_copy_sizes():
+    # one copy with a relocated mov esi,offset (counted), one with a fixup over its count
+    # (dropped), one inside a runtime row (dropped), and an unrolled run of 5 with a movsw
+    imm32 = 0x10400 + min(COPY_GLOBAL_IMM32)
+    fixups = [fixup_record(7, imm32 - 0x10000, 2, 0x100) + fixup_record(7, 0x501, 2, 0x100),
+              b"", b""]  # fmt: skip
+    patches = {0x10400: COPY_GLOBAL, 0x10500: COPY_GLOBAL, 0x10600: COPY_GLOBAL,
+               0x10700: b"\xa5" * 5 + MOVSW}  # fmt: skip
+    scan = probe.scan_exe(_scan_le(patches, fixups), [_row(0x10600, 0x10620)], exe="SYNTH.EXE")
+    assert (scan.copy_sizes.runs, scan.copy_sizes.reps) == ({"5+2": 1}, {"5": 1})
+    assert scan.to_json()["struct_copy_sizes"] == {"movsd_runs": {"5+2": 1}, "rep_movsd": {"5": 1}}
+    (line,) = [line for line in scan.evidence if line.startswith("struct-copy sizes")]
+    assert scan.evidence[scan.evidence.index(line) - 1].startswith("cpu:")  # its sibling
+
+
+def test_copy_sizes_evidence_line():
+    scan = replace(_evidence_scan(movsd_unrolled=48),
+                   copy_sizes=probe.CopySizes({"2": 40, "2+2": 8}, {"5+2": 2, "7": 8}))  # fmt: skip
+    (line,) = [line for line in probe.flag_evidence(_scan_le({}), [], scan)
+               if line.startswith("struct-copy sizes")]  # fmt: skip
+    assert line.startswith("struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):")
+    assert "unrolled movsd runs by length 2: 40, 2+2: 8;" in line
+    assert "mov ecx,n .. rep movsd by n 5+2: 2, 7: 8 " in line
+    assert "(source: " in line and "24 bytes" in line
+    empty = replace(_evidence_scan(), copy_sizes=probe.CopySizes({}, {}))
+    (line,) = [line for line in probe.flag_evidence(_scan_le({}), [], empty)
+               if line.startswith("struct-copy sizes")]  # fmt: skip
+    assert "by length none;" in line and "by n none " in line
