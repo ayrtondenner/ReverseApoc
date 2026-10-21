@@ -47,6 +47,10 @@ clang-format rewrites the inside of `#pragma aux` (`parm [eax]` becomes `parm[ea
 - **After tooling changes:** `/code-review`, `/simplify`, ruff, pytest; `/security-review` when Docker, CI or file-reading code changed. A refactor made by `/simplify` or the `code-simplifier` agent gets its own `/code-review` afterwards. On PR #1 that second pass caught two behaviour changes the refactors had introduced: a directory walk that stopped being lazy, and a cleanup that deleted an older `.part` file.
 - **At the end of a phase**, before `/gsd-verify-work`: `/claude-md-management:revise-claude-md` to capture what the session learned, then `/claude-md-management:claude-md-improver` to audit CLAUDE.md. Keep CLAUDE.md under 150 lines and move detail into `docs/`.
 
+## Finding ids
+
+Every finding recorded in a review (`NN-REVIEW.md`) or its disposition ledger (`NN-REVIEW-DISPOSITION.md`) uses one of the prefixes `CR-`, `BL-`, `WR-` or `IN-`, because GSD's disposition ledger keeps only those. A note from any other source, such as the verifier, takes the next free `IN-NN` id instead of a prefix of its own. In Phase 3 the verifier note VN-01 was renamed IN-13 for this reason.
+
 ## Evaluated and skipped
 
 | Tool | Why it is skipped |
