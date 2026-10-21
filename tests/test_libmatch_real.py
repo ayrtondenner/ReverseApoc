@@ -92,3 +92,10 @@ def test_rows_do_not_overlap(scanned):
     assert rows
     for row, following in zip(rows, rows[1:], strict=False):
         assert row.end <= following.start, f"{row.describe()} overlaps {following.describe()}"
+
+
+def test_summary_names_discriminating_modules(scanned):
+    """D-07 evidence for the docs: a version set smaller than all swept versions, with names."""
+    every = f"versions {'+'.join(SWEPT_VERSIONS)}"
+    sets = [line.split(": ") for line in scanned.report.summary() if line.startswith("versions ")]
+    assert any(len(parts) == 3 and parts[0] != every and parts[2] for parts in sets)
