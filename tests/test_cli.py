@@ -262,6 +262,50 @@ def test_rebuild_json_missing(tmp_path, capsys):
     assert obj["expected_sha1"] == load_manifest(tmp_path / "m.toml")[0].sha1
 
 
+def _elsewhere_setup(tmp_path, *, present: bool = True):
+    """SYNTH.EXE with its last byte flipped in tmp_path/elsewhere (nothing there when not
+    `present`) and tmp_path/custom.toml describing the unchanged bytes: neither is the default
+    orig dir or manifest (VN-01)."""
+    data = build_le_image().data
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    if present:
+        changed = bytearray(data)
+        changed[-1] ^= 0xFF
+        (elsewhere / "SYNTH.EXE").write_bytes(bytes(changed))
+    custom = write_manifest(tmp_path / "custom.toml", {"SYNTH.EXE": data})
+    args = ["rebuild", "--orig", str(elsewhere), "--manifest", str(custom)]
+    return elsewhere, custom, [*args, "--out", str(tmp_path / "build")]
+
+
+def test_rebuild_refused_names_the_input_and_manifest(tmp_path, capsys):
+    elsewhere, custom, args = _elsewhere_setup(tmp_path)
+    assert main(args) == 1
+    line = capsys.readouterr().out
+    assert line.startswith("REFUSED")
+    assert str(elsewhere / "SYNTH.EXE") in line
+    assert str(custom) in line
+    assert "check-orig" in line
+    assert "config/targets.toml" not in line
+
+
+def test_rebuild_missing_names_the_input(tmp_path, capsys):
+    elsewhere, _, args = _elsewhere_setup(tmp_path, present=False)
+    assert main(args) == 1
+    line = capsys.readouterr().out
+    assert line.startswith("MISSING")
+    assert str(elsewhere / "SYNTH.EXE") in line
+
+
+def test_rebuild_json_refused_keeps_the_eight_keys(tmp_path, capsys):
+    # the control: passes before and after VN-01, the new fields stay out of --json
+    _, _, args = _elsewhere_setup(tmp_path)
+    assert main([*args, "--json"]) == 1
+    (obj,) = json.loads(capsys.readouterr().out)
+    assert set(obj) == JSON_KEYS
+    assert obj["status"] == "refused"
+
+
 def _two_target_setup(tmp_path):
     """SYNTH.EXE (bound fixture) and OTHER.EXE (unbound fixture), both in orig/ and the
     manifest."""
