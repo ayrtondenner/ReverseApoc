@@ -128,7 +128,9 @@ def test_argv_shape(ws, monkeypatch):
 
     monkeypatch.setattr(compiler.shutil, "which", lambda path: path)
     linux = FakeCompiler()
-    ws.compile(ws.source(), ws.root / "out" / "a.obj", linux, platform="linux")
+    # A stamp of its own, or the win32 run's stamp would spare this run its banner probe.
+    stamps = ws.root / "cache-linux"
+    ws.compile(ws.source(), ws.root / "out" / "a.obj", linux, platform="linux", stamps=stamps)
     assert linux.compiles == [[WIBO, *expected]]
     assert linux.probes == [[WIBO, exe]]
 
