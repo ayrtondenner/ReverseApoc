@@ -9,7 +9,7 @@ import json
 import pytest
 
 from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
-from cpptree import init_exe, write_init_lib
+from cpptree import init_exe, write_cpp_lib, write_init_lib
 from isoimage import build_iso
 from libtree import cli_workspace
 from reverseapoc import targets
@@ -813,10 +813,13 @@ def test_libmatch_help_lists_options(capsys):
 # ---- cppscan ----
 
 
-def _cppscan_workspace(tmp_path, **exe_args):
-    """cli_workspace with the inirt386 EXE and library instead of module "fake"."""
+def _cppscan_workspace(tmp_path, *, cpp_library=True, **exe_args):
+    """cli_workspace with the inirt386 EXE and library instead of module "fake", plus a C++
+    runtime library (without one the C++-only module signal cannot be computed)."""
     ws = cli_workspace(tmp_path, exe=init_exe(**exe_args))
     write_init_lib(ws["watcom"])
+    if cpp_library:
+        write_cpp_lib(ws["watcom"])
     return ws
 
 
@@ -847,7 +850,22 @@ def test_cppscan_prints_the_verdict(tmp_path, capsys):
     capsys.readouterr()
     assert main(_cppscan_args(ws, "--runtime", str(ws["out"]))) == 0
     out = capsys.readouterr().out
-    assert out.startswith("SYNTH.EXE: C (wcc386)")
+    assert out.startswith("SYNTH.EXE: C (wcc386): ")
+
+
+def test_cppscan_without_cpp_libraries_does_not_report_a_full_c_verdict(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path, cpp_library=False)
+    assert main(_cppscan_args(ws, "--output", str(ws["out"]), verb="libmatch")) == 0
+    capsys.readouterr()
+    assert main(_cppscan_args(ws, "--runtime", str(ws["out"]))) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("SYNTH.EXE: C (wcc386) on partial evidence")
+    assert "C++-only runtime rows: not computed" in out
+    assert main(_cppscan_args(ws, "--runtime", str(ws["out"]), "--json")) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["cpp_only_modules_computed"] is False
+    assert "no C++ library" in report["cpp_only_modules_gap"]
+    assert not report["verdict"].startswith("C (wcc386): ")
 
 
 def test_cppscan_cpp_verdict_still_exits_0(tmp_path, capsys):

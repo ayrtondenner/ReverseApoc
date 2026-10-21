@@ -15,7 +15,7 @@ from pathlib import Path
 
 import omfimage as om
 from conftest import build_le_image, fixup_record
-from libtree import OBJ1_BASE, OBJ2_BASE, body, planted, write_lib
+from libtree import OBJ1_BASE, OBJ2_BASE, body, code_module, planted, write_lib
 from reverseapoc.libmatch import STATUS_UNIQUE, MatchRange
 
 INIT_VA = 0x10300  # where the inirt386 code is planted in object 1
@@ -28,6 +28,7 @@ ROUTINE_FIELD = 2  # offset of the routine pointer in an entry
 XI_ROUTINES = (0x10400, 0x10310, 0x10500, 0x10520, 0x10540)  # 0x10310 is inside inirt386
 YI_ROUTINES = (0x10600, 0x10620)
 LIBRARY = "DOS/CLIB3R.LIB"
+CPP_LIBRARY = "PLIB3R.LIB"  # a C++ runtime library, which the C++-only module signal needs
 
 
 def inirt_module() -> bytes:
@@ -45,6 +46,12 @@ def inirt_module() -> bytes:
 
 def write_init_lib(watcom: Path, version: str = "10.6", relpath: str = LIBRARY) -> Path:
     return write_lib(watcom, version, relpath, [inirt_module()])
+
+
+def write_cpp_lib(watcom: Path, version: str = "10.6", relpath: str = CPP_LIBRARY) -> Path:
+    """A readable C++ runtime library (one made-up module), so that the scan can compute the
+    C++-only runtime module signal for this version."""
+    return write_lib(watcom, version, relpath, [code_module("cppmod", body(40, seed=0x71))])
 
 
 def inirt_row(**changes) -> MatchRange:
