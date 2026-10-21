@@ -12,7 +12,9 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
+from reverseapoc.cflags import parse_cflags
 from reverseapoc.targets import load_manifest
+from reverseapoc.watcom import load_watcom_manifest
 
 # Every host directory that holds user-supplied, never-committed bytes.
 PROTECTED_DIRS = ("orig", "third_party")
@@ -98,6 +100,49 @@ def test_toolchain_records_the_confirmed_le_layout():
     stale = ("runs exactly to EOF", "To be confirmed in Phase 2/3")
     assert [claim for claim in stale if claim in text] == []
     assert [needle for needle in ("0x1A0723", "0x303DDF", "trailer") if needle not in text] == []
+
+
+def test_toolchain_records_the_compiler_result():
+    # CID-05: the Compiler section states the measured result (per-EXE flags table, the D-03
+    # wibo log, the runtime map, the probe scan and the C/C++ scan) instead of the Phase 4
+    # hypotheses and open questions.
+    text = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    stale = (
+        "To be confirmed in Phase 4",
+        "to be confirmed in Phase 4",
+        "is a Phase 4 spike",
+        "Decoding it is Phase 4 work",
+        "Not known yet; CID-05 (Phase 4) records them here",
+        "To be confirmed in Phase 5:** scan obj2",
+    )
+    assert [claim for claim in stale if claim in text] == []
+    needles = (
+        "| Flag | UFO2P | TACP | Evidence | Status |",
+        "04-native-vs-wibo",
+        "runtime.csv",
+        "probe scan",
+        "cppscan",
+    )
+    assert [needle for needle in needles if needle not in text] == []
+
+
+def _default_cflags_rule():
+    """The `*` rule of config/cflags.txt, parsed against the versions of config/watcom.toml."""
+    path = REPO_ROOT / "config" / "cflags.txt"
+    versions = tuple(load_watcom_manifest())
+    rules = parse_cflags(path.read_text(encoding="utf-8"), versions=versions, where=str(path))
+    return next(rule for rule in rules if rule.glob == "*")
+
+
+def test_cflags_default_rule_is_documented():
+    # CID-05: the default compiler@version and every flag of the `*` rule are the ones the docs
+    # give evidence for, so the rule cannot drift away from docs/toolchain.md "Flags".
+    rule = _default_cflags_rule()
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    matching = (REPO_ROOT / "docs" / "matching.md").read_text(encoding="utf-8")
+    assert rule.spec in toolchain
+    assert rule.spec in matching
+    assert [flag for flag in rule.flags if f"`{flag}`" not in toolchain] == []
 
 
 _HASH_PREFIX_DIGITS = 8
