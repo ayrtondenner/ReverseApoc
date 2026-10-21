@@ -31,18 +31,6 @@ findings:
     severity: info
     disposition: fixed
     title: "`--output` does not reach the rebuild output directory, so `verify` writes `<repo>/build` whatever `builddir` says"
-  - id: WR-01
-    severity: warning
-    disposition: deferred
-    title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
-  - id: WR-03
-    severity: warning
-    disposition: deferred
-    title: "The output write is checked by path only, not by file identity, and is not atomic; the input is read twice"
-  - id: WR-04
-    severity: warning
-    disposition: deferred
-    title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
   - id: IN-01
     severity: info
     disposition: fixed
@@ -75,10 +63,6 @@ findings:
     severity: info
     disposition: fixed
     title: "`configure.py` still calls itself a \"Phase 2 skeleton\""
-  - id: IN-13
-    severity: info
-    disposition: fixed
-    title: "REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say"
   - id: WR-08
     severity: warning
     disposition: deferred
@@ -87,9 +71,25 @@ findings:
     severity: info
     disposition: deferred
     title: "REFUSED and MISSING hints tell the user to run `check-orig` and `ingest` without the `--orig` and `--manifest` that produced the line"
+  - id: WR-01
+    severity: warning
+    disposition: deferred
+    title: "Objects that share logical pages are accepted, and a patch into the second owner is silently dropped"
+  - id: WR-03
+    severity: warning
+    disposition: deferred
+    title: "The output write is checked by path only, not by file identity, and is not atomic; the input is read twice"
+  - id: WR-04
+    severity: warning
+    disposition: deferred
+    title: "With `--json`, an error in any target produces no JSON and discards the results already computed"
+  - id: IN-13
+    severity: info
+    disposition: fixed
+    title: "REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say"
 open: 0
 total: 21
-recorded: 2026-10-20T23:13:08.458Z
+recorded: 2026-10-21T03:16:11.038Z
 ---
 
 # Phase 03: Code Review Disposition
@@ -103,9 +103,6 @@ recorded: 2026-10-20T23:13:08.458Z
 | IN-09 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (231ee0d), gate logs build/gate/03-10/ |
 | IN-10 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
 | IN-11 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
-| WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
-| WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
 | IN-01 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
 | IN-02 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
 | IN-03 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/; proof: docstring-only change, grep for the old sentence fails at HEAD |
@@ -114,9 +111,12 @@ recorded: 2026-10-20T23:13:08.458Z
 | IN-06 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
 | IN-07 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
 | IN-08 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| IN-13 | info | fixed | renamed from VN-01 (owner 2026-10-21); verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
 | WR-08 | warning | deferred | owner 2026-10-21: deferred to Phase 5 - refuse last_page_size > page_size when the LE is read and handle the no-page case, so every splice refusal is a SpliceError before patches flow (regression from 03-08) |
 | IN-12 | info | deferred | owner 2026-10-21: deferred to Phase 5 - carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints |
+| WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
+| WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
+| WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
+| IN-13 | info | fixed | renamed from VN-01 (owner 2026-10-21); verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
