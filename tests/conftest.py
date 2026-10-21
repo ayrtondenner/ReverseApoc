@@ -138,6 +138,26 @@ class SyntheticLE:
     fixup_end: int = 0  # file offset just past the fixup section
 
 
+def _patch_offset(
+    objects: list[tuple[int, int, int, int, int]],
+    page_numbers: tuple[int, ...],
+    page_offsets: list[int],
+    va: int,
+    size: int,
+) -> int:
+    """File offset of linear address `va` for a patch of `size` bytes (see build_le_image)."""
+    for _vsize, base, _flags, first_page, page_count in objects:
+        if not base <= va < base + page_count * PAGE_SIZE:
+            continue
+        logical = first_page + (va - base) // PAGE_SIZE
+        physical = page_numbers[logical - 1]
+        in_page = (va - base) % PAGE_SIZE
+        page_size = LAST_PAGE_SIZE if physical == len(page_numbers) else PAGE_SIZE
+        assert in_page + size <= page_size, f"patch at {va:#x} crosses the end of its page"
+        return page_offsets[physical - 1] + in_page
+    raise AssertionError(f"patch at {va:#x} lies in no object's pages")
+
+
 def build_le_image(
     *,
     bound: bool = True,
@@ -148,6 +168,7 @@ def build_le_image(
     trailer: bytes = b"",
     extra_header_fields: dict[int, int] | None = None,
     objects: list[tuple[int, int, int, int, int]] | None = None,
+    patches: dict[int, bytes] | None = None,
 ) -> SyntheticLE:
     """Build a minimal LE executable: [fake extender MZ] + MZ stub + LE header + tables + pages
     [+ trailer].
@@ -160,7 +181,10 @@ def build_le_image(
     pages are always written in physical order, each filled with `page_fill(physical number)`,
     the short page last. `trailer` is appended after the last page. `extra_header_fields`
     (LE header offset -> u32) is merged over the header fields before packing. `objects`
-    replaces OBJECTS for this image.
+    replaces OBJECTS for this image. `patches` ({linear address: bytes}) overwrites page bytes
+    after the fill: each address is mapped through the object table to its logical page, then
+    through `page_numbers` to the physical page in the file. A patch must stay inside one page
+    and inside that page's data (the short last page included); otherwise AssertionError.
     """
     fixups = DEFAULT_FIXUPS if fixups is None else fixups
     num_pages = len(page_flags)
@@ -243,6 +267,9 @@ def build_le_image(
         page_offsets.append(len(image))
         size = LAST_PAGE_SIZE if n == num_pages else PAGE_SIZE
         image += bytes([page_fill(n)]) * size
+    for va, blob in (patches or {}).items():
+        at = _patch_offset(objects, page_numbers, page_offsets, va, len(blob))
+        image[at : at + len(blob)] = blob
     trailer_offset = len(image)
     image += trailer
     return SyntheticLE(
