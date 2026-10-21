@@ -128,7 +128,7 @@ Reading the result:
 How to reproduce (the logs live in `build/gate/04-evidence/`, gitignored; they hold counts, addresses, names and hashes only):
 
 1. `uv run reverseapoc check-watcom 10.5 10.6 11.0` (every key file OK; older installs first run `uv run reverseapoc install-watcom 10.5 --force`)
-2. `uv run reverseapoc libmatch UFO2P.EXE` and `uv run reverseapoc libmatch TACP.EXE` (summary at the end; `--write` regenerates `config/<exe>/runtime.csv`)
+2. `uv run reverseapoc libmatch UFO2P.EXE` and `uv run reverseapoc libmatch TACP.EXE` (summary at the end; `--write` regenerates `config/<exe>/runtime.csv`, and refuses unless every swept version loads an OMF library, since the map does not record which versions were swept)
 3. `uv run reverseapoc probe calibrate --output build/probe/calibration.json`
 4. `uv run reverseapoc probe scan UFO2P.EXE --calibration build/probe/calibration.json`, then `TACP.EXE`
 5. `uv run reverseapoc cppscan UFO2P.EXE`, then `TACP.EXE`

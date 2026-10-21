@@ -19,6 +19,7 @@ from .le import LE, LEError, format_summary
 from .libmatch import (
     SWEPT_VERSIONS,
     LibMatchError,
+    LoadedLibrary,
     check_versions,
     load_libraries,
     read_runtime_csv,
@@ -121,6 +122,21 @@ def _add_cc_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_cc)
 
 
+def _refuse_partial_sweep(
+    libraries: list[LoadedLibrary], versions: list[str], watcom_dir: Path
+) -> None:
+    """--write replaces the committed D-06 map, whose rows do not record which versions were
+    swept: every SWEPT_VERSIONS entry and every --versions entry must load at least one OMF
+    library, or a version would drop out of the rows without anyone seeing it."""
+    loaded = {library.version for library in libraries}
+    missing = [v for v in dict.fromkeys([*SWEPT_VERSIONS, *versions]) if v not in loaded]
+    if missing:
+        raise LibMatchError(
+            f"--write needs the libraries of every swept version; none loaded under {watcom_dir} "
+            f"for {', '.join(missing)} (install it, or use --output PATH for a partial sweep)"
+        )
+
+
 def _cmd_libmatch(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
     output = runtime_csv_path(target.name) if args.write else args.output
@@ -134,6 +150,8 @@ def _cmd_libmatch(args: argparse.Namespace) -> int:
         raise LibMatchError(
             f"no OMF library found under {args.watcom_dir} for versions {' '.join(args.versions)}"
         )
+    if args.write:
+        _refuse_partial_sweep(libraries, args.versions, args.watcom_dir)
     report = scan_exe(LE(data), libraries, exe=target.name, skipped=skipped)
     if args.json:
         print(json.dumps(report.to_json(), indent=2))
