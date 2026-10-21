@@ -217,6 +217,17 @@ None.
 - Plan 04-10 can call `count_idioms(code, base=..., exclude=runtime_ranges, mask=...)` on the game's code objects and compare against `calibrate()` cells. It should read the two deviations first: rep_movsd_small cannot show `-4`, and movzx appears under 10.6 `-os`.
 - Plan 04-11: once 10.5 is reinstalled, `test_calibration_with_10_5` runs all three versions and checks that `ties()` agrees with the cells' hashes. The expected result is "10.6 (10.5 byte-identical on the probe)".
 
+## Self-Check: PASSED
+
+- All six files exist: probe/cg_basic.c, probe/README.md, tools/reverseapoc/probe.py, tests/test_probe.py, tests/test_probe_real.py, and this SUMMARY.
+- Commits cb8891f, 8e9bec2, 5f2ee36 and a491fa1 are on this branch (`git log 7088b0f..HEAD`). No file was deleted (`git diff --diff-filter=D 7088b0f HEAD` is empty), and the working tree is clean.
+- Acceptance checks:
+  - `uv run pytest -q`: 729 passed, 92 skipped. `uv run ruff check .`: clean.
+  - `grep -c "//" probe/cg_basic.c` prints 0, and `grep -c "Calibration (host" probe/README.md` prints 1.
+  - `grep -n "def count_idioms"` finds it.
+  - `pytest -k "movsd or rep_movsd or loop or switch or calibration_format or ties"`: 10 passed.
+  - Real verify (relative watcom dir): 22 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused".
+
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
