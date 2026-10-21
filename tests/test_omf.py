@@ -518,6 +518,38 @@ def test_comdat32_continuation_without_start_raises():
         read_object(comdat_module(comdat32(4, b"\x01", flags=0x01, offset=0)))
 
 
+# TIS OMF 1.1: in PUBDEF, and in COMDAT's public base (same layout), the Base Frame follows
+# whenever the Base Segment index is 0, even with a Base Group (review IN-05).
+BASE_NAMES = lnames("", "_TEXT", "CODE", "f_", "DGROUP")  # indexes 1..5
+
+
+def test_pubdef_group_without_segment_reads_the_base_frame():
+    mod = read_object(
+        module(
+            "pb",
+            BASE_NAMES,
+            segdef32(2, 3, 0),
+            grpdef(5, 1),
+            pubdef32(0, [("abs_", 0x10), ("abs2_", 0x20)], group=1, frame=0x1234),
+        )
+    )
+    assert mod.publics == (Public("abs_", 0, 0x10), Public("abs2_", 0, 0x20))
+
+
+def test_comdat32_group_without_segment_reads_the_base_frame():
+    mod = read_object(
+        module(
+            "cb",
+            BASE_NAMES,
+            segdef32(2, 3, 0),
+            grpdef(5, 1),
+            comdat32(4, CALL_RET, group=1, seg=0, frame=0x1234),
+        )
+    )
+    [block] = mod.comdats
+    assert (block.name, block.segment_index, block.data) == ("f_", 0, CALL_RET)
+
+
 def test_comdat32_without_public_base():
     mod = read_object(comdat_module(comdat32(4, CALL_RET, attributes=0x03)))
     assert (mod.comdats[0].name, mod.comdats[0].segment_index) == ("f_", 0)

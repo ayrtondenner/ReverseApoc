@@ -558,7 +558,7 @@ def _pubdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     if group:
         m.group(group)
     if seg == 0:
-        cur.u16()  # base frame of an absolute public
+        cur.u16()  # base frame: present whenever the segment index is 0 (TIS OMF 1.1)
     else:
         m.segment(seg)
     while not cur.at_end():
@@ -677,12 +677,14 @@ def _comdat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     cur.index()  # type index
     seg = 0
     if attributes & _COMDAT_ALLOCATION_MASK == _COMDAT_EXPLICIT:
+        # The public base has PUBDEF's layout (TIS OMF 1.1): the base frame follows whenever
+        # the segment index is 0, whatever the group index.
         group, seg = cur.index(), cur.index()
         if group:
             m.group(group)
         if seg:
             m.segment(seg)
-        elif not group:
+        else:
             cur.u16()  # base frame
     block = _comdat_block(m, flags, m.lname(cur.index()), seg, alignment)
     iterated = bool(flags & COMDAT_ITERATED)
