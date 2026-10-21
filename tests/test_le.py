@@ -287,3 +287,43 @@ def test_fixup_overrunning_its_page_table_entry_fails(le_builder):
     fixups = [DEFAULT_FIXUPS[0][:-1], DEFAULT_FIXUPS[1], DEFAULT_FIXUPS[2]]
     with pytest.raises(LEError, match="overruns"):
         LE(le_builder(fixups=fixups).data).fixups()
+
+
+# ---- WR-08: a last page larger than the page size is refused when the header is read ----------
+
+OVERSIZED_LAST_PAGE = 0x1400  # larger than PAGE_SIZE
+
+
+def oversized_last_page_image(**options) -> bytes:
+    """The fixture with last_page_size = OVERSIZED_LAST_PAGE, padded so the last page's bytes are
+    all in the file: the header field is then the only thing wrong with it."""
+    img = build_le_image(extra_header_fields={0x2C: OVERSIZED_LAST_PAGE}, **options)
+    pad = bytes(OVERSIZED_LAST_PAGE - LAST_PAGE_SIZE)
+    return img.data[: img.trailer_offset] + pad + img.data[img.trailer_offset :]
+
+
+@pytest.mark.parametrize("options", [{}, {"page_numbers": (3, 2, 1)}], ids=["last", "permuted"])
+def test_last_page_larger_than_page_size_is_refused(options):
+    with pytest.raises(LEError, match=r"0x2c \(last page size\) is 0x1400.*page size 0x1000"):
+        LE(oversized_last_page_image(**options))
+
+
+def test_last_page_as_large_as_a_page_is_accepted():
+    img = build_le_image(extra_header_fields={0x2C: PAGE_SIZE})
+    data = img.data + bytes(PAGE_SIZE - LAST_PAGE_SIZE)
+    le = LE(data)
+    assert le.pages[-1].size == PAGE_SIZE
+    assert le.pages_end == len(data)
+
+
+def test_last_page_size_is_not_checked_without_pages():
+    # With no pages the field describes no page, so it is not refused.
+    img = build_le_image(
+        fixups=[],
+        page_flags=(),
+        objects=[(0x100, 0x10000, 0x2045, 1, 0), (0x3000, 0x20000, 0x2043, 1, 0)],
+        extra_header_fields={0x2C: OVERSIZED_LAST_PAGE},
+    )
+    le = LE(img.data)
+    assert le.pages == []
+    assert le.pages_end == le.data_pages_offset

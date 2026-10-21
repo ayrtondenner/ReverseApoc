@@ -71,6 +71,10 @@ TGT_CHAIN = 0x08
 TGT_OFF32 = 0x10
 TGT_OBJ16 = 0x40
 
+# LE header page sizes (offsets relative to the LE header).
+_HDR_PAGE_SIZE = 0x28  # u32: size of every data page but the last
+_HDR_LAST_PAGE_SIZE = 0x2C  # u32: size of the last data page, at most the page size
+
 # LE header fields that place data outside the loader and fixup sections (offsets relative to
 # the LE header). Read only so that a file using them can be refused instead of mis-tiled.
 _HDR_NONRES_NAME_TABLE_OFFSET = 0x88  # u32: non-resident name table offset
@@ -203,8 +207,8 @@ class LE:
         self.num_pages = h(0x14)
         self.eip_obj, self.eip = h(0x18), h(0x1C)
         self.esp_obj, self.esp = h(0x20), h(0x24)
-        self.page_size = h(0x28)
-        self.last_page_size = h(0x2C)
+        self.page_size = h(_HDR_PAGE_SIZE)
+        self.last_page_size = h(_HDR_LAST_PAGE_SIZE)
         self.fixup_section_size = h(0x30)
         self.loader_section_size = h(0x38)
         self.object_table_offset = self.le_offset + h(0x40)
@@ -223,6 +227,13 @@ class LE:
 
         if self.page_size == 0 or self.page_size & (self.page_size - 1):
             raise LEError(f"page size {self.page_size:#x} is not a power of two")
+        # Every reader of the pages assumes a page holds at most page_size bytes. With no pages
+        # the field describes no page and is not checked.
+        if self.num_pages and self.last_page_size > self.page_size:
+            raise LEError(
+                f"LE header field {_HDR_LAST_PAGE_SIZE:#x} (last page size) is "
+                f"{self.last_page_size:#x}, larger than the page size {self.page_size:#x}"
+            )
         self.objects = self._read_objects()
         self.pages = self._read_page_map()
         for obj in (self.eip_obj, self.esp_obj):

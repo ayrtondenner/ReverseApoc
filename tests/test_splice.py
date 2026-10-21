@@ -22,7 +22,7 @@ from conftest import (
     write_manifest,
 )
 from reverseapoc import splice
-from reverseapoc.le import LE, LEUnsupportedError
+from reverseapoc.le import LE, LEError, LEUnsupportedError
 from reverseapoc.splice import (
     Region,
     SpliceError,
@@ -821,6 +821,44 @@ def test_unwritable_reason_names_the_page(options, va, expected, absent):
     message = _refused(_no_fixups(**options), {va: bytes([PATCH_BYTE])})
     assert expected in message
     assert absent not in message
+
+
+# ---- WR-08: a malformed last page size never reaches splice() as a TypeError -------------------
+
+OVERSIZED_LAST_PAGE = 0x1400  # larger than PAGE_SIZE
+# Object 2 is one page whose vsize ends at the page size, so the oversized last page runs past it.
+WR08_OBJECTS = [(0x2000, 0x10000, 0x2045, 1, 2), (0x1000, 0x20000, 0x2043, 3, 1)]
+
+
+def _oversized_last_page(**options) -> bytes:
+    img = _no_fixups(extra_header_fields={0x2C: OVERSIZED_LAST_PAGE}, **options)
+    pad = bytes(OVERSIZED_LAST_PAGE - LAST_PAGE_SIZE)
+    return img.data[: img.trailer_offset] + pad + img.data[img.trailer_offset :]
+
+
+@pytest.mark.parametrize(
+    ("options", "patches"),
+    [
+        ({"objects": WR08_OBJECTS}, {}),
+        ({"objects": WR08_OBJECTS}, {0x20FFF: bytes([PATCH_BYTE])}),
+        ({"objects": WR08_OBJECTS}, {0x21000: bytes([PATCH_BYTE])}),
+        ({"objects": WR08_OBJECTS}, {0x21200: bytes([PATCH_BYTE])}),
+        ({"page_numbers": (3, 2, 1)}, {}),
+    ],
+    ids=["round-trip", "last-byte-of-vsize", "past-vsize", "past-page-size", "permuted"],
+)
+def test_splice_refuses_last_page_larger_than_page_size(options, patches):
+    """splice()'s contract: every refusal is an LEError (SpliceError included), never a TypeError
+    and never a silent round trip with wrong bytes."""
+    with pytest.raises(LEError, match=r"last page size"):
+        splice.splice(LE(_oversized_last_page(**options)), patches)
+
+
+def test_unwritable_reason_without_a_page_slot_is_a_splice_error(monkeypatch):
+    # A layout the guard misses must still fail as a SpliceError naming the address.
+    monkeypatch.setattr(splice, "_page_slot", lambda le, obj, addr: None)
+    message = _refused(_no_fixups(), {0x11800: bytes([PATCH_BYTE])})
+    assert "0x11800: no page of object 1 covers it" in message
 
 
 def test_rebuild_result_names_the_input_path(tmp_path):

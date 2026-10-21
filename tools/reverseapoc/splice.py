@@ -341,8 +341,12 @@ def _unwritable_reason(le: LE, addr: int) -> str:
         return f"{addr:#x} is not in any object"
     if addr >= _page_backed_end(le, obj):
         return f"{addr:#x} is in the BSS of object {obj.index} (past its page data)"
-    # base <= addr < the page-backed end, so a page of the object covers addr
-    off, page = _page_slot(le, obj, addr)
+    # base <= addr < the page-backed end, so a page of the object covers addr, as long as no page
+    # holds more than page_size bytes (the LE reader refuses that header, WR-08)
+    slot = _page_slot(le, obj, addr)
+    if slot is None:
+        raise SpliceError(f"{addr:#x}: no page of object {obj.index} covers it")
+    off, page = slot
     if addr - obj.base >= off + page.size:
         return (
             f"{addr:#x} is past the page data of {_page_label(obj, page)} "
