@@ -24,7 +24,13 @@ from . import omf
 from .cflags import Rule
 from .compiler import OBJ_SUFFIX, CompilerError, Runner, check_gate, compile_rule
 from .le import LE
-from .libmatch import SWEPT_VERSIONS, MatchRange, target_view
+from .libmatch import (
+    SWEPT_VERSIONS,
+    MatchRange,
+    read_runtime_csv,
+    runtime_csv_path,
+    target_view,
+)
 from .targets import REPO_ROOT
 
 
@@ -625,6 +631,18 @@ class ExeScan:
             "chk_blocks": [{"block": block, "calls": n} for block, n in self.chk_blocks],
             "evidence": list(self.evidence),
         }
+
+
+def runtime_rows(name: str, runtime: Path | str | None = None) -> list[MatchRange]:
+    """The runtime map of manifest target `name` (default config/<stem>/runtime.csv, D-06). A
+    missing map is refused rather than counting the whole code object as game code."""
+    path = Path(runtime) if runtime is not None else runtime_csv_path(name)
+    if not path.is_file():
+        raise ProbeError(
+            f"runtime map {path} not found; run `uv run reverseapoc libmatch {name} --write` "
+            "(or --output PATH, then pass --runtime PATH)"
+        )
+    return read_runtime_csv(path)
 
 
 def _covered(ranges: Iterable[Span], low: int, high: int) -> int:
