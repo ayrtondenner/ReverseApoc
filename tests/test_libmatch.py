@@ -7,15 +7,32 @@ from pathlib import Path
 
 import pytest
 
+import omfimage as om
 from conftest import build_le_image, page_fill
-from libtree import FAKE_CODE, fake_module, planted_fake_exe, write_lib
+from libtree import (
+    FAKE_ABS_SITE,
+    FAKE_CALL_SITE,
+    FAKE_CODE,
+    PLANT_VA,
+    abs_fixup,
+    body,
+    call_fixup,
+    code_module,
+    fake_module,
+    planted,
+    planted_fake_exe,
+    synth_exe,
+    write_lib,
+)
 from reverseapoc import libmatch
 from reverseapoc.le import LE
 from reverseapoc.libmatch import (
     RUNTIME_CSV_COLUMNS,
+    LibMatchError,
     LibMatchReport,
     MatchRange,
     format_runtime_csv,
+    iter_library_paths,
     load_libraries,
     read_runtime_csv,
     runtime_csv_path,
@@ -126,3 +143,188 @@ def test_libmatch_carries_the_kknd_derivation_header():
     first = Path(libmatch.__file__).read_text(encoding="utf-8").splitlines()[0]
     assert first.startswith("# Derived from KKND-Decomp tools/lib_match.py (CC0 1.0)")
 
+
+# ---- rejection rules ----
+
+
+def _fake_tree(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [fake_module()])
+    return watcom
+
+
+def test_unmasked_difference_rejects(tmp_path):
+    copy = bytearray(planted(FAKE_CODE))
+    copy[30] ^= 0xFF
+    report = _scan(_fake_tree(tmp_path), synth_exe({PLANT_VA: bytes(copy)}))
+    assert report.ranges == ()
+
+
+def test_le_fixup_on_unmasked_byte_rejects(tmp_path):
+    sites = [(PLANT_VA + FAKE_ABS_SITE, 0x100), (PLANT_VA + 28, 0x100)]
+    report = _scan(_fake_tree(tmp_path), synth_exe({PLANT_VA: planted(FAKE_CODE)}, sites))
+    assert report.ranges == ()
+
+
+def test_missing_le_fixup_at_absolute_site_rejects(tmp_path):
+    report = _scan(_fake_tree(tmp_path), synth_exe({PLANT_VA: planted(FAKE_CODE)}, []))
+    assert report.ranges == ()
+    # the self-relative site at offset 20 never needs an LE fixup: the default EXE has none there
+    found = _scan(_fake_tree(tmp_path), planted_fake_exe())
+    assert [r.module for r in found.ranges] == ["fake"]
+    assert FAKE_CALL_SITE == 20
+
+
+# ---- skip records ----
+
+
+def _call_module(name: str, code: bytes) -> bytes:
+    return code_module(name, code, fixups=[call_fixup(4)], externs=["e_"])
+
+
+def test_short_segment_recorded(tmp_path):
+    watcom = tmp_path / "w"
+    short, enough = body(19, seed=0x90), body(20, seed=0xB0)  # 15 and 16 unmasked bytes
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB",
+              [_call_module("short15", short), _call_module("ok16", enough)])  # fmt: skip
+    exe = synth_exe({0x10300: planted(short, (4,)), 0x10400: planted(enough, (4,))}, [])
+    report = _scan(watcom, exe)
+    assert [(r.module, r.start) for r in report.ranges] == [("ok16", 0x10400)]
+    short_skip = libmatch.Skipped("10.6", "DOS/CLIB3R.LIB", "short15", "_TEXT", "short")
+    assert short_skip in report.skipped
+    assert not any(s.module == "ok16" for s in report.skipped)
+
+
+def test_lidata_fixup_segment_recorded(tmp_path):
+    watcom = tmp_path / "w"
+    code = body(20, seed=0x90)
+    mod = om.module(
+        "iter",
+        om.lnames("", "_TEXT", "CODE"),
+        om.segdef32(2, 3, len(code)),
+        om.pubdef32(1, [("iter_", 0)]),
+        om.extdef("e_"),
+        om.lidata32(1, 0, [(1, code)]),
+        om.fixupp32(call_fixup(4)),
+    )
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [mod])
+    report = _scan(watcom, synth_exe({0x10300: planted(code, (4,))}, []))
+    assert report.ranges == ()
+    skip = libmatch.Skipped("10.6", "DOS/CLIB3R.LIB", "iter", "_TEXT", "unmaskable")
+    assert skip in report.skipped
+
+
+def test_not_omf_and_parse_error_recorded(tmp_path):
+    watcom = tmp_path / "w"
+    coff = watcom / "10.6" / "LIB386" / "NT" / "COFF.LIB"
+    coff.parent.mkdir(parents=True)
+    coff.write_bytes(b"!<arch>\n" + bytes(64))
+    broken = om.module("bad", om.lnames("", "_TEXT", "CODE"), om.ledata32(5, 0, b"\x01"))
+    write_lib(watcom, "10.6", "DOS/BROKEN.LIB", [broken, fake_module()])
+    libraries, skipped = load_libraries(watcom, ("10.6",))
+    assert [lib.relpath for lib in libraries] == ["DOS/BROKEN.LIB"]
+    assert libmatch.Skipped("10.6", "NT/COFF.LIB", "", "", "not OMF") in skipped
+    (failure,) = [s for s in skipped if s.library == "DOS/BROKEN.LIB"]
+    assert re.fullmatch(r"parse error at 0x[0-9a-f]+: .+", failure.reason)
+
+
+# ---- merging ----
+
+
+def _diff_module(version: str) -> bytes:
+    code = bytearray(body(40, seed=0x90))
+    if version == "11.0":
+        code[10] ^= 0xFF
+    return code_module("diff", bytes(code))
+
+
+def test_versions_merge(tmp_path):
+    watcom = tmp_path / "w"
+    for version in ("10.5", "10.6", "11.0"):
+        write_lib(watcom, version, "DOS/CLIB3R.LIB", [fake_module(), _diff_module(version)])
+    exe = synth_exe({PLANT_VA: planted(FAKE_CODE), 0x10400: body(40, seed=0x90)})
+    report = _scan(watcom, exe, versions=("10.5", "10.6", "11.0"))
+    assert [(r.module, r.versions) for r in report.ranges] == [
+        ("fake", ("10.5", "10.6", "11.0")),
+        ("diff", ("10.5", "10.6")),
+    ]
+
+
+def test_libraries_merge_and_order(tmp_path):
+    watcom = tmp_path / "w"
+    pm = code_module("pm", body(40, seed=0x90))
+    for relpath in ("DOS/CLIB3S.LIB", "DOS/CLIB3R.LIB"):
+        write_lib(watcom, "10.6", relpath, [fake_module()])
+    for relpath in ("NT/PMATH.LIB", "PMATH.LIB", "MATH387R.LIB"):
+        write_lib(watcom, "10.6", relpath, [pm])
+    exe = synth_exe({PLANT_VA: planted(FAKE_CODE), 0x10400: body(40, seed=0x90)})
+    report = _scan(watcom, exe)
+    assert [r.libraries for r in report.ranges] == [
+        ("DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB"),
+        ("MATH387R.LIB", "PMATH.LIB", "NT/PMATH.LIB"),
+    ]
+    lib_dir = watcom / "10.6" / "LIB386"
+    assert [p.relative_to(lib_dir).as_posix() for p in iter_library_paths(watcom / "10.6")] == [
+        "DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB", "MATH387R.LIB", "PMATH.LIB", "NT/PMATH.LIB",
+    ]  # fmt: skip
+
+
+# ---- overlaps ----
+
+
+def test_touching_ranges_stay_separate(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB",
+              [fake_module(), code_module("next", body(40, seed=0x90))])  # fmt: skip
+    exe = synth_exe({PLANT_VA: planted(FAKE_CODE), PLANT_VA + 40: body(40, seed=0x90)})
+    report = _scan(watcom, exe)
+    assert [(r.start, r.end, r.module) for r in report.ranges] == [
+        (0x10200, 0x10228, "fake"),
+        (0x10228, 0x10250, "next"),
+    ]
+    assert report.dropped == ()
+
+
+def test_contained_range_dropped(tmp_path):
+    watcom = tmp_path / "w"
+    head = code_module("head", FAKE_CODE[:20], fixups=[abs_fixup(FAKE_ABS_SITE)])
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [fake_module(), head])
+    report = _scan(watcom, planted_fake_exe())
+    assert list(report.ranges) == [FAKE_ROW]
+    assert [(r.start, r.end, r.module) for r in report.dropped] == [(0x10200, 0x10214, "head")]
+    assert "dropped" in report.format() and "head" in report.format()
+
+
+def test_partial_overlap_raises(tmp_path):
+    watcom = tmp_path / "w"
+    tail_code = FAKE_CODE[20:] + body(20, seed=0x90)
+    tail = code_module("tail", tail_code, fixups=[call_fixup(0)], externs=["e_"])
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [fake_module(), tail])
+    exe = synth_exe({PLANT_VA: planted(FAKE_CODE), PLANT_VA + 40: body(20, seed=0x90)})
+    with pytest.raises(LibMatchError) as err:
+        _scan(watcom, exe)
+    message = str(err.value)
+    for needle in ("0x00010200", "0x00010228", "fake", "0x00010214", "0x0001023c", "tail"):
+        assert needle in message
+
+
+def test_empty_tree(tmp_path):
+    watcom = tmp_path / "w"
+    (watcom / "10.6").mkdir(parents=True)
+    libraries, skipped = load_libraries(watcom, ("10.6",))
+    assert libraries == []
+    assert skipped == [libmatch.Skipped("10.6", "LIB386", "", "", "no LIB386 directory")]
+    report = scan_exe(LE(planted_fake_exe()), libraries, skipped=skipped)
+    assert report.ranges == ()
+    assert list(report.skipped) == skipped
+
+
+def test_equal_start_sorts_by_end():
+    rows = [
+        MatchRange(0x10300, 0x10340, "_TEXT", "c", ("A.LIB",), ("10.6",), ("c_",), "unique"),
+        MatchRange(0x10200, 0x10240, "_TEXT", "b", ("A.LIB",), ("10.6",), ("b_",), "unique"),
+        MatchRange(0x10200, 0x10220, "_TEXT", "a", ("A.LIB",), ("10.6",), ("a_",), "unique"),
+    ]
+    report = LibMatchReport("SYNTH.EXE", 0x10000, 0x1800, tuple(rows), ())
+    modules = [line.split(",")[3] for line in format_runtime_csv(report, "X").splitlines()[2:]]
+    assert modules == ["a", "b", "c"]
