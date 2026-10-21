@@ -323,10 +323,13 @@ def test_measured_facts(real):
 
     start, length = _region(le, REGION_PADDING)
     assert length == facts["padding"]
-    assert not any(le.data[start : start + length])  # all-zero padding, as a boolean
+    # Count zero bytes so a failure prints two integers, never the bytes themselves.
+    zeros = le.data[start : start + length].count(0)
+    assert zeros == length  # all-zero padding
     tail = _obj1_tail(le)
     assert len(tail) == facts["obj1_tail_past_vsize"]
-    assert not any(le.data[off] for off in tail)
+    tail_zeros = sum(le.data[off] == 0 for off in tail)
+    assert tail_zeros == len(tail)
 
     assert _region(le, REGION_TRAILER) == facts["trailer"]
     trailer = le.summary()["trailer"]
