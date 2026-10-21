@@ -45,16 +45,16 @@ IDIOMS = (
 # The flag sets every version is calibrated with (04-RESEARCH Pattern 6 and Pitfall 9). Every
 # entry names its CPU option, so wcc386's default CPU (research A5) never matters.
 FLAG_SETS = (
-    ("-3r", "-s"),  # 386 register convention: setcc;movzx, rep movsd
-    ("-4r", "-s"),  # 486: setcc;and on both versions, mov ecx,n; rep movsd
+    ("-3r", "-s"),  # 386 register convention: setcc;movzx, mov ecx,5 .. rep movsd
+    ("-4r", "-s"),  # 486: setcc;and on both versions, mov ecx,5 .. rep movsd
     ("-5r", "-s"),  # Pentium: unrolled movsd; 11.0 branches instead of setcc
     ("-5r",),  # without -s: the __CHK stack-check calls appear
-    ("-4r", "-s", "-ox"),  # full optimisation at -4: switch compare order
-    ("-5r", "-s", "-ox"),  # full optimisation at -5: switch compare order
+    ("-4r", "-s", "-ox"),  # full optimisation at -4: switch order (ascending on both, measured)
+    ("-5r", "-s", "-ox"),  # full optimisation at -5: switch order (ascending on both, measured)
     ("-5r", "-s", "-oneatx"),  # the "fastest code" set: changes loop shape
     ("-5r", "-s", "-os"),  # optimise for size
     ("-5r", "-s", "-fpi87"),  # inline x87 without the emulator: noemu387
-    ("-5s", "-s"),  # stack convention: clib3s and math387s
+    ("-5s", "-s"),  # stack convention: math387s (no CLIB library is requested, measured)
 )
 
 Span = tuple[int, int]  # [start, end) offsets inside the code
@@ -69,8 +69,31 @@ _SETCC_AND = re.compile(rb"\x0f[\x90-\x9f]\xc0\x25\xff\x00\x00\x00")
 _SETCC_MOVZX = re.compile(rb"\x0f[\x90-\x9f]\xc0\x0f\xb6\xc0")
 # two or more movsd (A5) not preceded by rep (F3) or by another movsd: one unrolled copy per run
 _MOVSD_RUN = re.compile(rb"(?<![\xf3\xa5])\xa5{2,}")
-# mov ecx,imm32 with 1..16 (B9 01..10 00 00 00); rep movsd (F3 A5)
-_REP_MOVSD_SMALL = re.compile(rb"\xb9[\x01-\x10]\x00\x00\x00\xf3\xa5")
+# mov ecx,imm32 (B9 id) with a count of 1..16 dwords; up to four register-to-register mov
+# (89 /r or 8B /r with ModRM mod=11); rep movsd (F3 A5). At -3r and -4r both versions load edi
+# and esi between the count and the copy (measured on the probe, so the shape is not adjacent).
+_MOV_ECX_IMM32 = 0xB9
+_IMM32_SIZE = 4
+_MOV_REG_OPCODES = (0x89, 0x8B)  # mov r/m32,r32 and mov r32,r/m32
+_MODRM_MOD_REG = range(0xC0, 0x100)  # ModRM mod=11 (bits 7-6): both operands are registers
+_REP_MOVSD = bytes((0xF3, 0xA5))  # rep movsd
+SMALL_COPY_DWORDS = range(1, 17)  # the ecx counts taken as a small struct copy
+SMALL_COPY_MOVES = 4  # register moves allowed between mov ecx and rep movsd
+
+
+def _byte_class(values: Iterable[int]) -> bytes:
+    """A regex class matching one byte of `values`."""
+    return b"[" + b"".join(re.escape(bytes((value,))) for value in values) + b"]"
+
+
+_REP_MOVSD_SMALL = re.compile(
+    re.escape(bytes((_MOV_ECX_IMM32,)))
+    + _byte_class(SMALL_COPY_DWORDS)
+    + re.escape(bytes(_IMM32_SIZE - 1))  # the high bytes of a count below 256
+    + b"(?:%b%b){0,%d}"
+    % (_byte_class(_MOV_REG_OPCODES), _byte_class(_MODRM_MOD_REG), SMALL_COPY_MOVES)
+    + re.escape(_REP_MOVSD)
+)
 # cmp eax,imm8 (83 F8 ib), cmp eax,imm32 (3D id) or cmp al,imm8 (3C ib); found at every offset
 _COMPARE = re.compile(rb"(?=(\x83\xf8.|\x3d.{4}|\x3c.))", re.DOTALL)
 _CMP_EAX_IMM32 = 0x3D
