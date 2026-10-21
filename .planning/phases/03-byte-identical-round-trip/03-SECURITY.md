@@ -58,6 +58,19 @@ created: "2026-10-20"
 | T-03-24 | Repudiation | rebuild report masked_fields (text and --json) | low | mitigate | `len({m.fixup ...})` at splice.py:635; `test_mask_count_counts_distinct_fields` (5 cases); key and 8-key contract unchanged (tests/test_cli.py untouched) | closed |
 | T-03-25 | Tampering | gate step 7 (container, non-default --orig) | low | mitigate | orig/ mounted `:ro` (docker/compose.yaml:16); /tmp/alt-orig holds symlinks only; default build.ninja regenerated (`--orig orig` after the gate) | closed |
 | T-03-26 | Information disclosure | gate logs build/gate/03-06/ and 03-06-SUMMARY gate section | low | mitigate | build/ gitignored; cmp without -l; 0 runs of 5+ hex bytes in the seven logs | closed |
+| T-03-27 | Denial of service | configure.py main(): a non-UTF-8 executable name | low | mitigate | `test_render_refuses_names_that_are_not_utf8`, `test_main_never_truncates_on_an_encoding_failure`, Linux-only `test_main_refuses_real_names_that_are_not_utf8` (ran in the container, 407 passed) | closed |
+| T-03-28 | Tampering | configure.py render(): orig dir or exe path starting with `-` | medium | mitigate | `test_render_refuses_an_option_like_orig_dir`, `test_render_refuses_an_option_like_exe_path`, `test_main_refuses_an_option_like_*` | closed |
+| T-03-29 | Tampering | configure.py rebuild rule: verify output directory | low | mitigate | `--out build` (`test_rebuild_out_is_the_builddir`, `test_generated_rebuild_writes_into_builddir`); gate 03-10 step 8 cmp silent from build/cfg-03-10/ | closed |
+| T-03-30 | Repudiation | configure.py HEADER: status line and comments | low | mitigate | `CHECK-ORIG {orig}` (`test_render_check_orig_description_names_the_orig_dir`, `test_header_comments_name_no_fixed_orig_dir`); gate 03-10 step 7 shows `CHECK-ORIG ../tmp/alt-orig` | closed |
+| T-03-31 | Denial of service | targets.load_manifest: malformed TOML, non-UTF-8, wrong shape | low | mitigate | ManifestError (`test_malformed_manifest_raises_manifest_error`, CLI `test_malformed_manifest_is_an_error_line`) | closed |
+| T-03-32 | Tampering | targets.check_bare_name / splice._check_bare_name | medium | mitigate | `ntpath.isreserved` + POSIX and Windows path rules (`test_manifest_refuses_a_non_bare_target_name`, `test_rebuild_target_refuses_a_non_bare_name`); real manifest still loads | closed |
+| T-03-33 | Repudiation | splice.Region.describe and _unwritable_reason | low | mitigate | `test_region_labels_count_pages_within_the_object`, `test_mismatch_label_in_a_later_object`, `test_unwritable_reason_names_the_page`; object-1 labels and 03-03 substrings unchanged | closed |
+| T-03-34 | Repudiation | RebuildResult.format REFUSED/MISSING lines | low | mitigate | `test_rebuild_result_names_the_input_path`, `test_rebuild_refused_names_the_input_and_manifest`, `test_rebuild_missing_names_the_input`; `test_rebuild_json_refused_keeps_the_eight_keys` | closed |
+| T-03-35 | Repudiation | tests/test_splice_real.py helpers | low | mitigate | no `page_count - 2` / `max(SRC_SIZE` left; helpers use `le.page_va`; FACTS byte-identical (cmp in 03-09); 21 real-file tests pass, no skip | closed |
+| T-03-36 | Information disclosure | real-file test assertions and messages | low | mitigate | assertions on offsets, VAs, counts, booleans and filecmp only; `_page_at` message names the VA only | closed |
+| T-03-37 | Tampering | gate steps 7 and 8 (container) | low | mitigate | orig/ `:ro`; /tmp/alt-orig symlinks only; step 8 writes only build/cfg-03-10/ (gitignored); default build.ninja regenerated | closed |
+| T-03-38 | Information disclosure | gate logs build/gate/03-10/ and 03-10-SUMMARY | low | mitigate | build/ gitignored; cmp without -l; 0 runs of 5+ hex bytes in the eight logs | closed |
+| T-03-39 | Repudiation | 03-REVIEW-DISPOSITION.md | low | mitigate | each fixed row cites plan, GREEN commit (`git merge-base --is-ancestor` checked) and build/gate/03-10/; 03-10 Task 2 verify passed | closed |
 | T-03-SC | Tampering | package installs | low | accept | no dependency change in the phase (`git diff 547faf8..HEAD -- uv.lock pyproject.toml` is empty; 03-06 adds only the stdlib `re` and `sys`) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -83,6 +96,7 @@ created: "2026-10-20"
 |------------|---------------|--------|------|--------|
 | 2026-10-20 | 22 | 22 | 0 | /gsd-secure-phase 3 (orchestrator, L1 grep-depth short-circuit) |
 | 2026-10-20 | 27 | 27 | 0 | gap closure 03-06 re-audit (orchestrator, L1, T-03-22..26 added) |
+| 2026-10-21 | 40 | 40 | 0 | gap closure 03-07..03-10 re-audit (orchestrator, L1, T-03-27..39 added) |
 
 ---
 
@@ -101,4 +115,12 @@ created: "2026-10-20"
 |---|---|
 | Threats found | 27 |
 | Closed | 27 |
+| Open | 0 |
+
+## Security Audit 2026-10-21
+
+| Metric | Count |
+|---|---|
+| Threats found | 40 |
+| Closed | 40 |
 | Open | 0 |

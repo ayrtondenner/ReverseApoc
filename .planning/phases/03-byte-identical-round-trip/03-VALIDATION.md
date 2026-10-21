@@ -62,6 +62,13 @@ Requirement-level map (task IDs are bound by the planner; every task that touche
 | 03-06-T1 | 03-06 | gap | RT-03 | T-03-22, T-03-23 | --orig reaches check-orig/verify; unsafe --orig and \|/LF/CR names refused before any write; parse-le $in unquoted; names with spaces work (WR-05, WR-06) | unit + integration | `uv run pytest -q tests/test_configure.py -k "orig or represent or spaces"` | ✅ | ✅ green |
 | 03-06-T2 | 03-06 | gap | RT-02 | T-03-24 | masked_fields counts distinct fixup fields (touching, three-patch, straddling, two-field, mixed) (WR-02) | unit | `uv run pytest -q tests/test_splice.py -k distinct_fields` | ✅ | ✅ green |
 | 03-06-T3 | 03-06 | gap | RT-03 | T-03-25, T-03-26 | gate re-run on the main checkout incl. ninja verify through a non-default --orig; logs under build/gate/03-06/, reproduced in 03-06-SUMMARY.md | gate (real-file, host + container) | `test "$(tail -qn 1 build/gate/03-06/0[1-7]-*.log \| sort -u)" = "exit=0"` | ✅ | ✅ green |
+| 03-07-T1 | 03-07 | gap | RT-03 | T-03-27, T-03-28 | non-UTF-8 and option-like (`-`) orig dirs / exe paths refused with ConfigureError; build.ninja never truncated (WR-07, IN-09) | unit + container | `uv run pytest -q tests/test_configure.py -k \"utf8 or option_like or truncat\"` (Linux-only case runs in the container) | ✅ | ✅ green |
+| 03-07-T2 | 03-07 | gap | RT-03 | T-03-29, T-03-30 | `CHECK-ORIG {orig}`, no fixed orig/ comment, rebuild `--out build` = builddir, no stale phase wording (IN-10, IN-11, IN-08) | unit + integration | `uv run pytest -q tests/test_configure.py -k \"description_names or header_comments or rebuild_out or writes_into_builddir or stale_phase\"` | ✅ | ✅ green |
+| 03-08-T1 | 03-08 | gap | RT-03 | T-03-31, T-03-32 | malformed manifests and non-bare / Windows-reserved target names raise ManifestError, host-independently (IN-06, IN-07) | unit + CLI | `uv run pytest -q tests/test_targets.py tests/test_cli.py -k \"malformed or non_bare\"` | ✅ | ✅ green |
+| 03-08-T2 | 03-08 | gap | RT-04 | T-03-33, T-03-34 | within-object page labels and refusal reasons; REFUSED/MISSING name the real input and manifest; 8 JSON keys kept (IN-01, IN-02, IN-03, VN-01) | unit + CLI | `uv run pytest -q tests/test_splice.py tests/test_cli.py -k \"within_the_object or later_object or unwritable_reason_names or names_the_input or refused_names or missing_names or eight_keys\"` | ✅ | ✅ green |
+| 03-09-T1 | 03-09 | gap | RT-05 | T-03-35, T-03-36 | real-file helpers derived from le.py's reader, not splice.py's arithmetic; FACTS unchanged (IN-05) | real-file | `REVERSEAPOC_ORIG=... uv run pytest -q -rs tests/test_splice_real.py` (21 passed, no skip) | ✅ | ✅ green |
+| 03-09-T2 | 03-09 | gap | RT-05 | — | toolchain.md container orig/ row lists SMKP.EXE (IN-04) | doc check | `grep -qF 'SMKP.EXE from your install' docs/toolchain.md` | ✅ | ✅ green |
+| 03-10-T1 | 03-10 | gap | RT-03 | T-03-37, T-03-38 | gate re-run after G-03-6 incl. ninja check-orig through a non-default --orig and ninja verify from a sub-directory build.ninja; logs under build/gate/03-10/, reproduced in 03-10-SUMMARY.md | gate (real-file, host + container) | `test \"$(tail -qn 1 build/gate/03-10/0[1-8]-*.log \| sort -u)\" = \"exit=0\"` | ✅ | ✅ green |
 
 Real-file rows skip in a worktree without orig/; executors run them with `REVERSEAPOC_ORIG="$(git rev-parse --path-format=absolute --git-common-dir)/../orig"` prefixed (plan 03-01 adds the override to tests/conftest.py).
 
@@ -115,3 +122,12 @@ Real-file rows skip in a worktree without orig/; executors run them with `REVERS
 | Resolved | 0 |
 | Escalated | 0 |
 | Rows added (03-06) | 3 |
+
+## Validation Audit 2026-10-21
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Rows added (03-07..03-10) | 7 |
