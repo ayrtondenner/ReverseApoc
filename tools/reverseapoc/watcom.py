@@ -13,7 +13,7 @@ import urllib.request
 import zlib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import BinaryIO
 
 from .iso9660 import ISOError, extract_all
@@ -92,11 +92,37 @@ class WatcomMedia:
         return f"{base}/{self.item}/{urllib.parse.quote(self.file)}"
 
 
+def _in_tree_problem(value: str) -> str | None:
+    """Why `value` cannot be a path inside the install tree on both Windows and POSIX, or None.
+    The Pure path classes behave the same on every host, so the answer does not depend on where
+    this runs. Accepts relative POSIX paths such as `BINW/WCC386.EXE` only."""
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).anchor:
+        return "is absolute or names a drive"
+    if "\\" in value or ":" in value:
+        return "contains a backslash or a colon"
+    if ".." in PurePosixPath(value).parts:
+        return "has a '..' segment"
+    return None
+
+
+def _check_in_tree(where: str, key: str, value: str) -> None:
+    """Refuse a manifest path that would leave the install tree when joined onto it."""
+    problem = _in_tree_problem(value)
+    if problem is not None:
+        raise ManifestError(
+            f"{where}: '{key}' {value!r} {problem}; it must be a relative POSIX path inside "
+            "the installed tree"
+        )
+
+
 def _parse_wpack(where: str, entry: dict) -> tuple[tuple[str, ...], str]:
-    """The optional `wpack` parts and `wpack_member` of a key file: both or neither."""
+    """The optional `wpack` parts and `wpack_member` of a key file: both or neither. Every part
+    is a path inside the installed tree."""
     parts = entry.get("wpack", [])
     if not isinstance(parts, list) or not all(isinstance(p, str) and p for p in parts):
         raise ManifestError(f"{where}: 'wpack' must be a list of non-empty strings")
+    for part in parts:
+        _check_in_tree(where, "wpack", part)
     member = entry.get("wpack_member", "")
     if not isinstance(member, str):
         raise ManifestError(f"{where}: 'wpack_member' must be a string")
@@ -116,9 +142,11 @@ def _parse_key_file(where: str, entry: object) -> KeyFile:
     note = entry.get("note", "")
     if not isinstance(note, str):
         raise ManifestError(f"{where}: 'note' must be a string")
+    path = _text(entry, where, "path")
+    _check_in_tree(where, "path", path)
     wpack, wpack_member = _parse_wpack(where, entry)
     return KeyFile(
-        path=_text(entry, where, "path"),
+        path=path,
         size=_size(entry, where),
         md5=_digest(entry, where, "md5", 32),
         sha1=_digest(entry, where, "sha1", 40),
@@ -439,23 +467,35 @@ def _replace_with_retry(
             sleep(delay * attempt)
 
 
+def _inside(root: Path, rel: str, what: str) -> Path:
+    """`root / rel` resolved, refusing any path that would land outside `root` (as extract_all
+    does). The loader already rejects such manifest paths; this also covers a KeyFile built in
+    code and a symlink in the tree."""
+    base = root.resolve()
+    target = (base / rel).resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise WatcomError(f"{what}: {rel!r} would be used outside {base}")
+    return target
+
+
 def _decode_wpack_key_files(media: WatcomMedia, root: Path) -> None:
     """Replace each wpack key file in the extracted tree `root` by its decoded archive member
     (D-01). The parts are read from `root`; the result goes to the key file's own manifest path,
-    never to a name taken from the archive."""
+    never to a name taken from the archive. Nothing is read or written outside `root`."""
     for kf in media.key_files:
         if not kf.wpack:
             continue
         what = f"cannot decode {kf.path} for Watcom {media.version} from {', '.join(kf.wpack)}"
-        missing = [part for part in kf.wpack if not (root / part).is_file()]
+        dest = _inside(root, kf.path, what)
+        sources = [_inside(root, part, what) for part in kf.wpack]
+        missing = [part for part, src in zip(kf.wpack, sources, strict=True) if not src.is_file()]
         if missing:
             raise WatcomError(f"{what}: {', '.join(missing)} not found")
-        data = join_parts((root / part).read_bytes() for part in kf.wpack)
+        data = join_parts(src.read_bytes() for src in sources)
         try:
             decoded = decode_member(data, kf.wpack_member, expected_size=kf.size)
         except WpackError as exc:
             raise WatcomError(f"{what}: {exc}") from exc
-        dest = root / kf.path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(decoded)
 
