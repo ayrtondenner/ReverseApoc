@@ -122,13 +122,13 @@ Plans:
   5. A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) reports its result per EXE and confirms `wcc386`, or names the modules that need `wpp386` (CID-06)
 
 **Spike**: wibo 1.2.0 runs `wcc386.exe` for each version (10.5, 10.6, 11.0) in Docker.
-**Plans:** 12 plans
+**Plans:** 3/12 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 04-01-PLAN.md — `reverseapoc cc` wrapper: config/cflags.txt rules, compiler hash gate and banner log, scrubbed env, Watcom-safe paths (CID-01, CID-02)
-- [ ] 04-02-PLAN.md — stdlib OMF/LIB reader (fixups, LIDATA, Easy OMF, COMDAT32, normalized object hash) proven on every LIB386 library; real-file skip helpers (CID-04)
-- [ ] 04-03-PLAN.md — wpack format description, then the independent 10.5 decoder; D-01 time box with recorded verdict or fallback (CID-01)
+- [x] 04-01-PLAN.md — `reverseapoc cc` wrapper: config/cflags.txt rules, compiler hash gate and banner log, scrubbed env, Watcom-safe paths (CID-01, CID-02)
+- [x] 04-02-PLAN.md — stdlib OMF/LIB reader (fixups, LIDATA, Easy OMF, COMDAT32, normalized object hash) proven on every LIB386 library; real-file skip helpers (CID-04)
+- [x] 04-03-PLAN.md — wpack format description, then the independent 10.5 decoder; D-01 time box with recorded verdict or fallback (CID-01)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 04-04-PLAN.md — real compiles per version with banner, compiler and object hashes; env-scrub, -bt=dos, two-source cflags and error-path proofs (CID-01, CID-02)
@@ -189,6 +189,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
-| 4. Compiler identification | 0/12 | Planned | - |
+| 4. Compiler identification | 3/12 | In Progress | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
