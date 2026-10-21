@@ -107,7 +107,7 @@ coverage:
     requirement: CID-04
     verification:
       - kind: unit
-        ref: "uv run pytest -q tests/test_cli.py -k libmatch (12 tests)"
+        ref: "uv run pytest -q tests/test_cli.py -k libmatch (11 tests; first written as 12, corrected in Review fix round 1)"
         status: pass
     human_judgment: false
 
@@ -136,6 +136,8 @@ status: complete
 - The `build_le_image(patches=...)` overlay in conftest, mapped through the object table and the page map.
 
 ## Real smoke runs (counts and names only)
+
+> Review fix round 1 (2026-10-21, at the end of this file) changes TACP's rule (b) and ambiguous counts, and corrects the fprintf/sprintf sentence and the rule (b) observation below. This section is kept as first written.
 
 Inputs: the main checkout's `orig/` and `third_party/watcom` (read-only), all three swept versions, MIN_UNMASKED 16. Output: `build/libmatch-smoke/` only.
 
@@ -245,6 +247,39 @@ None.
 - Files: tools/reverseapoc/libmatch.py, tests/test_libmatch.py, tests/libtree.py, this SUMMARY: present. `head -n 1 tools/reverseapoc/libmatch.py` starts with `# Derived from KKND-Decomp tools/lib_match.py (CC0 1.0)`. `grep -n "def config_dir" tools/reverseapoc/targets.py` prints a line.
 - Commits on this branch since 5f2d186: 1cda9d4, ab039e2, 3590650, 15df920, 1dfcaae, 551aa0f, 83b7d9b, a246bf4 (8 task commits), plus this SUMMARY's docs commit.
 - Acceptance: the plan's pytest selections for Tasks 1-3 exit 0; `libmatch --help` lists all seven options (`test_libmatch_help_lists_options`); both real runs exit 0 with `_cstart_` at the entry VA; no unique undefmbr/undefed/fatalerr row.
+
+## Review fix round 1 (2026-10-21)
+
+The plan review found one defect in rule (b) (Q1), two SUMMARY claims the evidence does not support (S1, S2) and a missing negative test that 04-07 relies on (M3). The sections above are kept as first written; only the D5 test count in the frontmatter is corrected in place, and it says so.
+
+### Changes
+
+- `c95e950` fix(04-05): rule (b) keyed each candidate's publics by range start only, and built that map from every group, including ranges later dropped as contained. Containment is now decided on the raw (start, end) groups first (`_split_contained`). The rule (b) map (`_public_addresses`) is built from the surviving groups, with each public at its range start plus its offset. New tests: `test_call_graph_target_is_a_public_inside_a_range` (on the old code the row stayed ambiguous) and `test_call_graph_ignores_a_contained_range` (on the old code the wrong module came out unique).
+- `cc5f52c` test(04-05): `read_runtime_csv` refuses a wrong header and a start cell that is not hex (bad digit, empty, `h` suffix). Both tests fail when the header check or the ValueError wrap is removed.
+
+### Corrections
+
+- **fprintf/sprintf (S1).** "`fprintf`/`sprintf` are true identical bodies in one library" is wrong. TACP's group at 0x000C3665..0x000C3686 was fprintf (10.5, 10.6, 11.0) against **11.0's** sprintf. Their masked extern calls differ: fprintf calls `__fprtf_`, 11.0's sprintf calls `vsprintf_`. Both calls land at 0x000C99BC, where `__fprtf_` is the public, 0x11 bytes into the fprtf range at 0x000C99AB. The 10.6 sprintf has its own row at 0x000C32B2. With the fix, rule (b) resolves the group to fprintf. The atoi/atol half of the sentence stands: both rows' candidates share every library and version.
+- **Rule (b) observation (S1).** The false flags on stk, stk386 and initfile came from the evidence-map defect, not from the rule. Their call to `__fatal_runtime_error_` (xmsg + 5: 0x000C6B0E in UFO2P, 0x000C9518 in TACP) hit the start of the dropped C++ `fatalerr` range. After the fix, a read-only probe that applies rule (b) to every real hit flags only `uputs` (the NT alternative that `puts` beats), 11.0's `sprintf` at TACP 0x000C3665, and `fatalerr` in its dropped range.
+- **CLI test count (S2).** `tests/test_cli.py -k libmatch` collects 11 tests, not 12. `tests/test_libmatch.py` now holds 34 (the 28 above, 2 call-graph tests and 4 CSV refusal cases).
+
+### Re-run
+
+Same command lines and inputs as above, output in `build/libmatch-smoke/` only.
+
+| | UFO2P | TACP |
+|---|---:|---:|
+| Ranges | 121 (unchanged) | 132 (unchanged) |
+| Bytes covered (of the code object) | 43,958 of 785,117 | 46,055 of 795,983 |
+| Skipped: not OMF / short | 160 / 10,141 | 160 / 10,141 |
+| Dropped (strictly contained) | 1 (`fatalerr` at 0x000C6B0E) | 1 (`fatalerr` at 0x000C9518) |
+| Resolved by rule (a) data / (b) calls / (c) C before C++ | 0 / 1 / 0 | 0 / 2 / 0 |
+| Still ambiguous | 14 | 12 |
+
+- UFO2P's CSV is identical to the first run. TACP's differs in one row: 0x000C3665 is now `fprintf`, `unique`, publics `fprintf_`, no alternatives. Before, it was `ambiguous` with publics `fprintf_;sprintf_` and three `sprintf@.../CLIB3R.LIB` alternatives. This reproduces the reviewer's in-memory what-if.
+- Version tallies are unchanged in both EXEs. `_cstart_` is still at the entry VA, and no unique row names undefmbr, undefed or fatalerr.
+- Remaining ambiguous rows: the list in "Real smoke runs" names 15 modules across both EXEs. UFO2P's 14 are all of them except fprintf. TACP's 12 also lack dosdrive and ddisk386.
+- Verification: `uv run pytest -q` gives 772 passed, 7 skipped, and `uv run ruff check .` is clean.
 
 ---
 *Phase: 04-compiler-identification*
