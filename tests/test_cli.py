@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 
@@ -11,6 +12,7 @@ from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_m
 from isoimage import build_iso
 from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
+from reverseapoc.splice import RebuildResult
 from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
 
@@ -295,6 +297,72 @@ def test_rebuild_missing_names_the_input(tmp_path, capsys):
     line = capsys.readouterr().out
     assert line.startswith("MISSING")
     assert str(elsewhere / "SYNTH.EXE") in line
+
+
+def _hint_args(line: str, verb: str) -> argparse.Namespace:
+    """Parse the command a REFUSED or MISSING hint tells the user to run (paths without spaces)."""
+    command = line.split(f"run uv run reverseapoc {verb}", 1)[1].rstrip(")\n")
+    return build_parser().parse_args([verb, *command.split()])
+
+
+def test_rebuild_refused_hint_names_the_same_orig_and_manifest(tmp_path, capsys):
+    # IN-12: following the hint must check the files the REFUSED line is about
+    elsewhere, custom, args = _elsewhere_setup(tmp_path)
+    assert main(args) == 1
+    line = capsys.readouterr().out.rstrip("\n")
+    source = elsewhere / "SYNTH.EXE"
+    assert line == (
+        f"REFUSED   SYNTH.EXE  {source} does not match {custom}; "
+        f"run uv run reverseapoc check-orig --orig {elsewhere} --manifest {custom}"
+    )
+    hint = _hint_args(line, "check-orig")
+    assert (hint.orig, hint.manifest) == (elsewhere, custom)
+
+
+def test_rebuild_missing_hint_names_the_same_orig_and_manifest(tmp_path, capsys):
+    elsewhere, custom, args = _elsewhere_setup(tmp_path, present=False)
+    assert main(args) == 1
+    line = capsys.readouterr().out.rstrip("\n")
+    source = elsewhere / "SYNTH.EXE"
+    assert line == (
+        f"MISSING   SYNTH.EXE  ({source} not found; "
+        f"run uv run reverseapoc ingest --orig {elsewhere} --manifest {custom})"
+    )
+    hint = _hint_args(line, "ingest")
+    assert (hint.orig, hint.manifest) == (elsewhere, custom)
+
+
+def _synth_target(tmp_path):
+    (target,) = load_manifest(write_manifest(tmp_path / "m.toml", {"SYNTH.EXE": b"synthetic"}))
+    return target
+
+
+@pytest.mark.parametrize(
+    ("status", "hint"),
+    [
+        ("refused", "; run uv run reverseapoc check-orig"),
+        ("missing", "; run uv run reverseapoc ingest)"),
+    ],
+)
+def test_rebuild_hint_without_options_for_the_defaults(tmp_path, status, hint):
+    result = RebuildResult(_synth_target(tmp_path), status, None, source=DEFAULT_ORIG / "SYNTH.EXE")
+    assert result.format(9, DEFAULT_MANIFEST).endswith(hint)
+
+
+def test_rebuild_hint_names_only_the_options_that_differ(tmp_path):
+    target = _synth_target(tmp_path)
+    custom_orig = RebuildResult(target, "refused", None, source=tmp_path / "SYNTH.EXE")
+    line = custom_orig.format(9, DEFAULT_MANIFEST)
+    assert line.endswith(f"; run uv run reverseapoc check-orig --orig {tmp_path}")
+    custom_manifest = RebuildResult(target, "missing", None, source=DEFAULT_ORIG / "SYNTH.EXE")
+    line = custom_manifest.format(9, tmp_path / "m.toml")
+    assert line.endswith(f"; run uv run reverseapoc ingest --manifest {tmp_path / 'm.toml'})")
+
+
+def test_rebuild_hint_quotes_a_path_with_a_space(tmp_path):
+    spaced = tmp_path / "my orig"
+    result = RebuildResult(_synth_target(tmp_path), "refused", None, source=spaced / "SYNTH.EXE")
+    assert result.format(9, DEFAULT_MANIFEST).endswith(f'check-orig --orig "{spaced}"')
 
 
 def test_rebuild_json_refused_keeps_the_eight_keys(tmp_path, capsys):
