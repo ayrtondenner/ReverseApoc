@@ -1,4 +1,4 @@
-"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, fetch-watcom,
+"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, fetch-watcom,
 install-watcom, check-watcom."""
 
 from __future__ import annotations
@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+from .cflags import DEFAULT_CFLAGS, CflagsError
+from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
@@ -63,6 +65,42 @@ def _cmd_rebuild(args: argparse.Namespace) -> int:
     else:
         print(report.format())
     return 0 if report.ok else 1
+
+
+def _cmd_cc(args: argparse.Namespace) -> int:
+    result = compile_source(
+        args.src,
+        args.obj,
+        cflags=args.cflags,
+        manifest=args.manifest,
+        watcom_dir=args.watcom_dir,
+        log=args.log,
+    )
+    if result.output.strip():
+        # With --json, stdout stays one JSON document; the compiler's messages go to stderr.
+        print(result.output.rstrip("\n"), file=sys.stderr if args.json else sys.stdout)
+    if args.json:
+        print(json.dumps(result.to_json(), indent=2))
+    else:
+        print(result.format())
+    return 0 if result.ok else 1
+
+
+def _add_cc_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "cc",
+        help="compile one C source with the Watcom version and flags config/cflags.txt assigns "
+        "to it",
+    )
+    p.add_argument("src", type=Path, help="the C source, inside the repository")
+    p.add_argument("-o", "--obj", type=Path, required=True, help="the object to write")
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_cc)
 
 
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
@@ -179,15 +217,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true", help="print the results as JSON")
     p.set_defaults(func=_cmd_rebuild)
 
+    _add_cc_command(sub)
     _add_watcom_commands(sub)
     return parser
+
+
+_ERRORS = (
+    IngestError,
+    LEError,
+    ManifestError,
+    ISOError,
+    WatcomError,
+    CompilerError,
+    CflagsError,
+    OSError,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
-    except (IngestError, LEError, ManifestError, ISOError, WatcomError, OSError) as exc:
+    except _ERRORS as exc:
         print(f"reverseapoc {args.command}: error: {exc}", file=sys.stderr)
         return 1
 
