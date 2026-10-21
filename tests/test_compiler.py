@@ -6,6 +6,7 @@ needed; the real compile is a separate, manual verification step.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -14,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import compiler, watcom
+from reverseapoc import compiler, omf, watcom
 from reverseapoc.cflags import CflagsError
 from reverseapoc.compiler import (
     WIBO,
@@ -105,7 +106,8 @@ def test_cc_compiles_through_gate(ws):
     )
     log = ws.log.read_text(encoding="utf-8")
     assert "Version 10.6" in log
-    assert len(re.findall(r"\b[0-9a-f]{40}\b", log)) == 2
+    # two gated compiler SHA-1s, then the object's raw and normalized SHA-1
+    assert len(re.findall(r"\b[0-9a-f]{40}\b", log)) == 4
 
 
 def test_argv_shape(ws, monkeypatch):
@@ -452,6 +454,39 @@ def test_stamp_for_another_root_is_a_miss(tmp_path, monkeypatch):
 
 
 # 6. failures, error files and the log -----------------------------------------------------------
+
+
+def test_result_carries_object_hashes(ws):
+    obj = ws.root / "out" / "a.obj"
+    result = ws.compile(ws.source(), obj, FakeCompiler())
+    data = obj.read_bytes()
+    assert result.object_sha1 == hashlib.sha1(data).hexdigest()
+    assert result.normalized_sha1 == omf.normalized_object_sha1(data)
+    assert result.object_sha1 != result.normalized_sha1  # THEADR and COMENT 0xE9 are dropped
+    assert f"sha1 {result.object_sha1}  normalized {result.normalized_sha1}" in result.format()
+    (line,) = ws.log.read_text(encoding="utf-8").splitlines()
+    assert f"sha1 {result.object_sha1}  normalized {result.normalized_sha1}" in line
+    assert line.endswith("exit 0")
+    data_json = result.to_json()
+    assert data_json["object_sha1"] == result.object_sha1
+    assert data_json["normalized_sha1"] == result.normalized_sha1
+
+
+def test_failed_compile_has_no_object_hashes(ws):
+    result = ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler(rc=2))
+    assert (result.object_sha1, result.normalized_sha1) == (None, None)
+    assert result.to_json()["object_sha1"] is None
+    assert result.to_json()["normalized_sha1"] is None
+    assert "normalized" not in ws.log.read_text(encoding="utf-8")
+
+
+def test_object_that_is_not_omf_is_refused(ws):
+    # exit 0 but not an OMF module: no hash can be trusted, so the object does not survive
+    obj = ws.root / "out" / "a.obj"
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), obj, FakeCompiler(obj_bytes=b"not an object"))
+    assert "a.obj" in str(info.value)
+    assert not obj.exists()
 
 
 def test_failed_compile_cleans_up(ws):

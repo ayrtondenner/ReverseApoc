@@ -27,10 +27,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import watcom
+from . import omf, watcom
 from .cflags import Rule, load_cflags, select_rule
 from .splice import _write_atomic
-from .targets import REPO_ROOT
+from .targets import REPO_ROOT, hash_file
 
 WIBO = "/usr/local/bin/wibo"
 WRAPPER_FLAGS = ("-zq", "-zld", "-bt=dos")
@@ -329,21 +329,33 @@ class CompileResult:
     argv: tuple[str, ...]
     returncode: int
     output: str  # the compiler's own stdout and stderr
+    # The object's SHA-1 over the whole file, and omf.normalized_object_sha1 (THEADR and COMENT
+    # 0xE9 dropped), which is what native and wibo compiles are compared by (D-03). None when
+    # the compile failed.
+    object_sha1: str | None = None
+    normalized_sha1: str | None = None
 
     @property
     def ok(self) -> bool:
         return self.returncode == 0 and self.obj.is_file()
 
+    def hashes(self) -> str:
+        """`sha1 <raw>  normalized <normalized>`, or "" when there is no object."""
+        if self.object_sha1 is None:
+            return ""
+        return f"sha1 {self.object_sha1}  normalized {self.normalized_sha1}"
+
     def format(self) -> str:
         if self.ok:
             return (
                 f"OK      {self.src.as_posix()} -> {self.obj.as_posix()}  {self.rule.spec}  "
-                f"{self.gate.banner}"
+                f"{self.gate.banner}  {self.hashes()}"
             )
         return f"FAILED  {self.src.as_posix()}  {self.rule.spec}  exit {self.returncode}"
 
     def to_json(self) -> dict[str, Any]:
-        """Names, paths, the spec, the banner, gate SHA-1s, argv and the exit code; never bytes."""
+        """Names, paths, the spec, the banner, gate and object SHA-1s, argv and the exit code;
+        never bytes."""
         return {
             "src": self.src.as_posix(),
             "obj": self.obj.as_posix(),
@@ -355,6 +367,8 @@ class CompileResult:
             "gate": [[path, sha1] for path, sha1 in self.gate.files],
             "argv": list(self.argv),
             "returncode": self.returncode,
+            "object_sha1": self.object_sha1,
+            "normalized_sha1": self.normalized_sha1,
         }
 
 
@@ -367,9 +381,20 @@ def _log_line(result: CompileResult) -> str:
         result.gate.banner,
         gate,
         " ".join(result.argv),
+        result.hashes(),
         f"exit {result.returncode}",
     )
-    return "  ".join(fields) + "\n"
+    return "  ".join(field for field in fields if field) + "\n"
+
+
+def _object_hashes(obj: Path) -> tuple[str, str]:
+    """(raw SHA-1, normalized SHA-1) of a freshly written object. An object that is not an OMF
+    module cannot be trusted, so it is deleted and the compile refused."""
+    try:
+        return hash_file(obj).sha1, omf.normalized_object_sha1(obj.read_bytes())
+    except omf.OMFError as exc:
+        obj.unlink(missing_ok=True)
+        raise CompilerError(f"{obj} is not an OMF object module ({exc}); it was deleted") from exc
 
 
 def _append_log(log: Path, result: CompileResult) -> None:
@@ -421,10 +446,13 @@ def compile_rule(
     obj.parent.mkdir(parents=True, exist_ok=True)
     obj.unlink(missing_ok=True)
     proc = runner(argv, cwd=root, env=scrubbed_env(os.environ, platform), **_CAPTURE)
+    hashes: tuple[str | None, str | None] = (None, None)
     if proc.returncode != 0:
         obj.unlink(missing_ok=True)
+    elif obj.is_file():
+        hashes = _object_hashes(obj)
     output = "".join(part for part in (proc.stdout, proc.stderr) if part)
-    result = CompileResult(src, obj, rule, gate, tuple(argv), proc.returncode, output)
+    result = CompileResult(src, obj, rule, gate, tuple(argv), proc.returncode, output, *hashes)
     _append_log(log, result)
     return result
 
