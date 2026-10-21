@@ -95,17 +95,27 @@ def ledata16(seg: int, offset: int, data: bytes, *, offset32: bool = False) -> b
     return record(0xA0, index(seg) + struct.pack("<I" if offset32 else "<H", offset) + data)
 
 
-def _lidata_block(block: tuple[int, bytes | list]) -> bytes:
+def _lidata_block(block: tuple[int, bytes | list], fmt: str) -> bytes:
+    """fmt packs (repeat count, block count): "<IH" in LIDATA32, "<HH" in LIDATA."""
     repeat, content = block
     if isinstance(content, bytes):
-        return struct.pack("<IH", repeat, 0) + bytes([len(content)]) + content
-    return struct.pack("<IH", repeat, len(content)) + b"".join(_lidata_block(b) for b in content)
+        return struct.pack(fmt, repeat, 0) + bytes([len(content)]) + content
+    nested = b"".join(_lidata_block(b, fmt) for b in content)
+    return struct.pack(fmt, repeat, len(content)) + nested
 
 
 def lidata32(seg: int, offset: int, blocks: list[tuple[int, bytes | list]]) -> bytes:
     """A block is (repeat, content bytes) or (repeat, [nested blocks])."""
     body = index(seg) + struct.pack("<I", offset)
-    return record(0xA3, body + b"".join(_lidata_block(b) for b in blocks))
+    return record(0xA3, body + b"".join(_lidata_block(b, "<IH") for b in blocks))
+
+
+def lidata16(
+    seg: int, offset: int, blocks: list[tuple[int, bytes | list]], *, offset32: bool = False
+) -> bytes:
+    """Record 0xA2 with u16 repeat counts; Easy OMF modules write a u32 data offset in it."""
+    body = index(seg) + struct.pack("<I" if offset32 else "<H", offset)
+    return record(0xA2, body + b"".join(_lidata_block(b, "<HH") for b in blocks))
 
 
 def fixup(
