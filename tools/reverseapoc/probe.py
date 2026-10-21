@@ -68,6 +68,7 @@ _SETCC_AND = re.compile(rb"\x0f[\x90-\x9f]\xc0\x25\xff\x00\x00\x00")
 # setcc al (0F 90..9F C0); movzx eax,al (0F B6 C0)
 _SETCC_MOVZX = re.compile(rb"\x0f[\x90-\x9f]\xc0\x0f\xb6\xc0")
 # two or more movsd (A5) not preceded by rep (F3) or by another movsd: one unrolled copy per run
+# (_movsd_runs reads the bytes around it too)
 _MOVSD_RUN = re.compile(rb"(?<![\xf3\xa5])\xa5{2,}")
 # mov ecx,imm32 (B9 id) with a count of 1..16 dwords; up to four register-to-register mov
 # (89 /r or 8B /r with ModRM mod=11); rep movsd (F3 A5). At -3r and -4r both versions load edi
@@ -164,6 +165,15 @@ def _regex_matches(pattern: re.Pattern[bytes]) -> Callable[[bytes], Iterator[Mat
         return ((match.span(),) for match in pattern.finditer(code))
 
     return matches
+
+
+def _movsd_runs(code: bytes) -> Iterator[Match]:
+    """One hit per _MOVSD_RUN run, read together with the byte before it (it says the run is no
+    rep movsd) and the byte after it (it says where the run ends). A fixup on either neighbour
+    therefore drops the run, instead of its relocated value deciding the count."""
+    for match in _MOVSD_RUN.finditer(code):
+        start, end = match.span()
+        yield ((max(start - 1, 0), min(end + 1, len(code))),)
 
 
 def _rotated_loops(code: bytes) -> Iterator[Match]:
@@ -279,7 +289,7 @@ def _switches(direction: int) -> Callable[[bytes], Iterator[Match]]:
 _COUNTERS: dict[str, Callable[[bytes], Iterator[Match]]] = {
     "setcc_and": _regex_matches(_SETCC_AND),
     "setcc_movzx": _regex_matches(_SETCC_MOVZX),
-    "movsd_unrolled": _regex_matches(_MOVSD_RUN),
+    "movsd_unrolled": _movsd_runs,
     "rep_movsd_small": _regex_matches(_REP_MOVSD_SMALL),
     "loop_rotated": _rotated_loops,
     "loop_top_tested": _top_tested_loops,
