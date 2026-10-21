@@ -1077,12 +1077,14 @@ def test_probe_scan_with_calibration(tmp_path, capsys):
     args = _probe_args(ws, "--runtime", str(ws["runtime"]), "--calibration", str(cal_path))
     assert main(args) == 0
     lines = capsys.readouterr().out.splitlines()
-    (at,) = [i for i, line in enumerate(lines) if line.startswith("consistent")]
-    # the header names what the cells were filtered by: the decisive idiom families only, so
-    # a cell the convention, fpu or stack line contradicts can still be listed (review M1)
+    # the plan's verify greps `^consistent:`, so that stays the literal line prefix (review N-1)
+    (at,) = [i for i, line in enumerate(lines) if line.startswith("consistent:")]
+    # the qualifier follows the count and names what the cells were filtered by: the decisive
+    # idiom families only, so a cell the convention, fpu or stack line contradicts can still be
+    # listed (review M1)
     assert lines[at] == (
-        "consistent (decisive idiom families byte_compare, struct_copy only; not checked "
-        "against the other evidence lines): 2 of 4 calibration cells"
+        "consistent: 2 of 4 calibration cells (decisive idiom families byte_compare, "
+        "struct_copy only; not checked against the other evidence lines)"
     )
     assert lines[at + 1 : at + 3] == ["  10.5 -5r -s", "  10.6 -5r -s"]
     (ties,) = [line for line in lines if line.startswith("ties:")]
