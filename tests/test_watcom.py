@@ -27,6 +27,7 @@ from reverseapoc.watcom import (
     load_watcom_manifest,
     select,
 )
+from wpackimage import archive, no_shannon_stream
 
 
 def _md5(data: bytes) -> str:
@@ -606,6 +607,150 @@ def test_check_watcom_report(tmp_path):
     assert not report.ok and "MISMATCH" in report.format()
 
 
+# 7. wpack key files (decoded by install-watcom) ----------------------------------------------
+
+DECODED = b"made-up decoded compiler, not the CD stub"
+WPACK_PARTS = ("DISKIMGS/DISK02/P.1", "DISKIMGS/DISK03/P.2")
+WPACK_MEMBER = "packed.exe"
+_WPACK = 'wpack = ["D/P.1", "D/P.2"]\nwpack_member = "x.exe"\n'
+
+
+def _wpack_parts(content: bytes = DECODED) -> tuple[bytes, bytes]:
+    """One synthetic archive holding `content`, split in two like PCK00017.1 + .2."""
+    data = archive([(WPACK_MEMBER, content, no_shannon_stream(list(content)), False)])
+    cut = len(data) // 2
+    return data[:cut], data[cut:]
+
+
+def _wpack_key(tmp_path: Path, size: int, data: bytes = DECODED) -> KeyFile:
+    """A BINW/X.EXE key file with wpack fields, loaded through the manifest parser."""
+    parts = ", ".join(f'"{p}"' for p in WPACK_PARTS)
+    path = tmp_path / "kf.toml"
+    path.write_text(
+        GOOD
+        + f'[[media.key_files]]\npath = "BINW/X.EXE"\nsize = {size}\n'
+        + f'md5 = "{_md5(data)}"\nsha1 = "{_sha1(data)}"\n'
+        + f'wpack = [{parts}]\nwpack_member = "{WPACK_MEMBER}"\n'
+    )
+    return load_watcom_manifest(path)["1.0"].key_files[0]
+
+
+def _wpack_install(
+    tmp_path: Path, parts: tuple[bytes, ...] | None = None, size: int = len(DECODED)
+) -> tuple[WatcomMedia, Path, Path]:
+    parts = _wpack_parts() if parts is None else parts
+    tree = {"BINW/X.EXE": b"stub", "README.TXT": b"hi"}
+    tree.update(zip(WPACK_PARTS, parts, strict=False))  # fewer parts: a part missing on the CD
+    image = build_iso(tree)
+    media = _media(image, key_files=[_wpack_key(tmp_path, size)])
+    media_dir, install_dir = tmp_path / "media", tmp_path / "install"
+    media_dir.mkdir()
+    (media_dir / media.local_name).write_bytes(image)
+    return media, media_dir, install_dir
+
+
+def _nothing_installed(install_dir: Path) -> bool:
+    return not install_dir.exists() or not any(install_dir.iterdir())
+
+
+def test_manifest_wpack_fields_parse(tmp_path):
+    path = tmp_path / "w.toml"
+    path.write_text(GOOD + _KF.format(m="0" * 32, s="0" * 40) + _WPACK)
+    kf = load_watcom_manifest(path)["1.0"].key_files[0]
+    assert (kf.wpack, kf.wpack_member) == (("D/P.1", "D/P.2"), "x.exe")
+    path.write_text(GOOD + _KF.format(m="0" * 32, s="0" * 40))
+    kf = load_watcom_manifest(path)["1.0"].key_files[0]
+    assert (kf.wpack, kf.wpack_member) == ((), "")
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        'wpack = "D/P.1"\nwpack_member = "x.exe"\n',
+        'wpack = ["D/P.1", ""]\nwpack_member = "x.exe"\n',
+        'wpack = ["D/P.1", 2]\nwpack_member = "x.exe"\n',
+        'wpack = ["D/P.1"]\n',
+        'wpack_member = "x.exe"\n',
+        'wpack = []\nwpack_member = "x.exe"\n',
+        'wpack = ["D/P.1"]\nwpack_member = ""\n',
+        'wpack = ["D/P.1"]\nwpack_member = 3\n',
+    ],
+    ids=[
+        "not-a-list", "empty-part", "int-part", "no-member", "no-parts", "empty-parts",
+        "empty-member", "int-member",
+    ],
+)  # fmt: skip
+def test_manifest_wpack_validation(tmp_path, fields):
+    path = tmp_path / "w.toml"
+    path.write_text(GOOD + _KF.format(m="0" * 32, s="0" * 40) + fields)
+    with pytest.raises(ManifestError, match=r"key_files\[0\]"):
+        load_watcom_manifest(path)
+
+
+def test_install_decodes_wpack_key_file(tmp_path):
+    media, media_dir, install_dir = _wpack_install(tmp_path)
+    vc = install_version(media, media_dir, install_dir)
+    assert [r.status for r in vc.results] == ["ok"]
+    root = install_dir / "9.0"
+    assert (root / "BINW" / "X.EXE").read_bytes() == DECODED
+    assert (root / "README.TXT").read_bytes() == b"hi"
+    assert not list(root.rglob(WPACK_MEMBER))  # never written under the archive's own name
+    assert [p.name for p in install_dir.iterdir()] == ["9.0"]
+
+
+def test_install_wpack_corrupt_part_fails_cleanly(tmp_path):
+    p1, p2 = _wpack_parts()
+    p2 = bytes([p2[0] ^ 0xFF]) + p2[1:]  # inside the compressed stream: its CRC-32 fails
+    media, media_dir, install_dir = _wpack_install(tmp_path, (p1, p2))
+    with pytest.raises(WatcomError) as exc:
+        install_version(media, media_dir, install_dir)
+    message = str(exc.value)
+    assert "9.0" in message and "BINW/X.EXE" in message
+    assert all(part in message for part in WPACK_PARTS)
+    assert _nothing_installed(install_dir)
+
+
+def test_install_wpack_size_mismatch_fails(tmp_path):
+    media, media_dir, install_dir = _wpack_install(tmp_path, size=len(DECODED) + 1)
+    with pytest.raises(WatcomError, match=rf"{len(DECODED)} bytes, expected {len(DECODED) + 1}"):
+        install_version(media, media_dir, install_dir)
+    assert _nothing_installed(install_dir)
+
+
+def test_install_wpack_missing_part_fails(tmp_path):
+    p1, _ = _wpack_parts()
+    media, media_dir, install_dir = _wpack_install(tmp_path, (p1,))
+    with pytest.raises(WatcomError, match=WPACK_PARTS[1]):
+        install_version(media, media_dir, install_dir)
+    assert _nothing_installed(install_dir)
+
+
+def test_install_wpack_failure_keeps_previous_install(tmp_path):
+    media, media_dir, install_dir = _wpack_install(tmp_path)
+    install_version(media, media_dir, install_dir)
+    broken = dataclasses.replace(
+        media, key_files=(dataclasses.replace(media.key_files[0], size=len(DECODED) + 1),)
+    )
+    with pytest.raises(WatcomError):
+        install_version(broken, media_dir, install_dir, force=True)
+    assert [p.name for p in install_dir.iterdir()] == ["9.0"]
+    assert (install_dir / "9.0" / "BINW" / "X.EXE").read_bytes() == DECODED
+
+
+def test_check_hint_for_wpack_mismatch(tmp_path):
+    plain = _kf("A.EXE", b"aaa")
+    media, install_dir = _checked(
+        tmp_path, [plain, _wpack_key(tmp_path, len(DECODED))],
+        {"A.EXE": b"AAA", "BINW/X.EXE": b"stub"},
+    )  # fmt: skip
+    text = check_version(media, install_dir).format()
+    lines = [ln for ln in text.splitlines() if "MISMATCH" in ln]
+    assert len(lines) == 2
+    hint = "(re-run `uv run reverseapoc install-watcom 9.0 --force` to decode it)"
+    assert lines[1].endswith(hint)
+    assert "re-run" not in lines[0]
+
+
 def test_defaults_are_under_repo():
     assert watcom.DEFAULT_WATCOM_MANIFEST.name == "watcom.toml"
     assert watcom.DEFAULT_MEDIA.parts[-2:] == ("third_party", "watcom-media")
@@ -627,9 +772,12 @@ def test_default_manifest_pins_key_files():
 
 def test_default_manifest_pinned_values():
     assert _key("10.6", "BINW/WCC386.EXE").size == 567698
-    k = _key("10.5", "BINW/WCC386.EXE")
-    assert k.size == 65536
-    assert k.known_bad is True
+    k = _key("10.5", "BINW/WCC386.EXE")  # decoded from the wpack archive by install (D-01)
+    assert k.size == 567558
+    assert k.known_bad is False
+    assert k.wpack == ("DISKIMGS/DISK02/PCK00017.1", "DISKIMGS/DISK03/PCK00017.2")
+    assert k.wpack_member == "wcc386.exe"
+    assert k.sha1 == "a479921bf3bfc6a092710ab291d00752a09d782b"
     assert _key("11.0", "BINNT/WCCD386.DLL").size == 659968
     assert _key("10.6", "BINW/WCC386.EXE").sha1 == "183433f959d6071fd00ea1917effd9085066d227"
     assert _key("10.6", "LIB386/DOS/CLIB3R.LIB").sha1 == "57250829673b7849ce70bf0e288e61ff98231de7"
