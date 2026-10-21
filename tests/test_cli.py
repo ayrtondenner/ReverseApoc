@@ -956,6 +956,10 @@ def test_probe_scan_json(tmp_path, capsys):
     assert data["exe"] == "SYNTH.EXE"
     assert data["counts"]["setcc_and"] == 1
     assert data["lib_bytes"] == 0x20
+    # the sized struct copies (none in this EXE), and their evidence line beside the cpu line
+    assert data["struct_copy_sizes"] == {"movsd_runs": {}, "rep_movsd": {}}
+    cpu = next(i for i, line in enumerate(data["evidence"]) if line.startswith("cpu:"))
+    assert data["evidence"][cpu + 1].startswith("struct-copy sizes (cpu -4/-5 evidence")
 
 
 def test_probe_scan_refuses_orig_mismatch(tmp_path, capsys):
@@ -1073,8 +1077,13 @@ def test_probe_scan_with_calibration(tmp_path, capsys):
     args = _probe_args(ws, "--runtime", str(ws["runtime"]), "--calibration", str(cal_path))
     assert main(args) == 0
     lines = capsys.readouterr().out.splitlines()
-    (at,) = [i for i, line in enumerate(lines) if line.startswith("consistent:")]
-    assert lines[at] == "consistent: 2 of 4 calibration cells"
+    (at,) = [i for i, line in enumerate(lines) if line.startswith("consistent")]
+    # the header names what the cells were filtered by: the decisive idiom families only, so
+    # a cell the convention, fpu or stack line contradicts can still be listed (review M1)
+    assert lines[at] == (
+        "consistent (decisive idiom families byte_compare, struct_copy only; not checked "
+        "against the other evidence lines): 2 of 4 calibration cells"
+    )
     assert lines[at + 1 : at + 3] == ["  10.5 -5r -s", "  10.6 -5r -s"]
     (ties,) = [line for line in lines if line.startswith("ties:")]
     assert ties == "ties: -5r -s: 10.5 10.6"  # the -3r tie is not among the consistent cells
