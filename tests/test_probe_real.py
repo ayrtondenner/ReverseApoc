@@ -19,7 +19,14 @@ import pytest
 from conftest import REPO_ROOT, WATCOM_DIR, requires_runner, requires_version
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate, compile_rule
-from reverseapoc.probe import FLAG_SETS, PROBE_DIR, calibrate, count_idioms, object_code
+from reverseapoc.probe import (
+    FLAG_SETS,
+    PROBE_DIR,
+    calibrate,
+    count_idioms,
+    flag_id,
+    object_code,
+)
 
 PROBE_ROOT = REPO_ROOT / "build" / "test-probe"
 
@@ -104,6 +111,20 @@ ROWS = [
     ),
     pytest.param(
         "11.0", S5, {"rep_movsd_small": "==0", "movsd_unrolled": ">=1"}, id="11.0-5r-no-small-rep"
+    ),
+    # Measured, not research: 04-RESEARCH shows other jcc forms for 11.0's switch at -ox, but the
+    # compared values ascend in every cell except -oneatx on both versions (one chain, review fix
+    # round 1), so switch order does not separate 10.6 from 11.0 on the probe.
+    *(
+        pytest.param(
+            version,
+            flags,
+            {"switch_ascending": ">=1", "switch_descending": "==0"},
+            id=f"{version}-{flag_id(flags)}-switch-up",
+        )
+        for version in ("10.6", "11.0")
+        for flags in FLAG_SETS
+        if "-oneatx" not in flags
     ),
     pytest.param("11.0", S4, {"setcc_and": ">=1"}, id="11.0-4r-and"),
     pytest.param("11.0", S5, {"setcc_and": "==0", "setcc_movzx": "==0"}, id="11.0-5r-branch"),
