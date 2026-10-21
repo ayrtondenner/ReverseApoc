@@ -209,6 +209,8 @@ Tracer gate (Task 1): all three `<verify>` commands re-run green before Task 2 s
 - **Committed in:** 11611f7, 08a59ed
 - **Follow-up for 04-06 / docs:** docs/toolchain.md calls the 10.x BINW compiler "the LE
   program". That is measured for 10.6 only; the 10.5 one is LX. `le.py` does not read LX.
+  Correction (2026-10-21): the 10.6 compiler is LX too, not LE; `BINW/WCC386.EXE` is an LX
+  image in 10.5, 10.6 and 11.0 (`LX` at `e_lfanew` 0xE38). See docs/learnings.md.
 
 **2. [Rule 2 - Missing validation] Extra archive guards**
 - **Found during:** Task 1

@@ -78,7 +78,7 @@ Recent decisions affecting current work:
 - [Phase 5]: Hybrid pipeline (own oracle + decomp.wtf fork mode) vs fallback is decided by the objdiff-on-converted-ELF spike
 - [Phase 4]: Watcom 10.6 (10.5 equivalent) is the hypothesis; Open Watcom only for `wdis`/`wlink`/`wlib`
 - [Phase 04]: Game code: Watcom C 10.6 (10.5 byte-identical on the probe, 11.0 tied at -4r, candidate pending Phase 5 matches); linked runtime 10.6, no mix
-- [Phase 04]: config/cflags.txt default is * wcc386@10.6 -4r -s -fpi (proven flags only); -s kept because only 40/32 functions call __CHK, which get per-glob rules in Phase 5
+- [Phase 04]: config/cflags.txt default is * wcc386@10.6 -4r -s -fpi (the flags the scans support); -s kept because only 40/32 functions call __CHK, which get per-glob rules in Phase 5
 
 ### Pending Todos
 
@@ -87,7 +87,7 @@ None yet.
 ### Blockers/Concerns
 
 - [Phase 4]: RESOLVED 2026-10-19: Watcom 10.5, 10.6 and 11.0 media are supplied in gitignored `third_party/watcom-media/` (archive.org items Watcom_C_10.5/10.6/11.0; ISO SHA-1s 0722e749…, 211f4e7a…, 1708a29f…, re-checked in this session). Extracted trees go to `third_party/watcom/<ver>/`. RESOLVED 2026-10-21 (04-03/04-06/04-11): install-watcom 10.5 decodes the real BINW/WCC386.EXE from DISKIMGS PCK00017.1/.2 and config/watcom.toml pins it; the main checkout was migrated with --force
-- [Phase 4]: For 10.5/10.6, `BINNT\WCC386.EXE` is a 9,216-byte Win32 loader for the LE (10.6) or LX (10.5) compiler `BINW\WCC386.EXE`, so the layout needs `binw/` as well as `binnt/`; 11.0's BINNT is native (WCC386.EXE + WCCD386.DLL) (reported by session reverseapoc-f2 on 2026-10-19; CONFIRMED 2026-10-21 by spike 004: the loader opens ..\BINW\WCC386.EXE itself)
+- [Phase 4]: For 10.5/10.6, `BINNT\WCC386.EXE` is a 9,216-byte Win32 loader for the LX compiler `BINW\WCC386.EXE`, so the layout needs `binw/` as well as `binnt/`; 11.0's BINNT is native (WCC386.EXE + WCCD386.DLL) (reported by session reverseapoc-f2 on 2026-10-19; CONFIRMED 2026-10-21 by spike 004: the loader opens ..\BINW\WCC386.EXE itself)
 - [Phase 5]: `clang` (C89 lint gate) is missing from the Docker image; capstone cp314 wheels are unverified
 - [Phase 6]: Repo visibility must be settled before Pages and listings (Pages on a private repo needs a paid plan)
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
