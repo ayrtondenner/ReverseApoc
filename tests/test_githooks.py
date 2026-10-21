@@ -138,6 +138,29 @@ def test_a_message_without_a_final_newline_keeps_its_subject(tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "text",
+    ["", "\n", "# Please enter the commit message.\n#\n"],
+    ids=["empty", "blank", "comments"],
+)
+def test_an_empty_message_stays_empty_so_git_aborts(tmp_path, text):
+    msg = _message(tmp_path, text)
+    assert _run_hook(msg, _env(tmp_path, claudecode=True)).returncode == 0
+    assert msg.read_text(encoding="utf-8") == text
+
+
+def test_an_empty_commit_under_claude_code_is_still_aborted(repo, tmp_path):
+    env = _env(tmp_path, claudecode=True)
+    _commit(repo, env, "a.txt", "feat: one")
+    (repo / "b.txt").write_text("b", encoding="utf-8")
+    _git(repo, env, "add", "b.txt")
+    result = subprocess.run(
+        [GIT, "commit", "-q", "-m", ""], cwd=repo, env=env, capture_output=True, text=True
+    )
+    assert result.returncode != 0
+    assert _git(repo, env, "log", "-1", "--format=%s").strip() == "feat: one"
+
+
 def test_running_twice_adds_one_trailer(tmp_path):
     msg = _message(tmp_path, "feat: one\n")
     env = _env(tmp_path, claudecode=True)
