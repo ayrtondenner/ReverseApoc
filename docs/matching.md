@@ -25,7 +25,7 @@ Calibrated 2026-10-21 on our clean-room probe `probe/cg_basic.c`, compiled with 
 | 5-dword struct copy | `-3r`, `-4r`, `-4r -ox`: `mov ecx,5` .. `rep movsd` (register moves between). Every `-5r`/`-5s` cell: five `movsd` unrolled | the same split | only the 5-dword size (20-23 bytes with a movsw/movsb tail) separates `-4` from `-5` (10.6 and 11.0 sizes table, 04-10): 2-4 dwords unroll at both, 6 and more use rep at both, except `-os`, which also unrolls 6 and 7 |
 | counted loop `for (i = 0; i < n; i++)` | rotated: `jmp` to the bottom test, `jl` back | top-tested: `cmp; jge` out, `jmp` back | 10.x vs 11.0 on the probe, but not decisive in game code (both shapes occur) and gone under `-oneatx` for both |
 | sparse switch `{1, 2, 3, 10}` | one ascending compare chain (none found under `-oneatx`) | the same | switch order does not separate the versions; our counter covers `eax`/`al` compares only |
-| `-fpi` vs `-fpi87` | identical code; only the default-library record differs (`emu387` vs `noemu387`) | the same | the linked EMU387 module says some object asked for `-fpi` |
+| `-fpi` vs `-fpi87` | identical code (LEDATA and FIXUPP records equal); the `-fpi` object also requests `emu387` (`-fpi87`: `noemu387`) and declares the extern `__init_387_emulator`, which pulls EMU387 in | the same | the linked EMU387 module says some object asked for `-fpi` |
 | without `-s` | one `push imm32; call __CHK` per function (7 in the 7-function probe) | the same | each `__CHK` call in game code is one function built without `-s` |
 | `-5s` | default libraries `math387s` and `emu387`; no CLIB library is requested under any flag set | the same | a stack-convention build links 3S libraries |
 

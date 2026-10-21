@@ -268,6 +268,19 @@ None. Contributors with a pre-Phase-4 10.5 install run `uv run reverseapoc insta
 - Files found: .planning/spikes/004-wibo-watcom/README.md, .planning/spikes/MANIFEST.md, docs/toolchain.md, docs/matching.md, docs/learnings.md, config/cflags.txt, tests/test_hygiene.py, probe/README.md, build/gate/04-native-vs-wibo.txt, build/gate/04-evidence/01..05 logs.
 - Commits d7573a2, 94cb90c, d9b874d, 48df720 are ancestors of HEAD; `git rev-list --count 1cfbaed..HEAD` = 4 before this SUMMARY; no commit deletes a file.
 
+## Review fix round 1 (2026-10-21)
+
+A review of this plan found wording that overstated the evidence and a test that could not catch drift. Corrections (the evidence logs, `config/watcom.toml` and `third_party/` were not touched; the `*` rule line itself is unchanged):
+
+1. **`-fpi` vs `-fpi87` (toolchain.md Flags FPU row, matching.md idiom row).** "Identical code; only the default-library record differs" was false. Record-level comparison of the probe objects `5r_s` vs `5r_s_fpi87` (10.5, 10.6, 11.0): LEDATA and FIXUPP equal, but the `-fpi` object also requests `emu387` (COMENT 0x9F) and declares the extern `__init_387_emulator` (EXTDEF), which is what pulls EMU387 in (the A3 mechanism). Both docs now say that; the calibration log shows only the default-library column.
+2. **"Proven" default rule (toolchain.md paragraph after the Flags notes, config/cflags.txt comment).** Now "consistent with and supported by the scans, not proven": 10.6 is consistent with the probe (10.5 byte-identical, 11.0 tied at `-4r`) and the linked runtime (10.6, D-07); `-4r` from the register convention plus "no `-5` evidence" (5-dword struct copies use `rep`); the first Phase 5 matches confirm or change the rule.
+3. **learnings.md switch-chain claim.** "Every cell has one ascending chain" now reads "every cell except `-oneatx` (none)", as in 03-probe-calibrate.log, 04-08-SUMMARY and probe/README.md.
+4. **D-02 disposition (toolchain.md Result, "10.6 vs 11.0").** Records that 11.0a/11.0b were not swept and why (11.0 is only a codegen tie at `-4r`; the linked runtime is 10.6 with zero 11.0-only rows); they are swept if the first Phase 5 matches favour 11.0 over 10.6 (trees and manifest entries exist). The cflags.txt comment points to it.
+5. **Hygiene test (tests/test_hygiene.py, commit e9b54d0).** `test_cflags_default_rule_is_documented` now requires the whole rule text (`*  wcc386@10.6  -4r -s -fpi`, whitespace-normalised) as one code span in toolchain.md and, in matching.md, a `*` row per EXE with the same spec and flag set. Fifteen tests pin it: nine drifted rules (`-5r -s`, `-5r -s -fpi`, `-fpi87`, `-3s`, `-zm -zp1`, `-oneatx`, a prefix of the rule, 11.0, 10.5), three drifted matching rows, a missing row, and a flag-reordered row that must pass. RED against the old check: 8 of the 9 drifted rules were not caught.
+6. **STATE.md.** The 2026-10-19 BINNT line called the `BINW\WCC386.EXE` compiler "LE" for both versions; it now says LE (10.6) or LX (10.5). Nothing else in STATE.md changed.
+
+Left alone (review Minors 1 and 2): the `-s` "most code" count and the `-fpi` same-object claim still rest on throwaway scratch checks that are not logged under `build/gate/`.
+
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
