@@ -24,13 +24,13 @@ from __future__ import annotations
 import csv
 import io
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .le import LE
-from .omf import Library, Module, OMFError, Segment, is_omf_library, read_library
+from .omf import Library, Module, OMFError, OMFFixup, Segment, is_omf_library, read_library
 from .splice import _write_atomic
 from .targets import Target, check_bare_name, config_dir, hash_bytes, target_problems
 
@@ -62,6 +62,13 @@ LIB_DIR = "LIB386"  # the 32-bit library tree of a Watcom installation
 _LIB_SUFFIX = ".LIB"
 _FIRST_DIR = "DOS"  # root and DOS/ libraries sort first: they are what a DOS/4GW EXE links
 _OBJ_EXECUTABLE = 0x0004  # LE object flag: executable
+_FIELD32 = 4  # bytes of a 32-bit fixup field (off32 or rel32)
+_NO_DATA_CLASSES = ("BSS", "STACK")  # segment classes without initialized bytes
+# Disambiguation rules, in the order they are applied (the report counts what each resolved).
+RULE_DATA = "data"
+RULE_CALLS = "calls"
+RULE_C_BEFORE_CPP = "c-before-c++"
+DISAMBIGUATION_RULES = (RULE_DATA, RULE_CALLS, RULE_C_BEFORE_CPP)
 _LIST_SEPARATOR = ";"
 
 
@@ -143,6 +150,7 @@ class LibMatchReport:
     ranges: tuple[MatchRange, ...]
     skipped: tuple[Skipped, ...]
     dropped: tuple[MatchRange, ...] = ()
+    resolved: tuple[tuple[str, int], ...] = ()  # (rule, groups it narrowed to one module)
 
     @property
     def covered(self) -> int:
@@ -158,7 +166,9 @@ class LibMatchReport:
         lines.append(
             f"{self.exe}: {len(self.ranges)} ranges, {self.covered} of {self.code_size} code "
             f"bytes; skipped: {_counts(_reason_kind(s.reason) for s in self.skipped)}; "
-            f"dropped {len(self.dropped)}"
+            f"dropped {len(self.dropped)}; resolved: "
+            f"{', '.join(f'{rule} {n}' for rule, n in self.resolved) or 'none'}; ambiguous "
+            f"{sum(r.status == STATUS_AMBIGUOUS for r in self.ranges)}"
         )
         lines += [f"dropped {r.describe()}" for r in self.dropped]
         return "\n".join(lines)
@@ -171,6 +181,7 @@ class LibMatchReport:
             "ranges": [r.to_json() for r in self.ranges],
             "skipped": [asdict(s) for s in self.skipped],
             "dropped": [r.to_json() for r in self.dropped],
+            "resolved": dict(self.resolved),
         }
 
 
@@ -386,12 +397,136 @@ def _versions(hits: Iterable[_Hit]) -> tuple[str, ...]:
     return tuple(sorted({h.owner.version for h in hits}, key=_version_order))
 
 
+# ---- disambiguation of identical bodies (rules a-d) ----
+
+
+def _library_family(relpath: str) -> int:
+    """0 for a C runtime library, 2 for a C++ one, 1 for anything else (by file name)."""
+    name = PurePosixPath(relpath).name.upper()
+    if name.startswith(C_LIBRARY_PREFIXES):
+        return 0
+    if name.startswith(CPP_LIBRARY_PREFIXES):
+        return 2
+    return 1
+
+
+def _family(hits: Iterable[_Hit]) -> int:
+    return min(_library_family(h.owner.library) for h in hits)
+
+
+def _by_module(hits: Iterable[_Hit]) -> dict[str, list[_Hit]]:
+    by_name: dict[str, list[_Hit]] = defaultdict(list)
+    for hit in hits:
+        by_name[hit.owner.module_name].append(hit)
+    return dict(by_name)
+
+
+def _data_target(module: Module, fixup: OMFFixup) -> Segment | None:
+    """The segment of `module` with initialized bytes that a segment-relative 32-bit fixup
+    targets, or None when the fixup gives no data evidence."""
+    if not fixup.segment_relative or fixup.size != _FIELD32 or fixup.target_kind != "segment":
+        return None
+    if not 1 <= fixup.target_index <= len(module.segments):
+        return None
+    target = module.segments[fixup.target_index - 1]
+    if target.length == 0 or target.unmaskable or target.class_name.upper() in _NO_DATA_CLASSES:
+        return None
+    return target
+
+
+def _segment_at(image: bytes, va: int, seg: Segment) -> bool:
+    """`seg`'s bytes, masked at its own fixups, sit at linear address `va` of the image."""
+    if va + seg.length > len(image):
+        return False
+    mask, window = seg.mask, image[va : va + seg.length]
+    return all(k in mask or window[k] == byte for k, byte in enumerate(seg.data))
+
+
+def _data_consistent(hit: _Hit, view: TargetView, _publics: Mapping[int, frozenset[str]]) -> bool:
+    """Rule (a): every data segment the code addresses holds its bytes where the LE fixup at
+    that site points (segment VA = LE target - OMF displacement - addend stored at the site)."""
+    seg = hit.owner.segment
+    for fixup in seg.fixups:
+        target = _data_target(hit.owner.module, fixup)
+        if target is None:
+            continue
+        target_va = view.fixup_targets.get(hit.start + fixup.offset)
+        if target_va is None:
+            return False
+        addend = int.from_bytes(seg.data[fixup.offset : fixup.offset + _FIELD32], "little")
+        seg_va = (target_va - fixup.displacement - addend) & 0xFFFFFFFF
+        if not _segment_at(view.image, seg_va, target):
+            return False
+    return True
+
+
+def _calls_consistent(hit: _Hit, view: TargetView, publics: Mapping[int, frozenset[str]]) -> bool:
+    """Rule (b): no rel32 call or jump to an extern lands on the start of a matched range
+    whose publics do not include that extern's name."""
+    for fixup in hit.owner.segment.fixups:
+        if fixup.segment_relative or fixup.size != _FIELD32 or fixup.target_kind != "extern":
+            continue
+        site = hit.start + fixup.offset
+        rel = int.from_bytes(view.image[site : site + _FIELD32], "little", signed=True)
+        names = publics.get((site + _FIELD32 + rel) & 0xFFFFFFFF)
+        if names is not None and fixup.target_name not in names:
+            return False
+    return True
+
+
+def _narrow(
+    by_name: dict[str, list[_Hit]], passes: Callable[[_Hit], bool]
+) -> dict[str, list[_Hit]]:
+    """The modules with a hit that passes; all of them when none passes (evidence never
+    empties a group)."""
+    passing = {name: hits for name, hits in by_name.items() if any(passes(h) for h in hits)}
+    return passing or by_name
+
+
+def _c_before_cpp(by_name: dict[str, list[_Hit]]) -> dict[str, list[_Hit]]:
+    """Rule (c): with candidates from both C and C++ runtime libraries, drop the C++ ones."""
+    families = {name: _family(hits) for name, hits in by_name.items()}
+    if 0 not in families.values() or 2 not in families.values():
+        return by_name
+    return {name: hits for name, hits in by_name.items() if families[name] != 2}
+
+
+def _disambiguate(
+    hits: list[_Hit], view: TargetView, publics: Mapping[int, frozenset[str]]
+) -> tuple[list[_Hit], str | None]:
+    """The hits left after rules (a)-(c), applied in order to a group with more than one
+    module name, and the rule that left a single module (None when none did)."""
+    by_name = _by_module(hits)
+    if len(by_name) < 2:
+        return hits, None
+    steps: list[tuple[str, Callable[[dict[str, list[_Hit]]], dict[str, list[_Hit]]]]] = [
+        (RULE_DATA, lambda b: _narrow(b, lambda h: _data_consistent(h, view, publics))),
+        (RULE_CALLS, lambda b: _narrow(b, lambda h: _calls_consistent(h, view, publics))),
+        (RULE_C_BEFORE_CPP, _c_before_cpp),
+    ]
+    for rule, step in steps:
+        by_name = step(by_name)
+        if len(by_name) == 1:
+            return [h for group in by_name.values() for h in group], rule
+    return [h for group in by_name.values() for h in group], None
+
+
+def _range_publics(groups: Mapping[tuple[int, int], list[_Hit]]) -> dict[int, frozenset[str]]:
+    """Range start -> every public of every candidate placed there (for rule b)."""
+    publics: dict[int, set[str]] = defaultdict(set)
+    for (start, _end), hits in groups.items():
+        publics[start].update(p for h in hits for p in h.owner.publics)
+    return {start: frozenset(names) for start, names in publics.items()}
+
+
 def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
     """One range from every hit at [start, end): unique when they share one module name. The
     libraries, versions and publics are those of every hit (D-07: every version whose bytes
     match), so a module renamed between versions still shows all of them."""
-    names = sorted({h.owner.module_name for h in hits})
-    chosen = [h for h in hits if h.owner.module_name == names[0]]
+    by_name = _by_module(hits)
+    # Rule (d): still tied -> ambiguous; the module shown is the first by (C before C++, name).
+    names = sorted(by_name, key=lambda name: (_family(by_name[name]), name))
+    chosen = by_name[names[0]]
     others = [h for h in hits if h.owner.module_name != names[0]]
     return MatchRange(
         start=start,
@@ -465,9 +600,17 @@ def scan_exe(
         for base in placements[key]:
             hit = _Hit(owner, view.base + base)
             groups[(hit.start, hit.end)].append(hit)
-    rows = (_row(start, end, hits) for (start, end), hits in groups.items())
+    publics = _range_publics(groups)
+    rows: list[MatchRange] = []
+    resolved: dict[str, int] = dict.fromkeys(DISAMBIGUATION_RULES, 0)
+    for (start, end), hits in groups.items():
+        kept, rule = _disambiguate(hits, view, publics)
+        if rule is not None:
+            resolved[rule] += 1
+        rows.append(_row(start, end, kept))
     ranges, dropped = _drop_contained(rows)
-    return LibMatchReport(exe, view.base, len(view.code), ranges, tuple(skips), dropped)
+    return LibMatchReport(exe, view.base, len(view.code), ranges, tuple(skips), dropped,
+                          tuple(resolved.items()))  # fmt: skip
 
 
 # ---- the libmatch verb's inputs and output ----
