@@ -4,14 +4,23 @@ Independent implementation from the TIS OMF 1.1 specification; no Open Watcom or
 
 A record is a u8 type, a u16 length that counts the body and the checksum byte, the body, and the
 checksum (never verified: Watcom tools do not always fill it in). Odd record types are the 32-bit
-forms of the even ones. Supported records: THEADR, LNAMES, SEGDEF/SEGDEF32, EXTDEF/LEXTDEF,
-PUBDEF/PUBDEF32/LPUBDEF/LPUBDEF32, LEDATA/LEDATA32 and MODEND/MODEND32; in a library, the 0xF0
-header (page size = its record length + 3) and the 0xF1 end record. Other record types are
-skipped by their length.
+forms of the even ones. Supported records:
 
-Anything malformed (a record running past the data, an index out of range, data past the end of
-its segment) raises OMFError naming the record type and its file offset. In a library a module
-that fails is recorded in `Library.failures` and the walk goes on with the next module.
+- THEADR (module name), LNAMES, SEGDEF/SEGDEF32, GRPDEF;
+- EXTDEF/LEXTDEF, COMDEF/LCOMDEF and CEXTDEF, which together number the externals 1, 2, ...;
+- PUBDEF/PUBDEF32/LPUBDEF/LPUBDEF32;
+- LEDATA/LEDATA32, LIDATA/LIDATA32 (expanded, nesting capped at LIDATA_MAX_DEPTH, size bounded
+  by the segment length), FIXUPP/FIXUPP32 with THREAD state, BAKPAT/BAKPAT32 (applied);
+  NBKPAT/NBKPAT32 are only counted;
+- COMENT class 0x9B (memory model), 0x9F (default library), 0xAA (Easy OMF: the 16-bit-numbered
+  records carry 32-bit fields), 0xE9 (dependency: ignored);
+- MODEND/MODEND32; in a library, the 0xF0 header (page size = its record length + 3) and the
+  0xF1 end record.
+
+Other record types are skipped by their length. Anything malformed (a record running past the
+data, an index out of range, data past the end of its segment, an unknown fixup location) raises
+OMFError naming the record type and its file offset. In a library a module that fails is
+recorded in `Library.failures` and the walk goes on with the next module.
 """
 
 from __future__ import annotations
@@ -22,7 +31,7 @@ from dataclasses import dataclass, field
 
 # Record types (TIS OMF 1.1 record names).
 REC_THEADR = 0x80  # translator header: the module name
-REC_COMENT = 0x88  # comment: class byte, then class-specific text
+REC_COMENT = 0x88  # comment: type byte, class byte, then class-specific text
 REC_MODEND = 0x8A  # module end
 REC_MODEND32 = 0x8B
 REC_EXTDEF = 0x8C  # external names
@@ -38,10 +47,17 @@ REC_LEDATA = 0xA0  # logical enumerated data
 REC_LEDATA32 = 0xA1
 REC_LIDATA = 0xA2  # logical iterated data
 REC_LIDATA32 = 0xA3
+REC_COMDEF = 0xB0  # communal names; they take external numbers
+REC_BAKPAT = 0xB2  # backpatch: add values to already-written data
+REC_BAKPAT32 = 0xB3
 REC_LEXTDEF = 0xB4  # local (module-private) external names
 REC_LPUBDEF = 0xB6  # local public names
 REC_LPUBDEF32 = 0xB7
+REC_LCOMDEF = 0xB8  # local communal names
+REC_CEXTDEF = 0xBC  # COMDAT external names (LNAMES indexes)
 REC_COMDAT32 = 0xC3  # initialized communal data
+REC_NBKPAT = 0xC8  # named backpatch (COMDAT data)
+REC_NBKPAT32 = 0xC9
 REC_LIBHDR = 0xF0  # library header
 REC_LIBEND = 0xF1  # library end
 
@@ -63,10 +79,17 @@ _REC_NAMES = {
     REC_LEDATA32: "LEDATA32",
     REC_LIDATA: "LIDATA",
     REC_LIDATA32: "LIDATA32",
+    REC_COMDEF: "COMDEF",
+    REC_BAKPAT: "BAKPAT",
+    REC_BAKPAT32: "BAKPAT32",
     REC_LEXTDEF: "LEXTDEF",
     REC_LPUBDEF: "LPUBDEF",
     REC_LPUBDEF32: "LPUBDEF32",
+    REC_LCOMDEF: "LCOMDEF",
+    REC_CEXTDEF: "CEXTDEF",
     REC_COMDAT32: "COMDAT32",
+    REC_NBKPAT: "NBKPAT",
+    REC_NBKPAT32: "NBKPAT32",
     REC_LIBHDR: "LIBHDR",
     REC_LIBEND: "LIBEND",
 }
@@ -91,6 +114,61 @@ _SEG_BIG = 0x02  # length field is 0 and means 64 KiB (16-bit) or 4 GiB (32-bit)
 _SEG_USE32 = 0x01
 _SEG_BIG16_LENGTH = 0x10000
 MAX_SEGMENT_LENGTH = 1 << 24  # zero-filled buffers are bounded; no library segment comes close
+
+# GRPDEF component descriptor.
+_GRP_SEGMENT_INDEX = 0xFF  # a segment index follows
+
+# COMENT body: comment type byte, class byte, then the text.
+_COMENT_CLASS = 1
+COMENT_MODEL = 0x9B  # memory model text, e.g. "3fOp"
+COMENT_DEFAULT_LIBRARY = 0x9F  # default library name, e.g. "clib3r"
+COMENT_EASY_OMF = 0xAA  # Phar Lap Easy OMF: 16-bit-numbered records carry 32-bit fields
+COMENT_DEPENDENCY = 0xE9  # source dependency with a timestamp (differs between builds)
+
+# FIXUPP subrecords. The first byte decides: FIXUP (high bit set) or THREAD.
+LOCAT_FIXUP = 0x80  # subrecord is a FIXUP; clear = THREAD
+LOCAT_M = 0x40  # segment-relative fixup; clear = self-relative
+_LOCAT_TYPE_SHIFT = 2  # location type in bits 2-5 of the first locat byte
+_LOCAT_TYPE_MASK = 0x0F
+_LOCAT_OFFSET_MASK = 0x03FF  # 10-bit data-record offset across both locat bytes
+THREAD_D = 0x40  # THREAD subrecord: frame thread; clear = target thread
+_THREAD_METHOD_SHIFT = 2
+_THREAD_METHOD_MASK = 0x07
+_THREAD_NUMBER_MASK = 0x03
+FIXDAT_F = 0x80  # frame comes from a frame thread
+_FIXDAT_FRAME_SHIFT = 4
+_FIXDAT_FRAME_MASK = 0x07
+FIXDAT_T = 0x08  # target comes from a target thread
+FIXDAT_P = 0x04  # no target displacement; also bit 2 of the target method (T4-T6)
+_FIXDAT_TARGET_MASK = 0x03
+_FRAME_DATUM_METHODS = 3  # frame methods F0-F2 carry an index; F4/F5 do not
+_TARGET_FRAME_NUMBER = 3  # target method T3: the datum is a u16 frame number
+_TARGET_KINDS = {0: "segment", 1: "group", 2: "extern", 3: "frame"}
+
+# Fixup location types and the bytes each patches.
+LOC_OFFSET32 = 9
+LOC_POINTER48 = 11
+LOC_SIZES = {
+    0: 1,  # low byte
+    1: 2,  # 16-bit offset
+    2: 2,  # 16-bit base (selector)
+    3: 4,  # 16:16 pointer
+    4: 1,  # high byte
+    5: 2,  # 16-bit loader-resolved offset
+    LOC_OFFSET32: 4,  # 32-bit offset
+    LOC_POINTER48: 6,  # 16:32 pointer
+    13: 4,  # 32-bit loader-resolved offset
+}
+
+LIDATA_MAX_DEPTH = 8  # nesting levels of LIDATA blocks accepted
+
+# BAKPAT location types and the bytes each patches.
+_BAKPAT_SIZES = {0: 1, 1: 2, 2: 4}
+
+# COMDEF: data type byte, then one communal length (two for FAR data).
+_COMDEF_FAR = 0x61  # number of elements, then element size
+_COMLEN_SHORT_MAX = 0x80  # a first byte up to 0x80 is the length itself
+_COMLEN_WIDTHS = {0x81: 2, 0x84: 3, 0x88: 4}  # first byte -> width of the length that follows
 
 # Library header body (after the record framing).
 _LIB_PAGE_EXTRA = _REC_BODY  # page size = header record length + 3
@@ -123,12 +201,12 @@ class OMFFixup:
     size: int  # bytes patched
     segment_relative: bool  # M bit: segment-relative, else self-relative
     location: int  # location type (9 = 32-bit offset)
-    frame_method: int
-    target_method: int
+    frame_method: int  # F0-F5
+    target_method: int  # T0-T6; 4-6 are T0-T2 without a displacement
     target_kind: str  # "segment", "group", "extern" or "frame"
-    target_index: int
+    target_index: int  # 1-based index of that kind (a frame number for "frame")
     target_name: str
-    displacement: int
+    displacement: int  # 0 when the record has none
 
 
 @dataclass(frozen=True)
@@ -167,7 +245,11 @@ class Module:
     offset: int  # file offset of the THEADR record
     segments: tuple[Segment, ...]
     publics: tuple[Public, ...]
-    externs: tuple[str, ...]
+    externs: tuple[str, ...]  # in external-number order (EXTDEF, COMDEF, CEXTDEF, ...)
+    model: str = ""
+    default_libraries: tuple[str, ...] = ()
+    easy_omf: bool = False
+    nbkpat_records: int = 0  # NBKPAT/NBKPAT32 records seen (not applied)
 
 
 @dataclass(frozen=True)
@@ -214,6 +296,10 @@ class _Cursor:
     def u32(self) -> int:
         return struct.unpack_from("<I", self.body, self._take(4))[0]
 
+    def raw(self, n: int) -> bytes:
+        start = self._take(n)
+        return self.body[start : start + n]
+
     def skip(self, n: int) -> None:
         self._take(n)
 
@@ -224,13 +310,10 @@ class _Cursor:
         return first
 
     def name(self) -> str:
-        length = self.u8()
-        start = self._take(length)
-        return self.body[start : start + length].decode("latin-1")
+        return self.raw(self.u8()).decode("latin-1")
 
     def rest(self) -> bytes:
-        start = self._take(len(self.body) - self.pos)
-        return self.body[start:]
+        return self.raw(len(self.body) - self.pos)
 
 
 @dataclass
@@ -241,10 +324,30 @@ class _SegmentBuilder:
     length: int
     use32: bool
     data: bytearray
+    fixups: list[OMFFixup] = field(default_factory=list)
+    unmaskable: bool = False
+    backpatched: set[int] = field(default_factory=set)
+
+    def check_range(self, offset: int, size: int, what: str) -> None:
+        if offset + size > self.length:
+            raise OMFError(
+                f"{what} {offset:#x}..{offset + size:#x} runs past segment {self.name!r} "
+                f"({self.length:#x} bytes)"
+            )
 
     def freeze(self) -> Segment:
         return Segment(self.index, self.name, self.class_name, self.length, self.use32,
-                       bytes(self.data))  # fmt: skip
+                       bytes(self.data), tuple(self.fixups), self.unmaskable,
+                       frozenset(self.backpatched))  # fmt: skip
+
+
+@dataclass(frozen=True)
+class _DataRecord:
+    """The data record a following FIXUPP refers to."""
+
+    segment: _SegmentBuilder
+    offset: int  # segment offset where the record's data starts
+    iterated: bool  # LIDATA: fixup offsets address the record, not the expanded bytes
 
 
 @dataclass
@@ -255,8 +358,16 @@ class _ModuleReader:
     name: str = ""
     lnames: list[str] = field(default_factory=list)
     segments: list[_SegmentBuilder] = field(default_factory=list)
+    groups: list[str] = field(default_factory=list)
     publics: list[Public] = field(default_factory=list)
     externs: list[str] = field(default_factory=list)
+    model: str = ""
+    default_libraries: list[str] = field(default_factory=list)
+    easy_omf: bool = False
+    nbkpat_records: int = 0
+    frame_threads: dict[int, tuple[int, int]] = field(default_factory=dict)
+    target_threads: dict[int, tuple[int, int]] = field(default_factory=dict)
+    last_data: _DataRecord | None = None
 
     def feed(self, rec: Record) -> None:
         handler = _HANDLERS.get(rec.kind)
@@ -268,7 +379,8 @@ class _ModuleReader:
             raise OMFError(f"{rec.name} record at {rec.offset:#x}: {exc}") from exc
 
     def wide(self, rec: Record) -> bool:
-        return bool(rec.kind & _WIDE_BIT)
+        """32-bit fields: an odd record type, or any record of an Easy OMF module."""
+        return bool(rec.kind & _WIDE_BIT) or self.easy_omf
 
     def offset_field(self, cur: _Cursor, rec: Record) -> int:
         return cur.u32() if self.wide(rec) else cur.u16()
@@ -285,6 +397,27 @@ class _ModuleReader:
             raise OMFError(f"segment index {idx} out of range ({len(self.segments)} segments)")
         return self.segments[idx - 1]
 
+    def group(self, idx: int) -> str:
+        if not 1 <= idx <= len(self.groups):
+            raise OMFError(f"group index {idx} out of range ({len(self.groups)} groups)")
+        return self.groups[idx - 1]
+
+    def extern(self, idx: int) -> str:
+        if not 1 <= idx <= len(self.externs):
+            raise OMFError(f"extern index {idx} out of range ({len(self.externs)} externs)")
+        return self.externs[idx - 1]
+
+    def datum_name(self, method: int, idx: int) -> str:
+        """Name of a frame or target datum: methods 0-2 name a segment, group or extern."""
+        kind = method & _FIXDAT_TARGET_MASK
+        if kind == 0:
+            return self.segment(idx).name
+        if kind == 1:
+            return self.group(idx)
+        if kind == 2:
+            return self.extern(idx)
+        return ""
+
     def freeze(self) -> Module:
         return Module(
             name=self.name,
@@ -292,11 +425,28 @@ class _ModuleReader:
             segments=tuple(s.freeze() for s in self.segments),
             publics=tuple(self.publics),
             externs=tuple(self.externs),
+            model=self.model,
+            default_libraries=tuple(self.default_libraries),
+            easy_omf=self.easy_omf,
+            nbkpat_records=self.nbkpat_records,
         )
 
 
 def _theadr(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     m.name = cur.name()
+
+
+def _coment(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    cur.u8()  # comment type flags
+    if cur.at_end():
+        return
+    cls = cur.u8()
+    if cls == COMENT_EASY_OMF:
+        m.easy_omf = True
+    elif cls == COMENT_MODEL:
+        m.model = cur.rest().decode("latin-1")
+    elif cls == COMENT_DEFAULT_LIBRARY:
+        m.default_libraries.append(cur.rest().decode("latin-1"))
 
 
 def _lnames(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
@@ -308,24 +458,34 @@ def _segdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     attr = cur.u8()
     if attr >> _SEG_ALIGN_SHIFT == _SEG_ALIGN_ABSOLUTE:
         cur.skip(_SEG_ABS_FRAME_SIZE)
-    wide = m.wide(rec)
     length = m.offset_field(cur, rec)
     if attr & _SEG_BIG:
-        if wide:
+        if m.wide(rec):
             raise OMFError("a 4 GiB segment (B bit in a 32-bit SEGDEF) is not supported")
         length = _SEG_BIG16_LENGTH
     if length > MAX_SEGMENT_LENGTH:
         raise OMFError(f"segment length {length:#x} exceeds {MAX_SEGMENT_LENGTH:#x}")
     name, class_name = m.lname(cur.index()), m.lname(cur.index())
-    cur.index()  # overlay name: unused
+    cur.index()  # overlay name: unused; an Easy OMF access byte may follow and is ignored
     seg = _SegmentBuilder(len(m.segments) + 1, name, class_name, length,
                           bool(attr & _SEG_USE32), bytearray(length))  # fmt: skip
     m.segments.append(seg)
 
 
+def _grpdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    name = m.lname(cur.index())
+    while not cur.at_end():
+        kind = cur.u8()
+        if kind != _GRP_SEGMENT_INDEX:
+            raise OMFError(f"group component type {kind:#04x} is not a segment index")
+        m.segment(cur.index())
+    m.groups.append(name)
+
+
 def _pubdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
-    cur.index()  # base group
-    seg = cur.index()
+    group, seg = cur.index(), cur.index()
+    if group:
+        m.group(group)
     if seg == 0:
         cur.u16()  # base frame of an absolute public
     else:
@@ -343,31 +503,205 @@ def _extdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
         cur.index()  # type index
 
 
+def _communal_length(cur: _Cursor) -> int:
+    first = cur.u8()
+    if first <= _COMLEN_SHORT_MAX:
+        return first
+    width = _COMLEN_WIDTHS.get(first)
+    if width is None:
+        raise OMFError(f"communal length prefix {first:#04x} is not 0x81, 0x84 or 0x88")
+    return int.from_bytes(cur.raw(width), "little")
+
+
+def _comdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    while not cur.at_end():
+        m.externs.append(cur.name())
+        cur.index()  # type index
+        data_type = cur.u8()
+        _communal_length(cur)
+        if data_type == _COMDEF_FAR:
+            _communal_length(cur)
+
+
+def _cextdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    while not cur.at_end():
+        m.externs.append(m.lname(cur.index()))
+        cur.index()  # type index
+
+
 def _ledata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     seg = m.segment(cur.index())
     offset = m.offset_field(cur, rec)
     data = cur.rest()
-    end = offset + len(data)
-    if end > seg.length:
-        raise OMFError(
-            f"data {offset:#x}..{end:#x} runs past segment {seg.name!r} ({seg.length:#x} bytes)"
+    seg.check_range(offset, len(data), "data")
+    seg.data[offset : offset + len(data)] = data
+    m.last_data = _DataRecord(seg, offset, iterated=False)
+
+
+# A parsed LIDATA block: (repeat count, content bytes or nested blocks).
+type _Block = tuple[int, bytes | list[_Block]]
+
+
+def _lidata_block(cur: _Cursor, wide: bool, depth: int) -> _Block:
+    if depth > LIDATA_MAX_DEPTH:
+        raise OMFError(f"iterated data nesting depth exceeds {LIDATA_MAX_DEPTH}")
+    repeat = cur.u32() if wide else cur.u16()
+    count = cur.u16()
+    if count == 0:
+        return repeat, cur.raw(cur.u8())
+    return repeat, [_lidata_block(cur, wide, depth + 1) for _ in range(count)]
+
+
+def _block_size(block: _Block) -> int:
+    repeat, content = block
+    if isinstance(content, bytes):
+        return repeat * len(content)
+    return repeat * sum(_block_size(b) for b in content)
+
+
+def _expand(block: _Block) -> bytes:
+    repeat, content = block
+    if isinstance(content, bytes):
+        return content * repeat
+    return b"".join(_expand(b) for b in content) * repeat
+
+
+def _lidata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    seg = m.segment(cur.index())
+    offset = m.offset_field(cur, rec)
+    blocks: list[_Block] = []
+    while not cur.at_end():
+        blocks.append(_lidata_block(cur, m.wide(rec), 1))
+    size = sum(_block_size(b) for b in blocks)  # checked before anything is expanded
+    seg.check_range(offset, size, "iterated data")
+    seg.data[offset : offset + size] = b"".join(_expand(b) for b in blocks)
+    m.last_data = _DataRecord(seg, offset, iterated=True)
+
+
+def _thread(m: _ModuleReader, cur: _Cursor, first: int) -> None:
+    method = first >> _THREAD_METHOD_SHIFT & _THREAD_METHOD_MASK
+    number = first & _THREAD_NUMBER_MASK
+    if first & THREAD_D:
+        idx = cur.index() if method < _FRAME_DATUM_METHODS else 0
+        m.frame_threads[number] = (method, idx)
+        return
+    method &= _FIXDAT_TARGET_MASK  # the P bit of each FIXUP supplies bit 2
+    idx = cur.u16() if method == _TARGET_FRAME_NUMBER else cur.index()
+    m.target_threads[number] = (method, idx)
+
+
+def _frame(m: _ModuleReader, cur: _Cursor, fixdat: int) -> int:
+    field_value = fixdat >> _FIXDAT_FRAME_SHIFT & _FIXDAT_FRAME_MASK
+    if fixdat & FIXDAT_F:
+        number = field_value & _THREAD_NUMBER_MASK
+        if number not in m.frame_threads:
+            raise OMFError(f"frame thread {number} is not defined")
+        return m.frame_threads[number][0]
+    if field_value < _FRAME_DATUM_METHODS:
+        m.datum_name(field_value, cur.index())  # validates the index
+    return field_value
+
+
+def _target(m: _ModuleReader, cur: _Cursor, fixdat: int) -> tuple[int, int]:
+    """(low two bits of the target method, datum index)."""
+    low = fixdat & _FIXDAT_TARGET_MASK
+    if fixdat & FIXDAT_T:
+        if low not in m.target_threads:
+            raise OMFError(f"target thread {low} is not defined")
+        return m.target_threads[low]
+    idx = cur.u16() if low == _TARGET_FRAME_NUMBER else cur.index()
+    return low, idx
+
+
+def _fixup(m: _ModuleReader, cur: _Cursor, rec: Record, first: int) -> None:
+    data = m.last_data
+    if data is None:
+        raise OMFError("FIXUP subrecord with no preceding LEDATA or LIDATA record")
+    locat = first << 8 | cur.u8()
+    location = first >> _LOCAT_TYPE_SHIFT & _LOCAT_TYPE_MASK
+    size = LOC_SIZES.get(location)
+    if size is None:
+        raise OMFError(f"unknown location type {location}")
+    fixdat = cur.u8()
+    frame_method = _frame(m, cur, fixdat)
+    low, target_index = _target(m, cur, fixdat)
+    target_name = m.datum_name(low, target_index)
+    displacement = 0 if fixdat & FIXDAT_P else m.offset_field(cur, rec)
+    if data.iterated:
+        data.segment.unmaskable = True  # the offset addresses the LIDATA record itself
+        return
+    offset = data.offset + (locat & _LOCAT_OFFSET_MASK)
+    data.segment.check_range(offset, size, "fixup")
+    data.segment.fixups.append(
+        OMFFixup(
+            offset=offset,
+            size=size,
+            segment_relative=bool(first & LOCAT_M),
+            location=location,
+            frame_method=frame_method,
+            target_method=low | (fixdat & FIXDAT_P),
+            target_kind=_TARGET_KINDS[low],
+            target_index=target_index,
+            target_name=target_name,
+            displacement=displacement,
         )
-    seg.data[offset:end] = data
+    )
+
+
+def _fixupp(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    while not cur.at_end():
+        first = cur.u8()
+        if first & LOCAT_FIXUP:
+            _fixup(m, cur, rec, first)
+        else:
+            _thread(m, cur, first)
+
+
+def _bakpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    seg = m.segment(cur.index())
+    location = cur.u8()
+    size = _BAKPAT_SIZES.get(location)
+    if size is None:
+        raise OMFError(f"unknown backpatch location type {location}")
+    while not cur.at_end():
+        offset, value = m.offset_field(cur, rec), m.offset_field(cur, rec)
+        seg.check_range(offset, size, "backpatch")
+        old = int.from_bytes(seg.data[offset : offset + size], "little")
+        new = (old + value) & ((1 << 8 * size) - 1)
+        seg.data[offset : offset + size] = new.to_bytes(size, "little")
+        seg.backpatched.update(range(offset, offset + size))
+
+
+def _nbkpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    m.nbkpat_records += 1
 
 
 _HANDLERS = {
     REC_THEADR: _theadr,
+    REC_COMENT: _coment,
     REC_LNAMES: _lnames,
     REC_SEGDEF: _segdef,
     REC_SEGDEF32: _segdef,
+    REC_GRPDEF: _grpdef,
     REC_PUBDEF: _pubdef,
     REC_PUBDEF32: _pubdef,
     REC_LPUBDEF: _pubdef,
     REC_LPUBDEF32: _pubdef,
     REC_EXTDEF: _extdef,
     REC_LEXTDEF: _extdef,
+    REC_COMDEF: _comdef,
+    REC_LCOMDEF: _comdef,
+    REC_CEXTDEF: _cextdef,
     REC_LEDATA: _ledata,
     REC_LEDATA32: _ledata,
+    REC_LIDATA: _lidata,
+    REC_LIDATA32: _lidata,
+    REC_FIXUPP: _fixupp,
+    REC_FIXUPP32: _fixupp,
+    REC_BAKPAT: _bakpat,
+    REC_BAKPAT32: _bakpat,
+    REC_NBKPAT: _nbkpat,
+    REC_NBKPAT32: _nbkpat,
 }
 
 
