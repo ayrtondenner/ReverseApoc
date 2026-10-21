@@ -11,6 +11,10 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-21: what the Phase 4 code review turned up
+
+- **10.5 writes no error file.** With `-fr=<file>`, 10.6 and 11.0 write the error file next to the object; 10.5 (the BINNT stub running the decoded BINW compiler) writes none anywhere, and the message still reaches the captured output. Found once the wrapper's invariant tests ran for 10.5 too (review WR-05); `tests/test_compiler_real.py` records it.
+
 ## 2026-10-21: running the 1990s compilers (Phase 4, plans 04-01..04-06, 04-11)
 
 - **wpack needs Watcom's own qsort.** The 10.5 compiler's archive (PCK00017.1 + .2) builds its Shannon-Fano code table with the Watcom C library's qsort (shell sort below 16 items, Bentley-McIlroy partition above). A stable sort assigns tied symbols in another order and decodes garbage ("a match runs past the member length"). The 10.5 header is 12 bytes (the first member's `disk_addr` is 12); Open Watcom v2's 16-byte variant is refused. Format: [research/wpack-format.md](research/wpack-format.md).
