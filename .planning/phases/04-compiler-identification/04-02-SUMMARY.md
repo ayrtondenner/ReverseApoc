@@ -215,6 +215,12 @@ None. Real-file tests skip until `uv run reverseapoc install-watcom <version>` h
 - 04-08/04-09 can use `normalized_object_sha1` and `requires_runner()`.
 - Verification: `uv run pytest -q` gives 498 passed, 54 skipped (the real-file tests skip without overrides in the worktree), and `uv run ruff check .` is clean. The real run of `tests/test_omf_real.py` gives 9 passed with no SKIPPED line.
 
+## Self-Check: PASSED
+
+- Files: tools/reverseapoc/omf.py, tests/omfimage.py, tests/test_omf.py (56 tests collected), tests/test_omf_real.py, tests/conftest.py, this SUMMARY: all present.
+- Commits on this branch since e24d37a: c175aad, 1be538d, bdf593d, f15b036, 82a1651, 7c10476, c4b0eea, 01a2100 (8 task commits), plus this SUMMARY's docs commit.
+- Acceptance greps: `class OMFError(ValueError)`, `REVERSEAPOC_WATCOM_DIR` in conftest, `def requires_version` and `def requires_runner`, `LOC_SIZES|LIDATA_MAX_DEPTH|COMENT_EASY_OMF` (8 lines), `def normalized_object_sha1`: all print.
+
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
