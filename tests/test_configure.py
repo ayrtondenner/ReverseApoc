@@ -8,6 +8,7 @@ import sys
 import pytest
 
 import configure
+from conftest import build_le_image, write_manifest
 from reverseapoc.cli import main as cli_main
 from reverseapoc.targets import load_manifest
 
@@ -78,7 +79,8 @@ def test_render_has_verify_edge():
     assert "rule rebuild" in text
     block = _rule_block(text, "rebuild")
     # WR-05: the rebuild command carries the orig dir (default layout: orig/).
-    assert "command = uv run reverseapoc rebuild --orig orig" in block
+    # IN-11: it writes into build, the builddir next to build.ninja, not the repo's build/.
+    assert "command = uv run reverseapoc rebuild --orig orig --out build" in block
     assert "description = REBUILD build/" in block
     assert "pool = console" in block
     assert "build $builddir/always/verify: rebuild" in text
@@ -113,10 +115,10 @@ def _command(text: str, rule: str) -> str:
 def test_render_passes_orig_to_check_orig_and_rebuild():
     text = configure.render([], orig="../elsewhere")
     assert CHECK_ORIG_CMD + "../elsewhere" in _rule_block(text, "check_orig")
-    assert REBUILD_CMD + "../elsewhere" in _rule_block(text, "rebuild")
+    assert REBUILD_CMD + "../elsewhere --out build" in _rule_block(text, "rebuild")
     text = configure.render(["orig/UFO2P.EXE"])
     assert CHECK_ORIG_CMD + "orig" in _rule_block(text, "check_orig")
-    assert REBUILD_CMD + "orig" in _rule_block(text, "rebuild")
+    assert REBUILD_CMD + "orig --out build" in _rule_block(text, "rebuild")
     # ninja shell-quotes $in itself, so the rule must not quote it again (WR-06).
     assert "command = uv run reverseapoc parse-le $in" in _rule_block(text, "parse_le")
 
@@ -144,7 +146,7 @@ def test_main_passes_orig_to_check_orig_and_rebuild(tmp_path, out_parts, expecte
     orig = _orig_from_parse_le_edge(text)
     assert orig == expected
     assert _command(text, "check_orig").endswith(f"--orig {orig}")
-    assert _command(text, "rebuild").endswith(f"--orig {orig}")
+    assert _command(text, "rebuild").endswith(f"--orig {orig} --out build")
 
 
 def test_generated_commands_read_the_orig_dir(tmp_path, monkeypatch, capsys):
@@ -212,7 +214,7 @@ UNSAFE_ORIG_DIRS = ["my orig", "a;b", "a$b", "a`b`", "a'b", 'a"b', "a&b", "a\nb"
 def test_render_refuses_an_unsafe_orig_dir(orig):
     text = configure.render([], orig="../safe-dir")
     assert CHECK_ORIG_CMD + "../safe-dir" in _rule_block(text, "check_orig")
-    assert REBUILD_CMD + "../safe-dir" in _rule_block(text, "rebuild")
+    assert REBUILD_CMD + "../safe-dir --out build" in _rule_block(text, "rebuild")
     with pytest.raises(configure.ConfigureError) as excinfo:
         configure.render([], orig=orig)
     assert repr(orig) in str(excinfo.value)
@@ -337,3 +339,59 @@ def test_main_refuses_an_option_like_exe_name(tmp_path, capsys):
     assert err.startswith("configure.py: error:")
     assert "'-h.exe'" in err
     assert out.read_bytes() == SENTINEL
+
+
+# ---- IN-10, IN-11, IN-08: the header names the orig dir it reads and the builddir it writes ----
+
+
+def test_render_check_orig_description_names_the_orig_dir():
+    text = configure.render([], orig="../elsewhere")
+    assert "description = CHECK-ORIG ../elsewhere" in _rule_block(text, "check_orig")
+    text = configure.render(["orig/UFO2P.EXE"])
+    assert "description = CHECK-ORIG orig" in _rule_block(text, "check_orig")
+
+
+def test_header_comments_name_no_fixed_orig_dir():
+    text = configure.render([], orig="../elsewhere")
+    comments = [line for line in text.splitlines() if line.startswith("#")]
+    assert [line for line in comments if "orig/" in line] == []
+    for target in ("ninja check-orig", "ninja parse-le", "ninja verify"):
+        assert any(target in line for line in comments), target
+
+
+def test_rebuild_out_is_the_builddir():
+    text = configure.render([], orig="../elsewhere")
+    builddir = next(line for line in text.splitlines() if line.startswith("builddir = "))
+    out = _command(text, "rebuild").partition(" --out ")[2].split(" ")[0]
+    assert out == builddir.removeprefix("builddir = ")
+
+
+def test_generated_rebuild_writes_into_builddir(tmp_path, monkeypatch, capsys):
+    # End to end on the host: `ninja verify` runs in the build.ninja dir and writes into its
+    # builddir. The CLI default is moved into tmp_path so a failing run never writes build/.
+    monkeypatch.setattr("reverseapoc.cli.DEFAULT_OUT", tmp_path / "default-out")
+    data = build_le_image().data
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "IN11.EXE").write_bytes(data)
+    manifest = write_manifest(tmp_path / "m.toml", {"IN11.EXE": data})
+    cfg = tmp_path / "cfg"
+    cfg.mkdir()
+    assert configure.main(["--orig", str(elsewhere), "--output", str(cfg / "build.ninja")]) == 0
+    text = (cfg / "build.ninja").read_text(encoding="utf-8")
+    capsys.readouterr()
+    monkeypatch.chdir(cfg)
+    argv = _command(text, "rebuild").removeprefix("command = uv run reverseapoc ").split()
+    assert cli_main([*argv, "--manifest", str(manifest)]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert any(line.startswith("OK") and "IN11.EXE" in line for line in lines)
+    assert (cfg / "build" / "IN11.EXE").read_bytes() == data
+    assert not (tmp_path / "default-out" / "IN11.EXE").exists()
+
+
+def test_no_stale_phase_wording():
+    text = configure.render([])
+    for where in (configure.__doc__, text):
+        assert "Phase 2" not in where
+        assert "skeleton" not in where
+    assert "Phase 5" in text
