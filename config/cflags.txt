@@ -12,8 +12,10 @@
 #   source that no rule matches is refused.
 # - `#` starts a comment, on its own line or after a rule.
 #
-# The wrapper owns these flags; they may not appear here: -zq -zld -bt -fo -fr -fi -fh -ad -i.
-# A flag must start with `-` and hold no `/`, `\` or whitespace.
+# The wrapper owns these flags; they may not appear here in any case or spelling (Watcom ignores
+# case and takes a value with or without `=`, so `-Iinc` is -i): -zq -zld -bt -fo -fr -fi -fh
+# -ad -i. A flag is one option: it must start with `-` and hold no other `-` (Watcom starts a new
+# option there), no `/`, no `\` and no whitespace.
 #
 # Evidence for the flags: docs/toolchain.md, section "Flags". The default below is the research
 # reading (04-RESEARCH.md "Flag evidence matrix"); plan 04-11 replaces it with the flags the

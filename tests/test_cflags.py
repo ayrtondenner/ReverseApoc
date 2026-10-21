@@ -72,7 +72,38 @@ def test_wrapper_owned_flags_refused(flag):
     assert "wrapper" in message
 
 
-@pytest.mark.parametrize("flag", ["5r", "-dX=a/b", "-dX=a\\b"])
+# Watcom takes an option's value with or without "=" and ignores case, so every one of these
+# adds an include directory (probed with the real 10.6 and 11.0 compilers: `-iinc` and `-Iinc`
+# find a header that exists only in inc/).
+@pytest.mark.parametrize("flag", ["-ix", "-iinc", "-i..", "-isrc", "-iC:", "-Iinc", "-I=inc", "-I"])
+def test_include_flags_in_any_spelling_refused(flag):
+    message = _refused(f"*  wcc386@10.6  -5r {flag}\n")
+    assert message.startswith("my/cflags.txt:1:")
+    assert flag in message
+    assert "wrapper" in message
+
+
+@pytest.mark.parametrize("flag", ["-ZQ", "-ZLD", "-Bt=nt", "-FO=x.obj", "-FR=x.err", "-AD"])
+def test_wrapper_owned_flags_refused_in_any_case(flag):
+    message = _refused(f"*  wcc386@10.6  -5r {flag}\n")
+    assert message.startswith("my/cflags.txt:1:")
+    assert flag in message
+    assert "wrapper" in message
+
+
+# Watcom starts a new option at every `-` inside one argument, even inside a value: the real
+# compilers read `-s-iinc` and `-dY=1-iinc` as adding an include directory.
+@pytest.mark.parametrize(
+    "flag", ["-s-iinc", "-dY=1-iinc", "-5r-zq", "-zp4-fo=x.obj", "-s-", "--5r"]
+)
+def test_a_flag_holds_one_option(flag):
+    message = _refused(f"*  wcc386@10.6  {flag}\n")
+    assert message.startswith("my/cflags.txt:1:")
+    assert flag in message
+    assert "option" in message
+
+
+@pytest.mark.parametrize("flag", ["5r", "-dX=a/b", "-dX=a\\b", "/iinc", "/I=inc", "-s/iinc"])
 def test_bad_flag_shapes_refused(flag):
     message = _refused(f"*  wcc386@10.6  {flag}\n")
     assert message.startswith("my/cflags.txt:1:")
@@ -80,9 +111,10 @@ def test_bad_flag_shapes_refused(flag):
 
 
 def test_flags_that_only_share_a_prefix_are_allowed():
-    # "-i" is wrapper-owned only as "-i" or "-i=..."; "-fpi" and "-zp4" are ordinary flags.
-    rules = parse_cflags("*  wcc386@10.6  -fpi -zp4 -ix\n", versions=VERSIONS)
-    assert rules[0].flags == ("-fpi", "-zp4", "-ix")
+    # "-fpi" and "-zp4" share a first letter with -fi, -fr and -zq; "-zl" (no default library
+    # names) is a prefix of -zld, not the other way round. Case alone does not refuse a flag.
+    rules = parse_cflags("*  wcc386@10.6  -fpi -zp4 -zl -ZP4 -d1+\n", versions=VERSIONS)
+    assert rules[0].flags == ("-fpi", "-zp4", "-zl", "-ZP4", "-d1+")
 
 
 def test_unmatched_source_refused():
