@@ -16,9 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, WATCOM_DIR, requires_runner, requires_version
+from conftest import ORIG_DIR, REPO_ROOT, WATCOM_DIR, requires_runner, requires_version
+from reverseapoc import probe
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate, compile_rule
+from reverseapoc.le import LE
+from reverseapoc.libmatch import read_runtime_csv, runtime_csv_path
 from reverseapoc.probe import (
     FLAG_SETS,
     PROBE_DIR,
@@ -229,3 +232,35 @@ def test_calibration_with_10_5():
                 assert (a.version, a.flags) in tied
     print()
     print(cal.format())
+
+
+# ---- plan 04-10: the game's non-library code -----------------------------------------------------
+
+EXES = ("UFO2P.EXE", "TACP.EXE")
+
+
+def _requires_exe(name: str) -> Path:
+    path = ORIG_DIR / name
+    if not path.is_file():
+        pytest.skip(f"orig/{name} not present (run `uv run reverseapoc ingest` or set "
+                    "REVERSEAPOC_ORIG)")  # fmt: skip
+    return path
+
+
+@pytest.fixture(scope="module", params=EXES)
+def exe_scan(request):
+    """scan_exe over one EXE with its committed runtime map (config/<stem>/runtime.csv)."""
+    path = _requires_exe(request.param)
+    runtime = runtime_csv_path(request.param)
+    assert runtime.is_file(), f"{runtime} missing: run uv run reverseapoc libmatch --write"
+    return probe.scan_exe(LE(path), read_runtime_csv(runtime), exe=request.param)
+
+
+def test_exe_nonlibrary_idioms(exe_scan):
+    counts = exe_scan.counts
+    print()
+    print(exe_scan.format())
+    assert counts["setcc_and"] > 0, counts
+    assert counts["setcc_movzx"] == 0, counts
+    assert counts["movsd_unrolled"] > 0, counts
+    assert counts["rep_movsd_small"] == 0, counts

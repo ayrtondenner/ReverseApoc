@@ -12,8 +12,11 @@ import json
 import pytest
 
 import omfimage
-from reverseapoc import omf
+from conftest import build_le_image, fixup_record
+from reverseapoc import omf, probe
 from reverseapoc.compiler import CompilerError
+from reverseapoc.le import LE
+from reverseapoc.libmatch import MatchRange
 from reverseapoc.probe import (
     FLAG_SETS,
     IDIOMS,
@@ -510,3 +513,61 @@ def test_calibrate_failed_compile_names_the_cell(fake, tmp_path):
 def test_calibrate_default_sources_are_in_probe_dir():
     assert PROBE_SOURCES == ("cg_basic.c",)
     assert all((PROBE_DIR / name).is_file() for name in PROBE_SOURCES)
+
+
+# ---- plan 04-10: scanning an EXE's non-library code ---------------------------------------------
+
+SCAN_CODE_BASE = 0x10000  # conftest.OBJECTS: object 1 is the executable one ...
+SCAN_CODE_SIZE = 0x1800  # ... with this virtual size
+NO_FIXUPS = [b"", b"", b""]  # one empty fixup record list per page of the synthetic LE
+
+
+def _row(start: int, end: int, *, libraries=("DOS/CLIB3R.LIB",), publics=("fake_",)):
+    return MatchRange(start, end, "_TEXT", "fake", tuple(libraries), ("10.6",), tuple(publics),
+                      "unique")  # fmt: skip
+
+
+def _scan_le(patches: dict[int, bytes], fixups: list[bytes] = NO_FIXUPS) -> LE:
+    return LE(build_le_image(fixups=fixups, patches=patches).data)
+
+
+def test_scan_excludes_runtime_rows():
+    # one setcc;and in game code, one inside the runtime row [0x10500, 0x10520)
+    le = _scan_le({0x10400: SETCC_AND, 0x10500: SETCC_AND})
+    rows = [_row(0x10500, 0x10520), _row(0x20000, 0x20010)]  # the second lies in the data object
+    scan = probe.scan_exe(le, rows, exe="SYNTH.EXE")
+    assert scan.exe == "SYNTH.EXE"
+    assert (scan.code_base, scan.code_size) == (SCAN_CODE_BASE, SCAN_CODE_SIZE)
+    assert scan.counts["setcc_and"] == 1
+    assert list(scan.counts) == list(IDIOMS)
+    assert scan.lib_bytes == 0x20
+    assert scan.nonlib_bytes + scan.lib_bytes == scan.code_size
+
+
+def test_scan_touching_row_boundary():
+    le = _scan_le({0x10400: SETCC_AND})
+    last = 0x10400 + SETCC_AND_END - 1  # the last byte of the and immediate
+    # a row whose first byte is the encoding's last byte excludes it ...
+    assert probe.scan_exe(le, [_row(last, last + 8)], exe="X").counts["setcc_and"] == 0
+    # ... a row starting one byte later does not
+    assert probe.scan_exe(le, [_row(last + 1, last + 9)], exe="X").counts["setcc_and"] == 1
+
+
+def test_scan_masks_le_fixup_bytes():
+    # an off32 LE fixup over the setcc bytes: a relocated operand is never read as an idiom
+    fixups = [fixup_record(7, 0x402, 2, 0x100), b"", b""]
+    le = _scan_le({0x10400: SETCC_AND}, fixups)
+    assert probe.scan_exe(le, [], exe="X").counts["setcc_and"] == 0
+
+
+def test_scan_format_and_json():
+    scan = probe.scan_exe(_scan_le({0x10400: SETCC_AND}), [_row(0x10500, 0x10520)], exe="SYNTH.EXE")
+    lines = scan.format().splitlines()
+    assert lines[0].startswith("SYNTH.EXE: code 0x00010000..0x00011800")
+    counted = dict(line.split() for line in lines if line.startswith("  "))
+    assert counted == {name: str(scan.counts[name]) for name in IDIOMS}
+    data = scan.to_json()
+    assert data["exe"] == "SYNTH.EXE"
+    assert (data["code_base"], data["code_size"], data["lib_bytes"]) == (0x10000, 0x1800, 0x20)
+    assert data["counts"] == scan.counts
+    json.dumps(data)  # plain JSON types only
