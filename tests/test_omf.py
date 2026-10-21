@@ -17,6 +17,7 @@ from omfimage import (
     ledata16,
     ledata32,
     library,
+    lidata16,
     lidata32,
     lnames,
     module,
@@ -356,6 +357,26 @@ def test_easy_omf_reads_16bit_numbered_records_as_32bit(access: int | None):
     assert mod.publics == (Public("e_", 1, 0x12340),)
     assert seg.fixups[0].offset == 0x12340
     assert seg.fixups[0].displacement == 0x100000
+
+
+def test_easy_omf_lidata_keeps_16bit_repeat_counts():
+    # Easy OMF widens the data offset of record 0xA2, not its repeat counts (shape seen in a
+    # real Easy OMF LIDATA record: it parses to the last byte only this way)
+    mod = read_object(
+        module(
+            "easy",
+            coment(0xAA, b"80386"),
+            lnames("", "_DATA", "DATA"),
+            segdef_easy(2, 3, 0x20),
+            lidata16(1, 0x10, [(3, b"ab"), (2, [(1, b"x"), (1, b"y")])], offset32=True),
+        )
+    )
+    assert mod.segments[0].data[0x10:0x1A] == b"abababxyxy"
+
+
+def test_lidata16_without_easy_omf():
+    mod = read_object(two_segment_module(lidata16(2, 4, [(2, b"cd")])))
+    assert mod.segments[1].data[4:8] == b"cdcd"
 
 
 def test_without_easy_omf_16bit_records_have_16bit_fields():
