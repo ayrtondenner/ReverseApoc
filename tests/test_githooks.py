@@ -128,6 +128,16 @@ def test_an_existing_trailer_in_any_case_is_kept_as_is(tmp_path, trailer):
     assert msg.read_text(encoding="utf-8") == original
 
 
+def test_a_message_without_a_final_newline_keeps_its_subject(tmp_path):
+    # git 2.43 hands a `merge -m` message to commit-msg without a final newline; interpret-trailers
+    # then glues the trailer onto the subject line instead of starting a trailer block
+    msg = _message(tmp_path, "chore: merge executor worktree (x)")
+    assert _run_hook(msg, _env(tmp_path, claudecode=True)).returncode == 0
+    assert msg.read_text(encoding="utf-8") == (
+        f"chore: merge executor worktree (x)\n\n{DEFAULT_TRAILER}\n"
+    )
+
+
 def test_running_twice_adds_one_trailer(tmp_path):
     msg = _message(tmp_path, "feat: one\n")
     env = _env(tmp_path, claudecode=True)
