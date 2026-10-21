@@ -201,3 +201,9 @@ None. No external service configuration is required.
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
+
+## Self-Check: PASSED
+
+- Files present: tests/test_compiler_real.py, tools/reverseapoc/compiler.py, tests/test_compiler.py, tests/watcomtree.py
+- Commits on this branch: edecc34, 40ec06c, 6967d76
+- Re-run before this SUMMARY: `uv run pytest -q` (627 passed, 68 skipped), `uv run ruff check .` (clean), the real file natively (11 passed, 1 skipped: 10.5 gate refused), no `./*.err` in the worktree root
