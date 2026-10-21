@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -175,6 +177,33 @@ def test_ci_workflows_exist():
 def test_ci_never_fetches_the_compiler(workflow, needle):
     # docs/legal.md: CI never downloads or installs the compiler either.
     assert needle not in workflow.read_text(encoding="utf-8")
+
+
+def _git_ls_stage(path: str) -> str | None:
+    """`git ls-files --stage` for `path` in this checkout, or None when there is no git or no
+    work tree to ask (a source export). safe.directory=* lets a bind mount owned by another
+    user be read inside the container."""
+    git = shutil.which("git")
+    if git is None:
+        return None
+    cmd = [git, "-c", "safe.directory=*", "-C", str(REPO_ROOT)]
+    inside = subprocess.run([*cmd, "rev-parse", "--is-inside-work-tree"], capture_output=True)
+    if inside.returncode != 0:
+        return None
+    listed = subprocess.run(
+        [*cmd, "ls-files", "--stage", "--", path], capture_output=True, text=True, check=True
+    )
+    return listed.stdout
+
+
+def test_commit_msg_hook_is_tracked_and_executable():
+    # The Co-Authored-By hook only helps if every clone gets it, executable, via
+    # `git config core.hooksPath .githooks`.
+    staged = _git_ls_stage(".githooks/commit-msg")
+    if staged is None:
+        pytest.skip("not a git work tree")
+    assert staged.split()[:1] == ["100755"]
+    assert staged.rstrip().endswith("\t.githooks/commit-msg")
 
 
 @pytest.mark.skipif(not Path("/.dockerenv").exists(), reason="only inside the container")

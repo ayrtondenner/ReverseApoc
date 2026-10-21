@@ -32,6 +32,7 @@ rebuilt EXE is SHA-1 identical to the original and objdiff reports 100% for the 
 ## Workflow
 
 GSD is not committed: run `npx @opengsd/gsd-core@1.18.0 --claude --local` once per clone, then `/gsd-health`.
+Also once per clone: `git config core.hooksPath .githooks` (adds Co-Authored-By to Claude Code commits).
 GSD owns milestones and phases (`/gsd-plan-phase N`, `/gsd-execute-phase N`, `/gsd-verify-work N`,
 `/gsd-spike`); superpowers owns work inside a phase (brainstorming, TDD, verification). Milestone 1
 roadmap: `docs/workflow.md`. Review passes and what they may touch: `docs/ceremonies.md`.
