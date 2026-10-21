@@ -218,11 +218,12 @@ def _read_calibration(path: Path) -> probe.Calibration:
 
 def _consistent_lines(calibration: probe.Calibration, cells: list[probe.Cell]) -> list[str]:
     """The consistent cells as "<version> <flags>", then the ties among them only (D-10). The
-    header names the filter: the decisive idiom families, not the other evidence lines."""
+    header keeps the `consistent:` prefix (plan 04-10 greps it) and names the filter after the
+    count: the decisive idiom families, not the other evidence lines."""
     families = ", ".join(probe.DECISIVE_FAMILIES)
     lines = [
-        f"consistent (decisive idiom families {families} only; not checked against the other "
-        f"evidence lines): {len(cells)} of {len(calibration.cells)} calibration cells"
+        f"consistent: {len(cells)} of {len(calibration.cells)} calibration cells "
+        f"(decisive idiom families {families} only; not checked against the other evidence lines)"
     ]
     lines += [f"  {cell.version} {' '.join(cell.flags)}" for cell in cells]
     ties = probe.Calibration(tuple(cells), ()).ties()
