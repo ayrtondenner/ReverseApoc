@@ -72,6 +72,23 @@ def test_bad_table_length(watcom):
         init_tables(LE(exe), [inirt_row()], watcom)
 
 
+def test_table_that_ends_before_it_starts(watcom):
+    exe = init_exe(xi=(), yi=(), bounds=(0x20112, 0x20100, 0x20112, 0x20112))
+    with pytest.raises(CppScanError, match="ends before it starts") as info:
+        init_tables(LE(exe), [inirt_row()], watcom)
+    assert "multiple of" not in str(info.value)
+
+
+DATA_END = 0x23000  # conftest OBJECTS: object 2 is 0x3000 bytes at 0x20000
+
+
+def test_empty_table_at_the_very_end_of_the_data_object(watcom):
+    """An empty YI table (start == end) may sit at the object's end address (review IN-06)."""
+    exe = init_exe(yi=(), bounds=(0x20100, 0x20112, DATA_END, DATA_END))
+    xi, yi = init_tables(LE(exe), [inirt_row()], watcom)
+    assert len(xi) == 3 and yi == ()
+
+
 def test_table_outside_the_data_object(watcom):
     exe = init_exe(xi=(), yi=(), bounds=(0x10100, 0x10106, 0x10106, 0x10106))
     with pytest.raises(CppScanError, match="data object"):

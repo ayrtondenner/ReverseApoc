@@ -271,11 +271,16 @@ def _bound_addresses(row: MatchRange, seg: Segment, fixups: Mapping[int, Fixup])
 
 
 def _check_table(le: LE, table: str, start: int, end: int) -> None:
-    """[start, end) is a whole number of entries inside one non-executable object."""
-    if end < start or (end - start) % XI_ENTRY_SIZE:
+    """[start, end) is a whole number of entries inside one non-executable object. An empty
+    table (start == end) may sit at the very end of its object."""
+    if end < start:
+        raise CppScanError(f"{table} table 0x{start:08X}..0x{end:08X} ends before it starts")
+    if (end - start) % XI_ENTRY_SIZE:
         raise CppScanError(f"{table} table 0x{start:08X}..0x{end:08X} is not a multiple of "
                            f"{XI_ENTRY_SIZE} bytes")  # fmt: skip
     obj = le.obj_of_va(start)
+    if obj is None and start == end:  # obj_of_va is half-open: the end address is not inside
+        obj = next((o for o in le.objects if o.end == start), None)
     if obj is None or obj.flags & _OBJ_EXECUTABLE or end > obj.end:
         raise CppScanError(f"{table} table 0x{start:08X}..0x{end:08X} is not inside the data "
                            "object")  # fmt: skip
