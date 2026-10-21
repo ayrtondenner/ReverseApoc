@@ -328,3 +328,17 @@ def test_equal_start_sorts_by_end():
     report = LibMatchReport("SYNTH.EXE", 0x10000, 0x1800, tuple(rows), ())
     modules = [line.split(",")[3] for line in format_runtime_csv(report, "X").splitlines()[2:]]
     assert modules == ["a", "b", "c"]
+
+
+def test_row_versions_and_libraries_cover_every_candidate(tmp_path):
+    """A module renamed between versions (cmp386 in 10.x, _strcmp in 11.0) gives one row whose
+    versions and libraries are every version and library that matched, not the chosen name's."""
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [fake_module("old")])
+    write_lib(watcom, "11.0", "DOS/CLIB3S.LIB", [fake_module("new")])
+    report = _scan(watcom, planted_fake_exe(), versions=("10.6", "11.0"))
+    (row,) = report.ranges
+    assert (row.module, row.status) == ("new", "ambiguous")
+    assert row.versions == ("10.6", "11.0")
+    assert row.libraries == ("DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB")
+    assert row.alternatives == ("old@DOS/CLIB3R.LIB",)
