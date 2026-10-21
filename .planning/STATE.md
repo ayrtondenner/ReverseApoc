@@ -6,15 +6,15 @@ current_phase: 03
 current_phase_name: Byte-identical round trip
 status: executing
 stopped_at: Phase 3 context gathered
-last_updated: "2026-10-20T22:57:15.501Z"
+last_updated: "2026-10-21T03:15:54.974Z"
 last_activity: 2026-10-20
 last_activity_desc: Phase 03 execution resumed (wave continue)
-state_head: 9158a037746bdba4163ebfc631b2be1eb2fd3893
+state_head: 543e7319b8fbd2ec201a91e2e3085d148ad1e7c9
 progress:
   total_phases: 6
   completed_phases: 2
-  total_plans: 10
-  completed_plans: 9
+  total_plans: 14
+  completed_plans: 14
 ---
 
 # Project State
@@ -87,6 +87,7 @@ None yet.
 - [Cross-cutting]: Spike 003 found the installed UFO2P.EXE/TACP.EXE are byte-identical to the CD's `XCOM3/UFOEXE/UFO2P4.EXE`/`XCOM3/TACEXE/TACP4.EXE`; docs/toolchain.md "OpenApoc CRC mismatch" still says the store installers applied a later build. Owner decision pending on correcting it
 - [Phase 5]: Close Phase 3 review findings WR-01 (layout() must refuse shared logical pages and overlapping objects; today a patch into the second owner is silently dropped and rebuild reports OK) and WR-03 (samefile guard against a hardlink into orig/, atomic write, single read of the input) before splice() lands real patches (owner triage 2026-10-20; .planning/phases/03-byte-identical-round-trip/03-REVIEW.md)
 - [Phase 6]: Close Phase 3 review finding WR-04 (rebuild --json must always print, with a per-target error status, so the driver never loses results) (owner triage 2026-10-20)
+- [Phase 5]: Close Phase 3 review findings WR-08 (refuse last_page_size > page_size when the LE is read and handle the no-page case, so a malformed header can never make splice() raise a raw TypeError; a regression from plan 03-08) and IN-12 (carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints) before Phase 5 patches flow through splice() (owner triage 2026-10-21)
 
 ## Deferred Items
 

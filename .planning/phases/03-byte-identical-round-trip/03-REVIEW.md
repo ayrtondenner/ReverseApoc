@@ -238,7 +238,7 @@ Fixed (03-07, `bf341b5`). The module docstring (`configure.py:4-5`) and the head
 (`configure.py:24`) now say "Verification targets only (check-orig, parse-le, verify)". Pinned by
 `test_no_stale_phase_wording`.
 
-### VN-01: REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say
+### IN-13 (formerly VN-01): REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say
 
 Fixed (03-08, `09781cf`):
 
