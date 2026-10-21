@@ -130,3 +130,72 @@ def test_check_orig_missing_directory(tmp_path):
     report = check_orig(tmp_path / "nowhere", manifest)
     assert not report.ok
     assert [r.status for r in report.results] == ["missing"]
+
+
+# ---- Plan 03-08 (IN-06, IN-07): a malformed manifest or a non-bare name is a ManifestError ----
+
+MALFORMED_MANIFESTS = [
+    pytest.param('[[targets]\nname = "A.EXE"\n', False, id="invalid-toml"),
+    pytest.param(b'[[targets]]\nname = "\xff"\n', False, id="not-utf8"),
+    pytest.param("targets = 5\n", True, id="targets-int"),
+    pytest.param('targets = "x"\n', True, id="targets-str"),
+    pytest.param("targets = [1]\n", True, id="targets-array-of-ints"),
+    pytest.param('[targets]\nname = "A.EXE"\n', True, id="targets-table"),
+]
+
+
+@pytest.mark.parametrize(("body", "shape"), MALFORMED_MANIFESTS)
+def test_malformed_manifest_raises_manifest_error(tmp_path, body, shape):
+    path = tmp_path / "bad.toml"
+    if isinstance(body, bytes):
+        path.write_bytes(body)
+    else:
+        path.write_text(body, encoding="utf-8")
+    with pytest.raises(ManifestError) as exc:
+        load_manifest(path)
+    assert str(path) in str(exc.value)
+    if shape:
+        assert "array of tables" in str(exc.value)
+
+
+def _one_target(path, name: str):
+    """A manifest with one valid entry named `name`, written as a TOML literal string so a
+    backslash stays a backslash. The digests are computed here from b"x", never copied."""
+    content = b"x"
+    path.write_text(
+        "[[targets]]\n"
+        f"name = '{name}'\n"
+        'path = "SUB/X.EXE"\n'
+        f"size = {len(content)}\n"
+        f'md5 = "{hashlib.md5(content).hexdigest()}"\n'
+        f'sha1 = "{hashlib.sha1(content).hexdigest()}"\n',
+        encoding="utf-8",
+    )
+    return path
+
+
+NON_BARE_NAMES = [
+    "SUB/X.EXE",
+    "SUB\\X.EXE",
+    "A:B",
+    "..",
+    ".",
+    "NUL",
+    "CON",
+    "nul.exe",
+    "COM1",
+    "LPT1.EXE",
+    "CONIN$",
+    "A.",
+    "A ",
+    "A*B",
+]
+
+
+@pytest.mark.parametrize("name", NON_BARE_NAMES)
+def test_manifest_refuses_a_non_bare_target_name(tmp_path, name):
+    (control,) = load_manifest(_one_target(tmp_path / "ok.toml", "A.EXE"))
+    assert control.name == "A.EXE"
+    with pytest.raises(ManifestError) as exc:
+        load_manifest(_one_target(tmp_path / "bad.toml", name))
+    assert repr(name) in str(exc.value)
