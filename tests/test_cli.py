@@ -12,9 +12,12 @@ from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_m
 from cpptree import init_exe, write_cpp_lib, write_init_lib
 from isoimage import build_iso
 from libtree import cli_workspace
+from reverseapoc import probe as probe_module
 from reverseapoc import targets
 from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
+from reverseapoc.libmatch import RUNTIME_CSV_COLUMNS, RUNTIME_CSV_COMMENT, SWEPT_VERSIONS
+from reverseapoc.probe import IDIOMS, Calibration, Cell
 from reverseapoc.splice import RebuildResult
 from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
@@ -892,3 +895,211 @@ def test_cppscan_help_lists_options(capsys):
     out = capsys.readouterr().out
     for option in ("--orig", "--manifest", "--watcom-dir", "--runtime", "--json"):
         assert option in out
+
+
+# ---- probe ----
+
+# cmp al,5; sete al; and eax,0FFh; ret (a hand-written encoding, as in tests/test_probe.py)
+PROBE_SETCC_AND = b"\x3c\x05\x0f\x94\xc0\x25\xff\x00\x00\x00\xc3"
+PROBE_RUNTIME_ROW = "0x00010500,0x00010520,_TEXT,fake,DOS/CLIB3R.LIB,10.6,fake_,unique,"
+
+
+def _probe_workspace(tmp_path):
+    """cli_workspace whose SYNTH.EXE holds one setcc;and in game code, plus a runtime map."""
+    exe = build_le_image(fixups=[b"", b"", b""], patches={0x10400: PROBE_SETCC_AND}).data
+    ws = cli_workspace(tmp_path, exe=exe)
+    ws["runtime"] = tmp_path / "runtime.csv"
+    header = ",".join(RUNTIME_CSV_COLUMNS)
+    comment = RUNTIME_CSV_COMMENT.format(name="SYNTH.EXE")
+    ws["runtime"].write_text(f"{comment}\n{header}\n{PROBE_RUNTIME_ROW}\n", encoding="utf-8")
+    return ws
+
+
+def _probe_args(ws, *extra):
+    return ["probe", "scan", "SYNTH.EXE", "--orig", str(ws["orig"]), "--manifest",
+            str(ws["manifest"]), *extra]  # fmt: skip
+
+
+def test_probe_scan_missing_runtime_map(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(tmp_path / "absent.csv"))) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc probe: error:")
+    assert "libmatch SYNTH.EXE --write" in err
+
+
+def test_probe_scan_default_runtime_is_the_config_dir(tmp_path, capsys, monkeypatch):
+    ws = _probe_workspace(tmp_path)
+    monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
+    assert main(_probe_args(ws)) == 1
+    err = capsys.readouterr().err
+    assert str(tmp_path / "repo" / "config" / "synth" / "runtime.csv") in err
+
+
+def test_probe_scan_prints_counts(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]))) == 0
+    out = capsys.readouterr().out
+    counted = {}
+    for line in out.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in IDIOMS:
+            counted[words[0]] = int(words[1])
+    assert list(counted) == list(IDIOMS)
+    assert counted == {name: int(name == "setcc_and") for name in IDIOMS}
+
+
+def test_probe_scan_json(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]), "--json")) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["exe"] == "SYNTH.EXE"
+    assert data["counts"]["setcc_and"] == 1
+    assert data["lib_bytes"] == 0x20
+
+
+def test_probe_scan_refuses_orig_mismatch(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    (ws["orig"] / "SYNTH.EXE").write_bytes(b"MZ not the manifest's file")
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]))) == 1
+    assert "does not match" in capsys.readouterr().err
+
+
+def test_probe_requires_a_subcommand(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe"])
+    err = capsys.readouterr().err
+    assert "invalid choice" not in err  # the verb exists ...
+    assert "required" in err  # ... and wants calibrate or scan
+
+
+def test_probe_scan_help_lists_options(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe", "scan", "--help"])
+    out = capsys.readouterr().out
+    for option in ("--orig", "--manifest", "--runtime", "--json"):
+        assert option in out
+
+
+def _probe_cell(version, flags, sha1, **counts):
+    return Cell(version, flags, {name: counts.get(name, 0) for name in IDIOMS}, 0,
+                ("math387r", "emu387"), sha1)  # fmt: skip
+
+
+def _probe_calibration() -> Calibration:
+    """Four hand-made cells: the -5r pair ties and emits setcc;and (consistent with
+    PROBE_SETCC_AND), the -3r pair ties too but emits only setcc;movzx (not consistent)."""
+    five, three = ("-5r", "-s"), ("-3r", "-s")
+    return Calibration(
+        (
+            _probe_cell("10.5", five, "a" * 40, setcc_and=1),
+            _probe_cell("10.6", five, "a" * 40, setcc_and=1),
+            _probe_cell("10.6", three, "c" * 40, setcc_movzx=1),
+            _probe_cell("11.0", three, "c" * 40, setcc_movzx=1),
+        ),
+        skipped=(),
+    )
+
+
+def test_probe_help_lists_calibrate_and_scan(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe", "--help"])
+    out = capsys.readouterr().out
+    assert "calibrate" in out and "scan" in out
+
+
+def test_probe_calibrate_writes_json(tmp_path, capsys, monkeypatch):
+    cal = _probe_calibration()
+    seen = {}
+
+    def fake_calibrate(versions, **kwargs):
+        seen.update(versions=tuple(versions), **kwargs)
+        return cal
+
+    monkeypatch.setattr(probe_module, "calibrate", fake_calibrate)
+    output = tmp_path / "cal" / "calibration.json"
+    args = ["probe", "calibrate", "--watcom-dir", str(tmp_path / "w"), "--output", str(output)]
+    assert main(args) == 0
+    assert cal.format() in capsys.readouterr().out
+    assert Calibration.from_json(json.loads(output.read_text(encoding="utf-8"))) == cal
+    assert seen["versions"] == SWEPT_VERSIONS
+    assert seen["watcom_dir"] == tmp_path / "w"
+
+
+def test_probe_calibrate_json_and_versions(tmp_path, capsys, monkeypatch):
+    seen = {}
+
+    def fake_calibrate(versions, **kwargs):
+        seen["versions"] = tuple(versions)
+        return _probe_calibration()
+
+    monkeypatch.setattr(probe_module, "calibrate", fake_calibrate)
+    output = tmp_path / "calibration.json"
+    args = ["probe", "calibrate", "--versions", "11.0", "10.6", "--output", str(output), "--json"]
+    assert main(args) == 0
+    assert json.loads(capsys.readouterr().out) == _probe_calibration().to_json()
+    assert seen["versions"] == ("11.0", "10.6")
+
+
+def test_probe_calibrate_refuses_output_inside_the_watcom_tree(tmp_path, capsys, monkeypatch):
+    def fail(*args, **kwargs):
+        raise AssertionError("calibrate must not run")
+
+    monkeypatch.setattr(probe_module, "calibrate", fail)
+    watcom = tmp_path / "w"
+    watcom.mkdir()
+    output = watcom / "calibration.json"
+    assert main(["probe", "calibrate", "--watcom-dir", str(watcom), "--output", str(output)]) == 1
+    assert "refusing to write" in capsys.readouterr().err
+    assert not output.exists()
+
+
+def test_probe_calibrate_help_lists_options(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe", "calibrate", "--help"])
+    out = capsys.readouterr().out
+    for option in ("--versions", "--manifest", "--watcom-dir", "--output", "--json"):
+        assert option in out
+
+
+def _write_calibration(path, cal: Calibration):
+    path.write_text(json.dumps(cal.to_json()), encoding="utf-8")
+    return path
+
+
+def test_probe_scan_with_calibration(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    cal_path = _write_calibration(tmp_path / "calibration.json", _probe_calibration())
+    args = _probe_args(ws, "--runtime", str(ws["runtime"]), "--calibration", str(cal_path))
+    assert main(args) == 0
+    lines = capsys.readouterr().out.splitlines()
+    (at,) = [i for i, line in enumerate(lines) if line.startswith("consistent:")]
+    assert lines[at] == "consistent: 2 of 4 calibration cells"
+    assert lines[at + 1 : at + 3] == ["  10.5 -5r -s", "  10.6 -5r -s"]
+    (ties,) = [line for line in lines if line.startswith("ties:")]
+    assert ties == "ties: -5r -s: 10.5 10.6"  # the -3r tie is not among the consistent cells
+
+
+def test_probe_scan_with_calibration_json(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    cal_path = _write_calibration(tmp_path / "calibration.json", _probe_calibration())
+    args = _probe_args(ws, "--runtime", str(ws["runtime"]), "--calibration", str(cal_path))
+    assert main([*args, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["consistent"] == [
+        {"version": "10.5", "flags": ["-5r", "-s"]},
+        {"version": "10.6", "flags": ["-5r", "-s"]},
+    ]
+    assert data["ties"] == [{"flags": ["-5r", "-s"], "versions": ["10.5", "10.6"]}]
+
+
+@pytest.mark.parametrize("text", ["{not json", "[]", '{"idioms": []}'])
+def test_probe_scan_bad_calibration_json(tmp_path, capsys, text):
+    ws = _probe_workspace(tmp_path)
+    cal_path = tmp_path / "calibration.json"
+    cal_path.write_text(text, encoding="utf-8")
+    args = _probe_args(ws, "--runtime", str(ws["runtime"]), "--calibration", str(cal_path))
+    assert main(args) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc probe: error:")
+    assert str(cal_path) in err

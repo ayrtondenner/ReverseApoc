@@ -16,9 +16,12 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT, WATCOM_DIR, requires_runner, requires_version
+from conftest import ORIG_DIR, REPO_ROOT, WATCOM_DIR, requires_runner, requires_version
+from reverseapoc import probe
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate, compile_rule
+from reverseapoc.le import LE
+from reverseapoc.libmatch import read_runtime_csv, runtime_csv_path
 from reverseapoc.probe import (
     FLAG_SETS,
     PROBE_DIR,
@@ -229,3 +232,88 @@ def test_calibration_with_10_5():
                 assert (a.version, a.flags) in tied
     print()
     print(cal.format())
+
+
+# ---- plan 04-10: the game's non-library code -----------------------------------------------------
+
+EXES = ("UFO2P.EXE", "TACP.EXE")
+
+
+def _requires_exe(name: str) -> Path:
+    path = ORIG_DIR / name
+    if not path.is_file():
+        pytest.skip(f"orig/{name} not present (run `uv run reverseapoc ingest` or set "
+                    "REVERSEAPOC_ORIG)")  # fmt: skip
+    return path
+
+
+@pytest.fixture(scope="module", params=EXES)
+def exe_scan(request):
+    """scan_exe over one EXE with its committed runtime map (config/<stem>/runtime.csv)."""
+    path = _requires_exe(request.param)
+    runtime = runtime_csv_path(request.param)
+    assert runtime.is_file(), f"{runtime} missing: run uv run reverseapoc libmatch --write"
+    return probe.scan_exe(LE(path), read_runtime_csv(runtime), exe=request.param)
+
+
+# The decisive idioms measured in non-library code with the corrected counters (plan 04-08 review
+# fix rounds 1 and 2) and the production mask (every LE fixup byte). 04-RESEARCH Pattern 6 counted
+# rep_movsd_small as 0 with the adjacent `B9 <n> 00 00 00 F3 A5` encoding, which cannot see the
+# register moves wcc386 puts between the two; the measured shape finds hits in both EXEs, so the
+# research's "== 0" is recorded here as measured (> 0), not forced.
+MEASURED_DECISIVE = {
+    "UFO2P.EXE": {"setcc_and": 30, "setcc_movzx": 0, "movsd_unrolled": 75, "rep_movsd_small": 4},
+    "TACP.EXE": {"setcc_and": 58, "setcc_movzx": 0, "movsd_unrolled": 35, "rep_movsd_small": 2},
+}
+
+
+def test_exe_nonlibrary_idioms(exe_scan):
+    counts = exe_scan.counts
+    print()
+    print(exe_scan.format())
+    assert counts["setcc_and"] > 0, counts
+    assert counts["setcc_movzx"] == 0, counts
+    assert counts["movsd_unrolled"] > 0, counts
+    assert counts["rep_movsd_small"] > 0, counts  # research: 0 (old adjacent encoding)
+    measured = {name: counts[name] for name in MEASURED_DECISIVE[exe_scan.exe]}
+    assert measured == MEASURED_DECISIVE[exe_scan.exe]
+
+
+def test_exe_chk_calls(exe_scan):
+    print()
+    print(*exe_scan.evidence, sep="\n")
+    assert exe_scan.chk_calls > 0
+    assert sum(n for _, n in exe_scan.chk_blocks) == exe_scan.chk_calls
+    assert all(block % 0x10000 == 0 for block, _ in exe_scan.chk_blocks), exe_scan.chk_blocks
+
+
+# Measured with the corrected counters; the same list for both EXEs. 04-RESEARCH read "no 11.0,
+# no -3r or -4r" from a game-code rep_movsd_small of 0, but the corrected counter finds rep movsd
+# struct copies in both EXEs, so the -4r cells of both versions (setcc;and plus rep movsd) stay.
+# Recorded as measured, not forced (plan 04-10 truth "a different real result is recorded"), for
+# plan 04-11; the research claims that do hold are asserted below.
+MEASURED_CONSISTENT = [
+    "10.6 -4r -s",
+    "10.6 -5r -s",
+    "10.6 -5r",
+    "10.6 -4r -s -ox",
+    "10.6 -5r -s -ox",
+    "10.6 -5r -s -oneatx",
+    "10.6 -5r -s -fpi87",
+    "10.6 -5s -s",
+    "11.0 -4r -s",
+    "11.0 -4r -s -ox",
+]
+
+
+def test_exe_consistent_cells(calibration, exe_scan):
+    cells = probe.consistent_cells(calibration, exe_scan)
+    names = [f"{c.version} {' '.join(c.flags)}" for c in cells]
+    print()
+    print(f"{exe_scan.exe} consistent: {names}")
+    # research claims that hold: no -3r cell, no 11.0 -5 cell, at least one 10.6 -5r cell
+    assert not [c for c in cells if "-3r" in c.flags], names
+    assert not [c for c in cells if c.version == "11.0" and c.flags[0] in ("-5r", "-5s")], names
+    assert [c for c in cells if c.version == "10.6" and "-5r" in c.flags], names
+    # research claims that do not hold ("no 11.0", "no -4r"): the measured list
+    assert names == MEASURED_CONSISTENT
