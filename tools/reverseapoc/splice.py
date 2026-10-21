@@ -55,6 +55,7 @@ from .targets import (
     FileHashes,
     ManifestError,
     Target,
+    check_bare_name,
     check_target,
     hash_file,
     load_manifest,
@@ -573,9 +574,8 @@ class RebuildReport:
 
 
 def _check_bare_name(target: Target) -> None:
-    name = target.name
-    if not name or name in (".", "..") or Path(name).name != name:
-        raise SpliceError(f"target name {name!r} is not a bare file name")
+    """Refuse a Target built without load_manifest whose name is not a bare file name (IN-07)."""
+    check_bare_name(target.name)
 
 
 def _refuse_inside_orig(path: Path, orig_dir: Path) -> None:

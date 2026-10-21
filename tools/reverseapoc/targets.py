@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import ntpath
 import string
 import tomllib
 import zlib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 
 def _find_repo_root() -> Path:
@@ -72,9 +73,31 @@ def _crc32(entry: dict, where: str) -> int | None:
     return crc32
 
 
+def check_bare_name(name: str) -> None:
+    """Raise ManifestError unless `name` is a bare file name on both Windows and POSIX, so
+    `orig_dir / name` and `out_dir / name` name a file in that directory and never a device.
+    ntpath and the Pure path classes behave the same on every host, so the answer does not
+    depend on where this runs."""
+    if (
+        not name
+        or name in (".", "..")
+        or PurePosixPath(name).name != name
+        or PureWindowsPath(name).name != name
+        or ntpath.isreserved(name)
+    ):
+        raise ManifestError(
+            f"target name {name!r} must be a bare file name on both Windows and POSIX: no "
+            "directory or drive, no reserved device name, no wildcard, no trailing dot or space"
+        )
+
+
 def _parse_target(i: int, entry: dict) -> Target:
     where = f"targets[{i}] ({entry.get('name', '?')})"
     name, path = _text(entry, where, "name"), _text(entry, where, "path")
+    try:
+        check_bare_name(name)
+    except ManifestError as exc:
+        raise ManifestError(f"{where}: {exc}") from exc
     size = _size(entry, where)
     md5, sha1 = _digest(entry, where, "md5", 32), _digest(entry, where, "sha1", 40)
     crc32 = _crc32(entry, where)
@@ -91,13 +114,20 @@ def _parse_target(i: int, entry: dict) -> Target:
 
 
 def load_manifest(path: Path | str | None = None) -> list[Target]:
-    """Load and validate the manifest (default: config/targets.toml)."""
+    """Load and validate the manifest (default: config/targets.toml). Bytes that are not UTF-8,
+    invalid TOML and a `targets` value that is not an array of tables raise ManifestError
+    naming the manifest; a missing file stays an OSError."""
     path = Path(path) if path is not None else DEFAULT_MANIFEST
-    with path.open("rb") as fh:
-        data = tomllib.load(fh)
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ManifestError(f"{path}: {exc}") from exc
     entries = data.get("targets")
     if not entries:
         raise ManifestError(f"{path}: no [[targets]] entries")
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ManifestError(f"{path}: 'targets' must be an array of tables ([[targets]])")
     return [_parse_target(i, entry) for i, entry in enumerate(entries)]
 
 
