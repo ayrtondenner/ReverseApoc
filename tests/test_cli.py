@@ -186,7 +186,7 @@ INVALID_TOML = '[[targets]\nname = "A.EXE"\n'
     ids=["check-orig", "rebuild", "rebuild-json"],
 )
 def test_malformed_manifest_is_an_error_line(tmp_path, capsys, verb):
-    # IN-06: one error line and exit 1, not a traceback (no JSON error status: WR-04, Phase 6)
+    # IN-06: one error line and exit 1, not a traceback (with --json, stdout is "[]": WR-04)
     bad = tmp_path / "bad.toml"
     bad.write_text(INVALID_TOML, encoding="utf-8")
     args = [*verb, "--orig", str(tmp_path / "orig"), "--manifest", str(bad)]
@@ -434,6 +434,69 @@ def test_rebuild_mismatch_line_and_json(tmp_path, capsys, monkeypatch):
     assert obj["status"] == "mismatch"
     assert obj["first_diff"] == {"offset": offset, "region": region, "va": 0x10800}
     assert obj["diff_bytes"] == 1
+
+
+def _erroring_middle_target_setup(tmp_path):
+    """SYNTH.EXE and OTHER.EXE rebuild fine; BAD.EXE, between them in the manifest, matches it
+    but has a non-resident name table, which layout() refuses (D-19)."""
+    files = {
+        "SYNTH.EXE": build_le_image().data,
+        "BAD.EXE": build_le_image(extra_header_fields={0x88: 0x10}).data,
+        "OTHER.EXE": build_le_image(bound=False).data,
+    }
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    for name, data in files.items():
+        (orig / name).write_bytes(data)
+    manifest = write_manifest(tmp_path / "m.toml", files)
+    out = tmp_path / "build"
+    args = ["rebuild", "--orig", str(orig), "--manifest", str(manifest), "--out", str(out)]
+    return out, args
+
+
+def test_rebuild_json_reports_a_target_error_and_keeps_the_others(tmp_path, capsys):
+    # WR-04: an error in one target is a per-target status; --json still prints every target
+    out, args = _erroring_middle_target_setup(tmp_path)
+    assert main([*args, "--json"]) == 1
+    results = json.loads(capsys.readouterr().out)
+    assert [(r["name"], r["status"]) for r in results] == [
+        ("SYNTH.EXE", "ok"),
+        ("BAD.EXE", "error"),
+        ("OTHER.EXE", "ok"),
+    ]
+    bad = results[1]
+    assert set(bad) == JSON_KEYS | {"error"}
+    assert "BAD.EXE" in bad["error"]
+    assert "non-resident name table" in bad["error"]
+    assert (bad["output"], bad["sha1"], bad["first_diff"]) == (None, None, None)
+    assert bad["expected_sha1"] == load_manifest(tmp_path / "m.toml")[1].sha1
+    assert all(set(r) == JSON_KEYS for r in (results[0], results[2]))
+    assert sorted(p.name for p in out.iterdir()) == ["OTHER.EXE", "SYNTH.EXE"]
+
+
+def test_rebuild_text_reports_a_target_error_and_keeps_the_others(tmp_path, capsys):
+    _, args = _erroring_middle_target_setup(tmp_path)
+    assert main(args) == 1
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert [line[:20] for line in lines] == [
+        "OK        SYNTH.EXE ",
+        "ERROR     BAD.EXE   ",
+        "OK        OTHER.EXE ",
+    ]
+    assert "non-resident name table" in lines[1]
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("option", ["--exe", "--manifest"], ids=["unknown-exe", "no-manifest"])
+def test_rebuild_json_run_error_still_prints_a_list(tmp_path, capsys, option):
+    # a failure before any target has no per-target entry: stdout is an empty list
+    _, args = _two_target_setup(tmp_path)
+    value = "NOPE.EXE" if option == "--exe" else str(tmp_path / "absent.toml")
+    assert main([*args, option, value, "--json"]) == 1
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == []
+    assert "reverseapoc rebuild: error:" in captured.err
 
 
 def test_rebuild_default_options():

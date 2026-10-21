@@ -50,7 +50,14 @@ def _cmd_parse_le(args: argparse.Namespace) -> int:
 
 
 def _cmd_rebuild(args: argparse.Namespace) -> int:
-    report = rebuild(args.orig, args.out, args.manifest, exe=args.exe)
+    try:
+        report = rebuild(args.orig, args.out, args.manifest, exe=args.exe)
+    except (LEError, ManifestError, OSError):
+        # A failure before any target (manifest, --exe, --out): with --json, stdout is still a
+        # list, and main() prints the error line (WR-04).
+        if args.json:
+            print("[]")
+        raise
     if args.json:
         print(json.dumps(report.to_json(), indent=2))
     else:
