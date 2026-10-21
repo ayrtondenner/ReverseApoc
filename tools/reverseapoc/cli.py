@@ -19,7 +19,6 @@ from .le import LE, LEError, format_summary
 from .libmatch import (
     SWEPT_VERSIONS,
     LibMatchError,
-    MatchRange,
     check_versions,
     load_libraries,
     read_runtime_csv,
@@ -206,18 +205,6 @@ def _add_cppscan_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_cppscan)
 
 
-def _runtime_rows(target_name: str, runtime: Path | None) -> list[MatchRange]:
-    """The runtime map of `target_name` (default config/<stem>/runtime.csv); a missing map is
-    refused rather than counting the whole code object as game code (CID-03 empty edge)."""
-    path = runtime if runtime is not None else runtime_csv_path(target_name)
-    if not Path(path).is_file():
-        raise ProbeError(
-            f"runtime map {path} not found; run `uv run reverseapoc libmatch {target_name} "
-            "--write` (or --output PATH, then pass --runtime PATH)"
-        )
-    return read_runtime_csv(path)
-
-
 def _read_calibration(path: Path) -> probe.Calibration:
     """The calibration JSON at `path`; a file that is not JSON or not the to_json() shape is
     refused with an error naming the file."""
@@ -241,7 +228,7 @@ def _consistent_lines(calibration: probe.Calibration, cells: list[probe.Cell]) -
 
 def _probe_scan(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
-    rows = _runtime_rows(target.name, args.runtime)
+    rows = probe.runtime_rows(target.name, args.runtime)
     calibration = _read_calibration(args.calibration) if args.calibration else None
     data = read_target(target, args.orig, args.manifest)
     scan = probe.scan_exe(LE(data), rows, exe=target.name)
