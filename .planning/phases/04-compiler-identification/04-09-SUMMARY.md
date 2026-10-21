@@ -114,6 +114,8 @@ status: complete
 
 ## Real results (counts, priorities and addresses only)
 
+> Review fix round 1 (2026-10-21, at the end of this file) adds a second verdict form for a scan whose C++-only module signal could not be computed. Both real EXEs still print the full form below. This section is kept as first written.
+
 Inputs: the main checkout's `orig/` and `third_party/watcom` (10.5, 10.6, 11.0), read-only. The runtime map was computed live in the real test, and for the CLI check it went to `build/cppscan/<exe>.csv` (gitignored).
 
 | | UFO2P | TACP |
@@ -201,6 +203,49 @@ None.
 - Files present: tools/reverseapoc/cppscan.py, tests/cpptree.py, tests/test_cppscan.py, tests/test_cppscan_real.py, this SUMMARY. `grep -n "class CppScanError(ValueError)" tools/reverseapoc/cppscan.py` prints line 30.
 - The task commits 87c528d, a046803, a0808ad and a6cb965 are all ancestors of HEAD (`git rev-list --count 7088b0f..a6cb965` = 4). No commit deletes a file. The working tree is clean.
 - Acceptance: `uv run pytest -q tests/test_cppscan.py` gives 18 passed. The `-k "cpp_only or string_counts or vtable or cpp_verdict or empty_tables"` selection gives 7 passed. The real tests give 4 passed with no SKIPPED line. `cppscan --help` lists `--orig`, `--manifest`, `--watcom-dir`, `--runtime` and `--json`. `uv run pytest -q && uv run ruff check .` gives 734 passed, 73 skipped, and ruff is clean.
+
+
+## Review fix round 1 (2026-10-21)
+
+The plan review found one Important defect: the C++-only-module signal read only the runtime map, and nothing recorded whether the sweep that built the map held any C++ library. A map built from a tree without PLIB/PLBX/CPLX, or with those libraries skipped as unreadable, still gave `C (wcc386)` for a signal that was never computed. The real verdict was sound (52 C++ libraries loaded, none skipped), but 04-11 writes this verdict into toolchain.md. Two minors were folded in. The sections above are kept as first written.
+
+### Changes
+
+- `9c81fa7` fix(04-09), one commit with its tests:
+  - **Important (signal not computed).** `scan` now calls `cpp_only_gap(rows, watcom_dir)`. For every Watcom version the runtime map names, `<watcom>/<version>/LIB386` must hold C++ libraries (file name starting PLIB, PLBX or CPLX) and each must parse completely: not an OMF library, a parse error and any unparsed module (what `libmatch.load_libraries` would record as skipped) all count as a gap. A version name that is not a bare directory name raises CppScanError, as before. The reason is stored in `CppScanReport.cpp_only_gap` (empty when the signal was computed) and shown in the text report (`C++-only runtime rows: not computed (...)`) and the JSON (`cpp_only_modules_computed`, `cpp_only_modules_gap`).
+  - **Minor 1 (W? end to end).** `test_mangled_names_alone_are_cpp_evidence`: an EXE whose only signal is one `W?abc$` string gets a `C++ evidence:` verdict naming `W? strings x1`. With the `W? strings` entry deleted from `_signals` it fails.
+  - **Minor 2 (library/version pairing).** `_init_segment` no longer pairs `row.libraries[0]` with `row.versions[0]`. It tries the (version, library) pairs in row order, versions outermost, keeps the pairs whose library file exists in that version's LIB386, and takes the first one that holds the module's CODE segment. It refuses when no pair exists ("... not found in Watcom ...") or no existing pair holds the segment ("no inirt386 CODE segment ... in <pairs tried>").
+
+### Verdict wording
+
+| Situation | Verdict |
+|---|---|
+| Every signal computed, none fired | `C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; N vtable-shaped candidate runs (...)` |
+| C++-only module signal not computed, nothing else fired | `C (wcc386) on partial evidence: the C++-only runtime module signal was not computed (<gap>); no XI priority 64, no YI priority 40, no __wcpp_ or W? strings; N vtable-shaped candidate runs (...)` |
+| Any signal fired | `C++ evidence: ...; modules needing wpp386: <names, or "not located (no C++-only runtime rows)", or "not located (C++-only runtime module signal not computed)">` |
+
+The XI/YI tables and the strings are always computed (a failure raises), so the verdict is never left undetermined and "undetermined" is not a verdict form. Only the first form is a full C verdict: plan 04-11 should cite it, and treat anything starting `C (wcc386) on partial evidence` as unconfirmed. The real tests now match `C (wcc386): ` with the colon, so the partial form cannot pass them.
+
+### Covering tests
+
+- `tests/test_cppscan.py` (18 -> 32 tests): no C++ library, an unreadable one (not OMF), one with an unparsed module, a second version named by the map that holds none, a version without a LIB386 tree, a C++ verdict with the gap (modules "not located (... not computed)"), a version name leaving the Watcom dir, a map naming no version; the `W?`-only verdict; five pairing tests (first version lacks the library, first library missing, library present but another module in 10.5, no pair exists, no pair holds the module). The shared `watcom` fixture now also holds a readable C++ library (`tests/cpptree.py: write_cpp_lib`), and the C verdict tests match `C (wcc386): `.
+- `tests/test_cli.py`: `test_cppscan_without_cpp_libraries_does_not_report_a_full_c_verdict` (text and JSON); the other cppscan CLI tests use a workspace with a C++ library.
+- `tests/test_cppscan_real.py` (4 -> 5 tests): `test_cpp_libraries_were_swept_and_none_was_skipped` asserts that every swept version loaded at least one PLIB/PLBX/CPLX library and that no C++ library is in the skip list; `test_verdict_is_c` also asserts `cpp_only_gap == ""`.
+- On the old code, 13 tests failed (12 new ones and `test_c_verdict`, which now also reads `cpp_only_gap`). The failures were the intended ones: a full C verdict with no C++ library, and "not found" for an absent first pairing. Removing `W? strings` from `_signals` fails the W? test, and making `scan` pass `cpp_only_gap=""` fails 8 tests (7 synthetic, 1 CLI).
+
+### Re-run
+
+Real inputs read-only (the main checkout's `orig/` and `third_party/watcom`); the runtime maps went to `build/cppscan/`.
+
+- `uv run pytest -q -rs tests/test_cppscan_real.py` gives 5 passed, no SKIPPED line.
+- Both verdict lines are unchanged and still the full form:
+  - `UFO2P.EXE: C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; 5 vtable-shaped candidate runs (C dispatch tables look the same)`
+  - `TACP.EXE: C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; 3 vtable-shaped candidate runs (C dispatch tables look the same)`
+- The UFO2P map names versions 10.5, 10.6 and 11.0; each LIB386 holds C++ libraries and none is unreadable, so `cpp_only_modules_computed` is true. Pointing `--watcom-dir` at a scratch tree with only `DOS/CLIB3R.LIB` per version (scratchpad, outside the repo) gives `C (wcc386) on partial evidence: the C++-only runtime module signal was not computed (10.5: no C++ library ...; 10.6: ...; 11.0: ...)`.
+- Cost: the check parses the 52 C++ libraries again, about 2.7 s per `cppscan` run on this host.
+- Verification: `uv run pytest -q` gives 900 passed, 8 skipped, and `uv run ruff check .` is clean.
+
+Not changed (out of scope for this round): review Minors 3 to 7, including the stale line-30 self-check above.
 
 ---
 *Phase: 04-compiler-identification*
