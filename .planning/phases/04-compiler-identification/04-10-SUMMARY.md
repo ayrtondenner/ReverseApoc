@@ -47,7 +47,7 @@ key-decisions:
   - "Calibration.from_json refuses a calibration whose idiom list differs from IDIOMS, so a table from other counters is never compared with a scan"
 
 patterns-established:
-  - "probe scan output: a header line, one indented line per idiom (`  <name>  <count>`), then evidence lines at column 0, then with --calibration a `consistent:` section and a `ties:` line"
+  - "probe scan output: a header line, one indented line per idiom (`  <name>  <count>`), then evidence lines at column 0, then with --calibration a `consistent:` section and a `ties:` line (fix round 1 changed the section's header and fix round 2 restored the `consistent:` line prefix, with the filter note after the count)"
 
 requirements-completed: [CID-03, CID-05]  # copied from the plan; REQUIREMENTS.md is not marked here: requirements.ready-ids blocks both until 04-11/04-12 (which also declare them) have SUMMARYs
 
@@ -109,7 +109,7 @@ coverage:
         ref: "tests/test_cli.py#test_probe_calibrate_writes_json, test_probe_scan_with_calibration, test_probe_scan_with_calibration_json, test_probe_scan_bad_calibration_json (3 cases)"
         status: pass
       - kind: integration
-        ref: "uv run reverseapoc probe calibrate --watcom-dir ../../../third_party/watcom --output build/probe/calibration.json && uv run reverseapoc probe scan TACP.EXE --orig ../../../orig --calibration build/probe/calibration.json (consistent: and stack checks: present)"
+        ref: "uv run reverseapoc probe calibrate --watcom-dir ../../../third_party/watcom --output build/probe/calibration.json && uv run reverseapoc probe scan TACP.EXE --orig ../../../orig --calibration build/probe/calibration.json (consistent: and stack checks: present; fix round 1 broke the `^consistent:` match, fix round 2 restored it and replayed this command)"
         status: pass
     human_judgment: false
 
@@ -314,7 +314,7 @@ None.
   - `uv run pytest -q tests/test_probe.py -k scan`: 4 passed. `-k "chk or flag_evidence or consistent"`: 8 passed.
   - `probe scan --help` lists --orig, --manifest, --runtime, --calibration and --json. `probe --help` lists calibrate and scan. `probe calibrate --help` lists --versions, --manifest, --watcom-dir, --output and --json (tested).
   - `grep -n "class ProbeError(ValueError)" tools/reverseapoc/probe.py` prints line 31.
-  - build/probe/calibration.json exists, and build/probe/scan-tacp.out holds `consistent:` and `stack checks:`. build/probe/scan-ufo2p.out has a non-zero setcc_and line.
+  - build/probe/calibration.json exists, and build/probe/scan-tacp.out holds `consistent:` and `stack checks:`. build/probe/scan-ufo2p.out has a non-zero setcc_and line. *(Superseded in fix round 1: the header became `consistent (decisive idiom families ...): ...`, which no longer matches `^consistent:`. Fix round 2 put the prefix back; see below.)*
 - Plan verification:
   - Real file (overrides set): 50 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused"; there is no skip for 10.6, 11.0, the runner or orig.
   - `uv run pytest -q`: 818 passed, 135 skipped. `uv run ruff check .`: All checks passed!
@@ -326,7 +326,7 @@ The 04-10 review found that the struct-copy reading 04-11 would use understates 
 | Commit | Change |
 |---|---|
 | `0fe2dfc` test(04-10) | Failing tests first: synthetic encodings for the run-length histogram and the sized rep-copy recogniser, the sibling evidence line, the scan JSON key and the new header. Real tests pin the measured breakdown per EXE and check the breakdown on the probe's own objects. Seen failing against the pre-fix code: 16 failed (missing `copy_sizes`, JSON key, line and header), every older test passed. |
-| `ca2486f` fix(04-10) | `probe.copy_sizes` and `CopySizes`; `ExeScan.copy_sizes`; `struct_copy_sizes` in the scan JSON; a `struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):` line right after the `cpu:` line; the header `consistent (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines): N of M calibration cells`. |
+| `ca2486f` fix(04-10) | `probe.copy_sizes` and `CopySizes`; `ExeScan.copy_sizes`; `struct_copy_sizes` in the scan JSON; a `struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):` line right after the `cpu:` line; the header `consistent (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines): N of M calibration cells`. *(Superseded in fix round 2: the header is now `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`.)* |
 
 ### What the sized count recognises
 
@@ -339,7 +339,7 @@ The 04-10 review found that the struct-copy reading 04-11 would use understates 
   - a count loaded another way;
   - `sub esp,imm` between (a by-value argument);
   - a `jmp` into a `rep movsd` that another function shares (cross-function tail merging, seen in a one-file clean-room build).
-  Measured in non-library code (counts only): no copy of the last two forms in either EXE. A loose window (`mov ecx,1..16`, then `rep movsd` within 24 bytes) finds 32 (UFO2P) and 30 (TACP); the recogniser takes 16 and 19 of them. Of the loose 5-dword pairs it leaves out, UFO2P's 3 have no mov/lea load ending at the `rep movsd`, so they are not read as copies. TACP's 2 have a 2-byte arithmetic instruction after `mov ecx,5` and three loads ending at the rep, so they are likely 5-dword copies; they would add to TACP's `-4` count, not change it.
+  Measured in non-library code (counts only): no copy of the last two forms in either EXE. A loose window (`mov ecx,1..16`, then `rep movsd` within 24 bytes) finds 32 (UFO2P) and 30 (TACP); the recogniser takes 16 and 19 of them. Of the loose 5-dword pairs it leaves out, UFO2P's 3 have no mov/lea load ending at the `rep movsd`, so they are not read as copies. TACP's 2 have a 2-byte arithmetic instruction after `mov ecx,5` and three loads ending at the rep, so they are likely 5-dword copies; they would add to TACP's `-4` count, not change it. *(Corrected in fix round 2: two of UFO2P's 3 skipped pairs, at 0xa3a33 and 0x73f09, do load esi and edi and are likely 5-dword copies too, so "not read as copies" understates UFO2P's `-4` evidence. TACP's 2 have `lea esi` and two 32-bit stores after the count rather than "three loads". See "Fix round 2" below.)*
 
 ### The breakdown per EXE (host, `uv run reverseapoc probe scan <EXE> --calibration build/probe/calibration.json`)
 
@@ -380,9 +380,9 @@ TACP:  struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled 
 
 ### What 04-11 should conclude for `-4r` vs `-5r`
 
-- **UFO2P: `-4r`.** The struct copies give only `-4` evidence: two 22-byte rep copies (a size `-5r` unrolls under every option tried) and no unrolled 5-dword run. Byte compares (setcc;and 30, movzx 0) fit `-4r` and 10.6 `-5r` alike, rule out `-3r`, and rule out 11.0 `-5` (which branches). So no idiom supports `-5r` in UFO2P, and the functions holding the two copies contradict it. The evidence is two sites, so record it as the measured reading, with the caveat below.
+- **UFO2P: `-4r`.** The struct copies give only `-4` evidence: two 22-byte rep copies (a size `-5r` unrolls under every option tried) and no unrolled 5-dword run. Byte compares (setcc;and 30, movzx 0) fit `-4r` and 10.6 `-5r` alike, rule out `-3r`, and rule out 11.0 `-5` (which branches). So no idiom supports `-5r` in UFO2P, and the functions holding the two copies contradict it. The evidence is two sites, so record it as the measured reading, with the caveat below. *(Corrected in fix round 2: about four sites in two code regions, not two; see "Fix round 2".)*
 - **TACP: `-4r`.** Six recognised 5-dword rep copies (five 20-byte, one 21-byte), two more likely ones not recognised, and no unrolled 5-dword run. The byte-compare reading is the same as UFO2P's. This is stronger evidence than UFO2P's.
-- **Both.** Write `-4r`, not `-5r`, for both EXEs. Per D-09 this is a per-EXE finding, not an assumption. The caveat: struct copies speak only for the modules that copy a 5-dword struct, so a module built at `-5` that copies none would not show. State this as "no `-5` evidence", not "no `-5` modules"; Phase 5 matches confirm it. The struct-copy shapes are the same on 10.6 and 11.0 at every size tried, so they do not decide the version. That stays with the runtime-library and loop-shape evidence. The consistent-cell list keeps 10.6 `-5r` cells only because the struct_copy family is inert; it is not support for `-5r`.
+- **Both.** Write `-4r`, not `-5r`, for both EXEs. Per D-09 this is a per-EXE finding, not an assumption. The caveat: struct copies speak only for the modules that copy a 5-dword struct, so a module built at `-5` that copies none would not show. State this as "no `-5` evidence", not "no `-5` modules"; Phase 5 matches confirm it *(fix round 2: read "will confirm"; nothing is confirmed yet)*. The struct-copy shapes are the same on 10.6 and 11.0 at every size tried, so they do not decide the version. That stays with the runtime-library and loop-shape evidence. The consistent-cell list keeps 10.6 `-5r` cells only because the struct_copy family is inert; it is not support for `-5r`.
 
 ### Verification (fix round 1)
 
@@ -390,6 +390,20 @@ TACP:  struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled 
 - `REVERSEAPOC_ORIG=../../../orig REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom uv run pytest -q -rs tests/test_probe_real.py`: 53 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused"; there is no skip for 10.6, 11.0 or orig.
 - `uv run pytest -q`: 826 passed, 138 skipped. `uv run ruff check .`: All checks passed!
 - `uv run reverseapoc probe calibrate --versions 10.6 11.0 --watcom-dir ../../../third_party/watcom` and `probe scan UFO2P.EXE` / `TACP.EXE --orig ../../../orig --calibration build/probe/calibration.json` (text and `--json`) print the lines above. The `consistent` list is the same ten cells, under the new header. Output holds counts, size keys, addresses and names only.
+
+### Fix round 2 (2026-10-21)
+
+The re-review of round 1 found that the new header broke this plan's committed Task 3 verify (`grep -q "^consistent:"`, 04-10-PLAN.md:195), plus three smaller points in the sized-copy reading. Under the controller's ruling the counters, the consistency rule, the calibration and the JSON are unchanged.
+
+- **Header keeps the `consistent:` prefix.** `probe scan --calibration` now prints `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`. The qualifier moved after the count, so the line still starts `consistent:`. The cell lines and the `ties:` line are unchanged, and the JSON never carried the header. Commit `df52a39` fix(04-10). `test_probe_scan_with_calibration` pins the line and now selects it by `startswith("consistent:")`; it was seen failing against the round 1 wording first. The round 1 mentions of the old header above (frontmatter, key-link check, Self-Check, the round 1 table) are marked superseded in place.
+- **UFO2P's `-4r` rests on about four sites in two regions, not two.** The round 1 line on the loose 5-dword pairs said UFO2P's 3 skipped ones have no load ending at the `rep movsd`. For two of them that is wrong. Both the `mov ecx,5` pairs at 0xa3a33 and 0x73f09 also load esi and edi, so they are likely 5-dword copies. The recogniser skips them because an instruction it does not accept (a byte load at 0xa3a33, shift/sub/add at 0x73f09) sits between the count and the `rep movsd`. They sit next to the two recognised `5+2` copies: 0xa3a33 and the recognised 0xa3bc8 and 0xa49f8 are within 4 KiB (block 0xa0000), and 0x73f09 is a second region. The fifth loose pair (0x23df7) does not decode as a setup. The direction is unchanged (no unrolled run of 5 or more in either EXE), but the evidence is stronger than "two sites". The same line's TACP detail is also corrected: its 2 skipped pairs have `lea esi` and two 32-bit stores after the count, not three loads.
+- **Scope of the size calibration.** The size table and `test_calibration_copy_sizes` cover Watcom 10.6 and 11.0 only. 10.5 is uncalibrated (the gate refused its install), so nothing here says 10.5 shares the 5-dword rep/unroll split. Plan 04-11 re-checks it after it reinstalls 10.5. Read "Phase 5 matches confirm it" in the round 1 conclusion as "will confirm".
+
+### Verification (fix round 2)
+
+- `uv run pytest -q tests/test_cli.py tests/test_probe.py`: 138 passed. `uv run ruff check`: All checks passed!
+- Plan 04-10 Task 3 verify, replayed with `REVERSEAPOC_ORIG` and `REVERSEAPOC_WATCOM_DIR` set and outputs under `build/probe/` only: `probe calibrate` and `probe scan TACP.EXE --calibration` exit 0, `grep -q "^consistent:"` and `grep -q "^stack checks:"` both match. The `consistent` list is the same ten cells.
+- `REVERSEAPOC_ORIG=../../../orig REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom uv run pytest -q -rs`: 956 passed, 8 skipped. The skips are the two "Watcom 10.5: gate refused" real tests, two Windows file-name cases, one non-UTF-8 file-name case and three container-only hygiene tests. `uv run ruff check .`: All checks passed!
 
 ---
 *Phase: 04-compiler-identification*
