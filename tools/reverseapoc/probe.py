@@ -23,8 +23,14 @@ from typing import Any, NamedTuple
 from . import omf
 from .cflags import Rule
 from .compiler import OBJ_SUFFIX, CompilerError, Runner, check_gate, compile_rule
-from .libmatch import SWEPT_VERSIONS
+from .le import LE
+from .libmatch import SWEPT_VERSIONS, MatchRange, target_view
 from .targets import REPO_ROOT
+
+
+class ProbeError(ValueError):
+    """The probe cannot run on its input (a missing runtime map, a malformed calibration)."""
+
 
 PROBE_DIR = REPO_ROOT / "probe"
 PROBE_SOURCES = ("cg_basic.c",)
@@ -519,3 +525,71 @@ def _compile_probe(
             f"exit {result.returncode}\n{result.output}"
         )
     return obj, result.normalized_sha1
+
+
+# ---- scanning an EXE's non-library code (CID-03, D-06, D-10) ------------------------------------
+
+
+@dataclass(frozen=True)
+class ExeScan:
+    """The idioms counted in one EXE's code object outside every runtime.csv range."""
+
+    exe: str
+    code_base: int  # linear address of the code object
+    code_size: int
+    nonlib_bytes: int  # code bytes outside every runtime row
+    lib_bytes: int  # code bytes inside a runtime row
+    counts: dict[str, int]  # IDIOMS order, non-library code only
+    chk_calls: int = 0  # push imm32; call __CHK in non-library code
+    chk_blocks: tuple[tuple[int, int], ...] = ()  # (64 KiB block, calls), by block
+    evidence: tuple[str, ...] = ()  # one line per observable flag (D-08)
+
+    def format(self) -> str:
+        """A header line, one indented line per idiom, then the evidence lines."""
+        end = self.code_base + self.code_size
+        lines = [
+            f"{self.exe}: code {self.code_base:#010x}..{end:#010x}, {self.code_size} bytes: "
+            f"{self.nonlib_bytes} non-library, {self.lib_bytes} in runtime rows"
+        ]
+        width = max(len(name) for name in IDIOMS)
+        lines += [f"  {name:<{width}}  {self.counts[name]}" for name in IDIOMS]
+        lines += self.evidence
+        return "\n".join(lines)
+
+    def to_json(self) -> dict[str, Any]:
+        """The same numbers as format(): counts, addresses and block numbers, never bytes."""
+        return {
+            "exe": self.exe,
+            "code_base": self.code_base,
+            "code_size": self.code_size,
+            "nonlib_bytes": self.nonlib_bytes,
+            "lib_bytes": self.lib_bytes,
+            "counts": dict(self.counts),
+            "chk_calls": self.chk_calls,
+            "chk_blocks": [{"block": block, "calls": n} for block, n in self.chk_blocks],
+            "evidence": list(self.evidence),
+        }
+
+
+def _covered(ranges: Iterable[Span], low: int, high: int) -> int:
+    """Bytes of [low, high) that lie in at least one of `ranges`."""
+    total, reach = 0, low
+    for start, end in sorted(ranges):
+        start, end = max(start, reach), min(end, high)
+        if end > start:
+            total += end - start
+            reach = end
+    return total
+
+
+def scan_exe(le: LE, rows: Iterable[MatchRange], *, exe: str) -> ExeScan:
+    """Count IDIOMS in the EXE's code object with every runtime row excluded (a hit touching a
+    row by one byte is dropped) and every LE fixup byte masked (a relocated operand is never read
+    as an idiom)."""
+    view = target_view(le)
+    end = view.base + len(view.code)
+    exclude = [(r.start, r.end) for r in rows]
+    mask = frozenset(va - view.base for va in view.fixup_bytes if view.base <= va < end)
+    counts = count_idioms(view.code, base=view.base, exclude=exclude, mask=mask)
+    lib_bytes = _covered(exclude, view.base, end)
+    return ExeScan(exe, view.base, len(view.code), len(view.code) - lib_bytes, lib_bytes, counts)

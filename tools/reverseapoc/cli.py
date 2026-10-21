@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, libmatch, cppscan,
-fetch-watcom, install-watcom, check-watcom."""
+probe, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from .le import LE, LEError, format_summary
 from .libmatch import (
     SWEPT_VERSIONS,
     LibMatchError,
+    MatchRange,
     check_versions,
     load_libraries,
     read_runtime_csv,
@@ -29,6 +30,8 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .omf import OMFError
+from .probe import ProbeError
+from .probe import scan_exe as probe_scan_exe
 from .splice import DEFAULT_OUT, rebuild
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig, load_manifest
 from .watcom import (
@@ -203,6 +206,56 @@ def _add_cppscan_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_cppscan)
 
 
+def _runtime_rows(target_name: str, runtime: Path | None) -> list[MatchRange]:
+    """The runtime map of `target_name` (default config/<stem>/runtime.csv); a missing map is
+    refused rather than counting the whole code object as game code (CID-03 empty edge)."""
+    path = runtime if runtime is not None else runtime_csv_path(target_name)
+    if not Path(path).is_file():
+        raise ProbeError(
+            f"runtime map {path} not found; run `uv run reverseapoc libmatch {target_name} "
+            "--write` (or --output PATH, then pass --runtime PATH)"
+        )
+    return read_runtime_csv(path)
+
+
+def _probe_scan(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    rows = _runtime_rows(target.name, args.runtime)
+    data = read_target(target, args.orig, args.manifest)
+    scan = probe_scan_exe(LE(data), rows, exe=target.name)
+    print(json.dumps(scan.to_json(), indent=2) if args.json else scan.format())
+    return 0
+
+
+def _cmd_probe(args: argparse.Namespace) -> int:
+    return {"scan": _probe_scan}[args.probe_command](args)
+
+
+def _add_probe_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "probe",
+        help="count the calibrated codegen idioms in an EXE's non-library code (CID-03, D-10)",
+    )
+    probe_sub = p.add_subparsers(dest="probe_command", required=True)
+    s = probe_sub.add_parser(
+        "scan",
+        help="count the idioms in an EXE's code object outside its runtime map, with one "
+        "evidence line per observable flag",
+    )
+    s.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    s.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    s.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    s.add_argument(
+        "--runtime",
+        type=Path,
+        metavar="CSV",
+        help="the runtime map from libmatch; default: config/<exe>/runtime.csv",
+    )
+    s.add_argument("--json", action="store_true", help="print the scan as JSON")
+    p.set_defaults(func=_cmd_probe)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -320,6 +373,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cc_command(sub)
     _add_libmatch_command(sub)
     _add_cppscan_command(sub)
+    _add_probe_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -334,6 +388,7 @@ _ERRORS = (
     CflagsError,
     LibMatchError,
     CppScanError,
+    ProbeError,
     OMFError,
     OSError,
 )
