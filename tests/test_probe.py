@@ -224,9 +224,58 @@ def test_switch_limits():
     # a jcc more than 6 bytes after its compare does not pair with it
     assert count_idioms(_switch(1, 2, 10, gap=b"\x90" * 7))["switch_ascending"] == 0
     assert count_idioms(_switch(1, 2, 10, gap=b"\x90" * 6))["switch_ascending"] == 1
-    # the whole chain must fit in 64 bytes
+    # a compare 60 bytes after the pair does not join it
     far = _switch(1, 2) + b"\x90" * 60 + _switch(10)
     assert count_idioms(far)["switch_ascending"] == 0
+
+
+# cmp al,5; jne rel8: the branch form of `return c == 5` (11.0 at -5), a paired compare.
+EQ5_BRANCH = b"\x3c\x05\x75\x06"
+
+
+def test_switch_compare_before_chain():
+    # a compare that turns the direction starts the next chain with the compare before it:
+    # 5 then 2, 3, 10 is the ascending chain 2, 3, 10, not [5, 2] and [3, 10]
+    up = count_idioms(EQ5_BRANCH + _switch(2, 3, 10))
+    assert (up["switch_ascending"], up["switch_descending"]) == (1, 0)
+    # the restarted chain reads the compare it kept, not the one it dropped
+    assert count_idioms(EQ5_BRANCH + _switch(2, 3, 10), mask=frozenset({0}))[
+        "switch_ascending"
+    ] == 1  # the 3C of cmp al,5
+    for kept in (6, 8):  # the immediate of cmp eax,2 and the displacement of its je
+        assert count_idioms(EQ5_BRANCH + _switch(2, 3, 10), mask=frozenset({kept}))[
+            "switch_ascending"
+        ] == 0
+    # cmp al,1; jne, then 10, 3, 2: the descending chain 10, 3, 2
+    down = count_idioms(b"\x3c\x01\x75\x06" + _switch(10, 3, 2))
+    assert (down["switch_ascending"], down["switch_descending"]) == (0, 1)
+
+
+def test_switch_step_gap():
+    # a compare 30 bytes before the next one (another function) does not join its chain
+    far = EQ5_BRANCH + b"\x90" * 30 + _switch(2, 1)
+    assert count_idioms(far)["switch_descending"] == 0
+    # up to 12 bytes from one compare's jcc to the next compare is one chain, 13 is not
+    assert count_idioms(_switch(1) + b"\x90" * 12 + _switch(2, 10))["switch_ascending"] == 1
+    assert count_idioms(_switch(1) + b"\x90" * 13 + _switch(2, 10))["switch_ascending"] == 0
+
+
+def _wide_switch(*immediates: int) -> bytes:
+    """cmp eax,imm32 (3D id), six nops, je rel32 (0F 84 cd) and twelve nops per immediate: the
+    widest step the counter accepts, 29 bytes from one compare to the next."""
+    return b"".join(
+        b"\x3d" + imm.to_bytes(4, "little") + b"\x90" * 6 + b"\x0f\x84\x10\x00\x00\x00"
+        + b"\x90" * 12
+        for imm in immediates
+    )
+
+
+def test_switch_window():
+    # the third compare ends at byte 63: inside the 64-byte window
+    assert count_idioms(_wide_switch(1, 2, 3))["switch_ascending"] == 1
+    # the fourth ends at byte 92: it starts a new chain on its own (only a compare that turns
+    # the direction keeps the one before it), so seven compares count as 1-3 and 4-6
+    assert count_idioms(_wide_switch(1, 2, 3, 4, 5, 6, 7))["switch_ascending"] == 2
 
 
 # ---- Task 2: flag sets, stack checks, calibration ----------------------------------------------
