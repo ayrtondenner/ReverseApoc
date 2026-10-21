@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from reverseapoc import compiler
+from reverseapoc.cflags import CflagsError
 from reverseapoc.compiler import (
     WIBO,
     CompilerError,
@@ -221,3 +222,39 @@ def test_banner_must_name_version(ws):
     assert "Version 10.6" in str(info.value)
     assert "Version 11.0" in str(info.value)
     assert runner.compiles == []
+
+
+# 3. per-file rules (CID-02) ---------------------------------------------------------------------
+
+
+def _include(argv: list[str]) -> str:
+    (include,) = [arg for arg in argv if arg.startswith("-i=")]
+    return include
+
+
+def test_two_sources_get_their_rules(tmp_path):
+    rules = "*  wcc386@10.6  -5r -s\nsrc/b*.c  wcc386@11.0  -3r\n"
+    ws = make_workspace(tmp_path, versions=("10.6", "11.0"), rules=rules)
+    runner = FakeCompiler()
+    a = ws.compile(ws.source("src/a.c"), ws.root / "out" / "a.obj", runner)
+    b = ws.compile(ws.source("src/b1.c"), ws.root / "out" / "b1.obj", runner)
+    assert (a.ok, b.ok) == (True, True)
+    a_argv, b_argv = runner.compiles
+    exe = "BINNT/WCC386.EXE"
+    assert a_argv[0] == str((ws.watcom / "10.6").resolve() / exe)
+    assert "-5r" in a_argv and "-s" in a_argv
+    assert _include(a_argv).endswith("10.6\\H")
+    assert b_argv[0] == str((ws.watcom / "11.0").resolve() / exe)
+    assert "-3r" in b_argv and "-5r" not in b_argv
+    assert _include(b_argv).endswith("11.0\\H")
+    assert (a.rule.spec, b.rule.spec) == ("wcc386@10.6", "wcc386@11.0")
+    assert "Version 11.0" in b.gate.banner
+    assert [path for path, _ in b.gate.files] == ["BINNT/WCC386.EXE", "BINNT/WCCD386.DLL"]
+
+
+def test_invalid_cflags_is_refused_before_anything_runs(ws):
+    ws.cflags.write_text("*  wcc386@10.6  -5r -fo=elsewhere.obj\n", encoding="utf-8")
+    runner = FakeCompiler()
+    with pytest.raises(CflagsError, match=":1:"):
+        ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
+    assert runner.calls == []
