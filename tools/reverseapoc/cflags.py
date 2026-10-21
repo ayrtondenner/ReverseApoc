@@ -21,6 +21,10 @@ from .watcom import load_watcom_manifest
 
 DEFAULT_CFLAGS = REPO_ROOT / "config" / "cflags.txt"
 COMPILERS = ("wcc386", "wpp386")
+# Options the wrapper always sets or must control (quiet, no file-dependency info, DOS target,
+# object, error file, forced include, precompiled header, auto-dependency file, include path);
+# a per-file rule may not set them. "-i" must stay last: _wrapper_owned matches it specially.
+WRAPPER_OWNED = ("-zq", "-zld", "-bt", "-fo", "-fr", "-fi", "-fh", "-ad", "-i")
 
 
 class CflagsError(ValueError):
@@ -49,22 +53,65 @@ def _fields(text: str):
         yield lineno, fields
 
 
-def _parse_rule(lineno: int, fields: list[str]) -> Rule:
+def _wrapper_owned(flag: str) -> str | None:
+    """The WRAPPER_OWNED option `flag` sets, if any. Each is matched as a prefix, except "-i",
+    which only counts as the whole flag or followed by "=": a future "-ix"-style flag is a
+    different option and must not be caught by accident."""
+    if flag == "-i" or flag.startswith("-i="):
+        return "-i"
+    return next((owned for owned in WRAPPER_OWNED[:-1] if flag.startswith(owned)), None)
+
+
+def _check_flag(flag: str) -> None:
+    # Flags are quoted with backticks, not repr(): repr doubles a backslash, and the message
+    # must show the flag exactly as the file spells it.
+    if not flag.startswith("-"):
+        raise CflagsError(f"flag `{flag}` must start with `-`")
+    owned = _wrapper_owned(flag)
+    if owned is not None:
+        raise CflagsError(f"flag `{flag}` sets {owned}, which the wrapper owns")
+    bad = next((c for c in ("/", "\\") if c in flag), None)
+    if bad is not None:
+        raise CflagsError(f"flag `{flag}` holds `{bad}`, which Watcom would misread")
+    if any(c.isspace() for c in flag):
+        raise CflagsError(f"flag `{flag}` holds whitespace")
+
+
+def _check_spec(compiler: str, version: str, versions: Collection[str]) -> None:
+    if compiler not in COMPILERS:
+        raise CflagsError(f"unknown compiler {compiler!r}; known: {', '.join(COMPILERS)}")
+    if version not in versions:
+        raise CflagsError(
+            f"unknown Watcom version {version!r}; known: {', '.join(versions)} "
+            "(config/watcom.toml)"
+        )
+
+
+def _parse_rule(lineno: int, fields: list[str], versions: Collection[str]) -> Rule:
+    if len(fields) < 2:
+        raise CflagsError("expected `<glob>  <compiler>@<version>  <flags...>`")
     glob, spec, *flags = fields
-    compiler, _, version = spec.partition("@")
+    compiler, at, version = spec.partition("@")
+    if not (at and compiler and version):
+        raise CflagsError(f"expected <compiler>@<version>, got {spec!r}")
+    _check_spec(compiler, version, versions)
+    for flag in flags:
+        _check_flag(flag)
     return Rule(glob, compiler, version, tuple(flags), lineno)
 
 
 def parse_cflags(text: str, *, versions: Collection[str], where: str = "cflags.txt") -> list[Rule]:
-    """The rules of a cflags.txt text, in file order; errors name `where` and the line."""
+    """The rules of a cflags.txt text, in file order. Every error names `where` and the line:
+    a first rule whose glob is not `*`, a malformed compiler@version, an unknown compiler or
+    version, and a flag that is wrapper-owned or holds `/`, `\\` or whitespace."""
     rules = []
     for lineno, fields in _fields(text):
-        rule = _parse_rule(lineno, fields)
-        if not rules and rule.glob != "*":
-            raise CflagsError(
-                f"{where}:{lineno}: the first rule must be the `*` default, not {rule.glob!r}"
-            )
-        rules.append(rule)
+        try:
+            if not rules and fields[0] != "*":
+                raise CflagsError(f"the first rule must be the `*` default, not {fields[0]!r}")
+            rules.append(_parse_rule(lineno, fields, versions))
+        except CflagsError as exc:
+            raise CflagsError(f"{where}:{lineno}: {exc}") from exc
     return rules
 
 
