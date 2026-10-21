@@ -19,8 +19,8 @@ file from mosura or any other project is copied: mosura's licence is unverified.
 |---|---|---|---|
 | `pr_eq5` | `return c == 5;` on an `unsigned char` | `setcc al; and eax,0FFh` (-4/-5, and 11.0 only at -4) vs `setcc al; movzx eax,al` (-3) vs a branch (11.0 at -5) | Pattern 6, row 1 |
 | `pr_sum` | `for (i = 0; i < n; i++) s += a[i];` | rotated loop (10.x: `jmp` to a bottom test, `jl` back) vs top-tested loop (11.0: `cmp; jge` exit, `jmp` back) | Pattern 6, row 2 |
-| `pr_switch` | `switch` on 1, 2, 3, 10 with a default | the order of the compare chain (ascending vs descending), mostly under `-ox` | Pattern 6, row 4 |
-| `pr_copy` | `*dst = *src` on a five-dword struct | unrolled `movsd` (-5) vs `mov ecx,5; rep movsd` (-4) | Pattern 6, row 3 |
+| `pr_switch` | `switch` on 1, 2, 3, 10 with a default | the order of the compare chain (ascending vs descending), mostly under `-ox`; measured ascending on both versions (see the calibration) | Pattern 6, row 4 |
+| `pr_copy` | `*dst = *src` on a five-dword struct | unrolled `movsd` (-5) vs `mov ecx,5`, two register moves, `rep movsd` (-3/-4) | Pattern 6, row 3 |
 | `pr_div10` | `x / 10` | constant division (reciprocal multiply vs `idiv`); kept for the `-o*` scans | Pattern 6, flag matrix |
 | `pr_fexpr` | `a * b + c` on doubles | inline x87; `-fpi` asks for `emu387`, `-fpi87` for `noemu387` (default-library COMENT) | Pattern 6, rows 5-7 |
 | `pr_call` | calls `pr_div10` and `pr_eq5` | a stack-check prologue (`__CHK` calls without `-s`, none with `-s`) | Pattern 6, flag matrix |
@@ -38,27 +38,32 @@ switch_descending, `__CHK` = self-relative fixups to `__CHK`. 10.5 is skipped un
 reinstalls its BINW compiler. No two versions produced the same normalized object under any flag
 set, so there are no ties between 10.6 and 11.0.
 
+Re-run on 2026-10-21 after review fix round 1, which corrected the switch chain counter and
+changed `rep` to the measured struct-copy shape (see the 04-08 SUMMARY). Only the `rep`, `sw_up`
+and `sw_down` columns changed: `rep` now hits at `-3r`, `-4r` and `-4r -ox`, and every 11.0
+switch cell now reads like 10.6.
+
 | version | flags | and | movzx | movsd | rep | rot | top | sw_up | sw_down | `__CHK` | default libraries |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 10.6 | `-3r -s` | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
-| 10.6 | `-4r -s` | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-3r -s` | 0 | 1 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-4r -s` | 1 | 0 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 7 | math387r, emu387 |
-| 10.6 | `-4r -s -ox` | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-4r -s -ox` | 1 | 0 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r -s -ox` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r -s -oneatx` | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r -s -os` | 0 | 1 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
 | 10.6 | `-5r -s -fpi87` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, noemu387 |
 | 10.6 | `-5s -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387s, emu387 |
-| 11.0 | `-3r -s` | 0 | 1 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
-| 11.0 | `-4r -s` | 1 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
-| 11.0 | `-5r -s` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-3r -s` | 0 | 1 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-4r -s` | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
 | 11.0 | `-5r` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 7 | math387r, emu387 |
-| 11.0 | `-4r -s -ox` | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
-| 11.0 | `-5r -s -ox` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | math387r, emu387 |
+| 11.0 | `-4r -s -ox` | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -ox` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
 | 11.0 | `-5r -s -oneatx` | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
-| 11.0 | `-5r -s -os` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
-| 11.0 | `-5r -s -fpi87` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, noemu387 |
+| 11.0 | `-5r -s -os` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -fpi87` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, noemu387 |
 | 11.0 | `-5s -s` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387s, emu387 |
 
 What the table says, and where it differs from 04-RESEARCH Pattern 6:
@@ -66,15 +71,24 @@ What the table says, and where it differs from 04-RESEARCH Pattern 6:
 - Byte compare: `movzx` at `-3r` for both versions; `and` at `-4r`/`-5r` for 10.6 and at `-4r`
   for 11.0; neither form for 11.0 at `-5r` (a branch). Also measured: 10.6 at `-5r -s -os` emits
   `movzx`, so `movzx` alone does not prove `-3`.
-- Struct copy: five unrolled `movsd` at `-5`, none at `-3`/`-4`. The research row "`-4r` gives
-  `mov ecx,5; rep movsd`" holds as mnemonics, but the two instructions are not adjacent in the
-  probe (`mov ecx,5` sits 9 bytes before `rep movsd`), so the adjacent `rep_movsd_small`
-  encoding counts 0 in every cell. A game-code count of 0 for it does not rule out `-4`.
+- Struct copy: five unrolled `movsd` at `-5`, none at `-3`/`-4`. At `-3r` and `-4r` both versions
+  emit `mov ecx,5`, then two register moves (loading edi and esi), then `rep movsd`, so the
+  research row "`-4r` gives `mov ecx,5; rep movsd`" holds as mnemonics. `rep_movsd_small` counts
+  that measured shape (up to four register moves between, review fix round 1), and it is 0 in
+  every `-5` cell, so `rep` vs `movsd` separates `-3`/`-4` from `-5`. The plan's adjacent
+  encoding counted 0 in every cell, so the research's game-code count of 0 for it never ruled
+  out `-4`; plan 04-10 recounts it.
 - Loops: rotated in 10.6 and top-tested in 11.0 under every flag set except `-oneatx`, where
   neither shape is found (as the research noted).
-- Switch: an ascending chain in pr_switch for most cells; the one descending hit (11.0
-  `-5r -s -ox`) is byte-level noise that starts in pr_eq5, which is why switch counts are not
-  decisive.
+- Switch: one ascending chain and no descending chain in every cell except `-oneatx` (none), on
+  both versions, so switch order does not separate 10.6 from 11.0 on the probe. The first table
+  showed 11.0 zeros and one descending hit (11.0 `-5r -s -ox`). Those came from counter defects,
+  not from the codegen and not from byte noise. A compare that turned the direction dropped the
+  real chain: pr_eq5's `cmp al,5; jne` did so in the 11.0 `-5` cells with `-s`, and pr_switch's
+  own first compare did so at 11.0 `-4r -s -ox`. A compare in another function could also join a
+  chain: pr_eq5's compare and two of pr_switch's formed the descending hit. Both defects were fixed in review round 1. The research's different 11.0 `-ox`
+  jcc forms show only in the chain's start: pr_switch's first compare turns the direction, so the
+  ascending chain starts at its second compare. The order counter does not separate that shape.
 - Stack checks: 7 `__CHK` calls without `-s` (one per function), none with `-s`.
 - Libraries: `-fpi` requests emu387 and `-fpi87` noemu387; `-5s` requests math387s. No cell
   requests a CLIB library (clib3r or clib3s), so the research's "`-5s` gives clib3s" does not
