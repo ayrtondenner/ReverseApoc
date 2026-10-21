@@ -6,19 +6,22 @@ needed; the real compile is a separate, manual verification step.
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
-from reverseapoc import compiler
+from reverseapoc import compiler, watcom
 from reverseapoc.cflags import CflagsError
 from reverseapoc.compiler import (
     WIBO,
     CompilerError,
     compile_source,
     gate_paths,
+    guest_path,
     runner_prefix,
     scrubbed_env,
 )
@@ -250,6 +253,254 @@ def test_two_sources_get_their_rules(tmp_path):
     assert (a.rule.spec, b.rule.spec) == ("wcc386@10.6", "wcc386@11.0")
     assert "Version 11.0" in b.gate.banner
     assert [path for path, _ in b.gate.files] == ["BINNT/WCC386.EXE", "BINNT/WCCD386.DLL"]
+
+
+def test_include_is_own_tree_only(tmp_path):
+    ws = make_workspace(tmp_path, versions=("10.6", "11.0"), rules="*  wcc386@11.0  -3r\n")
+    runner = FakeCompiler()
+    ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
+    (argv,) = runner.compiles
+    includes = [arg for arg in argv if arg.startswith("-i=")]
+    assert includes == ["-i=w\\11.0\\H"]
+
+
+# 4. paths (D-14) --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rel", "named"),
+    [
+        ("a b.c", "space"),
+        ("-x.c", "'-'"),
+        ("src/../a.c", ".."),
+        ("src/a$.c", "'$'"),
+    ],
+)
+@pytest.mark.parametrize("which", ["src", "obj"])
+def test_guest_path_refusals(ws, rel, named, which):
+    runner = FakeCompiler()
+    good_src, good_obj = ws.source(), ws.root / "out" / "a.obj"
+    bad = ws.root / rel
+    if which == "src":
+        bad.parent.mkdir(parents=True, exist_ok=True)
+        bad.write_text("int x;\n")
+    src, obj = (bad, good_obj) if which == "src" else (good_src, bad)
+    with pytest.raises(CompilerError) as info:
+        ws.compile(src, obj, runner)
+    message = str(info.value)
+    assert rel.split("/")[-1] in message
+    assert named in message
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize("which", ["src", "obj"])
+def test_guest_path_outside_root_refused(tmp_path, which):
+    ws = make_workspace(tmp_path / "repo")
+    outside = tmp_path / "elsewhere" / "a.c"
+    outside.parent.mkdir()
+    outside.write_text("int x;\n")
+    runner = FakeCompiler()
+    src, obj = (outside, ws.root / "a.obj") if which == "src" else (ws.source(), outside)
+    with pytest.raises(CompilerError, match="outside"):
+        ws.compile(src, obj, runner)
+    assert runner.calls == []
+
+
+def test_guest_path_reports_the_first_bad_character(tmp_path):
+    with pytest.raises(CompilerError) as info:
+        guest_path(tmp_path / "src" / "a$b%.c", tmp_path, inside=True)
+    assert "'$'" in str(info.value)
+    assert "'%'" not in str(info.value)
+
+
+def test_guest_path_rewrites_slashes(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    assert guest_path(root / "src" / "sub" / "a.c", root, inside=True) == "src\\sub\\a.c"
+    assert guest_path(tmp_path / "w" / "10.6" / "H", root, inside=False) == "..\\w\\10.6\\H"
+    with pytest.raises(CompilerError):
+        guest_path(tmp_path / "w w" / "10.6" / "H", root, inside=False)
+
+
+def test_include_path_from_a_tree_outside_the_root(tmp_path):
+    ws = make_workspace(tmp_path / "repo")
+    tree_dir = tmp_path / "trees"
+    make_tree(tree_dir, "10.6")
+    runner = FakeCompiler()
+    assert ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, watcom_dir=tree_dir).ok
+    (argv,) = runner.compiles
+    assert _include(argv) == "-i=..\\trees\\10.6\\H"
+
+
+# 5. the gate stamp ------------------------------------------------------------------------------
+
+
+def _count_checks(monkeypatch) -> list[str]:
+    calls: list[str] = []
+    real = watcom.check_version
+
+    def counting(media, install_dir):
+        calls.append(media.version)
+        return real(media, install_dir)
+
+    monkeypatch.setattr(watcom, "check_version", counting)
+    return calls
+
+
+def _stamp(ws: Workspace) -> Path:
+    return ws.stamps / "watcom-wcc386-10.6.json"
+
+
+def test_stamp_cache_skips_rehash(ws, monkeypatch):
+    checks = _count_checks(monkeypatch)
+    runner = FakeCompiler()
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, runner).ok
+    assert (len(checks), len(runner.probes)) == (1, 1)
+    assert json.loads(_stamp(ws).read_text(encoding="utf-8"))["banner"].endswith("Version 10.6")
+
+    second = ws.compile(src, obj, runner)
+    assert second.ok
+    assert (len(checks), len(runner.probes)) == (1, 1)
+    assert "Version 10.6" in second.gate.banner
+    assert len(runner.compiles) == 2
+
+    gated = ws.watcom / "10.6" / "BINW" / "WCC386.EXE"
+    st = gated.stat()
+    os.utime(gated, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+    assert ws.compile(src, obj, runner).ok
+    assert (len(checks), len(runner.probes)) == (2, 2)
+
+    _stamp(ws).write_text("{ not json", encoding="utf-8")
+    assert ws.compile(src, obj, runner).ok
+    assert (len(checks), len(runner.probes)) == (3, 3)
+    assert json.loads(_stamp(ws).read_text(encoding="utf-8"))["files"]
+
+
+@pytest.mark.parametrize(
+    "stamp",
+    ['["a list"]', '{"root": 1}', '{"root": "x", "files": [], "banner": "b"}', ""],
+)
+def test_stamp_with_the_wrong_shape_is_a_miss(ws, monkeypatch, stamp):
+    checks = _count_checks(monkeypatch)
+    ws.stamps.mkdir(parents=True)
+    _stamp(ws).write_text(stamp, encoding="utf-8")
+    assert ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler()).ok
+    assert checks == ["10.6"]
+
+
+def test_stamp_written_atomically(ws, monkeypatch):
+    written: list[Path] = []
+    real = compiler._write_atomic
+
+    def recording(path, data):
+        written.append(Path(path))
+        real(path, data)
+
+    monkeypatch.setattr(compiler, "_write_atomic", recording)
+    assert ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler()).ok
+    assert written == [_stamp(ws)]
+    assert sorted(p.name for p in ws.stamps.iterdir()) == [_stamp(ws).name]
+
+
+def test_stamp_rechecks_manifest(ws):
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, FakeCompiler()).ok
+    # Same size, different SHA-1: only the stamp-versus-manifest comparison can catch it.
+    files = dict(TREE_FILES["10.6"])
+    files["BINW/WCC386.EXE"] = files["BINW/WCC386.EXE"][:-1] + b"X"
+    write_watcom_manifest(ws.manifest, {"10.6": files})
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(src, obj, runner)
+    assert "BINW/WCC386.EXE" in str(info.value)
+    assert "mismatch" in str(info.value)
+    assert runner.calls == []
+
+
+def test_stamp_for_another_root_is_a_miss(tmp_path, monkeypatch):
+    ws = make_workspace(tmp_path)
+    other = tmp_path / "other"
+    make_tree(other, "10.6")
+    checks = _count_checks(monkeypatch)
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, FakeCompiler()).ok
+    assert ws.compile(src, obj, FakeCompiler(), watcom_dir=other).ok
+    assert checks == ["10.6", "10.6"]
+
+
+# 6. failures, error files and the log -----------------------------------------------------------
+
+
+def test_failed_compile_cleans_up(ws):
+    obj = ws.root / "out" / "a.obj"
+    result = ws.compile(ws.source(), obj, FakeCompiler(rc=2))
+    assert not result.ok
+    assert not obj.exists()
+    assert result.format().startswith("FAILED")
+    assert "exit 2" in result.format()
+
+
+def test_stale_object_is_removed_before_the_compile(ws):
+    obj = ws.root / "out" / "a.obj"
+    obj.parent.mkdir(parents=True)
+    obj.write_bytes(b"stale object from an earlier run")
+    result = ws.compile(ws.source(), obj, FakeCompiler(write_obj=False))
+    assert not result.ok
+    assert not obj.exists()
+
+
+def test_err_file_stays_under_object_dir(ws, tmp_path_factory, monkeypatch):
+    cwd = tmp_path_factory.mktemp("cwd")
+    monkeypatch.chdir(cwd)
+    before = sorted(p.name for p in ws.root.iterdir())
+    runner = FakeCompiler(rc=2)
+    ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
+    (argv,) = runner.compiles
+    assert [arg for arg in argv if arg.startswith("-fr=")] == ["-fr=out\\a.err"]
+    assert (ws.root / "out" / "a.err").is_file()  # kept for the reader
+    after = sorted(p.name for p in ws.root.iterdir())
+    assert set(after) - set(before) <= {"src", "out", "logs", "cache"}
+    assert not list(ws.root.glob("*.err"))
+    assert list(cwd.iterdir()) == []
+
+
+def test_log_lists_gate_files_in_manifest_order(tmp_path):
+    # The manifest lists BINW before BINNT: the log follows the manifest, not gate_paths().
+    files = TREE_FILES["10.6"]
+    reordered = {path: files[path] for path in ("BINW/WCC386.EXE", "BINNT/WCC386.EXE")}
+    ws = make_workspace(tmp_path, trees={"10.6": reordered})
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    ws.compile(src, obj, FakeCompiler())
+    ws.compile(src, obj, FakeCompiler())
+    lines = ws.log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    gates = [re.findall(r"(\S+)=([0-9a-f]{40})\b", line) for line in lines]
+    assert gates[0] == gates[1]
+    assert [path for path, _ in gates[0]] == ["BINW/WCC386.EXE", "BINNT/WCC386.EXE"]
+    assert all(line.endswith("exit 0") for line in lines)
+
+
+def test_missing_tree_refused(ws):
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, watcom_dir=ws.root / "none")
+    message = str(info.value)
+    assert str((ws.root / "none" / "10.6").resolve()) in message
+    assert "install-watcom 10.6" in message
+    assert runner.calls == []
+
+
+def test_zero_length_compiler_is_a_mismatch(ws):
+    (ws.watcom / "10.6" / "BINNT" / "WCC386.EXE").write_bytes(b"")
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
+    message = str(info.value)
+    assert "BINNT/WCC386.EXE" in message
+    assert "mismatch" in message
+    assert "install-watcom 10.6" in message
+    assert runner.calls == []
 
 
 def test_invalid_cflags_is_refused_before_anything_runs(ws):
