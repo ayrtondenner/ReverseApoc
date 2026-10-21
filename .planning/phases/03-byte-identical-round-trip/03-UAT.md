@@ -3,16 +3,16 @@ status: testing
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-21T11:23:31Z
+updated: 2026-10-21T11:33:14Z
 ---
 
 ## Current Test
 
-number: 9
-name: 03-08 did not implement the deferred WR-01, WR-03 or WR-04 (judgment-tier prohibition)
+number: 10
+name: 03-09's real-file tests never print or assert on game bytes (judgment-tier prohibition)
 expected: |
-  No shared-page/overlap refusal in layout(); rebuild_target's write path (write_bytes,
-  _refuse_inside_orig, double read) unchanged; no JSON error status.
+  Assertions compare offsets, VAs, counts, booleans and filecmp only; the new _page_at message
+  names the VA only.
 awaiting: user response
 
 ## Tests
@@ -56,7 +56,7 @@ result: pass
 
 ### 9. 03-08 did not implement the deferred WR-01, WR-03 or WR-04 (judgment-tier prohibition)
 expected: no shared-page/overlap refusal in layout(), rebuild_target's write path (write_bytes, _refuse_inside_orig, double read) unchanged, no JSON error status (verifier's non-authoritative check: holds)
-result: [pending]
+result: pass
 
 ### 10. 03-09's real-file tests never print or assert on game bytes (judgment-tier prohibition)
 expected: assertions compare offsets, VAs, counts, booleans and filecmp only; the new _page_at message names the VA only (verifier's non-authoritative check: holds)
@@ -69,9 +69,9 @@ result: [pending]
 ## Summary
 
 total: 11
-passed: 6
+passed: 7
 issues: 2
-pending: 3
+pending: 2
 skipped: 0
 blocked: 0
 
