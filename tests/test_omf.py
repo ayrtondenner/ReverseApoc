@@ -4,10 +4,36 @@ from __future__ import annotations
 
 import pytest
 
-from omfimage import extdef, ledata32, library, lnames, module, pubdef32, record, segdef32, theadr
+from omfimage import (
+    bakpat32,
+    cextdef,
+    comdef,
+    coment,
+    extdef,
+    fixup,
+    fixupp16,
+    fixupp32,
+    grpdef,
+    ledata16,
+    ledata32,
+    library,
+    lidata32,
+    lnames,
+    module,
+    pubdef16,
+    pubdef32,
+    record,
+    segdef16,
+    segdef32,
+    segdef_easy,
+    theadr,
+    thread,
+)
+from reverseapoc import omf
 from reverseapoc.omf import (
     ModuleFailure,
     OMFError,
+    OMFFixup,
     Public,
     is_omf_library,
     read_library,
@@ -119,3 +145,284 @@ def test_is_omf_library():
 def test_unknown_records_are_skipped_by_length():
     mod = read_object(text_module("m", record(0x7E, b"\x01\x02\x03"), ledata32(1, 0, CODE8)))
     assert mod.segments[0].data == CODE8
+
+
+# --- FIXUPP, LIDATA, Easy OMF, BAKPAT, COMENT and GRPDEF ---
+
+NAMES = lnames("", "_TEXT", "CODE", "_DATA", "DATA", "DGROUP")  # indexes 1..6
+
+
+def two_segment_module(*records: bytes) -> bytes:
+    """_TEXT (segment 1) and _DATA (segment 2), DGROUP = {_DATA}, one extern "puts_"."""
+    return module(
+        "fx",
+        NAMES,
+        segdef32(2, 3, 0x40),
+        segdef32(4, 5, 0x40),
+        grpdef(6, 2),
+        extdef("puts_"),
+        *records,
+    )
+
+
+def only_fixup(*records: bytes) -> OMFFixup:
+    [fx] = read_object(two_segment_module(*records)).segments[0].fixups
+    return fx
+
+
+def test_fixup_offset32_segment_relative():
+    mod = read_object(
+        two_segment_module(
+            ledata32(1, 0x10, bytes(8)),
+            fixupp32(fixup(2, frame=(1, 1), target=(0, 2), displacement=0x20)),
+        )
+    )
+    text = mod.segments[0]
+    assert text.fixups == (
+        OMFFixup(
+            offset=0x12,
+            size=4,
+            segment_relative=True,
+            location=9,
+            frame_method=1,
+            target_method=0,
+            target_kind="segment",
+            target_index=2,
+            target_name="_DATA",
+            displacement=0x20,
+        ),
+    )
+    assert text.mask == frozenset(range(0x12, 0x16))
+
+
+def test_fixup_self_relative_extern():
+    fx = only_fixup(
+        ledata32(1, 0x10, bytes(8)), fixupp32(fixup(4, segment_relative=False, target=(2, 1)))
+    )
+    assert fx.offset == 0x14
+    assert (fx.target_kind, fx.target_index, fx.target_name) == ("extern", 1, "puts_")
+    assert not fx.segment_relative
+    assert (fx.target_method, fx.displacement) == (6, 0)  # P bit set: no displacement
+
+
+def test_fixup_threads():
+    fx = only_fixup(
+        ledata32(1, 0, bytes(8)),
+        fixupp32(
+            thread("target", 0, 2, 1),
+            thread("frame", 1, 5),
+            fixup(0, frame=("thread", 1), target=("thread", 0)),
+        ),
+    )
+    assert (fx.target_kind, fx.target_name, fx.frame_method, fx.target_method) == (
+        "extern",
+        "puts_",
+        5,
+        6,
+    )
+
+
+def test_fixup_threads_persist_across_records():
+    fx = only_fixup(
+        fixupp32(thread("target", 3, 0, 2)),
+        ledata32(1, 0, bytes(8)),
+        fixupp32(fixup(4, target=("thread", 3), displacement=0x30)),
+    )
+    assert (fx.target_kind, fx.target_name, fx.target_method, fx.displacement) == (
+        "segment",
+        "_DATA",
+        0,
+        0x30,
+    )
+
+
+def test_fixup_undefined_thread_raises():
+    with pytest.raises(OMFError, match="thread"):
+        read_object(
+            two_segment_module(ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=("thread", 2))))
+        )
+
+
+def test_fixup_without_data_record_raises():
+    with pytest.raises(OMFError, match="FIXUPP32"):
+        read_object(two_segment_module(fixupp32(fixup(0, target=(0, 1), displacement=0))))
+
+
+def test_fixup_extern_index_counts_comdef_and_cextdef():
+    mod = read_object(
+        module(
+            "ext",
+            lnames("", "_TEXT", "CODE", "c_"),
+            segdef32(2, 3, 0x10),
+            extdef("a_"),
+            comdef(("b_", 4)),
+            cextdef(4),
+            ledata32(1, 0, bytes(8)),
+            fixupp32(fixup(0, target=(2, 3), displacement=0)),
+        )
+    )
+    assert mod.externs == ("a_", "b_", "c_")
+    assert mod.segments[0].fixups[0].target_name == "c_"
+
+
+@pytest.mark.parametrize(
+    ("location", "size"),
+    [(0, 1), (1, 2), (2, 2), (3, 4), (4, 1), (5, 2), (9, 4), (11, 6), (13, 4)],
+)
+def test_location_sizes(location: int, size: int):
+    fx = only_fixup(
+        ledata32(1, 0, bytes(8)),
+        fixupp32(fixup(0, location=location, target=(0, 2), displacement=0)),
+    )
+    assert (fx.location, fx.size) == (location, size)
+
+
+def test_unknown_location_type_raises():
+    with pytest.raises(OMFError, match="location type 6"):
+        read_object(
+            two_segment_module(
+                ledata32(1, 0, bytes(8)),
+                fixupp32(fixup(0, location=6, target=(0, 2), displacement=0)),
+            )
+        )
+
+
+def test_lidata_expands_repeated_content():
+    mod = read_object(two_segment_module(lidata32(2, 0, [(3, b"ab")])))
+    assert mod.segments[1].data[:7] == b"ababab\x00"
+
+
+def test_lidata_expands_nested_blocks():
+    mod = read_object(two_segment_module(lidata32(2, 4, [(2, [(2, b"x"), (1, b"yz")])])))
+    assert mod.segments[1].data[4:12] == b"xxyzxxyz"
+
+
+def test_lidata_past_segdef_length_raises():
+    with pytest.raises(OMFError, match="LIDATA32"):
+        read_object(two_segment_module(lidata32(2, 0x3E, [(2, b"ab")])))
+
+
+def test_lidata_huge_repeat_raises_without_expanding():
+    with pytest.raises(OMFError, match="LIDATA32"):
+        read_object(two_segment_module(lidata32(2, 0, [(0xFFFFFFFF, [(0xFFFFFFFF, b"ab")])])))
+
+
+def nested_block(depth: int) -> tuple:
+    block: tuple = (1, b"a")
+    for _ in range(depth - 1):
+        block = (1, [block])
+    return block
+
+
+def test_lidata_depth_cap():
+    mod = read_object(two_segment_module(lidata32(2, 0, [nested_block(omf.LIDATA_MAX_DEPTH)])))
+    assert mod.segments[1].data[:1] == b"a"
+    with pytest.raises(OMFError, match="depth"):
+        read_object(two_segment_module(lidata32(2, 0, [nested_block(omf.LIDATA_MAX_DEPTH + 1)])))
+
+
+def test_fixup_after_lidata_marks_unmaskable():
+    mod = read_object(
+        two_segment_module(
+            ledata32(1, 0, bytes(8)),
+            lidata32(2, 0, [(4, b"\x01\x02\x03\x04")]),
+            fixupp32(fixup(0, target=(0, 1), displacement=0)),
+        )
+    )
+    text, data = mod.segments
+    assert data.unmaskable
+    assert data.fixups == ()
+    assert not text.unmaskable
+
+
+@pytest.mark.parametrize("access", [None, 0x03], ids=["no-access-byte", "access-byte"])
+def test_easy_omf_reads_16bit_numbered_records_as_32bit(access: int | None):
+    mod = read_object(
+        module(
+            "easy",
+            coment(0xAA, b"80386"),
+            lnames("", "_TEXT", "CODE"),
+            segdef_easy(2, 3, 0x12345, access=access),
+            pubdef16(1, [("e_", 0x12340)], offset32=True),
+            ledata16(1, 0x12340, b"\x0a\x0b\x0c\x0d", offset32=True),
+            fixupp16(fixup(0, target=(0, 1), displacement=0x100000)),
+        )
+    )
+    assert mod.easy_omf
+    [seg] = mod.segments
+    assert seg.length == 0x12345
+    assert seg.use32
+    assert seg.data[0x12340:0x12344] == b"\x0a\x0b\x0c\x0d"
+    assert mod.publics == (Public("e_", 1, 0x12340),)
+    assert seg.fixups[0].offset == 0x12340
+    assert seg.fixups[0].displacement == 0x100000
+
+
+def test_without_easy_omf_16bit_records_have_16bit_fields():
+    mod = read_object(
+        module(
+            "plain",
+            lnames("", "_TEXT", "CODE"),
+            segdef16(2, 3, 0x40),
+            pubdef16(1, [("e_", 0x10)]),
+            ledata16(1, 0x10, b"\x0a\x0b\x0c\x0d"),
+            fixupp16(fixup(0, target=(0, 1), displacement=0x1234, use32=False)),
+        )
+    )
+    assert not mod.easy_omf
+    [seg] = mod.segments
+    assert (seg.length, seg.use32) == (0x40, False)
+    assert seg.data[0x10:0x14] == b"\x0a\x0b\x0c\x0d"
+    assert mod.publics == (Public("e_", 1, 0x10),)
+    assert seg.fixups[0].displacement == 0x1234
+
+
+def test_bakpat_applies_and_masks():
+    dword = bytes([0, 0, 0, 0, 0x05, 0, 0, 0])
+    mod = read_object(two_segment_module(ledata32(1, 0, dword), bakpat32(1, 2, [(4, 0x10)])))
+    text = mod.segments[0]
+    assert text.data[:8] == bytes([0, 0, 0, 0, 0x15, 0, 0, 0])
+    assert text.backpatched == frozenset(range(4, 8))
+    assert text.mask == frozenset(range(4, 8))
+
+
+def test_bakpat_wraps():
+    dword = bytes([0xF0, 0xFF, 0xFF, 0xFF])
+    mod = read_object(two_segment_module(ledata32(1, 0, dword), bakpat32(1, 2, [(0, 0x20)])))
+    assert mod.segments[0].data[:4] == bytes([0x10, 0, 0, 0])
+
+
+def test_bakpat_past_segment_raises():
+    with pytest.raises(OMFError, match="BAKPAT32"):
+        read_object(two_segment_module(bakpat32(1, 2, [(0x3E, 1)])))
+
+
+def test_coment_metadata():
+    mod = read_object(
+        module(
+            "meta",
+            coment(0x9B, b"3fOp"),
+            coment(0x9F, b"clib3r"),
+            coment(0x9F, b"math387r"),
+            coment(0xE9, b"\x01\x02\x03\x04\x05\x06x.h"),
+        )
+    )
+    assert mod.model == "3fOp"
+    assert mod.default_libraries == ("clib3r", "math387r")
+    assert not mod.easy_omf
+
+
+def test_grpdef_names():
+    fx = only_fixup(
+        ledata32(1, 0, bytes(8)), fixupp32(fixup(0, frame=(1, 1), target=(1, 1), displacement=0))
+    )
+    assert (fx.target_kind, fx.target_index, fx.target_name) == ("group", 1, "DGROUP")
+
+
+def test_grpdef_index_out_of_range_raises():
+    with pytest.raises(OMFError, match="group index 2"):
+        read_object(
+            two_segment_module(
+                ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=(1, 2), displacement=0))
+            )
+        )
