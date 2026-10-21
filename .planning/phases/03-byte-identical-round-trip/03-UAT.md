@@ -1,9 +1,9 @@
 ---
-status: complete
+status: diagnosed
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-21T01:38:23.702Z
+updated: 2026-10-21T01:52:09Z
 ---
 
 ## Current Test
@@ -81,8 +81,26 @@ blocked: 0
   reason: "User reported: Fix now for them all"
   severity: major
   test: 6
-  artifacts: []
-  missing: []
+  root_cause: "All 13 confirmed at 786edec (4 wider than reported). configure.py: WR-07 ninja_path does not check UTF-8 encodability and main() truncates build.ninja before encoding; IN-09 a leading dash is allowed in the --orig dir and in exe paths (parse-le then prints help and exits 0); IN-10 constant orig/ labels; IN-11 the rebuild rule lacks --out so verify writes REPO_ROOT/build; IN-08 Phase 2 skeleton wording. splice.py: IN-01 describe() uses the global logical page; IN-02 _unwritable_reason never locates the page; IN-03 docstring vs kept zero-length page regions; VN-01 REFUSED/MISSING hard-code orig/NAME and config/targets.toml. targets.py: IN-06 load_manifest does not wrap TOML/UTF-8/shape errors (tracebacks); IN-07 _check_bare_name raises SpliceError, accepts Windows reserved names, host-dependent. Tests/docs: IN-05 test_splice_real.py copies splice.py's page-backed-end arithmetic and MAX_FIELD; IN-04 the toolchain.md container row omits SMKP.EXE."
+  artifacts:
+    - path: "configure.py"
+      issue: "WR-07, IN-08, IN-09, IN-10, IN-11"
+    - path: "tools/reverseapoc/splice.py"
+      issue: "IN-01, IN-02, IN-03, IN-07 (second guard), VN-01"
+    - path: "tools/reverseapoc/targets.py"
+      issue: "IN-06, IN-07"
+    - path: "tests/test_splice_real.py"
+      issue: "IN-05 copied arithmetic; IN-01 expected label at :238"
+    - path: "docs/toolchain.md"
+      issue: "IN-04 container orig/ row omits SMKP.EXE"
+  missing:
+    - "WR-07: refuse non-UTF-8-encodable names with ConfigureError and never truncate build.ninja on a refusal"
+    - "IN-09: refuse a leading dash in the --orig dir and in every exe path written to build.ninja"
+    - "IN-10/IN-11/IN-08: CHECK-ORIG {orig} description and generic comments; the rebuild rule passes --out matching builddir (pinned rebuild-command assertions updated deliberately); drop the Phase 2 skeleton wording"
+    - "IN-01/IN-02/IN-03/VN-01: within-object page numbering in labels and refusal reasons (03-03 substrings kept), docstring fix, REFUSED/MISSING name the real input path and manifest (8 JSON keys unchanged)"
+    - "IN-06/IN-07: load_manifest raises ManifestError for parse/decode/shape errors and for non-bare or Windows-reserved target names, host-independently"
+    - "IN-05/IN-04: real-file helpers independent of splice.py arithmetic (FACTS unchanged, zero skips); toolchain.md lists SMKP.EXE"
+  debug_session: ".planning/debug/phase3-g036-review-findings.md"
 
 ## Deferred Follow-Ups
 
