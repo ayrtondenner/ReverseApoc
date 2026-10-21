@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import struct
 import zlib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 SIGNATURE = 0x2403
@@ -51,6 +51,17 @@ _COUNT_BITS = 6
 _POS_INDEX_BITS = 8  # bits that index D_CODE / D_LEN
 _POS_LOW_BITS = 6  # raw low bits of a position
 _POS_LOW_MASK = (1 << _POS_LOW_BITS) - 1
+
+# Shannon-coded streams (section 7).
+_MATCH_BASE = 256 - (THRESHOLD + 1)  # symbol 256 is a match of THRESHOLD + 1 bytes
+_CODE_BITS = 16  # codes are left-aligned in 16 bits
+_CODE_SPACE = 1 << _CODE_BITS
+_NO_CODE = 0xFFFF  # first code value recorded for a length nobody uses
+_SKIP_FLAG = 0x80  # code-length entry: skip (entry & _SKIP_MASK) + 1 symbols
+_SKIP_MASK = 0x7F
+_RUN_SHIFT = 4  # otherwise: (entry >> 4) + 1 symbols of length (entry & 0x0F) + 1
+_WIDTH_MASK = 0x0F
+_SMALL_SORT = 16  # Watcom qsort shell-sorts blocks smaller than this (section 8)
 
 
 def _position_tables() -> tuple[bytes, bytes]:
@@ -186,10 +197,12 @@ def _decode(stream: bytes, shannon: bool, size: int) -> bytes:
     out = _Output(size)
     if size == 0:
         return out.result()
-    bits = _BitReader(stream)
-    if shannon:
-        raise WpackError("Shannon-coded members are decoded in Task 2")
-    _decode_plain(bits, out)
+    if not shannon:
+        _decode_plain(_BitReader(stream), out)
+        return out.result()
+    lengths, used = code_lengths(stream)
+    symbols, widths = _code_table(lengths)
+    _decode_shannon(_BitReader(stream, used), out, symbols, widths)
     return out.result()
 
 
@@ -199,10 +212,10 @@ class _BitReader:
 
     _PAD = 3  # bytes of zero padding: a peek of up to 16 bits spans at most 3 bytes
 
-    def __init__(self, stream: bytes) -> None:
+    def __init__(self, stream: bytes, start: int = 0) -> None:
         self._buf = stream + bytes(self._PAD)
         self._limit = len(stream) * 8
-        self._pos = 0  # in bits
+        self._pos = start * 8  # in bits; `start` is a byte offset
 
     def peek(self, width: int) -> int:
         byte, bit = divmod(self._pos, 8)
@@ -265,3 +278,195 @@ def _decode_plain(bits: _BitReader, out: _Output) -> None:
             out.copy(count, _read_position(bits))
         else:
             out.literal(bits.read(_LITERAL_BITS))
+
+
+def _decode_shannon(bits: _BitReader, out: _Output, symbols: list[int], widths: bytes) -> None:
+    """The Shannon-coded stream after its code-length table (sections 7.4 and 7.5)."""
+    while not out.done():
+        view = bits.peek(_CODE_BITS)
+        symbol = symbols[view]
+        if symbol < 0:
+            raise WpackError("invalid code in the compressed stream")
+        bits.skip(widths[view])
+        if symbol < 256:
+            out.literal(symbol)
+        else:
+            out.copy(symbol - _MATCH_BASE, _read_position(bits))
+
+
+def code_lengths(stream: bytes) -> tuple[list[int], int]:
+    """Unpack the run-length packed code-length table at the start of a Shannon-coded stream
+    (section 7.2): the code length of every symbol (0 = no code) and the bytes the table used."""
+    if not stream or 1 + stream[0] + 1 > len(stream):
+        raise WpackError("code-length table ends early")
+    used = 1 + stream[0] + 1
+    lengths = [0] * NUM_SYMBOLS
+    symbol = 0
+    for entry in stream[1:used]:
+        if entry & _SKIP_FLAG:
+            count, width = (entry & _SKIP_MASK) + 1, 0
+        else:
+            count, width = (entry >> _RUN_SHIFT) + 1, (entry & _WIDTH_MASK) + 1
+        if symbol + count > NUM_SYMBOLS:
+            raise WpackError(f"code-length table runs past symbol {NUM_SYMBOLS - 1}")
+        if width:
+            lengths[symbol : symbol + count] = [width] * count
+        symbol += count
+    return lengths, used
+
+
+def _code_table(lengths: list[int]) -> tuple[list[int], bytes]:
+    """For every 16-bit look-ahead value, the symbol it decodes to (-1: invalid) and that
+    symbol's code length (section 7.3 assignment, section 7.4 lookup rule)."""
+    coded = [s for s in range(NUM_SYMBOLS) if lengths[s]]
+    if not coded:
+        raise WpackError("code-length table assigns no codes")
+    walk = watcom_qsort(coded, lengths.__getitem__)[::-1]  # longest codes first
+    first, offset = _first_codes(walk, lengths)
+    symbols, widths = [-1] * _CODE_SPACE, bytearray(_CODE_SPACE)
+    bound = _CODE_SPACE  # values at or above this already have a shorter code
+    for width in range(lengths[walk[-1]], _CODE_BITS + 1):
+        low = first.get(width, _NO_CODE)
+        for view in range(low, bound):
+            index = offset[width] + ((view - low) >> (_CODE_BITS - width))
+            symbols[view] = walk[index] if index < len(walk) else -1
+            widths[view] = width
+        bound = min(bound, low)
+    return symbols, bytes(widths)
+
+
+def _first_codes(walk: list[int], lengths: list[int]) -> tuple[dict[int, int], dict[int, int]]:
+    """Canonical assignment over the walk order: per code length, the first (smallest) code
+    value and the walk index where that length starts."""
+    first: dict[int, int] = {}
+    offset: dict[int, int] = {}
+    value, step = 0, 0
+    for index, symbol in enumerate(walk):
+        value = (value + step) & (_CODE_SPACE - 1)
+        width = lengths[symbol]
+        if width not in first:
+            first[width], offset[width] = value, index
+        step = 1 << (_CODE_BITS - width)
+    return first, offset
+
+
+def watcom_qsort[T](items: Iterable[T], key: Callable[[T], int]) -> list[T]:
+    """The items sorted by key exactly as Watcom's C library qsort orders them, equal keys
+    included (section 8). It is not a stable sort; wpack's code assignment depends on it."""
+    a = list(items)
+    pending = [(0, len(a))]
+    while pending:
+        base, n = pending.pop()
+        pending.extend(_sort_block(a, key, base, n))
+    return a
+
+
+def _sort_block[T](a: list[T], key: Callable[[T], int], base: int, n: int) -> list[tuple[int, int]]:
+    """Sort one block in place: partition while it is large, keep the smaller-keys or the
+    larger-keys side as section 8.2 step 4 says, shell-sort what is left. Returns the blocks
+    set aside for later."""
+    later = []
+    while n >= _SMALL_SORT:
+        base, n, aside = _partition(a, key, base, n)
+        if aside is not None:
+            later.append(aside)
+    if n > 1:
+        _shell_sort(a, key, base, n)
+    return later
+
+
+def _shell_sort[T](a: list[T], key: Callable[[T], int], base: int, n: int) -> None:
+    """Section 8.1: gap 3 over block positions 0, 3, 6, ... only, then gap 1 over all."""
+    for gap in (3, 1):
+        for pos in range(base + gap, base + n, gap):
+            _sift_back(a, key, base, pos, gap)
+
+
+def _sift_back[T](a: list[T], key: Callable[[T], int], base: int, pos: int, gap: int) -> None:
+    """Move the element at pos back in steps of gap while its predecessor's key is greater."""
+    while pos > base and key(a[pos - gap]) > key(a[pos]):
+        a[pos - gap], a[pos] = a[pos], a[pos - gap]
+        pos -= gap
+
+
+def _median3[T](a: list[T], key: Callable[[T], int], i: int, j: int, k: int) -> int:
+    """Section 8.2 step 1: the median of three, with its exact comparison sequence."""
+    ki, kj, kk = key(a[i]), key(a[j]), key(a[k])
+    if ki > kj:
+        if ki > kk:
+            return j if kj > kk else k
+        return i
+    if ki >= kk:
+        return i
+    return k if kj > kk else j
+
+
+def _pivot_index[T](a: list[T], key: Callable[[T], int], base: int, n: int) -> int:
+    mid = base + n // 2
+    if n < 30:
+        return mid
+    lo, hi = base, base + n - 1
+    if n >= 43:
+        s = n // 8
+        lo = _median3(a, key, lo, lo + s, lo + 2 * s)
+        mid = _median3(a, key, mid - s, mid, mid + s)
+        hi = _median3(a, key, hi - 2 * s, hi - s, hi)
+    return _median3(a, key, lo, mid, hi)
+
+
+def _partition[T](
+    a: list[T], key: Callable[[T], int], base: int, n: int
+) -> tuple[int, int, tuple[int, int] | None]:
+    """Section 8.2 steps 2-4: three-way partition around a pivot value. Returns the block to
+    continue with and the block set aside (or None)."""
+    pivot = key(a[_pivot_index(a, key, base, n)])
+    pa = pb = base
+    pc = pd = base + n - 1
+    while True:
+        pa, pb = _scan_up(a, key, pivot, pa, pb, pc)
+        pc, pd = _scan_down(a, key, pivot, pb, pc, pd)
+        if pb > pc:
+            break
+        a[pb], a[pc] = a[pc], a[pb]
+        pb, pc = pb + 1, pc - 1
+    end = base + n
+    s = min(pa - base, pb - pa)
+    a[base : base + s], a[pb - s : pb] = a[pb - s : pb], a[base : base + s]
+    s = min(pd - pc, end - pd - 1)
+    a[pb : pb + s], a[end - s : end] = a[end - s : end], a[pb : pb + s]
+    smaller, larger = pb - pa, pd - pc
+    if larger >= smaller:
+        return base, smaller, (end - larger, larger)
+    if smaller <= 1:
+        return base, 0, None
+    return end - larger, larger, (base, smaller)
+
+
+def _scan_up[T](
+    a: list[T], key: Callable[[T], int], pivot: int, pa: int, pb: int, pc: int
+) -> tuple[int, int]:
+    """Advance pb over keys not above the pivot, gathering equal keys at pa."""
+    while pb <= pc:
+        k = key(a[pb])
+        if k > pivot:
+            break
+        if k == pivot:
+            a[pa], a[pb] = a[pb], a[pa]
+            pa += 1
+        pb += 1
+    return pa, pb
+
+
+def _scan_down[T](
+    a: list[T], key: Callable[[T], int], pivot: int, pb: int, pc: int, pd: int
+) -> tuple[int, int]:
+    """Step pc back over keys not below the pivot, gathering equal keys at pd."""
+    while pc >= pb:
+        k = key(a[pc])
+        if k < pivot:
+            break
+        if k == pivot:
+            a[pc], a[pd] = a[pd], a[pc]
+            pd -= 1
+        pc -= 1
+    return pc, pd
