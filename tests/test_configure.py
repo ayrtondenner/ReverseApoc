@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 
 import pytest
@@ -238,3 +239,101 @@ def test_main_keeps_names_with_spaces(tmp_path):
     out = tmp_path / "build.ninja"
     assert configure.main(["--orig", str(orig), "--output", str(out)]) == 0
     assert "parse_le orig/MY$ GAME.EXE" in out.read_text(encoding="utf-8")
+
+
+# ---- WR-07: a name build.ninja cannot hold as UTF-8 is refused, and build.ninja stays intact -----
+
+SENTINEL = b"# sentinel: configure.py must leave this file alone\n"
+NOT_UTF8 = ["orig/A\udcffB.EXE", "orig/A\ud800B.EXE"]
+
+
+@pytest.mark.parametrize("path", NOT_UTF8, ids=["low-surrogate", "high-surrogate"])
+def test_render_refuses_names_that_are_not_utf8(path):
+    with pytest.raises(configure.ConfigureError) as excinfo:
+        configure.render([path])
+    assert repr(path) in str(excinfo.value)
+    assert "UTF-8" in str(excinfo.value)
+
+
+def test_main_refuses_names_that_are_not_utf8(tmp_path, monkeypatch, capsys):
+    # find_executables is replaced, so this runs on Windows too.
+    orig = tmp_path / "orig"
+    monkeypatch.setattr(configure, "find_executables", lambda _dir: [orig / "A\udcffB.EXE"])
+    out = tmp_path / "build.ninja"
+    out.write_bytes(SENTINEL)
+    assert configure.main(["--orig", str(orig), "--output", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("configure.py: error:")
+    assert "\\udcff" in err
+    assert out.read_bytes() == SENTINEL
+
+
+@pytest.mark.skipif(
+    sys.platform != "linux", reason="needs a file system that stores non-UTF-8 byte names"
+)
+def test_main_refuses_real_names_that_are_not_utf8(tmp_path):
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / os.fsdecode(b"A\xffB.exe")).write_bytes(b"x")
+    out = tmp_path / "build.ninja"
+    out.write_bytes(SENTINEL)
+    assert configure.main(["--orig", str(orig), "--output", str(out)]) == 1
+    assert out.read_bytes() == SENTINEL
+
+
+def test_main_never_truncates_on_an_encoding_failure(tmp_path, monkeypatch, capsys):
+    # The bytes exist before build.ninja is opened, even for text that slips past render().
+    monkeypatch.setattr(configure, "render", lambda exes, *, orig: "# A\udcffB\n")
+    out = tmp_path / "build.ninja"
+    out.write_bytes(SENTINEL)
+    assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 1
+    assert capsys.readouterr().err.startswith("configure.py: error:")
+    assert out.read_bytes() == SENTINEL
+
+
+# ---- IN-09: no path in build.ninja reaches reverseapoc's argparse as an option ------------------
+
+OPTION_LIKE_ORIG_DIRS = ["-h", "--orig", "-"]
+
+
+@pytest.mark.parametrize("orig", OPTION_LIKE_ORIG_DIRS)
+def test_render_refuses_an_option_like_orig_dir(orig):
+    text = configure.render([], orig="../safe-dir")
+    assert CHECK_ORIG_CMD + "../safe-dir" in _rule_block(text, "check_orig")
+    with pytest.raises(configure.ConfigureError) as excinfo:
+        configure.render([], orig=orig)
+    assert repr(orig) in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("exe", "orig"), [("-h.exe", "."), ("-h/UFO2P.EXE", "orig")], ids=["exe-name", "orig-dir"]
+)
+def test_render_refuses_an_option_like_exe_path(exe, orig):
+    # Only the full path is an argument; a bare name under $builddir/always/ never is.
+    assert "parse_le orig/-h.exe" in configure.render(["orig/-h.exe"])
+    with pytest.raises(configure.ConfigureError) as excinfo:
+        configure.render([exe], orig=orig)
+    assert repr(exe) in str(excinfo.value)
+
+
+def test_main_refuses_an_option_like_orig_dir(tmp_path, capsys):
+    orig = tmp_path / "-h"
+    orig.mkdir()
+    out = tmp_path / "build.ninja"
+    out.write_bytes(SENTINEL)
+    assert configure.main(["--orig", str(orig), "--output", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("configure.py: error:")
+    assert "'-h'" in err
+    assert out.read_bytes() == SENTINEL
+
+
+def test_main_refuses_an_option_like_exe_name(tmp_path, capsys):
+    (tmp_path / "-h.exe").write_bytes(b"x")
+    out = tmp_path / "build.ninja"
+    out.write_bytes(SENTINEL)
+    assert configure.main(["--orig", str(tmp_path), "--output", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("configure.py: error:")
+    assert "'-h.exe'" in err
+    assert out.read_bytes() == SENTINEL
