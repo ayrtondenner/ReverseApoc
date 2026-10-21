@@ -1,0 +1,27 @@
+#!/bin/sh
+# commit-msg: give commits made under Claude Code a Co-Authored-By trailer.
+#
+# Claude Code sets CLAUDECODE=1 for every command it runs, including the commits and merges
+# that GSD tooling makes on its own (`gsd-tools query commit`, `git merge --no-ff --no-edit -m`).
+# When CLAUDECODE is set and the message has no Co-Authored-By trailer yet (any case), this
+# appends one. The value defaults to "Claude <noreply@anthropic.com>"; override it per clone
+# with `git config reverseapoc.coauthor "Name <email>"`. Without CLAUDECODE the message is left
+# alone. The hook is idempotent and always exits 0, so it never blocks a commit.
+#
+# Enable once per clone: git config core.hooksPath .githooks
+
+msg_file=$1
+
+[ -n "${CLAUDECODE:-}" ] || exit 0
+[ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
+
+if git interpret-trailers --parse "$msg_file" 2>/dev/null | grep -qi '^co-authored-by:'; then
+    exit 0
+fi
+
+coauthor=$(git config --get reverseapoc.coauthor 2>/dev/null)
+[ -n "$coauthor" ] || coauthor='Claude <noreply@anthropic.com>'
+
+git interpret-trailers --in-place --trailer "Co-Authored-By: $coauthor" "$msg_file" \
+    >/dev/null 2>&1 || true
+exit 0

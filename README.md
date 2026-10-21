@@ -82,6 +82,7 @@ Bring your own files. Nothing below downloads the game, and the compiler downloa
 2. `uv run reverseapoc ingest` copies the executables into the gitignored `orig/` and checks their hashes.
 3. `docker compose build`
 4. `docker compose run --rm build uv run pytest`
+5. `git config core.hooksPath .githooks` enables the tracked `commit-msg` hook, which adds a `Co-Authored-By` trailer to commits made under Claude Code (including GSD's own commits and merges). Override the value with `git config reverseapoc.coauthor "Name <email>"`.
 
 `docker compose run --rm test` runs the test suite in the container in one step. To get the original Watcom compilers, run `uv run reverseapoc fetch-watcom` and then `uv run reverseapoc install-watcom` (opt-in, at your own responsibility); they land in the gitignored `third_party/watcom/`. Sources and details: [Getting the Watcom compilers](docs/toolchain.md#getting-the-watcom-compilers).
 
