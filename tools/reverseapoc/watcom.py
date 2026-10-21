@@ -111,7 +111,7 @@ def _parse_key_file(where: str, entry: object) -> KeyFile:
 def _parse_media(i: int, entry: dict) -> WatcomMedia:
     where = f"media[{i}] ({entry.get('version', '?')})"
     raw_keys = entry.get("key_files", [])
-    if not isinstance(raw_keys, list):
+    if not isinstance(raw_keys, list) or not all(isinstance(kf, dict) for kf in raw_keys):
         raise ManifestError(f"{where}: 'key_files' must be an array of tables")
     key_files = tuple(
         _parse_key_file(f"{where} key_files[{j}]", kf) for j, kf in enumerate(raw_keys)
@@ -137,16 +137,27 @@ def _parse_media(i: int, entry: dict) -> WatcomMedia:
 
 
 def load_watcom_manifest(path: Path | str | None = None) -> dict[str, WatcomMedia]:
-    """Load and validate the media manifest (default: config/watcom.toml), keyed by version."""
+    """Load and validate the media manifest (default: config/watcom.toml), keyed by version.
+    Bytes that are not UTF-8, invalid TOML, a `media` or `key_files` value that is not an array
+    of tables and any bad entry raise ManifestError naming the manifest; a missing file stays
+    an OSError."""
     path = Path(path) if path is not None else DEFAULT_WATCOM_MANIFEST
-    with path.open("rb") as fh:
-        data = tomllib.load(fh)
+    try:
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+        raise ManifestError(f"{path}: {exc}") from exc
     entries = data.get("media")
     if not entries:
         raise ManifestError(f"{path}: no [[media]] entries")
+    if not isinstance(entries, list) or not all(isinstance(entry, dict) for entry in entries):
+        raise ManifestError(f"{path}: 'media' must be an array of tables ([[media]])")
     manifest: dict[str, WatcomMedia] = {}
     for i, entry in enumerate(entries):
-        media = _parse_media(i, entry)
+        try:
+            media = _parse_media(i, entry)
+        except ManifestError as exc:
+            raise ManifestError(f"{path}: {exc}") from exc
         if media.version in manifest:
             raise ManifestError(f"{path}: duplicate media version {media.version!r}")
         manifest[media.version] = media

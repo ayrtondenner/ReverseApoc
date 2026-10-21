@@ -141,6 +141,54 @@ def test_invalid_manifests(tmp_path, text):
         load_watcom_manifest(path)
 
 
+MALFORMED_MANIFESTS = [
+    pytest.param('[[media]\nversion = "1.0"\n', "", id="invalid-toml"),
+    pytest.param(b'[[media]]\nversion = "\xff"\n', "", id="not-utf8"),
+    pytest.param("media = 1\n", "'media' must be an array of tables", id="media-int"),
+    pytest.param("media = [1]\n", "'media' must be an array of tables", id="media-array-of-ints"),
+    pytest.param('[media]\nversion = "1.0"\n', "'media' must be an array of tables", id="table"),
+    pytest.param(GOOD + "key_files = 1\n", "'key_files' must be an array of tables", id="kf-int"),
+    pytest.param(GOOD + "key_files = [1]\n", "'key_files' must be an array of tables", id="kf-1"),
+]
+
+
+def _write(path: Path, body: str | bytes) -> Path:
+    if isinstance(body, bytes):
+        path.write_bytes(body)
+    else:
+        path.write_text(body, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(("body", "message"), MALFORMED_MANIFESTS)
+def test_malformed_manifest_raises_manifest_error(tmp_path, body, message):
+    path = _write(tmp_path / "bad.toml", body)
+    with pytest.raises(ManifestError) as exc:
+        load_watcom_manifest(path)
+    assert str(path) in str(exc.value)
+    assert message in str(exc.value)
+
+
+def test_missing_manifest_stays_oserror(tmp_path):
+    with pytest.raises(OSError):
+        load_watcom_manifest(tmp_path / "absent.toml")
+
+
+@pytest.mark.parametrize(("body", "message"), MALFORMED_MANIFESTS)
+def test_check_watcom_malformed_manifest_is_one_error_line(tmp_path, capsys, body, message):
+    from reverseapoc.cli import main
+
+    bad = _write(tmp_path / "bad.toml", body)
+    args = ["check-watcom", "--manifest", str(bad), "--dest", str(tmp_path / "w")]
+    assert main(args) == 1
+    captured = capsys.readouterr()
+    lines = captured.err.splitlines()
+    assert len(lines) == 1
+    assert lines[0].startswith("reverseapoc check-watcom: error:")
+    assert str(bad) in lines[0]
+    assert "Traceback" not in captured.err + captured.out
+
+
 def test_key_files_parse(tmp_path):
     path = tmp_path / "w.toml"
     path.write_text(
