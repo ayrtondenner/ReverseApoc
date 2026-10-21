@@ -37,7 +37,7 @@ findings:
     title: "Flags are checked against a deny list, while guest paths use an allow list"
   - id: IN-04
     severity: info
-    disposition: open
+    disposition: skipped
     title: "The private `splice._write_atomic` is imported by three other modules"
   - id: IN-05
     severity: info
@@ -49,11 +49,11 @@ findings:
     title: "`cppscan._check_table` refuses an empty table at the very end of an object and mislabels `end < start`"
   - id: IN-07
     severity: info
-    disposition: open
+    disposition: fixed
     title: "Dead code: `Candidate` and `_Hit.candidate()`"
-open: 12
+open: 10
 total: 12
-recorded: 2026-10-21T22:01:34.321Z
+recorded: 2026-10-21T22:34:13.928Z
 ---
 
 # Phase 04: Code Review Disposition
@@ -68,10 +68,10 @@ recorded: 2026-10-21T22:01:34.321Z
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
-| IN-04 | info | open | - |
+| IN-04 | info | skipped | 04-REVIEW-FIX.md |
 | IN-05 | info | open | - |
 | IN-06 | info | open | - |
-| IN-07 | info | open | - |
+| IN-07 | info | fixed | 04-REVIEW-FIX.md |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
