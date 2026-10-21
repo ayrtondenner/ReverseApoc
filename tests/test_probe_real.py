@@ -89,14 +89,21 @@ ROWS = [
         id="10.6-5r-and-unrolled",
     ),
     pytest.param("10.6", S5, {"rep_movsd_small": "==0"}, id="10.6-5r-no-small-rep"),
-    # Measured, not research: 04-RESEARCH expects `mov ecx,5; rep movsd` at -4r to count as
-    # rep_movsd_small, but the probe's mov ecx,5 sits 9 bytes before its rep movsd (other moves
-    # in between), so the adjacent encoding counts 0. The -4/-5 split shows as no unrolled copy.
+    # `mov ecx,5; rep movsd` at -3r/-4r: the probe loads edi and esi between the two (two
+    # register moves), so rep_movsd_small counts that measured shape (review fix round 1); the
+    # plan's adjacent encoding counted 0 here.
+    *(
+        pytest.param(
+            version,
+            flags,
+            {"rep_movsd_small": ">=1", "movsd_unrolled": "==0"},
+            id=f"{version}-{flags[0].lstrip('-')}-small-rep",
+        )
+        for version in ("10.6", "11.0")
+        for flags in (S3, S4)
+    ),
     pytest.param(
-        "10.6",
-        S4,
-        {"rep_movsd_small": "==0", "movsd_unrolled": "==0"},
-        id="10.6-4r-small-rep-measured-0",
+        "11.0", S5, {"rep_movsd_small": "==0", "movsd_unrolled": ">=1"}, id="11.0-5r-no-small-rep"
     ),
     pytest.param("11.0", S4, {"setcc_and": ">=1"}, id="11.0-4r-and"),
     pytest.param("11.0", S5, {"setcc_and": "==0", "setcc_movzx": "==0"}, id="11.0-5r-branch"),

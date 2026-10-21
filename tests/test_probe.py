@@ -120,6 +120,46 @@ def test_rep_movsd_small():
     assert count_idioms(b"\xb9\x05\x01\x00\x00\xf3\xa5")["rep_movsd_small"] == 0  # mov ecx,105h
 
 
+MOV_ECX_5 = b"\xb9\x05\x00\x00\x00"  # mov ecx,5
+REP_MOVSD = b"\xf3\xa5"  # rep movsd
+MOV_EDI_EAX = b"\x89\xc7"  # mov edi,eax (89 /r, ModRM mod=11)
+MOV_ESI_EDX = b"\x89\xd6"  # mov esi,edx
+# The -3r/-4r struct copy as the probe compiles it: the copy's pointers load between the count
+# and the copy.
+REP_MOVSD_GAPPED = MOV_ECX_5 + MOV_EDI_EAX + MOV_ESI_EDX + REP_MOVSD
+
+
+def test_rep_movsd_small_gapped():
+    assert count_idioms(REP_MOVSD_GAPPED)["rep_movsd_small"] == 1
+    # the other direction of mov: mov edi,eax; mov esi,edx as 8B /r
+    assert count_idioms(MOV_ECX_5 + b"\x8b\xf8\x8b\xf2" + REP_MOVSD)["rep_movsd_small"] == 1
+    assert count_idioms(MOV_ECX_5 + MOV_EDI_EAX * 4 + REP_MOVSD)["rep_movsd_small"] == 1
+    assert count_idioms(MOV_ECX_5 + MOV_EDI_EAX * 5 + REP_MOVSD)["rep_movsd_small"] == 0
+    # something other than a register mov between: add eax,edx, or a nop
+    for between in (b"\x01\xd0", b"\x90"):
+        code = MOV_ECX_5 + MOV_EDI_EAX + between + REP_MOVSD
+        assert count_idioms(code)["rep_movsd_small"] == 0
+    # a mov with a memory operand: mov eax,[ebp+8] (mod=01) and mov [edi],eax (mod=00)
+    for memory in (b"\x8b\x45\x08", b"\x89\x07"):
+        assert count_idioms(MOV_ECX_5 + memory + REP_MOVSD)["rep_movsd_small"] == 0
+    # a count outside 1..16
+    for count in (b"\x00", b"\x11"):
+        code = b"\xb9" + count + b"\x00\x00\x00" + MOV_EDI_EAX + REP_MOVSD
+        assert count_idioms(code)["rep_movsd_small"] == 0
+
+
+def test_rep_movsd_small_gapped_mask():
+    end = len(REP_MOVSD_GAPPED)
+    # a masked byte anywhere from mov ecx to rep movsd drops it, the moves between included ...
+    for offset in (0, 1, len(MOV_ECX_5), len(MOV_ECX_5) + 3, end - 1):
+        masked = count_idioms(REP_MOVSD_GAPPED, mask=frozenset({offset}))
+        assert masked["rep_movsd_small"] == 0
+    # ... a masked byte just outside does not
+    code = b"\x90" + REP_MOVSD_GAPPED + b"\x90"
+    for offset in (0, end + 1):
+        assert count_idioms(code, mask=frozenset({offset}))["rep_movsd_small"] == 1
+
+
 # ---- Task 2: loop shapes -----------------------------------------------------------------------
 
 # A rotated loop: the entry jumps forward to the test at the bottom, which jumps back up.
