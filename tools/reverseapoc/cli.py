@@ -1,4 +1,4 @@
-"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, fetch-watcom,
+"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, libmatch, fetch-watcom,
 install-watcom, check-watcom."""
 
 from __future__ import annotations
@@ -13,8 +13,21 @@ from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
+from .libmatch import (
+    SWEPT_VERSIONS,
+    LibMatchError,
+    check_versions,
+    load_libraries,
+    read_target,
+    refuse_output,
+    runtime_csv_path,
+    scan_exe,
+    select_target,
+    write_runtime_csv,
+)
+from .omf import OMFError
 from .splice import DEFAULT_OUT, rebuild
-from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig
+from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig, load_manifest
 from .watcom import (
     ARCHIVE_BASE,
     DEFAULT_INSTALL,
@@ -101,6 +114,52 @@ def _add_cc_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_cc)
+
+
+def _cmd_libmatch(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    output = runtime_csv_path(target.name) if args.write else args.output
+    if output is not None:
+        refuse_output(output, args.orig, args.watcom_dir)
+    check_versions(args.versions)
+    data = read_target(target, args.orig, args.manifest)
+    libraries, skipped = load_libraries(args.watcom_dir, args.versions)
+    if not libraries:
+        raise LibMatchError(
+            f"no OMF library found under {args.watcom_dir} for versions {' '.join(args.versions)}"
+        )
+    report = scan_exe(LE(data), libraries, exe=target.name, skipped=skipped)
+    if args.json:
+        print(json.dumps(report.to_json(), indent=2))
+    else:
+        print(report.format())
+    if output is not None:
+        write_runtime_csv(output, report, target.name)
+        print(f"wrote {output}", file=sys.stderr)
+    return 0
+
+
+def _add_libmatch_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "libmatch",
+        help="place Watcom runtime library modules in an EXE's code object and write "
+        "config/<exe>/runtime.csv",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument(
+        "--versions", nargs="+", default=list(SWEPT_VERSIONS), metavar="VERSION", help=default
+    )
+    where = p.add_mutually_exclusive_group()
+    where.add_argument(
+        "--write", action="store_true", help="write config/<exe>/runtime.csv (D-06, D-16)"
+    )
+    where.add_argument("--output", type=Path, metavar="PATH", help="write the CSV to PATH")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=_cmd_libmatch)
 
 
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
@@ -218,6 +277,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_rebuild)
 
     _add_cc_command(sub)
+    _add_libmatch_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -230,6 +290,8 @@ _ERRORS = (
     WatcomError,
     CompilerError,
     CflagsError,
+    LibMatchError,
+    OMFError,
     OSError,
 )
 
