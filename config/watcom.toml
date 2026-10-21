@@ -14,6 +14,10 @@
 # `file` may contain a sub-path inside the archive.org item; the local file name is its basename.
 # `[[media.key_files]]` (path, size, md5, sha1, optional crc32, known_bad, note) lists files to
 # verify after `install-watcom`; `path` is POSIX with the exact on-disc case.
+# A key file may also carry `wpack` (the wpack archive parts in order, POSIX paths inside the
+# installed tree) and `wpack_member` (the member's name in that archive), both or neither:
+# `install-watcom` then decodes the member and writes it to `path`, replacing the CD's copy, and
+# the hashes above are those of the decoded file (D-01).
 
 [[media]]
 version = "10.5"
@@ -34,12 +38,13 @@ note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LE compiler)"
 
 [[media.key_files]]
 path = "BINW/WCC386.EXE"
-size = 65536
-crc32 = 0xFC61DB61
-md5 = "fbf78c355af4442ad554d9e74086bb1b"
-sha1 = "97118b186b7bfdc3835afbb73d7ac47afda41d51"
-known_bad = true
-note = "damaged 65,536-byte stub on the CD; the real 567,558-byte compiler is packed in DISKIMGS/DISK02/PCK00017.1 + DISK03/PCK00017.2 (wpack), not decoded yet"
+size = 567558
+crc32 = 0xDAA1AD2A
+md5 = "17751042fa2927337ba69bc0bfb16684"
+sha1 = "a479921bf3bfc6a092710ab291d00752a09d782b"
+wpack = ["DISKIMGS/DISK02/PCK00017.1", "DISKIMGS/DISK03/PCK00017.2"]
+wpack_member = "wcc386.exe"
+note = "decoded by install-watcom from the wpack archive DISKIMGS/DISK02/PCK00017.1 + DISKIMGS/DISK03/PCK00017.2; the CD's BINW/WCC386.EXE is a damaged 65,536-byte stub (D-01)"
 
 [[media.key_files]]
 path = "BINNT/WLINK.EXE"
