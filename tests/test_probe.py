@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import json
 
-import omfimage
 import pytest
-from watcomtree import TREE_FILES, FakeCompiler, make_tree, write_watcom_manifest
 
+import omfimage
 from reverseapoc import omf
 from reverseapoc.compiler import CompilerError
 from reverseapoc.probe import (
@@ -26,6 +25,7 @@ from reverseapoc.probe import (
     chk_sites,
     count_idioms,
 )
+from watcomtree import TREE_FILES, FakeCompiler, make_tree, write_watcom_manifest
 
 # cmp al,5; sete al; and eax,0FFh; ret
 SETCC_AND = b"\x3c\x05\x0f\x94\xc0\x25\xff\x00\x00\x00\xc3"
