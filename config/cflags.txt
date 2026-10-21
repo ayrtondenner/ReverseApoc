@@ -18,11 +18,13 @@
 # option there), no `/`, no `\` and no whitespace.
 #
 # Evidence for the default: docs/toolchain.md, sections "Result" and "Flags" (Phase 4, measured
-# per EXE; UFO2P and TACP give the same answer). 10.6 is the version consistent with both the
-# codegen probe (10.5 byte-identical; 11.0 tied at -4r, a candidate until a Phase 5 match) and
-# the linked 10.6 runtime library. The flags are the proven ones, written explicitly:
-#   -4r   register convention (no 3S-only runtime row) and CPU target -4 (5-dword rep copies,
-#         no unrolled 5-dword run)
+# per EXE; UFO2P and TACP give the same answer). The rule is consistent with those scans and
+# supported by them, not proven by them; the first Phase 5 matches confirm or change it. 10.6 is
+# the version consistent with both the codegen probe (10.5 byte-identical; 11.0 tied at -4r, a
+# candidate until a Phase 5 match; 11.0a/11.0b not swept, D-02) and the linked 10.6 runtime
+# library. The flags are the scan-backed ones, written explicitly:
+#   -4r   register convention (no 3S-only runtime row) and CPU target -4 (no -5 evidence: the
+#         5-dword struct copies use rep, no unrolled 5-dword run; Phase 5 confirms)
 #   -s    no stack checks: true for most code; the 40 (UFO2P) / 32 (TACP) functions that call
 #         __CHK get per-glob rules without -s once Phase 5 maps them to files
 #   -fpi  inline x87 with the emulator (an EMU387 row); wcc386's default, written out
