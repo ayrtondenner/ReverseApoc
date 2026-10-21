@@ -87,9 +87,12 @@ _JCC_REL32 = range(0x80, 0x90)
 _REL8_SIZE, _REL32_SIZE = 1, 4
 
 # Shape limits: the loop top's exit test sits within 16 bytes of the backward jmp's target; a
-# switch compare is followed by its jcc within 6 bytes; a chain of at least 3 compares fits in 64.
+# switch compare is followed by its jcc within 6 bytes, and the next compare of its chain starts
+# within 12 bytes of that jcc (every measured probe chain, 11.0 -ox included, fits); a chain of
+# at least 3 compares fits in 64.
 LOOP_TOP_WINDOW = 16
 SWITCH_JCC_GAP = 6
+SWITCH_STEP_GAP = 12
 SWITCH_WINDOW = 64
 SWITCH_MIN_COMPARES = 3
 
@@ -210,18 +213,19 @@ def _direction(a: int, b: int) -> int:
     return (b > a) - (b < a)
 
 
-def _extends(chain: list[_Compare], cmp: _Compare) -> bool:
-    if cmp.end - chain[0].start > SWITCH_WINDOW:
-        return False
-    step = _direction(chain[-1].value, cmp.value)
-    if step == 0:
-        return False
-    return len(chain) == 1 or step == _direction(chain[0].value, chain[1].value)
+def _step(prev: _Compare, cmp: _Compare) -> int:
+    """+1 or -1, the direction from prev to cmp, when cmp starts within SWITCH_STEP_GAP bytes of
+    prev's jcc; 0 when it starts further away (another function) or compares the same value."""
+    if cmp.start - prev.jcc.end > SWITCH_STEP_GAP:
+        return 0
+    return _direction(prev.value, cmp.value)
 
 
 def _switch_chains(code: bytes) -> Iterator[tuple[int, Match]]:
     """(direction, pieces) of every chain of at least SWITCH_MIN_COMPARES compares, each paired
-    with a jcc, all within SWITCH_WINDOW bytes, immediates strictly monotonic."""
+    with a jcc and starting within SWITCH_STEP_GAP bytes of the previous jcc, all within
+    SWITCH_WINDOW bytes, immediates strictly monotonic. A compare that turns the direction ends
+    the chain and starts the next one together with the compare before it."""
     chain: list[_Compare] = []
 
     def finished() -> Iterator[tuple[int, Match]]:
@@ -232,11 +236,13 @@ def _switch_chains(code: bytes) -> Iterator[tuple[int, Match]]:
     for cmp in _paired_compares(code):
         if chain and cmp.start < chain[-1].jcc.end:
             continue  # overlaps the previous compare or its jcc: not an instruction
-        if chain and _extends(chain, cmp):
+        step = _step(chain[-1], cmp) if chain else 0
+        heading = _direction(chain[0].value, chain[1].value) if len(chain) > 1 else step
+        if step and step == heading and cmp.end - chain[0].start <= SWITCH_WINDOW:
             chain.append(cmp)
             continue
         yield from finished()
-        chain = [cmp]
+        chain = [chain[-1], cmp] if step and step != heading else [cmp]
     yield from finished()
 
 
