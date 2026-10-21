@@ -342,3 +342,76 @@ def test_row_versions_and_libraries_cover_every_candidate(tmp_path):
     assert row.versions == ("10.6", "11.0")
     assert row.libraries == ("DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB")
     assert row.alternatives == ("old@DOS/CLIB3R.LIB",)
+
+
+# ---- disambiguation of identical bodies ----
+
+TWIN_CODE = body(40, seed=0x90)
+DATA_ADDEND = 4  # the off32 site addresses offset 4 of the module's DATA segment
+DATA_VA = 0x20100  # where the EXE's copy of the matching DATA segment sits (object 2)
+
+
+def _data_twin(name: str, data: bytes) -> bytes:
+    code = bytearray(TWIN_CODE)
+    code[FAKE_ABS_SITE : FAKE_ABS_SITE + 4] = DATA_ADDEND.to_bytes(4, "little")
+    return code_module(name, bytes(code), fixups=[abs_fixup(FAKE_ABS_SITE, seg=2)], data=data)
+
+
+def _data_twin_exe(data_in_exe: bytes) -> bytes:
+    site = (PLANT_VA + FAKE_ABS_SITE, DATA_VA - 0x20000 + DATA_ADDEND)
+    patches = {PLANT_VA: planted(TWIN_CODE, (FAKE_ABS_SITE,)), DATA_VA: data_in_exe}
+    return synth_exe(patches, [site])
+
+
+A_DATA = body(16, seed=0x30)
+B_DATA = body(16, seed=0x50)
+
+
+def _row_summary(report):
+    return [(r.module, r.status, r.alternatives) for r in report.ranges]
+
+
+def test_data_check_picks_matching_module(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [_data_twin("a", A_DATA), _data_twin("b", B_DATA)])
+    report = _scan(watcom, _data_twin_exe(A_DATA))
+    assert _row_summary(report) == [("a", "unique", ())]
+
+
+def test_call_graph_picks_consistent_module(tmp_path):
+    watcom = tmp_path / "w"
+    twin = {
+        ext: code_module(name, TWIN_CODE, fixups=[call_fixup(FAKE_CALL_SITE)], externs=[ext])
+        for name, ext in (("a", "x_"), ("b", "y_"))
+    }
+    xmod = code_module("xmod", body(40, seed=0xC0), publics=[("x_", 0)])
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [twin["x_"], twin["y_"], xmod])
+    site = PLANT_VA + FAKE_CALL_SITE
+    code = bytearray(TWIN_CODE)
+    code[FAKE_CALL_SITE : FAKE_CALL_SITE + 4] = (0x10400 - (site + 4)).to_bytes(4, "little")
+    report = _scan(watcom, synth_exe({PLANT_VA: bytes(code), 0x10400: body(40, seed=0xC0)}, []))
+    assert _row_summary(report) == [("a", "unique", ()), ("xmod", "unique", ())]
+
+
+def test_c_before_cpp(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [code_module("cstub", TWIN_CODE)])
+    write_lib(watcom, "10.6", "PLIB3R.LIB", [code_module("cppstub", TWIN_CODE)])
+    report = _scan(watcom, synth_exe({PLANT_VA: TWIN_CODE}, []))
+    assert _row_summary(report) == [("cstub", "unique", ())]
+    assert report.ranges[0].libraries == ("DOS/CLIB3R.LIB",)
+
+
+def test_still_tied_is_ambiguous(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB",
+              [code_module("other", TWIN_CODE), code_module("aaa", TWIN_CODE)])  # fmt: skip
+    report = _scan(watcom, synth_exe({PLANT_VA: TWIN_CODE}, []))
+    assert _row_summary(report) == [("aaa", "ambiguous", ("other@DOS/CLIB3R.LIB",))]
+
+
+def test_disambiguation_never_drops_the_last_candidate(tmp_path):
+    watcom = tmp_path / "w"
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [_data_twin("a", A_DATA), _data_twin("b", B_DATA)])
+    report = _scan(watcom, _data_twin_exe(body(16, seed=0x70)))
+    assert _row_summary(report) == [("a", "ambiguous", ("b@DOS/CLIB3R.LIB",))]
