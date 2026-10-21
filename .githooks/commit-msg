@@ -16,7 +16,10 @@ msg_file=$1
 [ -n "$msg_file" ] && [ -f "$msg_file" ] || exit 0
 
 # An empty message (blank, or comment lines only) must stay empty so git still aborts the commit.
-[ -n "$(git stripspace --strip-comments < "$msg_file" 2>/dev/null)" ] || exit 0
+# `commit -v` puts the diff below git's scissors line, which git cuts off before its own check, so
+# stop reading there too. The pattern takes a one-character comment prefix; a longer
+# core.commentString (git 2.45+) is not recognised.
+[ -n "$(sed -n '/^. -\{24\} >8 -\{24\}$/q;p' "$msg_file" | git stripspace --strip-comments 2>/dev/null)" ] || exit 0
 
 if git interpret-trailers --parse "$msg_file" 2>/dev/null | grep -qi '^co-authored-by:'; then
     exit 0
