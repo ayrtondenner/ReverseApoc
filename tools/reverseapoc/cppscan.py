@@ -8,6 +8,15 @@ Signals, strongest first:
    routine type (u8), priority (u8), near routine pointer (u32, read relocated). C++ static
    constructors run at priority 64 (program) and module destructors at 40; the C runtime's own
    entries use 1, 2, 10 and 32. An XI entry at 64 or a YI entry at 40 is C++ evidence.
+2. C++-only runtime modules: runtime-map rows with status `unique` whose every library is a C++
+   one (PLIB*, PLBX*, CPLX*). Rows also matched by a C library, and ambiguous rows (the 18-byte
+   stubs of research Pitfall 4), never count. The runtime map places CODE segments only, so C++
+   runtime code kept in COMDAT blocks is not covered by this signal; the report says so.
+3. `__wcpp_` and `W?` (Watcom C++ mangled name) strings in the non-executable objects. Counted,
+   never printed.
+4. Vtable-shaped runs: two or more off32 LE fixups 4 bytes apart in a non-executable object, all
+   pointing into the executable object outside the runtime map. C dispatch tables look the
+   same, so they are reported as candidates and never decide the verdict.
 
 Output (reports and JSON) holds counts, addresses, priorities and module names only, never
 bytes or strings from the EXE.
@@ -15,15 +24,16 @@ bytes or strings from the EXE.
 
 from __future__ import annotations
 
+import re
 import struct
 from collections import Counter
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from .le import LE, Fixup
-from .libmatch import LIB_DIR, MatchRange, check_versions
+from .le import LE, SRC_OFF32, Fixup, LEObject
+from .libmatch import CPP_LIBRARY_PREFIXES, LIB_DIR, STATUS_UNIQUE, MatchRange, check_versions
 from .omf import Module, Segment, read_library
 
 
@@ -60,6 +70,10 @@ INIT_MODULE = "inirt386"  # the C runtime module that walks the XI and YI tables
 TABLE_BOUNDS = {"XI": ("XIB", "XIE"), "YI": ("YIB", "YIE")}
 _OBJ_EXECUTABLE = 0x0004  # LE object flag: executable
 _SEGMENT_TARGET = "segment"
+WCPP_MARKER = b"__wcpp_"  # prefix of the Watcom C++ runtime's symbols
+MANGLED_NAME = re.compile(rb"W\?[A-Za-z_$]")  # start of a Watcom C++ mangled name
+MIN_VTABLE_RUN = 2  # pointers in a row before a run counts as vtable-shaped
+COMDAT_NOTE = "CODE segments only; COMDAT code is not matched"
 
 
 @dataclass(frozen=True)
@@ -113,6 +127,10 @@ class CppScanReport:
             in_lib = sum(e.in_library for e in entries)
             lines.append(f"{table}{span}: {len(entries)} entries; priority {_profile(entries)}; "
                          f"routine in runtime map {in_lib}")  # fmt: skip
+        modules = ", ".join(self.cpp_only_modules) or "none"
+        lines.append(f"C++-only runtime rows ({COMDAT_NOTE}): {modules}")
+        lines.append(f"__wcpp_ strings {self.wcpp_strings}, W? strings {self.mangled_strings}, "
+                     f"vtable-shaped candidate runs {self.vtable_candidates}")  # fmt: skip
         return "\n".join(lines)
 
     def to_json(self) -> dict[str, Any]:
@@ -129,6 +147,7 @@ class CppScanReport:
             "verdict": self.verdict,
             "tables": tables,
             "cpp_only_modules": list(self.cpp_only_modules),
+            "cpp_only_modules_cover": COMDAT_NOTE,
             "wcpp_strings": self.wcpp_strings,
             "mangled_strings": self.mangled_strings,
             "vtable_candidates": self.vtable_candidates,
@@ -256,6 +275,67 @@ def init_tables(
     return tables["XI"], tables["YI"]
 
 
+# ---- the other signals ----
+
+
+def _is_cpp_library(relpath: str) -> bool:
+    return PurePosixPath(relpath).name.upper().startswith(CPP_LIBRARY_PREFIXES)
+
+
+def cpp_only_modules(rows: Sequence[MatchRange]) -> tuple[str, ...]:
+    """Modules of unique rows matched by C++ runtime libraries only, sorted by name. A row
+    that a C library also matched, or an ambiguous one, is no evidence (Pitfall 4)."""
+    return tuple(sorted({
+        r.module for r in rows
+        if r.status == STATUS_UNIQUE and r.libraries and all(map(_is_cpp_library, r.libraries))
+    }))  # fmt: skip
+
+
+def _data_objects(le: LE) -> Iterator[LEObject]:
+    return (o for o in le.objects if not o.flags & _OBJ_EXECUTABLE)
+
+
+def string_counts(le: LE) -> tuple[int, int]:
+    """(occurrences of `__wcpp_`, of a `W?` mangled-name start) in the non-executable objects."""
+    image = le.load_flat()
+    wcpp = mangled = 0
+    for obj in _data_objects(le):
+        data = bytes(image[obj.base : obj.end])
+        wcpp += data.count(WCPP_MARKER)
+        mangled += sum(1 for _ in MANGLED_NAME.finditer(data))
+    return wcpp, mangled
+
+
+def _runs(sites: Sequence[int]) -> Iterator[int]:
+    """The lengths of the runs of sorted `sites` that lie 4 bytes apart."""
+    length, previous = 0, None
+    for site in sites:
+        if previous is not None and site - previous == _NEAR_POINTER:
+            length += 1
+        else:
+            if length:
+                yield length
+            length = 1
+        previous = site
+    if length:
+        yield length
+
+
+def vtable_candidates(le: LE, rows: Sequence[MatchRange]) -> int:
+    """Runs of at least MIN_VTABLE_RUN off32 LE fixups, 4 bytes apart in a non-executable
+    object, each pointing into an executable object outside every runtime-map row."""
+    data = list(_data_objects(le))
+    code = [o for o in le.objects if o.flags & _OBJ_EXECUTABLE]
+
+    def is_code_pointer(fx: Fixup) -> bool:
+        in_data = any(o.contains(fx.src_va) for o in data)
+        to_code = any(o.contains(fx.target_va) for o in code)
+        return in_data and to_code and not _in_rows(fx.target_va, rows)
+
+    sites = [fx.src_va for fx in le.fixups() if fx.kind == SRC_OFF32 and is_code_pointer(fx)]
+    return sum(1 for n in _runs(sites) if n >= MIN_VTABLE_RUN)
+
+
 # ---- the verdict ----
 
 
@@ -263,21 +343,34 @@ def _with_priority(entries: Sequence[InitEntry], priority: int) -> int:
     return sum(e.priority == priority for e in entries)
 
 
-def verdict(xi: Sequence[InitEntry], yi: Sequence[InitEntry]) -> str:
-    """"C (wcc386): ..." when no C++ signal fired, else "C++ evidence: ..." naming them."""
-    signals = []
-    if n := _with_priority(xi, PRIO_PROGRAM):
-        signals.append(f"XI priority {PRIO_PROGRAM} x{n}")
-    if n := _with_priority(yi, PRIO_DTOR):
-        signals.append(f"YI priority {PRIO_DTOR} x{n}")
+def _signals(report: CppScanReport) -> list[str]:
+    counts = [
+        (f"XI priority {PRIO_PROGRAM}", _with_priority(report.xi, PRIO_PROGRAM)),
+        (f"YI priority {PRIO_DTOR}", _with_priority(report.yi, PRIO_DTOR)),
+        ("C++-only runtime modules", len(report.cpp_only_modules)),
+        ("__wcpp_ strings", report.wcpp_strings),
+        ("W? strings", report.mangled_strings),
+    ]
+    return [f"{name} x{n}" for name, n in counts if n]
+
+
+def verdict(report: CppScanReport) -> str:
+    """"C (wcc386): ..." when no C++ signal fired, else "C++ evidence: ..." naming the signals
+    and the modules that would need wpp386. Vtable-shaped runs are listed, never decisive."""
+    signals = _signals(report)
     if not signals:
-        return f"C (wcc386): no XI priority {PRIO_PROGRAM}, no YI priority {PRIO_DTOR}"
-    return f"C++ evidence: {', '.join(signals)}"
+        return (f"C (wcc386): no XI priority {PRIO_PROGRAM}, no YI priority {PRIO_DTOR}, no "
+                f"C++-only runtime module, no __wcpp_ or W? strings; {report.vtable_candidates} "
+                "vtable-shaped candidate runs (C dispatch tables look the same)")  # fmt: skip
+    modules = ", ".join(report.cpp_only_modules) or "not located (no C++-only runtime rows)"
+    return f"C++ evidence: {', '.join(signals)}; modules needing wpp386: {modules}"
 
 
 def scan(le: LE, rows: Sequence[MatchRange], watcom_dir: Path, *, exe: str) -> CppScanReport:
     """Every C++ signal of `le`, given its runtime map `rows`, and the verdict."""
     bounds = table_bounds(le, rows, watcom_dir)
     tables = _tables_from(le, rows, bounds)
-    xi, yi = tables["XI"], tables["YI"]
-    return CppScanReport(exe, xi, yi, verdict=verdict(xi, yi), bounds=bounds)
+    wcpp, mangled = string_counts(le)
+    report = CppScanReport(exe, tables["XI"], tables["YI"], cpp_only_modules(rows), wcpp,
+                           mangled, vtable_candidates(le, rows), bounds=bounds)  # fmt: skip
+    return replace(report, verdict=verdict(report))
