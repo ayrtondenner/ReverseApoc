@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import re
 from pathlib import Path
 
@@ -28,6 +29,10 @@ from reverseapoc import libmatch
 from reverseapoc.le import LE
 from reverseapoc.libmatch import (
     RUNTIME_CSV_COLUMNS,
+    RUNTIME_CSV_COMMENT,
+    STATUS_AMBIGUOUS,
+    STATUS_UNIQUE,
+    SWEPT_VERSIONS,
     LibMatchError,
     LibMatchReport,
     MatchRange,
@@ -480,3 +485,30 @@ def test_disambiguation_never_drops_the_last_candidate(tmp_path):
     write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [_data_twin("a", A_DATA), _data_twin("b", B_DATA)])
     report = _scan(watcom, _data_twin_exe(body(16, seed=0x70)))
     assert _row_summary(report) == [("a", "ambiguous", ("b@DOS/CLIB3R.LIB",))]
+
+
+# ---- the committed runtime maps (D-06), checked in CI without orig/ ----
+
+COMMITTED_EXES = ("UFO2P.EXE", "TACP.EXE")
+ADDRESS = re.compile(r"0x[0-9A-F]{8}")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")  # a run this long in a name cell would be bytes
+
+
+@pytest.mark.parametrize("name", COMMITTED_EXES)
+def test_committed_runtime_csvs_are_names_and_addresses(name):
+    path = runtime_csv_path(name)
+    assert path.is_file(), f"{path} missing: run `uv run reverseapoc libmatch {name} --write`"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == RUNTIME_CSV_COMMENT.format(name=name)
+    rows = list(csv.reader(lines[1:]))
+    assert tuple(rows[0]) == RUNTIME_CSV_COLUMNS
+    assert any("_cstart_" in row[6].split(";") for row in rows[1:])
+    for row in rows[1:]:
+        cells = dict(zip(RUNTIME_CSV_COLUMNS, row, strict=True))
+        assert ADDRESS.fullmatch(cells["start"]) and ADDRESS.fullmatch(cells["end"]), row
+        assert int(cells["start"], 16) < int(cells["end"], 16), row
+        versions = cells["versions"].split(";")
+        assert versions and set(versions) <= set(SWEPT_VERSIONS), row
+        assert cells["status"] in (STATUS_UNIQUE, STATUS_AMBIGUOUS), row
+        names = [cells[c] for c in RUNTIME_CSV_COLUMNS if c not in ("start", "end")]
+        assert not any(HEX_RUN.search(cell) for cell in names), row
