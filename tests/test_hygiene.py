@@ -134,15 +134,116 @@ def _default_cflags_rule():
     return next(rule for rule in rules if rule.glob == "*")
 
 
+_RULE_EXES = ("UFO2P.EXE", "TACP.EXE")
+
+
+def _normalized(text: str) -> str:
+    """The text with every run of whitespace collapsed to one space."""
+    return " ".join(text.split())
+
+
+def _matching_rule_rows(matching: str, glob: str) -> dict[str, tuple[str, frozenset[str]]]:
+    """exe -> (compiler@version, flag set) for the rows `| <glob> | <EXE> | <spec> | <flags> |`
+    of docs/matching.md "Compiler and flags per module"."""
+    pattern = rf"^\| {re.escape(glob)} \| (\S+\.EXE) \| (\S+) \| ([^|]+?) \|"
+    rows = re.findall(pattern, matching, flags=re.MULTILINE)
+    return {exe: (spec, frozenset(flags.split())) for exe, spec, flags in rows}
+
+
+def _default_rule_doc_problems(rule, toolchain: str, matching: str) -> list[str]:
+    """What is wrong when the `*` default rule and the docs disagree (empty = they agree).
+
+    docs/toolchain.md must hold the whole rule text as one code span (whitespace-normalised, so
+    a rule that is a prefix of the documented one, or only shares flags with it, is caught), and
+    each per-EXE row of docs/matching.md must carry the same spec and the same flag set."""
+    problems = []
+    rule_text = _normalized(f"{rule.glob} {rule.spec} {' '.join(rule.flags)}")
+    if f"`{rule_text}`" not in _normalized(toolchain):
+        problems.append(f"toolchain.md does not quote the rule `{rule_text}`")
+    rows = _matching_rule_rows(matching, rule.glob)
+    problems += [
+        f"matching.md has no `{rule.glob}` row for {exe}" for exe in _RULE_EXES if exe not in rows
+    ]
+    for exe, (spec, flags) in rows.items():
+        if (spec, flags) != (rule.spec, frozenset(rule.flags)):
+            problems.append(f"matching.md row for {exe} says {spec} {sorted(flags)}")
+    return problems
+
+
 def test_cflags_default_rule_is_documented():
-    # CID-05: the default compiler@version and every flag of the `*` rule are the ones the docs
-    # give evidence for, so the rule cannot drift away from docs/toolchain.md "Flags".
+    # CID-05: the `*` rule of config/cflags.txt appears whole in docs/toolchain.md and, per EXE,
+    # in docs/matching.md, so the rule cannot drift away from the evidence the docs give.
     rule = _default_cflags_rule()
     toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
     matching = (REPO_ROOT / "docs" / "matching.md").read_text(encoding="utf-8")
-    assert rule.spec in toolchain
-    assert rule.spec in matching
-    assert [flag for flag in rule.flags if f"`{flag}`" not in toolchain] == []
+    assert _default_rule_doc_problems(rule, toolchain, matching) == []
+
+
+_DRIFTED_RULES = (
+    "*  wcc386@10.6  -5r -s",  # the superseded rule
+    "*  wcc386@10.6  -5r -s -fpi",
+    "*  wcc386@10.6  -4r -s -fpi87",  # contradicted by the EMU387 row
+    "*  wcc386@10.6  -3s",
+    "*  wcc386@10.6  -4r -s -zm -zp1",  # candidates, not evidence
+    "*  wcc386@10.6  -4r -s -oneatx",
+    "*  wcc386@10.6  -4r -s",  # a prefix of the documented rule
+    "*  wcc386@11.0  -4r -s -fpi",
+    "*  wcc386@10.5  -4r -s -fpi",
+)
+
+
+def _matching_rows(ufo2p: str, tacp: str | None) -> str:
+    """A "Compiler and flags per module" table; `ufo2p` and `tacp` are `spec | flags` cells."""
+    lines = [
+        "| Module / file glob | EXE | Compiler@version | Flags | Evidence | Date |",
+        "|---|---|---|---|---|---|",
+        f"| * | UFO2P.EXE | {ufo2p} | proof | 2026-10-21 |",
+    ]
+    if tacp is not None:
+        lines.append(f"| * | TACP.EXE | {tacp} | proof | 2026-10-21 |")
+    return "\n".join(lines) + "\n"
+
+
+@pytest.mark.parametrize("drifted", _DRIFTED_RULES)
+def test_default_rule_doc_check_catches_a_drifted_rule(drifted):
+    # The check is only worth something if it can fail: parse a rule that differs from the
+    # documented one (in memory; config/cflags.txt is never touched) and expect a complaint.
+    # The matching.md rows are written from the drifted rule itself, so only the toolchain.md
+    # half of the check can complain here.
+    versions = tuple(load_watcom_manifest())
+    rule = parse_cflags(drifted, versions=versions)[0]
+    cells = f"{rule.spec} | {' '.join(rule.flags)}"
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    problems = _default_rule_doc_problems(rule, toolchain, _matching_rows(cells, cells))
+    assert [p for p in problems if p.startswith("toolchain.md")] != []
+
+
+@pytest.mark.parametrize(
+    ("ufo2p", "tacp"),
+    [
+        ("wcc386@10.6 | -5r -s -fpi", "wcc386@10.6 | -4r -s -fpi"),  # other flags in one row
+        ("wcc386@10.6 | -4r -s -fpi", "wcc386@11.0 | -4r -s -fpi"),  # other version in one row
+        ("wcc386@10.6 | -4r -s", "wcc386@10.6 | -4r -s -fpi"),  # a flag dropped in one row
+    ],
+)
+def test_default_rule_doc_check_catches_a_drifted_matching_row(ufo2p, tacp):
+    rule = _default_cflags_rule()
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    assert _default_rule_doc_problems(rule, toolchain, _matching_rows(ufo2p, tacp)) != []
+
+
+def test_default_rule_doc_check_accepts_matching_rows_in_any_flag_order():
+    rule = _default_cflags_rule()
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    both = "wcc386@10.6 | -fpi -s -4r"
+    assert _default_rule_doc_problems(rule, toolchain, _matching_rows(both, both)) == []
+
+
+def test_default_rule_doc_check_wants_a_row_per_exe():
+    rule = _default_cflags_rule()
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    one_row = _matching_rows("wcc386@10.6 | -4r -s -fpi", None)
+    assert _default_rule_doc_problems(rule, toolchain, one_row) != []
 
 
 _HASH_PREFIX_DIGITS = 8
