@@ -4,17 +4,17 @@ milestone: v1.0
 milestone_name: Milestone 1
 current_phase: 04
 current_phase_name: Compiler identification
-status: executing
-stopped_at: Completed 04-11-PLAN.md
-last_updated: "2026-10-21T20:48:46.238Z"
+status: verifying
+stopped_at: Completed 04-12-PLAN.md
+last_updated: "2026-10-21T21:43:10.728Z"
 last_activity: 2026-10-21
-last_activity_desc: Completed 04-11
-state_head: e724a56501a8c34ba9fa10447da6b5083e9c42ed
+last_activity_desc: Completed 04-12
+state_head: 4bb80f6e79d043bc7300074fb2dfb940b79356b0
 progress:
   total_phases: 8
   completed_phases: 3
   total_plans: 26
-  completed_plans: 25
+  completed_plans: 26
 ---
 
 # Project State
@@ -28,10 +28,10 @@ See: .planning/PROJECT.md (updated 2026-10-21)
 
 ## Current Position
 
-Phase: 04 (Compiler identification) — EXECUTING
-Plan: 12 of 12 (04-11 complete; 04-12, the phase gate, is next)
-Status: Ready to execute
-Last activity: 2026-10-21 — Completed 04-11 (D-03 normalized equal for 10.5/10.6/11.0; toolchain.md records 10.6, -4r -s -fpi)
+Phase: 04 (Compiler identification) — VERIFYING
+Plan: 12 of 12 (04-12, the phase gate, complete; /gsd-verify-work 4 next)
+Status: Phase complete — ready for verification
+Last activity: 2026-10-21 — Completed 04-12 (Phase 4 gate green on host and container; logs under build/gate/04-12/)
 
 Progress: [█████░░░░░] 50%
 
@@ -64,6 +64,7 @@ Next steps:
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 04 P11 | 24min | 3 tasks | 8 files |
+| Phase 04 P12 | 9min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,7 @@ Recent decisions affecting current work:
 - [Phase 4]: Watcom 10.6 (10.5 equivalent) is the hypothesis; Open Watcom only for `wdis`/`wlink`/`wlib`
 - [Phase 04]: Game code: Watcom C 10.6 (10.5 byte-identical on the probe, 11.0 tied at -4r, candidate pending Phase 5 matches); linked runtime 10.6, no mix
 - [Phase 04]: config/cflags.txt default is * wcc386@10.6 -4r -s -fpi (the flags the scans support); -s kept because only 40/32 functions call __CHK, which get per-glob rules in Phase 5
+- [Phase 04]: Phase 4 gate green on host (974 passed, 6 platform-only skips) and container (980 passed, 0 skipped), ruff clean; rebuild SHA-1 identical; check-watcom OK; compiler/probe real tests pass under wibo
 
 ### Pending Todos
 
@@ -108,6 +110,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-21T20:48:45.834Z
-Stopped at: Completed 04-11-PLAN.md
+Last session: 2026-10-21T21:43:10.181Z
+Stopped at: Completed 04-12-PLAN.md
 Resume file: None

@@ -32,12 +32,12 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Compiler identification (Phase 4)
 
-- [ ] **CID-01**: The original Watcom compiler runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/` (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` loads the LX `BINW\WCC386.EXE`, so `binw/` is required too)
-- [ ] **CID-02**: A compiler wrapper keyed by `compiler@version` plus a per-file flags table (`config/cflags.txt`) selects the compiler and flags per source file
-- [ ] **CID-03**: The mosura codegen probe compiled with each version locates its idioms in both code objects (non-library code)
-- [ ] **CID-04**: Linked CLIB3R/MATH3R runtime modules match byte for byte (masked) against one version's `LIB386`
-- [ ] **CID-05**: Compiler version and default flags are recorded in `docs/toolchain.md` with per-flag evidence, per EXE
-- [ ] **CID-06**: A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) confirms `wcc386` vs `wpp386`
+- [x] **CID-01**: The original Watcom compiler runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/` (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` loads the LX `BINW\WCC386.EXE`, so `binw/` is required too)
+- [x] **CID-02**: A compiler wrapper keyed by `compiler@version` plus a per-file flags table (`config/cflags.txt`) selects the compiler and flags per source file
+- [x] **CID-03**: The mosura codegen probe compiled with each version locates its idioms in both code objects (non-library code)
+- [x] **CID-04**: Linked CLIB3R/MATH3R runtime modules match byte for byte (masked) against one version's `LIB386`
+- [x] **CID-05**: Compiler version and default flags are recorded in `docs/toolchain.md` with per-flag evidence, per EXE
+- [x] **CID-06**: A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) confirms `wcc386` vs `wpp386`
 
 ### Split and first matches (Phase 5)
 
@@ -146,12 +146,12 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | RT-03 | Phase 3 | Complete |
 | RT-04 | Phase 3 | Complete |
 | RT-05 | Phase 3 | Complete |
-| CID-01 | Phase 4 | Pending |
-| CID-02 | Phase 4 | Pending |
-| CID-03 | Phase 4 | Pending |
-| CID-04 | Phase 4 | Pending |
-| CID-05 | Phase 4 | Pending |
-| CID-06 | Phase 4 | Pending |
+| CID-01 | Phase 4 | Complete |
+| CID-02 | Phase 4 | Complete |
+| CID-03 | Phase 4 | Complete |
+| CID-04 | Phase 4 | Complete |
+| CID-05 | Phase 4 | Complete |
+| CID-06 | Phase 4 | Complete |
 | SPL-01 | Phase 5 | Pending |
 | SPL-02 | Phase 5 | Pending |
 | SPL-03 | Phase 5 | Pending |
