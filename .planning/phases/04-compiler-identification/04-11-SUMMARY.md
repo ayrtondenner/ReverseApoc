@@ -94,7 +94,7 @@ coverage:
     human_judgment: true
     rationale: "Whether each cell says no more than its log shows is a reading judgment (checked by hand below); the test pins structure and the absence of stale markers only"
   - id: D5
-    description: "config/cflags.txt default rule names the identified compiler@version and the proven flags, documented in toolchain.md and matching.md"
+    description: "config/cflags.txt default rule names the identified compiler@version and the flags the scans support, documented in toolchain.md and matching.md"
     requirement: CID-05
     verification:
       - kind: unit
@@ -280,6 +280,10 @@ A review of this plan found wording that overstated the evidence and a test that
 6. **STATE.md.** The 2026-10-19 BINNT line called the `BINW\WCC386.EXE` compiler "LE" for both versions; it now says LE (10.6) or LX (10.5). Nothing else in STATE.md changed.
 
 Left alone (review Minors 1 and 2): the `-s` "most code" count and the `-fpi` same-object claim still rest on throwaway scratch checks that are not logged under `build/gate/`.
+
+## Review fix round 2 (2026-10-21)
+
+LX correction: the BINW compilers of 10.5, 10.6 and 11.0 are all LX images (`LX` at `e_lfanew` 0xE38 in each; `reverseapoc parse-le` rejects them with "no LE header found"), so round 1's "LE (10.6) or LX (10.5)" wording in STATE.md was wrong for 10.6. Corrected in docs/toolchain.md (What is on the discs), docs/learnings.md (two entries; the first also says the `config/watcom.toml` 10.5 and 10.6 BINNT notes, "the real LE compiler", are stale for both) and STATE.md (the BINNT line now says "the LX compiler"). The Issues Encountered line above that calls the watcom.toml note "stale for 10.5" holds for 10.6 as well. Also reworded the `provides` text here and the STATE.md `cflags.txt` line from "proven flags" to "the flags the scans support", matching round 1 item 2.
 
 ---
 *Phase: 04-compiler-identification*
