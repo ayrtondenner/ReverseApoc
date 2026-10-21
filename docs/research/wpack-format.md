@@ -335,7 +335,7 @@ sort used for the small blocks.
 | Header | signature `0x2403`, version 1.1, 1 member, `info_len` 27, `info_offset` 357,412 |
 | Member | `wcc386.exe`, length 567,558, `disk_addr` 12, Shannon-coded |
 | CRC check | CRC-32 of bytes `[12, 357412)` equals the member's `crc` |
-| Decoded file | the 10.5 `BINW/WCC386.EXE`: an MZ program carrying an LE image |
+| Decoded file | the 10.5 `BINW/WCC386.EXE`: an MZ program whose `e_lfanew` points at an **LX** header (`LX\0\0`), not LE; `tools/reverseapoc/le.py` reads LE only |
 
 The decoded size and hashes are pinned in `config/watcom.toml` by plan 04-06 after an end-to-end
 `install-watcom 10.5`, not here.
