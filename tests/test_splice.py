@@ -915,6 +915,23 @@ def test_layout_accepts_an_empty_object_inside_another():
     img = _no_fixups(objects=EMPTY_OBJECT_INSIDE)
     check_tiling(layout(LE(img.data)), len(img.data))
 
+
+# The same objects with the empty one at object 1's base, inside it, at its end and at object 2's
+# base, in each table position: a check on sorted neighbours that counted the empty object refused
+# some positions and accepted others when it shared a base with object 1 or 2.
+SIZED_OBJECTS = EMPTY_OBJECT_INSIDE[:2]
+
+
+@pytest.mark.parametrize("position", [0, 1, 2], ids=["first", "middle", "last"])
+@pytest.mark.parametrize("base", [0x10000, 0x10800, 0x12000, 0x20000], ids=hex)
+def test_layout_accepts_an_empty_object_in_any_table_position(base, position):
+    objects = list(SIZED_OBJECTS)
+    objects.insert(position, (0, base, 0x2043, 4, 0))
+    img = _no_fixups(objects=objects)
+    check_tiling(layout(LE(img.data)), len(img.data))
+    _assert_control(img)
+
+
 # ---- WR-03: the output is checked by file identity, written atomically, the input read once -----
 
 PREVIOUS_BUILD = b"previous build output"  # synthetic: what build/<NAME> held before the rebuild
