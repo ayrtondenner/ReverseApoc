@@ -8,6 +8,7 @@ import json
 import sys
 from pathlib import Path
 
+from . import probe
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
@@ -31,8 +32,7 @@ from .libmatch import (
 )
 from .omf import OMFError
 from .probe import ProbeError
-from .probe import scan_exe as probe_scan_exe
-from .splice import DEFAULT_OUT, rebuild
+from .splice import DEFAULT_OUT, _write_atomic, rebuild
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig, load_manifest
 from .watcom import (
     ARCHIVE_BASE,
@@ -218,26 +218,88 @@ def _runtime_rows(target_name: str, runtime: Path | None) -> list[MatchRange]:
     return read_runtime_csv(path)
 
 
+def _read_calibration(path: Path) -> probe.Calibration:
+    """The calibration JSON at `path`; a file that is not JSON or not the to_json() shape is
+    refused with an error naming the file."""
+    try:
+        return probe.Calibration.from_json(json.loads(Path(path).read_text(encoding="utf-8")))
+    except (ValueError, UnicodeDecodeError) as exc:  # JSONDecodeError and ProbeError included
+        raise ProbeError(
+            f"{path}: not a calibration from `reverseapoc probe calibrate`: {exc}"
+        ) from exc
+
+
+def _consistent_lines(calibration: probe.Calibration, cells: list[probe.Cell]) -> list[str]:
+    """The consistent cells as "<version> <flags>", then the ties among them only (D-10)."""
+    lines = [f"consistent: {len(cells)} of {len(calibration.cells)} calibration cells"]
+    lines += [f"  {cell.version} {' '.join(cell.flags)}" for cell in cells]
+    ties = probe.Calibration(tuple(cells), ()).ties()
+    lines += [f"ties: {' '.join(flags)}: {' '.join(vs)}" for flags, vs in ties] or ["ties: none"]
+    lines += [f"calibration skipped: {version}" for version, _ in calibration.skipped]
+    return lines
+
+
 def _probe_scan(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
     rows = _runtime_rows(target.name, args.runtime)
+    calibration = _read_calibration(args.calibration) if args.calibration else None
     data = read_target(target, args.orig, args.manifest)
-    scan = probe_scan_exe(LE(data), rows, exe=target.name)
-    print(json.dumps(scan.to_json(), indent=2) if args.json else scan.format())
+    scan = probe.scan_exe(LE(data), rows, exe=target.name)
+    cells = probe.consistent_cells(calibration, scan) if calibration is not None else []
+    if args.json:
+        report = scan.to_json()
+        if calibration is not None:
+            report["consistent"] = [{"version": c.version, "flags": list(c.flags)} for c in cells]
+            ties = probe.Calibration(tuple(cells), ()).ties()
+            report["ties"] = [{"flags": list(f), "versions": list(vs)} for f, vs in ties]
+            report["calibration_skipped"] = [version for version, _ in calibration.skipped]
+        print(json.dumps(report, indent=2))
+        return 0
+    print(scan.format())
+    if calibration is not None:
+        print("\n".join(_consistent_lines(calibration, cells)))
+    return 0  # the verdict is information, not a failure
+
+
+def _probe_calibrate(args: argparse.Namespace) -> int:
+    refuse_output(args.output, args.watcom_dir)
+    check_versions(args.versions)
+    calibration = probe.calibrate(args.versions, manifest=args.manifest, watcom_dir=args.watcom_dir)
+    print(json.dumps(calibration.to_json(), indent=2) if args.json else calibration.format())
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    text = json.dumps(calibration.to_json(), indent=2) + "\n"
+    _write_atomic(output, text.encode("utf-8"))
+    print(f"wrote {output}", file=sys.stderr)
     return 0
 
 
 def _cmd_probe(args: argparse.Namespace) -> int:
-    return {"scan": _probe_scan}[args.probe_command](args)
+    return {"calibrate": _probe_calibrate, "scan": _probe_scan}[args.probe_command](args)
 
 
 def _add_probe_command(sub: argparse._SubParsersAction) -> None:
     default = "default: %(default)s"
     p = sub.add_parser(
         "probe",
-        help="count the calibrated codegen idioms in an EXE's non-library code (CID-03, D-10)",
+        help="calibrate the codegen idioms per Watcom version and flag set, and count them in an "
+        "EXE's non-library code (CID-03, D-10)",
     )
     probe_sub = p.add_subparsers(dest="probe_command", required=True)
+    c = probe_sub.add_parser(
+        "calibrate",
+        help="compile probe/cg_basic.c with every version and flag set and write the idiom table "
+        "as JSON",
+    )
+    c.add_argument(
+        "--versions", nargs="+", default=list(SWEPT_VERSIONS), metavar="VERSION", help=default
+    )
+    c.add_argument("--manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
+    c.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    c.add_argument(
+        "--output", type=Path, default=probe.DEFAULT_PROBE_OUT / "calibration.json", help=default
+    )
+    c.add_argument("--json", action="store_true", help="print the calibration as JSON")
     s = probe_sub.add_parser(
         "scan",
         help="count the idioms in an EXE's code object outside its runtime map, with one "
@@ -251,6 +313,12 @@ def _add_probe_command(sub: argparse._SubParsersAction) -> None:
         type=Path,
         metavar="CSV",
         help="the runtime map from libmatch; default: config/<exe>/runtime.csv",
+    )
+    s.add_argument(
+        "--calibration",
+        type=Path,
+        metavar="JSON",
+        help="the output of `probe calibrate`: also list the consistent cells and their ties",
     )
     s.add_argument("--json", action="store_true", help="print the scan as JSON")
     p.set_defaults(func=_cmd_probe)
