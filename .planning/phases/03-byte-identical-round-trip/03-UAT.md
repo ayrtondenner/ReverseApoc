@@ -3,17 +3,16 @@ status: testing
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-21T03:03:30Z
+updated: 2026-10-21T03:15:54Z
 ---
 
 ## Current Test
 
-number: 7
-name: Triage of the two new review findings after the G-03-6 re-review (03-REVIEW-DISPOSITION.md)
+number: 8
+name: 03-07 did not edit orig/, config/ or the Docker files and puts no game bytes in tests (judgment-tier prohibition)
 expected: |
-  WR-08 (malformed last_page_size > page_size lets a patch raise a raw TypeError; a regression from
-  03-08) and IN-12 (REFUSED/MISSING hints omit --orig/--manifest) each set to fix now, deferred
-  (with phase and reason) or skipped. Verifier judgment: neither breaks a must-have.
+  `git diff 0269b2a HEAD -- config docker compose.yaml` is empty; orig/ SHA-1s equal the manifest;
+  test_configure.py writes only synthetic names and markers.
 awaiting: user response
 
 ## Tests
@@ -48,7 +47,8 @@ severity: major
 
 ### 7. Triage of the two new review findings after the G-03-6 re-review (03-REVIEW-DISPOSITION.md)
 expected: WR-08 (malformed last_page_size > page_size lets a patch raise a raw TypeError instead of SpliceError and breaks a permuted-map round trip; a regression introduced by 03-08) and IN-12 (REFUSED/MISSING hints omit --orig/--manifest) each set to fix now, deferred (with phase and reason) or skipped; verifier judgment: neither breaks a must-have
-result: [pending]
+result: pass
+reason: "Owner: WR-08 and IN-12: lets fix both in Phase 5; VN-01 renamed IN-13"
 
 ### 8. 03-07 did not edit orig/, config/ or the Docker files and puts no game bytes in tests (judgment-tier prohibition)
 expected: `git diff 0269b2a HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest; test_configure.py writes only synthetic names and markers (verifier's non-authoritative check: holds)
@@ -69,9 +69,9 @@ result: [pending]
 ## Summary
 
 total: 11
-passed: 4
+passed: 5
 issues: 2
-pending: 5
+pending: 4
 skipped: 0
 blocked: 0
 
@@ -132,6 +132,9 @@ blocked: 0
 
 ## Deferred Follow-Ups
 
+- test: 7
+  idea: "WR-08 (refuse last_page_size > page_size when the LE is read; handle the no-page case so every splice refusal is a SpliceError; regression from 03-08) and IN-12 (carry --orig/--manifest into the REFUSED/MISSING hints): fix during Phase 5"
+  deferred_at: 2026-10-21
 - test: 3
   idea: "WR-01 (layout() must refuse shared logical pages and overlapping objects) and WR-03 (samefile guard, atomic write, single input read): fix during Phase 5, before splice() lands real patches"
   deferred_at: 2026-10-20

@@ -75,19 +75,19 @@ findings:
     severity: info
     disposition: fixed
     title: "`configure.py` still calls itself a \"Phase 2 skeleton\""
-  - id: VN-01
+  - id: IN-13
     severity: info
     disposition: fixed
     title: "REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say"
   - id: WR-08
     severity: warning
-    disposition: open
+    disposition: deferred
     title: "`_unwritable_reason` raises `TypeError` when `last_page_size` exceeds `page_size`, and the same header makes the round trip produce wrong bytes"
   - id: IN-12
     severity: info
-    disposition: open
+    disposition: deferred
     title: "REFUSED and MISSING hints tell the user to run `check-orig` and `ingest` without the `--orig` and `--manifest` that produced the line"
-open: 2
+open: 0
 total: 21
 recorded: 2026-10-20T23:13:08.458Z
 ---
@@ -114,9 +114,9 @@ recorded: 2026-10-20T23:13:08.458Z
 | IN-06 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
 | IN-07 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
 | IN-08 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| VN-01 | info | fixed | verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
-| WR-08 | warning | open | - |
-| IN-12 | info | open | - |
+| IN-13 | info | fixed | renamed from VN-01 (owner 2026-10-21); verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
+| WR-08 | warning | deferred | owner 2026-10-21: deferred to Phase 5 - refuse last_page_size > page_size when the LE is read and handle the no-page case, so every splice refusal is a SpliceError before patches flow (regression from 03-08) |
+| IN-12 | info | deferred | owner 2026-10-21: deferred to Phase 5 - carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
