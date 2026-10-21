@@ -731,3 +731,43 @@ def test_scan_exe_fills_stack_checks_and_evidence():
     assert tuple(line.split(":")[0] + ":" for line in scan.evidence) == EVIDENCE_PREFIXES
     assert scan.format().splitlines()[-len(EVIDENCE_PREFIXES):] == list(scan.evidence)
     assert scan.to_json()["chk_blocks"] == [{"block": 0x10000, "calls": 1}]
+
+
+# ---- plan 04-10 Task 3: the calibration as JSON --------------------------------------------------
+
+
+def _hand_calibration() -> Calibration:
+    five = ("-5r", "-s")
+    return Calibration(
+        (
+            _cell("10.6", ("-3r", "-s"), "c" * 40, setcc_movzx=1, rep_movsd_small=1),
+            _cell("10.6", five, "a" * 40, setcc_and=1, movsd_unrolled=1, chk=7),
+            _cell("11.0", five, "b" * 40, movsd_unrolled=1),
+        ),
+        skipped=(("10.5", "Watcom 10.5: gate refused (bad)"),),
+    )
+
+
+def test_calibration_json_round_trip():
+    cal = _hand_calibration()
+    data = json.loads(json.dumps(cal.to_json()))
+    assert Calibration.from_json(data) == cal
+
+
+@pytest.mark.parametrize(
+    ("change", "problem"),
+    [
+        (lambda d: [], "not an object"),
+        (lambda d: {**d, "idioms": ["setcc_and"]}, "idioms"),
+        (lambda d: {k: v for k, v in d.items() if k != "cells"}, "cells"),
+        (lambda d: {**d, "cells": [{**d["cells"][0], "version": 10.6}]}, "version"),
+        (lambda d: {**d, "cells": [{**d["cells"][0], "flags": "-5r"}]}, "flags"),
+        (lambda d: {**d, "cells": [{**d["cells"][0], "counts": {"setcc_and": 1}}]}, "counts"),
+        (lambda d: {**d, "cells": [{**d["cells"][0], "chk_calls": "7"}]}, "chk_calls"),
+        (lambda d: {**d, "skipped": [{"version": "10.5"}]}, "skipped"),
+    ],
+)
+def test_calibration_from_json_refuses_malformed_shapes(change, problem):
+    data = change(_hand_calibration().to_json())
+    with pytest.raises(probe.ProbeError, match=problem):
+        Calibration.from_json(data)
