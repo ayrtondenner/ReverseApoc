@@ -39,6 +39,7 @@ DEFAULT_STAMPS = REPO_ROOT / "build" / "cache"
 KEPT_ENV = ("PATH",)
 KEPT_ENV_WIN32 = ("SYSTEMROOT", "TEMP", "TMP")
 COMPILER_EXE = "BINNT/WCC386.EXE"  # the NT-hosted driver both backends run
+OBJ_SUFFIX = ".obj"  # the only suffix -o accepts: the object is deleted, then rewritten
 
 # How every compiler run is started: list argv, no shell, output captured as text.
 _CAPTURE: dict[str, Any] = dict(
@@ -282,6 +283,18 @@ def guest_path(path: Path | str, root: Path | str, *, inside: bool) -> str:
     return rel.replace("/", "\\")
 
 
+def _check_outputs(src: Path, obj: Path, err: Path) -> None:
+    """Refuse outputs that would destroy a file: the object is deleted before the compile and
+    rewritten by it, and the error file is rewritten. The object must end in OBJ_SUFFIX (so -o
+    never names a source, a header or the error file), and neither output may be the source."""
+    if obj.suffix != OBJ_SUFFIX:
+        raise CompilerError(f"{obj} must end in {OBJ_SUFFIX}; the compile deletes and rewrites it")
+    source = src.resolve()
+    clash = next((out for out in (obj, err) if out.resolve() == source), None)
+    if clash is not None:
+        raise CompilerError(f"{clash} is the source {src}; the compile would overwrite it")
+
+
 def build_argv(
     exe: Path | str,
     rule: Rule,
@@ -378,17 +391,20 @@ def compile_rule(
     log: Path | str | None = None,
     stamps: Path | str | None = None,
 ) -> CompileResult:
-    """Compile `src` into `obj` with `rule`. Paths are checked first, then the gate, so a refused
-    path or binary never reaches the runner. A non-zero exit leaves no object behind."""
+    """Compile `src` into `obj` with `rule`. Paths and outputs are checked first, then the gate,
+    so a refused path or binary never reaches the runner and nothing is deleted. A non-zero exit
+    leaves no object behind."""
     root = Path(root if root is not None else REPO_ROOT).resolve()
     watcom_dir = Path(watcom_dir) if watcom_dir is not None else watcom.DEFAULT_INSTALL
     runner = runner if runner is not None else subprocess.run
     platform = platform if platform is not None else sys.platform
     log = Path(log) if log is not None else DEFAULT_LOG
     src, obj = Path(src), Path(obj)
+    err = obj.with_suffix(".err")  # next to the object
     guest_src = guest_path(src, root, inside=True)
     guest_obj = guest_path(obj, root, inside=True)
-    guest_err = guest_path(obj.with_suffix(".err"), root, inside=True)  # next to the object
+    guest_err = guest_path(err, root, inside=True)
+    _check_outputs(src, obj, err)
     include = guest_path(watcom_dir / rule.version / "H", root, inside=False)
     prefix = runner_prefix(platform)
     gate = check_gate(
