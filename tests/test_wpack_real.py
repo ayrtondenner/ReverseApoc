@@ -18,8 +18,9 @@ import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc.iso9660 import ISO9660
+from reverseapoc.le import LE
 from reverseapoc.watcom import load_watcom_manifest
-from reverseapoc.wpack import join_parts, read_archive
+from reverseapoc.wpack import decode_member, join_parts, read_archive
 
 MEDIA_DIR = Path(
     os.environ.get("REVERSEAPOC_WATCOM_MEDIA") or REPO_ROOT / "third_party" / "watcom-media"
@@ -61,3 +62,13 @@ def test_pck00017_header_and_crc(pck00017):
     assert member.shannon  # format doc section 9
     (info_offset,) = struct.unpack_from("<I", pck00017, INFO_OFFSET_FIELD)
     assert zlib.crc32(pck00017[member.disk_addr : info_offset]) == member.crc
+
+
+def test_pck00017_decodes_to_the_compiler(pck00017):
+    data = decode_member(pck00017, MEMBER, expected_size=MEMBER_LENGTH)
+    # Only derived values reach an assertion, so a failure never prints compiler bytes.
+    size, head = len(data), bytes(data[:2])
+    assert size == MEMBER_LENGTH
+    assert head == b"MZ"
+    objects = len(LE(data).objects)
+    assert objects >= 1

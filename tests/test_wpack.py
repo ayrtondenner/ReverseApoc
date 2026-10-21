@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import random
 import zlib
 
 import pytest
 
 from reverseapoc import wpack
 from reverseapoc.wpack import Member, WpackError, decode_member, join_parts, read_archive
-from wpackimage import STAMP, archive, no_shannon_stream
+from wpackimage import STAMP, archive, no_shannon_stream, shannon_stream
 
 # A NO_SHANNON member: a match into the space-filled initial window, literals, an overlapping
 # match, and a long-range match back to the first output byte.
@@ -106,3 +107,70 @@ def test_header_size_constant_follows_the_field_layout():
     assert wpack.HEADER_SIZE == 12
     assert wpack.NUM_SYMBOLS == 314
     assert wpack.WINDOW_START == 4036
+
+
+# --- Shannon-coded members and the Watcom qsort tie order (Task 2) ---
+
+# Eight coded symbols (fewer than 16, so the builder's small-sort path applies) with a complete
+# set of code lengths. 'a' (length 3) sits at sorted position 0 and 'd' (length 2) at position
+# 3, so the gap-3 pass swaps them and 'd' gets its code before 'b': a stable sort would not.
+LENGTHS = {ord("a"): 3, ord("b"): 2, ord("c"): 3, ord("d"): 2, ord("e"): 4, 256: 3, 257: 5, 258: 5}
+SHANNON_TOKENS = [
+    (3, 100), ord("a"), ord("b"), ord("c"), (3, 2), ord("d"), (4, 0), ord("e"), (5, 6),
+]  # fmt: skip
+SHANNON_EXPECTED = b"   abcabcdddddecdddd"
+
+
+def _by_key(item: tuple[str, int]) -> int:
+    return item[1]
+
+
+def test_watcom_qsort_orders_by_key():
+    rng = random.Random(1995)
+    for size in (0, 1, 2, 15, 16, 100, 314):
+        items = [(f"x{i}", rng.randint(0, 9)) for i in range(size)]
+        result = wpack.watcom_qsort(items, _by_key)
+        assert sorted(result) == sorted(items), size
+        assert [k for _, k in result] == sorted(k for _, k in items), size
+
+
+def test_watcom_qsort_small_n_order():
+    # Format doc 8.1 worked example. Keys 2,1,1,1,2,1 tagged a..f.
+    # Gap 3 visits position 3 only: key 1 ('d') < key 2 ('a'), so 'a' and 'd' swap:
+    #   d b c a e f
+    # Gap 1, insertion sort: 'f' (1) moves back past 'e' (2) and 'a' (2), stops after 'c' (1):
+    #   d b c f a e
+    items = [("a", 2), ("b", 1), ("c", 1), ("d", 1), ("e", 2), ("f", 1)]
+    assert [t for t, _ in wpack.watcom_qsort(items, _by_key)] == list("dbcfae")
+
+
+def test_watcom_qsort_differs_from_stable_sort():
+    rng = random.Random(314)
+    items = [(f"s{i}", rng.randint(1, 4)) for i in range(314)]
+    assert wpack.watcom_qsort(items, _by_key) != sorted(items, key=_by_key)
+
+
+def test_code_length_table_rle():
+    # 3 entries: skip 2 symbols, 4 symbols of length 3, 1 symbol of length 8; then stream bits.
+    lengths, used = wpack.code_lengths(bytes([2, 0x81, 0x32, 0x07]) + b"\xee\xee")
+    assert used == 4
+    assert lengths[:8] == [0, 0, 3, 3, 3, 3, 8, 0]
+    assert len(lengths) == wpack.NUM_SYMBOLS and not any(lengths[7:])
+
+
+def test_code_length_table_overrun_raises():
+    with pytest.raises(WpackError, match="past"):
+        # skip 128 + 128 + 57, then a run of 8 symbols from symbol 313: past the last (313)
+        wpack.code_lengths(bytes([3, 0xFF, 0xFF, 0xB8, 0x70]))
+
+
+def test_code_length_table_truncated_raises():
+    with pytest.raises(WpackError, match="ends early"):
+        wpack.code_lengths(bytes([3, 0x81, 0x32]))
+
+
+def test_shannon_member_decodes():
+    stream = shannon_stream(SHANNON_TOKENS, LENGTHS)
+    data = archive([("coded.bin", SHANNON_EXPECTED, stream, True)])
+    size = len(SHANNON_EXPECTED)
+    assert decode_member(data, "coded.bin", expected_size=size) == SHANNON_EXPECTED
