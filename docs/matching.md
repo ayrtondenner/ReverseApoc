@@ -2,7 +2,7 @@
 
 The project's record of how Watcom turns C into the bytes in UFO2P.EXE and TACP.EXE: flags, idioms and traps that we have **verified on our own binaries**. Each entry says where it was seen (function address, EXE) and when.
 
-**Nothing recorded yet.** Phase 4 fills in compilers and flags; Phase 5 and later fill in the rest. Raw observations go to [learnings.md](learnings.md) first and move here once confirmed. Hypotheses and evidence from the research live in [toolchain.md](toolchain.md).
+Phase 4 recorded the compiler and the default flags per EXE (whole-binary scans, below) and the idioms calibrated on our own probe; Phase 5 and later add per-function entries. Raw observations go to [learnings.md](learnings.md) first and move here once confirmed. The evidence behind each compiler and flag claim lives in [toolchain.md](toolchain.md#compiler).
 
 ## Compiler and flags per module
 
@@ -17,13 +17,32 @@ Both rows are the `*` default of `config/cflags.txt`, a whole-binary result per 
 
 C shapes and the code Watcom emits for them (switches, loops, byte compares, struct copies, division by constants, register allocation order).
 
-Nothing recorded yet.
+Calibrated 2026-10-21 on our clean-room probe `probe/cg_basic.c`, compiled with 10.5, 10.6 and 11.0 over ten flag sets (`uv run reverseapoc probe calibrate`; the table is in [probe/README.md](../probe/README.md)). 10.5 and 10.6 give byte-identical objects in all ten flag sets, so "10.x" below means both. Mnemonics and counts only.
+
+| Construct | 10.x | 11.0 | Reads as |
+|---|---|---|---|
+| `return c == 5;` on an `unsigned char` | `-3r`: `sete al; movzx eax,al`. `-4r`, `-5r`: `sete al; and eax,0FFh`. `-5r -os`: `movzx` again | `-3r`: `movzx`. `-4r`: `and eax,0FFh`. Every `-5` cell: a branch (`jne`, `mov eax,1`), no setcc | `and`-form: not `-3`, not 11.0 at `-5`; a `movzx` alone does not prove `-3` (10.x `-os`) |
+| 5-dword struct copy | `-3r`, `-4r`, `-4r -ox`: `mov ecx,5` .. `rep movsd` (register moves between). Every `-5r`/`-5s` cell: five `movsd` unrolled | the same split | only the 5-dword size (20-23 bytes with a movsw/movsb tail) separates `-4` from `-5` (10.6 and 11.0 sizes table, 04-10): 2-4 dwords unroll at both, 6 and more use rep at both, except `-os`, which also unrolls 6 and 7 |
+| counted loop `for (i = 0; i < n; i++)` | rotated: `jmp` to the bottom test, `jl` back | top-tested: `cmp; jge` out, `jmp` back | 10.x vs 11.0 on the probe, but not decisive in game code (both shapes occur) and gone under `-oneatx` for both |
+| sparse switch `{1, 2, 3, 10}` | one ascending compare chain (none found under `-oneatx`) | the same | switch order does not separate the versions; our counter covers `eax`/`al` compares only |
+| `-fpi` vs `-fpi87` | identical code; only the default-library record differs (`emu387` vs `noemu387`) | the same | the linked EMU387 module says some object asked for `-fpi` |
+| without `-s` | one `push imm32; call __CHK` per function (7 in the 7-function probe) | the same | each `__CHK` call in game code is one function built without `-s` |
+| `-5s` | default libraries `math387s` and `emu387`; no CLIB library is requested under any flag set | the same | a stack-convention build links 3S libraries |
+
+Measured in the game's non-library code with these idioms: [toolchain.md "Evidence"](toolchain.md#evidence) (counts) and ["Flags"](toolchain.md#flags) (what they prove).
 
 ## Pitfalls
 
 Things that look equivalent in C but compile differently, and tooling traps.
 
-Nothing recorded yet.
+Compiler wrapper traps, each verified in Phase 4 and handled by `uv run reverseapoc cc` (details in [toolchain.md "wibo"](toolchain.md#wibo)):
+
+- **Environment variables change codegen.** `wcc386` reads its own name as an options variable: `WCC386=-3r` turned the `and`-form byte compare into `movzx` on 10.6 and 11.0. `INCLUDE` changes the header search. docker compose loads `../.env` into the container, so the wrapper builds the child environment from scratch.
+- **The NT-hosted compilers target NT by default.** Without `-bt=dos`, `__NT__` is defined and the headers and default libraries take the NT branches. The wrapper always passes `-bt=dos`, and cflags.txt may not override it.
+- **A failed compile writes `<stem>.err` into the cwd** (the repo root). The wrapper passes `-fr=` with a path beside the object.
+- **`/` starts an option and a space splits the command line.** A forward-slash path became `Invalid option`. The wrapper writes relative backslash paths and refuses paths with a space or a leading `-`. In Git Bash, MSYS also rewrites `-i=` arguments and eats `\\`; run manual compiles with `MSYS_NO_PATHCONV=1`, or through the wrapper.
+- **Objects hold absolute paths.** THEADR holds the absolute source path and COMENT class 0xE9 absolute header paths and DOS timestamps, even when the command line was relative, so raw object hashes never agree across host and container. Compare the normalized SHA-1 (all records except THEADR and COMENT 0xE9), which the wrapper prints next to the raw one; it was equal native vs wibo for 10.5, 10.6 and 11.0 (D-03).
+- **Identical library bodies.** Equal-length library stubs match each other after masking: CLIB's 18-byte `noefgfmt`/`nomem` stubs look like the C++ `__wcpp_` undefined-member stubs, and C++ `fatalerr` equals the head of CLIB's `__fatal_runtime_error_`. A naive library match "finds" the C++ runtime in both EXEs. `libmatch` keeps such rows `ambiguous` (or resolves them by data, call graph or C-before-C++), and an ambiguous row's publics are candidates, not placements.
 
 Leads from other projects, not yet verified here:
 
