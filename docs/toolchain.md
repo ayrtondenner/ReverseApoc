@@ -287,7 +287,7 @@ Result (spike [004](../.planning/spikes/004-wibo-watcom/README.md), verdict VALI
 
 `uv run reverseapoc cc SRC -o OBJ` encodes the invocation rules, the same on the host and in the container:
 
-- always `-zq -zld -bt=dos` (quiet, no file-dependency record, DOS target instead of the NT host's `__NT__` default) and `-fr=` naming an error file beside the object, so no stray `.err` file lands in the cwd;
+- always `-zq -zld -bt=dos` (quiet; no file-dependency entries: `-zld` drops the source and header entries, but each object still ends its dependency list with one empty COMENT 0xE9 record, measured on 10.5, 10.6 and 11.0; DOS target instead of the NT host's `__NT__` default) and `-fr=` naming an error file beside the object, so no stray `.err` file lands in the cwd (10.5 writes no error file at all);
 - `-i=<tree>\H` from the selected version's own tree only (`WATCOM=<tree>` alone does not find the headers);
 - relative paths with backslashes, refusing any path with a space or a leading `-` (Watcom reads `/` as an option switch);
 - an environment built from scratch (PATH, plus SYSTEMROOT, TEMP and TMP on Windows), so `WCC386`, `INCLUDE` or `WATCOM` set in the caller's environment never reach the compiler (`WCC386=-3r` in the environment changes codegen);
