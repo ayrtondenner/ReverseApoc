@@ -12,6 +12,7 @@ crosses `/`, matching is case-sensitive). A source no rule matches is refused.
 from __future__ import annotations
 
 import fnmatch
+import re
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,10 @@ UNSUPPORTED_COMPILERS = ("wpp386",)
 # takes its value with or without "=", so `-iinc`, `-Iinc` and `-I=inc` all add an include path
 # (D-14; probed with the real 10.6 and 11.0 compilers).
 WRAPPER_OWNED = ("-zq", "-zld", "-bt", "-fo", "-fr", "-fi", "-fh", "-ad", "-i")
+# What a whole flag may hold once the checks with their own message have passed: an allow list,
+# like compiler._SAFE_PATH for guest paths. A quote or a shell character would reach Watcom's own
+# command-line quoting and could merge the next argv entries into one option (review IN-03).
+_SAFE_FLAG = re.compile(r"-[A-Za-z0-9_=.+]+")
 
 
 class CflagsError(ValueError):
@@ -86,6 +91,8 @@ def _check_flag(flag: str) -> None:
         raise CflagsError(f"flag `{flag}` holds `{bad}`, which Watcom would misread")
     if any(c.isspace() for c in flag):
         raise CflagsError(f"flag `{flag}` holds whitespace")
+    if not _SAFE_FLAG.fullmatch(flag):
+        raise CflagsError(f"flag `{flag}` may hold only [A-Za-z0-9_=.+] after its `-`")
 
 
 def _check_spec(compiler: str, version: str, versions: Collection[str]) -> None:
@@ -120,7 +127,8 @@ def parse_cflags(text: str, *, versions: Collection[str], where: str = "cflags.t
     """The rules of a cflags.txt text, in file order. Every error names `where` and the line:
     a first rule whose glob is not `*`, a malformed compiler@version, an unknown or unsupported
     compiler or version, and a flag that does not start with `-`, holds a second `-`, is
-    wrapper-owned in any case, or holds `/`, `\\` or whitespace."""
+    wrapper-owned in any case, or holds `/`, `\\`, whitespace or any other character outside
+    [A-Za-z0-9_=.+]."""
     rules = []
     for lineno, fields in _fields(text):
         try:

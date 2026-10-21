@@ -16,7 +16,8 @@
 # The wrapper owns these flags; they may not appear here in any case or spelling (Watcom ignores
 # case and takes a value with or without `=`, so `-Iinc` is -i): -zq -zld -bt -fo -fr -fi -fh
 # -ad -i. A flag is one option: it must start with `-` and hold no other `-` (Watcom starts a new
-# option there), no `/`, no `\` and no whitespace.
+# option there), and after the `-` only letters, digits and `_ = . +` (so no `/`, `\`, quote or
+# whitespace).
 #
 # Evidence for the default: docs/toolchain.md, sections "Result" and "Flags" (Phase 4, measured
 # per EXE; UFO2P and TACP give the same answer). The rule is consistent with those scans and
