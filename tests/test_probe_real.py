@@ -277,3 +277,21 @@ def test_exe_nonlibrary_idioms(exe_scan):
     assert counts["rep_movsd_small"] > 0, counts  # research: 0 (old adjacent encoding)
     measured = {name: counts[name] for name in MEASURED_DECISIVE[exe_scan.exe]}
     assert measured == MEASURED_DECISIVE[exe_scan.exe]
+
+
+def test_exe_chk_calls(exe_scan):
+    print()
+    print(*exe_scan.evidence, sep="\n")
+    assert exe_scan.chk_calls > 0
+    assert sum(n for _, n in exe_scan.chk_blocks) == exe_scan.chk_calls
+    assert all(block % 0x10000 == 0 for block, _ in exe_scan.chk_blocks), exe_scan.chk_blocks
+
+
+def test_exe_consistent_cells(calibration, exe_scan):
+    cells = probe.consistent_cells(calibration, exe_scan)
+    names = [f"{c.version} {' '.join(c.flags)}" for c in cells]
+    print()
+    print(f"{exe_scan.exe} consistent: {names}")
+    assert not [c for c in cells if c.version == "11.0"], names
+    assert not [c for c in cells if {"-3r", "-4r"} & set(c.flags)], names
+    assert [c for c in cells if c.version == "10.6" and "-5r" in c.flags], names

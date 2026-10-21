@@ -571,3 +571,163 @@ def test_scan_format_and_json():
     assert (data["code_base"], data["code_size"], data["lib_bytes"]) == (0x10000, 0x1800, 0x20)
     assert data["counts"] == scan.counts
     json.dumps(data)  # plain JSON types only
+
+
+# ---- plan 04-10 Task 2: stack checks, flag evidence, consistent cells ----------------------------
+
+CHK_BASE = 0x10000
+CHK_ROW = (0x20000, 0x20040)  # the runtime row publishing __CHK
+OTHER_ROW = (0x20040, 0x20080)  # a runtime row without __CHK
+
+
+def _push_call(site: int, target: int) -> bytes:
+    """push 10h (68 imm32); call rel32 (E8) to `target`, for a push at linear address `site`."""
+    call_end = site + 5 + 5  # the call's rel32 is relative to the end of the call
+    return b"\x68\x10\x00\x00\x00\xe8" + (target - call_end).to_bytes(4, "little", signed=True)
+
+
+def _chk_code(sites: dict[int, int]) -> bytes:
+    """Code from CHK_BASE to past OTHER_ROW, zero-filled, with a push/call at each site."""
+    code = bytearray(OTHER_ROW[1] + 0x100 - CHK_BASE)
+    for site, target in sites.items():
+        blob = _push_call(site, target)
+        code[site - CHK_BASE : site - CHK_BASE + len(blob)] = blob
+    return bytes(code)
+
+
+def _chk_rows():
+    return [_row(*CHK_ROW, publics=("__CHK", "__STK")), _row(*OTHER_ROW, publics=("other_",))]
+
+
+def test_chk_calls():
+    rows = _chk_rows()
+    exclude = [(r.start, r.end) for r in rows]
+    sites = {
+        0x10010: CHK_ROW[0],  # counted
+        0x1F000: CHK_ROW[0] + 4,  # counted: inside the __CHK row, same 64 KiB block
+        0x10100: 0x10800,  # calls game code: not counted
+        0x10200: OTHER_ROW[0],  # calls a row without __CHK: not counted
+        0x20050: CHK_ROW[0],  # the site itself lies in a runtime row: not counted
+    }
+    assert probe.chk_calls(_chk_code(sites), CHK_BASE, rows, exclude) == (2, ((0x10000, 2),))
+
+
+def test_chk_calls_blocks_sorted():
+    rows = _chk_rows()
+    exclude = [(r.start, r.end) for r in rows]
+    sites = {0x20100: CHK_ROW[0], 0x10010: CHK_ROW[0], 0x10020: CHK_ROW[0]}
+    assert probe.chk_calls(_chk_code(sites), CHK_BASE, rows, exclude) == (
+        3,
+        ((0x10000, 2), (0x20000, 1)),
+    )
+
+
+def test_chk_calls_need_the_push_and_a_chk_row():
+    rows = _chk_rows()
+    code = bytearray(_chk_code({0x10010: CHK_ROW[0]}))
+    code[0x10] = 0x90  # nop instead of push imm32: a bare call is not a stack check
+    assert probe.chk_calls(bytes(code), CHK_BASE, rows, []) == (0, ())
+    no_chk = [_row(*CHK_ROW, publics=("__STK",))]
+    assert probe.chk_calls(_chk_code({0x10010: CHK_ROW[0]}), CHK_BASE, no_chk, []) == (0, ())
+
+
+EVIDENCE_PREFIXES = (
+    "calling convention:",
+    "fpu:",
+    "cpu:",
+    "stack checks:",
+    "memory model:",
+    "shapes (not decisive):",
+)
+
+
+def _evidence_scan(**counts: int) -> probe.ExeScan:
+    return probe.ExeScan(
+        exe="SYNTH.EXE",
+        code_base=0x10000,
+        code_size=0x1800,
+        nonlib_bytes=0x1700,
+        lib_bytes=0x100,
+        counts={name: counts.get(name, 0) for name in IDIOMS},
+        chk_calls=3,
+        chk_blocks=((0x10000, 2), (0xB0000, 1)),
+    )
+
+
+def test_flag_evidence_lines():
+    rows = [
+        _row(0x10100, 0x10120, libraries=("DOS/CLIB3R.LIB", "NT/CLIB3R.LIB")),  # 3R only
+        _row(0x10120, 0x10140, libraries=("DOS/CLIB3S.LIB",)),  # 3S only
+        _row(0x10140, 0x10160, libraries=("DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB")),  # both
+        _row(0x10160, 0x10180, libraries=("DOS/EMU387.LIB",)),  # neither convention
+        _row(0x10180, 0x101A0, libraries=("MATH387R.LIB",)),  # 3R only, MATH387
+        _row(0x101A0, 0x101C0, libraries=("MATH387R.LIB", "MATH3R.LIB")),  # MATH387 and MATH3
+        _row(0x101C0, 0x101E0, publics=("__CHK",)),
+    ]
+    scan = _evidence_scan(setcc_and=30, movsd_unrolled=75, rep_movsd_small=4, loop_rotated=9,
+                          switch_ascending=2)  # fmt: skip
+    lines = probe.flag_evidence(_scan_le({}), rows, scan)
+    assert tuple(line.split(":")[0] + ":" for line in lines) == EVIDENCE_PREFIXES
+    convention, fpu, cpu, stack, memory, shapes = lines
+    assert "3R only 4 rows" in convention and "3S only 1 row" in convention
+    assert "both 1 row" in convention and "(source: runtime rows)" in convention
+    assert "mixed" in convention  # a mix is reported as a mix, never voted apart (D-07)
+    assert "EMU387 1 row" in fpu and "NOEMU387 0 rows" in fpu
+    assert "MATH387 2 rows" in fpu and "MATH3 1 row (0 only in MATH3)" in fpu
+    assert "A3" in fpu and "(source: runtime rows)" in fpu
+    for name, n in (("setcc_and", 30), ("setcc_movzx", 0), ("movsd_unrolled", 75),
+                    ("rep_movsd_small", 4)):  # fmt: skip
+        assert f"{name} {n}" in cpu
+    assert "(source: idiom counts in non-library code)" in cpu
+    assert "3 __CHK calls" in stack and "0x00010000 2" in stack and "0x000b0000 1" in stack
+    assert "(source: idiom counts, __CHK from runtime row fake)" in stack
+    assert "2 objects, 2 with the 32-bit flag" in memory and "(source: LE object table)" in memory
+    assert "loop_rotated 9" in shapes and "switch_ascending 2" in shapes
+    assert "eax/al" in shapes  # the switch counter's compare forms
+
+
+def test_flag_evidence_without_rows():
+    scan = _evidence_scan()
+    convention, fpu, _cpu, stack, *_ = probe.flag_evidence(_scan_le({}), [], scan)
+    assert "no evidence" in convention
+    assert "EMU387 0 rows" in fpu
+    assert "no runtime row publishes __CHK" in stack
+
+
+def test_decisive_families():
+    assert probe.DECISIVE_FAMILIES == {
+        "byte_compare": ("setcc_and", "setcc_movzx"),
+        "struct_copy": ("movsd_unrolled", "rep_movsd_small"),
+    }
+
+
+def test_consistent_cells():
+    a = _cell("10.6", ("-5r", "-s"), "a", setcc_and=1, movsd_unrolled=1, loop_rotated=1)
+    b = _cell("10.6", ("-3r", "-s"), "b", setcc_movzx=1, movsd_unrolled=1)
+    c = _cell("10.6", ("-4r", "-s"), "c", setcc_and=1, rep_movsd_small=1)
+    d = _cell("11.0", ("-5r", "-s"), "d", movsd_unrolled=1)
+    e = _cell("11.0", ("-5r", "-s", "-ox"), "e", setcc_and=1, movsd_unrolled=1, loop_top_tested=1)
+    calibration = Calibration((a, b, c, d, e), ())
+    scan = _evidence_scan(setcc_and=30, movsd_unrolled=75, loop_rotated=357)
+    # loop (and switch) counts are reported but never decide: e top-tests and stays
+    assert probe.consistent_cells(calibration, scan) == [a, e]
+
+
+def test_consistent_cells_family_without_exe_hits_removes_nothing():
+    a = _cell("10.6", ("-5r", "-s"), "a", setcc_and=1)
+    b = _cell("10.6", ("-3r", "-s"), "b", setcc_movzx=1, rep_movsd_small=1)
+    calibration = Calibration((a, b), ())
+    assert probe.consistent_cells(calibration, _evidence_scan()) == [a, b]
+    # the EXE shows both setcc forms: a cell emitting either one is kept
+    both = _evidence_scan(setcc_and=1, setcc_movzx=1)
+    assert probe.consistent_cells(calibration, both) == [a, b]
+
+
+def test_scan_exe_fills_stack_checks_and_evidence():
+    site = 0x10400
+    le = _scan_le({site: _push_call(site, 0x10500)})
+    scan = probe.scan_exe(le, [_row(0x10500, 0x10520, publics=("__CHK",))], exe="SYNTH.EXE")
+    assert (scan.chk_calls, scan.chk_blocks) == (1, ((0x10000, 1),))
+    assert tuple(line.split(":")[0] + ":" for line in scan.evidence) == EVIDENCE_PREFIXES
+    assert scan.format().splitlines()[-len(EVIDENCE_PREFIXES):] == list(scan.evidence)
+    assert scan.to_json()["chk_blocks"] == [{"block": 0x10000, "calls": 1}]
