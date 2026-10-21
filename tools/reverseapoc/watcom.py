@@ -29,6 +29,7 @@ from .targets import (
     check_target,
     hash_file,
 )
+from .wpack import WpackError, decode_member, join_parts
 
 DEFAULT_WATCOM_MANIFEST = REPO_ROOT / "config" / "watcom.toml"
 DEFAULT_MEDIA = REPO_ROOT / "third_party" / "watcom-media"
@@ -55,6 +56,9 @@ class KeyFile:
     crc32: int | None = None
     known_bad: bool = False
     note: str = ""
+    # D-01: the CD's copy is damaged; install decodes the real file from this wpack archive.
+    wpack: tuple[str, ...] = ()  # archive parts in order, POSIX paths inside the installed tree
+    wpack_member: str = ""  # member name inside the archive (matched without case)
 
     def as_target(self) -> Target:
         return Target(
@@ -88,6 +92,21 @@ class WatcomMedia:
         return f"{base}/{self.item}/{urllib.parse.quote(self.file)}"
 
 
+def _parse_wpack(where: str, entry: dict) -> tuple[tuple[str, ...], str]:
+    """The optional `wpack` parts and `wpack_member` of a key file: both or neither."""
+    parts = entry.get("wpack", [])
+    if not isinstance(parts, list) or not all(isinstance(p, str) and p for p in parts):
+        raise ManifestError(f"{where}: 'wpack' must be a list of non-empty strings")
+    member = entry.get("wpack_member", "")
+    if not isinstance(member, str):
+        raise ManifestError(f"{where}: 'wpack_member' must be a string")
+    if bool(parts) != bool(member):
+        raise ManifestError(
+            f"{where}: 'wpack' and a non-empty 'wpack_member' go together (both or neither)"
+        )
+    return tuple(parts), member
+
+
 def _parse_key_file(where: str, entry: object) -> KeyFile:
     if not isinstance(entry, dict):
         raise ManifestError(f"{where}: must be a table")
@@ -97,6 +116,7 @@ def _parse_key_file(where: str, entry: object) -> KeyFile:
     note = entry.get("note", "")
     if not isinstance(note, str):
         raise ManifestError(f"{where}: 'note' must be a string")
+    wpack, wpack_member = _parse_wpack(where, entry)
     return KeyFile(
         path=_text(entry, where, "path"),
         size=_size(entry, where),
@@ -105,6 +125,8 @@ def _parse_key_file(where: str, entry: object) -> KeyFile:
         crc32=_crc32(entry, where),
         known_bad=known_bad,
         note=note,
+        wpack=wpack,
+        wpack_member=wpack_member,
     )
 
 
@@ -344,7 +366,13 @@ class VersionCheck:
                     f"{self.media.version}`)"
                 )
             elif r.status == "mismatch":
-                lines.append(f"  MISMATCH  {path}  " + "; ".join(r.problems))
+                line = f"  MISMATCH  {path}  " + "; ".join(r.problems)
+                if r.key_file.wpack:
+                    line += (
+                        f"  (re-run `uv run reverseapoc install-watcom {self.media.version} "
+                        "--force` to decode it)"
+                    )
+                lines.append(line)
             else:
                 lines.append(f"  KNOWN BAD {path}  {r.key_file.note}".rstrip())
         lines.append(
@@ -411,6 +439,27 @@ def _replace_with_retry(
             sleep(delay * attempt)
 
 
+def _decode_wpack_key_files(media: WatcomMedia, root: Path) -> None:
+    """Replace each wpack key file in the extracted tree `root` by its decoded archive member
+    (D-01). The parts are read from `root`; the result goes to the key file's own manifest path,
+    never to a name taken from the archive."""
+    for kf in media.key_files:
+        if not kf.wpack:
+            continue
+        what = f"cannot decode {kf.path} for Watcom {media.version} from {', '.join(kf.wpack)}"
+        missing = [part for part in kf.wpack if not (root / part).is_file()]
+        if missing:
+            raise WatcomError(f"{what}: {', '.join(missing)} not found")
+        data = join_parts((root / part).read_bytes() for part in kf.wpack)
+        try:
+            decoded = decode_member(data, kf.wpack_member, expected_size=kf.size)
+        except WpackError as exc:
+            raise WatcomError(f"{what}: {exc}") from exc
+        dest = root / kf.path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(decoded)
+
+
 def install_version(
     media: WatcomMedia,
     media_dir: Path | str,
@@ -418,7 +467,8 @@ def install_version(
     *,
     force: bool = False,
 ) -> VersionCheck:
-    """Extract a verified ISO into `install_dir/<version>` (via a `.partial` directory)."""
+    """Extract a verified ISO into `install_dir/<version>` (via a `.partial` directory) and
+    decode its wpack key files there, before the finished tree replaces the old one."""
     iso = Path(media_dir) / media.local_name
     hint = f"run `uv run reverseapoc fetch-watcom {media.version}`"
     if not iso.is_file():
@@ -438,6 +488,7 @@ def install_version(
             extract_all(iso, partial, skip_dirs=media.skip_dirs)
         except ISOError as exc:
             raise WatcomError(f"cannot extract Watcom {media.version} from {iso}: {exc}") from exc
+        _decode_wpack_key_files(media, partial)
         if target.exists():
             shutil.rmtree(target)
         try:
