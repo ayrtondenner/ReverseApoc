@@ -49,8 +49,14 @@ def segdef32(name_idx: int, class_idx: int, length: int, *, attr: int = 0x69) ->
     return record(0x99, body + index(1))
 
 
-def pubdef32(seg: int, entries: list[tuple[str, int]], *, group: int = 0) -> bytes:
+def pubdef32(
+    seg: int, entries: list[tuple[str, int]], *, group: int = 0, frame: int = 0
+) -> bytes:
+    """Record 0x91. TIS OMF 1.1 (PUBDEF): the Base Frame is present only if the Base Segment
+    index is 0, whatever the Base Group index."""
     body = index(group) + index(seg)
+    if seg == 0:
+        body += struct.pack("<H", frame)
     for public, offset in entries:
         body += name(public) + struct.pack("<I", offset) + index(0)  # type index 0
     return record(0x91, body)
@@ -202,11 +208,12 @@ def comdat32(
     frame: int = 0,
 ) -> bytes:
     """COMDAT32. flags 0x01 continuation, 0x02 iterated data; attributes low nibble 0 means
-    explicit allocation, the only case with a public base (group, segment, frame if both 0)."""
+    explicit allocation, the only case with a public base. TIS OMF 1.1 gives the public base
+    PUBDEF's layout: group, segment, and a frame only if the segment index is 0."""
     body = bytes([flags, attributes, alignment]) + struct.pack("<I", offset) + index(0)
     if attributes & 0x0F == 0:
         body += index(group) + index(seg)
-        if group == 0 and seg == 0:
+        if seg == 0:
             body += struct.pack("<H", frame)
     return record(0xC3, body + index(name_idx) + data)
 
