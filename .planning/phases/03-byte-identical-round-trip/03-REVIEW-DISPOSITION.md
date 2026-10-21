@@ -87,21 +87,21 @@ recorded: 2026-10-20T23:13:08.458Z
 | WR-02 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
 | WR-05 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
 | WR-06 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
-| WR-07 | warning | open | - |
-| IN-09 | info | open | - |
-| IN-10 | info | open | - |
-| IN-11 | info | open | - |
+| WR-07 | warning | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-09 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-10 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-11 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
 | WR-01 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches |
 | WR-03 | warning | deferred | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches |
 | WR-04 | warning | deferred | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
-| IN-06 | info | open | - |
-| IN-07 | info | open | - |
-| IN-08 | info | open | - |
+| IN-01 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-02 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-03 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-04 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-05 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-06 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-07 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
+| IN-08 | info | open | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
