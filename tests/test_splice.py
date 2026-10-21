@@ -7,7 +7,9 @@ under pytest's tmp_path.
 from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import fields
+from pathlib import Path
 
 import pytest
 
@@ -897,6 +899,77 @@ def test_layout_accepts_disjoint_objects_in_any_order():
     img = _no_fixups(objects=DESCENDING_OBJECTS)
     check_tiling(layout(LE(img.data)), len(img.data))
     _assert_control(img)
+
+
+# ---- WR-03: the output is checked by file identity, written atomically, the input read once -----
+
+PREVIOUS_BUILD = b"previous build output"  # synthetic: what build/<NAME> held before the rebuild
+
+
+def _patched_rebuild_setup(tmp_path):
+    """orig/ with the 3-page fixture, its target, and a build dir already holding PREVIOUS_BUILD.
+    A patch makes the rebuilt bytes differ from orig/, so a write through a link would show."""
+    img = _no_fixups()
+    orig, manifest = _orig(tmp_path, img.data)
+    (target,) = load_manifest(manifest)
+    out = tmp_path / "build"
+    out.mkdir()
+    return img, orig, target, out
+
+
+def test_rebuild_refuses_an_output_hardlinked_to_the_input(tmp_path):
+    img, orig, target, out = _patched_rebuild_setup(tmp_path)
+    try:
+        os.link(orig / target.name, out / target.name)
+    except OSError as exc:
+        pytest.skip(f"this file system cannot hardlink: {exc}")
+    with pytest.raises(SpliceError, match=r"same file as .*SYNTH\.EXE"):
+        rebuild_target(target, orig, out, patches={0x10800: bytes([PATCH_BYTE])})
+    assert (orig / target.name).read_bytes() == img.data
+
+
+def _fail_halfway(path, data):
+    """A Path.write_bytes that writes half of `data`, then fails like a full disk."""
+    with open(path, "wb") as fh:
+        fh.write(bytes(data)[: len(data) // 2])
+    raise OSError(28, "No space left on device")
+
+
+def _fail_replace(src, dst):
+    raise OSError(13, "Permission denied")
+
+
+@pytest.mark.parametrize(
+    ("owner", "name", "failure"),
+    [(Path, "write_bytes", _fail_halfway), (os, "replace", _fail_replace)],
+    ids=["mid-write", "replace"],
+)
+def test_rebuild_failed_write_keeps_previous_output(tmp_path, monkeypatch, owner, name, failure):
+    _, orig, target, out = _patched_rebuild_setup(tmp_path)
+    (out / target.name).write_bytes(PREVIOUS_BUILD)
+    monkeypatch.setattr(owner, name, failure)
+    with pytest.raises(OSError):
+        rebuild_target(target, orig, out, patches={0x10800: bytes([PATCH_BYTE])})
+    monkeypatch.undo()
+    assert (out / target.name).read_bytes() == PREVIOUS_BUILD
+    assert [p.name for p in out.iterdir()] == [target.name]  # no temporary file left behind
+
+
+def test_rebuild_reads_the_input_once(tmp_path, monkeypatch):
+    _, orig, target, out = _patched_rebuild_setup(tmp_path)
+    source = (orig / target.name).resolve()
+    reads = []
+    real_open = Path.open
+
+    def counting_open(self, mode="r", *args, **kwargs):
+        if "r" in mode and self.resolve() == source:
+            reads.append(mode)
+        return real_open(self, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    result = rebuild_target(target, orig, out)
+    assert result.status == "ok"
+    assert len(reads) == 1
 
 
 def test_rebuild_result_names_the_input_path(tmp_path):

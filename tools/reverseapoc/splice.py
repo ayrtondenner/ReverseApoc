@@ -28,6 +28,9 @@ SHA-1s only, never file bytes.
 
 from __future__ import annotations
 
+import hashlib
+import os
+import zlib
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -56,7 +59,6 @@ from .targets import (
     ManifestError,
     Target,
     check_bare_name,
-    check_target,
     hash_file,
     load_manifest,
 )
@@ -647,6 +649,40 @@ def _refuse_inside_orig(path: Path, orig_dir: Path) -> None:
         raise SpliceError(f"refusing to write {path}: it lies inside orig/ ({orig_dir})")
 
 
+def _refuse_same_file(path: Path, source: Path) -> None:
+    """Refuse an output that is the input file under another name, such as a hardlink, which
+    the path check of _refuse_inside_orig cannot see (WR-03)."""
+    if path.exists() and os.path.samefile(path, source):
+        raise SpliceError(f"refusing to write {path}: it is the same file as {source}")
+
+
+def _hash_bytes(data: bytes) -> FileHashes:
+    """targets.hash_file for bytes already in memory."""
+    sha1 = hashlib.sha1(data).hexdigest()
+    return FileHashes(len(data), zlib.crc32(data), hashlib.md5(data).hexdigest(), sha1)
+
+
+def _matches(target: Target, got: FileHashes) -> bool:
+    """The checks of targets.check_target (size, CRC32 when the manifest gives one, MD5 and
+    SHA-1), run on the bytes rebuild parses instead of on a second read of the file."""
+    crc_ok = target.crc32 is None or got.crc32 == target.crc32
+    return got.size == target.size and crc_ok and (got.md5, got.sha1) == (target.md5, target.sha1)
+
+
+def _write_atomic(path: Path, data: bytes) -> None:
+    """Write `data` to a temporary file next to `path`, then swap it in with os.replace: a write
+    that fails leaves the previous `path` as it was, and a link at `path` is replaced, never
+    written through (WR-03)."""
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.unlink(missing_ok=True)  # a stale temporary file could itself be a link
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
 def _first_difference(a: bytes, b: bytes) -> int | None:
     return next((i for i, (x, y) in enumerate(zip(a, b, strict=True)) if x != y), None)
 
@@ -679,25 +715,31 @@ def rebuild_target(
     """Rebuild orig_dir/<name> from its regions, with `patches` spliced in, into out_dir/<name>
     and compare its SHA-1 with the manifest. A mismatch names the first differing file offset,
     its region and the count of differing bytes. Nothing is written when the input is missing
-    or does not match the manifest."""
+    or does not match the manifest, and an output that is the input file is refused.
+
+    The input is read once: the bytes checked against the manifest are the bytes parsed. The
+    output is written to a temporary file and swapped in, so a failed write keeps the previous
+    output (WR-03)."""
     _check_bare_name(target)
     out_path = out_dir / target.name
     _refuse_inside_orig(out_path, orig_dir)
-    check = check_target(target, orig_dir / target.name)
-    if check.status == "missing":
-        return RebuildResult(target, "missing", None, source=check.path)
-    if check.status != "ok":
-        return RebuildResult(target, "refused", None, source=check.path)
+    source = orig_dir / target.name
+    if not source.is_file():
+        return RebuildResult(target, "missing", None, source=source)
+    _refuse_same_file(out_path, source)
+    data = source.read_bytes()
+    if not _matches(target, _hash_bytes(data)):
+        return RebuildResult(target, "refused", None, source=source)
     try:
-        le = LE(check.path)
+        le = LE(data)
         result = splice(le, patches or {})
     except LEError as exc:
         raise type(exc)(f"{target.name}: {exc}") from exc
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(result.data)
+    _write_atomic(out_path, result.data)
     hashes = hash_file(out_path)
     masked = len({m.fixup for m in result.masked})  # distinct fields (WR-02)
-    common = {"masked_fields": masked, "source": check.path}
+    common = {"masked_fields": masked, "source": source}
     if hashes.sha1 == target.sha1:
         return RebuildResult(target, "ok", out_path, hashes, **common)
     diff = _mismatch(result, le.data)
