@@ -532,7 +532,7 @@ def build_argv(version: str, flags: list[str], src_rel: str, obj_rel: str, err_r
 
 | # | Claim | Section | Risk if Wrong |
 |---|---|---|---|
-| A1 | Writing `wpack.py` from a format description (not copying OWPL code) keeps `tools/` GPLv3-clean; LZHUF tables are freely reusable | Pattern 1 | Licence conflict in `tools/`; owner should confirm before merge |
+| A1 | Writing `wpack.py` from a format description (not copying OWPL code) keeps `tools/` GPLv3-clean; LZHUF tables are freely reusable | Pattern 1 | Licence conflict in `tools/`. RESOLVED by D-15 (owner, 2026-10-21): independent implementation from `docs/research/wpack-format.md`, OWPL `bld/wpack` cited as format reference only, LZHUF tables reused (plan 04-03) |
 | A2 | The 10.5 archive's 12-byte header layout (vs OW v2's 16-byte) applies to all 10.5 PCK archives we touch | Pattern 1 / Pitfall 8 | Only PCK00017 is needed; low risk |
 | A3 | EMU387 being linked implies game objects were compiled with `-fpi` (not `-fpi87`); wlink may link the emulator if *any* object requests it | Flag matrix | `-fpi87` for some modules would go unnoticed; Phase 5 matches confirm (code is identical either way, only the default-lib COMENT differs) |
 | A4 | Watcom 10.6 used the same init priority constants as OW v2's `rtprior.h` (32 library / 64 program / 40 dtor) | Pattern 7 | The observed library entries all have 32, which supports it; if wrong, re-derive from 10.6 CLIB XI entries per module |
@@ -540,21 +540,29 @@ def build_argv(version: str, flags: list[str], src_rel: str, obj_rel: str, err_r
 | A6 | The ~40/32 `__CHK` call sites belong to game or third-party modules compiled without `-s`, not to unmatched Watcom runtime | Flag matrix | Their location (0x10000 and 0xB0000 blocks, below `_cstart_`) suggests non-runtime; Phase 5 split confirms |
 | A7 | Byte-pattern idiom hits inside code are real instructions (not jump-table data in code) | Pattern 6 | Small count noise; acceptable for "counts favour" (D-10) |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Where do the 10.5 decoder's expected hashes come from in tests?**
+All five were settled before planning (owner decisions D-15/D-16 and the Claude's-discretion items in
+04-CONTEXT.md, 2026-10-21) or are answered by execution; none blocks planning.
+
+1. **Where do the 10.5 decoder's expected hashes come from in tests?** RESOLVED
    - What we know: the prototype gives size 567,558, sha1 `a479921b…`, md5 `17751042…`, crc32 `0xDAA1AD2A`.
    - Recommendation: the executor re-derives them with the production decoder, verifies the banner, and only then edits `config/watcom.toml` (one reviewed commit). Tests read them through `load_watcom_manifest()` (Phase 3 D-15/D-21 pattern).
-2. **Does D-05's "every 32-bit library" include the NT/OS2/WIN/NETWARE subtrees?**
+   - **RESOLVED:** recommendation adopted (D-01, D-15). Plan 04-03 writes the decoder from `docs/research/wpack-format.md`; plan 04-06 Task 2 re-derives size and hashes from a real end-to-end `install-watcom 10.5`, checks the banner, pins them in `config/watcom.toml`, and `tests/test_wpack_real.py` reads the pin through `load_watcom_manifest()`, never a copied literal.
+2. **Does D-05's "every 32-bit library" include the NT/OS2/WIN/NETWARE subtrees?** RESOLVED
    - What we know: whole-tree sweep costs 19 s for 3 versions and adds no new ranges; every range is also matched by a `DOS/` library.
    - Recommendation: sweep the whole tree (literal reading of D-05), skip non-OMF libraries with a reported reason, and in `runtime.csv` list all matching libraries but order `DOS/` and root first.
-3. **COMDAT support in `omf.py` now or in Phase 5?**
+   - **RESOLVED:** recommendation adopted as a Claude's-discretion item in 04-CONTEXT.md (whole `LIB386` tree, each non-OMF library skipped with its reason reported). Plan 04-02 Task 3 (`test_lib386_sweep`: every library parsed or reported not OMF, non-OMF only under `NT/`); plan 04-05 (skip records `not OMF`, `runtime.csv` libraries with `DOS/` and root first); D-16 puts the file at `config/ufo2p/runtime.csv` and `config/tacp/runtime.csv` (plan 04-07).
+3. **COMDAT support in `omf.py` now or in Phase 5?** RESOLVED
    - Recommendation: now, minimal (COMDAT32 data + name), because the PLIB C++ libraries keep code in COMDATs and CID-06 should scan them; Phase 5 needs it anyway (SPL-07).
-4. **Which modules lack `-s`?**
+   - **RESOLVED:** now, adopted as a Claude's-discretion item in 04-CONTEXT.md (`omf.py` supports COMDAT and Easy OMF now). Plan 04-02 Task 2 (Easy OMF, COMENT 0xAA) and Task 3 (COMDAT32 blocks with their fixups).
+4. **Which modules lack `-s`?** RESOLVED
    - What we know: 40 (UFO2P) / 32 (TACP) `__CHK` calls in two address clusters.
    - Recommendation: report the ranges in toolchain.md; per-glob rules come when Phase 5 maps them to translation units.
-5. **Are UFO2P and TACP flags identical?**
+   - **RESOLVED:** answered by execution in plans 04-10/04-11 per D-08/D-09; not a planning blocker. Plan 04-10 Task 2 counts the `__CHK` call sites per EXE grouped by 64 KiB block (`-s` evidence); plan 04-11 Task 2 records them in toolchain.md's Flags table. Per-glob `cflags.txt` rules for those modules wait for Phase 5's split (A6).
+5. **Are UFO2P and TACP flags identical?** RESOLVED
    - Recommendation: report per EXE (D-09). The prototype numbers have the same signs for both, but TACP's setcc/movsd counts differ in magnitude.
+   - **RESOLVED:** answered by execution in plans 04-10/04-11 per D-08/D-09; not a planning blocker. Plan 04-10 prints the evidence per flag and per EXE; plan 04-11 Task 2 gives toolchain.md one column per EXE, and "both EXEs use the same flags" is recorded only as a finding.
 
 ## Environment Availability
 
@@ -676,7 +684,7 @@ The 10.5 decoder runs as its own track so it never blocks 10.6/11.0 (D-01 time b
 - PyPI JSON for capstone 5.0.9 wheel tags
 
 ### Tertiary (LOW confidence)
-- Licence-compatibility reading of OWPL vs GPLv3 (A1)
+- Licence-compatibility reading of OWPL vs GPLv3 (A1, resolved by D-15)
 
 ## Metadata
 
