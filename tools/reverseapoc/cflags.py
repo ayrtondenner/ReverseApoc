@@ -20,7 +20,10 @@ from .targets import REPO_ROOT
 from .watcom import load_watcom_manifest
 
 DEFAULT_CFLAGS = REPO_ROOT / "config" / "cflags.txt"
-COMPILERS = ("wcc386", "wpp386")
+COMPILERS = ("wcc386",)
+# Known to Watcom but not run by the wrapper yet: it always runs BINNT/WCC386.EXE, so a rule for
+# one of these would compile with the C compiler (review IN-02).
+UNSUPPORTED_COMPILERS = ("wpp386",)
 # Options the wrapper always sets or must control (quiet, no file-dependency info, DOS target,
 # object, error file, forced include, precompiled header, auto-dependency file, include path);
 # a per-file rule may not set them. Each is a prefix: Watcom ignores the case of an option and
@@ -86,6 +89,11 @@ def _check_flag(flag: str) -> None:
 
 
 def _check_spec(compiler: str, version: str, versions: Collection[str]) -> None:
+    if compiler in UNSUPPORTED_COMPILERS:
+        raise CflagsError(
+            f"compiler {compiler!r} is not supported by the wrapper yet; it runs only "
+            f"{', '.join(COMPILERS)}"
+        )
     if compiler not in COMPILERS:
         raise CflagsError(f"unknown compiler {compiler!r}; known: {', '.join(COMPILERS)}")
     if version not in versions:
@@ -110,9 +118,9 @@ def _parse_rule(lineno: int, fields: list[str], versions: Collection[str]) -> Ru
 
 def parse_cflags(text: str, *, versions: Collection[str], where: str = "cflags.txt") -> list[Rule]:
     """The rules of a cflags.txt text, in file order. Every error names `where` and the line:
-    a first rule whose glob is not `*`, a malformed compiler@version, an unknown compiler or
-    version, and a flag that does not start with `-`, holds a second `-`, is wrapper-owned in
-    any case, or holds `/`, `\\` or whitespace."""
+    a first rule whose glob is not `*`, a malformed compiler@version, an unknown or unsupported
+    compiler or version, and a flag that does not start with `-`, holds a second `-`, is
+    wrapper-owned in any case, or holds `/`, `\\` or whitespace."""
     rules = []
     for lineno, fields in _fields(text):
         try:
