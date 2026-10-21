@@ -30,7 +30,16 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .le import LE
-from .omf import Library, Module, OMFError, OMFFixup, Segment, is_omf_library, read_library
+from .omf import (
+    Library,
+    Module,
+    OMFError,
+    OMFFixup,
+    Public,
+    Segment,
+    is_omf_library,
+    read_library,
+)
 from .splice import _write_atomic
 from .targets import Target, check_bare_name, config_dir, hash_bytes, target_problems
 
@@ -298,9 +307,13 @@ class _Owner:
         return PureWindowsPath(self.module.name).stem
 
     @property
+    def segment_publics(self) -> tuple[Public, ...]:
+        """The module's publics defined in this segment, with their offsets."""
+        return tuple(p for p in self.module.publics if p.segment_index == self.segment.index)
+
+    @property
     def publics(self) -> tuple[str, ...]:
-        names = {p.name for p in self.module.publics if p.segment_index == self.segment.index}
-        return tuple(sorted(names))
+        return tuple(sorted({p.name for p in self.segment_publics}))
 
 
 @dataclass(frozen=True, eq=False)
@@ -461,8 +474,8 @@ def _data_consistent(hit: _Hit, view: TargetView, _publics: Mapping[int, frozens
 
 
 def _calls_consistent(hit: _Hit, view: TargetView, publics: Mapping[int, frozenset[str]]) -> bool:
-    """Rule (b): no rel32 call or jump to an extern lands on the start of a matched range
-    whose publics do not include that extern's name."""
+    """Rule (b): no rel32 call or jump to an extern lands on the address of a placed public
+    (`publics`, from _public_addresses) unless one of the names there is that extern's."""
     for fixup in hit.owner.segment.fixups:
         if fixup.segment_relative or fixup.size != _FIELD32 or fixup.target_kind != "extern":
             continue
@@ -511,12 +524,21 @@ def _disambiguate(
     return [h for group in by_name.values() for h in group], None
 
 
-def _range_publics(groups: Mapping[tuple[int, int], list[_Hit]]) -> dict[int, frozenset[str]]:
-    """Range start -> every public of every candidate placed there (for rule b)."""
-    publics: dict[int, set[str]] = defaultdict(set)
-    for (start, _end), hits in groups.items():
-        publics[start].update(p for h in hits for p in h.owner.publics)
-    return {start: frozenset(names) for start, names in publics.items()}
+def _public_addresses(hits: Iterable[_Hit]) -> dict[int, frozenset[str]]:
+    """Linear address -> the name of every public placed there (for rule b). A public sits at
+    its hit's start plus its offset in the segment, so a call into a module's second entry
+    point counts as evidence, not only a call to where its range starts."""
+    names: dict[int, set[str]] = defaultdict(set)
+    for hit in hits:
+        for public in hit.owner.segment_publics:
+            names[hit.start + public.offset].add(public.name)
+    return {va: frozenset(found) for va, found in names.items()}
+
+
+def _ranked_modules(hits: Iterable[_Hit]) -> list[str]:
+    """The module names of `hits`, C runtime before C++ runtime, then by name."""
+    by_name = _by_module(hits)
+    return sorted(by_name, key=lambda name: (_family(by_name[name]), name))
 
 
 def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
@@ -525,7 +547,7 @@ def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
     match), so a module renamed between versions still shows all of them."""
     by_name = _by_module(hits)
     # Rule (d): still tied -> ambiguous; the module shown is the first by (C before C++, name).
-    names = sorted(by_name, key=lambda name: (_family(by_name[name]), name))
+    names = _ranked_modules(hits)
     chosen = by_name[names[0]]
     others = [h for h in hits if h.owner.module_name != names[0]]
     return MatchRange(
@@ -541,30 +563,35 @@ def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
     )
 
 
-def _overlap_error(outer: MatchRange, inner: MatchRange) -> LibMatchError:
-    return LibMatchError(
-        f"ranges 0x{outer.start:08x}..0x{outer.end:08x} ({outer.module}) and "
-        f"0x{inner.start:08x}..0x{inner.end:08x} ({inner.module}) overlap without one "
-        "containing the other"
-    )
+_RangeKey = tuple[int, int]  # (start, end) of one group of hits
 
 
-def _drop_contained(
-    ranges: Iterable[MatchRange],
-) -> tuple[tuple[MatchRange, ...], tuple[MatchRange, ...]]:
-    """(kept, dropped): a range strictly inside a longer one is dropped; a partial overlap
-    raises LibMatchError naming both. Touching ranges (one's end is the next's start) stay."""
-    kept: list[MatchRange] = []
-    dropped: list[MatchRange] = []
-    for r in sorted(ranges, key=lambda r: (r.start, -r.end)):
+def _overlap_error(groups: Mapping[_RangeKey, list[_Hit]], *keys: _RangeKey) -> LibMatchError:
+    named = [
+        f"0x{start:08x}..0x{end:08x} ({_LIST_SEPARATOR.join(_ranked_modules(groups[start, end]))})"
+        for start, end in keys
+    ]
+    return LibMatchError(f"ranges {' and '.join(named)} overlap without one containing the other")
+
+
+def _split_contained(
+    groups: Mapping[_RangeKey, list[_Hit]],
+) -> tuple[list[_RangeKey], list[_RangeKey]]:
+    """(kept, dropped) range keys, each sorted by (start, end): a range strictly inside a
+    longer one is dropped; a partial overlap raises LibMatchError naming both. Touching ranges
+    (one's end is the next's start) stay. This runs before disambiguation, so a dropped (false)
+    placement never serves as call-graph evidence."""
+    kept: list[_RangeKey] = []
+    dropped: list[_RangeKey] = []
+    for key in sorted(groups, key=lambda k: (k[0], -k[1])):
         outer = kept[-1] if kept else None
-        if outer is None or r.start >= outer.end:
-            kept.append(r)
-        elif r.end <= outer.end:
-            dropped.append(r)
+        if outer is None or key[0] >= outer[1]:
+            kept.append(key)
+        elif key[1] <= outer[1]:
+            dropped.append(key)
         else:
-            raise _overlap_error(outer, r)
-    return tuple(kept), tuple(sorted(dropped, key=_range_order))
+            raise _overlap_error(groups, outer, key)
+    return kept, sorted(dropped)
 
 
 def _range_order(r: MatchRange) -> tuple[int, int]:
@@ -585,7 +612,7 @@ def scan_exe(
     view = target_view(le)
     skips = list(skipped)
     placements: dict[tuple[bytes, frozenset[int], frozenset[int]], list[int]] = {}
-    groups: dict[tuple[int, int], list[_Hit]] = defaultdict(list)
+    groups: dict[_RangeKey, list[_Hit]] = defaultdict(list)
     for owner in _code_segments(libraries):
         seg = owner.segment
         reason = _skip_reason(seg, min_unmasked)
@@ -600,16 +627,17 @@ def scan_exe(
         for base in placements[key]:
             hit = _Hit(owner, view.base + base)
             groups[(hit.start, hit.end)].append(hit)
-    publics = _range_publics(groups)
-    rows: list[MatchRange] = []
+    kept, dropped = _split_contained(groups)
+    publics = _public_addresses(hit for key in kept for hit in groups[key])
+    rows: dict[_RangeKey, MatchRange] = {}
     resolved: dict[str, int] = dict.fromkeys(DISAMBIGUATION_RULES, 0)
     for (start, end), hits in groups.items():
-        kept, rule = _disambiguate(hits, view, publics)
+        chosen, rule = _disambiguate(hits, view, publics)
         if rule is not None:
             resolved[rule] += 1
-        rows.append(_row(start, end, kept))
-    ranges, dropped = _drop_contained(rows)
-    return LibMatchReport(exe, view.base, len(view.code), ranges, tuple(skips), dropped,
+        rows[start, end] = _row(start, end, chosen)
+    return LibMatchReport(exe, view.base, len(view.code), tuple(rows[k] for k in kept),
+                          tuple(skips), tuple(rows[k] for k in dropped),
                           tuple(resolved.items()))  # fmt: skip
 
 
