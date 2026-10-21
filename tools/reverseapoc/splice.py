@@ -55,6 +55,7 @@ from .targets import (
     FileHashes,
     ManifestError,
     Target,
+    check_bare_name,
     check_target,
     hash_file,
     load_manifest,
@@ -97,6 +98,16 @@ class SpliceError(LEError):
     """A patch or rebuild was refused."""
 
 
+def _page_label(obj: LEObject, page: LEPage) -> str:
+    """ "page K of object M" with K the page's position in its object, followed by the logical
+    page number when it differs, e.g. "page 1 of object 2 (logical page 3)" (D-08)."""
+    k = page.logical - obj.page_index + 1
+    label = f"page {k} of object {obj.index}"
+    if page.logical != k:
+        label += f" (logical page {page.logical})"
+    return label
+
+
 @dataclass(frozen=True, order=True)
 class Region:
     """A half-open byte range [start, end) of the file. Page regions also carry the object and
@@ -114,10 +125,11 @@ class Region:
         return None if self.va is None else self.va + offset - self.start
 
     def describe(self, offset: int) -> str:
-        """Where `offset` lies, e.g. "page 3 of object 1, VA 0x00012010" or "trailer"."""
+        """Where `offset` lies, e.g. "page 2 of object 1, VA 0x00011010",
+        "page 1 of object 2 (logical page 3), VA 0x00020010" or "trailer"."""
         if self.kind != REGION_PAGE:
             return REGION_LABELS[self.kind]
-        text = f"page {self.page.logical} of object {self.obj.index}, VA {self.va_at(offset):#010x}"
+        text = f"{_page_label(self.obj, self.page)}, VA {self.va_at(offset):#010x}"
         if self.page.number != self.page.logical:
             text += f" (physical page {self.page.number})"
         return text
@@ -163,7 +175,9 @@ def _page_regions(le: LE) -> Iterator[Region]:
 
 
 def layout(le: LE) -> list[Region]:
-    """The regions of `le`'s file, sorted by start. Zero-length regions are left out.
+    """The regions of `le`'s file, sorted by start. Zero-length fixed regions (an extender,
+    padding or trailer that is absent) are dropped, but every page keeps its region, even a page
+    that holds no bytes (a last_page_size of 0), which still tiles.
 
     Raises LEUnsupportedError for a non-resident name table or debug info (D-19), a loader
     section that does not end where the fixup section ends, and any page that is not a
@@ -306,18 +320,38 @@ def _page_backed_end(le: LE, obj: LEObject) -> int:
     return obj.base + (obj.page_count - 1) * le.page_size + last.size
 
 
+def _page_slot(le: LE, obj: LEObject, addr: int) -> tuple[int, LEPage] | None:
+    """(offset in the object image, page) of the page of `obj` whose page-sized slot holds
+    linear address `addr`, or None when no page of `obj` covers it."""
+    rel = addr - obj.base
+    return next(
+        ((off, page) for off, page in _object_pages(le, obj) if off <= rel < off + le.page_size),
+        None,
+    )
+
+
 def _unwritable_reason(le: LE, addr: int) -> str:
-    """Why linear address `addr` lies outside every writable span (D-03, D-18)."""
+    """Why linear address `addr` lies outside every writable span (D-03, D-18): no object, the
+    BSS past the object's page data, the hole after a short page inside the object, or page
+    data past the object's vsize. The last two name the page."""
     obj = le.obj_of_va(addr)
-    if obj is not None:
+    if obj is None:
+        obj = next((o for o in le.objects if o.base <= addr < _page_backed_end(le, o)), None)
+    if obj is None:
+        return f"{addr:#x} is not in any object"
+    if addr >= _page_backed_end(le, obj):
         return f"{addr:#x} is in the BSS of object {obj.index} (past its page data)"
-    obj = next((o for o in le.objects if o.base <= addr < _page_backed_end(le, o)), None)
-    if obj is not None:
+    # base <= addr < the page-backed end, so a page of the object covers addr
+    off, page = _page_slot(le, obj, addr)
+    if addr - obj.base >= off + page.size:
         return (
-            f"{addr:#x} is past the end of object {obj.index} (vsize {obj.vsize:#x}) "
-            "in its last page"
+            f"{addr:#x} is past the page data of {_page_label(obj, page)} "
+            f"({page.size:#x} bytes)"
         )
-    return f"{addr:#x} is not in any object"
+    return (
+        f"{addr:#x} is past the end of object {obj.index} (vsize {obj.vsize:#x}) "
+        f"in {_page_label(obj, page)}"
+    )
 
 
 def _span_at(spans: list[_Span], i: int, addr: int) -> _Span | None:
@@ -502,6 +536,7 @@ class RebuildResult:
     first_diff_va: int | None = None  # its linear address when it lies in a page
     diff_bytes: int = 0  # how many bytes differ
     masked_fields: int = 0  # distinct fixup fields the patches covered and left unchanged (D-02)
+    source: Path | None = None  # the input file rebuild checked, inside the orig dir (not JSON)
 
     @property
     def ok(self) -> bool:
@@ -510,7 +545,9 @@ class RebuildResult:
     def _masked_note(self) -> str:
         return f"; masked {self.masked_fields} fixup fields" if self.masked_fields else ""
 
-    def format(self, width: int) -> str:
+    def format(self, width: int, manifest: Path | None = None) -> str:
+        """One line for this target. MISSING and REFUSED name the input file rebuild checked
+        and REFUSED the manifest it used ("the manifest" when the caller does not pass it)."""
         name = self.target.name.ljust(width)
         if self.status == "ok":
             return f"OK        {name}  sha1 {self.hashes.sha1} == manifest{self._masked_note()}"
@@ -522,13 +559,12 @@ class RebuildResult:
                     f"{self.diff_bytes} bytes differ"
                 )
             return line + self._masked_note()
+        source = self.source if self.source is not None else self.target.name
         if self.status == "missing":
-            return (
-                f"MISSING   {name}  (orig/{self.target.name} not found; "
-                "run uv run reverseapoc ingest)"
-            )
+            return f"MISSING   {name}  ({source} not found; run uv run reverseapoc ingest)"
+        against = manifest if manifest is not None else "the manifest"
         return (
-            f"REFUSED   {name}  orig/{self.target.name} does not match config/targets.toml; "
+            f"REFUSED   {name}  {source} does not match {against}; "
             "run uv run reverseapoc check-orig"
         )
 
@@ -558,6 +594,7 @@ class RebuildResult:
 class RebuildReport:
     out_dir: Path
     results: list[RebuildResult]
+    manifest: Path | None = None  # the manifest rebuild() loaded, named by REFUSED (not JSON)
 
     @property
     def ok(self) -> bool:
@@ -565,7 +602,7 @@ class RebuildReport:
 
     def format(self) -> str:
         width = max((len(r.target.name) for r in self.results), default=0)
-        return "\n".join(r.format(width) for r in self.results)
+        return "\n".join(r.format(width, self.manifest) for r in self.results)
 
     def to_json(self) -> list[dict[str, Any]]:
         """One RebuildResult.to_json() object per target, in manifest order."""
@@ -573,9 +610,8 @@ class RebuildReport:
 
 
 def _check_bare_name(target: Target) -> None:
-    name = target.name
-    if not name or name in (".", "..") or Path(name).name != name:
-        raise SpliceError(f"target name {name!r} is not a bare file name")
+    """Refuse a Target built without load_manifest whose name is not a bare file name (IN-07)."""
+    check_bare_name(target.name)
 
 
 def _refuse_inside_orig(path: Path, orig_dir: Path) -> None:
@@ -621,9 +657,9 @@ def rebuild_target(
     _refuse_inside_orig(out_path, orig_dir)
     check = check_target(target, orig_dir / target.name)
     if check.status == "missing":
-        return RebuildResult(target, "missing", None)
+        return RebuildResult(target, "missing", None, source=check.path)
     if check.status != "ok":
-        return RebuildResult(target, "refused", None)
+        return RebuildResult(target, "refused", None, source=check.path)
     try:
         le = LE(check.path)
         result = splice(le, patches or {})
@@ -633,10 +669,11 @@ def rebuild_target(
     out_path.write_bytes(result.data)
     hashes = hash_file(out_path)
     masked = len({m.fixup for m in result.masked})  # distinct fields (WR-02)
+    common = {"masked_fields": masked, "source": check.path}
     if hashes.sha1 == target.sha1:
-        return RebuildResult(target, "ok", out_path, hashes, masked_fields=masked)
+        return RebuildResult(target, "ok", out_path, hashes, **common)
     diff = _mismatch(result, le.data)
-    return RebuildResult(target, "mismatch", out_path, hashes, masked_fields=masked, **diff)
+    return RebuildResult(target, "mismatch", out_path, hashes, **common, **diff)
 
 
 def _select(targets: list[Target], exe: str | None, manifest: Path) -> list[Target]:
@@ -669,4 +706,5 @@ def rebuild(
     for target in targets:
         _check_bare_name(target)
     targets = _select(targets, exe, manifest)
-    return RebuildReport(out_dir, [rebuild_target(t, orig_dir, out_dir) for t in targets])
+    results = [rebuild_target(t, orig_dir, out_dir) for t in targets]
+    return RebuildReport(out_dir, results, manifest)
