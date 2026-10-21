@@ -28,6 +28,58 @@ file from mosura or any other project is copied: mosura's licence is unverified.
 Loop and switch counts are byte-level matches over raw code and are not decisive on their own
 (research A7 and Pattern 6): a byte pattern can also hit data or the middle of an instruction.
 
+## Calibration (host, 2026-10-21)
+
+Measured natively on the Windows host with `probe.calibrate()` (wcc386 through `reverseapoc cc`'s
+wrapper: `-zq -zld -bt=dos` plus the flags shown). Counts summed over the probe's CODE segment;
+`and` = setcc_and, `movzx` = setcc_movzx, `movsd` = movsd_unrolled, `rep` = rep_movsd_small,
+`rot` / `top` = loop_rotated / loop_top_tested, `sw_up` / `sw_down` = switch_ascending /
+switch_descending, `__CHK` = self-relative fixups to `__CHK`. 10.5 is skipped until plan 04-11
+reinstalls its BINW compiler. No two versions produced the same normalized object under any flag
+set, so there are no ties between 10.6 and 11.0.
+
+| version | flags | and | movzx | movsd | rep | rot | top | sw_up | sw_down | `__CHK` | default libraries |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10.6 | `-3r -s` | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-4r -s` | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 7 | math387r, emu387 |
+| 10.6 | `-4r -s -ox` | 1 | 0 | 0 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -ox` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -oneatx` | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -os` | 0 | 1 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -fpi87` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, noemu387 |
+| 10.6 | `-5s -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387s, emu387 |
+| 11.0 | `-3r -s` | 0 | 1 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-4r -s` | 1 | 0 | 0 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 7 | math387r, emu387 |
+| 11.0 | `-4r -s -ox` | 1 | 0 | 0 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -ox` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 1 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -oneatx` | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -os` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -fpi87` | 0 | 0 | 1 | 0 | 0 | 1 | 0 | 0 | 0 | math387r, noemu387 |
+| 11.0 | `-5s -s` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387s, emu387 |
+
+What the table says, and where it differs from 04-RESEARCH Pattern 6:
+
+- Byte compare: `movzx` at `-3r` for both versions; `and` at `-4r`/`-5r` for 10.6 and at `-4r`
+  for 11.0; neither form for 11.0 at `-5r` (a branch). Also measured: 10.6 at `-5r -s -os` emits
+  `movzx`, so `movzx` alone does not prove `-3`.
+- Struct copy: five unrolled `movsd` at `-5`, none at `-3`/`-4`. The research row "`-4r` gives
+  `mov ecx,5; rep movsd`" holds as mnemonics, but the two instructions are not adjacent in the
+  probe (`mov ecx,5` sits 9 bytes before `rep movsd`), so the adjacent `rep_movsd_small`
+  encoding counts 0 in every cell. A game-code count of 0 for it does not rule out `-4`.
+- Loops: rotated in 10.6 and top-tested in 11.0 under every flag set except `-oneatx`, where
+  neither shape is found (as the research noted).
+- Switch: an ascending chain in pr_switch for most cells; the one descending hit (11.0
+  `-5r -s -ox`) is byte-level noise that starts in pr_eq5, which is why switch counts are not
+  decisive.
+- Stack checks: 7 `__CHK` calls without `-s` (one per function), none with `-s`.
+- Libraries: `-fpi` requests emu387 and `-fpi87` noemu387; `-5s` requests math387s. No cell
+  requests a CLIB library (clib3r or clib3s), so the research's "`-5s` gives clib3s" does not
+  show here. The probe calls no CLIB function, which may be why; this was not tested.
+
 ## Running the calibration
 
 `uv run reverseapoc probe calibrate` (the CLI verb arrives with plan 04-10). Until then the

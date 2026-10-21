@@ -89,7 +89,15 @@ ROWS = [
         id="10.6-5r-and-unrolled",
     ),
     pytest.param("10.6", S5, {"rep_movsd_small": "==0"}, id="10.6-5r-no-small-rep"),
-    pytest.param("10.6", S4, {"rep_movsd_small": ">=1"}, id="10.6-4r-small-rep"),
+    # Measured, not research: 04-RESEARCH expects `mov ecx,5; rep movsd` at -4r to count as
+    # rep_movsd_small, but the probe's mov ecx,5 sits 9 bytes before its rep movsd (other moves
+    # in between), so the adjacent encoding counts 0. The -4/-5 split shows as no unrolled copy.
+    pytest.param(
+        "10.6",
+        S4,
+        {"rep_movsd_small": "==0", "movsd_unrolled": "==0"},
+        id="10.6-4r-small-rep-measured-0",
+    ),
     pytest.param("11.0", S4, {"setcc_and": ">=1"}, id="11.0-4r-and"),
     pytest.param("11.0", S5, {"setcc_and": "==0", "setcc_movzx": "==0"}, id="11.0-5r-branch"),
     pytest.param("10.6", S5, {"loop_rotated": ">=1", "loop_top_tested": "==0"}, id="10.6-rotated"),
@@ -102,14 +110,17 @@ ROWS = [
     pytest.param("11.0", S5, {"chk_calls": "==0"}, id="11.0-s-no-chk"),
 ]
 
-# (version, flags, default libraries that must be requested), compared case-insensitively.
+# (version, flags, default libraries requested, default libraries not requested), compared
+# case-insensitively. Measured, not research: with -5s the probe requests math387s but not
+# clib3s (no CLIB default library is requested under any flag set; the probe calls no CLIB).
 LIBRARY_ROWS = [
-    pytest.param(version, flags, libs, id=f"{version}-{tag}")
+    pytest.param(version, flags, wanted, unwanted, id=f"{version}-{tag}")
     for version in CALIBRATED
-    for flags, libs, tag in (
-        (S5, ("emu387",), "fpi-emu387"),
-        (("-5r", "-s", "-fpi87"), ("noemu387",), "fpi87-noemu387"),
-        (("-5s", "-s"), ("clib3s", "math387s"), "5s-3s-libraries"),
+    for flags, wanted, unwanted, tag in (
+        (S5, ("emu387",), ("noemu387",), "fpi-emu387"),
+        (("-5r", "-s", "-fpi87"), ("noemu387",), ("emu387",), "fpi87-noemu387"),
+        (("-5s", "-s"), ("math387s",), ("math387r",), "5s-math387s"),
+        (("-5s", "-s"), (), ("clib3s",), "5s-clib3s-measured-absent"),
     )
 ]
 
@@ -148,10 +159,11 @@ def test_calibration_rows(calibration, version, flags, expected):
     assert not failed, f"{version} {' '.join(flags)}: expected {expected}, measured {measured}"
 
 
-@pytest.mark.parametrize(("version", "flags", "libs"), LIBRARY_ROWS)
-def test_calibration_libraries(calibration, version, flags, libs):
+@pytest.mark.parametrize(("version", "flags", "wanted", "unwanted"), LIBRARY_ROWS)
+def test_calibration_libraries(calibration, version, flags, wanted, unwanted):
     requested = {name.lower() for name in calibration.cell(version, flags).default_libraries}
-    assert set(libs) <= requested, requested
+    assert set(wanted) <= requested, requested
+    assert not set(unwanted) & requested, requested
 
 
 def test_calibration_covers_every_flag_set(calibration):
