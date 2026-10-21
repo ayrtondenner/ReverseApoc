@@ -829,9 +829,13 @@ def _parse_row(row: dict[str, str]) -> MatchRange:
 
 
 def read_runtime_csv(path: Path) -> list[MatchRange]:
-    """The rows of a runtime.csv; comment lines (starting with #) are skipped."""
-    lines = [line for line in Path(path).read_text(encoding="utf-8").splitlines()
-             if not line.startswith("#")]  # fmt: skip
+    """The rows of a runtime.csv; comment lines (starting with #) are skipped. A file that is
+    not UTF-8 is refused with an error naming it."""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise LibMatchError(f"{path}: not UTF-8 ({exc})") from exc
+    lines = [line for line in text.splitlines() if not line.startswith("#")]
     reader = csv.DictReader(lines)
     if tuple(reader.fieldnames or ()) != RUNTIME_CSV_COLUMNS:
         raise LibMatchError(f"{path}: header is not {','.join(RUNTIME_CSV_COLUMNS)}")

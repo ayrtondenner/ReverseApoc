@@ -132,7 +132,11 @@ def load_cflags(
     path = Path(path) if path is not None else DEFAULT_CFLAGS
     if versions is None:
         versions = tuple(load_watcom_manifest())
-    return parse_cflags(path.read_text(encoding="utf-8"), versions=versions, where=str(path))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise CflagsError(f"{path}: not UTF-8 ({exc})") from exc
+    return parse_cflags(text, versions=versions, where=str(path))
 
 
 def select_rule(rules: Sequence[Rule], relpath: str) -> Rule:
