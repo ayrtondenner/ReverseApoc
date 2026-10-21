@@ -133,7 +133,7 @@ The image is built locally and never pushed with proprietary bytes in it.
 | In the image (Phase 2) | Supplied by you (gitignored, mounted read-only) | Outside the container |
 |---|---|---|
 | Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5, 10.6, 11.0, 11.0a and 11.0b trees, mounted at `/work/watcom:ro` (see [Getting the Watcom compilers](#getting-the-watcom-compilers)) | Ghidra 12.1.4 + JDK 21 in WSL2 Ubuntu |
-| ninja | `orig/`: UFO2P.EXE and TACP.EXE from your install, mounted at `/work/orig:ro` | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
+| ninja | `orig/`: UFO2P.EXE, TACP.EXE and SMKP.EXE from your install, mounted at `/work/orig:ro` | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
 | clang-format, clangd | `.env`: install paths and API keys | GhidraMCP under `uvx --python 3.13` |
 | binutils (`as`) | | retrokit via pipx (if chosen over lastonesky's loader) |
 | `objdiff-cli` (pinned release binary) | | |

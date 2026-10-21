@@ -7,6 +7,10 @@ under tmp_path, never to orig/ or build/. They assert on offsets, VAs, counts, b
 filecmp results, never on byte slices of the real files, so a failure never prints game bytes:
 a mismatch shows up as a list of failing VAs.
 
+The helpers derive page offsets, page-backed ends and page straddling from le.py's reader
+(LE.page_va, LEPage and the object table's page range), never from splice.py's arithmetic, and
+FACTS, as the spikes confirmed it, is the oracle they are checked against.
+
 The expected SHA-1 of each file is read through load_manifest() (D-15); no hash is copied here.
 """
 
@@ -14,8 +18,10 @@ from __future__ import annotations
 
 import filecmp
 import hashlib
-from bisect import bisect_left, bisect_right
+from bisect import bisect_right
 from collections import Counter
+from functools import cache
+from operator import itemgetter
 
 import pytest
 
@@ -27,9 +33,9 @@ from reverseapoc.le import (
     SRC_PTR1632,
     SRC_REL32,
     SRC_SEL16,
-    SRC_SIZE,
     Fixup,
     LEObject,
+    LEPage,
 )
 from reverseapoc.splice import (
     REGION_PADDING,
@@ -53,7 +59,6 @@ PARAMS = [
     )
     for target in TARGETS
 ]
-MAX_FIELD = max(SRC_SIZE.values())
 
 # Measured layout facts per target, as spikes 001 (pages and fixups) and 002 (region tiling)
 # confirmed them with an independent raw reader, and spike 003 the trailer (D-10): offsets,
@@ -117,30 +122,47 @@ def _object(le: LE, va: int) -> LEObject:
     return obj
 
 
-def _page_offset(le: LE, obj: LEObject, va: int) -> int:
-    """File offset of linear address `va` in a page of `obj` (also past its vsize), through
-    the object's page and LEPage.file_offset, never recomputed from the logical number."""
-    k, rest = divmod(va - obj.base, le.page_size)
-    return le.pages[obj.page_index + k - 1].file_offset + rest
+@cache
+def _page_index(le: LE) -> tuple[tuple[int, LEPage], ...]:
+    """Every page in the file as (its linear address from le.page_va, the page), sorted by
+    linear address. LE hashes by identity and the fixture parses each file once."""
+    return tuple(sorted(((le.page_va(p.logical), p) for p in le.pages), key=itemgetter(0)))
+
+
+def _page_at(le: LE, va: int) -> tuple[int, LEPage]:
+    """(linear address, page) of the page in the file whose data holds linear address `va`."""
+    index = _page_index(le)
+    i = bisect_right(index, va, key=itemgetter(0)) - 1
+    page_va, page = index[max(i, 0)]
+    assert i >= 0 and page_va <= va < page_va + page.size, f"{va:#x} is in no page in the file"
+    return page_va, page
+
+
+def _page_offset(le: LE, va: int) -> int:
+    """File offset of linear address `va` (also past its object's vsize), through the page
+    that holds it and LEPage.file_offset."""
+    page_va, page = _page_at(le, va)
+    return page.file_offset + va - page_va
 
 
 def _file_offset(le: LE, va: int) -> int:
     """File offset of linear address `va` inside an object."""
-    return _page_offset(le, _object(le, va), va)
+    _object(le, va)
+    return _page_offset(le, va)
 
 
+@cache
 def _page_backed_end(le: LE, obj: LEObject) -> int:
-    """Linear address just past the last byte of `obj` that a page in the file backs."""
-    if obj.page_count == 0:
-        return obj.base
-    last = le.pages[obj.page_index + obj.page_count - 2]
-    return obj.base + (obj.page_count - 1) * le.page_size + last.size
+    """Linear address just past the last byte of `obj` that a page in the file backs: the
+    furthest page end over the object table's page range, or the object's base without pages."""
+    pages = range(obj.page_index, obj.page_index + obj.page_count)
+    ends = (le.page_va(p.logical) + p.size for p in le.pages if p.logical in pages)
+    return max(ends, default=obj.base)
 
 
-def _covered(fixups: list[Fixup], srcs: list[int], va: int) -> bool:
-    """Whether some fixup field (sorted by src_va, `srcs` their addresses) covers `va`."""
-    lo, hi = bisect_left(srcs, va - MAX_FIELD + 1), bisect_right(srcs, va)
-    return any(fx.src_va + fx.size > va for fx in fixups[lo:hi])
+def _covered(fixups: list[Fixup], va: int) -> bool:
+    """Whether some fixup field covers linear address `va`."""
+    return any(fx.src_va <= va < fx.src_va + fx.size for fx in fixups)
 
 
 def _backed_end(le: LE, fx: Fixup) -> int:
@@ -148,11 +170,10 @@ def _backed_end(le: LE, fx: Fixup) -> int:
 
 
 def _straddles(le: LE, fx: Fixup) -> bool:
-    """The first and last page-backed byte of the field lie in different pages."""
-    base = _object(le, fx.src_va).base
-    first = (fx.src_va - base) // le.page_size
-    last = (_backed_end(le, fx) - 1 - base) // le.page_size
-    return first != last
+    """The first and last page-backed byte of the field lie in different pages in the file."""
+    _, first = _page_at(le, fx.src_va)
+    _, last = _page_at(le, _backed_end(le, fx) - 1)
+    return first is not last
 
 
 def _straddlers(le: LE) -> tuple[int, ...]:
@@ -178,11 +199,6 @@ def _changed(le: LE, out: bytes, start: int, end: int) -> list[str]:
     """VAs in [start, end) whose byte in `out` differs from the original file."""
     offsets = ((a, _file_offset(le, a)) for a in range(start, end))
     return [f"{a:#x}" for a, off in offsets if out[off] != le.data[off]]
-
-
-def _fixup_index(le: LE) -> tuple[list[Fixup], list[int]]:
-    fixups = le.fixups()
-    return fixups, [fx.src_va for fx in fixups]
 
 
 # ---- round trip ---------------------------------------------------------------------------------
@@ -214,9 +230,9 @@ def test_rebuild_writes_identical_file(real, tmp_path):
 def _control_va(le: LE) -> int:
     """A mid-page address of object 1's middle page that no fixup field covers."""
     obj = le.objects[0]
-    fixups, srcs = _fixup_index(le)
+    fixups = le.fixups()
     va = obj.base + (obj.page_count // 2) * le.page_size + le.page_size // 2
-    while _covered(fixups, srcs, va):
+    while _covered(fixups, va):
         va += 1
     return va
 
@@ -225,17 +241,15 @@ def test_control_mutation_is_reported(real, tmp_path):
     target, le = real
     obj = le.objects[0]
     va = _control_va(le)
-    k = (va - obj.base) // le.page_size
-    page = le.pages[obj.page_index + k - 1]
-    page_va = obj.base + k * le.page_size
-    assert page_va <= va < page_va + page.size
+    page_va, page = _page_at(le, va)
+    within = (va - obj.base) // le.page_size + 1  # the page's position in its object (D-08)
 
     patches = {va: _inverted(le, va, 1)}
     result = rebuild_target(target, ORIG_DIR, tmp_path / "patched", patches=patches)
     assert result.status == "mismatch"
     assert result.first_diff == page.file_offset + (va - page_va)
     assert result.first_diff_va == va
-    assert result.first_diff_region.startswith(f"page {page.logical} of object 1")
+    assert result.first_diff_region.startswith(f"page {within} of object 1")
     assert (result.diff_bytes, result.masked_fields) == (1, 0)
 
     assert rebuild_target(target, ORIG_DIR, tmp_path / "plain").status == "ok"
@@ -258,9 +272,9 @@ def test_straddling_fields_are_masked(real):
     reported = {m.fixup.src_va for m in result.masked if m.straddles_page}
     assert [f"{fx.src_va:#x}" for fx in straddlers if fx.src_va not in reported] == []
     # The bytes either side of each field were written unless another field covers them.
-    fixups, srcs = _fixup_index(le)
+    fixups = le.fixups()
     edges = [a for fx in straddlers for a in (fx.src_va - 1, fx.src_va + fx.size)]
-    free = [a for a in edges if not _covered(fixups, srcs, a)]
+    free = [a for a in edges if not _covered(fixups, a)]
     assert free
     assert [f"{a:#x}" for a in free if not _changed(le, result.data, a, a + 1)] == []
 
@@ -295,7 +309,7 @@ def _region(le: LE, kind: str) -> tuple[int, int] | None:
 def _obj1_tail(le: LE) -> list[int]:
     """File offsets of object 1's page bytes past its vsize."""
     obj = le.objects[0]
-    return [_page_offset(le, obj, va) for va in range(obj.end, _page_backed_end(le, obj))]
+    return [_page_offset(le, va) for va in range(obj.end, _page_backed_end(le, obj))]
 
 
 def test_measured_facts(real):
