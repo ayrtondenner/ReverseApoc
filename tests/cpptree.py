@@ -56,6 +56,11 @@ def inirt_row(**changes) -> MatchRange:
     return MatchRange(**fields)
 
 
+def _object_offset(va: int) -> tuple[int, int]:
+    """(LE object number, offset in it) of a linear address in object 1 or 2."""
+    return (2, va - OBJ2_BASE) if va >= OBJ2_BASE else (1, va - OBJ1_BASE)
+
+
 def _entries(start: int, priorities: Sequence[int], routines: Sequence[int]):
     """(patches, page-3 fixup records) for entries at `start` with these priorities."""
     patches, records = {}, b""
@@ -77,7 +82,7 @@ def init_exe(
     """A synthetic LE with inirt386 planted at INIT_VA and XI/YI entries of these priorities.
     `extra_data` adds more patches; `data_fixups` more LE fixup records on page 3 (object 2)."""
     code_records = b"".join(
-        fixup_record(7, INIT_VA + site - OBJ1_BASE, 2, target - OBJ2_BASE)
+        fixup_record(7, INIT_VA + site - OBJ1_BASE, *_object_offset(target))
         for site, target in zip(INIT_SITES, bounds, strict=True)
     )
     xi_patches, xi_records = _entries(bounds[0], xi, XI_ROUTINES)
