@@ -472,6 +472,36 @@ def test_stale_object_is_removed_before_the_compile(ws):
     assert not obj.exists()
 
 
+KEPT = "int kept;\n"  # what a file the compile must not touch holds
+
+
+@pytest.mark.parametrize(
+    ("src_rel", "obj_rel", "named"),
+    [
+        ("src/a.c", "src/a.c", ".obj"),  # -o is the source: the stale-object unlink deleted it
+        ("src/a.c", "src/b.c", ".obj"),  # -o is another source
+        ("src/a.c", "out/a.err", ".obj"),  # -fo= and -fr= would name one file
+        ("src/a.c", "out/a", ".obj"),
+        ("src/a.obj", "src/a.obj", "source"),  # a source that is itself named .obj
+        ("src/a.err", "src/a.obj", "source"),  # the error file would overwrite the source
+    ],
+)
+def test_outputs_that_would_destroy_a_file_are_refused(ws, src_rel, obj_rel, named):
+    src, obj = ws.source(src_rel), ws.root / obj_rel
+    if not obj.exists():
+        obj.parent.mkdir(parents=True, exist_ok=True)
+        obj.write_text(KEPT)
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(src, obj, runner)
+    message = str(info.value)
+    assert named in message
+    assert Path(obj_rel).name in message or Path(src_rel).name in message
+    assert runner.calls == []  # refused before the banner probe and the compile
+    assert src.read_text() == "int x;\n"
+    assert obj.is_file()  # nothing was deleted
+
+
 def test_err_file_stays_under_object_dir(ws, tmp_path_factory, monkeypatch):
     cwd = tmp_path_factory.mktemp("cwd")
     monkeypatch.chdir(cwd)
