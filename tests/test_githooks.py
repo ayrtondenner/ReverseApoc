@@ -161,6 +161,58 @@ def test_an_empty_commit_under_claude_code_is_still_aborted(repo, tmp_path):
     assert _git(repo, env, "log", "-1", "--format=%s").strip() == "feat: one"
 
 
+# `commit -v` (or commit.verbose) puts the diff below git's scissors line in the message file;
+# git cuts there before its own empty-message check, so the hook must not count the diff either
+SCISSORS_AND_DIFF = (
+    "# ------------------------ >8 ------------------------\n"
+    "# Do not modify or remove the line above.\n"
+    "# Everything below it will be ignored.\n"
+    "diff --git a/b.txt b/b.txt\n"
+    "new file mode 100644\n"
+    "--- /dev/null\n"
+    "+++ b/b.txt\n"
+    "@@ -0,0 +1 @@\n"
+    "+b\n"
+)
+VERBOSE_HELP = "# Please enter the commit message for your changes.\n#\n"
+
+
+def test_an_untouched_verbose_message_stays_empty(tmp_path):
+    text = f"\n{VERBOSE_HELP}{SCISSORS_AND_DIFF}"
+    msg = _message(tmp_path, text)
+    assert _run_hook(msg, _env(tmp_path, claudecode=True)).returncode == 0
+    assert msg.read_text(encoding="utf-8") == text
+
+
+def test_a_verbose_message_gets_the_trailer_above_the_scissors(tmp_path):
+    msg = _message(tmp_path, f"feat: one\n\n{VERBOSE_HELP}{SCISSORS_AND_DIFF}")
+    assert _run_hook(msg, _env(tmp_path, claudecode=True)).returncode == 0
+    text = msg.read_text(encoding="utf-8")
+    above, cut, below = text.partition(SCISSORS_AND_DIFF.splitlines(keepends=True)[0])
+    assert cut
+    assert above.startswith("feat: one\n")
+    assert _coauthor_lines(above) == [DEFAULT_TRAILER]
+    assert cut + below == SCISSORS_AND_DIFF
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["commit", "-v"], ["-c", "commit.verbose=true", "commit"]],
+    ids=["dash-v", "commit.verbose"],
+)
+def test_an_untouched_verbose_commit_under_claude_code_is_still_aborted(repo, tmp_path, args):
+    env = _env(tmp_path, claudecode=True)
+    _commit(repo, env, "a.txt", "feat: one")
+    head = _git(repo, env, "rev-parse", "HEAD")
+    (repo / "b.txt").write_text("b", encoding="utf-8")
+    _git(repo, env, "add", "b.txt")
+    env["GIT_EDITOR"] = "true"  # an editor that leaves the message as git wrote it
+    result = subprocess.run([GIT, *args], cwd=repo, env=env, capture_output=True, text=True)
+    assert result.returncode != 0
+    assert "Aborting commit due to empty commit message" in result.stderr
+    assert _git(repo, env, "rev-parse", "HEAD") == head
+
+
 def test_running_twice_adds_one_trailer(tmp_path):
     msg = _message(tmp_path, "feat: one\n")
     env = _env(tmp_path, claudecode=True)
