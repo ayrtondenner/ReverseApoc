@@ -43,3 +43,8 @@ def test_verdict_is_c(report):
     assert report.xi
     assert not [e for e in report.xi if e.priority == PRIO_PROGRAM]
     assert not [e for e in report.yi if e.priority == PRIO_DTOR]
+
+
+def test_no_cpp_signals(report):
+    assert report.cpp_only_modules == ()
+    assert (report.wcpp_strings, report.mangled_strings) == (0, 0)
