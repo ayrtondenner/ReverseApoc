@@ -495,12 +495,22 @@ def test_comdat32_continuation_appends():
         comdat_module(
             comdat32(4, b"\x01\x02\x03"),
             comdat32(4, b"\x04\x05", flags=0x01, offset=3),
-            fixupp32(fixup(1, location=1, target=(2, 1), displacement=0)),
+            fixupp32(fixup(0, location=1, target=(2, 1), displacement=0)),
         )
     )
     [block] = mod.comdats
     assert block.data == b"\x01\x02\x03\x04\x05"
-    assert [(f.offset, f.size) for f in block.fixups] == [(4, 2)]
+    assert [(f.offset, f.size) for f in block.fixups] == [(3, 2)]  # continuation offset 3
+
+
+def test_comdat32_fixup_past_block_raises():
+    with pytest.raises(OMFError, match="COMDAT 'f_'"):
+        read_object(
+            comdat_module(
+                comdat32(4, b"\x01\x02\x03"),
+                fixupp32(fixup(2, location=1, target=(2, 1), displacement=0)),
+            )
+        )
 
 
 def test_comdat32_continuation_without_start_raises():

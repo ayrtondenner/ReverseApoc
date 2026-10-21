@@ -12,6 +12,7 @@ forms of the even ones. Supported records:
 - LEDATA/LEDATA32, LIDATA/LIDATA32 (expanded, nesting capped at LIDATA_MAX_DEPTH, size bounded
   by the segment length), FIXUPP/FIXUPP32 with THREAD state, BAKPAT/BAKPAT32 (applied);
   NBKPAT/NBKPAT32 are only counted;
+- COMDAT32 (named blocks with continuations and their fixups; C++ libraries keep code there);
 - COMENT class 0x9B (memory model), 0x9F (default library), 0xAA (Easy OMF: the 16-bit-numbered
   records carry 32-bit offsets and lengths, while LIDATA repeat counts stay 16-bit),
   0xE9 (dependency: ignored);
@@ -22,10 +23,14 @@ Other record types are skipped by their length. Anything malformed (a record run
 data, an index out of range, data past the end of its segment, an unknown fixup location) raises
 OMFError naming the record type and its file offset. In a library a module that fails is
 recorded in `Library.failures` and the walk goes on with the next module.
+
+`normalized_object_sha1` hashes an object without its THEADR and COMENT 0xE9 records, which
+carry the source path and timestamps, so compiles on different hosts can be compared.
 """
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -171,6 +176,13 @@ _COMDEF_FAR = 0x61  # number of elements, then element size
 _COMLEN_SHORT_MAX = 0x80  # a first byte up to 0x80 is the length itself
 _COMLEN_WIDTHS = {0x81: 2, 0x84: 3, 0x88: 4}  # first byte -> width of the length that follows
 
+# COMDAT32 header: flags, attributes, alignment, enumerated data offset, type index, public base
+# (explicit allocation only), public name index, then the data.
+COMDAT_CONTINUATION = 0x01  # flags: more data for the block of the same name
+COMDAT_ITERATED = 0x02  # flags: the data is LIDATA-style blocks
+_COMDAT_ALLOCATION_MASK = 0x0F  # attributes low nibble: allocation type
+_COMDAT_EXPLICIT = 0  # explicit allocation: group index, segment index (frame if both 0)
+
 # Library header body (after the record framing).
 _LIB_PAGE_EXTRA = _REC_BODY  # page size = header record length + 3
 _LIB_MIN_PAGE = 16
@@ -236,8 +248,28 @@ class Segment:
     @property
     def mask(self) -> frozenset[int]:
         """Every byte offset a fixup or a backpatch writes: those bytes differ after linking."""
-        patched = {i for f in self.fixups for i in range(f.offset, f.offset + f.size)}
-        return frozenset(patched | self.backpatched)
+        return _patched(self.fixups) | self.backpatched
+
+
+@dataclass(frozen=True)
+class Comdat:
+    """A named COMDAT32 block (C++ libraries keep their code in these)."""
+
+    name: str
+    segment_index: int  # 1-based SEGDEF number; 0 when not explicitly allocated
+    alignment: int  # 0 = the segment's, 1 byte, 2 word, 3 paragraph, 4 page, 5 dword
+    data: bytes
+    fixups: tuple[OMFFixup, ...] = ()
+    unmaskable: bool = False  # a FIXUPP addressed iterated data, so the mask is unknown
+
+    @property
+    def mask(self) -> frozenset[int]:
+        """Every byte offset a fixup writes."""
+        return _patched(self.fixups)
+
+
+def _patched(fixups: tuple[OMFFixup, ...]) -> frozenset[int]:
+    return frozenset(i for f in fixups for i in range(f.offset, f.offset + f.size))
 
 
 @dataclass(frozen=True)
@@ -247,6 +279,7 @@ class Module:
     segments: tuple[Segment, ...]
     publics: tuple[Public, ...]
     externs: tuple[str, ...]  # in external-number order (EXTDEF, COMDEF, CEXTDEF, ...)
+    comdats: tuple[Comdat, ...] = ()
     model: str = ""
     default_libraries: tuple[str, ...] = ()
     easy_omf: bool = False
@@ -336,19 +369,53 @@ class _SegmentBuilder:
                 f"({self.length:#x} bytes)"
             )
 
+    def check_write(self, offset: int, size: int, what: str) -> None:
+        self.check_range(offset, size, what)
+
     def freeze(self) -> Segment:
         return Segment(self.index, self.name, self.class_name, self.length, self.use32,
                        bytes(self.data), tuple(self.fixups), self.unmaskable,
                        frozenset(self.backpatched))  # fmt: skip
 
 
+@dataclass
+class _ComdatBuilder:
+    """A COMDAT block; it grows as its records (first and continuations) write into it."""
+
+    name: str
+    segment_index: int
+    alignment: int
+    data: bytearray = field(default_factory=bytearray)
+    fixups: list[OMFFixup] = field(default_factory=list)
+    unmaskable: bool = False
+
+    def check_range(self, offset: int, size: int, what: str) -> None:
+        if offset + size > len(self.data):
+            raise OMFError(
+                f"{what} {offset:#x}..{offset + size:#x} runs past COMDAT {self.name!r} "
+                f"({len(self.data):#x} bytes)"
+            )
+
+    def check_write(self, offset: int, size: int, what: str) -> None:
+        """Bounds the block like a segment, then zero-extends it to cover the write."""
+        if offset + size > MAX_SEGMENT_LENGTH:
+            raise OMFError(
+                f"{what} {offset:#x}..{offset + size:#x} exceeds {MAX_SEGMENT_LENGTH:#x}"
+            )
+        self.data.extend(bytes(max(0, offset + size - len(self.data))))
+
+    def freeze(self) -> Comdat:
+        return Comdat(self.name, self.segment_index, self.alignment, bytes(self.data),
+                      tuple(self.fixups), self.unmaskable)  # fmt: skip
+
+
 @dataclass(frozen=True)
 class _DataRecord:
     """The data record a following FIXUPP refers to."""
 
-    segment: _SegmentBuilder
-    offset: int  # segment offset where the record's data starts
-    iterated: bool  # LIDATA: fixup offsets address the record, not the expanded bytes
+    target: _SegmentBuilder | _ComdatBuilder
+    offset: int  # offset in the target where the record's data starts
+    iterated: bool  # LIDATA-style data: fixup offsets address the record, not the expanded bytes
 
 
 @dataclass
@@ -362,6 +429,8 @@ class _ModuleReader:
     groups: list[str] = field(default_factory=list)
     publics: list[Public] = field(default_factory=list)
     externs: list[str] = field(default_factory=list)
+    comdats: list[_ComdatBuilder] = field(default_factory=list)
+    comdat_by_name: dict[str, _ComdatBuilder] = field(default_factory=dict)  # for continuations
     model: str = ""
     default_libraries: list[str] = field(default_factory=list)
     easy_omf: bool = False
@@ -426,6 +495,7 @@ class _ModuleReader:
             segments=tuple(s.freeze() for s in self.segments),
             publics=tuple(self.publics),
             externs=tuple(self.externs),
+            comdats=tuple(c.freeze() for c in self.comdats),
             model=self.model,
             default_libraries=tuple(self.default_libraries),
             easy_omf=self.easy_omf,
@@ -534,7 +604,7 @@ def _ledata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     seg = m.segment(cur.index())
     offset = m.offset_field(cur, rec)
     data = cur.rest()
-    seg.check_range(offset, len(data), "data")
+    seg.check_write(offset, len(data), "data")
     seg.data[offset : offset + len(data)] = data
     m.last_data = _DataRecord(seg, offset, iterated=False)
 
@@ -567,19 +637,62 @@ def _expand(block: _Block) -> bytes:
     return b"".join(_expand(b) for b in content) * repeat
 
 
-def _lidata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
-    seg = m.segment(cur.index())
-    offset = m.offset_field(cur, rec)
-    # Easy OMF widens the data offset of record 0xA2 but not its repeat counts: only LIDATA32
-    # has 32-bit ones (a real Easy OMF LIDATA record parses to its last byte only this way).
+def _write_iterated(
+    target: _SegmentBuilder | _ComdatBuilder, offset: int, cur: _Cursor, rec: Record
+) -> None:
+    """Expands the remaining blocks of `cur` into `target` at `offset`."""
+    # Easy OMF widens the data offset of record 0xA2 but not its repeat counts: only the 32-bit
+    # records have 32-bit ones (a real Easy OMF LIDATA record parses to its last byte only so).
     repeat32 = bool(rec.kind & _WIDE_BIT)
     blocks: list[_Block] = []
     while not cur.at_end():
         blocks.append(_lidata_block(cur, repeat32, 1))
     size = sum(_block_size(b) for b in blocks)  # checked before anything is expanded
-    seg.check_range(offset, size, "iterated data")
-    seg.data[offset : offset + size] = b"".join(_expand(b) for b in blocks)
+    target.check_write(offset, size, "iterated data")
+    target.data[offset : offset + size] = b"".join(_expand(b) for b in blocks)
+
+
+def _lidata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    seg = m.segment(cur.index())
+    offset = m.offset_field(cur, rec)
+    _write_iterated(seg, offset, cur, rec)
     m.last_data = _DataRecord(seg, offset, iterated=True)
+
+
+def _comdat_block(m: _ModuleReader, flags: int, name: str, seg: int, align: int) -> _ComdatBuilder:
+    if flags & COMDAT_CONTINUATION:
+        block = m.comdat_by_name.get(name)
+        if block is None:
+            raise OMFError(f"continuation of COMDAT {name!r} with no first record")
+        return block
+    block = _ComdatBuilder(name, seg, align)
+    m.comdats.append(block)
+    m.comdat_by_name[name] = block
+    return block
+
+
+def _comdat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    flags, attributes, alignment = cur.u8(), cur.u8(), cur.u8()
+    offset = m.offset_field(cur, rec)  # enumerated data offset
+    cur.index()  # type index
+    seg = 0
+    if attributes & _COMDAT_ALLOCATION_MASK == _COMDAT_EXPLICIT:
+        group, seg = cur.index(), cur.index()
+        if group:
+            m.group(group)
+        if seg:
+            m.segment(seg)
+        elif not group:
+            cur.u16()  # base frame
+    block = _comdat_block(m, flags, m.lname(cur.index()), seg, alignment)
+    iterated = bool(flags & COMDAT_ITERATED)
+    if iterated:
+        _write_iterated(block, offset, cur, rec)
+    else:
+        data = cur.rest()
+        block.check_write(offset, len(data), "data")
+        block.data[offset : offset + len(data)] = data
+    m.last_data = _DataRecord(block, offset, iterated)
 
 
 def _thread(m: _ModuleReader, cur: _Cursor, first: int) -> None:
@@ -620,7 +733,7 @@ def _target(m: _ModuleReader, cur: _Cursor, fixdat: int) -> tuple[int, int]:
 def _fixup(m: _ModuleReader, cur: _Cursor, rec: Record, first: int) -> None:
     data = m.last_data
     if data is None:
-        raise OMFError("FIXUP subrecord with no preceding LEDATA or LIDATA record")
+        raise OMFError("FIXUP subrecord with no preceding LEDATA, LIDATA or COMDAT record")
     locat = first << 8 | cur.u8()
     location = first >> _LOCAT_TYPE_SHIFT & _LOCAT_TYPE_MASK
     size = LOC_SIZES.get(location)
@@ -632,11 +745,11 @@ def _fixup(m: _ModuleReader, cur: _Cursor, rec: Record, first: int) -> None:
     target_name = m.datum_name(low, target_index)
     displacement = 0 if fixdat & FIXDAT_P else m.offset_field(cur, rec)
     if data.iterated:
-        data.segment.unmaskable = True  # the offset addresses the LIDATA record itself
+        data.target.unmaskable = True  # the offset addresses the iterated record itself
         return
     offset = data.offset + (locat & _LOCAT_OFFSET_MASK)
-    data.segment.check_range(offset, size, "fixup")
-    data.segment.fixups.append(
+    data.target.check_range(offset, size, "fixup")
+    data.target.fixups.append(
         OMFFixup(
             offset=offset,
             size=size,
@@ -706,6 +819,7 @@ _HANDLERS = {
     REC_BAKPAT32: _bakpat,
     REC_NBKPAT: _nbkpat,
     REC_NBKPAT32: _nbkpat,
+    REC_COMDAT32: _comdat,
 }
 
 
@@ -748,6 +862,26 @@ def _build_module(records: list[Record], offset: int) -> Module:
 def read_object(data: bytes, *, offset: int = 0) -> Module:
     """The module whose THEADR is at `offset` (an object file, or one module of a library)."""
     return _build_module(list(iter_records(data, offset)), offset)
+
+
+def _host_specific(rec: Record) -> bool:
+    """THEADR and COMENT 0xE9 name the source path and its timestamp."""
+    if rec.kind == REC_THEADR:
+        return True
+    return (
+        rec.kind == REC_COMENT
+        and len(rec.body) > _COMENT_CLASS
+        and rec.body[_COMENT_CLASS] == COMENT_DEPENDENCY
+    )
+
+
+def normalized_object_sha1(data: bytes) -> str:
+    """SHA-1 over the raw bytes of every record up to MODEND except the host-specific ones."""
+    digest = hashlib.sha1()
+    for rec in iter_records(data):
+        if not _host_specific(rec):
+            digest.update(data[rec.offset : rec.end])
+    return digest.hexdigest()
 
 
 def is_omf_library(data: bytes) -> bool:
