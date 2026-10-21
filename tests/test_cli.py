@@ -15,6 +15,8 @@ from libtree import cli_workspace
 from reverseapoc import targets
 from reverseapoc.cli import build_parser, main
 from reverseapoc.le import LE
+from reverseapoc.libmatch import RUNTIME_CSV_COLUMNS, RUNTIME_CSV_COMMENT
+from reverseapoc.probe import IDIOMS
 from reverseapoc.splice import RebuildResult
 from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
@@ -891,4 +893,88 @@ def test_cppscan_help_lists_options(capsys):
         main(["cppscan", "--help"])
     out = capsys.readouterr().out
     for option in ("--orig", "--manifest", "--watcom-dir", "--runtime", "--json"):
+        assert option in out
+
+
+# ---- probe ----
+
+# cmp al,5; sete al; and eax,0FFh; ret (a hand-written encoding, as in tests/test_probe.py)
+PROBE_SETCC_AND = b"\x3c\x05\x0f\x94\xc0\x25\xff\x00\x00\x00\xc3"
+PROBE_RUNTIME_ROW = "0x00010500,0x00010520,_TEXT,fake,DOS/CLIB3R.LIB,10.6,fake_,unique,"
+
+
+def _probe_workspace(tmp_path):
+    """cli_workspace whose SYNTH.EXE holds one setcc;and in game code, plus a runtime map."""
+    exe = build_le_image(fixups=[b"", b"", b""], patches={0x10400: PROBE_SETCC_AND}).data
+    ws = cli_workspace(tmp_path, exe=exe)
+    ws["runtime"] = tmp_path / "runtime.csv"
+    header = ",".join(RUNTIME_CSV_COLUMNS)
+    comment = RUNTIME_CSV_COMMENT.format(name="SYNTH.EXE")
+    ws["runtime"].write_text(f"{comment}\n{header}\n{PROBE_RUNTIME_ROW}\n", encoding="utf-8")
+    return ws
+
+
+def _probe_args(ws, *extra):
+    return ["probe", "scan", "SYNTH.EXE", "--orig", str(ws["orig"]), "--manifest",
+            str(ws["manifest"]), *extra]  # fmt: skip
+
+
+def test_probe_scan_missing_runtime_map(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(tmp_path / "absent.csv"))) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc probe: error:")
+    assert "libmatch SYNTH.EXE --write" in err
+
+
+def test_probe_scan_default_runtime_is_the_config_dir(tmp_path, capsys, monkeypatch):
+    ws = _probe_workspace(tmp_path)
+    monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
+    assert main(_probe_args(ws)) == 1
+    err = capsys.readouterr().err
+    assert str(tmp_path / "repo" / "config" / "synth" / "runtime.csv") in err
+
+
+def test_probe_scan_prints_counts(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]))) == 0
+    out = capsys.readouterr().out
+    counted = {}
+    for line in out.splitlines():
+        words = line.split()
+        if len(words) == 2 and words[0] in IDIOMS:
+            counted[words[0]] = int(words[1])
+    assert list(counted) == list(IDIOMS)
+    assert counted == {name: int(name == "setcc_and") for name in IDIOMS}
+
+
+def test_probe_scan_json(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]), "--json")) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["exe"] == "SYNTH.EXE"
+    assert data["counts"]["setcc_and"] == 1
+    assert data["lib_bytes"] == 0x20
+
+
+def test_probe_scan_refuses_orig_mismatch(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    (ws["orig"] / "SYNTH.EXE").write_bytes(b"MZ not the manifest's file")
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]))) == 1
+    assert "does not match" in capsys.readouterr().err
+
+
+def test_probe_requires_a_subcommand(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe"])
+    err = capsys.readouterr().err
+    assert "invalid choice" not in err  # the verb exists ...
+    assert "required" in err  # ... and wants calibrate or scan
+
+
+def test_probe_scan_help_lists_options(capsys):
+    with pytest.raises(SystemExit):
+        main(["probe", "scan", "--help"])
+    out = capsys.readouterr().out
+    for option in ("--orig", "--manifest", "--runtime", "--json"):
         assert option in out
