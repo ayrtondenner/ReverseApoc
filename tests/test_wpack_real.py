@@ -18,7 +18,6 @@ import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc.iso9660 import ISO9660
-from reverseapoc.le import LE
 from reverseapoc.watcom import load_watcom_manifest
 from reverseapoc.wpack import decode_member, join_parts, read_archive
 
@@ -38,6 +37,7 @@ MEMBER = "wcc386.exe"
 MEMBER_LENGTH = 567558  # docs/research/wpack-format.md section 9
 HEADER_LEN = 12  # the 10.5 disc's header (format doc section 2), own literal
 INFO_OFFSET_FIELD = 8
+MZ_LFANEW_FIELD = 0x3C  # u32 in the MZ header: offset of the new-style executable header
 
 
 @pytest.fixture(scope="module")
@@ -70,5 +70,9 @@ def test_pck00017_decodes_to_the_compiler(pck00017):
     size, head = len(data), bytes(data[:2])
     assert size == MEMBER_LENGTH
     assert head == b"MZ"
-    objects = len(LE(data).objects)
-    assert objects >= 1
+    # The 10.5 compiler is bound as an LX image (the other linear-executable variant DOS/4GW
+    # loads), not LE: le.LE refuses it ("no LE header found"). So check the header level: the
+    # MZ's e_lfanew points at the "LX" signature with little-endian byte and word order.
+    (lfanew,) = struct.unpack_from("<I", data, MZ_LFANEW_FIELD)
+    signature = bytes(data[lfanew : lfanew + 4])
+    assert signature == b"LX\0\0"
