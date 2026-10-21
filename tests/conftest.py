@@ -3,13 +3,20 @@
 `ORIG_DIR` is the orig/ the real-file tests read. The environment variable REVERSEAPOC_ORIG
 overrides it, so those tests can run from a git worktree that has no orig/ of its own (point it
 at the main checkout's orig/; the tests only read it). Docker and CI leave it unset.
+
+`WATCOM_DIR` holds the installed Watcom trees (`third_party/watcom/<version>/`); the environment
+variable REVERSEAPOC_WATCOM_DIR overrides it the same way, read-only. Real-file tests call
+`requires_version(version)` first, which skips naming the missing version, and compile tests call
+`requires_runner()`, which skips unless a compiler runner exists (the Windows host or wibo).
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 import struct
+import sys
 import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +27,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 ORIG_DIR = (
     Path(os.environ["REVERSEAPOC_ORIG"]) if "REVERSEAPOC_ORIG" in os.environ else REPO_ROOT / "orig"
 )
+WATCOM_DIR = Path(os.environ.get("REVERSEAPOC_WATCOM_DIR") or REPO_ROOT / "third_party" / "watcom")
+
+
+def requires_version(version: str) -> Path:
+    """The installed tree of one Watcom version; skips the test when it is not installed."""
+    path = WATCOM_DIR / version
+    if not path.is_dir():
+        pytest.skip(
+            f"Watcom {version}: {path} not installed (run `uv run reverseapoc install-watcom "
+            f"{version}` or set REVERSEAPOC_WATCOM_DIR)"
+        )
+    return path
+
+
+def requires_runner() -> None:
+    """Skips the test unless the Watcom compilers can run: natively on Windows, else via wibo."""
+    if sys.platform != "win32" and shutil.which("wibo") is None:
+        pytest.skip("no compiler runner: needs the Windows host or wibo in the container")
+
 
 PAGE_SIZE = 0x1000
 LAST_PAGE_SIZE = 0x200
