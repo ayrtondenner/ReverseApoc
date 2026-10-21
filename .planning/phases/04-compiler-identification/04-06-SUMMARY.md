@@ -214,6 +214,11 @@ None. Plan 04-11 runs `uv run reverseapoc install-watcom 10.5 --force` on the ma
 
 Plans 04-11 and 04-12 can take their LANDED branches. The 10.5 compiler installs reproducibly from the owner's ISO, it is pinned and gated, and it runs natively.
 
+## Self-Check: PASSED
+
+- Files found: tools/reverseapoc/watcom.py, config/watcom.toml, tests/test_watcom.py, tests/test_wpack_real.py, this SUMMARY.
+- Commits on the branch: ba5abd8, 4e1012c, 9480ec5, 6c4681c, 6e1f051. The working tree is clean.
+
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
