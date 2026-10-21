@@ -32,7 +32,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD was set up; retroactive verification) (completed 2026-10-20)
 - [x] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD was set up; retroactive verification) (completed 2026-10-20)
-- [ ] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail
+- [x] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail (completed 2026-10-21)
 - [ ] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match
 - [ ] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE
 - [ ] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions
@@ -83,7 +83,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
 
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
-**Plans:** 10/10 plans executed
+**Plans:** 10/10 plans complete
 
 Plans:
 **Wave 1**
@@ -163,7 +163,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
-| 3. Byte-identical round trip | 10/10 | In Progress | - |
+| 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 0/TBD | Not started | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |

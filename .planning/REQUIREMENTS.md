@@ -24,11 +24,11 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Byte-identical round trip (Phase 3)
 
-- [ ] **RT-01**: The rebuild reassembles each EXE from decomposed parts (untouched prefix regions plus per-object images re-paged through the LE page map), not from a file copy
-- [ ] **RT-02**: A splice API writes bytes at a linear address into a copy of the original and refuses writes outside page data and any change of file length; straddling fields are handled in flat address space
-- [ ] **RT-03**: A CLI verb rebuilds UFO2P.EXE, TACP.EXE and SMKP.EXE into `build/` and checks the whole-EXE SHA-1 against `config/targets.toml`; `cmp` against `orig/` is silent
-- [ ] **RT-04**: Negative tests prove the gate can fail: a one-byte mutation (mid-page, page edge, short last page, across a page boundary) changes the SHA-1 and the failure names the offset
-- [ ] **RT-05**: A byte-region map tiles every byte of each file (extender, MZ stub, LE header/loader section, fixup section, padding, pages, 27-byte trailer) and the LE edge cases on the real files are confirmed and documented (page types, straddling fixups, trailer)
+- [x] **RT-01**: The rebuild reassembles each EXE from decomposed parts (untouched prefix regions plus per-object images re-paged through the LE page map), not from a file copy
+- [x] **RT-02**: A splice API writes bytes at a linear address into a copy of the original and refuses writes outside page data and any change of file length; straddling fields are handled in flat address space
+- [x] **RT-03**: A CLI verb rebuilds UFO2P.EXE, TACP.EXE and SMKP.EXE into `build/` and checks the whole-EXE SHA-1 against `config/targets.toml`; `cmp` against `orig/` is silent
+- [x] **RT-04**: Negative tests prove the gate can fail: a one-byte mutation (mid-page, page edge, short last page, across a page boundary) changes the SHA-1 and the failure names the offset
+- [x] **RT-05**: A byte-region map tiles every byte of each file (extender, MZ stub, LE header/loader section, fixup section, padding, pages, 27-byte trailer) and the LE edge cases on the real files are confirmed and documented (page types, straddling fixups, trailer)
 
 ### Compiler identification (Phase 4)
 
@@ -118,11 +118,11 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | ING-03 | Phase 2 | Complete |
 | ING-04 | Phase 2 | Complete |
 | ING-05 | Phase 2 | Complete |
-| RT-01 | Phase 3 | Pending |
-| RT-02 | Phase 3 | Pending |
-| RT-03 | Phase 3 | Pending |
-| RT-04 | Phase 3 | Pending |
-| RT-05 | Phase 3 | Pending |
+| RT-01 | Phase 3 | Complete |
+| RT-02 | Phase 3 | Complete |
+| RT-03 | Phase 3 | Complete |
+| RT-04 | Phase 3 | Complete |
+| RT-05 | Phase 3 | Complete |
 | CID-01 | Phase 4 | Pending |
 | CID-02 | Phase 4 | Pending |
 | CID-03 | Phase 4 | Pending |
