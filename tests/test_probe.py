@@ -107,20 +107,29 @@ def test_movsd_runs():
     assert count_idioms(b"\xf3\xa5\xa5")["movsd_unrolled"] == 0  # rep movsd; movsd
     assert count_idioms(b"\x90\xa5")["movsd_unrolled"] == 0  # a single movsd is no unrolled copy
     assert count_idioms(MOVSD_TWO_RUNS)["movsd_unrolled"] == 2
-    # a masked byte inside one run drops only that run
+    # a masked byte in one two-movsd run leaves a single movsd there: only the other run counts
     assert count_idioms(MOVSD_TWO_RUNS, mask=frozenset({4}))["movsd_unrolled"] == 1
 
 
-def test_movsd_run_reads_its_neighbours():
-    # the byte before a run says it is no rep movsd, the byte after it says where it ends: a
-    # fixup on either drops the run, whatever value the fixup byte has (nop, rep, movsd)
+def test_movsd_run_fixup_neighbours():
+    # a fixup byte is an operand, never movsd (A5) or rep (F3): a masked neighbour ends the run
+    # and never blocks it, whatever value the fixup byte has (nop, rep, movsd)
     for value in (0x90, 0xF3, 0xA5):
         before = bytes((0x90, value)) + b"\xa5\xa5\x90"
-        assert count_idioms(before, mask=frozenset({1}))["movsd_unrolled"] == 0
+        assert count_idioms(before, mask=frozenset({1}))["movsd_unrolled"] == 1
         after = b"\x90\xa5\xa5" + bytes((value, 0x90))
-        assert count_idioms(after, mask=frozenset({3}))["movsd_unrolled"] == 0
-    # a fixup two bytes away does not touch it
-    assert count_idioms(b"\x90\x90\xa5\xa5\x90\x90", mask=frozenset({0, 5}))["movsd_unrolled"] == 1
+        assert count_idioms(after, mask=frozenset({3}))["movsd_unrolled"] == 1
+    # unmasked neighbours keep their meaning: rep before is rep movsd, movsd extends the run,
+    # rep after is the next instruction
+    assert count_idioms(b"\x90\xf3\xa5\xa5\x90")["movsd_unrolled"] == 0
+    assert count_idioms(b"\x90\xa5\xa5\xa5\x90")["movsd_unrolled"] == 1
+    assert count_idioms(b"\x90\xa5\xa5\xf3\x90")["movsd_unrolled"] == 1
+    # the start and the end of the code are boundaries too
+    assert count_idioms(b"\xa5\xa5")["movsd_unrolled"] == 1
+    # a fixup byte inside an A5 sequence ends one run and starts the next; it is never part of a
+    # run, so one unmasked movsd beside it is no run
+    assert count_idioms(b"\xa5\xa5\xa5\xa5\xa5", mask=frozenset({2}))["movsd_unrolled"] == 2
+    assert count_idioms(b"\x90\xa5\xa5\x90", mask=frozenset({2}))["movsd_unrolled"] == 0
 
 
 def test_rep_movsd_small():
