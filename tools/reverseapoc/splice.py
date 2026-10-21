@@ -29,6 +29,7 @@ SHA-1s only, never file bytes.
 from __future__ import annotations
 
 import os
+import secrets
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -683,12 +684,16 @@ def _refuse_same_file(path: Path, source: Path) -> None:
 
 def _write_atomic(path: Path, data: bytes) -> None:
     """Write `data` to a temporary file next to `path`, then swap it in with os.replace: a write
-    that fails leaves the previous `path` as it was, and a link at `path` is replaced, never
-    written through (WR-03)."""
-    tmp = path.with_name(f".{path.name}.tmp")
-    tmp.unlink(missing_ok=True)  # a stale temporary file could itself be a link
+    that fails leaves the previous `path` as it was and no temporary file behind, and a link at
+    `path` is replaced, never written through (WR-03). Each call writes a temporary file of its
+    own, so parallel writers of one path (ninja -j) never publish each other's partial data."""
+    # A random name opened exclusively: never an existing file, a link or another writer's file.
+    # Not tempfile.mkstemp, whose 0600 mode would differ from a plain write's umask-based mode.
+    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fh = tmp.open("xb")
     try:
-        tmp.write_bytes(data)
+        with fh:
+            fh.write(data)
         os.replace(tmp, path)
     except BaseException:
         tmp.unlink(missing_ok=True)
