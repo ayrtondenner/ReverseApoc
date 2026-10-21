@@ -73,7 +73,23 @@ def ninja_path(path: str) -> str:
             f"{path!r} holds {bad!r}, which ninja 1.11 (the container's) cannot escape in a "
             "build path; rename the file"
         )
+    try:
+        path.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ConfigureError(
+            f"{path!r} is not valid UTF-8, and build.ninja is written as UTF-8; rename the file"
+        ) from None
     return path.replace("$", "$$").replace(" ", "$ ").replace(":", "$:")
+
+
+def _refuse_option_like(path: str) -> str:
+    """`path`, unless reverseapoc's argparse would read it as an option."""
+    if path.startswith("-"):
+        raise ConfigureError(
+            f"{path!r} starts with '-', so the reverseapoc command in build.ninja would read it "
+            "as an option; rename or move the file or directory"
+        )
+    return path
 
 
 def _check_orig_dir(orig: str) -> str:
@@ -83,7 +99,7 @@ def _check_orig_dir(orig: str) -> str:
             "which /bin/sh runs in the container and CreateProcess splits on Windows, so only "
             "ASCII letters, digits and . _ - / : are accepted; rename or move the directory"
         )
-    return orig
+    return _refuse_option_like(orig)
 
 
 def find_executables(orig_dir: Path) -> list[Path]:
@@ -109,7 +125,7 @@ def render(exes: list[str], *, orig: str = "orig") -> str:
     ]
     outputs = []
     for exe in exes:
-        src = ninja_path(exe)  # first, so a refusal names the whole path
+        src = ninja_path(_refuse_option_like(exe))  # first, so a refusal names the whole path
         out = f"$builddir/always/parse-le/{ninja_path(Path(exe).name)}"
         lines.append(f"build {out}: parse_le {src}")
         outputs.append(out)
@@ -133,11 +149,12 @@ def main(argv: list[str] | None = None) -> int:
     base = args.output.resolve().parent
     exes = [_relative(p, base) for p in find_executables(args.orig)]
     try:
-        text = render(exes, orig=_relative(args.orig, base))
-    except ConfigureError as exc:
+        # Encoded before the output is opened, so a refusal never truncates build.ninja.
+        data = render(exes, orig=_relative(args.orig, base)).encode("utf-8")
+    except (ConfigureError, UnicodeEncodeError) as exc:
         print(f"configure.py: error: {exc}", file=sys.stderr)
         return 1
-    args.output.write_text(text, encoding="utf-8", newline="\n")
+    args.output.write_bytes(data)
     print(f"wrote {args.output} ({len(exes)} executable(s) for parse-le)")
     return 0
 
