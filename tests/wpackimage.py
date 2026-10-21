@@ -74,6 +74,70 @@ def no_shannon_stream(tokens: list[Token]) -> bytes:
     return w.getvalue()
 
 
+def _packed_lengths(lengths: dict[int, int]) -> bytes:
+    """The run-length packed code-length table (format doc section 7.2)."""
+    syms = sorted(lengths)
+    entries, symbol, i = [], 0, 0
+    while i < len(syms):
+        sym, width = syms[i], lengths[syms[i]]
+        while symbol < sym:  # skip entries: bit 7 set, up to 128 symbols each
+            gap = min(sym - symbol, 128)
+            entries.append(0x80 | (gap - 1))
+            symbol += gap
+        run = 1  # consecutive symbols of the same length, up to 8 per entry
+        while run < 8 and syms[i + run : i + run + 1] == [sym + run]:
+            if lengths[sym + run] != width:
+                break
+            run += 1
+        entries.append(((run - 1) << 4) | (width - 1))
+        symbol, i = sym + run, i + run
+    assert 1 <= len(entries) <= 256
+    return bytes([len(entries) - 1, *entries])
+
+
+def _shell_order(symbols: list[int], lengths: dict[int, int]) -> list[int]:
+    """Watcom qsort for fewer than 16 elements (format doc 8.1): gap 3 over positions 0, 3, 6...
+    only, then a plain insertion sort; each moves an element back while its predecessor is
+    strictly longer."""
+    assert len(symbols) < 16, "the builder only knows the shell-sort path"
+    a = list(symbols)
+    for gap in (3, 1):
+        for start in range(gap, len(a), gap):
+            k = start
+            while k > 0 and lengths[a[k - gap]] > lengths[a[k]]:
+                a[k - gap], a[k] = a[k], a[k - gap]
+                k -= gap
+    return a
+
+
+def canonical_codes(lengths: dict[int, int]) -> dict[int, tuple[int, int]]:
+    """symbol -> (code bits, code length), assigned per format doc section 7.3."""
+    order = _shell_order(sorted(lengths), lengths)
+    codes, value, step = {}, 0, 0
+    for sym in reversed(order):
+        value = (value + step) & 0xFFFF
+        width = lengths[sym]
+        codes[sym] = (value >> (16 - width), width)
+        step = 1 << (16 - width)
+    return codes
+
+
+def shannon_stream(tokens: list[Token], lengths: dict[int, int]) -> bytes:
+    """A Shannon-coded member stream: packed code-length table, then the coded tokens. Literals
+    are symbols 0-255, a match of length n is symbol n + 253 followed by its position. Fewer
+    than 16 symbols may be coded (the builder implements only the small-sort path)."""
+    codes = canonical_codes(lengths)
+    w = BitWriter()
+    for tok in tokens:
+        if isinstance(tok, int):
+            w.put(*codes[tok])
+        else:
+            length, pos = tok
+            w.put(*codes[length + 253])
+            w.position(pos)
+    return _packed_lengths(lengths) + w.getvalue()
+
+
 def archive(
     members: list[tuple[str, bytes, bytes, bool]],
     *,
