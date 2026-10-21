@@ -1,14 +1,20 @@
 ---
-status: diagnosed
+status: testing
 phase: 03-byte-identical-round-trip
 source: [03-VERIFICATION.md]
 started: 2026-10-20T22:06:30Z
-updated: 2026-10-21T01:52:09Z
+updated: 2026-10-21T03:03:30Z
 ---
 
 ## Current Test
 
-[testing complete]
+number: 7
+name: Triage of the two new review findings after the G-03-6 re-review (03-REVIEW-DISPOSITION.md)
+expected: |
+  WR-08 (malformed last_page_size > page_size lets a patch raise a raw TypeError; a regression from
+  03-08) and IN-12 (REFUSED/MISSING hints omit --orig/--manifest) each set to fix now, deferred
+  (with phase and reason) or skipped. Verifier judgment: neither breaks a must-have.
+awaiting: user response
 
 ## Tests
 
@@ -40,12 +46,32 @@ result: issue
 reported: "Fix now for them all"
 severity: major
 
+### 7. Triage of the two new review findings after the G-03-6 re-review (03-REVIEW-DISPOSITION.md)
+expected: WR-08 (malformed last_page_size > page_size lets a patch raise a raw TypeError instead of SpliceError and breaks a permuted-map round trip; a regression introduced by 03-08) and IN-12 (REFUSED/MISSING hints omit --orig/--manifest) each set to fix now, deferred (with phase and reason) or skipped; verifier judgment: neither breaks a must-have
+result: [pending]
+
+### 8. 03-07 did not edit orig/, config/ or the Docker files and puts no game bytes in tests (judgment-tier prohibition)
+expected: `git diff 0269b2a HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest; test_configure.py writes only synthetic names and markers (verifier's non-authoritative check: holds)
+result: [pending]
+
+### 9. 03-08 did not implement the deferred WR-01, WR-03 or WR-04 (judgment-tier prohibition)
+expected: no shared-page/overlap refusal in layout(), rebuild_target's write path (write_bytes, _refuse_inside_orig, double read) unchanged, no JSON error status (verifier's non-authoritative check: holds)
+result: [pending]
+
+### 10. 03-09's real-file tests never print or assert on game bytes (judgment-tier prohibition)
+expected: assertions compare offsets, VAs, counts, booleans and filecmp only; the new _page_at message names the VA only (verifier's non-authoritative check: holds)
+result: [pending]
+
+### 11. 03-10 edited nothing to make a gate step pass and its logs/SUMMARY hold no game bytes (judgment-tier prohibition)
+expected: no source commit between the 03-07..03-09 merges and the gate; the eight logs and the SUMMARY hold summaries, OK/check-orig lines and paths only, cmp without -l (verifier's non-authoritative check: holds)
+result: [pending]
+
 ## Summary
 
-total: 6
+total: 11
 passed: 4
 issues: 2
-pending: 0
+pending: 5
 skipped: 0
 blocked: 0
 
@@ -77,10 +103,12 @@ blocked: 0
 
 - gap_id: G-03-6
   truth: "Every open review finding after the 03-06 re-review is fixed in Phase 3: WR-07, IN-01..IN-11, and the verifier's note that REFUSED/MISSING lines always say orig/<NAME> (owner triage, UAT test 6)"
-  status: failed
+  status: resolved
   reason: "User reported: Fix now for them all"
   severity: major
   test: 6
+  resolved_by: 03-10-PLAN.md
+  resolved_at: 2026-10-21
   root_cause: "All 13 confirmed at 786edec (4 wider than reported). configure.py: WR-07 ninja_path does not check UTF-8 encodability and main() truncates build.ninja before encoding; IN-09 a leading dash is allowed in the --orig dir and in exe paths (parse-le then prints help and exits 0); IN-10 constant orig/ labels; IN-11 the rebuild rule lacks --out so verify writes REPO_ROOT/build; IN-08 Phase 2 skeleton wording. splice.py: IN-01 describe() uses the global logical page; IN-02 _unwritable_reason never locates the page; IN-03 docstring vs kept zero-length page regions; VN-01 REFUSED/MISSING hard-code orig/NAME and config/targets.toml. targets.py: IN-06 load_manifest does not wrap TOML/UTF-8/shape errors (tracebacks); IN-07 _check_bare_name raises SpliceError, accepts Windows reserved names, host-dependent. Tests/docs: IN-05 test_splice_real.py copies splice.py's page-backed-end arithmetic and MAX_FIELD; IN-04 the toolchain.md container row omits SMKP.EXE."
   artifacts:
     - path: "configure.py"
