@@ -175,7 +175,8 @@ def _check_disjoint(le: LE) -> None:
             raise LEUnsupportedError(
                 f"logical page {logical} belongs to objects {first.index} and {obj.index}"
             )
-    for a, b in pairwise(sorted(le.objects, key=lambda o: o.base)):
+    sized = (o for o in le.objects if o.vsize)  # an empty object owns no address
+    for a, b in pairwise(sorted(sized, key=lambda o: o.base)):
         if a.end > b.base:
             raise LEUnsupportedError(f"objects {a.index} and {b.index} overlap at {b.base:#x}")
 

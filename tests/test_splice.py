@@ -901,6 +901,20 @@ def test_layout_accepts_disjoint_objects_in_any_order():
     _assert_control(img)
 
 
+
+# An empty object (vsize 0, no pages) at an address inside object 1 owns no address, so it
+# overlaps nothing, whatever its position in the object table.
+EMPTY_OBJECT_INSIDE = [
+    (0x2000, 0x10000, 0x2045, 1, 2),
+    (0x1000, 0x20000, 0x2043, 3, 1),
+    (0, 0x10800, 0x2043, 4, 0),
+]
+
+
+def test_layout_accepts_an_empty_object_inside_another():
+    img = _no_fixups(objects=EMPTY_OBJECT_INSIDE)
+    check_tiling(layout(LE(img.data)), len(img.data))
+
 # ---- WR-03: the output is checked by file identity, written atomically, the input read once -----
 
 PREVIOUS_BUILD = b"previous build output"  # synthetic: what build/<NAME> held before the rebuild
