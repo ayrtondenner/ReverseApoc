@@ -122,7 +122,7 @@ Plans:
   5. A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) reports its result per EXE and confirms `wcc386`, or names the modules that need `wpp386` (CID-06)
 
 **Spike**: wibo 1.2.0 runs `wcc386.exe` for each version (10.5, 10.6, 11.0) in Docker.
-**Plans:** 9/12 plans executed
+**Plans:** 10/12 plans executed
 
 Plans:
 **Wave 1**
@@ -141,7 +141,7 @@ Plans:
 - [x] 04-09-PLAN.md — C vs C++ scan (XI/YI via inirt386, C++-only runtime rows, mangled strings, vtable candidates), `cppscan` verb (CID-06)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 04-10-PLAN.md — `probe calibrate|scan`: non-library idiom counts, per-flag evidence lines and consistent calibration cells per EXE (CID-03, CID-05)
+- [x] 04-10-PLAN.md — `probe calibrate|scan`: non-library idiom counts, per-flag evidence lines and consistent calibration cells per EXE (CID-03, CID-05)
 
 **Wave 5** *(blocked on Wave 4 completion; main checkout)*
 - [ ] 04-11-PLAN.md — 10.5 data migration, D-03 native vs wibo log, spike 004 record, toolchain.md/matching.md/learnings.md results and the final cflags default (CID-05, CID-01)
@@ -189,6 +189,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
-| 4. Compiler identification | 9/12 | In Progress | - |
+| 4. Compiler identification | 10/12 | In Progress | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
