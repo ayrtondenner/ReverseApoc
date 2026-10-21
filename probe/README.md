@@ -101,4 +101,6 @@ calibration also runs through `tests/test_probe_real.py` or `probe.calibrate()`.
 reinstalled 10.5 with its decoded compiler, the table covers 10.5 as well: 10.5 and 10.6 give
 byte-identical objects in all ten flag sets. Objects go under
 `build/probe/<version>/<flags>/` (gitignored). Output holds counts, library names and SHA-1s,
-never object bytes.
+never object bytes. If the hash gate (D-13) refuses any requested version, the verb prints the
+table, exits 1 and writes no calibration; pass `--versions` to calibrate only the versions you
+have installed.

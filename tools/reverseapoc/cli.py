@@ -260,6 +260,14 @@ def _probe_calibrate(args: argparse.Namespace) -> int:
     check_versions(args.versions)
     calibration = probe.calibrate(args.versions, manifest=args.manifest, watcom_dir=args.watcom_dir)
     print(json.dumps(calibration.to_json(), indent=2) if args.json else calibration.format())
+    if calibration.skipped or not calibration.cells:
+        # A gate refusal is fatal, as in `cc`: a calibration without the refused version would
+        # let a later `probe scan --calibration` leave it out without saying so.
+        refused = "; ".join(f"{version}: {reason}" for version, reason in calibration.skipped)
+        raise ProbeError(
+            f"not writing {args.output}: the gate refused {refused or 'every version'}; "
+            "fix or install the version, or leave it out of --versions"
+        )
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(calibration.to_json(), indent=2) + "\n"
