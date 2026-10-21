@@ -387,7 +387,9 @@ def _versions(hits: Iterable[_Hit]) -> tuple[str, ...]:
 
 
 def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
-    """One range from every hit at [start, end): unique when they share one module name."""
+    """One range from every hit at [start, end): unique when they share one module name. The
+    libraries, versions and publics are those of every hit (D-07: every version whose bytes
+    match), so a module renamed between versions still shows all of them."""
     names = sorted({h.owner.module_name for h in hits})
     chosen = [h for h in hits if h.owner.module_name == names[0]]
     others = [h for h in hits if h.owner.module_name != names[0]]
@@ -396,9 +398,9 @@ def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
         end=end,
         segment=min(h.owner.segment.name for h in chosen),
         module=names[0],
-        libraries=_libraries(chosen),
-        versions=_versions(chosen),
-        publics=_sorted_set(p for h in chosen for p in h.owner.publics),
+        libraries=_libraries(hits),
+        versions=_versions(hits),
+        publics=_sorted_set(p for h in hits for p in h.owner.publics),
         status=STATUS_UNIQUE if not others else STATUS_AMBIGUOUS,
         alternatives=_sorted_set(f"{h.owner.module_name}@{h.owner.library}" for h in others),
     )
