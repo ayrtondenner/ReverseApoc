@@ -111,7 +111,7 @@ status: complete
 - `probe/cg_basic.c`: clean-room C89, seven functions (byte compare, counted loop, sparse switch, five-dword struct copy, division by 10, x87 expression, a caller). `probe/README.md` has the construct table, the clean-room note and the measured table.
 - `tools/reverseapoc/probe.py`: the eight counters in IDIOMS order behind one mask/exclude filter, `object_code`, `chk_sites`, `Cell`, `Calibration` and `calibrate`.
 - Real calibration on the host: 10.6 and 11.0 x 10 flag sets, 20 cells, no ties. 10.5 is skipped by its gate (reason starts "Watcom 10.5:") until plan 04-11.
-- Every hit in the real objects falls in the function the construct lives in, with one exception, a switch_descending hit in 11.0 `-5r -s -ox` that starts in pr_eq5 (byte-level noise, research A7). Checked with a throwaway script that reported only names and offsets.
+- Every hit in the real objects falls in the function the construct lives in, with one exception, a switch_descending hit in 11.0 `-5r -s -ox` that starts in pr_eq5 (byte-level noise, research A7). Checked with a throwaway script that reported only names and offsets. *(Corrected in "Review fix round 1" below: that hit was a counter defect, not noise.)*
 
 ## Measured calibration table (host, 2026-10-21; counts only)
 
@@ -146,7 +146,7 @@ Ties: none (no two versions produce the same normalized object for any flag set)
 
 | Row | Research expectation | Measured |
 |---|---|---|
-| 10.6 `-4r -s` struct copy | `mov ecx,5; rep movsd`, counted as `B9 <1..16> 00 00 00 F3 A5` (rep_movsd_small >= 1) | rep_movsd_small = 0 in every cell. Both instructions are there at `-3r` and `-4r` for both versions, but `mov ecx,5` sits 9 bytes before `rep movsd`, with other moves between. The test asserts the measured 0, plus movsd_unrolled = 0 at `-4r`, which keeps the -4/-5 split visible. Consequence for 04-10: a game-code count of 0 for the adjacent encoding does not rule out `-4`. |
+| 10.6 `-4r -s` struct copy | `mov ecx,5; rep movsd`, counted as `B9 <1..16> 00 00 00 F3 A5` (rep_movsd_small >= 1) | rep_movsd_small = 0 in every cell. Both instructions are there at `-3r` and `-4r` for both versions, but `mov ecx,5` sits 9 bytes before `rep movsd`, with other moves between. The test asserts the measured 0, plus movsd_unrolled = 0 at `-4r`, which keeps the -4/-5 split visible. Consequence for 04-10: a game-code count of 0 for the adjacent encoding does not rule out `-4`. *(Review fix round 1: the counter now takes the measured shape and hits at `-3r`/`-4r`; see below.)* |
 | `-5s -s` default libraries | clib3s and math387s | math387s and emu387; no CLIB library is requested under any flag set (clib3r is absent too). The test asserts math387s present, math387r absent and clib3s absent (measured). |
 
 Every other research row reproduced: `movzx` at 10.6 `-3r`; `and`, unrolled movsd and no small rep movsd at 10.6 `-5r`; `and` at 11.0 `-4r`; neither setcc form at 11.0 `-5r`; rotated loops for 10.6 and top-tested for 11.0 at `-5r -s`; `__CHK` calls without `-s` (7, one per function) and none with `-s`; emu387 with `-fpi` and noemu387 with `-fpi87`, on both versions.
@@ -214,7 +214,7 @@ None.
 
 ## Next Phase Readiness
 
-- Plan 04-10 can call `count_idioms(code, base=..., exclude=runtime_ranges, mask=...)` on the game's code objects and compare against `calibrate()` cells. It should read the two deviations first: rep_movsd_small cannot show `-4`, and movzx appears under 10.6 `-os`.
+- Plan 04-10 can call `count_idioms(code, base=..., exclude=runtime_ranges, mask=...)` on the game's code objects and compare against `calibrate()` cells. It should read the two deviations first: rep_movsd_small cannot show `-4`, and movzx appears under 10.6 `-os`. *(Superseded by "Review fix round 1" below: rep_movsd_small now shows `-3`/`-4`, switch order does not separate the versions, and 04-10 must recount the research's game-code baseline with the corrected counters.)*
 - Plan 04-11: once 10.5 is reinstalled, `test_calibration_with_10_5` runs all three versions and checks that `ties()` agrees with the cells' hashes. The expected result is "10.6 (10.5 byte-identical on the probe)".
 
 ## Self-Check: PASSED
@@ -227,6 +227,77 @@ None.
   - `grep -n "def count_idioms"` finds it.
   - `pytest -k "movsd or rep_movsd or loop or switch or calibration_format or ties"`: 10 passed.
   - Real verify (relative watcom dir): 22 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused".
+
+## Review fix round 1 (2026-10-21)
+
+The 04-08 review found two counters that would mislead plan 04-10 (Important I-1 and I-2) and two minors folded in here (M1 and M5). The fixes were made test-first. Every new assertion was seen failing on the old code. Each part of each fix was then removed once, temporarily, to prove that a test catches its absence. The probe source was not changed.
+
+| Commit | Change |
+|---|---|
+| `6dbaeeb` fix(04-08) | Switch chains (I-1). A compare that turns the direction used to drop the compare before it. It now starts the next chain together with that compare. The next compare must also start within `SWITCH_STEP_GAP` = 12 bytes of the previous jcc; before, only the 64-byte window bounded the gap. A compare past the window still starts a new chain on its own. |
+| `5c1a58a` fix(04-08) | rep_movsd_small (I-2) now counts the measured shape: `mov ecx,imm32` with a count of 1..16 (`SMALL_COPY_DWORDS`), up to `SMALL_COPY_MOVES` = 4 register-to-register `mov` (89 /r or 8B /r with ModRM mod=11), then `rep movsd`. The pattern is built from named constants. It is still one span, so a masked byte anywhere from `mov ecx` to `rep movsd` drops the hit, as before. The FLAG_SETS comments now state measured facts (M1). |
+| `c66477a` fix(04-08) | movsd_unrolled (M5). Each run is now read together with the byte before it and the byte after it, so a fixup on either neighbour drops the run whatever its value. The byte after had the same defect as the lookbehind byte: a masked A5 there extended the run into the fixup, while any other masked value ended the run. |
+| `a764f03` fix(04-08) | Real rows. Every cell except `-oneatx`, on both versions, asserts one ascending chain and no descending chain. rep_movsd_small is asserted >= 1 at `-3r` and `-4r` and == 0 at `-5r`, on both versions. The `-4r` row was `==0` with id `10.6-4r-small-rep-measured-0`. |
+
+### Re-run calibration table (host, 2026-10-21; counts only)
+
+Columns as in the first table. Only `rep`, `up` and `down` changed.
+
+| version | flags | and | movzx | movsd | rep | rot | top | up | down | `__CHK` | default libraries |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 10.6 | `-3r -s` | 0 | 1 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-4r -s` | 1 | 0 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 7 | math387r, emu387 |
+| 10.6 | `-4r -s -ox` | 1 | 0 | 0 | 1 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -ox` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -oneatx` | 1 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -os` | 0 | 1 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, emu387 |
+| 10.6 | `-5r -s -fpi87` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387r, noemu387 |
+| 10.6 | `-5s -s` | 1 | 0 | 1 | 0 | 1 | 0 | 1 | 0 | 0 | math387s, emu387 |
+| 11.0 | `-3r -s` | 0 | 1 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-4r -s` | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 7 | math387r, emu387 |
+| 11.0 | `-4r -s -ox` | 1 | 0 | 0 | 1 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -ox` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -oneatx` | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -os` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, emu387 |
+| 11.0 | `-5r -s -fpi87` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387r, noemu387 |
+| 11.0 | `-5s -s` | 0 | 0 | 1 | 0 | 0 | 1 | 1 | 0 | 0 | math387s, emu387 |
+
+Ties: none. Skipped: 10.5 (gate refused), as before.
+
+### Corrected readings
+
+- **Switch.** The claim above that the 11.0 `-5r -s -ox` descending hit was "byte-level noise" was wrong, and so was the README's "ascending chain for most cells". The objects show a cross-function chain of real instructions: pr_eq5's `cmp al,5; jne` and two compares of pr_switch. The pre-fix counter fails the new real rows in exactly five cells, all 11.0:
+  - `-5r -s`, `-5r -s -os` and `-5r -s -fpi87`: pr_eq5's paired compare split 5, 2, 3, 10 into [5, 2] and [3, 10], so the real chain was dropped.
+  - `-5r -s -ox`: the descending cross-function chain [5, 2, 1].
+  - `-4r -s -ox`: pr_switch's own first compare turns the direction, and the old restart dropped the chain after it.
+
+  After the fix, every cell except `-oneatx` on both versions has one ascending chain and no descending chain. The real chains use step gaps of at most 2 bytes (8 at 11.0 `-ox`), well inside the 12-byte limit. Switch order therefore does not separate 10.6 from 11.0 on the probe. The research's different 11.0 `-ox` jcc forms show only where the chain starts: at 11.0 `-ox`, pr_switch's first compare turns the direction, so the chain starts at its second compare (offsets from the object's publics). No counter reads that shape.
+- **Struct copy.** rep_movsd_small hits at `-3r`, `-4r` and `-4r -ox` on both versions, and is 0 in every `-5` cell. `rep` vs `movsd` now gives a positive signal for `-3`/`-4` as well as for `-5`.
+
+### Deviations update (for plan 04-11)
+
+| Row | Research expectation | Measured after fix round 1 |
+|---|---|---|
+| 10.6 `-4r -s` struct copy | `mov ecx,5; rep movsd` | Reproduces as mnemonics and is now counted: rep_movsd_small >= 1 at `-3r` and `-4r` on both versions. This calibrates the counter's encoding against the measured probe output: the plan's adjacent encoding could not see the two register moves the probe puts between the instructions. It does not force the row. The probe and the row's mnemonics are unchanged, and the counter is pinned against negatives: a non-mov between, five moves, a count outside 1..16, and a mov with a memory operand. |
+| switch {1,2,3,10} at `-ox` | 11.0 differs from 10.6 (`cmp; jae; cmp; jne ...`) | The compared values ascend on both versions, one chain each, so the order counter does not separate the versions. Asserted as measured (the `*-switch-up` rows). |
+
+The `-5s -s` default-library deviation is unchanged.
+
+### For plan 04-10
+
+- **Recount the research's game-code baseline** (04-RESEARCH Pattern 6) with the corrected counters. Its "`B9 <1..16> 00 00 00 F3 A5` = 0, so no -4 struct copy" used the adjacent encoding, which cannot see the probe's own `-3`/`-4` copy, so that 0 never ruled out `-4`. The switch and movsd counts change too.
+- **Switch.** A chain now stays within one function (the 12-byte step limit), but switch order is not a version discriminator on the probe. The compare forms still cover only eax and al (Minor 3, tracked).
+- **movsd_unrolled** now drops a run whose neighbouring byte is a fixup site. A run right after an instruction with a relocated operand (for example `mov edi,offset dst`) is no longer counted. The probe's runs follow register moves, so the calibration does not change, but game-code counts can come out lower than the research's.
+
+### Verification (fix round 1)
+
+- `uv run pytest -q tests/test_probe.py`: 25 passed.
+- `REVERSEAPOC_WATCOM_DIR="<repo>/third_party/watcom" uv run pytest -q -rs tests/test_probe_real.py`: 44 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused".
+- `uv run pytest -q`: 884 passed, 8 skipped. `uv run ruff check .`: All checks passed!
 
 ---
 *Phase: 04-compiler-identification*
