@@ -32,7 +32,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Compiler identification (Phase 4)
 
-- [ ] **CID-01**: The original Watcom compiler runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/` (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` loads the LE `BINW\WCC386.EXE`, so `binw/` is required too)
+- [ ] **CID-01**: The original Watcom compiler runs under wibo 1.2.0 in Docker for each owner-supplied version (10.5, 10.6, 11.0), mounted read-only from `third_party/watcom/` (11.0: native `BINNT\wcc386.exe`; 10.5/10.6: `BINNT\wcc386.exe` loads the LX `BINW\WCC386.EXE`, so `binw/` is required too)
 - [ ] **CID-02**: A compiler wrapper keyed by `compiler@version` plus a per-file flags table (`config/cflags.txt`) selects the compiler and flags per source file
 - [ ] **CID-03**: The mosura codegen probe compiled with each version locates its idioms in both code objects (non-library code)
 - [ ] **CID-04**: Linked CLIB3R/MATH3R runtime modules match byte for byte (masked) against one version's `LIB386`

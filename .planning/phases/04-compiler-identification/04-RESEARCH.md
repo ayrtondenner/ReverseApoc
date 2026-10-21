@@ -103,7 +103,7 @@ All runs used `docker compose run --rm -T build bash -s` from `docker/` with the
 | 10.5 (prototype-decoded BINW in a scratch tree mounted at `/scratch`) | compiles, rc 0 | compiles, rc 0 | `WATCOM C32 Optimizing Compiler  Version 10.5` |
 | 10.6 | compiles, rc 0, ~43 ms per compile | compiles, rc 0, ~49 ms | `WATCOM C32 Optimizing Compiler  Version 10.6` |
 | 11.0 | compiles, rc 0, ~88 ms per compile | compiles, rc 0 | `Watcom C32 Optimizing Compiler  Version 11.0` |
-| 11.0 `BINW/WCC386.EXE` run directly | `Failed to load PE image` (expected: LE, not PE) | — | — |
+| 11.0 `BINW/WCC386.EXE` run directly | `Failed to load PE image` (expected: LE, not PE) (Correction 2026-10-21: measured LX in 10.5, 10.6 and 11.0; see docs/learnings.md.) | — | — |
 
 Facts established:
 1. **10.x loader mechanics.** `WIBO_DEBUG=1` shows the 10.6 BINNT loader calling `GetModuleFileNameA` → `Z:\work\watcom\10.6\BINNT\WCC386.EXE`, then `CreateFileA(Z:\work\watcom\10.6\BINW\WCC386.EXE)`. It resolves the sibling `BINW` from its own path. PATH, `WATCOM`, DOS4GW and W32RUN are not needed. A tree only needs `BINNT/WCC386.EXE` + `BINW/WCC386.EXE` + `H/`. [VERIFIED: wibo debug trace]
@@ -524,7 +524,7 @@ def build_argv(version: str, flags: list[str], src_rel: str, obj_rel: str, err_r
 
 | Old Approach | Current Approach | When Changed | Impact |
 |---|---|---|---|
-| Run 10.x under DOSBox/dosemu (mosura, Daggerfall) | wibo 1.2.0 runs the BINNT loader, which hosts the LE compiler | decomp.me cromper; verified here | Fast (~40-90 ms per compile), no emulator in image |
+| Run 10.x under DOSBox/dosemu (mosura, Daggerfall) | wibo 1.2.0 runs the BINNT loader, which hosts the LE compiler (Correction 2026-10-21: measured LX in 10.5, 10.6 and 11.0; see docs/learnings.md.) | decomp.me cromper; verified here | Fast (~40-90 ms per compile), no emulator in image |
 | KKND `lib_match.py`: prefix at known function starts | Anchor-and-verify slide over the whole code object, whole segments, both-side masks | This research | No function list needed (Phase 4 precedes the split) |
 | Version from banner | Library-module version sets + calibrated probe idioms | mosura, Theme Hospital | Banner cannot separate 10.5/10.6/11.0 |
 
