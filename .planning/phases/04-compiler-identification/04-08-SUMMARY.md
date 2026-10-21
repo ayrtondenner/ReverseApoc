@@ -236,7 +236,7 @@ The 04-08 review found two counters that would mislead plan 04-10 (Important I-1
 |---|---|
 | `6dbaeeb` fix(04-08) | Switch chains (I-1). A compare that turns the direction used to drop the compare before it. It now starts the next chain together with that compare. The next compare must also start within `SWITCH_STEP_GAP` = 12 bytes of the previous jcc; before, only the 64-byte window bounded the gap. A compare past the window still starts a new chain on its own. |
 | `5c1a58a` fix(04-08) | rep_movsd_small (I-2) now counts the measured shape: `mov ecx,imm32` with a count of 1..16 (`SMALL_COPY_DWORDS`), up to `SMALL_COPY_MOVES` = 4 register-to-register `mov` (89 /r or 8B /r with ModRM mod=11), then `rep movsd`. The pattern is built from named constants. It is still one span, so a masked byte anywhere from `mov ecx` to `rep movsd` drops the hit, as before. The FLAG_SETS comments now state measured facts (M1). |
-| `c66477a` fix(04-08) | movsd_unrolled (M5). Each run is now read together with the byte before it and the byte after it, so a fixup on either neighbour drops the run whatever its value. The byte after had the same defect as the lookbehind byte: a masked A5 there extended the run into the fixup, while any other masked value ended the run. |
+| `c66477a` fix(04-08) | movsd_unrolled (M5). The relocated value of a fixup byte beside a run no longer decides the count. The byte after the run had the same defect as the lookbehind byte: a masked A5 there extended the run into the fixup, while any other masked value ended the run. This commit dropped the run whenever a neighbour was a fixup; fix round 2 (`4790973`, below) replaced that with "a fixup byte is a run boundary". |
 | `a764f03` fix(04-08) | Real rows. Every cell except `-oneatx`, on both versions, asserts one ascending chain and no descending chain. rep_movsd_small is asserted >= 1 at `-3r` and `-4r` and == 0 at `-5r`, on both versions. The `-4r` row was `==0` with id `10.6-4r-small-rep-measured-0`. |
 
 ### Re-run calibration table (host, 2026-10-21; counts only)
@@ -291,13 +291,15 @@ The `-5s -s` default-library deviation is unchanged.
 
 - **Recount the research's game-code baseline** (04-RESEARCH Pattern 6) with the corrected counters. Its "`B9 <1..16> 00 00 00 F3 A5` = 0, so no -4 struct copy" used the adjacent encoding, which cannot see the probe's own `-3`/`-4` copy, so that 0 never ruled out `-4`. The switch and movsd counts change too.
 - **Switch.** A chain now stays within one function (the 12-byte step limit), but switch order is not a version discriminator on the probe. The compare forms still cover only eax and al (Minor 3, tracked).
-- **movsd_unrolled** now drops a run whose neighbouring byte is a fixup site. A run right after an instruction with a relocated operand (for example `mov edi,offset dst`) is no longer counted. The probe's runs follow register moves, so the calibration does not change, but game-code counts can come out lower than the research's.
+- **movsd_unrolled** reads a fixup byte as an operand, so a fixup byte ends a run and never blocks or drops one (fix round 2). A run right after an instruction with a relocated operand (for example `mov edi,offset dst`) is counted. Only an unmasked neighbour decides: A5 extends the run, and F3 before it makes it rep movsd. A fixup byte inside an A5 sequence splits it into two runs. The probe's runs follow register moves, so the calibration does not change.
 
 ### Verification (fix round 1)
 
 - `uv run pytest -q tests/test_probe.py`: 25 passed.
 - `REVERSEAPOC_WATCOM_DIR="<repo>/third_party/watcom" uv run pytest -q -rs tests/test_probe_real.py`: 44 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused".
 - `uv run pytest -q`: 884 passed, 8 skipped. `uv run ruff check .`: All checks passed!
+
+**Fix round 2 (2026-10-21, `4790973`):** a fixup byte beside an unrolled movsd run is now a run boundary (an operand is never A5 or F3), so the run is counted instead of dropped. The probe calibration is unchanged: every count and every normalized SHA-1 matches the table above. Verification is the same as above (25 unit and 44 real passed, the 10.5 gate skip, 884 passed and 8 skipped overall, ruff clean).
 
 ---
 *Phase: 04-compiler-identification*
