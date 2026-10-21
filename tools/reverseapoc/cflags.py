@@ -23,7 +23,9 @@ DEFAULT_CFLAGS = REPO_ROOT / "config" / "cflags.txt"
 COMPILERS = ("wcc386", "wpp386")
 # Options the wrapper always sets or must control (quiet, no file-dependency info, DOS target,
 # object, error file, forced include, precompiled header, auto-dependency file, include path);
-# a per-file rule may not set them. "-i" must stay last: _wrapper_owned matches it specially.
+# a per-file rule may not set them. Each is a prefix: Watcom ignores the case of an option and
+# takes its value with or without "=", so `-iinc`, `-Iinc` and `-I=inc` all add an include path
+# (D-14; probed with the real 10.6 and 11.0 compilers).
 WRAPPER_OWNED = ("-zq", "-zld", "-bt", "-fo", "-fr", "-fi", "-fh", "-ad", "-i")
 
 
@@ -54,12 +56,10 @@ def _fields(text: str):
 
 
 def _wrapper_owned(flag: str) -> str | None:
-    """The WRAPPER_OWNED option `flag` sets, if any. Each is matched as a prefix, except "-i",
-    which only counts as the whole flag or followed by "=": a future "-ix"-style flag is a
-    different option and must not be caught by accident."""
-    if flag == "-i" or flag.startswith("-i="):
-        return "-i"
-    return next((owned for owned in WRAPPER_OWNED[:-1] if flag.startswith(owned)), None)
+    """The WRAPPER_OWNED option `flag` sets, if any: the first one that is a prefix of the flag
+    once it is lowercased, as Watcom ignores case."""
+    option = flag.lower()
+    return next((owned for owned in WRAPPER_OWNED if option.startswith(owned)), None)
 
 
 def _check_flag(flag: str) -> None:
@@ -67,6 +67,14 @@ def _check_flag(flag: str) -> None:
     # must show the flag exactly as the file spells it.
     if not flag.startswith("-"):
         raise CflagsError(f"flag `{flag}` must start with `-`")
+    if "-" in flag[1:]:
+        # Watcom starts a new option at every `-`, even inside a value: `-s-iinc` and
+        # `-dY=1-iinc` both add an include path. One flag is one option, so the checks below
+        # see every option the compiler will.
+        raise CflagsError(
+            f"flag `{flag}` holds a second `-`, where Watcom starts another option; "
+            "give each option its own field"
+        )
     owned = _wrapper_owned(flag)
     if owned is not None:
         raise CflagsError(f"flag `{flag}` sets {owned}, which the wrapper owns")
@@ -103,7 +111,8 @@ def _parse_rule(lineno: int, fields: list[str], versions: Collection[str]) -> Ru
 def parse_cflags(text: str, *, versions: Collection[str], where: str = "cflags.txt") -> list[Rule]:
     """The rules of a cflags.txt text, in file order. Every error names `where` and the line:
     a first rule whose glob is not `*`, a malformed compiler@version, an unknown compiler or
-    version, and a flag that is wrapper-owned or holds `/`, `\\` or whitespace."""
+    version, and a flag that does not start with `-`, holds a second `-`, is wrapper-owned in
+    any case, or holds `/`, `\\` or whitespace."""
     rules = []
     for lineno, fields in _fields(text):
         try:
