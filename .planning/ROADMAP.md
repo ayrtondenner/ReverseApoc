@@ -83,7 +83,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   5. `docs/toolchain.md` records the LE edge cases confirmed on the real files (page types, the 14 UFO2P / 11 TACP page-straddling fixups, the 27-byte trailer) as offsets, lengths and hashes only, replacing the "page data runs exactly to EOF" and "To be confirmed in Phase 2/3" lines (RT-05)
 
 **Spike**: Iterated pages / fixup edge cases on the real files, plus the 27 trailing bytes after the last LE page (starting `64 00 9B FF`) that a byte-identical rebuild must preserve.
-**Plans:** 6/10 plans executed
+**Plans:** 9/10 plans executed
 
 Plans:
 **Wave 1**
@@ -103,9 +103,9 @@ Plans:
 - [x] 03-06-PLAN.md — Wave 1: fix review warnings WR-05/WR-06 (`configure.py --orig` reaches check-orig and verify; refuse paths ninja or the shell would misread) and WR-02 (masked_fields counts distinct fields); re-run the phase gate on the main checkout (RT-02, RT-03)
 
 **Gap closure (G-03-6, UAT test 6)**
-- [ ] 03-07-PLAN.md — Wave 1: configure.py refuses non-UTF-8 names without truncating build.ninja (WR-07) and paths starting with `-` (IN-09); `CHECK-ORIG` names the orig dir (IN-10); the rebuild rule passes `--out build` (IN-11); stale skeleton wording removed (IN-08) (RT-03)
-- [ ] 03-08-PLAN.md — Wave 1: load_manifest raises ManifestError for malformed manifests and non-bare or Windows-reserved names (IN-06, IN-07); labels and refusal reasons count pages within the object (IN-01, IN-02); layout() docstring (IN-03); REFUSED/MISSING name the real input and manifest (VN-01) (RT-02, RT-03, RT-04)
-- [ ] 03-09-PLAN.md — Wave 1: real-file test helpers derived from le.py's reader instead of splice.py's arithmetic, FACTS unchanged (IN-05); docs/toolchain.md lists SMKP.EXE in the container's orig/ row (IN-04) (RT-03, RT-05)
+- [x] 03-07-PLAN.md — Wave 1: configure.py refuses non-UTF-8 names without truncating build.ninja (WR-07) and paths starting with `-` (IN-09); `CHECK-ORIG` names the orig dir (IN-10); the rebuild rule passes `--out build` (IN-11); stale skeleton wording removed (IN-08) (RT-03)
+- [x] 03-08-PLAN.md — Wave 1: load_manifest raises ManifestError for malformed manifests and non-bare or Windows-reserved names (IN-06, IN-07); labels and refusal reasons count pages within the object (IN-01, IN-02); layout() docstring (IN-03); REFUSED/MISSING name the real input and manifest (VN-01) (RT-02, RT-03, RT-04)
+- [x] 03-09-PLAN.md — Wave 1: real-file test helpers derived from le.py's reader instead of splice.py's arithmetic, FACTS unchanged (IN-05); docs/toolchain.md lists SMKP.EXE in the container's orig/ row (IN-04) (RT-03, RT-05)
 - [ ] 03-10-PLAN.md — Wave 2 *(blocked on 03-07, 03-08, 03-09)*: phase gate re-run on the main checkout, eight steps including `ninja verify` through `--orig` and from a sub-directory build.ninja; all 13 findings marked fixed in 03-REVIEW-DISPOSITION.md (RT-01, RT-03)
 
 ### Phase 4: Compiler identification
@@ -163,7 +163,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 |-------|----------------|--------|-----------|
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
-| 3. Byte-identical round trip | 6/6 | In Progress | - |
+| 3. Byte-identical round trip | 9/10 | In Progress | - |
 | 4. Compiler identification | 0/TBD | Not started | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
