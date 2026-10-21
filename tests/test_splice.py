@@ -861,6 +861,44 @@ def test_unwritable_reason_without_a_page_slot_is_a_splice_error(monkeypatch):
     assert "0x11800: no page of object 1 covers it" in message
 
 
+# ---- WR-01: objects that share logical pages or linear addresses are refused by layout() --------
+
+# Object 2 starts at logical page 2, which object 1 already owns.
+SHARED_PAGE_OBJECTS = [(0x2000, 0x10000, 0x2045, 1, 2), (0x1200, 0x20000, 0x2043, 2, 2)]
+# Disjoint pages, but object 2's [base, end) starts inside object 1's.
+OVERLAPPING_OBJECTS = [(0x2000, 0x10000, 0x2045, 1, 2), (0x3000, 0x11000, 0x2043, 3, 1)]
+# Object 1 is listed first but lies above object 2.
+DESCENDING_OBJECTS = [(0x2000, 0x30000, 0x2045, 1, 2), (0x3000, 0x20000, 0x2043, 3, 1)]
+
+
+def test_layout_refuses_a_shared_logical_page():
+    le = LE(_no_fixups(objects=SHARED_PAGE_OBJECTS).data)
+    with pytest.raises(LEUnsupportedError, match=r"logical page 2 belongs to objects 1 and 2"):
+        layout(le)
+
+
+def test_patch_into_the_second_owner_of_a_page_is_refused():
+    # Before WR-01 this patch went into object 2's image, which reassemble() never reads, and
+    # splice() returned the input unchanged with nothing masked.
+    le = LE(_no_fixups(objects=SHARED_PAGE_OBJECTS).data)
+    with pytest.raises(LEUnsupportedError, match=r"objects 1 and 2"):
+        splice.splice(le, {0x20010: bytes([PATCH_BYTE])})
+
+
+def test_layout_refuses_overlapping_objects():
+    le = LE(_no_fixups(objects=OVERLAPPING_OBJECTS).data)
+    with pytest.raises(LEUnsupportedError, match=r"objects 1 and 2 overlap at 0x11000"):
+        layout(le)
+    with pytest.raises(LEUnsupportedError, match=r"objects 1 and 2 overlap"):
+        splice.splice(le, {0x11010: bytes([PATCH_BYTE])})
+
+
+def test_layout_accepts_disjoint_objects_in_any_order():
+    img = _no_fixups(objects=DESCENDING_OBJECTS)
+    check_tiling(layout(LE(img.data)), len(img.data))
+    _assert_control(img)
+
+
 def test_rebuild_result_names_the_input_path(tmp_path):
     data = build_le_image().data
     manifest = write_manifest(tmp_path / "custom.toml", {"SYNTH.EXE": data})
