@@ -555,6 +555,23 @@ def splice(le: LE, patches: Mapping[int, bytes]) -> SpliceResult:
 # ---- rebuild ------------------------------------------------------------------------------------
 
 
+def _arg(path: Path) -> str:
+    """`path` as one command-line argument: double-quoted when it holds whitespace."""
+    text = str(path)
+    return f'"{text}"' if any(c.isspace() for c in text) else text
+
+
+def _hint(verb: str, orig_dir: Path | None, manifest: Path | None) -> str:
+    """The command to run next, with the --orig and --manifest that produced the line when they
+    are not the defaults, so following it checks the same files (IN-12)."""
+    words = ["run uv run reverseapoc", verb]
+    if orig_dir is not None and orig_dir.resolve() != DEFAULT_ORIG.resolve():
+        words += ["--orig", _arg(orig_dir)]
+    if manifest is not None and manifest.resolve() != DEFAULT_MANIFEST.resolve():
+        words += ["--manifest", _arg(manifest)]
+    return " ".join(words)
+
+
 @dataclass(frozen=True)
 class RebuildResult:
     target: Target
@@ -577,7 +594,8 @@ class RebuildResult:
 
     def format(self, width: int, manifest: Path | None = None) -> str:
         """One line for this target. MISSING and REFUSED name the input file rebuild checked
-        and REFUSED the manifest it used ("the manifest" when the caller does not pass it)."""
+        and REFUSED the manifest it used ("the manifest" when the caller does not pass it).
+        Their hint repeats --orig and --manifest when those are not the defaults (IN-12)."""
         name = self.target.name.ljust(width)
         if self.status == "ok":
             return f"OK        {name}  sha1 {self.hashes.sha1} == manifest{self._masked_note()}"
@@ -590,12 +608,13 @@ class RebuildResult:
                 )
             return line + self._masked_note()
         source = self.source if self.source is not None else self.target.name
+        orig_dir = self.source.parent if self.source is not None else None
         if self.status == "missing":
-            return f"MISSING   {name}  ({source} not found; run uv run reverseapoc ingest)"
+            return f"MISSING   {name}  ({source} not found; {_hint('ingest', orig_dir, manifest)})"
         against = manifest if manifest is not None else "the manifest"
         return (
             f"REFUSED   {name}  {source} does not match {against}; "
-            "run uv run reverseapoc check-orig"
+            f"{_hint('check-orig', orig_dir, manifest)}"
         )
 
     def to_json(self) -> dict[str, Any]:
