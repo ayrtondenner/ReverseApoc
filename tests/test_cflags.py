@@ -56,6 +56,14 @@ def test_unknown_compiler_and_version():
     assert "10.6" in message and "11.0" in message  # the known versions
 
 
+def test_wpp386_refused_until_the_wrapper_runs_it():
+    """The wrapper always runs BINNT/WCC386.EXE, so a wpp386 rule would compile C++ with the C
+    compiler; it is refused here, at the rule, rather than later at the gate (review IN-02)."""
+    message = _refused("*  wcc386@10.6  -5r\nsrc/*.cpp  wpp386@10.6  -5r\n")
+    assert message.startswith("my/cflags.txt:2:")
+    assert "wpp386" in message and "not supported" in message
+
+
 @pytest.mark.parametrize("line", ["*  wcc386  -5r", "*", "*  @10.6", "*  wcc386@"])
 def test_missing_at_sign_or_fields(line):
     assert _refused(line + "\n").startswith("my/cflags.txt:1:")

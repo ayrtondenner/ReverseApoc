@@ -7,7 +7,8 @@
 #
 # - <glob> matches the source's repository-relative path with `/` separators (fnmatch,
 #   case-sensitive; `*` also crosses `/`).
-# - <compiler> is wcc386 or wpp386; <version> must be a version in config/watcom.toml.
+# - <compiler> is wcc386 (wpp386 is refused until the wrapper can run it); <version> must be
+#   a version in config/watcom.toml.
 # - The first rule must be the `*` default. A source takes the LAST rule that matches it, and a
 #   source that no rule matches is refused.
 # - `#` starts a comment, on its own line or after a rule.
