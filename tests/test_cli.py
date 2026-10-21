@@ -15,6 +15,7 @@ from reverseapoc.le import LE
 from reverseapoc.splice import RebuildResult
 from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from reverseapoc.watcom import MEDIA_NOTICE
+from watcomtree import TREE_FILES, FakeCompiler, make_tree, write_watcom_manifest
 
 
 def test_parse_le_text(synthetic_le_path, capsys):
@@ -599,3 +600,95 @@ def test_watcom_unknown_version(tmp_path, capsys):
     _watcom_manifest(manifest, b"x", b"y")
     assert main(["check-watcom", "7.7", "--manifest", str(manifest)]) == 1
     assert "7.7" in capsys.readouterr().err
+
+
+# ---- cc: the compiler wrapper ----
+
+
+@pytest.fixture
+def cc_workspace(tmp_path, monkeypatch):
+    """A fake 10.6 tree, manifest and cflags under tmp_path, with tmp_path standing in for the
+    repository root and a FakeCompiler standing in for subprocess.run."""
+    from reverseapoc import compiler
+
+    make_tree(tmp_path / "w", "10.6")
+    manifest = write_watcom_manifest(tmp_path / "watcom.toml", {"10.6": TREE_FILES["10.6"]})
+    cflags = tmp_path / "cflags.txt"
+    cflags.write_text("*  wcc386@10.6  -5r -s\n", encoding="utf-8")
+    src = tmp_path / "src" / "a.c"
+    src.parent.mkdir()
+    src.write_text("int x;\n")
+    runner = FakeCompiler()
+    monkeypatch.setattr(compiler, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(compiler, "DEFAULT_STAMPS", tmp_path / "cache")
+    monkeypatch.setattr(compiler, "runner_prefix", lambda platform: [])
+    monkeypatch.setattr(compiler.subprocess, "run", runner)
+    options = [
+        "--cflags", str(cflags), "--manifest", str(manifest),
+        "--watcom-dir", str(tmp_path / "w"), "--log", str(tmp_path / "logs" / "cc.log"),
+    ]  # fmt: skip
+    return argparse.Namespace(root=tmp_path, src=src, options=options, runner=runner)
+
+
+def test_cc_ok_line_and_exit_code(cc_workspace, capsys):
+    ws = cc_workspace
+    obj = ws.root / "out" / "a.obj"
+    assert main(["cc", str(ws.src), "-o", str(obj), *ws.options]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    ok = [line for line in lines if line.startswith("OK")]
+    assert len(ok) == 1
+    assert "wcc386@10.6" in ok[0]
+    assert "WATCOM C32 Optimizing Compiler  Version 10.6" in ok[0]
+    assert "src/a.c" in ok[0] and "out/a.obj" in ok[0]
+    assert obj.is_file()
+
+
+def test_cc_json(cc_workspace, capsys):
+    ws = cc_workspace
+    obj = ws.root / "out" / "a.obj"
+    assert main(["cc", str(ws.src), "-o", str(obj), *ws.options, "--json"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["spec"] == "wcc386@10.6"
+    assert data["returncode"] == 0
+    assert "Version 10.6" in data["banner"]
+    assert [path for path, _sha1 in data["gate"]] == ["BINNT/WCC386.EXE", "BINW/WCC386.EXE"]
+
+
+def test_cc_help_lists_options(capsys):
+    with pytest.raises(SystemExit):
+        main(["cc", "--help"])
+    out = capsys.readouterr().out
+    for option in ("-o", "--cflags", "--manifest", "--watcom-dir", "--log", "--json"):
+        assert option in out
+
+
+def test_cc_failed_compile_exits_1(cc_workspace, capsys):
+    ws = cc_workspace
+    ws.runner.rc = 2
+    ws.runner.output = "t.c(1): Error! E1009: fake error\n"
+    obj = ws.root / "out" / "a.obj"
+    assert main(["cc", str(ws.src), "-o", str(obj), *ws.options]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert "t.c(1): Error! E1009: fake error" in lines
+    failed = [line for line in lines if line.startswith("FAILED")]
+    assert len(failed) == 1
+    assert "exit 2" in failed[0]
+    assert not obj.exists()
+
+
+def test_cc_refuses_a_source_with_a_space(cc_workspace, capsys):
+    ws = cc_workspace
+    src = ws.root / "src" / "a b.c"
+    src.write_text("int x;\n")
+    assert main(["cc", str(src), "-o", str(ws.root / "a.obj"), *ws.options]) == 1
+    assert "space" in capsys.readouterr().err
+    assert ws.runner.calls == []
+
+
+def test_cc_refusal_is_an_error_line(cc_workspace, capsys):
+    ws = cc_workspace
+    (ws.root / "w" / "10.6" / "BINW" / "WCC386.EXE").unlink()
+    assert main(["cc", str(ws.src), "-o", str(ws.root / "a.obj"), *ws.options]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cc: error:")
+    assert "install-watcom 10.6" in err
