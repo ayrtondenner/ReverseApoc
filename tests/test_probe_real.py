@@ -306,6 +306,68 @@ MEASURED_CONSISTENT = [
 ]
 
 
+# ---- 04-10 review fix round 1: struct copies by size (cpu -4/-5 evidence, not calibrated) ------
+
+
+def _merge(totals: dict[str, int], more: dict[str, int]) -> dict[str, int]:
+    return {key: totals.get(key, 0) + more.get(key, 0) for key in {**totals, **more}}
+
+
+def test_calibration_copy_sizes(calibration):
+    """The sized breakdown on the probe's real objects: pr_copy's five-dword copy is one rep copy
+    of 5 at -3r/-4r and one unrolled run of 5 at -5, in every calibrated cell."""
+    for cell in calibration.cells:
+        obj = PROBE_ROOT / "calibration" / cell.version / flag_id(cell.flags) / "cg_basic.obj"
+        runs: dict[str, int] = {}
+        reps: dict[str, int] = {}
+        for code, mask in object_code(obj.read_bytes()):
+            sizes = probe.copy_sizes(code, mask=mask)
+            runs, reps = _merge(runs, sizes.runs), _merge(reps, sizes.reps)
+        unrolled = cell.flags[0] in ("-5r", "-5s")
+        expected = ({"5": 1}, {}) if unrolled else ({}, {"5": 1})
+        assert (runs, reps) == expected, f"{cell.version} {' '.join(cell.flags)}"
+
+
+def _five_dwords(sizes: dict[str, int]) -> dict[str, int]:
+    """The five-dword copies, with or without a movsw/movsb tail ("5", "5+1", ...)."""
+    return {key: n for key, n in sizes.items() if key.split("+")[0] == "5"}
+
+
+# Measured (counts only) with the committed runtime maps and every LE fixup byte masked. The
+# review reported "no 5-long run, at least 3 (UFO2P) / 5 (TACP) five-dword rep copies" from a
+# loose window; the sized recogniser finds no run of 5 in either EXE, and five-dword rep copies
+# in both, but UFO2P's two are 22-byte copies (5 dwords, then a movsw), TACP's are five exact
+# 20-byte copies and one 21-byte copy.
+MEASURED_FIVE_DWORDS = {
+    "UFO2P.EXE": ({}, {"5+2": 2}),
+    "TACP.EXE": ({}, {"5": 5, "5+1": 1}),
+}
+MEASURED_COPY_SIZES = {
+    "UFO2P.EXE": (
+        {"2": 18, "2+1": 16, "2+2": 14, "3": 2, "3+1": 1, "3+2": 5, "3+3": 5, "4": 7, "4+1": 5,
+         "4+2": 2},
+        {"5+2": 2, "7": 8, "10": 2, "11+2": 1, "12": 3, "other": 14},
+    ),
+    "TACP.EXE": (
+        {"2": 19, "2+2": 6, "2+3": 1, "3": 6, "3+2": 1, "3+3": 1, "4": 1},
+        {"5": 5, "5+1": 1, "9": 1, "10": 6, "10+2": 1, "11+2": 1, "12": 2, "14": 2, "other": 30},
+    ),
+}  # fmt: skip
+
+
+def test_exe_struct_copy_sizes(exe_scan):
+    sizes = exe_scan.copy_sizes
+    print()
+    print(next(line for line in exe_scan.evidence if line.startswith("struct-copy sizes")))
+    # the runs are the movsd_unrolled runs; every rep_movsd_small copy is also a sized copy
+    assert sum(sizes.runs.values()) == exe_scan.counts["movsd_unrolled"]
+    small = sum(n for key, n in sizes.reps.items() if key != probe.REP_OTHER_KEY)
+    assert small >= exe_scan.counts["rep_movsd_small"]
+    five = (_five_dwords(sizes.runs), _five_dwords(sizes.reps))
+    assert five == MEASURED_FIVE_DWORDS[exe_scan.exe]
+    assert (sizes.runs, sizes.reps) == MEASURED_COPY_SIZES[exe_scan.exe]
+
+
 def test_exe_consistent_cells(calibration, exe_scan):
     cells = probe.consistent_cells(calibration, exe_scan)
     names = [f"{c.version} {' '.join(c.flags)}" for c in cells]

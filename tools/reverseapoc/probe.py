@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
@@ -356,6 +356,225 @@ def count_idioms(
     }
 
 
+# ---- struct copies by size: evidence for the -4/-5 CPU question, not a calibrated idiom ---------
+#
+# The probe calibrates one struct size (five dwords). Clean-room copies of other sizes (04-10
+# review fix round 1) unroll at small sizes and use rep at large ones whatever the CPU option, so
+# movsd_unrolled and rep_movsd_small alone cannot say -4 or -5; these counts say which sizes the
+# game copies each way. A size key is the dword count n, or "n+k" when k more bytes follow at
+# once by movsw (2), movsb (1) or both (3): the struct is 4n+k bytes. Nothing reads them in
+# consistent_cells.
+
+RUN_LONG = 6  # unrolled runs of this many movsd or more share one key
+RUN_LONG_KEY = f">={RUN_LONG}"
+REP_OTHER_KEY = "other"  # a rep copy whose count lies outside SMALL_COPY_DWORDS
+# Setup bytes allowed between the end of mov ecx,imm32 and rep movsd. Every byte must belong to
+# a recognised setup instruction (below); the longest setup measured in the game is 15 bytes.
+REP_COPY_WINDOW = 24
+
+# Setup instructions (Intel SDM vol. 2, MOV and LEA): the copy's esi/edi loads, and loads or
+# stores of other registers the compiler schedules between, in any addressing form. Anything
+# that writes ecx, or any other instruction (arithmetic, byte or word moves, push, pop, call,
+# a prefix), ends the walk: such a copy is not counted.
+_MOV_RM_R = 0x89  # mov r/m32,r32: writes the ModRM r/m operand
+_MOV_R_RM = 0x8B  # mov r32,r/m32: writes the ModRM reg register
+_LEA = 0x8D  # lea r32,m: writes the ModRM reg register; a memory operand only
+_MOV_R_IMM32 = range(0xB8, 0xC0)  # B8+rd id: mov r32,imm32 writes register rd
+_ECX = 1  # register number of ecx (SDM vol. 2, table 2-2)
+_NO_SETUP = -1  # _written's answer for an encoding that is no setup instruction
+_MOD_SHIFT, _REG_SHIFT, _FIELD = 6, 3, 0b111  # ModRM: mod (bits 7-6), reg (5-3), r/m (2-0)
+_MOD_NO_DISP, _MOD_DISP8, _MOD_DISP32 = 0b00, 0b01, 0b10  # memory operand forms
+_MOD_REGISTER = 0b11  # mod=11: the r/m operand is a register
+_RM_SIB = 0b100  # r/m=100 with a memory operand: a SIB byte follows
+_RM_DISP32 = 0b101  # mod=00 with r/m=101: a disp32 and no base register
+_SIB_NO_BASE = 0b101  # mod=00 with SIB base=101: a disp32 and no base register
+_DISP8_SIZE, _DISP32_SIZE = 1, 4
+_DISP_BY_MOD = {_MOD_NO_DISP: 0, _MOD_DISP8: _DISP8_SIZE, _MOD_DISP32: _DISP32_SIZE}
+# What may follow the last movsd at once: movsw (operand-size prefix, movs) copies a word, then
+# movsb a byte. Their bytes must be unmasked: a fixup byte is an operand, never movsw or movsb.
+_TAILS = ((bytes((0x66, 0xA5)), 2), (bytes((0xA4,)), 1))  # (encoding, bytes copied)
+
+
+@dataclass(frozen=True)
+class CopySizes:
+    """Struct copies by size key ("n" or "n+k"), only the sizes found, smallest first."""
+
+    runs: dict[str, int]  # unrolled movsd runs (the movsd_unrolled runs) by length
+    reps: dict[str, int]  # mov ecx,n .. rep movsd copies by n
+
+
+class _Setup(NamedTuple):
+    read: Span  # the opcode, ModRM and SIB bytes: the only bytes whose values are read
+    end: int  # one past the displacement or immediate, whose value is never read
+
+
+def _modrm_ends(code: bytes, at: int) -> tuple[int, int] | None:
+    """(end of the ModRM and SIB bytes, end of the displacement) for a ModRM byte at `at`."""
+    if at >= len(code):
+        return None
+    mod, rm = code[at] >> _MOD_SHIFT, code[at] & _FIELD
+    read = at + 1
+    if mod == _MOD_REGISTER:
+        return read, read
+    disp = _DISP_BY_MOD[mod]
+    if rm == _RM_SIB:
+        if read >= len(code):
+            return None
+        if mod == _MOD_NO_DISP and code[read] & _FIELD == _SIB_NO_BASE:
+            disp = _DISP32_SIZE
+        read += 1
+    elif mod == _MOD_NO_DISP and rm == _RM_DISP32:
+        disp = _DISP32_SIZE
+    return read, read + disp
+
+
+def _written(op: int, modrm: int) -> int | None:
+    """The register a ModRM-form setup writes (None: memory), or _NO_SETUP."""
+    mod, reg, rm = modrm >> _MOD_SHIFT, (modrm >> _REG_SHIFT) & _FIELD, modrm & _FIELD
+    if op == _MOV_RM_R:
+        return rm if mod == _MOD_REGISTER else None
+    if op == _LEA and mod == _MOD_REGISTER:
+        return _NO_SETUP  # lea takes a memory operand only
+    return reg
+
+
+def _setup_at(code: bytes, at: int) -> _Setup | None:
+    """The setup instruction at `at`, if the bytes there encode one that leaves ecx alone. Its
+    read span becomes a piece of the copy, so count_idioms' rule drops a copy whose opcode, ModRM
+    or SIB bytes are masked; its displacement or immediate lies between pieces and may be masked
+    (a relocated address): only its length, which the opcode and ModRM fix, is used."""
+    if at >= len(code):
+        return None
+    op = code[at]
+    if op in _MOV_R_IMM32:
+        written, ends = op - _MOV_R_IMM32.start, (at + 1, at + 1 + _IMM32_SIZE)
+    elif op in (_MOV_RM_R, _MOV_R_RM, _LEA) and (ends := _modrm_ends(code, at + 1)):
+        written = _written(op, code[at + 1])
+    else:
+        return None
+    read_end, end = ends
+    if written in (_ECX, _NO_SETUP) or end > len(code):
+        return None
+    return _Setup((at, read_end), end)
+
+
+def _setup_to_rep(code: bytes, at: int) -> tuple[int, list[Span]] | None:
+    """(offset of the rep movsd, read spans of the setup) when setup instructions lead from `at`
+    to a rep movsd starting at most REP_COPY_WINDOW bytes later."""
+    pieces: list[Span] = []
+    limit = at + REP_COPY_WINDOW
+    while at <= limit:
+        if code[at : at + len(_REP_MOVSD)] == _REP_MOVSD:
+            return at, pieces
+        setup = _setup_at(code, at)
+        if setup is None:
+            return None
+        pieces.append(setup.read)
+        at = setup.end
+    return None
+
+
+def _tail(code: bytes, at: int, mask: frozenset[int]) -> tuple[int, tuple[Span, ...]]:
+    """(bytes copied, pieces) of a movsw and/or movsb starting at `at`; (0, ()) without one."""
+    copied, end = 0, at
+    for encoding, size in _TAILS:
+        stop = end + len(encoding)
+        if code[end:stop] == encoding and mask.isdisjoint(range(end, stop)):
+            copied, end = copied + size, stop
+    return copied, ((at, end),) if copied else ()
+
+
+Size = tuple[int, int]  # (dwords, tail bytes)
+
+
+def _sized_runs(code: bytes, mask: frozenset[int]) -> Iterator[tuple[Size, Match]]:
+    """(size, pieces) of every movsd_unrolled run; one movsd is one A5 byte."""
+    for ((start, end),) in _movsd_runs(code, mask):
+        tail, pieces = _tail(code, end, mask)
+        yield (end - start, tail), ((start, end), *pieces)
+
+
+def _offsets(code: bytes, byte: int) -> Iterator[int]:
+    """Every offset of `byte` in `code` (byte-level, research A7)."""
+    at = code.find(byte)
+    while at >= 0:
+        yield at
+        at = code.find(byte, at + 1)
+
+
+def _sized_reps(code: bytes, mask: frozenset[int]) -> Iterator[tuple[Size, int, Match]]:
+    """(size, offset of the rep movsd, pieces) of every mov ecx,imm32 whose setup reaches a rep
+    movsd. The pieces are mov ecx,imm32 (its count is read), the read bytes of each setup
+    instruction, rep movsd and the tail; a setup's displacement or immediate lies between."""
+    for start in _offsets(code, _MOV_ECX_IMM32):
+        count_end = start + 1 + _IMM32_SIZE
+        found = _setup_to_rep(code, count_end) if count_end <= len(code) else None
+        if found is None:
+            continue
+        rep, setup = found
+        rep_end = rep + len(_REP_MOVSD)
+        tail, tail_pieces = _tail(code, rep_end, mask)
+        count = int.from_bytes(code[start + 1 : count_end], "little")
+        yield (count, tail), rep, ((start, count_end), *setup, (rep, rep_end), *tail_pieces)
+
+
+def _first_per_rep(hits: Iterable[tuple[Size, int, Match]]) -> Iterator[Size]:
+    """One copy per rep movsd: a mov ecx,imm32 read inside an earlier copy's setup (the B9 of
+    `mov edi,[ecx+5]`, say) reaching the same rep movsd is not counted again."""
+    seen: set[int] = set()
+    for size, rep, _ in hits:
+        if rep not in seen:
+            seen.add(rep)
+            yield size
+
+
+def _size_key(dwords: int, tail: int) -> str:
+    return f"{dwords}+{tail}" if tail else str(dwords)
+
+
+def _run_key(size: Size) -> tuple[Size, str]:
+    """(sort key, size key) of a run: its length and tail, or RUN_LONG_KEY from RUN_LONG on."""
+    if size[0] >= RUN_LONG:
+        return (RUN_LONG, 0), RUN_LONG_KEY
+    return size, _size_key(*size)
+
+
+def _rep_key(size: Size) -> tuple[Size, str]:
+    """(sort key, size key) of a rep copy: its count and tail, or REP_OTHER_KEY for a count
+    outside SMALL_COPY_DWORDS."""
+    if size[0] not in SMALL_COPY_DWORDS:
+        return (SMALL_COPY_DWORDS.stop, 0), REP_OTHER_KEY
+    return size, _size_key(*size)
+
+
+def _histogram(keys: Iterable[tuple[Size, str]]) -> dict[str, int]:
+    """Copies per size key, smallest size first."""
+    counts: dict[tuple[Size, str], int] = {}
+    for key in keys:
+        counts[key] = counts.get(key, 0) + 1
+    return {label: n for (_, label), n in sorted(counts.items())}
+
+
+def copy_sizes(
+    code: bytes,
+    *,
+    base: int = 0,
+    exclude: Iterable[Span] = (),
+    mask: frozenset[int] = frozenset(),
+) -> CopySizes:
+    """The unrolled movsd runs and the mov ecx,n .. rep movsd copies in `code` by size, under
+    count_idioms' rules: a hit whose pieces touch `mask`, or whose extent (first piece to last)
+    touches an `exclude` range, is not counted. The runs are exactly the movsd_unrolled runs."""
+    exclude = tuple(exclude)
+
+    def allowed(match: Match) -> bool:
+        return _allowed(match, base=base, exclude=exclude, mask=mask)
+
+    runs = (size for size, match in _sized_runs(code, mask) if allowed(match))
+    reps = _first_per_rep(hit for hit in _sized_reps(code, mask) if allowed(hit[2]))
+    return CopySizes(_histogram(map(_run_key, runs)), _histogram(map(_rep_key, reps)))
+
+
 def object_code(data: bytes) -> list[tuple[bytes, frozenset[int]]]:
     """(bytes, fixup mask) of every CODE segment of one OMF object, in SEGDEF order."""
     return [(seg.data, seg.mask) for seg in omf.read_object(data).segments if seg.is_code]
@@ -605,6 +824,8 @@ class ExeScan:
     chk_calls: int = 0  # push imm32; call __CHK in non-library code
     chk_blocks: tuple[tuple[int, int], ...] = ()  # (64 KiB block, calls), by block
     evidence: tuple[str, ...] = ()  # one line per observable flag (D-08)
+    # struct copies by size in non-library code: cpu -4/-5 evidence, never read by the verdict
+    copy_sizes: CopySizes = field(default_factory=lambda: CopySizes({}, {}))
 
     def format(self) -> str:
         """A header line, one indented line per idiom, then the evidence lines."""
@@ -627,6 +848,10 @@ class ExeScan:
             "nonlib_bytes": self.nonlib_bytes,
             "lib_bytes": self.lib_bytes,
             "counts": dict(self.counts),
+            "struct_copy_sizes": {
+                "movsd_runs": dict(self.copy_sizes.runs),
+                "rep_movsd": dict(self.copy_sizes.reps),
+            },
             "chk_calls": self.chk_calls,
             "chk_blocks": [{"block": block, "calls": n} for block, n in self.chk_blocks],
             "evidence": list(self.evidence),
@@ -792,6 +1017,32 @@ def _cpu_line(scan: ExeScan) -> str:
     )
 
 
+# What the sizes mean, measured on throwaway clean-room struct copies of 2-6, 8 and 16 dwords
+# with 0-3 tail bytes, copied through a pointer, into a global, an array element and a local, and
+# passed by value, with 10.6 and 11.0 (04-10 review fix round 1; counts in the 04-10 SUMMARY).
+COPY_SIZE_READING = (
+    "on clean-room copies (10.6, 11.0) only n=5 (20-23 bytes) separates -4 (rep at -4r, -4r -ox) "
+    "from -5 (unrolled at -5r with -s, -ox, -oneatx, -os and without -s); 2-4 dwords unroll and "
+    "6 or more use rep at both, except -os, which also unrolls 6 and 7 (04-10 review fix round 1)"
+)
+
+
+def _sizes_text(sizes: dict[str, int]) -> str:
+    return ", ".join(f"{key}: {n}" for key, n in sizes.items()) or "none"
+
+
+def _copy_sizes_line(scan: ExeScan) -> str:
+    """The cpu line's sibling: struct copies by size, labelled as not calibrated by the probe."""
+    sizes = scan.copy_sizes
+    return (
+        "struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled movsd runs by "
+        f"length {_sizes_text(sizes.runs)}; mov ecx,n .. rep movsd by n {_sizes_text(sizes.reps)} "
+        "(source: sized struct-copy counts in non-library code; n+k is n dwords then k bytes by "
+        "movsw/movsb; a rep copy's setup is mov or lea writing any register but ecx, within "
+        f"{REP_COPY_WINDOW} bytes); {COPY_SIZE_READING}"
+    )
+
+
 def _stack_line(rows: Sequence[MatchRange], scan: ExeScan) -> str:
     modules = sorted({r.module for r in rows if CHK_PUBLIC in r.publics})
     if not modules:
@@ -825,13 +1076,14 @@ def _shapes_line(scan: ExeScan) -> str:
 
 def flag_evidence(le: LE, rows: Iterable[MatchRange], scan: ExeScan) -> tuple[str, ...]:
     """One line per observable flag (D-08), each naming its source and its counts: calling
-    convention, fpu, cpu, stack checks, memory model, then the non-decisive loop and switch
-    shapes. A mix of evidence is reported as a mix (D-07)."""
+    convention, fpu, cpu and its struct-copy sizes, stack checks, memory model, then the
+    non-decisive loop and switch shapes. A mix of evidence is reported as a mix (D-07)."""
     rows = list(rows)
     return (
         _convention_line(rows),
         _fpu_line(rows),
         _cpu_line(scan),
+        _copy_sizes_line(scan),
         _stack_line(rows, scan),
         _memory_line(le),
         _shapes_line(scan),
@@ -841,15 +1093,17 @@ def flag_evidence(le: LE, rows: Iterable[MatchRange], scan: ExeScan) -> tuple[st
 def scan_exe(le: LE, rows: Iterable[MatchRange], *, exe: str) -> ExeScan:
     """Count IDIOMS in the EXE's code object with every runtime row excluded (a hit touching a
     row by one byte is dropped) and every LE fixup byte masked (a relocated operand is never read
-    as an idiom); count the __CHK calls by block and derive the evidence lines."""
+    as an idiom); count the struct copies by size under the same rules and the __CHK calls by
+    block, and derive the evidence lines."""
     rows = list(rows)
     view = target_view(le)
     end = view.base + len(view.code)
     exclude = [(r.start, r.end) for r in rows]
     mask = frozenset(va - view.base for va in view.fixup_bytes if view.base <= va < end)
     counts = count_idioms(view.code, base=view.base, exclude=exclude, mask=mask)
+    sizes = copy_sizes(view.code, base=view.base, exclude=exclude, mask=mask)
     lib_bytes = _covered(exclude, view.base, end)
     calls, blocks = chk_calls(view.code, view.base, rows, exclude)
     scan = ExeScan(exe, view.base, len(view.code), len(view.code) - lib_bytes, lib_bytes, counts,
-                   calls, blocks)  # fmt: skip
+                   calls, blocks, copy_sizes=sizes)  # fmt: skip
     return replace(scan, evidence=flag_evidence(le, rows, scan))
