@@ -14,6 +14,7 @@ Entry format:
 ## 2026-10-21: what the Phase 4 code review turned up
 
 - **10.5 writes no error file.** With `-fr=<file>`, 10.6 and 11.0 write the error file next to the object; 10.5 (the BINNT stub running the decoded BINW compiler) writes none anywhere, and the message still reaches the captured output. Found once the wrapper's invariant tests ran for 10.5 too (review WR-05); `tests/test_compiler_real.py` records it.
+- **`-zld` empties the dependency list but keeps its end marker.** Counting COMENT classes (no bytes) in objects of a plain and a header-including source: without `-zld` each object has one COMENT 0xE9 per file (source, then headers) plus an empty one; with `-zld` only the empty 0xE9 remains, on 10.5, 10.6 and 11.0. So the wrapper's objects carry no dependency paths or timestamps, and of the two host-specific records only THEADR still names a path; the normalized hash still drops 0xE9, which matters for objects built without `-zld` (review IN-01).
 
 ## 2026-10-21: running the 1990s compilers (Phase 4, plans 04-01..04-06, 04-11)
 
