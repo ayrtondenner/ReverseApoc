@@ -100,19 +100,6 @@ class Skipped:
 
 
 @dataclass(frozen=True)
-class Candidate:
-    """One verified placement of one library's segment."""
-
-    start: int
-    end: int
-    segment: str
-    module: str
-    library: str
-    version: str
-    publics: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class MatchRange:
     """One runtime.csv row: [start, end) in linear addresses."""
 
@@ -422,11 +409,6 @@ class _Hit:
     @property
     def end(self) -> int:
         return self.start + self.owner.segment.length
-
-    def candidate(self) -> Candidate:
-        o = self.owner
-        return Candidate(self.start, self.end, o.segment.name, o.module_name, o.library,
-                         o.version, o.publics)  # fmt: skip
 
 
 def _code_segments(libraries: Iterable[LoadedLibrary]) -> Iterator[_Owner]:
