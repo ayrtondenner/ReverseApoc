@@ -11,7 +11,7 @@ import pytest
 from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
 from cpptree import init_exe, write_cpp_lib, write_init_lib
 from isoimage import build_iso
-from libtree import cli_workspace
+from libtree import body, cli_workspace, code_module, write_lib
 from reverseapoc import probe as probe_module
 from reverseapoc import targets
 from reverseapoc.cli import build_parser, main
@@ -771,12 +771,49 @@ def test_libmatch_json(tmp_path, capsys):
     assert (row["start"], row["end"], row["module"]) == (0x10200, 0x10228, "fake")
 
 
+def _full_sweep(ws, *, but: str | None = None):
+    """Give every swept version except `but` a library (10.6 already holds module "fake"); the
+    extra ones hold a module that occurs nowhere in the EXE, so the rows stay the same."""
+    other = code_module("other", body(40, 0x90))
+    for version in SWEPT_VERSIONS:
+        if version not in ("10.6", but):
+            write_lib(ws["watcom"], version, "DOS/CLIB3R.LIB", [other])
+
+
 def test_libmatch_write_goes_to_the_config_dir(tmp_path, capsys, monkeypatch):
     ws = cli_workspace(tmp_path)
+    _full_sweep(ws)
     monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
     assert main(_libmatch_args(ws, "SYNTH.EXE", "--write")) == 0
     path = tmp_path / "repo" / "config" / "synth" / "runtime.csv"
     assert FAKE_CSV_ROW in path.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize("gap", ["no-lib386", "no-omf-library", "versions-subset"])
+def test_libmatch_write_refuses_a_partial_sweep(tmp_path, capsys, monkeypatch, gap):
+    """--write writes the committed D-06 map, which records no swept-version list: every swept
+    version must load a library, or the rows would silently lack it (review WR-04)."""
+    ws = cli_workspace(tmp_path)
+    _full_sweep(ws, but="11.0")
+    if gap == "no-omf-library":
+        junk = ws["watcom"] / "11.0" / "LIB386" / "DOS" / "CLIB3R.LIB"
+        junk.parent.mkdir(parents=True)
+        junk.write_bytes(b"not an OMF library")
+    if gap == "versions-subset":
+        _full_sweep(ws)
+    monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
+    extra = ["--versions", "10.5", "10.6"] if gap == "versions-subset" else []
+    assert main(_libmatch_args(ws, "SYNTH.EXE", "--write", *extra)) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc libmatch: error:")
+    assert "--write" in err and "11.0" in err
+    assert not (tmp_path / "repo" / "config" / "synth" / "runtime.csv").exists()
+
+
+def test_libmatch_output_still_takes_a_partial_sweep(tmp_path, capsys):
+    ws = cli_workspace(tmp_path)  # 10.6 only: --output is a scratch file, not the D-06 map
+    assert main(_libmatch_args(ws, "SYNTH.EXE", "--output", str(ws["out"]))) == 0
+    assert FAKE_CSV_ROW in ws["out"].read_text(encoding="utf-8").splitlines()
 
 
 def test_libmatch_write_and_output_are_exclusive(tmp_path, capsys):
