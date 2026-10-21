@@ -16,10 +16,10 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 
 - ✓ Repo hygiene: game files, disassembly, build output and secrets never tracked; plugins at project scope; lean CLAUDE.md; docs skeleton, README, `.recomp.json`, design spec — Phase 1 (built before GSD was set up, commits `d7d4d65`…`e50784f`)
 - ✓ Container and target ingest: Docker image (uv, ninja, objdiff-cli, wibo, Open Watcom v2 tools), hash manifest `config/targets.toml`, `reverseapoc ingest | check-orig | parse-le`, LE parser with 75 pytest tests green on host, in the container and in CI — Phase 2 (built before GSD was set up, commits `29f9327` and `8418027`)
+- ✓ Byte-identical round trip: `uv run reverseapoc rebuild` / `ninja verify` reassemble UFO2P.EXE, TACP.EXE and SMKP.EXE from a byte-region map and page-mapped object images, `cmp`/SHA-1 identical to `orig/` on the host and in the container. The `splice(le, {va: bytes})` API refuses unwritable or overlapping patches and masks fixup fields, and negative tests prove the gate fails on a one-byte change. RT-01..RT-05 — Phase 3 (plans 03-01..03-10, VERIFICATION passed 87/87, UAT 2026-10-21)
 
 ### Active
 
-- [ ] Byte-identical round trip: KKND-style in-place page splice rebuilds UFO2P.EXE and TACP.EXE with `cmp`/SHA-1 identical to `orig/` (Phase 3)
 - [ ] Compiler identification: exact Watcom version and default flags proven by the mosura codegen probe and a CLIB3R/MATH3R library match (Phase 4)
 - [ ] Split and first matches: Ghidra + LE loader, `omf2elf.py`, function split, `configure.py` -> ninja + `objdiff.json`; one function per EXE matched, relocation-checked, spliced, whole EXE identical (Phase 5)
 - [ ] Reporting and agent pilot: self-hosted progress (mosaic, badge, JSON on Pages), guardrail hooks, decomp.wtf fork mode, per-function driver; 10 easy functions matched unattended with zero regressions; recomp.fyi and decomphub listings (Phase 6)
@@ -37,7 +37,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 
 ## Context
 
-- **Targets (installed build, primary):** UFO2P.EXE 1,705,790 bytes, sha1 `e7488bf3…7c56`; TACP.EXE 3,161,594 bytes, sha1 `48ef0096…7393`. Both bound with DOS/4GW Professional: 217,764-byte extender, Watcom MZ stub at 0x352A4, LE header at 0x37F34, 2 objects (code at 0x10000, data at 0xD0000 / 0xE0000), 4 KiB pages. A second build (CD v1.00, inside the disc image both stores ship) is the one OpenApoc's offsets describe; it is recorded under `[[cd_builds]]` for cross-reference.
+- **Targets (installed build, primary):** UFO2P.EXE 1,705,790 bytes, sha1 `e7488bf3…7c56`; TACP.EXE 3,161,594 bytes, sha1 `48ef0096…7393`. Both bound with DOS/4GW Professional: 217,764-byte extender, Watcom MZ stub at 0x352A4, LE header at 0x37F34, 2 objects (code at 0x10000, data at 0xD0000 / 0xE0000), 4 KiB pages. A second build (CD v1.00, inside the disc image both stores ship) is the one OpenApoc's offsets describe; it is recorded under `[[cd_builds]]` for cross-reference. Phase 3 spike 003 found that the installed executables are byte-identical to the disc's `XCOM3/UFOEXE/UFO2P4.EXE` and `XCOM3/TACEXE/TACP4.EXE`, and that every one of these builds ends in an opaque 27-byte record after the last LE page, which the rebuild carries unchanged.
 - **Compiler hypothesis:** Watcom C 10.6 (10.5 equivalent), C not C++ (`wcc386`); 11.0 not excluded by the banner. Open Watcom does not match classic 10.x and is used only for `wdis`/`wlink`/`wlib`.
 - **Reuse:** KKND-Decomp (CC0) for LE reading, in-place splice, discovery; Theme Hospital decomp (GPLv3) for `omf2elf.py` and the configure/ninja pattern; retrokit (Apache-2.0) as an external analysis tool. `tools/` is GPLv3.
 - **Prior art for the oracle-first design:** every successful AI decomp in the research stood on a deterministic verifier; every documented failure (rewritten hashes, false match claims, permuter overfitting) came from an agent judging itself.
@@ -67,7 +67,9 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Phases with gates, byte-identical rebuild before any decompiling [Owner] (structure), [Default] (gate wording) | Abahbob; Theme Hospital's final cmp | — Pending |
 | Watcom 10.6 (10.5 equivalent) hypothesis; Open Watcom only for wdis/wlink/wlib [Default] | Banner and codegen evidence; settled in Phase 4 | — Pending |
 | C89 with wcc386 by default; wpp386 per file if a module proves C++ [Default] | Source-file strings, no C++ runtime traces | — Pending |
-| In-place page splice for the MVP instead of a full LE rewrite [Default] | Byte-identical by construction for unmatched bytes; 1-3 days vs 10-20+ | — Pending |
+| In-place page splice for the MVP instead of a full LE rewrite [Default] | Byte-identical by construction for unmatched bytes; 1-3 days vs 10-20+ | ✓ Good (Phase 3: three EXEs rebuild SHA-1 identical; full rewrite reopens only if a matched function changes size, LE-01) |
+| The 27 bytes after the last LE page stay opaque and are carried unchanged (D-10) [Owner] | Spike 003: a structured record (u16 value/complement pairs) also on the 1997 CD builds, not a checksum, bind record or install stamp | ✓ Good (Phase 3) |
+| Phase 3 review findings deferred: WR-01, WR-03, WR-08, IN-12 to Phase 5; WR-04 to Phase 6 [Owner, 2026-10-20/21] | They matter once real patches flow through `splice()` (Phase 5) or the driver reads `--json` (Phase 6); tracked in STATE.md concerns and 03-REVIEW-DISPOSITION.md | — Pending |
 | Progress self-hosted on GitHub Pages (treemap SVG, shields JSON, progress.json) [Default] | decomp.dev closed to new projects; recomp.fyi renders no badge | — Pending |
 | recomp.fyi listing via .recomp.json and decomphub.com submission once public [Owner] | Visibility in directories still open | — Pending |
 | Per-function driver: one `claude -p "/goal ..."` per function, 3-5 attempt cap with re-queue, driver re-verifies bytes; evaluate Nigel first [Default] | Lewis's results, Macabeus's benchmark; /goal's evaluator cannot run tools | — Pending |
@@ -78,7 +80,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 
 ## Left to the builder (decided in the phase that needs it)
 
-- Exact LE writer strategy and header/page-map/fixup verification; whether a full rewrite is ever needed (Phase 3)
+- ~~Exact LE writer strategy and header/page-map/fixup verification; whether a full rewrite is ever needed (Phase 3)~~ Settled in Phase 3: in-place splice through `splice(le, {va: bytes})` with fixup masking; a full rewrite reopens only if a matched function changes size (LE-01)
 - OMF-to-ELF details: per-unit target ELF objects from LE fixups, section/symbol naming, COMDAT, FLAT-group fixups, inline switch tables, extra-relocation check (Phase 5)
 - Scorer design (Phase 6); hook implementation (Phase 6)
 - Stub convention for unmatched functions in Watcom units; compat header path and `__WATCOMC__` value; progress file names; Nigel vs Python driver
@@ -101,4 +103,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-20 after Phases 1-2 (verified retroactively, UAT passed)*
+*Last updated: 2026-10-21 after Phase 3 (verification passed, UAT passed)*
