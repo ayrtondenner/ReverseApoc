@@ -196,6 +196,12 @@ None.
 - Open: C++ runtime code that lives only in COMDATs is not matched (see Decisions). If phase 5 ever has reason to doubt the C verdict for one file, matching `Module.comdats` the way libmatch matches segments would close that gap.
 - Verification: `uv run pytest -q` gives 734 passed, 73 skipped, and `uv run ruff check .` is clean.
 
+## Self-Check: PASSED
+
+- Files present: tools/reverseapoc/cppscan.py, tests/cpptree.py, tests/test_cppscan.py, tests/test_cppscan_real.py, this SUMMARY. `grep -n "class CppScanError(ValueError)" tools/reverseapoc/cppscan.py` prints line 30.
+- The task commits 87c528d, a046803, a0808ad and a6cb965 are all ancestors of HEAD (`git rev-list --count 7088b0f..a6cb965` = 4). No commit deletes a file. The working tree is clean.
+- Acceptance: `uv run pytest -q tests/test_cppscan.py` gives 18 passed. The `-k "cpp_only or string_counts or vtable or cpp_verdict or empty_tables"` selection gives 7 passed. The real tests give 4 passed with no SKIPPED line. `cppscan --help` lists `--orig`, `--manifest`, `--watcom-dir`, `--runtime` and `--json`. `uv run pytest -q && uv run ruff check .` gives 734 passed, 73 skipped, and ruff is clean.
+
 ---
 *Phase: 04-compiler-identification*
 *Completed: 2026-10-21*
