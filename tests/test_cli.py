@@ -9,6 +9,7 @@ import json
 import pytest
 
 from conftest import OUTER_STUB_SIZE, SYNTHETIC_TRAILER, build_le_image, write_manifest
+from cpptree import init_exe, write_init_lib
 from isoimage import build_iso
 from libtree import cli_workspace
 from reverseapoc import targets
@@ -806,4 +807,70 @@ def test_libmatch_help_lists_options(capsys):
     out = capsys.readouterr().out
     for option in ("--orig", "--manifest", "--watcom-dir", "--versions", "--write", "--output",
                    "--json"):  # fmt: skip
+        assert option in out
+
+
+# ---- cppscan ----
+
+
+def _cppscan_workspace(tmp_path, **exe_args):
+    """cli_workspace with the inirt386 EXE and library instead of module "fake"."""
+    ws = cli_workspace(tmp_path, exe=init_exe(**exe_args))
+    write_init_lib(ws["watcom"])
+    return ws
+
+
+def _cppscan_args(ws, *extra, verb="cppscan"):
+    return [verb, "SYNTH.EXE", "--orig", str(ws["orig"]), "--manifest", str(ws["manifest"]),
+            "--watcom-dir", str(ws["watcom"]), *extra]  # fmt: skip
+
+
+def test_cppscan_missing_runtime_map(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path)
+    assert main(_cppscan_args(ws, "--runtime", str(tmp_path / "absent.csv"))) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cppscan: error:")
+    assert "libmatch SYNTH.EXE --write" in err
+
+
+def test_cppscan_default_runtime_is_the_config_dir(tmp_path, capsys, monkeypatch):
+    ws = _cppscan_workspace(tmp_path)
+    monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
+    assert main(_cppscan_args(ws)) == 1
+    err = capsys.readouterr().err
+    assert str(tmp_path / "repo" / "config" / "synth" / "runtime.csv") in err
+
+
+def test_cppscan_prints_the_verdict(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path)
+    assert main(_cppscan_args(ws, "--output", str(ws["out"]), verb="libmatch")) == 0
+    capsys.readouterr()
+    assert main(_cppscan_args(ws, "--runtime", str(ws["out"]))) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("SYNTH.EXE: C (wcc386)")
+
+
+def test_cppscan_cpp_verdict_still_exits_0(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path, xi=(64,))
+    assert main(_cppscan_args(ws, "--output", str(ws["out"]), verb="libmatch")) == 0
+    capsys.readouterr()
+    assert main(_cppscan_args(ws, "--runtime", str(ws["out"]), "--json")) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert "XI priority 64" in report["verdict"]
+
+
+def test_cppscan_refuses_orig_mismatch(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path)
+    assert main(_cppscan_args(ws, "--output", str(ws["out"]), verb="libmatch")) == 0
+    (ws["orig"] / "SYNTH.EXE").write_bytes(b"MZ not the manifest's file")
+    capsys.readouterr()
+    assert main(_cppscan_args(ws, "--runtime", str(ws["out"]))) == 1
+    assert "does not match" in capsys.readouterr().err
+
+
+def test_cppscan_help_lists_options(capsys):
+    with pytest.raises(SystemExit):
+        main(["cppscan", "--help"])
+    out = capsys.readouterr().out
+    for option in ("--orig", "--manifest", "--watcom-dir", "--runtime", "--json"):
         assert option in out

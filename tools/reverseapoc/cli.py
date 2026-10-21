@@ -1,5 +1,5 @@
-"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, libmatch, fetch-watcom,
-install-watcom, check-watcom."""
+"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, libmatch, cppscan,
+fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from pathlib import Path
 
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
+from .cppscan import CppScanError
+from .cppscan import scan as cpp_scan
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
@@ -18,6 +20,7 @@ from .libmatch import (
     LibMatchError,
     check_versions,
     load_libraries,
+    read_runtime_csv,
     read_target,
     refuse_output,
     runtime_csv_path,
@@ -162,6 +165,44 @@ def _add_libmatch_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_libmatch)
 
 
+def _cmd_cppscan(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    runtime = args.runtime if args.runtime is not None else runtime_csv_path(target.name)
+    if not Path(runtime).is_file():
+        raise CppScanError(
+            f"runtime map {runtime} not found; run `uv run reverseapoc libmatch {target.name} "
+            "--write` (or --output PATH, then pass --runtime PATH)"
+        )
+    data = read_target(target, args.orig, args.manifest)
+    report = cpp_scan(LE(data), read_runtime_csv(runtime), args.watcom_dir, exe=target.name)
+    if args.json:
+        print(json.dumps(report.to_json(), indent=2))
+    else:
+        print(report.format())
+    return 0  # the verdict is information, not a failure
+
+
+def _add_cppscan_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "cppscan",
+        help="look for C++ evidence (static init/destructor tables, C++ runtime, mangled names) "
+        "and report C or C++ per EXE",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument(
+        "--runtime",
+        type=Path,
+        metavar="CSV",
+        help="the runtime map from libmatch; default: config/<exe>/runtime.csv",
+    )
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=_cmd_cppscan)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -278,6 +319,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     _add_cc_command(sub)
     _add_libmatch_command(sub)
+    _add_cppscan_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -291,6 +333,7 @@ _ERRORS = (
     CompilerError,
     CflagsError,
     LibMatchError,
+    CppScanError,
     OMFError,
     OSError,
 )
