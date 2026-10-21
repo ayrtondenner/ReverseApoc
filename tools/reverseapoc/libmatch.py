@@ -221,6 +221,9 @@ def load_libraries(
     skipped: list[Skipped] = []
     for version in versions:
         tree = Path(watcom_dir) / version
+        if not (tree / LIB_DIR).is_dir():
+            skipped.append(Skipped(version, LIB_DIR, "", "", f"no {LIB_DIR} directory"))
+            continue
         for path in iter_library_paths(tree):
             relpath = path.relative_to(tree / LIB_DIR).as_posix()
             library, skips = _load_one(version, relpath, path)
@@ -368,6 +371,21 @@ def _sorted_set(items: Iterable[str]) -> tuple[str, ...]:
     return tuple(sorted(set(items)))
 
 
+def _version_order(version: str) -> tuple[int, str]:
+    """Manifest order (SWEPT_VERSIONS), then any other version by name."""
+    if version in SWEPT_VERSIONS:
+        return (SWEPT_VERSIONS.index(version), "")
+    return (len(SWEPT_VERSIONS), version)
+
+
+def _libraries(hits: Iterable[_Hit]) -> tuple[str, ...]:
+    return tuple(sorted({h.owner.library for h in hits}, key=_library_order))
+
+
+def _versions(hits: Iterable[_Hit]) -> tuple[str, ...]:
+    return tuple(sorted({h.owner.version for h in hits}, key=_version_order))
+
+
 def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
     """One range from every hit at [start, end): unique when they share one module name."""
     names = sorted({h.owner.module_name for h in hits})
@@ -378,12 +396,42 @@ def _row(start: int, end: int, hits: list[_Hit]) -> MatchRange:
         end=end,
         segment=min(h.owner.segment.name for h in chosen),
         module=names[0],
-        libraries=_sorted_set(h.owner.library for h in chosen),
-        versions=_sorted_set(h.owner.version for h in chosen),
+        libraries=_libraries(chosen),
+        versions=_versions(chosen),
         publics=_sorted_set(p for h in chosen for p in h.owner.publics),
         status=STATUS_UNIQUE if not others else STATUS_AMBIGUOUS,
         alternatives=_sorted_set(f"{h.owner.module_name}@{h.owner.library}" for h in others),
     )
+
+
+def _overlap_error(outer: MatchRange, inner: MatchRange) -> LibMatchError:
+    return LibMatchError(
+        f"ranges 0x{outer.start:08x}..0x{outer.end:08x} ({outer.module}) and "
+        f"0x{inner.start:08x}..0x{inner.end:08x} ({inner.module}) overlap without one "
+        "containing the other"
+    )
+
+
+def _drop_contained(
+    ranges: Iterable[MatchRange],
+) -> tuple[tuple[MatchRange, ...], tuple[MatchRange, ...]]:
+    """(kept, dropped): a range strictly inside a longer one is dropped; a partial overlap
+    raises LibMatchError naming both. Touching ranges (one's end is the next's start) stay."""
+    kept: list[MatchRange] = []
+    dropped: list[MatchRange] = []
+    for r in sorted(ranges, key=lambda r: (r.start, -r.end)):
+        outer = kept[-1] if kept else None
+        if outer is None or r.start >= outer.end:
+            kept.append(r)
+        elif r.end <= outer.end:
+            dropped.append(r)
+        else:
+            raise _overlap_error(outer, r)
+    return tuple(kept), tuple(sorted(dropped, key=_range_order))
+
+
+def _range_order(r: MatchRange) -> tuple[int, int]:
+    return (r.start, r.end)
 
 
 def scan_exe(
@@ -395,13 +443,18 @@ def scan_exe(
     skipped: Sequence[Skipped] = (),
 ) -> LibMatchReport:
     """Place every CODE segment of `libraries` in the code object of `le`. `skipped` (from
-    load_libraries) is carried into the report."""
+    load_libraries) is carried into the report; segments too short to place or with an
+    unknown mask are added to it, never dropped silently."""
     view = target_view(le)
+    skips = list(skipped)
     placements: dict[tuple[bytes, frozenset[int], frozenset[int]], list[int]] = {}
     groups: dict[tuple[int, int], list[_Hit]] = defaultdict(list)
     for owner in _code_segments(libraries):
         seg = owner.segment
-        if _skip_reason(seg, min_unmasked) is not None:
+        reason = _skip_reason(seg, min_unmasked)
+        if reason is not None:
+            skips.append(Skipped(owner.version, owner.library, owner.module_name, seg.name,
+                                 reason))  # fmt: skip
             continue
         # Identical segments (CLIB3R/CLIB3S, several versions) are searched once.
         key = (seg.data, seg.mask, _absolute_sites(seg))
@@ -410,8 +463,9 @@ def scan_exe(
         for base in placements[key]:
             hit = _Hit(owner, view.base + base)
             groups[(hit.start, hit.end)].append(hit)
-    ranges = tuple(_row(start, end, hits) for (start, end), hits in sorted(groups.items()))
-    return LibMatchReport(exe, view.base, len(view.code), ranges, tuple(skipped))
+    rows = (_row(start, end, hits) for (start, end), hits in groups.items())
+    ranges, dropped = _drop_contained(rows)
+    return LibMatchReport(exe, view.base, len(view.code), ranges, tuple(skips), dropped)
 
 
 # ---- the libmatch verb's inputs and output ----
@@ -474,7 +528,7 @@ def format_runtime_csv(report: LibMatchReport, name: str) -> str:
     buf.write(RUNTIME_CSV_COMMENT.format(name=name) + "\n")
     writer = csv.writer(buf, lineterminator="\n")
     writer.writerow(RUNTIME_CSV_COLUMNS)
-    writer.writerows(_cells(r) for r in report.ranges)
+    writer.writerows(_cells(r) for r in sorted(report.ranges, key=_range_order))
     return buf.getvalue()
 
 
