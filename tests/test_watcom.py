@@ -6,6 +6,7 @@ import dataclasses
 import hashlib
 import http.client
 import io
+import json
 import zlib
 from pathlib import Path
 
@@ -687,6 +688,34 @@ def test_manifest_wpack_validation(tmp_path, fields):
         load_watcom_manifest(path)
 
 
+# Paths that would leave the install tree: parent segment, absolute (POSIX, UNC or drive),
+# backslash, colon. The loader must refuse them whatever host it runs on.
+UNSAFE_PATHS = ["../x", "D/../../x", "/abs", "//host/share/x", "C:/x", "C:x", "a\\b", "a:b"]
+UNSAFE_IDS = [
+    "parent", "inner-parent", "absolute", "unc", "drive", "drive-relative", "backslash", "colon",
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("unsafe", UNSAFE_PATHS, ids=UNSAFE_IDS)
+def test_manifest_wpack_part_path_must_stay_in_tree(tmp_path, unsafe):
+    path = tmp_path / "w.toml"
+    fields = f'wpack = ["D/P.1", {json.dumps(unsafe)}]\nwpack_member = "x.exe"\n'
+    path.write_text(GOOD + _KF.format(m="0" * 32, s="0" * 40) + fields)
+    with pytest.raises(ManifestError, match=r"key_files\[0\].*wpack") as exc:
+        load_watcom_manifest(path)
+    assert repr(unsafe) in str(exc.value)
+
+
+@pytest.mark.parametrize("unsafe", UNSAFE_PATHS, ids=UNSAFE_IDS)
+def test_manifest_key_file_path_must_stay_in_tree(tmp_path, unsafe):
+    path = tmp_path / "w.toml"
+    kf = _KF.replace('"BINW/X.EXE"', json.dumps(unsafe)).format(m="0" * 32, s="0" * 40)
+    path.write_text(GOOD + kf)
+    with pytest.raises(ManifestError, match=r"key_files\[0\].*'path'") as exc:
+        load_watcom_manifest(path)
+    assert repr(unsafe) in str(exc.value)
+
+
 def test_install_decodes_wpack_key_file(tmp_path):
     media, media_dir, install_dir = _wpack_install(tmp_path)
     vc = install_version(media, media_dir, install_dir)
@@ -707,6 +736,7 @@ def test_install_wpack_corrupt_part_fails_cleanly(tmp_path):
     message = str(exc.value)
     assert "9.0" in message and "BINW/X.EXE" in message
     assert all(part in message for part in WPACK_PARTS)
+    assert "CRC" in message
     assert _nothing_installed(install_dir)
 
 
@@ -733,6 +763,54 @@ def test_install_wpack_failure_keeps_previous_install(tmp_path):
     )
     with pytest.raises(WatcomError):
         install_version(broken, media_dir, install_dir, force=True)
+    assert [p.name for p in install_dir.iterdir()] == ["9.0"]
+    assert (install_dir / "9.0" / "BINW" / "X.EXE").read_bytes() == DECODED
+
+
+def _outside_parts(tmp_path: Path) -> tuple[Path, Path]:
+    """The same archive parts, planted next to the install dir instead of inside the tree."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    p1, p2 = _wpack_parts()
+    (outside / "P.1").write_bytes(p1)
+    (outside / "P.2").write_bytes(p2)
+    return outside / "P.1", outside / "P.2"
+
+
+@pytest.mark.parametrize("how", ["parent", "absolute"])
+def test_install_wpack_part_outside_tree_is_refused(tmp_path, how):
+    media, media_dir, install_dir = _wpack_install(tmp_path)
+    parts = _outside_parts(tmp_path)
+    if how == "absolute":
+        named = tuple(p.as_posix() for p in parts)
+    else:  # from install/.9.0.partial up to tmp_path
+        named = tuple("../../outside/" + p.name for p in parts)
+    kf = dataclasses.replace(media.key_files[0], wpack=named)
+    with pytest.raises(WatcomError, match="outside") as exc:
+        install_version(dataclasses.replace(media, key_files=(kf,)), media_dir, install_dir)
+    assert "9.0" in str(exc.value) and "BINW/X.EXE" in str(exc.value)
+    assert _nothing_installed(install_dir)
+
+
+@pytest.mark.parametrize("escape", ["../ESCAPED.BIN", "../../ESCAPED.BIN", "../.9.0.partial/../x"])
+def test_install_wpack_key_file_outside_tree_is_refused(tmp_path, escape):
+    media, media_dir, install_dir = _wpack_install(tmp_path)
+    kf = dataclasses.replace(media.key_files[0], path=escape)
+    with pytest.raises(WatcomError, match="outside") as exc:
+        install_version(dataclasses.replace(media, key_files=(kf,)), media_dir, install_dir)
+    assert "9.0" in str(exc.value) and escape in str(exc.value)
+    assert not list(tmp_path.rglob("ESCAPED.BIN"))
+    assert not (install_dir / "x").exists()
+    assert _nothing_installed(install_dir)
+
+
+def test_install_wpack_failure_outside_tree_keeps_previous_install(tmp_path):
+    media, media_dir, install_dir = _wpack_install(tmp_path)
+    install_version(media, media_dir, install_dir)
+    kf = dataclasses.replace(media.key_files[0], path="../ESCAPED.BIN")
+    escaping = dataclasses.replace(media, key_files=(kf,))
+    with pytest.raises(WatcomError, match="outside"):
+        install_version(escaping, media_dir, install_dir, force=True)
     assert [p.name for p in install_dir.iterdir()] == ["9.0"]
     assert (install_dir / "9.0" / "BINW" / "X.EXE").read_bytes() == DECODED
 
