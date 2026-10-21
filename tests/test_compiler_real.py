@@ -31,7 +31,6 @@ from reverseapoc.watcom import load_watcom_manifest
 
 CC_ROOT = REPO_ROOT / "build" / "test-cc"
 VERSIONS = ("10.5", "10.6", "11.0")
-RUNNABLE = ("10.6", "11.0")  # 10.5 joins once plans 04-06 and 04-11 fix its BINW compiler
 FLAGS = ("-5r", "-s")
 
 # C89: declarations first, block comments only.
@@ -112,7 +111,7 @@ def test_compile_real(cc_root, version):
     assert f"sha1 {result.object_sha1}  normalized {result.normalized_sha1}" in line
 
 
-@pytest.mark.parametrize("version", RUNNABLE)
+@pytest.mark.parametrize("version", VERSIONS)
 def test_normalized_hash_is_stable(cc_root, version):
     _require_compiler(version, cc_root)
     first = _compile(cc_root, version, FLAGS, "eq.c", BYTE_COMPARE)
@@ -154,7 +153,7 @@ def _code(result: CompileResult) -> bytes:
     return b"".join(seg.data for seg in _module(result).segments if seg.is_code)
 
 
-@pytest.mark.parametrize("version", RUNNABLE)
+@pytest.mark.parametrize("version", VERSIONS)
 def test_env_injection_has_no_effect(cc_root, version, monkeypatch):
     # No CPU option in the rule, so an injected WCC386=-3r would decide the zero extension.
     _require_compiler(version, cc_root)
@@ -174,7 +173,7 @@ def test_env_injection_has_no_effect(cc_root, version, monkeypatch):
     assert injected.normalized_sha1 == clean.normalized_sha1
 
 
-@pytest.mark.parametrize("version", RUNNABLE)
+@pytest.mark.parametrize("version", VERSIONS)
 def test_target_is_dos(cc_root, version):
     _require_compiler(version, cc_root)
     result = _compile(cc_root, version, FLAGS, "target.c", TARGETS)
@@ -213,7 +212,7 @@ def test_cflags_two_sources_real(cc_root):
     assert SETCC_MOVZX.search(code_b1) and not SETCC_AND.search(code_b1)
 
 
-@pytest.mark.parametrize("version", RUNNABLE)
+@pytest.mark.parametrize("version", VERSIONS)
 def test_compile_error_cleans_up(cc_root, version):
     _require_compiler(version, cc_root)
     before = set(REPO_ROOT.glob("*.err")) | set(Path.cwd().glob("*.err"))
@@ -223,6 +222,9 @@ def test_compile_error_cleans_up(cc_root, version):
     assert not result.obj.exists()
     assert (result.object_sha1, result.normalized_sha1) == (None, None)
     errs = list(cc_root.rglob("*.err"))
-    assert errs == [result.obj.with_suffix(".err")]  # -fr= put it next to the object
+    # -fr= puts the error file next to the object. Measured: 10.5 writes no error file at all
+    # (the message still reaches the captured output), and none anywhere else either.
+    assert errs == ([] if version == "10.5" else [result.obj.with_suffix(".err")])
+    assert "Error!" in result.output
     after = set(REPO_ROOT.glob("*.err")) | set(Path.cwd().glob("*.err"))
     assert after == before

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -21,7 +22,7 @@ from reverseapoc import probe
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate, compile_rule
 from reverseapoc.le import LE
-from reverseapoc.libmatch import read_runtime_csv, runtime_csv_path
+from reverseapoc.libmatch import SWEPT_VERSIONS, read_runtime_csv, runtime_csv_path
 from reverseapoc.probe import (
     FLAG_SETS,
     PROBE_DIR,
@@ -51,6 +52,15 @@ def _require_compiler(version: str, root_dir: Path) -> None:
         check_gate("wcc386", version, watcom_dir=WATCOM_DIR, stamps=root_dir / "stamps")
     except CompilerError as exc:
         pytest.skip(f"Watcom {version}: gate refused ({exc})")
+
+
+def _refusal(version: str, root_dir: Path) -> str | None:
+    """The reason _require_compiler would skip `version`, or None when it can run here."""
+    try:
+        _require_compiler(version, root_dir)
+    except pytest.skip.Exception as exc:
+        return str(exc)
+    return None
 
 
 def _probe_counts(root_dir: Path, version: str, flags: tuple[str, ...]) -> dict[str, int]:
@@ -85,12 +95,12 @@ def test_byte_compare_calibration(cc_root):
 
 # ---- Task 2: the calibration matrix ------------------------------------------------------------
 
-CALIBRATED = ("10.6", "11.0")  # 10.5 joins once plan 04-11 reinstalls its BINW compiler
+CALIBRATED = SWEPT_VERSIONS
 S3, S4, S5 = ("-3r", "-s"), ("-4r", "-s"), ("-5r", "-s")
 
 # One row per 04-RESEARCH Pattern 6 claim: (version, flags, {field: condition}). A field is an
 # idiom name or "chk_calls"; a condition is ">=1" or "==0".
-ROWS = [
+_ROWS = [
     pytest.param("10.6", S3, {"setcc_movzx": ">=1", "setcc_and": "==0"}, id="10.6-3r-movzx"),
     pytest.param(
         "10.6",
@@ -140,6 +150,16 @@ ROWS = [
     pytest.param("10.6", S5, {"chk_calls": "==0"}, id="10.6-s-no-chk"),
     pytest.param("11.0", S5, {"chk_calls": "==0"}, id="11.0-s-no-chk"),
 ]
+# 10.5 gives the same objects as 10.6 in every flag set (docs/matching.md), so every 10.6 row
+# holds for 10.5 too.
+ROWS = [
+    *_ROWS,
+    *(
+        pytest.param("10.5", *row.values[1:], id=row.id.replace("10.6", "10.5", 1))
+        for row in _ROWS
+        if row.values[0] == "10.6"
+    ),
+]
 
 # (version, flags, default libraries requested, default libraries not requested), compared
 # case-insensitively. Measured, not research: with -5s the probe requests math387s but not
@@ -156,22 +176,40 @@ LIBRARY_ROWS = [
 ]
 
 
+@dataclass(frozen=True)
+class _Calibrated:
+    calibration: probe.Calibration  # the CALIBRATED versions that can run here
+    refused: dict[str, str]  # version -> why it cannot run here
+
+    def cell(self, version: str, flags: tuple[str, ...]) -> probe.Cell:
+        """The cell, or a skip naming the version when it could not run here (so one missing
+        version skips only its own rows)."""
+        if version in self.refused:
+            pytest.skip(self.refused[version])
+        return self.calibration.cell(version, flags)
+
+
 @pytest.fixture(scope="module")
-def calibration():
-    """calibrate() over 10.6 and 11.0 once per module, into build/test-probe/calibration."""
+def calibration() -> _Calibrated:
+    """calibrate() over every CALIBRATED version that can run here, once per module, into
+    build/test-probe/calibration."""
     root_dir = PROBE_ROOT / "calibration"
     shutil.rmtree(root_dir, ignore_errors=True)
     root_dir.mkdir(parents=True)
-    for version in CALIBRATED:
-        _require_compiler(version, root_dir)
-    return calibrate(
-        versions=CALIBRATED,
+    reasons = {version: _refusal(version, root_dir) for version in CALIBRATED}
+    refused = {version: reason for version, reason in reasons.items() if reason is not None}
+    runnable = [version for version in CALIBRATED if version not in refused]
+    if not runnable:
+        pytest.skip("; ".join(refused.values()))
+    cal = calibrate(
+        versions=runnable,
         out_dir=root_dir,
         root=REPO_ROOT,
         watcom_dir=WATCOM_DIR,
         log=root_dir / "cc.log",
         stamps=root_dir / "stamps",
     )
+    return _Calibrated(cal, refused)
 
 
 def _value(cell, field: str) -> int:
@@ -198,19 +236,24 @@ def test_calibration_libraries(calibration, version, flags, wanted, unwanted):
 
 
 def test_calibration_covers_every_flag_set(calibration):
-    assert [(c.version, c.flags) for c in calibration.cells] == [
-        (version, flags) for version in CALIBRATED for flags in FLAG_SETS
+    cal = calibration.calibration
+    assert [(c.version, c.flags) for c in cal.cells] == [
+        (version, flags)
+        for version in CALIBRATED
+        if version not in calibration.refused
+        for flags in FLAG_SETS
     ]
-    assert calibration.skipped == ()
+    assert cal.skipped == ()
     print()
-    print(calibration.format())
+    print(cal.format())
 
 
 def test_calibration_with_10_5():
     root_dir = PROBE_ROOT / "calibration-10.5"
     shutil.rmtree(root_dir, ignore_errors=True)
     root_dir.mkdir(parents=True)
-    _require_compiler("10.5", root_dir)
+    for version in SWEPT_VERSIONS:  # calibrate() sweeps all of them; skip, not fail, without one
+        _require_compiler(version, root_dir)
     cal = calibrate(
         out_dir=root_dir,
         root=REPO_ROOT,
@@ -291,8 +334,9 @@ def test_exe_chk_calls(exe_scan):
 # no -3r or -4r" from a game-code rep_movsd_small of 0, but the corrected counter finds rep movsd
 # struct copies in both EXEs, so the -4r cells of both versions (setcc;and plus rep movsd) stay.
 # Recorded as measured, not forced (plan 04-10 truth "a different real result is recorded"), for
-# plan 04-11; the research claims that do hold are asserted below.
-MEASURED_CONSISTENT = [
+# plan 04-11; the research claims that do hold are asserted below. 10.5 gives the same objects
+# as 10.6, so the same eight cells of 10.5 are consistent too (docs/toolchain.md: 18 of 30).
+_CONSISTENT_10_6 = [
     "10.6 -4r -s",
     "10.6 -5r -s",
     "10.6 -5r",
@@ -301,6 +345,10 @@ MEASURED_CONSISTENT = [
     "10.6 -5r -s -oneatx",
     "10.6 -5r -s -fpi87",
     "10.6 -5s -s",
+]
+MEASURED_CONSISTENT = [
+    *(name.replace("10.6", "10.5", 1) for name in _CONSISTENT_10_6),
+    *_CONSISTENT_10_6,
     "11.0 -4r -s",
     "11.0 -4r -s -ox",
 ]
@@ -316,7 +364,7 @@ def _merge(totals: dict[str, int], more: dict[str, int]) -> dict[str, int]:
 def test_calibration_copy_sizes(calibration):
     """The sized breakdown on the probe's real objects: pr_copy's five-dword copy is one rep copy
     of 5 at -3r/-4r and one unrolled run of 5 at -5, in every calibrated cell."""
-    for cell in calibration.cells:
+    for cell in calibration.calibration.cells:
         obj = PROBE_ROOT / "calibration" / cell.version / flag_id(cell.flags) / "cg_basic.obj"
         runs: dict[str, int] = {}
         reps: dict[str, int] = {}
@@ -369,13 +417,16 @@ def test_exe_struct_copy_sizes(exe_scan):
 
 
 def test_exe_consistent_cells(calibration, exe_scan):
-    cells = probe.consistent_cells(calibration, exe_scan)
+    cells = probe.consistent_cells(calibration.calibration, exe_scan)
     names = [f"{c.version} {' '.join(c.flags)}" for c in cells]
     print()
     print(f"{exe_scan.exe} consistent: {names}")
     # research claims that hold: no -3r cell, no 11.0 -5 cell, at least one 10.6 -5r cell
     assert not [c for c in cells if "-3r" in c.flags], names
     assert not [c for c in cells if c.version == "11.0" and c.flags[0] in ("-5r", "-5s")], names
-    assert [c for c in cells if c.version == "10.6" and "-5r" in c.flags], names
-    # research claims that do not hold ("no 11.0", "no -4r"): the measured list
-    assert names == MEASURED_CONSISTENT
+    if "10.6" not in calibration.refused:
+        assert [c for c in cells if c.version == "10.6" and "-5r" in c.flags], names
+    # research claims that do not hold ("no 11.0", "no -4r"): the measured list, over the
+    # versions that could run here
+    ran = [name for name in MEASURED_CONSISTENT if name.split()[0] not in calibration.refused]
+    assert names == ran
