@@ -156,6 +156,28 @@ def _check_mappable(le: LE) -> None:
         )
 
 
+def _object_logical_pages(le: LE) -> Iterator[tuple[int, LEObject]]:
+    """(logical page, object) for every page every object claims, in object order."""
+    for obj in le.objects:
+        for logical in range(obj.page_index, obj.page_index + obj.page_count):
+            yield logical, obj
+
+
+def _check_disjoint(le: LE) -> None:
+    """Refuse objects that share a logical page or whose [base, end) ranges overlap: a page or
+    an address with two owners would be read back from one object's image only (WR-01)."""
+    owners: dict[int, LEObject] = {}
+    for logical, obj in _object_logical_pages(le):
+        first = owners.setdefault(logical, obj)
+        if first is not obj:
+            raise LEUnsupportedError(
+                f"logical page {logical} belongs to objects {first.index} and {obj.index}"
+            )
+    for a, b in pairwise(sorted(le.objects, key=lambda o: o.base)):
+        if a.end > b.base:
+            raise LEUnsupportedError(f"objects {a.index} and {b.index} overlap at {b.base:#x}")
+
+
 def _owner(le: LE, page: LEPage) -> LEObject:
     obj = next(
         (o for o in le.objects if o.page_index <= page.logical < o.page_index + o.page_count),
@@ -180,9 +202,11 @@ def layout(le: LE) -> list[Region]:
     that holds no bytes (a last_page_size of 0), which still tiles.
 
     Raises LEUnsupportedError for a non-resident name table or debug info (D-19), a loader
-    section that does not end where the fixup section ends, and any page that is not a
-    physical page inside the file (le.check_loadable)."""
+    section that does not end where the fixup section ends, objects that share a logical page
+    or overlap in linear address space (WR-01), and any page that is not a physical page inside
+    the file (le.check_loadable)."""
     _check_mappable(le)
+    _check_disjoint(le)
     fixups_end = le.fixup_page_table_offset + le.fixup_section_size
     # The declared loader section of wlink output includes the fixup section, so the loader
     # tables end where the fixup section starts.
