@@ -959,11 +959,38 @@ def test_rebuild_refuses_an_output_hardlinked_to_the_input(tmp_path):
     assert (orig / target.name).read_bytes() == img.data
 
 
-def _fail_halfway(path, data):
-    """A Path.write_bytes that writes half of `data`, then fails like a full disk."""
-    with open(path, "wb") as fh:
-        fh.write(bytes(data)[: len(data) // 2])
+class _PausedFile:
+    """A file opened for writing that runs `pause` after half of each write, as if another
+    process were scheduled in the middle of it."""
+
+    def __init__(self, fh, pause):
+        self._fh, self._pause = fh, pause
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        self._fh.close()
+
+    def write(self, data):
+        half = len(data) // 2
+        self._fh.write(data[:half])
+        self._fh.flush()
+        self._pause()
+        return half + self._fh.write(data[half:])
+
+
+_REAL_OPEN = Path.open
+
+
+def _disk_full():
     raise OSError(28, "No space left on device")
+
+
+def _fail_halfway(self, mode="r", *args, **kwargs):
+    """A Path.open whose files for writing take half of the data, then fail like a full disk."""
+    fh = _REAL_OPEN(self, mode, *args, **kwargs)
+    return fh if "r" in mode else _PausedFile(fh, _disk_full)
 
 
 def _fail_replace(src, dst):
@@ -972,7 +999,7 @@ def _fail_replace(src, dst):
 
 @pytest.mark.parametrize(
     ("owner", "name", "failure"),
-    [(Path, "write_bytes", _fail_halfway), (os, "replace", _fail_replace)],
+    [(Path, "open", _fail_halfway), (os, "replace", _fail_replace)],
     ids=["mid-write", "replace"],
 )
 def test_rebuild_failed_write_keeps_previous_output(tmp_path, monkeypatch, owner, name, failure):
@@ -984,6 +1011,45 @@ def test_rebuild_failed_write_keeps_previous_output(tmp_path, monkeypatch, owner
     monkeypatch.undo()
     assert (out / target.name).read_bytes() == PREVIOUS_BUILD
     assert [p.name for p in out.iterdir()] == [target.name]  # no temporary file left behind
+
+
+def test_a_writer_never_publishes_another_writers_partial_file(tmp_path, monkeypatch):
+    """Review I-2's interleaving (ninja -j, two `cc` writing one gate stamp): writer A has
+    written and closed its temporary file, writer B is half-way through its own, and A swaps
+    its file in. A must publish A's whole data, never B's half, and B must still finish."""
+    target = tmp_path / "watcom-wcc386-10.6.json"
+    a_data, b_data = b"A" * 64, b"B" * 64
+    real_open, real_replace = Path.open, os.replace
+    pending: list[tuple] = []  # A's swap, held back until B is half-way through its write
+    temporaries: list[Path] = []
+    published: list[bytes] = []
+
+    def a_swaps_now():
+        real_replace(*pending.pop())
+        published.append(target.read_bytes())
+
+    def opening(self, mode="r", *args, **kwargs):
+        fh = real_open(self, mode, *args, **kwargs)
+        if "r" in mode:
+            return fh
+        temporaries.append(self)
+        return _PausedFile(fh, a_swaps_now) if pending else fh
+
+    def replacing(src, dst):
+        if len(temporaries) == 1:  # A's swap: run B before it lands
+            pending.append((src, dst))
+            splice._write_atomic(target, b_data)
+            return
+        real_replace(src, dst)
+
+    monkeypatch.setattr(Path, "open", opening)
+    monkeypatch.setattr(os, "replace", replacing)
+    splice._write_atomic(target, a_data)
+    monkeypatch.undo()
+    assert published == [a_data]
+    assert target.read_bytes() == b_data
+    assert len(set(temporaries)) == 2  # each writer had a temporary file of its own
+    assert [p.name for p in tmp_path.iterdir()] == [target.name]
 
 
 def test_rebuild_reads_the_input_once(tmp_path, monkeypatch):
