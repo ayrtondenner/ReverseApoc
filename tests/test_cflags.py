@@ -118,6 +118,17 @@ def test_bad_flag_shapes_refused(flag):
     assert flag in message
 
 
+# Only [A-Za-z0-9_=.+] may follow the `-`: a quote would reach Watcom's own command-line quoting
+# (list2cmdline) and could merge the next argv entries into one option (review IN-03).
+@pytest.mark.parametrize(
+    "flag", ['-dA="x', "-dA='x'", "-dA=$x", "-dA=%x%", "-dA=a&b", "-dA=a|b", "-dA=a;b", "-d*", "-"]
+)
+def test_flag_characters_are_an_allow_list(flag):
+    message = _refused(f"*  wcc386@10.6  {flag}\n")
+    assert message.startswith("my/cflags.txt:1:")
+    assert flag in message
+
+
 def test_flags_that_only_share_a_prefix_are_allowed():
     # "-fpi" and "-zp4" share a first letter with -fi, -fr and -zq; "-zl" (no default library
     # names) is a prefix of -zld, not the other way round. Case alone does not refuse a flag.
