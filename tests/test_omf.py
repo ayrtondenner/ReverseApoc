@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+
 import pytest
 
 from omfimage import (
     bakpat32,
     cextdef,
+    comdat32,
     comdef,
     coment,
     extdef,
@@ -19,6 +22,7 @@ from omfimage import (
     library,
     lidata16,
     lidata32,
+    lidata_blocks32,
     lnames,
     module,
     pubdef16,
@@ -447,3 +451,109 @@ def test_grpdef_index_out_of_range_raises():
                 ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=(1, 2), displacement=0))
             )
         )
+
+
+# --- COMDAT32 and the normalized object hash ---
+
+COMDAT_NAMES = lnames("", "_TEXT", "CODE", "f_")  # indexes 1..4
+CALL_RET = bytes([0xE8, 0, 0, 0, 0, 0xC3])
+
+
+def comdat_module(*records: bytes) -> bytes:
+    """One empty _TEXT segment, one extern "g_", then the given COMDAT records."""
+    return module("cd", COMDAT_NAMES, segdef32(2, 3, 0), extdef("g_"), *records)
+
+
+def test_comdat32_block():
+    mod = read_object(
+        comdat_module(
+            comdat32(4, CALL_RET, alignment=1, seg=1),
+            fixupp32(fixup(1, segment_relative=False, target=(2, 1))),
+        )
+    )
+    call = OMFFixup(
+        offset=1,
+        size=4,
+        segment_relative=False,
+        location=9,
+        frame_method=5,
+        target_method=6,
+        target_kind="extern",
+        target_index=1,
+        target_name="g_",
+        displacement=0,
+    )
+    assert mod.comdats == (
+        omf.Comdat(name="f_", segment_index=1, alignment=1, data=CALL_RET, fixups=(call,)),
+    )
+    assert mod.comdats[0].mask == frozenset(range(1, 5))
+    assert mod.segments[0].fixups == ()
+
+
+def test_comdat32_continuation_appends():
+    mod = read_object(
+        comdat_module(
+            comdat32(4, b"\x01\x02\x03"),
+            comdat32(4, b"\x04\x05", flags=0x01, offset=3),
+            fixupp32(fixup(1, location=1, target=(2, 1), displacement=0)),
+        )
+    )
+    [block] = mod.comdats
+    assert block.data == b"\x01\x02\x03\x04\x05"
+    assert [(f.offset, f.size) for f in block.fixups] == [(4, 2)]
+
+
+def test_comdat32_continuation_without_start_raises():
+    with pytest.raises(OMFError, match="COMDAT32"):
+        read_object(comdat_module(comdat32(4, b"\x01", flags=0x01, offset=0)))
+
+
+def test_comdat32_without_public_base():
+    mod = read_object(comdat_module(comdat32(4, CALL_RET, attributes=0x03)))
+    assert (mod.comdats[0].name, mod.comdats[0].segment_index) == ("f_", 0)
+
+
+def test_comdat32_iterated_data_expands_and_is_unmaskable():
+    blocks = lidata_blocks32([(3, b"ab")])
+    mod = read_object(
+        comdat_module(
+            comdat32(4, blocks, flags=0x02),
+            fixupp32(fixup(0, target=(2, 1), displacement=0)),
+        )
+    )
+    [block] = mod.comdats
+    assert block.data == b"ababab"
+    assert block.unmaskable
+    assert block.fixups == ()
+
+
+def dependency_object(path: str, dependency: bytes = b"", code: int = 0x90) -> bytes:
+    return module(
+        path,
+        coment(0xE9, dependency),
+        lnames("", "_TEXT", "CODE"),
+        segdef32(2, 3, 4),
+        ledata32(1, 0, bytes([code, 0x01, 0x02, 0x03])),
+    )
+
+
+def test_normalized_hash_ignores_theadr_and_dependency_comments():
+    host = dependency_object("C:\\work\\a.c", b"\x11\x22\x33\x44\x03a.h")
+    wibo = dependency_object("/src/a.c", b"\x55\x66\x77\x88\x03b.h")
+    assert omf.normalized_object_sha1(host) == omf.normalized_object_sha1(wibo)
+    kept = dependency_object("x")
+    kept = kept[len(theadr("x")) + len(coment(0xE9, b"")) :]
+    assert omf.normalized_object_sha1(host) == hashlib.sha1(kept).hexdigest()
+
+
+def test_normalized_hash_sees_data_and_other_comments():
+    base = omf.normalized_object_sha1(dependency_object("a.c"))
+    assert omf.normalized_object_sha1(dependency_object("a.c", code=0x91)) != base
+    with_model = module("a.c", coment(0x9B, b"3fOp"), lnames(""))
+    without_model = module("a.c", lnames(""))
+    assert omf.normalized_object_sha1(with_model) != omf.normalized_object_sha1(without_model)
+
+
+def test_normalized_hash_stops_at_modend():
+    obj = dependency_object("a.c")
+    assert omf.normalized_object_sha1(obj + b"\xa5" * 16) == omf.normalized_object_sha1(obj)

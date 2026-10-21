@@ -184,6 +184,33 @@ def comdef(*entries: tuple[str, int]) -> bytes:
                                  for n, size in entries))  # fmt: skip
 
 
+def lidata_blocks32(blocks: list[tuple[int, bytes | list]]) -> bytes:
+    """LIDATA32-style blocks on their own, for an iterated COMDAT32."""
+    return b"".join(_lidata_block(b, "<IH") for b in blocks)
+
+
+def comdat32(
+    name_idx: int,
+    data: bytes,
+    *,
+    flags: int = 0,
+    attributes: int = 0,
+    alignment: int = 1,
+    offset: int = 0,
+    group: int = 0,
+    seg: int = 1,
+    frame: int = 0,
+) -> bytes:
+    """COMDAT32. flags 0x01 continuation, 0x02 iterated data; attributes low nibble 0 means
+    explicit allocation, the only case with a public base (group, segment, frame if both 0)."""
+    body = bytes([flags, attributes, alignment]) + struct.pack("<I", offset) + index(0)
+    if attributes & 0x0F == 0:
+        body += index(group) + index(seg)
+        if group == 0 and seg == 0:
+            body += struct.pack("<H", frame)
+    return record(0xC3, body + index(name_idx) + data)
+
+
 def cextdef(*lname_idxs: int) -> bytes:
     """COMDAT external names: LNAMES indexes, each with type index 0."""
     return record(0xBC, b"".join(index(i) + index(0) for i in lname_idxs))
