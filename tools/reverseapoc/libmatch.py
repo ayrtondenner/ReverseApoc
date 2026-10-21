@@ -165,8 +165,46 @@ class LibMatchReport:
     def covered(self) -> int:
         return sum(r.end - r.start for r in self.ranges)
 
+    def summary_data(self) -> dict[str, Any]:
+        """The D-05/D-07 evidence in numbers: coverage, rows per version set (with the modules
+        of every set smaller than all swept versions), rows per library, the ambiguous rows and
+        the skips by (version, reason)."""
+        percent = round(100 * self.covered / self.code_size, 2) if self.code_size else 0.0
+        return {
+            "ranges": len(self.ranges),
+            "covered": self.covered,
+            "code_size": self.code_size,
+            "percent": percent,
+            "version_sets": _version_sets(self.ranges),
+            "libraries": _library_rows(self.ranges),
+            "ambiguous": [
+                {"module": r.module, "alternatives": _alternative_modules(r)}
+                for r in self.ranges
+                if r.status == STATUS_AMBIGUOUS
+            ],
+            "skipped": _skip_counts(self.skipped),
+        }
+
+    def summary(self) -> list[str]:
+        """summary_data() as report lines (format() ends with them)."""
+        data = self.summary_data()
+        lines = [
+            f"summary {self.exe}: {_plural(data['ranges'], 'range')}, {data['covered']} of "
+            f"{data['code_size']} code bytes ({data['percent']:.2f}%)"
+        ]
+        for vs in data["version_sets"]:
+            rows = _plural(vs["rows"], "row")
+            names = f": {', '.join(vs['modules'])}" if vs["modules"] else ""
+            lines.append(f"versions {'+'.join(vs['versions'])}: {rows}{names}")
+        lines += [f"library {lib}: {_plural(n, 'row')}" for lib, n in data["libraries"].items()]
+        ambiguous = [f"{a['module']} ({', '.join(a['alternatives'])})" for a in data["ambiguous"]]
+        lines.append(f"ambiguous {len(ambiguous)}: {', '.join(ambiguous) or 'none'}")
+        lines += _skip_lines(data["skipped"])
+        return lines
+
     def format(self) -> str:
-        """One line per range, then a summary line; dropped ranges are listed after it."""
+        """One line per range, then a summary line; dropped ranges are listed after it, and the
+        summary() lines close the report."""
         lines = [
             f"0x{r.start:08X}-0x{r.end:08X}  {r.module}  {_LIST_SEPARATOR.join(r.libraries)}  "
             f"{_LIST_SEPARATOR.join(r.versions)}  {r.status}"
@@ -180,6 +218,7 @@ class LibMatchReport:
             f"{sum(r.status == STATUS_AMBIGUOUS for r in self.ranges)}"
         )
         lines += [f"dropped {r.describe()}" for r in self.dropped]
+        lines += self.summary()
         return "\n".join(lines)
 
     def to_json(self) -> dict[str, Any]:
@@ -191,12 +230,71 @@ class LibMatchReport:
             "skipped": [asdict(s) for s in self.skipped],
             "dropped": [r.to_json() for r in self.dropped],
             "resolved": dict(self.resolved),
+            "summary": self.summary_data(),
         }
 
 
 def _reason_kind(reason: str) -> str:
     """The reason without its detail: "parse error at 0x10: ..." counts as "parse error"."""
     return "parse error" if reason.startswith("parse error") else reason
+
+
+# ---- the report summary ----
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _version_key(versions: Iterable[str]) -> tuple[tuple[int, str], ...]:
+    return tuple(sorted(_version_order(v) for v in versions))
+
+
+def _version_sets(ranges: Iterable[MatchRange]) -> list[dict[str, Any]]:
+    """Rows per version set, largest set first. A set smaller than all swept versions names
+    its modules (D-07: those are the modules that discriminate)."""
+    by_set: dict[tuple[str, ...], list[MatchRange]] = defaultdict(list)
+    for r in ranges:
+        by_set[tuple(sorted(r.versions, key=_version_order))].append(r)
+    swept = set(SWEPT_VERSIONS)
+    out = []
+    for versions in sorted(by_set, key=lambda vs: (-len(vs), _version_key(vs))):
+        rows = by_set[versions]
+        modules = [] if set(versions) >= swept else sorted({r.module for r in rows})
+        out.append({"versions": list(versions), "rows": len(rows), "modules": modules})
+    return out
+
+
+def _library_rows(ranges: Iterable[MatchRange]) -> dict[str, int]:
+    """Rows per library, in the CSV's library order."""
+    tally: dict[str, int] = defaultdict(int)
+    for r in ranges:
+        for library in r.libraries:
+            tally[library] += 1
+    return {lib: tally[lib] for lib in sorted(tally, key=_library_order)}
+
+
+def _alternative_modules(r: MatchRange) -> list[str]:
+    """The module names of an ambiguous row's alternatives ("name@library" cells)."""
+    return sorted({alt.partition("@")[0] for alt in r.alternatives})
+
+
+def _skip_counts(skipped: Iterable[Skipped]) -> list[dict[str, Any]]:
+    tally: dict[tuple[str, str], int] = defaultdict(int)
+    for s in skipped:
+        tally[s.version, _reason_kind(s.reason)] += 1
+    keys = sorted(tally, key=lambda k: (_version_order(k[0]), k[1]))
+    return [{"version": v, "reason": reason, "count": tally[v, reason]} for v, reason in keys]
+
+
+def _skip_lines(counts: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One line per version: "skipped 10.6: not OMF 53, short 3380"."""
+    by_version: dict[str, list[str]] = defaultdict(list)
+    for c in counts:
+        by_version[c["version"]].append(f"{c['reason']} {c['count']}")
+    return [f"skipped {v}: {', '.join(parts)}" for v, parts in by_version.items()] or [
+        "skipped: none"
+    ]
 
 
 # ---- loading the libraries ----
