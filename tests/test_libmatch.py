@@ -378,19 +378,60 @@ def test_data_check_picks_matching_module(tmp_path):
     assert _row_summary(report) == [("a", "unique", ())]
 
 
+CALLEE_VA = 0x10400  # where the call-graph tests plant the module the twins call into
+CALLEE_CODE = body(40, seed=0xC0)
+CALLEE_PUBLIC_OFFSET = 16  # a public inside the callee, not at its range start
+
+
+def _call_twin(name: str, ext: str) -> bytes:
+    """TWIN_CODE as module `name`, with a rel32 call to extern `ext` at FAKE_CALL_SITE."""
+    return code_module(name, TWIN_CODE, fixups=[call_fixup(FAKE_CALL_SITE)], externs=[ext])
+
+
+def _call_twin_exe(target: int) -> bytes:
+    """TWIN_CODE at PLANT_VA calling `target` by rel32, and CALLEE_CODE at CALLEE_VA."""
+    rel = target - (PLANT_VA + FAKE_CALL_SITE + 4)
+    code = bytearray(TWIN_CODE)
+    code[FAKE_CALL_SITE : FAKE_CALL_SITE + 4] = rel.to_bytes(4, "little", signed=True)
+    return synth_exe({PLANT_VA: bytes(code), CALLEE_VA: CALLEE_CODE}, [])
+
+
 def test_call_graph_picks_consistent_module(tmp_path):
     watcom = tmp_path / "w"
-    twin = {
-        ext: code_module(name, TWIN_CODE, fixups=[call_fixup(FAKE_CALL_SITE)], externs=[ext])
-        for name, ext in (("a", "x_"), ("b", "y_"))
-    }
-    xmod = code_module("xmod", body(40, seed=0xC0), publics=[("x_", 0)])
-    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [twin["x_"], twin["y_"], xmod])
-    site = PLANT_VA + FAKE_CALL_SITE
-    code = bytearray(TWIN_CODE)
-    code[FAKE_CALL_SITE : FAKE_CALL_SITE + 4] = (0x10400 - (site + 4)).to_bytes(4, "little")
-    report = _scan(watcom, synth_exe({PLANT_VA: bytes(code), 0x10400: body(40, seed=0xC0)}, []))
+    xmod = code_module("xmod", CALLEE_CODE, publics=[("x_", 0)])
+    twins = [_call_twin("a", "x_"), _call_twin("b", "y_")]
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [*twins, xmod])
+    report = _scan(watcom, _call_twin_exe(CALLEE_VA))
     assert _row_summary(report) == [("a", "unique", ()), ("xmod", "unique", ())]
+
+
+def test_call_graph_target_is_a_public_inside_a_range(tmp_path):
+    """The call lands on a public at a non-zero offset of its range (TACP's fprintf calls
+    __fprtf_, which is not where its range starts): that public is evidence too."""
+    watcom = tmp_path / "w"
+    xmod = code_module("xmod", CALLEE_CODE, publics=[("xmod_", 0), ("x_", CALLEE_PUBLIC_OFFSET)])
+    twins = [_call_twin("a", "x_"), _call_twin("b", "y_")]
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [*twins, xmod])
+    report = _scan(watcom, _call_twin_exe(CALLEE_VA + CALLEE_PUBLIC_OFFSET))
+    assert _row_summary(report) == [("a", "unique", ()), ("xmod", "unique", ())]
+    assert dict(report.resolved)["calls"] == 1
+
+
+def test_call_graph_ignores_a_contained_range(tmp_path):
+    """A range dropped as contained (the C++ fatalerr inside CLIB's fatal-error code) is a false
+    placement: its publics must not shadow those of the range that contains it."""
+    watcom = tmp_path / "w"
+    xmod = code_module("xmod", CALLEE_CODE, publics=[("xmod_", 0), ("x_", CALLEE_PUBLIC_OFFSET)])
+    inner_code = CALLEE_CODE[CALLEE_PUBLIC_OFFSET : CALLEE_PUBLIC_OFFSET + 20]
+    inner = code_module("inner", inner_code, publics=[("inner_", 0)])
+    twins = [_call_twin("a", "x_"), _call_twin("b", "inner_")]
+    write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [*twins, xmod, inner])
+    report = _scan(watcom, _call_twin_exe(CALLEE_VA + CALLEE_PUBLIC_OFFSET))
+    assert _row_summary(report) == [("a", "unique", ()), ("xmod", "unique", ())]
+    inner_start = CALLEE_VA + CALLEE_PUBLIC_OFFSET
+    assert [(r.start, r.end, r.module) for r in report.dropped] == [
+        (inner_start, inner_start + len(inner_code), "inner")
+    ]
 
 
 def test_c_before_cpp(tmp_path):
