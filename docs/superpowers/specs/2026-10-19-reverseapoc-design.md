@@ -2,6 +2,7 @@
 
 - **Date:** 2026-10-19
 - **Status:** approved plan for Milestone 1; Phases 1-2 detailed, Phases 3-6 planned later with GSD.
+- **Amendment 2026-10-21 [Owner]:** Milestone 1 extended with Phase 7 (mechanics-first decompilation) and Phase 8 (clean-room specs for OpenApoc, OpenSpec format, CC0-1.0). See [workflow.md](../../workflow.md#milestone-1-roadmap) and [clean-room.md](../../clean-room.md). The text below is the plan as approved on 2026-10-19.
 - **Sources:** the [kickoff research report](../../research/2026-10-19-kickoff-research-report.md), the eight research notes in [docs/research/](../../research/), the owner's kickoff brief and the approved plan.
 
 Every decision below is tagged:

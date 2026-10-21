@@ -77,6 +77,27 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 - [ ] **AGT-10**: decomp.wtf v0.10.6 fork mode runs pinned in WSL2 as a subprocess, if the Phase 6 stub-convention spike passes (otherwise a minimal own agent layer)
 - [ ] **AGT-11**: The pilot matches 10 easy functions unattended with zero regressions and both EXEs identical
 
+### Mechanics-first decompilation (Phase 7)
+
+- [ ] **DEC-01**: `config/mechanics.toml` maps each OpenApoc checklist item the decomp can answer (#263, #264, #265, #997) to its EXE and the functions behind it, located from UI strings and data-table cross-references; the owner signs the list off
+- [ ] **DEC-02**: The driver works through the list callees first, with claims so parallel agents never take the same function and a single owner of the shared naming state (symbols file)
+- [ ] **DEC-03**: Every function on the list matches (objdiff 100%, relocation check passes) and both EXEs stay SHA-1 identical with zero regressions
+- [ ] **DEC-04**: A stdlib `reverseapoc readlint` (TDD) fails on placeholder names (`FUN_`, `sub_`, `DAT_`), functions without a header comment, and unnamed struct fields or magic constants in matched units; the tool decides readability, not the agent
+- [ ] **DEC-05**: The progress page shows mechanics coverage per checklist item
+- [ ] **DEC-06**: The Phase 6 usage caps and per-attempt logging carry over, and nightly totals (turns, tokens, time) are recorded
+
+### Clean-room specs (Phase 8)
+
+- [ ] **SPEC-01**: A spec template `specs/_template/spec.md` in OpenSpec format (`## Purpose`, `## Requirements`, `### Requirement:` with SHALL/MUST, `#### Scenario:` with WHEN/THEN) plus OpenApoc issue, constants and formulas, functions (EXE + address), evidence, sources and a status ladder `drafted -> cited -> backed-by-matched-code -> dosbox-verified -> reviewed-by-openapoc`
+- [ ] **SPEC-02**: A stdlib `reverseapoc speclint` (TDD) enforces the OpenSpec validate rules in strict mode, that cited addresses exist in `config/<exe>/functions.csv`, that `backed-by-matched-code` matches the gate-written status table, that `dosbox-verified` names a test, that no fenced C or text copied from `src/` appears, and that every source has URL, access date and wiki revid
+- [ ] **SPEC-03**: A stdlib `reverseapoc wikifetch` reads single pages through the MediaWiki API with a descriptive User-Agent, at least 10 s between requests per host, the revid recorded, and a gitignored cache; wiki text is never committed
+- [ ] **SPEC-04**: An `apoc-spec` project skill in `.claude/skills/apoc-spec/` teaches an agent to fill the template from matched code and sources
+- [ ] **SPEC-05**: `docs/clean-room.md` states the author/implementer split, the human review rule and the conduct towards OpenApoc, and links the OpenApoc Discord messages on clean-room practice
+- [ ] **SPEC-06**: `specs/LICENSE` is CC0-1.0, named in `docs/legal.md` and `README.md`, with the rule that community facts are re-expressed in our own words and cited, never copied
+- [ ] **SPEC-07**: `specs/claims.md` inventories mechanics claims from UFOpaedia, Wikibooks, StrategyWiki and the OpenApoc Discord, paraphrased and linked, each tied to a checklist item with a verdict (confirmed, refuted, refined) or "none found"
+- [ ] **SPEC-08**: Every target in `config/mechanics.toml` has a spec that passes `speclint` and reaches at least `backed-by-matched-code`
+- [ ] **SPEC-09**: The owner reviews every spec; a review line in the spec records who and when
+
 ## v2 Requirements
 
 Deferred to a later milestone. Tracked but not in the current roadmap.
@@ -104,6 +125,8 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | IDA | Cloud decompiler, no LE loader |
 | Win9x release, XCOMAPOC.EXE, SETUP.EXE | Non-goals for Milestone 1 |
 | decomp.wtf from-scratch mode, permuter, m2c | No LE/x86 path |
+| Contacting OpenApoc about specs, or sending specs or PRs to OpenApoc | Owner decision 2026-10-21: not in Milestone 1; the specs stay in this repo until after the milestone |
+| Clean-room implementation in OpenApoc | Done later by implementers who see only `specs/`, never `src/` |
 
 ## Traceability
 
@@ -158,12 +181,27 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | AGT-09 | Phase 6 | Pending |
 | AGT-10 | Phase 6 | Pending |
 | AGT-11 | Phase 6 | Pending |
+| DEC-01 | Phase 7 | Pending |
+| DEC-02 | Phase 7 | Pending |
+| DEC-03 | Phase 7 | Pending |
+| DEC-04 | Phase 7 | Pending |
+| DEC-05 | Phase 7 | Pending |
+| DEC-06 | Phase 7 | Pending |
+| SPEC-01 | Phase 8 | Pending |
+| SPEC-02 | Phase 8 | Pending |
+| SPEC-03 | Phase 8 | Pending |
+| SPEC-04 | Phase 8 | Pending |
+| SPEC-05 | Phase 8 | Pending |
+| SPEC-06 | Phase 8 | Pending |
+| SPEC-07 | Phase 8 | Pending |
+| SPEC-08 | Phase 8 | Pending |
+| SPEC-09 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 49 total
-- Mapped to phases: 49
+- v1 requirements: 64 total
+- Mapped to phases: 64
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-19*
-*Last updated: 2026-10-19 after initialization*
+*Last updated: 2026-10-21 after adding Phases 7 and 8 (DEC, SPEC)*

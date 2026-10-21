@@ -6,15 +6,15 @@ current_phase: 04
 current_phase_name: Compiler identification
 status: executing
 stopped_at: Phase 4 context gathered
-last_updated: "2026-10-21T15:16:50.971Z"
+last_updated: "2026-10-21T19:27:29.339Z"
 last_activity: 2026-10-21
 last_activity_desc: Phase 04 execution started
-state_head: 55fb627d94962e7f912784465263460bc29a4a69
+state_head: 2ee1e2408d79bdf28e8205551dc9d356f94f93c2
 progress:
-  total_phases: 6
+  total_phases: 8
   completed_phases: 3
   total_plans: 26
-  completed_plans: 14
+  completed_plans: 24
 ---
 
 # Project State
@@ -67,7 +67,7 @@ Next steps:
 Decisions are logged in PROJECT.md Key Decisions table.
 Recent decisions affecting current work:
 
-- [Roadmap]: Phase structure fixed by the owner in `docs/workflow.md`; Milestone 1 phases are numbered 1-6
+- [Roadmap]: Phase structure fixed by the owner in `docs/workflow.md`; Milestone 1 phases are numbered 1-8 (Phases 7 and 8 added by the owner on 2026-10-21)
 - [Roadmap]: A phase is complete only when its `VERIFICATION.md` passes; ROADMAP checkboxes are annotations
 - [Phase 3]: In-place page splice for the MVP; full LE rewrite deferred (reopen trigger: a matched function changes size). Proven: three EXEs rebuild SHA-1 identical (Phase 3 gate)
 - [Phase 5]: Hybrid pipeline (own oracle + decomp.wtf fork mode) vs fallback is decided by the objdiff-on-converted-ELF spike
@@ -85,6 +85,11 @@ None yet.
 - [Phase 6]: Repo visibility must be settled before Pages and listings (Pages on a private repo needs a paid plan)
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
 - [Cross-cutting]: RESOLVED 2026-10-21: docs/toolchain.md and docs/learnings.md now say the installed UFO2P.EXE/TACP.EXE are the disc's `UFO2P4.EXE`/`TACP4.EXE` build (spike 003), not a store patch
+
+### Roadmap Evolution
+
+- Phase 7 added: Mechanics-first decompilation (owner decision 2026-10-21; DEC-01..06)
+- Phase 8 added: Clean-room specs for OpenApoc (owner decision 2026-10-21; SPEC-01..09, CC0-1.0, OpenSpec format)
 
 ## Deferred Items
 

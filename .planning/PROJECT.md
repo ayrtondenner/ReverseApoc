@@ -23,6 +23,8 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 - [ ] Compiler identification: exact Watcom version and default flags proven by the mosura codegen probe and a CLIB3R/MATH3R library match (Phase 4)
 - [ ] Split and first matches: Ghidra + LE loader, `omf2elf.py`, function split, `configure.py` -> ninja + `objdiff.json`; one function per EXE matched, relocation-checked, spliced, whole EXE identical (Phase 5)
 - [ ] Reporting and agent pilot: self-hosted progress (mosaic, badge, JSON on Pages), guardrail hooks, decomp.wtf fork mode, per-function driver; 10 easy functions matched unattended with zero regressions; recomp.fyi and decomphub listings (Phase 6)
+- [ ] Mechanics-first decompilation: every function behind the OpenApoc checklist items the decomp can answer matched, named and commented by the driver at scale; readability lint (Phase 7)
+- [ ] Clean-room specs for OpenApoc: OpenSpec-format spec per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review, under CC0-1.0 (Phase 8)
 
 ### Out of Scope
 
@@ -34,6 +36,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 - Competing with or replacing OpenApoc — ReverseApoc serves it
 - Claiming to be the first Watcom or X-COM decomp — it is the closest found
 - IDA — cloud decompiler and no LE loader [Owner]/[Default]
+- Contacting OpenApoc about the specs or sending them specs or PRs in Milestone 1 — [Owner, 2026-10-21]
 
 ## Context
 
@@ -61,7 +64,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Hybrid pipeline: own matching oracle (Watcom 10.x under wibo in Docker, configure.py + ninja, LE splitter, in-place splice, whole-EXE SHA-1, OMF-to-ELF for objdiff) + decomp.wtf v0.10.6 fork mode as agent layer [Owner] | decomp.wtf has no LE/Watcom path but fork mode accepts any configure.py + ninja + objdiff.json repo; ~3-7 extra days vs 12-24 to build an agent layer | — Pending |
 | Fallback if objdiff cannot diff OMF-converted ELF: own pipeline + minimal agent layer [Default] | Decided by the Phase 5 spike | — Pending |
 | Reuse KKND-Decomp (CC0), Theme Hospital (GPLv3), retrokit (Apache-2.0) [Default] | Closest existing Watcom/DOS/4GW pipelines; ~13-24 developer-days for the oracle | ✓ Good (KKND le.py lifted in Phase 2) |
-| GSD for milestones and phases; Milestone 1 = Phases 1-6, each with a verification gate [Owner] | Durable phase state, VERIFICATION.md gates, /gsd-spike | — Pending |
+| GSD for milestones and phases; Milestone 1 = Phases 1-6, each with a verification gate [Owner]; extended to Phases 1-8 [Owner, 2026-10-21] | Durable phase state, VERIFICATION.md gates, /gsd-spike | — Pending |
 | superpowers inside phases; GSD's files are the record when both prescribe a step [Owner] | Avoids two systems giving competing instructions | — Pending |
 | Plugins installed at project scope rather than trimming the list [Owner] | Settings enabled seven plugins but only one was installed | ✓ Good |
 | Phases with gates, byte-identical rebuild before any decompiling [Owner] (structure), [Default] (gate wording) | Abahbob; Theme Hospital's final cmp | — Pending |
@@ -77,6 +80,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default] | Only maintained LE loaders for Ghidra 12.1 | — Pending |
 | Primary target is the installed build; CD v1.00 build recorded for cross-reference [Default] | What players run; OpenApoc offsets describe the CD build; revisit after Phase 5 | — Pending |
 | Milestone 1 phases numbered 1-6 [Owner, 2026-10-19] | GSD phase ids start at 1 | ✓ Good |
+| Add Phase 7 (mechanics-first decomp) and Phase 8 (clean-room specs) to Milestone 1; Phase 6 keeps its 10-function pilot gate; specs use the OpenSpec format, not the tool; specs are CC0-1.0; no OpenApoc contact during Milestone 1 [Owner, 2026-10-21] | Only about 12 leaf functions are matched by the end of Phase 6, so mechanics must be decompiled before they can be specced; CC0 lets OpenApoc (GPL-3.0) use spec text without attribution; clean room needs the author/implementer split (see `docs/clean-room.md`) | — Pending |
 
 ## Left to the builder (decided in the phase that needs it)
 

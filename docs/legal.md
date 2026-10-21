@@ -22,8 +22,20 @@ This is a description of how the project handles copyrighted material, not legal
 ## Licences in this repository
 
 - **`tools/` is GPLv3** (version 3 or later). It includes modules copied from the [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) (`omf2elf.py` and related), whose tooling is GPLv3; their copyright headers are kept as-is. Code taken from [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp) (CC0) and [retrokit](https://github.com/nemo22/retrokit) (Apache-2.0) can be combined into a GPLv3 work; the reverse is not possible.
+- **Specs under `specs/` are CC0-1.0** (owner decision 2026-10-21). They are written in our own words from the matched code and from community sources, so OpenApoc (GPL-3.0) can use them, text included, without attribution. A spec can only be CC0 if we wrote it; see the source rules in [Specs and clean room](#specs-and-clean-room).
 - **decomp.wtf** (MIT) is a separate tool run as a subprocess in WSL2. It is never imported or vendored, so its code does not mix with ours.
 - **Decompiled C under `src/` and `include/`:** this code reproduces the logic of the copyrighted original game. It is written for interoperability and research, and published to help OpenApoc, a GPL reimplementation that requires the original game files, understand the original behaviour. As with Theme Hospital's decomp, the project claims no rights in it, and it ships with no assets. Rebuilding the game from it requires your own original executables.
+
+## Specs and clean room
+
+Phase 8 writes one behaviour spec per mechanic for OpenApoc. The decompiled C never leaves this repository; only the specs do. The roles, the review rule and the OpenApoc discussion behind them are in [clean-room.md](clean-room.md).
+
+Community sources are read for facts, which are not copyrightable, and re-expressed in our own words:
+
+- **UFOpaedia:** no open licence ("All of the texts on this website are copyrighted to their respective authors", `UFOpaedia:Copyrights`), and its robots.txt blocks AI crawlers. We fetch single pages for reference, throttled, with an honest User-Agent, never crawl it, cite by revision id and copy no prose or table layout.
+- **StrategyWiki and Wikibooks:** CC BY-SA 4.0. Copying their wording or table layout would make a spec an adaptation under BY-SA, which conflicts with CC0, so we state the facts in our own structure and cite by revision id.
+- **DOSBox wiki:** used for harness setup only, read by hand.
+- **OpenApoc Discord:** read-only, paraphrased, linked by message URL; no bulk export is committed.
 
 ## AI use
 
