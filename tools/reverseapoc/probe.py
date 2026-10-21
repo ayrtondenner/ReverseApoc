@@ -16,8 +16,8 @@ from __future__ import annotations
 import hashlib
 import re
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
+from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 from . import omf
@@ -582,14 +582,200 @@ def _covered(ranges: Iterable[Span], low: int, high: int) -> int:
     return total
 
 
+def _overlaps(low: int, high: int, ranges: Iterable[Span]) -> bool:
+    return any(start < high and low < end for start, end in ranges)
+
+
+# push imm32 (68 id) directly followed by call rel32 (E8 cd): Watcom's stack-check prologue,
+# `push <frame size>; call __CHK`, in every function built without -s. Found at every offset.
+_PUSH_IMM32 = 0x68
+_CALL_REL32 = 0xE8
+_PUSH_SIZE = 1 + _IMM32_SIZE
+_CALL_SIZE = 1 + _REL32_SIZE
+_CHK_CALL = re.compile(
+    b"(?=%b.{%d}%b.{%d})"
+    % (re.escape(bytes((_PUSH_IMM32,))), _IMM32_SIZE, re.escape(bytes((_CALL_REL32,))),
+       _REL32_SIZE),
+    re.DOTALL,
+)  # fmt: skip
+CHK_PUBLIC = "__CHK"
+CHK_BLOCK = 0x10000  # call sites are grouped by 64 KiB block of linear address (D-08)
+
+
+def _chk_sites(
+    code: bytes, base: int, targets: Sequence[Span], exclude: Sequence[Span]
+) -> Iterator[int]:
+    """The linear address of every push of a push/call pair whose call lands in `targets` and
+    whose ten bytes lie outside `exclude`."""
+    for match in _CHK_CALL.finditer(code):
+        site = base + match.start()
+        if _overlaps(site, site + _PUSH_SIZE + _CALL_SIZE, exclude):
+            continue
+        call_end = site + _PUSH_SIZE + _CALL_SIZE
+        target = call_end + _rel(code, match.start() + _PUSH_SIZE + 1, _REL32_SIZE)
+        if _overlaps(target, target + 1, targets):
+            yield site
+
+
+def chk_calls(
+    code: bytes, base: int, rows: Iterable[MatchRange], exclude: Iterable[Span]
+) -> tuple[int, tuple[tuple[int, int], ...]]:
+    """(calls, ((block, calls), ...)) for every `push imm32; call rel32` in `code` (linear
+    address `base`) whose call target lies in a runtime row publishing __CHK and whose site lies
+    outside `exclude`; blocks are 64 KiB aligned and sorted."""
+    targets = [(r.start, r.end) for r in rows if CHK_PUBLIC in r.publics]
+    blocks: dict[int, int] = {}
+    for site in _chk_sites(code, base, targets, tuple(exclude)):
+        block = site - site % CHK_BLOCK
+        blocks[block] = blocks.get(block, 0) + 1
+    return sum(blocks.values()), tuple(sorted(blocks.items()))
+
+
+# ---- the verdict: which calibration cells the game code is consistent with (D-07, D-10) --------
+
+# The idiom families whose calibrated forms decide a cell. Loop and switch shapes are byte-level
+# and not decisive on their own (research A7, Pattern 6): they are reported, never used here.
+DECISIVE_FAMILIES = {
+    "byte_compare": ("setcc_and", "setcc_movzx"),
+    "struct_copy": ("movsd_unrolled", "rep_movsd_small"),
+}
+
+
+def _cell_consistent(cell: Cell, scan: ExeScan) -> bool:
+    """False when some decisive family shows idioms in the EXE and the cell emits none of
+    them; a family the EXE shows nothing of removes nothing."""
+    for family in DECISIVE_FAMILIES.values():
+        shown = [name for name in family if scan.counts.get(name, 0) > 0]
+        if shown and not any(cell.counts.get(name, 0) > 0 for name in shown):
+            return False
+    return True
+
+
+def consistent_cells(calibration: Calibration, scan: ExeScan) -> list[Cell]:
+    """The calibration cells (in calibration order) the EXE's non-library idioms are consistent
+    with. Nothing is voted: several cells, versions included, may stay (D-07, D-10)."""
+    return [cell for cell in calibration.cells if _cell_consistent(cell, scan)]
+
+
+# ---- one evidence line per observable flag (D-08, D-09) ----------------------------------------
+
+_CONVENTION_SUFFIX = re.compile(r"\d([RS])$")  # CLIB3R, MATH387S, PLIB3R: the convention letter
+_OBJ_BIG = 0x2000  # LE object flag: 32-bit ("big") object
+_CPU_IDIOMS = ("setcc_and", "setcc_movzx", "movsd_unrolled", "rep_movsd_small")
+_SHAPE_IDIOMS = ("loop_rotated", "loop_top_tested", "switch_ascending", "switch_descending")
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
+def _stems(r: MatchRange) -> list[str]:
+    return [PurePosixPath(library).stem.upper() for library in r.libraries]
+
+
+def _fpu_family(stem: str) -> str | None:
+    for prefix in ("NOEMU", "EMU", "MATH387", "MATH3"):  # NOEMU before EMU, MATH387 before MATH3
+        if stem.startswith(prefix):
+            return prefix
+    return None
+
+
+def _convention_line(rows: Sequence[MatchRange]) -> str:
+    letters = [{m.group(1) for s in _stems(r) if (m := _CONVENTION_SUFFIX.search(s))} for r in rows]
+    r_only = sum(1 for found in letters if found == {"R"})
+    s_only = sum(1 for found in letters if found == {"S"})
+    both = sum(1 for found in letters if found == {"R", "S"})
+    if r_only and s_only:
+        reading = "mixed: rows only in 3R and rows only in 3S libraries"
+    elif r_only or s_only:
+        reading = "register (r) convention" if r_only else "stack (s) convention"
+    else:
+        reading = "no evidence"
+    return (
+        f"calling convention: 3R only {_count(r_only, 'row')}, 3S only {_count(s_only, 'row')}, "
+        f"both {_count(both, 'row')} (source: runtime rows); {reading}"
+    )
+
+
+def _fpu_line(rows: Sequence[MatchRange]) -> str:
+    families = [{_fpu_family(s) for s in _stems(r)} for r in rows]
+    emu, noemu, m387, m3 = (sum(1 for f in families if name in f)
+                            for name in ("EMU", "NOEMU", "MATH387", "MATH3"))  # fmt: skip
+    m3_only = sum(1 for f in families if "MATH3" in f and "MATH387" not in f)
+    return (
+        f"fpu: EMU387 {_count(emu, 'row')}, NOEMU387 {_count(noemu, 'row')}; "
+        f"MATH387 {_count(m387, 'row')}, MATH3 {_count(m3, 'row')} ({m3_only} only in MATH3) "
+        "(source: runtime rows); an EMU387 row means some object requested emu387 (-fpi), and "
+        "-fpi87 modules linked beside it would not show (research A3)"
+    )
+
+
+def _cpu_line(scan: ExeScan) -> str:
+    counts = ", ".join(f"{name} {scan.counts[name]}" for name in _CPU_IDIOMS)
+    return (
+        f"cpu: {counts} (source: idiom counts in non-library code); read against the "
+        "calibration cells (probe calibrate)"
+    )
+
+
+def _stack_line(rows: Sequence[MatchRange], scan: ExeScan) -> str:
+    modules = sorted({r.module for r in rows if CHK_PUBLIC in r.publics})
+    if not modules:
+        return f"stack checks: {scan.chk_calls} __CHK calls; no runtime row publishes __CHK"
+    blocks = ", ".join(f"{block:#010x} {n}" for block, n in scan.chk_blocks) or "none"
+    return (
+        f"stack checks: {scan.chk_calls} __CHK calls (push imm32; call __CHK) in non-library "
+        f"code, by block {blocks} (source: idiom counts, __CHK from runtime row "
+        f"{', '.join(modules)}); each call is a function built without -s (research A6)"
+    )
+
+
+def _memory_line(le: LE) -> str:
+    objects = le.objects
+    big = sum(1 for obj in objects if obj.flags & _OBJ_BIG)
+    reading = "; flat 32-bit layout (-mf)" if objects and big == len(objects) else ""
+    return (
+        f"memory model: {_count(len(objects), 'object')}, {big} with the 32-bit flag "
+        f"(source: LE object table){reading}"
+    )
+
+
+def _shapes_line(scan: ExeScan) -> str:
+    counts = ", ".join(f"{name} {scan.counts[name]}" for name in _SHAPE_IDIOMS)
+    return (
+        f"shapes (not decisive): {counts} (source: idiom counts in non-library code; byte-level, "
+        "research A7; switch compares cover eax/al only: cmp eax,imm8, cmp eax,imm32, "
+        "cmp al,imm8)"
+    )
+
+
+def flag_evidence(le: LE, rows: Iterable[MatchRange], scan: ExeScan) -> tuple[str, ...]:
+    """One line per observable flag (D-08), each naming its source and its counts: calling
+    convention, fpu, cpu, stack checks, memory model, then the non-decisive loop and switch
+    shapes. A mix of evidence is reported as a mix (D-07)."""
+    rows = list(rows)
+    return (
+        _convention_line(rows),
+        _fpu_line(rows),
+        _cpu_line(scan),
+        _stack_line(rows, scan),
+        _memory_line(le),
+        _shapes_line(scan),
+    )
+
+
 def scan_exe(le: LE, rows: Iterable[MatchRange], *, exe: str) -> ExeScan:
     """Count IDIOMS in the EXE's code object with every runtime row excluded (a hit touching a
     row by one byte is dropped) and every LE fixup byte masked (a relocated operand is never read
-    as an idiom)."""
+    as an idiom); count the __CHK calls by block and derive the evidence lines."""
+    rows = list(rows)
     view = target_view(le)
     end = view.base + len(view.code)
     exclude = [(r.start, r.end) for r in rows]
     mask = frozenset(va - view.base for va in view.fixup_bytes if view.base <= va < end)
     counts = count_idioms(view.code, base=view.base, exclude=exclude, mask=mask)
     lib_bytes = _covered(exclude, view.base, end)
-    return ExeScan(exe, view.base, len(view.code), len(view.code) - lib_bytes, lib_bytes, counts)
+    calls, blocks = chk_calls(view.code, view.base, rows, exclude)
+    scan = ExeScan(exe, view.base, len(view.code), len(view.code) - lib_bytes, lib_bytes, counts,
+                   calls, blocks)  # fmt: skip
+    return replace(scan, evidence=flag_evidence(le, rows, scan))

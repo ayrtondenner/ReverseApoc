@@ -287,11 +287,33 @@ def test_exe_chk_calls(exe_scan):
     assert all(block % 0x10000 == 0 for block, _ in exe_scan.chk_blocks), exe_scan.chk_blocks
 
 
+# Measured with the corrected counters; the same list for both EXEs. 04-RESEARCH read "no 11.0,
+# no -3r or -4r" from a game-code rep_movsd_small of 0, but the corrected counter finds rep movsd
+# struct copies in both EXEs, so the -4r cells of both versions (setcc;and plus rep movsd) stay.
+# Recorded as measured, not forced (plan 04-10 truth "a different real result is recorded"), for
+# plan 04-11; the research claims that do hold are asserted below.
+MEASURED_CONSISTENT = [
+    "10.6 -4r -s",
+    "10.6 -5r -s",
+    "10.6 -5r",
+    "10.6 -4r -s -ox",
+    "10.6 -5r -s -ox",
+    "10.6 -5r -s -oneatx",
+    "10.6 -5r -s -fpi87",
+    "10.6 -5s -s",
+    "11.0 -4r -s",
+    "11.0 -4r -s -ox",
+]
+
+
 def test_exe_consistent_cells(calibration, exe_scan):
     cells = probe.consistent_cells(calibration, exe_scan)
     names = [f"{c.version} {' '.join(c.flags)}" for c in cells]
     print()
     print(f"{exe_scan.exe} consistent: {names}")
-    assert not [c for c in cells if c.version == "11.0"], names
-    assert not [c for c in cells if {"-3r", "-4r"} & set(c.flags)], names
+    # research claims that hold: no -3r cell, no 11.0 -5 cell, at least one 10.6 -5r cell
+    assert not [c for c in cells if "-3r" in c.flags], names
+    assert not [c for c in cells if c.version == "11.0" and c.flags[0] in ("-5r", "-5s")], names
     assert [c for c in cells if c.version == "10.6" and "-5r" in c.flags], names
+    # research claims that do not hold ("no 11.0", "no -4r"): the measured list
+    assert names == MEASURED_CONSISTENT
