@@ -10,9 +10,11 @@ import pytest
 from conftest import write_manifest
 from reverseapoc.targets import (
     DEFAULT_MANIFEST,
+    REPO_ROOT,
     ManifestError,
     Target,
     check_orig,
+    config_dir,
     hash_bytes,
     hash_file,
     load_manifest,
@@ -217,3 +219,10 @@ def test_manifest_refuses_a_non_bare_target_name(tmp_path, name):
     with pytest.raises(ManifestError) as exc:
         load_manifest(_one_target(tmp_path / "bad.toml", name))
     assert repr(name) in str(exc.value)
+
+
+def test_config_dir():
+    assert config_dir("UFO2P.EXE") == REPO_ROOT / "config" / "ufo2p"
+    assert config_dir("TACP.EXE").as_posix().endswith("config/tacp")
+    with pytest.raises(ManifestError):
+        config_dir("a/b.exe")

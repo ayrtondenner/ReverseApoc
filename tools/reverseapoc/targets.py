@@ -91,6 +91,13 @@ def check_bare_name(name: str) -> None:
         )
 
 
+def config_dir(name: str) -> Path:
+    """The per-EXE config directory (D-16): config/<lowercase stem of the manifest name>, e.g.
+    UFO2P.EXE -> config/ufo2p. The manifest name stays the lookup key; `name` must be bare."""
+    check_bare_name(name)
+    return REPO_ROOT / "config" / PurePosixPath(name).stem.lower()
+
+
 def _parse_target(i: int, entry: dict) -> Target:
     where = f"targets[{i}] ({entry.get('name', '?')})"
     name, path = _text(entry, where, "name"), _text(entry, where, "path")
