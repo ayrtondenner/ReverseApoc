@@ -11,12 +11,21 @@ Signals, strongest first:
 2. C++-only runtime modules: runtime-map rows with status `unique` whose every library is a C++
    one (PLIB*, PLBX*, CPLX*). Rows also matched by a C library, and ambiguous rows (the 18-byte
    stubs of research Pitfall 4), never count. The runtime map places CODE segments only, so C++
-   runtime code kept in COMDAT blocks is not covered by this signal; the report says so.
+   runtime code kept in COMDAT blocks is not covered by this signal; the report says so. The map
+   only names the modules it matched, so "no C++-only row" proves something only if the sweep
+   that built it held readable C++ libraries. `cpp_only_gap` checks that for every Watcom version
+   the map names (C++ libraries present in its LIB386, none unreadable); when it fails the signal
+   is reported as not computed and cannot support a C verdict (see `verdict`).
 3. `__wcpp_` and `W?` (Watcom C++ mangled name) strings in the non-executable objects. Counted,
    never printed.
 4. Vtable-shaped runs: two or more off32 LE fixups 4 bytes apart in a non-executable object, all
    pointing into the executable object outside the runtime map. C dispatch tables look the
    same, so they are reported as candidates and never decide the verdict.
+
+Verdicts: `C (wcc386): ...` only when every signal was computed and none fired. When the
+C++-only module signal was not computed, `C (wcc386) on partial evidence: ...` says so and rests
+on the init tables and the strings alone (both are always computed, or the scan raises, so the
+verdict is never left undetermined). Any signal that fired gives `C++ evidence: ...`.
 
 Output (reports and JSON) holds counts, addresses, priorities and module names only, never
 bytes or strings from the EXE.
@@ -33,8 +42,15 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from .le import LE, SRC_OFF32, Fixup, LEObject
-from .libmatch import CPP_LIBRARY_PREFIXES, LIB_DIR, STATUS_UNIQUE, MatchRange, check_versions
-from .omf import Module, Segment, read_library
+from .libmatch import (
+    CPP_LIBRARY_PREFIXES,
+    LIB_DIR,
+    STATUS_UNIQUE,
+    MatchRange,
+    check_versions,
+    iter_library_paths,
+)
+from .omf import Library, Module, OMFError, Segment, is_omf_library, read_library
 
 
 class CppScanError(ValueError):
@@ -74,6 +90,7 @@ WCPP_MARKER = b"__wcpp_"  # prefix of the Watcom C++ runtime's symbols
 MANGLED_NAME = re.compile(rb"W\?[A-Za-z_$]")  # start of a Watcom C++ mangled name
 MIN_VTABLE_RUN = 2  # pointers in a row before a run counts as vtable-shaped
 COMDAT_NOTE = "CODE segments only; COMDAT code is not matched"
+MODULES_SIGNAL = "C++-only runtime module signal"  # "... was not computed" in the verdict
 
 
 @dataclass(frozen=True)
@@ -112,6 +129,7 @@ class CppScanReport:
     vtable_candidates: int = 0
     verdict: str = ""
     bounds: Mapping[str, tuple[int, int]] | None = None  # table -> (start, end)
+    cpp_only_gap: str = ""  # why the C++-only module signal was not computed; "" when it was
 
     def _tables(self) -> dict[str, tuple[InitEntry, ...]]:
         return {"XI": self.xi, "YI": self.yi}
@@ -127,11 +145,17 @@ class CppScanReport:
             in_lib = sum(e.in_library for e in entries)
             lines.append(f"{table}{span}: {len(entries)} entries; priority {_profile(entries)}; "
                          f"routine in runtime map {in_lib}")  # fmt: skip
-        modules = ", ".join(self.cpp_only_modules) or "none"
-        lines.append(f"C++-only runtime rows ({COMDAT_NOTE}): {modules}")
+        lines.append(self._modules_line())
         lines.append(f"__wcpp_ strings {self.wcpp_strings}, W? strings {self.mangled_strings}, "
                      f"vtable-shaped candidate runs {self.vtable_candidates}")  # fmt: skip
         return "\n".join(lines)
+
+    def _modules_line(self) -> str:
+        modules = ", ".join(self.cpp_only_modules)
+        if not self.cpp_only_gap:
+            return f"C++-only runtime rows ({COMDAT_NOTE}): {modules or 'none'}"
+        found = f"; found anyway: {modules}" if modules else ""
+        return f"C++-only runtime rows: not computed ({self.cpp_only_gap}){found}"
 
     def to_json(self) -> dict[str, Any]:
         tables = {}
@@ -148,6 +172,8 @@ class CppScanReport:
             "tables": tables,
             "cpp_only_modules": list(self.cpp_only_modules),
             "cpp_only_modules_cover": COMDAT_NOTE,
+            "cpp_only_modules_computed": not self.cpp_only_gap,
+            "cpp_only_modules_gap": self.cpp_only_gap or None,
             "wcpp_strings": self.wcpp_strings,
             "mangled_strings": self.mangled_strings,
             "vtable_candidates": self.vtable_candidates,
@@ -164,12 +190,18 @@ def _init_row(rows: Sequence[MatchRange]) -> MatchRange:
     raise CppScanError(f"the runtime map has no {INIT_MODULE} row: the init tables cannot be found")
 
 
-def _library_path(watcom_dir: Path, version: str, library: str) -> Path:
-    """watcom_dir/<version>/LIB386/<library>, refused when it would leave that tree."""
+def _checked_version(version: str) -> str:
+    """`version`, refused unless it is a bare directory name under the Watcom dir."""
     try:
         check_versions([version])
     except ValueError as exc:
         raise CppScanError(str(exc)) from exc
+    return version
+
+
+def _library_path(watcom_dir: Path, version: str, library: str) -> Path:
+    """watcom_dir/<version>/LIB386/<library>, refused when it would leave that tree."""
+    _checked_version(version)
     root = (Path(watcom_dir) / version / LIB_DIR).resolve()
     path = (root / PurePosixPath(library)).resolve()
     if not path.is_relative_to(root):
@@ -177,21 +209,38 @@ def _library_path(watcom_dir: Path, version: str, library: str) -> Path:
     return path
 
 
-def _init_segment(row: MatchRange, watcom_dir: Path) -> Segment:
-    """The CODE segment of the library module the inirt386 row was matched from."""
-    if not row.libraries or not row.versions:
-        raise CppScanError(f"{row.describe()}: the row names no library or version")
-    path = _library_path(watcom_dir, row.versions[0], row.libraries[0])
-    if not path.is_file():
-        raise CppScanError(f"{path} not found (install Watcom {row.versions[0]})")
-    library = read_library(path.read_bytes(), path=row.libraries[0])
+def _code_segment(row: MatchRange, library: Library) -> Segment | None:
+    """The row's module CODE segment in `library`, or None."""
     modules = [m for m in library.modules if _stem(m) == row.module]
     for seg in (s for m in modules for s in m.segments):
         if seg.is_code and seg.name == row.segment and seg.length == row.end - row.start:
             return seg
+    return None
+
+
+def _init_segment(row: MatchRange, watcom_dir: Path) -> Segment:
+    """The CODE segment of the library module the inirt386 row was matched from.
+
+    The row's versions and libraries are independent sorted sets, not pairs. The pairs are tried
+    in row order (versions outermost): those whose library file exists in that version's LIB386,
+    until one holds the module's CODE segment."""
+    if not row.libraries or not row.versions:
+        raise CppScanError(f"{row.describe()}: the row names no library or version")
+    pairs = [(v, lib) for v in row.versions for lib in row.libraries]
+    present = [(v, lib, _library_path(watcom_dir, v, lib)) for v, lib in pairs]
+    present = [(v, lib, path) for v, lib, path in present if path.is_file()]
+    if not present:
+        raise CppScanError(
+            f"{', '.join(row.libraries)} not found in Watcom {', '.join(row.versions)} under "
+            f"{watcom_dir} (install the version that holds it)"
+        )
+    for _version, library, path in present:
+        seg = _code_segment(row, read_library(path.read_bytes(), path=library))
+        if seg is not None:
+            return seg
+    tried = ", ".join(f"{library} ({version})" for version, library, _path in present)
     raise CppScanError(
-        f"{row.libraries[0]} ({row.versions[0]}) has no {row.module} CODE segment "
-        f"{row.segment} of {row.end - row.start} bytes"
+        f"no {row.module} CODE segment {row.segment} of {row.end - row.start} bytes in {tried}"
     )
 
 
@@ -291,6 +340,44 @@ def cpp_only_modules(rows: Sequence[MatchRange]) -> tuple[str, ...]:
     }))  # fmt: skip
 
 
+def _read_problem(path: Path) -> str:
+    """Why the sweep could not use the library at `path` completely, "" when it could."""
+    data = path.read_bytes()
+    if not is_omf_library(data):
+        return "not OMF"
+    try:
+        library = read_library(data, path=path.name)
+    except OMFError as exc:
+        return f"parse error: {exc}"
+    return "; ".join(f"module {f.index}: {f.message}" for f in library.failures)
+
+
+def _version_gaps(watcom_dir: Path, version: str) -> list[str]:
+    """What keeps Watcom `version` from backing the C++-only module signal."""
+    tree = Path(watcom_dir) / _checked_version(version)
+    if not (tree / LIB_DIR).is_dir():
+        return [f"{version}: no {LIB_DIR} directory"]
+    paths = [p for p in iter_library_paths(tree) if _is_cpp_library(p.name)]
+    if not paths:
+        prefixes = ", ".join(f"{prefix}*" for prefix in CPP_LIBRARY_PREFIXES)
+        return [f"{version}: no C++ library ({prefixes}) under {LIB_DIR}"]
+    problems = ((p.relative_to(tree / LIB_DIR).as_posix(), _read_problem(p)) for p in paths)
+    return [f"{version}: {relpath} unreadable ({why})" for relpath, why in problems if why]
+
+
+def cpp_only_gap(rows: Sequence[MatchRange], watcom_dir: Path) -> str:
+    """Why "no C++-only runtime module" cannot be trusted, "" when it can.
+
+    The runtime map names only the modules it matched, so an absent C++-only row proves
+    something only if the sweep that built it held C++ libraries. Every Watcom version the map
+    names must hold readable C++ libraries (PLIB*, PLBX*, CPLX*) under <watcom_dir>/<v>/LIB386,
+    with no module of them unparsed (what libmatch would have skipped)."""
+    versions = sorted({v for r in rows for v in r.versions})
+    if not versions:
+        return "the runtime map names no Watcom version"
+    return "; ".join(gap for v in versions for gap in _version_gaps(Path(watcom_dir), v))
+
+
 def _data_objects(le: LE) -> Iterator[LEObject]:
     return (o for o in le.objects if not o.flags & _OBJ_EXECUTABLE)
 
@@ -356,14 +443,22 @@ def _signals(report: CppScanReport) -> list[str]:
 
 def verdict(report: CppScanReport) -> str:
     """"C (wcc386): ..." when no C++ signal fired, else "C++ evidence: ..." naming the signals
-    and the modules that would need wpp386. Vtable-shaped runs are listed, never decisive."""
+    and the modules that would need wpp386. Vtable-shaped runs are listed, never decisive.
+    When the C++-only module signal was not computed (`cpp_only_gap`), no C verdict claims it:
+    "C (wcc386) on partial evidence: ..." names the gap and rests on the other signals."""
     signals = _signals(report)
-    if not signals:
-        return (f"C (wcc386): no XI priority {PRIO_PROGRAM}, no YI priority {PRIO_DTOR}, no "
-                f"C++-only runtime module, no __wcpp_ or W? strings; {report.vtable_candidates} "
-                "vtable-shaped candidate runs (C dispatch tables look the same)")  # fmt: skip
-    modules = ", ".join(report.cpp_only_modules) or "not located (no C++-only runtime rows)"
-    return f"C++ evidence: {', '.join(signals)}; modules needing wpp386: {modules}"
+    gap = report.cpp_only_gap
+    if signals:
+        none = f"{MODULES_SIGNAL} not computed" if gap else "no C++-only runtime rows"
+        modules = ", ".join(report.cpp_only_modules) or f"not located ({none})"
+        return f"C++ evidence: {', '.join(signals)}; modules needing wpp386: {modules}"
+    tables = f"no XI priority {PRIO_PROGRAM}, no YI priority {PRIO_DTOR}"
+    vtables = (f"{report.vtable_candidates} vtable-shaped candidate runs "
+               "(C dispatch tables look the same)")  # fmt: skip
+    if gap:
+        return (f"C (wcc386) on partial evidence: the {MODULES_SIGNAL} was not computed "
+                f"({gap}); {tables}, no __wcpp_ or W? strings; {vtables}")  # fmt: skip
+    return f"C (wcc386): {tables}, no C++-only runtime module, no __wcpp_ or W? strings; {vtables}"
 
 
 def scan(le: LE, rows: Sequence[MatchRange], watcom_dir: Path, *, exe: str) -> CppScanReport:
@@ -372,5 +467,6 @@ def scan(le: LE, rows: Sequence[MatchRange], watcom_dir: Path, *, exe: str) -> C
     tables = _tables_from(le, rows, bounds)
     wcpp, mangled = string_counts(le)
     report = CppScanReport(exe, tables["XI"], tables["YI"], cpp_only_modules(rows), wcpp,
-                           mangled, vtable_candidates(le, rows), bounds=bounds)  # fmt: skip
+                           mangled, vtable_candidates(le, rows), bounds=bounds,
+                           cpp_only_gap=cpp_only_gap(rows, watcom_dir))  # fmt: skip
     return replace(report, verdict=verdict(report))
