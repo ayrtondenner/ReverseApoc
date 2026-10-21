@@ -700,6 +700,32 @@ def test_cc_refusal_is_an_error_line(cc_workspace, capsys):
     assert "install-watcom 10.6" in err
 
 
+NOT_UTF8 = b"* \xff wcc386@10.6\n"  # one byte that no UTF-8 sequence starts with
+
+
+def test_cc_cflags_that_is_not_utf8_is_an_error_line(cc_workspace, capsys):
+    ws = cc_workspace
+    bad = ws.root / "bad-cflags.txt"
+    bad.write_bytes(NOT_UTF8)
+    options = list(ws.options)
+    options[options.index("--cflags") + 1] = str(bad)
+    assert main(["cc", str(ws.src), "-o", str(ws.root / "a.obj"), *options]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cc: error:")
+    assert "bad-cflags.txt" in err and "not UTF-8" in err
+    assert ws.runner.calls == []
+
+
+def test_cc_object_without_a_name_is_an_error_line(cc_workspace, capsys, monkeypatch):
+    ws = cc_workspace
+    monkeypatch.chdir(ws.root)  # `-o .` names the repository root itself, which has no name
+    assert main(["cc", str(ws.src), "-o", ".", *ws.options]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cc: error:")
+    assert ".obj" in err
+    assert ws.runner.calls == []
+
+
 # ---- libmatch ----
 
 
@@ -839,6 +865,16 @@ def test_cppscan_missing_runtime_map(tmp_path, capsys):
     assert "libmatch SYNTH.EXE --write" in err
 
 
+def test_cppscan_runtime_map_that_is_not_utf8_is_an_error_line(tmp_path, capsys):
+    ws = _cppscan_workspace(tmp_path)
+    bad = tmp_path / "bad-runtime.csv"
+    bad.write_bytes(NOT_UTF8)
+    assert main(_cppscan_args(ws, "--runtime", str(bad))) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cppscan: error:")
+    assert "bad-runtime.csv" in err and "not UTF-8" in err
+
+
 def test_cppscan_default_runtime_is_the_config_dir(tmp_path, capsys, monkeypatch):
     ws = _cppscan_workspace(tmp_path)
     monkeypatch.setattr(targets, "REPO_ROOT", tmp_path / "repo")
@@ -926,6 +962,15 @@ def test_probe_scan_missing_runtime_map(tmp_path, capsys):
     err = capsys.readouterr().err
     assert err.startswith("reverseapoc probe: error:")
     assert "libmatch SYNTH.EXE --write" in err
+
+
+def test_probe_scan_runtime_map_that_is_not_utf8_is_an_error_line(tmp_path, capsys):
+    ws = _probe_workspace(tmp_path)
+    ws["runtime"].write_bytes(NOT_UTF8)
+    assert main(_probe_args(ws, "--runtime", str(ws["runtime"]))) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc probe: error:")
+    assert "runtime.csv" in err and "not UTF-8" in err
 
 
 def test_probe_scan_default_runtime_is_the_config_dir(tmp_path, capsys, monkeypatch):

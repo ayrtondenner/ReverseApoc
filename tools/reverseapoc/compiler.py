@@ -283,12 +283,17 @@ def guest_path(path: Path | str, root: Path | str, *, inside: bool) -> str:
     return rel.replace("/", "\\")
 
 
-def _check_outputs(src: Path, obj: Path, err: Path) -> None:
-    """Refuse outputs that would destroy a file: the object is deleted before the compile and
-    rewritten by it, and the error file is rewritten. The object must end in OBJ_SUFFIX (so -o
-    never names a source, a header or the error file), and neither output may be the source."""
+def _check_object_name(obj: Path) -> None:
+    """The object is deleted before the compile and rewritten by it, so it must end in
+    OBJ_SUFFIX: -o never names a source, a header or the error file. Checked before the error
+    file's name is derived from it, so a path without a name (`-o .`) is refused here too."""
     if obj.suffix != OBJ_SUFFIX:
         raise CompilerError(f"{obj} must end in {OBJ_SUFFIX}; the compile deletes and rewrites it")
+
+
+def _check_outputs(src: Path, obj: Path, err: Path) -> None:
+    """Refuse outputs that would destroy the source: the object is deleted before the compile
+    and rewritten by it, and the error file is rewritten, so neither may be the source."""
     source = src.resolve()
     clash = next((out for out in (obj, err) if out.resolve() == source), None)
     if clash is not None:
@@ -425,9 +430,10 @@ def compile_rule(
     platform = platform if platform is not None else sys.platform
     log = Path(log) if log is not None else DEFAULT_LOG
     src, obj = Path(src), Path(obj)
-    err = obj.with_suffix(".err")  # next to the object
     guest_src = guest_path(src, root, inside=True)
     guest_obj = guest_path(obj, root, inside=True)
+    _check_object_name(obj)
+    err = obj.with_suffix(".err")  # next to the object
     guest_err = guest_path(err, root, inside=True)
     _check_outputs(src, obj, err)
     include = guest_path(watcom_dir / rule.version / "H", root, inside=False)
