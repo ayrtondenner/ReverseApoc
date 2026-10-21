@@ -32,12 +32,22 @@
       "number": "6",
       "name": "Reporting and agent pilot",
       "status": "pending"
+    },
+    {
+      "number": "7",
+      "name": "Mechanics-first decompilation",
+      "status": "pending"
+    },
+    {
+      "number": "8",
+      "name": "Clean-room specs for OpenApoc",
+      "status": "pending"
     }
   ],
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step",
-    "reason": "Phase 4 of 6 · executing"
+    "reason": "Phase 4 of 8 · executing"
   },
-  "updated_at": "2026-10-21T15:16:51.016Z"
+  "updated_at": "2026-10-21T19:24:44.068Z"
 }

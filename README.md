@@ -140,7 +140,7 @@ Verdicts in short; the full table with reasons, install method and status is in 
 | Diff and matching | [objdiff](https://github.com/encounter/objdiff) | [coddog](https://github.com/ethteck/coddog) (idea reimplemented now), [mizuchi](https://github.com/macabeus/mizuchi), [decomp_settings](https://github.com/ethteck/decomp_settings) | [m2c](https://github.com/matt-kempster/m2c), [decomp-permuter](https://github.com/simonlindholm/decomp-permuter), [asm-differ](https://github.com/simonlindholm/asm-differ), [Kappa](https://github.com/macabeus/kappa) (two ideas ported) |
 | C source tools | [ast-grep](https://ast-grep.github.io/), [clang-format](https://clang.llvm.org/docs/ClangFormat.html) | | |
 | Loops | [Nigel](https://github.com/cdlewis/nigel), [/goal](https://code.claude.com/docs/en/goal), [autoresearch](https://github.com/karpathy/autoresearch) (pattern) | [Ralph loop](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/ralph-loop) (prototype) | [Bilevel-Autoresearch](https://github.com/EdwardOptimization/Bilevel-Autoresearch) |
-| Planning | [GSD](https://github.com/open-gsd/gsd-core), [superpowers](https://github.com/obra/superpowers) | | [OpenSpec](https://github.com/Fission-AI/openspec) |
+| Planning | [GSD](https://github.com/open-gsd/gsd-core), [superpowers](https://github.com/obra/superpowers), [OpenSpec](https://github.com/Fission-AI/openspec) spec format (Phase 8) | | OpenSpec tool, [SpecKit](https://github.com/github/spec-kit) |
 | Understanding | | [Understand-Anything](https://github.com/Egonex-AI/Understand-Anything), [Groma](https://github.com/MrLesk/groma.md) | |
 | Style and review | [i-have-adhd](https://github.com/ayghri/i-have-adhd) (chat and comments) | | [Ponytail](https://github.com/dietrichgebert/ponytail), [pstack](https://github.com/backnotprop/pstack), [thermo-nuclear review](https://github.com/cursor/plugins/blob/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md), [cpp-pro](https://github.com/sickn33/agentic-awesome-skills/blob/main/skills/cpp-pro/SKILL.md), [Mindrally cpp](https://github.com/Mindrally/skills/blob/main/cpp/SKILL.md), [Qt agent-skills](https://github.com/TheQtCompanyRnD/agent-skills) |
 | Retrieval | | [jina embeddings](https://huggingface.co/jinaai/jina-embeddings-v2-base-code), [Voyage](https://blog.voyageai.com/2026/08/13/voyage-code-4/) (optional), SQLite + numpy | [pgvector](https://github.com/pgvector/pgvector), [RxDB](https://rxdb.info/) |
@@ -159,7 +159,7 @@ AI tools, Claude Code in particular, are used openly in this project, from resea
 
 ## License
 
-The tooling under `tools/` is GPLv3, because it includes modules from the Theme Hospital decomp with their headers kept. The decompiled C under `src/` reproduces copyrighted game logic for interoperability and research and is published to support OpenApoc; no rights in it are claimed and no assets ship with it. See [docs/legal.md](docs/legal.md).
+The tooling under `tools/` is GPLv3, because it includes modules from the Theme Hospital decomp with their headers kept. The decompiled C under `src/` reproduces copyrighted game logic for interoperability and research and is published to support OpenApoc; no rights in it are claimed and no assets ship with it. The behaviour specs under `specs/` (Phase 8) are CC0-1.0, written in our own words for clean-room reimplementation; see [docs/clean-room.md](docs/clean-room.md). See [docs/legal.md](docs/legal.md).
 
 ## Contributing
 

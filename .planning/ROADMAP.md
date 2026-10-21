@@ -9,7 +9,7 @@
 
 ## Milestones
 
-- 🚧 **v1.0 Milestone 1** - Phases 1-6 (in progress)
+- 🚧 **v1.0 Milestone 1** - Phases 1-8 (in progress)
 
 ## Overview
 
@@ -20,7 +20,10 @@ rebuilds UFO2P.EXE and TACP.EXE byte for byte with a gate that can fail. Phase 4
 Watcom compiler and flags. Phase 5 connects split, compile, objdiff, relocation check and splice into
 one pipeline and lands the first hand match per EXE. Phase 6 publishes progress from gate-written
 data and runs an unattended agent pilot under guardrails, where the build, never the agent, decides
-every match.
+every match. Phase 7 (added by the owner on 2026-10-21) scales that driver to the functions behind
+the OpenApoc checklist items the decomp can answer, matched and made readable. Phase 8 writes
+clean-room specs for those mechanics in OpenSpec format, checked by a linter, under CC0-1.0, so
+OpenApoc can re-implement from the specs without ever seeing the decompiled code.
 
 ## Phases
 
@@ -36,6 +39,8 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [ ] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match
 - [ ] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE
 - [ ] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions
+- [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
+- [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0
 
 ## Phase Details
 
@@ -179,10 +184,41 @@ Plans:
 **Plans**: TBD
 **UI hint**: yes
 
+### Phase 7: Mechanics-first decompilation
+
+**Goal**: Every function behind the OpenApoc checklist items the decomp can answer is located, matched byte for byte and made readable (meaningful names, header comments, named types and constants) by the Phase 6 driver at scale, with both EXEs SHA-1 identical after every commit.
+**Depends on**: Phase 6
+**Requirements**: DEC-01, DEC-02, DEC-03, DEC-04, DEC-05, DEC-06
+**Success Criteria** (what must be TRUE):
+  1. `config/mechanics.toml` maps each answerable item of OpenApoc #263, #264, #265 and #997 to its EXE and the functions behind it, located from UI strings and data-table cross-references, and the owner has signed the list off (DEC-01)
+  2. The driver works through the list callees first, with claims so parallel agents never take the same function and a single owner of the shared naming state (DEC-02, DEC-06)
+  3. For every function in `config/mechanics.toml`, `check` prints objdiff 100% and a passing relocation check, and after the last commit `rebuild` plus `cmp` against `orig/` are silent for both EXEs with zero regressions (DEC-03)
+  4. `uv run reverseapoc readlint src/` exits 0, and negative tests show it fails on a `FUN_`/`sub_`/`DAT_` placeholder name, a function without a header comment, and an unnamed struct field or magic constant in a matched unit; pytest and ruff pass on the host and in the container (DEC-04)
+  5. The progress page shows coverage per checklist item, and every target reads matched (DEC-05)
+
+**Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
+**Plans**: TBD
+
+### Phase 8: Clean-room specs for OpenApoc
+
+**Goal**: Every mechanic decompiled in Phase 7 has a clean-room spec in OpenSpec format, written in our own words, citing function addresses and dated community sources, checked by a linter that can fail, reviewed by the owner and licensed CC0-1.0 so OpenApoc can use it without conditions.
+**Depends on**: Phase 7
+**Requirements**: SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-08, SPEC-09
+**Success Criteria** (what must be TRUE):
+  1. `specs/_template/spec.md` has the OpenSpec shape (`## Purpose`, `## Requirements`, `### Requirement:` with SHALL/MUST, `#### Scenario:` with WHEN/THEN) plus OpenApoc issue, constants and formulas, functions (EXE + address), evidence, sources and status on the ladder `drafted -> cited -> backed-by-matched-code -> dosbox-verified -> reviewed-by-openapoc` (SPEC-01)
+  2. `uv run reverseapoc speclint specs/` exits 0, and negative tests show it fails on a missing section, a requirement without SHALL/MUST or scenario, an address not in `config/<exe>/functions.csv`, a `backed-by-matched-code` claim the gate-written status table does not support, a `dosbox-verified` claim without a test, a fenced C block or text copied from `src/`, and a source without URL, access date and wiki revid (SPEC-02)
+  3. `uv run reverseapoc wikifetch` fetches single pages through the MediaWiki API with a descriptive User-Agent, at least 10 s between requests per host and the revid recorded, caches into a gitignored directory, and its tests run offline (SPEC-03)
+  4. The `apoc-spec` skill exists in `.claude/skills/apoc-spec/`; `docs/clean-room.md` states the author/implementer split and the human review rule and links both OpenApoc Discord messages; `specs/LICENSE` is CC0-1.0 and `docs/legal.md` and `README.md` name it (SPEC-04, SPEC-05, SPEC-06)
+  5. `specs/claims.md` lists the mechanics claims from UFOpaedia, Wikibooks, StrategyWiki and the OpenApoc Discord, paraphrased and linked, each tied to a checklist item with a verdict (confirmed, refuted, refined) or marked "none found" (SPEC-07)
+  6. Every target in `config/mechanics.toml` has a spec that passes `speclint`, reaches at least `backed-by-matched-code`, and carries an owner review line with date; pytest and ruff pass on the host and in the container (SPEC-08, SPEC-09)
+
+**Spike**: `wikifetch` fetches one UFOpaedia table page with the revid recorded and the table numbers intact (decides fetcher vs MCP extract for citations).
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -192,3 +228,5 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 4. Compiler identification | 10/12 | In Progress | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
+| 7. Mechanics-first decompilation | 0/TBD | Not started | - |
+| 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
