@@ -84,10 +84,7 @@ None yet.
 - [Phase 5]: `clang` (C89 lint gate) is missing from the Docker image; capstone cp314 wheels are unverified
 - [Phase 6]: Repo visibility must be settled before Pages and listings (Pages on a private repo needs a paid plan)
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
-- [Cross-cutting]: Spike 003 found the installed UFO2P.EXE/TACP.EXE are byte-identical to the CD's `XCOM3/UFOEXE/UFO2P4.EXE`/`XCOM3/TACEXE/TACP4.EXE`; docs/toolchain.md "OpenApoc CRC mismatch" still says the store installers applied a later build. Owner decision pending on correcting it
-- [Phase 5]: Close Phase 3 review findings WR-01 (layout() must refuse shared logical pages and overlapping objects; today a patch into the second owner is silently dropped and rebuild reports OK) and WR-03 (samefile guard against a hardlink into orig/, atomic write, single read of the input) before splice() lands real patches (owner triage 2026-10-20; .planning/phases/03-byte-identical-round-trip/03-REVIEW.md)
-- [Phase 6]: Close Phase 3 review finding WR-04 (rebuild --json must always print, with a per-target error status, so the driver never loses results) (owner triage 2026-10-20)
-- [Phase 5]: Close Phase 3 review findings WR-08 (refuse last_page_size > page_size when the LE is read and handle the no-page case, so a malformed header can never make splice() raise a raw TypeError; a regression from plan 03-08) and IN-12 (carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints) before Phase 5 patches flow through splice() (owner triage 2026-10-21)
+- [Cross-cutting]: RESOLVED 2026-10-21: docs/toolchain.md and docs/learnings.md now say the installed UFO2P.EXE/TACP.EXE are the disc's `UFO2P4.EXE`/`TACP4.EXE` build (spike 003), not a store patch
 
 ## Deferred Items
 
