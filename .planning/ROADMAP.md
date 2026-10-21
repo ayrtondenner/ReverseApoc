@@ -122,7 +122,32 @@ Plans:
   5. A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) reports its result per EXE and confirms `wcc386`, or names the modules that need `wpp386` (CID-06)
 
 **Spike**: wibo 1.2.0 runs `wcc386.exe` for each version (10.5, 10.6, 11.0) in Docker.
-**Plans**: TBD
+**Plans:** 12 plans
+
+Plans:
+**Wave 1**
+- [ ] 04-01-PLAN.md — `reverseapoc cc` wrapper: config/cflags.txt rules, compiler hash gate and banner log, scrubbed env, Watcom-safe paths (CID-01, CID-02)
+- [ ] 04-02-PLAN.md — stdlib OMF/LIB reader (fixups, LIDATA, Easy OMF, COMDAT32, normalized object hash) proven on every LIB386 library; real-file skip helpers (CID-04)
+- [ ] 04-03-PLAN.md — wpack format description, then the independent 10.5 decoder; D-01 time box with recorded verdict or fallback (CID-01)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 04-04-PLAN.md — real compiles per version with banner, compiler and object hashes; env-scrub, -bt=dos, two-source cflags and error-path proofs (CID-01, CID-02)
+- [ ] 04-05-PLAN.md — masked library matcher, runtime.csv format, config_dir (D-16), disambiguation rules, `libmatch` verb (CID-04)
+- [ ] 04-06-PLAN.md — `install-watcom 10.5` decodes BINW/WCC386.EXE; decoded compiler pinned in config/watcom.toml (CID-01)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 04-07-PLAN.md — committed config/ufo2p|tacp/runtime.csv with drift test and the D-05/D-07 summary (CID-04)
+- [ ] 04-08-PLAN.md — clean-room C89 probe, idiom counters and the per-version, per-flag calibration with ties (CID-03)
+- [ ] 04-09-PLAN.md — C vs C++ scan (XI/YI via inirt386, C++-only runtime rows, mangled strings, vtable candidates), `cppscan` verb (CID-06)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 04-10-PLAN.md — `probe calibrate|scan`: non-library idiom counts, per-flag evidence lines and consistent calibration cells per EXE (CID-03, CID-05)
+
+**Wave 5** *(blocked on Wave 4 completion; main checkout)*
+- [ ] 04-11-PLAN.md — 10.5 data migration, D-03 native vs wibo log, spike 004 record, toolchain.md/matching.md/learnings.md results and the final cflags default (CID-05, CID-01)
+
+**Wave 6** *(blocked on Wave 5 completion; main checkout)*
+- [ ] 04-12-PLAN.md — phase gate on host and container: no real-file skips, rebuild still SHA-1 identical, check-watcom OK, drift and D-03 confirmed (CID-01..CID-06)
 
 ### Phase 5: Split and first matches
 
@@ -164,6 +189,6 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
-| 4. Compiler identification | 0/TBD | Not started | - |
+| 4. Compiler identification | 0/12 | Planned | - |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
