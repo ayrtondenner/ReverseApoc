@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import re
 from pathlib import Path
 
@@ -28,6 +29,10 @@ from reverseapoc import libmatch
 from reverseapoc.le import LE
 from reverseapoc.libmatch import (
     RUNTIME_CSV_COLUMNS,
+    RUNTIME_CSV_COMMENT,
+    STATUS_AMBIGUOUS,
+    STATUS_UNIQUE,
+    SWEPT_VERSIONS,
     LibMatchError,
     LibMatchReport,
     MatchRange,
@@ -480,3 +485,105 @@ def test_disambiguation_never_drops_the_last_candidate(tmp_path):
     write_lib(watcom, "10.6", "DOS/CLIB3R.LIB", [_data_twin("a", A_DATA), _data_twin("b", B_DATA)])
     report = _scan(watcom, _data_twin_exe(body(16, seed=0x70)))
     assert _row_summary(report) == [("a", "ambiguous", ("b@DOS/CLIB3R.LIB",))]
+
+
+# ---- the committed runtime maps (D-06), checked in CI without orig/ ----
+
+COMMITTED_EXES = ("UFO2P.EXE", "TACP.EXE")
+ADDRESS = re.compile(r"0x[0-9A-F]{8}")
+HEX_RUN = re.compile(r"[0-9A-Fa-f]{8,}")  # a run this long in a name cell would be bytes
+
+
+@pytest.mark.parametrize("name", COMMITTED_EXES)
+def test_committed_runtime_csvs_are_names_and_addresses(name):
+    path = runtime_csv_path(name)
+    assert path.is_file(), f"{path} missing: run `uv run reverseapoc libmatch {name} --write`"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == RUNTIME_CSV_COMMENT.format(name=name)
+    rows = list(csv.reader(lines[1:]))
+    assert tuple(rows[0]) == RUNTIME_CSV_COLUMNS
+    assert any("_cstart_" in row[6].split(";") for row in rows[1:])
+    for row in rows[1:]:
+        cells = dict(zip(RUNTIME_CSV_COLUMNS, row, strict=True))
+        assert ADDRESS.fullmatch(cells["start"]) and ADDRESS.fullmatch(cells["end"]), row
+        assert int(cells["start"], 16) < int(cells["end"], 16), row
+        versions = cells["versions"].split(";")
+        assert versions and set(versions) <= set(SWEPT_VERSIONS), row
+        assert cells["status"] in (STATUS_UNIQUE, STATUS_AMBIGUOUS), row
+        names = [cells[c] for c in RUNTIME_CSV_COLUMNS if c not in ("start", "end")]
+        assert not any(HEX_RUN.search(cell) for cell in names), row
+
+
+# ---- the report summary (D-05, D-07 evidence) ----
+
+
+def _summary_report() -> LibMatchReport:
+    lib, lib_s, nt = "DOS/CLIB3R.LIB", "DOS/CLIB3S.LIB", "NT/CLIB3R.LIB"
+    rows = (
+        MatchRange(0x10100, 0x10140, "_TEXT", "strlen", (lib, lib_s), ("10.5", "10.6", "11.0"),
+                   ("strlen_",), "unique"),
+        MatchRange(0x10140, 0x10180, "_TEXT", "fopen", (lib,), ("10.5", "10.6"), ("fopen_",),
+                   "unique"),
+        MatchRange(0x10180, 0x101C0, "_TEXT", "prtf", (lib,), ("10.6",), ("__prtf_",), "unique"),
+        MatchRange(0x101C0, 0x10200, "_TEXT", "atoi", (lib, nt), ("10.5", "10.6"),
+                   ("atoi_", "atol_"), "ambiguous", (f"atol@{lib}", f"atol@{nt}")),
+    )  # fmt: skip
+    skipped = (
+        libmatch.Skipped("10.5", nt, "", "", "not OMF"),
+        libmatch.Skipped("10.6", nt, "", "", "not OMF"),
+        libmatch.Skipped("10.6", lib, "m", "_TEXT", "short"),
+        libmatch.Skipped("10.6", lib, "n", "_TEXT", "short"),
+        libmatch.Skipped("10.6", "DOS/BAD.LIB", "", "", "parse error at 0x10: truncated"),
+    )
+    return LibMatchReport("SYNTH.EXE", 0x10000, 0x1000, rows, skipped)
+
+
+SUMMARY_LINES = [
+    "summary SYNTH.EXE: 4 ranges, 256 of 4096 code bytes (6.25%)",
+    "versions 10.5+10.6+11.0: 1 row",
+    "versions 10.5+10.6: 2 rows: atoi, fopen",
+    "versions 10.6: 1 row: prtf",
+    "library DOS/CLIB3R.LIB: 4 rows",
+    "library DOS/CLIB3S.LIB: 1 row",
+    "library NT/CLIB3R.LIB: 1 row",
+    "ambiguous 1: atoi (atol)",
+    "skipped 10.5: not OMF 1",
+    "skipped 10.6: not OMF 1, parse error 1, short 2",
+]
+
+
+def test_summary_counts():
+    assert _summary_report().summary() == SUMMARY_LINES
+
+
+def test_summary_in_format_and_json():
+    report = _summary_report()
+    assert report.format().splitlines()[-len(SUMMARY_LINES) :] == SUMMARY_LINES
+    assert report.to_json()["summary"] == {
+        "ranges": 4,
+        "covered": 256,
+        "code_size": 4096,
+        "percent": 6.25,
+        "version_sets": [
+            {"versions": ["10.5", "10.6", "11.0"], "rows": 1, "modules": []},
+            {"versions": ["10.5", "10.6"], "rows": 2, "modules": ["atoi", "fopen"]},
+            {"versions": ["10.6"], "rows": 1, "modules": ["prtf"]},
+        ],
+        "libraries": {"DOS/CLIB3R.LIB": 4, "DOS/CLIB3S.LIB": 1, "NT/CLIB3R.LIB": 1},
+        "ambiguous": [{"module": "atoi", "alternatives": ["atol"]}],
+        "skipped": [
+            {"version": "10.5", "reason": "not OMF", "count": 1},
+            {"version": "10.6", "reason": "not OMF", "count": 1},
+            {"version": "10.6", "reason": "parse error", "count": 1},
+            {"version": "10.6", "reason": "short", "count": 2},
+        ],
+    }
+
+
+def test_summary_of_an_empty_report():
+    report = LibMatchReport("SYNTH.EXE", 0x10000, 0, (), ())
+    assert report.summary() == [
+        "summary SYNTH.EXE: 0 ranges, 0 of 0 code bytes (0.00%)",
+        "ambiguous 0: none",
+        "skipped: none",
+    ]
