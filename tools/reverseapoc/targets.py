@@ -150,6 +150,13 @@ def hash_file(path: Path) -> FileHashes:
     return FileHashes(size, crc, md5.hexdigest(), sha1.hexdigest())
 
 
+def hash_bytes(data: bytes) -> FileHashes:
+    """hash_file for bytes already in memory."""
+    return FileHashes(
+        len(data), zlib.crc32(data), hashlib.md5(data).hexdigest(), hashlib.sha1(data).hexdigest()
+    )
+
+
 @dataclass(frozen=True)
 class TargetCheck:
     target: Target
@@ -199,7 +206,13 @@ class CheckReport:
 def check_target(target: Target, path: Path) -> TargetCheck:
     if not path.is_file():
         return TargetCheck(target, "missing", path)
-    got = hash_file(path)
+    problems = target_problems(target, hash_file(path))
+    return TargetCheck(target, "mismatch" if problems else "ok", path, problems)
+
+
+def target_problems(target: Target, got: FileHashes) -> list[str]:
+    """How `got` differs from the manifest entry: size, CRC32 when the manifest gives one, MD5
+    and SHA-1. An empty list means it matches."""
     problems = []
     if got.size != target.size:
         problems.append(f"size: expected {target.size}, got {got.size}")
@@ -209,7 +222,7 @@ def check_target(target: Target, path: Path) -> TargetCheck:
         problems.append(f"md5: expected {target.md5}, got {got.md5}")
     if got.sha1 != target.sha1:
         problems.append(f"sha1: expected {target.sha1}, got {got.sha1}")
-    return TargetCheck(target, "mismatch" if problems else "ok", path, problems)
+    return problems
 
 
 def check_orig(

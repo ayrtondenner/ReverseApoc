@@ -13,7 +13,10 @@ from reverseapoc.targets import (
     ManifestError,
     Target,
     check_orig,
+    hash_bytes,
+    hash_file,
     load_manifest,
+    target_problems,
 )
 
 
@@ -113,6 +116,21 @@ def test_check_orig_reports_missing_and_mismatched(tmp_path):
     assert {p.split(":")[0] for p in bad.problems} == {"crc32", "md5", "sha1"}
     text = report.format()
     assert "MISSING" in text and "MISMATCH" in text and "C.EXE" in text
+
+
+def test_hash_bytes_equals_hash_file(tmp_path):
+    data = bytes(range(256)) * 5000  # crosses hash_file's 1 MiB chunk boundary
+    path = tmp_path / "f.bin"
+    path.write_bytes(data)
+    assert hash_bytes(data) == hash_file(path)
+
+
+def test_target_problems_is_the_check_target_comparison(tmp_path):
+    manifest = write_manifest(tmp_path / "m.toml", {"A.EXE": b"alpha"})
+    (target,) = load_manifest(manifest)
+    assert target_problems(target, hash_bytes(b"alpha")) == []
+    problems = target_problems(target, hash_bytes(b"ALPHA"))
+    assert {p.split(":")[0] for p in problems} == {"crc32", "md5", "sha1"}
 
 
 def test_check_orig_size_mismatch(tmp_path):
