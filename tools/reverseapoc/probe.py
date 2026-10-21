@@ -432,6 +432,62 @@ class Calibration:
             "skipped": [{"version": v, "reason": r} for v, r in self.skipped],
         }
 
+    @classmethod
+    def from_json(cls, data: Any) -> Calibration:
+        """The calibration to_json() wrote. Refuses (ProbeError naming the problem) any other
+        shape, and idioms other than IDIOMS: a calibration from other counters cannot be
+        compared with this scan. "ties" is derived from the cells and not read."""
+        _check(isinstance(data, dict), "the calibration is not an object")
+        _check(data.get("idioms") == list(IDIOMS), f"idioms are not {list(IDIOMS)}; recalibrate")
+        cells = data.get("cells")
+        skipped = data.get("skipped", [])
+        _check(isinstance(cells, list), "cells is not a list")
+        _check(isinstance(skipped, list), "skipped is not a list")
+        return cls(
+            tuple(_cell_from_json(n, cell) for n, cell in enumerate(cells, start=1)),
+            tuple(_skip_from_json(n, skip) for n, skip in enumerate(skipped, start=1)),
+        )
+
+
+def _check(condition: bool, problem: str) -> None:
+    if not condition:
+        raise ProbeError(problem)
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _is_strings(value: Any) -> bool:
+    return isinstance(value, list) and all(isinstance(item, str) for item in value)
+
+
+def _cell_from_json(n: int, cell: Any) -> Cell:
+    _check(isinstance(cell, dict), f"cell {n} is not an object")
+    counts = cell.get("counts")
+    _check(isinstance(cell.get("version"), str), f"cell {n}: version is not a string")
+    _check(_is_strings(cell.get("flags")), f"cell {n}: flags is not a list of strings")
+    _check(
+        isinstance(counts, dict) and list(counts) == list(IDIOMS)
+        and all(_is_int(v) for v in counts.values()),
+        f"cell {n}: counts does not hold one integer per idiom, in IDIOMS order",
+    )  # fmt: skip
+    _check(_is_int(cell.get("chk_calls")), f"cell {n}: chk_calls is not an integer")
+    _check(_is_strings(cell.get("default_libraries")),
+           f"cell {n}: default_libraries is not a list of strings")  # fmt: skip
+    _check(isinstance(cell.get("normalized_sha1"), str), f"cell {n}: normalized_sha1 is missing")
+    return Cell(cell["version"], tuple(cell["flags"]), dict(counts), cell["chk_calls"],
+                tuple(cell["default_libraries"]), cell["normalized_sha1"])  # fmt: skip
+
+
+def _skip_from_json(n: int, skip: Any) -> tuple[str, str]:
+    _check(
+        isinstance(skip, dict) and isinstance(skip.get("version"), str)
+        and isinstance(skip.get("reason"), str),
+        f"skipped entry {n} lacks a version or a reason",
+    )  # fmt: skip
+    return skip["version"], skip["reason"]
+
 
 def _version_order(versions: Iterable[str]) -> list[str]:
     """SWEPT_VERSIONS order, then any other version by name; duplicates dropped."""
