@@ -1,6 +1,6 @@
 # Toolchain
 
-What the targets are, what built them, and what each part of our toolchain does. Facts marked "local scan" come from read-only Python scans of the Steam install on 2026-10-19. Everything else cites the research notes in [research/](research/). Items marked **to be confirmed in Phase 4** (or another phase) are hypotheses, not facts.
+What the targets are, what built them, and what each part of our toolchain does. Facts marked "local scan" come from read-only Python scans of the Steam install on 2026-10-19. Everything else cites the research notes in [research/](research/). Items marked **to be confirmed in Phase N** are hypotheses, not facts.
 
 ## Targets
 
@@ -83,7 +83,7 @@ Byte-region map. Every byte of each file lies in exactly one region; the boundar
 
 - Each 32-bit EXE carries two Watcom banners: `WATCOM C/C++16 Run-Time system ... 1988-1994` (in the 16-bit DOS/4GW part) and `WATCOM C/C++32 Run-Time system ... 1988-1995` (in the 32-bit program), plus Rational Systems copyrights (local scan).
 - Banner dating ([mosura watcom-detection](https://github.com/jdmichaud/mosura/blob/main/docs/watcom-detection.md)): 10.5, 10.6 and 11.0/11.0A/11.0B all ship the same `1988-1995` banner. The banner excludes only 10.0/10.0a.
-- Codegen fingerprint ([mosura codegen fingerprint](https://github.com/jdmichaud/mosura/blob/main/docs/watcom-codegen-fingerprint.md)):
+- Codegen fingerprint, the published reference ([mosura codegen fingerprint](https://github.com/jdmichaud/mosura/blob/main/docs/watcom-codegen-fingerprint.md)). Our own clean-room probe (`probe/cg_basic.c`, plan 04-08) reproduced the byte-compare row but not the register row: on our counted loop 10.6 kept the bound in `ecx` and 11.0 in `ebx`, so register choice depends on the construct and is not used as evidence. Switch compare order did not separate 10.6 from 11.0 on our probe either (one ascending chain in both). Every idiom we use is calibrated from our own probe objects instead (`uv run reverseapoc probe calibrate`, see [probe/README.md](../probe/README.md)).
 
 | Construct | 10.5 / 10.6 | 11.0 | Open Watcom 2.0 |
 |---|---|---|---|
@@ -91,22 +91,76 @@ Byte-region map. Every byte of each file lies in exactly one region; the boundar
 | Counted loop bound register | `ebx` | `ecx` | `ecx` |
 | Switch compare order | ascending | ascending | descending |
 
-- Whole-file idiom counts (local scan, runtime library included): `setcc al; and eax,0FFh` appears 33 times in UFO2P and 61 times in TACP; `setcc al; movzx eax,al` once in each; the 10.0a-only "promote then `cmp eax,imm`" idiom 0 times.
+- Idiom counts in **non-library** code (every runtime row of `config/<exe>/runtime.csv` excluded, every LE fixup byte masked; `uv run reverseapoc probe scan <EXE>`, plan 04-10). The 2026-10-19 whole-file counts (33 / 61 `and`-form hits) included the runtime library.
+
+| Idiom | UFO2P | TACP |
+|---|---:|---:|
+| non-library / runtime-row code bytes | 741,159 / 43,958 | 749,928 / 46,055 |
+| `setcc al; and eax,0FFh` (setcc_and) | 30 | 58 |
+| `setcc al; movzx eax,al` (setcc_movzx) | 0 | 0 |
+| unrolled `movsd` runs (movsd_unrolled) | 75 | 35 |
+| `mov ecx,1..16` .. `rep movsd`, register moves between (rep_movsd_small) | 4 | 2 |
+| rotated / top-tested loops (byte level, not decisive) | 357 / 194 | 262 / 223 |
+| ascending / descending switch chains (eax/al compares only, not decisive) | 10 / 7 | 12 / 10 |
+| `push imm32; call __CHK` | 40 | 32 |
+
 - Theme Hospital (1997) settled on 10.6, found 10.5/10.5a/10.6 identical on what it tested, and saw 11.0 match only 2 of 10 demo functions ([MATCHING.md](https://github.com/matteo-pacini/theme-hospital-decomp/blob/master/docs/MATCHING.md)).
 - Open Watcom does not match classic 10.x: it "threads jumps on conditions it can prove on loop entry, and it lays out loops differently. No flag tested fixes this" ([KKND COMPILER_ANALYSIS.md](https://github.com/Wyrelade/KKND-Decomp/blob/main/COMPILER_ANALYSIS.md)). KKND now patches OW's `wcc386` to work around it.
 
-### Hypothesis
+### Result
 
-**Watcom C 10.6, with 10.5 as an equivalent.** 11.0 is less likely but not excluded by the banner. Open Watcom will not match and is used only for auxiliary tools. **To be confirmed in Phase 4** by:
+Phase 4 measured each EXE separately (D-09). The game-code compiler comes from the codegen probe and the linked runtime library from the library match; they are reported separately (D-07), and ties are written as ties (D-10). Measured 2026-10-21 on the owner's trees (10.5 with the decoded compiler, 10.6, 11.0).
 
-1. compiling the mosura probe with owner-supplied 10.5, 10.6 and 11.0 and looking for its idioms in UFO2P's code object;
-2. matching the linked CLIB3R/MATH3R runtime modules byte for byte against each version's `LIB386`, NHL95PC-style ([NHL95PC](https://github.com/abdulahmad/NHL95PC)).
+| | UFO2P (`ufo24`) | TACP (`tac4`) | Evidence |
+|---|---|---|---|
+| Game-code compiler | **Watcom C 10.6** (10.5 byte-identical on the probe), with **11.0 tied at `-4r`** on the decisive idioms | same as UFO2P | `probe calibrate`: 10.5 and 10.6 give the same object in all 10 flag sets (`tie:` lines). `probe scan`: 18 of 30 calibration cells consistent, the same 18 in both EXEs: eight 10.5 and the same eight 10.6 cells, plus 11.0 `-4r -s` and 11.0 `-4r -s -ox`. No `-3r` cell (no `movzx` form) and no 11.0 `-5` cell (11.0 branches at `-5`) is consistent. |
+| Linked runtime library | **10.6**, no mix | **10.6**, no mix | `libmatch` summary (and `config/<exe>/runtime.csv`): 11 rows match only 10.6 in each EXE, every other row lists 10.6 too (UFO2P: 58 in all three versions, 51 in 10.5+10.6, 1 in 10.6+11.0; TACP: 62, 57, 2), and no row matches only 10.5 or only 11.0. The 10.6-only modules: chk8087, cinit, close, efgfmt, ftell, ftos, grownear, initargv, memalloc, prtf, sprintf. |
+| Runtime libraries | DOS/CLIB3R.LIB (106 rows), MATH387R.LIB (15), MATH3R.LIB (1), DOS/EMU387.LIB (1), DOS/GRAPH.LIB (1) | DOS/CLIB3R.LIB (113), MATH387R.LIB (19), MATH3R.LIB (1), DOS/EMU387.LIB (1), DOS/GRAPH.LIB (1) | `libmatch` summary. A row lists every library holding the same body, so the NT/, OS2/, WIN/ and NETWARE/ copies of a CLIB module are not separate evidence. The 3S rows (CLIB3S 16, MATH387S 3, MATH3S 1) all list a 3R library too: `probe scan` "calling convention" counts 3S-only rows as 0. |
+| Library-match coverage | 121 ranges, 43,958 of 785,117 code bytes (5.60%); 14 ambiguous | 132 ranges, 46,055 of 795,983 code bytes (5.79%); 12 ambiguous | `libmatch` summary; committed as `config/ufo2p/runtime.csv` and `config/tacp/runtime.csv`. An ambiguous row names its alternative module, and its publics may include the alternative's names, so Phase 5 treats them as candidates. |
+| C or C++ | `C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; 5 vtable-shaped candidate runs` | `C (wcc386): ...` the same, with 3 vtable-shaped candidate runs | `cppscan` verdict line; see [C, not C++](#c-not-c) |
 
-Modules may mix versions (Theme Hospital used 10.0a for some CRT modules), so the build keeps `compiler@version` per file.
+Reading the result:
+
+- **10.5 vs 10.6.** Byte-identical on every probe cell, so the probe cannot separate them and no time is spent on it (D-10). The default rule names 10.6 because it is the version consistent with both the probe and the linked runtime library.
+- **10.6 vs 11.0.** At `-4r` both emit the `and`-form byte compare and the `rep movsd` struct copy, so the decisive idioms tie. The probe's counted loop separates them (10.x rotates it, 11.0 tests at the top), but the game has both loop shapes (rotated / top-tested 357 / 194 in UFO2P, 262 / 223 in TACP; byte-level counts, and `-oneatx` removes both shapes on the probe), so loop shape is not decisive. 11.0 stays a **candidate, evidence pending: the first Phase 5 matches**. What separates them: a game function that compiles byte-identical under `wcc386@10.6` and not under `wcc386@11.0` with the same flags (or the reverse). The 10.6-only runtime modules say the game was linked against the 10.6 library; that is library evidence, not game-code evidence (D-07).
+- The consistent-cell list reads only the decisive idiom families (byte compare and struct copy). The other evidence lines contradict two of its cells: `-5s -s` (no 3S-only runtime row) and `-5r -s -fpi87` (an EMU387 row, see Flags). The `-5r` cells stay in the list only because both EXEs show both struct-copy shapes; the sized struct-copy count below speaks against `-5`.
+
+How to reproduce (the logs live in `build/gate/04-evidence/`, gitignored; they hold counts, addresses, names and hashes only):
+
+1. `uv run reverseapoc check-watcom 10.5 10.6 11.0` (every key file OK; older installs first run `uv run reverseapoc install-watcom 10.5 --force`)
+2. `uv run reverseapoc libmatch UFO2P.EXE` and `uv run reverseapoc libmatch TACP.EXE` (summary at the end; `--write` regenerates `config/<exe>/runtime.csv`)
+3. `uv run reverseapoc probe calibrate --output build/probe/calibration.json`
+4. `uv run reverseapoc probe scan UFO2P.EXE --calibration build/probe/calibration.json`, then `TACP.EXE`
+5. `uv run reverseapoc cppscan UFO2P.EXE`, then `TACP.EXE`
+
+Modules may still mix versions (Theme Hospital used 10.0a for some CRT modules), so the build keeps `compiler@version` per file and Phase 5 overrides the default per glob where a match says so.
 
 ### Flags
 
-Not known yet; CID-05 (Phase 4) records them here. References from other Watcom games, not evidence for ours:
+Per-flag evidence for each EXE (D-08, D-09). "Proven (scan)" means a whole-binary scan of non-library code shows it; the `-o*`, `-zp*`, `-zm` and `-fp3`/`-fp5` candidates need matched functions.
+
+| Flag | UFO2P | TACP | Evidence | Status |
+|---|---|---|---|---|
+| Calling convention: `-3r`/`-4r`/`-5r` (register) vs `-3s`/`-5s` (stack) | register (`r`) | register (`r`) | `probe scan` "calling convention": rows only in 3R libraries 102 / 113, only in 3S libraries 0 / 0, in both 18 / 18 (shared asm modules) | proven (scan) |
+| Stack checks: `-s` | `-s` for most code; 40 functions without it, `__CHK` calls in block 0x00010000 (37) and 0x000b0000 (3) | `-s` for most code; 32 functions without it, block 0x00010000 (26) and 0x000b0000 (6) | `probe scan` "stack checks": each `push imm32; call __CHK` is one function built without `-s` (the probe emits one per function without `-s` and none with it); 40 / 32 calls in 741,159 / 749,928 non-library bytes | proven for most code (scan); the `__CHK` functions get a per-glob rule without `-s` once Phase 5 maps them to source files |
+| FPU: `-fpi` vs `-fpi87` vs `-fpc` | `-fpi` | `-fpi` | `probe scan` "fpu": EMU387 1 row, NOEMU387 0; MATH387 15 / 19 rows and MATH3 1 row (shared, 0 only in MATH3), so inline x87 code, not `-fpc` calls | proven (scan), with one caveat: one `-fpi` object anywhere links the emulator, so `-fpi87` modules beside it would not show (research A3). The code is identical; only the default-library record differs (probe calibration) |
+| CPU target: `-4` vs `-5` (and `-3`) | `-4` | `-4` | `probe scan` "cpu": setcc_and 30 / 58, setcc_movzx 0 / 0, so not `-3`. "struct-copy sizes": 5-dword rep copies UFO2P 2 (`5+2`), TACP 6 (`5` x5, `5+1` x1), and no unrolled run of 5 or more `movsd` in either EXE. On the probe only a 5-dword copy (20-23 bytes) separates `-4` (rep) from `-5` (unrolled under every `-5r` option tried) | scan evidence: no `-5` evidence in either EXE. A module built at `-5` that copies no 5-dword struct would not show; the first Phase 5 matches will confirm |
+| Memory model: `-mf` | flat 32-bit | flat 32-bit | `probe scan` "memory model": 2 objects, both with the 32-bit flag | consistent with `-mf`, wcc386's 386 default; this is what the data shows, not a flag proof, so the rule does not write it |
+| Target: `-bt=dos` | DOS | DOS | DOS CLIB modules linked (`runtime.csv`); the NT-hosted compilers define `__NT__` without it | wrapper-owned: `uv run reverseapoc cc` always passes `-bt=dos` |
+| Optimization: `-o*` | not known yet | not known yet | the decisive idioms tie between `-4r -s` and `-4r -s -ox`; loop shapes are mixed (see Result) | candidate, evidence pending: a Phase 5 function that matches under one `-o` set and not under the other |
+| Structure packing: `-zp*` | not known yet | not known yet | field offsets of structs used by matched code | candidate, evidence pending (Phase 5 matches) |
+| One segment per function: `-zm` | not known yet | not known yet | padding and order between functions in the code object | candidate, evidence pending (Phase 5 matches) |
+| FP scheduling: `-fp3`/`-fp5` | not known yet | not known yet | `fxch` placement in x87 code | candidate, evidence pending (Phase 5 matches) |
+
+Notes:
+
+- The `-4` reading rests on few sites: UFO2P's two recognised 5-dword copies plus two likely ones the recogniser skips (an unaccepted instruction between `mov ecx,5` and `rep movsd`), in two code regions; TACP's six plus two likely ones ([04-10-SUMMARY.md](../.planning/phases/04-compiler-identification/04-10-SUMMARY.md), fix rounds 1 and 2). The size table behind it was measured on 10.6 and 11.0; 10.5 gives the same object as 10.6 on the probe's 5-dword copy in every cell.
+- Switch compare forms are counted for `eax`/`al` only; the switch and loop counts are shapes, never evidence for a flag.
+- Both EXEs give the same answer for every flag: a measured finding, not an assumption (D-09).
+
+The default rule in `config/cflags.txt` holds the compiler and the flags proven above, written explicitly: `*  wcc386@10.6  -4r -s -fpi`. `-4r` carries the register convention and the CPU target, `-s` the stack-check default, and `-fpi` is wcc386's default made explicit (the probe gives the same object with and without it). The candidates stay out of the rule until Phase 5 matches prove them.
+
+References from other Watcom games, not evidence for ours:
 
 | Project | Compiler | Flags |
 |---|---|---|
@@ -114,17 +168,31 @@ Not known yet; CID-05 (Phase 4) records them here. References from other Watcom 
 | Theme Hospital | `wpp386` 10.6 | `-s -ot -d2 -zm` |
 | NHL95PC | 10.0 GA | `-5r -fpi -zp1` |
 
-Starting candidates for our scratches: `-5r` or `-4r`, `-s`, an `-o*` subset, `-zp1` or `-zp4`.
+For scratches, start from the default rule above and try the candidates (`-o*` subsets, `-zp1` or `-zp4`, `-zm`) one at a time.
 
 ### C, not C++
 
-All evidence points to C compiled with `wcc386` (local scan):
+Both EXEs are C compiled with `wcc386` (CID-06). `uv run reverseapoc cppscan <EXE>` (plan 04-09) prints, per EXE:
 
-- UFO2P embeds `source\grafix.c` (next to PCX-loading error strings) and `source/pixlpath.c` (next to `rawdata/pixlpath.pcx`). TACP contains neither.
-- Neither binary contains Watcom C++ mangling (`W?...`), `__wcpp_` runtime symbols, "pure virtual" strings or RTTI strings.
-- The `assertion "%s" failed` string lives in the DOS/4GW extender region, not the game.
+- UFO2P: `C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; 5 vtable-shaped candidate runs (C dispatch tables look the same)`
+- TACP: `C (wcc386): no XI priority 64, no YI priority 40, no C++-only runtime module, no __wcpp_ or W? strings; 3 vtable-shaped candidate runs (C dispatch tables look the same)`
 
-The binaries are stripped, so missing symbols alone are weak evidence. **To be confirmed in Phase 5:** scan obj2 for vtables, obj1 for `__wcpp_` routines and for XI/YI static-init segments. Keep `wpp386` available per file, because Theme Hospital found that `wcc386` "generates different code for the same source" when the original was C++.
+| Signal | UFO2P | TACP |
+|---|---|---|
+| XI init table (found through the matched `inirt386` module) | 0x0013E11C..0x0013E158, 10 entries: priority 1 (thread) x1, 2 (fpu) x1, 3 x1, 32 (library) x7; 8 routines in the runtime map | 0x002B63D6..0x002B6412, the same 10-entry profile; 8 in the runtime map |
+| YI exit table | 0x0013E158..0x0013E164, 2 entries: priority 1 x1, 32 x1; 1 in the runtime map | 0x002B6412..0x002B641E, the same profile; 1 in the runtime map |
+| XI priority 64 (C++ static constructors) / YI priority 40 (module destructors) | 0 / 0 | 0 / 0 |
+| Runtime rows only in C++ libraries | none | none |
+| `__wcpp_` / `W?` strings | 0 / 0 | 0 / 0 |
+| Vtable-shaped candidate runs (weak: C function-pointer tables look the same) | 5 | 3 |
+
+What the scan does not cover:
+
+- The C++-only module signal reads CODE segments only, like `libmatch`; code that sits only in COMDATs is not matched (in the 10.5/10.6 PLIB3R about 13% of the C++ code bytes, measured in plan 04-09).
+- An ambiguous runtime row whose candidates are all C++ libraries would not be counted; there is none in either EXE.
+- Only a verdict starting `C (wcc386): ` is a full C verdict. `C (wcc386) on partial evidence:` means the C++ library sweep had a gap.
+
+Older local-scan facts that agree: UFO2P embeds `source\grafix.c` (next to PCX-loading error strings) and `source/pixlpath.c` (next to `rawdata/pixlpath.pcx`), and TACP contains neither; neither binary holds "pure virtual" or RTTI strings; the `assertion "%s" failed` string lives in the DOS/4GW extender region, not the game. Keep `wpp386` available per file anyway, because Theme Hospital found that `wcc386` "generates different code for the same source" when the original was C++.
 
 ## What the Docker image contains, and what you supply
 
@@ -181,9 +249,9 @@ Both are gitignored.
 
 ### What is on the discs
 
-- **10.5 and 10.6:** `BINNT/WCC386.EXE` is a 9,216-byte Win32 loader stub ("32-bit DOS programs require the BINW directory to be in your path before BINNT"). The real compiler is the LE program `BINW/WCC386.EXE` (567,698 bytes in 10.6). Running the 10.x compiler under wibo therefore needs `BINW` next to `BINNT`. **To be confirmed in Phase 4.**
+- **10.5 and 10.6:** `BINNT/WCC386.EXE` is a 9,216-byte Win32 loader stub ("32-bit DOS programs require the BINW directory to be in your path before BINNT"). The real compiler is `BINW/WCC386.EXE`: an LE program of 567,698 bytes in 10.6, and an LX image of 567,558 bytes in 10.5 (decoded, see below). The loader finds it by itself: it reads its own path and opens `..\BINW\WCC386.EXE` next to it (confirmed under wibo with `WIBO_DEBUG=1`, spike [004](../.planning/spikes/004-wibo-watcom/README.md)), so a tree needs `BINW` next to `BINNT`, and PATH, `WATCOM` and DOS4GW are not needed.
 - **11.0, 11.0a, 11.0b:** `BINNT` is native Win32 (`WCC386.EXE` driver plus `WCCD386.DLL`).
-- **10.5:** `BINW/WCC386.EXE` on the CD is a damaged 65,536-byte stub. The real 567,558-byte binary is packed in `DISKIMGS/DISK02/PCK00017.1` and `DISKIMGS/DISK03/PCK00017.2` (wpack). `check-watcom` reports it as KNOWN BAD. Decoding it is Phase 4 work.
+- **10.5:** `BINW/WCC386.EXE` on the CD is a damaged 65,536-byte stub. The real 567,558-byte binary is packed in `DISKIMGS/DISK02/PCK00017.1` and `DISKIMGS/DISK03/PCK00017.2` (wpack). `install-watcom 10.5` decodes it from those two parts with the repo's own decoder (D-01; format in [research/wpack-format.md](research/wpack-format.md)) and `config/watcom.toml` pins the decoded file. An install made before that still holds the stub, and `check-watcom 10.5` reports `MISMATCH` for it: run `uv run reverseapoc install-watcom 10.5 --force` once to replace the tree.
 - **11.0b:** the only public dump has one damaged directory sector (353) for the 3-file sample folder `SAMPLES/WIN/DATACTL/WIN16`. 7-Zip cannot open the image. `install-watcom` skips that folder (manifest `skip_dirs`). The compiler, headers and libraries are unaffected.
 
 ## Tools in detail
@@ -213,7 +281,17 @@ LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less
 
 ### wibo
 
-wibo 1.2.0 runs the Win32-hosted `BINNT\wcc386.exe` on Linux ([decompals/wibo](https://github.com/decompals/wibo)). Older wibo (nixpkgs 0.6.14) cannot run Watcom ("Unhandled function LocalAlloc"). Watcom treats `/` as an option switch and splits paths on spaces: decomp.me rewrites `/` to `\`, and KKND compiles from relative paths under `build/tmp`. The BINNT binaries also run natively on the Windows host, which helps debugging. **Running every 10.x version under wibo in Docker is a Phase 4 spike.**
+wibo 1.2.0 runs the Win32-hosted `BINNT\wcc386.exe` on Linux ([decompals/wibo](https://github.com/decompals/wibo)). Older wibo (nixpkgs 0.6.14) cannot run Watcom ("Unhandled function LocalAlloc"). Watcom treats `/` as an option switch and splits paths on spaces: decomp.me rewrites `/` to `\`, and KKND compiles from relative paths under `build/tmp`. The BINNT binaries also run natively on the Windows host, which helps debugging.
+
+Result (spike [004](../.planning/spikes/004-wibo-watcom/README.md), verdict VALIDATED): 10.5 (with the decoded BINW compiler), 10.6 and 11.0 all run under wibo 1.2.0 in `docker compose run` from the read-only `third_party/watcom` tree. D-03 compiled `probe/cg_basic.c` natively and under wibo for each version: the raw SHA-1s differ (THEADR holds the absolute source path, COMENT class 0xE9 absolute header paths and timestamps), and the normalized SHA-1s, over every other record, are equal for all three versions (`build/gate/04-native-vs-wibo.txt`: `D-03: normalized equal for 10.5, 10.6, 11.0`).
+
+`uv run reverseapoc cc SRC -o OBJ` encodes the invocation rules, the same on the host and in the container:
+
+- always `-zq -zld -bt=dos` (quiet, no file-dependency record, DOS target instead of the NT host's `__NT__` default) and `-fr=` naming an error file beside the object, so no stray `.err` file lands in the cwd;
+- `-i=<tree>\H` from the selected version's own tree only (`WATCOM=<tree>` alone does not find the headers);
+- relative paths with backslashes, refusing any path with a space or a leading `-` (Watcom reads `/` as an option switch);
+- an environment built from scratch (PATH, plus SYSTEMROOT, TEMP and TMP on Windows), so `WCC386`, `INCLUDE` or `WATCOM` set in the caller's environment never reach the compiler (`WCC386=-3r` in the environment changes codegen);
+- the size and SHA-1 of the compiler binaries checked against `config/watcom.toml` first, and the compiler's banner written to the log; the OK line gives the raw and the normalized SHA-1 of the object.
 
 ### Open Watcom v2
 
@@ -232,7 +310,7 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 | wibo | 1.2.0 | Phase 2 |
 | objdiff-cli | v3.8.2 (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Open Watcom v2 | `2026-10-01-Build` (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
-| Watcom C | 10.6 / 10.5 hypothesis | Phase 4 |
+| Watcom C | game code: 10.6 (10.5 byte-identical on the probe; 11.0 tied at `-4r`, candidate pending Phase 5 matches); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
 | Ghidra | 12.1.4 + JDK 21 | Phase 5 |
 | ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 5 |
 | GhidraMCP | 2.0, headless, Python 3.13 | Phase 5 |
