@@ -575,7 +575,7 @@ def _hint(verb: str, orig_dir: Path | None, manifest: Path | None) -> str:
 @dataclass(frozen=True)
 class RebuildResult:
     target: Target
-    status: str  # "ok", "mismatch", "missing" or "refused"
+    status: str  # "ok", "mismatch", "missing", "refused" or "error"
     output: Path | None
     hashes: FileHashes | None = None
     first_diff: int | None = None  # first file offset where the output differs from orig/
@@ -584,6 +584,7 @@ class RebuildResult:
     diff_bytes: int = 0  # how many bytes differ
     masked_fields: int = 0  # distinct fixup fields the patches covered and left unchanged (D-02)
     source: Path | None = None  # the input file rebuild checked, inside the orig dir (not JSON)
+    error: str | None = None  # why an "error" target failed: names and offsets, never bytes
 
     @property
     def ok(self) -> bool:
@@ -607,6 +608,8 @@ class RebuildResult:
                     f"{self.diff_bytes} bytes differ"
                 )
             return line + self._masked_note()
+        if self.status == "error":
+            return f"ERROR     {name}  {self.error}"
         source = self.source if self.source is not None else self.target.name
         orig_dir = self.source.parent if self.source is not None else None
         if self.status == "missing":
@@ -619,7 +622,7 @@ class RebuildResult:
 
     def to_json(self) -> dict[str, Any]:
         """The result as plain JSON data (D-08): names, a status, a path, numbers, a region
-        label and SHA-1s, never file bytes."""
+        label and SHA-1s, never file bytes. An "error" result adds the "error" message."""
         first_diff = None
         if self.first_diff is not None:
             first_diff = {
@@ -627,6 +630,7 @@ class RebuildResult:
                 "region": self.first_diff_region,
                 "va": self.first_diff_va,
             }
+        error = {"error": self.error} if self.status == "error" else {}
         return {
             "name": self.target.name,
             "status": self.status,
@@ -636,6 +640,7 @@ class RebuildResult:
             "first_diff": first_diff,
             "diff_bytes": self.diff_bytes,
             "masked_fields": self.masked_fields,
+            **error,
         }
 
 
@@ -765,6 +770,15 @@ def rebuild_target(
     return RebuildResult(target, "mismatch", out_path, hashes, **common, **diff)
 
 
+def _rebuild_or_error(target: Target, orig_dir: Path, out_dir: Path) -> RebuildResult:
+    """rebuild_target, with a refusal or I/O failure of this one target recorded as an "error"
+    result instead of raised, so the report covers every target (WR-04)."""
+    try:
+        return rebuild_target(target, orig_dir, out_dir)
+    except (LEError, ManifestError, OSError) as exc:
+        return RebuildResult(target, "error", None, error=str(exc))
+
+
 def _select(targets: list[Target], exe: str | None, manifest: Path) -> list[Target]:
     """All targets, or the one named `exe` (case-insensitive). `exe` only selects among the
     manifest's names; it never becomes part of a path."""
@@ -786,7 +800,8 @@ def rebuild(
 ) -> RebuildReport:
     """Rebuild every [[targets]] entry of the manifest (default: config/targets.toml), or only
     the one named `exe` (case-insensitive), from orig_dir (default: orig/) into out_dir
-    (default: build/). An unknown `exe` raises ManifestError before anything is written."""
+    (default: build/). An unknown `exe` raises ManifestError before anything is written. A
+    target that fails gets an "error" result and the other targets are still rebuilt."""
     orig_dir = Path(orig_dir) if orig_dir is not None else DEFAULT_ORIG
     out_dir = Path(out_dir) if out_dir is not None else DEFAULT_OUT
     manifest = Path(manifest) if manifest is not None else DEFAULT_MANIFEST
@@ -795,5 +810,5 @@ def rebuild(
     for target in targets:
         _check_bare_name(target)
     targets = _select(targets, exe, manifest)
-    results = [rebuild_target(t, orig_dir, out_dir) for t in targets]
+    results = [_rebuild_or_error(t, orig_dir, out_dir) for t in targets]
     return RebuildReport(out_dir, results, manifest)
