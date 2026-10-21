@@ -1117,6 +1117,21 @@ def test_probe_calibrate_refuses_output_inside_the_watcom_tree(tmp_path, capsys,
     assert not output.exists()
 
 
+@pytest.mark.parametrize("cells", ["some", "none"])
+def test_probe_calibrate_gate_refusal_is_fatal(tmp_path, capsys, monkeypatch, cells):
+    """A version the D-13 gate refuses fails the run and writes no calibration, as in `cc`;
+    a partial calibration would make a later `probe scan` silently leave the version out."""
+    kept = _probe_calibration().cells if cells == "some" else ()
+    refused = Calibration(kept, skipped=(("11.0", "BINNT/WCC386.EXE is mismatch"),))
+    monkeypatch.setattr(probe_module, "calibrate", lambda versions, **kwargs: refused)
+    output = tmp_path / "calibration.json"
+    assert main(["probe", "calibrate", "--output", str(output)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc probe: error:")
+    assert "11.0: BINNT/WCC386.EXE is mismatch" in err
+    assert not output.exists()
+
+
 @pytest.mark.parametrize("default", ["DEFAULT_ORIG", "DEFAULT_INSTALL"])
 def test_probe_calibrate_refuses_output_inside_the_default_trees(
     tmp_path, capsys, monkeypatch, default
