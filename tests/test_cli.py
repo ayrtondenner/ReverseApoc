@@ -466,7 +466,7 @@ def test_rebuild_json_reports_a_target_error_and_keeps_the_others(tmp_path, caps
     ]
     bad = results[1]
     assert set(bad) == JSON_KEYS | {"error"}
-    assert "BAD.EXE" in bad["error"]
+    assert not bad["error"].startswith("BAD.EXE")  # the name is already in "name"
     assert "non-resident name table" in bad["error"]
     assert (bad["output"], bad["sha1"], bad["first_diff"]) == (None, None, None)
     assert bad["expected_sha1"] == load_manifest(tmp_path / "m.toml")[1].sha1
@@ -485,6 +485,7 @@ def test_rebuild_text_reports_a_target_error_and_keeps_the_others(tmp_path, caps
         "OK        OTHER.EXE ",
     ]
     assert "non-resident name table" in lines[1]
+    assert lines[1].count("BAD.EXE") == 1  # named once, by the column
     assert captured.err == ""
 
 

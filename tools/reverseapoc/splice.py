@@ -28,9 +28,7 @@ SHA-1s only, never file bytes.
 
 from __future__ import annotations
 
-import hashlib
 import os
-import zlib
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -59,8 +57,10 @@ from .targets import (
     ManifestError,
     Target,
     check_bare_name,
+    hash_bytes,
     hash_file,
     load_manifest,
+    target_problems,
 )
 
 DEFAULT_OUT = REPO_ROOT / "build"
@@ -680,19 +680,6 @@ def _refuse_same_file(path: Path, source: Path) -> None:
         raise SpliceError(f"refusing to write {path}: it is the same file as {source}")
 
 
-def _hash_bytes(data: bytes) -> FileHashes:
-    """targets.hash_file for bytes already in memory."""
-    sha1 = hashlib.sha1(data).hexdigest()
-    return FileHashes(len(data), zlib.crc32(data), hashlib.md5(data).hexdigest(), sha1)
-
-
-def _matches(target: Target, got: FileHashes) -> bool:
-    """The checks of targets.check_target (size, CRC32 when the manifest gives one, MD5 and
-    SHA-1), run on the bytes rebuild parses instead of on a second read of the file."""
-    crc_ok = target.crc32 is None or got.crc32 == target.crc32
-    return got.size == target.size and crc_ok and (got.md5, got.sha1) == (target.md5, target.sha1)
-
-
 def _write_atomic(path: Path, data: bytes) -> None:
     """Write `data` to a temporary file next to `path`, then swap it in with os.replace: a write
     that fails leaves the previous `path` as it was, and a link at `path` is replaced, never
@@ -752,7 +739,7 @@ def rebuild_target(
         return RebuildResult(target, "missing", None, source=source)
     _refuse_same_file(out_path, source)
     data = source.read_bytes()
-    if not _matches(target, _hash_bytes(data)):
+    if target_problems(target, hash_bytes(data)):
         return RebuildResult(target, "refused", None, source=source)
     try:
         le = LE(data)
@@ -776,7 +763,8 @@ def _rebuild_or_error(target: Target, orig_dir: Path, out_dir: Path) -> RebuildR
     try:
         return rebuild_target(target, orig_dir, out_dir)
     except (LEError, ManifestError, OSError) as exc:
-        return RebuildResult(target, "error", None, error=str(exc))
+        # rebuild_target prefixes the name onto LE errors; the report already names the target
+        return RebuildResult(target, "error", None, error=str(exc).removeprefix(f"{target.name}: "))
 
 
 def _select(targets: list[Target], exe: str | None, manifest: Path) -> list[Target]:
