@@ -45,11 +45,21 @@ Requirements: CID-01..CID-06 (`.planning/REQUIREMENTS.md`).
 - **D-13:** Before compiling, the wrapper checks the size and SHA-1 of the compiler binaries against `config/watcom.toml` (`BINNT/WCC386.EXE`, plus `BINW/WCC386.EXE` for 10.x, plus `BINNT/WCCD386.DLL` for 11.0). It refuses on a mismatch or a KNOWN BAD file, and writes the tool's own banner (e.g. "Version 10.6") into the build log. Hashes are cached per run so the check stays cheap. It reuses `watcom.load_watcom_manifest` and its validators.
 - **D-14:** Watcom reads `/` as an option switch and splits paths on spaces, so the wrapper rewrites paths to relative paths with backslashes (as decomp.me does) and refuses any path containing a space or starting with `-`, the same allowlist idea `configure.py` got in plans 03-06/03-07. Include paths resolve only to the selected version's own `H/` tree, never the host's or another version's.
 
+### Decided after research (owner, 2026-10-21)
+- **D-15:** `wpack.py` is an independent implementation written from a format description. The description (header layout, LZHUF stage, concatenation of the .1/.2 parts, the qsort tie order) goes in `docs/research/wpack-format.md` first. Open Watcom's OWPL-licensed `bld/wpack` is cited only as the format reference; none of its code or comments is copied into GPLv3 `tools/`. The classic 1988 LZHUF `d_code`/`d_len` tables may be reused.
+- **D-16:** Per-EXE config directories use the lowercase stem: `config/ufo2p/`, `config/tacp/` (so D-06's file is `config/ufo2p/runtime.csv`). The manifest name (`UFO2P.EXE`) stays the lookup key, and one helper maps the name to the directory. Phase 5's `functions.csv` follows the same rule. — **Reversibility:** costly — Phase 5 and 6 tools resolve paths through it.
+
 ### Claude's Discretion
 - The probe sources are written in-house, a clean-room C89 set covering mosura's documented constructs (byte compare return, counted loop, switch order) plus constructs the flag scans need. mosura's licence is unverified, so its files are not copied.
 - The C vs C++ scan method (CID-06): vtable-shaped pointer tables in obj2, `__wcpp_` routines via the runtime map, XI/YI static-init segments, mangled `W?` names. Output per EXE.
 - Module layout under `tools/reverseapoc/` (e.g. `wpack.py`, `omf.py`, `libmatch.py`, `compiler.py`, `probe.py`), test layout, CLI verbs other than `cc`, and where the probe sources live.
 - How the spike "wibo 1.2.0 runs wcc386.exe for each version in Docker" is run and recorded (`/gsd-spike`).
+- Settled from research (04-RESEARCH.md):
+  - D-05's sweep covers the whole `LIB386` tree, and each non-OMF library (COFF under `NT/`) is skipped with its reason reported.
+  - `omf.py` supports COMDAT and Easy OMF (COMENT 0xAA) now.
+  - The wrapper scrubs the environment (no inherited `WCC386`/`INCLUDE`/`WATCOM`), always passes `-bt=dos -zq -fr= -zld`, and captures the banner from a no-argument run.
+  - D-03's cross-check compares objects with THEADR and COMENT 0xE9 records dropped (they carry absolute paths and timestamps).
+  - The probe idioms are calibrated per version and flag set before game code is counted.
 
 </decisions>
 
