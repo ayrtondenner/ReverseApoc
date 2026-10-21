@@ -8,9 +8,10 @@ The project's record of how Watcom turns C into the bytes in UFO2P.EXE and TACP.
 
 | Module / file glob | EXE | Compiler@version | Flags | Evidence | Date |
 |---|---|---|---|---|---|
-| | | | | | |
+| * | UFO2P.EXE | wcc386@10.6 | -4r -s -fpi | runtime.csv + probe scan + cppscan (toolchain.md "Result") | 2026-10-21 |
+| * | TACP.EXE | wcc386@10.6 | -4r -s -fpi | runtime.csv + probe scan + cppscan (toolchain.md "Result") | 2026-10-21 |
 
-Nothing recorded yet.
+Both rows are the `*` default of `config/cflags.txt`, a whole-binary result per EXE (D-09). 10.5 gives the same objects as 10.6 on the probe, and 11.0 ties with 10.6 at `-4r` on the decisive idioms (a candidate until a Phase 5 match separates them). The 40 (UFO2P) and 32 (TACP) functions that call `__CHK` were built without `-s`; they get their own rows once Phase 5 maps them to files. The flags table with the evidence for each flag is [toolchain.md "Flags"](toolchain.md#flags).
 
 ## Known idioms
 
