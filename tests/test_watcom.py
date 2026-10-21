@@ -772,9 +772,12 @@ def test_default_manifest_pins_key_files():
 
 def test_default_manifest_pinned_values():
     assert _key("10.6", "BINW/WCC386.EXE").size == 567698
-    k = _key("10.5", "BINW/WCC386.EXE")
-    assert k.size == 65536
-    assert k.known_bad is True
+    k = _key("10.5", "BINW/WCC386.EXE")  # decoded from the wpack archive by install (D-01)
+    assert k.size == 567558
+    assert k.known_bad is False
+    assert k.wpack == ("DISKIMGS/DISK02/PCK00017.1", "DISKIMGS/DISK03/PCK00017.2")
+    assert k.wpack_member == "wcc386.exe"
+    assert k.sha1 == "a479921bf3bfc6a092710ab291d00752a09d782b"
     assert _key("11.0", "BINNT/WCCD386.DLL").size == 659968
     assert _key("10.6", "BINW/WCC386.EXE").sha1 == "183433f959d6071fd00ea1917effd9085066d227"
     assert _key("10.6", "LIB386/DOS/CLIB3R.LIB").sha1 == "57250829673b7849ce70bf0e288e61ff98231de7"

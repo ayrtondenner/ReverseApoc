@@ -18,6 +18,7 @@ import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc.iso9660 import ISO9660
+from reverseapoc.targets import hash_bytes
 from reverseapoc.watcom import load_watcom_manifest
 from reverseapoc.wpack import decode_member, join_parts, read_archive
 
@@ -76,3 +77,14 @@ def test_pck00017_decodes_to_the_compiler(pck00017):
     (lfanew,) = struct.unpack_from("<I", data, MZ_LFANEW_FIELD)
     signature = bytes(data[lfanew : lfanew + 4])
     assert signature == b"LX\0\0"
+
+
+def test_decoded_compiler_matches_manifest(pck00017):
+    """The 10.5 pin in config/watcom.toml is what the ISO decodes to (D-01): re-derived from the
+    owner's media on every real run, compared through the manifest loader, never a literal."""
+    key = next(k for k in MANIFEST["10.5"].key_files if k.path == "BINW/WCC386.EXE")
+    assert key.wpack == tuple(PARTS)
+    assert key.wpack_member == MEMBER
+    assert key.known_bad is False
+    got = hash_bytes(decode_member(pck00017, MEMBER, expected_size=MEMBER_LENGTH))
+    assert (got.size, got.md5, got.sha1, got.crc32) == (key.size, key.md5, key.sha1, key.crc32)
