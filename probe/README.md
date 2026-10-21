@@ -96,7 +96,9 @@ What the table says, and where it differs from 04-RESEARCH Pattern 6:
 
 ## Running the calibration
 
-`uv run reverseapoc probe calibrate` (the CLI verb arrives with plan 04-10). Until then the
-calibration runs through `tests/test_probe_real.py` or `probe.calibrate()`. Objects go under
+`uv run reverseapoc probe calibrate [--output build/probe/calibration.json]` (plan 04-10); the
+calibration also runs through `tests/test_probe_real.py` or `probe.calibrate()`. Since plan 04-11
+reinstalled 10.5 with its decoded compiler, the table covers 10.5 as well: 10.5 and 10.6 give
+byte-identical objects in all ten flag sets. Objects go under
 `build/probe/<version>/<flags>/` (gitignored). Output holds counts, library names and SHA-1s,
 never object bytes.
