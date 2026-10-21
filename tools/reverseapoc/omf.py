@@ -13,7 +13,8 @@ forms of the even ones. Supported records:
   by the segment length), FIXUPP/FIXUPP32 with THREAD state, BAKPAT/BAKPAT32 (applied);
   NBKPAT/NBKPAT32 are only counted;
 - COMENT class 0x9B (memory model), 0x9F (default library), 0xAA (Easy OMF: the 16-bit-numbered
-  records carry 32-bit fields), 0xE9 (dependency: ignored);
+  records carry 32-bit offsets and lengths, while LIDATA repeat counts stay 16-bit),
+  0xE9 (dependency: ignored);
 - MODEND/MODEND32; in a library, the 0xF0 header (page size = its record length + 3) and the
   0xF1 end record.
 
@@ -542,14 +543,14 @@ def _ledata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
 type _Block = tuple[int, bytes | list[_Block]]
 
 
-def _lidata_block(cur: _Cursor, wide: bool, depth: int) -> _Block:
+def _lidata_block(cur: _Cursor, repeat32: bool, depth: int) -> _Block:
     if depth > LIDATA_MAX_DEPTH:
         raise OMFError(f"iterated data nesting depth exceeds {LIDATA_MAX_DEPTH}")
-    repeat = cur.u32() if wide else cur.u16()
+    repeat = cur.u32() if repeat32 else cur.u16()
     count = cur.u16()
     if count == 0:
         return repeat, cur.raw(cur.u8())
-    return repeat, [_lidata_block(cur, wide, depth + 1) for _ in range(count)]
+    return repeat, [_lidata_block(cur, repeat32, depth + 1) for _ in range(count)]
 
 
 def _block_size(block: _Block) -> int:
@@ -569,9 +570,12 @@ def _expand(block: _Block) -> bytes:
 def _lidata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     seg = m.segment(cur.index())
     offset = m.offset_field(cur, rec)
+    # Easy OMF widens the data offset of record 0xA2 but not its repeat counts: only LIDATA32
+    # has 32-bit ones (a real Easy OMF LIDATA record parses to its last byte only this way).
+    repeat32 = bool(rec.kind & _WIDE_BIT)
     blocks: list[_Block] = []
     while not cur.at_end():
-        blocks.append(_lidata_block(cur, m.wide(rec), 1))
+        blocks.append(_lidata_block(cur, repeat32, 1))
     size = sum(_block_size(b) for b in blocks)  # checked before anything is expanded
     seg.check_range(offset, size, "iterated data")
     seg.data[offset : offset + size] = b"".join(_expand(b) for b in blocks)
