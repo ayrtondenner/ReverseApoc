@@ -84,7 +84,8 @@ def sha1_of(data: bytes) -> str:
 class FakeCompiler:
     """A runner in place of subprocess.run. A call with no argument after the compiler prints
     the banner of the version whose tree holds the compiler; a compile call writes the `-fo=`
-    object (relative to `cwd`, backslashes as Watcom gets them) and exits with `rc`."""
+    object (relative to `cwd`, backslashes as Watcom gets them) and exits with `rc`. A failing
+    compile also writes the `-fr=` error file, as Watcom does."""
 
     def __init__(
         self,
@@ -101,6 +102,11 @@ class FakeCompiler:
         self.calls: list[tuple[list[str], dict]] = []
 
     @staticmethod
+    def _host_path(kwargs: dict, args: list[str], option: str) -> Path:
+        guest = next(arg for arg in args if arg.startswith(option))[len(option) :]
+        return Path(kwargs["cwd"]) / guest.replace("\\", "/")
+
+    @staticmethod
     def _exe_index(argv: list[str]) -> int:
         return next(i for i, arg in enumerate(argv) if arg.upper().endswith("WCC386.EXE"))
 
@@ -113,10 +119,10 @@ class FakeCompiler:
             version = Path(argv[exe]).parents[1].name
             out = f"{self.banners[version]}\nCopyright by nobody\nUsage: wcc386 [options] file\n"
             return subprocess.CompletedProcess(argv, 1, stdout=out, stderr="")
-        obj = next(arg for arg in args if arg.startswith("-fo="))[len("-fo=") :]
         if self.write_obj:
-            target = Path(kwargs["cwd"]) / obj.replace("\\", "/")
-            target.write_bytes(b"fake object")
+            self._host_path(kwargs, args, "-fo=").write_bytes(b"fake object")
+        if self.rc != 0:
+            self._host_path(kwargs, args, "-fr=").write_text("Error! E1009: fake error\n")
         return subprocess.CompletedProcess(argv, self.rc, stdout=self.output, stderr="")
 
     @property

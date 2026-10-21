@@ -662,6 +662,29 @@ def test_cc_help_lists_options(capsys):
         assert option in out
 
 
+def test_cc_failed_compile_exits_1(cc_workspace, capsys):
+    ws = cc_workspace
+    ws.runner.rc = 2
+    ws.runner.output = "t.c(1): Error! E1009: fake error\n"
+    obj = ws.root / "out" / "a.obj"
+    assert main(["cc", str(ws.src), "-o", str(obj), *ws.options]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert "t.c(1): Error! E1009: fake error" in lines
+    failed = [line for line in lines if line.startswith("FAILED")]
+    assert len(failed) == 1
+    assert "exit 2" in failed[0]
+    assert not obj.exists()
+
+
+def test_cc_refuses_a_source_with_a_space(cc_workspace, capsys):
+    ws = cc_workspace
+    src = ws.root / "src" / "a b.c"
+    src.write_text("int x;\n")
+    assert main(["cc", str(src), "-o", str(ws.root / "a.obj"), *ws.options]) == 1
+    assert "space" in capsys.readouterr().err
+    assert ws.runner.calls == []
+
+
 def test_cc_refusal_is_an_error_line(cc_workspace, capsys):
     ws = cc_workspace
     (ws.root / "w" / "10.6" / "BINW" / "WCC386.EXE").unlink()
