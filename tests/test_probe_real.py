@@ -256,6 +256,17 @@ def exe_scan(request):
     return probe.scan_exe(LE(path), read_runtime_csv(runtime), exe=request.param)
 
 
+# The decisive idioms measured in non-library code with the corrected counters (plan 04-08 review
+# fix rounds 1 and 2) and the production mask (every LE fixup byte). 04-RESEARCH Pattern 6 counted
+# rep_movsd_small as 0 with the adjacent `B9 <n> 00 00 00 F3 A5` encoding, which cannot see the
+# register moves wcc386 puts between the two; the measured shape finds hits in both EXEs, so the
+# research's "== 0" is recorded here as measured (> 0), not forced.
+MEASURED_DECISIVE = {
+    "UFO2P.EXE": {"setcc_and": 30, "setcc_movzx": 0, "movsd_unrolled": 75, "rep_movsd_small": 4},
+    "TACP.EXE": {"setcc_and": 58, "setcc_movzx": 0, "movsd_unrolled": 35, "rep_movsd_small": 2},
+}
+
+
 def test_exe_nonlibrary_idioms(exe_scan):
     counts = exe_scan.counts
     print()
@@ -263,4 +274,6 @@ def test_exe_nonlibrary_idioms(exe_scan):
     assert counts["setcc_and"] > 0, counts
     assert counts["setcc_movzx"] == 0, counts
     assert counts["movsd_unrolled"] > 0, counts
-    assert counts["rep_movsd_small"] == 0, counts
+    assert counts["rep_movsd_small"] > 0, counts  # research: 0 (old adjacent encoding)
+    measured = {name: counts[name] for name in MEASURED_DECISIVE[exe_scan.exe]}
+    assert measured == MEASURED_DECISIVE[exe_scan.exe]
