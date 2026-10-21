@@ -125,7 +125,8 @@ def _cmd_libmatch(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
     output = runtime_csv_path(target.name) if args.write else args.output
     if output is not None:
-        refuse_output(output, args.orig, args.watcom_dir)
+        # The default trees stay protected when --orig or --watcom-dir point elsewhere.
+        refuse_output(output, args.orig, DEFAULT_ORIG, args.watcom_dir, DEFAULT_INSTALL)
     check_versions(args.versions)
     data = read_target(target, args.orig, args.manifest)
     libraries, skipped = load_libraries(args.watcom_dir, args.versions)
@@ -255,7 +256,7 @@ def _probe_scan(args: argparse.Namespace) -> int:
 
 
 def _probe_calibrate(args: argparse.Namespace) -> int:
-    refuse_output(args.output, args.watcom_dir)
+    refuse_output(args.output, DEFAULT_ORIG, args.watcom_dir, DEFAULT_INSTALL)
     check_versions(args.versions)
     calibration = probe.calibrate(args.versions, manifest=args.manifest, watcom_dir=args.watcom_dir)
     print(json.dumps(calibration.to_json(), indent=2) if args.json else calibration.format())

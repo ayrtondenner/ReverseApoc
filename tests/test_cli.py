@@ -819,6 +819,20 @@ def test_libmatch_refuses_output_inside_orig(tmp_path, capsys):
     assert not inside.exists()
 
 
+@pytest.mark.parametrize("default", ["DEFAULT_ORIG", "DEFAULT_INSTALL"])
+def test_libmatch_refuses_output_inside_the_default_trees(tmp_path, capsys, monkeypatch, default):
+    """--orig and --watcom-dir point elsewhere, yet the default orig/ and Watcom tree stay
+    protected: they are only ever read (CLAUDE.md)."""
+    ws = cli_workspace(tmp_path)
+    protected = tmp_path / "default-tree"
+    protected.mkdir()
+    monkeypatch.setattr(f"reverseapoc.cli.{default}", protected)
+    inside = protected / "TACP.EXE"
+    assert main(_libmatch_args(ws, "SYNTH.EXE", "--output", str(inside))) == 1
+    assert "refusing to write" in capsys.readouterr().err
+    assert not inside.exists()
+
+
 def test_libmatch_refuses_a_tree_without_libraries(tmp_path, capsys):
     ws = cli_workspace(tmp_path)
     empty = tmp_path / "empty"
@@ -1099,6 +1113,24 @@ def test_probe_calibrate_refuses_output_inside_the_watcom_tree(tmp_path, capsys,
     watcom.mkdir()
     output = watcom / "calibration.json"
     assert main(["probe", "calibrate", "--watcom-dir", str(watcom), "--output", str(output)]) == 1
+    assert "refusing to write" in capsys.readouterr().err
+    assert not output.exists()
+
+
+@pytest.mark.parametrize("default", ["DEFAULT_ORIG", "DEFAULT_INSTALL"])
+def test_probe_calibrate_refuses_output_inside_the_default_trees(
+    tmp_path, capsys, monkeypatch, default
+):
+    def fail(*args, **kwargs):
+        raise AssertionError("calibrate must not run")
+
+    monkeypatch.setattr(probe_module, "calibrate", fail)
+    protected = tmp_path / "default-tree"
+    protected.mkdir()
+    monkeypatch.setattr(f"reverseapoc.cli.{default}", protected)
+    output = protected / "UFO2P.EXE"
+    args = ["probe", "calibrate", "--watcom-dir", str(tmp_path / "w"), "--output", str(output)]
+    assert main(args) == 1
     assert "refusing to write" in capsys.readouterr().err
     assert not output.exists()
 
