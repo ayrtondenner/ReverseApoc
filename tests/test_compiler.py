@@ -405,6 +405,26 @@ def test_stamp_written_atomically(ws, monkeypatch):
     assert sorted(p.name for p in ws.stamps.iterdir()) == [_stamp(ws).name]
 
 
+def _disk_full(path, data):
+    raise OSError(28, "No space left on device")
+
+
+@pytest.mark.parametrize("failure", ["write", "parent is a file"])
+def test_a_stamp_that_cannot_be_written_never_fails_a_compile(ws, monkeypatch, failure):
+    # The stamp is only a cache: losing it costs a re-hash next time, never the compile.
+    stamps = ws.stamps
+    if failure == "write":
+        monkeypatch.setattr(compiler, "_write_atomic", _disk_full)
+    else:
+        (ws.root / "a-file").write_text("not a directory\n")
+        stamps = ws.root / "a-file" / "cache"
+    runner = FakeCompiler()
+    result = ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, stamps=stamps)
+    assert result.ok
+    assert (len(runner.probes), len(runner.compiles)) == (1, 1)
+    assert not _stamp(ws).exists()
+
+
 def test_stamp_rechecks_manifest(ws):
     src, obj = ws.source(), ws.root / "out" / "a.obj"
     assert ws.compile(src, obj, FakeCompiler()).ok

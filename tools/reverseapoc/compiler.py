@@ -143,8 +143,9 @@ def _banner(exe: Path, version: str, runner: Runner, platform: str) -> str:
 # build/cache/watcom-<compiler>-<version>.json holds {"root", "files": {path: [size, mtime_ns,
 # sha1]}, "banner"}. It is reused only while the root is the same, every gated file has the same
 # size and mtime, and every recorded SHA-1 is still the manifest's. Parallel processes share
-# nothing else: the stamp is swapped in whole (splice._write_atomic), and a torn, unreadable or
-# wrong-shaped stamp is a miss that is re-hashed, never trusted.
+# nothing else: each writes its own temporary file and swaps the stamp in whole
+# (splice._write_atomic), and a torn, unreadable or wrong-shaped stamp is a miss that is
+# re-hashed, never trusted.
 
 
 def _stamp_path(stamps: Path, compiler: str, version: str) -> Path:
