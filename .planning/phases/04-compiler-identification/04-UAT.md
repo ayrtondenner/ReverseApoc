@@ -1,9 +1,9 @@
 ---
-status: complete
+status: diagnosed
 phase: 04-compiler-identification
 source: [04-VERIFICATION.md]
 started: 2026-10-21T22:56:05Z
-updated: 2026-10-22T19:50:02.596Z
+updated: 2026-10-22T20:24:52Z
 ---
 
 ## Current Test
@@ -51,5 +51,16 @@ blocked: 0
   reason: "User reported: issue: the log loss. (1600-compile concurrency run: stamp held; cc.log lost/tore lines on the Docker Desktop 9p bind mount and on the Windows host, none on container-local Linux fs)"
   severity: major
   test: 2
-  artifacts: []  # Filled by diagnosis
-  missing: []    # Filled by diagnosis
+  root_cause: "Stale-offset overwrite, not dropped writes: tools/reverseapoc/compiler.py _append_log (:405-408) does an unsynchronised open('a') + write and relies on O_APPEND being atomic between processes. Docker Desktop's 9p drvfs bind mount (cache=0x5 writeback; bytes reach the server at close) and the Windows host (UCRT _write = lseek(FILE_END) + WriteFile) both emulate append in two steps, so concurrent writers read the same EOF and overwrite each other. Container-local fs is correct (0/6400 lost). Default build/logs/cc.log sits on the bind mount."
+  artifacts:
+    - path: "tools/reverseapoc/compiler.py"
+      issue: "_append_log has no cross-process synchronisation; assumes atomic O_APPEND"
+    - path: "tests/"
+      issue: "no concurrent-writer test; 04-VERIFICATION truth marked insufficient_spec"
+  missing:
+    - "Serialise read-EOF -> write -> CLOSE of the log across processes with a stdlib OS lock on a sidecar <log>.lock (POSIX fcntl.flock(LOCK_EX); win32 msvcrt.locking(LK_NBLCK) on byte 0 in a short sleep loop, catching only the contention errno; never LK_LOCK). The lock must be released only after the log fd is closed (unlock-before-close still lost 102-118/1600 on 9p)."
+    - "Regression test (red first): 16 subprocess writers x 25 calls of the real compiler._append_log with a log under REPO_ROOT/build (bind mount in the container, NTFS on the host; tmp_path passes in the container today and proves nothing); expect exactly 400 intact lines with the exact tag set. Prototype: build/debug-cclog/test_cclog_concurrency.py (orchestrator re-ran 2026-10-22: today fails on host and container bind mount; lock_append candidate passes both)."
+    - "Crash safety: a writer killed while holding the lock must not block later writers (OS locks free on process exit; measured 0.003-0.011 s)."
+    - "Document that host and container writing the SAME log at once is unsupported (OS locks do not cross that boundary; measured host lost 222/1200)."
+    - "Keep constraints: _log_line format and bytes-free content unchanged; --log and default build/logs/cc.log unchanged; stdlib only; lock sidecar sits next to whatever --log names. Optional: newline='\n' for uniform LF (host lines are CRLF today)."
+  debug_session: ".planning/debug/cc-log-loses-lines-parallel.md"
