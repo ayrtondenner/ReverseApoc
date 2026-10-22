@@ -62,5 +62,5 @@ blocked: 0
     - "Regression test (red first): 16 subprocess writers x 25 calls of the real compiler._append_log with a log under REPO_ROOT/build (bind mount in the container, NTFS on the host; tmp_path passes in the container today and proves nothing); expect exactly 400 intact lines with the exact tag set. Prototype: build/debug-cclog/test_cclog_concurrency.py (orchestrator re-ran 2026-10-22: today fails on host and container bind mount; lock_append candidate passes both)."
     - "Crash safety: a writer killed while holding the lock must not block later writers (OS locks free on process exit; measured 0.003-0.011 s)."
     - "Document that host and container writing the SAME log at once is unsupported (OS locks do not cross that boundary; measured host lost 222/1200)."
-    - "Keep constraints: _log_line format and bytes-free content unchanged; --log and default build/logs/cc.log unchanged; stdlib only; lock sidecar sits next to whatever --log names. Optional: newline='\n' for uniform LF (host lines are CRLF today)."
+    - "Keep constraints: _log_line format and bytes-free content unchanged; --log and default build/logs/cc.log unchanged; stdlib only; lock sidecar sits next to whatever --log names. Optional: open the log with newline set to LF for uniform LF (host lines are CRLF today)."
   debug_session: ".planning/debug/cc-log-loses-lines-parallel.md"
