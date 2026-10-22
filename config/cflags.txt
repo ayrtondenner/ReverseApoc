@@ -31,6 +31,7 @@
 #         __CHK get per-glob rules without -s once Phase 5 maps them to files
 #   -fpi  inline x87 with the emulator (an EMU387 row); wcc386's default, written out
 # Candidates stay out until Phase 5 matches prove them (toolchain.md "Flags"): -o*, -zp*, -zm,
-# -fp3/-fp5.
+# -fp3/-fp5. Version fallbacks (10.5 first, then 11.0) and the full candidate list to permute when
+# a match misses: toolchain.md "Fallbacks and candidates".
 
 *  wcc386@10.6  -4r -s -fpi

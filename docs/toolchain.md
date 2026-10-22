@@ -168,7 +168,33 @@ References from other Watcom games, not evidence for ours:
 | Theme Hospital | `wpp386` 10.6 | `-s -ot -d2 -zm` |
 | NHL95PC | 10.0 GA | `-5r -fpi -zp1` |
 
-For scratches, start from the default rule above and try the candidates (`-o*` subsets, `-zp1` or `-zp4`, `-zm`) one at a time.
+For scratches, start from the default rule above and work through [Fallbacks and candidates](#fallbacks-and-candidates) below.
+
+### Fallbacks and candidates
+
+The owner accepted Phase 4 under D-08/D-10 on 2026-10-22 (override in `04-VERIFICATION.md`): the version and flags below are a preference order and a candidate list, not a proof. The first Phase 5 matches prove or drop each entry; record what a match proves in the Flags table above.
+
+Game-code compiler versions, in the order to try:
+
+1. **10.6, preferred.** The linked runtime library is 10.6 (11 modules per EXE match only 10.6, see Result), and a team building one game most likely used one toolchain for runtime and game code. The probe cannot separate 10.6 from 10.5, or from 11.0 at `-4r`, so this is a choice backed by the runtime evidence, not a codegen proof.
+2. **10.5, first fallback.** Byte-identical to 10.6 on every probe cell, so it only matters if a real function compiles differently under the two. Try it when a 10.6 build misses and no flag change explains the miss.
+3. **11.0, candidate.** Tied with 10.6 at `-4r` on the decisive idioms, with no 11.0-only runtime row. If Phase 5 matches favour it, sweep 11.0a and 11.0b too (see Result).
+
+Candidate flags. Each axis lists the default-rule value first; the alternatives stay candidates until a match proves one. When a function misses, change one axis at a time first, then combine axes (the version above is one more axis):
+
+| Axis | Default rule | Alternatives to try | What proves it |
+|---|---|---|---|
+| CPU target | `-4` | `-5` | a 5-dword struct copy unrolled (`-5`) or `rep` (`-4`) in a matched function; a module with no such copy does not show it |
+| Stack checks | `-s` | no `-s` (per function: the 40 UFO2P / 32 TACP `__CHK` functions) | a `push imm32; call __CHK` prologue in the original function |
+| FPU | `-fpi` | `-fpi87` (per module) | the object's default-library request (`emu387` vs `noemu387`); the code bytes are equal on the probe, and one `-fpi` object anywhere hides `-fpi87` neighbours (research A3) |
+| FP scheduling | none | `-fp3`, `-fp5` | `fxch` placement in matched x87 code |
+| Optimization | none | `-ox`; subsets `-ot`, `-os`, `-oneatx`; single letters `-od -of+ -or -oi -om -ol -on -op` (decomp.me's set); KKND used `-of+ -omiler`, Theme Hospital `-ot` | a function that matches under one `-o` set and not another. On the probe, `-ox` ties with no `-o` at `-4r`; `-os` at `-5r` emitted the `movzx` byte compare the game lacks (not probed at `-4r`); `-oneatx` removes both loop shapes |
+| Structure packing | none (compiler default) | `-zp1`, `-zp2`, `-zp4`, `-zp8` (KKND and NHL95PC used `-zp1`) | field offsets of structs used by matched code |
+| One segment per function | off | `-zm` (KKND and Theme Hospital used it) | padding and order between functions in the code object |
+| Char signedness | none (unsigned `char`) | `-j` | sign- vs zero-extension of `char` loads in matched code |
+| Debug info | none | `-d1`, `-d2` (Theme Hospital used `-d2`) | untested whether either changes our code bytes |
+
+Ruled out by the Phase 4 scans, so not permuted unless new evidence appears: `-3` (no `movzx` byte compare), the stack calling convention `-3s`/`-4s`/`-5s` (0 3S-only runtime rows), `-fpc` (inline x87 via MATH387), and any memory model other than flat `-mf`.
 
 ### C, not C++
 
@@ -310,7 +336,7 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 | wibo | 1.2.0 | Phase 2 |
 | objdiff-cli | v3.8.2 (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Open Watcom v2 | `2026-10-01-Build` (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
-| Watcom C | game code: 10.6 (10.5 byte-identical on the probe; 11.0 tied at `-4r`, candidate pending Phase 5 matches); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
+| Watcom C | game code: 10.6 preferred (10.5 byte-identical on the probe, first fallback; 11.0 tied at `-4r`, candidate pending Phase 5 matches; see [Fallbacks and candidates](#fallbacks-and-candidates)); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
 | Ghidra | 12.1.4 + JDK 21 | Phase 5 |
 | ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 5 |
 | GhidraMCP | 2.0, headless, Python 3.13 | Phase 5 |
