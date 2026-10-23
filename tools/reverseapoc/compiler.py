@@ -428,8 +428,12 @@ def _lock_path(log: Path) -> Path:
 if sys.platform == "win32":
 
     def _try_lock(fd: int) -> bool:
-        """One non-blocking try for byte 0. False only on contention (EACCES); any other error
-        is raised. The blocking msvcrt modes retry once per second, so they are not used."""
+        """One non-blocking try for byte 0. False on EACCES, any other error is raised. EACCES
+        is lock contention, but the Windows C runtime also sets it for access-denied,
+        sharing-violation and network-denied errors, and `_acquire` retries those too. The
+        wait has no deadline by design (plan 04-13), so a failure that persists, or a holder
+        that never exits, makes it spin. The blocking msvcrt modes retry once per second, so
+        they are not used."""
         try:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         except OSError as exc:
