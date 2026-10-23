@@ -41,7 +41,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Split and first matches (Phase 5)
 
-- [ ] **SPL-01**: Ghidra 12.1.4 with one LE loader in WSL2 exports a function list to `config/<exe>/functions.csv`
+- [ ] **SPL-01**: Ghidra 12.1.4 (headless, JDK 21) with one LE loader in the Docker image exports a function list to `config/<exe>/functions.csv`
 - [ ] **SPL-02**: An independent capstone discovery pass cross-checks the Ghidra function list and boundary disagreements are reconciled
 - [ ] **SPL-03**: Functions are grouped into translation units with per-EXE config under `config/<exe>/`
 - [ ] **SPL-04**: A stub convention keeps original bytes for every unmatched function
