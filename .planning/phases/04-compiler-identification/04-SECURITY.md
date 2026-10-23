@@ -12,6 +12,7 @@ created: "2026-10-21"
 
 > Per-phase security contract: threat register, accepted risks, and audit trail.
 > Register: the `<threat_model>` blocks of plans 04-01..04-12 (41 unique threats). Verified against the code on main at 0f5f4ac by gsd-security-auditor (ASVS L1, block_on: high); evidence per threat is in the audit run recorded below.
+> Gap closure 04-13 (G-04-2) adds T-04-41..47 and re-accepts T-04-SC. They were verified at L1 grep depth against main at f1cc86d (short-circuit: threats_open 0, plan-time register, ASVS 1). The 2026-10-22 audit row below records the evidence.
 
 ---
 
@@ -30,6 +31,10 @@ created: "2026-10-21"
 | matcher -> runtime.csv (committed) | the only Phase 4 file derived from game and library bytes that is committed | hex addresses, Watcom symbol names, versions, status |
 | CLI arguments -> filesystem | `--output`/`--write` choose where files go | paths (refused inside orig/ or the Watcom tree) |
 | Open Watcom source -> our code | licence boundary (OWPL vs GPLv3) | format knowledge only (D-15) |
+| concurrent `cc` processes -> one cc.log (04-13) | many writers append the provenance record at once, within one environment | one log line per compile (serialised by the OS lock on `<log>.lock`) |
+| host process and container process -> one cc.log on the bind mount (04-13) | two OS lock domains that do not see each other | log lines (declared unsupported; each side uses its own `--log`) |
+| `--log` argument -> sidecar `<log>.lock` (04-13) | a user-chosen path decides where the lock file is created | an empty lock file beside the log |
+| tests -> REPO_ROOT/build (04-13) | tests write logs, objects and lock files into the gitignored build tree | build/test-cclog/<test>/ and build/test-cc/<test>/ only |
 
 ---
 
@@ -77,6 +82,13 @@ created: "2026-10-21"
 | T-04-38 | Tampering | third_party/watcom/10.5 | low | mitigate | changed only through `install-watcom 10.5 --force` against the pinned manifest, then verified by check-watcom | closed |
 | T-04-39 | Repudiation | gate completeness | medium | mitigate | one log per step with an exit line; verify fails on any missing log, non-zero exit or skipped real-file test; notes cannot replace a run | closed |
 | T-04-40 | Information disclosure | logs and SUMMARY | low | mitigate | cmp without -l; logs hold summaries, OK lines with manifest SHA-1s, counts and names | closed |
+| T-04-41 | Repudiation | compiler._append_log: cc.log, the record of which compiler@version and flags built each object | medium | mitigate | `_append_log` writes the precomputed line inside `with _log_lock(log)`, opening and closing the log inside the lock (compiler.py:466-476). The concurrent-append test (16x25, repo-build and tmp-path) and the 16 real parallel `cc` test pass; mutants M1 (host, container) and M2 (container) fail them (build/gate/04-13/mutants) | closed |
+| T-04-42 | Denial of service | the log lock when a `cc` dies while holding it | medium | mitigate | fcntl.flock / msvcrt.locking OS locks; the sidecar is opened "a+b" and never deleted, and compiler.py has no mkdir/O_EXCL lock (its only `unlink` calls are for objects). test_a_killed_lock_holder_does_not_block_later_appends passes, and M5 (mkdir lock) fails it | closed |
+| T-04-43 | Denial of service | the win32 lock spin | low | mitigate | `_try_lock` uses LK_NBLCK only and re-raises any errno other than EACCES (compiler.py:421-430), with a 1 ms `_LOCK_RETRY_SECONDS`. test_lock_does_not_swallow_other_errors (EBADF) passes, and M3 fails it | closed |
+| T-04-44 | Tampering | host and container appending to one log at the same time | low | accept | docs/toolchain.md "wibo" says the host and a container writing the same log at the same time is not supported, and says to give each its own `--log` | closed (accepted risk, logged below) |
+| T-04-45 | Information disclosure | cc.log content and the sidecar | low | mitigate | `_log_line` is byte-identical to the version before 04-13 (the plan's invariant diff exits 0). The sidecar test asserts `my.log.lock` has size 0 | closed |
+| T-04-46 | Tampering | tests writing under REPO_ROOT/build | low | mitigate | the `shared_dir` fixture is build/test-cclog/<test> and is removed before and after each test (shutil.rmtree, tests/test_cc_log.py:118-122). The real test uses the existing build/test-cc/<test> fixture | closed |
+| T-04-47 | Repudiation | gate completeness | medium | mitigate | build/gate/04-13/01..05 each end in `exit=0`, and the 6 required mutant logs end in `exit=1`. The plan's Task 3 verify checks (real-file skips, container skip reasons, 5x repeats) and the SUMMARY "## Phase gate output" check exit 0, re-run by the orchestrator | closed |
 | T-04-SC | Tampering | package installs | low | accept | no package is installed: stdlib only, pytest and ruff already locked in uv.lock | closed (accepted risk, logged below) |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -89,7 +101,8 @@ created: "2026-10-21"
 
 | Risk ID | Threat Ref | Rationale | Accepted By | Date |
 |---------|------------|-----------|-------------|------|
-| AR-04-01 | T-04-SC | Supply chain: Phase 4 adds no dependency (pyproject.toml/uv.lock unchanged since Phase 1, `dependencies = []`; every new module imports the stdlib only). Accepted in all twelve plan threat models. | plan threat models (owner-approved plans), recorded by the orchestrator | 2026-10-21 |
+| AR-04-01 | T-04-SC | Supply chain: Phase 4 adds no dependency (pyproject.toml/uv.lock unchanged since Phase 1, `dependencies = []`; every new module imports the stdlib only). Accepted in all twelve plan threat models. Re-accepted by 04-13: the lock uses fcntl/msvcrt/contextlib/errno/time, and pyproject.toml and uv.lock are unchanged from 9b4dca2 to f1cc86d. | plan threat models (owner-approved plans), recorded by the orchestrator | 2026-10-21 |
+| AR-04-02 | T-04-44 | The host and a container appending to one cc.log at the same time can still lose lines (measured: 222/1200), because their OS locks do not see each other. A server-enforced mkdir/O_EXCL lock was rejected: it wedges on a stale lock after a crash. Documented as unsupported in docs/toolchain.md "wibo". | plan 04-13 threat model (design A of the G-04-2 diagnosis), recorded by the orchestrator | 2026-10-22 |
 
 ---
 
@@ -104,6 +117,7 @@ created: "2026-10-21"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-21 | 41 | 40 | 1 (non-blocking, below high) | gsd-security-auditor (ASVS L1, block_on high) via /gsd-execute-phase 4 verify:post |
+| 2026-10-22 | 48 | 47 | 1 (T-04-13, unchanged, non-blocking, below high) | orchestrator L1 grep short-circuit via /gsd-execute-phase 04 --gaps-only verify:post (04-13 adds T-04-41..47, all closed) |
 
 Observations from the audit (status unchanged): the real env-injection and failed-compile cleanup proofs (T-04-15/16) still run for 10.6 and 11.0 only (`tests/test_compiler_real.py` RUNNABLE); a failing assertion in those tests would print a shortened repr of in-repo probe object bytes (T-04-17); three supplementary doc claims rest on scratch checks cited in 04-11-SUMMARY rather than build/gate logs (T-04-36).
 
@@ -116,4 +130,4 @@ Observations from the audit (status unchanged): the real env-injection and faile
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-21 (T-04-13 owner sign-off pending, non-blocking)
+**Approval:** verified 2026-10-21; 04-13 threats verified 2026-10-22 (T-04-13 owner sign-off pending, non-blocking)
