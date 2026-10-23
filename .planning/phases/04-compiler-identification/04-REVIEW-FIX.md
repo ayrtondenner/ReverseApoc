@@ -24,7 +24,7 @@ This report replaces the one from the previous review round. That report is stil
 
 ## Fixed Issues
 
-### WR-01: A `--log` without a final name component (`.`, `C:/`, `/`) crashed with an uncaught ValueError, after the compile had run
+### WR-01: A `--log` without a final name component (`.`, `C:/`, `/`) now crashes with an uncaught ValueError, after the compile has run
 
 **Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cli.py`
 **Commit:** 37b104f
@@ -48,7 +48,7 @@ the runner, so a bad `--log` never compiles and never writes an object. `_lock_p
   failure.
 - GREEN (after the fix): `2 passed`.
 
-### WR-02: `--log /dev/null` (and any log in a directory the user cannot create files in) failed a successful compile
+### WR-02: `--log /dev/null` (and any log in a directory the user cannot create files in) now fails a successful compile
 
 **Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cc_log.py`, `docs/toolchain.md`
 **Commit:** 83053f9
@@ -85,7 +85,7 @@ there. The 04-13 plan's grep for them passes.
   - Container: all of `tests/test_cc_log.py` gives `7 passed, 2 skipped` (the two skips are the
     Windows-only msvcrt tests), and `ls /dev/null.lock` reports no such file.
 
-### WR-03: The concurrency tests waited on child processes with no timeout, and the real parallel test leaked processes on its first failure
+### WR-03: The new concurrency tests wait on child processes with no timeout, and the real parallel test leaks processes on its first failure
 
 **Files modified:** `tests/test_cc_log.py`, `tests/test_compiler_real.py`
 **Commit:** c01df4c
