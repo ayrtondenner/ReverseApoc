@@ -233,3 +233,13 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Follow-up — Phase 04 deferred UAT follow-up: Test 5 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 04 verification
+**Source phase:** 04
+**Deferred at:** 2026-10-23 during /gsd-verify-work 04 session completion
+**Follow-ups:**
+- [ ] Test 5: Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails with 'Is a directory' (deferred 2026-10-23)
