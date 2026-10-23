@@ -234,6 +234,28 @@ def test_compile_error_cleans_up(cc_root, version):
 
 PARALLEL_CC = 16
 CC_MAIN = "import sys; from reverseapoc.cli import main; sys.exit(main(sys.argv[1:]))"
+# The log lock has no deadline, so each wait on a `cc` is bounded here: a lock that never comes
+# free fails the test instead of hanging the gate. One compile takes seconds.
+CC_WAIT_SECONDS = 300
+
+
+def _start_cc(obj: str, options: list[str]) -> subprocess.Popen:
+    return subprocess.Popen(
+        [sys.executable, "-c", CC_MAIN, "cc", "probe/cg_basic.c", "-o", obj, *options],
+        cwd=REPO_ROOT,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _reap(procs: list[subprocess.Popen]) -> None:
+    """Kill and reap every `cc` still running, so a failed test leaves none writing into
+    build/test-cc/ (on Windows their open files would make the next run's rmtree fail)."""
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
 
 
 def test_parallel_cc_keeps_one_log_line_per_compile(cc_root):
@@ -253,18 +275,13 @@ def test_parallel_cc_keeps_one_log_line_per_compile(cc_root):
         str(log),
         "--json",
     ]
-    procs = [
-        subprocess.Popen(
-            [sys.executable, "-c", CC_MAIN, "cc", "probe/cg_basic.c", "-o", obj, *options],
-            cwd=REPO_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        for obj in objs
-    ]
-    for proc in procs:
-        _, err = proc.communicate()
+    procs: list[subprocess.Popen] = []
+    try:
+        procs.extend(_start_cc(obj, options) for obj in objs)
+        errs = [proc.communicate(timeout=CC_WAIT_SECONDS)[1] for proc in procs]
+    finally:
+        _reap(procs)
+    for proc, err in zip(procs, errs, strict=True):
         assert proc.returncode == 0, err
     assert all((REPO_ROOT / obj).is_file() for obj in objs)
     lines = log.read_text(encoding="utf-8").splitlines()

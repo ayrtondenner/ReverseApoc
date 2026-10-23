@@ -36,6 +36,9 @@ HOLD_SECONDS = 60  # the holder sleeps this long inside the lock unless it is ki
 BLOCKED_CHECK_SECONDS = 0.5  # how long a waiting writer must still be waiting
 FREED_TIMEOUT_SECONDS = 10  # how long the writer may take once the holder is dead
 BUSY_CALLS = 3  # contended msvcrt.locking calls before the lock is granted
+# The lock has no deadline, so every wait on a writer is bounded here: a lock that never comes
+# free fails the test instead of hanging the gate. Far above the measured 2.7 s for 1600 appends.
+WAIT_SECONDS = 120
 
 LINE_START = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00  .*")
 OBJ_ARG = re.compile(r"-fo=\S+")
@@ -114,6 +117,14 @@ def _start_writer(log: Path, w: int, count: int, stdout=subprocess.DEVNULL) -> s
     return subprocess.Popen(argv, stdout=stdout, text=True)
 
 
+def _reap(procs: list[subprocess.Popen]) -> None:
+    """Kill and reap every process still running, so a failed test leaves none behind."""
+    for proc in procs:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
 @pytest.fixture
 def shared_dir(request) -> Path:
     """build/test-cclog/<test name>, empty at the start and removed at the end."""
@@ -127,8 +138,12 @@ def shared_dir(request) -> Path:
 def test_concurrent_appends_keep_every_line(where, shared_dir, tmp_path):
     base = shared_dir if where == "repo-build" else tmp_path
     log = base / "logs" / "cc.log"
-    writers = [_start_writer(log, w, LINES) for w in range(WRITERS)]
-    assert [p.wait() for p in writers] == [0] * WRITERS
+    writers: list[subprocess.Popen] = []
+    try:
+        writers.extend(_start_writer(log, w, LINES) for w in range(WRITERS))
+        assert [p.wait(timeout=WAIT_SECONDS) for p in writers] == [0] * WRITERS
+    finally:
+        _reap(writers)
     assert_every_line_intact(log.read_text(encoding="utf-8").splitlines())
 
 
@@ -205,10 +220,7 @@ def test_a_killed_lock_holder_does_not_block_later_appends(shared_dir):
         _assert_line_intact(lines[0])
         assert OBJ_ARG.search(lines[0]).group(0) == "-fo=o/w0-0.obj"
     finally:
-        for proc in procs:
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait()
+        _reap(procs)
 
 
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="Windows-only: msvcrt lock path")
