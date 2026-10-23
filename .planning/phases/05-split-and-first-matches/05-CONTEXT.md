@@ -227,6 +227,7 @@ Requirements: SPL-01..SPL-13 (`.planning/REQUIREMENTS.md`). Roadmap spike: objdi
 - Installed vs CD v1.00 primary build: revisit after Phase 5 (PROJECT.md Key Decisions).
 - GhidraMCP / retrokit MCP for interactive agent queries: Phase 6 (agent context pack) or later.
 - A host-native Ghidra GUI setup guide using the owner's Windows JDK: optional docs, not pipeline.
+- objdiff pairing of jump-table functions: their own-segment relocations will not pair with per-function target sections until omf2elf splits `_TEXT` by public. D-15 keeps tables out of the first matches, so this waits for Phase 6/7 (research Open Question 5, resolved 2026-10-23).
 
 </deferred>
 

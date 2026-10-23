@@ -737,17 +737,31 @@ public class ExportFunctions extends GhidraScript {
 | A5 | The KKND score weights transfer to Watcom 10.6 game code | Pattern 13 | A poorer first pick; the 3-candidate cap bounds it |
 | A6 | The GitHub `ubuntu-latest` CI runner has a clang that can run the lint test | Validation | The lint test skips in CI; the container still gates it |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Does a target-side address-to-name map count as "relocations mapped" (D-02)?**
+All six were settled on 2026-10-23, after this research: by owner decisions D-19 and D-20, by the
+Claude's Discretion entries in 05-CONTEXT.md, or as out of Phase 5 scope. Each entry keeps the original
+question and recommendation as history and names the plans that carry the resolution.
+
+1. **Does a target-side address-to-name map count as "relocations mapped" (D-02)?** — RESOLVED by D-19 (owner, 2026-10-23).
    - What we know: `__CMain`'s relocations name `main_`, `exit_`, `stackavail_`, `__CommonInit_` and four runtime data symbols. objdiff pairs undefined-symbol relocations by exact name + addend.
-   - What's unclear: whether the owner reads a spike-local name map as a workaround (PARTIAL) or as normal mapping (VALIDATED).
-   - Recommendation: record it as the one workaround in the spike README. Make the general mechanism an optional `config/<exe>/symbols.csv` (address,name,kind; addresses and names only), needed by first game matches only if they call non-placeholder targets, which the filter avoids.
-2. **Is reading `SRC/STARTUP/386/CMAIN386.C` from the user's tree acceptable for the spike?** It is never copied into the repo; the spike script points `reverseapoc cc` at `third_party/watcom/10.6/...` (inside the repo root, gitignored, read-only mount in the container). Recommendation: yes; it literally satisfies D-01 step 2.
-3. **Image size +1.17 GB vs D-04's ~800 MB.** Recommendation: accept, with a separate cached stage; flag to the owner at the first Ghidra task's checkpoint.
-4. **Per-public offsets for runtime rows:** regenerate from LIB386 at functions.csv seeding (needs the Watcom trees, like `libmatch --write`), or extend runtime.csv? Recommendation: derive in the functions.csv generator with a drift test; leave the committed runtime.csv untouched (it is generated, "do not edit").
-5. **Jump-table functions later:** own-segment relocations on a non-`-zm` base vs per-function target sections will not objdiff-pair until omf2elf splits `_TEXT` by public. Out of Phase 5 (D-15 excludes tables); note it for Phase 6/7.
-6. **`ninja verify` landing:** extend `rebuild` to splice matched functions from built objects (zero-regression gate), or keep landing inside `check` only? Recommendation: both call one `land.py`; `ninja verify` lands all matched functions of both EXEs.
+   - What was unclear: whether the owner reads a spike-local name map as a workaround (PARTIAL) or as normal mapping (VALIDATED).
+   - Recommendation (history): record it as the one workaround in the spike README. Make the general mechanism an optional `config/<exe>/symbols.csv` (address,name,kind; addresses and names only), needed by first game matches only if they call non-placeholder targets, which the filter avoids.
+   - RESOLVED: the map is normal relocation mapping, not a workaround, so the verdict is VALIDATED if objdiff shows 100% on the `__CMain` pair. The general mechanism is the optional committed `config/<exe>/symbols.csv` (`address,name,kind`, no bytes). The "workaround" framing above is superseded. Adopted by 05-01 (the spike README's name map section and its D-02/D-19 verdict), 05-04 (the symbols.csv schema, reader and validator) and 05-16 (the committed symbols.csv for both EXEs).
+2. **Is reading `SRC/STARTUP/386/CMAIN386.C` from the user's tree acceptable for the spike?** — RESOLVED by D-19 (owner, 2026-10-23).
+   - Original note: it is never copied into the repo; the spike script points `reverseapoc cc` at `third_party/watcom/10.6/...` (inside the repo root, gitignored, read-only mount in the container). Recommendation (history): yes; it literally satisfies D-01 step 2.
+   - RESOLVED: yes. The file is read in place from the owner's read-only `third_party/watcom/10.6/SRC/STARTUP/386/CMAIN386.C` and never copied into a tracked path. Adopted by 05-01 (the spike compile, its no-copy prohibition and the `git ls-files` check) and 05-18 Task 1 (the production re-proof of the `__CMain` pair, same in-place read and the same `git ls-files` check).
+3. **Image size +1.17 GB vs D-04's ~800 MB.** — RESOLVED by D-20 (owner, 2026-10-23).
+   - Recommendation (history): accept, with a separate cached stage; flag to the owner at the first Ghidra task's checkpoint.
+   - RESOLVED: +1.17 GB (882 MB Ghidra + 286 MB JDK) is accepted. The layer stays in the main image as its own cached Dockerfile stage, and unused install parts are stripped only if the smoke test still passes. The owner accepted the size in advance, so the checkpoint flag is no longer needed; the measured size is recorded for UAT instead. Adopted by 05-12 (the `ghidra` stage, the D-20 strip attempt and the before/after image size in its SUMMARY).
+4. **Per-public offsets for runtime rows:** regenerate from LIB386 at functions.csv seeding (needs the Watcom trees, like `libmatch --write`), or extend runtime.csv? — RESOLVED (05-CONTEXT.md, Claude's Discretion).
+   - Recommendation (history): derive in the functions.csv generator with a drift test; leave the committed runtime.csv untouched (it is generated, "do not edit").
+   - RESOLVED: as recommended. Runtime public offsets are derived from LIB386 when functions.csv is generated, a real-file drift test re-derives them, and the committed runtime.csv is not edited. Adopted by 05-04 (`seed_runtime_rows`, its MUST NOT prohibition on editing runtime.csv, and `tests/test_functions_lib_real.py`); 05-13 calls `seed_runtime_rows` in the `functions` generator and 05-16 writes the committed functions.csv with it.
+5. **Jump-table functions later:** own-segment relocations on a non-`-zm` base vs per-function target sections will not objdiff-pair until omf2elf splits `_TEXT` by public. — RESOLVED as out of Phase 5 scope.
+   - RESOLVED: D-15 excludes jump-table functions from the first matches, so Phase 5 needs no per-public `_TEXT` split. The split, and with it the objdiff pairing of jump-table functions, is deferred to Phase 6/7 and listed in 05-CONTEXT.md `## Deferred Ideas`. Phase 5 still finds tables and treats them as data-in-code: 05-07 (discovery), 05-08 (data-in-code sections in the target ELF) and 05-11 (the score filter drops functions with a table); 05-09 records the deferral in its flagged assumptions.
+6. **`ninja verify` landing:** extend `rebuild` to splice matched functions from built objects (zero-regression gate), or keep landing inside `check` only? — RESOLVED (05-CONTEXT.md, Claude's Discretion).
+   - Recommendation (history): both call one `land.py`; `ninja verify` lands all matched functions of both EXEs.
+   - RESOLVED: as recommended. `check` and `ninja verify` share one land step, and `ninja verify` lands every matched function of both EXEs (the zero-regression gate). Adopted by 05-09 (`tools/reverseapoc/land.py`, the one land step), 05-14 (the `land` rule and edge joined to the `verify` phony) and 05-17 (`check` and the `land` verb on `land_all`); 05-18, 05-19 and 05-20 run `ninja verify` in the container.
 
 ## Environment Availability
 
