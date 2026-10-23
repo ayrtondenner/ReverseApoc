@@ -47,7 +47,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 
 ## Constraints
 
-- **Host**: Windows 10 + WSL2 Ubuntu + Docker Desktop; no cmake/make/ninja/clang/Ghidra on the host, so builds run in Docker and Ghidra/decomp.wtf in WSL2 — [Owner] (Docker, WSL2), [Default] (split)
+- **Host**: Windows 10 + WSL2 Ubuntu + Docker Desktop; no cmake/make/ninja/clang/Ghidra on the host, so builds and the headless Ghidra export run in Docker and decomp.wtf in WSL2 — [Owner] (Docker, WSL2; Ghidra in the image, 2026-10-23), [Default] (split)
 - **Python**: 3.14 pinned (`.python-version`), managed with uv; move to 3.15 is a one-line change — [Owner]
 - **License**: GPLv3 for `tools/`; decomp.wtf (MIT) stays a subprocess, never imported — [Owner]
 - **Bring your own files**: Watcom compiler under gitignored `third_party/watcom/`, game under gitignored `orig/`, both mounted read-only, never in an image — [Owner]/[Default]
@@ -77,7 +77,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | recomp.fyi listing via .recomp.json and decomphub.com submission once public [Owner] | Visibility in directories still open | — Pending |
 | Per-function driver: one `claude -p "/goal ..."` per function, 3-5 attempt cap with re-queue, driver re-verifies bytes; evaluate Nigel first [Default] | Lewis's results, Macabeus's benchmark; /goal's evaluator cannot run tools | — Pending |
 | Similarity retrieval without ML first (opcode Levenshtein, UFO2P-TACP twins) [Default] | Corpus is a few thousand functions | — Pending |
-| Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default] | Only maintained LE loaders for Ghidra 12.1 | — Pending |
+| Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default]; lastonesky v12.1.4-1 chosen, Ghidra + openjdk-21-jdk-headless baked into the Docker image, SHA-pinned [Owner, 2026-10-23] | Only maintained LE loaders for Ghidra 12.1; lastonesky has no 12.2 build; in the image no developer installs Ghidra or a JDK by hand (Apache-2.0 / GPLv2+CE, unlike the user-supplied Watcom and game) | — Pending |
 | Primary target is the installed build; CD v1.00 build recorded for cross-reference [Default] | What players run; OpenApoc offsets describe the CD build; revisit after Phase 5 | — Pending |
 | Milestone 1 phases numbered 1-6 [Owner, 2026-10-19] | GSD phase ids start at 1 | ✓ Good |
 | Add Phase 7 (mechanics-first decomp) and Phase 8 (clean-room specs) to Milestone 1; Phase 6 keeps its 10-function pilot gate; specs use the OpenSpec format, not the tool; specs are CC0-1.0; no OpenApoc contact during Milestone 1 [Owner, 2026-10-21] | Only about 12 leaf functions are matched by the end of Phase 6, so mechanics must be decompiled before they can be specced; CC0 lets OpenApoc (GPL-3.0) use spec text without attribution; clean room needs the author/implementer split (see `docs/clean-room.md`) | — Pending |
