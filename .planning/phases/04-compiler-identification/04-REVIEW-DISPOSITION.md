@@ -3,6 +3,30 @@ phase: 04
 review: 04-REVIEW.md
 titles: json
 findings:
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "`--log <existing directory>` compiles, then fails at the append and leaves the object behind (pre-existing, accepted at UAT)"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "The WR-02 fix covers devices only; an unwritable log directory still fails a successful compile"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "`_reap` in the real parallel test kills only the Python `cc`, not the compiler it spawned; `cc_root` still fails on a leftover directory"
+  - id: IN-11
+    severity: info
+    disposition: open
+    title: "`test_dev_null_log_works_and_leaves_no_sidecar` hides its own regression when run as root"
+  - id: IN-12
+    severity: info
+    disposition: open
+    title: "The IN-03 qualification reached the toolchain bullet but not the `_append_log` docstring"
+  - id: IN-13
+    severity: info
+    disposition: open
+    title: "The new CLI test's `assert not obj.exists()` cannot fail"
   - id: WR-01
     severity: warning
     disposition: fixed
@@ -51,21 +75,27 @@ findings:
     severity: info
     disposition: fixed
     title: "Dead code: `Candidate` and `_Hit.candidate()`"
-open: 0
-total: 12
-recorded: 2026-10-23T16:22:55.417Z
+open: 6
+total: 18
+recorded: 2026-10-23T19:20:36.639Z
 ---
 
 # Phase 04: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | 04-REVIEW-FIX.md |
-| WR-02 | warning | fixed | 04-REVIEW-FIX.md |
-| WR-03 | warning | fixed | 04-REVIEW-FIX.md |
-| IN-01 | info | fixed | 04-REVIEW-FIX.md |
-| IN-02 | info | fixed | 04-REVIEW-FIX.md |
-| IN-03 | info | fixed | 04-REVIEW-FIX.md |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
+| IN-11 | info | open | - |
+| IN-12 | info | open | - |
+| IN-13 | info | open | - |
+| WR-01 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| WR-02 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| WR-03 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-01 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-02 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-03 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
 | WR-04 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
 | WR-05 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
 | IN-04 | info | skipped | 04-REVIEW-FIX.md (not in the current review) |
