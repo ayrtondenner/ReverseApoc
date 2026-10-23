@@ -36,7 +36,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Hygiene and safety** - No game bytes or secrets tracked, plugins and GSD at project scope, lean CLAUDE.md, docs skeleton (built before GSD was set up; retroactive verification) (completed 2026-10-20)
 - [x] **Phase 2: Container and target ingest** - Docker image, hash manifest, ingest/check-orig, LE parser with pytest (built before GSD was set up; retroactive verification) (completed 2026-10-20)
 - [x] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail (completed 2026-10-21)
-- [ ] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match
+- [x] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match (completed 2026-10-23)
 - [ ] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE
 - [ ] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions
 - [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
@@ -127,7 +127,7 @@ Plans:
   5. A C vs C++ scan (vtables, `__wcpp_` routines, XI/YI segments) reports its result per EXE and confirms `wcc386`, or names the modules that need `wpp386` (CID-06)
 
 **Spike**: wibo 1.2.0 runs `wcc386.exe` for each version (10.5, 10.6, 11.0) in Docker.
-**Plans:** 13/13 plans executed
+**Plans:** 13/13 plans complete
 
 Plans:
 **Wave 1**
@@ -228,7 +228,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 1. Hygiene and safety | 2/2 | Complete    | 2026-10-20 |
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
-| 4. Compiler identification | 13/13 | In Progress | - |
+| 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 0/TBD | Not started | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
@@ -242,4 +242,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Source phase:** 04
 **Deferred at:** 2026-10-23 during /gsd-verify-work 04 session completion
 **Follow-ups:**
-- [ ] Test 5: Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails with 'Is a directory' (deferred 2026-10-23)
+- [ ] Test 5: Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
