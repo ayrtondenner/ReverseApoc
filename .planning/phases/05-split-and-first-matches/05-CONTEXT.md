@@ -113,7 +113,13 @@ Requirements: SPL-01..SPL-13 (`.planning/REQUIREMENTS.md`). Roadmap spike: objdi
   Each cell's result goes under `build/logs/`. If no cell reaches 100%, the next-ranked candidate is tried, up to 3 candidates per EXE. After that the run stops and reports at a checkpoint.
 - **D-18:** A match that needs flags other than the default gets a per-glob rule in `config/cflags.txt`. The `*` default changes only when at least 3 functions from different regions of both EXEs agree (P18, no overfitting). Ties stay ties. `docs/toolchain.md` records each match's evidence cell, and that is how Phase 5 confirms or narrows the Phase 4 candidates (10.6 vs 10.5/11.0, `-4` vs `-5`, `-o*`). — **Reversibility:** costly — the default flags every later unit.
 
+### Decided after research (owner, 2026-10-23)
+- **D-19:** An address→name map on the target side counts as normal relocation mapping, not a workaround. The spike verdict is VALIDATED if objdiff then shows 100% on the `__CMain` pair, compiled from the owner's read-only `third_party/watcom/10.6/SRC/STARTUP/386/CMAIN386.C`, which is never copied into the repo. The general mechanism is an optional committed `config/<exe>/symbols.csv` with columns `address,name,kind`, holding addresses and names only and no bytes. The spike README records how it works.
+- **D-20:** The Ghidra + JDK layer measures about +1.17 GB (882 MB Ghidra + 286 MB JDK), not the ~800 MB in D-04, and this is accepted. It stays in the main image but is built as its own cached Dockerfile stage, so Python or tool edits don't rebuild it. Unused parts of the Ghidra install, such as `docs/`, are stripped only if the smoke test still passes afterwards.
+
 ### Claude's Discretion
+- Runtime public offsets, needed for call targets such as `exit_` at module + 1, are derived from LIB386 when `functions.csv` is generated, with a drift test. The committed, generated `runtime.csv` stays unchanged (research Open Question 4).
+- `check` and `ninja verify` share one land step. `ninja verify` lands every matched function of both EXEs, which is the zero-regression gate (research Open Question 6).
 - `reverseapoc check <unit>`: its human output, its `--json` shape and its exit codes. It must print objdiff %, the relocation check and the splice SHA-1 (SPL-11), and serve the Phase 6 driver.
 - omf2elf internals. It grows from `tools/reverseapoc/omf.py` (04 D-04). Only the 16-bit COMDAT (0xC2) and NBKPAT are still missing there.
 - Scorer details and the exact Ghidra script language: Java, or Python through PyGhidra/Jython, whichever 12.1.4 headless supports cleanly.
