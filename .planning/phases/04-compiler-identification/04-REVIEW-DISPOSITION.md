@@ -5,36 +5,36 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: fixed
-    title: "Bad input files and `-o .` still crash with a traceback instead of `reverseapoc <verb>: error:`"
+    disposition: open
+    title: "A `--log` without a final name component (`.`, `C:/`, `/`) now crashes with an uncaught ValueError, after the compile has run"
   - id: WR-02
     severity: warning
-    disposition: fixed
-    title: "`probe calibrate --output` can overwrite files in orig/; `libmatch` protects only the `--orig` it was given"
+    disposition: open
+    title: "`--log /dev/null` (and any log in a directory the user cannot create files in) now fails a successful compile"
   - id: WR-03
     severity: warning
-    disposition: fixed
-    title: "`probe calibrate` turns a refusal by the D-13 hash gate into a \"skipped\" version, exits 0 and writes the calibration"
+    disposition: open
+    title: "The new concurrency tests wait on child processes with no timeout, and the real parallel test leaks processes on its first failure"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "`_try_lock` retries on EACCES, but the UCRT maps more than lock contention to EACCES, and the spin has no deadline or diagnostic"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "The sidecar comes from the `--log` spelling, not the file it names"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "The toolchain bullet states Windows-host facts as general ones"
   - id: WR-04
     severity: warning
     disposition: fixed
-    title: "`libmatch --write` commits a runtime map built from a partial sweep, and downstream cannot tell"
+    title: "`libmatch --write` could commit a runtime map from a partial sweep"
   - id: WR-05
     severity: warning
     disposition: fixed
-    title: "Stale test gating keeps 10.5 out of the wrapper invariant tests, and the 10.5 calibration test fails instead of skipping"
-  - id: IN-01
-    severity: info
-    disposition: fixed
-    title: "The docs say `-zld` suppresses the file-dependency record, but the wrapper's own objects carry COMENT 0xE9"
-  - id: IN-02
-    severity: info
-    disposition: fixed
-    title: "cflags accepts `wpp386`, but the compiler wrapper always runs WCC386.EXE"
-  - id: IN-03
-    severity: info
-    disposition: fixed
-    title: "Flags are checked against a deny list, while guest paths use an allow list"
+    title: "Stale gating kept 10.5 out of the wrapper and calibration tests"
   - id: IN-04
     severity: info
     disposition: skipped
@@ -42,36 +42,36 @@ findings:
   - id: IN-05
     severity: info
     disposition: fixed
-    title: "The OMF reader decides inconsistently when a Base Frame follows"
+    title: "The OMF reader disagreed on when a Base Frame follows"
   - id: IN-06
     severity: info
     disposition: fixed
-    title: "`cppscan._check_table` refuses an empty table at the very end of an object and mislabels `end < start`"
+    title: "`_check_table` refused an empty table at the very end of an object"
   - id: IN-07
     severity: info
     disposition: fixed
     title: "Dead code: `Candidate` and `_Hit.candidate()`"
-open: 0
+open: 6
 total: 12
-recorded: 2026-10-21T22:47:20.034Z
+recorded: 2026-10-23T01:42:51.161Z
 ---
 
 # Phase 04: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | 949d646 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| WR-02 | warning | fixed | 08fd818 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| WR-03 | warning | fixed | 353e363 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| WR-04 | warning | fixed | 9db7bfd (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| WR-05 | warning | fixed | 71cf495 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-01 | info | fixed | 4778a10 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-02 | info | fixed | ca4893a (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-03 | info | fixed | 15ce10f (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-04 | info | skipped | 04-REVIEW-FIX.md |
-| IN-05 | info | fixed | 50e2915 (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-06 | info | fixed | 6fd647a (04-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-07 | info | fixed | 04-REVIEW-FIX.md |
+| WR-01 | warning | open | - |
+| WR-02 | warning | open | - |
+| WR-03 | warning | open | - |
+| IN-01 | info | open | - |
+| IN-02 | info | open | - |
+| IN-03 | info | open | - |
+| WR-04 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| WR-05 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-04 | info | skipped | 04-REVIEW-FIX.md (not in the current review) |
+| IN-05 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-06 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
+| IN-07 | info | fixed | 04-REVIEW-FIX.md (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
