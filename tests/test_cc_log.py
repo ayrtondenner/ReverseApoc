@@ -14,6 +14,7 @@ name, so every test fails for its own reason when one is missing.
 from __future__ import annotations
 
 import errno
+import os
 import re
 import shutil
 import subprocess
@@ -153,6 +154,31 @@ def test_default_log_and_its_lock():
     assert REPO_ROOT / "build" / "logs" / "cc.log" == compiler.DEFAULT_LOG
     lock = compiler._lock_path(compiler.DEFAULT_LOG)
     assert lock == REPO_ROOT / "build" / "logs" / "cc.log.lock"
+
+
+def _no_lock(log: Path):
+    raise AssertionError(f"took the sidecar lock for {log}")
+
+
+def test_a_device_log_is_appended_without_the_lock(monkeypatch):
+    """os.devnull (`/dev/null`, `nul`) is a device: it needs no append serialisation, and its
+    directory may not take a `<log>.lock` (the container's /dev for user dev)."""
+    monkeypatch.setattr(compiler, "_log_lock", _no_lock)
+    compiler._append_log(Path(os.devnull), _result("w0-0"))
+
+
+posix_only = pytest.mark.skipif(
+    sys.platform == "win32", reason="POSIX-only: /dev/null and its directory /dev"
+)
+
+
+@posix_only
+def test_dev_null_log_works_and_leaves_no_sidecar():
+    sidecar = Path("/dev/null" + compiler.LOCK_SUFFIX)
+    if sidecar.exists():
+        pytest.skip(f"{sidecar} already exists, left by something else")
+    compiler._append_log(Path("/dev/null"), _result("w0-0"))
+    assert not sidecar.exists()
 
 
 def test_a_killed_lock_holder_does_not_block_later_appends(shared_dir):
