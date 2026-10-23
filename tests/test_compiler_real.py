@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -228,3 +230,48 @@ def test_compile_error_cleans_up(cc_root, version):
     assert "Error!" in result.output
     after = set(REPO_ROOT.glob("*.err")) | set(Path.cwd().glob("*.err"))
     assert after == before
+
+
+PARALLEL_CC = 16
+CC_MAIN = "import sys; from reverseapoc.cli import main; sys.exit(main(sys.argv[1:]))"
+
+
+def test_parallel_cc_keeps_one_log_line_per_compile(cc_root):
+    # G-04-2: parallel `reverseapoc cc` runs sharing one --log leave one intact line each.
+    _require_compiler("10.6", cc_root)
+    rel = cc_root.relative_to(REPO_ROOT).as_posix()
+    cflags = cc_root / "cflags.txt"
+    cflags.write_text("*  wcc386@10.6  -4r -s -fpi\n", encoding="utf-8")
+    log = cc_root / "cc.log"
+    objs = [f"{rel}/o{i}.obj" for i in range(PARALLEL_CC)]
+    options = [
+        "--cflags",
+        str(cflags),
+        "--watcom-dir",
+        str(WATCOM_DIR),
+        "--log",
+        str(log),
+        "--json",
+    ]
+    procs = [
+        subprocess.Popen(
+            [sys.executable, "-c", CC_MAIN, "cc", "probe/cg_basic.c", "-o", obj, *options],
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for obj in objs
+    ]
+    for proc in procs:
+        _, err = proc.communicate()
+        assert proc.returncode == 0, err
+    assert all((REPO_ROOT / obj).is_file() for obj in objs)
+    lines = log.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == PARALLEL_CC, lines
+    for line in lines:
+        assert line.endswith("  exit 0"), line
+        assert line.count("Version 10.6") == 1, line
+        assert line.count("-fo=") == 1, line
+    logged = {re.search(r"-fo=(\S+)", line).group(1).replace("\\", "/") for line in lines}
+    assert logged == set(objs)
