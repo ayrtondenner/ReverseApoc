@@ -726,6 +726,23 @@ def test_cc_object_without_a_name_is_an_error_line(cc_workspace, capsys, monkeyp
     assert ws.runner.calls == []
 
 
+@pytest.mark.parametrize("log_name", [".", "/"])
+def test_cc_log_without_a_name_is_an_error_line(cc_workspace, capsys, monkeypatch, log_name):
+    ws = cc_workspace
+    monkeypatch.chdir(ws.root)  # `--log .` names the repository root itself, which has no name
+    obj = ws.root / "out" / "a.obj"
+    options = list(ws.options)
+    options[options.index("--log") + 1] = log_name
+    assert main(["cc", str(ws.src), "-o", str(obj), *options]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc cc: error:")
+    assert len(err.splitlines()) == 1
+    assert "Traceback" not in err
+    assert "--log" in err
+    assert ws.runner.calls == []
+    assert not obj.exists()
+
+
 # ---- libmatch ----
 
 
