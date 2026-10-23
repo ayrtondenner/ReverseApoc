@@ -1,194 +1,155 @@
 ---
 phase: 04-compiler-identification
-fixed_at: 2026-10-21T22:32:28Z
+fixed_at: 2026-10-23T14:52:45Z
 review_path: .planning/phases/04-compiler-identification/04-REVIEW.md
 iteration: 1
-findings_in_scope: 12
-fixed: 11
-skipped: 1
-status: partial
+findings_in_scope: 3
+fixed: 3
+skipped: 0
+status: all_fixed
 ---
 
 # Phase 4: Code Review Fix Report
 
-**Fixed at:** 2026-10-21T22:32:28Z
-**Source review:** .planning/phases/04-compiler-identification/04-REVIEW.md
+**Fixed at:** 2026-10-23T14:52:45Z
+**Source review:** .planning/phases/04-compiler-identification/04-REVIEW.md (incremental review of plan 04-13 / G-04-2)
 **Iteration:** 1
 
+This report replaces the one from the previous review round. That report is still in git history.
+
 **Summary:**
-- Findings in scope: 12 (fix_scope: all)
-- Fixed: 11
-- Skipped: 1 (IN-04, as the orchestrator allowed)
-
-Every fix was written test-first: the new test was seen failing before the change, except for the
-IN-05 PUBDEF pin (PUBDEF already followed the spec) and the IN-07 deletion of dead code. Each fix
-is one `fix(04): ...` commit with its tests.
-
-## Verification
-
-- **Where it ran:** the fixes were made and committed in an isolated worktree
-  (`.claude/worktrees/rf-04-*`, branch `gsd-reviewfix/04-97`). The real-file tests there used
-  `REVERSEAPOC_ORIG`, `REVERSEAPOC_WATCOM_DIR` and `REVERSEAPOC_WATCOM_MEDIA`, pointed at the main
-  checkout. After `main` was fast-forwarded, the gate ran again **in the main checkout**, with its
-  default `orig/` and `third_party/`. That run can be reproduced from the tree as it is now.
-- **Main checkout, final:** `uv run pytest -q`: 1027 passed, 6 skipped. All 6 skips depend on the
-  platform: 2 for Windows file names, 1 for non-UTF-8 byte names, 3 that run only inside the
-  container. No real-file test skips. `uv run ruff check .`: all checks passed.
-- **Baseline before the fixes** (worktree, media env unset): 965 passed and 15 skipped. 9 of those
-  skips were watcom-media skips, caused only by the unset media variable.
-- **Unchanged:** `config/ufo2p/runtime.csv` and `config/tacp/runtime.csv` are byte-identical.
-  `libmatch UFO2P --write` and `libmatch TACP --write`, run against the real trees, reproduced them
-  exactly (`cmp` against HEAD), and the drift test passes. `config/watcom.toml`,
-  `config/targets.toml`, `orig/` and `third_party/` were not touched; `check-watcom` reports
-  10 ok. `.planning/config.json` and `.planning/milestone.lock` were not staged.
+- Findings in scope: 3 (WR-01, WR-02, WR-03; IN-01..03 are out of scope under `critical_warning`)
+- Fixed: 3
+- Skipped: 0
 
 ## Fixed Issues
 
-### WR-01: Bad input files and `-o .` still crash with a traceback
+### WR-01: A `--log` without a final name component (`.`, `C:/`, `/`) crashed with an uncaught ValueError, after the compile had run
 
-**Files modified:** `tools/reverseapoc/cflags.py`, `tools/reverseapoc/libmatch.py`, `tools/reverseapoc/compiler.py`, `tests/test_cli.py`
-**Commit:** 949d646
+**Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cli.py`
+**Commit:** 37b104f
+**Applied fix:** Added `_check_log_name(log)`, which raises
+`CompilerError("--log <log> names no file; the lock sidecar is <log>.lock")` when `log.name` is
+empty. `compile_rule` calls it right after `_check_object_name(obj)`. That is before the gate and
+the runner, so a bad `--log` never compiles and never writes an object. `_lock_path`, `_log_line`,
+`DEFAULT_LOG` and the `--log` option are unchanged.
+
+**Test-first evidence:**
+- New test `test_cc_log_without_a_name_is_an_error_line[.]` and `[/]` in `tests/test_cli.py`. It
+  uses the existing `cc_workspace` fake-compiler fixture, so no real Watcom is needed. It asserts:
+  - `main` returns 1;
+  - stderr is a single line that starts `reverseapoc cc: error:`, names `--log`, and has no
+    `Traceback`;
+  - the runner was never called (`ws.runner.calls == []`);
+  - no object exists.
+- RED (before the fix): `2 failed`. Both failed with
+  `ValueError: WindowsPath('/') has an empty name` (and the same for `.`), raised from
+  `_lock_path` <- `_log_lock` <- `_append_log`, after the compile. That is the reviewer's
+  failure.
+- GREEN (after the fix): `2 passed`.
+
+### WR-02: `--log /dev/null` (and any log in a directory the user cannot create files in) failed a successful compile
+
+**Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cc_log.py`, `docs/toolchain.md`
+**Commit:** 83053f9
+**Applied fix:** This is the owner's option (a). In `_append_log`, a log that exists and is not a
+regular file (`log.exists() and not log.is_file()`) is written without the lock: /dev/null,
+a FIFO, a console. It is opened in append mode, written and closed, and no `<log>.lock` is
+created. Every other log keeps `with _log_lock(log):` exactly as before: the log is opened,
+written and closed inside the lock. The docstring now says this too.
+
+The cc.log bullet in `docs/toolchain.md` ("wibo" section) now says two more things:
+- the log's directory must be writable, because `<log>.lock` is created there;
+- a log that is a device (such as `/dev/null`) is appended to without the lock and gets no
+  sidecar.
+
+The exact phrases `cc.log.lock` and `same log at the same time is not supported` are still
+there. The 04-13 plan's grep for them passes.
+
+**Test-first evidence:**
+- `test_a_device_log_is_appended_without_the_lock` is portable. It appends to
+  `Path(os.devnull)`, which is `nul` on Windows and `/dev/null` on POSIX; on both, the path
+  exists and is not a regular file. `compiler._log_lock` is replaced by a stub that raises, so
+  the test fails if the lock is taken.
+- `test_dev_null_log_works_and_leaves_no_sidecar` is POSIX-only. It is skipped on win32 with
+  the reason "POSIX-only: /dev/null and its directory /dev". It appends to the real `/dev/null`
+  and asserts that `/dev/null.lock` does not exist afterwards. If that file already exists, the
+  test skips instead.
+- RED (before the fix):
+  - Windows host: `1 failed, 1 skipped`, with `AssertionError: took the sidecar lock for nul`.
+  - Container (`reverseapoc-build:local`, user `dev`): `2 failed`. Both raised
+    `PermissionError: [Errno 13] Permission denied: '/dev/null.lock'`, which is the failure the
+    reviewer reproduced.
+- GREEN (after the fix):
+  - Windows host: `1 passed, 1 skipped`.
+  - Container: all of `tests/test_cc_log.py` gives `7 passed, 2 skipped` (the two skips are the
+    Windows-only msvcrt tests), and `ls /dev/null.lock` reports no such file.
+
+### WR-03: The concurrency tests waited on child processes with no timeout, and the real parallel test leaked processes on its first failure
+
+**Files modified:** `tests/test_cc_log.py`, `tests/test_compiler_real.py`
+**Commit:** c01df4c
 **Applied fix:**
-- `load_cflags` now wraps `UnicodeDecodeError` in `CflagsError`, and `read_runtime_csv` wraps it in
-  `LibMatchError`.
-- `compile_rule` checks the `.obj` suffix (new `_check_object_name`) after the guest-path checks
-  and before it derives the `.err` name. The order of the existing path refusals is unchanged.
-- Four CLI tests assert exit 1 and an `error:` line: `cc --cflags`, `cppscan --runtime`,
-  `probe scan --runtime` and `cc -o .`.
+- `tests/test_cc_log.py`:
+  - New constant `WAIT_SECONDS = 120`. Its comment says it is far above the measured 2.7 s for
+    1600 appends.
+  - New helper `_reap(procs)`: it kills and waits for every process that is still running.
+  - `test_concurrent_appends_keep_every_line` now starts its writers inside `try`, waits on each
+    with `p.wait(timeout=WAIT_SECONDS)`, and calls `_reap(writers)` in `finally`.
+  - The killed-holder test's `finally` loop did the same thing inline. It now calls `_reap(procs)`
+    instead, with no change in behaviour.
+- `tests/test_compiler_real.py`:
+  - New constant `CC_WAIT_SECONDS = 300`.
+  - New helper `_start_cc(obj, options)`, the existing Popen call moved out unchanged.
+  - New helper `_reap(procs)`: it kills, then calls `communicate()` so the stderr pipes are
+    drained.
+  - `test_parallel_cc_keeps_one_log_line_per_compile` now does four steps:
+    1. starts its `cc` processes inside `try`;
+    2. collects stderr with `communicate(timeout=CC_WAIT_SECONDS)`;
+    3. reaps in `finally`;
+    4. only then asserts each return code.
+  - So the first failing return code can no longer leave up to 15 `cc` processes running.
 
-### WR-02: Outputs could land in orig/ or the Watcom tree
+**Evidence:**
+- Scratch harness (not committed): one process held the log lock for good, and
+  `test_concurrent_appends_keep_every_line` ran with `WAIT_SECONDS` patched to 2. Result:
+  `TimeoutExpired after 2 s; writers started: 16; still running: []`. The test fails instead of
+  hanging, and no writer is left behind.
+- The real parallel test passed in the worktree when pointed at the main checkout's Watcom trees,
+  read-only, through `REVERSEAPOC_WATCOM_DIR`: `1 passed`.
 
-**Files modified:** `tools/reverseapoc/cli.py`, `tests/test_cli.py`
-**Commit:** 08fd818
-**Applied fix:** `_probe_calibrate` and `_cmd_libmatch` now always pass `DEFAULT_ORIG` and
-`DEFAULT_INSTALL` to `refuse_output`, as well as any `--orig` or `--watcom-dir` override.
-Parametrized tests monkeypatch the defaults to a temporary tree, so the real orig/ is never at
-risk.
+This finding was not test-first: the change is to test code only, and the owner's TDD
+instruction covered WR-01 and WR-02.
 
-### WR-03: `probe calibrate` turned a hash-gate refusal into "skipped" and exited 0
+## Verification
 
-**Files modified:** `tools/reverseapoc/cli.py`, `tests/test_cli.py`, `probe/README.md`
-**Commit:** 353e363
-**Applied fix:** If any version was skipped (or no cell was produced), the verb prints the table,
-raises `ProbeError` naming each refused version with its reason, and writes no calibration.json.
-`probe.calibrate()` itself still returns the skips. The README says how to calibrate a subset
-(`--versions`).
+Every gate ran inside the isolated worktree
+`.claude/worktrees/rf-04-<pid>-<epoch>`, on branch `gsd-reviewfix/04-<pid>`. That worktree is
+gone now: it was removed after the fast-forward to `main`. The worktree had no `third_party/`, so
+the real-compiler tests skipped there, except the one parallel run listed under WR-03.
 
-### WR-04: `libmatch --write` could commit a runtime map from a partial sweep
+| Check | Where | Result |
+|---|---|---|
+| `uv run pytest -q tests/test_cc_log.py tests/test_compiler.py tests/test_cli.py` | Windows host, worktree | 158 passed, 1 skipped |
+| same three files | container (`docker run` with the worktree mounted at /work and `reverseapoc_uv-venv` mounted read-only, `uv run --no-sync`) | 157 passed, 2 skipped |
+| `uv run pytest -q tests/test_hygiene.py` (together with the three files above, after WR-02) | Windows host, worktree | passed (202 passed, 4 skipped in total) |
+| `uv run ruff check .` | Windows host, worktree, after each commit | All checks passed |
+| `grep -q 'cc.log.lock' docs/toolchain.md && grep -q 'same log at the same time is not supported' docs/toolchain.md` | worktree | both found |
 
-**Files modified:** `tools/reverseapoc/cli.py`, `tests/test_cli.py`, `docs/toolchain.md`
-**Commit:** 9db7bfd
-**Applied fix:**
-- `--write` now refuses with a `LibMatchError` (`_refuse_partial_sweep`) unless every
-  `SWEPT_VERSIONS` entry and every `--versions` entry loads at least one OMF library.
-- The refusal covers a missing LIB386 directory, a LIB386 directory with no OMF library, and a
-  `--versions` subset.
-- `--output` still accepts a partial sweep, and a test pins that.
-- The runtime.csv format did not change (D-06), as the orchestrator asked.
+`docker compose` was not run from the worktree on purpose. It would have created a new compose
+project with new named volumes, and root-owned `orig/` and `third_party/` directories in the
+worktree. The orchestrator re-verifies on the main checkout, on the host and in the container.
 
-### WR-05: Stale gating kept 10.5 out of the wrapper and calibration tests
+`ruff format --check tools/reverseapoc/compiler.py` reports two existing differences, at the
+`runner_prefix` signature and at `except (OSError, ValueError)`. Neither was touched by these
+fixes, and the project gate is `ruff check`, which passes.
 
-**Files modified:** `tests/test_compiler_real.py`, `tests/test_probe_real.py`, `docs/learnings.md`
-**Commit:** 71cf495
-**Applied fix:**
-- `RUNNABLE` is gone (the tests use `VERSIONS`), and `CALIBRATED = SWEPT_VERSIONS`.
-- The calibration fixture now calibrates only the versions that can run here. A missing version
-  skips only its own rows: `_Calibrated.cell` skips with that version's reason.
-- Every 10.6 calibration row is also generated for 10.5.
-- `MEASURED_CONSISTENT` gains the same eight 10.5 cells, which gives the 18 of 30 cited in
-  docs/toolchain.md.
-- `test_calibration_with_10_5` now calls `_require_compiler` for every version it sweeps.
-- Proof: with a tree that held only 10.5 (a scratch junction, since removed), that test skipped
-  instead of failing, the 10.5 rows passed, and the 10.6 and 11.0 rows skipped. The old code failed.
-- **New finding:** 10.5 writes no `-fr=` error file at all (10.6 and 11.0 do). The error message
-  still reaches the captured output, and no stray file appears anywhere. The cleanup test now
-  records this per version, and docs/learnings.md has an entry for it.
-
-### IN-01: The docs claim about `-zld` was wrong
-
-**Files modified:** `docs/toolchain.md`, `docs/learnings.md`
-**Commit:** 4778a10
-**Applied fix:**
-- **Measurement:** I counted COMENT classes (counts and lengths only, no bytes) in objects from a
-  plain source and a header-including source, compiled with and without `-zld` on 10.5, 10.6
-  and 11.0.
-- **Without `-zld`:** each object has one COMENT 0xE9 per file (the source, then each header),
-  plus one empty 0xE9.
-- **With `-zld`:** only the empty 0xE9 end-of-list marker remains.
-- toolchain.md now describes this, and learnings.md records the measurement. The wrapper was
-  right, so no code changed.
-
-### IN-02: cflags accepted `wpp386`, but the wrapper always runs WCC386.EXE
-
-**Files modified:** `tools/reverseapoc/cflags.py`, `tests/test_cflags.py`, `config/cflags.txt`
-**Commit:** ca4893a
-**Applied fix:** `COMPILERS = ("wcc386",)` plus `UNSUPPORTED_COMPILERS = ("wpp386",)`. A `wpp386`
-rule is now refused at the rule, with the line number and "not supported by the wrapper yet".
-The comment in cflags.txt changed to match; the committed rule did not change.
-
-### IN-03: Flags were checked against a deny list
-
-**Files modified:** `tools/reverseapoc/cflags.py`, `tests/test_cflags.py`, `config/cflags.txt`
-**Commit:** 15ce10f
-**Applied fix:** After the checks that have their own messages, a flag must fullmatch
-`_SAFE_FLAG = -[A-Za-z0-9_=.+]+`. Quotes and shell characters are now refused, and a
-parametrized test covers them. The committed rule (`-4r -s -fpi`) and the "prefix only"
-test flags still pass.
-
-### IN-05: The OMF reader disagreed on when a Base Frame follows
-
-**Files modified:** `tools/reverseapoc/omf.py`, `tests/omfimage.py`, `tests/test_omf.py`
-**Commit:** 50e2915
-**Applied fix:**
-- **The rule:** TIS OMF 1.1 places PUBDEF's Base Frame after a Base Segment index of 0, whatever
-  the Base Group index. It gives COMDAT's explicit public base the same layout. So `_pubdef` was
-  right and `_comdat` was wrong: it read the frame only when the group index was 0 as well.
-- **Reader:** `_comdat` now reads the frame whenever the segment index is 0.
-- **Test helpers:** `comdat32` encodes the spec rule, and `pubdef32` can now emit a frame. Before,
-  both helpers mirrored the reader rather than the spec.
-- **Tests:** two synthetic tests pin the group != 0, segment == 0 case for PUBDEF and for COMDAT.
-  The COMDAT one failed before the fix.
-- **Real data:** `tests/test_omf_real.py` and `tests/test_libmatch_real.py` pass unchanged.
-- **Caveat:** no local copy of the TIS specification exists in the repo, and no web tool was
-  available. The rule comes from the spec text as I remember it, not from reading a copy here.
-  It is marked for human verification below.
-
-### IN-06: `_check_table` refused an empty table at the very end of an object
-
-**Files modified:** `tools/reverseapoc/cppscan.py`, `tests/test_cppscan.py`
-**Commit:** 6fd647a
-**Applied fix:** `end < start` now has its own message ("ends before it starts"). An empty table
-(start == end) that `obj_of_va` misses, because the lookup is half-open, falls back to the object
-that ends exactly at `start`. Both cases have tests, and `tests/test_cppscan_real.py` still passes.
-
-### IN-07: Dead code: `Candidate` and `_Hit.candidate()`
-
-**Files modified:** `tools/reverseapoc/libmatch.py`
-**Commit:** a122147
-**Applied fix:** Grep found no reference in tools/, tests/ or the docs, so I deleted both. This
-was trivially safe, so I fixed it even though the orchestrator allowed a skip.
-
-## Needs human verification
-
-- **IN-05 (OMF logic):** confirm against a copy of the TIS OMF 1.1 specification that COMDAT's
-  explicit public base carries a Base Frame whenever its Base Segment index is 0. Watcom's
-  libraries never use this case, so real data cannot tell the two rules apart.
-- **WR-03 (behaviour choice):** `probe calibrate` now refuses to write when any version is
-  refused, not only when every version is refused. Partial calibrations need `--versions`.
-
-## Skipped Issues
-
-### IN-04: The private `splice._write_atomic` is imported by three other modules
-
-**File:** `tools/reverseapoc/compiler.py:175`, `tools/reverseapoc/libmatch.py:43`, `tools/reverseapoc/cli.py:35`
-**Reason:** Skipped by orchestrator ruling. Renaming or moving the shared atomic writer is a
-refactor of a helper used by four modules. It is better done on its own, with behaviour-pinning
-tests.
-**Original issue:** `_write_atomic` is now the shared atomic writer for the gate stamps,
-runtime.csv and calibration.json, but it is imported across modules under an underscore name.
+None of these were touched: `_log_line`, `DEFAULT_LOG`, the `--log` option, the existing
+assertions in `tests/test_compiler.py` and `tests/test_cli.py`, `pyproject.toml`, `uv.lock`,
+`orig/`, `third_party/`, `config/*.toml` and the Docker files. No dependency was added.
 
 ---
 
-_Fixed: 2026-10-21T22:32:28Z_
+_Fixed: 2026-10-23T14:52:45Z_
 _Fixer: Claude (gsd-code-fixer)_
 _Iteration: 1_
