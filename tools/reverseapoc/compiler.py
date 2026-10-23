@@ -9,19 +9,23 @@ are root-relative with backslashes (Watcom reads `/` as an option switch), and t
 is the selected version's own H directory only (D-14). The child environment is rebuilt from
 scratch, because Watcom reads WCC386, INCLUDE and friends and they change codegen.
 
-Output and build/logs/cc.log carry banners, paths, argv, exit codes and SHA-1s, never file bytes.
+Output and build/logs/cc.log carry banners, paths, argv, exit codes and SHA-1s, never file bytes;
+cc.log appends from parallel processes are serialised by an OS lock on the sidecar `<log>.lock`.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import errno
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-from collections.abc import Callable, Mapping
+import time
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -32,9 +36,17 @@ from .cflags import Rule, load_cflags, select_rule
 from .splice import _write_atomic
 from .targets import REPO_ROOT, hash_file
 
+# The log lock is an OS lock, which the kernel frees when its holder exits.
+if sys.platform == "win32":
+    import msvcrt
+else:
+    import fcntl
+
 WIBO = "/usr/local/bin/wibo"
 WRAPPER_FLAGS = ("-zq", "-zld", "-bt=dos")
 DEFAULT_LOG = REPO_ROOT / "build" / "logs" / "cc.log"
+LOCK_SUFFIX = ".lock"  # the lock sidecar sits next to whatever --log names
+_LOCK_RETRY_SECONDS = 0.001
 DEFAULT_STAMPS = REPO_ROOT / "build" / "cache"
 KEPT_ENV = ("PATH",)
 KEPT_ENV_WIN32 = ("SYSTEMROOT", "TEMP", "TMP")
@@ -402,10 +414,66 @@ def _object_hashes(obj: Path) -> tuple[str, str]:
         raise CompilerError(f"{obj} is not an OMF object module ({exc}); it was deleted") from exc
 
 
+def _lock_path(log: Path) -> Path:
+    return log.with_name(log.name + LOCK_SUFFIX)
+
+
+if sys.platform == "win32":
+
+    def _try_lock(fd: int) -> bool:
+        """One non-blocking try for byte 0. False only on contention (EACCES); any other error
+        is raised. The blocking msvcrt modes retry once per second, so they are not used."""
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            if exc.errno != errno.EACCES:
+                raise
+            return False
+        return True
+
+    def _acquire(fh) -> None:
+        fh.seek(0)
+        while not _try_lock(fh.fileno()):
+            time.sleep(_LOCK_RETRY_SECONDS)
+
+    def _release(fh) -> None:
+        fh.seek(0)
+        msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+
+else:
+
+    def _acquire(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+
+    def _release(fh) -> None:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _log_lock(log: Path) -> Iterator[None]:
+    """Hold the OS lock on `<log>.lock`. "a+b" creates the sidecar if needed and never
+    truncates or writes it. The sidecar is never deleted: deleting would reopen a
+    create/delete race, and a dead holder leaves nothing to clean up, because the OS lock
+    dies with the process."""
+    with open(_lock_path(log), "a+b") as fh:
+        _acquire(fh)
+        try:
+            yield
+        finally:
+            _release(fh)
+
+
 def _append_log(log: Path, result: CompileResult) -> None:
+    """Append one line for `result`. The log is opened, written and closed inside the lock,
+    and closed before the release: on the container's 9p bind mount the bytes reach the
+    server at close, and there and in the Windows UCRT append is read-EOF-then-write. Parallel
+    `cc` within one environment is safe; the host and a container writing the same log at
+    once are not covered, because their OS locks do not see each other."""
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(_log_line(result))
+    line = _log_line(result)
+    with _log_lock(log):
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(line)
 
 
 def compile_rule(
