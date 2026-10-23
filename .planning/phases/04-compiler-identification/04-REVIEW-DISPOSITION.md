@@ -17,15 +17,15 @@ findings:
     title: "The new concurrency tests wait on child processes with no timeout, and the real parallel test leaks processes on its first failure"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "`_try_lock` retries on EACCES, but the UCRT maps more than lock contention to EACCES, and the spin has no deadline or diagnostic"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: fixed
     title: "The sidecar comes from the `--log` spelling, not the file it names"
   - id: IN-03
     severity: info
-    disposition: open
+    disposition: fixed
     title: "The toolchain bullet states Windows-host facts as general ones"
   - id: WR-04
     severity: warning
@@ -51,9 +51,9 @@ findings:
     severity: info
     disposition: fixed
     title: "Dead code: `Candidate` and `_Hit.candidate()`"
-open: 3
+open: 0
 total: 12
-recorded: 2026-10-23T14:54:16.454Z
+recorded: 2026-10-23T16:22:55.417Z
 ---
 
 # Phase 04: Code Review Disposition
@@ -63,9 +63,9 @@ recorded: 2026-10-23T14:54:16.454Z
 | WR-01 | warning | fixed | 04-REVIEW-FIX.md |
 | WR-02 | warning | fixed | 04-REVIEW-FIX.md |
 | WR-03 | warning | fixed | 04-REVIEW-FIX.md |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
+| IN-01 | info | fixed | 04-REVIEW-FIX.md |
+| IN-02 | info | fixed | 04-REVIEW-FIX.md |
+| IN-03 | info | fixed | 04-REVIEW-FIX.md |
 | WR-04 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
 | WR-05 | warning | fixed | 04-REVIEW-FIX.md (not in the current review) |
 | IN-04 | info | skipped | 04-REVIEW-FIX.md (not in the current review) |
