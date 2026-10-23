@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: complete
 phase: 04-compiler-identification
 source: [04-VERIFICATION.md]
 started: 2026-10-21T22:56:05Z
-updated: 2026-10-22T20:24:52Z
+updated: 2026-10-23T19:14:30.860Z
 ---
 
 ## Current Test
@@ -34,10 +34,25 @@ expected: Owner confirms the advisory LLM-judge verdicts in 04-VERIFICATION.md "
 result: pass
 note: "Owner reviewed all 12 grouped prohibition rows and signed off A1 (T-04-13): no OWPL code or comments in tools/reverseapoc/wpack.py. Re-run /gsd-secure-phase 4 to close T-04-13 in 04-SECURITY.md."
 
+### 4. UAT re-test of G-04-2 after plan 04-13 (also settles the 04-01 backstop truth)
+expected: Many parallel `reverseapoc cc` compiles inside ONE environment (container bind mount, then separately the Windows host), each environment with its own --log: every compile exits 0; no torn stamp is trusted; cc.log holds exactly one intact line per compile (lines may interleave, none lost, none torn); the sidecar cc.log.lock exists and is empty
+result: pass
+note: "320 parallel compiles per environment (10 rounds x 32; round 1 no stamp, round 2 torn stamp planted), build/uat-retest/: container bind mount and Windows host each 320/320 exit 0 and ok, one banner (10.6), one normalized sha1, cc.log exactly 320 intact lines with every object once, cc.log.lock present and empty, no leftover .tmp, stamp valid JSON after the run. Before 04-13 the bind mount kept 72/80."
+
+### 5. Truth 24 / P1 of 04-13: `--log` behaviour for a nameless path and a device
+expected: Owner accepts the changed behaviour as now shipped after review fixes WR-01/WR-02: a --log without a file name is refused before the compile; a device log such as /dev/null is appended without the lock and gets no sidecar; docs/toolchain.md says the log's directory must be writable for <log>.lock. Rejecting turns this into a gap
+result: pass
+note: "Owner accepted (2026-10-23). Observed: `--log .` refused before the compile (exit 1, no object); `--log /dev/null` compiles, exit 0, no /dev/null.lock; an existing folder as --log compiles then fails with 'Is a directory' (exit 1, object kept), same as before 04-13. docs/toolchain.md:321 is accurate but does not spell out the nameless/folder cases: deferred as a doc follow-up."
+
+### 6. Prohibitions of 04-13 without wired enforcement (P1 --log part, P2, P5, P6)
+expected: Owner confirms the verifier's observations: pyproject `dependencies = []` and uv.lock unchanged since c2d4054~1; no 'debug-cclog' reference in the committed tests; config/, docker/, tests/test_compiler.py, tests/test_cli.py unchanged since c2d4054~1 (beyond the 04 review fixes); check-orig 3 OK; every gate step logged with exit=0
+result: pass
+note: "Re-checked 2026-10-23 at HEAD: dependencies = [], pyproject.toml and uv.lock unchanged since c2d4054~1; no debug-cclog reference in tests/; config/, docker/, tests/test_compiler.py unchanged, tests/test_cli.py +17 lines only from review fix WR-01 (37b104f); check-orig 3 ok; build/gate/04-13/01..05 all exit=0 (every exit=1 in 04-13-SUMMARY is a deliberate mutant)."
+
 ## Summary
 
-total: 3
-passed: 2
+total: 6
+passed: 5
 issues: 1
 pending: 0
 skipped: 0
@@ -47,7 +62,9 @@ blocked: 0
 
 - gap_id: G-04-2
   truth: "Under concurrent compiles (ninja -j) no compile fails or trusts a torn stamp; cc.log keeps one intact line per compile (lines may interleave, never vanish or tear)"
-  status: failed
+  status: resolved
+  resolved_by: 04-13-PLAN.md
+  resolved_at: 2026-10-23
   reason: "User reported: issue: the log loss. (1600-compile concurrency run: stamp held; cc.log lost/tore lines on the Docker Desktop 9p bind mount and on the Windows host, none on container-local Linux fs)"
   severity: major
   test: 2
@@ -64,3 +81,9 @@ blocked: 0
     - "Document that host and container writing the SAME log at once is unsupported (OS locks do not cross that boundary; measured host lost 222/1200)."
     - "Keep constraints: _log_line format and bytes-free content unchanged; --log and default build/logs/cc.log unchanged; stdlib only; lock sidecar sits next to whatever --log names. Optional: open the log with newline set to LF for uniform LF (host lines are CRLF today)."
   debug_session: ".planning/debug/cc-log-loses-lines-parallel.md"
+
+## Deferred Follow-Ups
+
+- test: 5
+  idea: "Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails with 'Is a directory'"
+  deferred_at: 2026-10-23
