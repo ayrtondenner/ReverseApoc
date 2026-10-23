@@ -20,7 +20,19 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mkelf import FIELD, FIELD_SIZE, ElfParts, cut_target, find_public, from_omf
+from mkelf import (
+    FIELD,
+    FIELD_SIZE,
+    PC32_ADDEND,
+    R_386_32,
+    R_386_PC32,
+    ElfParts,
+    Reloc,
+    cut_target,
+    find_public,
+    from_omf,
+    function_parts,
+)
 
 from reverseapoc.cflags import load_cflags, select_rule
 from reverseapoc.le import LE, SRC_OFF32
@@ -52,6 +64,20 @@ EXPECTED = {
     },
     "match_percent": 100.0,
 }  # fmt: skip
+
+# Plant P3: made-up bytes in the research probe shape (05-RESEARCH.md "Code Examples"):
+# mov eax,[abs32]; call rel32; mov dword [abs32], imm32; ret. Not game bytes.
+SYNTH_NAME = "func_00010000_"
+SYNTH_CODE = bytes.fromhex("a100000000" "e800000000" "c70500000000" "00000000" "c3")  # fmt: skip
+SYNTH_RELOCS = {
+    1: (R_386_32, "_D_000D0000"),
+    6: (R_386_PC32, "func_00012345_"),
+    12: (R_386_32, "_D_000D0010"),  # 1st relocation of the mov: the address
+    16: (R_386_32, "_D_000D0020"),  # 2nd relocation of the mov: the imm32
+}
+SYNTH_OTHER = "_D_000D0030"
+P1_FROM, P1_TO = "exit_", "main_"
+P2_ADDEND = 4
 
 
 @dataclass
@@ -198,26 +224,90 @@ def build_name_map(report, exe, seg, base_va, flat, le_fx):
     return names, call_fields
 
 
-def write_pair(pair: Pair, *, section_name: str = "_TEXT", tag: str = "") -> tuple[Path, Path]:
-    folder = REPO / OUT / pair.exe.split(".")[0].lower()
-    folder.mkdir(parents=True, exist_ok=True)
+def pair_parts(pair: Pair, *, section_name: str = "_TEXT") -> tuple[ElfParts, ElfParts]:
+    """(target, base) for one EXE: the LE cut and our converted object."""
     target = cut_target(pair.le, pair.start, pair.end, PUBLIC, pair.names, pair.call_fields,
                         section_name=section_name)  # fmt: skip
-    base = from_omf(pair.module, PUBLIC)
-    return _write(folder, f"target{tag}.o", target), _write(folder, f"base{tag}.o", base)
+    return target, from_omf(pair.module, PUBLIC)
 
 
-def _write(folder: Path, name: str, parts: ElfParts) -> Path:
-    path = folder / name
-    path.write_bytes(parts.to_bytes())
-    return path
+def diff_parts(folder: str, tag: str, target: ElfParts, base: ElfParts, symbol: str):
+    """Write both objects under build/spike005/<folder>/ and return objdiff's match_percent."""
+    path = REPO / OUT / folder
+    path.mkdir(parents=True, exist_ok=True)
+    t, b = path / f"target{tag}.o", path / f"base{tag}.o"
+    t.write_bytes(target.to_bytes())
+    b.write_bytes(base.to_bytes())
+    return objdiff_percent(t, b, symbol)
+
+
+def folder_of(exe: str) -> str:
+    return exe.split(".")[0].lower()
 
 
 def diff_pair(report: Report, pair: Pair) -> None:
-    target, base = write_pair(pair)
-    percent = objdiff_percent(target, base, PUBLIC)
+    percent = diff_parts(folder_of(pair.exe), "", *pair_parts(pair), PUBLIC)
     report.claim(pair.exe, percent == EXPECTED["match_percent"], "objdiff",
                  f"{PUBLIC} match_percent {percent}")  # fmt: skip
+
+
+def below_100(percent: float | None) -> bool:
+    return percent is not None and percent < EXPECTED["match_percent"]
+
+
+def retarget(parts: ElfParts, old: str, new: str, rtype: int) -> bool:
+    """Point the first `rtype` relocation naming `old` at `new` instead."""
+    for i, r in enumerate(parts.relocs):
+        if r.rtype == rtype and parts.symbols[r.symbol].name == old:
+            parts.relocs[i] = Reloc(r.section, r.offset, r.rtype, parts.symbol_index(new))
+            return True
+    return False
+
+
+def plant_pair(report: Report, pair: Pair) -> None:
+    """P1 wrong call symbol in our object, P2 wrong addend in the target, P4 `.text` naming."""
+    folder = folder_of(pair.exe)
+    target, base = pair_parts(pair)
+    done = retarget(base, P1_FROM, P1_TO, R_386_PC32)
+    percent = diff_parts(folder, "-p1", target, base, PUBLIC)
+    report.claim(pair.exe, done and below_100(percent), "P1-wrong-call-symbol",
+                 f"{P1_FROM}->{P1_TO} match_percent {percent} (expect below 100)")  # fmt: skip
+
+    target, base = pair_parts(pair)
+    first = min((r for r in target.relocs if r.rtype == R_386_32), key=lambda r: r.offset)
+    FIELD.pack_into(target.sections[0][1], first.offset, P2_ADDEND)
+    percent = diff_parts(folder, "-p2", target, base, PUBLIC)
+    report.claim(pair.exe, below_100(percent), "P2-wrong-addend",
+                 f"R_386_32 at {pair.start + first.offset:#010x} addend {P2_ADDEND} "
+                 f"match_percent {percent} (expect below 100)")  # fmt: skip
+
+    target, base = pair_parts(pair, section_name=".text")
+    percent = diff_parts(folder, "-p4", target, base, PUBLIC)
+    detail = f"target section .text, base _TEXT: match_percent {percent} (expect unpaired)"
+    report.claim(pair.exe, percent is None, "P4-section-.text", detail)
+
+
+def synthetic(override: dict[int, str]) -> ElfParts:
+    data = bytearray(SYNTH_CODE)
+    parts = function_parts("_TEXT", data, SYNTH_NAME, 0, len(data))
+    for offset, (rtype, name) in SYNTH_RELOCS.items():
+        FIELD.pack_into(data, offset, PC32_ADDEND if rtype == R_386_PC32 else 0)
+        sym = parts.symbol_index(override.get(offset, name))
+        parts.relocs.append(Reloc(0, offset, rtype, sym))
+    return parts
+
+
+def plant_synthetic(report: Report) -> None:
+    """P3: two made-up objects differing only in one relocation's symbol."""
+    good = synthetic({})
+    control = diff_parts("synthetic", "-p3-control", good, synthetic({12: SYNTH_OTHER}),
+                         SYNTH_NAME)  # fmt: skip
+    detail = f"symbol at field 12 differs: match_percent {control} (expect below 100)"
+    report.claim("synthetic", below_100(control), "P3-control-1st-reloc", detail)
+    percent = diff_parts("synthetic", "-p3", good, synthetic({16: SYNTH_OTHER}), SYNTH_NAME)
+    report.claim("synthetic", percent == EXPECTED["match_percent"], "P3-blind-spot-2nd-reloc",
+                 f"symbol at field 16 (imm32, 2nd reloc of one instruction) differs: "
+                 f"match_percent {percent} (expect exactly 100.0)")  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -231,8 +321,13 @@ def main(argv: list[str] | None = None) -> int:
     if obj is not None:
         for exe in exes:
             pair = check_pair(report, exe, obj)
-            if pair is not None:
-                diff_pair(report, pair)
+            if pair is None:
+                continue
+            diff_pair(report, pair)
+            if args.plants:
+                plant_pair(report, pair)
+    if args.plants:
+        plant_synthetic(report)
     print("ALL PASS" if report.failures == 0 else f"{report.failures} FAILED")
     return 1 if report.failures else 0
 
