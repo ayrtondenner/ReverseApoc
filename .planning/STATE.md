@@ -2,19 +2,19 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 milestone_name: Milestone 1
-current_phase: 5
+current_phase: 05
 current_phase_name: Split and first matches
 status: executing
-stopped_at: Phase 5 context gathered
-last_updated: "2026-10-23T22:41:20.328Z"
+stopped_at: Completed 05-01-PLAN.md
+last_updated: "2026-10-23T23:38:06.615Z"
 last_activity: 2026-10-23
-last_activity_desc: Phase 04 complete, transitioned to Phase 5
-state_head: 807d72f613bdc2316ac3b1e362835a2419c960c2
+last_activity_desc: Phase 05 execution started
+state_head: d4d8f4bcd3d011e7703d3eaf0573ea0bbc1e8e6c
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 47
-  completed_plans: 27
+  completed_plans: 28
 ---
 
 # Project State
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-23)
 
 **Core value:** Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to the original, objdiff 100% for the function), never by an agent's own judgement.
-**Current focus:** Phase 5 — Split and first matches
+**Current focus:** Phase 05 — Split and first matches
 
 ## Current Position
 
-Phase: 5 (Split and first matches) — READY TO EXECUTE
-Plan: Not started
+Phase: 05 (Split and first matches) — EXECUTING
+Plan: 2 of 20
 Status: Ready to execute
-Last activity: 2026-10-23 — Phase 04 complete, transitioned to Phase 5
+Last activity: 2026-10-23 — Phase 05 execution started
 
 Progress: [█████░░░░░] 50%
 
@@ -67,6 +67,7 @@ Next steps:
 | Phase 04 P11 | 24min | 3 tasks | 8 files |
 | Phase 04 P12 | 9min | 2 tasks | 2 files |
 | Phase 04 P13 | 18min | 3 tasks | 5 files |
+| Phase 05 P01 | 10min | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -84,6 +85,8 @@ Recent decisions affecting current work:
 - [Phase 04]: Phase 4 gate green on host (974 passed, 6 platform-only skips) and container (980 passed, 0 skipped), ruff clean; rebuild SHA-1 identical; check-watcom OK; compiler/probe real tests pass under wibo
 - [Phase 04]: cc.log appends are serialised by a stdlib OS lock on the sidecar <log>.lock (fcntl.flock / non-blocking msvcrt.locking retrying only on EACCES), released after the log closes; host and container on one log at once is unsupported (G-04-2)
 - [Phase 04]: UAT 2026-10-23: owner re-tested G-04-2 (320 parallel compiles per environment, no lost line) and accepted the shipped `--log` behaviour; a docs note on a nameless or folder `--log` is backlog 999.1; review IN-08..IN-13 (info) left open in 04-REVIEW-DISPOSITION.md
+- [Phase 05]: Spike 005 VALIDATED (D-02, D-19): objdiff-cli 3.8.2 scores the converted cmain386 OMF object at 100.0 for __CMain in both EXEs with only an address-to-name map; hybrid pipeline stays
+- [Phase 05]: objdiff misses a wrong 2nd relocation of one instruction (100.0, spike 005 P3): the SPL-09 relocation check is the match gate; code sections are named _TEXT on both sides (a .text target is unpaired)
 
 ### Pending Todos
 
@@ -113,6 +116,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-23T20:48:46.380Z
-Stopped at: Phase 5 context gathered
-Resume file: .planning/phases/05-split-and-first-matches/05-CONTEXT.md
+Last session: 2026-10-23T23:38:06.043Z
+Stopped at: Completed 05-01-PLAN.md
+Resume file: None
