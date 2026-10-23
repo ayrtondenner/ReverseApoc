@@ -11,6 +11,12 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-22: O_APPEND is not atomic on the bind mount or the Windows host (Phase 4 UAT gap G-04-2)
+
+- **What happened.** 1600 parallel `cc` compiles all succeeded, but cc.log kept 72/80, 495/608 and 75/96 lines on the Docker Desktop 9p bind mount (/work, aname=drvfs, cache=0x5) and 732/736 on the Windows host; container-local /tmp kept 80/80. Lines were overwritten, not dropped: 9p and the UCRT (`_write` = `_lseeki64(FILE_END)` + `WriteFile`) emulate append as read-EOF-then-write, so two writers land on the same offset. A bare `0` line is the tail of a 519-character line under a 517-character one.
+- **The fix.** `_append_log` holds an OS lock on `<log>.lock` across open, write and close. A release before the close still lost 102 and 118 of 1600 lines on 9p, because the bytes reach the server at close, not at flush. The blocking msvcrt modes retry once a second (13.5 s against 2.7 s per 1600 lines), so the Windows path spins on LK_NBLCK and treats only EACCES as busy. OS locks free themselves when the holder dies (0.003-0.011 s measured), so a killed `cc` never wedges the log; they do not cross the host/container boundary (the host lost 222/1200 lines with both writing). Rule: [toolchain.md "wibo"](toolchain.md#wibo).
+- **The test lesson.** A concurrency test under tmp_path passes in the container even with the bug, because overlay fs appends atomically. `tests/test_cc_log.py` writes under build/, so the container run exercises the bind mount.
+
 ## 2026-10-21: what the Phase 4 code review turned up
 
 - **10.5 writes no error file.** With `-fr=<file>`, 10.6 and 11.0 write the error file next to the object; 10.5 (the BINNT stub running the decoded BINW compiler) writes none anywhere, and the message still reaches the captured output. Found once the wrapper's invariant tests ran for 10.5 too (review WR-05); `tests/test_compiler_real.py` records it.
