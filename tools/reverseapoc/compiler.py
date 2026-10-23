@@ -303,6 +303,13 @@ def _check_object_name(obj: Path) -> None:
         raise CompilerError(f"{obj} must end in {OBJ_SUFFIX}; the compile deletes and rewrites it")
 
 
+def _check_log_name(log: Path) -> None:
+    """The log's lock sidecar is `<log>.lock`, so the log needs a file name. Checked before the
+    compile, so a path without a name (`--log .`, `--log /`) never reaches the runner."""
+    if not log.name:
+        raise CompilerError(f"--log {log} names no file; the lock sidecar is <log>{LOCK_SUFFIX}")
+
+
 def _check_outputs(src: Path, obj: Path, err: Path) -> None:
     """Refuse outputs that would destroy the source: the object is deleted before the compile
     and rewritten by it, and the error file is rewritten, so neither may be the source."""
@@ -501,6 +508,7 @@ def compile_rule(
     guest_src = guest_path(src, root, inside=True)
     guest_obj = guest_path(obj, root, inside=True)
     _check_object_name(obj)
+    _check_log_name(log)
     err = obj.with_suffix(".err")  # next to the object
     guest_err = guest_path(err, root, inside=True)
     _check_outputs(src, obj, err)
