@@ -114,6 +114,14 @@ class ElfParts:
         return write_elf(self.sections, self.symbols, self.relocs)
 
 
+def function_parts(
+    section_name: str, data: bytearray, name: str, value: int, size: int
+) -> ElfParts:
+    """One code section holding one GLOBAL STT_FUNC, plus the section's own symbol."""
+    section = Symbol("", 0, bind=STB_LOCAL, kind=STT_SECTION)
+    return ElfParts([(section_name, data)], [section, Symbol(name, 0, value, size, kind=STT_FUNC)])
+
+
 class _Strtab:
     def __init__(self) -> None:
         self.data = bytearray(b"\0")
@@ -219,10 +227,7 @@ def from_omf(module: Module, public_name: str) -> ElfParts:
     as a GLOBAL STT_FUNC sized to the segment, every fixup as REL with the TH addend rule."""
     seg, pub_offset = find_public(module, public_name)
     data = bytearray(seg.data)
-    parts = ElfParts([(seg.name, data)], [Symbol("", 0, bind=STB_LOCAL, kind=STT_SECTION)])
-    parts.symbols.append(
-        Symbol(public_name, 0, pub_offset, seg.length - pub_offset, STB_GLOBAL, STT_FUNC)
-    )
+    parts = function_parts(seg.name, data, public_name, pub_offset, seg.length - pub_offset)
     for fx in seg.fixups:
         rtype, extra = relocation_of(fx)
         stored = FIELD.unpack_from(data, fx.offset)[0]
@@ -268,8 +273,7 @@ def cut_target(
     of the call's destination (field rewritten to -4)."""
     flat = le.load_flat(relocate=False)
     data = bytearray(flat[start:end])
-    parts = ElfParts([(section_name, data)], [Symbol("", 0, bind=STB_LOCAL, kind=STT_SECTION)])
-    parts.symbols.append(Symbol(name, 0, 0, end - start, STB_GLOBAL, STT_FUNC))
+    parts = function_parts(section_name, data, name, 0, end - start)
     for fx in le.fixups():
         if not start <= fx.src_va < end:
             continue
