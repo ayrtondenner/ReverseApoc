@@ -5,15 +5,15 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A `--log` without a final name component (`.`, `C:/`, `/`) now crashes with an uncaught ValueError, after the compile has run"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "`--log /dev/null` (and any log in a directory the user cannot create files in) now fails a successful compile"
   - id: WR-03
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The new concurrency tests wait on child processes with no timeout, and the real parallel test leaks processes on its first failure"
   - id: IN-01
     severity: info
@@ -51,18 +51,18 @@ findings:
     severity: info
     disposition: fixed
     title: "Dead code: `Candidate` and `_Hit.candidate()`"
-open: 6
+open: 3
 total: 12
-recorded: 2026-10-23T01:42:51.161Z
+recorded: 2026-10-23T14:54:16.454Z
 ---
 
 # Phase 04: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
+| WR-01 | warning | fixed | 04-REVIEW-FIX.md |
+| WR-02 | warning | fixed | 04-REVIEW-FIX.md |
+| WR-03 | warning | fixed | 04-REVIEW-FIX.md |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
