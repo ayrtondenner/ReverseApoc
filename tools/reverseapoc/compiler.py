@@ -475,9 +475,15 @@ def _append_log(log: Path, result: CompileResult) -> None:
     and closed before the release: on the container's 9p bind mount the bytes reach the
     server at close, and there and in the Windows UCRT append is read-EOF-then-write. Parallel
     `cc` within one environment is safe; the host and a container writing the same log at
-    once are not covered, because their OS locks do not see each other."""
+    once are not covered, because their OS locks do not see each other. A log that exists but
+    is not a regular file (/dev/null, a FIFO, a console) is a device: it needs no append
+    serialisation and its directory may not take a sidecar, so it is written without the lock."""
     log.parent.mkdir(parents=True, exist_ok=True)
     line = _log_line(result)
+    if log.exists() and not log.is_file():
+        with log.open("a", encoding="utf-8") as fh:
+            fh.write(line)
+        return
     with _log_lock(log):
         with log.open("a", encoding="utf-8") as fh:
             fh.write(line)
