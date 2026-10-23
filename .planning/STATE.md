@@ -2,47 +2,48 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 milestone_name: Milestone 1
-current_phase: 04
-current_phase_name: Compiler identification
-status: verifying
-stopped_at: Completed 04-13-PLAN.md
-last_updated: "2026-10-23T01:31:28.379Z"
-last_activity: 2026-10-22
-last_activity_desc: Completed 04-13
-state_head: 82dadbbbdbfeb4e301ea5febce78427b1291052d
+current_phase: 5
+current_phase_name: Split and first matches
+status: planning
+stopped_at: Phase 04 complete, ready to plan Phase 5
+last_updated: "2026-10-23T19:32:07.412Z"
+last_activity: 2026-10-23
+last_activity_desc: Phase 04 complete, transitioned to Phase 5
+state_head: 2ad9de5683b98b389e7878fa76f92db0d2e609b7
 progress:
   total_phases: 8
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 27
   completed_plans: 27
+  percent: 50
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-21)
+See: .planning/PROJECT.md (updated 2026-10-23)
 
 **Core value:** Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to the original, objdiff 100% for the function), never by an agent's own judgement.
-**Current focus:** Phase 04 — Compiler identification
+**Current focus:** Phase 5 — Split and first matches
 
 ## Current Position
 
-Phase: 04 (Compiler identification) — VERIFYING
-Plan: 13 of 13
-Status: Phase complete — ready for verification
-Last activity: 2026-10-22 — Completed 04-13 (G-04-2 cc.log lock; gate green on host and container; logs under build/gate/04-13/)
+Phase: 5 — Split and first matches
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-23 — Phase 04 complete, transitioned to Phase 5
 
 Progress: [█████░░░░░] 50%
 
 Next steps:
-1. Phases 1-3 complete (Phase 3: VERIFICATION.md passed 87/87, UAT passed by the owner on 2026-10-21).
-2. Phase 4: `/gsd-discuss-phase 4`, then `/gsd-plan-phase 4`, then `/gsd-execute-phase 4` and `/gsd-verify-work 4`.
+1. Phases 1-4 complete (Phase 4: VERIFICATION.md passed 26/26, UAT passed by the owner on 2026-10-23).
+2. Phase 5: `/gsd-discuss-phase 5`, then `/gsd-plan-phase 5`, then `/gsd-execute-phase 5` and `/gsd-verify-work 5`.
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 14
+- Total plans completed: 27
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -53,6 +54,7 @@ Next steps:
 | 1 | 2 | - | - |
 | 2 | 2 | - | - |
 | 3 | 10 | - | - |
+| 04 | 13 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -78,11 +80,11 @@ Recent decisions affecting current work:
 - [Roadmap]: A phase is complete only when its `VERIFICATION.md` passes; ROADMAP checkboxes are annotations
 - [Phase 3]: In-place page splice for the MVP; full LE rewrite deferred (reopen trigger: a matched function changes size). Proven: three EXEs rebuild SHA-1 identical (Phase 3 gate)
 - [Phase 5]: Hybrid pipeline (own oracle + decomp.wtf fork mode) vs fallback is decided by the objdiff-on-converted-ELF spike
-- [Phase 4]: Watcom 10.6 (10.5 equivalent) is the hypothesis; Open Watcom only for `wdis`/`wlink`/`wlib`
 - [Phase 04]: Game code: Watcom C 10.6 (10.5 byte-identical on the probe, 11.0 tied at -4r, candidate pending Phase 5 matches); linked runtime 10.6, no mix
 - [Phase 04]: config/cflags.txt default is * wcc386@10.6 -4r -s -fpi (the flags the scans support); -s kept because only 40/32 functions call __CHK, which get per-glob rules in Phase 5
 - [Phase 04]: Phase 4 gate green on host (974 passed, 6 platform-only skips) and container (980 passed, 0 skipped), ruff clean; rebuild SHA-1 identical; check-watcom OK; compiler/probe real tests pass under wibo
 - [Phase 04]: cc.log appends are serialised by a stdlib OS lock on the sidecar <log>.lock (fcntl.flock / non-blocking msvcrt.locking retrying only on EACCES), released after the log closes; host and container on one log at once is unsupported (G-04-2)
+- [Phase 04]: UAT 2026-10-23: owner re-tested G-04-2 (320 parallel compiles per environment, no lost line) and accepted the shipped `--log` behaviour; a docs note on a nameless or folder `--log` is backlog 999.1; review IN-08..IN-13 (info) left open in 04-REVIEW-DISPOSITION.md
 
 ### Pending Todos
 
@@ -112,6 +114,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-23T01:31:27.751Z
-Stopped at: Completed 04-13-PLAN.md
+Last session: 2026-10-23T19:40:00Z
+Stopped at: Phase 04 complete, ready to plan Phase 5
 Resume file: None
