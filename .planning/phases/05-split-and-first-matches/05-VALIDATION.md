@@ -43,19 +43,19 @@ The planner and executor fill in task IDs. Each row maps one requirement to the 
 
 | Task ID | Plan | Wave | Requirement | Threat Ref | Secure Behavior | Test Type | Automated Command | File Exists | Status |
 |---------|------|------|-------------|------------|-----------------|-----------|-------------------|-------------|--------|
-| TBD | TBD | TBD | SPL-01 | T-05-* | The Ghidra and JDK layer is SHA-256 pinned, and no game or Watcom path is baked into the image | hygiene + unit + real (`requires_ghidra`) | `uv run pytest -q tests/test_hygiene.py tests/test_ghidra.py tests/test_ghidra_real.py` | ❌ W0 (hygiene ✅ extend) | ⬜ pending |
-| TBD | TBD | TBD | SPL-02 | — | N/A | unit + real | `uv run pytest -q tests/test_discover.py tests/test_functions.py tests/test_functions_real.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-03 | — | N/A | unit + real | `uv run pytest -q tests/test_units.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-04 | — | N/A | real (`requires_version("10.6")`, `requires_runner`) + unit | `uv run pytest -q tests/test_stub_real.py tests/test_configure.py` | ❌ W0 / ✅ extend | ⬜ pending |
-| TBD | TBD | TBD | SPL-05 | T-05-* | Listings exist only under gitignored `asm/` and are never committed | unit + hygiene | `uv run pytest -q tests/test_asm.py tests/test_hygiene.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-06 | — | N/A | unit | `uv run pytest -q tests/test_configure.py` | ✅ extend | ⬜ pending |
-| TBD | TBD | TBD | SPL-07 | — | N/A | unit + real | `uv run pytest -q tests/test_elf.py tests/test_omf2elf.py tests/test_omf2elf_real.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-08 | — | N/A | unit | `uv run pytest -q tests/test_target.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-09 | T-05-* | A wrong call or fixup target fails even where objdiff says 100% | unit | `uv run pytest -q tests/test_relocs.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-10 | T-05-* | Original bytes are kept at relocated fields on both sides, and a mutated non-relocated byte fails | unit + real | `uv run pytest -q tests/test_land.py tests/test_splice_real.py` | ❌ W0 / ✅ extend | ⬜ pending |
-| TBD | TBD | TBD | SPL-11 | — | N/A | unit | `uv run pytest -q tests/test_check.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-12 | — | N/A | real (`requires_clang`) | `uv run pytest -q tests/test_lint.py` | ❌ W0 | ⬜ pending |
-| TBD | TBD | TBD | SPL-13 | T-05-* | Both EXE SHA-1s match `config/targets.toml`, and the objdiff-blind negative fails the relocation check | container real | `docker compose run --rm build bash -lc "python configure.py && ninja && ninja verify && uv run reverseapoc check ufo2p/<u> && uv run reverseapoc check tacp/<u>"` + `uv run pytest -q tests/test_check_real.py tests/test_objdiff_real.py` | ❌ W0 | ⬜ pending |
+| 05-10-T1/T2, 05-12-T1/T2, 05-16-T1/T2 | 05-10, 05-12, 05-16 | 3, 4, 6 | SPL-01 | T-05-21, T-05-26, T-05-27 | The Ghidra and JDK layer is SHA-256 pinned, and no game or Watcom path is baked into the image | hygiene + unit + real (`requires_ghidra`) | `uv run pytest -q tests/test_hygiene.py tests/test_ghidra.py tests/test_ghidra_real.py` | ❌ W0 (hygiene ✅ extend) | ⬜ pending |
+| 05-07-T1/T2, 05-13-T1/T2, 05-16-T1/T2 | 05-07, 05-13, 05-16 | 3, 5, 6 | SPL-02 | — | N/A | unit + real | `uv run pytest -q tests/test_discover.py tests/test_functions.py tests/test_functions_real.py` | ❌ W0 | ⬜ pending |
+| 05-13-T3, 05-16-T3 | 05-13, 05-16 | 5, 6 | SPL-03 | — | N/A | unit + real | `uv run pytest -q tests/test_units.py` | ❌ W0 | ⬜ pending |
+| 05-05-T1/T2, 05-14-T2 | 05-05, 05-14 | 2, 5 | SPL-04 | — | N/A | real (`requires_version("10.6")`, `requires_runner`) + unit | `uv run pytest -q tests/test_stub_real.py tests/test_configure.py` | ❌ W0 / ✅ extend | ⬜ pending |
+| 05-11-T1 | 05-11 | 3 | SPL-05 | T-05-24 | Listings exist only under gitignored `asm/` and are never committed | unit + hygiene | `uv run pytest -q tests/test_asm.py tests/test_hygiene.py` | ❌ W0 | ⬜ pending |
+| 05-14-T1/T2/T3, 05-18-T3 | 05-14, 05-18 | 5, 7 | SPL-06 | — | N/A | unit | `uv run pytest -q tests/test_configure.py` | ✅ extend | ⬜ pending |
+| 05-02-T1/T2/T3, 05-06-T1/T2/T3 | 05-02, 05-06 | 2, 3 | SPL-07 | — | N/A | unit + real | `uv run pytest -q tests/test_elf.py tests/test_omf2elf.py tests/test_omf2elf_real.py` | ❌ W0 | ⬜ pending |
+| 05-08-T1/T2 | 05-08 | 3 | SPL-08 | — | N/A | unit | `uv run pytest -q tests/test_target.py` | ❌ W0 | ⬜ pending |
+| 05-09-T1/T2, 05-18-T1 | 05-09, 05-18 | 3, 7 | SPL-09 | T-05-18 | A wrong call or fixup target fails even where objdiff says 100% | unit | `uv run pytest -q tests/test_relocs.py` | ❌ W0 | ⬜ pending |
+| 05-09-T1/T3, 05-17-T2, 05-18-T1 | 05-09, 05-17, 05-18 | 3, 6, 7 | SPL-10 | T-05-19, T-05-20 | Original bytes are kept at relocated fields on both sides, and a mutated non-relocated byte fails | unit + real | `uv run pytest -q tests/test_land.py` + container `uv run pytest -q tests/test_check_real.py` (cmain386 land SHA-1) | ❌ W0 / ✅ extend | ⬜ pending |
+| 05-17-T1/T2/T3 | 05-17 | 6 | SPL-11 | — | N/A | unit | `uv run pytest -q tests/test_check.py` | ❌ W0 | ⬜ pending |
+| 05-12-T3 | 05-12 | 4 | SPL-12 | — | N/A | real (`requires_clang`) | `uv run pytest -q tests/test_lint.py` | ❌ W0 | ⬜ pending |
+| 05-18-T1/T2/T3, 05-19-T1/T2/T3, 05-20-T1 | 05-18, 05-19, 05-20 | 7, 8, 9 | SPL-13 | T-05-39, T-05-43 | Both EXE SHA-1s match `config/targets.toml`, and the objdiff-blind negative fails the relocation check | container real | `docker compose run --rm build bash -lc "uv sync --locked && uv run python configure.py && ninja && ninja lint && ninja verify && uv run reverseapoc check ufo2p/<u> --json && uv run reverseapoc check tacp/<u> --json"` + container `uv run pytest -q tests/test_check_real.py tests/test_objdiff_real.py` | ❌ W0 | ⬜ pending |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
