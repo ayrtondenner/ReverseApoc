@@ -36,21 +36,33 @@ Outputs go to build/<exe>/obj|base|target/<unit>.*.
 
 from __future__ import annotations
 
+import functools
+import importlib.util
 import json
 import math
 import re
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from types import ModuleType
 from typing import Any
 
 from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import CompilerError, compile_source
 from .elf import STT_FUNC, write_elf
-from .functions import FunctionRow, UnitRow, read_functions_csv, read_symbols_csv, read_units_csv
+from .functions import (
+    KIND_GAME,
+    KIND_THUNK,
+    FunctionRow,
+    UnitRow,
+    read_functions_csv,
+    read_symbols_csv,
+    read_units_csv,
+)
 from .land import LandedFunction, LandResult, land
 from .le import LE, Fixup
 from .libmatch import LibMatchError, read_target, select_target
@@ -61,7 +73,7 @@ from .relocs import FIELD_SIZE, OwnPublic, RelocError, RelocResult, check_functi
 from .splice import _write_atomic
 from .symbols import SymbolTable
 from .target import TargetResult, branch_fields, build_target
-from .targets import Target, check_bare_name, load_manifest
+from .targets import REPO_ROOT, Target, check_bare_name, load_manifest
 from .watcom import DEFAULT_INSTALL
 
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
@@ -264,15 +276,138 @@ def _reloc(d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic]) -> RelocRes
         return RelocResult(False, (f"{_hex(d.row.start)}: {exc}",), frozenset(), frozenset())
 
 
+def with_relocs(
+    module: Module, defined: Iterable[Defined], rows: Sequence[FunctionRow], exe: ExeInputs
+) -> list[tuple[Defined, RelocResult]]:
+    """Each of `defined` with its relocation check."""
+    out = []
+    for d in defined:
+        publics = own_publics(module, d.segment, rows, exe.symbols)
+        out.append((d, _reloc(d, exe, publics)))
+    return out
+
+
 def checked_functions(
     module: Module, rows: Sequence[FunctionRow], exe: ExeInputs
 ) -> list[tuple[Defined, RelocResult]]:
     """Every defined function of `module` with its relocation check."""
-    out = []
-    for d in defined_functions(module, rows, exe.symbols):
-        publics = own_publics(module, d.segment, rows, exe.symbols)
-        out.append((d, _reloc(d, exe, publics)))
-    return out
+    return with_relocs(module, defined_functions(module, rows, exe.symbols), rows, exe)
+
+
+# ---- the unit's account: every game/thunk row exported or marked, nothing else exported ----
+
+CONFIGURE = "configure.py"  # owns the D-12 parser of unit files; check imports it, never copies
+STUB_STATUS = "stub, not checked"
+SOURCE_PROBLEM = "source"  # the name of a problem that belongs to the unit file, not a row
+_REQUIRED_KINDS = (KIND_GAME, KIND_THUNK)  # runtime and data-in-code rows stay exempt (F5)
+
+
+@functools.cache
+def _configure() -> ModuleType:
+    """configure.py of this checkout, loaded by path (it is a script, not part of the
+    package), or the one already imported under that name from the same file."""
+    path = REPO_ROOT / CONFIGURE
+    loaded = sys.modules.get("configure")
+    if loaded is not None and Path(getattr(loaded, "__file__", "")).resolve() == path.resolve():
+        return loaded
+    spec = importlib.util.spec_from_file_location("_reverseapoc_configure", path)
+    if not path.is_file() or spec is None or spec.loader is None:
+        raise CheckError(f"{path} not found: check reads unit files with its D-12 parser")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up while it executes
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+@dataclass(frozen=True)
+class SourceMarks:
+    marked: frozenset[str]  # names marked INCLUDE_ASM in live code
+    defined: frozenset[str]  # func_ names defined in C at file scope
+    problems: tuple[str, ...]  # D-12 problems configure.py reports for the file
+
+
+def source_marks(text: str, rows: Sequence[FunctionRow]) -> SourceMarks:
+    """The unit file read by configure.py's D-12 parser, so configure and check agree on what
+    is marked and defined. Its problems are those of check_unit_source that name something
+    outside the unit, or a conditional the parser refuses."""
+    cfg = _configure()
+    try:
+        code = cfg._live_code(cfg._NOT_CODE.sub(cfg._blank, text))
+    except cfg._ConditionalError as exc:
+        return SourceMarks(frozenset(), frozenset(), (str(exc),))
+    outside = tuple(p for p in cfg.check_unit_source(text, rows)
+                    if p.endswith("is not a function of the unit"))  # fmt: skip
+    return SourceMarks(frozenset(cfg._MARKER.findall(code)),
+                       frozenset(cfg._file_scope_definitions(code)), outside)  # fmt: skip
+
+
+@dataclass(frozen=True)
+class Unaccounted:
+    """A mismatch of the unit's account: a row neither checked nor a stub, or a stray public."""
+
+    name: str
+    va: int | None  # the row start; None for a public that is no row
+    reason: str
+
+    def to_json(self) -> dict[str, Any]:
+        return {"name": self.name, "va": None if self.va is None else _hex(self.va),
+                "reason": self.reason}  # fmt: skip
+
+    def format(self) -> str:
+        where = "" if self.va is None else f"  {_hex(self.va)}"
+        return f"MISMATCH  {self.name}{where}  {self.reason}"
+
+
+@dataclass(frozen=True)
+class UnitAccount:
+    defined: tuple[Defined, ...]  # checked and landed
+    stubs: tuple[FunctionRow, ...]  # marked INCLUDE_ASM: reported, not checked, not landed
+    problems: tuple[Unaccounted, ...]
+
+
+def _row_reason(linker: str, exported: bool, marked: bool, elsewhere: bool, in_c: bool) -> str:
+    if exported and marked:
+        return f"both exported as {linker} and marked INCLUDE_ASM"
+    if elsewhere:
+        return f"exported as {linker} outside a code segment"
+    if in_c:
+        return f"defined in C but not exported as {linker}"
+    return f"neither exported nor marked INCLUDE_ASM (expected public {linker})"
+
+
+def account_unit(
+    module: Module, rows: Sequence[FunctionRow], symbols: SymbolTable, text: str
+) -> UnitAccount:
+    """Orchestrator ruling (review round 1): every game and thunk row of `rows` is exactly one
+    of (a) exported under its linker name in a code segment, then checked and landed, or (b)
+    marked INCLUDE_ASM in `text`, then a stub; anything else is a mismatch naming the row.
+    A public of the object that names no row of `rows` is a mismatch too."""
+    defined = defined_functions(module, rows, symbols)
+    exported = {d.row.start for d in defined}
+    publics = list(dict.fromkeys(p.name for p in module.publics))
+    required = [row for row in rows if row.kind in _REQUIRED_KINDS]
+    marks = source_marks(text, rows) if required else SourceMarks(frozenset(), frozenset(), ())
+    stubs, problems, failed = [], [], set()
+    for row in required:
+        linker = symbols.linker_name(row.start)
+        is_exported, is_marked = row.start in exported, row.name in marks.marked
+        if is_exported != is_marked:
+            stubs += [] if is_exported else [row]
+            continue
+        reason = _row_reason(linker, is_exported, is_marked, linker in publics,
+                             row.name in marks.defined)  # fmt: skip
+        problems.append(Unaccounted(row.name, row.start, reason))
+        failed.add(row.start)
+    names = _linker_names(rows, symbols)
+    problems += [Unaccounted(name, None, f"public {name} is not a function of the unit")
+                 for name in publics if name not in names]  # fmt: skip
+    problems += [Unaccounted(SOURCE_PROBLEM, None, p) for p in marks.problems]
+    kept = tuple(d for d in defined if d.row.start not in failed)
+    return UnitAccount(kept, tuple(stubs), tuple(problems))
 
 
 @dataclass(frozen=True)
@@ -390,11 +525,18 @@ class FunctionCheck:
 
 @dataclass(frozen=True)
 class Refused:
-    """A defined function the land step did not land: its relocation check failed."""
+    """What the land step did not land and fails the splice: a function whose relocation check
+    failed, or a mismatch of the unit's account (a row neither exported nor marked, a stray
+    public, whose va is None)."""
 
     name: str
-    va: int
+    va: int | None
     problems: tuple[str, ...]
+
+    def lines(self) -> list[str]:
+        where = "" if self.va is None else f" at {_hex(self.va)}"
+        return [f"  REFUSED {self.name}{where}: {p}"
+                for p in self.problems or ("relocation check failed",)]  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -430,9 +572,7 @@ class ExeLand:
             line = f"MISMATCH {self.exe} sha1 {r.sha1} != manifest {r.expected} {landed}"
             if r.first_difference is not None:
                 line += f"; first difference at VA {_hex(r.first_difference)}"
-        refused = [f"  REFUSED {f.name} at {_hex(f.va)}: {p}" for f in self.refused
-                   for p in f.problems or ("relocation check failed",)]  # fmt: skip
-        return [line, *refused]
+        return [line, *(text for f in self.refused for text in f.lines())]
 
 
 @dataclass(frozen=True)
@@ -445,10 +585,13 @@ class CheckResult:
     splices: tuple[ExeLand, ...]
     target: TargetResult | None = None
     compile_output: str = ""
+    problems: tuple[Unaccounted, ...] = ()  # the unit's account (review round 1)
+    stubs: tuple[FunctionRow, ...] = ()  # marked INCLUDE_ASM: not checked, not landed
 
     @property
     def ok(self) -> bool:
         return (bool(self.functions) and all(fn.ok for fn in self.functions)
+                and not self.problems
                 and bool(self.splices) and all(s.ok for s in self.splices))  # fmt: skip
 
     @property
@@ -468,6 +611,9 @@ class CheckResult:
             "compiler": self.compiler,
             "flags": list(self.flags),
             "functions": [fn.to_json() for fn in self.functions],
+            "problems": [p.to_json() for p in self.problems],
+            "stubs": [{"name": row.name, "va": _hex(row.start), "status": STUB_STATUS}
+                      for row in self.stubs],  # fmt: skip
             "splice": [s.to_json() for s in self.splices],
             "target": self._target_json(),
             "ok": self.ok,
@@ -477,6 +623,8 @@ class CheckResult:
         lines = [f"check {self.exe}/{self.unit}  {self.compiler} {' '.join(self.flags)}"]
         for fn in self.functions:
             lines += fn.format()
+        lines += [p.format() for p in self.problems]
+        lines += [f"STUB      {row.name}  {_hex(row.start)}  {STUB_STATUS}" for row in self.stubs]
         target = self._target_json()
         if target["raw_fields"] or target["undecoded"]:
             raw = ", ".join(f"{f['va']} {f['kind']}" for f in target["raw_fields"]) or "none"
@@ -498,6 +646,13 @@ class SourceCheck:
     functions: tuple[FunctionCheck, ...]
     target: TargetResult
     compile_output: str
+    problems: tuple[Unaccounted, ...] = ()
+    stubs: tuple[FunctionRow, ...] = ()
+
+
+def read_source(src: Path) -> str:
+    """The unit file's text for the D-12 parser; undecodable bytes cannot hide a marker."""
+    return Path(src).read_text(encoding="utf-8", errors="replace")
 
 
 def check_source(
@@ -521,8 +676,9 @@ def check_source(
     _write(paths.base, write_elf(convert(module)))
     target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
     _write(paths.target, target.data)
-    checked = checked_functions(module, rows, exe)
-    if not checked:
+    account = account_unit(module, rows, exe.symbols, read_source(src))
+    checked = with_relocs(module, account.defined, rows, exe)
+    if not checked and not account.problems:
         raise CheckError(f"{src} defines no function of unit {unit}")
     functions = []
     for d, reloc in checked:
@@ -531,7 +687,7 @@ def check_source(
         functions.append(FunctionCheck(d.row.name, d.row.start, d.size, percent, reloc,
                                        same.ok, same.differing, same.first_va))  # fmt: skip
     return SourceCheck(compiled.rule.spec, tuple(compiled.rule.flags), tuple(functions), target,
-                       compiled.output)  # fmt: skip
+                       compiled.output, account.problems, account.stubs)  # fmt: skip
 
 
 # ---- the land step check and `ninja verify` share ----
@@ -558,7 +714,10 @@ def _land_exe(
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
                              f"{src}")  # fmt: skip
         rows = [row for row in exe.rows if row.unit == unit.unit]
-        for d, reloc in checked_functions(read_module(obj), rows, exe):
+        module = read_module(obj)
+        account = account_unit(module, rows, exe.symbols, read_source(src))
+        refused += [Refused(p.name, p.va, (p.reason,)) for p in account.problems]
+        for d, reloc in with_relocs(module, account.defined, rows, exe):
             if reloc.ok:
                 landed.append(LandedFunction(d.row, d.ours, reloc))
             else:
@@ -657,7 +816,8 @@ def check_unit(
                        build_dir=build_dir, compile_fn=compile_fn, options=options,
                        fresh={(target.name, unit)}, loaded={target.name: inputs})  # fmt: skip
     return CheckResult(exe, unit, source.compiler, source.flags, source.functions,
-                       tuple(splices), source.target, source.compile_output)  # fmt: skip
+                       tuple(splices), source.target, source.compile_output,
+                       source.problems, source.stubs)  # fmt: skip
 
 
 # ---- the D-17 sweep ----
