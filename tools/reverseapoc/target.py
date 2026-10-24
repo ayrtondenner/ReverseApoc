@@ -20,13 +20,18 @@ target's object offset there, Pitfall 1):
   into the destination row. Intra-function jumps and rel8 branches get none. Decoding treats an
   LE fixup site at an instruction start as inline data and resumes after the field (P8), and
   data-in-code rows are not decoded at all;
+- decoding of a row stops for good at a byte capstone cannot decode that is no LE fixup site:
+  guessing where the next instruction starts could read an e8/e9/0f 8x inside an immediate as a
+  branch. No PC32 is synthesized past it, the remaining bytes stay as the file has them (LE
+  off32 fixups there still relocate: they come from the fixup table), and the result lists the
+  VA in `undecoded`, so the unit stays cuttable (D-13);
 - a non-off32 LE fixup (sel16, ptr16:32, ...) keeps its raw bytes and gets no relocation; the
   result lists its VA and kind (orchestrator ruling F11), so every unit stays cuttable.
 
 Referenced names the unit does not define become undefined GLOBAL STT_NOTYPE symbols.
 `build_target` refuses, with a TargetError naming the VA, a row outside the code object, a
-reference into the code object that lies in no functions.csv row, and an LE fixup field split
-by a row boundary.
+reference into the code object that lies in no functions.csv row, a rel32 branch whose
+destination is outside the code object, and an LE fixup field split by a row boundary.
 
 Target bytes come only from `load_flat(relocate=False)` (P4): never from Ghidra and never from a
 relocated image, whose fields would hold load addresses instead of the file's bytes.
@@ -65,7 +70,6 @@ CODE_ALIGN = 16  # the alignment omf2elf gives code sections
 OBJ_EXECUTABLE = 0x0004  # LE object flag: executable
 PC32_ADDEND = -4  # a rel32 field is relative to the end of its 4-byte field
 MAX_FIELD = max(SRC_SIZE.values())  # the longest LE fixup field (ptr16:32)
-_UNDECODABLE_SKIP = 1  # resume one byte past a byte capstone cannot decode
 _FIELD = struct.Struct("<i")  # a 32-bit relocated field holds its REL addend
 
 
@@ -85,6 +89,7 @@ class RawField:
 class TargetResult:
     data: bytes  # the ELF object
     raw_fields: tuple[RawField, ...] = ()  # non-off32 fixup sites written without relocation
+    undecoded: tuple[int, ...] = ()  # per row, the VA past which no PC32 was synthesized
 
 
 @dataclass(frozen=True)
@@ -171,43 +176,66 @@ def _fixup_relocs(
     return fields, raw
 
 
-def _instructions(row: FunctionRow, flat: bytes, sites: Mapping[int, int]) -> Iterator[Insn]:
+@dataclass(frozen=True)
+class _Decoded:
+    insns: list[Insn]  # in order
+    undecoded: int | None  # VA of the byte decoding stopped at, short of the row end
+
+
+def _decode_row(row: FunctionRow, flat: bytes, sites: Mapping[int, int]) -> _Decoded:
     """The instructions of `row` in order. An LE fixup site at an instruction start is inline
-    data (a jump table entry): it is skipped whole and decoding resumes after it (P8)."""
+    data (a jump table entry): it is skipped whole and decoding resumes after it (P8). Any other
+    byte capstone cannot decode ends decoding of the row: past it, instruction starts are
+    unknown, and a guess could read an immediate's e8/e9/0f 8x byte as a branch."""
+    insns: list[Insn] = []
     va = row.start
     while va < row.end:
         if va in sites:
             va += sites[va]
             continue
-        last = None
-        for last in decode(bytes(flat[va : row.end]), va, data_sites=sites):
-            yield last
-        va = _UNDECODABLE_SKIP + va if last is None else last.va + last.size
+        before = len(insns)
+        insns += decode(bytes(flat[va : row.end]), va, data_sites=sites)
+        end = insns[-1].va + insns[-1].size if len(insns) > before else va
+        if end < row.end and end not in sites:
+            return _Decoded(insns, end)
+        va = end
+    return _Decoded(insns, None)
+
+
+def _branches(
+    row: FunctionRow, insns: Sequence[Insn], sites: Mapping[int, int]
+) -> Iterator[tuple[int, int]]:
+    """(field, destination) of the rel32 calls and of the rel32 jumps leaving `row`."""
+    for insn in insns:
+        field, dest = insn.rel32_field, insn.branch_target
+        if field is None or dest is None or field in sites:
+            continue
+        if not insn.is_call and row.start <= dest < row.end:
+            continue  # an intra-function jump
+        yield field, dest
 
 
 def branch_fields(
     row: FunctionRow, flat: bytes, fixup_sites: Mapping[int, int]
 ) -> list[tuple[int, int]]:
     """(field VA, destination VA) of every rel32 call in `row` and of every rel32 jump whose
-    destination lies outside it. `fixup_sites` maps each LE fixup field VA to its size; a rel32
-    field that is itself an LE fixup site belongs to that fixup and is not listed."""
-    out = []
-    for insn in _instructions(row, flat, fixup_sites):
-        field, dest = insn.rel32_field, insn.branch_target
-        if field is None or dest is None or field in fixup_sites:
-            continue
-        if not insn.is_call and row.start <= dest < row.end:
-            continue  # an intra-function jump
-        out.append((field, dest))
-    return out
+    destination lies outside it, up to the first undecodable byte. `fixup_sites` maps each LE
+    fixup field VA to its size; a rel32 field that is itself an LE fixup site belongs to that
+    fixup and is not listed."""
+    return list(_branches(row, _decode_row(row, flat, fixup_sites).insns, fixup_sites))
 
 
-def _branch_relocs(img: _Image, row: FunctionRow) -> list[_Field]:
+def _branch_relocs(img: _Image, row: FunctionRow) -> tuple[list[_Field], int | None]:
+    """PC32 fields of `row`, and the VA where decoding stopped short (None if it did not)."""
+    decoded = _decode_row(row, img.flat, img.sites)
     out = []
-    for field, dest in branch_fields(row, img.flat, img.sites):
-        name, offset = _target_symbol(img, dest, f"branch at {_hex(field)}")
+    for field, dest in _branches(row, decoded.insns, img.sites):
+        where = f"branch at {_hex(field)}"
+        if not img.code.contains(dest):
+            raise TargetError(f"{where} to {_hex(dest)}: outside the code object")
+        name, offset = _target_symbol(img, dest, where)
         out.append(_Field(field - row.start, R_386_PC32, name, PC32_ADDEND + offset))
-    return out
+    return out, decoded.undecoded
 
 
 def _rewrite(data: bytearray, fields: Sequence[_Field]) -> bytes:
@@ -230,14 +258,24 @@ def _row_symbol(img: _Image, row: FunctionRow, section: int) -> ElfSymbol:
     return ElfSymbol(name, section, 0, size, STB_GLOBAL, STT_FUNC)
 
 
-def _cut_row(img: _Image, row: FunctionRow) -> tuple[ElfSection, list[_Field], list[RawField]]:
+@dataclass(frozen=True)
+class _Cut:
+    section: ElfSection
+    fields: list[_Field]
+    raw: list[RawField]
+    undecoded: int | None
+
+
+def _cut_row(img: _Image, row: FunctionRow) -> _Cut:
     _check_row(row, img.code)
     fields, raw = _fixup_relocs(img, row, _covered(img, row))
+    undecoded = None
     if row.kind != KIND_DATA_IN_CODE:
-        fields += _branch_relocs(img, row)
+        branches, undecoded = _branch_relocs(img, row)
+        fields += branches
     data = _rewrite(bytearray(img.flat[row.start : row.end]), fields)
     section = ElfSection(SECTION_NAME, data, flags=SHF_ALLOC | SHF_EXECINSTR, align=CODE_ALIGN)
-    return section, fields, raw
+    return _Cut(section, fields, raw, undecoded)
 
 
 def build_target(
@@ -249,20 +287,23 @@ def build_target(
     fixups: Sequence[Fixup] | None = None,
 ) -> TargetResult:
     """The target ELF object of the unit made of `rows`, with the non-off32 fixup sites it left
-    raw. `flat` and `fixups` default to `le.load_flat(relocate=False)` and `le.fixups()`; a
-    caller cutting many units passes them once."""
+    raw and the VAs where decoding stopped short. `flat` and `fixups` default to
+    `le.load_flat(relocate=False)` and `le.fixups()`; a caller cutting many units passes them
+    once."""
     flat = bytes(le.load_flat(relocate=False)) if flat is None else flat
     fixups = le.fixups() if fixups is None else fixups
     img = _Image(flat, fixups, [fx.src_va for fx in fixups],
                  {fx.src_va: fx.size for fx in fixups}, symbols, _code_object(le))  # fmt: skip
-    sections, syms, relocs, all_fields, raw = [], [], [], [], []
+    sections, syms, relocs, all_fields, raw, undecoded = [], [], [], [], [], []
     for index, row in enumerate(sorted(rows, key=lambda r: r.start)):
-        section, fields, row_raw = _cut_row(img, row)
-        sections.append(section)
+        cut = _cut_row(img, row)
+        sections.append(cut.section)
         syms.append(_row_symbol(img, row, index))
-        relocs += [ElfReloc(index, f.offset, f.type, f.symbol) for f in fields]
-        all_fields += fields
-        raw += row_raw
+        relocs += [ElfReloc(index, f.offset, f.type, f.symbol) for f in cut.fields]
+        all_fields += cut.fields
+        raw += cut.raw
+        if cut.undecoded is not None:
+            undecoded.append(cut.undecoded)
     syms += _undefined({s.name for s in syms}, all_fields)
     obj = ElfObject(tuple(sections), tuple(syms), tuple(relocs))
-    return TargetResult(write_elf(obj), tuple(raw))
+    return TargetResult(write_elf(obj), tuple(raw), tuple(undecoded))
