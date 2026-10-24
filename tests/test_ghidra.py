@@ -277,3 +277,11 @@ def test_drafts_refuse_bad_addresses(tmp_path, addresses):
     with pytest.raises(ghidra.GhidraError, match="address"):
         ghidra.export_drafts(EXE, orig, addresses, tmp_path / "asm", install=install, runner=fake)
     assert fake.calls == []
+
+
+def test_default_outputs_are_gitignored():
+    root = ghidra.REPO_ROOT
+    ignored = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    for default in (ghidra.DEFAULT_EXPORT_DIR, ghidra.DEFAULT_ASM_DIR):
+        top = default.relative_to(root).parts[0]
+        assert f"{top}/" in ignored
