@@ -31,8 +31,14 @@ LIB = "DOS/CLIB3R.LIB"
 ROW_START = 0x10200
 
 
-def _row(start: int, end: int, name: str, kind: str = "runtime", unit: str = "",
-         evidence: str = "runtime") -> FunctionRow:  # fmt: skip
+def _row(
+    start: int,
+    end: int,
+    name: str,
+    kind: str = "runtime",
+    unit: str = "",
+    evidence: str = "runtime",
+) -> FunctionRow:
     return FunctionRow(start, end, name, kind, unit, evidence)
 
 
@@ -52,8 +58,16 @@ def _libraries(tmp_path: Path, *modules: bytes, version: str = "10.6") -> list[L
 
 
 def _range(module: str, length: int, publics: tuple[str, ...], **kwargs) -> MatchRange:
-    fields = dict(start=ROW_START, end=ROW_START + length, segment="_TEXT", module=module,
-                  libraries=(LIB,), versions=("10.6",), publics=publics, status="unique")  # fmt: skip
+    fields = {
+        "start": ROW_START,
+        "end": ROW_START + length,
+        "segment": "_TEXT",
+        "module": module,
+        "libraries": (LIB,),
+        "versions": ("10.6",),
+        "publics": publics,
+        "status": "unique",
+    }
     fields.update(kwargs)
     return MatchRange(**fields)
 
@@ -97,8 +111,8 @@ def test_functions_csv_refuses_non_utf8(tmp_path):
 
 
 def test_seed_runtime_rows_splits_a_module_by_public_offsets(tmp_path):
-    libraries = _libraries(tmp_path, code_module("zork", body(8), publics=[("zork_", 0),
-                                                                           ("zork2_", 1)]))  # fmt: skip
+    module = code_module("zork", body(8), publics=[("zork_", 0), ("zork2_", 1)])
+    libraries = _libraries(tmp_path, module)
     rows = seed_runtime_rows([_range("zork", 8, ("zork2_", "zork_"))], libraries)
     assert rows == [
         _row(ROW_START, ROW_START + 1, "zork_"),
@@ -144,6 +158,14 @@ def test_seed_leaves_bytes_before_the_first_public_uncovered(tmp_path):
     assert rows == [_row(ROW_START + 3, ROW_START + 8, "gap_")]
 
 
+def test_seed_ignores_a_public_at_the_segment_end(tmp_path):
+    # An end label (like ___GETDSEnd_) starts no function; it never becomes a zero-length row.
+    module = code_module("lbl", body(8), publics=[("lbl_", 0), ("lblEnd_", 8)])
+    libraries = _libraries(tmp_path, module)
+    rows = seed_runtime_rows([_range("lbl", 8, ("lblEnd_", "lbl_"))], libraries)
+    assert rows == [_row(ROW_START, ROW_START + 8, "lbl_")]
+
+
 def test_seed_finds_a_module_named_by_another_version(tmp_path):
     # runtime.csv names a range after the first module name of every version that matched it; the
     # 10.6 module may only be listed among the alternatives.
@@ -153,8 +175,8 @@ def test_seed_finds_a_module_named_by_another_version(tmp_path):
 
 
 def test_seed_uses_the_rows_first_version_when_it_lacks_the_preferred_one(tmp_path):
-    libraries = _libraries(tmp_path, code_module("old", body(8), publics=[("old_", 2)]),
-                           version="10.5")  # fmt: skip
+    module = code_module("old", body(8), publics=[("old_", 2)])
+    libraries = _libraries(tmp_path, module, version="10.5")
     runtime = [_range("old", 8, ("old_",), versions=("10.5",))]
     assert seed_runtime_rows(runtime, libraries) == [_row(ROW_START + 2, ROW_START + 8, "old_")]
 
