@@ -7,29 +7,43 @@ LE fixups, so splicing our raw bytes would write our placeholder displacement th
 SHA-1 (research Pitfall 2). The patch builder therefore follows KKND's keep-original rule: our
 bytes everywhere except under a relocated field on either side, where the original bytes stay.
 That is sound only after the relocation check proved each field lands on the original target, so
-a function whose check did not pass is refused, never landed.
+a function whose check did not pass is refused, never landed. objdiff's percentage is never a
+substitute for that check.
 
 The SHA-1 compare is independent of the check: a function whose check was wrongly reported ok
-still fails here if any of its bytes outside the fields differ.
+still fails here if any of its bytes outside the fields differ, and the result names the first
+differing VA.
 
-Results carry addresses, counts and SHA-1s only, never bytes.
+Results carry addresses, counts and SHA-1s only, never bytes. write_landed refuses a path inside
+orig/ and the original file itself.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .functions import FunctionRow
 from .le import LE
 from .relocs import FIELD_SIZE, RelocResult
-from .splice import splice
+from .splice import (
+    SpliceError,
+    SpliceResult,
+    _first_difference,
+    _refuse_inside_orig,
+    _refuse_same_file,
+    _write_atomic,
+    region_at,
+    splice,
+)
 from .targets import hash_bytes
 
 
 class LandError(ValueError):
-    """A function cannot be landed: its relocation check did not pass, or it does not fit."""
+    """A function cannot be landed (its relocation check did not pass, or it does not fit its
+    row), or a landed EXE cannot be written where asked."""
 
 
 @dataclass(frozen=True)
@@ -71,6 +85,7 @@ class LandResult:
     expected: str  # the manifest's SHA-1
     landed: tuple[int, ...]  # row starts of the landed functions, sorted
     masked: int  # distinct LE fixup fields the patches covered
+    first_difference: int | None = None  # VA of the first byte that differs from the original
 
     @property
     def ok(self) -> bool:
@@ -80,7 +95,10 @@ class LandResult:
         count = f"landed {len(self.landed)} functions, masked {self.masked} fixup fields"
         if self.ok:
             return f"OK        {count}; sha1 {self.sha1} == manifest"
-        return f"MISMATCH  {count}; sha1 {self.sha1} != manifest {self.expected}"
+        line = f"MISMATCH  {count}; sha1 {self.sha1} != manifest {self.expected}"
+        if self.first_difference is not None:
+            line += f"; first difference at VA {_hex(self.first_difference)}"
+        return line
 
     def to_json(self) -> dict[str, Any]:
         """Addresses, counts and SHA-1s only."""
@@ -91,7 +109,25 @@ class LandResult:
             "landed": list(self.landed),
             "functions": len(self.landed),
             "masked_fields": self.masked,
+            "first_difference": self.first_difference,
         }
+
+
+def _patches(functions: list[LandedFunction], flat: bytes) -> dict[int, bytes]:
+    """{row start: patch}, every patch built (and every check verified) before any splice."""
+    patches: dict[int, bytes] = {}
+    for fn in functions:
+        if fn.row.start in patches:
+            raise LandError(f"two functions start at {_hex(fn.row.start)}")
+        patches[fn.row.start] = build_patch(fn, flat)
+    return patches
+
+
+def _first_difference_va(result: SpliceResult, orig: bytes) -> int | None:
+    offset = _first_difference(result.data, orig)
+    if offset is None:
+        return None
+    return region_at(result.regions, offset).va_at(offset)
 
 
 def land(
@@ -102,11 +138,25 @@ def land(
     flat: bytes | None = None,
 ) -> LandResult:
     """Splice every function into `le` and hash the result. Refuses any function whose
-    relocation check did not pass before anything is spliced."""
+    relocation check did not pass, and two functions at one start, before anything is spliced;
+    overlapping functions are refused by splice(). The result is the same for any input order."""
     functions = sorted(functions, key=lambda fn: fn.row.start)
     flat = bytes(le.load_flat(relocate=False)) if flat is None else flat
-    patches = {fn.row.start: build_patch(fn, flat) for fn in functions}
-    result = splice(le, patches)
+    result = splice(le, _patches(functions, flat))
+    sha1 = hash_bytes(result.data).sha1
     masked = len({m.fixup for m in result.masked})
     landed = tuple(fn.row.start for fn in functions)
-    return LandResult(result.data, hash_bytes(result.data).sha1, expected_sha1, landed, masked)
+    first = None if sha1 == expected_sha1.lower() else _first_difference_va(result, le.data)
+    return LandResult(result.data, sha1, expected_sha1, landed, masked, first)
+
+
+def write_landed(result: LandResult, path: Path, *, orig_dir: Path, source: Path) -> None:
+    """Write the landed EXE to `path` atomically. Refuses a path inside `orig_dir` and a path
+    that is the original `source` file under any name."""
+    try:
+        _refuse_inside_orig(path, orig_dir)
+        _refuse_same_file(path, source)
+    except SpliceError as exc:
+        raise LandError(str(exc)) from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_atomic(path, result.data)
