@@ -8,8 +8,10 @@ FIXUPP threads resolved); nothing here re-reads them. `convert(module)` maps:
   a CODE class to PROGBITS ALLOC+EXECINSTR, a class ending in BSS to NOBITS ALLOC+WRITE with
   the segment length, any other class to PROGBITS ALLOC+WRITE; classes starting with DEB
   (DEBSYM, DEBTYP) are dropped with their fixups;
-- each public to a GLOBAL symbol, STT_FUNC in code and STT_OBJECT elsewhere, sized to the next
-  public of its segment or the segment end;
+- each public to a GLOBAL symbol (LOCAL for LPUBDEF), STT_FUNC in code and STT_OBJECT
+  elsewhere, sized to the next public of its segment or the segment end; in code, Watcom
+  filler (nop, mov eax,eax in both encodings, lea eax,[eax+0]) after a terminal instruction
+  is not counted, decoded with x86.py (a function may fall through, so no `ret` is required);
 - each COMDAT (0xC2 or 0xC3, NBKPAT already applied) to its own section, named after its
   segment or, without one, after the COMDAT, with one symbol at offset 0: WEAK when the
   selection criterion allows duplicates (pick any, same size, exact match), GLOBAL for "no
@@ -40,6 +42,7 @@ from .elf import (
     SHF_EXECINSTR,
     SHF_WRITE,
     STB_GLOBAL,
+    STB_LOCAL,
     STB_WEAK,
     STT_FUNC,
     STT_OBJECT,
@@ -63,6 +66,7 @@ from .omf import (
     read_object,
 )
 from .splice import _write_atomic
+from .x86 import decode, is_filler
 
 _CODE_ALLOCATIONS = (COMDAT_ALLOC_FAR_CODE, COMDAT_ALLOC_CODE32)  # COMDAT without a segment
 CODE_ALIGN = 16
@@ -161,13 +165,37 @@ def _section(part: _Part, data: bytes) -> ElfSection:
     return ElfSection(part.name, data, flags=SHF_ALLOC | SHF_WRITE, align=DATA_ALIGN)
 
 
+def _code_end(part: _Part, start: int, end: int) -> int:
+    """Where the code of [start, end) ends once trailing Watcom filler is trimmed (TH `sized`).
+
+    The span is decoded with x86.decode, stopping at fixup sites (inline data). Only when it
+    decodes to its last byte, ends in filler, and the last non-filler instruction is terminal
+    is the filler cut off; otherwise (fall-through into the next function, inline data, bytes
+    capstone cannot decode) the whole span is kept.
+    """
+    sites = frozenset(fx.offset for fx in part.fixups)
+    insns = list(decode(part.data[start:end], start, data_sites=sites))
+    if not insns or insns[-1].va + insns[-1].size != end:
+        return end
+    body = list(insns)
+    while body and is_filler(body[-1]):
+        body.pop()
+    if len(body) == len(insns) or not body or not body[-1].is_terminal:
+        return end
+    return body[-1].va + body[-1].size
+
+
 def _sized_publics(module: Module, part: _Part, section: int) -> list[ElfSymbol]:
-    """A symbol per public in the segment of `part`, sized to the next public or the end."""
+    """A symbol per public in the segment of `part`, sized to the next public or the end;
+    in code, trailing filler after a terminal instruction is not counted (`_code_end`)."""
     own = [p for p in module.publics if p.segment_index == part.segment_index]
     offsets = sorted({p.offset for p in own})
     ends = dict(zip(offsets, [*offsets[1:], part.length], strict=False))  # [length] if no public
+    if part.code:
+        ends = {start: _code_end(part, start, end) for start, end in ends.items()}
     kind = STT_FUNC if part.code else STT_OBJECT
-    return [ElfSymbol(p.name, section, p.offset, ends[p.offset] - p.offset, type=kind)
+    return [ElfSymbol(p.name, section, p.offset, ends[p.offset] - p.offset,
+                      bind=STB_LOCAL if p.local else STB_GLOBAL, type=kind)
             for p in own]  # fmt: skip
 
 
@@ -176,7 +204,8 @@ def _comdat_symbol(part: _Part, section: int) -> ElfSymbol:
     assert part.comdat is not None
     bind = STB_GLOBAL if part.comdat.selection == COMDAT_SELECT_NO_MATCH else STB_WEAK
     kind = STT_FUNC if part.code else STT_OBJECT
-    return ElfSymbol(part.comdat.name, section, 0, part.length, bind=bind, type=kind)
+    size = _code_end(part, 0, part.length) if part.code else part.length
+    return ElfSymbol(part.comdat.name, section, 0, size, bind=bind, type=kind)
 
 
 def _symbols(module: Module, parts: list[_Part]) -> list[ElfSymbol]:
