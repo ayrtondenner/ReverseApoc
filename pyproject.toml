@@ -5,7 +5,9 @@ description = "Tooling for a byte-matching decompilation of X-COM Apocalypse (DO
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
 license = "GPL-3.0-or-later"
-dependencies = []
+dependencies = [
+    "capstone==5.0.9",
+]
 
 [project.scripts]
 reverseapoc = "reverseapoc.cli:main"

@@ -8,11 +8,20 @@ at the main checkout's orig/; the tests only read it). Docker and CI leave it un
 variable REVERSEAPOC_WATCOM_DIR overrides it the same way, read-only. Real-file tests call
 `requires_version(version)` first, which skips naming the missing version, and compile tests call
 `requires_runner()`, which skips unless a compiler runner exists (the Windows host or wibo).
+
+Tests that need another tool skip the same way, naming it: `requires_capstone()`,
+`requires_objdiff()` (objdiff-cli on PATH), `requires_clang()` (clang-18 or clang on PATH) and
+`requires_ghidra()`, which returns the Ghidra install (GHIDRA_INSTALL_DIR, read at call time, else
+GHIDRA_DIR) and skips unless it holds support/analyzeHeadless.
+
+`build_le_image(ghidra_loadable=True)` builds an image Ghidra's LeLoader accepts: the first MZ
+gets e_lfarlc 0x40 and an e_lfanew pointing at the LE header.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import shutil
 import struct
@@ -47,11 +56,53 @@ def requires_runner() -> None:
         pytest.skip("no compiler runner: needs the Windows host or wibo in the container")
 
 
+def requires_capstone() -> None:
+    """Skips the test unless the capstone package is importable."""
+    if importlib.util.find_spec("capstone") is None:
+        pytest.skip("capstone is not installed (`uv sync --locked`, or run in the container)")
+
+
+def requires_objdiff() -> None:
+    """Skips the test unless objdiff-cli is on PATH."""
+    if shutil.which("objdiff-cli") is None:
+        pytest.skip("objdiff-cli is not on PATH (run in the container)")
+
+
+def requires_clang() -> None:
+    """Skips the test unless clang-18 or clang is on PATH."""
+    if shutil.which("clang-18") is None and shutil.which("clang") is None:
+        pytest.skip("clang-18 / clang is not on PATH (run in the container)")
+
+
+GHIDRA_DIR = Path("/opt/ghidra")  # where the Docker image installs Ghidra
+
+
+def ghidra_dir() -> Path:
+    """The Ghidra install: GHIDRA_INSTALL_DIR when set, read at call time, else GHIDRA_DIR."""
+    return Path(os.environ.get("GHIDRA_INSTALL_DIR") or GHIDRA_DIR)
+
+
+def requires_ghidra() -> Path:
+    """The Ghidra install dir; skips the test unless it holds support/analyzeHeadless."""
+    path = ghidra_dir()
+    if not (path / "support" / "analyzeHeadless").is_file():
+        pytest.skip(
+            f"Ghidra: {path}/support/analyzeHeadless not found (set GHIDRA_INSTALL_DIR, "
+            "or run in the container)"
+        )
+    return path
+
+
 PAGE_SIZE = 0x1000
 LAST_PAGE_SIZE = 0x200
 OUTER_STUB_SIZE = 0x180  # fake "bound extender" MZ in front of the MZ that owns the LE header
 INNER_LFANEW = 0x80  # e_lfanew of the owning MZ (relative to that MZ)
 LE_HEADER_SIZE = 0xC4  # object table follows the header, as wlink lays it out
+MZ_E_LFARLC = 0x18  # MZ header field: file offset of the relocation table (u16)
+MZ_E_LFANEW = 0x3C  # MZ header field: file offset of the new-format (LE) header (u32)
+LE_DATA_PAGES = 0x80  # LE header field: data pages offset, relative to the MZ owning the header
+# e_lfarlc value of a new-format executable: Ghidra's LeLoader trusts e_lfanew only with it.
+NEW_FORMAT_LFARLC = 0x40
 
 # (vsize, base, flags, first logical page, page count)
 OBJECTS = [
@@ -169,6 +220,7 @@ def build_le_image(
     extra_header_fields: dict[int, int] | None = None,
     objects: list[tuple[int, int, int, int, int]] | None = None,
     patches: dict[int, bytes] | None = None,
+    ghidra_loadable: bool = False,
 ) -> SyntheticLE:
     """Build a minimal LE executable: [fake extender MZ] + MZ stub + LE header + tables + pages
     [+ trailer].
@@ -185,6 +237,13 @@ def build_le_image(
     after the fill: each address is mapped through the object table to its logical page, then
     through `page_numbers` to the physical page in the file. A patch must stay inside one page
     and inside that page's data (the short last page included); otherwise AssertionError.
+
+    With `ghidra_loadable=True` the first MZ (the fake extender when bound, else the stub) gets
+    e_lfarlc = NEW_FORMAT_LFARLC and an e_lfanew holding the LE header's file offset, which is
+    what Ghidra's LeLoader needs to accept the file (05-RESEARCH Pitfall 5). That MZ then owns
+    the LE header, so the data-pages field is written relative to it (the start of the file)
+    and the pages stay where they are: `LE(data).stub_offset` is 0, every other parsed value
+    matches the default image.
     """
     fixups = DEFAULT_FIXUPS if fixups is None else fixups
     num_pages = len(page_flags)
@@ -198,14 +257,15 @@ def build_le_image(
     if bound:
         outer = bytearray(b"\xcc" * OUTER_STUB_SIZE)
         outer[0:2] = b"MZ"
-        struct.pack_into("<I", outer, 0x3C, 0x0FFFFFF0)  # points past EOF, like the real loader
+        # e_lfanew points past EOF, like the real loader
+        struct.pack_into("<I", outer, MZ_E_LFANEW, 0x0FFFFFF0)
         outer[0x100:0x104] = b"LE\x00\x00"  # decoy: no MZ owns it
         prefix = bytes(outer)
 
     stub_offset = len(prefix)
     inner = bytearray(b"\x90" * INNER_LFANEW)
     inner[0:2] = b"MZ"
-    struct.pack_into("<I", inner, 0x3C, INNER_LFANEW)
+    struct.pack_into("<I", inner, MZ_E_LFANEW, INNER_LFANEW)
 
     obj_table = b"".join(struct.pack("<6I", *obj, 0) for obj in objects)
     page_map = b"".join(
@@ -257,10 +317,14 @@ def build_le_image(
     tables = bytes(header) + obj_table + page_map + fixup_page_table + fixup_records
     body_end = le_rel + len(tables)
     data_pages_rel = (body_end + 0x1FF) & ~0x1FF
-    struct.pack_into("<I", header, 0x80, data_pages_rel)
+    owner_offset = 0 if ghidra_loadable else stub_offset  # file offset of the MZ owning LE
+    struct.pack_into("<I", header, LE_DATA_PAGES, stub_offset - owner_offset + data_pages_rel)
     tables = bytes(header) + obj_table + page_map + fixup_page_table + fixup_records
 
     image = bytearray(prefix + bytes(inner) + tables)
+    if ghidra_loadable:
+        struct.pack_into("<H", image, MZ_E_LFARLC, NEW_FORMAT_LFARLC)
+        struct.pack_into("<I", image, MZ_E_LFANEW, stub_offset + le_rel)
     image += b"\x00" * (stub_offset + data_pages_rel - len(image))
     page_offsets = []
     for n in range(1, num_pages + 1):
