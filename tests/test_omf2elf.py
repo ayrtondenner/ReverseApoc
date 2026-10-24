@@ -310,8 +310,8 @@ def test_lpubdef_is_local_in_elf():
     stat, pub = elf.symbol("stat_"), elf.symbol("pub_")
     assert (stat.bind, stat.type, stat.value, stat.size) == (STB_LOCAL, STT_FUNC, 2, 2)
     assert (pub.bind, pub.type) == (STB_GLOBAL, STT_FUNC)
-    order = [s.name for s in elf.symbols]
-    assert order.index("stat_") < elf.symtab_info <= order.index("pub_")
+    symtab = ["", *(s.name for s in elf.symbols)]  # elfread leaves out the null symbol 0
+    assert symtab.index("stat_") < elf.symtab_info <= symtab.index("pub_")
 
 
 @pytest.mark.parametrize(
