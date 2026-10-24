@@ -86,7 +86,8 @@ def test_counts_in_range(real):
 
 
 def test_ends_tile(real):
-    """Every function ends after its start and no later than the next start (D-07 end rule)."""
+    """Every function ends after its start and no later than the next start (D-07 end rule), so
+    ranges never overlap; code after a function's padding may be left as an uncovered gap."""
     le, found = real
     end_of = disc.ends(found, le)
     limits = [*found.starts[1:], code_object(le).end]
