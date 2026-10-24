@@ -611,6 +611,20 @@ def test_functions_verb_writes_both_csvs(tmp_path: Path, capsys):
     assert "1 missing verdict" in captured.out
 
 
+def test_functions_verb_keeps_units(tmp_path: Path, capsys):
+    """Regenerating functions.csv fills the unit column from the existing units.csv, so a hand
+    re-cut survives; without a units.csv the column stays empty."""
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(C))
+    out = tmp_path / "out"
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0, capsys.readouterr().err
+    assert {row.unit for row in read_functions_csv(out / "functions.csv")} == {""}
+    units = [UnitRow("front", A, C, "first"), UnitRow("grafix", C, C + 0x10, "hand")]
+    write_units_csv(out / "units.csv", units, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0, capsys.readouterr().err
+    rows = read_functions_csv(out / "functions.csv")
+    assert [row.unit for row in rows] == ["front", "front", "grafix"]
+
+
 # ---- the full D-07/D-08 rule set ----
 
 OBJECT_END = CODE + 0x1800  # end of the synthetic code object (conftest OBJECTS)
