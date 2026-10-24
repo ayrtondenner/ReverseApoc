@@ -249,6 +249,7 @@ class Segment:
     fixups: tuple[OMFFixup, ...] = ()
     unmaskable: bool = False  # a FIXUPP addressed iterated data, so the mask is unknown
     backpatched: frozenset[int] = frozenset()
+    unmaskable_at: int | None = None  # data offset of the first LIDATA a FIXUPP addressed
 
     @property
     def is_code(self) -> bool:
@@ -272,6 +273,8 @@ class Comdat:
     unmaskable: bool = False  # a FIXUPP addressed iterated data, so the mask is unknown
     attributes: int = 0  # selection criterion (high nibble) and allocation type (low nibble)
     backpatched: frozenset[int] = frozenset()  # offsets an NBKPAT added into
+    iterated_at: int | None = None  # data offset of the first iterated (LIDATA-style) record
+    unmaskable_at: int | None = None  # data offset of the first iterated data a FIXUPP addressed
 
     @property
     def selection(self) -> int:
@@ -382,6 +385,7 @@ class _SegmentBuilder:
     fixups: list[OMFFixup] = field(default_factory=list)
     unmaskable: bool = False
     backpatched: set[int] = field(default_factory=set)
+    unmaskable_at: int | None = None
 
     def check_range(self, offset: int, size: int, what: str) -> None:
         if offset + size > self.length:
@@ -396,7 +400,7 @@ class _SegmentBuilder:
     def freeze(self) -> Segment:
         return Segment(self.index, self.name, self.class_name, self.length, self.use32,
                        bytes(self.data), tuple(self.fixups), self.unmaskable,
-                       frozenset(self.backpatched))  # fmt: skip
+                       frozenset(self.backpatched), self.unmaskable_at)  # fmt: skip
 
 
 @dataclass
@@ -411,6 +415,8 @@ class _ComdatBuilder:
     fixups: list[OMFFixup] = field(default_factory=list)
     unmaskable: bool = False
     backpatched: set[int] = field(default_factory=set)
+    iterated_at: int | None = None
+    unmaskable_at: int | None = None
 
     def check_range(self, offset: int, size: int, what: str) -> None:
         if offset + size > len(self.data):
@@ -430,7 +436,8 @@ class _ComdatBuilder:
     def freeze(self) -> Comdat:
         return Comdat(self.name, self.segment_index, self.alignment, bytes(self.data),
                       tuple(self.fixups), self.unmaskable, self.attributes,
-                      frozenset(self.backpatched))  # fmt: skip
+                      frozenset(self.backpatched), self.iterated_at,
+                      self.unmaskable_at)  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -716,6 +723,8 @@ def _comdat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     block = _comdat_block(m, flags, m.lname(cur.index()), seg, alignment, attributes)
     iterated = bool(flags & COMDAT_ITERATED)
     if iterated:
+        if block.iterated_at is None:
+            block.iterated_at = offset
         _write_iterated(block, offset, cur, rec)
     else:
         data = cur.rest()
@@ -775,6 +784,8 @@ def _fixup(m: _ModuleReader, cur: _Cursor, rec: Record, first: int) -> None:
     displacement = 0 if fixdat & FIXDAT_P else m.offset_field(cur, rec)
     if data.iterated:
         data.target.unmaskable = True  # the offset addresses the iterated record itself
+        if data.target.unmaskable_at is None:
+            data.target.unmaskable_at = data.offset
         return
     offset = data.offset + (locat & _LOCAT_OFFSET_MASK)
     data.target.check_range(offset, size, "fixup")
