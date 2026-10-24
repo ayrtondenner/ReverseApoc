@@ -169,7 +169,7 @@ Plans:
   4. For one function per EXE, the single-unit `check` tool prints objdiff 100%, a passing relocation check (every non-relocated byte, equal length, every `call rel32` target, every absolute fixup target) and, after splicing with the original link-time value kept at each fixup site, both rebuilt EXEs SHA-1 identical to `config/targets.toml`; a negative test with a wrong call or fixup target makes the relocation check fail even where objdiff reports 100% (SPL-09, SPL-10, SPL-11, SPL-13)
 
 **Spike**: objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback: if INVALIDATED, the KKND-style compare stays the oracle and Phase 6 uses a minimal own agent layer).
-**Plans:** 5/20 plans executed
+**Plans:** 11/20 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -182,12 +182,12 @@ Plans:
 - [x] 05-05-PLAN.md — INCLUDE_ASM stub in include/common.h and `-i=include;H` in the cc wrapper, proven inert under 10.6 (SPL-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 05-06-PLAN.md — omf2elf complete: COMDAT 0xC2, NBKPAT, LIDATA, BAKPAT, CEXTDEF, LPUBDEF, filler sizing, refusals (SPL-07)
-- [ ] 05-07-PLAN.md — capstone recursive-descent discovery with LE evidence, jump tables, D-07 ends (SPL-02)
-- [ ] 05-08-PLAN.md — per-unit target ELF cut from the LE with rebuilt relocations and PC32 (SPL-08)
-- [ ] 05-09-PLAN.md — relocation check and the land step (keep-original fields, splice, SHA-1) with the negative suite (SPL-09, SPL-10, SPL-13)
-- [ ] 05-10-PLAN.md — Ghidra headless driver, Java export and drafts scripts, export adapter (SPL-01)
-- [ ] 05-11-PLAN.md — asm listings into gitignored asm/ and the P16 easiest-first scorer, `asm`/`score` verbs (SPL-05)
+- [x] 05-06-PLAN.md — omf2elf complete: COMDAT 0xC2, NBKPAT, LIDATA, BAKPAT, CEXTDEF, LPUBDEF, filler sizing, refusals (SPL-07)
+- [x] 05-07-PLAN.md — capstone recursive-descent discovery with LE evidence, jump tables, D-07 ends (SPL-02)
+- [x] 05-08-PLAN.md — per-unit target ELF cut from the LE with rebuilt relocations and PC32 (SPL-08)
+- [x] 05-09-PLAN.md — relocation check and the land step (keep-original fields, splice, SHA-1) with the negative suite (SPL-09, SPL-10, SPL-13)
+- [x] 05-10-PLAN.md — Ghidra headless driver, Java export and drafts scripts, export adapter (SPL-01)
+- [x] 05-11-PLAN.md — asm listings into gitignored asm/ and the P16 easiest-first scorer, `asm`/`score` verbs (SPL-05)
 
 **Wave 4** *(blocked on Wave 3 completion; main checkout)*
 - [ ] 05-12-PLAN.md — Ghidra 12.1.4 + JDK 21 + clang 18 in the image, smoke and real export, `ghidra-export` and `lint` verbs, compat header (SPL-01, SPL-12)
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
-| 5. Split and first matches | 5/20 | In Progress | - |
+| 5. Split and first matches | 11/20 | In Progress | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
