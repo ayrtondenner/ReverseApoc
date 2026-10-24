@@ -354,3 +354,138 @@ def test_land_all_lists_only_exes_with_units(tmp_path, monkeypatch, capsys):
     doc = json.loads(capsys.readouterr().out)
     assert [s["exe"] for s in doc["splice"]] == ["ONE.EXE", "TWO.EXE"]
     assert all(s["ok"] and s["landed"] == 1 for s in doc["splice"])
+
+
+# ---- Task 3: the logged D-17 sweep -------------------------------------------------------------
+
+
+def test_sweep_matrix():
+    assert check.SWEEP_VERSIONS == ("10.6", "10.5", "11.0")
+    assert check.SWEEP_CPU == ("-4r", "-5r")
+    assert check.SWEEP_OPT == ((), ("-ox",), ("-os",), ("-ot",), ("-oneatx",))
+    cells = check.sweep_cells(chk=False)
+    assert len(cells) == 30 and len(set(cells)) == 30
+    assert all("-s" in flags and "-fpi" in flags for _, flags in cells)
+    assert cells[0] == ("10.6", ("-4r", "-s", "-fpi"))
+    chk = check.sweep_cells(chk=True)
+    assert len(chk) == 60 and len(set(chk)) == 60
+    assert sum("-s" in flags for _, flags in chk) == 30
+    assert all("-fpi" in flags for _, flags in chk)
+    assert {version for version, _ in chk} == set(check.SWEEP_VERSIONS)
+
+
+class FlagCompiler(FakeCompiler):
+    """Writes the matching object only when the cell's temporary cflags rule holds `-ox`."""
+
+    def __call__(self, src, obj, **kwargs):
+        good = "-ox" in Path(kwargs["cflags"]).read_text(encoding="utf-8").split()
+        self.data = omf_object() if good else omf_object(callee="func_00010020_")
+        return super().__call__(src, obj, **kwargs)
+
+
+def watcom_tree(env: Env, versions=None) -> Path:
+    root = env.root / "watcom"
+    for version in check.SWEEP_VERSIONS if versions is None else versions:
+        (root / version).mkdir(parents=True)
+    return root
+
+
+def run_sweep(env: Env, compiler, *, versions=None):
+    return check.sweep(
+        STEM, UNIT, "func_00010000", **env.kwargs(), watcom_dir=watcom_tree(env, versions),
+        compile_fn=compiler, objdiff_runner=FakeObjdiff(100.0),
+    )  # fmt: skip
+
+
+def cell_lines(text: str) -> list[str]:
+    return [line for line in text.splitlines() if line.startswith("cell ")]
+
+
+def test_sweep_logs_one_line_per_cell(env, monkeypatch):
+    def no_land(*args, **kwargs):
+        raise AssertionError("the sweep landed something")
+
+    monkeypatch.setattr(check, "land", no_land)
+    monkeypatch.setattr(check, "land_all", no_land)
+    report = run_sweep(env, FlagCompiler())
+
+    log = env.build / "logs" / f"sweep-{STEM}-{UNIT}-func_00010000.log"
+    assert report.log_path == log
+    text = log.read_text(encoding="utf-8")
+    lines = cell_lines(text)
+    assert len(lines) == 30
+    assert lines[0].split()[:3] == ["cell", "01", "wcc386@10.6"]
+    assert "-4r -s -fpi" in lines[0] and "reloc FAILED" in lines[0]
+    ox = [line for line in lines if " -ox " in line]
+    assert len(ox) == 6 and all("objdiff 100%" in line and "reloc ok" in line and
+                                "differing 0" in line for line in ox)  # fmt: skip
+    (best,) = [line for line in text.splitlines() if line.startswith("best:")]
+    assert [n for n in re.findall(r"cell (\d+)", best)] == [line.split()[1] for line in ox]
+    assert [cell.number for cell in report.best] == [int(line.split()[1]) for line in ox]
+    assert report.lines == text.splitlines()
+
+
+def test_sweep_log_carries_no_bytes(env):
+    run_sweep(env, FlagCompiler())
+    text = (env.build / "logs" / f"sweep-{STEM}-{UNIT}-func_00010000.log").read_text("utf-8")
+    for line in cell_lines(text):
+        words = line.split()
+        assert words[0] == "cell" and words[2].startswith("wcc386@")
+        assert not re.search(r"\b[0-9a-f]{8,}\b", line)  # no hex dumps, no SHA-1s
+
+
+def test_sweep_leaves_cflags_alone(env):
+    cflags = env.config / "cflags.txt"
+    original_text = Path(check.DEFAULT_CFLAGS).read_bytes()
+    cflags.write_bytes(original_text)
+    compiler = FlagCompiler()
+    run_sweep(env, compiler)
+
+    assert cflags.read_bytes() == original_text
+    assert Path(check.DEFAULT_CFLAGS).read_bytes() == original_text
+    sweep_dir = env.build / "sweep" / STEM / UNIT
+    assert len(compiler.calls) == 30
+    for _, obj, kwargs in compiler.calls:
+        assert Path(kwargs["cflags"]).is_relative_to(sweep_dir)
+        assert obj.is_relative_to(sweep_dir)
+    rule = Path(compiler.calls[1][2]["cflags"]).read_text(encoding="utf-8")
+    assert rule.split() == ["*", "wcc386@10.6", "-4r", "-ox", "-s", "-fpi"]
+
+
+def test_sweep_not_installed(env):
+    compiler = FlagCompiler()
+    report = run_sweep(env, compiler, versions=("10.6",))
+    lines = cell_lines("\n".join(report.lines))
+    assert len(lines) == 30
+    missing = [line for line in lines if line.endswith("not installed")]
+    assert len(missing) == 20
+    assert all("wcc386@10.6" not in line for line in missing)
+    assert len(compiler.calls) == 10
+
+
+def test_sweep_doubles_the_matrix_for_a_chk_caller(tmp_path):
+    """The function calls the runtime public __CHK: the sweep toggles -s (60 cells)."""
+    env = make_env(tmp_path)
+    chk = FunctionRow(OTHER.start, OTHER.end, "__CHK", "runtime", UNIT, "runtime")
+    write_functions_csv(env.config / STEM / "functions.csv", [ROW, chk, FAR], EXE)
+    report = run_sweep(env, FakeCompiler(omf_object(callee="__CHK")))
+    assert report.chk
+    assert len(cell_lines("\n".join(report.lines))) == 60
+
+
+def test_sweep_cli(env, monkeypatch, capsys):
+    patch_tools(monkeypatch, compiler=FlagCompiler())
+    watcom = watcom_tree(env)
+    argv = ["check", f"{STEM}/{UNIT}", *env.argv(), "--watcom-dir", str(watcom),
+            "--sweep", "func_00010000"]  # fmt: skip
+    assert cli_main(argv) == 0
+    out = capsys.readouterr().out
+    assert len(cell_lines(out)) == 30 and "best:" in out
+    assert not (env.build / "land").exists()
+
+
+def test_sweep_unknown_function(env, monkeypatch, capsys):
+    patch_tools(monkeypatch)
+    argv = ["check", f"{STEM}/{UNIT}", *env.argv(), "--sweep", "func_00010020"]
+    assert cli_main(argv) == check.EXIT_TOOL
+    assert "func_00010020" in capsys.readouterr().err
