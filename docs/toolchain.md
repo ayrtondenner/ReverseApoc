@@ -157,6 +157,7 @@ Notes:
 - The `-4` reading rests on few sites: UFO2P's two recognised 5-dword copies plus two likely ones the recogniser skips (an unaccepted instruction between `mov ecx,5` and `rep movsd`), in two code regions; TACP's six plus two likely ones ([04-10-SUMMARY.md](../.planning/phases/04-compiler-identification/04-10-SUMMARY.md), fix rounds 1 and 2). The size table behind it was measured on 10.6 and 11.0; 10.5 gives the same object as 10.6 on the probe's 5-dword copy in every cell.
 - Switch compare forms are counted for `eax`/`al` only; the switch and loop counts are shapes, never evidence for a flag.
 - Both EXEs give the same answer for every flag: a measured finding, not an assumption (D-09).
+- **What the first UFO2P match says (05-18, func_000A3980, see [Phase 5 match evidence](#phase-5-match-evidence)).** It matches under the default rule, so the rule holds for it, but it separates no candidate: no sweep ran (D-17 sweeps only after a miss), so 10.6, 10.5 and 11.0 stay tied; it has no 5-dword struct copy, so `-4` vs `-5` stays tied; it has no loop, branch or stack frame for an `-o` set to change, so `-o*` stays a candidate; and it loads a byte declared `signed char`, which reads the same with or without `-j`. One match changes nothing in the `*` default: D-18 needs 3 functions from different regions of both EXEs that agree.
 
 The default rule in `config/cflags.txt` is `*  wcc386@10.6  -4r -s -fpi`, written explicitly. It is consistent with the scans above and supported by them; it is not proven by them. The version is 10.6 because that is the one consistent with the probe (10.5 byte-identical, 11.0 tied with it at `-4r`, see Result) and with the linked runtime library (10.6, D-07). `-4r` carries the register convention (no 3S-only runtime row) and the CPU target `-4` (no `-5` evidence: the 5-dword struct copies use `rep`). `-s` is the stack-check default, and `-fpi` is wcc386's default made explicit (the probe gives the same object with and without it; research A3 caveat in the FPU row). The candidates stay out of the rule until Phase 5 matches prove them, and the first Phase 5 matches also confirm or change the rule itself.
 
@@ -169,6 +170,16 @@ References from other Watcom games, not evidence for ours:
 | NHL95PC | 10.0 GA | `-5r -fpi -zp1` |
 
 For scratches, start from the default rule above and work through [Fallbacks and candidates](#fallbacks-and-candidates) below.
+
+### Phase 5 match evidence
+
+Every hand match, with the cell that proved it. A row is written only from `reverseapoc check EXE/UNIT --json` exiting 0: objdiff 100.0, the relocation check, the byte compare and both EXEs landed SHA-1 identical to `config/targets.toml` (D-16). "default" is the `*` rule of `config/cflags.txt`; a sweep cell names its number and its log under `build/logs/` (gitignored).
+
+| EXE | Function | Unit | Compiler | Flags | Evidence cell | objdiff | Reloc check | SHA-1 |
+|---|---|---|---|---|---|---|---|---|
+| UFO2P.EXE | func_000A3980 (13 bytes: one call, one `signed char` load) | u_000a34f0 (`src/ufo2p/u_000a34f0.c`, 2 INCLUDE_ASM stubs) | wcc386@10.6 | `-4r -s -fpi` | default | 100.0 | ok | UFO2P.EXE and TACP.EXE identical |
+
+Before any game C, plan 05-18 re-proved spike 005 through the production writers (`tests/test_check_real.py`): `check_source` on Watcom's own CMAIN386.C against the `__CMain` runtime row gives objdiff 100.0, a passing relocation check and equal bytes in both EXEs, landing it alone keeps both SHA-1s, and a planted wrong call target fails the relocation check. `tests/test_objdiff_real.py` repeats the objdiff blind spot (a wrong 2nd relocation of one instruction scores 100.0) through omf2elf, the target writer and objdiff-cli.
 
 ### Fallbacks and candidates
 
