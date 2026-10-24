@@ -99,6 +99,7 @@ def test_ghidra_export_verb_refuses_an_unknown_exe(monkeypatch, tmp_path, capsys
 REAL_EXES = ("UFO2P.EXE", "TACP.EXE")
 MIN_FUNCTIONS = 1_300  # research Pattern 2: 1408 (UFO2P) and 1498 (TACP) at full analysis
 MIN_RUNTIME_STARTS = 70  # runtime.csv rows whose start Ghidra also finds
+DATA_OBJECT_NOISE = 1  # one-address "functions" Ghidra makes in the data object, per EXE
 
 
 def _real_param(name: str):
@@ -128,10 +129,15 @@ def test_export_real_count(real_export):
 
 
 def test_export_real_entries_in_code_object(real_export):
+    # Measured 2026-10-24: Ghidra also makes ONE function in each EXE's data object, a
+    # one-address body (FUN_0013bd40 in UFO2P, FUN_002b405c in TACP) with no code behind it.
+    # It is analysis noise, never a start candidate: reconcile (05-16) drops entries outside
+    # the code object. Every other entry lies in the code object.
     _, le, rows = real_export
-    code = le.objects[0]
-    outside = [f"0x{row.entry:08X}" for row in rows if not code.contains(row.entry)]
-    assert outside == []
+    code, data = le.objects[0], le.objects[1]
+    outside = [row for row in rows if not code.contains(row.entry)]
+    assert len(outside) <= DATA_OBJECT_NOISE
+    assert all(data.contains(row.entry) and row.addresses == 1 for row in outside)
 
 
 def test_export_real_has_the_le_entry_point(real_export):
