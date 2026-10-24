@@ -237,6 +237,55 @@ None. objdiff-cli is in the container image; on the host `check` exits 2 and nam
 - `uv run pytest -q`: 1336 passed, 200 skipped; `uv run ruff check .`: all checks passed
 - Acceptance: Task 2 `-k` selection 21 passed (>= 8); `uv run reverseapoc check ufo2p/nonexistent` exit 2; `-k sweep` 8 passed
 
+## Review fixes (round 1)
+
+**Finding (Important):** `defined_functions` checked only the code publics that name a unit row. Suppose a game or thunk row is defined in C but not exported under its linker name (a cdecl name, `#pragma aux`, a typo, another segment). Both check and land skipped that row silently. The unit could exit 0 with `ok: true`, and the original bytes still gave a matching SHA-1.
+
+**Orchestrator ruling applied:** every `game` and `thunk` row of the unit must meet exactly one of two conditions:
+- (a) the object exports the row's linker name (`SymbolTable.linker_name`) in a code segment, and the row is checked and landed as before;
+- (b) the source marks it `INCLUDE_ASM`, and the row is reported as `stub, not checked` and not landed.
+
+Anything else is a mismatch: exit 1, `ok: false`, the row named under `problems` with its reason. A public of the object that is no row of the unit is a mismatch too. `runtime` and `data-in-code` rows stay exempt.
+
+**Changes:**
+- **`check.account_unit(module, rows, symbols, text)`** returns `UnitAccount(defined, stubs, problems)`. The reasons are:
+  - `defined in C but not exported as <linker>`;
+  - `neither exported nor marked INCLUDE_ASM (expected public <linker>)`;
+  - `both exported as <linker> and marked INCLUDE_ASM`;
+  - `exported as <linker> outside a code segment`;
+  - `public <name> is not a function of the unit` (va null).
+  - Also included: configure's own D-12 problems that name something outside the unit, and any conditional the parser refuses (name `source`).
+- **One D-12 parser, imported:** markers and C definitions come from configure.py's parser (`_NOT_CODE`, `_blank`, `_live_code`, `_MARKER`, `_file_scope_definitions`, `check_unit_source`), never a copy. `check._configure()` reuses the imported `configure` module when it is the same file. Otherwise it loads `<repo>/configure.py` by path. configure.py itself is unchanged.
+- **`check` and `land`:**
+  - `check_source` and `_land_exe` both use the account;
+  - `CheckResult.ok` also requires `not problems`;
+  - the JSON gains `problems: [{name, va, reason}]` and `stubs: [{name, va, status}]`;
+  - `land` refuses every problem as `REFUSED <name>[ at <va>]: <reason>`;
+  - "defines no function" stays exit 2 only when there are no problems either.
+
+**Tests (test-first):** `b9cb6d5` added 7 tests, all failing before the fix:
+- defined but misnamed: exit 1, naming the row and the stray public;
+- neither exported nor marked;
+- marked stub reported and not landed, while the other function still decides ok;
+- both exported and marked;
+- extra public not in the unit;
+- land refuses a misnamed row;
+- land refuses an extra public.
+
+`5117bbb` pinned the result-level gate: a mutation removing `not self.problems` survived at first, because the splice refusal also failed the result. It also tests the by-path configure.py load.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_check.py`: `40 passed in 2.06s`
+- `uv run pytest -q`: `1345 passed, 200 skipped in 17.83s`
+- `uv run ruff check .`: `All checks passed!`
+- Mutation `and not self.problems` -> `and True`: `1 failed, 39 passed` (reverted from a scratchpad copy)
+
+**Commits:** `b9cb6d5` (test), `6b64402` (fix), `5117bbb` (test)
+
+**Concerns for 05-18:**
+- `check_source` on the cmain386 runtime pair applies the extra-public rule. If Watcom's CMAIN386.C object exports any public besides the cmain386 row's linker name, that public is a mismatch.
+- The D-12 marker parse runs only when the rows include game or thunk rows, so CMAIN386.C's `#if`/`#ifdef` lines are not refused there.
+
 ---
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
