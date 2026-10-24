@@ -882,3 +882,43 @@ def test_gap_merged_into_ghidra_function():
     assert [(r.start, r.end) for r in spanning.functions] == [(A, label + 1)]
     short = run(make_image(patches), [gfun(A)])
     assert [(r.start, r.end) for r in short.functions] == [(A, A + 5)]
+
+
+# ---- code review IN-05: an address cell is exactly 0x%08X, as the writers emit it ---------------
+
+ADDRESS_CELLS = {
+    # reader, header, data row with {cell} for the address under test, its column
+    "functions-start": (read_functions_csv, "start,end,name,kind,unit,evidence",
+                        "{cell},0x00012350,func_00012345,game,first,call", "start"),
+    "functions-end": (read_functions_csv, "start,end,name,kind,unit,evidence",
+                      "0x00012345,{cell},func_00012345,game,first,call", "end"),
+    "units-start": (read_units_csv, "unit,start,end,reason", "first,{cell},0x00020000,first",
+                    "start"),
+    "symbols": (read_symbols_csv, "address,name,kind", "{cell},main_,func", "address"),
+    "boundaries": (read_boundaries_csv, "address,ghidra,capstone,evidence,verdict,reason",
+                   "{cell},yes,no,call;ghidra,rule,a direct call target", "address"),
+}  # fmt: skip
+BAD_ADDRESSES = ["-0x10", "0x1_0", " 0x00010000", "0x00010000 ", "+0x00010000", "0x10000",
+                 "0x0001000a", "0X00010000", "00010000"]  # fmt: skip
+
+
+@pytest.mark.parametrize("cell", BAD_ADDRESSES)
+@pytest.mark.parametrize("table", sorted(ADDRESS_CELLS))
+def test_address_cells_must_be_0x_and_8_hex_digits(tmp_path, table, cell):
+    reader, header, line, column = ADDRESS_CELLS[table]
+    path = tmp_path / "table.csv"
+    path.write_text(f"{header}\n{line.format(cell=cell)}\n", encoding="utf-8")
+    with pytest.raises(FunctionsError) as info:
+        reader(path)
+    message = str(info.value)
+    assert message.startswith(f"{path}: data row 1: {column} {cell!r} ")
+    assert "0x%08X" in message
+
+
+@pytest.mark.parametrize("table", sorted(ADDRESS_CELLS))
+def test_address_cells_in_the_written_form_still_read(tmp_path, table):
+    reader, header, line, _ = ADDRESS_CELLS[table]
+    path = tmp_path / "table.csv"
+    cell = "0x00012345" if table != "functions-end" else "0x00012350"
+    path.write_text(f"{header}\n{line.format(cell=cell)}\n", encoding="utf-8")
+    assert len(reader(path)) == 1

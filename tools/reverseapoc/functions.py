@@ -101,6 +101,9 @@ RUNTIME_VERSION = "10.6"  # Phase 4: the linked runtime is 10.6
 _ADDRESS_FORMAT = f"0x{{:0{ADDRESS_DIGITS}X}}"
 _PLACEHOLDER_FORMAT = f"{{}}{{:0{ADDRESS_DIGITS}X}}"
 _UNIT_NAME = re.compile(r"[a-z0-9_]+")
+# An address cell exactly as _address writes it (0x%08X): int(cell, 16) alone would also take a
+# sign, `_` digit separators, surrounding whitespace, a 0X prefix or no prefix (code review IN-05).
+_ADDRESS_CELL = re.compile(rf"0x[0-9A-F]{{{ADDRESS_DIGITS}}}")
 _LINKER_NAME = re.compile(r"[A-Za-z_$?@.][A-Za-z0-9_$?@.]*")  # a Watcom public, as wlink sees it
 _LIST_SEPARATOR = ";"
 _YES, _NO = "yes", "no"
@@ -193,10 +196,12 @@ def _cell(record: dict[str, str], column: str) -> str:
 
 def _parse_address(record: dict[str, str], column: str) -> int:
     cell = _cell(record, column)
-    try:
-        return int(cell, 16)
-    except ValueError:
-        raise ValueError(f"{column} {cell!r} is not a hex address") from None
+    if not _ADDRESS_CELL.fullmatch(cell):
+        raise ValueError(
+            f"{column} {cell!r} is not a hex address written as 0x%08X "
+            f"(0x and {ADDRESS_DIGITS} upper-case hex digits)"
+        )
+    return int(cell, 16)
 
 
 def _check_choice(column: str, value: str, allowed: Sequence[str]) -> None:
