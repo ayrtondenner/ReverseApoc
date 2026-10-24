@@ -10,8 +10,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from conftest import build_le_image, requires_ghidra, write_manifest
-from reverseapoc.ghidra import export_drafts, export_functions, ghidra_version, read_ghidra_export
+import pytest
+
+from conftest import ORIG_DIR, build_le_image, requires_ghidra, write_manifest
+from reverseapoc.cli import main as cli_main
+from reverseapoc.ghidra import (
+    draft_name,
+    export_drafts,
+    export_functions,
+    ghidra_version,
+    read_ghidra_export,
+)
+from reverseapoc.le import LE
+from reverseapoc.libmatch import read_runtime_csv, runtime_csv_path
 
 GHIDRA_VERSION = "12.1.4"
 LOADER_PROPERTIES = ("Ghidra", "Extensions", "ghidra-lx-loader", "extension.properties")
@@ -64,3 +75,91 @@ def test_headless_drafts_a_synthetic_le(tmp_path):
     assert result.written == (SYNTH_ENTRY,)
     assert result.missing == ()
     assert (result.path / f"func_{SYNTH_ENTRY:08X}.c").stat().st_size > 0
+
+
+# ---- the ghidra-export verb (host-runnable) ----
+
+
+def test_ghidra_export_verb_host_message(monkeypatch, tmp_path, capsys):
+    # D-05: without an install the verb fails early and names the container command.
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(tmp_path))
+    assert cli_main(["ghidra-export", "UFO2P.EXE", "--out", str(tmp_path / "out")]) == 1
+    err = capsys.readouterr().err
+    assert "docker compose run --rm build uv run reverseapoc ghidra-export" in err
+
+
+def test_ghidra_export_verb_refuses_an_unknown_exe(monkeypatch, tmp_path, capsys):
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(tmp_path))
+    assert cli_main(["ghidra-export", "NOPE.EXE", "--out", str(tmp_path / "out")]) == 1
+    assert "no target named 'NOPE.EXE'" in capsys.readouterr().err
+
+
+# ---- the real export of both EXEs (container, orig/) ----
+
+REAL_EXES = ("UFO2P.EXE", "TACP.EXE")
+MIN_FUNCTIONS = 1_300  # research Pattern 2: 1408 (UFO2P) and 1498 (TACP) at full analysis
+MIN_RUNTIME_STARTS = 70  # runtime.csv rows whose start Ghidra also finds
+
+
+def _real_param(name: str):
+    return pytest.param(
+        name,
+        id=name,
+        marks=pytest.mark.skipif(
+            not (ORIG_DIR / name).is_file(),
+            reason=f"orig/{name} not present (run uv run reverseapoc ingest)",
+        ),
+    )
+
+
+@pytest.fixture(scope="module", params=[_real_param(name) for name in REAL_EXES])
+def real_export(request, tmp_path_factory):
+    """(name, LE, export rows) for one EXE, analysed once per module."""
+    install = requires_ghidra()
+    name = request.param
+    out = tmp_path_factory.mktemp(f"ghidra-{name}")
+    result = export_functions(name, ORIG_DIR, out, install=install)
+    return name, LE(ORIG_DIR / name), read_ghidra_export(result.path)
+
+
+def test_export_real_count(real_export):
+    _, _, rows = real_export
+    assert len(rows) >= MIN_FUNCTIONS
+
+
+def test_export_real_entries_in_code_object(real_export):
+    _, le, rows = real_export
+    code = le.objects[0]
+    outside = [f"0x{row.entry:08X}" for row in rows if not code.contains(row.entry)]
+    assert outside == []
+
+
+def test_export_real_has_the_le_entry_point(real_export):
+    _, le, rows = real_export
+    assert le.entry_va in {row.entry for row in rows}
+
+
+def test_export_real_finds_runtime_starts(real_export):
+    name, _, rows = real_export
+    entries = {row.entry for row in rows}
+    starts = {row.start for row in read_runtime_csv(runtime_csv_path(name))}
+    assert len(starts & entries) >= MIN_RUNTIME_STARTS
+
+
+@pytest.mark.skipif(
+    not (ORIG_DIR / "UFO2P.EXE").is_file(),
+    reason="orig/UFO2P.EXE not present (run uv run reverseapoc ingest)",
+)
+def test_drafts_real(tmp_path):
+    # D-16, and the 05-10 review: the LE entry and the cmain386 runtime row are LE object
+    # addresses that ExportDrafts.java's toAddr(long) must resolve to a function.
+    install = requires_ghidra()
+    name = "UFO2P.EXE"
+    cmain = [r.start for r in read_runtime_csv(runtime_csv_path(name)) if r.module == "cmain386"]
+    assert len(cmain) == 1
+    wanted = [LE(ORIG_DIR / name).entry_va, *cmain]
+    result = export_drafts(name, ORIG_DIR, wanted, tmp_path / "asm", install=install)
+    assert result.missing == ()
+    assert set(result.written) == set(wanted)
+    sizes = [(result.path / draft_name(address)).stat().st_size for address in wanted]
+    assert all(size > 0 for size in sizes)
