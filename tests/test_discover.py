@@ -85,6 +85,47 @@ def test_fixup_seed():
     assert f - CODE not in found.evidence
 
 
+def jmp_table(table_off: int) -> bytes:
+    """`jmp dword ptr [eax*4 + table]` (FF 24 85 disp32) with the raw displacement holding the
+    object-relative table offset, as wlink leaves it."""
+    return b"\xff\x24\x85" + struct.pack("<I", table_off)
+
+
+def table_fixups(sources: list[int], targets: list[int]) -> bytes:
+    """off32 fixups from object-1 page offsets `sources` to object-1 VAs `targets`."""
+    return b"".join(
+        fixup_record(OFF32, src, 1, dst - CODE, off32=True)
+        for src, dst in zip(sources, targets, strict=True)
+    )
+
+
+def test_jump_table():
+    """`jmp [eax*4+T]` through three code-to-code off32 fixups: T is one data-in-code range, the
+    case labels belong to the same function (not starts), and a call from a case is followed."""
+    a, table, d = CODE + 0x100, CODE + 0x200, CODE + 0x400
+    cases = [CODE + 0x300, CODE + 0x310, CODE + 0x320]
+    disp = a + 3  # the displacement field of the jmp
+    entries = [table, table + 4, table + 8]
+    fixups = [
+        table_fixups([disp - CODE, *(e - CODE for e in entries)], [table, *cases]),
+        b"",
+        b"",
+    ]
+    patches = {
+        a: jmp_table(table - CODE),
+        **{e: struct.pack("<I", c - CODE) for e, c in zip(entries, cases, strict=True)},
+        cases[0]: RET,
+        cases[1]: call(cases[1], d) + RET,
+        cases[2]: RET,
+        d: RET,
+    }
+    found = discover(make_le(patches, fixups=fixups))
+    assert found.jump_tables == ((table, table + 12),)
+    assert found.starts == (a, d)
+    assert found.evidence[d] == frozenset({"call"})
+    assert found.decoded_bytes == 7 + 1 + 6 + 1 + 1
+
+
 def test_evidence_merges():
     """A start that is both called and runtime-seeded carries both kinds of evidence."""
     a, b = CODE + 0x100, CODE + 0x200
