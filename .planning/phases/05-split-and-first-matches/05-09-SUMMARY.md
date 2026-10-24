@@ -204,3 +204,46 @@ None.
 
 - Files exist: tools/reverseapoc/relocs.py, tools/reverseapoc/land.py, tests/relocpair.py, tests/test_relocs.py, tests/test_land.py
 - Commits on this branch: 3a20959, bfecdb4, d18fe01, b071705, 919c9d5, 691a978
+
+## Review fixes (round 1)
+
+Fixed test-first. RED was commit `b6a5ae6`, GREEN was commit `ea4a8c3`.
+
+**I1 (Important): the own-`_TEXT` rule assumed a layout.** `_own_segment` resolved any target in our own `_TEXT` to `start - off + stored`. That is only right if our whole `_TEXT` sits in the original exactly as in our object, and nothing checked that. A call to another public of our unit could pass while the original's field landed on a different function. build_patch keeps the original field, so the SHA-1 would not catch it either.
+
+**Orchestrator ruling applied (round 1):** `check_function` takes an optional `own_publics: Sequence[OwnPublic]`. Each `OwnPublic(name, offset, size, start)` is one of our unit's `_TEXT` publics, `[offset, offset + size)` in our segment, with the start VA of the original functions.csv row it matches. I chose this offset-and-size form, as the ruling allowed, because the check needs each public's extent to find the public that contains a target. An own-`_TEXT` target at offset `t = stored + displacement` resolves as follows:
+- Inside the checked public, it resolves to `start + (t - off)`, its own row, with no map needed.
+- Inside an own public P, it resolves to `P.start + (t - P.offset)`. A mismatch is a problem that names `_TEXT+<t> (P)`, our address and the original's.
+- Anywhere else (no map, no entry, or t in no public), it is refused with `own _TEXT target <t> outside <row> needs the unit's public-to-row map`.
+- An own public that is empty or lies outside our segment raises RelocError.
+- The module docstring states the caller's obligation: 05-17 `check` and 05-18 build the map from units.csv and functions.csv.
+
+**Minors:**
+- `check_function` now sorts the LE fixups itself. `_le_fields` documents that it needs sorted input.
+- `land`'s `expected_sha1` is still keyword-only with no default. A value that is not 40 hex digits raises LandError.
+
+**Tests added:**
+- `test_own_segment_call_to_a_second_public_resolves_through_the_map` (a)
+- `test_own_segment_call_with_a_wrong_map_fails` (b)
+- `test_own_segment_call_without_a_map_entry_is_refused[no map, no entry for the target]` (c)
+- `test_own_segment_jump_inside_the_function_needs_no_map` (d)
+- `test_own_segment_layout_coincidence_is_not_trusted`: the I1 case. The original call lands on start + 6, where our object happens to put `static_`. Without a map it must be refused; with the true map it must fail.
+- `test_own_segment_target_inside_a_mapped_public_keeps_its_offset`
+- `test_own_public_of_zero_size_is_refused`
+- `test_own_public_outside_our_segment_is_refused`
+- `test_unsorted_le_fixups_give_the_same_result`
+- `test_expected_sha1_is_required`
+- `test_a_wrong_expected_sha1_refuses`
+- `test_a_malformed_expected_sha1_is_refused` (4 cases)
+- Replaced: the old `test_own_segment_call_resolves` and `..._wrong_label_fails`, which relied on the layout assumption.
+
+**RED evidence:** the RED commit's tests were run against an uncommitted API-only stub (`OwnPublic` defined, `own_publics` accepted and ignored): `11 failed, 41 passed`. The I1 test failed with `assert not True ... RelocResult(ok=True, problems=(), ours=frozenset({65537}), theirs=frozenset()).ok`. That is the hole: the old rule passed the layout coincidence. One RED test had a bug: its "no entry" decoy public lay past our 8-byte segment. It was corrected in the GREEN commit (the map now holds only the checked public), and a separate test now covers the out-of-segment refusal.
+
+Commands and their output lines:
+
+- `uv run pytest -q tests/test_relocs.py tests/test_land.py`: `53 passed in 0.17s`
+- `uv run pytest -q`: `1053 passed, 177 skipped in 13.33s`
+- `uv run ruff check .`: `All checks passed!`
+- Mutation run (each of `_segment_relative`, `_self_relative`, `_reverse_coverage`, `_bytes`, `_length` disabled in turn): the suite fails every time.
+
+The `actuals.commits` value in the frontmatter still counts the 6 original task commits. Round 1 added `b6a5ae6` and `ea4a8c3`, and this SUMMARY update is one more commit.
