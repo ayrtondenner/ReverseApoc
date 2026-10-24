@@ -7,6 +7,7 @@ import pytest
 
 from elfread import read_elf
 from omfimage import (
+    comdat16,
     extdef,
     fixup,
     fixupp32,
@@ -15,6 +16,7 @@ from omfimage import (
     lidata32,
     lnames,
     module,
+    nbkpat,
     pubdef32,
     segdef32,
     thread,
@@ -241,3 +243,31 @@ def test_fixup_to_a_dropped_debug_segment_is_refused():
     data = watcom_module(fixupp32(fixup(0, target=(0, 6))))
     with pytest.raises(Omf2ElfError, match=r"\$\$SYMBOLS.*not emitted"):
         convert(read_object(data))
+
+
+# ---- 05-06: COMDATs, NBKPAT, LPUBDEF, LIDATA, BAKPAT, CEXTDEF, filler, refusals ----
+
+STB_LOCAL = 0
+STB_WEAK = 2
+
+
+def test_comdat16_converts_to_a_weak_section():
+    # "pick any" (selection 1) explicitly allocated in _TEXT, patched by NBKPAT; "no match"
+    # (selection 0) with code32 allocation (3), so no segment and no public base.
+    data = module(
+        "cd",
+        lnames("", "_TEXT", "CODE", "f_", "g_"),
+        segdef32(2, 3, 0),
+        comdat16(4, bytes.fromhex("b801000000c3"), attributes=0x10, seg=1),  # mov eax,1; ret
+        nbkpat(4, 1, [(1, 0x0102)]),
+        comdat16(5, b"\xc3", attributes=0x03),
+    )
+    elf = convert_bytes(data)
+    f, g = elf.symbol("f_"), elf.symbol("g_")
+    assert (f.bind, f.type, f.value, f.size) == (STB_WEAK, STT_FUNC, 0, 6)
+    f_sec = elf.section(f.section_index)
+    assert (f_sec.name, f_sec.data) == ("_TEXT", bytes.fromhex("b80301" "0000c3"))
+    assert f_sec.flags == SHF_ALLOC | SHF_EXECINSTR
+    assert (g.bind, g.type, g.size) == (STB_GLOBAL, STT_FUNC, 1)
+    g_sec = elf.section(g.section_index)
+    assert (g_sec.name, g_sec.data, g_sec.flags) == ("g_", b"\xc3", SHF_ALLOC | SHF_EXECINSTR)
