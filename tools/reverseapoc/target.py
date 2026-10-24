@@ -26,12 +26,17 @@ target's object offset there, Pitfall 1):
   off32 fixups there still relocate: they come from the fixup table), and the result lists the
   VA in `undecoded`, so the unit stays cuttable (D-13);
 - a non-off32 LE fixup (sel16, ptr16:32, ...) keeps its raw bytes and gets no relocation; the
-  result lists its VA and kind (orchestrator ruling F11), so every unit stays cuttable.
+  result lists its VA and kind (orchestrator ruling F11), so every unit stays cuttable;
+- so do an off32 fixup or rel32 branch whose target lies in the code object but in no
+  functions.csv row (a split gap D-11 leaves for later), and a decoded rel32 branch whose
+  destination is outside the code object (data read as code): kinds `off32 to no row`,
+  `branch to no row` and `branch outside the code object` (plan 05-18, the F11 principle).
+  A function holding one is no first-match candidate; our side relocates the field, so objdiff
+  and the relocation check both disagree with the raw target and nothing can pass on it.
 
 Referenced names the unit does not define become undefined GLOBAL STT_NOTYPE symbols.
-`build_target` refuses, with a TargetError naming the VA, a row outside the code object, a
-reference into the code object that lies in no functions.csv row, a rel32 branch whose
-destination is outside the code object, and an LE fixup field split by a row boundary.
+`build_target` refuses, with a TargetError naming the VA, a row outside the code object and an
+LE fixup field split by a row boundary.
 
 Target bytes come only from `load_flat(relocate=False)` (P4): never from Ghidra and never from a
 relocated image, whose fields would hold load addresses instead of the file's bytes.
@@ -70,6 +75,9 @@ CODE_ALIGN = 16  # the alignment omf2elf gives code sections
 OBJ_EXECUTABLE = 0x0004  # LE object flag: executable
 PC32_ADDEND = -4  # a rel32 field is relative to the end of its 4-byte field
 MAX_FIELD = max(SRC_SIZE.values())  # the longest LE fixup field (ptr16:32)
+RAW_OFF32_NO_ROW = "off32 to no row"  # RawField kinds of references the cut cannot name
+RAW_BRANCH_NO_ROW = "branch to no row"
+RAW_BRANCH_OUTSIDE = "branch outside the code object"
 _FIELD = struct.Struct("<i")  # a 32-bit relocated field holds its REL addend
 
 
@@ -82,13 +90,13 @@ class RawField:
     """An LE fixup field left as raw bytes with no relocation (orchestrator ruling F11)."""
 
     va: int
-    kind: str  # le.Fixup.kind_name
+    kind: str  # le.Fixup.kind_name, or one of the RAW_* kinds of an unnamed reference
 
 
 @dataclass(frozen=True)
 class TargetResult:
     data: bytes  # the ELF object
-    raw_fields: tuple[RawField, ...] = ()  # non-off32 fixup sites written without relocation
+    raw_fields: tuple[RawField, ...] = ()  # fields written without relocation (F11, RAW_*)
     undecoded: tuple[int, ...] = ()  # per row, the VA past which no PC32 was synthesized
 
 
@@ -150,20 +158,22 @@ def _covered(img: _Image, row: FunctionRow) -> list[Fixup]:
     return list(img.fixups[first : bisect_left(img.srcs, row.end)])
 
 
-def _target_symbol(img: _Image, va: int, where: str) -> tuple[str, int]:
-    """(symbol, offset of `va` past it) for a reference to `va`."""
+def _target_symbol(img: _Image, va: int) -> tuple[str, int] | None:
+    """(symbol, offset of `va` past it) for a reference to `va`; None for a code address in
+    no functions.csv row, which has no name to relocate against."""
     if not img.code.contains(va):
         return img.symbols.linker_name(va, data=True), 0
     row = img.symbols.containing(va)
     if row is None:
-        raise TargetError(f"{where} to {_hex(va)}: in no functions.csv row")
+        return None
     return img.symbols.linker_name(row.start), va - row.start
 
 
 def _fixup_relocs(
     img: _Image, row: FunctionRow, covered: Sequence[Fixup]
 ) -> tuple[list[_Field], list[RawField]]:
-    """R_386_32 fields for the off32 fixups in `row`, and the other kinds left raw (F11)."""
+    """R_386_32 fields for the off32 fixups in `row`, and the fields left raw: other kinds (F11)
+    and off32 fixups into no row."""
     fields, raw = [], []
     for fx in covered:
         if fx.src_va + fx.size > row.end:
@@ -171,8 +181,11 @@ def _fixup_relocs(
         if fx.kind != SRC_OFF32:
             raw.append(RawField(fx.src_va, fx.kind_name))
             continue
-        name, addend = _target_symbol(img, fx.target_va, f"LE fixup at {_hex(fx.src_va)}")
-        fields.append(_Field(fx.src_va - row.start, R_386_32, name, addend))
+        named = _target_symbol(img, fx.target_va)
+        if named is None:
+            raw.append(RawField(fx.src_va, RAW_OFF32_NO_ROW))
+            continue
+        fields.append(_Field(fx.src_va - row.start, R_386_32, *named))
     return fields, raw
 
 
@@ -225,17 +238,28 @@ def branch_fields(
     return list(_branches(row, _decode_row(row, flat, fixup_sites).insns, fixup_sites))
 
 
-def _branch_relocs(img: _Image, row: FunctionRow) -> tuple[list[_Field], int | None]:
-    """PC32 fields of `row`, and the VA where decoding stopped short (None if it did not)."""
+@dataclass(frozen=True)
+class _Branches:
+    fields: list[_Field]  # the PC32 relocations
+    raw: list[RawField]  # branches with no name to relocate against
+    undecoded: int | None  # the VA where decoding stopped short, None if it did not
+
+
+def _branch_relocs(img: _Image, row: FunctionRow) -> _Branches:
+    """PC32 fields of `row`, the branches left raw, and where decoding stopped short."""
     decoded = _decode_row(row, img.flat, img.sites)
-    out = []
+    out, raw = [], []
     for field, dest in _branches(row, decoded.insns, img.sites):
-        where = f"branch at {_hex(field)}"
         if not img.code.contains(dest):
-            raise TargetError(f"{where} to {_hex(dest)}: outside the code object")
-        name, offset = _target_symbol(img, dest, where)
+            raw.append(RawField(field, RAW_BRANCH_OUTSIDE))
+            continue
+        named = _target_symbol(img, dest)
+        if named is None:
+            raw.append(RawField(field, RAW_BRANCH_NO_ROW))
+            continue
+        name, offset = named
         out.append(_Field(field - row.start, R_386_PC32, name, PC32_ADDEND + offset))
-    return out, decoded.undecoded
+    return _Branches(out, raw, decoded.undecoded)
 
 
 def _rewrite(data: bytearray, fields: Sequence[_Field]) -> bytes:
@@ -271,8 +295,10 @@ def _cut_row(img: _Image, row: FunctionRow) -> _Cut:
     fields, raw = _fixup_relocs(img, row, _covered(img, row))
     undecoded = None
     if row.kind != KIND_DATA_IN_CODE:
-        branches, undecoded = _branch_relocs(img, row)
-        fields += branches
+        branches = _branch_relocs(img, row)
+        fields += branches.fields
+        raw += branches.raw
+        undecoded = branches.undecoded
     data = _rewrite(bytearray(img.flat[row.start : row.end]), fields)
     section = ElfSection(SECTION_NAME, data, flags=SHF_ALLOC | SHF_EXECINSTR, align=CODE_ALIGN)
     return _Cut(section, fields, raw, undecoded)
@@ -306,4 +332,4 @@ def build_target(
             undecoded.append(cut.undecoded)
     syms += _undefined({s.name for s in syms}, all_fields)
     obj = ElfObject(tuple(sections), tuple(syms), tuple(relocs))
-    return TargetResult(write_elf(obj), tuple(raw), tuple(undecoded))
+    return TargetResult(write_elf(obj), tuple(sorted(raw, key=lambda f: f.va)), tuple(undecoded))
