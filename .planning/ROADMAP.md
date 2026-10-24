@@ -169,7 +169,7 @@ Plans:
   4. For one function per EXE, the single-unit `check` tool prints objdiff 100%, a passing relocation check (every non-relocated byte, equal length, every `call rel32` target, every absolute fixup target) and, after splicing with the original link-time value kept at each fixup site, both rebuilt EXEs SHA-1 identical to `config/targets.toml`; a negative test with a wrong call or fixup target makes the relocation check fail even where objdiff reports 100% (SPL-09, SPL-10, SPL-11, SPL-13)
 
 **Spike**: objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback: if INVALIDATED, the KKND-style compare stays the oracle and Phase 6 uses a minimal own agent layer).
-**Plans:** 12/20 plans executed
+**Plans:** 15/20 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -193,9 +193,9 @@ Plans:
 - [x] 05-12-PLAN.md — Ghidra 12.1.4 + JDK 21 + clang 18 in the image, smoke and real export, `ghidra-export` and `lint` verbs, compat header (SPL-01, SPL-12)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 05-13-PLAN.md — D-07/D-08 reconcile with automatic verdicts, units draft, INCLUDE_ASM scaffold, `discover`/`functions`/`units` verbs (SPL-02, SPL-03, SPL-04)
-- [ ] 05-14-PLAN.md — configure.py: build.ninja compile/convert/cut/lint/asm/land edges, objdiff.json, compile_commands.json, D-12 check (SPL-06, SPL-04)
-- [ ] 05-15-PLAN.md — docs: Ghidra in the image (not WSL2), D-03 outcome, spike 005 result, Phase 5 learnings (SPL-01, SPL-12)
+- [x] 05-13-PLAN.md — D-07/D-08 reconcile with automatic verdicts, units draft, INCLUDE_ASM scaffold, `discover`/`functions`/`units` verbs (SPL-02, SPL-03, SPL-04)
+- [x] 05-14-PLAN.md — configure.py: build.ninja compile/convert/cut/lint/asm/land edges, objdiff.json, compile_commands.json, D-12 check (SPL-06, SPL-04)
+- [x] 05-15-PLAN.md — docs: Ghidra in the image (not WSL2), D-03 outcome, spike 005 result, Phase 5 learnings (SPL-01, SPL-12)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 05-16-PLAN.md — commit functions.csv, boundaries.csv (every disagreement reconciled), units.csv and symbols.csv for both EXEs with drift tests (SPL-01, SPL-02, SPL-03)
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
-| 5. Split and first matches | 12/20 | In Progress | - |
+| 5. Split and first matches | 15/20 | In Progress | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
