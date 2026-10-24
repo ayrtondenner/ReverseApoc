@@ -403,6 +403,47 @@ def test_dockerfile_never_fetches_the_compiler(needle):
     assert needle not in text
 
 
+_DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile"
+
+# D-03, D-04, D-06, D-14: Ghidra 12.1.4 and the lastonesky LE loader in their own cached stage,
+# each zip pinned by SHA-256; OpenJDK 21 and clang 18 at exact apt versions.
+_GHIDRA_NEEDLES = [
+    "ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db",  # Ghidra 12.1.4 zip
+    "0a9c65cee8c090ec4b7f72b595eb829267f80ae8f36a2a44d4ef1ef5af41be45",  # LxLoader v12.1.4-1
+    "AS ghidra",
+    "openjdk-21-jdk-headless=21.0.12.1+1-1~24.04.4",
+    "clang-18=1:18.1.3-1ubuntu1",
+    "clang=1:18.0-59~exp2",
+    "GHIDRA_INSTALL_DIR=/opt/ghidra",
+]
+
+
+def _dockerfile_lines() -> list[str]:
+    return _DOCKERFILE.read_text(encoding="utf-8").splitlines()
+
+
+@pytest.mark.parametrize("needle", _GHIDRA_NEEDLES)
+def test_dockerfile_pins_ghidra(needle):
+    assert needle in _DOCKERFILE.read_text(encoding="utf-8")
+
+
+def test_dockerfile_checks_every_download():
+    # T-05-26: every curl download is followed by a sha256sum check that fails the build.
+    text = _DOCKERFILE.read_text(encoding="utf-8")
+    assert text.count("curl -fsSL") >= 1
+    assert text.count("sha256sum -c") >= text.count("curl -fsSL")
+
+
+def test_dockerfile_copies_nothing_from_the_context():
+    # T-05-27, D-06: only COPY --from=<stage>, never ADD, so no file of the build context
+    # (orig/, third_party/, the Watcom trees) can enter an image layer.
+    stripped = [line.strip() for line in _dockerfile_lines()]
+    copies = [line for line in stripped if line.upper().startswith("COPY")]
+    assert copies
+    assert [line for line in copies if "--from=" not in line] == []
+    assert [line for line in stripped if line.upper().startswith("ADD")] == []
+
+
 def test_ci_workflows_exist():
     assert _WORKFLOWS
 
