@@ -9,6 +9,7 @@ import pytest
 from omfimage import (
     bakpat32,
     cextdef,
+    comdat16,
     comdat32,
     comdef,
     coment,
@@ -24,7 +25,10 @@ from omfimage import (
     lidata32,
     lidata_blocks32,
     lnames,
+    lpubdef32,
     module,
+    nbkpat,
+    nbkpat32,
     pubdef16,
     pubdef32,
     record,
@@ -567,6 +571,59 @@ def test_comdat32_iterated_data_expands_and_is_unmaskable():
     assert block.data == b"ababab"
     assert block.unmaskable
     assert block.fixups == ()
+
+
+def test_comdat16_reads_like_comdat32():
+    fix = fixupp32(fixup(1, segment_relative=False, target=(2, 1)))
+    tail = b"\x04\x05"
+    wide = read_object(comdat_module(comdat32(4, CALL_RET, attributes=0x10), fix,
+                                     comdat32(4, tail, flags=0x01, offset=6)))  # fmt: skip
+    narrow = read_object(comdat_module(comdat16(4, CALL_RET, attributes=0x10), fix,
+                                       comdat16(4, tail, flags=0x01, offset=6)))  # fmt: skip
+    assert narrow.comdats == wide.comdats
+    [block] = narrow.comdats
+    assert (block.name, block.data, block.selection) == ("f_", CALL_RET + tail, 1)
+    assert [(f.offset, f.target_name) for f in block.fixups] == [(1, "g_")]
+
+
+def test_nbkpat_patches_the_comdat():
+    data = bytes([0x10, 0x00, 0xF0, 0xFF, 0xFF, 0xFF])
+    mod = read_object(
+        comdat_module(
+            comdat32(4, data),
+            nbkpat(4, 1, [(0, 0x0102)]),  # word at 0: 0x0010 + 0x0102
+            nbkpat32(4, 2, [(2, 0x20)]),  # dword at 2 wraps: 0xFFFFFFF0 + 0x20
+        )
+    )
+    [block] = mod.comdats
+    assert block.data == bytes([0x12, 0x01, 0x10, 0x00, 0x00, 0x00])
+    assert mod.nbkpat_records == 2
+    assert block.mask == frozenset(range(6))
+
+
+def test_nbkpat_naming_an_unknown_comdat_raises():
+    with pytest.raises(OMFError, match=r"NBKPAT record at .*no COMDAT 'g_'"):
+        read_object(module("cd", lnames("", "_TEXT", "CODE", "f_", "g_"), segdef32(2, 3, 0),
+                           comdat32(4, CALL_RET), nbkpat(5, 0, [(0, 1)])))  # fmt: skip
+
+
+def test_nbkpat_past_the_comdat_raises():
+    with pytest.raises(OMFError, match=r"NBKPAT32 record at .*runs past COMDAT 'f_'"):
+        read_object(comdat_module(comdat32(4, CALL_RET), nbkpat32(4, 2, [(4, 1)])))
+
+
+def test_lpubdef_is_local():
+    mod = read_object(
+        module(
+            "lp",
+            lnames("", "_TEXT", "CODE"),
+            segdef32(2, 3, 8),
+            pubdef32(1, [("g_", 0)]),
+            lpubdef32(1, [("s_", 4)]),
+        )
+    )
+    assert [(p.name, p.offset, p.local) for p in mod.publics] == [("g_", 0, False),
+                                                                    ("s_", 4, True)]  # fmt: skip
 
 
 def dependency_object(path: str, dependency: bytes = b"", code: int = 0x90) -> bytes:
