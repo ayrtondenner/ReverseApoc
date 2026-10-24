@@ -5,6 +5,7 @@ run for real on synthetic inputs. Every byte, name and address is made up (tests
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,9 +25,13 @@ from relocpair import (
     original,
 )
 from reverseapoc import check
+from reverseapoc.asm import data_ranges
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
+from reverseapoc.le import LE
+from reverseapoc.symbols import SymbolTable
+from reverseapoc.target import build_target
 
 EXE = "SYN.EXE"
 STEM = "syn"
@@ -202,3 +207,149 @@ def test_check_passes_a_matching_unit(env, monkeypatch, capsys):
     assert splice["exe"] == EXE and splice["ok"] is True and splice["landed"] == 1
     assert splice["sha1"] == splice["expected"]
     assert doc["ok"] is True
+
+
+# ---- Task 2: exit codes, objdiff edge cases, the target and land verbs ---------------------------
+
+
+def test_reloc_failure_beats_objdiff(env, monkeypatch, capsys):
+    """objdiff says 100.0, but the call lands on func_00010020: the relocation check decides."""
+    wrong = FakeCompiler(omf_object(callee="func_00010020_"))
+    result = run_check(env, compiler=wrong, objdiff=FakeObjdiff(100.0))
+
+    (fn,) = result.functions
+    assert fn.objdiff_percent == 100.0
+    assert not fn.reloc.ok and fn.reloc.problems
+    assert not result.ok and result.exit_code == check.EXIT_MISMATCH
+    (splice,) = result.splices
+    assert not splice.ok and [r.name for r in splice.refused] == ["func_00010000"]
+
+    patch_tools(monkeypatch, compiler=wrong)
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), "--json"]) == 1
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["functions"][0]["reloc"]["ok"] is False
+    assert doc["ok"] is False
+
+
+def test_absent_percent_is_zero(env):
+    result = run_check(env, objdiff=FakeObjdiff(None))
+    (fn,) = result.functions
+    assert fn.objdiff_percent == 0.0
+    assert fn.reloc.ok
+    assert result.exit_code == check.EXIT_MISMATCH
+
+
+@pytest.mark.parametrize("value", [True, "100.0", 150.0, float("nan"), -1.0])
+def test_absent_percent_or_nonsense_is_zero_not_a_match(value):
+    doc = {"left": {"symbols": [{"name": SYMBOL, "match_percent": value}]}}
+    assert check.match_percent(doc, SYMBOL) == 0.0
+    assert check.match_percent({"left": {"symbols": []}}, SYMBOL) == 0.0
+    assert check.match_percent([], SYMBOL) == 0.0
+
+
+def test_objdiff_missing(env, monkeypatch, capsys):
+    compiler = FakeCompiler()
+    monkeypatch.setattr(check, "compile_source", compiler)
+    monkeypatch.setattr(check.shutil, "which", lambda name: None)
+
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv()]) == check.EXIT_TOOL
+    err = capsys.readouterr().err
+    assert f"docker compose run --rm build uv run reverseapoc check {STEM}/{UNIT}" in err
+    assert compiler.calls == []  # it fails before compiling anything
+
+
+@pytest.mark.parametrize(
+    ("target", "message"),
+    [(f"{STEM}/u_99999999", "no unit 'u_99999999'"), ("nope/u_00010000", "no target named"),
+     (f"{STEM}/Bad-Unit", "must match"), (STEM, "expected EXE/UNIT")],
+)  # fmt: skip
+def test_unknown_unit(env, monkeypatch, capsys, target, message):
+    patch_tools(monkeypatch)
+    assert cli_main(["check", target, *env.argv()]) == check.EXIT_TOOL
+    assert message in capsys.readouterr().err
+
+
+def test_compile_failure(env, monkeypatch, capsys):
+    patch_tools(monkeypatch, compiler=FakeCompiler(ok=False))
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv()]) == check.EXIT_TOOL
+    assert "compile failed" in capsys.readouterr().err
+
+
+def test_missing_source_is_a_tool_error(env, monkeypatch, capsys):
+    (env.src / STEM / f"{UNIT}.c").unlink()
+    patch_tools(monkeypatch)
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv()]) == check.EXIT_TOOL
+    assert "--write-src" in capsys.readouterr().err
+
+
+def expected_target(env: Env) -> bytes:
+    le = LE(env.data)
+    table = SymbolTable.build([ROW, OTHER, FAR], data_ranges=data_ranges(le))
+    return build_target(le, [ROW, OTHER], table).data
+
+
+@pytest.mark.parametrize("exe", [EXE, STEM])
+def test_target_verb(env, capsys, exe):
+    out = env.build / STEM / "target" / f"{UNIT}.o"
+    argv = ["target", exe, UNIT, "--orig", str(env.orig), "--manifest", str(env.manifest),
+            "--config", str(env.config), "-o", str(out)]  # fmt: skip
+    assert cli_main(argv) == 0
+    assert out.read_bytes() == expected_target(env)
+    assert out.name in capsys.readouterr().out
+
+
+def test_target_verb_unknown_unit(env, capsys):
+    argv = ["target", STEM, "u_99999999", "--orig", str(env.orig), "--manifest",
+            str(env.manifest), "--config", str(env.config), "-o", str(env.build / "x.o")]  # fmt: skip
+    assert cli_main(argv) == 1
+    assert "no unit 'u_99999999'" in capsys.readouterr().err
+
+
+def land_argv(env: Env, *extra: str) -> list[str]:
+    return ["land", *env.argv(), *extra]
+
+
+def test_land_verb_without_units(tmp_path, capsys):
+    """Orchestrator ruling F4: an EXE without units.csv is not landed and not listed."""
+    env = make_env(tmp_path, with_units=())
+    assert cli_main(land_argv(env, "--json")) == 0
+    assert json.loads(capsys.readouterr().out) == []
+    assert not (env.build / "land").exists()
+
+
+def put_object(env: Env, data: bytes) -> None:
+    obj = env.build / STEM / "obj" / f"{UNIT}.obj"
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    obj.write_bytes(data)
+
+
+def test_land_verb_with_a_matched_unit(env, capsys):
+    put_object(env, omf_object())
+    assert cli_main(land_argv(env)) == 0
+    out = capsys.readouterr().out
+    assert re.search(rf"^OK {EXE} sha1 [0-9a-f]{{40}} landed 1$", out, re.M), out
+    assert (env.build / "land" / EXE).read_bytes() == env.data
+
+
+def test_land_verb_refuses_a_failing_function(env, capsys):
+    put_object(env, omf_object(callee="func_00010020_"))
+    assert cli_main(land_argv(env, "--out", str(env.root / "landed"))) == 1
+    out = capsys.readouterr().out
+    assert f"MISMATCH {EXE}" in out and "REFUSED func_00010000" in out
+    assert (env.root / "landed" / EXE).is_file()
+
+
+def test_land_verb_missing_object_says_run_ninja(env, capsys):
+    assert cli_main(land_argv(env)) == 1
+    assert "run ninja first" in capsys.readouterr().err
+
+
+def test_land_all_lists_only_exes_with_units(tmp_path, monkeypatch, capsys):
+    """Orchestrator ruling F4: three manifest targets, units.csv for two: exactly two splices."""
+    names = ("ONE.EXE", "TWO.EXE", "SMK.EXE")
+    env = make_env(tmp_path, exes=names, with_units=names[:2])
+    patch_tools(monkeypatch)
+    assert cli_main(["check", f"one/{UNIT}", *env.argv(), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert [s["exe"] for s in doc["splice"]] == ["ONE.EXE", "TWO.EXE"]
+    assert all(s["ok"] and s["landed"] == 1 for s in doc["splice"])
