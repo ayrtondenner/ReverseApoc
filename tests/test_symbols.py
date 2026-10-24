@@ -4,7 +4,6 @@ the documented runtime public `exit_`."""
 from __future__ import annotations
 
 import pytest
-from reverseapoc.symbols import SymbolError, SymbolTable
 
 from libtree import body, code_module, write_lib
 from reverseapoc.functions import (
@@ -15,6 +14,7 @@ from reverseapoc.functions import (
     seed_runtime_rows,
 )
 from reverseapoc.libmatch import MatchRange, load_libraries
+from reverseapoc.symbols import SymbolError, SymbolTable
 
 GAME = FunctionRow(0x12345, 0x12350, "func_00012345", "game", "a", "call")
 THUNK = FunctionRow(0x12350, 0x12358, "func_00012350", "thunk", "a", "call")
@@ -152,3 +152,19 @@ def test_one_name_for_two_addresses_is_refused():
     with pytest.raises(SymbolError, match="exit_"):
         SymbolTable.build(FUNCTIONS, aliases={"exit_": 0x12360, "_exit_": 0x12360},
                           symbols=[SymbolRow(0xD3000, "exit_", "data")])  # fmt: skip
+
+
+def test_a_runtime_name_at_two_addresses_is_ambiguous():
+    # A module-local table public (like _Alphabet in both itoa and ltoa) seeds two runtime rows
+    # of one name: each row keeps its name, but the name resolves to no single address.
+    rows = [
+        FunctionRow(0x12360, 0x12364, "_tbl", "runtime", "", "runtime"),
+        FunctionRow(0x12364, 0x12370, "one_", "runtime", "", "runtime"),
+        FunctionRow(0x12380, 0x12384, "_tbl", "runtime", "", "runtime"),
+    ]
+    table = SymbolTable.build(rows)
+    assert table.linker_name(0x12380) == "_tbl"
+    assert table.ambiguous == {"_tbl": (0x12360, 0x12380)}
+    assert table.address_of("one_") == 0x12364
+    with pytest.raises(SymbolError, match="_tbl.*ambiguous"):
+        table.address_of("_tbl")

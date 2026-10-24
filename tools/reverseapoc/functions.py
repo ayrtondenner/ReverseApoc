@@ -628,3 +628,9 @@ def seed_runtime_rows(
         FunctionRow(e.start, e.end, e.name, KIND_RUNTIME, "", EVIDENCE_RUNTIME)
         for e in runtime_entries(runtime, libraries, version=version)
     ]
+
+
+def runtime_aliases(entries: Iterable[RuntimeEntry]) -> dict[str, int]:
+    """Every public of every entry -> the entry's start, so SymbolTable.address_of resolves the
+    aliases a seeded row is not named after (F12: malloc_ and _nmalloc_ name one row)."""
+    return {alias: entry.start for entry in entries for alias in entry.aliases}
