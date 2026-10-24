@@ -10,6 +10,10 @@ FIXUPP threads resolved); nothing here re-reads them. `convert(module)` maps:
   (DEBSYM, DEBTYP) are dropped with their fixups;
 - each public to a GLOBAL symbol, STT_FUNC in code and STT_OBJECT elsewhere, sized to the next
   public of its segment or the segment end;
+- each COMDAT (0xC2 or 0xC3, NBKPAT already applied) to its own section, named after its
+  segment or, without one, after the COMDAT, with one symbol at offset 0: WEAK when the
+  selection criterion allows duplicates (pick any, same size, exact match), GLOBAL for "no
+  match"; a COMDAT without a segment is code when allocated as far code or code32;
 - each extern to an undefined GLOBAL symbol named as in OMF (referenced or not);
 - each location-9 (offset32) fixup to one REL relocation by the Theme Hospital addend rule: a
   self-relative fixup becomes R_386_PC32 with the field rewritten to stored + displacement - 4,
@@ -35,6 +39,8 @@ from .elf import (
     SHF_ALLOC,
     SHF_EXECINSTR,
     SHF_WRITE,
+    STB_GLOBAL,
+    STB_WEAK,
     STT_FUNC,
     STT_OBJECT,
     ElfObject,
@@ -43,9 +49,22 @@ from .elf import (
     ElfSymbol,
     write_elf,
 )
-from .omf import LOC_OFFSET32, REC_THEADR, Module, OMFError, OMFFixup, Segment, read_object
+from .omf import (
+    COMDAT_ALLOC_CODE32,
+    COMDAT_ALLOC_FAR_CODE,
+    COMDAT_SELECT_NO_MATCH,
+    LOC_OFFSET32,
+    REC_THEADR,
+    Comdat,
+    Module,
+    OMFError,
+    OMFFixup,
+    Segment,
+    read_object,
+)
 from .splice import _write_atomic
 
+_CODE_ALLOCATIONS = (COMDAT_ALLOC_FAR_CODE, COMDAT_ALLOC_CODE32)  # COMDAT without a segment
 CODE_ALIGN = 16
 DATA_ALIGN = 4
 DEBUG_CLASS_PREFIX = "DEB"  # DEBSYM, DEBTYP: Watcom debug information
@@ -90,25 +109,88 @@ def is_bss(seg: Segment) -> bool:
     return seg.class_name.upper().endswith(BSS_CLASS_SUFFIX)
 
 
-def _section(seg: Segment, data: bytes) -> ElfSection:
-    if seg.is_code:
-        return ElfSection(seg.name, data, flags=SHF_ALLOC | SHF_EXECINSTR, align=CODE_ALIGN)
-    if is_bss(seg):
+@dataclass(frozen=True)
+class _Part:
+    """One ELF section to emit: an OMF segment (`segment_index`) or a COMDAT (`comdat`)."""
+
+    name: str  # the section name
+    where: str  # how errors name it: "segment _TEXT" or "COMDAT 'f_'"
+    code: bool
+    bss: bool
+    data: bytes
+    length: int
+    fixups: tuple[OMFFixup, ...]
+    segment_index: int = 0  # 1-based SEGDEF number; 0 for a COMDAT
+    comdat: Comdat | None = None
+
+
+def _segment_part(seg: Segment) -> _Part:
+    return _Part(seg.name, f"segment {seg.name}", seg.is_code, is_bss(seg), seg.data, seg.length,
+                 seg.fixups, segment_index=seg.index)  # fmt: skip
+
+
+def _comdat_part(cd: Comdat, segments: dict[int, Segment]) -> _Part:
+    """A COMDAT's section is named after its segment, or after the COMDAT when it has none."""
+    seg = segments.get(cd.segment_index)
+    code = seg.is_code if seg else cd.allocation in _CODE_ALLOCATIONS
+    name = seg.name if seg else cd.name
+    return _Part(name, f"COMDAT {cd.name!r}", code, False, cd.data, len(cd.data), cd.fixups,
+                 comdat=cd)  # fmt: skip
+
+
+def _parts(module: Module) -> list[_Part]:
+    """Every emitted segment in SEGDEF order, then every COMDAT; debug classes are dropped."""
+    segments = {seg.index: seg for seg in module.segments}
+    parts = [_segment_part(seg) for seg in module.segments if not is_debug(seg)]
+    for cd in module.comdats:
+        seg = segments.get(cd.segment_index)
+        if seg is not None and is_debug(seg):
+            continue
+        parts.append(_comdat_part(cd, segments))
+    return parts
+
+
+def _section(part: _Part, data: bytes) -> ElfSection:
+    if part.code:
+        return ElfSection(part.name, data, flags=SHF_ALLOC | SHF_EXECINSTR, align=CODE_ALIGN)
+    if part.bss:
         if any(data):
-            raise Omf2ElfError(f"segment {seg.name}: BSS segment holds initialised bytes")
-        return ElfSection(seg.name, kind="nobits", flags=SHF_ALLOC | SHF_WRITE,
-                          align=DATA_ALIGN, size=seg.length)  # fmt: skip
-    return ElfSection(seg.name, data, flags=SHF_ALLOC | SHF_WRITE, align=DATA_ALIGN)
+            raise Omf2ElfError(f"{part.where}: BSS segment holds initialised bytes")
+        return ElfSection(part.name, kind="nobits", flags=SHF_ALLOC | SHF_WRITE,
+                          align=DATA_ALIGN, size=part.length)  # fmt: skip
+    return ElfSection(part.name, data, flags=SHF_ALLOC | SHF_WRITE, align=DATA_ALIGN)
 
 
-def _publics(module: Module, seg: Segment, section: int) -> list[ElfSymbol]:
-    """A symbol per public in `seg`, sized to the next public or the segment end."""
-    own = [p for p in module.publics if p.segment_index == seg.index]
+def _sized_publics(module: Module, part: _Part, section: int) -> list[ElfSymbol]:
+    """A symbol per public in the segment of `part`, sized to the next public or the end."""
+    own = [p for p in module.publics if p.segment_index == part.segment_index]
     offsets = sorted({p.offset for p in own})
-    ends = dict(zip(offsets, [*offsets[1:], seg.length], strict=False))  # [length] if no public
-    kind = STT_FUNC if seg.is_code else STT_OBJECT
+    ends = dict(zip(offsets, [*offsets[1:], part.length], strict=False))  # [length] if no public
+    kind = STT_FUNC if part.code else STT_OBJECT
     return [ElfSymbol(p.name, section, p.offset, ends[p.offset] - p.offset, type=kind)
             for p in own]  # fmt: skip
+
+
+def _comdat_symbol(part: _Part, section: int) -> ElfSymbol:
+    """The COMDAT's own symbol: WEAK when its selection criterion allows duplicates."""
+    assert part.comdat is not None
+    bind = STB_GLOBAL if part.comdat.selection == COMDAT_SELECT_NO_MATCH else STB_WEAK
+    kind = STT_FUNC if part.code else STT_OBJECT
+    return ElfSymbol(part.comdat.name, section, 0, part.length, bind=bind, type=kind)
+
+
+def _symbols(module: Module, parts: list[_Part]) -> list[ElfSymbol]:
+    """Publics and COMDATs, then every extern not defined here as an undefined GLOBAL."""
+    symbols: list[ElfSymbol] = []
+    for i, part in enumerate(parts):
+        if part.comdat is not None:
+            symbols.append(_comdat_symbol(part, i))
+            continue
+        symbols += _sized_publics(module, part, i)
+    defined = {s.name for s in symbols}
+    symbols += [ElfSymbol(name, None) for name in dict.fromkeys(module.externs)
+                if name not in defined]  # fmt: skip
+    return symbols
 
 
 def _target(fx: OMFFixup, where: str, section_of: dict[int, int]) -> tuple[str, int | None]:
@@ -125,10 +207,10 @@ def _target(fx: OMFFixup, where: str, section_of: dict[int, int]) -> tuple[str, 
 
 
 def _relocation(
-    fx: OMFFixup, seg: Segment, data: bytearray, section_of: dict[int, int]
+    fx: OMFFixup, part: _Part, section: int, data: bytearray, section_of: dict[int, int]
 ) -> ElfReloc:
     """Rewrites the fixup's field to its REL addend and returns its relocation."""
-    where = f"segment {seg.name} offset {fx.offset:#x}"
+    where = f"{part.where} offset {fx.offset:#x}"
     if fx.location != LOC_OFFSET32:
         raise Omf2ElfError(f"{where}: fixup location {fx.location} is not 9 (offset32)")
     symbol, target_section = _target(fx, where, section_of)
@@ -136,7 +218,28 @@ def _relocation(
     stored = _FIELD.unpack_from(data, fx.offset)[0]
     _FIELD.pack_into(data, fx.offset, stored + fx.displacement + (PC32_BIAS if relative else 0))
     rtype = R_386_PC32 if relative else R_386_32
-    return ElfReloc(section_of[seg.index], fx.offset, rtype, symbol, target_section)
+    return ElfReloc(section, fx.offset, rtype, symbol, target_section)
+
+
+def _relocations(
+    part: _Part, section: int, section_of: dict[int, int]
+) -> tuple[bytes, list[ElfReloc]]:
+    """The part's bytes with every fixup field rewritten to its addend, and the relocations."""
+    data = bytearray(part.data)
+    relocs = [_relocation(fx, part, section, data, section_of) for fx in part.fixups]
+    return bytes(data), relocs
+
+
+def _sections(
+    parts: list[_Part], section_of: dict[int, int]
+) -> tuple[list[ElfSection], list[ElfReloc]]:
+    sections: list[ElfSection] = []
+    relocs: list[ElfReloc] = []
+    for i, part in enumerate(parts):
+        data, part_relocs = _relocations(part, i, section_of)
+        sections.append(_section(part, data))
+        relocs += part_relocs
+    return sections, relocs
 
 
 def _check_publics(module: Module) -> None:
@@ -145,24 +248,20 @@ def _check_publics(module: Module) -> None:
             raise Omf2ElfError(f"public {pub.name!r} is absolute (no segment)")
 
 
+def _check_unmaskable(module: Module) -> None:
+    for seg in module.segments:
+        if seg.unmaskable and not is_debug(seg):
+            raise Omf2ElfError(f"segment {seg.name}: a fixup addresses iterated data")
+
+
 def convert(module: Module) -> ElfObject:
     """The ELF object of one Watcom OMF module."""
     _check_publics(module)
-    emitted = [seg for seg in module.segments if not is_debug(seg)]
-    section_of = {seg.index: i for i, seg in enumerate(emitted)}
-    sections: list[ElfSection] = []
-    symbols: list[ElfSymbol] = []
-    relocs: list[ElfReloc] = []
-    for seg in emitted:
-        if seg.unmaskable:
-            raise Omf2ElfError(f"segment {seg.name}: a fixup addresses iterated data")
-        data = bytearray(seg.data)
-        relocs += [_relocation(fx, seg, data, section_of) for fx in seg.fixups]
-        sections.append(_section(seg, bytes(data)))
-        symbols += _publics(module, seg, section_of[seg.index])
-    defined = {s.name for s in symbols}
-    symbols += [ElfSymbol(name, None) for name in dict.fromkeys(module.externs)
-                if name not in defined]  # fmt: skip
+    _check_unmaskable(module)
+    parts = _parts(module)
+    section_of = {p.segment_index: i for i, p in enumerate(parts) if p.segment_index}
+    sections, relocs = _sections(parts, section_of)
+    symbols = _symbols(module, parts)
     return ElfObject(tuple(sections), tuple(symbols), tuple(relocs))
 
 
