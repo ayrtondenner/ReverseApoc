@@ -310,7 +310,13 @@ decomp.me's `msdos` platform offers `wcc10.0a`, `wcc10.5`, `wcc10.5a`, `wcc10.6`
 - Bridge: Theme Hospital's `omf2elf.py` (GPLv3, about 590 lines) converts Watcom OMF to ELF32, including COMDAT, LIDATA, FIXUPP threads and BAKPAT. Theme Hospital runs objdiff-cli 3.8.1 through it.
 - objdiff compares at most one relocation per x86 instruction, so Theme Hospital's `elfrelocs.py`/`verify.py` check the rest.
 - Target objects for objdiff are cut from the LE, with relocations built from LE fixups (Phase 5).
-- Fallback: KKND-style compare (cut each function from its OMF object, mask relocations, check their targets), which avoids objdiff entirely. **The Phase 5 spike decides.**
+- Fallback: KKND-style compare (cut each function from its OMF object, mask relocations, check their targets), which avoids objdiff entirely. Not needed: spike 005 kept the hybrid pipeline (D-02).
+
+Result (spike [005](../.planning/spikes/005-objdiff-omf-elf/README.md), verdict VALIDATED):
+
+- **The pair.** The `cmain386` runtime row (public `__CMain`, 79 bytes) of UFO2P.EXE and TACP.EXE, against Watcom's own `SRC/STARTUP/386/CMAIN386.C` read in place from the read-only 10.6 tree (never copied, D-19) and compiled by `reverseapoc cc` under the default rule. objdiff-cli 3.8.2 loads both the converted object and the LE cut and reports `match_percent` 100.0 for `__CMain` in both EXEs.
+- **The shape objdiff pairs.** Code sections are named `_TEXT` on both sides: a target `.text` against our `_TEXT` is left unpaired. Relocations are REL, with the addend in the field: on our side the Theme Hospital addend rule (`R_386_PC32` field = stored + displacement - 4, `R_386_32` = stored + displacement), on the target side every LE off32 field rewritten to its addend (the raw field holds `target_off`) and every call field to -4. objdiff compares a relocation to an undefined symbol by name and addend only, so the target side uses the exact linker names (`func_X_`, `_D_X`, Watcom publics such as `exit_` and `__CommonInit_`), one name per address; the optional committed `config/<exe>/symbols.csv` (`address,name,kind`, no bytes) supplies names the CSVs cannot derive.
+- **The blind spot.** objdiff checks one relocation per instruction: in the spike's plants a wrong symbol on the 2nd relocation of one instruction (the imm32 of a `mov dword [abs32], imm32`) still scores 100.0, while a wrong call symbol or addend drops the score below 100. objdiff is a score and a viewer, not the gate: the relocation check (SPL-09, `tools/reverseapoc/relocs.py`) plus the whole-EXE SHA-1 is the gate.
 
 ### wibo
 
