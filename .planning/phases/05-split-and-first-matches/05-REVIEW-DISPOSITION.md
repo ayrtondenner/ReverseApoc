@@ -1,4 +1,4 @@
----
+| IN-05 |  | fixed | 2d74826 (05-REVIEW-FIX.md; scoped re-review: addressed) || IN-04 |  | fixed | aaa08e6 (05-REVIEW-FIX.md; scoped re-review: addressed) || IN-03 |  | fixed | 300ee86 (05-REVIEW-FIX.md; scoped re-review: addressed) || IN-01 |  | fixed | 1fecd6b (05-REVIEW-FIX.md; scoped re-review: addressed) || WR-01 |  | fixed | bcf46d7 (05-REVIEW-FIX.md; scoped re-review: addressed) |---
 phase: 05
 review: 05-REVIEW.md
 titles: json
@@ -13,7 +13,7 @@ findings:
     title: "A `static` function always fails `check`, and the messages do not say why"
   - id: IN-02
     severity: info
-    disposition: open
+    disposition: deferred
     title: "Every jump-table function is refused: wcc386 puts the table before the public, outside every own public"
   - id: IN-03
     severity: info
@@ -27,7 +27,7 @@ findings:
     severity: info
     disposition: open
     title: "The committed-CSV address parser accepts more than `0x%08X`"
-open: 6
+open: 0
 total: 6
 recorded: 2026-10-24T05:48:26.387Z
 ---
@@ -38,7 +38,7 @@ recorded: 2026-10-24T05:48:26.387Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
 | IN-01 | info | open | - |
-| IN-02 | info | open | - |
+| IN-02 | info | deferred | fails closed (jump-table functions refused, never passed); pairing the leading table with its row is Phase 6/7 work |
 | IN-03 | info | open | - |
 | IN-04 | info | open | - |
 | IN-05 | info | open | - |
