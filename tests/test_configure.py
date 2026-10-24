@@ -15,7 +15,7 @@ from reverseapoc.functions import FunctionRow
 from reverseapoc.targets import load_manifest
 
 
-def test_render_has_phony_targets_and_phase5_note():
+def test_render_has_phony_targets_and_compile_rules():
     text = configure.render(["orig/UFO2P.EXE", "orig/TACP.EXE"])
     assert "build check-orig: phony" in text
     assert "build parse-le: phony" in text
@@ -23,7 +23,8 @@ def test_render_has_phony_targets_and_phase5_note():
     assert "uv run reverseapoc parse-le $in" in text
     assert "parse_le orig/UFO2P.EXE" in text
     assert "parse_le orig/TACP.EXE" in text
-    assert "Phase 5" in text
+    assert "rule cc" in text
+    assert "rule omf2elf" in text
     assert "builddir = build" in text
 
 
@@ -396,7 +397,15 @@ def test_no_stale_phase_wording():
     for where in (configure.__doc__, text):
         assert "Phase 2" not in where
         assert "skeleton" not in where
-    assert "Phase 5" in text
+        # The compile rules are here now; nothing promises them for a later phase.
+        assert "Phase 5" not in where
+        assert "arrive in" not in where
+        assert "Verification targets only" not in where
+    assert "rule cc" in text
+    assert "rule omf2elf" in text
+    comments = [line for line in text.splitlines() if line.startswith("#")]
+    for target in ("ninja objects", "ninja lint", "ninja asm", "ninja verify"):
+        assert any(target in line for line in comments), target
 
 
 # ---- Phase 5 (SPL-06): units with C become compile, convert and cut edges ----------------------
@@ -622,6 +631,114 @@ def test_main_refuses_a_stray_source(tmp_path, capsys):
     argv = _split_tree(tmp_path)
     (tmp_path / "src" / "ufo2p" / "stray.c").write_text("int x;\n", encoding="utf-8")
     _assert_refused(tmp_path, argv, capsys, "stray.c", "names no unit")
+
+
+THREE_UNITS = (
+    configure.UnitBuild("ufo2p", "UFO2P.EXE", "u_a", "src/ufo2p/u_a.c"),
+    configure.UnitBuild("ufo2p", "UFO2P.EXE", "u_b", None),
+    configure.UnitBuild("tacp", "TACP.EXE", "u_c", "src/tacp/u_c.c"),
+)
+BASES = ("$builddir/ufo2p/base/u_a.o", "$builddir/tacp/base/u_c.o")
+TARGETS = (
+    "$builddir/ufo2p/target/u_a.o",
+    "$builddir/ufo2p/target/u_b.o",
+    "$builddir/tacp/target/u_c.o",
+)
+
+
+def _deps(line: str) -> tuple[list[str], list[str]]:
+    """The explicit and implicit inputs of a `build out: rule in... | implicit...` line."""
+    inputs = line.partition(": ")[2].split(" ")[1:]
+    if "|" not in inputs:
+        return inputs, []
+    bar = inputs.index("|")
+    return inputs[:bar], inputs[bar + 1 :]
+
+
+def test_land_joins_verify():
+    text = configure.render([], orig="../elsewhere", units=THREE_UNITS)
+    assert "build $builddir/always/verify: rebuild" in text
+    lines = text.splitlines()
+    assert "build verify: phony $builddir/always/verify $builddir/always/land" in lines
+    explicit, implicit = _deps(_edge(text, "$builddir/always/land"))
+    assert explicit == []
+    assert sorted(implicit) == sorted(BASES)
+    assert _command(text, "land") == "command = uv run reverseapoc land --orig ../elsewhere"
+    assert REBUILD_CMD + "../elsewhere --out build" in _rule_block(text, "rebuild")
+
+
+def test_land_without_units_still_joins_verify():
+    lines = configure.render([]).splitlines()
+    assert "build verify: phony $builddir/always/verify $builddir/always/land" in lines
+    assert "build $builddir/always/land: land" in lines
+
+
+def test_lint_and_asm_edges():
+    text = configure.render([], units=THREE_UNITS)
+    assert _command(text, "lint") == "command = uv run reverseapoc lint $in --stamp $out"
+    stamps = ["$builddir/ufo2p/lint/u_a.stamp", "$builddir/tacp/lint/u_c.stamp"]
+    assert _deps(_edge(text, stamps[0]))[0] == ["src/ufo2p/u_a.c"]
+    assert _deps(_edge(text, stamps[1]))[0] == ["src/tacp/u_c.c"]
+    assert "$builddir/ufo2p/lint/u_b.stamp" not in text
+    assert f"build lint: phony {' '.join(stamps)}" in text.splitlines()
+
+    assert _command(text, "asm") == "command = uv run reverseapoc asm $exe --orig orig"
+    lines = text.splitlines()
+    for exe in ("ufo2p", "tacp"):
+        out = f"$builddir/always/asm/{exe}"
+        index = lines.index(f"build {out}: asm")
+        assert lines[index + 1] == f"  exe = {exe}"
+    asm_phony = "build asm: phony $builddir/always/asm/ufo2p $builddir/always/asm/tacp"
+    assert asm_phony in lines
+
+
+def test_regeneration_rule(tmp_path):
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    assert "generator = 1" in _rule_block(text, "configure")
+    command = _command(text, "configure")
+    assert "configure.py --orig orig --config config --src src --output $out" in command
+    explicit, implicit = _deps(_edge(text, "build.ninja"))
+    assert explicit == []
+    assert implicit[0].endswith("configure.py")
+    for dep in ("config/ufo2p/units.csv", "config/ufo2p/functions.csv", f"src/ufo2p/{UNIT}.c"):
+        assert dep in implicit, dep
+
+
+def test_regeneration_rule_refuses_an_unsafe_config_dir(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    config = tmp_path / "my config"
+    (tmp_path / "config").rename(config)
+    argv[argv.index("--config") + 1] = str(config)
+    _assert_refused(tmp_path, argv, capsys, "my config")
+
+
+def test_default_builds_objects():
+    text = configure.render([], units=THREE_UNITS)
+    lines = text.splitlines()
+    assert "default check-orig objects" in lines
+    explicit, implicit = _deps(_edge(text, "objects"))
+    assert explicit[0] == "phony"
+    assert sorted(explicit[1:]) == sorted(BASES + TARGETS)
+    assert implicit == []
+
+
+def test_default_builds_objects_without_units():
+    lines = configure.render([]).splitlines()
+    assert "default check-orig objects" in lines
+    assert "build objects: phony" in lines
+
+
+def test_gitignore_lists_generated_files():
+    lines = (configure.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    start = lines.index("# --- generated by configure.py ---")
+    block = []
+    for line in lines[start + 1 :]:
+        if not line.strip() or line.startswith("# ---"):
+            break
+        block.append(line.strip())
+    for name in ("build.ninja", "objdiff.json", "compile_commands.json"):
+        assert name in block, name
 
 
 def test_main_creates_the_output_directory(tmp_path):
