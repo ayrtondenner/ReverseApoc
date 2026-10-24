@@ -133,7 +133,7 @@ def _label(va: int) -> str:
     return f".L{va:08X}"
 
 
-def _branch_target(insn: Insn, fixups: Mapping[int, Fixup]) -> int | None:
+def branch_target(insn: Insn, fixups: Mapping[int, Fixup]) -> int | None:
     """The destination of a direct call or jump; an LE rel32 fixup on its field wins."""
     if insn.branch_target is None:
         return None
@@ -146,7 +146,7 @@ def _local_labels(items: Sequence[Item], row: FunctionRow, fixups: Mapping[int, 
     for item in items:
         if not isinstance(item, Insn) or not item.is_jump:
             continue
-        target = _branch_target(item, fixups)
+        target = branch_target(item, fixups)
         if target is not None and row.start <= target < row.end:
             labels.add(target)
     return labels
@@ -181,7 +181,7 @@ def _field_operands(insn: Insn, op_str: str, fixups: Iterable[Fixup], symbols: S
 def _operands(
     insn: Insn, row: FunctionRow, fixups: Mapping[int, Fixup], symbols: SymbolTable
 ) -> str:
-    target = _branch_target(insn, fixups)
+    target = branch_target(insn, fixups)
     if target is not None:
         if insn.is_jump and row.start <= target < row.end:
             return _label(target)
