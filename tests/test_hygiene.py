@@ -156,6 +156,21 @@ def test_docs_place_ghidra_in_the_image():
     assert "ghidra-export" in toolchain
 
 
+_SPIKE_005 = "005-objdiff-omf-elf"
+
+
+def test_toolchain_records_spike_005():
+    # D-01, D-02: "objdiff and the OMF bridge" links the spike record and states the verdict
+    # exactly as the record's `verdict:` line, instead of "The Phase 5 spike decides".
+    readme = REPO_ROOT / ".planning" / "spikes" / _SPIKE_005 / "README.md"
+    verdict = re.search(r"^verdict: (\S+)$", readme.read_text(encoding="utf-8"), re.M)
+    assert verdict
+    text = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    assert "The Phase 5 spike decides" not in text
+    link = f"spike [005](../.planning/spikes/{_SPIKE_005}/README.md), verdict {verdict[1]}"
+    assert link in text
+
+
 def _default_cflags_rule():
     """The `*` rule of config/cflags.txt, parsed against the versions of config/watcom.toml."""
     path = REPO_ROOT / "config" / "cflags.txt"
