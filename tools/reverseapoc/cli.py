@@ -1,19 +1,29 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import probe
+from .asm import AsmError, data_ranges, select_rows, write_listings
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
 from .elf import ElfError
+from .functions import (
+    FunctionRow,
+    FunctionsError,
+    functions_csv_path,
+    read_functions_csv,
+    read_symbols_csv,
+    symbols_csv_path,
+)
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
@@ -33,9 +43,20 @@ from .libmatch import (
 )
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
-from .probe import ProbeError
+from .probe import CHK_PUBLIC, ProbeError
+from .score import ScoreError, ScoreReport, assess
 from .splice import DEFAULT_OUT, _write_atomic, rebuild
-from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig, load_manifest
+from .symbols import SymbolError, SymbolTable
+from .targets import (
+    DEFAULT_MANIFEST,
+    DEFAULT_ORIG,
+    REPO_ROOT,
+    ManifestError,
+    Target,
+    check_orig,
+    config_dir,
+    load_manifest,
+)
 from .watcom import (
     ARCHIVE_BASE,
     DEFAULT_INSTALL,
@@ -363,6 +384,129 @@ def _add_probe_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_probe)
 
 
+# ---- split reading aids: asm ----
+
+DEFAULT_ASM = REPO_ROOT / "asm"
+
+
+@dataclass(frozen=True)
+class _SplitInputs:
+    target: Target
+    le: LE
+    rows: list[FunctionRow]
+    symbols: SymbolTable
+
+
+def _split_inputs(args: argparse.Namespace, target: Target) -> _SplitInputs:
+    """The EXE (checked against the manifest), its functions.csv rows and its symbol table."""
+    functions = args.functions or functions_csv_path(target.name)
+    symbols = args.symbols or symbols_csv_path(target.name)
+    rows = read_functions_csv(functions)
+    le = LE(read_target(target, args.orig, args.manifest))
+    table = SymbolTable.build(rows, read_symbols_csv(symbols), data_ranges=data_ranges(le))
+    return _SplitInputs(target, le, rows, table)
+
+
+def _hex_address(value: str) -> int:
+    try:
+        return int(value, 16)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a hex address") from exc
+
+
+def _cmd_asm(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    out_dir = Path(args.out) / config_dir(target.name).name
+    # Listings are disassembly-class output: never inside orig/ or the Watcom tree (T-05-25).
+    refuse_output(out_dir, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
+    inputs = _split_inputs(args, target)
+    rows = select_rows(inputs.rows, inputs.symbols, only=args.only)
+    report = write_listings(
+        rows,
+        flat=inputs.le.load_flat(relocate=False),
+        fixups=inputs.le.fixups(),
+        symbols=inputs.symbols,
+        out_dir=out_dir,
+    )
+    print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
+    return 0
+
+
+def _add_split_inputs(p: argparse.ArgumentParser) -> None:
+    default = "default: %(default)s"
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument(
+        "--functions", type=Path, metavar="CSV", help="default: config/<exe>/functions.csv"
+    )
+    p.add_argument("--symbols", type=Path, metavar="CSV", help="default: config/<exe>/symbols.csv")
+
+
+def _add_asm_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "asm",
+        help="write one Intel-syntax listing per functions.csv row into the gitignored "
+        "asm/<exe>/ (SPL-05)",
+    )
+    _add_split_inputs(p)
+    p.add_argument(
+        "--out", type=Path, default=DEFAULT_ASM, help="listing root; default: %(default)s"
+    )
+    p.add_argument(
+        "--only",
+        type=_hex_address,
+        metavar="ADDR",
+        help="list only the row containing this hex address",
+    )
+    p.add_argument("--json", action="store_true", help="print the count and directory as JSON")
+    p.set_defaults(func=_cmd_asm)
+
+
+def _runtime_starts(target: Target) -> set[int]:
+    """The starts of the committed runtime.csv rows (D-06), when that file exists."""
+    path = runtime_csv_path(target.name)
+    return {row.start for row in read_runtime_csv(path)} if path.is_file() else set()
+
+
+def _chk_targets(inputs: _SplitInputs) -> set[int]:
+    """Where __CHK lives: rows named so, and the runtime public of that name."""
+    targets = {row.start for row in inputs.rows if row.name == CHK_PUBLIC}
+    if CHK_PUBLIC in inputs.symbols.names:
+        targets.add(inputs.symbols.names[CHK_PUBLIC])
+    return targets
+
+
+def _cmd_score(args: argparse.Namespace) -> int:
+    if args.top < 1:
+        raise ScoreError(f"--top must be at least 1, not {args.top}")
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    inputs = _split_inputs(args, target)
+    assessments = assess(
+        inputs.rows,
+        flat=inputs.le.load_flat(relocate=False),
+        fixups=inputs.le.fixups(),
+        symbols=inputs.symbols,
+        chk_targets=_chk_targets(inputs),
+        runtime_starts=_runtime_starts(target),
+    )
+    report = ScoreReport.build(target.name, assessments, inputs.symbols, args.top)
+    print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
+    return 0
+
+
+def _add_score_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "score",
+        help="apply the P16 first-match filter and rank the survivors easiest-first (D-15); "
+        "prints addresses and names only",
+    )
+    _add_split_inputs(p)
+    p.add_argument("--top", type=int, default=10, help="candidates to print; default: %(default)s")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=_cmd_score)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -482,6 +626,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_libmatch_command(sub)
     _add_cppscan_command(sub)
     _add_probe_command(sub)
+    _add_asm_command(sub)
+    _add_score_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -500,6 +646,10 @@ _ERRORS = (
     OMFError,
     Omf2ElfError,
     ElfError,
+    FunctionsError,
+    SymbolError,
+    AsmError,
+    ScoreError,
     OSError,
 )
 
