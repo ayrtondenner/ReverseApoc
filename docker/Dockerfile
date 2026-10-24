@@ -7,7 +7,15 @@
 #     supplies it and it is bind-mounted at /work/watcom at runtime.
 #   - No game files (X-COM Apocalypse). They are bind-mounted at /work/orig.
 #   - No project source. The repo is bind-mounted at /work; the image only
-#     pre-installs tools.
+#     pre-installs tools. Every COPY is `COPY --from=<stage>` and there is no
+#     ADD, so nothing from the build context can enter a layer.
+#
+# WHAT IT DOES CONTAIN besides the build tools (D-04): Ghidra 12.1.4 (Apache-2.0)
+# with the lastonesky ghidra-lx-loader (Apache-2.0) at /opt/ghidra, and OpenJDK 21
+# (GPLv2 with the Classpath Exception) to run it headless. Both zips are
+# downloaded and SHA-256 checked in the `ghidra` stage below; no developer
+# installs Ghidra or a JDK by hand (D-05). Watcom and the game are still never
+# in the image.
 #   - Open Watcom v2's compiler is installed on disk but NOT put on PATH and
 #     NOT used for matching (its codegen differs from Watcom 10.x). Only its
 #     binary tools wdis, wlink and wlib are exposed.
@@ -22,6 +30,8 @@
 # versions below are the 24.04 archive versions at the same date; if the build
 # fails with "version not found", Ubuntu has published a security update:
 # refresh the versions with `apt-cache policy <pkg>` in a fresh ubuntu:24.04.
+# Refreshed 2026-10-24: ca-certificates and xz-utils (security updates); the
+# JDK and clang pins were added the same day.
 ARG UBUNTU_IMAGE=ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
 
 # Python interpreter that uv installs (the project pins 3.14).
@@ -35,6 +45,19 @@ ARG OBJDIFF_SHA256=e5445089a6f707e30cb5e02992451b604619cedfd2660ee2373a86bfefd9e
 # "Current-build" is NOT used because it is rewritten daily).
 ARG OW_TAG=2026-10-01-Build
 ARG OW_SHA256=e6aa1b1e40ac8bbf97658d2c70fff8a4242d6ca4a1c60806f2baa5317083d4fe
+
+# Ghidra 12.1.4 PUBLIC, the NSA release zip from GitHub.
+ARG GHIDRA_VERSION=12.1.4
+# Release asset name (the date is Ghidra's build date).
+ARG GHIDRA_ZIP=ghidra_12.1.4_PUBLIC_20260921.zip
+# SHA-256 of that zip (recomputed in the phase 5 research).
+ARG GHIDRA_SHA256=ddac49f903da9d5bac833e5cc79395098b9c33cfd3279be5f31bd00387d2d4db
+# lastonesky/ghidra-lx-loader release tag built for Ghidra 12.1.4 (LeLoader, watcom cspec).
+ARG LXLOADER_TAG=v12.1.4-1
+# Release asset name of that tag.
+ARG LXLOADER_ZIP=ghidra_12.1.4_PUBLIC_20261010_ghidra-lx-loader.zip
+# SHA-256 of that zip (recomputed in the phase 5 research).
+ARG LXLOADER_SHA256=0a9c65cee8c090ec4b7f72b595eb829267f80ae8f36a2a44d4ef1ef5af41be45
 
 # ---------------------------------------------------------------------------
 # Stage: pinned third-party tool sources (copied into the final image).
@@ -55,9 +78,9 @@ ARG OW_TAG
 ARG OW_SHA256
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ca-certificates=20260601~24.04.1 \
+      ca-certificates=20260816ubuntu0.24.04.1 \
       curl=8.5.0-2ubuntu10.16 \
-      xz-utils=5.6.1+really5.4.5-1ubuntu0.3 \
+      xz-utils=5.6.1+really5.4.5-1ubuntu0.4 \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /dl
 # objdiff-cli: single static-ish binary; verify sha256 before installing.
@@ -74,6 +97,38 @@ RUN curl -fsSL -o ow-snapshot.tar.xz \
  && rm ow-snapshot.tar.xz
 
 # ---------------------------------------------------------------------------
+# Stage: download and verify Ghidra and the LE loader (D-03, D-04, D-20).
+# Its own stage, so an objdiff or Open Watcom bump does not refetch ~570 MB.
+# ---------------------------------------------------------------------------
+FROM ${UBUNTU_IMAGE} AS ghidra
+ARG GHIDRA_VERSION
+ARG GHIDRA_ZIP
+ARG GHIDRA_SHA256
+ARG LXLOADER_TAG
+ARG LXLOADER_ZIP
+ARG LXLOADER_SHA256
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends \
+      ca-certificates=20260816ubuntu0.24.04.1 \
+      curl=8.5.0-2ubuntu10.16 \
+      unzip=6.0-28ubuntu4.1 \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /dl
+# The loader is installed by unzipping it into Ghidra/Extensions/ (the headless
+# install of docs/GettingStarted.md); Ghidra picks it up at the next start.
+RUN curl -fsSL -o ghidra.zip \
+      "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_ZIP}" \
+ && echo "${GHIDRA_SHA256}  ghidra.zip" | sha256sum -c - \
+ && unzip -q ghidra.zip -d /opt \
+ && mv "/opt/ghidra_${GHIDRA_VERSION}_PUBLIC" /opt/ghidra \
+ && rm ghidra.zip \
+ && curl -fsSL -o lx.zip \
+      "https://github.com/lastonesky/ghidra-lx-loader/releases/download/${LXLOADER_TAG}/${LXLOADER_ZIP}" \
+ && echo "${LXLOADER_SHA256}  lx.zip" | sha256sum -c - \
+ && unzip -q lx.zip -d /opt/ghidra/Ghidra/Extensions \
+ && rm lx.zip
+
+# ---------------------------------------------------------------------------
 # Final image.
 # ---------------------------------------------------------------------------
 FROM ${UBUNTU_IMAGE} AS final
@@ -85,6 +140,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   ninja-build  build.ninja executor
 #   binutils     GNU as / ld / objdump
 #   clang-format, clangd  formatting and language server for the C sources
+#   clang-18, clang  the C89 lint gate (`reverseapoc lint`, D-14); `clang` is
+#                    the metapackage that puts a plain `clang` on PATH
+#   openjdk-21-jdk-headless  runs Ghidra headless and compiles its Java scripts
 #   git, curl, ca-certificates, xz-utils, unzip  general plumbing
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
@@ -92,10 +150,13 @@ RUN apt-get update \
       binutils=2.42-4ubuntu2.10 \
       clang-format=1:18.0-59~exp2 \
       clangd=1:18.0-59~exp2 \
+      clang-18=1:18.1.3-1ubuntu1 \
+      clang=1:18.0-59~exp2 \
+      openjdk-21-jdk-headless=21.0.12.1+1-1~24.04.4 \
       git=1:2.43.0-1ubuntu7.4 \
       curl=8.5.0-2ubuntu10.16 \
-      ca-certificates=20260601~24.04.1 \
-      xz-utils=5.6.1+really5.4.5-1ubuntu0.3 \
+      ca-certificates=20260816ubuntu0.24.04.1 \
+      xz-utils=5.6.1+really5.4.5-1ubuntu0.4 \
       unzip=6.0-28ubuntu4.1 \
  && rm -rf /var/lib/apt/lists/*
 
@@ -112,6 +173,11 @@ COPY --from=fetch /opt/watcom-v2 /opt/watcom-v2
 RUN ln -s /opt/watcom-v2/binl64/wdis  /usr/local/bin/wdis \
  && ln -s /opt/watcom-v2/binl64/wlink /usr/local/bin/wlink \
  && ln -s /opt/watcom-v2/binl64/wlib  /usr/local/bin/wlib
+
+# Ghidra 12.1.4 with the LE loader (verified in the ghidra stage). The install
+# stays root-owned and read-only; user settings go to ~/.config/ghidra.
+COPY --from=ghidra /opt/ghidra /opt/ghidra
+ENV GHIDRA_INSTALL_DIR=/opt/ghidra
 
 # Non-root user `dev` (uid 1000). Ubuntu 24.04 ships an `ubuntu` user with
 # uid 1000; remove it first so `dev` can take that uid (matches the usual
