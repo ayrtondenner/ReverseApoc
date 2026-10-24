@@ -28,13 +28,20 @@ import csv
 import io
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
+from types import MappingProxyType
+from typing import TYPE_CHECKING
 
 from .libmatch import LoadedLibrary, MatchRange, _code_segments, _Owner
 from .splice import _write_atomic
 from .targets import config_dir
+
+if TYPE_CHECKING:  # discover pulls in capstone; reconcile imports it when it runs
+    from .discover import Discovery
+    from .ghidra import GhidraFunction
+    from .le import LE
 
 
 class FunctionsError(ValueError):
@@ -649,3 +656,139 @@ def runtime_aliases(entries: Iterable[RuntimeEntry]) -> dict[str, int]:
     """Every public of every entry -> the entry's start, so SymbolTable.address_of resolves the
     aliases a seeded row is not named after (F12: malloc_ and _nmalloc_ name one row)."""
     return {alias: entry.start for entry in entries for alias in entry.aliases}
+
+
+# ---- reconcile: the D-07 rule over the Ghidra and capstone start lists (D-08) ----
+
+# The evidence column of a row takes the first kind present in this order (a fixed tie-break);
+# the first four are LE evidence, which decides a disagreement (D-07).
+EVIDENCE_ORDER = ("runtime", "entry", "call", "fixup", "ghidra", "capstone")
+LE_EVIDENCE = EVIDENCE_ORDER[:4]
+EVIDENCE_GHIDRA = "ghidra"
+EVIDENCE_CAPSTONE = "capstone"
+VERDICT_RULE = "rule"
+
+
+@dataclass(frozen=True)
+class Reconciled:
+    """functions.csv and boundaries.csv rows from one reconcile run, and the Ghidra entries that
+    were dropped because they lie outside every code object."""
+
+    functions: tuple[FunctionRow, ...]
+    boundaries: tuple[BoundaryRow, ...]
+    dropped_ghidra: int = 0
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """What a disagreement address becomes: a start or not, and the verdict that says so."""
+
+    start: bool
+    verdict: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class _Inputs:
+    """The two start lists and the LE evidence of every address."""
+
+    ghidra: frozenset[int]
+    capstone: frozenset[int]
+    evidence: Mapping[int, frozenset[str]]
+
+    def le_evidence(self, address: int) -> tuple[str, ...]:
+        kinds = self.evidence.get(address, frozenset())
+        return tuple(kind for kind in LE_EVIDENCE if kind in kinds)
+
+
+def _ordered(kinds: Iterable[str]) -> tuple[str, ...]:
+    present = set(kinds)
+    return tuple(kind for kind in EVIDENCE_ORDER if kind in present)
+
+
+def _candidate_starts(
+    le: LE, ghidra: Sequence[GhidraFunction], discovery: Discovery,
+    runtime_rows: Sequence[FunctionRow],
+) -> tuple[_Inputs, int]:  # fmt: skip
+    """Ghidra entries inside a code object (the rest are counted and dropped: an export entry
+    in the data object is not a function), the capstone starts, and the LE evidence of each
+    address: discovery's kinds plus `runtime` for every seeded runtime row start."""
+    from .discover import code_objects
+
+    code = code_objects(le)
+    entries = {row.entry for row in ghidra}
+    kept = frozenset(e for e in entries if any(obj.contains(e) for obj in code))
+    evidence: dict[int, set[str]] = defaultdict(set)
+    for address, kinds in discovery.evidence.items():
+        evidence[address] |= kinds
+    for row in runtime_rows:
+        evidence[row.start].add(EVIDENCE_RUNTIME)
+    frozen = {address: frozenset(kinds) for address, kinds in evidence.items()}
+    inputs = _Inputs(kept, frozenset(discovery.starts), MappingProxyType(frozen))
+    return inputs, len(entries) - len(kept)
+
+
+def _disagreements(inputs: _Inputs) -> list[int]:
+    """Every address that is a start in exactly one of the two lists, sorted (D-08)."""
+    return sorted(inputs.ghidra ^ inputs.capstone)
+
+
+def _auto_verdict(address: int, inputs: _Inputs) -> _Decision | None:
+    """The rule's verdict where the LE evidence decides (D-07), else None."""
+    kinds = inputs.le_evidence(address)
+    if kinds:
+        return _Decision(True, VERDICT_RULE, kinds[0])
+    return None
+
+
+def _boundary(address: int, inputs: _Inputs, decision: _Decision | None) -> BoundaryRow:
+    verdict, reason = (decision.verdict, decision.reason) if decision else ("", "")
+    return BoundaryRow(address, address in inputs.ghidra, address in inputs.capstone,
+                       inputs.le_evidence(address), verdict, reason)  # fmt: skip
+
+
+def _evidence(address: int, inputs: _Inputs) -> str:
+    """The first of EVIDENCE_ORDER that placed the start (the fixed tie-break)."""
+    kinds = [*inputs.le_evidence(address)]
+    if address in inputs.ghidra:
+        kinds.append(EVIDENCE_GHIDRA)
+    if address in inputs.capstone:
+        kinds.append(EVIDENCE_CAPSTONE)
+    return _ordered(kinds)[0]
+
+
+def reconcile(
+    le: LE,
+    ghidra: Sequence[GhidraFunction],
+    discovery: Discovery,
+    runtime_rows: Sequence[FunctionRow],
+    *,
+    existing: Sequence[BoundaryRow] = (),
+) -> Reconciled:
+    """functions.csv and boundaries.csv rows by the D-07 rule, neither tool winning by default.
+
+    A start is real if it is a call rel32 target, an absolute fixup target into code, the entry
+    point or a runtime start; Ghidra contributes entries only (its bodies are address sets). An
+    address both tools report is a start; one only one tool reports is a boundaries.csv row with
+    verdict `rule` and the deciding evidence as its reason when the LE evidence decides, else
+    with an empty verdict for a person. Ends come from discover.ends over the final starts."""
+    from .discover import ends
+
+    inputs, dropped = _candidate_starts(le, ghidra, discovery, runtime_rows)
+    if not (inputs.ghidra or inputs.capstone or runtime_rows):
+        raise FunctionsError("reconcile found no function start at all")
+    starts = set(inputs.ghidra & inputs.capstone)
+    boundaries = []
+    for address in _disagreements(inputs):
+        decision = _auto_verdict(address, inputs)
+        boundaries.append(_boundary(address, inputs, decision))
+        if decision is not None and decision.start:
+            starts.add(address)
+    runtime_starts = {row.start for row in runtime_rows}
+    limits = tuple(sorted(starts | runtime_starts))
+    end_of = ends(replace(discovery, starts=limits), le)
+    rows = list(runtime_rows)
+    for start in sorted(starts - runtime_starts):
+        rows.append(FunctionRow(start, end_of[start], game_name(start), KIND_GAME, "",
+                                _evidence(start, inputs)))  # fmt: skip
+    return Reconciled(tuple(sorted(rows, key=lambda r: r.start)), tuple(boundaries), dropped)
