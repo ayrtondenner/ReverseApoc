@@ -1,0 +1,8 @@
+# linker names for addresses that are neither func_/D_ placeholders nor runtime publics (D-19); addresses and names only
+address,name,kind
+0x00010010,main_,func
+0x000C9357,stackavail_,func
+0x0013BBA4,__ASTACKSIZ,data
+0x0013BBA8,__ASTACKPTR,data
+0x00249968,____Argc,data
+0x0024996C,____Argv,data
