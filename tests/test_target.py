@@ -21,7 +21,7 @@ from reverseapoc.elf import (
     STT_OBJECT,
 )
 from reverseapoc.functions import FunctionRow, SymbolRow, data_name, game_name
-from reverseapoc.le import LE, SRC_OFF32, SRC_PTR1632, SRC_SEL16
+from reverseapoc.le import LE, SRC_OFF32, SRC_PTR1632, SRC_REL32, SRC_SEL16
 from reverseapoc.symbols import SymbolTable
 from reverseapoc.target import RawField, TargetError, build_target
 
@@ -59,9 +59,7 @@ def _unrelocated_bytes_match(section, start: int, flat: bytes, fields: list[int]
     """Every byte of `section` outside the 4-byte fields at `fields` (section offsets) equals
     load_flat(relocate=False) at the same address."""
     masked = {offset + k for offset in fields for k in range(4)}
-    return all(
-        byte == flat[start + i] for i, byte in enumerate(section.data) if i not in masked
-    )
+    return all(byte == flat[start + i] for i, byte in enumerate(section.data) if i not in masked)
 
 
 # A at 0x10000: mov eax,[abs32]; call rel32 B; ret; then nops up to 0x10010. B at 0x10010: ret.
@@ -252,6 +250,24 @@ def test_non_off32_field_stays_raw(kind, size, opcode, name):
     assert _section_of(view, "func_00010000_").data == flat[0x10000:0x10010]
     assert _relocs(view, "func_00010000_") == []
     assert result.raw_fields == (RawField(0x10000 + len(opcode), name),)
+
+
+def test_rel32_field_with_an_le_fixup_gets_no_pc32():
+    # the call's field is an LE rel32 fixup site: the fixup owns it, so it stays raw (F11)
+    a, b = _row(0x10000, 0x10010), _row(0x10010, 0x10020)
+    body = b"\xe8" + _rel(0x10010, 0x10001) + RET_PAD[:11]
+    record = fixup_record(SRC_REL32, 0x001, 1, 0x10)
+    _, result, view = _cut([a, b], page1=record, patches={0x10000: body, 0x10010: RET_PAD})
+    assert _relocs(view, "func_00010000_") == []
+    assert result.raw_fields == (RawField(0x10001, "rel32"),)
+
+
+def test_decoding_resumes_after_an_undecodable_byte():
+    # 0f 04 does not decode; one byte later `04 90` (add al, 0x90) does, then the call to B
+    a, b = _row(0x10000, 0x10010), _row(0x10010, 0x10020)
+    body = b"\x0f\x04\x90" + b"\xe8" + _rel(0x10010, 0x10004) + RET_PAD[:8]
+    _, _, view = _cut([a, b], patches={0x10000: body, 0x10010: RET_PAD})
+    assert _relocs(view, "func_00010000_") == [(4, R_386_PC32, "func_00010010_", -4)]
 
 
 def test_refuses_a_call_to_no_row():
