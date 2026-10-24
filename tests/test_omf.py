@@ -340,8 +340,10 @@ def test_fixup_after_lidata_marks_unmaskable():
     )
     text, data = mod.segments
     assert data.unmaskable
+    assert data.unmaskable_at == 0  # data offset of the LIDATA record the FIXUPP addressed
     assert data.fixups == ()
     assert not text.unmaskable
+    assert text.unmaskable_at is None
 
 
 @pytest.mark.parametrize("access", [None, 0x03], ids=["no-access-byte", "access-byte"])
@@ -570,7 +572,13 @@ def test_comdat32_iterated_data_expands_and_is_unmaskable():
     [block] = mod.comdats
     assert block.data == b"ababab"
     assert block.unmaskable
+    assert (block.iterated_at, block.unmaskable_at) == (0, 0)
     assert block.fixups == ()
+
+
+def test_frame_number_target_reads_its_u16_datum():
+    fx = only_fixup(ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=(3, 0x1234))))
+    assert (fx.target_kind, fx.target_index) == ("frame", 0x1234)
 
 
 def test_comdat16_reads_like_comdat32():

@@ -3,6 +3,8 @@ read back with tests/elfread.py. Every byte and name here is made up."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from elfread import read_elf
@@ -19,6 +21,7 @@ from omfimage import (
     ledata32,
     lextdef,
     lidata32,
+    lidata_blocks32,
     lnames,
     lpubdef32,
     module,
@@ -419,3 +422,117 @@ def test_kitchen_sink_module():
     assert elf.relocs(udata.index)[0].symbol_section_index == text.index
     assert rels(cd32) == [(1, R_386_PC32, "ext_", -4)]
     assert rels(cd16) == []
+
+
+# ---- refusals: what Phase 5 does not convert (Task 3) ----
+
+EIGHT_NOPS = b"\x90" * 8
+CD_LNAMES = ("", "_TEXT", "CODE", "f_")
+
+
+def iterated_comdat(*fixups: bytes) -> bytes:
+    blocks = lidata_blocks32([(2, b"\x90")])
+    return module("cd", lnames(*CD_LNAMES), segdef32(2, 3, 0), extdef("x_"),
+                  comdat32(4, blocks, flags=0x02), *fixups)  # fmt: skip
+
+
+def location_module(location: int) -> bytes:
+    return watcom_module(extdef("x_"), fixupp32(fixup(0, location=location, target=(2, 1))),
+                         text=EIGHT_NOPS)  # fmt: skip
+
+
+def easy_module(*records: bytes) -> bytes:
+    """An Easy OMF module with one 8-byte _TEXT/CODE segment and extern x_."""
+    return module("easy", coment(0xAA, b""), lnames("", "_TEXT", "CODE"), segdef32(2, 3, 8),
+                  extdef("x_"), *records)  # fmt: skip
+
+
+REFUSALS = {
+    "iterated-comdat": (iterated_comdat(), r"COMDAT 'f_' offset 0x0: iterated COMDAT data"),
+    "fixup-into-lidata-comdat": (
+        iterated_comdat(fixupp32(fixup(0, target=(2, 1)))),
+        r"COMDAT 'f_' offset 0x0: FIXUPP addresses LIDATA",
+    ),
+    "fixup-into-lidata-segment": (
+        watcom_module(extdef("x_"), lidata32(4, 0, [(1, bytes(4))]),
+                      fixupp32(fixup(0, target=(2, 1)))),  # fmt: skip
+        r"segment _DATA offset 0x0: FIXUPP addresses LIDATA",
+    ),
+    "frame-number-target": (
+        watcom_module(fixupp32(fixup(0, target=(3, 0x1234)))),
+        r"segment _TEXT offset 0x0: FIXUPP target is frame number 0x1234",
+    ),
+    "group-target": (
+        watcom_module(grpdef(TEXT_LN, 1), fixupp32(fixup(0, target=(1, 1)))),
+        r"segment _TEXT offset 0x0: FIXUPP target group '_TEXT'",
+    ),
+    "location-2-selector": (
+        location_module(2), r"_TEXT offset 0x0: FIXUPP location 2 \(16-bit base"
+    ),
+    "location-3-pointer": (
+        location_module(3), r"_TEXT offset 0x0: FIXUPP location 3 \(16:16 pointer"
+    ),
+    "location-11-pointer": (
+        location_module(11), r"_TEXT offset 0x0: FIXUPP location 11 \(16:32 pointer"
+    ),
+    "location-1-offset16": (
+        location_module(1), r"_TEXT offset 0x0: FIXUPP location 1 \(16-bit offset"
+    ),
+    "location-5-without-easy-omf": (
+        location_module(5), r"_TEXT offset 0x0: FIXUPP location 5 .*only under Easy OMF"
+    ),
+    "location-5-field-past-the-data": (
+        easy_module(ledata32(1, 0, bytes(8)), fixupp32(fixup(6, location=5, target=(2, 1)))),
+        r"segment _TEXT offset 0x6: FIXUPP 32-bit field runs past the data \(0x8 bytes\)",
+    ),
+    "addend-overflows-int32": (
+        watcom_module(ledata32(1, 0, bytes.fromhex("01000000")),
+                      fixupp32(fixup(0, target=(0, 1), displacement=0x7FFFFFFF))),  # fmt: skip
+        r"segment _TEXT offset 0x0: FIXUPP addend 0x80000000 does not fit in 32 signed bits",
+    ),
+    "public-past-the-segment-end": (
+        watcom_module(pubdef32(1, [("far_", 0x10)])),
+        r"PUBDEF public 'far_' offset 0x10 is past the end of segment _TEXT \(0x4 bytes\)",
+    ),
+    "public-in-a-debug-segment": (
+        watcom_module(pubdef32(6, [("dbg_", 0)])),
+        r"PUBDEF public 'dbg_' offset 0x0 is in debug segment \$\$SYMBOLS",
+    ),
+    "absolute-public": (watcom_module(pubdef32(0, [("abs_", 0x10)])), r"'abs_' is absolute"),
+    "initialised-bss": (watcom_module(ledata32(5, 0, b"\x01")), r"_BSS.*initialised"),
+}
+
+
+@pytest.mark.parametrize("case", list(REFUSALS))
+def test_refusal_names_the_record_and_writes_nothing(case: str, tmp_path, capsys):
+    data, message = REFUSALS[case]
+    obj, out = tmp_path / "m.obj", tmp_path / "m.o"
+    obj.write_bytes(data)
+    with pytest.raises(Omf2ElfError, match=message):
+        convert_file(obj, out)
+    assert not out.exists()
+    assert cli_main(["omf2elf", str(obj), "-o", str(out)]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc omf2elf: error:")
+    assert re.search(message, err)
+    assert not out.exists()
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["m.obj"]  # no partial or temp file
+
+
+def test_location_5_under_easy_omf_converts_as_offset32():
+    # mov eax,[x_ + 8]; ret; filler. TH rule: location 5 in Easy OMF is a 32-bit offset.
+    elf = convert_bytes(easy_module(ledata32(1, 0, bytes.fromhex("a108000000c39090")),
+                                    fixupp32(fixup(1, location=5, target=(2, 1)))))  # fmt: skip
+    rels = [(r.offset, r.type, r.symbol, r.addend) for r in elf.relocs("_TEXT")]
+    assert rels == [(1, R_386_32, "x_", 8)]
+
+
+def test_refusal_comes_before_any_output_when_a_good_segment_comes_first(tmp_path):
+    # _TEXT converts cleanly; the refused fixup is in _DATA, after it.
+    data = watcom_module(extdef("x_"), ledata32(4, 0, bytes(4)),
+                         fixupp32(fixup(0, location=3, target=(2, 1))))  # fmt: skip
+    obj, out = tmp_path / "m.obj", tmp_path / "m.o"
+    obj.write_bytes(data)
+    with pytest.raises(Omf2ElfError, match="_DATA offset 0x0: FIXUPP location 3"):
+        convert_file(obj, out)
+    assert not out.exists()

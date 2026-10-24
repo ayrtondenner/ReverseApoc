@@ -152,7 +152,8 @@ def fixup(
 ) -> bytes:
     """A FIXUP subrecord. frame/target are (method, index or None) or ("thread", number).
 
-    A target method is given as 0-2; a displacement of None sets the P bit (methods 4-6).
+    A target method is given as 0-3 (3: the datum is a u16 frame number); a displacement of
+    None sets the P bit (methods 4-6).
     """
     locat = 0x8000 | (0x4000 if segment_relative else 0) | (location << 10) | locat_offset
     out = struct.pack(">H", locat)
@@ -165,7 +166,8 @@ def fixup(
     if target[0] == "thread":
         t_bit, targt, target_datum = 1, target[1], b""
     else:
-        t_bit, targt, target_datum = 0, target[0] & 3, index(target[1])
+        t_bit, targt = 0, target[0] & 3
+        target_datum = struct.pack("<H", target[1]) if targt == 3 else index(target[1])
     out += bytes([f_bit << 7 | frame_field << 4 | t_bit << 3 | p_bit << 2 | targt])
     out += frame_datum + target_datum
     if displacement is not None:
