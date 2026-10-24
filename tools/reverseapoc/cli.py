@@ -604,19 +604,33 @@ def _functions_report(name: str, result: Reconciled) -> dict:
         "disagreements": len(verdicts),
         "verdicts": {"auto": auto, "hand": len(verdicts) - auto - missing, "missing": missing},
         "dropped_ghidra": result.dropped_ghidra,
+        # Hand verdicts that did not survive (review round 1): addresses and verdict words only.
+        "replaced": [{"address": f"0x{a:08X}", "verdict": v} for a, v in result.replaced],
+        "dropped_hand": [f"0x{a:08X}" for a in result.dropped_hand],
     }
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
 
 
 def _format_functions_report(report: dict) -> str:
     kinds = ", ".join(f"{n} {kind}" for kind, n in report["kinds"].items())
     verdicts = report["verdicts"]
     missing = verdicts["missing"]
-    return "\n".join([
+    lines = [
         f"{report['exe']}: {report['functions']} functions ({kinds})",
         f"{report['disagreements']} disagreements: {verdicts['auto']} auto (rule), "
-        f"{verdicts['hand']} hand, {missing} missing verdict{'' if missing == 1 else 's'}",
+        f"{verdicts['hand']} hand, {_plural(missing, 'missing verdict')}",
         f"{report['dropped_ghidra']} Ghidra entries outside the code object dropped",
-    ])  # fmt: skip
+    ]
+    if replaced := report["replaced"]:
+        changes = ", ".join(f"{r['address']} {r['verdict']} -> {VERDICT_RULE}" for r in replaced)
+        lines.append(f"{_plural(len(replaced), 'hand verdict')} replaced by the rule: {changes}")
+    if dropped := report["dropped_hand"]:
+        lines.append(f"{_plural(len(dropped), 'hand row')} no longer a disagreement, dropped: "
+                     f"{', '.join(dropped)}")  # fmt: skip
+    return "\n".join(lines)
 
 
 def _cmd_functions(args: argparse.Namespace) -> int:
@@ -703,6 +717,9 @@ def _draft(args: argparse.Namespace, target: Target, out_dir: Path) -> tuple[lis
 
 def _cmd_units(args: argparse.Namespace) -> int:
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    if (args.write or args.output is not None) and args.units is not None:
+        raise UnitsError("--units names the units.csv --write-src reads on its own; a draft "
+                         "(--write or --output) writes units.csv, so drop --units")  # fmt: skip
     if args.write or args.output is not None:
         out_dir = config_dir(target.name) if args.write else Path(args.output)
         refuse_output(out_dir, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)

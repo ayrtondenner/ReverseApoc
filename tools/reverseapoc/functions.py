@@ -676,17 +676,23 @@ VERDICT_RULE = "rule"
 VERDICT_GHIDRA = "ghidra"
 VERDICT_CAPSTONE = "capstone"
 VERDICT_DATA_IN_CODE = "data-in-code"
+HAND_VERDICTS = (VERDICT_GHIDRA, VERDICT_CAPSTONE, VERDICT_DATA_IN_CODE)  # written by a person
 _TABLE_ENTRY = 4  # bytes per jump-table entry: one off32 field
 
 
 @dataclass(frozen=True)
 class Reconciled:
-    """functions.csv and boundaries.csv rows from one reconcile run, and the Ghidra entries that
-    were dropped because they lie outside every code object."""
+    """functions.csv and boundaries.csv rows from one reconcile run; the Ghidra entries that
+    were dropped because they lie outside every code object; and every hand verdict of the
+    previous boundaries.csv that did not survive, so none is lost silently: `replaced` holds
+    (address, old verdict) where the rule now decides (D-07: the LE evidence wins), and
+    `dropped_hand` the addresses of hand rows that are no longer a disagreement."""
 
     functions: tuple[FunctionRow, ...]
     boundaries: tuple[BoundaryRow, ...]
     dropped_ghidra: int = 0
+    replaced: tuple[tuple[int, str], ...] = ()
+    dropped_hand: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -833,6 +839,19 @@ def _apply_verdicts(
         return _boundary(address, context, "", ""), None
     row = _boundary(address, context, hand.verdict, hand.reason)
     return row, _hand_placement(hand.verdict, address, context)
+
+
+def _lost_hand_verdicts(
+    boundaries: Sequence[BoundaryRow], hand: Mapping[int, BoundaryRow]
+) -> tuple[tuple[tuple[int, str], ...], tuple[int, ...]]:
+    """(address, old verdict) of every hand verdict the rule replaced, and the addresses of the
+    hand rows whose address is no longer a disagreement, both sorted."""
+    written = {row.address: row.verdict for row in boundaries}
+    by_hand = {a: row.verdict for a, row in hand.items() if row.verdict in HAND_VERDICTS}
+    replaced = tuple((a, verdict) for a, verdict in sorted(by_hand.items())
+                     if written.get(a) == VERDICT_RULE)  # fmt: skip
+    dropped = tuple(a for a in sorted(by_hand) if a not in written)
+    return replaced, dropped
 
 
 def _evidence(address: int, context: _Context) -> str:
@@ -985,4 +1004,5 @@ def reconcile(
         rows.append(FunctionRow(start, limits.after(start), data_name(start), KIND_DATA_IN_CODE,
                                 "", _evidence(start, context)))  # fmt: skip
     rows += _data_in_code_rows(discovery.jump_tables, rows)
-    return Reconciled(_sorted_rows(rows), tuple(boundaries), dropped)
+    replaced, dropped_hand = _lost_hand_verdicts(boundaries, hand)
+    return Reconciled(_sorted_rows(rows), tuple(boundaries), dropped, replaced, dropped_hand)
