@@ -11,6 +11,7 @@ import pytest
 import configure
 from conftest import build_le_image, write_manifest
 from reverseapoc.cli import main as cli_main
+from reverseapoc.functions import FunctionRow
 from reverseapoc.targets import load_manifest
 
 
@@ -470,6 +471,157 @@ def test_unit_with_source_gets_compile_edges(tmp_path):
     assert entry["file"].endswith(f"src/ufo2p/{UNIT}.c")
     assert "-std=gnu89" in entry["arguments"]
     assert "-c" in entry["arguments"]
+
+
+GENERATED = ("build.ninja", "objdiff.json", "compile_commands.json")
+
+
+def _rows(*specs):
+    """FunctionRows of UNIT from (start, kind) pairs, each 0x10 bytes long."""
+    rows = []
+    for start, kind in specs:
+        name = f"func_{start:08X}" if kind in ("game", "thunk") else f"D_{start:08X}"
+        if kind == "runtime":
+            name = f"rt_{start:x}_"
+        rows.append(FunctionRow(start, start + 0x10, name, kind, UNIT, "call"))
+    return rows
+
+
+TWO_GAME = _rows((0x10000, "game"), (0x10010, "game"))
+
+
+def test_unit_source_complete_file_has_no_problems():
+    assert configure.check_unit_source(UNIT_SOURCE, TWO_GAME) == []
+
+
+def test_unit_source_neither_defined_nor_marked():
+    text = "int func_00010000(void) { return 0; }\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_defined_and_marked():
+    text = UNIT_SOURCE + "INCLUDE_ASM(func_00010000);\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "both" in problem
+
+
+def test_unit_source_marked_twice():
+    text = UNIT_SOURCE + "INCLUDE_ASM(func_00010010);\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "2 times" in problem
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["INCLUDE_ASM(func_00020000);\n", "void func_00020000(void)\n{\n}\n"],
+    ids=["marker", "definition"],
+)
+def test_unit_source_names_a_function_outside_the_unit(extra):
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + extra, TWO_GAME)
+    assert "func_00020000" in problem and "not a function of the unit" in problem
+
+
+def test_unit_source_prototype_and_call_are_not_definitions():
+    text = (
+        "INCLUDE_ASM(func_00010000);\n"
+        "int func_00010010(void);\n"
+        "static int f(void)\n{\n    if (func_00010010()) {\n        return 1;\n    }\n"
+        "    return func_00010010();\n}\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_ignores_comments():
+    text = (
+        "/* INCLUDE_ASM(func_00010010); */\n"
+        "INCLUDE_ASM(func_00010000);\n"
+        "/*\nint func_00010010(void)\n{\n}\n*/\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "int func_00010000(void) {\n    return 0;\n}\n",
+        "int\nfunc_00010000(int a, int (*cb)(int))\n{\n    return cb(a);\n}\n",
+        "static unsigned char *func_00010000 ( char *p )\n\n{\n    return p;\n}\n",
+    ],
+    ids=["same-line", "nested-parens", "blank-line"],
+)
+def test_unit_source_definition_shapes(definition):
+    text = "INCLUDE_ASM(func_00010010);\n" + definition
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+def test_unit_source_covers_thunk_rows_and_exempts_runtime_and_data():
+    # Orchestrator ruling F5: game and thunk rows need C or a marker; runtime and data-in-code
+    # rows are exempt.
+    rows = _rows((0x10000, "game"), (0x10010, "thunk"), (0x10020, "runtime"),
+                 (0x10030, "data-in-code"))  # fmt: skip
+    text = "INCLUDE_ASM(func_00010000);\n"
+    (problem,) = configure.check_unit_source(text, rows)
+    assert "func_00010010" in problem
+    assert configure.check_unit_source(text + "INCLUDE_ASM(func_00010010);\n", rows) == []
+
+
+def test_marker_next_to_definition_is_fine():
+    text = "INCLUDE_ASM(func_00010010);\nint func_00010000(void)\n{\n    return 0;\n}\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+    text = "int func_00010000(void)\n{\n    return 0;\n}\nINCLUDE_ASM(func_00010010);\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+FOUR_GAME = _rows((0x10000, "game"), (0x10010, "game"), (0x10020, "game"), (0x10030, "game"))
+FOUR_PARTS = {
+    "m0": "INCLUDE_ASM(func_00010000);\n",
+    "d1": "int func_00010010(void)\n{\n    return 1;\n}\n",
+    "m2": "INCLUDE_ASM(func_00010020);\n",
+    "d3": "void func_00010030(void)\n{\n}\n",
+}
+
+
+@pytest.mark.parametrize(
+    "order",
+    [("m0", "m2", "d1", "d3"), ("d1", "d3", "m0", "m2"), ("m0", "d1", "m2", "d3"),
+     ("d3", "m2", "d1", "m0")],  # fmt: skip
+    ids=["markers-first", "markers-after", "interleaved", "reversed"],
+)
+def test_order_does_not_matter(order):
+    text = "".join(FOUR_PARTS[part] for part in order)
+    assert configure.check_unit_source(text, FOUR_GAME) == []
+    without_last = "".join(FOUR_PARTS[part] for part in order[:-1])
+    (problem,) = configure.check_unit_source(without_last, FOUR_GAME)
+    assert "neither" in problem
+
+
+def _assert_refused(tmp_path, argv, capsys, *needles):
+    assert configure.main(argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("configure.py: error:")
+    for needle in needles:
+        assert needle in err
+    for name in GENERATED:
+        assert not (tmp_path / name).exists(), name
+
+
+def test_main_refuses_an_incomplete_unit(tmp_path, capsys):
+    argv = _split_tree(tmp_path, source="int func_00010000(void)\n{\n    return 0;\n}\n")
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "func_00010010")
+
+
+def test_main_refuses_a_bad_unit_name(tmp_path, capsys):
+    units = "unit,start,end,reason\nBad-Unit,0x00010000,0x00010020,first\n"
+    _assert_refused(tmp_path, _split_tree(tmp_path, source=None, units=units), capsys, "Bad-Unit")
+
+
+def test_main_refuses_a_stray_source(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    (tmp_path / "src" / "ufo2p" / "stray.c").write_text("int x;\n", encoding="utf-8")
+    _assert_refused(tmp_path, argv, capsys, "stray.c", "names no unit")
 
 
 def test_main_creates_the_output_directory(tmp_path):
