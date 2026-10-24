@@ -224,15 +224,20 @@ Older local-scan facts that agree: UFO2P embeds `source\grafix.c` (next to PCX-l
 
 The image is built locally and never pushed with proprietary bytes in it.
 
-| In the image (Phase 2) | Supplied by you (gitignored, mounted read-only) | Outside the container |
+| In the image | Supplied by you (gitignored, mounted read-only) | Outside the container |
 |---|---|---|
-| Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5, 10.6, 11.0, 11.0a and 11.0b trees, mounted at `/work/watcom:ro` (see [Getting the Watcom compilers](#getting-the-watcom-compilers)) | Ghidra 12.1.4 + JDK 21 in WSL2 Ubuntu |
-| ninja | `orig/`: UFO2P.EXE, TACP.EXE and SMKP.EXE from your install, mounted at `/work/orig:ro` | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
-| clang-format, clangd | `.env`: install paths and API keys | GhidraMCP under `uvx --python 3.13` |
-| binutils (`as`) | | retrokit via pipx (if chosen over lastonesky's loader) |
+| Python 3.14 + uv (image tag pinned) | `third_party/watcom/`: Watcom 10.5, 10.6, 11.0, 11.0a and 11.0b trees, mounted at `/work/watcom:ro` (see [Getting the Watcom compilers](#getting-the-watcom-compilers)) | decomp.wtf v0.10.6 in WSL2, its own venv (Python 3.12+) |
+| ninja | `orig/`: UFO2P.EXE, TACP.EXE and SMKP.EXE from your install, mounted at `/work/orig:ro` | |
+| clang-format, clangd | `.env`: install paths and API keys | |
+| binutils (`as`) | | |
 | `objdiff-cli` (pinned release binary) | | |
 | wibo 1.2.0 (`COPY --from=ghcr.io/decompals/wibo:1.2.0`, as decomp.me's cromper does) | | |
 | Open Watcom v2 Linux build (`wdis`, `wlink`, `wlib` only) | | |
+| OpenJDK 21 (`openjdk-21-jdk-headless`, 21.0.12.1, apt-pinned; Phase 5) | | |
+| Ghidra 12.1.4 with the lastonesky LE loader v12.1.4-1, headless, in its own cached `ghidra` stage at `/opt/ghidra` (`GHIDRA_INSTALL_DIR`); run it with `uv run reverseapoc ghidra-export` (Phase 5) | | |
+| clang 18 (18.1.3, apt-pinned), the C89 lint gate `uv run reverseapoc lint` (D-14; Phase 5) | | |
+
+capstone 5.0.9 is not an image package: it is a Python dependency (`[project].dependencies`) and comes with `uv sync`. Ghidra, the JDK and clang took the image from 300,640,359 to 898,389,257 bytes, after the D-20 strip of Ghidra's `docs/` and its uninstalled top-level `Extensions/` zips (plan 05-12; the unstripped image was 1,067,599,391 bytes). GhidraMCP is not installed: it is Later (see [tools.md](tools.md)).
 
 Watcom 10.x/11.0 is proprietary and its current IP owner was not verified, so it is never baked into an image layer. Open Watcom's licence permits redistribution, but it cannot match.
 
@@ -291,11 +296,13 @@ decomp.me's `msdos` platform offers `wcc10.0a`, `wcc10.5`, `wcc10.5a`, `wcc10.6`
 - **Ghidra 12.1.4** (2026-09-21). Stock Ghidra has no LE loader and no `__watcall` ([ghidra#532](https://github.com/NationalSecurityAgency/ghidra/issues/532), [ghidra#156](https://github.com/NationalSecurityAgency/ghidra/issues/156)).
 - **lastonesky ghidra-lx-loader v12.1.4-1** (2026-10-10): supports 12.1.x and ships a Watcom cspec with `__watcall` ([release](https://github.com/lastonesky/ghidra-lx-loader/releases/tag/v12.1.4-1)). Upstream yetmorecode v12.0.1 targets 12.0 and breaks on the 12.1 loader API.
 - **retrokit** (Apache-2.0): its own LE loader, `watcom`/`watcomreg` cspec auto-detection, Open Watcom library signatures, function export and an MCP server ([nemo22/retrokit](https://github.com/nemo22/retrokit)). Exported sizes are Ghidra body counts and need post-processing into contiguous ranges.
-- Pick one loader per Ghidra install. Neither has been tested on UFO2P or TACP. **Decided in Phase 5.**
+- **Outcome (D-03, Phase 5): lastonesky v12.1.4-1, retrokit not used.** The loader zip and the Ghidra zip are SHA-256-pinned in `docker/Dockerfile`. The loader imports both bound EXEs through its BW-header walk: its `checkFormat` takes `e_lfanew` only when the first MZ has `e_lfarlc == 0x40`, and otherwise walks "DOS/16 BW" headers from `(e_cp-1)*512 + e_cblp`; both EXEs have a `BW` header at 0xF474, so the README's "DOS/16 LE" is its name for that binding, not an unbound file ([05-RESEARCH.md](../.planning/phases/05-split-and-first-matches/05-RESEARCH.md), "Pattern 2: Ghidra headless export"). It places `.object1` at 0x10000 and `.object2` at 0xD0000 (UFO2P) / 0xE0000 (TACP) with the le.py sizes.
+- **Bytes and fixups always come from `le.py`** (P3, P4). With every relocation site zeroed on both sides, Ghidra's blocks and `load_flat(relocate=False)` have equal SHA-1s for both objects of both EXEs, so Ghidra's bytes differ only at relocation sites. Its relocation table lists each page-straddling off32 field twice (type 7: 28,197 = 28,183 + 14 in UFO2P, 24,435 = 24,424 + 11 in TACP). Ghidra supplies boundaries, names and drafts only.
+- **Headless export.** `uv run reverseapoc ghidra-export EXE` runs `analyzeHeadless -loader LeLoader` with the committed Java GhidraScripts (Jython is an uninstalled extension in 12.1.4 and PyGhidra's bundled JPype wheels stop at cp313, while the project is on 3.14). It finds 1408 functions in UFO2P and 1498 in TACP, about one minute per EXE, and `--drafts ADDR ...` writes decompile drafts. Each export has exactly one one-address "function" in the data object (UFO2P 0x0013BD40, TACP 0x002B405C), which reconcile drops (plan 05-12). The raw exports are cached, gitignored, in `build/ghidra/<exe>/functions.raw.csv`.
 
 ### GhidraMCP
 
-LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less `--headless` PyGhidra mode. That mode needs Python 3.10-3.13, so run it with `uvx --python 3.13` while the project stays on 3.14 ([GhidraMCP](https://github.com/LaurieWired/GhidraMCP)).
+**Later** (Phase 6 context pack or later; deferred in Phase 5, see [tools.md](tools.md)). LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less `--headless` PyGhidra mode, which needs Python 3.10-3.13 ([GhidraMCP](https://github.com/LaurieWired/GhidraMCP)). It is not installed in the image.
 
 ### objdiff and the OMF bridge
 
@@ -338,7 +345,9 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 | objdiff-cli | v3.8.2 (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Open Watcom v2 | `2026-10-01-Build` (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Watcom C | game code: 10.6 preferred (10.5 byte-identical on the probe, first fallback; 11.0 tied at `-4r`, candidate pending Phase 5 matches; see [Fallbacks and candidates](#fallbacks-and-candidates)); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
-| Ghidra | 12.1.4 + JDK 21 | Phase 5 |
-| ghidra-lx-loader | lastonesky v12.1.4-1 (or retrokit) | Phase 5 |
-| GhidraMCP | 2.0, headless, Python 3.13 | Phase 5 |
+| Ghidra | 12.1.4 (sha256-pinned in `docker/Dockerfile`) + OpenJDK 21.0.12.1 | Phase 5 |
+| ghidra-lx-loader | lastonesky v12.1.4-1 (sha256-pinned in `docker/Dockerfile`) | Phase 5 |
+| clang | 18.1.3 (`clang-18=1:18.1.3-1ubuntu1`, lint gate) | Phase 5 |
+| capstone | 5.0.9 (`[project].dependencies`) | Phase 5 |
+| GhidraMCP | 2.0, headless, Python 3.13 | Later |
 | decomp.wtf | v0.10.6 (archived) | Phase 6 |

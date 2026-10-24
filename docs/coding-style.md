@@ -23,7 +23,7 @@ If a module turns out to be C++, it is compiled with `wpp386` per file and gets 
 - **`__near` / `__far`**: the program is flat 32-bit, so expect them only around DOS/4GW, interrupt or real-mode interfaces. Keep them where the original needs them.
 - **Struct packing** is set with `-zp` (`-zp1` in KKND and NHL95PC). Ours is not known yet; CID-05 (Phase 4) records it in [matching.md](matching.md). Struct layouts and offset comments must follow it.
 - **Enums** take the smallest signed type that fits under Watcom; a field that holds an enum value keeps its original integer type.
-- **Compat header.** clang and clangd do not understand Watcom keywords. A compat header defines `__far`, `__near`, `__interrupt`, `__cdecl` and `__watcall` as empty for clang only, alongside `-D__386__ -D__FLAT__` and a `__WATCOMC__` value (set by CID-05 to match the version found in Phase 4). Its path is decided in Phase 5.
+- **Compat header.** clang and clangd do not understand Watcom keywords. A compat header defines `__far`, `__near`, `__interrupt`, `__cdecl` and `__watcall` as empty for clang only, alongside `-D__386__ -D__FLAT__` and a `__WATCOMC__` value (set by CID-05 to match the version found in Phase 4). The header is `include/watcom_compat.h`, active only under clang (wcc386 never sees its definitions). The C89 lint gate runs it as `uv run reverseapoc lint` in the container, with `-D__WATCOMC__=1060`.
 
 ## Naming
 
