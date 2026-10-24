@@ -1,5 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, ghidra-export, lint, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, discover, functions, ghidra-export, lint, fetch-watcom,
+install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -15,14 +16,24 @@ from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
+from .discover import DiscoverError, discover
 from .elf import ElfError
 from .functions import (
+    KINDS,
+    RUNTIME_VERSION,
+    VERDICT_RULE,
     FunctionRow,
     FunctionsError,
+    Reconciled,
     functions_csv_path,
+    read_boundaries_csv,
     read_functions_csv,
     read_symbols_csv,
+    reconcile,
+    seed_runtime_rows,
     symbols_csv_path,
+    write_boundaries_csv,
+    write_functions_csv,
 )
 from .ghidra import (
     DEFAULT_ASM_DIR,
@@ -30,6 +41,7 @@ from .ghidra import (
     GhidraError,
     export_drafts,
     export_functions,
+    read_ghidra_export,
 )
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
@@ -38,6 +50,7 @@ from .libmatch import (
     SWEPT_VERSIONS,
     LibMatchError,
     LoadedLibrary,
+    MatchRange,
     check_versions,
     load_libraries,
     read_runtime_csv,
@@ -515,6 +528,137 @@ def _add_score_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_score)
 
 
+# ---- the function list: discover, functions (SPL-02, D-07, D-08, D-10) ----
+
+
+def _cmd_discover(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    le = LE(read_target(target, args.orig, args.manifest))
+    found = discover(le, runtime_starts=_runtime_starts(target))
+    print(json.dumps(found.to_json(), indent=2) if args.json else found.format())
+    return 0
+
+
+def _add_discover_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "discover",
+        help="run the capstone recursive descent over an EXE's code object and print the counts "
+        "(starts per evidence kind, decoded bytes, jump tables)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--json", action="store_true", help="print the counts as JSON")
+    p.set_defaults(func=_cmd_discover)
+
+
+def _runtime_matches(runtime: Path | None, target: Target) -> list[MatchRange]:
+    """The runtime.csv rows (04 D-06): `runtime`, else the committed config/<exe>/runtime.csv."""
+    path = runtime if runtime is not None else runtime_csv_path(target.name)
+    if not Path(path).is_file():
+        raise FunctionsError(
+            f"runtime map {path} not found; run `uv run reverseapoc libmatch {target.name} "
+            "--write` (or --output PATH, then pass --runtime PATH)"
+        )
+    return read_runtime_csv(path)
+
+
+def _seeded_runtime_rows(matches: list[MatchRange], watcom_dir: Path) -> list[FunctionRow]:
+    """The runtime functions.csv rows, split at the public offsets of the installed LIB386 of
+    the version each row is seeded from (10.6 where the row lists it, else its first)."""
+    if not matches:
+        return []
+    versions = {RUNTIME_VERSION if RUNTIME_VERSION in m.versions else m.versions[0]
+                for m in matches if m.versions}  # fmt: skip
+    libraries, _ = load_libraries(watcom_dir, sorted(versions))
+    return seed_runtime_rows(matches, libraries)
+
+
+def _existing(out: Path, committed: Path) -> Path | None:
+    """The file a regeneration keeps hand-written columns from: the one it is about to replace,
+    else the committed one."""
+    return next((path for path in (out, committed) if path.is_file()), None)
+
+
+def _functions_report(name: str, result: Reconciled) -> dict:
+    kinds = {kind: sum(1 for r in result.functions if r.kind == kind) for kind in KINDS}
+    verdicts = [row.verdict for row in result.boundaries]
+    auto = sum(1 for v in verdicts if v == VERDICT_RULE)
+    missing = sum(1 for v in verdicts if not v)
+    return {
+        "exe": name,
+        "functions": len(result.functions),
+        "kinds": kinds,
+        "disagreements": len(verdicts),
+        "verdicts": {"auto": auto, "hand": len(verdicts) - auto - missing, "missing": missing},
+        "dropped_ghidra": result.dropped_ghidra,
+    }
+
+
+def _format_functions_report(report: dict) -> str:
+    kinds = ", ".join(f"{n} {kind}" for kind, n in report["kinds"].items())
+    verdicts = report["verdicts"]
+    missing = verdicts["missing"]
+    return "\n".join([
+        f"{report['exe']}: {report['functions']} functions ({kinds})",
+        f"{report['disagreements']} disagreements: {verdicts['auto']} auto (rule), "
+        f"{verdicts['hand']} hand, {missing} missing verdict{'' if missing == 1 else 's'}",
+        f"{report['dropped_ghidra']} Ghidra entries outside the code object dropped",
+    ])  # fmt: skip
+
+
+def _cmd_functions(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    out_dir = config_dir(target.name) if args.write else Path(args.output)
+    refuse_output(out_dir, args.orig, DEFAULT_ORIG, args.watcom_dir, DEFAULT_INSTALL)
+    le = LE(read_target(target, args.orig, args.manifest))
+    runtime_rows = _seeded_runtime_rows(_runtime_matches(args.runtime, target), args.watcom_dir)
+    found = discover(le, runtime_starts=[row.start for row in runtime_rows])
+    boundaries_out = out_dir / "boundaries.csv"
+    kept = _existing(boundaries_out, config_dir(target.name) / "boundaries.csv")
+    result = reconcile(le, read_ghidra_export(args.ghidra_export), found, runtime_rows,
+                       existing=read_boundaries_csv(kept) if kept else ())  # fmt: skip
+    write_functions_csv(out_dir / "functions.csv", result.functions, target.name)
+    write_boundaries_csv(boundaries_out, result.boundaries, target.name)
+    report = _functions_report(target.name, result)
+    print(json.dumps(report, indent=2) if args.json else _format_functions_report(report))
+    print(f"wrote {out_dir / 'functions.csv'} and {boundaries_out}", file=sys.stderr)
+    return 0  # open verdicts are reported; the boundaries check (D-08) fails on them
+
+
+def _add_functions_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "functions",
+        help="reconcile the Ghidra export with the capstone pass (D-07) into functions.csv and "
+        "boundaries.csv, keeping hand-written verdicts (D-08)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument(
+        "--runtime", type=Path, metavar="CSV", help="default: config/<exe>/runtime.csv"
+    )
+    p.add_argument(
+        "--ghidra-export",
+        type=Path,
+        required=True,
+        metavar="PATH",
+        help="the functions.raw.csv written by `reverseapoc ghidra-export`",
+    )
+    where = p.add_mutually_exclusive_group(required=True)
+    where.add_argument(
+        "--write",
+        action="store_true",
+        help="write config/<exe>/functions.csv and boundaries.csv",
+    )
+    where.add_argument("--output", type=Path, metavar="DIR", help="write both CSVs into DIR")
+    p.add_argument("--json", action="store_true", help="print the counts as JSON")
+    p.set_defaults(func=_cmd_functions)
+
+
 # ---- headless Ghidra: ghidra-export (container only, D-05) ----
 
 
@@ -709,6 +853,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_probe_command(sub)
     _add_asm_command(sub)
     _add_score_command(sub)
+    _add_discover_command(sub)
+    _add_functions_command(sub)
     _add_ghidra_export_command(sub)
     _add_lint_command(sub)
     _add_watcom_commands(sub)
@@ -730,6 +876,7 @@ _ERRORS = (
     Omf2ElfError,
     ElfError,
     FunctionsError,
+    DiscoverError,
     SymbolError,
     AsmError,
     ScoreError,
