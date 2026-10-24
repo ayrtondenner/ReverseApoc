@@ -576,6 +576,38 @@ def test_comdat32_iterated_data_expands_and_is_unmaskable():
     assert block.fixups == ()
 
 
+def location5_module(*head: bytes, comdat: bool = False) -> bytes:
+    """A location-5 fixup at offset 1 of an 8-byte _TEXT (or a COMDAT f_), after `head`."""
+    data = (comdat32(4, bytes(8)) if comdat else ledata32(1, 0, bytes(8)))
+    return module("l5", *head, COMDAT_NAMES, segdef32(2, 3, 8), extdef("g_"), data,
+                  fixupp32(fixup(1, location=5, target=(2, 1))))  # fmt: skip
+
+
+@pytest.mark.parametrize("comdat", [False, True], ids=["segment", "comdat"])
+def test_easy_omf_location_5_patches_a_32bit_field(comdat: bool):
+    # Under Easy OMF location 5 is a 32-bit offset (TH rule), so the mask covers 4 bytes.
+    mod = read_object(location5_module(coment(0xAA, b""), comdat=comdat))
+    block = mod.comdats[0] if comdat else mod.segments[0]
+    assert [(f.location, f.size) for f in block.fixups] == [(5, 4)]
+    assert block.mask == frozenset(range(1, 5))
+
+
+@pytest.mark.parametrize("comdat", [False, True], ids=["segment", "comdat"])
+def test_location_5_without_easy_omf_patches_16_bits(comdat: bool):
+    mod = read_object(location5_module(comdat=comdat))
+    block = mod.comdats[0] if comdat else mod.segments[0]
+    assert [(f.location, f.size) for f in block.fixups] == [(5, 2)]
+    assert block.mask == frozenset(range(1, 3))
+
+
+def test_easy_omf_location_5_field_past_the_segment_raises():
+    fix = fixupp32(fixup(6, location=5, target=(2, 1)))
+    data = module("l5", coment(0xAA, b""), COMDAT_NAMES, segdef32(2, 3, 8), extdef("g_"),
+                  ledata32(1, 0, bytes(8)), fix)  # fmt: skip
+    with pytest.raises(OMFError, match=r"fixup 0x6\.\.0xa runs past segment '_TEXT'"):
+        read_object(data)
+
+
 def test_frame_number_target_reads_its_u16_datum():
     fx = only_fixup(ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=(3, 0x1234))))
     assert (fx.target_kind, fx.target_index) == ("frame", 0x1234)

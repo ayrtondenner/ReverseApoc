@@ -3,6 +3,7 @@ read back with tests/elfread.py. Every byte and name here is made up."""
 
 from __future__ import annotations
 
+import dataclasses
 import re
 
 import pytest
@@ -30,9 +31,10 @@ from omfimage import (
     segdef32,
     thread,
 )
+from reverseapoc import omf2elf
 from reverseapoc.cli import main as cli_main
 from reverseapoc.elf import write_elf
-from reverseapoc.omf import read_object
+from reverseapoc.omf import OMFError, read_object
 from reverseapoc.omf2elf import Omf2ElfError, convert, convert_file
 
 # Made-up ELF values from the gABI/psABI, written out here rather than imported from elf.py.
@@ -482,8 +484,17 @@ REFUSALS = {
         location_module(5), r"_TEXT offset 0x0: FIXUPP location 5 .*only under Easy OMF"
     ),
     "location-5-field-past-the-data": (
+        # Under Easy OMF location 5 patches 4 bytes, so omf.py already bounds the whole field.
         easy_module(ledata32(1, 0, bytes(8)), fixupp32(fixup(6, location=5, target=(2, 1)))),
-        r"segment _TEXT offset 0x6: FIXUPP 32-bit field runs past the data \(0x8 bytes\)",
+        r"FIXUPP32 record at 0x[0-9a-f]+: fixup 0x6\.\.0xa runs past segment '_TEXT'",
+    ),
+    "fixup-into-bss": (
+        watcom_module(extdef("x_"), ledata32(5, 0, bytes(8)), fixupp32(fixup(0, target=(2, 1)))),
+        r"segment _BSS offset 0x0: FIXUPP patches a BSS segment, which holds no bytes",
+    ),
+    "fixup-to-a-dropped-debug-segment": (
+        watcom_module(fixupp32(fixup(0, target=(0, 6)))),
+        r"segment _TEXT offset 0x0: FIXUPP target segment '\$\$SYMBOLS' is not emitted",
     ),
     "addend-overflows-int32": (
         watcom_module(ledata32(1, 0, bytes.fromhex("01000000")),
@@ -517,6 +528,34 @@ def test_refusal_names_the_record_and_writes_nothing(case: str, tmp_path, capsys
     assert re.search(message, err)
     assert not out.exists()
     assert sorted(p.name for p in tmp_path.iterdir()) == ["m.obj"]  # no partial or temp file
+
+
+@pytest.mark.parametrize("case", list(REFUSALS))
+def test_refusal_runs_before_any_section_is_built(case: str, monkeypatch):
+    data, message = REFUSALS[case]
+    try:
+        module_ = read_object(data)
+    except OMFError as exc:  # refused by omf.py while reading, before omf2elf sees anything
+        assert re.search(message, str(exc))
+        return
+
+    def no_build(*args, **kwargs):
+        raise AssertionError("a section was built before the refusal")
+    monkeypatch.setattr(omf2elf, "_sections", no_build)
+    monkeypatch.setattr(omf2elf, "_symbols", no_build)
+    with pytest.raises(Omf2ElfError, match=message):
+        convert(module_)
+
+
+def test_refusal_field_past_the_data_of_a_hand_built_module():
+    # omf.py bounds every fixup it reads; a Module built by other code may not be.
+    mod = read_object(watcom_module(extdef("x_"), fixupp32(fixup(0, target=(2, 1)))))
+    text = mod.segments[0]
+    moved = dataclasses.replace(text.fixups[0], offset=2)
+    mod = dataclasses.replace(mod, segments=(dataclasses.replace(text, fixups=(moved,)),
+                                             *mod.segments[1:]))  # fmt: skip
+    with pytest.raises(Omf2ElfError, match=r"_TEXT offset 0x2: FIXUPP 32-bit field runs past"):
+        convert(mod)
 
 
 def test_location_5_under_easy_omf_converts_as_offset32():
