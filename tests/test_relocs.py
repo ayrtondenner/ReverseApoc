@@ -4,8 +4,6 @@ in flat VA space, without ELF or objdiff (SPL-09). Every byte, name and address 
 
 from __future__ import annotations
 
-from reverseapoc.relocs import RelocResult, check_function
-
 from relocpair import (
     CALL_FIELD,
     GOOD_OURS,
@@ -15,6 +13,7 @@ from relocpair import (
     good_segment,
     table,
 )
+from reverseapoc.relocs import RelocResult, check_function
 
 
 def check(segment, row, orig, symbols=None, *, off=0, size=None):
