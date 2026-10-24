@@ -262,12 +262,38 @@ def test_rel32_field_with_an_le_fixup_gets_no_pc32():
     assert result.raw_fields == (RawField(0x10001, "rel32"),)
 
 
-def test_decoding_resumes_after_an_undecodable_byte():
-    # 0f 04 does not decode; one byte later `04 90` (add al, 0x90) does, then the call to B
-    a, b = _row(0x10000, 0x10010), _row(0x10010, 0x10020)
-    body = b"\x0f\x04\x90" + b"\xe8" + _rel(0x10010, 0x10004) + RET_PAD[:8]
-    _, _, view = _cut([a, b], patches={0x10000: body, 0x10010: RET_PAD})
-    assert _relocs(view, "func_00010000_") == [(4, R_386_PC32, "func_00010010_", -4)]
+def test_branch_synthesis_stops_at_an_undecodable_byte():
+    # Review fix round 1 (orchestrator ruling): 0f 04 at A+1 does not decode. Decoding a
+    # resynchronised guess past it could read an e8 as a call, so no PC32 is synthesized after
+    # it. The bytes stay as the file has them, the off32 fixup after it still relocates (it
+    # comes from the fixup table), and the VA is reported.
+    a, b = _row(0x10000, 0x10020), _row(0x10020, 0x10030)
+    body = (
+        NOP + b"\x0f\x04" + NOP  # nop; undecodable at 0x10001; nop
+        + b"\xe8" + _rel(0x10020, 0x10005)  # looks like a call to B
+        + b"\xa1" + struct.pack("<I", 0x100)  # mov eax,[abs32], field 0x1000A -> data
+        + RET_PAD + NOP * 2
+    )  # fmt: skip
+    page1 = fixup_record(SRC_OFF32, 0x00A, 2, 0x100)
+    le, result, view = _cut([a, b], page1=page1, patches={0x10000: body, 0x10020: RET_PAD})
+    assert _relocs(view, "func_00010000_") == [(0xA, R_386_32, "_D_00020100", 0)]
+    flat = bytes(le.load_flat(relocate=False))
+    assert _unrelocated_bytes_match(_section_of(view, "func_00010000_"), 0x10000, flat, [0xA])
+    assert result.undecoded == (0x10001,)
+    assert result.raw_fields == ()
+
+
+def test_a_fully_decoded_unit_reports_nothing_undecoded():
+    le = _le(TRACER_FIXUPS, patches=TRACER_PATCHES)
+    assert build_target(le, [A, B], _table([A, B])).undecoded == ()
+
+
+def test_refuses_a_branch_out_of_the_code_object():
+    # a call rel32 whose destination lies in the data object is no function reference
+    a = _row(0x10000, 0x10010)
+    body = b"\xe8" + _rel(0x20100, 0x10001) + RET_PAD[:11]
+    with pytest.raises(TargetError, match="0x00020100"):
+        _cut([a], patches={0x10000: body})
 
 
 def test_refuses_a_call_to_no_row():
