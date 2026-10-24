@@ -31,7 +31,7 @@ from collections.abc import Container, Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .asm import FixupIndex, row_sites, walk
+from .asm import FixupIndex, branch_target, row_sites, walk
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_RUNTIME, FunctionRow
 from .le import SRC_OFF32, Fixup
 from .symbols import SymbolError, SymbolTable
@@ -140,17 +140,10 @@ def _nameable_start(symbols: SymbolTable, va: int) -> bool:
     return symbols.function_at(va) is not None and _resolves(symbols, va)
 
 
-def _branch_target(insn: Insn, fixups: dict[int, Fixup]) -> int | None:
-    if insn.branch_target is None:
-        return None
-    fixup = fixups.get(insn.rel32_field) if insn.rel32_field is not None else None
-    return fixup.target_va if fixup is not None else insn.branch_target
-
-
 def _has_chk(insns: Sequence[Insn], fixups: dict[int, Fixup], chk_targets: Container[int]) -> bool:
     if len(insns) < 2 or insns[0].mnemonic != _PUSH_IMM32 or not insns[1].is_call:
         return False
-    target = _branch_target(insns[1], fixups)
+    target = branch_target(insns[1], fixups)
     return target is not None and target in chk_targets
 
 
@@ -160,7 +153,7 @@ def _instruction_features(
     calls = 0
     targets_ok = True
     for insn in insns:
-        target = _branch_target(insn, fixups)
+        target = branch_target(insn, fixups)
         if target is None:
             continue
         leaves = not row.start <= target < row.end
