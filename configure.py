@@ -4,16 +4,27 @@
 Verification targets only (check-orig, parse-le, verify). Re-run after `reverseapoc ingest`
 so `parse-le` picks up the executables present in the orig dir (--orig, default orig/).
 
-    python configure.py [--orig DIR] [--output build.ninja]
+    python configure.py [--orig DIR] [--config DIR] [--src DIR] [--output build.ninja]
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import json
 import os
 import re
 import sys
-from pathlib import Path
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from pathlib import Path, PurePosixPath
+
+if importlib.util.find_spec("reverseapoc") is None:  # plain `python`, outside the uv environment
+    sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
+
+from reverseapoc.functions import FunctionRow, FunctionsError, read_functions_csv, read_units_csv
+from reverseapoc.lint import CLANGD_FLAGS
+from reverseapoc.targets import ManifestError, load_manifest
 
 ROOT = Path(__file__).resolve().parent
 
@@ -47,9 +58,33 @@ rule rebuild
   description = REBUILD build/
   pool = console
 
+rule cc
+  command = uv run reverseapoc cc $in -o $out
+  description = CC $in
+
+rule omf2elf
+  command = uv run reverseapoc omf2elf $in -o $out
+  description = OMF2ELF $out
+
+rule target
+  command = uv run reverseapoc target $exe $unit --orig {orig} -o $out
+  description = TARGET $exe/$unit
+
 # Outputs under $builddir/always/ are never written, so these edges run every time they are
 # requested; check-orig, verify and parse-le are phony aliases for them.
 """
+
+BUILDDIR = "build"  # the builddir of build.ninja, relative to its directory
+OBJDIFF_SCHEMA = "https://raw.githubusercontent.com/encounter/objdiff/main/config.schema.json"
+OBJDIFF_MIN_VERSION = "3.8.2"
+OBJDIFF_WATCH = ("*.c", "*.h")
+OBJDIFF_NAME = "objdiff.json"
+COMPILE_COMMANDS_NAME = "compile_commands.json"
+CLANG = "clang"
+SOURCE_SUFFIX = ".c"
+# What `reverseapoc cc` reads besides the source, relative to the repository root.
+CC_CONFIG = ("config/cflags.txt", "config/watcom.toml")
+INCLUDE_DIR = "include"
 
 
 class ConfigureError(ValueError):
@@ -63,6 +98,9 @@ _UNESCAPABLE = ("|", "\n", "\r")
 # in the container and CreateProcess splits on Windows; no quoting is portable across both, so
 # only characters that need none are accepted. `:` covers a drive letter (see _relative).
 _SAFE_ORIG = re.compile(r"[A-Za-z0-9._/:-]+")
+
+# EXE config dirs and unit names go into build paths, commands and Watcom file names unescaped.
+_UNIT_NAME = re.compile(r"[a-z0-9_]+")
 
 
 def ninja_path(path: str) -> str:
@@ -102,22 +140,89 @@ def _check_orig_dir(orig: str) -> str:
     return _refuse_option_like(orig)
 
 
-def find_executables(orig_dir: Path) -> list[Path]:
-    """*.exe files directly in `orig_dir` (any case), sorted by name ignoring case."""
-    if not orig_dir.is_dir():
-        return []
-    exes = [p for p in orig_dir.iterdir() if p.is_file() and p.suffix.lower() == ".exe"]
-    return sorted(exes, key=lambda p: p.name.casefold())
+def _check_name(what: str, name: str) -> str:
+    if not _UNIT_NAME.fullmatch(name):
+        raise ConfigureError(
+            f"{what} {name!r} is not [a-z0-9_]+, so build.ninja cannot carry it unescaped"
+        )
+    return name
 
 
-def render(exes: list[str], *, orig: str = "orig") -> str:
+@dataclass(frozen=True)
+class UnitBuild:
+    """One units.csv row of one EXE, as build.ninja, objdiff.json and clangd see it. Paths are
+    relative to the build.ninja directory, like the exe paths render() takes."""
+
+    exe: str  # the config dir stem, e.g. ufo2p
+    exe_name: str  # the manifest name, e.g. UFO2P.EXE
+    unit: str
+    source: str | None  # src/<exe>/<unit>.c, when the unit has C
+    functions: tuple[FunctionRow, ...] = ()  # the functions.csv rows of the unit
+    inputs: tuple[str, ...] = ()  # the config files the target cut reads
+
+    def output(self, kind: str, suffix: str = ".o") -> str:
+        """`<exe>/<kind>/<unit><suffix>` under the builddir, without the builddir."""
+        return f"{self.exe}/{kind}/{self.unit}{suffix}"
+
+
+@dataclass(frozen=True)
+class Layout:
+    """Repository files build.ninja names, relative to the build.ninja directory."""
+
+    cc_inputs: tuple[str, ...] = ()  # cflags, the Watcom manifest and the project headers
+
+    @classmethod
+    def for_base(cls, base: Path) -> Layout:
+        headers = sorted((ROOT / INCLUDE_DIR).glob("*.h"))
+        cc_inputs = [ROOT / name for name in CC_CONFIG] + headers
+        return cls(cc_inputs=tuple(_relative(p, base) for p in cc_inputs))
+
+
+def _built(path: str) -> str:
+    return f"$builddir/{path}"
+
+
+def _implicit(paths: Sequence[str]) -> str:
+    return f" | {' '.join(ninja_path(p) for p in paths)}" if paths else ""
+
+
+def _unit_edges(unit: UnitBuild, orig: str, layout: Layout) -> list[str]:
+    _check_name("EXE config dir", unit.exe)
+    _check_name("unit", unit.unit)
+    target_deps = [f"{orig}/{unit.exe_name}", *unit.inputs]
+    lines = [
+        f"build {_built(unit.output('target'))}: target{_implicit(target_deps)}",
+        f"  exe = {unit.exe}",
+        f"  unit = {unit.unit}",
+    ]
+    if unit.source is None:
+        return lines
+    src = ninja_path(_refuse_option_like(unit.source))
+    obj = _built(unit.output("obj", ".obj"))
+    lines += [
+        f"build {obj}: cc {src}{_implicit(layout.cc_inputs)}",
+        f"build {_built(unit.output('base'))}: omf2elf {obj}",
+    ]
+    return lines
+
+
+def render(
+    exes: list[str],
+    *,
+    orig: str = "orig",
+    units: Sequence[UnitBuild] = (),
+    layout: Layout | None = None,
+) -> str:
     """build.ninja text for executables given as paths relative to the build.ninja directory.
     `orig` is the orig directory relative to the build.ninja directory, like the exe paths.
-    The rebuild rule writes into `build` next to build.ninja, the builddir.
+    The rebuild rule writes into `build` next to build.ninja, the builddir. `units` adds the
+    compile, convert and cut edges of every unit; `layout` names the files they depend on.
 
     Raises ConfigureError for a path build.ninja cannot safely carry."""
+    orig = _check_orig_dir(orig)
+    layout = layout or Layout()
     lines = [
-        HEADER.format(orig=_check_orig_dir(orig)),
+        HEADER.format(orig=orig),
         "build $builddir/always/check-orig: check_orig",
         "build check-orig: phony $builddir/always/check-orig",
         "build $builddir/always/verify: rebuild",
@@ -131,8 +236,96 @@ def render(exes: list[str], *, orig: str = "orig") -> str:
         lines.append(f"build {out}: parse_le {src}")
         outputs.append(out)
     lines.append(" ".join(["build parse-le: phony", *outputs]))
+    lines.append("")
+    for unit in units:
+        lines += _unit_edges(unit, orig, layout)
     lines += ["", "default check-orig", ""]
     return "\n".join(lines)
+
+
+def _objdiff_unit(unit: UnitBuild) -> dict:
+    entry: dict = {
+        "name": f"{unit.exe}/{unit.unit}",
+        "target_path": f"{BUILDDIR}/{unit.output('target')}",
+    }
+    metadata: dict = {"progress_categories": [unit.exe]}
+    if unit.source is not None:
+        entry["base_path"] = f"{BUILDDIR}/{unit.output('base')}"
+        metadata = {"source_path": unit.source, **metadata}
+    entry["metadata"] = metadata
+    return entry
+
+
+def render_objdiff(units: Sequence[UnitBuild]) -> str:
+    """objdiff.json (objdiff 3.8.2 schema) for `units`; paths relative to its directory, which
+    is the build.ninja directory. A unit without C has no base object yet."""
+    exes = dict.fromkeys((unit.exe, unit.exe_name) for unit in units)
+    config = {
+        "$schema": OBJDIFF_SCHEMA,
+        "min_version": OBJDIFF_MIN_VERSION,
+        "custom_make": "ninja",
+        "build_target": False,
+        "build_base": True,
+        "watch_patterns": list(OBJDIFF_WATCH),
+        "progress_categories": [{"id": exe, "name": name} for exe, name in exes],
+        "units": [_objdiff_unit(unit) for unit in units],
+    }
+    return json.dumps(config, indent=2) + "\n"
+
+
+def render_compile_commands(units: Sequence[UnitBuild], base: Path) -> str:
+    """compile_commands.json for clangd: one entry per unit with C, in the lint gate's dialect.
+    The lint flags name include/ relative to the repository root, so that is the directory."""
+    entries = []
+    for unit in units:
+        if unit.source is None:
+            continue
+        file = (base / unit.source).resolve().as_posix()
+        entries.append(
+            {"directory": ROOT.as_posix(), "file": file,
+             "arguments": [CLANG, *CLANGD_FLAGS, "-c", file]}  # fmt: skip
+        )
+    return json.dumps(entries, indent=2) + "\n"
+
+
+def find_executables(orig_dir: Path) -> list[Path]:
+    """*.exe files directly in `orig_dir` (any case), sorted by name ignoring case."""
+    if not orig_dir.is_dir():
+        return []
+    exes = [p for p in orig_dir.iterdir() if p.is_file() and p.suffix.lower() == ".exe"]
+    return sorted(exes, key=lambda p: p.name.casefold())
+
+
+def _exe_units(name: str, config: Path, src: Path, base: Path) -> Iterator[UnitBuild]:
+    exe = PurePosixPath(name).stem.lower()
+    exe_config = config / exe
+    units_csv = exe_config / "units.csv"
+    if not units_csv.is_file():
+        return
+    functions_csv = exe_config / "functions.csv"
+    if not functions_csv.is_file():
+        raise ConfigureError(f"{units_csv} has no functions.csv beside it")
+    symbols_csv = exe_config / "symbols.csv"
+    inputs = [functions_csv, units_csv, *([symbols_csv] if symbols_csv.is_file() else [])]
+    functions = read_functions_csv(functions_csv)
+    for row in read_units_csv(units_csv):
+        source = src / exe / f"{row.unit}{SOURCE_SUFFIX}"
+        yield UnitBuild(
+            exe=exe,
+            exe_name=name,
+            unit=row.unit,
+            source=_relative(source, base) if source.is_file() else None,
+            functions=tuple(f for f in functions if f.unit == row.unit),
+            inputs=tuple(_relative(p, base) for p in inputs),
+        )
+
+
+def collect_units(config: Path, src: Path, base: Path) -> list[UnitBuild]:
+    """Every units.csv row of every manifest target that has config/<exe>/units.csv."""
+    units: list[UnitBuild] = []
+    for target in load_manifest():
+        units += _exe_units(target.name, config, src, base)
+    return units
 
 
 def _relative(path: Path, base: Path) -> str:
@@ -142,21 +335,43 @@ def _relative(path: Path, base: Path) -> str:
         return path.resolve().as_posix()
 
 
+def _encode_outputs(args: argparse.Namespace, base: Path) -> tuple[dict[Path, bytes], int, int]:
+    """Every generated file's bytes, encoded before any file is opened."""
+    exes = [_relative(p, base) for p in find_executables(args.orig)]
+    units = collect_units(args.config, args.src, base)
+    texts = {
+        args.output: render(
+            exes, orig=_relative(args.orig, base), units=units, layout=Layout.for_base(base)
+        ),
+        args.output.with_name(OBJDIFF_NAME): render_objdiff(units),
+        args.output.with_name(COMPILE_COMMANDS_NAME): render_compile_commands(units, base),
+    }
+    return {path: text.encode("utf-8") for path, text in texts.items()}, len(exes), len(units)
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Write build.ninja.")
+    parser = argparse.ArgumentParser(
+        description="Write build.ninja, objdiff.json and compile_commands.json."
+    )
     parser.add_argument("--orig", type=Path, default=ROOT / "orig")
+    parser.add_argument("--config", type=Path, default=ROOT / "config")
+    parser.add_argument("--src", type=Path, default=ROOT / "src")
     parser.add_argument("--output", type=Path, default=ROOT / "build.ninja")
     args = parser.parse_args(argv)
     base = args.output.resolve().parent
-    exes = [_relative(p, base) for p in find_executables(args.orig)]
     try:
-        # Encoded before the output is opened, so a refusal never truncates build.ninja.
-        data = render(exes, orig=_relative(args.orig, base)).encode("utf-8")
-    except (ConfigureError, UnicodeEncodeError) as exc:
+        # Encoded before any output is opened, so a refusal never truncates a generated file.
+        data, exe_count, unit_count = _encode_outputs(args, base)
+    except (ConfigureError, FunctionsError, ManifestError, UnicodeEncodeError) as exc:
         print(f"configure.py: error: {exc}", file=sys.stderr)
         return 1
-    args.output.write_bytes(data)
-    print(f"wrote {args.output} ({len(exes)} executable(s) for parse-le)")
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    for path, payload in data.items():
+        path.write_bytes(payload)
+    print(
+        f"wrote {args.output}, {OBJDIFF_NAME} and {COMPILE_COMMANDS_NAME} "
+        f"({exe_count} executable(s) for parse-le, {unit_count} unit(s))"
+    )
     return 0
 
 

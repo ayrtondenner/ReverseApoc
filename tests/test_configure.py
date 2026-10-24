@@ -286,7 +286,7 @@ def test_main_refuses_real_names_that_are_not_utf8(tmp_path):
 
 def test_main_never_truncates_on_an_encoding_failure(tmp_path, monkeypatch, capsys):
     # The bytes exist before build.ninja is opened, even for text that slips past render().
-    monkeypatch.setattr(configure, "render", lambda exes, *, orig: "# A\udcffB\n")
+    monkeypatch.setattr(configure, "render", lambda exes, *, orig, **_units: "# A\udcffB\n")
     out = tmp_path / "build.ninja"
     out.write_bytes(SENTINEL)
     assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 1
@@ -470,3 +470,10 @@ def test_unit_with_source_gets_compile_edges(tmp_path):
     assert entry["file"].endswith(f"src/ufo2p/{UNIT}.c")
     assert "-std=gnu89" in entry["arguments"]
     assert "-c" in entry["arguments"]
+
+
+def test_main_creates_the_output_directory(tmp_path):
+    out = tmp_path / "cfg-smoke" / "build.ninja"
+    assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 0
+    for name in ("build.ninja", "objdiff.json", "compile_commands.json"):
+        assert (out.parent / name).is_file(), name
