@@ -7,4 +7,8 @@
   development for Python tooling, verification-before-completion before any "done" claim.
 - When both prescribe a step, follow GSD's phase files for sequencing and superpowers for how
   the step is carried out. Re-run `/gsd-health` after updating either plugin.
+- Create or update a project skill (`.claude/skills/<name>/`) only through superpowers'
+  `writing-skills` skill. This covers `watcom-decomp` (Phase 6) and `apoc-spec` (Phase 8).
+  A third-party skill kept as installed (such as `unlazy`) is updated from its upstream
+  instead, with the new source and hash recorded in `docs/tools.md`.
 - Claude Code is the only agent runtime in this repo. Do not generate files for other runtimes.

@@ -36,6 +36,8 @@ Also once per clone: `git config core.hooksPath .githooks` (adds Co-Authored-By 
 GSD owns milestones and phases (`/gsd-plan-phase N`, `/gsd-execute-phase N`, `/gsd-verify-work N`,
 `/gsd-spike`); superpowers owns work inside a phase (brainstorming, TDD, verification). Milestone 1
 roadmap: `docs/workflow.md`. Review passes and what they may touch: `docs/ceremonies.md`.
+Every project skill we create or update goes through superpowers' `writing-skills` skill
+(`.claude/rules/workflow.md`).
 
 ## Where to read more
 
