@@ -103,3 +103,37 @@ def test_markers_emit_nothing(stub_root):
     assert unit.externs == control.externs
     assert _text(control)  # the function compiled to something
     assert _text(unit) == _text(control)
+
+
+MARKERS_ONLY = """\
+/* a unit whose functions are all unmatched: markers only (D-12) */
+#include "common.h"
+
+INCLUDE_ASM(func_00012000);
+INCLUDE_ASM(func_00012100);
+"""
+
+NEXT_TO = """\
+/* a stub directly before a defined function */
+#include "common.h"
+
+INCLUDE_ASM(func_00012000);
+int func_00012010(void)
+{
+    return 0;
+}
+"""
+
+
+def test_markers_only_file(stub_root):
+    module = _compile(stub_root, "markers.c", MARKERS_ONLY)
+    assert module.publics == ()
+    assert _marker_externs(module) == []
+    assert module.externs == ()
+    assert _text(module) == b""
+
+
+def test_marker_next_to_a_defined_function(stub_root):
+    module = _compile(stub_root, "next.c", NEXT_TO)
+    assert _publics(module) == ("func_00012010_",)
+    assert _marker_externs(module) == []
