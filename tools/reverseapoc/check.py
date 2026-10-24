@@ -292,7 +292,7 @@ def objdiff_argv(target_o: Path, base_o: Path, symbol: str) -> list[str]:
     return [OBJDIFF, "diff", "-1", str(target_o), "-2", str(base_o), "-o", "-", symbol]
 
 
-def _match_percent(doc: object, symbol: str) -> float:
+def match_percent(doc: object, symbol: str) -> float:
     """`match_percent` of `symbol` in `left.symbols`; absent, malformed or out of [0, 100]
     counts as 0.0, never as a match."""
     left = doc.get("left") if isinstance(doc, dict) else None
@@ -313,7 +313,7 @@ def objdiff_percent(target_o: Path, base_o: Path, symbol: str, *, runner: Runner
         doc = json.loads(text)
     except ValueError as exc:
         raise CheckError(f"{OBJDIFF} printed no JSON for {symbol}: {exc}") from exc
-    return _match_percent(doc, symbol)
+    return match_percent(doc, symbol)
 
 
 def default_objdiff_runner(target: str = "<exe>/<unit>") -> Runner:
@@ -543,6 +543,9 @@ def _land_exe(
         obj = UnitPaths.of(build_dir, exe.stem, unit.unit).obj
         if compile_fn is not None and (exe.target.name, unit.unit) not in fresh:
             _compile(compile_fn, src, obj, options)
+        elif not obj.is_file():
+            raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
+                             f"{src}")  # fmt: skip
         rows = [row for row in exe.rows if row.unit == unit.unit]
         for d, reloc in checked_functions(read_module(obj), rows, exe):
             if reloc.ok:
@@ -581,6 +584,28 @@ def land_all(
         out.append(_land_exe(exe, src_root=src_root, build_dir=build_dir,
                              compile_fn=compile_fn, options=options, fresh=fresh))  # fmt: skip
     return out
+
+
+# ---- the target object of one unit (the ninja `target` edge) ----
+
+
+def write_target(
+    exe: str, unit: str, out: Path, *, orig_dir: Path, manifest: Path, config_root: Path
+) -> tuple[TargetResult, int]:
+    """Cut the target object of `unit` and write it to `out`; returns it with its row count."""
+    target = select_exe(load_manifest(manifest), exe, manifest)
+    inputs = load_exe(target, orig_dir=orig_dir, manifest=manifest, config_root=config_root)
+    rows = inputs.unit_rows(unit)
+    result = build_target(inputs.le, rows, inputs.symbols, flat=inputs.flat, fixups=inputs.fixups)
+    _write(Path(out), result.data)
+    return result, len(rows)
+
+
+def format_target(out: Path, result: TargetResult, rows: int) -> str:
+    """One line: the object, its row count, and the raw fields and undecoded sites (05-08)."""
+    raw = ", ".join(f"{_hex(f.va)} {f.kind}" for f in result.raw_fields) or "none"
+    undecoded = ", ".join(_hex(va) for va in result.undecoded) or "none"
+    return f"wrote {out}: {rows} rows; raw fields {raw}; undecoded {undecoded}"
 
 
 # ---- one unit ----

@@ -299,8 +299,9 @@ def test_target_verb(env, capsys, exe):
 
 
 def test_target_verb_unknown_unit(env, capsys):
+    out = env.build / "x.o"
     argv = ["target", STEM, "u_99999999", "--orig", str(env.orig), "--manifest",
-            str(env.manifest), "--config", str(env.config), "-o", str(env.build / "x.o")]  # fmt: skip
+            str(env.manifest), "--config", str(env.config), "-o", str(out)]  # fmt: skip
     assert cli_main(argv) == 1
     assert "no unit 'u_99999999'" in capsys.readouterr().err
 

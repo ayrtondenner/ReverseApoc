@@ -14,7 +14,7 @@ from pathlib import Path
 from . import probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .cflags import DEFAULT_CFLAGS, CflagsError
-from .check import EXIT_TOOL, CheckError, check_unit
+from .check import EXIT_TOOL, CheckError, check_unit, format_target, land_all, write_target
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
@@ -49,7 +49,7 @@ from .ghidra import (
 )
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
-from .land import LandError
+from .land import LandError, write_landed
 from .le import LE, LEError, format_summary
 from .libmatch import (
     SWEPT_VERSIONS,
@@ -924,6 +924,58 @@ def _add_check_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_check)
 
 
+def _cmd_target(args: argparse.Namespace) -> int:
+    # The target object is cut from the game: never written inside orig/ or the Watcom tree.
+    refuse_output(args.output, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
+    result, rows = write_target(args.exe, args.unit, args.output, orig_dir=args.orig,
+                                manifest=args.manifest, config_root=args.config)  # fmt: skip
+    print(format_target(args.output, result, rows))
+    return 0
+
+
+def _add_target_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "target",
+        help="cut one unit's target ELF object from the LE image (the ninja `target` edge)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("unit", metavar="UNIT", help="a unit of config/<exe>/units.csv")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("-o", "--output", type=Path, required=True, help="the ELF object to write")
+    p.set_defaults(func=_cmd_target)
+
+
+def _cmd_land(args: argparse.Namespace) -> int:
+    out = args.out if args.out is not None else args.build / "land"
+    refuse_output(out, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
+    lands = land_all(args.manifest, orig_dir=args.orig, config_root=args.config,
+                     src_root=args.src, build_dir=args.build)  # fmt: skip
+    for landed in lands:
+        write_landed(landed.result, out / landed.exe, orig_dir=args.orig,
+                     source=args.orig / landed.exe)  # fmt: skip
+    if args.json:
+        print(json.dumps([landed.to_json() for landed in lands], indent=2))
+    else:
+        lines = [line for landed in lands for line in landed.format()]
+        print("\n".join(lines) or "no EXE has config/<exe>/units.csv: nothing to land")
+    return 0 if all(landed.ok for landed in lands) else 1
+
+
+def _add_land_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "land",
+        help="land every function of every built unit object into its EXE, write the result to "
+        "build/land/ and compare each SHA-1 with config/targets.toml (SPL-10, `ninja verify`)",
+    )
+    _add_unit_roots(p)
+    p.add_argument("--out", type=Path, help="where the landed EXEs go; default: <build>/land")
+    p.add_argument("--json", action="store_true", help="print the results as JSON")
+    p.set_defaults(func=_cmd_land)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -1051,6 +1103,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_ghidra_export_command(sub)
     _add_lint_command(sub)
     _add_check_command(sub)
+    _add_target_command(sub)
+    _add_land_command(sub)
     _add_watcom_commands(sub)
     return parser
 
