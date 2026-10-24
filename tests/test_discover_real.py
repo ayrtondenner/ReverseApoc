@@ -64,19 +64,21 @@ def code_object(le: LE):
 
 def test_entry_point_is_a_start(real):
     le, found = real
-    assert le.entry_va in found.evidence
-    assert "entry" in found.evidence[le.entry_va]
+    kinds = found.evidence.get(le.entry_va, frozenset())
+    assert "entry" in kinds
 
 
 def test_starts_lie_in_the_code_object(real):
     le, found = real
     code = code_object(le)
-    outside = [va for va in found.starts if not code.contains(va)]
-    assert outside == []
-    assert list(found.starts) == sorted(set(found.starts))
+    outside = sum(1 for va in found.starts if not code.contains(va))
+    in_order = list(found.starts) == sorted(set(found.starts))
+    assert outside == 0
+    assert in_order
 
 
 def test_counts_in_range(real):
     le, found = real
-    assert MIN_STARTS <= len(found.starts) <= MAX_STARTS
-    assert MIN_DECODED <= found.decoded_bytes <= code_object(le).vsize
+    starts, decoded, size = len(found.starts), found.decoded_bytes, code_object(le).vsize
+    assert MIN_STARTS <= starts <= MAX_STARTS
+    assert MIN_DECODED <= decoded <= size
