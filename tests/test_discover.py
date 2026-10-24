@@ -9,6 +9,7 @@ data object is object 2 at 0x20000.
 from __future__ import annotations
 
 import json
+import re
 import struct
 
 import pytest
@@ -148,6 +149,23 @@ def test_report_has_counts_only():
     assert report["ignored_seeds"] == 0
     assert report["jump_tables"] == 0
     assert report["evidence"] == {"call": 1, "entry": 1, "fixup": 0, "runtime": 0}
+    for shown in (text, repr(found), json.dumps(found.to_json())):
+        assert "0x" not in shown.lower()
+        assert re.search(r"\d{5,}", shown) is None  # no address in decimal either
+
+
+def test_errors_carry_no_address_in_assertions():
+    """DiscoverError is checked by type only: its message may name a synthetic address."""
+    a = CODE + 0x100
+    le = make_le({a: RET})
+    found = discover(le)
+    outside = Discovery((DATA,), {DATA: frozenset({"runtime"})}, 0, (), 0)
+    with pytest.raises(disc.DiscoverError):
+        disc.ends(outside, le)
+    no_code = [(0x1800, CODE, 0x2043, 1, 2), (0x3000, DATA, 0x2043, 3, 1)]
+    with pytest.raises(disc.DiscoverError):
+        discover(make_le({a: RET}, objects=no_code))
+    assert disc.ends(found, le)[a] == CODE + 0x1800  # no padding after the ret: next limit
 
 
 # Task 2: leading tables, inline data, the D-07 end rule and the object edges.
@@ -209,6 +227,25 @@ def test_function_ends():
     assert found.starts == (a, b, c)
     assert found.decoded_bytes == 11 + 2 + 1
     assert disc.ends(found, le) == {a: a + 0xB, b: c, c: c + 1}
+
+
+def test_ends_leave_gap_code_outside():
+    """ret, padding, then decodable code with no start evidence before the next start: the first
+    function ends at the padding and the trailing code is a gap no range covers."""
+    a, gap, b = CODE, CODE + 0x8, CODE + 0x10
+    vsize = 0x20
+    patches = {
+        a: call(a, b) + RET + b"\x90\x90",
+        gap: XOR_EAX + RET + bytes(b - gap - 3),
+        b: RET + bytes(vsize - 0x11),
+    }
+    le = make_le(patches, entry=0, objects=small_code(vsize))
+    found = discover(le)
+    assert found.starts == (a, b)
+    assert found.decoded_bytes == 6 + 1
+    end_of = disc.ends(found, le)
+    assert end_of == {a: a + 6, b: b + 1}
+    assert not any(start <= gap < end for start, end in end_of.items())
 
 
 def test_seed_outside_code_object():
