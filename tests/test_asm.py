@@ -6,8 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import build_le_image, fixup_record, write_manifest
 
+from conftest import build_le_image, fixup_record, write_manifest
 from reverseapoc.asm import AsmError, listing, select_rows, write_listings
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, write_functions_csv
@@ -153,7 +153,8 @@ def test_asm_verb_only(tmp_path: Path, capsys):
     write_functions_csv(functions, _rows(), "SYN.EXE")
     out = tmp_path / "asm"
     rc = cli_main(["asm", "SYN.EXE", "--orig", str(orig), "--manifest", str(manifest),
-                   "--functions", str(functions), "--out", str(out), "--only", "0x10013"])  # fmt: skip
+                   "--functions", str(functions), "--out", str(out),
+                   "--only", "0x10013"])  # fmt: skip
     captured = capsys.readouterr()
     assert rc == 0, captured.err
     assert sorted(p.name for p in (out / "syn").iterdir()) == ["func_00010010.s"]
