@@ -246,6 +246,33 @@ Execution context nonce: ba396fd0c5bc0597
 - FOUND commits: 8130e2f, 52249f4, 2a30ab5, bdee4d2, ced1dd5, 8c04aa5 (ancestors of HEAD)
 - `uv run pytest -q` 1252 passed, 200 skipped; `uv run ruff check .` clean; `git check-ignore` lists both generated files; `grep -n "arrive in Phase 5" configure.py` prints nothing
 
+## Review fixes (round 1)
+
+Two Important findings in the D-12 completeness check, fixed test-first (RED `fed1fc3`, fix `1a8e891`).
+
+**1. `//` line comments were not blanked.** wcc386 and clang gnu89 accept them, so `// INCLUDE_ASM(func_X);` or a `//`-commented definition counted as marked or defined. `_NOT_CODE` now also blanks `//[^\n]*`, in the same left-to-right alternation as block comments and string/char literals, so a `//` inside a string is not a comment. Comment blanking now keeps line breaks, so directive line numbers stay true.
+Tests: `test_unit_source_ignores_line_comments[marker]` and `[definition]` (both refused as "neither"), `test_unit_source_line_comment_inside_a_string_is_not_a_comment`.
+
+**2. `#if 0` blocks were not understood.** Orchestrator ruling (review round 1), implemented as follows:
+- An `#if 0` block is dead up to its matching `#endif`, including any conditionals nested inside it.
+- The `#else` branch of an `#if 0` is live code.
+- Any other preprocessor conditional is refused, naming the file and line: `#if <expr>` (including `#if 1`), `#ifdef`, `#ifndef`, and `#elif` (also at the top level of an `#if 0`). So are an `#else` or `#endif` without a matching `#if 0` and an `#if 0` still open at end of file.
+- Directive lines themselves never count as code, so a macro body is never read as a marker.
+
+This lives in `_live_code` and `_directive_step`, and `check_unit_source` returns the refusal as its problem. Tests:
+- `test_unit_source_if0_block_is_dead`: "neither"
+- `test_unit_source_if0_else_branch_is_live`: defined; would read "both" if the dead branch counted
+- `test_unit_source_refuses_conditionals_it_cannot_evaluate`: 8 cases (ifdef, ifndef, if-expr, if-1, elif, after-comment line numbering, stray-endif, second-else), each asserting the line and the directive
+- `test_unit_source_refuses_an_unterminated_if0`
+- `test_main_refuses_a_conditional_naming_the_line`: exit 1, message names `u_00010000.c`, `line 1` and `#ifdef`; nothing is written
+
+K&R definitions still fail safe: they are refused as "neither", never a false pass. That limit is now stated in the module docstring and the `check_unit_source` docstring, and the "Issues Encountered" note about `#if 0` above is superseded.
+
+Commands and output lines:
+- `uv run pytest -q tests/test_configure.py` -> `90 passed, 3 skipped in 0.45s` (RED before the fix: `14 failed, 76 passed, 3 skipped`)
+- `uv run pytest -q` -> `1267 passed, 200 skipped in 13.95s`
+- `uv run ruff check .` -> `All checks passed!`
+
 ---
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
