@@ -116,6 +116,9 @@ RUN apt-get update \
 WORKDIR /dl
 # The loader is installed by unzipping it into Ghidra/Extensions/ (the headless
 # install of docs/GettingStarted.md); Ghidra picks it up at the next start.
+# D-20: /opt/ghidra/docs and the top-level /opt/ghidra/Extensions (zips of
+# uninstalled extensions, not Ghidra/Extensions) are removed; the smoke test,
+# both real exports and the drafts test pass without them.
 RUN curl -fsSL -o ghidra.zip \
       "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_${GHIDRA_VERSION}_build/${GHIDRA_ZIP}" \
  && echo "${GHIDRA_SHA256}  ghidra.zip" | sha256sum -c - \
@@ -126,7 +129,8 @@ RUN curl -fsSL -o ghidra.zip \
       "https://github.com/lastonesky/ghidra-lx-loader/releases/download/${LXLOADER_TAG}/${LXLOADER_ZIP}" \
  && echo "${LXLOADER_SHA256}  lx.zip" | sha256sum -c - \
  && unzip -q lx.zip -d /opt/ghidra/Ghidra/Extensions \
- && rm lx.zip
+ && rm lx.zip \
+ && rm -rf /opt/ghidra/docs /opt/ghidra/Extensions
 
 # ---------------------------------------------------------------------------
 # Final image.
