@@ -13,16 +13,37 @@ import pytest
 import omfimage as om
 from libtree import body, code_module, write_lib
 from reverseapoc.functions import (
+    BOUNDARIES_CSV_COLUMNS,
+    BOUNDARIES_CSV_COMMENT,
     FUNCTIONS_CSV_COLUMNS,
     FUNCTIONS_CSV_COMMENT,
+    SYMBOLS_CSV_COLUMNS,
+    SYMBOLS_CSV_COMMENT,
+    UNIT_REASONS,
+    UNITS_CSV_COLUMNS,
+    UNITS_CSV_COMMENT,
+    BoundaryRow,
     FunctionRow,
     FunctionsError,
+    SymbolRow,
+    UnitRow,
+    boundaries_csv_path,
+    check_unit_assignment,
     format_functions_csv,
     functions_csv_path,
+    missing_verdicts,
+    read_boundaries_csv,
     read_functions_csv,
+    read_symbols_csv,
+    read_units_csv,
     runtime_entries,
     seed_runtime_rows,
+    symbols_csv_path,
+    units_csv_path,
+    write_boundaries_csv,
     write_functions_csv,
+    write_symbols_csv,
+    write_units_csv,
 )
 from reverseapoc.libmatch import LoadedLibrary, MatchRange, load_libraries
 from reverseapoc.targets import REPO_ROOT
@@ -191,3 +212,272 @@ def test_seed_refuses_a_module_whose_segment_length_differs(tmp_path):
     libraries = _libraries(tmp_path, code_module("zork", body(8)))
     with pytest.raises(FunctionsError, match="zork"):
         seed_runtime_rows([_range("zork", 9, ("zork_",))], libraries)
+
+
+# ---- functions.csv validation ----
+
+FUNCTIONS_HEADER = ",".join(FUNCTIONS_CSV_COLUMNS)
+GOOD_LINE = "0x00012345,0x00012350,func_00012345,game,first,call"
+
+
+def _functions_file(tmp_path: Path, *lines: str) -> Path:
+    path = tmp_path / "functions.csv"
+    path.write_text("\n".join(["# comment", FUNCTIONS_HEADER, *lines]) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("lines", "row", "what"),
+    [
+        pytest.param(
+            [GOOD_LINE, "0x00012000,0x00012010,func_00012000,game,first,call"],
+            2,
+            "order",
+            id="refused-out-of-order",
+        ),
+        pytest.param(
+            [GOOD_LINE, "0x0001234F,0x00012360,func_0001234F,game,first,call"],
+            2,
+            "overlap",
+            id="refused-one-byte-overlap",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012345,func_00012345,game,first,call"],
+            1,
+            "start",
+            id="refused-empty-range",
+        ),
+        pytest.param(
+            ["0x00012346,0x00012350,func_00012345,game,first,call"],
+            1,
+            "func_00012346",
+            id="refused-game-name",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,D_00012344,data-in-code,first,capstone"],
+            1,
+            "D_00012345",
+            id="refused-data-name",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,func_00012345,library,first,call"],
+            1,
+            "library",
+            id="refused-kind",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,func_00012345,game,first,guess"],
+            1,
+            "guess",
+            id="refused-evidence",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,func_00012345,game,Bad-Name,call"],
+            1,
+            "Bad-Name",
+            id="refused-unit-name",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,bad name,runtime,,runtime"],
+            1,
+            "bad name",
+            id="refused-runtime-name",
+        ),
+        pytest.param(
+            ["0x00012345,0x00012350,func_00012345,thunk,first,call", "x,0x1,func_1,game,,call"],
+            2,
+            "start",
+            id="refused-unparsable-address",
+        ),
+    ],
+)
+def test_functions_reader_refusals(tmp_path, lines, row, what):
+    path = _functions_file(tmp_path, *lines)
+    with pytest.raises(FunctionsError) as info:
+        read_functions_csv(path)
+    message = str(info.value)
+    assert str(path) in message
+    assert f"data row {row}" in message
+    assert what in message
+
+
+def test_functions_reader_accepts_an_empty_unit(tmp_path):
+    # Orchestrator ruling F1: seeded runtime rows and the functions verb leave the unit empty.
+    path = _functions_file(tmp_path, "0x00012345,0x00012350,func_00012345,game,,call")
+    assert read_functions_csv(path)[0].unit == ""
+
+
+def test_touching_rows_stay_separate(tmp_path):
+    path = _functions_file(
+        tmp_path,
+        "0x00010000,0x00010010,func_00010000,game,first,entry",
+        "0x00010010,0x00010020,func_00010010,game,first,call",
+    )
+    rows = read_functions_csv(path)
+    assert [(r.start, r.end) for r in rows] == [(0x10000, 0x10010), (0x10010, 0x10020)]
+
+
+# ---- boundaries.csv (D-08) ----
+
+BOUNDARIES = [
+    BoundaryRow(0x10010, True, False, ("call", "ghidra"), "rule", "a direct call target"),
+    BoundaryRow(0x10020, False, True, ("capstone",), "data-in-code", "a jump table"),
+    BoundaryRow(0x10030, True, True, (), "", ""),
+]
+
+
+def test_boundaries_csv_round_trip(tmp_path):
+    path = tmp_path / "boundaries.csv"
+    write_boundaries_csv(path, BOUNDARIES, name="UFO2P.EXE")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == BOUNDARIES_CSV_COMMENT.format(name="UFO2P.EXE")
+    assert lines[1] == "address,ghidra,capstone,evidence,verdict,reason"
+    assert tuple(lines[1].split(",")) == BOUNDARIES_CSV_COLUMNS
+    assert lines[2] == "0x00010010,yes,no,call;ghidra,rule,a direct call target"
+    assert read_boundaries_csv(path) == BOUNDARIES
+    assert boundaries_csv_path("UFO2P.EXE") == REPO_ROOT / "config" / "ufo2p" / "boundaries.csv"
+
+
+def test_boundaries_missing_verdicts(tmp_path):
+    path = tmp_path / "boundaries.csv"
+    write_boundaries_csv(path, BOUNDARIES, name="UFO2P.EXE")
+    assert missing_verdicts(read_boundaries_csv(path)) == [0x10030]
+
+
+def _boundaries_file(tmp_path: Path, *lines: str) -> Path:
+    path = tmp_path / "boundaries.csv"
+    header = ",".join(BOUNDARIES_CSV_COLUMNS)
+    path.write_text("\n".join([header, *lines]) + "\n", encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("lines", "what"),
+    [
+        pytest.param(["0x00010010,yes,no,call,rule,"], "reason", id="refused-verdict-no-reason"),
+        pytest.param(["0x00010010,yes,no,call,maybe,why"], "maybe", id="refused-verdict"),
+        pytest.param(
+            ["0x00010010,yes,no,call,,", "0x00010010,no,yes,capstone,,"],
+            "0x00010010",
+            id="refused-duplicate-address",
+        ),
+        pytest.param(
+            ["0x00010020,yes,no,call,,", "0x00010010,no,yes,capstone,,"],
+            "order",
+            id="refused-unsorted",
+        ),
+        pytest.param(["0x00010010,true,no,call,,"], "true", id="refused-boolean"),
+        pytest.param(["0x00010010,yes,no,guess,,"], "guess", id="refused-evidence"),
+    ],
+)
+def test_boundaries_reader_refusals(tmp_path, lines, what):
+    path = _boundaries_file(tmp_path, *lines)
+    with pytest.raises(FunctionsError, match=what):
+        read_boundaries_csv(path)
+
+
+# ---- units.csv (D-11) ----
+
+UNITS = [
+    UnitRow("chk_first", 0x10000, 0x10020, "chk-cluster"),
+    UnitRow("game_a", 0x10020, 0x10040, "source-string"),
+]
+
+
+def test_units_csv_round_trip(tmp_path):
+    path = tmp_path / "units.csv"
+    write_units_csv(path, UNITS, name="UFO2P.EXE")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == UNITS_CSV_COMMENT.format(name="UFO2P.EXE")
+    assert lines[1] == "unit,start,end,reason"
+    assert tuple(lines[1].split(",")) == UNITS_CSV_COLUMNS
+    assert lines[2] == "chk_first,0x00010000,0x00010020,chk-cluster"
+    assert read_units_csv(path) == UNITS
+    assert set(UNIT_REASONS) >= {"first", "runtime", "chk-cluster", "hand"}
+    assert units_csv_path("TACP.EXE") == REPO_ROOT / "config" / "tacp" / "units.csv"
+
+
+@pytest.mark.parametrize(
+    ("rows", "what"),
+    [
+        pytest.param(
+            [UnitRow("a", 0x10000, 0x10020, "first"), UnitRow("b", 0x1001F, 0x10030, "hand")],
+            "overlap",
+            id="refused-overlap",
+        ),
+        pytest.param(
+            [UnitRow("a", 0x10000, 0x10020, "first"), UnitRow("a", 0x10020, 0x10030, "hand")],
+            "duplicate",
+            id="refused-duplicate-name",
+        ),
+        pytest.param([UnitRow("Game-A", 0x10000, 0x10020, "first")], "Game-A", id="refused-name"),
+        pytest.param([UnitRow("a", 0x10000, 0x10020, "guess")], "guess", id="refused-reason"),
+    ],
+)
+def test_units_reader_refusals(tmp_path, rows, what):
+    path = tmp_path / "units.csv"
+    write_units_csv(path, rows, name="UFO2P.EXE")
+    with pytest.raises(FunctionsError, match=what):
+        read_units_csv(path)
+
+
+def test_check_unit_assignment():
+    good = [
+        FunctionRow(0x10000, 0x10010, "func_00010000", "game", "chk_first", "entry"),
+        FunctionRow(0x10020, 0x10030, "func_00010020", "game", "game_a", "call"),
+    ]
+    assert check_unit_assignment(good, UNITS) == []
+    bad = [
+        FunctionRow(0x0F000, 0x0F010, "func_0000F000", "game", "chk_first", "call"),  # outside
+        FunctionRow(0x10018, 0x10028, "func_00010018", "game", "chk_first", "call"),  # spans two
+        FunctionRow(0x10030, 0x10038, "func_00010030", "game", "chk_first", "call"),  # wrong unit
+    ]
+    problems = check_unit_assignment(bad, UNITS)
+    assert len(problems) == 3
+    assert "0x0000F000" in problems[0] and "outside" in problems[0]
+    assert "0x00010018" in problems[1] and "spans" in problems[1]
+    assert "0x00010030" in problems[2] and "game_a" in problems[2]
+
+
+# ---- symbols.csv (D-19) ----
+
+SYMBOLS = [SymbolRow(0x10010, "main_", "func"), SymbolRow(0xD2000, "_errno", "data")]
+
+
+def test_symbols_csv_round_trip(tmp_path):
+    path = tmp_path / "symbols.csv"
+    write_symbols_csv(path, SYMBOLS, name="UFO2P.EXE")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == SYMBOLS_CSV_COMMENT.format(name="UFO2P.EXE")
+    assert lines[1] == "address,name,kind"
+    assert tuple(lines[1].split(",")) == SYMBOLS_CSV_COLUMNS
+    assert lines[2] == "0x00010010,main_,func"
+    assert read_symbols_csv(path) == SYMBOLS
+    assert symbols_csv_path("UFO2P.EXE") == REPO_ROOT / "config" / "ufo2p" / "symbols.csv"
+
+
+def test_symbols_csv_is_optional(tmp_path):
+    assert read_symbols_csv(tmp_path / "absent.csv") == []
+
+
+@pytest.mark.parametrize(
+    ("rows", "what"),
+    [
+        pytest.param([SymbolRow(0x10010, "main_", "code")], "code", id="refused-kind"),
+        pytest.param(
+            [SymbolRow(0x10010, "main_", "func"), SymbolRow(0x10010, "other_", "func")],
+            "0x00010010",
+            id="refused-duplicate-address",
+        ),
+        pytest.param(
+            [SymbolRow(0x10010, "main_", "func"), SymbolRow(0x10020, "main_", "func")],
+            "main_",
+            id="refused-duplicate-name",
+        ),
+    ],
+)
+def test_symbols_reader_refusals(tmp_path, rows, what):
+    path = tmp_path / "symbols.csv"
+    write_symbols_csv(path, rows, name="UFO2P.EXE")
+    with pytest.raises(FunctionsError, match=what):
+        read_symbols_csv(path)
