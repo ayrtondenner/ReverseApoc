@@ -6,7 +6,8 @@ wibo (/usr/local/bin/wibo) in the Linux container. Before any compile the hash g
 checks size and SHA-1 of every binary the compiler executes or loads against
 config/watcom.toml, and captures the compiler's own banner from a no-argument run. Guest paths
 are root-relative with backslashes (Watcom reads `/` as an option switch), and the include path
-is the selected version's own H directory only (D-14). The child environment is rebuilt from
+is the compile root's include/ (project headers, D-12) followed by the selected version's own H
+directory, and nothing else (D-14). The child environment is rebuilt from
 scratch, because Watcom reads WCC386, INCLUDE and friends and they change codegen.
 
 Output and build/logs/cc.log carry banners, paths, argv, exit codes and SHA-1s, never file bytes;
@@ -51,6 +52,10 @@ DEFAULT_STAMPS = REPO_ROOT / "build" / "cache"
 KEPT_ENV = ("PATH",)
 KEPT_ENV_WIN32 = ("SYSTEMROOT", "TEMP", "TMP")
 COMPILER_EXE = "BINNT/WCC386.EXE"  # the NT-hosted driver both backends run
+# Project headers (include/common.h). compile_rule joins INCLUDE_DIR to the compile root, not
+# to REPO_ROOT, so a worktree (or any other root) compiles with its own include/.
+INCLUDE_DIR = "include"
+PROJECT_INCLUDE = REPO_ROOT / INCLUDE_DIR
 OBJ_SUFFIX = ".obj"  # the only suffix -o accepts: the object is deleted, then rewritten
 
 # How every compiler run is started: list argv, no shell, output captured as text.
@@ -319,6 +324,14 @@ def _check_outputs(src: Path, obj: Path, err: Path) -> None:
         raise CompilerError(f"{clash} is the source {src}; the compile would overwrite it")
 
 
+def _include_list(root: Path, watcom_dir: Path, version: str) -> str:
+    """The one -i= value: the compile root's include/ first, then `version`'s own H directory,
+    joined by Watcom's `;` list separator. No other directory, so no other tree's headers."""
+    project = guest_path(root / INCLUDE_DIR, root, inside=True)
+    tree = guest_path(watcom_dir / version / "H", root, inside=False)
+    return f"{project};{tree}"
+
+
 def build_argv(
     exe: Path | str,
     rule: Rule,
@@ -522,7 +535,7 @@ def compile_rule(
     err = obj.with_suffix(".err")  # next to the object
     guest_err = guest_path(err, root, inside=True)
     _check_outputs(src, obj, err)
-    include = guest_path(watcom_dir / rule.version / "H", root, inside=False)
+    include = _include_list(root, watcom_dir, rule.version)
     prefix = runner_prefix(platform)
     gate = check_gate(
         rule.compiler,
