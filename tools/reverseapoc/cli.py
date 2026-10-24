@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, ghidra-export, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, ghidra-export, lint, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -48,6 +48,7 @@ from .libmatch import (
     select_target,
     write_runtime_csv,
 )
+from .lint import LintError, run_lint
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
@@ -554,6 +555,39 @@ def _add_ghidra_export_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_ghidra_export)
 
 
+# ---- the C89 lint gate: lint (container, SPL-12) ----
+
+DEFAULT_SRC = REPO_ROOT / "src"
+
+
+def _cmd_lint(args: argparse.Namespace) -> int:
+    # Before plan 05-13 writes the first unit there is no src/: that is 0 files, not an error.
+    paths = args.paths or ([DEFAULT_SRC] if DEFAULT_SRC.is_dir() else [])
+    result = run_lint(paths)
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    if not result.ok:
+        return 1
+    if args.stamp is not None:  # ninja's lint edge depends on this file
+        args.stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp = f"lint ok: {len(result.files)} files\n"
+        _write_atomic(args.stamp, stamp.encode("ascii"))
+    return 0
+
+
+def _add_lint_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "lint",
+        help="check C sources with clang -fsyntax-only -std=gnu89 and the Watcom compat header "
+        "(D-14; in the container)",
+    )
+    p.add_argument(
+        "paths", nargs="*", type=Path, metavar="PATHS", help="files or directories; default: src"
+    )
+    p.add_argument("--stamp", type=Path, metavar="FILE", help="write FILE when the lint passes")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_lint)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -676,6 +710,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_asm_command(sub)
     _add_score_command(sub)
     _add_ghidra_export_command(sub)
+    _add_lint_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -699,6 +734,7 @@ _ERRORS = (
     AsmError,
     ScoreError,
     GhidraError,
+    LintError,
     OSError,
 )
 
