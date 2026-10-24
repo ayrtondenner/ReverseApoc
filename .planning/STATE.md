@@ -5,16 +5,16 @@ milestone_name: Milestone 1
 current_phase: 05
 current_phase_name: Split and first matches
 status: executing
-stopped_at: Completed 05-12-PLAN.md
-last_updated: "2026-10-24T03:41:25.816Z"
+stopped_at: Completed 05-18-PLAN.md
+last_updated: "2026-10-24T04:15:40.039Z"
 last_activity: 2026-10-23
 last_activity_desc: Phase 05 execution started
-state_head: fcffc5f3373156d3c02b38be70c862b386141be6
+state_head: 1ccd212fb8a79c0301c44746b1593fbb14e54cd6
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 47
-  completed_plans: 44
+  completed_plans: 45
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-23)
 ## Current Position
 
 Phase: 05 (Split and first matches) — EXECUTING
-Plan: 18 of 20
+Plan: 19 of 20
 Status: Ready to execute
 Last activity: 2026-10-23 — Phase 05 execution started
 
@@ -69,6 +69,7 @@ Next steps:
 | Phase 04 P13 | 18min | 3 tasks | 5 files |
 | Phase 05 P01 | 10min | 2 tasks | 4 files |
 | Phase 05 P12 | 42min | 3 tasks | 7 files |
+| Phase 05 P18 | 32min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -90,6 +91,8 @@ Recent decisions affecting current work:
 - [Phase 05]: objdiff misses a wrong 2nd relocation of one instruction (100.0, spike 005 P3): the SPL-09 relocation check is the match gate; code sections are named _TEXT on both sides (a .text target is unpaired)
 - [Phase 05]: 05-12: Ghidra 12.1.4 + LxLoader v12.1.4-1 (SHA-256 pinned), OpenJDK 21 and clang 18 are in the image; D-20 strip of docs/ and top-level Extensions/ kept (image 898,389,257 bytes)
 - [Phase 05]: 05-12: Ghidra makes one one-address function in each EXE's data object (UFO2P 0x0013BD40, TACP 0x002B405C); reconcile (05-16) drops entries outside the code object
+- [Phase 05]: 05-18: first UFO2P match func_000A3980 (u_000a34f0) under the default wcc386@10.6 -4r -s -fpi rule; no sweep, no cflags rule, * default unchanged (D-18)
+- [Phase 05]: 05-18: target.py leaves references into no functions.csv row and branches out of the code object raw (named in raw_fields, F11 principle) so every real unit cuts and the default ninja graph builds
 
 ### Pending Todos
 
@@ -119,6 +122,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T02:09:29.696Z
-Stopped at: Completed 05-12-PLAN.md
+Last session: 2026-10-24T04:15:39.425Z
+Stopped at: Completed 05-18-PLAN.md
 Resume file: None
