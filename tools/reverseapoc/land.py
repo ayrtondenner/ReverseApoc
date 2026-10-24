@@ -20,6 +20,7 @@ orig/ and the original file itself.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,6 +40,9 @@ from .splice import (
     splice,
 )
 from .targets import hash_bytes
+
+_SHA1_DIGITS = 40
+_SHA1 = re.compile(f"[0-9a-fA-F]{{{_SHA1_DIGITS}}}")
 
 
 class LandError(ValueError):
@@ -123,6 +127,11 @@ def _patches(functions: list[LandedFunction], flat: bytes) -> dict[int, bytes]:
     return patches
 
 
+def _check_sha1(value: object) -> None:
+    if not isinstance(value, str) or _SHA1.fullmatch(value) is None:
+        raise LandError(f"expected SHA-1 must be {_SHA1_DIGITS} hex digits, got {value!r}")
+
+
 def _first_difference_va(result: SpliceResult, orig: bytes) -> int | None:
     offset = _first_difference(result.data, orig)
     if offset is None:
@@ -139,7 +148,12 @@ def land(
 ) -> LandResult:
     """Splice every function into `le` and hash the result. Refuses any function whose
     relocation check did not pass, and two functions at one start, before anything is spliced;
-    overlapping functions are refused by splice(). The result is the same for any input order."""
+    overlapping functions are refused by splice(). The result is the same for any input order.
+
+    `expected_sha1` is required and has no default: callers (05-14 `ninja verify`, 05-17
+    `check`) pass the manifest's value from targets.load_manifest(). A value that is not 40 hex
+    digits raises LandError."""
+    _check_sha1(expected_sha1)
     functions = sorted(functions, key=lambda fn: fn.row.start)
     flat = bytes(le.load_flat(relocate=False)) if flat is None else flat
     result = splice(le, _patches(functions, flat))

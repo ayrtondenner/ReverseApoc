@@ -253,7 +253,7 @@ def test_own_segment_call_with_a_wrong_map_fails():
 
 @pytest.mark.parametrize(
     "own_publics",
-    [(), [OwnPublic("other_", 0x40, 4, CODE_BASE + 0x200)]],
+    [(), [OwnPublic("func_00010000_", 0, len(CALLER_OURS), CODE_BASE)]],
     ids=["no map", "no entry for the target"],
 )
 def test_own_segment_call_without_a_map_entry_is_refused(own_publics):
@@ -282,6 +282,11 @@ def test_own_segment_layout_coincidence_is_not_trusted():
 def test_own_public_of_zero_size_is_refused():
     with pytest.raises(RelocError, match="static_"):
         caller_check([OwnPublic("static_", STATIC_OFFSET, 0, STATIC_VA)])
+
+
+def test_own_public_outside_our_segment_is_refused():
+    with pytest.raises(RelocError, match="other_"):
+        caller_check([OwnPublic("other_", 0x40, 4, CODE_BASE + 0x200)])
 
 
 def test_unsorted_le_fixups_give_the_same_result():
