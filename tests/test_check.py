@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import write_manifest
-from omfimage import extdef, fixupp32, ledata32, lnames, module, pubdef32, segdef32
+from omfimage import extdef, fixupp32, ledata32, lnames, lpubdef32, module, pubdef32, segdef32
 from relocpair import (
     CODE_BASE,
     GOOD_ORIGINAL,
@@ -595,6 +595,49 @@ def test_a_problem_alone_fails_the_result(env):
                                result.functions, result.splices, problems=(problem,))  # fmt: skip
     assert all(s.ok for s in broken.splices) and all(fn.ok for fn in broken.functions)
     assert not broken.ok and broken.exit_code == check.EXIT_MISMATCH
+
+
+# ---- code review IN-01: a static function's mismatch says why ---------------------------------
+
+STATIC_REASON = ("public helper_ is a static (LPUBDEF) function, which check cannot pair with a "
+                 "row: give it its row's func_ name or keep the row INCLUDE_ASM")  # fmt: skip
+
+
+def static_helper_object() -> bytes:
+    """omf_object with a `static` helper after func_00010000, as wcc386 emits it: LPUBDEF."""
+    code = GOOD_OURS + b"\xc3"
+    return module(
+        "u_00010000", lnames("", "_TEXT", "CODE"), segdef32(2, 3, len(code)),
+        pubdef32(1, [(SYMBOL, 0)]), lpubdef32(1, [("helper_", len(GOOD_OURS))]),
+        extdef("func_00010010_", "_D_00020004"), ledata32(1, 0, code),
+        fixupp32(call(1, 1), absolute(6, 2)),
+    )  # fmt: skip
+
+
+def test_static_function_mismatch_names_the_reason(env, monkeypatch, capsys):
+    code, doc = check_json(env, monkeypatch, capsys, FakeCompiler(static_helper_object()))
+    assert code == check.EXIT_MISMATCH
+    assert problems_by_name(doc)["helper_"] == [STATIC_REASON]
+
+
+def test_land_refuses_a_static_function_naming_the_reason(env, capsys):
+    put_object(env, static_helper_object())
+    assert cli_main(land_argv(env)) == 1
+    assert f"REFUSED helper_: {STATIC_REASON}" in capsys.readouterr().out
+
+
+def test_static_data_mismatch_names_the_reason():
+    data = module(
+        "u_00010000", lnames("", "_TEXT", "CODE", "_DATA", "DATA"),
+        segdef32(2, 3, len(GOOD_OURS)), segdef32(4, 5, 4),
+        pubdef32(1, [(SYMBOL, 0)]), lpubdef32(2, [("counter", 0)]),
+        ledata32(1, 0, GOOD_OURS), ledata32(2, 0, b"\0\0\0\0"),
+    )  # fmt: skip
+    table = SymbolTable.build([ROW, OTHER, FAR])
+    account = check.account_unit(check.read_object(data), [ROW, OTHER], table, SOURCE)
+    (stray,) = [p for p in account.problems if p.name == "counter"]
+    assert stray.reason == ("public counter is static (LPUBDEF) data, which check cannot pair "
+                            "with a row: make it non-static")  # fmt: skip
 
 
 # ---- code review WR-01: check never writes ninja's objects with options ninja does not use ------

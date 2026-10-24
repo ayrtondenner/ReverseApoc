@@ -11,6 +11,10 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-24: what the Phase 5 code review turned up
+
+- **A `static` function cannot pass `check` yet.** wcc386 10.6 emits a `static` as an LPUBDEF under its own name, and a call to it, even inside the unit, as a self-relative fixup to an EXTDEF of that name. Its name is no row name, so the caller fails the relocation check (`unknown symbol`) and the unit fails its account. `check` now names it: "a static (LPUBDEF) function, which check cannot pair with a row: give it its row's func_ name or keep the row INCLUDE_ASM" (static data likewise). Until statics are paired with rows, a function stays non-static under its `func_` name.
+
 ## 2026-10-24: the first TACP match (Phase 5, plan 05-19)
 
 - **func_00055080 of TACP.EXE matched on the first draft under the default rule.** It is `reverseapoc score tacp`'s candidate 1 (11 bytes: a call, a 32-bit store of its result, `ret`), far from TACP's uncovered stretch at 0x00029D4D..0x00031040, with no raw fields and no undecoded sites in its target cut. The unit u_00054f20 was kept as drafted. A mutation probe that declared the global `short` failed `check` (a 12-byte function, objdiff 98.3333%, relocation check failed, TACP splice refused), so the verdict is not vacuous.
