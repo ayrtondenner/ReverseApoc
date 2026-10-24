@@ -212,3 +212,19 @@ Wave 3 plans (05-08, 05-09, 05-11, 05-13, 05-14) can import functions.py and sym
 
 - Files exist: tools/reverseapoc/functions.py, tools/reverseapoc/symbols.py, tests/test_functions.py, tests/test_symbols.py, tests/test_functions_lib_real.py
 - Commits on this branch: a89eb35, 1d34f86, 58dc9f2, 9adfc3e, 0470238, 770d70a
+
+## Review fixes (round 1)
+
+Both review findings were fixed test-first. RED was commit `20246ef`: both new tests failed with `DID NOT RAISE FunctionsError`. GREEN was commit `2673166`.
+
+1. **Important 1: `_offset_aliases` took the union of publics without checking their offsets.** If two matching segments of the same length put one public at different offsets, seeding would silently split the row in the wrong place. It now raises FunctionsError naming the row, the public and both offsets (`_check_one_offset`). Test: `test_seed_refuses_a_public_at_two_offsets` plants a module `zork` in DOS/CLIB3R.LIB with `zork_` at 0 and in DOS/CLIB3S.LIB with `zork_` at 2.
+2. **Important 2: `_row_owners` ignored `row.segment`.** Candidate segments must now have `name == row.segment` as well as the row's length. Test: `test_seed_refuses_a_segment_with_another_name` (an `OTHER_TEXT` segment of the right length does not match a `_TEXT` row).
+
+Commands and their output lines:
+
+- `uv run pytest -q tests/test_functions.py tests/test_symbols.py`: `65 passed in 0.27s`
+- `REVERSEAPOC_WATCOM_DIR=C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/third_party/watcom uv run pytest -q -rs tests/test_functions_lib_real.py`: exit 0, `7 passed in 54.11s`, 0 SKIPPED lines. Every row of UFO2P and TACP still resolves, because seeding raises on any row it cannot resolve.
+- `uv run ruff check .`: `All checks passed!`
+- `uv run pytest -q`: `945 passed, 172 skipped in 12.30s`
+
+actuals.commits in the frontmatter still counts the 6 original task commits. Round 1 added `20246ef` and `2673166`, and this SUMMARY update is one more commit.
