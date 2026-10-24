@@ -1,5 +1,5 @@
-"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, libmatch, cppscan,
-probe, fetch-watcom, install-watcom, check-watcom."""
+"""`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
+cppscan, probe, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
+from .elf import ElfError
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
 from .le import LE, LEError, format_summary
@@ -31,6 +32,7 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .omf import OMFError
+from .omf2elf import Omf2ElfError, convert_file
 from .probe import ProbeError
 from .splice import DEFAULT_OUT, _write_atomic, rebuild
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, ManifestError, check_orig, load_manifest
@@ -120,6 +122,23 @@ def _add_cc_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_cc)
+
+
+def _cmd_omf2elf(args: argparse.Namespace) -> int:
+    result = convert_file(args.src, args.output)
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    return 0
+
+
+def _add_omf2elf_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "omf2elf",
+        help="convert a Watcom OMF object into an ELF32 relocatable object for objdiff",
+    )
+    p.add_argument("src", type=Path, help="the OMF object to convert")
+    p.add_argument("-o", "--output", type=Path, required=True, help="the ELF object to write")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_omf2elf)
 
 
 def _refuse_partial_sweep(
@@ -459,6 +478,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=_cmd_rebuild)
 
     _add_cc_command(sub)
+    _add_omf2elf_command(sub)
     _add_libmatch_command(sub)
     _add_cppscan_command(sub)
     _add_probe_command(sub)
@@ -478,6 +498,8 @@ _ERRORS = (
     CppScanError,
     ProbeError,
     OMFError,
+    Omf2ElfError,
+    ElfError,
     OSError,
 )
 
