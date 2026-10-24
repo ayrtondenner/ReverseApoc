@@ -9,7 +9,10 @@ whole-EXE SHA-1 check. objdiff.json and compile_commands.json describe the same 
 and clangd; all three are generated per environment and gitignored.
 
 configure refuses a unit file in which a game or thunk function of the unit is neither defined
-in C nor marked INCLUDE_ASM (D-12), and a C file that names no unit. Re-run after `reverseapoc
+in C nor marked INCLUDE_ASM (D-12), and a C file that names no unit. The check reads the file
+with regexes: comments and dead `#if 0` branches do not count, any other preprocessor
+conditional is refused (it cannot be evaluated, so it fails closed), and a K&R-style definition
+is not recognised, so it is refused as neither defined nor marked. Re-run after `reverseapoc
 ingest` so `parse-le` picks up the executables present in the orig dir (--orig, default orig/);
 build.ninja re-runs configure itself when the config CSVs or the unit files change.
 
@@ -146,9 +149,18 @@ _SAFE_ORIG = re.compile(r"[A-Za-z0-9._/:-]+")
 _UNIT_NAME = re.compile(r"[a-z0-9_]+")
 
 # D-12 detection by regex over the unit file (research Pattern 4; `check` later confirms the
-# definitions from the compiled publics). Comments and string or character literals are blanked
-# first; an unterminated comment runs to the end of the file, as it would for the compiler.
-_NOT_CODE = re.compile(r"/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL)
+# definitions from the compiled publics). Comments (block and //, which wcc386 and clang gnu89
+# both accept) and string or character literals are blanked first, keeping line breaks so
+# directive line numbers stay true; an unterminated block comment runs to the end of the file,
+# as it would for the compiler.
+_NOT_CODE = re.compile(
+    r"/\*.*?(?:\*/|\Z)|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL
+)
+# Preprocessor conditionals: only `#if 0` is understood (its block is dead, nested conditionals
+# included, and its #else branch is live); any other conditional is refused, never guessed.
+_DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z_]+)(.*)")
+_OPENERS = ("if", "ifdef", "ifndef")
+_IF_ZERO = "0"
 _PLACEHOLDER = r"func_[0-9A-F]{8}"
 _MARKER = re.compile(rf"\bINCLUDE_ASM\s*\(\s*({_PLACEHOLDER})\s*\)\s*;")
 # A declarator whose parameter list (one level of nested parentheses, for function pointers) is
@@ -207,7 +219,73 @@ def _check_name(what: str, name: str) -> str:
 
 
 def _blank(match: re.Match[str]) -> str:
-    return " " if match.group().startswith("/*") else '""'
+    """A comment becomes spaces with its line breaks kept; a literal becomes an empty one."""
+    found = match.group()
+    if found.startswith("/"):
+        return re.sub(r"[^\n]", " ", found)
+    return found[0] * 2
+
+
+class _ConditionalError(ValueError):
+    """A preprocessor conditional the D-12 check cannot evaluate (it fails closed)."""
+
+
+def _refuse_conditional(number: int, name: str, why: str) -> _ConditionalError:
+    return _ConditionalError(f"line {number}: #{name} {why}; a unit file may use only #if 0")
+
+
+def _directive_step(
+    number: int, name: str, rest: str, dead: int, live_else: int
+) -> tuple[int, int]:
+    """The next (dead, live_else) state after one directive. `dead` is the nesting depth inside
+    the dead branch of an #if 0 (0 when live); `live_else` counts the live #else branches of
+    #if 0 blocks still waiting for their #endif."""
+    if dead:
+        if name in _OPENERS:
+            return dead + 1, live_else
+        if name == "endif":
+            return dead - 1, live_else
+        if dead == 1 and name == "else":
+            return 0, live_else + 1
+        if dead == 1 and name == "elif":
+            raise _refuse_conditional(number, name, "is a conditional the check cannot evaluate")
+        return dead, live_else
+    if name == "if" and rest == _IF_ZERO:
+        return 1, live_else
+    if name in (*_OPENERS, "elif"):
+        raise _refuse_conditional(number, name, "is a conditional the check cannot evaluate")
+    if name == "else":
+        raise _refuse_conditional(number, name, "is outside the dead branch of an #if 0")
+    if name == "endif":
+        if not live_else:
+            raise _refuse_conditional(number, name, "has no matching #if 0")
+        return 0, live_else - 1
+    return dead, live_else
+
+
+def _live_code(code: str) -> str:
+    """`code` (comments already blanked) with every directive line and every line of a dead
+    #if 0 branch blanked, line breaks kept. Raises _ConditionalError for any conditional other
+    than #if 0, an unmatched #else or #endif, or an #if 0 left open at the end of the file."""
+    lines = code.split("\n")
+    dead = live_else = 0
+    opened = 0  # the line of the outermost #if 0 or its #else still open
+    for number, line in enumerate(lines, start=1):
+        match = _DIRECTIVE.fullmatch(line)
+        if match is None:
+            if dead:
+                lines[number - 1] = ""
+            continue
+        lines[number - 1] = ""  # a directive's text (a macro body included) is not code
+        was_open = dead or live_else
+        dead, live_else = _directive_step(
+            number, match.group(1), match.group(2).strip(), dead, live_else
+        )
+        if not was_open:
+            opened = number
+    if dead or live_else:
+        raise _ConditionalError(f"line {opened}: #if 0 has no matching #endif")
+    return "\n".join(lines)
 
 
 def _file_scope_definitions(code: str) -> Iterator[str]:
@@ -237,8 +315,14 @@ def _function_problem(name: str, defined: int, marked: int) -> str | None:
 def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[str]:
     """The D-12 problems of one unit file: every game or thunk row of the unit is defined in C
     or marked INCLUDE_ASM, exactly once and not both, and no marker or definition names a
-    func_ placeholder outside the unit. The order of the file does not matter."""
-    code = _NOT_CODE.sub(_blank, text)
+    func_ placeholder outside the unit. The order of the file does not matter. Comments and
+    dead #if 0 branches do not count; any other preprocessor conditional is itself a problem
+    (the check fails closed rather than guess). A K&R-style definition is not recognised, so it
+    is reported as neither defined nor marked (a false refusal, never a false pass)."""
+    try:
+        code = _live_code(_NOT_CODE.sub(_blank, text))
+    except _ConditionalError as exc:
+        return [str(exc)]
     marked = Counter(_MARKER.findall(code))
     defined = Counter(_file_scope_definitions(code))
     required = [row.name for row in unit_functions if row.kind in _CHECKED_KINDS]
