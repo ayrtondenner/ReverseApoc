@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -582,3 +583,27 @@ def test_land_refuses_an_extra_public(env, capsys):
     assert cli_main(land_argv(env)) == 1
     out = capsys.readouterr().out
     assert "REFUSED helper_: public helper_ is not a function of the unit" in out
+
+
+def test_a_problem_alone_fails_the_result(env):
+    """The result-level gate does not lean on the splice: a problem with every function and
+    every splice ok is still a mismatch."""
+    result = run_check(env)
+    assert result.ok
+    problem = check.Unaccounted("func_00010010", OTHER.start, "neither exported nor marked")
+    broken = check.CheckResult(result.exe, result.unit, result.compiler, result.flags,
+                               result.functions, result.splices, problems=(problem,))  # fmt: skip
+    assert all(s.ok for s in broken.splices) and all(fn.ok for fn in broken.functions)
+    assert not broken.ok and broken.exit_code == check.EXIT_MISMATCH
+
+
+def test_configure_parser_loads_by_path(monkeypatch):
+    """Outside pytest nothing has imported configure.py; check loads it from the checkout."""
+    monkeypatch.delitem(sys.modules, "configure", raising=False)
+    check._configure.cache_clear()
+    try:
+        marks = check.source_marks(SOURCE, [ROW, OTHER])
+        assert marks.marked == {"func_00010010"} and marks.defined == {"func_00010000"}
+        assert Path(check._configure().__file__).name == "configure.py"
+    finally:
+        check._configure.cache_clear()
