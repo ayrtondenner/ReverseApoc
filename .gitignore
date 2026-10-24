@@ -72,3 +72,5 @@ GEMINI.md
 build.ninja
 .ninja_log
 .ninja_deps
+objdiff.json
+compile_commands.json
