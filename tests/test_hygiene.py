@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -300,8 +301,22 @@ def test_round_trip_tests_never_copy_manifest_hashes():
 def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
     """What is wrong when a runtime dependency has no docs/tools.md reason (empty = none).
 
-    Not implemented yet (RED)."""
-    return []
+    Every `[project].dependencies` entry must be an exact `name==version` pin, and some table
+    row of the tools text must hold that pin as a code span (so `foo==1.0` is not satisfied by
+    `foo==1.0.1`), the name and the `**Use**` verdict."""
+    problems = []
+    rows = [line for line in tools_text.splitlines() if line.startswith("|")]
+    for pin in tomllib.loads(pyproject_text)["project"].get("dependencies", []):
+        name, sep, version = pin.partition("==")
+        if not sep or not version:
+            problems.append(f"{pin!r} is not an exact `name==version` pin")
+            continue
+        documented = any(
+            f"`{pin}`" in row and name.lower() in row.lower() and "**Use**" in row for row in rows
+        )
+        if not documented:
+            problems.append(f"docs/tools.md has no **Use** row holding `{pin}`")
+    return problems
 
 
 def test_every_runtime_dependency_is_documented():
@@ -313,7 +328,9 @@ def test_every_runtime_dependency_is_documented():
 
 
 _PLANTED_PYPROJECT = '[project]\nname = "x"\ndependencies = ["foo==1.0"]\n'
-_TOOLS_HEADER = "| Candidate | Verdict | Reason | Install method | Status |\n|---|---|---|---|---|\n"
+_TOOLS_HEADER = (
+    "| Candidate | Verdict | Reason | Install method | Status |\n|---|---|---|---|---|\n"
+)
 
 
 def test_dependency_doc_check_catches_an_undocumented_pin():
@@ -321,8 +338,9 @@ def test_dependency_doc_check_catches_an_undocumented_pin():
     # another version, and a row that is not a "Use" verdict are each one problem.
     other = "| [bar](https://example.invalid) | **Use** | r | uv: `bar==2.0` | Phase 5 |\n"
     wrong_pin = "| [foo](https://example.invalid) | **Use** | r | uv: `foo==1.1` | Phase 5 |\n"
+    longer_pin = "| [foo](https://example.invalid) | **Use** | r | uv: `foo==1.0.1` | Phase 5 |\n"
     skipped = "| [foo](https://example.invalid) | **Skip** | r | uv: `foo==1.0` | skipped |\n"
-    for rows in (other, wrong_pin, skipped):
+    for rows in (other, wrong_pin, longer_pin, skipped):
         assert len(_dependency_doc_problems(_PLANTED_PYPROJECT, _TOOLS_HEADER + rows)) == 1
     good = "| [foo](https://example.invalid) 1.0 | **Use** | r | uv: `foo==1.0` | Phase 5 |\n"
     assert _dependency_doc_problems(_PLANTED_PYPROJECT, _TOOLS_HEADER + good) == []
