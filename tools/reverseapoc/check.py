@@ -417,12 +417,23 @@ def _stray_reason(public: Public, code: Collection[int]) -> str:
 
 
 def account_unit(
-    module: Module, rows: Sequence[FunctionRow], symbols: SymbolTable, text: str
+    module: Module,
+    rows: Sequence[FunctionRow],
+    symbols: SymbolTable,
+    text: str,
+    *,
+    unit_file: bool = True,
 ) -> UnitAccount:
     """Orchestrator ruling (review round 1): every game and thunk row of `rows` is exactly one
     of (a) exported under its linker name in a code segment, then checked and landed, or (b)
     marked INCLUDE_ASM in `text`, then a stub; anything else is a mismatch naming the row.
-    A public of the object that names no row of `rows` is a mismatch too."""
+    A public of the object that names no row of `rows` is a mismatch too.
+
+    `text` is a unit file (src/<exe>/<unit>.c) unless `unit_file` is False: its D-12 source
+    problems (a refused conditional, a marker or definition naming another unit's function)
+    are mismatches even when the unit has no game or thunk row, as configure.py refuses that
+    file (code review IN-03). A file that is no unit file (the 05-18 runtime pair, Watcom's own
+    CMAIN386.C, which configure never reads) gets them only when a row requires them."""
     defined = defined_functions(module, rows, symbols)
     exported = {d.row.start for d in defined}
     first: dict[str, Public] = {}
@@ -430,7 +441,8 @@ def account_unit(
         first.setdefault(public.name, public)
     publics = list(first)
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
-    marks = source_marks(text, rows) if required else SourceMarks(frozenset(), frozenset(), ())
+    checked = unit_file or required
+    marks = source_marks(text, rows) if checked else SourceMarks(frozenset(), frozenset(), ())
     stubs, problems, failed = [], [], set()
     for row in required:
         linker = symbols.linker_name(row.start)
@@ -706,11 +718,13 @@ def check_source(
     compile_fn: Callable[..., Any],
     objdiff_runner: Runner,
     options: CompileOptions | None = None,
+    unit_file: bool = True,
 ) -> SourceCheck:
     """Compile `src`, convert it, cut the target of `rows` and check every function the object
     defines among `rows` (objdiff, relocation check, bytes). `unit` names the outputs
     <root>/<exe>/obj|base|target/<unit>.*, where <root> is object_root(build_dir, options).
-    Plan 05-18 calls this for the cmain386 runtime pair."""
+    Plan 05-18 calls this for the cmain386 runtime pair with `unit_file=False`: that source is
+    Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03)."""
     check_unit_name(unit)
     options = options or CompileOptions()
     paths = UnitPaths.of(object_root(build_dir, options), exe.stem, unit)
@@ -719,7 +733,7 @@ def check_source(
     _write(paths.base, write_elf(convert(module)))
     target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
     _write(paths.target, target.data)
-    account = account_unit(module, rows, exe.symbols, read_source(src))
+    account = account_unit(module, rows, exe.symbols, read_source(src), unit_file=unit_file)
     checked = with_relocs(module, account.defined, rows, exe)
     if not checked and not account.problems:
         raise CheckError(f"{src} defines no function of unit {unit}")

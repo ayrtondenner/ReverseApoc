@@ -76,6 +76,7 @@ def _compile(exe: check.ExeInputs, build_dir):
     result = check.check_source(
         exe, UNIT, CMAIN386, [row], build_dir=build_dir, compile_fn=compile_source,
         objdiff_runner=check.default_objdiff_runner(f"{exe.stem}/{UNIT}"), options=options,
+        unit_file=False,  # Watcom's own file, not src/<exe>/<unit>.c: no D-12 source checks
     )  # fmt: skip
     root = check.object_root(build_dir, options)
     module = check.read_module(check.UnitPaths.of(root, exe.stem, UNIT).obj)
