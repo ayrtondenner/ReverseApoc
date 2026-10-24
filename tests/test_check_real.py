@@ -9,6 +9,11 @@ our object must fail the relocation check.
 These tests skip unless CMAIN386.C, orig/<EXE>, a compiler runner and objdiff-cli all exist (the
 main checkout's container). They write only under build/test-check/ (the compiler writes only
 inside the repository) and assert on names, VAs, percentages, counts and SHA-1s, never on bytes.
+
+The WR-01 test also needs ninja: it runs configure.py and ninja on the committed units, then
+`check` with an experimental cflags file, and shows that ninja's object is still the one
+config/cflags.txt compiled. It compares our own compiled objects with each other, never with
+game bytes.
 """
 
 from __future__ import annotations
@@ -16,16 +21,19 @@ from __future__ import annotations
 import dataclasses
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import configure
 from conftest import ORIG_DIR, REPO_ROOT, WATCOM_DIR, requires_objdiff, requires_runner
 from reverseapoc import check
 from reverseapoc.compiler import compile_source
 from reverseapoc.land import LandedFunction, land
 from reverseapoc.relocs import check_function
 from reverseapoc.targets import load_manifest
+from reverseapoc.watcom import DEFAULT_INSTALL
 
 CMAIN386 = WATCOM_DIR / "10.6" / "SRC" / "STARTUP" / "386" / "CMAIN386.C"
 SYMBOL = "__CMain"  # the runtime row's name and its linker name
@@ -64,12 +72,13 @@ def _row(exe: check.ExeInputs):
 def _compile(exe: check.ExeInputs, build_dir):
     """check_source on the pair, with the compiled object read back for the land step."""
     row = _row(exe)
+    options = check.CompileOptions(watcom_dir=WATCOM_DIR, log=build_dir / "cc.log")
     result = check.check_source(
         exe, UNIT, CMAIN386, [row], build_dir=build_dir, compile_fn=compile_source,
-        objdiff_runner=check.default_objdiff_runner(f"{exe.stem}/{UNIT}"),
-        options=check.CompileOptions(watcom_dir=WATCOM_DIR, log=build_dir / "cc.log"),
+        objdiff_runner=check.default_objdiff_runner(f"{exe.stem}/{UNIT}"), options=options,
     )  # fmt: skip
-    module = check.read_module(check.UnitPaths.of(build_dir, exe.stem, UNIT).obj)
+    root = check.object_root(build_dir, options)
+    module = check.read_module(check.UnitPaths.of(root, exe.stem, UNIT).obj)
     return row, result, module
 
 
@@ -111,3 +120,65 @@ def test_cmain386_wrong_call_target_fails(build_dir):
     field = f"0x{row.start + fx.offset - d.off:08X}"
     problems = result.problems
     assert any(p.startswith(f"{field}: ") and PLANTED in p for p in problems), problems
+
+
+# ---- code review WR-01: `check --cflags` never feeds ninja an object of other flags ------------
+
+NINJA_ROOT = REPO_ROOT / "build" / "test-ninja"  # the compiler writes only inside the repository
+NINJA_EXE, NINJA_UNIT = "ufo2p", "u_000a34f0"  # a committed unit with a matched function
+EXPERIMENT = "*  wcc386@10.6  -4r -fpi\n"  # stack checks on: not what config/cflags.txt compiles
+
+
+def _ninja(base: Path, *args: str) -> str:
+    proc = subprocess.run(["ninja", "-C", str(base), *args], capture_output=True, text=True,
+                          check=False, timeout=600)  # fmt: skip
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    return proc.stdout
+
+
+def test_ninja_keeps_committed_objects_after_a_custom_check(request):
+    """configure + ninja build the unit's object with config/cflags.txt; `check --cflags
+    experiment` then compiles a different object, but ninja's object, its mtime and ninja's
+    verdict (nothing to do) are unchanged, and a further ninja run still yields the committed
+    flags' object. Before WR-01 check overwrote it, ninja took it as up to date, and
+    `ninja verify` landed it."""
+    if shutil.which("ninja") is None:
+        pytest.skip("ninja is not on PATH (run in the container)")
+    for target in load_manifest(MANIFEST):
+        if (CONFIG / check.exe_stem(target.name) / "units.csv").is_file() and not (
+            ORIG_DIR / target.name
+        ).is_file():
+            pytest.skip(f"orig/{target.name} not present (run uv run reverseapoc ingest)")
+    if not (DEFAULT_INSTALL / "10.6").is_dir():
+        pytest.skip(f"{DEFAULT_INSTALL / '10.6'} not installed (ninja's cc edge uses it)")
+    requires_runner()
+    requires_objdiff()
+    base = NINJA_ROOT / re.sub(r"[^A-Za-z0-9._-]", "_", request.node.name)
+    shutil.rmtree(base, ignore_errors=True)
+    base.mkdir(parents=True)
+    # `reverseapoc cc` refuses a source path with `..`, so the unit files are copied next to
+    # this build.ninja (the same committed C; the `*` cflags rule matches any path).
+    src = base / "src"
+    shutil.copytree(REPO_ROOT / "src", src)
+    assert configure.main(["--src", str(src), "--output", str(base / "build.ninja")]) == 0
+    rel = f"{configure.BUILDDIR}/{NINJA_EXE}/obj/{NINJA_UNIT}.obj"
+    _ninja(base, rel)
+    obj = base / rel
+    committed = (obj.read_bytes(), obj.stat().st_mtime_ns)
+
+    experiment = base / "experiment.txt"
+    experiment.write_text(EXPERIMENT, encoding="ascii")
+    build_dir = base / configure.BUILDDIR
+    result = check.check_unit(
+        NINJA_EXE, NINJA_UNIT, orig_dir=ORIG_DIR, manifest=MANIFEST, config_root=CONFIG,
+        src_root=src, build_dir=build_dir, cflags=experiment,
+        log=base / "cc.log",
+    )  # fmt: skip
+    assert result.flags == ("-4r", "-fpi")
+    assert (obj.read_bytes(), obj.stat().st_mtime_ns) == committed
+    custom = check.UnitPaths.of(build_dir / check.CUSTOM_ROOT, NINJA_EXE, NINJA_UNIT).obj
+    assert custom.read_bytes() != committed[0]  # the experiment really compiles another object
+
+    assert "no work to do" in _ninja(base, "-n", rel)
+    _ninja(base, rel)
+    assert obj.read_bytes() == committed[0]

@@ -597,6 +597,81 @@ def test_a_problem_alone_fails_the_result(env):
     assert not broken.ok and broken.exit_code == check.EXIT_MISMATCH
 
 
+# ---- code review WR-01: check never writes ninja's objects with options ninja does not use ------
+
+
+class OptionCompiler(FakeCompiler):
+    """The object a non-default option set compiles differs from the committed flags' one."""
+
+    def __call__(self, src, obj, **kwargs):
+        default = kwargs["cflags"] is None or Path(kwargs["cflags"]) == check.DEFAULT_CFLAGS
+        self.data = omf_object() if default else omf_object(callee="func_00010020_")
+        return super().__call__(src, obj, **kwargs)
+
+
+def ninja_object(env: Env) -> Path:
+    return env.build / STEM / "obj" / f"{UNIT}.obj"
+
+
+def test_check_with_custom_cflags_leaves_ninja_objects_alone(env, monkeypatch, capsys):
+    """WR-01: ninja built build/<exe>/obj/<unit>.obj with config/cflags.txt; `check --cflags`
+    compiles elsewhere, so the object ninja's land step (`ninja verify`) reads is still the one
+    the committed flags produced, with its mtime, and lands with the manifest SHA-1."""
+    put_object(env, omf_object())
+    obj = ninja_object(env)
+    before = (obj.read_bytes(), obj.stat().st_mtime_ns)
+    custom = env.root / "experiment.txt"
+    custom.write_text("*  wcc386@10.6  -4r -fpi\n", encoding="utf-8")
+    compiler = OptionCompiler()
+    patch_tools(monkeypatch, compiler=compiler)
+
+    argv = ["check", f"{STEM}/{UNIT}", *env.argv(), "--cflags", str(custom), "--json"]
+    assert cli_main(argv) == check.EXIT_MISMATCH  # the experiment's object does not match
+    capsys.readouterr()
+    assert compiler.calls
+    custom_root = env.build / check.CUSTOM_ROOT
+    for _, written, kwargs in compiler.calls:
+        assert written.is_relative_to(custom_root), written
+        assert Path(kwargs["cflags"]) == custom
+    assert (obj.read_bytes(), obj.stat().st_mtime_ns) == before
+    for kind in ("base", "target"):
+        assert not (env.build / STEM / kind).exists(), kind
+
+    assert cli_main(land_argv(env)) == 0  # ninja verify's land step: the committed flags' object
+    assert re.search(rf"^OK {EXE} sha1 [0-9a-f]{{40}} landed 1$", capsys.readouterr().out, re.M)
+
+
+@pytest.mark.parametrize(
+    "option", ["--cflags", "--watcom-manifest", "--watcom-dir"]
+)  # fmt: skip
+def test_any_custom_option_compiles_outside_ninja_paths(env, monkeypatch, capsys, option):
+    other = env.root / "other"
+    other.mkdir()
+    compiler = FakeCompiler()
+    patch_tools(monkeypatch, compiler=compiler)
+    cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), option, str(other / "x"), "--json"])
+    capsys.readouterr()
+    assert compiler.calls
+    assert all(obj.is_relative_to(env.build / check.CUSTOM_ROOT) for _, obj, _ in compiler.calls)
+    assert not ninja_object(env).exists()
+
+
+def test_check_with_default_options_keeps_ninja_paths(env, monkeypatch, capsys):
+    """The CLI passes the committed defaults explicitly; those objects are what ninja's cc edge
+    would write, so check keeps writing build/<exe>/obj|base|target (behaviour unchanged)."""
+    compiler = FakeCompiler()
+    patch_tools(monkeypatch, compiler=compiler)
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), "--json"]) == 0
+    capsys.readouterr()
+    assert [obj for _, obj, _ in compiler.calls] == [ninja_object(env)]
+    assert not (env.build / check.CUSTOM_ROOT).exists()
+
+
+def test_custom_root_is_no_exe_stem():
+    """build/<stem>/ belongs to ninja; the custom root can never be an EXE config stem."""
+    assert not check._UNIT_NAME.fullmatch(check.CUSTOM_ROOT)
+
+
 def test_configure_parser_loads_by_path(monkeypatch):
     """Outside pytest nothing has imported configure.py; check loads it from the checkout."""
     monkeypatch.delitem(sys.modules, "configure", raising=False)

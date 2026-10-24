@@ -31,7 +31,11 @@ config/cflags.txt (DEFAULT_CFLAGS) and decides no match: a cell worth keeping be
 rule (D-18) and is then proven by a plain `check`.
 
 Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
-Outputs go to build/<exe>/obj|base|target/<unit>.*.
+Outputs go to build/<exe>/obj|base|target/<unit>.*, the paths of build.ninja's edges, when check
+compiles with the committed config/cflags.txt, config/watcom.toml and Watcom tree. With any other
+--cflags, --watcom-manifest or --watcom-dir they go to build/check-custom/<exe>/... instead
+(`object_root`), so ninja never takes an object built with flags it does not use for its own
+up-to-date output, and `ninja verify` lands only objects of the committed flags (D-18, WR-01).
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ from .splice import _write_atomic
 from .symbols import SymbolTable
 from .target import TargetResult, branch_fields, build_target
 from .targets import REPO_ROOT, Target, check_bare_name, load_manifest
-from .watcom import DEFAULT_INSTALL
+from .watcom import DEFAULT_INSTALL, DEFAULT_WATCOM_MANIFEST
 
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 OBJDIFF = "objdiff-cli"
@@ -189,6 +193,26 @@ class CompileOptions:
     watcom_manifest: Path | None = None
     watcom_dir: Path | None = None
     log: Path | None = None
+
+
+# Where check compiles with non-default options. Not [a-z0-9_]+, so it is never an EXE config stem
+# and never a path build.ninja writes (its unit outputs are $builddir/<stem>/...).
+CUSTOM_ROOT = "check-custom"
+
+
+def _is_default(path: Path | None, default: Path) -> bool:
+    return path is None or Path(path).resolve() == Path(default).resolve()
+
+
+def object_root(build_dir: Path, options: CompileOptions) -> Path:
+    """The build dir check compiles into with `options`: `build_dir` itself, whose
+    <exe>/obj|base|target paths build.ninja's edges own, only when every option is the committed
+    one ninja's cc edge uses (config/cflags.txt, config/watcom.toml, the default Watcom tree);
+    otherwise `build_dir`/check-custom, so ninja never sees those objects (WR-01)."""
+    default = (_is_default(options.cflags, DEFAULT_CFLAGS)
+               and _is_default(options.watcom_manifest, DEFAULT_WATCOM_MANIFEST)
+               and _is_default(options.watcom_dir, DEFAULT_INSTALL))  # fmt: skip
+    return Path(build_dir) if default else Path(build_dir) / CUSTOM_ROOT
 
 
 def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: CompileOptions) -> Any:
@@ -668,10 +692,12 @@ def check_source(
 ) -> SourceCheck:
     """Compile `src`, convert it, cut the target of `rows` and check every function the object
     defines among `rows` (objdiff, relocation check, bytes). `unit` names the outputs
-    build/<exe>/obj|base|target/<unit>.*. Plan 05-18 calls this for the cmain386 runtime pair."""
+    <root>/<exe>/obj|base|target/<unit>.*, where <root> is object_root(build_dir, options).
+    Plan 05-18 calls this for the cmain386 runtime pair."""
     check_unit_name(unit)
-    paths = UnitPaths.of(build_dir, exe.stem, unit)
-    compiled = _compile(compile_fn, Path(src), paths.obj, options or CompileOptions())
+    options = options or CompileOptions()
+    paths = UnitPaths.of(object_root(build_dir, options), exe.stem, unit)
+    compiled = _compile(compile_fn, Path(src), paths.obj, options)
     module = read_module(paths.obj)
     _write(paths.base, write_elf(convert(module)))
     target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
@@ -703,11 +729,14 @@ def _land_exe(
     fresh: Collection[tuple[str, str]],
 ) -> ExeLand:
     landed, refused = [], []
+    # Without compile_fn the objects are ninja's; compiled here, they go where check_source puts
+    # them for the same options, never over ninja's with other options (WR-01).
+    root = Path(build_dir) if compile_fn is None else object_root(build_dir, options)
     for unit in exe.units:
         src = Path(src_root) / exe.stem / f"{unit.unit}{SOURCE_SUFFIX}"
         if not src.is_file():
             continue  # a unit without C has nothing to land
-        obj = UnitPaths.of(build_dir, exe.stem, unit.unit).obj
+        obj = UnitPaths.of(root, exe.stem, unit.unit).obj
         if compile_fn is not None and (exe.target.name, unit.unit) not in fresh:
             _compile(compile_fn, src, obj, options)
         elif not obj.is_file():
@@ -741,8 +770,9 @@ def land_all(
     """Land every defined function of every compiled unit (a unit with src/<exe>/<unit>.c) of
     every manifest target that has config/<exe>/units.csv (orchestrator ruling F4: an EXE
     without units.csv is skipped, so SMKP.EXE never appears). With `compile_fn` each unit is
-    compiled first, except the (name, unit) pairs in `fresh` whose object is already built.
-    `loaded` reuses ExeInputs by manifest name."""
+    compiled first, into object_root(build_dir, options), except the (name, unit) pairs in
+    `fresh` whose object is already built there; without it, the objects ninja built under
+    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name."""
     loaded = loaded or {}
     options = options or CompileOptions()
     out = []
