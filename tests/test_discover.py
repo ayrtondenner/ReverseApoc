@@ -14,6 +14,7 @@ import struct
 import pytest
 
 from conftest import build_le_image, fixup_record, requires_capstone
+from reverseapoc import discover as disc
 from reverseapoc.discover import Discovery, discover
 from reverseapoc.le import LE
 
@@ -147,3 +148,94 @@ def test_report_has_counts_only():
     assert report["ignored_seeds"] == 0
     assert report["jump_tables"] == 0
     assert report["evidence"] == {"call": 1, "entry": 1, "fixup": 0, "runtime": 0}
+
+
+# Task 2: leading tables, inline data, the D-07 end rule and the object edges.
+
+FILLER_MOV = b"\x89\xc0"  # mov eax, eax: Watcom alignment filler
+XOR_EAX = b"\x31\xc0"  # xor eax, eax: not terminal
+
+
+def small_code(vsize: int) -> list[tuple[int, int, int, int, int]]:
+    """A code object of `vsize` bytes at CODE (bytes past it load as zero) and the data object."""
+    return [(vsize, CODE, 0x2045, 1, 2), (0x3000, DATA, 0x2043, 3, 1)]
+
+
+def test_leading_table():
+    """A table directly before a function entry is a jump-table range ending at that entry and
+    not the tail of the previous function."""
+    a, table, b = CODE + 0x100, CODE + 0x108, CODE + 0x110
+    cases = [CODE + 0x200, CODE + 0x210]
+    entries = [table, table + 4]
+    fixups = [table_fixups([b + 3 - CODE, *(e - CODE for e in entries)], [table, *cases]), b"", b""]
+    patches = {
+        a: call(a, b) + RET + FILLER_MOV,
+        **{e: struct.pack("<I", c - CODE) for e, c in zip(entries, cases, strict=True)},
+        b: jmp_table(table - CODE),
+        cases[0]: RET,
+        cases[1]: RET,
+    }
+    le = make_le(patches, fixups=fixups)
+    found = discover(le)
+    assert found.jump_tables == ((table, b),)
+    assert found.starts == (a, b)
+    assert disc.ends(found, le)[a] == a + 6
+
+
+def test_inline_data():
+    """An LE fixup site at an instruction start ends the path: the field is not decoded (here it
+    would decode as a call to a function nothing else reaches)."""
+    a, unreached = CODE + 0x100, CODE + 0x200
+    site = a + 1
+    fixups = [fixup_record(OFF32, site - CODE, 2, 0), b"", b""]
+    le = make_le({a: b"\x90" + call(site, unreached), unreached: RET}, fixups=fixups)
+    found = discover(le)
+    assert found.starts == (a,)
+    assert found.decoded_bytes == 1
+
+
+def test_function_ends():
+    """D-07 end rule: the first padding byte (filler or zero) after a terminal instruction, else
+    the next start; a function that falls through has no ret and ends at the next start."""
+    a, b, c = CODE, CODE + 0xC, CODE + 0xE
+    vsize = 0x20
+    patches = {
+        a: call(a, b) + call(a + 5, c) + RET + b"\x90",
+        b: XOR_EAX,  # falls through into c
+        c: RET + bytes(vsize - 0xF),  # zero padding to the object end
+    }
+    le = make_le(patches, entry=0, objects=small_code(vsize))
+    found = discover(le)
+    assert found.starts == (a, b, c)
+    assert found.decoded_bytes == 11 + 2 + 1
+    assert disc.ends(found, le) == {a: a + 0xB, b: c, c: c + 1}
+
+
+def test_seed_outside_code_object():
+    a = CODE + 0x100
+    found = discover(make_le({a: RET}), runtime_starts=[DATA + 0x10])
+    assert found.starts == (a,)
+    assert found.ignored_seeds == 1
+
+
+def test_function_at_object_edges():
+    """A function at the object base and one whose ret is the object's last byte."""
+    a, b = CODE, CODE + 0xD
+    patches = {a: call(a, b) + RET + b"\x90" * 7, b: XOR_EAX + RET}
+    le = make_le(patches, entry=0, objects=small_code(0x10))
+    found = discover(le)
+    assert found.starts == (a, b)
+    assert found.decoded_bytes == 6 + 3
+    assert disc.ends(found, le) == {a: a + 6, b: CODE + 0x10}
+
+
+def test_no_read_past_object_edges():
+    """A function running off the end of the object stops there: the zero bytes after the
+    object (which decode as `add [eax], al`) are never decoded."""
+    a, b = CODE, CODE + 0xE
+    patches = {a: call(a, b) + RET + b"\x90" * 8, b: XOR_EAX}
+    le = make_le(patches, entry=0, objects=small_code(0x10))
+    found = discover(le)
+    assert found.starts == (a, b)
+    assert found.decoded_bytes == 6 + 2
+    assert disc.ends(found, le)[b] == CODE + 0x10

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ORIG_DIR, REPO_ROOT, requires_capstone
+from reverseapoc import discover as disc
 from reverseapoc.discover import Discovery, discover
 from reverseapoc.le import LE
 from reverseapoc.libmatch import read_runtime_csv
@@ -82,3 +83,15 @@ def test_counts_in_range(real):
     starts, decoded, size = len(found.starts), found.decoded_bytes, code_object(le).vsize
     assert MIN_STARTS <= starts <= MAX_STARTS
     assert MIN_DECODED <= decoded <= size
+
+
+def test_ends_tile(real):
+    """Every function ends after its start and no later than the next start (D-07 end rule)."""
+    le, found = real
+    end_of = disc.ends(found, le)
+    limits = [*found.starts[1:], code_object(le).end]
+    bad = sum(
+        1 for start, limit in zip(found.starts, limits, strict=True)
+        if not start < end_of[start] <= limit
+    )
+    assert bad == 0
