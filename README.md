@@ -68,7 +68,7 @@ Files copied from Theme Hospital keep their copyright headers. That is why `tool
 
 - **Compiler:** Watcom C 10.5/10.6 is the working hypothesis (10.5 and 10.6 emit identical code on the published probes). The exact version is settled in Phase 4.
 - **Extender:** DOS/4GW Professional, bound into each EXE (LE format, two objects, no debug info).
-- **Analysis:** Ghidra 12.1.4 with [ghidra-lx-loader](https://github.com/lastonesky/ghidra-lx-loader) (or retrokit), in WSL2.
+- **Analysis:** Ghidra 12.1.4 with the lastonesky [ghidra-lx-loader](https://github.com/lastonesky/ghidra-lx-loader), headless in the Docker image.
 - **Diff and reports:** objdiff, behind an OMF-to-ELF converter.
 - **Tooling:** Python 3.14 with [uv](https://docs.astral.sh/uv/), everything build-related in Docker.
 
