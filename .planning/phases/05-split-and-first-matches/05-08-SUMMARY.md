@@ -226,6 +226,29 @@ None.
 - FOUND: tools/reverseapoc/target.py, tests/test_target.py
 - FOUND on this branch: a964c65, b468c3f, d14c7a2, 8ad1173 (`git rev-list --count 532a745..HEAD` = 4 before this SUMMARY commit)
 
+## Review fixes (round 1)
+
+Both findings were fixed test-first. RED is commit `ec3d39a` and GREEN is commit `d9b7530`.
+
+1. **Important: resuming one byte past an undecodable byte could desynchronise.** A misaligned e8/e9/0f 8x inside a later immediate or table entry could be read as a rel32 branch. That gave either a TargetError at a wrong VA or a spurious R_386_PC32 whose rewritten field corrupted bytes that must equal load_flat. It also went against the 05-03 contract that decoding stops at an undecodable byte.
+   - **Orchestrator ruling:** do not refuse the unit (D-13, F11). Stop branch synthesis for the rest of the row and report the site.
+   - **Fix:** `_decode_row` replaces `_instructions`. Inline data at an LE fixup site is still skipped whole and decoding resumes after it. Any other byte where capstone stops short of the row end now ends decoding for that row.
+   - After that byte, no PC32 is synthesized and the bytes stay as `load_flat(relocate=False)` gives them. LE off32 fixups in the remainder still become R_386_32, because they come from the fixup table, not from decoding.
+   - **Reporting:** the VA goes into the new field `TargetResult.undecoded: tuple[int, ...]`, one VA per row that stopped short. I chose a separate field over a RawField kind because the site is not an LE fixup.
+   - `_UNDECODABLE_SKIP` is gone. This supersedes auto-fix 4 above ("Decoding resumes after an undecodable byte").
+   - **Tests:** `test_branch_synthesis_stops_at_an_undecodable_byte` replaces `test_decoding_resumes_after_an_undecodable_byte`. It uses nop, `0f 04` at 0x10001, nop, then a byte sequence that looks like `call B`, then an off32 `mov eax,[abs32]`. The relocations are exactly `[(0xA, R_386_32, "_D_00020100", 0)]`, every byte outside that field equals load_flat (the e8 field included), `undecoded == (0x10001,)` and `raw_fields == ()`. At RED this test failed with the spurious `(5, R_386_PC32, 'func_00010020_', -4)`. `test_a_fully_decoded_unit_reports_nothing_undecoded` pins `undecoded == ()` on the tracer unit.
+2. **Minor: a rel32 branch destination outside the code object became a `_D_` symbol.** `_branch_relocs` now raises `TargetError("branch at 0x... to 0x...: outside the code object")`. Test: `test_refuses_a_branch_out_of_the_code_object` (a call to 0x00020100 in the data object), which failed with `DID NOT RAISE` at RED.
+
+Commands and their output lines:
+
+- `uv run pytest -q tests/test_target.py`: `20 passed in 0.18s`
+- `uv run pytest -q`: `1020 passed, 177 skipped in 14.96s`
+- `uv run ruff check .`: `All checks passed!`
+
+For 05-17: print `TargetResult.undecoded` beside `raw_fields`. A function with an undecoded site has unsynthesized branches, so 05-11 should treat it like an F11 site and exclude it from first-match candidates.
+
+actuals.commits in the frontmatter still counts the 4 original task commits. Round 1 added `ec3d39a` and `d9b7530`, and this SUMMARY update is one more commit.
+
 ---
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
