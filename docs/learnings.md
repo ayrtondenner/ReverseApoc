@@ -11,6 +11,12 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-10-24: the first TACP match (Phase 5, plan 05-19)
+
+- **func_00055080 of TACP.EXE matched on the first draft under the default rule.** It is `reverseapoc score tacp`'s candidate 1 (11 bytes: a call, a 32-bit store of its result, `ret`), far from TACP's uncovered stretch at 0x00029D4D..0x00031040, with no raw fields and no undecoded sites in its target cut. The unit u_00054f20 was kept as drafted. A mutation probe that declared the global `short` failed `check` (a 12-byte function, objdiff 98.3333%, relocation check failed, TACP splice refused), so the verdict is not vacuous.
+- **The bytes cannot tell a `void` function from one that returns the stored value.** wcc386 does not save EAX in a `void` function that clobbers it, so `void f(void) { D = g(); }` and `int f(void) { return D = g(); }` give the same 11 bytes. The C says `void` until a caller that reads EAX after the call shows otherwise; the callers decide, not this function.
+- **Two leaf-sized matches separate no candidate.** Neither has a loop, a branch, a struct copy or x87 code, so 10.5/10.6/11.0, `-4`/`-5` and `-o*` all stay tied. The `*` default and `__WATCOMC__` 1060 stay (D-18, D-14), and the cells that would settle each tie are listed under [toolchain.md "Flags"](toolchain.md#flags). The next matches should be chosen to carry a loop or a 5-dword struct copy, not only to be small.
+
 ## 2026-10-24: the first UFO2P match and the first real ninja graph (Phase 5, plan 05-18)
 
 - **func_000A3980 matched on the first try under the default rule.** It is `reverseapoc score`'s candidate 1 (13 bytes: a call and a byte load returned as `int`). The one shape choice that mattered was the type of the global: the load sign-extends, so it is `extern signed char`, and plain `char` (unsigned under Watcom without `-j`) would zero-extend. A mutation probe that declared it `unsigned char` failed `check` (objdiff 46.7%, relocation check failed, 3 bytes differ, UFO2P splice refused), so the verdict is not vacuous. No sweep ran, so it proves the default rule for this function only and separates no compiler version or flag ([toolchain.md "Phase 5 match evidence"](toolchain.md#phase-5-match-evidence)).
