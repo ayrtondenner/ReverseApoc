@@ -169,17 +169,17 @@ Plans:
   4. For one function per EXE, the single-unit `check` tool prints objdiff 100%, a passing relocation check (every non-relocated byte, equal length, every `call rel32` target, every absolute fixup target) and, after splicing with the original link-time value kept at each fixup site, both rebuilt EXEs SHA-1 identical to `config/targets.toml`; a negative test with a wrong call or fixup target makes the relocation check fail even where objdiff reports 100% (SPL-09, SPL-10, SPL-11, SPL-13)
 
 **Spike**: objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback: if INVALIDATED, the KKND-style compare stays the oracle and Phase 6 uses a minimal own agent layer).
-**Plans:** 1/20 plans executed
+**Plans:** 5/20 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
 - [x] 05-01-PLAN.md — objdiff spike on the cmain386 pair (spike 005): spike-local converter and target cut, plants, D-19 name map, D-02 verdict (SPL-07, SPL-08)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 05-02-PLAN.md — ELF32 writer, omf2elf core and the `omf2elf` verb; real 10.6 object converts (SPL-07)
-- [ ] 05-03-PLAN.md — capstone 5.0.9 (docs/tools.md first, blocking legitimacy checkpoint, uv add), x86.py decode helpers, Wave 0 skip helpers and Ghidra-loadable LE (SPL-02, SPL-01)
-- [ ] 05-04-PLAN.md — functions/boundaries/units/symbols CSV schemas, runtime public offsets from LIB386, symbols.py naming (SPL-01, SPL-03)
-- [ ] 05-05-PLAN.md — INCLUDE_ASM stub in include/common.h and `-i=include;H` in the cc wrapper, proven inert under 10.6 (SPL-04)
+- [x] 05-02-PLAN.md — ELF32 writer, omf2elf core and the `omf2elf` verb; real 10.6 object converts (SPL-07)
+- [x] 05-03-PLAN.md — capstone 5.0.9 (docs/tools.md first, blocking legitimacy checkpoint, uv add), x86.py decode helpers, Wave 0 skip helpers and Ghidra-loadable LE (SPL-02, SPL-01)
+- [x] 05-04-PLAN.md — functions/boundaries/units/symbols CSV schemas, runtime public offsets from LIB386, symbols.py naming (SPL-01, SPL-03)
+- [x] 05-05-PLAN.md — INCLUDE_ASM stub in include/common.h and `-i=include;H` in the cc wrapper, proven inert under 10.6 (SPL-04)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 05-06-PLAN.md — omf2elf complete: COMDAT 0xC2, NBKPAT, LIDATA, BAKPAT, CEXTDEF, LPUBDEF, filler sizing, refusals (SPL-07)
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
-| 5. Split and first matches | 1/20 | In Progress | - |
+| 5. Split and first matches | 5/20 | In Progress | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
