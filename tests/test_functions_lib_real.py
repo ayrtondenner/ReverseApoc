@@ -15,10 +15,12 @@ from reverseapoc.functions import (
     FunctionRow,
     format_functions_csv,
     read_functions_csv,
+    runtime_aliases,
     runtime_entries,
     seed_runtime_rows,
 )
 from reverseapoc.libmatch import LoadedLibrary, load_libraries, read_runtime_csv, runtime_csv_path
+from reverseapoc.symbols import SymbolTable
 
 EXES = ("UFO2P.EXE", "TACP.EXE")
 
@@ -62,3 +64,18 @@ def test_every_alias_shares_its_rows_start(exe, libraries):
     assert any(len(e.aliases) > 1 for e in entries)  # malloc_/_nmalloc_ and the like (F12)
     for entry in entries:
         assert entry.name in entry.aliases
+
+
+@pytest.mark.parametrize("exe", EXES)
+def test_runtime_names_and_aliases_build_one_symbol_table(exe, libraries):
+    runtime = read_runtime_csv(runtime_csv_path(exe))
+    entries = runtime_entries(runtime, libraries)
+    table = SymbolTable.build(
+        seed_runtime_rows(runtime, libraries), aliases=runtime_aliases(entries)
+    )
+    # _Alphabet heads both itoa and ltoa: a module-local table, so it names no single address.
+    assert set(table.ambiguous) == {"_Alphabet"}
+    for entry in entries:
+        assert table.linker_name(entry.start) == entry.name
+        unique = [alias for alias in entry.aliases if alias not in table.ambiguous]
+        assert all(table.address_of(alias) == entry.start for alias in unique)
