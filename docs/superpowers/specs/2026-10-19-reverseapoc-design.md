@@ -46,7 +46,7 @@ Things the project must actively avoid:
 
 ## Constraints
 
-- **Host:** Windows 10 with WSL2 Ubuntu and Docker Desktop. No cmake, make, ninja, clang or Ghidra on the host, so everything build-related runs in Docker; Ghidra and decomp.wtf run in WSL2. **[Owner]** (Docker and WSL2), **[Default]** (the split)
+- **Host:** Windows 10 with WSL2 Ubuntu and Docker Desktop. No cmake, make, ninja, clang or Ghidra on the host, so everything build-related runs in Docker; Ghidra runs headless in the Docker image (owner decision 2026-10-23, D-04) and decomp.wtf runs in WSL2. **[Owner]** (Docker and WSL2), **[Default]** (the split)
 - **Python 3.14 pin**, moving to 3.15 with a one-line change once dependencies have wheels. **[Owner]**
 - **GPLv3 for `tools/`**, so Theme Hospital's modules can be copied with their headers. decomp.wtf (MIT) stays a separate tool run as a subprocess, never imported. **[Owner]**
 - **User-supplied Watcom compiler** under gitignored `third_party/watcom/`, mounted read-only, never in an image. Same for the game under `orig/`. **[Owner]** (bring your own files), **[Default]** (mount layout)
@@ -85,7 +85,7 @@ your Watcom 10.x -------------> third_party/ (ro)+--> Docker build image
                                                  |     objdiff + relocation check
                                                  |     in-place splice -> whole-EXE SHA-1
                                                  |
-WSL2: Ghidra + LE loader, GhidraMCP ------------+--> function list, drafts, names
+Docker: Ghidra + LE loader (headless) ----------+--> function list, drafts, names
 WSL2: decomp.wtf fork mode (subprocess) --------+--> claims, agents, dashboard
 driver (claude -p "/goal ...") ------------------+--> re-verify, commit one function
 GitHub Actions --> progress.svg / progress.json / shield JSON on Pages, report artifact for recomp.fyi
