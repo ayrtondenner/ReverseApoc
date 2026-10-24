@@ -262,3 +262,39 @@ None.
 
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
+
+## Review fixes (round 1)
+
+**Important: a missing committed CSV skipped instead of failing.** Since Task 2 committed TACP's files, the `_committed` skip was stale. If config/<exe>/boundaries.csv were deleted, `test_every_disagreement_has_a_verdict` (which needs no game input, so it runs in CI) would have skipped and stayed green.
+- `_committed` is replaced by `_present(path, hint)`. It asserts that the file exists and names it in the failure. functions.csv, boundaries.csv, units.csv and symbols.csv are now all required.
+- Only orig/ (`_orig`), Ghidra (`requires_ghidra`), Watcom (`requires_version`) and capstone may skip.
+- The fixture checks the committed files before any skip.
+- Proof that the test now fails: I renamed config/tacp/boundaries.csv to `.bak`, ran `uv run pytest -q -rs tests/test_functions_real.py -k "verdict or drift"` with no real inputs, and restored the file. Output: `1 failed, 1 passed, 3 skipped, 8 deselected, 3 errors in 0.25s`.
+  - The FAILED test was `test_every_disagreement_has_a_verdict[TACP.EXE]`, with `AssertionError: ...config\tacp\boundaries.csv missing: run 'uv run reverseapoc functions <exe> --ghidra-export PATH --write'`.
+  - The 3 errors are the TACP drift tests, whose fixture hits the same assertion.
+  - The 3 skips are UFO2P drift tests, skipped only for the absent orig/UFO2P.EXE.
+
+**Minor: 3 UFO2P code bytes outside every unit.** The code object ends at 0x000CFADD, while the last row and the last unit (rt_iobaddr) end at 0x000CFADA.
+- The 3 bytes are not filler. They are a 3-byte routine, the target of the jump that is all of func_000CFAB6 (fixup evidence). This is the UFO2P twin of TACP 0x000D2019. Neither Ghidra nor capstone starts a function there, so there is no boundaries row to give a verdict to.
+- Extending rt_iobaddr would put game code into a runtime unit, so I left units.csv unchanged and recorded the fact instead.
+- New `test_units_tile_the_code` states the rule. Units tile the code object with no gap or overlap, from its start to the end of the last functions.csv row. Past that row only `UNCOVERED_TAIL` bytes remain: 3 in UFO2P, 0 in TACP.
+- The "reached from another function by jump or thunk" candidate rule would give this routine a row in a later plan.
+
+**Minor: the three TACP decoded-call reasons now carry LE evidence counts (D-08).** Each reason names the counts for the unreached stretch it cites, as a local decode measured them (counts only):
+
+| Stretch | LE fixup sources | Fixup targets | Undecodable bytes | Decoded calls on other functions.csv starts |
+|---|---|---|---|---|
+| 0x00029D4D..0x0002C540 | 114 | 0 | 0 | 159 of 163 |
+| 0x0002CB8D..0x00031040 | 385 | 0 | 0 | 270 of 347 |
+| tail 0x000312F7..0x00032973 of func_000310F0 | 82 | 0 | 0 | 115 of 131 |
+
+The "other starts" counts exclude the three hand-verdict starts themselves. The drift test confirms the CSV still regenerates exactly.
+
+**Minor: `_export_csv` wrote into build/ghidra even when REVERSEAPOC_GHIDRA_EXPORT pointed elsewhere.** It now exports into `_export_root()`, the env var when set, else build/ghidra.
+
+Commits: `43fe476` (fix: tests), `d9f3ff6` (fix: TACP reasons).
+
+Commands and output:
+- `REVERSEAPOC_ORIG=.../orig REVERSEAPOC_WATCOM_DIR=.../third_party/watcom REVERSEAPOC_GHIDRA_EXPORT=.../build/ghidra uv run pytest -q -rs tests/test_functions_real.py` (literal main-checkout paths): `16 passed in 84.95s (0:01:24)`, 0 SKIPPED
+- `uv run pytest -q`: `1311 passed, 210 skipped in 18.20s`
+- `uv run ruff check .`: `All checks passed!`
