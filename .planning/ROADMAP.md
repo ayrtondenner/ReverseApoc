@@ -282,3 +282,21 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Deferred at:** 2026-10-23 during /gsd-verify-work 04 session completion
 **Follow-ups:**
 - [ ] Test 5: Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
+
+### Phase 999.2: Follow-up — Phase 05 deferred UAT follow-up: Test 1 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 05 verification
+**Source phase:** 05
+**Target phase:** 7 (success criterion 4, DEC-04)
+**Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
+**Follow-ups:**
+- [ ] Test 1: readlint must also reject our own placeholders `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit, not only Ghidra's `FUN_`/`sub_`/`DAT_`; Phase 7 success criterion 4 as worded would let src/ufo2p/u_000a34f0.c and src/tacp/u_00054f20.c through unnamed (deferred 2026-10-24)
+
+### Phase 999.3: Follow-up — Phase 05 deferred UAT follow-up: Test 5 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 05 verification
+**Source phase:** 05
+**Target phase:** 6 (agents start relying on asm/ listings)
+**Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
+**Follow-ups:**
+- [ ] Test 5: `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)
