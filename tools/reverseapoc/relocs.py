@@ -10,9 +10,16 @@ independent of objdiff and fails that case:
 2. Fields: `ours` are the VAs our OMF fixups cover (segment offset mapped to start + offset - off);
    `theirs` are the LE fixup fields inside the row.
 3. Bytes: every byte outside the fields of both sides is equal (`_bytes`).
-4. Each of our fixups lands on the original target, want = base + stored + displacement, where
-   base is address_of(symbol) for an extern (symbols.py) and start - off for our own `_TEXT`
-   (a case label or a static function, `_own_segment`):
+4. Each of our fixups lands on the original target `want`:
+   - an extern: want = address_of(symbol) + stored + displacement (symbols.py);
+   - our own `_TEXT` at segment offset t = stored + displacement (`_own_segment`): inside the
+     checked public, want = start + (t - off), its own row; anywhere else, t must lie in one of
+     `own_publics`, our unit's other publics with the original row each sits at, and want = that
+     row's start + (t - the public's offset). Without such an entry the field is refused, never
+     resolved by assuming our whole `_TEXT` sits in the original as in our object. The caller
+     owes the map: it builds `own_publics` from the unit's units.csv and functions.csv rows
+     (05-17 `check`, 05-18);
+   then by the fixup's kind:
    - self-relative: have = F + 4 + int32(original field), and the LE has no fixup at F (a rel32
      call is not an LE fixup) (`_self_relative`);
    - segment-relative: an off32 LE fixup at F whose target_va == want (`_segment_relative`);
@@ -31,7 +38,7 @@ They carry VAs, symbol names, addresses and counts, never byte values.
 from __future__ import annotations
 
 import struct
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -52,6 +59,17 @@ LOCAL_SEGMENT_PROBLEM = "local segment reference, move data to an extern D_ symb
 
 class RelocError(ValueError):
     """The inputs of a check do not describe one function."""
+
+
+@dataclass(frozen=True)
+class OwnPublic:
+    """Another public of our unit's `_TEXT`: [offset, offset + size) in our segment, and the
+    start VA of the functions.csv row it matches in the original."""
+
+    name: str
+    offset: int
+    size: int
+    start: int
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,7 @@ class _Pair:
     flat: bytes
     symbols: SymbolTable
     theirs: Mapping[int, Fixup]  # LE fixups whose field overlaps the row, by src_va
+    own_publics: tuple[OwnPublic, ...]  # sorted by offset
 
     def va(self, offset: int) -> int:
         """The VA of our segment offset `offset`."""
@@ -115,8 +134,19 @@ def _check_inputs(segment: Segment, off: int, size: int, row: FunctionRow, flat:
         raise RelocError(f"{row.name}: row ends at {_va(row.end)}, past the image")
 
 
+def _check_own_publics(own_publics: Sequence[OwnPublic], segment: Segment) -> None:
+    for public in own_publics:
+        end = public.offset + public.size
+        if public.size <= 0 or public.offset < 0 or end > len(segment.data):
+            raise RelocError(
+                f"own public {public.name}: [{public.offset:#x}, {end:#x}) is empty or lies "
+                f"outside segment {segment.name}"
+            )
+
+
 def _le_fields(fixups: Sequence[Fixup], lo: int, hi: int) -> Iterator[Fixup]:
-    """LE fixups (sorted by src_va, as le.fixups() returns them) whose field overlaps [lo, hi)."""
+    """LE fixups whose field overlaps [lo, hi). `fixups` must be sorted by src_va; check_function
+    sorts them, so a caller's order never matters."""
     first = bisect_left(fixups, lo - _MAX_LE_FIELD + 1, key=lambda fx: fx.src_va)
     for fx in fixups[first:]:
         if fx.src_va >= hi:
@@ -165,9 +195,28 @@ def _bytes(pair: _Pair, masked: set[int]) -> Iterator[str]:
         )
 
 
-def _own_segment(pair: _Pair) -> int:
-    """Rule 4, our own `_TEXT`: its VA, given that our public at `off` sits at the row start."""
-    return pair.row.start - pair.off
+def _containing(publics: Sequence[OwnPublic], t: int) -> OwnPublic | None:
+    """The public with the largest offset <= t, if t lies inside it."""
+    index = bisect_right(publics, t, key=lambda public: public.offset) - 1
+    if index < 0 or t >= publics[index].offset + publics[index].size:
+        return None
+    return publics[index]
+
+
+def _own_segment(pair: _Pair, field: int, fx: OMFFixup) -> tuple[str, int] | str:
+    """Rule 4, our own `_TEXT`: (label, want) through the checked public or `own_publics`, or
+    the refusal when the target's original row is unknown."""
+    t = (pair.stored(fx) + fx.displacement) & _ADDRESS_MASK
+    label = f"{fx.target_name}+{t:#x}"
+    if pair.off <= t < pair.off + pair.size:
+        return label, pair.va(t)
+    public = _containing(pair.own_publics, t)
+    if public is None:
+        return (
+            f"{_va(field)}: {fx.target_name}: own _TEXT target {t:#x} outside {pair.row.name} "
+            "needs the unit's public-to-row map"
+        )
+    return f"{label} ({public.name})", (public.start + t - public.offset) & _ADDRESS_MASK
 
 
 def _local_segment(field: int, fx: OMFFixup) -> str:
@@ -175,48 +224,49 @@ def _local_segment(field: int, fx: OMFFixup) -> str:
     return f"{_va(field)}: {fx.target_name}: {LOCAL_SEGMENT_PROBLEM}"
 
 
-def _base(pair: _Pair, field: int, fx: OMFFixup) -> int | str:
-    """The VA our fixup's target starts at, or the problem that stops checking this field."""
+def _want(pair: _Pair, field: int, fx: OMFFixup) -> tuple[str, int] | str:
+    """(label, the VA our fixup targets), or the problem that stops checking this field."""
     if fx.target_kind == _TARGET_SEGMENT:
         if fx.target_index == pair.segment.index:
-            return _own_segment(pair)
+            return _own_segment(pair, field, fx)
         return _local_segment(field, fx)
     if fx.target_kind != _TARGET_EXTERN:
         return f"{_va(field)}: {fx.target_name}: fixup target {fx.target_kind} is not supported"
     try:
-        return pair.symbols.address_of(fx.target_name)
+        base = pair.symbols.address_of(fx.target_name)
     except SymbolError as exc:
         return f"{_va(field)}: {exc}"
+    return fx.target_name, (base + pair.stored(fx) + fx.displacement) & _ADDRESS_MASK
 
 
-def _self_relative(pair: _Pair, field: int, fx: OMFFixup, want: int) -> Iterator[str]:
+def _self_relative(pair: _Pair, field: int, name: str, want: int) -> Iterator[str]:
     """Rule 4, self-relative: the original rel32 lands on the same target, with no LE fixup."""
     if field in pair.theirs:
         yield (
-            f"{_va(field)}: {fx.target_name}: a self-relative fixup where the original has an "
+            f"{_va(field)}: {name}: a self-relative fixup where the original has an "
             "LE fixup"
         )
         return
     have = (field + FIELD_SIZE + pair.original(field)) & _ADDRESS_MASK
     if have != want:
         yield (
-            f"{_va(field)}: {fx.target_name} resolves to {_va(want)}, "
+            f"{_va(field)}: {name} resolves to {_va(want)}, "
             f"the original lands on {_va(have)}"
         )
 
 
-def _segment_relative(pair: _Pair, field: int, fx: OMFFixup, want: int) -> Iterator[str]:
+def _segment_relative(pair: _Pair, field: int, name: str, want: int) -> Iterator[str]:
     """Rule 4, segment-relative: an off32 LE fixup at the field with the same target."""
     le = pair.theirs.get(field)
     if le is None:
-        yield f"{_va(field)}: {fx.target_name}: the original has no LE fixup here"
+        yield f"{_va(field)}: {name}: the original has no LE fixup here"
         return
     if le.kind != SRC_OFF32:
-        yield f"{_va(field)}: {fx.target_name}: the original LE fixup is {le.kind_name}, not off32"
+        yield f"{_va(field)}: {name}: the original LE fixup is {le.kind_name}, not off32"
         return
     if le.target_va != want:
         yield (
-            f"{_va(field)}: {fx.target_name} resolves to {_va(want)}, "
+            f"{_va(field)}: {name} resolves to {_va(want)}, "
             f"the original targets {_va(le.target_va)}"
         )
 
@@ -230,13 +280,12 @@ def _fixup(pair: _Pair, fx: OMFFixup) -> Iterator[str]:
     if fx.location != LOC_OFFSET32:
         yield f"{_va(field)}: {fx.target_name}: fixup location {fx.location} is not offset32"
         return
-    base = _base(pair, field, fx)
-    if isinstance(base, str):
-        yield base
+    target = _want(pair, field, fx)
+    if isinstance(target, str):
+        yield target
         return
-    want = (base + pair.stored(fx) + fx.displacement) & _ADDRESS_MASK
     rule = _segment_relative if fx.segment_relative else _self_relative
-    yield from rule(pair, field, fx, want)
+    yield from rule(pair, field, *target)
 
 
 def _reverse_coverage(pair: _Pair, ours: set[int]) -> Iterator[str]:
@@ -258,13 +307,19 @@ def check_function(
     flat: bytes,
     fixups: Sequence[Fixup],
     symbols: SymbolTable,
+    own_publics: Sequence[OwnPublic] = (),
 ) -> RelocResult:
     """Check our public [off, off + size) of `segment` against `row` of the original. `flat` is
-    le.load_flat(relocate=False) and `fixups` le.fixups(), sorted by src_va. Raises RelocError
-    for a zero-size public, a zero-length row, or a public or row outside its data."""
+    le.load_flat(relocate=False) and `fixups` le.fixups() (any order). `own_publics` maps our
+    unit's other publics to their original rows (rule 4); a reference to our own `_TEXT` outside
+    the checked public fails without it. Raises RelocError for a zero-size public, a zero-length
+    row, or a public, own public or row outside its data."""
     _check_inputs(segment, off, size, row, flat)
-    theirs = {fx.src_va: fx for fx in _le_fields(fixups, row.start, row.end)}
-    pair = _Pair(segment, off, size, row, flat, symbols, theirs)
+    _check_own_publics(own_publics, segment)
+    ordered = sorted(fixups, key=lambda fx: fx.src_va)
+    theirs = {fx.src_va: fx for fx in _le_fields(ordered, row.start, row.end)}
+    publics = tuple(sorted(own_publics, key=lambda public: public.offset))
+    pair = _Pair(segment, off, size, row, flat, symbols, theirs, publics)
     ours = list(_our_fixups(pair))
     fields = {pair.va(fx.offset) for fx in ours}
     length = tuple(_length(pair))
