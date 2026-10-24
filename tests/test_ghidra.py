@@ -7,6 +7,8 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from reverseapoc import ghidra
 
 EXE = "UFO2P.EXE"
@@ -102,3 +104,176 @@ def test_export_runs_headless_and_reads_the_csv(tmp_path):
     )
     assert result.to_json() == {"path": str(result.path), "count": 2, "seconds": result.seconds}
     assert "2 functions" in result.format()
+
+
+# ---- the adapter refuses bad or empty exports ----
+
+
+def write_export(path: Path, *lines: str, header: str = HEADER) -> Path:
+    path.write_text("\n".join((header, *lines)) + "\n", encoding="utf-8")
+    return path
+
+
+def test_header_only_export(tmp_path):
+    path = write_export(tmp_path / "functions.raw.csv")
+    with pytest.raises(ghidra.GhidraError, match="export holds no functions"):
+        ghidra.read_ghidra_export(path)
+
+
+def test_rows_sorted_and_unique(tmp_path):
+    rows = [
+        "0x00010080,0x00010080,0x0001008F,16,1,false,unknown,FUN_00010080",
+        "0x00010040,0x00010040,0x0001007F,64,1,false,unknown,FUN_00010040",
+        "0x00010000,0x00010000,0x0001003F,64,1,false,unknown,FUN_00010000",
+    ]
+    path = write_export(tmp_path / "reverse.csv", *rows)
+    assert [r.entry for r in ghidra.read_ghidra_export(path)] == [0x10000, 0x10040, 0x10080]
+
+    dup = write_export(tmp_path / "dup.csv", rows[1], rows[0], rows[1])
+    with pytest.raises(ghidra.GhidraError, match="0x00010040"):
+        ghidra.read_ghidra_export(dup)
+
+
+@pytest.mark.parametrize(
+    ("lines", "header", "needle"),
+    [
+        ((ROWS[0],), "entry,body_min,name", "header"),
+        (("0x0001ZZ40,0x00010040,0x0001007F,64,1,false,unknown,FUN_x",), HEADER, "data row 1"),
+        ((ROWS[0], "0x00010100,0x00010100,0x0001010F,16,1,maybe,unknown,f"), HEADER, "data row 2"),
+        (("0x00010040,0x00010040,0x0001007F,64,1,false,unknown",), HEADER, "data row 1"),
+        (("10040,0x00010040,0x0001007F,64,1,false,unknown,FUN_x",), HEADER, "data row 1"),
+    ],
+    ids=["wrong-header", "non-hex-address", "bad-thunk", "short-row", "no-0x-prefix"],
+)
+def test_bad_rows(tmp_path, lines, header, needle):
+    path = write_export(tmp_path / "bad.csv", *lines, header=header)
+    with pytest.raises(ghidra.GhidraError, match=needle):
+        ghidra.read_ghidra_export(path)
+
+
+def test_quoted_name_reads_back(tmp_path):
+    path = write_export(
+        tmp_path / "quoted.csv",
+        '0x00010000,0x00010000,0x0001000F,16,1,false,unknown,"operator,""odd"""',
+    )
+    (row,) = ghidra.read_ghidra_export(path)
+    assert row.name == 'operator,"odd"'
+
+
+# ---- version, install and refusals ----
+
+
+def test_version(tmp_path):
+    assert ghidra.ghidra_version(make_install(tmp_path)) == "12.1.4"
+    with pytest.raises(ghidra.GhidraError, match="application.properties"):
+        ghidra.ghidra_version(tmp_path / "nowhere")
+
+
+def test_version_without_the_key(tmp_path):
+    install = make_install(tmp_path)
+    (install / "Ghidra" / "application.properties").write_text("a=b\n", encoding="utf-8")
+    with pytest.raises(ghidra.GhidraError, match="application.version"):
+        ghidra.ghidra_version(install)
+
+
+def test_missing_install(tmp_path):
+    orig, fake = make_orig(tmp_path), FakeHeadless()
+    with pytest.raises(ghidra.GhidraError) as info:
+        ghidra.export_functions(EXE, orig, tmp_path / "out", install=tmp_path / "none",
+                                runner=fake)  # fmt: skip
+    assert "docker compose run --rm build uv run reverseapoc ghidra-export" in str(info.value)
+    assert fake.calls == []
+
+
+def test_missing_exe_is_refused(tmp_path):
+    install, fake = make_install(tmp_path), FakeHeadless()
+    (tmp_path / "orig").mkdir()
+    with pytest.raises(ghidra.GhidraError, match="reverseapoc ingest"):
+        ghidra.export_functions(EXE, tmp_path / "orig", tmp_path / "out", install=install,
+                                runner=fake)  # fmt: skip
+    assert fake.calls == []
+
+
+def test_unknown_target_is_refused(tmp_path):
+    install, orig, fake = make_install(tmp_path), make_orig(tmp_path), FakeHeadless()
+    with pytest.raises(ghidra.GhidraError, match="no target named"):
+        ghidra.export_functions("../UFO2P.EXE", orig, tmp_path / "out", install=install,
+                                runner=fake)  # fmt: skip
+    assert fake.calls == []
+
+
+def test_refuses_output_in_orig(tmp_path):
+    install, orig, fake = make_install(tmp_path), make_orig(tmp_path), FakeHeadless()
+    with pytest.raises(ghidra.GhidraError, match="inside"):
+        ghidra.export_functions(EXE, orig, orig / "ghidra", install=install, runner=fake)
+    assert fake.calls == []
+    assert not (orig / "ghidra").exists()
+
+
+@pytest.mark.parametrize(
+    ("fake", "needle"),
+    [(FakeHeadless(returncode=1), "exit code 1"), (FakeHeadless(write=False), "exit code 0")],
+    ids=["exit-1", "no-csv"],
+)
+def test_runner_failure(tmp_path, fake, needle):
+    install, orig = make_install(tmp_path), make_orig(tmp_path)
+    with pytest.raises(ghidra.GhidraError, match=needle):
+        ghidra.export_functions(EXE, orig, tmp_path / "out", install=install, runner=fake)
+
+
+def test_runner_failure_never_reads_a_stale_export(tmp_path):
+    install, orig = make_install(tmp_path), make_orig(tmp_path)
+    out_dir = tmp_path / "out"
+    ghidra.export_functions(EXE, orig, out_dir, install=install, runner=FakeHeadless())
+    with pytest.raises(ghidra.GhidraError, match="exit code 0"):
+        ghidra.export_functions(EXE, orig, out_dir, install=install,
+                                runner=FakeHeadless(write=False))  # fmt: skip
+
+
+# ---- decompile drafts (D-16) ----
+
+
+def test_drafts_argv(tmp_path):
+    install, orig, fake = make_install(tmp_path), make_orig(tmp_path), FakeHeadless()
+    asm_dir = tmp_path / "asm"
+    result = ghidra.export_drafts(EXE, orig, [0x00010040, 0x00010000], asm_dir, install=install,
+                                  runner=fake)  # fmt: skip
+
+    drafts = asm_dir / "ufo2p" / "ghidra"
+    assert result.path == drafts
+    assert drafts.is_dir()
+    assert fake.project_existed == [True]
+    (argv,) = fake.calls
+    _follows(argv, "-postScript", "ExportDrafts.java", str(drafts), "0x00010040", "0x00010000")
+    _follows(argv, "-loader", "LeLoader")
+    _follows(argv, "-scriptPath", str(ghidra.SCRIPT_DIR))
+    assert (ghidra.SCRIPT_DIR / "ExportDrafts.java").is_file()
+
+    fake2 = FakeHeadless()
+    with pytest.raises(ghidra.GhidraError, match="inside"):
+        ghidra.export_drafts(EXE, orig, [0x00010000], orig / "asm", install=install, runner=fake2)
+    assert fake2.calls == []
+
+
+def test_drafts_report_written_and_missing(tmp_path):
+    install, orig = make_install(tmp_path), make_orig(tmp_path)
+    asm_dir = tmp_path / "asm"
+
+    def writes_one(argv, **kwargs):
+        out = Path(argv[argv.index("ExportDrafts.java") + 1])
+        (out / "func_00010000.c").write_text("/* draft */\n", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    result = ghidra.export_drafts(EXE, orig, [0x00010000, 0x00010040], asm_dir, install=install,
+                                  runner=writes_one)  # fmt: skip
+    assert result.written == (0x00010000,)
+    assert result.missing == (0x00010040,)
+    assert result.to_json()["missing"] == ["0x00010040"]
+
+
+@pytest.mark.parametrize("addresses", [[], [-1], [1 << 32]], ids=["none", "negative", "too-big"])
+def test_drafts_refuse_bad_addresses(tmp_path, addresses):
+    install, orig, fake = make_install(tmp_path), make_orig(tmp_path), FakeHeadless()
+    with pytest.raises(ghidra.GhidraError, match="address"):
+        ghidra.export_drafts(EXE, orig, addresses, tmp_path / "asm", install=install, runner=fake)
+    assert fake.calls == []
