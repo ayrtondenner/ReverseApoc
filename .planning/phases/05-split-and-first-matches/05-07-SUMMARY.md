@@ -190,3 +190,34 @@ None - no external service configuration required.
 - FOUND: tools/reverseapoc/discover.py, tests/test_discover.py, tests/test_discover_real.py
 - FOUND commits: c721536, 14e3dd7, 2129261, 0ffcf4d, 3c9a32a
 - Acceptance: line 1 is the KKND header; `-k "jump or leading or inline or ends or outside or edges"` selects 7 tests, all passing; the real test passes for both EXEs, unskipped; `uv run pytest -q` gives 1012 passed, 185 skipped; `uv run ruff check .` is clean.
+
+## Review fixes (round 1)
+
+**Important: the D-07 end rule now follows the plan.** Before this fix, a terminal instruction ended a function only when everything up to the next start was padding. As a result, code after the padding that had no start evidence was absorbed into the previous function. Following the orchestrator ruling, a function now ends at the first padding byte (filler or zero) after a terminal instruction. It also ends at a terminal instruction that is followed only by jump tables and padding up to the next start, which covers a leading table that comes directly after a `ret`. Code after the padding is no longer part of the function: it stays uncovered as a gap for 05-13 to judge. A non-terminal last instruction still ends at the next start (fall-through).
+- Test `test_ends_leave_gap_code_outside` covers: ret, padding, decodable gap code without evidence, then the next start. The first function ends at the padding and the gap lies outside every range. At RED it failed with the old 0xB end against the expected 6.
+- `test_ends_tile` (real) still asserts start < end <= next start, so ranges never overlap. Its docstring now says gaps may exist. It did not fail, and the 2,500-start limit is unaffected because `ends` does not change discovery.
+
+**Minor:**
+- `test_report_has_counts_only` now asserts that `format()`, `repr()` and `to_json()` contain no `0x` and no run of 5 or more digits.
+- New `test_errors_carry_no_address_in_assertions` checks `DiscoverError` by type only, for a start outside the code object and for an LE without an executable object. No real-file test raises it.
+
+**Commits:** `c3e06f3` test(05-07) (RED), `2842afe` fix(05-07) (GREEN).
+
+**Commands and output:**
+- `uv run pytest -q tests/test_discover.py`: `14 passed`
+- `REVERSEAPOC_ORIG=C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/orig uv run pytest -q -rs tests/test_discover_real.py`: `8 passed in 27.26s`, 0 SKIPPED
+- `uv run pytest -q`: `1014 passed, 185 skipped in 14.00s`
+- `uv run ruff check .`: `All checks passed!`
+
+**Real counts after the fix:**
+
+| | UFO2P.EXE | TACP.EXE |
+|---|---|---|
+| starts | 1,946 | 1,930 |
+| decoded bytes | 708,010 | 697,665 |
+| bytes covered by ranges / code object size | 753,779 / 785,117 | 747,561 / 795,983 |
+| functions ending at the next start (was 1,637 / 1,609) | 1,466 | 1,457 |
+| gaps (gap bytes) | 480 (31,338) | 473 (48,422) |
+| gaps longer than 16 bytes | 134 | 111 |
+
+The gap bytes include padding and leading jump tables as well as uncovered code.
