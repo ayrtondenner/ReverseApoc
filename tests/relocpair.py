@@ -1,0 +1,117 @@
+"""Test-only builder of a synthetic function pair for the relocation check and the land step: an
+original function in a tests/conftest.py LE image, and our compiled function in a tests/omfimage.py
+OMF module. Every byte, name and address here is made up.
+
+The LE image has the conftest objects: code at 0x10000 (two pages), data at 0x20000. The game rows
+func_00010010 and func_00010020 exist only so their placeholders resolve; their bytes are page fill.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from conftest import PAGE_SIZE, build_le_image, fixup_record
+from omfimage import extdef, fixup, fixupp32, ledata32, lnames, module, pubdef32, segdef32
+from reverseapoc.functions import FunctionRow, game_name
+from reverseapoc.le import LE, Fixup
+from reverseapoc.omf import Segment, read_object
+from reverseapoc.symbols import SymbolTable
+
+CODE_BASE = 0x10000  # object 1
+DATA_RANGES = [(0x20000, 0x23000)]  # object 2
+TEXT_INDEX = 1  # SEGDEF numbers in our module
+CONST_INDEX = 2
+_PAGES = 3  # logical pages of the conftest image: two code, one data
+
+
+def game_row(start: int, end: int) -> FunctionRow:
+    return FunctionRow(start, end, game_name(start), "game", "unit", "call")
+
+
+CALLEES = [game_row(0x10010, 0x10018), game_row(0x10020, 0x10028)]
+
+
+# ---- the good pair: call func_00010010; mov eax,[0x20004]; ret ----------------------------------
+
+GOOD_ORIGINAL = bytes.fromhex("e80b000000" "a104000000" "c3")  # rel32 to 0x10010; raw off32 = 4
+GOOD_OURS = bytes.fromhex("e800000000" "a100000000" "c3")  # placeholders where we relocate
+GOOD_ROW = game_row(CODE_BASE, CODE_BASE + len(GOOD_ORIGINAL))
+CALL_FIELD = CODE_BASE + 1
+LOAD_FIELD = CODE_BASE + 6
+
+
+def le_off32(field_va: int, target_off: int, *, obj: int = 2) -> bytes:
+    """One off32 LE fixup record for a field on the first code page."""
+    return fixup_record(7, field_va - CODE_BASE, obj, target_off, off32=True)
+
+
+def call(offset: int, extern: int) -> bytes:
+    """A self-relative fixup of our field at `offset` to extern number `extern`."""
+    return fixup(offset, segment_relative=False, target=(2, extern))
+
+
+def absolute(offset: int, extern: int) -> bytes:
+    """A segment-relative fixup of our field at `offset` to extern number `extern`."""
+    return fixup(offset, target=(2, extern))
+
+
+def to_segment(offset: int, segment: int, *, relative: bool = False) -> bytes:
+    """A fixup of our field at `offset` to one of our own segments (by SEGDEF number)."""
+    return fixup(offset, segment_relative=not relative, target=(0, segment))
+
+
+def our_segment(
+    data: bytes,
+    fixups: Sequence[bytes] = (),
+    externs: Sequence[str] = (),
+    *,
+    publics: Sequence[tuple[str, int]] = (("func_00010000_", 0),),
+) -> Segment:
+    """Our `_TEXT` (SEGDEF 1) holding `data`, with a CONST segment (SEGDEF 2) beside it."""
+    records = [
+        lnames("", "_TEXT", "CODE", "CONST", "DATA"),
+        segdef32(2, 3, len(data)),
+        segdef32(4, 5, 8),
+        pubdef32(TEXT_INDEX, list(publics)),
+    ]
+    if externs:
+        records.append(extdef(*externs))
+    records.append(ledata32(TEXT_INDEX, 0, data))
+    if fixups:
+        records.append(fixupp32(*fixups))
+    obj = read_object(module("unit", *records))
+    return next(seg for seg in obj.segments if seg.name == "_TEXT")
+
+
+@dataclass(frozen=True)
+class Original:
+    data: bytes  # the whole synthetic EXE
+    le: LE
+    flat: bytes
+    fixups: list[Fixup]
+
+
+def original(patches: dict[int, bytes], page1: bytes = b"", page2: bytes = b"") -> Original:
+    """The conftest LE image with `patches` written into its pages and the given fixup records
+    on code pages 1 and 2. A patch must stay inside one page."""
+    for va, blob in patches.items():
+        assert (va - CODE_BASE) // PAGE_SIZE == (va + len(blob) - 1 - CODE_BASE) // PAGE_SIZE
+    records = [page1, page2] + [b""] * (_PAGES - 2)
+    data = build_le_image(fixups=records, patches=patches).data
+    le = LE(data)
+    return Original(data, le, bytes(le.load_flat(relocate=False)), le.fixups())
+
+
+def table(*rows: FunctionRow) -> SymbolTable:
+    return SymbolTable.build([*rows, *CALLEES], data_ranges=DATA_RANGES)
+
+
+def good_segment() -> Segment:
+    return our_segment(
+        GOOD_OURS, [call(1, 1), absolute(6, 2)], ["func_00010010_", "_D_00020004"]
+    )
+
+
+def good_original() -> Original:
+    return original({CODE_BASE: GOOD_ORIGINAL}, page1=le_off32(LOAD_FIELD, 0x4))
