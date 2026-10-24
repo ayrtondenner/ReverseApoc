@@ -717,9 +717,10 @@ def test_default_builds_objects():
     text = configure.render([], units=THREE_UNITS)
     lines = text.splitlines()
     assert "default check-orig objects" in lines
-    explicit, implicit = _deps(_edge(text, "objects"))
-    assert explicit[0] == "phony"
-    assert sorted(explicit[1:]) == sorted(BASES + TARGETS)
+    line = _edge(text, "objects")
+    assert line.startswith("build objects: phony ")
+    explicit, implicit = _deps(line)
+    assert sorted(explicit) == sorted(BASES + TARGETS)
     assert implicit == []
 
 
