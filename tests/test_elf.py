@@ -117,3 +117,13 @@ def test_relocation_naming_an_unknown_symbol_is_refused():
     obj = ElfObject((TEXT,), (), (ElfReloc(0, 1, R_386_32, symbol="nowhere_"),))
     with pytest.raises(ElfError, match="unknown symbol 'nowhere_'"):
         write_elf(obj)
+
+
+def test_reader_refuses_a_relocation_against_symbol_0():
+    # tests/elfread.py: symbol 0 is the null symbol; reading it must not wrap to the last one.
+    data = bytearray(write_elf(sample()))
+    rel = read_elf(bytes(data)).section(".rel_TEXT")
+    start = data.find(rel.data)
+    data[start + 4 : start + 8] = (R_386_32).to_bytes(4, "little")  # r_info: symbol 0
+    with pytest.raises(ValueError, match="symbol index 0"):
+        read_elf(bytes(data)).relocs("_TEXT")

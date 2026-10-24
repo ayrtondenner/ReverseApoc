@@ -9,6 +9,7 @@ import pytest
 from omfimage import (
     bakpat32,
     cextdef,
+    comdat16,
     comdat32,
     comdef,
     coment,
@@ -24,7 +25,10 @@ from omfimage import (
     lidata32,
     lidata_blocks32,
     lnames,
+    lpubdef32,
     module,
+    nbkpat,
+    nbkpat32,
     pubdef16,
     pubdef32,
     record,
@@ -336,8 +340,10 @@ def test_fixup_after_lidata_marks_unmaskable():
     )
     text, data = mod.segments
     assert data.unmaskable
+    assert data.unmaskable_at == 0  # data offset of the LIDATA record the FIXUPP addressed
     assert data.fixups == ()
     assert not text.unmaskable
+    assert text.unmaskable_at is None
 
 
 @pytest.mark.parametrize("access", [None, 0x03], ids=["no-access-byte", "access-byte"])
@@ -566,7 +572,98 @@ def test_comdat32_iterated_data_expands_and_is_unmaskable():
     [block] = mod.comdats
     assert block.data == b"ababab"
     assert block.unmaskable
+    assert (block.iterated_at, block.unmaskable_at) == (0, 0)
     assert block.fixups == ()
+
+
+def location5_module(*head: bytes, comdat: bool = False) -> bytes:
+    """A location-5 fixup at offset 1 of an 8-byte _TEXT (or a COMDAT f_), after `head`."""
+    data = (comdat32(4, bytes(8)) if comdat else ledata32(1, 0, bytes(8)))
+    return module("l5", *head, COMDAT_NAMES, segdef32(2, 3, 8), extdef("g_"), data,
+                  fixupp32(fixup(1, location=5, target=(2, 1))))  # fmt: skip
+
+
+@pytest.mark.parametrize("comdat", [False, True], ids=["segment", "comdat"])
+def test_easy_omf_location_5_patches_a_32bit_field(comdat: bool):
+    # Under Easy OMF location 5 is a 32-bit offset (TH rule), so the mask covers 4 bytes.
+    mod = read_object(location5_module(coment(0xAA, b""), comdat=comdat))
+    block = mod.comdats[0] if comdat else mod.segments[0]
+    assert [(f.location, f.size) for f in block.fixups] == [(5, 4)]
+    assert block.mask == frozenset(range(1, 5))
+
+
+@pytest.mark.parametrize("comdat", [False, True], ids=["segment", "comdat"])
+def test_location_5_without_easy_omf_patches_16_bits(comdat: bool):
+    mod = read_object(location5_module(comdat=comdat))
+    block = mod.comdats[0] if comdat else mod.segments[0]
+    assert [(f.location, f.size) for f in block.fixups] == [(5, 2)]
+    assert block.mask == frozenset(range(1, 3))
+
+
+def test_easy_omf_location_5_field_past_the_segment_raises():
+    fix = fixupp32(fixup(6, location=5, target=(2, 1)))
+    data = module("l5", coment(0xAA, b""), COMDAT_NAMES, segdef32(2, 3, 8), extdef("g_"),
+                  ledata32(1, 0, bytes(8)), fix)  # fmt: skip
+    with pytest.raises(OMFError, match=r"fixup 0x6\.\.0xa runs past segment '_TEXT'"):
+        read_object(data)
+
+
+def test_frame_number_target_reads_its_u16_datum():
+    fx = only_fixup(ledata32(1, 0, bytes(8)), fixupp32(fixup(0, target=(3, 0x1234))))
+    assert (fx.target_kind, fx.target_index) == ("frame", 0x1234)
+
+
+def test_comdat16_reads_like_comdat32():
+    fix = fixupp32(fixup(1, segment_relative=False, target=(2, 1)))
+    tail = b"\x04\x05"
+    wide = read_object(comdat_module(comdat32(4, CALL_RET, attributes=0x10), fix,
+                                     comdat32(4, tail, flags=0x01, offset=6)))  # fmt: skip
+    narrow = read_object(comdat_module(comdat16(4, CALL_RET, attributes=0x10), fix,
+                                       comdat16(4, tail, flags=0x01, offset=6)))  # fmt: skip
+    assert narrow.comdats == wide.comdats
+    [block] = narrow.comdats
+    assert (block.name, block.data, block.selection) == ("f_", CALL_RET + tail, 1)
+    assert [(f.offset, f.target_name) for f in block.fixups] == [(1, "g_")]
+
+
+def test_nbkpat_patches_the_comdat():
+    data = bytes([0x10, 0x00, 0xF0, 0xFF, 0xFF, 0xFF])
+    mod = read_object(
+        comdat_module(
+            comdat32(4, data),
+            nbkpat(4, 1, [(0, 0x0102)]),  # word at 0: 0x0010 + 0x0102
+            nbkpat32(4, 2, [(2, 0x20)]),  # dword at 2 wraps: 0xFFFFFFF0 + 0x20
+        )
+    )
+    [block] = mod.comdats
+    assert block.data == bytes([0x12, 0x01, 0x10, 0x00, 0x00, 0x00])
+    assert mod.nbkpat_records == 2
+    assert block.mask == frozenset(range(6))
+
+
+def test_nbkpat_naming_an_unknown_comdat_raises():
+    with pytest.raises(OMFError, match=r"NBKPAT record at .*no COMDAT 'g_'"):
+        read_object(module("cd", lnames("", "_TEXT", "CODE", "f_", "g_"), segdef32(2, 3, 0),
+                           comdat32(4, CALL_RET), nbkpat(5, 0, [(0, 1)])))  # fmt: skip
+
+
+def test_nbkpat_past_the_comdat_raises():
+    with pytest.raises(OMFError, match=r"NBKPAT32 record at .*runs past COMDAT 'f_'"):
+        read_object(comdat_module(comdat32(4, CALL_RET), nbkpat32(4, 2, [(4, 1)])))
+
+
+def test_lpubdef_is_local():
+    mod = read_object(
+        module(
+            "lp",
+            lnames("", "_TEXT", "CODE"),
+            segdef32(2, 3, 8),
+            pubdef32(1, [("g_", 0)]),
+            lpubdef32(1, [("s_", 4)]),
+        )
+    )
+    assert [(p.name, p.offset, p.local) for p in mod.publics] == [("g_", 0, False),
+                                                                    ("s_", 4, True)]  # fmt: skip
 
 
 def dependency_object(path: str, dependency: bytes = b"", code: int = 0x90) -> bytes:

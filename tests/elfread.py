@@ -121,7 +121,10 @@ class ElfView:
         out = []
         for pos in range(0, len(rel.data), _REL.size):
             offset, info = _REL.unpack_from(rel.data, pos)
-            sym = self.symbols[(info >> 8) - 1]
+            index = info >> 8
+            if not 0 < index <= len(self.symbols):  # 0 is the null symbol, not in self.symbols
+                raise ValueError(f"{rel.name} entry at {pos:#x}: symbol index {index} is invalid")
+            sym = self.symbols[index - 1]
             addend = _FIELD.unpack_from(target.data, offset)[0]
             out.append(RelocView(offset, info & 0xFF, sym.name, sym.type,
                                  sym.section_index, addend))  # fmt: skip
