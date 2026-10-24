@@ -26,7 +26,11 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .libmatch import LibMatchError, refuse_output, select_target
-from .targets import DEFAULT_MANIFEST, load_manifest
+from .targets import DEFAULT_MANIFEST, REPO_ROOT, load_manifest
+
+# Default output roots, both gitignored: the raw export and the decompile drafts.
+DEFAULT_EXPORT_DIR = REPO_ROOT / "build" / "ghidra"  # build/ghidra/<exe>/functions.raw.csv
+DEFAULT_ASM_DIR = REPO_ROOT / "asm"  # asm/<exe>/ghidra/func_XXXXXXXX.c
 
 SCRIPT_DIR = Path(__file__).parent / "ghidra_scripts"
 EXPORT_SCRIPT = "ExportFunctions.java"
