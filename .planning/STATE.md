@@ -2,47 +2,48 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 milestone_name: Milestone 1
-current_phase: 05
-current_phase_name: Split and first matches
-status: verifying
-stopped_at: Completed 05-20-PLAN.md
-last_updated: "2026-10-24T05:21:16.504Z"
-last_activity: 2026-10-23
-last_activity_desc: Phase 05 execution started
-state_head: 24d83e52294dc77b36cca11f7cfab2f3be126621
+current_phase: 6
+current_phase_name: Reporting and agent pilot
+status: planning
+stopped_at: Phase 05 complete, ready to plan Phase 6
+last_updated: "2026-10-24T20:04:33.770Z"
+last_activity: 2026-10-24
+last_activity_desc: Phase 05 complete, transitioned to Phase 6
+state_head: f96343fc5f6b726e2fc44e9a9cb16c49429afcc2
 progress:
   total_phases: 8
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 47
   completed_plans: 47
+  percent: 63
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-23)
+See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to the original, objdiff 100% for the function), never by an agent's own judgement.
-**Current focus:** Phase 05 — Split and first matches
+**Current focus:** Phase 6 — Reporting and agent pilot
 
 ## Current Position
 
-Phase: 05 (Split and first matches) — EXECUTING
-Plan: 20 of 20
-Status: Phase complete — ready for verification
-Last activity: 2026-10-23 — Phase 05 execution started
+Phase: 6 — Reporting and agent pilot
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-24 — Phase 05 complete, transitioned to Phase 6
 
-Progress: [█████░░░░░] 50%
+Progress: [██████░░░░] 63%
 
 Next steps:
-1. Phases 1-4 complete (Phase 4: VERIFICATION.md passed 26/26, UAT passed by the owner on 2026-10-23).
-2. Phase 5: `/gsd-discuss-phase 5`, then `/gsd-plan-phase 5`, then `/gsd-execute-phase 5` and `/gsd-verify-work 5`.
+1. Phases 1-5 complete (Phase 5: VERIFICATION.md passed with 1 owner override, UAT passed 5/5 by the owner on 2026-10-24).
+2. Phase 6: `/gsd-discuss-phase 6`, then `/gsd-plan-phase 6`, then `/gsd-execute-phase 6` and `/gsd-verify-work 6`. Pick up backlog 999.3 (`asm` listing collision on `_Alphabet`) in Phase 6.
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 27
+- Total plans completed: 47
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -54,6 +55,7 @@ Next steps:
 | 2 | 2 | - | - |
 | 3 | 10 | - | - |
 | 04 | 13 | - | - |
+| 05 | 20 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -83,7 +85,6 @@ Recent decisions affecting current work:
 - [Roadmap]: Phase structure fixed by the owner in `docs/workflow.md`; Milestone 1 phases are numbered 1-8 (Phases 7 and 8 added by the owner on 2026-10-21)
 - [Roadmap]: A phase is complete only when its `VERIFICATION.md` passes; ROADMAP checkboxes are annotations
 - [Phase 3]: In-place page splice for the MVP; full LE rewrite deferred (reopen trigger: a matched function changes size). Proven: three EXEs rebuild SHA-1 identical (Phase 3 gate)
-- [Phase 5]: Hybrid pipeline (own oracle + decomp.wtf fork mode) vs fallback is decided by the objdiff-on-converted-ELF spike
 - [Phase 04]: Game code: Watcom C 10.6 (10.5 byte-identical on the probe, 11.0 tied at -4r, candidate pending Phase 5 matches); linked runtime 10.6, no mix
 - [Phase 04]: config/cflags.txt default is * wcc386@10.6 -4r -s -fpi (the flags the scans support); -s kept because only 40/32 functions call __CHK, which get per-glob rules in Phase 5
 - [Phase 04]: Phase 4 gate green on host (974 passed, 6 platform-only skips) and container (980 passed, 0 skipped), ruff clean; rebuild SHA-1 identical; check-watcom OK; compiler/probe real tests pass under wibo
@@ -98,6 +99,7 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-19: first TACP match func_00055080 (u_00054f20) under the default wcc386@10.6 -4r -s -fpi rule; no sweep, no cflags rule
 - [Phase 05]: 05-19: two leaf-sized matches separate no Phase 4 candidate (10.5/10.6/11.0, -4/-5, -o* tied); * default and __WATCOMC__ 1060 stay (D-18, D-14)
 - [Phase 05]: 05-20: Phase 5 gate green on main from a clean ninja graph (both units compiled by wcc386@10.6 under wibo, linted, landed SHA-1 identical); both first-match checks exit 0; host 1540p/25 platform skips, container 1563p/2 Windows-only skips, ruff clean; 05-VALIDATION.md signed off 13/13 with build/gate/05-evidence/ logs
+- [Phase 05]: UAT 2026-10-24 (5/5 passed): the owner accepted the 05-18 raw-fields deviation from 05-08 (override in 05-VERIFICATION.md), the 898 MB image and capstone 5.0.9 (in the uv venv volume, not the image), and the 7 hand boundary verdicts. Follow-ups: backlog 999.3 (`asm` `_Alphabet` collision, Phase 6) and 999.2 (readlint must reject `func_`/`D_` placeholders, Phase 7)
 
 ### Pending Todos
 
@@ -127,6 +129,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T05:21:15.905Z
-Stopped at: Completed 05-20-PLAN.md
+Last session: 2026-10-24T20:10:00Z
+Stopped at: Phase 05 complete, ready to plan Phase 6
 Resume file: None

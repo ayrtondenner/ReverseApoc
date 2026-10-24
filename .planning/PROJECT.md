@@ -18,10 +18,10 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 - ✓ Container and target ingest: Docker image (uv, ninja, objdiff-cli, wibo, Open Watcom v2 tools), hash manifest `config/targets.toml`, `reverseapoc ingest | check-orig | parse-le`, LE parser with 75 pytest tests green on host, in the container and in CI — Phase 2 (built before GSD was set up, commits `29f9327` and `8418027`)
 - ✓ Byte-identical round trip: `uv run reverseapoc rebuild` / `ninja verify` reassemble UFO2P.EXE, TACP.EXE and SMKP.EXE from a byte-region map and page-mapped object images, `cmp`/SHA-1 identical to `orig/` on the host and in the container. The `splice(le, {va: bytes})` API refuses unwritable or overlapping patches and masks fixup fields, and negative tests prove the gate fails on a one-byte change. RT-01..RT-05 — Phase 3 (plans 03-01..03-10, VERIFICATION passed 87/87, UAT 2026-10-21)
 - ✓ Compiler identification: the 10.6 runtime library (CLIB3R/MATH3R) matches byte for byte (masked) in UFO2P.EXE and TACP.EXE; the codegen probe finds its idioms in both EXEs' own code; `wcc386` (C, not C++) confirmed; `reverseapoc cc` runs 10.5/10.6/11.0 under wibo with a per-file flags table; version and flags recorded per EXE with evidence in `docs/toolchain.md`. Game code: 10.6 preferred, 10.5 first fallback, 11.0 candidate; `-4r -s -fpi` baseline, other flags carried as candidates for Phase 5 (accepted by override, D-08/D-10). CID-01..CID-06 — Phase 4 (plans 04-01..04-13, VERIFICATION passed 26/26, UAT 2026-10-23)
+- ✓ Split and first matches: Ghidra 12.1.4 with the lastonesky LE loader runs headless in the image; a capstone pass cross-checks its function list, with hand verdicts for the 7 boundaries the LE evidence does not decide; `functions.csv` and `units.csv` per EXE (841 units); `INCLUDE_ASM` stubs; `omf2elf.py`; target ELFs cut from LE fixups; an independent relocation check; `configure.py` -> ninja + `objdiff.json`; clang C89 lint; `check` and land. func_000A3980 (UFO2P) and func_00055080 (TACP) match under `wcc386@10.6 -4r -s -fpi`: objdiff 100%, relocation check passed, both EXEs SHA-1 identical. SPL-01..SPL-13 — Phase 5 (plans 05-01..05-20, VERIFICATION passed with 1 owner override, UAT 2026-10-24)
 
 ### Active
 
-- [ ] Split and first matches: Ghidra + LE loader, `omf2elf.py`, function split, `configure.py` -> ninja + `objdiff.json`; one function per EXE matched, relocation-checked, spliced, whole EXE identical (Phase 5)
 - [ ] Reporting and agent pilot: self-hosted progress (mosaic, badge, JSON on Pages), guardrail hooks, decomp.wtf fork mode, per-function driver; 10 easy functions matched unattended with zero regressions; recomp.fyi and decomphub listings (Phase 6)
 - [ ] Mechanics-first decompilation: every function behind the OpenApoc checklist items the decomp can answer matched, named and commented by the driver at scale; readability lint (Phase 7)
 - [ ] Clean-room specs for OpenApoc: OpenSpec-format spec per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review, under CC0-1.0 (Phase 8)
@@ -62,7 +62,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Hybrid pipeline: own matching oracle (Watcom 10.x under wibo in Docker, configure.py + ninja, LE splitter, in-place splice, whole-EXE SHA-1, OMF-to-ELF for objdiff) + decomp.wtf v0.10.6 fork mode as agent layer [Owner] | decomp.wtf has no LE/Watcom path but fork mode accepts any configure.py + ninja + objdiff.json repo; ~3-7 extra days vs 12-24 to build an agent layer | — Pending |
-| Fallback if objdiff cannot diff OMF-converted ELF: own pipeline + minimal agent layer [Default] | Decided by the Phase 5 spike | — Pending |
+| Fallback if objdiff cannot diff OMF-converted ELF: own pipeline + minimal agent layer [Default] | Decided by the Phase 5 spike | ✓ Not needed (spike 005 VALIDATED: objdiff pairs omf2elf output with the LE-cut target; its 2nd-relocation blind spot is covered by our own relocation check) |
 | Reuse KKND-Decomp (CC0), Theme Hospital (GPLv3), retrokit (Apache-2.0) [Default] | Closest existing Watcom/DOS/4GW pipelines; ~13-24 developer-days for the oracle | ✓ Good (KKND le.py lifted in Phase 2) |
 | GSD for milestones and phases; Milestone 1 = Phases 1-6, each with a verification gate [Owner]; extended to Phases 1-8 [Owner, 2026-10-21] | Durable phase state, VERIFICATION.md gates, /gsd-spike | — Pending |
 | superpowers inside phases; GSD's files are the record when both prescribe a step [Owner] | Avoids two systems giving competing instructions | — Pending |
@@ -77,7 +77,10 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | recomp.fyi listing via .recomp.json and decomphub.com submission once public [Owner] | Visibility in directories still open | — Pending |
 | Per-function driver: one `claude -p "/goal ..."` per function, 3-5 attempt cap with re-queue, driver re-verifies bytes; evaluate Nigel first [Default] | Lewis's results, Macabeus's benchmark; /goal's evaluator cannot run tools | — Pending |
 | Similarity retrieval without ML first (opcode Levenshtein, UFO2P-TACP twins) [Default] | Corpus is a few thousand functions | — Pending |
-| Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default]; lastonesky v12.1.4-1 chosen, Ghidra + openjdk-21-jdk-headless baked into the Docker image, SHA-pinned [Owner, 2026-10-23] | Only maintained LE loaders for Ghidra 12.1; lastonesky has no 12.2 build; in the image no developer installs Ghidra or a JDK by hand (Apache-2.0 / GPLv2+CE, unlike the user-supplied Watcom and game) | — Pending |
+| Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 [Default]; lastonesky v12.1.4-1 chosen, Ghidra + openjdk-21-jdk-headless baked into the Docker image, SHA-pinned [Owner, 2026-10-23] | Only maintained LE loaders for Ghidra 12.1; lastonesky has no 12.2 build; in the image no developer installs Ghidra or a JDK by hand (Apache-2.0 / GPLv2+CE, unlike the user-supplied Watcom and game) | ✓ Good (Phase 5: exports UFO2P 1408 / TACP 1498 functions; image 898,389,257 bytes after the D-20 strip, accepted by the owner 2026-10-24; GhidraMCP not needed yet) |
+| Target cuts leave a branch or off32 field into no `functions.csv` row raw (listed in `raw_fields`) instead of refusing the unit as 05-08 planned [Owner override, 2026-10-24] | The refusal left 18 of 842 units uncuttable on the first real ninja run; the relocation check still fails such a field, so no false match is possible | ✓ Good (all 841 units cut with raw fields none at HEAD) |
+| capstone 5.0.9 as the first runtime dependency, installed by `uv sync --locked` into the venv volume, not baked into the image [Owner, 2026-10-24] | A second boundary list independent of Ghidra (SPL-02) | ✓ Good |
+| Phase 5 UAT follow-ups: fix the `asm` listing collision on ambiguous runtime names (`_Alphabet`) in Phase 6; readlint must also reject our own `func_`/`D_` placeholders in Phase 7 [Owner, 2026-10-24] | Agents rely on `asm/` from Phase 6; Phase 7 criterion 4 names only Ghidra's `FUN_`/`sub_`/`DAT_` | — Pending (ROADMAP backlog 999.2, 999.3) |
 | Primary target is the installed build; CD v1.00 build recorded for cross-reference [Default] | What players run; OpenApoc offsets describe the CD build; revisit after Phase 5 | — Pending |
 | Milestone 1 phases numbered 1-6 [Owner, 2026-10-19] | GSD phase ids start at 1 | ✓ Good |
 | Add Phase 7 (mechanics-first decomp) and Phase 8 (clean-room specs) to Milestone 1; Phase 6 keeps its 10-function pilot gate; specs use the OpenSpec format, not the tool; specs are CC0-1.0; no OpenApoc contact during Milestone 1 [Owner, 2026-10-21] | Only about 12 leaf functions are matched by the end of Phase 6, so mechanics must be decompiled before they can be specced; CC0 lets OpenApoc (GPL-3.0) use spec text without attribution; clean room needs the author/implementer split (see `docs/clean-room.md`) | — Pending |
@@ -85,9 +88,10 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 ## Left to the builder (decided in the phase that needs it)
 
 - ~~Exact LE writer strategy and header/page-map/fixup verification; whether a full rewrite is ever needed (Phase 3)~~ Settled in Phase 3: in-place splice through `splice(le, {va: bytes})` with fixup masking; a full rewrite reopens only if a matched function changes size (LE-01)
-- OMF-to-ELF details: per-unit target ELF objects from LE fixups, section/symbol naming, COMDAT, FLAT-group fixups, inline switch tables, extra-relocation check (Phase 5)
+- ~~OMF-to-ELF details: per-unit target ELF objects from LE fixups, section/symbol naming, COMDAT, FLAT-group fixups, inline switch tables, extra-relocation check (Phase 5)~~ Settled in Phase 5: `omf2elf.py`, `target.py` and `relocs.py`; `check` refuses jump-table functions until Phase 7 (IN-02)
 - Scorer design (Phase 6); hook implementation (Phase 6)
-- Stub convention for unmatched functions in Watcom units; compat header path and `__WATCOMC__` value; progress file names; Nigel vs Python driver
+- ~~Stub convention for unmatched functions in Watcom units; compat header path and `__WATCOMC__` value~~ Settled in Phase 5: `INCLUDE_ASM(func_XXXXXXXX)` in `include/common.h`, `include/watcom_compat.h`, and the lint defines `__WATCOMC__` to the build version
+- Progress file names; Nigel vs Python driver (Phase 6)
 
 ## Evolution
 
@@ -107,4 +111,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-23 after Phase 4 (verification passed 26/26, UAT passed)*
+*Last updated: 2026-10-24 after Phase 5 (verification passed with 1 owner override, UAT passed 5/5)*
