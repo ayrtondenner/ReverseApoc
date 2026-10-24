@@ -292,6 +292,15 @@ class _EndScan(_Image):
         fx = self.fixups.get(va)
         return va + fx.size if fx is not None else None
 
+    def padding_size(self, va: int, limit: int) -> int:
+        """Size of the padding item at `va` (a zero byte or a filler instruction), else 0."""
+        if self.flat[va] == 0:
+            return 1
+        if va in self.sites:
+            return 0
+        insn = x86.decode_one(bytes(self.flat[va : min(va + _MAX_INSN, limit)]), va)
+        return insn.size if insn is not None and x86.is_filler(insn) else 0
+
     def only_padding(self, va: int, limit: int) -> bool:
         """True when [va, limit) holds only filler instructions, zero bytes and jump tables (a
         leading table of the next function)."""
@@ -299,21 +308,20 @@ class _EndScan(_Image):
             if (end := self.table_end(va)) is not None:
                 va = end
                 continue
-            if self.flat[va] == 0:
-                va += 1
-                continue
-            if va in self.sites:
+            if not (size := self.padding_size(va, limit)):
                 return False
-            window = bytes(self.flat[va : min(va + _MAX_INSN, limit)])
-            insn = x86.decode_one(window, va)
-            if insn is None or not x86.is_filler(insn):
-                return False
-            va += insn.size
+            va += size
         return True
+
+    def ends_here(self, va: int, limit: int) -> bool:
+        """True when a terminal instruction ending at `va` ends the function: padding starts at
+        `va`, or only jump tables and padding remain up to `limit`."""
+        return va >= limit or bool(self.padding_size(va, limit)) or self.only_padding(va, limit)
 
     def end_of(self, start: int, limit: int) -> int:
         """The first padding byte after a terminal instruction in [start, limit), else limit (a
-        function that falls through into the next one has no ret)."""
+        function that falls through into the next one has no ret). Code after that padding is
+        not part of the function: it stays a gap for the reconcile step to judge."""
         pos = start
         while pos < limit:
             if (resume := self.skip(pos)) is not None:
@@ -322,16 +330,18 @@ class _EndScan(_Image):
             last = pos
             for insn in x86.decode(bytes(self.flat[pos:limit]), pos, data_sites=self.sites):
                 last = insn.va + insn.size
-                if insn.is_terminal and self.only_padding(last, limit):
+                if insn.is_terminal and self.ends_here(last, limit):
                     return last
             pos = last if last > pos else pos + 1  # step over an undecodable byte
         return limit
 
 
 def ends(discovery: Discovery, le: LE) -> dict[int, int]:
-    """End of every start by the D-07 rule: the next start (or the object end), or the start of
-    the padding (filler or zero bytes, and any leading jump table of the next function) after a
-    terminal instruction. Decoding never reads past the containing object."""
+    """End of every start by the D-07 rule: the first padding byte (filler or zero) after a
+    terminal instruction, or the end of a terminal instruction followed only by jump tables and
+    padding up to the next start; else the next start (or the object end). Ranges never overlap;
+    code after a function's padding that has no start of its own is left uncovered (a gap).
+    Decoding never reads past the containing object."""
     scan = _EndScan(le, discovery.jump_tables)
     starts = discovery.starts
     result = {}
