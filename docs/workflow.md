@@ -74,7 +74,8 @@ superpowers drives the work inside a phase:
 - **test-driven-development** during execute, for Python tooling (pytest for the LE reader, OMF converter, lints). For decompiled C the byte match is the test;
 - **systematic-debugging** when a build or a match breaks;
 - **verification-before-completion** before any "done" claim;
-- **requesting-code-review** at the end of a plan, following [ceremonies.md](ceremonies.md).
+- **requesting-code-review** at the end of a plan, following [ceremonies.md](ceremonies.md);
+- **writing-skills** whenever a project skill under `.claude/skills/` is created or updated, such as `watcom-decomp` (Phase 6) and `apoc-spec` (Phase 8). Owner rule since 2026-10-24.
 
 When both systems prescribe a step, GSD's phase files are the record. `.claude/rules/workflow.md` states this split; re-check with `/gsd-health` after updating either system.
 

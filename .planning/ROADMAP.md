@@ -256,6 +256,7 @@ Plans:
 
 **Spike**: `wikifetch` fetches one UFOpaedia table page with the revid recorded and the table numbers intact (decides fetcher vs MCP extract for citations).
 **Plans**: TBD
+**Note**: Write the `apoc-spec` skill (SPEC-04) with superpowers' `writing-skills` skill (owner, 2026-10-24). That is the rule for every project skill, in `.claude/rules/workflow.md`.
 
 ## Progress
 
