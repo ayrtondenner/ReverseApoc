@@ -17,7 +17,7 @@ Progress is published from gate-written data, and an unattended per-function dri
 - **Agent pilot (AGT-01..11):**
   - the decomp.wtf stub-convention spike;
   - our own Python driver, which runs one fresh `claude -p "/goal ..."` session per function;
-  - guardrail hooks, the `watcom-decomp` skill, the context pack and a stdlib MCP server;
+  - guardrail hooks, the `watcom-decomp` skill, the context pack and an attempt wrapper for direct `check`/`asm`/`context` calls (D-44);
   - the easiest-first scorer and the zero-regression gate;
   - an owner-started pilot that matches 10 easy functions.
 - **Every open deferred item from Phases 1-5** (DI-01..DI-37 below). The owner put all of them in scope on 2026-10-24.
@@ -66,9 +66,9 @@ Facts fixed before the discussion (owner, 2026-10-24):
   - the hooks (D-15..D-17);
   - the `watcom-decomp` skill (D-19);
   - the context pack (D-13, D-14);
-  - **a stdlib stdio MCP server** (`reverseapoc` server, about 150 lines, no new dependency) exposing `check`, `asm` and `context` tools.
+  - **direct CLI calls** for `check`, `asm` and `context`, through a Bash allowlist (D-44).
 
-  Agents therefore get **no shell at all**. There are no claims and no SQLite. Adding the `mcp` package instead of stdlib would need a `docs/tools.md` row and a stated reason. — **Reversibility:** costly — the MCP tool names are referenced by the skill, the hooks allowlist, the driver settings file and the tests.
+  **Revised by the owner on 2026-10-24, after research.** The discussion had picked a stdlib stdio MCP server so that agents would get no shell at all. The owner reversed that before any plan was written: there is **no MCP server**. Agents get Bash, and the hooks plus `--allowedTools` restrict it to those wrapper commands only. There are no claims and no SQLite. — **Reversibility:** costly — the wrapper command names are referenced by the skill, the hooks allowlist and the tests.
 
 ### Driver AGT-01/02/03/04
 - **D-05:** Our own stdlib Python driver, `tools/reverseapoc/driver.py`, plus a `reverseapoc drive` verb, built test-first. It owns the outcome log, backoff, gate calls and the commit. Nigel is rejected: it has no licence (GitHub `license: null`), needs Go (not on the host), logs no turns or tokens, and detects limits by one phrase.
@@ -76,12 +76,15 @@ Facts fixed before the discussion (owner, 2026-10-24):
   ```
   claude -p "/goal ..." --output-format stream-json --verbose --max-turns 40
     --model claude-opus-5-5 --permission-mode dontAsk
-    --allowedTools "Read,Edit,Write,Glob,Grep,mcp__reverseapoc__*"
+    --tools "Read,Edit,Write,Glob,Grep,Bash"
+    --allowedTools "Read,Edit,Write,Glob,Grep,Bash(<attempt wrapper> *)"
+    --strict-mcp-config
     --setting-sources project --settings config/driver/claude-settings.json
     --append-system-prompt-file .claude/skills/watcom-decomp/SKILL.md
     --max-budget-usd 5
   ```
-  - The driver settings file adds the matching-session hooks (D-16) and the MCP server, and turns off plugins such as security-guidance, whose Stop review costs tokens.
+  This is the command as revised after research (D-44, D-45).
+  - The driver settings file adds the matching-session hooks (D-16) and turns off plugins such as security-guidance, whose Stop review costs tokens.
   - `--setting-sources project` keeps the per-machine GSD hooks in `.claude/settings.local.json` out.
   - `--bare` is not used: it needs `ANTHROPIC_API_KEY`, and the owner uses a subscription.
 - **D-07:** One attempt is one fresh session. The caps:
@@ -104,7 +107,7 @@ Facts fixed before the discussion (owner, 2026-10-24):
 - **D-11, D-12:** not used. The numbering is kept stable so references don't shift.
 
 ### Context pack AGT-08
-- **D-13:** The pack is served through the MCP `context` tool and holds:
+- **D-13:** The pack is written by a `context` CLI command. The driver runs it before each attempt, and the agent may re-run it through the attempt wrapper (D-44). It holds:
   - the target asm listing (`asm/<exe>/<name>.s`);
   - the unit file;
   - caller and callee signatures with their match status;
@@ -134,8 +137,8 @@ Facts fixed before the discussion (owner, 2026-10-24):
     - the claimed unit's `src/<exe>/<unit>.c`;
     - new headers under `include/` (never `common.h` or `watcom_compat.h`, where `INCLUDE_ASM` could be redefined);
     - the attempt's `build/driver/.../notes.md`.
-  - Agents have no Bash. Their tools are Read, Edit, Write, Glob, Grep and the MCP tools.
-  - The MCP `check` tool may run `check --sweep` as a diagnostic. A sweep hit is recorded as PARTIAL "needs flags X" for the owner to decide (D-18 of Phase 5: cflags.txt is owner-only).
+  - Bash runs only the attempt wrapper's `check`, `asm` and `context` subcommands (D-44). Every other Bash command is denied, including any with shell chaining, pipes, redirection, substitution or a second command. Their other tools are Read, Edit, Write, Glob and Grep.
+  - The wrapper's `check` may run `check --sweep` as a diagnostic. A sweep hit is recorded as PARTIAL "needs flags X" for the owner to decide (D-18 of Phase 5: cflags.txt is owner-only).
   - The block covers cflags.txt, the cc wrapper, configure.py, tools/, the manifests, status.csv, `.claude/`, `.github/` and `tests/` (DI-07).
   - After each attempt the driver checks `git status --porcelain` against the allowlist. Any stray path resets the attempt and stops the night.
 
@@ -149,10 +152,10 @@ Facts fixed before the discussion (owner, 2026-10-24):
   5. Relocation rules (docs/matching.md L59-68).
   6. Strings move to extern `D_` symbols; no statics or jump tables until DI-02/DI-03 widen the pool.
   7. `INCLUDE_ASM`: replace the marker; extern names.
-  8. The MCP `check` tool, its JSON and its exit codes 0/1/2.
+  8. The attempt wrapper's `check`/`asm`/`context` commands (D-44), check's JSON, and its exit codes 0/1/2.
   9. When to give up.
 
-  It links to docs for depth, and a pytest checks that every path, verb and MCP tool it names exists.
+  It links to docs for depth, and a pytest checks that every path, verb and command it names exists.
 
 ### Status table RPT-01 and attempt log AGT-03
 - **D-20:** The status table is a sparse `config/<exe>/status.csv`, with rows only for matched or partial functions; a missing row means unmatched.
@@ -256,7 +259,7 @@ Facts fixed before the discussion (owner, 2026-10-24):
   | Wave | Plans |
   |---|---|
   | 1 | spike 006 (D-01..D-03); `asm` ambiguous-name fix (DI-01); oracle hardening (DI-04, DI-05, DI-06); cc and log cleanup (DI-11..DI-18); the Phase 5 minors (DI-19) |
-  | 2 | jump tables and statics (DI-02, DI-03); status table, `gate` and cross-check (RPT-01, AGT-06); hooks (AGT-05, DI-07); skill, context pack and MCP server (AGT-08, AGT-09, D-04); scorer (AGT-07) |
+  | 2 | jump tables and statics (DI-02, DI-03); status table, `gate` and cross-check (RPT-01, AGT-06); hooks (AGT-05, DI-07); skill, context pack and the attempt wrapper (AGT-08, AGT-09, D-04, D-44); scorer (AGT-07) |
   | 3 | driver plus stand-in tests (AGT-01..04); progress.py, Pages, report, DecompHub feed and README (RPT-02..05, DI-08, DI-34, DI-37); listing drafts (DI-35, DI-36); docs and paperwork (DI-20..DI-23, DI-25..DI-31, DI-33) |
   | 4 (main checkout) | the pilot checkpoint (blocking-human: CLI upgrade, Pages source, owner starts the run), then the phase gate |
 
@@ -280,18 +283,38 @@ Facts fixed before the discussion (owner, 2026-10-24):
     - Claude records the owner's existing sign-offs (04-UAT A1, 05 UAT) with dates and links;
     - the owner confirms spike 005 VALIDATED with one line at the pilot checkpoint.
 - **D-42:** DI-32: the installed build (`UFO2P4.EXE`/`TACP4.EXE`) stays primary. CD v1.00 is for cross-reference only. OpenApoc offsets are re-located by signature when Phase 7 needs them. Twin matching of CD v1.00 is revisited after Phase 7. This ruling is recorded in PROJECT.md Key Decisions.
-- **D-43:** DI-33: **the owner allows Claude one recorded edit** of the `config/watcom.toml:37` note, which says "the real LE compiler" and should say LX. The conditions:
-  - the edit changes only that comment word or line;
+- **D-43:** DI-33: **the owner allows Claude one recorded edit** of the `config/watcom.toml` notes on **lines 37 and 106**. Both say "the real LE compiler" and should say LX. Line 106 was added after research found the same stale note there (D-47). The conditions:
+  - the edit changes only those two comment words or lines;
   - it is made before the always-on hooks land;
   - the commit message quotes the owner's authorization of 2026-10-24;
   - the planner first confirms that no gate or test hashes the file's bytes (`tests/test_compiler_real.py:85` reads its keys, not its hash).
 
   CLAUDE.md's "never modify the hash manifests to make a check pass" is not engaged: this is a comment fix the owner authorized, not a change to make a check pass.
 
+### Owner rulings after research (2026-10-24)
+
+These settle the R1-R7 findings in `06-RESEARCH.md` ("Research findings that touch locked decisions"). Where this section disagrees with RESEARCH.md, this section wins. RESEARCH.md's "MCP stdio server" section and its MCP code example are **superseded**: no MCP server is built.
+
+- **D-44:** **No MCP server** (owner reversal of the discussion's choice on question 1.4).
+  - The agent runs `check`, `asm` and `context` as direct CLI calls through one host-side attempt wrapper. Example shape: `uv run reverseapoc attempt check|asm|context ...`; the planner chooses the final verb name.
+  - The wrapper reaches the container for `check` through `docker compose run --rm build ...`. It reads the claimed EXE, unit and function from the driver's environment, never from agent arguments, so the agent cannot point it at another unit, `--cflags` or `--watcom-dir`. It may pass `--sweep`.
+  - Bash is pre-approved only for that wrapper in `--allowedTools`. The matching-session hook denies every Bash command whose argv is not exactly a wrapper invocation, and every command that contains `;`, `&`, `|`, `<`, `>`, `` ` ``, `$(`, a newline or any other shell metacharacter.
+  - `--strict-mcp-config` stays with no server listed, so `-p` sessions do not connect to `.mcp.json`'s Tavily or the owner's user-scope `discord-user` server (R1).
+  - The stdio MCP server is recorded as a Deferred Idea, revisited if Bash allowlisting proves leaky.
+- **D-45:** R2: the session gets `--tools "Read,Edit,Write,Glob,Grep,Bash"`, so no other built-in tool exists. `--allowedTools` restricts Bash to the wrapper (D-06). dontAsk mode may still run read-only shell commands by itself, so the hook's deny (D-44) is the binding rule.
+- **D-46:** R3: the always-on hook exempts exactly one path from its `build/` block: the path in env `REVERSEAPOC_ATTEMPT_NOTES`, which the driver sets. It must resolve under `build/driver/` and end in `notes.md`. Nothing else under `build/` becomes writable.
+- **D-47:** R4: the one-time `config/watcom.toml` edit covers line 106 as well as line 37 (D-43). Research confirmed that no test or gate hashes the file's bytes.
+- **D-48:** R5: the driver takes `--max-sessions` (default 30, the night cap) and `--target-matched` (default 10). The pilot runs with `--max-sessions 40 --target-matched 10` (D-37 ceiling).
+- **D-49:** R6: keep D-28's single combined report with categories `ufo2p`/`tacp`. Record in docs the risk that objdiff's `Report::split()` treats dot-free category ids as versions, which recomp.fyi might copy. recomp.fyi's ingestion is private and cannot be tested.
+- **D-50:** R7: bytes inside unit spans that belong to no functions.csv row (25,691 in UFO2P and 35,241 in TACP, mostly alignment filler) appear as their own **"uncovered"** segment in progress.json, the treemap and the report.
+  - They are counted in the denominator, and the page notes that most of them are filler (refines D-26/D-40).
+  - The 3-byte UFO2P tail past 0x000CFADA lies outside every unit span. It is recorded as not counted.
+  - Attributing the filler is left to a later phase.
+
 ### Claude's Discretion
-- The internal module layout of the driver, MCP server and progress.py within `tools/reverseapoc/`; verb names other than `drive` and `gate`; the treemap layout algorithm (squarified or slice-and-dice, stdlib); the exact /goal prompt wording; the look-alike similarity metric.
+- The internal module layout of the driver, the attempt wrapper and progress.py within `tools/reverseapoc/`; verb names other than `drive` and `gate`; the treemap layout algorithm (squarified or slice-and-dice, stdlib); the exact /goal prompt wording; the look-alike similarity metric.
 - How the stand-in `claude` (a fake CLI emitting recorded stream-json) is built for the driver tests.
-- Whether the MCP server runs inside the container (via `docker compose run -i`) or on the host shelling out to the container, provided `check` itself always runs in the container.
+- The attempt wrapper's verb name and argument shape (D-44), provided `check` itself always runs in the container and the claimed target comes from the driver's environment.
 
 </decisions>
 
@@ -379,7 +402,7 @@ Every row ends Phase 6 closed by a commit, or carried forward under an owner rul
 ## Existing Code Insights
 
 ### Reusable Assets
-- `tools/reverseapoc/cli.py`: `build_parser` L1074-1136 registers verbs through `_add_*_command(sub)`; `_ERRORS` L1139. New verbs (`gate`, `drive`, the MCP server, `progress`) follow this pattern.
+- `tools/reverseapoc/cli.py`: `build_parser` L1074-1136 registers verbs through `_add_*_command(sub)`; `_ERRORS` L1139. New verbs (`gate`, `drive`, the attempt wrapper, `progress`) follow this pattern.
 - `tools/reverseapoc/score.py`: `assess` L287, `ScoreReport` L334, weights L48-54, P16 filter L226-258. The driver's scorer wraps it with status awareness.
 - `tools/reverseapoc/check.py`:
   - `check_unit` L845, `FunctionCheck` L544, `CheckResult.to_json` L660, `land_all` L789, `_land_exe`/`ExeLand.ok` L753-821;
@@ -407,7 +430,7 @@ Every row ends Phase 6 closed by a commit, or carried forward under an owner rul
 
 ### Integration Points
 - `.claude/settings.json` (today only `enabledPlugins`): gains the always-on hook block (D-16).
-- `config/driver/claude-settings.json` (new): the matching-session hooks, the MCP server and the plugin overrides.
+- `config/driver/claude-settings.json` (new): the matching-session hooks and the plugin overrides (no MCP server, D-44).
 - `.github/workflows/ci.yml`: the drift test runs here. The new `.github/workflows/pages.yml` sits next to it.
 - `docker/compose.yaml` (`build` service): every `check`/`gate` the driver runs.
 - `README.md` Progress section, `.recomp.json`, the repo root `decomphub.progress.json`.
@@ -429,6 +452,8 @@ Every row ends Phase 6 closed by a commit, or carried forward under an owner rul
 ## Deferred Ideas
 
 - SQLite claims with a TTL for parallel agents (Phase 7, DEC-06), and re-evaluating decomp.wtf for that role (D-03).
+- A stdlib stdio MCP server exposing check/asm/context. It was chosen in the discussion, then dropped by the owner after research (D-44). Revisit it if Bash allowlisting proves leaky.
+- Attributing the uncovered filler bytes (D-50), for example with a committed padding list.
 - Scorer tuning: pure leaf functions, new features, dropping `WEIGHT_NO_FRAME` (Phase 7) (D-09).
 - GhidraMCP as a live agent tool (Later) (D-14).
 - A dedicated second clone for parallel runs (Phase 7) (D-34).
