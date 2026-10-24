@@ -6,12 +6,15 @@ tests/test_functions_lib_real.py.
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
 
 import omfimage as om
+from conftest import build_le_image, fixup_record, requires_capstone, write_manifest
 from libtree import body, code_module, write_lib
+from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import (
     BOUNDARIES_CSV_COLUMNS,
     BOUNDARIES_CSV_COMMENT,
@@ -45,7 +48,8 @@ from reverseapoc.functions import (
     write_symbols_csv,
     write_units_csv,
 )
-from reverseapoc.libmatch import LoadedLibrary, MatchRange, load_libraries
+from reverseapoc.ghidra import EXPORT_COLUMNS
+from reverseapoc.libmatch import RUNTIME_CSV_COLUMNS, LoadedLibrary, MatchRange, load_libraries
 from reverseapoc.targets import REPO_ROOT
 
 LIB = "DOS/CLIB3R.LIB"
@@ -501,3 +505,100 @@ def test_symbols_reader_refusals(tmp_path, rows, what):
     write_symbols_csv(path, rows, name="UFO2P.EXE")
     with pytest.raises(FunctionsError, match=what):
         read_symbols_csv(path)
+
+
+# ---- reconcile (D-07, D-08): made-up bytes patched into the synthetic LE of conftest.py ----
+
+CODE = 0x10000  # base of the synthetic code object (object 1)
+DATA = 0x20000  # base of the synthetic data object (object 2)
+RET = b"\xc3"
+PAD = bytes(1)  # a zero byte after a terminal instruction ends the function (D-07)
+OFF32 = 7  # LE fixup source type: 32-bit offset
+NO_FIXUPS = [b"", b"", b""]
+
+
+def call(at: int, target: int) -> bytes:
+    """`call target` (E8 rel32) placed at `at`."""
+    return b"\xe8" + struct.pack("<i", target - (at + 5))
+
+
+def jmp(at: int, target: int) -> bytes:
+    """`jmp target` (E9 rel32) placed at `at`."""
+    return b"\xe9" + struct.pack("<i", target - (at + 5))
+
+
+def make_image(
+    patches: dict[int, bytes], *, entry: int = 0x100, fixups: list[bytes] | None = None
+) -> bytes:
+    """A synthetic LE whose entry point is object 1 + `entry`; skips without capstone."""
+    requires_capstone()
+    return build_le_image(
+        fixups=NO_FIXUPS if fixups is None else fixups, entry=(1, entry), patches=patches
+    ).data
+
+
+def data_pointer(offset: int, target: int) -> bytes:
+    """One off32 fixup record at data object + `offset` pointing at code address `target`."""
+    return fixup_record(OFF32, offset, 1, target - CODE, off32=True)
+
+
+def ghidra_line(entry: int, *, size: int = 1, thunk: bool = False) -> str:
+    last = entry + size - 1
+    return (f"0x{entry:08X},0x{entry:08X},0x{last:08X},{size},1,"
+            f"{'true' if thunk else 'false'},__stdcall,FUN_{entry:08x}")  # fmt: skip
+
+
+def write_ghidra_export(path: Path, *lines: str) -> Path:
+    path.write_text("\n".join([",".join(EXPORT_COLUMNS), *lines]) + "\n", encoding="utf-8")
+    return path
+
+
+def write_empty_runtime(path: Path) -> Path:
+    path.write_text(",".join(RUNTIME_CSV_COLUMNS) + "\n", encoding="utf-8")
+    return path
+
+
+def verb_setup(tmp_path: Path, data: bytes, *ghidra: str) -> list[str]:
+    """Arguments naming SYN.EXE in tmp_path/orig, its manifest, an empty runtime.csv and a
+    Ghidra export holding `ghidra`."""
+    orig = tmp_path / "orig"
+    orig.mkdir(exist_ok=True)
+    (orig / "SYN.EXE").write_bytes(data)
+    manifest = write_manifest(tmp_path / "targets.toml", {"SYN.EXE": data})
+    runtime = write_empty_runtime(tmp_path / "runtime.csv")
+    export = write_ghidra_export(tmp_path / "functions.raw.csv", *ghidra)
+    return ["SYN.EXE", "--orig", str(orig), "--manifest", str(manifest), "--runtime",
+            str(runtime), "--ghidra-export", str(export)]  # fmt: skip
+
+
+A, B, C, D = CODE + 0x100, CODE + 0x200, CODE + 0x300, CODE + 0x400
+
+
+def tracer_image() -> bytes:
+    """The entry A calls B; a data-object pointer at DATA+0x10 names C; D has no evidence."""
+    patches = {A: call(A, B) + RET + PAD, B: RET + PAD, C: RET + PAD, D: RET + PAD,
+               DATA + 0x10: struct.pack("<I", C - CODE)}  # fmt: skip
+    return make_image(patches, fixups=[b"", b"", data_pointer(0x10, C)])
+
+
+def test_functions_verb_writes_both_csvs(tmp_path: Path, capsys):
+    """Ghidra sees A, B and D; capstone sees A, B and C. C (capstone-only, an LE fixup target)
+    is decided by the rule; D (Ghidra-only, no LE evidence) is left for a person."""
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(D))
+    out = tmp_path / "out"
+    rc = cli_main(["functions", *args, "--output", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    rows = read_functions_csv(out / "functions.csv")
+    assert [(r.start, r.end, r.name, r.kind, r.evidence) for r in rows] == [
+        (A, A + 6, f"func_{A:08X}", "game", "entry"),
+        (B, B + 1, f"func_{B:08X}", "game", "call"),
+        (C, C + 1, f"func_{C:08X}", "game", "fixup"),
+    ]
+    boundaries = read_boundaries_csv(out / "boundaries.csv")
+    assert boundaries == [
+        BoundaryRow(C, ghidra=False, capstone=True, evidence=("fixup",), verdict="rule",
+                    reason="fixup"),
+        BoundaryRow(D, ghidra=True, capstone=False, evidence=(), verdict="", reason=""),
+    ]  # fmt: skip
+    assert "1 missing verdict" in captured.out
