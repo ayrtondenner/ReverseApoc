@@ -49,21 +49,37 @@ def segdef32(name_idx: int, class_idx: int, length: int, *, attr: int = 0x69) ->
     return record(0x99, body + index(1))
 
 
-def pubdef32(
-    seg: int, entries: list[tuple[str, int]], *, group: int = 0, frame: int = 0
-) -> bytes:
-    """Record 0x91. TIS OMF 1.1 (PUBDEF): the Base Frame is present only if the Base Segment
-    index is 0, whatever the Base Group index."""
+def _pubdef32_body(seg: int, entries: list[tuple[str, int]], group: int, frame: int) -> bytes:
     body = index(group) + index(seg)
     if seg == 0:
         body += struct.pack("<H", frame)
     for public, offset in entries:
         body += name(public) + struct.pack("<I", offset) + index(0)  # type index 0
-    return record(0x91, body)
+    return body
+
+
+def pubdef32(
+    seg: int, entries: list[tuple[str, int]], *, group: int = 0, frame: int = 0
+) -> bytes:
+    """Record 0x91. TIS OMF 1.1 (PUBDEF): the Base Frame is present only if the Base Segment
+    index is 0, whatever the Base Group index."""
+    return record(0x91, _pubdef32_body(seg, entries, group, frame))
+
+
+def lpubdef32(
+    seg: int, entries: list[tuple[str, int]], *, group: int = 0, frame: int = 0
+) -> bytes:
+    """Record 0xB7: local (module-private) publics, laid out like PUBDEF32."""
+    return record(0xB7, _pubdef32_body(seg, entries, group, frame))
 
 
 def extdef(*names: str) -> bytes:
     return record(0x8C, b"".join(name(n) + index(0) for n in names))
+
+
+def lextdef(*names: str) -> bytes:
+    """Record 0xB4: local external names, laid out like EXTDEF."""
+    return record(0xB4, b"".join(name(n) + index(0) for n in names))
 
 
 def ledata32(seg: int, offset: int, data: bytes) -> bytes:
@@ -136,7 +152,8 @@ def fixup(
 ) -> bytes:
     """A FIXUP subrecord. frame/target are (method, index or None) or ("thread", number).
 
-    A target method is given as 0-2; a displacement of None sets the P bit (methods 4-6).
+    A target method is given as 0-3 (3: the datum is a u16 frame number); a displacement of
+    None sets the P bit (methods 4-6).
     """
     locat = 0x8000 | (0x4000 if segment_relative else 0) | (location << 10) | locat_offset
     out = struct.pack(">H", locat)
@@ -149,7 +166,8 @@ def fixup(
     if target[0] == "thread":
         t_bit, targt, target_datum = 1, target[1], b""
     else:
-        t_bit, targt, target_datum = 0, target[0] & 3, index(target[1])
+        t_bit, targt = 0, target[0] & 3
+        target_datum = struct.pack("<H", target[1]) if targt == 3 else index(target[1])
     out += bytes([f_bit << 7 | frame_field << 4 | t_bit << 3 | p_bit << 2 | targt])
     out += frame_datum + target_datum
     if displacement is not None:
@@ -195,6 +213,17 @@ def lidata_blocks32(blocks: list[tuple[int, bytes | list]]) -> bytes:
     return b"".join(_lidata_block(b, "<IH") for b in blocks)
 
 
+def _comdat_body(name_idx: int, data: bytes, offset_fmt: str, header: tuple[int, ...]) -> bytes:
+    """header: flags, attributes, alignment, data offset, group, segment, frame."""
+    flags, attributes, alignment, offset, group, seg, frame = header
+    body = bytes([flags, attributes, alignment]) + struct.pack(offset_fmt, offset) + index(0)
+    if attributes & 0x0F == 0:
+        body += index(group) + index(seg)
+        if seg == 0:
+            body += struct.pack("<H", frame)
+    return body + index(name_idx) + data
+
+
 def comdat32(
     name_idx: int,
     data: bytes,
@@ -207,15 +236,49 @@ def comdat32(
     seg: int = 1,
     frame: int = 0,
 ) -> bytes:
-    """COMDAT32. flags 0x01 continuation, 0x02 iterated data; attributes low nibble 0 means
-    explicit allocation, the only case with a public base. TIS OMF 1.1 gives the public base
-    PUBDEF's layout: group, segment, and a frame only if the segment index is 0."""
-    body = bytes([flags, attributes, alignment]) + struct.pack("<I", offset) + index(0)
-    if attributes & 0x0F == 0:
-        body += index(group) + index(seg)
-        if seg == 0:
-            body += struct.pack("<H", frame)
-    return record(0xC3, body + index(name_idx) + data)
+    """COMDAT32. flags 0x01 continuation, 0x02 iterated data. attributes: the high nibble is
+    the selection criterion (0 no match, 1 pick any, 2 same size, 3 exact match), the low
+    nibble the allocation type, where 0 means explicit allocation, the only case with a public
+    base. TIS OMF 1.1 gives the public base PUBDEF's layout: group, segment, and a frame only if
+    the segment index is 0."""
+    header = (flags, attributes, alignment, offset, group, seg, frame)
+    return record(0xC3, _comdat_body(name_idx, data, "<I", header))
+
+
+def comdat16(
+    name_idx: int,
+    data: bytes,
+    *,
+    flags: int = 0,
+    attributes: int = 0,
+    alignment: int = 1,
+    offset: int = 0,
+    group: int = 0,
+    seg: int = 1,
+    frame: int = 0,
+    offset32: bool = False,
+) -> bytes:
+    """Record 0xC2: COMDAT32's layout with a u16 data offset (u32 in an Easy OMF module)."""
+    header = (flags, attributes, alignment, offset, group, seg, frame)
+    return record(0xC2, _comdat_body(name_idx, data, "<I" if offset32 else "<H", header))
+
+
+def _nbkpat_body(name_idx: int, location: int, pairs: list[tuple[int, int]], fmt: str) -> bytes:
+    """TIS OMF 1.1 NBKPAT: location type, public name index (LNAMES), (offset, value) pairs."""
+    body = bytes([location]) + index(name_idx)
+    return body + b"".join(struct.pack(fmt, o, v) for o, v in pairs)
+
+
+def nbkpat(
+    name_idx: int, location: int, pairs: list[tuple[int, int]], *, offset32: bool = False
+) -> bytes:
+    """Record 0xC8 with u16 offsets and values (u32 in an Easy OMF module)."""
+    return record(0xC8, _nbkpat_body(name_idx, location, pairs, "<II" if offset32 else "<HH"))
+
+
+def nbkpat32(name_idx: int, location: int, pairs: list[tuple[int, int]]) -> bytes:
+    """Record 0xC9 with u32 offsets and values."""
+    return record(0xC9, _nbkpat_body(name_idx, location, pairs, "<II"))
 
 
 def cextdef(*lname_idxs: int) -> bytes:
