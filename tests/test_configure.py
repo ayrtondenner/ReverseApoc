@@ -553,6 +553,75 @@ def test_unit_source_ignores_comments():
 
 
 @pytest.mark.parametrize(
+    "commented",
+    ["// INCLUDE_ASM(func_00010010);\n", "// int func_00010010(void) {\n//}\n"],
+    ids=["marker", "definition"],
+)
+def test_unit_source_ignores_line_comments(commented):
+    # Review fix round 1: wcc386 and clang gnu89 accept // comments.
+    text = "INCLUDE_ASM(func_00010000);\n" + commented
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_line_comment_inside_a_string_is_not_a_comment():
+    text = 'static char *s = "http://x"; INCLUDE_ASM(func_00010010);\nINCLUDE_ASM(func_00010000);\n'
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+def test_unit_source_if0_block_is_dead():
+    text = (
+        "INCLUDE_ASM(func_00010000);\n"
+        "#if 0\n#ifdef FOO\nINCLUDE_ASM(func_00010010);\n#endif\n"
+        "int func_00010010(void)\n{\n    return 0;\n}\n#endif\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_if0_else_branch_is_live():
+    text = (
+        "INCLUDE_ASM(func_00010010);\n"
+        "#if 0\nINCLUDE_ASM(func_00010000);\n#else\n"
+        "int func_00010000(void)\n{\n    return 0;\n}\n#endif\n"
+    )
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "line", "directive"),
+    [
+        ("#ifdef FOO\n#endif\n", 1, "#ifdef"),
+        ("#ifndef FOO\n#endif\n", 1, "#ifndef"),
+        ("int x;\n#if FOO\n#endif\n", 2, "#if"),
+        ("#if 1\n#endif\n", 1, "#if"),
+        ("#if 0\n#elif FOO\n#endif\n", 2, "#elif"),
+        ("/*\n\n*/\n  #  ifdef FOO\n#endif\n", 4, "#ifdef"),
+        ("#endif\n", 1, "#endif"),
+        ("#if 0\n#else\n#else\n#endif\n", 3, "#else"),
+    ],
+    ids=["ifdef", "ifndef", "if-expr", "if-1", "elif", "after-comment", "stray-endif",
+         "second-else"],  # fmt: skip
+)
+def test_unit_source_refuses_conditionals_it_cannot_evaluate(text, line, directive):
+    # Orchestrator ruling (review round 1): only #if 0 is understood; anything else fails closed.
+    shift = UNIT_SOURCE.count("\n")
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + text, TWO_GAME)
+    assert f"line {line + shift}" in problem
+    assert directive in problem
+
+
+def test_unit_source_refuses_an_unterminated_if0():
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + "#if 0\nint y;\n", TWO_GAME)
+    assert "#if 0" in problem and "#endif" in problem
+
+
+def test_main_refuses_a_conditional_naming_the_line(tmp_path, capsys):
+    argv = _split_tree(tmp_path, source="#ifdef FOO\n#endif\n" + UNIT_SOURCE)
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "line 1", "#ifdef")
+
+
+@pytest.mark.parametrize(
     "definition",
     [
         "int func_00010000(void) {\n    return 0;\n}\n",
