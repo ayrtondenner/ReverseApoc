@@ -4,9 +4,6 @@ address is made up (tests/relocpair.py)."""
 
 from __future__ import annotations
 
-from reverseapoc.land import LandedFunction, land
-from reverseapoc.relocs import check_function
-
 from conftest import write_manifest
 from relocpair import (
     CALL_FIELD,
@@ -17,7 +14,9 @@ from relocpair import (
     good_segment,
     table,
 )
+from reverseapoc.land import LandedFunction, land
 from reverseapoc.le import LE
+from reverseapoc.relocs import check_function
 from reverseapoc.targets import load_manifest
 
 FIELD = 4
