@@ -70,7 +70,7 @@ from .functions import (
 from .land import LandedFunction, LandResult, land
 from .le import LE, Fixup
 from .libmatch import LibMatchError, read_target, select_target
-from .omf import REC_THEADR, Module, Segment, read_object
+from .omf import REC_THEADR, Module, Public, Segment, read_object
 from .omf2elf import convert
 from .probe import CHK_PUBLIC
 from .relocs import FIELD_SIZE, OwnPublic, RelocError, RelocResult, check_function
@@ -403,6 +403,19 @@ def _row_reason(linker: str, exported: bool, marked: bool, elsewhere: bool, in_c
     return f"neither exported nor marked INCLUDE_ASM (expected public {linker})"
 
 
+def _stray_reason(public: Public, code: Collection[int]) -> str:
+    """Why a public that names no row of the unit is a mismatch. A `static` is an LPUBDEF
+    (code review IN-01): check pairs publics with rows by their row names, which a static's
+    own name never is, so it can only fail; the reason says so."""
+    if not public.local:
+        return f"public {public.name} is not a function of the unit"
+    if public.segment_index in code:
+        return (f"public {public.name} is a static (LPUBDEF) function, which check cannot pair "
+                "with a row: give it its row's func_ name or keep the row INCLUDE_ASM")  # fmt: skip
+    return (f"public {public.name} is static (LPUBDEF) data, which check cannot pair with a "
+            "row: make it non-static")  # fmt: skip
+
+
 def account_unit(
     module: Module, rows: Sequence[FunctionRow], symbols: SymbolTable, text: str
 ) -> UnitAccount:
@@ -412,7 +425,10 @@ def account_unit(
     A public of the object that names no row of `rows` is a mismatch too."""
     defined = defined_functions(module, rows, symbols)
     exported = {d.row.start for d in defined}
-    publics = list(dict.fromkeys(p.name for p in module.publics))
+    first: dict[str, Public] = {}
+    for public in module.publics:
+        first.setdefault(public.name, public)
+    publics = list(first)
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
     marks = source_marks(text, rows) if required else SourceMarks(frozenset(), frozenset(), ())
     stubs, problems, failed = [], [], set()
@@ -427,7 +443,8 @@ def account_unit(
         problems.append(Unaccounted(row.name, row.start, reason))
         failed.add(row.start)
     names = _linker_names(rows, symbols)
-    problems += [Unaccounted(name, None, f"public {name} is not a function of the unit")
+    code = {seg.index for seg in module.segments if seg.is_code}
+    problems += [Unaccounted(name, None, _stray_reason(first[name], code))
                  for name in publics if name not in names]  # fmt: skip
     problems += [Unaccounted(SOURCE_PROBLEM, None, p) for p in marks.problems]
     kept = tuple(d for d in defined if d.row.start not in failed)
