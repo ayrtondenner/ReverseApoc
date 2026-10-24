@@ -28,11 +28,11 @@ Refused with Omf2ElfError, before any section is built, each message naming the 
 the segment or COMDAT and the offset: a fixup into iterated data (`unmaskable`), iterated
 COMDAT data, a frame-number or group target, any fixup location but offset32 (pointer and
 selector locations, 16-bit and byte offsets, location 5 outside Easy OMF), a 32-bit field
-outside the data or an addend that does not fit in it, an absolute public, a public past its
-segment's end or in a dropped debug segment. A fixup target in a dropped segment and
-initialised bytes in a BSS segment are refused while the sections are built; either way
-`convert` raises before returning, and `convert_file(src, dst)` writes the ELF atomically only
-after it has returned.
+outside the data or an addend that does not fit in it, a fixup target in a dropped debug
+segment, a BSS segment holding initialised bytes or a fixup, an absolute public, a public past
+its segment's end or in a dropped debug segment. `convert_file(src, dst)` writes the ELF
+atomically only after `convert` has returned. omf.py sizes an Easy OMF location-5 fixup at 4
+bytes, so its mask and this conversion cover the same field.
 """
 
 from __future__ import annotations
@@ -63,6 +63,7 @@ from .omf import (
     COMDAT_ALLOC_CODE32,
     COMDAT_ALLOC_FAR_CODE,
     COMDAT_SELECT_NO_MATCH,
+    LOC_LOADER_OFFSET16,
     LOC_OFFSET32,
     LOC_POINTER48,
     REC_THEADR,
@@ -90,7 +91,6 @@ PC32_BIAS = -FIELD_SIZE  # a PC32 addend counts from the field's end, the CPU fr
 # Fixup location types (TIS OMF 1.1) by name, for the refusal messages.
 LOC_BASE = 2  # 16-bit base (selector)
 LOC_POINTER32 = 3  # 16:16 far pointer
-LOC_LOADER_OFFSET16 = 5  # loader-resolved 16-bit offset; Easy OMF: a 32-bit offset (TH rule)
 _LOCATION_NAMES = {
     0: "low byte",
     1: "16-bit offset",
@@ -251,7 +251,7 @@ def _refuse_location(fx: OMFFixup, where: str, easy_omf: bool) -> None:
     raise Omf2ElfError(f"{what} is not 9 (offset32)")
 
 
-def _refuse_target(fx: OMFFixup, where: str) -> None:
+def _refuse_target(fx: OMFFixup, where: str, emitted: frozenset[int]) -> None:
     if fx.target_kind == "frame":
         raise Omf2ElfError(f"{where}: FIXUPP target is frame number {fx.target_index:#x}, "
                            "not a segment or an extern")  # fmt: skip
@@ -259,6 +259,9 @@ def _refuse_target(fx: OMFFixup, where: str) -> None:
         raise Omf2ElfError(
             f"{where}: FIXUPP target {fx.target_kind} {fx.target_name!r} is not supported"
         )
+    if fx.target_kind == "segment" and fx.target_index not in emitted:
+        raise Omf2ElfError(f"{where}: FIXUPP target segment {fx.target_name!r} is not emitted "
+                           "(a dropped debug segment)")  # fmt: skip
 
 
 def _addend(fx: OMFFixup, data: bytes) -> int:
@@ -277,42 +280,53 @@ def _refuse_field(fx: OMFFixup, where: str, data: bytes) -> None:
         raise Omf2ElfError(f"{where}: FIXUPP addend {addend:#x} does not fit in 32 signed bits")
 
 
+def _refuse_bss(parts: list[_Part]) -> None:
+    """A BSS segment becomes NOBITS: it can hold neither initialised bytes nor a fixup."""
+    for part in parts:
+        if not part.bss:
+            continue
+        for fx in part.fixups:
+            raise Omf2ElfError(f"{part.where} offset {fx.offset:#x}: FIXUPP patches a BSS "
+                               "segment, which holds no bytes")  # fmt: skip
+        if any(part.data):
+            raise Omf2ElfError(f"{part.where}: BSS segment holds initialised bytes")
+
+
 def _refuse_fixups(parts: list[_Part], easy_omf: bool) -> None:
+    emitted = frozenset(p.segment_index for p in parts if p.segment_index)
     for part in parts:
         for fx in part.fixups:
             where = f"{part.where} offset {fx.offset:#x}"
             _refuse_location(fx, where, easy_omf)
-            _refuse_target(fx, where)
+            _refuse_target(fx, where, emitted)
             _refuse_field(fx, where, part.data)
 
 
 def _refuse(module: Module, parts: list[_Part]) -> None:
+    """Every refusal, run before any section is built."""
     _refuse_publics(module)
     _refuse_unmaskable(parts)
     _refuse_iterated_comdats(parts)
+    _refuse_bss(parts)
     _refuse_fixups(parts, module.easy_omf)
 
 
-# ---- conversion ----
+# ---- conversion (everything below runs only on a module `_refuse` accepted) ----
 
 
 def _section(part: _Part, data: bytes) -> ElfSection:
     if part.code:
         return ElfSection(part.name, data, flags=SHF_ALLOC | SHF_EXECINSTR, align=CODE_ALIGN)
     if part.bss:
-        if any(data):
-            raise Omf2ElfError(f"{part.where}: BSS segment holds initialised bytes")
         return ElfSection(part.name, kind="nobits", flags=SHF_ALLOC | SHF_WRITE,
                           align=DATA_ALIGN, size=part.length)  # fmt: skip
     return ElfSection(part.name, data, flags=SHF_ALLOC | SHF_WRITE, align=DATA_ALIGN)
 
 
-def _target(fx: OMFFixup, where: str, section_of: dict[int, int]) -> tuple[str, int | None]:
+def _target(fx: OMFFixup, section_of: dict[int, int]) -> tuple[str, int | None]:
     """(symbol name, target section) of a fixup: an extern's name, or a segment's section."""
     if fx.target_kind == "extern":
         return fx.target_name, None
-    if fx.target_index not in section_of:
-        raise Omf2ElfError(f"{where}: target segment {fx.target_name!r} is not emitted")
     return "", section_of[fx.target_index]
 
 
@@ -321,7 +335,7 @@ def _relocation(
 ) -> ElfReloc:
     """Rewrites the fixup's field to its REL addend and returns its relocation (the field and
     the addend were checked by `_refuse_field`)."""
-    symbol, target_section = _target(fx, f"{part.where} offset {fx.offset:#x}", section_of)
+    symbol, target_section = _target(fx, section_of)
     _FIELD.pack_into(data, fx.offset, _addend(fx, part.data))
     rtype = R_386_32 if fx.segment_relative else R_386_PC32
     return ElfReloc(section, fx.offset, rtype, symbol, target_section)
