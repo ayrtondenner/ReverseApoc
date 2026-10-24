@@ -223,3 +223,21 @@ def test_convert_file_reports_counts(tmp_path):
     assert (result.sections, result.symbols, result.relocations) == (1, 2, 1)
     assert result.to_json()["relocations"] == 1
     assert result.format() == f"OK {out} sections 1 symbols 2 relocations 1"
+
+
+def test_initialised_bytes_in_bss_are_refused():
+    data = watcom_module(ledata32(5, 0, b"\x01"))
+    with pytest.raises(Omf2ElfError, match="_BSS.*initialised"):
+        convert(read_object(data))
+
+
+def test_absolute_public_is_refused():
+    data = watcom_module(pubdef32(0, [("abs_", 0x10)]))
+    with pytest.raises(Omf2ElfError, match="'abs_' is absolute"):
+        convert(read_object(data))
+
+
+def test_fixup_to_a_dropped_debug_segment_is_refused():
+    data = watcom_module(fixupp32(fixup(0, target=(0, 6))))
+    with pytest.raises(Omf2ElfError, match=r"\$\$SYMBOLS.*not emitted"):
+        convert(read_object(data))
