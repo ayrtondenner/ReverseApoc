@@ -81,6 +81,7 @@ SYM_SIZE = _SYM.size
 REL_SIZE = _REL.size
 FIELD_SIZE = 4  # both R_386_32 and R_386_PC32 patch a 32-bit field
 
+NULL_ENTRIES = 1  # section header 0 and symbol 0 are the reserved null entries
 TABLE_ALIGN = 4  # .rel and .symtab entries are 32-bit words
 REL_PREFIX = ".rel"
 SYMTAB_NAME = ".symtab"
@@ -187,15 +188,15 @@ class _Layout:
             self.names.setdefault(syms[old].name, []).append(self.first_symbol + pos)
 
     def shndx(self, section: int) -> int:
-        return 1 + section  # after the null section
+        return NULL_ENTRIES + section  # after the null section
 
     @property
     def symtab_index(self) -> int:
-        return 1 + len(self.obj.sections) + len(self.rel_sections)
+        return NULL_ENTRIES + len(self.obj.sections) + len(self.rel_sections)
 
     @property
     def first_symbol(self) -> int:
-        return 1 + len(self.obj.sections)  # after the null and the section symbols
+        return NULL_ENTRIES + len(self.obj.sections)  # after the null and the section symbols
 
     @property
     def first_global(self) -> int:
@@ -204,7 +205,7 @@ class _Layout:
 
     def symbol_index(self, rel: ElfReloc) -> int:
         if rel.target_section is not None:
-            return 1 + rel.target_section  # the section symbols follow the null symbol
+            return NULL_ENTRIES + rel.target_section  # section symbols follow the null one
         found = self.names.get(rel.symbol, [])
         if len(found) != 1:
             what = "unknown" if not found else "ambiguous"
@@ -267,7 +268,7 @@ def write_elf(obj: ElfObject) -> bytes:
         w.emit(REL_PREFIX + obj.sections[i].name, SHT_REL, _rel_body(layout, i),
                link=layout.symtab_index, info=layout.shndx(i), align=TABLE_ALIGN,
                entsize=REL_SIZE)  # fmt: skip
-    strtab_index = layout.symtab_index + 1
+    strtab_index = layout.symtab_index + 1  # .strtab follows .symtab, .shstrtab follows it
     w.emit(SYMTAB_NAME, SHT_SYMTAB, symtab, link=strtab_index, info=layout.first_global,
            align=TABLE_ALIGN, entsize=SYM_SIZE)  # fmt: skip
     w.emit(STRTAB_NAME, SHT_STRTAB, bytes(strtab.data))
