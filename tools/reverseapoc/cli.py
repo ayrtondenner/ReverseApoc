@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -43,7 +43,8 @@ from .libmatch import (
 )
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
-from .probe import ProbeError
+from .probe import CHK_PUBLIC, ProbeError
+from .score import ScoreError, ScoreReport, assess
 from .splice import DEFAULT_OUT, _write_atomic, rebuild
 from .symbols import SymbolError, SymbolTable
 from .targets import (
@@ -462,6 +463,50 @@ def _add_asm_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_asm)
 
 
+def _runtime_starts(target: Target) -> set[int]:
+    """The starts of the committed runtime.csv rows (D-06), when that file exists."""
+    path = runtime_csv_path(target.name)
+    return {row.start for row in read_runtime_csv(path)} if path.is_file() else set()
+
+
+def _chk_targets(inputs: _SplitInputs) -> set[int]:
+    """Where __CHK lives: rows named so, and the runtime public of that name."""
+    targets = {row.start for row in inputs.rows if row.name == CHK_PUBLIC}
+    if CHK_PUBLIC in inputs.symbols.names:
+        targets.add(inputs.symbols.names[CHK_PUBLIC])
+    return targets
+
+
+def _cmd_score(args: argparse.Namespace) -> int:
+    if args.top < 1:
+        raise ScoreError(f"--top must be at least 1, not {args.top}")
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    inputs = _split_inputs(args, target)
+    assessments = assess(
+        inputs.rows,
+        flat=inputs.le.load_flat(relocate=False),
+        fixups=inputs.le.fixups(),
+        symbols=inputs.symbols,
+        chk_targets=_chk_targets(inputs),
+        runtime_starts=_runtime_starts(target),
+    )
+    report = ScoreReport.build(target.name, assessments, inputs.symbols, args.top)
+    print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
+    return 0
+
+
+def _add_score_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "score",
+        help="apply the P16 first-match filter and rank the survivors easiest-first (D-15); "
+        "prints addresses and names only",
+    )
+    _add_split_inputs(p)
+    p.add_argument("--top", type=int, default=10, help="candidates to print; default: %(default)s")
+    p.add_argument("--json", action="store_true", help="print the report as JSON")
+    p.set_defaults(func=_cmd_score)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -582,6 +627,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_cppscan_command(sub)
     _add_probe_command(sub)
     _add_asm_command(sub)
+    _add_score_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -603,6 +649,7 @@ _ERRORS = (
     FunctionsError,
     SymbolError,
     AsmError,
+    ScoreError,
     OSError,
 )
 

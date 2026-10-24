@@ -186,7 +186,8 @@ def _operands(
         if insn.is_jump and row.start <= target < row.end:
             return _label(target)
         return target_name(symbols, target, code=True)
-    inside = [fx for fx in fixups.values() if insn.va - fx.size < fx.src_va < insn.va + insn.size]
+    fields = (fixups.get(va) for va in range(insn.va - _MAX_FIELD + 1, insn.va + insn.size))
+    inside = [fx for fx in fields if fx is not None and fx.src_va + fx.size > insn.va]
     return _field_operands(insn, insn.op_str, inside, symbols)
 
 

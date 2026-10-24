@@ -9,8 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from conftest import PAGE_SIZE, build_le_image, fixup_record, write_manifest
 
+from conftest import PAGE_SIZE, build_le_image, fixup_record, write_manifest
 from reverseapoc.asm import data_ranges
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, write_functions_csv
