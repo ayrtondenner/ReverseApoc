@@ -557,7 +557,8 @@ def _candidate_modules(row: MatchRange) -> set[tuple[str, str]]:
 
 
 def _row_owners(row: MatchRange, owners: Sequence[_Owner], version: str) -> list[_Owner]:
-    """The code segments of `version` that runtime.csv placed at `row`."""
+    """The code segments of `version` that runtime.csv placed at `row`: named `row.segment`, of
+    the row's length, in a (module, library) pair the row lists."""
     pairs = _candidate_modules(row)
     length = row.end - row.start
     found = [
@@ -565,12 +566,13 @@ def _row_owners(row: MatchRange, owners: Sequence[_Owner], version: str) -> list
         for owner in owners
         if owner.version == version
         and (owner.module_name, owner.library) in pairs
+        and owner.segment.name == row.segment
         and owner.segment.length == length
     ]
     if not found:
         raise FunctionsError(
-            f"runtime row {row.describe()}: no {version} code segment of length {length:#x} "
-            f"for module {row.module} in {', '.join(row.libraries)}"
+            f"runtime row {row.describe()}: no {version} code segment {row.segment} of length "
+            f"{length:#x} for module {row.module} in {', '.join(row.libraries)}"
         )
     return found
 
@@ -581,13 +583,26 @@ def _offset_aliases(row: MatchRange, owners: Iterable[_Owner]) -> dict[int, set[
     an end label (___GETDSEnd_), not an entry point, and never becomes a zero-length row."""
     wanted = set(row.publics)
     length = row.end - row.start
+    offsets: dict[str, int] = {}
     by_offset: dict[int, set[str]] = defaultdict(set)
     for owner in owners:
         for public in owner.segment_publics:
             if public.name not in wanted or public.offset >= length:
                 continue
+            _check_one_offset(row, offsets, public.name, public.offset)
             by_offset[public.offset].add(public.name)
     return by_offset
+
+
+def _check_one_offset(row: MatchRange, offsets: dict[str, int], name: str, offset: int) -> None:
+    """The matching segments must agree on where each public sits; a disagreement would split
+    the row in the wrong place, so it is refused rather than guessed."""
+    known = offsets.setdefault(name, offset)
+    if known != offset:
+        raise FunctionsError(
+            f"runtime row {row.describe()}: public {name} sits at offset {known:#x} in one "
+            f"matching segment and {offset:#x} in another"
+        )
 
 
 def _row_entries(row: MatchRange, owners: Sequence[_Owner], version: str) -> list[RuntimeEntry]:
