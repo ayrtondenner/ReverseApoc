@@ -50,6 +50,27 @@ def test_accepts_path_str_and_bytes(synthetic_le, synthetic_le_path):
     assert LE(synthetic_le_path).path == synthetic_le_path
 
 
+_MZ_E_LFARLC = 0x18  # MZ header: file offset of the relocation table (u16)
+_MZ_E_LFANEW = 0x3C  # MZ header: file offset of the new-format header (u32)
+
+
+@pytest.mark.parametrize("bound", [True, False])
+def test_ghidra_loadable_image(bound):
+    # Ghidra's LeLoader takes e_lfanew only when the first MZ has e_lfarlc == 0x40 (05-RESEARCH
+    # Pitfall 5). That MZ then owns the LE header, so le.py must still read the same image.
+    img = build_le_image(bound=bound, ghidra_loadable=True)
+    default = build_le_image(bound=bound)
+    assert struct.unpack_from("<H", img.data, _MZ_E_LFARLC)[0] == 0x40
+    assert struct.unpack_from("<I", img.data, _MZ_E_LFANEW)[0] == img.le_offset
+    le, ref = LE(img.data), LE(default.data)
+    assert le.le_offset == img.le_offset
+    assert le.objects == ref.objects
+    assert le.entry_va == ref.entry_va
+    assert le.data_pages_offset == img.data_pages_offset
+    assert le.load_flat() == ref.load_flat()
+    assert le.fixups() == ref.fixups()
+
+
 def test_header_fields(synthetic_le):
     le = LE(synthetic_le.data)
     assert le.page_size == PAGE_SIZE
