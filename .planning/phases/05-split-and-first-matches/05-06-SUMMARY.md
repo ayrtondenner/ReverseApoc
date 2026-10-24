@@ -215,3 +215,29 @@ None. No external service configuration required.
 
 - All 7 modified files exist and are in the commits above.
 - `39284b5`, `a8c0a3e`, `2ce1461`, `5a54037`, `c1bab34` and `2d49bbd` are ancestors of HEAD.
+
+## Review fixes (round 1)
+
+Commits: `aa9c27d` (test, RED: 10 failed, 128 passed) and `c1f5abb` (fix).
+
+**Important: Easy OMF location 5 and its mask.** Under Easy OMF, omf2elf converts location 5 as a 32-bit offset, but `OMFFixup.size` stayed 2 (`LOC_SIZES[5]`). `Segment.mask` and `Comdat.mask` therefore covered only half of the patched field. Now `_fixup` gives such a fixup `EASY_OMF_LOC5_SIZE` (4) bytes, and `LOC_LOADER_OFFSET16 = 5` is defined in omf.py and imported by omf2elf. Without Easy OMF the size stays 2, and conversion refuses the fixup. Because omf.py now bounds the whole 4-byte field, a location-5 field past the segment end is refused while reading (`OMFError`), wrapped by convert_file. Tests:
+- `tests/test_omf.py#test_easy_omf_location_5_patches_a_32bit_field[segment|comdat]` (size 4, mask `range(1, 5)`)
+- `#test_location_5_without_easy_omf_patches_16_bits[segment|comdat]` (size 2, mask `range(1, 3)`)
+- `#test_easy_omf_location_5_field_past_the_segment_raises`
+- `REFUSALS["location-5-field-past-the-data"]`, whose regex is now the omf.py message
+
+**Minor: every refusal before any section is built.**
+- `_refuse_target` now refuses a fixup target in a dropped debug segment.
+- `_refuse_bss` refuses a BSS segment that holds initialised bytes or a fixup. The fixup case is new: such a field would land in NOBITS.
+- `_section` and `_target` no longer raise.
+- `test_refusal_runs_before_any_section_is_built` runs every `REFUSALS` case with `_sections` and `_symbols` patched to fail. Cases that omf.py already refuses check the OMFError message instead.
+- New cases: `fixup-into-bss` and `fixup-to-a-dropped-debug-segment`.
+- `test_refusal_field_past_the_data_of_a_hand_built_module` keeps `_refuse_field`'s range check covered on a Module that omf.py did not bound.
+
+**Minor: `nbkpat_records`** is now incremented after the record has validated and been applied. No test observes this: a failing NBKPAT raises, so no Module is produced either way.
+
+Commands and output:
+- `uv run pytest -q tests/test_omf.py tests/test_omf2elf.py tests/test_elf.py`: `148 passed in 0.51s`
+- `uv run pytest -q`: `1064 passed, 177 skipped in 14.05s`
+- `uv run ruff check .`: `All checks passed!`
+- `REVERSEAPOC_WATCOM_DIR=C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/third_party/watcom REVERSEAPOC_ORIG=C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/orig uv run pytest -q -rs tests/test_omf_real.py tests/test_omf2elf_real.py tests/test_libmatch_real.py`: exit 0, `21 passed in 60.23s (0:01:00)`, 0 SKIPPED lines
