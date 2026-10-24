@@ -169,7 +169,7 @@ Plans:
   4. For one function per EXE, the single-unit `check` tool prints objdiff 100%, a passing relocation check (every non-relocated byte, equal length, every `call rel32` target, every absolute fixup target) and, after splicing with the original link-time value kept at each fixup site, both rebuilt EXEs SHA-1 identical to `config/targets.toml`; a negative test with a wrong call or fixup target makes the relocation check fail even where objdiff reports 100% (SPL-09, SPL-10, SPL-11, SPL-13)
 
 **Spike**: objdiff diffs OMF-converted ELF cleanly (decides hybrid vs fallback: if INVALIDATED, the KKND-style compare stays the oracle and Phase 6 uses a minimal own agent layer).
-**Plans:** 19/20 plans executed
+**Plans:** 20/20 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -208,7 +208,7 @@ Plans:
 - [x] 05-19-PLAN.md — the first TACP match, UFO2P match kept, D-18 evidence recorded (SPL-13)
 
 **Wave 9** *(blocked on Wave 8 completion; main checkout)*
-- [ ] 05-20-PLAN.md — phase gate: container ninja graph and both checks, rebuild/cmp, both suites with skip audit, hygiene, validation sign-off (SPL-01..SPL-13)
+- [x] 05-20-PLAN.md — phase gate: container ninja graph and both checks, rebuild/cmp, both suites with skip audit, hygiene, validation sign-off (SPL-01..SPL-13)
 
 ### Phase 6: Reporting and agent pilot
 
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 2. Container and target ingest | 2/2 | Complete    | 2026-10-20 |
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
-| 5. Split and first matches | 19/20 | In Progress | - |
+| 5. Split and first matches | 20/20 | In Progress | - |
 | 6. Reporting and agent pilot | 0/TBD | Not started | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |

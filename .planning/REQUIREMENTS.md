@@ -41,19 +41,19 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Split and first matches (Phase 5)
 
-- [ ] **SPL-01**: Ghidra 12.1.4 (headless, JDK 21) with one LE loader in the Docker image exports a function list to `config/<exe>/functions.csv`
-- [ ] **SPL-02**: An independent capstone discovery pass cross-checks the Ghidra function list and boundary disagreements are reconciled
-- [ ] **SPL-03**: Functions are grouped into translation units with per-EXE config under `config/<exe>/`
-- [ ] **SPL-04**: A stub convention keeps original bytes for every unmatched function
-- [ ] **SPL-05**: Per-function disassembly is generated from `orig/` into gitignored `asm/` by script
-- [ ] **SPL-06**: `configure.py` writes `build.ninja`, `objdiff.json` and `compile_commands.json` for the Watcom-under-wibo compile path
-- [ ] **SPL-07**: `omf2elf.py` converts Watcom OMF to ELF32 (COMDAT, LIDATA, FIXUPP threads, BAKPAT, CEXTDEF) with pytest
-- [ ] **SPL-08**: Target ELF objects are cut from the LE with relocations rebuilt from LE fixups
-- [ ] **SPL-09**: A relocation check beyond objdiff verifies every non-relocated byte, equal length, every `call rel32` target and every absolute fixup target
-- [ ] **SPL-10**: Splicing a matched function keeps the original link-time value at each fixup site after its target is checked
-- [ ] **SPL-11**: A single-unit `check` tool prints per-function match (objdiff %, reloc check, splice SHA-1)
-- [ ] **SPL-12**: A C89 lint gate (`clang -fsyntax-only -std=gnu89 -Werror=declaration-after-statement` with a Watcom compat header) runs on `src/`
-- [ ] **SPL-13**: One function per EXE compiles, matches with relocations checked, splices back, both EXEs stay SHA-1 identical and objdiff shows 100%
+- [x] **SPL-01**: Ghidra 12.1.4 (headless, JDK 21) with one LE loader in the Docker image exports a function list to `config/<exe>/functions.csv`
+- [x] **SPL-02**: An independent capstone discovery pass cross-checks the Ghidra function list and boundary disagreements are reconciled
+- [x] **SPL-03**: Functions are grouped into translation units with per-EXE config under `config/<exe>/`
+- [x] **SPL-04**: A stub convention keeps original bytes for every unmatched function
+- [x] **SPL-05**: Per-function disassembly is generated from `orig/` into gitignored `asm/` by script
+- [x] **SPL-06**: `configure.py` writes `build.ninja`, `objdiff.json` and `compile_commands.json` for the Watcom-under-wibo compile path
+- [x] **SPL-07**: `omf2elf.py` converts Watcom OMF to ELF32 (COMDAT, LIDATA, FIXUPP threads, BAKPAT, CEXTDEF) with pytest
+- [x] **SPL-08**: Target ELF objects are cut from the LE with relocations rebuilt from LE fixups
+- [x] **SPL-09**: A relocation check beyond objdiff verifies every non-relocated byte, equal length, every `call rel32` target and every absolute fixup target
+- [x] **SPL-10**: Splicing a matched function keeps the original link-time value at each fixup site after its target is checked
+- [x] **SPL-11**: A single-unit `check` tool prints per-function match (objdiff %, reloc check, splice SHA-1)
+- [x] **SPL-12**: A C89 lint gate (`clang -fsyntax-only -std=gnu89 -Werror=declaration-after-statement` with a Watcom compat header) runs on `src/`
+- [x] **SPL-13**: One function per EXE compiles, matches with relocations checked, splices back, both EXEs stay SHA-1 identical and objdiff shows 100%
 
 ### Reporting (Phase 6)
 
@@ -152,19 +152,19 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | CID-04 | Phase 4 | Complete |
 | CID-05 | Phase 4 | Complete |
 | CID-06 | Phase 4 | Complete |
-| SPL-01 | Phase 5 | Pending |
-| SPL-02 | Phase 5 | Pending |
-| SPL-03 | Phase 5 | Pending |
-| SPL-04 | Phase 5 | Pending |
-| SPL-05 | Phase 5 | Pending |
-| SPL-06 | Phase 5 | Pending |
-| SPL-07 | Phase 5 | Pending |
-| SPL-08 | Phase 5 | Pending |
-| SPL-09 | Phase 5 | Pending |
-| SPL-10 | Phase 5 | Pending |
-| SPL-11 | Phase 5 | Pending |
-| SPL-12 | Phase 5 | Pending |
-| SPL-13 | Phase 5 | Pending |
+| SPL-01 | Phase 5 | Complete |
+| SPL-02 | Phase 5 | Complete |
+| SPL-03 | Phase 5 | Complete |
+| SPL-04 | Phase 5 | Complete |
+| SPL-05 | Phase 5 | Complete |
+| SPL-06 | Phase 5 | Complete |
+| SPL-07 | Phase 5 | Complete |
+| SPL-08 | Phase 5 | Complete |
+| SPL-09 | Phase 5 | Complete |
+| SPL-10 | Phase 5 | Complete |
+| SPL-11 | Phase 5 | Complete |
+| SPL-12 | Phase 5 | Complete |
+| SPL-13 | Phase 5 | Complete |
 | RPT-01 | Phase 6 | Pending |
 | RPT-02 | Phase 6 | Pending |
 | RPT-03 | Phase 6 | Pending |

@@ -4,17 +4,17 @@ milestone: v1.0
 milestone_name: Milestone 1
 current_phase: 05
 current_phase_name: Split and first matches
-status: executing
-stopped_at: Completed 05-19-PLAN.md
-last_updated: "2026-10-24T04:45:44.782Z"
+status: verifying
+stopped_at: Completed 05-20-PLAN.md
+last_updated: "2026-10-24T05:21:16.504Z"
 last_activity: 2026-10-23
 last_activity_desc: Phase 05 execution started
-state_head: 0a7756ee813227ca8e87ffcd26dc0ee517f01a4d
+state_head: 24d83e52294dc77b36cca11f7cfab2f3be126621
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 47
-  completed_plans: 46
+  completed_plans: 47
 ---
 
 # Project State
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-23)
 
 Phase: 05 (Split and first matches) — EXECUTING
 Plan: 20 of 20
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-23 — Phase 05 execution started
 
 Progress: [█████░░░░░] 50%
@@ -71,6 +71,7 @@ Next steps:
 | Phase 05 P12 | 42min | 3 tasks | 7 files |
 | Phase 05 P18 | 32min | 3 tasks | 7 files |
 | Phase 05 P19 | 17min | 3 tasks | 4 files |
+| Phase 05 P20 | 25min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -96,6 +97,7 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-18: target.py leaves references into no functions.csv row and branches out of the code object raw (named in raw_fields, F11 principle) so every real unit cuts and the default ninja graph builds
 - [Phase 05]: 05-19: first TACP match func_00055080 (u_00054f20) under the default wcc386@10.6 -4r -s -fpi rule; no sweep, no cflags rule
 - [Phase 05]: 05-19: two leaf-sized matches separate no Phase 4 candidate (10.5/10.6/11.0, -4/-5, -o* tied); * default and __WATCOMC__ 1060 stay (D-18, D-14)
+- [Phase 05]: 05-20: Phase 5 gate green on main from a clean ninja graph (both units compiled by wcc386@10.6 under wibo, linted, landed SHA-1 identical); both first-match checks exit 0; host 1540p/25 platform skips, container 1563p/2 Windows-only skips, ruff clean; 05-VALIDATION.md signed off 13/13 with build/gate/05-evidence/ logs
 
 ### Pending Todos
 
@@ -125,6 +127,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T04:45:44.193Z
-Stopped at: Completed 05-19-PLAN.md
+Last session: 2026-10-24T05:21:15.905Z
+Stopped at: Completed 05-20-PLAN.md
 Resume file: None
