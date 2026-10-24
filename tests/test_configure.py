@@ -432,16 +432,21 @@ int func_00010000(void)
 """
 
 
-def _split_tree(tmp_path, *, source=UNIT_SOURCE, units=UNITS_CSV, functions=FUNCTIONS_CSV):
-    """A tmp orig, config and src tree for UFO2P.EXE with one unit; returns configure argv."""
+def _split_tree(
+    tmp_path, *, source=UNIT_SOURCE, units=UNITS_CSV, functions=FUNCTIONS_CSV, exe="UFO2P.EXE"
+):
+    """A tmp orig, config (with its own targets.toml) and src tree for `exe` with one unit;
+    returns configure argv."""
     orig = tmp_path / "orig"
     orig.mkdir()
-    (orig / "UFO2P.EXE").write_bytes(b"x")
-    exe_config = tmp_path / "config" / "ufo2p"
+    (orig / exe).write_bytes(b"x")
+    write_manifest(_config_dir(tmp_path, "targets.toml"), {exe: b"x"})
+    stem = exe.removesuffix(".EXE").lower()
+    exe_config = tmp_path / "config" / stem
     exe_config.mkdir(parents=True)
     (exe_config / "units.csv").write_text(units, encoding="utf-8")
     (exe_config / "functions.csv").write_text(functions, encoding="utf-8")
-    exe_src = tmp_path / "src" / "ufo2p"
+    exe_src = tmp_path / "src" / stem
     exe_src.mkdir(parents=True)
     if source is not None:
         (exe_src / f"{UNIT}.c").write_text(source, encoding="utf-8")
@@ -451,6 +456,29 @@ def _split_tree(tmp_path, *, source=UNIT_SOURCE, units=UNITS_CSV, functions=FUNC
         "--src", str(tmp_path / "src"),
         "--output", str(tmp_path / "build.ninja"),
     ]  # fmt: skip
+
+
+def _config_dir(tmp_path, name: str):
+    config = tmp_path / "config"
+    config.mkdir(exist_ok=True)
+    return config / name
+
+
+def test_config_dir_brings_its_own_manifest(tmp_path):
+    """Code review IN-04: --config DIR reads DIR/targets.toml, not the repository's, so the
+    CSVs and the manifest come from one tree. SYN.EXE is in no repository manifest."""
+    assert configure.main(_split_tree(tmp_path, exe="SYN.EXE")) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    obj = f"$builddir/syn/obj/{UNIT}.obj"
+    assert _edge(text, obj).startswith(f"build {obj}: cc src/syn/{UNIT}.c")
+    assert "$builddir/ufo2p/" not in text
+
+
+def test_config_dir_without_a_manifest_is_refused(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    (tmp_path / "config" / "targets.toml").unlink()
+    _assert_refused(tmp_path, argv, capsys, str(tmp_path / "config" / "targets.toml"),
+                    "--config")  # fmt: skip
 
 
 def _edge(text: str, output: str) -> str:

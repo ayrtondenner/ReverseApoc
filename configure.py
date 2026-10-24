@@ -615,11 +615,21 @@ def _check_no_stray_sources(src: Path, units: Sequence[UnitBuild]) -> None:
             )
 
 
+MANIFEST_NAME = "targets.toml"
+
+
 def collect_units(config: Path, src: Path, base: Path) -> list[UnitBuild]:
-    """Every units.csv row of every manifest target that has config/<exe>/units.csv. Raises
-    ConfigureError for a unit file that fails D-12 or a C file under `src` that names no unit."""
+    """Every units.csv row of every target of `config`/targets.toml that has
+    `config`/<exe>/units.csv: the manifest comes from the same tree as the CSVs (code review
+    IN-04). Raises ConfigureError for a config dir without targets.toml, a unit file that fails
+    D-12 or a C file under `src` that names no unit."""
+    manifest = config / MANIFEST_NAME
+    if not manifest.is_file():
+        raise ConfigureError(
+            f"{manifest} not found: --config DIR must hold the targets.toml its CSVs belong to"
+        )
     units: list[UnitBuild] = []
-    for target in load_manifest():
+    for target in load_manifest(manifest):
         units += _exe_units(target.name, config, src, base)
     _check_no_stray_sources(src, units)
     return units
