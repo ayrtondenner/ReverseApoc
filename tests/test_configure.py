@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -10,10 +11,11 @@ import pytest
 import configure
 from conftest import build_le_image, write_manifest
 from reverseapoc.cli import main as cli_main
+from reverseapoc.functions import FunctionRow
 from reverseapoc.targets import load_manifest
 
 
-def test_render_has_phony_targets_and_phase5_note():
+def test_render_has_phony_targets_and_compile_rules():
     text = configure.render(["orig/UFO2P.EXE", "orig/TACP.EXE"])
     assert "build check-orig: phony" in text
     assert "build parse-le: phony" in text
@@ -21,7 +23,8 @@ def test_render_has_phony_targets_and_phase5_note():
     assert "uv run reverseapoc parse-le $in" in text
     assert "parse_le orig/UFO2P.EXE" in text
     assert "parse_le orig/TACP.EXE" in text
-    assert "Phase 5" in text
+    assert "rule cc" in text
+    assert "rule omf2elf" in text
     assert "builddir = build" in text
 
 
@@ -285,7 +288,7 @@ def test_main_refuses_real_names_that_are_not_utf8(tmp_path):
 
 def test_main_never_truncates_on_an_encoding_failure(tmp_path, monkeypatch, capsys):
     # The bytes exist before build.ninja is opened, even for text that slips past render().
-    monkeypatch.setattr(configure, "render", lambda exes, *, orig: "# A\udcffB\n")
+    monkeypatch.setattr(configure, "render", lambda exes, *, orig, **_units: "# A\udcffB\n")
     out = tmp_path / "build.ninja"
     out.write_bytes(SENTINEL)
     assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 1
@@ -394,4 +397,422 @@ def test_no_stale_phase_wording():
     for where in (configure.__doc__, text):
         assert "Phase 2" not in where
         assert "skeleton" not in where
-    assert "Phase 5" in text
+        # The compile rules are here now; nothing promises them for a later phase.
+        assert "Phase 5" not in where
+        assert "arrive in" not in where
+        assert "Verification targets only" not in where
+    assert "rule cc" in text
+    assert "rule omf2elf" in text
+    comments = [line for line in text.splitlines() if line.startswith("#")]
+    for target in ("ninja objects", "ninja lint", "ninja asm", "ninja verify"):
+        assert any(target in line for line in comments), target
+
+
+# ---- Phase 5 (SPL-06): units with C become compile, convert and cut edges ----------------------
+
+UNIT = "u_00010000"
+FUNCTIONS_CSV = """\
+start,end,name,kind,unit,evidence
+0x00010000,0x00010010,func_00010000,game,u_00010000,call
+0x00010010,0x00010020,func_00010010,game,u_00010000,call
+"""
+UNITS_CSV = """\
+unit,start,end,reason
+u_00010000,0x00010000,0x00010020,first
+"""
+UNIT_SOURCE = """\
+#include "common.h"
+
+INCLUDE_ASM(func_00010010);
+
+int func_00010000(void)
+{
+    return 0;
+}
+"""
+
+
+def _split_tree(tmp_path, *, source=UNIT_SOURCE, units=UNITS_CSV, functions=FUNCTIONS_CSV):
+    """A tmp orig, config and src tree for UFO2P.EXE with one unit; returns configure argv."""
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / "UFO2P.EXE").write_bytes(b"x")
+    exe_config = tmp_path / "config" / "ufo2p"
+    exe_config.mkdir(parents=True)
+    (exe_config / "units.csv").write_text(units, encoding="utf-8")
+    (exe_config / "functions.csv").write_text(functions, encoding="utf-8")
+    exe_src = tmp_path / "src" / "ufo2p"
+    exe_src.mkdir(parents=True)
+    if source is not None:
+        (exe_src / f"{UNIT}.c").write_text(source, encoding="utf-8")
+    return [
+        "--orig", str(orig),
+        "--config", str(tmp_path / "config"),
+        "--src", str(tmp_path / "src"),
+        "--output", str(tmp_path / "build.ninja"),
+    ]  # fmt: skip
+
+
+def _edge(text: str, output: str) -> str:
+    """The `build <output>: ...` line of build.ninja text."""
+    return next(line for line in text.splitlines() if line.startswith(f"build {output}:"))
+
+
+def test_unit_with_source_gets_compile_edges(tmp_path):
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    for rule in ("cc", "omf2elf", "target"):
+        assert f"rule {rule}" in text
+    obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
+    base = f"$builddir/ufo2p/base/{UNIT}.o"
+    target = f"$builddir/ufo2p/target/{UNIT}.o"
+    assert _edge(text, obj).startswith(f"build {obj}: cc src/ufo2p/{UNIT}.c")
+    assert _edge(text, base).startswith(f"build {base}: omf2elf {obj}")
+    assert _edge(text, target).startswith(f"build {target}: target")
+
+    objdiff = json.loads((tmp_path / "objdiff.json").read_text(encoding="utf-8"))
+    (unit,) = [u for u in objdiff["units"] if u["name"] == f"ufo2p/{UNIT}"]
+    assert unit["target_path"] == f"build/ufo2p/target/{UNIT}.o"
+    assert unit["base_path"] == f"build/ufo2p/base/{UNIT}.o"
+
+    commands = json.loads((tmp_path / "compile_commands.json").read_text(encoding="utf-8"))
+    (entry,) = commands
+    assert entry["file"].endswith(f"src/ufo2p/{UNIT}.c")
+    assert "-std=gnu89" in entry["arguments"]
+    assert "-c" in entry["arguments"]
+
+
+GENERATED = ("build.ninja", "objdiff.json", "compile_commands.json")
+
+
+def _rows(*specs):
+    """FunctionRows of UNIT from (start, kind) pairs, each 0x10 bytes long."""
+    rows = []
+    for start, kind in specs:
+        name = f"func_{start:08X}" if kind in ("game", "thunk") else f"D_{start:08X}"
+        if kind == "runtime":
+            name = f"rt_{start:x}_"
+        rows.append(FunctionRow(start, start + 0x10, name, kind, UNIT, "call"))
+    return rows
+
+
+TWO_GAME = _rows((0x10000, "game"), (0x10010, "game"))
+
+
+def test_unit_source_complete_file_has_no_problems():
+    assert configure.check_unit_source(UNIT_SOURCE, TWO_GAME) == []
+
+
+def test_unit_source_neither_defined_nor_marked():
+    text = "int func_00010000(void) { return 0; }\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_defined_and_marked():
+    text = UNIT_SOURCE + "INCLUDE_ASM(func_00010000);\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "both" in problem
+
+
+def test_unit_source_marked_twice():
+    text = UNIT_SOURCE + "INCLUDE_ASM(func_00010010);\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "2 times" in problem
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["INCLUDE_ASM(func_00020000);\n", "void func_00020000(void)\n{\n}\n"],
+    ids=["marker", "definition"],
+)
+def test_unit_source_names_a_function_outside_the_unit(extra):
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + extra, TWO_GAME)
+    assert "func_00020000" in problem and "not a function of the unit" in problem
+
+
+def test_unit_source_prototype_and_call_are_not_definitions():
+    text = (
+        "INCLUDE_ASM(func_00010000);\n"
+        "int func_00010010(void);\n"
+        "static int f(void)\n{\n    if (func_00010010()) {\n        return 1;\n    }\n"
+        "    return func_00010010();\n}\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_ignores_comments():
+    text = (
+        "/* INCLUDE_ASM(func_00010010); */\n"
+        "INCLUDE_ASM(func_00010000);\n"
+        "/*\nint func_00010010(void)\n{\n}\n*/\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+@pytest.mark.parametrize(
+    "commented",
+    ["// INCLUDE_ASM(func_00010010);\n", "// int func_00010010(void) {\n//}\n"],
+    ids=["marker", "definition"],
+)
+def test_unit_source_ignores_line_comments(commented):
+    # Review fix round 1: wcc386 and clang gnu89 accept // comments.
+    text = "INCLUDE_ASM(func_00010000);\n" + commented
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_line_comment_inside_a_string_is_not_a_comment():
+    text = 'static char *s = "http://x"; INCLUDE_ASM(func_00010010);\nINCLUDE_ASM(func_00010000);\n'
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+def test_unit_source_if0_block_is_dead():
+    text = (
+        "INCLUDE_ASM(func_00010000);\n"
+        "#if 0\n#ifdef FOO\nINCLUDE_ASM(func_00010010);\n#endif\n"
+        "int func_00010010(void)\n{\n    return 0;\n}\n#endif\n"
+    )
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_unit_source_if0_else_branch_is_live():
+    text = (
+        "INCLUDE_ASM(func_00010010);\n"
+        "#if 0\nINCLUDE_ASM(func_00010000);\n#else\n"
+        "int func_00010000(void)\n{\n    return 0;\n}\n#endif\n"
+    )
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "line", "directive"),
+    [
+        ("#ifdef FOO\n#endif\n", 1, "#ifdef"),
+        ("#ifndef FOO\n#endif\n", 1, "#ifndef"),
+        ("int x;\n#if FOO\n#endif\n", 2, "#if"),
+        ("#if 1\n#endif\n", 1, "#if"),
+        ("#if 0\n#elif FOO\n#endif\n", 2, "#elif"),
+        ("/*\n\n*/\n  #  ifdef FOO\n#endif\n", 4, "#ifdef"),
+        ("#endif\n", 1, "#endif"),
+        ("#if 0\n#else\n#else\n#endif\n", 3, "#else"),
+    ],
+    ids=["ifdef", "ifndef", "if-expr", "if-1", "elif", "after-comment", "stray-endif",
+         "second-else"],  # fmt: skip
+)
+def test_unit_source_refuses_conditionals_it_cannot_evaluate(text, line, directive):
+    # Orchestrator ruling (review round 1): only #if 0 is understood; anything else fails closed.
+    shift = UNIT_SOURCE.count("\n")
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + text, TWO_GAME)
+    assert f"line {line + shift}" in problem
+    assert directive in problem
+
+
+def test_unit_source_refuses_an_unterminated_if0():
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + "#if 0\nint y;\n", TWO_GAME)
+    assert "#if 0" in problem and "#endif" in problem
+
+
+def test_main_refuses_a_conditional_naming_the_line(tmp_path, capsys):
+    argv = _split_tree(tmp_path, source="#ifdef FOO\n#endif\n" + UNIT_SOURCE)
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "line 1", "#ifdef")
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "int func_00010000(void) {\n    return 0;\n}\n",
+        "int\nfunc_00010000(int a, int (*cb)(int))\n{\n    return cb(a);\n}\n",
+        "static unsigned char *func_00010000 ( char *p )\n\n{\n    return p;\n}\n",
+    ],
+    ids=["same-line", "nested-parens", "blank-line"],
+)
+def test_unit_source_definition_shapes(definition):
+    text = "INCLUDE_ASM(func_00010010);\n" + definition
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+def test_unit_source_covers_thunk_rows_and_exempts_runtime_and_data():
+    # Orchestrator ruling F5: game and thunk rows need C or a marker; runtime and data-in-code
+    # rows are exempt.
+    rows = _rows((0x10000, "game"), (0x10010, "thunk"), (0x10020, "runtime"),
+                 (0x10030, "data-in-code"))  # fmt: skip
+    text = "INCLUDE_ASM(func_00010000);\n"
+    (problem,) = configure.check_unit_source(text, rows)
+    assert "func_00010010" in problem
+    assert configure.check_unit_source(text + "INCLUDE_ASM(func_00010010);\n", rows) == []
+
+
+def test_marker_next_to_definition_is_fine():
+    text = "INCLUDE_ASM(func_00010010);\nint func_00010000(void)\n{\n    return 0;\n}\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+    text = "int func_00010000(void)\n{\n    return 0;\n}\nINCLUDE_ASM(func_00010010);\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+FOUR_GAME = _rows((0x10000, "game"), (0x10010, "game"), (0x10020, "game"), (0x10030, "game"))
+FOUR_PARTS = {
+    "m0": "INCLUDE_ASM(func_00010000);\n",
+    "d1": "int func_00010010(void)\n{\n    return 1;\n}\n",
+    "m2": "INCLUDE_ASM(func_00010020);\n",
+    "d3": "void func_00010030(void)\n{\n}\n",
+}
+
+
+@pytest.mark.parametrize(
+    "order",
+    [("m0", "m2", "d1", "d3"), ("d1", "d3", "m0", "m2"), ("m0", "d1", "m2", "d3"),
+     ("d3", "m2", "d1", "m0")],  # fmt: skip
+    ids=["markers-first", "markers-after", "interleaved", "reversed"],
+)
+def test_order_does_not_matter(order):
+    text = "".join(FOUR_PARTS[part] for part in order)
+    assert configure.check_unit_source(text, FOUR_GAME) == []
+    without_last = "".join(FOUR_PARTS[part] for part in order[:-1])
+    (problem,) = configure.check_unit_source(without_last, FOUR_GAME)
+    assert "neither" in problem
+
+
+def _assert_refused(tmp_path, argv, capsys, *needles):
+    assert configure.main(argv) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("configure.py: error:")
+    for needle in needles:
+        assert needle in err
+    for name in GENERATED:
+        assert not (tmp_path / name).exists(), name
+
+
+def test_main_refuses_an_incomplete_unit(tmp_path, capsys):
+    argv = _split_tree(tmp_path, source="int func_00010000(void)\n{\n    return 0;\n}\n")
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "func_00010010")
+
+
+def test_main_refuses_a_bad_unit_name(tmp_path, capsys):
+    units = "unit,start,end,reason\nBad-Unit,0x00010000,0x00010020,first\n"
+    _assert_refused(tmp_path, _split_tree(tmp_path, source=None, units=units), capsys, "Bad-Unit")
+
+
+def test_main_refuses_a_stray_source(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    (tmp_path / "src" / "ufo2p" / "stray.c").write_text("int x;\n", encoding="utf-8")
+    _assert_refused(tmp_path, argv, capsys, "stray.c", "names no unit")
+
+
+THREE_UNITS = (
+    configure.UnitBuild("ufo2p", "UFO2P.EXE", "u_a", "src/ufo2p/u_a.c"),
+    configure.UnitBuild("ufo2p", "UFO2P.EXE", "u_b", None),
+    configure.UnitBuild("tacp", "TACP.EXE", "u_c", "src/tacp/u_c.c"),
+)
+BASES = ("$builddir/ufo2p/base/u_a.o", "$builddir/tacp/base/u_c.o")
+TARGETS = (
+    "$builddir/ufo2p/target/u_a.o",
+    "$builddir/ufo2p/target/u_b.o",
+    "$builddir/tacp/target/u_c.o",
+)
+
+
+def _deps(line: str) -> tuple[list[str], list[str]]:
+    """The explicit and implicit inputs of a `build out: rule in... | implicit...` line."""
+    inputs = line.partition(": ")[2].split(" ")[1:]
+    if "|" not in inputs:
+        return inputs, []
+    bar = inputs.index("|")
+    return inputs[:bar], inputs[bar + 1 :]
+
+
+def test_land_joins_verify():
+    text = configure.render([], orig="../elsewhere", units=THREE_UNITS)
+    assert "build $builddir/always/verify: rebuild" in text
+    lines = text.splitlines()
+    assert "build verify: phony $builddir/always/verify $builddir/always/land" in lines
+    explicit, implicit = _deps(_edge(text, "$builddir/always/land"))
+    assert explicit == []
+    assert sorted(implicit) == sorted(BASES)
+    assert _command(text, "land") == "command = uv run reverseapoc land --orig ../elsewhere"
+    assert REBUILD_CMD + "../elsewhere --out build" in _rule_block(text, "rebuild")
+
+
+def test_land_without_units_still_joins_verify():
+    lines = configure.render([]).splitlines()
+    assert "build verify: phony $builddir/always/verify $builddir/always/land" in lines
+    assert "build $builddir/always/land: land" in lines
+
+
+def test_lint_and_asm_edges():
+    text = configure.render([], units=THREE_UNITS)
+    assert _command(text, "lint") == "command = uv run reverseapoc lint $in --stamp $out"
+    stamps = ["$builddir/ufo2p/lint/u_a.stamp", "$builddir/tacp/lint/u_c.stamp"]
+    assert _deps(_edge(text, stamps[0]))[0] == ["src/ufo2p/u_a.c"]
+    assert _deps(_edge(text, stamps[1]))[0] == ["src/tacp/u_c.c"]
+    assert "$builddir/ufo2p/lint/u_b.stamp" not in text
+    assert f"build lint: phony {' '.join(stamps)}" in text.splitlines()
+
+    assert _command(text, "asm") == "command = uv run reverseapoc asm $exe --orig orig"
+    lines = text.splitlines()
+    for exe in ("ufo2p", "tacp"):
+        out = f"$builddir/always/asm/{exe}"
+        index = lines.index(f"build {out}: asm")
+        assert lines[index + 1] == f"  exe = {exe}"
+    asm_phony = "build asm: phony $builddir/always/asm/ufo2p $builddir/always/asm/tacp"
+    assert asm_phony in lines
+
+
+def test_regeneration_rule(tmp_path):
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    assert "generator = 1" in _rule_block(text, "configure")
+    command = _command(text, "configure")
+    assert "configure.py --orig orig --config config --src src --output $out" in command
+    explicit, implicit = _deps(_edge(text, "build.ninja"))
+    assert explicit == []
+    assert implicit[0].endswith("configure.py")
+    for dep in ("config/ufo2p/units.csv", "config/ufo2p/functions.csv", f"src/ufo2p/{UNIT}.c"):
+        assert dep in implicit, dep
+
+
+def test_regeneration_rule_refuses_an_unsafe_config_dir(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    config = tmp_path / "my config"
+    (tmp_path / "config").rename(config)
+    argv[argv.index("--config") + 1] = str(config)
+    _assert_refused(tmp_path, argv, capsys, "my config")
+
+
+def test_default_builds_objects():
+    text = configure.render([], units=THREE_UNITS)
+    lines = text.splitlines()
+    assert "default check-orig objects" in lines
+    line = _edge(text, "objects")
+    assert line.startswith("build objects: phony ")
+    explicit, implicit = _deps(line)
+    assert sorted(explicit) == sorted(BASES + TARGETS)
+    assert implicit == []
+
+
+def test_default_builds_objects_without_units():
+    lines = configure.render([]).splitlines()
+    assert "default check-orig objects" in lines
+    assert "build objects: phony" in lines
+
+
+def test_gitignore_lists_generated_files():
+    lines = (configure.ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+    start = lines.index("# --- generated by configure.py ---")
+    block = []
+    for line in lines[start + 1 :]:
+        if not line.strip() or line.startswith("# ---"):
+            break
+        block.append(line.strip())
+    for name in ("build.ninja", "objdiff.json", "compile_commands.json"):
+        assert name in block, name
+
+
+def test_main_creates_the_output_directory(tmp_path):
+    out = tmp_path / "cfg-smoke" / "build.ninja"
+    assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 0
+    for name in ("build.ninja", "objdiff.json", "compile_commands.json"):
+        assert (out.parent / name).is_file(), name
