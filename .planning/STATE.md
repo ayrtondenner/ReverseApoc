@@ -5,16 +5,16 @@ milestone_name: Milestone 1
 current_phase: 05
 current_phase_name: Split and first matches
 status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-10-24T01:22:54.423Z"
+stopped_at: Completed 05-12-PLAN.md
+last_updated: "2026-10-24T02:09:30.263Z"
 last_activity: 2026-10-23
 last_activity_desc: Phase 05 execution started
-state_head: 39ae144f238c3a31d6637e7fc6ac13a512303776
+state_head: 17017869190cd63520272c5a0e89138797da66c1
 progress:
   total_phases: 8
   completed_phases: 4
   total_plans: 47
-  completed_plans: 38
+  completed_plans: 39
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-23)
 ## Current Position
 
 Phase: 05 (Split and first matches) — EXECUTING
-Plan: 12 of 20
+Plan: 13 of 20
 Status: Ready to execute
 Last activity: 2026-10-23 — Phase 05 execution started
 
@@ -68,6 +68,7 @@ Next steps:
 | Phase 04 P12 | 9min | 2 tasks | 2 files |
 | Phase 04 P13 | 18min | 3 tasks | 5 files |
 | Phase 05 P01 | 10min | 2 tasks | 4 files |
+| Phase 05 P12 | 42min | 3 tasks | 7 files |
 
 ## Accumulated Context
 
@@ -87,6 +88,8 @@ Recent decisions affecting current work:
 - [Phase 04]: UAT 2026-10-23: owner re-tested G-04-2 (320 parallel compiles per environment, no lost line) and accepted the shipped `--log` behaviour; a docs note on a nameless or folder `--log` is backlog 999.1; review IN-08..IN-13 (info) left open in 04-REVIEW-DISPOSITION.md
 - [Phase 05]: Spike 005 VALIDATED (D-02, D-19): objdiff-cli 3.8.2 scores the converted cmain386 OMF object at 100.0 for __CMain in both EXEs with only an address-to-name map; hybrid pipeline stays
 - [Phase 05]: objdiff misses a wrong 2nd relocation of one instruction (100.0, spike 005 P3): the SPL-09 relocation check is the match gate; code sections are named _TEXT on both sides (a .text target is unpaired)
+- [Phase 05]: 05-12: Ghidra 12.1.4 + LxLoader v12.1.4-1 (SHA-256 pinned), OpenJDK 21 and clang 18 are in the image; D-20 strip of docs/ and top-level Extensions/ kept (image 898,389,257 bytes)
+- [Phase 05]: 05-12: Ghidra makes one one-address function in each EXE's data object (UFO2P 0x0013BD40, TACP 0x002B405C); reconcile (05-16) drops entries outside the code object
 
 ### Pending Todos
 
@@ -96,7 +99,7 @@ None yet.
 
 - [Phase 4]: RESOLVED 2026-10-19: Watcom 10.5, 10.6 and 11.0 media are supplied in gitignored `third_party/watcom-media/` (archive.org items Watcom_C_10.5/10.6/11.0; ISO SHA-1s 0722e749…, 211f4e7a…, 1708a29f…, re-checked in this session). Extracted trees go to `third_party/watcom/<ver>/`. RESOLVED 2026-10-21 (04-03/04-06/04-11): install-watcom 10.5 decodes the real BINW/WCC386.EXE from DISKIMGS PCK00017.1/.2 and config/watcom.toml pins it; the main checkout was migrated with --force
 - [Phase 4]: For 10.5/10.6, `BINNT\WCC386.EXE` is a 9,216-byte Win32 loader for the LX compiler `BINW\WCC386.EXE`, so the layout needs `binw/` as well as `binnt/`; 11.0's BINNT is native (WCC386.EXE + WCCD386.DLL) (reported by session reverseapoc-f2 on 2026-10-19; CONFIRMED 2026-10-21 by spike 004: the loader opens ..\BINW\WCC386.EXE itself)
-- [Phase 5]: `clang` (C89 lint gate) is missing from the Docker image; capstone cp314 wheels are unverified
+- [Phase 5]: RESOLVED 2026-10-24 (05-12): clang 18 (`clang-18=1:18.1.3-1ubuntu1`, `clang=1:18.0-59~exp2`) is in the Docker image and `reverseapoc lint` runs there; capstone 5.0.9 py3-none wheels verified in 05-03
 - [Phase 6]: Repo visibility must be settled before Pages and listings (Pages on a private repo needs a paid plan)
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
 - [Cross-cutting]: RESOLVED 2026-10-21: docs/toolchain.md and docs/learnings.md now say the installed UFO2P.EXE/TACP.EXE are the disc's `UFO2P4.EXE`/`TACP4.EXE` build (spike 003), not a store patch
@@ -116,6 +119,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-23T23:38:06.043Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-10-24T02:09:29.696Z
+Stopped at: Completed 05-12-PLAN.md
 Resume file: None
