@@ -97,3 +97,11 @@ Recorded for the owner (gate plan 05-20): the spike 005 verdict is `VALIDATED` (
 Sign-off evidence: `build/gate/05-evidence/11-signoff.log` (every task of 05-01..05-20 carries an `<automated>` verify except the one 05-03 checkpoint; no watch-mode flag) and `build/gate/05-evidence/09-rows.log` (every row command finished in the container in at most 172 s).
 
 **Approval:** 2026-10-24, gate plan 05-20
+
+## Validation Audit 2026-10-24
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
