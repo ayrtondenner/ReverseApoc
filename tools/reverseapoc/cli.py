@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, ghidra-export, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -23,6 +23,13 @@ from .functions import (
     read_functions_csv,
     read_symbols_csv,
     symbols_csv_path,
+)
+from .ghidra import (
+    DEFAULT_ASM_DIR,
+    DEFAULT_EXPORT_DIR,
+    GhidraError,
+    export_drafts,
+    export_functions,
 )
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
@@ -507,6 +514,46 @@ def _add_score_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_score)
 
 
+# ---- headless Ghidra: ghidra-export (container only, D-05) ----
+
+
+def _cmd_ghidra_export(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    if args.drafts:
+        result = export_drafts(
+            target.name, args.orig, args.drafts, args.asm, manifest=args.manifest
+        )
+        ok = not result.missing
+    else:
+        result = export_functions(target.name, args.orig, args.out, manifest=args.manifest)
+        ok = True
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    return 0 if ok else 1
+
+
+def _add_ghidra_export_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "ghidra-export",
+        help="run headless Ghidra on an EXE and write <out>/<exe>/functions.raw.csv, or with "
+        "--drafts the decompile drafts asm/<exe>/ghidra/func_XXXXXXXX.c (in the container)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--out", type=Path, default=DEFAULT_EXPORT_DIR, help=default)
+    p.add_argument(
+        "--drafts",
+        nargs="+",
+        type=_hex_address,
+        metavar="ADDR",
+        help="write decompile drafts for these hex addresses instead of the function list",
+    )
+    p.add_argument("--asm", type=Path, default=DEFAULT_ASM_DIR, help="drafts root; " + default)
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_ghidra_export)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -628,6 +675,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_probe_command(sub)
     _add_asm_command(sub)
     _add_score_command(sub)
+    _add_ghidra_export_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -650,6 +698,7 @@ _ERRORS = (
     SymbolError,
     AsmError,
     ScoreError,
+    GhidraError,
     OSError,
 )
 
