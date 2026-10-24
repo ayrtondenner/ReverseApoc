@@ -277,6 +277,18 @@ def test_write_src_runs_on_its_own(tmp_path: Path, capsys):
                      "--src-root", str(src)]) == 1  # fmt: skip
 
 
+def test_units_option_refused_when_drafting(tmp_path: Path, capsys):
+    """--units names the units.csv --write-src reads on its own; a draft writes units.csv, so
+    the combination is refused instead of ignoring --units."""
+    args = verb_setup(tmp_path)
+    units = tmp_path / "units.csv"
+    write_units_csv(units, [UnitRow("grafix", 0x10000, 0x10020, "hand")], "SYN.EXE")
+    out = tmp_path / "out"
+    assert cli_main(["units", *args, "--units", str(units), "--output", str(out)]) == 1
+    assert "--units" in capsys.readouterr().err
+    assert not out.exists()
+
+
 def test_units_verb_needs_an_action(tmp_path: Path, capsys):
     assert cli_main(["units", *verb_setup(tmp_path)]) == 1
     assert "--write-src" in capsys.readouterr().err

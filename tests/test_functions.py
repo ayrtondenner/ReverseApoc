@@ -6,6 +6,7 @@ tests/test_functions_lib_real.py.
 
 from __future__ import annotations
 
+import json
 import struct
 from pathlib import Path
 from types import MappingProxyType
@@ -739,15 +740,48 @@ def tracer_run(*existing: BoundaryRow, ghidra: tuple[int, ...] = (A, B, D)) -> R
 
 def test_hand_verdict_kept():
     """A hand verdict on a row the tool leaves open survives regeneration and is applied; the
-    tool-owned columns are regenerated; a hand verdict where the rule decides is replaced; a
-    row that is no longer a disagreement is dropped."""
-    gone = CODE + 0x600
-    result = tracer_run(hand(D, "ghidra", "prologue"), hand(C, "capstone"), hand(gone, "ghidra"))
-    assert result.boundaries == (
-        BoundaryRow(C, False, True, ("fixup",), "rule", "fixup"),
-        BoundaryRow(D, True, False, (), "ghidra", "prologue"),
-    )
+    tool-owned columns (here the stale evidence `call`) are regenerated."""
+    result = tracer_run(hand(D, "ghidra", "prologue"))
+    assert result.boundaries[1] == BoundaryRow(D, True, False, (), "ghidra", "prologue")
     assert (D, D + 1, f"func_{D:08X}", "game", "ghidra") in cells(result.functions)
+    assert result.replaced == ()
+    assert result.dropped_hand == ()
+
+
+def test_hand_verdict_replaced_by_the_rule_is_reported():
+    """Where the LE evidence decides, the rule wins (D-07), but the hand verdict it replaced is
+    reported by address with its old verdict, never lost silently. An open row or an earlier
+    `rule` row is no hand verdict and is not reported."""
+    result = tracer_run(hand(C, "capstone"), hand(D, "", ""))
+    assert result.boundaries[0] == BoundaryRow(C, False, True, ("fixup",), "rule", "fixup")
+    assert result.replaced == ((C, "capstone"),)
+    assert tracer_run(hand(C, "rule", "fixup")).replaced == ()
+
+
+def test_hand_row_no_longer_a_disagreement_is_reported():
+    """A hand row whose address is no longer a disagreement leaves boundaries.csv; the address
+    is reported."""
+    gone = CODE + 0x600
+    result = tracer_run(hand(gone, "ghidra"), hand(CODE + 0x700, "", ""))
+    assert gone not in [row.address for row in result.boundaries]
+    assert result.dropped_hand == (gone,)
+
+
+def test_functions_verb_reports_replaced_and_dropped_hand_verdicts(tmp_path: Path, capsys):
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(D))
+    out = tmp_path / "out"
+    gone = CODE + 0x600
+    hand_rows = [hand(C, "capstone"), hand(gone, "ghidra")]
+    write_boundaries_csv(out / "boundaries.csv", hand_rows, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert f"1 hand verdict replaced by the rule: 0x{C:08X} capstone -> rule" in text
+    assert f"1 hand row no longer a disagreement, dropped: 0x{gone:08X}" in text
+    write_boundaries_csv(out / "boundaries.csv", hand_rows, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["replaced"] == [{"address": f"0x{C:08X}", "verdict": "capstone"}]
+    assert report["dropped_hand"] == [f"0x{gone:08X}"]
 
 
 def test_hand_verdict_capstone_keeps_a_ghidra_only_start_out():
