@@ -22,6 +22,14 @@ relocation check and the byte comparison, and every splice SHA-1 matches with no
 1 on any mismatch; 2 (EXIT_TOOL) for a tool or usage problem (CheckError and the tool errors the
 CLI lists: compile failure, objdiff-cli missing, unknown unit). A missing tool is never a pass.
 
+`check EXE/UNIT --sweep FUNC` runs the fixed D-17 matrix instead (`sweep`): versions 10.6, 10.5,
+11.0 x CPU -4r, -5r x optimisation none, -ox, -os, -ot, -oneatx, with -s toggled only when the
+function calls the runtime public __CHK. Each cell compiles with a temporary one-rule cflags file
+under build/sweep/<exe>/<unit>/ and is logged, one line per cell, to
+build/logs/sweep-<exe>-<unit>-<func>.log, then the best cells. The sweep never lands, never edits
+config/cflags.txt (DEFAULT_CFLAGS) and decides no match: a cell worth keeping becomes a per-glob
+rule (D-18) and is then proven by a plain `check`.
+
 Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
 Outputs go to build/<exe>/obj|base|target/<unit>.*.
 """
@@ -39,7 +47,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .asm import data_ranges
-from .compiler import compile_source
+from .cflags import DEFAULT_CFLAGS, CflagsError
+from .compiler import CompilerError, compile_source
 from .elf import STT_FUNC, write_elf
 from .functions import FunctionRow, UnitRow, read_functions_csv, read_symbols_csv, read_units_csv
 from .land import LandedFunction, LandResult, land
@@ -47,11 +56,13 @@ from .le import LE, Fixup
 from .libmatch import LibMatchError, read_target, select_target
 from .omf import REC_THEADR, Module, Segment, read_object
 from .omf2elf import convert
+from .probe import CHK_PUBLIC
 from .relocs import FIELD_SIZE, OwnPublic, RelocError, RelocResult, check_function
 from .splice import _write_atomic
 from .symbols import SymbolTable
-from .target import TargetResult, build_target
+from .target import TargetResult, branch_fields, build_target
 from .targets import Target, check_bare_name, load_manifest
+from .watcom import DEFAULT_INSTALL
 
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 OBJDIFF = "objdiff-cli"
@@ -647,4 +658,206 @@ def check_unit(
                        fresh={(target.name, unit)}, loaded={target.name: inputs})  # fmt: skip
     return CheckResult(exe, unit, source.compiler, source.flags, source.functions,
                        tuple(splices), source.target, source.compile_output)  # fmt: skip
+
+
+# ---- the D-17 sweep ----
+
+SWEEP_COMPILER = "wcc386"
+SWEEP_VERSIONS = ("10.6", "10.5", "11.0")
+SWEEP_CPU = ("-4r", "-5r")
+SWEEP_OPT = ((), ("-ox",), ("-os",), ("-ot",), ("-oneatx",))
+NO_STACK_CHECKS = "-s"
+SWEEP_FPU = "-fpi"
+NOT_INSTALLED = "not installed"
+COMPILE_FAILED = "compile failed"
+NOT_DEFINED = "not defined"
+SWEEP_RULE = "*  {spec}  {flags}\n"  # one `*` rule: every source takes it
+
+
+def sweep_cells(*, chk: bool) -> list[tuple[str, tuple[str, ...]]]:
+    """(version, flags) of every D-17 cell: 30, or 60 when -s is toggled for a __CHK caller."""
+    stacks = ((NO_STACK_CHECKS,), ()) if chk else ((NO_STACK_CHECKS,),)
+    return [(version, (cpu, *opt, *stack, SWEEP_FPU)) for version in SWEEP_VERSIONS
+            for cpu in SWEEP_CPU for opt in SWEEP_OPT for stack in stacks]  # fmt: skip
+
+
+@dataclass(frozen=True)
+class SweepCell:
+    number: int  # 1-based
+    version: str
+    flags: tuple[str, ...]
+    status: str = ""  # NOT_INSTALLED, COMPILE_FAILED, NOT_DEFINED, or "" once measured
+    percent: float = 0.0
+    reloc_ok: bool = False
+    differing: int = 0
+
+    @property
+    def measured(self) -> bool:
+        return not self.status
+
+    def rank(self) -> tuple[bool, float, int]:
+        """Smaller is better: a passing relocation check, then objdiff, then fewer bytes."""
+        return (not self.reloc_ok, -self.percent, self.differing)
+
+    def line(self) -> str:
+        head = f"cell {self.number:02d}  {SWEEP_COMPILER}@{self.version}  {' '.join(self.flags)}"
+        if not self.measured:
+            return f"{head}  {self.status}"
+        reloc = "reloc ok" if self.reloc_ok else "reloc FAILED"
+        return f"{head}  objdiff {self.percent:g}%  {reloc}  differing {self.differing}"
+
+    def to_json(self) -> dict[str, Any]:
+        measured = self.measured
+        return {
+            "cell": self.number,
+            "compiler": f"{SWEEP_COMPILER}@{self.version}",
+            "flags": list(self.flags),
+            "status": self.status or "measured",
+            "objdiff_percent": self.percent if measured else None,
+            "reloc_ok": self.reloc_ok if measured else None,
+            "differing": self.differing if measured else None,
+        }
+
+
+@dataclass(frozen=True)
+class SweepReport:
+    exe: str
+    unit: str
+    function: str
+    chk: bool
+    cells: tuple[SweepCell, ...]
+    best: tuple[SweepCell, ...]
+    log_path: Path
+
+    @property
+    def lines(self) -> list[str]:
+        caller = "yes" if self.chk else "no"
+        head = f"sweep {self.exe}/{self.unit} {self.function}  calls __CHK: {caller}"
+        best = ", ".join(f"cell {cell.number:02d}" for cell in self.best) or "none"
+        return [head, *(cell.line() for cell in self.cells), f"best: {best}"]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "exe": self.exe,
+            "unit": self.unit,
+            "function": self.function,
+            "chk": self.chk,
+            "cells": [cell.to_json() for cell in self.cells],
+            "best": [cell.number for cell in self.best],
+            "log": str(self.log_path),
+        }
+
+
+def calls_chk(row: FunctionRow, exe: ExeInputs) -> bool:
+    """Whether `row` calls a functions.csv runtime row named __CHK."""
+    chk = {r.start for r in exe.rows if r.name == CHK_PUBLIC}
+    if not chk:
+        return False
+    sites = {fx.src_va: fx.size for fx in exe.fixups}
+    return any(dest in chk for _, dest in branch_fields(row, exe.flat, sites))
+
+
+def _sweep_row(exe: ExeInputs, rows: Sequence[FunctionRow], function: str) -> FunctionRow:
+    for row in rows:
+        if function in (row.name, exe.symbols.linker_name(row.start)):
+            return row
+    raise CheckError(f"{function} is not a function of the unit")
+
+
+@dataclass(frozen=True)
+class _SweepSetup:
+    exe: ExeInputs
+    rows: Sequence[FunctionRow]
+    row: FunctionRow
+    src: Path
+    work: Path  # build/sweep/<exe>/<unit>
+    target_o: Path
+    compile_fn: Callable[..., Any]
+    runner: Runner
+    options: CompileOptions
+
+
+def _compile_cell(setup: _SweepSetup, number: int, version: str, flags: Sequence[str]) -> Path:
+    """The cell's object, compiled with a temporary one-rule cflags file in `setup.work`."""
+    rule = setup.work / f"cell-{number:02d}.cflags"
+    if rule.resolve() == Path(DEFAULT_CFLAGS).resolve():  # T-05-38: never the committed table
+        raise CheckError(f"refusing to write the sweep rule over {DEFAULT_CFLAGS}")
+    spec = f"{SWEEP_COMPILER}@{version}"
+    _write(rule, SWEEP_RULE.format(spec=spec, flags=" ".join(flags)).encode("ascii"))
+    obj = setup.work / f"cell-{number:02d}{OBJECT_SUFFIX}"
+    o = setup.options
+    _compile(setup.compile_fn, setup.src, obj,
+             CompileOptions(rule, o.watcom_manifest, o.watcom_dir, o.log))  # fmt: skip
+    return obj
+
+
+def _measure(setup: _SweepSetup, number: int, version: str, flags: tuple[str, ...]) -> SweepCell:
+    if not (Path(setup.options.watcom_dir or DEFAULT_INSTALL) / version).is_dir():
+        return SweepCell(number, version, flags, NOT_INSTALLED)
+    try:
+        obj = _compile_cell(setup, number, version, flags)
+    except (CheckError, CompilerError, CflagsError):
+        return SweepCell(number, version, flags, COMPILE_FAILED)
+    module = read_module(obj)
+    found = [pair for pair in checked_functions(module, setup.rows, setup.exe)
+             if pair[0].row == setup.row]  # fmt: skip
+    if not found:
+        return SweepCell(number, version, flags, NOT_DEFINED)
+    d, reloc = found[0]
+    base = setup.work / f"cell-{number:02d}{ELF_SUFFIX}"
+    _write(base, write_elf(convert(module)))
+    same = compare_bytes(d.ours, d.row, setup.exe.flat, reloc)
+    percent = objdiff_percent(setup.target_o, base, d.symbol, runner=setup.runner)
+    return SweepCell(number, version, flags, "", percent, reloc.ok, same.differing)
+
+
+def _best(cells: Sequence[SweepCell]) -> tuple[SweepCell, ...]:
+    measured = [cell for cell in cells if cell.measured]
+    if not measured:
+        return ()
+    top = min(cell.rank() for cell in measured)
+    return tuple(cell for cell in measured if cell.rank() == top)
+
+
+def sweep(
+    exe: str,
+    unit: str,
+    function: str,
+    *,
+    orig_dir: Path,
+    manifest: Path,
+    config_root: Path,
+    src_root: Path,
+    build_dir: Path,
+    watcom_dir: Path | None = None,
+    watcom_manifest: Path | None = None,
+    log: Path | None = None,
+    compile_fn: Callable[..., Any] | None = None,
+    objdiff_runner: Runner | None = None,
+) -> SweepReport:
+    """Run the D-17 matrix for one function of `unit` and log every cell (see the module
+    docstring). Never lands and never writes config/cflags.txt."""
+    check_unit_name(unit)
+    target = select_exe(load_manifest(manifest), exe, manifest)
+    runner = objdiff_runner or default_objdiff_runner(f"{exe}/{unit}")
+    inputs = load_exe(target, orig_dir=orig_dir, manifest=manifest, config_root=config_root)
+    rows = inputs.unit_rows(unit)
+    row = _sweep_row(inputs, rows, function)
+    src = Path(src_root) / inputs.stem / f"{unit}{SOURCE_SUFFIX}"
+    if not src.is_file():
+        raise CheckError(f"{src} not found")
+    work = Path(build_dir) / "sweep" / inputs.stem / unit
+    target_o = work / f"target{ELF_SUFFIX}"
+    cut = build_target(inputs.le, rows, inputs.symbols, flat=inputs.flat, fixups=inputs.fixups)
+    _write(target_o, cut.data)
+    options = CompileOptions(None, watcom_manifest, watcom_dir, log)
+    setup = _SweepSetup(inputs, rows, row, src, work, target_o, compile_fn or compile_source,
+                        runner, options)  # fmt: skip
+    chk = calls_chk(row, inputs)
+    cells = tuple(_measure(setup, n, version, flags)
+                  for n, (version, flags) in enumerate(sweep_cells(chk=chk), start=1))  # fmt: skip
+    log_path = Path(build_dir) / "logs" / f"sweep-{inputs.stem}-{unit}-{row.name}.log"
+    report = SweepReport(exe, unit, row.name, chk, cells, _best(cells), log_path)
+    _write(log_path, ("\n".join(report.lines) + "\n").encode("utf-8"))
+    return report
 

@@ -14,7 +14,15 @@ from pathlib import Path
 from . import probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .cflags import DEFAULT_CFLAGS, CflagsError
-from .check import EXIT_TOOL, CheckError, check_unit, format_target, land_all, write_target
+from .check import (
+    EXIT_TOOL,
+    CheckError,
+    check_unit,
+    format_target,
+    land_all,
+    sweep,
+    write_target,
+)
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
@@ -876,8 +884,21 @@ def _split_unit(text: str) -> tuple[str, str]:
     return exe, unit
 
 
+def _run_sweep(args: argparse.Namespace, exe: str, unit: str) -> int:
+    report = sweep(
+        exe, unit, args.sweep, orig_dir=args.orig, manifest=args.manifest,
+        config_root=args.config, src_root=args.src, build_dir=args.build,
+        watcom_dir=args.watcom_dir, watcom_manifest=args.watcom_manifest, log=args.log,
+    )  # fmt: skip
+    print(json.dumps(report.to_json(), indent=2) if args.json else "\n".join(report.lines))
+    print(f"wrote {report.log_path}", file=sys.stderr)
+    return 0  # the sweep is evidence for a cflags rule (D-18), never a match
+
+
 def _run_check(args: argparse.Namespace) -> int:
     exe, unit = _split_unit(args.target)
+    if args.sweep is not None:
+        return _run_sweep(args, exe, unit)
     result = check_unit(
         exe, unit, orig_dir=args.orig, manifest=args.manifest, config_root=args.config,
         src_root=args.src, build_dir=args.build, watcom_dir=args.watcom_dir, cflags=args.cflags,
@@ -920,6 +941,12 @@ def _add_check_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
     p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
     p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
+    p.add_argument(
+        "--sweep",
+        metavar="FUNC",
+        help="run the fixed D-17 flag matrix for FUNC and log every cell to "
+        "build/logs/sweep-<exe>-<unit>-<func>.log; never lands, never edits config/cflags.txt",
+    )
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_check)
 
