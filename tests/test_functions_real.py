@@ -29,7 +29,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra, requires_version
-from reverseapoc.asm import data_ranges
+from reverseapoc.asm import OBJ_EXECUTABLE, data_ranges
 from reverseapoc.functions import (
     RUNTIME_VERSION,
     FunctionRow,
@@ -66,6 +66,13 @@ EXES = ("UFO2P.EXE", "TACP.EXE")
 EXPORT_ENV = "REVERSEAPOC_GHIDRA_EXPORT"
 UNIT_NAME = re.compile(r"[a-z0-9_]+")
 SPIKE_FUNCTIONS = ("main_",)  # spike 005: a linker name no functions.csv row carries
+# Code-object bytes past the last functions.csv row, which no row and so no unit covers: UFO2P's
+# 3 bytes at 0x000CFADA are the target of the jump that is all of func_000CFAB6; neither Ghidra
+# nor capstone starts a function there, so it is no disagreement either (see the 05-16 SUMMARY).
+UNCOVERED_TAIL = {"UFO2P.EXE": 3, "TACP.EXE": 0}
+FUNCTIONS_HINT = "run `uv run reverseapoc functions <exe> --ghidra-export PATH --write`"
+UNITS_HINT = "run `uv run reverseapoc units <exe> --write`"
+SYMBOLS_HINT = "write it by hand from the spike 005 name table (D-19)"
 
 
 @dataclass(frozen=True)
@@ -80,22 +87,34 @@ def _stem(name: str) -> str:
     return Path(name).stem.lower()
 
 
-def _committed(path: Path, name: str) -> Path:
-    """A committed config file; skips (per EXE) until the plan step that writes it has run."""
-    if not path.is_file():
-        pytest.skip(f"{path} not committed yet (run `uv run reverseapoc functions {name} --write`)")
+def _present(path: Path, how: str) -> Path:
+    """A committed config file: missing is a failure, never a skip (only game, Ghidra and Watcom
+    inputs, which are never committed, may skip)."""
+    assert path.is_file(), f"{path} missing: {how}"
     return path
 
 
+def _orig(name: str) -> Path:
+    path = ORIG_DIR / name
+    if not path.is_file():
+        pytest.skip(f"{path} not present (run `uv run reverseapoc ingest` or set REVERSEAPOC_ORIG)")
+    return path
+
+
+def _export_root() -> Path:
+    """REVERSEAPOC_GHIDRA_EXPORT when set, else build/ghidra."""
+    return Path(os.environ[EXPORT_ENV]) if EXPORT_ENV in os.environ else DEFAULT_EXPORT_DIR
+
+
 def _export_csv(name: str) -> Path:
-    """The cached Ghidra export of `name`; exported into build/ghidra first when it is missing
-    and Ghidra is installed (skips naming GHIDRA_INSTALL_DIR otherwise)."""
-    root = Path(os.environ[EXPORT_ENV]) if EXPORT_ENV in os.environ else DEFAULT_EXPORT_DIR
+    """The cached Ghidra export of `name` under _export_root(); exported there first when it is
+    missing and Ghidra is installed (skips naming GHIDRA_INSTALL_DIR otherwise)."""
+    root = _export_root()
     cached = root / _stem(name) / EXPORT_NAME
     if cached.is_file():
         return cached
     requires_ghidra()
-    return export_functions(name, ORIG_DIR, DEFAULT_EXPORT_DIR).path
+    return export_functions(name, ORIG_DIR, root).path
 
 
 def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
@@ -121,12 +140,10 @@ def regenerated(request) -> Regenerated:
     from reverseapoc.units import assign_units
 
     name = request.param
+    boundaries = _present(boundaries_csv_path(name), FUNCTIONS_HINT)
+    _present(functions_csv_path(name), FUNCTIONS_HINT)
     requires_capstone()
-    path = ORIG_DIR / name
-    if not path.is_file():
-        pytest.skip(f"{path} not present (run `uv run reverseapoc ingest` or set REVERSEAPOC_ORIG)")
-    boundaries = _committed(boundaries_csv_path(name), name)
-    _committed(functions_csv_path(name), name)
+    path = _orig(name)
     export = _export_csv(name)
     le = LE(path)
     matches = read_runtime_csv(runtime_csv_path(name))
@@ -161,28 +178,36 @@ def test_no_hand_verdict_lost(regenerated):
 @pytest.mark.parametrize("name", EXES)
 def test_every_disagreement_has_a_verdict(name):
     """D-08: every Ghidra/capstone disagreement carries a verdict and a reason."""
-    rows = read_boundaries_csv(_committed(boundaries_csv_path(name), name))
+    rows = read_boundaries_csv(_present(boundaries_csv_path(name), FUNCTIONS_HINT))
     assert rows, f"{name}: boundaries.csv lists no disagreement"
     assert [f"0x{a:08X}" for a in missing_verdicts(rows)] == []
     assert [f"0x{r.address:08X}" for r in rows if not r.reason] == []
 
 
-def _present(path: Path, how: str) -> Path:
-    """A file committed for every EXE: missing is a failure, not a skip."""
-    assert path.is_file(), f"{path} missing: {how}"
-    return path
-
-
-UNITS_HINT = "run `uv run reverseapoc units <exe> --write`"
-SYMBOLS_HINT = "write it by hand from the spike 005 name table (D-19)"
-
-
 @pytest.mark.parametrize("name", EXES)
 def test_every_function_in_one_unit(name):
     """D-11: every functions.csv row lies in exactly one unit and its unit column says which."""
-    functions = read_functions_csv(_committed(functions_csv_path(name), name))
+    functions = read_functions_csv(_present(functions_csv_path(name), FUNCTIONS_HINT))
     units = read_units_csv(_present(units_csv_path(name), UNITS_HINT))
     assert check_unit_assignment(functions, units) == []
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_units_tile_the_code(name):
+    """D-11 coverage rule, as the draft applies it: the units tile the code object without a gap
+    or overlap from its start to the end of the last functions.csv row; past that row only the
+    UNCOVERED_TAIL bytes remain, in no row and no unit."""
+    functions = read_functions_csv(_present(functions_csv_path(name), FUNCTIONS_HINT))
+    units = sorted(read_units_csv(_present(units_csv_path(name), UNITS_HINT)),
+                   key=lambda unit: unit.start)  # fmt: skip
+    (code,) = [obj for obj in LE(_orig(name)).objects if obj.flags & OBJ_EXECUTABLE]
+    gaps = [f"0x{a.end:08X}..0x{b.start:08X}" for a, b in zip(units, units[1:], strict=False)
+            if a.end != b.start]  # fmt: skip
+    assert gaps == []
+    assert units[0].start == code.base
+    last_end = max(row.end for row in functions)
+    assert units[-1].end == last_end
+    assert code.end - last_end == UNCOVERED_TAIL[name]
 
 
 @pytest.mark.parametrize("name", EXES)
@@ -199,11 +224,9 @@ def test_symbols_resolve(name):
     """D-19: every symbols.csv name resolves through SymbolTable to its own address, a func name
     to a functions.csv start and a data name to the EXE's data object; the spike 005 names that
     no row carries are there."""
-    path = ORIG_DIR / name
-    if not path.is_file():
-        pytest.skip(f"{path} not present (run `uv run reverseapoc ingest` or set REVERSEAPOC_ORIG)")
-    functions = read_functions_csv(_committed(functions_csv_path(name), name))
+    functions = read_functions_csv(_present(functions_csv_path(name), FUNCTIONS_HINT))
     symbols = read_symbols_csv(_present(symbols_csv_path(name), SYMBOLS_HINT))
+    path = _orig(name)
     matches = read_runtime_csv(runtime_csv_path(name))
     ranges = data_ranges(LE(path))
     aliases = runtime_aliases(runtime_entries(matches, _libraries(matches)))
