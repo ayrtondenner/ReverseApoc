@@ -127,6 +127,35 @@ def test_toolchain_records_the_compiler_result():
     assert [needle for needle in needles if needle not in text] == []
 
 
+# Phase 5 (D-03, D-04, D-14, D-20): Ghidra 12.1.4 with the lastonesky loader runs headless in the
+# Docker image, retrokit is not used, and the compat header has its path. Each phrase below was
+# in a live doc before the correction (docs/research/ keeps the old wording as written).
+_STALE_GHIDRA_PHRASES = (
+    "Ghidra 12.1.4 + JDK 21 in WSL2",
+    "WSL2 (with JDK 21)",
+    "Ghidra and decomp.wtf run in WSL2",
+    "WSL2: Ghidra",
+    "(or retrokit), in WSL2",
+    "(lastonesky or retrokit) in WSL2",
+    "**Decided in Phase 5.**",
+    "Its path is decided in Phase 5",
+)
+
+
+def test_docs_place_ghidra_in_the_image():
+    hits = [
+        f"{path.relative_to(REPO_ROOT)}: {phrase}"
+        for path in _live_docs()
+        for phrase in _STALE_GHIDRA_PHRASES
+        if phrase in path.read_text(encoding="utf-8")
+    ]
+    assert hits == []
+    style = (REPO_ROOT / "docs" / "coding-style.md").read_text(encoding="utf-8")
+    assert "include/watcom_compat.h" in style
+    toolchain = (REPO_ROOT / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    assert "ghidra-export" in toolchain
+
+
 def _default_cflags_rule():
     """The `*` rule of config/cflags.txt, parsed against the versions of config/watcom.toml."""
     path = REPO_ROOT / "config" / "cflags.txt"
