@@ -297,6 +297,77 @@ def test_round_trip_tests_never_copy_manifest_hashes():
     assert found == []
 
 
+def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
+    """What is wrong when a runtime dependency has no docs/tools.md reason (empty = none).
+
+    Not implemented yet (RED)."""
+    return []
+
+
+def test_every_runtime_dependency_is_documented():
+    # .claude/rules/tools.md: no third-party dependency without a reason in docs/tools.md. Each
+    # `[project].dependencies` pin needs a "Use" row in docs/tools.md holding the exact pin.
+    pyproject = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    tools = (REPO_ROOT / "docs" / "tools.md").read_text(encoding="utf-8")
+    assert _dependency_doc_problems(pyproject, tools) == []
+
+
+_PLANTED_PYPROJECT = '[project]\nname = "x"\ndependencies = ["foo==1.0"]\n'
+_TOOLS_HEADER = "| Candidate | Verdict | Reason | Install method | Status |\n|---|---|---|---|---|\n"
+
+
+def test_dependency_doc_check_catches_an_undocumented_pin():
+    # The check is only worth something if it can fail: a planted pin with no row, a row with
+    # another version, and a row that is not a "Use" verdict are each one problem.
+    other = "| [bar](https://example.invalid) | **Use** | r | uv: `bar==2.0` | Phase 5 |\n"
+    wrong_pin = "| [foo](https://example.invalid) | **Use** | r | uv: `foo==1.1` | Phase 5 |\n"
+    skipped = "| [foo](https://example.invalid) | **Skip** | r | uv: `foo==1.0` | skipped |\n"
+    for rows in (other, wrong_pin, skipped):
+        assert len(_dependency_doc_problems(_PLANTED_PYPROJECT, _TOOLS_HEADER + rows)) == 1
+    good = "| [foo](https://example.invalid) 1.0 | **Use** | r | uv: `foo==1.0` | Phase 5 |\n"
+    assert _dependency_doc_problems(_PLANTED_PYPROJECT, _TOOLS_HEADER + good) == []
+
+
+def test_dependency_doc_check_wants_an_exact_pin():
+    loose = '[project]\nname = "x"\ndependencies = ["foo>=1.0"]\n'
+    row = "| [foo](https://example.invalid) | **Use** | r | uv: `foo>=1.0` | Phase 5 |\n"
+    assert len(_dependency_doc_problems(loose, _TOOLS_HEADER + row)) == 1
+
+
+def _skip_message(helper) -> str:
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        helper()
+    return str(skipped.value)
+
+
+def test_requires_helpers_skip_cleanly(monkeypatch, tmp_path):
+    # Wave 0 skip helpers (05-03): each skips, naming what is missing, instead of failing.
+    import importlib.util
+
+    import conftest
+
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(tmp_path))
+    message = _skip_message(conftest.requires_ghidra)
+    assert "GHIDRA_INSTALL_DIR" in message
+    assert "analyzeHeadless" in message
+
+    monkeypatch.setattr(shutil, "which", lambda *_args, **_kwargs: None)
+    assert "objdiff-cli" in _skip_message(conftest.requires_objdiff)
+    assert "clang" in _skip_message(conftest.requires_clang)
+
+    monkeypatch.setattr(importlib.util, "find_spec", lambda *_args, **_kwargs: None)
+    assert "capstone" in _skip_message(conftest.requires_capstone)
+
+
+def test_requires_ghidra_returns_the_install_dir(monkeypatch, tmp_path):
+    import conftest
+
+    (tmp_path / "support").mkdir()
+    (tmp_path / "support" / "analyzeHeadless").write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.setenv("GHIDRA_INSTALL_DIR", str(tmp_path))
+    assert conftest.requires_ghidra() == tmp_path
+
+
 def test_gitignore_excludes_the_compiler_media_and_installs():
     patterns = _ignore_patterns(REPO_ROOT / ".gitignore")
     assert "third_party/" in patterns
