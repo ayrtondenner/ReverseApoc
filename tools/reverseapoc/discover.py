@@ -29,6 +29,7 @@ path never reads past it. The report holds addresses and counts only, never inst
 
 from __future__ import annotations
 
+from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -108,8 +109,8 @@ def code_objects(le: LE) -> list[LEObject]:
     return [obj for obj in le.objects if obj.flags & _OBJ_EXECUTABLE]
 
 
-class _Descent:
-    """State of one discovery run over an LE."""
+class _Image:
+    """le.py's unrelocated image with its code objects and LE fixup sites."""
 
     def __init__(self, le: LE) -> None:
         self.code = code_objects(le)
@@ -118,15 +119,22 @@ class _Descent:
         self.flat = le.load_flat(relocate=False)
         self.fixups = {fx.src_va: fx for fx in le.fixups()}
         self.sites = frozenset(self.fixups)
+
+    def code_object(self, va: int) -> LEObject | None:
+        return next((obj for obj in self.code if obj.contains(va)), None)
+
+
+class _Descent(_Image):
+    """State of one discovery run over an LE."""
+
+    def __init__(self, le: LE) -> None:
+        super().__init__(le)
         self.evidence: dict[int, set[str]] = defaultdict(set)
         self.visited: set[int] = set()
         self.decoded = 0
         self.pending: list[int] = []
         self.tables: dict[int, int] = {}  # jump table start -> end
         self.table_entries: set[int] = set()  # src_va of every jump-table entry
-
-    def code_object(self, va: int) -> LEObject | None:
-        return next((obj for obj in self.code if obj.contains(va)), None)
 
     def add_start(self, va: int, kind: str) -> bool:
         """Record `kind` evidence for a start at `va`; False when `va` is outside the code."""
@@ -259,3 +267,80 @@ def discover(le: LE, *, runtime_starts: Iterable[int] = ()) -> Discovery:
         jump_tables=tuple(sorted(descent.tables.items())),
         ignored_seeds=ignored,
     )
+
+
+class _EndScan(_Image):
+    """The D-07 end rule over the unrelocated image, with the jump tables as data-in-code."""
+
+    def __init__(self, le: LE, tables: Iterable[tuple[int, int]]) -> None:
+        super().__init__(le)
+        self.tables = sorted(tables)
+        self.table_starts = [start for start, _ in self.tables]
+
+    def table_end(self, va: int) -> int | None:
+        """End of the jump table containing `va`, else None."""
+        i = bisect_right(self.table_starts, va) - 1
+        if i < 0 or va >= self.tables[i][1]:
+            return None
+        return self.tables[i][1]
+
+    def skip(self, va: int) -> int | None:
+        """Where code resumes after the jump table or inline LE fixup field at `va`."""
+        end = self.table_end(va)
+        if end is not None:
+            return end
+        fx = self.fixups.get(va)
+        return va + fx.size if fx is not None else None
+
+    def only_padding(self, va: int, limit: int) -> bool:
+        """True when [va, limit) holds only filler instructions, zero bytes and jump tables (a
+        leading table of the next function)."""
+        while va < limit:
+            if (end := self.table_end(va)) is not None:
+                va = end
+                continue
+            if self.flat[va] == 0:
+                va += 1
+                continue
+            if va in self.sites:
+                return False
+            window = bytes(self.flat[va : min(va + _MAX_INSN, limit)])
+            insn = x86.decode_one(window, va)
+            if insn is None or not x86.is_filler(insn):
+                return False
+            va += insn.size
+        return True
+
+    def end_of(self, start: int, limit: int) -> int:
+        """The first padding byte after a terminal instruction in [start, limit), else limit (a
+        function that falls through into the next one has no ret)."""
+        pos = start
+        while pos < limit:
+            if (resume := self.skip(pos)) is not None:
+                pos = resume
+                continue
+            last = pos
+            for insn in x86.decode(bytes(self.flat[pos:limit]), pos, data_sites=self.sites):
+                last = insn.va + insn.size
+                if insn.is_terminal and self.only_padding(last, limit):
+                    return last
+            pos = last if last > pos else pos + 1  # step over an undecodable byte
+        return limit
+
+
+def ends(discovery: Discovery, le: LE) -> dict[int, int]:
+    """End of every start by the D-07 rule: the next start (or the object end), or the start of
+    the padding (filler or zero bytes, and any leading jump table of the next function) after a
+    terminal instruction. Decoding never reads past the containing object."""
+    scan = _EndScan(le, discovery.jump_tables)
+    starts = discovery.starts
+    result = {}
+    for i, start in enumerate(starts):
+        obj = scan.code_object(start)
+        if obj is None:
+            raise DiscoverError(f"start {start:#x} lies in no code object")
+        limit = obj.end
+        if i + 1 < len(starts):
+            limit = min(limit, starts[i + 1])
+        result[start] = scan.end_of(start, limit)
+    return result
