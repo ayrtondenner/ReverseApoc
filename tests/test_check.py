@@ -46,14 +46,21 @@ RULE = Rule("*", "wcc386", "10.6", ("-4r", "-s", "-fpi"), 1)
 SYMBOL = "func_00010000_"
 
 
-def omf_object(code: bytes = GOOD_OURS, callee: str = "func_00010010_") -> bytes:
-    """Our compiled unit: `_TEXT` holding `code` with func_00010000_ at 0, a self-relative call
-    to `callee` at 1 and an absolute load of _D_00020004 at 6."""
+def omf_object(
+    code: bytes = GOOD_OURS,
+    callee: str = "func_00010010_",
+    *,
+    public: str = SYMBOL,
+    extra: tuple[tuple[str, int], ...] = (),
+) -> bytes:
+    """Our compiled unit: `_TEXT` holding `code` with `public` (func_00010000_) at 0, a
+    self-relative call to `callee` at 1, an absolute load of _D_00020004 at 6, and `extra`
+    publics (name, offset) besides."""
     return module(
         "u_00010000",
         lnames("", "_TEXT", "CODE"),
         segdef32(2, 3, len(code)),
-        pubdef32(1, [(SYMBOL, 0)]),
+        pubdef32(1, [(public, 0), *extra]),
         extdef(callee, "_D_00020004"),
         ledata32(1, 0, code),
         fixupp32(call(1, 1), absolute(6, 2)),
@@ -491,3 +498,87 @@ def test_sweep_unknown_function(env, monkeypatch, capsys):
     argv = ["check", f"{STEM}/{UNIT}", *env.argv(), "--sweep", "func_00010020"]
     assert cli_main(argv) == check.EXIT_TOOL
     assert "func_00010020" in capsys.readouterr().err
+
+
+# ---- review round 1: every game/thunk row of the unit is exported or marked, never skipped ----
+
+
+def check_json(env: Env, monkeypatch, capsys, compiler) -> tuple[int, dict]:
+    patch_tools(monkeypatch, compiler=compiler)
+    code = cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), "--json"])
+    return code, json.loads(capsys.readouterr().out)
+
+
+def problems_by_name(doc: dict) -> dict[str, list[str]]:
+    found: dict[str, list[str]] = {}
+    for problem in doc["problems"]:
+        found.setdefault(problem["name"], []).append(problem["reason"])
+    return found
+
+
+def test_defined_but_misnamed_is_a_mismatch(env, monkeypatch, capsys):
+    """The C defines func_00010000, but the object exports it under another name (cdecl): the
+    row was never checked, so the unit must not pass on the original bytes."""
+    misnamed = FakeCompiler(omf_object(public="func_00010000"))
+    code, doc = check_json(env, monkeypatch, capsys, misnamed)
+    assert code == check.EXIT_MISMATCH
+    assert doc["ok"] is False
+    row = "defined in C but not exported as func_00010000_"
+    stray = "public func_00010000 is not a function of the unit"
+    assert {"name": "func_00010000", "va": "0x00010000", "reason": row} in doc["problems"]
+    # the stray public itself is named too, without an address (it is no row)
+    assert {"name": "func_00010000", "va": None, "reason": stray} in doc["problems"]
+    assert doc["functions"] == []
+
+
+def test_neither_exported_nor_marked_is_a_mismatch(env, monkeypatch, capsys):
+    (env.src / STEM / f"{UNIT}.c").write_text(
+        "int func_00010000(void) { return 0; }\n", encoding="utf-8"
+    )
+    code, doc = check_json(env, monkeypatch, capsys, FakeCompiler())
+    assert code == check.EXIT_MISMATCH
+    assert problems_by_name(doc)["func_00010010"] == [
+        "neither exported nor marked INCLUDE_ASM (expected public func_00010010_)"
+    ]
+    assert doc["functions"][0]["objdiff_percent"] == 100.0  # the exported one is still checked
+
+
+def test_marked_stub_is_reported_not_landed(env, monkeypatch, capsys):
+    code, doc = check_json(env, monkeypatch, capsys, FakeCompiler())
+    assert code == check.EXIT_OK and doc["ok"] is True
+    assert doc["stubs"] == [{"name": "func_00010010", "va": "0x00010010",
+                             "status": "stub, not checked"}]  # fmt: skip
+    assert doc["problems"] == []
+    assert [s["landed"] for s in doc["splice"]] == [1]  # only func_00010000 landed
+
+
+def test_exported_and_marked_is_a_mismatch(env, monkeypatch, capsys):
+    (env.src / STEM / f"{UNIT}.c").write_text(SOURCE + "INCLUDE_ASM(func_00010000);\n",
+                                              encoding="utf-8")  # fmt: skip
+    code, doc = check_json(env, monkeypatch, capsys, FakeCompiler())
+    assert code == check.EXIT_MISMATCH
+    assert "func_00010000" in problems_by_name(doc)
+
+
+def test_extra_public_not_in_the_unit_is_a_mismatch(env, monkeypatch, capsys):
+    helper = omf_object(GOOD_OURS + b"\xc3", extra=(("helper_", len(GOOD_OURS)),))
+    code, doc = check_json(env, monkeypatch, capsys, FakeCompiler(helper))
+    assert code == check.EXIT_MISMATCH
+    assert problems_by_name(doc)["helper_"] == ["public helper_ is not a function of the unit"]
+    assert doc["functions"][0]["reloc"]["ok"] is True  # func_00010000 itself still matches
+
+
+def test_land_refuses_a_misnamed_function(env, capsys):
+    put_object(env, omf_object(public="func_00010000"))
+    assert cli_main(land_argv(env)) == 1
+    out = capsys.readouterr().out
+    assert f"MISMATCH {EXE}" in out
+    reason = "defined in C but not exported as func_00010000_"
+    assert f"REFUSED func_00010000 at 0x00010000: {reason}" in out
+
+
+def test_land_refuses_an_extra_public(env, capsys):
+    put_object(env, omf_object(GOOD_OURS + b"\xc3", extra=(("helper_", len(GOOD_OURS)),)))
+    assert cli_main(land_argv(env)) == 1
+    out = capsys.readouterr().out
+    assert "REFUSED helper_: public helper_ is not a function of the unit" in out
