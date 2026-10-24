@@ -208,3 +208,17 @@ Facts checked during the session (read-only):
 - Twin matching of CD v1.00 (after Phase 7).
 - Reddit, GBAtemp and decompals posts (later).
 - readlint with the 999.2 rule (Phase 7).
+
+---
+
+## Owner rulings after research (2026-10-24)
+
+After `06-RESEARCH.md` was written, the owner ruled on its findings R1-R7 (recorded as D-44..D-50 in CONTEXT.md):
+
+| Finding | Options presented | Owner's choice |
+|---|---|---|
+| R1/R2/R5: `--mcp-config` + `--strict-mcp-config`; `--tools` to remove the shell; `--max-sessions`/`--target-matched` (pilot 40/10) | Accept all three / accept R1+R2 with the pilot capped at 30 | Free text: "i think I will reverse the MCP creation step, so the agent will use direct CLI calls for check, asm and context; is there still time for that? For unrelated stuff: accept". So **no MCP server** (reverses question 1.4): a Bash-allowlisted attempt wrapper instead. `--strict-mcp-config` stays, `--tools` includes Bash, and R5 is accepted. |
+| R3: notes.md under build/ vs the always-on build/ block | Env-var exemption / MCP notes tool | Env-var exemption (`REVERSEAPOC_ATTEMPT_NOTES`) |
+| R4: the same stale note on config/watcom.toml:106 | Both lines 37 and 106 / only line 37 | Both lines |
+| R7: uncovered bytes inside unit spans (mostly filler) | Separate "uncovered" segment / exclude filler via a committed list / leave out of the % | Separate "uncovered" segment |
+| R6: objdiff `Report::split()` category risk | (risk only) | Recorded in docs |
