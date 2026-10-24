@@ -67,10 +67,12 @@ def our_segment(
     externs: Sequence[str] = (),
     *,
     publics: Sequence[tuple[str, int]] = (("func_00010000_", 0),),
+    local: str = "CONST",
 ) -> Segment:
-    """Our `_TEXT` (SEGDEF 1) holding `data`, with a CONST segment (SEGDEF 2) beside it."""
+    """Our `_TEXT` (SEGDEF 1) holding `data`, with a module-local data segment named `local`
+    (SEGDEF 2) beside it."""
     records = [
-        lnames("", "_TEXT", "CODE", "CONST", "DATA"),
+        lnames("", "_TEXT", "CODE", local, "DATA"),
         segdef32(2, 3, len(data)),
         segdef32(4, 5, 8),
         pubdef32(TEXT_INDEX, list(publics)),
