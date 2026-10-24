@@ -220,6 +220,8 @@ def test_reloc_failure_beats_objdiff(env, monkeypatch, capsys):
     (fn,) = result.functions
     assert fn.objdiff_percent == 100.0
     assert not fn.reloc.ok and fn.reloc.problems
+    assert fn.bytes_ok  # only the call target is wrong: the function verdict must still fail
+    assert not fn.ok and fn.format()[0].startswith("MISMATCH")
     assert not result.ok and result.exit_code == check.EXIT_MISMATCH
     (splice,) = result.splices
     assert not splice.ok and [r.name for r in splice.refused] == ["func_00010000"]
