@@ -211,3 +211,12 @@ None. No external service configuration is required.
 *Completed: 2026-10-24*
 
 ## Self-Check: PASSED
+
+## Review fixes (round 1)
+
+**Important: `_branch_target` was duplicated in score.py.** asm.py now holds the only copy, as the public `branch_target(insn, fixups)`. score.py imports it with the other asm helpers, and its copy is gone. Behaviour is unchanged. Commit `03af90b`.
+
+Commands and output:
+- `uv run pytest -q tests/test_asm.py tests/test_score.py`: `27 passed in 0.93s`
+- `uv run pytest -q`: `1027 passed, 177 skipped in 13.80s`
+- `uv run ruff check .`: `All checks passed!`
