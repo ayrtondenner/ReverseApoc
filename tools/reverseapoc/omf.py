@@ -11,8 +11,9 @@ forms of the even ones. Supported records:
 - PUBDEF/PUBDEF32/LPUBDEF/LPUBDEF32;
 - LEDATA/LEDATA32, LIDATA/LIDATA32 (expanded, nesting capped at LIDATA_MAX_DEPTH, size bounded
   by the segment length), FIXUPP/FIXUPP32 with THREAD state, BAKPAT/BAKPAT32 (applied);
-  NBKPAT/NBKPAT32 are only counted;
-- COMDAT32 (named blocks with continuations and their fixups; C++ libraries keep code there);
+- COMDAT/COMDAT32 (named blocks with continuations and their fixups; C++ libraries keep code
+  there) and NBKPAT/NBKPAT32, applied to the named COMDAT's data;
+- LPUBDEF/LPUBDEF32 publics are marked `Public.local`;
 - COMENT class 0x9B (memory model), 0x9F (default library), 0xAA (Easy OMF: the 16-bit-numbered
   records carry 32-bit offsets and lengths, while LIDATA repeat counts stay 16-bit),
   0xE9 (dependency: ignored);
@@ -61,7 +62,8 @@ REC_LPUBDEF = 0xB6  # local public names
 REC_LPUBDEF32 = 0xB7
 REC_LCOMDEF = 0xB8  # local communal names
 REC_CEXTDEF = 0xBC  # COMDAT external names (LNAMES indexes)
-REC_COMDAT32 = 0xC3  # initialized communal data
+REC_COMDAT = 0xC2  # initialized communal data
+REC_COMDAT32 = 0xC3
 REC_NBKPAT = 0xC8  # named backpatch (COMDAT data)
 REC_NBKPAT32 = 0xC9
 REC_LIBHDR = 0xF0  # library header
@@ -93,6 +95,7 @@ _REC_NAMES = {
     REC_LPUBDEF32: "LPUBDEF32",
     REC_LCOMDEF: "LCOMDEF",
     REC_CEXTDEF: "CEXTDEF",
+    REC_COMDAT: "COMDAT",
     REC_COMDAT32: "COMDAT32",
     REC_NBKPAT: "NBKPAT",
     REC_NBKPAT32: "NBKPAT32",
@@ -100,6 +103,7 @@ _REC_NAMES = {
     REC_LIBEND: "LIBEND",
 }
 _MODEND_KINDS = (REC_MODEND, REC_MODEND32)
+_LOCAL_PUBDEFS = (REC_LPUBDEF, REC_LPUBDEF32)
 _WIDE_BIT = 0x01  # odd record types carry 32-bit offsets and lengths
 
 # Record framing.
@@ -168,7 +172,7 @@ LOC_SIZES = {
 
 LIDATA_MAX_DEPTH = 8  # nesting levels of LIDATA blocks accepted
 
-# BAKPAT location types and the bytes each patches.
+# BAKPAT and NBKPAT location types and the bytes each patches.
 _BAKPAT_SIZES = {0: 1, 1: 2, 2: 4}
 
 # COMDEF: data type byte, then one communal length (two for FAR data).
@@ -176,12 +180,16 @@ _COMDEF_FAR = 0x61  # number of elements, then element size
 _COMLEN_SHORT_MAX = 0x80  # a first byte up to 0x80 is the length itself
 _COMLEN_WIDTHS = {0x81: 2, 0x84: 3, 0x88: 4}  # first byte -> width of the length that follows
 
-# COMDAT32 header: flags, attributes, alignment, enumerated data offset, type index, public base
-# (explicit allocation only), public name index, then the data.
+# COMDAT/COMDAT32 header: flags, attributes, alignment, enumerated data offset, type index,
+# public base (explicit allocation only), public name index, then the data.
 COMDAT_CONTINUATION = 0x01  # flags: more data for the block of the same name
 COMDAT_ITERATED = 0x02  # flags: the data is LIDATA-style blocks
 _COMDAT_ALLOCATION_MASK = 0x0F  # attributes low nibble: allocation type
+_COMDAT_SELECTION_SHIFT = 4  # attributes high nibble: selection criterion
 _COMDAT_EXPLICIT = 0  # explicit allocation: group index, segment index (frame if both 0)
+COMDAT_SELECT_NO_MATCH = 0  # only one instance may exist; 1 pick any, 2 same size, 3 exact
+COMDAT_ALLOC_FAR_CODE = 1  # allocation types that put the block in code
+COMDAT_ALLOC_CODE32 = 3
 
 # Library header body (after the record framing).
 _LIB_PAGE_EXTRA = _REC_BODY  # page size = header record length + 3
@@ -227,6 +235,7 @@ class Public:
     name: str
     segment_index: int  # 1-based SEGDEF number, 0 for an absolute public
     offset: int
+    local: bool = False  # from LPUBDEF/LPUBDEF32: private to the module
 
 
 @dataclass(frozen=True)
@@ -253,7 +262,7 @@ class Segment:
 
 @dataclass(frozen=True)
 class Comdat:
-    """A named COMDAT32 block (C++ libraries keep their code in these)."""
+    """A named COMDAT or COMDAT32 block (C++ libraries keep their code in these)."""
 
     name: str
     segment_index: int  # 1-based SEGDEF number; 0 when not explicitly allocated
@@ -261,11 +270,23 @@ class Comdat:
     data: bytes
     fixups: tuple[OMFFixup, ...] = ()
     unmaskable: bool = False  # a FIXUPP addressed iterated data, so the mask is unknown
+    attributes: int = 0  # selection criterion (high nibble) and allocation type (low nibble)
+    backpatched: frozenset[int] = frozenset()  # offsets an NBKPAT added into
+
+    @property
+    def selection(self) -> int:
+        """Selection criterion: 0 no match, 1 pick any, 2 same size, 3 exact match."""
+        return self.attributes >> _COMDAT_SELECTION_SHIFT
+
+    @property
+    def allocation(self) -> int:
+        """Allocation type: 0 explicit (segment_index), 1 far code, 2 far data, 3 code32, ..."""
+        return self.attributes & _COMDAT_ALLOCATION_MASK
 
     @property
     def mask(self) -> frozenset[int]:
-        """Every byte offset a fixup writes."""
-        return _patched(self.fixups)
+        """Every byte offset a fixup or an NBKPAT writes."""
+        return _patched(self.fixups) | self.backpatched
 
 
 def _patched(fixups: tuple[OMFFixup, ...]) -> frozenset[int]:
@@ -283,7 +304,7 @@ class Module:
     model: str = ""
     default_libraries: tuple[str, ...] = ()
     easy_omf: bool = False
-    nbkpat_records: int = 0  # NBKPAT/NBKPAT32 records seen (not applied)
+    nbkpat_records: int = 0  # NBKPAT/NBKPAT32 records seen (each applied to its COMDAT)
 
 
 @dataclass(frozen=True)
@@ -385,9 +406,11 @@ class _ComdatBuilder:
     name: str
     segment_index: int
     alignment: int
+    attributes: int = 0
     data: bytearray = field(default_factory=bytearray)
     fixups: list[OMFFixup] = field(default_factory=list)
     unmaskable: bool = False
+    backpatched: set[int] = field(default_factory=set)
 
     def check_range(self, offset: int, size: int, what: str) -> None:
         if offset + size > len(self.data):
@@ -406,7 +429,8 @@ class _ComdatBuilder:
 
     def freeze(self) -> Comdat:
         return Comdat(self.name, self.segment_index, self.alignment, bytes(self.data),
-                      tuple(self.fixups), self.unmaskable)  # fmt: skip
+                      tuple(self.fixups), self.unmaskable, self.attributes,
+                      frozenset(self.backpatched))  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -565,7 +589,7 @@ def _pubdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
         name = cur.name()
         offset = m.offset_field(cur, rec)
         cur.index()  # type index
-        m.publics.append(Public(name, seg, offset))
+        m.publics.append(Public(name, seg, offset, local=rec.kind in _LOCAL_PUBDEFS))
 
 
 def _extdef(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
@@ -659,19 +683,22 @@ def _lidata(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     m.last_data = _DataRecord(seg, offset, iterated=True)
 
 
-def _comdat_block(m: _ModuleReader, flags: int, name: str, seg: int, align: int) -> _ComdatBuilder:
+def _comdat_block(
+    m: _ModuleReader, flags: int, name: str, seg: int, align: int, attributes: int
+) -> _ComdatBuilder:
     if flags & COMDAT_CONTINUATION:
         block = m.comdat_by_name.get(name)
         if block is None:
             raise OMFError(f"continuation of COMDAT {name!r} with no first record")
         return block
-    block = _ComdatBuilder(name, seg, align)
+    block = _ComdatBuilder(name, seg, align, attributes)
     m.comdats.append(block)
     m.comdat_by_name[name] = block
     return block
 
 
 def _comdat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    """COMDAT (0xC2) and COMDAT32 (0xC3): the width of the offset comes from `m.wide`."""
     flags, attributes, alignment = cur.u8(), cur.u8(), cur.u8()
     offset = m.offset_field(cur, rec)  # enumerated data offset
     cur.index()  # type index
@@ -686,7 +713,7 @@ def _comdat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
             m.segment(seg)
         else:
             cur.u16()  # base frame
-    block = _comdat_block(m, flags, m.lname(cur.index()), seg, alignment)
+    block = _comdat_block(m, flags, m.lname(cur.index()), seg, alignment, attributes)
     iterated = bool(flags & COMDAT_ITERATED)
     if iterated:
         _write_iterated(block, offset, cur, rec)
@@ -776,23 +803,42 @@ def _fixupp(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
             _thread(m, cur, first)
 
 
-def _bakpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
-    seg = m.segment(cur.index())
-    location = cur.u8()
+def _backpatch_size(location: int) -> int:
     size = _BAKPAT_SIZES.get(location)
     if size is None:
         raise OMFError(f"unknown backpatch location type {location}")
+    return size
+
+
+def _add_patches(
+    m: _ModuleReader, cur: _Cursor, rec: Record, target: _SegmentBuilder | _ComdatBuilder,
+    size: int,
+) -> None:  # fmt: skip
+    """Adds each (offset, value) pair of the rest of `cur` into `target`, bounds-checked."""
     while not cur.at_end():
         offset, value = m.offset_field(cur, rec), m.offset_field(cur, rec)
-        seg.check_range(offset, size, "backpatch")
-        old = int.from_bytes(seg.data[offset : offset + size], "little")
+        target.check_range(offset, size, "backpatch")
+        old = int.from_bytes(target.data[offset : offset + size], "little")
         new = (old + value) & ((1 << 8 * size) - 1)
-        seg.data[offset : offset + size] = new.to_bytes(size, "little")
-        seg.backpatched.update(range(offset, offset + size))
+        target.data[offset : offset + size] = new.to_bytes(size, "little")
+        target.backpatched.update(range(offset, offset + size))
+
+
+def _bakpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    seg = m.segment(cur.index())
+    _add_patches(m, cur, rec, seg, _backpatch_size(cur.u8()))
 
 
 def _nbkpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
+    """TIS OMF 1.1: location type, public name index (LNAMES) of a COMDAT, (offset, value)
+    pairs, 16-bit in NBKPAT and 32-bit in NBKPAT32 or an Easy OMF module."""
     m.nbkpat_records += 1
+    size = _backpatch_size(cur.u8())
+    name = m.lname(cur.index())
+    block = m.comdat_by_name.get(name)
+    if block is None:
+        raise OMFError(f"no COMDAT {name!r} to backpatch")
+    _add_patches(m, cur, rec, block, size)
 
 
 _HANDLERS = {
@@ -821,6 +867,7 @@ _HANDLERS = {
     REC_BAKPAT32: _bakpat,
     REC_NBKPAT: _nbkpat,
     REC_NBKPAT32: _nbkpat,
+    REC_COMDAT: _comdat,
     REC_COMDAT32: _comdat,
 }
 
