@@ -6,15 +6,22 @@ tests/test_functions_lib_real.py.
 
 from __future__ import annotations
 
+import json
+import struct
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
 import omfimage as om
+from conftest import build_le_image, fixup_record, requires_capstone, write_manifest
 from libtree import body, code_module, write_lib
+from reverseapoc.cli import main as cli_main
+from reverseapoc.discover import Discovery, discover
 from reverseapoc.functions import (
     BOUNDARIES_CSV_COLUMNS,
     BOUNDARIES_CSV_COMMENT,
+    EVIDENCE_ORDER,
     FUNCTIONS_CSV_COLUMNS,
     FUNCTIONS_CSV_COMMENT,
     SYMBOLS_CSV_COLUMNS,
@@ -25,10 +32,12 @@ from reverseapoc.functions import (
     BoundaryRow,
     FunctionRow,
     FunctionsError,
+    Reconciled,
     SymbolRow,
     UnitRow,
     boundaries_csv_path,
     check_unit_assignment,
+    format_boundaries_csv,
     format_functions_csv,
     functions_csv_path,
     missing_verdicts,
@@ -36,6 +45,7 @@ from reverseapoc.functions import (
     read_functions_csv,
     read_symbols_csv,
     read_units_csv,
+    reconcile,
     runtime_entries,
     seed_runtime_rows,
     symbols_csv_path,
@@ -45,7 +55,9 @@ from reverseapoc.functions import (
     write_symbols_csv,
     write_units_csv,
 )
-from reverseapoc.libmatch import LoadedLibrary, MatchRange, load_libraries
+from reverseapoc.ghidra import EXPORT_COLUMNS, GhidraFunction
+from reverseapoc.le import LE
+from reverseapoc.libmatch import RUNTIME_CSV_COLUMNS, LoadedLibrary, MatchRange, load_libraries
 from reverseapoc.targets import REPO_ROOT
 
 LIB = "DOS/CLIB3R.LIB"
@@ -501,3 +513,372 @@ def test_symbols_reader_refusals(tmp_path, rows, what):
     write_symbols_csv(path, rows, name="UFO2P.EXE")
     with pytest.raises(FunctionsError, match=what):
         read_symbols_csv(path)
+
+
+# ---- reconcile (D-07, D-08): made-up bytes patched into the synthetic LE of conftest.py ----
+
+CODE = 0x10000  # base of the synthetic code object (object 1)
+DATA = 0x20000  # base of the synthetic data object (object 2)
+RET = b"\xc3"
+PAD = bytes(1)  # a zero byte after a terminal instruction ends the function (D-07)
+OFF32 = 7  # LE fixup source type: 32-bit offset
+NO_FIXUPS = [b"", b"", b""]
+
+
+def call(at: int, target: int) -> bytes:
+    """`call target` (E8 rel32) placed at `at`."""
+    return b"\xe8" + struct.pack("<i", target - (at + 5))
+
+
+def jmp(at: int, target: int) -> bytes:
+    """`jmp target` (E9 rel32) placed at `at`."""
+    return b"\xe9" + struct.pack("<i", target - (at + 5))
+
+
+def make_image(
+    patches: dict[int, bytes], *, entry: int = 0x100, fixups: list[bytes] | None = None
+) -> bytes:
+    """A synthetic LE whose entry point is object 1 + `entry`; skips without capstone."""
+    requires_capstone()
+    return build_le_image(
+        fixups=NO_FIXUPS if fixups is None else fixups, entry=(1, entry), patches=patches
+    ).data
+
+
+def data_pointer(offset: int, target: int) -> bytes:
+    """One off32 fixup record at data object + `offset` pointing at code address `target`."""
+    return fixup_record(OFF32, offset, 1, target - CODE, off32=True)
+
+
+def ghidra_line(entry: int, *, size: int = 1, thunk: bool = False) -> str:
+    last = entry + size - 1
+    return (f"0x{entry:08X},0x{entry:08X},0x{last:08X},{size},1,"
+            f"{'true' if thunk else 'false'},__stdcall,FUN_{entry:08x}")  # fmt: skip
+
+
+def write_ghidra_export(path: Path, *lines: str) -> Path:
+    path.write_text("\n".join([",".join(EXPORT_COLUMNS), *lines]) + "\n", encoding="utf-8")
+    return path
+
+
+def write_empty_runtime(path: Path) -> Path:
+    path.write_text(",".join(RUNTIME_CSV_COLUMNS) + "\n", encoding="utf-8")
+    return path
+
+
+def verb_setup(tmp_path: Path, data: bytes, *ghidra: str) -> list[str]:
+    """Arguments naming SYN.EXE in tmp_path/orig, its manifest, an empty runtime.csv and a
+    Ghidra export holding `ghidra`."""
+    orig = tmp_path / "orig"
+    orig.mkdir(exist_ok=True)
+    (orig / "SYN.EXE").write_bytes(data)
+    manifest = write_manifest(tmp_path / "targets.toml", {"SYN.EXE": data})
+    runtime = write_empty_runtime(tmp_path / "runtime.csv")
+    export = write_ghidra_export(tmp_path / "functions.raw.csv", *ghidra)
+    return ["SYN.EXE", "--orig", str(orig), "--manifest", str(manifest), "--runtime",
+            str(runtime), "--ghidra-export", str(export)]  # fmt: skip
+
+
+A, B, C, D = CODE + 0x100, CODE + 0x200, CODE + 0x300, CODE + 0x400
+
+
+def tracer_image() -> bytes:
+    """The entry A calls B; a data-object pointer at DATA+0x10 names C; D has no evidence."""
+    patches = {A: call(A, B) + RET + PAD, B: RET + PAD, C: RET + PAD, D: RET + PAD,
+               DATA + 0x10: struct.pack("<I", C - CODE)}  # fmt: skip
+    return make_image(patches, fixups=[b"", b"", data_pointer(0x10, C)])
+
+
+def test_functions_verb_writes_both_csvs(tmp_path: Path, capsys):
+    """Ghidra sees A, B and D; capstone sees A, B and C. C (capstone-only, an LE fixup target)
+    is decided by the rule; D (Ghidra-only, no LE evidence) is left for a person."""
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(D))
+    out = tmp_path / "out"
+    rc = cli_main(["functions", *args, "--output", str(out)])
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    rows = read_functions_csv(out / "functions.csv")
+    assert [(r.start, r.end, r.name, r.kind, r.evidence) for r in rows] == [
+        (A, A + 6, f"func_{A:08X}", "game", "entry"),
+        (B, B + 1, f"func_{B:08X}", "game", "call"),
+        (C, C + 1, f"func_{C:08X}", "game", "fixup"),
+    ]
+    boundaries = read_boundaries_csv(out / "boundaries.csv")
+    assert boundaries == [
+        BoundaryRow(C, ghidra=False, capstone=True, evidence=("fixup",), verdict="rule",
+                    reason="fixup"),
+        BoundaryRow(D, ghidra=True, capstone=False, evidence=(), verdict="", reason=""),
+    ]  # fmt: skip
+    assert "1 missing verdict" in captured.out
+
+
+def test_functions_verb_keeps_units(tmp_path: Path, capsys):
+    """Regenerating functions.csv fills the unit column from the existing units.csv, so a hand
+    re-cut survives; without a units.csv the column stays empty."""
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(C))
+    out = tmp_path / "out"
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0, capsys.readouterr().err
+    assert {row.unit for row in read_functions_csv(out / "functions.csv")} == {""}
+    units = [UnitRow("front", A, C, "first"), UnitRow("grafix", C, C + 0x10, "hand")]
+    write_units_csv(out / "units.csv", units, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0, capsys.readouterr().err
+    rows = read_functions_csv(out / "functions.csv")
+    assert [row.unit for row in rows] == ["front", "front", "grafix"]
+
+
+# ---- the full D-07/D-08 rule set ----
+
+OBJECT_END = CODE + 0x1800  # end of the synthetic code object (conftest OBJECTS)
+
+
+def gfun(entry: int, *, last: int | None = None, thunk: bool = False) -> GhidraFunction:
+    """A Ghidra export row whose body runs from `entry` to `last` (inclusive)."""
+    last = entry if last is None else last
+    return GhidraFunction(entry, entry, last, last - entry + 1, 1, thunk, "__stdcall",
+                          f"FUN_{entry:08x}")  # fmt: skip
+
+
+def run(
+    data: bytes,
+    ghidra: list[GhidraFunction],
+    *,
+    runtime: tuple[FunctionRow, ...] = (),
+    modules: tuple[MatchRange, ...] = (),
+    existing: tuple[BoundaryRow, ...] = (),
+) -> Reconciled:
+    le = LE(data)
+    found = discover(le, runtime_starts=[row.start for row in runtime])
+    extra = {"modules": modules} if modules else {}
+    return reconcile(le, ghidra, found, list(runtime), existing=existing, **extra)
+
+
+def cells(rows) -> list[tuple]:
+    return [(r.start, r.end, r.name, r.kind, r.evidence) for r in rows]
+
+
+def table_fixups(sources: list[int], targets: list[int]) -> bytes:
+    """off32 fixups from object-1 addresses `sources` to object-1 addresses `targets`."""
+    return b"".join(
+        fixup_record(OFF32, src - CODE, 1, dst - CODE, off32=True)
+        for src, dst in zip(sources, targets, strict=True)
+    )
+
+
+def jmp_table(table: int) -> bytes:
+    """`jmp dword ptr [eax*4 + table]` with the raw field holding the object offset (wlink)."""
+    return b"\xff\x24\x85" + struct.pack("<I", table - CODE)
+
+
+def test_case_label_is_not_a_start():
+    """B's switch table sits before B (a leading table). Its first case label is also named by
+    a data pointer, so capstone starts a function there: the rule says it is a case label."""
+    table, b = CODE + 0x108, CODE + 0x110
+    case0, case1 = b + 7, b + 8
+    fixups = [table_fixups([b + 3, table, table + 4], [table, case0, case1]), b"",
+              data_pointer(0x10, case0)]  # fmt: skip
+    patches = {
+        A: call(A, b) + RET + PAD * 2,
+        table: struct.pack("<II", case0 - CODE, case1 - CODE),
+        b: jmp_table(table) + RET + RET + PAD,
+        DATA + 0x10: struct.pack("<I", case0 - CODE),
+    }
+    result = run(make_image(patches, fixups=fixups), [gfun(A), gfun(b, last=b + 8)])
+    assert cells(result.functions) == [
+        (A, A + 6, f"func_{A:08X}", "game", "entry"),
+        (table, b, f"D_{table:08X}", "data-in-code", "fixup"),
+        (b, b + 9, f"func_{b:08X}", "game", "call"),
+    ]
+    assert result.boundaries == (
+        BoundaryRow(case0, False, True, ("fixup",), "rule", f"case label of the table at "
+                    f"0x{table:08X}"),
+    )  # fmt: skip
+
+
+M = CODE + 0x400  # start of a made-up runtime module whose first public is at M + 1
+EXIT = FunctionRow(M + 1, M + 0x10, "exit_", "runtime", "", "runtime")
+
+
+def runtime_image() -> bytes:
+    """A (the entry) returns; the module's first byte is no public; exit_ calls a helper
+    inside its own row."""
+    patches = {A: RET + PAD, M: b"\x90", M + 1: call(M + 1, M + 8) + RET + PAD, M + 8: RET + PAD}
+    return make_image(patches)
+
+
+def exit_module() -> MatchRange:
+    return _range("exit", 0x10, ("exit_",), start=M, end=M + 0x10)
+
+
+def test_runtime_public_inside_a_module():
+    """exit_ sits at the module start + 1 and Ghidra misses it: a runtime row by the rule. The
+    byte before the module's first public is a data-in-code row of the module."""
+    result = run(runtime_image(), [gfun(A)], runtime=(EXIT,), modules=(exit_module(),))
+    assert cells(result.functions) == [
+        (A, A + 1, f"func_{A:08X}", "game", "entry"),
+        (M, M + 1, f"D_{M:08X}", "data-in-code", "runtime"),
+        (M + 1, M + 0x10, "exit_", "runtime", "runtime"),
+    ]
+    assert result.boundaries[0] == BoundaryRow(M + 1, False, True, ("runtime",), "rule",
+                                               "runtime")  # fmt: skip
+
+
+def test_runtime_public_start_inside_a_runtime_row():
+    """A call target inside a runtime row is part of that row: no function row of its own."""
+    result = run(runtime_image(), [gfun(A)], runtime=(EXIT,), modules=(exit_module(),))
+    assert M + 8 not in [row.start for row in result.functions]
+    assert result.boundaries[1] == BoundaryRow(M + 8, False, True, ("call",), "rule",
+                                               "runtime (inside exit_)")  # fmt: skip
+
+
+def hand(address: int, verdict: str, reason: str = "read by hand") -> BoundaryRow:
+    return BoundaryRow(address, False, True, ("call",), verdict, reason)
+
+
+def tracer_run(*existing: BoundaryRow, ghidra: tuple[int, ...] = (A, B, D)) -> Reconciled:
+    return run(tracer_image(), [gfun(entry) for entry in ghidra], existing=existing)
+
+
+def test_hand_verdict_kept():
+    """A hand verdict on a row the tool leaves open survives regeneration and is applied; the
+    tool-owned columns (here the stale evidence `call`) are regenerated."""
+    result = tracer_run(hand(D, "ghidra", "prologue"))
+    assert result.boundaries[1] == BoundaryRow(D, True, False, (), "ghidra", "prologue")
+    assert (D, D + 1, f"func_{D:08X}", "game", "ghidra") in cells(result.functions)
+    assert result.replaced == ()
+    assert result.dropped_hand == ()
+
+
+def test_hand_verdict_replaced_by_the_rule_is_reported():
+    """Where the LE evidence decides, the rule wins (D-07), but the hand verdict it replaced is
+    reported by address with its old verdict, never lost silently. An open row or an earlier
+    `rule` row is no hand verdict and is not reported."""
+    result = tracer_run(hand(C, "capstone"), hand(D, "", ""))
+    assert result.boundaries[0] == BoundaryRow(C, False, True, ("fixup",), "rule", "fixup")
+    assert result.replaced == ((C, "capstone"),)
+    assert tracer_run(hand(C, "rule", "fixup")).replaced == ()
+
+
+def test_hand_row_no_longer_a_disagreement_is_reported():
+    """A hand row whose address is no longer a disagreement leaves boundaries.csv; the address
+    is reported."""
+    gone = CODE + 0x600
+    result = tracer_run(hand(gone, "ghidra"), hand(CODE + 0x700, "", ""))
+    assert gone not in [row.address for row in result.boundaries]
+    assert result.dropped_hand == (gone,)
+
+
+def test_functions_verb_reports_replaced_and_dropped_hand_verdicts(tmp_path: Path, capsys):
+    args = verb_setup(tmp_path, tracer_image(), ghidra_line(A), ghidra_line(B), ghidra_line(D))
+    out = tmp_path / "out"
+    gone = CODE + 0x600
+    hand_rows = [hand(C, "capstone"), hand(gone, "ghidra")]
+    write_boundaries_csv(out / "boundaries.csv", hand_rows, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out)]) == 0
+    text = capsys.readouterr().out
+    assert f"1 hand verdict replaced by the rule: 0x{C:08X} capstone -> rule" in text
+    assert f"1 hand row no longer a disagreement, dropped: 0x{gone:08X}" in text
+    write_boundaries_csv(out / "boundaries.csv", hand_rows, "SYN.EXE")
+    assert cli_main(["functions", *args, "--output", str(out), "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["replaced"] == [{"address": f"0x{C:08X}", "verdict": "capstone"}]
+    assert report["dropped_hand"] == [f"0x{gone:08X}"]
+
+
+def test_hand_verdict_capstone_keeps_a_ghidra_only_start_out():
+    result = tracer_run(hand(D, "capstone"))
+    assert D not in [row.start for row in result.functions]
+    assert result.boundaries[1].verdict == "capstone"
+
+
+def test_hand_verdict_data_in_code_makes_a_data_row():
+    result = tracer_run(hand(D, "data-in-code"))
+    assert cells(result.functions)[-1] == (D, OBJECT_END, f"D_{D:08X}", "data-in-code", "ghidra")
+
+
+def test_thunk():
+    """A Ghidra thunk whose body is one jmp rel32 is a thunk row; a Ghidra thunk flag on a
+    function that is not a single jmp leaves it a game row."""
+    t = CODE + 0x180
+    patches = {A: call(A, t) + call(A + 5, B) + RET + PAD, t: jmp(t, B) + PAD, B: RET + PAD}
+    ghidra = [gfun(A), gfun(t, last=t + 4, thunk=True), gfun(B, thunk=True)]
+    result = run(make_image(patches), ghidra)
+    assert [(r.start, r.end, r.kind) for r in result.functions] == [
+        (A, A + 11, "game"),
+        (t, t + 5, "thunk"),
+        (B, B + 1, "game"),
+    ]
+
+
+def test_agreement_is_not_a_disagreement():
+    result = tracer_run(ghidra=(A, B, C))
+    assert result.boundaries == ()
+    assert [row.start for row in result.functions] == [A, B, C]
+
+
+def test_touching_functions_stay_separate():
+    """A capstone end that touches the next start keeps two rows."""
+    b = A + 6
+    result = run(make_image({A: call(A, b) + RET, b: RET + PAD}), [gfun(A), gfun(b)])
+    assert [(r.start, r.end) for r in result.functions] == [(A, b), (b, b + 1)]
+
+
+def test_no_disagreements(tmp_path):
+    result = tracer_run(ghidra=(A, B, C))
+    path = tmp_path / "boundaries.csv"
+    write_boundaries_csv(path, result.boundaries, "SYN.EXE")
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        BOUNDARIES_CSV_COMMENT.format(name="SYN.EXE"),
+        ",".join(BOUNDARIES_CSV_COLUMNS),
+    ]
+    assert missing_verdicts(read_boundaries_csv(path)) == []
+
+
+def test_no_starts():
+    """No start in either list and no runtime row: refused, not an empty function list. A
+    Ghidra entry in the data object is no start."""
+    le = LE(make_image({}))
+    nothing = Discovery((), MappingProxyType({}), 0, (), 0)
+    with pytest.raises(FunctionsError, match="no function start"):
+        reconcile(le, [gfun(DATA + 0x40)], nothing, [])
+
+
+def test_ghidra_entry_outside_code_is_dropped():
+    result = run(tracer_image(), [gfun(A), gfun(B), gfun(C), gfun(DATA + 0x40)])
+    assert result.dropped_ghidra == 1
+    assert result.boundaries == ()
+
+
+def test_boundaries_sorted_unique():
+    """Disagreements come out sorted by address, once each, written as exact 0x%08X."""
+    e, f = CODE + 0x500, CODE + 0x700
+    ghidra = [gfun(f), gfun(A), gfun(e), gfun(B), gfun(D)]
+    result = run(tracer_image(), ghidra)
+    assert [row.address for row in result.boundaries] == [C, D, e, f]
+    text = format_boundaries_csv(result.boundaries, "SYN.EXE")
+    assert f"0x{C:08X},no,yes,fixup,rule,fixup" in text.splitlines()
+
+
+def test_evidence_tie_break():
+    """A runtime start that is also a call target has evidence runtime; the entry that is also
+    a call target has evidence entry; the boundaries evidence lists every kind in that order."""
+    r = CODE + 0x400
+    zork = FunctionRow(r, r + 1, "zork_", "runtime", "", "runtime")
+    patches = {A: call(A, r) + call(A + 5, B) + RET + PAD, B: call(B, A) + RET + PAD,
+               r: RET + PAD}  # fmt: skip
+    result = run(make_image(patches), [gfun(A), gfun(B)], runtime=(zork,))
+    assert result.boundaries == (
+        BoundaryRow(r, False, True, ("runtime", "call"), "rule", "runtime"),
+    )
+    assert [r.evidence for r in result.functions] == ["entry", "call", "runtime"]
+    assert EVIDENCE_ORDER == ("runtime", "entry", "call", "fixup", "ghidra", "capstone")
+
+
+def test_gap_merged_into_ghidra_function():
+    """Watcom aligns a label after a jmp with filler: capstone ends A at the filler, but the gap
+    has no start evidence and Ghidra's function spans it, so the gap goes back into A."""
+    label = A + 8
+    patches = {A: jmp(A, label) + b"\x90" * 3 + RET + PAD}
+    spanning = run(make_image(patches), [gfun(A, last=label)])
+    assert [(r.start, r.end) for r in spanning.functions] == [(A, label + 1)]
+    short = run(make_image(patches), [gfun(A)])
+    assert [(r.start, r.end) for r in short.functions] == [(A, A + 5)]
