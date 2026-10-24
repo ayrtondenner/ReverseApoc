@@ -122,11 +122,14 @@ class Env:
                 "src_root": self.src, "build_dir": self.build}  # fmt: skip
 
     def argv(self) -> list[str]:
-        return ["--orig", str(self.orig), "--manifest", str(self.manifest),
-                "--config", str(self.config), "--src", str(self.src), "--build", str(self.build)]  # fmt: skip
+        paths = {"--orig": self.orig, "--manifest": self.manifest, "--config": self.config,
+                 "--src": self.src, "--build": self.build}  # fmt: skip
+        return [part for option, path in paths.items() for part in (option, str(path))]
 
 
-def make_env(tmp_path: Path, *, exes: tuple[str, ...] = (EXE,), with_units: tuple[str, ...] = (EXE,)) -> Env:
+def make_env(
+    tmp_path: Path, *, exes: tuple[str, ...] = (EXE,), with_units: tuple[str, ...] = (EXE,)
+) -> Env:
     """A synthetic EXE per name (all the same image), a manifest, and config/src for the names in
     `with_units`."""
     data = original({CODE_BASE: GOOD_ORIGINAL}, page1=le_off32(LOAD_FIELD, 0x4)).data
@@ -160,7 +163,7 @@ def run_check(env: Env, compiler=None, objdiff=None, **kwargs):
 def patch_tools(monkeypatch, compiler=None, objdiff=None):
     monkeypatch.setattr(check, "compile_source", compiler or FakeCompiler())
     runner = objdiff or FakeObjdiff()
-    monkeypatch.setattr(check, "default_objdiff_runner", lambda: runner)
+    monkeypatch.setattr(check, "default_objdiff_runner", lambda *args: runner)
     return runner
 
 
