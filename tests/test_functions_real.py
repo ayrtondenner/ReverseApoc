@@ -22,33 +22,50 @@ only, never game bytes.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
 from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra, requires_version
+from reverseapoc.asm import data_ranges
 from reverseapoc.functions import (
     RUNTIME_VERSION,
     FunctionRow,
     Reconciled,
     boundaries_csv_path,
+    check_unit_assignment,
     format_boundaries_csv,
     format_functions_csv,
     functions_csv_path,
     missing_verdicts,
     read_boundaries_csv,
+    read_functions_csv,
+    read_symbols_csv,
     read_units_csv,
     reconcile,
+    runtime_aliases,
+    runtime_entries,
     seed_runtime_rows,
+    symbols_csv_path,
     units_csv_path,
 )
 from reverseapoc.ghidra import DEFAULT_EXPORT_DIR, EXPORT_NAME, export_functions, read_ghidra_export
 from reverseapoc.le import LE
-from reverseapoc.libmatch import MatchRange, load_libraries, read_runtime_csv, runtime_csv_path
+from reverseapoc.libmatch import (
+    LoadedLibrary,
+    MatchRange,
+    load_libraries,
+    read_runtime_csv,
+    runtime_csv_path,
+)
+from reverseapoc.symbols import SYMBOL_KIND_FUNC, SymbolTable
 
 EXES = ("UFO2P.EXE", "TACP.EXE")
 EXPORT_ENV = "REVERSEAPOC_GHIDRA_EXPORT"
+UNIT_NAME = re.compile(r"[a-z0-9_]+")
+SPIKE_FUNCTIONS = ("main_",)  # spike 005: a linker name no functions.csv row carries
 
 
 @dataclass(frozen=True)
@@ -81,15 +98,18 @@ def _export_csv(name: str) -> Path:
     return export_functions(name, ORIG_DIR, DEFAULT_EXPORT_DIR).path
 
 
-def _runtime_rows(matches: list[MatchRange]) -> list[FunctionRow]:
-    """The seeded runtime rows, from the LIB386 of the version each row is seeded from (the
-    rule of the `functions` verb: 10.6 where the row lists it, else its first version)."""
+def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
+    """The LIB386 of the version each runtime row is seeded from (the rule of the `functions`
+    verb: 10.6 where the row lists it, else its first version)."""
     versions = {RUNTIME_VERSION if RUNTIME_VERSION in m.versions else m.versions[0]
                 for m in matches if m.versions}  # fmt: skip
     for version in sorted(versions):
         requires_version(version)
-    libraries, _ = load_libraries(WATCOM_DIR, sorted(versions))
-    return seed_runtime_rows(matches, libraries)
+    return load_libraries(WATCOM_DIR, sorted(versions))[0]
+
+
+def _runtime_rows(matches: list[MatchRange]) -> list[FunctionRow]:
+    return seed_runtime_rows(matches, _libraries(matches))
 
 
 @pytest.fixture(scope="module", params=EXES)
@@ -145,3 +165,53 @@ def test_every_disagreement_has_a_verdict(name):
     assert rows, f"{name}: boundaries.csv lists no disagreement"
     assert [f"0x{a:08X}" for a in missing_verdicts(rows)] == []
     assert [f"0x{r.address:08X}" for r in rows if not r.reason] == []
+
+
+def _present(path: Path, how: str) -> Path:
+    """A file committed for every EXE: missing is a failure, not a skip."""
+    assert path.is_file(), f"{path} missing: {how}"
+    return path
+
+
+UNITS_HINT = "run `uv run reverseapoc units <exe> --write`"
+SYMBOLS_HINT = "write it by hand from the spike 005 name table (D-19)"
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_every_function_in_one_unit(name):
+    """D-11: every functions.csv row lies in exactly one unit and its unit column says which."""
+    functions = read_functions_csv(_committed(functions_csv_path(name), name))
+    units = read_units_csv(_present(units_csv_path(name), UNITS_HINT))
+    assert check_unit_assignment(functions, units) == []
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_unit_names_are_safe(name):
+    """Unit names become file names (src/<exe>/<unit>.c): [a-z0-9_]+ and unique."""
+    names = [unit.unit for unit in read_units_csv(_present(units_csv_path(name), UNITS_HINT))]
+    assert names
+    assert [n for n in names if not UNIT_NAME.fullmatch(n)] == []
+    assert len(set(names)) == len(names)
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_symbols_resolve(name):
+    """D-19: every symbols.csv name resolves through SymbolTable to its own address, a func name
+    to a functions.csv start and a data name to the EXE's data object; the spike 005 names that
+    no row carries are there."""
+    path = ORIG_DIR / name
+    if not path.is_file():
+        pytest.skip(f"{path} not present (run `uv run reverseapoc ingest` or set REVERSEAPOC_ORIG)")
+    functions = read_functions_csv(_committed(functions_csv_path(name), name))
+    symbols = read_symbols_csv(_present(symbols_csv_path(name), SYMBOLS_HINT))
+    matches = read_runtime_csv(runtime_csv_path(name))
+    ranges = data_ranges(LE(path))
+    aliases = runtime_aliases(runtime_entries(matches, _libraries(matches)))
+    table = SymbolTable.build(functions, symbols, data_ranges=ranges, aliases=aliases)
+    assert [s.name for s in symbols if table.address_of(s.name) != s.address] == []
+    starts = {row.start for row in functions}
+    funcs = [s for s in symbols if s.kind == SYMBOL_KIND_FUNC]
+    assert [s.name for s in funcs if s.address not in starts] == []
+    data = [s for s in symbols if s.kind != SYMBOL_KIND_FUNC]
+    assert [s.name for s in data if not any(lo <= s.address < hi for lo, hi in ranges)] == []
+    assert set(SPIKE_FUNCTIONS) <= {s.name for s in funcs}
