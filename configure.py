@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -22,7 +23,14 @@ from pathlib import Path, PurePosixPath
 if importlib.util.find_spec("reverseapoc") is None:  # plain `python`, outside the uv environment
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 
-from reverseapoc.functions import FunctionRow, FunctionsError, read_functions_csv, read_units_csv
+from reverseapoc.functions import (
+    KIND_GAME,
+    KIND_THUNK,
+    FunctionRow,
+    FunctionsError,
+    read_functions_csv,
+    read_units_csv,
+)
 from reverseapoc.lint import CLANGD_FLAGS
 from reverseapoc.targets import ManifestError, load_manifest
 
@@ -102,6 +110,17 @@ _SAFE_ORIG = re.compile(r"[A-Za-z0-9._/:-]+")
 # EXE config dirs and unit names go into build paths, commands and Watcom file names unescaped.
 _UNIT_NAME = re.compile(r"[a-z0-9_]+")
 
+# D-12 detection by regex over the unit file (research Pattern 4; `check` later confirms the
+# definitions from the compiled publics). Comments and string or character literals are blanked
+# first; an unterminated comment runs to the end of the file, as it would for the compiler.
+_NOT_CODE = re.compile(r"/\*.*?(?:\*/|\Z)|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL)
+_PLACEHOLDER = r"func_[0-9A-F]{8}"
+_MARKER = re.compile(rf"\bINCLUDE_ASM\s*\(\s*({_PLACEHOLDER})\s*\)\s*;")
+# A declarator whose parameter list (one level of nested parentheses, for function pointers) is
+# followed by `{`: a definition. A prototype ends in `;` and a call never meets a `{` directly.
+_DEFINITION = re.compile(rf"\b({_PLACEHOLDER})\s*\((?:[^()]|\([^()]*\))*\)\s*\{{")
+_CHECKED_KINDS = (KIND_GAME, KIND_THUNK)  # orchestrator ruling F5: runtime, data-in-code exempt
+
 
 def ninja_path(path: str) -> str:
     """Escape a path for use in a ninja build line."""
@@ -146,6 +165,51 @@ def _check_name(what: str, name: str) -> str:
             f"{what} {name!r} is not [a-z0-9_]+, so build.ninja cannot carry it unescaped"
         )
     return name
+
+
+def _blank(match: re.Match[str]) -> str:
+    return " " if match.group().startswith("/*") else '""'
+
+
+def _file_scope_definitions(code: str) -> Iterator[str]:
+    """The placeholder names defined at brace depth 0 of `code` (comments already blanked)."""
+    depth = 0
+    position = 0
+    for match in _DEFINITION.finditer(code):
+        between = code[position : match.start()]
+        depth += between.count("{") - between.count("}")
+        position = match.start()
+        if depth == 0:
+            yield match.group(1)
+
+
+def _function_problem(name: str, defined: int, marked: int) -> str | None:
+    if defined and marked:
+        return f"{name} is both defined in C and marked INCLUDE_ASM"
+    if marked > 1:
+        return f"{name} is marked INCLUDE_ASM {marked} times"
+    if defined > 1:
+        return f"{name} is defined {defined} times"
+    if not defined and not marked:
+        return f"{name} is neither defined in C nor marked INCLUDE_ASM (D-12)"
+    return None
+
+
+def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[str]:
+    """The D-12 problems of one unit file: every game or thunk row of the unit is defined in C
+    or marked INCLUDE_ASM, exactly once and not both, and no marker or definition names a
+    func_ placeholder outside the unit. The order of the file does not matter."""
+    code = _NOT_CODE.sub(_blank, text)
+    marked = Counter(_MARKER.findall(code))
+    defined = Counter(_file_scope_definitions(code))
+    required = [row.name for row in unit_functions if row.kind in _CHECKED_KINDS]
+    problems = [_function_problem(name, defined[name], marked[name]) for name in required]
+    known = set(required)
+    for name in sorted(marked.keys() - known):
+        problems.append(f"{name} is marked INCLUDE_ASM but is not a function of the unit")
+    for name in sorted(defined.keys() - known):
+        problems.append(f"{name} is defined in C but is not a function of the unit")
+    return [problem for problem in problems if problem is not None]
 
 
 @dataclass(frozen=True)
@@ -310,21 +374,52 @@ def _exe_units(name: str, config: Path, src: Path, base: Path) -> Iterator[UnitB
     functions = read_functions_csv(functions_csv)
     for row in read_units_csv(units_csv):
         source = src / exe / f"{row.unit}{SOURCE_SUFFIX}"
+        unit_functions = tuple(f for f in functions if f.unit == row.unit)
+        has_source = source.is_file()
+        if has_source:
+            _check_source(source, unit_functions)
         yield UnitBuild(
             exe=exe,
             exe_name=name,
-            unit=row.unit,
-            source=_relative(source, base) if source.is_file() else None,
-            functions=tuple(f for f in functions if f.unit == row.unit),
+            unit=_check_name("unit", row.unit),
+            source=_relative(source, base) if has_source else None,
+            functions=unit_functions,
             inputs=tuple(_relative(p, base) for p in inputs),
         )
 
 
+def _check_source(path: Path, unit_functions: Sequence[FunctionRow]) -> None:
+    """Refuse a unit file that fails the D-12 completeness check."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigureError(f"{path}: not UTF-8 ({exc})") from None
+    problems = check_unit_source(text, unit_functions)
+    if problems:
+        raise ConfigureError(f"{path}: {'; '.join(problems)}")
+
+
+def _check_no_stray_sources(src: Path, units: Sequence[UnitBuild]) -> None:
+    """Every C file under `src` is src/<exe>/<unit>.c for a unit in that EXE's units.csv."""
+    if not src.is_dir():
+        return
+    known = {(unit.exe, f"{unit.unit}{SOURCE_SUFFIX}") for unit in units}
+    for path in sorted(src.rglob(f"*{SOURCE_SUFFIX}")):
+        parts = path.relative_to(src).parts
+        if len(parts) != 2 or tuple(parts) not in known:
+            raise ConfigureError(
+                f"{path} names no unit: a C source must be src/<exe>/<unit>.c for a unit of "
+                "config/<exe>/units.csv"
+            )
+
+
 def collect_units(config: Path, src: Path, base: Path) -> list[UnitBuild]:
-    """Every units.csv row of every manifest target that has config/<exe>/units.csv."""
+    """Every units.csv row of every manifest target that has config/<exe>/units.csv. Raises
+    ConfigureError for a unit file that fails D-12 or a C file under `src` that names no unit."""
     units: list[UnitBuild] = []
     for target in load_manifest():
         units += _exe_units(target.name, config, src, base)
+    _check_no_stray_sources(src, units)
     return units
 
 
