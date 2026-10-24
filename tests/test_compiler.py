@@ -122,7 +122,7 @@ def test_argv_shape(ws, monkeypatch):
         "-fr=out\\a.err",
         "-5r",
         "-s",
-        "-i=w\\10.6\\H",
+        "-i=include;w\\10.6\\H",
         "src\\a.c",
         "-fo=out\\a.obj",
     ]
@@ -265,7 +265,20 @@ def test_include_is_own_tree_only(tmp_path):
     ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
     (argv,) = runner.compiles
     includes = [arg for arg in argv if arg.startswith("-i=")]
-    assert includes == ["-i=w\\11.0\\H"]
+    assert includes == ["-i=include;w\\11.0\\H"]
+
+
+def test_include_list_puts_the_repo_include_first(ws):
+    # One -i= option: the compile root's include/ (project headers such as common.h) first, then
+    # the rule's own H directory. Nothing else, so no other Watcom tree's headers can leak in.
+    runner = FakeCompiler()
+    ws.compile(ws.source(), ws.root / "out" / "a.obj", runner)
+    (argv,) = runner.compiles
+    includes = [arg for arg in argv if arg.startswith("-i=")]
+    project = guest_path(ws.root / "include", ws.root, inside=True)
+    tree = guest_path(ws.watcom / "10.6" / "H", ws.root, inside=False)
+    assert includes == [f"-i={project};{tree}"]
+    assert project == "include"
 
 
 # 4. paths (D-14) --------------------------------------------------------------------------------
@@ -333,7 +346,7 @@ def test_include_path_from_a_tree_outside_the_root(tmp_path):
     runner = FakeCompiler()
     assert ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, watcom_dir=tree_dir).ok
     (argv,) = runner.compiles
-    assert _include(argv) == "-i=..\\trees\\10.6\\H"
+    assert _include(argv) == "-i=include;..\\trees\\10.6\\H"
 
 
 # 5. the gate stamp ------------------------------------------------------------------------------
