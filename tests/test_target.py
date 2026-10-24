@@ -288,19 +288,33 @@ def test_a_fully_decoded_unit_reports_nothing_undecoded():
     assert build_target(le, [A, B], _table([A, B])).undecoded == ()
 
 
-def test_refuses_a_branch_out_of_the_code_object():
+# Plan 05-18 (Rule 3, the F11 principle): the real graph has branches and off32 fixups into code
+# no functions.csv row covers (split gaps D-11 leaves for later) and decoded "branches" out of
+# the code object (data read as code in a runtime row). Refusing them left 18 real units
+# uncuttable and `ninja` failing before any C existed. Such a field keeps its raw bytes and gets
+# no relocation, and the result names it, so the unit stays cuttable (D-13) and a function
+# holding one is no first-match candidate. It cannot make a false pass: our side relocates that
+# field, so objdiff and the relocation check both disagree with the raw target.
+
+
+def _assert_raw_field(body: bytes, kind: str, page1: bytes = b"") -> None:
+    a = _row(0x10000, 0x10010)
+    le, result, view = _cut([a], page1=page1, patches={0x10000: body})
+    flat = bytes(le.load_flat(relocate=False))
+    assert _section_of(view, "func_00010000_").data == flat[0x10000:0x10010]
+    assert _relocs(view, "func_00010000_") == []
+    assert result.raw_fields == (RawField(0x10001, kind),)
+
+
+def test_a_branch_out_of_the_code_object_stays_raw():
     # a call rel32 whose destination lies in the data object is no function reference
-    a = _row(0x10000, 0x10010)
     body = b"\xe8" + _rel(0x20100, 0x10001) + RET_PAD[:11]
-    with pytest.raises(TargetError, match="0x00020100"):
-        _cut([a], patches={0x10000: body})
+    _assert_raw_field(body, "branch outside the code object")
 
 
-def test_refuses_a_call_to_no_row():
-    a = _row(0x10000, 0x10010)
+def test_a_call_to_no_row_stays_raw():
     body = b"\xe8" + _rel(0x10400, 0x10001) + RET_PAD[:11]
-    with pytest.raises(TargetError, match="0x00010400"):
-        _cut([a], patches={0x10000: body})
+    _assert_raw_field(body, "branch to no row")
 
 
 def test_refuses_a_row_outside_the_code_object():
@@ -309,12 +323,10 @@ def test_refuses_a_row_outside_the_code_object():
         _cut([a, data_row], patches={0x10000: RET_PAD})
 
 
-def test_refuses_an_off32_target_in_no_row():
+def test_an_off32_target_in_no_row_stays_raw():
     # the target is in the code object, but in a gap between rows
-    a = _row(0x10000, 0x10010)
     body = b"\xb8" + struct.pack("<I", 0x400) + RET_PAD[:11]
-    with pytest.raises(TargetError, match="0x00010400"):
-        _cut([a], page1=fixup_record(SRC_OFF32, 0x001, 1, 0x400), patches={0x10000: body})
+    _assert_raw_field(body, "off32 to no row", fixup_record(SRC_OFF32, 0x001, 1, 0x400))
 
 
 @pytest.mark.parametrize("unit", ["a", "b"])
