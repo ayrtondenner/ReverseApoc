@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, discover, functions, ghidra-export, lint, fetch-watcom,
+cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, fetch-watcom,
 install-watcom, check-watcom."""
 
 from __future__ import annotations
@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,11 +30,13 @@ from .functions import (
     read_boundaries_csv,
     read_functions_csv,
     read_symbols_csv,
+    read_units_csv,
     reconcile,
     seed_runtime_rows,
     symbols_csv_path,
     write_boundaries_csv,
     write_functions_csv,
+    write_units_csv,
 )
 from .ghidra import (
     DEFAULT_ASM_DIR,
@@ -77,6 +80,14 @@ from .targets import (
     check_orig,
     config_dir,
     load_manifest,
+)
+from .units import (
+    UnitsError,
+    assign_units,
+    chk_callers,
+    draft_units,
+    scaffold_unit,
+    write_unit_source,
 )
 from .watcom import (
     ARCHIVE_BASE,
@@ -621,7 +632,9 @@ def _cmd_functions(args: argparse.Namespace) -> int:
     result = reconcile(le, read_ghidra_export(args.ghidra_export), found, runtime_rows,
                        existing=read_boundaries_csv(kept) if kept else (),
                        modules=matches)  # fmt: skip
-    write_functions_csv(out_dir / "functions.csv", result.functions, target.name)
+    units = _existing(out_dir / "units.csv", config_dir(target.name) / "units.csv")
+    rows = assign_units(result.functions, read_units_csv(units)) if units else result.functions
+    write_functions_csv(out_dir / "functions.csv", rows, target.name)
     write_boundaries_csv(boundaries_out, result.boundaries, target.name)
     report = _functions_report(target.name, result)
     print(json.dumps(report, indent=2) if args.json else _format_functions_report(report))
@@ -659,6 +672,101 @@ def _add_functions_command(sub: argparse._SubParsersAction) -> None:
     where.add_argument("--output", type=Path, metavar="DIR", help="write both CSVs into DIR")
     p.add_argument("--json", action="store_true", help="print the counts as JSON")
     p.set_defaults(func=_cmd_functions)
+
+
+# ---- units: the D-11 draft and the D-12 scaffold (SPL-03, SPL-04) ----
+
+
+def _draft(args: argparse.Namespace, target: Target, out_dir: Path) -> tuple[list, list]:
+    """Draft units.csv from functions.csv and write both into `out_dir`; returns the units and
+    the functions with their unit column filled."""
+    units_out = out_dir / "units.csv"
+    if args.write and units_out.is_file() and not args.redraft:
+        raise UnitsError(
+            f"{units_out} exists and may hold hand re-cuts; pass --redraft to replace it"
+        )
+    rows = read_functions_csv(args.functions or config_dir(target.name) / "functions.csv")
+    le = LE(read_target(target, args.orig, args.manifest))
+    matches = _runtime_matches(args.runtime, target)
+    flat = le.load_flat(relocate=False)
+    chk = [(m.start, m.end) for m in matches if CHK_PUBLIC in m.publics]
+    units = draft_units(le, rows, runtime=matches, chk_callers=chk_callers(rows, flat, chk),
+                        flat=flat, fixups=le.fixups())  # fmt: skip
+    assigned = assign_units(rows, units)
+    write_units_csv(units_out, units, target.name)
+    write_functions_csv(out_dir / "functions.csv", assigned, target.name)
+    reasons = ", ".join(f"{n} {reason}" for reason, n in
+                        sorted(Counter(u.reason for u in units).items()))  # fmt: skip
+    print(f"{target.name}: {len(units)} units ({reasons}); wrote {units_out}")
+    return units, assigned
+
+
+def _cmd_units(args: argparse.Namespace) -> int:
+    target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
+    if args.write or args.output is not None:
+        out_dir = config_dir(target.name) if args.write else Path(args.output)
+        refuse_output(out_dir, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
+        units, functions = _draft(args, target, out_dir)
+    elif args.write_src is not None:  # orchestrator ruling F2: scaffold from the committed CSVs
+        units = read_units_csv(args.units or config_dir(target.name) / "units.csv")
+        functions = read_functions_csv(args.functions or config_dir(target.name) / "functions.csv")
+    else:
+        raise UnitsError("give --write, --output DIR or --write-src UNIT")
+    if args.write_src is not None:
+        unit = next((u for u in units if u.unit == args.write_src), None)
+        if unit is None:
+            raise UnitsError(f"no unit named {args.write_src!r} in units.csv")
+        path = Path(args.src_root) / config_dir(target.name).name / f"{unit.unit}.c"
+        refuse_output(path, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
+        write_unit_source(path, scaffold_unit(target.name, unit, functions))
+        print(f"wrote {path}")
+    return 0
+
+
+def _add_units_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "units",
+        help="draft config/<exe>/units.csv from functions.csv (D-11) and fill its unit column; "
+        "with --write-src UNIT scaffold src/<exe>/<unit>.c with INCLUDE_ASM markers (D-12)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument(
+        "--functions", type=Path, metavar="CSV", help="default: config/<exe>/functions.csv"
+    )
+    p.add_argument(
+        "--runtime", type=Path, metavar="CSV", help="default: config/<exe>/runtime.csv"
+    )
+    p.add_argument(
+        "--units",
+        type=Path,
+        metavar="CSV",
+        help="the units.csv --write-src reads on its own; default: config/<exe>/units.csv",
+    )
+    where = p.add_mutually_exclusive_group()  # optional with --write-src (ruling F2)
+    where.add_argument(
+        "--write",
+        action="store_true",
+        help="write config/<exe>/units.csv and the unit column of config/<exe>/functions.csv",
+    )
+    where.add_argument(
+        "--output", type=Path, metavar="DIR", help="write units.csv and functions.csv into DIR"
+    )
+    p.add_argument(
+        "--redraft",
+        action="store_true",
+        help="let --write replace an existing units.csv (its hand re-cuts are lost)",
+    )
+    p.add_argument(
+        "--write-src",
+        metavar="UNIT",
+        help="create src/<exe>/<UNIT>.c with one INCLUDE_ASM marker per game and thunk "
+        "function; an existing file is never overwritten",
+    )
+    p.add_argument("--src-root", type=Path, default=DEFAULT_SRC, help=default)
+    p.set_defaults(func=_cmd_units)
 
 
 # ---- headless Ghidra: ghidra-export (container only, D-05) ----
@@ -857,6 +965,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_score_command(sub)
     _add_discover_command(sub)
     _add_functions_command(sub)
+    _add_units_command(sub)
     _add_ghidra_export_command(sub)
     _add_lint_command(sub)
     _add_watcom_commands(sub)
@@ -879,6 +988,7 @@ _ERRORS = (
     ElfError,
     FunctionsError,
     DiscoverError,
+    UnitsError,
     SymbolError,
     AsmError,
     ScoreError,
