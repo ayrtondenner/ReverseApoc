@@ -640,6 +640,53 @@ def test_static_data_mismatch_names_the_reason():
                             "with a row: make it non-static")  # fmt: skip
 
 
+# ---- code review IN-03: the D-12 source checks run for a unit of runtime rows only too ---------
+
+RT_MAIN = FunctionRow(ROW.start, ROW.end, "main_", "runtime", UNIT, "runtime")
+RT_CHK = FunctionRow(OTHER.start, OTHER.end, "__CHK", "runtime", UNIT, "runtime")
+RUNTIME_SOURCES = {
+    "clean": ("int main(void) { return 0; }\n", None),
+    "ifdef": ("#ifdef X\nint main(void) { return 0; }\n#endif\n", "line 1: #ifdef"),
+    "foreign-marker": ("INCLUDE_ASM(func_00010020);\nint main(void) { return 0; }\n",
+                       "func_00010020 is marked INCLUDE_ASM but is not a function of the unit"),
+}  # fmt: skip
+
+
+def runtime_unit(env: Env, source: str) -> FakeCompiler:
+    """UNIT holds only runtime rows (main_, __CHK): no game or thunk row is required."""
+    write_functions_csv(env.config / STEM / "functions.csv", [RT_MAIN, RT_CHK, FAR], EXE)
+    (env.src / STEM / f"{UNIT}.c").write_text(source, encoding="utf-8")
+    return FakeCompiler(omf_object(public="main_", callee="__CHK"))
+
+
+@pytest.mark.parametrize("case", sorted(RUNTIME_SOURCES))
+def test_runtime_only_unit_gets_the_source_checks(env, monkeypatch, capsys, case):
+    source, problem = RUNTIME_SOURCES[case]
+    compiler = runtime_unit(env, source)
+    code, doc = check_json(env, monkeypatch, capsys, compiler)
+    if problem is None:  # the control: the same unit with a clean file passes
+        assert code == check.EXIT_OK and doc["problems"] == [], doc["problems"]
+        return
+    assert code == check.EXIT_MISMATCH
+    reasons = problems_by_name(doc)[check.SOURCE_PROBLEM]
+    assert any(problem in reason for reason in reasons), reasons
+
+    put_object(env, compiler.data)
+    assert cli_main(land_argv(env)) == 1  # the land step refuses the unit file too
+    assert problem in capsys.readouterr().out
+
+
+def test_source_checks_skip_a_file_that_is_no_unit_file():
+    """check_source on a file that is no units.csv unit (the 05-18 runtime pair, Watcom's own
+    CMAIN386.C) keeps the exemption: configure never reads that file either."""
+    module = check.read_object(omf_object(public="main_", callee="__CHK"))
+    table = SymbolTable.build([RT_MAIN, RT_CHK, FAR])
+    text = RUNTIME_SOURCES["ifdef"][0]
+    assert check.account_unit(module, [RT_MAIN, RT_CHK], table, text).problems
+    assert not check.account_unit(module, [RT_MAIN, RT_CHK], table, text,
+                                  unit_file=False).problems  # fmt: skip
+
+
 # ---- code review WR-01: check never writes ninja's objects with options ninja does not use ------
 
 
