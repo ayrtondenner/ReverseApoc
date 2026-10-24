@@ -156,15 +156,18 @@ _TARGET_FRAME_NUMBER = 3  # target method T3: the datum is a u16 frame number
 _TARGET_KINDS = {0: "segment", 1: "group", 2: "extern", 3: "frame"}
 
 # Fixup location types and the bytes each patches.
+LOC_LOADER_OFFSET16 = 5
 LOC_OFFSET32 = 9
 LOC_POINTER48 = 11
+# Easy OMF: location 5 is a 32-bit offset (the TH rule), so it patches an offset32's bytes.
+EASY_OMF_LOC5_SIZE = 4
 LOC_SIZES = {
     0: 1,  # low byte
     1: 2,  # 16-bit offset
     2: 2,  # 16-bit base (selector)
     3: 4,  # 16:16 pointer
     4: 1,  # high byte
-    5: 2,  # 16-bit loader-resolved offset
+    LOC_LOADER_OFFSET16: 2,  # 16-bit loader-resolved offset (EASY_OMF_LOC5_SIZE in Easy OMF)
     LOC_OFFSET32: 4,  # 32-bit offset
     LOC_POINTER48: 6,  # 16:32 pointer
     13: 4,  # 32-bit loader-resolved offset
@@ -777,6 +780,8 @@ def _fixup(m: _ModuleReader, cur: _Cursor, rec: Record, first: int) -> None:
     size = LOC_SIZES.get(location)
     if size is None:
         raise OMFError(f"unknown location type {location}")
+    if location == LOC_LOADER_OFFSET16 and m.easy_omf:
+        size = EASY_OMF_LOC5_SIZE
     fixdat = cur.u8()
     frame_method = _frame(m, cur, fixdat)
     low, target_index = _target(m, cur, fixdat)
@@ -843,13 +848,13 @@ def _bakpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
 def _nbkpat(m: _ModuleReader, cur: _Cursor, rec: Record) -> None:
     """TIS OMF 1.1: location type, public name index (LNAMES) of a COMDAT, (offset, value)
     pairs, 16-bit in NBKPAT and 32-bit in NBKPAT32 or an Easy OMF module."""
-    m.nbkpat_records += 1
     size = _backpatch_size(cur.u8())
     name = m.lname(cur.index())
     block = m.comdat_by_name.get(name)
     if block is None:
         raise OMFError(f"no COMDAT {name!r} to backpatch")
     _add_patches(m, cur, rec, block, size)
+    m.nbkpat_records += 1  # counted once the record has validated and applied
 
 
 _HANDLERS = {
