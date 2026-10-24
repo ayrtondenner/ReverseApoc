@@ -1,5 +1,5 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, fetch-watcom,
+cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, fetch-watcom,
 install-watcom, check-watcom."""
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ from pathlib import Path
 from . import probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .cflags import DEFAULT_CFLAGS, CflagsError
+from .check import EXIT_TOOL, CheckError, check_unit
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
@@ -48,6 +49,7 @@ from .ghidra import (
 )
 from .ingest import IngestError, ingest
 from .iso9660 import ISOError
+from .land import LandError
 from .le import LE, LEError, format_summary
 from .libmatch import (
     SWEPT_VERSIONS,
@@ -68,9 +70,11 @@ from .lint import LintError, run_lint
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
+from .relocs import RelocError
 from .score import ScoreError, ScoreReport, assess
-from .splice import DEFAULT_OUT, _write_atomic, rebuild
+from .splice import DEFAULT_OUT, SpliceError, _write_atomic, rebuild
 from .symbols import SymbolError, SymbolTable
+from .target import TargetError
 from .targets import (
     DEFAULT_MANIFEST,
     DEFAULT_ORIG,
@@ -859,6 +863,67 @@ def _add_lint_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_lint)
 
 
+# ---- the single-unit check (SPL-11, D-16) ----
+
+DEFAULT_CONFIG = REPO_ROOT / "config"
+DEFAULT_BUILD = REPO_ROOT / "build"
+
+
+def _split_unit(text: str) -> tuple[str, str]:
+    exe, sep, unit = text.partition("/")
+    if not (sep and exe and unit) or "/" in unit:
+        raise CheckError(f"expected EXE/UNIT (e.g. ufo2p/u_000a1b2c), got {text!r}")
+    return exe, unit
+
+
+def _run_check(args: argparse.Namespace) -> int:
+    exe, unit = _split_unit(args.target)
+    result = check_unit(
+        exe, unit, orig_dir=args.orig, manifest=args.manifest, config_root=args.config,
+        src_root=args.src, build_dir=args.build, watcom_dir=args.watcom_dir, cflags=args.cflags,
+        watcom_manifest=args.watcom_manifest, log=args.log,
+    )  # fmt: skip
+    if result.compile_output.strip():
+        print(result.compile_output.rstrip("\n"), file=sys.stderr)
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    return result.exit_code
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    """Exit 0 matched, 1 mismatch, 2 for any tool or usage error (never a pass)."""
+    try:
+        return _run_check(args)
+    except (*_ERRORS, CheckError) as exc:
+        print(f"reverseapoc check: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_unit_roots(p: argparse.ArgumentParser) -> None:
+    default = "default: %(default)s"
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--src", type=Path, default=DEFAULT_SRC, help=default)
+    p.add_argument("--build", type=Path, default=DEFAULT_BUILD, help=default)
+
+
+def _add_check_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "check",
+        help="compile one unit, objdiff and relocation-check every function it defines, land "
+        "every compiled unit and compare each EXE's SHA-1 (SPL-11; objdiff-cli: in the container)",
+    )
+    p.add_argument("target", metavar="EXE/UNIT", help="e.g. ufo2p/u_000a1b2c")
+    _add_unit_roots(p)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_check)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -985,6 +1050,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_units_command(sub)
     _add_ghidra_export_command(sub)
     _add_lint_command(sub)
+    _add_check_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1011,6 +1077,11 @@ _ERRORS = (
     ScoreError,
     GhidraError,
     LintError,
+    CheckError,
+    TargetError,
+    RelocError,
+    LandError,
+    SpliceError,
     OSError,
 )
 
