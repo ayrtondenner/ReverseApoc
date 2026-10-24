@@ -235,3 +235,27 @@ Execution context nonce: a6e90a49d73f316c
 
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
+
+## Review fixes (round 1)
+
+**Important: hand verdicts lost silently.** Before this fix, a hand verdict from the previous boundaries.csv disappeared without a message in two cases: when the LE rule decided its address, and when its address was no longer a disagreement. `test_hand_verdict_kept` pinned that behaviour.
+
+The orchestrator ruled: the rule still wins where it decides (D-07), but nothing is lost silently. A hand verdict where the rule does not decide is kept, as before.
+
+- `Reconciled` gains two fields:
+  - `replaced: tuple[(address, old verdict), ...]`: the hand verdicts (`ghidra`, `capstone`, `data-in-code`) that the rule replaced with `rule`.
+  - `dropped_hand: tuple[address, ...]`: the hand rows dropped because the address is no longer a disagreement.
+  - Open rows and earlier `rule` rows are not hand verdicts and are not reported. A new helper, `_lost_hand_verdicts`, computes both fields. `HAND_VERDICTS` names the hand verdict words.
+- The `functions` verb prints `N hand verdict(s) replaced by the rule: 0x... <old> -> rule` and `N hand row(s) no longer a disagreement, dropped: 0x...` when either count is non-zero. The `--json` output gains `replaced` (address and verdict) and `dropped_hand` (addresses). Both hold addresses and verdict words only.
+- Tests:
+  - `test_hand_verdict_kept` is narrowed to the case where the rule does not decide; it also asserts that nothing is reported.
+  - New: `test_hand_verdict_replaced_by_the_rule_is_reported`, `test_hand_row_no_longer_a_disagreement_is_reported` and `test_functions_verb_reports_replaced_and_dropped_hand_verdicts` (text and JSON).
+
+**Minor: `--units` was ignored when drafting.** `units` now refuses `--units` together with `--write` or `--output`. The error names `--units`, and nothing is written. Test: `test_units_option_refused_when_drafting`.
+
+Commits: `ef62903` (test, RED: 5 failed, 77 passed), `e89eea1` (fix).
+
+Commands and output:
+- `uv run pytest -q tests/test_functions.py tests/test_units.py`: `82 passed in 0.75s`
+- `uv run pytest -q`: `1258 passed, 200 skipped in 14.33s`
+- `uv run ruff check .`: `All checks passed!`
