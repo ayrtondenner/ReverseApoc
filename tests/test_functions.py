@@ -214,6 +214,26 @@ def test_seed_refuses_a_module_whose_segment_length_differs(tmp_path):
         seed_runtime_rows([_range("zork", 9, ("zork_",))], libraries)
 
 
+def test_seed_refuses_a_segment_with_another_name(tmp_path):
+    # Same length, but runtime.csv placed the module's _TEXT; an OTHER_TEXT segment never stands in.
+    module = code_module("zork", body(8), publics=[("zork_", 0)], seg_name="OTHER_TEXT")
+    libraries = _libraries(tmp_path, module)
+    with pytest.raises(FunctionsError, match="zork"):
+        seed_runtime_rows([_range("zork", 8, ("zork_",))], libraries)
+
+
+def test_seed_refuses_a_public_at_two_offsets(tmp_path):
+    # Two same-length candidate segments that disagree on where one public sits: never a guess.
+    watcom = tmp_path / "w"
+    other = "DOS/CLIB3S.LIB"
+    write_lib(watcom, "10.6", LIB, [code_module("zork", body(8), publics=[("zork_", 0)])])
+    write_lib(watcom, "10.6", other, [code_module("zork", body(8), publics=[("zork_", 2)])])
+    libraries, _ = load_libraries(watcom, ("10.6",))
+    runtime = [_range("zork", 8, ("zork_",), libraries=(LIB, other))]
+    with pytest.raises(FunctionsError, match=r"zork_.*0x0.*0x2"):
+        seed_runtime_rows(runtime, libraries)
+
+
 # ---- functions.csv validation ----
 
 FUNCTIONS_HEADER = ",".join(FUNCTIONS_CSV_COLUMNS)
