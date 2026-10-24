@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 
@@ -395,3 +396,77 @@ def test_no_stale_phase_wording():
         assert "Phase 2" not in where
         assert "skeleton" not in where
     assert "Phase 5" in text
+
+
+# ---- Phase 5 (SPL-06): units with C become compile, convert and cut edges ----------------------
+
+UNIT = "u_00010000"
+FUNCTIONS_CSV = """\
+start,end,name,kind,unit,evidence
+0x00010000,0x00010010,func_00010000,game,u_00010000,call
+0x00010010,0x00010020,func_00010010,game,u_00010000,call
+"""
+UNITS_CSV = """\
+unit,start,end,reason
+u_00010000,0x00010000,0x00010020,first
+"""
+UNIT_SOURCE = """\
+#include "common.h"
+
+INCLUDE_ASM(func_00010010);
+
+int func_00010000(void)
+{
+    return 0;
+}
+"""
+
+
+def _split_tree(tmp_path, *, source=UNIT_SOURCE, units=UNITS_CSV, functions=FUNCTIONS_CSV):
+    """A tmp orig, config and src tree for UFO2P.EXE with one unit; returns configure argv."""
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / "UFO2P.EXE").write_bytes(b"x")
+    exe_config = tmp_path / "config" / "ufo2p"
+    exe_config.mkdir(parents=True)
+    (exe_config / "units.csv").write_text(units, encoding="utf-8")
+    (exe_config / "functions.csv").write_text(functions, encoding="utf-8")
+    exe_src = tmp_path / "src" / "ufo2p"
+    exe_src.mkdir(parents=True)
+    if source is not None:
+        (exe_src / f"{UNIT}.c").write_text(source, encoding="utf-8")
+    return [
+        "--orig", str(orig),
+        "--config", str(tmp_path / "config"),
+        "--src", str(tmp_path / "src"),
+        "--output", str(tmp_path / "build.ninja"),
+    ]  # fmt: skip
+
+
+def _edge(text: str, output: str) -> str:
+    """The `build <output>: ...` line of build.ninja text."""
+    return next(line for line in text.splitlines() if line.startswith(f"build {output}:"))
+
+
+def test_unit_with_source_gets_compile_edges(tmp_path):
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    for rule in ("cc", "omf2elf", "target"):
+        assert f"rule {rule}" in text
+    obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
+    base = f"$builddir/ufo2p/base/{UNIT}.o"
+    target = f"$builddir/ufo2p/target/{UNIT}.o"
+    assert _edge(text, obj).startswith(f"build {obj}: cc src/ufo2p/{UNIT}.c")
+    assert _edge(text, base).startswith(f"build {base}: omf2elf {obj}")
+    assert _edge(text, target).startswith(f"build {target}: target")
+
+    objdiff = json.loads((tmp_path / "objdiff.json").read_text(encoding="utf-8"))
+    (unit,) = [u for u in objdiff["units"] if u["name"] == f"ufo2p/{UNIT}"]
+    assert unit["target_path"] == f"build/ufo2p/target/{UNIT}.o"
+    assert unit["base_path"] == f"build/ufo2p/base/{UNIT}.o"
+
+    commands = json.loads((tmp_path / "compile_commands.json").read_text(encoding="utf-8"))
+    (entry,) = commands
+    assert entry["file"].endswith(f"src/ufo2p/{UNIT}.c")
+    assert "-std=gnu89" in entry["arguments"]
+    assert "-c" in entry["arguments"]
