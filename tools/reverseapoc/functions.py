@@ -19,6 +19,11 @@ with a FunctionsError naming the file and its data row; a bad file is never half
 Runtime rows are seeded from config/<exe>/runtime.csv (Phase 4 D-06), which stays untouched:
 each runtime module's range is split at the offsets of its code segment's publics, read from the
 installed LIB386 at generation time.
+
+`reconcile` writes functions.csv and boundaries.csv from the Ghidra export and the capstone pass
+(discover.py) by the D-07 rule: LE evidence (runtime, entry, call, fixup) decides a disagreement
+with verdict `rule`; a disagreement it does not decide keeps the hand verdict of the previous
+boundaries.csv or stays empty for a person (D-08).
 """
 
 from __future__ import annotations
@@ -28,7 +33,7 @@ import csv
 import io
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import MappingProxyType
@@ -41,7 +46,7 @@ from .targets import config_dir
 if TYPE_CHECKING:  # discover pulls in capstone; reconcile imports it when it runs
     from .discover import Discovery
     from .ghidra import GhidraFunction
-    from .le import LE
+    from .le import LE, Fixup, LEObject
 
 
 class FunctionsError(ValueError):
@@ -664,9 +669,14 @@ def runtime_aliases(entries: Iterable[RuntimeEntry]) -> dict[str, int]:
 # the first four are LE evidence, which decides a disagreement (D-07).
 EVIDENCE_ORDER = ("runtime", "entry", "call", "fixup", "ghidra", "capstone")
 LE_EVIDENCE = EVIDENCE_ORDER[:4]
+EVIDENCE_FIXUP = "fixup"
 EVIDENCE_GHIDRA = "ghidra"
 EVIDENCE_CAPSTONE = "capstone"
 VERDICT_RULE = "rule"
+VERDICT_GHIDRA = "ghidra"
+VERDICT_CAPSTONE = "capstone"
+VERDICT_DATA_IN_CODE = "data-in-code"
+_TABLE_ENTRY = 4  # bytes per jump-table entry: one off32 field
 
 
 @dataclass(frozen=True)
@@ -681,24 +691,34 @@ class Reconciled:
 
 @dataclass(frozen=True)
 class _Decision:
-    """What a disagreement address becomes: a start or not, and the verdict that says so."""
+    """What the rule makes of a disagreement address: a start or not, and why."""
 
     start: bool
-    verdict: str
     reason: str
 
 
 @dataclass(frozen=True)
-class _Inputs:
-    """The two start lists and the LE evidence of every address."""
+class _Context:
+    """The two start lists, the LE evidence of every address and what the rule consults."""
 
     ghidra: frozenset[int]
     capstone: frozenset[int]
     evidence: Mapping[int, frozenset[str]]
+    functions: Mapping[int, GhidraFunction]  # the kept Ghidra rows by entry
+    case_labels: Mapping[int, int]  # case label -> start of its jump table
+    runtime_starts: frozenset[int]
+    covered: tuple[tuple[int, int, str], ...]  # runtime rows, then runtime.csv modules
 
     def le_evidence(self, address: int) -> tuple[str, ...]:
         kinds = self.evidence.get(address, frozenset())
         return tuple(kind for kind in LE_EVIDENCE if kind in kinds)
+
+    def runtime_owner(self, address: int) -> str | None:
+        """The runtime row or module holding `address`, unless a runtime row starts there: such
+        an address is runtime code, never a function row of its own."""
+        if address in self.runtime_starts:
+            return None
+        return next((name for start, end, name in self.covered if start <= address < end), None)
 
 
 def _ordered(kinds: Iterable[str]) -> tuple[str, ...]:
@@ -706,55 +726,211 @@ def _ordered(kinds: Iterable[str]) -> tuple[str, ...]:
     return tuple(kind for kind in EVIDENCE_ORDER if kind in present)
 
 
-def _candidate_starts(
-    le: LE, ghidra: Sequence[GhidraFunction], discovery: Discovery,
-    runtime_rows: Sequence[FunctionRow],
-) -> tuple[_Inputs, int]:  # fmt: skip
-    """Ghidra entries inside a code object (the rest are counted and dropped: an export entry
-    in the data object is not a function), the capstone starts, and the LE evidence of each
-    address: discovery's kinds plus `runtime` for every seeded runtime row start."""
-    from .discover import code_objects
+def _table_targets(fixups: Mapping[int, Fixup], start: int, end: int) -> Iterator[int]:
+    """The case labels of the jump table [start, end): the target of each entry's fixup."""
+    for entry in range(start, end, _TABLE_ENTRY):
+        fixup = fixups.get(entry)
+        if fixup is not None:
+            yield fixup.target_va
 
-    code = code_objects(le)
-    entries = {row.entry for row in ghidra}
-    kept = frozenset(e for e in entries if any(obj.contains(e) for obj in code))
+
+def _case_labels(le: LE, tables: Iterable[tuple[int, int]]) -> dict[int, int]:
+    fixups = {fixup.src_va: fixup for fixup in le.fixups()}
+    labels: dict[int, int] = {}
+    for start, end in tables:
+        for label in _table_targets(fixups, start, end):
+            labels.setdefault(label, start)
+    return labels
+
+
+def _merged_evidence(
+    discovery: Discovery, runtime_rows: Sequence[FunctionRow]
+) -> Mapping[int, frozenset[str]]:
+    """discovery's evidence plus `runtime` for every seeded runtime row start."""
     evidence: dict[int, set[str]] = defaultdict(set)
     for address, kinds in discovery.evidence.items():
         evidence[address] |= kinds
     for row in runtime_rows:
         evidence[row.start].add(EVIDENCE_RUNTIME)
-    frozen = {address: frozenset(kinds) for address, kinds in evidence.items()}
-    inputs = _Inputs(kept, frozenset(discovery.starts), MappingProxyType(frozen))
-    return inputs, len(entries) - len(kept)
+    return MappingProxyType({address: frozenset(kinds) for address, kinds in evidence.items()})
 
 
-def _disagreements(inputs: _Inputs) -> list[int]:
+def _candidate_starts(
+    le: LE,
+    ghidra: Sequence[GhidraFunction],
+    discovery: Discovery,
+    runtime_rows: Sequence[FunctionRow],
+    modules: Sequence[MatchRange],
+) -> tuple[_Context, int]:
+    """Ghidra entries inside a code object (an export entry in the data object is not a
+    function: it is counted and dropped), the capstone starts, and what the rule consults."""
+    from .discover import code_objects
+
+    code = code_objects(le)
+    kept = {row.entry: row for row in ghidra if any(obj.contains(row.entry) for obj in code)}
+    covered = [(row.start, row.end, row.name) for row in runtime_rows]
+    covered += [(module.start, module.end, module.module) for module in modules]
+    context = _Context(
+        ghidra=frozenset(kept),
+        capstone=frozenset(discovery.starts),
+        evidence=_merged_evidence(discovery, runtime_rows),
+        functions=MappingProxyType(kept),
+        case_labels=MappingProxyType(_case_labels(le, discovery.jump_tables)),
+        runtime_starts=frozenset(row.start for row in runtime_rows),
+        covered=tuple(covered),
+    )
+    return context, len({row.entry for row in ghidra}) - len(kept)
+
+
+def _disagreements(context: _Context) -> list[int]:
     """Every address that is a start in exactly one of the two lists, sorted (D-08)."""
-    return sorted(inputs.ghidra ^ inputs.capstone)
+    return sorted(context.ghidra ^ context.capstone)
 
 
-def _auto_verdict(address: int, inputs: _Inputs) -> _Decision | None:
-    """The rule's verdict where the LE evidence decides (D-07), else None."""
-    kinds = inputs.le_evidence(address)
+def _auto_verdict(address: int, context: _Context) -> _Decision | None:
+    """The rule's decision where the LE evidence decides (D-07), else None (a person decides).
+    In order: a runtime row start; an address inside a runtime row or module; a case label
+    with no evidence beyond the table's own fixups; a call, fixup or entry start."""
+    if address in context.runtime_starts:
+        return _Decision(True, EVIDENCE_RUNTIME)
+    owner = context.runtime_owner(address)
+    if owner is not None:
+        return _Decision(False, f"{EVIDENCE_RUNTIME} (inside {owner})")
+    kinds = context.le_evidence(address)
+    table = context.case_labels.get(address)
+    if table is not None and set(kinds) <= {EVIDENCE_FIXUP}:
+        return _Decision(False, f"case label of the table at {_address(table)}")
     if kinds:
-        return _Decision(True, VERDICT_RULE, kinds[0])
+        return _Decision(True, kinds[0])
     return None
 
 
-def _boundary(address: int, inputs: _Inputs, decision: _Decision | None) -> BoundaryRow:
-    verdict, reason = (decision.verdict, decision.reason) if decision else ("", "")
-    return BoundaryRow(address, address in inputs.ghidra, address in inputs.capstone,
-                       inputs.le_evidence(address), verdict, reason)  # fmt: skip
+def _boundary(address: int, context: _Context, verdict: str, reason: str) -> BoundaryRow:
+    return BoundaryRow(address, address in context.ghidra, address in context.capstone,
+                       context.le_evidence(address), verdict, reason)  # fmt: skip
 
 
-def _evidence(address: int, inputs: _Inputs) -> str:
+def _hand_placement(verdict: str, address: int, context: _Context) -> str | None:
+    """Where a hand verdict puts `address`: a function start (follow that tool), a data-in-code
+    start, or nothing."""
+    if verdict == VERDICT_DATA_IN_CODE:
+        return KIND_DATA_IN_CODE
+    followed = {VERDICT_GHIDRA: context.ghidra, VERDICT_CAPSTONE: context.capstone}[verdict]
+    return KIND_GAME if address in followed else None
+
+
+def _apply_verdicts(
+    address: int, context: _Context, hand: BoundaryRow | None
+) -> tuple[BoundaryRow, str | None]:
+    """The boundaries.csv row of one disagreement and where it places the address (KIND_GAME,
+    KIND_DATA_IN_CODE or None). The tool owns address, ghidra, capstone, evidence and every
+    `rule` verdict; a hand verdict and reason survive only where the rule does not decide."""
+    decision = _auto_verdict(address, context)
+    if decision is not None:
+        placement = KIND_GAME if decision.start else None
+        return _boundary(address, context, VERDICT_RULE, decision.reason), placement
+    if hand is None or hand.verdict in ("", VERDICT_RULE):
+        return _boundary(address, context, "", ""), None
+    row = _boundary(address, context, hand.verdict, hand.reason)
+    return row, _hand_placement(hand.verdict, address, context)
+
+
+def _evidence(address: int, context: _Context) -> str:
     """The first of EVIDENCE_ORDER that placed the start (the fixed tie-break)."""
-    kinds = [*inputs.le_evidence(address)]
-    if address in inputs.ghidra:
+    kinds = [*context.le_evidence(address)]
+    if address in context.ghidra:
         kinds.append(EVIDENCE_GHIDRA)
-    if address in inputs.capstone:
+    if address in context.capstone:
         kinds.append(EVIDENCE_CAPSTONE)
     return _ordered(kinds)[0]
+
+
+def _kind(start: int, end: int, context: _Context, flat: bytes | bytearray) -> str:
+    """thunk for a Ghidra thunk whose body is one jmp rel32, else game."""
+    from . import x86
+
+    function = context.functions.get(start)
+    if function is None or not function.thunk:
+        return KIND_GAME
+    insn = x86.decode_one(bytes(flat[start:end]), start)
+    single_jmp = (insn is not None and insn.is_jump and not insn.is_conditional
+                  and insn.rel32_field is not None and insn.size == end - start)  # fmt: skip
+    return KIND_THUNK if single_jmp else KIND_GAME
+
+
+def _merged_end(start: int, end: int, limit: int, context: _Context, tables: Sequence[int]) -> int:
+    """Watcom aligns some labels after a jmp with filler, so capstone can end a function early.
+    The gap after `end` has no start of its own (the next start is `limit`); when Ghidra's
+    function at `start` spans it, the gap goes back into the function, never past `limit` or
+    into a jump table (05-07)."""
+    function = context.functions.get(start)
+    if function is None or function.body_max < end:
+        return end
+    index = bisect.bisect_left(tables, end)
+    table = tables[index] if index < len(tables) else limit
+    return max(end, min(limit, function.body_max + 1, table))
+
+
+class _Limits:
+    """Every row start, sorted, to find where a row must end at the latest."""
+
+    def __init__(self, starts: Iterable[int], code: Sequence[LEObject]) -> None:
+        self.starts = sorted(set(starts))
+        self.code = code
+
+    def after(self, address: int) -> int:
+        """The next row start after `address`, else the end of its code object."""
+        index = bisect.bisect_right(self.starts, address)
+        if index < len(self.starts):
+            return self.starts[index]
+        return next(obj.end for obj in self.code if obj.contains(address))
+
+
+def _module_lead_rows(
+    modules: Sequence[MatchRange], runtime_rows: Sequence[FunctionRow]
+) -> list[FunctionRow]:
+    """The bytes of a runtime module before its first public (05-04: cstart +3, stk +8, emu387
+    +888) are part of the module but of no seeded row: a data-in-code row of the module."""
+    rows = []
+    for module in modules:
+        inside = [row.start for row in runtime_rows if module.start <= row.start < module.end]
+        first = min(inside, default=module.end)
+        if first > module.start:
+            rows.append(FunctionRow(module.start, first, data_name(module.start),
+                                    KIND_DATA_IN_CODE, "", EVIDENCE_RUNTIME))  # fmt: skip
+    return rows
+
+
+def _overlaps(rows: Sequence[FunctionRow], starts: Sequence[int], start: int, end: int) -> bool:
+    index = bisect.bisect_right(starts, start) - 1
+    if index >= 0 and rows[index].end > start:
+        return True
+    return index + 1 < len(rows) and rows[index + 1].start < end
+
+
+def _data_in_code_rows(
+    tables: Iterable[tuple[int, int]], rows: Sequence[FunctionRow]
+) -> list[FunctionRow]:
+    """A jump table that no row covers (a leading table, 05-RESEARCH Pattern 3) becomes a
+    data-in-code row; a table inside a function's range stays part of that function."""
+    ordered = sorted(rows, key=lambda row: row.start)
+    starts = [row.start for row in ordered]
+    return [
+        FunctionRow(start, end, data_name(start), KIND_DATA_IN_CODE, "", EVIDENCE_FIXUP)
+        for start, end in tables
+        if not _overlaps(ordered, starts, start, end)
+    ]
+
+
+def _sorted_rows(rows: Iterable[FunctionRow]) -> tuple[FunctionRow, ...]:
+    """The rows by start; an overlap is a bug in the rule and is refused, never written."""
+    ordered = sorted(rows, key=lambda row: row.start)
+    for previous, row in zip(ordered, ordered[1:], strict=False):
+        try:
+            _check_after(previous.start, previous.end, row.start)
+        except ValueError as exc:
+            raise FunctionsError(f"reconcile: {row.name}: {exc}") from exc
+    return tuple(ordered)
 
 
 def reconcile(
@@ -764,31 +940,49 @@ def reconcile(
     runtime_rows: Sequence[FunctionRow],
     *,
     existing: Sequence[BoundaryRow] = (),
+    modules: Sequence[MatchRange] = (),
 ) -> Reconciled:
     """functions.csv and boundaries.csv rows by the D-07 rule, neither tool winning by default.
 
     A start is real if it is a call rel32 target, an absolute fixup target into code, the entry
-    point or a runtime start; Ghidra contributes entries only (its bodies are address sets). An
-    address both tools report is a start; one only one tool reports is a boundaries.csv row with
-    verdict `rule` and the deciding evidence as its reason when the LE evidence decides, else
-    with an empty verdict for a person. Ends come from discover.ends over the final starts."""
-    from .discover import ends
+    point or a runtime start; Ghidra contributes entries only (its bodies are address sets, used
+    only to close an alignment gap and to confirm a thunk). An address both tools report is one
+    row; an address one tool reports is one boundaries.csv row: verdict `rule` with the deciding
+    evidence as its reason when the LE evidence decides, else the hand verdict of `existing`
+    (matched by address) or an empty verdict for a person. Runtime rows are `runtime_rows`
+    (seeded from runtime.csv); `modules` are the runtime.csv rows themselves, whose bytes before
+    the first public become a data-in-code row. Ends come from discover.ends over the final
+    starts; an uncovered jump table is a data-in-code row."""
+    from .discover import code_objects, ends
 
-    inputs, dropped = _candidate_starts(le, ghidra, discovery, runtime_rows)
-    if not (inputs.ghidra or inputs.capstone or runtime_rows):
+    context, dropped = _candidate_starts(le, ghidra, discovery, runtime_rows, modules)
+    if not (context.ghidra or context.capstone or runtime_rows):
         raise FunctionsError("reconcile found no function start at all")
-    starts = set(inputs.ghidra & inputs.capstone)
+    hand = {row.address: row for row in existing}
+    starts = {a for a in context.ghidra & context.capstone if context.runtime_owner(a) is None}
+    data_starts: set[int] = set()
     boundaries = []
-    for address in _disagreements(inputs):
-        decision = _auto_verdict(address, inputs)
-        boundaries.append(_boundary(address, inputs, decision))
-        if decision is not None and decision.start:
+    for address in _disagreements(context):
+        row, placement = _apply_verdicts(address, context, hand.get(address))
+        boundaries.append(row)
+        if placement == KIND_GAME:
             starts.add(address)
-    runtime_starts = {row.start for row in runtime_rows}
-    limits = tuple(sorted(starts | runtime_starts))
-    end_of = ends(replace(discovery, starts=limits), le)
-    rows = list(runtime_rows)
-    for start in sorted(starts - runtime_starts):
-        rows.append(FunctionRow(start, end_of[start], game_name(start), KIND_GAME, "",
-                                _evidence(start, inputs)))  # fmt: skip
-    return Reconciled(tuple(sorted(rows, key=lambda r: r.start)), tuple(boundaries), dropped)
+        elif placement == KIND_DATA_IN_CODE:
+            data_starts.add(address)
+    starts -= context.runtime_starts
+    lead = _module_lead_rows(modules, runtime_rows)
+    limits = _Limits([*starts, *data_starts, *context.runtime_starts, *(r.start for r in lead)],
+                     code_objects(le))  # fmt: skip
+    end_of = ends(replace(discovery, starts=tuple(limits.starts)), le)
+    flat = le.load_flat(relocate=False)
+    tables = [start for start, _ in discovery.jump_tables]
+    rows = [*runtime_rows, *lead]
+    for start in sorted(starts):
+        end = _merged_end(start, end_of[start], limits.after(start), context, tables)
+        rows.append(FunctionRow(start, end, game_name(start), _kind(start, end, context, flat),
+                                "", _evidence(start, context)))  # fmt: skip
+    for start in sorted(data_starts):
+        rows.append(FunctionRow(start, limits.after(start), data_name(start), KIND_DATA_IN_CODE,
+                                "", _evidence(start, context)))  # fmt: skip
+    rows += _data_in_code_rows(discovery.jump_tables, rows)
+    return Reconciled(_sorted_rows(rows), tuple(boundaries), dropped)

@@ -613,12 +613,14 @@ def _cmd_functions(args: argparse.Namespace) -> int:
     out_dir = config_dir(target.name) if args.write else Path(args.output)
     refuse_output(out_dir, args.orig, DEFAULT_ORIG, args.watcom_dir, DEFAULT_INSTALL)
     le = LE(read_target(target, args.orig, args.manifest))
-    runtime_rows = _seeded_runtime_rows(_runtime_matches(args.runtime, target), args.watcom_dir)
+    matches = _runtime_matches(args.runtime, target)
+    runtime_rows = _seeded_runtime_rows(matches, args.watcom_dir)
     found = discover(le, runtime_starts=[row.start for row in runtime_rows])
     boundaries_out = out_dir / "boundaries.csv"
     kept = _existing(boundaries_out, config_dir(target.name) / "boundaries.csv")
     result = reconcile(le, read_ghidra_export(args.ghidra_export), found, runtime_rows,
-                       existing=read_boundaries_csv(kept) if kept else ())  # fmt: skip
+                       existing=read_boundaries_csv(kept) if kept else (),
+                       modules=matches)  # fmt: skip
     write_functions_csv(out_dir / "functions.csv", result.functions, target.name)
     write_boundaries_csv(boundaries_out, result.boundaries, target.name)
     report = _functions_report(target.name, result)
