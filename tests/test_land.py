@@ -118,6 +118,28 @@ def test_refuses_a_field_outside_the_row():
         build_patch(forged(GOOD_ROW, GOOD_OURS, fields={GOOD_ROW.end}), orig.flat)
 
 
+def test_expected_sha1_is_required():
+    orig = good_original()
+    with pytest.raises(TypeError):
+        land(orig.le, [checked(orig)])  # the manifest value must be passed (05-14, 05-17)
+
+
+def test_a_wrong_expected_sha1_refuses():
+    orig = good_original()
+    wrong = sha1(orig.data + b"\x00")
+    result = land(orig.le, [checked(orig)], expected_sha1=wrong)
+    assert not result.ok
+    assert result.format().startswith("MISMATCH ")
+    assert result.to_json()["ok"] is False
+
+
+@pytest.mark.parametrize("bad", ["", "0" * 39, "z" * 40, None])
+def test_a_malformed_expected_sha1_is_refused(bad):
+    orig = good_original()
+    with pytest.raises(LandError, match="SHA-1"):
+        land(orig.le, [checked(orig)], expected_sha1=bad)
+
+
 def test_no_functions():
     orig = good_original()
     result = land(orig.le, [], expected_sha1=sha1(orig.data))

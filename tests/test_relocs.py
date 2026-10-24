@@ -29,22 +29,23 @@ from relocpair import (
     table,
     to_segment,
 )
-from reverseapoc.relocs import RelocError, RelocResult, check_function
+from reverseapoc.relocs import OwnPublic, RelocError, RelocResult, check_function
 
 # A dump of hex bytes ("e8 0b 00", "e80b0000") or a bytes repr: no problem may hold one.
 _BYTE_DUMP = re.compile(r"\\x[0-9a-fA-F]{2}|\b(?:[0-9a-f]{2} ){2,}|\b(?:[0-9a-f]{2}){3,}\b")
 GOOD_EXTERNS = ["func_00010010_", "_D_00020004"]
 
 
-def check(segment, row, orig, symbols=None, *, off=0, size=None):
+def check(segment, row, orig, symbols=None, *, off=0, size=None, own_publics=(), fixups=None):
     return check_function(
         segment,
         off=off,
         size=len(GOOD_OURS) if size is None else size,
         row=row,
         flat=orig.flat,
-        fixups=orig.fixups,
+        fixups=orig.fixups if fixups is None else fixups,
         symbols=symbols or table(row),
+        own_publics=own_publics,
     )
 
 
@@ -192,25 +193,104 @@ def test_own_segment_absolute_reference_resolves():
     assert result.ok, result.problems
 
 
-def test_own_segment_call_resolves():
-    """call <static function right after ours>: a self-relative fixup to our own _TEXT."""
-    ours = bytes.fromhex("e8" "06000000" "c3")  # stored = the callee's segment offset
-    orig_code = bytes.fromhex("e8" "01000000" "c3")  # rel32 to start + 6
+def test_own_segment_jump_inside_the_function_needs_no_map():
+    """A self-relative reference to a label inside the checked public is its own row."""
+    ours = bytes.fromhex("e8" "05000000" "c3")  # stored = the ret's segment offset
+    orig_code = bytes.fromhex("e8" "00000000" "c3")  # rel32 0: lands on the ret at start + 5
     row = game_row(CODE_BASE, CODE_BASE + len(ours))
-    publics = [("func_00010000_", 0), ("static_", 6)]
-    fixups = [to_segment(1, TEXT_INDEX, relative=True)]
-    segment = our_segment(ours + bytes.fromhex("c3"), fixups, publics=publics)
+    segment = our_segment(ours, [to_segment(1, TEXT_INDEX, relative=True)])
     result = check(segment, row, original({CODE_BASE: orig_code}), size=len(ours))
     assert result.ok, result.problems
 
 
-def test_own_segment_reference_to_the_wrong_label_fails():
-    ours = bytes.fromhex("e8" "07000000" "c3")
-    row = game_row(CODE_BASE, CODE_BASE + len(ours))
-    orig = original({CODE_BASE: bytes.fromhex("e8" "01000000" "c3")})
-    segment = our_segment(ours + bytes(2), [to_segment(1, TEXT_INDEX, relative=True)])
-    (problem,) = problems_of(check(segment, row, orig, size=len(ours)))
-    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: _TEXT ")
+# call static_: the second public of our unit, at segment offset 6 (2 bytes). In the original its
+# row is far from ours, so a layout assumption (start - off + 6) would resolve it wrongly.
+STATIC_OFFSET, STATIC_SIZE = 6, 2
+STATIC_VA = CODE_BASE + 0x100
+CALLER_OURS = bytes.fromhex("e8" "06000000" "c3")  # stored = static_'s segment offset
+CALLER_ROW = game_row(CODE_BASE, CODE_BASE + len(CALLER_OURS))
+
+
+def caller_original():
+    rel = STATIC_VA - (CODE_BASE + 5)
+    return original({CODE_BASE: bytes.fromhex("e8") + rel.to_bytes(4, "little") + b"\xc3"})
+
+
+def caller_segment(stored: int = STATIC_OFFSET):
+    code = bytes.fromhex("e8") + stored.to_bytes(4, "little") + bytes.fromhex("c3" "40c3")
+    publics = [("func_00010000_", 0), ("static_", STATIC_OFFSET)]
+    return our_segment(code, [to_segment(1, TEXT_INDEX, relative=True)], publics=publics)
+
+
+def caller_check(own_publics=(), stored=STATIC_OFFSET):
+    return check(caller_segment(stored), CALLER_ROW, caller_original(), size=len(CALLER_OURS),
+                 own_publics=own_publics)  # fmt: skip
+
+
+def test_own_segment_call_to_a_second_public_resolves_through_the_map():
+    mapped = [OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA)]
+    result = caller_check(mapped)
+    assert result.ok, result.problems
+
+
+def test_own_segment_target_inside_a_mapped_public_keeps_its_offset():
+    """A target 1 byte into static_ maps to its row start + 1; the original lands on + 0."""
+    mapped = [OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA)]
+    (problem,) = problems_of(caller_check(mapped, stored=STATIC_OFFSET + 1))
+    assert f"0x{STATIC_VA + 1:08X}" in problem
+    assert f"0x{STATIC_VA:08X}" in problem
+
+
+def test_own_segment_call_with_a_wrong_map_fails():
+    wrong = STATIC_VA + 0x100
+    mapped = [OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, wrong)]
+    (problem,) = problems_of(caller_check(mapped))
+    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: ")
+    assert "static_" in problem
+    assert f"0x{wrong:08X}" in problem
+    assert f"0x{STATIC_VA:08X}" in problem
+
+
+@pytest.mark.parametrize(
+    "own_publics",
+    [(), [OwnPublic("other_", 0x40, 4, CODE_BASE + 0x200)]],
+    ids=["no map", "no entry for the target"],
+)
+def test_own_segment_call_without_a_map_entry_is_refused(own_publics):
+    """Never resolved by assuming our whole _TEXT sits in the original as in our object."""
+    (problem,) = problems_of(caller_check(own_publics))
+    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: _TEXT")
+    assert "needs the unit's public-to-row map" in problem
+
+
+def test_own_segment_layout_coincidence_is_not_trusted():
+    """Review I1: the original call lands on start + 6, where our object happens to place
+    static_, but in the original that is another function. Without the map this must not pass,
+    and with the true map (static_ at STATIC_VA) it must fail."""
+    lands_next = original({CODE_BASE: bytes.fromhex("e8" "01000000" "c3")})  # rel32 to start + 6
+    unmapped = check(caller_segment(), CALLER_ROW, lands_next, size=len(CALLER_OURS))
+    (problem,) = problems_of(unmapped)
+    assert "needs the unit's public-to-row map" in problem
+    mapped = [OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA)]
+    true_map = check(caller_segment(), CALLER_ROW, lands_next, size=len(CALLER_OURS),
+                     own_publics=mapped)  # fmt: skip
+    (problem,) = problems_of(true_map)
+    assert f"0x{STATIC_VA:08X}" in problem
+    assert f"0x{CODE_BASE + 6:08X}" in problem
+
+
+def test_own_public_of_zero_size_is_refused():
+    with pytest.raises(RelocError, match="static_"):
+        caller_check([OwnPublic("static_", STATIC_OFFSET, 0, STATIC_VA)])
+
+
+def test_unsorted_le_fixups_give_the_same_result():
+    orig = store_original()
+    segment = store_segment("_D_00020010")
+    forward = check(segment, STORE_ROW, orig, size=11)
+    backward = check(segment, STORE_ROW, orig, size=11, fixups=list(reversed(orig.fixups)))
+    assert backward == forward
+    assert backward.ok, backward.problems
 
 
 # ---- edges ---------------------------------------------------------------------------------------
