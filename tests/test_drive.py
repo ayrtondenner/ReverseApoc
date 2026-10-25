@@ -23,7 +23,8 @@ from reverseapoc.driver import DriveOptions, ExeWorld, PackInfo, Seams
 from reverseapoc.picker import Pick
 from reverseapoc.score import Candidate
 from reverseapoc.session import run_session
-from test_driver import FAKE, _git, _git_env, _write
+from test_driver import FAKE, Night, _git, _git_env, _write
+from test_driver import RUN as NIGHT_RUN
 
 EXES = ("ufo2p", "tacp")
 BASE = {"ufo2p": 0x00010000, "tacp": 0x00110000}  # made-up starts, one 64 KiB region apart each
@@ -633,3 +634,65 @@ def test_canary_runs_the_preflight_first(tmp_path, capsys):
     code, out, _ = rig.drive(capsys, canary=True, json=True)
     assert code == 2 and _refusal(out)["reason"] == "cli version"
     assert not rig.launches
+
+
+# ---- Task 3: the end-of-run checks (D-24, D-23) ----
+
+NINJA_SCRIPT = "uv run --frozen python configure.py && ninja -t clean && ninja verify"
+NINJA_VERIFY = [*COMPOSE, "bash", "-lc", NINJA_SCRIPT]
+GATE_ALL = [*CONTAINER_UV, "gate", "--all", "--json"]
+
+
+def _ordered_night(tmp_path, runner: Runner):
+    """A night (06-23's harness) with nothing to do, whose end-of-run checks run through
+    driver.finish and `runner`; `events` interleaves the runner's and git's calls."""
+    night = Night(tmp_path / "night", picks=())
+    events: list[tuple[str, list[str]]] = []
+    night.on_git = lambda argv: events.append(("git", argv))
+
+    def run(argv):
+        events.append(("run", list(argv)))
+        return runner(argv)
+
+    run_dir = night.repo / "build" / "driver" / NIGHT_RUN
+    report = night.run(end_of_run=lambda: driver.finish(run, run_dir=run_dir))
+    return night, report, events, run_dir
+
+
+def test_end_of_run_order(tmp_path):
+    night, report, events, run_dir = _ordered_night(tmp_path, Runner())
+    runs = [argv for kind, argv in events if kind == "run"]
+    assert runs == [NINJA_VERIFY, GATE_ALL]
+    gate_at = next(i for i, (kind, argv) in enumerate(events) if argv == GATE_ALL)
+    commit_at = next(i for i, (kind, argv) in enumerate(events)
+                     if kind == "git" and "commit" in argv)  # fmt: skip
+    assert gate_at < commit_at
+    assert night.commits() == ["chore(driver): attempt log"]
+    ended = night.kinds("run")[-1]
+    assert (ended["event"], ended["checks_failed"]) == ("ENDED", [])
+    assert report.exit_code == 0
+    for name in ("end-ninja-verify.log", "end-gate-all.log"):
+        log = (run_dir / name).read_text(encoding="utf-8")
+        assert "noise on stdout" in log and "noise on stderr" in log, name
+
+
+@pytest.mark.parametrize(
+    ("failing", "expected"),
+    [(NINJA_VERIFY, ["ninja verify exit 1"]), (GATE_ALL, ["gate --all exit 1"])],
+)
+def test_a_failing_end_of_run_check_is_recorded_and_exits_1(tmp_path, failing, expected):
+    runner = Runner(replies=[(lambda a: a == failing, (1, "", "made-up failure\n"))])
+    night, report, events, _ = _ordered_night(tmp_path, runner)
+    assert [argv for kind, argv in events if kind == "run"] == [NINJA_VERIFY, GATE_ALL]
+    ended = night.kinds("run")[-1]
+    assert (ended["event"], ended["checks_failed"]) == ("ENDED", expected)
+    assert report.exit_code == 1
+    assert night.commits() == ["chore(driver): attempt log"]
+
+
+def test_real_deps_wire_finish_as_the_end_of_run(tmp_path):
+    rig = Rig(tmp_path)
+    deps = driver.real_deps(rig.options(), rig.seams(), _world(rig.packs))
+    assert list(deps.end_of_run()) == []
+    assert rig.runner.calls == [NINJA_VERIFY, GATE_ALL]
+    assert (rig.repo / "build" / "driver" / RUN / "end-gate-all.log").is_file()
