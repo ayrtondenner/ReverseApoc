@@ -87,13 +87,17 @@ class Tree:
     def source(self, exe: str, unit: str) -> Path:
         return self.src / STEMS[exe] / f"{unit}.c"
 
-    def write_unit(self, exe: str, unit: str, starts: list[int], *, crlf: bool = False) -> str:
+    def write_unit(self, exe: str, unit: str, starts: list[int], *, crlf: bool = False,
+                   names: dict[int, str] | None = None) -> str:  # fmt: skip
         """Write the unit file defining `starts` in C (the other rows of the unit stay
-        INCLUDE_ASM) and return its LF text."""
+        INCLUDE_ASM) and return its LF text. `names` gives a start its C name after a
+        symbols.csv rename (the C defines the new name, as check requires)."""
         rows = [start for start, u in ROWS[exe] if u == unit]
+        names = names or {}
         lines = ['#include "common.h"']
         for start in rows:
-            lines.append(f"int {fname(start)}(void) {{ return {start}; }}" if start in starts
+            c_name = names.get(start, fname(start))
+            lines.append(f"int {c_name}(void) {{ return {start}; }}" if start in starts
                          else f"INCLUDE_ASM({fname(start)});")  # fmt: skip
         text = "\n".join(lines) + "\n"
         path = self.source(exe, unit)
@@ -721,15 +725,72 @@ def rename(tree: Tree, start: int, name: str) -> None:
     write_symbols_csv(tree.config / "ufo2p" / "symbols.csv", [SymbolRow(start, name, "func")], UFO)
 
 
+LINKED = "UnitInit_"  # the symbols.csv name, verbatim: the linker name the object exports
+C_NAME = "UnitInit"  # what the C defines for it (Watcom appends the `_`)
+
+
 def test_regating_a_renamed_function_updates_its_name(tree):
     """Orchestrator ruling (minor 3): a matched row is keyed by (EXE, start); a passing re-gate
-    takes the name symbols.csv gives the start, keeping attempts and date (F29)."""
+    takes the name symbols.csv gives the start, keeping attempts and date (F29). The C defines
+    the new name, as the real check requires (fix round 2)."""
     seed(tree, UFO, [matched(A1, UNIT_A, attempts=3, day="2026-10-01")])
-    rename(tree, A1, "UnitInit")
-    text = tree.write_unit(UFO, UNIT_A, [A1])
-    assert run_gate(tree, f"ufo2p/{UNIT_A}", attempts=1).exit_code == 0
+    rename(tree, A1, LINKED)
+    text = tree.write_unit(UFO, UNIT_A, [A1], names={A1: C_NAME})
+    assert f"int {C_NAME}(void)" in text and f"int {fname(A1)}(" not in text
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", attempts=1)
+    assert result.exit_code == 0, result.problems
     assert tree.rows(UFO) == [dataclasses.replace(
-        matched(A1, UNIT_A, attempts=3, day="2026-10-01", sha=lf_sha256(text)), name="UnitInit")]
+        matched(A1, UNIT_A, attempts=3, day="2026-10-01", sha=lf_sha256(text)), name=LINKED)]
+
+
+def test_gate_all_passes_with_a_renamed_match(tree):
+    """gate --all proves a matched start renamed in symbols.csv whose C defines the new name."""
+    text = tree.write_unit(UFO, UNIT_A, [A1], names={A1: C_NAME})
+    rename(tree, A1, LINKED)
+    before = seed(tree, UFO, [dataclasses.replace(matched(A1, UNIT_A, sha=lf_sha256(text)),
+                                                  name=LINKED)])  # fmt: skip
+    fake = FakeAll(tree)
+    result = run_all(tree, fake)
+    assert result.exit_code == 0, result.problems
+    assert fake.sources == [(UFO, UNIT_A)]
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_an_unwritable_name_is_refused_before_check(tree):
+    """Minor (ruling): the name column is the symbols.csv name verbatim; one status.csv cannot
+    hold is a tool error up front, naming the row, never after a passing check."""
+    tree.write_unit(UFO, UNIT_A, [A1], names={A1: "UnitInit"})
+    rename(tree, A1, "Unit$Init_")
+    fake = FakeCheck(tree)
+    with pytest.raises(CheckError, match=r"Unit\$Init_.*0x00010000|0x00010000.*Unit\$Init_"):
+        run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert fake.calls == []
+    assert not tree.status(UFO).exists()
+
+
+def test_partial_refuses_an_unwritable_name_before_check(committed):
+    tree = committed
+    rename(tree, B1, "Unit$Init_")
+    fake = FakePartial(tree, {B1: 50.0})
+    with pytest.raises(CheckError, match="0x00010020"):
+        run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), fake)
+    assert fake.sources == []
+    assert not tree.status(UFO).exists()
+
+
+def test_a_unit_with_neither_markers_nor_definitions_goes_to_check(tree):
+    """Only a unit whose every game/thunk row is marked INCLUDE_ASM is called reverted without
+    check; one with neither markers nor the expected definitions goes to check, which refuses
+    it as it does today (a tool error)."""
+    seed(tree, UFO, [matched(A1, UNIT_A)])
+    path = tree.source(UFO, UNIT_A)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b'#include "common.h"\n')
+    tree.defined[(UFO, UNIT_A)] = []
+    fake = FakeCheck(tree)
+    with pytest.raises(CheckError, match="defines no function"):
+        run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert len(fake.calls) == 1
 
 
 def test_a_stale_name_is_refused(tree):
