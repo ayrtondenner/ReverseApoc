@@ -30,7 +30,7 @@ Until then those entries read "not seen in the code matched so far".
 
 ## When to Surface
 
-**Trigger:** the full decomp reaches 100%.
+**Trigger:** the full decomp reaches 100%. This is the last step of the layout in [[SEED-261025-l4y]].
 
 ## Scope Estimate
 

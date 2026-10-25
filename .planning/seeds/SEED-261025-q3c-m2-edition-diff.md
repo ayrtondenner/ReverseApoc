@@ -3,7 +3,7 @@ id: SEED-261025-q3c
 status: dormant
 planted: 2026-10-25
 planted_during: Milestone 1, Phase 6 (Reporting and agent pilot)
-trigger_when: Milestone 2, after the full decomp of the installed build ([[SEED-261025-3ga]])
+trigger_when: "Milestone 2: early steps any time, verdict after 100%"
 scope: medium
 ---
 
@@ -41,7 +41,9 @@ Rules: no game bytes from any edition are committed. Hashes go into the manifest
 
 ## When to Surface
 
-**Trigger:** Milestone 2, after the installed build is fully matched.
+**Trigger:** Milestone 2 (layout in [[SEED-261025-l4y]]):
+- **Any time:** hash a bought disc, and diff functions against the v1.00 builds as they match.
+- **After 100%:** the verdict.
 
 ## Scope Estimate
 

@@ -17,16 +17,18 @@ The owner marked this a priority on 2026-10-25 because it is the item that is fo
 
 - **Phase 7:** a spike locates the #997 tick-rate and training code, and the mechanics list includes #997.
 - **Phase 8:** the #997 spec reaches at least `backed-by-matched-code`.
-- **Phase 8, SPEC-07:** the wiki claim inventory. This is the "wiki claim inventory" item from the original 7-12 proposal, except for its "priority list agreed (with OpenApoc)" part.
+- **Phase 8, SPEC-07:** the wiki claim inventory. This is the "wiki claim inventory" item from the original 7-12 proposal.
 
 ## What Is Left For Milestone 2
 
 1. **`dosbox-verified`.** It needs the differential harness ([[SEED-261025-hft]]).
-2. **OpenApoc review (`reviewed-by-openapoc`).** It needs contact with OpenApoc, which is out of scope in Milestone 1 (owner decision 2026-10-21). This is also where the original proposal's "agree terms with OpenApoc" step (spec format, licence, AI-written PRs and their volume) and the agreed priority list belong.
+2. **OpenApoc review (`reviewed-by-openapoc`).** It needs contact with OpenApoc, which is out of scope in Milestone 1 (owner decision 2026-10-21). The contact opens with the owner's own posts when Milestone 1 ends.
+
+There is no "agree terms with OpenApoc" step (owner, 2026-10-25). We write the specs in the format that makes sense to us, since both projects are open source. If OpenApoc raises concerns about the format, the owner says so and we update the specs then.
 
 ## When to Surface
 
-**Trigger:** planning Milestone 2. Run it early. It needs only the #997 functions matched in Phase 7 and the harness, not the full decomp ([[SEED-261025-3ga]]).
+**Trigger:** planning Milestone 2. This is Track B, step B2 of the layout in [[SEED-261025-l4y]]. It needs only the #997 functions matched in Phase 7 and the harness, not the full decomp ([[SEED-261025-3ga]]).
 
 ## Scope Estimate
 
