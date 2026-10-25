@@ -30,7 +30,9 @@ anything unknown fails closed (STOP), and only a known transient condition is no
   is counted, and the outcome comes from the driver's gate, never from the result (T-06-39).
 
 An error result is any result but `is_error: false`: a missing or non-boolean flag counts as an
-error (fail closed, fix round 2 M1).
+error (fail closed, fix round 2 M1). An `is_error: false` result that still carries an
+`api_error_status` or a non-empty `errors` is an error result too (fix round 3); only a clean
+`is_error: false` result keeps its text unread. A subtype that is not a string is unknown.
 
 Precedence when one stream carries several signals: STOP over LIMIT over TRANSIENT over
 ATTEMPT_DONE. A run with a credit problem must end even if a limit was also hit, and a limit is
@@ -179,8 +181,11 @@ def _rate_limits(events: Sequence[dict]) -> Iterator[Mapping]:
 
 def _is_error_result(result: Mapping) -> bool:
     """Whether a result is an error result: anything but `is_error: false`, so a missing or
-    non-boolean flag counts as an error (fail closed, fix round 2 M1)."""
-    return result.get("is_error") is not False
+    non-boolean flag counts as an error (fail closed, fix round 2 M1); and an `is_error: false`
+    result that still carries an `api_error_status` or a non-empty `errors` (fix round 3)."""
+    if result.get("is_error") is not False:
+        return True
+    return result.get("api_error_status") is not None or result.get("errors") not in (None, [])
 
 
 def _result_texts(results: Sequence[dict]) -> Iterator[str]:
@@ -204,7 +209,11 @@ def _error_statuses(results: Sequence[dict]) -> list[object]:
 
 
 def _unknown_subtype(results: Sequence[dict]) -> bool:
-    return any(result.get("subtype") not in _KNOWN_SUBTYPES for result in results)
+    """Whether a result's subtype is unknown; a non-string subtype is unknown (fix round 3)."""
+    return any(
+        not isinstance(subtype := result.get("subtype"), str) or subtype not in _KNOWN_SUBTYPES
+        for result in results
+    )
 
 
 def _unexplained_error(results: Sequence[dict]) -> bool:
