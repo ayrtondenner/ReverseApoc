@@ -130,9 +130,11 @@ def test_write_refuses_a_row_the_reader_would_refuse(tmp_path, bad):
 
 
 def test_only_gate_writes_the_table():
-    """D-21: gate.py is the one caller of write_status in the package and configure.py."""
+    """D-21: gate.py is the one caller of write_status in the package, configure.py and
+    tools/progress.py (a stdlib script with a writer of its own, 06-18)."""
     root = Path(__file__).resolve().parents[1]
-    sources = [*(root / "tools" / "reverseapoc").glob("*.py"), root / "configure.py"]
+    sources = [*(root / "tools" / "reverseapoc").glob("*.py"), root / "configure.py",
+               root / "tools" / "progress.py"]
     others = [p for p in sources if p.name != "status.py"]
     callers = sorted(p.name for p in others if "write_status" in p.read_text(encoding="utf-8"))
     assert callers == ["gate.py"]
