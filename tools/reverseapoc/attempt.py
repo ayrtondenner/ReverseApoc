@@ -485,13 +485,15 @@ def run_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tup
 
 def _remove_container(name: str, runner: Runner, held: _Held) -> list[str]:
     """M7: after a timeout, `docker rm -f <name>` through the same runner, for at most
-    RM_TIMEOUT seconds (N2). If that fails, is slow or raises, the lock stays (`held.keep`):
-    the orphan may still write build/, so this attempt's checks end."""
+    RM_TIMEOUT seconds (N2). The caller has already marked the lock kept (N7); only a removal
+    that succeeded clears the mark. If it fails, is slow or raises, the lock stays: the orphan
+    may still write build/, so this attempt's checks end."""
     try:
         removed = runner(("docker", "rm", "-f", name), timeout=RM_TIMEOUT).returncode == EXIT_OK
     except Exception:  # noqa: BLE001 - any failure to remove it fails closed
         removed = False
     if removed:
+        held.keep = False
         return [f"  the stopped container {name} was removed"]
     held.keep = True
     return [f"  the stopped container {name} could not be removed: the check lock stays and "
@@ -521,6 +523,25 @@ def _locked_check(
     started = CLOCK()
     ran = runner(container_check_argv(claim, sweep=sweep, name=name))
     seconds = CLOCK() - started
+    if ran.timed_out:
+        held.keep = True  # N7: fail closed from here until a removal succeeds
+    removal: list[str] = []
+    try:
+        line, summary = _record(claim, ran, n, source, seconds, sweep=sweep, default=default,
+                                saved_path=checks / f"{stem}.json", log=log)  # fmt: skip
+    finally:
+        # N2: the evidence is written first, so a slow removal cannot lose it; N7: the
+        # removal still runs when that write raised (whose error then surfaces as exit 2).
+        if ran.timed_out:
+            removal = _remove_container(name, runner, held)
+    return line.exit, "\n".join([summary, *removal])
+
+
+def _record(
+    claim: Claim, ran: Ran, n: int, source: str, seconds: float, *, sweep: bool, default: str,
+    saved_path: Path, log: Path,
+) -> tuple[CheckLogLine, str]:
+    """The run's log line and summary, with its JSON saved and its line appended."""
     doc = _parse(ran.stdout)
     try:
         if doc is None:
@@ -534,11 +555,9 @@ def _locked_check(
         summary = _summary(claim, line, None, ran, seconds)
     saved = doc if doc is not None else {"error": "no usable JSON", "returncode": ran.returncode,
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
-    write_atomic(checks / f"{stem}.json", (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
+    write_atomic(saved_path, (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
     _append(log, line)
-    # N2: the evidence is on disk before the removal, so a slow removal cannot lose it.
-    removal = _remove_container(name, runner, held) if ran.timed_out else []
-    return line.exit, "\n".join([summary, *removal])
+    return line, summary
 
 
 CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for
