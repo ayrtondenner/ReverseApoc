@@ -1096,6 +1096,10 @@ class _Night:
             raise
         if note:  # S1: the night stops after the audit and containment ran
             self._reset(session)
+            if session.counted:  # fix round 2 minor 4: the attempt is recorded like any stop
+                self.sessions += 1
+                summary = read_checks(claim.attempt_dir)
+                self._record_attempt(session, GAVE_UP, TOOL, summary)
             raise _Stop(TOOL, note)
         if session.disposition is Disposition.STOP:
             self._reset(session)
@@ -1152,12 +1156,14 @@ class _Night:
             self.sessions += 1
         self._guardrail(session, stray, record=session.counted)
 
-    def _guardrail(self, session: _Session, stray: Sequence[str], *, record: bool) -> None:
+    def _guardrail(
+        self, session: _Session, stray: Sequence[str], *, record: bool, extra: Sequence[str] = ()
+    ) -> None:
         """Security ruling: a breach never leaves the strays in place and never deletes one.
         Each stray file is copied (tracked, or pinned with earlier bytes) or moved (new) into
         build/driver/<run>/quarantine/<path>, then put back as it was before the session; the
         attempt is reset as usual and the STOPPED record lists every path."""
-        detail = self._contain_and_reset(session, stray)
+        detail = "; ".join([self._contain_and_reset(session, stray), *extra])
         if record:
             self._record_attempt(session, GAVE_UP, GUARDRAIL,
                                  read_checks(session.claim.attempt_dir))  # fmt: skip
@@ -1353,19 +1359,28 @@ class _Night:
 
     # --- judging a session ---
 
-    def _restore_pre_gate(self) -> None:
-        """status.csv, the feed and the log back to their bytes right before the gate."""
+    def _restore_pre_gate(self) -> list[str]:
+        """status.csv, the feed and the log back to their bytes right before the gate. Each
+        file is tried alone; a refused or failed restore comes back as a note for the record
+        (fix round 2 minor 1: never silent)."""
+        notes = []
         for rel, data in self.pre_gate.items():
-            if data is not None:
-                self._restore_bytes(rel, self.repo / rel, data)
+            if data is None:
+                continue
+            try:
+                if not self._restore_bytes(rel, self.repo / rel, data):
+                    notes.append(f"not restored: {rel} (refused: a link or outside the checkout)")
+            except Exception as exc:  # noqa: BLE001 - named in the record
+                notes.append(f"not restored: {rel} ({type(exc).__name__}: {exc})")
         self.pre_gate = {}
+        return notes
 
     def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP) -> None:
-        self._restore_pre_gate()  # a gate that passed or half-wrote leaves no row behind
+        notes = self._restore_pre_gate()  # a gate that passed or half-wrote leaves no row behind
         self._reset(session)
         if session.counted:
             self._record_attempt(session, outcome, TOOL, read_checks(session.claim.attempt_dir))
-        raise _Stop(TOOL, what)
+        raise _Stop(TOOL, "; ".join([what, *notes]))
 
     def _judge(self, session: _Session) -> GateRun | None:
         """The lint, then the gate (D-24). None when the lint failed (the gate never runs)."""
@@ -1441,8 +1456,8 @@ class _Night:
         untracked = [p for p, code in parse_status(raw).items() if code == _UNTRACKED]
         odd = [p for p in untracked if not _HEADER.fullmatch(p)]
         if odd:
-            self._restore_pre_gate()
-            self._guardrail(session, odd, record=session.counted)
+            notes = self._restore_pre_gate()
+            self._guardrail(session, odd, record=session.counted, extra=notes)
         older = [p for p in untracked if p not in session.new_headers]
         if older:  # fix round 1 minor 5: never silently left out of a match commit
             why = f"untracked headers this session did not write: {_listed(older)}"
@@ -1453,36 +1468,60 @@ class _Night:
                       abort: str | None = None) -> None:  # fmt: skip
         claim = session.claim
         headers = self._commit_headers(session)
-        self._record_attempt(session, MATCHED, abort, summary)
-        usage = session.usage
-        message = commit_message(exe=claim.pick.exe, function=claim.function,
-                                 unit=claim.pick.unit, attempt_n=claim.n,
-                                 attempts=self.config.attempts_per_function,
-                                 model=session.text("model"), usage=usage,
-                                 seconds=session.seconds, sha1s=gate_sha1s(gate.doc))  # fmt: skip
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix(), *headers]
+        self._record_attempt(session, MATCHED, abort, summary)
         try:
+            message = commit_message(exe=claim.pick.exe, function=claim.function,
+                                     unit=claim.pick.unit, attempt_n=claim.n,
+                                     attempts=self.config.attempts_per_function,
+                                     model=session.text("model"), usage=session.usage,
+                                     seconds=session.seconds,
+                                     sha1s=gate_sha1s(gate.doc))  # fmt: skip
             commit_paths(self.deps.git, message=message,
                          message_file=claim.attempt_dir / COMMIT_MSG, paths=paths)  # fmt: skip
-        except DriverError as exc:
-            self._undo_match(session, paths, summary, str(exc))
+        except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
+            why = f"{type(exc).__name__}: {exc}"
+            raise _Stop(TOOL, self._undo_match(session, paths, summary, why)) from exc
+        except BaseException as exc:  # minor 3: an interrupt is undone, then re-raised
+            undone = self._undo_match(session, paths, summary, type(exc).__name__)
+            self.interrupted = f" during the match commit; {undone}"
+            raise
         self.matched += 1
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
-                    why: str) -> None:  # fmt: skip
-        """Fix round 1, I2: a match commit that failed leaves no trace of a match. Everything it
-        staged is unstaged, status.csv, the feed and the log go back to their pre-gate bytes
-        (dropping the driver's own uncommitted MATCHED record), the attempt is reset and logged
-        GAVE_UP `tool`, and the night stops."""
+                    why: str) -> str:  # fmt: skip
+        """Fix round 1 I2, completed in fix round 2 (J1): a match commit that failed leaves no
+        trace of a match. Each step is best-effort with its own note: unstage what it added,
+        put status.csv, the feed and the log back to their pre-gate bytes (dropping the
+        driver's own uncommitted MATCHED record), reset the attempt. Then the attempt is
+        always logged GAVE_UP `tool`, and the returned detail names the original error, every
+        step that failed and every path still staged. The caller stops the night."""
         notes = [f"the match commit failed: {why}"]
         try:
             _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
-        except DriverError as exc:
-            notes.append(f"could not unstage: {exc}")
-        self._restore_pre_gate()
-        self._reset(session)
-        self._record_attempt(session, GAVE_UP, TOOL, summary)
-        raise _Stop(TOOL, "; ".join(notes))
+        except Exception as exc:  # noqa: BLE001 - named below
+            notes.append(f"could not unstage: {type(exc).__name__}: {exc}")
+        notes += self._restore_pre_gate()
+        try:
+            self._reset(session)
+        except Exception as exc:  # noqa: BLE001 - named below
+            notes.append(f"could not reset the attempt: {type(exc).__name__}: {exc}")
+        staged = self._staged()
+        if staged:
+            notes.append(f"still staged: {_listed(staged)}")
+        try:
+            self._record_attempt(session, GAVE_UP, TOOL, summary)
+        except Exception as exc:  # noqa: BLE001 - named below
+            notes.append(f"could not record the attempt: {type(exc).__name__}: {exc}")
+        return "; ".join(notes)
+
+    def _staged(self) -> list[str]:
+        """Every path staged in the index (best-effort: an unreadable index is named)."""
+        try:
+            raw = _git_ok(self.deps.git, ["diff", "--cached", "--name-only", "-z"])
+        except Exception as exc:  # noqa: BLE001 - the caller names it
+            return [f"<unknown: {type(exc).__name__}: {exc}>"]
+        return [n for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
 
     # --- records ---
 
