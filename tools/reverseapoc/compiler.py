@@ -55,7 +55,6 @@ COMPILER_EXE = "BINNT/WCC386.EXE"  # the NT-hosted driver both backends run
 # Project headers (include/common.h). compile_rule joins INCLUDE_DIR to the compile root, not
 # to REPO_ROOT, so a worktree (or any other root) compiles with its own include/.
 INCLUDE_DIR = "include"
-PROJECT_INCLUDE = REPO_ROOT / INCLUDE_DIR
 OBJ_SUFFIX = ".obj"  # the only suffix -o accepts: the object is deleted, then rewritten
 
 # How every compiler run is started: list argv, no shell, output captured as text.
@@ -518,10 +517,11 @@ def _append_log(log: Path, result: CompileResult) -> None:
     """Append one line for `result`. The log is opened, written and closed inside the lock,
     and closed before the release: on the container's 9p bind mount the bytes reach the
     server at close, and there and in the Windows UCRT append is read-EOF-then-write. Parallel
-    `cc` within one environment is safe; the host and a container writing the same log at
-    once are not covered, because their OS locks do not see each other. A log that exists but
-    is not a regular file (/dev/null, a FIFO, a console) is a device: it needs no append
-    serialisation and its directory may not take a sidecar, so it is written without the lock."""
+    `cc` within one environment is safe; the Windows host and a container writing the same log
+    at once are not covered, because their OS locks do not see each other. A log that exists
+    but is not a regular file (/dev/null, NUL, a FIFO, a console) is a device: it needs no
+    append serialisation and its directory may not take a sidecar, so it is written without
+    the lock. A directory takes the same branch; `cc` refuses one before the compile."""
     log.parent.mkdir(parents=True, exist_ok=True)
     line = _log_line(result)
     if _is_device(log):
