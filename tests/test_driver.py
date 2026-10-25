@@ -89,7 +89,8 @@ def _git(repo: Path, env: dict, *args: str) -> str:
 def _make_repo(tmp_path: Path, env: dict, *, unit: bool) -> Path:
     repo = tmp_path / "repo"
     files = {
-        ".gitignore": "build/\n.venv/\n.claude/settings.local.json\n__pycache__/\n",
+        ".gitignore": "build/\n.venv/\n.claude/settings.local.json\n.claude/hooks/\n"
+        ".claude/worktrees/\n__pycache__/\n",
         "include/common.h": "/* made up */\n",
         f"config/{EXE}/status.csv": STATUS_HEAD,
         "config/tacp/status.csv": STATUS_HEAD,
@@ -130,6 +131,8 @@ def _plant_dir_link(link: Path, target: Path) -> None:
     link.parent.mkdir(parents=True, exist_ok=True)
     if link.is_dir() and not any(link.iterdir()):
         link.rmdir()
+    elif link.is_dir():
+        link.rename(link.with_name(link.name + ".moved"))  # the session swapped the directory
     if sys.platform == "win32":
         import _winapi
 
@@ -196,6 +199,8 @@ class Night:
         self.now = 1000.0
         self.inject: list[str] = []
         self.on_git = None  # called with each git argv before it runs
+        self.gate_names = ("UFO2P.EXE", "TACP.EXE")  # the EXE names the fake gate reports
+        self.git_at_launch = -1
         self._current = Sess()
         self._git = git_runner(self.repo, env=self.env)
 
@@ -221,6 +226,7 @@ class Night:
     def _session(self, argv, *, cwd, env, transcript, timeout_s):
         spec = self._current
         self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
+        self.git_at_launch = len(self.git_calls)
         self.now += 45.0
         if spec.raises is not None:
             for rel, text in spec.files:
@@ -257,8 +263,8 @@ class Night:
             "checks": [
                 {
                     "splice": [
-                        {"exe": "UFO2P.EXE", "sha1": SHA_UFO2P},
-                        {"exe": "TACP.EXE", "sha1": SHA_TACP},
+                        {"exe": self.gate_names[0], "sha1": SHA_UFO2P},
+                        {"exe": self.gate_names[1], "sha1": SHA_TACP},
                     ]
                 }
             ],
@@ -609,12 +615,14 @@ def test_stop_classes_end_the_run(tmp_path, scenario, reason):
 
 
 def test_transient_retries_then_aborts(tmp_path):
-    """AGT-03 empty: no result three times -> one abort record, no tri-state record."""
+    """AGT-03 empty, D-08 literally ("3 retries, then the attempt is aborted"): the first
+    launch and 3 retries without a result -> one abort record with retries 3, no tri-state
+    record (minor 6)."""
     sessions = [Sess("overloaded", write=None), Sess("no_result", write=None),
-                Sess("overloaded", write=None)]  # fmt: skip
+                Sess("overloaded", write=None), Sess("no_result", write=None)]  # fmt: skip
     night = Night(tmp_path, sessions=sessions)
     report = night.run()
-    assert len(night.launched) == 3
+    assert len(night.launched) == 4
     abort = _one(night.kinds("abort"))
     assert (abort["abort_reason"], abort["retries"], abort["attempt"]) == ("transient", 3, 1)
     assert night.kinds("attempt") == []
@@ -1121,3 +1129,88 @@ def test_a_failed_match_commit_unstages_new_files_too(tmp_path):
     assert night.git("diff", "--cached", "--name-only").strip() == ""
     assert not (night.repo / UNIT_REL).exists()
     assert not (night.repo / "include" / "fx_util.h").exists()
+
+
+def test_a_third_transient_retry_that_succeeds_is_counted(tmp_path):
+    """Minor 6: three transient launches are not yet an abort; the 4th launch counts."""
+    sessions = [Sess("overloaded", write=None)] * 3 + [Sess()]
+    night = Night(tmp_path, sessions=sessions)
+    night.run(config={"attempts_per_function": 1})
+    assert night.kinds("abort") == []
+    assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
+
+
+def test_containers_are_removed_before_a_raising_session_is_measured(tmp_path):
+    """Minor 1: nothing is measured until the attempt's containers are gone."""
+    night = Night(tmp_path, sessions=[Sess(raises=RuntimeError("made-up crash"))])
+    order: list[int] = []
+    night.run(remove_containers=lambda prefix: order.append(len(night.git_calls)))
+    assert order == [night.git_at_launch]
+
+
+@pytest.mark.parametrize("rel", [".venv/Scripts/made_up.exe", ".claude/hooks/made_up.js"])
+def test_the_whole_venv_and_ignored_claude_trees_are_fingerprinted(tmp_path, rel):
+    """Minor 2 (widened): stat-only fingerprint of all of .venv and of every gitignored tree
+    under .claude/."""
+    night = Night(tmp_path, sessions=[Sess(write=rel)])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert rel in report.detail
+
+
+def test_claude_worktrees_are_not_fingerprinted(tmp_path):
+    rel = ".claude/worktrees/agent-made-up/notes.txt"
+    night = Night(tmp_path, sessions=[Sess(write=rel)])
+    report = night.run(config={"attempts_per_function": 1})
+    assert report.event == "ENDED"
+
+
+def test_the_session_env_forbids_bytecode_writes(tmp_path):
+    """Minor 3: the wrapper must not write .pyc files mid-session."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.run()
+    assert night.launched[0].env.get("PYTHONDONTWRITEBYTECODE") == "1"
+
+
+def test_a_restore_write_through_a_link_is_refused(tmp_path):
+    """Minor 4: restoring a pinned file goes through the same link checks as quarantine
+    writes; a swapped .claude/ (a junction or symlink) is refused and named "not restored"."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sess = Sess(write=None, files=((SETTINGS_LOCAL, "changed\n"),), link=(".claude", outside))
+    night = Night(tmp_path, sessions=[sess])
+    _write(night.repo / SETTINGS_LOCAL, '{"made": "up"}\n')
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert f"not restored: {SETTINGS_LOCAL}" in report.detail
+    assert list(outside.iterdir()) == []
+
+
+def test_an_untracked_header_from_before_the_session_is_named(tmp_path):
+    """Minor 5: an untracked include/<name>.h that the session did not write is not silently
+    left out of a match commit: the night stops naming it, and it stays in place."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    _write(night.repo / "include" / "old.h", "/* the owner's, uncommitted */\n")
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert "include/old.h" in report.detail
+    assert _feats(night) == []
+    assert (night.repo / "include" / "old.h").is_file()
+
+
+def test_a_gate_naming_other_exes_is_a_tool_failure(tmp_path):
+    """Minor 7: both SHA-1s must belong to the two EXEs (config stems ufo2p and tacp)."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.gate_names = ("UFO2P.EXE", "OTHER.EXE")
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert _feats(night) == []
+
+
+def test_a_directory_stray_is_named_not_contained(tmp_path):
+    """Minor 9: git lists a nested repository as one `dir/` entry; it is reported."""
+    night = Night(tmp_path, sessions=[Sess(files=(("vendor/x/a.txt", "made up\n"),))])
+    night.inject.append("vendor/x/")
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert "not contained: vendor/x/" in report.detail
