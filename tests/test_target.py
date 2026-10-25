@@ -303,8 +303,8 @@ def test_a_fully_decoded_unit_reports_nothing_undecoded():
 # the code object (data read as code in a runtime row). Refusing them left 18 real units
 # uncuttable and `ninja` failing before any C existed. Such a field keeps its raw bytes and gets
 # no relocation, and the result names it, so the unit stays cuttable (D-13) and a function
-# holding one is no first-match candidate. It cannot make a false pass: our side relocates that
-# field, so objdiff and the relocation check both disagree with the raw target.
+# holding one is no first-match candidate. It cannot make a false pass: relocation rules 4 and 5
+# refuse any reference to it (the end-to-end cases at the end of this file, 06-08).
 
 
 def _assert_raw_field(body: bytes, kind: str, page1: bytes = b"") -> None:

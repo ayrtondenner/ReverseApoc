@@ -31,8 +31,13 @@ target's object offset there, Pitfall 1):
   functions.csv row (a split gap D-11 leaves for later), and a decoded rel32 branch whose
   destination is outside the code object (data read as code): kinds `off32 to no row`,
   `branch to no row` and `branch outside the code object` (plan 05-18, the F11 principle).
-  A function holding one is no first-match candidate; our side relocates the field, so objdiff
-  and the relocation check both disagree with the raw target and nothing can pass on it.
+  A function holding one is no first-match candidate, and the relocation check cannot pass it.
+  That compiled C relocates the field is true (wcc386 emits a fixup for every call, even to a
+  static) but is not the guarantee. The guarantee is relocation rule 4 (each of our fixups
+  must land on a nameable start equal to the original target, and a raw target lies in no row,
+  so no name reaches it) plus rule 5 (every LE fixup field in the row must be one of ours, which
+  fails a constant of ours equal to a raw off32 field). Pinned end to end by
+  tests/test_target.py `test_raw_field_reference_fails_check_function`.
 
 Referenced names the unit does not define become undefined GLOBAL STT_NOTYPE symbols.
 `build_target` refuses, with a TargetError naming the VA, a row outside the code object and an
