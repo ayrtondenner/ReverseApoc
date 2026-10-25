@@ -547,7 +547,68 @@ def test_stale_object_is_removed_before_the_compile(ws):
     assert not obj.exists()
 
 
-KEPT = "int kept;\n"  # what a file the compile must not touch holds
+# DI-06 part a: every object carries a record of what built it --------------------------------
+
+PROV_KEYS = {"compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256", "version"}
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _prov(obj: Path) -> Path:
+    return obj.with_name(obj.name + ".prov.json")
+
+
+def test_compile_writes_a_provenance_stamp(ws):
+    """A successful compile writes <obj>.prov.json: the rule's compiler and flags, SHA-256 of the
+    source (CRLF read as LF), of the cflags table and the Watcom manifest it used, and the stamp
+    format version, nothing else. A failed compile removes it and writes none."""
+    src = ws.source()
+    src.write_bytes(b"int x;\r\nint y;\n")
+    obj = ws.root / "out" / "a.obj"
+    result = ws.compile(src, obj, FakeCompiler())
+    assert result.ok
+    assert _prov(obj).is_file()
+    doc = json.loads(_prov(obj).read_text(encoding="utf-8"))
+    assert set(doc) == PROV_KEYS
+    assert (doc["compiler"], doc["flags"]) == ("wcc386@10.6", ["-5r", "-s"])
+    assert doc["source_sha256"] == _sha256(b"int x;\nint y;\n")
+    assert doc["cflags_sha256"] == _sha256(ws.cflags.read_bytes())
+    assert doc["watcom_sha256"] == _sha256(ws.manifest.read_bytes())
+    assert doc["version"] == compiler.PROV_VERSION
+    assert compiler.provenance_path(obj) == _prov(obj)
+
+    failed = ws.compile(src, obj, FakeCompiler(rc=2))
+    assert not failed.ok
+    assert not _prov(obj).exists()
+
+
+def test_a_refused_compile_leaves_no_stamp(ws):
+    """An object the compile refuses (not OMF) is deleted, and an old stamp goes with it."""
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, FakeCompiler()).ok
+    assert _prov(obj).is_file()
+    with pytest.raises(CompilerError):
+        ws.compile(src, obj, FakeCompiler(obj_bytes=b"not an object"))
+    assert not obj.exists() and not _prov(obj).exists()
+
+
+def test_provenance_stamp_is_written_atomically(ws, monkeypatch):
+    written = []
+    real = compiler.write_atomic
+
+    def record(path, data):
+        written.append(Path(path))
+        real(path, data)
+
+    monkeypatch.setattr(compiler, "write_atomic", record)
+    obj = ws.root / "out" / "a.obj"
+    assert ws.compile(ws.source(), obj, FakeCompiler()).ok
+    assert _prov(obj) in written
+
+
+KEPT ="int kept;\n"  # what a file the compile must not touch holds
 
 
 @pytest.mark.parametrize(
