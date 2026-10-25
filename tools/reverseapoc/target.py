@@ -31,13 +31,23 @@ target's object offset there, Pitfall 1):
   functions.csv row (a split gap D-11 leaves for later), and a decoded rel32 branch whose
   destination is outside the code object (data read as code): kinds `off32 to no row`,
   `branch to no row` and `branch outside the code object` (plan 05-18, the F11 principle).
-  A function holding one is no first-match candidate, and the relocation check cannot pass it.
-  That compiled C relocates the field is true (wcc386 emits a fixup for every call, even to a
-  static) but is not the guarantee. The guarantee is relocation rule 4 (each of our fixups
-  must land on a nameable start equal to the original target, and a raw target lies in no row,
-  so no name reaches it) plus rule 5 (every LE fixup field in the row must be one of ours, which
-  fails a constant of ours equal to a raw off32 field). Pinned end to end by
-  tests/test_target.py `test_raw_field_reference_fails_check_function`.
+  A function holding one is no first-match candidate. What the relocation check guarantees
+  depends on the kind (rule 4: each of our fixups lands on the original target through a
+  nameable start; rule 5: every LE fixup field in the row is one of ours):
+  - `off32 to no row`: every object fails. Rule 4 refuses a fixup of ours there, since no name
+    reaches a gap (placeholders and symbols.csv functions need a row start, data names a data
+    range), and rule 5 refuses an object with none, since the LE has a fixup there.
+  - `branch to no row`: rule 4 refuses every fixup of ours there. A rel32 is no LE fixup, so
+    rule 5 checks nothing, and our displacement left unrelocated and byte-identical to the
+    original passes rule 3. That this does not happen also rests on wcc386 emitting a fixup for
+    every call, even to a static.
+  - `branch outside the code object`: a destination in a data object is nameable as `_D_<va>`,
+    so a fixup of ours to it passes rule 4.
+  In the two passing cases the residual risk is bounded by byte identity: rule 3 compares every
+  byte outside the fields and build_patch keeps the original bytes under every field, so the
+  landed bytes equal the original's and the whole-EXE SHA-1 gate still holds.
+  tests/test_target.py pins all three kinds end to end
+  (`test_raw_field_reference_fails_check_function` and the two passing cases).
 
 Referenced names the unit does not define become undefined GLOBAL STT_NOTYPE symbols.
 `build_target` refuses, with a TargetError naming the VA, a row outside the code object and an
