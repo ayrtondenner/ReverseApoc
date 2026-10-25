@@ -50,7 +50,7 @@ from .functions import (
     write_functions_csv,
     write_units_csv,
 )
-from .gate import GateRoots, gate_units
+from .gate import GateResult, GateRoots, gate_all, gate_units
 from .ghidra import (
     DEFAULT_ASM_DIR,
     DEFAULT_EXPORT_DIR,
@@ -1015,9 +1015,22 @@ def _gate_roots(args: argparse.Namespace) -> GateRoots:
                      log=args.log)  # fmt: skip
 
 
-def _run_gate(args: argparse.Namespace) -> int:
+def _gate(args: argparse.Namespace) -> GateResult:
+    """The gate mode the arguments name; a CheckError for a combination that makes no sense."""
+    if args.all:
+        if args.targets:
+            raise CheckError("--all re-checks every matched unit; it takes no EXE/UNIT")
+        if args.attempts is not None:
+            raise CheckError("--attempts has no meaning with --all, which writes nothing")
+        return gate_all(roots=_gate_roots(args))
+    if not args.targets:
+        raise CheckError("expected EXE/UNIT [EXE/UNIT ...] or --all")
     targets = [_split_unit(text) for text in args.targets]
-    result = gate_units(targets, roots=_gate_roots(args), attempts=args.attempts)
+    return gate_units(targets, roots=_gate_roots(args), attempts=args.attempts or 0)
+
+
+def _run_gate(args: argparse.Namespace) -> int:
+    result = _gate(args)
     print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
     return result.exit_code
 
@@ -1036,16 +1049,24 @@ def _add_gate_command(sub: argparse._SubParsersAction) -> None:
     default = "default: %(default)s"
     p = sub.add_parser(
         "gate",
-        help="run check for each EXE/UNIT and, only when every check exits 0, write matched rows "
-        "to config/<exe>/status.csv (D-21; the only writer of status.csv; in the container)",
+        help="run check for each EXE/UNIT and, only when every check exits 0 and the landed set "
+        "equals status.csv's matched set plus the units' functions, write matched rows to "
+        "config/<exe>/status.csv (D-21, D-24; the only writer of status.csv; in the container)",
     )
-    p.add_argument("targets", nargs="+", metavar="EXE/UNIT", help="e.g. ufo2p/u_000a1b2c")
+    # One or more targets, or --all (argparse cannot put a nargs="+" positional in a mutually
+    # exclusive group; _gate enforces "one or the other").
+    p.add_argument("targets", nargs="*", metavar="EXE/UNIT",
+                   help="e.g. ufo2p/u_000a1b2c; several are checked, cross-checked and written "
+                   "together, all or nothing")  # fmt: skip
+    p.add_argument("--all", action="store_true",
+                   help="re-check every unit with matched rows (check_source each, one land) and "
+                   "the cross-check; writes nothing")  # fmt: skip
     _add_unit_roots(p)
     p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
     p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
     p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
     p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
-    p.add_argument("--attempts", type=int, default=0, metavar="N",
+    p.add_argument("--attempts", type=int, default=None, metavar="N",
                    help="matching attempts the rows record; 0 (the default) = matched by hand")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_gate)
