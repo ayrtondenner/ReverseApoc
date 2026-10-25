@@ -338,3 +338,54 @@ def test_check_init_names_duplicate_tools():
     problems = check_init(init, tested_major=2, min_version=MIN_VERSION)
     assert len(problems) == 1, problems
     assert "duplicate Read" in problems[0]
+
+
+# Fix round 2 R1 (orchestrator ruling): an error result no known signal explains, or a result
+# of an unknown subtype, stops the run; it is never counted as an attempt.
+
+
+def _status_less_error(text: str) -> dict:
+    return {"type": "result", "subtype": "success", "is_error": True, "result": text}
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Invalid API key - Please run /login",
+        "OAuth token has expired. Please obtain a new token.",
+        "",
+    ],
+)
+def test_classify_unexplained_error_result_stops(text):
+    assert classify((_status_less_error(text),), 1, False) is Disposition.STOP
+
+
+def test_classify_error_result_explained_by_a_stream_signal_keeps_it():
+    """A rejected rate_limit_event explains the error result that follows it ('rejected')."""
+    assert _classify("rejected", 1) is Disposition.LIMIT
+
+
+@pytest.mark.parametrize("subtype", ["error_max_structured_output_retries", "error_new", None])
+def test_classify_unknown_result_subtype_stops(subtype):
+    result = {"type": "result", "subtype": subtype, "is_error": False, "result": "Done."}
+    assert classify((result,), 0, False) is Disposition.STOP
+
+
+# Fix round 2 M1: an is_error that is missing or not a boolean is an error result (fail closed).
+
+
+@pytest.mark.parametrize("flag", ["missing", None, "true", "false", 1, 0])
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({"api_error_status": 401}, Disposition.STOP),
+        ({"result": "Credit balance is too low"}, Disposition.STOP),
+        ({"result": "Done."}, Disposition.STOP),
+        ({"api_error_status": 529}, Disposition.TRANSIENT),
+    ],
+)
+def test_classify_reads_a_non_boolean_is_error_as_an_error(flag, extra, expected):
+    result = {"type": "result", "subtype": "success", **extra}
+    if flag != "missing":
+        result["is_error"] = flag
+    assert classify((result,), 1, False) is expected
