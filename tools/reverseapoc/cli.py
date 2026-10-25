@@ -1135,8 +1135,11 @@ def _cmd_check_watcom(args: argparse.Namespace) -> int:
 
 
 def _cmd_attempt(args: argparse.Namespace) -> int:
-    """Exit 0 matched, 1 mismatch, 2 for a refusal or any tool error (never a pass). The
-    arguments after `attempt` must be one of hooks.ATTEMPT_FORMS exactly (ruling F27)."""
+    """`attempt check`: exit 0 only when the claimed function matches and check passes its
+    unit, 1 for a mismatch or a claimed function that was not compiled, 2 for a refusal or any
+    tool error (never a pass). `attempt check --sweep` exits 0 when it ran (never a match) and
+    2 when it did not. The arguments after `attempt` must be one of hooks.ATTEMPT_FORMS
+    exactly (ruling F27)."""
     raw = args.raw_argv
     rest = raw[raw.index("attempt") + 1 :]
     try:
@@ -1195,8 +1198,11 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
         help="the matching session's wrapper: check, asm or context for the function the "
         "driver claimed (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC, REVERSEAPOC_ATTEMPT_DIR; D-44)",
-        description="Takes its target only from the driver's environment. Exit 0 matched, 1 "
-        "mismatch, 2 refused or tool error.",
+        description="Takes its target only from the driver's environment. attempt check: exit "
+        "0 only when the claimed function matches (objdiff 100, relocations and bytes ok) and "
+        "check passes its unit; 1 for a mismatch or a claimed function that was not compiled "
+        "(still INCLUDE_ASM); 2 refused or tool error. attempt check --sweep: 0 when it ran, "
+        "2 when it did not; a sweep is a diagnostic, never a match.",
     )
     asub = p.add_subparsers(dest="attempt_command", required=True, metavar="{check,asm,context}")
     c = asub.add_parser(
