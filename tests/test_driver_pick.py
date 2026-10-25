@@ -173,6 +173,14 @@ def test_variety_limits_are_parameters():
     assert len(wide) == 8  # every look-alike in its own 32-byte region
 
 
+@pytest.mark.parametrize("limit", ["max_per_unit", "max_per_region", "region_size"])
+def test_variety_limits_below_one_are_refused(limit):
+    pool = [_candidate(SPREAD_BASE, 10)]
+    with pytest.raises(PickerError, match=limit):
+        list(queue({UFO2P: pool}, units={UFO2P: _own_units(pool)}, excluded=(), difficult=(),
+                   **{limit: 0}))  # fmt: skip
+
+
 def test_requeue_on_exhausted_pool():
     difficult = {(UFO2P, 0x1000): frozenset(), (TACP, 0x2000): frozenset()}
     everything = requeue(difficult, matched=frozenset(), callees={}, pool_empty=True)
