@@ -54,7 +54,7 @@ from pathlib import Path
 
 from . import attempt, hooks, streamjson
 from .fileio import write_atomic
-from .picker import Key, Pick
+from .picker import EXE_ORDER, Key, Pick
 from .session import TIMEOUT_S, SessionResult, goal_prompt
 from .streamjson import Disposition
 
@@ -64,6 +64,8 @@ DIFFICULT = DRIVER_DIR / "difficult.json"
 FEED = "decomphub.progress.json"  # gate-written, committed with status.csv
 TRANSCRIPT = "transcript.jsonl"
 COMMIT_MSG = "commit-msg.txt"
+LOG_MSG = "commit-log.txt"  # under build/driver/<run>/
+LOG_SUBJECT = "chore(driver): attempt log"  # D-23
 BEST_DIR = "best"
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
@@ -207,12 +209,133 @@ class RecordError(ValueError):
     """A record that does not follow the attempts.jsonl schema (D-23)."""
 
 
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _is_number(value: object) -> bool:
+    return _number(value) and value >= 0
+
+
+def _matches(pattern: re.Pattern) -> Callable[[object], bool]:
+    return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
+
+
+def _one_of(*values: object) -> Callable[[object], bool]:
+    return lambda value: value in values and (value is None or isinstance(value, str))
+
+
+def _optional(check: Callable[[object], bool]) -> Callable[[object], bool]:
+    return lambda value: value is None or check(value)
+
+
+def _is_text(value: object) -> bool:
+    return isinstance(value, str)
+
+
+def _shaped(fields: Mapping[str, Callable[[object], bool]]) -> Callable[[object], bool]:
+    def check(value: object) -> bool:
+        return (isinstance(value, dict) and set(value) == set(fields)
+                and all(ok(value[key]) for key, ok in fields.items()))  # fmt: skip
+
+    return check
+
+
+_COUNT_KEYS = ("input", "output", "cache_read", "cache_creation")
+_CLAIM_FIELDS = {
+    "run": _matches(_RUN_ID),
+    "exe": _one_of("ufo2p", "tacp"),
+    "function": _matches(re.compile(r"func_[0-9A-F]{8}")),
+    "unit": _matches(re.compile(r"[a-z0-9_]+")),
+    "start": _matches(re.compile(r"0x[0-9A-F]{8}")),
+    "attempt": lambda value: _is_int(value) and value >= 1,
+    "date": _matches(re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")),
+}
+RECORD_FIELDS: dict[str, dict[str, Callable[[object], bool]]] = {
+    KIND_ATTEMPT: {
+        **_CLAIM_FIELDS,
+        "kind": _one_of(KIND_ATTEMPT),
+        "outcome": _one_of(MATCHED, PARTIAL, GAVE_UP),
+        "abort_reason": _one_of(None, LINT, TIMEOUT, GUARDRAIL, TOOL),
+        "turns": _is_int,
+        "tokens": _shaped(dict.fromkeys(_COUNT_KEYS, _is_int)),
+        "cost_usd": _is_number,
+        "seconds": _is_number,
+        "model": _optional(_is_text),
+        "cli_version": _optional(_is_text),
+        "check": _shaped(
+            {
+                "runs": _is_int,
+                "best_percent": _optional(_is_number),
+                "sweep_hit": _optional(_is_text),
+                "needs": _optional(_is_text),
+            }
+        ),
+        "pack_bytes": _is_int,
+        "truncated": lambda value: isinstance(value, list) and all(map(_is_text, value)),
+    },  # fmt: skip
+    KIND_ABORT: {
+        **_CLAIM_FIELDS,
+        "kind": _one_of(KIND_ABORT),
+        "abort_reason": _one_of(TRANSIENT),
+        "retries": _is_int,
+    },
+    KIND_RUN: {
+        "kind": _one_of(KIND_RUN),
+        "run": _matches(_RUN_ID),
+        "event": _one_of(STARTED, STOPPED, ENDED),
+        "reason": _is_text,  # checked against the event below (F30)
+        "detail": _optional(_is_text),
+        "sessions": _is_int,
+        "matched": _is_int,
+        "date": _CLAIM_FIELDS["date"],
+    },
+}
+RUN_REASONS = {
+    STARTED: (START,),
+    STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL),
+    ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED),
+}
+
+
+def _strings(value: object) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            yield str(key)
+            yield from _strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _strings(item)
+
+
 def validate_record(obj: object) -> None:
-    """Stub (plan 06-23 Task 3 RED)."""
+    """Raise RecordError unless `obj` is one attempts.jsonl record (D-23): the exact key set
+    of its kind (`attempt`, `abort`, `run`), every value of the pinned type or enum, a run
+    record's `reason` one of its event's (F30), and no string anywhere holding a hex run
+    longer than 64 characters (no game bytes, T-06-55)."""
+    if not isinstance(obj, dict):
+        raise RecordError(f"a record is a JSON object, not {type(obj).__name__}")
+    fields = RECORD_FIELDS.get(obj.get("kind"))  # type: ignore[arg-type]
+    if fields is None:
+        raise RecordError(f"unknown record kind {obj.get('kind')!r}")
+    missing, extra = sorted(set(fields) - set(obj)), sorted(set(obj) - set(fields))
+    if missing or extra:
+        raise RecordError(f"{obj['kind']} record: missing {missing}, extra {extra}")
+    bad = [key for key, ok in fields.items() if not ok(obj[key])]
+    if bad:
+        raise RecordError(f"{obj['kind']} record: bad value for {', '.join(bad)}")
+    if obj["kind"] == KIND_RUN and obj["reason"] not in RUN_REASONS[obj["event"]]:
+        raise RecordError(f"run record: {obj['reason']!r} is no reason for {obj['event']}")
+    if any(_LONG_HEX.search(text) for text in _strings(obj)):
+        raise RecordError(f"{obj['kind']} record holds a hex string longer than 64 characters")
 
 
 def append_record(path: Path, record: Mapping) -> None:
-    """Append one compact JSON line (LF) to `path`; a record is never rewritten (D-23)."""
+    """Validate `record`, then append it as one compact JSON line (LF) to `path`; a record is
+    never rewritten (D-23)."""
+    validate_record(record)
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as fh:
@@ -257,6 +380,7 @@ def commit_message(
 def commit_paths(git, *, message: str, message_file: Path, paths: Sequence[str]) -> None:
     """`git add -- <paths>` (a new unit or header is untracked, F5), then
     `git commit -F <file> -- <paths>`: explicit literal paths only, never `-A` or `.`."""
+    message_file.parent.mkdir(parents=True, exist_ok=True)
     write_atomic(message_file, message.encode("utf-8"))
     _git_ok(git, ["add", "--", *paths])
     _git_ok(git, ["commit", "-q", "-F", str(message_file), "--", *paths])
@@ -575,7 +699,25 @@ class _Night:
         except _Stop as stop:
             event, reason, detail = STOPPED, stop.reason, stop.detail
         self._record_run(event, reason, detail)
+        if not (event == STOPPED and reason == GUARDRAIL):  # after a breach: commit nothing
+            self._commit_log(stopped=event == STOPPED)
         return DriveReport(event, reason, self.sessions, self.matched, detail)
+
+    def _commit_log(self, *, stopped: bool) -> None:
+        """D-23: the night's remaining records in one `chore(driver): attempt log` commit, with
+        the status tables and the feed when partial rows changed them. After a STOP only the log
+        is committed: a gate that failed may have left a half-written table."""
+        paths = [ATTEMPT_LOG.as_posix()]
+        if not stopped:
+            paths += [*(f"config/{exe}/status.csv" for exe in EXE_ORDER), FEED]
+        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "-z", "--", *paths])
+        dirty = parse_status(raw)
+        changed = [path for path in paths if path in dirty]
+        if not changed:
+            return
+        message = f"{LOG_SUBJECT}\n\nAttempt records of run {self.config.run_id}.\n"
+        message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LOG_MSG)
+        commit_paths(self.deps.git, message=message, message_file=message_file, paths=changed)
 
     def _end(self) -> str | None:
         if self.matched >= self.config.target_matched:
