@@ -45,7 +45,7 @@ key-decisions:
 patterns-established:
   - "Listing file names are unique per EXE under str.casefold, pinned by tests/test_asm.py::test_committed_listing_names_are_unique"
 
-requirements-completed: [AGT-07, AGT-08]
+requirements-completed: []  # AGT-07, AGT-08 partial (scorer and listing prerequisites only); the driver (06-14, 06-25) and the context pack (06-13, 06-15) carry them
 
 coverage:
   - id: D1
@@ -209,6 +209,23 @@ The full JSON reports (`--top 2000`) of both EXEs are byte-identical before and 
 - FOUND: tools/reverseapoc/asm.py, tools/reverseapoc/score.py, tools/reverseapoc/cli.py, tools/reverseapoc/x86.py, tests/test_asm.py, tests/test_score.py
 - FOUND commits on HEAD: a56080d, 6d535c1, 940b974, ec55400
 - RED commits precede GREEN for both tdd tasks: test(06-06) a56080d < fix(06-06) 6d535c1; test(06-06) 940b974 < fix(06-06) ec55400
+
+## Fix round 1
+
+Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-06.md` (approved, minors only). FIX_BASE c0f925f.
+
+| # | Review minor | Change | Commits |
+|---|---|---|---|
+| 1 | `requirements-completed` premature | Set to `[]`, with a note: AGT-07 and AGT-08 are only partial here. The driver (06-14, 06-25) and the context pack (06-13, 06-15) carry them. | this docs commit |
+| 2 | Case-only clashes caught only by the test (T-06-12) | `write_listings` first names every row through `_listing_files`. If two names are equal under `str.casefold`, it raises `AsmError` naming both addresses, before creating `out_dir` or writing any file. RED: planted `Foo`/`foo` pair. | 82caaad (RED), c16d75c (fix) |
+| 3 | Far pointers break "immediate printed last" | Chose the safe fallback: `_field_operand` returns None for `ljmp`/`lcall`, so every fixup inside a ptr16:32 stays a note. A docstring-only fix would have been wrong, because a sel16 fixup whose value equals the offset renamed the offset part (RED showed `ljmp 0x100:D_00020000` and `lcall 0x100, D_00020000`). The `_substitute` / `_field_operand` docstrings now say so. | 0c86e28 (RED), c16d75c (fix) |
+| 4 | Bare `0x1000` / `- 11` in the 9a test | Named `OFF32_SIZE`, `FRAMED_FIELD = 1 + 2 + 5 + 1`, `FIELD_BEFORE_PAGE` and `LE_PAGE_SIZE`. The `conftest.PAGE_SIZE` patch stays, with a comment: `build_le_image` has no page-size parameter, and that one global drives header field 0x28, the page layout and the patch mapping together. | 3e0acf3 |
+| 5 | Offsets pinned only indirectly; memory push untested | `test_x86.py::test_field_offsets` covers five made-up encodings (`C7 05`, `C7 04 85`, moffs `A1`, `push imm32`, `push eax`). `test_has_chk_needs_a_chk_call` now runs for a register push and a memory push (`FF 35`). Both pin existing behaviour, so there is no RED. | 3e0acf3 |
+| - | Late `--top 0` refusal (review minor 4) | Left as written, because the plan mandates it. | - |
+
+Verification after round 1:
+- `uv run pytest -q`: 1530 passed, 216 skipped. `uv run ruff check .`: all checks passed.
+- With the main checkout's orig/, `reverseapoc asm` for both EXEs still writes 1892 + 1874 listings. They are identical (`diff -r`) to the listings from before this plan.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
