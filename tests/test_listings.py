@@ -45,6 +45,20 @@ SPIKE_006 = REPO_ROOT / ".planning" / "spikes" / "006-decompwtf-fork-stub" / "RE
 # The LE loader Phase 5 dropped (D-03); the notes must not name it (D-32, D-41).
 DROPPED_LOADER = "retrokit"
 
+README = REPO_ROOT / "README.md"
+VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
+REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
+# The file names published since Phase 1 and kept by D-26.
+PAGES_FILES = ("progress-shield.json", "progress.svg", "progress.json")
+# The mosaic's categories (D-26, D-50), each defined as a bold `**name**:` list item.
+CATEGORIES = ("matched", "partial", "unmatched", "library", "uncovered")
+# D-50: the uncovered bytes are counted in the denominator, as tools/progress.py does.
+DENOMINATOR = "over all game and thunk bytes plus the uncovered bytes"
+# What the figures are computed from (tools/progress.py inputs) and what they leave out.
+PROGRESS_NEEDLES = ("status.csv", "functions.csv", "units.csv", "data-in-code", "3-byte")
+# Stale Toolchain summary wording from Phase 1 (DI-25).
+STALE_TOOLCHAIN = ("working hypothesis", "settled in Phase 4")
+
 
 def _recomp() -> dict:
     return json.loads(RECOMP_JSON.read_text(encoding="utf-8"))
@@ -125,13 +139,6 @@ def test_note_check_follows_the_spike_verdict(notes, verdict, stale):
     assert _stale_note_phrases(notes, verdict) == stale
 
 
-README = REPO_ROOT / "README.md"
-VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
-REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
-# The file names published since Phase 1 and kept by D-26.
-PAGES_FILES = ("progress-shield.json", "progress.svg", "progress.json")
-
-
 def _section(text: str, heading: str) -> str:
     """The body of `## <heading>` up to the next level-2 heading."""
     match = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
@@ -151,10 +158,71 @@ def test_readme_progress_section():
     section = _section(README.read_text(encoding="utf-8"), "Progress")
     assert [name for name in PAGES_FILES if f"{PAGES}{name}" not in section] == []
     assert "[Progress data](decomphub.progress.json)" in section
-    needles = ("matched", "partial", "unmatched", "library", "uncovered", "status")
-    assert [needle for needle in needles if needle not in section] == []
+    # A bold `**name**:` label, so "matched" is not satisfied by "unmatched".
+    undefined = [name for name in CATEGORIES if not re.search(rf"\*\*{name}\*\*:", section)]
+    assert undefined == []
+    assert [needle for needle in PROGRESS_NEEDLES if needle not in section] == []
     assert "Placeholder" not in section
     assert "coming in Phase 6" not in section
+
+
+def test_readme_percentage_counts_uncovered_bytes():
+    # D-50: tools/progress.py divides by game + thunk + uncovered bytes.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert DENOMINATOR in section
+
+
+def test_readme_progress_makes_no_stub_claim():
+    # Only units with C are compiled; every other function keeps the original EXE's bytes
+    # through the splice, so "unmatched" must not be described as an INCLUDE_ASM stub.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert "INCLUDE_ASM" not in section
+    assert "original" in _category_line(section, "unmatched")
+
+
+def _category_line(section: str, name: str) -> str:
+    match = re.search(rf"^- \*\*{name}\*\*:.*$", section, re.M)
+    assert match, f"no '**{name}**:' item"
+    return match[0]
+
+
+def _unannotated_agent_lines(section: str) -> list[str]:
+    """Lines that name decomp.wtf or an MCP server without the Phase 6 outcome: spike 006
+    INVALIDATED fork mode (06-01) and there is no MCP server (D-44). The retrokit row carries
+    its own D-41 annotation ("not used")."""
+    hits = []
+    for line in section.splitlines():
+        if "decomp.wtf" in line and "spike 006" not in line:
+            hits.append(line)
+        elif "MCP" in line and "D-44" not in line and "not used" not in line:
+            hits.append(line)
+    return hits
+
+
+def test_readme_approach_annotates_the_agent_layer():
+    section = _section(README.read_text(encoding="utf-8"), "Approach")
+    assert _unannotated_agent_lines(section) == []
+
+
+@pytest.mark.parametrize(
+    ("line", "flagged"),
+    [
+        ("- decomp.wtf v0.10.6 in fork mode", True),
+        ("- the fallback is an MCP server", True),
+        ("- decomp.wtf fork mode (not used: spike 006 INVALIDATED it; no MCP, D-44)", False),
+        ("| retrokit | MCP server (not used: lastonesky) |", False),
+    ],
+)
+def test_agent_line_check_catches_unannotated_lines(line, flagged):
+    assert bool(_unannotated_agent_lines(line)) is flagged
+
+
+def test_readme_toolchain_summary_is_current():
+    # DI-25: 10.5, 10.6 and 11.0 stay tied on game code after the two Phase 5 leaf matches.
+    section = _section(README.read_text(encoding="utf-8"), "Toolchain summary")
+    assert [phrase for phrase in STALE_TOOLCHAIN if phrase in section] == []
+    assert "tied" in section
+    assert "docs/toolchain.md" in section
 
 
 def test_decomphub_verification_file():
