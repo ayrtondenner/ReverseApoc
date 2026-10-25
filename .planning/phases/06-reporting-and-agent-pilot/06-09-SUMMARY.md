@@ -15,11 +15,11 @@ provides:
 affects: [06-11 gate --partial (routes to check-custom through CompileOptions.src_root), 06-16 container re-proof of the stamp flow, driver plans (DI-06 is a D-38 prerequisite)]
 
 actuals:
-  tokens: 21418  # fix round 1: chars/4 over git diff 370e3e2..5294bdb (85,670 chars), SUMMARY included once (first round: 12000)
+  tokens: 24847  # fix round 2: chars/4 over git diff 370e3e2..b49be21 (99,387 chars, SUMMARY included); round 1: 21418, first round: 12000
   tasks: 3
-  commits: 12  # git rev-list --count 370e3e2..5294bdb, the first SUMMARY commit included
+  commits: 15  # git rev-list --count 370e3e2..b49be21, the earlier SUMMARY commits included
 plan_head_before: 370e3e2b30f632f72b5dd6935253fc0d2598c59e
-plan_head_after: 5294bdb2990079bc20df79b8fc45c7e7af1e5f39
+plan_head_after: b49be21e337fb1b6657c510f418c919ace1820d1
 
 tech-stack:
   added: []
@@ -286,10 +286,43 @@ Host re-proof with real files (main checkout's Watcom 10.6 tree and orig/):
 
 Verification: `uv run pytest -q` gives 1594 passed, 217 skipped. `uv run ruff check .`: all checks passed. No CR in any changed file.
 
+## Fix round 2 (rereview-06-09-r1.md, FIX_BASE 0c336e6)
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| N1 (Minor; it failed closed but blocked every unit) | **Problem:** the stamp hashed every file under include/, recursively. The cc edge declares only the top-level `include/*.h`, so a README, an editor backup or `include/sub/x.h` would make every unit refuse with "run ninja", and `ninja objects` could never clear it. **Fix:** there is now ONE definition, `compiler.project_headers(root)`: every top-level `<root>/include/*.h` file, sorted by name. `include_sha256` hashes exactly that list, one line `<name>\0<SHA-256, CRLF as LF>\n` per header. configure.py's `Layout.for_base` takes the cc edge's implicit header inputs from the same function. The regeneration edge now also depends on the include/ directory (new `Layout.header_dirs`, the same mechanism as `src_dirs`), so adding or removing a header re-runs configure and then rebuilds. The cheap option was available, so I did not need the "re-run configure.py" message variant. The default render does not change: the golden uses `Layout()`, whose `header_dirs` is empty, so `DEFAULT_RENDER_GOLDEN` is untouched and there is no diff to show. **Tests:** `test_land_ignores_files_in_include_that_are_no_project_header` (README, `common.h~` and `sub/x.h` added after the stamp, and the unit still lands); `test_cc_edge_headers_are_the_stamped_headers` (configure's header inputs are whatever `project_headers` returns; the real repository's set is top-level `include/*.h`); `test_regeneration_edge_watches_the_include_dir`. The compiler-side stamp test now also writes a README, a backup and `sub/c.h`, and pins `include_sha256` over `common.h` and `b.h` only. The test helper `headers_sha256` follows the same definition. | `3b06a55` | `b49be21` |
+| N3 | `_land_exe` reads the object's bytes once. `check_provenance(..., data=)` hashes them through `provenance(rule, src, obj_data, ...)`, and the new `parse_module(data, path)` parses the same buffer, so what is hashed is exactly what lands. `read_module(path)` is now `parse_module(path.read_bytes(), path)`. `compiler.object_sha256` takes bytes. Test: `test_land_reads_the_object_once` counts `Path.read_bytes` calls on the object. | `3b06a55` | `b49be21` |
+
+RED evidence (`3b06a55`): 5 failures.
+- The stamp test's `include_sha256` differed, because the old code hashed the README, the backup and `sub/c.h`.
+- The include-files test refused with "the headers under ... changed since it was built".
+- The read-once test counted 2 reads.
+- The regeneration edge lacked the include/ path.
+- `test_cc_edge_headers_are_the_stamped_headers` failed with `AttributeError: no attribute 'project_headers'`, because the shared function did not exist yet.
+
+**N2, known limit for Phase 7 (note only, no code).** Some headers a compile can read are outside `project_headers` and are not stamped:
+- a quoted `#include` resolved by Watcom's search order before `-i=`: the including file's directory (src/<exe>/), the cwd (the compile root), and `../` paths;
+- headers reached through a symlinked directory or a subdirectory of include/;
+- Watcom system headers other than `H/STDIO.H`, the only H file in config/watcom.toml.
+
+ninja has the same blind spot: there is no depfile, because `-ad` is wrapper-owned. So this is not a regression, and both committed units include only "common.h". Phase 6 matching sessions may create headers only under include/ (D-17). Phase 7 should either probe Watcom's quoted-include search order and widen the header set (and ninja's inputs) to match, or refuse any `#include` that resolves outside the project headers.
+
+Re-proof on the host (main checkout's Watcom 10.6 tree and orig/):
+- Both units compiled again, and the stamps were rewritten.
+- `uv run reverseapoc land --orig <main>/orig --build build/06-09 --out build/06-09/land`: `OK UFO2P.EXE sha1 e7488bf3... landed 1`, `OK TACP.EXE sha1 48ef0096... landed 1`, exit 0.
+- With a probe `include/README.06-09-probe.md` added after the build, the land still passed: both OK, exit 0. The probe was then removed and `git status` was clean.
+- `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 units, and its regeneration edge lists the include/ directory.
+
+Verification:
+- `uv run pytest -q tests/test_configure.py tests/test_compiler.py tests/test_check.py tests/test_cli.py`: 395 passed, 3 skipped.
+- `uv run pytest -q`: 1598 passed, 217 skipped.
+- `uv run ruff check .`: all checks passed.
+- No CR in any changed file.
+
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/check.py, tools/reverseapoc/compiler.py, configure.py, tests/test_check.py, tests/test_compiler.py, tests/test_configure.py
-- FOUND commits (ancestors of HEAD): 52e83b1, 47546f1, 8fcd36d, 3c56067, f8c8e48, 3533764, a264884; fix round 1: 620a584, 162557e, b3c2049, 30aa93c, 5294bdb
+- FOUND commits (ancestors of HEAD): 52e83b1, 47546f1, 8fcd36d, 3c56067, f8c8e48, 3533764, a264884; fix round 1: 620a584, 162557e, b3c2049, 30aa93c, 5294bdb, 0c336e6; fix round 2: 3b06a55, b49be21
 - FOUND: tools/reverseapoc/cli.py (fix round 1)
 
 ---
