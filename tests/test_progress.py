@@ -118,8 +118,8 @@ def test_progress_is_stdlib_and_312_compatible():
 
 @pytest.mark.parametrize("exe", EXES)
 def test_reader_agrees_with_reverseapoc(exe):
-    progress = load_progress()
     """progress.py's own minimal CSV reader gives the rows reverseapoc's readers give."""
+    progress = load_progress()
     config = CONFIG / exe
     ours = progress.read_functions(config / "functions.csv")
     theirs = read_functions_csv(config / "functions.csv")
@@ -146,9 +146,9 @@ def test_reader_refuses_a_wrong_header(tmp_path):
 
 
 def test_derive_counts_on_synthetic_csvs(tmp_path):
-    progress = load_progress()
     """Matched, partial, unmatched, uncovered and library bytes and the percent, by hand: the
     percent is matched / (game + thunk + uncovered), library and data-in-code stay outside it."""
+    progress = load_progress()
     doc = progress_doc(progress, synthetic_config(tmp_path), tmp_path)
     code = size(U_MATCHED) + size(U_PARTIAL) + size(U_UNMATCHED) + size(U_THUNK)
     ufo = doc["exes"]["ufo2p"]
@@ -184,9 +184,9 @@ def test_notes_name_the_filler_and_the_ufo2p_tail(tmp_path):
 
 
 def test_uncovered_on_committed_csvs(tmp_path):
-    progress = load_progress()
     """D-50 on today's committed CSVs: the bytes inside unit spans in no functions.csv row,
     pinned, and equal to a set computation over reverseapoc's readers."""
+    progress = load_progress()
     doc = progress_doc(progress, CONFIG, tmp_path)
     for exe in EXES:
         inside = set()
@@ -218,9 +218,9 @@ def test_shield_message_keeps_small_percents(value, message):
 
 
 def test_outputs_are_byte_stable_and_atomic(tmp_path, monkeypatch):
-    progress = load_progress()
     """Two runs give identical bytes (indent 2, LF, trailing newline); a write whose os.replace
     fails leaves the previous file whole and no temporary file behind."""
+    progress = load_progress()
     config = synthetic_config(tmp_path)
     first, second = tmp_path / "one", tmp_path / "two"
     for out in (first, second):
@@ -257,8 +257,8 @@ def test_script_runs_isolated(tmp_path):
 
 
 def test_main_creates_every_output_parent(tmp_path):
-    progress = load_progress()
     """Ruling F17: main creates the parent directory of every output it writes."""
+    progress = load_progress()
     config = synthetic_config(tmp_path)
     out = tmp_path / "a" / "b"
     assert progress.main(["--config", str(config), "--out", str(out)]) == 0
