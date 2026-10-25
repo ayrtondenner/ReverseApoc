@@ -7,25 +7,35 @@ is not a JSON object is malformed, counted by `parse`, and never fatal or execut
 Nothing here talks to the CLI; `session.run_session` feeds it.
 
 `classify` maps a session to one driver action (`Disposition`), from the `system/api_retry`
-errors, `rate_limit_event`s, the `result` event and its text (D-08):
+errors, `rate_limit_event`s, the `result` event and the CLI's error text (D-08). The principle:
+anything unknown fails closed (STOP), and only a known transient condition is not counted.
 
 - STOP: api_retry `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold` or
-  `billing_error`; a rate_limit_event with errorCode `credits_required`, or `rejected` with any
-  other errorCode (unknown, so fail closed); result text "Credit balance is too low" or
-  "Not logged in".
-- LIMIT: api_retry `rate_limit`; a `rejected` rate_limit_event without errorCode; result
-  `api_error_status` 429; result text "hit your ... limit".
-- TRANSIENT: no result event and no wall-clock timeout (api_retry `overloaded`/`server_error`
-  with no result, a non-zero exit with no result, or no events at all).
-- ATTEMPT_DONE: a result event of any subtype (`success`, `error_max_turns`,
-  `error_max_budget_usd`, `error_during_execution`, ...) or a wall-clock timeout. It is counted,
-  and the outcome comes from the driver's gate, never from the result (T-06-39).
+  `billing_error`, or any api_retry error outside the known sets (`cloud_credential_error`,
+  `model_not_found`, `invalid_request`, `max_output_tokens`, `unknown`, a missing or future
+  code); a rate_limit_event with errorCode `credits_required`, or `rejected` with any other
+  errorCode; an `is_error: true` result whose `api_error_status` is neither 429 nor 5xx (401,
+  400, 403, a non-integer, ...); error text "Credit balance is too low" or "Not logged in".
+- LIMIT: api_retry `rate_limit`; a `rejected` rate_limit_event without errorCode; a result with
+  `api_error_status` 429; error text "hit your ... limit".
+- TRANSIENT: an `is_error: true` result with a 5xx `api_error_status` (529 overloaded
+  included); or no result event and no wall-clock timeout (api_retry `overloaded` or
+  `server_error` with no result, a non-zero exit with no result, or no events at all).
+- ATTEMPT_DONE: any other result event (`success`, `error_max_turns`, `error_max_budget_usd`,
+  `error_during_execution`, ...) or a wall-clock timeout. It is counted, and the outcome comes
+  from the driver's gate, never from the result (T-06-39).
 
 Precedence when one stream carries several signals: STOP over LIMIT over TRANSIENT over
 ATTEMPT_DONE. A run with a credit problem must end even if a limit was also hit, and a limit is
-not an attempt even if a result followed it. Result text is read from the result event only
-(`result` and `errors[]`), never from the agent's own messages, so the model cannot stop or
-stall the run by writing the words.
+not an attempt even if a result followed it. TRANSIENT competes with ATTEMPT_DONE only through
+a 5xx error result (which beats it: the server, not the agent, ended the session); a session
+with no result is TRANSIENT by definition. An api_retry `overloaded`/`server_error` followed by
+a clean result is ATTEMPT_DONE, since the session recovered.
+
+Error text is the CLI's own: a result's `result` field only when the result has
+`is_error: true` (on a successful result it is the agent's last message), and `errors[]`. It is
+never read from the agent's messages, so the model cannot stop or stall the run by writing the
+words (fix round 1 I2).
 
 `check_init` asserts the `system/init` event (Pitfall 2, D-36, T-06-40); the driver treats any
 problem as STOP. `usage` and `tool_uses` feed the attempt log (AGT-03) and the transcript audit.
@@ -54,6 +64,9 @@ _STOP_RETRY_ERRORS = frozenset(
     {"authentication_failed", "oauth_org_not_allowed", "account_on_hold", "billing_error"}
 )
 _LIMIT_RETRY_ERRORS = frozenset({"rate_limit"})
+_TRANSIENT_RETRY_ERRORS = frozenset({"overloaded", "server_error"})
+_KNOWN_RETRY_ERRORS = _STOP_RETRY_ERRORS | _LIMIT_RETRY_ERRORS | _TRANSIENT_RETRY_ERRORS
+_HTTP_SERVER_ERRORS = range(500, 600)  # 5xx, 529 (overloaded) included
 _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
@@ -154,21 +167,43 @@ def _rate_limits(events: Sequence[dict]) -> Iterator[Mapping]:
 
 
 def _result_texts(results: Sequence[dict]) -> Iterator[str]:
+    """The CLI's own error text: `result` only on an `is_error: true` result (on a successful
+    result it is the agent's last message, fix round 1 I2), and every string in `errors[]`."""
     for result in results:
-        if isinstance(result.get("result"), str):
+        if result.get("is_error") is True and isinstance(result.get("result"), str):
             yield result["result"]
         errors = result.get("errors")
         if isinstance(errors, list):
             yield from (error for error in errors if isinstance(error, str))
 
 
-def _is_stop(events: Sequence[dict], texts: Sequence[str]) -> bool:
-    if _retry_errors(events) & _STOP_RETRY_ERRORS:
-        return True
+def _error_statuses(results: Sequence[dict]) -> list[object]:
+    """The `api_error_status` of every `is_error: true` result that carries one."""
+    return [
+        result["api_error_status"]
+        for result in results
+        if result.get("is_error") is True and result.get("api_error_status") is not None
+    ]
+
+
+def _is_server_error(status: object) -> bool:
+    return (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and _HTTP_SERVER_ERRORS.start <= status < _HTTP_SERVER_ERRORS.stop
+    )
+
+
+def _is_stop(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
+    if _retry_errors(events) - _KNOWN_RETRY_ERRORS or _retry_errors(events) & _STOP_RETRY_ERRORS:
+        return True  # a known STOP code, or a code outside every known set (fail closed)
     for info in _rate_limits(events):
         code = info.get("errorCode")
         if code == _CREDITS_REQUIRED or (code and info.get("status") == _REJECTED):
             return True
+    if any(status != _HTTP_TOO_MANY_REQUESTS and not _is_server_error(status)
+           for status in _error_statuses(results)):  # fmt: skip
+        return True
     return any(_STOP_TEXT.search(text) for text in texts)
 
 
@@ -189,10 +224,12 @@ def classify(events: Sequence[dict], exit_code: int | None, timed_out: bool) -> 
     docstring for the signals and their precedence."""
     results = _results(events)
     texts = list(_result_texts(results))
-    if _is_stop(events, texts):
+    if _is_stop(events, results, texts):
         return Disposition.STOP
     if _is_limit(events, results, texts):
         return Disposition.LIMIT
+    if any(_is_server_error(status) for status in _error_statuses(results)):
+        return Disposition.TRANSIENT
     if results or timed_out:
         return Disposition.ATTEMPT_DONE
     return Disposition.TRANSIENT
@@ -236,10 +273,13 @@ def _tools_problem(init: Mapping) -> str | None:
         return f"tools {tools!r} is not a list of tool names"
     missing = [tool for tool in EXPECTED_TOOLS if tool not in tools]
     extra = sorted(set(tools) - set(EXPECTED_TOOLS))
-    if not missing and not extra and len(tools) == len(EXPECTED_TOOLS):
+    duplicate = sorted({tool for tool in tools if tools.count(tool) > 1})
+    if not (missing or extra or duplicate):
         return None
-    return (f"tools are not exactly {','.join(EXPECTED_TOOLS)}: missing "
-            f"{','.join(missing) or 'none'}, extra {','.join(extra) or 'none'}")  # fmt: skip
+    found = [f"{label} {','.join(names)}"
+             for label, names in (("missing", missing), ("extra", extra),
+                                  ("duplicate", duplicate)) if names]  # fmt: skip
+    return f"tools are not exactly {','.join(EXPECTED_TOOLS)}: {'; '.join(found)}"
 
 
 def _names(entries: object) -> str:
