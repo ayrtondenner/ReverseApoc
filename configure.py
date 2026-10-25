@@ -180,24 +180,39 @@ _COMMENT_OR_LITERAL = re.compile(
 )
 
 # Translation phases 1-2 as wcc386 10.6 does them (06-03 re-review N1, observed with
-# `wcc386 -zq -p`): C89 trigraphs map first, everywhere, literals included; a CRLF or a lone CR
-# is one line break (a lone CR as read_text reads it, which is how configure and check read a
-# unit file; wcc386 itself does not break a line there, see 06-03-SUMMARY); and a backslash
-# followed by spaces or tabs and then a newline is a splice, as a backslash-newline is. A form
-# feed or vertical tab after the backslash is not. No rewrite adds or removes a line break.
+# `wcc386 -zq -p`): C89 trigraphs map first, everywhere, literals included; a CRLF is one line
+# break; and a backslash followed by spaces or tabs and then a newline is a splice, as a
+# backslash-newline is. A form feed or vertical tab after the backslash is not. No rewrite adds
+# or removes a line break. A lone CR (not followed by LF) is refused (re-review R2-1): wcc386
+# ends a // comment there but keeps it inside a literal as a character, so no one mapping of it
+# reads as the compiler does, and read_text, which turns it into a line break, hid live code.
 _TRIGRAPHS = {"=": "#", "/": "\\", "'": "^", "(": "[", ")": "]", "!": "|", "<": "{", ">": "}",
               "-": "~"}  # fmt: skip
 _TRIGRAPH = re.compile(r"\?\?([=/'()!<>-])")
-_LINE_BREAK = re.compile(r"\r\n?")
+_CRLF = "\r\n"
+_LONE_CR = re.compile(r"\r(?!\n)")
+_LONE_CR_BYTES = re.compile(rb"\r(?!\n)")
 _BLANK_SPLICE = re.compile(r"\\[ \t]+\n")
 
 
+def lone_cr_problem(line: int) -> str:
+    """The refusal of a lone carriage return on `line` (1-based)."""
+    return (
+        f"line {line}: a carriage return not followed by a line feed, which wcc386 reads as a "
+        "line break in a // comment but as a character in a literal, so the check cannot read "
+        "it; save the file with LF or CRLF line ends"
+    )
+
+
 def normalize_source(text: str) -> str:
-    """`text` after translation phases 1-2 up to the splice itself: trigraphs mapped, CRLF and
-    CR made LF, and blanks between a splicing backslash and its newline removed. The line count
-    is that of `text` read with universal newlines."""
+    """`text` after translation phases 1-2 up to the splice itself: trigraphs mapped, CRLF made
+    LF, and blanks between a splicing backslash and its newline removed; the line count is
+    kept. Raises _UnreadableSource for a lone CR, naming its line."""
+    lone = _LONE_CR.search(text)
+    if lone is not None:
+        raise _UnreadableSource(lone_cr_problem(text.count("\n", 0, lone.start()) + 1))
     text = _TRIGRAPH.sub(lambda match: _TRIGRAPHS[match.group(1)], text)
-    return _BLANK_SPLICE.sub(_SPLICE + "\n", _LINE_BREAK.sub("\n", text))
+    return _BLANK_SPLICE.sub(_SPLICE + "\n", text.replace(_CRLF, "\n"))
 
 
 class _SourceScanner:
@@ -290,6 +305,12 @@ def _blank(match: re.Match[str]) -> str:
 
 class _ConditionalError(ValueError):
     """A preprocessor conditional the D-12 check cannot evaluate (it fails closed)."""
+
+
+class _UnreadableSource(_ConditionalError):
+    """Text the D-12 check cannot read as wcc386 does, such as a lone CR (it fails closed). A
+    _ConditionalError, so every caller that refuses a conditional (check.source_marks
+    included) refuses it the same way."""
 
 
 def _refuse_conditional(number: int, name: str, why: str) -> _ConditionalError:
@@ -714,9 +735,15 @@ def _exe_units(name: str, config: Path, src: Path, base: Path) -> Iterator[UnitB
 
 
 def _check_source(path: Path, unit_functions: Sequence[FunctionRow]) -> None:
-    """Refuse a unit file that fails the D-12 completeness check."""
+    """Refuse a unit file that fails the D-12 completeness check. The bytes are read, not
+    read_text: universal newlines would turn a lone CR into a line break and hide it from
+    normalize_source's refusal (re-review R2-1)."""
+    data = path.read_bytes()
+    lone = _LONE_CR_BYTES.search(data)
+    if lone is not None:
+        raise ConfigureError(f"{path}: {lone_cr_problem(data.count(b'\n', 0, lone.start()) + 1)}")
     try:
-        text = path.read_text(encoding="utf-8")
+        text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigureError(f"{path}: not UTF-8 ({exc})") from None
     problems = check_unit_source(text, unit_functions)
