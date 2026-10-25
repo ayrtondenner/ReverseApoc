@@ -41,7 +41,7 @@ key-files:
 
 key-decisions:
   - "classify precedence STOP > LIMIT > TRANSIENT > ATTEMPT_DONE; error words are read only from the CLI's own error text: a result's `result` field only when `is_error` is true (on a successful result it is the agent's last message), plus `errors[]`; never from agent messages (corrected in fix round 1, I2)"
-  - "Unknown fails closed (fix round 1, I3 ruling): an api_retry error outside the known sets, an is_error result status other than 429/5xx, or a rejected rate_limit_event with an errorCode other than credits_required is STOP; an is_error 5xx/529 result is TRANSIENT; any other result is ATTEMPT_DONE; no result and no timeout is TRANSIENT"
+  - "Unknown fails closed (fix round 1 I3, fix round 2 R1/M1 rulings): an api_retry error outside the known sets, an error-result status other than 429/5xx, a rejected rate_limit_event with an errorCode other than credits_required, a result subtype outside the four known ones, or a success error result no known signal explains is STOP; an error 5xx/529 result is TRANSIENT; a clean success or a known error subtype is ATTEMPT_DONE; no result and no timeout is TRANSIENT; any result but is_error false is an error result"
   - "run_session kills the tree on any exception after Popen and re-raises (fix round 1, I1); on POSIX it also kills the session's group after a normal exit"
   - "EXPECTED_MODEL/EXPECTED_TOOLS live in streamjson; session builds --tools and the read/write part of --allowedTools from EXPECTED_TOOLS and keeps the literal \"claude-opus-5-5\" (acceptance criterion); a test pins session.MODEL == streamjson.EXPECTED_MODEL"
   - "run_session inherits stderr (the driver's console shows it) and gives the session no stdin (DEVNULL)"
@@ -171,7 +171,13 @@ See key-decisions in the frontmatter.
 - an api_retry error outside the known sets (`cloud_credential_error`, `model_not_found`, `invalid_request`, `max_output_tokens`, `unknown`, a missing or future code) is STOP, even if a clean result follows.
 Fixtures `cloud_credential.jsonl` (STOP) and `overloaded_result.jsonl` (TRANSIENT); tests `test_classify_error_results_from_the_review_probes`, `test_classify_server_error_result_is_transient`, `test_classify_other_error_status_stops`, `test_classify_429_result_stays_limit`, `test_classify_unknown_api_retry_error_stops`. Commits 4d216e0 (RED), e40d33c (GREEN).
 
-**Total deviations:** 3 orchestrator rulings applied (F11, F34, fix round 1 I3), 3 auto-fixed (1 TDD ordering, 1 flakiness, 1 fail-closed hardening group), plus the fix round 1 items below. **Impact:** no scope change; every change has a test.
+**7. Orchestrator ruling (fix round 2 R1): an unexplained error result or an unknown subtype is STOP.** Same D-08 fail-closed principle as I3, overriding the plan's "a result event (success, error_max_turns, error_max_budget_usd, error_during_execution) -> ATTEMPT_DONE" for these cases:
+- a result whose `subtype` is outside {success, error_max_turns, error_max_budget_usd, error_during_execution} is STOP (checked with the other STOP signals);
+- a `success` result that is an error result and that no known signal explains is STOP. A known signal is a STOP or LIMIT phrase in the result text or `errors[]`, status 429 (LIMIT) or 5xx (TRANSIENT), or a LIMIT event in the stream (the `rejected` fixture stays LIMIT). This check runs after LIMIT and TRANSIENT, so it only catches what nothing else explained.
+- The three error subtypes explain themselves and stay ATTEMPT_DONE. The plan named no errors[] codes, so `errors[]` strings count as known only through the phrases.
+Tests: `test_classify_unexplained_error_result_stops` ("Invalid API key - Please run /login", "OAuth token has expired. Please obtain a new token.", empty), `test_classify_unknown_result_subtype_stops`, `test_classify_error_result_explained_by_a_stream_signal_keeps_it`. Commits f10129f (RED), 756e307 (GREEN). **No fixture's classification changed:** I classified all 29 fixtures with the ea98c43 and the new streamjson under three endings each (exit 0, exit 1, timed out): 0 differences.
+
+**Total deviations:** 4 orchestrator rulings applied (F11, F34, fix round 1 I3, fix round 2 R1), 3 auto-fixed (1 TDD ordering, 1 flakiness, 1 fail-closed hardening group), plus the fix round 1 and 2 items below. **Impact:** no scope change; every change has a test.
 
 ## Fix round 1 (FIX_BASE 451eec1; review-06-17.md, rulings fixround-06-17-r1.md)
 
@@ -197,6 +203,25 @@ Verification after the fix round (host, worktree):
 - `uv run pytest -q -rs`: 2176 passed, 225 skipped in 49.06 s. The only new skip is the POSIX-only line above; the rest are real-file tests with no orig/ or third_party/ in a worktree.
 - `uv run ruff check .`: All checks passed; `ruff format --check` on the five Python files: already formatted.
 - No fakeclaude or sleeper process was left after the runs (wmic scan: 0).
+
+## Fix round 2 (FIX_BASE ea98c43; rereview-06-17-r1-report.md, rulings in the coordinator's message)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| R1 | A status-less error result in an unknown wording ("Invalid API key", an expired OAuth token), or an unknown result subtype, was counted as an attempt | orchestrator ruling, Deviation 7 above | `test_classify_unexplained_error_result_stops`, `test_classify_unknown_result_subtype_stops`, `test_classify_error_result_explained_by_a_stream_signal_keeps_it` | f10129f, 756e307 |
+| M1 | A result with `is_error` missing or not a boolean dropped its STOP text and status after I2 | any result but `is_error: false` is an error result | `test_classify_reads_a_non_boolean_is_error_as_an_error` (missing, None, "true", "false", 1, 0 x 401/text/"Done." -> STOP, 529 -> TRANSIENT) | f10129f, 756e307 |
+| M2 | The pid-refusal test called the real `kill_tree(0, windows=False)`, so a regression would SIGKILL pytest's own group in the container | test-only: `os.killpg` (raising=False) and `run` replaced by recorders; asserts neither was called | `test_kill_tree_refuses_a_pid_that_names_the_callers_group` | a94e2f1 (no behaviour change, so no GREEN) |
+| M3 | An exception after the root exited left its group alive | POSIX: the handler kills the group when the root has already exited too (kill_tree ignores ProcessLookupError) | `test_an_exception_after_the_root_exited_kills_the_group_on_posix`, `..._kills_nothing_on_windows` (fake popen, recorder) | a94e2f1, 2bae676 |
+
+RED evidence, each failing on an assertion:
+- f10129f: 30 AssertionErrors, every one `ATTEMPT_DONE is STOP` or `ATTEMPT_DONE is TRANSIENT`.
+- a94e2f1: `assert [] == [4242]` (the POSIX case). The Windows case and M2 passed, as pins.
+
+Verification after fix round 2 (host, worktree):
+- `uv run pytest -q tests/test_session.py tests/test_streamjson.py`: 126 passed, 1 skipped (the POSIX-only test).
+- `uv run pytest -q -rs`: 2209 passed, 225 skipped in 40.69 s; no new skip.
+- `uv run ruff check .`: All checks passed. `ruff format --check` on the five Python files: already formatted.
+- wmic scan afterwards: no fakeclaude or sleeper process left.
 
 ### Known limits and container gate items
 
@@ -231,7 +256,7 @@ None.
 ## Self-Check: PASSED
 
 - Files: tools/reverseapoc/session.py, tools/reverseapoc/streamjson.py, tests/fakeclaude.py, tests/test_session.py, tests/test_streamjson.py and tests/fixtures/stream/ (29 files after fix round 1) exist.
-- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 and, for fix round 1, 26f5158, 8a6be26, 4d216e0, e40d33c, a0ac314, 773fecc are ancestors of HEAD.
+- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 and, for fix round 1, 26f5158, 8a6be26, 4d216e0, e40d33c, a0ac314, 773fecc and, for fix round 2, f10129f, 756e307, a94e2f1, 2bae676 are ancestors of HEAD.
 - No modification to STATE.md, ROADMAP.md, orig/, config/ or build scripts.
 
 ---
