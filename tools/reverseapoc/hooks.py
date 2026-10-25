@@ -83,8 +83,9 @@ _PRAGMA_OPERATOR = re.compile(r"\b_Pragma\b")
 # A `#pragma aux` directive; \s also takes the form feed and vertical tab the compiler skips.
 _PRAGMA_AUX = re.compile(r"\s*#\s*pragma\s+aux(?![A-Za-z0-9_])(.*)", re.DOTALL)
 _CODE_BODY = "="  # `#pragma aux name = <bytes>` emits code; `parm [eax]` and the like do not
-# A `#pragma` directive of any kind (the matching layer during the pilot, M14).
-_PRAGMA = re.compile(r"\s*#\s*pragma(?![A-Za-z0-9_])")
+# A `#pragma` directive of any kind (the matching layer during the pilot, M14), also spelled
+# with the `%:` digraph for `#` (fix round 2 N6; configure's scanner does not translate it).
+_PRAGMA = re.compile(r"\s*(#|%:)\s*pragma(?![A-Za-z0-9_])")
 
 # D-17: the matching-session layer. The claim and the notes path come from the driver's env.
 CLAIM_ENV = "REVERSEAPOC_CLAIM"
