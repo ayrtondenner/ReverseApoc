@@ -21,6 +21,7 @@ owner-only).
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -57,8 +58,10 @@ NOTES_FILE = "notes.md"  # REVERSEAPOC_ATTEMPT_NOTES must be <attempt dir>/notes
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
-CONTAINER_CHECK = ("docker", "compose", "run", "--rm", "-T", "build",
-                   "uv", "run", "--frozen", "reverseapoc", "check")  # fmt: skip
+CONTAINER_RUN = ("docker", "compose", "run", "--rm", "-T")
+CONTAINER_CHECK = ("build", "uv", "run", "--frozen", "reverseapoc", "check")
+CONTAINER_PREFIX = "reverseapoc-attempt-"  # + 8 hex of the attempt dir + -NNNN (M7, 06-23)
+_DIR_HEX = 8
 _CLAIM = re.compile(r"(ufo2p|tacp)/([a-z0-9_]+)")
 _FUNC = re.compile(r"func_([0-9A-F]{8})")
 _HEX = 16
@@ -98,6 +101,7 @@ class Ran:
     returncode: int
     stdout: str
     stderr: str
+    timed_out: bool = False  # the runner stopped the client; the container may still run (M7)
 
 
 Runner = Callable[[Sequence[str]], Ran]
@@ -113,7 +117,8 @@ def default_runner(argv: Sequence[str]) -> Ran:
     except FileNotFoundError as exc:
         return Ran(EXIT_TOOL, "", f"{argv[0]} not found: {exc}")
     except subprocess.TimeoutExpired:
-        return Ran(EXIT_TOOL, "", f"the check ran longer than {CHECK_TIMEOUT} s and was stopped")
+        return Ran(EXIT_TOOL, "", f"the check ran longer than {CHECK_TIMEOUT} s and was stopped",
+                   timed_out=True)  # fmt: skip
     return Ran(proc.returncode, proc.stdout or "", proc.stderr or "")
 
 
@@ -199,10 +204,17 @@ def _notes(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path:
 # ---- attempt check ----
 
 
-def container_check_argv(claim: Claim, *, sweep: bool) -> tuple[str, ...]:
-    """`check <claim> --json` in the container's `build` service (-T: no tty, so the output is
-    captured), plus `--sweep <function>` for the D-17 diagnostic."""
-    argv = (*CONTAINER_CHECK, claim.target, "--json")
+def container_name(claim: Claim, stem: str) -> str:
+    """M7: reverseapoc-attempt-<8 hex of the attempt dir>-<NNNN>, unique per attempt and run, so
+    a run the wrapper stopped (and the driver after a session, 06-23) can remove it by name."""
+    digest = hashlib.sha256(claim.attempt_dir.as_posix().encode("utf-8")).hexdigest()
+    return f"{CONTAINER_PREFIX}{digest[:_DIR_HEX]}-{stem}"
+
+
+def container_check_argv(claim: Claim, *, sweep: bool, name: str) -> tuple[str, ...]:
+    """`check <claim> --json` in the container's `build` service, named `name` (-T: no tty, so
+    the output is captured), plus `--sweep <function>` for the D-17 diagnostic."""
+    argv = (*CONTAINER_RUN, "--name", name, *CONTAINER_CHECK, claim.target, "--json")
     return (*argv, "--sweep", claim.function) if sweep else argv
 
 
@@ -402,8 +414,17 @@ def _append(log: Path, line: CheckLogLine) -> None:
         fh.write(json.dumps(line.to_json(), sort_keys=True) + "\n")
 
 
+@dataclass
+class _Held:
+    """The held check lock; `keep` leaves it in place when the run ends (M7: an orphan
+    container that could not be removed ends this attempt's checks)."""
+
+    path: Path
+    keep: bool = False
+
+
 @contextmanager
-def _check_lock(attempt_dir: Path) -> Iterator[None]:
+def _check_lock(attempt_dir: Path) -> Iterator[_Held]:
     """Hold <attempt dir>/check.lock (O_CREAT|O_EXCL) for one whole run (security finding 1:
     a session can start checks with Bash run_in_background, and each would read the same
     count). Held already: AttemptError at once. A stale lock (a killed run) is never cleared:
@@ -414,14 +435,16 @@ def _check_lock(attempt_dir: Path) -> Iterator[None]:
     except FileExistsError as exc:
         raise AttemptError(f"another check is running in this attempt ({lock} exists; run "
                            "checks one at a time, in the foreground)") from exc  # fmt: skip
+    held = _Held(lock)
     try:
         try:
             os.write(fd, f"{os.getpid()}\n".encode("ascii"))
         finally:
             os.close(fd)
-        yield
+        yield held
     finally:
-        lock.unlink(missing_ok=True)
+        if not held.keep:
+            lock.unlink(missing_ok=True)
 
 
 def _reserved(checks: Path) -> int:
@@ -445,11 +468,27 @@ def run_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tup
     """One check run of the claimed unit: (exit code 0/1/2, the summary to print). Under the
     attempt's check lock, the budget is checked and the run's slot reserved (its snapshot of
     the unit file) before the container starts."""
-    with _check_lock(claim.attempt_dir):
-        return _locked_check(claim, sweep=sweep, runner=runner, roots=roots)
+    with _check_lock(claim.attempt_dir) as held:
+        return _locked_check(claim, sweep=sweep, runner=runner, roots=roots, held=held)
 
 
-def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tuple[int, str]:
+def _remove_container(name: str, runner: Runner, held: _Held) -> list[str]:
+    """M7: after a timeout, `docker rm -f <name>` through the same runner. If that fails, the
+    lock stays (`held.keep`): the orphan may still write build/, so this attempt's checks end."""
+    try:
+        removed = runner(("docker", "rm", "-f", name)).returncode == EXIT_OK
+    except Exception:  # noqa: BLE001 - any failure to remove it fails closed
+        removed = False
+    if removed:
+        return [f"  the stopped container {name} was removed"]
+    held.keep = True
+    return [f"  the stopped container {name} could not be removed: the check lock stays and "
+            "this attempt's checks are over; write notes.md and stop"]  # fmt: skip
+
+
+def _locked_check(
+    claim: Claim, *, sweep: bool, runner: Runner, roots: Roots, held: _Held
+) -> tuple[int, str]:
     log = claim.attempt_dir / CHECK_LOG
     checks = claim.attempt_dir / CHECKS_DIR
     checks.mkdir(exist_ok=True)
@@ -466,9 +505,11 @@ def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) ->
     stem = f"{n:04d}"
     source = f"{CHECKS_DIR}/{stem}.c"
     _reserve(claim.attempt_dir / source, text)
+    name = container_name(claim, stem)
     started = CLOCK()
-    ran = runner(container_check_argv(claim, sweep=sweep))
+    ran = runner(container_check_argv(claim, sweep=sweep, name=name))
     seconds = CLOCK() - started
+    removal = _remove_container(name, runner, held) if ran.timed_out else []
     doc = _parse(ran.stdout)
     try:
         if doc is None:
@@ -484,7 +525,7 @@ def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) ->
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(checks / f"{stem}.json", (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
     _append(log, line)
-    return line.exit, summary
+    return line.exit, "\n".join([summary, *removal])
 
 
 CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for
