@@ -172,8 +172,10 @@ equal the ones the research listed.
 | P3 blind spot | same made-up bytes, only the symbol of the 2nd relocation of the `mov dword` (the imm32, field 16) differs | 100.0 | exactly 100.0: missed |
 | P4 naming | the target's section is `.text`, ours `_TEXT` | no `match_percent` (unpaired) | unpaired |
 
-P3 shows that objdiff checks only one relocation per instruction, so a wrong target on the 2nd
-relocation of an instruction still scores 100%. objdiff is therefore a score and a viewer, not
+P3 shows a blind spot of the observed shape: in the plants, a wrong symbol on the 2nd relocation
+of `mov dword [abs32], imm32` still scored 100.0, while a wrong symbol on its 1st relocation was
+caught. The spike tested only this instruction, so it makes no claim about other instructions
+with two relocations. objdiff is therefore a score and a viewer, not
 the gate: the KKND-style relocation check (SPL-09, plan 05-09) is the gate, and the whole-EXE
 SHA-1 stays the final authority. P4 pins the naming rule for the production writers (plans 05-02
 and 05-08): both sides name code sections `_TEXT`.
