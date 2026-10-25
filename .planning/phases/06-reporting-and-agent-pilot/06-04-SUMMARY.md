@@ -303,6 +303,21 @@ Verification after the round:
 - `uv run ruff check .` is clean.
 - config/ is unchanged in this round.
 
+## Fix round 2
+
+The re-review (rereview-06-04-r1.md) confirmed all 7 minors fixed, the 26 ends unchanged, and that no function swallows its neighbour. This round fixes its two notes. FIX_BASE is 367dba9; there are 3 code commits from there, with the test commit first.
+
+| # | Note | Fix | Commit | Proof |
+|---|------|-----|--------|-------|
+| N1 | `_listed_versions` required every listed version (10.5, 10.6 and 11.0), but the rule loads only the version it picks per row | Orchestrator ruling applied: `_required_versions` is `{_row_version(m, RUNTIME_VERSION) for m in matches}`, computed with the verb's own helper, called by its private name. It stays strict: a missing tree fails with an AssertionError naming the version and its LIB386 path, and never skips (R-A). | 7a640d8 (RED), ed30004 (fix) | New test `test_required_versions_are_what_the_rule_loads[UFO2P.EXE, TACP.EXE]`. It needs no orig/ and no Watcom tree. It takes the committed runtime.csv plus one row without 10.6, records the versions `cli._seeded_runtime_rows` passes to `load_libraries`, and compares them with `_required_versions`. RED: ['10.5', '10.6', '11.0'] != ['10.6', '11.0']. GREEN: equal. With an empty REVERSEAPOC_WATCOM_DIR the error reads "runtime.csv rows need Watcom 10.6 (<dir>/10.6/LIB386), not installed ...". |
+| N2 | The `read_tables` docstring said "table start", but the code accepts any target inside a table | The docstring now says: any LE fixup inside the jmp whose target lies anywhere in a jump table yields all of that table's case labels. No behaviour change. | 19edb01 | tests/test_discover.py: 20 passed |
+
+Verification after the round:
+- F19 real run, tests/test_functions_real.py and tests/test_discover_real.py: 26 passed, 0 SKIPPED (build/06-04-real.out).
+- `uv run pytest -q`: 1432 passed, 215 skipped.
+- `uv run ruff check .` is clean.
+- config/ is unchanged.
+
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
