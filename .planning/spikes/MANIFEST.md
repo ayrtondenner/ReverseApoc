@@ -51,6 +51,24 @@ in plan 05-18.
 - Take target bytes from `le.load_flat(relocate=False)` and relocations from `le.fixups()` only
   (P4), never from Ghidra or a relocated image.
 
+### reporting-and-agent-pilot
+Confirm whether decomp.wtf v0.10.6 fork mode, unpatched, accepts the repo's stub convention: a
+bare `INCLUDE_ASM(func_X);` marker per function not matched yet, objdiff linker names `func_X_`,
+and the D-12 check in configure.py. The checks are code evidence from the pinned source plus a
+half-day WSL2 smoke run that submits func_000A3980's known C through `compile_and_diff` (D-01).
+The verdict follows D-02, and D-03 decides the AGT-10 agent layer for the Phase 6 pilot. Spike
+006 is the Phase 6 roadmap spike.
+
+**Requirements:**
+
+- Read the decomp.wtf source as text only (Path.read_text, ast.parse) in a scratch directory
+  under the gitignored build/. Never import, execute or vendor it on the host, and never commit
+  any of it (docs/legal.md).
+- Install and run decomp.wtf only inside the WSL2 distro, from the pinned v0.10.6 tag tarball.
+  Do not patch it, and do not build the WSL2 toolchain (ninja, wibo, objdiff-cli, Watcom) to make
+  it pass.
+- Record tool messages, names and addresses only, never listing or object bytes.
+
 ## Spikes
 
 | # | Idea | Name | Type | Validates | Verdict | Tags |
@@ -60,3 +78,4 @@ in plan 05-18.
 | 003 | le-round-trip-facts | trailer | standard | Given the 27 bytes after the last page in UFO2P/TACP, when checksum, installer-stamp and DOS/4GW-bind hypotheses are tested and the CD v1.00 build compared, then the trailer is identified or stays opaque (D-10) | PARTIAL | le, trailer, dos4gw, cd-build, d-10 |
 | 004 | compiler-identification | wibo-watcom | standard | Given wibo 1.2.0 in the reverseapoc-build image and the read-only third_party/watcom trees, when each version's BINNT/WCC386.EXE compiles a C89 probe, then 10.5 (decoded BINW), 10.6 and 11.0 produce objects whose normalized SHA-1 equals the native host compile | VALIDATED | watcom, wibo, compiler, d-01, d-03 |
 | 005 | split-and-first-matches | objdiff-omf-elf | standard | Given the cmain386 rows of UFO2P/TACP, CMAIN386.C read from the owner's 10.6 tree and objdiff-cli 3.8.2, when the reverseapoc cc object is converted to ELF32 and diffed against a target cut from le.py bytes with LE-fixup relocations, synthesized PC32 calls and an address-to-name map, then objdiff reports match_percent 100.0 for __CMain | VALIDATED | objdiff, omf, elf, d-01, d-02, d-19 |
+| 006 | reporting-and-agent-pilot | decompwtf-fork-stub | standard | Given pinned decomp.wtf v0.10.6 and the repo's bare INCLUDE_ASM(func_X); markers with objdiff names func_X_, when fork mode opens a clone in WSL2 and func_000A3980's C is sent through compile_and_diff, then it replaces the marker, builds with our ninja and objdiff and check exits 0 | INVALIDATED | decomp.wtf, fork-mode, d-01, d-02 |
