@@ -47,6 +47,7 @@ _OPERAND_SEPARATOR = ", "  # between operands in capstone's op_str
 _MEMORY_OPEN = "["  # opens a memory operand; its displacement is the last number before `]`
 _DISPLACEMENT = "displacement"  # the fixup field is the memory operand's displacement
 _IMMEDIATE = "immediate"  # the fixup field is the immediate operand
+_FAR_POINTER_MNEMONICS = frozenset({"ljmp", "lcall"})  # capstone's names for jmp/call ptr16:32
 
 
 class AsmError(ValueError):
@@ -159,8 +160,10 @@ def _local_labels(items: Sequence[Item], row: FunctionRow, fixups: Mapping[int, 
 
 def _field_operand(insn: Insn, offset: int) -> str | None:
     """Which operand holds the field starting `offset` bytes into `insn`: _DISPLACEMENT,
-    _IMMEDIATE (from capstone's disp_offset / imm_offset), or None for neither."""
-    if offset <= 0:
+    _IMMEDIATE (from capstone's disp_offset / imm_offset), or None for neither. A far pointer
+    (ptr16:32 of ljmp / lcall) is always None: capstone's imm_offset is its selector, encoded
+    last but printed first, so no operand text lines up with the field; it stays a note."""
+    if offset <= 0 or insn.mnemonic in _FAR_POINTER_MNEMONICS:
         return None
     if offset == insn.disp_offset:
         return _DISPLACEMENT
@@ -172,7 +175,8 @@ def _field_operand(insn: Insn, offset: int) -> str | None:
 def _substitute(op_str: str, raw: int, name: str, *, field: str) -> str | None:
     """`op_str` with the number of the operand holding the fixup field replaced by `name`: for
     _DISPLACEMENT the last number inside the memory operand's brackets, for _IMMEDIATE the last
-    operand's number (Intel syntax prints the immediate last). Only that operand is touched, so
+    operand's number (Intel syntax prints the immediate last; far pointers, which break that
+    order, never get here, see _field_operand). Only that operand is touched, so
     a scale or another operand of the same value stays a number (05-REVIEW row 9c). None when
     that number is not `raw`."""
     operands = op_str.split(_OPERAND_SEPARATOR)
@@ -302,14 +306,32 @@ def write_listings(
     symbols: SymbolTable,
     out_dir: Path,
 ) -> AsmReport:
-    """Write one listing per row into `out_dir`, each file atomically."""
+    """Write one listing per row into `out_dir`, each file atomically. AsmError, before anything
+    is written, when two rows' file names are equal under str.casefold (threat T-06-12)."""
+    named = _listing_files(rows, symbols)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     index = FixupIndex(fixups)
-    count = 0
-    for row in rows:
+    for row, name in named:
         near = index.overlapping(row.start, row.end)
         text = listing(row, flat=flat, fixups=near, symbols=symbols)
-        write_atomic(out_dir / file_name(symbols, row), text.encode("utf-8"))
-        count += 1
-    return AsmReport(count, out_dir)
+        write_atomic(out_dir / name, text.encode("utf-8"))
+    return AsmReport(len(named), out_dir)
+
+
+def _listing_files(
+    rows: Iterable[FunctionRow], symbols: SymbolTable
+) -> list[tuple[FunctionRow, str]]:
+    """Each row with its listing file name. The asm/ bind mount is NTFS, where names that differ
+    only in case are one file, so such a pair is refused rather than one listing overwriting the
+    other."""
+    named = []
+    seen: dict[str, int] = {}
+    for row in rows:
+        name = file_name(symbols, row)
+        other = seen.setdefault(name.casefold(), row.start)
+        if other != row.start:
+            raise AsmError(f"the listings of 0x{other:08X} and 0x{row.start:08X} would share "
+                           f"one file ({name}, names equal ignoring case)")  # fmt: skip
+        named.append((row, name))
+    return named
