@@ -13,11 +13,13 @@ requires:
   - phase: 06-13
     provides: contextpack.gather, build_pack, write_pack, CallIndex, Pack.to_json
 provides:
-  - "tools/reverseapoc/attempt.py: Claim (from REVERSEAPOC_CLAIM/FUNC/ATTEMPT_DIR only), CHECK_BUDGET = 25, container_check_argv, run_check (check.lock, reserved checks/NNNN.c slots), CheckLogLine, load_exe, resolve_row, make_pack, cmd_check/cmd_asm/cmd_context"
+  - "tools/reverseapoc/attempt.py: Claim (from REVERSEAPOC_CLAIM/FUNC/ATTEMPT_DIR/ATTEMPT_NOTES only), claimed_row, CHECK_BUDGET = 25, container_name, container_check_argv, run_check (check.lock, reserved checks/NNNN.c slots, docker rm -f after a timeout), CheckLogLine, exe_inputs (check.load_exe), resolve_row, make_pack, cmd_check/cmd_asm/cmd_context"
   - "reverseapoc attempt check [--sweep] | asm [NAME] | context, argv after `attempt` equal to hooks.ATTEMPT_FORMS"
   - "reverseapoc context EXE FUNC [--out DIR] [--json]"
-  - ".claude/skills/watcom-decomp/SKILL.md (139 lines) and tests/test_skill.py"
-  - "D-18 pragma policy in .claude/rules/src.md and docs/coding-style.md"
+  - "contextpack.Notes: earlier notes cut as D-14's fourth step (fix round 1 M11)"
+  - "hooks matching layer: no run_in_background Bash, no #pragma of any kind (fix round 1 M14)"
+  - ".claude/skills/watcom-decomp/SKILL.md (147 lines after fix round 1) and tests/test_skill.py"
+  - "D-18 pragma policy in .claude/rules/src.md and docs/coding-style.md (every #pragma since fix round 1)"
 affects: [06-17 session goal prompt, 06-23 driver (checks.jsonl, checks/NNNN.c, context --json, notes layout), 06-25 canary, 06-26 preflight (first real attempt check)]
 
 actuals:
@@ -26,6 +28,10 @@ actuals:
   commits: 11
 plan_head_before: ca93eb245503a8aa89ef88959f255403313f4e3c
 plan_head_after: f47261b97e2b3fb991e91c37b502ab41cb4452a2
+fix_round_1:
+  base: 53d6127ce961b02296ad5bd516415bcfe09a0957
+  head_before_summary: ebb6fa0
+  commits: 14  # git rev-list --count 53d6127..ebb6fa0, plus this SUMMARY commit
 
 tech-stack:
   added: []
@@ -43,6 +49,9 @@ key-files:
   modified:
     - tools/reverseapoc/cli.py
     - tools/reverseapoc/contextpack.py
+    - tools/reverseapoc/hooks.py  # fix round 1 M14
+    - tests/test_hooks.py  # fix round 1 M14
+    - tests/test_contextpack.py  # fix round 1 M11
     - .claude/rules/src.md
     - docs/coding-style.md
 
@@ -51,8 +60,11 @@ key-decisions:
   - "A stale check.lock is never cleared: every session gets a fresh attempt dir, so it ends that attempt's checks (fail closed)"
   - "A sweep hit is a 100.0 cell with reloc_ok and differing 0 whose `compiler flags` differ from the unit's own cflags.txt rule; logged as sweep_hit `wcc386@V flags...`"
   - "check exit is passed through only when it agrees with the JSON's ok (0 with ok true, 1 with ok false); anything else, or no JSON, is exit 2"
-  - "The wrapper prints the absolute POSIX paths of checks/NNNN.json, checks/NNNN.c and <attempt dir>/notes.md, because the goal prompt does not name the attempt dir"
-  - "Earlier notes are capped at the newest 6144 bytes: notes are a required pack section, and an unbounded notes file would make every later pack fail the 24 KB cap"
+  - "Fix round 1 I1: attempt check exits 0 only when check exits 0 and the claimed function itself passes (objdiff 100, reloc and bytes ok); a claimed function that is a stub or absent from functions[] is exit 1 'was not compiled (still INCLUDE_ASM?)' with no measurement; a FUNC that is no game/thunk row of the claimed unit is refused with exit 2 before a slot is reserved"
+  - "A sweep exits 0 when it ran and 2 when it did not, never 1; its 0 reads 'SWEEP RAN (a diagnostic: never a match)'"
+  - "The wrapper prints the absolute POSIX paths of checks/NNNN.json and checks/NNNN.c, and REVERSEAPOC_ATTEMPT_NOTES, which must be <attempt dir>/notes.md (fix round 1 M8)"
+  - "Fix round 1 M11 (extension of D-14): no fixed notes cap; earlier notes are cut only when the pack is over 24 KB after look-alikes, callers and the draft: attempts.jsonl records first (oldest first), then notes.md texts (oldest first), so records never crowd out notes and the newest note is the last thing cut"
+  - "Fix round 1 M7: the check container is named reverseapoc-attempt-<8 hex of sha256(attempt dir)>-<NNNN>; after a runner timeout the wrapper runs docker rm -f <name> through the same runner, and keeps check.lock if that fails"
 
 patterns-established:
   - "Skill commands test: every backticked `uv run` span in SKILL.md must be ATTEMPT_PREFIX plus one of ATTEMPT_FORMS (asm <NAME> quoted literally), and all five forms must appear"
@@ -89,7 +101,7 @@ coverage:
     requirement: AGT-09
     verification:
       - kind: unit
-        ref: "tests/test_skill.py (5 tests)"
+        ref: "tests/test_skill.py (13 tests after fix round 1)"
         status: pass
     human_judgment: false
   - id: D5
@@ -97,7 +109,7 @@ coverage:
     requirement: AGT-09
     verification: []
     human_judgment: true
-    rationale: "The with-skill pressure-scenario run is the orchestrator's (subagents cannot be spawned here); pending"
+    rationale: "The with-skill pressure-scenario runs are the orchestrator's (subagents cannot be spawned here). GREEN passed before fix round 1; the orchestrator re-runs the affected scenarios after this REFACTOR"
   - id: D6
     description: "D-18 pragma policy text in .claude/rules/src.md and docs/coding-style.md"
     requirement: AGT-09
@@ -259,7 +271,7 @@ See `key-decisions` in the frontmatter. In addition:
    - Issue: my verify command piped pytest into `tail`, so its exit code was lost. On Windows the new paths printed with backslashes, so `checks/0001.json` was not found. The context test also read stderr after an earlier `readouterr()` had consumed it.
    - Fix: `511619c` prints paths with `as_posix()` (the Read tool takes forward slashes on every host) and captures once in the test.
    - Verification: the wrapper and skill tests re-ran with a real exit code (49 passed, rc=0). Every later verify kept pytest's own exit code.
-3. **[Rule 2 - Missing critical] Earlier notes are bounded to the newest 6144 bytes (`NOTES_CAP`).**
+3. **[Rule 2 - Missing critical] Earlier notes are bounded to the newest 6144 bytes (`NOTES_CAP`).** Superseded by fix round 1 M11 (see "Fix round 1" below): the fixed cap is gone.
    - Issue: notes are a required pack section, which build_pack never cuts. An attempt that wrote long notes would make every later pack of that function fail the 24 KB cap.
    - Fix: the newest 6144 bytes are kept, with a marker for what was cut.
    - Commit: `7f8552a`.
@@ -305,31 +317,73 @@ None.
 
 None.
 
+## Fix round 1
+
+Rulings: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/fixround-06-15-r1.md` (answering review-06-15.md). Base `53d6127`. Every behaviour change had a RED test commit that failed on its assertion (or on the missing name the test wished for) before its GREEN commit.
+
+| Item | Change | Tests (RED commit -> GREEN commit) |
+|---|---|---|
+| I1(a) | `claimed_row`: FUNC must be a game or thunk row of the claimed unit in functions.csv (the rows check accounts for), read once per call; else exit 2 before the lock and before any slot. asm/context reuse it on check's loaded rows. | `test_attempt_refuses_a_func_that_is_no_game_row_of_the_claimed_unit` x3 (another unit, a runtime row, no row; plain and `--sweep`) (`be64d46` -> `31c1470`) |
+| I1(b) | `_verdict`: exit 0 only when check exits 0 agreeing with `ok` and the claimed function has objdiff 100, reloc ok and bytes ok. A stub or absent claimed function is exit 1, prints "func_X was not compiled (still INCLUDE_ASM?)" and logs `best_percent`/`reloc_ok`/`bytes_ok` as null. check's own 2 passes through. | `test_attempt_check_a_stub_claim_is_not_a_match`, `..._missing_from_the_json_is_not_a_match`, `..._must_pass_and_check_exit_0` (same commits) |
+| I1(c) | A sweep's 0 reads "SWEEP RAN (a diagnostic: never a match)"; exit rule 0 ran / 2 did not / never 1, stated in the skill and tested. | `test_attempt_sweep_exit_is_never_a_match`; skill: `test_skill_states_the_exit_codes_in_the_wrapper_section` |
+| I1(d) | cli.py `attempt` description and `_cmd_attempt` docstring; SKILL.md quick-reference row. | `test_attempt_help_states_the_claimed_function_rule`; `test_skill_states_the_exit_codes_in_the_wrapper_section` |
+| M1 | Skill: timeout 600000 on every `attempt check`, plain or `--sweep`; the wrapper's 580 s stays below it. | `test_skill_states_the_timing_rules` (`2a92322` -> `ebb6fa0`) |
+| M2 | "90 s / 15 checks" removed. The summary head is `attempt check 7/25, 41 s (18 left) ...`, timed by `attempt.CLOCK` around the runner; the skill says to budget by it. | `test_attempt_check_prints_elapsed_seconds_and_checks_left` (`a53a670` -> `f817490`); `test_skill_states_the_timing_rules` |
+| M3 | Skill: "C89 is required: the driver lints the unit before it commits a match" (06-23 makes it true). | `test_skill_states_the_lint_and_file_order_rules` |
+| M4 / R2 | Skill: the ruling's file-order wording, with `docs/matching.md#relocation-rules`. | same test |
+| M5 | test_skill: `anchors_problems` (every `path#anchor` is a `##`/`###` heading slug of the file), `attempt_form_problems` (every backticked span with an `attempt` token, short or full, is an ATTEMPT_FORMS entry), `json_field_problems` (every dotted JSON path in the skill and every bare key in its JSON block is a key path of a real `to_json` of a made-up CheckResult and SweepReport, or a checks.jsonl key). | `test_skill_anchors_resolve`, `test_skill_short_attempt_forms_are_wrapper_forms`, `test_skill_json_fields_exist`. Mutation probe on in-memory copies (scratch script, the file never written): `#flags`->`#flagz` CAUGHT; `#relocation-rules`->`#relocation-rule` CAUGHT; `` `attempt asm` ``->`` `attempt disasm` `` CAUGHT; `` `attempt check --sweep` ``->`` `attempt sweep` `` CAUGHT; `` `reverseapoc attempt chek` `` CAUGHT; `bytes.first_va`->`bytes.first_addr` CAUGHT; `reloc.problems`->`reloc.problem` CAUGHT; `splice[]`->`splices[]` CAUGHT; `differing`->`different` CAUGHT (9/9). |
+| M6 | checks.jsonl sweep lines carry `sweep: true` (plain lines `false`); 06-23 must skip them when picking the best C (rulings ## 06-23). | `test_attempt_sweep_exit_is_never_a_match` asserts every sweep line's `sweep` is true; `test_attempt_check_sweep_logs_a_hit` already did |
+| M7 | `docker compose run --rm -T --name reverseapoc-attempt-<8 hex of sha256(attempt dir)>-<NNNN> build ...`. `Ran.timed_out` (the default runner sets it on TimeoutExpired) triggers `docker rm -f <name>` through the same runner before the lock is released; a failed removal (non-zero or an exception) keeps `check.lock`. | `test_attempt_check_builds_the_container_argv`, `test_container_names_differ_per_attempt_dir`, `test_a_timed_out_run_removes_its_container`, `test_a_container_that_cannot_be_removed_keeps_the_lock`, `test_the_default_runner_reports_a_timeout` (`2219bdf` -> `9c6288e`) |
+| M8 | `Claim.notes` from `REVERSEAPOC_ATTEMPT_NOTES`; it must resolve to `<attempt dir>/notes.md` (part by part, exact case), else exit 2; that value is the path printed by `attempt check` and `attempt context`. | `test_attempt_refuses_a_notes_path_that_is_not_the_attempt_dirs` x3 (unset, other.md, ../notes.md), `test_attempt_check_prints_the_notes_env_path` (`a53a670` -> `f817490`) |
+| M9 | `_cmd_attempt` catches any `Exception` after `_ERRORS`: one stderr line `reverseapoc attempt: error: <Type>: <msg>`, exit 2, no traceback. | `test_an_unexpected_exception_is_a_tool_error`, `test_attempt_asm_an_undecodable_listing_is_a_tool_error`; `test_attempt_check_releases_the_lock_after_a_runner_exception` now expects exit 2 (same commits) |
+| M10 | Exit codes moved into "## The attempt wrapper" (D-19 section 8); the quick-reference row points there. | `test_skill_states_the_exit_codes_in_the_wrapper_section` |
+| M11 | `attempt.NOTES_CAP` and `_bounded` removed. `earlier_notes` returns `contextpack.Notes(texts, records, records_label)`; `build_pack` cuts notes as a fourth step after look-alikes, callers and the draft: records oldest first, then texts oldest first. Texts render before records; the header counts both; the section starts `... N older notes and M attempt records cut`. | `test_notes_render_texts_before_records`, `test_notes_are_cut_only_after_the_d14_cuts_records_first`, `test_notes_cut_the_oldest_first_and_keep_the_newest`, `test_notes_as_text_stay_one_uncut_block`, `test_context_verb_keeps_long_notes_whole_when_the_pack_fits` (`5598c15` -> `81efed9`) |
+| M12 | `attempt.load_exe`/`ExeData` removed; `attempt.exe_inputs` wraps `check.select_exe` + `check.load_exe` (ExeInputs has the same `stem/rows/symbols/flat/fixups`). | `test_attempt_reads_the_exe_with_checks_loader`, `test_context_verb_reads_config_like_check` (`15d29f9` -> `f6de682`) |
+| M13 | No change (recorded). | - |
+| M14(a) | Matching layer: a Bash call whose `tool_input.run_in_background` is anything but absent or false is denied, "checks run in the foreground, one at a time". | `test_matching_denies_a_background_bash` x3 (True, "true", 1), `test_matching_allows_a_foreground_bash`, `test_always_ignores_background_bash` (`e8ec804` -> `73a2426`) |
+| M14(b) | Matching layer: src/ and include/ writes with any `#pragma` directive are denied (`_PRAGMA` on configure's blanked, spliced logical lines; `any_pragma=True` only from `_matching_write`). The always layer is unchanged (`any_pragma` defaults to False). Skill, `.claude/rules/src.md` and `docs/coding-style.md` say "no `#pragma` of any kind". | `test_matching_denies_every_pragma` x8 (`#pragma on/off (check_stack)`, `pack(1)`, `warning`, spaced `once`, continued, comment-split, trigraph `??=pragma`), each also asserting the always layer does not deny; `test_matching_allows_pragma_words_outside_code`; `test_pragma_policy_is_every_pragma` |
+| R1 | Skill: each sweep cell reports `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields) under its `compiler` and `flags` (SweepCell.to_json); "A sweep hit is never a match until a plain `attempt check` under the new rule passes". | `test_skill_states_what_a_sweep_cell_reports` |
+| R2 | Covered by M4. | - |
+
+The skill change is the REFACTOR step of superpowers:writing-skills (invoked): only the items above were changed; SKILL.md is 147 lines. The orchestrator re-runs the affected scenarios.
+
+### Fix round 1 deviations
+
+- **M11 is an extension of D-14.** D-14 lists three cuts (look-alikes, callers, the draft); notes are now a fourth, applied only while the pack is still over 24 KB. Reading of the ruling: "records never crowd out notes" means the attempts.jsonl records are cut before any notes.md text, and "the oldest notes first, the newest kept" means texts are cut oldest first. Files: `tools/reverseapoc/contextpack.py` (already in scope by rulings ## 06-15), `tests/test_contextpack.py`.
+- **M14 scope addition.** `tools/reverseapoc/hooks.py` and `tests/test_hooks.py` join this plan's files. Matching layer only; the always layer's behaviour is byte-for-byte the same (its call passes no `any_pragma`), and no tooling write outside a matching session is newly denied.
+- **M12 is not a pure move**, so it is recorded here: check's loader requires `config/<exe>/units.csv` (the old loader did not) and treats symbols.csv as optional (the old one required it); the `context` verb now reads every CSV from `--config` as check does and no longer takes `--functions`/`--symbols` (it used `_add_split_inputs` before). The test fixture gained a units.csv. No cli loader was reused: `cli._split_inputs` takes an argparse namespace and ignores `--config`.
+- **I1(a) reads functions.csv only** for `attempt check`, not units.csv or the LE, so a check needs no orig/ read on the host; asm/context validate on check's already-loaded rows. A unit missing from units.csv still fails in the container (check's exit 2 passes through).
+- **Test edits inside GREEN commits** (lint only): `81efed9` turned a `%` format in the RED helper into an f-string (ruff UP031).
+- **06-23 consumers (notes, not code):** a not-compiled check line has `exit` 1 and null `best_percent`; skip null percents when picking the best C. `REVERSEAPOC_ATTEMPT_NOTES` is now required by every `attempt` subcommand. The container-name prefix is `attempt.CONTAINER_PREFIX` + 8 hex of sha256 of the attempt dir's POSIX path.
+
 ## Next Phase Readiness
 
 - **06-17 (session):** the goal prompt can name `uv run --frozen reverseapoc attempt check`. The skill file for `--append-system-prompt-file` is `.claude/skills/watcom-decomp/SKILL.md`.
 - **06-23 (driver):** what it can read and run:
-  - `checks.jsonl` lines carry `n, exit, sweep, best_percent, reloc_ok, bytes_ok, splice_ok, sweep_hit, source`;
+  - `checks.jsonl` lines carry `n, exit, sweep, best_percent, reloc_ok, bytes_ok, splice_ok, sweep_hit, source`; sweep lines have `sweep: true` and must never be the best C; a not-compiled line has `best_percent: null`;
   - the best C is `<attempt dir>/<source>`;
-  - `reverseapoc context EXE FUNC --out <attempt dir> --json` gives `pack_bytes` and `truncated`;
-  - set `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC` and `REVERSEAPOC_ATTEMPT_DIR` (an existing dir below build/driver/), and give each session a fresh attempt dir.
-- **06-26 (preflight):** the first real `attempt check` (docker compose `-T`) is still unproven, as the plan's flagged assumption says.
-- **Skill GREEN verification:** pending, the orchestrator's.
+  - `reverseapoc context EXE FUNC --out <attempt dir> --json` gives `pack_bytes` and `truncated` (notes cuts appear as `attempt record N` / `earlier note N`);
+  - set `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` (an existing dir below build/driver/) and `REVERSEAPOC_ATTEMPT_NOTES` = `<attempt dir>/notes.md`, and give each session a fresh attempt dir;
+  - after each session, remove containers named `reverseapoc-attempt-<8 hex>-*` for that attempt dir (rulings ## 06-23).
+- **06-26 (preflight):** the first real `attempt check` (docker compose `-T --name`) is still unproven, as the plan's flagged assumption says.
+- **Skill GREEN verification:** passed before fix round 1; the orchestrator re-runs the affected scenarios after this REFACTOR.
 
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/attempt.py, tests/test_attempt_wrapper.py, tests/test_skill.py, .claude/skills/watcom-decomp/SKILL.md.
-- FOUND on this branch (`git log ca93eb2..HEAD`): ccedbaa, cce58ca, 100bca9, 474c9d2, 457e83a, 7f8552a, cc25102, 1cf25c1, b8e8517, 511619c, f47261b (11 commits).
+- FOUND on this branch (`git log ca93eb2..HEAD`): ccedbaa, cce58ca, 100bca9, 474c9d2, 457e83a, 7f8552a, cc25102, 1cf25c1, b8e8517, 511619c, f47261b (11 plan commits), 53d6127 (plan SUMMARY), and the 14 fix-round-1 commits be64d46, 31c1470, a53a670, f817490, 2219bdf, 9c6288e, 5598c15, 81efed9, 15d29f9, f6de682, e8ec804, 73a2426, 2a92322, ebb6fa0.
 - Acceptance:
   - `CHECK_BUDGET = 25` is in attempt.py, and `REVERSEAPOC_CLAIM` is read from the environment only (via `hooks.CLAIM_ENV`);
   - `uv run reverseapoc attempt check --cflags x` exits 2;
   - `context --help` and `attempt --help` exit 0;
-  - SKILL.md has nine `## ` headings in D-19's order and 139 lines (≤ 300);
-  - `human-reviewed` appears in both policy files.
-- Plan verification:
-  - `uv run pytest -q tests/test_skill.py tests/test_hygiene.py`: 70 passed, 3 skipped (pre-existing hygiene skips);
-  - full host suite: 2015 passed, 222 skipped (real-file skips; orig/ and the Watcom tree are not in the worktree);
-  - `uv run ruff check .`: all checks passed.
+  - SKILL.md has nine `## ` headings in D-19's order and 147 lines (≤ 300);
+  - `human-reviewed` appears in both policy files, and so does "no `#pragma` of any kind".
+- Verification after fix round 1 (measured, pytest's own exit code kept):
+  - focused: `uv run --frozen pytest -q tests/test_attempt_wrapper.py tests/test_skill.py tests/test_contextpack.py tests/test_hooks.py`: 321 passed, 1 skipped (`symlink creation needs privileges on this host`, the R-A reason), rc 0; the same with REVERSEAPOC_ORIG / REVERSEAPOC_WATCOM_DIR / REVERSEAPOC_GHIDRA_EXPORT pointed at the main checkout: 321 passed, 1 skipped;
+  - `uv run --frozen pytest -q tests/test_skill.py tests/test_hygiene.py`: 78 passed, 3 skipped (pre-existing hygiene skips);
+  - full host suite `uv run --frozen pytest -q`: 2063 passed, 222 skipped, rc 0 (real-file skips; orig/ and the Watcom tree are not in the worktree); with the three env vars pointed at the main checkout: 2246 passed, 39 skipped, rc 0;
+  - `uv run --frozen ruff check .`: all checks passed.
+  - No new skips were added. Docker was not run (worktree); container-only tests skip on the host.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
