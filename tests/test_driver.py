@@ -89,7 +89,7 @@ def _git(repo: Path, env: dict, *args: str) -> str:
 def _make_repo(tmp_path: Path, env: dict, *, unit: bool) -> Path:
     repo = tmp_path / "repo"
     files = {
-        ".gitignore": "build/\n",
+        ".gitignore": "build/\n.venv/\n.claude/settings.local.json\n",
         "include/common.h": "/* made up */\n",
         f"config/{EXE}/status.csv": STATUS_HEAD,
         "config/tacp/status.csv": STATUS_HEAD,
@@ -326,6 +326,10 @@ class Night:
 
     def kinds(self, kind: str) -> list[dict]:
         return [r for r in self.records() if r.get("kind") == kind]
+
+    @property
+    def quarantine(self) -> Path:
+        return self.repo / "build" / "driver" / RUN / "quarantine"
 
     def attempt_dir(self, n: int = 1, func: str = FUNC) -> Path:
         return self.repo / "build" / "driver" / RUN / EXE / func / f"attempt-{n}"
@@ -603,7 +607,9 @@ def test_stray_write_resets_and_stops(tmp_path):
     assert [r for r in _runs(night) if r[0] == "STOPPED"] == [("STOPPED", "guardrail")]
     assert "tools/x.py" in report.detail
     assert _unit_text(night) == SCAFFOLD
-    assert (night.repo / "tools" / "x.py").is_file()  # left for the owner to inspect
+    # Security ruling (guardrail stop): never left in place, never deleted: quarantined.
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
     assert not (Path(__file__).resolve().parents[1] / "tools" / "x.py").exists()
     assert night.gate_calls == []
 
@@ -774,3 +780,80 @@ def test_a_guardrail_stop_commits_nothing(tmp_path):
     night = Night(tmp_path, sessions=[Sess(write=f"config/{EXE}/status.csv")])
     night.run()
     assert night.commits() == []
+
+
+# ---- Security rulings (06-23): paths outside git's view, and a stop that cleans up ----
+
+SETTINGS_LOCAL = ".claude/settings.local.json"
+PTH_DIR = ".venv/Lib/site-packages"
+
+
+def _stopped(night: Night) -> dict:
+    return _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+
+
+def test_a_session_adding_a_git_hook_stops_and_the_hook_is_quarantined(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(write=".git/hooks/pre-commit")], gate_exits=[0])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert ".git/hooks/pre-commit" in _stopped(night)["detail"]
+    assert not (night.repo / ".git" / "hooks" / "pre-commit").exists()
+    assert (night.quarantine / ".git" / "hooks" / "pre-commit").is_file()
+    assert night.gate_calls == []
+    assert night.commits() == []
+
+
+def test_a_session_editing_settings_local_stops_and_the_old_bytes_come_back(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(write=SETTINGS_LOCAL)])
+    _write(night.repo / SETTINGS_LOCAL, '{"made": "up"}\n')
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert SETTINGS_LOCAL in report.detail
+    assert (night.repo / SETTINGS_LOCAL).read_text(encoding="utf-8") == '{"made": "up"}\n'
+    assert (night.quarantine / SETTINGS_LOCAL).read_text(encoding="utf-8").startswith("/*")
+
+
+def test_a_session_adding_a_pth_file_stops(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(write=f"{PTH_DIR}/made_up.pth")])
+    (night.repo / PTH_DIR).mkdir(parents=True)
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert f"{PTH_DIR}/made_up.pth" in report.detail
+    assert not (night.repo / PTH_DIR / "made_up.pth").exists()
+    assert (night.quarantine / PTH_DIR / "made_up.pth").is_file()
+
+
+def test_a_session_writing_only_its_attempt_dir_does_not_stop(tmp_path):
+    """build/ stays out of the audit by design: the wrapper writes the attempt dir."""
+    scratch = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/scratch.txt"
+    night = Night(tmp_path, sessions=[Sess(write=scratch)])
+    report = night.run(config={"attempts_per_function": 1})
+    assert report.event == "ENDED"
+
+
+def test_a_guardrail_stop_restores_tracked_strays_and_quarantines_new_ones(tmp_path):
+    sess = Sess(write="tools/x.py", files=(("tools/keep.py", "# changed by the agent\n"),))
+    night = Night(tmp_path, sessions=[sess])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert (night.repo / "tools" / "keep.py").read_text(encoding="utf-8") == "# made up\n"
+    assert night.git("status", "--porcelain=v1", "--", "tools/keep.py").strip() == ""
+    assert (night.quarantine / "tools" / "keep.py").read_text(encoding="utf-8") == (
+        "# changed by the agent\n"
+    )
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    detail = _stopped(night)["detail"]
+    assert "restored: tools/keep.py" in detail
+    assert "tools/x.py" in detail.split("quarantined:", 1)[1]
+
+
+def test_a_guardrail_stop_keeps_the_drivers_own_pending_rows(tmp_path):
+    """A stray edit of a file the driver itself had changed this night (status.csv with a
+    partial row) goes back to its pre-session bytes, not to HEAD."""
+    sessions = [Sess(checks=(check_line(1, 50.0),)), Sess(write=f"config/{EXE}/status.csv")]
+    night = Night(tmp_path, sessions=sessions)
+    report = night.run(config={"attempts_per_function": 2})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    status = (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8")
+    assert status.startswith(STATUS_HEAD) and ",partial," in status
