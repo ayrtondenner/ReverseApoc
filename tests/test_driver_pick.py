@@ -137,7 +137,8 @@ def test_skipped_candidates_do_not_count_as_blocked():
     q = queue({UFO2P: pool}, units={UFO2P: _own_units(pool)},
               excluded={(UFO2P, SPREAD_BASE + REGION)}, difficult=())  # fmt: skip
     assert len(list(q)) == 1
-    assert q.ended == {UFO2P: END_EXHAUSTED}
+    assert q.ended[UFO2P] == END_EXHAUSTED
+    assert q.pool_empty(TACP)  # an EXE in `order` with no pool is an exhausted one
 
 
 def test_queue_refuses_pool_keys_outside_order():
