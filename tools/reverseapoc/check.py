@@ -15,7 +15,9 @@ our object defines (a code public that names a row of the unit), reports three t
 Then it lands every defined function of every compiled unit of every EXE that has
 config/<exe>/units.csv through land.py, the same land step `ninja verify` runs (`land_all`, SPL-10),
 and compares each landed EXE's SHA-1 with config/targets.toml. A function whose relocation check
-fails is refused, never landed, and makes its EXE's splice fail.
+fails is refused, never landed, and makes its EXE's splice fail. `ninja verify`'s land step (no
+compile) lands an object only while its provenance stamp `<obj>.prov.json` matches today's
+source, cflags table, Watcom manifest and rule (`check_provenance`, DI-06 part a).
 
 Exit codes (`CheckResult.exit_code`): 0 only when every defined function scores 100.0, passes the
 relocation check and the byte comparison, and every splice SHA-1 matches with nothing refused;
@@ -32,14 +34,15 @@ rule (D-18) and is then proven by a plain `check`.
 
 Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
 Outputs go to build/<exe>/obj|base|target/<unit>.*, the paths of build.ninja's edges, when check
-compiles with the committed config/cflags.txt, config/watcom.toml and Watcom tree. With any other
---cflags, --watcom-manifest or --watcom-dir they go to build/check-custom/<exe>/... instead
-(`object_root`), so ninja never takes an object built with flags it does not use for its own
-up-to-date output, and `ninja verify` lands only objects of the committed flags (D-18, WR-01).
+compiles the committed src/ and config/ with the committed config/cflags.txt, config/watcom.toml
+and Watcom tree. With any other --cflags, --watcom-manifest, --watcom-dir, --src or --config they
+go to build/check-custom/<exe>/... instead (`object_root`), so ninja never takes an object built
+from sources or flags it does not use for its own up-to-date output (D-18, WR-01, DI-06 part b).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import importlib.util
 import json
@@ -56,7 +59,17 @@ from typing import Any
 
 from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
-from .compiler import CompilerError, compile_source
+from .compiler import (
+    INCLUDE_DIR,
+    PROV_KEYS,
+    PROV_VERSION,
+    CompilerError,
+    compile_source,
+    provenance,
+    provenance_path,
+    read_provenance,
+    source_rule,
+)
 from .elf import STT_FUNC, write_elf
 from .fileio import write_atomic
 from .functions import (
@@ -76,7 +89,7 @@ from .omf2elf import convert
 from .probe import CHK_PUBLIC
 from .relocs import FIELD_SIZE, OwnPublic, RelocError, RelocResult, check_function
 from .symbols import SymbolTable
-from .target import TargetResult, branch_fields, build_target
+from .target import RawField, TargetResult, branch_fields, build_target
 from .targets import REPO_ROOT, Target, check_bare_name, load_manifest
 from .watcom import DEFAULT_INSTALL, DEFAULT_WATCOM_MANIFEST
 
@@ -193,11 +206,19 @@ class CompileOptions:
     watcom_manifest: Path | None = None
     watcom_dir: Path | None = None
     log: Path | None = None
+    # The trees the sources and the config are read from (DI-06 part b, ruling F7); None is the
+    # committed one, as for the options above.
+    src_root: Path | None = None
+    config_root: Path | None = None
 
 
 # Where check compiles with non-default options. Not [a-z0-9_]+, so it is never an EXE config stem
 # and never a path build.ninja writes (its unit outputs are $builddir/<stem>/...).
 CUSTOM_ROOT = "check-custom"
+# The trees ninja's cc edge compiles from and its target edge reads (cli.py's --src/--config
+# defaults). object_root reads them at call time.
+DEFAULT_SRC = REPO_ROOT / "src"
+DEFAULT_CONFIG = REPO_ROOT / "config"
 
 
 def _is_default(path: Path | None, default: Path) -> bool:
@@ -207,12 +228,27 @@ def _is_default(path: Path | None, default: Path) -> bool:
 def object_root(build_dir: Path, options: CompileOptions) -> Path:
     """The build dir check compiles into with `options`: `build_dir` itself, whose
     <exe>/obj|base|target paths build.ninja's edges own, only when every option is the committed
-    one ninja's cc edge uses (config/cflags.txt, config/watcom.toml, the default Watcom tree);
-    otherwise `build_dir`/check-custom, so ninja never sees those objects (WR-01)."""
+    one ninja's cc edge uses (config/cflags.txt, config/watcom.toml, the default Watcom tree,
+    src/ and config/); otherwise `build_dir`/check-custom, so ninja never sees those objects
+    (WR-01, DI-06 part b)."""
     default = (_is_default(options.cflags, DEFAULT_CFLAGS)
                and _is_default(options.watcom_manifest, DEFAULT_WATCOM_MANIFEST)
-               and _is_default(options.watcom_dir, DEFAULT_INSTALL))  # fmt: skip
+               and _is_default(options.watcom_dir, DEFAULT_INSTALL)
+               and _is_default(options.src_root, DEFAULT_SRC)
+               and _is_default(options.config_root, DEFAULT_CONFIG))  # fmt: skip
     return Path(build_dir) if default else Path(build_dir) / CUSTOM_ROOT
+
+
+def with_roots(options: CompileOptions, *, src_root: Path, config_root: Path) -> CompileOptions:
+    """`options` carrying the trees a land step compiles from: a non-default root always wins
+    (so the objects go to check-custom), a default one fills an unset field only, so a caller's
+    own non-default root (06-11's `gate --partial`) is kept."""
+    def pick(given: Path | None, root: Path, default: Path) -> Path | None:
+        return Path(root) if given is None or not _is_default(root, default) else given
+
+    return dataclasses.replace(options, src_root=pick(options.src_root, src_root, DEFAULT_SRC),
+                               config_root=pick(options.config_root, config_root,
+                                                DEFAULT_CONFIG))  # fmt: skip
 
 
 def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: CompileOptions) -> Any:
@@ -225,7 +261,11 @@ def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: Comp
 
 
 def read_module(path: Path) -> Module:
-    data = Path(path).read_bytes()
+    return parse_module(Path(path).read_bytes(), path)
+
+
+def parse_module(data: bytes, path: Path) -> Module:
+    """`data`, read from `path`, as an OMF module."""
     if not data or data[0] != REC_THEADR:
         raise CheckError(f"{path}: not an OMF object (no THEADR record first)")
     return read_object(data)
@@ -393,11 +433,24 @@ class UnitAccount:
     problems: tuple[Unaccounted, ...]
 
 
-def _row_reason(linker: str, exported: bool, marked: bool, elsewhere: bool, in_c: bool) -> str:
+# Where a public of a row's linker name sits when defined_functions did not take it.
+_IN_CODE = "in a code segment, but not as a function check can pair with its row"
+_AS_DATA = "outside a code segment (data)"
+
+
+def _place(public: Public, code: Collection[int]) -> str:
+    """As 17c's _stray_reason does: data only for a public outside every code segment."""
+    return _IN_CODE if public.segment_index in code else _AS_DATA
+
+
+def _row_reason(linker: str, exported: bool, marked: bool, where: str | None, in_c: bool) -> str:
+    """`where` is _place of a public of `linker` that defined_functions did not take, or None."""
     if exported and marked:
         return f"both exported as {linker} and marked INCLUDE_ASM"
-    if elsewhere:
-        return f"exported as {linker} outside a code segment"
+    if marked and where:  # 05-REVIEW 17a: such a public of the row's name is no stub
+        return f"marked INCLUDE_ASM but exported as {linker} {where}"
+    if where:
+        return f"exported as {linker} {where}"
     if in_c:
         return f"defined in C but not exported as {linker}"
     return f"neither exported nor marked INCLUDE_ASM (expected public {linker})"
@@ -408,7 +461,8 @@ def _stray_reason(public: Public, code: Collection[int]) -> str:
     (code review IN-01): check pairs publics with rows by their row names, which a static's
     own name never is, so it can only fail; the reason says so."""
     if not public.local:
-        return f"public {public.name} is not a function of the unit"
+        kind = "" if public.segment_index in code else "data, "  # 05-REVIEW 17c
+        return f"public {public.name} is {kind}not a function of the unit"
     if public.segment_index in code:
         return (f"public {public.name} is a static (LPUBDEF) function, which check cannot pair "
                 "with a row: give it its row's func_ name or keep the row INCLUDE_ASM")  # fmt: skip
@@ -426,8 +480,9 @@ def account_unit(
 ) -> UnitAccount:
     """Orchestrator ruling (review round 1): every game and thunk row of `rows` is exactly one
     of (a) exported under its linker name in a code segment, then checked and landed, or (b)
-    marked INCLUDE_ASM in `text`, then a stub; anything else is a mismatch naming the row.
-    A public of the object that names no row of `rows` is a mismatch too.
+    marked INCLUDE_ASM in `text` with no public of its linker name, then a stub; anything else
+    is a mismatch naming the row (a marked row whose name the object exports as data included,
+    05-REVIEW 17a). A public of the object that names no row of `rows` is a mismatch too.
 
     `text` is a unit file (src/<exe>/<unit>.c) unless `unit_file` is False: its D-12 source
     problems (a refused conditional, a marker or definition naming another unit's function)
@@ -440,6 +495,7 @@ def account_unit(
     for public in module.publics:
         first.setdefault(public.name, public)
     publics = list(first)
+    code = {seg.index for seg in module.segments if seg.is_code}
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
     checked = unit_file or required
     marks = source_marks(text, rows) if checked else SourceMarks(frozenset(), frozenset(), ())
@@ -447,15 +503,16 @@ def account_unit(
     for row in required:
         linker = symbols.linker_name(row.start)
         is_exported, is_marked = row.start in exported, row.name in marks.marked
-        if is_exported != is_marked:
+        # A public of the row's name that defined_functions did not take (data, mostly).
+        where = _place(first[linker], code) if linker in first and not is_exported else None
+        if is_exported != is_marked and not (is_marked and where):
             stubs += [] if is_exported else [row]
             continue
-        reason = _row_reason(linker, is_exported, is_marked, linker in publics,
+        reason = _row_reason(linker, is_exported, is_marked, where,
                              row.name in marks.defined)  # fmt: skip
         problems.append(Unaccounted(row.name, row.start, reason))
         failed.add(row.start)
     names = _linker_names(rows, symbols)
-    code = {seg.index for seg in module.segments if seg.is_code}
     problems += [Unaccounted(name, None, _stray_reason(first[name], code))
                  for name in publics if name not in names]  # fmt: skip
     problems += [Unaccounted(SOURCE_PROBLEM, None, p) for p in marks.problems]
@@ -540,6 +597,10 @@ def default_objdiff_runner(target: str = "<exe>/<unit>") -> Runner:
 # ---- results ----
 
 
+def _raw_fields_json(fields: Iterable[RawField]) -> list[dict[str, str]]:
+    return [{"va": _hex(f.va), "kind": f.kind} for f in fields]
+
+
 @dataclass(frozen=True)
 class FunctionCheck:
     name: str
@@ -550,6 +611,7 @@ class FunctionCheck:
     bytes_ok: bool
     differing: int
     first_va: int | None
+    raw_fields: tuple[RawField, ...] = ()  # the unit's raw fields inside this row (18b)
 
     @property
     def ok(self) -> bool:
@@ -564,6 +626,7 @@ class FunctionCheck:
             "reloc": {"ok": self.reloc.ok, "problems": list(self.reloc.problems)},
             "bytes": {"ok": self.bytes_ok, "differing": self.differing,
                       "first_va": None if self.first_va is None else _hex(self.first_va)},
+            "raw_fields": _raw_fields_json(self.raw_fields),
         }  # fmt: skip
 
     def format(self) -> list[str]:
@@ -654,7 +717,7 @@ class CheckResult:
     def _target_json(self) -> dict[str, Any]:
         if self.target is None:
             return {"raw_fields": [], "undecoded": []}
-        return {"raw_fields": [{"va": _hex(f.va), "kind": f.kind} for f in self.target.raw_fields],
+        return {"raw_fields": _raw_fields_json(self.target.raw_fields),
                 "undecoded": [_hex(va) for va in self.target.undecoded]}  # fmt: skip
 
     def to_json(self) -> dict[str, Any]:
@@ -704,8 +767,14 @@ class SourceCheck:
 
 
 def read_source(src: Path) -> str:
-    """The unit file's text for the D-12 parser; undecodable bytes cannot hide a marker."""
-    return Path(src).read_text(encoding="utf-8", errors="replace")
+    """The unit file's text for the D-12 parser, decoded as configure.py's _check_source does:
+    from its bytes, with no newline translation (so the parser sees, and refuses, a lone CR),
+    and strictly, so a file that is not UTF-8 is refused (05-REVIEW 17b), never read with
+    replacement characters that could hide a marker."""
+    try:
+        return Path(src).read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CheckError(f"{src}: not UTF-8 ({exc})") from None
 
 
 def check_source(
@@ -741,13 +810,78 @@ def check_source(
     for d, reloc in checked:
         same = compare_bytes(d.ours, d.row, exe.flat, reloc)
         percent = objdiff_percent(paths.target, paths.base, d.symbol, runner=objdiff_runner)
+        raw = tuple(f for f in target.raw_fields if d.row.start <= f.va < d.row.end)
         functions.append(FunctionCheck(d.row.name, d.row.start, d.size, percent, reloc,
-                                       same.ok, same.differing, same.first_va))  # fmt: skip
+                                       same.ok, same.differing, same.first_va, raw))  # fmt: skip
     return SourceCheck(compiled.rule.spec, tuple(compiled.rule.flags), tuple(functions), target,
                        compiled.output, account.problems, account.stubs)  # fmt: skip
 
 
 # ---- the land step check and `ninja verify` share ----
+
+# What each provenance field records, for the refusal message (compiler.PROV_KEYS).
+_PROV_FIELDS = {"compiler": "the compiler", "flags": "the flags",
+                "source_sha256": "the source", "version": "the stamp format"}  # fmt: skip
+
+
+def _unread_state(stamp: Path) -> str:
+    """Why read_provenance gave nothing for `stamp`: missing, of another stamp format (a
+    format-1 stamp lacks the header and object hashes), or unreadable."""
+    if not stamp.exists():
+        return "missing"
+    try:
+        version = json.loads(stamp.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        version = None
+    if isinstance(version, int) and not isinstance(version, bool) and version != PROV_VERSION:
+        return f"of stamp format {version}, not format {PROV_VERSION}"
+    return "unreadable or of the wrong shape"
+
+
+def _compile_root(src_root: Path) -> Path:
+    """The root `reverseapoc cc` selected the unit's cflags rule from: the repository (ninja's
+    cc edge runs there, as compile_source's default root) when the src tree is inside it, else
+    the src tree's parent, so a tree elsewhere names its units src/<exe>/<unit>.c as well."""
+    resolved = Path(src_root).resolve()
+    return REPO_ROOT if resolved.is_relative_to(REPO_ROOT.resolve()) else resolved.parent
+
+
+def _stale(obj: Path, src: Path, why: str) -> CheckError:
+    return CheckError(f"stale object {obj}: {why}; run ninja (`ninja objects`) to rebuild it "
+                      f"from {src}")  # fmt: skip
+
+
+def check_provenance(
+    obj: Path, src: Path, options: CompileOptions, *, src_root: Path, data: bytes
+) -> None:
+    """DI-06 part a: ninja's land step lands `obj` only while its provenance stamp equals what
+    `reverseapoc cc` would record for `src` today (the source, the cflags table and Watcom
+    manifest of `options`, the rule the table assigns, the headers under include/) and for
+    `obj` as it is on disk (its bytes are the ones stamped). A stamp that is missing,
+    unreadable, of another shape or format, or stale is a CheckError naming the object. Nothing
+    turns this off: the land step has no option or variable that skips it."""
+    stamp = provenance_path(obj)
+    found = read_provenance(obj)
+    if found is None:
+        raise _stale(obj, src, f"no provenance stamp: {stamp} is {_unread_state(stamp)}")
+    cflags = Path(options.cflags) if options.cflags is not None else DEFAULT_CFLAGS
+    manifest = (Path(options.watcom_manifest) if options.watcom_manifest is not None
+                else DEFAULT_WATCOM_MANIFEST)  # fmt: skip
+    root = _compile_root(src_root)
+    try:
+        rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
+        today = provenance(rule, src, data, cflags=cflags, manifest=manifest, root=root)
+    except (OSError, ValueError) as exc:
+        raise CheckError(f"cannot check the provenance of {obj}: {exc}") from exc
+    names = {**_PROV_FIELDS, "cflags_sha256": str(cflags), "watcom_sha256": str(manifest),
+             "include_sha256": f"the headers under {root / INCLUDE_DIR}"}  # fmt: skip
+    changed = [names[key] for key in PROV_KEYS
+               if key != "object_sha256" and found.get(key) != today[key]]  # fmt: skip
+    why = [f"{', '.join(changed)} changed since it was built"] if changed else []
+    if found.get("object_sha256") != today["object_sha256"]:
+        why.append("the object is not the one its stamp was written for (its bytes changed)")
+    if why:
+        raise _stale(obj, src, "; ".join(why))
 
 
 def _land_exe(
@@ -773,8 +907,11 @@ def _land_exe(
         elif not obj.is_file():
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
                              f"{src}")  # fmt: skip
+        data = obj.read_bytes()  # read once: the stamp check hashes what is parsed and landed
+        if compile_fn is None:
+            check_provenance(obj, src, options, src_root=src_root, data=data)
         rows = [row for row in exe.rows if row.unit == unit.unit]
-        module = read_module(obj)
+        module = parse_module(data, obj)
         account = account_unit(module, rows, exe.symbols, read_source(src))
         refused += [Refused(p.name, p.va, (p.reason,)) for p in account.problems]
         for d, reloc in with_relocs(module, account.defined, rows, exe):
@@ -803,9 +940,11 @@ def land_all(
     without units.csv is skipped, so SMKP.EXE never appears). With `compile_fn` each unit is
     compiled first, into object_root(build_dir, options), except the (name, unit) pairs in
     `fresh` whose object is already built there; without it, the objects ninja built under
-    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name."""
+    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name. `src_root` and
+    `config_root` go into the options (with_roots), so compiling another tree never writes
+    ninja's objects (DI-06 part b)."""
     loaded = loaded or {}
-    options = options or CompileOptions()
+    options = with_roots(options or CompileOptions(), src_root=src_root, config_root=config_root)
     out = []
     for target in load_manifest(manifest):
         if not (Path(config_root) / exe_stem(target.name) / "units.csv").is_file():
@@ -870,7 +1009,8 @@ def check_unit(
         raise CheckError(f"{src} not found: scaffold it with `uv run reverseapoc units "
                          f"{target.name} --write-src {unit}`")  # fmt: skip
     compile_fn = compile_fn or compile_source
-    options = CompileOptions(cflags, watcom_manifest, watcom_dir, log)
+    options = CompileOptions(cflags, watcom_manifest, watcom_dir, log, src_root=Path(src_root),
+                             config_root=Path(config_root))  # fmt: skip
     source = check_source(inputs, unit, src, rows, build_dir=build_dir, compile_fn=compile_fn,
                           objdiff_runner=runner, options=options)  # fmt: skip
     splices = land_all(manifest, orig_dir=orig_dir, config_root=config_root, src_root=src_root,
