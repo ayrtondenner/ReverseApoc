@@ -370,15 +370,60 @@ def test_a_normal_exit_kills_nothing_on_windows(tmp_path, monkeypatch):
     assert _finished_session(tmp_path, monkeypatch, posix=False) == []
 
 
-def test_kill_tree_refuses_a_pid_that_names_the_callers_group():
-    """os.killpg(0, ...) would hit the caller's own process group."""
+def test_kill_tree_refuses_a_pid_that_names_the_callers_group(monkeypatch):
+    """os.killpg(0, ...) would hit the caller's own process group. The real killpg is replaced
+    by a recorder (fix round 2 M2), so a regression of the guard can never SIGKILL pytest's own
+    group in the container run; raising=False because Windows has no os.killpg."""
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "killpg", lambda pgid, sig: signalled.append((pgid, sig)),
+                        raising=False)  # fmt: skip
+    ran: list[list[str]] = []
     for pid in (0, -1):
         try:
-            kill_tree(pid, windows=False)
+            kill_tree(pid, windows=False, run=lambda argv, **_: ran.append(argv))
             got = None
         except Exception as exc:  # anything but the refusal is the defect under test
             got = exc
         assert isinstance(got, ValueError), repr(got)
+    assert signalled == []
+    assert ran == []
+
+
+# Fix round 2 M3: on POSIX the exception handler kills the session's group even when the root
+# has already exited, so a descendant cannot outlive an exception that came after the exit.
+
+
+def _interrupted_after_exit(tmp_path, monkeypatch, *, posix: bool) -> list[int]:
+    killed: list[int] = []
+    monkeypatch.setattr(session, "kill_tree", lambda pid, **_: killed.append(pid))
+    monkeypatch.setattr(session, "_POSIX", posix)
+    calls = iter(range(1_000_000))
+
+    def clock() -> float:
+        if next(calls) >= 1:  # the deadline is computed; the first read check raises
+            raise KeyboardInterrupt
+        return 0.0
+
+    lines = (STREAMS / "success.jsonl").read_bytes().splitlines(keepends=True)
+    with pytest.raises(KeyboardInterrupt):
+        run_session(
+            ["claude-stand-in"],
+            cwd=tmp_path,
+            env={},
+            transcript=tmp_path / "attempt" / "transcript.jsonl",
+            popen=_FakePopen(lines),  # its poll() says the root has already exited
+            clock=clock,
+        )
+    return killed
+
+
+def test_an_exception_after_the_root_exited_kills_the_group_on_posix(tmp_path, monkeypatch):
+    assert _interrupted_after_exit(tmp_path, monkeypatch, posix=True) == [_FAKE_PID]
+
+
+def test_an_exception_after_the_root_exited_kills_nothing_on_windows(tmp_path, monkeypatch):
+    """Windows: taskkill /T cannot find the children of an exited root (a known limit)."""
+    assert _interrupted_after_exit(tmp_path, monkeypatch, posix=False) == []
 
 
 @pytest.mark.skipif(
