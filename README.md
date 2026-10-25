@@ -11,11 +11,11 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-The badge, the mosaic and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are generated on every push to `main` from the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; nobody edits them by hand), and published to GitHub Pages. The percentage is matched bytes of game and thunk functions over all game and thunk bytes, per EXE and combined. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
+The badge, the mosaic and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are generated on every push to `main` from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`, and published to GitHub Pages. The percentage is matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes, per EXE and combined; data-in-code is left out. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
 
 - **matched**: byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE SHA-1;
 - **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts as not matched;
-- **unmatched**: no attempt has scored yet; the function is still an `INCLUDE_ASM` stub;
+- **unmatched**: no gate-written matched or partial row; the rebuilt EXE still carries the original bytes of the function, kept by the in-place splice;
 - **library**: the Watcom runtime library, not decompiled and left out of the percentage;
 - **uncovered**: bytes inside a unit that belong to no function row, mostly alignment filler between functions. They count as not matched. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
 
@@ -44,7 +44,7 @@ This is a recollection, not a verified fact. Hashing a retail Win9x executable a
 
 ## Approach
 
-ReverseApoc uses a **hybrid solution**: our own matching oracle, plus decomp.wtf's "fork mode" as the agent layer.
+ReverseApoc uses a **hybrid solution**: our own matching oracle, plus decomp.wtf's "fork mode" as the agent layer. (Phase 6 update: spike 006 INVALIDATED fork mode (plan 06-01), so the agent layer is our own (D-03, D-04); see the notes below.)
 
 The oracle (ours, assembled from reusable parts):
 
@@ -55,9 +55,9 @@ The oracle (ours, assembled from reusable parts):
 
 The agent layer:
 
-- [decomp.wtf](https://github.com/i12bp8/decomp.wtf) v0.10.6 in fork mode, pinned and lightly patched, installed in WSL2 and run as a separate tool (a subprocess, never imported). Fork mode accepts a local repo that builds with `configure.py` + ninja and produces `objdiff.json`. It judges candidates with objdiff and brings function claims, MCP tools, guardrails and a dashboard.
+- [decomp.wtf](https://github.com/i12bp8/decomp.wtf) v0.10.6 in fork mode, pinned and lightly patched, installed in WSL2 and run as a separate tool (a subprocess, never imported). Fork mode accepts a local repo that builds with `configure.py` + ninja and produces `objdiff.json`. It judges candidates with objdiff and brings function claims, MCP tools, guardrails and a dashboard. (Not used in Phase 6: spike 006 INVALIDATED fork mode (06-01). The agent layer is our own (D-03, D-04), with no MCP server (D-44); agents call the Bash-allowlisted attempt wrapper. decomp.wtf is re-evaluated for Phase 7.)
 - Our driver re-verifies the bytes before any commit. An agent never judges its own match.
-- If objdiff cannot diff the converted objects cleanly (a Phase 5 spike), the fallback is our own minimal agent layer: an MCP server, claims and guardrails, Claude Code only.
+- If objdiff cannot diff the converted objects cleanly (a Phase 5 spike), the fallback is our own minimal agent layer: an MCP server, claims and guardrails, Claude Code only. (Phase 6 update: objdiff diffs the converted objects (spike 005 VALIDATED), but spike 006 INVALIDATED fork mode, so Phase 6 builds its own agent layer anyway: the driver, the guardrail hooks and the context pack, with no MCP server (D-44); agents call the Bash-allowlisted attempt wrapper.)
 
 The order of work follows Abahbob's rule: get a byte-identical rebuild of raw bytes first, decompile second.
 
@@ -68,13 +68,13 @@ The order of work follows Abahbob's rule: get a byte-identical rebuild of raw by
 | [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp) | CC0-1.0 | LE reader, in-place page splice with SHA-1 gate, function discovery tools |
 | [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) | GPLv3 | `omf2elf.py`, the `configure.py` + ninja + objdiff pattern; the reference for a 100% matched Watcom 10.6 DOS/4GW game |
 | [retrokit](https://github.com/nemo22/retrokit) | Apache-2.0 | Headless Ghidra LE loader, Watcom calling conventions, function export, MCP server (external tool) (not used: Phase 5 runs Ghidra headless in the Docker image with the lastonesky loader) |
-| [decomp.wtf](https://github.com/i12bp8/decomp.wtf) | MIT (archived 2026-10-15) | Agent harness, claims, guardrails, dashboard; used in fork mode as a separate tool |
+| [decomp.wtf](https://github.com/i12bp8/decomp.wtf) | MIT (archived 2026-10-15) | Agent harness, claims, guardrails, dashboard; used in fork mode as a separate tool (not used in Phase 6: spike 006 INVALIDATED fork mode; the agent layer is our own, D-03/D-04) |
 
 Files copied from Theme Hospital keep their copyright headers. That is why `tools/` is GPLv3.
 
 ## Toolchain summary
 
-- **Compiler:** Watcom C 10.5/10.6 is the working hypothesis (10.5 and 10.6 emit identical code on the published probes). The exact version is settled in Phase 4.
+- **Compiler:** Watcom C 10.6 `wcc386` (C, not C++) under the default rule `-4r -s -fpi`. The runtime library is 10.6 byte for byte; on game code 10.5, 10.6 and 11.0 stay tied after the two Phase 5 leaf matches, and later matches are logged to separate them (see docs/toolchain.md).
 - **Extender:** DOS/4GW Professional, bound into each EXE (LE format, two objects, no debug info).
 - **Analysis:** Ghidra 12.1.4 with the lastonesky [ghidra-lx-loader](https://github.com/lastonesky/ghidra-lx-loader), headless in the Docker image.
 - **Diff and reports:** objdiff, behind an OMF-to-ELF converter.
