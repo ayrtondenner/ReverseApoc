@@ -395,11 +395,11 @@ def test_preflight_regenerates_listings_and_drafts(tmp_path, capsys):
     for exe in EXES:
         assert [*HOST_CLI, "asm", exe, "--json"] in rig.runner.calls
     drafts = rig.commands("ghidra-export")
-    assert [call[: len(CONTAINER_UV) + 3] for call in drafts] == [
-        [*CONTAINER_UV, "ghidra-export", exe, "--drafts"] for exe in EXES]  # fmt: skip
+    assert [call[: len(CONTAINER_UV) + 4] for call in drafts] == [
+        [*CONTAINER_UV, "ghidra-export", exe, "--json", "--drafts"] for exe in EXES]  # fmt: skip
     picked = {(p["exe"], p["start"]) for p in json.loads(out)["picks"]}
     asked = {(call[len(CONTAINER_UV) + 1], a) for call in drafts
-             for a in call[len(CONTAINER_UV) + 3 :]}  # fmt: skip
+             for a in call[len(CONTAINER_UV) + 4 :]}  # fmt: skip
     assert picked <= asked
     last_draft = max(i for i, call in enumerate(rig.runner.calls) if "ghidra-export" in call)
     assert built_at and min(built_at) > last_draft
@@ -407,16 +407,44 @@ def test_preflight_regenerates_listings_and_drafts(tmp_path, capsys):
     assert order == sorted(order)  # the venv is synced before it is compiled
 
 
-def test_preflight_drafts_tool_failure_refuses_but_missing_drafts_do_not(tmp_path, capsys):
-    """ghidra-export exits 1 when some drafts could not be made: the pack works without a
-    draft, so that is logged; any other failure refuses."""
-    one = Rig(tmp_path / "one", runner=Runner(replies=[_fails([*CONTAINER_UV, "ghidra-export"])]))
-    code, _, _ = one.drive(capsys, dry_run=True, json=True)
+def _ghidra_reply(code: int, out: str, err: str = ""):
+    prefix = [*CONTAINER_UV, "ghidra-export"]
+    return (lambda argv: argv[: len(prefix)] == prefix, (code, out, err))
+
+
+MISSING_ONE = '{"path": "asm/x/ghidra", "written": [], "missing": ["0x00010000"], "seconds": 1.0}'
+
+
+def test_preflight_accepts_exit_1_only_with_missing_drafts_named(tmp_path, capsys):
+    """Fix round 1 I1: ghidra-export --json exits 1 when some drafts could not be made; the
+    pack works without a draft, so a parseable document with a non-empty `missing` list is
+    logged and the run goes on."""
+    rig = Rig(tmp_path, runner=Runner(replies=[_ghidra_reply(1, MISSING_ONE)]))
+    code, _, _ = rig.drive(capsys, dry_run=True, json=True)
     assert code == 0
-    two = Rig(tmp_path / "two",
-              runner=Runner(replies=[_fails([*CONTAINER_UV, "ghidra-export"], 2)]))  # fmt: skip
-    code, out, _ = two.drive(capsys, dry_run=True, json=True)
-    assert code == 2 and _refusal(out)["reason"] == "drafts"
+
+
+@pytest.mark.parametrize(
+    ("code", "out", "err"),
+    [
+        (1, "", "Traceback (most recent call last):\nreverseapoc.ghidra.GhidraError: made up\n"),
+        (1, '{"path": "x", "written": ["0x00010000"], "missing": [], "seconds": 1.0}', ""),
+        (1, "not json at all", ""),
+        (1, '{"written": [], "missing": "0x00010000"}', ""),
+        (2, "", "made-up failure"),
+        (125, "", "made-up docker failure"),
+    ],
+)
+def test_preflight_refuses_any_other_drafts_failure(tmp_path, capsys, code, out, err):
+    """Fix round 1 I1: exit 1 is also every ghidra-export tool error (a traceback, a missing
+    analyzeHeadless) and many docker failures: without a non-empty `missing` list it refuses,
+    and so does any other non-zero exit."""
+    rig = Rig(tmp_path, runner=Runner(replies=[_ghidra_reply(code, out, err)]))
+    exit_code, stdout, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert exit_code == 2
+    doc = _refusal(stdout)
+    assert doc["reason"] == "drafts"
+    assert f"exit {code}" in doc["detail"]
 
 
 def test_json_mode_stdout_is_one_document_and_noise_goes_to_the_log(tmp_path, capsys):
