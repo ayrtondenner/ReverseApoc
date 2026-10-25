@@ -1,0 +1,46 @@
+{
+  "format": "decomphub.progress/v1",
+  "repository": "https://github.com/ayrtondenner/ReverseApoc",
+  "tracks": [
+    {
+      "id": "ufo2p-code",
+      "label": "UFO2P.EXE code decompiled",
+      "scope": "Bytes of UFO2P.EXE's game and thunk functions rebuilt byte for byte from C, over all game and thunk bytes plus the bytes inside unit spans that no function row covers yet (mostly alignment filler). The Watcom runtime and data in code are excluded.",
+      "measurement": {
+        "kind": "percent",
+        "value": 0.0018
+      }
+    },
+    {
+      "id": "tacp-code",
+      "label": "TACP.EXE code decompiled",
+      "scope": "Bytes of TACP.EXE's game and thunk functions rebuilt byte for byte from C, over all game and thunk bytes plus the bytes inside unit spans that no function row covers yet (mostly alignment filler). The Watcom runtime and data in code are excluded.",
+      "measurement": {
+        "kind": "percent",
+        "value": 0.0015
+      }
+    },
+    {
+      "id": "ufo2p-functions",
+      "label": "UFO2P.EXE functions matched",
+      "scope": "Game and thunk functions of UFO2P.EXE whose rebuilt C is byte-identical to the original (matched rows of status.csv), over all game and thunk functions in functions.csv.",
+      "measurement": {
+        "kind": "ratio",
+        "completed": 1,
+        "total": 1553,
+        "unit": "functions"
+      }
+    },
+    {
+      "id": "tacp-functions",
+      "label": "TACP.EXE functions matched",
+      "scope": "Game and thunk functions of TACP.EXE whose rebuilt C is byte-identical to the original (matched rows of status.csv), over all game and thunk functions in functions.csv.",
+      "measurement": {
+        "kind": "ratio",
+        "completed": 1,
+        "total": 1526,
+        "unit": "functions"
+      }
+    }
+  ]
+}

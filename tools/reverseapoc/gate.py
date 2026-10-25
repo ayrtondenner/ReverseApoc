@@ -34,6 +34,14 @@ row with that percent and the saved file's SHA-256; an existing partial row with
 equal) percent is kept, with the larger attempts count. A matched row is never touched, and a
 saved file with D-12 account problems writes nothing.
 
+After a passing `gate EXE/UNIT` has written status.csv, gate rewrites decomphub.progress.json
+(D-21, D-29) next to the config root (config_root.parent, ruling F8: the repo root for the
+default config/, a tmp root in tests) with tools/progress.py's derivation from the tables it just
+wrote, through fileio.write_atomic. progress.py is a stdlib script, loaded by path once
+(functools.cache, like check._configure), so gate and the D-22 drift test share one derivation.
+A failure to write the feed names the status.csv already written. --partial and --all do not
+touch it: partial rows do not enter the feed's figures.
+
 On any mismatch gate writes nothing and exits 1; on a tool error (CheckError, StatusError, the
 CLI's tool errors) it writes nothing and exits 2. No flag, environment variable or helper writes
 a matched row without a passing check: the verdict is check's own, in the container, never an
@@ -43,10 +51,14 @@ agent's transcript (D-24, AGT-01).
 from __future__ import annotations
 
 import dataclasses
+import functools
+import importlib.util
+import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 # check_unit, check_source, land_all, load_exe and compile_source are looked up at call time
@@ -74,6 +86,7 @@ from .check import (
     source_marks,
 )
 from .compiler import compile_source
+from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
     KIND_THUNK,
@@ -96,13 +109,15 @@ from .status import (
     status_path,
     write_status,
 )
-from .targets import Target, load_manifest
+from .targets import REPO_ROOT, Target, load_manifest
 
 MODE_UNIT, MODE_ALL, MODE_PARTIAL = "unit", "all", "partial"
 UNITS_CSV = "units.csv"
 FUNCTIONS_CSV = "functions.csv"
 SYMBOLS_CSV = "symbols.csv"
 FUNC_SYMBOL = "func"  # the symbols.csv kind of a function name
+PROGRESS_SCRIPT = "tools/progress.py"  # derives the published figures; gate imports, never copies
+DECOMPHUB_FEED = "decomphub.progress.json"
 
 
 @dataclass(frozen=True)
@@ -363,6 +378,45 @@ def cross_check(
     return problems
 
 
+# ---- decomphub.progress.json (D-21, D-29) ----
+
+
+@functools.cache
+def _progress() -> ModuleType:
+    """tools/progress.py of this checkout, loaded by path (it is a stdlib script the Pages job
+    runs with `python -I`, not part of the package)."""
+    path = REPO_ROOT / PROGRESS_SCRIPT
+    spec = importlib.util.spec_from_file_location("_reverseapoc_progress", path)
+    if not path.is_file() or spec is None or spec.loader is None:
+        raise CheckError(f"{path} not found: gate derives {DECOMPHUB_FEED} with it")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up while it executes
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[spec.name]
+        raise
+    return module
+
+
+def feed_path(config_root: Path) -> Path:
+    """decomphub.progress.json next to the config root (ruling F8)."""
+    return Path(config_root).parent / DECOMPHUB_FEED
+
+
+def write_feed(config_root: Path, written: Sequence[Path] = ()) -> Path:
+    """Rewrite the feed from the CSVs under `config_root`. Any failure is a CheckError that
+    names the status.csv tables `written` before it (restore config/ before committing)."""
+    path = feed_path(config_root)
+    progress = _progress()
+    try:
+        write_atomic(path, progress.render(progress.build_decomphub(progress.derive(config_root))))
+    except (OSError, progress.ProgressError) as exc:
+        done = f"wrote {', '.join(map(str, written))} but " if written else ""
+        raise CheckError(f"{done}not {path}: {exc}; restore config/ before committing") from exc
+    return path
+
+
 # ---- gate EXE/UNIT [EXE/UNIT ...] ----
 
 
@@ -520,6 +574,7 @@ def gate_units(
         if _hash_or_none(src) != sha:
             raise CheckError(f"{src} changed after its check; gate it again")
     written = _write_tables(roots.config_root, tables, passed, attempts, _today(today), owners)
+    write_feed(roots.config_root, sorted({w.path for w in written}, key=str))
     return GateResult(MODE_UNIT, labels, EXIT_OK, tuple(reports), tuple(docs), (), written)
 
 
