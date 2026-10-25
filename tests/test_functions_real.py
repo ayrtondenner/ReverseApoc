@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -118,15 +118,22 @@ def _export_csv(name: str) -> Path:
     return export_functions(name, ORIG_DIR, root).path
 
 
+def _required_versions(matches: list[MatchRange]) -> list[str]:
+    """The Watcom versions whose LIB386 trees the runtime rows need."""
+    return sorted({version for match in matches for version in match.versions})
+
+
 def _listed_versions(matches: list[MatchRange]) -> list[str]:
-    """Every Watcom version some runtime.csv row lists, after asserting that its LIB386 tree is
-    installed under WATCOM_DIR. Strict: a listed version without its tree fails loudly, it is
-    never skipped (the game file is present by now, so the comparison must run)."""
-    versions = sorted({version for match in matches for version in match.versions})
-    missing = [v for v in versions if not (WATCOM_DIR / v / LIB_DIR).is_dir()]
+    """_required_versions, after asserting that each one's LIB386 tree is installed under
+    WATCOM_DIR. Strict: a required version without its tree fails loudly, naming the version
+    and the path it was looked for at; it is never skipped (the game file is present by now,
+    so the comparison must run)."""
+    versions = _required_versions(matches)
+    missing = [f"{v} ({WATCOM_DIR / v / LIB_DIR})" for v in versions
+               if not (WATCOM_DIR / v / LIB_DIR).is_dir()]  # fmt: skip
     assert missing == [], (
-        f"runtime.csv rows list Watcom {missing}, whose {LIB_DIR} trees are not under "
-        f"{WATCOM_DIR} (run `uv run reverseapoc install-watcom` or set REVERSEAPOC_WATCOM_DIR)"
+        f"runtime.csv rows need Watcom {', '.join(missing)}, not installed "
+        "(run `uv run reverseapoc install-watcom` or set REVERSEAPOC_WATCOM_DIR)"
     )
     return versions
 
@@ -248,3 +255,28 @@ def test_symbols_resolve(name):
     data = [s for s in symbols if s.kind != SYMBOL_KIND_FUNC]
     assert [s.name for s in data if not any(lo <= s.address < hi for lo, hi in ranges)] == []
     assert set(SPIKE_FUNCTIONS) <= {s.name for s in funcs}
+
+
+class _Loaded(Exception):
+    """Stops cli._seeded_runtime_rows once it has asked for its libraries."""
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_required_versions_are_what_the_rule_loads(name, monkeypatch):
+    """The Watcom trees the real tests require are exactly the versions the `functions` verb
+    loads for the committed runtime.csv plus one row that does not list RUNTIME_VERSION (the
+    rule seeds that row from its first version). Needs no orig/ and no Watcom tree."""
+    matches = read_runtime_csv(runtime_csv_path(name))
+    other = replace(matches[0], versions=("11.0", "10.5"))  # no RUNTIME_VERSION: first is 11.0
+    matches = [*matches, other]
+    loaded: list[str] = []
+
+    def record(watcom_dir, versions):
+        loaded.extend(versions)
+        raise _Loaded
+
+    monkeypatch.setattr(cli, "load_libraries", record)
+    with pytest.raises(_Loaded):
+        cli._seeded_runtime_rows(matches, WATCOM_DIR)
+    assert loaded
+    assert _required_versions(matches) == sorted(loaded)
