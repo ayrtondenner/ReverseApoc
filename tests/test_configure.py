@@ -821,10 +821,49 @@ def test_code_text_is_the_shared_entry_point():
 
 
 def test_normalisation_keeps_the_line_count():
-    text = "a ??/ \r\nb\rc ??= ??( ??) ??! ??< ??> ??- ??' \\\t\n\f\v"
+    text = "a ??/ \r\nb\r\nc ??= ??( ??) ??! ??< ??> ??- ??' \\\t\n\f\v"
     normal = configure.normalize_source(text)
     assert normal == "a \\\nb\nc # [ ] | { } ~ ^ \\\n\f\v"
     assert normal.count("\n") == 3
+
+
+# 06-03 re-review R2-1: wcc386 ends a // comment at a lone CR but keeps one inside a literal as
+# a character, so no single mapping of a lone CR reads as it does; a lone CR is refused.
+LONE_CR_IN_LITERAL = (
+    'INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\nchar *s = "a\rb"; '
+    'int func_00010000(void) { return 0; } char *t = "x";\n'
+)
+LONE_CR_BEFORE_ASM = 'char *s = "a\rb"; void f(void) { _asm int 3 } char *t = "x";\n'
+
+
+def test_lone_cr_is_refused_on_raw_text():
+    (problem,) = configure.check_unit_source(LONE_CR_IN_LITERAL, TWO_GAME)
+    assert problem.startswith("line 3: ") and "carriage return" in problem
+    marks = check.source_marks(LONE_CR_IN_LITERAL, TWO_GAME)
+    assert marks.marked == marks.defined == frozenset()
+    (problem,) = marks.problems
+    assert problem.startswith("line 3: ") and "carriage return" in problem
+
+
+@pytest.mark.parametrize(
+    "text",
+    [LONE_CR_BEFORE_ASM, "// c\rINCLUDE_ASM(func_00010000);\n"],
+    ids=["literal-before-asm", "line-comment"],
+)
+def test_scanner_refuses_a_lone_cr(text):
+    with pytest.raises(configure._ConditionalError, match="line 1: .*carriage return"):
+        configure.code_text(text)
+    with pytest.raises(configure._ConditionalError, match="carriage return"):
+        configure.normalize_source(text)
+
+
+def test_main_refuses_a_unit_file_with_a_lone_cr(tmp_path, capsys):
+    """read_text would turn the lone CR into a line break, so configure checks the bytes."""
+    argv = _split_tree(tmp_path)
+    unit_file = tmp_path / "src" / "ufo2p" / f"{UNIT}.c"
+    unit_file.write_bytes(UNIT_SOURCE.encode("utf-8") + b'char *s = "a\rb";\n')
+    line = UNIT_SOURCE.count("\n") + 1
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", f"line {line}", "carriage return")
 
 
 def test_directive_after_a_multiline_comment_keeps_its_line():
