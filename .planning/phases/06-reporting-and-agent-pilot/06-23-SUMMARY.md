@@ -213,7 +213,7 @@ Every task and security pass has a `test(06-23)` commit before its `feat(06-23)`
 - **.git internals other than the pinned files** (HEAD, refs, the index's skip-worktree bits, objects) are not audited (fix round 1 minor 2). Only .git/config, .git/info/exclude, .git/info/attributes and .git/hooks/ are pinned by bytes.
 
 - **build/ is not audited (security ruling, by design).** The attempt wrapper writes checks/, checks.jsonl and context.md there, and a matching session can write only through Edit/Write (the matching hook's allowlist, which admits only the attempt's notes.md under build/) and the attempt wrapper. A gitignored write elsewhere is seen only when it lands on a pinned path or in the fingerprinted trees, or in the transcript.
-- **The fingerprint and pyc files.** Any `__pycache__` file and any `.venv` file written during a session stops the night. Since fix round 1 (minor 3) the session env sets `PYTHONDONTWRITEBYTECODE=1`, so the wrapper writes no `.pyc`. `uv run`'s environment sync could still touch `.venv`. 06-25's preflight compiles the package and decides `--no-sync` together with hooks.ATTEMPT_PREFIX (the wrapper's argv is pinned there).
+- **The fingerprint and pyc files.** Any `__pycache__` file and any `.venv` file written during a session stops the night. Since fix round 1 (minor 3) the session env sets `PYTHONDONTWRITEBYTECODE=1`, so the wrapper writes no `.pyc`. `uv run`'s environment sync could still touch `.venv`. 06-25's preflight compiles tools/ and configure.py (the hooks run `python -I`, which ignores `PYTHONDONTWRITEBYTECODE`; fix round 2 minor 2, recorded by the orchestrator) and decides `--no-sync` together with hooks.ATTEMPT_PREFIX (the wrapper's argv is pinned there).
 - **A changed (not new) site-packages file** cannot be restored (no bytes are kept, by the ruling's "no contents" design); it is copied to quarantine and named under "still changed after containment".
 - **Transcript strays outside the checkout** cannot be restored; they are named only.
 
@@ -245,6 +245,26 @@ Verification after fix round 1 (host, worktree):
 - `uv run ruff check .`: All checks passed.
 - A stat walk of this worktree's `.venv` (793 files) takes 0.28 s.
 
+## Fix round 2 (FIX_BASE 6bd2066; rereview-06-23-r1-report.md, rulings fixround-06-23-r2.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| J1 (I2 completed) | Only a DriverError from commit_paths was undone; a raising git or an unwritable message file left a MATCHED record and staged files; a lock held through the undo lost the GAVE_UP record and the staged names | any `Exception` around the message and the commit runs `_undo_match`; each step (unstage with literal pathspecs, pre-gate restore, reset, the GAVE_UP record) is best-effort with its own note; the detail names the original error, every failed step and every path still staged (`git diff --cached --name-only -z`, best-effort); STOPPED `tool` | `test_a_raising_match_commit_leaves_no_trace_of_a_match`, `test_an_unwritable_message_file_leaves_no_trace_of_a_match`, `test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged` | 0a76567, e617728 |
+| J2 | One failing git call during containment aborted the rest, lost the stray names, turned guardrail into error and let the chore commit carry the session's edit | `_contain` handles each stray alone (`_contain_one` in try/except, `not restored: <path> (<error>)`), the reset and the second snapshot are best-effort and named; a sticky `breached` flag is set whenever containment runs, and `run()` commits nothing after a breach, whatever the final reason; the STOPPED record still goes to the log on disk | `test_a_failing_restore_during_containment_spares_the_other_strays`, `test_a_session_edit_of_the_log_and_a_table_is_never_committed`, `test_a_raising_session_with_strays_commits_nothing` | 178e0c1, f04d7e0 |
+| Minor 1 | `_restore_pre_gate` ignored a refused restore | each file alone; a refused or failed restore is a `not restored: <path> (...)` note in the stop detail | `test_a_refused_pre_gate_restore_is_named` | 0a76567, e617728 |
+| Minor 2 | The hooks' `python -I` ignores PYTHONDONTWRITEBYTECODE | note for 06-25 (recorded by the orchestrator): preflight compiles tools/ and configure.py | - | - |
+| Minor 3 | An interrupt between the MATCHED record and the commit left the record and staged files unnamed | the same best-effort `_undo_match` runs before the re-raise; the `interrupted` record names what it undid and what stays staged | `test_an_interrupt_during_the_match_commit_is_undone_and_named` | 0a76567, e617728 |
+| Minor 4 | A counted session stopped only by a failed container removal had no attempt record | it is counted and recorded GAVE_UP `tool` | `test_a_failed_container_removal_alone_stops_the_night` (extended) | 0a76567, e617728 |
+
+The harness gained `raise_verbs` (a git verb raises once after the first launch), `fail_verbs` (a git verb fails N times with a made-up index.lock error) and `Sess.append`, so the reviewer's probes became the RED tests.
+
+RED evidence: 0a76567 failed with 6 assertions (`('STOPPED', 'error') == ('STOPPED', 'tool')` x4, `'match commit' in 'KeyboardInterrupt'`, and the minor 4 attempt list `[]`). 178e0c1 failed with 3 assertions (`('STOPPED', 'error') == ('STOPPED', 'guardrail')` x2, `['chore(driver): attempt log'] == []`).
+
+Verification after fix round 2 (host, worktree):
+- `uv run pytest -q tests/test_driver.py tests/test_attempts_schema.py`: 117 passed, 2 skipped (both R-A symlink skips).
+- Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2597 passed, 44 skipped in 433 s.
+- `uv run ruff check .`: All checks passed.
+
 ## Issues Encountered
 
 - The harness refused some compound shell commands (heredocs, scripts mentioning git, `cd ... && git ...`); file edits ran through the Edit tool or small scripts in the scratchpad, and git steps as plain commands.
@@ -267,7 +287,7 @@ None.
 
 ## Next Phase Readiness
 
-- 06-25: preflight compiles the package, and decides `uv run --no-sync` together with hooks.ATTEMPT_PREFIX (fix round 1 minor 3). The session env already carries `PYTHONDONTWRITEBYTECODE=1`.
+- 06-25: preflight compiles tools/ and configure.py (fix round 2 minor 2: the hooks' `python -I` ignores `PYTHONDONTWRITEBYTECODE`), and decides `uv run --no-sync` together with hooks.ATTEMPT_PREFIX (fix round 1 minor 3). The session env already carries `PYTHONDONTWRITEBYTECODE=1`.
 - 06-25 wires the real Deps: `argv=lambda p: session.build_argv(p, claude=...)`, `session=session.run_session`, `gate`/`partial_gate`/`lint` as `docker compose run --rm -T build uv run --frozen reverseapoc gate|lint ...` parsing `--json`, `remove_containers(prefix)` with `docker ps -a --filter name=<prefix>` then `docker rm -f`, `queue`/`requeue`/`matched_callees` over picker and score, `scaffold` via `units --write-src`, `pack` via `context --out <dir> --json`, `git=git_runner(repo)`, and `DriveConfig(tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION)`.
 - 06-27 can grep `"reason":"guardrail"` in STOPPED records.
 - No tick-rate finding (OpenApoc #997) in this plan.
