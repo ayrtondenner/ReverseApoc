@@ -4,6 +4,7 @@ hash here is made up."""
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 
 import pytest
 
@@ -122,6 +123,15 @@ def test_write_refuses_a_row_the_reader_would_refuse(tmp_path, bad):
     with pytest.raises(StatusError):
         write_status(path, [bad])
     assert not path.exists()
+
+
+def test_only_gate_writes_the_table():
+    """D-21: gate.py is the one caller of write_status in the package and configure.py."""
+    root = Path(__file__).resolve().parents[1]
+    sources = [*(root / "tools" / "reverseapoc").glob("*.py"), root / "configure.py"]
+    others = [p for p in sources if p.name != "status.py"]
+    callers = sorted(p.name for p in others if "write_status" in p.read_text(encoding="utf-8"))
+    assert callers == ["gate.py"]
 
 
 def test_lf_sha256_ignores_crlf():
