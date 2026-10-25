@@ -15,8 +15,12 @@ After each session, in this order:
 2. the audit (D-17, F3): every path whose `git status --porcelain=v1 --untracked-files=all`
    entry or content hash changed during the session, and every path a write tool names in the
    transcript, must pass hooks.matching_write_allowed; an untracked include/ entry must also be
-   `include/<name>.h` (security ruling). A stray path resets the attempt and stops the night
-   (STOPPED `guardrail`) with nothing committed;
+   `include/<name>.h`; and a fixed list of paths git cannot see (.git/config, .git/hooks/,
+   .githooks/, the two Claude settings files, the venv's pyvenv.cfg and .pth files) must not
+   change (security rulings). A stray path stops the night (STOPPED `guardrail`) with nothing
+   committed: each stray file is copied or moved into build/driver/<run>/quarantine/ and put
+   back as it was, the attempt is reset, and the record lists every path. build/ itself is not
+   audited: the attempt wrapper writes there by design (a known limit);
 3. streamjson.classify (D-08): STOP stops the night; a check_init problem stops it too; LIMIT
    keeps the session's work (the gate runs on it as usual), then backs off 60, 120, 240 s and
    polls every 300 s, not counted; TRANSIENT resets and relaunches, and after 3 such sessions
@@ -90,9 +94,15 @@ _SHA1 = re.compile(r"[0-9a-f]{40}")
 _HEADER = re.compile(r"include/[A-Za-z0-9_]+(?:/[A-Za-z0-9_]+)*\.h")  # security ruling
 _SOURCE = re.compile(r"checks/[0-9]{4}\.c")  # attempt.CheckLogLine.source
 _LONG_HEX = re.compile(r"[0-9A-Fa-f]{65,}")
-_DETAIL_CAP = 500
+_DETAIL_CAP = 4000  # a guardrail record lists every stray, restored and quarantined path
 _TEXT_CAP = 200
 _UNTRACKED = "??"
+_TRANSCRIPT_MARK = " (transcript)"
+QUARANTINE = "quarantine"  # build/driver/<run>/quarantine/: a breach's files, never deleted
+_GIT_PREFIX = ".git/"  # a pinned name under the common git directory
+_PINNED_FILES = (".claude/settings.local.json", "config/driver/claude-settings.json",
+                 ".venv/pyvenv.cfg")  # fmt: skip
+_PTH_GLOBS = (".venv/Lib/site-packages/*.pth", ".venv/lib/python*/site-packages/*.pth")
 
 
 class DriverError(RuntimeError):
@@ -421,11 +431,20 @@ def parse_status(raw: bytes) -> dict[str, str]:
     return entries
 
 
-def _digest(path: Path) -> str | None:
+def _read(path: Path) -> bytes | None:
+    """The bytes of a regular file, None when there is none (or the name cannot exist)."""
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        return path.read_bytes() if path.is_file() else None
     except OSError, ValueError:
         return None
+
+
+def _sha256(data: bytes | None) -> str | None:
+    return None if data is None else hashlib.sha256(data).hexdigest()
+
+
+def _files(directory: Path) -> list[Path]:
+    return sorted(p for p in directory.rglob("*") if p.is_file()) if directory.is_dir() else []
 
 
 def _write_targets(events: Sequence[dict]) -> list[str | None]:
@@ -621,6 +640,18 @@ class _Claim:
 
 
 @dataclass(frozen=True)
+class _Snapshot:
+    """The tree as the driver saw it right before or after a session (F3): each `git status`
+    path with its entry and content hash, the bytes of each such file (so a stray edit of a
+    file the driver itself had changed goes back to these bytes), and the bytes (None:
+    missing) of each pinned path outside git's view (security ruling)."""
+
+    status: dict[str, tuple[str, str | None]]
+    data: dict[str, bytes]
+    pinned: dict[str, bytes | None]
+
+
+@dataclass(frozen=True)
 class _Session:
     """A finished (or raised) session and what the driver measured around it."""
 
@@ -632,6 +663,8 @@ class _Session:
     new_headers: tuple[str, ...]  # untracked include/<name>.h the session wrote, allowlisted
     scaffolded: bool
     unit_before: bytes
+    before: _Snapshot
+    pinned_changed: tuple[str, ...] = ()  # pinned paths outside git's view that changed
 
     @property
     def events(self) -> tuple[dict, ...]:
@@ -689,6 +722,7 @@ class _Night:
         self.limit_streak = 0
         self.done: set[Key] = set()
         self.live: _Session | None = None  # the session to reset if a later step raises
+        self.git_dir: Path | None = None
 
     # --- the night ---
 
@@ -831,10 +865,41 @@ class _Night:
             raise DriverError(f"scaffold wrote no {claim.unit_rel}")
         return True
 
-    def _snapshot(self) -> dict[str, tuple[str, str | None]]:
-        """F3: each `git status` path with its entry and the SHA-256 of its content."""
+    def _snapshot(self) -> _Snapshot:
+        """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
+        paths git cannot see (security ruling)."""
         raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "--untracked-files=all", "-z"])
-        return {p: (code, _digest(self.repo / p)) for p, code in parse_status(raw).items()}
+        entries = parse_status(raw)
+        data = {p: b for p in entries if (b := _read(self.repo / p)) is not None}
+        status = {p: (code, _sha256(data.get(p))) for p, code in entries.items()}
+        pinned = {name: _read(self._pinned_path(name)) for name in self._pinned_names()}
+        return _Snapshot(status, data, pinned)
+
+    def _git_dir(self) -> Path:
+        """The checkout's common git directory (.git; a worktree's shared one)."""
+        if self.git_dir is None:
+            raw = _git_ok(self.deps.git, ["rev-parse", "--git-common-dir"]).decode().strip()
+            path = Path(raw)
+            self.git_dir = path if path.is_absolute() else self.repo / path
+        return self.git_dir
+
+    def _pinned_path(self, name: str) -> Path:
+        if name.startswith(_GIT_PREFIX):
+            return self._git_dir() / name[len(_GIT_PREFIX) :]
+        return self.repo / name
+
+    def _pinned_names(self) -> list[str]:
+        """Security ruling: the paths outside git's view whose change the audit must see:
+        .git/config, every file under .git/hooks/ and .githooks/, the two Claude settings
+        files, the venv's pyvenv.cfg and every .pth under its site-packages."""
+        hooks_dir = self._git_dir() / "hooks"
+        names = [f"{_GIT_PREFIX}config", *_PINNED_FILES]
+        names += [_GIT_PREFIX + "hooks/" + p.relative_to(hooks_dir).as_posix()
+                  for p in _files(hooks_dir)]  # fmt: skip
+        names += [p.relative_to(self.repo).as_posix() for p in _files(self.repo / ".githooks")]
+        for pattern in _PTH_GLOBS:
+            names += [p.relative_to(self.repo).as_posix() for p in self.repo.glob(pattern)]
+        return sorted(set(names))
 
     def _tracked(self) -> frozenset[str]:
         raw = _git_ok(self.deps.git, ["ls-files", "-z"])
@@ -884,15 +949,19 @@ class _Night:
 
     def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before) -> _Session:
         after = self._snapshot()
-        changed = tuple(sorted(p for p in before.keys() | after.keys()
-                               if before.get(p) != after.get(p)))  # fmt: skip
+        changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
+                               if before.status.get(p) != after.status.get(p)))  # fmt: skip
+        pinned = tuple(sorted(n for n in before.pinned.keys() | after.pinned.keys()
+                              if before.pinned.get(n) != after.pinned.get(n)))  # fmt: skip
         allowed = self._allowed(claim, self._tracked())
-        headers = tuple(p for p in changed if after.get(p, ("", None))[0] == _UNTRACKED
+        headers = tuple(p for p in changed if after.status.get(p, ("", None))[0] == _UNTRACKED
                         and _HEADER.fullmatch(p) and allowed(p))  # fmt: skip
-        return _Session(claim, result, pack, seconds, changed, headers, scaffolded, unit_before)
+        return _Session(claim, result, pack, seconds, changed, headers, scaffolded, unit_before,
+                        before, pinned)  # fmt: skip
 
     def _strays(self, session: _Session) -> list[str]:
-        """Every path the session changed or wrote that the allowlist refuses (D-17, F3)."""
+        """Every path the session changed or wrote that the allowlist refuses (D-17, F3), and
+        every pinned path outside git's view that changed (security ruling)."""
         allowed = self._allowed(session.claim, self._tracked())
         stray = [p for p in session.changed if not allowed(p)]
         stray += [
@@ -900,22 +969,78 @@ class _Night:
             for p in session.changed
             if p.startswith("include/") and not _HEADER.fullmatch(p) and p not in stray
         ]
+        stray += [name for name in session.pinned_changed if name not in stray]
         raws = _write_targets(session.events)
         for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
             if rels is None or not all(allowed(rel) for rel in rels):
-                stray.append(f"{raw} (transcript)")
+                stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
 
     def _audit(self, session: _Session) -> None:
         stray = self._strays(session)
         if not stray:
             return
-        self._reset(session)
         if session.counted:
             self.sessions += 1
-            summary = read_checks(session.claim.attempt_dir)
-            self._record_attempt(session, GAVE_UP, GUARDRAIL, summary)
-        raise _Stop(GUARDRAIL, "stray paths: " + ", ".join(stray))
+        self._guardrail(session, stray, record=session.counted)
+
+    def _guardrail(self, session: _Session, stray: Sequence[str], *, record: bool) -> None:
+        """Security ruling: a breach never leaves the strays in place and never deletes one.
+        Each stray file is copied (tracked, or pinned with earlier bytes) or moved (new) into
+        build/driver/<run>/quarantine/<path>, then put back as it was before the session; the
+        attempt is reset as usual and the STOPPED record lists every path."""
+        files = [s for s in stray if not s.endswith(_TRANSCRIPT_MARK)]
+        restored, quarantined = self._contain(session, files)
+        self._reset(session)
+        if record:
+            self._record_attempt(session, GAVE_UP, GUARDRAIL,
+                                 read_checks(session.claim.attempt_dir))  # fmt: skip
+        detail = (f"stray paths: {', '.join(stray)}; restored: {', '.join(restored) or 'none'}"
+                  f"; quarantined: {', '.join(quarantined) or 'none'}")  # fmt: skip
+        raise _Stop(GUARDRAIL, detail)
+
+    def _quarantine(self, name: str, path: Path, *, move: bool) -> str:
+        """Copy (or move) `path` to build/driver/<run>/quarantine/<name>; never overwrites."""
+        target = self.repo.joinpath(DRIVER_DIR, self.config.run_id, QUARANTINE, *name.split("/"))
+        k = 0
+        while target.exists():
+            k += 1
+            target = target.with_name(f"{target.name}.{k}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if move:
+            os.replace(path, target)
+        else:
+            shutil.copyfile(path, target)
+        return f"{name} -> {target.relative_to(self.repo).as_posix()}"
+
+    def _contain(self, session: _Session, files: Sequence[str]) -> tuple[list[str], list[str]]:
+        """Put each stray path back as it was before the session, keeping what the session left
+        in quarantine. Tracked: back to HEAD, or to the driver's own pre-session bytes when the
+        driver had changed it; pinned or untracked: back to the earlier bytes, or moved out
+        when the session created it. The attempt's own unit and new headers are kept too."""
+        tracked = self._tracked()
+        before = session.before
+        restored: list[str] = []
+        quarantined: list[str] = []
+        for name in files:
+            pinned = name in session.pinned_changed and name.casefold() not in tracked
+            path = self._pinned_path(name) if pinned else self.repo / name
+            earlier = before.pinned.get(name) if pinned else before.data.get(name)
+            if path.is_file():
+                quarantined.append(self._quarantine(name, path, move=earlier is None))
+            if not pinned and name.casefold() in tracked and earlier is None:
+                _git_ok(self.deps.git, ["restore", "--source=HEAD", "--staged", "--worktree",
+                                        "--", name])  # fmt: skip
+                restored.append(name)
+            elif earlier is not None:
+                write_atomic(path, earlier)
+                if name.casefold() in tracked:
+                    _git_ok(self.deps.git, ["restore", "--staged", "--", name])
+                restored.append(name)
+        for name in (session.claim.unit_rel, *session.new_headers):
+            if name in session.changed and (self.repo / name).is_file():
+                quarantined.append(self._quarantine(name, self.repo / name, move=False))
+        return restored, quarantined
 
     def _check_init(self, session: _Session) -> None:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
@@ -1025,8 +1150,7 @@ class _Night:
         untracked = [p for p, code in parse_status(raw).items() if code == _UNTRACKED]
         odd = [p for p in untracked if not _HEADER.fullmatch(p)]
         if odd:
-            self._reset(session)
-            raise _Stop(GUARDRAIL, "untracked include/ entries: " + ", ".join(odd))
+            self._guardrail(session, odd, record=session.counted)
         return [p for p in untracked if p in session.new_headers]
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
