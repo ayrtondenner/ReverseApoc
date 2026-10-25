@@ -176,7 +176,7 @@ def test_always_allows_near_miss_paths(repo, rel):
 
 
 def test_always_allows_the_attempt_notes(repo):
-    notes = repo / "build" / "driver" / "run1" / "ufo2p" / "func_000A3980" / "attempt-1" / "notes.md"
+    notes = repo / "build" / "driver" / "run1" / "ufo2p" / "func_000A3980" / "a-1" / "notes.md"
     env = {"REVERSEAPOC_ATTEMPT_NOTES": native(notes)}
     assert not always(write(native(notes)), env).deny
     assert not always(write(notes.as_posix()), env).deny
