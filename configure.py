@@ -152,13 +152,16 @@ _UNIT_NAME = re.compile(r"[a-z0-9_]+")
 # definitions from the compiled publics). Comments (block and //, which wcc386 and clang gnu89
 # both accept) and string or character literals are blanked first, keeping line breaks so
 # directive line numbers stay true; an unterminated block comment runs to the end of the file,
-# as it would for the compiler.
+# as it would for the compiler. A backslash-newline splices lines first (translation phase 2,
+# DI-05): a `//` comment runs on through it, and so do string and character literals (`\\.`
+# under DOTALL); block comments span lines anyway.
 _NOT_CODE = re.compile(
-    r"/\*.*?(?:\*/|\Z)|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL
+    r"/\*.*?(?:\*/|\Z)|//(?:\\\n|[^\n])*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL
 )
 # Preprocessor conditionals: only `#if 0` is understood (its block is dead, nested conditionals
 # included, and its #else branch is live); any other conditional is refused, never guessed.
 _DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z_]+)(.*)")
+_SPLICE = "\\"  # a physical line ending in a backslash continues on the next one
 _OPENERS = ("if", "ifdef", "ifndef")
 _IF_ZERO = "0"
 _PLACEHOLDER = r"func_[0-9A-F]{8}"
@@ -219,11 +222,12 @@ def _check_name(what: str, name: str) -> str:
 
 
 def _blank(match: re.Match[str]) -> str:
-    """A comment becomes spaces with its line breaks kept; a literal becomes an empty one."""
+    """A comment becomes spaces with its line breaks kept; a literal becomes an empty one that
+    keeps the line breaks of its spliced lines between its quotes, so line numbers stay true."""
     found = match.group()
     if found.startswith("/"):
         return re.sub(r"[^\n]", " ", found)
-    return found[0] * 2
+    return found[0] + "\n" * found.count("\n") + found[0]
 
 
 class _ConditionalError(ValueError):
@@ -270,13 +274,15 @@ def _live_code(code: str) -> str:
     lines = code.split("\n")
     dead = live_else = 0
     opened = 0  # the line of the outermost #if 0 or its #else still open
-    for number, line in enumerate(lines, start=1):
-        match = _DIRECTIVE.fullmatch(line)
+    for first, last, logical in _logical_lines(lines):
+        number = first + 1  # a directive is reported at its first physical line
+        match = _DIRECTIVE.fullmatch(logical)
         if match is None:
             if dead:
-                lines[number - 1] = ""
+                lines[first : last + 1] = [""] * (last + 1 - first)
             continue
-        lines[number - 1] = ""  # a directive's text (a macro body included) is not code
+        # A directive's text (a macro body and its continuation lines included) is not code.
+        lines[first : last + 1] = [""] * (last + 1 - first)
         was_open = dead or live_else
         dead, live_else = _directive_step(
             number, match.group(1), match.group(2).strip(), dead, live_else
@@ -286,6 +292,19 @@ def _live_code(code: str) -> str:
     if dead or live_else:
         raise _ConditionalError(f"line {opened}: #if 0 has no matching #endif")
     return "\n".join(lines)
+
+
+def _logical_lines(lines: Sequence[str]) -> Iterator[tuple[int, int, str]]:
+    """(first, last, text) per logical line: physical lines `first`..`last` (0-based) joined
+    where one ends in a backslash, the backslash-newline removed (translation phase 2)."""
+    first = 0
+    while first < len(lines):
+        last = first
+        while lines[last].endswith(_SPLICE) and last + 1 < len(lines):
+            last += 1
+        parts = [line.removesuffix(_SPLICE) for line in lines[first:last]]
+        yield first, last, "".join([*parts, lines[last]])
+        first = last + 1
 
 
 def _file_scope_definitions(code: str) -> Iterator[str]:

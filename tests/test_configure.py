@@ -714,11 +714,8 @@ def test_check_source_marks_agrees_with_configure(probe):
     text, marked, defined = CONTINUATION_PROBES[probe]
     marks = check.source_marks(text, TWO_GAME)
     assert (set(marks.marked), set(marks.defined)) == (marked, defined)
-    neither = {
-        row.name
-        for row in TWO_GAME
-        if any(row.name in p and "neither" in p for p in configure.check_unit_source(text, TWO_GAME))
-    }
+    problems = configure.check_unit_source(text, TWO_GAME)
+    neither = {r.name for r in TWO_GAME if any(r.name in p and "neither" in p for p in problems)}
     assert neither == {row.name for row in TWO_GAME} - marked - defined
 
 
