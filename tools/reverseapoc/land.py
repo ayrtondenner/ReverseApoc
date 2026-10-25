@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .fileio import write_atomic
 from .functions import FunctionRow
 from .le import LE
 from .relocs import FIELD_SIZE, RelocResult
@@ -35,7 +36,6 @@ from .splice import (
     _first_difference,
     _refuse_inside_orig,
     _refuse_same_file,
-    _write_atomic,
     region_at,
     splice,
 )
@@ -173,4 +173,4 @@ def write_landed(result: LandResult, path: Path, *, orig_dir: Path, source: Path
     except SpliceError as exc:
         raise LandError(str(exc)) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, result.data)
+    write_atomic(path, result.data)

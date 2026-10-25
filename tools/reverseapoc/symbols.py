@@ -31,6 +31,7 @@ from .functions import (
     KIND_GAME,
     KIND_RUNTIME,
     KIND_THUNK,
+    SYMBOL_KINDS,
     FunctionRow,
     SymbolRow,
     data_name,
@@ -39,7 +40,8 @@ from .functions import (
 
 FUNCTION_LINK_SUFFIX = "_"  # Watcom register convention: func_X -> func_X_
 DATA_LINK_PREFIX = "_"  # and D_X -> _D_X
-SYMBOL_KIND_FUNC = "func"
+SYMBOL_KIND_FUNC = SYMBOL_KINDS[0]  # functions.SYMBOL_KINDS is (func, data)
+SYMBOL_KIND_DATA = SYMBOL_KINDS[1]
 _HEX_ADDRESS = f"([0-9A-F]{{{ADDRESS_DIGITS}}})"
 _GAME_LINK = re.compile(re.escape(GAME_PREFIX) + _HEX_ADDRESS + re.escape(FUNCTION_LINK_SUFFIX))
 _DATA_LINK = re.compile(re.escape(DATA_LINK_PREFIX + DATA_PREFIX) + _HEX_ADDRESS)
@@ -98,10 +100,15 @@ class SymbolTable:
         aliases: Mapping[str, int] | None = None,
     ) -> SymbolTable:
         """`data_ranges` are the LE data objects, given by the caller from le.objects; `aliases`
-        are functions.runtime_aliases, each naming a runtime row start."""
+        are functions.runtime_aliases, each naming a runtime row start.
+
+        A symbols.csv data row must lie in one of `data_ranges`; the check runs when the caller
+        passes the LE's data ranges, as the production callers check.load_exe and
+        cli._split_inputs always do. A caller with only the CSVs and no LE passes none, and its
+        data rows are not range-checked."""
         rows = tuple(sorted(functions, key=lambda row: row.start))
         by_start = {row.start: row for row in rows}
-        by_address = _symbols_by_address(symbols, by_start)
+        by_address = _symbols_by_address(symbols, by_start, data_ranges)
         aliases = aliases or {}
         for alias, va in aliases.items():
             _check_alias(alias, va, by_start)
@@ -169,14 +176,18 @@ class SymbolTable:
 
     def address_of(self, name: str) -> int:
         """The address a linker name stands for; SymbolError for anything this table does not
-        know (a placeholder whose address starts no row or lies in no data range, or an unknown
-        name)."""
+        know (a placeholder whose address starts no row or lies in no data range, the
+        placeholder of an address symbols.csv renames, or an unknown name)."""
         game = _GAME_LINK.fullmatch(name)
         if game is not None:
-            return self._placeholder_function(name, int(game.group(1), _HEX_BASE))
+            va = int(game.group(1), _HEX_BASE)
+            self._refuse_renamed(name, va)
+            return self._placeholder_function(name, va)
         data = _DATA_LINK.fullmatch(name)
         if data is not None:
-            return self._placeholder_data(name, int(data.group(1), _HEX_BASE))
+            va = int(data.group(1), _HEX_BASE)
+            self._refuse_renamed(name, va)
+            return self._placeholder_data(name, va)
         if name in self.ambiguous:
             places = ", ".join(_hex(va) for va in self.ambiguous[name])
             raise SymbolError(f"{name} is ambiguous: a runtime public at {places}")
@@ -184,6 +195,12 @@ class SymbolTable:
         if va is None:
             raise SymbolError(f"unknown symbol {name}")
         return va
+
+    def _refuse_renamed(self, name: str, va: int) -> None:
+        """A placeholder of an address symbols.csv names is not that address's linker name."""
+        symbol = self.symbols.get(va)
+        if symbol is not None:
+            raise SymbolError(f"{name}: symbols.csv names {_hex(va)} {symbol.name}")
 
     def _placeholder_function(self, name: str, va: int) -> int:
         row = self.by_start.get(va)
@@ -195,26 +212,45 @@ class SymbolTable:
         row = self.by_start.get(va)
         if row is not None and row.kind == KIND_DATA_IN_CODE:
             return va
-        if any(start <= va < end for start, end in self.data_ranges):
+        if _in_data_range(va, self.data_ranges):
             return va
         raise SymbolError(f"{name}: {_hex(va)} is in no data object and starts no data-in-code row")
 
 
+def _in_data_range(va: int, data_ranges: Sequence[tuple[int, int]]) -> bool:
+    return any(start <= va < end for start, end in data_ranges)
+
+
 def _symbols_by_address(
-    symbols: Sequence[SymbolRow], by_start: Mapping[int, FunctionRow]
+    symbols: Sequence[SymbolRow],
+    by_start: Mapping[int, FunctionRow],
+    data_ranges: Sequence[tuple[int, int]],
 ) -> dict[int, SymbolRow]:
-    """symbols.csv by address: one name per address, and a func symbol names a row start."""
+    """symbols.csv by address: one name per address, no name shaped like a func_/D_
+    placeholder, a func symbol names a row start, and a data symbol lies in a data range when
+    any are given (rows 3, 7a, 7b of 05-REVIEW)."""
     by_address: dict[int, SymbolRow] = {}
     for symbol in symbols:
         if symbol.address in by_address:
             raise SymbolError(f"symbols.csv names {_hex(symbol.address)} twice")
-        if symbol.kind == SYMBOL_KIND_FUNC and symbol.address not in by_start:
-            raise SymbolError(
-                f"symbols.csv func {symbol.name} at {_hex(symbol.address)} starts no "
-                "functions.csv row"
-            )
+        _check_symbol(symbol, by_start, data_ranges)
         by_address[symbol.address] = symbol
     return by_address
+
+
+def _check_symbol(
+    symbol: SymbolRow, by_start: Mapping[int, FunctionRow], data_ranges: Sequence[tuple[int, int]]
+) -> None:
+    where = f"{symbol.name} at {_hex(symbol.address)}"
+    if _GAME_LINK.fullmatch(symbol.name) or _DATA_LINK.fullmatch(symbol.name):
+        # linker_name would hand it out, and address_of would read it back as a placeholder.
+        raise SymbolError(f"symbols.csv name {where} has the shape of a placeholder")
+    if symbol.kind == SYMBOL_KIND_FUNC and symbol.address not in by_start:
+        raise SymbolError(f"symbols.csv func {where} starts no functions.csv row")
+    if symbol.kind != SYMBOL_KIND_DATA or not data_ranges:
+        return
+    if not _in_data_range(symbol.address, data_ranges):
+        raise SymbolError(f"symbols.csv data {where} lies in no data object")
 
 
 def _check_alias(alias: str, va: int, by_start: Mapping[int, FunctionRow]) -> None:

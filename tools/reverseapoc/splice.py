@@ -29,7 +29,6 @@ SHA-1s only, never file bytes.
 from __future__ import annotations
 
 import os
-import secrets
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
@@ -37,6 +36,8 @@ from itertools import islice, pairwise
 from pathlib import Path
 from typing import Any
 
+# The old private name of fileio.write_atomic, kept for one release (D-41).
+from .fileio import write_atomic as _write_atomic
 from .le import (
     _HDR_DEBUG_INFO_LENGTH,
     _HDR_DEBUG_INFO_OFFSET,
@@ -680,24 +681,6 @@ def _refuse_same_file(path: Path, source: Path) -> None:
     the path check of _refuse_inside_orig cannot see (WR-03)."""
     if path.exists() and os.path.samefile(path, source):
         raise SpliceError(f"refusing to write {path}: it is the same file as {source}")
-
-
-def _write_atomic(path: Path, data: bytes) -> None:
-    """Write `data` to a temporary file next to `path`, then swap it in with os.replace: a write
-    that fails leaves the previous `path` as it was and no temporary file behind, and a link at
-    `path` is replaced, never written through (WR-03). Each call writes a temporary file of its
-    own, so parallel writers of one path (ninja -j) never publish each other's partial data."""
-    # A random name opened exclusively: never an existing file, a link or another writer's file.
-    # Not tempfile.mkstemp, whose 0600 mode would differ from a plain write's umask-based mode.
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
-    fh = tmp.open("xb")
-    try:
-        with fh:
-            fh.write(data)
-        os.replace(tmp, path)
-    except BaseException:
-        tmp.unlink(missing_ok=True)
-        raise
 
 
 def _first_difference(a: bytes, b: bytes) -> int | None:
