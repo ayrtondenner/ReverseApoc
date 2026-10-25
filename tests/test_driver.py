@@ -1162,7 +1162,7 @@ def test_claude_worktrees_are_not_fingerprinted(tmp_path):
     rel = ".claude/worktrees/agent-made-up/notes.txt"
     night = Night(tmp_path, sessions=[Sess(write=rel)])
     report = night.run(config={"attempts_per_function": 1})
-    assert report.event == "ENDED"
+    assert report.event == "ENDED", report.detail
 
 
 def test_the_session_env_forbids_bytecode_writes(tmp_path):

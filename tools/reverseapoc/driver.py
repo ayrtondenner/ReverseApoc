@@ -18,7 +18,8 @@ After each session, in this order:
    `include/<name>.h`; a fixed list of paths git cannot see (.git/config, .git/info/exclude
    and attributes, .git/hooks/, .githooks/, the two Claude settings files, the venv's
    pyvenv.cfg, .pth and *customize.py files) must keep their bytes; and the fingerprint (path,
-   size, mtime_ns) of the venv's site-packages and of every repo __pycache__ must not change
+   size, mtime_ns) of all of .venv, of every gitignored tree under .claude/ but
+   .claude/worktrees/, and of every repo __pycache__ must not change
    (security rulings). A stray path stops the night (STOPPED `guardrail`) with nothing
    committed: each stray file is copied or moved into build/driver/<run>/quarantine/ (created
    at run start; no link followed, O_EXCL, never overwritten) and put back as it was, the
@@ -27,8 +28,9 @@ After each session, in this order:
    the attempt wrapper writes there by design (a known limit);
 3. streamjson.classify (D-08): STOP stops the night; a check_init problem stops it too; LIMIT
    keeps the session's work (the gate runs on it as usual), then backs off 60, 120, 240 s and
-   polls every 300 s, not counted; TRANSIENT resets and relaunches, and after 3 such sessions
-   writes an `abort` record, not counted; ATTEMPT_DONE (a result or a wall-clock timeout) is
+   polls every 300 s, not counted; TRANSIENT resets and relaunches, and after the first launch
+   and 3 retries (D-08) writes an `abort` record, not counted; ATTEMPT_DONE (a result or a
+   wall-clock timeout) is
    counted;
 4. a counted session: the C89 lint of the unit, then the container gate. Only gate exit 0 is a
    match (D-24): never the transcript, the result event or /goal's verdict. A match is one
@@ -59,7 +61,7 @@ import time
 from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from . import attempt, hooks, streamjson
 from .fileio import write_atomic
@@ -81,7 +83,7 @@ MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
 BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
-TRANSIENT_TRIES = 3  # D-08: overloaded/server_error/no result, then the attempt is aborted
+TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
@@ -115,6 +117,8 @@ _CUSTOMIZE = ("sitecustomize.py", "usercustomize.py")  # anywhere under the venv
 _VENV = ".venv"
 _NOT_FINGERPRINTED = ("build", _VENV, ".git")  # top-level directories the __pycache__ scan skips
 _PYCACHE = "__pycache__"
+_CLAUDE = ".claude"
+_WORKTREES = ".claude/worktrees"  # other agents' checkouts: never fingerprinted
 _LISTED_CAP = 50  # paths named in one STOPPED record list before "and N more"
 _O_NEW = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
           | getattr(os, "O_BINARY", 0))  # fmt: skip
@@ -462,15 +466,19 @@ def _files(directory: Path) -> list[Path]:
     return sorted(p for p in directory.rglob("*") if p.is_file()) if directory.is_dir() else []
 
 
-def _walk(root: Path, *, skip_top: Sequence[str] = ()) -> Iterable[tuple[Path, list[str]]]:
+def _walk(
+    root: Path, *, skip_top: Sequence[str] = (), prune: Sequence[Path] = ()
+) -> Iterable[tuple[Path, list[str]]]:
     """(directory, its file names) under `root`, never following a link, the top-level
-    directories in `skip_top` left out."""
+    directories in `skip_top` and every directory in `prune` (at any depth) left out."""
     if not root.is_dir():
         return
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        if Path(dirpath) == root:
+        here = Path(dirpath)
+        if here == root:
             dirnames[:] = [d for d in dirnames if d not in skip_top]
-        yield Path(dirpath), filenames
+        dirnames[:] = [d for d in dirnames if here / d not in prune]
+        yield here, filenames
 
 
 def _is_link(path: Path) -> bool:
@@ -689,7 +697,8 @@ class _Claim:
         """The session's environment: the base plus the four claim variables (absolute, F28)."""
         return {**base, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
-                attempt.NOTES_ENV: str(self.notes)}  # fmt: skip
+                attempt.NOTES_ENV: str(self.notes),
+                "PYTHONDONTWRITEBYTECODE": "1"}  # fmt: skip  # fix round 1 minor 3: no .pyc
 
 
 @dataclass(frozen=True)
@@ -762,6 +771,7 @@ class _Contained:
     restored: list[str] = field(default_factory=list)
     quarantined: list[str] = field(default_factory=list)
     not_contained: list[str] = field(default_factory=list)
+    not_restored: list[str] = field(default_factory=list)
     refused: list[str] = field(default_factory=list)
 
 
@@ -899,7 +909,8 @@ class _Night:
 
     def _attempt(self, pick: Pick, n: int) -> str | None:
         """Launch until one session counts (its outcome), a LIMIT session matches (MATCHED), or
-        TRANSIENT_TRIES sessions in a row were transient (None, an abort record)."""
+        the first launch and TRANSIENT_RETRIES retries were all transient (None, an abort record
+        with retries = TRANSIENT_RETRIES; D-08, fix round 1 minor 6)."""
         transient = 0
         while True:
             claim = _Claim(pick, self.config.run_id, self.repo, n)
@@ -915,8 +926,8 @@ class _Night:
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 transient += 1
-                if transient >= TRANSIENT_TRIES:
-                    self._record_abort(claim, transient)
+                if transient > TRANSIENT_RETRIES:
+                    self._record_abort(claim, transient - 1)
                     return None
                 continue
             return self._counted(session)
@@ -961,18 +972,32 @@ class _Night:
         return {name: _read(self._pinned_path(name)) for name in self._pinned_names()}
 
     def _fingerprint(self) -> dict[str, tuple[int, int]]:
-        """Security ruling (third pass): (size, mtime_ns) of every file in the venv's
-        site-packages and in every __pycache__ of the checkout outside build/, .venv and .git;
-        no contents are read."""
-        roots = [d for pattern in _SITE_GLOBS for d in self.repo.glob(pattern) if d.is_dir()]
+        """Security ruling (third pass, widened in fix round 1): (size, mtime_ns) of every file
+        in .venv, in every gitignored tree under .claude/ but .claude/worktrees/, and in every
+        __pycache__ of the checkout outside build/, .venv and .git; no contents are read."""
         found: dict[str, tuple[int, int]] = {}
-        for root in roots:
-            for directory, names in _walk(root):
-                self._print_files(found, directory, names)
+        for directory, names in _walk(self.repo / _VENV):  # fix round 1 minor 2: all of .venv
+            self._print_files(found, directory, names)
+        worktrees = [self.repo / _WORKTREES]  # git may report .claude/ itself as one entry
+        for root in self._ignored_claude():
+            if root.is_dir() and not _is_link(root):
+                for directory, names in _walk(root, prune=worktrees):
+                    self._print_files(found, directory, names)
+            elif root.is_file() or _is_link(root):
+                self._print_files(found, root.parent, [root.name])
         for directory, names in _walk(self.repo, skip_top=_NOT_FINGERPRINTED):
             if directory.name == _PYCACHE:
                 self._print_files(found, directory, names)
         return found
+
+    def _ignored_claude(self) -> list[Path]:
+        """Every gitignored file or tree under .claude/ but .claude/worktrees/ (fix round 1
+        minor 2: GSD's hooks, gsd-core and the like)."""
+        args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]
+        raw = _git_ok(self.deps.git, [*args, "--", _CLAUDE])
+        names = [n.rstrip("/") for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
+        return [self.repo / n for n in names
+                if n != _WORKTREES and not n.startswith(_WORKTREES + "/")]  # fmt: skip
 
     def _print_files(self, found: dict, directory: Path, names: Sequence[str]) -> None:
         for name in names:
@@ -1045,7 +1070,9 @@ class _Night:
                                        timeout_s=self.config.wall_clock_s)  # fmt: skip
         except BaseException as exc:
             # Third pass: contain what the session left before the stop. Minor 8: an interrupt
-            # is contained the same way, then re-raised for run() to record.
+            # is contained the same way, then re-raised for run() to record. Minor 1: nothing
+            # is measured until the attempt's containers are gone.
+            self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
             session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before)
             stray = self._strays(session)
             contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
@@ -1056,8 +1083,7 @@ class _Night:
                 raise
             why = f"the session raised {type(exc).__name__}: {exc}{contained}"
             raise _Stop(ERROR, why) from exc
-        finally:
-            self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
+        self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
         seconds = self.deps.clock() - start
         session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before)
         self.live = session
@@ -1130,6 +1156,8 @@ class _Night:
                   f"; quarantined: {_listed(done.quarantined)}")  # fmt: skip
         if done.not_contained:
             detail += f"; not contained: {_listed(done.not_contained)}"
+        if done.not_restored:
+            detail += f"; not restored: {_listed(done.not_restored)}"
         if done.refused:
             detail += "; " + "; ".join(done.refused)
         still = self._still_changed(session)
@@ -1220,6 +1248,9 @@ class _Night:
             # copied and stays (named again under "still changed").
             changed_print = name in session.print_changed and name in before.prints
             move = earlier is None and name.casefold() not in tracked and not changed_print
+            if path.is_dir() and not _is_link(path):  # minor 9: a nested repo, say
+                done.not_contained.append(f"{name} (a directory)")
+                continue
             if path.is_file() or _is_link(path):
                 if not self._keep(done, name, path, move=move) and move:
                     done.not_contained.append(name)
@@ -1230,7 +1261,9 @@ class _Night:
                                         "--", name])  # fmt: skip
                 restored.append(name)
             elif earlier is not None:
-                write_atomic(path, earlier)
+                if not self._restore_bytes(name, path, earlier):
+                    done.not_restored.append(name)
+                    continue
                 if name.casefold() in tracked:
                     _git_ok(self.deps.git, ["restore", "--staged", "--", name])
                 restored.append(name)
@@ -1238,6 +1271,25 @@ class _Night:
             if name in session.changed and (self.repo / name).is_file():
                 self._keep(done, name, self.repo / name, move=False)
         return done
+
+    def _restore_bytes(self, name: str, path: Path, data: bytes) -> bool:
+        """Fix round 1 minor 4: write `data` back to `path` only when no component between its
+        anchor (the checkout, or the git directory for .git/ names) and its parent is a link,
+        a junction or a reparse point, and the parent resolves inside the anchor."""
+        anchor = self._git_dir() if name.startswith(_GIT_PREFIX) else self.repo
+        try:
+            parts = path.parent.relative_to(anchor).parts
+        except ValueError:
+            return False
+        current = anchor
+        for part in parts:
+            current = current / part
+            if _is_link(current) or not current.is_dir():
+                return False
+        if not path.parent.resolve().is_relative_to(anchor.resolve()) or _is_link(path):
+            return False
+        write_atomic(path, data)
+        return True
 
     def _check_init(self, session: _Session) -> None:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
@@ -1273,7 +1325,15 @@ class _Night:
 
     # --- judging a session ---
 
+    def _restore_pre_gate(self) -> None:
+        """status.csv, the feed and the log back to their bytes right before the gate."""
+        for rel, data in self.pre_gate.items():
+            if data is not None:
+                self._restore_bytes(rel, self.repo / rel, data)
+        self.pre_gate = {}
+
     def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP) -> None:
+        self._restore_pre_gate()  # a gate that passed or half-wrote leaves no row behind
         self._reset(session)
         if session.counted:
             self._record_attempt(session, outcome, TOOL, read_checks(session.claim.attempt_dir))
@@ -1282,6 +1342,7 @@ class _Night:
     def _judge(self, session: _Session) -> GateRun | None:
         """The lint, then the gate (D-24). None when the lint failed (the gate never runs)."""
         pick, n = session.claim.pick, session.claim.n
+        self.pre_gate = {}
         lint = self.deps.lint(pick)
         if lint == EXIT_TOOL:
             self._tool_failure(session, "the C89 lint could not run (exit 2)")
@@ -1293,8 +1354,10 @@ class _Night:
         gate = self.deps.gate(pick, n)
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
             self._tool_failure(session, f"gate exited {gate.exit_code}")
-        if gate.exit_code == EXIT_OK and len(gate_sha1s(gate.doc)) != 2:
-            self._tool_failure(session, "gate passed but its output does not name both SHA-1s")
+        stems = sorted(PurePosixPath(name).stem.lower() for name, _ in gate_sha1s(gate.doc))
+        if gate.exit_code == EXIT_OK and stems != sorted(EXE_ORDER):  # minor 7
+            self._tool_failure(session, f"gate passed but its SHA-1s name {stems}, not both of "
+                                        f"{sorted(EXE_ORDER)}")  # fmt: skip
         return gate
 
     def _salvage(self, session: _Session) -> bool:
@@ -1350,8 +1413,13 @@ class _Night:
         untracked = [p for p, code in parse_status(raw).items() if code == _UNTRACKED]
         odd = [p for p in untracked if not _HEADER.fullmatch(p)]
         if odd:
+            self._restore_pre_gate()
             self._guardrail(session, odd, record=session.counted)
-        return [p for p in untracked if p in session.new_headers]
+        older = [p for p in untracked if p not in session.new_headers]
+        if older:  # fix round 1 minor 5: never silently left out of a match commit
+            why = f"untracked headers this session did not write: {_listed(older)}"
+            self._tool_failure(session, f"{why} (commit or remove them first)")
+        return list(untracked)
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None) -> None:  # fmt: skip
@@ -1383,9 +1451,7 @@ class _Night:
             _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
         except DriverError as exc:
             notes.append(f"could not unstage: {exc}")
-        for rel, data in self.pre_gate.items():
-            if data is not None:
-                write_atomic(self.repo / rel, data)
+        self._restore_pre_gate()
         self._reset(session)
         self._record_attempt(session, GAVE_UP, TOOL, summary)
         raise _Stop(TOOL, "; ".join(notes))
