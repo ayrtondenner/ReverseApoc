@@ -325,16 +325,16 @@ def _is_device(log: Path) -> bool:
 
 
 def _probe_log_lock(log: Path) -> None:
-    """Open and close `<log>.lock` in "a+b", as _log_lock does after the compile, so a log whose
-    sidecar cannot be created fails before the compile instead of after it with the object on
-    disk. It opens the same sidecar the lock opens later and never deletes it, so it adds no
-    race. A device log takes no lock, so it is not probed."""
+    """Open and close `<log>.lock` through _open_lock, as _log_lock does after the compile, so
+    a log whose sidecar cannot be created fails before the compile instead of after it with the
+    object on disk. It opens the same sidecar the lock opens later and never deletes it, so it
+    adds no race. A device log takes no lock, so it is not probed."""
     if _is_device(log):
         return
     lock = _lock_path(log)
     try:
         log.parent.mkdir(parents=True, exist_ok=True)
-        with open(lock, "a+b"):
+        with _open_lock(log):
             pass
     except OSError as exc:
         raise CompilerError(
@@ -466,6 +466,13 @@ def _lock_path(log: Path) -> Path:
     return log.with_name(log.name + LOCK_SUFFIX)
 
 
+def _open_lock(log: Path):
+    """Open `<log>.lock` in "a+b": it creates the sidecar if needed and never truncates or
+    writes it. The one opener of the sidecar, shared by _probe_log_lock and _log_lock, so the
+    probe before the compile keeps opening exactly what the lock opens after it."""
+    return open(_lock_path(log), "a+b")
+
+
 if sys.platform == "win32":
 
     def _try_lock(fd: int) -> bool:
@@ -503,11 +510,10 @@ else:
 
 @contextmanager
 def _log_lock(log: Path) -> Iterator[None]:
-    """Hold the OS lock on `<log>.lock`. "a+b" creates the sidecar if needed and never
-    truncates or writes it. The sidecar is never deleted: deleting would reopen a
-    create/delete race, and a dead holder leaves nothing to clean up, because the OS lock
-    dies with the process."""
-    with open(_lock_path(log), "a+b") as fh:
+    """Hold the OS lock on `<log>.lock`, opened by _open_lock. The sidecar is never deleted:
+    deleting would reopen a create/delete race, and a dead holder leaves nothing to clean up,
+    because the OS lock dies with the process."""
+    with _open_lock(log) as fh:
         _acquire(fh)
         try:
             yield
