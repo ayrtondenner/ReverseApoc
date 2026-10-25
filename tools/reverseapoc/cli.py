@@ -1,19 +1,21 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, fetch-watcom, install-watcom, check-watcom."""
+gate, context, attempt, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
 import argparse
 import dataclasses
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import probe
+from . import attempt, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
+from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .check import (
     DEFAULT_CONFIG,
@@ -27,6 +29,7 @@ from .check import (
     write_target,
 )
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
+from .contextpack import ContextPackError, write_pack
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
 from .discover import DiscoverError, discover
@@ -1129,6 +1132,117 @@ def _cmd_check_watcom(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+# ---- the attempt wrapper: the only Bash a matching session runs (D-44) ----
+
+
+def _cmd_attempt(args: argparse.Namespace) -> int:
+    """`attempt check`: exit 0 only when the claimed function matches and check passes its
+    unit, 1 for a mismatch or a claimed function that was not compiled, 2 for a refusal or any
+    tool error (never a pass). `attempt check --sweep` exits 0 when it ran (never a match) and
+    2 when it did not. The arguments after `attempt` must be one of hooks.ATTEMPT_FORMS
+    exactly (ruling F27)."""
+    raw = args.raw_argv
+    rest = raw[raw.index("attempt") + 1 :]
+    try:
+        if not attempt.form_allowed(rest):
+            raise AttemptError(f"accepts only: {attempt.forms_text()}")
+        if args.attempt_command == "check":
+            return attempt.cmd_check(sweep=args.sweep)
+        if args.attempt_command == "asm":
+            return attempt.cmd_asm(args.name)
+        return attempt.cmd_context()
+    except _ERRORS as exc:
+        print(f"reverseapoc attempt: error: {_one_line(exc)}", file=sys.stderr)
+        return EXIT_TOOL
+    except Exception as exc:  # M9: any other failure is a tool error (2), never a mismatch (1)
+        print(f"reverseapoc attempt: error: {type(exc).__name__}: {_one_line(exc)}",
+              file=sys.stderr)  # fmt: skip
+        return EXIT_TOOL
+
+
+def _one_line(exc: BaseException) -> str:
+    """The exception's text on one line (fix round 2 N1): every CR/LF run becomes a space."""
+    return re.sub(r"[\r\n]+", " ", str(exc))
+
+
+def _cmd_context(args: argparse.Namespace) -> int:
+    roots = attempt.ROOTS
+    data = attempt.exe_inputs(args.exe, orig=args.orig, manifest=args.manifest, config=args.config)
+    row = attempt.resolve_row(data, args.function)
+    out = args.out
+    if out is None:
+        driver = Path(roots.repo).joinpath(*attempt.DRIVER_PARTS)
+        out = driver / attempt.MANUAL_RUN / data.stem / attempt.placeholder(row)
+    pack = attempt.make_pack(data, row, src=args.src, config=args.config, asm_root=args.asm,
+                             roots=roots)  # fmt: skip
+    path = write_pack(pack, out, root=roots.repo)
+    if args.json:
+        print(json.dumps({"path": str(path), **pack.to_json()}, indent=2))
+    else:
+        cut = ", ".join(pack.truncated) or "nothing"
+        print(f"wrote {path} ({pack.pack_bytes} bytes; cut: {cut})")
+    return 0
+
+
+def _add_context_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "context",
+        help="write the D-13 context pack of one function to build/driver/ (gitignored; "
+        "default build/driver/manual/<exe>/<func>/context.md)",
+    )
+    # check's loader (fix round 1 M12): every CSV comes from --config, as for check.
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("function", metavar="FUNC", help="func_XXXXXXXX or the row's symbols.csv name")
+    p.add_argument("--src", type=Path, default=DEFAULT_SRC, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--asm", type=Path, default=DEFAULT_ASM, help="listing root; " + default)
+    p.add_argument("--out", type=Path, help="the pack's directory, under build/driver/")
+    p.add_argument("--json", action="store_true", help="print the path, size and cuts as JSON")
+    p.set_defaults(func=_cmd_context)
+
+
+def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "attempt",
+        allow_abbrev=False,
+        help="the matching session's wrapper: check, asm or context for the function the "
+        "driver claimed (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC, REVERSEAPOC_ATTEMPT_DIR; D-44)",
+        description="Takes its target only from the driver's environment. attempt check: exit "
+        "0 only when the claimed function matches (objdiff 100, relocations and bytes ok) and "
+        "check passes its unit; 1 for a mismatch or a claimed function that was not compiled "
+        "(still INCLUDE_ASM); 2 refused or tool error. attempt check --sweep: 0 when it ran, "
+        "2 when it did not; a sweep is a diagnostic, never a match.",
+    )
+    asub = p.add_subparsers(dest="attempt_command", required=True, metavar="{check,asm,context}")
+    c = asub.add_parser(
+        "check",
+        allow_abbrev=False,
+        help=f"run `reverseapoc check <claim> --json` in the container (at most "
+        f"{attempt.CHECK_BUDGET} runs per attempt) and log it under the attempt directory",
+    )
+    c.add_argument(
+        "--sweep",
+        action="store_true",
+        help="run the D-17 flag matrix for the claimed function instead (a diagnostic; a hit "
+        "is logged for the owner, cflags.txt is owner-only)",
+    )
+    a = asub.add_parser(
+        "asm",
+        allow_abbrev=False,
+        help="print the listing of the claimed function, or of NAME (another row of its EXE)",
+    )
+    a.add_argument("name", nargs="?", metavar="NAME", help="a func_XXXXXXXX or symbols.csv name")
+    asub.add_parser(
+        "context",
+        allow_abbrev=False,
+        help="rebuild the claimed function's context pack into the attempt directory and print it",
+    )
+    p.set_defaults(func=_cmd_attempt)
+
+
 def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser, *, media: bool, dest: bool) -> None:
         default = "default: %(default)s"
@@ -1226,6 +1340,8 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
+    _add_context_command(sub)
+    _add_attempt_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1258,12 +1374,16 @@ _ERRORS = (
     LandError,
     SpliceError,
     StatusError,
+    AttemptError,
+    ContextPackError,
     OSError,
 )
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
     args = build_parser().parse_args(argv)
+    args.raw_argv = tuple(argv)  # the attempt wrapper checks its own argv against the hook's forms
     try:
         return args.func(args)
     except _ERRORS as exc:

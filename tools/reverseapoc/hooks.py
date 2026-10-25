@@ -14,9 +14,11 @@ turns a failure of uv or the import into a block). Two layers:
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> a session may write
   only its unit, a new include/*.h and its notes.md (`matching_write_allowed`, which the driver's
-  audit reuses), with no `#pragma aux` of any kind (D-18); read only inside the repository and
-  never a .env* file; and run Bash only as an exact attempt-wrapper form (ATTEMPT_PREFIX plus one
-  of ATTEMPT_FORMS, D-44). Every other tool is denied. The always rules apply here too, so a
+  audit reuses), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix round 1 M14:
+  `#pragma on/off (check_stack)` changes code the way a flag does); read only inside the
+  repository and never a .env* file; and run Bash only as an exact attempt-wrapper form
+  (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`).
+  Every other tool is denied. The always rules apply here too, so a
   matching session never depends on how Claude Code merges the two settings files.
 
 `decide` is the pure decision; `main` reads stdin, prints the deny JSON and exits 0, or prints
@@ -81,6 +83,9 @@ _PRAGMA_OPERATOR = re.compile(r"\b_Pragma\b")
 # A `#pragma aux` directive; \s also takes the form feed and vertical tab the compiler skips.
 _PRAGMA_AUX = re.compile(r"\s*#\s*pragma\s+aux(?![A-Za-z0-9_])(.*)", re.DOTALL)
 _CODE_BODY = "="  # `#pragma aux name = <bytes>` emits code; `parm [eax]` and the like do not
+# A `#pragma` directive of any kind (the matching layer during the pilot, M14), also spelled
+# with the `%:` digraph for `#` (fix round 2 N6; configure's scanner does not translate it).
+_PRAGMA = re.compile(r"\s*(#|%:)\s*pragma(?![A-Za-z0-9_])")
 
 # D-17: the matching-session layer. The claim and the notes path come from the driver's env.
 CLAIM_ENV = "REVERSEAPOC_CLAIM"
@@ -423,41 +428,46 @@ def _configure():
     return load()
 
 
-def _inline_asm(logical: str, *, any_pragma_aux: bool) -> str | None:
+def _inline_asm(logical: str, *, any_pragma_aux: bool, any_pragma: bool = False) -> str | None:
     found = _INLINE_ASM.search(logical) or _PRAGMA_OPERATOR.search(logical)
     if found is not None:
         return f"inline assembly `{found.group()}`"
+    if any_pragma and _PRAGMA.match(logical):
+        return "a #pragma directive"
     aux = _PRAGMA_AUX.match(logical)
     if aux is not None and (any_pragma_aux or _CODE_BODY in aux.group(1)):
         return "a #pragma aux" if any_pragma_aux else "a code-emitting #pragma aux (`=` body)"
     return None
 
 
-def asm_problem(text: str, *, any_pragma_aux: bool = False) -> str | None:
+def asm_problem(text: str, *, any_pragma_aux: bool = False, any_pragma: bool = False) -> str | None:
     """Why `text` (a src/ or include/ file) is refused, or None: inline asm (`_asm`, `__asm`,
-    `_Pragma`) or a code-emitting `#pragma aux` (any `#pragma aux` with `any_pragma_aux`, D-18)
-    in its code, read through configure's D-12 scanner (translation phases 1-2, backslash
-    continuations spliced, comments and literals blanked). Text the scanner cannot read as
-    wcc386 does (a lone CR) is refused too."""
+    `_Pragma`) or a code-emitting `#pragma aux` (any `#pragma aux` with `any_pragma_aux`, D-18;
+    any `#pragma` directive at all with `any_pragma`, M14) in its code, read through
+    configure's D-12 scanner (translation phases 1-2, backslash continuations spliced, comments
+    and literals blanked). Text the scanner cannot read as wcc386 does (a lone CR) is refused
+    too."""
     cfg = _configure()
     try:
         code = cfg._NOT_CODE.sub(cfg._blank, text)
     except cfg._ConditionalError as exc:
         return f"the text cannot be read as wcc386 reads it: {exc}"
     for first, _last, logical in cfg._logical_lines(code.split("\n")):
-        found = _inline_asm(logical, any_pragma_aux=any_pragma_aux)
+        found = _inline_asm(logical, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma)
         if found is not None:
             return f"line {first + 1} (logical line start): {found}"
     return None
 
 
-def _source_problem(tool: str, tool_input: Mapping, path: str, *, any_pragma_aux: bool) -> str:
+def _source_problem(
+    tool: str, tool_input: Mapping, path: str, *, any_pragma_aux: bool, any_pragma: bool = False
+) -> str:
     if tool == "NotebookEdit":
         return "a notebook edit in src/ or include/ cannot be scanned for inline asm"
     text = _post_edit_text(tool, tool_input, path)
     if text is None:
         return "an edit whose old_string is not in the file verbatim cannot be checked"
-    return asm_problem(text, any_pragma_aux=any_pragma_aux) or ""
+    return asm_problem(text, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma) or ""
 
 
 def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
@@ -649,9 +659,10 @@ def _matching_write(
         )
     if _under(rels[0], "src") or _under(rels[0], "include"):
         problem = _source_problem(payload["tool_name"], tool_input, canonical(raw, _cwd(payload)),
-                                  any_pragma_aux=True)  # fmt: skip
+                                  any_pragma_aux=True, any_pragma=True)  # fmt: skip
         if problem:
-            return _deny(f"no inline asm and no #pragma aux of any kind (D-18): {problem}")
+            return _deny("no inline asm and no #pragma of any kind during the pilot (D-18, M14; "
+                         f"flags and pragmas are owner-only): {problem}")  # fmt: skip
     return NO_OPINION
 
 
@@ -664,6 +675,13 @@ def _notes_relative(env: Mapping[str, str], payload: Mapping, root: tuple[str, .
     except HookError:
         return None
     return rels[0] if rels and len(set(rels)) == 1 else None
+
+
+def _backgrounded(tool_input: object) -> bool:
+    """M14(a): whether a Bash call asks for run_in_background; any value but absent or false
+    counts (fail closed)."""
+    value = tool_input.get("run_in_background") if isinstance(tool_input, Mapping) else None
+    return value is not None and value is not False
 
 
 def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str], bool]) -> Decision:
@@ -685,6 +703,9 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
         if not bash_allowed(command):
             forms = ", ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in ATTEMPT_FORMS)
             return _deny(f"a matching session runs only the attempt wrapper: {forms} (D-44)")
+        if _backgrounded(tool_input):
+            return _deny("checks run in the foreground, one at a time: no run_in_background "
+                         "in a matching session (M14)")  # fmt: skip
         return NO_OPINION
     decision = _always(payload, env)
     return decision if decision.deny else _matching_write(payload, env, tracked, root)

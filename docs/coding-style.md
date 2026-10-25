@@ -19,7 +19,7 @@ If a module turns out to be C++, it is compiled with `wpp386` per file and gets 
 ## Watcom specifics
 
 - **Calling convention.** The default is Watcom's register convention (`__watcall`): arguments in `eax`, `edx`, `ebx`, `ecx`, then the stack. C function symbols get a trailing underscore (`name_`) and data symbols a leading one (`_name`).
-- **`#pragma aux`** declares calling conventions, register parameters, return registers and clobbered registers for a function. Put pragmas in headers next to the prototype. Pragma bodies that emit code bytes are not allowed in `src/` (see [workflow.md](workflow.md#hooks-guardrails-phase-6)).
+- **`#pragma aux`** declares calling conventions, register parameters, return registers and clobbered registers for a function. Default `__watcall` needs no pragma. Agents write no `#pragma` of any kind during the pilot, `#pragma aux` or any other (`#pragma on/off (check_stack)` changes code the way a flag does, and flags are owner-only), and the matching hook blocks it (Phase 6 D-18). A calling-convention pragma comes only in a human-reviewed commit, in a header next to the prototype. Pragma bodies that emit code bytes are never allowed in `src/` (see [workflow.md](workflow.md#hooks-guardrails-phase-6)).
 - **`__near` / `__far`**: the program is flat 32-bit, so expect them only around DOS/4GW, interrupt or real-mode interfaces. Keep them where the original needs them.
 - **Struct packing** is set with `-zp` (`-zp1` in KKND and NHL95PC). Ours is not known yet; CID-05 (Phase 4) records it in [matching.md](matching.md). Struct layouts and offset comments must follow it.
 - **Enums** take the smallest signed type that fits under Watcom; a field that holds an enum value keeps its original integer type.
