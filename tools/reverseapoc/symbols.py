@@ -226,8 +226,9 @@ def _symbols_by_address(
     by_start: Mapping[int, FunctionRow],
     data_ranges: Sequence[tuple[int, int]],
 ) -> dict[int, SymbolRow]:
-    """symbols.csv by address: one name per address, a func symbol names a row start, and a
-    data symbol lies in a data range when any are given (rows 3, 7b of 05-REVIEW)."""
+    """symbols.csv by address: one name per address, no name shaped like a func_/D_
+    placeholder, a func symbol names a row start, and a data symbol lies in a data range when
+    any are given (rows 3, 7a, 7b of 05-REVIEW)."""
     by_address: dict[int, SymbolRow] = {}
     for symbol in symbols:
         if symbol.address in by_address:
@@ -241,6 +242,9 @@ def _check_symbol(
     symbol: SymbolRow, by_start: Mapping[int, FunctionRow], data_ranges: Sequence[tuple[int, int]]
 ) -> None:
     where = f"{symbol.name} at {_hex(symbol.address)}"
+    if _GAME_LINK.fullmatch(symbol.name) or _DATA_LINK.fullmatch(symbol.name):
+        # linker_name would hand it out, and address_of would read it back as a placeholder.
+        raise SymbolError(f"symbols.csv name {where} has the shape of a placeholder")
     if symbol.kind == SYMBOL_KIND_FUNC and symbol.address not in by_start:
         raise SymbolError(f"symbols.csv func {where} starts no functions.csv row")
     if symbol.kind != SYMBOL_KIND_DATA or not data_ranges:
