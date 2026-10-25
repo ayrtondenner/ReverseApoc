@@ -52,6 +52,7 @@ CHECK_TIMEOUT = 580  # seconds; under the Bash tool's 600 s cap, so the run is s
 CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
 CHECK_LOCK = "check.lock"
+NOTES_FILE = "notes.md"  # the driver's REVERSEAPOC_ATTEMPT_NOTES is <attempt dir>/notes.md (06-23)
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -339,8 +340,9 @@ def _summary(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ra
         body = ["  the check printed no usable JSON"] + _tail(ran.stdout)
     if line.exit == EXIT_TOOL or doc is None:
         body += _tail(ran.stderr)
-    stem = Path(line.source).with_suffix("")
-    saved = f"saved {stem.as_posix()}.json (full JSON) and {line.source} (the C checked)"
+    source = claim.attempt_dir / line.source
+    saved = (f"saved {source.with_suffix('.json')} (full JSON) and {source} (the C checked)\n"
+             f"notes: {claim.attempt_dir / NOTES_FILE}")  # fmt: skip
     return "\n".join([head, *body, saved])
 
 
@@ -622,6 +624,7 @@ def cmd_context() -> int:
     claim, data, row = _claimed_row()
     pack = make_pack(data, row, src=ROOTS.src, config=ROOTS.config, asm_root=ROOTS.asm,
                      roots=ROOTS)  # fmt: skip
-    contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
+    path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     sys.stdout.write(pack.text)
+    print(f"wrote {path}; notes: {claim.attempt_dir / NOTES_FILE}", file=sys.stderr)
     return EXIT_OK
