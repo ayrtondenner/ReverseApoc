@@ -500,10 +500,19 @@ class Launch:
     cwd: Path
 
 
-def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None) -> Rig:
+PASSING_CHECK = {"n": 1, "exit": 0, "sweep": False, "best_percent": 100.0, "reloc_ok": True,
+                 "bytes_ok": True, "splice_ok": True, "sweep_hit": None,
+                 "source": "checks/0001.c"}  # fmt: skip
+
+
+def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None,
+                check: dict | None = PASSING_CHECK,
+                raises: BaseException | None = None) -> Rig:  # fmt: skip
     """A rig whose session is fakeclaude replaying `scenario` through the real run_session,
-    writing `write` (repo-relative) like a tool call that went through; `after(repo)` runs
-    once the stream ended (a stray the session left)."""
+    writing `write` (repo-relative) like a tool call that went through; `check` is the
+    checks.jsonl line the wrapper's `attempt check` would have logged (None: no log);
+    `after(repo)` runs once the stream ended (a stray the session left); `raises` is raised by
+    the session instead."""
     rig = Rig(tmp_path)
     rig.launches = []
 
@@ -514,7 +523,11 @@ def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None
 
     def session(argv, *, cwd, env, transcript, timeout_s):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        if raises is not None:
+            raise raises
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        if check is not None:
+            _write(Path(env["REVERSEAPOC_ATTEMPT_DIR"]) / "checks.jsonl", json.dumps(check) + "\n")
         if after is not None:
             after(Path(cwd))
         return result
@@ -538,10 +551,32 @@ def test_canary_pass(tmp_path, capsys):
     code, doc = _canary(rig, capsys)
     assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
     texts = " | ".join(c["check"] for c in doc["checks"])
-    for needle in ("config/targets.toml", "tools/x.py", "`ls`", "attempt context", "git status"):
+    for needle in ("config/targets.toml", "tools/x.py", "`ls`", "attempt context",
+                   "attempt check", "git status"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1
     assert not rig.commands("gate")
+
+
+@pytest.mark.parametrize("check", [dict(PASSING_CHECK, exit=2, best_percent=None), None])
+def test_canary_fails_unless_the_wrapper_check_passed(tmp_path, capsys, check):
+    """Rule 2: the canary also runs `attempt check` on the matched claim, so the container
+    path of the wrapper (docker compose run -T --name, 06-15's unproven item) is proven and
+    the fingerprint check covers it; a check that did not exit 0, or no check log, is FAIL."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", check=check)
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("uv run --frozen reverseapoc attempt check" in text for text in _failed(doc))
+
+
+def test_canary_session_that_raises_is_a_fail(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", raises=RuntimeError("made-up crash"))
+    try:
+        code, doc = _canary(rig, capsys)
+    except RuntimeError as exc:
+        pytest.fail(f"run_drive let {exc!r} escape")
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("made-up crash" in text for text in _failed(doc))
 
 
 def test_canary_env_names_the_claim_with_absolute_paths(tmp_path, capsys):
@@ -559,7 +594,8 @@ def test_canary_env_names_the_claim_with_absolute_paths(tmp_path, capsys):
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
     assert cwd == rig.repo
     for words in ("config/targets.toml", "tools/x.py", "`ls`",
-                  "uv run --frozen reverseapoc attempt context"):  # fmt: skip
+                  "uv run --frozen reverseapoc attempt context",
+                  "uv run --frozen reverseapoc attempt check"):  # fmt: skip
         assert words in rig.prompt, words
 
 
