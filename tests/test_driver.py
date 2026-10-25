@@ -1106,3 +1106,18 @@ def test_a_failed_match_commit_leaves_no_trace_of_a_match(tmp_path):
     assert night.commits() == [CHORE]
     assert night.commit_files(CHORE) == [LOG]
     assert "MATCHED" not in night.file_at(CHORE, LOG)
+
+
+def test_a_failed_match_commit_unstages_new_files_too(tmp_path):
+    """I2 with untracked paths: a scaffolded unit and a new header were `git add`ed; after the
+    failed commit neither stays in the index or on disk."""
+    sess = Sess(files=(("include/fx_util.h", "/* made up */\n"),))
+    night = Night(tmp_path, unit_committed=False, sessions=[sess], gate_exits=[0])
+    hook = night.repo / ".git" / "hooks" / "commit-msg"
+    _write(hook, REFUSE_FEAT_HOOK)
+    hook.chmod(0o755)
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert night.git("diff", "--cached", "--name-only").strip() == ""
+    assert not (night.repo / UNIT_REL).exists()
+    assert not (night.repo / "include" / "fx_util.h").exists()
