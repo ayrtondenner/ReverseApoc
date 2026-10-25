@@ -3,7 +3,7 @@ id: SEED-261025-o1r
 status: dormant
 planted: 2026-10-25
 planted_during: Milestone 1, Phase 6 (Reporting and agent pilot)
-trigger_when: Milestone 2, once the Learning AI functions are matched (after or alongside the full decomp)
+trigger_when: "Milestone 2: draft after Track A batch A1, final pass after 100%"
 scope: medium
 ---
 
@@ -45,7 +45,9 @@ These are unmatched leads, not facts.
 
 ## When to Surface
 
-**Trigger:** Milestone 2, when the Tier 1-3 functions are matched.
+**Trigger:** Milestone 2, in two steps (layout in [[SEED-261025-l4y]]):
+- **Draft** after Track A's batch A1 matches the Learning AI code. The owner approved the earlier draft on 2026-10-25.
+- **Final pass** after 100%, adding what the tactical AI's use of the tables shows.
 
 ## Scope Estimate
 

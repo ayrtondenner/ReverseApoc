@@ -21,6 +21,8 @@ From the original 7-12 proposal: the harness returns the same value twice from a
 
 **Trigger:** planning Milestone 2, sequenced before the pilot spec.
 
+This is Track B, step B1 of the layout in [[SEED-261025-l4y]]. It starts on day one and needs nothing new from the decomp.
+
 ## Scope Estimate
 
 **Medium.** Things to decide:

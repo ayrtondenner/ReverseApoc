@@ -3,7 +3,7 @@ id: SEED-261025-hwp
 status: dormant
 planted: 2026-10-25
 planted_during: Milestone 1, Phase 6 (Reporting and agent pilot)
-trigger_when: Milestone 2, once the game's file-search wrapper and its "missing CD" error path are matched
+trigger_when: "Milestone 2, day one (DOSBox patch); reproducer after Track A batch A1"
 scope: medium
 ---
 
@@ -46,7 +46,9 @@ Targets: DOSBox-X #4904 first, then the same fix for DOSBox Staging.
 
 ## When to Surface
 
-**Trigger:** Milestone 2, once the search wrapper and error path are matched.
+**Trigger:** Milestone 2. This is Track C of the layout in [[SEED-261025-l4y]]:
+- The DOSBox-X patch can start on day one, since the cause is known.
+- The reproducer waits for Track A's batch A1 (the search wrapper and error path).
 
 ## Scope Estimate
 

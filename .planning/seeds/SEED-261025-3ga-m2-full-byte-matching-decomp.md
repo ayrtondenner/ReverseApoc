@@ -21,6 +21,8 @@ The owner set this as Milestone 2's priority on 2026-10-25. Milestone 1 matches 
 
 **Trigger:** planning Milestone 2. It sets the milestone's main track.
 
+This is Track A of the layout in [[SEED-261025-l4y]]. It starts on day one with the targeted batch A1 (the CD search wrapper and its error path, the Learning AI code, any #997 callees Phase 7 left unmatched), then works through subsystem batches until 100%.
+
 ## Scope Estimate
 
 **Large.** Milestone 1 counts 1,633 game functions in UFO2P and 1,596 in TACP in `config/<exe>/functions.csv`, about 716 KB of game code per EXE. The Phase 6 driver and Phase 7's scaled run are the starting point.
