@@ -97,6 +97,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 - [ ] **SPEC-07**: `specs/claims.md` inventories mechanics claims from UFOpaedia, Wikibooks, StrategyWiki and the OpenApoc Discord, paraphrased and linked, each tied to a checklist item with a verdict (confirmed, refuted, refined) or "none found"
 - [ ] **SPEC-08**: Every target in `config/mechanics.toml` has a spec that passes `speclint` and reaches at least `backed-by-matched-code`
 - [ ] **SPEC-09**: The owner reviews every spec; a review line in the spec records who and when
+- [ ] **SPEC-10**: `docs/findings/bugs.md`, `cut-content.md`, `cheats-and-easter-eggs.md` and `learning-ai.md` exist and hold what is known when Phase 8 runs: community reports (UFOpaedia through `wikifetch` with revid, OpenApoc Discord by message link, other sources by URL and access date), paraphrased under the SPEC-06 source rules, plus findings from Phase 7's matched code and `docs/learnings.md`. Each entry names the EXE (UFO2P or TACP), the build, the function address where known, and a status: `reported`, `confirmed` (the function is matched per the gate-written status table), `refuted`, or `not seen in the code matched so far`. An item that fits two files lives in one and is linked from the other. Each file states that later phases and milestones keep it current (owner, 2026-10-25)
 
 ## v2 Requirements
 
@@ -196,12 +197,13 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | SPEC-07 | Phase 8 | Pending |
 | SPEC-08 | Phase 8 | Pending |
 | SPEC-09 | Phase 8 | Pending |
+| SPEC-10 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 64 total
-- Mapped to phases: 64
+- v1 requirements: 65 total
+- Mapped to phases: 65
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-19*
-*Last updated: 2026-10-21 after adding Phases 7 and 8 (DEC, SPEC)*
+*Last updated: 2026-10-25 after adding SPEC-10 (findings docs) to Phase 8*
