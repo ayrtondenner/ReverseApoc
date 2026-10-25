@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
-from reverseapoc import attempt, hooks
+from reverseapoc import attempt, check, hooks
 from reverseapoc.cli import build_parser, main
-from reverseapoc.functions import FunctionRow, write_functions_csv
+from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.status import StatusRow, lf_sha256, status_path, write_status
 from test_contextpack import (
     A_BYTES,
@@ -664,6 +664,8 @@ def tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> attempt.Roots:
     ]
     (config / "ufo2p").mkdir(parents=True)
     write_functions_csv(config / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+    write_units_csv(config / "ufo2p" / "units.csv", [UnitRow(UNIT_AB, FUNC_A, FUNC_C, "first"),
+                    UnitRow(UNIT_C, FUNC_C, END, "first")], "UFO2P.EXE")  # fmt: skip
     write_status(status_path(config, "ufo2p"), [StatusRow(
         FUNC_A, "func_00010000", UNIT_AB, "matched", 100.0, 0, lf_sha256(UNIT_AB_TEXT),
         "2026-10-25")])  # fmt: skip
@@ -801,6 +803,28 @@ def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monk
     assert saved.startswith("# Context pack: func_00010010")
     assert "made-up listing of B" in saved
     assert (attempt_dir / "notes.md").as_posix() in captured.err
+
+
+def test_attempt_reads_the_exe_with_checks_loader(tree: attempt.Roots, monkeypatch):
+    """M12: attempt asm/context and the context verb load the EXE through check.load_exe (one
+    loader: the same CSVs, symbols.csv default and data ranges as check), not a third copy."""
+    assert not hasattr(attempt, "load_exe") and not hasattr(attempt, "ExeData")
+    calls = []
+    real = check.load_exe
+    monkeypatch.setattr(check, "load_exe", lambda *a, **k: calls.append(1) or real(*a, **k))
+    _claim_b(tree, monkeypatch)
+    assert _run(["attempt", "asm"]) == 0
+    assert _run(_context_argv(tree)) == 0
+    assert len(calls) == 2
+
+
+def test_context_verb_reads_config_like_check(capsys):
+    """M12: the context verb takes check's config root (--config) for every CSV, so it has no
+    --functions or --symbols of its own."""
+    assert _run(["context", "--help"]) == 0
+    out = capsys.readouterr().out
+    assert "--config" in out
+    assert "--functions" not in out and "--symbols" not in out
 
 
 def test_context_and_attempt_help_exit_0(capsys):
