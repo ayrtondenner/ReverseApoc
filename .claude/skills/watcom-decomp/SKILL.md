@@ -13,16 +13,16 @@ You make one claimed function byte-identical to the original, proven by `attempt
 |---|---|
 | The only Bash | the five wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Look around with Read, Grep and Glob. |
 | What you may write | the claimed unit file, a new header under `include/`, and this attempt's notes.md. Its full path is printed after `notes:` by `attempt check` and (on stderr) `attempt context`. Nothing else. |
-| Check exit codes | `0` matched; `1` mismatch (compiled and compared, something differs); `2` refused or tool error, which includes a compile error. Exit 2 never measures anything. |
+| Check exit codes | under "The attempt wrapper" below. |
 | Check budget | 25 runs per attempt. Every run counts: exit `0`, `1` or `2`, and each `--sweep`. A call the wrapper refuses before running counts nothing. |
-| Real time budget | 30 minutes, about 90 s per check: plan on about 15 checks. A sweep takes minutes. |
+| Real time budget | 30 minutes. Each check prints its elapsed seconds and the checks left (`check 7/25, 41 s`); budget by those against the clock. A sweep takes longer than a check. |
 | Full evidence | `<attempt dir>/checks/NNNN.json` (check's JSON) and `checks/NNNN.c` (the exact C that run checked), one pair per run, plus a line in `checks.jsonl`. Each check prints both full paths. |
 | Default flags | `wcc386@10.6 -4r -s -fpi` (the `*` rule of `config/cflags.txt`). |
 | Linker names | function `func_000A3980` links as `func_000A3980_`; data `D_0012EFAC` as `_D_0012EFAC`. A symbols.csv name is used verbatim. |
 | Marker | `INCLUDE_ASM(func_XXXXXXXX);` (one argument). |
 
 Never:
-- write `#pragma aux` of any kind, `_asm`, `__asm` or `_Pragma` (the hook blocks them);
+- write a `#pragma` of any kind (`#pragma aux`, `#pragma on/off (check_stack)`, any other), `_asm`, `__asm` or `_Pragma` (the hook blocks them);
 - edit `config/cflags.txt`, anything else in `config/`, `include/common.h`, `include/watcom_compat.h`, tools, tests or build files;
 - run a check with `run_in_background`, or start a second check while one runs: checks run one at a time, in the foreground.
 
@@ -57,12 +57,12 @@ Extern types, from how the target listing touches the data:
 - Declare every local at the start of its block, before any statement. No `for (int i...)`, no mixed declarations and code.
 - `/* */` comments only, never `//`. No `inline`, `bool`, VLAs, designated initializers or compound literals.
 - Never reorder declarations: their order decides the stack slots.
-- The owner's lint (`reverseapoc lint`, clang `-std=gnu89 -Werror=declaration-after-statement`) runs before a match is committed. A C89 slip fails it even when check passes.
+- C89 is required: the driver lints the unit before it commits a match (`reverseapoc lint`, clang `-std=gnu89 -Werror=declaration-after-statement`). A C89 slip fails the attempt even when check passes.
 - Depth: `docs/coding-style.md`.
 
 ## Pragmas
 
-- Agents write no `#pragma aux` of any kind during the pilot: not for a calling convention, not for registers, not to force a match.
+- Agents write no `#pragma` of any kind during the pilot: not `#pragma aux` (a calling convention, registers, forcing a match), and not `#pragma on/off (check_stack)`, which changes code the way a flag does. Flags are owner-only.
 - Calling-convention pragmas come only in human-reviewed commits.
 - Default `__watcall` needs no pragma. A register difference is a C-shape or flags question; record it in notes.md.
 
@@ -82,7 +82,8 @@ check passes a function only when all of these hold (`docs/matching.md#relocatio
 ## Replacing INCLUDE_ASM
 
 - Delete the claimed function's `INCLUDE_ASM(func_XXXXXXXX);` line. Leave every other marker as it is.
-- Put the prototypes and externs it needs, then its definition, after the marker block, as in `src/ufo2p/u_000a34f0.c`. File order does not change the object.
+- Put the prototypes and externs it needs, then its definition, after the marker block, as in `src/ufo2p/u_000a34f0.c`.
+- File order does not change check's verdict (calls resolve through fixups), except for a jump-table function, whose table must come first in the unit (`docs/matching.md#relocation-rules`). The pilot has none.
 - The definition keeps the row's name (`func_XXXXXXXX`, or its symbols.csv name).
 - Use `D_XXXXXXXX` and `func_XXXXXXXX` placeholders for data and callees. Never invent names.
 
@@ -96,9 +97,16 @@ check passes a function only when all of these hold (`docs/matching.md#relocatio
 | `uv run --frozen reverseapoc attempt asm <NAME>` | the listing of another function of the same EXE, e.g. a callee |
 | `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes) |
 
-- Run `attempt check --sweep` with the Bash tool's `timeout` set to 600000. The wrapper stops a run at 580 s and logs it as exit `2`.
+- Run every `attempt check`, plain or `--sweep`, with the Bash tool's `timeout` set to 600000. The wrapper stops a run at 580 s and logs it as exit `2`.
 - "another check is running in this attempt" means a check is still running, or one was killed. Do not retry. Work from the last result, then stop.
 - The arguments are fixed: the wrapper takes the unit, function and flags from the driver, and refuses anything else with exit `2`.
+
+`attempt check` exits:
+- `0`: the claimed function matches (objdiff 100, reloc and bytes ok) and check passes its whole unit. Only this is a match.
+- `1`: a mismatch, or the claimed function was not compiled (the summary says "was not compiled (still INCLUDE_ASM?)").
+- `2`: refused or tool error, a compile error included. Exit 2 never measures anything.
+
+`attempt check --sweep` exits `0` when it ran and `2` when it did not, never `1`: a sweep is a diagnostic, never a match.
 
 check's JSON, in `checks/NNNN.json`:
 - `ok`;
@@ -106,7 +114,7 @@ check's JSON, in `checks/NNNN.json`:
 - `problems[]`: the unit's account, e.g. a row that is neither defined nor marked;
 - `splice[]`: per EXE, `ok` and `first_difference`.
 
-A sweep's JSON has `cells[]` (`compiler`, `flags`, `objdiff_percent`, `reloc_ok`, `differing`). A 100% cell under other flags is logged as `sweep_hit`.
+A sweep's JSON has `cells[]`. Each cell reports, for the claimed function under its `compiler` and `flags`, `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields that differ). A cell at 100% with `reloc_ok` and `differing` 0 under other flags is logged as `sweep_hit`. A sweep hit is never a match until a plain `attempt check` under the new rule passes, and only the owner adds that rule.
 
 ### From a mismatch to the instruction
 
