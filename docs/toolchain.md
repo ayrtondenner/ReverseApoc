@@ -328,7 +328,7 @@ decomp.me's `msdos` platform offers `wcc10.0a`, `wcc10.5`, `wcc10.5a`, `wcc10.6`
 
 ### GhidraMCP
 
-**Later** (Phase 6 context pack or later; deferred in Phase 5, see [tools.md](tools.md)). LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less `--headless` PyGhidra mode, which needs Python 3.10-3.13 ([GhidraMCP](https://github.com/LaurieWired/GhidraMCP)). It is not installed in the image.
+**Later (Phase 7 or later)** (deferred in Phase 5; Phase 6 has no MCP server, D-41 and D-44; see [tools.md](tools.md)). LaurieWired GhidraMCP 2.0 (2026-10-10) supports Ghidra 12.1.4 and has a GUI-less `--headless` PyGhidra mode, which needs Python 3.10-3.13 ([GhidraMCP](https://github.com/LaurieWired/GhidraMCP)). It is not installed in the image.
 
 ### objdiff and the OMF bridge
 
