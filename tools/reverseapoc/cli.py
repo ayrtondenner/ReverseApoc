@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, context, attempt, fetch-watcom, install-watcom, check-watcom."""
+gate, context, attempt, drive, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -11,9 +11,10 @@ import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, probe
+from . import attempt, driver, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
@@ -1243,18 +1244,63 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_attempt)
 
 
+# ---- the night driver: drive (06-25; D-10, D-24, D-34, D-36, D-48) ----
+
+
+def _positive(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from exc
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"{value} is below 1")
+    return number
+
+
+def _run_id(value: str | None) -> str:
+    """The run's id: `--run ID`, else the UTC time it starts (YYYYMMDD-HHMMSS)."""
+    if value is None:
+        return datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+        raise argparse.ArgumentTypeError(f"run id {value!r} is not [A-Za-z0-9_.-]+")
+    return value
+
+
 def _cmd_drive(args: argparse.Namespace) -> int:
-    """Skeleton."""
-    return 0
+    """Exit 0 for a night that ENDED with every end-of-run check passing, a dry run or a
+    passing canary; 1 for a STOPPED night, a failed end-of-run check or a failing canary; 2
+    when it refused to start (preflight, dirty outputs)."""
+    options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
+                                  max_sessions=args.max_sessions,
+                                  target_matched=args.target_matched, dry_run=args.dry_run,
+                                  canary=args.canary, json=args.json)  # fmt: skip
+    return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
 def _add_drive_command(sub: argparse._SubParsersAction) -> None:
-    """Skeleton."""
-    p = sub.add_parser("drive", help="the night driver")
-    for flag in ("--max-sessions", "--target-matched", "--run"):
-        p.add_argument(flag)
-    for flag in ("--dry-run", "--canary", "--json"):
-        p.add_argument(flag, action="store_true")
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "drive",
+        help="run the night driver in the main checkout: one fresh claude session per attempt, "
+        "the container gate decides every match (D-24, D-34, D-48)",
+        description="Refuses to start (exit 2) outside the main checkout, on a dirty tree, on a "
+        f"Claude CLI that is not major {driver.TESTED_MAJOR} and at least "
+        f"{'.'.join(map(str, driver.MIN_CLI_VERSION))}, when Docker does not answer or the "
+        "container's uv sync fails.",
+    )
+    p.add_argument("--max-sessions", type=_positive, default=30, metavar="N",
+                   help="counted sessions before the night ends; " + default)  # fmt: skip
+    p.add_argument("--target-matched", type=_positive, default=10, metavar="N",
+                   help="matches before the night ends; " + default)  # fmt: skip
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true",
+                      help="print the 10 pilot picks and build their packs; no claude, no gate")
+    mode.add_argument("--canary", action="store_true",
+                      help="owner only: one real session that proves the guardrails deny "
+                      "(PASS/FAIL)")  # fmt: skip
+    p.add_argument("--run", type=_run_id, default=None, metavar="ID",
+                   help="the run id under build/driver/; default: the UTC start time")
+    p.add_argument("--json", action="store_true", help="print exactly one JSON document")
     p.set_defaults(func=_cmd_drive)
 
 
