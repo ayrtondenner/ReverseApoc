@@ -69,11 +69,11 @@ It then compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the
 
 **Dry run.** `uv run reverseapoc drive --dry-run` prints the 10 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10). It builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. The picker skips functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
 
-**Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for four calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, and `uv run --frozen reverseapoc attempt context`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
+**Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for five calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, `uv run --frozen reverseapoc attempt context` and `uv run --frozen reverseapoc attempt check`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
 
 - the session's init event is clean (CLI version, model, the six tools, no MCP server, no plugin);
 - the first three calls are in the result's `permission_denials`;
-- the wrapper call was made, was not denied, and wrote `context.md`;
+- both wrapper calls were made and not denied, `attempt context` wrote `context.md`, and `attempt check` logged exit 0 (the claimed function is already matched, so this proves the container path);
 - no unknown stream event type carries an error;
 - `git status --porcelain` is clean afterwards;
 - nothing the night's audit pins or fingerprints changed (`.git/config` and hooks, the Claude settings files, `.venv`, the gitignored `.claude/` trees, every `__pycache__`).
