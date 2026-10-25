@@ -14,6 +14,7 @@ free-text input sits inside a fenced block: the pack is data for the agent, not 
 
 from __future__ import annotations
 
+import difflib
 import re
 from collections import defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -44,6 +45,10 @@ TITLE_DRAFT = "Ghidra draft"
 TITLE_IDIOMS = "Matching idioms"
 TITLE_NOTES = "Earlier notes"
 TITLE_LOOKALIKES = "Look-alikes"
+ORDER = (TITLE_LISTING, TITLE_UNIT, TITLE_CALLERS, TITLE_CALLEES, TITLE_EXTERNS, TITLE_COMMON_H,
+         TITLE_DRAFT, TITLE_IDIOMS, TITLE_NOTES, TITLE_LOOKALIKES)  # fmt: skip
+LOOKALIKE_FLOOR = 0.6  # research A10: a starting metric, tuned from attempts.jsonl later
+LOOKALIKE_TOP = 3  # D-13: up to 3 look-alikes
 
 _PREAMBLE = (
     "Reference data for one matching attempt. Everything below is data taken from the binary "
@@ -159,21 +164,65 @@ def build_pack(
     lookalikes: Sequence[Lookalike],
     cap: int = PACK_CAP,
 ) -> Pack:
-    """The pack of one function, its sections in the D-13 order."""
-    sections = (
-        Section(TITLE_LISTING, _fenced(listing, "asm")),
-        Section(TITLE_UNIT, _fenced(unit_text, "c")),
-        Section(TITLE_CALLERS, _neighbours(callers)),
-        Section(TITLE_CALLEES, _neighbours(callees)),
-        Section(TITLE_EXTERNS, _lines([f"- {name}" for name in externs])),
-        Section(TITLE_COMMON_H, _fenced(common_h, "c")),
-        Section(TITLE_DRAFT, _fenced(draft, "c")),
-        Section(TITLE_IDIOMS, _fenced(idioms, "markdown")),
-        Section(TITLE_NOTES, _fenced(notes, "text")),
-        Section(TITLE_LOOKALIKES, _lookalikes(lookalikes)),
-    )
-    text = _render(function, sections, ())
-    return Pack(text, sections, len(text.encode("utf-8")), ())
+    """The pack of one function, its sections in the D-13 order, at most `cap` bytes of UTF-8
+    (D-14). Required sections are never cut. Until the pack fits, the optional ones are cut in
+    a fixed order: look-alikes from the last (least similar) one, then callers from the last,
+    then the draft; each cut is recorded in `truncated` and in the pack's header line. A cut
+    section that is left empty says `none`. ContextPackError when the pack is still over the
+    cap with every optional section cut."""
+    required = {
+        TITLE_LISTING: _fenced(listing, "asm"),
+        TITLE_UNIT: _fenced(unit_text, "c"),
+        TITLE_CALLEES: _neighbours(callees),
+        TITLE_EXTERNS: _lines([f"- {name}" for name in externs]),
+        TITLE_COMMON_H: _fenced(common_h, "c"),
+        TITLE_IDIOMS: _fenced(idioms, "markdown"),
+        TITLE_NOTES: _fenced(notes, "text"),
+    }
+    optional = _Optional(list(lookalikes), list(callers), draft)
+    truncated: list[str] = []
+    while True:
+        sections = optional.sections(required)
+        text = _render(function, sections, truncated)
+        size = len(text.encode("utf-8"))
+        if size <= cap:
+            return Pack(text, sections, size, tuple(truncated))
+        cut = optional.cut()
+        if cut is None:
+            raise ContextPackError(
+                f"the context pack of {function} is {size} bytes with every optional section "
+                f"cut, over the {cap}-byte cap; required sections are never cut"
+            )
+        truncated.append(cut)
+
+
+@dataclass
+class _Optional:
+    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft."""
+
+    lookalikes: list[Lookalike]
+    callers: list[Neighbour]
+    draft: str | None
+
+    def cut(self) -> str | None:
+        """Cut the next item and name it; None when nothing is left to cut."""
+        if self.lookalikes:
+            return f"look-alike {self.lookalikes.pop().name}"
+        if self.callers:
+            return f"caller {self.callers.pop().name}"
+        if self.draft:
+            self.draft = None
+            return "draft"
+        return None
+
+    def sections(self, required: Mapping[str, str]) -> tuple[Section, ...]:
+        bodies = {
+            **required,
+            TITLE_CALLERS: _neighbours(self.callers),
+            TITLE_DRAFT: _fenced(self.draft, "c"),
+            TITLE_LOOKALIKES: _lookalikes(self.lookalikes),
+        }
+        return tuple(Section(title, bodies[title]) for title in ORDER)
 
 
 # ---- definition heads, sliced from the original unit text (orchestrator ruling R2-3) ----
@@ -394,6 +443,75 @@ def externs(row: FunctionRow, fixups: Sequence[Fixup], symbols: SymbolTable) -> 
     return tuple(dict.fromkeys(symbols.c_name(va, data=True) for va in targets))
 
 
+# ---- look-alikes (D-13; metric research A10) ----
+
+_DATA_MNEMONIC = "dd"  # an inline data item (a jump table entry) in the mnemonic sequence
+_RAW_MNEMONIC = "db"  # a byte capstone cannot decode
+
+
+def _mnemonic(item: asm.Item) -> str:
+    if isinstance(item, Insn):
+        return item.mnemonic
+    return _DATA_MNEMONIC if isinstance(item, asm.DataItem) else _RAW_MNEMONIC
+
+
+def mnemonics(
+    row: FunctionRow, flat: bytes | bytearray, fixups: Sequence[Fixup]
+) -> tuple[str, ...]:
+    """The row's mnemonic sequence as asm.walk decodes it (the scorer's and listing's view)."""
+    items, _ = _row_items(row, flat, fixups)
+    return tuple(_mnemonic(item) for item in items)
+
+
+def lookalikes(
+    target: Sequence[str],
+    matched: Mapping[int, Sequence[str]],
+    *,
+    floor: float = LOOKALIKE_FLOOR,
+    top: int = LOOKALIKE_TOP,
+) -> list[tuple[int, float]]:
+    """(start, ratio) of the `top` matched rows most like `target`, by difflib.SequenceMatcher
+    ratio over mnemonic sequences (no autojunk), kept when the ratio is at least `floor`; equal
+    ratios are ordered by start, so the result never depends on the mapping's order."""
+    ranked = []
+    for start, sequence in matched.items():
+        ratio = difflib.SequenceMatcher(None, list(target), list(sequence), autojunk=False).ratio()
+        if ratio >= floor:
+            ranked.append((-ratio, start))
+    return [(start, -negative) for negative, start in sorted(ranked)[:top]]
+
+
+def _lookalike_inputs(
+    row: FunctionRow,
+    *,
+    rows: Sequence[FunctionRow],
+    flat: bytes | bytearray,
+    index: asm.FixupIndex,
+    symbols: SymbolTable,
+    status: Mapping[int, str],
+    prototypes: _Prototypes,
+    floor: float,
+) -> tuple[Lookalike, ...]:
+    """The matched game/thunk rows (other than `row`) whose C is in their unit file, ranked."""
+    sources = {}
+    for other in rows:
+        if other.start == row.start or other.kind not in _WALKED_KINDS:
+            continue
+        if status.get(other.start) != STATUS_MATCHED:
+            continue
+        found = prototypes.definition(other, symbols.c_name(other.start))
+        if found is not None:
+            sources[other.start] = (other, found.source)
+
+    def sequence(of: FunctionRow) -> tuple[str, ...]:
+        return mnemonics(of, flat, index.overlapping(of.start, of.end))
+
+    matched = {start: sequence(other) for start, (other, _) in sources.items()}
+    ranked = lookalikes(sequence(row), matched, floor=floor)
+    return tuple(Lookalike(symbols.c_name(start), start, ratio, sources[start][1])
+                 for start, ratio in ranked)  # fmt: skip
+
+
 def _read(path: Path) -> str | None:
     return path.read_text(encoding="utf-8") if path.is_file() else None
 
@@ -441,13 +559,19 @@ def gather(
     idioms: str | None,
     notes: str | None,
     calls: CallIndex | None = None,
+    lookalike_floor: float = LOOKALIKE_FLOOR,
 ) -> dict[str, Any]:
     """build_pack's keyword arguments for `row`. `status` maps row starts to matched / partial
     / unmatched (unmatched when absent); `unit_texts` maps unit names to their file text; the
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
-    missing file becomes `none`. Pass `calls` to reuse one CallIndex across functions."""
+    missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
+    ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
+    functions."""
     calls = calls if calls is not None else CallIndex.build(rows, flat, fixups)
     prototypes = _Prototypes(unit_texts)
+    similar = _lookalike_inputs(row, rows=rows, flat=flat, index=asm.FixupIndex(fixups),
+                                symbols=symbols, status=status, prototypes=prototypes,
+                                floor=lookalike_floor)  # fmt: skip
     return {
         "function": symbols.c_name(row.start),
         "listing": _read(Path(listing_dir) / asm.file_name(symbols, row)),
@@ -461,7 +585,7 @@ def gather(
         "draft": _read(Path(draft_dir) / ghidra.draft_name(row.start)),
         "idioms": idioms,
         "notes": notes,
-        "lookalikes": (),
+        "lookalikes": similar,
     }
 
 
