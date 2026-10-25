@@ -191,7 +191,9 @@ class Deps:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     today: Callable[[], str] = _today
-    end_of_run: Callable[[], Sequence[str]] = tuple  # stub (fix round 4 RED): not called yet
+    # Fix round 4 L1: the end-of-run checks (06-25 wires ninja verify and gate --all); each
+    # failed check is one string. Called after the last session, before the ENDED record.
+    end_of_run: Callable[[], Sequence[str]] = tuple
 
 
 @dataclass(frozen=True)
@@ -203,11 +205,15 @@ class DriveReport:
     sessions: int
     matched: int
     detail: str | None = None
+    checks_failed: tuple[str, ...] = ()  # the end-of-run checks that failed (L1)
 
     @property
     def exit_code(self) -> int:
-        """0 ENDED, 2 REFUSED (the night never started), 1 STOPPED."""
-        return {ENDED: 0, REFUSED: 2}.get(self.event, 1)
+        """0 ENDED with every end-of-run check passing, 2 REFUSED (the night never started),
+        1 otherwise (STOPPED, or ENDED with a failed check, fix round 4 L1)."""
+        if self.event == ENDED:
+            return 1 if self.checks_failed else 0
+        return 2 if self.event == REFUSED else 1
 
 
 def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
@@ -273,6 +279,10 @@ def _shaped(fields: Mapping[str, Callable[[object], bool]]) -> Callable[[object]
     return check
 
 
+def _strings_list(value: object) -> bool:
+    return isinstance(value, list) and all(map(_is_text, value))
+
+
 _COUNT_KEYS = ("input", "output", "cache_read", "cache_creation")
 _CLAIM_FIELDS = {
     "run": _matches(_RUN_ID),
@@ -320,6 +330,8 @@ RECORD_FIELDS: dict[str, dict[str, Callable[[object], bool]]] = {
         "detail": _optional(_is_text),
         "sessions": _is_int,
         "matched": _is_int,
+        "checks_failed": _strings_list,  # fix round 4 L1: the end-of-run checks that failed
+        "uncommitted": _strings_list,  # L2: partial rows a STOPPED night leaves uncommitted
         "date": _CLAIM_FIELDS["date"],
     },
 }
@@ -813,7 +825,13 @@ class _Night:
         """Every night ends with a run record (fix round 1, I1): ENDED, a STOPPED reason, a
         STOPPED `error` for any other exception, or a STOPPED `interrupted` for a
         KeyboardInterrupt/SystemExit, which is then re-raised (minor 8)."""
-        dirty = self._dirty_outputs()
+        try:
+            dirty = self._dirty_outputs()
+        except Exception as exc:  # fix round 4 L3: refused, never an escape
+            why = _detail(
+                f"refusing to start: the outputs check failed: {type(exc).__name__}: {exc}"
+            )
+            return DriveReport(REFUSED, "outputs check", 0, 0, why)
         if dirty:  # fix round 3 minor 1: never start on another night's leftovers
             detail = (
                 f"refusing to start: {_listed(dirty)} differ from HEAD or are staged "
@@ -821,21 +839,53 @@ class _Night:
             )
             return DriveReport(REFUSED, "dirty", 0, 0, detail)
         self._record_run(STARTED, START)
+        failed: list[str] = []
         try:
             event, reason, detail = ENDED, self._loop(), None
+            failed = [_detail(str(check)) for check in self.deps.end_of_run()]  # L1
         except _Stop as stop:
             event, reason, detail = STOPPED, stop.reason, stop.detail
         except Exception as exc:
             event, reason, detail = STOPPED, ERROR, _detail(f"{type(exc).__name__}: {exc}")
         except BaseException as exc:
-            self._record_run(STOPPED, INTERRUPTED, _detail(type(exc).__name__ + self.interrupted))
+            why = _detail(type(exc).__name__ + self.interrupted)
+            self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows())
             raise
-        self._record_run(event, reason, detail)
+        uncommitted = self._uncommitted_rows() if event == STOPPED else []
+        self._record_run(event, reason, detail, checks_failed=failed, uncommitted=uncommitted)
         if (
             not self.breached
         ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
-        return DriveReport(event, reason, self.sessions, self.matched, detail)
+        return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed))
+
+    def _uncommitted_rows(self) -> list[str]:
+        """Fix round 4 L2: each status.csv row that differs from HEAD (`<path>: <start>
+        <status>`) and a changed feed, so the owner knows why the next drive is refused.
+        Best-effort: a path that cannot be read is named as such."""
+        out: list[str] = []
+        for exe in EXE_ORDER:
+            rel = f"config/{exe}/status.csv"
+            try:
+                out += self._new_rows(rel)
+            except Exception as exc:  # noqa: BLE001 - named instead
+                out.append(f"{rel}: unknown ({type(exc).__name__}: {exc})")
+        try:
+            if FEED in parse_status(_git_ok(self.deps.git, ["status", "--porcelain=v1", "-z",
+                                                            "--", FEED])):  # fmt: skip
+                out.append(f"{FEED}: changed")
+        except Exception as exc:  # noqa: BLE001 - named instead
+            out.append(f"{FEED}: unknown ({type(exc).__name__}: {exc})")
+        return [_detail(line) for line in out]
+
+    def _new_rows(self, rel: str) -> list[str]:
+        """The rows of `rel` that HEAD does not have, as `<rel>: <start> <status>`."""
+        path = self.repo / rel
+        now = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
+        head = set(_git_ok(self.deps.git, ["show", f"HEAD:{rel}"]).decode("utf-8").splitlines())
+        rows = [line.split(",") for line in now if line not in head and not line.startswith("#")]
+        return [f"{rel}: {cells[0]} {cells[3]}" if len(cells) > 3 else f"{rel}: {cells[0]}"
+                for cells in rows]  # fmt: skip
 
     def _outputs(self) -> list[str]:
         """The files the driver commits besides the unit: the log, both tables, the feed."""
@@ -1606,9 +1656,12 @@ class _Night:
                   "date": self.deps.today()}  # fmt: skip
         append_record(self.log, record)
 
-    def _record_run(self, event: str, reason: str, detail: str | None = None) -> None:
+    def _record_run(self, event: str, reason: str, detail: str | None = None, *,
+                    checks_failed: Sequence[str] = (),
+                    uncommitted: Sequence[str] = ()) -> None:  # fmt: skip
         record = {"kind": KIND_RUN, "run": self.config.run_id, "event": event, "reason": reason,
                   "detail": detail, "sessions": self.sessions, "matched": self.matched,
+                  "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
                   "date": self.deps.today()}  # fmt: skip
         append_record(self.log, record)
 
