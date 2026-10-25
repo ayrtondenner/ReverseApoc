@@ -10,9 +10,23 @@ from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
+from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
 from reverseapoc import attempt, hooks
 from reverseapoc.cli import build_parser, main
+from reverseapoc.functions import FunctionRow, write_functions_csv
+from reverseapoc.status import StatusRow, lf_sha256, status_path, write_status
+from test_contextpack import (
+    A_BYTES,
+    B_BYTES,
+    C_BYTES,
+    END,
+    FUNC_A,
+    FUNC_B,
+    FUNC_C,
+    UNIT_AB,
+    UNIT_AB_TEXT,
+    UNIT_C,
+)
 
 CLAIM = "ufo2p/u_000a34f0"
 FUNC = "func_000A3980"
@@ -291,3 +305,161 @@ def test_attempt_help_exits_0(capsys):
 def test_default_roots_are_the_repository():
     assert attempt.ROOTS.repo == REPO_ROOT
     assert attempt.ROOTS.src == REPO_ROOT / "src"
+
+
+# ---- Task 2: the context verb, attempt asm and attempt context ----
+
+LISTING_B = "# func_00010010  made-up listing of B\n  0x00010010  ret\n"
+LISTING_A = "# func_00010000  made-up listing of A\n  0x00010000  ret\n"
+UNIT_C_TEXT = '#include "common.h"\n\nINCLUDE_ASM(func_00010020);\n'
+
+
+def _image() -> bytes:
+    records = (
+        fixup_record(7, 0x06, 1, 0x20)
+        + fixup_record(7, 0x11, 2, 0x200)
+        + fixup_record(7, 0x16, 2, 0x100)
+    )
+    return build_le_image(
+        fixups=[records, b"", b""], patches={FUNC_A: A_BYTES, FUNC_B: B_BYTES, FUNC_C: C_BYTES}
+    ).data
+
+
+def _write(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+@pytest.fixture
+def tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> attempt.Roots:
+    """A tmp repository with a synthetic UFO2P.EXE, its CSVs, two unit files, listings, a
+    draft, earlier notes in the driver's layout (ruling F9) and an attempt log."""
+    repo = tmp_path / "repo"
+    data = _image()
+    orig = repo / "orig"
+    orig.mkdir(parents=True)
+    (orig / "UFO2P.EXE").write_bytes(data)
+    manifest = write_manifest(repo / "targets.toml", {"UFO2P.EXE": data})
+    config = repo / "config"
+    rows = [
+        FunctionRow(FUNC_A, FUNC_B, "func_00010000", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "call"),
+    ]
+    (config / "ufo2p").mkdir(parents=True)
+    write_functions_csv(config / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+    write_status(status_path(config, "ufo2p"), [StatusRow(
+        FUNC_A, "func_00010000", UNIT_AB, "matched", 100.0, 0, lf_sha256(UNIT_AB_TEXT),
+        "2026-10-25")])  # fmt: skip
+    src = repo / "src"
+    _write(src / "ufo2p" / f"{UNIT_AB}.c", UNIT_AB_TEXT)
+    _write(src / "ufo2p" / f"{UNIT_C}.c", UNIT_C_TEXT)
+    asm_root = repo / "asm"
+    _write(asm_root / "ufo2p" / "func_00010010.s", LISTING_B)
+    _write(asm_root / "ufo2p" / "func_00010000.s", LISTING_A)
+    _write(asm_root / "ufo2p" / "ghidra" / "func_00010010.c", "int func_00010010(void) {}\n")
+    driver = repo / "build" / "driver"
+    _write(driver / "run0" / "ufo2p" / "func_00010010" / "attempt-2" / "notes.md", "note two\n")
+    _write(driver / "run0" / "ufo2p" / "func_00010010" / "attempt-1" / "notes.md", "note one\n")
+    _write(driver / "manual" / "ufo2p" / "func_00010010" / "notes.md", "manual note\n")
+    _write(driver / "run0" / "ufo2p" / "func_00010020" / "attempt-1" / "notes.md", "OTHER\n")
+    _write(driver / "run0" / "tacp" / "func_00010010" / "attempt-1" / "notes.md", "TACP\n")
+    _write(repo / "progress" / "attempts.jsonl", "\n".join([
+        json.dumps({"kind": "attempt", "exe": "ufo2p", "function": "func_00010010",
+                    "outcome": "PARTIAL", "run": "run0", "attempt": 1}),
+        json.dumps({"kind": "attempt", "exe": "ufo2p", "function": "func_00010020",
+                    "outcome": "GAVE_UP", "run": "run0", "attempt": 1}),
+        "not json",
+    ]) + "\n")  # fmt: skip
+    roots = dataclasses.replace(attempt.ROOTS, repo=repo, orig=orig, manifest=manifest,
+                                config=config, src=src, asm=asm_root)  # fmt: skip
+    monkeypatch.setattr(attempt, "ROOTS", roots)
+    return roots
+
+
+def _context_argv(roots: attempt.Roots, *extra: str) -> list[str]:
+    return ["context", "ufo2p", "func_00010010", "--orig", str(roots.orig),
+            "--manifest", str(roots.manifest), "--config", str(roots.config),
+            "--src", str(roots.src), "--asm", str(roots.asm), *extra]  # fmt: skip
+
+
+def _claim_b(roots: attempt.Roots, monkeypatch: pytest.MonkeyPatch) -> Path:
+    attempt_dir = roots.repo / "build" / "driver" / "run1" / "ufo2p" / "func_00010010" / "attempt-1"
+    attempt_dir.mkdir(parents=True)
+    monkeypatch.setenv(attempt.CLAIM_ENV, f"ufo2p/{UNIT_AB}")
+    monkeypatch.setenv(attempt.FUNC_ENV, "func_00010010")
+    monkeypatch.setenv(attempt.DIR_ENV, str(attempt_dir))
+    return attempt_dir
+
+
+def test_context_verb_writes_the_pack(tree: attempt.Roots, capsys):
+    out = tree.repo / "build" / "driver" / "r" / "ufo2p" / "func_00010010"
+    assert _run(_context_argv(tree, "--out", str(out))) == 0, capsys.readouterr().err
+    text = (out / "context.md").read_text(encoding="utf-8")
+    assert text.startswith("# Context pack: func_00010010")
+    for title in ("Target listing", "Unit file", "Callers", "Callees", "D_ externs",
+                  "include/common.h", "Ghidra draft", "Matching idioms", "Earlier notes",
+                  "Look-alikes"):  # fmt: skip
+        assert f"\n## {title}\n" in text
+    assert "made-up listing of B" in text
+    assert "func_00010000 (game, matched): int func_00010000(void);" in text  # status.csv
+    assert "func_00010020 (game, unmatched)" in text
+    assert "int func_00010010(void) {}" in text  # the draft
+    assert "Known idioms" in text and "Relocation rules" in text  # matching.md, by heading
+    assert "#define INCLUDE_ASM" in text  # include/common.h
+
+
+def test_context_verb_collects_earlier_notes(tree: attempt.Roots, capsys):
+    """F9: the driver's attempt-*/notes.md and manual notes.md of this EXE and function, sorted
+    by path, and this function's attempts.jsonl records."""
+    assert _run(_context_argv(tree)) == 0, capsys.readouterr().err
+    out = tree.repo / "build" / "driver" / "manual" / "ufo2p" / "func_00010010"
+    text = (out / "context.md").read_text(encoding="utf-8")
+    manual, one, two = text.index("manual note"), text.index("note one"), text.index("note two")
+    assert manual < one < two
+    assert "run0/ufo2p/func_00010010/attempt-1/notes.md" in text
+    assert "OTHER" not in text and "TACP" not in text
+    assert '"outcome": "PARTIAL"' in text and "GAVE_UP" not in text
+
+
+def test_context_verb_json_reports_size_and_cuts(tree: attempt.Roots, capsys):
+    assert _run(_context_argv(tree, "--json")) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["pack_bytes"] > 0
+    assert doc["truncated"] == []
+    assert doc["path"].endswith("context.md")
+
+
+def test_context_verb_refuses_an_out_outside_build_driver(tree: attempt.Roots, capsys):
+    out = tree.repo / "elsewhere"
+    assert _run(_context_argv(tree, "--out", str(out))) != 0
+    assert not out.exists()
+    assert "build" in capsys.readouterr().err
+
+
+def test_attempt_asm_prints_the_claimed_listing(tree: attempt.Roots, monkeypatch, capsys):
+    _claim_b(tree, monkeypatch)
+    assert _run(["attempt", "asm"]) == 0
+    assert capsys.readouterr().out == LISTING_B
+    assert _run(["attempt", "asm", "func_00010000"]) == 0  # another row of the same EXE
+    assert capsys.readouterr().out == LISTING_A
+    assert _run(["attempt", "asm", "func_00099999"]) == 2  # no such row
+    assert "func_00099999" in capsys.readouterr().err
+    assert _run(["attempt", "asm", "func_00010020"]) == 2  # a row with no listing yet
+    assert "reverseapoc asm" in capsys.readouterr().err
+
+
+def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monkeypatch, capsys):
+    attempt_dir = _claim_b(tree, monkeypatch)
+    assert _run(["attempt", "context"]) == 0
+    printed = capsys.readouterr().out
+    saved = (attempt_dir / "context.md").read_text(encoding="utf-8")
+    assert printed == saved
+    assert saved.startswith("# Context pack: func_00010010")
+    assert "made-up listing of B" in saved
+
+
+def test_context_and_attempt_help_exit_0(capsys):
+    assert _run(["context", "--help"]) == 0
+    assert _run(["attempt", "--help"]) == 0
