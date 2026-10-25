@@ -516,6 +516,100 @@ def test_compose_project_is_the_normalized_directory_name():
     assert driver.compose_project(Path("/x/My Repo.2")) == "myrepo2"
 
 
+# --- fix round 1 I2: every preflight-phase error is REFUSED, exit 2, one JSON document ---
+
+
+def _drive_refused(rig: Rig, capsys, **options) -> dict:
+    try:
+        code, out, _ = rig.drive(capsys, json=True, **options)
+    except Exception as exc:  # noqa: BLE001 - an escape is the defect under test
+        pytest.fail(f"run_drive let {type(exc).__name__}: {exc} escape")
+    assert code == 2, out
+    return _refusal(out)
+
+
+def test_a_corrupt_difficult_list_is_refused(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    _write(rig.repo / "build/driver/difficult.json", "not a difficult list\n")
+    doc = _drive_refused(rig, capsys, dry_run=True)
+    assert "difficult.json" in doc["detail"]
+
+
+def test_a_malformed_committed_status_table_is_refused(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    _write(rig.repo / "config/ufo2p/status.csv", "made-up garbage\n")
+    _git(rig.repo, rig.env, "add", "--", "config/ufo2p/status.csv")
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "a malformed table")
+    doc = _drive_refused(rig, capsys, dry_run=True)
+    assert "status.csv" in doc["detail"]
+
+
+def test_a_runner_that_raises_is_refused(tmp_path, capsys):
+    rig = Rig(tmp_path)
+
+    def run(argv):
+        if list(argv) == DOCKER_INFO:
+            raise PermissionError("made-up: access denied")
+        return rig.runner(argv)
+
+    doc = _drive_refused(rig, capsys, dry_run=True, seams=dict(run=run))
+    assert "PermissionError" in doc["detail"]
+
+
+def test_a_missing_git_is_refused(tmp_path, capsys):
+    rig = Rig(tmp_path)
+
+    def git(args):
+        raise FileNotFoundError("made-up: git not found")
+
+    doc = _drive_refused(rig, capsys, dry_run=True, seams=dict(git=git))
+    assert "git" in doc["detail"]
+    assert not rig.runner.calls
+
+
+def test_a_failing_pack_in_the_dry_run_is_refused(tmp_path, capsys):
+    rig = Rig(tmp_path)
+
+    def broken(exe):
+        def pack(pick, directory):
+            raise OSError("made-up: disk full")
+
+        return pack
+
+    rig.packs.for_exe = broken
+    doc = _drive_refused(rig, capsys, dry_run=True)
+    assert "disk full" in doc["detail"]
+
+
+@pytest.mark.parametrize(("error", "code"),
+                         [(PermissionError("made up"), 126), (FileNotFoundError("made up"), 127),
+                          (OSError("made up"), 126)])  # fmt: skip
+def test_command_runner_maps_every_os_error(tmp_path, monkeypatch, error, code):
+    def raising(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(driver.subprocess, "run", raising)
+    try:
+        done = driver.command_runner(tmp_path)(["docker", "info"])
+    except OSError as exc:
+        pytest.fail(f"command_runner let {exc!r} escape")
+    assert done.returncode == code
+    assert "made up" in done.stderr
+
+
+def test_git_runner_maps_an_os_error(tmp_path, monkeypatch):
+    def raising(*args, **kwargs):
+        raise FileNotFoundError("made up: no git")
+
+    monkeypatch.setattr(driver.subprocess, "run", raising)
+    try:
+        done = driver.git_runner(tmp_path)(["status"])
+    except OSError as exc:
+        pytest.fail(f"git_runner let {exc!r} escape")
+    assert done.returncode == 127
+    assert b"no git" in done.stderr
+
+
 # --- the canary ---
 
 CANARY_DIR = f"build/driver/canary/{RUN}/ufo2p/func_000A3980/attempt-1"
