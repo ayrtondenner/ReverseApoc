@@ -26,6 +26,7 @@ from relocpair import (
     table,
 )
 from reverseapoc import land as land_module
+from reverseapoc.check import Defined
 from reverseapoc.land import LandedFunction, LandError, LandResult, build_patch, land, write_landed
 from reverseapoc.le import LE
 from reverseapoc.relocs import RelocResult, check_function
@@ -192,6 +193,71 @@ def test_mutated_byte_changes_the_sha1():
     assert not result.ok
     assert result.first_difference == GOOD_ROW.end - 1
     assert f"0x{GOOD_ROW.end - 1:08X}" in result.format()
+
+
+# ---- a verdict belongs to one row and one run of bytes (05-REVIEW row 10b) ----------------------
+
+
+def _no_bytes_repr(message: str) -> bool:
+    """LandError messages name addresses and SHA-1s, never a bytes value."""
+    return "b'" not in message and 'b"' not in message
+
+
+def test_check_function_names_the_row_and_bytes_it_judged():
+    result = checked(good_original()).reloc
+    assert getattr(result, "start", None) == GOOD_ROW.start
+    assert getattr(result, "length", None) == len(GOOD_OURS)
+    assert getattr(result, "sha1", None) == sha1(GOOD_OURS)
+
+
+def test_land_refuses_a_verdict_for_another_row():
+    """Row A's verdict with row B's bytes: same length and SHA-1, another start."""
+    orig, _, _, far = three_functions()
+    other = game_row(FAR_START + 0x10, FAR_START + 0x10 + len(FAR_CODE))
+    misfiled = LandedFunction(other, FAR_CODE, far.reloc)
+    with pytest.raises(LandError, match=rf"{other.name}: the relocation verdict") as exc:
+        land(orig.le, [misfiled], expected_sha1=sha1(orig.data))
+    assert f"0x{FAR_START:08X}" in str(exc.value)
+    assert f"0x{other.start:08X}" in str(exc.value)
+    assert _no_bytes_repr(str(exc.value))
+
+
+@pytest.mark.parametrize(
+    "ours",
+    [GOOD_OURS[:-1] + bytes.fromhex("90"), GOOD_OURS + bytes.fromhex("90")],
+    ids=["sha1", "length"],
+)
+def test_land_refuses_a_verdict_for_other_bytes(ours):
+    orig = good_original()
+    good = checked(orig)
+    other = LandedFunction(GOOD_ROW, ours, good.reloc)
+    with pytest.raises(LandError, match=rf"{GOOD_ROW.name}: the relocation verdict") as exc:
+        land(orig.le, [other], expected_sha1=sha1(orig.data))
+    assert sha1(GOOD_OURS) in str(exc.value)
+    assert sha1(ours) in str(exc.value)
+    assert _no_bytes_repr(str(exc.value))
+
+
+def test_land_refuses_a_verdict_without_its_row_and_bytes():
+    """An ok verdict that does not say which row and bytes it judged (06-08 F24)."""
+    orig = good_original()
+    bare = RelocResult(True, (), frozenset(), frozenset())
+    with pytest.raises(LandError, match=rf"{GOOD_ROW.name}: the relocation verdict"):
+        land(orig.le, [LandedFunction(GOOD_ROW, GOOD_ORIGINAL, bare)],
+             expected_sha1=sha1(orig.data))  # fmt: skip
+
+
+def test_land_accepts_the_producer_shape():
+    """check.py's path: one Defined, its check_function verdict, LandedFunction(d.row, d.ours)."""
+    orig = good_original()
+    d = Defined(GOOD_ROW, "func_00010000_", good_segment(), 0, len(GOOD_OURS))
+    reloc = check_function(
+        d.segment, off=d.off, size=d.size, row=d.row, flat=orig.flat, fixups=orig.fixups,
+        symbols=table(d.row),
+    )  # fmt: skip
+    result = land(orig.le, [LandedFunction(d.row, d.ours, reloc)], expected_sha1=sha1(orig.data))
+    assert result.ok, result.format()
+    assert result.landed == (GOOD_ROW.start,)
 
 
 def test_land_result_json_holds_addresses_counts_and_sha1s_only():
