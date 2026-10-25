@@ -37,15 +37,19 @@ saved file with D-12 account problems writes nothing.
 After a passing `gate EXE/UNIT` has written status.csv, gate rewrites decomphub.progress.json
 (D-21, D-29) next to the config root (config_root.parent, ruling F8: the repo root for the
 default config/, a tmp root in tests) with tools/progress.py's derivation from the tables it just
-wrote, through fileio.write_atomic. progress.py is a stdlib script, loaded by path once
-(functools.cache, like check._configure), so gate and the D-22 drift test share one derivation.
-A failure to write the feed names the status.csv already written. --partial and --all do not
-touch it: partial rows do not enter the feed's figures.
+wrote, through fileio.write_atomic, and its text and --json output name the feed to commit with
+status.csv. progress.py is a stdlib script, loaded by path once (functools.cache, like
+check._configure), so gate and the D-22 drift test share one derivation. Before any table is
+written, progress.py derives the tables as they will be, in memory: a table it would refuse
+stops the gate with nothing written. --partial and --all do not touch the feed: partial rows do
+not enter its figures.
 
 On any mismatch gate writes nothing and exits 1; on a tool error (CheckError, StatusError, the
-CLI's tool errors) it writes nothing and exits 2. No flag, environment variable or helper writes
-a matched row without a passing check: the verdict is check's own, in the container, never an
-agent's transcript (D-24, AGT-01).
+CLI's tool errors) it exits 2 and writes nothing, except when an OS error strikes after a table
+was written (the second EXE's status.csv, or the feed after the tables): its message then names
+every table already written, so config/ is restored before anything is committed. No flag,
+environment variable or helper writes a matched row without a passing check: the verdict is
+check's own, in the container, never an agent's transcript (D-24, AGT-01).
 """
 
 from __future__ import annotations
@@ -183,6 +187,7 @@ class GateResult:
     problems: tuple[str, ...] = ()  # why gate refused, beyond the checks' own verdicts
     written: tuple[Written, ...] = ()
     splices: tuple[dict[str, Any], ...] = ()  # gate --all's one land, per EXE
+    feed: Path | None = None  # the decomphub.progress.json gate rewrote, to commit with the tables
 
     @property
     def ok(self) -> bool:
@@ -192,12 +197,15 @@ class GateResult:
         return {"mode": self.mode, "targets": list(self.targets), "ok": self.ok,
                 "exit_code": self.exit_code, "checks": list(self.checks),
                 "problems": list(self.problems), "splice": list(self.splices),
-                "written": [w.to_json() for w in self.written]}  # fmt: skip
+                "written": [w.to_json() for w in self.written],
+                "feed": None if self.feed is None else str(self.feed)}  # fmt: skip
 
     def format(self) -> str:
         lines = [*self.reports]
         lines += [f"GATE REFUSED  {problem}" for problem in self.problems]
         lines += [w.line() for w in self.written]
+        if self.feed is not None:
+            lines.append(f"wrote {DECOMPHUB_FEED} -> {self.feed} (commit it with status.csv)")
         if self.mode == MODE_ALL:  # --all never writes: its verdict alone
             lines.append("ok" if self.ok else "MISMATCH")
             return "\n".join(lines)
@@ -399,6 +407,17 @@ def _progress() -> ModuleType:
     return module
 
 
+def _derivable(config_root: Path, status_texts: Mapping[str, str]) -> None:
+    """progress.py derives the feed from the tables as they will be after the write (stem ->
+    status.csv text, in memory), so a table it would refuse stops gate before any is written."""
+    progress = _progress()
+    try:
+        progress.derive(config_root, status_texts=status_texts)
+    except progress.ProgressError as exc:
+        raise CheckError(f"{DECOMPHUB_FEED} cannot be derived from the tables gate would write "
+                         f"({exc}); nothing written") from None  # fmt: skip
+
+
 def feed_path(config_root: Path) -> Path:
     """decomphub.progress.json next to the config root (ruling F8)."""
     return Path(config_root).parent / DECOMPHUB_FEED
@@ -509,6 +528,7 @@ def _write_tables(config_root: Path, tables: Mapping[str, Sequence[StatusRow]],
     paths = {name: status_path(config_root, exe_stem(name)) for name in merged}
     for rows in merged.values():
         format_status(rows)  # a row write_status would refuse fails before any table is written
+    _derivable(config_root, {exe_stem(name): format_status(rows) for name, rows in merged.items()})
     written: list[Written] = []
     done: list[Path] = []
     for name in sorted(merged, key=exe_stem):
@@ -575,8 +595,9 @@ def gate_units(
             raise CheckError(f"{src} changed after its check; gate it again")
     _progress()  # a checkout that cannot derive the feed fails before any table is written
     written = _write_tables(roots.config_root, tables, passed, attempts, _today(today), owners)
-    write_feed(roots.config_root, sorted({w.path for w in written}, key=str))
-    return GateResult(MODE_UNIT, labels, EXIT_OK, tuple(reports), tuple(docs), (), written)
+    feed = write_feed(roots.config_root, sorted({w.path for w in written}, key=str))
+    return GateResult(MODE_UNIT, labels, EXIT_OK, tuple(reports), tuple(docs), (), written,
+                      feed=feed)  # fmt: skip
 
 
 def gate_unit(
