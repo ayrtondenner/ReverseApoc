@@ -32,14 +32,15 @@ rule (D-18) and is then proven by a plain `check`.
 
 Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
 Outputs go to build/<exe>/obj|base|target/<unit>.*, the paths of build.ninja's edges, when check
-compiles with the committed config/cflags.txt, config/watcom.toml and Watcom tree. With any other
---cflags, --watcom-manifest or --watcom-dir they go to build/check-custom/<exe>/... instead
-(`object_root`), so ninja never takes an object built with flags it does not use for its own
-up-to-date output, and `ninja verify` lands only objects of the committed flags (D-18, WR-01).
+compiles the committed src/ and config/ with the committed config/cflags.txt, config/watcom.toml
+and Watcom tree. With any other --cflags, --watcom-manifest, --watcom-dir, --src or --config they
+go to build/check-custom/<exe>/... instead (`object_root`), so ninja never takes an object built
+from sources or flags it does not use for its own up-to-date output (D-18, WR-01, DI-06 part b).
 """
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 import importlib.util
 import json
@@ -193,11 +194,19 @@ class CompileOptions:
     watcom_manifest: Path | None = None
     watcom_dir: Path | None = None
     log: Path | None = None
+    # The trees the sources and the config are read from (DI-06 part b, ruling F7); None is the
+    # committed one, as for the options above.
+    src_root: Path | None = None
+    config_root: Path | None = None
 
 
 # Where check compiles with non-default options. Not [a-z0-9_]+, so it is never an EXE config stem
 # and never a path build.ninja writes (its unit outputs are $builddir/<stem>/...).
 CUSTOM_ROOT = "check-custom"
+# The trees ninja's cc edge compiles from and its target edge reads (cli.py's --src/--config
+# defaults). object_root reads them at call time.
+DEFAULT_SRC = REPO_ROOT / "src"
+DEFAULT_CONFIG = REPO_ROOT / "config"
 
 
 def _is_default(path: Path | None, default: Path) -> bool:
@@ -207,12 +216,27 @@ def _is_default(path: Path | None, default: Path) -> bool:
 def object_root(build_dir: Path, options: CompileOptions) -> Path:
     """The build dir check compiles into with `options`: `build_dir` itself, whose
     <exe>/obj|base|target paths build.ninja's edges own, only when every option is the committed
-    one ninja's cc edge uses (config/cflags.txt, config/watcom.toml, the default Watcom tree);
-    otherwise `build_dir`/check-custom, so ninja never sees those objects (WR-01)."""
+    one ninja's cc edge uses (config/cflags.txt, config/watcom.toml, the default Watcom tree,
+    src/ and config/); otherwise `build_dir`/check-custom, so ninja never sees those objects
+    (WR-01, DI-06 part b)."""
     default = (_is_default(options.cflags, DEFAULT_CFLAGS)
                and _is_default(options.watcom_manifest, DEFAULT_WATCOM_MANIFEST)
-               and _is_default(options.watcom_dir, DEFAULT_INSTALL))  # fmt: skip
+               and _is_default(options.watcom_dir, DEFAULT_INSTALL)
+               and _is_default(options.src_root, DEFAULT_SRC)
+               and _is_default(options.config_root, DEFAULT_CONFIG))  # fmt: skip
     return Path(build_dir) if default else Path(build_dir) / CUSTOM_ROOT
+
+
+def with_roots(options: CompileOptions, *, src_root: Path, config_root: Path) -> CompileOptions:
+    """`options` carrying the trees a land step compiles from: a non-default root always wins
+    (so the objects go to check-custom), a default one fills an unset field only, so a caller's
+    own non-default root (06-11's `gate --partial`) is kept."""
+    def pick(given: Path | None, root: Path, default: Path) -> Path | None:
+        return Path(root) if given is None or not _is_default(root, default) else given
+
+    return dataclasses.replace(options, src_root=pick(options.src_root, src_root, DEFAULT_SRC),
+                               config_root=pick(options.config_root, config_root,
+                                                DEFAULT_CONFIG))  # fmt: skip
 
 
 def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: CompileOptions) -> Any:
@@ -803,9 +827,11 @@ def land_all(
     without units.csv is skipped, so SMKP.EXE never appears). With `compile_fn` each unit is
     compiled first, into object_root(build_dir, options), except the (name, unit) pairs in
     `fresh` whose object is already built there; without it, the objects ninja built under
-    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name."""
+    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name. `src_root` and
+    `config_root` go into the options (with_roots), so compiling another tree never writes
+    ninja's objects (DI-06 part b)."""
     loaded = loaded or {}
-    options = options or CompileOptions()
+    options = with_roots(options or CompileOptions(), src_root=src_root, config_root=config_root)
     out = []
     for target in load_manifest(manifest):
         if not (Path(config_root) / exe_stem(target.name) / "units.csv").is_file():
@@ -870,7 +896,8 @@ def check_unit(
         raise CheckError(f"{src} not found: scaffold it with `uv run reverseapoc units "
                          f"{target.name} --write-src {unit}`")  # fmt: skip
     compile_fn = compile_fn or compile_source
-    options = CompileOptions(cflags, watcom_manifest, watcom_dir, log)
+    options = CompileOptions(cflags, watcom_manifest, watcom_dir, log, src_root=Path(src_root),
+                             config_root=Path(config_root))  # fmt: skip
     source = check_source(inputs, unit, src, rows, build_dir=build_dir, compile_fn=compile_fn,
                           objdiff_runner=runner, options=options)  # fmt: skip
     splices = land_all(manifest, orig_dir=orig_dir, config_root=config_root, src_root=src_root,
