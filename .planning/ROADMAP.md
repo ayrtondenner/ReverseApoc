@@ -223,7 +223,7 @@ Plans:
   5. An unattended pilot run matches 10 easy functions, one function per commit, with zero regressions: every previously matched function still matches and both EXEs stay SHA-1 identical after every commit; agent work runs through decomp.wtf v0.10.6 fork mode pinned in WSL2 as a subprocess if the spike passes, otherwise through a minimal own agent layer (AGT-06, AGT-10, AGT-11)
 
 **Spike**: decomp.wtf fork mode accepts the repo's stub convention.
-**Plans:** 16/27 plans executed
+**Plans:** 22/27 plans executed
 **UI hint**: yes
 
 Plans:
@@ -256,12 +256,12 @@ Plans:
 - [x] 06-16-PLAN.md — seed status.csv with the container gate, CI drift test, real container proofs, both suites (RPT-01, AGT-06)
 
 **Wave 7** *(D-38 Wave 3; blocked on Wave 6 completion)*
-- [ ] 06-17-PLAN.md — session argv, /goal prompt, stream-json classifier, init assertions, stand-in claude (AGT-01, AGT-03, AGT-04)
-- [ ] 06-18-PLAN.md — progress.py: progress.json, shield, report.json, DecompHub feed; gate rewrites the feed (RPT-02, RPT-04, RPT-05)
-- [ ] 06-19-PLAN.md — listing drafts: three awesome-list PRs and the decomp.me preset request (RPT-05)
-- [ ] 06-20-PLAN.md — docs carry-overs: .dockerignore, SMKP entry, stale text, tool verdicts, AI-use record (AGT-10, RPT-04, AGT-06)
-- [ ] 06-21-PLAN.md — planning paperwork and the DI-01..DI-37 ledger (AGT-10, AGT-11)
-- [ ] 06-22-PLAN.md — README progress section, .recomp.json, DecompHub verification file (RPT-05, RPT-03)
+- [x] 06-17-PLAN.md — session argv, /goal prompt, stream-json classifier, init assertions, stand-in claude (AGT-01, AGT-03, AGT-04)
+- [x] 06-18-PLAN.md — progress.py: progress.json, shield, report.json, DecompHub feed; gate rewrites the feed (RPT-02, RPT-04, RPT-05)
+- [x] 06-19-PLAN.md — listing drafts: three awesome-list PRs and the decomp.me preset request (RPT-05)
+- [x] 06-20-PLAN.md — docs carry-overs: .dockerignore, SMKP entry, stale text, tool verdicts, AI-use record (AGT-10, RPT-04, AGT-06)
+- [x] 06-21-PLAN.md — planning paperwork and the DI-01..DI-37 ledger (AGT-10, AGT-11)
+- [x] 06-22-PLAN.md — README progress section, .recomp.json, DecompHub verification file (RPT-05, RPT-03)
 
 **Wave 8** *(blocked on Wave 7 completion)*
 - [ ] 06-23-PLAN.md — the driver loop: caps, backoff, audit, gate before commit, reset, attempts.jsonl (AGT-01..AGT-04, AGT-06)
@@ -320,7 +320,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
-| 6. Reporting and agent pilot | 16/27 | In Progress | - |
+| 6. Reporting and agent pilot | 22/27 | In Progress | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
