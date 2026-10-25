@@ -10,6 +10,7 @@ from conftest import REPO_ROOT
 from reverseapoc import session
 from reverseapoc.streamjson import (
     EXPECTED_MODEL,
+    EXPECTED_TOOLS,
     Disposition,
     ToolUse,
     Usage,
@@ -96,11 +97,72 @@ def test_classify_precedence_stop_over_limit_over_transient_over_done():
         _events("overloaded")[1],
         _events("success")[-1],
     )
+    server_down = _events("overloaded_result")[-1]  # an is_error result with status 529
     assert classify((limit, auth, done), 1, False) is Disposition.STOP
     assert classify((limit, done), 0, False) is Disposition.LIMIT
     assert classify((limit,), None, True) is Disposition.LIMIT
+    assert classify((limit, server_down), 1, False) is Disposition.LIMIT
     assert classify((overloaded,), 1, False) is Disposition.TRANSIENT
+    assert classify((overloaded, server_down), 1, False) is Disposition.TRANSIENT
+    # A retried overload that recovered: the session went on and produced a clean result.
     assert classify((overloaded, done), 0, False) is Disposition.ATTEMPT_DONE
+
+
+# Fix round 1 I3 (orchestrator ruling): an unknown error signal stops the run; only a known
+# server-side condition is TRANSIENT (not counted).
+
+
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [("cloud_credential", Disposition.STOP), ("overloaded_result", Disposition.TRANSIENT)],
+)
+def test_classify_error_results_from_the_review_probes(name, expected):
+    assert _classify(name, 1) is expected
+
+
+def _error_result(status: object) -> dict:
+    return {"type": "result", "subtype": "success", "is_error": True, "api_error_status": status}
+
+
+@pytest.mark.parametrize("status", [500, 502, 503, 529])
+def test_classify_server_error_result_is_transient(status):
+    assert classify((_error_result(status),), 1, False) is Disposition.TRANSIENT
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 418, "529"])
+def test_classify_other_error_status_stops(status):
+    assert classify((_error_result(status),), 1, False) is Disposition.STOP
+
+
+def test_classify_429_result_stays_limit():
+    assert classify((_error_result(429),), 1, False) is Disposition.LIMIT
+
+
+@pytest.mark.parametrize(
+    "error",
+    ["cloud_credential_error", "model_not_found", "invalid_request", "max_output_tokens",
+     "unknown", "a_future_code", None],
+)  # fmt: skip
+def test_classify_unknown_api_retry_error_stops(error):
+    retry = {"type": "system", "subtype": "api_retry", "error": error}
+    assert classify((retry,), 1, False) is Disposition.STOP
+    assert classify((retry, _events("success")[-1]), 0, False) is Disposition.STOP
+
+
+# Fix round 1 I2: on a successful result, `result` is the agent's own last message.
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Matched. I did not hit your 25-run limit.",
+        "The sweep result was not logged in notes.md yet; done.",
+        "Credit balance is too low? No: done.",
+    ],
+)
+def test_classify_reads_no_error_words_from_a_successful_result(text):
+    result = {"type": "result", "subtype": "success", "is_error": False, "result": text}
+    assert classify((result,), 0, False) is Disposition.ATTEMPT_DONE
 
 
 def test_classify_rejected_with_an_unknown_error_code_stops():
@@ -269,3 +331,10 @@ def test_parse_line_counts_deep_nesting_as_malformed():
     except RecursionError as exc:
         got = exc
     assert got is None
+
+
+def test_check_init_names_duplicate_tools():
+    init = dict(init_event(_events("success")), tools=["Read", *EXPECTED_TOOLS])
+    problems = check_init(init, tested_major=2, min_version=MIN_VERSION)
+    assert len(problems) == 1, problems
+    assert "duplicate Read" in problems[0]
