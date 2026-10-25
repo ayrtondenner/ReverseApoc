@@ -523,8 +523,6 @@ def _chk_targets(inputs: _SplitInputs) -> set[int]:
 
 
 def _cmd_score(args: argparse.Namespace) -> int:
-    if args.top < 1:
-        raise ScoreError(f"--top must be at least 1, not {args.top}")
     target = select_target(load_manifest(args.manifest), args.exe, args.manifest)
     inputs = _split_inputs(args, target)
     assessments = assess(
@@ -534,6 +532,7 @@ def _cmd_score(args: argparse.Namespace) -> int:
         symbols=inputs.symbols,
         chk_targets=_chk_targets(inputs),
         runtime_starts=_runtime_starts(target),
+        page_size=inputs.le.page_size,
     )
     report = ScoreReport.build(target.name, assessments, inputs.symbols, args.top)
     print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
