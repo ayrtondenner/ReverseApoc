@@ -548,6 +548,20 @@ def test_an_unexpected_exception_is_a_tool_error(repo: Path, monkeypatch, capsys
     assert "RuntimeError" in line and "made-up runner failure" in line
 
 
+@pytest.mark.parametrize("error", [RuntimeError, OSError])  # outside and inside cli._ERRORS
+def test_a_multi_line_error_is_printed_as_one_line(repo: Path, monkeypatch, capsys, error):
+    """Fix round 2 N1: a tool error is exactly one stderr line, CR/LF in its text replaced."""
+
+    def broken(argv):
+        raise error("line one\nline two\r\nline three")
+
+    monkeypatch.setattr(attempt, "RUNNER", broken)
+    assert _run(["attempt", "check"]) == 2
+    err = capsys.readouterr().err
+    assert err.count("\n") == 1 and "\r" not in err
+    assert "line one line two line three" in err
+
+
 def test_attempt_check_prints_elapsed_seconds_and_checks_left(repo: Path, monkeypatch, capsys):
     """M2: the summary line gives the run's elapsed seconds and the checks left, so the agent
     budgets by measured time against the 30-minute clock."""
