@@ -113,7 +113,7 @@ def _scenarios(tmp_path):
     yield Night(tmp_path / "lint", sessions=[Sess()], lint_exits=[1]), {"attempts_per_function": 1}
     yield Night(tmp_path / "timeout", sessions=[Sess("no_result", write=None, timeout=True)]), {
         "attempts_per_function": 1}  # fmt: skip
-    yield Night(tmp_path / "abort", sessions=[Sess("overloaded", write=None)] * 3), {}
+    yield Night(tmp_path / "abort", sessions=[Sess("overloaded", write=None)] * 4), {}
     yield Night(tmp_path / "stray", sessions=[Sess(write="tools/x.py")]), {}
     yield Night(tmp_path / "stop", sessions=[Sess("auth")]), {}
     yield Night(tmp_path / "init", sessions=[Sess("bad_init_model")]), {}
