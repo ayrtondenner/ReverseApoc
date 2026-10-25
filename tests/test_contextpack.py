@@ -3,6 +3,7 @@ draft and LE byte below is made up, and every pack is written under pytest's tmp
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -476,6 +477,64 @@ def test_cut_sections_are_marked_in_place():
     pad = PACK_CAP - _size(**_big_inputs(lookalikes=(), callers=())) + 2
     body = {s.title: s.body for s in build_pack(**_big_inputs(pad)).sections}
     assert (body["Callers"], body["Ghidra draft"]) == ("cut (3 items)", "cut (1 item)")
+
+
+LOOKS = ("look-alike func_00013000", "look-alike func_00012000", "look-alike func_00011000")
+CALLERS = ("caller func_00023000", "caller func_00022000", "caller func_00021000")
+NOTES_LABEL = "--- progress/attempts.jsonl"
+
+
+def _notes(*texts: str, records: int = 2):
+    return contextpack.Notes(
+        texts=tuple(f"--- run0/ufo2p/func_00010010/attempt-{n}/notes.md\n{text}"
+                    for n, text in enumerate(texts, start=1)),
+        records=tuple('{"kind": "attempt", "n": %d, "pad": "%s"}' % (n, "r" * 500)
+                      for n in range(1, records + 1)),
+        records_label=NOTES_LABEL,
+    )  # fmt: skip
+
+
+def test_notes_render_texts_before_records():
+    """M11: notes.md texts come before the attempts.jsonl records, oldest first."""
+    pack = build_pack(**_inputs(notes=_notes("OLDEST", "NEWEST", records=1)))
+    body = {s.title: s.body for s in pack.sections}["Earlier notes"]
+    assert body.index("OLDEST") < body.index("NEWEST") < body.index(NOTES_LABEL)
+    assert body.index(NOTES_LABEL) < body.index('"n": 1')
+
+
+def test_notes_are_cut_only_after_the_d14_cuts_records_first():
+    """M11 (an extension of D-14): notes are cut only when the pack is still over the cap
+    after look-alikes, callers and the draft; the attempt records go first, oldest first."""
+    notes = _notes("OLDEST" + "o" * 3000, "MIDDLE" + "m" * 3000, "NEWEST" + "n" * 3000)
+    bare = _size(**_big_inputs(lookalikes=(), callers=(), draft=None,
+                               notes=dataclasses.replace(notes, records=())))  # fmt: skip
+    pack = build_pack(**_big_inputs(PACK_CAP - bare - 200, notes=notes))
+    assert pack.pack_bytes <= PACK_CAP
+    assert pack.truncated == (*LOOKS, *CALLERS, "draft", "attempt record 1", "attempt record 2")
+    body = {s.title: s.body for s in pack.sections}["Earlier notes"]
+    assert "OLDEST" in body and "MIDDLE" in body and "NEWEST" in body
+    assert NOTES_LABEL not in body
+    assert "2 of 2 attempt records" in pack.text.split("\n## ")[0]
+
+
+def test_notes_cut_the_oldest_first_and_keep_the_newest():
+    """M11: then the notes.md texts, oldest first; the newest is the last thing cut."""
+    notes = _notes("OLDEST" + "o" * 3000, "MIDDLE" + "m" * 3000, "NEWEST" + "n" * 3000)
+    newest = contextpack.Notes(texts=notes.texts[-1:])
+    bare = _size(**_big_inputs(lookalikes=(), callers=(), draft=None, notes=newest))
+    pack = build_pack(**_big_inputs(PACK_CAP - bare - 200, notes=notes))
+    assert pack.pack_bytes <= PACK_CAP
+    assert pack.truncated[7:] == ("attempt record 1", "attempt record 2", "earlier note 1",
+                                  "earlier note 2")  # fmt: skip
+    body = {s.title: s.body for s in pack.sections}["Earlier notes"]
+    assert "NEWEST" in body and "OLDEST" not in body and "MIDDLE" not in body
+    assert body.startswith("... 2 older notes and 2 attempt records cut")
+
+
+def test_notes_as_text_stay_one_uncut_block():
+    """A plain string (a manual note) is one note, rendered as before."""
+    body = {s.title: s.body for s in build_pack(**_inputs()).sections}["Earlier notes"]
+    assert body == "```text\nattempt 1: PARTIAL 80%, the made-up loop order differs\n```"
 
 
 def test_cap_counts_utf8_bytes_not_characters():
