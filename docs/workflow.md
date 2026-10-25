@@ -58,6 +58,27 @@ uv run reverseapoc drive [--max-sessions N] [--target-matched N] [--dry-run | --
 
 The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
 
+**Before you start** (the preflight refuses without most of these):
+
+- Docker Desktop is running (`docker info` answers) and the image is built: `docker compose build`.
+- `orig/` holds your executables: `uv run reverseapoc ingest`, then `uv run reverseapoc check-orig`.
+- The Watcom trees are installed under `third_party/watcom/`: `uv run reverseapoc install-watcom` (after `fetch-watcom`), then `uv run reverseapoc check-watcom`.
+- The Claude CLI is in the tested range: `claude --version` must print major 2 and at least 2.1.302 (for example `2.1.302 (Claude Code)`). Upgrade with `claude install stable` if it is older.
+- The tree is clean: `git status` shows nothing, on the main checkout.
+
+**Then, in this order, from the main checkout:**
+
+1. `uv run reverseapoc drive --dry-run`: check the 10 picks and that it exits 0.
+2. `uv run reverseapoc drive --canary --run <fresh id>` (for example `--run canary1`, then `canary2`): repeat with a new id, after the recovery steps below, until the last line is `CANARY PASS`.
+3. `uv run reverseapoc drive --max-sessions 40 --target-matched 10`: the pilot.
+4. Read the results:
+   - the exit code (0 ended clean, 1 stopped or a failed end check, 2 refused) and the printed summary;
+   - `progress/attempts.jsonl`: one `attempt` record per counted session (outcome MATCHED, PARTIAL or GAVE_UP), `abort` records, and the `run` records; the last one is ENDED or STOPPED with its `reason`, `checks_failed` and `uncommitted`;
+   - `config/ufo2p/status.csv` and `config/tacp/status.csv`: the matched and partial rows;
+   - the commits: `git log --format='%h %s' --grep='^Matched-By: reverseapoc drive$'` lists one `feat(<exe>): match ...` commit per match; the night's last commit is `chore(driver): attempt log`;
+   - `build/driver/<run>/`: transcripts, check logs, notes, `end-ninja-verify.log`, `end-gate-all.log`.
+5. The commits are local. Pushing `main` is the owner's step, after reading the results.
+
 **Preflight.** Every run, the dry run and the canary included, first checks the checkout, then runs a fixed list of commands. Nothing is started unless all of it passes. It compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the hooks run `python -I`, which ignores `PYTHONDONTWRITEBYTECODE`), and regenerates the asm listings of both EXEs on the host. The dry run and the night (not the canary) then load both EXEs and precompute the Ghidra drafts of their picks in one container call per EXE (`ghidra-export EXE --json --drafts ...`, D-13). Each command's output goes to `build/driver/<run>/preflight.log`.
 
 Any failure before the night starts is a refusal: exit 2, a reason, a detail, and with `--json` exactly one document `{"event": "REFUSED", "reason": ..., "detail": ...}`. The reasons:
@@ -76,7 +97,7 @@ Any failure before the night starts is a refusal: exit 2, a reason, a detail, an
 | `picks` | a status table or `build/driver/difficult.json` cannot be read, or the pilot cannot be filled with 5 + 5 |
 | `drafts` | `ghidra-export --drafts` fails. Exit 1 is accepted only with a JSON document that names the missing drafts (a pack works without a draft); every other failure refuses |
 | `pack` | the dry run cannot build a pack |
-| `preflight` / `canary` | any other error in those steps (a runner or git that cannot start, for example) |
+| `preflight` / `canary` | any other unexpected error in those steps. A git or a docker that cannot start does not land here: the real runners turn it into a failed command, so it gives `worktree` (git) or `docker`. A canary error after its session started is not a refusal: it is a FAIL line and `CANARY FAIL`, exit 1 |
 
 The night's own refusal (`dirty` outputs: `progress/attempts.jsonl`, a `status.csv` or the feed differ from HEAD) also exits 2.
 
@@ -115,7 +136,13 @@ After the session the driver removes the attempt's containers, audits every chan
 
 **End of run.** When the night ENDS (nothing to do, max sessions, target matched, queue exhausted), the driver runs, in the container, `uv run --frozen python configure.py && ninja -t clean && ninja verify`, then `reverseapoc gate --all`, and logs both under `build/driver/<run>/` (`end-ninja-verify.log`, `end-gate-all.log`). A failed check is recorded in the ENDED run record and the night exits 1. Then the `chore(driver): attempt log` commit holds the night's records. **A STOPPED night skips both end checks**: it has no ninja verify or `gate --all` evidence, so run them by hand before trusting it. Exit codes: 0 ended clean, 1 stopped or a failed end check, 2 refused.
 
-**Open assumptions to watch at the pilot checkpoint.** The tests prove the driver against synthetic streams and fake commands only. These hold only if the real CLI, Docker and host behave as assumed; the canary checks the first five:
+**Warnings for the night.**
+
+- **Do not edit the checkout while the driver runs.** The audit compares the tree before and after each session, so your edit looks like a session stray: the night stops on a guardrail (STOPPED `guardrail`), your file is restored to HEAD or moved into `build/driver/<run>/quarantine/`, and nothing is committed.
+- **Ctrl+C** ends the night as STOPPED `interrupted` (the live attempt is reset and the record names what was undone). The end-of-run checks are skipped, as for any STOPPED night.
+- **The canary is a real, paid Claude session.** Its `attempt check` alone can take up to 10 minutes (the wrapper's container check runs for at most 580 s).
+
+**Open assumptions to watch at the pilot checkpoint.** The tests prove the driver against synthetic streams and fake commands only. These hold only if the real CLI, Docker and host behave as assumed. The canary checks items 1, 4, 5 and 6; items 2 (hook timing) and 3 (`CLAUDE_PROJECT_DIR`, partly shown) stay open after a `CANARY PASS`; items 7 to 9 are operational:
 
 - **`permission_denials` shape.** The canary reads the result event's `permission_denials` as `{tool_name, tool_use_id, tool_input}` entries and expects hook denials to appear there. If they do not, the canary FAILs; look at the transcript.
 - **Hook timing per tool.** If Claude Code ran every PreToolUse hook of a turn before any of its tools, two Edits each placeable on the original file could compose `_asm`. The canary cannot see this. Behind it: the always layer denies any `src/` Edit whose old text is not verbatim in the file, and the gate decides every match; no commit-time inline-asm scan exists.
