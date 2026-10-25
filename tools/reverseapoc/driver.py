@@ -789,6 +789,7 @@ class _Night:
         self.live: _Session | None = None  # the session to reset if a later step raises
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
+        self.pre_gate: dict[str, bytes | None] = {}  # status.csv, feed, log right before the gate
 
     # --- the night ---
 
@@ -1286,6 +1287,9 @@ class _Night:
             self._tool_failure(session, "the C89 lint could not run (exit 2)")
         if lint != EXIT_OK:
             return None
+        claim = session.claim
+        self.pre_gate = {rel: _read(self.repo / rel)
+                         for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix())}  # fmt: skip
         gate = self.deps.gate(pick, n)
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
             self._tool_failure(session, f"gate exited {gate.exit_code}")
@@ -1361,9 +1365,30 @@ class _Night:
                                  model=session.text("model"), usage=usage,
                                  seconds=session.seconds, sha1s=gate_sha1s(gate.doc))  # fmt: skip
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix(), *headers]
-        commit_paths(self.deps.git, message=message, message_file=claim.attempt_dir / COMMIT_MSG,
-                     paths=paths)  # fmt: skip
+        try:
+            commit_paths(self.deps.git, message=message,
+                         message_file=claim.attempt_dir / COMMIT_MSG, paths=paths)  # fmt: skip
+        except DriverError as exc:
+            self._undo_match(session, paths, summary, str(exc))
         self.matched += 1
+
+    def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
+                    why: str) -> None:  # fmt: skip
+        """Fix round 1, I2: a match commit that failed leaves no trace of a match. Everything it
+        staged is unstaged, status.csv, the feed and the log go back to their pre-gate bytes
+        (dropping the driver's own uncommitted MATCHED record), the attempt is reset and logged
+        GAVE_UP `tool`, and the night stops."""
+        notes = [f"the match commit failed: {why}"]
+        try:
+            _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
+        except DriverError as exc:
+            notes.append(f"could not unstage: {exc}")
+        for rel, data in self.pre_gate.items():
+            if data is not None:
+                write_atomic(self.repo / rel, data)
+        self._reset(session)
+        self._record_attempt(session, GAVE_UP, TOOL, summary)
+        raise _Stop(TOOL, "; ".join(notes))
 
     # --- records ---
 
