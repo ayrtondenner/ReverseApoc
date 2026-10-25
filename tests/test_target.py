@@ -11,6 +11,8 @@ import pytest
 
 from conftest import build_le_image, fixup_record
 from elfread import read_elf
+from relocpair import CALLEES, CODE_BASE, absolute, call, game_row, le_off32, original, our_segment
+from relocpair import table as reloc_table
 from reverseapoc.elf import (
     R_386_32,
     R_386_PC32,
@@ -22,8 +24,16 @@ from reverseapoc.elf import (
 )
 from reverseapoc.functions import FunctionRow, SymbolRow, data_name, game_name
 from reverseapoc.le import LE, SRC_OFF32, SRC_PTR1632, SRC_REL32, SRC_SEL16
+from reverseapoc.omf import Segment
+from reverseapoc.relocs import check_function
 from reverseapoc.symbols import SymbolTable
-from reverseapoc.target import RawField, TargetError, build_target
+from reverseapoc.target import (
+    RAW_BRANCH_NO_ROW,
+    RAW_OFF32_NO_ROW,
+    RawField,
+    TargetError,
+    build_target,
+)
 
 DATA_RANGES = [(0x20000, 0x23000)]  # the synthetic data object
 NOP = b"\x90"
@@ -337,3 +347,101 @@ def test_refuses_a_field_split_by_a_row_boundary(unit):
     with pytest.raises(TargetError, match="0x0001000e"):
         _cut([a, b], unit=[a] if unit == "a" else [b], page1=page1,
              patches={0x10000: RET_PAD, 0x10010: RET_PAD})  # fmt: skip
+
+
+# ---- end to end: a raw field cannot pass the relocation check (05-REVIEW rows 18a, 18c) --------
+# A target cut leaves a field raw when it names no row. That no such function can pass does not
+# rest on "our side relocates the field": the guarantee is relocation rule 4 (each of our fixups
+# must land on a nameable start equal to the original target) plus rule 5 (every LE fixup field
+# in the row is one of ours). The cases below cut such a unit, compile nothing, and run
+# check_function on objects built by tests/relocpair.py that reference the field.
+
+GAP = 0x10400  # code in no functions.csv row: a split gap (D-11)
+NAMED = CALLEES[0].start  # relocpair's row func_00010010, a nameable start
+FIELD_VA = CODE_BASE + 1  # the field after the one-byte opcode
+EXTERN_GAP = f"{game_name(GAP)}_"
+EXTERN_NAMED = f"{game_name(NAMED)}_"
+NO_ROW_AT_GAP = f"{EXTERN_GAP}: no game or thunk row starts at 0x{GAP:08X}"  # SymbolError
+_PLACEHOLDER_CALL = b"\xe8" + bytes(4) + b"\xc3"  # call rel32 0; ret
+_PLACEHOLDER_LOAD = b"\xb8" + bytes(4) + b"\xc3"  # mov eax, 0; ret
+
+
+def _call_to(dest: int) -> bytes:
+    """call rel32 dest; ret, at CODE_BASE."""
+    return b"\xe8" + _rel(dest, FIELD_VA) + b"\xc3"
+
+
+def _load_of(dest: int) -> tuple[bytes, bytes]:
+    """mov eax, offset dest; ret, at CODE_BASE, and its off32 LE fixup record."""
+    body = b"\xb8" + struct.pack("<I", dest - CODE_BASE) + b"\xc3"
+    return body, le_off32(FIELD_VA, dest - CODE_BASE, obj=1)
+
+
+def _end_to_end(original_body: bytes, page1: bytes, ours: Segment, size: int):
+    """(cut, verdict): the target cut of the one-row unit at CODE_BASE, and check_function of
+    `ours` against that row."""
+    row = game_row(CODE_BASE, CODE_BASE + len(original_body))
+    orig = original({CODE_BASE: original_body}, page1=page1)
+    symbols = reloc_table(row)
+    cut = build_target(orig.le, [row], symbols, flat=orig.flat, fixups=orig.fixups)
+    verdict = check_function(ours, off=0, size=size, row=row, flat=orig.flat,
+                             fixups=orig.fixups, symbols=symbols)  # fmt: skip
+    return cut, verdict
+
+
+def _assert_passes(cut, verdict) -> None:
+    assert cut.raw_fields == ()
+    assert verdict.ok, verdict.problems
+
+
+_RAW_CASES = {
+    # rule 4: the extern names no row start, so it has no address (SymbolError)
+    "branch, extern at the gap": (
+        _call_to(GAP), b"", _PLACEHOLDER_CALL, [call(1, 1)], [EXTERN_GAP], RAW_BRANCH_NO_ROW,
+        NO_ROW_AT_GAP,
+    ),
+    # rule 4: a nameable start, but not the original target
+    "branch, nameable start": (
+        _call_to(GAP), b"", _PLACEHOLDER_CALL, [call(1, 1)], [EXTERN_NAMED], RAW_BRANCH_NO_ROW,
+        f"{EXTERN_NAMED} resolves to 0x{NAMED:08X}, the original lands on 0x{GAP:08X}",
+    ),
+    "off32, extern at the gap": (
+        *_load_of(GAP), _PLACEHOLDER_LOAD, [absolute(1, 1)], [EXTERN_GAP], RAW_OFF32_NO_ROW,
+        NO_ROW_AT_GAP,
+    ),
+    "off32, nameable start": (
+        *_load_of(GAP), _PLACEHOLDER_LOAD, [absolute(1, 1)], [EXTERN_NAMED], RAW_OFF32_NO_ROW,
+        f"{EXTERN_NAMED} resolves to 0x{NAMED:08X}, the original targets 0x{GAP:08X}",
+    ),
+    # rule 5: our constant equals the raw field, so only reverse coverage tells them apart
+    "off32, our constant": (
+        *_load_of(GAP), _load_of(GAP)[0], [], [], RAW_OFF32_NO_ROW,
+        "the original has an off32 LE fixup here and ours has none (a constant where the "
+        "original has an address)",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", _RAW_CASES.values(), ids=_RAW_CASES.keys())
+def test_raw_field_reference_fails_check_function(case):
+    original_body, page1, ours, fixups, externs, kind, problem = case
+    segment = our_segment(ours, fixups, externs)
+    cut, verdict = _end_to_end(original_body, page1, segment, len(ours))
+    assert cut.raw_fields == (RawField(FIELD_VA, kind),)
+    assert not verdict.ok
+    assert verdict.problems == (f"0x{FIELD_VA:08X}: {problem}",)
+    # the second case: the expectation a nameable reference meets is wrong here, and fails
+    with pytest.raises(AssertionError):
+        _assert_passes(cut, verdict)
+
+
+@pytest.mark.parametrize("kind", ["branch", "off32"])
+def test_the_same_reference_to_a_named_row_passes(kind):
+    """The control: the same shapes with the target at a row start cut with no raw field and
+    pass, so the failures above come from the raw target, not from the fixture."""
+    if kind == "branch":
+        original_body, page1, ours, fixup = _call_to(NAMED), b"", _PLACEHOLDER_CALL, call(1, 1)
+    else:
+        (original_body, page1), ours, fixup = _load_of(NAMED), _PLACEHOLDER_LOAD, absolute(1, 1)
+    segment = our_segment(ours, [fixup], [EXTERN_NAMED])
+    _assert_passes(*_end_to_end(original_body, page1, segment, len(ours)))
