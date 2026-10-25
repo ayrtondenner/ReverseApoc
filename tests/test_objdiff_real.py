@@ -10,8 +10,8 @@ objdiff-cli on PATH (the container).
 from __future__ import annotations
 
 from conftest import requires_objdiff
-from omfimage import extdef, fixupp32, ledata32, lnames, module, pubdef32, segdef32
-from relocpair import CODE_BASE, absolute, game_row, le_off32, original, table
+from omfimage import extdef, fixupp32, grpdef, ledata32, lnames, module, pubdef32, segdef32
+from relocpair import CODE_BASE, FLAT_LNAME, absolute, game_row, le_off32, original, table
 from reverseapoc import check
 from reverseapoc.elf import write_elf
 from reverseapoc.omf import read_object
@@ -31,8 +31,9 @@ FIRST, SECOND, WRONG = "_D_00020004", "_D_00020010", "_D_00020020"
 def our_module(first: str, second: str):
     return read_object(module(
         "u_00010000",
-        lnames("", "_TEXT", "CODE"),
+        lnames("", "_TEXT", "CODE", FLAT_LNAME),
         segdef32(2, 3, len(OURS)),
+        grpdef(4),  # FLAT, the frame of the relocpair fixups
         pubdef32(1, [(SYMBOL, 0)]),
         extdef(first, second),
         ledata32(1, 0, OURS),

@@ -14,9 +14,20 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import write_manifest
-from omfimage import extdef, fixupp32, ledata32, lnames, lpubdef32, module, pubdef32, segdef32
+from omfimage import (
+    extdef,
+    fixupp32,
+    grpdef,
+    ledata32,
+    lnames,
+    lpubdef32,
+    module,
+    pubdef32,
+    segdef32,
+)
 from relocpair import (
     CODE_BASE,
+    FLAT_LNAME,
     GOOD_ORIGINAL,
     GOOD_OURS,
     LOAD_FIELD,
@@ -59,8 +70,9 @@ def omf_object(
     publics (name, offset) besides."""
     return module(
         "u_00010000",
-        lnames("", "_TEXT", "CODE"),
+        lnames("", "_TEXT", "CODE", FLAT_LNAME),
         segdef32(2, 3, len(code)),
+        grpdef(4),  # FLAT, the frame of the relocpair fixups
         pubdef32(1, [(public, 0), *extra]),
         extdef(callee, "_D_00020004"),
         ledata32(1, 0, code),
@@ -607,8 +619,8 @@ def static_helper_object() -> bytes:
     """omf_object with a `static` helper after func_00010000, as wcc386 emits it: LPUBDEF."""
     code = GOOD_OURS + b"\xc3"
     return module(
-        "u_00010000", lnames("", "_TEXT", "CODE"), segdef32(2, 3, len(code)),
-        pubdef32(1, [(SYMBOL, 0)]), lpubdef32(1, [("helper_", len(GOOD_OURS))]),
+        "u_00010000", lnames("", "_TEXT", "CODE", FLAT_LNAME), segdef32(2, 3, len(code)),
+        grpdef(4), pubdef32(1, [(SYMBOL, 0)]), lpubdef32(1, [("helper_", len(GOOD_OURS))]),
         extdef("func_00010010_", "_D_00020004"), ledata32(1, 0, code),
         fixupp32(call(1, 1), absolute(6, 2)),
     )  # fmt: skip
