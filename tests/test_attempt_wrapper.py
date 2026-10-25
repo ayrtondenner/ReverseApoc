@@ -222,7 +222,6 @@ def test_attempt_refuses_an_unknown_subcommand(repo: Path, monkeypatch):
         ("dir", "outside"),
         ("dir", "build"),
         ("dir", "build/driver"),
-        ("dir", "Build/driver/run1/ufo2p/func_000A3980/attempt-1"),
         ("dir", "build/driver/../../x"),
     ],
 )
@@ -239,6 +238,15 @@ def test_attempt_refuses_a_bad_environment(repo: Path, monkeypatch, name, value)
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 2
     assert runner.calls == []
+
+
+def test_attempt_dir_is_compared_with_exact_case():
+    """The container's file system does not fold case, and .gitignore's build/ does not cover
+    Build/ (contextpack's rule); a pure-path check, so it holds on every host."""
+    anchor = Path("/repo/build/driver")
+    assert attempt._inside(Path("/repo/build/driver/run1/ufo2p"), anchor)
+    assert not attempt._inside(Path("/repo/Build/driver/run1/ufo2p"), anchor)
+    assert not attempt._inside(anchor, anchor)
 
 
 def test_attempt_check_budget(repo: Path, monkeypatch, capsys):
