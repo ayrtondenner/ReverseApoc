@@ -31,6 +31,13 @@ from test_contextpack import (
 CLAIM = "ufo2p/u_000a34f0"
 FUNC = "func_000A3980"
 UNIT_TEXT = b'#include "common.h"\n\nINCLUDE_ASM(func_000A3980);\n'
+OTHER = "func_000A34F0"  # a second game row of the claimed unit
+CHECK_ROWS = [  # made-up functions.csv rows for the check tests (I1: the claim must be one)
+    FunctionRow(0x000A34F0, 0x000A3980, OTHER, "game", "u_000a34f0", "call"),
+    FunctionRow(0x000A3980, 0x000A3990, FUNC, "game", "u_000a34f0", "call"),
+    FunctionRow(0x000A3990, 0x000A39A0, "func_000A3990", "runtime", "u_000a34f0", "runtime"),
+    FunctionRow(0x000A4000, 0x000A4010, "func_000A4000", "game", "u_000a4000", "call"),
+]
 
 
 class FakeRunner:
@@ -88,7 +95,8 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     unit.write_bytes(UNIT_TEXT)
     attempt_dir = root / "build" / "driver" / "run1" / "ufo2p" / FUNC / "attempt-1"
     attempt_dir.mkdir(parents=True)
-    roots = dataclasses.replace(attempt.ROOTS, repo=root, src=root / "src")
+    write_functions_csv(root / "config" / "ufo2p" / "functions.csv", CHECK_ROWS, "UFO2P.EXE")
+    roots = dataclasses.replace(attempt.ROOTS, repo=root, src=root / "src", config=root / "config")
     monkeypatch.setattr(attempt, "ROOTS", roots)
     monkeypatch.setenv(attempt.CLAIM_ENV, CLAIM)
     monkeypatch.setenv(attempt.FUNC_ENV, FUNC)
@@ -201,6 +209,91 @@ def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(same, near)), "")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[1]["sweep_hit"] is None
+
+
+def _stub_doc() -> dict:
+    """check's JSON for a unit whose other function matched while the claimed one is still
+    INCLUDE_ASM: check's unit-wide ok is true and the claimed function is only a stub."""
+    doc = _check_doc(ok=True)
+    doc["functions"][0].update(name=OTHER, va="0x000A34F0")
+    doc["stubs"] = [{"name": FUNC, "va": "0x000A3980", "status": "stub, not checked"}]
+    return doc
+
+
+def test_attempt_check_a_stub_claim_is_not_a_match(repo: Path, monkeypatch, capsys):
+    """I1(b): exit 0 only for the claimed function itself. check exits 0 for this unit, but the
+    claimed function was never compiled, so the wrapper says 1 and why."""
+    _use(monkeypatch, FakeRunner(json.dumps(_stub_doc())))
+    assert _run(["attempt", "check"]) == 1
+    assert f"{FUNC} was not compiled (still INCLUDE_ASM?)" in capsys.readouterr().out
+    (line,) = _lines(repo)
+    assert line["exit"] == 1
+    assert (line["best_percent"], line["reloc_ok"], line["bytes_ok"]) == (None, None, None)
+
+
+def test_attempt_check_a_claim_missing_from_the_json_is_not_a_match(repo: Path, monkeypatch,
+                                                                    capsys):  # fmt: skip
+    doc = _stub_doc()
+    doc["stubs"] = []
+    _use(monkeypatch, FakeRunner(json.dumps(doc)))
+    assert _run(["attempt", "check"]) == 1
+    assert f"{FUNC} was not compiled (still INCLUDE_ASM?)" in capsys.readouterr().out
+
+
+def test_attempt_check_the_claimed_function_must_pass_and_check_exit_0(repo: Path, monkeypatch):
+    """I1(b): the claimed function at 100 with reloc and bytes ok is not enough when check
+    exits 1 for its unit; check's own exit 2 passes through."""
+    doc = _check_doc(ok=False)
+    doc["functions"][0].update(objdiff_percent=100.0, reloc={"ok": True, "problems": []},
+                               bytes={"ok": True, "differing": 0, "first_va": None})  # fmt: skip
+    runner = _use(monkeypatch, FakeRunner(json.dumps(doc), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    runner.answer = attempt.Ran(2, "", "reverseapoc check: error: made-up")
+    assert _run(["attempt", "check"]) == 2
+
+
+@pytest.mark.parametrize(
+    "func",
+    ["func_000A4000",  # a game row of another unit
+     "func_000A3990",  # a runtime row of the claimed unit
+     "func_00099990"],  # no row at all
+)  # fmt: skip
+def test_attempt_refuses_a_func_that_is_no_game_row_of_the_claimed_unit(repo: Path, monkeypatch,
+                                                                        capsys, func):  # fmt: skip
+    """I1(a): the environment check refuses, with exit 2 and before any slot is reserved, a
+    FUNC that is not a game or thunk row of the claimed unit (functions.csv, as check reads)."""
+    monkeypatch.setenv(attempt.FUNC_ENV, func)
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    for argv in (["attempt", "check"], ["attempt", "check", "--sweep"]):
+        assert _run(argv) == 2
+        assert func in capsys.readouterr().err
+    assert runner.calls == []
+    assert not (repo / "checks").exists()
+
+
+def test_attempt_sweep_exit_is_never_a_match(repo: Path, monkeypatch, capsys):
+    """I1(c): a sweep exits 0 when it ran, whatever its cells say, and 2 when it did not; it
+    never exits 1 and its 0 never reads as a match."""
+    low = _cell(1, "10.6", ["-4r", "-s", "-fpi"], 10.0, reloc_ok=False, differing=9)
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_sweep_doc(low))))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    out = capsys.readouterr().out
+    assert "never a match" in out
+    assert " OK" not in out
+    runner.answer = attempt.Ran(1, json.dumps(_sweep_doc(low)), "")
+    assert _run(["attempt", "check", "--sweep"]) == 2
+    runner.answer = attempt.Ran(2, "", "reverseapoc check: error: made-up")
+    assert _run(["attempt", "check", "--sweep"]) == 2
+    assert [line["exit"] for line in _lines(repo)] == [0, 2, 2]
+    assert all(line["sweep"] is True for line in _lines(repo))  # M6: sweep lines say so
+
+
+def test_attempt_help_states_the_claimed_function_rule(capsys):
+    """I1(d): exit 0 is the claimed function's match, not a unit-wide 'matched'."""
+    assert _run(["attempt", "--help"]) == 0
+    out = " ".join(capsys.readouterr().out.split())
+    assert "Exit 0 matched," not in out
+    assert "claimed function" in out and "--sweep" in out
 
 
 @pytest.mark.parametrize(
