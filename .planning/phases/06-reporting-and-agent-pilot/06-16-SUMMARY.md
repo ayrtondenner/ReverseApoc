@@ -11,21 +11,22 @@ provides:
   - "config/ufo2p/status.csv and config/tacp/status.csv, written by one container gate run (UFO2P func_000A3980, TACP func_00055080)"
   - "tests/test_drift.py: the D-22 CI drift test (no game files)"
   - "tests/test_gate_real.py: gate --all on the real files passes and refuses a reverted match"
-  - "container proofs: real tests unskipped, ninja graph with stamps, both EXEs SHA-1 identical"
+  - "container proofs: real tests unskipped, ninja graph with stamps, both EXEs SHA-1 identical, both suites green"
 affects: [06-17, 06-18, 06-25, 06-27, progress, driver]
 
 actuals:
-  tokens: 2872
+  tokens: 3178
   tasks: 3
-  commits: 3
+  commits: 5
 plan_head_before: 28e211dc5ac054634f7f9bed431cacb27928c0d7
-plan_head_after: 9ac110ade943d81fcb805ec9fbed8afd13c4e8cb
+plan_head_after: f9222adf9971b72dbd0b524c77ddcb43f2fa8e5c
 
 tech-stack:
   added: []
   patterns:
     - "Drift test: matched names == union of source_marks(...).defined over src/<exe>/*.c; matched source_sha256 == lf_sha256(unit)"
     - "Real gate tests stand a src copy under build/ in for check.DEFAULT_SRC (gate compiles only the committed tree)"
+    - "Tests that run real git against the checkout pass safe.directory=* through GIT_CONFIG_COUNT/KEY_0/VALUE_0"
 
 key-files:
   created:
@@ -34,12 +35,13 @@ key-files:
     - tests/test_drift.py
     - tests/test_gate_real.py
     - .planning/phases/06-reporting-and-agent-pilot/deferred-items.md
-  modified: []
+  modified:
+    - tests/test_hooks.py
 
 key-decisions:
   - "status.csv seeded by ONE container run of `gate ufo2p/u_000a34f0 tacp/u_00054f20 --json` (ruling F1), never by hand"
   - "functions.csv not regenerated (ruling Row 11); tiling and D-50 figures re-measured instead"
-  - "The 5 container failures in tests/test_hooks.py (06-12) are not fixed here: Task 3 changes no tracked file"
+  - "06-12's 5 container failures were test-environment defects, fixed in tests/test_hooks.py only (ruling F2b); hooks.py stays fail-closed"
 
 patterns-established:
   - "Container evidence runs use `docker compose run --rm -T` (the build service has tty: true)"
@@ -85,36 +87,35 @@ coverage:
     description: "Host suite and ruff, with platform-only skips"
     verification:
       - kind: integration
-        ref: "build/gate/06-seed/06-host.log (2275 passed, 32 skipped, exit=0, ruff clean)"
+        ref: "build/gate/06-seed/06-host.log (2275 passed, 32 skipped, exit=0, ruff clean); uv run pytest -q tests/test_hooks.py after f9222ad (211 passed)"
         status: pass
     human_judgment: false
   - id: D6
-    description: "Container suite with no skips except the msvcrt pair"
+    description: "Container suite and ruff with no skips except the msvcrt pair"
     verification:
       - kind: integration
-        ref: "build/gate/06-seed/07-container.log (5 failed in tests/test_hooks.py, 2300 passed, 2 skipped, exit=1)"
-        status: fail
-    human_judgment: true
-    rationale: "Container suite red on 06-12's hooks tests (git dubious ownership, stripped UV_ env); needs a 06-12 fix round and an owner call on the image"
+        ref: "build/gate/06-seed/07b-container.log (2305 passed, 2 skipped, ruff clean, exit=0); F2 container verify passed"
+        status: pass
+    human_judgment: false
 
-duration: 28min
+duration: 41min
 completed: 2026-10-25
-status: halted
+status: complete
 ---
 
 # Phase 6 Plan 16: Seed status.csv via gate, CI drift test, container proofs Summary
 
-**One container gate run wrote the status table for the two Phase 5 matches. A CI drift test now ties status.csv to the matched C, and `gate --all` is proven on the real files: it passes on the committed tree and refuses a reverted match. The real tests and the ninja graph with stamps pass in the container, and the host suite is green. The container suite is NOT green: 5 tests/test_hooks.py tests (plan 06-12) fail there for two environment reasons. Per the plan they are reported, not fixed here.**
+**One container gate run wrote the status table for the two Phase 5 matches. A CI drift test now ties status.csv to the matched C, and `gate --all` is proven on the real files: it passes on the committed tree and refuses a reverted match. The real tests and the ninja graph with stamps pass in the container. After ruling F2b fixed two test-environment defects in 06-12's tests/test_hooks.py, both suites and ruff are green: 2275 passed on the host and 2305 in the container, with only the allowed skips.**
 
 Execution context nonce: 9c70041144e97752
 
 ## Performance
 
-- **Duration:** about 28 min
+- **Duration:** about 41 min. That is 28 min to the halt, plus about 13 min for the F2b resume.
 - **Started:** 2026-10-25T13:17:45Z
-- **Completed:** 2026-10-25T13:45:18Z
-- **Tasks:** 3. Tasks 1 and 2 are complete. Task 3 ran, and its container verify fails.
-- **Files:** 5 created (2 tables, 2 tests, deferred-items.md), plus gitignored evidence
+- **Completed:** 2026-10-25T13:59Z
+- **Tasks:** 3 of 3
+- **Files:** 5 created (2 tables, 2 tests, deferred-items.md) and 1 modified (tests/test_hooks.py), plus gitignored evidence
 
 ## Accomplishments
 
@@ -140,6 +141,10 @@ Execution context nonce: 9c70041144e97752
   - 03-real.log: gate_real, check_tables_real (with its objdiff layer), ghidra_real, functions_real and check_real gave 42 passed, no SKIPPED, exit=0.
   - test_functions_real's drift tests pass, so the boundary checkpoint did not fire.
   - 04-ninja.log: configure, ninja, lint and verify exit 0, and both EXEs are SHA-1 identical.
+- **Both suites green (Task 3, after F2b):**
+  - Host: 2275 passed, 32 platform skips.
+  - Container: 2305 passed, 2 msvcrt skips.
+  - Ruff is clean on both.
 - **Ruling Row 11 re-check** (scratch script in the session scratchpad; numbers only):
 
   | EXE | rows | units | unit span | row bytes | uncovered | unit gaps | rows outside their unit |
@@ -163,9 +168,12 @@ Execution context nonce: 9c70041144e97752
    - No GREEN code was needed: gate_all (06-11) already behaves as pinned. This is the same precedent as 06-10 Task 2.
    - The two tests require opposite verdicts (exit 0 and exit 1) from the same gate_all path, so neither passes vacuously.
    - On the host both skip only for objdiff-cli. In the container both pass (5.3 s).
-3. **Task 3: both suites with the skip audit.** No tracked file changed. The host verify passes; the container verify FAILS (see Issues).
+3. **Task 3: both suites with the skip audit**
+   - First run: the host passed. The container failed: 5 tests in tests/test_hooks.py (07-container.log). That halt is `c33ec7a` (docs).
+   - Ruling F2b: RED is 07-container.log. GREEN is `f9222ad` (fix), tests/test_hooks.py only.
+   - Then test_hooks on the host (211 passed), the container suite and ruff (07b-container.log, exit=0), and the F2 container verify, which passed.
 
-**Plan metadata:** the SUMMARY commit that follows (docs).
+**Plan metadata:** `c33ec7a` (the halted SUMMARY), then this SUMMARY commit (docs).
 
 ## Evidence logs (gitignored, build/gate/06-seed/)
 
@@ -175,7 +183,8 @@ Execution context nonce: 9c70041144e97752
 - `04b-ninja-rebuild.log` (supplementary, see Deviations): `ninja -t clean -r cc` and `-r lint`, then the same chain. It shows CC x2 (wcc386@10.6), OMF2ELF x2, LINT x2 (`lint: 1 files, ok`), REBUILD, and LAND `landed 1` with the manifest SHA-1s, `exit=0`.
 - `05-stamps.log`: both `*.obj.prov.json`, then the post-rebuild listing (2026-10-25T10:28:54-0300, written by ninja's cc edges).
 - `06-host.log`: 2275 passed, 32 skipped, `exit=0`, then `All checks passed!` (ruff).
-- `07-container.log`: 5 failed, 2300 passed, 2 skipped, `exit=1`.
+- `07-container.log`: the RED for F2b. 5 failed (tests/test_hooks.py), 2300 passed, 2 skipped, `exit=1`.
+- `07b-container.log`: 2305 passed, 2 skipped, `All checks passed!` (ruff), `exit=0`.
 
 ## Skip audit (ruling F2): every skip line
 
@@ -198,27 +207,33 @@ SKIPPED [3] tests\test_hygiene.py:551: only inside the container
 SKIPPED [2] tests\conftest.py:74: clang-18 / clang is not on PATH (run in the container)
 ```
 
-Container (07-container.log). These are only F2's one allowed reason, with no `_real.py` skip. The lines moved from :226 to :234/:255, and the reason is unchanged:
+The F2b change touches only tests/test_hooks.py, which has no skip. Its host run after the change was 211 passed, 0 skipped.
+
+Container (07b-container.log). These are only F2's one allowed reason, with no `_real.py` skip. The lines moved from :226 to :234/:255, and the reason is unchanged:
 
 ```
 SKIPPED [1] C:\Users\Ayrton\Documents\Gitprojects\ReverseApoc\tests\test_cc_log.py:234: Windows-only: msvcrt lock path
 SKIPPED [1] C:\Users\Ayrton\Documents\Gitprojects\ReverseApoc\tests\test_cc_log.py:255: Windows-only: msvcrt lock path
 ```
 
-Ruff: `All checks passed!` on the host. In the container, the `&&` chain stopped at the pytest failure, so ruff did not run there.
+Ruff: `All checks passed!` on the host (06-host.log, and again after f9222ad) and in the container (07b-container.log).
 
 ## Files Created/Modified
 
 - `config/ufo2p/status.csv`, `config/tacp/status.csv`: written by `gate` in the container, never by hand.
 - `tests/test_drift.py`: the D-22 drift test.
 - `tests/test_gate_real.py`: the real gate --all cross-check.
-- `.planning/phases/06-reporting-and-agent-pilot/deferred-items.md`: the container failures for 06-12.
+- `tests/test_hooks.py` (F2b):
+  - `SAFE_GIT_ENV` (git `safe.directory=*` through GIT_CONFIG_COUNT/KEY_0/VALUE_0) is passed by test_main_tracks_headers_with_git (monkeypatch.setenv) and by test_matching_entry_point_end_to_end (the subprocess env).
+  - `_session_env` keeps UV_PROJECT_ENVIRONMENT.
+- `.planning/phases/06-reporting-and-agent-pilot/deferred-items.md`: the 06-12 container entry, now resolved.
 
 ## Decisions Made
 
 - Seeded with one gate run (F1). config/*/functions.csv and the other CSVs were not regenerated (Row 11).
 - The drift test takes "defined" from check.source_marks over every src/<exe>/*.c. Each file is read as strict UTF-8 bytes with its own unit's functions.csv rows, so it agrees with configure and check.
 - test_gate_real.py stands its reverted src copy in for `check.DEFAULT_SRC` with monkeypatch, because gate compiles only the committed tree (`_committed_src`). The copy lives under build/ because the compiler compiles only inside the repository.
+- F2b: hooks.py is unchanged, so a hook whose git refuses the checkout still blocks (exit 2). The tests give their own git the exception.
 
 ## Deviations from Plan
 
@@ -230,6 +245,18 @@ The second verify was F1's form (`test "$(cat 01-gate-seed.exit)" = "0"` plus th
 
 **Orchestrator ruling F2: the skip audit.** I used F2's host and container regexes and listed every skip line above. I "fixed" no skip.
 
+**Orchestrator ruling F2b: 06-12's container failures fixed in tests/test_hooks.py (`f9222ad`).**
+- **Found during:** Task 3. 07-container.log had 5 failed. I reproduced both causes in the container:
+  1. git "dubious ownership" on the uid-0 bind mount;
+  2. `_session_env` stripping the image's `UV_PROJECT_ENVIRONMENT`, after which uv tried to replace the host's /work/.venv and failed with an I/O error.
+- **Fix:** the two real-git tests pass `safe.directory=*` through GIT_CONFIG_COUNT/KEY_0/VALUE_0, following the precedents at test_hygiene.py:531 and test_githooks.py. `_session_env` keeps UV_PROJECT_ENVIRONMENT when it is set and still drops every other UV_* variable, so the "no project" and "no uv on PATH" cases still exit 2.
+- **Unchanged:** hooks.py, the image, compose, the Dockerfile and the build scripts.
+- **Verification:** RED is 07-container.log. After the fix:
+  - host test_hooks: 211 passed, ruff clean;
+  - container suite and ruff (07b-container.log): 2305 passed, 2 skipped, exit=0;
+  - the F2 container verify passed.
+- **Files modified:** tests/test_hooks.py.
+
 **1. [Rule 3 - Blocking] `-T` on every captured `docker compose run`**
 - **Found during:** Task 1.
 - **Issue:** The compose `build` service has `tty: true` (ledger note "For 06-15, 06-23 and 06-26"). Without `-T` the redirected JSON and logs can carry TTY artefacts.
@@ -240,26 +267,13 @@ The second verify was F1's form (`test "$(cat 01-gate-seed.exit)" = "0"` plus th
 - **Issue:** In 04-ninja.log every cc and lint edge was already up to date, so it did not show that ninja's own cc edges write the stamps and that lint runs.
 - **Fix:** In the container, `ninja -t clean -r cc && ninja -t clean -r lint` removed only the two objects with their stamps and the lint stamps (ninja's own writes). Then the plan's chain ran again with exit 0. 04-ninja.log is kept unchanged as the plan's evidence.
 
-**Total deviations:** 2 auto-fixed (1 blocking, 1 missing proof), plus 3 orchestrator rulings applied. **Impact:** no scope change. No tracked file outside the plan's list was changed, apart from deferred-items.md.
+**Total deviations:** 2 auto-fixed (1 blocking, 1 missing proof), plus 4 orchestrator rulings applied (F1, Row 11, F2, F2b). **Impact:** F2b adds tests/test_hooks.py to the plan's files, as the ruling directs. There is no other scope change.
 
 ## Issues Encountered
 
-**BLOCKER: the container suite fails, 5 tests in tests/test_hooks.py (plan 06-12).** `07-container.log`: 5 failed, 2300 passed, 2 skipped. I reproduced both causes in the container. Both are deterministic and independent of this plan's commits. They are logged in deferred-items.md:
-
-1. `test_main_tracks_headers_with_git` and `test_matching_entry_point_end_to_end`:
-   - /work is owned by uid 0 inside the container (the Docker Desktop bind mount), and pytest runs as `dev` (uid 1000).
-   - `git ls-files` exits 128: `fatal: detected dubious ownership in repository at '/work'`.
-   - So `hooks._git_tracked` raises HookError, and the matching hook blocks with exit 2.
-2. `test_settings_commands_fail_closed_through_the_hook_shell[0|1|2]`:
-   - `_session_env` strips all `UV_*` variables, including the image's `UV_PROJECT_ENVIRONMENT=/opt/venv`.
-   - `uv run --frozen --project /work` then tries to replace /work/.venv (the host's Windows venv) and fails: `failed to remove directory /work/.venv/Scripts: I/O error (os error 5)`.
-   - With the image's UV_ environment the same command exits 0.
-
-These tests had never run in a container before. 06-16 is the first phase-6 container suite. Task 3 says to change no tracked file and to fix the cause in the plan that owns the file, so they are not fixed here. The fix needs a 06-12 fix round. One option, `safe.directory` in the image, is a build-infrastructure change and needs the owner's call. Until then the CLAUDE.md done gate (tooling green in the container too) is not met for phase 6. Hence `status: halted`. When the 06-12 fix lands, re-running Task 3's second verify closes this plan.
-
-**Cosmetic:** the host and container share `tests/__pycache__` through the bind mount. So pytest shows the other side's paths in some lines (`\work\tests\...` on the host, `C:\Users\...` in the container) and `???` for source lines. Results are not affected.
-
-No tick-rate finding (OpenApoc #997).
+- The first container suite failed on 5 tests/test_hooks.py tests. Both causes were in the test environment, and ruling F2b resolved them (see Deviations, and deferred-items.md, now `status: resolved`).
+- **Cosmetic:** the host and container share `tests/__pycache__` through the bind mount. So pytest shows the other side's paths in some lines (`\work\tests\...` on the host, `C:\Users\...` in the container) and `???` for source lines. Results are not affected.
+- No tick-rate finding (OpenApoc #997).
 
 ## User Setup Required
 
@@ -267,17 +281,17 @@ None.
 
 ## Next Phase Readiness
 
-- status.csv exists and is gate-written. 06-18's progress, 06-25's driver and the picker's `matched_starts` can read it.
+- status.csv exists and is gate-written. 06-18's progress, 06-25's driver and the picker's `matched_starts` can read it. CI's drift test guards it from now on.
 - 06-18 must pin the re-measured coverage figures (UFO2P 25,787 / TACP 35,349 uncovered), not the older ones.
-- Blocked: the phase-6 container done gate, until 06-12's 5 container failures are fixed.
+- The CLAUDE.md done gate holds for Waves 1-2: tests and ruff green on the host and in the container.
 
 ## Self-Check: PASSED
 
-- FOUND: config/ufo2p/status.csv, config/tacp/status.csv, tests/test_drift.py, tests/test_gate_real.py
-- FOUND: build/gate/06-seed/01-gate-seed.{json,exit}, 03-real.log, 04-ninja.log, 04b-ninja-rebuild.log, 05-stamps.log, 06-host.log, 07-container.log
-- FOUND commits: 004f89d, fc7d1cd, 9ac110a. `git rev-list --count 28e211d..9ac110a` = 3, with no file deletions.
-- Task 1 and Task 2 acceptance criteria re-run: PASS. Task 3: 06-host.log `exit=0` PASS; 07-container.log `exit=1` FAIL (the blocker above).
+- FOUND: config/ufo2p/status.csv, config/tacp/status.csv, tests/test_drift.py, tests/test_gate_real.py, tests/test_hooks.py
+- FOUND: build/gate/06-seed/01-gate-seed.{json,exit}, 03-real.log, 04-ninja.log, 04b-ninja-rebuild.log, 05-stamps.log, 06-host.log, 07-container.log, 07b-container.log
+- FOUND commits: 004f89d, fc7d1cd, 9ac110a, c33ec7a, f9222ad. `git rev-list --count 28e211d..f9222ad` = 5, with no file deletions.
+- Every task's acceptance criteria re-run: PASS. 06-host.log `exit=0`; 07b-container.log `exit=0`; the F2 container verify passed.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
-*Completed: 2026-10-25 (halted on Task 3's container verify)*
+*Completed: 2026-10-25*
