@@ -207,19 +207,16 @@ def test_every_function_in_one_unit(name):
 
 @pytest.mark.parametrize("name", EXES)
 def test_units_tile_the_code(name):
-    """D-11 coverage rule, as the draft applies it: the units tile the code object without a gap
-    or overlap from its start to the end of the last functions.csv row; past that row only the
-    UNCOVERED_TAIL bytes remain, in no row and no unit."""
+    """D-11 coverage rule, the part that needs the LE: the units start at the code object's base,
+    and past the last functions.csv row only the UNCOVERED_TAIL bytes remain, in no row and no
+    unit. The gap-free tiling up to that row is CSV-only and runs without orig/
+    (tests/test_units.py::test_committed_units_tile_their_rows)."""
     functions = read_functions_csv(_present(functions_csv_path(name), FUNCTIONS_HINT))
     units = sorted(read_units_csv(_present(units_csv_path(name), UNITS_HINT)),
                    key=lambda unit: unit.start)  # fmt: skip
     (code,) = [obj for obj in LE(_orig(name)).objects if obj.flags & OBJ_EXECUTABLE]
-    gaps = [f"0x{a.end:08X}..0x{b.start:08X}" for a, b in zip(units, units[1:], strict=False)
-            if a.end != b.start]  # fmt: skip
-    assert gaps == []
     assert units[0].start == code.base
     last_end = max(row.end for row in functions)
-    assert units[-1].end == last_end
     assert code.end - last_end == UNCOVERED_TAIL[name]
 
 
