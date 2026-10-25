@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
+from reverseapoc import session
 from reverseapoc.session import build_argv, goal_prompt, kill_tree, run_session
 from reverseapoc.streamjson import Disposition, classify
 
@@ -231,6 +232,7 @@ def test_nonzero_exit_without_result_is_transient(tmp_path):
 
 _DEEP_LINE = b"[" * 100_000 + b"\n"
 _INTERRUPT_AFTER_S = 3.0  # long enough for fakeclaude to report its child
+_FAKE_PID = 4242
 
 
 class _FakePopen:
@@ -239,7 +241,7 @@ class _FakePopen:
     def __init__(self, lines: list[bytes], code: int = 0) -> None:
         self.stdout = io.BytesIO(b"".join(lines))
         self.code = code
-        self.pid = 0
+        self.pid = _FAKE_PID  # never a real kill target: these tests replace kill_tree
         self.argv: list[str] | None = None
         self.kwargs: dict = {}
 
@@ -254,7 +256,10 @@ class _FakePopen:
         return self.code
 
 
-def test_run_session_through_an_injected_popen_counts_a_deep_line_as_malformed(tmp_path):
+def test_run_session_through_an_injected_popen_counts_a_deep_line_as_malformed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(session, "kill_tree", lambda pid, **_: None)
     lines = (STREAMS / "success.jsonl").read_bytes().splitlines(keepends=True)
     fake = _FakePopen([lines[0], _DEEP_LINE, *lines[1:]])
     try:
@@ -333,3 +338,69 @@ def test_an_exception_mid_read_kills_the_tree_and_propagates(tmp_path):
         for proc in procs:
             _kill_pid(proc.pid)
             proc.wait()
+
+
+# Fix round 1 minor: after a normal exit on POSIX the session's process group is killed, so a
+# descendant that outlives claude dies too. Windows cannot: taskkill /T finds children through
+# a live parent only (a known limit, recorded in the SUMMARY).
+
+
+def _finished_session(tmp_path, monkeypatch, *, posix: bool) -> list[int]:
+    killed: list[int] = []
+    monkeypatch.setattr(session, "kill_tree", lambda pid, **_: killed.append(pid))
+    monkeypatch.setattr(session, "_POSIX", posix, raising=False)
+    lines = (STREAMS / "success.jsonl").read_bytes().splitlines(keepends=True)
+    result = run_session(
+        ["claude-stand-in"],
+        cwd=tmp_path,
+        env={},
+        transcript=tmp_path / "attempt" / "transcript.jsonl",
+        popen=_FakePopen(lines),
+    )
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    return killed
+
+
+def test_a_normal_exit_kills_the_group_on_posix(tmp_path, monkeypatch):
+    assert _finished_session(tmp_path, monkeypatch, posix=True) == [_FAKE_PID]
+
+
+def test_a_normal_exit_kills_nothing_on_windows(tmp_path, monkeypatch):
+    assert _finished_session(tmp_path, monkeypatch, posix=False) == []
+
+
+def test_kill_tree_refuses_a_pid_that_names_the_callers_group():
+    """os.killpg(0, ...) would hit the caller's own process group."""
+    for pid in (0, -1):
+        try:
+            kill_tree(pid, windows=False)
+            got = None
+        except Exception as exc:  # anything but the refusal is the defect under test
+            got = exc
+        assert isinstance(got, ValueError), repr(got)
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX-only: taskkill /T cannot find children after the parent exits",
+)
+def test_a_descendant_dies_when_the_session_exits_on_posix(tmp_path):
+    transcript = tmp_path / "attempt" / "transcript.jsonl"
+    child = None
+    try:
+        result = run_session(
+            _fake("--scenario", "success", "--spawn-child"),
+            cwd=tmp_path,
+            env=_env(),
+            transcript=transcript,
+            timeout_s=60,
+        )
+        assert result.timed_out is False
+        assert result.exit_code == 0
+        child = _child_pid(transcript)
+        assert child is not None
+        assert _gone(child), f"child {child} outlived the session"
+    finally:
+        if child is not None:
+            _kill_pid(child)
