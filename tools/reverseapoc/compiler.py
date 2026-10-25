@@ -12,12 +12,15 @@ scratch, because Watcom reads WCC386, INCLUDE and friends and they change codege
 
 Output and build/logs/cc.log carry banners, paths, argv, exit codes and SHA-1s, never file bytes;
 cc.log appends from parallel processes are serialised by an OS lock on the sidecar `<log>.lock`.
+Every successful compile_source also writes `<obj>.prov.json`, the record of what built the
+object (see "the provenance stamp" below), which ninja's land step checks (DI-06 part a).
 """
 
 from __future__ import annotations
 
 import dataclasses
 import errno
+import hashlib
 import json
 import os
 import re
@@ -33,7 +36,7 @@ from pathlib import Path
 from typing import Any
 
 from . import omf, watcom
-from .cflags import Rule, load_cflags, select_rule
+from .cflags import DEFAULT_CFLAGS, Rule, load_cflags, select_rule
 from .fileio import write_atomic
 from .targets import REPO_ROOT, hash_file
 
@@ -611,19 +614,130 @@ def compile_source(
     log: Path | str | None = None,
     stamps: Path | str | None = None,
 ) -> CompileResult:
-    """Pick the cflags rule for `src` (by its root-relative POSIX path) and compile with it."""
+    """Pick the cflags rule for `src` (by its root-relative POSIX path) and compile with it.
+    A successful compile writes the provenance stamp `<obj>.prov.json` (provenance_path). A
+    compile that ran and left no object (a non-zero exit, an object that is not OMF) removes an
+    old stamp; a refusal before the compile runs touches neither the old object nor its stamp."""
+    rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
+    # Taken before the compile: a source edited during it no longer matches the stamp.
+    prov = provenance(rule, src, cflags=cflags, manifest=manifest)
+    try:
+        result = compile_rule(
+            rule,
+            src,
+            obj,
+            root=root,
+            manifest=manifest,
+            watcom_dir=watcom_dir,
+            runner=runner,
+            platform=platform,
+            log=log,
+            stamps=stamps,
+        )
+    except BaseException:
+        _drop_orphan_stamp(obj)
+        raise
+    if result.ok:
+        _write_provenance(Path(obj), prov)
+    else:
+        _drop_orphan_stamp(obj)
+    return result
+
+
+def _drop_orphan_stamp(obj: Path | str) -> None:
+    """Remove the stamp of an object that no longer exists. A path with no name (`-o .`) was
+    refused before anything ran and has no stamp."""
+    obj = Path(obj)
+    if obj.name and not obj.is_file():
+        provenance_path(obj).unlink(missing_ok=True)
+
+
+def _write_provenance(obj: Path, prov: dict[str, Any]) -> None:
+    """Write the stamp atomically. Unlike the gate stamp it is no cache: an object without one is
+    refused by the land step, so a stamp that cannot be written fails the compile and the
+    object is deleted with it."""
+    stamp = provenance_path(obj)
+    try:
+        write_atomic(stamp, (json.dumps(prov, indent=2) + "\n").encode("utf-8"))
+    except OSError as exc:
+        obj.unlink(missing_ok=True)
+        stamp.unlink(missing_ok=True)
+        raise CompilerError(f"{stamp}: the provenance stamp cannot be written ({exc}); "
+                            f"{obj} was deleted") from exc  # fmt: skip
+
+
+def source_rule(
+    src: Path | str,
+    *,
+    cflags: Path | str | None = None,
+    root: Path | str | None = None,
+    manifest: Path | str | None = None,
+) -> Rule:
+    """The cflags rule compile_source compiles `src` with (the last rule matching its
+    root-relative POSIX path)."""
     root = Path(root if root is not None else REPO_ROOT).resolve()
     versions = tuple(watcom.load_watcom_manifest(manifest))
-    rule = select_rule(load_cflags(cflags, versions=versions), _root_relative(src, root))
-    return compile_rule(
-        rule,
-        src,
-        obj,
-        root=root,
-        manifest=manifest,
-        watcom_dir=watcom_dir,
-        runner=runner,
-        platform=platform,
-        log=log,
-        stamps=stamps,
-    )
+    return select_rule(load_cflags(cflags, versions=versions), _root_relative(src, root))
+
+
+# ---- the provenance stamp (DI-06 part a) -------------------------------------------------------
+# `<obj>.prov.json` records what built the object: the rule's compiler and flags, SHA-256 of the
+# source (CRLF read as LF, so a checkout's line endings do not matter), of the cflags table and of
+# the Watcom manifest the compile used, and PROV_VERSION. ninja's land step (check._land_exe)
+# lands an object only while its stamp equals provenance() of today's files; build.ninja declares
+# the stamp as an implicit output of the cc edge, so ninja rebuilds an object without one.
+
+PROV_SUFFIX = ".prov.json"
+PROV_VERSION = 1  # the stamp format; a stamp of another format is stale
+PROV_KEYS = ("compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256", "version")
+
+
+def provenance_path(obj: Path | str) -> Path:
+    obj = Path(obj)
+    return obj.with_name(obj.name + PROV_SUFFIX)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def source_sha256(src: Path | str) -> str:
+    """SHA-256 of the source text with CRLF normalised to LF."""
+    try:
+        data = Path(src).read_bytes()
+    except OSError as exc:
+        raise CompilerError(f"{src}: cannot read the source ({exc})") from exc
+    return _sha256(data.replace(b"\r\n", b"\n"))
+
+
+def provenance(
+    rule: Rule,
+    src: Path | str,
+    *,
+    cflags: Path | str | None = None,
+    manifest: Path | str | None = None,
+) -> dict[str, Any]:
+    """The stamp of `src` compiled with `rule`, the cflags table `cflags` and the Watcom
+    manifest `manifest` (None: config/cflags.txt and config/watcom.toml)."""
+    cflags = Path(cflags) if cflags is not None else DEFAULT_CFLAGS
+    manifest = Path(manifest) if manifest is not None else watcom.DEFAULT_WATCOM_MANIFEST
+    return {
+        "compiler": rule.spec,
+        "flags": list(rule.flags),
+        "source_sha256": source_sha256(src),
+        "cflags_sha256": _sha256(cflags.read_bytes()),
+        "watcom_sha256": _sha256(manifest.read_bytes()),
+        "version": PROV_VERSION,
+    }
+
+
+def read_provenance(obj: Path | str) -> dict[str, Any] | None:
+    """The stamp next to `obj`, or None when it is missing, unreadable or not a JSON object of
+    exactly PROV_KEYS. A torn or wrong-shaped stamp is never trusted."""
+    try:
+        data = json.loads(provenance_path(obj).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or sorted(data) != sorted(PROV_KEYS):
+        return None
+    return data

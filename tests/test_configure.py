@@ -1231,7 +1231,8 @@ build $builddir/ufo2p/target/u_00010000.o: target | orig/UFO2P.EXE config/ufo2p/
 config/ufo2p/units.csv
   exe = ufo2p
   unit = u_00010000
-build $builddir/ufo2p/obj/u_00010000.obj: cc src/ufo2p/u_00010000.c
+build $builddir/ufo2p/obj/u_00010000.obj | $builddir/ufo2p/obj/u_00010000.obj.prov.json: cc \
+src/ufo2p/u_00010000.c
 build $builddir/ufo2p/base/u_00010000.o: omf2elf $builddir/ufo2p/obj/u_00010000.obj
 build objects: phony $builddir/ufo2p/base/u_00010000.o $builddir/ufo2p/target/u_00010000.o
 

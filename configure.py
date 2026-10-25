@@ -35,6 +35,7 @@ from pathlib import Path, PurePosixPath
 if importlib.util.find_spec("reverseapoc") is None:  # plain `python`, outside the uv environment
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 
+from reverseapoc.compiler import PROV_SUFFIX
 from reverseapoc.functions import (
     KIND_GAME,
     KIND_THUNK,
@@ -587,8 +588,12 @@ def _unit_edges(unit: UnitBuild, orig: str, layout: Layout) -> list[str]:
         return lines
     src = ninja_path(_refuse_option_like(unit.source))
     obj = _built(unit.output("obj", ".obj"))
+    # The provenance stamp `reverseapoc cc` writes next to the object (DI-06 part a) is an
+    # implicit output: ninja rebuilds an object that has none, and the land step refuses one
+    # whose stamp is missing or stale. Like the object, it is a checked-name builddir path.
+    stamp = _built(unit.output("obj", ".obj" + PROV_SUFFIX))
     lines += [
-        f"build {obj}: cc {src}{_implicit(layout.cc_inputs)}",
+        f"build {obj}{_implicit([stamp], built=True)}: cc {src}{_implicit(layout.cc_inputs)}",
         f"build {_built(unit.output('base'))}: omf2elf {obj}",
     ]
     return lines

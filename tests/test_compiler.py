@@ -442,8 +442,9 @@ def test_stamp_written_atomically(ws, monkeypatch):
         real(path, data)
 
     monkeypatch.setattr(compiler, "write_atomic", recording)
-    assert ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler()).ok
-    assert written == [_stamp(ws)]
+    obj = ws.root / "out" / "a.obj"
+    assert ws.compile(ws.source(), obj, FakeCompiler()).ok
+    assert written == [_stamp(ws), _prov(obj)]  # the gate stamp, then the object's provenance
     assert sorted(p.name for p in ws.stamps.iterdir()) == [_stamp(ws).name]
 
 
@@ -456,7 +457,12 @@ def test_a_stamp_that_cannot_be_written_never_fails_a_compile(ws, monkeypatch, f
     # The stamp is only a cache: losing it costs a re-hash next time, never the compile.
     stamps = ws.stamps
     if failure == "write":
-        monkeypatch.setattr(compiler, "write_atomic", _disk_full)
+        real = compiler.write_atomic
+
+        def gate_stamp_disk_full(path, data):  # the object's provenance stamp is no cache
+            (_disk_full if Path(path).parent == stamps else real)(path, data)
+
+        monkeypatch.setattr(compiler, "write_atomic", gate_stamp_disk_full)
     else:
         (ws.root / "a-file").write_text("not a directory\n")
         stamps = ws.root / "a-file" / "cache"
@@ -606,6 +612,21 @@ def test_provenance_stamp_is_written_atomically(ws, monkeypatch):
     obj = ws.root / "out" / "a.obj"
     assert ws.compile(ws.source(), obj, FakeCompiler()).ok
     assert _prov(obj) in written
+
+
+def test_a_provenance_stamp_that_cannot_be_written_fails_the_compile(ws, monkeypatch):
+    """Unlike the gate stamp, the provenance stamp is what the land step trusts: without it the
+    compile fails and leaves no object."""
+    real = compiler.write_atomic
+    obj = ws.root / "out" / "a.obj"
+
+    def prov_disk_full(path, data):
+        (_disk_full if Path(path) == _prov(obj) else real)(path, data)
+
+    monkeypatch.setattr(compiler, "write_atomic", prov_disk_full)
+    with pytest.raises(CompilerError, match="provenance stamp cannot be written"):
+        ws.compile(ws.source(), obj, FakeCompiler())
+    assert not obj.exists() and not _prov(obj).exists()
 
 
 KEPT ="int kept;\n"  # what a file the compile must not touch holds
