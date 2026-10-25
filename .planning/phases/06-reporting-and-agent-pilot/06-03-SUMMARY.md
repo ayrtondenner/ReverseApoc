@@ -14,11 +14,15 @@ provides:
 affects: [06-12 hooks.py (reuses the D-12 parser), 06-09 (updates the default-render golden), driver plans, 06-16 container re-run]
 
 actuals:
-  tokens: 9024
+  # chars/4 over `git diff 021a58b..17ac24d` (57,496 chars, SUMMARY included; code and tests
+  # alone are 39,633 chars = 9,908). The 80000 estimate is far above this realized diff: the plan
+  # touched few lines in each file. The first SUMMARY's 9024 was the same measure before the fix
+  # round (36,094 chars of diff, no SUMMARY).
+  tokens: 14374
   tasks: 3
-  commits: 6
+  commits: 11  # git rev-list --count 021a58b..17ac24d, the first SUMMARY commit 9ab2390 included
 plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: de94a5b222dea3a22b91ee2dd0bd9b03860ada1b
+plan_head_after: 17ac24df3ae2400c9e9d886be29a2bd68f48784c
 
 tech-stack:
   added: []
@@ -175,6 +179,7 @@ See key-decisions in the frontmatter. One addition: with `--config` pointing at 
 
 ## Deviations from Plan
 
+- **Orchestrator ruling on F4 (fix round 1), accepted as applied:** the regeneration rule has always carried `--config config`, so the no-config-flags assertion covers only the five rules that read config/ (check_orig, rebuild, target, asm, land).
 - **Orchestrator ruling F4: pin the golden on a synthetic tree.** `test_default_config_render_is_unchanged` builds the `_split_tree` config/src tree in tmp_path, collects its units and renders with the default `Layout()`. The result is compared with the literal `DEFAULT_RENDER_GOLDEN`, captured from the code before the change. Interpretation: the ruling asks the default render to contain none of `--config`, `--manifest`, `--functions` or `--symbols`. The regeneration rule always carries `--config config` (it existed before this plan and must stay), so the assertion covers the commands of the config-reading rules (check_orig, rebuild, target, asm, land). The golden literal pins the rest of the text, the configure rule included.
 - **Orchestrator ruling F20: observe the real frame method.** I compiled both matched units on the host with the main checkout's Watcom tree and listed `frame_method` for every FIXUPP: the observed set is {F1}, with the FLAT group as frame datum. The allowed set is exactly that, named `FRAME_GROUP` / `FLAT_CODE_FRAMES`. Commands and results are in the section "F20: the observed frame set" above. I used the literal main-checkout path, because the harness refuses `$(...)` in git-bearing commands.
 
@@ -226,10 +231,27 @@ See key-decisions in the frontmatter. One addition: with `--config` pointing at 
 - 06-09 updates `DEFAULT_RENDER_GOLDEN`: its only diff is the `| ...prov.json` implicit outputs of the cc edges (ruling F4 consumer).
 - Open question (not in this plan): `land` reads `--src` too. A non-default `--src` is passed back only to the regeneration rule, not to land.
 
+## Fix round 1 (review-06-03.md, FIX_BASE 9ab2390)
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| I1 (Important, regression of a71dd7a) | `_blank` turned `"a\<nl>b"` into a quote, a bare newline and a quote, so `#define S "a\<nl>b" INCLUDE_ASM(...)` ended the directive at the literal and read the marker as live. A literal now blanks to its quote, one backslash-newline per spliced line break, and its quote, so the directive stays one logical line. Probe `define-string` was added to CONTINUATION_PROBES, with a line-number case. | `8a0a536` | `31b01ce` |
+| M1 | The comment and literal scanner now accepts splices inside the delimiters (`/\<nl>/`, `/\<nl>*`, `*\<nl>/`) and after an escape's backslash, as translation phase 2 runs before phase 3. `_blank` turns every line break inside a comment into a splice (a comment is one space), so a block comment spanning lines inside a `#define` keeps the directive going. `_live_code` puts a multi-line logical code line on its first physical line and empties the rest, so code is read spliced and later line numbers stay true. Probes: `line-comment-opener-splice`, `block-comment-opener-splice`, `block-comment-closer-splice`, `define-block-comment`, plus `code-splice-marker` and `code-comment-in-marker` (live code stays live). Line-number cases: `closer-splice`, `define-comment`. Every probe agrees between configure and `check.source_marks` (the parametrized `test_check_source_marks_agrees_with_configure`). check.py is unchanged. This also removes the `*\<nl>/` over-blanking that 06-12's hooks.py would have inherited. | `8a0a536` | `31b01ce` |
+| M2 | The relocs.py module docstring, the frame-constant comment and the problem text now say "frame method F1 (a group frame)" and state that the frame datum is not checked (omf.py keeps none). omf.py is unchanged. | n/a | `17ac24d` |
+| M3 | Note: the observed F20 set comes from four extern-target fixups only. Fixups to the unit's own `_TEXT` (or to a static callee) were never observed. If wcc386 frames them differently, the check fails closed (refused, never passed), which could block a later match until the set is re-observed. This is recorded beside `FRAME_GROUP` in relocs.py. | n/a | `17ac24d` |
+| M4 | `tests/relocpair.py` `call`/`absolute` take `frame: tuple[int, int | None]`, and `test_unexpected_frame_is_refused` gained an `F3 frame number` case. It passed on first run because it pins existing behaviour. | `5f3f806` | n/a |
+| M5 | Corrected the `actuals` block: `tokens` is chars/4 over the realized diff including this fix round (57,496 chars, 14374; code and tests alone are 9,908). The first 9024 was the same measure before the round. `commits` and `plan_head_after` were re-measured. | n/a | (this SUMMARY commit) |
+
+Verification after the round:
+- `uv run pytest -q`: 1448 passed, 215 skipped. `uv run ruff check .`: all checks passed.
+- `uv run pytest -q tests/test_configure.py tests/test_check.py`: 167 passed, 3 skipped.
+- RED for `8a0a536`: 7 failures, all on assertions. Six probes returned the wrong marked set in source_marks and configure, and `closer-splice` gave no problem where one was expected. `code-comment-in-marker` and the `define-string`/`define-comment` line-number cases passed before the fix and pin behaviour that must stay.
+- Real files: `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 committed units. `check.source_marks` on both matched unit files reports their definitions with no problems. `check.checked_functions` on `build/06-03/*.obj` still gives `func_000A3980 ok` and `func_00055080 ok`.
+
 ## Self-Check: PASSED
 
 - FOUND: configure.py, tools/reverseapoc/relocs.py, tests/test_configure.py, tests/test_relocs.py, tests/relocpair.py
-- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b (`git log 021a58b..HEAD`, 6 commits)
+- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b, 9ab2390, 8a0a536, 31b01ce, 5f3f806, 17ac24d (`git log 021a58b..HEAD`, 11 commits before this SUMMARY update)
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
