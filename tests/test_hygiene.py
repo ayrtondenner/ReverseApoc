@@ -342,6 +342,13 @@ def test_round_trip_tests_never_copy_manifest_hashes():
     assert found == []
 
 
+# A bare exact pin: a PEP 508 project name, `==`, a version with no `=`, `;`, `[` or space.
+# Anything else (a range, a marker, an extra, a second `==`) is refused.
+_EXACT_PIN = re.compile(
+    r"(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9][A-Za-z0-9.+!_-]*)"
+)
+
+
 def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
     """What is wrong when a runtime dependency has no docs/tools.md reason (empty = none).
 
@@ -351,10 +358,11 @@ def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
     problems = []
     rows = [line for line in tools_text.splitlines() if line.startswith("|")]
     for pin in tomllib.loads(pyproject_text)["project"].get("dependencies", []):
-        name, sep, version = pin.partition("==")
-        if not sep or not version:
+        exact = _EXACT_PIN.fullmatch(pin)
+        if exact is None:
             problems.append(f"{pin!r} is not an exact `name==version` pin")
             continue
+        name = exact.group("name")
         documented = any(
             f"`{pin}`" in row and name.lower() in row.lower() and "**Use**" in row for row in rows
         )
