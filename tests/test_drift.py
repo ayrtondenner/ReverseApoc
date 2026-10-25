@@ -7,6 +7,9 @@ each matched row's source_sha256 is the LF-normalised SHA-256 of its unit file t
 added by hand, a match reverted to INCLUDE_ASM, a new definition nobody gated, or any edit of
 matched C (a comment included) fails here until `reverseapoc gate` runs again in the container
 (D-21). The planted cases run on tmp copies of the committed tables and C.
+
+D-22 point 3: the committed decomphub.progress.json is byte for byte what tools/progress.py
+derives from the committed CSVs, the same derivation gate writes it with (06-18).
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ from reverseapoc.status import (
     status_path,
     write_status,
 )
+from test_progress import load_progress
 
 EXES = ("ufo2p", "tacp")
 CONFIG = REPO_ROOT / "config"
@@ -36,6 +40,7 @@ UNIT_SUFFIX = ".c"
 # The Phase 5 matches the table holds from 06-16 on; the planted cases work on the UFO2P one.
 PLANT_EXE, PLANT_UNIT, PLANT_FUNC = "ufo2p", "u_000a34f0", "func_000A3980"
 PLANT_STUB = "func_000A3970"  # an INCLUDE_ASM row of the same unit
+FEED = REPO_ROOT / "decomphub.progress.json"
 
 
 def _read(path: Path) -> str:
@@ -149,3 +154,25 @@ def test_drift_catches_planted_changes(planted):
         f"{PLANT_EXE}: {PLANT_FUNC}: {unit.name} changed since gate ran (re-gate it)"]
     unit.write_bytes(original)
     assert drift(config_root, src_root, PLANT_EXE) == []
+
+
+def derived_feed(config_root: Path) -> bytes:
+    progress = load_progress()
+    return progress.render(progress.build_decomphub(progress.derive(config_root)))
+
+
+def test_committed_feed_is_derived():
+    """D-22 point 3: decomphub.progress.json equals build_decomphub(derive(config/))."""
+    assert FEED.is_file(), f"{FEED} is not committed; gate writes it (D-29)"
+    assert FEED.read_bytes() == derived_feed(CONFIG), (
+        "decomphub.progress.json drifted from the CSVs: re-run gate, or "
+        "uv run python -I tools/progress.py --decomphub decomphub.progress.json")
+
+
+def test_feed_drift_is_caught(planted):
+    """A matched row removed from a tmp copy of status.csv changes the derived feed."""
+    config_root, _ = planted
+    before = derived_feed(config_root)
+    table = status_path(config_root, PLANT_EXE)
+    write_status(table, [r for r in read_status(table) if r.name != PLANT_FUNC])
+    assert derived_feed(config_root) != before

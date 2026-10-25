@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import write_manifest
+from conftest import REPO_ROOT, write_manifest
 from reverseapoc import check, gate
 from reverseapoc.check import (
     CheckError,
@@ -39,6 +39,7 @@ from reverseapoc.functions import (
 from reverseapoc.land import LandResult
 from reverseapoc.relocs import RelocResult
 from reverseapoc.status import MATCHED, StatusRow, lf_sha256, read_status, status_path, write_status
+from test_progress import load_progress
 
 UFO, TACP = "UFO2P.EXE", "TACP.EXE"
 STEMS = {UFO: "ufo2p", TACP: "tacp"}
@@ -967,3 +968,69 @@ def test_full_revert_in_a_mixed_unit_gate_all_exits_1(tree, kind):
     assert (UFO, UNIT_A) not in fake.sources
     assert (UFO, UNIT_A) not in set(fake.lands[0]["fresh"])
     assert tree.status(UFO).read_bytes() == before
+
+
+# ---- 06-18: gate rewrites decomphub.progress.json (D-21, D-29, ruling F8) ----
+
+FEED = "decomphub.progress.json"
+
+
+def derived_feed(config: Path) -> bytes:
+    """What progress.py derives from the CSVs under `config`, as the committed file holds it."""
+    progress = load_progress()
+    return progress.render(progress.build_decomphub(progress.derive(config)))
+
+
+def test_gate_rewrites_the_decomphub_feed(tree):
+    """After a passing gate the feed next to config/ (config_root.parent, ruling F8) is
+    progress.py's derivation from the tables gate just wrote."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    feed = tree.root / FEED
+    feed.write_bytes(b"stale\n")
+    result = run_gate(tree, f"ufo2p/{UNIT_A}")
+    assert result.ok
+    assert feed.read_bytes() == derived_feed(tree.config)
+    tracks = {t["id"]: t["measurement"] for t in json.loads(feed.read_bytes())["tracks"]}
+    assert (tracks["ufo2p-functions"]["completed"], tracks["ufo2p-functions"]["total"]) == (1, 4)
+    assert tracks["tacp-functions"]["completed"] == 0
+
+
+@pytest.mark.parametrize("failure", ["mismatch", "error"])
+def test_gate_failure_leaves_the_feed(tree, failure):
+    tree.write_unit(UFO, UNIT_A, [A1])
+    feed = tree.root / FEED
+    feed.write_bytes(b"previous feed\n")
+    if failure == "mismatch":
+        result = run_gate(tree, f"ufo2p/{UNIT_A}", check=FakeCheck(tree, mismatch=True))
+        assert result.exit_code == 1
+    else:
+        with pytest.raises(CheckError):
+            run_gate(tree, f"ufo2p/{UNIT_A}", check=FakeCheck(tree, error=CheckError("objdiff")))
+    assert feed.read_bytes() == b"previous feed\n"
+
+
+def test_gate_with_a_tmp_config_root_leaves_the_repo_feed(tree):
+    """Ruling F8: the feed goes next to the config root gate was given, so a gate over a tmp
+    tree never touches the repository's decomphub.progress.json."""
+    repo_feed = REPO_ROOT / FEED
+    before = repo_feed.read_bytes() if repo_feed.exists() else None
+    tree.write_unit(UFO, UNIT_A, [A1])
+    assert run_gate(tree, f"ufo2p/{UNIT_A}").ok
+    assert (tree.root / FEED).is_file()
+    assert (repo_feed.read_bytes() if repo_feed.exists() else None) == before
+
+
+def test_gate_names_the_tables_when_the_feed_write_fails(tree, monkeypatch):
+    """The feed is written after status.csv: an OS error there names the written table, so
+    config/ is restored before anything is committed (the M2 rule)."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+
+    def failing(path, data):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(gate, "write_atomic", failing)
+    with pytest.raises(CheckError) as caught:
+        run_gate(tree, f"ufo2p/{UNIT_A}")
+    message = str(caught.value)
+    assert str(tree.status(UFO)) in message and FEED in message and "disk full" in message
+    assert tree.status(UFO).exists() and not (tree.root / FEED).exists()
