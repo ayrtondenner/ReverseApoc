@@ -5,6 +5,7 @@ check's land step does. Every name, address and hash is made up."""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -14,8 +15,16 @@ from pathlib import Path
 import pytest
 
 from conftest import write_manifest
-from reverseapoc import gate
-from reverseapoc.check import CheckError, CheckResult, ExeLand, FunctionCheck, SourceCheck
+from reverseapoc import check, gate
+from reverseapoc.check import (
+    CheckError,
+    CheckResult,
+    ExeLand,
+    FunctionCheck,
+    SourceCheck,
+    UnitPaths,
+    object_root,
+)
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.land import LandResult
@@ -511,3 +520,149 @@ def test_gate_cli_all(tree, monkeypatch, capsys):
 def test_gate_cli_target_usage(tree, capsys, argv):
     assert cli_main([*argv, *tree.argv()]) == 2
     assert "reverseapoc gate: error:" in capsys.readouterr().err
+
+
+# ---- Task 3: gate --partial (D-21, D-23, ruling F7) --------------------------------------------
+
+
+class FakePartial(FakeAll):
+    """check_source for a saved attempt: scores `percent[start]` for each function the saved
+    file defines, and writes its object where the real check_source would (object_root of the
+    options gate passes), so a test sees which build tree it went to."""
+
+    def __init__(self, tree: Tree, percent: dict[int, float]) -> None:
+        super().__init__(tree, percent=percent)
+        self.options: list = []
+        self.objects: list[Path] = []
+
+    def source(self, exe, unit, src, rows, *, build_dir, options, **kwargs) -> SourceCheck:
+        self.sources.append((exe.target.name, unit))
+        self.options.append(options)
+        obj = UnitPaths.of(object_root(build_dir, options), exe.stem, unit).obj
+        obj.parent.mkdir(parents=True, exist_ok=True)
+        obj.write_bytes(b"custom object")
+        self.objects.append(obj)
+        unit_starts = {row.start for row in rows}
+        functions = tuple(ok_function(s, p) for s, p in sorted(self.percent.items())
+                          if s in unit_starts)  # fmt: skip
+        return SourceCheck("wcc386", ("-4r",), functions, None, "")
+
+
+@pytest.fixture
+def committed(tree, monkeypatch) -> Tree:
+    """The tmp tree stands in for the committed src/ and config/, so only the saved file's own
+    root can send a compile to check-custom (DI-06 part b)."""
+    monkeypatch.setattr(check, "DEFAULT_SRC", tree.src)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", tree.config)
+    return tree
+
+
+def saved_copy(tree: Tree, unit: str, text: str = "int saved(void) { return 1; }\n") -> Path:
+    path = tree.root / "build" / "driver" / "run1" / "ufo2p" / fname(B1) / "attempt-1" / "best"
+    path.mkdir(parents=True, exist_ok=True)
+    (path / f"{unit}.c").write_bytes(text.encode("utf-8"))
+    return path / f"{unit}.c"
+
+
+def run_partial(tree: Tree, unit: str, saved: Path, fake: FakePartial, *, attempts: int = 1):
+    return gate.gate_partial("ufo2p", unit, saved, roots=tree.roots, attempts=attempts,
+                             today=TODAY, load_fn=fake.load, check_source_fn=fake.source,
+                             compile_fn=lambda *a, **k: None,
+                             objdiff_runner=lambda argv: "")  # fmt: skip
+
+
+def test_partial_writes_best_percent(committed):
+    tree = committed
+    ninja_obj = tree.root / "build" / "ufo2p" / "obj" / f"{UNIT_B}.obj"
+    ninja_obj.parent.mkdir(parents=True)
+    ninja_obj.write_bytes(b"ninja object")
+    saved = saved_copy(tree, UNIT_B)
+    fake = FakePartial(tree, {B1: 73.5})
+    result = run_partial(tree, UNIT_B, saved, fake, attempts=2)
+    assert result.exit_code == 0 and result.mode == "partial"
+    sha = hashlib.sha256(saved.read_bytes()).hexdigest()
+    assert tree.rows(UFO) == [StatusRow(B1, fname(B1), UNIT_B, "partial", 73.5, 2, sha,
+                                        "2026-10-25")]  # fmt: skip
+    assert "73.50" in tree.status(UFO).read_text(encoding="utf-8")
+    (options,) = fake.options
+    assert Path(options.src_root) == saved.parent
+    (obj,) = fake.objects
+    assert obj.is_relative_to(tree.root / "build" / "check-custom")
+    assert ninja_obj.read_bytes() == b"ninja object"
+
+
+def test_partial_never_downgrades_a_matched_row(committed):
+    tree = committed
+    before = seed(tree, UFO, [matched(A1, UNIT_A, attempts=3)])
+    saved = saved_copy(tree, UNIT_A)
+    result = run_partial(tree, UNIT_A, saved, FakePartial(tree, {A1: 60.0, A2: 50.0}))
+    assert result.exit_code == 0
+    rows = tree.rows(UFO)
+    assert rows[0] == matched(A1, UNIT_A, attempts=3)
+    expected = [(A1, MATCHED, 100.0), (A2, "partial", 50.0)]
+    assert [(r.start, r.status, r.best_percent) for r in rows] == expected
+    assert tree.status(UFO).read_bytes() != before
+
+
+def test_partial_keeps_the_higher_percent(committed):
+    tree = committed
+    old = StatusRow(B1, fname(B1), UNIT_B, "partial", 80.0, 1, "d" * 64, "2026-10-01")
+    seed(tree, UFO, [old])
+    result = run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), FakePartial(tree, {B1: 60.0}),
+                         attempts=2)  # fmt: skip
+    assert result.exit_code == 0
+    assert tree.rows(UFO) == [dataclasses.replace(old, attempts=2)]
+
+
+def test_partial_takes_a_higher_percent(committed):
+    tree = committed
+    seed(tree, UFO, [StatusRow(B1, fname(B1), UNIT_B, "partial", 60.0, 1, "d" * 64,
+                               "2026-10-01")])  # fmt: skip
+    saved = saved_copy(tree, UNIT_B)
+    assert run_partial(tree, UNIT_B, saved, FakePartial(tree, {B1: 80.25}), attempts=2).ok
+    (row,) = tree.rows(UFO)
+    assert (row.best_percent, row.attempts, row.date) == (80.25, 2, "2026-10-25")
+    assert row.source_sha256 == hashlib.sha256(saved.read_bytes()).hexdigest()
+
+
+def test_partial_with_no_progress_writes_nothing(committed):
+    tree = committed
+    before = seed(tree, UFO, [matched(A1, UNIT_A)])
+    fake = FakePartial(tree, {A1: 100.0, A2: 0.0})  # the matched one is never a partial row
+    result = run_partial(tree, UNIT_A, saved_copy(tree, UNIT_A), fake)
+    assert result.exit_code == 1 and result.written == ()
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_partial_cli(committed, monkeypatch, capsys):
+    tree = committed
+    saved = saved_copy(tree, UNIT_B)
+    fake = FakePartial(tree, {B1: 42.0})
+    monkeypatch.setattr(gate, "load_exe", fake.load)
+    monkeypatch.setattr(gate, "check_source", fake.source)
+    monkeypatch.setattr(gate, "default_objdiff_runner", lambda target: lambda argv: "")
+    argv = ["gate", f"ufo2p/{UNIT_B}", "--partial", *tree.argv(), "--src", str(saved),
+            "--attempts", "2", "--json"]  # fmt: skip
+    assert cli_main(argv) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "partial" and [w["best_percent"] for w in doc["written"]] == ["42.00"]
+
+
+@pytest.mark.parametrize(
+    "case", ["no-src", "directory", "not-c", "missing", "two-targets", "with-all"]
+)
+def test_partial_cli_usage(committed, capsys, case):
+    tree = committed
+    saved = saved_copy(tree, UNIT_B)
+    (saved.parent / "notes.md").write_text("x", encoding="utf-8")
+    src = {"no-src": None, "directory": saved.parent, "not-c": saved.parent / "notes.md",
+           "missing": saved.parent / "gone.c"}.get(case, saved)  # fmt: skip
+    targets = {"two-targets": [f"ufo2p/{UNIT_B}", f"ufo2p/{UNIT_A}"], "with-all": ["--all"]}
+    argv = ["gate", *targets.get(case, [f"ufo2p/{UNIT_B}"]), "--partial", *tree.argv()]
+    if src is not None:
+        argv += ["--src", str(src)]
+    else:  # --src left at its default, the committed src root
+        argv = [a for a in argv if a not in ("--src", str(tree.src))]
+    assert cli_main(argv) == 2
+    assert "reverseapoc gate: error:" in capsys.readouterr().err
+    assert not tree.status(UFO).exists()
