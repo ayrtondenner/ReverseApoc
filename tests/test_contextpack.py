@@ -7,6 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from conftest import REPO_ROOT, build_le_image, fixup_record
+from reverseapoc import contextpack
+from reverseapoc.functions import FunctionRow, SymbolRow
+from reverseapoc.le import LE
+from reverseapoc.symbols import SymbolTable
 from reverseapoc.contextpack import (
     PACK_CAP,
     ContextPackError,
@@ -103,3 +108,170 @@ def test_empty_inputs_say_none():
 
 def test_pack_cap_is_24_kib():
     assert PACK_CAP == 24576
+
+
+# ---- the neighbourhood from a synthetic LE (Task 2) ----
+
+CODE = 0x10000
+FUNC_A = CODE  # calls B; also loads the address of C (a code pointer, not a call or extern)
+FUNC_B = CODE + 0x10  # reads and writes two data words, then calls C
+FUNC_C = CODE + 0x20
+END = CODE + 0x30
+A_BYTES = (
+    b"\xe8\x0b\x00\x00\x00"  # call FUNC_B (rel32 0xB from FUNC_A + 5)
+    + b"\xb8\x20\x00\x00\x00"  # mov eax, 0x20 (off32 field, LE fixup -> FUNC_C)
+    + b"\xc3"  # ret
+    + b"\x90" * 5
+)
+B_BYTES = (
+    b"\xa1\x00\x02\x00\x00"  # mov eax, [0x200] (off32 field -> data + 0x200)
+    + b"\xa3\x00\x01\x00\x00"  # mov [0x100], eax (off32 field -> data + 0x100)
+    + b"\xe8\x01\x00\x00\x00"  # call FUNC_C (rel32 1 from FUNC_B + 15)
+    + b"\xc3"  # ret
+)
+C_BYTES = b"\xc3" + b"\x90" * 15
+UNIT_AB = "u_00010000"
+UNIT_C = "u_00010020"
+UNIT_AB_TEXT = (
+    '#include "common.h"\n'
+    "\n"
+    "extern int D_00020100;\n"
+    "\n"
+    "/* made-up comment\n"
+    "   with a { and a ; */ int func_00010000(void)\n"
+    "{\n"
+    "    return func_00010010();\n"
+    "}\n"
+    "\n"
+    "int func_00010010(void)\n"
+    "{\n"
+    "    return D_00020100;\n"
+    "}\n"
+)
+
+
+def _le_inputs():
+    records = (
+        fixup_record(7, 0x06, 1, 0x20)
+        + fixup_record(7, 0x11, 2, 0x200)
+        + fixup_record(7, 0x16, 2, 0x100)
+    )
+    data = build_le_image(
+        fixups=[records, b"", b""], patches={FUNC_A: A_BYTES, FUNC_B: B_BYTES, FUNC_C: C_BYTES}
+    ).data
+    le = LE(data)
+    rows = [
+        FunctionRow(FUNC_A, FUNC_B, "func_00010000", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "call"),
+    ]
+    data_ranges = [(obj.base, obj.end) for obj in le.objects if not obj.flags & 0x4]
+    symbols = SymbolTable.build(
+        rows, [SymbolRow(0x20200, "_g_counter", "data")], data_ranges=data_ranges
+    )
+    return rows, le.load_flat(relocate=False), le.fixups(), symbols
+
+
+def _gather(row, tmp_path: Path, status, **overrides):
+    rows, flat, fixups, symbols = _le_inputs()
+    kwargs = {
+        "rows": rows,
+        "flat": flat,
+        "fixups": fixups,
+        "symbols": symbols,
+        "status": status,
+        "unit_texts": {UNIT_AB: UNIT_AB_TEXT},
+        "listing_dir": tmp_path / "asm",
+        "draft_dir": tmp_path / "asm" / "ghidra",
+        "common_h": "/* made-up common.h */\n",
+        "idioms": "made-up idioms\n",
+        "notes": None,
+    }
+    kwargs.update(overrides)
+    return contextpack.gather(rows[row], **kwargs)
+
+
+def test_callers_and_callees_from_the_le(tmp_path: Path):
+    rows, flat, fixups, _ = _le_inputs()
+    index = contextpack.CallIndex.build(rows, flat, fixups)
+    assert index.callees_of(FUNC_A) == (FUNC_B,)
+    assert index.callees_of(FUNC_B) == (FUNC_C,)
+    assert index.callers_of(FUNC_B) == (FUNC_A,)
+    assert index.callers_of(FUNC_C) == (FUNC_B,)  # the code pointer in A is not a call
+    (tmp_path / "asm").mkdir()
+    (tmp_path / "asm" / "func_00010010.s").write_text("# made-up listing\n", encoding="utf-8")
+    inputs = _gather(1, tmp_path, {FUNC_A: "matched", FUNC_C: "partial"})
+    assert inputs["callers"] == (
+        contextpack.Neighbour("func_00010000", "game", "matched", "int func_00010000(void)"),
+    )
+    assert inputs["callees"] == (contextpack.Neighbour("func_00010020", "game", "partial", None),)
+    assert inputs["listing"] == "# made-up listing\n"
+    assert inputs["draft"] is None  # no draft file: the section says none
+    assert inputs["unit_text"] == UNIT_AB_TEXT
+    build_pack(**inputs)  # gather's dict is exactly build_pack's keywords
+
+
+def test_matched_callee_carries_its_prototype(tmp_path: Path):
+    inputs = _gather(0, tmp_path, {FUNC_B: "matched"})
+    assert inputs["callees"] == (
+        contextpack.Neighbour("func_00010010", "game", "matched", "int func_00010010(void)"),
+    )
+    unmatched = _gather(1, tmp_path, {})
+    assert unmatched["callees"] == (
+        contextpack.Neighbour("func_00010020", "game", "unmatched", None),
+    )
+
+
+def test_externs_are_the_d_symbols_the_row_touches(tmp_path: Path):
+    assert _gather(1, tmp_path, {})["externs"] == ("D_00020100", "_g_counter")
+    assert _gather(0, tmp_path, {})["externs"] == ()  # its only off32 targets code
+    assert _gather(2, tmp_path, {})["externs"] == ()
+
+
+# ---- definition heads sliced from the original text (orchestrator ruling R2-3) ----
+
+TRICKY_UNIT = (
+    '#include "common.h"\r\n'
+    "#if 0\r\n"
+    "int func_00010000(int a) { return a; }\r\n"
+    "#endif\r\n"
+    'static const char trigraphs[] = "??=??( {";\r\n'
+    "/* a comment with a { brace\r\n"
+    "   and a ; */ int func_00010000(void)\r\n"
+    "{\r\n"
+    "    return 1; /* } */\r\n"
+    "}\r\n"
+    "#define LIMIT 3\r\n"
+    "unsigned\r\n"
+    "func_00010010(void)\r\n"
+    "{\r\n"
+    "    return LIMIT;\r\n"
+    "}\r\n"
+)
+
+
+def test_callee_prototype_offsets_survive_comments_trigraphs_and_crlf():
+    found = contextpack.definitions(TRICKY_UNIT)
+    assert set(found) == {"func_00010000", "func_00010010"}
+    first = found["func_00010000"]
+    assert first.head == "int func_00010000(void)"  # the #if 0 copy is dead code
+    assert first.source == "int func_00010000(void)\r\n{\r\n    return 1; /* } */\r\n}"
+    assert found["func_00010010"].head == "unsigned\r\nfunc_00010010(void)"  # not the #define
+
+
+def test_callee_prototype_on_the_real_tacp_unit():
+    """src/tacp/u_00054f20.c is the file R2-3 names: its comment block before the definition
+    holds braces and backticks, and code_text's offsets do not map onto it."""
+    text = (REPO_ROOT / "src" / "tacp" / "u_00054f20.c").read_text(encoding="utf-8")
+    found = contextpack.definitions(text)
+    assert set(found) == {"func_00055080"}
+    assert found["func_00055080"].head == "void func_00055080(void)"
+    assert found["func_00055080"].source == (
+        "void func_00055080(void)\n{\n    D_0028DF70 = func_00011500();\n}"
+    )
+
+
+def test_callee_prototype_unreadable_unit_gives_none():
+    # a lone CR and an #if the D-12 parser cannot evaluate: no head is guessed
+    assert contextpack.definitions("int func_00010000(void) {}\r\n#if FOO\n#endif\n") == {}
+    assert contextpack.definitions("int func_00010000(void) {}\rint x;\n") == {}
