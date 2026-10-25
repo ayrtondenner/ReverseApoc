@@ -64,3 +64,23 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v5
+
+  # D-30 (owner-approved outward call): ask DecompHub to re-read decomphub.progress.json. It runs
+  # only on a push and only after the owner sets the repository variable DECOMPHUB_REFRESH to
+  # true; otherwise the job is skipped. No secret and no token: the body is public data.
+  notify-decomphub:
+    needs: deploy
+    if: github.event_name == 'push' && vars.DECOMPHUB_REFRESH == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Notify DecompHub
+        env:
+          PROJECT_REPOSITORY: https://github.com/${{ github.repository }}
+          PROJECT_REVISION: ${{ github.sha }}
+        run: |
+          jq -n --arg repository "$PROJECT_REPOSITORY" --arg revision "$PROJECT_REVISION" \
+            '{repository: $repository, revision: $revision}' |
+            curl --fail --silent --show-error --max-time 20 \
+              -H "Content-Type: application/json" --data-binary @- \
+              https://app.decomphub.com/api/progress/refresh
