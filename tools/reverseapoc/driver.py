@@ -91,6 +91,7 @@ START = "start"
 NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED = (
     "nothing to do", "max sessions", "target matched", "queue exhausted")  # fmt: skip
 GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL = "guardrail", "stop signal", "init", "error", "tool"
+INTERRUPTED = "interrupted"  # KeyboardInterrupt/SystemExit: recorded, then re-raised
 LINT, TIMEOUT = "lint", "timeout"  # an attempt record's abort_reason
 TRANSIENT = "transient"  # an abort record's abort_reason
 
@@ -317,7 +318,7 @@ RECORD_FIELDS: dict[str, dict[str, Callable[[object], bool]]] = {
 }
 RUN_REASONS = {
     STARTED: (START,),
-    STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL),
+    STOPPED: (GUARDRAIL, STOP_SIGNAL, INIT, ERROR, TOOL, INTERRUPTED),
     ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED),
 }
 
@@ -787,15 +788,24 @@ class _Night:
         self.done: set[Key] = set()
         self.live: _Session | None = None  # the session to reset if a later step raises
         self.git_dir: Path | None = None
+        self.interrupted = ""  # what containment did before an interrupt was re-raised
 
     # --- the night ---
 
     def run(self) -> DriveReport:
+        """Every night ends with a run record (fix round 1, I1): ENDED, a STOPPED reason, a
+        STOPPED `error` for any other exception, or a STOPPED `interrupted` for a
+        KeyboardInterrupt/SystemExit, which is then re-raised (minor 8)."""
         self._record_run(STARTED, START)
         try:
             event, reason, detail = ENDED, self._loop(), None
         except _Stop as stop:
             event, reason, detail = STOPPED, stop.reason, stop.detail
+        except Exception as exc:
+            event, reason, detail = STOPPED, ERROR, _detail(f"{type(exc).__name__}: {exc}")
+        except BaseException as exc:
+            self._record_run(STOPPED, INTERRUPTED, _detail(type(exc).__name__ + self.interrupted))
+            raise
         self._record_run(event, reason, detail)
         if not (event == STOPPED and reason == GUARDRAIL):  # after a breach: commit nothing
             self._commit_log(stopped=event == STOPPED)
@@ -870,14 +880,21 @@ class _Night:
         except _Stop:
             raise
         except Exception as exc:
-            if self.live is not None:
-                try:
-                    self._reset(self.live)
-                except Exception:  # noqa: BLE001 - the stop below names the first failure
-                    pass
+            self._reset_live()
             raise _Stop(ERROR, f"{type(exc).__name__}: {exc}") from exc
+        except BaseException:
+            self._reset_live()  # minor 8: an interrupt between steps still resets the attempt
+            raise
         finally:
             self.live = None
+
+    def _reset_live(self) -> None:
+        if self.live is None:
+            return
+        try:
+            self._reset(self.live)
+        except Exception:  # noqa: BLE001 - the stop names the first failure
+            pass
 
     def _attempt(self, pick: Pick, n: int) -> str | None:
         """Launch until one session counts (its outcome), a LIMIT session matches (MATCHED), or
@@ -1025,13 +1042,17 @@ class _Night:
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
                                        timeout_s=self.config.wall_clock_s)  # fmt: skip
-        except Exception as exc:
-            # Third pass: contain what the session left before the ERROR stop.
+        except BaseException as exc:
+            # Third pass: contain what the session left before the stop. Minor 8: an interrupt
+            # is contained the same way, then re-raised for run() to record.
             session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before)
             stray = self._strays(session)
             contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
             if not stray:
                 self._reset(session)
+            if not isinstance(exc, Exception):
+                self.interrupted = f" during a session{contained}"
+                raise
             why = f"the session raised {type(exc).__name__}: {exc}{contained}"
             raise _Stop(ERROR, why) from exc
         finally:
