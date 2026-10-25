@@ -282,6 +282,21 @@ Verification after fix round 3 (host, worktree):
 - Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2607 passed, 44 skipped in 444 s.
 - `uv run ruff check .`: All checks passed.
 
+## Fix round 4 (FIX_BASE 2137a50; rereview r3 approved, minors as rulings fixround-06-23-r4.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| L1 (consumer contract for 06-25-PLAN.md:157) | No place for the end-of-run checks (ninja verify, gate --all) between the last session and the ENDED record | `Deps.end_of_run` (default: no checks) runs after the loop and before the ENDED record; its failed checks go under the pinned `checks_failed` key (empty list otherwise, on every run record); `DriveReport.checks_failed` carries them and `exit_code` is 1 for an ENDED night with a failed check; the chore commit follows the record; an exception from it is STOPPED `error` (I1) | `test_end_of_run_checks_land_in_the_ended_record_before_the_chore_commit`, `test_a_clean_end_of_run_keeps_exit_0`, `test_a_raising_end_of_run_is_a_stopped_error`, schema `run without checks_failed`, `checks_failed not a list`, `test_schema_accepts_an_ended_record_with_failed_checks` | da59a8e, 02b7561 |
+| L2 | A STOPPED night did not say which partial rows it left uncommitted | every STOPPED record (interrupted included) names each status.csv row that differs from HEAD (`<path>: <start> <status>`) and a changed feed under the pinned `uncommitted` key; best-effort, an unreadable path is named as such; no auto-commit | `test_a_stopped_night_names_its_uncommitted_partial_rows`, schema `run without uncommitted`, `uncommitted not strings` | da59a8e, 02b7561 |
+| L3 | A failing git call in the dirty-outputs check escaped `drive()` | it returns a `REFUSED` report (exit 2, reason `outputs check`) naming the error, with nothing written | `test_a_failing_outputs_check_refuses_the_start` | da59a8e, 02b7561 |
+
+RED evidence (da59a8e): 9 failures, all on assertions. The end_of_run order and value checks (`[] == [(3, ['STARTED'], 0)]`, `None == []`, `('ENDED', 'nothing to do') == ('STOPPED', 'error')`), the uncommitted list (`None == [...]`), L3 through the escape helper (`Failed: drive() let RuntimeError escape`), and the schema's good records (`extra ['checks_failed', 'uncommitted']`). `Deps.end_of_run` was an uncalled stub so the tests failed on assertions, not on a TypeError.
+
+Verification after fix round 4 (host, worktree):
+- `uv run pytest -q tests/test_driver.py tests/test_attempts_schema.py`: 137 passed, 2 skipped (both R-A symlink skips).
+- Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2617 passed, 44 skipped in 426 s.
+- `uv run ruff check .`: All checks passed.
+
 ## Issues Encountered
 
 - The harness refused some compound shell commands (heredocs, scripts mentioning git, `cd ... && git ...`); file edits ran through the Edit tool or small scripts in the scratchpad, and git steps as plain commands.
@@ -305,6 +320,7 @@ None.
 ## Next Phase Readiness
 
 - 06-25: preflight compiles tools/ and configure.py (fix round 2 minor 2: the hooks' `python -I` ignores `PYTHONDONTWRITEBYTECODE`), and decides `uv run --no-sync` together with hooks.ATTEMPT_PREFIX (fix round 1 minor 3). The session env already carries `PYTHONDONTWRITEBYTECODE=1`.
+- 06-25 wires `Deps.end_of_run` to its end-of-run checks (fix round 4 L1): return one string per failed check, for example `"ninja verify exit 1"`, `"gate --all exit 1"`; the driver pins them in the ENDED record and exits 1.
 - 06-25 wires the real Deps: `argv=lambda p: session.build_argv(p, claude=...)`, `session=session.run_session`, `gate`/`partial_gate`/`lint` as `docker compose run --rm -T build uv run --frozen reverseapoc gate|lint ...` parsing `--json`, `remove_containers(prefix)` with `docker ps -a --filter name=<prefix>` then `docker rm -f`, `queue`/`requeue`/`matched_callees` over picker and score, `scaffold` via `units --write-src`, `pack` via `context --out <dir> --json`, `git=git_runner(repo)`, and `DriveConfig(tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION)`.
 - 06-27 can grep `"reason":"guardrail"` in STOPPED records.
 - No tick-rate finding (OpenApoc #997) in this plan.
