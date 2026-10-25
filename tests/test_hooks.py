@@ -427,6 +427,63 @@ def test_matching_denies_every_pragma_aux(repo):
     assert not matching(in_repo(write(native(unit), SCAFFOLD + "/* #pragma aux */\n"), repo)).deny
 
 
+PILOT_PRAGMAS = [  # fix round 1 M14(b): every #pragma, not only aux
+    "#pragma on (check_stack)\n",  # changes code the way a flag does; flags are owner-only
+    "#pragma off (check_stack)\n",
+    "#pragma pack(1)\n",
+    "#pragma warning 1 4\n",
+    "  #  pragma once\n",
+    "#pragma \\\n off (check_stack)\n",
+    "#pragma/* x */off (check_stack)\n",
+    "??=pragma off (check_stack)\n",
+]
+
+
+@pytest.mark.parametrize("text", PILOT_PRAGMAS)
+def test_matching_denies_every_pragma(repo, text):
+    """M14(b): during the pilot a matching session writes no #pragma of any kind in src/ or
+    include/; the always layer is unchanged (it denies only a code-emitting #pragma aux)."""
+    unit = _unit(repo)
+    decision = matching(in_repo(write(native(unit), SCAFFOLD + text), repo))
+    assert decision.deny
+    assert "#pragma of any kind" in decision.reason
+    header = repo / "include" / "foo.h"
+    assert matching(in_repo(write(native(header), text), repo)).deny
+    assert not always(write(native(unit), SCAFFOLD + text)).deny
+
+
+def test_matching_allows_pragma_words_outside_code(repo):
+    unit = _unit(repo)
+    for text in ["/* #pragma off (check_stack) */\n", 'char *s = "#pragma once";\n',
+                 "int pragma_count;\n"]:  # fmt: skip
+        assert not matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
+
+
+def _background(command: str, repo: Path, value: object) -> dict:
+    payload = bash(command, repo)
+    payload["tool_input"]["run_in_background"] = value
+    return payload
+
+
+@pytest.mark.parametrize("value", [True, "true", 1])
+def test_matching_denies_a_background_bash(repo, value):
+    """M14(a): checks run in the foreground, one at a time; a background wrapper call is
+    denied (the lock alone does not stop edits made while a background check runs)."""
+    decision = matching(_background(f"{WRAPPER} check", repo, value))
+    assert decision.deny
+    assert "checks run in the foreground, one at a time" in decision.reason
+
+
+def test_matching_allows_a_foreground_bash(repo):
+    assert not matching(_background(f"{WRAPPER} check", repo, False)).deny
+    assert not matching(bash(f"{WRAPPER} check", repo)).deny
+
+
+def test_always_ignores_background_bash(repo):
+    """The always layer has no opinion on Bash, background or not (M14 is matching-only)."""
+    assert not always(_background("ls", repo, True)).deny
+
+
 def test_attempt_forms_are_the_shared_constants():
     assert hooks.ATTEMPT_PREFIX == ("uv", "run", "--frozen", "reverseapoc", "attempt")
     assert hooks.ATTEMPT_FORMS == (
