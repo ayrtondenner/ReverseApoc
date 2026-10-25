@@ -37,11 +37,13 @@ from .le import SRC_OFF32, Fixup
 from .symbols import SymbolError, SymbolTable
 from .x86 import Insn
 
-LE_PAGE_SIZE = 0x1000  # the page size wlink writes; fixups crossing it are straddlers
+# assess's default page size, the one wlink writes. `score` passes the LE header's own page size
+# (LE.page_size, header field 0x28) instead; fixups crossing a page are straddlers.
+LE_PAGE_SIZE = 0x1000
 STRING_MIN = 3  # printable bytes before the NUL that make a data target a string
 _PRINTABLE = frozenset(range(0x20, 0x7F)) | {0x09, 0x0A, 0x0D}
 _NUL = 0
-_PUSH_IMM32 = "push"
+_PUSH = "push"  # the __CHK prologue pushes the frame size as an immediate
 _FRAME = ("push", "ebp")
 
 # KKND score_functions.py weights (lower is easier).
@@ -141,7 +143,12 @@ def _nameable_start(symbols: SymbolTable, va: int) -> bool:
 
 
 def _has_chk(insns: Sequence[Insn], fixups: dict[int, Fixup], chk_targets: Container[int]) -> bool:
-    if len(insns) < 2 or insns[0].mnemonic != _PUSH_IMM32 or not insns[1].is_call:
+    """The row opens with `push <immediate>; call __CHK` (a register or memory push before the
+    call is not the stack-check prologue, 05-REVIEW row 9d)."""
+    if len(insns) < 2 or not insns[1].is_call:
+        return False
+    push = insns[0]
+    if push.mnemonic != _PUSH or not push.imm_offset:
         return False
     target = branch_target(insns[1], fixups)
     return target is not None and target in chk_targets

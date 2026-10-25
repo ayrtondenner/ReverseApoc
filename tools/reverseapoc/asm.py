@@ -11,8 +11,9 @@ writer and the relocation check agree on every name (Pitfall 3):
   (func_X, a runtime public, a symbols.csv name), an address inside a row as that row's name
   plus an offset, and a jump inside the listed row as a local `.LXXXXXXXX` label;
 - an operand overlapping an LE fixup field is named after the fixup's linear target. The field
-  itself holds an object-relative offset (Pitfall 1), so the raw value is only used to find the
-  operand text, never as an address;
+  itself holds an object-relative offset (Pitfall 1). The operand is found by the field's
+  position (capstone's displacement or immediate offset), and the raw value only confirms the
+  number in that operand's text; it is never used as an address;
 - an LE fixup site at an instruction start is inline data (a jump table entry), written as a
   `dd <symbol>` line; decoding resumes after it.
 
@@ -42,6 +43,10 @@ _DATA_DIRECTIVES = {1: "db", 2: "dw", 4: "dd", 6: "df"}
 # A number as capstone prints it in Intel syntax: 0x-prefixed hex, or decimal below 10.
 _NUMBER = re.compile(r"(?<![\w.])(0x[0-9a-f]+|[0-9]+)(?![\w])")
 _SAFE_FILE = re.compile(r"[A-Za-z0-9_$@][A-Za-z0-9_$@.]*")
+_OPERAND_SEPARATOR = ", "  # between operands in capstone's op_str
+_MEMORY_OPEN = "["  # opens a memory operand; its displacement is the last number before `]`
+_DISPLACEMENT = "displacement"  # the fixup field is the memory operand's displacement
+_IMMEDIATE = "immediate"  # the fixup field is the immediate operand
 
 
 class AsmError(ValueError):
@@ -152,14 +157,39 @@ def _local_labels(items: Sequence[Item], row: FunctionRow, fixups: Mapping[int, 
     return labels
 
 
-def _substitute(op_str: str, raw: int, name: str, *, last: bool) -> str | None:
-    """`op_str` with the number equal to `raw` replaced by `name` (the last such number when the
-    field ends the instruction, i.e. an immediate, else the first); None when no number fits."""
-    matches = [m for m in _NUMBER.finditer(op_str) if int(m.group(1), 0) == raw]
-    if not matches:
+def _field_operand(insn: Insn, offset: int) -> str | None:
+    """Which operand holds the field starting `offset` bytes into `insn`: _DISPLACEMENT,
+    _IMMEDIATE (from capstone's disp_offset / imm_offset), or None for neither."""
+    if offset <= 0:
         return None
-    m = matches[-1] if last else matches[0]
-    return op_str[: m.start(1)] + name + op_str[m.end(1) :]
+    if offset == insn.disp_offset:
+        return _DISPLACEMENT
+    if offset == insn.imm_offset:
+        return _IMMEDIATE
+    return None
+
+
+def _substitute(op_str: str, raw: int, name: str, *, field: str) -> str | None:
+    """`op_str` with the number of the operand holding the fixup field replaced by `name`: for
+    _DISPLACEMENT the last number inside the memory operand's brackets, for _IMMEDIATE the last
+    operand's number (Intel syntax prints the immediate last). Only that operand is touched, so
+    a scale or another operand of the same value stays a number (05-REVIEW row 9c). None when
+    that number is not `raw`."""
+    operands = op_str.split(_OPERAND_SEPARATOR)
+    if field == _DISPLACEMENT:
+        index = next((i for i, op in enumerate(operands) if _MEMORY_OPEN in op), None)
+    else:
+        index = len(operands) - 1
+    if index is None:
+        return None
+    text = operands[index]
+    begin = text.find(_MEMORY_OPEN) if field == _DISPLACEMENT else 0
+    numbers = list(_NUMBER.finditer(text, begin))
+    if not numbers or int(numbers[-1].group(1), 0) != raw:
+        return None
+    m = numbers[-1]
+    operands[index] = text[: m.start(1)] + name + text[m.end(1) :]
+    return _OPERAND_SEPARATOR.join(operands)
 
 
 def _field_operands(insn: Insn, op_str: str, fixups: Iterable[Fixup], symbols: SymbolTable) -> str:
@@ -169,8 +199,8 @@ def _field_operands(insn: Insn, op_str: str, fixups: Iterable[Fixup], symbols: S
         name = target_name(symbols, fixup.target_va)
         offset = fixup.src_va - insn.va
         raw = int.from_bytes(insn.raw[offset : offset + fixup.size], _LITTLE)
-        last = offset + fixup.size == insn.size
-        rewritten = _substitute(op_str, raw, name, last=last) if offset >= 0 else None
+        field = _field_operand(insn, offset)
+        rewritten = _substitute(op_str, raw, name, field=field) if field else None
         if rewritten is None:
             notes.append(f"{fixup.kind_name} -> {name}")
             continue

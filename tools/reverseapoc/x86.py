@@ -12,8 +12,11 @@ instruction boundaries and the same branch facts:
   unconditional jmp (direct, indirect or far).
 
 Both come from capstone's operand detail (`imm`, `imm_offset`, `imm_size`), never from
-hand-decoded opcodes. Decoding stops at the end of the bytes, at a byte capstone cannot decode,
-and at an instruction start that is a data site: objdiff and the Theme Hospital scanner treat a
+hand-decoded opcodes; so do `disp_offset` and `imm_offset`, where in the instruction the memory
+displacement and the immediate fields sit (the asm listing names a fixup field by them).
+
+Decoding stops at the end of the bytes, at a byte capstone cannot decode, and at an
+instruction start that is a data site: objdiff and the Theme Hospital scanner treat a
 relocation that sits where an instruction would start as inline data (a jump table), not code.
 
 `is_filler` recognises the padding Watcom puts after a terminal instruction to align the next
@@ -86,6 +89,8 @@ class Insn:
     is_jump: bool  # any jump: jmp, jcc, loop, jecxz
     is_conditional: bool  # a jump that may fall through
     is_terminal: bool  # flow does not fall through: ret, iret, unconditional jmp
+    disp_offset: int = 0  # byte offset of the memory displacement field in `raw`; 0: none
+    imm_offset: int = 0  # byte offset of the immediate field in `raw`; 0: none
 
 
 @functools.cache
@@ -127,6 +132,8 @@ def _insn(ci: CsInsn) -> Insn:
         is_jump=is_jump,
         is_conditional=is_jump and not unconditional,
         is_terminal=returns or unconditional,
+        disp_offset=ci.disp_offset,
+        imm_offset=ci.imm_offset,
     )
 
 
