@@ -25,6 +25,11 @@ extern int D_0028DF70;
 /*
  * func_00055080: calls func_00011500 and stores its result in D_0028DF70. Neither name is
  * known yet.
+ *
+ * Declared void because the body only stores: wcc386 gives the same 11 bytes for
+ * `void f(void) { D = g(); }` and `int f(void) { return D = g(); }`, so the bytes cannot
+ * tell them apart. It stays void until a caller that reads EAX after the call shows
+ * otherwise (docs/learnings.md, 2026-10-24, the first TACP match).
  */
 void func_00055080(void)
 {
