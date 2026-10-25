@@ -102,12 +102,13 @@ class ToolUse(NamedTuple):
 
 def parse_line(line: str | bytes) -> dict | None:
     """The JSON object on `line`, or None when the line is not one (malformed). Bytes are read
-    as UTF-8, an undecodable byte replaced."""
+    as UTF-8, an undecodable byte replaced. A line nested too deeply for the parser
+    (RecursionError) is malformed too, never fatal."""
     if isinstance(line, bytes):
         line = line.decode("utf-8", errors="replace")
     try:
         value = json.loads(line)
-    except ValueError:
+    except ValueError, RecursionError:
         return None
     return value if isinstance(value, dict) else None
 
