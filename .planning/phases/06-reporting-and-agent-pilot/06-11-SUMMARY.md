@@ -227,6 +227,7 @@ See key-decisions in the frontmatter. Two points on interfaces later plans call:
 - The writes are atomic per file, not across the two EXEs' tables. Every touched table is merged and validated before any is written, so only an OS error between the two `os.replace` calls could leave one table written. That is an exit 2 the driver reports.
 - `write_status` is a public library function. D-21's "no other writer" is enforced by the CLI (only `gate` reaches it), by the scan test, and later by the 06-12 hooks and the 06-16 drift test.
 - Fix round 1: deliberately un-matching a function, or moving a matched start to another unit, has no gate path. Only gate writes status.csv, and gate never removes a matched row: it refuses the cross-check. Removing such a row is an owner action outside this plan. A moved start cannot happen for matched code. A rename can happen. Since fix round 2, the tests prove exactly this, on fakes: when symbols.csv renames a matched start and the C defines the new name (as the real check requires), a re-gate passes. It writes the symbols.csv name verbatim and keeps attempts and date (`test_regating_a_renamed_function_updates_its_name`), and `gate --all` passes for it (`test_gate_all_passes_with_a_renamed_match`). The real container check of renamed C is not exercised here. configure's own D-12 check is still placeholder-only, so ninja refuses renamed C until Phase 7 extends it.
+- Fix round 3 (re-review r2, Minor 2): gate runs the up-front name check (`_check_names`, `status.check_name`) on every row of the gated unit, including rows it never writes, such as INCLUDE_ASM rows and data-in-code or runtime rows. A symbols.csv name that status.csv cannot hold therefore refuses the whole unit (exit 2) even when that row would never be written. This fails closed, and it only matters once symbols.csv names a start with `$?@.`.
 - Fix round 1 (M6, a note for 06-23 and 06-25): `gate --partial` compiles the saved file, and `compiler.source_rule` picks the cflags rule by that file's own repo-relative path (`build/driver/.../best/<unit>.c`), not by `src/<exe>/<unit>.c`. That is harmless while config/cflags.txt has only the `*` rule. Once a D-18 per-glob rule exists, partial percents would be scored with the wrong flags. 06-23 must pick the rule by the unit path, for example by saving the best C under a tree that mirrors `src/<exe>/<unit>.c`, or by passing the unit path to the rule lookup.
 
 ## User Setup Required
@@ -278,6 +279,19 @@ After the fix:
 - `uv run pytest -q tests/test_gate.py tests/test_status.py`: 99 passed.
 - `uv run pytest -q`: 1697 passed, 217 skipped (the worktree's real-file skips).
 - `uv run ruff check .`: clean.
+
+## Fix round 3
+
+Fix base `938cefc`. The r2 re-review approved fix round 2 (spec compliant), with two Minors. This round adds tests only; no code behaviour changed.
+
+| Finding | What changed | Test (tests/test_gate.py) |
+|---|---|---|
+| Minor 1: no test covered `_reverted`'s game/thunk filter | Added a full-revert test for a mixed unit: UNIT_A has A1 (game, matched, now marked INCLUDE_ASM) and A2 (data-in-code `D_00010010`, or runtime `rt_helper_`), which the C neither marks nor defines. `gate` and `gate --all` each exit 1 with "reverted to INCLUDE_ASM" and do not run check; status.csv is unchanged. For `--all`, a new `FakeAllFromCsv` loads the kinds from functions.csv, and the unit is also left out of `fresh`. | `test_full_revert_in_a_mixed_unit_exits_1[data-in-code, runtime]`, `test_full_revert_in_a_mixed_unit_gate_all_exits_1[data-in-code, runtime]` |
+| Minor 2: the name check covers rows that are never written | Note only: one line under Known limits. | n/a |
+
+Mutation proof: I temporarily replaced `required = [row for row in unit_rows if row.kind in (KIND_GAME, KIND_THUNK)]` with `required = list(unit_rows)`. All 4 new tests failed: each raised the fake check's `CheckError: ... defines no function of unit u_00010000`, which is the old exit-2 path. The other 99 still passed. I then restored the file with `git checkout -- tools/reverseapoc/gate.py`; `git diff` was empty, and the mutation was never committed.
+
+After the change, `uv run pytest -q tests/test_gate.py tests/test_status.py` gives 103 passed, and `uv run ruff check .` is clean.
 
 ## Self-Check: PASSED
 
