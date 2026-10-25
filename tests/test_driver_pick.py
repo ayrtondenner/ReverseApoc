@@ -99,8 +99,8 @@ class _Row:
 def test_matched_starts_reads_status_through_the_seam():
     tables = {UFO2P: [_Row(0x1000, "matched"), _Row(0x2000, "partial")],
               TACP: [_Row(0x3000, "matched")]}  # fmt: skip
-    assert matched_starts((UFO2P, TACP), read=tables.__getitem__) == {(UFO2P, 0x1000),
-                                                                       (TACP, 0x3000)}
+    matched = matched_starts((UFO2P, TACP), read=tables.__getitem__)
+    assert matched == {(UFO2P, 0x1000), (TACP, 0x3000)}
 
 
 def test_missing_status_means_nothing_matched():
