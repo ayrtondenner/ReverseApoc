@@ -3,15 +3,21 @@ every byte below is made up."""
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
 
-from conftest import build_le_image, fixup_record, write_manifest
-from reverseapoc.asm import AsmError, listing, select_rows, write_listings
+from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
+from reverseapoc.asm import AsmError, file_name, listing, select_rows, write_listings
 from reverseapoc.cli import main as cli_main
-from reverseapoc.functions import FunctionRow, write_functions_csv
-from reverseapoc.le import LE
+from reverseapoc.functions import (
+    FunctionRow,
+    read_functions_csv,
+    read_symbols_csv,
+    write_functions_csv,
+)
+from reverseapoc.le import LE, SRC_OFF32, SRC_SEL16, Fixup
 from reverseapoc.symbols import SymbolTable
 
 CODE = 0x10000
@@ -171,3 +177,109 @@ def test_write_listings_report(tmp_path: Path):
         "func_00010010.s",
         "func_00010020.s",
     ]
+
+
+# ---- one listing per row (DI-01, backlog 999.3) ----
+
+ALPHABET_ITOA = CODE + 0x40
+ALPHABET_LTOA = CODE + 0x80
+ALPHABET = "_Alphabet"  # a module-local public of rt_itoa and of rt_ltoa
+
+
+def test_ambiguous_name_gets_one_listing_per_row(tmp_path: Path):
+    rows = [
+        FunctionRow(ALPHABET_ITOA, ALPHABET_ITOA + 0x10, ALPHABET, "runtime", "rt_itoa", "runtime"),
+        FunctionRow(ALPHABET_LTOA, ALPHABET_LTOA + 0x10, ALPHABET, "runtime", "rt_ltoa", "runtime"),
+    ]
+    symbols = SymbolTable.build(rows)
+    assert ALPHABET in symbols.ambiguous
+    flat = bytes(ALPHABET_LTOA + 0x10)
+    out = tmp_path / "asm"
+    report = write_listings(rows, flat=flat, fixups=(), symbols=symbols, out_dir=out)
+    assert report.count == 2
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [f"runtime_{ALPHABET_ITOA:08X}.s", f"runtime_{ALPHABET_LTOA:08X}.s"]
+    for row in rows:
+        text = (out / f"runtime_{row.start:08X}.s").read_text(encoding="utf-8")
+        assert text.splitlines()[0].startswith(f"# {ALPHABET}  0x{row.start:08X}")
+
+
+def test_write_listings_refuses_a_case_only_clash(tmp_path: Path):
+    """Two names equal under str.casefold would be one file on NTFS (threat T-06-12): the
+    writer refuses, naming both rows, before it writes anything."""
+    rows = [
+        FunctionRow(ALPHABET_ITOA, ALPHABET_ITOA + 0x10, "Foo", "runtime", "rt_foo", "runtime"),
+        FunctionRow(ALPHABET_LTOA, ALPHABET_LTOA + 0x10, "foo", "runtime", "rt_bar", "runtime"),
+    ]
+    symbols = SymbolTable.build(rows)
+    assert not symbols.ambiguous  # distinct names, so file_name keeps both
+    out = tmp_path / "asm"
+    with pytest.raises(AsmError, match=f"0x{ALPHABET_ITOA:08X}.*0x{ALPHABET_LTOA:08X}"):
+        write_listings(rows, flat=bytes(ALPHABET_LTOA + 0x10), fixups=(), symbols=symbols,
+                       out_dir=out)  # fmt: skip
+    assert not out.exists()
+
+
+@pytest.mark.parametrize("stem", ["ufo2p", "tacp"])
+def test_committed_listing_names_are_unique(stem: str):
+    """Every committed functions.csv row gets its own listing name, compared case-insensitively
+    (the asm/ bind mount is NTFS). CSVs only: no orig/, no LE (orchestrator ruling F6)."""
+    config = REPO_ROOT / "config" / stem
+    rows = read_functions_csv(config / "functions.csv")
+    symbols = SymbolTable.build(rows, read_symbols_csv(config / "symbols.csv"))
+    seen: dict[str, int] = {}
+    collisions = []
+    for row in rows:
+        key = file_name(symbols, row).casefold()
+        if key in seen:
+            collisions.append(f"0x{seen[key]:08X} and 0x{row.start:08X} -> {key}")
+        seen.setdefault(key, row.start)
+    assert collisions == []
+    assert len(seen) == len(rows)
+
+
+# ---- the fixup field's operand, by position (05-REVIEW row 9c) ----
+
+# mov dword ptr [eax*4 + 4], 4: the scale, the displacement and the immediate all read 4.
+EQUAL_NUMBERS = b"\xc7\x04\x85" + b"\x04\x00\x00\x00" + b"\x04\x00\x00\x00"
+EQUAL_DISP_AT = 3  # byte offset of the disp32 field in EQUAL_NUMBERS
+EQUAL_IMM_AT = 7  # byte offset of the imm32 field
+
+
+def _one_line(code: bytes, fixup: Fixup) -> str:
+    """The listing line of `code`, alone in a row at CODE, with one LE fixup."""
+    row = FunctionRow(CODE, CODE + len(code), "func_00010000", "game", "", "call")
+    flat = bytearray(row.end)
+    flat[CODE:] = code
+    symbols = SymbolTable.build([row], data_ranges=[(DATA, DATA + 0x1000)])
+    return _instruction_lines(listing(row, flat=flat, fixups=[fixup], symbols=symbols))[0]
+
+
+def _equal_numbers_line(field_at: int) -> str:
+    return _one_line(EQUAL_NUMBERS, Fixup(CODE + field_at, SRC_OFF32, DATA + 4, 2, 4, 4))
+
+
+def test_substitute_leaves_an_equal_displacement_alone():
+    """Only the operand holding the fixup field is renamed; the scale, displacement or
+    immediate that merely has the same value stays a number."""
+    assert _equal_numbers_line(EQUAL_DISP_AT).endswith("mov dword ptr [eax*4 + D_00020004], 4")
+    assert _equal_numbers_line(EQUAL_IMM_AT).endswith("mov dword ptr [eax*4 + 4], D_00020004")
+
+
+# ljmp / lcall ptr16:32 with offset and selector both 0x100. capstone's imm_offset is the
+# selector (encoded last) while Intel syntax prints the selector first.
+FAR_VALUE = 0x100
+FAR_OFFSET_AT = 1  # byte offset of the 32-bit offset part, after the opcode
+FAR_SELECTOR_AT = FAR_OFFSET_AT + 4  # the 16-bit selector follows the offset
+FAR_POINTER = struct.pack("<IH", FAR_VALUE, FAR_VALUE)
+
+
+@pytest.mark.parametrize(("opcode", "text"), [(b"\xea", "ljmp 0x100:0x100"),
+                                              (b"\x9a", "lcall 0x100, 0x100")])  # fmt: skip
+def test_far_pointer_fixups_stay_notes(opcode: bytes, text: str):
+    """A fixup inside a far pointer (ptr16:32) is never renamed in place: the printed order of
+    its parts does not follow the encoding, so the listing keeps the number and adds a note."""
+    selector = Fixup(CODE + FAR_SELECTOR_AT, SRC_SEL16, DATA, 2, 0, 2)
+    assert _one_line(opcode + FAR_POINTER, selector).endswith(f"{text}  ; sel16 -> D_00020000")
+    offset = Fixup(CODE + FAR_OFFSET_AT, SRC_OFF32, DATA + 4, 2, 4, 4)
+    assert _one_line(opcode + FAR_POINTER, offset).endswith(f"{text}  ; off32 -> D_00020004")
