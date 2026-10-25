@@ -794,6 +794,50 @@ def test_canary_runs_the_preflight_first(tmp_path, capsys):
     assert not rig.launches
 
 
+# --- fix round 1: canary minors ---
+
+
+def test_canary_fails_when_head_moves(tmp_path, capsys):
+    """A commit leaves `git status` clean: the canary also compares HEAD before and after."""
+    holder = {}
+
+    def commit(repo: Path) -> None:
+        _git(repo, holder["env"], "commit", "-q", "--allow-empty", "-m", "a made-up commit")
+
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", after=commit)
+    holder["env"] = rig.env
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("HEAD" in text for text in _failed(doc)), _failed(doc)
+
+
+def test_canary_removes_its_containers_by_the_attempt_prefix(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    _canary(rig, capsys)
+    prefix = driver.attempt.container_prefix(rig.repo / CANARY_DIR)
+    assert [c for c in rig.runner.calls if c[:2] == ["docker", "ps"]] == [
+        ["docker", "ps", "-a", "--filter",
+         f"label=com.docker.compose.project={driver.compose_project(rig.repo)}",
+         "--filter", f"name={prefix}", "--format", "{{.Names}}"]]  # fmt: skip
+
+
+def test_canary_names_a_failed_container_removal(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    rig.runner.replies.append((lambda a: a[:2] == ["docker", "ps"], (1, "", "made up\n")))
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("containers" in text for text in _failed(doc)), _failed(doc)
+
+
+def test_canary_refuses_a_reused_run_id(tmp_path, capsys):
+    """A reused --run ID would let an earlier canary's context.md or checks.jsonl pass."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    (rig.repo / CANARY_DIR).mkdir(parents=True)
+    code, out, _ = rig.drive(capsys, canary=True, json=True)
+    assert code == 2 and _refusal(out)["reason"] == "run id"
+    assert not rig.launches
+
+
 # ---- Task 3: the end-of-run checks (D-24, D-23) ----
 
 NINJA_SCRIPT = "uv run --frozen python configure.py && ninja -t clean && ninja verify"
