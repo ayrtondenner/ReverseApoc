@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,7 +22,8 @@ from reverseapoc import cli, driver
 from reverseapoc.driver import DriveOptions, ExeWorld, PackInfo, Seams
 from reverseapoc.picker import Pick
 from reverseapoc.score import Candidate
-from test_driver import _git, _git_env, _write
+from reverseapoc.session import run_session
+from test_driver import FAKE, _git, _git_env, _write
 
 EXES = ("ufo2p", "tacp")
 BASE = {"ufo2p": 0x00010000, "tacp": 0x00110000}  # made-up starts, one 64 KiB region apart each
@@ -130,6 +132,7 @@ class Rig:
     packs: Packs = field(default_factory=Packs)
 
     def __post_init__(self) -> None:
+        self.tmp_path.mkdir(parents=True, exist_ok=True)
         self.env = _git_env(self.tmp_path)
         self.repo = _make_repo(self.tmp_path, self.env)
         self.git_calls: list[list[str]] = []
@@ -272,3 +275,361 @@ def test_cli_drive_reaches_run_drive(tmp_path, monkeypatch, capsys):
     assert options is not None, "_cmd_drive never called driver.run_drive"
     assert (options.max_sessions, options.target_matched, options.dry_run) == (40, 10, True)
     assert (options.run_id, options.json, options.canary) == ("pilot1", True, False)
+
+
+# ---- Task 2: the preflight (D-34, D-36, D-13) and the canary (Pitfalls 2-3) ----
+
+HOST_CLI = ["uv", "run", "--frozen", "reverseapoc"]
+DOCKER_INFO = ["docker", "info"]
+CONTAINER_SYNC = [*COMPOSE, "uv", "sync", "--locked"]
+HOST_SYNC = ["uv", "sync", "--locked"]
+COMPILE = ["uv", "run", "--frozen", "python", "-m", "compileall", "-q", "tools", "configure.py"]
+
+
+def _refusal(out: str) -> dict:
+    assert out.count("\n") == 1 and out.startswith("{"), "stdout is not one JSON line"
+    doc = json.loads(out)
+    assert doc["event"] == "REFUSED", doc
+    return doc
+
+
+def _fails(argv_prefix: list[str], code: int = 1):
+    return (lambda argv: argv[: len(argv_prefix)] == argv_prefix, (code, "", "made-up failure\n"))
+
+
+@pytest.mark.parametrize(
+    ("case", "reason", "words"),
+    [
+        ("cli 2.1.240", "cli version", "2.1.240"),
+        ("cli 3.0.0", "cli version", "major"),
+        ("cli unreadable", "cli version", "not a Claude Code version"),
+        ("cli fails", "cli version", "exit 1"),
+        ("docker info fails", "docker", "Docker"),
+        ("container sync fails", "container sync", "uv sync --locked"),
+        ("host sync fails", "host sync", "uv sync --locked"),
+        ("compile fails", "compile", "compileall"),
+        ("asm fails", "asm", "asm"),
+    ],
+)
+def test_preflight_refusals(tmp_path, capsys, case, reason, words):
+    runner = Runner()
+    versions = {"cli 2.1.240": "2.1.240 (Claude Code)", "cli 3.0.0": "3.0.0 (Claude Code)",
+                "cli unreadable": "garbage"}  # fmt: skip
+    runner.version = versions.get(case, runner.version)
+    if case == "cli fails":
+        runner.replies.append(_fails(["claude", "--version"]))
+    prefixes = {"docker info fails": DOCKER_INFO, "container sync fails": CONTAINER_SYNC,
+                "host sync fails": HOST_SYNC, "compile fails": COMPILE,
+                "asm fails": [*HOST_CLI, "asm"]}  # fmt: skip
+    if case in prefixes:
+        runner.replies.append(_fails(prefixes[case]))
+    rig = Rig(tmp_path, runner=runner)
+    code, out, _ = rig.drive(capsys, json=True)
+    assert code == 2
+    doc = _refusal(out)
+    assert doc["reason"] == reason
+    assert words in doc["detail"]
+
+
+def test_preflight_refuses_a_worktree(tmp_path, capsys):
+    """D-34: git-dir != git-common-dir means a linked worktree, never the main checkout."""
+    rig = Rig(tmp_path)
+    linked = tmp_path / "linked"
+    _git(rig.repo, rig.env, "worktree", "add", "-q", str(linked))
+    rig._git = driver.git_runner(linked, env=rig.env)
+    code, out, _ = rig.drive(capsys, json=True, repo=linked)
+    assert code == 2
+    doc = _refusal(out)
+    assert doc["reason"] == "worktree" and "main checkout" in doc["detail"]
+    assert not rig.runner.calls  # refused before any command
+
+
+def test_preflight_refuses_a_dirty_tree_naming_the_paths(tmp_path, capsys):
+    """F14: dirty means `git status --porcelain` is not empty; the refusal names the paths."""
+    rig = Rig(tmp_path)
+    _write(rig.repo / "stray.txt", "made up\n")
+    _write(rig.repo / "config/ufo2p/README", "changed\n")
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 2
+    doc = _refusal(out)
+    assert doc["reason"] == "dirty"
+    assert "stray.txt" in doc["detail"] and "config/ufo2p/README" in doc["detail"]
+    assert not rig.runner.calls
+
+
+def test_preflight_passes_a_clean_main_checkout_on_2_1_302(tmp_path):
+    rig = Rig(tmp_path)
+    driver.preflight(rig.options(), rig.seams(), check_cli=True)  # raises Refused otherwise
+    assert ["claude", "--version"] in rig.runner.calls
+
+
+def test_dry_run_skips_only_the_cli_version_check(tmp_path, capsys):
+    rig = Rig(tmp_path, runner=Runner(version="1.0.0 (Claude Code)"))
+    code, _, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    assert not [c for c in rig.runner.calls if c[1:] == ["--version"]]
+    for argv in (DOCKER_INFO, CONTAINER_SYNC, HOST_SYNC, COMPILE):
+        assert argv in rig.runner.calls, argv
+
+
+def test_preflight_regenerates_listings_and_drafts(tmp_path, capsys):
+    """D-13: the asm listings of both EXEs on the host, then one container ghidra-export
+    --drafts call per EXE covering the queue's top picks, all before the first pack."""
+    rig = Rig(tmp_path)
+    built_at: list[int] = []
+    original = rig.packs.for_exe
+
+    def counting(exe):
+        pack = original(exe)
+
+        def wrapped(pick, directory):
+            built_at.append(len(rig.runner.calls))
+            return pack(pick, directory)
+
+        return wrapped
+
+    rig.packs.for_exe = counting
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    for exe in EXES:
+        assert [*HOST_CLI, "asm", exe, "--json"] in rig.runner.calls
+    drafts = rig.commands("ghidra-export")
+    assert [call[: len(CONTAINER_UV) + 3] for call in drafts] == [
+        [*CONTAINER_UV, "ghidra-export", exe, "--drafts"] for exe in EXES]  # fmt: skip
+    picked = {(p["exe"], p["start"]) for p in json.loads(out)["picks"]}
+    asked = {(call[len(CONTAINER_UV) + 1], a) for call in drafts
+             for a in call[len(CONTAINER_UV) + 3 :]}  # fmt: skip
+    assert picked <= asked
+    last_draft = max(i for i, call in enumerate(rig.runner.calls) if "ghidra-export" in call)
+    assert built_at and min(built_at) > last_draft
+    order = [rig.runner.calls.index(argv) for argv in (HOST_SYNC, COMPILE)]
+    assert order == sorted(order)  # the venv is synced before it is compiled
+
+
+def test_preflight_drafts_tool_failure_refuses_but_missing_drafts_do_not(tmp_path, capsys):
+    """ghidra-export exits 1 when some drafts could not be made: the pack works without a
+    draft, so that is logged; any other failure refuses."""
+    one = Rig(tmp_path / "one", runner=Runner(replies=[_fails([*CONTAINER_UV, "ghidra-export"])]))
+    code, _, _ = one.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    two = Rig(tmp_path / "two",
+              runner=Runner(replies=[_fails([*CONTAINER_UV, "ghidra-export"], 2)]))  # fmt: skip
+    code, out, _ = two.drive(capsys, dry_run=True, json=True)
+    assert code == 2 and _refusal(out)["reason"] == "drafts"
+
+
+def test_json_mode_stdout_is_one_document_and_noise_goes_to_the_log(tmp_path, capsys):
+    """F13: every preflight command's stdout and stderr go to build/driver/<run>/preflight.log;
+    stdout carries exactly one JSON document."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    assert out.count("\n") == 1
+    json.loads(out)
+    path = rig.repo / "build" / "driver" / RUN / "preflight.log"
+    assert path.is_file(), "no preflight.log"
+    log = path.read_text(encoding="utf-8")
+    assert "noise on stdout" in log and "noise on stderr" in log
+    assert "docker info" in log and "compileall" in log
+
+
+def test_compiled_bytecode_is_not_rewritten_by_an_isolated_import(tmp_path):
+    """Why preflight compiles tools/ and configure.py (06-23 security notes): the hooks import
+    the package with `python -I`, which ignores PYTHONDONTWRITEBYTECODE. After compileall the
+    import writes nothing, so the driver's __pycache__ fingerprint stays still; without it the
+    import writes a .pyc (the night would stop)."""
+    pkg = tmp_path / "pkg"
+    _write(pkg / "mod.py", "VALUE = 1\n")
+
+    def prints() -> dict[str, tuple[int, int]]:
+        return {p.relative_to(pkg).as_posix(): (p.stat().st_size, p.stat().st_mtime_ns)
+                for p in pkg.rglob("*") if "__pycache__" in p.parts and p.is_file()}  # fmt: skip
+
+    def isolated_import() -> None:
+        code = f"import sys; sys.path.insert(0, {str(pkg)!r}); import mod"
+        subprocess.run([sys.executable, "-I", "-c", code], check=True)
+
+    isolated_import()
+    assert prints(), "the control: an uncompiled import writes a .pyc"
+    for path in pkg.rglob("*.pyc"):
+        path.unlink()
+    subprocess.run([sys.executable, "-m", "compileall", "-q", str(pkg)], check=True)
+    before = prints()
+    isolated_import()
+    assert prints() == before
+
+
+def test_remove_containers_filters_by_project_and_prefix(tmp_path):
+    prefix = "reverseapoc-attempt-0123abcd-"
+    names = f"{prefix}0001\nother-{prefix}0002\n{prefix}0003\n"
+    runner = Runner(replies=[(lambda a: a[:2] == ["docker", "ps"], (0, names, ""))])
+    rig = Rig(tmp_path, runner=runner)
+    deps = driver.real_deps(rig.options(), rig.seams(), _world(rig.packs))
+    deps.remove_containers(prefix)
+    project = driver.compose_project(rig.repo)
+    assert runner.calls == [
+        ["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+         "--filter", f"name={prefix}", "--format", "{{.Names}}"],
+        ["docker", "rm", "-f", f"{prefix}0001", f"{prefix}0003"],
+    ]  # fmt: skip
+
+
+def test_remove_containers_failure_raises(tmp_path):
+    runner = Runner(replies=[(lambda a: a[:2] == ["docker", "ps"], (1, "", "made up\n"))])
+    rig = Rig(tmp_path, runner=runner)
+    deps = driver.real_deps(rig.options(), rig.seams(), _world(rig.packs))
+    with pytest.raises(driver.DriverError):
+        deps.remove_containers("reverseapoc-attempt-0123abcd-")
+
+
+def test_compose_project_is_the_normalized_directory_name():
+    assert driver.compose_project(Path("C:/x/ReverseApoc")) == "reverseapoc"
+    assert driver.compose_project(Path("/x/My Repo.2")) == "myrepo2"
+
+
+# --- the canary ---
+
+CANARY_DIR = f"build/driver/canary/{RUN}/ufo2p/func_000A3980/attempt-1"
+
+
+@dataclass
+class Launch:
+    argv: list[str]
+    env: dict
+    cwd: Path
+
+
+def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None) -> Rig:
+    """A rig whose session is fakeclaude replaying `scenario` through the real run_session,
+    writing `write` (repo-relative) like a tool call that went through; `after(repo)` runs
+    once the stream ended (a stray the session left)."""
+    rig = Rig(tmp_path)
+    rig.launches = []
+
+    def argv(prompt: str):
+        rig.prompt = prompt
+        cmd = [sys.executable, str(FAKE), "--scenario", scenario]
+        return cmd + (["--write", write] if write else [])
+
+    def session(argv, *, cwd, env, transcript, timeout_s):
+        rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        if after is not None:
+            after(Path(cwd))
+        return result
+
+    rig.argv, rig.session = argv, session
+    return rig
+
+
+def _canary(rig: Rig, capsys) -> tuple[int, dict]:
+    code, out, _ = rig.drive(capsys, canary=True, json=True)
+    assert out.count("\n") == 1, "stdout is not one JSON line"
+    return code, json.loads(out)
+
+
+def _failed(doc: dict) -> list[str]:
+    return [c["check"] for c in doc.get("checks", []) if not c["ok"]]
+
+
+def test_canary_pass(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
+    texts = " | ".join(c["check"] for c in doc["checks"])
+    for needle in ("config/targets.toml", "tools/x.py", "`ls`", "attempt context", "git status"):
+        assert needle in texts, needle
+    assert len(rig.launches) == 1
+    assert not rig.commands("gate")
+
+
+def test_canary_env_names_the_claim_with_absolute_paths(tmp_path, capsys):
+    """F12: REVERSEAPOC_CLAIM ufo2p/u_000a34f0, REVERSEAPOC_FUNC func_000A3980, and absolute
+    attempt dir and notes under build/driver/canary/; the session runs in the checkout."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    _canary(rig, capsys)
+    assert len(rig.launches) == 1
+    env, cwd = rig.launches[0].env, rig.launches[0].cwd
+    assert env["REVERSEAPOC_CLAIM"] == "ufo2p/u_000a34f0"
+    assert env["REVERSEAPOC_FUNC"] == "func_000A3980"
+    attempt_dir = Path(env["REVERSEAPOC_ATTEMPT_DIR"])
+    assert attempt_dir.is_absolute() and attempt_dir == rig.repo / CANARY_DIR
+    assert Path(env["REVERSEAPOC_ATTEMPT_NOTES"]) == attempt_dir / "notes.md"
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+    assert cwd == rig.repo
+    for words in ("config/targets.toml", "tools/x.py", "`ls`",
+                  "uv run --frozen reverseapoc attempt context"):  # fmt: skip
+        assert words in rig.prompt, words
+
+
+def test_canary_fail(tmp_path, capsys):
+    """The tools/x.py Write was not denied (and it landed): FAIL naming it, exit 1."""
+    rig = _canary_rig(tmp_path, "canary_fail", write="tools/x.py")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    failed = _failed(doc)
+    assert any("tools/x.py" in text and "denied" in text for text in failed), failed
+    assert any("git status" in text and "tools/x.py" in text for text in failed), failed
+
+
+def test_canary_wrapper_denied(tmp_path, capsys):
+    """F12: the attempt wrapper call denied (and no context.md): FAIL naming the wrapper."""
+    rig = _canary_rig(tmp_path, "canary_wrapper_denied")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    failed = " | ".join(_failed(doc))
+    assert "uv run --frozen reverseapoc attempt context" in failed
+    assert "context.md" in failed
+
+
+def test_canary_fails_on_an_init_problem(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(driver, "MIN_CLI_VERSION", (2, 1, 400))
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    rig.runner.version = "2.1.400 (Claude Code)"
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("below the minimum 2.1.400" in text for text in _failed(doc))
+
+
+def test_canary_fails_on_an_unknown_event_type_carrying_an_error(tmp_path, capsys):
+    """06-23 notes: unknown event types stay ignored by the driver, so the canary proves none
+    of them carries an error on the real CLI."""
+    rig = _canary_rig(tmp_path, "canary_unknown_error", write=f"{CANARY_DIR}/context.md")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("made_up_event" in text for text in _failed(doc))
+
+
+@pytest.mark.parametrize("stray", [".venv/Lib/site-packages/x.pth", "tools/__pycache__/x.pyc"])
+def test_canary_fails_when_the_session_changes_what_the_driver_fingerprints(
+    tmp_path, capsys, stray
+):
+    """06-23 notes: the night stops on any change to the venv, a pinned file or a repo
+    __pycache__ during a session, so the canary proves a real session (its hooks and its
+    wrapper call) changes none of them."""
+
+    def leave(repo: Path) -> None:
+        _write(repo / stray, "made up\n")
+
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", after=leave)
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any(stray in text for text in _failed(doc)), _failed(doc)
+
+
+def test_canary_text_mode_prints_pass_and_fail_lines(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_fail", write="tools/x.py")
+    code, out, _ = rig.drive(capsys, canary=True)
+    assert code == 1
+    lines = out.splitlines()
+    assert lines[-1:] == ["CANARY FAIL"]
+    assert any(line.startswith("PASS: ") for line in lines)
+    assert any(line.startswith("FAIL: ") and "tools/x.py" in line for line in lines)
+
+
+def test_canary_runs_the_preflight_first(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    rig.runner.version = "2.1.240 (Claude Code)"
+    code, out, _ = rig.drive(capsys, canary=True, json=True)
+    assert code == 2 and _refusal(out)["reason"] == "cli version"
+    assert not rig.launches
