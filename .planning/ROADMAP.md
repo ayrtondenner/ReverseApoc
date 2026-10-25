@@ -223,16 +223,16 @@ Plans:
   5. An unattended pilot run matches 10 easy functions, one function per commit, with zero regressions: every previously matched function still matches and both EXEs stay SHA-1 identical after every commit; agent work runs through decomp.wtf v0.10.6 fork mode pinned in WSL2 as a subprocess if the spike passes, otherwise through a minimal own agent layer (AGT-06, AGT-10, AGT-11)
 
 **Spike**: decomp.wtf fork mode accepts the repo's stub convention.
-**Plans:** 27 plans
+**Plans:** 5/27 plans executed
 **UI hint**: yes
 
 Plans:
 **Wave 1** *(D-38 Wave 1: spike and deferred-item hardening)*
-- [ ] 06-01-PLAN.md — spike 006: decomp.wtf v0.10.6 fork mode vs the stub convention, D-02 verdict, D-03 consequence (AGT-10)
-- [ ] 06-02-PLAN.md — DI-18 fileio.write_atomic and the importer flip; symbols/functions minors (RPT-01, AGT-06)
-- [ ] 06-03-PLAN.md — DI-05 continuation-aware D-12 parser, DI-04 relocs refusals and frame check, DI-06c config-consistent rules (AGT-05, AGT-06)
-- [ ] 06-04-PLAN.md — 05 minors: discover end rule (measured), lint and drafts-script refusals, CSV tiling without orig/ (AGT-06, AGT-08)
-- [ ] 06-05-PLAN.md — 05 minors: comment-only void note in matched TACP C, spike 005 wording, test hygiene, Dockerfile comment (AGT-06)
+- [x] 06-01-PLAN.md — spike 006: decomp.wtf v0.10.6 fork mode vs the stub convention, D-02 verdict, D-03 consequence (AGT-10)
+- [x] 06-02-PLAN.md — DI-18 fileio.write_atomic and the importer flip; symbols/functions minors (RPT-01, AGT-06)
+- [x] 06-03-PLAN.md — DI-05 continuation-aware D-12 parser, DI-04 relocs refusals and frame check, DI-06c config-consistent rules (AGT-05, AGT-06)
+- [x] 06-04-PLAN.md — 05 minors: discover end rule (measured), lint and drafts-script refusals, CSV tiling without orig/ (AGT-06, AGT-08)
+- [x] 06-05-PLAN.md — 05 minors: comment-only void note in matched TACP C, spike 005 wording, test hygiene, Dockerfile comment (AGT-06)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 06-06-PLAN.md — DI-01 one asm listing per row (999.3); scorer and listing minors (AGT-07, AGT-08)
@@ -320,7 +320,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
-| 6. Reporting and agent pilot | 0/27 | Planned | - |
+| 6. Reporting and agent pilot | 5/27 | In Progress | - |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
