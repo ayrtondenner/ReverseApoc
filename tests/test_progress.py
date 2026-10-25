@@ -204,9 +204,16 @@ def test_shield_shape(tmp_path):
     assert set(shield) == {"schemaVersion", "label", "message", "color"}
     assert shield["schemaVersion"] == 1
     assert shield["label"] == "decompiled"
-    assert shield["message"] == "5.80%"  # the combined 5.7971, two decimals
+    assert shield["message"] == "5.7971%"  # the combined percent as progress.json has it
     assert shield["message"].endswith("%")
     assert isinstance(shield["color"], str) and shield["color"]
+
+
+@pytest.mark.parametrize(("value", "message"), [(0.0016, "0.0016%"), (5.7971, "5.7971%"),
+                                                (12.5, "12.5%"), (100.0, "100%"), (0.0, "0%")])
+def test_shield_message_keeps_small_percents(value, message):
+    """Today's figure is a few thousandths of a percent: two decimals would publish 0.00%."""
+    assert load_progress().shield_message(value) == message
 
 
 def test_outputs_are_byte_stable_and_atomic(tmp_path, monkeypatch):
