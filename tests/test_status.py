@@ -98,7 +98,7 @@ def test_status_refuses_bad_tables(tmp_path, body, message):
 def test_status_refuses_unsorted_rows(tmp_path):
     later = GOOD.replace("0x00010000,func_00010000", "0x00010020,func_00010020")
     path = tmp_path / "status.csv"
-    path.write_text(f"{STATUS_COMMENT}\n{HEADER}\n{later}\n{GOOD}\n", encoding="utf-8")
+    path.write_bytes(f"{STATUS_COMMENT}\n{HEADER}\n{later}\n{GOOD}\n".encode())
     with pytest.raises(StatusError, match="line 4"):
         read_status(path)
 
