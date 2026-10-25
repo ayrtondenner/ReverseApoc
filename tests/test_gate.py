@@ -31,6 +31,7 @@ from reverseapoc.functions import (
     FunctionRow,
     SymbolRow,
     UnitRow,
+    read_functions_csv,
     write_functions_csv,
     write_symbols_csv,
     write_units_csv,
@@ -905,3 +906,64 @@ def test_gate_all_output_shape(tree):
     doc = failing.to_json()
     assert {tuple(sorted(c)) for c in doc["checks"]} == {("exe", "functions", "unit")}
     assert [s["exe"] for s in doc["splice"]] == [UFO, TACP]
+
+
+# ---- fix round 3: a full revert in a unit that mixes row kinds ---------------------------------
+
+MIXED_NAMES = {"data-in-code": "D_00010010", "runtime": "rt_helper_"}
+
+
+def mix_unit_a(tree: Tree, kind: str) -> None:
+    """UNIT_A becomes A1 (game) plus A2 of `kind`. A2 is exempt from the D-12 account, so the
+    C neither marks nor defines it, as in about 50 real units per EXE."""
+    rows = [FunctionRow(A1, A1 + 0x10, fname(A1), "game", UNIT_A, "call"),
+            FunctionRow(A2, A2 + 0x10, MIXED_NAMES[kind], kind, UNIT_A, "call"),
+            FunctionRow(B1, B1 + 0x10, fname(B1), "game", UNIT_B, "call"),
+            FunctionRow(C1, C1 + 0x10, fname(C1), "game", UNIT_C, "call")]  # fmt: skip
+    write_functions_csv(tree.config / "ufo2p" / "functions.csv", rows, UFO)
+
+
+def write_marked_a1(tree: Tree) -> str:
+    text = f'#include "common.h"\nINCLUDE_ASM({fname(A1)});\n'
+    path = tree.source(UFO, UNIT_A)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    tree.defined[(UFO, UNIT_A)] = []
+    return text
+
+
+class FakeAllFromCsv(FakeAll):
+    """FakeAll whose ExeInputs rows are the tree's functions.csv, kinds included."""
+
+    def load(self, target, **kwargs) -> FakeExe:
+        path = self.tree.config / STEMS[target.name] / "functions.csv"
+        return FakeExe(target, STEMS[target.name], tuple(read_functions_csv(path)))
+
+
+@pytest.mark.parametrize("kind", ["data-in-code", "runtime"])
+def test_full_revert_in_a_mixed_unit_exits_1(tree, kind):
+    """Only game and thunk rows must be marked for a unit to be reverted (the _reverted filter):
+    the matched game row marked again is a mismatch, without check, in a mixed unit too."""
+    mix_unit_a(tree, kind)
+    before = seed(tree, UFO, [matched(A1, UNIT_A)])
+    write_marked_a1(tree)
+    fake = FakeCheck(tree)
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert result.exit_code == 1
+    assert any(fname(A1) in p and "reverted to INCLUDE_ASM" in p for p in result.problems)
+    assert fake.calls == []
+    assert tree.status(UFO).read_bytes() == before
+
+
+@pytest.mark.parametrize("kind", ["data-in-code", "runtime"])
+def test_full_revert_in_a_mixed_unit_gate_all_exits_1(tree, kind):
+    mix_unit_a(tree, kind)
+    text = write_marked_a1(tree)
+    before = seed(tree, UFO, [matched(A1, UNIT_A, sha=lf_sha256(text))])
+    fake = FakeAllFromCsv(tree)
+    result = run_all(tree, fake)
+    assert result.exit_code == 1
+    assert any(fname(A1) in p and "reverted to INCLUDE_ASM" in p for p in result.problems)
+    assert (UFO, UNIT_A) not in fake.sources
+    assert (UFO, UNIT_A) not in set(fake.lands[0]["fresh"])
+    assert tree.status(UFO).read_bytes() == before
