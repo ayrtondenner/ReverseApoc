@@ -206,6 +206,8 @@ class Night:
         self.git_at_launch = -1
         self.raise_verbs: dict[str, BaseException] = {}  # git verb -> exception, raised once
         self.fail_verbs: dict[str, int] = {}  # git verb -> how many calls fail with LOCK_ERROR
+        self.fail_plan: dict[str, list[bool]] = {}  # git verb -> per-call schedule
+        self.fail_from_launch = 1  # failures arm once this many sessions have launched
         self._current = Sess()
         self._git = git_runner(self.repo, env=self.env)
 
@@ -299,9 +301,13 @@ class Night:
         verb = _verb(list(args))
         if self.launched and verb in self.raise_verbs:  # once, after the first launch
             raise self.raise_verbs.pop(verb)
-        if self.launched and self.fail_verbs.get(verb, 0) > 0:  # a lock someone else holds
+        armed = len(self.launched) >= self.fail_from_launch
+        if armed and self.fail_verbs.get(verb, 0) > 0:  # a lock someone else holds
             self.fail_verbs[verb] -= 1
             return subprocess.CompletedProcess(args, 128, b"", LOCK_ERROR)
+        if armed and self.fail_plan.get(verb):  # per call: True fails, False runs
+            if self.fail_plan[verb].pop(0):
+                return subprocess.CompletedProcess(args, 128, b"", LOCK_ERROR)
         done = self._git(args)
         if "status" in args and self.launched and self.inject:
             extra = b"".join(f"?? {path}\0".encode() for path in self.inject)
@@ -381,6 +387,7 @@ class Night:
 
 MATCH_SUBJECT = f"feat({EXE}): match {FUNC} in {UNIT} (C89)"
 LOCK_ERROR = b"fatal: Unable to create '.git/index.lock': File exists (made up).\n"
+FEED_NAME = "decomphub.progress.json"
 
 
 def _verb(call: list[str]) -> str | None:
@@ -1431,3 +1438,60 @@ def test_a_raising_session_with_strays_commits_nothing(tmp_path):
     report = night.run()
     assert (report.event, report.reason) == ("STOPPED", "error")
     assert night.commits() == []
+
+
+# ---- Fix round 3 (rereview-06-23-r2, fixround-06-23-r3) ----
+
+
+def _refuse_writes_to(monkeypatch, name: str) -> None:
+    """write_atomic raises for files called `name` (an os.replace onto a file held open)."""
+    real = driver.write_atomic
+
+    def refuse(path, data):
+        if Path(path).name == name:
+            raise PermissionError(f"made-up: {name} is held open")
+        return real(path, data)
+
+    monkeypatch.setattr(driver, "write_atomic", refuse)
+
+
+def _failed_commit_night(tmp_path) -> Night:
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    hook = night.repo / ".git" / "hooks" / "commit-msg"
+    _write(hook, REFUSE_FEAT_HOOK)
+    hook.chmod(0o755)
+    return night
+
+
+@pytest.mark.parametrize("step", ["log", "table", "feed", "unstage", "reset"])
+def test_a_failed_undo_step_commits_nothing(tmp_path, monkeypatch, step):
+    """K1: after a failed match commit, any undo step that fails sets the no-commit flag:
+    nothing is committed that night, not even the log, and the record names the failure."""
+    night = _failed_commit_night(tmp_path)
+    if step in ("log", "table", "feed"):
+        name = {"log": "attempts.jsonl", "table": "status.csv", "feed": FEED_NAME}[step]
+        _refuse_writes_to(monkeypatch, name)
+    elif step == "unstage":
+        night.fail_plan["restore"] = [True]
+    else:  # the reset's git restore, after a working unstage
+        night.fail_plan["restore"] = [False, True]
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert night.commits() == []
+    expected = {"log": "not restored: progress/attempts.jsonl", "table": "not restored: config/",
+                "feed": f"not restored: {FEED_NAME}", "unstage": "could not unstage",
+                "reset": "could not reset the attempt"}[step]  # fmt: skip
+    assert expected in report.detail
+
+
+def test_a_restored_stray_that_cannot_be_unstaged_is_named_so(tmp_path):
+    """Minor 2: the bytes came back but `git restore --staged` failed: "restored; could not
+    unstage", not "not restored"."""
+    sessions = [Sess(checks=(check_line(1, 50.0),)), Sess(write=f"config/{EXE}/status.csv")]
+    night = Night(tmp_path, sessions=sessions)
+    night.fail_from_launch = 2
+    night.fail_verbs["restore"] = 1
+    report = night.run(config={"attempts_per_function": 2})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert f"restored; could not unstage: config/{EXE}/status.csv (" in report.detail
+    assert f"not restored: config/{EXE}/status.csv" not in report.detail
