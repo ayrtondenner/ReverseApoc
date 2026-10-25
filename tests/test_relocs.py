@@ -347,8 +347,8 @@ def test_wrong_target_inside_function_fails():
 
 @pytest.mark.parametrize(
     "frame",
-    [(0, TEXT_INDEX), (2, 1), (4, None), (5, None)],
-    ids=["F0 segment", "F2 extern", "F4 location", "F5 target"],
+    [(0, TEXT_INDEX), (2, 1), (3, None), (4, None), (5, None)],
+    ids=["F0 segment", "F2 extern", "F3 frame number", "F4 location", "F5 target"],
 )
 def test_unexpected_frame_is_refused(frame):
     """wcc386 10.6 frames every flat-code fixup with F1 FLAT (the real objects of 06-03); any

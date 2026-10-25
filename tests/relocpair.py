@@ -60,12 +60,12 @@ def le_off32(field_va: int, target_off: int, *, obj: int = 2) -> bytes:
     return fixup_record(SRC_OFF32, field_va - CODE_BASE, obj, target_off, off32=True)
 
 
-def call(offset: int, extern: int, *, frame: tuple = FLAT_FRAME) -> bytes:
+def call(offset: int, extern: int, *, frame: tuple[int, int | None] = FLAT_FRAME) -> bytes:
     """A self-relative fixup of our field at `offset` to extern number `extern`."""
     return fixup(offset, segment_relative=False, frame=frame, target=(2, extern))
 
 
-def absolute(offset: int, extern: int, *, frame: tuple = FLAT_FRAME) -> bytes:
+def absolute(offset: int, extern: int, *, frame: tuple[int, int | None] = FLAT_FRAME) -> bytes:
     """A segment-relative fixup of our field at `offset` to extern number `extern`."""
     return fixup(offset, frame=frame, target=(2, extern))
 
