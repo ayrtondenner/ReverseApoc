@@ -29,10 +29,14 @@ from relocpair import (
     table,
     to_segment,
 )
+from reverseapoc.le import SRC_OFF32, SRC_SEL16
 from reverseapoc.relocs import OwnPublic, RelocError, RelocResult, check_function
 
-# A dump of hex bytes ("e8 0b 00", "e80b0000") or a bytes repr: no problem may hold one.
-_BYTE_DUMP = re.compile(r"\\x[0-9a-fA-F]{2}|\b(?:[0-9a-f]{2} ){2,}|\b(?:[0-9a-f]{2}){3,}\b")
+# A dump of hex bytes ("e8 0b 00", "E80B0000") or a bytes repr, in either case: no problem may
+# hold one (05-REVIEW 10d).
+_BYTE_DUMP = re.compile(
+    r"\\x[0-9a-f]{2}|\b(?:[0-9a-f]{2} ){2,}|\b(?:[0-9a-f]{2}){3,}\b", re.IGNORECASE
+)
 GOOD_EXTERNS = ["func_00010010_", "_D_00020004"]
 
 
@@ -160,7 +164,7 @@ def test_self_relative_fixup_over_an_le_fixup_fails():
 
 
 def test_le_fixup_must_be_off32():
-    sel16 = fixup_record(2, LOAD_FIELD - CODE_BASE, 2)
+    sel16 = fixup_record(SRC_SEL16, LOAD_FIELD - CODE_BASE, 2)
     orig = original({CODE_BASE: GOOD_ORIGINAL}, page1=sel16)
     (problem,) = problems_of(check(good_segment(), GOOD_ROW, orig))
     assert problem.startswith(f"0x{LOAD_FIELD:08X}: _D_00020004: ")
@@ -289,6 +293,72 @@ def test_own_public_outside_our_segment_is_refused():
         caller_check([OwnPublic("other_", 0x40, 4, CODE_BASE + 0x200)])
 
 
+# ---- 05-REVIEW 12a-12c: own publics are one unambiguous map --------------------------------------
+
+
+@pytest.mark.parametrize(
+    "own_publics",
+    [
+        [OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA),
+         OwnPublic("alias_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA + 0x10)],
+        [OwnPublic("alias_", STATIC_OFFSET + 1, 1, STATIC_VA + 0x10),
+         OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA)],
+    ],
+    ids=["same offset", "overlapping spans"],
+)
+def test_duplicate_own_publics_are_refused(own_publics):
+    """12a: two entries covering one offset would make resolution order-dependent (the last
+    entry won), so the map is refused, naming both, before any fixup is resolved."""
+    with pytest.raises(RelocError) as refused:
+        caller_check(own_publics)
+    assert "static_" in str(refused.value) and "alias_" in str(refused.value)
+
+
+def test_adjacent_own_publics_are_accepted():
+    mapped = [OwnPublic("func_00010000_", 0, len(CALLER_OURS), CODE_BASE),
+              OwnPublic("static_", STATIC_OFFSET, STATIC_SIZE, STATIC_VA)]  # fmt: skip
+    result = caller_check(mapped)
+    assert result.ok, result.problems
+
+
+def test_target_at_own_public_end_is_refused():
+    """12b: an own public is [offset, offset + size); its end belongs to no entry, so the field
+    is refused rather than resolved through the public before it."""
+    mapped = [OwnPublic("static_", STATIC_OFFSET, 1, STATIC_VA)]
+    (problem,) = problems_of(caller_check(mapped, stored=STATIC_OFFSET + 1))
+    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: _TEXT")
+    assert "needs the unit's public-to-row map" in problem
+
+
+def test_wrong_target_inside_function_fails():
+    """12c: a self-relative target inside the checked function 1 byte off the original's."""
+    ours = bytes.fromhex("e8" "05000000" "c3")  # stored = the ret's segment offset (5)
+    orig_code = bytes.fromhex("e8" "01000000" "c3")  # rel32 1: lands on start + 6
+    row = game_row(CODE_BASE, CODE_BASE + len(ours))
+    segment = our_segment(ours, [to_segment(1, TEXT_INDEX, relative=True)])
+    (problem,) = problems_of(check(segment, row, original({CODE_BASE: orig_code}),
+                                   size=len(ours)))  # fmt: skip
+    assert problem == (f"0x{CODE_BASE + 1:08X}: _TEXT+0x5 resolves to 0x{CODE_BASE + 5:08X}, "
+                       f"the original lands on 0x{CODE_BASE + 6:08X}")  # fmt: skip
+
+
+# ---- 05-REVIEW 10a: the fixup frame ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [(0, TEXT_INDEX), (2, 1), (3, None), (4, None), (5, None)],
+    ids=["F0 segment", "F2 extern", "F3 frame number", "F4 location", "F5 target"],
+)
+def test_unexpected_frame_is_refused(frame):
+    """wcc386 10.6 frames every flat-code fixup with F1 FLAT (the real objects of 06-03); any
+    other frame method is refused at the field's VA, even when target and bytes agree."""
+    segment = our_segment(GOOD_OURS, [call(1, 1, frame=frame), absolute(6, 2)], GOOD_EXTERNS)
+    (problem,) = problems_of(check(segment, GOOD_ROW, good_original()))
+    assert problem.startswith(f"0x{CALL_FIELD:08X}: func_00010010_: ")
+    assert f"F{frame[0]}" in problem and "frame" in problem
+
+
 def test_unsorted_le_fixups_give_the_same_result():
     orig = store_original()
     segment = store_segment("_D_00020010")
@@ -306,8 +376,8 @@ def test_straddler_passes():
     start = 0x10FFD  # mov eax,[0x20040] with its field at 0x10FFE..0x11001; ret
     ours = bytes.fromhex("a1" "00000000" "c3")
     first, second = bytes.fromhex("a1" "4000"), bytes.fromhex("0000" "c3")
-    page1 = fixup_record(7, 0xFFE, 2, 0x40, off32=True)
-    page2 = fixup_record(7, -2, 2, 0x40, off32=True)  # the same field, listed on page 2 too
+    page1 = fixup_record(SRC_OFF32, 0xFFE, 2, 0x40, off32=True)
+    page2 = fixup_record(SRC_OFF32, -2, 2, 0x40, off32=True)  # the same field, listed on page 2 too
     orig = original({start: first, start + len(first): second}, page1=page1, page2=page2)
     row = game_row(start, start + len(ours))
     segment = our_segment(ours, [absolute(1, 1)], ["_D_00020040"])
