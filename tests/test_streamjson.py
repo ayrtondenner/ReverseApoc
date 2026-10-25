@@ -389,3 +389,49 @@ def test_classify_reads_a_non_boolean_is_error_as_an_error(flag, extra, expected
     if flag != "missing":
         result["is_error"] = flag
     assert classify((result,), 1, False) is expected
+
+
+# Fix round 3, minor 1: a subtype that is not a string is an unknown subtype, never a crash.
+
+
+@pytest.mark.parametrize("subtype", [["success"], {"success": 1}, 7, 1.5, True, None])
+def test_classify_non_string_subtype_stops(subtype):
+    result = {"type": "result", "subtype": subtype, "is_error": False, "result": "Done."}
+    try:
+        got = classify((result,), 0, False)
+    except Exception as exc:  # a crash is the defect under test
+        got = exc
+    assert got is Disposition.STOP
+
+
+# Fix round 3, minor 2: `is_error: false` with a non-empty errors[] or an api_error_status is
+# still an error result; a clean `is_error: false` result keeps the I2 protection.
+
+
+@pytest.mark.parametrize(
+    ("extra", "expected"),
+    [
+        ({"api_error_status": 401}, Disposition.STOP),
+        ({"api_error_status": 529}, Disposition.TRANSIENT),
+        ({"api_error_status": 503}, Disposition.TRANSIENT),
+        ({"api_error_status": "oops"}, Disposition.STOP),
+        ({"errors": ["A made-up failure"]}, Disposition.STOP),
+        ({"errors": ["You've hit your usage limit"]}, Disposition.LIMIT),
+        ({"errors": "not a list"}, Disposition.STOP),
+    ],
+)
+def test_classify_is_error_false_with_error_fields_is_an_error(extra, expected):
+    result = {"type": "result", "subtype": "success", "is_error": False, "result": "Done.", **extra}
+    assert classify((result,), 1, False) is expected
+
+
+@pytest.mark.parametrize("extra", [{}, {"errors": []}, {"api_error_status": None}])
+def test_classify_clean_is_error_false_result_keeps_the_i2_protection(extra):
+    result = {
+        "type": "result",
+        "subtype": "success",
+        "is_error": False,
+        "result": "Not logged in? Credit balance is too low? I did not hit your limit.",
+        **extra,
+    }
+    assert classify((result,), 0, False) is Disposition.ATTEMPT_DONE
