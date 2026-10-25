@@ -58,14 +58,27 @@ uv run reverseapoc drive [--max-sessions N] [--target-matched N] [--dry-run | --
 
 The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
 
-**Preflight.** Every run, the dry run and the canary included, first refuses to start (exit 2, with a named reason) when:
+**Preflight.** Every run, the dry run and the canary included, first checks the checkout, then runs a fixed list of commands. Nothing is started unless all of it passes. It compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the hooks run `python -I`, which ignores `PYTHONDONTWRITEBYTECODE`), and regenerates the asm listings of both EXEs on the host. The dry run and the night (not the canary) then load both EXEs and precompute the Ghidra drafts of their picks in one container call per EXE (`ghidra-export EXE --json --drafts ...`, D-13). Each command's output goes to `build/driver/<run>/preflight.log`.
 
-- the checkout is not the main checkout (a linked worktree has its own git dir);
-- `git status --porcelain` is not empty (the refusal names the paths);
-- `claude --version` is not major 2 or is below **2.1.302**, the minimum CLI version (D-36; the dry run skips only this check). 2.1.302 is the release where `-p` has the documented permission default; `onFailure` needs 2.1.295;
-- `docker info` fails, or `uv sync --locked` fails in the container or on the host.
+Any failure before the night starts is a refusal: exit 2, a reason, a detail, and with `--json` exactly one document `{"event": "REFUSED", "reason": ..., "detail": ...}`. The reasons:
 
-It then compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the hooks run `python -I`, which ignores `PYTHONDONTWRITEBYTECODE`), regenerates the asm listings of both EXEs on the host, and precomputes the Ghidra drafts of the queue's top picks in one container call per EXE (D-13). Each command's output goes to `build/driver/<run>/preflight.log`.
+| Reason | When |
+|---|---|
+| `run id` | `--run ID` is not `[A-Za-z0-9_.-]+`, or a canary with this ID already ran (its attempt directory exists) |
+| `worktree` | not the main checkout (a linked worktree has its own git dir) |
+| `dirty` | `git status --porcelain` is not empty; the detail names the paths |
+| `cli version` | `claude --version` fails, cannot be read, is not major 2, or is below **2.1.302**, the minimum CLI version (D-36; the dry run skips only this check). 2.1.302 is the release where `-p` has the documented permission default; `onFailure` needs 2.1.295 |
+| `docker` | `docker info` fails |
+| `container sync` / `host sync` | `uv sync --locked` fails in the container / on the host |
+| `compile` | `compileall` of `tools/` and `configure.py` fails |
+| `asm` | the asm listings of an EXE cannot be written |
+| `world` | an EXE cannot be loaded (orig/, a config CSV) |
+| `picks` | a status table or `build/driver/difficult.json` cannot be read, or the pilot cannot be filled with 5 + 5 |
+| `drafts` | `ghidra-export --drafts` fails. Exit 1 is accepted only with a JSON document that names the missing drafts (a pack works without a draft); every other failure refuses |
+| `pack` | the dry run cannot build a pack |
+| `preflight` / `canary` | any other error in those steps (a runner or git that cannot start, for example) |
+
+The night's own refusal (`dirty` outputs: `progress/attempts.jsonl`, a `status.csv` or the feed differ from HEAD) also exits 2.
 
 **Dry run.** `uv run reverseapoc drive --dry-run` prints the 10 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10). It builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. The picker skips functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
 
@@ -75,10 +88,20 @@ It then compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the
 - the first three calls are in the result's `permission_denials`;
 - both wrapper calls were made and not denied, `attempt context` wrote `context.md`, and `attempt check` logged exit 0 (the claimed function is already matched, so this proves the container path);
 - no unknown stream event type carries an error;
+- the attempt's containers were removed afterwards (by the attempt's name prefix, as the night does);
 - `git status --porcelain` is clean afterwards;
-- nothing the night's audit pins or fingerprints changed (`.git/config` and hooks, the Claude settings files, `.venv`, the gitignored `.claude/` trees, every `__pycache__`).
+- HEAD and every ref are where they were (a commit leaves `git status` clean);
+- nothing the night's audit pins or fingerprints changed (`.git/config`, `.git/info/exclude` and `attributes`, `.git/hooks/`, `.githooks/`, the two Claude settings files, `.venv`, the gitignored `.claude/` trees but `.claude/worktrees/`, every `__pycache__`).
 
-Otherwise it prints FAIL with each failed check and exits 1. It leaves the tree as the session left it, for inspection; the next preflight refuses a dirty tree.
+Each check prints one `PASS: ...` or `FAIL: ...` line; the last line is `CANARY PASS` (exit 0) or `CANARY FAIL` (exit 1). Use a fresh `--run ID` for every canary (the default, the UTC time, always is): a reused one is refused. The canary leaves the tree as the session left it, for inspection, and changes nothing back.
+
+**After a FAILed or leaky canary**, before anything else:
+
+1. Read the FAIL lines and the transcript `build/driver/canary/<run>/ufo2p/func_000A3980/attempt-1/transcript.jsonl`.
+2. `git status` lists what the session left in git's view. Put tracked files back with `git restore --source=HEAD -- <paths>` (for example `git restore --source=HEAD -- config/targets.toml`) and delete untracked strays by name (for example `tools/x.py`). If HEAD moved, inspect the new commit with `git log` before resetting anything.
+3. The FAIL line `pinned and fingerprinted files changed: ...` names paths git cannot see (`.git/hooks/`, `.git/config`, `.venv`, `.claude/`, `__pycache__`). The next preflight does not see them, so check each named path by hand: delete a new hook, `.pth` or `*customize.py`, restore `.git/config` or a settings file from a backup or by hand, and run `uv sync --locked` and `uv run --frozen python -m compileall -q tools configure.py` again for `.venv` and `__pycache__`.
+4. If a container is named in a FAIL line, remove it with `docker rm -f <name>`.
+5. Run the canary again with a new `--run ID` until it prints `CANARY PASS`.
 
 **One attempt.** The driver scaffolds the unit if it is missing, builds the pack, and starts the session in the checkout root. The session gets `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES` (absolute paths). It may run only the attempt wrapper's three commands:
 
@@ -90,7 +113,19 @@ After the session the driver removes the attempt's containers, audits every chan
 
 **Reset rules (D-34).** A match is one commit with explicit paths: the unit, `status.csv`, `decomphub.progress.json`, `progress/attempts.jsonl` and any new header. Anything else resets the attempt: `git restore --source=HEAD -- <unit> include/` for tracked files, and a unit scaffolded by this attempt or a header it added is deleted. The driver never runs `git add -A` or `git clean`. A partial attempt keeps its best C under `best/` and is scored by `gate --partial`. A write outside the claim is a guardrail stop: the stray files are restored or moved into `build/driver/<run>/quarantine/` (never deleted), the night ends and nothing is committed. A night that stops with partial rows leaves `status.csv` uncommitted and names it; the next drive refuses to start until the owner commits or restores it.
 
-**End of run.** After the last session the driver runs, in the container, `uv run --frozen python configure.py && ninja -t clean && ninja verify`, then `reverseapoc gate --all`, and logs both under `build/driver/<run>/`. A failed check is recorded in the ENDED run record and the night exits 1. Then the `chore(driver): attempt log` commit holds the night's records. Exit codes: 0 ended clean, 1 stopped or a failed end check, 2 refused.
+**End of run.** When the night ENDS (nothing to do, max sessions, target matched, queue exhausted), the driver runs, in the container, `uv run --frozen python configure.py && ninja -t clean && ninja verify`, then `reverseapoc gate --all`, and logs both under `build/driver/<run>/` (`end-ninja-verify.log`, `end-gate-all.log`). A failed check is recorded in the ENDED run record and the night exits 1. Then the `chore(driver): attempt log` commit holds the night's records. **A STOPPED night skips both end checks**: it has no ninja verify or `gate --all` evidence, so run them by hand before trusting it. Exit codes: 0 ended clean, 1 stopped or a failed end check, 2 refused.
+
+**Open assumptions to watch at the pilot checkpoint.** The tests prove the driver against synthetic streams and fake commands only. These hold only if the real CLI, Docker and host behave as assumed; the canary checks the first five:
+
+- **`permission_denials` shape.** The canary reads the result event's `permission_denials` as `{tool_name, tool_use_id, tool_input}` entries and expects hook denials to appear there. If they do not, the canary FAILs; look at the transcript.
+- **Hook timing per tool.** If Claude Code ran every PreToolUse hook of a turn before any of its tools, two Edits each placeable on the original file could compose `_asm`. The canary cannot see this. Behind it: the always layer denies any `src/` Edit whose old text is not verbatim in the file, and the gate decides every match; no commit-time inline-asm scan exists.
+- **`CLAUDE_PROJECT_DIR`.** The canary shows that the hooks ran in a project holding `reverseapoc.hooks` (the denials and an allowed wrapper call), not that it is this checkout rather than another one with `hooks.py`. The main-checkout preflight and the session's cwd make a foreign value unlikely.
+- **`uv run --frozen` writes nothing to `.venv`** once the preflight's host `uv sync --locked` ran (the wrapper has no `--no-sync`). The canary's fingerprint check proves or refutes it.
+- **Container bytecode.** The container's Python 3.14 is assumed to accept the host-compiled `.pyc` in the bind mount and to write none during `attempt check`. The canary's fifth call and its fingerprint check prove or refute it.
+- **Known stream event types** are `system`, `assistant`, `user`, `result` and `rate_limit_event`. Any other type is ignored by the night; the canary FAILs if one carries an error key.
+- **The `claude` executable** is found with `shutil.which("claude")` and is assumed to be the native `claude.exe` from `claude install`. A `.cmd` shim may not start under the driver's argv-list launch.
+- **`COMPOSE_PROJECT_NAME`.** Container cleanup filters on the compose project label, derived from the checkout's directory name (`reverseapoc`). If `COMPOSE_PROJECT_NAME` is set, the filter finds nothing and no error is raised, so a timed-out check container could keep running.
+- **Leaky canary leftovers** (for example `tools/x.py`) stay in place for inspection; clean up as above before the pilot.
 
 ### Hooks (guardrails, Phase 6)
 
