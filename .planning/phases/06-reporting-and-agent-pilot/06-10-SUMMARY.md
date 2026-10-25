@@ -238,9 +238,10 @@ Evidence re-run after the fix (`REVERSEAPOC_WATCOM_DIR=../../../third_party/watc
 ## Self-Check: PASSED
 
 - Files: tests/test_check_tables_real.py, tools/reverseapoc/check.py, docs/matching.md and docs/learnings.md exist.
-- Commits 930a173, a314bb9, 55edbe4, 2efa21c and 02a6ca1 are on this branch (`git rev-list --count 325c606..HEAD` = 5 before this SUMMARY).
+- Commits are on this branch: the plan's 930a173, a314bb9, 55edbe4, 2efa21c, 02a6ca1 and the SUMMARY db8c803; fix round 1's 2861c12, 9c16f06, 3287ee8 and 6eb867a; and fix round 2's wording commit. `git rev-list --count 325c606..HEAD` was 10 before the fix round 2 commit, so it is 11 after it.
 - Acceptance: all three synthetic test names are in tests/test_check.py; `test_self_extdef_resolves_to_the_local_public` and `test_real_static_probe_passes` exist; tests/test_check_tables_real.py holds only its C sources and a synthetic LE; learnings.md no longer says a static cannot pass without naming the row-name condition.
-- `uv run pytest -q`: 1602 passed, 221 skipped. `uv run ruff check .`: all checks passed.
+- `uv run pytest -q` (fresh run in fix round 2, on the code as it stands after fix round 1): 1610 passed, 221 skipped. `uv run ruff check .`: all checks passed. The figures before the fix rounds were 1602 passed, 221 skipped.
+- Fix round 2 (re-review N1, N2) was wording only: the `with_relocs` and `_head_reloc` docstrings now say that an entry is accepted when it resolves inside the head or inside the table span itself, at the VA the original LE fixup targets. This Self-Check now shows current figures. No behaviour changed.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
