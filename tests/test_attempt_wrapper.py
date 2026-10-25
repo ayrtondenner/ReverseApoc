@@ -165,15 +165,29 @@ def test_container_names_differ_per_attempt_dir(repo: Path, monkeypatch):
 
 class TimeoutRunner:
     """The check run times out (the default runner's TimeoutExpired); `docker rm -f` then
-    answers with `rm_code`. Duck-typed answers: only the fields the wrapper reads."""
+    answers with `rm_code`, or raises with `rm_raises`. Records each call's keyword arguments
+    and, at the removal, whether the run's evidence was already on disk (fix round 2 N2).
+    Duck-typed answers: only the fields the wrapper reads."""
 
-    def __init__(self, rm_code: int) -> None:
+    def __init__(self, rm_code: int = 0, *, attempt_dir: Path | None = None,
+                 rm_raises: bool = False) -> None:  # fmt: skip
         self.calls: list[tuple[str, ...]] = []
+        self.kwargs: list[dict] = []
         self.rm_code = rm_code
+        self.attempt_dir = attempt_dir
+        self.rm_raises = rm_raises
+        self.evidence_at_removal: tuple[bool, bool] | None = None
 
-    def __call__(self, argv):
+    def __call__(self, argv, **kwargs):
         self.calls.append(tuple(argv))
+        self.kwargs.append(kwargs)
         if argv[:2] == ("docker", "rm"):
+            if self.attempt_dir is not None:
+                saved = self.attempt_dir / "checks" / "0001.json"
+                log = self.attempt_dir / "checks.jsonl"
+                self.evidence_at_removal = (saved.is_file(), log.is_file())
+            if self.rm_raises:
+                raise subprocess.TimeoutExpired(argv, 15)
             return SimpleNamespace(returncode=self.rm_code, stdout="", stderr="made-up rm",
                                    timed_out=False)  # fmt: skip
         return SimpleNamespace(returncode=2, stdout="", stderr="made-up timeout", timed_out=True)
@@ -202,6 +216,64 @@ def test_a_container_that_cannot_be_removed_keeps_the_lock(repo: Path, monkeypat
     assert "could not be removed" in capsys.readouterr().out
     assert _run(["attempt", "check"]) == 2
     assert len(runner.calls) == 2  # refused: the lock is held
+
+
+def test_the_evidence_is_written_before_the_removal(repo: Path, monkeypatch):
+    """Fix round 2 N2: the run's JSON and its checks.jsonl line (exit 2) are on disk before
+    `docker rm -f` starts, so a slow or failing removal cannot lose them; a removal that
+    raises keeps the lock (fail closed)."""
+    runner = TimeoutRunner(attempt_dir=repo, rm_raises=True)
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    assert _run(["attempt", "check"]) == 2
+    assert runner.evidence_at_removal == (True, True)
+    assert (repo / "check.lock").is_file()
+    assert _lines(repo)[-1]["exit"] == 2
+    saved = json.loads((repo / "checks" / "0001.json").read_text(encoding="utf-8"))
+    assert "made-up timeout" in saved["stderr"]
+
+
+def test_the_removal_has_its_own_short_timeout(repo: Path, monkeypatch):
+    """Fix round 2 N2: `docker rm -f` gets RM_TIMEOUT (15 s), so 580 + 15 stays under the
+    Bash tool's 600 s; the check run keeps the runner's own timeout."""
+    assert getattr(attempt, "RM_TIMEOUT", None) == 15
+    assert attempt.CHECK_TIMEOUT + attempt.RM_TIMEOUT < 600
+    runner = TimeoutRunner()
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    assert _run(["attempt", "check"]) == 2
+    assert runner.kwargs == [{}, {"timeout": attempt.RM_TIMEOUT}]
+    assert not (repo / "check.lock").exists()
+
+
+def test_the_default_runner_takes_a_timeout(monkeypatch):
+    """Fix round 2 N2: default_runner passes a given timeout to subprocess.run."""
+    seen = {}
+
+    def run(argv, **kwargs):
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(attempt.subprocess, "run", run)
+    try:
+        attempt.default_runner(("docker", "rm", "-f", "x"), timeout=15)
+    except TypeError:
+        pytest.fail("default_runner takes no timeout")
+    assert seen["timeout"] == 15
+    attempt.default_runner(("docker", "compose", "run"))
+    assert seen["timeout"] == attempt.CHECK_TIMEOUT
+
+
+def test_container_prefix_is_the_names_single_source(repo: Path, monkeypatch):
+    """Fix round 2 N3: attempt.container_prefix(attempt dir) is the one name builder the
+    06-23 driver reuses; it resolves the directory, so any spelling of it gives the prefix of
+    the name the wrapper passed to docker."""
+    prefix = getattr(attempt, "container_prefix", None)
+    assert prefix is not None, "attempt.container_prefix is the driver's name helper"
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    name = runner.calls[0][6]
+    assert name == prefix(repo) + "0001"
+    assert prefix(repo / "sub" / "..") == prefix(repo)
+    assert prefix(repo).startswith(attempt.CONTAINER_PREFIX) and prefix(repo).endswith("-")
 
 
 def test_the_default_runner_reports_a_timeout(monkeypatch):
