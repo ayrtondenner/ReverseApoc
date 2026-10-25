@@ -26,13 +26,13 @@ from omfimage import (
 from reverseapoc.functions import FunctionRow, game_name
 from reverseapoc.le import LE, SRC_OFF32, Fixup
 from reverseapoc.omf import Segment, read_object
+from reverseapoc.relocs import FRAME_GROUP
 from reverseapoc.symbols import SymbolTable
 
 CODE_BASE = 0x10000  # object 1
 DATA_RANGES = [(0x20000, 0x23000)]  # object 2
 TEXT_INDEX = 1  # SEGDEF numbers in our module
 CONST_INDEX = 2
-FRAME_GROUP = 1  # OMF frame method F1: the frame datum is a GRPDEF index
 FLAT_LNAME = "FLAT"  # the group wcc386 10.6 names as the frame of every flat-code fixup
 FLAT_GROUP = 1  # its GRPDEF number in our module
 FLAT_FRAME = (FRAME_GROUP, FLAT_GROUP)  # F1 FLAT, the frame the real 10.6 objects use (06-03)
