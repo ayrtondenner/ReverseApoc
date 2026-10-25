@@ -1305,8 +1305,11 @@ def test_a_pinned_file_replaced_by_a_file_symlink_comes_back(tmp_path):
         pytest.skip("symlink creation needs privileges on this host")
     probe.unlink()
 
-    def swap(args):  # the "agent" swaps the file for a link while the session runs
-        if night.launched and not os.path.islink(leaf):
+    swapped = []
+
+    def swap(args):  # the "agent" swaps the file for a link once, while the session runs
+        if night.launched and not swapped:
+            swapped.append(True)
             leaf.unlink()
             leaf.symlink_to(outside)
 
