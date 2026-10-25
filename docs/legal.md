@@ -23,7 +23,7 @@ This is a description of how the project handles copyrighted material, not legal
 
 - **`tools/` is GPLv3** (version 3 or later). It includes modules copied from the [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) (`omf2elf.py` and related), whose tooling is GPLv3; their copyright headers are kept as-is. Code taken from [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp) (CC0) and [retrokit](https://github.com/nemo22/retrokit) (Apache-2.0) can be combined into a GPLv3 work; the reverse is not possible.
 - **Specs under `specs/` are CC0-1.0** (owner decision 2026-10-21). They are written in our own words from the matched code and from community sources, so OpenApoc (GPL-3.0) can use them, text included, without attribution. A spec can only be CC0 if we wrote it; see the source rules in [Specs and clean room](#specs-and-clean-room).
-- **decomp.wtf** (MIT) is a separate tool run as a subprocess in WSL2. It is never imported or vendored, so its code does not mix with ours.
+- **decomp.wtf** (MIT) was evaluated in spike 006 as a separate tool run as a subprocess in WSL2, and Phase 6 does not use it (D-03; it is re-evaluated for Phase 7). It is never imported or vendored, so its code does not mix with ours.
 - **Decompiled C under `src/` and `include/`:** this code reproduces the logic of the copyrighted original game. It is written for interoperability and research, and published to help OpenApoc, a GPL reimplementation that requires the original game files, understand the original behaviour. As with Theme Hospital's decomp, the project claims no rights in it, and it ships with no assets. Rebuilding the game from it requires your own original executables.
 
 ## Specs and clean room
@@ -40,6 +40,8 @@ Community sources are read for facts, which are not copyrightable, and re-expres
 ## AI use
 
 AI tools, Claude Code in particular, are used openly for research, tooling and decompilation attempts. AI output is never trusted on its own: every match is accepted only after a deterministic byte comparison run by the build (objdiff, relocation checks, whole-EXE SHA-1), and the agent is blocked from editing the original files, hash manifests and build scripts.
+
+From the Phase 6 driver (plan 06-23) on, the public record of every agent attempt will be the committed `progress/attempts.jsonl` (D-23). It will hold one line per attempt with the function, the attempt number, the outcome (matched, partial or gave up), the abort reason, turns, tokens, a cost estimate, the time taken, the model and CLI version, and a check summary. It will hold no game bytes. Failed attempts will be committed too, so the log shows what the agent could not do as well as what it matched. Transcripts and full check output stay in the gitignored `build/`.
 
 ## Why not IDA Free
 

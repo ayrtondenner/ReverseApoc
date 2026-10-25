@@ -18,6 +18,10 @@ __pycache__/
 **/*.bin
 **/*.BIN
 **/*.img
+**/*.IMG
 **/*.cue
+**/*.CUE
+**/*.mdf
+**/*.MDF
 .ua/
 groma/
