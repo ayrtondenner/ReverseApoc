@@ -68,3 +68,150 @@ byte for byte. It documents the original engine for the OpenApoc reimplementatio
 - Repo: https://github.com/ayrtondenner/ReverseApoc
 - Progress page: https://ayrtondenner.github.io/ReverseApoc/
 ```
+
+## awesome-decomp-games
+
+Who sends it: the owner opens this pull request on <https://github.com/SubmitGame/awesome-decomp-games>.
+
+Target file: `data/additions.json`. The list is generated: its CONTRIBUTING.md says never to edit `README.md` or the
+tables, and to add a project by a PR that appends one object to `data/additions.json`, with the keys `title`, `url`,
+`platform`, `type` and `description`; `type` is a hint (`decomp` here), and stars, progress and link status are filled
+in automatically. `DOS` is one of the list's platform values (126 entries in `data/games.json` on 2026-10-25), and
+titles follow the `Game (repo)` shape. Two optional keys that other entries in the file use are added on purpose:
+`"ai_flag": true`, which marks the entry with the list's AI warning, so the project discloses its own AI use instead of
+waiting to be flagged, and `"needs_assets": "byo"`, which says the user brings their own game files.
+
+Placement: append as the last element of the top-level array in `data/additions.json`. Add a comma after the closing
+brace of the current last object, and keep the file's one-space indentation.
+
+Object to append:
+
+```json
+ {
+  "title": "X-COM: Apocalypse (ReverseApoc)",
+  "url": "https://github.com/ayrtondenner/ReverseApoc",
+  "platform": "DOS",
+  "type": "decomp",
+  "needs_assets": "byo",
+  "ai_flag": true,
+  "description": "AI-assisted (Claude Code) byte-matching decompilation of the 1997 DOS executables UFO2P.EXE and TACP.EXE with the original Watcom C 10.6 compiler. Every match is proven by byte comparison: objdiff 100% for the function and both rebuilt executables SHA-1 identical to the retail files. No game files are distributed; bring your own copy. Progress: https://ayrtondenner.github.io/ReverseApoc/"
+ }
+```
+
+PR title:
+
+```text
+Add X-COM: Apocalypse (ReverseApoc), DOS decomp
+```
+
+PR body:
+
+```md
+Appends one entry to `data/additions.json`: ReverseApoc, a byte-matching decompilation of X-COM: Apocalypse
+(MicroProse, 1997, DOS). It rebuilds the two DOS/4GW LE executables (UFO2P.EXE and TACP.EXE) with the original
+Watcom C 10.6 compiler, to document the original engine for the OpenApoc reimplementation. It is not a port.
+
+- AI use: the project is AI-assisted (Claude Code), so the entry sets `"ai_flag": true` itself.
+- Acceptance test: byte comparison. A function counts as matched only when objdiff reports 100% for it, an
+  independent relocation check passes, and the rebuilt UFO2P.EXE and TACP.EXE are SHA-1 identical to the retail
+  files. The agent never judges its own matches.
+- No game files are distributed: no executables, assets, disassembly or compiler binaries are in the repository;
+  users bring their own copy (`"needs_assets": "byo"`).
+- Repo: https://github.com/ayrtondenner/ReverseApoc
+- Progress page: https://ayrtondenner.github.io/ReverseApoc/
+```
+
+## awesome-game-decompilations
+
+Who sends it: the owner opens this pull request on <https://github.com/CharlotteCross1998/awesome-game-decompilations>.
+
+Target file: `README.md`, section `## PC / Computer`. Entries there are bare links, one per line,
+`- [Game](link)`, sorted alphabetically within the section, with a platform note in parentheses where it helps
+(`Touhou (PC-98)`). The list's "AI disclosure" section allows AI projects and discloses each one with a `⚠️` at the
+start of the link text (`[⚠️ Mickey Saves the Day 3D Adventure](...)`), sorted by the title after the emoji. The repo
+has no CONTRIBUTING file.
+
+Placement: in `## PC / Computer`, between `- [Touhou (PC-98)](https://github.com/nmlgc/ReC98)` and
+`- [Zuma Deluxe](https://github.com/alula/CircleShootApp)`.
+
+Line to add:
+
+```md
+- [⚠️ X-COM: Apocalypse (DOS)](https://github.com/ayrtondenner/ReverseApoc)
+```
+
+PR title:
+
+```text
+Add X-COM: Apocalypse (DOS) to PC / Computer, marked AI
+```
+
+PR body:
+
+```md
+Adds ReverseApoc to the PC / Computer section, marked with ⚠️ as the AI disclosure section asks: the project is
+AI-assisted, openly (Claude Code writes the decompilation attempts).
+
+ReverseApoc is a byte-matching decompilation of X-COM: Apocalypse (MicroProse, 1997, DOS): readable C89 that,
+compiled with the original Watcom C 10.6 compiler, rebuilds the two DOS/4GW LE executables (UFO2P.EXE and TACP.EXE)
+byte for byte. It documents the original engine for the OpenApoc reimplementation and is not a port.
+
+- Acceptance test: byte comparison. A function counts as matched only when objdiff reports 100% for it, an
+  independent relocation check passes, and the rebuilt UFO2P.EXE and TACP.EXE are SHA-1 identical to the retail
+  files. AI output is never trusted on its own.
+- No game files are distributed: no executables, assets, disassembly or compiler binaries are in the repository;
+  users bring their own copy of the game and of the compiler.
+- Repo: https://github.com/ayrtondenner/ReverseApoc
+- Progress page: https://ayrtondenner.github.io/ReverseApoc/
+```
+
+## decomp.me preset request
+
+Who sends it: the owner files this issue by hand, on decomp.me's issue tracker
+(<https://github.com/decompme/decomp.me/issues>) or through whatever channel decomp.me asks presets to be requested in
+at the time; the owner checks which by hand. decomp.me bans LLM and automated access, so no tool visited decomp.me or
+its repository for this draft: it is written from [toolchain.md](toolchain.md) ("Compiler" and "Tools in detail",
+which record that the `msdos` platform already offers `wcc10.6`) and the phase 6 context. The request is for a preset
+only, so scratches for this game start from the right compiler and flags; it asks for no new compiler.
+
+Issue title:
+
+```text
+Preset request: X-COM: Apocalypse (msdos, wcc10.6, -4r -s -fpi)
+```
+
+Issue body:
+
+```md
+Could you add a preset for X-COM: Apocalypse (MicroProse, 1997, DOS)?
+
+- Platform: `msdos`
+- Compiler: `wcc10.6`
+- Flags: `-4r -s -fpi`
+
+Project: ReverseApoc, https://github.com/ayrtondenner/ReverseApoc (progress page:
+https://ayrtondenner.github.io/ReverseApoc/). It is a byte-matching decompilation of the game's two DOS/4GW LE
+executables, UFO2P.EXE and TACP.EXE, with the original Watcom compiler, written to document the original engine for
+the OpenApoc reimplementation. The project is AI-assisted (Claude Code), openly, and every match is proven
+by byte comparison: objdiff 100% for the function, an independent relocation check, and both rebuilt executables SHA-1
+identical to the retail files. No game files are distributed. We use decomp.me sparingly and by hand, for genuinely
+hard functions, and never post agent-generated scratches in bulk.
+
+Evidence for the compiler and flags (details in
+https://github.com/ayrtondenner/ReverseApoc/blob/main/docs/toolchain.md, "Compiler"):
+
+- Compiler: the linked runtime library matches Watcom C 10.6 byte for byte in both executables (11 modules per
+  executable match only 10.6, none only 10.5 or 11.0). 10.5 gives the same code as 10.6 on every probe we ran, and
+  11.0 ties with it at `-4r`, so 10.6 is the version that fits both the code and the runtime.
+- `-4r`: register calling convention (no stack-convention-only runtime module is linked) and a 486 target (5-dword
+  struct copies use `rep movsd`, not the unrolled copies `-5` gives).
+- `-s`: most functions have no stack-check prologue; the few that call `__CHK` (40 in UFO2P.EXE, 32 in TACP.EXE)
+  were built without `-s`, so a scratch for one of those drops the flag.
+- `-fpi`: inline x87 with the emulator linked (EMU387), not `-fpc` library calls.
+- The first matched functions in both executables compile byte-identical under `wcc386` 10.6 with exactly
+  `-4r -s -fpi`.
+
+Our own build also passes `-bt=dos`, because the NT-hosted compilers define `__NT__` without it. We mention it
+only in case the `msdos` platform does not already target DOS; we have not tested whether any function's code
+depends on it.
+```
