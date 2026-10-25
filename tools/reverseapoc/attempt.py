@@ -26,6 +26,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -38,7 +39,7 @@ from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
 from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv, read_symbols_csv
-from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, attempt_form_matches
+from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, NOTES_ENV, attempt_form_matches
 from .le import LE, Fixup
 from .libmatch import read_target, select_target
 from .status import read_status, status_path
@@ -52,7 +53,7 @@ CHECK_TIMEOUT = 580  # seconds; under the Bash tool's 600 s cap, so the run is s
 CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
 CHECK_LOCK = "check.lock"
-NOTES_FILE = "notes.md"  # the driver's REVERSEAPOC_ATTEMPT_NOTES is <attempt dir>/notes.md (06-23)
+NOTES_FILE = "notes.md"  # REVERSEAPOC_ATTEMPT_NOTES must be <attempt dir>/notes.md (06-23, M8)
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -117,6 +118,7 @@ def default_runner(argv: Sequence[str]) -> Ran:
 
 
 RUNNER: Runner = default_runner  # read at call time; tests replace it
+CLOCK: Callable[[], float] = time.monotonic  # times each run (M2); tests replace it
 
 
 def form_allowed(argv: Sequence[str]) -> bool:
@@ -145,6 +147,7 @@ class Claim:
     unit: str
     function: str  # func_XXXXXXXX
     attempt_dir: Path  # resolved, below build/driver/
+    notes: Path  # REVERSEAPOC_ATTEMPT_NOTES as the driver set it: <attempt dir>/notes.md
 
     @property
     def target(self) -> str:
@@ -164,7 +167,9 @@ class Claim:
         if _FUNC.fullmatch(function) is None:
             raise AttemptError(f"{FUNC_ENV} must be set by the driver to func_XXXXXXXX "
                                "(8 upper-case hex digits)")  # fmt: skip
-        return cls(claim.group(1), claim.group(2), function, _attempt_dir(env, roots))
+        attempt_dir = _attempt_dir(env, roots)
+        return cls(claim.group(1), claim.group(2), function, attempt_dir,
+                   _notes(env, roots, attempt_dir))  # fmt: skip
 
 
 def _attempt_dir(env: Mapping[str, str], roots: Roots) -> Path:
@@ -177,6 +182,18 @@ def _attempt_dir(env: Mapping[str, str], roots: Roots) -> Path:
         raise AttemptError(f"{DIR_ENV} {value!r} is not an existing directory below {anchor} "
                            "(the gitignored build/driver/, exact case)")  # fmt: skip
     return path
+
+
+def _notes(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path:
+    """M8: REVERSEAPOC_ATTEMPT_NOTES, the one build/ path the hook lets the agent write, must
+    be <attempt dir>/notes.md (compared resolved, part by part with exact case), so the path
+    the wrapper prints is the path the hook allows."""
+    value = env.get(NOTES_ENV) or ""
+    expected = attempt_dir / NOTES_FILE
+    given = Path(value)
+    if not value or (Path(roots.repo) / given).resolve().parts != expected.parts:
+        raise AttemptError(f"{NOTES_ENV} must be set by the driver to {expected}, got {value!r}")
+    return given
 
 
 # ---- attempt check ----
@@ -355,10 +372,13 @@ def _not_compiled(claim: Claim) -> str:
     return f"  {claim.function} was not compiled (still INCLUDE_ASM?)"
 
 
-def _summary(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran) -> str:
+def _summary(
+    claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran, seconds: float
+) -> str:
     kind = "check --sweep" if line.sweep else "check"
     verdict = (_SWEEP_VERDICT if line.sweep else _VERDICT)[line.exit]
-    head = (f"attempt {kind} {line.n}/{CHECK_BUDGET} {claim.target} {claim.function}: "
+    head = (f"attempt {kind} {line.n}/{CHECK_BUDGET}, {round(seconds)} s "
+            f"({CHECK_BUDGET - line.n} left) {claim.target} {claim.function}: "
             f"exit {line.exit} {verdict}")  # fmt: skip
     body = []
     if doc is not None and line.sweep:
@@ -373,7 +393,7 @@ def _summary(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ra
     source = claim.attempt_dir / line.source
     saved = (f"saved {source.with_suffix('.json').as_posix()} (full JSON) and "
              f"{source.as_posix()} (the C checked)\n"
-             f"notes: {(claim.attempt_dir / NOTES_FILE).as_posix()}")  # fmt: skip
+             f"notes: {claim.notes.as_posix()}")  # fmt: skip
     return "\n".join([head, *body, saved])
 
 
@@ -446,18 +466,20 @@ def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) ->
     stem = f"{n:04d}"
     source = f"{CHECKS_DIR}/{stem}.c"
     _reserve(claim.attempt_dir / source, text)
+    started = CLOCK()
     ran = runner(container_check_argv(claim, sweep=sweep))
+    seconds = CLOCK() - started
     doc = _parse(ran.stdout)
     try:
         if doc is None:
             raise ValueError("no JSON")
         line = (_sweep_line(doc, default, ran, n, source) if sweep
                 else _check_line(doc, claim, ran, n, source))  # fmt: skip
-        summary = _summary(claim, line, doc, ran)
+        summary = _summary(claim, line, doc, ran, seconds)
     except (KeyError, TypeError, ValueError, AttributeError):
         doc = None
         line = _tool_line(n, sweep, source)
-        summary = _summary(claim, line, None, ran)
+        summary = _summary(claim, line, None, ran, seconds)
     saved = doc if doc is not None else {"error": "no usable JSON", "returncode": ran.returncode,
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(checks / f"{stem}.json", (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
@@ -671,6 +693,5 @@ def cmd_context() -> int:
                      roots=ROOTS)  # fmt: skip
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     sys.stdout.write(pack.text)
-    notes = (claim.attempt_dir / NOTES_FILE).as_posix()
-    print(f"wrote {path.as_posix()}; notes: {notes}", file=sys.stderr)
+    print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)
     return EXIT_OK
