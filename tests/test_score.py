@@ -17,6 +17,7 @@ from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, write_functions_csv
 from reverseapoc.le import LE, SRC_OFF32, SRC_SEL16
 from reverseapoc.score import (
+    LE_PAGE_SIZE,
     Candidate,
     ScoreError,
     ScoreReport,
@@ -324,6 +325,11 @@ def test_score_error_is_a_value_error():
 # ---- 05-REVIEW rows 9a, 9b, 9d ----
 
 SMALL_PAGE = 0x800  # a page size other than wlink's 0x1000, written into LE header field 0x28
+OFF32_SIZE = 4  # bytes of an off32 fixup field
+# framed(): the mov's off32 field follows push ebp (1), mov ebp, esp (2), call rel32 (5) and the
+# mov's own opcode byte (1).
+FRAMED_FIELD = 1 + 2 + 5 + 1
+FIELD_BEFORE_PAGE = 2  # the field starts this many bytes before a SMALL_PAGE boundary
 
 
 def _small_page_image(funcs: list[Func]) -> bytes:
@@ -344,12 +350,16 @@ def _small_page_image(funcs: list[Func]) -> bytes:
 
 def test_score_takes_the_page_size_from_the_le(tmp_path: Path, monkeypatch, capsys):
     """Row 9a: `score` checks straddling against the LE header's page size, not 0x1000."""
+    # build_le_image reads the page size from the conftest.PAGE_SIZE global (header field 0x28,
+    # page layout and patch mapping alike) and takes no page-size parameter; patching that one
+    # global keeps the three consistent without changing the shared builder.
     monkeypatch.setattr(conftest, "PAGE_SIZE", SMALL_PAGE)
     callee = Func(CODE + 0x100, RET)
-    f = framed(CODE + SMALL_PAGE - 11, call=callee.start)
+    f = framed(CODE + SMALL_PAGE - FIELD_BEFORE_PAGE - FRAMED_FIELD, call=callee.start)
     field_va = f.fixups[0][0]
-    assert field_va < CODE + SMALL_PAGE < field_va + 4  # crosses a SMALL_PAGE boundary only
-    assert field_va // 0x1000 == (field_va + 3) // 0x1000
+    last = field_va + OFF32_SIZE - 1
+    assert field_va < CODE + SMALL_PAGE <= last  # crosses a SMALL_PAGE boundary ...
+    assert field_va // LE_PAGE_SIZE == last // LE_PAGE_SIZE  # ... but no LE_PAGE_SIZE one
     data = _small_page_image([f, callee])
     assert LE(data).page_size == SMALL_PAGE
     orig = tmp_path / "orig"
@@ -385,11 +395,19 @@ def test_top_is_checked_once(tmp_path: Path, monkeypatch, capsys):
     assert err.count("--top must be at least 1, not 0") == 1
 
 
-def test_has_chk_needs_a_chk_call():
-    """Row 9d: only `push <immediate>; call __CHK` is a stack-check prologue; a register push
-    before the call is not."""
+@pytest.mark.parametrize(
+    "push",
+    [
+        b"\x50",  # push eax
+        b"\xff\x35" + struct.pack("<I", DATA_PLAIN),  # push dword ptr [DATA_PLAIN]
+    ],
+    ids=["register", "memory"],
+)
+def test_has_chk_needs_a_chk_call(push: bytes):
+    """Row 9d: only `push <immediate>; call __CHK` is a stack-check prologue; a register or
+    memory push before the call is not."""
     f = Func(CODE)
-    f.emit(b"\x50")  # push eax
+    f.emit(push)
     f.call(CHK)
     f.emit(PUSH_EBP + MOV_EBP_ESP)
     f.call(CALLEE)
