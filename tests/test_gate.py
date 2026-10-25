@@ -1034,3 +1034,17 @@ def test_gate_names_the_tables_when_the_feed_write_fails(tree, monkeypatch):
     message = str(caught.value)
     assert str(tree.status(UFO)) in message and FEED in message and "disk full" in message
     assert tree.status(UFO).exists() and not (tree.root / FEED).exists()
+
+
+def test_gate_without_progress_py_writes_no_table(tree, tmp_path, monkeypatch):
+    """progress.py is loaded before any status.csv is written: a checkout without it refuses
+    the gate with nothing written, never a table without its feed."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    monkeypatch.setattr(gate, "REPO_ROOT", tmp_path / "no-checkout")
+    gate._progress.cache_clear()
+    try:
+        with pytest.raises(CheckError, match="progress.py not found"):
+            run_gate(tree, f"ufo2p/{UNIT_A}")
+    finally:
+        gate._progress.cache_clear()
+    assert not tree.status(UFO).exists() and not (tree.root / FEED).exists()
