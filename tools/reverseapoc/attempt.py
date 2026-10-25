@@ -556,7 +556,6 @@ def cmd_check(*, sweep: bool) -> int:
 # ---- listings and the context pack (attempt asm, attempt context, the context verb; D-13) ----
 
 IDIOM_HEADINGS = ("Known idioms", "Relocation rules")  # the matching.md sections a pack holds
-NOTES_CAP = 6144  # bytes of earlier notes kept (the newest), so notes alone never fill the pack
 ATTEMPT_LOG = Path("progress") / "attempts.jsonl"  # the driver's tracked log (06-23)
 MANUAL_RUN = "manual"  # build/driver/manual/<exe>/<func>/: packs built by hand
 _SECTION = re.compile(r"(?m)^(?=## )")
@@ -625,14 +624,6 @@ def idioms(text: str | None) -> str | None:
     return "\n\n".join(parts) + "\n" if parts else None
 
 
-def _bounded(text: str) -> str:
-    data = text.encode("utf-8")
-    if len(data) <= NOTES_CAP:
-        return text
-    kept = data[-NOTES_CAP:].decode("utf-8", errors="ignore")
-    return f"... {len(data) - NOTES_CAP} bytes of older notes cut\n{kept}"
-
-
 def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
     if not log.is_file():
         return []
@@ -649,21 +640,22 @@ def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
     return records
 
 
-def earlier_notes(repo: Path, stem: str, func: str) -> str | None:
+def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     """Ruling F9: build/driver/*/<exe>/<func>/attempt-*/notes.md (the driver's layout) and
     build/driver/*/<exe>/<func>/notes.md (manual packs), sorted by path, then this function's
-    attempt records in progress/attempts.jsonl; the newest NOTES_CAP bytes."""
+    attempt records in progress/attempts.jsonl. Nothing is cut here: build_pack cuts notes
+    only when the pack is over the cap (M11, records first, then the oldest texts)."""
     driver = Path(repo).joinpath(*DRIVER_PARTS)
     found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
              *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
-    parts = []
+    texts = []
     for path in sorted(found, key=lambda p: p.relative_to(driver).as_posix()):
         text = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
-        parts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
+        texts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
     records = _attempt_records(Path(repo) / ATTEMPT_LOG, stem, func)
-    if records:
-        parts.append("\n".join([f"--- {ATTEMPT_LOG.as_posix()}", *records]))
-    return _bounded("\n\n".join(parts) + "\n") if parts else None
+    if not texts and not records:
+        return None
+    return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
 
 
 def _unit_texts(src: Path, data: ExeData, claimed: str) -> dict[str, str]:

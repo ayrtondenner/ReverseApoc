@@ -101,6 +101,26 @@ class Section:
 
 
 @dataclass(frozen=True)
+class Notes:
+    """Earlier notes (D-13), each list oldest first: notes.md texts, then the attempt records
+    under `records_label`, rendered in that order. Fix round 1 M11, an extension of D-14: when
+    the pack is still over the cap after its three cuts, the records are cut first, oldest
+    first, so they never crowd out a note; then the texts, oldest first, so the newest note is
+    the last thing cut."""
+
+    texts: tuple[str, ...] = ()
+    records: tuple[str, ...] = ()
+    records_label: str = ""
+
+    @classmethod
+    def of(cls, notes: str | Notes | None) -> Notes:
+        """A plain string (a manual note) is one text."""
+        if isinstance(notes, Notes):
+            return notes
+        return cls(texts=(notes,) if notes else ())
+
+
+@dataclass(frozen=True)
 class Pack:
     text: str
     sections: tuple[Section, ...]
@@ -161,6 +181,27 @@ def _lookalike(lookalike: Lookalike) -> str:
 # ---- the pack ----
 
 
+def _notes_body(notes: Notes, texts_cut: int, records_cut: int) -> str:
+    """The notes section: the kept texts, then the kept records under their label, fenced; a
+    first line says how many older ones were cut, and `cut (N items)` when none is left."""
+    total = len(notes.texts) + len(notes.records)
+    texts, records = notes.texts[texts_cut:], notes.records[records_cut:]
+    parts = [text.rstrip("\n") for text in texts]
+    if records:
+        parts.append("\n".join([*([notes.records_label] if notes.records_label else []),
+                                *records]))  # fmt: skip
+    if not total:
+        return NONE
+    if not parts:
+        return _cut_mark(total)
+    fenced = _fenced("\n\n".join(parts), "text")
+    if not texts_cut and not records_cut:
+        return fenced
+    older = f"{texts_cut} older note{'' if texts_cut == 1 else 's'}"
+    held = f"{records_cut} attempt record{'' if records_cut == 1 else 's'}"
+    return f"... {older} and {held} cut\n\n{fenced}"
+
+
 def _render(function: str, sections: Sequence[Section], cut: str) -> str:
     parts = [f"# Context pack: {function}", f"{_PREAMBLE}\nTruncated: {cut}"]
     parts += [f"## {section.title}\n\n{section.body}" for section in sections]
@@ -178,19 +219,21 @@ def build_pack(
     common_h: str | None,
     draft: str | None,
     idioms: str | None,
-    notes: str | None,
+    notes: str | Notes | None,
     lookalikes: Sequence[Lookalike],
     cap: int = PACK_CAP,
 ) -> Pack:
     """The pack of one function, its sections in the D-13 order, at most `cap` bytes of UTF-8
     (D-14). Required sections are never cut. Until the pack fits, the optional ones are cut in
     a fixed order: look-alikes from the last (least similar) one, then callers from the last,
-    then the draft. Each cut item is listed in `truncated` (and to_json); the header line
-    `Truncated:` only counts them per section, so it stays a few dozen bytes however many are
-    cut (review I-1). A cut section says so in place: `cut (N items)` when nothing is left,
-    `... N more cut` after the items it keeps. ContextPackError when the required sections
+    then the draft, then (fix round 1 M11, an extension of D-14) the earlier notes: their
+    attempt records oldest first, then their notes.md texts oldest first. Each cut item is
+    listed in `truncated` (and to_json); the header line `Truncated:` only counts them per
+    section, so it stays a few dozen bytes however many are cut (review I-1). A cut section
+    says so in place: `cut (N items)` when nothing is left, `... N more cut` after the items
+    it keeps. ContextPackError when the required sections
     plus the pack's frame (title, preamble, headings, the short header) and the cut marks are
-    over the cap with every optional section cut."""
+    over the cap with every optional section (the earlier notes included) cut."""
     required = {
         TITLE_LISTING: _fenced(listing, "asm"),
         TITLE_UNIT: _fenced(unit_text, "c"),
@@ -198,9 +241,8 @@ def build_pack(
         TITLE_EXTERNS: _lines([f"- {name}" for name in externs]),
         TITLE_COMMON_H: _fenced(common_h, "c"),
         TITLE_IDIOMS: _fenced(idioms, "markdown"),
-        TITLE_NOTES: _fenced(notes, "text"),
     }
-    optional = _Optional(tuple(lookalikes), tuple(callers), draft)
+    optional = _Optional(tuple(lookalikes), tuple(callers), draft, Notes.of(notes))
     truncated: list[str] = []
     while True:
         sections = optional.sections(required)
@@ -220,17 +262,21 @@ def build_pack(
 
 @dataclass
 class _Optional:
-    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft. Items
-    are cut from the end of each list; the `*_kept` counts say how many remain."""
+    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft, then
+    the earlier notes (M11). Look-alikes and callers are cut from the end of their lists, notes
+    from the start (the oldest); the `*_kept` and `*_cut` counts say where each stands."""
 
     lookalikes: tuple[Lookalike, ...]
     callers: tuple[Neighbour, ...]
     draft: str | None
+    notes: Notes
 
     def __post_init__(self) -> None:
         self.lookalikes_kept = len(self.lookalikes)
         self.callers_kept = len(self.callers)
         self.draft_kept = bool(self.draft)
+        self.records_cut = 0
+        self.texts_cut = 0
 
     def cut(self) -> str | None:
         """Cut the next item and name it; None when nothing is left to cut."""
@@ -243,6 +289,12 @@ class _Optional:
         if self.draft_kept:
             self.draft_kept = False
             return "draft"
+        if self.records_cut < len(self.notes.records):
+            self.records_cut += 1
+            return f"attempt record {self.records_cut}"
+        if self.texts_cut < len(self.notes.texts):
+            self.texts_cut += 1
+            return f"earlier note {self.texts_cut}"
         return None
 
     def summary(self) -> str:
@@ -255,6 +307,10 @@ class _Optional:
             parts.append(f"{len(self.callers) - self.callers_kept} of {len(self.callers)} callers")
         if self.draft and not self.draft_kept:
             parts.append("draft")
+        if self.records_cut:
+            parts.append(f"{self.records_cut} of {len(self.notes.records)} attempt records")
+        if self.texts_cut:
+            parts.append(f"{self.texts_cut} of {len(self.notes.texts)} earlier notes")
         return ", ".join(parts) if parts else NONE
 
     def sections(self, required: Mapping[str, str]) -> tuple[Section, ...]:
@@ -265,6 +321,7 @@ class _Optional:
             **required,
             TITLE_CALLERS: _kept(callers, len(self.callers), "\n"),
             TITLE_DRAFT: draft,
+            TITLE_NOTES: _notes_body(self.notes, self.texts_cut, self.records_cut),
             TITLE_LOOKALIKES: _kept(lookalikes, len(self.lookalikes), "\n\n"),
         }
         return tuple(Section(title, bodies[title]) for title in ORDER)
@@ -620,7 +677,7 @@ def gather(
     draft_dir: Path,
     common_h: str | None,
     idioms: str | None,
-    notes: str | None,
+    notes: str | Notes | None,
     calls: CallIndex | None = None,
     lookalike_floor: float = LOOKALIKE_FLOOR,
 ) -> dict[str, Any]:

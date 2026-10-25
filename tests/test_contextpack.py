@@ -488,7 +488,7 @@ def _notes(*texts: str, records: int = 2):
     return contextpack.Notes(
         texts=tuple(f"--- run0/ufo2p/func_00010010/attempt-{n}/notes.md\n{text}"
                     for n, text in enumerate(texts, start=1)),
-        records=tuple('{"kind": "attempt", "n": %d, "pad": "%s"}' % (n, "r" * 500)
+        records=tuple(f'{{"kind": "attempt", "n": {n}, "pad": "{"r" * 500}"}}'
                       for n in range(1, records + 1)),
         records_label=NOTES_LABEL,
     )  # fmt: skip
