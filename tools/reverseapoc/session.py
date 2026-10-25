@@ -254,15 +254,23 @@ def run_session(
         stdout=subprocess.PIPE,
         **_group_options(),
     )
-    reader = _Reader(proc.stdout)
-    with transcript.open("ab") as log:
-        record = _Transcript(log)
-        ended = _read_until(reader, record, deadline, clock)
-        exit_code = _reap(proc, max(deadline - clock(), 0.0)) if ended else None
-        timed_out = exit_code is None
-        if timed_out:
+    try:
+        reader = _Reader(proc.stdout)
+        with transcript.open("ab") as log:
+            record = _Transcript(log)
+            ended = _read_until(reader, record, deadline, clock)
+            exit_code = _reap(proc, max(deadline - clock(), 0.0)) if ended else None
+            timed_out = exit_code is None
+            if timed_out:
+                kill_tree(proc.pid)
+                _drain(reader, record)
+                exit_code = _reap(proc, _REAP_S)
+        reader.close()
+    except BaseException:
+        # Fix round 1 I1: the new process group keeps Ctrl+C from the session, and the caller
+        # gets no pid when this raises, so no exception may leave the tree running.
+        if proc.poll() is None:
             kill_tree(proc.pid)
-            _drain(reader, record)
-            exit_code = _reap(proc, _REAP_S)
-    reader.close()
+            _reap(proc, _REAP_S)
+        raise
     return SessionResult(tuple(record.events), exit_code, timed_out, record.malformed, transcript)
