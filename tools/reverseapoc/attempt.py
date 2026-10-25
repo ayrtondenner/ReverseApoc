@@ -34,18 +34,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, contextpack
-from .asm import data_ranges
+from . import asm, check, contextpack
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
-from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv, read_symbols_csv
+from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv
 from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, NOTES_ENV, attempt_form_matches
-from .le import LE, Fixup
-from .libmatch import read_target, select_target
 from .status import read_status, status_path
-from .symbols import SymbolTable
-from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, config_dir, load_manifest
+from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 
 FUNC_ENV = "REVERSEAPOC_FUNC"
 DIR_ENV = "REVERSEAPOC_ATTEMPT_DIR"
@@ -561,35 +557,11 @@ MANUAL_RUN = "manual"  # build/driver/manual/<exe>/<func>/: packs built by hand
 _SECTION = re.compile(r"(?m)^(?=## )")
 
 
-@dataclass(frozen=True)
-class ExeData:
-    """One EXE as the pack and the listings need it: rows, symbols and the unrelocated image."""
-
-    stem: str  # ufo2p
-    rows: list[FunctionRow]
-    symbols: SymbolTable
-    flat: bytes | bytearray
-    fixups: list[Fixup]
-
-
-def load_exe(
-    exe: str,
-    *,
-    orig: Path,
-    manifest: Path,
-    config: Path,
-    functions: Path | None = None,
-    symbols: Path | None = None,
-) -> ExeData:
-    """The EXE (checked against the manifest) with config/<exe>/functions.csv and symbols.csv
-    under `config` unless given."""
-    target = select_target(load_manifest(manifest), exe, manifest)
-    stem = config_dir(target.name).name
-    rows = read_functions_csv(functions or Path(config) / stem / "functions.csv")
-    le = LE(read_target(target, orig, manifest))
-    named = read_symbols_csv(symbols or Path(config) / stem / "symbols.csv")
-    table = SymbolTable.build(rows, named, data_ranges=data_ranges(le))
-    return ExeData(stem, rows, table, le.load_flat(relocate=False), le.fixups())
+def exe_inputs(exe: str, *, orig: Path, manifest: Path, config: Path) -> check.ExeInputs:
+    """The EXE as check loads it (fix round 1 M12: one loader): checked against the manifest,
+    with config/<exe>/functions.csv, units.csv and, when present, symbols.csv under `config`."""
+    target = check.select_exe(load_manifest(manifest), exe, manifest)
+    return check.load_exe(target, orig_dir=orig, manifest=manifest, config_root=config)
 
 
 def placeholder(row: FunctionRow) -> str:
@@ -597,7 +569,7 @@ def placeholder(row: FunctionRow) -> str:
     return f"func_{row.start:08X}"
 
 
-def resolve_row(data: ExeData, name: str) -> FunctionRow:
+def resolve_row(data: check.ExeInputs, name: str) -> FunctionRow:
     """The row of `data` whose functions.csv name, C name or placeholder is `name`."""
     for row in data.rows:
         if name in (row.name, data.symbols.c_name(row.start), placeholder(row)):
@@ -605,7 +577,7 @@ def resolve_row(data: ExeData, name: str) -> FunctionRow:
     raise AttemptError(f"{name} is no functions.csv row of {data.stem}")
 
 
-def listing_text(data: ExeData, row: FunctionRow, asm_root: Path) -> str:
+def listing_text(data: check.ExeInputs, row: FunctionRow, asm_root: Path) -> str:
     path = Path(asm_root) / data.stem / asm.file_name(data.symbols, row)
     if not path.is_file():
         raise AttemptError(f"no listing {path}; the owner writes them with "
@@ -658,7 +630,7 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
 
 
-def _unit_texts(src: Path, data: ExeData, claimed: str) -> dict[str, str]:
+def _unit_texts(src: Path, data: check.ExeInputs, claimed: str) -> dict[str, str]:
     """Every unit file of the EXE (06-13 note a: neighbours in other units need their C), read
     as bytes decoded as strict UTF-8 (note b: a lone CR stays refused, never translated). A
     unit that is not UTF-8 is left out, unless it is the claimed one."""
@@ -680,7 +652,7 @@ def _optional_text(path: Path) -> str | None:
 
 
 def make_pack(
-    data: ExeData,
+    data: check.ExeInputs,
     row: FunctionRow,
     *,
     src: Path,
@@ -704,9 +676,9 @@ def make_pack(
     return contextpack.build_pack(**inputs)
 
 
-def _claimed_row() -> tuple[Claim, ExeData, FunctionRow]:
+def _claimed_row() -> tuple[Claim, check.ExeInputs, FunctionRow]:
     claim = Claim.from_env(os.environ, roots=ROOTS)
-    data = load_exe(claim.exe, orig=ROOTS.orig, manifest=ROOTS.manifest, config=ROOTS.config)
+    data = exe_inputs(claim.exe, orig=ROOTS.orig, manifest=ROOTS.manifest, config=ROOTS.config)
     return claim, data, claimed_row(data.rows, claim)
 
 
