@@ -281,5 +281,7 @@ def run_session(
         if proc.poll() is None:
             kill_tree(proc.pid)
             _reap(proc, _REAP_S)
+        elif _POSIX:
+            kill_tree(proc.pid)  # fix round 2 M3: the root exited, its group may live on
         raise
     return SessionResult(tuple(record.events), exit_code, timed_out, record.malformed, transcript)
