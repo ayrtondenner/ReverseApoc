@@ -58,6 +58,7 @@ from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import CompilerError, compile_source
 from .elf import STT_FUNC, write_elf
+from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
     KIND_THUNK,
@@ -74,7 +75,6 @@ from .omf import REC_THEADR, Module, Public, Segment, read_object
 from .omf2elf import convert
 from .probe import CHK_PUBLIC
 from .relocs import FIELD_SIZE, OwnPublic, RelocError, RelocResult, check_function
-from .splice import _write_atomic
 from .symbols import SymbolTable
 from .target import TargetResult, branch_fields, build_target
 from .targets import REPO_ROOT, Target, check_bare_name, load_manifest
@@ -233,7 +233,7 @@ def read_module(path: Path) -> Module:
 
 def _write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, data)
+    write_atomic(path, data)
 
 
 # ---- the functions our object defines ----

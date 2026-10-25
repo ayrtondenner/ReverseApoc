@@ -28,9 +28,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .fileio import write_atomic
 from .functions import FunctionRow
 from .le import LE, Fixup
-from .splice import _write_atomic
 from .symbols import SymbolTable
 from .x86 import Insn, decode
 
@@ -278,6 +278,6 @@ def write_listings(
     for row in rows:
         near = index.overlapping(row.start, row.end)
         text = listing(row, flat=flat, fixups=near, symbols=symbols)
-        _write_atomic(out_dir / file_name(symbols, row), text.encode("utf-8"))
+        write_atomic(out_dir / file_name(symbols, row), text.encode("utf-8"))
         count += 1
     return AsmReport(count, out_dir)
