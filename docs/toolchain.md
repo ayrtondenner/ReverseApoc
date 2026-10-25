@@ -10,10 +10,13 @@ Steam and GOG installs are byte-identical for the game executables (local scan).
 |---|---:|---|---|---|---|---|
 | `UFOEXE/UFO2P.EXE` | 1,705,790 | `d2e874a76344cb9c48afce57357aab31` | `ufo24` | `0xDBD3B41D` | obj1:0xB0784 | Target |
 | `TACEXE/TACP.EXE` | 3,161,594 | `644382a6caa787cff613c50a170b5152` | `tac4` | `0x3EC9C268` | obj1:0xB28B0 | Target |
-| `UFOEXE/SMKP.EXE` | 271,436 | `2d7933f255348a60536d811391b461ba` | `SMKP` | `0x93A0E620` | obj1:0x6CB0 | Deferred (Smacker player, v2 requirement SMKP-01) |
+| `UFOEXE/SMKP.EXE` | 271,436 | `2d7933f255348a60536d811391b461ba` | `SMKP` | `0x93A0E620` | obj1:0x6CB0 (confirmed 2026-10-25, see below) | Deferred (Smacker player, v2 requirement SMKP-01) |
 | `XCOMAPOC.EXE` | 18,171 | `867f7997fae1714313b873f15359c4fb` | n/a | n/a (not ingested) | n/a | Out of scope (16-bit launcher) |
 
 - SHA-1 values are recorded in `config/targets.toml` (Phase 2).
+- SMKP.EXE's entry point was confirmed on 2026-10-25 with `uv run reverseapoc parse-le orig/SMKP.EXE --json`
+  (read-only): `"entry": {"object": 1, "offset": 27824, "linear": 93360}`, that is obj1:0x6CB0, linear 0x16CB0
+  (obj1 base 0x10000). Phase 1 could not check it without `orig/`.
 - `SETUP.EXE` is Borland C++ 1991 and out of scope.
 - The two targets have separate module names, which suggests separate link scripts. Expect two decomp targets with largely shared engine code, possibly compiled with slightly different flags.
 
