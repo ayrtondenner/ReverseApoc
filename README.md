@@ -11,15 +11,15 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-The badge, the mosaic and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are generated on every push to `main` from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`, and published to GitHub Pages. The percentage is matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes, per EXE and combined; data-in-code is left out. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
+The badge, the mosaic and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are regenerated on every push to `main`, together with the shield and the objdiff-shaped report.json, and published to GitHub Pages. They come from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`. The percentage is matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes, per EXE and combined (thunks count as code); the combined figure comes from summed bytes, not an average. The function ratio is matched game and thunk functions over all game and thunk functions. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
 
 - **matched**: byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE SHA-1;
-- **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts as not matched;
+- **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts for nothing in the percentage or the function ratio (only report.json's fuzzy percent gives it credit);
 - **unmatched**: no gate-written matched or partial row; the rebuilt EXE still carries the original bytes of the function, kept by the in-place splice;
-- **library**: the Watcom runtime library, not decompiled and left out of the percentage;
-- **uncovered**: bytes inside a unit that belong to no function row, mostly alignment filler between functions. They count as not matched. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
+- **library**: the Watcom runtime library, not decompiled and outside both sides of the percentage; data-in-code is excluded too;
+- **uncovered**: bytes inside a unit span that no functions.csv row of any kind covers (runtime and data-in-code rows count as covering), mostly alignment filler between functions. They are in the denominator. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
 
-The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json).
+The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json). That file changes only when a `gate EXE/UNIT` run passes.
 
 ## Supported versions
 
