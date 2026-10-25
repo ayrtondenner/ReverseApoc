@@ -489,6 +489,30 @@ def _edge(text: str, output: str) -> str:
     return next(line for line in text.splitlines() if line.startswith(heads))
 
 
+def test_cc_edge_headers_are_the_stamped_headers(tmp_path, monkeypatch):
+    """Fix round 2, N1: one definition of the project headers. The cc edge's implicit header
+    inputs are compiler.project_headers of the repository, the same files the stamp's
+    include_sha256 covers, so a refusal for a header is always one `ninja objects` clears."""
+    from reverseapoc import compiler
+
+    real = compiler.project_headers(configure.ROOT)
+    assert real and all(p.parent == configure.ROOT / "include" and p.suffix == ".h" for p in real)
+    fake = tmp_path / "only.h"
+    monkeypatch.setattr(configure, "project_headers", lambda root: [fake])
+    layout = configure.Layout.for_base(tmp_path, config=tmp_path / "config", src=tmp_path / "src",
+                                       output=tmp_path / "build.ninja")  # fmt: skip
+    assert [p for p in layout.cc_inputs if p.endswith(".h")] == ["only.h"]
+
+
+def test_regeneration_edge_watches_the_include_dir(tmp_path):
+    """Fix round 2, N1: a header added to include/ changes the cc edges' inputs, so the
+    directory is a regeneration input, as each src/<exe> is."""
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    include = configure.ninja_path(configure._relative(configure.ROOT / "include", tmp_path))
+    assert include in _edge(text, "build.ninja").split(" | ", 1)[1].split()
+
+
 def test_cc_edge_declares_the_stamp(tmp_path):
     """DI-06 part a: the provenance stamp `reverseapoc cc` writes next to the object is an
     implicit output of the cc edge, so ninja rebuilds an object that has no stamp yet."""

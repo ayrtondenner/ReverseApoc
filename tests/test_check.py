@@ -363,10 +363,10 @@ def _text_sha256(data: bytes) -> str:
 
 
 def headers_sha256(include: Path) -> str:
-    """include_sha256, computed here from its definition: per file under include/, sorted by
-    its POSIX path below include/, `<path>\\0<SHA-256 of the content, CRLF as LF>\\n`, hashed."""
-    files = sorted((p.relative_to(include).as_posix(), p) for p in include.rglob("*")
-                   if p.is_file()) if include.is_dir() else []  # fmt: skip
+    """include_sha256, computed here from its definition: per top-level include/*.h (the
+    headers build.ninja's cc edge declares), sorted by name, `<name>\\0<SHA-256 of the content,
+    CRLF as LF>\\n`, hashed."""
+    files = sorted((p.name, p) for p in include.glob("*.h") if p.is_file())
     lines = "".join(f"{rel}\0{_text_sha256(path.read_bytes())}\n" for rel, path in files)
     return _sha256(lines.encode("utf-8"))
 
@@ -1024,6 +1024,40 @@ def test_land_refuses_an_object_after_a_header_edit(env):
     assert landed.ok
     header.write_text(header.read_text(encoding="utf-8") + "#define MORE 1\n", encoding="utf-8")
     assert_stale(env, "stale object", "the headers")
+
+
+def test_land_ignores_files_in_include_that_are_no_project_header(env):
+    """Fix round 2, N1: a README, an editor backup or a header in a subdirectory of include/ is
+    nothing build.ninja's cc edge declares, so `ninja objects` could never clear a refusal for
+    it; the stamp covers exactly the top-level include/*.h."""
+    include = env.root / "include"
+    include.mkdir()
+    (include / "common.h").write_text("#define A 1\n", encoding="utf-8")
+    put_object(env, omf_object())
+    (include / "README.md").write_text("notes\n", encoding="utf-8")
+    (include / "common.h~").write_text("backup\n", encoding="utf-8")
+    (include / "sub").mkdir()
+    (include / "sub" / "x.h").write_text("int x;\n", encoding="utf-8")
+    (landed,) = ninja_land(env)
+    assert landed.ok, landed.format()
+
+
+def test_land_reads_the_object_once(env, monkeypatch):
+    """Fix round 2, N3: the bytes land hashes are the bytes it parses and lands."""
+    put_object(env, omf_object())
+    obj = ninja_object(env)
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == obj:
+            reads.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    (landed,) = ninja_land(env)
+    assert landed.ok
+    assert len(reads) == 1
 
 
 def test_land_refuses_an_object_overwritten_after_its_stamp(env):
