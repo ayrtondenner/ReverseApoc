@@ -133,6 +133,8 @@ def _plant_dir_link(link: Path, target: Path) -> None:
         link.rmdir()
     elif link.is_dir():
         link.rename(link.with_name(link.name + ".moved"))  # the session swapped the directory
+    elif link.is_file():
+        link.unlink()  # the session replaced a file by a directory link
     if sys.platform == "win32":
         import _winapi
 
@@ -1214,3 +1216,79 @@ def test_a_directory_stray_is_named_not_contained(tmp_path):
     report = night.run()
     assert (report.event, report.reason) == ("STOPPED", "guardrail")
     assert "not contained: vendor/x/" in report.detail
+
+
+def _docker_down(prefix: str) -> None:
+    raise RuntimeError("made-up docker failure")
+
+
+def test_a_failed_container_removal_never_gates_containment(tmp_path):
+    """S1: remove_containers raising after a normal session: the strays are still audited and
+    contained, and the record says the containers were not removed."""
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py")])
+    report = night.run(remove_containers=_docker_down)
+    assert report.event == "STOPPED"
+    assert "containers not removed: RuntimeError: made-up docker failure" in report.detail
+    assert "tools/x.py" in report.detail
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+
+
+def test_a_failed_container_removal_alone_stops_the_night(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0], picks=(_pick(0), _pick(1)))
+    report = night.run(remove_containers=_docker_down)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert "containers not removed" in report.detail
+    assert len(night.launched) == 1
+    assert _feats(night) == []
+
+
+def test_a_failed_container_removal_on_the_raise_path_still_contains(tmp_path):
+    sess = Sess(raises=RuntimeError("made-up crash"), files=(("tools/x.py", "# made up\n"),))
+    night = Night(tmp_path, sessions=[sess])
+    report = night.run(remove_containers=_docker_down)
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert "containers not removed" in report.detail and "made-up crash" in report.detail
+    assert (night.quarantine / "tools" / "x.py").is_file()
+
+
+def test_a_pinned_file_replaced_by_a_junction_or_symlink_dir_comes_back(tmp_path):
+    """S2: a leaf link is replaced, not refused: the pinned file is restored to its bytes as a
+    regular file (a junction on Windows, a directory symlink elsewhere); the target is never
+    written."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    night = Night(tmp_path, sessions=[Sess(write=None, link=(SETTINGS_LOCAL, outside))])
+    _write(night.repo / SETTINGS_LOCAL, '{"made": "up"}\n')
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    leaf = night.repo / SETTINGS_LOCAL
+    assert not os.path.islink(leaf) and not os.path.isjunction(leaf)
+    assert leaf.read_text(encoding="utf-8") == '{"made": "up"}\n'
+    assert list(outside.iterdir()) == []
+
+
+def test_a_pinned_file_replaced_by_a_file_symlink_comes_back(tmp_path):
+    outside = tmp_path / "outside.json"
+    outside.write_text("outside\n", encoding="utf-8")
+    night = Night(tmp_path, sessions=[Sess(write=None)])
+    leaf = night.repo / SETTINGS_LOCAL
+    _write(leaf, '{"made": "up"}\n')
+    probe = tmp_path / "probe-link"
+    try:
+        probe.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation needs privileges on this host")
+    probe.unlink()
+
+    def swap(args):  # the "agent" swaps the file for a link while the session runs
+        if night.launched and not os.path.islink(leaf):
+            leaf.unlink()
+            leaf.symlink_to(outside)
+
+    night.on_git = swap
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert not os.path.islink(leaf)
+    assert leaf.read_text(encoding="utf-8") == '{"made": "up"}\n'
+    assert outside.read_text(encoding="utf-8") == "outside\n"
