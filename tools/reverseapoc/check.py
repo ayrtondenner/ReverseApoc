@@ -429,13 +429,24 @@ class UnitAccount:
     problems: tuple[Unaccounted, ...]
 
 
-def _row_reason(linker: str, exported: bool, marked: bool, elsewhere: bool, in_c: bool) -> str:
+# Where a public of a row's linker name sits when defined_functions did not take it.
+_IN_CODE = "in a code segment, but not as a function check can pair with its row"
+_AS_DATA = "outside a code segment (data)"
+
+
+def _place(public: Public, code: Collection[int]) -> str:
+    """As 17c's _stray_reason does: data only for a public outside every code segment."""
+    return _IN_CODE if public.segment_index in code else _AS_DATA
+
+
+def _row_reason(linker: str, exported: bool, marked: bool, where: str | None, in_c: bool) -> str:
+    """`where` is _place of a public of `linker` that defined_functions did not take, or None."""
     if exported and marked:
         return f"both exported as {linker} and marked INCLUDE_ASM"
-    if marked and elsewhere:  # 05-REVIEW 17a: a data public of the row's name is no stub
-        return f"marked INCLUDE_ASM but exported as {linker} outside a code segment (data)"
-    if elsewhere:
-        return f"exported as {linker} outside a code segment"
+    if marked and where:  # 05-REVIEW 17a: such a public of the row's name is no stub
+        return f"marked INCLUDE_ASM but exported as {linker} {where}"
+    if where:
+        return f"exported as {linker} {where}"
     if in_c:
         return f"defined in C but not exported as {linker}"
     return f"neither exported nor marked INCLUDE_ASM (expected public {linker})"
@@ -480,6 +491,7 @@ def account_unit(
     for public in module.publics:
         first.setdefault(public.name, public)
     publics = list(first)
+    code = {seg.index for seg in module.segments if seg.is_code}
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
     checked = unit_file or required
     marks = source_marks(text, rows) if checked else SourceMarks(frozenset(), frozenset(), ())
@@ -487,16 +499,16 @@ def account_unit(
     for row in required:
         linker = symbols.linker_name(row.start)
         is_exported, is_marked = row.start in exported, row.name in marks.marked
-        elsewhere = linker in publics and not is_exported  # a public outside a code segment
-        if is_exported != is_marked and not (is_marked and elsewhere):
+        # A public of the row's name that defined_functions did not take (data, mostly).
+        where = _place(first[linker], code) if linker in first and not is_exported else None
+        if is_exported != is_marked and not (is_marked and where):
             stubs += [] if is_exported else [row]
             continue
-        reason = _row_reason(linker, is_exported, is_marked, elsewhere,
+        reason = _row_reason(linker, is_exported, is_marked, where,
                              row.name in marks.defined)  # fmt: skip
         problems.append(Unaccounted(row.name, row.start, reason))
         failed.add(row.start)
     names = _linker_names(rows, symbols)
-    code = {seg.index for seg in module.segments if seg.is_code}
     problems += [Unaccounted(name, None, _stray_reason(first[name], code))
                  for name in publics if name not in names]  # fmt: skip
     problems += [Unaccounted(SOURCE_PROBLEM, None, p) for p in marks.problems]
