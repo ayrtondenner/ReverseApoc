@@ -9,9 +9,6 @@ import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record
 from reverseapoc import contextpack
-from reverseapoc.functions import FunctionRow, SymbolRow
-from reverseapoc.le import LE
-from reverseapoc.symbols import SymbolTable
 from reverseapoc.contextpack import (
     PACK_CAP,
     ContextPackError,
@@ -20,6 +17,9 @@ from reverseapoc.contextpack import (
     build_pack,
     write_pack,
 )
+from reverseapoc.functions import FunctionRow, SymbolRow
+from reverseapoc.le import LE
+from reverseapoc.symbols import SymbolTable
 
 ORDER = (
     "Target listing",
