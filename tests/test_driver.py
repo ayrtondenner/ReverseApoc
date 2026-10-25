@@ -125,8 +125,11 @@ class Sess:
 
 
 def _plant_dir_link(link: Path, target: Path) -> None:
-    """A directory link that needs no privilege: a junction on Windows, a symlink elsewhere."""
+    """A directory link that needs no privilege: a junction on Windows, a symlink elsewhere. An
+    empty directory already there (the driver's quarantine root) is replaced."""
     link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_dir() and not any(link.iterdir()):
+        link.rmdir()
     if sys.platform == "win32":
         import _winapi
 
@@ -986,3 +989,26 @@ def test_a_raising_session_has_its_strays_contained(tmp_path):
     assert not (night.repo / "tools" / "x.py").exists()
     assert (night.quarantine / "tools" / "x.py").is_file()
     assert (night.quarantine / ".git" / "info" / "exclude").is_file()
+
+
+def test_a_refused_quarantine_never_skips_restoration(tmp_path):
+    """Fourth pass: with the quarantine root replaced by a link, the stray tracked edit and the
+    changed pinned file are still restored; the untracked stray stays in place, named "not
+    contained"; each refusal is recorded per file; nothing lands outside."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    files = (("tools/keep.py", "# changed\n"), (".git/info/exclude", "changed\n"))
+    sess = Sess(write="tools/x.py", files=files, link=(QUARANTINE_REL, outside))
+    night = Night(tmp_path, sessions=[sess])
+    exclude = night.repo / ".git" / "info" / "exclude"
+    exclude_before = exclude.read_bytes()
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert (night.repo / "tools" / "keep.py").read_text(encoding="utf-8") == "# made up\n"
+    assert exclude.read_bytes() == exclude_before
+    assert (night.repo / "tools" / "x.py").is_file()
+    detail = _stopped(night)["detail"]
+    assert "not contained: tools/x.py" in detail
+    for name in ("tools/keep.py", ".git/info/exclude", "tools/x.py"):
+        assert f"refused {name}:" in detail, name
+    assert list(outside.iterdir()) == []
