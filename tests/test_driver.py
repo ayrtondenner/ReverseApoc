@@ -1495,3 +1495,32 @@ def test_a_restored_stray_that_cannot_be_unstaged_is_named_so(tmp_path):
     assert (report.event, report.reason) == ("STOPPED", "guardrail")
     assert f"restored; could not unstage: config/{EXE}/status.csv (" in report.detail
     assert f"not restored: config/{EXE}/status.csv" not in report.detail
+
+
+def test_a_night_after_a_breach_refuses_to_start(tmp_path):
+    """Minor 1: a breached night leaves the log modified and uncommitted; the next drive()
+    refuses to start (exit 2, before STARTED, nothing written), naming the path."""
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py")])
+    first = night.run()
+    assert (first.event, first.reason) == ("STOPPED", "guardrail")
+    log_before = (night.repo / LOG).read_bytes()
+    night.sessions.append(Sess())
+    report = night.run()
+    assert (report.event, report.exit_code) == ("REFUSED", 2)
+    assert LOG in report.detail
+    assert (night.repo / LOG).read_bytes() == log_before
+    assert len(night.launched) == 1
+    assert night.commits() == []
+
+
+@pytest.mark.parametrize("rel", [f"config/{EXE}/status.csv", "config/tacp/status.csv",
+                                 "decomphub.progress.json"])  # fmt: skip
+def test_a_dirty_or_staged_table_refuses_the_start(tmp_path, rel):
+    night = Night(tmp_path, sessions=[Sess()])
+    _write(night.repo / rel, "left over\n")
+    night.git("add", "--", rel)  # staged counts too
+    report = night.run()
+    assert (report.event, report.exit_code) == ("REFUSED", 2)
+    assert rel in report.detail
+    assert night.launched == []
+    assert (night.repo / LOG).read_text(encoding="utf-8") == ""
