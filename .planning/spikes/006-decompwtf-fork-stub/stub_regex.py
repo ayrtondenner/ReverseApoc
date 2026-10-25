@@ -23,10 +23,10 @@ FILE = "csource.py"
 NAME = "func_000A34F0"
 # D-01: the class before the name needs `"`, `/`, `,` or a space, so a bare marker misses.
 EXPECTED = {
-    "bare-marker": False,  # INCLUDE_ASM(func_000A34F0); is found by _stub
-    "quoted-marker": True,  # INCLUDE_ASM("x", func_000A34F0); is found by _stub
+    "bare-marker": False,  # is INCLUDE_ASM(func_000A34F0); found by _stub?
+    "quoted-marker": True,  # is INCLUDE_ASM("x", func_000A34F0); found by _stub?
     "char-class": {'"': True, "/": True, ",": True, " ": True, "(": False},
-    "repo-markers": False,  # any INCLUDE_ASM line under src/ is found by _stub
+    "repo-markers": False,  # is any INCLUDE_ASM line under src/ found by _stub?
 }
 _FLAGS = {
     "M": re.MULTILINE,
