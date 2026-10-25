@@ -34,11 +34,14 @@ independent of objdiff and fails that case:
 
 A page-straddling LE field is one Fixup from le.fixups(), checked by its VA like any other.
 Problems are `0xVVVVVVVV: <what>` strings sorted by VA, the same for any order of our fixups.
-They carry VAs, symbol names, addresses and counts, never byte values.
+They carry VAs, symbol names, addresses and counts, never byte values. The result names what it
+judged (the row start, and the length and SHA-1 of our bytes), so land can refuse a verdict paired
+with another row or other bytes (05-REVIEW row 10b).
 """
 
 from __future__ import annotations
 
+import hashlib
 import struct
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Mapping, Sequence
@@ -87,12 +90,20 @@ class OwnPublic:
 @dataclass(frozen=True)
 class RelocResult:
     """The verdict of one function. `ours` and `theirs` are field start VAs; `problems` are
-    `0xVVVVVVVV: <what>` strings sorted by VA. Addresses and names only, never bytes."""
+    `0xVVVVVVVV: <what>` strings sorted by VA. Addresses and names only, never bytes.
+
+    `start`, `length` and `sha1` name what the verdict judged: the row's start VA, and the
+    length and SHA-1 (hex) of our bytes checked against it. check_function always sets them;
+    land refuses an ok verdict that lacks them or names another row or other bytes
+    (05-REVIEW row 10b). A verdict built elsewhere for a RelocError leaves them None."""
 
     ok: bool
     problems: tuple[str, ...]
     ours: frozenset[int]
     theirs: frozenset[int]
+    start: int | None = None
+    length: int | None = None
+    sha1: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -352,10 +363,24 @@ def check_function(
     fields = {pair.va(fx.offset) for fx in ours}
     length = tuple(_length(pair))
     if length:  # the rest compares [start, end) byte for byte, which needs equal lengths
-        return RelocResult(False, length, frozenset(fields), frozenset(theirs))
+        return _verdict(pair, length, fields)
     problems = [
         *_bytes(pair, _masked(pair, ours)),
         *(problem for fx in ours for problem in _fixup(pair, fx)),
         *_reverse_coverage(pair, fields),
     ]
-    return RelocResult(not problems, tuple(sorted(problems)), frozenset(fields), frozenset(theirs))
+    return _verdict(pair, problems, fields)
+
+
+def bytes_sha1(data: bytes) -> str:
+    """The SHA-1 (hex) a RelocResult records for the bytes it judged."""
+    return hashlib.sha1(data).hexdigest()
+
+
+def _verdict(pair: _Pair, problems: Sequence[str], fields: set[int]) -> RelocResult:
+    """The result for `pair`, naming the row start and the length and SHA-1 of our bytes."""
+    ours = pair.segment.data[pair.off : pair.off + pair.size]
+    return RelocResult(
+        not problems, tuple(sorted(problems)), frozenset(fields), frozenset(pair.theirs),
+        start=pair.row.start, length=pair.size, sha1=bytes_sha1(bytes(ours)),
+    )  # fmt: skip
