@@ -66,3 +66,12 @@ def test_write_atomic_replaces_a_link(tmp_path):
 def test_splice_alias_is_the_same_object():
     # One release of the old private name for out-of-tree callers (D-41).
     assert splice._write_atomic is fileio.write_atomic
+
+
+def test_no_module_imports_the_private_alias():
+    # Every module writes through fileio.write_atomic; only splice still names the old alias.
+    package = Path(fileio.__file__).parent
+    naming = sorted(
+        p.name for p in package.glob("*.py") if "_write_atomic" in p.read_text(encoding="utf-8")
+    )
+    assert naming == ["splice.py"]
