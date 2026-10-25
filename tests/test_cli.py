@@ -731,6 +731,8 @@ def test_cc_log_without_a_name_is_an_error_line(cc_workspace, capsys, monkeypatc
     ws = cc_workspace
     monkeypatch.chdir(ws.root)  # `--log .` names the repository root itself, which has no name
     obj = ws.root / "out" / "a.obj"
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    obj.write_bytes(b"keep")  # the refusal comes before the stale-object unlink (IN-13)
     options = list(ws.options)
     options[options.index("--log") + 1] = log_name
     assert main(["cc", str(ws.src), "-o", str(obj), *options]) == 1
@@ -740,7 +742,7 @@ def test_cc_log_without_a_name_is_an_error_line(cc_workspace, capsys, monkeypatc
     assert "Traceback" not in err
     assert "--log" in err
     assert ws.runner.calls == []
-    assert not obj.exists()
+    assert obj.read_bytes() == b"keep"
 
 
 # ---- libmatch ----

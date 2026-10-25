@@ -14,6 +14,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -47,9 +48,12 @@ int pr_eq5(unsigned char c)
 
 @pytest.fixture
 def cc_root(request) -> Path:
-    """A fresh build/test-cc/<test name> directory for this test (removed and recreated)."""
+    """A fresh build/test-cc/<test name> directory for this test (removed and recreated). A
+    directory the rmtree could not remove fails here, naming it, instead of hiding the cause."""
     path = CC_ROOT / re.sub(r"[^A-Za-z0-9._-]", "_", request.node.name)
     shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        pytest.fail(f"{path} survived rmtree; a process from an earlier run still holds it")
     path.mkdir(parents=True)
     return path
 
@@ -155,6 +159,23 @@ def _code(result: CompileResult) -> bytes:
     return b"".join(seg.data for seg in _module(result).segments if seg.is_code)
 
 
+@dataclass(frozen=True)
+class Codegen:
+    """Which zero extension the code segments hold, as booleans, plus the object's normalized
+    SHA-1. A failing assertion prints this, never the object's bytes (T-04-17)."""
+
+    and_mask: bool  # setcc al; and eax,0FFh
+    movzx: bool  # setcc al; movzx eax,al
+    sha1: str | None
+
+
+def _codegen(result: CompileResult) -> Codegen:
+    code = _code(result)
+    return Codegen(
+        bool(SETCC_AND.search(code)), bool(SETCC_MOVZX.search(code)), result.normalized_sha1
+    )
+
+
 @pytest.mark.parametrize("version", VERSIONS)
 def test_env_injection_has_no_effect(cc_root, version, monkeypatch):
     # No CPU option in the rule, so an injected WCC386=-3r would decide the zero extension.
@@ -169,8 +190,9 @@ def test_env_injection_has_no_effect(cc_root, version, monkeypatch):
     injected = _compile(cc_root, version, flags, "eq.c", BYTE_COMPARE)
     assert clean.ok and explicit.ok and injected.ok, clean.output + injected.output
     # the injected option would change codegen if it reached the compiler ...
-    assert SETCC_MOVZX.search(_code(explicit))
-    assert not SETCC_MOVZX.search(_code(clean))
+    explicit_gen, clean_gen = _codegen(explicit), _codegen(clean)
+    assert explicit_gen.movzx, explicit_gen
+    assert not clean_gen.movzx, clean_gen
     # ... and it does not reach it
     assert injected.normalized_sha1 == clean.normalized_sha1
 
@@ -209,9 +231,9 @@ def test_cflags_two_sources_real(cc_root):
     a, b1 = results["a"], results["b1"]
     assert a.ok and b1.ok, a.output + b1.output
     assert (a.rule.flags, b1.rule.flags) == (("-5r", "-s"), ("-3r", "-s"))
-    code_a, code_b1 = _code(a), _code(b1)
-    assert SETCC_AND.search(code_a) and not SETCC_MOVZX.search(code_a)
-    assert SETCC_MOVZX.search(code_b1) and not SETCC_AND.search(code_b1)
+    gen_a, gen_b1 = _codegen(a), _codegen(b1)
+    assert (gen_a.and_mask, gen_a.movzx) == (True, False), gen_a
+    assert (gen_b1.and_mask, gen_b1.movzx) == (False, True), gen_b1
 
 
 @pytest.mark.parametrize("version", VERSIONS)
@@ -250,8 +272,9 @@ def _start_cc(obj: str, options: list[str]) -> subprocess.Popen:
 
 
 def _reap(procs: list[subprocess.Popen]) -> None:
-    """Kill and reap every `cc` still running, so a failed test leaves none writing into
-    build/test-cc/ (on Windows their open files would make the next run's rmtree fail)."""
+    """Kill and reap every `cc` process still running. It reaps the `cc` processes only: a
+    compiler (wcc386.exe or wibo) that a killed `cc` started is orphaned and may still write into
+    build/test-cc/ until it finishes, which is why cc_root fails on a directory it cannot remove."""
     for proc in procs:
         if proc.poll() is None:
             proc.kill()
