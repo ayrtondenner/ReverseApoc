@@ -60,7 +60,9 @@ from typing import Any
 from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import (
+    INCLUDE_DIR,
     PROV_KEYS,
+    PROV_VERSION,
     CompilerError,
     compile_source,
     provenance,
@@ -806,6 +808,20 @@ _PROV_FIELDS = {"compiler": "the compiler", "flags": "the flags",
                 "source_sha256": "the source", "version": "the stamp format"}  # fmt: skip
 
 
+def _unread_state(stamp: Path) -> str:
+    """Why read_provenance gave nothing for `stamp`: missing, of another stamp format (a
+    format-1 stamp lacks the header and object hashes), or unreadable."""
+    if not stamp.exists():
+        return "missing"
+    try:
+        version = json.loads(stamp.read_text(encoding="utf-8")).get("version")
+    except (OSError, ValueError, AttributeError):
+        version = None
+    if isinstance(version, int) and not isinstance(version, bool) and version != PROV_VERSION:
+        return f"of stamp format {version}, not format {PROV_VERSION}"
+    return "unreadable or of the wrong shape"
+
+
 def _compile_root(src_root: Path) -> Path:
     """The root `reverseapoc cc` selected the unit's cflags rule from: the repository (ninja's
     cc edge runs there, as compile_source's default root) when the src tree is inside it, else
@@ -822,26 +838,32 @@ def _stale(obj: Path, src: Path, why: str) -> CheckError:
 def check_provenance(obj: Path, src: Path, options: CompileOptions, *, src_root: Path) -> None:
     """DI-06 part a: ninja's land step lands `obj` only while its provenance stamp equals what
     `reverseapoc cc` would record for `src` today (the source, the cflags table and Watcom
-    manifest of `options`, the rule the table assigns). A stamp that is missing, unreadable,
-    of another shape or format, or stale is a CheckError naming the object. Nothing turns this
-    off: the land step has no option or variable that skips it."""
+    manifest of `options`, the rule the table assigns, the headers under include/) and for
+    `obj` as it is on disk (its bytes are the ones stamped). A stamp that is missing,
+    unreadable, of another shape or format, or stale is a CheckError naming the object. Nothing
+    turns this off: the land step has no option or variable that skips it."""
     stamp = provenance_path(obj)
     found = read_provenance(obj)
     if found is None:
-        state = "unreadable or of the wrong shape" if stamp.exists() else "missing"
-        raise _stale(obj, src, f"no provenance stamp: {stamp} is {state}")
+        raise _stale(obj, src, f"no provenance stamp: {stamp} is {_unread_state(stamp)}")
     cflags = Path(options.cflags) if options.cflags is not None else DEFAULT_CFLAGS
     manifest = (Path(options.watcom_manifest) if options.watcom_manifest is not None
                 else DEFAULT_WATCOM_MANIFEST)  # fmt: skip
+    root = _compile_root(src_root)
     try:
-        rule = source_rule(src, cflags=cflags, root=_compile_root(src_root), manifest=manifest)
-        today = provenance(rule, src, cflags=cflags, manifest=manifest)
+        rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
+        today = provenance(rule, src, obj, cflags=cflags, manifest=manifest, root=root)
     except (OSError, ValueError) as exc:
         raise CheckError(f"cannot check the provenance of {obj}: {exc}") from exc
-    names = {**_PROV_FIELDS, "cflags_sha256": str(cflags), "watcom_sha256": str(manifest)}
-    changed = [names[key] for key in PROV_KEYS if found.get(key) != today[key]]
-    if changed:
-        raise _stale(obj, src, f"built from another {', '.join(changed)} than today's")
+    names = {**_PROV_FIELDS, "cflags_sha256": str(cflags), "watcom_sha256": str(manifest),
+             "include_sha256": f"the headers under {root / INCLUDE_DIR}"}  # fmt: skip
+    changed = [names[key] for key in PROV_KEYS
+               if key != "object_sha256" and found.get(key) != today[key]]  # fmt: skip
+    why = [f"built from another {', '.join(changed)} than today's"] if changed else []
+    if found.get("object_sha256") != today["object_sha256"]:
+        why.append("the object is not the one its stamp was written for (its bytes changed)")
+    if why:
+        raise _stale(obj, src, "; ".join(why))
 
 
 def _land_exe(
