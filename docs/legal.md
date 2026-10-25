@@ -41,7 +41,7 @@ Community sources are read for facts, which are not copyrightable, and re-expres
 
 AI tools, Claude Code in particular, are used openly for research, tooling and decompilation attempts. AI output is never trusted on its own: every match is accepted only after a deterministic byte comparison run by the build (objdiff, relocation checks, whole-EXE SHA-1), and the agent is blocked from editing the original files, hash manifests and build scripts.
 
-The public record of every agent attempt is the committed `progress/attempts.jsonl` (D-23): one line per attempt with the function, the outcome (matched, partial or gave up), the abort reason, turns, tokens, a cost estimate, the time taken, the model and CLI version, and a check summary. It holds no game bytes. Failed attempts are committed too, so the log shows what the agent could not do as well as what it matched. Transcripts and full check output stay in the gitignored `build/`.
+From the Phase 6 driver (plan 06-23) on, the public record of every agent attempt will be the committed `progress/attempts.jsonl` (D-23). It will hold one line per attempt with the function, the attempt number, the outcome (matched, partial or gave up), the abort reason, turns, tokens, a cost estimate, the time taken, the model and CLI version, and a check summary. It will hold no game bytes. Failed attempts will be committed too, so the log shows what the agent could not do as well as what it matched. Transcripts and full check output stay in the gitignored `build/`.
 
 ## Why not IDA Free
 
