@@ -32,25 +32,96 @@ select function -> decompile attempt -> compile (Watcom under wibo)
 
 ### The driver owns verification
 
-- The driver re-runs the compile, compare and SHA-1 check itself before committing. It never trusts the transcript.
+- The driver re-runs the compile, compare and SHA-1 check itself before committing. It never trusts the transcript. Only the container gate's exit 0 is a match (D-24).
 - `/goal`'s evaluator "does not call tools" ([docs](https://code.claude.com/docs/en/goal)), so its verdict is a hint, not a check.
-- The driver backs off when it hits usage limits and caps functions per night. Unattended Opus can exhaust a Max 20x plan in days ([Lewis, 2026-02-16](https://blog.chrislewis.au/the-long-tail-of-llm-assisted-decompilation/)).
-- Evaluate [Nigel](https://github.com/cdlewis/nigel) first: its `candidate_source`, `verify_command`, `success_command` and `reset_command` map almost one-to-one onto this loop. The alternative is about 200 lines of Python.
-- In the hybrid pipeline, decomp.wtf's fork mode supplies claims (so parallel agents do not collide), MCP tools, a dashboard and undo when a change breaks an existing match. Our build stays the final judge.
+- The driver backs off when it hits usage limits (60, 120, 240 s, then every 300 s) and caps the night. Unattended Opus can exhaust a Max 20x plan in days ([Lewis, 2026-02-16](https://blog.chrislewis.au/the-long-tail-of-llm-assisted-decompilation/)).
+- Phase 6 caps each function at 3 sessions per pass (D-07). A capped function goes to `build/driver/difficult.json` and comes back once a callee is matched or the easy pool is empty.
+- **Nigel was rejected (D-05).** It has no licence (GitHub reports none), needs Go, which is not on the host, logs no turns or tokens, and detects usage limits by one phrase. The driver is our own stdlib Python instead: `tools/reverseapoc/driver.py` and the `reverseapoc drive` verb, built test-first.
+- **decomp.wtf is not used in Phase 6 (D-03).** Spike 006 ([README](../.planning/spikes/006-decompwtf-fork-stub/README.md)) found that unpatched v0.10.6 fork mode does not accept our stub convention (verdict INVALIDATED: no build in WSL2, and its stub regex and linker-name lookup refuse our `INCLUDE_ASM(func_X);` units). Phase 6 runs on its own agent layer: the driver, the hooks, the `watcom-decomp` skill, the context pack and the attempt wrapper. decomp.wtf is re-evaluated for Phase 7's parallel claims.
+
+### Running the driver
+
+`reverseapoc drive` runs on the Windows host, in the main checkout (D-34). It starts one fresh `claude -p` session per attempt and runs every gate in the container.
+
+```
+uv run reverseapoc drive [--max-sessions N] [--target-matched N] [--dry-run | --canary] [--run ID] [--json]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--max-sessions N` | 30 | counted sessions before the night ends (D-48) |
+| `--target-matched N` | 10 | matches before the night ends (D-48) |
+| `--dry-run` | off | print the 10 pilot picks and build their packs; no claude, no gate |
+| `--canary` | off | owner only: one real session that proves the guardrails deny (PASS/FAIL) |
+| `--run ID` | the UTC start time | the run directory `build/driver/<ID>/` |
+| `--json` | off | print exactly one JSON document on stdout |
+
+The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
+
+**Preflight.** Every run, the dry run and the canary included, first refuses to start (exit 2, with a named reason) when:
+
+- the checkout is not the main checkout (a linked worktree has its own git dir);
+- `git status --porcelain` is not empty (the refusal names the paths);
+- `claude --version` is not major 2 or is below **2.1.302**, the minimum CLI version (D-36; the dry run skips only this check). 2.1.302 is the release where `-p` has the documented permission default; `onFailure` needs 2.1.295;
+- `docker info` fails, or `uv sync --locked` fails in the container or on the host.
+
+It then compiles `tools/` and `configure.py`, so no session writes a `.pyc` (the hooks run `python -I`, which ignores `PYTHONDONTWRITEBYTECODE`), regenerates the asm listings of both EXEs on the host, and precomputes the Ghidra drafts of the queue's top picks in one container call per EXE (D-13). Each command's output goes to `build/driver/<run>/preflight.log`.
+
+**Dry run.** `uv run reverseapoc drive --dry-run` prints the 10 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10). It builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. The picker skips functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
+
+**Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for four calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, and `uv run --frozen reverseapoc attempt context`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
+
+- the session's init event is clean (CLI version, model, the six tools, no MCP server, no plugin);
+- the first three calls are in the result's `permission_denials`;
+- the wrapper call was made, was not denied, and wrote `context.md`;
+- no unknown stream event type carries an error;
+- `git status --porcelain` is clean afterwards;
+- nothing the night's audit pins or fingerprints changed (`.git/config` and hooks, the Claude settings files, `.venv`, the gitignored `.claude/` trees, every `__pycache__`).
+
+Otherwise it prints FAIL with each failed check and exits 1. It leaves the tree as the session left it, for inspection; the next preflight refuses a dirty tree.
+
+**One attempt.** The driver scaffolds the unit if it is missing, builds the pack, and starts the session in the checkout root. The session gets `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES` (absolute paths). It may run only the attempt wrapper's three commands:
+
+- `uv run --frozen reverseapoc attempt check` (and `check --sweep`, a diagnostic that is never a match), at most 25 runs per attempt;
+- `uv run --frozen reverseapoc attempt asm` (or `asm <NAME>` for another row of the same EXE);
+- `uv run --frozen reverseapoc attempt context`.
+
+After the session the driver removes the attempt's containers, audits every changed path, then lints the unit (C89) and runs the container gate.
+
+**Reset rules (D-34).** A match is one commit with explicit paths: the unit, `status.csv`, `decomphub.progress.json`, `progress/attempts.jsonl` and any new header. Anything else resets the attempt: `git restore --source=HEAD -- <unit> include/` for tracked files, and a unit scaffolded by this attempt or a header it added is deleted. The driver never runs `git add -A` or `git clean`. A partial attempt keeps its best C under `best/` and is scored by `gate --partial`. A write outside the claim is a guardrail stop: the stray files are restored or moved into `build/driver/<run>/quarantine/` (never deleted), the night ends and nothing is committed. A night that stops with partial rows leaves `status.csv` uncommitted and names it; the next drive refuses to start until the owner commits or restores it.
+
+**End of run.** After the last session the driver runs, in the container, `uv run --frozen python configure.py && ninja -t clean && ninja verify`, then `reverseapoc gate --all`, and logs both under `build/driver/<run>/`. A failed check is recorded in the ENDED run record and the night exits 1. Then the `chore(driver): attempt log` commit holds the night's records. Exit codes: 0 ended clean, 1 stopped or a failed end check, 2 refused.
 
 ### Hooks (guardrails, Phase 6)
 
-Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" and worked around a blocked `make` (Lewis); an agent tried to fork its compiler (Macabeus). Prose rules are not enough, so hooks enforce these:
+Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" and worked around a blocked `make` (Lewis); an agent tried to fork its compiler (Macabeus). Prose rules are not enough, so two PreToolUse hook layers in `tools/reverseapoc/hooks.py` enforce these.
+
+**The always layer** runs in every Claude session in this repo (`.claude/settings.json`; the driver's settings file carries a copy). On Write, Edit, MultiEdit and NotebookEdit it blocks:
 
 | Block | Why |
 |---|---|
-| Any edit under `orig/` | The original executables are the ground truth |
-| Edits to hash manifests (`config/targets.toml`, any `*.sha1`) | The SHA-1 is the done-gate |
-| Edits to build and verify scripts (`configure.py`, the splice/verify tools, compiler wrappers) during a matching session | The oracle must not change under the agent |
-| Inline assembly in `src/` (`_asm`, `__asm`, and `#pragma aux` bodies that emit code bytes) | Matching must come from C; calling-convention pragmas stay allowed |
-| Builds that bypass the verify script, and edits to generated files (`asm/`, `build/`) | Same oracle for everyone |
+| Any write under `orig/` | The original executables are the ground truth |
+| Writes to `config/targets.toml`, `config/watcom.toml` and any `*.sha1` | The SHA-1 is the done-gate |
+| Writes under `asm/` and `build/` (except the attempt's own `notes.md`) | Generated output; the same oracle for everyone |
+| Inline assembly in `src/` and `include/`: `_asm`, `__asm`, `_Pragma`, and `#pragma aux` bodies that emit code bytes | Matching must come from C |
+| An Edit in `src/` or `include/` whose old text is not in the file verbatim, and any lone CR | The scan must see the exact text the compiler will |
 
-The exact hook implementation is left to Phase 6 (see the [design spec](superpowers/specs/2026-10-19-reverseapoc-design.md#what-is-left-to-the-builder)).
+**The matching layer** runs only in driver sessions (`config/driver/claude-settings.json`). It denies by default:
+
+- writes only to the claimed unit, a new untracked `include/<name>.h` and the attempt's `notes.md`;
+- **agents write no `#pragma aux` of any kind in the pilot, and no other `#pragma` either** (D-18); calling-convention pragmas come only in human-reviewed commits;
+- Read, Glob and Grep only inside the checkout, never `.env*`;
+- Bash only as one of the attempt wrapper's exact forms, never in the background;
+- every other tool is denied, and without a valid claim every write and every Bash call is denied.
+
+**Both layers fail closed.** Each handler runs `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks ... || exit 2`. A missing `uv`, a missing module, or an unset or foreign `CLAUDE_PROJECT_DIR` blocks every Edit and Write (exit 2). The matching handler also sets `onFailure: block`.
+
+Known limits:
+
+- Bash is not covered by the always layer. An owner or executor session can still change `orig/` or a manifest with a shell command; `check-orig` and the gate catch it by hash.
+- A hard link made by Bash to a protected file is allowed: the hook does no inode check. Only Bash can make one, and the matching layer cannot run `ln`, `mklink` or `fsutil`.
+- Other git checkouts are over-denied: a path is judged against every ancestor holding `.git`, so `build/`, `orig/`, `asm/` and `*.sha1` are also blocked in another checkout a session writes to.
+- Whether a `--settings` file merges with or replaces project hooks, and whether each tool's hook runs right before that tool (not once for the whole turn), is proven only on the real CLI. The canary checks the denials; the driver's post-session audit and the gate stand behind both.
 
 ## The GSD phase loop
 
