@@ -8,9 +8,11 @@ function, the flags, the Watcom tree or the source root. The accepted argument s
 exactly hooks.ATTEMPT_FORMS (ruling F27), which the matching-session hook allows.
 
 `attempt check` runs `reverseapoc check <claim> --json` in the container through an injectable
-runner, at most CHECK_BUDGET times per attempt (D-07). Each run keeps the C it checked
-(`checks/NNNN.c`, ruling F10) and the JSON (`checks/NNNN.json`) and appends one line to
-`checks.jsonl`, all under the gitignored attempt directory in build/driver/. `--sweep` runs the
+runner, at most CHECK_BUDGET times per attempt (D-07). One run at a time: each holds
+`check.lock` and reserves its number by creating the snapshot of the C it checks
+(`checks/NNNN.c`, ruling F10, O_EXCL), so a reserved slot counts even if the run then fails.
+Each run keeps the JSON (`checks/NNNN.json`) and appends one line to `checks.jsonl`, all under
+the gitignored attempt directory in build/driver/. `--sweep` runs the
 D-17 flag matrix as a diagnostic: a cell at 100% under flags other than the unit's cflags.txt
 rule is logged as `sweep_hit`, for the owner to decide (D-18 of Phase 5; cflags.txt is
 owner-only).
@@ -23,7 +25,8 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -40,6 +43,9 @@ CHECK_BUDGET = 25  # D-07: "or stop after 25 check runs", enforced here
 CHECK_TIMEOUT = 580  # seconds; under the Bash tool's 600 s cap, so the run is still logged
 CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
+CHECK_LOCK = "check.lock"
+_SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
+_O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
 CONTAINER_CHECK = ("docker", "compose", "run", "--rm", "-T", "build",
                    "uv", "run", "--frozen", "reverseapoc", "check")  # fmt: skip
@@ -193,12 +199,6 @@ class CheckLogLine:
         return dataclasses.asdict(self)
 
 
-def _runs(log: Path) -> int:
-    if not log.is_file():
-        return 0
-    return sum(1 for line in log.read_text(encoding="utf-8").splitlines() if line.strip())
-
-
 def _parse(stdout: str) -> dict[str, Any] | None:
     try:
         doc = json.loads(stdout)
@@ -341,11 +341,58 @@ def _append(log: Path, line: CheckLogLine) -> None:
         fh.write(json.dumps(line.to_json(), sort_keys=True) + "\n")
 
 
+@contextmanager
+def _check_lock(attempt_dir: Path) -> Iterator[None]:
+    """Hold <attempt dir>/check.lock (O_CREAT|O_EXCL) for one whole run (security finding 1:
+    a session can start checks with Bash run_in_background, and each would read the same
+    count). Held already: AttemptError at once. A stale lock (a killed run) is never cleared:
+    every session gets a fresh attempt directory, so it ends this attempt's checks."""
+    lock = attempt_dir / CHECK_LOCK
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError as exc:
+        raise AttemptError(f"another check is running in this attempt ({lock} exists; run "
+                           "checks one at a time, in the foreground)") from exc  # fmt: skip
+    try:
+        try:
+            os.write(fd, f"{os.getpid()}\n".encode("ascii"))
+        finally:
+            os.close(fd)
+        yield
+    finally:
+        lock.unlink(missing_ok=True)
+
+
+def _reserved(checks: Path) -> int:
+    """The highest run number reserved in checks/ (a NNNN.c snapshot), 0 for none. A slot
+    counts whether or not its run finished or logged a line."""
+    numbers = [int(m.group(1)) for p in checks.iterdir() if (m := _SNAPSHOT.fullmatch(p.name))]
+    return max(numbers, default=0)
+
+
+def _reserve(path: Path, text: bytes) -> None:
+    """Create the run's snapshot with O_EXCL: the file is the slot (ruling F10)."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | _O_BINARY, 0o644)
+    except FileExistsError as exc:
+        raise AttemptError(f"{path} is already reserved") from exc
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(text)
+
+
 def run_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tuple[int, str]:
-    """One check run of the claimed unit: (exit code 0/1/2, the summary to print). The budget
-    is checked before anything runs; the unit file is copied before the container starts."""
+    """One check run of the claimed unit: (exit code 0/1/2, the summary to print). Under the
+    attempt's check lock, the budget is checked and the run's slot reserved (its snapshot of
+    the unit file) before the container starts."""
+    with _check_lock(claim.attempt_dir):
+        return _locked_check(claim, sweep=sweep, runner=runner, roots=roots)
+
+
+def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tuple[int, str]:
     log = claim.attempt_dir / CHECK_LOG
-    n = _runs(log) + 1
+    checks = claim.attempt_dir / CHECKS_DIR
+    checks.mkdir(exist_ok=True)
+    n = _reserved(checks) + 1
     if n > CHECK_BUDGET:
         raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
                            "(D-07); write notes.md and stop")  # fmt: skip
@@ -355,11 +402,9 @@ def run_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tup
         text = unit.read_bytes()
     except OSError as exc:
         raise AttemptError(f"{unit} cannot be read: {exc}") from exc
-    checks = claim.attempt_dir / CHECKS_DIR
-    checks.mkdir(exist_ok=True)
     stem = f"{n:04d}"
     source = f"{CHECKS_DIR}/{stem}.c"
-    write_atomic(claim.attempt_dir / source, text)
+    _reserve(claim.attempt_dir / source, text)
     ran = runner(container_check_argv(claim, sweep=sweep))
     doc = _parse(ran.stdout)
     try:
