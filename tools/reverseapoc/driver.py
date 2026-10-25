@@ -2106,19 +2106,36 @@ def preflight(options: DriveOptions, seams: Seams, *, check_cli: bool,
         log.must([*HOST_CLI, "asm", exe, "--json"], "asm", f"the {exe} asm listings")
 
 
+def _missing_drafts(stdout: str) -> list[str] | None:
+    """The `missing` addresses of a `ghidra-export --json` document (GhidraDrafts.to_json), or
+    None when stdout is not such a document or names none."""
+    doc = _json_doc(stdout)
+    missing = doc.get("missing") if doc is not None else None
+    if not isinstance(missing, list) or not missing or not all(map(_is_text, missing)):
+        return None
+    return missing
+
+
 def _drafts(log: _Log, picks: Sequence[Pick]) -> None:
-    """D-13: one container `ghidra-export EXE --drafts ...` per EXE for the given picks. Exit
-    1 (some drafts missing) is logged: a pack works without a draft. Anything else refuses."""
+    """D-13: one container `ghidra-export EXE --json --drafts ...` per EXE for the given picks.
+    Exit 0 is done. Exit 1 is accepted only with a parseable document naming the missing drafts
+    (logged: a pack works without a draft), because every ghidra-export tool error and many
+    docker failures exit 1 too (fix round 1 I1). Anything else refuses, naming the output."""
     for exe in EXE_ORDER:
         starts = [f"0x{p.start:08X}" for p in picks if p.exe == exe]
         if not starts:
             continue
-        argv = [*CONTAINER_CLI, "ghidra-export", exe, "--drafts", *starts]
+        argv = [*CONTAINER_CLI, "ghidra-export", exe, "--json", "--drafts", *starts]
         done = log.run(argv)
-        if done.returncode == DRAFTS_SOME_MISSING:
-            log.note(f"{exe}: some Ghidra drafts could not be made; their packs have none")
-        elif done.returncode != 0:
-            raise Refused("drafts", f"`ghidra-export {exe} --drafts` exit {done.returncode}")
+        if done.returncode == 0:
+            continue
+        missing = _missing_drafts(done.stdout or "")
+        if done.returncode == DRAFTS_SOME_MISSING and missing is not None:
+            log.note(f"{exe}: no Ghidra draft for {', '.join(missing)}; their packs have none")
+            continue
+        tail = (done.stderr or done.stdout or "").strip().splitlines()[-1:] or ["no output"]
+        raise Refused("drafts", f"`ghidra-export {exe} --json --drafts` exit {done.returncode}"
+                                f" without a missing-drafts list: {tail[0]}")  # fmt: skip
 
 
 def _load_worlds(seams: Seams) -> Mapping[str, ExeWorld]:
