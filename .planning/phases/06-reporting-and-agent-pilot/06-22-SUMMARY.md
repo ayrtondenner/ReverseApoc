@@ -154,9 +154,14 @@ No orchestrator ruling applies to 06-22 (rulings.md has no "## 06-22" section). 
 
 1. **[Rule 2 - test strength] Planted-defect tests added.** I added three small parametrized tests so that each check can be shown to fail (the project's "a check is only worth something if it can fail" pattern from test_hygiene.py). The six planned tests are unchanged. Files: tests/test_listings.py. Commits: 8b8fa37, 3b250ce.
 2. **[Plan detail] tools/progress.py was not on this base.** Task 2's read_first names it, but it is 06-18's output and runs in the same wave. I took the category meanings from 06-CONTEXT D-26/D-50, tools/reverseapoc/status.py (a matched or partial row; a missing row means unmatched) and gate.py `_merge_partial` (partial means objdiff above 0%, not matched).
-3. **[Plan detail] README line numbers.** The annotated rows are now at L69 and L146; the plan named L62 and L139 before the Progress section grew.
+3. **[Plan detail] README line numbers.** The annotated rows are now at L69 and L146; the plan named L62 and L139 before the Progress section grew. (After fix round 1 the annotations moved again; the tests find the rows by section, not by line number.)
+4. **Owner ruling 2026-10-25: no `help` field (removes recomp.fyi's 'wants help' tag).**
+   - The `help` array was removed from .recomp.json, and nothing else in the file changed.
+   - `test_recomp_json_asks_for_no_help` pins the absence. `help` stays in the pinned v1 property set, because the schema allows it.
+   - No test or live doc expected the field. Only the dated research snapshot docs/research/notes-progress-reporting-recompfyi.md lists `help` among the schema fields, and it is left as written.
+   - Commits: e6656f0 (RED), e360d32 (GREEN).
 
-**Total deviations:** 1 auto-added (Rule 2), 2 recorded plan details. **Impact:** none on scope; no file outside files_modified was touched besides this SUMMARY.
+**Total deviations:** 1 auto-added (Rule 2), 2 recorded plan details, 1 owner ruling (fix round 2); fix round 1 is in its own section below. **Impact:** none on scope; no file outside files_modified was touched besides this SUMMARY.
 
 ## Issues Encountered
 
@@ -192,6 +197,17 @@ FIX_BASE 32314b5. Source: review-06-22.md, the coordinator's rulings, and an add
 - **RED evidence:** df8d641 failed 5 of 24 tests and 3e118fc failed 2 of 25. Every failure was the planned assertion; there were no collection or import errors. The reports are `build/06-22/fix1-red.out` and `build/06-22/fix1b-red.out`.
 - **After the round:** tests/test_listings.py has 25 passed. With hygiene: 90 passed, 3 skipped (`only inside the container`). Host suite: 2291 passed, 41 skipped, exit 0, with the same skip reasons as before and none in tests/test_listings.py. ruff: All checks passed.
 - **Unchanged:** the present-tense Pages and report wording, as ruled. The README's goal framing and its honesty: two matched functions, and the EXEs are not rebuilt from C.
+
+## Fix round 2
+
+FIX_BASE 39e27d0. Source: owner ruling 2026-10-25, relayed by the coordinator. Nothing was sent to recomp.fyi and nothing was pushed.
+
+| Item | Change | Test (tests/test_listings.py) | Commits |
+|---|---|---|---|
+| Owner ruling 2026-10-25 | No `help` field in .recomp.json, which removes recomp.fyi's 'wants help' tag. No other key changed, and the file still validates against the pinned schema. | `test_recomp_json_asks_for_no_help` | e6656f0, e360d32 |
+
+- **RED evidence:** e6656f0 failed 1 of 26 tests, on `assert 'help' not in {...}` (`build/06-22/fix2-red.out`).
+- **After the round:** tests/test_listings.py has 26 passed. Host suite: 2292 passed, 41 skipped, exit 0 (`build/06-22/fix2-host-suite.log`), with the same skip reasons as before and none in tests/test_listings.py. ruff: All checks passed.
 
 ## Self-Check: PASSED
 
