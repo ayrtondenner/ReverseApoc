@@ -342,6 +342,14 @@ def test_round_trip_tests_never_copy_manifest_hashes():
     assert found == []
 
 
+# A bare exact pin: a PEP 508 project name, `==`, and a version of letters, digits and `.+!_-`
+# that starts with a letter or digit. Anything else (a range, a marker, an extra, a second `==`)
+# is refused.
+_EXACT_PIN = re.compile(
+    r"(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9][A-Za-z0-9.+!_-]*)"
+)
+
+
 def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
     """What is wrong when a runtime dependency has no docs/tools.md reason (empty = none).
 
@@ -351,10 +359,11 @@ def _dependency_doc_problems(pyproject_text: str, tools_text: str) -> list[str]:
     problems = []
     rows = [line for line in tools_text.splitlines() if line.startswith("|")]
     for pin in tomllib.loads(pyproject_text)["project"].get("dependencies", []):
-        name, sep, version = pin.partition("==")
-        if not sep or not version:
+        exact = _EXACT_PIN.fullmatch(pin)
+        if exact is None:
             problems.append(f"{pin!r} is not an exact `name==version` pin")
             continue
+        name = exact.group("name")
         documented = any(
             f"`{pin}`" in row and name.lower() in row.lower() and "**Use**" in row for row in rows
         )
@@ -394,6 +403,19 @@ def test_dependency_doc_check_wants_an_exact_pin():
     loose = '[project]\nname = "x"\ndependencies = ["foo>=1.0"]\n'
     row = "| [foo](https://example.invalid) | **Use** | r | uv: `foo>=1.0` | Phase 5 |\n"
     assert len(_dependency_doc_problems(loose, _TOOLS_HEADER + row)) == 1
+
+
+@pytest.mark.parametrize(
+    "pin",
+    ["foo==1.0; python_version >= '3.14'", "foo[cli]==1.0", "foo==1.0==2.0", "foo ==1.0", "==1.0"],
+)
+def test_dependency_doc_check_refuses_anything_but_name_eq_version(pin):
+    # Only a bare `name==version` passes: a marker, an extra, a second `==`, a space or an empty
+    # name is refused even when a **Use** row holds the very same text.
+    pyproject = f'[project]\nname = "x"\ndependencies = ["{pin}"]\n'
+    row = f"| [foo](https://example.invalid) | **Use** | r | uv: `{pin}` | Phase 5 |\n"
+    problems = _dependency_doc_problems(pyproject, _TOOLS_HEADER + row)
+    assert problems == [f"{pin!r} is not an exact `name==version` pin"]
 
 
 def _skip_message(helper) -> str:
