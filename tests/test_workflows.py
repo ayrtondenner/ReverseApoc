@@ -50,11 +50,34 @@ def top(header: str) -> list[str]:
     return [line.strip() for line in block(lines[top_level[0]:], header) if line.strip()]
 
 
+def job_lines(name: str) -> list[str]:
+    """The raw lines of job `name` under `jobs:`, comments dropped."""
+    lines = [line for line in pages_text().splitlines() if not line.lstrip().startswith("#")]
+    return block(block(lines, "jobs:"), f"{name}:")
+
+
 def job(name: str) -> list[str]:
     """The stripped lines of job `name` under `jobs:`."""
-    lines = [line for line in pages_text().splitlines() if not line.lstrip().startswith("#")]
-    jobs = block(lines, "jobs:")
-    return [line.strip() for line in block(jobs, f"{name}:") if line.strip()]
+    return [line.strip() for line in job_lines(name) if line.strip()]
+
+
+def indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def keys(lines: list[str]) -> list[str]:
+    """The mapping keys at the shallowest indent of `lines` (a block's own keys)."""
+    body = [line for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    least = min(indent(line) for line in body)
+    return [line.strip().split(":")[0] for line in body if indent(line) == least]
+
+
+def job_permissions(name: str) -> list[str]:
+    """The sorted `permissions:` entries of job `name`; [] when it has no block."""
+    lines = job_lines(name)
+    if not any(line.strip() == "permissions:" for line in lines):
+        return []
+    return sorted(line.strip() for line in block(lines, "permissions:") if line.strip())
 
 
 def test_pages_triggers():
@@ -73,11 +96,42 @@ def test_pages_triggers():
     assert "workflow_dispatch:" in on
 
 
+def test_pages_trigger_set_is_closed():
+    """Fix round 1: exactly the triggers D-27 names. A pull_request or pull_request_target
+    trigger would run the workflow for code that is not on main."""
+    lines = [line for line in pages_text().splitlines() if not line.lstrip().startswith("#")]
+    on = block(lines[lines.index("on:"):], "on:")
+    assert keys(on) == ["push", "schedule", "workflow_dispatch"]
+    assert "pull_request" not in pages_text()
+
+
 def test_pages_permissions_and_concurrency():
-    """Least privilege (T-06-57): read the repository, write Pages, mint the OIDC token Pages
-    needs; one deploy at a time, never cancelling a running one."""
-    assert sorted(top("permissions:")) == ["contents: read", "id-token: write", "pages: write"]
+    """Least privilege (T-06-57, orchestrator ruling of fix round 1: permissions per job). The
+    workflow reads the repository; only deploy writes Pages and mints the OIDC token Pages
+    needs; build runs repository code with read access only; notify needs no token. One deploy
+    at a time, never cancelling a running one."""
+    assert top("permissions:") == ["contents: read"]
+    assert job_permissions("build") == []  # inherits contents: read
+    assert job_permissions("deploy") == ["id-token: write", "pages: write"]
+    assert "permissions: {}" in job("notify-decomphub")
+    assert pages_text().count("pages: write") == 1 and pages_text().count("id-token: write") == 1
     assert top("concurrency:") == ["group: pages", "cancel-in-progress: false"]
+
+
+def test_every_checkout_drops_its_credentials():
+    """Fix round 1: no checkout leaves the job token in .git/config for later steps."""
+    lines = pages_text().splitlines()
+    checkouts = [i for i, line in enumerate(lines) if "actions/checkout@" in line]
+    assert checkouts
+    for i in checkouts:
+        step = []
+        for line in lines[i + 1:]:
+            if line.strip() and (indent(line) < indent(lines[i])
+                                 or line.lstrip().startswith("- ")):  # fmt: skip
+                break
+            step.append(line.strip())
+        assert "persist-credentials: false" in step, lines[i]
+    assert "persist-credentials: true" not in pages_text()
 
 
 def test_pages_build_steps():
@@ -139,10 +193,23 @@ def test_gitignore_ignores_playwright_mcp():
 # ---- Task 3: the DecompHub refresh POST (D-30) ----
 
 REFRESH = "https://app.decomphub.com/api/progress/refresh"
-# The job-level condition: a push to main, and only once the owner sets the repository variable
-# DECOMPHUB_REFRESH to true. Without it the job is skipped, so the workflow is inert by default.
-GATE = "if: github.event_name == 'push' && vars.DECOMPHUB_REFRESH == 'true'"
+# The job-level condition: this repository (never a fork, fix round 1), a push to main, and only
+# once the owner sets the repository variable DECOMPHUB_REFRESH to true. Otherwise the job is
+# skipped, so the workflow is inert by default.
+GATE = ("if: github.repository == 'ayrtondenner/ReverseApoc' && github.event_name == 'push' "
+        "&& vars.DECOMPHUB_REFRESH == 'true'")  # fmt: skip
 URL = re.compile(r"https?://[^\s\"']+")
+JQ = ('body="$(jq -n --arg repository "$PROJECT_REPOSITORY" --arg revision "$PROJECT_REVISION" \\',
+      "'{repository: $repository, revision: $revision}')\"")  # fmt: skip
+EMPTY_CHECK = 'if [ -z "$body" ]; then'
+CURL = ("curl --fail --silent --show-error --max-time 20 \\",
+        '-H "Content-Type: application/json" --data-binary @- \\', REFRESH)  # fmt: skip
+
+
+def notify_script() -> list[str]:
+    """The stripped lines of the notify step's `run: |` script."""
+    notify = job_lines("notify-decomphub")
+    return [line.strip() for line in block(notify, "run: |") if line.strip()]
 
 
 def test_decomphub_notify_is_gated():
@@ -150,15 +217,28 @@ def test_decomphub_notify_is_gated():
     assert "needs: deploy" in notify
     assert GATE in notify
     assert notify.index(GATE) < notify.index("steps:"), "the gate is on the job, not a step"
+    assert "||" not in GATE and "!" not in GATE
     assert "permissions: {}" in notify, "the POST needs no token"
     assert "PROJECT_REPOSITORY: https://github.com/${{ github.repository }}" in notify
     assert "PROJECT_REVISION: ${{ github.sha }}" in notify
-    assert ("jq -n --arg repository \"$PROJECT_REPOSITORY\" --arg revision \"$PROJECT_REVISION\""
-            " \\") in notify  # fmt: skip
-    assert "'{repository: $repository, revision: $revision}' |" in notify
-    assert "curl --fail --silent --show-error --max-time 20 \\" in notify
-    assert '-H "Content-Type: application/json" --data-binary @- \\' in notify
-    assert REFRESH in notify
+
+
+def test_decomphub_notify_never_posts_an_empty_body():
+    """Fix round 1: bash with -euo pipefail; jq builds the body into a variable, an empty body
+    fails the step before curl runs, and only then is it posted with a 20 s timeout. (The
+    review's stub run showed that without pipefail a missing jq let curl POST nothing.)"""
+    notify = job("notify-decomphub")
+    assert "shell: bash" in notify and notify.index("shell: bash") < notify.index("run: |")
+    script = notify_script()
+    assert script[0] == "set -euo pipefail"
+    assert list(script[1:3]) == list(JQ)
+    check = script.index(EMPTY_CHECK)
+    assert script[check + 1].startswith('echo "::error::') and script[check + 2] == "exit 1"
+    assert script[check + 3] == "fi"
+    post = script[check + 4:]
+    assert post[0] == "printf '%s\\n' \"$body\" |"
+    assert post[1:] == list(CURL)
+    assert all("curl" not in line for line in script[:check + 4])
 
 
 def test_no_other_outward_url():
