@@ -41,7 +41,7 @@ key-files:
 key-decisions:
   - "Only the driver's gate exit 0 is MATCHED; the lint runs first and a failed lint is PARTIAL \"lint\" with the gate never run, so status.csv is untouched"
   - "A LIMIT session that changed the unit or wrote a header is judged (lint, gate); a pass is a counted MATCHED, else it is reset; then the 60/120/240/300 s backoff"
-  - "TRANSIENT_TRIES = 3 sessions in a row (the plan's test wording: three times -> one abort record), then the function is left for this pass"
+  - "TRANSIENT_RETRIES = 3 retries after the first launch, so 4 transient launches in a row before the abort record (D-08 literally: \"3 retries, then the attempt is aborted\"; fix round 1 minor 6 replaced the earlier 3-launch reading), then the function is left for this pass"
   - "check_init runs on any session that has an init event and on a counted session with a result; a timed-out session without init is not judged by it"
   - "The transcript audit judges write-tool paths against the checkout root and the cwd the CLI reports in its init event (the same directory, possibly spelled differently)"
   - "Each launch starts in a fresh attempt dir: an uncounted launch's directory moves to attempt-<n>-uncounted-<k>, so the counted session's best C path stays attempt-<n>/best/<unit>.c (F7)"
@@ -71,7 +71,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D3
-    description: "D-08 handling: LIMIT backoff 60/120/240 then 300 s polls, not counted, keeps its work; STOP classes and check_init problems end the run; TRANSIENT x3 -> one abort record; timeout counted; a session exception is a STOP"
+    description: "D-08 handling: LIMIT backoff 60/120/240 then 300 s polls, not counted, keeps its work; STOP classes and check_init problems end the run; TRANSIENT: first launch + 3 retries -> one abort record (retries 3); timeout counted; a session exception is a STOP"
     requirement: AGT-04
     verification:
       - kind: integration
@@ -210,10 +210,40 @@ Every task and security pass has a `test(06-23)` commit before its `feat(06-23)`
 
 ## Known Limits
 
+- **.git internals other than the pinned files** (HEAD, refs, the index's skip-worktree bits, objects) are not audited (fix round 1 minor 2). Only .git/config, .git/info/exclude, .git/info/attributes and .git/hooks/ are pinned by bytes.
+
 - **build/ is not audited (security ruling, by design).** The attempt wrapper writes checks/, checks.jsonl and context.md there, and a matching session can write only through Edit/Write (the matching hook's allowlist, which admits only the attempt's notes.md under build/) and the attempt wrapper. A gitignored write elsewhere is seen only when it lands on a pinned path or in the fingerprinted trees, or in the transcript.
-- **The fingerprint and pyc files.** A `__pycache__` file written during a session stops the night. The wrapper imports reverseapoc on the host; if the driver process had not imported (or compiled) a module the wrapper needs, Python would write its .pyc mid-session. 06-25's preflight should compile the package (for example `python -m compileall tools`) or the drive verb should import the wrapper's modules before the first session.
+- **The fingerprint and pyc files.** Any `__pycache__` file and any `.venv` file written during a session stops the night. Since fix round 1 (minor 3) the session env sets `PYTHONDONTWRITEBYTECODE=1`, so the wrapper writes no `.pyc`. `uv run`'s environment sync could still touch `.venv`. 06-25's preflight compiles the package and decides `--no-sync` together with hooks.ATTEMPT_PREFIX (the wrapper's argv is pinned there).
 - **A changed (not new) site-packages file** cannot be restored (no bytes are kept, by the ruling's "no contents" design); it is copied to quarantine and named under "still changed after containment".
 - **Transcript strays outside the checkout** cannot be restored; they are named only.
+
+## Fix round 1 (FIX_BASE 982f312; review-06-23.md, rulings fixround-06-23-r1.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| I1 | An exception outside an attempt (queue, requeue, difficult.json load/save, quarantine root) escaped `drive()` with no STOPPED record | `run()` turns any `Exception` into STOPPED `error` with type and message; only the attempt log is committed after it | `test_a_raising_queue_ends_the_night_with_a_stopped_record`, `test_a_corrupt_difficult_list_...`, `test_a_failing_difficult_save_...` | b6ff6f8, be98e48 |
+| Minor 8 | Ctrl-C skipped containment and the record | `KeyboardInterrupt`/`SystemExit` during a session is contained like an error, recorded STOPPED `interrupted` (new reason in RUN_REASONS) with what containment did, then re-raised; between steps the live attempt is reset first | `test_an_interrupt_is_contained_recorded_and_re_raised` | b6ff6f8, be98e48 |
+| I2 | A failed match commit published a MATCHED record and left the gated files staged | status.csv, the feed and the log are read right before the gate; on a failed `commit_paths`: `git restore --staged --literal-pathspecs -- <paths>`, the three files back to their pre-gate bytes (dropping the uncommitted MATCHED record), reset, GAVE_UP `tool`, STOPPED `tool` naming the git error | `test_a_failed_match_commit_leaves_no_trace_of_a_match` (a commit-msg hook that predates the night refuses feat messages after `git add` succeeded), `test_a_failed_match_commit_unstages_new_files_too` (pin, untracked case) | 9462ba2, ccc3245 |
+| Minor 1 | On the raise path the audit ran before the containers were removed | removal first on both paths (no `finally`) | `test_containers_are_removed_before_a_raising_session_is_measured` | 14cd277, 7bf0ab0 |
+| Minor 2 (widened) | Gitignored executable trees were not audited | the stat-only fingerprint covers all of `.venv` and every gitignored file or tree under `.claude/` (`git ls-files --others --ignored --exclude-standard --directory -- .claude`), `.claude/worktrees/` pruned at any depth (git may report `.claude/` as one entry); .git internals other than the pinned files stay a known limit | `test_the_whole_venv_and_ignored_claude_trees_are_fingerprinted[.venv/Scripts/..., .claude/hooks/...]`, `test_claude_worktrees_are_not_fingerprinted` | 14cd277, 7bf0ab0 |
+| Minor 3 | The wrapper could write .pyc mid-session | the session env sets `PYTHONDONTWRITEBYTECODE=1`; note for 06-25 (compile in preflight, `--no-sync` with ATTEMPT_PREFIX) | `test_the_session_env_forbids_bytecode_writes` | 14cd277, 7bf0ab0 |
+| Minor 4 | Restore writes skipped the link checks | `_restore_bytes`: every component between the anchor (checkout, or git dir for .git/ names) and the parent is lstat-checked and the parent must resolve inside the anchor; a refusal is named `not restored`; also used for pre-gate bytes | `test_a_restore_write_through_a_link_is_refused` (a swapped `.claude/` junction or symlink) | 14cd277, 7bf0ab0 |
+| S2 (corrects minor 4) | A leaf link was refused, so the link stayed | a leaf link is replaced: a junction or directory symlink is removed (the link itself), a file link is swapped out by `write_atomic`'s `os.replace`; the original bytes come back as a regular file | `test_a_pinned_file_replaced_by_a_junction_or_symlink_dir_comes_back` (runs on Windows), `test_a_pinned_file_replaced_by_a_file_symlink_comes_back` (R-A skip here) | c2cd1a3, 4e8f1d1 |
+| S1 | A failing container removal would have skipped the audit | `_remove_containers` in its own try/except on both paths; the failure is recorded as `containers not removed: <error>`, the audit and containment still run, and the night stops (the audit's reason, the raise path's `error`, else `tool`) | `test_a_failed_container_removal_never_gates_containment`, `..._alone_stops_the_night`, `..._on_the_raise_path_still_contains` | c2cd1a3, 4e8f1d1 |
+| Minor 5 | An untracked header from before the session was silently left out of a match commit | it stops the night (`tool`) naming it; it stays in place | `test_an_untracked_header_from_before_the_session_is_named` | 14cd277, 7bf0ab0 |
+| Minor 6 | `TRANSIENT_TRIES = 3` gave 3 launches; D-08 says "3 retries" | `TRANSIENT_RETRIES = 3` retries after the first launch: 4 transient launches, abort record `retries: 3` | `test_transient_retries_then_aborts` (4 launches), `test_a_third_transient_retry_that_succeeds_is_counted` | 14cd277, 7bf0ab0 |
+| Minor 7 | `gate_sha1s` accepted any two EXE names | a passing gate must name SHA-1s for exactly the `ufo2p` and `tacp` stems; every gate-side tool failure puts status.csv, the feed and the log back to their pre-gate bytes | `test_a_gate_naming_other_exes_is_a_tool_failure` | 14cd277, 7bf0ab0 |
+| Minor 9 | A directory stray (`?? dir/`) was not reported | named `not contained: <dir>/ (a directory)` | `test_a_directory_stray_is_named_not_contained` | 14cd277, 7bf0ab0 |
+
+RED evidence: every RED commit failed on assertions. b6ff6f8 reported `Failed: drive() let RuntimeError/DriverError/PermissionError escape` through a test helper that turns an escape into a test failure, and `assert ('STARTED', 'start') == ('STOPPED', 'interrupted')`. 9462ba2: `assert ('STOPPED', 'error') == ('STOPPED', 'tool')`. 14cd277: 10 assertion failures; the restore case showed the restore writing through the junction (`restored: .claude/settings.local.json`). c2cd1a3: 4 assertion failures plus the R-A skip.
+
+A slip, corrected before any commit: `ruff format tests/` reformatted 24 test files outside this plan. Each was restored with `git checkout -- <file>`, one file at a time, and only test_driver.py and test_attempts_schema.py were committed.
+
+Verification after fix round 1 (host, worktree):
+- `uv run pytest -q tests/test_driver.py tests/test_attempts_schema.py`: 109 passed, 2 skipped (both R-A symlink skips; their junction twins run).
+- Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2589 passed, 44 skipped in 409 s.
+- `uv run ruff check .`: All checks passed.
+- A stat walk of this worktree's `.venv` (793 files) takes 0.28 s.
 
 ## Issues Encountered
 
@@ -237,6 +267,7 @@ None.
 
 ## Next Phase Readiness
 
+- 06-25: preflight compiles the package, and decides `uv run --no-sync` together with hooks.ATTEMPT_PREFIX (fix round 1 minor 3). The session env already carries `PYTHONDONTWRITEBYTECODE=1`.
 - 06-25 wires the real Deps: `argv=lambda p: session.build_argv(p, claude=...)`, `session=session.run_session`, `gate`/`partial_gate`/`lint` as `docker compose run --rm -T build uv run --frozen reverseapoc gate|lint ...` parsing `--json`, `remove_containers(prefix)` with `docker ps -a --filter name=<prefix>` then `docker rm -f`, `queue`/`requeue`/`matched_callees` over picker and score, `scaffold` via `units --write-src`, `pack` via `context --out <dir> --json`, `git=git_runner(repo)`, and `DriveConfig(tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION)`.
 - 06-27 can grep `"reason":"guardrail"` in STOPPED records.
 - No tick-rate finding (OpenApoc #997) in this plan.
