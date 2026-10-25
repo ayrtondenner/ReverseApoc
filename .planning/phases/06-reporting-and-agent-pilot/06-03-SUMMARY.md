@@ -18,11 +18,11 @@ actuals:
   # alone are 39,633 chars = 9,908). The 80000 estimate is far above this realized diff: the plan
   # touched few lines in each file. The first SUMMARY's 9024 was the same measure before the fix
   # round (36,094 chars of diff, no SUMMARY).
-  tokens: 17925  # fix round 2: chars/4 over git diff 021a58b..0aff168 (71,699 chars; 49,401 without .planning)
+  tokens: 20142  # fix round 3: chars/4 over git diff 021a58b..0d195a1 (80,567 chars)
   tasks: 3
-  commits: 15  # git rev-list --count 021a58b..0aff168, the SUMMARY commits included
+  commits: 18  # git rev-list --count 021a58b..0d195a1, the SUMMARY commits included
 plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: 0aff168f6decc0cf9c1c0d92d4c272b5bff49d8b
+plan_head_after: 0d195a1358c8f4e3f353141b4c37dfb39ad0dd7e
 
 tech-stack:
   added: []
@@ -252,14 +252,14 @@ Verification after the round:
 
 | Item | What was done | Test commit | Fix commit |
 |------|---------------|-------------|------------|
-| N1 (Important, predates this plan) | New shared entry point. `configure.normalize_source` performs translation phases 1-2 the way wcc386 10.6 does: (a) C89 trigraphs are mapped everywhere, string literals included; (b) CRLF and a lone CR become LF; (c) a backslash followed by spaces or tabs and then a newline becomes a backslash-newline (a form feed or vertical tab is not treated so). None of these adds or removes a line break; a lone CR counts as one, as `read_text` already reads it. `_NOT_CODE` is now a small scanner object whose `sub` runs `normalize_source` before the comment/literal regex. `check.source_marks` calls `cfg._NOT_CODE.sub(cfg._blank, text)`, so it gets the normalisation with no check.py change. `configure.code_text(text)` (= `_live_code(_NOT_CODE.sub(_blank, text))`) is the one entry point, and `check_unit_source` uses it. Probes added to CONTINUATION_PROBES: `blank-splice-closer-definition`, `blank-splice-string-definition`, `blank-splice-name`, `blank-splice-define`, `tab-splice-define`, `blank-splice-line-comment`, `blank-splice-if0`, `formfeed-is-no-splice`, `vtab-is-no-splice`, `trigraph-line-comment`, `trigraph-closer`, `trigraph-directive`, `crlf-closer`, `crlf-string`. New tests: `test_blank_splice_closer_hides_no_definition` (D-12 reports "both"), `test_inline_asm_stays_visible_to_the_scanner` (4 probes), `test_code_text_is_the_shared_entry_point` and `test_normalisation_keeps_the_line_count`. | `5b6eeb5` | `0aff168` |
+| N1 (Important, predates this plan) | New shared entry point. `configure.normalize_source` performs translation phases 1-2 the way wcc386 10.6 does: (a) C89 trigraphs are mapped everywhere, string literals included; (b) CRLF becomes LF (as first written, a lone CR became LF too; fix round 3 refuses it instead); (c) a backslash followed by spaces or tabs and then a newline becomes a backslash-newline (a form feed or vertical tab is not treated so). None of these adds or removes a line break. `_NOT_CODE` is now a small scanner object whose `sub` runs `normalize_source` before the comment/literal regex. `check.source_marks` calls `cfg._NOT_CODE.sub(cfg._blank, text)`, so it gets the normalisation with no check.py change. `configure.code_text(text)` (= `_live_code(_NOT_CODE.sub(_blank, text))`) is the one entry point, and `check_unit_source` uses it. Probes added to CONTINUATION_PROBES: `blank-splice-closer-definition`, `blank-splice-string-definition`, `blank-splice-name`, `blank-splice-define`, `tab-splice-define`, `blank-splice-line-comment`, `blank-splice-if0`, `formfeed-is-no-splice`, `vtab-is-no-splice`, `trigraph-line-comment`, `trigraph-closer`, `trigraph-directive`, `crlf-closer`, `crlf-string`. New tests: `test_blank_splice_closer_hides_no_definition` (D-12 reports "both"), `test_inline_asm_stays_visible_to_the_scanner` (4 probes), `test_code_text_is_the_shared_entry_point` and `test_normalisation_keeps_the_line_count`. | `5b6eeb5` | `0aff168` |
 | N2 (Minor, new in 31b01ce) | A directive is now reported at the physical line of its `#` (`_physical_line`), so `/* a⏎b */ #ifdef FOO` reports line 4, as both bases did. `test_directive_after_a_multiline_comment_keeps_its_line` covers this and the unclosed `#if 0` form. | `5b6eeb5` | `0aff168` |
 | N3 (Minor) | The SUMMARY frontmatter `provides`, the coverage D3 description, the headline and the F20 section now say "frame method other than F1 (a group frame)" and that the frame datum is not checked. | n/a | (this SUMMARY commit) |
 
 **Against the real compiler.** Scratch harnesses (in the session scratchpad; probe files under the gitignored `build/06-03/probes/`) ran each probe through `third_party/watcom/10.6/BINNT/WCC386.EXE -zq -p` from the main checkout. They compared its marked/defined sets with `configure`'s reading of the same file after `read_text`.
 - All 15 non-CR probes agree after the fix: the blank, tab, trigraph and CRLF splice probes, plus the form feed and vertical tab non-splices. Before the fix, 10 of them differed.
 - The 5 inline-asm probes agree on `_asm int 3`: live in 4, and inside the comment for the form-feed one.
-- One difference remains, on purpose. wcc386 does **not** treat a lone CR as a line break: `INCLUDE_ASM(..)⏎CR#define X \⏎CR INCLUDE_ASM(..)` gives both markers live for wcc386. Python's `read_text`, which configure and check use, and `normalize_source` turn a lone CR into a line break. For D-12 this fails closed: a marker reads as dead, so the row reports "neither".
+- One difference remains, on purpose. wcc386 does **not** treat a lone CR as a line break: `INCLUDE_ASM(..)⏎CR#define X \⏎CR INCLUDE_ASM(..)` gives both markers live for wcc386. Python's `read_text` and the round-2 `normalize_source` turned a lone CR into a line break. **Correction (fix round 3):** the round-2 claim that this "fails closed for D-12" was wrong. A lone CR inside a literal also hid a live definition (re-review R2-1, probe A), and then D-12 passed. A lone CR is now refused outright on both paths (see Fix round 3).
 
 Verification:
 - `uv run pytest -q`: 1470 passed, 215 skipped.
@@ -273,13 +273,30 @@ Verification:
 
 **Notes for 06-12:**
 - hooks.py must call the shared entry point `configure.code_text(text)` (or at least `configure.normalize_source` before any scan). It must never run `_COMMENT_OR_LITERAL` on raw tool-input text.
-- A lone CR is the one place our reading differs from wcc386's. A hook scanning `src/` should refuse a lone CR outright, which fails closed.
+- A lone CR is the one place our reading differed from wcc386's. Since fix round 3, `normalize_source` (and so `code_text`) raises `_UnreadableSource`, a `_ConditionalError`, for it. A hook that calls `code_text` on raw tool-input text therefore refuses it with no extra code. It must treat that exception as a deny, never as "no asm found".
 - `code_text` puts a spliced code line on its first physical line, so a hook that reports line numbers for code should say "line N (logical line start)". Directives are reported at the line of their `#`.
+
+## Fix round 3 (rereview-06-03-r2.md, FIX_BASE 74e660b)
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| R2-1 (fail-open on raw text, introduced by the round-2 normaliser) | A lone CR is no longer mapped; it is refused. `normalize_source` raises `_UnreadableSource` (a subclass of `_ConditionalError`) for any CR not followed by LF, and names its line: `line N: a carriage return not followed by a line feed, ...`. `code_text`, `check_unit_source` (one problem) and `check.source_marks` (the problem, with empty marked/defined sets, through its existing `except cfg._ConditionalError`) all refuse it, so check.py is unchanged. configure's `_check_source` now reads the unit file's bytes and refuses a lone CR before decoding, because `read_text` would turn it into a line break. CRLF stays one line break. Tests: `test_lone_cr_is_refused_on_raw_text` (probe A through `check_unit_source` and `check.source_marks`), `test_scanner_refuses_a_lone_cr` (probe B, and a lone CR ending a `//` comment, through `code_text` and `normalize_source`) and `test_main_refuses_a_unit_file_with_a_lone_cr` (raw bytes on disk, refused naming the file and line). `test_normalisation_keeps_the_line_count` now uses CRLF only. | `3c1ba50` | `0d195a1` |
+| SUMMARY correction | The round-2 claim that a lone CR "fails closed for D-12" is corrected in place. It was wrong, because a lone CR in a literal could hide a live definition. A lone CR is now refused outright on both paths: the read path, through `_check_source`'s byte check, and the raw path, through `normalize_source`. The 06-12 note is updated: the refusal now lives in the shared entry point. | n/a | (this SUMMARY commit) |
+
+Verification:
+- `uv run pytest -q`: 1474 passed, 215 skipped.
+- `uv run ruff check .`: clean.
+- RED for `3c1ba50`: 4 failures, each on its assertion.
+  - Probe A: no problem where one was expected.
+  - Both `code_text` cases: `DID NOT RAISE _ConditionalError`.
+  - The raw-bytes file: `configure.main` returned 0 instead of 1.
+- `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 committed units, so none has a lone CR.
+- `check.source_marks` on both matched unit files is clean: defined `func_000A3980` with 2 marked, and `func_00055080` with 10 marked, no problems.
 
 ## Self-Check: PASSED
 
 - FOUND: configure.py, tools/reverseapoc/relocs.py, tests/test_configure.py, tests/test_relocs.py, tests/relocpair.py
-- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b, 9ab2390, 8a0a536, 31b01ce, 5f3f806, 17ac24d, 2d90b08, 54a7040, 5b6eeb5, 0aff168 (`git log 021a58b..HEAD`, 15 commits before this SUMMARY update)
+- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b, 9ab2390, 8a0a536, 31b01ce, 5f3f806, 17ac24d, 2d90b08, 54a7040, 5b6eeb5, 0aff168, 74e660b, 3c1ba50, 0d195a1 (`git log 021a58b..HEAD`, 18 commits before this SUMMARY update)
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
