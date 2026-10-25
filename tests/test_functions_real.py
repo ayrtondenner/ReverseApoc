@@ -13,9 +13,10 @@ The Ghidra export is read from REVERSEAPOC_GHIDRA_EXPORT (a directory holding
 else from build/ghidra. When the cached file is missing and Ghidra is installed
 (GHIDRA_INSTALL_DIR, or the container) it is exported into build/ghidra first.
 
-Skipped, naming the missing input, unless orig/<EXE>, the Watcom trees the runtime rows are
-seeded from, capstone and the export (or Ghidra) are present; they never run in CI because
-neither the game nor Ghidra's output is ever committed. Assertions compare text and addresses
+Skipped, naming the missing input, unless orig/<EXE>, capstone and the export (or Ghidra) are
+present; they never run in CI because neither the game nor Ghidra's output is ever committed.
+Once the game file is there, a Watcom version a runtime.csv row lists without its LIB386 tree
+installed is a failure, not a skip. Assertions compare text and addresses
 only, never game bytes.
 """
 
@@ -23,17 +24,19 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
-from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra, requires_version
+from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra
+from reverseapoc import cli
 from reverseapoc.asm import OBJ_EXECUTABLE, data_ranges
 from reverseapoc.functions import (
     RUNTIME_VERSION,
     FunctionRow,
     Reconciled,
+    _row_version,  # the verb's per-row version rule, called by its private name (row 16a)
     boundaries_csv_path,
     check_unit_assignment,
     format_boundaries_csv,
@@ -47,13 +50,13 @@ from reverseapoc.functions import (
     reconcile,
     runtime_aliases,
     runtime_entries,
-    seed_runtime_rows,
     symbols_csv_path,
     units_csv_path,
 )
 from reverseapoc.ghidra import DEFAULT_EXPORT_DIR, EXPORT_NAME, export_functions, read_ghidra_export
 from reverseapoc.le import LE
 from reverseapoc.libmatch import (
+    LIB_DIR,
     LoadedLibrary,
     MatchRange,
     load_libraries,
@@ -88,7 +91,7 @@ def _stem(name: str) -> str:
 
 
 def _present(path: Path, how: str) -> Path:
-    """A committed config file: missing is a failure, never a skip (only game, Ghidra and Watcom
+    """A committed config file: missing is a failure, never a skip (only the game and Ghidra
     inputs, which are never committed, may skip)."""
     assert path.is_file(), f"{path} missing: {how}"
     return path
@@ -117,18 +120,39 @@ def _export_csv(name: str) -> Path:
     return export_functions(name, ORIG_DIR, root).path
 
 
-def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
-    """The LIB386 of the version each runtime row is seeded from (the rule of the `functions`
-    verb: 10.6 where the row lists it, else its first version)."""
-    versions = {RUNTIME_VERSION if RUNTIME_VERSION in m.versions else m.versions[0]
-                for m in matches if m.versions}  # fmt: skip
-    for version in sorted(versions):
-        requires_version(version)
-    return load_libraries(WATCOM_DIR, sorted(versions))[0]
+def _required_versions(matches: list[MatchRange]) -> list[str]:
+    """The Watcom versions whose LIB386 trees the runtime rows need: the one the verb's own
+    per-row helper picks for each row (RUNTIME_VERSION where the row lists it, else its first),
+    computed with that helper rather than a copy of its rule."""
+    return sorted({_row_version(match, RUNTIME_VERSION) for match in matches})
+
+
+def _listed_versions(matches: list[MatchRange]) -> list[str]:
+    """_required_versions, after asserting that each one's LIB386 tree is installed under
+    WATCOM_DIR. Strict: a required version without its tree fails loudly, naming the version
+    and the path it was looked for at; it is never skipped (the game file is present by now,
+    so the comparison must run)."""
+    versions = _required_versions(matches)
+    missing = [f"{v} ({WATCOM_DIR / v / LIB_DIR})" for v in versions
+               if not (WATCOM_DIR / v / LIB_DIR).is_dir()]  # fmt: skip
+    assert missing == [], (
+        f"runtime.csv rows need Watcom {', '.join(missing)}, not installed "
+        "(run `uv run reverseapoc install-watcom` or set REVERSEAPOC_WATCOM_DIR)"
+    )
+    return versions
 
 
 def _runtime_rows(matches: list[MatchRange]) -> list[FunctionRow]:
-    return seed_runtime_rows(matches, _libraries(matches))
+    """The runtime rows exactly as the `functions` verb seeds them, through cli's own helper,
+    which picks each row's version itself (05-REVIEW row 16a: no copy of its rule here)."""
+    _listed_versions(matches)
+    return cli._seeded_runtime_rows(matches, WATCOM_DIR)
+
+
+def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
+    """The LIB386 of every version a runtime row lists; functions.runtime_entries picks each
+    row's version from them by the verb's own rule."""
+    return load_libraries(WATCOM_DIR, _listed_versions(matches))[0]
 
 
 @pytest.fixture(scope="module", params=EXES)
@@ -194,19 +218,16 @@ def test_every_function_in_one_unit(name):
 
 @pytest.mark.parametrize("name", EXES)
 def test_units_tile_the_code(name):
-    """D-11 coverage rule, as the draft applies it: the units tile the code object without a gap
-    or overlap from its start to the end of the last functions.csv row; past that row only the
-    UNCOVERED_TAIL bytes remain, in no row and no unit."""
+    """D-11 coverage rule, the part that needs the LE: the units start at the code object's base,
+    and past the last functions.csv row only the UNCOVERED_TAIL bytes remain, in no row and no
+    unit. The gap-free tiling up to that row is CSV-only and runs without orig/
+    (tests/test_units.py::test_committed_units_tile_their_rows)."""
     functions = read_functions_csv(_present(functions_csv_path(name), FUNCTIONS_HINT))
     units = sorted(read_units_csv(_present(units_csv_path(name), UNITS_HINT)),
                    key=lambda unit: unit.start)  # fmt: skip
     (code,) = [obj for obj in LE(_orig(name)).objects if obj.flags & OBJ_EXECUTABLE]
-    gaps = [f"0x{a.end:08X}..0x{b.start:08X}" for a, b in zip(units, units[1:], strict=False)
-            if a.end != b.start]  # fmt: skip
-    assert gaps == []
     assert units[0].start == code.base
     last_end = max(row.end for row in functions)
-    assert units[-1].end == last_end
     assert code.end - last_end == UNCOVERED_TAIL[name]
 
 
@@ -238,3 +259,28 @@ def test_symbols_resolve(name):
     data = [s for s in symbols if s.kind != SYMBOL_KIND_FUNC]
     assert [s.name for s in data if not any(lo <= s.address < hi for lo, hi in ranges)] == []
     assert set(SPIKE_FUNCTIONS) <= {s.name for s in funcs}
+
+
+class _Loaded(Exception):
+    """Stops cli._seeded_runtime_rows once it has asked for its libraries."""
+
+
+@pytest.mark.parametrize("name", EXES)
+def test_required_versions_are_what_the_rule_loads(name, monkeypatch):
+    """The Watcom trees the real tests require are exactly the versions the `functions` verb
+    loads for the committed runtime.csv plus one row that does not list RUNTIME_VERSION (the
+    rule seeds that row from its first version). Needs no orig/ and no Watcom tree."""
+    matches = read_runtime_csv(runtime_csv_path(name))
+    other = replace(matches[0], versions=("11.0", "10.5"))  # no RUNTIME_VERSION: first is 11.0
+    matches = [*matches, other]
+    loaded: list[str] = []
+
+    def record(watcom_dir, versions):
+        loaded.extend(versions)
+        raise _Loaded
+
+    monkeypatch.setattr(cli, "load_libraries", record)
+    with pytest.raises(_Loaded):
+        cli._seeded_runtime_rows(matches, WATCOM_DIR)
+    assert loaded
+    assert _required_versions(matches) == sorted(loaded)

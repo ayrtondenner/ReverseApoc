@@ -277,12 +277,54 @@ class _EndScan(_Image):
         self.tables = sorted(tables)
         self.table_starts = [start for start, _ in self.tables]
 
-    def table_end(self, va: int) -> int | None:
-        """End of the jump table containing `va`, else None."""
+    def table_at(self, va: int) -> tuple[int, int] | None:
+        """The jump table [start, end) containing `va`, else None."""
         i = bisect_right(self.table_starts, va) - 1
         if i < 0 or va >= self.tables[i][1]:
             return None
-        return self.tables[i][1]
+        return self.tables[i]
+
+    def table_end(self, va: int) -> int | None:
+        """End of the jump table containing `va`, else None."""
+        table = self.table_at(va)
+        return table[1] if table is not None else None
+
+    def case_targets(self, va: int) -> Iterator[int]:
+        """The case labels of the jump table containing `va` (none when `va` is in no table)."""
+        table = self.table_at(va)
+        if table is None:
+            return
+        for entry in range(table[0], table[1], _TABLE_ENTRY):
+            if (fx := self.fixups.get(entry)) is not None:
+                yield fx.target_va
+
+    def after_tables(self, va: int, limit: int, reached: set[int]) -> int | None:
+        """End of the run of jump tables at `va` when the code after it, up to `limit`, is
+        reached by no target in `reached` and no case label of those tables: that code is not
+        part of the function (05-REVIEW row 11). None when no table starts the run, or when the
+        function goes on past it."""
+        if self.table_at(va) is None:
+            return None
+        end = va
+        cases: list[int] = []
+        while (table := self.table_at(end)) is not None:
+            cases.extend(self.case_targets(end))
+            end = table[1]
+        if any(end <= target < limit for targets in (reached, cases) for target in targets):
+            return None
+        return end
+
+    def read_tables(self, insn: x86.Insn) -> Iterator[int]:
+        """The case labels of every jump table an indirect jmp reads: for each LE fixup inside
+        the instruction whose target lies anywhere in a jump table, all the case labels of that
+        table, wherever the table lies. A table past the scan position can still reach code
+        before it (review 06-04 minor 1)."""
+        if not insn.is_jump or insn.branch_target is not None:
+            return
+        for va in range(insn.va, insn.va + insn.size):
+            fx = self.fixups.get(va)
+            if fx is not None and self.table_at(fx.target_va) is not None:
+                yield from self.case_targets(fx.target_va)
 
     def skip(self, va: int) -> int | None:
         """Where code resumes after the jump table or inline LE fixup field at `va`."""
@@ -319,19 +361,32 @@ class _EndScan(_Image):
         return va >= limit or bool(self.padding_size(va, limit)) or self.only_padding(va, limit)
 
     def end_of(self, start: int, limit: int) -> int:
-        """The first padding byte after a terminal instruction in [start, limit), else limit (a
-        function that falls through into the next one has no ret). Code after that padding is
-        not part of the function: it stays a gap for the reconcile step to judge."""
+        """The first padding byte after a terminal instruction in [start, limit), or the end of
+        the jump tables right after one when no branch or case label of the code scanned so far
+        reaches the code behind them; else limit (a function that falls through into the next
+        one has no ret). The case labels counted are those of every table the scan stepped over
+        or the scanned code's jmps read, wherever that table lies. Code after that padding or
+        those tables is not part of the function: it stays a gap for the reconcile step to
+        judge."""
         pos = start
+        reached: set[int] = set()  # jump targets and case labels of the code scanned so far
         while pos < limit:
             if (resume := self.skip(pos)) is not None:
+                reached.update(self.case_targets(pos))
                 pos = resume
                 continue
             last = pos
             for insn in x86.decode(bytes(self.flat[pos:limit]), pos, data_sites=self.sites):
                 last = insn.va + insn.size
-                if insn.is_terminal and self.ends_here(last, limit):
+                if insn.branch_target is not None and not insn.is_call:
+                    reached.add(insn.branch_target)
+                reached.update(self.read_tables(insn))
+                if not insn.is_terminal:
+                    continue
+                if self.ends_here(last, limit):
                     return last
+                if (end := self.after_tables(last, limit, reached)) is not None:
+                    return end
             pos = last if last > pos else pos + 1  # step over an undecodable byte
         return limit
 
@@ -339,9 +394,11 @@ class _EndScan(_Image):
 def ends(discovery: Discovery, le: LE) -> dict[int, int]:
     """End of every start by the D-07 rule: the first padding byte (filler or zero) after a
     terminal instruction, or the end of a terminal instruction followed only by jump tables and
-    padding up to the next start; else the next start (or the object end). Ranges never overlap;
-    code after a function's padding that has no start of its own is left uncovered (a gap).
-    Decoding never reads past the containing object."""
+    padding up to the next start, or the end of the jump tables right after a terminal
+    instruction when no jump target or case label of the function's code scanned so far lies
+    behind them (05-REVIEW row 11); else the next start (or the object end). Ranges never
+    overlap; code after a function's padding or trailing tables that has no start of its own
+    is left uncovered (a gap). Decoding never reads past the containing object."""
     scan = _EndScan(le, discovery.jump_tables)
     starts = discovery.starts
     result = {}

@@ -5,9 +5,10 @@
 // Usage (analyzeHeadless): -postScript ExportDrafts.java <out dir> 0x000XXXXX [0x000XXXXX ...]
 // For each address it decompiles the function that starts there and writes
 // <out dir>/func_XXXXXXXX.c holding Ghidra's C text. An address with no function, or a decompile
-// that does not complete, writes nothing and prints the address. The drafts are a reading aid for
-// the executor and never count as a match; reverseapoc.ghidra points <out dir> at the gitignored
-// asm/<exe>/ghidra/ tree, so they are never committed.
+// that does not complete, writes nothing and prints the address; an address that does not parse
+// prints an `ERROR <address>` line, and the rest of the batch still runs. The drafts are a
+// reading aid for the executor and never count as a match; reverseapoc.ghidra points <out dir> at
+// the gitignored asm/<exe>/ghidra/ tree, so they are never committed.
 //@category ReverseApoc
 
 import java.io.File;
@@ -50,10 +51,25 @@ public class ExportDrafts extends GhidraScript {
 		}
 	}
 
-	/** Decompile the function at `text` into outDir/func_XXXXXXXX.c; false when none is written. */
+	/**
+	 * Decompile the function at `text` into outDir/func_XXXXXXXX.c; false when none is written.
+	 * An address that does not parse prints an ERROR line naming it and the batch goes on.
+	 */
 	private boolean draft(DecompInterface decomp, File outDir, String text) throws Exception {
-		long offset = Long.parseLong(text.substring(2), 16);
-		Address address = toAddr(offset);
+		long offset;
+		try {
+			if (!text.startsWith("0x")) {
+				throw new NumberFormatException("no 0x prefix");
+			}
+			offset = Long.parseLong(text.substring(2), 16);
+		}
+		catch (NumberFormatException e) {
+			println("ERROR " + text + ": not a 0x-prefixed hex address (" + e.getMessage() + ")");
+			return false;
+		}
+		// The explicit factory and the default space: the space the LE loader maps the objects in.
+		Address address =
+			currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(offset);
 		Function function = getFunctionAt(address);
 		if (function == null) {
 			println("ExportDrafts: no function at " + text);
