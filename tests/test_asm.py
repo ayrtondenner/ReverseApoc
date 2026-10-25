@@ -3,6 +3,7 @@ every byte below is made up."""
 
 from __future__ import annotations
 
+import struct
 from pathlib import Path
 
 import pytest
@@ -16,7 +17,7 @@ from reverseapoc.functions import (
     read_symbols_csv,
     write_functions_csv,
 )
-from reverseapoc.le import LE, SRC_OFF32, Fixup
+from reverseapoc.le import LE, SRC_OFF32, SRC_SEL16, Fixup
 from reverseapoc.symbols import SymbolTable
 
 CODE = 0x10000
@@ -245,13 +246,17 @@ EQUAL_DISP_AT = 3  # byte offset of the disp32 field in EQUAL_NUMBERS
 EQUAL_IMM_AT = 7  # byte offset of the imm32 field
 
 
-def _equal_numbers_line(field_at: int) -> str:
-    row = FunctionRow(CODE, CODE + len(EQUAL_NUMBERS), "func_00010000", "game", "", "call")
+def _one_line(code: bytes, fixup: Fixup) -> str:
+    """The listing line of `code`, alone in a row at CODE, with one LE fixup."""
+    row = FunctionRow(CODE, CODE + len(code), "func_00010000", "game", "", "call")
     flat = bytearray(row.end)
-    flat[CODE:] = EQUAL_NUMBERS
-    fixup = Fixup(CODE + field_at, SRC_OFF32, DATA + 4, 2, 4, 4)
+    flat[CODE:] = code
     symbols = SymbolTable.build([row], data_ranges=[(DATA, DATA + 0x1000)])
     return _instruction_lines(listing(row, flat=flat, fixups=[fixup], symbols=symbols))[0]
+
+
+def _equal_numbers_line(field_at: int) -> str:
+    return _one_line(EQUAL_NUMBERS, Fixup(CODE + field_at, SRC_OFF32, DATA + 4, 2, 4, 4))
 
 
 def test_substitute_leaves_an_equal_displacement_alone():
@@ -259,3 +264,22 @@ def test_substitute_leaves_an_equal_displacement_alone():
     immediate that merely has the same value stays a number."""
     assert _equal_numbers_line(EQUAL_DISP_AT).endswith("mov dword ptr [eax*4 + D_00020004], 4")
     assert _equal_numbers_line(EQUAL_IMM_AT).endswith("mov dword ptr [eax*4 + 4], D_00020004")
+
+
+# ljmp / lcall ptr16:32 with offset and selector both 0x100. capstone's imm_offset is the
+# selector (encoded last) while Intel syntax prints the selector first.
+FAR_VALUE = 0x100
+FAR_OFFSET_AT = 1  # byte offset of the 32-bit offset part, after the opcode
+FAR_SELECTOR_AT = FAR_OFFSET_AT + 4  # the 16-bit selector follows the offset
+FAR_POINTER = struct.pack("<IH", FAR_VALUE, FAR_VALUE)
+
+
+@pytest.mark.parametrize(("opcode", "text"), [(b"\xea", "ljmp 0x100:0x100"),
+                                              (b"\x9a", "lcall 0x100, 0x100")])  # fmt: skip
+def test_far_pointer_fixups_stay_notes(opcode: bytes, text: str):
+    """A fixup inside a far pointer (ptr16:32) is never renamed in place: the printed order of
+    its parts does not follow the encoding, so the listing keeps the number and adds a note."""
+    selector = Fixup(CODE + FAR_SELECTOR_AT, SRC_SEL16, DATA, 2, 0, 2)
+    assert _one_line(opcode + FAR_POINTER, selector).endswith(f"{text}  ; sel16 -> D_00020000")
+    offset = Fixup(CODE + FAR_OFFSET_AT, SRC_OFF32, DATA + 4, 2, 4, 4)
+    assert _one_line(opcode + FAR_POINTER, offset).endswith(f"{text}  ; off32 -> D_00020004")
