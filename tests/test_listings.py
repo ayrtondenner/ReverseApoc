@@ -123,3 +123,57 @@ def test_recomp_checks_catch_planted_defects(planted, check):
 )
 def test_note_check_follows_the_spike_verdict(notes, verdict, stale):
     assert _stale_note_phrases(notes, verdict) == stale
+
+
+README = REPO_ROOT / "README.md"
+VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
+REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
+# The file names published since Phase 1 and kept by D-26.
+PAGES_FILES = ("progress-shield.json", "progress.svg", "progress.json")
+
+
+def _section(text: str, heading: str) -> str:
+    """The body of `## <heading>` up to the next level-2 heading."""
+    match = re.search(rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", text, re.M | re.S)
+    assert match, f"no '## {heading}' section"
+    return match[1]
+
+
+def _sentences(text: str) -> int:
+    """Sentences in the prose of a Markdown file: headings are skipped, and a full stop only
+    ends a sentence before whitespace or the end, so dots inside URLs do not count."""
+    prose = " ".join(line for line in text.splitlines() if not line.startswith("#"))
+    return len(re.findall(r"[.!?](?=\s|$)", prose.strip()))
+
+
+def test_readme_progress_section():
+    # DI-08, D-26, D-29, D-50: the Phase 6 placeholder gives way to what the figures count.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert [name for name in PAGES_FILES if f"{PAGES}{name}" not in section] == []
+    assert "[Progress data](decomphub.progress.json)" in section
+    needles = ("matched", "partial", "unmatched", "library", "uncovered", "status")
+    assert [needle for needle in needles if needle not in section] == []
+    assert "Placeholder" not in section
+    assert "coming in Phase 6" not in section
+
+
+def test_decomphub_verification_file():
+    # D-31: a short ownership statement the owner cites when filing the maintainer claim.
+    assert VERIFICATION.is_file()
+    text = VERIFICATION.read_text(encoding="utf-8")
+    assert 1 <= _sentences(text) <= 3
+    assert "ayrtondenner" in text
+    assert REPOSITORY in text
+    assert "decomphub.progress.json" in text
+
+
+@pytest.mark.parametrize(
+    ("text", "count"),
+    [
+        ("# Title\n\nOne. Two.\n", 2),
+        ("See https://example.org/a/b and decomphub.progress.json.\n", 1),
+        ("One. Two. Three. Four.", 4),
+    ],
+)
+def test_sentence_count_skips_headings_and_url_dots(text, count):
+    assert _sentences(text) == count
