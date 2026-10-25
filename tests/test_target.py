@@ -6,13 +6,25 @@ object is 0x10000..0x11800 (pages 1-2), the data object 0x20000..0x23000 (page 3
 from __future__ import annotations
 
 import struct
+from typing import NamedTuple
 
 import pytest
 
 from conftest import build_le_image, fixup_record
 from elfread import read_elf
-from relocpair import CALLEES, CODE_BASE, absolute, call, game_row, le_off32, original, our_segment
+from relocpair import (
+    CALLEES,
+    CODE_BASE,
+    Original,
+    absolute,
+    call,
+    game_row,
+    le_off32,
+    original,
+    our_segment,
+)
 from relocpair import table as reloc_table
+from reverseapoc import relocs
 from reverseapoc.elf import (
     R_386_32,
     R_386_PC32,
@@ -23,15 +35,18 @@ from reverseapoc.elf import (
     STT_OBJECT,
 )
 from reverseapoc.functions import FunctionRow, SymbolRow, data_name, game_name
+from reverseapoc.land import LandedFunction, build_patch
 from reverseapoc.le import LE, SRC_OFF32, SRC_PTR1632, SRC_REL32, SRC_SEL16
 from reverseapoc.omf import Segment
-from reverseapoc.relocs import check_function
+from reverseapoc.relocs import RelocResult, check_function
 from reverseapoc.symbols import SymbolTable
 from reverseapoc.target import (
     RAW_BRANCH_NO_ROW,
+    RAW_BRANCH_OUTSIDE,
     RAW_OFF32_NO_ROW,
     RawField,
     TargetError,
+    TargetResult,
     build_target,
 )
 
@@ -303,8 +318,9 @@ def test_a_fully_decoded_unit_reports_nothing_undecoded():
 # the code object (data read as code in a runtime row). Refusing them left 18 real units
 # uncuttable and `ninja` failing before any C existed. Such a field keeps its raw bytes and gets
 # no relocation, and the result names it, so the unit stays cuttable (D-13) and a function
-# holding one is no first-match candidate. It cannot make a false pass: relocation rules 4 and 5
-# refuse any reference to it (the end-to-end cases at the end of this file, 06-08).
+# holding one is no first-match candidate. What the relocation check does with it depends on the
+# kind; the end-to-end cases at the end of this file (06-08) pin each, including the two that pass
+# with bytes identical to the original.
 
 
 def _assert_raw_field(body: bytes, kind: str, page1: bytes = b"") -> None:
@@ -349,12 +365,18 @@ def test_refuses_a_field_split_by_a_row_boundary(unit):
              patches={0x10000: RET_PAD, 0x10010: RET_PAD})  # fmt: skip
 
 
-# ---- end to end: a raw field cannot pass the relocation check (05-REVIEW rows 18a, 18c) --------
-# A target cut leaves a field raw when it names no row. That no such function can pass does not
-# rest on "our side relocates the field": the guarantee is relocation rule 4 (each of our fixups
-# must land on a nameable start equal to the original target) plus rule 5 (every LE fixup field
-# in the row is one of ours). The cases below cut such a unit, compile nothing, and run
-# check_function on objects built by tests/relocpair.py that reference the field.
+# ---- end to end: what the relocation check does with a raw field (05-REVIEW rows 18a, 18c) -----
+# A target cut leaves a field raw when it names no row. What holds, per raw kind (target.py):
+# - `off32 to no row`: rule 4 refuses any fixup of ours there (no name reaches a gap), and rule 5
+#   refuses an object with no fixup there (the LE has one). Every object fails.
+# - `branch to no row`: rule 4 refuses any fixup of ours there. A rel32 is no LE fixup, so rule 5
+#   has nothing to check, and an unrelocated displacement byte-identical to the original passes.
+#   wcc386 emits a fixup for every call, even to a static, so compiled C never gives that case.
+# - `branch outside the code object`: a data-object destination is nameable (`_D_<va>`), so a
+#   fixup of ours to it passes rule 4.
+# The two passing cases are pinned below. Neither is a byte-level false pass: the landed bytes
+# equal the original's, and the whole-EXE SHA-1 gate still holds. The cases cut a unit, compile
+# nothing, and run check_function on objects built by tests/relocpair.py.
 
 GAP = 0x10400  # code in no functions.csv row: a split gap (D-11)
 NAMED = CALLEES[0].start  # relocpair's row func_00010010, a nameable start
@@ -377,21 +399,28 @@ def _load_of(dest: int) -> tuple[bytes, bytes]:
     return body, le_off32(FIELD_VA, dest - CODE_BASE, obj=1)
 
 
-def _end_to_end(original_body: bytes, page1: bytes, ours: Segment, size: int):
-    """(cut, verdict): the target cut of the one-row unit at CODE_BASE, and check_function of
-    `ours` against that row."""
+class _EndToEnd(NamedTuple):
+    row: FunctionRow
+    orig: Original
+    cut: TargetResult
+    verdict: RelocResult
+
+
+def _end_to_end(original_body: bytes, page1: bytes, ours: Segment, size: int) -> _EndToEnd:
+    """The target cut of the one-row unit at CODE_BASE, and check_function of `ours` against
+    that row."""
     row = game_row(CODE_BASE, CODE_BASE + len(original_body))
     orig = original({CODE_BASE: original_body}, page1=page1)
     symbols = reloc_table(row)
     cut = build_target(orig.le, [row], symbols, flat=orig.flat, fixups=orig.fixups)
     verdict = check_function(ours, off=0, size=size, row=row, flat=orig.flat,
                              fixups=orig.fixups, symbols=symbols)  # fmt: skip
-    return cut, verdict
+    return _EndToEnd(row, orig, cut, verdict)
 
 
-def _assert_passes(cut, verdict) -> None:
-    assert cut.raw_fields == ()
-    assert verdict.ok, verdict.problems
+def _landed_bytes(e2e: _EndToEnd, ours: bytes) -> bytes:
+    """What land would write for the row: build_patch of our bytes under the verdict."""
+    return build_patch(LandedFunction(e2e.row, ours, e2e.verdict), e2e.orig.flat)
 
 
 _RAW_CASES = {
@@ -422,17 +451,30 @@ _RAW_CASES = {
 }
 
 
+def _run_case(case) -> tuple[_EndToEnd, str, str]:
+    original_body, page1, ours, fixups, externs, kind, problem = case
+    e2e = _end_to_end(original_body, page1, our_segment(ours, fixups, externs), len(ours))
+    return e2e, kind, problem
+
+
 @pytest.mark.parametrize("case", _RAW_CASES.values(), ids=_RAW_CASES.keys())
 def test_raw_field_reference_fails_check_function(case):
-    original_body, page1, ours, fixups, externs, kind, problem = case
-    segment = our_segment(ours, fixups, externs)
-    cut, verdict = _end_to_end(original_body, page1, segment, len(ours))
-    assert cut.raw_fields == (RawField(FIELD_VA, kind),)
-    assert not verdict.ok
-    assert verdict.problems == (f"0x{FIELD_VA:08X}: {problem}",)
-    # the second case: the expectation a nameable reference meets is wrong here, and fails
-    with pytest.raises(AssertionError):
-        _assert_passes(cut, verdict)
+    """Rule 4 refuses every fixup of ours at a `branch to no row` or `off32 to no row` field, and
+    rule 5 an object with none at an `off32 to no row` field, naming the field VA."""
+    e2e, kind, problem = _run_case(case)
+    assert e2e.cut.raw_fields == (RawField(FIELD_VA, kind),)
+    assert not e2e.verdict.ok
+    assert e2e.verdict.problems == (f"0x{FIELD_VA:08X}: {problem}",)
+
+
+@pytest.mark.parametrize("case", _RAW_CASES.values(), ids=_RAW_CASES.keys())
+def test_raw_field_failures_come_from_rules_4_and_5(case, monkeypatch):
+    """The negative case: with rule 4 (each of our fixups) and rule 5 (reverse coverage) turned
+    off, every case above passes, so its failure is those rules' verdict and nothing else."""
+    monkeypatch.setattr(relocs, "_fixup", lambda pair, fx: iter(()))
+    monkeypatch.setattr(relocs, "_reverse_coverage", lambda pair, ours: iter(()))
+    e2e, _, _ = _run_case(case)
+    assert e2e.verdict.ok, e2e.verdict.problems
 
 
 @pytest.mark.parametrize("kind", ["branch", "off32"])
@@ -443,5 +485,34 @@ def test_the_same_reference_to_a_named_row_passes(kind):
         original_body, page1, ours, fixup = _call_to(NAMED), b"", _PLACEHOLDER_CALL, call(1, 1)
     else:
         (original_body, page1), ours, fixup = _load_of(NAMED), _PLACEHOLDER_LOAD, absolute(1, 1)
-    segment = our_segment(ours, [fixup], [EXTERN_NAMED])
-    _assert_passes(*_end_to_end(original_body, page1, segment, len(ours)))
+    e2e = _end_to_end(original_body, page1, our_segment(ours, [fixup], [EXTERN_NAMED]), len(ours))
+    assert e2e.cut.raw_fields == ()
+    assert e2e.verdict.ok, e2e.verdict.problems
+
+
+DATA_DEST = DATA_RANGES[0][0] + 0x10  # a destination inside the data object
+
+
+def test_an_unrelocated_branch_to_no_row_passes_the_relocation_check():
+    """The limit of `branch to no row`: our displacement byte-identical to the original's, with
+    no fixup, passes rule 3, and rules 4 and 5 have nothing to judge. Acceptable: the landed
+    bytes equal the original's and the SHA-1 gate holds; wcc386 emits a fixup for every call, so
+    compiled C does not give this object."""
+    body = _call_to(GAP)
+    e2e = _end_to_end(body, b"", our_segment(body), len(body))
+    assert e2e.cut.raw_fields == (RawField(FIELD_VA, RAW_BRANCH_NO_ROW),)
+    assert e2e.verdict.ok, e2e.verdict.problems
+    assert _landed_bytes(e2e, body) == body
+
+
+def test_a_branch_outside_the_code_object_to_a_data_name_passes_the_relocation_check():
+    """The limit of `branch outside the code object`: the data destination is nameable as
+    `_D_<va>`, so our fixup to it lands on the original target and passes rule 4. Acceptable:
+    the landed bytes equal the original's and the SHA-1 gate holds."""
+    body = _call_to(DATA_DEST)
+    data_name_ = f"_{data_name(DATA_DEST)}"
+    e2e = _end_to_end(body, b"", our_segment(_PLACEHOLDER_CALL, [call(1, 1)], [data_name_]),
+                      len(_PLACEHOLDER_CALL))  # fmt: skip
+    assert e2e.cut.raw_fields == (RawField(FIELD_VA, RAW_BRANCH_OUTSIDE),)
+    assert e2e.verdict.ok, e2e.verdict.problems
+    assert _landed_bytes(e2e, _PLACEHOLDER_CALL) == body
