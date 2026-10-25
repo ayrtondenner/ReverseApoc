@@ -1,0 +1,3 @@
+# written by: uv run reverseapoc gate EXE/UNIT; do not edit
+start,name,unit,status,best_percent,attempts,source_sha256,date
+0x000A3980,func_000A3980,u_000a34f0,matched,100.00,0,7edd9a60ab744a3773b0284e5449355e79c92dc458cc4750bcd6bde985c18665,2026-10-25
