@@ -11,7 +11,7 @@ Phase 4 recorded the compiler and the default flags per EXE (whole-binary scans,
 | * | UFO2P.EXE | wcc386@10.6 | -4r -s -fpi | runtime.csv + probe scan + cppscan (toolchain.md "Result") | 2026-10-21 |
 | * | TACP.EXE | wcc386@10.6 | -4r -s -fpi | runtime.csv + probe scan + cppscan (toolchain.md "Result") | 2026-10-21 |
 
-Both rows are the `*` default of `config/cflags.txt`, a whole-binary result per EXE (D-09). 10.5 gives the same objects as 10.6 on the probe, and 11.0 ties with 10.6 at `-4r` on the decisive idioms (a candidate until a Phase 5 match separates them). The 40 (UFO2P) and 32 (TACP) functions that call `__CHK` were built without `-s`; they get their own rows once Phase 5 maps them to files. The first two hand matches (UFO2P func_000A3980 in `src/ufo2p/u_000a34f0.c`, TACP func_00055080 in `src/tacp/u_00054f20.c`) both matched under the `*` default, so no per-glob rule exists yet ([toolchain.md "Phase 5 match evidence"](toolchain.md#phase-5-match-evidence)). The flags table with the evidence for each flag is [toolchain.md "Flags"](toolchain.md#flags).
+Both rows are the `*` default of `config/cflags.txt`, a whole-binary result per EXE (D-09). 10.5 gives the same objects as 10.6 on the probe, and 11.0 ties with 10.6 at `-4r` on the decisive idioms (still tied after the two Phase 5 leaf matches, which separate no candidate; Phase 6 records the evidence of each pilot match). The 40 (UFO2P) and 32 (TACP) functions that call `__CHK` were built without `-s`; they get their own rows once Phase 5 maps them to files. The first two hand matches (UFO2P func_000A3980 in `src/ufo2p/u_000a34f0.c`, TACP func_00055080 in `src/tacp/u_00054f20.c`) both matched under the `*` default, so no per-glob rule exists yet ([toolchain.md "Phase 5 match evidence"](toolchain.md#phase-5-match-evidence)). The flags table with the evidence for each flag is [toolchain.md "Flags"](toolchain.md#flags).
 
 ## Known idioms
 
@@ -25,7 +25,7 @@ Calibrated 2026-10-21 on our clean-room probe `probe/cg_basic.c`, compiled with 
 | 5-dword struct copy | `-3r`, `-4r`, `-4r -ox`: `mov ecx,5` .. `rep movsd` (register moves between). Every `-5r`/`-5s` cell: five `movsd` unrolled | the same split | only the 5-dword size (20-23 bytes with a movsw/movsb tail) separates `-4` from `-5` (10.6 and 11.0 sizes table, 04-10): 2-4 dwords unroll at both, 6 and more use rep at both, except `-os`, which also unrolls 6 and 7 |
 | counted loop `for (i = 0; i < n; i++)` | rotated: `jmp` to the bottom test, `jl` back | top-tested: `cmp; jge` out, `jmp` back | 10.x vs 11.0 on the probe, but not decisive in game code (both shapes occur) and gone under `-oneatx` for both |
 | sparse switch `{1, 2, 3, 10}` | one ascending compare chain (none found under `-oneatx`) | the same | switch order does not separate the versions; our counter covers `eax`/`al` compares only |
-| `-fpi` vs `-fpi87` | identical code (LEDATA and FIXUPP records equal); the `-fpi` object also requests `emu387` (`-fpi87`: `noemu387`) and declares the extern `__init_387_emulator`, which pulls EMU387 in | the same | the linked EMU387 module says some object asked for `-fpi` |
+| `-fpi` vs `-fpi87` | identical code (LEDATA and FIXUPP records equal; scratch check, not logged); the `-fpi` object also requests `emu387` (`-fpi87`: `noemu387`) and declares the extern `__init_387_emulator`, which pulls EMU387 in | the same | the linked EMU387 module says some object asked for `-fpi` |
 | without `-s` | one `push imm32; call __CHK` per function (7 in the 7-function probe) | the same | each `__CHK` call in game code is one function built without `-s` |
 | `-5s` | default libraries `math387s` and `emu387`; no CLIB library is requested under any flag set | the same | a stack-convention build links 3S libraries |
 
@@ -54,17 +54,18 @@ Leads from other projects, not yet verified here:
 
 What a diff line means for OMF-converted Watcom objects, which differences are real and which are artefacts of the conversion.
 
-Nothing recorded yet. Known limit: objdiff compares at most one relocation per x86 instruction, so a 100% objdiff score still needs the relocation check below.
+What Phase 5 established (spike 005, plans 05-17 to 05-19; details in [toolchain.md "Result"](toolchain.md#result)): objdiff-cli pairs code sections by name, so our converted `_TEXT` pairs only with a target `_TEXT` (a target `.text` stays unpaired), and it compares a relocation to an undefined symbol by name and addend only, so the target side carries the exact linker names. Both first matches (UFO2P func_000A3980, TACP func_00055080) score 100.0. A 100.0 is a score, not a match: in the spike's plants a wrong symbol on the 2nd relocation of a `mov dword [abs32], imm32` (its imm32) still scores 100.0. That is the one instruction shape observed, and it is why every match also needs the relocation check below and the whole-EXE SHA-1.
 
 ## Relocation rules
 
 How relocations in our compiled object must line up with the LE fixups of the original.
 
-Starting rules from KKND's build gate, to be confirmed in Phase 5:
+Rules from KKND's build gate, confirmed in Phase 5. The relocation check (SPL-09, `tools/reverseapoc/relocs.py`) implements them independently of objdiff, and together with the whole-EXE SHA-1 it is the match gate. Both first matches (05-18 func_000A3980, 05-19 func_00055080) pass it, and a planted wrong call target fails it (`tests/test_check_real.py`):
 
 - every non-relocated byte identical, and the function length equal;
 - every `call rel32` hits the same function;
 - every absolute fixup resolves to the same target as the original LE fixup;
+- every LE fixup field inside the row is covered by one of our fixups (reverse coverage), so a constant that happens to equal the raw field cannot pass the byte compare;
 - references to local-segment data (string literals) are rejected until data placement is modelled; such data moves to an extern `D_` symbol.
 
 Confirmed rules for jump tables and statics (plan 06-10, D-39; `tools/reverseapoc/check.py` `leading_table` and `own_publics`):

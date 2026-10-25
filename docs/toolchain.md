@@ -166,7 +166,7 @@ Notes:
   - **10.6 vs 11.0:** tied. Settled by a match whose sweep log shows the 10.6 cells at 100.0 and the 11.0 cells below it, or the reverse; the likely function has a counted loop (10.x rotates it, 11.0 tests at the top) or a branch at `-5`.
   - **`-4` vs `-5`:** tied; neither function copies a 5-dword struct. Settled by a matched function with a 20-23 byte struct copy (`rep movsd` at `-4`, unrolled at `-5`).
   - **`-o*`:** still a candidate; neither function has anything an `-o` set reorders. Settled by a function with a loop or a branch that matches under `-4r -s` and not under `-4r -s -ox`, or the reverse.
-  - **`-s`:** consistent; neither function calls `__CHK`, and both match with `-s`.
+  - **`-s`:** tied, not separated. Both functions compile with `-s` and match, and neither calls `__CHK`, but no cell without `-s` was compared (no sweep ran), so the two matches do not separate `-s` from no `-s`. The scan evidence in the Stack checks row stands, and the 40 / 32 `__CHK` functions still need their own per-glob rules.
   - **`-zp*`, `-zm`, `-fp3`/`-fp5`:** not touched (no struct field, one function per compared object, no x87 code).
 
   Two functions are fewer than the three D-18 requires, so the `*` default stays `*  wcc386@10.6  -4r -s -fpi` and `__WATCOMC__` stays 1060 (D-14) until three functions from different regions of both EXEs agree. Neither match needed a per-glob rule.
@@ -198,11 +198,13 @@ Before any game C, plan 05-18 re-proved spike 005 through the production writers
 
 The owner accepted Phase 4 under D-08/D-10 on 2026-10-22 (override in `04-VERIFICATION.md`): the version and flags below are a preference order and a candidate list, not a proof. The first Phase 5 matches prove or drop each entry; record what a match proves in the Flags table above.
 
+The two Phase 5 leaf matches (05-18 UFO2P func_000A3980, 05-19 TACP func_00055080) did not separate any entry below: both matched under the default rule on the first draft with no sweep, and neither has a loop, branch, struct copy or x87 code, so every version and flag here stays tied or a candidate (see the Flags notes). Phase 6 records the evidence of each pilot match, taken from different code regions (D-10), so that a later match can separate them.
+
 Game-code compiler versions, in the order to try:
 
 1. **10.6, preferred.** The linked runtime library is 10.6 (11 modules per EXE match only 10.6, see Result), and a team building one game most likely used one toolchain for runtime and game code. The probe cannot separate 10.6 from 10.5, or from 11.0 at `-4r`, so this is a choice backed by the runtime evidence, not a codegen proof.
 2. **10.5, first fallback.** Byte-identical to 10.6 on every probe cell, so it only matters if a real function compiles differently under the two. Try it when a 10.6 build misses and no flag change explains the miss.
-3. **11.0, candidate.** Tied with 10.6 at `-4r` on the decisive idioms, with no 11.0-only runtime row. If Phase 5 matches favour it, sweep 11.0a and 11.0b too (see Result).
+3. **11.0, candidate.** Tied with 10.6 at `-4r` on the decisive idioms, with no 11.0-only runtime row, and still tied after the two Phase 5 leaf matches. If a later match favours it, sweep 11.0a and 11.0b too (see Result).
 
 Candidate flags. Each axis lists the default-rule value first; the alternatives stay candidates until a match proves one. When a function misses, change one axis at a time first, then combine axes (the version above is one more axis):
 
@@ -340,7 +342,7 @@ Result (spike [005](../.planning/spikes/005-objdiff-omf-elf/README.md), verdict 
 
 - **The pair.** The `cmain386` runtime row (public `__CMain`, 79 bytes) of UFO2P.EXE and TACP.EXE, against Watcom's own `SRC/STARTUP/386/CMAIN386.C` read in place from the read-only 10.6 tree (never copied, D-19) and compiled by `reverseapoc cc` under the default rule. objdiff-cli 3.8.2 loads both the converted object and the LE cut and reports `match_percent` 100.0 for `__CMain` in both EXEs.
 - **The shape objdiff pairs.** Code sections are named `_TEXT` on both sides: a target `.text` against our `_TEXT` is left unpaired. Relocations are REL, with the addend in the field: on our side the Theme Hospital addend rule (`R_386_PC32` field = stored + displacement - 4, `R_386_32` = stored + displacement), on the target side every LE off32 field rewritten to its addend (the raw field holds `target_off`) and every call field to -4. objdiff compares a relocation to an undefined symbol by name and addend only, so the target side uses the exact linker names (`func_X_`, `_D_X`, Watcom publics such as `exit_` and `__CommonInit_`), one name per address; the optional committed `config/<exe>/symbols.csv` (`address,name,kind`, no bytes) supplies names the CSVs cannot derive.
-- **The blind spot.** objdiff checks one relocation per instruction: in the spike's plants a wrong symbol on the 2nd relocation of one instruction (the imm32 of a `mov dword [abs32], imm32`) still scores 100.0, while a wrong call symbol or addend drops the score below 100. objdiff is a score and a viewer, not the gate: the relocation check (SPL-09, `tools/reverseapoc/relocs.py`) plus the whole-EXE SHA-1 is the gate.
+- **The blind spot.** In the spike's plants, a wrong symbol on the 2nd relocation of a `mov dword [abs32], imm32` (its imm32) still scores 100.0, while a wrong call symbol or addend drops the score below 100. That is the one instruction shape observed; whether objdiff misses a 2nd relocation on other shapes was not tested. objdiff is a score and a viewer, not the gate: the relocation check (SPL-09, `tools/reverseapoc/relocs.py`) plus the whole-EXE SHA-1 is the gate.
 
 ### wibo
 
@@ -374,7 +376,7 @@ Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-0
 | wibo | 1.2.0 | Phase 2 |
 | objdiff-cli | v3.8.2 (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
 | Open Watcom v2 | `2026-10-01-Build` (sha256-pinned in `docker/Dockerfile`) | Phase 2 |
-| Watcom C | game code: 10.6 preferred (10.5 byte-identical on the probe, first fallback; 11.0 tied at `-4r`, candidate pending Phase 5 matches; see [Fallbacks and candidates](#fallbacks-and-candidates)); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
+| Watcom C | game code: 10.6 preferred (10.5 byte-identical on the probe, first fallback; 11.0 tied at `-4r`, tied after the two Phase 5 leaf matches; Phase 6 records per-match evidence; see [Fallbacks and candidates](#fallbacks-and-candidates)); linked runtime library: 10.6 (see [Result](#result)) | Phase 4 |
 | Ghidra | 12.1.4 (sha256-pinned in `docker/Dockerfile`) + OpenJDK 21.0.12.1 | Phase 5 |
 | ghidra-lx-loader | lastonesky v12.1.4-1 (sha256-pinned in `docker/Dockerfile`) | Phase 5 |
 | clang | 18.1.3 (`clang-18=1:18.1.3-1ubuntu1`, lint gate) | Phase 5 |
