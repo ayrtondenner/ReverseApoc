@@ -172,6 +172,27 @@ None. The owner files the DecompHub maintainer claim citing docs/DECOMPHUB_VERIF
 - 06-24 (Pages workflow) publishes the URLs the README and `.recomp.json` now point at. 06-27 moves `.recomp.json` to `in-progress` and reruns tests/test_listings.py.
 - The game's tick rate (OpenApoc #997) was not touched in this plan.
 
+## Fix round 1
+
+FIX_BASE 32314b5. Source: review-06-22.md, the coordinator's rulings, and an addition with the definitions tools/progress.py (06-18) implements. Each change has a RED test commit before its docs commit.
+
+| Item | Change | Test (tests/test_listings.py) | Commits |
+|---|---|---|---|
+| I1 | The percentage's denominator is game + thunk bytes plus the uncovered bytes (D-50) | `test_readme_percentage_counts_uncovered_bytes` (`DENOMINATOR`) | df8d641, 0c858b0 |
+| I2 | Unmatched now means no gate-written matched or partial row, and the rebuilt EXE keeps that function's original bytes through the in-place splice. The INCLUDE_ASM stub claim is gone. | `test_readme_progress_makes_no_stub_claim` | df8d641, 0c858b0 |
+| I3 | The four Approach lines that name decomp.wtf fork mode or an MCP server keep their text and gain a note, as with D-41: spike 006 INVALIDATED (06-01), the agent layer is our own (D-03, D-04), there is no MCP server (D-44), and agents call the Bash-allowlisted attempt wrapper | `test_readme_approach_annotates_the_agent_layer`, `test_agent_line_check_catches_unannotated_lines` | df8d641, 0c858b0 |
+| Minor | Category needles are matched as bold `**name**:` items, so "unmatched" no longer satisfies "matched" | `test_readme_progress_section` (`CATEGORIES`) | df8d641 |
+| Minor | The Progress section names data-in-code (excluded) and its inputs: status.csv plus functions.csv and units.csv | `test_readme_progress_section` (`PROGRESS_NEEDLES`) | df8d641, 0c858b0 |
+| Minor | Toolchain summary uses the DI-25 wording: 10.6 default rule; 10.5, 10.6 and 11.0 tied on game code after the two Phase 5 leaf matches; links docs/toolchain.md | `test_readme_toolchain_summary_is_current` | df8d641, 0c858b0 |
+| Minor | The second block of test constants moved to the top of the file | (structure only) | df8d641 |
+| Addition | The combined figure comes from summed bytes; thunks count as code; the function ratio is defined | `test_readme_percentage_counts_uncovered_bytes` (`COMBINED`), `test_readme_partial_gets_no_credit` (`RATIO`) | 3e118fc, 364f8ed |
+| Addition | Partial counts for nothing in the percentage or the ratio; only report.json's fuzzy percent credits it | `test_readme_partial_gets_no_credit` (`PARTIAL_RULE`) | 3e118fc, 364f8ed |
+| Addition | Uncovered means no functions.csv row of any kind covers the bytes; library is outside both sides of the percentage; Pages regenerates progress.json, the shield and report.json on push; decomphub.progress.json changes only when a `gate EXE/UNIT` run passes | (text only, brief) | 364f8ed |
+
+- **RED evidence:** df8d641 failed 5 of 24 tests and 3e118fc failed 2 of 25. Every failure was the planned assertion; there were no collection or import errors. The reports are `build/06-22/fix1-red.out` and `build/06-22/fix1b-red.out`.
+- **After the round:** tests/test_listings.py has 25 passed. With hygiene: 90 passed, 3 skipped (`only inside the container`). Host suite: 2291 passed, 41 skipped, exit 0, with the same skip reasons as before and none in tests/test_listings.py. ruff: All checks passed.
+- **Unchanged:** the present-tense Pages and report wording, as ruled. The README's goal framing and its honesty: two matched functions, and the EXEs are not rebuilt from C.
+
 ## Self-Check: PASSED
 
 - All four files in files_modified and this SUMMARY exist; `git diff --name-status 5d391a9 HEAD` shows only them (3 added, 2 modified, no deletions).
