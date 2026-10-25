@@ -52,8 +52,14 @@ REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
 PAGES_FILES = ("progress-shield.json", "progress.svg", "progress.json")
 # The mosaic's categories (D-26, D-50), each defined as a bold `**name**:` list item.
 CATEGORIES = ("matched", "partial", "unmatched", "library", "uncovered")
-# D-50: the uncovered bytes are counted in the denominator, as tools/progress.py does.
+# D-50: the uncovered bytes are counted in the denominator, as tools/progress.py does, and the
+# combined figure comes from summed bytes, not an average of the two EXEs.
 DENOMINATOR = "over all game and thunk bytes plus the uncovered bytes"
+COMBINED = "from summed bytes"
+# tools/progress.py: a partial row earns nothing in the percentage or the function ratio;
+# only report.json's fuzzy percent credits it.
+PARTIAL_RULE = "counts for nothing in the percentage or the function ratio"
+RATIO = "matched game and thunk functions over all game and thunk functions"
 # What the figures are computed from (tools/progress.py inputs) and what they leave out.
 PROGRESS_NEEDLES = ("status.csv", "functions.csv", "units.csv", "data-in-code", "3-byte")
 # Stale Toolchain summary wording from Phase 1 (DI-25).
@@ -170,6 +176,17 @@ def test_readme_percentage_counts_uncovered_bytes():
     # D-50: tools/progress.py divides by game + thunk + uncovered bytes.
     section = _section(README.read_text(encoding="utf-8"), "Progress")
     assert DENOMINATOR in section
+    assert COMBINED in section
+
+
+def test_readme_partial_gets_no_credit():
+    # A partial row counts for nothing in the percentage or the function ratio (progress.py);
+    # only report.json's fuzzy percent gives it credit.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    partial = _category_line(section, "partial")
+    assert PARTIAL_RULE in partial
+    assert "fuzzy" in partial
+    assert RATIO in section
 
 
 def test_readme_progress_makes_no_stub_claim():
