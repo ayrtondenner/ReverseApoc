@@ -13,9 +13,10 @@ The Ghidra export is read from REVERSEAPOC_GHIDRA_EXPORT (a directory holding
 else from build/ghidra. When the cached file is missing and Ghidra is installed
 (GHIDRA_INSTALL_DIR, or the container) it is exported into build/ghidra first.
 
-Skipped, naming the missing input, unless orig/<EXE>, the Watcom trees the runtime rows are
-seeded from, capstone and the export (or Ghidra) are present; they never run in CI because
-neither the game nor Ghidra's output is ever committed. Assertions compare text and addresses
+Skipped, naming the missing input, unless orig/<EXE>, capstone and the export (or Ghidra) are
+present; they never run in CI because neither the game nor Ghidra's output is ever committed.
+Once the game file is there, a Watcom version a runtime.csv row lists without its LIB386 tree
+installed is a failure, not a skip. Assertions compare text and addresses
 only, never game bytes.
 """
 
@@ -28,11 +29,10 @@ from pathlib import Path
 
 import pytest
 
-from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra, requires_version
+from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra
 from reverseapoc import cli
 from reverseapoc.asm import OBJ_EXECUTABLE, data_ranges
 from reverseapoc.functions import (
-    RUNTIME_VERSION,
     FunctionRow,
     Reconciled,
     boundaries_csv_path,
@@ -54,6 +54,7 @@ from reverseapoc.functions import (
 from reverseapoc.ghidra import DEFAULT_EXPORT_DIR, EXPORT_NAME, export_functions, read_ghidra_export
 from reverseapoc.le import LE
 from reverseapoc.libmatch import (
+    LIB_DIR,
     LoadedLibrary,
     MatchRange,
     load_libraries,
@@ -88,7 +89,7 @@ def _stem(name: str) -> str:
 
 
 def _present(path: Path, how: str) -> Path:
-    """A committed config file: missing is a failure, never a skip (only game, Ghidra and Watcom
+    """A committed config file: missing is a failure, never a skip (only the game and Ghidra
     inputs, which are never committed, may skip)."""
     assert path.is_file(), f"{path} missing: {how}"
     return path
@@ -117,25 +118,30 @@ def _export_csv(name: str) -> Path:
     return export_functions(name, ORIG_DIR, root).path
 
 
-def _require_runtime_tree(matches: list[MatchRange]) -> None:
-    """Skip unless the RUNTIME_VERSION tree is installed. Every committed runtime.csv row lists
-    that version, so it is the only LIB386 cli's version rule loads; a row without it fails
-    here instead of being seeded from a tree this test never required."""
-    requires_version(RUNTIME_VERSION)
-    assert [m.start for m in matches if RUNTIME_VERSION not in m.versions] == []
+def _listed_versions(matches: list[MatchRange]) -> list[str]:
+    """Every Watcom version some runtime.csv row lists, after asserting that its LIB386 tree is
+    installed under WATCOM_DIR. Strict: a listed version without its tree fails loudly, it is
+    never skipped (the game file is present by now, so the comparison must run)."""
+    versions = sorted({version for match in matches for version in match.versions})
+    missing = [v for v in versions if not (WATCOM_DIR / v / LIB_DIR).is_dir()]
+    assert missing == [], (
+        f"runtime.csv rows list Watcom {missing}, whose {LIB_DIR} trees are not under "
+        f"{WATCOM_DIR} (run `uv run reverseapoc install-watcom` or set REVERSEAPOC_WATCOM_DIR)"
+    )
+    return versions
 
 
 def _runtime_rows(matches: list[MatchRange]) -> list[FunctionRow]:
-    """The runtime rows exactly as the `functions` verb seeds them, through cli's own helper
-    (05-REVIEW row 16a: no copy of its version rule here)."""
-    _require_runtime_tree(matches)
+    """The runtime rows exactly as the `functions` verb seeds them, through cli's own helper,
+    which picks each row's version itself (05-REVIEW row 16a: no copy of its rule here)."""
+    _listed_versions(matches)
     return cli._seeded_runtime_rows(matches, WATCOM_DIR)
 
 
 def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
-    """The RUNTIME_VERSION LIB386, the one cli's rule picks for every committed row."""
-    _require_runtime_tree(matches)
-    return load_libraries(WATCOM_DIR, [RUNTIME_VERSION])[0]
+    """The LIB386 of every version a runtime row lists; functions.runtime_entries picks each
+    row's version from them by the verb's own rule."""
+    return load_libraries(WATCOM_DIR, _listed_versions(matches))[0]
 
 
 @pytest.fixture(scope="module", params=EXES)
