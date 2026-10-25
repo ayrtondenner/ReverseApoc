@@ -425,8 +425,9 @@ def _head_reloc(
     d: Defined, exe: ExeInputs, seg_map: _SegmentMap, table: LeadingTable
 ) -> RelocResult:
     """The head's verdict: its own check with the table's entry added to the map, failed too by
-    the check of the table's span, whose only other own public is the head (so every entry must
-    land inside the head on the original's target)."""
+    the check of the table's span, whose only other own public is the head: an entry is accepted
+    when it resolves inside the head or inside the span itself, at the VA the original LE fixup
+    targets."""
     reloc = _reloc(d, exe, (table.public, *seg_map.publics))
     head = tuple(p for p in seg_map.publics if p.name == d.symbol)
     span = Defined(table.span, table.span.name, d.segment, 0, table.size)
@@ -443,8 +444,9 @@ def with_relocs(
       public-to-row map"), as before 06-10;
     - the head passes only when the table's span [table row start, head start) passes the
       relocation check like a function: equal length, equal bytes (filler included), and each
-      entry an off32 to an address inside the head equal to the original LE fixup's target. An
-      entry into any other function is refused (06-10 fix round 1, C1 and M1).
+      entry an off32 that resolves inside the head or inside the span itself to the VA the
+      original LE fixup targets. An entry into any other function is refused (06-10 fix round
+      1, C1 and M1).
     If the account dropped the head, nothing resolves into the table."""
     maps: dict[int, _SegmentMap] = {}
     out = []
