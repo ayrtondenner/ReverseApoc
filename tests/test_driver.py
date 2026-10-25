@@ -203,6 +203,8 @@ class Night:
         self.on_git = None  # called with each git argv before it runs
         self.gate_names = ("UFO2P.EXE", "TACP.EXE")  # the EXE names the fake gate reports
         self.git_at_launch = -1
+        self.raise_verbs: dict[str, BaseException] = {}  # git verb -> exception, raised once
+        self.fail_verbs: dict[str, int] = {}  # git verb -> how many calls fail with LOCK_ERROR
         self._current = Sess()
         self._git = git_runner(self.repo, env=self.env)
 
@@ -290,6 +292,12 @@ class Night:
         self.git_calls.append(list(args))
         if self.on_git is not None:
             self.on_git(list(args))
+        verb = _verb(list(args))
+        if self.launched and verb in self.raise_verbs:  # once, after the first launch
+            raise self.raise_verbs.pop(verb)
+        if self.launched and self.fail_verbs.get(verb, 0) > 0:  # a lock someone else holds
+            self.fail_verbs[verb] -= 1
+            return subprocess.CompletedProcess(args, 128, b"", LOCK_ERROR)
         done = self._git(args)
         if "status" in args and self.launched and self.inject:
             extra = b"".join(f"?? {path}\0".encode() for path in self.inject)
@@ -368,6 +376,7 @@ class Night:
 
 
 MATCH_SUBJECT = f"feat({EXE}): match {FUNC} in {UNIT} (C89)"
+LOCK_ERROR = b"fatal: Unable to create '.git/index.lock': File exists (made up).\n"
 
 
 def _verb(call: list[str]) -> str | None:
@@ -1241,6 +1250,10 @@ def test_a_failed_container_removal_alone_stops_the_night(tmp_path):
     assert "containers not removed" in report.detail
     assert len(night.launched) == 1
     assert _feats(night) == []
+    # Fix round 2 minor 4: the counted session still gets its attempt record.
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["abort_reason"]) == ("GAVE_UP", "tool")
+    assert report.sessions == 1
 
 
 def test_a_failed_container_removal_on_the_raise_path_still_contains(tmp_path):
@@ -1292,3 +1305,87 @@ def test_a_pinned_file_replaced_by_a_file_symlink_comes_back(tmp_path):
     assert not os.path.islink(leaf)
     assert leaf.read_text(encoding="utf-8") == '{"made": "up"}\n'
     assert outside.read_text(encoding="utf-8") == "outside\n"
+
+
+# ---- Fix round 2 (rereview-06-23-r1, fixround-06-23-r2) ----
+
+
+def _no_match_anywhere(night: Night) -> None:
+    """No MATCHED record on disk or in any commit, nothing staged, the tables as at HEAD."""
+    assert all(r.get("outcome") != "MATCHED" for r in night.records())
+    for sha in night.git("log", "--format=%H", f"{night.base}..HEAD").split():
+        assert "MATCHED" not in night.git("show", f"{sha}:{LOG}")
+    assert (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8") == STATUS_HEAD
+    assert (night.repo / "decomphub.progress.json").read_text(encoding="utf-8") == "{}\n"
+    assert _feats(night) == []
+
+
+def test_a_raising_match_commit_leaves_no_trace_of_a_match(tmp_path):
+    """J1: commit_paths fails with something other than a DriverError (a raising git)."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.raise_verbs["commit"] = RuntimeError("made-up git crash")
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert "made-up git crash" in report.detail
+    assert _one(night.kinds("attempt"))["abort_reason"] == "tool"
+    assert night.git("diff", "--cached", "--name-only").strip() == ""
+    _no_match_anywhere(night)
+
+
+def test_an_unwritable_message_file_leaves_no_trace_of_a_match(tmp_path):
+    """J1: the commit message file cannot be written (a directory stands in its place)."""
+    msg_dir = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/commit-msg.txt/blocker"
+    night = Night(tmp_path, sessions=[Sess(files=((msg_dir, "made up\n"),))], gate_exits=[0])
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert _one(night.kinds("attempt"))["abort_reason"] == "tool"
+    _no_match_anywhere(night)
+
+
+def test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged(tmp_path):
+    """J1: the commit fails on a lock that is still held for the unstage and the reset: the
+    GAVE_UP record is still written, and every path left staged is named."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.fail_verbs.update({"commit": 1, "restore": 2})
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert _one(night.kinds("attempt"))["abort_reason"] == "tool"
+    staged = night.git("diff", "--cached", "--name-only").split()
+    assert staged, "the probe needs paths left staged"
+    for path in staged:
+        assert path in report.detail, path
+    assert "still staged:" in report.detail
+    assert all(r.get("outcome") != "MATCHED" for r in night.records())
+    for sha in night.git("log", "--format=%H", f"{night.base}..HEAD").split():
+        assert "MATCHED" not in night.git("show", f"{sha}:{LOG}")
+
+
+def test_an_interrupt_during_the_match_commit_is_undone_and_named(tmp_path):
+    """Minor 3: Ctrl-C between the MATCHED record and the commit runs the same undo first."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.raise_verbs["commit"] = KeyboardInterrupt()
+    with pytest.raises(KeyboardInterrupt):
+        night.run()
+    last = night.records()[-1]
+    assert (last["event"], last["reason"]) == ("STOPPED", "interrupted")
+    assert "match commit" in last["detail"]
+    assert night.git("diff", "--cached", "--name-only").strip() == ""
+    _no_match_anywhere(night)
+
+
+def test_a_refused_pre_gate_restore_is_named(tmp_path, monkeypatch):
+    """Minor 1: a pre-gate restore that fails is named in the record, never silent."""
+    real = driver.write_atomic
+
+    def refuse_status(path, data):
+        if Path(path).name == "status.csv":
+            raise OSError("made-up disk failure")
+        return real(path, data)
+
+    monkeypatch.setattr(driver, "write_atomic", refuse_status)
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.gate_names = ("UFO2P.EXE", "OTHER.EXE")  # a tool failure after a passing gate
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert f"not restored: config/{EXE}/status.csv" in report.detail
+    assert "made-up disk failure" in report.detail
