@@ -288,7 +288,12 @@ def test_export_drafts_script_handles_bad_addresses():
     parse = text.index("Long.parseLong")
     catch = text.index("catch (NumberFormatException")
     assert text.rindex("try {", 0, parse) < parse < catch
-    assert '"ERROR "' in text[catch:]
+    block = text[catch : text.index("}", catch)]  # the catch block: no nested braces in it
+    assert 'println("ERROR "' in block
+    # the batch goes on: the catch reports and returns false, it never rethrows or exits
+    assert "return false;" in block
+    assert "throw" not in block
+    assert "System.exit" not in block
     assert "currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(" in text
     assert "toAddr(" not in text
 
