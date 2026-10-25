@@ -233,6 +233,11 @@ None.
 - The idioms text passed to `gather` is the caller's choice. matching.md's "Known idioms" and "Relocation rules" headings are the planned source, and 06-15 picks them by heading.
 - The floor of 0.6 is a starting metric (research A10). On the real UFO2P.EXE, the only matched rows today give ratios like 0.364, so most packs will have no look-alikes until more functions match.
 
+## Self-Check: PASSED
+
+- The three files exist: tools/reverseapoc/contextpack.py, tests/test_contextpack.py and this SUMMARY.
+- The six task commits (9e15bf3, 140e971, 1b31b0b, d36064e, d67ac29, 2304555) are on this branch. `git diff --name-only 325c606..HEAD` lists only these three files. STATE.md, ROADMAP.md, config/ and orig/ are untouched.
+
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
