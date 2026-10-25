@@ -223,6 +223,23 @@ Verification after fix round 2 (host, worktree):
 - `uv run ruff check .`: All checks passed. `ruff format --check` on the five Python files: already formatted.
 - wmic scan afterwards: no fakeclaude or sleeper process left.
 
+## Fix round 3 (FIX_BASE b1ecda3; rereview-06-17-r2-report.md approved r2, two minors)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| Minor 1 | A list or dict subtype crashed classify (`TypeError: unhashable`) | a subtype that is not a string is unknown, so STOP | `test_classify_non_string_subtype_stops` (list, dict, int, float, bool, None) | 34646c9, 301f151 |
+| Minor 2 | `is_error: false` with an `api_error_status` or a non-empty `errors` was ATTEMPT_DONE | such a result is an error result and the existing rules classify it: 401/non-int -> STOP, 529/503 -> TRANSIENT, unexplained errors[] -> STOP, a LIMIT phrase in errors[] -> LIMIT. A clean `is_error: false` result (no status, no errors or `errors: []`) keeps the I2 protection | `test_classify_is_error_false_with_error_fields_is_an_error`, `test_classify_clean_is_error_false_result_keeps_the_i2_protection` | 34646c9, 301f151 |
+
+RED evidence (34646c9): 8 failures, all on assertions. They are `TypeError(... unhashable type: 'list'/'dict') is STOP`, and `ATTEMPT_DONE is STOP` or `ATTEMPT_DONE is TRANSIENT`. The int/float/bool/None subtypes, the LIMIT phrase in errors[] and the clean-result cases passed at RED, as pins.
+
+**No fixture's classification changed:** I classified all 29 fixtures under three endings each with the b1ecda3 streamjson and with the new one (0 differences), and again against ea98c43 (0 differences).
+
+Verification after fix round 3 (host, worktree):
+- `uv run pytest -q tests/test_session.py tests/test_streamjson.py`: 142 passed, 1 skipped (the POSIX-only test).
+- `uv run pytest -q -rs`: 2225 passed, 225 skipped in 41.19 s; no new skip.
+- `uv run ruff check .`: All checks passed. `ruff format --check` on the five Python files: already formatted.
+- wmic scan afterwards: no fakeclaude or sleeper process left.
+
 ### Known limits and container gate items
 
 - **Windows, after a normal exit:** a descendant that outlives claude is not killed. `taskkill /T` finds children through a live parent only, and a Job Object is out of scope. 06-23's orphan-container cleanup by name covers `docker compose run`, not stray host processes.
@@ -256,7 +273,7 @@ None.
 ## Self-Check: PASSED
 
 - Files: tools/reverseapoc/session.py, tools/reverseapoc/streamjson.py, tests/fakeclaude.py, tests/test_session.py, tests/test_streamjson.py and tests/fixtures/stream/ (29 files after fix round 1) exist.
-- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 and, for fix round 1, 26f5158, 8a6be26, 4d216e0, e40d33c, a0ac314, 773fecc and, for fix round 2, f10129f, 756e307, a94e2f1, 2bae676 are ancestors of HEAD.
+- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 and, for fix round 1, 26f5158, 8a6be26, 4d216e0, e40d33c, a0ac314, 773fecc and, for fix round 2, f10129f, 756e307, a94e2f1, 2bae676 and, for fix round 3, 34646c9, 301f151 are ancestors of HEAD.
 - No modification to STATE.md, ROADMAP.md, orig/, config/ or build scripts.
 
 ---
