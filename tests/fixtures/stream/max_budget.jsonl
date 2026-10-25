@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000002","cwd":"/repo","claude_code_version":"2.1.240","model":"claude-opus-5-5","permissionMode":"dontAsk","tools":["Read","Edit","Write","Glob","Grep","Bash"],"mcp_servers":[],"plugins":[]}
+{"type":"assistant","session_id":"00000000-0000-4000-8000-000000000002","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_fake_02","name":"Read","input":{"file_path":"/repo/src/ufo2p/u_00010000.c"}}]}}
+{"type":"result","subtype":"error_max_budget_usd","is_error":true,"session_id":"00000000-0000-4000-8000-000000000002","num_turns":2,"duration_ms":9000,"duration_api_ms":6000,"total_cost_usd":0.05,"permission_denials":[],"errors":[],"terminal_reason":"budget_exhausted"}

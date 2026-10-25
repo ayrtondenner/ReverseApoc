@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000002","cwd":"/repo","claude_code_version":"2.1.240","model":"claude-opus-5-5","permissionMode":"dontAsk","tools":["Read","Edit","Write","Glob","Grep","Bash"],"mcp_servers":[],"plugins":[]}
+{"type":"system","subtype":"api_retry","session_id":"00000000-0000-4000-8000-000000000002","attempt":1,"max_retries":10,"retry_delay_ms":2000,"error_status":401,"error":"authentication_failed"}
