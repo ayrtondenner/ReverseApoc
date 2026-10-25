@@ -15,5 +15,18 @@
         "repo": "ayghri/i-have-adhd"
       }
     }
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer always"
+          }
+        ]
+      }
+    ]
   }
 }
