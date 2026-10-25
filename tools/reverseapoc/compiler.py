@@ -55,7 +55,6 @@ COMPILER_EXE = "BINNT/WCC386.EXE"  # the NT-hosted driver both backends run
 # Project headers (include/common.h). compile_rule joins INCLUDE_DIR to the compile root, not
 # to REPO_ROOT, so a worktree (or any other root) compiles with its own include/.
 INCLUDE_DIR = "include"
-PROJECT_INCLUDE = REPO_ROOT / INCLUDE_DIR
 OBJ_SUFFIX = ".obj"  # the only suffix -o accepts: the object is deleted, then rewritten
 
 # How every compiler run is started: list argv, no shell, output captured as text.
@@ -309,10 +308,39 @@ def _check_object_name(obj: Path) -> None:
 
 
 def _check_log_name(log: Path) -> None:
-    """The log's lock sidecar is `<log>.lock`, so the log needs a file name. Checked before the
-    compile, so a path without a name (`--log .`, `--log /`) never reaches the runner."""
-    if not log.name:
+    """The log's lock sidecar is `<log>.lock`, so the log needs a file name, and the line is
+    appended to it, so it may not be a directory. Checked before the compile, so a path without
+    a name (`--log .`, `--log /`, a path ending in `..`) or an existing directory never reaches
+    the runner. `..` is refused by name: `new/..` is a directory even while `new` does not
+    exist, and the lock probe would create `new` before the append failed."""
+    if log.name in ("", ".."):
         raise CompilerError(f"--log {log} names no file; the lock sidecar is <log>{LOCK_SUFFIX}")
+    if log.is_dir():
+        raise CompilerError(f"--log {log} is a directory; name a file in it")
+
+
+def _is_device(log: Path) -> bool:
+    """A log that exists but is not a regular file: /dev/null, NUL, a FIFO, a console."""
+    return log.exists() and not log.is_file()
+
+
+def _probe_log_lock(log: Path) -> None:
+    """Open and close `<log>.lock` through _open_lock, as _log_lock does after the compile, so
+    a log whose sidecar cannot be created fails before the compile instead of after it with the
+    object on disk. It opens the same sidecar the lock opens later and never deletes it, so it
+    adds no race. A device log takes no lock, so it is not probed."""
+    if _is_device(log):
+        return
+    lock = _lock_path(log)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with _open_lock(log):
+            pass
+    except OSError as exc:
+        raise CompilerError(
+            f"--log {log}: cannot open its lock sidecar {lock} ({exc}); "
+            "the log's directory must be writable"
+        ) from exc
 
 
 def _check_outputs(src: Path, obj: Path, err: Path) -> None:
@@ -438,6 +466,13 @@ def _lock_path(log: Path) -> Path:
     return log.with_name(log.name + LOCK_SUFFIX)
 
 
+def _open_lock(log: Path):
+    """Open `<log>.lock` in "a+b": it creates the sidecar if needed and never truncates or
+    writes it. The one opener of the sidecar, shared by _probe_log_lock and _log_lock, so the
+    probe before the compile keeps opening exactly what the lock opens after it."""
+    return open(_lock_path(log), "a+b")
+
+
 if sys.platform == "win32":
 
     def _try_lock(fd: int) -> bool:
@@ -475,11 +510,10 @@ else:
 
 @contextmanager
 def _log_lock(log: Path) -> Iterator[None]:
-    """Hold the OS lock on `<log>.lock`. "a+b" creates the sidecar if needed and never
-    truncates or writes it. The sidecar is never deleted: deleting would reopen a
-    create/delete race, and a dead holder leaves nothing to clean up, because the OS lock
-    dies with the process."""
-    with open(_lock_path(log), "a+b") as fh:
+    """Hold the OS lock on `<log>.lock`, opened by _open_lock. The sidecar is never deleted:
+    deleting would reopen a create/delete race, and a dead holder leaves nothing to clean up,
+    because the OS lock dies with the process."""
+    with _open_lock(log) as fh:
         _acquire(fh)
         try:
             yield
@@ -491,13 +525,14 @@ def _append_log(log: Path, result: CompileResult) -> None:
     """Append one line for `result`. The log is opened, written and closed inside the lock,
     and closed before the release: on the container's 9p bind mount the bytes reach the
     server at close, and there and in the Windows UCRT append is read-EOF-then-write. Parallel
-    `cc` within one environment is safe; the host and a container writing the same log at
-    once are not covered, because their OS locks do not see each other. A log that exists but
-    is not a regular file (/dev/null, a FIFO, a console) is a device: it needs no append
-    serialisation and its directory may not take a sidecar, so it is written without the lock."""
+    `cc` within one environment is safe; the Windows host and a container writing the same log
+    at once are not covered, because their OS locks do not see each other. A log that exists
+    but is not a regular file (/dev/null, NUL, a FIFO, a console) is a device: it needs no
+    append serialisation and its directory may not take a sidecar, so it is written without
+    the lock. A directory takes the same branch; `cc` refuses one before the compile."""
     log.parent.mkdir(parents=True, exist_ok=True)
     line = _log_line(result)
-    if log.exists() and not log.is_file():
+    if _is_device(log):
         with log.open("a", encoding="utf-8") as fh:
             fh.write(line)
         return
@@ -519,9 +554,9 @@ def compile_rule(
     log: Path | str | None = None,
     stamps: Path | str | None = None,
 ) -> CompileResult:
-    """Compile `src` into `obj` with `rule`. Paths and outputs are checked first, then the gate,
-    so a refused path or binary never reaches the runner and nothing is deleted. A non-zero exit
-    leaves no object behind."""
+    """Compile `src` into `obj` with `rule`. Paths, outputs and the log's lock sidecar are
+    checked first, then the gate, so a refused path, log or binary never reaches the runner and
+    nothing is deleted. A non-zero exit leaves no object behind."""
     root = Path(root if root is not None else REPO_ROOT).resolve()
     watcom_dir = Path(watcom_dir) if watcom_dir is not None else watcom.DEFAULT_INSTALL
     runner = runner if runner is not None else subprocess.run
@@ -536,6 +571,7 @@ def compile_rule(
     guest_err = guest_path(err, root, inside=True)
     _check_outputs(src, obj, err)
     include = _include_list(root, watcom_dir, rule.version)
+    _probe_log_lock(log)
     prefix = runner_prefix(platform)
     gate = check_gate(
         rule.compiler,

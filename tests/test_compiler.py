@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -605,6 +606,82 @@ def test_log_lists_gate_files_in_manifest_order(tmp_path):
     assert gates[0] == gates[1]
     assert [path for path, _ in gates[0]] == ["BINW/WCC386.EXE", "BINNT/WCC386.EXE"]
     assert all(line.endswith("exit 0") for line in lines)
+
+
+# A bad --log fails before the compile, so a good compile never ends as a failed edge with a
+# stray object (04-REVIEW IN-08, IN-09).
+
+KEEP = b"object from an earlier run"
+
+
+def _kept_object(ws: Workspace) -> Path:
+    obj = ws.root / "out" / "a.obj"
+    obj.parent.mkdir(parents=True, exist_ok=True)
+    obj.write_bytes(KEEP)
+    return obj
+
+
+def test_log_naming_a_directory_is_refused_before_the_compile(ws):
+    logdir = ws.root / "logdir"
+    logdir.mkdir()
+    obj = ws.root / "out" / "a.obj"
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), obj, runner, log=logdir)
+    message = str(info.value)
+    assert str(logdir) in message
+    assert "is a directory" in message
+    assert runner.calls == []
+    assert not obj.exists()
+    assert list(logdir.iterdir()) == []
+
+
+@pytest.mark.parametrize("parts", [("new", ".."), ("..",)])
+def test_log_ending_in_dotdot_names_no_file(ws, parts):
+    """`--log new/..` names a directory, not a file, even while `new` does not exist (POSIX then
+    passes is_dir(), the probe would create `new`, and the append would fail after the
+    compile). Refused by name, before anything is created, on both platforms."""
+    log = ws.root.joinpath(*parts)
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, log=log)
+    assert "names no file" in str(info.value)
+    assert runner.calls == []
+    assert not (ws.root / "new").exists()
+
+
+def test_unwritable_lock_is_refused_before_the_compile(ws, monkeypatch):
+    real_open = open
+    lock = compiler._lock_path(ws.log)
+
+    def deny_lock(file, mode="r", *args, **kwargs):
+        if Path(file) == lock and mode == "a+b":
+            raise PermissionError(13, "Permission denied", str(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(compiler, "open", deny_lock, raising=False)
+    obj = _kept_object(ws)
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), obj, runner)
+    message = str(info.value)
+    assert str(lock) in message
+    assert "Permission denied" in message
+    assert runner.calls == []  # refused before the banner probe and the compile
+    assert obj.read_bytes() == KEEP  # nothing was deleted
+
+
+def _no_sidecar(log: Path):
+    raise AssertionError(f"touched the lock sidecar of {log}")
+
+
+def test_device_log_still_works(ws, monkeypatch):
+    """A device log keeps the device branch: no sidecar is probed or locked, on either platform
+    (`/dev/null` on POSIX, `NUL` on Windows)."""
+    device = Path("NUL") if sys.platform == "win32" else Path("/dev/null")
+    monkeypatch.setattr(compiler, "_lock_path", _no_sidecar)
+    result = ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler(), log=device)
+    assert result.ok
 
 
 def test_missing_tree_refused(ws):
