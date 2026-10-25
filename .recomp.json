@@ -37,12 +37,11 @@
     {
       "label": "OpenApoc",
       "url": "https://github.com/openapoc/openapoc"
+    },
+    {
+      "label": "Progress",
+      "url": "https://ayrtondenner.github.io/ReverseApoc/"
     }
-  ],
-  "help": [
-    "Watcom 10.x codegen knowledge",
-    "LE/OMF tooling",
-    "X-COM Apocalypse internals"
   ],
   "tags": [
     "x-com",
@@ -51,5 +50,5 @@
     "dos4gw",
     "ai-assisted"
   ],
-  "notes": "Hybrid pipeline: own matching oracle (KKND-Decomp and Theme Hospital decomp tooling, retrokit for Ghidra) plus decomp.wtf fork mode as the agent layer. Progress percentages arrive once an objdiff-shaped report exists (Phase 5-6)."
+  "notes": "Own matching oracle built from KKND-Decomp and Theme Hospital decomp tooling: the original Watcom C 10.6 under wibo in Docker, configure.py + ninja, an in-place LE splice with a whole-EXE SHA-1 gate, and OMF-to-ELF for objdiff. Ghidra 12.1.4 runs headless in the Docker image with the lastonesky LE loader. The agent layer is our own (Phase 6, after spike 006): a per-function Claude Code driver whose matches the build re-verifies, never the agent. Progress comes from a gate-written status table; the objdiff-shaped report is the X-COM_Apocalypse_DOS_report artifact."
 }
