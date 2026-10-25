@@ -907,6 +907,15 @@ def test_land_all_with_other_src_compiles_outside_ninja_paths(env):
     assert not ninja_object(env).exists()
 
 
+def test_cli_takes_its_default_roots_from_check():
+    """Fix round 1, M8: one definition of the committed src/ and config/ trees, so the CLI's
+    defaults and object_root's can never drift apart."""
+    from reverseapoc import cli
+
+    assert cli.DEFAULT_SRC is check.DEFAULT_SRC
+    assert cli.DEFAULT_CONFIG is check.DEFAULT_CONFIG
+
+
 def test_custom_root_is_no_exe_stem():
     """build/<stem>/ belongs to ninja; the custom root can never be an EXE config stem."""
     assert not check._UNIT_NAME.fullmatch(check.CUSTOM_ROOT)
@@ -1136,6 +1145,22 @@ def test_stray_data_public_message_says_data():
     account = check.account_unit(module_, [ROW, OTHER], table, SOURCE)
     (stray,) = [p for p in account.problems if p.name == "counter"]
     assert stray.reason == "public counter is data, not a function of the unit"
+
+
+def test_a_code_public_check_does_not_take_is_not_called_data(monkeypatch):
+    """Fix round 1, M3: `elsewhere` is any public of the row's linker name that
+    defined_functions did not take, which can be a code public too (here simulated by a
+    defined_functions that takes none). The reason says data only for a public outside a code
+    segment, as 17c's does; the row is still a mismatch, never a stub."""
+    monkeypatch.setattr(check, "defined_functions", lambda *args: [])
+    table = SymbolTable.build([ROW, OTHER, FAR])
+    data = omf_object(GOOD_OURS + b"\xc3", extra=(("func_00010010_", len(GOOD_OURS)),))
+    account = check.account_unit(check.read_object(data), [ROW, OTHER], table, SOURCE)
+    assert account.stubs == ()
+    reasons = {p.name: p.reason for p in account.problems}
+    in_code = "in a code segment, but not as a function check can pair with its row"
+    assert reasons[OTHER.name] == f"marked INCLUDE_ASM but exported as func_00010010_ {in_code}"
+    assert reasons[ROW.name] == f"exported as {SYMBOL} {in_code}"
 
 
 def test_check_json_lists_raw_fields_per_function(env, monkeypatch, capsys):
