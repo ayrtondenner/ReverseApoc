@@ -1036,6 +1036,42 @@ def test_gate_names_the_tables_when_the_feed_write_fails(tree, monkeypatch):
     assert tree.status(UFO).exists() and not (tree.root / FEED).exists()
 
 
+def test_gate_refuses_tables_progress_cannot_derive(tree):
+    """Fix round 1, minor 1: progress.py derives the tables as they will be after the write,
+    in memory, before any status.csv is written. A matched row at a start that is not a game or
+    thunk row (here a runtime row a check defined) is a ProgressError: the gate exits 2 with
+    nothing written, never a table without its feed."""
+    mix_unit_a(tree, "runtime")
+    tree.write_unit(UFO, UNIT_A, [A1, A2])
+    with pytest.raises(CheckError, match="decomphub.progress.json") as caught:
+        run_gate(tree, f"ufo2p/{UNIT_A}")
+    assert "0x00010010" in str(caught.value)
+    assert not tree.status(UFO).exists() and not (tree.root / FEED).exists()
+
+
+def test_gate_output_names_the_rewritten_feed(tree, monkeypatch, capsys):
+    """Fix round 1, minor 3: the text and --json output name the feed gate rewrote, so a
+    by-hand gate (D-21) knows to commit it with status.csv."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    result = run_gate(tree, f"ufo2p/{UNIT_A}")
+    feed = tree.root / FEED
+    assert result.feed == feed
+    assert result.to_json()["feed"] == str(feed)
+    line = next(line for line in result.format().splitlines() if FEED in line)
+    assert str(feed) in line and "commit" in line
+    tree.write_unit(TACP, UNIT_T, [T1])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    assert cli_main(["gate", f"tacp/{UNIT_T}", "--json", *tree.argv()]) == 0
+    assert json.loads(capsys.readouterr().out)["feed"] == str(feed)
+
+
+def test_gate_output_has_no_feed_when_nothing_was_written(tree):
+    tree.write_unit(UFO, UNIT_A, [A1])
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", check=FakeCheck(tree, mismatch=True))
+    assert result.feed is None and result.to_json()["feed"] is None
+    assert FEED not in result.format()
+
+
 def test_gate_without_progress_py_writes_no_table(tree, tmp_path, monkeypatch):
     """progress.py is loaded before any status.csv is written: a checkout without it refuses
     the gate with nothing written, never a table without its feed."""
