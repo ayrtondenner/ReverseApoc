@@ -49,7 +49,8 @@ _default_runner: Runner = subprocess.run
 
 
 class LintError(ValueError):
-    """The lint gate cannot run: no clang, or a path that does not exist."""
+    """The lint gate cannot run: no clang, a path that does not exist, or a named file that is
+    not a .c source."""
 
 
 @dataclass(frozen=True)
@@ -87,13 +88,16 @@ def lint_argv(path: Path | str, *, clang: str) -> list[str]:
 def _sources_under(path: Path) -> Iterable[Path]:
     if path.is_dir():
         return path.rglob(f"*{SOURCE_SUFFIX}")
-    if path.is_file():
-        return [path] if path.suffix == SOURCE_SUFFIX else []
-    raise LintError(f"{path} not found")
+    if not path.is_file():
+        raise LintError(f"{path} not found")
+    if path.suffix != SOURCE_SUFFIX:  # named on purpose: refuse it, never skip it silently
+        raise LintError(f"{path} is not a {SOURCE_SUFFIX} source")
+    return [path]
 
 
 def collect_sources(paths: Iterable[Path | str]) -> list[Path]:
-    """The *.c files under the given directories and the given *.c files, sorted, each once."""
+    """The *.c files under the given directories and the given *.c files, sorted, each once. A
+    named file that is not a *.c file raises LintError."""
     found: set[Path] = set()
     for path in paths:
         found.update(_sources_under(Path(path)))

@@ -276,3 +276,144 @@ def test_no_read_past_object_edges():
     assert found.starts == (a, b)
     assert found.decoded_bytes == 6 + 2
     assert disc.ends(found, le)[b] == CODE + 0x10
+
+
+# DI-19 row 11 (05-REVIEW): a jump table after the function's last terminal instruction.
+
+TABLE_ENTRY = 4  # bytes per jump-table entry: one off32 field
+JMP_DISP = 3  # offset of the disp32 field in `jmp [eax*4+disp32]` (FF 24 85)
+NEXT = CODE + 0x18  # the runtime-seeded start after the function under test
+NEXT_VSIZE = 0x20  # code object size for these layouts
+
+
+def table_function(cases: list[int], after_table: bytes) -> tuple[LE, int]:
+    """A function at CODE: `jmp [eax*4+T]`, a `ret` at each of `cases` that lies before the
+    table, the table T (one entry per case) right after the last of those rets, then
+    `after_table`, zero bytes, and a runtime-seeded start at NEXT (a `ret`). Returns the LE
+    and T."""
+    before = [c for c in cases if c < CODE + 0x10]
+    table = max(before) + len(RET)
+    entries = [table + i * TABLE_ENTRY for i in range(len(cases))]
+    sources = [JMP_DISP, *(e - CODE for e in entries)]
+    fixups = [table_fixups(sources, [table, *cases]), b"", b""]
+    tail = entries[-1] + TABLE_ENTRY
+    patches = {
+        CODE: jmp_table(table - CODE),
+        **dict.fromkeys(before, RET),
+        **{e: struct.pack("<I", c - CODE) for e, c in zip(entries, cases, strict=True)},
+        tail: after_table + bytes(NEXT - tail - len(after_table)),
+        NEXT: RET + bytes(CODE + NEXT_VSIZE - NEXT - len(RET)),
+    }
+    return make_le(patches, entry=0, fixups=fixups, objects=small_code(NEXT_VSIZE)), table
+
+
+def test_code_after_ret_and_table_is_not_absorbed():
+    """ret, the function's jump table, then code no branch of the function reaches: the function
+    ends at the table's end and the trailing code stays a gap (05-REVIEW row 11)."""
+    le, table = table_function([CODE + 7, CODE + 8], XOR_EAX + RET)
+    found = discover(le, runtime_starts=[NEXT])
+    table_end = table + 2 * TABLE_ENTRY
+    assert found.jump_tables == ((table, table_end),)
+    assert found.starts == (CODE, NEXT)
+    end_of = disc.ends(found, le)
+    assert end_of == {CODE: table_end, NEXT: NEXT + 1}
+    assert not any(start <= table_end < end for start, end in end_of.items())
+
+
+def test_table_then_padding_still_ends_at_padding():
+    """ret, a jump table, then only padding up to the next start: the function still ends at
+    its last terminal instruction (the table may lead the next function)."""
+    le, table = table_function([CODE + 7, CODE + 8], b"")
+    found = discover(le, runtime_starts=[NEXT])
+    assert disc.ends(found, le) == {CODE: table, NEXT: NEXT + 1}
+
+
+def test_case_label_after_the_table_stays_in_the_function():
+    """ret, the jump table, then a case label of that table: the code after the table is reached
+    by the function, so the function goes on to its next terminal instruction."""
+    le, table = table_function([CODE + 7, CODE + 0x10], XOR_EAX + RET)
+    found = discover(le, runtime_starts=[NEXT])
+    table_end = table + 2 * TABLE_ENTRY
+    assert found.jump_tables == ((table, table_end),)
+    assert disc.ends(found, le) == {CODE: table_end + len(XOR_EAX + RET), NEXT: NEXT + 1}
+
+
+WIDE_NEXT = CODE + 0x30  # the runtime-seeded start for the wider layouts below
+WIDE_VSIZE = 0x40
+JA_REL32 = b"\x0f\x87"  # ja rel32: a conditional forward jump
+
+
+def ja(at: int, target: int) -> bytes:
+    """`ja target` (0F 87 rel32) placed at `at`."""
+    return JA_REL32 + struct.pack("<i", target - (at + len(JA_REL32) + 4))
+
+
+def table_layout(
+    code: dict[int, bytes], jmps: dict[int, int], tables: dict[int, list[int]]
+) -> LE:
+    """A code object of WIDE_VSIZE bytes, zero-filled, with `code` patched in, a
+    `jmp [eax*4+T]` at each key of `jmps` reading the table at its value, each table of
+    `tables` holding off32 entries to its case labels, and a runtime-seeded start at WIDE_NEXT
+    whose bytes `code` supplies."""
+    image = bytearray(WIDE_VSIZE)
+    sources, targets = [], []
+    for at, table in jmps.items():
+        image[at - CODE : at - CODE + 7] = jmp_table(table - CODE)
+        sources.append(at + JMP_DISP - CODE)
+        targets.append(table)
+    for table, cases in tables.items():
+        for i, case in enumerate(cases):
+            entry = table + i * TABLE_ENTRY
+            image[entry - CODE : entry - CODE + TABLE_ENTRY] = struct.pack("<I", case - CODE)
+            sources.append(entry - CODE)
+            targets.append(case)
+    for at, data in code.items():
+        image[at - CODE : at - CODE + len(data)] = data
+    fixups = [table_fixups(sources, targets), b"", b""]
+    return make_le({CODE: bytes(image)}, entry=0, fixups=fixups, objects=small_code(WIDE_VSIZE))
+
+
+def test_case_label_of_a_later_table_keeps_the_code():
+    """jmp [T1]; cases `ret`, `jmp [T2]`, `ret`; T1; code C; T2. C is reached only by a case label
+    of T2, a table the function's own jmp reads but which lies past T1: the function goes on
+    past T1 and ends at its last terminal instruction before T2 (review 06-04 minor 1)."""
+    t1, c, t2 = CODE + 0x10, CODE + 0x1C, CODE + 0x1F
+    le = table_layout(
+        {CODE + 7: RET, CODE + 0xF: RET, c: XOR_EAX + RET, WIDE_NEXT: RET},
+        jmps={CODE: t1, CODE + 8: t2},
+        tables={t1: [CODE + 7, CODE + 8, CODE + 0xF], t2: [c]},
+    )
+    found = discover(le, runtime_starts=[WIDE_NEXT])
+    assert found.jump_tables == ((t1, c), (t2, t2 + TABLE_ENTRY))
+    assert found.starts == (CODE, WIDE_NEXT)
+    assert disc.ends(found, le)[CODE] == c + len(XOR_EAX + RET)
+
+
+def test_forward_jump_past_the_table_keeps_the_code():
+    """`ja L`, `jmp [T]`, T, then L: the code after the table is the target of the function's own
+    forward jump, so it stays in the function (pins the direct-branch half of the rule)."""
+    t, label = CODE + 0xD, CODE + 0x11
+    le = table_layout(
+        {CODE: ja(CODE, label), label: XOR_EAX + RET, WIDE_NEXT: RET},
+        jmps={CODE + 6: t},
+        tables={t: [CODE + 6]},  # not CODE: a zero entry byte would read as padding
+    )
+    found = discover(le, runtime_starts=[WIDE_NEXT])
+    assert found.jump_tables == ((t, label),)
+    assert disc.ends(found, le)[CODE] == label + len(XOR_EAX + RET)
+
+
+def test_case_label_of_a_skipped_table_keeps_the_code():
+    """`xor`, inline table T1 (read by a jmp in the next function), `ret`, table T2, then L, a case
+    label of T1: L is reached through the table the scan stepped over, so it stays in the
+    function (pins the skipped-table half of the rule)."""
+    t1, ret_at, t2, label = CODE + 2, CODE + 6, CODE + 7, CODE + 0xB
+    le = table_layout(
+        {CODE: XOR_EAX, ret_at: RET, label: XOR_EAX + RET},
+        jmps={WIDE_NEXT: t2, WIDE_NEXT + 7: t1},
+        tables={t1: [label], t2: [WIDE_NEXT + 7]},
+    )
+    found = discover(le, runtime_starts=[WIDE_NEXT])
+    assert found.jump_tables == ((t1, ret_at), (t2, label))
+    assert found.starts == (CODE, WIDE_NEXT)
+    assert disc.ends(found, le)[CODE] == label + len(XOR_EAX + RET)

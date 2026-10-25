@@ -109,6 +109,21 @@ def test_collect_sources_refuses_a_missing_path(tmp_path):
         collect_sources([tmp_path / "nope"])
 
 
+def test_lint_refuses_an_explicit_non_c_path(capsys, monkeypatch):
+    """An explicitly named file that is not a .c source is an error naming it, raised before
+    clang is looked up, not a silent skip (05-REVIEW row 13b). Directories still expand."""
+
+    def no_lookup(*args, **kwargs):
+        raise AssertionError("clang was looked up")
+
+    monkeypatch.setattr(lint.shutil, "which", no_lookup)
+    header = REPO_ROOT / "include" / "common.h"
+    assert cli_main(["lint", str(header)]) == 1
+    err = capsys.readouterr().err
+    assert str(header) in err
+    assert "not a .c source" in err
+
+
 def test_lint_verb_with_no_sources(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(lint.shutil, "which", lambda *a, **k: None)  # no clang is needed
     assert cli_main(["lint", str(tmp_path)]) == 0

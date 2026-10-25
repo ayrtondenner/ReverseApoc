@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import build_le_image, fixup_record, requires_capstone, write_manifest
+from conftest import REPO_ROOT, build_le_image, fixup_record, requires_capstone, write_manifest
 from reverseapoc import cli
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import (
@@ -306,3 +306,72 @@ def test_units_write_keeps_a_hand_recut(tmp_path: Path, monkeypatch, capsys):
     assert [u.unit for u in read_units_csv(units)] == ["grafix"]
     assert cli_main(["units", *args, "--write", "--redraft"]) == 0
     assert [u.unit for u in read_units_csv(units)] == ["u_00010000"]
+
+
+# ---- the committed CSVs, without orig/ (05-REVIEW row 16b) ----
+
+COMMITTED_EXES = ("ufo2p", "tacp")  # config/<stem>/ of the two split executables
+
+
+def tiling_problems(functions: list[FunctionRow], units: list[UnitRow]) -> list[str]:
+    """D-11 tiling from the CSVs alone: consecutive units meet with no gap or overlap, the last
+    unit ends at the last functions.csv row's end, every row lies in exactly one unit span, and
+    check_unit_assignment finds no problem; one line per violation. The code-object bounds
+    (first unit at the object base, the uncovered tail) need the LE and stay in
+    tests/test_functions_real.py::test_units_tile_the_code."""
+    ordered = sorted(units, key=lambda unit: unit.start)
+    pairs = zip(ordered, ordered[1:], strict=False)
+    problems = [f"{a.unit} ends at {a.end:#x}, {b.unit} starts at {b.start:#x}"
+                for a, b in pairs if a.end != b.start]  # fmt: skip
+    last_end = max(row.end for row in functions)
+    if ordered[-1].end != last_end:
+        problems.append(f"last unit ends at {ordered[-1].end:#x}, last row at {last_end:#x}")
+    for row in functions:
+        holders = [u.unit for u in ordered if u.start <= row.start and row.end <= u.end]
+        if len(holders) != 1:
+            problems.append(f"{row.name} lies in {len(holders)} unit spans")
+    return problems + check_unit_assignment(functions, units)
+
+
+def plant_moved_end(units: list[UnitRow], functions: list[FunctionRow], path: Path) -> str:
+    """Write a copy of `units` to `path` with the end of the unit holding the first game row
+    moved into that row; returns the row's name."""
+    row = next(r for r in functions if r.kind == "game")
+    moved = [UnitRow(u.unit, u.start, row.end - 1, u.reason) if u.unit == row.unit else u
+             for u in units]  # fmt: skip
+    write_units_csv(path, moved, "PLANT.EXE")
+    return row.name
+
+
+def plant_gap(units: list[UnitRow], functions: list[FunctionRow], path: Path) -> str:
+    """Write a copy of `units` to `path` with one unit's end moved back by a byte that no row
+    covers (its alignment tail), so every row still lies in its unit and only the gap check
+    can catch it; returns the unit's name."""
+    last_row_end = {u.unit: max((r.end for r in functions if r.unit == u.unit), default=u.start)
+                    for u in units}  # fmt: skip
+    unit = next(u for u in units[:-1] if last_row_end[u.unit] < u.end)
+    moved = [UnitRow(u.unit, u.start, u.end - 1, u.reason) if u is unit else u for u in units]
+    write_units_csv(path, moved, "PLANT.EXE")
+    return unit.unit
+
+
+PLANTS = {"committed": None, "row-cut": plant_moved_end, "gap": plant_gap}
+
+
+@pytest.mark.parametrize("planted", list(PLANTS))
+@pytest.mark.parametrize("stem", COMMITTED_EXES)
+def test_committed_units_tile_their_rows(stem, planted, tmp_path):
+    """D-11 on the committed config/<stem>/units.csv and functions.csv, with no game file: the
+    units tile the rows (no gap, no overlap, ending at the last row) and every row lies in
+    exactly one unit span. The planted cases damage a tmp copy (a unit end moved into a row, or
+    a one-byte gap after a unit) and must be caught, so the check cannot pass vacuously."""
+    config = REPO_ROOT / "config" / stem
+    functions = read_functions_csv(config / "functions.csv")
+    units = read_units_csv(config / "units.csv")
+    assert functions and units
+    if (plant := PLANTS[planted]) is None:
+        assert tiling_problems(functions, units) == []
+        return
+    name = plant(units, functions, tmp_path / "units.csv")
+    problems = tiling_problems(functions, read_units_csv(tmp_path / "units.csv"))
+    assert any(name in problem for problem in problems)

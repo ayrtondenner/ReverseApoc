@@ -279,6 +279,25 @@ def test_drafts_refuse_bad_addresses(tmp_path, addresses):
     assert fake.calls == []
 
 
+def test_export_drafts_script_handles_bad_addresses():
+    """ExportDrafts.java reports an unparsable address as an `ERROR <address>` line and goes on
+    with the rest instead of aborting the batch, and resolves addresses through the program's
+    address factory explicitly (05-REVIEW row 8). Text assertions: Ghidra is not needed."""
+    text = (ghidra.SCRIPT_DIR / "ExportDrafts.java").read_text(encoding="utf-8")
+    assert "catch (NumberFormatException" in text
+    parse = text.index("Long.parseLong")
+    catch = text.index("catch (NumberFormatException")
+    assert text.rindex("try {", 0, parse) < parse < catch
+    block = text[catch : text.index("}", catch)]  # the catch block: no nested braces in it
+    assert 'println("ERROR "' in block
+    # the batch goes on: the catch reports and returns false, it never rethrows or exits
+    assert "return false;" in block
+    assert "throw" not in block
+    assert "System.exit" not in block
+    assert "currentProgram.getAddressFactory().getDefaultAddressSpace().getAddress(" in text
+    assert "toAddr(" not in text
+
+
 def test_default_outputs_are_gitignored():
     root = ghidra.REPO_ROOT
     ignored = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
