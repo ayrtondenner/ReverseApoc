@@ -6,7 +6,10 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -126,16 +129,91 @@ def _lines(attempt_dir: Path) -> list[dict]:
 # ---- Task 1: attempt check ----
 
 
+_NAME = re.compile(r"reverseapoc-attempt-([0-9a-f]{8})-([0-9]{4})")
+
+
 def test_attempt_check_builds_the_container_argv(repo: Path, monkeypatch):
+    """M7: the container is named reverseapoc-attempt-<8 hex of the attempt dir>-<NNNN>, so a
+    run the wrapper stopped can be removed by name."""
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0
-    assert runner.calls == [(
-        "docker", "compose", "run", "--rm", "-T", "build",
-        "uv", "run", "--frozen", "reverseapoc", "check", CLAIM, "--json",
-    )]  # fmt: skip
+    (first,) = runner.calls
+    assert first[:6] == ("docker", "compose", "run", "--rm", "-T", "--name")
+    name = _NAME.fullmatch(first[6])
+    assert name is not None and name.group(2) == "0001"
+    assert first[7:] == ("build", "uv", "run", "--frozen", "reverseapoc", "check", CLAIM, "--json")
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc()), "")
     assert _run(["attempt", "check", "--sweep"]) == 0
-    assert runner.calls[1] == (*runner.calls[0], "--sweep", FUNC)
+    second = runner.calls[1]
+    assert second[6] == f"reverseapoc-attempt-{name.group(1)}-0002"  # same attempt, next slot
+    assert second[7:] == (*first[7:], "--sweep", FUNC)
+
+
+def test_container_names_differ_per_attempt_dir(repo: Path, monkeypatch):
+    """M7: two attempt directories never share a container name."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    other = repo.parent / "attempt-2"
+    other.mkdir()
+    monkeypatch.setenv(attempt.DIR_ENV, str(other))
+    monkeypatch.setenv(hooks.NOTES_ENV, str(other / "notes.md"))
+    assert _run(["attempt", "check"]) == 0
+    one, two = (_NAME.fullmatch(call[6]) for call in runner.calls)
+    assert one.group(1) != two.group(1)
+    assert one.group(2) == two.group(2) == "0001"
+
+
+class TimeoutRunner:
+    """The check run times out (the default runner's TimeoutExpired); `docker rm -f` then
+    answers with `rm_code`. Duck-typed answers: only the fields the wrapper reads."""
+
+    def __init__(self, rm_code: int) -> None:
+        self.calls: list[tuple[str, ...]] = []
+        self.rm_code = rm_code
+
+    def __call__(self, argv):
+        self.calls.append(tuple(argv))
+        if argv[:2] == ("docker", "rm"):
+            return SimpleNamespace(returncode=self.rm_code, stdout="", stderr="made-up rm",
+                                   timed_out=False)  # fmt: skip
+        return SimpleNamespace(returncode=2, stdout="", stderr="made-up timeout", timed_out=True)
+
+
+def test_a_timed_out_run_removes_its_container(repo: Path, monkeypatch):
+    """M7: on the runner's timeout the wrapper runs `docker rm -f <name>` through the same
+    runner before it releases the lock; the run is logged as exit 2."""
+    runner = TimeoutRunner(rm_code=0)
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    assert _run(["attempt", "check"]) == 2
+    check, remove = runner.calls
+    assert remove == ("docker", "rm", "-f", check[6])
+    assert not (repo / "check.lock").exists()
+    assert _lines(repo)[-1]["exit"] == 2
+
+
+def test_a_container_that_cannot_be_removed_keeps_the_lock(repo: Path, monkeypatch, capsys):
+    """M7: if `docker rm -f` fails, the lock stays: this attempt's checks are over (fail
+    closed), because the orphan container may still write build/."""
+    runner = TimeoutRunner(rm_code=1)
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    assert _run(["attempt", "check"]) == 2
+    assert len(runner.calls) == 2
+    assert (repo / "check.lock").is_file()
+    assert "could not be removed" in capsys.readouterr().out
+    assert _run(["attempt", "check"]) == 2
+    assert len(runner.calls) == 2  # refused: the lock is held
+
+
+def test_the_default_runner_reports_a_timeout(monkeypatch):
+    """M7: the default runner turns TimeoutExpired into a timed-out exit-2 run."""
+
+    def slow(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, attempt.CHECK_TIMEOUT)
+
+    monkeypatch.setattr(attempt.subprocess, "run", slow)
+    ran = attempt.default_runner(("docker", "compose", "run"))
+    assert ran.returncode == 2
+    assert getattr(ran, "timed_out", False) is True
 
 
 def test_attempt_check_passes_exit_codes_and_logs(repo: Path, monkeypatch, capsys):
