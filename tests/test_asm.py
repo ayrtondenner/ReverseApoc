@@ -203,6 +203,22 @@ def test_ambiguous_name_gets_one_listing_per_row(tmp_path: Path):
         assert text.splitlines()[0].startswith(f"# {ALPHABET}  0x{row.start:08X}")
 
 
+def test_write_listings_refuses_a_case_only_clash(tmp_path: Path):
+    """Two names equal under str.casefold would be one file on NTFS (threat T-06-12): the
+    writer refuses, naming both rows, before it writes anything."""
+    rows = [
+        FunctionRow(ALPHABET_ITOA, ALPHABET_ITOA + 0x10, "Foo", "runtime", "rt_foo", "runtime"),
+        FunctionRow(ALPHABET_LTOA, ALPHABET_LTOA + 0x10, "foo", "runtime", "rt_bar", "runtime"),
+    ]
+    symbols = SymbolTable.build(rows)
+    assert not symbols.ambiguous  # distinct names, so file_name keeps both
+    out = tmp_path / "asm"
+    with pytest.raises(AsmError, match=f"0x{ALPHABET_ITOA:08X}.*0x{ALPHABET_LTOA:08X}"):
+        write_listings(rows, flat=bytes(ALPHABET_LTOA + 0x10), fixups=(), symbols=symbols,
+                       out_dir=out)  # fmt: skip
+    assert not out.exists()
+
+
 @pytest.mark.parametrize("stem", ["ufo2p", "tacp"])
 def test_committed_listing_names_are_unique(stem: str):
     """Every committed functions.csv row gets its own listing name, compared case-insensitively
