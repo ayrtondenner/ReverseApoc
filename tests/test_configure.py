@@ -708,7 +708,134 @@ CONTINUATION_PROBES = {
         {"func_00010000", "func_00010010"},
         set(),
     ),
+    # 06-03 re-review N1: wcc386 10.6 also splices a backslash followed by spaces or tabs and
+    # then a newline, in every context (a form feed or vertical tab does not splice); it maps
+    # C89 trigraphs first (`??/` is a backslash, `??=` a `#`), and a raw CRLF is one line break.
+    # Each expected reading is what `wcc386 -zq -p` (10.6, BINNT) preprocesses the text to.
+    "blank-splice-closer-definition": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n"
+        "/* x *\\ \n/ int func_00010000(void) { return 0; } /* y */\n",
+        {"func_00010000", "func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-string-definition": (
+        'INCLUDE_ASM(func_00010010);\nchar *s = "a\\ \nb"; int func_00010000(void) { return 0; }\n',
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-name": (
+        "INCLUDE_ASM(func_00010010);\nint func_0001\\ \n0000(void) { return 0; }\n",
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-define": (
+        "INCLUDE_ASM(func_00010000);\n#define X \\ \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "tab-splice-define": (
+        "INCLUDE_ASM(func_00010000);\n#define X \\\t \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "blank-splice-line-comment": (
+        "INCLUDE_ASM(func_00010000);\n// c \\ \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "blank-splice-if0": (
+        "INCLUDE_ASM(func_00010000);\n#if \\ \n0\nINCLUDE_ASM(func_00010010);\n#endif\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "formfeed-is-no-splice": (
+        "INCLUDE_ASM(func_00010000);\n// c \\\f\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "vtab-is-no-splice": (
+        "INCLUDE_ASM(func_00010000);\n// c \\\v\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "trigraph-line-comment": (
+        "INCLUDE_ASM(func_00010000);\n// x ??/\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "trigraph-closer": (
+        "/* x *??/\n/ INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "trigraph-directive": (
+        "INCLUDE_ASM(func_00010000);\n??=define X \\\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "crlf-closer": (
+        "/* x *\\\r\n/ INCLUDE_ASM(func_00010000);\r\nINCLUDE_ASM(func_00010010);\r\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "crlf-string": (
+        'INCLUDE_ASM(func_00010010);\r\nchar *s = "a\\\r\nb"; '
+        "int func_00010000(void) { return 0; }\r\n",
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
 }
+
+
+def test_blank_splice_closer_hides_no_definition():
+    """N1: the definition after `*\\ <newline>/` is live for wcc386, so the D-12 check sees it
+    next to its marker and reports both (it used to read it as part of the comment)."""
+    text, _, _ = CONTINUATION_PROBES["blank-splice-closer-definition"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "both" in problem
+
+
+INLINE_ASM_PROBES = {
+    "blank-splice-closer": "/* x *\\ \n/ void f(void) { _asm int 3 } /* y */\n",
+    "blank-splice-string": 'char *s = "a\\ \nb"; void f(void) { _asm int 3 } char *t = "x";\n',
+    "trigraph-closer": "/* x *??/\n/ void f(void) { _asm int 3 } /* y */\n",
+    "crlf-closer": "/* x *\\\r\n/ void f(void) { _asm int 3 } /* y */\r\n",
+}
+
+
+@pytest.mark.parametrize("probe", sorted(INLINE_ASM_PROBES))
+def test_inline_asm_stays_visible_to_the_scanner(probe):
+    """06-12's hooks scan the same output for inline asm; wcc386 keeps `_asm int 3` live in
+    each probe, so the scanner must too (the chain check.source_marks runs)."""
+    text = INLINE_ASM_PROBES[probe]
+    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+    assert "_asm int 3" in code
+
+
+def test_code_text_is_the_shared_entry_point():
+    """configure.code_text is the one entry point (phases 1-2, then the scanner) that the
+    D-12 check, check.source_marks and 06-12's hooks share."""
+    for text in [*INLINE_ASM_PROBES.values(), *(p[0] for p in CONTINUATION_PROBES.values())]:
+        expected = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+        assert configure.code_text(text) == expected
+
+
+def test_normalisation_keeps_the_line_count():
+    text = "a ??/ \r\nb\rc ??= ??( ??) ??! ??< ??> ??- ??' \\\t\n\f\v"
+    normal = configure.normalize_source(text)
+    assert normal == "a \\\nb\nc # [ ] | { } ~ ^ \\\n\f\v"
+    assert normal.count("\n") == 3
+
+
+def test_directive_after_a_multiline_comment_keeps_its_line():
+    """N2: a directive on the closing line of a multi-line block comment is reported at the
+    line of its `#`, as before the comment was read as one space."""
+    markers = "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n"
+    text = markers + "/* a\nb */ #ifdef FOO\n#endif\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert problem.startswith("line 4: #ifdef")
+    (problem,) = configure.check_unit_source("/* a\nb */ #if 0\n", TWO_GAME)
+    assert problem.startswith("line 2: #if 0 has no matching #endif")
 
 
 def test_line_comment_continuation_hides_a_marker():
