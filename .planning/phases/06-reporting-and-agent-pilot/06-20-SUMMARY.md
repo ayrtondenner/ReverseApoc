@@ -10,7 +10,7 @@ requires:
 provides:
   - ".dockerignore excludes **/*.IMG, **/*.CUE, **/*.mdf, **/*.MDF; tests/test_hygiene.py covers all twelve exe/iso/bin/img/cue/mdf cases"
   - "docs/toolchain.md: SMKP.EXE entry point obj1:0x6CB0 confirmed with parse-le --json on the main checkout's orig/"
-  - "docs/toolchain.md, docs/matching.md, docs/learnings.md: no text describes Phase 5 as pending; candidates tied, -s tied, blind spot limited to the observed shape"
+  - "docs/toolchain.md, docs/matching.md, docs/learnings.md: after fix round 1, no live text describes Phase 5 as pending (dated learnings entries keep their words with an 'Update, 2026-10-25' note); candidates tied, -s tied, blind spot limited to the observed shape"
   - "docs/tools.md verdicts (ast-grep Later, GhidraMCP Later (Phase 7 or later), Nigel Skip per D-05, recomp.fyi D-49 risk); design-spec L76 annotation; legal.md AI-use record (progress/attempts.jsonl) and decomp.wtf line"
 affects: [06-22, 06-27, README, listings, phase-7]
 
@@ -105,7 +105,7 @@ Execution context nonce: dc9d133e246719e5
 
 - DI-22 closed: four disc-image patterns added to `.dockerignore`, pinned by six new parametrized cases in `tests/test_hygiene.py` (TDD: RED 82acd9c, GREEN 9277149).
 - DI-22 closed: `uv run reverseapoc parse-le "<main checkout>/orig/SMKP.EXE" --json` (read-only) prints `"entry": {"object": 1, "offset": 27824, "linear": 93360}`. 27824 = 0x6CB0, so the doc value was right. The row is marked confirmed and the command is cited under the table.
-- DI-20, DI-25 wording, 05 rows 1 and 19a: no text in toolchain.md, matching.md or learnings.md still describes Phase 5 as pending.
+- DI-20, DI-25 wording, 05 rows 1 and 19a. The first pass (0a2cf9b) left about eight "Phase 5 ... pending / will / once" lines in toolchain.md, plus one in matching.md. The review caught them, and fix round 1 rewrote them. After that round, no live text in toolchain.md, matching.md or learnings.md describes Phase 5 as pending. Dated learnings entries keep their original words and gain an "Update, 2026-10-25" note.
 - DI-21 (docs part), 05 row 14, D-03, D-05, D-23, D-41, D-49: tools.md verdicts, the design-spec annotation and the legal.md AI-use record.
 
 ## Task Commits
@@ -205,9 +205,33 @@ See key-decisions in the frontmatter.
 
 ## Issues Encountered
 
-- None blocking. Noticed but left alone, because they are outside the plan's listed items:
-  - toolchain.md:151 (Stack checks row) and matching.md:14 still say the `__CHK` functions get their own rows "once Phase 5 maps them to (source) files". This is future work, but the phase name is stale. A later docs pass could say "once matching reaches them".
-  - learnings.md:77 ("the first Phase 5 matches decide") is inside a dated 2026-10-21 entry, so it stays as history.
+- First pass: I listed only toolchain.md:148 and matching.md:14 here as stale. The review found the toolchain.md lines described above as well. Fix round 1 fixed all of them, and these two as well.
+- Left alone after fix round 1: learnings.md:104 ("decomp.wtf's fork mode as the agent layer"). It sits in the dated 2026-10-19 entry and is not a "Phase 5 pending" claim. legal.md and tools.md already state D-03.
+
+## Fix round 1 (FIX_BASE a479c1f, review-06-20.md)
+
+| Item | Where | What changed |
+|---|---|---|
+| I1 | toolchain.md:128 | 11.0 is "a candidate, tied after the two Phase 5 leaf matches" (10.5/10.6/11.0 tied on game code); Phase 6 records the evidence of each pilot match. 11.0a/b are swept "if a later match favours 11.0 (the two Phase 5 leaf matches did not)" |
+| I1 | toolchain.md:148 | the `__CHK` per-glob rule comes "once a match reaches one (neither Phase 5 match calls `__CHK`)" |
+| I1 | toolchain.md:150 | `-4` vs `-5`: tied after the two Phase 5 leaf matches (no 5-dword copy); Phase 6 records per-match evidence |
+| I1 | toolchain.md:153-156 | the four `-o*`/`-zp*`/`-zm`/`-fp3`/`-fp5` status cells each say why the two leaf matches do not touch the flag, plus the Phase 6 per-match evidence |
+| I1 | toolchain.md:174 | "until a match proves them"; the two leaf matches separate no candidate; D-18's three-function rule; Phase 6 records per-match evidence |
+| I1 | toolchain.md:199 | "A match proves or drops an entry" (this no longer contradicts the :201 paragraph) |
+| I1 (grep) | toolchain.md:34, :37, :81, :139 | :34 and :37: build-to-build diff and primary build follow D-42 (twin matching revisited after Phase 7). :81: the loader README claim "checked in Phase 5", linking to Ghidra and loaders. :139: a per-glob rule overrides the default where a match says so, and none exists yet |
+| I1 | matching.md:14 | `__CHK` rows "once a match reaches one (neither Phase 5 match calls `__CHK`)" |
+| I1 (grep) | learnings.md:77, :103, :110 | dated entries kept as written, each followed by an "Update, 2026-10-25" sentence (tie stands; spike 005 kept the hybrid path; D-42) |
+| I1 | SUMMARY frontmatter `provides` and Accomplishments | the completion claim corrected to what is now true |
+| M1 | toolchain.md:169 | the two matches do not separate the flag set; neither original has a `__CHK` call, which is consistent with `-s` for those two functions |
+| M2 | legal.md:44 | future tense from the Phase 6 driver (plan 06-23) on, and D-23's attempt-number field added |
+| M3 | learnings.md:67 | "This confirms the 2026-10-19 BINNT entry below, which now says so" (it no longer quotes the removed phrase) |
+| M4 | toolchain.md:379 | "11.0 tied at `-4r`, still tied after the two Phase 5 leaf matches" |
+| Notes | test design, ledger | no change, per the ruling |
+
+Verification after fix round 1:
+- `uv run pytest -q -rs tests/test_hygiene.py`: 71 passed, 3 skipped. The skips are the existing `only inside the container` ones.
+- `uv run ruff check .`: All checks passed.
+- Re-grep: every "Phase 5" line in the three docs was reviewed. The remaining "pending", "will", "once" and "first Phase 5 matches" hits are either the corrected wording or dated text followed by its update.
 
 ## Threat Flags
 
