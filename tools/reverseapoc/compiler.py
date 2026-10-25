@@ -309,10 +309,37 @@ def _check_object_name(obj: Path) -> None:
 
 
 def _check_log_name(log: Path) -> None:
-    """The log's lock sidecar is `<log>.lock`, so the log needs a file name. Checked before the
-    compile, so a path without a name (`--log .`, `--log /`) never reaches the runner."""
+    """The log's lock sidecar is `<log>.lock`, so the log needs a file name, and the line is
+    appended to it, so it may not be a directory. Checked before the compile, so a path without
+    a name (`--log .`, `--log /`) or an existing directory never reaches the runner."""
     if not log.name:
         raise CompilerError(f"--log {log} names no file; the lock sidecar is <log>{LOCK_SUFFIX}")
+    if log.is_dir():
+        raise CompilerError(f"--log {log} is a directory; name a file in it")
+
+
+def _is_device(log: Path) -> bool:
+    """A log that exists but is not a regular file: /dev/null, NUL, a FIFO, a console."""
+    return log.exists() and not log.is_file()
+
+
+def _probe_log_lock(log: Path) -> None:
+    """Open and close `<log>.lock` in "a+b", as _log_lock does after the compile, so a log whose
+    sidecar cannot be created fails before the compile instead of after it with the object on
+    disk. It opens the same sidecar the lock opens later and never deletes it, so it adds no
+    race. A device log takes no lock, so it is not probed."""
+    if _is_device(log):
+        return
+    lock = _lock_path(log)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(lock, "a+b"):
+            pass
+    except OSError as exc:
+        raise CompilerError(
+            f"--log {log}: cannot open its lock sidecar {lock} ({exc}); "
+            "the log's directory must be writable"
+        ) from exc
 
 
 def _check_outputs(src: Path, obj: Path, err: Path) -> None:
@@ -497,7 +524,7 @@ def _append_log(log: Path, result: CompileResult) -> None:
     serialisation and its directory may not take a sidecar, so it is written without the lock."""
     log.parent.mkdir(parents=True, exist_ok=True)
     line = _log_line(result)
-    if log.exists() and not log.is_file():
+    if _is_device(log):
         with log.open("a", encoding="utf-8") as fh:
             fh.write(line)
         return
@@ -519,9 +546,9 @@ def compile_rule(
     log: Path | str | None = None,
     stamps: Path | str | None = None,
 ) -> CompileResult:
-    """Compile `src` into `obj` with `rule`. Paths and outputs are checked first, then the gate,
-    so a refused path or binary never reaches the runner and nothing is deleted. A non-zero exit
-    leaves no object behind."""
+    """Compile `src` into `obj` with `rule`. Paths, outputs and the log's lock sidecar are
+    checked first, then the gate, so a refused path, log or binary never reaches the runner and
+    nothing is deleted. A non-zero exit leaves no object behind."""
     root = Path(root if root is not None else REPO_ROOT).resolve()
     watcom_dir = Path(watcom_dir) if watcom_dir is not None else watcom.DEFAULT_INSTALL
     runner = runner if runner is not None else subprocess.run
@@ -536,6 +563,7 @@ def compile_rule(
     guest_err = guest_path(err, root, inside=True)
     _check_outputs(src, obj, err)
     include = _include_list(root, watcom_dir, rule.version)
+    _probe_log_lock(log)
     prefix = runner_prefix(platform)
     gate = check_gate(
         rule.compiler,
