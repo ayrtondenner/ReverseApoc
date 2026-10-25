@@ -1075,3 +1075,34 @@ def test_an_interrupt_is_contained_recorded_and_re_raised(tmp_path):
     assert not (night.repo / "tools" / "x.py").exists()
     assert (night.quarantine / "tools" / "x.py").is_file()
     assert night.commits() == []
+
+
+REFUSE_FEAT_HOOK = """#!/bin/sh
+case "$(head -n 1 "$1")" in
+  feat\\(*) echo "made-up hook refusal" >&2; exit 1 ;;
+esac
+exit 0
+"""
+
+
+def test_a_failed_match_commit_leaves_no_trace_of_a_match(tmp_path):
+    """I2: `git add` succeeds, `git commit` fails (a commit-msg hook that predates the night
+    refuses feat messages): nothing stays staged, status.csv, the feed and the log are back to
+    their pre-attempt bytes, the attempt is GAVE_UP `tool`, and no MATCHED record is ever
+    committed."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    hook = night.repo / ".git" / "hooks" / "commit-msg"
+    _write(hook, REFUSE_FEAT_HOOK)
+    hook.chmod(0o755)
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert "made-up hook refusal" in report.detail
+    assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
+    assert night.kinds("attempt")[0]["abort_reason"] == "tool"
+    assert night.git("diff", "--cached", "--name-only").strip() == ""
+    assert (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8") == STATUS_HEAD
+    assert (night.repo / "decomphub.progress.json").read_text(encoding="utf-8") == "{}\n"
+    assert _unit_text(night) == SCAFFOLD
+    assert night.commits() == [CHORE]
+    assert night.commit_files(CHORE) == [LOG]
+    assert "MATCHED" not in night.file_at(CHORE, LOG)
