@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import re
 import sys
 from collections import Counter
 from dataclasses import dataclass
@@ -1151,11 +1152,17 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
             return attempt.cmd_asm(args.name)
         return attempt.cmd_context()
     except _ERRORS as exc:
-        print(f"reverseapoc attempt: error: {exc}", file=sys.stderr)
+        print(f"reverseapoc attempt: error: {_one_line(exc)}", file=sys.stderr)
         return EXIT_TOOL
     except Exception as exc:  # M9: any other failure is a tool error (2), never a mismatch (1)
-        print(f"reverseapoc attempt: error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"reverseapoc attempt: error: {type(exc).__name__}: {_one_line(exc)}",
+              file=sys.stderr)  # fmt: skip
         return EXIT_TOOL
+
+
+def _one_line(exc: BaseException) -> str:
+    """The exception's text on one line (fix round 2 N1): every CR/LF run becomes a space."""
+    return re.sub(r"[\r\n]+", " ", str(exc))
 
 
 def _cmd_context(args: argparse.Namespace) -> int:
