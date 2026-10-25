@@ -772,6 +772,7 @@ class _Contained:
     quarantined: list[str] = field(default_factory=list)
     not_contained: list[str] = field(default_factory=list)
     not_restored: list[str] = field(default_factory=list)
+    unstage_failed: list[str] = field(default_factory=list)  # bytes back, index entry not
     refused: list[str] = field(default_factory=list)
 
 
@@ -1190,6 +1191,8 @@ class _Night:
             detail += f"; not contained: {_listed(done.not_contained)}"
         if done.not_restored:
             detail += f"; not restored: {_listed(done.not_restored)}"
+        if done.unstage_failed:
+            detail += f"; restored; could not unstage: {_listed(done.unstage_failed)}"
         if done.refused:
             detail += "; " + "; ".join(done.refused)
         try:
@@ -1318,7 +1321,11 @@ class _Night:
                 done.not_restored.append(name)
                 return
             if name.casefold() in tracked:
-                _git_ok(self.deps.git, ["restore", "--staged", "--", name])
+                try:
+                    _git_ok(self.deps.git, ["restore", "--staged", "--", name])
+                except Exception as exc:  # noqa: BLE001 - minor 2: the bytes did come back
+                    done.unstage_failed.append(f"{name} ({type(exc).__name__}: {exc})")
+                    return
             done.restored.append(name)
 
     def _restore_bytes(self, name: str, path: Path, data: bytes) -> bool:
@@ -1538,6 +1545,8 @@ class _Night:
             self._record_attempt(session, GAVE_UP, TOOL, summary)
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not record the attempt: {type(exc).__name__}: {exc}")
+        if len(notes) > 1:  # fix round 3 K1: an incomplete undo commits nothing tonight
+            self.breached = True
         return "; ".join(notes)
 
     def _staged(self) -> list[str]:
