@@ -226,7 +226,7 @@ See key-decisions in the frontmatter. Two points on interfaces later plans call:
 
 - The writes are atomic per file, not across the two EXEs' tables. Every touched table is merged and validated before any is written, so only an OS error between the two `os.replace` calls could leave one table written. That is an exit 2 the driver reports.
 - `write_status` is a public library function. D-21's "no other writer" is enforced by the CLI (only `gate` reaches it), by the scan test, and later by the 06-12 hooks and the 06-16 drift test.
-- Fix round 1: deliberately un-matching a function, or moving a matched start to another unit, has no gate path. Only gate writes status.csv, and gate never removes a matched row: it refuses the cross-check. Removing such a row is an owner action outside this plan. A moved start cannot happen for matched code; a rename can, and it is re-gateable.
+- Fix round 1: deliberately un-matching a function, or moving a matched start to another unit, has no gate path. Only gate writes status.csv, and gate never removes a matched row: it refuses the cross-check. Removing such a row is an owner action outside this plan. A moved start cannot happen for matched code. A rename can happen. Since fix round 2, the tests prove exactly this, on fakes: when symbols.csv renames a matched start and the C defines the new name (as the real check requires), a re-gate passes. It writes the symbols.csv name verbatim and keeps attempts and date (`test_regating_a_renamed_function_updates_its_name`), and `gate --all` passes for it (`test_gate_all_passes_with_a_renamed_match`). The real container check of renamed C is not exercised here. configure's own D-12 check is still placeholder-only, so ninja refuses renamed C until Phase 7 extends it.
 - Fix round 1 (M6, a note for 06-23 and 06-25): `gate --partial` compiles the saved file, and `compiler.source_rule` picks the cflags rule by that file's own repo-relative path (`build/driver/.../best/<unit>.c`), not by `src/<exe>/<unit>.c`. That is harmless while config/cflags.txt has only the `*` rule. Once a D-18 per-glob rule exists, partial percents would be scored with the wrong flags. 06-23 must pick the rule by the unit path, for example by saving the best C under a tree that mirrors `src/<exe>/<unit>.c`, or by passing the unit path to the rule lookup.
 
 ## User Setup Required
@@ -259,6 +259,25 @@ Fix base `ae38da9`. The review approved, with one Important finding (it fails cl
 RED (`a22f512`): 16 new targets failed on their assertions. The full-revert cases raised CheckError, or wrongly exited 0. The rename kept the old name; the stale name passed; the half-write raised a bare OSError; the non-default src passed. The partial with problems wrote a row, the edited file passed, and the stale sha passed. The `--all` text ended "status.csv not written". The three status tables were read without error. Existing tests stayed green; seeded_tree now seeds the real file hashes.
 
 After the fix: `uv run pytest -q tests/test_gate.py tests/test_status.py` gives 95 passed. `uv run pytest -q` gives 1693 passed and 217 skipped (the worktree's real-file skips). `uv run ruff check .` is clean.
+
+## Fix round 2
+
+Fix base `fb18d0c`. The re-review approved fix round 1 (spec compliant), with one new Important finding and one Minor. RED `a777840` (test), GREEN `c661557` (fix).
+
+| Finding | What changed | Test (tests/test_gate.py) |
+|---|---|---|
+| Important: `_reverted` read a renamed function as reverted (it looked for `func_` definitions), so re-gating a renamed match and `gate --all` exited 1 | Ruling applied: `_reverted` keys on configure's D-12 INCLUDE_ASM markers (`source_marks(...).marked`). It reports "reverted to INCLUDE_ASM" and skips check only when every game or thunk row of the unit carries a marker. A unit with neither markers nor the expected definitions goes to check, which refuses it as before (exit 2). | `test_regating_a_renamed_function_updates_its_name` (rewritten: the C defines `UnitInit`, symbols.csv names the start `UnitInit_`), `test_gate_all_passes_with_a_renamed_match` (new), `test_a_unit_with_neither_markers_nor_definitions_goes_to_check` (new). `test_gate_all_exits_1_on_a_fully_reverted_unit` and `test_gating_a_fully_reverted_matched_unit_exits_1` stay green with their C fully marked. |
+| Minor (ruling): the `name` column | status.py's docstring states it: D-20's `name` is the name the build links and check verifies, which is the symbols.csv name verbatim when the start has one, else the functions.csv name. progress.py and the D-22 drift test (06-16/06-17) read this exact name. New `status.check_name`. `gate` and `gate --partial` check every row of the gated unit with it before check runs, so an unwritable name (one containing `$?@.`) exits 2 up front, naming the name, the start and the unit. | `test_an_unwritable_name_is_refused_before_check`, `test_partial_refuses_an_unwritable_name_before_check` |
+
+RED (`a777840`): 5 targets failed.
+- The rewritten rename test and the `--all` rename case exited 1 with "reverted to INCLUDE_ASM".
+- The two name tests got a StatusError after the check had run, not a CheckError before it.
+- The neither-markers case returned exit 1, where check should have raised (`DID NOT RAISE CheckError`).
+
+After the fix:
+- `uv run pytest -q tests/test_gate.py tests/test_status.py`: 99 passed.
+- `uv run pytest -q`: 1697 passed, 217 skipped (the worktree's real-file skips).
+- `uv run ruff check .`: clean.
 
 ## Self-Check: PASSED
 
