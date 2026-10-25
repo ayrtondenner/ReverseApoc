@@ -568,8 +568,9 @@ def _prov(obj: Path) -> Path:
 
 
 def _headers_sha256(files: dict[str, bytes]) -> str:
-    """The include_sha256 scheme: per file under include/, sorted by its POSIX path below
-    include/, a line `<path>\\0<SHA-256 of the content with CRLF as LF>\\n`, hashed."""
+    """The include_sha256 scheme: per project header (a top-level include/*.h, the set
+    build.ninja's cc edge declares), sorted by name, a line `<name>\\0<SHA-256 of the content
+    with CRLF as LF>\\n`, hashed."""
     lines = "".join(f"{rel}\0{_sha256(data.replace(b'\r\n', b'\n'))}\n"
                     for rel, data in sorted(files.items()))  # fmt: skip
     return _sha256(lines.encode("utf-8"))
@@ -582,8 +583,10 @@ def test_compile_writes_a_provenance_stamp(ws):
     nothing else. A failed compile removes it and writes none."""
     src = ws.source()
     src.write_bytes(b"int x;\r\nint y;\n")
-    headers = {"common.h": b"#define A 1\r\n", "sub/b.h": b"int b;\n"}
-    for rel, data in headers.items():
+    headers = {"common.h": b"#define A 1\r\n", "b.h": b"int b;\n"}
+    # Fix round 2, N1: only the top-level *.h are project headers; ninja tracks nothing else.
+    others = {"README.md": b"notes\n", "common.h~": b"backup\n", "sub/c.h": b"int c;\n"}
+    for rel, data in {**headers, **others}.items():
         (ws.root / "include" / rel).parent.mkdir(parents=True, exist_ok=True)
         (ws.root / "include" / rel).write_bytes(data)
     obj = ws.root / "out" / "a.obj"
@@ -597,6 +600,7 @@ def test_compile_writes_a_provenance_stamp(ws):
     assert doc["cflags_sha256"] == _sha256(ws.cflags.read_bytes())
     assert doc["watcom_sha256"] == _sha256(ws.manifest.read_bytes())
     assert doc["include_sha256"] == _headers_sha256(headers)
+    assert compiler.project_headers(ws.root) == [ws.root / "include" / n for n in sorted(headers)]
     assert doc["object_sha256"] == _sha256(obj.read_bytes())
     assert doc["version"] == compiler.PROV_VERSION == 2
     assert compiler.provenance_path(obj) == _prov(obj)
