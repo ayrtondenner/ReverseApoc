@@ -13,7 +13,9 @@ Status values:
 
 Built at base `5d391a9` (after wave 6: plans 06-01..06-16 merged). Wave 7 (06-17..06-22) was running in parallel, so
 its rows say `planned`. Where a closing plan had fix rounds, the Commit(s) column lists the task commits and the
-fix-round commits that touched the item; the full list is in that plan's SUMMARY.
+fix-round commits that touched the item; the full list is in that plan's SUMMARY. The rows 06-21 closes itself
+(DI-26..DI-28, DI-30, DI-31) and the rulings it records (DI-09, DI-10, DI-32) were filled in after its Tasks 2-3
+(225ec66, 80e9c17).
 
 ## A. Phase 6 targets and driver blockers
 
@@ -29,9 +31,9 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-08 | README.md progress placeholder "coming in Phase 6" | 06-22 | none yet | planned 06-22 |
 | DI-09 (spike) | Phase 5 deferral: the decomp.wtf INCLUDE_ASM spike (spike 006, verdict INVALIDATED; own agent layer per D-03/D-04) | 06-01 | f0f79ea, b3b4636 | closed |
 | DI-09 (GhidraMCP) | Phase 5 deferral: GhidraMCP in the context pack | D-41 (DI-21 part: GhidraMCP becomes "Later (Phase 7 or later)"; the tools.md row edit is 06-20's) | none (ruling) | ruled (D-41) |
-| DI-09 (sweeps) | Phase 5 deferral: `-zp`/`-zm`/`-fp` and 11.0a/b flag sweeps | D-41: they run only if a pilot miss needs them; recorded in PROJECT.md Key Decisions by 06-21 | none (ruling) | ruled (D-41) |
-| DI-09 (GUI guide) | Phase 5 deferral: optional Ghidra GUI guide | D-41: no Ghidra GUI guide in Phase 6; recorded in PROJECT.md Key Decisions by 06-21 | none (ruling) | ruled (D-41) |
-| DI-10 | Phase 6 builder decisions (scorer, hooks, progress file names, Nigel vs Python driver) | D-05..D-29 (decided in discuss-phase); PROJECT.md "Left to the builder" lines struck through by 06-21 | none (ruling) | ruled (D-05..D-29) |
+| DI-09 (sweeps) | Phase 5 deferral: `-zp`/`-zm`/`-fp` and 11.0a/b flag sweeps | D-41: they run only if a pilot miss needs them; recorded in PROJECT.md Key Decisions by 06-21 | none (ruling); recorded in 80e9c17 | ruled (D-41) |
+| DI-09 (GUI guide) | Phase 5 deferral: optional Ghidra GUI guide | D-41: no Ghidra GUI guide in Phase 6; recorded in PROJECT.md Key Decisions by 06-21 | none (ruling); recorded in 80e9c17 | ruled (D-41) |
+| DI-10 | Phase 6 builder decisions (scorer, hooks, progress file names, Nigel vs Python driver) | D-05..D-29 (decided in discuss-phase); PROJECT.md "Left to the builder" lines struck through by 06-21 | none (ruling); recorded in 80e9c17 | ruled (D-05..D-29) |
 
 ## B. Small cleanups
 
@@ -66,7 +68,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-20 | Stale doc text: matching.md:57,63; learnings.md:86; toolchain.md:374 and :166 | 06-20 | none yet | planned 06-20 |
 | DI-21 | Owner-left doc items: tools.md:53 ast-grep, design spec :76, README :62/:139, tools.md:16 GhidraMCP (D-41) | 06-20 (docs) and 06-22 (README) | none yet | planned 06-20, 06-22 |
 | DI-22 | Phase 1 carry-overs: toolchain.md:13 SMKP entry point obj1:0x6CB0; .dockerignore `*.IMG`, `*.CUE`, `*.mdf` | 06-20 | none yet | planned 06-20 |
-| DI-23 | 04 security observations T-04-15/16 (10.5 real proofs), T-04-17 (failing assert printed bytes), T-04-36 (unlogged scratch checks) | 06-07 Tasks 2-3 and fix round 1; 04-SECURITY.md closure recorded by 06-21 Task 2 | 1b34ae3, e23cbcc, fdf0e0a | closed |
+| DI-23 | 04 security observations T-04-15/16 (10.5 real proofs), T-04-17 (failing assert printed bytes), T-04-36 (unlogged scratch checks) | 06-07 Tasks 2-3 and fix round 1; 04-SECURITY.md closure recorded by 06-21 Task 2 | 1b34ae3, e23cbcc, fdf0e0a; 225ec66 | closed |
 | DI-24 | Uncovered code: TACP ~0x29D4D..0x31040 and the UFO2P 3-byte tail at 0x000CFADA have no functions.csv rows | D-40 (counts as unmatched now; rows added when matching reaches it); D-50 (shown as an "uncovered" segment, implemented by 06-18) | none (ruling) | ruled (D-40, D-50) |
 | DI-25 (wording) | Compiler candidates unseparated: fix the stale toolchain.md wording | 06-20 | none yet | planned 06-20 |
 | DI-25 (evidence) | Compiler candidates unseparated: log the evidence from each pilot match | 06-27 (after the owner's pilot run) | none yet | pending 06-27 |
@@ -75,18 +77,18 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 
 | ID | Item | Closed by | Commit(s) | Status |
 |----|------|-----------|-----------|--------|
-| DI-26 | T-04-13: owner signed A1 off in 04-UAT.md, but 04-SECURITY.md still said pending | 06-21 Task 2 | none yet | planned 06-21 |
-| DI-27 | 04-VALIDATION.md sign-off boxes unticked and "Approval: pending" against a validated frontmatter | 06-21 Task 2 | none yet | planned 06-21 |
-| DI-28 | 05-VERIFICATION.md body said "Status: human_needed", frontmatter passed | 06-21 Task 2 | none yet | planned 06-21 |
+| DI-26 | T-04-13: owner signed A1 off in 04-UAT.md, but 04-SECURITY.md still said pending | 06-21 Task 2 (records the owner's A1 sign-off, 04-UAT.md test 3, 38b3b6b, D-41) | 225ec66 | closed |
+| DI-27 | 04-VALIDATION.md sign-off boxes unticked and "Approval: pending" against a validated frontmatter | 06-21 Task 2 (cites 04-UAT.md, f606a13, D-41) | 225ec66 | closed |
+| DI-28 | 05-VERIFICATION.md body said "Status: human_needed", frontmatter passed | 06-21 Task 2 (cites 05-UAT.md 5/5, c988bed, and the override, 4491f04) | 225ec66 | closed |
 | DI-29 | Spike 005 VALIDATED verdict needs the owner's recorded sign-off (owner line at the pilot checkpoint, D-41) | 06-26 (owner line) and 06-27 | none yet | pending 06-27 |
-| DI-30 | STATE.md Phase 5 blocker repeats its RESOLVED text; Deferred Items table said none | 06-21 Task 3 | none yet | planned 06-21 |
-| DI-31 | Backlog 999.2: Phase 7 SC4 (DEC-04) reworded so readlint also rejects `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit (readlint itself stays Phase 7) | 06-21 Task 3 | none yet | planned 06-21 |
+| DI-30 | STATE.md Phase 5 blocker repeats its RESOLVED text; Deferred Items table said none | 06-21 Task 3 | 80e9c17 | closed |
+| DI-31 | Backlog 999.2: Phase 7 SC4 (DEC-04) reworded so readlint also rejects `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit (readlint itself stays Phase 7) | 06-21 Task 3 | 80e9c17 | closed |
 
 ## D. Owner-only
 
 | ID | Item | Closed by | Commit(s) | Status |
 |----|------|-----------|-----------|--------|
-| DI-32 | Primary build: installed build vs CD v1.00; OpenApoc offsets re-located before reuse | D-42 (installed build primary, CD v1.00 cross-reference only, offsets re-located by signature in Phase 7, twin matching after Phase 7); recorded in PROJECT.md Key Decisions by 06-21 Task 3 | none (ruling) | ruled (D-42) |
+| DI-32 | Primary build: installed build vs CD v1.00; OpenApoc offsets re-located before reuse | D-42 (installed build primary, CD v1.00 cross-reference only, offsets re-located by signature in Phase 7, twin matching after Phase 7); recorded in PROJECT.md Key Decisions by 06-21 Task 3 | none (ruling); recorded in 80e9c17 | ruled (D-42) |
 | DI-33 | config/watcom.toml notes on lines 37 and 106 said "LE"; now "LX" (D-43, D-47, owner-authorized one-time edit) | 06-07 Task 3 | 28342e1 | closed |
 
 ## E. Listing work (owner, 2026-10-24)
