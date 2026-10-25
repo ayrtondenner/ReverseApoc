@@ -13,7 +13,7 @@ provides:
 affects: [06-16, 06-20]
 
 actuals:
-  tokens: 2214
+  tokens: 19175  # chars/4 over the full text of the six changed files (76699 chars)
   tasks: 2
   commits: 6
 plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
@@ -35,7 +35,7 @@ key-files:
     - docker/Dockerfile
 
 key-decisions:
-  - "The exact pin regex is _EXACT_PIN (PEP 508 name, ==, a version with no =, ;, [ or space), matched with fullmatch"
+  - "The exact pin regex is _EXACT_PIN (PEP 508 name, ==, a version of letters, digits and .+!_- starting with a letter or digit), matched with fullmatch"
   - "MZ constants come from tests/conftest.py, not le.py (ruling F21)"
 
 patterns-established:
@@ -140,8 +140,8 @@ Execution context nonce: 787955882886fbc5
 
 ## Decisions Made
 
-- The pin regex accepts a PEP 508 name and a version with no `=`, `;`, `[` or space, so it refuses markers and
-  extras that `partition` let through. The one real pin (`capstone==5.0.9`) still passes.
+- The pin regex accepts a PEP 508 name and a version of letters, digits and `.+!_-` (starting with a letter or
+  digit), an allow-list, so it refuses markers and extras that `partition` let through. The one real pin (`capstone==5.0.9`) still passes.
 
 ## Deviations from Plan
 
@@ -193,6 +193,26 @@ None.
 ## Self-Check: PASSED
 
 - All six modified files exist; commits 43daac3, 9d817e4, 02031f8, d7e4601, 191d094, d8be60c are ancestors of HEAD.
+
+## Fix round 1
+
+The review approved the plan with no Critical or Important findings and asked for three cosmetic minors
+(FIX_BASE 4b4c4c9).
+
+1. **The pin regex comment matches the regex.** tests/test_hygiene.py's comment on `_EXACT_PIN` now says the
+   version is letters, digits and `.+!_-` starting with a letter or digit (an allow-list), instead of "no `=`,
+   `;`, `[` or space". The same wording is fixed in this SUMMARY's key-decisions and "Decisions Made".
+   Code comment: `6b7531b`; SUMMARY lines: this fix-round SUMMARY commit.
+2. **`actuals.tokens` re-measured.** 2214 was chars/4 over the diff text only. It is now 19175, chars/4 over the
+   full text of the six changed files (76699 chars), the scale the plan estimate uses. `commits: 6` and
+   `plan_head_after: d8be60c` still describe the plan's task commits; the fix-round commits are listed here.
+   Commit: this fix-round SUMMARY commit.
+3. **Spike 005 P3 paragraph rewrapped and reworded.** README.md:175-181 no longer has the ragged short line, and
+   "a blind spot of the observed shape" is now "where objdiff missed a wrong symbol". The claim is the same.
+   Commit: `a3adc21`.
+
+Re-run after the fixes: `uv run pytest -q tests/test_hygiene.py` 65 passed, 3 skipped (container-only, pre-existing);
+`uv run ruff check .` all checks passed.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
