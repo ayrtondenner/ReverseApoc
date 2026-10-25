@@ -123,6 +123,7 @@ class Sess:
     timeout: bool = False
     raises: BaseException | None = None
     link: tuple[str, Path] | None = None
+    append: tuple[tuple[str, str], ...] = ()  # (repo-relative file, text appended to it)
 
 
 def _plant_dir_link(link: Path, target: Path) -> None:
@@ -241,6 +242,9 @@ class Night:
                              **extra)  # fmt: skip
         for rel, text in spec.files:
             _write(Path(cwd) / rel, text)
+        for rel, text in spec.append:
+            with (Path(cwd) / rel).open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
         if spec.link is not None:
             _plant_dir_link(Path(cwd) / spec.link[0], spec.link[1])
         attempt_dir = Path(env[attempt.DIR_ENV])
@@ -1389,3 +1393,41 @@ def test_a_refused_pre_gate_restore_is_named(tmp_path, monkeypatch):
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert f"not restored: config/{EXE}/status.csv" in report.detail
     assert "made-up disk failure" in report.detail
+
+
+def test_a_failing_restore_during_containment_spares_the_other_strays(tmp_path):
+    """J2: a lock at the first git restore of containment: that file is named "not
+    restored", the other strays are still restored or quarantined, the reason stays
+    guardrail, and nothing is committed."""
+    files = (("tools/keep.py", "# changed\n"), ("decomphub.progress.json", "agent\n"))
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py", files=files)])
+    night.fail_verbs["restore"] = 1
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert "not restored: decomphub.progress.json (" in report.detail
+    assert (night.repo / "tools" / "keep.py").read_text(encoding="utf-8") == "# made up\n"
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    assert night.commits() == []
+
+
+def test_a_session_edit_of_the_log_and_a_table_is_never_committed(tmp_path):
+    """J2: the session appends to attempts.jsonl and edits config/tacp/status.csv, and the
+    first restore meets a lock: neither is committed, both are named, the log is restored."""
+    sess = Sess(append=((LOG, '{"agent":"line"}\n'),),
+                files=(("config/tacp/status.csv", "agent edit\n"),))  # fmt: skip
+    night = Night(tmp_path, sessions=[sess])
+    night.fail_verbs["restore"] = 1
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert night.commits() == []
+    assert '"agent"' not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert "config/tacp/status.csv" in report.detail and LOG in report.detail
+
+
+def test_a_raising_session_with_strays_commits_nothing(tmp_path):
+    """J2: containment ran, so the breach is sticky: even an `error` stop commits nothing."""
+    sess = Sess(raises=RuntimeError("made-up crash"), files=(("tools/x.py", "# made up\n"),))
+    night = Night(tmp_path, sessions=[sess])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert night.commits() == []
