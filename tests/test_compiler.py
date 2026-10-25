@@ -434,13 +434,13 @@ def test_stamp_with_the_wrong_shape_is_a_miss(ws, monkeypatch, stamp):
 
 def test_stamp_written_atomically(ws, monkeypatch):
     written: list[Path] = []
-    real = compiler._write_atomic
+    real = compiler.write_atomic
 
     def recording(path, data):
         written.append(Path(path))
         real(path, data)
 
-    monkeypatch.setattr(compiler, "_write_atomic", recording)
+    monkeypatch.setattr(compiler, "write_atomic", recording)
     assert ws.compile(ws.source(), ws.root / "out" / "a.obj", FakeCompiler()).ok
     assert written == [_stamp(ws)]
     assert sorted(p.name for p in ws.stamps.iterdir()) == [_stamp(ws).name]
@@ -455,7 +455,7 @@ def test_a_stamp_that_cannot_be_written_never_fails_a_compile(ws, monkeypatch, f
     # The stamp is only a cache: losing it costs a re-hash next time, never the compile.
     stamps = ws.stamps
     if failure == "write":
-        monkeypatch.setattr(compiler, "_write_atomic", _disk_full)
+        monkeypatch.setattr(compiler, "write_atomic", _disk_full)
     else:
         (ws.root / "a-file").write_text("not a directory\n")
         stamps = ws.root / "a-file" / "cache"

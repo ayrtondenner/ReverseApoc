@@ -34,7 +34,7 @@ from typing import Any
 
 from . import omf, watcom
 from .cflags import Rule, load_cflags, select_rule
-from .splice import _write_atomic
+from .fileio import write_atomic
 from .targets import REPO_ROOT, hash_file
 
 # The log lock is an OS lock, which the kernel frees when its holder exits.
@@ -162,7 +162,7 @@ def _banner(exe: Path, version: str, runner: Runner, platform: str) -> str:
 # sha1]}, "banner"}. It is reused only while the root is the same, every gated file has the same
 # size and mtime, and every recorded SHA-1 is still the manifest's. Parallel processes share
 # nothing else: each writes its own temporary file and swaps the stamp in whole
-# (splice._write_atomic), and a torn, unreadable or wrong-shaped stamp is a miss that is
+# (fileio.write_atomic), and a torn, unreadable or wrong-shaped stamp is a miss that is
 # re-hashed, never trusted.
 
 
@@ -203,7 +203,7 @@ def _write_stamp(stamp: Path, root: Path, files: dict[str, list], banner: str) -
     data = {"root": str(root), "files": files, "banner": banner}
     try:
         stamp.parent.mkdir(parents=True, exist_ok=True)
-        _write_atomic(stamp, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
+        write_atomic(stamp, (json.dumps(data, indent=2) + "\n").encode("utf-8"))
     except OSError:
         pass
 
