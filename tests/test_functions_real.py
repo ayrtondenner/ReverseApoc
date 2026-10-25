@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra, requires_version
+from reverseapoc import cli
 from reverseapoc.asm import OBJ_EXECUTABLE, data_ranges
 from reverseapoc.functions import (
     RUNTIME_VERSION,
@@ -47,7 +48,6 @@ from reverseapoc.functions import (
     reconcile,
     runtime_aliases,
     runtime_entries,
-    seed_runtime_rows,
     symbols_csv_path,
     units_csv_path,
 )
@@ -117,18 +117,25 @@ def _export_csv(name: str) -> Path:
     return export_functions(name, ORIG_DIR, root).path
 
 
-def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
-    """The LIB386 of the version each runtime row is seeded from (the rule of the `functions`
-    verb: 10.6 where the row lists it, else its first version)."""
-    versions = {RUNTIME_VERSION if RUNTIME_VERSION in m.versions else m.versions[0]
-                for m in matches if m.versions}  # fmt: skip
-    for version in sorted(versions):
-        requires_version(version)
-    return load_libraries(WATCOM_DIR, sorted(versions))[0]
+def _require_runtime_tree(matches: list[MatchRange]) -> None:
+    """Skip unless the RUNTIME_VERSION tree is installed. Every committed runtime.csv row lists
+    that version, so it is the only LIB386 cli's version rule loads; a row without it fails
+    here instead of being seeded from a tree this test never required."""
+    requires_version(RUNTIME_VERSION)
+    assert [m.start for m in matches if RUNTIME_VERSION not in m.versions] == []
 
 
 def _runtime_rows(matches: list[MatchRange]) -> list[FunctionRow]:
-    return seed_runtime_rows(matches, _libraries(matches))
+    """The runtime rows exactly as the `functions` verb seeds them, through cli's own helper
+    (05-REVIEW row 16a: no copy of its version rule here)."""
+    _require_runtime_tree(matches)
+    return cli._seeded_runtime_rows(matches, WATCOM_DIR)
+
+
+def _libraries(matches: list[MatchRange]) -> list[LoadedLibrary]:
+    """The RUNTIME_VERSION LIB386, the one cli's rule picks for every committed row."""
+    _require_runtime_tree(matches)
+    return load_libraries(WATCOM_DIR, [RUNTIME_VERSION])[0]
 
 
 @pytest.fixture(scope="module", params=EXES)
