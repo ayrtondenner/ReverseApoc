@@ -230,8 +230,17 @@ class Night:
             with status.open("a", encoding="utf-8", newline="\n") as fh:
                 fh.write(f"0x{pick.start:08X},{pick.name},{pick.unit},matched,100.00,{attempts}\n")
             _write(self.repo / "decomphub.progress.json", '{"matched": 1}\n')
-        doc = {"ok": code == 0, "checks": [{"splice": [{"exe": "UFO2P.EXE", "sha1": SHA_UFO2P},
-                                                       {"exe": "TACP.EXE", "sha1": SHA_TACP}]}]}
+        doc = {
+            "ok": code == 0,
+            "checks": [
+                {
+                    "splice": [
+                        {"exe": "UFO2P.EXE", "sha1": SHA_UFO2P},
+                        {"exe": "TACP.EXE", "sha1": SHA_TACP},
+                    ]
+                }
+            ],
+        }
         return GateRun(code, doc)
 
     def _partial(self, pick: Pick, src: str, attempts: int) -> int:
@@ -338,7 +347,8 @@ def test_match_commits_one_function(tmp_path):
     night.run()
     assert [s for s in night.commits() if s.startswith("feat(")] == [MATCH_SUBJECT]
     assert night.commit_files("feat(") == sorted(
-        [UNIT_REL, f"config/{EXE}/status.csv", "decomphub.progress.json", LOG])
+        [UNIT_REL, f"config/{EXE}/status.csv", "decomphub.progress.json", LOG]
+    )
     body = night.message("feat(")
     for needle in ("attempt 1/3", "model claude-opus-5-5", "turns 3", "1200 input",
                    "300 output", "5000 cache read", "800 cache creation", "seconds 45",
@@ -351,7 +361,7 @@ def test_match_commits_one_function(tmp_path):
     assert adds and all(call[call.index("add") + 1] == "--" for call in adds)
     assert not [c for c in night.git_calls if "-A" in c or "--all" in c or c[-1:] == ["."]]
     commit = next(call for call in night.git_calls if _verb(call) == "commit")
-    assert "-F" in commit and commit[commit.index("--") + 1:] == adds[0][adds[0].index("--") + 1:]
+    assert "-F" in commit and commit[commit.index("--") + 1 :] == adds[0][adds[0].index("--") + 1 :]
     # Security ruling (06-23 commit_match): paths are never globs.
     assert all(call[0] == "--literal-pathspecs" for call in night.git_calls
                if _verb(call) in ("add", "commit"))  # fmt: skip
@@ -393,7 +403,8 @@ def test_match_commit_adds_new_files(tmp_path):
     night.run()
     assert night.scaffolded == [PICK]
     assert night.commit_files("feat(") == sorted(
-        [UNIT_REL, "include/x.h", f"config/{EXE}/status.csv", "decomphub.progress.json", LOG])
+        [UNIT_REL, "include/x.h", f"config/{EXE}/status.csv", "decomphub.progress.json", LOG]
+    )
 
 
 # ---- Task 2: caps, backoff, stop classes, the audit and the reset ----
