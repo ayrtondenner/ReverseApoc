@@ -47,6 +47,7 @@ FUNC_ENV = "REVERSEAPOC_FUNC"
 DIR_ENV = "REVERSEAPOC_ATTEMPT_DIR"
 CHECK_BUDGET = 25  # D-07: "or stop after 25 check runs", enforced here
 CHECK_TIMEOUT = 580  # seconds; under the Bash tool's 600 s cap, so the run is still logged
+RM_TIMEOUT = 15  # seconds for `docker rm -f` after a timeout: 580 + 15 < 600 (fix round 2 N2)
 CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
 CHECK_LOCK = "check.lock"
@@ -100,20 +101,22 @@ class Ran:
     timed_out: bool = False  # the runner stopped the client; the container may still run (M7)
 
 
-Runner = Callable[[Sequence[str]], Ran]
+Runner = Callable[..., Ran]  # runner(argv) for a check; runner(argv, timeout=s) for a removal
 
 
-def default_runner(argv: Sequence[str]) -> Ran:
-    """Runs argv from the repository root (where compose.yaml is), no shell. A missing docker
-    or a timeout becomes a failed run (exit 2), so it is still logged and counted."""
+def default_runner(argv: Sequence[str], *, timeout: float = CHECK_TIMEOUT) -> Ran:
+    """Runs argv from the repository root (where compose.yaml is), no shell, for at most
+    `timeout` seconds. A missing docker or a timeout becomes a failed run (exit 2), so it is
+    still logged and counted."""
     try:
         proc = subprocess.run(list(argv), cwd=ROOTS.repo, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=CHECK_TIMEOUT,
+                              encoding="utf-8", errors="replace", timeout=timeout,
                               check=False)  # fmt: skip
     except FileNotFoundError as exc:
         return Ran(EXIT_TOOL, "", f"{argv[0]} not found: {exc}")
     except subprocess.TimeoutExpired:
-        return Ran(EXIT_TOOL, "", f"the check ran longer than {CHECK_TIMEOUT} s and was stopped",
+        command = " ".join(argv[:3])
+        return Ran(EXIT_TOOL, "", f"`{command}` ran longer than {timeout:g} s and was stopped",
                    timed_out=True)  # fmt: skip
     return Ran(proc.returncode, proc.stdout or "", proc.stderr or "")
 
@@ -200,11 +203,20 @@ def _notes(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path:
 # ---- attempt check ----
 
 
+def container_prefix(attempt_dir: Path) -> str:
+    """`reverseapoc-attempt-<8 hex>-`: the single source of an attempt's container names (fix
+    round 2 N3). The hex is of sha256 of the RESOLVED attempt dir's POSIX path, so any spelling
+    of the directory gives the same prefix; the 06-23 driver reuses this to remove a
+    session's leftover containers."""
+    resolved = Path(attempt_dir).resolve().as_posix()
+    digest = hashlib.sha256(resolved.encode("utf-8")).hexdigest()
+    return f"{CONTAINER_PREFIX}{digest[:_DIR_HEX]}-"
+
+
 def container_name(claim: Claim, stem: str) -> str:
-    """M7: reverseapoc-attempt-<8 hex of the attempt dir>-<NNNN>, unique per attempt and run, so
-    a run the wrapper stopped (and the driver after a session, 06-23) can remove it by name."""
-    digest = hashlib.sha256(claim.attempt_dir.as_posix().encode("utf-8")).hexdigest()
-    return f"{CONTAINER_PREFIX}{digest[:_DIR_HEX]}-{stem}"
+    """M7: container_prefix(attempt dir) + <NNNN>, unique per attempt and run, so a run the
+    wrapper stopped (and the driver after a session, 06-23) can remove it by name."""
+    return container_prefix(claim.attempt_dir) + stem
 
 
 def container_check_argv(claim: Claim, *, sweep: bool, name: str) -> tuple[str, ...]:
@@ -469,10 +481,11 @@ def run_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) -> tup
 
 
 def _remove_container(name: str, runner: Runner, held: _Held) -> list[str]:
-    """M7: after a timeout, `docker rm -f <name>` through the same runner. If that fails, the
-    lock stays (`held.keep`): the orphan may still write build/, so this attempt's checks end."""
+    """M7: after a timeout, `docker rm -f <name>` through the same runner, for at most
+    RM_TIMEOUT seconds (N2). If that fails, is slow or raises, the lock stays (`held.keep`):
+    the orphan may still write build/, so this attempt's checks end."""
     try:
-        removed = runner(("docker", "rm", "-f", name)).returncode == EXIT_OK
+        removed = runner(("docker", "rm", "-f", name), timeout=RM_TIMEOUT).returncode == EXIT_OK
     except Exception:  # noqa: BLE001 - any failure to remove it fails closed
         removed = False
     if removed:
@@ -505,7 +518,6 @@ def _locked_check(
     started = CLOCK()
     ran = runner(container_check_argv(claim, sweep=sweep, name=name))
     seconds = CLOCK() - started
-    removal = _remove_container(name, runner, held) if ran.timed_out else []
     doc = _parse(ran.stdout)
     try:
         if doc is None:
@@ -521,6 +533,8 @@ def _locked_check(
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(checks / f"{stem}.json", (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
     _append(log, line)
+    # N2: the evidence is on disk before the removal, so a slow removal cannot lose it.
+    removal = _remove_container(name, runner, held) if ran.timed_out else []
     return line.exit, "\n".join([summary, *removal])
 
 
