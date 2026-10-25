@@ -25,6 +25,12 @@ ALWAYS_COMMAND = (
     "pre-tool-use --layer always || exit 2"
 )
 EDIT_TOOLS = "Edit|Write|MultiEdit|NotebookEdit"
+# git's safe.directory=* for the tests that run real git against this checkout (ruling F2b): in
+# the container the bind mount belongs to another user, and git refuses it ("dubious
+# ownership"). Passed through the environment, as tests/test_githooks.py does; hooks.py itself
+# stays fail-closed when git refuses (exit 2).
+SAFE_GIT_ENV = {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "safe.directory",
+                "GIT_CONFIG_VALUE_0": "*"}  # fmt: skip
 
 
 class _Env(dict):
@@ -588,7 +594,9 @@ def test_matching_write_allowed_is_the_one_allowlist():
     )
 
 
-def test_main_tracks_headers_with_git():
+def test_main_tracks_headers_with_git(monkeypatch):
+    for key, value in SAFE_GIT_ENV.items():
+        monkeypatch.setenv(key, value)
     tracked = hooks._git_tracked(str(REPO_ROOT))
     assert tracked("include/common.h")
     assert tracked("INCLUDE/COMMON.H")
@@ -596,7 +604,7 @@ def test_main_tracks_headers_with_git():
 
 
 def test_matching_entry_point_end_to_end():
-    env = _Env({**os.environ, **CLAIM})
+    env = _Env({**os.environ, **CLAIM, **SAFE_GIT_ENV})
     env.pop("REVERSEAPOC_ATTEMPT_NOTES", None)
 
     def run(payload: dict) -> subprocess.CompletedProcess[bytes]:
@@ -836,11 +844,15 @@ def _through_shell(command: str, payload: dict, *, cwd: Path, env: dict) -> tupl
 
 
 def _session_env() -> dict:
-    """The environment a hook sees outside `uv run`: no CLAUDE_PROJECT_DIR, no VIRTUAL_ENV and
-    no PATH entry inside the checkout (pytest runs with the project's venv on PATH)."""
+    """The environment a hook sees outside `uv run`: no CLAUDE_PROJECT_DIR, no VIRTUAL_ENV, no
+    UV_* variable and no PATH entry inside the checkout (pytest runs with the project's venv on
+    PATH). UV_PROJECT_ENVIRONMENT is kept when set (ruling F2b): the container's venv lives at
+    /opt/venv outside the bind mount, and without it uv would try to replace the host's .venv."""
     root = str(REPO_ROOT).casefold()
     dropped = ("CLAUDE_PROJECT_DIR", "VIRTUAL_ENV")
-    env = {k: v for k, v in os.environ.items() if k not in dropped and not k.startswith("UV_")}
+    kept = ("UV_PROJECT_ENVIRONMENT",)
+    env = {k: v for k, v in os.environ.items()
+           if k not in dropped and (k in kept or not k.startswith("UV_"))}  # fmt: skip
     keep = [d for d in env.get("PATH", "").split(os.pathsep)
             if d and not os.path.abspath(d).casefold().startswith(root)]  # fmt: skip
     return {**env, "PATH": os.pathsep.join(keep)}
