@@ -21,6 +21,10 @@ actuals:
   commits: 12     # measured: git rev-list --count d86e673..HEAD before this SUMMARY commit
 plan_head_before: d86e673dc3ab71512445f2349cbc7888b7543fac
 plan_head_after: dc3c34f60cc881959d603f084327e802563c7295
+fix_round_1:
+  base: d73dbb949f5f89cb5cf45d356aca10742642986e
+  head_before_summary: a4615bc
+  commits: 7  # git rev-list --count d73dbb9..a4615bc; the round's SUMMARY commit is one more
 
 tech-stack:
   added: []
@@ -226,6 +230,26 @@ See key-decisions in the frontmatter.
 - **The claude executable** is `shutil.which("claude")`; assumed to be the native `claude.exe` from `claude install`. A `.cmd` shim may not start under an argv-list Popen.
 - **Compose project name** is the checkout directory name normalized (`reverseapoc`). If the owner sets `COMPOSE_PROJECT_NAME`, the cleanup filter finds no container (no error).
 - **A leaky canary leaves its files** (for example tools/x.py) for inspection; restore them before the pilot.
+
+## Fix round 1 (FIX_BASE d73dbb9; review-06-25.md, rulings fixround-06-25-r1.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| I1 | ghidra-export exit 1 was taken as "some drafts missing", but every ghidra-export tool error, a traceback and many docker failures exit 1 too: a broken Ghidra let the dry run exit 0 | The drafts call is `ghidra-export EXE --json --drafts ...`. Exit 0 is done. Exit 1 passes only with a parseable GhidraDrafts document whose `missing` list is non-empty, logged per EXE. Anything else is REFUSED `drafts`, naming the exit code and the last output line | `test_preflight_accepts_exit_1_only_with_missing_drafts_named`, `test_preflight_refuses_any_other_drafts_failure` (6 cases: traceback, empty `missing`, non-JSON, malformed `missing`, exit 2, exit 125), `test_preflight_regenerates_listings_and_drafts` (argv carries `--json`) | 2f74f9e, 8bd5d3b |
+| I2 | A corrupt difficult.json, a malformed committed status.csv, a runner raising PermissionError, a missing git and a failing dry-run pack escaped as exit 1 with no JSON document | `run_drive` runs each step in a `_phase(reason)` that turns any error into `Refused` (preflight, canary, picks, drafts, pack; world was already covered). Result: exit 2 and one JSON document (F13). The night itself keeps 06-23's STOPPED handling. `command_runner` maps every OSError (127 for a missing program, 126 otherwise); `git_runner` maps one to a failed call the same way | `test_a_corrupt_difficult_list_is_refused`, `test_a_malformed_committed_status_table_is_refused`, `test_a_runner_that_raises_is_refused`, `test_a_missing_git_is_refused`, `test_a_failing_pack_in_the_dry_run_is_refused`, `test_command_runner_maps_every_os_error` (3 cases), `test_git_runner_maps_an_os_error` | 9d55132, 5496511 |
+| Minor 2 | The canary did not check HEAD or refs: a commit leaves `git status` clean | HEAD and every ref (`for-each-ref`) are recorded before and after the session; any move is a FAIL naming it | `test_canary_fails_when_head_moves` | 090e404, 95b7ad1 |
+| Minor 3 | The canary removed no containers | After the session, `container_remover(repo, run)(attempt.container_prefix(attempt_dir))` runs before the tree is measured, as the night does. A failed removal is a FAIL line | `test_canary_removes_its_containers_by_the_attempt_prefix`, `test_canary_names_a_failed_container_removal` | 090e404, 95b7ad1 |
+| Minor 1 | A reused `--run ID` could pass on an earlier canary's context.md or checks.jsonl | An existing canary attempt directory is REFUSED `run id` (`mkdir` without exist_ok), and no session starts | `test_canary_refuses_a_reused_run_id` | 090e404, 95b7ad1 |
+| Minor 4, 5 | docs/workflow.md was inaccurate (the canary precomputing drafts), the refusal list was incomplete, there was no recovery after a leaky canary, nothing said that a STOPPED night skips the end checks, and the open assumptions were only in this SUMMARY | Changes: one table of every refusal reason; the drafts rule, and a note that the canary does not precompute drafts; the canary's new checks and its literal `CANARY PASS` / `CANARY FAIL` line; a fresh `--run ID` per canary; "After a FAILed or leaky canary" (git status, `git restore --source=HEAD -- <paths>`, delete untracked strays, check by hand the pinned/fingerprinted paths git cannot see, `docker rm -f`); "A STOPPED night skips both end checks"; "Open assumptions to watch at the pilot checkpoint", with all nine items | docs: the three plan greps and test_hygiene | a4615bc (docs) |
+| Minor 6, 7 | `_chk_targets`/`_runtime_starts` are duplicated from cli.py; driver.py is large | Not in the work order; left as they are | - | - |
+
+RED evidence: each RED commit failed on assertions only. Escapes were reported through `pytest.fail`. 2f74f9e had 5 failures: the argv without `--json`, and 4 × `assert 0 == 2`; exit 2 and exit 125 passed as pins. 9d55132 had 8 failures: `run_drive let DriverError/StatusError/PermissionError/FileNotFoundError/OSError escape`, `command_runner let PermissionError/OSError escape` and `git_runner let FileNotFoundError escape`; the FileNotFoundError case of command_runner passed as a pin. 090e404 had 4 failures: `(0, 'PASS') == (1, 'FAIL')` × 2, `[] == [['docker', 'ps', ...]]` and `assert 0 == 2`.
+
+Verification after fix round 1 (host, worktree):
+- `uv run pytest -q tests/test_drive.py tests/test_drive_real.py` with REVERSEAPOC_ORIG at the main checkout: 66 passed, no skips.
+- Full suite (REVERSEAPOC_ORIG / WATCOM_DIR / GHIDRA_EXPORT at the main checkout): **2711 passed, 44 skipped** in 469 s, exit 0. None of the skips comes from test_drive*.py; the two `test_driver.py` R-A symlink skips are 06-23's.
+- `uv run ruff check .`: All checks passed.
+- Nothing reached the network. No `drive` without `--dry-run`, no `--canary`, no real claude and no docker were run; every command went through fakes.
 
 ## Known Stubs
 
