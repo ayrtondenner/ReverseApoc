@@ -25,17 +25,25 @@ import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from . import asm, contextpack
+from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
+from .functions import FunctionRow, read_functions_csv, read_symbols_csv
 from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, attempt_form_matches
-from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT
+from .le import LE, Fixup
+from .libmatch import read_target, select_target
+from .status import read_status, status_path
+from .symbols import SymbolTable
+from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, config_dir, load_manifest
 
 FUNC_ENV = "REVERSEAPOC_FUNC"
 DIR_ENV = "REVERSEAPOC_ATTEMPT_DIR"
@@ -429,3 +437,191 @@ def cmd_check(*, sweep: bool) -> int:
     code, text = run_check(claim, sweep=sweep, runner=RUNNER, roots=ROOTS)
     print(text)
     return code
+
+
+# ---- listings and the context pack (attempt asm, attempt context, the context verb; D-13) ----
+
+IDIOM_HEADINGS = ("Known idioms", "Relocation rules")  # the matching.md sections a pack holds
+NOTES_CAP = 6144  # bytes of earlier notes kept (the newest), so notes alone never fill the pack
+ATTEMPT_LOG = Path("progress") / "attempts.jsonl"  # the driver's tracked log (06-23)
+MANUAL_RUN = "manual"  # build/driver/manual/<exe>/<func>/: packs built by hand
+_SECTION = re.compile(r"(?m)^(?=## )")
+
+
+@dataclass(frozen=True)
+class ExeData:
+    """One EXE as the pack and the listings need it: rows, symbols and the unrelocated image."""
+
+    stem: str  # ufo2p
+    rows: list[FunctionRow]
+    symbols: SymbolTable
+    flat: bytes | bytearray
+    fixups: list[Fixup]
+
+
+def load_exe(
+    exe: str,
+    *,
+    orig: Path,
+    manifest: Path,
+    config: Path,
+    functions: Path | None = None,
+    symbols: Path | None = None,
+) -> ExeData:
+    """The EXE (checked against the manifest) with config/<exe>/functions.csv and symbols.csv
+    under `config` unless given."""
+    target = select_target(load_manifest(manifest), exe, manifest)
+    stem = config_dir(target.name).name
+    rows = read_functions_csv(functions or Path(config) / stem / "functions.csv")
+    le = LE(read_target(target, orig, manifest))
+    named = read_symbols_csv(symbols or Path(config) / stem / "symbols.csv")
+    table = SymbolTable.build(rows, named, data_ranges=data_ranges(le))
+    return ExeData(stem, rows, table, le.load_flat(relocate=False), le.fixups())
+
+
+def placeholder(row: FunctionRow) -> str:
+    """func_XXXXXXXX: the driver's directory name for a row (REVERSEAPOC_FUNC's form)."""
+    return f"func_{row.start:08X}"
+
+
+def resolve_row(data: ExeData, name: str) -> FunctionRow:
+    """The row of `data` whose functions.csv name, C name or placeholder is `name`."""
+    for row in data.rows:
+        if name in (row.name, data.symbols.c_name(row.start), placeholder(row)):
+            return row
+    raise AttemptError(f"{name} is no functions.csv row of {data.stem}")
+
+
+def listing_text(data: ExeData, row: FunctionRow, asm_root: Path) -> str:
+    path = Path(asm_root) / data.stem / asm.file_name(data.symbols, row)
+    if not path.is_file():
+        raise AttemptError(f"no listing {path}; the owner writes them with "
+                           f"`uv run reverseapoc asm {data.stem}`")  # fmt: skip
+    return path.read_text(encoding="utf-8")
+
+
+def idioms(text: str | None) -> str | None:
+    """The IDIOM_HEADINGS sections of docs/matching.md, picked by heading."""
+    if text is None:
+        return None
+    def wanted(part: str) -> bool:
+        return part.startswith("## ") and part[3:].partition("\n")[0].strip() in IDIOM_HEADINGS
+
+    parts = [part.rstrip("\n") for part in _SECTION.split(text) if wanted(part)]
+    return "\n\n".join(parts) + "\n" if parts else None
+
+
+def _bounded(text: str) -> str:
+    data = text.encode("utf-8")
+    if len(data) <= NOTES_CAP:
+        return text
+    kept = data[-NOTES_CAP:].decode("utf-8", errors="ignore")
+    return f"... {len(data) - NOTES_CAP} bytes of older notes cut\n{kept}"
+
+
+def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
+    if not log.is_file():
+        return []
+    records = []
+    for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(record, dict) or record.get("kind") != "attempt":
+            continue
+        if record.get("exe") == stem and record.get("function") == func:
+            records.append(json.dumps(record, sort_keys=True))
+    return records
+
+
+def earlier_notes(repo: Path, stem: str, func: str) -> str | None:
+    """Ruling F9: build/driver/*/<exe>/<func>/attempt-*/notes.md (the driver's layout) and
+    build/driver/*/<exe>/<func>/notes.md (manual packs), sorted by path, then this function's
+    attempt records in progress/attempts.jsonl; the newest NOTES_CAP bytes."""
+    driver = Path(repo).joinpath(*DRIVER_PARTS)
+    found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
+             *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
+    parts = []
+    for path in sorted(found, key=lambda p: p.relative_to(driver).as_posix()):
+        text = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
+        parts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
+    records = _attempt_records(Path(repo) / ATTEMPT_LOG, stem, func)
+    if records:
+        parts.append("\n".join([f"--- {ATTEMPT_LOG.as_posix()}", *records]))
+    return _bounded("\n\n".join(parts) + "\n") if parts else None
+
+
+def _unit_texts(src: Path, data: ExeData, claimed: str) -> dict[str, str]:
+    """Every unit file of the EXE (06-13 note a: neighbours in other units need their C), read
+    as bytes decoded as strict UTF-8 (note b: a lone CR stays refused, never translated). A
+    unit that is not UTF-8 is left out, unless it is the claimed one."""
+    texts = {}
+    for unit in sorted({row.unit for row in data.rows if row.unit}):
+        path = Path(src) / data.stem / f"{unit}.c"
+        if not path.is_file():
+            continue
+        try:
+            texts[unit] = path.read_bytes().decode("utf-8")
+        except UnicodeDecodeError as exc:
+            if unit == claimed:
+                raise AttemptError(f"{path} is not UTF-8: {exc}") from exc
+    return texts
+
+
+def _optional_text(path: Path) -> str | None:
+    return Path(path).read_text(encoding="utf-8") if Path(path).is_file() else None
+
+
+def make_pack(
+    data: ExeData,
+    row: FunctionRow,
+    *,
+    src: Path,
+    config: Path,
+    asm_root: Path,
+    roots: Roots,
+    calls: contextpack.CallIndex | None = None,
+) -> contextpack.Pack:
+    """The D-13 pack of `row`: status from config/<exe>/status.csv, every unit text of the EXE,
+    the listing and draft from asm/<exe>/ (and its ghidra/), include/common.h, the matching.md
+    idioms and earlier notes. Pass `calls` to reuse one CallIndex across functions."""
+    status = {entry.start: entry.status for entry in read_status(status_path(config, data.stem))}
+    listing_dir = Path(asm_root) / data.stem
+    inputs = contextpack.gather(
+        row, rows=data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
+        status=status, unit_texts=_unit_texts(src, data, row.unit), listing_dir=listing_dir,
+        draft_dir=listing_dir / "ghidra", common_h=_optional_text(roots.common_h),
+        idioms=idioms(_optional_text(roots.matching)),
+        notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
+    )  # fmt: skip
+    return contextpack.build_pack(**inputs)
+
+
+def _claimed_row() -> tuple[Claim, ExeData, FunctionRow]:
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    data = load_exe(claim.exe, orig=ROOTS.orig, manifest=ROOTS.manifest, config=ROOTS.config)
+    row = resolve_row(data, claim.function)
+    if row.unit != claim.unit:
+        raise AttemptError(f"{claim.function} is in unit {row.unit!r}, not the claimed "
+                           f"{claim.unit}")  # fmt: skip
+    return claim, data, row
+
+
+def cmd_asm(name: str | None) -> int:
+    """Print the claimed function's listing, or that of NAME (another row of the same EXE)."""
+    _, data, row = _claimed_row()
+    if name is not None:
+        row = resolve_row(data, name)
+    sys.stdout.write(listing_text(data, row, ROOTS.asm))
+    return EXIT_OK
+
+
+def cmd_context() -> int:
+    """Rebuild the claimed function's pack into <attempt dir>/context.md and print it."""
+    claim, data, row = _claimed_row()
+    pack = make_pack(data, row, src=ROOTS.src, config=ROOTS.config, asm_root=ROOTS.asm,
+                     roots=ROOTS)  # fmt: skip
+    contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
+    sys.stdout.write(pack.text)
+    return EXIT_OK

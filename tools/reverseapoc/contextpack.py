@@ -27,6 +27,7 @@ from . import asm, check, ghidra
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
+from .status import MATCHED, PARTIAL
 from .symbols import SymbolTable
 from .targets import REPO_ROOT
 from .x86 import Insn
@@ -278,11 +279,11 @@ class _Optional:
 # #if 0 lines are blanked to same-length filler, and a definition found in that text is sliced
 # from the original through the map. Only names code_text defines at file scope are kept.
 
-# TODO(06-15): switch to 06-11's status constants once both have merged; this plan does not
-# import 06-11's code.
-STATUS_MATCHED = "matched"
-STATUS_PARTIAL = "partial"
-STATUS_UNMATCHED = "unmatched"  # also a row with no status given
+STATUS_MATCHED = MATCHED
+STATUS_PARTIAL = PARTIAL
+# status.csv is sparse and has no unmatched rows, so this one has no constant there: it is a
+# row with no status given.
+STATUS_UNMATCHED = "unmatched"
 STATUSES = (STATUS_MATCHED, STATUS_PARTIAL, STATUS_UNMATCHED)
 _SPLICE_TEXT = "\\\n"  # a backslash-newline in normalised text (blanks after `\` removed)
 _CRLF = re.compile(r"\r\n")
