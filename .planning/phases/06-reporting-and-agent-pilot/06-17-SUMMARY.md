@@ -40,8 +40,9 @@ key-files:
   modified: []
 
 key-decisions:
-  - "classify precedence STOP > LIMIT > TRANSIENT > ATTEMPT_DONE; result text is read only from the result event (result, errors[]), never from agent messages, so the model cannot stop or stall the run by writing the words"
-  - "A rejected rate_limit_event with an errorCode other than credits_required is STOP (unknown, fail closed); any result event of any subtype is ATTEMPT_DONE; no result and no timeout is TRANSIENT"
+  - "classify precedence STOP > LIMIT > TRANSIENT > ATTEMPT_DONE; error words are read only from the CLI's own error text: a result's `result` field only when `is_error` is true (on a successful result it is the agent's last message), plus `errors[]`; never from agent messages (corrected in fix round 1, I2)"
+  - "Unknown fails closed (fix round 1, I3 ruling): an api_retry error outside the known sets, an is_error result status other than 429/5xx, or a rejected rate_limit_event with an errorCode other than credits_required is STOP; an is_error 5xx/529 result is TRANSIENT; any other result is ATTEMPT_DONE; no result and no timeout is TRANSIENT"
+  - "run_session kills the tree on any exception after Popen and re-raises (fix round 1, I1); on POSIX it also kills the session's group after a normal exit"
   - "EXPECTED_MODEL/EXPECTED_TOOLS live in streamjson; session builds --tools and the read/write part of --allowedTools from EXPECTED_TOOLS and keeps the literal \"claude-opus-5-5\" (acceptance criterion); a test pins session.MODEL == streamjson.EXPECTED_MODEL"
   - "run_session inherits stderr (the driver's console shows it) and gives the session no stdin (DEVNULL)"
 
@@ -161,9 +162,47 @@ See key-decisions in the frontmatter.
 
 **4. [Rule 1 - Flakiness] The tree-kill test uses a 3 s wall clock, not 1 s.** fakeclaude and its child are two Python start-ups (through the venv launcher on Windows), about 0.4 s here; 1 s left too little margin for a loaded host or the container. 3 s is still a tenth of the stand-in's 30 s sleep, and the test also asserts the run returned within 20 s. Constant `_TREE_TIMEOUT_S` in tests/test_session.py, commit 3e65e49.
 
-**5. [Rule 2 - Fail closed] Small additions beyond the plan's lists, each tested:** a rejected rate_limit_event with an unknown errorCode is STOP; limit and credit words are read only from the result event (`test_classify_ignores_limit_words_outside_the_result`); `goal_prompt` refuses names that are not identifiers; `check_init` reports an unreadable version or a non-list `tools`; `kill_tree` calls taskkill by its System32 path; `run_session` gives the session no stdin (`claude -p` reads piped stdin). `init_event` and `Parsed` are small helpers not named in the plan.
+**5. [Rule 2 - Fail closed] Small additions beyond the plan's lists, each tested:** a rejected rate_limit_event with an unknown errorCode is STOP; limit and credit words are never read from the agent's messages (`test_classify_ignores_limit_words_outside_the_result`; the first version still read a successful result's own text, corrected by fix round 1 I2); `goal_prompt` refuses names that are not identifiers; `check_init` reports an unreadable version or a non-list `tools`; `kill_tree` calls taskkill by its System32 path; `run_session` gives the session no stdin (`claude -p` reads piped stdin). `init_event` and `Parsed` are small helpers not named in the plan.
 
-**Total deviations:** 2 orchestrator rulings applied, 3 auto-fixed (1 TDD ordering, 1 flakiness, 1 fail-closed hardening group). **Impact:** no scope change; every change has a test.
+**6. Orchestrator ruling (fix round 1 I3): unknown error signals become STOP.** This overrides the plan's TRANSIENT wording ("overloaded/server_error with no result, or a non-zero exit with no result") and its "a result event -> ATTEMPT_DONE" arm for error results:
+- an `is_error: true` result with a 5xx `api_error_status` (529 included) is TRANSIENT (not counted), even though a result exists;
+- 429 stays LIMIT;
+- any other `is_error` status (400, 401, 403, a non-integer, ...) is STOP;
+- an api_retry error outside the known sets (`cloud_credential_error`, `model_not_found`, `invalid_request`, `max_output_tokens`, `unknown`, a missing or future code) is STOP, even if a clean result follows.
+Fixtures `cloud_credential.jsonl` (STOP) and `overloaded_result.jsonl` (TRANSIENT); tests `test_classify_error_results_from_the_review_probes`, `test_classify_server_error_result_is_transient`, `test_classify_other_error_status_stops`, `test_classify_429_result_stays_limit`, `test_classify_unknown_api_retry_error_stops`. Commits 4d216e0 (RED), e40d33c (GREEN).
+
+**Total deviations:** 3 orchestrator rulings applied (F11, F34, fix round 1 I3), 3 auto-fixed (1 TDD ordering, 1 flakiness, 1 fail-closed hardening group), plus the fix round 1 items below. **Impact:** no scope change; every change has a test.
+
+## Fix round 1 (FIX_BASE 451eec1; review-06-17.md, rulings fixround-06-17-r1.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| I1 | An exception mid-read left the whole session tree running with no pid returned; `parse_line` let RecursionError escape (one deeply nested line was fatal) | `run_session`: `except BaseException` after Popen kills the tree and reaps if the session still runs, then re-raises; `parse_line` treats RecursionError as malformed | `test_an_exception_mid_read_kills_the_tree_and_propagates` (injected clock raises KeyboardInterrupt on a `--spawn-child` run; root and child gone), `test_run_session_through_an_injected_popen_counts_a_deep_line_as_malformed`, `test_parse_line_counts_deep_nesting_as_malformed` | 26f5158, 8a6be26 |
+| I2 | A successful result's `result` (the agent's own words) could trigger LIMIT or STOP | error words read from `result` only when `is_error` is true; `errors[]` still read; docstring and key decision corrected | `test_classify_reads_no_error_words_from_a_successful_result` (3 texts, incl. the review's two probes); every existing error fixture classifies as before | 4d216e0, e40d33c |
+| I3 | Unknown error signals fell to TRANSIENT or ATTEMPT_DONE | orchestrator ruling, Deviation 6 above | see Deviation 6 | 4d216e0, e40d33c |
+| Minor 1 | No tree kill after a normal exit | POSIX: kill the session's group after the reap (ProcessLookupError ignored); `kill_tree` refuses pid < 1 (killpg(0) is the caller's group). Windows: known limit below | `test_a_normal_exit_kills_the_group_on_posix`, `test_a_normal_exit_kills_nothing_on_windows`, `test_kill_tree_refuses_a_pid_that_names_the_callers_group`, `test_a_descendant_dies_when_the_session_exits_on_posix` (skips on Windows: `POSIX-only: taskkill /T cannot find children after the parent exits`, an R-A reason) | a0ac314, 773fecc |
+| Minor 2 | Docstring claimed a TRANSIENT-over-ATTEMPT_DONE precedence that could not happen | docstring rewritten; the precedence test now has a real case (`overloaded` + 529 result -> TRANSIENT) | `test_classify_precedence_stop_over_limit_over_transient_over_done` | 4d216e0, e40d33c |
+| Minor 3 | `rate_limit` retry then success is LIMIT (plan-mandated) | unchanged; noted for 06-23 below | - | - |
+| Minor 4 | `popen`/`clock` injection never exercised | the I1 tests drive both | (I1 tests) | 26f5158 |
+| Minor 5 | TDD order (collection-level REDs) | every fix-round RED failed on an assertion; new tests import only existing names | - | - |
+| Minor 6 | Duplicate tools gave "missing none, extra none" | the message names `duplicate <tool>` | `test_check_init_names_duplicate_tools` | 4d216e0, e40d33c |
+
+RED evidence, each failing on an assertion for the right reason:
+- 26f5158: `AssertionError: the session root outlived the exception`, `Failed: a deeply nested line was fatal: RecursionError(...)`, `assert RecursionError(...) is None`. The test's own cleanup killed the leftover tree; a wmic scan afterwards found no fakeclaude or sleeper process.
+- 4d216e0: 24 AssertionErrors (for example `ATTEMPT_DONE is STOP` for `cloud_credential`, `LIMIT is ATTEMPT_DONE` for the success text, `'duplicate Read' in ...`).
+- a0ac314: `assert [] == [4242]`, and `isinstance(AttributeError("module 'os' has no attribute 'killpg'"), ValueError)`.
+
+Verification after the fix round (host, worktree):
+- `uv run pytest -q tests/test_session.py tests/test_streamjson.py`: 93 passed, 1 skipped (the POSIX-only test).
+- `uv run pytest -q -rs`: 2176 passed, 225 skipped in 49.06 s. The only new skip is the POSIX-only line above; the rest are real-file tests with no orig/ or third_party/ in a worktree.
+- `uv run ruff check .`: All checks passed; `ruff format --check` on the five Python files: already formatted.
+- No fakeclaude or sleeper process was left after the runs (wmic scan: 0).
+
+### Known limits and container gate items
+
+- **Windows, after a normal exit:** a descendant that outlives claude is not killed. `taskkill /T` finds children through a live parent only, and a Job Object is out of scope. 06-23's orphan-container cleanup by name covers `docker compose run`, not stray host processes.
+- **POSIX setsid escape:** `killpg` reaches only the session's own process group. A descendant that calls setsid (a Node child spawned `detached`, a `docker compose run`) escapes it. The driver runs on the Windows host (D-34), where `taskkill /T` follows parent pids, so this matters only if the driver runs on POSIX.
+- **Container run (wave gate G4):** the POSIX branch of `kill_tree` (`os.killpg`), the post-exit group kill, the `/proc/<pid>/stat` zombie probe, `test_timeout_kills_the_tree`, `test_an_exception_mid_read_kills_the_tree_and_propagates` and `test_a_descendant_dies_when_the_session_exits_on_posix` have not run under Linux yet. Docker is forbidden in a worktree, so G4 must run tests/test_session.py in the container.
 
 ## Issues Encountered
 
@@ -185,12 +224,14 @@ None.
 
 - 06-23 (driver loop) composes: `build_argv(goal_prompt(...), claude=...)`, `run_session(..., cwd=REPO_ROOT, env=..., transcript=<attempt dir>/transcript.jsonl)`, `init_event` + `check_init` (problem -> STOP), `classify`, `usage(result)` and `tool_uses` for the stray-write audit.
 - 06-25 owns the tested-major and minimum-version constants that `check_init` takes as arguments.
-- `run_session` does not kill the tree if the driver itself raises mid-read (for example Ctrl+C); 06-23 may want a try/finally around it.
+- Fixed in fix round 1 (I1): `run_session` itself kills the tree on any exception, Ctrl+C included, so 06-23 needs no wrapper.
+- For 06-23 (review minor 3, plan-mandated): an api_retry `rate_limit` followed by a successful result is LIMIT. Gate or keep the session's work before any LIMIT reset, so a match made after a retried 429 is not thrown away.
+- For 06-23: an unknown api_retry error is now STOP even when the session then recovered (I3 ruling). If the canary shows a benign code such as `max_output_tokens` retried routinely, the owner may widen the known set.
 
 ## Self-Check: PASSED
 
-- Files: tools/reverseapoc/session.py, tools/reverseapoc/streamjson.py, tests/fakeclaude.py, tests/test_session.py, tests/test_streamjson.py and tests/fixtures/stream/ (27 files) exist.
-- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 are ancestors of HEAD.
+- Files: tools/reverseapoc/session.py, tools/reverseapoc/streamjson.py, tests/fakeclaude.py, tests/test_session.py, tests/test_streamjson.py and tests/fixtures/stream/ (29 files after fix round 1) exist.
+- Commits c250ff1, 40ed703, f8fdbc7, 3d9f99c, efb716b, 3e65e49 and, for fix round 1, 26f5158, 8a6be26, 4d216e0, e40d33c, a0ac314, 773fecc are ancestors of HEAD.
 - No modification to STATE.md, ROADMAP.md, orig/, config/ or build scripts.
 
 ---
