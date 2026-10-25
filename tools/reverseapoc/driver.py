@@ -1072,10 +1072,11 @@ class _Night:
             # Third pass: contain what the session left before the stop. Minor 8: an interrupt
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
-            self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
+            note = self._remove_containers(claim)
             session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before)
             stray = self._strays(session)
             contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
+            contained += f"; {note}" if note else ""
             if not stray:
                 self._reset(session)
             if not isinstance(exc, Exception):
@@ -1083,16 +1084,33 @@ class _Night:
                 raise
             why = f"the session raised {type(exc).__name__}: {exc}{contained}"
             raise _Stop(ERROR, why) from exc
-        self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
+        note = self._remove_containers(claim)
         seconds = self.deps.clock() - start
         session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before)
         self.live = session
-        self._audit(session)
+        try:
+            self._audit(session)
+        except _Stop as stop:
+            if note:
+                raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
+            raise
+        if note:  # S1: the night stops after the audit and containment ran
+            self._reset(session)
+            raise _Stop(TOOL, note)
         if session.disposition is Disposition.STOP:
             self._reset(session)
             raise _Stop(STOP_SIGNAL, "the session's stream carries a D-08 STOP signal")
         self._check_init(session)
         return session
+
+    def _remove_containers(self, claim: _Claim) -> str:
+        """Fix round 1 S1: remove the attempt's containers; a failure never gates the audit and
+        containment that follow, it is only returned as a note for the record."""
+        try:
+            self.deps.remove_containers(attempt.container_prefix(claim.attempt_dir))
+        except Exception as exc:  # noqa: BLE001 - recorded, and the night stops after the audit
+            return f"containers not removed: {type(exc).__name__}: {exc}"
+        return ""
 
     def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before) -> _Session:
         after = self._snapshot()
@@ -1275,7 +1293,10 @@ class _Night:
     def _restore_bytes(self, name: str, path: Path, data: bytes) -> bool:
         """Fix round 1 minor 4: write `data` back to `path` only when no component between its
         anchor (the checkout, or the git directory for .git/ names) and its parent is a link,
-        a junction or a reparse point, and the parent resolves inside the anchor."""
+        a junction or a reparse point, and the parent resolves inside the anchor. S2: a leaf
+        that is a link is replaced, never followed: a directory link (a junction) is removed
+        first, since os.replace cannot replace a directory; a file link is swapped out by
+        write_atomic's os.replace. The quarantine already holds a note naming its target."""
         anchor = self._git_dir() if name.startswith(_GIT_PREFIX) else self.repo
         try:
             parts = path.parent.relative_to(anchor).parts
@@ -1286,8 +1307,15 @@ class _Night:
             current = current / part
             if _is_link(current) or not current.is_dir():
                 return False
-        if not path.parent.resolve().is_relative_to(anchor.resolve()) or _is_link(path):
+        if not path.parent.resolve().is_relative_to(anchor.resolve()):
             return False
+        if os.path.isjunction(path):
+            os.rmdir(path)  # removes the junction itself, never its target
+        elif _is_link(path) and path.is_dir():  # a directory symlink: the link, never its target
+            if os.name == "nt":
+                os.rmdir(path)  # Windows removes a directory symlink with rmdir
+            else:
+                os.unlink(path)
         write_atomic(path, data)
         return True
 
