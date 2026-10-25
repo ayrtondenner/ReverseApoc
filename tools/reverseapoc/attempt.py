@@ -229,7 +229,10 @@ def container_check_argv(claim: Claim, *, sweep: bool, name: str) -> tuple[str, 
 @dataclass(frozen=True)
 class CheckLogLine:
     """One line of checks.jsonl. best_percent, reloc_ok and bytes_ok are the claimed
-    function's (a sweep: its best cell's); None when the run printed no usable JSON."""
+    function's (a sweep: its best cell's). They are None (null) when the run printed no usable
+    JSON (exit 2), and when the claimed function was not compiled: a stub, or absent from
+    check's functions[] (exit 1, fix round 1 I1). `sweep` is true for a sweep line, which is
+    never the best C (06-23)."""
 
     n: int
     exit: int
