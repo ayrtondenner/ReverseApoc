@@ -1243,6 +1243,21 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_attempt)
 
 
+def _cmd_drive(args: argparse.Namespace) -> int:
+    """Skeleton."""
+    return 0
+
+
+def _add_drive_command(sub: argparse._SubParsersAction) -> None:
+    """Skeleton."""
+    p = sub.add_parser("drive", help="the night driver")
+    for flag in ("--max-sessions", "--target-matched", "--run"):
+        p.add_argument(flag)
+    for flag in ("--dry-run", "--canary", "--json"):
+        p.add_argument(flag, action="store_true")
+    p.set_defaults(func=_cmd_drive)
+
+
 def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser, *, media: bool, dest: bool) -> None:
         default = "default: %(default)s"
@@ -1342,6 +1357,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_gate_command(sub)
     _add_context_command(sub)
     _add_attempt_command(sub)
+    _add_drive_command(sub)
     _add_watcom_commands(sub)
     return parser
 
