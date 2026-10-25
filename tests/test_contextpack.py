@@ -275,3 +275,97 @@ def test_callee_prototype_unreadable_unit_gives_none():
     # a lone CR and an #if the D-12 parser cannot evaluate: no head is guessed
     assert contextpack.definitions("int func_00010000(void) {}\r\n#if FOO\n#endif\n") == {}
     assert contextpack.definitions("int func_00010000(void) {}\rint x;\n") == {}
+
+
+# ---- look-alikes and the 24 KB cap (Task 3) ----
+
+TARGET = tuple("abcdefghij")  # made-up mnemonics; SequenceMatcher ratio = 2 * matches / 20
+
+
+def test_lookalikes_rank_by_mnemonic_similarity():
+    matched = {
+        0x300: (*TARGET[:9], "z"),  # 0.9
+        0x100: (*TARGET[:7], "x", "y", "z"),  # 0.7
+        0x200: (*TARGET[:5], "v", "w", "x", "y", "z"),  # 0.5, under the 0.6 floor
+    }
+    assert contextpack.lookalikes(TARGET, matched) == [(0x300, 0.9), (0x100, 0.7)]
+    tied = {0x400: (*TARGET[:9], "z"), **matched, 0x050: (*TARGET[:9], "y")}
+    assert contextpack.lookalikes(TARGET, tied) == [(0x050, 0.9), (0x300, 0.9), (0x400, 0.9)]
+    assert contextpack.lookalikes(TARGET, tied, top=1) == [(0x050, 0.9)]
+
+
+def test_lookalikes_come_from_matched_rows_with_c(tmp_path: Path):
+    rows, flat, fixups, _ = _le_inputs()
+    assert contextpack.mnemonics(rows[1], flat, fixups) == ("mov", "mov", "call", "ret")
+    # C (ret + 15 nops) against A (call, mov, ret, 5 nops): 6 of 24 mnemonics pair up, 0.5
+    inputs = _gather(2, tmp_path, {FUNC_A: "matched"}, lookalike_floor=0.5)
+    (only,) = inputs["lookalikes"]
+    assert (only.name, only.start, only.ratio) == ("func_00010000", FUNC_A, 0.5)
+    assert only.source.startswith("int func_00010000(void)\n{")
+    assert _gather(2, tmp_path, {FUNC_A: "matched"})["lookalikes"] == ()  # floor 0.6
+
+
+def _big_inputs(pad: int = 1, **overrides):
+    """Inputs with three 2000-byte look-alikes, three long caller lines and a 3000-byte draft;
+    `pad` (at least 1, so the fenced section grows byte for byte) ASCII bytes go into the
+    required idioms section."""
+    lookalikes = tuple(
+        Lookalike(f"func_0001{n}000", 0x10000 + n * 0x1000, 0.9 - n / 10, "/*" + "x" * 2000 + "*/")
+        for n in range(1, 4)
+    )
+    callers = tuple(Neighbour(f"func_0002{n}000", "game", "matched", "int " + "y" * 200)
+                    for n in range(1, 4))  # fmt: skip
+    inputs = {
+        "lookalikes": lookalikes,
+        "callers": callers,
+        "draft": "z" * 3000,
+        "idioms": "i" * pad,
+    }
+    inputs.update(overrides)
+    return _inputs(**inputs)
+
+
+def _size(**inputs) -> int:
+    return build_pack(**inputs, cap=10**9).pack_bytes
+
+
+def test_pack_at_the_cap_is_kept_whole():
+    pad = PACK_CAP - _size(**_big_inputs()) + 1  # the base has pad 1
+    pack = build_pack(**_big_inputs(pad))
+    assert pack.pack_bytes == PACK_CAP
+    assert pack.truncated == ()
+    assert len(pack.text.encode("utf-8")) == PACK_CAP
+
+
+def test_pack_one_byte_over_is_truncated_in_order():
+    looks = ("look-alike func_00013000", "look-alike func_00012000", "look-alike func_00011000")
+    callers = ("caller func_00023000", "caller func_00022000", "caller func_00021000")
+    stages = [
+        (_size(**_big_inputs()), looks[:1]),
+        (_size(**_big_inputs(lookalikes=())), (*looks, callers[0])),
+        (_size(**_big_inputs(lookalikes=(), callers=())), (*looks, *callers, "draft")),
+    ]
+    for full, expected in stages:
+        pad = PACK_CAP - full + 2  # one byte over: the base has pad 1
+        pack = build_pack(**_big_inputs(pad))
+        assert pack.truncated == expected
+        assert pack.pack_bytes <= PACK_CAP
+        assert f"Truncated: {', '.join(expected)}" in pack.text
+        whole = build_pack(**_big_inputs(pad), cap=10**9)
+        required = ("Target listing", "Unit file", "Callees", "D_ externs", "include/common.h",
+                    "Matching idioms", "Earlier notes")  # fmt: skip
+        kept = {s.title: s.body for s in pack.sections}
+        assert all(kept[s.title] == s.body for s in whole.sections if s.title in required)
+        assert pack.to_json()["truncated"] == list(expected)
+
+
+def test_required_sections_alone_over_the_cap():
+    with pytest.raises(ContextPackError, match=r"\d+ bytes"):
+        build_pack(**_big_inputs(unit_text="u" * PACK_CAP))
+
+
+def test_pack_is_deterministic():
+    assert build_pack(**_big_inputs(5000)).text == build_pack(**_big_inputs(5000)).text
+    forward = {0x100: (*TARGET[:8], "y", "z"), 0x200: (*TARGET[:8], "z", "y")}
+    backward = dict(reversed(forward.items()))
+    assert contextpack.lookalikes(TARGET, forward) == contextpack.lookalikes(TARGET, backward)
