@@ -166,8 +166,8 @@ def test_attempt_check_names_the_attempt_dir(repo: Path, monkeypatch, capsys):
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0
     out = capsys.readouterr().out
-    assert str(repo / "checks" / "0001.json") in out
-    assert str(repo / "notes.md") in out
+    assert (repo / "checks" / "0001.json").as_posix() in out
+    assert (repo / "notes.md").as_posix() in out
 
 
 def test_attempt_check_snapshots_the_source(repo: Path, monkeypatch):
@@ -546,12 +546,13 @@ def test_attempt_asm_prints_the_claimed_listing(tree: attempt.Roots, monkeypatch
 def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monkeypatch, capsys):
     attempt_dir = _claim_b(tree, monkeypatch)
     assert _run(["attempt", "context"]) == 0
-    printed = capsys.readouterr().out
+    captured = capsys.readouterr()
+    printed = captured.out
     saved = (attempt_dir / "context.md").read_text(encoding="utf-8")
     assert printed == saved
     assert saved.startswith("# Context pack: func_00010010")
     assert "made-up listing of B" in saved
-    assert str(attempt_dir / "notes.md") in capsys.readouterr().err
+    assert (attempt_dir / "notes.md").as_posix() in captured.err
 
 
 def test_context_and_attempt_help_exit_0(capsys):
