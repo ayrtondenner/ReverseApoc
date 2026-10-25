@@ -45,7 +45,7 @@ import os
 import re
 import secrets
 import sys
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -133,12 +133,15 @@ class Status:
     best_percent: float
 
 
-def _records(path: Path, columns: Sequence[str]) -> list[dict[str, str]]:
-    """The data rows of a CSV as dicts; `#` comment lines skipped, the header checked."""
-    try:
-        text = Path(path).read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise ProgressError(f"{path}: cannot read ({exc})") from None
+def _records(path: Path, columns: Sequence[str], text: str | None = None
+             ) -> list[dict[str, str]]:  # fmt: skip
+    """The data rows of a CSV as dicts; `#` comment lines skipped, the header checked. `text`
+    stands in for the file's content (gate checks tables it has not written yet)."""
+    if text is None:
+        try:
+            text = Path(path).read_bytes().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise ProgressError(f"{path}: cannot read ({exc})") from None
     reader = csv.DictReader(line for line in text.splitlines() if not line.startswith(_COMMENT))
     if tuple(reader.fieldnames or ()) != tuple(columns):
         raise ProgressError(f"{path}: header is not {','.join(columns)}")
@@ -188,12 +191,13 @@ def read_units(path: Path) -> list[Unit]:
     return units
 
 
-def read_status(path: Path) -> list[Status]:
-    """status.csv rows; a missing file has none (D-20: sparse)."""
-    if not Path(path).exists():
+def read_status(path: Path, text: str | None = None) -> list[Status]:
+    """status.csv rows; a missing file has none (D-20: sparse). `text`, when given, is the
+    table's content in place of the file's."""
+    if text is None and not Path(path).exists():
         return []
     rows: list[Status] = []
-    for number, rec in enumerate(_records(path, STATUS_COLUMNS), start=1):
+    for number, rec in enumerate(_records(path, STATUS_COLUMNS, text), start=1):
         if rec["status"] not in (MATCHED, PARTIAL):
             raise ProgressError(f"{path}: data row {number}: status {rec['status']!r} is not "
                                 f"{MATCHED} or {PARTIAL}")  # fmt: skip
@@ -338,11 +342,11 @@ def _function(row: Row, status: Status | None) -> Function:
     return Function(row.start, row.end, status.name, row.kind, row.unit, status.status, best)
 
 
-def _derive_exe(config: Path, stem: str, label: str) -> ExeProgress:
+def _derive_exe(config: Path, stem: str, label: str, status_text: str | None) -> ExeProgress:
     exe_dir = Path(config) / stem
     rows = read_functions(exe_dir / FUNCTIONS_CSV)
     units = read_units(exe_dir / UNITS_CSV)
-    statuses = {s.start: s for s in read_status(exe_dir / STATUS_CSV)}
+    statuses = {s.start: s for s in read_status(exe_dir / STATUS_CSV, status_text)}
     code = [row for row in rows if row.kind in CODE_KINDS]
     stray = sorted(set(statuses) - {row.start for row in code})
     if stray:
@@ -361,9 +365,14 @@ def _derive_exe(config: Path, stem: str, label: str) -> ExeProgress:
     )
 
 
-def derive(config_dir: Path = DEFAULT_CONFIG) -> Progress:
-    """The progress of every EXE in EXES from config_dir/<stem>/{functions,units,status}.csv."""
-    return Progress(tuple(_derive_exe(Path(config_dir), stem, label) for stem, label in EXES))
+def derive(config_dir: Path = DEFAULT_CONFIG,
+           status_texts: Mapping[str, str] | None = None) -> Progress:
+    """The progress of every EXE in EXES from config_dir/<stem>/{functions,units,status}.csv.
+    `status_texts` maps a stem to status.csv content used in place of the file: gate derives
+    the tables it is about to write before it writes any (fix round 1)."""
+    texts = status_texts or {}
+    return Progress(tuple(_derive_exe(Path(config_dir), stem, label, texts.get(stem))
+                          for stem, label in EXES))  # fmt: skip
 
 
 # ---- outputs ----
@@ -506,6 +515,8 @@ def _unit_tally(functions: Sequence[Function]) -> _Tally:
 
 
 def _item(f: Function) -> dict[str, object]:
+    # `address` is the function's linear address (0x10000-based, as in functions.csv), not the
+    # section-relative offset objdiff writes; recomp.fyi reads only the measures. Keep it linear.
     return {"name": f.name, "size": str(f.size), "fuzzy_match_percent": f.best_percent,
             "address": str(f.start)}  # fmt: skip
 
