@@ -261,7 +261,11 @@ def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: Comp
 
 
 def read_module(path: Path) -> Module:
-    data = Path(path).read_bytes()
+    return parse_module(Path(path).read_bytes(), path)
+
+
+def parse_module(data: bytes, path: Path) -> Module:
+    """`data`, read from `path`, as an OMF module."""
     if not data or data[0] != REC_THEADR:
         raise CheckError(f"{path}: not an OMF object (no THEADR record first)")
     return read_object(data)
@@ -847,7 +851,9 @@ def _stale(obj: Path, src: Path, why: str) -> CheckError:
                       f"from {src}")  # fmt: skip
 
 
-def check_provenance(obj: Path, src: Path, options: CompileOptions, *, src_root: Path) -> None:
+def check_provenance(
+    obj: Path, src: Path, options: CompileOptions, *, src_root: Path, data: bytes
+) -> None:
     """DI-06 part a: ninja's land step lands `obj` only while its provenance stamp equals what
     `reverseapoc cc` would record for `src` today (the source, the cflags table and Watcom
     manifest of `options`, the rule the table assigns, the headers under include/) and for
@@ -864,7 +870,7 @@ def check_provenance(obj: Path, src: Path, options: CompileOptions, *, src_root:
     root = _compile_root(src_root)
     try:
         rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
-        today = provenance(rule, src, obj, cflags=cflags, manifest=manifest, root=root)
+        today = provenance(rule, src, data, cflags=cflags, manifest=manifest, root=root)
     except (OSError, ValueError) as exc:
         raise CheckError(f"cannot check the provenance of {obj}: {exc}") from exc
     names = {**_PROV_FIELDS, "cflags_sha256": str(cflags), "watcom_sha256": str(manifest),
@@ -901,10 +907,11 @@ def _land_exe(
         elif not obj.is_file():
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
                              f"{src}")  # fmt: skip
+        data = obj.read_bytes()  # read once: the stamp check hashes what is parsed and landed
         if compile_fn is None:
-            check_provenance(obj, src, options, src_root=src_root)
+            check_provenance(obj, src, options, src_root=src_root, data=data)
         rows = [row for row in exe.rows if row.unit == unit.unit]
-        module = read_module(obj)
+        module = parse_module(data, obj)
         account = account_unit(module, rows, exe.symbols, read_source(src))
         refused += [Refused(p.name, p.va, (p.reason,)) for p in account.problems]
         for d, reloc in with_relocs(module, account.defined, rows, exe):

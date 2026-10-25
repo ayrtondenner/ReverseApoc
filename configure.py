@@ -35,7 +35,7 @@ from pathlib import Path, PurePosixPath
 if importlib.util.find_spec("reverseapoc") is None:  # plain `python`, outside the uv environment
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 
-from reverseapoc.compiler import PROV_SUFFIX
+from reverseapoc.compiler import PROV_SUFFIX, project_headers
 from reverseapoc.functions import (
     KIND_GAME,
     KIND_THUNK,
@@ -484,6 +484,9 @@ class Layout:
     output: str = "build.ninja"  # the build.ninja file name
     cc_inputs: tuple[str, ...] = ()  # cflags, the Watcom manifest and the project headers
     src_dirs: tuple[str, ...] = ()  # existing src/<exe> dirs: a new unit file re-runs configure
+    # include/, when it exists: a header added or removed changes every cc edge's inputs, so it
+    # re-runs configure too (06-09 fix round 2, N1).
+    header_dirs: tuple[str, ...] = ()
     # The config dir the rules that read config/ are told about (DI-06c), or None for the
     # repository's own tree, which every reverseapoc verb reads by default.
     rule_config: str | None = None
@@ -493,9 +496,11 @@ class Layout:
         cls, base: Path, *, config: Path, src: Path, output: Path, exes: Sequence[str] = ()
     ) -> Layout:
         """The layout of a build.ninja in `base`; `exes` are the config dir stems with units."""
-        headers = sorted((ROOT / INCLUDE_DIR).glob("*.h"))
+        # The project headers the provenance stamp covers too: one definition (compiler.py).
+        headers = project_headers(ROOT)
         cc_inputs = [ROOT / name for name in CC_CONFIG] + headers
         src_dirs = [src / exe for exe in exes if (src / exe).is_dir()]
+        header_dirs = [ROOT / INCLUDE_DIR] if (ROOT / INCLUDE_DIR).is_dir() else []
         default_config = config.resolve() == (ROOT / DEFAULT_CONFIG).resolve()
         return cls(
             configure=_relative(ROOT / "configure.py", base),
@@ -504,6 +509,7 @@ class Layout:
             output=output.name,
             cc_inputs=tuple(_relative(p, base) for p in cc_inputs),
             src_dirs=tuple(_relative(p, base) for p in src_dirs),
+            header_dirs=tuple(_relative(p, base) for p in header_dirs),
             rule_config=None if default_config else _relative(config, base),
         )
 
@@ -572,6 +578,7 @@ def _regeneration_edge(units: Sequence[UnitBuild], layout: Layout) -> list[str]:
     deps = [layout.configure, *dict.fromkeys(p for unit in units for p in unit.inputs)]
     deps += [unit.source for unit in units if unit.source is not None]
     deps += layout.src_dirs
+    deps += layout.header_dirs
     return [f"build {ninja_path(layout.output)}: configure{_implicit(deps)}"]
 
 
