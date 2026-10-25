@@ -61,7 +61,8 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Container, Iterable, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
@@ -71,7 +72,7 @@ from .check import ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
 from .libmatch import read_runtime_csv, runtime_csv_path
-from .picker import EXE_ORDER, Key, Pick, PickerError
+from .picker import EXE_ORDER, Key, Pick
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
@@ -237,10 +238,21 @@ def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
     """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes."""
 
     def git(args: Sequence[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, env=None if env is None else dict(env),
-                              capture_output=True, check=False)  # fmt: skip
+        try:
+            return subprocess.run(["git", *args], cwd=repo,
+                                  env=None if env is None else dict(env),
+                                  capture_output=True, check=False)  # fmt: skip
+        except OSError as exc:  # fix round 1 I2: a missing or unrunnable git is a failed call
+            return subprocess.CompletedProcess(["git", *args], _os_error_exit(exc), b"",
+                                               f"git: {exc}".encode("utf-8", "replace"))
 
     return git
+
+
+def _os_error_exit(exc: OSError) -> int:
+    """127 for a program that is not there, 126 for any other reason it could not run (the
+    shell's convention)."""
+    return 127 if isinstance(exc, FileNotFoundError) else 126
 
 
 def _git_ok(git: Callable[[Sequence[str]], subprocess.CompletedProcess], args: list[str]) -> bytes:
@@ -1759,8 +1771,9 @@ def command_runner(repo: Path, *, timeout_s: float = COMMAND_TIMEOUT_S) -> Runne
             return subprocess.run(list(argv), cwd=repo, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=timeout_s,
                                   stdin=subprocess.DEVNULL, check=False)  # fmt: skip
-        except FileNotFoundError as exc:
-            return subprocess.CompletedProcess(list(argv), 127, "", f"{argv[0]}: {exc}")
+        except OSError as exc:  # fix round 1 I2: not only a missing program
+            return subprocess.CompletedProcess(list(argv), _os_error_exit(exc), "",
+                                               f"{argv[0]}: {exc}")
         except subprocess.TimeoutExpired:
             return subprocess.CompletedProcess(list(argv), 124, "",
                                                f"ran longer than {timeout_s:g} s")  # fmt: skip
@@ -2154,33 +2167,50 @@ def _refusal(options: DriveOptions, refused: Refused) -> int:
     return EXIT_TOOL
 
 
+@contextmanager
+def _phase(reason: str) -> Iterator[None]:
+    """Fix round 1 I2: any error before the night starts (a malformed table or difficult list,
+    a runner or git that raises, a pack that fails) is a refusal named after its phase, never
+    an escape: exit 2 and one JSON document (F13)."""
+    try:
+        yield
+    except Refused:
+        raise
+    except Exception as exc:
+        raise Refused(reason, f"{type(exc).__name__}: {exc}") from exc
+
+
 def run_drive(options: DriveOptions, seams: Seams) -> int:
     """`reverseapoc drive`: the preflight, then the canary, the dry run or one night."""
     if not _RUN_ID.fullmatch(options.run_id):
         return _refusal(options, Refused("run id", f"{options.run_id!r} is not [A-Za-z0-9_.-]+"))
     log = _Log(options, seams)
     try:
-        preflight(options, seams, check_cli=not options.dry_run, log=log)
+        with _phase("preflight"):
+            preflight(options, seams, check_cli=not options.dry_run, log=log)
         if options.canary:
-            return run_canary(options, seams)
+            with _phase("canary"):
+                return run_canary(options, seams)
         worlds = _load_worlds(seams)
         today = _today()
-        try:
+        with _phase("picks"):
             picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
                                                                            today=today)
-        except PickerError as exc:
-            raise Refused("picks", str(exc)) from exc
-        _drafts(log, picks)
+        with _phase("drafts"):
+            _drafts(log, picks)
+        if options.dry_run:
+            with _phase("pack"):
+                return dry_run(options, worlds, picks)
+        with _phase("picks"):
+            deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
         return _refusal(options, refused)
-    if options.dry_run:
-        return dry_run(options, worlds, picks)
     config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
                          base_env=seams.base_env)  # fmt: skip
-    report = drive(config, real_deps(options, seams, worlds, today=today))
+    report = drive(config, deps)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
            "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
