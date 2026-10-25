@@ -23,7 +23,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer always"
+            "command": "uv run --frozen --project \"$CLAUDE_PROJECT_DIR\" python -I -m reverseapoc.hooks pre-tool-use --layer always || exit 2"
           }
         ]
       }

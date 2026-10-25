@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Claude Code PreToolUse guardrail hooks (AGT-05, D-15..D-18, D-44..D-46, DI-07).
+r"""Claude Code PreToolUse guardrail hooks (AGT-05, D-15..D-18, D-44..D-46, DI-07).
 
 Run as `uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer always|matching`
 with the hook payload on stdin. Two layers:
@@ -23,10 +23,16 @@ nothing and exits 0 for no opinion (never an allow decision, so Claude Code's ow
 still bind). Any error exits 2 with the reason on stderr, which blocks the call (fail closed);
 Claude Code treats every other exit code as non-blocking, so main never returns one.
 
-Paths are normalised before any rule: Windows (backslash or drive letter) and POSIX forms, `..`
-resolved, compared casefolded (NTFS is case-insensitive). The checkout is the nearest ancestor
-holding `.git` (a directory, or the file of a git worktree), so a worktree under
-.claude/worktrees/ is judged as its own checkout."""
+Paths are normalised before any rule (`candidates`), `..` resolved and compared casefolded
+(NTFS is case-insensitive). On an NT host every path is a Windows path: `/` becomes `\`, device
+prefixes (`\\?\`, `\\.\`, `\??\`) and UNC are understood, a rooted path takes the cwd's drive,
+Git Bash's `/c/...` is read both ways, and the host's realpath of the raw path is judged too
+(it maps volume GUIDs, GLOBALROOT and 8.3 names to the drive path). A device path the host
+cannot map to a drive or share is an error, so the call is blocked. A path is judged against
+the project root ($CLAUDE_PROJECT_DIR, else the checkout holding this file) and against every
+ancestor holding `.git` (a directory, or a worktree's file), so a `.git` planted inside the
+checkout cannot move the root, and a worktree under .claude/worktrees/ is judged as its own
+checkout too."""
 
 from __future__ import annotations
 
@@ -84,6 +90,7 @@ _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _NEW_HEADER = re.compile(r"include/([a-z0-9_]+\.h)")
 _RESERVED_HEADERS = ("common.h", "watcom_compat.h")  # INCLUDE_ASM could be redefined there
 _SECRET_PREFIX = ".env"
+_GLOB_SETS = "{}[]"  # brace alternatives and character classes could spell .env
 # D-44: the attempt wrapper's argv forms, shared with the wrapper itself (06-15, ruling F27).
 ATTEMPT_PREFIX = ("uv", "run", "--frozen", "reverseapoc", "attempt")
 ATTEMPT_NAME_SLOT = "<NAME>"
@@ -98,6 +105,13 @@ ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a func_/D_ placeholder o
 _BASH_CHARS = re.compile(r"[A-Za-z0-9_ -]+")  # every character of every wrapper form, no more
 
 _DRIVE = re.compile(r"[A-Za-z]:")
+# Win32 file, Win32 device and NT object prefixes; after one, UNC\ names a share.
+_NT_OBJECT = "\\??\\"
+_DEVICE_PREFIXES = ("\\\\?\\", "\\\\.\\", _NT_OBJECT)
+_UNC = "UNC\\"
+_GIT_BASH_DRIVE = re.compile(r"\\([A-Za-z])(?=\\|$)")  # Git Bash's /c/..., slashes made \
+PROJECT_ENV = "CLAUDE_PROJECT_DIR"
+_HOOKS_REPO = Path(__file__).resolve().parents[2]  # tools/reverseapoc/hooks.py -> its checkout
 _GIT = ".git"
 _WORKTREE = re.compile(r"\.claude/worktrees/[^/]+/(.+)")
 
@@ -123,17 +137,32 @@ def _deny(reason: str) -> Decision:
 
 
 def _is_windows(raw: str) -> bool:
-    return "\\" in raw or _DRIVE.match(raw) is not None or raw.startswith("//?/")
+    """Whether `raw` is a Windows form; on an NT host every path is one (fix round 1 C1)."""
+    if os.name == "nt":
+        return True
+    return "\\" in raw or _DRIVE.match(raw) is not None or raw.startswith(("//?/", "//./"))
 
 
-def _strip_device_prefix(raw: str) -> str:
-    """`\\\\?\\C:\\x` -> `C:\\x` and `\\\\?\\UNC\\server\\share` -> `\\\\server\\share`."""
-    text = raw.replace("/", "\\")
-    for prefix in ("\\\\?\\", "\\\\.\\"):
-        if text.startswith(prefix):
-            rest = text[len(prefix) :]
-            return "\\\\" + rest[4:] if rest[:4].upper() == "UNC\\" else rest
+def _check_raw(raw: object) -> str:
+    if not isinstance(raw, str) or not raw or "\0" in raw:
+        raise HookError(f"path {raw!r} is not a usable path")
     return raw
+
+
+def _undevice(text: str) -> str | None:
+    """`text` (backslashes) without a Win32 or NT device prefix: `\\\\?\\C:\\x`, `\\\\.\\C:\\x`
+    and `\\??\\C:\\x` become `C:\\x`, and `...\\UNC\\server\\share` becomes `\\\\server\\share`.
+    None for a device form that names no drive or share (a volume GUID, GLOBALROOT, a pipe):
+    only the host's realpath can map those."""
+    for prefix in _DEVICE_PREFIXES:
+        if not text.startswith(prefix):
+            continue
+        rest = text[len(prefix) :]
+        if rest[: len(_UNC)].upper() == _UNC:
+            return "\\\\" + rest[len(_UNC) :]
+        drive, tail = ntpath.splitdrive(rest)
+        return rest if _DRIVE.fullmatch(drive) and tail.startswith("\\") else None
+    return text
 
 
 def _windows_components(path: str) -> str:
@@ -144,65 +173,152 @@ def _windows_components(path: str) -> str:
     return drive + "\\".join(parts)
 
 
-def canonical(raw: str, cwd: str = "") -> str:
-    """`raw` as an absolute, normalised path with forward slashes (case kept)."""
-    if not isinstance(raw, str) or not raw or "\0" in raw:
-        raise HookError(f"path {raw!r} is not a usable path")
-    if _is_windows(raw) or (not raw.startswith("/") and _is_windows(cwd)):
-        path = _strip_device_prefix(raw)
-        if not ntpath.isabs(path):
-            path = ntpath.join(_require_cwd(cwd, raw), path)
-        path = ntpath.normpath(_windows_components(ntpath.normpath(path)))
-        return path.replace("\\", "/")
-    path = raw if raw.startswith("/") else posixpath.join(_require_cwd(cwd, raw), raw)
-    return posixpath.normpath(path)
+def _placed(path: str) -> bool:
+    """Whether a backslashed path names a drive root or a share (`C:\\...`, `\\\\server\\share`)."""
+    drive, rest = ntpath.splitdrive(path)
+    return bool(drive) and (drive.startswith("\\\\") or rest.startswith("\\"))
 
 
-def _require_cwd(cwd: str, raw: str) -> str:
-    if not cwd:
-        raise HookError(f"path {raw!r} is relative and the payload has no cwd")
-    return _strip_device_prefix(cwd)
+def _windows_base(cwd: str) -> str | None:
+    """The payload cwd as a drive-absolute Windows path, or None."""
+    text = _undevice(cwd.replace("/", "\\")) if cwd else None
+    return text if text is not None and _placed(text) else None
 
 
-def candidates(raw: str, cwd: str = "") -> list[str]:
-    """The canonical path and, when it differs, the real one (symlinks and 8.3 names resolved by
-    the host). A rule that denies either form denies the call."""
-    lexical = canonical(raw, cwd)
-    found = [lexical]
-    if _is_windows(lexical) == (os.name == "nt"):  # the host can resolve only its own form
-        real = os.path.realpath(lexical).replace("\\", "/")
-        if real.casefold() != lexical.casefold():
-            found.append(real)
+def _windows_joined(text: str, cwd: str) -> str:
+    """`text` (backslashes, device prefixes kept) made absolute: a relative path joins the
+    payload cwd, a rooted one with no drive (`\\Users\\...`) takes the cwd's drive (or the
+    host's). A drive-relative path on another drive (`Q:x`) stays unplaced."""
+    if text.startswith(("\\\\", _NT_OBJECT)) or ntpath.isabs(text):
+        return text
+    base = _windows_base(cwd)
+    if text.startswith("\\"):
+        return ntpath.join(base or os.getcwd(), text)
+    if base is None:
+        raise HookError(f"path {text!r} is relative and the payload has no usable cwd")
+    return ntpath.join(base, text)
+
+
+def _windows_lexical(joined: str) -> str | None:
+    """The normalised, forward-slash form of an absolute Windows path; None for an unmappable
+    device form. Raises HookError for a path that names no drive root or share."""
+    path = _undevice(joined)
+    if path is None:
+        return None
+    if not _placed(path):
+        raise HookError(f"path {joined!r} cannot be placed on a drive or share")
+    return ntpath.normpath(_windows_components(ntpath.normpath(path))).replace("\\", "/")
+
+
+def _host_real(path: str) -> str | None:
+    """The host's realpath of `path` (symlinks, 8.3 names, volume GUIDs, GLOBALROOT and `//./`
+    resolved), forward slashes; None when the result names no drive or share. Raises
+    HookError when the host cannot resolve it."""
+    try:
+        real = os.path.realpath(path)
+    except (OSError, ValueError) as exc:
+        raise HookError(f"path {path!r} cannot be resolved: {exc}") from None
+    if os.name != "nt":
+        return real
+    plain = _undevice(real)
+    return plain.replace("\\", "/") if plain is not None and _placed(plain) else None
+
+
+def _windows_candidates(raw: str, cwd: str) -> list[str]:
+    text = raw.replace("/", "\\")
+    found = []
+    forms = [text]
+    bash_drive = _GIT_BASH_DRIVE.match(text)
+    if bash_drive is not None:  # Git Bash's /c/... names C:\...
+        forms.append(bash_drive.group(1) + ":\\" + text[bash_drive.end() :].lstrip("\\"))
+    for form in forms:
+        joined = _windows_joined(form, cwd)
+        lexical = _windows_lexical(joined)
+        if lexical is not None:
+            found.append(lexical)
+        # Python's realpath reads an NT object path (\??\...) as rooted on the current drive,
+        # not as the object it names, so only its lexical form is resolved.
+        raw_real = None if joined.startswith(_NT_OBJECT) else joined
+        reals = [_host_real(s) for s in (raw_real, lexical) if s is not None and os.name == "nt"]
+        if lexical is None and not any(reals):
+            raise HookError(f"device path {raw!r} cannot be mapped to a drive or share")
+        found.extend(real for real in reals if real is not None)
     return found
 
 
-def _root_of(path: str) -> Path | None:
-    """The nearest proper ancestor of `path` holding `.git` (a checkout or worktree root); None
-    for a path this host cannot place (the other platform's form)."""
-    if not Path(path).is_absolute():
-        return None
-    for parent in Path(path).parents:
-        if (parent / _GIT).exists():
-            return parent
-    return None
+def _posix_candidates(raw: str, cwd: str) -> list[str]:
+    if raw.startswith("/"):
+        path = raw
+    elif cwd:
+        path = posixpath.join(cwd, raw)
+    else:
+        raise HookError(f"path {raw!r} is relative and the payload has no cwd")
+    lexical = posixpath.normpath(path)
+    return [lexical, _host_real(lexical) or lexical]
+
+
+def candidates(raw: str, cwd: str = "") -> list[str]:
+    """Every absolute, normalised form of `raw` with forward slashes (case kept): the lexical
+    form and the host's real one (symlinks, 8.3 names, device paths resolved). A rule that
+    denies any form denies the call. Raises HookError (exit 2) for a path that cannot be
+    placed: a device path the host cannot map to a drive, or another drive's relative path."""
+    raw = _check_raw(raw)
+    cwd = cwd if isinstance(cwd, str) else ""
+    windows = _is_windows(raw) or (not raw.startswith("/") and _is_windows(cwd))
+    found = _windows_candidates(raw, cwd) if windows else _posix_candidates(raw, cwd)
+    unique: dict[str, str] = {}
+    for path in found:
+        unique.setdefault(path.casefold(), path)
+    if not unique:
+        raise HookError(f"path {raw!r} cannot be placed")
+    return list(unique.values())
+
+
+def canonical(raw: str, cwd: str = "") -> str:
+    """The first of `candidates`: the form the hook reads a file through."""
+    return candidates(raw, cwd)[0]
+
+
+def project_roots(env: Mapping[str, str]) -> tuple[str, ...]:
+    """The forms of the project root: $CLAUDE_PROJECT_DIR, else the checkout holding hooks.py
+    (fix round 1 C2). Every path is judged against it, wherever `.git` files sit."""
+    raw = env.get(PROJECT_ENV) or str(_HOOKS_REPO)
+    try:
+        return tuple(candidates(raw))
+    except HookError:
+        return tuple(candidates(str(_HOOKS_REPO)))
 
 
 def _relative(path: str, root: Path) -> str:
     return Path(path).relative_to(root).as_posix().casefold()
 
 
-def _repo_forms(path: str) -> Iterator[str]:
-    """The casefolded repo-relative forms of `path`: relative to its checkout and, for a path
-    under .claude/worktrees/<name>/, relative to that worktree too (even one whose `.git` is
-    missing), so a worktree's orig/ is still orig/."""
-    root = _root_of(path)
-    if root is None:
+def _git_anchors(path: str) -> Iterator[str]:
+    """`path` relative to EVERY ancestor holding `.git`, so a `.git` planted inside the checkout
+    (config/.git, src/.git) cannot move the root (fix round 1 C2)."""
+    if not Path(path).is_absolute():
         return
-    rel = _relative(path, root)
-    yield rel
-    inner = _WORKTREE.fullmatch(rel)
-    if inner is not None:
-        yield inner.group(1)
+    for parent in Path(path).parents:
+        if (parent / _GIT).exists():
+            yield _relative(path, parent)
+
+
+def _repo_forms(path: str, project: tuple[str, ...]) -> Iterator[str]:
+    """The casefolded repo-relative forms of `path`: against the project root and against every
+    ancestor holding `.git`, each also relative to a worktree under .claude/worktrees/<name>/
+    (even one whose `.git` is missing), so a worktree's orig/ is still orig/."""
+    inside = _inside(path, project)
+    for rel in (*(() if inside is None else (inside,)), *_git_anchors(path)):
+        yield rel
+        inner = _WORKTREE.fullmatch(rel)
+        if inner is not None:
+            yield inner.group(1)
+
+
+def _judged(paths: Sequence[str], project: tuple[str, ...]) -> Iterator[tuple[str, str]]:
+    """(path, repo-relative form) for every form of every candidate path."""
+    for path in paths:
+        yield from ((path, rel) for rel in _repo_forms(path, project))
 
 
 def _under(rel: str, directory: str) -> bool:
@@ -271,32 +387,30 @@ def _read_current(path: str) -> str | None:
 
 def _apply(text: str | None, edit: Mapping) -> str | None:
     """`text` after one Edit (`old_string` -> `new_string`, once or with `replace_all`), or None
-    when the edit cannot be placed. A CRLF file is also tried with LF line ends."""
+    when the edit cannot be placed verbatim (fix round 1 I2: no loose matching, CRLF or curly
+    quotes, so the scanned text is the text the tool writes). An empty old_string places only
+    on a file that does not exist yet (`text` None): the tool creates it from new_string."""
     old, new = _string(edit, "old_string"), _string(edit, "new_string")
-    if text is None or not old:
+    if not old:
+        return new if text is None else None
+    if text is None or old not in text:
         return None
-    for body in (text, text.replace("\r\n", "\n")):
-        if old in body:
-            count = -1 if edit.get("replace_all") is True else 1
-            return body.replace(old, new, count)
-    return None
+    return text.replace(old, new, -1 if edit.get("replace_all") is True else 1)
 
 
-def _post_edit_texts(tool: str, tool_input: Mapping, path: str) -> list[str]:
-    """The text(s) to scan: the file as the edit leaves it. When an edit cannot be placed on
-    the current file (the tool will then fail), the current file and every new string are
-    scanned on their own."""
+def _post_edit_text(tool: str, tool_input: Mapping, path: str) -> str | None:
+    """The file as the edit leaves it, or None when an edit cannot be placed verbatim."""
     if tool == "Write":
-        return [_string(tool_input, "content")]
+        return _string(tool_input, "content")
     edits = [tool_input] if tool == "Edit" else tool_input.get("edits")
     if not isinstance(edits, list) or not edits or not all(isinstance(e, Mapping) for e in edits):
         raise HookError(f"the {tool} payload has no list of edits")
-    current = text = _read_current(path)
+    text = _read_current(path)
     for one in edits:
         text = _apply(text, one)
         if text is None:
-            return [current or "", *(_string(e, "new_string") for e in edits)]
-    return [text]
+            return None
+    return text
 
 
 def _configure():
@@ -338,11 +452,10 @@ def asm_problem(text: str, *, any_pragma_aux: bool = False) -> str | None:
 def _source_problem(tool: str, tool_input: Mapping, path: str, *, any_pragma_aux: bool) -> str:
     if tool == "NotebookEdit":
         return "a notebook edit in src/ or include/ cannot be scanned for inline asm"
-    for text in _post_edit_texts(tool, tool_input, path):
-        problem = asm_problem(text, any_pragma_aux=any_pragma_aux)
-        if problem is not None:
-            return problem
-    return ""
+    text = _post_edit_text(tool, tool_input, path)
+    if text is None:
+        return "an edit whose old_string is not in the file verbatim cannot be checked"
+    return asm_problem(text, any_pragma_aux=any_pragma_aux) or ""
 
 
 def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
@@ -354,12 +467,11 @@ def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
     notes = _notes_paths(env, cwd)
     paths = candidates(raw, cwd)
     scanned = False
-    for path in paths:
-        for rel in _repo_forms(path):
-            reason = _protected(rel, notes=path.casefold() in notes)
-            if reason is not None:
-                return _deny(reason)
-            scanned = scanned or any(_under(rel, d) for d in _SCANNED_DIRS)
+    for path, rel in _judged(paths, project_roots(env)):
+        reason = _protected(rel, notes=path.casefold() in notes)
+        if reason is not None:
+            return _deny(reason)
+        scanned = scanned or any(_under(rel, d) for d in _SCANNED_DIRS)
     problem = _source_problem(tool, tool_input, paths[0], any_pragma_aux=False) if scanned else ""
     if problem:
         return _deny(f"no inline asm in src/ or include/ (D-16, coding rules): {problem}")
@@ -506,6 +618,8 @@ def _pattern_problem(pattern: object) -> str:
         return ""
     if not isinstance(pattern, str):
         return "that is not a string"
+    if any(char in pattern for char in _GLOB_SETS):  # fix round 1 M2: refused, never judged
+        return f"{pattern!r}, which holds a brace or class set,"
     parts = pattern.replace("\\", "/").split("/")
     if pattern.startswith(("/", "\\", "~")) or _DRIVE.match(pattern) or ".." in parts:
         return f"{pattern!r}, which can leave the repository,"
