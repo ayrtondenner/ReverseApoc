@@ -33,17 +33,27 @@ from relocpair import (
     GOOD_ORIGINAL,
     GOOD_OURS,
     LOAD_FIELD,
+    TEXT_INDEX,
     absolute,
     call,
     le_off32,
     original,
+    our_module,
+    to_segment,
 )
+from relocpair import table as symbol_table
 from reverseapoc import check
 from reverseapoc.asm import data_ranges
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
 from reverseapoc.compiler import provenance_path, source_rule
-from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    UnitRow,
+    game_name,
+    write_functions_csv,
+    write_units_csv,
+)
 from reverseapoc.le import LE
 from reverseapoc.symbols import SymbolTable
 from reverseapoc.target import RawField, TargetResult, build_target
@@ -1212,3 +1222,103 @@ def test_check_json_lists_raw_fields_per_function(env, monkeypatch, capsys):
     assert fn["raw_fields"] == [{"va": "0x00010001", "kind": "branch"}]
     assert doc["target"]["raw_fields"] == [{"va": "0x00010001", "kind": "branch"},
                                            {"va": "0x00010012", "kind": "off32"}]  # fmt: skip
+
+
+# ---- DI-02 (05-REVIEW IN-02): a jump table that leads its function ------------------------------
+#
+# wcc386 puts a switch's table at _TEXT+0, before the function's public, and the function jumps
+# through `jmp cs:[eax*4+_TEXT+0]`. The table's entries are fixups to case labels inside the
+# function. Made-up layout: a 3-entry table row D_00010100, 4 filler bytes, then func_00010110.
+
+TABLE_VA = CODE_BASE + 0x100
+TABLE_ENTRIES = 3
+TABLE_SIZE = TABLE_ENTRIES * 4
+TABLE_FILLER = bytes.fromhex("8bc08bc0")  # mov eax,eax twice: made-up filler, the same both sides
+SWITCH_OFF = TABLE_SIZE + len(TABLE_FILLER)  # our public's offset in _TEXT
+SWITCH_VA = TABLE_VA + SWITCH_OFF
+# cmp eax,2; ja default; jmp cs:[eax*4+table]; three `mov eax,imm; ret` cases; default: xor; ret
+SWITCH_BODY = bytes.fromhex(
+    "83f802" "771a" "2eff2485" "00000000" "b80a000000c3" "b815000000c3" "b820000000c3" "31c0c3"
+)
+JUMP_FIELD = 9  # the table address in the jmp, from the function start
+CASES = (13, 19, 25)  # the case labels, from the function start
+TABLE_ROW = FunctionRow(TABLE_VA, TABLE_VA + TABLE_SIZE, "D_00010100", "data-in-code", UNIT,
+                        "fixup")  # fmt: skip
+SWITCH_ROW = FunctionRow(SWITCH_VA, SWITCH_VA + len(SWITCH_BODY), "func_00010110", "game", UNIT,
+                         "call")  # fmt: skip
+SWITCH_SYMBOL = "func_00010110_"
+
+
+def _entries(base: int, cases: tuple[int, ...]) -> bytes:
+    return b"".join((base + case).to_bytes(4, "little") for case in cases)
+
+
+def table_module(prefix: bytes = b"", publics: tuple[tuple[str, int], ...] = ()):
+    """Our compiled unit: `prefix` (with `publics` in it), the table, the filler and the
+    function. Table entries and the jmp's table address are fixups to our own _TEXT."""
+    table_off = len(prefix)
+    switch_off = table_off + SWITCH_OFF
+    data = prefix + _entries(switch_off, CASES) + TABLE_FILLER + SWITCH_BODY
+    fixups = [to_segment(table_off + 4 * i, TEXT_INDEX) for i in range(TABLE_ENTRIES)]
+    jump = switch_off + JUMP_FIELD
+    data = data[:jump] + table_off.to_bytes(4, "little") + data[jump + 4 :]
+    fixups.append(to_segment(jump, TEXT_INDEX))
+    return our_module(data, fixups, publics=(*publics, (SWITCH_SYMBOL, switch_off)))
+
+
+def table_original(cases: tuple[int, ...] = CASES, prefix: bytes = b""):
+    """The LE: `prefix` right before the table, the table row, the filler and the function, with
+    an off32 LE fixup per table entry (to `cases`) and one for the jmp's table address."""
+    start = TABLE_VA - len(prefix)
+    patch = prefix + bytes(TABLE_SIZE) + TABLE_FILLER + SWITCH_BODY
+    records = [le_off32(TABLE_VA + 4 * i, SWITCH_VA - CODE_BASE + case, obj=1)
+               for i, case in enumerate(cases)]  # fmt: skip
+    records.append(le_off32(SWITCH_VA + JUMP_FIELD, TABLE_VA - CODE_BASE, obj=1))
+    return original({start: patch}, page1=b"".join(records))
+
+
+def table_check(module_, orig, rows):
+    exe = SimpleNamespace(flat=orig.flat, fixups=tuple(orig.fixups),
+                          symbols=symbol_table(*rows))  # fmt: skip
+    return {d.row.name: reloc for d, reloc in check.checked_functions(module_, rows, exe)}
+
+
+def test_leading_table_pairs_with_its_data_row():
+    """The table [0, first public) pairs with the data-in-code row that ends (filler after it)
+    right before the function's row: the jmp's table address resolves to the row, and each
+    entry is checked against its LE fixup."""
+    rows = [TABLE_ROW, SWITCH_ROW]
+    module_ = table_module()
+    segment = next(seg for seg in module_.segments if seg.name == "_TEXT")
+    publics = check.own_publics(module_, segment, rows, symbol_table(*rows))
+    assert check.OwnPublic("_D_00010100", 0, SWITCH_OFF, TABLE_VA) in publics
+    verdicts = table_check(module_, table_original(), rows)
+    assert list(verdicts) == [SWITCH_ROW.name]
+    assert verdicts[SWITCH_ROW.name].ok, verdicts[SWITCH_ROW.name].problems
+
+
+def test_leading_table_with_a_wrong_entry_fails():
+    """One table entry of ours points one case off the original's: the function fails, naming
+    the entry's VA."""
+    rows = [TABLE_ROW, SWITCH_ROW]
+    wrong = (CASES[0], CASES[2], CASES[2])  # the original's entry 1 is case 2, ours case 1
+    reloc = table_check(table_module(), table_original(wrong), rows)[SWITCH_ROW.name]
+    assert not reloc.ok
+    field = f"0x{TABLE_VA + 4:08X}: "
+    assert any(p.startswith(field) for p in reloc.problems), reloc.problems
+
+
+def test_mid_unit_table_still_fails_closed():
+    """A table between two publics (func_000100FC, then the table, then the switch) stays
+    refused, even when our layout coincides with the original's: the first public's span ends
+    at its row's length, so the jmp's table address lies in no own public."""
+    first = FunctionRow(TABLE_VA - 4, TABLE_VA - 1, game_name(TABLE_VA - 4), "game", UNIT, "call")
+    prefix = bytes.fromhex("31c0c3" "90")  # xor eax,eax; ret; one filler byte
+    rows = [first, TABLE_ROW, SWITCH_ROW]
+    module_ = table_module(prefix, publics=((f"{first.name}_", 0),))
+    verdicts = table_check(module_, table_original(prefix=prefix), rows)
+    switch = verdicts[SWITCH_ROW.name]
+    assert not switch.ok
+    field = f"0x{SWITCH_VA + JUMP_FIELD:08X}: "
+    (problem,) = [p for p in switch.problems if p.startswith(field)]
+    assert "needs the unit's public-to-row map" in problem
