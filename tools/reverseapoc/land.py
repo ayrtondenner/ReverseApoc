@@ -8,7 +8,9 @@ SHA-1 (research Pitfall 2). The patch builder therefore follows KKND's keep-orig
 bytes everywhere except under a relocated field on either side, where the original bytes stay.
 That is sound only after the relocation check proved each field lands on the original target, so
 a function whose check did not pass is refused, never landed. objdiff's percentage is never a
-substitute for that check.
+substitute for that check. A passing verdict authorizes only the row and bytes it judged: one
+that names no row start, length or SHA-1, or names another row or other bytes, is refused too
+(05-REVIEW row 10b).
 
 The SHA-1 compare is independent of the check: a function whose check was wrongly reported ok
 still fails here if any of its bytes outside the fields differ, and the result names the first
@@ -29,7 +31,7 @@ from typing import Any
 from .fileio import write_atomic
 from .functions import FunctionRow
 from .le import LE
-from .relocs import FIELD_SIZE, RelocResult
+from .relocs import FIELD_SIZE, RelocResult, bytes_sha1
 from .splice import (
     SpliceError,
     SpliceResult,
@@ -63,12 +65,37 @@ def _hex(va: int) -> str:
     return f"0x{va:08X}"
 
 
+def _check_verdict_is_for(fn: LandedFunction) -> None:
+    """The verdict judged exactly `fn`'s row and bytes: its start, length and SHA-1 are set and
+    equal the row start and the length and SHA-1 of `fn.ours` (05-REVIEW row 10b). The message
+    names addresses, lengths and SHA-1s only."""
+    reloc, name = fn.reloc, fn.row.name
+    if reloc.start is None or reloc.length is None or reloc.sha1 is None:
+        raise LandError(
+            f"{name}: the relocation verdict names no row start, length or SHA-1 of the bytes "
+            "it checked; not landing it"
+        )
+    if reloc.start != fn.row.start:
+        raise LandError(
+            f"{name}: the relocation verdict is for the row at {_hex(reloc.start)}, not this "
+            f"row at {_hex(fn.row.start)}; not landing it"
+        )
+    ours = bytes_sha1(fn.ours)
+    if reloc.length != len(fn.ours) or reloc.sha1 != ours:
+        raise LandError(
+            f"{name}: the relocation verdict is for {reloc.length} bytes with SHA-1 "
+            f"{reloc.sha1}, not these {len(fn.ours)} bytes with SHA-1 {ours}; not landing it"
+        )
+
+
 def build_patch(fn: LandedFunction, flat: bytes) -> bytes:
     """Our bytes for `fn`, with every field in ours | theirs holding the original bytes from
-    `flat` (le.load_flat(relocate=False)). Refuses a function whose check did not pass."""
+    `flat` (le.load_flat(relocate=False)). Refuses a function whose check did not pass, and one
+    whose verdict judged another row or other bytes."""
     start, end = fn.row.start, fn.row.end
     if not fn.reloc.ok:
         raise LandError(f"{fn.row.name}: the relocation check did not pass; not landing it")
+    _check_verdict_is_for(fn)
     if len(fn.ours) != end - start:
         raise LandError(
             f"{fn.row.name}: {len(fn.ours)} bytes of ours for a row of {end - start} bytes"
