@@ -26,7 +26,7 @@ from __future__ import annotations
 import hashlib
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -143,14 +143,16 @@ def _parse(record: dict[str, str]) -> StatusRow:
 
 
 def _check_lines(path: Path, data: bytes) -> None:
-    """The line rules _read_records does not see: LF only, the comment first, no other comment
-    and no blank line, so data row n is file line n + 2."""
+    """The line rules _read_records does not see: LF only, the comment first, a final LF, no
+    other comment and no blank line, so data row n is file line n + 2."""
     if b"\r" in data:
         raise StatusError(f"{path}: line endings must be LF only")
     text = data.decode("utf-8", errors="replace")
     lines = text.split("\n")
     if lines[0] != STATUS_COMMENT:
         raise StatusError(f"{path}: line 1 is not {STATUS_COMMENT!r}")
+    if not text.endswith("\n"):
+        raise StatusError(f"{path}: line {len(lines)} has no final LF")
     body = lines[1:-1] if text.endswith("\n") else lines[1:]
     for number, line in enumerate(body, start=2):
         if not line or line.startswith("#"):
@@ -162,7 +164,8 @@ def read_status(path: Path) -> list[StatusRow]:
     path = Path(path)
     if not path.exists():
         return []
-    _check_lines(path, path.read_bytes())
+    data = path.read_bytes()
+    _check_lines(path, data)
     try:
         records = _read_records(path, STATUS_COLUMNS)
     except FunctionsError as exc:
@@ -179,7 +182,22 @@ def read_status(path: Path) -> list[StatusRow]:
             raise StatusError(f"{path}: line {number}: start {_address(row.start)} is not after "
                               f"{_address(rows[-1].start)}; rows are sorted by start")  # fmt: skip
         rows.append(row)
+    _check_bytes(path, data, rows)
     return rows
+
+
+def _check_bytes(path: Path, data: bytes, rows: Sequence[StatusRow]) -> None:
+    """The file is exactly what write_status writes for its rows (fix round 1, M8): a quoted or
+    otherwise re-spelled cell that csv would accept is refused, naming its line."""
+    expected = format_status(rows).encode("utf-8")
+    if data == expected:
+        return
+    for number, (got, want) in enumerate(zip(data.split(b"\n"), expected.split(b"\n"),
+                                             strict=False), start=1):  # fmt: skip
+        if got != want:
+            raise StatusError(f"{path}: line {number}: not written the way gate writes it "
+                              "(a quoted or re-spelled cell)")  # fmt: skip
+    raise StatusError(f"{path}: not written the way gate writes it")
 
 
 def _cells(row: StatusRow) -> list[str]:

@@ -1054,8 +1054,10 @@ def _run_gate(args: argparse.Namespace) -> int:
 
 
 def _cmd_gate(args: argparse.Namespace) -> int:
-    """Exit 0 gated and written, 1 mismatch (nothing written), 2 for any tool or usage error
-    (nothing written, never a pass)."""
+    """Exit 0 gated (rows written; --all writes none), 1 on a mismatch, with nothing written, 2
+    for any tool or usage error, never a pass. A 2 writes nothing, except when a write fails
+    after another EXE's table was already written: the message names that table, so config/ is
+    restored before anything is committed."""
     try:
         return _run_gate(args)
     except (*_ERRORS, CheckError, StatusError) as exc:
