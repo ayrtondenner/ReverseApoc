@@ -1269,7 +1269,8 @@ def _run_id(value: str | None) -> str:
 def _cmd_drive(args: argparse.Namespace) -> int:
     """Exit 0 for a night that ENDED with every end-of-run check passing, a dry run or a
     passing canary; 1 for a STOPPED night, a failed end-of-run check or a failing canary; 2
-    when it refused to start (preflight, dirty outputs)."""
+    when it refused to start (preflight, dirty outputs, or a canary refused before its
+    session; once the canary's session ran, any error is a canary FAIL, exit 1)."""
     options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
                                   max_sessions=args.max_sessions,
                                   target_matched=args.target_matched, dry_run=args.dry_run,
