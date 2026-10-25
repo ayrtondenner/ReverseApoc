@@ -282,6 +282,27 @@ DI-19 rows 8, 11, 13b, 16a and 16b are closed by commits. The new real-file pins
 - Files exist: tools/reverseapoc/discover.py, lint.py, ghidra_scripts/ExportDrafts.java, tests/test_discover.py, test_lint.py, test_ghidra.py, test_units.py, test_functions_real.py, config/ufo2p/functions.csv, config/tacp/functions.csv.
 - Commits on HEAD: 5cf5392, 2114911, f4e63a4, 47b633d, dbc3d42, 8078685, f0dc6bf (7, measured with `git rev-list --count 021a58b..HEAD`).
 
+## Fix round 1
+
+The review approved the plan with no Critical or Important findings (review-06-04.md). This round fixes its 7 minors. FIX_BASE is 9665feb; there are 6 commits from there, and every test commit comes before the fix commit it pins.
+
+| # | Minor | Fix | Commit | Proof |
+|---|-------|-----|--------|-------|
+| 1 | The row 11 rule could cut code reached only through a later table's case label | `end_of` now adds the case labels of every table an indirect jmp in the scanned code reads, wherever that table lies (`_EndScan.read_tables`). RED first: the reviewer's layout ended at T1's end, 0x1001C. | a2678ad (RED), 446a7e9 (fix) | `test_case_label_of_a_later_table_keeps_the_code`. Re-measured on both EXEs into build/di19-11/after.json: identical to the approved set, still exactly the 26 ends (13 UFO2P + 13 TACP). No CSV regeneration needed. |
+| 2 | No CI pin for the direct-branch and skipped-table halves of the guard | Two synthetic layouts: a `ja L` over the trailing table, and an inline table stepped over whose case label lies past the next table | a2678ad | Mutation-checked against the fixed code. Deleting `reached.add(insn.branch_target)` fails `test_forward_jump_past_the_table_keeps_the_code`; deleting `reached.update(self.case_targets(pos))` fails `test_case_label_of_a_skipped_table_keeps_the_code`. |
+| 3 | The `ends()` docstring described the old rule | `ends()` and `end_of` docstrings now describe the trailing-table end and which case labels are counted | 446a7e9 | Read in the diff |
+| 4 | `set(reached)` was copied on every terminal instruction | `after_tables` returns early when no table follows, and checks `reached` and the tables' cases in place, without a copy | 446a7e9 | Synthetic suite green |
+| 5 | The text test did not pin that the batch goes on | The catch block must hold `println("ERROR "` and `return false;`, with no `throw` and no `System.exit` | 783ed9a | Mutation-checked: replacing `return false;` with `throw e;` fails the test |
+| 6 | `_require_runtime_tree` enforced "every row lists 10.6", which cli does not | `_listed_versions`: the LIB386 tree of every version any runtime row lists must be installed, else a loud failure (never a skip). cli._seeded_runtime_rows and functions.runtime_entries pick each row's version themselves. | 84033a0 | An empty REVERSEAPOC_WATCOM_DIR gives an AssertionError naming 10.5, 10.6 and 11.0. The F19 real run passes. |
+| 7 | The gap-free tiling checks sat only in the orig/-gated test | The `a.end == b.start` and last-end checks moved into the CSV-only `tiling_problems`; `test_units_tile_the_code` keeps only the code-object bounds. Added a planted one-byte-gap case. | 474a60a | Mutation-checked: weakening the gap check to an overlap-only check fails both `[*-gap]` cases |
+
+Verification after the round:
+- Synthetic suites (discover, lint, ghidra, units): 77 passed, 3 skipped. The skips are the pre-existing clang/Ghidra ones.
+- F19 real run, tests/test_functions_real.py and tests/test_discover_real.py: 24 passed, 0 SKIPPED (build/06-04-real.out).
+- `uv run pytest -q`: 1430 passed, 215 skipped.
+- `uv run ruff check .` is clean.
+- config/ is unchanged in this round.
+
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
