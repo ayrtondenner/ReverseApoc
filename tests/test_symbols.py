@@ -216,3 +216,19 @@ def test_symbol_kind_func_is_one_of_symbol_kinds():
     assert SYMBOL_KIND_FUNC in SYMBOL_KINDS
     source = inspect.getsource(symbols_module)
     assert '"func"' not in source and "'func'" not in source  # no second literal for the kind
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [
+        SymbolRow(0x10010, "func_00010010_", "func"),  # its own placeholder
+        SymbolRow(0x10010, "func_00012345_", "func"),  # another row's placeholder
+        SymbolRow(0xD3000, "_D_000D3000", "data"),
+        SymbolRow(0xD3000, "_D_000D2000", "data"),
+    ],
+    ids=["own-func", "other-func", "own-data", "other-data"],
+)
+def test_a_placeholder_shaped_symbols_csv_name_is_refused(symbol):
+    # linker_name would hand out the name, and address_of would read it back as a placeholder.
+    with pytest.raises(SymbolError, match=f"0x{symbol.address:08X}.*placeholder"):
+        SymbolTable.build(FUNCTIONS, [symbol], data_ranges=DATA_RANGES)
