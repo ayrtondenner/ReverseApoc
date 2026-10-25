@@ -226,6 +226,8 @@ See key-decisions in the frontmatter. Two points on interfaces later plans call:
 
 - The writes are atomic per file, not across the two EXEs' tables. Every touched table is merged and validated before any is written, so only an OS error between the two `os.replace` calls could leave one table written. That is an exit 2 the driver reports.
 - `write_status` is a public library function. D-21's "no other writer" is enforced by the CLI (only `gate` reaches it), by the scan test, and later by the 06-12 hooks and the 06-16 drift test.
+- Fix round 1: deliberately un-matching a function, or moving a matched start to another unit, has no gate path. Only gate writes status.csv, and gate never removes a matched row: it refuses the cross-check. Removing such a row is an owner action outside this plan. A moved start cannot happen for matched code; a rename can, and it is re-gateable.
+- Fix round 1 (M6, a note for 06-23 and 06-25): `gate --partial` compiles the saved file, and `compiler.source_rule` picks the cflags rule by that file's own repo-relative path (`build/driver/.../best/<unit>.c`), not by `src/<exe>/<unit>.c`. That is harmless while config/cflags.txt has only the `*` rule. Once a D-18 per-glob rule exists, partial percents would be scored with the wrong flags. 06-23 must pick the rule by the unit path, for example by saving the best C under a tree that mirrors `src/<exe>/<unit>.c`, or by passing the unit path to the rule lookup.
 
 ## User Setup Required
 
@@ -236,6 +238,27 @@ None.
 - 06-16 can seed both Phase 5 units in one container run: `uv run reverseapoc gate ufo2p/u_000a34f0 tacp/u_00054f20 --json`. Its verify reads the top-level `ok`.
 - 06-18 adds the decomphub feed write to the gate (F8: `config_root.parent / "decomphub.progress.json"`). The natural place is `_write_tables` in gate.py, after the status tables are written.
 - 06-23/06-25 call `gate EXE/UNIT --partial --src <repo-relative .c> --attempts N --json`.
+
+## Fix round 1
+
+Fix base `ae38da9`. The review approved, with one Important finding (it fails closed) and nine minors. RED `a22f512` (test), GREEN `1230849` (fix).
+
+| Finding | What changed | Test (tests/test_gate.py unless named) |
+|---|---|---|
+| Important 1: a fully reverted matched unit made `gate --all` (and gating it) exit 2 | `_reverted` reads the unit file with configure's D-12 parser (`source_marks`) before check. If its C defines none of the unit's functions, every matched row of the unit is a mismatch (exit 1). check is not run, and gate --all leaves the unit out of `fresh`. The fakes now raise "defines no function of unit" as check_unit/check_source do. | `test_gate_all_exits_1_on_a_fully_reverted_unit`, `test_gating_a_fully_reverted_matched_unit_exits_1` |
+| Ruling on minor 3: renames | Matched rows are keyed by (EXE, start). `_owners` names each start by its symbols.csv function name, else its functions.csv name. A passing re-gate writes that name and the new sha, and keeps attempts and date (F29). The cross-check compares by start. A matched row that is not re-gated and whose start now has another name is refused. A change of unit is still refused. | `test_regating_a_renamed_function_updates_its_name`, `test_a_stale_name_is_refused` |
+| M2: half-write message | An OSError on a later table raises CheckError naming the tables already written ("restore config/ before committing"). `_cmd_gate`'s docstring describes this case. | `test_a_failed_second_write_names_the_written_table`, `test_cmd_gate_docstring_names_the_half_write` |
+| M4: non-default `--src` | `gate` and `gate --all` refuse a src root other than the committed one (`check.DEFAULT_SRC`, read at call time), exit 2. `--src` is for `--partial` only. The tree fixture now stands in for the committed src/ and config/. | `test_gate_refuses_a_non_default_src`, `test_gate_cli_refuses_src_without_partial` (2) |
+| M5: partial with account problems | `gate_partial` writes nothing and exits 1 when `source.problems` is non-empty, naming them. | `test_partial_with_source_problems_writes_nothing` |
+| M6: cflags rule of a saved file | Not changed here. Recorded under Known limits as a note for 06-23/06-25. | n/a |
+| M7: hash window | Each unit file is hashed again just before the write. If it differs from the hash taken around its own check, gate raises CheckError (exit 2) and writes nothing. | `test_a_unit_file_changed_before_the_write_is_refused` |
+| M8: exact bytes | `read_status` requires a final LF and requires the file to equal `format_status(rows)` byte for byte. A quoted or re-spelled cell is refused, naming its line. | tests/test_status.py `test_status_refuses_bad_tables[quoted-cell, no-final-lf, header-no-final-lf]` |
+| M9: `--all` and source_sha256 | `recheck` compares each matched row's `source_sha256` with the unit file and reports a difference (exit 1). | `test_gate_all_refuses_a_stale_source_sha` |
+| M10: `--all` output | `--all` ends with `ok` or `MISMATCH`, never "status.csv not written". `checks` holds one `{exe, unit, functions}` entry per matched unit. The land's per-EXE results go under the new top-level `splice` key. | `test_gate_all_output_shape` |
+
+RED (`a22f512`): 16 new targets failed on their assertions. The full-revert cases raised CheckError, or wrongly exited 0. The rename kept the old name; the stale name passed; the half-write raised a bare OSError; the non-default src passed. The partial with problems wrote a row, the edited file passed, and the stale sha passed. The `--all` text ended "status.csv not written". The three status tables were read without error. Existing tests stayed green; seeded_tree now seeds the real file hashes.
+
+After the fix: `uv run pytest -q tests/test_gate.py tests/test_status.py` gives 95 passed. `uv run pytest -q` gives 1693 passed and 217 skipped (the worktree's real-file skips). `uv run ruff check .` is clean.
 
 ## Self-Check: PASSED
 
