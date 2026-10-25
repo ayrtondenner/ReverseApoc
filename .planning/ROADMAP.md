@@ -40,7 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE (completed 2026-10-24)
 - [ ] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions
 - [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
-- [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0
+- [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0; findings docs (bugs, cut content, cheats and easter eggs, Learning AI)
 
 ## Phase Details
 
@@ -295,7 +295,7 @@ Plans:
 
 **Goal**: Every mechanic decompiled in Phase 7 has a clean-room spec in OpenSpec format, written in our own words, citing function addresses and dated community sources, checked by a linter that can fail, reviewed by the owner and licensed CC0-1.0 so OpenApoc can use it without conditions.
 **Depends on**: Phase 7
-**Requirements**: SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-08, SPEC-09
+**Requirements**: SPEC-01, SPEC-02, SPEC-03, SPEC-04, SPEC-05, SPEC-06, SPEC-07, SPEC-08, SPEC-09, SPEC-10
 **Success Criteria** (what must be TRUE):
   1. `specs/_template/spec.md` has the OpenSpec shape (`## Purpose`, `## Requirements`, `### Requirement:` with SHALL/MUST, `#### Scenario:` with WHEN/THEN) plus OpenApoc issue, constants and formulas, functions (EXE + address), evidence, sources and status on the ladder `drafted -> cited -> backed-by-matched-code -> dosbox-verified -> reviewed-by-openapoc` (SPEC-01)
   2. `uv run reverseapoc speclint specs/` exits 0, and negative tests show it fails on a missing section, a requirement without SHALL/MUST or scenario, an address not in `config/<exe>/functions.csv`, a `backed-by-matched-code` claim the gate-written status table does not support, a `dosbox-verified` claim without a test, a fenced C block or text copied from `src/`, and a source without URL, access date and wiki revid (SPEC-02)
@@ -303,6 +303,7 @@ Plans:
   4. The `apoc-spec` skill exists in `.claude/skills/apoc-spec/`; `docs/clean-room.md` states the author/implementer split and the human review rule and links both OpenApoc Discord messages; `specs/LICENSE` is CC0-1.0 and `docs/legal.md` and `README.md` name it (SPEC-04, SPEC-05, SPEC-06)
   5. `specs/claims.md` lists the mechanics claims from UFOpaedia, Wikibooks, StrategyWiki and the OpenApoc Discord, paraphrased and linked, each tied to a checklist item with a verdict (confirmed, refuted, refined) or marked "none found" (SPEC-07)
   6. Every target in `config/mechanics.toml` has a spec that passes `speclint`, reaches at least `backed-by-matched-code`, and carries an owner review line with date; pytest and ruff pass on the host and in the container (SPEC-08, SPEC-09)
+  7. `docs/findings/` holds `bugs.md`, `cut-content.md`, `cheats-and-easter-eggs.md` and `learning-ai.md`, filled with the community reports and the Phase 7 findings known at the time; every entry has an EXE, a build, an address where known and a status (`reported`, `confirmed`, `refuted`, `not seen in the code matched so far`), and no entry reads `confirmed` unless its function is matched per the gate-written status table (SPEC-10)
 
 **Spike**: `wikifetch` fetches one UFOpaedia table page with the revid recorded and the table numbers intact (decides fetcher vs MCP extract for citations).
 **Plans**: TBD
