@@ -30,6 +30,7 @@ from reverseapoc import check
 from reverseapoc.compiler import compile_source
 from reverseapoc.functions import FunctionRow, game_name
 from reverseapoc.omf import Module, Segment
+from reverseapoc.omf2elf import convert
 from reverseapoc.symbols import SymbolTable
 
 BUILD_ROOT = REPO_ROOT / "build" / "test-check-tables"  # the compiler writes only in the repo
@@ -177,3 +178,104 @@ def test_real_switch_probe_objdiff(build_dir):
     runner = check.default_objdiff_runner(f"{STEM}/{UNIT}")
     (fn,) = _check(exe, src, build_dir, runner).functions
     assert fn.objdiff_percent == check.PERFECT
+
+
+# ---- DI-03: a static named with its row's name, and its caller ----------------------------------
+
+STATIC_VA, CALLER_VA = CODE_BASE + 0x200, CODE_BASE + 0x300  # made-up rows, apart on purpose
+STATIC_NAME, CALLER_NAME = game_name(STATIC_VA), game_name(CALLER_VA)
+STATIC_SOURCE = f"""\
+/* 05-REVIEW IN-01: a static function named with its row's name, and a caller in the unit. */
+static int {STATIC_NAME}(int x)
+{{
+    return x * 3 + 1;
+}}
+
+int {CALLER_NAME}(int y)
+{{
+    return {STATIC_NAME}(y) + {STATIC_NAME}(y + 1);
+}}
+"""
+HELPER_SOURCE = STATIC_SOURCE.replace(STATIC_NAME, "helper")  # a static with no row name
+# The IN-01 message (check._stray_reason), unchanged by DI-03.
+HELPER_REASON = ("public helper_ is a static (LPUBDEF) function, which check cannot pair with a "
+                 "row: give it its row's func_ name or keep the row INCLUDE_ASM")  # fmt: skip
+
+
+def _sizes(module: Module) -> dict[str, int]:
+    """omf2elf's size of each code public, as check.defined_functions takes it."""
+    return {s.name: s.size for s in convert(module).symbols if s.section is not None}
+
+
+def _laid_out(module: Module, starts: dict[str, int], *, plant: int = 0):
+    """Rows for the publics of `starts` (linker name -> made-up VA) and the original: each
+    public's bytes at its VA, every self-relative call to another of them rewritten to the rel32
+    that lands on that VA (`plant` bytes past it). A call to a public without a VA is left as
+    compiled."""
+    text, sizes = _text(module), _sizes(module)
+    rows, patches = [], {}
+    for name, va in starts.items():
+        off, size = _public(module, name), sizes[name]
+        rows.append(_row(va, va + size, name.removesuffix("_")))
+        code = bytearray(text.data[off : off + size])
+        for fx in text.fixups:
+            if not off <= fx.offset < off + size or fx.target_name not in starts:
+                continue
+            want = starts[fx.target_name] + FIELD.unpack_from(text.data, fx.offset)[0]
+            field = va + fx.offset - off
+            rel32 = want + fx.displacement + plant - field - REL32_END
+            FIELD.pack_into(code, fx.offset - off, rel32)
+        patches[va] = bytes(code)
+    return sorted(rows, key=lambda row: row.start), original(patches)
+
+
+def _static(build_dir: Path, source: str = STATIC_SOURCE, *, plant: int = 0):
+    src, module = _compile(source, build_dir)
+    sizes = _sizes(module)
+    starts = {f"{name}_": va for name, va in ((STATIC_NAME, STATIC_VA), (CALLER_NAME, CALLER_VA))
+              if f"{name}_" in sizes}  # fmt: skip
+    rows, flat_original = _laid_out(module, starts, plant=plant)
+    return src, module, _exe(rows, flat_original)
+
+
+def test_real_static_probe_passes(build_dir):
+    """[10.6] A static named func_X (an LPUBDEF) and its caller (calls through an EXTDEF of the
+    same name) both pass the relocation and byte checks; an original whose calls land one byte
+    past the static fails the caller; a static named `helper` still fails with the IN-01
+    message."""
+    src, module, exe = _static(build_dir)
+    (static,) = [p for p in module.publics if p.name == f"{STATIC_NAME}_"]
+    assert static.local  # the probe's premise: wcc386 10.6 emits the static as an LPUBDEF
+    assert f"{STATIC_NAME}_" in module.externs  # and its callers' target as an EXTDEF
+    result = _check(exe, src, build_dir, _perfect)
+    assert result.problems == (), [p.format() for p in result.problems]
+    assert [(fn.name, fn.va) for fn in result.functions] == [(STATIC_NAME, STATIC_VA),
+                                                             (CALLER_NAME, CALLER_VA)]  # fmt: skip
+    for fn in result.functions:
+        assert fn.reloc.ok, (fn.name, fn.reloc.problems)
+        assert fn.bytes_ok and fn.differing == 0, fn.name
+
+    planted_dir = build_dir / "planted"
+    planted_dir.mkdir()
+    src, _, exe = _static(planted_dir, plant=1)
+    verdicts = {fn.name: fn.reloc for fn in _check(exe, src, planted_dir, _perfect).functions}
+    assert verdicts[STATIC_NAME].ok
+    assert not verdicts[CALLER_NAME].ok
+    landed_past = f"the original lands on 0x{STATIC_VA + 1:08X}"
+    assert all(landed_past in p for p in verdicts[CALLER_NAME].problems), verdicts[CALLER_NAME]
+
+    helper_dir = build_dir / "helper"
+    helper_dir.mkdir()
+    src, _, exe = _static(helper_dir, HELPER_SOURCE)
+    result = _check(exe, src, helper_dir, _perfect)
+    reasons = [p.reason for p in result.problems if p.name == "helper_"]
+    assert reasons == [HELPER_REASON], [p.format() for p in result.problems]
+
+
+def test_real_static_probe_objdiff(build_dir):
+    """[10.6] objdiff-cli scores the static and its caller 100.0 (container, plan 06-16)."""
+    src, _, exe = _static(build_dir)
+    requires_objdiff()
+    runner = check.default_objdiff_runner(f"{STEM}/{UNIT}")
+    result = _check(exe, src, build_dir, runner)
+    assert [fn.objdiff_percent for fn in result.functions] == [check.PERFECT, check.PERFECT]
