@@ -5,7 +5,11 @@ missing file) means unmatched. Columns `start,name,unit,status,best_percent,atte
 source_sha256,date`:
 
 - `start`: the functions.csv row start, `0x%08X` (functions.py's IN-05 rule);
-- `name`, `unit`: the row's name and the unit file it is defined in;
+- `name`: the name the build links and check verifies for the start: its symbols.csv name
+  verbatim when the start has one, else its functions.csv name (a matched row is keyed by
+  start, so a re-gate after a rename rewrites it). progress.py and the D-22 drift test read
+  this exact name;
+- `unit`: the unit file the function is defined in;
 - `status`: `matched` or `partial`;
 - `best_percent`: objdiff's percent with two decimals, `100.00` for a matched row;
 - `attempts`: a decimal count, 0 for a match by hand;
@@ -92,11 +96,18 @@ def round_percent(percent: float) -> float:
     return round(float(percent), _PERCENT_DECIMALS)
 
 
+def check_name(name: str) -> None:
+    """ValueError unless the name column can hold `name` (a C identifier; a symbols.csv name
+    with `$?@.` cannot be written). gate calls it before check, so such a name is refused up
+    front, never after a passing check."""
+    if not _NAME.fullmatch(name):
+        raise ValueError(f"name {name!r} is not a C function name")
+
+
 def check_row(row: StatusRow) -> None:
     """ValueError unless `row` is one the reader accepts: the writer refuses what it could not
     read back."""
-    if not _NAME.fullmatch(row.name):
-        raise ValueError(f"name {row.name!r} is not a C function name")
+    check_name(row.name)
     if not _UNIT_NAME.fullmatch(row.unit):
         raise ValueError(f"unit {row.unit!r} must match [a-z0-9_]+")
     if row.status not in STATUSES:

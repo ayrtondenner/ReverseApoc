@@ -74,12 +74,20 @@ from .check import (
     source_marks,
 )
 from .compiler import compile_source
-from .functions import FunctionRow, _address, read_functions_csv, read_symbols_csv
+from .functions import (
+    KIND_GAME,
+    KIND_THUNK,
+    FunctionRow,
+    _address,
+    read_functions_csv,
+    read_symbols_csv,
+)
 from .status import (
     MATCHED,
     PARTIAL,
     PERCENT_MAX,
     StatusRow,
+    check_name,
     format_percent,
     format_status,
     lf_sha256,
@@ -253,15 +261,34 @@ def _owners(config_root: Path, known: Iterable[Target]) -> dict[str, dict[int, F
 
 def _reverted(name: str, src: Path, unit_rows: Sequence[FunctionRow],
               matched: Iterable[StatusRow], unit: str) -> list[str]:  # fmt: skip
-    """When the unit file's C defines none of `unit_rows` (configure.py's D-12 parser, as
-    check reads it), every matched row of the unit is a reverted match (Important 1);
-    otherwise []. check itself refuses such a file as a tool error, so gate looks first."""
-    if not Path(src).is_file():
+    """When the unit file marks every game and thunk row of the unit INCLUDE_ASM
+    (configure.py's D-12 markers, as check reads them), every matched row of the unit is a
+    reverted match (Important 1); otherwise []. Keyed on the markers, not on definitions:
+    after a symbols.csv rename the C defines the new name, which the placeholder-only parser
+    does not see as a definition (fix round 2). A file with neither markers nor the expected
+    definitions goes to check, which refuses it as before."""
+    required = [row for row in unit_rows if row.kind in (KIND_GAME, KIND_THUNK)]
+    if not required or not Path(src).is_file():
         return []
-    defined = source_marks(read_source(src), unit_rows).defined
-    if any(row.name in defined for row in unit_rows):
+    marked = source_marks(read_source(src), unit_rows).marked
+    if not all(row.name in marked for row in required):
         return []
     return [_function_problem(name, row, None, unit) or "" for row in matched]
+
+
+def _check_names(exe: str, unit: str, owners: Mapping[int, FunctionRow]) -> None:
+    """Every row of `unit` can be written under the name it has now (status.check_name),
+    checked before check runs (fix round 2): a CheckError naming the row, never a StatusError
+    after a passing check."""
+    for start, row in sorted(owners.items()):
+        if row.unit != unit:
+            continue
+        try:
+            check_name(row.name)
+        except ValueError as exc:
+            raise CheckError(f"{exe}: {row.name!r} at {_address(start)} (unit {unit}) cannot be "
+                             f"written to status.csv: {exc}; rename it in symbols.csv to a C "
+                             "identifier") from None  # fmt: skip
 
 
 # ---- the cross-check (D-24) ----
@@ -464,6 +491,8 @@ def gate_units(
     functions = _functions(roots.config_root, known)
     owners = _owners(roots.config_root, known)
     reports, docs, passed = [], [], []
+    for target in resolved:
+        _check_names(target.name, target.unit, owners.get(target.name, {}))
     for target in resolved:
         matched_here = [r for r in _matched(tables).get(target.name, {}).values()
                         if r.unit == target.unit]  # fmt: skip
@@ -673,6 +702,8 @@ def gate_partial(
     inputs = (load_fn or load_exe)(target, orig_dir=roots.orig_dir, manifest=roots.manifest,
                                    config_root=roots.config_root)  # fmt: skip
     rows = inputs.unit_rows(unit)
+    owners = _owners(roots.config_root, [target]).get(target.name, {})
+    _check_names(target.name, unit, owners)
     options = roots.options(src_root=saved.parent)
     if object_root(roots.build_dir, options) == Path(roots.build_dir):
         raise CheckError(f"{saved} would compile into ninja's object paths; save it outside "
@@ -686,7 +717,6 @@ def gate_partial(
     if source_sha256(saved) != before:
         raise CheckError(f"{saved} changed while it was checked; gate it again")
     path = status_path(roots.config_root, stem)
-    owners = _owners(roots.config_root, [target]).get(target.name, {})
     named = [dataclasses.replace(fn, name=owners[fn.va].name) if fn.va in owners else fn
              for fn in source.functions]  # fmt: skip
     merged, touched = _merge_partial(read_status(path), named, unit, before, attempts,
