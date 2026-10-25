@@ -776,7 +776,8 @@ class _Contained:
 
 
 class _Stop(Exception):
-    """Ends the night with a STOPPED record. `guardrail` stops commit nothing."""
+    """Ends the night with a STOPPED record. After any breach (containment ran) nothing is
+    committed, whatever the reason (fix round 2, J2)."""
 
     def __init__(self, reason: str, detail: str) -> None:
         super().__init__(reason)
@@ -799,6 +800,7 @@ class _Night:
         self.live: _Session | None = None  # the session to reset if a later step raises
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
+        self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
         self.pre_gate: dict[str, bytes | None] = {}  # status.csv, feed, log right before the gate
 
     # --- the night ---
@@ -818,7 +820,9 @@ class _Night:
             self._record_run(STOPPED, INTERRUPTED, _detail(type(exc).__name__ + self.interrupted))
             raise
         self._record_run(event, reason, detail)
-        if not (event == STOPPED and reason == GUARDRAIL):  # after a breach: commit nothing
+        if (
+            not self.breached
+        ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
         return DriveReport(event, reason, self.sessions, self.matched, detail)
 
@@ -1173,9 +1177,13 @@ class _Night:
         """Contain the strays, reset the attempt, take the pinned snapshot and the fingerprint
         again, and describe all of it. A refused quarantine write (a link) writes nothing more
         and is named."""
+        self.breached = True  # fix round 2 J2: sticky, whatever the final reason
         files = [s for s in stray if not s.endswith(_TRANSCRIPT_MARK)]
         done = self._contain(session, files)
-        self._reset(session)
+        try:
+            self._reset(session)
+        except Exception as exc:  # noqa: BLE001 - named in the record
+            done.refused.append(f"the attempt reset failed: {type(exc).__name__}: {exc}")
         detail = (f"stray paths: {_listed(list(stray))}; restored: {_listed(done.restored)}"
                   f"; quarantined: {_listed(done.quarantined)}")  # fmt: skip
         if done.not_contained:
@@ -1184,7 +1192,10 @@ class _Night:
             detail += f"; not restored: {_listed(done.not_restored)}"
         if done.refused:
             detail += "; " + "; ".join(done.refused)
-        still = self._still_changed(session)
+        try:
+            still = self._still_changed(session)
+        except Exception as exc:  # noqa: BLE001 - named in the record
+            still = [f"<not measured: {type(exc).__name__}: {exc}>"]
         return f"{detail}; still changed after containment: {_listed(still)}" if still else detail
 
     def _still_changed(self, session: _Session) -> list[str]:
@@ -1261,40 +1272,54 @@ class _Night:
         Fourth pass: each file is handled alone, and restoring never depends on the copy; a new
         file whose quarantine is refused stays in place, named "not contained". The attempt's
         own unit and new headers are copied too."""
-        tracked = self._tracked()
-        before = session.before
         done = _Contained()
+        try:
+            tracked = self._tracked()
+        except Exception as exc:  # noqa: BLE001 - every file is then judged untracked, named
+            done.refused.append(f"git ls-files failed: {type(exc).__name__}: {exc}")
+            tracked = frozenset()
         for name in files:
-            pinned = name in session.pinned_changed and name.casefold() not in tracked
-            path = self._pinned_path(name) if pinned else self.repo / name
-            earlier = before.pinned.get(name) if pinned else before.data.get(name)
-            # A fingerprinted file has no saved bytes: a new one moves out, a changed one is
-            # copied and stays (named again under "still changed").
-            changed_print = name in session.print_changed and name in before.prints
-            move = earlier is None and name.casefold() not in tracked and not changed_print
-            if path.is_dir() and not _is_link(path):  # minor 9: a nested repo, say
-                done.not_contained.append(f"{name} (a directory)")
-                continue
-            if path.is_file() or _is_link(path):
-                if not self._keep(done, name, path, move=move) and move:
-                    done.not_contained.append(name)
-                    continue
-            restored = done.restored
-            if not pinned and name.casefold() in tracked and earlier is None:
-                _git_ok(self.deps.git, ["restore", "--source=HEAD", "--staged", "--worktree",
-                                        "--", name])  # fmt: skip
-                restored.append(name)
-            elif earlier is not None:
-                if not self._restore_bytes(name, path, earlier):
-                    done.not_restored.append(name)
-                    continue
-                if name.casefold() in tracked:
-                    _git_ok(self.deps.git, ["restore", "--staged", "--", name])
-                restored.append(name)
+            try:  # fix round 2 J2: one failing file never stops the others
+                self._contain_one(done, session, name, tracked)
+            except Exception as exc:  # noqa: BLE001 - named in the record
+                done.not_restored.append(f"{name} ({type(exc).__name__}: {exc})")
         for name in (session.claim.unit_rel, *session.new_headers):
-            if name in session.changed and (self.repo / name).is_file():
-                self._keep(done, name, self.repo / name, move=False)
+            try:
+                if name in session.changed and (self.repo / name).is_file():
+                    self._keep(done, name, self.repo / name, move=False)
+            except Exception as exc:  # noqa: BLE001 - named in the record
+                done.refused.append(f"refused {name}: {type(exc).__name__}: {exc}")
         return done
+
+    def _contain_one(self, done: _Contained, session: _Session, name: str,
+                     tracked: frozenset[str]) -> None:  # fmt: skip
+        """Contain one stray (see _contain)."""
+        before = session.before
+        pinned = name in session.pinned_changed and name.casefold() not in tracked
+        path = self._pinned_path(name) if pinned else self.repo / name
+        earlier = before.pinned.get(name) if pinned else before.data.get(name)
+        # A fingerprinted file has no saved bytes: a new one moves out, a changed one is
+        # copied and stays (named again under "still changed").
+        changed_print = name in session.print_changed and name in before.prints
+        move = earlier is None and name.casefold() not in tracked and not changed_print
+        if path.is_dir() and not _is_link(path):  # minor 9: a nested repo, say
+            done.not_contained.append(f"{name} (a directory)")
+            return
+        if path.is_file() or _is_link(path):
+            if not self._keep(done, name, path, move=move) and move:
+                done.not_contained.append(name)
+                return
+        if not pinned and name.casefold() in tracked and earlier is None:
+            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--staged", "--worktree",
+                                    "--", name])  # fmt: skip
+            done.restored.append(name)
+        elif earlier is not None:
+            if not self._restore_bytes(name, path, earlier):
+                done.not_restored.append(name)
+                return
+            if name.casefold() in tracked:
+                _git_ok(self.deps.git, ["restore", "--staged", "--", name])
+            done.restored.append(name)
 
     def _restore_bytes(self, name: str, path: Path, data: bytes) -> bool:
         """Fix round 1 minor 4: write `data` back to `path` only when no component between its
