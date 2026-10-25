@@ -10,6 +10,7 @@ import ast
 import functools
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -262,3 +263,94 @@ def test_main_creates_every_output_parent(tmp_path):
     out = tmp_path / "a" / "b"
     assert progress.main(["--config", str(config), "--out", str(out)]) == 0
     assert (out / "progress.json").is_file() and (out / "progress-shield.json").is_file()
+
+
+# ---- Task 2: the DecompHub progress-v1 feed (D-29) ----
+
+# from decomphub.com/schemas/progress-v1.json, 2026-10-24
+FEED_FORMAT = "decomphub.progress/v1"
+FEED_TOP_REQUIRED = frozenset({"format", "repository", "tracks"})
+FEED_REPOSITORY_MAX = 2048
+FEED_TRACKS_MIN, FEED_TRACKS_MAX = 1, 20
+TRACK_REQUIRED = frozenset({"id", "label", "scope", "measurement"})
+TRACK_OPTIONAL = frozenset({"measuredAt"})
+TRACK_ID = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+LABEL_MAX, SCOPE_MAX, UNIT_MAX = 120, 300, 40
+PERCENT_KEYS = frozenset({"kind", "value", "valueMax", "approximate"})
+RATIO_KEYS = frozenset({"kind", "completed", "total", "unit", "approximate"})
+# D-29
+REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
+TRACK_IDS = ["ufo2p-code", "tacp-code", "ufo2p-functions", "tacp-functions"]
+
+
+def check_progress_v1(doc: dict) -> None:
+    """Every progress-v1 rule a test can check without the network."""
+    assert set(doc) == FEED_TOP_REQUIRED  # D-29: no revision (a file cannot hold its own hash)
+    assert doc["format"] == FEED_FORMAT
+    assert doc["repository"] == REPOSITORY and len(doc["repository"]) <= FEED_REPOSITORY_MAX
+    tracks = doc["tracks"]
+    assert FEED_TRACKS_MIN <= len(tracks) <= FEED_TRACKS_MAX
+    assert [t["id"] for t in tracks] == TRACK_IDS
+    assert len({t["id"] for t in tracks}) == len(tracks)
+    for track in tracks:
+        assert TRACK_REQUIRED <= set(track) <= TRACK_REQUIRED | TRACK_OPTIONAL, track
+        assert TRACK_ID.fullmatch(track["id"]), track["id"]
+        assert 1 <= len(track["label"]) <= LABEL_MAX and 1 <= len(track["scope"]) <= SCOPE_MAX
+        check_measurement(track["measurement"])
+
+
+def check_measurement(m: dict | None) -> None:
+    if m is None:
+        return
+    if m["kind"] == "percent":
+        assert set(m) <= PERCENT_KEYS and isinstance(m["value"], int | float)
+        assert 0 <= m["value"] <= 100
+        return
+    assert m["kind"] == "ratio" and set(m) <= RATIO_KEYS
+    assert isinstance(m["completed"], int) and isinstance(m["total"], int)
+    assert 0 <= m["completed"] <= m["total"] and m["total"] > 0
+    assert m["unit"] == "functions" and 1 <= len(m["unit"]) <= UNIT_MAX
+
+
+def feed(config: Path) -> dict:
+    progress = load_progress()
+    assert hasattr(progress, "build_decomphub"), "progress.py has no build_decomphub"
+    return progress.build_decomphub(progress.derive(config))
+
+
+def test_decomphub_feed_follows_progress_v1(tmp_path):
+    for config in (synthetic_config(tmp_path), CONFIG):
+        check_progress_v1(feed(config))
+
+
+def test_decomphub_feed_values(tmp_path):
+    """Code tracks are progress.json's percents, function tracks matched over game+thunk."""
+    tracks = {t["id"]: t["measurement"] for t in feed(synthetic_config(tmp_path))["tracks"]}
+    assert tracks["ufo2p-code"] == {"kind": "percent", "value": 6.5574}
+    assert tracks["tacp-code"] == {"kind": "percent", "value": 0.0}
+    assert tracks["ufo2p-functions"] == {"kind": "ratio", "completed": 1, "total": 4,
+                                         "unit": "functions"}  # fmt: skip
+    assert tracks["tacp-functions"] == {"kind": "ratio", "completed": 0, "total": 1,
+                                        "unit": "functions"}  # fmt: skip
+
+
+def test_decomphub_feed_is_byte_stable(tmp_path):
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    for name in ("a.json", "b.json"):
+        progress.write_decomphub(progress.derive(config), tmp_path / name)
+    data = (tmp_path / "a.json").read_bytes()
+    assert data == (tmp_path / "b.json").read_bytes()
+    assert data == progress.render(feed(config)) and data.endswith(b"}\n")
+
+
+def test_main_writes_report_and_feed(tmp_path):
+    """--report and --decomphub write their files, creating their directories (ruling F17)."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    report, hub = tmp_path / "c" / "report.json", tmp_path / "d" / "decomphub.progress.json"
+    assert progress.main(["--config", str(config), "--report", str(report),
+                          "--decomphub", str(hub)]) == 0  # fmt: skip
+    assert json.loads(report.read_text(encoding="utf-8"))["version"] == 2
+    check_progress_v1(json.loads(hub.read_text(encoding="utf-8")))
+    assert not (tmp_path / "progress.json").exists()
