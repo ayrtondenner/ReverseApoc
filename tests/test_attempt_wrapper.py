@@ -739,6 +739,20 @@ def test_context_verb_collects_earlier_notes(tree: attempt.Roots, capsys):
     assert '"outcome": "PARTIAL"' in text and "GAVE_UP" not in text
 
 
+def test_context_verb_keeps_long_notes_whole_when_the_pack_fits(tree: attempt.Roots, capsys):
+    """M11: no fixed notes cap; a 10 KB notes.md stays whole when the pack fits, and the
+    notes.md texts come before the attempts.jsonl records."""
+    long = "FIRST" + "n" * 10_000 + "LAST\n"
+    _write(tree.repo / "build" / "driver" / "run0" / "ufo2p" / "func_00010010" / "attempt-1"
+           / "notes.md", long)  # fmt: skip
+    assert _run(_context_argv(tree, "--json")) == 0, capsys.readouterr().err
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["truncated"] == []
+    text = Path(doc["path"]).read_text(encoding="utf-8")
+    assert long.rstrip("\n") in text
+    assert text.index("note two") < text.index("progress/attempts.jsonl")
+
+
 def test_context_verb_json_reports_size_and_cuts(tree: attempt.Roots, capsys):
     assert _run(_context_argv(tree, "--json")) == 0
     doc = json.loads(capsys.readouterr().out)
