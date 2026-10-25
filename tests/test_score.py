@@ -265,6 +265,7 @@ def test_rank_puts_a_chk_caller_after_a_non_caller():
     ranked = _rank([chk, plain])
     assert ranked[0].score > ranked[1].score
     assert [c.address for c in ranked] == [plain.start, chk.start]
+    assert [c.chk for c in ranked] == [False, True]  # the rank's first term, for the picker (06-14)
 
 
 def test_rank_skips_rejected_rows():
