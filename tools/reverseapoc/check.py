@@ -73,6 +73,7 @@ from .compiler import (
 from .elf import STT_FUNC, write_elf
 from .fileio import write_atomic
 from .functions import (
+    KIND_DATA_IN_CODE,
     KIND_GAME,
     KIND_THUNK,
     FunctionRow,
@@ -315,17 +316,73 @@ def defined_functions(
     return sorted(found, key=lambda d: d.row.start)
 
 
+@dataclass(frozen=True)
+class LeadingTable:
+    """A jump table wcc386 put at `_TEXT+0`, before the unit's first public (05-REVIEW IN-02,
+    DI-02): our span [0, size) is the original's [span.start, span.end), the data-in-code row
+    the table is plus the filler up to the row of the function the first public names (`head`).
+    """
+
+    span: FunctionRow  # the data-in-code row, its end moved to head.start
+    head: FunctionRow
+    size: int  # the first public's offset
+
+    @property
+    def public(self) -> OwnPublic:
+        """The table's own-public entry, sized as own_publics sizes every entry; with_relocs
+        offers it to the head's check only."""
+        return OwnPublic(self.span.name, 0, min(self.size, self.span.end - self.span.start),
+                         self.span.start)  # fmt: skip
+
+
+def leading_table(
+    module: Module, segment: Segment, rows: Sequence[FunctionRow], symbols: SymbolTable
+) -> LeadingTable | None:
+    """The table that leads `segment`, or None. All of these must hold, else nothing is paired
+    and a reference to [0, first public) stays refused: the first public (local ones count) is
+    past offset 0; every public there names one row, the head; the row of `rows` right before
+    the head is a data-in-code row that ends at or before the head's start. The table is then
+    checked against [row start, head start) like a function, filler included, and its length
+    rule refuses a layout of ours that differs (D-39)."""
+    publics = [p for p in module.publics if p.segment_index == segment.index]
+    if not publics:
+        return None
+    first = min(p.offset for p in publics)
+    by_name = _linker_names(rows, symbols)
+    heads = {by_name.get(p.name) for p in publics if p.offset == first}
+    if first == 0 or len(heads) != 1 or None in heads:
+        return None
+    (head,) = heads
+    before = [row for row in rows if row.start < head.start]
+    if not before:
+        return None
+    table = max(before, key=lambda row: row.start)
+    if table.kind != KIND_DATA_IN_CODE or table.end > head.start:
+        return None
+    span = dataclasses.replace(table, name=symbols.linker_name(table.start), end=head.start)
+    return LeadingTable(span, head, first)
+
+
 def own_publics(
     module: Module, segment: Segment, rows: Sequence[FunctionRow], symbols: SymbolTable
 ) -> tuple[OwnPublic, ...]:
     """The unit's public-to-row map relocs.check_function needs (05-09): every public of
-    `segment` that names a row of `rows`, sized to the next public or the segment end."""
-    starts = {name: row.start for name, row in _linker_names(rows, symbols).items()}
+    `segment` that names a row of `rows`, sized to the next public or the segment end but never
+    past its row's length (a table after a public is not that public's, 05-REVIEW IN-02). The
+    leading table's entry (`LeadingTable.public`) is not in it: with_relocs offers it to the
+    head alone."""
+    by_name = _linker_names(rows, symbols)
     publics = [p for p in module.publics if p.segment_index == segment.index]
     offsets = sorted({p.offset for p in publics})
     ends = dict(zip(offsets, [*offsets[1:], len(segment.data)], strict=True))
-    return tuple(OwnPublic(p.name, p.offset, ends[p.offset] - p.offset, starts[p.name])
-                 for p in publics if p.name in starts and ends[p.offset] > p.offset)  # fmt: skip
+    found = []
+    for p in publics:
+        row = by_name.get(p.name)
+        if row is None or ends[p.offset] <= p.offset:
+            continue
+        size = min(ends[p.offset] - p.offset, row.end - row.start)
+        found.append(OwnPublic(p.name, p.offset, size, row.start))
+    return tuple(found)
 
 
 def _reloc(d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic]) -> RelocResult:
@@ -340,14 +397,68 @@ def _reloc(d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic]) -> RelocRes
         return RelocResult(False, (f"{_hex(d.row.start)}: {exc}",), frozenset(), frozenset())
 
 
+def _with_table(reloc: RelocResult, table: RelocResult) -> RelocResult:
+    """`reloc` of the head function failed too by the problems of its leading table. The fields,
+    the row and our bytes stay the function's: land patches and checks those alone."""
+    if table.ok:
+        return reloc
+    problems = tuple(sorted((*reloc.problems, *table.problems)))
+    return dataclasses.replace(reloc, ok=False, problems=problems)
+
+
+@dataclass(frozen=True)
+class _SegmentMap:
+    """What with_relocs computes once per code segment of the unit (06-10 fix round 1, M3)."""
+
+    publics: tuple[OwnPublic, ...]  # own_publics, without the leading table
+    table: LeadingTable | None
+
+
+def _segment_map(
+    module: Module, segment: Segment, rows: Sequence[FunctionRow], symbols: SymbolTable
+) -> _SegmentMap:
+    return _SegmentMap(own_publics(module, segment, rows, symbols),
+                       leading_table(module, segment, rows, symbols))  # fmt: skip
+
+
+def _head_reloc(
+    d: Defined, exe: ExeInputs, seg_map: _SegmentMap, table: LeadingTable
+) -> RelocResult:
+    """The head's verdict: its own check with the table's entry added to the map, failed too by
+    the check of the table's span, whose only other own public is the head: an entry is accepted
+    when it resolves inside the head or inside the span itself, at the VA the original LE fixup
+    targets."""
+    reloc = _reloc(d, exe, (table.public, *seg_map.publics))
+    head = tuple(p for p in seg_map.publics if p.name == d.symbol)
+    span = Defined(table.span, table.span.name, d.segment, 0, table.size)
+    return _with_table(reloc, _reloc(span, exe, head))
+
+
 def with_relocs(
     module: Module, defined: Iterable[Defined], rows: Sequence[FunctionRow], exe: ExeInputs
 ) -> list[tuple[Defined, RelocResult]]:
-    """Each of `defined` with its relocation check."""
+    """Each of `defined` with its relocation check. A leading table (DI-02) belongs to its head,
+    the function whose row follows the table's row:
+    - only the head's check may resolve a reference into the table, through its entry; any
+      other function's reference to [0, first public) is refused ("needs the unit's
+      public-to-row map"), as before 06-10;
+    - the head passes only when the table's span [table row start, head start) passes the
+      relocation check like a function: equal length, equal bytes (filler included), and each
+      entry an off32 that resolves inside the head or inside the span itself to the VA the
+      original LE fixup targets. An entry into any other function is refused (06-10 fix round
+      1, C1 and M1).
+    If the account dropped the head, nothing resolves into the table."""
+    maps: dict[int, _SegmentMap] = {}
     out = []
     for d in defined:
-        publics = own_publics(module, d.segment, rows, exe.symbols)
-        out.append((d, _reloc(d, exe, publics)))
+        seg_map = maps.get(d.segment.index)
+        if seg_map is None:
+            seg_map = maps[d.segment.index] = _segment_map(module, d.segment, rows, exe.symbols)
+        table = seg_map.table
+        if table is not None and table.head == d.row:
+            out.append((d, _head_reloc(d, exe, seg_map, table)))
+        else:
+            out.append((d, _reloc(d, exe, seg_map.publics)))
     return out
 
 

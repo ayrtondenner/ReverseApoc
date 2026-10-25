@@ -18,7 +18,9 @@ independent of objdiff and fails that case:
      row's start + (t - the public's offset). Without such an entry the field is refused, never
      resolved by assuming our whole `_TEXT` sits in the original as in our object. The caller
      owes the map: it builds `own_publics` from the unit's units.csv and functions.csv rows
-     (05-17 `check`, 05-18), and two entries over one offset are refused (RelocError);
+     (05-17 `check`, 05-18), each entry no longer than its row, plus one entry for a jump
+     table that leads the unit's `_TEXT` paired through its data-in-code row (check.py
+     `leading_table`, DI-02); two entries over one offset are refused (RelocError);
    a fixup whose frame method is not F1 (a group frame, the method wcc386 10.6 emits for flat
    code; the frame datum is not checked) fails;
    then by the fixup's kind:

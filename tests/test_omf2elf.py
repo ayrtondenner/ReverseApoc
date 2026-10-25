@@ -319,6 +319,27 @@ def test_lpubdef_is_local_in_elf():
     assert symtab.index("stat_") < elf.symtab_info <= symtab.index("pub_")
 
 
+SELF_CALL_CODE = bytes.fromhex("40c3" "e800000000c3")  # func_X: inc eax; ret, then call func_X
+
+
+def test_self_extdef_resolves_to_the_local_public():
+    """DI-03: wcc386 10.6 emits `static int func_X(...)` as an LPUBDEF and its callers' calls as
+    self-relative fixups to a plain EXTDEF of the same name (05-REVIEW IN-01, probe 06-10). The
+    ELF has one symbol of that name, the LOCAL definition, and the call's relocation names it:
+    no undefined GLOBAL duplicate, so write_elf finds no ambiguous symbol."""
+    data = watcom_module(
+        lpubdef32(1, [("func_00010000_", 0)]), pubdef32(1, [("func_00010002_", 2)]),
+        extdef("func_00010000_"), fixupp32(fixup(3, segment_relative=False, target=(2, 1))),
+        text=SELF_CALL_CODE,
+    )  # fmt: skip
+    elf = convert_bytes(data)
+    named = [s for s in elf.symbols if s.name == "func_00010000_"]
+    assert [(s.bind, s.type, s.value) for s in named] == [(STB_LOCAL, STT_FUNC, 0)]
+    assert named[0].section_index is not None
+    (rel,) = elf.relocs(elf.symbol("func_00010002_").section_index)
+    assert (rel.offset, rel.type, rel.symbol) == (3, R_386_PC32, "func_00010000_")
+
+
 @pytest.mark.parametrize(
     ("f_code", "f_size"),
     [

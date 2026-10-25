@@ -17,7 +17,10 @@ re-reads them. `convert(module)` maps:
   after the COMDAT, with one symbol at offset 0: WEAK when the selection criterion allows
   duplicates (pick any, same size, exact match), GLOBAL for "no match"; a COMDAT without a
   segment is code when allocated as far code or code32;
-- each extern to an undefined GLOBAL symbol named as in OMF (referenced or not);
+- each extern to an undefined GLOBAL symbol named as in OMF (referenced or not), except an
+  extern a public or COMDAT of this module defines: wcc386 10.6 calls a `static` function
+  (an LPUBDEF) through a plain EXTDEF of the same name, and that call's relocation names the
+  module's own (LOCAL) symbol, the only one of that name (DI-03, probe 06-10);
 - each offset32 fixup (location 9, and location 5 in an Easy OMF module, the TH rule) to one
   REL relocation by the Theme Hospital addend rule: a self-relative fixup becomes R_386_PC32
   with the field rewritten to stored + displacement - 4, a segment-relative one R_386_32 with
