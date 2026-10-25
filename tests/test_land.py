@@ -64,9 +64,16 @@ def sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
+def verdict_for(row, ours, *, ours_fields=frozenset(), theirs_fields=frozenset()):
+    """A complete ok verdict made out for exactly `row` and `ours`, whatever the bytes are
+    (06-08 F24: start, length and SHA-1 set)."""
+    return RelocResult(True, (), frozenset(ours_fields), frozenset(theirs_fields),
+                       start=row.start, length=len(ours), sha1=sha1(ours))  # fmt: skip
+
+
 def forged(row, ours, *, fields=frozenset()):
     """A function whose relocation result claims ok whatever its bytes are."""
-    return LandedFunction(row, ours, RelocResult(True, (), frozenset(fields), frozenset()))
+    return LandedFunction(row, ours, verdict_for(row, ours, ours_fields=fields))
 
 
 def test_good_pair_lands_to_the_original(tmp_path):
@@ -188,7 +195,10 @@ def test_mutated_byte_changes_the_sha1():
     orig = good_original()
     good = checked(orig)
     changed = GOOD_OURS[:-1] + bytes.fromhex("90")
-    mutated = LandedFunction(GOOD_ROW, changed, good.reloc)
+    # a verdict forged for the changed bytes: the good check's fields, made out for `changed`
+    reloc = verdict_for(GOOD_ROW, changed, ours_fields=good.reloc.ours,
+                        theirs_fields=good.reloc.theirs)  # fmt: skip
+    mutated = LandedFunction(GOOD_ROW, changed, reloc)
     result = land(orig.le, [mutated], expected_sha1=sha1(orig.data))
     assert not result.ok
     assert result.first_difference == GOOD_ROW.end - 1
