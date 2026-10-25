@@ -85,6 +85,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 - [ ] **DEC-04**: A stdlib `reverseapoc readlint` (TDD) fails on placeholder names (`FUN_`, `sub_`, `DAT_`), functions without a header comment, and unnamed struct fields or magic constants in matched units; the tool decides readability, not the agent
 - [ ] **DEC-05**: The progress page shows mechanics coverage per checklist item
 - [ ] **DEC-06**: The Phase 6 usage caps and per-attempt logging carry over, and nightly totals (turns, tokens, time) are recorded
+- [ ] **DEC-07**: A stdlib `reverseapoc stats` (TDD) reads `progress/attempts.jsonl` and the git commit trailers and reports match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions the gate stopped, and guardrail-hook blocks; every match is classed `unattended`, `human-hints` or `human-written` (from the `Matched-By` trailer and owner notes in manual packs), and from Phase 7 on each attempt record carries its hook-block count. The numbers are kept for a later paper (owner, 2026-10-25)
 
 ### Clean-room specs (Phase 8)
 
@@ -188,6 +189,7 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | DEC-04 | Phase 7 | Pending |
 | DEC-05 | Phase 7 | Pending |
 | DEC-06 | Phase 7 | Pending |
+| DEC-07 | Phase 7 | Pending |
 | SPEC-01 | Phase 8 | Pending |
 | SPEC-02 | Phase 8 | Pending |
 | SPEC-03 | Phase 8 | Pending |
@@ -200,10 +202,10 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | SPEC-10 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 65 total
-- Mapped to phases: 65
+- v1 requirements: 66 total
+- Mapped to phases: 66
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-19*
-*Last updated: 2026-10-25 after adding SPEC-10 (findings docs) to Phase 8*
+*Last updated: 2026-10-25 after adding SPEC-10 (findings docs) to Phase 8 and DEC-07 (research metrics) to Phase 7*
