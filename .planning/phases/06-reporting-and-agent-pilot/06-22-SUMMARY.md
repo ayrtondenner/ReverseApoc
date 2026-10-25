@@ -172,6 +172,11 @@ None. The owner files the DecompHub maintainer claim citing docs/DECOMPHUB_VERIF
 - 06-24 (Pages workflow) publishes the URLs the README and `.recomp.json` now point at. 06-27 moves `.recomp.json` to `in-progress` and reruns tests/test_listings.py.
 - The game's tick rate (OpenApoc #997) was not touched in this plan.
 
+## Self-Check: PASSED
+
+- All four files in files_modified and this SUMMARY exist; `git diff --name-status 5d391a9 HEAD` shows only them (3 added, 2 modified, no deletions).
+- Commits 8b8fa37, a9011c7, 3b250ce and cf5dec3 are on this branch (`git log 5d391a9..HEAD`); the working tree is clean.
+
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
