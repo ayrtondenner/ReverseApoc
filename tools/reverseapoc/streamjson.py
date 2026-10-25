@@ -1,27 +1,68 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The driver's reading of a `claude -p --output-format stream-json --verbose` session (AGT-03,
-AGT-04, D-08).
+AGT-04, D-08, D-36).
 
 Each stdout line of a session is one JSON object. `parse_line` reads one defensively: a line that
 is not a JSON object is malformed, counted by `parse`, and never fatal or executed (T-06-42).
-`classify` maps the parsed events to one driver action (`Disposition`). Nothing here talks to the
-CLI; `session.run_session` feeds it.
+Nothing here talks to the CLI; `session.run_session` feeds it.
+
+`classify` maps a session to one driver action (`Disposition`), from the `system/api_retry`
+errors, `rate_limit_event`s, the `result` event and its text (D-08):
+
+- STOP: api_retry `authentication_failed`, `oauth_org_not_allowed`, `account_on_hold` or
+  `billing_error`; a rate_limit_event with errorCode `credits_required`, or `rejected` with any
+  other errorCode (unknown, so fail closed); result text "Credit balance is too low" or
+  "Not logged in".
+- LIMIT: api_retry `rate_limit`; a `rejected` rate_limit_event without errorCode; result
+  `api_error_status` 429; result text "hit your ... limit".
+- TRANSIENT: no result event and no wall-clock timeout (api_retry `overloaded`/`server_error`
+  with no result, a non-zero exit with no result, or no events at all).
+- ATTEMPT_DONE: a result event of any subtype (`success`, `error_max_turns`,
+  `error_max_budget_usd`, `error_during_execution`, ...) or a wall-clock timeout. It is counted,
+  and the outcome comes from the driver's gate, never from the result (T-06-39).
+
+Precedence when one stream carries several signals: STOP over LIMIT over TRANSIENT over
+ATTEMPT_DONE. A run with a credit problem must end even if a limit was also hit, and a limit is
+not an attempt even if a result followed it. Result text is read from the result event only
+(`result` and `errors[]`), never from the agent's own messages, so the model cannot stop or
+stall the run by writing the words.
+
+`check_init` asserts the `system/init` event (Pitfall 2, D-36, T-06-40); the driver treats any
+problem as STOP. `usage` and `tool_uses` feed the attempt log (AGT-03) and the transcript audit.
 """
 
 from __future__ import annotations
 
 import enum
 import json
-from collections.abc import Iterable, Sequence
+import re
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
 
 EXPECTED_MODEL = "claude-opus-5-5"  # D-35; session.MODEL passes the same id
 EXPECTED_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep", "Bash")  # D-45's --tools
 _RESULT = "result"
+_SYSTEM = "system"
+_INIT = "init"
+_API_RETRY = "api_retry"
+_RATE_LIMIT_EVENT = "rate_limit_event"
+_REJECTED = "rejected"
+_CREDITS_REQUIRED = "credits_required"
+_HTTP_TOO_MANY_REQUESTS = 429
+_STOP_RETRY_ERRORS = frozenset(
+    {"authentication_failed", "oauth_org_not_allowed", "account_on_hold", "billing_error"}
+)
+_LIMIT_RETRY_ERRORS = frozenset({"rate_limit"})
+_STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
+_LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
+_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
+_TARGET_FIELDS = ("file_path", "notebook_path", "command", "path")
 
 
 class Disposition(enum.Enum):
-    """What the driver does after a session (D-08)."""
+    """What the driver does after a session (D-08). There is no outcome here: MATCHED,
+    PARTIAL and GAVE_UP come from the driver's gate (T-06-39)."""
 
     LIMIT = "limit"  # usage limit: back off, poll; not an attempt
     STOP = "stop"  # auth, billing or credit trouble: write a STOPPED record, end the run
@@ -35,6 +76,28 @@ class Parsed:
 
     events: tuple[dict, ...]
     malformed: int
+
+
+@dataclass(frozen=True)
+class Usage:
+    """A session's accounting (AGT-03): tokens summed over the result's modelUsage per class,
+    and turns, cost and duration copied from the result."""
+
+    input_tokens: int
+    output_tokens: int
+    cache_read_tokens: int
+    cache_creation_tokens: int
+    turns: int
+    cost_usd: float
+    duration_ms: int
+
+
+class ToolUse(NamedTuple):
+    """One tool_use block: the tool and what it touched (file_path, notebook_path, command or
+    path, the first present), None when it names none."""
+
+    name: str
+    target: str | None
 
 
 def parse_line(line: str | bytes) -> dict | None:
@@ -65,13 +128,202 @@ def parse(lines: Iterable[str | bytes]) -> Parsed:
     return Parsed(tuple(events), malformed)
 
 
+def _mapping(value: object) -> Mapping:
+    return value if isinstance(value, Mapping) else {}
+
+
+def _system(events: Sequence[dict], subtype: str) -> Iterator[Mapping]:
+    for event in events:
+        if event.get("type") == _SYSTEM and event.get("subtype") == subtype:
+            yield event
+
+
 def _results(events: Sequence[dict]) -> list[dict]:
     return [event for event in events if event.get("type") == _RESULT]
 
 
+def _retry_errors(events: Sequence[dict]) -> set[str]:
+    return {str(event.get("error")) for event in _system(events, _API_RETRY)}
+
+
+def _rate_limits(events: Sequence[dict]) -> Iterator[Mapping]:
+    for event in events:
+        if event.get("type") == _RATE_LIMIT_EVENT:
+            yield _mapping(event.get("rate_limit_info"))
+
+
+def _result_texts(results: Sequence[dict]) -> Iterator[str]:
+    for result in results:
+        if isinstance(result.get("result"), str):
+            yield result["result"]
+        errors = result.get("errors")
+        if isinstance(errors, list):
+            yield from (error for error in errors if isinstance(error, str))
+
+
+def _is_stop(events: Sequence[dict], texts: Sequence[str]) -> bool:
+    if _retry_errors(events) & _STOP_RETRY_ERRORS:
+        return True
+    for info in _rate_limits(events):
+        code = info.get("errorCode")
+        if code == _CREDITS_REQUIRED or (code and info.get("status") == _REJECTED):
+            return True
+    return any(_STOP_TEXT.search(text) for text in texts)
+
+
+def _is_limit(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
+    if _retry_errors(events) & _LIMIT_RETRY_ERRORS:
+        return True
+    if any(info.get("status") == _REJECTED and not info.get("errorCode")
+           for info in _rate_limits(events)):  # fmt: skip
+        return True
+    if any(result.get("api_error_status") == _HTTP_TOO_MANY_REQUESTS for result in results):
+        return True
+    return any(_LIMIT_TEXT.search(text) for text in texts)
+
+
 def classify(events: Sequence[dict], exit_code: int | None, timed_out: bool) -> Disposition:
     """The driver's action for a session that produced `events` and ended with `exit_code`
-    (None when it was killed before exiting), `timed_out` when the wall clock killed it."""
-    if timed_out or _results(events):
+    (None when it never exited), `timed_out` when the wall clock killed it. See the module
+    docstring for the signals and their precedence."""
+    results = _results(events)
+    texts = list(_result_texts(results))
+    if _is_stop(events, texts):
+        return Disposition.STOP
+    if _is_limit(events, results, texts):
+        return Disposition.LIMIT
+    if results or timed_out:
         return Disposition.ATTEMPT_DONE
     return Disposition.TRANSIENT
+
+
+def parse_version(text: str) -> tuple[int, int, int]:
+    """(major, minor, patch) from `claude_code_version` ("2.1.240") or from `claude --version`
+    output ("2.1.240 (Claude Code)"); anything else raises ValueError."""
+    match = _VERSION.fullmatch(text.strip())
+    if match is None:
+        raise ValueError(f"not a Claude Code version: {text!r}")
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
+def init_event(events: Sequence[dict]) -> dict | None:
+    """The session's first `system/init` event, or None when it has none."""
+    return next(iter(_system(events, _INIT)), None)
+
+
+def _version_problem(
+    init: Mapping, tested_major: int, min_version: tuple[int, int, int]
+) -> str | None:
+    raw = init.get("claude_code_version")
+    try:
+        version = parse_version(raw if isinstance(raw, str) else "")
+    except ValueError:
+        return f"claude_code_version {raw!r} is not a version"
+    shown = ".".join(map(str, version))
+    if version[0] != tested_major:
+        return f"claude_code_version {shown} is not the tested major {tested_major} (D-36)"
+    if version < min_version:
+        minimum = ".".join(map(str, min_version))
+        return f"claude_code_version {shown} is below the minimum {minimum} (D-36)"
+    return None
+
+
+def _tools_problem(init: Mapping) -> str | None:
+    tools = init.get("tools")
+    if not isinstance(tools, list) or not all(isinstance(tool, str) for tool in tools):
+        return f"tools {tools!r} is not a list of tool names"
+    missing = [tool for tool in EXPECTED_TOOLS if tool not in tools]
+    extra = sorted(set(tools) - set(EXPECTED_TOOLS))
+    if not missing and not extra and len(tools) == len(EXPECTED_TOOLS):
+        return None
+    return (f"tools are not exactly {','.join(EXPECTED_TOOLS)}: missing "
+            f"{','.join(missing) or 'none'}, extra {','.join(extra) or 'none'}")  # fmt: skip
+
+
+def _names(entries: object) -> str:
+    if not isinstance(entries, list):
+        return repr(entries)
+    return ", ".join(str(_mapping(entry).get("name", entry)) for entry in entries)
+
+
+def check_init(
+    init: Mapping | None,
+    *,
+    tested_major: int,
+    min_version: tuple[int, int, int] | str,
+    expected_model: str = EXPECTED_MODEL,
+) -> list[str]:
+    """Every problem with a session's `system/init` event; empty when it is clean. The driver
+    treats any problem as STOP (fail closed, Pitfall 2): a missing init, a version outside the
+    tested major or below `min_version` (D-36), another model (D-35), tools other than exactly
+    D-45's six, any MCP server (D-44) or any plugin."""
+    if init is None:
+        return ["no system/init event"]
+    if isinstance(min_version, str):
+        min_version = parse_version(min_version)
+    problems = [_version_problem(init, tested_major, min_version)]
+    model = init.get("model")
+    if model != expected_model:
+        problems.append(f"model {model!r} is not {expected_model} (D-35)")
+    problems.append(_tools_problem(init))
+    servers = init.get("mcp_servers")
+    if servers != []:
+        problems.append(f"mcp_servers not empty: {_names(servers)} (D-44)")
+    plugins = init.get("plugins")
+    if plugins != []:
+        problems.append(f"plugins loaded: {_names(plugins)}")
+    return [problem for problem in problems if problem]
+
+
+def _count(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _amount(value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return 0.0
+    return float(value)
+
+
+def usage(result: Mapping) -> Usage:
+    """The accounting of a `result` event: modelUsage summed per token class over every model
+    (modelUsage, not usage, which covers the main loop only), with num_turns, total_cost_usd
+    and duration_ms. A missing or ill-typed field counts as zero."""
+    entries = [_mapping(entry) for entry in _mapping(result.get("modelUsage")).values()]
+
+    def total(key: str) -> int:
+        return sum(_count(entry.get(key)) for entry in entries)
+
+    return Usage(
+        input_tokens=total("inputTokens"),
+        output_tokens=total("outputTokens"),
+        cache_read_tokens=total("cacheReadInputTokens"),
+        cache_creation_tokens=total("cacheCreationInputTokens"),
+        turns=_count(result.get("num_turns")),
+        cost_usd=_amount(result.get("total_cost_usd")),
+        duration_ms=_count(result.get("duration_ms")),
+    )
+
+
+def _blocks(events: Sequence[dict]) -> Iterator[Mapping]:
+    for event in events:
+        if event.get("type") not in ("assistant", "user"):
+            continue
+        content = _mapping(event.get("message")).get("content")
+        if isinstance(content, list):
+            yield from (_mapping(block) for block in content)
+
+
+def _target(tool_input: Mapping) -> str | None:
+    return next((str(tool_input[field]) for field in _TARGET_FIELDS if field in tool_input), None)
+
+
+def tool_uses(events: Sequence[dict]) -> list[ToolUse]:
+    """Every tool_use block of the assistant and user messages, in stream order, with the
+    path or command it names (for the driver's transcript audit, independent of the hooks)."""
+    return [
+        ToolUse(str(block.get("name")), _target(_mapping(block.get("input"))))
+        for block in _blocks(events)
+        if block.get("type") == "tool_use"
+    ]
