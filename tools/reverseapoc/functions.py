@@ -39,8 +39,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING
 
+from .fileio import write_atomic
 from .libmatch import LoadedLibrary, MatchRange, _code_segments, _Owner
-from .splice import _write_atomic
 from .targets import config_dir
 
 if TYPE_CHECKING:  # discover pulls in capstone; reconcile imports it when it runs
@@ -151,7 +151,7 @@ def _format_csv(comment: str, columns: Sequence[str], rows: Iterable[Sequence[st
 def _write_text(path: Path, text: str) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, text.encode("utf-8"))
+    write_atomic(path, text.encode("utf-8"))
 
 
 def _read_records(path: Path, columns: Sequence[str]) -> list[dict[str, str]]:

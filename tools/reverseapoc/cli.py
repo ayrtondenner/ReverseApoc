@@ -28,6 +28,7 @@ from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
 from .discover import DiscoverError, discover
 from .elf import ElfError
+from .fileio import write_atomic
 from .functions import (
     KINDS,
     RUNTIME_VERSION,
@@ -80,7 +81,7 @@ from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
 from .relocs import RelocError
 from .score import ScoreError, ScoreReport, assess
-from .splice import DEFAULT_OUT, SpliceError, _write_atomic, rebuild
+from .splice import DEFAULT_OUT, SpliceError, rebuild
 from .symbols import SymbolError, SymbolTable
 from .target import TargetError
 from .targets import (
@@ -373,7 +374,7 @@ def _probe_calibrate(args: argparse.Namespace) -> int:
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     text = json.dumps(calibration.to_json(), indent=2) + "\n"
-    _write_atomic(output, text.encode("utf-8"))
+    write_atomic(output, text.encode("utf-8"))
     print(f"wrote {output}", file=sys.stderr)
     return 0
 
@@ -853,7 +854,7 @@ def _cmd_lint(args: argparse.Namespace) -> int:
     if args.stamp is not None:  # ninja's lint edge depends on this file
         args.stamp.parent.mkdir(parents=True, exist_ok=True)
         stamp = f"lint ok: {len(result.files)} files\n"
-        _write_atomic(args.stamp, stamp.encode("ascii"))
+        write_atomic(args.stamp, stamp.encode("ascii"))
     return 0
 
 

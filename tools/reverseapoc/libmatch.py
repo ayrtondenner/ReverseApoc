@@ -29,6 +29,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from .fileio import write_atomic
 from .le import LE
 from .omf import (
     Library,
@@ -40,7 +41,6 @@ from .omf import (
     is_omf_library,
     read_library,
 )
-from .splice import _write_atomic
 from .targets import Target, check_bare_name, config_dir, hash_bytes, target_problems
 
 
@@ -789,7 +789,7 @@ def write_runtime_csv(path: Path, report: LibMatchReport, name: str) -> None:
     """Write format_runtime_csv atomically, creating the parent directories."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(path, format_runtime_csv(report, name).encode("utf-8"))
+    write_atomic(path, format_runtime_csv(report, name).encode("utf-8"))
 
 
 def _split(cell: str) -> tuple[str, ...]:
