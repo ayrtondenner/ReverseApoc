@@ -838,6 +838,43 @@ def test_canary_refuses_a_reused_run_id(tmp_path, capsys):
     assert not rig.launches
 
 
+@pytest.mark.parametrize("verb", ["status", "for-each-ref"])
+def test_a_canary_error_after_the_session_is_a_fail_not_a_refusal(tmp_path, capsys, verb):
+    """Fix round 2: once the session ran, exit 2 ("never started") would be wrong. An error
+    while the canary measures the tree is a FAIL line after the lines gathered so far, exit 1."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    real_git = rig.git
+
+    def git(args):
+        if rig.launches and verb in args:
+            return subprocess.CompletedProcess(list(args), 128, b"", b"fatal: made up\n")
+        return real_git(args)
+
+    code, out, _ = rig.drive(capsys, canary=True, json=True, seams=dict(git=git))
+    assert out.count("\n") == 1, "stdout is not one JSON line"
+    doc = json.loads(out)
+    assert (code, doc.get("event"), doc.get("canary")) == (1, None, "FAIL")
+    texts = [c["check"] for c in doc["checks"]]
+    assert any(c["ok"] and c["check"].startswith("init:") for c in doc["checks"]), texts
+    assert any("made up" in text for text in _failed(doc)), texts
+
+
+def test_a_canary_error_after_the_session_ends_the_text_with_canary_fail(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    real_git = rig.git
+
+    def git(args):
+        if rig.launches and "for-each-ref" in args:
+            raise RuntimeError("made-up git crash")
+        return real_git(args)
+
+    code, out, _ = rig.drive(capsys, canary=True, seams=dict(git=git))
+    assert code == 1
+    lines = out.splitlines()
+    assert lines[-1:] == ["CANARY FAIL"]
+    assert any(line.startswith("FAIL: ") and "made-up git crash" in line for line in lines)
+
+
 # ---- Task 3: the end-of-run checks (D-24, D-23) ----
 
 NINJA_SCRIPT = "uv run --frozen python configure.py && ninja -t clean && ninja verify"
