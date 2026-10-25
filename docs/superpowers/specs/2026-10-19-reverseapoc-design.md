@@ -75,6 +75,8 @@ Things the project must actively avoid:
 | Similarity retrieval without ML first (opcode Levenshtein, twin matching UFO2P to TACP); embeddings later | [Default] | Corpus is a few thousand functions; Lewis dropped embeddings for coddog-style matching |
 | Ghidra 12.1.4 + lastonesky ghidra-lx-loader or retrokit, GhidraMCP 2.0 headless under Python 3.13 | [Default] | The only maintained LE loaders for Ghidra 12.1 |
 
+- **Annotation 2026-10-25 (Phase 6, D-41) on the last row above, which stays as approved:** Phase 5 chose the lastonesky ghidra-lx-loader (v12.1.4-1) inside the Docker image, and retrokit is not used. GhidraMCP is Later (Phase 7 or later). See [tools.md](../../tools.md) and [toolchain.md](../../toolchain.md).
+
 ## Architecture overview
 
 ```

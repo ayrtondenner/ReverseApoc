@@ -26,7 +26,10 @@ def _ignore_patterns(path: Path) -> set[str]:
     return {line.strip() for line in lines if line.strip() and not line.startswith("#")}
 
 
-@pytest.mark.parametrize("ext", ["exe", "EXE", "iso", "ISO", "bin", "BIN"])
+@pytest.mark.parametrize(
+    "ext",
+    ["exe", "EXE", "iso", "ISO", "bin", "BIN", "img", "IMG", "cue", "CUE", "mdf", "MDF"],
+)
 def test_dockerignore_excludes_executables_and_disc_images_at_any_depth(ext):
     # A bare `*.exe` in .dockerignore only matches at the context root; `**/` matches anywhere.
     assert f"**/*.{ext}" in _ignore_patterns(REPO_ROOT / ".dockerignore")
