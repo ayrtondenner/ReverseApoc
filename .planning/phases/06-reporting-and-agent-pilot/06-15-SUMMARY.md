@@ -30,8 +30,12 @@ plan_head_before: ca93eb245503a8aa89ef88959f255403313f4e3c
 plan_head_after: f47261b97e2b3fb991e91c37b502ab41cb4452a2
 fix_round_1:
   base: 53d6127ce961b02296ad5bd516415bcfe09a0957
-  head_before_summary: ebb6fa0
-  commits: 14  # git rev-list --count 53d6127..ebb6fa0, plus this SUMMARY commit
+  head: d09bebc5cf0e491d65c440485a79357ced6fb22c
+  commits: 15  # git rev-list --count 53d6127..d09bebc: 14 code/test/docs commits through ebb6fa0 + the SUMMARY commit d09bebc
+fix_round_2:
+  base: d09bebc5cf0e491d65c440485a79357ced6fb22c
+  head_before_summary: 577952a
+  commits: 9  # git rev-list --count d09bebc..577952a; the round's SUMMARY commit is one more
 
 tech-stack:
   added: []
@@ -354,7 +358,27 @@ The skill change is the REFACTOR step of superpowers:writing-skills (invoked): o
 - **M12 is not a pure move**, so it is recorded here: check's loader requires `config/<exe>/units.csv` (the old loader did not) and treats symbols.csv as optional (the old one required it); the `context` verb now reads every CSV from `--config` as check does and no longer takes `--functions`/`--symbols` (it used `_add_split_inputs` before). The test fixture gained a units.csv. No cli loader was reused: `cli._split_inputs` takes an argparse namespace and ignores `--config`.
 - **I1(a) reads functions.csv only** for `attempt check`, not units.csv or the LE, so a check needs no orig/ read on the host; asm/context validate on check's already-loaded rows. A unit missing from units.csv still fails in the container (check's exit 2 passes through).
 - **Test edits inside GREEN commits** (lint only): `81efed9` turned a `%` format in the RED helper into an f-string (ruff UP031).
-- **06-23 consumers (notes, not code):** a not-compiled check line has `exit` 1 and null `best_percent`; skip null percents when picking the best C. `REVERSEAPOC_ATTEMPT_NOTES` is now required by every `attempt` subcommand. The container-name prefix is `attempt.CONTAINER_PREFIX` + 8 hex of sha256 of the attempt dir's POSIX path.
+- **06-23 consumers (notes, not code):** a not-compiled check line has `exit` 1 and null `best_percent`; skip null percents when picking the best C. `REVERSEAPOC_ATTEMPT_NOTES` is now required by every `attempt` subcommand. The container-name prefix is `attempt.CONTAINER_PREFIX` + 8 hex of sha256 of the RESOLVED attempt dir's POSIX path; since fix round 2 (N3) the driver gets it only from `attempt.container_prefix(attempt_dir)`.
+
+## Fix round 2
+
+Rulings: `fixround-06-15-r2.md` (answering `rereview-06-15-r1-report.md`, approved with no Critical or Important findings), plus N7 from the security finding at the end of `security-findings-06-15.md`. Base `d09bebc`. Each behaviour change has a RED commit that failed on its assertions before its GREEN commit. The RED `test_the_default_runner_takes_a_timeout` turns the missing keyword's TypeError into an explicit `pytest.fail`.
+
+| Item | Change | Tests (RED -> GREEN) |
+|---|---|---|
+| N1 | `_cmd_attempt` prints every tool error (both the `_ERRORS` and the `Exception` branch) through `_one_line`: each CR/LF run becomes a space, so it is exactly one stderr line. | `test_a_multi_line_error_is_printed_as_one_line` x2 (RuntimeError, OSError) (`c2fae6c` -> `d647046`) |
+| N2 | After a timeout, the run's `NNNN.json` and its checks.jsonl line (exit 2) are written BEFORE `docker rm -f`. The removal has its own `RM_TIMEOUT = 15` s (580 + 15 < 600). `default_runner(argv, *, timeout=CHECK_TIMEOUT)` passes the timeout on. A failed, slow (timed-out) or raising removal keeps the lock. | `test_the_evidence_is_written_before_the_removal`, `test_the_removal_has_its_own_short_timeout`, `test_the_default_runner_takes_a_timeout`; `TimeoutRunner` now records kwargs and the on-disk evidence at the removal (`6eda63f` -> `cee76e7`) |
+| N3 | `attempt.container_prefix(attempt_dir)` resolves the directory and is the single source of container names; `container_name` is `container_prefix(...) + NNNN`. The 06-23 note above says the driver reuses it. | `test_container_prefix_is_the_names_single_source` (the argv name equals `prefix(repo) + "0001"`; `prefix(repo/sub/..) == prefix(repo)`) (same commits) |
+| N4 | `CheckLogLine` docstring: null measurements for a no-JSON run (exit 2) and for a not-compiled claimed function (exit 1); `sweep` lines are never the best C. | docstring only (`8610669`) |
+| N5 | Frontmatter commit counts corrected: fix round 1 has 15 commits (14 through `ebb6fa0`, plus the SUMMARY `d09bebc`); fix round 2's count is recorded the same way. | - |
+| N6 | Matching layer `_PRAGMA` also matches the `%:` digraph (`\s*(#\|%:)\s*pragma`), with or without spaces after `%:`. The always layer is unchanged. SKILL.md is left alone: "no `#pragma` of any kind" already covers the spelling. | `test_matching_denies_every_pragma` gains `%:pragma off (check_stack)`, `%:  pragma pack(1)`, `  %: pragma once` (each also asserting the always layer allows it); `test_matching_allows_pragma_words_outside_code` gains a comment and a string holding `%:pragma` (`2acc61a` -> `5284a29`) |
+| N7 | Security finding (MEDIUM fail-open): a raising evidence write skipped the removal and released the lock with the orphan running. Now `held.keep = True` the moment `ran.timed_out` is seen, before any evidence write. Only a removal that succeeded clears it. The removal runs in a `finally`, so a failed write still removes the container, and the write error then surfaces as exit 2. The evidence writing moved unchanged into `_record`. | `test_a_failed_evidence_write_still_removes_the_container` x4 (`write_atomic` or `_append` raises; removal ok: lock released; removal fails: lock kept), `test_a_failed_evidence_write_and_a_raising_removal_keep_the_lock` x2 (`3c70fa3` -> `577952a`) |
+
+Verification after fix round 2 (measured, pytest's own exit code kept):
+- **focused** (test_attempt_wrapper, test_hooks, test_skill, test_contextpack): 336 passed, 1 skipped (the R-A symlink reason), rc 0;
+- **full host suite** `uv run --frozen pytest -q`: 2078 passed, 222 skipped, rc 0;
+- **ruff:** `uv run --frozen ruff check .` passes all checks;
+- **SKILL.md:** 147 lines, unchanged this round. No new skips. Docker was not run.
 
 ## Next Phase Readiness
 
@@ -364,7 +388,7 @@ The skill change is the REFACTOR step of superpowers:writing-skills (invoked): o
   - the best C is `<attempt dir>/<source>`;
   - `reverseapoc context EXE FUNC --out <attempt dir> --json` gives `pack_bytes` and `truncated` (notes cuts appear as `attempt record N` / `earlier note N`);
   - set `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` (an existing dir below build/driver/) and `REVERSEAPOC_ATTEMPT_NOTES` = `<attempt dir>/notes.md`, and give each session a fresh attempt dir;
-  - after each session, remove containers named `reverseapoc-attempt-<8 hex>-*` for that attempt dir (rulings ## 06-23).
+  - after each session, remove the containers whose name starts with `attempt.container_prefix(<attempt dir>)` (the wrapper's own name builder, which resolves the directory; fix round 2 N3; rulings ## 06-23). Never rebuild the hash in the driver.
 - **06-26 (preflight):** the first real `attempt check` (docker compose `-T --name`) is still unproven, as the plan's flagged assumption says.
 - **Skill GREEN verification:** passed before fix round 1; the orchestrator re-runs the affected scenarios after this REFACTOR.
 
