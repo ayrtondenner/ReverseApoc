@@ -10,6 +10,7 @@ import pytest
 
 import configure
 from conftest import build_le_image, write_manifest
+from reverseapoc import check
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow
 from reverseapoc.targets import load_manifest
@@ -642,6 +643,83 @@ def test_unit_source_refuses_conditionals_it_cannot_evaluate(text, line, directi
 def test_unit_source_refuses_an_unterminated_if0():
     (problem,) = configure.check_unit_source(UNIT_SOURCE + "#if 0\nint y;\n", TWO_GAME)
     assert "#if 0" in problem and "#endif" in problem
+
+
+# ---- DI-05 (05-REVIEW item 15): backslash-newline is spliced as in translation phase 2 ---------
+
+# The three 05-REVIEW probe texts: a marker on the continuation line of a `//` comment, a
+# definition on the continuation line of a `#define`, and a definition on the continuation line
+# of a `//` comment. Each maps to the (marked, defined) sets the compiler would see.
+CONTINUATION_PROBES = {
+    "line-comment-marker": (
+        "INCLUDE_ASM(func_00010000);\n// note \\\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "define-definition": (
+        "INCLUDE_ASM(func_00010010);\n#define X \\\nint func_00010000(void) { return 0; }\n",
+        {"func_00010010"},
+        set(),
+    ),
+    "line-comment-definition": (
+        "INCLUDE_ASM(func_00010000);\n// x \\\nint func_00010010(void)\n{\n    return 0;\n}\n",
+        {"func_00010000"},
+        set(),
+    ),
+}
+
+
+def test_line_comment_continuation_hides_a_marker():
+    text, _, _ = CONTINUATION_PROBES["line-comment-marker"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_define_continuation_hides_a_definition():
+    text, _, _ = CONTINUATION_PROBES["define-definition"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "neither" in problem
+    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+    assert list(configure._file_scope_definitions(code)) == []
+
+
+@pytest.mark.parametrize(
+    ("prefix", "lines"),
+    [
+        ("// a \\\ncontinued\n", 2),
+        ("#define X \\\n    1 \\\n    + 2\n", 3),
+        ('static char *s = "a\\\nb";\n', 2),
+    ],
+    ids=["line-comment", "define", "string"],
+)
+def test_continuation_keeps_directive_line_numbers(prefix, lines):
+    shift = UNIT_SOURCE.count("\n") + lines
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + prefix + "#ifdef FOO\n#endif\n",
+                                             TWO_GAME)  # fmt: skip
+    assert f"line {shift + 1}:" in problem and "#ifdef" in problem
+
+
+def test_directive_continuation_is_one_directive():
+    # `#if \` + `0` is `#if 0` after splicing, and an `#ifdef` inside a #define body is not a
+    # directive; both read as the compiler reads them.
+    text = "INCLUDE_ASM(func_00010000);\n#if \\\n0\nINCLUDE_ASM(func_00010010);\n#endif\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+    text = UNIT_SOURCE + "#define Y \\\n#ifdef FOO\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+@pytest.mark.parametrize("probe", sorted(CONTINUATION_PROBES))
+def test_check_source_marks_agrees_with_configure(probe):
+    text, marked, defined = CONTINUATION_PROBES[probe]
+    marks = check.source_marks(text, TWO_GAME)
+    assert (set(marks.marked), set(marks.defined)) == (marked, defined)
+    neither = {
+        row.name
+        for row in TWO_GAME
+        if any(row.name in p and "neither" in p for p in configure.check_unit_source(text, TWO_GAME))
+    }
+    assert neither == {row.name for row in TWO_GAME} - marked - defined
 
 
 def test_main_refuses_a_conditional_naming_the_line(tmp_path, capsys):
