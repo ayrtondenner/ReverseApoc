@@ -16,9 +16,14 @@ import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc import hooks
+from test_configure import INLINE_ASM_PROBES
 
 WINDOWS = sys.platform == "win32"
-ALWAYS_COMMAND = "uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer always"
+# Fix round 1 C3: the project is pinned and any failure of the command itself becomes exit 2.
+ALWAYS_COMMAND = (
+    'uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks '
+    "pre-tool-use --layer always || exit 2"
+)
 EDIT_TOOLS = "Edit|Write|MultiEdit|NotebookEdit"
 
 
@@ -214,14 +219,10 @@ ASM_TEXTS = {
     "asm-in-if0": "#if 0\n_asm int 3\n#endif\n",
     "lone-cr": 'char *s = "a\rb"; int x;\n',
 }
-# 06-03's INLINE_ASM_PROBES (tests/test_configure.py): wcc386 keeps `_asm int 3` live in each,
-# though a scanner that reads the comment or literal naively would hide it.
-CONTINUATION_ASM_PROBES = {
-    "blank-splice-closer": "/* x *\\ \n/ void f(void) { _asm int 3 } /* y */\n",
-    "blank-splice-string": 'char *s = "a\\ \nb"; void f(void) { _asm int 3 } char *t = "x";\n',
-    "trigraph-closer": "/* x *??/\n/ void f(void) { _asm int 3 } /* y */\n",
-    "crlf-closer": "/* x *\\\r\n/ void f(void) { _asm int 3 } /* y */\r\n",
-}
+# 06-03's INLINE_ASM_PROBES (tests/test_configure.py), imported so the two cannot drift (fix
+# round 1 M3): wcc386 keeps `_asm int 3` live in each, though a scanner that reads the comment or
+# literal naively would hide it.
+CONTINUATION_ASM_PROBES = INLINE_ASM_PROBES
 
 
 def _unit(repo: Path, text: str = SCAFFOLD, rel: str = UNIT) -> Path:
@@ -266,6 +267,30 @@ def test_always_denies_an_edit_that_completes_asm(repo):
     assert not always(edit(native(path), "X", "s")).deny  # once: `_asX`
     other = _unit(repo, SCAFFOLD + "void f(void) { _a_X int 3 } /* _a_X */\n")
     assert always(edit(native(other), "_X", "sm", replace_all=True)).deny
+
+
+def test_always_denies_an_edit_that_cannot_be_placed_exactly(repo):
+    """Fix round 1 I2: in src/ and include/, an old_string that is not in the file verbatim is
+    denied, so a tool that places it loosely (curly quotes for straight ones) cannot complete
+    `_asm` behind the scan. Outside those trees the hook has no opinion on it."""
+    path = _unit(repo, "void f(void) { _a'' int 3 }\n", "include/q.h")
+    assert always(edit(native(path), "’’", "sm")).deny
+    assert always(edit(native(path), "''", "sm")).deny
+    assert always(edit(native(path), "not in the file", "int x;")).deny
+    assert always(multi_edit(native(path), ("void", "int"), ("absent", "x"))).deny
+    assert always(edit(native(repo / "src" / "missing.c"), "x", "y")).deny
+    tool_file = repo / "tools" / "x.py"
+    tool_file.parent.mkdir(parents=True)
+    tool_file.write_text("a = 1\n", encoding="utf-8")
+    assert not always(edit(native(tool_file), "not in the file", "b")).deny
+
+
+def test_always_scans_an_edit_that_creates_a_file(repo):
+    new = repo / "src" / "ufo2p" / "new.c"
+    assert not always(edit(native(new), "", SCAFFOLD)).deny
+    assert always(edit(native(new), "", "_asm int 3\n")).deny
+    existing = _unit(repo)
+    assert always(edit(native(existing), "", "int x;\n")).deny  # an empty old_string on a file
 
 
 ALLOWED_TEXTS = {
@@ -332,7 +357,10 @@ def test_worktree_root_is_found(repo):
 # --- Task 3: the matching layer (D-17, D-18, D-44, D-45, DI-07) -------------------------------
 
 CLAIM = {"REVERSEAPOC_CLAIM": "ufo2p/u_000a34f0"}
-MATCHING_COMMAND = "uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer matching"
+MATCHING_COMMAND = (
+    'uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks '
+    "pre-tool-use --layer matching || exit 2"
+)
 WRAPPER = "uv run --frozen reverseapoc attempt"
 
 
@@ -554,3 +582,236 @@ def test_driver_settings_shape():
     assert handler == {"type": "command", "command": MATCHING_COMMAND, "timeout": 120,
                        "onFailure": "block"}  # fmt: skip
     assert set(driver["hooks"]) == {"PreToolUse"}
+
+
+# --- Fix round 1 (review-06-12.md) ------------------------------------------------------------
+
+
+def _win_volume(path: Path) -> tuple[str, str]:
+    """(`\\\\?\\Volume{GUID}`, `\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeN`) of `path`'s drive."""
+    import ctypes
+
+    drive = str(path)[:2]
+    volume = ctypes.create_unicode_buffer(1024)
+    assert ctypes.windll.kernel32.GetVolumeNameForVolumeMountPointW(drive + "\\", volume, 1024)
+    device = ctypes.create_unicode_buffer(1024)
+    assert ctypes.windll.kernel32.QueryDosDeviceW(drive, device, 1024)
+    return volume.value.rstrip("\\"), "\\\\?\\GLOBALROOT" + device.value
+
+
+PATH_FORMS = [
+    "native", "posix", "rooted-no-drive", "rooted-no-drive-slash", "dot-device-slash",
+    "dot-device", "qmark-device", "qmark-device-slash", "nt-object", "volume-guid", "globalroot",
+    "git-bash", "trailing-dot", "data-stream", "relative",
+]  # fmt: skip
+
+
+def path_form(form: str, path: Path, cwd: Path) -> str:
+    """`path` written in `form`. On Windows these are the forms NT opens (C1); on POSIX each
+    form is a POSIX spelling of the same file (a doubled slash, `/./`, `..`), so one test
+    covers both hosts (rulings R-A)."""
+    posix = path.as_posix()
+    if not WINDOWS:
+        return {
+            "native": posix, "posix": posix, "rooted-no-drive": posix,
+            "rooted-no-drive-slash": "/" + posix, "dot-device-slash": "/." + posix,
+            "dot-device": posix.replace("/", "/./", 1), "qmark-device": "//" + posix.lstrip("/"),
+            "qmark-device-slash": "///" + posix.lstrip("/"),
+            "nt-object": str(path.parent / ".." / path.parent.name / path.name),
+            "volume-guid": posix, "globalroot": posix, "git-bash": posix, "trailing-dot": posix,
+            "data-stream": posix, "relative": os.path.relpath(path, cwd),
+        }[form]  # fmt: skip
+    text = str(path)
+    volume, globalroot = _win_volume(path)
+    return {
+        "native": text, "posix": posix, "rooted-no-drive": text[2:],
+        "rooted-no-drive-slash": posix[2:], "dot-device-slash": "//./" + posix,
+        "dot-device": "\\\\.\\" + text, "qmark-device": "\\\\?\\" + text,
+        "qmark-device-slash": "//?/" + posix, "nt-object": "\\??\\" + text,
+        "volume-guid": volume + text[2:], "globalroot": globalroot + text[2:],
+        "git-bash": "/" + text[0].lower() + posix[2:], "trailing-dot": text + ".",
+        "data-stream": text + "::$DATA", "relative": os.path.relpath(path, cwd),
+    }[form]  # fmt: skip
+
+
+@pytest.mark.parametrize("form", PATH_FORMS)
+def test_always_denies_every_path_form(repo, form):
+    """C1: each form of a protected path, and of a src/ file holding `_asm`, is denied."""
+    for rel in ["orig/UFO2P.EXE", "config/targets.toml"]:
+        raw = path_form(form, repo.joinpath(*rel.split("/")), repo)
+        decision = always(write(raw, cwd=repo))
+        assert decision.deny, (form, raw)
+    unit = _unit(repo)
+    raw = path_form(form, unit, repo)
+    assert always(write(raw, "void f(void) { _asm int 3 }\n", cwd=repo)).deny, (form, raw)
+    tool_file = repo / "tools" / "x.py"
+    assert not always(write(path_form(form, tool_file, repo), cwd=repo)).deny, form
+
+
+@pytest.mark.parametrize("form", PATH_FORMS)
+def test_matching_reads_deny_every_path_form_outside_the_repo(repo, tmp_path, form):
+    """C1: the matching layer's Read/Grep/Glob use the same canonicaliser, so a secret outside
+    the repo is denied in every form."""
+    secret = tmp_path / "home" / ".claude" / ".credentials.json"
+    secret.parent.mkdir(parents=True)
+    secret.write_text("{}", encoding="utf-8")
+    raw = path_form(form, secret, repo)
+    assert matching(tool("Read", repo, file_path=raw)).deny, (form, raw)
+    home = path_form(form, secret.parent, repo)
+    assert matching(tool("Grep", repo, pattern="x", path=home)).deny, (form, home)
+    assert matching(tool("Glob", repo, pattern="*", path=home)).deny, (form, home)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["\\\\?\\Volume{00000000-0000-0000-0000-000000000000}\\x", "\\\\.\\pipe\\x",
+     "\\\\.\\PhysicalDrive0", "//./pipe/x", "\\??\\Volume{00000000-0000-0000-0000-0000000}\\x",
+     "Q:relative\\x"],
+)  # fmt: skip
+def test_unmappable_device_paths_fail_closed(repo, raw):
+    """C1: a device form that cannot be mapped to a drive-letter path, or a drive-relative path
+    on another drive, cannot be judged: decide raises and the entry point exits 2."""
+    with pytest.raises(hooks.HookError):
+        always(write(raw, cwd=repo))
+    with pytest.raises(hooks.HookError):
+        matching(tool("Read", repo, file_path=raw))
+
+
+def test_unmappable_device_path_exits_2(repo):
+    done = _run_entry(json.dumps(write("\\\\.\\pipe\\x", cwd=repo)).encode("utf-8"))
+    assert (done.returncode, done.stdout) == (2, b"")
+
+
+def test_always_a_planted_git_does_not_move_the_root(repo):
+    """C2: a `.git` written into config/ or src/ does not make targets.toml or a unit escape;
+    the path is judged against every ancestor holding `.git`."""
+    for planted in ["config", "src", "src/ufo2p"]:
+        marker = repo.joinpath(*planted.split("/"), ".git")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        assert not always(write(native(marker), "gitdir: x\n")).deny
+        marker.write_text("gitdir: x\n", encoding="utf-8")
+    assert always(write(native(repo / "config" / "targets.toml"))).deny
+    unit = repo / "src" / "ufo2p" / "u.c"
+    assert always(write(native(unit), "void f(void) { _asm int 3 }\n")).deny
+    (repo / "orig" / ".git").mkdir(parents=True)
+    assert always(write(native(repo / "orig" / "x"))).deny
+
+
+def test_always_judges_against_the_project_root(tmp_path):
+    """C2: $CLAUDE_PROJECT_DIR anchors the path even where no `.git` is found."""
+    project = tmp_path / "project"
+    project.mkdir()
+    env = {"CLAUDE_PROJECT_DIR": native(project)}
+    assert always(write(native(project / "orig" / "x")), env).deny
+    assert always(write(native(project / "src" / "u.c"), "_asm int 3\n"), env).deny
+    assert not always(write(native(project / "tools" / "x.py")), env).deny
+    assert not always(write(native(project / "orig" / "x")), {}).deny  # no anchor at all
+
+
+def test_the_project_root_defaults_to_the_repo_holding_hooks():
+    root = Path(hooks.__file__).resolve().parents[2]
+    assert (root / "tools" / "reverseapoc" / "hooks.py").is_file()
+    assert hooks.project_roots({}) == hooks.project_roots({"CLAUDE_PROJECT_DIR": str(root)})
+
+
+@pytest.mark.parametrize(
+    "rel",
+    ["tools/reverseapoc/hooks.py", ".claude/settings.json", "config/driver/claude-settings.json",
+     "config/driver/x.json", "pyproject.toml", "uv.lock"],
+)  # fmt: skip
+def test_matching_denies_the_guardrail_files(repo, rel):
+    """I1 (security finding 2): the always layer leaves these editable by design (D-16); the
+    matching layer, deny by default (D-17), refuses them."""
+    target = repo.joinpath(*rel.split("/"))
+    assert matching(in_repo(write(native(target), "{}\n"), repo)).deny
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("{}\n", encoding="utf-8")
+    assert matching(in_repo(edit(native(target), "{}", "[]"), repo)).deny
+    assert not always(write(native(target), "{}\n")).deny
+
+
+@pytest.mark.parametrize("pattern", ["src/**/*.{c,h}", "{.env,x}", ".[e]nv", "*[!a].c", "a]b"])
+def test_matching_refuses_brace_and_class_globs(repo, pattern):
+    """M2: a pattern with { } [ ] is refused rather than judged."""
+    assert matching(tool("Glob", repo, pattern=pattern)).deny
+    assert matching(tool("Grep", repo, pattern="x", glob=pattern)).deny
+
+
+def _hook_shell() -> str:
+    """The shell Claude Code runs a command hook with: bash, which on Windows is Git for
+    Windows' bash (CLAUDE_CODE_GIT_BASH_PATH when set, else <Git>/bin/bash.exe next to git)."""
+    import shutil
+
+    if not WINDOWS:
+        found = shutil.which("bash")
+        assert found, "bash is required: Claude Code runs command hooks with it"
+        return found
+    configured = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if configured:
+        return configured
+    git = shutil.which("git")
+    assert git, "Git for Windows is required: its bash runs Claude Code's command hooks"
+    found = [p / "bin" / "bash.exe" for p in Path(git).resolve().parents]
+    bash = next((b for b in found if b.is_file()), None)
+    assert bash is not None, f"no bin/bash.exe above {git}"
+    return str(bash)
+
+
+def _settings_commands() -> list[tuple[str, str]]:
+    found = []
+    for name in [".claude/settings.json", "config/driver/claude-settings.json"]:
+        settings = json.loads((REPO_ROOT / name).read_text(encoding="utf-8"))
+        for entry in settings["hooks"]["PreToolUse"]:
+            found.extend((name, handler["command"]) for handler in entry["hooks"])
+    return found
+
+
+def _through_shell(command: str, payload: dict, *, cwd: Path, env: dict) -> tuple[int, bytes]:
+    done = subprocess.run(
+        [_hook_shell(), "-c", command], input=json.dumps(payload).encode("utf-8"),
+        capture_output=True, cwd=cwd, env=_Env(env), timeout=120, check=False,
+    )  # fmt: skip
+    return done.returncode, done.stdout
+
+
+def _session_env() -> dict:
+    """The environment a hook sees outside `uv run`: no CLAUDE_PROJECT_DIR, no VIRTUAL_ENV and
+    no PATH entry inside the checkout (pytest runs with the project's venv on PATH)."""
+    root = str(REPO_ROOT).casefold()
+    dropped = ("CLAUDE_PROJECT_DIR", "VIRTUAL_ENV")
+    env = {k: v for k, v in os.environ.items() if k not in dropped and not k.startswith("UV_")}
+    keep = [d for d in env.get("PATH", "").split(os.pathsep)
+            if d and not os.path.abspath(d).casefold().startswith(root)]  # fmt: skip
+    return {**env, "PATH": os.pathsep.join(keep)}
+
+
+def _without_uv(env: dict) -> dict:
+    """`env` with every PATH entry that holds uv removed."""
+    names = ("uv.exe", "uv") if WINDOWS else ("uv",)
+    keep = [d for d in env.get("PATH", "").split(os.pathsep)
+            if d and not any(Path(d, n).is_file() for n in names)]  # fmt: skip
+    return {**env, "PATH": os.pathsep.join(keep)}
+
+
+def test_the_always_handlers_are_byte_identical():
+    commands = [c for _, c in _settings_commands() if "--layer always" in c]
+    assert commands == [ALWAYS_COMMAND, ALWAYS_COMMAND]
+
+
+@pytest.mark.parametrize("index", range(3))
+def test_settings_commands_fail_closed_through_the_hook_shell(tmp_path, index):
+    """C3: the literal command of each handler, run by the hook shell from a directory outside
+    the project, denies a protected path with the project pinned and still lets a tooling path
+    through; with no project to find, or with uv missing from PATH, it exits 2."""
+    name, command = _settings_commands()[index]
+    base = _session_env()
+    env = {**base, "CLAUDE_PROJECT_DIR": str(REPO_ROOT), **CLAIM}
+    protected = write(native(REPO_ROOT / "orig" / "UFO2P.EXE"), cwd=REPO_ROOT)
+    allowed = (write(native(REPO_ROOT / "tools" / "zz_hooks_probe.py"), cwd=REPO_ROOT)
+               if "--layer always" in command else bash(f"{WRAPPER} check", REPO_ROOT))  # fmt: skip
+    code, out = _through_shell(command, protected, cwd=tmp_path, env=env)
+    assert code == 0 and b'"deny"' in out, (name, code, out)
+    assert _through_shell(command, allowed, cwd=tmp_path, env=env) == (0, b""), name
+    assert _through_shell(command, protected, cwd=tmp_path, env=base)[0] == 2, name
+    assert _through_shell(command, allowed, cwd=tmp_path, env=base)[0] == 2, name
+    assert _through_shell(command, protected, cwd=tmp_path, env=_without_uv(env))[0] == 2, name
