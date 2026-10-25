@@ -649,7 +649,7 @@ def _write_provenance(obj: Path, inputs: dict[str, Any]) -> None:
     a stamp that cannot be written fails the compile and the object is deleted with it."""
     stamp = provenance_path(obj)
     try:
-        prov = {**inputs, "object_sha256": object_sha256(obj)}
+        prov = {**inputs, "object_sha256": object_sha256(obj.read_bytes())}
         doc = {key: prov[key] for key in PROV_KEYS}
         write_atomic(stamp, (json.dumps(doc, indent=2) + "\n").encode("utf-8"))
     except OSError as exc:
@@ -707,21 +707,27 @@ def source_sha256(src: Path | str) -> str:
     return _sha256(data.replace(b"\r\n", b"\n"))
 
 
-def include_sha256(root: Path | str) -> str:
-    """SHA-256 over every file under `root`/include/, the project headers the compile reads:
-    per file, sorted by its POSIX path below include/, a line `<path>\\0<SHA-256 of its content
-    with CRLF as LF>\\n`. No include/ hashes the empty text."""
+def project_headers(root: Path | str) -> list[Path]:
+    """The project headers: every top-level `root`/include/*.h file, sorted by name. The one
+    definition (fix round 2, N1) that configure.py declares as the cc edge's implicit header
+    inputs and the stamp's include_sha256 covers, so every header refusal is one `ninja
+    objects` clears. Other files under include/ (a README, a backup, a subdirectory) are neither
+    declared nor stamped; a header outside this set is a known limit shared with ninja."""
     include = Path(root) / INCLUDE_DIR
-    files = sorted((p.relative_to(include).as_posix(), p) for p in include.rglob("*")
-                   if p.is_file()) if include.is_dir() else []  # fmt: skip
-    lines = "".join(f"{rel}\0{_sha256(path.read_bytes().replace(b'\r\n', b'\n'))}\n"
-                    for rel, path in files)  # fmt: skip
+    return sorted((p for p in include.glob("*.h") if p.is_file()), key=lambda p: p.name)
+
+
+def include_sha256(root: Path | str) -> str:
+    """SHA-256 over project_headers(`root`): per header, in that order, a line `<name>\\0<SHA-256
+    of its content with CRLF as LF>\\n`. No header hashes the empty text."""
+    lines = "".join(f"{p.name}\0{_sha256(p.read_bytes().replace(b'\r\n', b'\n'))}\n"
+                    for p in project_headers(root))  # fmt: skip
     return _sha256(lines.encode("utf-8"))
 
 
-def object_sha256(obj: Path | str) -> str:
-    """SHA-256 of the object's bytes, as they are on disk."""
-    return _sha256(Path(obj).read_bytes())
+def object_sha256(data: bytes) -> str:
+    """SHA-256 of an object's bytes."""
+    return _sha256(data)
 
 
 def input_provenance(
@@ -752,16 +758,17 @@ def input_provenance(
 def provenance(
     rule: Rule,
     src: Path | str,
-    obj: Path | str,
+    obj_data: bytes,
     *,
     cflags: Path | str | None = None,
     manifest: Path | str | None = None,
     root: Path | str | None = None,
 ) -> dict[str, Any]:
-    """The whole stamp for `obj` as it is now (input_provenance plus object_sha256): what the
-    land step compares a stamp with."""
+    """The whole stamp for an object whose bytes are `obj_data` (input_provenance plus
+    object_sha256): what the land step compares a stamp with. The caller passes the bytes it
+    also parses, so what is hashed is what lands (fix round 2, N3)."""
     inputs = input_provenance(rule, src, cflags=cflags, manifest=manifest, root=root)
-    prov = {**inputs, "object_sha256": object_sha256(obj)}
+    prov = {**inputs, "object_sha256": object_sha256(obj_data)}
     return {key: prov[key] for key in PROV_KEYS}
 
 
