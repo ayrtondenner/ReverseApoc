@@ -5,6 +5,7 @@ gate, fetch-watcom, install-watcom, check-watcom."""
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import sys
 from collections import Counter
@@ -50,7 +51,7 @@ from .functions import (
     write_functions_csv,
     write_units_csv,
 )
-from .gate import GateResult, GateRoots, gate_all, gate_units
+from .gate import GateResult, GateRoots, gate_all, gate_partial, gate_units
 from .ghidra import (
     DEFAULT_ASM_DIR,
     DEFAULT_EXPORT_DIR,
@@ -1022,11 +1023,28 @@ def _gate(args: argparse.Namespace) -> GateResult:
             raise CheckError("--all re-checks every matched unit; it takes no EXE/UNIT")
         if args.attempts is not None:
             raise CheckError("--attempts has no meaning with --all, which writes nothing")
+        if args.partial:
+            raise CheckError("--partial scores one saved attempt; it does not combine with --all")
         return gate_all(roots=_gate_roots(args))
     if not args.targets:
         raise CheckError("expected EXE/UNIT [EXE/UNIT ...] or --all")
     targets = [_split_unit(text) for text in args.targets]
+    if args.partial:
+        return _gate_partial(args, targets)
     return gate_units(targets, roots=_gate_roots(args), attempts=args.attempts or 0)
+
+
+def _gate_partial(args: argparse.Namespace, targets: list[tuple[str, str]]) -> GateResult:
+    """`--partial --src FILE` (ruling F7): FILE is the saved attempt, never a src root."""
+    if len(targets) != 1:
+        raise CheckError("--partial scores one saved attempt: give exactly one EXE/UNIT")
+    src = Path(args.src)
+    if src.resolve() == Path(DEFAULT_SRC).resolve() or src.suffix != ".c" or not src.is_file():
+        raise CheckError("--partial needs --src FILE naming the saved attempt's existing .c "
+                         f"file, got {src}")  # fmt: skip
+    (exe, unit), roots = targets[0], _gate_roots(args)
+    roots = dataclasses.replace(roots, src_root=src.parent)
+    return gate_partial(exe, unit, src, roots=roots, attempts=args.attempts or 0)
 
 
 def _run_gate(args: argparse.Namespace) -> int:
@@ -1061,6 +1079,10 @@ def _add_gate_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--all", action="store_true",
                    help="re-check every unit with matched rows (check_source each, one land) and "
                    "the cross-check; writes nothing")  # fmt: skip
+    p.add_argument("--partial", action="store_true",
+                   help="with one EXE/UNIT and --src FILE (the saved attempt's .c file, not a src "
+                   "root): score FILE under build/check-custom and write partial rows with the "
+                   "best percent; never touches a matched row")  # fmt: skip
     _add_unit_roots(p)
     p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
     p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)

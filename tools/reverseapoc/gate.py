@@ -19,6 +19,13 @@ unit nobody gated, and a matched row whose function moved to another unit.
 with matched rows, then ONE land_all (never check_unit per unit, which would recompile every
 unit for each one), the cross-check, and both SHA-1s through ExeLand.ok.
 
+`gate EXE/UNIT --partial --src FILE` scores a saved attempt (the driver's best C) with
+check_source, never landing it: its compile goes to build/check-custom (the saved file's
+directory is a non-default src root, DI-06 part b, ruling F7), so ninja's objects are never
+touched. Every function of the unit that is not matched and scores above 0% gets a `partial`
+row with that percent and the saved file's SHA-256; an existing partial row with a higher (or
+equal) percent is kept, with the larger attempts count. A matched row is never touched.
+
 On any mismatch gate writes nothing and exits 1; on a tool error (CheckError, StatusError, the
 CLI's tool errors) it writes nothing and exits 2. No flag, environment variable or helper writes
 a matched row without a passing check: the verdict is check's own, in the container, never an
@@ -52,24 +59,27 @@ from .check import (
     exe_stem,
     land_all,
     load_exe,
+    object_root,
     select_exe,
 )
 from .compiler import compile_source
 from .functions import FunctionRow, _address, read_functions_csv
 from .status import (
     MATCHED,
+    PARTIAL,
     PERCENT_MAX,
     StatusRow,
     format_percent,
     format_status,
     lf_sha256,
     read_status,
+    round_percent,
     status_path,
     write_status,
 )
 from .targets import Target, load_manifest
 
-MODE_UNIT, MODE_ALL = "unit", "all"
+MODE_UNIT, MODE_ALL, MODE_PARTIAL = "unit", "all", "partial"
 UNITS_CSV = "units.csv"
 FUNCTIONS_CSV = "functions.csv"
 
@@ -505,3 +515,87 @@ def gate_all(
     code = EXIT_MISMATCH if run.problems else EXIT_OK
     return GateResult(MODE_ALL, (), code, tuple(run.reports), tuple(run.checks),
                       tuple(run.problems))  # fmt: skip
+
+
+# ---- gate EXE/UNIT --partial --src FILE ----
+
+
+def _merge_partial(table: Iterable[StatusRow], functions: Iterable[FunctionCheck], unit: str,
+                   sha: str, attempts: int, day: str
+                   ) -> tuple[list[StatusRow], list[StatusRow]]:  # fmt: skip
+    """The table with a partial row for each unmatched function scoring above 0% (the best
+    percent wins, ties keep the earlier row; attempts take the larger count), and those rows."""
+    by_start = {row.start: row for row in table}
+    touched = []
+    for fn in functions:
+        percent = round_percent(fn.objdiff_percent)
+        old = by_start.get(fn.va)
+        if percent <= 0.0 or (old is not None and old.status == MATCHED):
+            continue
+        row = StatusRow(fn.va, fn.name, unit, PARTIAL, percent, attempts, sha, day)
+        if old is not None:
+            best = old if old.best_percent >= percent else row
+            row = dataclasses.replace(best, attempts=max(old.attempts, attempts))
+        by_start[fn.va] = row
+        touched.append(row)
+    return sorted(by_start.values(), key=lambda r: r.start), touched
+
+
+def _saved_file(path: Path) -> Path:
+    saved = Path(path)
+    if saved.suffix != SOURCE_SUFFIX or not saved.is_file():
+        raise CheckError(f"--partial --src must name the saved attempt's existing "
+                         f"{SOURCE_SUFFIX} file, got {saved}")  # fmt: skip
+    return saved
+
+
+def gate_partial(
+    exe: str,
+    unit: str,
+    saved_file: Path,
+    *,
+    roots: GateRoots,
+    attempts: int = 0,
+    today: date | None = None,
+    check_source_fn: Callable[..., SourceCheck] | None = None,
+    load_fn: Callable[..., Any] | None = None,
+    compile_fn: Callable[..., Any] | None = None,
+    objdiff_runner: Callable[[Sequence[str]], str] | None = None,
+) -> GateResult:
+    """Score `saved_file` as unit `unit` and write partial rows (D-21): exit 0 when a function
+    that is not matched scored above 0%, 1 when none did (nothing written), CheckError (exit 2)
+    for a tool or usage problem."""
+    _check_attempts(attempts)
+    saved = _saved_file(saved_file)
+    known = load_manifest(roots.manifest)
+    target = select_exe(known, exe, roots.manifest)
+    stem = exe_stem(target.name)
+    inputs = (load_fn or load_exe)(target, orig_dir=roots.orig_dir, manifest=roots.manifest,
+                                   config_root=roots.config_root)  # fmt: skip
+    rows = inputs.unit_rows(unit)
+    options = roots.options(src_root=saved.parent)
+    if object_root(roots.build_dir, options) == Path(roots.build_dir):
+        raise CheckError(f"{saved} would compile into ninja's object paths; save it outside "
+                         "the committed src tree")  # fmt: skip
+    before = source_sha256(saved)
+    source = (check_source_fn or check_source)(
+        inputs, unit, saved, rows, build_dir=roots.build_dir,
+        compile_fn=compile_fn or compile_source,
+        objdiff_runner=objdiff_runner or default_objdiff_runner(f"{exe}/{unit}"), options=options,
+    )  # fmt: skip
+    if source_sha256(saved) != before:
+        raise CheckError(f"{saved} changed while it was checked; gate it again")
+    path = status_path(roots.config_root, stem)
+    merged, touched = _merge_partial(read_status(path), source.functions, unit, before, attempts,
+                                     _today(today))  # fmt: skip
+    label = (f"{exe}/{unit}",)
+    report = "\n".join([f"check {exe}/{unit} --partial {saved}"]
+                       + [line for fn in source.functions for line in fn.format()])  # fmt: skip
+    doc = {"exe": exe, "unit": unit, "src": str(saved),
+           "functions": [fn.to_json() for fn in source.functions]}  # fmt: skip
+    if not touched:
+        none = f"no function of {unit} that is not matched scored above 0%"
+        return GateResult(MODE_PARTIAL, label, EXIT_MISMATCH, (report,), (doc,), (none,))
+    write_status(path, merged)
+    return GateResult(MODE_PARTIAL, label, EXIT_OK, (report,), (doc,), (),
+                      tuple(Written(path, row) for row in touched))  # fmt: skip
