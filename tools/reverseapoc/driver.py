@@ -203,6 +203,14 @@ def _detail(text: str) -> str:
 # ---- the attempt log ----
 
 
+class RecordError(ValueError):
+    """A record that does not follow the attempts.jsonl schema (D-23)."""
+
+
+def validate_record(obj: object) -> None:
+    """Stub (plan 06-23 Task 3 RED)."""
+
+
 def append_record(path: Path, record: Mapping) -> None:
     """Append one compact JSON line (LF) to `path`; a record is never rewritten (D-23)."""
     line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
