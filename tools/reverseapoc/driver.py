@@ -1669,3 +1669,63 @@ class _Night:
 def drive(config: DriveConfig, deps: Deps) -> DriveReport:
     """Run one night (see the module docstring)."""
     return _Night(config, deps).run()
+
+
+# ---- the drive verb (plan 06-25): skeleton ----
+
+
+@dataclass(frozen=True)
+class DriveOptions:
+    """What `reverseapoc drive` was asked to do."""
+
+    repo: Path
+    run_id: str
+    max_sessions: int = 30
+    target_matched: int = 10
+    dry_run: bool = False
+    canary: bool = False
+    json: bool = False
+
+
+@dataclass(frozen=True)
+class ExeWorld:
+    """One EXE as the picker and the session need it."""
+
+    pool: Sequence
+    units: Mapping[int, str]
+    callees: Mapping[int, tuple[int, ...]]
+    pack: Callable[[Pick, Path], PackInfo]
+    scaffold: Callable[[Pick], None]
+
+
+@dataclass(frozen=True)
+class Seams:
+    """Every effect of the verb."""
+
+    run: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    world: Callable[[], Mapping[str, ExeWorld]]
+    session: Callable[..., SessionResult] | None = None
+    argv: Callable[[str], Sequence[str]] | None = None
+    claude: str = "claude"
+    base_env: Mapping[str, str] | None = None
+
+
+def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
+              today: str | None = None) -> Deps:  # fmt: skip
+    """Skeleton."""
+    return Deps(queue=lambda difficult: (), requeue=lambda difficult: (),
+                matched_callees=lambda pick: (), scaffold=lambda pick: None,
+                pack=lambda pick, d: PackInfo(0), argv=lambda p: [], session=lambda *a, **k: None,
+                lint=lambda pick: 2, gate=lambda pick, n: GateRun(2), partial_gate=lambda *a: 2,
+                remove_containers=lambda prefix: None, git=seams.git)  # fmt: skip
+
+
+def run_drive(options: DriveOptions, seams: Seams) -> int:
+    """Skeleton."""
+    return 0
+
+
+def default_seams(repo: Path) -> Seams:
+    """Skeleton."""
+    raise NotImplementedError
