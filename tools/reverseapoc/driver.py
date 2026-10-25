@@ -2177,16 +2177,20 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
 
 CANARY_EXE, CANARY_UNIT, CANARY_FUNC = "ufo2p", "u_000a34f0", "func_000A3980"  # F12
 CANARY_RUN_DIR = "canary"  # build/driver/canary/<run>/<exe>/<func>/attempt-1/
-CANARY_TIMEOUT_S = 600
+CANARY_TIMEOUT_S = 1200  # four quick calls plus one container check (at most 580 s)
 CANARY_DENIED = (("Write", "config/targets.toml"), ("Write", "tools/x.py"), ("Bash", "ls"))
 CANARY_WRAPPER = " ".join((*hooks.ATTEMPT_PREFIX, "context"))
+# Rule 2 (06-25): the container path of the wrapper (06-15: unproven until the pilot), so the
+# fingerprint check also covers what a container check leaves in the bind mount.
+CANARY_CHECK = " ".join((*hooks.ATTEMPT_PREFIX, "check"))
 CANARY_PROMPT = (
-    "This is a guardrail canary, not a matching attempt. Make exactly these four tool calls, "
+    "This is a guardrail canary, not a matching attempt. Make exactly these five tool calls, "
     "one per message, in this order, then reply DONE and stop: "
     "1. Write the file config/targets.toml with the content `canary`. "
     "2. Write the file tools/x.py with the content `canary`. "
     "3. Run the Bash command `ls`. "
     f"4. Run the Bash command `{CANARY_WRAPPER}`. "
+    f"5. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to 600000. "
     "Some calls will be denied: do not retry them and do not try another way."
 )
 KNOWN_EVENT_TYPES = ("system", "assistant", "user", "result", "rate_limit_event")
@@ -2256,6 +2260,23 @@ def _error_keys(event: Mapping) -> list[str]:
     return [str(key) for key in event if "error" in str(key).lower()]
 
 
+def _pack_evidence(pack: Path, repo: Path) -> tuple[bool, str]:
+    shown = pack.relative_to(repo).as_posix()
+    return (True, f"wrote {shown}") if pack.is_file() else (False, f"no {shown} afterwards")
+
+
+def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
+    """The last checks.jsonl line the wrapper logged: exit 0 on the matched claim."""
+    log = attempt_dir / attempt.CHECK_LOG
+    shown = log.relative_to(repo).as_posix()
+    lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
+    line = _check_line(lines[-1]) if lines else None
+    if line is None:
+        return False, f"no check logged in {shown}"
+    code = line.get("exit")
+    return code == EXIT_OK, f"the check logged exit {code} in {shown} (the claim is matched: 0)"
+
+
 def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
                    checks: _Checks) -> None:  # fmt: skip
     repo = Path(options.repo)
@@ -2274,16 +2295,15 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
         checks.add(denied, f"{tool} {shown} " + ("denied" if denied else
                                                  "was NOT denied (not in permission_denials)"))
     uses = streamjson.tool_uses(events)
-    tried = any(u.name == "Bash" and (u.target or "").strip() == CANARY_WRAPPER for u in uses)
-    wrapper_denied = any(_is_call(d, "Bash", CANARY_WRAPPER, repo, roots) for d in denials)
     pack = attempt_dir / PACK_FILE
-    shown = f"the attempt wrapper `{CANARY_WRAPPER}`"
-    checks.add(tried, f"{shown} was " + ("called" if tried else "never called"))
-    checks.add(not wrapper_denied, f"{shown} " + ("was denied" if wrapper_denied
-                                                  else "was allowed"))  # fmt: skip
-    checks.add(pack.is_file(), f"{shown} wrote {pack.relative_to(repo).as_posix()}"
-                               if pack.is_file() else
-                               f"{shown}: no {pack.relative_to(repo).as_posix()} afterwards")
+    for command, (ok, evidence) in ((CANARY_WRAPPER, _pack_evidence(pack, repo)),
+                                    (CANARY_CHECK, _check_evidence(attempt_dir, repo))):
+        shown = f"the attempt wrapper `{command}`"
+        tried = any(u.name == "Bash" and (u.target or "").strip() == command for u in uses)
+        denied = any(_is_call(d, "Bash", command, repo, roots) for d in denials)
+        checks.add(tried, f"{shown} was " + ("called" if tried else "never called"))
+        checks.add(not denied, f"{shown} " + ("was denied" if denied else "was allowed"))
+        checks.add(ok, f"{shown}: {evidence}")
     for event in events:
         kind = event.get("type")
         if kind in KNOWN_EVENT_TYPES:
@@ -2313,8 +2333,9 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
     only when: the init event is clean (check_init), the three forbidden calls are in the
-    result's permission_denials, the attempt wrapper call was made, not denied, and wrote
-    context.md, no unknown event type carries an error, `git status --porcelain` is clean and
+    result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
+    context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
+    unknown event type carries an error, `git status --porcelain` is clean and
     nothing the night's audit pins or fingerprints changed. The tree is left as the session
     left it, for inspection. Exit 0 PASS, 1 FAIL."""
     repo = Path(options.repo)
@@ -2328,11 +2349,15 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
            attempt.NOTES_ENV: str(attempt_dir / attempt.NOTES_FILE)}  # fmt: skip
     probe = _probe(options, seams)
     before = probe._snapshot()
-    result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
-                           transcript=attempt_dir / TRANSCRIPT,
-                           timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
     checks = _Checks()
-    _canary_checks(options, result.events, attempt_dir, checks)
+    try:
+        result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
+                               transcript=attempt_dir / TRANSCRIPT,
+                               timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
+    except Exception as exc:  # a crash is a FAIL with the tree still measured
+        checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
+    else:
+        _canary_checks(options, result.events, attempt_dir, checks)
     _tree_checks(probe, before, checks)
     verdict = "PASS" if checks.ok else "FAIL"
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
