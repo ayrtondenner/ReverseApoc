@@ -725,3 +725,52 @@ def test_a_plain_new_header_is_committed_with_literal_pathspecs(tmp_path):
     assert "include/fx_util.h" in night.commit_files("feat(")
     calls = [call for call in night.git_calls if _verb(call) in ("add", "commit")]
     assert calls and all(call[0] == "--literal-pathspecs" for call in calls)
+
+
+# ---- Task 3: the end-of-night chore commit (D-23) ----
+
+CHORE = "chore(driver): attempt log"
+
+
+def test_failed_attempts_are_committed_at_the_end(tmp_path):
+    """A night whose last attempts failed ends with one chore commit holding the log and the
+    status.csv its partial rows changed, and nothing else; the tree is clean after it."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),)), Sess(), Sess()])
+    report = night.run()
+    assert report.event == "ENDED"
+    assert night.commits() == [CHORE]
+    assert night.commit_files(CHORE) == sorted([LOG, f"config/{EXE}/status.csv"])
+    assert night.git("status", "--porcelain=v1").strip() == ""
+    assert night.file_at(CHORE, LOG) == (night.repo / LOG).read_text(encoding="utf-8")
+
+
+def test_a_night_without_partial_rows_commits_only_the_log(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()] * 3)
+    night.run()
+    assert night.commits() == [CHORE]
+    assert night.commit_files(CHORE) == [LOG]
+
+
+def test_a_match_night_ends_with_the_run_record_in_a_chore_commit(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.run()
+    assert night.commits() == [MATCH_SUBJECT, CHORE]
+    assert night.commit_files(CHORE) == [LOG]
+    assert night.records()[-1]["event"] == "ENDED"
+
+
+def test_a_stopped_night_commits_only_the_log(tmp_path):
+    """After a STOP, status.csv may hold a gate's half-write: only the log is committed."""
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)),
+                  sessions=[Sess(checks=(check_line(1, 50.0),)), Sess("auth")])  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert (report.event, report.reason) == ("STOPPED", "stop signal")
+    assert night.commits() == [CHORE]
+    assert night.commit_files(CHORE) == [LOG]
+
+
+def test_a_guardrail_stop_commits_nothing(tmp_path):
+    """D-17 and the security ruling: after a breach the owner inspects the tree as it is."""
+    night = Night(tmp_path, sessions=[Sess(write=f"config/{EXE}/status.csv")])
+    night.run()
+    assert night.commits() == []
