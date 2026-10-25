@@ -515,7 +515,6 @@ def test_symbols_reader_refusals(tmp_path, rows, what):
         read_symbols_csv(path)
 
 
-
 def test_unit_and_symbol_follow_checks_keep_their_verdicts(tmp_path):
     # Pins the uniqueness verdicts of _unit_follows and _symbol_follows (DI-19 row 7d): a
     # duplicate is found however far back its first row is, and the message names the row.
