@@ -5,10 +5,12 @@ configure.py say about the unit text fork mode would write?
 Run (from the repo root, on the host):
     uv run python .planning/spikes/006-decompwtf-fork-stub/linker_name.py SRC [--plant]
 
-SRC is the extracted v0.10.6 tarball. `app/forkengine.py` and `forks/csource.py` are read with
-Path.read_text and ast.parse only; the finder pattern is rebuilt from the f-string's literal
-parts. Nothing from decomp.wtf is imported or executed (docs/legal.md:26, D-03). The repo's own
-configure.py is loaded by path (the cross-check, CONVENTIONS). Exit 1 when any claim fails.
+SRC is the extracted v0.10.6 tarball. Read with Path.read_text and ast.parse only:
+`app/forkengine.py`, `forks/csource.py` and every `src/decompnet/**/*.py` file (the
+csource.replace caller scan). The finder pattern is rebuilt from the f-string's literal parts.
+Nothing from decomp.wtf is imported or executed (docs/legal.md:26, D-03). From the repo:
+configure.py, loaded by path (the cross-check, CONVENTIONS), and reverseapoc.functions and
+reverseapoc.symbols, imported. Exit 1 when any claim fails.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ EXPECTED = {
     "symbol-source": True,  # meta["symbol"] is the objdiff report's function name
     "finder-linker-name": False,  # does csource.find("func_X_") find `int func_X(void) {`?
     "finder-c-name": True,  # does csource.find("func_X") find it?
+    "finder-on-marker": False,  # does the finder hit INCLUDE_ASM(func_X); for either spelling?
     "attempt-refuses": True,  # _attempt raises when the submission has no span
     "cheat-sites": {("_attempt", "_strip_comments(source)"), ("edit_file", "_strip_comments(new)")},
     "attempt-inserts": True,  # no span in the unit file -> _attempt calls _insert_in_order
@@ -262,14 +265,27 @@ def insert_keeps_stub(engine: ast.Module) -> tuple[bool, str]:
         raise SpikeError(f"_insert_in_order parameters {params}")
     returns = [node for node in ast.walk(func) if isinstance(node, ast.Return)]
     kept = [ret.value is not None and keeps_text(ret.value) for ret in returns]
-    ok = bool(returns) and all(kept)
-    return ok, f"{len(returns)} returns, {kept.count(True)} keep all of `text` around `code`"
+    # A store to `text` (x = ..., for text in, walrus) before a return could drop the stub.
+    rebinds = [
+        node.lineno
+        for node in ast.walk(func)
+        if isinstance(node, ast.Name) and node.id == "text" and isinstance(node.ctx, ast.Store)
+    ]
+    ok = bool(returns) and all(kept) and not rebinds
+    detail = f"{len(returns)} returns, {kept.count(True)} keep all of `text` around `code`"
+    return ok, f"{detail}, `text` rebound at lines {rebinds}"
 
 
 def replace_callers(src: Path) -> list[str]:
     """Every `csource.replace` call, or import of `replace` from csource, in the package."""
     found = []
-    for path in sorted(src.glob("src/decompnet/**/*.py")):
+    paths = sorted(src.glob("src/decompnet/**/*.py"))
+    scanned = {path.relative_to(src).as_posix() for path in paths}
+    if "src/decompnet/app/forkengine.py" not in scanned:
+        raise SpikeError(
+            f"src/decompnet/**/*.py under {src} ({len(paths)} files) lacks forkengine.py"
+        )
+    for path in paths:
         rel = path.relative_to(src).as_posix()
         for node in ast.walk(parse(path)):
             called = (
@@ -315,6 +331,10 @@ def run(src: Path, expected: dict) -> list[bool]:
         found = finder.compile(name).search(DEFINITION) is not None
         detail = f"find({name!r}) on `int {NAME}(void) {{` matched {found}"
         results.append(report("csource.py", claim, found == expected[claim], detail))
+    hits = {name: finder.compile(name).search(MARKER) is not None for name in (NAME, LINKER)}
+    ok = not any(hits.values()) if not expected["finder-on-marker"] else all(hits.values())
+    detail = f"find on `{MARKER.strip()}` matched {hits}"
+    results.append(report("csource.py", "finder-on-marker", ok, detail))
     good, detail = shaped("forkengine.py", attempt_refuses, engine)
     results.append(report("forkengine.py", "attempt-refuses", good, detail))
     sites, uses = shaped("forkengine.py", cheat_sites, engine)
