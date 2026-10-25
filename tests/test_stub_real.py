@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -69,7 +70,36 @@ def stub_root(request) -> Path:
     return path
 
 
-def _compile(root_dir: Path, name: str, text: str) -> omf.Module:
+@dataclass(frozen=True)
+class StubFacts:
+    """What the stub tests assert on: names, a size and a SHA-1, never the object's bytes. A
+    failing assertion prints this repr, where an omf.Module repr would print its segments'
+    data (T-04-17)."""
+
+    publics: tuple[str, ...]
+    externs: tuple[str, ...]
+    marker_externs: tuple[str, ...]
+    text_size: int
+    text_sha1: str
+
+
+def _text(module: omf.Module) -> bytes:
+    """The bytes of the module's _TEXT segment; b"" when it has none."""
+    return next((seg.data for seg in module.segments if seg.name == "_TEXT"), b"")
+
+
+def _facts(module: omf.Module) -> StubFacts:
+    text = _text(module)
+    return StubFacts(
+        publics=tuple(public.name for public in module.publics),
+        externs=module.externs,
+        marker_externs=tuple(name for name in module.externs if MARKER_EXTERN.fullmatch(name)),
+        text_size=len(text),
+        text_sha1=hashlib.sha1(text).hexdigest(),
+    )
+
+
+def _compile(root_dir: Path, name: str, text: str) -> StubFacts:
     """Write `text` to root_dir/name, compile it with its cflags rule and read the object."""
     src = root_dir / name
     src.write_text(text, encoding="ascii")
@@ -83,35 +113,20 @@ def _compile(root_dir: Path, name: str, text: str) -> omf.Module:
     )
     assert result.ok, result.output
     assert result.rule.spec == f"wcc386@{VERSION}"
-    return omf.read_object(result.obj.read_bytes())
+    return _facts(omf.read_object(result.obj.read_bytes()))
 
 
-def _text(module: omf.Module) -> bytes:
-    """The bytes of the module's _TEXT segment; b"" when it has none."""
-    return next((seg.data for seg in module.segments if seg.name == "_TEXT"), b"")
-
-
-def _publics(module: omf.Module) -> tuple[str, ...]:
-    return tuple(public.name for public in module.publics)
-
-
-def _marker_externs(module: omf.Module) -> list[str]:
-    return [name for name in module.externs if MARKER_EXTERN.fullmatch(name)]
-
-
-def _text_sha1(module: omf.Module) -> str:
-    """SHA-1 of the _TEXT bytes, so a failing comparison prints hashes, never bytes (T-04-17)."""
-    return hashlib.sha1(_text(module)).hexdigest()
+EMPTY_SHA1 = hashlib.sha1(b"").hexdigest()
 
 
 def test_markers_emit_nothing(stub_root):
     unit = _compile(stub_root, "unit.c", UNIT)
     control = _compile(stub_root, "control.c", DEFINED)
-    assert _publics(unit) == ("func_00012345_",)
-    assert _marker_externs(unit) == []
+    assert unit.publics == ("func_00012345_",)
+    assert unit.marker_externs == ()
     assert unit.externs == control.externs
-    assert len(_text(control)) > 0  # the function compiled to something
-    assert _text_sha1(unit) == _text_sha1(control)
+    assert control.text_size > 0  # the function compiled to something
+    assert unit.text_sha1 == control.text_sha1
 
 
 MARKERS_ONLY = """\
@@ -135,20 +150,20 @@ int func_00012010(void)
 
 
 def test_markers_only_file(stub_root):
-    module = _compile(stub_root, "markers.c", MARKERS_ONLY)
-    assert module.publics == ()
-    assert _marker_externs(module) == []
-    assert module.externs == ()
-    assert len(_text(module)) == 0
+    facts = _compile(stub_root, "markers.c", MARKERS_ONLY)
+    assert facts.publics == ()
+    assert facts.marker_externs == ()
+    assert facts.externs == ()
+    assert (facts.text_size, facts.text_sha1) == (0, EMPTY_SHA1)
 
 
 def test_marker_next_to_a_defined_function(stub_root):
-    module = _compile(stub_root, "next.c", NEXT_TO)
-    assert _publics(module) == ("func_00012010_",)
-    assert _marker_externs(module) == []
+    facts = _compile(stub_root, "next.c", NEXT_TO)
+    assert facts.publics == ("func_00012010_",)
+    assert facts.marker_externs == ()
 
 
-REFERENCED = """/* a marker whose extern is referenced, so the compiler must emit it */
+REFERENCED = """\n/* a marker whose extern is referenced, so the compiler must emit it */
 #include "common.h"
 
 INCLUDE_ASM(func_00012000);
@@ -161,6 +176,6 @@ int func_00012010(void)
 
 def test_marker_extern_pattern_sees_a_referenced_marker(stub_root):
     """The marker pattern is right: a referenced marker's extern, as Watcom spells it, matches,
-    so `_marker_externs(...) == []` above can fail."""
-    module = _compile(stub_root, "referenced.c", REFERENCED)
-    assert len(_marker_externs(module)) == 1, module.externs
+    so the `marker_externs == ()` checks above can fail."""
+    facts = _compile(stub_root, "referenced.c", REFERENCED)
+    assert facts.marker_externs == ("_INCLUDE_ASM_func_00012000",)
