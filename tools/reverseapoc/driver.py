@@ -39,8 +39,10 @@ After each session, in this order:
    GAVE_UP; a failed lint is PARTIAL "lint".
 
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
-(tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb that wires the real ones
-follows in plan 06-25. Every git call goes through `--literal-pathspecs`, so no path is a glob.
+(tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
+this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
+dry run, the owner-run canary and the end-of-run checks (`finish`). Every git call goes through
+`--literal-pathspecs`, so no path is a glob.
 
 Layout of one session (gitignored): build/driver/<run>/<exe>/<func>/attempt-<n>/ holds
 transcript.jsonl, context.md, notes.md, the wrapper's checks/ and checks.jsonl, and best/. A
@@ -57,17 +59,31 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import time
-from collections.abc import Callable, Container, Iterable, Mapping, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from . import attempt, hooks, streamjson
+from .check import ExeInputs
+from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
+from .libmatch import read_runtime_csv, runtime_csv_path
 from .picker import EXE_ORDER, Key, Pick
-from .session import TIMEOUT_S, SessionResult, goal_prompt
+from .picker import pilot as picker_pilot
+from .picker import queue as picker_queue
+from .picker import requeue as picker_requeue
+from .probe import CHK_PUBLIC
+from .score import Candidate, assess, candidates
+from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, run_session
+from .status import MATCHED as STATUS_MATCHED
+from .status import PARTIAL as STATUS_PARTIAL
+from .status import read_status, status_path
 from .streamjson import Disposition
+from .units import scaffold_unit, write_unit_source
 
 ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
 DRIVER_DIR = Path(*attempt.DRIVER_PARTS)  # build/driver
@@ -85,6 +101,8 @@ BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
+TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
+MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
@@ -220,10 +238,21 @@ def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
     """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes."""
 
     def git(args: Sequence[str]) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=repo, env=None if env is None else dict(env),
-                              capture_output=True, check=False)  # fmt: skip
+        try:
+            return subprocess.run(["git", *args], cwd=repo,
+                                  env=None if env is None else dict(env),
+                                  capture_output=True, check=False)  # fmt: skip
+        except OSError as exc:  # fix round 1 I2: a missing or unrunnable git is a failed call
+            return subprocess.CompletedProcess(["git", *args], _os_error_exit(exc), b"",
+                                               f"git: {exc}".encode("utf-8", "replace"))
 
     return git
+
+
+def _os_error_exit(exc: OSError) -> int:
+    """127 for a program that is not there, 126 for any other reason it could not run (the
+    shell's convention)."""
+    return 127 if isinstance(exc, FileNotFoundError) else 126
 
 
 def _git_ok(git: Callable[[Sequence[str]], subprocess.CompletedProcess], args: list[str]) -> bytes:
@@ -1669,3 +1698,815 @@ class _Night:
 def drive(config: DriveConfig, deps: Deps) -> DriveReport:
     """Run one night (see the module docstring)."""
     return _Night(config, deps).run()
+
+# ---- the drive verb (plan 06-25; D-10, D-13, D-24, D-34, D-36, D-48) ----
+
+COMPOSE_RUN = ("docker", "compose", "run", "--rm", "-T", "build")  # -T: output is captured
+CONTAINER_CLI = (*COMPOSE_RUN, "uv", "run", "--frozen", "reverseapoc")  # D-24: the gates
+COMMAND_TIMEOUT_S = 3600  # a gate re-checks a unit and rebuilds both EXEs; generous, never forever
+DRY_RUN_DIR = "dry-run"  # build/driver/<run>/dry-run/<exe>/<func>/context.md
+
+
+@dataclass(frozen=True)
+class DriveOptions:
+    """What `reverseapoc drive` was asked to do (D-48 defaults)."""
+
+    repo: Path
+    run_id: str
+    max_sessions: int = 30
+    target_matched: int = 10
+    dry_run: bool = False
+    canary: bool = False
+    json: bool = False
+
+    @property
+    def config_root(self) -> Path:
+        return Path(self.repo) / "config"
+
+    @property
+    def run_dir(self) -> Path:
+        return Path(self.repo).joinpath(DRIVER_DIR, self.run_id)
+
+
+@dataclass(frozen=True)
+class ExeWorld:
+    """One EXE as the picker and a session need it: score's P16 survivors (`pool`, D-09), the
+    unit of every row start, the callees of every row start (picker.requeue), and the two
+    builders that touch files: the D-13 context pack into a directory under build/driver/ and
+    the D-12 unit scaffold."""
+
+    pool: Sequence[Candidate]
+    units: Mapping[int, str]
+    callees: Mapping[int, tuple[int, ...]]
+    pack: Callable[[Pick, Path], PackInfo]
+    scaffold: Callable[[Pick], None]
+
+
+Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
+
+
+@dataclass(frozen=True)
+class Seams:
+    """Every effect of the verb: `run` runs every command except git and the session (docker,
+    uv, `claude --version`) and returns its exit code and text output; `git` is git_runner;
+    `world` loads both EXEs; `session` is session.run_session and `argv` the claude argv
+    (session.build_argv with the resolved `claude`)."""
+
+    run: Runner
+    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    world: Callable[[], Mapping[str, ExeWorld]]
+    session: Callable[..., SessionResult]
+    argv: Callable[[str], Sequence[str]]
+    claude: str = "claude"
+    base_env: Mapping[str, str] | None = None
+
+
+def command_runner(repo: Path, *, timeout_s: float = COMMAND_TIMEOUT_S) -> Runner:
+    """argv in `repo` (compose.yaml is at its root), never a shell, text output captured. A
+    missing program is exit 127 and a timeout exit 124, so no command can raise its way past a
+    refusal or a gate."""
+
+    def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(list(argv), cwd=repo, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=timeout_s,
+                                  stdin=subprocess.DEVNULL, check=False)  # fmt: skip
+        except OSError as exc:  # fix round 1 I2: not only a missing program
+            return subprocess.CompletedProcess(list(argv), _os_error_exit(exc), "",
+                                               f"{argv[0]}: {exc}")
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(list(argv), 124, "",
+                                               f"ran longer than {timeout_s:g} s")  # fmt: skip
+
+    return run
+
+
+def _target(pick: Pick) -> str:
+    return f"{pick.exe}/{pick.unit}"
+
+
+def gate_argv(pick: Pick, attempts: int) -> list[str]:
+    """D-24: the container gate of the claimed unit, recording `attempts`."""
+    return [*CONTAINER_CLI, "gate", _target(pick), "--attempts", str(attempts), "--json"]
+
+
+def partial_gate_argv(pick: Pick, src: str, attempts: int) -> list[str]:
+    """F7: `gate --partial` on the saved best C, a repo-relative POSIX path (/work in the
+    container)."""
+    return [*CONTAINER_CLI, "gate", _target(pick), "--partial", "--src", src,
+            "--attempts", str(attempts), "--json"]  # fmt: skip
+
+
+def lint_argv(pick: Pick) -> list[str]:
+    """The C89 lint of the claimed unit, in the container where clang is (06-15 notes)."""
+    return [*CONTAINER_CLI, "lint", f"src/{pick.exe}/{pick.unit}.c", "--json"]
+
+
+def _json_doc(text: str) -> Mapping | None:
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _status_rows(config_root: Path, exe: str) -> list:
+    return read_status(status_path(config_root, exe))
+
+
+def excluded_keys(config_root: Path, today: str) -> frozenset[Key]:
+    """D-09: the starts the picker skips besides the difficult list: every matched row, and
+    every partial row of this pass (dated `today`; a partial row from an earlier day is
+    eligible again)."""
+    out: set[Key] = set()
+    for exe in EXE_ORDER:
+        for row in _status_rows(config_root, exe):
+            if row.status == STATUS_MATCHED or (row.status == STATUS_PARTIAL and row.date == today):
+                out.add((exe, row.start))
+    return frozenset(out)
+
+
+def matched_keys(config_root: Path) -> frozenset[Key]:
+    return frozenset((exe, row.start) for exe in EXE_ORDER
+                     for row in _status_rows(config_root, exe)
+                     if row.status == STATUS_MATCHED)  # fmt: skip
+
+
+def _pools(worlds: Mapping[str, ExeWorld]) -> dict[str, Sequence[Candidate]]:
+    return {exe: worlds[exe].pool for exe in EXE_ORDER}
+
+
+def _units(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, str]]:
+    return {exe: worlds[exe].units for exe in EXE_ORDER}
+
+
+def _callee_keys(worlds: Mapping[str, ExeWorld], key: Key) -> tuple[Key, ...]:
+    exe, start = key
+    return tuple((exe, callee) for callee in worlds[exe].callees.get(start, ()))
+
+
+def _container_gate(run: Runner, argv: Sequence[str]) -> GateRun:
+    done = run(argv)
+    return GateRun(done.returncode, _json_doc(done.stdout or ""))
+
+
+END_OF_RUN = (
+    ("ninja verify", "end-ninja-verify.log",
+     (*COMPOSE_RUN, "bash", "-lc",
+      "uv run --frozen python configure.py && ninja -t clean && ninja verify")),
+    ("gate --all", "end-gate-all.log", (*CONTAINER_CLI, "gate", "--all", "--json")),
+)  # fmt: skip
+
+
+def finish(run: Runner, *, run_dir: Path) -> list[str]:
+    """D-24: the end-of-run checks, in the container and in this order: a from-clean ninja
+    verify (configure, clean, verify), then `gate --all`. Both always run; each one's output is
+    written by the driver to build/driver/<run>/end-*.log. Returns one string per failed check
+    (`ninja verify exit 1`), which the driver pins in the ENDED record before the chore commit
+    (06-23 fix round 4 L1: wired as Deps.end_of_run)."""
+    failed = []
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for name, log, argv in END_OF_RUN:
+        done = run(list(argv))
+        text = (f"$ {' '.join(argv)}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
+                f"\n--- stderr\n{done.stderr or ''}\n")  # fmt: skip
+        (run_dir / log).write_text(text, encoding="utf-8", newline="\n")
+        if done.returncode != 0:
+            failed.append(f"{name} exit {done.returncode}")
+    return failed
+
+
+def compose_project(repo: Path) -> str:
+    """The compose project name of the checkout: its directory name, lower case, with every
+    character but [a-z0-9_-] dropped (compose's own normalization)."""
+    return re.sub(r"[^a-z0-9_-]", "", Path(repo).name.lower())
+
+
+def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
+    """Pitfall 7: after a session, remove every container of the checkout's compose project
+    whose name starts with the attempt's prefix (attempt.container_prefix), such as a check
+    container left running after a timeout. A failing docker call is a DriverError; the driver
+    records it and stops the night after the audit (06-23 S1)."""
+    project = compose_project(repo)
+
+    def remove(prefix: str) -> None:
+        done = run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
+                    "--filter", f"name={prefix}", "--format", "{{.Names}}"])  # fmt: skip
+        if done.returncode != 0:
+            raise DriverError(f"docker ps failed: exit {done.returncode} "
+                              f"{(done.stderr or '').strip()}")  # fmt: skip
+        names = [name for name in (done.stdout or "").split() if name.startswith(prefix)]
+        if not names:
+            return
+        gone = run(["docker", "rm", "-f", *names])
+        if gone.returncode != 0:
+            raise DriverError(f"docker rm -f {' '.join(names)} failed: exit {gone.returncode}")
+
+    return remove
+
+
+def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
+              today: str | None = None) -> Deps:  # fmt: skip
+    """The Deps a real night uses: the picker over both pools minus status.csv's matched and
+    this pass's partial rows (AGT-07), picker.requeue with the matched set read now, the
+    worlds' scaffold and pack, the claude argv and session, and the container lint and gates
+    (D-24). `today` (UTC) names this pass."""
+    day = today or _today()
+    config_root = options.config_root
+    excluded = excluded_keys(config_root, day)
+
+    def queue(difficult: Container[Key]) -> Iterable[Pick]:
+        return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
+                            difficult=difficult)  # fmt: skip
+
+    def requeue(difficult: Mapping[Key, tuple[Key, ...]]) -> Iterable[Key]:
+        keys = frozenset(difficult)
+        empty = next(iter(queue(keys)), None) is None
+        callees = {key: _callee_keys(worlds, key) for key in difficult}
+        return picker_requeue(difficult, matched=matched_keys(config_root), callees=callees,
+                              pool_empty=empty)  # fmt: skip
+
+    def matched_callees(pick: Pick) -> tuple[Key, ...]:
+        matched = matched_keys(config_root)
+        return tuple(k for k in _callee_keys(worlds, (pick.exe, pick.start)) if k in matched)
+
+    def lint(pick: Pick) -> int:
+        code = seams.run(lint_argv(pick)).returncode
+        return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
+
+    return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
+                scaffold=lambda pick: worlds[pick.exe].scaffold(pick),
+                pack=lambda pick, directory: worlds[pick.exe].pack(pick, directory),
+                argv=seams.argv, session=seams.session, lint=lint,
+                gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
+                partial_gate=lambda pick, src, n: seams.run(
+                    partial_gate_argv(pick, src, n)).returncode,
+                remove_containers=container_remover(options.repo, seams.run),
+                git=seams.git, today=lambda: day,
+                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir))  # fmt: skip
+
+
+def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
+    """F13: in --json mode stdout carries exactly this one JSON document; else the text."""
+    if options.json:
+        print(json.dumps(doc, separators=(",", ":")))
+    else:
+        for line in text:
+            print(line)
+
+
+def _pick_doc(options: DriveOptions, pick: Pick, pack: Path, info: PackInfo) -> dict:
+    return {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
+            "unit": pick.unit, "size": pick.size, "score": pick.score,
+            "pack": pack.relative_to(options.repo).as_posix(),
+            "pack_bytes": info.pack_bytes}  # fmt: skip
+
+
+def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *, today: str) -> list[Pick]:
+    """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule), skipping status.csv's
+    matched and this pass's partial rows and the difficult list."""
+    difficult = load_difficult(Path(options.repo) / DIFFICULT)
+    return picker_pilot(_pools(worlds), units=_units(worlds),
+                        excluded=excluded_keys(options.config_root, today),
+                        difficult=frozenset(difficult))  # fmt: skip
+
+
+def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
+                    today: str) -> list[Pick]:  # fmt: skip
+    """The queue's first `max_sessions` picks: no night attempts more functions than that, so
+    their Ghidra drafts are the ones worth precomputing (D-13)."""
+    difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
+    stream = picker_queue(_pools(worlds), units=_units(worlds),
+                          excluded=excluded_keys(options.config_root, today),
+                          difficult=difficult)  # fmt: skip
+    return [pick for _, pick in zip(range(options.max_sessions), stream, strict=False)]
+
+
+def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], picks: Sequence[Pick]) -> int:
+    """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
+    gate (D-10)."""
+    docs, lines = [], []
+    for pick in picks:
+        directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
+        info = worlds[pick.exe].pack(pick, directory)
+        doc = _pick_doc(options, pick, directory / PACK_FILE, info)
+        docs.append(doc)
+        lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
+                     f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes)")
+    _emit(options, {"picks": docs}, lines)
+    return EXIT_OK
+
+
+# ---- the preflight (D-13, D-34, D-36; F13, F14) ----
+
+PREFLIGHT_LOG = "preflight.log"
+HOST_CLI = ("uv", "run", "--frozen", "reverseapoc")
+DOCKER_INFO = ("docker", "info")
+CONTAINER_SYNC = (*COMPOSE_RUN, "uv", "sync", "--locked")
+HOST_SYNC = ("uv", "sync", "--locked")
+# 06-23 security notes: the hooks run `python -I` (PYTHONDONTWRITEBYTECODE ignored) and import
+# reverseapoc lazily down to configure.py; compiled first, no session writes a .pyc.
+COMPILE = ("uv", "run", "--frozen", "python", "-m", "compileall", "-q", "tools", "configure.py")
+DRAFTS_SOME_MISSING = 1  # ghidra-export --drafts: ran, but some drafts could not be made
+
+
+class Refused(Exception):
+    """The verb refuses to start (exit 2): `reason` is the short name, `detail` the text."""
+
+    def __init__(self, reason: str, detail: str) -> None:
+        super().__init__(f"{reason}: {detail}")
+        self.reason = reason
+        self.detail = _detail(detail)
+
+
+class _Log:
+    """F13: every preflight command's argv, exit, stdout and stderr appended to
+    build/driver/<run>/preflight.log, so stdout keeps one JSON document in --json mode. In text
+    mode each step is also named on stderr."""
+
+    def __init__(self, options: DriveOptions, seams: Seams) -> None:
+        self.options = options
+        self.seams = seams
+        self.path = options.run_dir / PREFLIGHT_LOG
+
+    def note(self, text: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(text.rstrip("\n") + "\n")
+        if not self.options.json:
+            print(f"drive: {text.splitlines()[0]}", file=sys.stderr)
+
+    def run(self, argv: Sequence[str]) -> subprocess.CompletedProcess:
+        done = self.seams.run(list(argv))
+        self.note(f"$ {' '.join(argv)}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
+                  f"\n--- stderr\n{done.stderr or ''}")  # fmt: skip
+        return done
+
+    def must(self, argv: Sequence[str], reason: str, what: str) -> subprocess.CompletedProcess:
+        done = self.run(argv)
+        if done.returncode != 0:
+            tail = (done.stderr or done.stdout or "").strip().splitlines()[-1:] or [""]
+            raise Refused(reason, f"{what} failed: `{' '.join(argv)}` exit {done.returncode} "
+                                  f"{tail[0]}".rstrip())  # fmt: skip
+        return done
+
+
+def _git_text(seams: Seams, args: list[str], reason: str) -> str:
+    done = seams.git(args)
+    if done.returncode != 0:
+        why = (done.stderr or b"").decode("utf-8", "replace").strip()
+        raise Refused(reason, f"git {' '.join(args[:2])} failed: {why}")
+    return (done.stdout or b"").decode("utf-8", "surrogateescape")
+
+
+def _main_checkout(options: DriveOptions, seams: Seams) -> None:
+    """D-34: the git dir must be the common git dir (a linked worktree has its own)."""
+    out = _git_text(seams, ["rev-parse", "--path-format=absolute", "--git-dir",
+                            "--git-common-dir"], "worktree")  # fmt: skip
+    lines = out.splitlines()
+    if len(lines) != 2 or Path(lines[0]).resolve() != Path(lines[1]).resolve():
+        raise Refused("worktree", f"{options.repo} is not the main checkout (git dir "
+                                  f"{lines[0] if lines else '?'}, common dir "
+                                  f"{lines[-1] if lines else '?'}); run drive in the main "
+                                  "checkout (D-34)")  # fmt: skip
+
+
+def _clean_tree(seams: Seams) -> None:
+    """F14: dirty means `git status --porcelain` is not empty; the refusal names the paths."""
+    raw = _git_text(seams, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], "dirty")
+    paths = sorted(parse_status(raw.encode("utf-8", "surrogateescape")))
+    if paths:
+        raise Refused("dirty", f"the working tree is dirty: {_listed(paths)} (commit, restore or "
+                               "remove them first; drive never runs on a dirty tree, D-34)")
+
+
+def _cli_version(log: _Log, claude: str) -> None:
+    """D-36: `claude --version` must be major TESTED_MAJOR and at least MIN_CLI_VERSION (read
+    at call time)."""
+    done = log.run([claude, "--version"])
+    if done.returncode != 0:
+        raise Refused("cli version", f"`{claude} --version` failed: exit {done.returncode}")
+    text = (done.stdout or "").strip()
+    try:
+        version = streamjson.parse_version(text)
+    except ValueError as exc:
+        raise Refused("cli version", str(exc)) from exc
+    shown, minimum = ".".join(map(str, version)), ".".join(map(str, MIN_CLI_VERSION))
+    if version[0] != TESTED_MAJOR:
+        raise Refused("cli version", f"claude {shown} is major {version[0]}; the driver is "
+                                     f"tested on major {TESTED_MAJOR} only (D-36)")  # fmt: skip
+    if version < MIN_CLI_VERSION:
+        raise Refused("cli version", f"claude {shown} is below the minimum {minimum} (D-36); "
+                                     "upgrade it first")  # fmt: skip
+
+
+def preflight(options: DriveOptions, seams: Seams, *, check_cli: bool,
+              log: _Log | None = None) -> None:  # fmt: skip
+    """Fail closed (Refused) unless: this is the main checkout (D-34) on a clean tree (F14),
+    `claude --version` is pinned (D-36; skipped by the dry run), Docker answers, the
+    container's and the host's `uv sync --locked` pass, tools/ and configure.py compile, and
+    the asm listings of both EXEs regenerate on the host (D-13)."""
+    _main_checkout(options, seams)
+    _clean_tree(seams)
+    log = log or _Log(options, seams)
+    if check_cli:
+        _cli_version(log, seams.claude)
+    log.must(DOCKER_INFO, "docker", "Docker is not answering: docker info")
+    log.must(CONTAINER_SYNC, "container sync", "the container's uv sync --locked")
+    log.must(HOST_SYNC, "host sync", "the host's uv sync --locked")
+    log.must(COMPILE, "compile", "compileall of tools/ and configure.py")
+    for exe in EXE_ORDER:
+        log.must([*HOST_CLI, "asm", exe, "--json"], "asm", f"the {exe} asm listings")
+
+
+def _missing_drafts(stdout: str) -> list[str] | None:
+    """The `missing` addresses of a `ghidra-export --json` document (GhidraDrafts.to_json), or
+    None when stdout is not such a document or names none."""
+    doc = _json_doc(stdout)
+    missing = doc.get("missing") if doc is not None else None
+    if not isinstance(missing, list) or not missing or not all(map(_is_text, missing)):
+        return None
+    return missing
+
+
+def _drafts(log: _Log, picks: Sequence[Pick]) -> None:
+    """D-13: one container `ghidra-export EXE --json --drafts ...` per EXE for the given picks.
+    Exit 0 is done. Exit 1 is accepted only with a parseable document naming the missing drafts
+    (logged: a pack works without a draft), because every ghidra-export tool error and many
+    docker failures exit 1 too (fix round 1 I1). Anything else refuses, naming the output."""
+    for exe in EXE_ORDER:
+        starts = [f"0x{p.start:08X}" for p in picks if p.exe == exe]
+        if not starts:
+            continue
+        argv = [*CONTAINER_CLI, "ghidra-export", exe, "--json", "--drafts", *starts]
+        done = log.run(argv)
+        if done.returncode == 0:
+            continue
+        missing = _missing_drafts(done.stdout or "")
+        if done.returncode == DRAFTS_SOME_MISSING and missing is not None:
+            log.note(f"{exe}: no Ghidra draft for {', '.join(missing)}; their packs have none")
+            continue
+        tail = (done.stderr or done.stdout or "").strip().splitlines()[-1:] or ["no output"]
+        raise Refused("drafts", f"`ghidra-export {exe} --json --drafts` exit {done.returncode}"
+                                f" without a missing-drafts list: {tail[0]}")  # fmt: skip
+
+
+def _load_worlds(seams: Seams) -> Mapping[str, ExeWorld]:
+    try:
+        return seams.world()
+    except Exception as exc:  # any loader failure: nothing has started
+        raise Refused("world", f"cannot load the EXEs: {type(exc).__name__}: {exc}") from exc
+
+
+def _refusal(options: DriveOptions, refused: Refused) -> int:
+    doc = {"event": REFUSED, "reason": refused.reason, "detail": refused.detail}
+    if options.json:
+        _emit(options, doc, [])
+    else:
+        print(f"reverseapoc drive: refused ({refused.reason}): {refused.detail}", file=sys.stderr)
+    return EXIT_TOOL
+
+
+@contextmanager
+def _phase(reason: str) -> Iterator[None]:
+    """Fix round 1 I2: any error before the night starts (a malformed table or difficult list,
+    a runner or git that raises, a pack that fails) is a refusal named after its phase, never
+    an escape: exit 2 and one JSON document (F13)."""
+    try:
+        yield
+    except Refused:
+        raise
+    except Exception as exc:
+        raise Refused(reason, f"{type(exc).__name__}: {exc}") from exc
+
+
+def run_drive(options: DriveOptions, seams: Seams) -> int:
+    """`reverseapoc drive`: the preflight, then the canary, the dry run or one night."""
+    if not _RUN_ID.fullmatch(options.run_id):
+        return _refusal(options, Refused("run id", f"{options.run_id!r} is not [A-Za-z0-9_.-]+"))
+    log = _Log(options, seams)
+    try:
+        with _phase("preflight"):
+            preflight(options, seams, check_cli=not options.dry_run, log=log)
+        if options.canary:
+            with _phase("canary"):
+                return run_canary(options, seams)
+        worlds = _load_worlds(seams)
+        today = _today()
+        with _phase("picks"):
+            picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
+                                                                           today=today)
+        with _phase("drafts"):
+            _drafts(log, picks)
+        if options.dry_run:
+            with _phase("pack"):
+                return dry_run(options, worlds, picks)
+        with _phase("picks"):
+            deps = real_deps(options, seams, worlds, today=today)
+    except Refused as refused:
+        return _refusal(options, refused)
+    config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
+                         tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
+                         max_sessions=options.max_sessions,
+                         target_matched=options.target_matched,
+                         base_env=seams.base_env)  # fmt: skip
+    report = drive(config, deps)
+    doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
+           "matched": report.matched, "detail": report.detail,
+           "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
+    _emit(options, doc, [f"{report.event} {report.reason}: {report.sessions} sessions, "
+                         f"{report.matched} matched" + (f" ({report.detail})" if report.detail
+                                                        else "")])  # fmt: skip
+    return report.exit_code
+
+
+# ---- the canary (owner only; research Pitfalls 2-3; F12) ----
+
+CANARY_EXE, CANARY_UNIT, CANARY_FUNC = "ufo2p", "u_000a34f0", "func_000A3980"  # F12
+CANARY_RUN_DIR = "canary"  # build/driver/canary/<run>/<exe>/<func>/attempt-1/
+CANARY_TIMEOUT_S = 1200  # four quick calls plus one container check (at most 580 s)
+CANARY_DENIED = (("Write", "config/targets.toml"), ("Write", "tools/x.py"), ("Bash", "ls"))
+CANARY_WRAPPER = " ".join((*hooks.ATTEMPT_PREFIX, "context"))
+# Rule 2 (06-25): the container path of the wrapper (06-15: unproven until the pilot), so the
+# fingerprint check also covers what a container check leaves in the bind mount.
+CANARY_CHECK = " ".join((*hooks.ATTEMPT_PREFIX, "check"))
+CANARY_PROMPT = (
+    "This is a guardrail canary, not a matching attempt. Make exactly these five tool calls, "
+    "one per message, in this order, then reply DONE and stop: "
+    "1. Write the file config/targets.toml with the content `canary`. "
+    "2. Write the file tools/x.py with the content `canary`. "
+    "3. Run the Bash command `ls`. "
+    f"4. Run the Bash command `{CANARY_WRAPPER}`. "
+    f"5. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to 600000. "
+    "Some calls will be denied: do not retry them and do not try another way."
+)
+KNOWN_EVENT_TYPES = ("system", "assistant", "user", "result", "rate_limit_event")
+
+
+def _inert(*args, **kwargs):
+    raise DriverError("the canary's probe runs no picker, session or gate")
+
+
+def _probe(options: DriveOptions, seams: Seams) -> _Night:
+    """A _Night used only for the driver's own snapshot, pinned paths and fingerprint, so the
+    canary measures exactly what a night measures around a session."""
+    config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
+                         tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION)  # fmt: skip
+    deps = Deps(queue=_inert, requeue=_inert, matched_callees=_inert, scaffold=_inert,
+                pack=_inert, argv=_inert, session=_inert, lint=_inert, gate=_inert,
+                partial_gate=_inert, remove_containers=_inert, git=seams.git)  # fmt: skip
+    return _Night(config, deps)
+
+
+@dataclass
+class _Checks:
+    """The canary's PASS/FAIL lines, in order."""
+
+    lines: list[tuple[bool, str]] = field(default_factory=list)
+
+    def add(self, ok: bool, text: str) -> None:
+        self.lines.append((ok, _detail(text)))
+
+    @property
+    def ok(self) -> bool:
+        return all(ok for ok, _ in self.lines)
+
+
+def _denials(events: Sequence[dict]) -> list[Mapping]:
+    results = [e for e in events if e.get("type") == "result"]
+    denials = results[-1].get("permission_denials") if results else None
+    return [d for d in denials if isinstance(d, dict)] if isinstance(denials, list) else []
+
+
+def _tool_input(entry: Mapping) -> Mapping:
+    value = entry.get("tool_input") or entry.get("input")
+    return value if isinstance(value, dict) else {}
+
+
+def _names_path(entry: Mapping, rel: str, repo: Path, roots: Sequence[str]) -> bool:
+    raw = _tool_input(entry).get("file_path")
+    forms = _relative(raw if isinstance(raw, str) else None, repo, roots)
+    return forms is not None and rel.casefold() in forms
+
+
+def _names_command(entry: Mapping, command: str) -> bool:
+    raw = _tool_input(entry).get("command")
+    return isinstance(raw, str) and raw.strip() == command
+
+
+def _is_call(entry: Mapping, tool: str, target: str, repo: Path, roots: Sequence[str]) -> bool:
+    name = entry.get("tool_name") or entry.get("name")
+    if name != tool:
+        return False
+    if tool == "Bash":
+        return _names_command(entry, target)
+    return _names_path(entry, target, repo, roots)
+
+
+def _error_keys(event: Mapping) -> list[str]:
+    return [str(key) for key in event if "error" in str(key).lower()]
+
+
+def _pack_evidence(pack: Path, repo: Path) -> tuple[bool, str]:
+    shown = pack.relative_to(repo).as_posix()
+    return (True, f"wrote {shown}") if pack.is_file() else (False, f"no {shown} afterwards")
+
+
+def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
+    """The last checks.jsonl line the wrapper logged: exit 0 on the matched claim."""
+    log = attempt_dir / attempt.CHECK_LOG
+    shown = log.relative_to(repo).as_posix()
+    lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
+    line = _check_line(lines[-1]) if lines else None
+    if line is None:
+        return False, f"no check logged in {shown}"
+    code = line.get("exit")
+    return code == EXIT_OK, f"the check logged exit {code} in {shown} (the claim is matched: 0)"
+
+
+def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
+                   checks: _Checks) -> None:  # fmt: skip
+    repo = Path(options.repo)
+    init = streamjson.init_event(events)
+    problems = streamjson.check_init(init, tested_major=TESTED_MAJOR,
+                                     min_version=MIN_CLI_VERSION)  # fmt: skip
+    checks.add(not problems, "init: " + ("; ".join(problems) if problems else
+                                         f"claude {(init or {}).get('claude_code_version')}, "
+                                         "model, tools, no MCP server, no plugin"))  # fmt: skip
+    checks.add(any(e.get("type") == "result" for e in events), "the session ended with a result")
+    roots = _roots(repo, (init or {}).get("cwd"))
+    denials = _denials(events)
+    for tool, target in CANARY_DENIED:
+        shown = f"`{target}`" if tool == "Bash" else target
+        denied = any(_is_call(d, tool, target, repo, roots) for d in denials)
+        checks.add(denied, f"{tool} {shown} " + ("denied" if denied else
+                                                 "was NOT denied (not in permission_denials)"))
+    uses = streamjson.tool_uses(events)
+    pack = attempt_dir / PACK_FILE
+    for command, (ok, evidence) in ((CANARY_WRAPPER, _pack_evidence(pack, repo)),
+                                    (CANARY_CHECK, _check_evidence(attempt_dir, repo))):
+        shown = f"the attempt wrapper `{command}`"
+        tried = any(u.name == "Bash" and (u.target or "").strip() == command for u in uses)
+        denied = any(_is_call(d, "Bash", command, repo, roots) for d in denials)
+        checks.add(tried, f"{shown} was " + ("called" if tried else "never called"))
+        checks.add(not denied, f"{shown} " + ("was denied" if denied else "was allowed"))
+        checks.add(ok, f"{shown}: {evidence}")
+    for event in events:
+        kind = event.get("type")
+        if kind in KNOWN_EVENT_TYPES:
+            continue
+        keys = _error_keys(event)
+        checks.add(not keys, f"unknown event type {kind!r}"
+                             + (f" carries {', '.join(keys)}" if keys else " (ignored)"))
+
+
+def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
+    """git status clean, and nothing the night's audit pins or fingerprints changed."""
+    raw = _git_ok(probe.deps.git, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    dirty = sorted(parse_status(raw))
+    checks.add(not dirty, "git status --porcelain " + (f"is not clean: {_listed(dirty)}"
+                                                       if dirty else "is clean"))  # fmt: skip
+    pinned = probe._pinned_state()
+    changed = sorted(n for n in before.pinned.keys() | pinned.keys()
+                     if before.pinned.get(n) != pinned.get(n))  # fmt: skip
+    prints = probe._fingerprint()
+    changed += sorted(n for n in before.prints.keys() | prints.keys()
+                      if before.prints.get(n) != prints.get(n))  # fmt: skip
+    checks.add(not changed, "pinned and fingerprinted files " +
+               (f"changed: {_listed(changed)}" if changed else "unchanged"))  # fmt: skip
+
+
+def canary_attempt_dir(options: DriveOptions) -> Path:
+    """build/driver/canary/<run>/ufo2p/func_000A3980/attempt-1 (F12)."""
+    return Path(options.repo).joinpath(DRIVER_DIR, CANARY_RUN_DIR, options.run_id, CANARY_EXE,
+                                       CANARY_FUNC, "attempt-1")  # fmt: skip
+
+
+def _refs(probe: _Night) -> dict[str, str]:
+    """HEAD and every ref with its object (fix round 1: a commit leaves `git status` clean)."""
+    head = _git_ok(probe.deps.git, ["rev-parse", "HEAD"]).decode("utf-8").strip()
+    raw = _git_ok(probe.deps.git, ["for-each-ref", "--format=%(refname) %(objectname)"])
+    refs = dict(line.split(" ", 1) for line in raw.decode("utf-8", "replace").splitlines()
+                if " " in line)  # fmt: skip
+    return {"HEAD": head, **refs}
+
+
+def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
+                   attempt_dir: Path, checks: _Checks) -> None:  # fmt: skip
+    """The stream checks; an error in them is a FAIL line after the lines so far (fix round
+    2: the session ran, so the canary reports, it never refuses)."""
+    try:
+        _canary_checks(options, events, attempt_dir, checks)
+    except Exception as exc:  # noqa: BLE001 - reported, never a PASS
+        checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
+
+
+def run_canary(options: DriveOptions, seams: Seams) -> int:
+    """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
+    ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
+    only when: the init event is clean (check_init), the three forbidden calls are in the
+    result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
+    context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
+    unknown event type carries an error, `git status --porcelain` is clean and
+    nothing the night's audit pins or fingerprints changed, HEAD and the refs did not move,
+    and the attempt's containers were removed (fix round 1). The tree is left as the session
+    left it, for inspection. Exit 0 PASS, 1 FAIL (any error once the session started is a FAIL
+    line, fix round 2); a refusal before the session (an existing attempt dir) raises Refused,
+    exit 2."""
+    repo = Path(options.repo)
+    attempt_dir = canary_attempt_dir(options)
+    if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
+        raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
+                                "already ran with this --run ID; give a new one")  # fmt: skip
+    attempt_dir.mkdir(parents=True)
+    pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
+    claim = _Claim(pick, options.run_id, repo, 1)
+    base = seams.base_env if seams.base_env is not None else os.environ
+    env = {**claim.env(base), attempt.DIR_ENV: str(attempt_dir),
+           attempt.NOTES_ENV: str(attempt_dir / attempt.NOTES_FILE)}  # fmt: skip
+    probe = _probe(options, seams)
+    before = probe._snapshot()
+    refs_before = _refs(probe)
+    checks = _Checks()
+    try:
+        result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
+                               transcript=attempt_dir / TRANSCRIPT,
+                               timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
+    except Exception as exc:  # a crash is a FAIL with the tree still measured
+        checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
+    else:
+        _after_session(options, seams, result.events, attempt_dir, checks)
+    try:  # like the night: the attempt's containers go before anything is measured
+        container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
+    except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
+        checks.add(False, f"containers not removed: {type(exc).__name__}: {exc}")
+    try:  # fix round 2: the session ran, so an error here is a FAIL (exit 1), never REFUSED
+        _tree_checks(probe, before, checks)
+        refs_after = _refs(probe)
+        moved = sorted(name for name in refs_before.keys() | refs_after.keys()
+                       if refs_before.get(name) != refs_after.get(name))  # fmt: skip
+        checks.add(not moved, "HEAD and refs " + (f"moved: {_listed(moved)}" if moved
+                                                  else "did not move"))  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - reported with the lines gathered so far
+        checks.add(False, f"measuring the tree failed: {type(exc).__name__}: {exc}")
+    verdict = "PASS" if checks.ok else "FAIL"
+    doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
+           "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
+    lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
+    _emit(options, doc, [*lines, f"CANARY {verdict}"])
+    return EXIT_OK if checks.ok else EXIT_MISMATCH
+
+
+# ---- the real worlds ----
+
+
+def _chk_targets(data: ExeInputs) -> set[int]:
+    """Where __CHK lives: rows named so, and the runtime public of that name (cli score)."""
+    targets = {row.start for row in data.rows if row.name == CHK_PUBLIC}
+    if CHK_PUBLIC in data.symbols.names:
+        targets.add(data.symbols.names[CHK_PUBLIC])
+    return targets
+
+
+def _runtime_starts(data: ExeInputs) -> set[int]:
+    path = runtime_csv_path(data.target.name)
+    return {row.start for row in read_runtime_csv(path)} if path.is_file() else set()
+
+
+def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
+    """One EXE loaded once with check's loader: score.assess's survivors as `score` ranks them
+    (D-09), the units, one CallIndex reused by every pack (06-15 notes), the context pack
+    (attempt.make_pack, written under build/driver/) and the units scaffold."""
+    data = attempt.exe_inputs(exe, orig=roots.orig, manifest=roots.manifest, config=roots.config)
+    assessments = assess(data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
+                         chk_targets=_chk_targets(data), runtime_starts=_runtime_starts(data),
+                         page_size=data.le.page_size)  # fmt: skip
+    calls = CallIndex.build(list(data.rows), data.flat, list(data.fixups))
+    rows = {row.start: row for row in data.rows}
+
+    def pack(pick: Pick, directory: Path) -> PackInfo:
+        built = attempt.make_pack(data, rows[pick.start], src=roots.src, config=roots.config,
+                                  asm_root=roots.asm, roots=roots, calls=calls)  # fmt: skip
+        write_pack(built, directory, root=roots.repo)
+        return PackInfo(built.pack_bytes, tuple(built.truncated))
+
+    def scaffold(pick: Pick) -> None:
+        unit = next((u for u in data.units if u.unit == pick.unit), None)
+        if unit is None:
+            raise DriverError(f"{pick.exe}: no unit {pick.unit} in units.csv")
+        path = Path(roots.src) / exe / f"{pick.unit}.c"
+        write_unit_source(path, scaffold_unit(data.target.name, unit, list(data.rows)))
+
+    return ExeWorld(pool=candidates(assessments, data.symbols),
+                    units={row.start: row.unit for row in data.rows},
+                    callees=dict(calls.callees), pack=pack, scaffold=scaffold)  # fmt: skip
+
+
+def default_seams(repo: Path) -> Seams:
+    """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
+    (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
+    claude = shutil.which("claude") or "claude"
+    return Seams(run=command_runner(repo), git=git_runner(repo),
+                 world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
+                 session=run_session, argv=lambda prompt: build_argv(prompt, claude=claude),
+                 claude=claude)  # fmt: skip

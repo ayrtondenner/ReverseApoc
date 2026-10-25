@@ -32,14 +32,14 @@ from pathlib import Path
 from typing import Protocol
 
 from .score import Candidate
+from .status import MATCHED
 
 EXE_ORDER = ("ufo2p", "tacp")
 PILOT_PER_EXE = 5  # D-10: 5 UFO2P + 5 TACP
 MAX_PER_UNIT = 2  # D-10 variety rule
 MAX_PER_REGION = 3
 REGION_SIZE = 0x10000  # 64 KiB of linear address; D-10 fixes no alignment, so start // 0x10000
-# TODO(06-25): use 06-11's status.py vocabulary once both are merged (06-14 review M6).
-STATUS_MATCHED = "matched"
+STATUS_MATCHED = MATCHED  # status.py's vocabulary (06-14 review M6, closed in 06-25)
 
 END_EXHAUSTED = "pool exhausted"  # no eligible candidate left in the EXE's pool
 END_BLOCKED = "variety rule blocks the rest"  # candidates are left, the rule blocks them all
