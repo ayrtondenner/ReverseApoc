@@ -15,11 +15,11 @@ provides:
 affects: [06-11 gate --partial (routes to check-custom through CompileOptions.src_root), 06-16 container re-proof of the stamp flow, driver plans (DI-06 is a D-38 prerequisite)]
 
 actuals:
-  tokens: 12000  # chars/4 over git diff 370e3e2..3533764 (47,997 chars), SUMMARY excluded
+  tokens: 21418  # fix round 1: chars/4 over git diff 370e3e2..5294bdb (85,670 chars), SUMMARY included once (first round: 12000)
   tasks: 3
-  commits: 6  # git rev-list --count 370e3e2..HEAD at SUMMARY write
+  commits: 12  # git rev-list --count 370e3e2..5294bdb, the first SUMMARY commit included
 plan_head_before: 370e3e2b30f632f72b5dd6935253fc0d2598c59e
-plan_head_after: 3533764c7c5624021c28790ab1490caaeddb9bfe
+plan_head_after: 5294bdb2990079bc20df79b8fc45c7e7af1e5f39
 
 tech-stack:
   added: []
@@ -36,6 +36,7 @@ key-files:
     - tests/test_check.py
     - tests/test_compiler.py
     - tests/test_configure.py
+    - tools/reverseapoc/cli.py  # fix round 1, M8
 
 key-decisions:
   - "The provenance stamp is no cache: if it cannot be written, the compile fails and the object is deleted (the gate stamp stays best effort)"
@@ -60,7 +61,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: "cc writes <obj>.prov.json with exactly the six keys, atomically; a failed or refused compile leaves none; build.ninja's cc edge declares it as an implicit output (DI-06 part a, writer)"
+    description: "cc writes <obj>.prov.json (format 2 since fix round 1: eight keys, include_sha256 and object_sha256 added), atomically; a failed or refused compile leaves none; build.ninja's cc edge declares it as an implicit output (DI-06 part a, writer)"
     requirement: "AGT-06"
     verification:
       - kind: unit
@@ -247,10 +248,49 @@ See key-decisions in the frontmatter. The stamp path is a `$builddir` path, buil
 - 06-11 can route `gate --partial` to check-custom with `CompileOptions(src_root=<file's parent>)`. land_all keeps that root.
 - 06-16: the first container `ninja verify` after this merge rebuilds both matched objects, because their implicit `.prov.json` outputs are missing. Then land checks the stamps.
 
+## Fix round 1 (review-06-09.md, FIX_BASE a264884)
+
+Orchestrator ruling: extend the stamp so that a stale or substituted object can never land through a direct `land`. The stamp format is now 2 (`PROV_VERSION = 2`) with eight keys. A format-1 stamp is refused as stale, and the message names its format.
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| I1 (Important) | New key `include_sha256`. It hashes every file under the compile root's `include/`, the `-i=` directory the compile reads first: per file, sorted by its POSIX path below include/, the line `<path>\0<SHA-256 of the content with CRLF as LF>\n`, then SHA-256 over all lines. The writer uses compile_source's root (REPO_ROOT by default). The reader uses `_compile_root(src_root)`. After a header edit, a direct `reverseapoc land` refuses with `the headers under <root>/include changed since it was built; run ninja ...`. | `620a584` | `162557e` |
+| I2 (Important) | New key `object_sha256`: SHA-256 of the object's bytes, taken in `_write_provenance` once compile_rule has returned ok, so from the finished object. `check_provenance` hashes the object on disk and refuses on a difference: `the object is not the one its stamp was written for (its bytes changed)`. `compile_rule` now deletes the old stamp together with the old object, right before the run, so an interrupted compile (simulated with a runner that writes part of the object, then raises KeyboardInterrupt) leaves no stamp. A refusal before the run (path checks, gate) still leaves the old object and its stamp as a matching pair. Because the stamp is deleted before the compile, `_check_outputs` also refuses a stamp path that is the source. A stamp that cannot be written still fails the compile and deletes the object. `_drop_orphan_stamp` is gone: nothing needs it now. | `620a584` | `162557e` |
+| M7 | New tests: `test_land_refuses_an_object_after_a_watcom_manifest_change` (names the manifest path) and `test_land_refuses_an_object_built_by_another_compiler` (10.6 -> 10.5, same flags; names "the compiler"). | `620a584` | (passed with `162557e`) |
+| Old format | `test_land_refuses_an_old_format_stamp`: a six-key format-1 stamp gives `... is of stamp format 1, not format 2`. | `620a584` | `162557e` |
+| M3 | 17a now names the public's place the way 17c does. It says `outside a code segment (data)` only when the public is outside every code segment. Inside one, the reason is `in a code segment, but not as a function check can pair with its row`. The not-marked `exported as ...` reason uses the same phrase. Test: `test_a_code_public_check_does_not_take_is_not_called_data`, with defined_functions monkeypatched to take nothing. An absolute public could not be used as a fixture, because omf2elf refuses it as a tool error. | `b3c2049` | `30aa93c` |
+| M5 | Restored `KEPT = "int kept;\n"` at tests/test_compiler.py (stray whitespace edit). | `620a584` | n/a |
+| M6 | The env fixture's monkeypatch no longer passes `raising=False`. | `620a584` | n/a |
+| M8 | cli.py imports `DEFAULT_SRC` and `DEFAULT_CONFIG` from check.py (no import cycle: check.py does not import cli). Test: `test_cli_takes_its_default_roots_from_check`. **Deviation:** cli.py is outside the plan's `files_modified`; the coordinator asked for it. | `b3c2049` | `30aa93c` |
+| Wording | The stale message now reads `<fields> changed since it was built`, because "built from another the headers ... than today's" did not parse. | n/a | `5294bdb` |
+| put_stamp | tests/test_check.py's `put_stamp` computes the format-2 stamp from its definition (`headers_sha256`, `_text_sha256`). It does not call compiler.py, so the reader is checked against an independent writer. The compiler-side test pins the same `include_sha256` scheme (`_headers_sha256`). | `620a584` | n/a |
+
+RED evidence:
+- `620a584`: 21 failures in test_check.py and 3 in test_compiler.py, all on assertions. The stamp tests got 6 keys instead of 8. The interrupted compile kept its stamp. `test_the_stamp_may_not_be_the_source`: `DID NOT RAISE` (the stamp overwrote the source). The format-1 stamp was accepted. The header, object, manifest and compiler tests raised the wrong refusal (the format-1 reader read the format-2 stamp as the wrong shape, so their named words were missing). The accept and land tests failed because the format-1 reader refused the format-2 stamp `put_stamp` writes, which is the format change itself. `test_a_refusal_before_the_compile_keeps_the_old_object_and_stamp` passed: it pins behaviour that must stay.
+- `b3c2049`: 2 failures on assertions: the reason ended `outside a code segment (data)`, and `cli.DEFAULT_SRC is not check.DEFAULT_SRC`.
+
+Notes recorded, no change (coordinator ruling):
+- **M1:** `land_all` without a compiler takes the cflags table and manifest it compares with from `options`. No CLI path passes them (`_cmd_land` passes no options), so the no-bypass prohibition holds; this is a latent API surface only.
+- **M2:** `_compile_root`'s outside-the-repository branch (the src tree's parent) serves only the tmp-tree tests. ninja's cc and compile_source always use REPO_ROOT. That branch can only refuse or agree.
+- **M4:** two contrived corners. A FIFO or device "source" now blocks while being hashed, before compile_rule's path checks. A source named `<obj>.prov.json` is now refused by `_check_outputs`, which also closes the second corner.
+
+Host re-proof with real files (main checkout's Watcom 10.6 tree and orig/):
+- `uv run reverseapoc cc src/ufo2p/u_000a34f0.c -o build/06-09/ufo2p/obj/u_000a34f0.obj --watcom-dir <main>/third_party/watcom` and the same for `src/tacp/u_00054f20.c`: both OK. Each stamp has 8 keys and `version 2`. For ufo2p: `include_sha256 e0219065...`, `object_sha256 bf841071...`.
+- `uv run reverseapoc land --orig <main>/orig --build build/06-09 --out build/06-09/land`: `OK UFO2P.EXE sha1 e7488bf3... landed 1`, `OK TACP.EXE sha1 48ef0096... landed 1`, exit 0.
+- Each refusal exited 1, naming the object and "run ninja":
+  - TACP stamp removed: `no provenance stamp: ... is missing`.
+  - A comment appended to include/common.h: `the headers under <worktree>/include changed since it was built`.
+  - TACP's object copied over UFO2P's: `the object is not the one its stamp was written for (its bytes changed)`.
+- Everything was restored (include/common.h from a copy; `git status` clean apart from the code under commit; the UFO2P object from its backup). The land then gave both EXEs OK at the manifest SHA-1 again, exit 0.
+- `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 units.
+
+Verification: `uv run pytest -q` gives 1594 passed, 217 skipped. `uv run ruff check .`: all checks passed. No CR in any changed file.
+
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/check.py, tools/reverseapoc/compiler.py, configure.py, tests/test_check.py, tests/test_compiler.py, tests/test_configure.py
-- FOUND commits (ancestors of HEAD): 52e83b1, 47546f1, 8fcd36d, 3c56067, f8c8e48, 3533764
+- FOUND commits (ancestors of HEAD): 52e83b1, 47546f1, 8fcd36d, 3c56067, f8c8e48, 3533764, a264884; fix round 1: 620a584, 162557e, b3c2049, 30aa93c, 5294bdb
+- FOUND: tools/reverseapoc/cli.py (fix round 1)
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
