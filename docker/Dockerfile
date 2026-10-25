@@ -9,16 +9,15 @@
 #   - No project source. The repo is bind-mounted at /work; the image only
 #     pre-installs tools. Every COPY is `COPY --from=<stage>` and there is no
 #     ADD, so nothing from the build context can enter a layer.
+#   - No Open Watcom v2 compiler on PATH. It is installed on disk but NOT put
+#     on PATH and NOT used for matching (its codegen differs from Watcom 10.x).
+#     Only its binary tools wdis, wlink and wlib are exposed.
 #
 # WHAT IT DOES CONTAIN besides the build tools (D-04): Ghidra 12.1.4 (Apache-2.0)
 # with the lastonesky ghidra-lx-loader (Apache-2.0) at /opt/ghidra, and OpenJDK 21
 # (GPLv2 with the Classpath Exception) to run it headless. Both zips are
 # downloaded and SHA-256 checked in the `ghidra` stage below; no developer
-# installs Ghidra or a JDK by hand (D-05). Watcom and the game are still never
-# in the image.
-#   - Open Watcom v2's compiler is installed on disk but NOT put on PATH and
-#     NOT used for matching (its codegen differs from Watcom 10.x). Only its
-#     binary tools wdis, wlink and wlib are exposed.
+# installs Ghidra or a JDK by hand (D-05).
 #
 # Platform: x86-64 only (wibo, objdiff-cli and Open Watcom are x86-64 Linux
 # binaries).

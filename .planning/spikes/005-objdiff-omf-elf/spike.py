@@ -35,9 +35,9 @@ from mkelf import (
 )
 
 from reverseapoc.cflags import load_cflags, select_rule
-from reverseapoc.le import LE, SRC_OFF32
+from reverseapoc.le import LE, SRC_OFF32, Fixup
 from reverseapoc.libmatch import read_runtime_csv, read_target, runtime_csv_path, select_target
-from reverseapoc.omf import read_object
+from reverseapoc.omf import Module, Segment, read_object
 from reverseapoc.targets import DEFAULT_MANIFEST, DEFAULT_ORIG, load_manifest
 
 REPO = Path(__file__).resolve().parents[3]
@@ -138,8 +138,8 @@ class Pair:
     start: int
     end: int
     base_va: int  # VA of our segment's offset 0
-    module: object
-    segment: object
+    module: Module
+    segment: Segment
     names: dict[int, str]
     call_fields: list[int]
 
@@ -187,7 +187,14 @@ def check_pair(report: Report, exe: str, obj: bytes) -> Pair | None:
     return Pair(exe, le, start, end, base_va, module, seg, names, call_fields)
 
 
-def build_name_map(report, exe, seg, base_va, flat, le_fx):
+def build_name_map(
+    report: Report,
+    exe: str,
+    seg: Segment,
+    base_va: int,
+    flat: bytearray,
+    le_fx: list[Fixup],
+) -> tuple[dict[int, str], list[int]]:
     """address -> linker name, resolved from the pair's own fields (D-19)."""
     le_by_va = {f.src_va: f for f in le_fx}
     found: dict[str, set[int]] = {}
