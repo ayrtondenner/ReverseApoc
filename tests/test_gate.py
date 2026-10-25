@@ -15,7 +15,7 @@ import pytest
 
 from conftest import write_manifest
 from reverseapoc import gate
-from reverseapoc.check import CheckError, CheckResult, ExeLand, FunctionCheck
+from reverseapoc.check import CheckError, CheckResult, ExeLand, FunctionCheck, SourceCheck
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.land import LandResult
@@ -97,6 +97,7 @@ class Tree:
 
 
 def make_tree(root: Path) -> Tree:
+    root.mkdir(parents=True, exist_ok=True)
     write_manifest(root / "targets.toml", {UFO: b"ufo", TACP: b"tacp"})
     for exe, rows in ROWS.items():
         config = root / "config" / STEMS[exe]
@@ -235,3 +236,276 @@ def test_gate_cli_text_output(tree, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert f"matched {fname(A1)}" in out
     assert out.rstrip().endswith("ok")
+
+
+# ---- Task 2: the cross-check (D-24, AGT-06), several targets (F1), re-gating (F29) -------------
+
+
+def matched(start: int, unit: str, *, attempts: int = 0, day: str = "2026-10-01",
+            sha: str = "c" * 64) -> StatusRow:  # fmt: skip
+    return StatusRow(start, fname(start), unit, MATCHED, 100.0, attempts, sha, day)
+
+
+def seed(tree: Tree, exe: str, rows: list[StatusRow]) -> bytes:
+    write_status(tree.status(exe), rows)
+    return tree.status(exe).read_bytes()
+
+
+def owner_rows(exe: str) -> dict[int, FunctionRow]:
+    return {s: FunctionRow(s, s + 0x10, fname(s), "game", u, "call") for s, u in ROWS[exe]}
+
+
+def test_crosscheck_refuses_a_reverted_match(tree):
+    before = seed(tree, UFO, [matched(A1, UNIT_A)])
+    tree.write_unit(UFO, UNIT_A, [])  # func_A1 back to INCLUDE_ASM
+    tree.write_unit(UFO, UNIT_B, [B1])
+    result = run_gate(tree, f"ufo2p/{UNIT_B}")
+    assert result.exit_code == 1 and result.written == ()
+    assert any(fname(A1) in p and "not landed" in p for p in result.problems)
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_crosscheck_refuses_an_extra_landed_function(tree):
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(UFO, UNIT_B, [B1])  # compiled and landed, never gated
+    result = run_gate(tree, f"ufo2p/{UNIT_A}")
+    assert result.exit_code == 1
+    assert any(fname(B1) in p and "landed" in p for p in result.problems)
+    assert not tree.status(UFO).exists()
+
+
+@pytest.mark.parametrize("gated", [UNIT_A, UNIT_C], ids=["the-new-unit", "a-third-unit"])
+def test_crosscheck_refuses_a_moved_function(tree, gated):
+    """status.csv says func_A1 is matched in UNIT_B; functions.csv and the C now put it in
+    UNIT_A."""
+    before = seed(tree, UFO, [matched(A1, UNIT_B)])
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(UFO, UNIT_C, [C1])
+    result = run_gate(tree, f"ufo2p/{gated}")
+    assert result.exit_code == 1
+    assert any(fname(A1) in p and UNIT_B in p and UNIT_A in p for p in result.problems)
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_crosscheck_adjacency():
+    """A landed set one start away from the expected set, either way, is refused."""
+    rows = {UFO: {A1: matched(A1, UNIT_A), A2: matched(A2, UNIT_A)}}
+    owners = {UFO: owner_rows(UFO)}
+    assert gate.cross_check([splice(UFO, {A1, A2})], rows, {}, owners=owners) == []
+    assert gate.cross_check([splice(UFO, {A1})], rows, {}, owners=owners)
+    assert gate.cross_check([splice(UFO, {A1, A2, B1})], rows, {}, owners=owners)
+    assert gate.cross_check([splice(UFO, {A1, A2, B1})], rows, {UFO: {B1: UNIT_B}},
+                            owners=owners) == []  # fmt: skip
+    assert gate.cross_check([splice(UFO, {A1, A2})], rows, {UFO: {B1: UNIT_B}}, owners=owners)
+
+
+def test_crosscheck_refuses_matched_rows_of_an_exe_that_did_not_land():
+    rows = {TACP: {T1: matched(T1, UNIT_T)}}
+    problems = gate.cross_check([splice(UFO, set())], rows, {})
+    assert any(TACP in p and "nothing landed" in p for p in problems)
+
+
+def test_crosscheck_reads_the_exeland_exe_field():
+    rows = {TACP: {T1: matched(T1, UNIT_T)}}
+    assert gate.cross_check([splice(UFO, set()), splice(TACP, {T1})], rows, {}) == []
+
+
+def test_gate_two_targets_writes_both_rows(tree):
+    """Ruling F1: with empty tables and a unit of each EXE compiled, one gate run of both writes
+    both rows; one of them alone fails on the other's landed, unlisted function."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+    alone = run_gate(tree, f"ufo2p/{UNIT_A}")
+    assert alone.exit_code == 1 and any(fname(T1) in p for p in alone.problems)
+    assert not tree.status(UFO).exists() and not tree.status(TACP).exists()
+    both = run_gate(tree, f"ufo2p/{UNIT_A}", f"tacp/{UNIT_T}")
+    assert both.exit_code == 0
+    assert [r.start for r in tree.rows(UFO)] == [A1]
+    assert [r.start for r in tree.rows(TACP)] == [T1]
+    assert [w.row.start for w in both.written] == [T1, A1]  # by table (tacp, ufo2p), then start
+
+
+def test_gate_targets_are_all_or_nothing(tree):
+    """F1: one failing target of several writes no row of any."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+
+    class OneFails(FakeCheck):
+        def __call__(self, exe, unit, **kwargs):
+            self.mismatch = unit == UNIT_T
+            return super().__call__(exe, unit, **kwargs)
+
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", f"tacp/{UNIT_T}", check=OneFails(tree))
+    assert result.exit_code == 1
+    assert not tree.status(UFO).exists() and not tree.status(TACP).exists()
+
+
+def test_gate_refuses_a_target_named_twice(tree):
+    tree.write_unit(UFO, UNIT_A, [A1])
+    with pytest.raises(CheckError, match="twice"):
+        run_gate(tree, f"ufo2p/{UNIT_A}", f"UFO2P.EXE/{UNIT_A}")
+
+
+def test_regating_keeps_attempts_and_date(tree):
+    """Ruling F29: a re-gated unit's matched rows keep attempts and date; only source_sha256
+    is rewritten. A function newly defined in it gets today's row."""
+    seed(tree, UFO, [matched(A1, UNIT_A, attempts=3, day="2026-10-01")])
+    text = tree.write_unit(UFO, UNIT_A, [A1, A2])
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", attempts=1)
+    assert result.exit_code == 0
+    sha = lf_sha256(text)
+    kept = matched(A1, UNIT_A, attempts=3, day="2026-10-01", sha=sha)
+    assert tree.rows(UFO) == [kept, matched(A2, UNIT_A, attempts=1, day="2026-10-25", sha=sha)]
+
+
+def test_a_match_replaces_a_partial_row(tree):
+    seed(tree, UFO, [StatusRow(A1, fname(A1), UNIT_A, "partial", 80.0, 2, "d" * 64, "2026-10-01")])
+    text = tree.write_unit(UFO, UNIT_A, [A1])
+    assert run_gate(tree, f"ufo2p/{UNIT_A}", attempts=3).exit_code == 0
+    assert tree.rows(UFO) == [matched(A1, UNIT_A, attempts=3, day="2026-10-25",
+                                      sha=lf_sha256(text))]  # fmt: skip
+
+
+def test_merge_is_order_independent(tmp_path):
+    def run(order):
+        tree = make_tree(tmp_path / "-".join(order))
+        for unit in order:
+            tree.write_unit(UFO, unit, {UNIT_A: [A1], UNIT_B: [B1]}[unit])
+            assert run_gate(tree, f"ufo2p/{unit}", attempts=1).exit_code == 0
+        return tree.status(UFO).read_bytes()
+
+    assert run([UNIT_A, UNIT_B]) == run([UNIT_B, UNIT_A])
+
+
+# ---- gate --all --------------------------------------------------------------------------------
+
+
+@dataclass
+class FakeExe:
+    """The part of check.ExeInputs gate --all reads."""
+
+    target: object
+    stem: str
+    rows: tuple[FunctionRow, ...]
+
+    def unit_rows(self, unit: str) -> list[FunctionRow]:
+        rows = [row for row in self.rows if row.unit == unit]
+        if not rows:
+            raise CheckError(f"no unit {unit!r}")
+        return rows
+
+
+class FakeAll:
+    """load_exe, check_source and land_all for gate --all, counting their calls."""
+
+    def __init__(self, tree: Tree, *, percent: dict[int, float] | None = None,
+                 landed: dict[str, set[int]] | None = None,
+                 bad_sha: frozenset[str] = frozenset()) -> None:  # fmt: skip
+        self.tree, self.percent, self.landed = tree, percent or {}, landed or {}
+        self.bad_sha = bad_sha
+        self.sources: list[tuple[str, str]] = []
+        self.lands: list[dict] = []
+
+    def load(self, target, **kwargs) -> FakeExe:
+        return FakeExe(target, STEMS[target.name], tuple(owner_rows(target.name).values()))
+
+    def source(self, exe, unit, src, rows, **kwargs) -> SourceCheck:
+        assert Path(src) == self.tree.source(exe.target.name, unit)
+        self.sources.append((exe.target.name, unit))
+        functions = tuple(ok_function(s, self.percent.get(s, 100.0))
+                          for s in self.tree.defined.get((exe.target.name, unit), []))  # fmt: skip
+        return SourceCheck("wcc386", ("-4r",), functions, None, "")
+
+    def land(self, manifest, **kwargs) -> list[ExeLand]:
+        self.lands.append(kwargs)
+        out = []
+        for exe in (UFO, TACP):
+            default = {s for (e, _), starts in self.tree.defined.items() if e == exe
+                       for s in starts}  # fmt: skip
+            out.append(splice(exe, self.landed.get(exe, default), ok=exe not in self.bad_sha))
+        return out
+
+
+def run_all(tree: Tree, fake: FakeAll) -> gate.GateResult:
+    return gate.gate_all(roots=tree.roots, load_fn=fake.load, check_source_fn=fake.source,
+                         land_fn=fake.land, compile_fn=lambda *a, **k: None)  # fmt: skip
+
+
+def seeded_tree(tree: Tree) -> dict[str, bytes]:
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(UFO, UNIT_B, [B1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+    return {UFO: seed(tree, UFO, [matched(A1, UNIT_A), matched(B1, UNIT_B)]),
+            TACP: seed(tree, TACP, [matched(T1, UNIT_T)])}  # fmt: skip
+
+
+def test_gate_all_passes_and_writes_nothing(tree):
+    before = seeded_tree(tree)
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 0 and result.written == ()
+    assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def test_gate_all_runs_one_land(tree, monkeypatch):
+    seeded_tree(tree)
+
+    def no_check_unit(*args, **kwargs):
+        raise AssertionError("gate --all must not call check_unit")
+
+    monkeypatch.setattr(gate, "check_unit", no_check_unit)
+    fake = FakeAll(tree)
+    assert run_all(tree, fake).exit_code == 0
+    assert sorted(fake.sources) == sorted([(UFO, UNIT_A), (UFO, UNIT_B), (TACP, UNIT_T)])
+    assert len(fake.lands) == 1
+    assert set(fake.lands[0]["fresh"]) == set(fake.sources)
+
+
+def test_gate_all_with_empty_status(tree):
+    write_status(tree.status(UFO), [])  # header only: a valid, empty table
+    fake = FakeAll(tree)
+    result = run_all(tree, fake)
+    assert result.exit_code == 0
+    assert fake.sources == [] and len(fake.lands) == 1 and set(fake.lands[0]["fresh"]) == set()
+
+
+@pytest.mark.parametrize(
+    ("fake", "needle"),
+    [({"percent": {B1: 99.5}}, fname(B1)),
+     ({"landed": {UFO: {A1}}}, fname(B1)),
+     ({"landed": {TACP: {T1, 0x20010}}}, "0x00020010"),
+     ({"bad_sha": frozenset({TACP})}, TACP)],
+    ids=["objdiff-regression", "reverted", "extra-landed", "sha1"],
+)  # fmt: skip
+def test_gate_all_refuses_a_regression(tree, fake, needle):
+    before = seeded_tree(tree)
+    result = run_all(tree, FakeAll(tree, **fake))
+    assert result.exit_code == 1
+    assert any(needle in p for p in result.problems), result.problems
+    assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def test_gate_all_refuses_a_matched_unit_without_c(tree):
+    seeded_tree(tree)
+    tree.remove_unit(UFO, UNIT_B)
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 1
+    assert any(UNIT_B in p for p in result.problems)
+
+
+def test_gate_cli_all(tree, monkeypatch, capsys):
+    seeded_tree(tree)
+    fake = FakeAll(tree)
+    monkeypatch.setattr(gate, "load_exe", fake.load)
+    monkeypatch.setattr(gate, "check_source", fake.source)
+    monkeypatch.setattr(gate, "land_all", fake.land)
+    monkeypatch.setattr(gate, "compile_source", lambda *a, **k: None)
+    assert cli_main(["gate", "--all", *tree.argv(), "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["mode"] == "all" and doc["ok"] is True and doc["written"] == []
+
+
+@pytest.mark.parametrize("argv", [["gate"], ["gate", "--all", f"ufo2p/{UNIT_A}"],
+                                  ["gate", "--all", "--attempts", "2"]])  # fmt: skip
+def test_gate_cli_target_usage(tree, capsys, argv):
+    assert cli_main([*argv, *tree.argv()]) == 2
+    assert "reverseapoc gate: error:" in capsys.readouterr().err
