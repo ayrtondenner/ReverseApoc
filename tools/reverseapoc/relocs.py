@@ -18,7 +18,9 @@ independent of objdiff and fails that case:
      row's start + (t - the public's offset). Without such an entry the field is refused, never
      resolved by assuming our whole `_TEXT` sits in the original as in our object. The caller
      owes the map: it builds `own_publics` from the unit's units.csv and functions.csv rows
-     (05-17 `check`, 05-18);
+     (05-17 `check`, 05-18), and two entries over one offset are refused (RelocError);
+   a fixup whose frame method is not F1 (a group frame, the method wcc386 10.6 emits for flat
+   code; the frame datum is not checked) fails;
    then by the fixup's kind:
    - self-relative: have = F + 4 + int32(original field), and the LE has no fixup at F (a rel32
      call is not an LE fixup) (`_self_relative`);
@@ -41,6 +43,7 @@ import struct
 from bisect import bisect_left, bisect_right
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 from typing import Any
 
 from .functions import FunctionRow
@@ -55,6 +58,15 @@ _ADDRESS_MASK = 0xFFFFFFFF  # VAs and targets are compared modulo 2**32
 _TARGET_EXTERN = "extern"
 _TARGET_SEGMENT = "segment"
 LOCAL_SEGMENT_PROBLEM = "local segment reference, move data to an extern D_ symbol"
+# OMF frame method F1: the frame is a group, named by the datum. Every fixup of the real
+# wcc386 10.6 objects (both Phase 5 matched units, 06-03) has frame method F1 (its datum names
+# FLAT there); the check accepts exactly that observed set of methods (05-REVIEW 10a). Only the
+# method is checked: omf.py does not keep the frame datum, so which group an F1 fixup names is
+# not checked. The sample held extern targets only; a fixup to the unit's own _TEXT framed
+# otherwise would fail closed here.
+FRAME_GROUP = 1
+FLAT_CODE_FRAMES = frozenset({FRAME_GROUP})
+_FLAT_CODE_FRAME_NAMES = " or ".join(f"F{method}" for method in sorted(FLAT_CODE_FRAMES))
 
 
 class RelocError(ValueError):
@@ -135,12 +147,22 @@ def _check_inputs(segment: Segment, off: int, size: int, row: FunctionRow, flat:
 
 
 def _check_own_publics(own_publics: Sequence[OwnPublic], segment: Segment) -> None:
+    """Every own public is a non-empty span of `segment`, and no two share a byte: with two
+    entries over one offset, resolution would depend on their order (05-REVIEW 12a)."""
     for public in own_publics:
         end = public.offset + public.size
         if public.size <= 0 or public.offset < 0 or end > len(segment.data):
             raise RelocError(
                 f"own public {public.name}: [{public.offset:#x}, {end:#x}) is empty or lies "
                 f"outside segment {segment.name}"
+            )
+    ordered = sorted(own_publics, key=lambda public: (public.offset, public.size))
+    for before, after in pairwise(ordered):
+        if after.offset < before.offset + before.size:
+            raise RelocError(
+                f"own publics {before.name} [{before.offset:#x}, "
+                f"{before.offset + before.size:#x}) and {after.name} [{after.offset:#x}, "
+                f"{after.offset + after.size:#x}) overlap, so a target in both has no one row"
             )
 
 
@@ -279,6 +301,12 @@ def _fixup(pair: _Pair, fx: OMFFixup) -> Iterator[str]:
         return
     if fx.location != LOC_OFFSET32:
         yield f"{_va(field)}: {fx.target_name}: fixup location {fx.location} is not offset32"
+        return
+    if fx.frame_method not in FLAT_CODE_FRAMES:
+        yield (
+            f"{_va(field)}: {fx.target_name}: fixup frame method F{fx.frame_method} is not "
+            f"{_FLAT_CODE_FRAME_NAMES}, the frame method wcc386 10.6 emits for flat code"
+        )
         return
     target = _want(pair, field, fx)
     if isinstance(target, str):

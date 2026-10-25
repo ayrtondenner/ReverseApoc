@@ -10,6 +10,7 @@ import pytest
 
 import configure
 from conftest import build_le_image, write_manifest
+from reverseapoc import check
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow
 from reverseapoc.targets import load_manifest
@@ -644,6 +645,291 @@ def test_unit_source_refuses_an_unterminated_if0():
     assert "#if 0" in problem and "#endif" in problem
 
 
+# ---- DI-05 (05-REVIEW item 15): backslash-newline is spliced as in translation phase 2 ---------
+
+# The three 05-REVIEW probe texts: a marker on the continuation line of a `//` comment, a
+# definition on the continuation line of a `#define`, and a definition on the continuation line
+# of a `//` comment. Each maps to the (marked, defined) sets the compiler would see.
+CONTINUATION_PROBES = {
+    "line-comment-marker": (
+        "INCLUDE_ASM(func_00010000);\n// note \\\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "define-definition": (
+        "INCLUDE_ASM(func_00010010);\n#define X \\\nint func_00010000(void) { return 0; }\n",
+        {"func_00010010"},
+        set(),
+    ),
+    "line-comment-definition": (
+        "INCLUDE_ASM(func_00010000);\n// x \\\nint func_00010010(void)\n{\n    return 0;\n}\n",
+        {"func_00010000"},
+        set(),
+    ),
+    # 06-03 review I1: a #define continued through a spliced string literal; the marker is in
+    # the macro body.
+    "define-string": (
+        'INCLUDE_ASM(func_00010000);\n#define S "a\\\nb" INCLUDE_ASM(func_00010010);\n',
+        {"func_00010000"},
+        set(),
+    ),
+    # 06-03 review M1: translation phase 2 splices before comments are recognised (phase 3),
+    # so a backslash-newline inside a comment delimiter still forms it.
+    "line-comment-opener-splice": (
+        "INCLUDE_ASM(func_00010000);\n/\\\n/ INCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "block-comment-opener-splice": (
+        "INCLUDE_ASM(func_00010000);\n/\\\n* INCLUDE_ASM(func_00010010); */\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "block-comment-closer-splice": (
+        "/* x *\\\n/ INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    # A comment is one space (phase 3), so a block comment spanning lines inside a #define
+    # keeps the directive going: the marker after it is in the macro body.
+    "define-block-comment": (
+        "INCLUDE_ASM(func_00010000);\n#define X /* a\nb */ INCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    # Splices and multi-line comments inside live code join it as the compiler does.
+    "code-splice-marker": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_\\\nASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "code-comment-in-marker": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010) /*\n*/ ;\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    # 06-03 re-review N1: wcc386 10.6 also splices a backslash followed by spaces or tabs and
+    # then a newline, in every context (a form feed or vertical tab does not splice); it maps
+    # C89 trigraphs first (`??/` is a backslash, `??=` a `#`), and a raw CRLF is one line break.
+    # Each expected reading is what `wcc386 -zq -p` (10.6, BINNT) preprocesses the text to.
+    "blank-splice-closer-definition": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n"
+        "/* x *\\ \n/ int func_00010000(void) { return 0; } /* y */\n",
+        {"func_00010000", "func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-string-definition": (
+        'INCLUDE_ASM(func_00010010);\nchar *s = "a\\ \nb"; int func_00010000(void) { return 0; }\n',
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-name": (
+        "INCLUDE_ASM(func_00010010);\nint func_0001\\ \n0000(void) { return 0; }\n",
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
+    "blank-splice-define": (
+        "INCLUDE_ASM(func_00010000);\n#define X \\ \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "tab-splice-define": (
+        "INCLUDE_ASM(func_00010000);\n#define X \\\t \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "blank-splice-line-comment": (
+        "INCLUDE_ASM(func_00010000);\n// c \\ \nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "blank-splice-if0": (
+        "INCLUDE_ASM(func_00010000);\n#if \\ \n0\nINCLUDE_ASM(func_00010010);\n#endif\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "formfeed-is-no-splice": (
+        "INCLUDE_ASM(func_00010000);\n// c \\\f\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "vtab-is-no-splice": (
+        "INCLUDE_ASM(func_00010000);\n// c \\\v\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "trigraph-line-comment": (
+        "INCLUDE_ASM(func_00010000);\n// x ??/\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "trigraph-closer": (
+        "/* x *??/\n/ INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "trigraph-directive": (
+        "INCLUDE_ASM(func_00010000);\n??=define X \\\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "crlf-closer": (
+        "/* x *\\\r\n/ INCLUDE_ASM(func_00010000);\r\nINCLUDE_ASM(func_00010010);\r\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "crlf-string": (
+        'INCLUDE_ASM(func_00010010);\r\nchar *s = "a\\\r\nb"; '
+        "int func_00010000(void) { return 0; }\r\n",
+        {"func_00010010"},
+        {"func_00010000"},
+    ),
+}
+
+
+def test_blank_splice_closer_hides_no_definition():
+    """N1: the definition after `*\\ <newline>/` is live for wcc386, so the D-12 check sees it
+    next to its marker and reports both (it used to read it as part of the comment)."""
+    text, _, _ = CONTINUATION_PROBES["blank-splice-closer-definition"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "both" in problem
+
+
+INLINE_ASM_PROBES = {
+    "blank-splice-closer": "/* x *\\ \n/ void f(void) { _asm int 3 } /* y */\n",
+    "blank-splice-string": 'char *s = "a\\ \nb"; void f(void) { _asm int 3 } char *t = "x";\n',
+    "trigraph-closer": "/* x *??/\n/ void f(void) { _asm int 3 } /* y */\n",
+    "crlf-closer": "/* x *\\\r\n/ void f(void) { _asm int 3 } /* y */\r\n",
+}
+
+
+@pytest.mark.parametrize("probe", sorted(INLINE_ASM_PROBES))
+def test_inline_asm_stays_visible_to_the_scanner(probe):
+    """06-12's hooks scan the same output for inline asm; wcc386 keeps `_asm int 3` live in
+    each probe, so the scanner must too (the chain check.source_marks runs)."""
+    text = INLINE_ASM_PROBES[probe]
+    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+    assert "_asm int 3" in code
+
+
+def test_code_text_is_the_shared_entry_point():
+    """configure.code_text is the one entry point (phases 1-2, then the scanner) that the
+    D-12 check, check.source_marks and 06-12's hooks share."""
+    for text in [*INLINE_ASM_PROBES.values(), *(p[0] for p in CONTINUATION_PROBES.values())]:
+        expected = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+        assert configure.code_text(text) == expected
+
+
+def test_normalisation_keeps_the_line_count():
+    text = "a ??/ \r\nb\r\nc ??= ??( ??) ??! ??< ??> ??- ??' \\\t\n\f\v"
+    normal = configure.normalize_source(text)
+    assert normal == "a \\\nb\nc # [ ] | { } ~ ^ \\\n\f\v"
+    assert normal.count("\n") == 3
+
+
+# 06-03 re-review R2-1: wcc386 ends a // comment at a lone CR but keeps one inside a literal as
+# a character, so no single mapping of a lone CR reads as it does; a lone CR is refused.
+LONE_CR_IN_LITERAL = (
+    'INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\nchar *s = "a\rb"; '
+    'int func_00010000(void) { return 0; } char *t = "x";\n'
+)
+LONE_CR_BEFORE_ASM = 'char *s = "a\rb"; void f(void) { _asm int 3 } char *t = "x";\n'
+
+
+def test_lone_cr_is_refused_on_raw_text():
+    (problem,) = configure.check_unit_source(LONE_CR_IN_LITERAL, TWO_GAME)
+    assert problem.startswith("line 3: ") and "carriage return" in problem
+    marks = check.source_marks(LONE_CR_IN_LITERAL, TWO_GAME)
+    assert marks.marked == marks.defined == frozenset()
+    (problem,) = marks.problems
+    assert problem.startswith("line 3: ") and "carriage return" in problem
+
+
+@pytest.mark.parametrize(
+    "text",
+    [LONE_CR_BEFORE_ASM, "// c\rINCLUDE_ASM(func_00010000);\n"],
+    ids=["literal-before-asm", "line-comment"],
+)
+def test_scanner_refuses_a_lone_cr(text):
+    with pytest.raises(configure._ConditionalError, match="line 1: .*carriage return"):
+        configure.code_text(text)
+    with pytest.raises(configure._ConditionalError, match="carriage return"):
+        configure.normalize_source(text)
+
+
+def test_main_refuses_a_unit_file_with_a_lone_cr(tmp_path, capsys):
+    """read_text would turn the lone CR into a line break, so configure checks the bytes."""
+    argv = _split_tree(tmp_path)
+    unit_file = tmp_path / "src" / "ufo2p" / f"{UNIT}.c"
+    unit_file.write_bytes(UNIT_SOURCE.encode("utf-8") + b'char *s = "a\rb";\n')
+    line = UNIT_SOURCE.count("\n") + 1
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", f"line {line}", "carriage return")
+
+
+def test_directive_after_a_multiline_comment_keeps_its_line():
+    """N2: a directive on the closing line of a multi-line block comment is reported at the
+    line of its `#`, as before the comment was read as one space."""
+    markers = "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n"
+    text = markers + "/* a\nb */ #ifdef FOO\n#endif\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert problem.startswith("line 4: #ifdef")
+    (problem,) = configure.check_unit_source("/* a\nb */ #if 0\n", TWO_GAME)
+    assert problem.startswith("line 2: #if 0 has no matching #endif")
+
+
+def test_line_comment_continuation_hides_a_marker():
+    text, _, _ = CONTINUATION_PROBES["line-comment-marker"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+
+
+def test_define_continuation_hides_a_definition():
+    text, _, _ = CONTINUATION_PROBES["define-definition"]
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010000" in problem and "neither" in problem
+    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
+    assert list(configure._file_scope_definitions(code)) == []
+
+
+@pytest.mark.parametrize(
+    ("prefix", "lines"),
+    [
+        ("// a \\\ncontinued\n", 2),
+        ("#define X \\\n    1 \\\n    + 2\n", 3),
+        ('static char *s = "a\\\nb";\n', 2),
+        ('#define S "a\\\nb" 1\n', 2),
+        ("/* x *\\\n/\n", 2),
+        ("#define X /* a\nb */ 1\n", 2),
+    ],
+    ids=["line-comment", "define", "string", "define-string", "closer-splice", "define-comment"],
+)
+def test_continuation_keeps_directive_line_numbers(prefix, lines):
+    shift = UNIT_SOURCE.count("\n") + lines
+    (problem,) = configure.check_unit_source(UNIT_SOURCE + prefix + "#ifdef FOO\n#endif\n",
+                                             TWO_GAME)  # fmt: skip
+    assert f"line {shift + 1}:" in problem and "#ifdef" in problem
+
+
+def test_directive_continuation_is_one_directive():
+    # `#if \` + `0` is `#if 0` after splicing, and an `#ifdef` inside a #define body is not a
+    # directive; both read as the compiler reads them.
+    text = "INCLUDE_ASM(func_00010000);\n#if \\\n0\nINCLUDE_ASM(func_00010010);\n#endif\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "func_00010010" in problem and "neither" in problem
+    text = UNIT_SOURCE + "#define Y \\\n#ifdef FOO\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
+@pytest.mark.parametrize("probe", sorted(CONTINUATION_PROBES))
+def test_check_source_marks_agrees_with_configure(probe):
+    text, marked, defined = CONTINUATION_PROBES[probe]
+    marks = check.source_marks(text, TWO_GAME)
+    assert (set(marks.marked), set(marks.defined)) == (marked, defined)
+    problems = configure.check_unit_source(text, TWO_GAME)
+    neither = {r.name for r in TWO_GAME if any(r.name in p and "neither" in p for p in problems)}
+    assert neither == {row.name for row in TWO_GAME} - marked - defined
+
+
 def test_main_refuses_a_conditional_naming_the_line(tmp_path, capsys):
     argv = _split_tree(tmp_path, source="#ifdef FOO\n#endif\n" + UNIT_SOURCE)
     _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "line 1", "#ifdef")
@@ -844,3 +1130,151 @@ def test_main_creates_the_output_directory(tmp_path):
     assert configure.main(["--orig", str(tmp_path / "orig"), "--output", str(out)]) == 0
     for name in ("build.ninja", "objdiff.json", "compile_commands.json"):
         assert (out.parent / name).is_file(), name
+
+
+# ---- DI-06 part c: build.ninja rules carry the config tree they were generated from ----------
+
+# Orchestrator ruling F4: the default render over the synthetic one-unit tree of _split_tree,
+# pinned as a literal (never over the committed config/ or src/), taken before the change.
+DEFAULT_RENDER_GOLDEN = """\
+# build.ninja -- generated by configure.py; do not edit, re-run `python configure.py`.
+#
+#   ninja              the default: check-orig and objects
+#   ninja check-orig   verify the orig dir against config/targets.toml (size, CRC32, MD5, SHA-1)
+#   ninja parse-le     print the LE layout of every EXE found in the orig dir at configure time
+#   ninja objects      every unit's base object (its C) and target object (cut from the LE image)
+#   ninja lint         the C89 lint gate over every unit file (clang 18, in the container)
+#   ninja asm          per-function listings into the gitignored asm/ directory
+#   ninja verify       land matched functions, rebuild every target into build/ and check its
+#                      SHA-1 (config/targets.toml)
+#
+# Compile rules: cc runs wcc386 (Watcom 10.x, user-supplied) under wibo with config/cflags.txt;
+# omf2elf converts its OMF object to ELF32 for objdiff; target cuts the unit's bytes and
+# relocations from the LE image; land splices every matched function back into the LE image.
+
+ninja_required_version = 1.10
+builddir = build
+
+rule check_orig
+  command = uv run reverseapoc check-orig --orig orig
+  description = CHECK-ORIG orig
+  pool = console
+
+rule parse_le
+  command = uv run reverseapoc parse-le $in
+  description = PARSE-LE $in
+  pool = console
+
+rule rebuild
+  command = uv run reverseapoc rebuild --orig orig --out build
+  description = REBUILD build/
+  pool = console
+
+rule cc
+  command = uv run reverseapoc cc $in -o $out
+  description = CC $in
+
+rule omf2elf
+  command = uv run reverseapoc omf2elf $in -o $out
+  description = OMF2ELF $out
+
+rule target
+  command = uv run reverseapoc target $exe $unit --orig orig -o $out
+  description = TARGET $exe/$unit
+
+rule lint
+  command = uv run reverseapoc lint $in --stamp $out
+  description = LINT $in
+
+rule asm
+  command = uv run reverseapoc asm $exe --orig orig
+  description = ASM $exe
+  pool = console
+
+rule land
+  command = uv run reverseapoc land --orig orig
+  description = LAND build/
+  pool = console
+
+rule configure
+  command = uv run python configure.py --orig orig --config config --src src --output $out
+  description = CONFIGURE $out
+  generator = 1
+  pool = console
+
+# Outputs under $builddir/always/ are never written, so these edges run every time they are
+# requested; check-orig, verify and parse-le are phony aliases for them.
+
+build $builddir/always/check-orig: check_orig
+build check-orig: phony $builddir/always/check-orig
+build $builddir/always/verify: rebuild
+build $builddir/always/land: land | $builddir/ufo2p/base/u_00010000.o
+build verify: phony $builddir/always/verify $builddir/always/land
+
+build $builddir/always/parse-le/UFO2P.EXE: parse_le orig/UFO2P.EXE
+build parse-le: phony $builddir/always/parse-le/UFO2P.EXE
+
+build $builddir/ufo2p/target/u_00010000.o: target | orig/UFO2P.EXE config/ufo2p/functions.csv \
+config/ufo2p/units.csv
+  exe = ufo2p
+  unit = u_00010000
+build $builddir/ufo2p/obj/u_00010000.obj: cc src/ufo2p/u_00010000.c
+build $builddir/ufo2p/base/u_00010000.o: omf2elf $builddir/ufo2p/obj/u_00010000.obj
+build objects: phony $builddir/ufo2p/base/u_00010000.o $builddir/ufo2p/target/u_00010000.o
+
+build $builddir/ufo2p/lint/u_00010000.stamp: lint src/ufo2p/u_00010000.c
+build lint: phony $builddir/ufo2p/lint/u_00010000.stamp
+
+build $builddir/always/asm/ufo2p: asm
+  exe = ufo2p
+build asm: phony $builddir/always/asm/ufo2p
+
+build build.ninja: configure | configure.py config/ufo2p/functions.csv config/ufo2p/units.csv \
+src/ufo2p/u_00010000.c
+
+default check-orig objects
+"""
+
+# The commands of the rules that read config/: none of them names a config path by default.
+CONFIG_RULES = ("check_orig", "rebuild", "target", "asm", "land")
+CONFIG_FLAGS = ("--config", "--manifest", "--functions", "--symbols")
+
+
+def test_default_config_render_is_unchanged(tmp_path):
+    _split_tree(tmp_path)
+    units = configure.collect_units(tmp_path / "config", tmp_path / "src", tmp_path)
+    text = configure.render(["orig/UFO2P.EXE"], units=units, layout=configure.Layout())
+    assert text == DEFAULT_RENDER_GOLDEN
+    for rule in CONFIG_RULES:
+        command = _command(text, rule)
+        assert not [flag for flag in CONFIG_FLAGS if flag in command], command
+
+
+def test_default_config_dir_adds_no_rule_flags(tmp_path):
+    """--config naming the repository's config tree (the default) is the default text, wherever
+    build.ninja is written."""
+    out = tmp_path / "elsewhere" / "build.ninja"
+    argv = ["--orig", str(tmp_path / "orig"), "--config", str(configure.ROOT / "config"),
+            "--output", str(out)]  # fmt: skip
+    assert configure.main(argv) == 0
+    text = out.read_text(encoding="utf-8")
+    for rule in CONFIG_RULES:
+        command = _command(text, rule)
+        assert not [flag for flag in CONFIG_FLAGS if flag in command], command
+
+
+def test_custom_config_rules_name_its_manifest(tmp_path):
+    argv = _split_tree(tmp_path)
+    (tmp_path / "config").rename(tmp_path / "other")
+    argv[argv.index("--config") + 1] = str(tmp_path / "other")
+    assert configure.main(argv) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    manifest = "--manifest other/targets.toml"
+    for rule in ("check_orig", "rebuild", "target", "land", "asm"):
+        assert manifest in _command(text, rule), rule
+    for rule in ("target", "land"):
+        assert "--config other" in _command(text, rule), rule
+    asm = _command(text, "asm")
+    assert "--functions other/$exe/functions.csv" in asm
+    assert "--symbols other/$exe/symbols.csv" in asm
+    assert "configure.py --orig orig --config other --src src" in _command(text, "configure")
