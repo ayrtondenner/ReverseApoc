@@ -108,6 +108,12 @@ def test_recomp_json_links_are_https():
     assert _non_https(_recomp()) == []
 
 
+def test_recomp_json_asks_for_no_help():
+    # Owner ruling 2026-10-25: recomp.fyi shows a "wants help" tag for a non-empty `help`
+    # array, and the owner does not want it for now. `help` stays in the schema pin.
+    assert "help" not in _recomp()
+
+
 def test_recomp_json_lists_the_progress_page():
     assert PAGES in [link.get("url") for link in _recomp().get("links", [])]
 
