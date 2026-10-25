@@ -42,6 +42,7 @@ _DRAIN_S = 5.0  # after a kill, how long to wait for each line the dying tree st
 _REAP_S = 10.0  # after a kill, how long to wait for the exit code
 _TASKKILL_TIMEOUT_S = 30
 _EOF = object()  # the reader's end-of-stdout marker
+_POSIX = os.name != "nt"
 SETTINGS = "config/driver/claude-settings.json"  # repo-relative (F11)
 SKILL = ".claude/skills/watcom-decomp/SKILL.md"  # repo-relative (F11)
 EXES = ("ufo2p", "tacp")
@@ -127,7 +128,11 @@ def kill_tree(
 ) -> None:
     """Kill process `pid` and every process under it (Pitfall 7: claude, the wrapper, any
     `docker compose run`). Windows: `taskkill /T /F /PID <pid>` as an argv list, never a shell.
-    POSIX: SIGKILL to the process group `pid` leads (run_session starts a new session)."""
+    POSIX: SIGKILL to the process group `pid` leads (run_session starts a new session); a pid
+    below 1 is refused, since killpg(0) would hit the caller's own group. A descendant that
+    calls setsid has left the group and escapes the POSIX kill (a known limit)."""
+    if pid < 1:
+        raise ValueError(f"refusing to kill process group {pid}")
     if windows:
         run(
             [_taskkill(), "/T", "/F", "/PID", str(pid)],
@@ -261,6 +266,10 @@ def run_session(
             ended = _read_until(reader, record, deadline, clock)
             exit_code = _reap(proc, max(deadline - clock(), 0.0)) if ended else None
             timed_out = exit_code is None
+            if not timed_out and _POSIX:
+                # Fix round 1 minor: a descendant that outlived the session dies with its
+                # group. Windows cannot: taskkill /T needs the parent alive (a known limit).
+                kill_tree(proc.pid)
             if timed_out:
                 kill_tree(proc.pid)
                 _drain(reader, record)
