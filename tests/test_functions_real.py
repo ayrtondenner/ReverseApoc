@@ -33,8 +33,10 @@ from conftest import ORIG_DIR, WATCOM_DIR, requires_capstone, requires_ghidra
 from reverseapoc import cli
 from reverseapoc.asm import OBJ_EXECUTABLE, data_ranges
 from reverseapoc.functions import (
+    RUNTIME_VERSION,
     FunctionRow,
     Reconciled,
+    _row_version,  # the verb's per-row version rule, called by its private name (row 16a)
     boundaries_csv_path,
     check_unit_assignment,
     format_boundaries_csv,
@@ -119,8 +121,10 @@ def _export_csv(name: str) -> Path:
 
 
 def _required_versions(matches: list[MatchRange]) -> list[str]:
-    """The Watcom versions whose LIB386 trees the runtime rows need."""
-    return sorted({version for match in matches for version in match.versions})
+    """The Watcom versions whose LIB386 trees the runtime rows need: the one the verb's own
+    per-row helper picks for each row (RUNTIME_VERSION where the row lists it, else its first),
+    computed with that helper rather than a copy of its rule."""
+    return sorted({_row_version(match, RUNTIME_VERSION) for match in matches})
 
 
 def _listed_versions(matches: list[MatchRange]) -> list[str]:
