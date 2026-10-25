@@ -191,6 +191,7 @@ class Deps:
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     today: Callable[[], str] = _today
+    end_of_run: Callable[[], Sequence[str]] = tuple  # stub (fix round 4 RED): not called yet
 
 
 @dataclass(frozen=True)

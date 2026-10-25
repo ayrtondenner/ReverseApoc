@@ -37,7 +37,7 @@ def _abort() -> dict:
 def _run(event: str = "STOPPED", reason: str = "guardrail") -> dict:
     return {"kind": "run", "run": "night1", "event": event, "reason": reason,
             "detail": "stray paths: tools/x.py", "sessions": 2, "matched": 1,
-            "date": "2026-10-25"}  # fmt: skip
+            "checks_failed": [], "uncommitted": [], "date": "2026-10-25"}  # fmt: skip
 
 
 def test_committed_log_follows_the_schema():
@@ -51,7 +51,15 @@ def test_committed_log_follows_the_schema():
 @pytest.mark.parametrize("record", [_attempt(), _abort(), _run(), _run("STARTED", "start"),
                                     _run("ENDED", "nothing to do")])  # fmt: skip
 def test_schema_accepts_good_records(record):
-    validate_record(record)
+    assert _problem(record) is None
+
+
+def _problem(record) -> str | None:
+    try:
+        validate_record(record)
+    except RecordError as exc:
+        return str(exc)
+    return None
 
 
 def _mutated(make, change):
@@ -74,6 +82,10 @@ BAD = {
     "unknown event": _mutated(_run, lambda r: r.update(event="PAUSED")),
     "reason of another event": _mutated(_run, lambda r: r.update(reason="nothing to do")),
     "stopped without reason": _mutated(_run, lambda r: r.pop("reason")),  # F30
+    "run without checks_failed": _mutated(_run, lambda r: r.pop("checks_failed")),  # L1
+    "checks_failed not a list": _mutated(_run, lambda r: r.update(checks_failed="ninja")),
+    "run without uncommitted": _mutated(_run, lambda r: r.pop("uncommitted")),  # L2
+    "uncommitted not strings": _mutated(_run, lambda r: r.update(uncommitted=[1])),
     "bad start": _mutated(_attempt, lambda r: r.update(start="65552")),
     "bad function": _mutated(_attempt, lambda r: r.update(function="FUN_10010")),
     "unknown exe": _mutated(_attempt, lambda r: r.update(exe="ufo2")),
@@ -131,3 +143,9 @@ def test_schema_accepts_driver_records(tmp_path):
     assert {("attempt", "MATCHED"), ("attempt", "PARTIAL"), ("attempt", "GAVE_UP"),
             ("abort", None), ("run", "STARTED"), ("run", "STOPPED"),
             ("run", "ENDED")} <= kinds  # fmt: skip
+
+
+def test_schema_accepts_an_ended_record_with_failed_checks():
+    record = _run("ENDED", "queue exhausted")
+    record["checks_failed"] = ["ninja verify exit 1", "gate --all exit 1"]
+    assert _problem(record) is None
