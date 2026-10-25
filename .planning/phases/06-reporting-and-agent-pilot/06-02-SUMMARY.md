@@ -14,11 +14,11 @@ provides:
 affects: [06-status-table, 06-gate, 06-progress, 06-driver, 06-06, 06-16]
 
 actuals:
-  tokens: 7575
+  tokens: 7974
   tasks: 3
-  commits: 6
+  commits: 13  # 021a58ba..564b4b5: 6 task commits, the first SUMMARY commit, 6 fix-round-1 commits
 plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: bc84d084ac966b3e82639d31434c3a50450ba792
+plan_head_after: 564b4b513c307d14dd21f162cceec676ab910eb9
 
 tech-stack:
   added: []
@@ -46,7 +46,6 @@ key-files:
     - tests/test_functions.py
 
 key-decisions:
-  - "fileio.py carries only a module docstring: write_atomic is project-original (d4de0d8, WR-03), and no project-original neighbour carries a license header line"
   - "The symbols.csv data-range check runs only when SymbolTable.build is given data ranges (ruling F6); production callers always pass data_ranges(le)"
   - "address_of refuses both the func_ and the D_ placeholder of a renamed address, with the symbols.csv name in the message"
 
@@ -137,7 +136,6 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 
 ## Decisions Made
 
-- fileio.py has a module docstring and no provenance or license line. `_write_atomic` was written in this project (`d4de0d8`, WR-03), not taken from KKND-Decomp. No project-original module carries a header line.
 - The `follows` checks became factories, so `_load`'s `follows(rows, row)` contract is unchanged and no other reader is affected.
 
 ## Deviations from Plan
@@ -164,19 +162,25 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 **3. [Plan text] Task 1 RED is a collection error**
 - **Issue:** As the plan says, RED fails because `reverseapoc.fileio` does not exist (ImportError at collection). `workflow.tdd_mode` is off, so the strict RED-evidence classifier does not apply. The Task 2 and Task 3 REDs fail on assertions.
 
-**4. [Rule 3 - Tooling] Plan ledger not written to the git dir**
+**4. [Plan text] fileio.py has no GPLv3 header line**
+- **Found during:** Task 1 GREEN
+- **Issue:** The plan asked for a "GPLv3 header like its neighbours". No module under tools/reverseapoc carries a license header; the only header lines are the "Derived from ..." provenance lines of modules taken from KKND-Decomp or Theme Hospital.
+- **Fix:** fileio.py has a module docstring and no header line. `_write_atomic` was written in this project (`d4de0d8`, WR-03), not taken from KKND-Decomp, so no provenance line applies. tools/ stays GPLv3 as a whole (docs/legal.md).
+- **Committed in:** `cfb84d4`
+
+**5. [Rule 3 - Tooling] Plan ledger not written to the git dir**
 - **Issue:** The worktree sandbox refused writes to `.git/worktrees/<id>/gsd-plan-head-before-06-02`.
 - **Fix:** `commits:` was measured directly as `git rev-list --count 021a58ba..HEAD` = 6, starting from the dispatch base.
 
 ---
 
-**Total deviations:** 3 orchestrator rulings applied (F6, F22, F2), 1 rule-2 test addition, 3 notes on plan text and tooling.
+**Total deviations:** 3 orchestrator rulings applied (F6, F22, F2), 1 rule-2 test addition, 4 notes on plan text and tooling.
 **Impact on plan:** No scope creep. Behaviour of every committed CSV and generated file is unchanged (the existing suite and the real-LE tests stay green).
 
 ## Issues Encountered
 
 - While checking Task 2's grep scan I mistakenly redirected its output to `C:/Users/Ayrton/Documents/Gitprojects/scan.tmp`, outside both checkouts. It held only the scan text (`tools/reverseapoc/splice.py `). I deleted it right away.
-- `uv run ruff format --check tools tests` reports 31 files that would be reformatted. That was already true before this plan and is outside the done gate (`ruff check`). All files this plan created or changed are formatted.
+- `uv run ruff format --check tools tests` reports files that would be reformatted. Most were unformatted before this plan, and formatting is outside the done gate (`ruff check`). The first pass left one regression: an extra blank line in tests/test_functions.py, which was formatted at base. Fix round 1 removed it (`556620b`). check.py, cli.py, compiler.py and splice.py were already unformatted at base, and `ruff format --diff` gives the same number of changed lines for each at base and at HEAD, so none of the drift comes from lines this plan changed. Every other file this plan touched is formatted.
 - Real-file check on the host: I ran `REVERSEAPOC_ORIG/REVERSEAPOC_WATCOM_DIR/REVERSEAPOC_GHIDRA_EXPORT=<main checkout>` with `uv run pytest tests/test_functions_real.py tests/test_check_real.py tests/test_symbols.py`: 43 passed, 4 skipped (objdiff-cli or ninja not on PATH). The committed symbols.csv files load under the stricter table built from the real LE's data ranges. The container suite in 06-16 re-proves this.
 
 ## User Setup Required
@@ -186,7 +190,7 @@ None - no external service configuration required.
 ## Next Phase Readiness
 
 - Later plans (status table, gate, progress feed, driver) can import `from .fileio import write_atomic`.
-- Remove `splice._write_atomic` one release after this plan (D-41). `tests/test_splice.py:1041/1047` and `test_splice_alias_is_the_same_object` are its only remaining users.
+- Remove `splice._write_atomic` one release after this plan (D-41). Its remaining users are splice.py's own `rebuild` (splice.py:739 `_write_atomic(out_path, result.data)`), `tests/test_splice.py:1041/1047` and `test_splice_alias_is_the_same_object`. When the alias goes, `rebuild` and those tests must be flipped to `write_atomic`.
 
 ## Self-Check: PASSED
 
@@ -198,3 +202,20 @@ None - no external service configuration required.
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
+
+## Fix round 1
+
+Review approved with no Critical or Important findings. Fix base `81da71f`. Each minor and its commit:
+
+| # | Minor | Commit(s) |
+|---|-------|-----------|
+| 1 | tests/test_functions.py had three blank lines before the follows pin, so `ruff format --check` newly flagged a file that was formatted at base. Reformatted. The other touched files that are not formatted (check, cli, compiler, splice) were already unformatted at base, with the same `ruff format --diff` size at base and HEAD. | `556620b` style |
+| 2 | symbols.py's `SymbolTable.build` docstring and a test_symbols.py comment cited "orchestrator ruling F6". Both now state the behaviour: the data-range check runs when the caller passes the LE's data ranges, as check.load_exe and cli._split_inputs always do, and a CSV-only caller passes none. | `43c7178` docs |
+| 3 | symbols.csv could give an address a placeholder-shaped name, which `linker_name` would return and `address_of` would refuse. `SymbolTable.build` now refuses any symbols.csv name that fullmatches `func_XXXXXXXX_` or `_D_XXXXXXXX`, with the address in the error. RED first: `test_a_placeholder_shaped_symbols_csv_name_is_refused[own-func\|other-func\|own-data\|other-data]` failed with DID NOT RAISE, then passed after the fix. The real-LE tests still pass on the committed symbols.csv (16 passed, 4 tool skips). | `6d02177` test, `ccb09fe` fix |
+| 4 | `SYMBOL_KIND_FUNC = SYMBOL_KINDS[0]` and `SYMBOL_KIND_DATA = SYMBOL_KINDS[1]` depend on tuple order. Added the pin `test_symbol_kind_constants_pin_the_order_of_symbol_kinds`; it fails when SYMBOL_KINDS is reordered by hand (checked, then restored with `git checkout`). | `1decc86` test |
+| 5 | fileio.py's module docstring overstated the guarantee. It now says the target is replaced whole by os.replace or left untouched, nothing is fsynced, and a killed process can leave its `.<name>.<hex>.tmp` file. | `564b4b5` docs |
+| 6 | SUMMARY corrections: the formatting claim (Issues Encountered), the alias's remaining users including splice.py:739 `rebuild` (Next Phase Readiness), and the GPLv3-header decision moved from Decisions to Deviations (item 4). | this SUMMARY commit |
+
+Recorded note, not fixed (reviewer minor 6): no unit test asserts that check.load_exe and cli._split_inputs pass `data_ranges(le)`. The real-LE tests cover those paths (test_functions_real builds the table with the real LE's ranges).
+
+After the round: `uv run pytest -q` gives 1435 passed / 216 skipped, and `uv run ruff check .` is clean.
