@@ -17,16 +17,19 @@ from relocpair import (
     GOOD_OURS,
     GOOD_ROW,
     LOAD_FIELD,
+    absolute,
+    call,
     game_row,
     good_original,
     good_segment,
     le_off32,
     original,
+    our_module,
     our_segment,
     table,
 )
 from reverseapoc import land as land_module
-from reverseapoc.check import Defined
+from reverseapoc.check import ExeInputs, checked_functions
 from reverseapoc.land import LandedFunction, LandError, LandResult, build_patch, land, write_landed
 from reverseapoc.le import LE
 from reverseapoc.relocs import RelocResult, check_function
@@ -257,15 +260,20 @@ def test_land_refuses_a_verdict_without_its_row_and_bytes():
              expected_sha1=sha1(orig.data))  # fmt: skip
 
 
-def test_land_accepts_the_producer_shape():
-    """check.py's path: one Defined, its check_function verdict, LandedFunction(d.row, d.ours)."""
+def test_land_accepts_the_producer_shape(tmp_path):
+    """check.py's own path (as _land_exe runs it): check.checked_functions, which goes through
+    check.with_relocs, then LandedFunction(d.row, d.ours, reloc) for each ok verdict."""
     orig = good_original()
-    d = Defined(GOOD_ROW, "func_00010000_", good_segment(), 0, len(GOOD_OURS))
-    reloc = check_function(
-        d.segment, off=d.off, size=d.size, row=d.row, flat=orig.flat, fixups=orig.fixups,
-        symbols=table(d.row),
+    (target,) = load_manifest(write_manifest(tmp_path / "m.toml", {"SYNTH.EXE": orig.data}))
+    exe = ExeInputs(
+        target=target, stem="synth", le=orig.le, flat=orig.flat, fixups=tuple(orig.fixups),
+        rows=(GOOD_ROW,), units=(), symbols=table(GOOD_ROW), units_path=tmp_path / "units.csv",
     )  # fmt: skip
-    result = land(orig.le, [LandedFunction(d.row, d.ours, reloc)], expected_sha1=sha1(orig.data))
+    module = our_module(GOOD_OURS, [call(1, 1), absolute(6, 2)],
+                        ["func_00010010_", "_D_00020004"])  # fmt: skip
+    ((d, reloc),) = checked_functions(module, [GOOD_ROW], exe)
+    assert reloc.ok, reloc.problems
+    result = land(orig.le, [LandedFunction(d.row, d.ours, reloc)], expected_sha1=target.sha1)
     assert result.ok, result.format()
     assert result.landed == (GOOD_ROW.start,)
 
