@@ -9,17 +9,25 @@ subscription login (D-06). `--settings` and `--append-system-prompt-file` are re
 repository root, so the driver runs the session with `cwd` set to it (ruling F11).
 
 `goal_prompt` is the /goal prompt for one claim (D-07). `run_session` runs the argv, saves every
-stdout line as it arrives to the attempt's transcript.jsonl and parses it with streamjson.
+stdout line as it arrives to the attempt's transcript.jsonl and parses it with streamjson. At
+the 30-minute wall clock it kills the whole process tree with `kill_tree` (Pitfall 7) and
+reports `timed_out`; streamjson.classify counts that as an attempt.
 """
 
 from __future__ import annotations
 
+import ntpath
 import os
+import queue
 import re
+import signal
 import subprocess
+import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import IO
 
 from .hooks import ATTEMPT_NAME, ATTEMPT_PREFIX
 from .streamjson import EXPECTED_TOOLS, parse_line
@@ -28,6 +36,12 @@ MODEL = "claude-opus-5-5"  # D-35, the literal id
 MAX_TURNS = 40  # D-07
 MAX_BUDGET_USD = 5  # D-06, a runaway guard
 MAX_CHECK_RUNS = 25  # D-07's /goal clause
+TIMEOUT_S = 30 * 60  # D-07's wall clock per session
+_POLL_S = 1.0  # how often the reader looks at the clock while no line comes
+_DRAIN_S = 5.0  # after a kill, how long to wait for each line the dying tree still wrote
+_REAP_S = 10.0  # after a kill, how long to wait for the exit code
+_TASKKILL_TIMEOUT_S = 30
+_EOF = object()  # the reader's end-of-stdout marker
 SETTINGS = "config/driver/claude-settings.json"  # repo-relative (F11)
 SKILL = ".claude/skills/watcom-decomp/SKILL.md"  # repo-relative (F11)
 EXES = ("ufo2p", "tacp")
@@ -99,37 +113,156 @@ class SessionResult:
     transcript: Path
 
 
+def _taskkill() -> str:
+    """taskkill.exe by its System32 path, so no PATH entry can stand in for it."""
+    root = os.environ.get("SystemRoot") or os.environ.get("SYSTEMROOT") or r"C:\Windows"
+    return ntpath.join(root, "System32", "taskkill.exe")
+
+
+def kill_tree(
+    pid: int,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    windows: bool = os.name == "nt",
+) -> None:
+    """Kill process `pid` and every process under it (Pitfall 7: claude, the wrapper, any
+    `docker compose run`). Windows: `taskkill /T /F /PID <pid>` as an argv list, never a shell.
+    POSIX: SIGKILL to the process group `pid` leads (run_session starts a new session)."""
+    if windows:
+        run(
+            [_taskkill(), "/T", "/F", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=_TASKKILL_TIMEOUT_S,
+            check=False,
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass  # the whole group has already exited
+
+
+def _group_options() -> dict:
+    """Popen options that make the session the root of its own process group, so kill_tree
+    reaches everything it starts."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+    return {"start_new_session": True}
+
+
+def _pump(stream: IO[bytes], lines: queue.SimpleQueue) -> None:
+    """Move raw lines from the session's stdout into `lines`, then the end marker."""
+    try:
+        for raw in iter(stream.readline, b""):
+            lines.put(raw)
+    finally:
+        lines.put(_EOF)
+
+
+class _Reader:
+    """The session's stdout as a queue of raw lines, so the caller can stop waiting at the
+    deadline even when no line comes."""
+
+    def __init__(self, stream: IO[bytes]) -> None:
+        self._stream = stream
+        self._lines: queue.SimpleQueue = queue.SimpleQueue()
+        self._thread = threading.Thread(target=_pump, args=(stream, self._lines), daemon=True)
+        self._thread.start()
+
+    def get(self, timeout: float) -> bytes | object | None:
+        """The next raw line, _EOF at the end, or None when `timeout` passes first."""
+        try:
+            return self._lines.get(timeout=max(timeout, 0.0))
+        except queue.Empty:
+            return None
+
+    def close(self) -> None:
+        self._thread.join(_DRAIN_S)
+        if not self._thread.is_alive():
+            self._stream.close()
+
+
+class _Transcript:
+    """Appends raw lines to the transcript and parses each one."""
+
+    def __init__(self, log: IO[bytes]) -> None:
+        self._log = log
+        self.events: list[dict] = []
+        self.malformed = 0
+
+    def add(self, raw: bytes) -> None:
+        self._log.write(raw)
+        self._log.flush()
+        if not raw.strip():
+            return
+        event = parse_line(raw)
+        if event is None:
+            self.malformed += 1
+            return
+        self.events.append(event)
+
+
+def _read_until(reader: _Reader, record: _Transcript, deadline: float, clock) -> bool:
+    """Record lines until the end of stdout (True) or the deadline (False)."""
+    while (remaining := deadline - clock()) > 0:
+        raw = reader.get(min(remaining, _POLL_S))
+        if raw is _EOF:
+            return True
+        if raw is not None:
+            record.add(raw)
+    return False
+
+
+def _drain(reader: _Reader, record: _Transcript) -> None:
+    """After a kill, keep what the dying tree still wrote, waiting at most _DRAIN_S per line."""
+    while (raw := reader.get(_DRAIN_S)) not in (None, _EOF):
+        record.add(raw)
+
+
+def _reap(proc: subprocess.Popen, timeout: float) -> int | None:
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return None
+
+
 def run_session(
     argv: Sequence[str],
     *,
     cwd: Path,
     env: Mapping[str, str],
     transcript: Path,
+    timeout_s: float = TIMEOUT_S,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
+    clock: Callable[[], float] = time.monotonic,
 ) -> SessionResult:
-    """Run `argv` in `cwd` with exactly `env`, appending each raw stdout line to `transcript`
-    as it arrives and parsing it (a malformed line is counted, never fatal)."""
+    """Run `argv` in `cwd` with exactly `env` and no stdin, as the root of a new process group.
+    Each raw stdout line is appended to `transcript` (opened for append) as it arrives and
+    parsed; a malformed line is counted, never fatal. When `timeout_s` passes on `clock`
+    (monotonic) before the session ends, the whole tree is killed and the result says
+    `timed_out` (D-07's 30-minute wall clock). stderr is inherited, so the driver's console
+    shows it."""
     transcript.parent.mkdir(parents=True, exist_ok=True)
-    events: list[dict] = []
-    malformed = 0
+    deadline = clock() + timeout_s
     proc = popen(
         list(argv),
         cwd=os.fspath(cwd),
         env=dict(env),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
+        **_group_options(),
     )
+    reader = _Reader(proc.stdout)
     with transcript.open("ab") as log:
-        for raw in iter(proc.stdout.readline, b""):
-            log.write(raw)
-            log.flush()
-            if not raw.strip():
-                continue
-            event = parse_line(raw)
-            if event is None:
-                malformed += 1
-                continue
-            events.append(event)
-    proc.stdout.close()
-    exit_code = proc.wait()
-    return SessionResult(tuple(events), exit_code, False, malformed, transcript)
+        record = _Transcript(log)
+        ended = _read_until(reader, record, deadline, clock)
+        exit_code = _reap(proc, max(deadline - clock(), 0.0)) if ended else None
+        timed_out = exit_code is None
+        if timed_out:
+            kill_tree(proc.pid)
+            _drain(reader, record)
+            exit_code = _reap(proc, _REAP_S)
+    reader.close()
+    return SessionResult(tuple(record.events), exit_code, timed_out, record.malformed, transcript)
