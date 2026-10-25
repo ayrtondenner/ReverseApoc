@@ -261,6 +261,36 @@ None.
 `ExeProgress.uncovered`) and run `python -I tools/progress.py --out _site --report <path>` in Pages.
 The tick rate (OpenApoc #997) was not touched by this plan.
 
+## Fix round 1 (FIX_BASE 6f9c066, review-06-18.md: approved, minors only)
+
+| # | Minor | Change | Test | Commits |
+|---|---|---|---|---|
+| 1 | Pre-write guard only loaded progress.py | `progress.derive(config, status_texts=...)` reads status.csv text in memory. gate's `_write_tables` derives the merged tables before any write, so a table progress.py refuses exits 2 with nothing written | `test_gate_refuses_tables_progress_cannot_derive` (RED: status.csv was written first; RED_EVIDENCE_OK) | `8188945` RED, `5364ffa` GREEN |
+| 2 | gate.py docstring claimed "writes nothing" on every tool error | Docstring now gives the real contract: exit 2 writes nothing, except an OS error after a table was written (a second status.csv, or the feed), whose message names every written table | docstring only | `5364ffa` |
+| 3 | Feed rewrite not reported | `GateResult.feed`; text line `wrote decomphub.progress.json -> <path> (commit it with status.csv)`; `--json` key `feed` (null when nothing was written) | `test_gate_output_names_the_rewritten_feed`, `test_gate_output_has_no_feed_when_nothing_was_written` | `8188945` RED, `5364ffa` GREEN |
+| 4 | Sole-writer scan missed tools/progress.py | `test_only_gate_writes_the_table` also scans tools/progress.py | test-only, passes (progress.py has no write_status) | `b96b761` |
+| 5 | Five dead docstrings in tests/test_progress.py | Docstrings moved above `load_progress()` | test-only | `b96b761` |
+| 6 | UNASSIGNED_UNIT branch untested | Synthetic row with an empty unit cell lands in `tacp/unassigned`, bytes in the totals | `test_report_puts_rows_without_a_unit_in_an_unassigned_unit` (coverage of an existing branch, passes) | `b96b761` |
+| 7 | Report item `address` semantics | Comment in `_item`: linear address, not objdiff's section-relative offset | comment only | `5364ffa` |
+| 8 | Hooks do not cover the feed | Recorded only, as a known limit (below) | none | this commit |
+
+Files outside the plan's files_modified: `tests/test_status.py` (minor 4, at the coordinator's request).
+
+**Known limit (minor 8).** The always-on hook layer protects orig/, asm/, build/, the two TOML
+manifests and *.sha1 (hooks.py `_PROTECTED_DIRS` / `_PROTECTED_FILES`). It protects neither
+decomphub.progress.json nor status.csv. In a matching session, `hooks.matching_write_allowed`
+(hooks.py:546) allows only `src/<exe>/<unit>.c`, a new untracked `include/<name>.h` and the
+attempt's notes.md, so an agent cannot write the feed there; I read the function to confirm
+this. A hand edit outside a matching session is caught only by
+`tests/test_drift.py::test_committed_feed_is_derived` in CI, and the 06-23 driver commits gate's
+copy. A follow-up in 06-23 or later could add the feed to the always layer.
+
+**Fix round 1 verification (host):**
+- Targeted run (`test_gate`, `test_drift`, `test_progress`, `test_report_shape`, `test_status`): 148 passed.
+- Full suite: 2123 passed, 224 skipped. The skips are the same pre-existing real-file skips.
+- `uv run ruff check .`: All checks passed.
+- The committed feed is unchanged (the drift test passes).
+
 ## Self-Check: PASSED
 
 - Files: tools/progress.py, decomphub.progress.json, tests/test_progress.py, tests/test_report_shape.py exist.
