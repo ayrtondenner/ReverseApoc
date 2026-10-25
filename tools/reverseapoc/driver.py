@@ -2391,6 +2391,16 @@ def _refs(probe: _Night) -> dict[str, str]:
     return {"HEAD": head, **refs}
 
 
+def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
+                   attempt_dir: Path, checks: _Checks) -> None:  # fmt: skip
+    """The stream checks; an error in them is a FAIL line after the lines so far (fix round
+    2: the session ran, so the canary reports, it never refuses)."""
+    try:
+        _canary_checks(options, events, attempt_dir, checks)
+    except Exception as exc:  # noqa: BLE001 - reported, never a PASS
+        checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
+
+
 def run_canary(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
@@ -2400,7 +2410,9 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     unknown event type carries an error, `git status --porcelain` is clean and
     nothing the night's audit pins or fingerprints changed, HEAD and the refs did not move,
     and the attempt's containers were removed (fix round 1). The tree is left as the session
-    left it, for inspection. Exit 0 PASS, 1 FAIL."""
+    left it, for inspection. Exit 0 PASS, 1 FAIL (any error once the session started is a FAIL
+    line, fix round 2); a refusal before the session (an existing attempt dir) raises Refused,
+    exit 2."""
     repo = Path(options.repo)
     attempt_dir = canary_attempt_dir(options)
     if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
@@ -2423,17 +2435,20 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     except Exception as exc:  # a crash is a FAIL with the tree still measured
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
-        _canary_checks(options, result.events, attempt_dir, checks)
+        _after_session(options, seams, result.events, attempt_dir, checks)
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
         checks.add(False, f"containers not removed: {type(exc).__name__}: {exc}")
-    _tree_checks(probe, before, checks)
-    refs_after = _refs(probe)
-    moved = sorted(name for name in refs_before.keys() | refs_after.keys()
-                   if refs_before.get(name) != refs_after.get(name))  # fmt: skip
-    checks.add(not moved, "HEAD and refs " + (f"moved: {_listed(moved)}" if moved
-                                              else "did not move"))  # fmt: skip
+    try:  # fix round 2: the session ran, so an error here is a FAIL (exit 1), never REFUSED
+        _tree_checks(probe, before, checks)
+        refs_after = _refs(probe)
+        moved = sorted(name for name in refs_before.keys() | refs_after.keys()
+                       if refs_before.get(name) != refs_after.get(name))  # fmt: skip
+        checks.add(not moved, "HEAD and refs " + (f"moved: {_listed(moved)}" if moved
+                                                  else "did not move"))  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - reported with the lines gathered so far
+        checks.add(False, f"measuring the tree failed: {type(exc).__name__}: {exc}")
     verdict = "PASS" if checks.ok else "FAIL"
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
