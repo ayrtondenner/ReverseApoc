@@ -42,14 +42,25 @@ def _inputs(**overrides):
         "draft": "void func_00010010(void)\n{\n}\n",
         "idioms": "## Known idioms\n\nMade-up idiom text.\n",
         "notes": "attempt 1: PARTIAL 80%, the made-up loop order differs\n",
-        "lookalikes": (Lookalike("func_00010030", 0x10030, 0.75, "void func_00010030(void)\n{\n}"),),
+        "lookalikes": (
+            Lookalike("func_00010030", 0x10030, 0.75, "void func_00010030(void)\n{\n}"),
+        ),
     }
     inputs.update(overrides)
     return inputs
 
 
 def _headings(text: str) -> list[str]:
-    return [line[3:] for line in text.splitlines() if line.startswith("## ")]
+    """The `## ` headings outside fenced blocks (fenced inputs may hold headings of their own)."""
+    headings, fence = [], None
+    for line in text.splitlines():
+        run = len(line) - len(line.lstrip("`"))
+        if run >= 3 and (fence is None or (run >= fence and not line[run:].strip())):
+            fence = run if fence is None else None
+            continue
+        if fence is None and line.startswith("## "):
+            headings.append(line[3:])
+    return headings
 
 
 def test_pack_has_every_section_in_order():
