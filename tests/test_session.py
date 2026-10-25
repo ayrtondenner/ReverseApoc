@@ -5,11 +5,16 @@ stand-in that replays a synthetic stream fixture; no test ever starts the real c
 from __future__ import annotations
 
 import ctypes
+import io
+import json
 import os
+import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc.session import build_argv, goal_prompt, kill_tree, run_session
@@ -219,3 +224,112 @@ def test_nonzero_exit_without_result_is_transient(tmp_path):
     assert result.timed_out is False
     assert [event.get("type") for event in result.events] == ["system", "assistant"]
     assert classify(result.events, result.exit_code, result.timed_out) is Disposition.TRANSIENT
+
+
+# Fix round 1, I1: an exception mid-read never leaves the session tree alive, and a line the
+# JSON parser cannot handle (deep nesting) is malformed, never fatal.
+
+_DEEP_LINE = b"[" * 100_000 + b"\n"
+_INTERRUPT_AFTER_S = 3.0  # long enough for fakeclaude to report its child
+
+
+class _FakePopen:
+    """A finished session in place of subprocess.Popen: `lines` on stdout, exit `code`."""
+
+    def __init__(self, lines: list[bytes], code: int = 0) -> None:
+        self.stdout = io.BytesIO(b"".join(lines))
+        self.code = code
+        self.pid = 0
+        self.argv: list[str] | None = None
+        self.kwargs: dict = {}
+
+    def __call__(self, argv, **kwargs) -> _FakePopen:
+        self.argv, self.kwargs = list(argv), kwargs
+        return self
+
+    def poll(self) -> int:
+        return self.code
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.code
+
+
+def test_run_session_through_an_injected_popen_counts_a_deep_line_as_malformed(tmp_path):
+    lines = (STREAMS / "success.jsonl").read_bytes().splitlines(keepends=True)
+    fake = _FakePopen([lines[0], _DEEP_LINE, *lines[1:]])
+    try:
+        result = run_session(
+            ["claude-stand-in"],
+            cwd=tmp_path,
+            env={},
+            transcript=tmp_path / "attempt" / "transcript.jsonl",
+            popen=fake,
+        )
+    except RecursionError as exc:
+        pytest.fail(f"a deeply nested line was fatal: {exc!r}")
+    assert fake.argv == ["claude-stand-in"]
+    assert fake.kwargs["cwd"] == os.fspath(tmp_path)
+    assert fake.kwargs["stdin"] is subprocess.DEVNULL
+    assert result.malformed == 1
+    assert result.exit_code == 0
+    assert [event["type"] for event in result.events] == ["system", "assistant", "user", "result"]
+
+
+def _child_pid(transcript: Path) -> int | None:
+    for line in transcript.read_bytes().splitlines():
+        if b'"fake_child"' in line:
+            return json.loads(line)["pid"]
+    return None
+
+
+def _kill_pid(pid: int) -> None:
+    """Test cleanup only: end one process whatever the code under test did."""
+    if not _alive(pid):
+        return
+    if sys.platform == "win32":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], capture_output=True, check=False)
+        return
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+
+
+def test_an_exception_mid_read_kills_the_tree_and_propagates(tmp_path):
+    procs: list[subprocess.Popen] = []
+
+    def popen(argv, **kwargs) -> subprocess.Popen:
+        procs.append(subprocess.Popen(argv, **kwargs))
+        return procs[-1]
+
+    start = time.monotonic()
+
+    def clock() -> float:
+        now = time.monotonic()
+        if now - start > _INTERRUPT_AFTER_S:
+            raise KeyboardInterrupt
+        return now
+
+    transcript = tmp_path / "attempt" / "transcript.jsonl"
+    child = None
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            run_session(
+                _fake("--scenario", "no_result", "--spawn-child", "--sleep", "30"),
+                cwd=tmp_path,
+                env=_env(),
+                transcript=transcript,
+                timeout_s=60,
+                popen=popen,
+                clock=clock,
+            )
+        child = _child_pid(transcript)
+        assert child is not None, transcript.read_text()
+        assert _gone(procs[0].pid), "the session root outlived the exception"
+        assert _gone(child), f"child {child} outlived the exception"
+    finally:
+        if child is not None:
+            _kill_pid(child)
+        for proc in procs:
+            _kill_pid(proc.pid)
+            proc.wait()

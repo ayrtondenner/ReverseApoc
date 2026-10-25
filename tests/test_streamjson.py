@@ -260,3 +260,12 @@ def test_malformed_lines_are_counted():
 @pytest.mark.parametrize("line", ["[1, 2]", "42", '"text"', "null", "{", b"\xff\xfe"])
 def test_parse_line_refuses_anything_but_an_object(line):
     assert parse_line(line) is None
+
+
+def test_parse_line_counts_deep_nesting_as_malformed():
+    """Fix round 1 I1: json raises RecursionError on deep nesting; that is a malformed line."""
+    try:
+        got = parse_line("[" * 100_000)
+    except RecursionError as exc:
+        got = exc
+    assert got is None
