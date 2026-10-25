@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, attempt, fetch-watcom, install-watcom, check-watcom."""
+gate, context, attempt, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -28,6 +28,7 @@ from .check import (
     write_target,
 )
 from .compiler import DEFAULT_LOG, CompilerError, compile_source
+from .contextpack import ContextPackError, write_pack
 from .cppscan import CppScanError
 from .cppscan import scan as cpp_scan
 from .discover import DiscoverError, discover
@@ -1143,10 +1144,49 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
             raise AttemptError(f"accepts only: {attempt.forms_text()}")
         if args.attempt_command == "check":
             return attempt.cmd_check(sweep=args.sweep)
-        raise AttemptError(f"attempt {args.attempt_command} is not available yet")
+        if args.attempt_command == "asm":
+            return attempt.cmd_asm(args.name)
+        return attempt.cmd_context()
     except _ERRORS as exc:
         print(f"reverseapoc attempt: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
+
+
+def _cmd_context(args: argparse.Namespace) -> int:
+    roots = attempt.ROOTS
+    data = attempt.load_exe(args.exe, orig=args.orig, manifest=args.manifest, config=args.config,
+                            functions=args.functions, symbols=args.symbols)  # fmt: skip
+    row = attempt.resolve_row(data, args.function)
+    out = args.out
+    if out is None:
+        driver = Path(roots.repo).joinpath(*attempt.DRIVER_PARTS)
+        out = driver / attempt.MANUAL_RUN / data.stem / attempt.placeholder(row)
+    pack = attempt.make_pack(data, row, src=args.src, config=args.config, asm_root=args.asm,
+                             roots=roots)  # fmt: skip
+    path = write_pack(pack, out, root=roots.repo)
+    if args.json:
+        print(json.dumps({"path": str(path), **pack.to_json()}, indent=2))
+    else:
+        cut = ", ".join(pack.truncated) or "nothing"
+        print(f"wrote {path} ({pack.pack_bytes} bytes; cut: {cut})")
+    return 0
+
+
+def _add_context_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "context",
+        help="write the D-13 context pack of one function to build/driver/ (gitignored; "
+        "default build/driver/manual/<exe>/<func>/context.md)",
+    )
+    _add_split_inputs(p)
+    p.add_argument("function", metavar="FUNC", help="func_XXXXXXXX or the row's symbols.csv name")
+    p.add_argument("--src", type=Path, default=DEFAULT_SRC, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--asm", type=Path, default=DEFAULT_ASM, help="listing root; " + default)
+    p.add_argument("--out", type=Path, help="the pack's directory, under build/driver/")
+    p.add_argument("--json", action="store_true", help="print the path, size and cuts as JSON")
+    p.set_defaults(func=_cmd_context)
 
 
 def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
@@ -1282,6 +1322,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
+    _add_context_command(sub)
     _add_attempt_command(sub)
     _add_watcom_commands(sub)
     return parser
@@ -1316,6 +1357,7 @@ _ERRORS = (
     SpliceError,
     StatusError,
     AttemptError,
+    ContextPackError,
     OSError,
 )
 
