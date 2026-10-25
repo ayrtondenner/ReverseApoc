@@ -1012,3 +1012,66 @@ def test_a_refused_quarantine_never_skips_restoration(tmp_path):
     for name in ("tools/keep.py", ".git/info/exclude", "tools/x.py"):
         assert f"refused {name}:" in detail, name
     assert list(outside.iterdir()) == []
+
+
+# ---- Fix round 1 (review-06-23, fixround-06-23-r1) ----
+
+
+def _run_contained(night: Night, **deps) -> DriveReport:
+    """drive() must end every night with a report: an escaping exception fails the test."""
+    try:
+        return night.run(**deps)
+    except Exception as exc:  # noqa: BLE001 - the escape is the failure under test
+        pytest.fail(f"drive() let {type(exc).__name__} escape: {exc}")
+
+
+def _assert_stopped_error_and_only_the_log(night: Night, report, needle: str) -> None:
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert needle in report.detail
+    assert night.records()[-1]["event"] == "STOPPED"
+    assert night.records()[-1]["reason"] == "error"
+    assert night.commits() in ([], [CHORE])
+    if night.commits():
+        assert night.commit_files(CHORE) == [LOG]
+
+
+def test_a_raising_queue_ends_the_night_with_a_stopped_record(tmp_path):
+    """I1: an exception outside an attempt is a STOPPED error, not an escape."""
+    night = Night(tmp_path, sessions=[Sess()])
+
+    def queue(difficult):
+        yield PICK
+        raise RuntimeError("made-up picker failure")
+
+    report = _run_contained(night, queue=queue)
+    _assert_stopped_error_and_only_the_log(night, report, "made-up picker failure")
+
+
+def test_a_corrupt_difficult_list_ends_the_night_with_a_stopped_record(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()])
+    _write(night.repo / "build" / "driver" / "difficult.json", "not json\n")
+    report = _run_contained(night)
+    _assert_stopped_error_and_only_the_log(night, report, "DriverError")
+    assert night.launched == []
+
+
+def test_a_failing_difficult_save_ends_the_night_with_a_stopped_record(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))] + [Sess()] * 2)
+    (night.repo / "build" / "driver" / "difficult.json").mkdir(parents=True)  # unwritable
+    report = _run_contained(night)
+    _assert_stopped_error_and_only_the_log(night, report, "difficult.json")
+    assert len(night.launched) == 3
+
+
+def test_an_interrupt_is_contained_recorded_and_re_raised(tmp_path):
+    """Minor 8: Ctrl-C mid-session: contain first, record STOPPED interrupted, re-raise."""
+    sess = Sess(raises=KeyboardInterrupt(), files=(("tools/x.py", "# made up\n"),))
+    night = Night(tmp_path, sessions=[sess])
+    with pytest.raises(KeyboardInterrupt):
+        night.run()
+    last = night.records()[-1]
+    assert (last["event"], last["reason"]) == ("STOPPED", "interrupted")
+    assert "tools/x.py" in last["detail"]
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    assert night.commits() == []
