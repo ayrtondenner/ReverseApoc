@@ -42,7 +42,8 @@ human_verification:
 
 **Phase Goal:** The matching pipeline works end to end: functions are found and grouped into units, C compiles with the identified compiler, objdiff and an independent relocation check compare it to the target cut from the LE, and one hand-matched function per EXE splices back with both EXEs still SHA-1 identical.
 **Verified:** 2026-10-24
-**Status:** human_needed
+**Status:** passed
+**Owner sign-off:** the 2026-10-24 UAT passed 5/5 ([05-UAT.md](05-UAT.md), commit c988bed). The owner accepted the 05-08 deviation through the frontmatter `overrides:` entry (accepted_at 2026-10-24T19:56:37Z, commit 4491f04), and the frontmatter was set to `passed` in commit f96343f. Plan 06-21 updated this body line on 2026-10-25 to match (DI-28, D-41). The UAT settled the frontmatter's `human_verification` items, which were still open at verification time.
 **Re-verification:** No, initial verification
 
 ## Evidence I produced myself (at HEAD 50bc3d0, after the review fix wave)
