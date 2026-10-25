@@ -89,7 +89,7 @@ def _git(repo: Path, env: dict, *args: str) -> str:
 def _make_repo(tmp_path: Path, env: dict, *, unit: bool) -> Path:
     repo = tmp_path / "repo"
     files = {
-        ".gitignore": "build/\n.venv/\n.claude/settings.local.json\n",
+        ".gitignore": "build/\n.venv/\n.claude/settings.local.json\n__pycache__/\n",
         "include/common.h": "/* made up */\n",
         f"config/{EXE}/status.csv": STATUS_HEAD,
         "config/tacp/status.csv": STATUS_HEAD,
@@ -111,7 +111,9 @@ def _make_repo(tmp_path: Path, env: dict, *, unit: bool) -> Path:
 class Sess:
     """One scripted session: the stream fixture fakeclaude replays, the repo-relative file it
     writes (`--write`), extra files the "agent" leaves (written after the stream), the
-    checks.jsonl lines the wrapper would have logged, a wall-clock timeout, or an exception."""
+    checks.jsonl lines the wrapper would have logged, a wall-clock timeout, or an exception
+    (raised after `files` are written). `link` plants (repo-relative link, target directory):
+    a junction on Windows (no privilege needed), a symlink elsewhere."""
 
     scenario: str = "success"
     write: str | None = UNIT_REL
@@ -119,6 +121,18 @@ class Sess:
     checks: tuple[dict, ...] = ()
     timeout: bool = False
     raises: BaseException | None = None
+    link: tuple[str, Path] | None = None
+
+
+def _plant_dir_link(link: Path, target: Path) -> None:
+    """A directory link that needs no privilege: a junction on Windows, a symlink elsewhere."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(target), str(link))
+    else:
+        link.symlink_to(target, target_is_directory=True)
 
 
 @dataclass
@@ -178,6 +192,7 @@ class Night:
         self.sleeps: list[float] = []
         self.now = 1000.0
         self.inject: list[str] = []
+        self.on_git = None  # called with each git argv before it runs
         self._current = Sess()
         self._git = git_runner(self.repo, env=self.env)
 
@@ -205,12 +220,16 @@ class Night:
         self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
         self.now += 45.0
         if spec.raises is not None:
+            for rel, text in spec.files:
+                _write(Path(cwd) / rel, text)
             raise spec.raises
         extra = {"clock": _JumpClock()} if spec.timeout else {}
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
                              **extra)  # fmt: skip
         for rel, text in spec.files:
             _write(Path(cwd) / rel, text)
+        if spec.link is not None:
+            _plant_dir_link(Path(cwd) / spec.link[0], spec.link[1])
         attempt_dir = Path(env[attempt.DIR_ENV])
         for line in spec.checks:
             _write(attempt_dir / line["source"], f"/* made-up C of check {line['n']} */\n")
@@ -258,6 +277,8 @@ class Night:
         `status` also reports the made-up untracked entries in `self.inject` (a name NTFS
         cannot hold, such as `include/*.h`, can only reach the driver this way)."""
         self.git_calls.append(list(args))
+        if self.on_git is not None:
+            self.on_git(list(args))
         done = self._git(args)
         if "status" in args and self.launched and self.inject:
             extra = b"".join(f"?? {path}\0".encode() for path in self.inject)
@@ -857,3 +878,111 @@ def test_a_guardrail_stop_keeps_the_drivers_own_pending_rows(tmp_path):
     assert (report.event, report.reason) == ("STOPPED", "guardrail")
     status = (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8")
     assert status.startswith(STATUS_HEAD) and ",partial," in status
+
+
+# ---- Security rulings, third pass (06-23) ----
+
+QUARANTINE_REL = f"build/driver/{RUN}/quarantine"
+
+
+def test_the_quarantine_exists_before_any_session(tmp_path):
+    night = Night(tmp_path, picks=())
+    night.run()
+    assert night.quarantine.is_dir()
+
+
+def test_a_linked_quarantine_component_stops_and_writes_nothing(tmp_path):
+    """HIGH: a link planted inside the quarantine (a junction on Windows, a symlink elsewhere)
+    is refused before any containment write; nothing lands outside."""
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sess = Sess(write="tools/x.py", link=(f"{QUARANTINE_REL}/tools", outside))
+    night = Night(tmp_path, sessions=[sess])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert "link" in report.detail
+    assert list(outside.iterdir()) == []
+
+
+def test_a_symlinked_quarantine_at_run_start_stops_before_any_session(tmp_path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py")])
+    link = night.quarantine
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to(outside, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation needs privileges on this host")
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert night.launched == []
+    assert list(outside.iterdir()) == []
+
+
+def test_a_quarantined_file_is_never_overwritten(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py")])
+    _write(night.quarantine / "tools" / "x.py", "earlier evidence\n")
+    night.run()
+    assert (night.quarantine / "tools" / "x.py").read_text(encoding="utf-8") == (
+        "earlier evidence\n"
+    )
+    assert (night.quarantine / "tools" / "x.py.1").is_file()
+
+
+def test_a_pinned_change_after_containment_is_reported(tmp_path):
+    """The pinned snapshot is taken again after containment; a path that still differs is
+    named in the STOPPED record."""
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py",
+                                           files=(("tools/keep.py", "# changed\n"),))])  # fmt: skip
+    exclude = night.repo / ".git" / "info" / "exclude"
+
+    def late_write(args):
+        if "--worktree" in args:  # containment is restoring: something writes again
+            _write(exclude, "late change\n")
+
+    night.on_git = late_write
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert "still changed after containment: .git/info/exclude" in report.detail
+
+
+@pytest.mark.parametrize("rel", [".git/info/exclude", ".git/info/attributes",
+                                 ".venv/sitecustomize.py",
+                                 ".venv/Lib/site-packages/usercustomize.py"])  # fmt: skip
+def test_more_pinned_paths_stop_the_night(tmp_path, rel):
+    night = Night(tmp_path, sessions=[Sess(write=rel)])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert rel in report.detail
+
+
+@pytest.mark.parametrize("rel", [".venv/Lib/site-packages/made_up/__init__.py",
+                                 "tools/__pycache__/keep.cpython-314.pyc"])  # fmt: skip
+def test_a_fingerprint_change_stops_the_night(tmp_path, rel):
+    night = Night(tmp_path, sessions=[Sess(write=rel)])
+    (night.repo / ".venv" / "Lib" / "site-packages").mkdir(parents=True)
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert rel in report.detail
+
+
+def test_a_pycache_under_build_is_not_fingerprinted(tmp_path):
+    rel = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/__pycache__/x.pyc"
+    night = Night(tmp_path, sessions=[Sess(write=rel)])
+    report = night.run(config={"attempts_per_function": 1})
+    assert report.event == "ENDED"
+
+
+def test_a_raising_session_has_its_strays_contained(tmp_path):
+    """MEDIUM: a session that raises is measured and contained before the ERROR stop."""
+    files = (("tools/x.py", "# made up\n"), (".git/info/exclude", "made up\n"))
+    sess = Sess(raises=RuntimeError("made-up crash"), files=files)
+    night = Night(tmp_path, sessions=[sess])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert "made-up crash" in report.detail
+    assert "tools/x.py" in report.detail and ".git/info/exclude" in report.detail
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    assert (night.quarantine / ".git" / "info" / "exclude").is_file()
