@@ -12,7 +12,7 @@ provides:
 affects: [06-27, pilot-checkpoint, RPT-05]
 
 actuals:
-  tokens: 3017
+  tokens: 7138
   tasks: 2
   commits: 2
 plan_head_before: 5d391a95fc7e771f05cab9d5985e9a315bc99097
@@ -137,6 +137,20 @@ Tracer gate: interactive run, `human_verify_mode` end-of-phase, `<verify>` autom
 None - plan executed exactly as written. There is no "## 06-19" section in rulings.md, so no orchestrator ruling applied. R-A (skip reasons) and R-B (build/ evidence) did not come into play: no test was added and nothing was written under build/.
 
 Flagged assumption check: all three upstream files exist at the paths D-33 names (`categories/game-decompilation.md`, `data/additions.json`, README PC section, which is headed `## PC / Computer`); no layout change to record.
+
+### Fix round 1
+
+The review (`review-06-19.md`, base 976ec58) found one Important and four Minor issues. The coordinator ruled that all five be fixed; they are fixed in docs/listings.md and in this SUMMARY.
+
+| Finding | Ruling | What changed |
+|---|---|---|
+| I1: three PR bodies described the rebuild as already done | Rewrite in the README's framing; no counts; check every section | The awesome-rea, awesome-decomp-games and awesome-game-decompilations PR bodies now say "The goal is readable C89 that ... rebuilds the two ... executables byte for byte. The executables are not rebuilt from C yet: matches so far are proven function by function, each spliced into a copy of the user's own executable with the whole file SHA-1 checked." Every "the rebuilt UFO2P.EXE and TACP.EXE are SHA-1 identical" claim (acceptance bullets, awesome-rea line, additions.json description, decomp.me body, facts list) now reads "copies of UFO2P.EXE and TACP.EXE with the matched function spliced in stay SHA-1 identical". The additions.json description says "aiming at C89 that rebuilds both", and the decomp.me body says "The goal is C89 that rebuilds both ...; matches so far are proven function by function". A "Status" fact was added to the header. No count was added anywhere. |
+| M1: "the original Watcom C 10.6 compiler" stated as fact | Use the decomp.me wording: 10.6 is chosen on runtime evidence; 10.5/11.0 still tie on game code | The awesome-rea line now says "for Watcom C 10.6 (chosen on runtime-library evidence, with 10.5 and 11.0 still tied on game code)". The three PR bodies say "the original Watcom C 10.x compiler" plus "The compiler is taken to be Watcom C 10.6 because the linked runtime library is 10.6; 10.5 and 11.0 still tie with it on game code". The decomp.me evidence bullet now ends "so 10.6 is chosen on the runtime evidence; 10.5 and 11.0 still tie with it on game code". The header Compiler fact links toolchain.md "Fallbacks and candidates". |
+| M2: the awesome-rea line did not name the counter | Name it: functions matched, shown on the progress page | The line adds "progress is counted in functions matched on the project's progress page", and the PR body adds "The counter is functions matched, shown on the progress page." |
+| M3: "for the OpenApoc reimplementation" can read as an endorsement | Use "to help the OpenApoc team" or equivalent | All four occurrences were replaced with "The project is independent, exists to help the OpenApoc team understand the original engine" (decomp.me: "It is an independent project that exists to help the OpenApoc team understand the original engine"). A header fact says no draft may read as a commission or an endorsement. |
+| M4: `actuals.tokens: 3017` was implausible | Correct it, or drop it if it cannot be measured | Measured on the estimate scale (chars/4 of the files the plan changed, not a harness token count). The old figure counted only the first version of docs/listings.md (12,068 chars / 4). The new figure counts both changed files at the fix-round HEAD: docs/listings.md plus this SUMMARY. The upstream reads are excluded on purpose, because the scale measures the realized diff, not what was read. |
+
+Verification after the fix: Task 1 and Task 2 `<automated>` both exit 0 (hygiene 65 passed, 3 skipped). The JSON block parses (platform DOS, type decomp, ai_flag true). All four sections still carry the owner-sends, AI-assisted, byte-comparison, no-game-files, repo and Pages statements; none contains "reimplementation" or "original Watcom C 10.6". `uv run ruff check .` passes, and the stub scan finds nothing.
 
 ## Issues Encountered
 
