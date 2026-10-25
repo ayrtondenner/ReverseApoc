@@ -280,13 +280,14 @@ Plans:
 
 **Goal**: Every function behind the OpenApoc checklist items the decomp can answer is located, matched byte for byte and made readable (meaningful names, header comments, named types and constants) by the Phase 6 driver at scale, with both EXEs SHA-1 identical after every commit.
 **Depends on**: Phase 6
-**Requirements**: DEC-01, DEC-02, DEC-03, DEC-04, DEC-05, DEC-06
+**Requirements**: DEC-01, DEC-02, DEC-03, DEC-04, DEC-05, DEC-06, DEC-07
 **Success Criteria** (what must be TRUE):
   1. `config/mechanics.toml` maps each answerable item of OpenApoc #263, #264, #265 and #997 to its EXE and the functions behind it, located from UI strings and data-table cross-references, and the owner has signed the list off (DEC-01)
   2. The driver works through the list callees first, with claims so parallel agents never take the same function and a single owner of the shared naming state (DEC-02, DEC-06)
   3. For every function in `config/mechanics.toml`, `check` prints objdiff 100% and a passing relocation check, and after the last commit `rebuild` plus `cmp` against `orig/` are silent for both EXEs with zero regressions (DEC-03)
   4. `uv run reverseapoc readlint src/` exits 0, and negative tests show it fails on a `FUN_`/`sub_`/`DAT_` placeholder name and on our own `func_XXXXXXXX` / `D_XXXXXXXX` placeholders (backlog 999.2), a function without a header comment, and an unnamed struct field or magic constant in a matched unit; pytest and ruff pass on the host and in the container (DEC-04)
   5. The progress page shows coverage per checklist item, and every target reads matched (DEC-05)
+  6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
 **Plans**: TBD
