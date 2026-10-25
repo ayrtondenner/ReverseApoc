@@ -11,7 +11,15 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-*Placeholder. The mosaic, the badge and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) will be generated on push to `main` and published to GitHub Pages, coming in Phase 6. One cell per function, grouped by module, sized by bytes, coloured matched, partial or unmatched. File names are final once Phase 6 lands.*
+The badge, the mosaic and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are generated on every push to `main` from the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; nobody edits them by hand), and published to GitHub Pages. The percentage is matched bytes of game and thunk functions over all game and thunk bytes, per EXE and combined. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
+
+- **matched**: byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE SHA-1;
+- **partial**: an attempt scored above 0% in objdiff but is not byte-identical yet; it counts as not matched;
+- **unmatched**: no attempt has scored yet; the function is still an `INCLUDE_ASM` stub;
+- **library**: the Watcom runtime library, not decompiled and left out of the percentage;
+- **uncovered**: bytes inside a unit that belong to no function row, mostly alignment filler between functions. They count as not matched. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
+
+The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json).
 
 ## Supported versions
 
@@ -59,7 +67,7 @@ The order of work follows Abahbob's rule: get a byte-identical rebuild of raw by
 |---|---|---|
 | [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp) | CC0-1.0 | LE reader, in-place page splice with SHA-1 gate, function discovery tools |
 | [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) | GPLv3 | `omf2elf.py`, the `configure.py` + ninja + objdiff pattern; the reference for a 100% matched Watcom 10.6 DOS/4GW game |
-| [retrokit](https://github.com/nemo22/retrokit) | Apache-2.0 | Headless Ghidra LE loader, Watcom calling conventions, function export, MCP server (external tool) |
+| [retrokit](https://github.com/nemo22/retrokit) | Apache-2.0 | Headless Ghidra LE loader, Watcom calling conventions, function export, MCP server (external tool) (not used: Phase 5 runs Ghidra headless in the Docker image with the lastonesky loader) |
 | [decomp.wtf](https://github.com/i12bp8/decomp.wtf) | MIT (archived 2026-10-15) | Agent harness, claims, guardrails, dashboard; used in fork mode as a separate tool |
 
 Files copied from Theme Hospital keep their copyright headers. That is why `tools/` is GPLv3.
@@ -136,7 +144,7 @@ Verdicts in short; the full table with reasons, install method and status is in 
 
 | Area | Use | Later | Skip |
 |---|---|---|---|
-| Analysis | [Ghidra](https://github.com/NationalSecurityAgency/ghidra), [GhidraMCP](https://github.com/LaurieWired/GhidraMCP) | [REA](https://github.com/morluto/rea) | [BSim](https://ghidra.re/ghidra_docs/GhidraClass/BSim/README.html) |
+| Analysis | [Ghidra](https://github.com/NationalSecurityAgency/ghidra), [GhidraMCP](https://github.com/LaurieWired/GhidraMCP) (Later) | [REA](https://github.com/morluto/rea) | [BSim](https://ghidra.re/ghidra_docs/GhidraClass/BSim/README.html) |
 | Diff and matching | [objdiff](https://github.com/encounter/objdiff) | [coddog](https://github.com/ethteck/coddog) (idea reimplemented now), [mizuchi](https://github.com/macabeus/mizuchi), [decomp_settings](https://github.com/ethteck/decomp_settings) | [m2c](https://github.com/matt-kempster/m2c), [decomp-permuter](https://github.com/simonlindholm/decomp-permuter), [asm-differ](https://github.com/simonlindholm/asm-differ), [Kappa](https://github.com/macabeus/kappa) (two ideas ported) |
 | C source tools | [ast-grep](https://ast-grep.github.io/), [clang-format](https://clang.llvm.org/docs/ClangFormat.html) | | |
 | Loops | [Nigel](https://github.com/cdlewis/nigel), [/goal](https://code.claude.com/docs/en/goal), [autoresearch](https://github.com/karpathy/autoresearch) (pattern) | [Ralph loop](https://github.com/anthropics/claude-plugins-official/tree/main/plugins/ralph-loop) (prototype) | [Bilevel-Autoresearch](https://github.com/EdwardOptimization/Bilevel-Autoresearch) |
