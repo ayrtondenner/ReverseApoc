@@ -14,9 +14,10 @@ paths:
   `/* BUG(original): ... */`.
 - Never write inline assembly or `#pragma aux` to force a match; a function that cannot be
   matched in C stays an `INCLUDE_ASM` stub.
-- Pragma policy (Phase 6 D-18): agents write no `#pragma aux` of any kind during the pilot, and
-  the hook blocks it. Calling-convention pragmas come only in human-reviewed commits. Default
-  `__watcall` needs no pragma.
+- Pragma policy (Phase 6 D-18): agents write no `#pragma` of any kind during the pilot
+  (`#pragma aux`, and `#pragma on/off (check_stack)`, which changes code the way a flag does),
+  and the matching hook blocks it. Calling-convention pragmas come only in human-reviewed
+  commits. Default `__watcall` needs no pragma.
 - Never touch `orig/`, hash manifests under `config/`, or build scripts to make a check pass.
 - Lint gate: `clang -fsyntax-only -std=gnu89 -Werror=declaration-after-statement` with the
   compat header. clang-format only with pragma masking; formatting must never change the build.
