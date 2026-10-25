@@ -636,6 +636,20 @@ def test_log_naming_a_directory_is_refused_before_the_compile(ws):
     assert list(logdir.iterdir()) == []
 
 
+@pytest.mark.parametrize("parts", [("new", ".."), ("..",)])
+def test_log_ending_in_dotdot_names_no_file(ws, parts):
+    """`--log new/..` names a directory, not a file, even while `new` does not exist (POSIX then
+    passes is_dir(), the probe would create `new`, and the append would fail after the
+    compile). Refused by name, before anything is created, on both platforms."""
+    log = ws.root.joinpath(*parts)
+    runner = FakeCompiler()
+    with pytest.raises(CompilerError) as info:
+        ws.compile(ws.source(), ws.root / "out" / "a.obj", runner, log=log)
+    assert "names no file" in str(info.value)
+    assert runner.calls == []
+    assert not (ws.root / "new").exists()
+
+
 def test_unwritable_lock_is_refused_before_the_compile(ws, monkeypatch):
     real_open = open
     lock = compiler._lock_path(ws.log)
