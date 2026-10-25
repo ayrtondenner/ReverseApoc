@@ -7,6 +7,7 @@ from __future__ import annotations
 import ctypes
 import io
 import json
+import ntpath
 import os
 import signal
 import subprocess
@@ -180,7 +181,7 @@ def test_kill_tree_runs_taskkill_as_an_argv_list_on_windows():
     assert len(calls) == 1
     argv, kwargs = calls[0]
     assert isinstance(argv, list)
-    assert Path(argv[0]).name.lower() == "taskkill.exe"
+    assert ntpath.basename(argv[0]).lower() == "taskkill.exe"  # a Windows path on every host
     assert argv[1:] == ["/T", "/F", "/PID", "4321"]
     assert not kwargs.get("shell")
 
