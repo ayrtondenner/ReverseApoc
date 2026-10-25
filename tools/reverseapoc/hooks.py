@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 r"""Claude Code PreToolUse guardrail hooks (AGT-05, D-15..D-18, D-44..D-46, DI-07).
 
-Run as `uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer always|matching`
-with the hook payload on stdin. Two layers:
+Run as `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks
+pre-tool-use --layer always|matching || exit 2` with the hook payload on stdin (the `|| exit 2`
+turns a failure of uv or the import into a block). Two layers:
 
 - **always** (`.claude/settings.json`, every session in the repo, matcher
   `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
@@ -240,7 +241,8 @@ def _windows_candidates(raw: str, cwd: str) -> list[str]:
         # not as the object it names, so only its lexical form is resolved.
         raw_real = None if joined.startswith(_NT_OBJECT) else joined
         reals = [_host_real(s) for s in (raw_real, lexical) if s is not None and os.name == "nt"]
-        if lexical is None and not any(reals):
+        if lexical is None and not any(reals):  # defence in depth: backs up the empty-result
+            # raise in `candidates`, so a mutation of this one is equivalent (re-review m2)
             raise HookError(f"device path {raw!r} cannot be mapped to a drive or share")
         found.extend(real for real in reals if real is not None)
     return found

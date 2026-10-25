@@ -235,7 +235,7 @@ See key-decisions in the frontmatter.
 
 ---
 
-**Total deviations:** 3 rulings applied as plan text (06-03 notes, F16, F27), 1 recorded (F32), R-A and R-B honoured, and 4 auto-fixes (Rule 2). **Impact:** all are hardening inside the planned files. There is no new surface, configure.py and check.py are untouched, and `files_modified` is exactly the plan's four files.
+**Total deviations:** 3 rulings applied as plan text (06-03 notes, F16, F27), F32 rewritten in fix round 1 (the hook now fails closed), R-A and R-B honoured, and 4 auto-fixes (Rule 2). **Impact:** all are hardening inside the planned files. There is no new surface, configure.py and check.py are untouched, and `files_modified` is exactly the plan's four files.
 
 ## Known limitations (not stubs)
 
@@ -251,6 +251,13 @@ See key-decisions in the frontmatter.
 - Grep without a `path` searches from the session cwd. ripgrep skips hidden and gitignored files such as `.env` by default. An explicit `.env` path or glob is denied, and so is any Glob pattern or Grep glob holding `{ } [ ]` (fix round 1 M2).
 - **Bash is not covered by the always layer** (security finding 3, orchestrator ruling). An owner or executor session can still change orig/ or the manifests with a shell command. Mitigations: `check-orig` hash-verifies orig/ against config/targets.toml, and the matching layer parses every Bash call and allows only the exact attempt-wrapper forms.
 - **M1, accepted fail-closed limit:** because a path is judged against every ancestor holding `.git` (fix round 1 C2), the always layer also denies build/, orig/, asm/ and `*.sha1`, and scans src/ and include/, in *other* git checkouts that a session in this repo writes to (for example `otherproject/build/x`).
+- **Hard links (re-review m1), accepted:** a Write to a hard link of config/targets.toml (or of a file in orig/) that sits in an allowed directory is allowed. realpath returns the link's own name, and the hook does no inode check. Why this is accepted:
+  - only Bash can create a hard link, and the always layer does not cover Bash (the known limit above);
+  - the matching layer's Bash allowlist cannot run `ln`, `mklink` or `fsutil`;
+  - G9 and `check-orig` verify the manifests and orig/ by hash;
+  - an nlink-based deny would over-deny uv's hard-linked `.venv`.
+- **An unset or foreign CLAUDE_PROJECT_DIR blocks every edit (re-review m4), fails closed.** The handler runs `uv run --frozen --project "$CLAUDE_PROJECT_DIR" ... || exit 2`. If the variable is unset, or names a checkout without `reverseapoc.hooks`, uv or the import fails and the command exits 2 for every Edit, Write, MultiEdit and NotebookEdit.
+- **Merge window (re-review m4):** hooks.py and the settings change land together in this branch, so main never has the handler without the module. A session whose `CLAUDE_PROJECT_DIR` points at a checkout without hooks.py has every Edit and Write blocked: a main checkout before the merge that picks up this settings file, or an older worktree. To recover, merge or check out a commit that has tools/reverseapoc/hooks.py, or edit the settings by shell. The always layer does not see Bash.
 - **Unmappable device paths block.** A `\\?\GLOBALROOT\...` path whose device the host cannot open (a wrong HarddiskVolume number) and an unknown `Volume{GUID}`, `\\.\pipe\...` or `\\.\PhysicalDrive0` raise HookError, so the call exits 2. A UNC path (`\\server\share\...`) stays an accepted form. It is judged lexically and through the `.git` ancestors reached over the share.
 
 ## Threat model notes
@@ -307,6 +314,19 @@ Verification (evidence written by shell redirection under build/06-12/: `fix1-te
 - `uv run pytest -q`: 1792 passed, 217 skipped, exit 0.
 - `uv run ruff check .`: all checks passed, exit 0.
 - The reviewer's `probe_hooks.py` against the fixed module: every form of config/targets.toml is denied, the rooted, Volume{GUID} and `//./` src/ `_asm` writes are denied, and every credentials read is denied. The GLOBALROOT form with the probe's wrong volume number raises HookError (exit 2). Both nested-`.git` walks are denied, and so is the curly-quote edit.
+
+## Fix round 2 (rereview-06-12-r1.md, FIX_BASE e4bd769)
+
+Wording and records only. No behaviour changed.
+
+| Item | What was done | Commit |
+|------|---------------|--------|
+| m1 | Hard links to config/targets.toml or orig/ are recorded under Known limitations, with no inode check (Bash-only creation, matching allowlist, hash checks, uv's hard-linked .venv). | (this commit) |
+| m2 | The device-path HookError raise in `_windows_candidates` is kept as defence in depth. A comment says it backs up the empty-result raise in `candidates`, so a mutation of it is equivalent. | (this commit) |
+| m3 | The module docstring names the current command: `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks pre-tool-use --layer always\|matching \|\| exit 2`. | (this commit) |
+| m4 | Recorded that an unset or foreign `CLAUDE_PROJECT_DIR` blocks every edit (exit 2, fails closed), and added the merge-window note. The stale "1 recorded (F32)" count now reads "F32 rewritten in fix round 1". | (this commit) |
+
+Verification: `uv run pytest -q tests/test_hooks.py` gives 194 passed. `uv run ruff check .` is clean.
 
 ## Self-Check: PASSED
 
