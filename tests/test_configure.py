@@ -666,6 +666,48 @@ CONTINUATION_PROBES = {
         {"func_00010000"},
         set(),
     ),
+    # 06-03 review I1: a #define continued through a spliced string literal; the marker is in
+    # the macro body.
+    "define-string": (
+        'INCLUDE_ASM(func_00010000);\n#define S "a\\\nb" INCLUDE_ASM(func_00010010);\n',
+        {"func_00010000"},
+        set(),
+    ),
+    # 06-03 review M1: translation phase 2 splices before comments are recognised (phase 3),
+    # so a backslash-newline inside a comment delimiter still forms it.
+    "line-comment-opener-splice": (
+        "INCLUDE_ASM(func_00010000);\n/\\\n/ INCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "block-comment-opener-splice": (
+        "INCLUDE_ASM(func_00010000);\n/\\\n* INCLUDE_ASM(func_00010010); */\n",
+        {"func_00010000"},
+        set(),
+    ),
+    "block-comment-closer-splice": (
+        "/* x *\\\n/ INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    # A comment is one space (phase 3), so a block comment spanning lines inside a #define
+    # keeps the directive going: the marker after it is in the macro body.
+    "define-block-comment": (
+        "INCLUDE_ASM(func_00010000);\n#define X /* a\nb */ INCLUDE_ASM(func_00010010);\n",
+        {"func_00010000"},
+        set(),
+    ),
+    # Splices and multi-line comments inside live code join it as the compiler does.
+    "code-splice-marker": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_\\\nASM(func_00010010);\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
+    "code-comment-in-marker": (
+        "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010) /*\n*/ ;\n",
+        {"func_00010000", "func_00010010"},
+        set(),
+    ),
 }
 
 
@@ -689,8 +731,11 @@ def test_define_continuation_hides_a_definition():
         ("// a \\\ncontinued\n", 2),
         ("#define X \\\n    1 \\\n    + 2\n", 3),
         ('static char *s = "a\\\nb";\n', 2),
+        ('#define S "a\\\nb" 1\n', 2),
+        ("/* x *\\\n/\n", 2),
+        ("#define X /* a\nb */ 1\n", 2),
     ],
-    ids=["line-comment", "define", "string"],
+    ids=["line-comment", "define", "string", "define-string", "closer-splice", "define-comment"],
 )
 def test_continuation_keeps_directive_line_numbers(prefix, lines):
     shift = UNIT_SOURCE.count("\n") + lines
