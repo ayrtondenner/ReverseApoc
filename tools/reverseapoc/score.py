@@ -97,6 +97,7 @@ class Candidate:
     size: int
     score: int
     reasons: tuple[str, ...]
+    chk: bool = False  # opens with a __CHK prologue: the rank's first term (see `candidates`)
 
     def to_json(self) -> dict[str, Any]:
         return {"address": f"0x{self.address:08X}", "name": self.name, "size": self.size,
@@ -318,7 +319,8 @@ def candidates(assessments: Iterable[Assessment], symbols: SymbolTable) -> list[
     survivors = [a for a in assessments if not a.rejected]
     survivors.sort(key=lambda a: (a.features.chk, score(a.features), a.row.start))
     return [Candidate(a.row.start, symbols.c_name(a.row.start), a.features.size,
-                      score(a.features), score_reasons(a.features)) for a in survivors]  # fmt: skip
+                      score(a.features), score_reasons(a.features), a.features.chk)
+            for a in survivors]  # fmt: skip
 
 
 def rank(
