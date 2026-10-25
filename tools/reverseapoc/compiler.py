@@ -346,11 +346,12 @@ def _probe_log_lock(log: Path) -> None:
         ) from exc
 
 
-def _check_outputs(src: Path, obj: Path, err: Path) -> None:
-    """Refuse outputs that would destroy the source: the object is deleted before the compile
-    and rewritten by it, and the error file is rewritten, so neither may be the source."""
+def _check_outputs(src: Path, *outputs: Path) -> None:
+    """Refuse outputs that would destroy the source: the object and its provenance stamp are
+    deleted before the compile and rewritten after it, and the error file is rewritten, so none
+    may be the source."""
     source = src.resolve()
-    clash = next((out for out in (obj, err) if out.resolve() == source), None)
+    clash = next((out for out in outputs if out.resolve() == source), None)
     if clash is not None:
         raise CompilerError(f"{clash} is the source {src}; the compile would overwrite it")
 
@@ -572,7 +573,7 @@ def compile_rule(
     _check_log_name(log)
     err = obj.with_suffix(".err")  # next to the object
     guest_err = guest_path(err, root, inside=True)
-    _check_outputs(src, obj, err)
+    _check_outputs(src, obj, err, provenance_path(obj))
     include = _include_list(root, watcom_dir, rule.version)
     _probe_log_lock(log)
     prefix = runner_prefix(platform)
@@ -589,6 +590,9 @@ def compile_rule(
     argv = build_argv(exe, rule, guest_src, guest_obj, guest_err, include, prefix=prefix)
     obj.parent.mkdir(parents=True, exist_ok=True)
     obj.unlink(missing_ok=True)
+    # The old provenance stamp goes with the old object, before the run: a compile killed after
+    # writing part of the new object leaves no stamp beside it (fix round 1, I2).
+    provenance_path(obj).unlink(missing_ok=True)
     proc = runner(argv, cwd=root, env=scrubbed_env(os.environ, platform), **_CAPTURE)
     hashes: tuple[str | None, str | None] = (None, None)
     if proc.returncode != 0:
@@ -615,50 +619,39 @@ def compile_source(
     stamps: Path | str | None = None,
 ) -> CompileResult:
     """Pick the cflags rule for `src` (by its root-relative POSIX path) and compile with it.
-    A successful compile writes the provenance stamp `<obj>.prov.json` (provenance_path). A
-    compile that ran and left no object (a non-zero exit, an object that is not OMF) removes an
-    old stamp; a refusal before the compile runs touches neither the old object nor its stamp."""
+    A successful compile writes the provenance stamp `<obj>.prov.json` (provenance_path) once
+    the object is complete. compile_rule removes the old stamp with the old object, right before
+    the run, so a failed, refused-after-the-run or interrupted compile leaves none; a refusal
+    before the run touches neither the old object nor its stamp."""
     rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
-    # Taken before the compile: a source edited during it no longer matches the stamp.
-    prov = provenance(rule, src, cflags=cflags, manifest=manifest)
-    try:
-        result = compile_rule(
-            rule,
-            src,
-            obj,
-            root=root,
-            manifest=manifest,
-            watcom_dir=watcom_dir,
-            runner=runner,
-            platform=platform,
-            log=log,
-            stamps=stamps,
-        )
-    except BaseException:
-        _drop_orphan_stamp(obj)
-        raise
+    # Taken before the compile: an input edited during it no longer matches the stamp.
+    inputs = input_provenance(rule, src, cflags=cflags, manifest=manifest, root=root)
+    result = compile_rule(
+        rule,
+        src,
+        obj,
+        root=root,
+        manifest=manifest,
+        watcom_dir=watcom_dir,
+        runner=runner,
+        platform=platform,
+        log=log,
+        stamps=stamps,
+    )
     if result.ok:
-        _write_provenance(Path(obj), prov)
-    else:
-        _drop_orphan_stamp(obj)
+        _write_provenance(Path(obj), inputs)
     return result
 
 
-def _drop_orphan_stamp(obj: Path | str) -> None:
-    """Remove the stamp of an object that no longer exists. A path with no name (`-o .`) was
-    refused before anything ran and has no stamp."""
-    obj = Path(obj)
-    if obj.name and not obj.is_file():
-        provenance_path(obj).unlink(missing_ok=True)
-
-
-def _write_provenance(obj: Path, prov: dict[str, Any]) -> None:
-    """Write the stamp atomically. Unlike the gate stamp it is no cache: an object without one is
-    refused by the land step, so a stamp that cannot be written fails the compile and the
-    object is deleted with it."""
+def _write_provenance(obj: Path, inputs: dict[str, Any]) -> None:
+    """Write the stamp of the finished object atomically: `inputs` plus the object's SHA-256.
+    Unlike the gate stamp it is no cache: an object without one is refused by the land step, so
+    a stamp that cannot be written fails the compile and the object is deleted with it."""
     stamp = provenance_path(obj)
     try:
-        write_atomic(stamp, (json.dumps(prov, indent=2) + "\n").encode("utf-8"))
+        prov = {**inputs, "object_sha256": object_sha256(obj)}
+        doc = {key: prov[key] for key in PROV_KEYS}
+        write_atomic(stamp, (json.dumps(doc, indent=2) + "\n").encode("utf-8"))
     except OSError as exc:
         obj.unlink(missing_ok=True)
         stamp.unlink(missing_ok=True)
@@ -683,13 +676,17 @@ def source_rule(
 # ---- the provenance stamp (DI-06 part a) -------------------------------------------------------
 # `<obj>.prov.json` records what built the object: the rule's compiler and flags, SHA-256 of the
 # source (CRLF read as LF, so a checkout's line endings do not matter), of the cflags table and of
-# the Watcom manifest the compile used, and PROV_VERSION. ninja's land step (check._land_exe)
-# lands an object only while its stamp equals provenance() of today's files; build.ninja declares
-# the stamp as an implicit output of the cc edge, so ninja rebuilds an object without one.
+# the Watcom manifest the compile used, of the project headers under the compile root's include/
+# (the -i= directory the compile reads first), of the finished object itself, and PROV_VERSION.
+# ninja's land step (check._land_exe) lands an object only while its stamp equals provenance()
+# of today's files and of the object on disk, so neither an input edited since the build nor an
+# object copied over ninja's lands (fix round 1, I1/I2); build.ninja declares the stamp as an
+# implicit output of the cc edge, so ninja rebuilds an object without one.
 
 PROV_SUFFIX = ".prov.json"
-PROV_VERSION = 1  # the stamp format; a stamp of another format is stale
-PROV_KEYS = ("compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256", "version")
+PROV_VERSION = 2  # the stamp format; a stamp of another format (format 1 included) is stale
+PROV_KEYS = ("compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256",
+             "include_sha256", "object_sha256", "version")  # fmt: skip
 
 
 def provenance_path(obj: Path | str) -> Path:
@@ -710,25 +707,62 @@ def source_sha256(src: Path | str) -> str:
     return _sha256(data.replace(b"\r\n", b"\n"))
 
 
-def provenance(
+def include_sha256(root: Path | str) -> str:
+    """SHA-256 over every file under `root`/include/, the project headers the compile reads:
+    per file, sorted by its POSIX path below include/, a line `<path>\\0<SHA-256 of its content
+    with CRLF as LF>\\n`. No include/ hashes the empty text."""
+    include = Path(root) / INCLUDE_DIR
+    files = sorted((p.relative_to(include).as_posix(), p) for p in include.rglob("*")
+                   if p.is_file()) if include.is_dir() else []  # fmt: skip
+    lines = "".join(f"{rel}\0{_sha256(path.read_bytes().replace(b'\r\n', b'\n'))}\n"
+                    for rel, path in files)  # fmt: skip
+    return _sha256(lines.encode("utf-8"))
+
+
+def object_sha256(obj: Path | str) -> str:
+    """SHA-256 of the object's bytes, as they are on disk."""
+    return _sha256(Path(obj).read_bytes())
+
+
+def input_provenance(
     rule: Rule,
     src: Path | str,
     *,
     cflags: Path | str | None = None,
     manifest: Path | str | None = None,
+    root: Path | str | None = None,
 ) -> dict[str, Any]:
-    """The stamp of `src` compiled with `rule`, the cflags table `cflags` and the Watcom
-    manifest `manifest` (None: config/cflags.txt and config/watcom.toml)."""
+    """Every stamp field but object_sha256: `src` compiled with `rule`, the cflags table
+    `cflags`, the Watcom manifest `manifest` (None: config/cflags.txt and config/watcom.toml)
+    and the headers of the compile root `root` (None: the repository)."""
     cflags = Path(cflags) if cflags is not None else DEFAULT_CFLAGS
     manifest = Path(manifest) if manifest is not None else watcom.DEFAULT_WATCOM_MANIFEST
+    root = Path(root) if root is not None else REPO_ROOT
     return {
         "compiler": rule.spec,
         "flags": list(rule.flags),
         "source_sha256": source_sha256(src),
         "cflags_sha256": _sha256(cflags.read_bytes()),
         "watcom_sha256": _sha256(manifest.read_bytes()),
+        "include_sha256": include_sha256(root),
         "version": PROV_VERSION,
     }
+
+
+def provenance(
+    rule: Rule,
+    src: Path | str,
+    obj: Path | str,
+    *,
+    cflags: Path | str | None = None,
+    manifest: Path | str | None = None,
+    root: Path | str | None = None,
+) -> dict[str, Any]:
+    """The whole stamp for `obj` as it is now (input_provenance plus object_sha256): what the
+    land step compares a stamp with."""
+    inputs = input_provenance(rule, src, cflags=cflags, manifest=manifest, root=root)
+    prov = {**inputs, "object_sha256": object_sha256(obj)}
+    return {key: prov[key] for key in PROV_KEYS}
 
 
 def read_provenance(obj: Path | str) -> dict[str, Any] | None:
