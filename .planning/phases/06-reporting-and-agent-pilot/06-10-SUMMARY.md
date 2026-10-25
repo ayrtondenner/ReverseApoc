@@ -163,7 +163,7 @@ Execution context nonce: cc94622c737ece6f
 
 ## Deviations from Plan
 
-**1. Orchestrator ruling F25: a separate objdiff test.** The objdiff layer of each real probe is its own test, `test_real_switch_probe_objdiff[10.6]` and `test_real_static_probe_objdiff[10.6]`, each calling `requires_objdiff()` after the compile. The host run of `-k switch` shows the relocation and byte test passed and only the objdiff test skipped (`build/06-10-switch.out`).
+**1. Orchestrator ruling F25: a separate objdiff test.** The objdiff layer of each real probe is its own test, `test_real_switch_probe_objdiff` and `test_real_static_probe_objdiff`, each calling `requires_objdiff()` after the compile. The plan and F25 write these names with a `[10.6]` id, but the tests are not parametrized: each compiles with 10.6 through `requires_version("10.6")`, so the real pytest ids carry no `[10.6]` (fix round 1, M5). The host run of `-k switch` shows the relocation and byte test passed and only the objdiff test skipped (`build/06-10-switch.out`).
 
 **2. [Rule 2 - Missing critical] Own publics capped at their row's length**
 - **Found during:** Task 1 RED. `test_mid_unit_table_still_fails_closed` passed the switch today when our layout coincided with the original's.
@@ -214,6 +214,26 @@ None.
 
 - Plan 06-16 runs the objdiff layers (`test_real_switch_probe_objdiff`, `test_real_static_probe_objdiff`) unskipped in the container. If target.py's relocation for the `jmp` table address does not pair with ours in objdiff, that test shows it there.
 - The pilot scorer keeps P16's exclusions (jump tables) until Phase 7.
+
+## Fix round 1
+
+Review: `review-06-10.md` (FIX_BASE db8c803). TDD order: RED `2861c12`, then GREEN `9c16f06`.
+
+| Item | Finding | Fix | Commit | Proof |
+|---|---|---|---|---|
+| C1 (Critical) | The table's own-public entry was offered to every function, but the table was checked only in the head's verdict. A later function jumping through `_TEXT+0` passed with a wrong table and would have been landed. | `own_publics` no longer carries the table entry. `with_relocs` adds it only to the head's map, so any other function's reference to `[0, first public)` is refused ("needs the unit's public-to-row map"). If the account dropped the head, nothing resolves into the table. | 9c16f06 | `test_leading_table_used_by_another_function_is_refused[same-table]` and `[planted-entry]` (the reviewer's layout): RED in 2861c12, green after 9c16f06 |
+| M1 | The `with_relocs` docstring said entries land "inside that function", but entries into any function of the unit were accepted. | Tightened to the claim: the span is checked with the head as its only other own public, so every entry must land inside the head on the original's target. The docstring states exactly that. | 9c16f06 | `test_leading_table_entry_outside_the_head_fails`: RED in 2861c12, green after |
+| M2 | `leading_table`'s refusal branches and the span's filler and length comparison had no committed tests. | Pinned (they fail closed today) with `test_no_leading_table_without_its_data_row` (`game-row-before-head`, `data-row-past-head-start`, `no-data-row`) and `test_leading_table_span_compares_filler_and_length` (`filler-differs`, `original-table-longer`). | 2861c12 | pass |
+| M3 | `leading_table` ran twice per function, and `own_publics` once per function. | `_SegmentMap` computes both once per code segment in `with_relocs`. | 9c16f06 | suite green |
+| M4 | learnings.md cited D-09 for "drafts stay non-static", which D-09 does not say. | Reworded: the scorer has no static filter yet, and adding one is Phase 7 tuning (D-09). Also added the head-only rule to learnings.md and matching.md. | 3287ee8 | `tests/test_hygiene.py` pass |
+| M5 | The SUMMARY quoted `[10.6]` ids that do not exist. | Deviation 1 now gives the real names and says why they carry no id. | this SUMMARY commit | n/a |
+
+The 06-08 binding is kept: the head's verdict keeps its own `start`, `length`, `sha1`, `ours` and `theirs`. Only `ok` and `problems` take the span's result (`_with_table`).
+
+Evidence re-run after the fix (`REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom`, shell redirection):
+- `build/06-10-switch.out`: `1 passed, 1 skipped, 2 deselected` (the skip is the objdiff layer only).
+- `build/06-10-static.out` (tables_real plus omf2elf_real): `4 passed, 2 skipped` (both skips are objdiff layers). There were no runner or 10.6 skips.
+- `uv run pytest -q`: 1610 passed, 221 skipped. `uv run ruff check .`: all checks passed.
 
 ## Self-Check: PASSED
 
