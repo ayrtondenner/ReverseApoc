@@ -244,7 +244,7 @@ Source: review-06-13.md (spec approved; one Important finding, minors). FIX_BASE
 
 | Finding | Change | Test | RED evidence |
 |---|---|---|---|
-| I-1: the truncation header grew 22 bytes per cut item, so 600 unmatched callers raised although the required sections (22,581 bytes) fit | The `Truncated:` line counts cuts per section (`3 of 3 look-alikes, 118 of 400 callers, draft`), so it has a small fixed bound. The per-item list stays in `Pack.truncated` and `to_json()`. The error reads "the required sections alone are N bytes ..." and is raised only when the pack is still over with every optional section cut | `test_many_cut_callers_never_exhaust_the_cap`; `test_pack_one_byte_over_is_truncated_in_order` checks the new header | Raised the spurious `ContextPackError ... 35775 bytes` |
+| I-1: the truncation header grew 22 bytes per cut item, so 600 unmatched callers raised although the required sections (22,581 bytes) fit | The `Truncated:` line counts cuts per section (`3 of 3 look-alikes, 118 of 400 callers, draft`), so it has a small fixed bound. The per-item list stays in `Pack.truncated` and `to_json()`. The error reads "the required sections plus the pack's frame and cut marks are N bytes ..." (fix round 2, N-1) and is raised only when the pack is still over with every optional section cut | `test_many_cut_callers_never_exhaust_the_cap`; `test_pack_one_byte_over_is_truncated_in_order` checks the new header | Raised the spurious `ContextPackError ... 35775 bytes` |
 | M-1: the prototype was printed raw | `Neighbour.line` prints `" ".join(head.split())` | `test_prototypes_render_on_one_line` (CRLF, `## injected` in a comment, `#if 0`) | Assertion: `\r` found in the pack |
 | M-2: a head could start with a stray backslash | `_declaration_start` skips backslash-newline splices as well as blanks | `test_callee_prototype_head_skips_a_splice_before_it` | Assertion: head `'\\  \t\nint ...'` |
 | M-3: cut sections were not marked | A fully cut section says `cut (N items)` (the draft says `cut (1 item)`). A partly cut list ends with `... N more cut`. `none` still means no input | `test_cut_sections_are_marked_in_place` | Assertion: `'none' == 'cut (3 items)'` |
@@ -261,6 +261,14 @@ Judgment calls:
 - On Windows, a `Build/Driver` spelling of a directory that already exists as `build/driver` resolves to the on-disk case and is accepted. It is the same NTFS directory. A spelling that does not exist keeps its case and is refused, as it is on the container's case-sensitive file system.
 
 Verification after the fix: `uv run pytest -q tests/test_contextpack.py` gave 30 passed and 1 skipped (the R-A symlink reason). `uv run pytest -q` gave 1628 passed and 218 skipped. `uv run ruff check .` reported all checks passed.
+
+## Fix round 2
+
+Source: rereview-06-13-r1.md (fix round 1 approved; one Minor). FIX_BASE 7e185ef. This round changes wording only; behaviour is unchanged.
+
+| Finding | Change | Test |
+|---|---|---|
+| N-1: the over-cap error said "the required sections alone are N bytes", but N also counts the pack's frame and the cut marks (a 1-character draft gave 421 bytes against 411 for the required sections alone) | The message now reads "the required sections plus the pack's frame and cut marks are N bytes in the context pack of <function> (every optional section cut), over the <cap>-byte cap". `build_pack`'s docstring says the same | `test_required_sections_alone_over_the_cap` matches the new text |
 
 Points for 06-15, from the review's "cannot verify" list:
 - (a) Pass every unit text of the EXE in `unit_texts`, not just the claimed unit. Otherwise neighbours and look-alikes in other units get no C.

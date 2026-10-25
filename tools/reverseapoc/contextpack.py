@@ -188,7 +188,8 @@ def build_pack(
     `Truncated:` only counts them per section, so it stays a few dozen bytes however many are
     cut (review I-1). A cut section says so in place: `cut (N items)` when nothing is left,
     `... N more cut` after the items it keeps. ContextPackError when the required sections
-    alone (with the pack's fixed headings and those short marks) are over the cap."""
+    plus the pack's frame (title, preamble, headings, the short header) and the cut marks are
+    over the cap with every optional section cut."""
     required = {
         TITLE_LISTING: _fenced(listing, "asm"),
         TITLE_UNIT: _fenced(unit_text, "c"),
@@ -209,9 +210,9 @@ def build_pack(
         cut = optional.cut()
         if cut is None:
             raise ContextPackError(
-                f"the required sections alone are {size} bytes of the context pack of "
-                f"{function} (every optional section cut), over the {cap}-byte cap; required "
-                "sections are never cut"
+                f"the required sections plus the pack's frame and cut marks are {size} bytes "
+                f"in the context pack of {function} (every optional section cut), over the "
+                f"{cap}-byte cap; required sections are never cut"
             )
         truncated.append(cut)
 

@@ -440,7 +440,8 @@ def test_pack_one_byte_over_is_truncated_in_order():
 
 
 def test_required_sections_alone_over_the_cap():
-    with pytest.raises(ContextPackError, match=r"required sections alone are \d+ bytes"):
+    message = r"required sections plus the pack's frame and cut marks are \d+ bytes"
+    with pytest.raises(ContextPackError, match=message):
         build_pack(**_big_inputs(unit_text="u" * PACK_CAP))
 
 
