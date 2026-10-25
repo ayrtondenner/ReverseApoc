@@ -27,7 +27,8 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
     python -I tools/progress.py [--config DIR] [--out DIR] [--report PATH]
                                 [--decomphub PATH] [--commit SHA]
 
---out DIR writes DIR/progress.json and DIR/progress-shield.json (the shields.io endpoint);
+--out DIR writes DIR/progress.json, DIR/progress-shield.json (the shields.io endpoint) and
+DIR/progress.svg (the mosaic: a squarified treemap, EXE > unit > function);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -48,6 +49,7 @@ import sys
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG = ROOT / "config"
@@ -283,6 +285,7 @@ class ExeProgress:
     library_bytes: int
     library_functions: int
     data_in_code_bytes: int
+    library_rows: tuple[Row, ...] = ()  # the runtime rows, one library cell each in the mosaic
 
     @property
     def totals(self) -> Totals:
@@ -362,6 +365,7 @@ def _derive_exe(config: Path, stem: str, label: str, status_text: str | None) ->
         library_bytes=sum(row.size for row in library),
         library_functions=len(library),
         data_in_code_bytes=sum(row.size for row in rows if row.kind == KIND_DATA),
+        library_rows=tuple(library),
     )
 
 
@@ -612,6 +616,239 @@ def write_decomphub(progress: Progress, path: Path) -> None:
     _write_atomic(path, render(build_decomphub(progress)))
 
 
+# ---- progress.svg, the mosaic (D-26, D-50) ----
+
+Rect = tuple[float, float, float, float]  # x, y, width, height
+
+
+def _worst(total: float, smallest: float, largest: float, side: float) -> float:
+    """The worst aspect ratio of a row of areas laid along `side` (Bruls et al., eq. 1)."""
+    side2 = side * side
+    return max(side2 * largest / (total * total), total * total / (side2 * smallest))
+
+
+def _row_end(areas: Sequence[float], first: int, side: float) -> int:
+    """The end of the row starting at `first`: areas join it while the worst ratio improves."""
+    total = smallest = largest = areas[first]
+    end = first + 1
+    while end < len(areas):
+        area = areas[end]
+        grown = _worst(total + area, min(smallest, area), max(largest, area), side)
+        if grown > _worst(total, smallest, largest, side):
+            break
+        total, smallest, largest = total + area, min(smallest, area), max(largest, area)
+        end += 1
+    return end
+
+
+def _lay_row(row: Sequence[float], rect: Rect, out: list[Rect]) -> Rect:
+    """Lay `row` along the shorter side of `rect`, append its rectangles, return the rest."""
+    x, y, w, h = rect
+    total = sum(row)
+    if w >= h:  # a column at the left, as tall as the rectangle
+        width = total / h
+        for area in row:
+            out.append((x, y, width, area / width))
+            y += area / width
+        return x + width, rect[1], max(w - width, 0.0), h
+    height = total / w  # a strip at the top, as wide as the rectangle
+    for area in row:
+        out.append((x, y, area / height, height))
+        x += area / height
+    return rect[0], y + height, w, max(h - height, 0.0)
+
+
+def squarify(sizes: Sequence[float], rect: Rect) -> list[Rect]:
+    """Tile `rect` with one rectangle per size, its area proportional to the size, in input
+    order: the squarified treemap of Bruls, Huizing and van Wijk (2000). Rows grow while their
+    worst aspect ratio improves and are laid along the shorter side. Pass the sizes largest
+    first, as the algorithm assumes; every size must be positive."""
+    if any(value <= 0 for value in sizes):
+        raise ValueError("squarify: every size must be positive")
+    x, y, w, h = rect
+    if w <= 0 or h <= 0:
+        return [(x, y, 0.0, 0.0) for _ in sizes]
+    total = sum(sizes)
+    areas = [value * (w * h) / total for value in sizes]
+    out: list[Rect] = []
+    first = 0
+    while first < len(areas):
+        x, y, w, h = rect
+        if w <= 0 or h <= 0:  # float drift left no room: the rest are empty
+            out.extend((x, y, 0.0, 0.0) for _ in areas[first:])
+            break
+        end = _row_end(areas, first, min(w, h))
+        rect = _lay_row(areas[first:end], rect, out)
+        first = end
+    return out
+
+
+LIBRARY, UNCOVERED = "library", "uncovered"
+CELL_STATUSES = (MATCHED, PARTIAL, UNMATCHED, LIBRARY, UNCOVERED)
+# Fixed colours (D-50), checked with the dataviz palette validator on the light surface: the
+# three hues pass CVD separation; unmatched and uncovered are neutral greys on purpose.
+TREEMAP_COLORS = {MATCHED: "#008300", PARTIAL: "#eda100", UNMATCHED: "#898781",
+                  LIBRARY: "#2a78d6", UNCOVERED: "#d8d6cf"}  # fmt: skip
+LEGEND_LABELS = {MATCHED: "matched", PARTIAL: "partial", UNMATCHED: "unmatched",
+                 LIBRARY: "library (not decompiled)",
+                 UNCOVERED: "uncovered: mostly alignment filler"}  # fmt: skip
+PROGRESS_SVG = "progress.svg"
+SVG_WIDTH, SVG_HEIGHT = 1200, 800
+LEGEND_HEIGHT = 30  # the title and legend row above the map
+EXE_HEADER = 20  # each EXE's caption strip
+SURFACE, INK, SECONDARY_INK = "#fcfcfb", "#0b0b0b", "#52514e"
+FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
+LEGEND_MARGIN = 8  # the legend ends this far from the right edge
+LEGEND_CHAR = 6.6  # px per label character at 12 px, for spacing the legend items
+LEGEND_GAP = 26  # dot, padding and gap between legend items
+
+
+@dataclass(frozen=True)
+class _Cell:
+    """One mosaic cell: a function, a library function or a unit's uncovered bytes."""
+
+    size: int
+    start: int
+    status: str  # one of CELL_STATUSES
+    title: str | None = None  # a tooltip, matched cells only
+
+    @property
+    def key(self) -> tuple[int, int, int]:
+        """Largest first, then by address, then by status: a stable, total order."""
+        return -self.size, self.start, CELL_STATUSES.index(self.status)
+
+
+def _xml(text: str) -> str:
+    """Text or attribute content, escaped (names come from the CSVs)."""
+    return escape(text, {'"': "&quot;"})
+
+
+def _num(value: float) -> str:
+    """A coordinate rounded to 0.1, without a trailing ".0"."""
+    text = f"{round(value, 1):.1f}"
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _box(rect: Rect) -> str:
+    """x/y/width/height attributes: the edges rounded to 0.1, so neighbours stay flush."""
+    x, y, w, h = rect
+    left, top, right, bottom = (round(v, 1) for v in (x, y, x + w, y + h))
+    return (f'x="{_num(left)}" y="{_num(top)}" width="{_num(right - left)}" '
+            f'height="{_num(bottom - top)}"')  # fmt: skip
+
+
+def _unit_cells(exe: ExeProgress) -> dict[str, list[_Cell]]:
+    """The cells of each unit: its game/thunk functions, runtime rows and uncovered bytes.
+    Data-in-code is not drawn (D-26)."""
+    groups: dict[str, list[_Cell]] = {}
+    for f in exe.functions:
+        title = f"{f.name}: {f.size:,} bytes, matched" if f.status == MATCHED else None
+        groups.setdefault(f.unit or UNASSIGNED_UNIT, []).append(
+            _Cell(f.size, f.start, f.status, title))
+    for row in exe.library_rows:
+        groups.setdefault(row.unit or UNASSIGNED_UNIT, []).append(
+            _Cell(row.size, row.start, LIBRARY))
+    for unit, uncovered in zip(exe.units, exe.uncovered, strict=True):
+        if uncovered:
+            groups.setdefault(unit.unit, []).append(_Cell(uncovered, unit.start, UNCOVERED))
+    return groups
+
+
+def _unit_title(exe: ExeProgress, unit: str, cells: Sequence[_Cell]) -> str:
+    def total(*statuses: str) -> int:
+        return sum(c.size for c in cells if c.status in statuses)
+
+    code = [c for c in cells if c.status in (MATCHED, PARTIAL, UNMATCHED)]
+    parts = [f"{exe.label} {unit}: {total(MATCHED):,} of {total(MATCHED, PARTIAL, UNMATCHED):,} "
+             f"code bytes matched, {len(code)} functions"]  # fmt: skip
+    if total(LIBRARY):
+        parts.append(f"{total(LIBRARY):,} library bytes")
+    if total(UNCOVERED):
+        parts.append(f"{total(UNCOVERED):,} uncovered bytes")
+    return "; ".join(parts)
+
+
+def _cell_svg(cell: _Cell, rect: Rect) -> str:
+    fill = TREEMAP_COLORS[cell.status]
+    if cell.title is None:
+        return f'<rect {_box(rect)} fill="{fill}"/>'
+    return f'<rect {_box(rect)} fill="{fill}"><title>{_xml(cell.title)}</title></rect>'
+
+
+def _unit_svg(exe: ExeProgress, unit: str, cells: Sequence[_Cell], rect: Rect) -> list[str]:
+    ordered = sorted(cells, key=lambda c: c.key)
+    lines = [f'<g data-unit="{_xml(unit)}"><title>{_xml(_unit_title(exe, unit, ordered))}</title>']
+    rects = squarify([c.size for c in ordered], rect)
+    lines += [_cell_svg(cell, r) for cell, r in zip(ordered, rects, strict=True)]
+    lines.append(f'<rect {_box(rect)} fill="none" stroke="{SURFACE}" stroke-width="1"/></g>')
+    return lines
+
+
+def _drawn_bytes(exe: ExeProgress) -> int:
+    return sum(c.size for cells in _unit_cells(exe).values() for c in cells)
+
+
+def _exe_svg(exe: ExeProgress, rect: Rect) -> list[str]:
+    """One EXE: a caption strip, then its units squarified, largest first."""
+    x, y, w, h = rect
+    totals = exe.totals
+    caption = (f"{exe.label}: {shield_message(totals.percent)} decompiled, "
+               f"{totals.matched_functions:,} of {totals.total_functions:,} functions matched")
+    lines = [f'<g data-exe="{_xml(exe.stem)}">',
+             f'<text x="{_num(x + 4)}" y="{_num(y + 14)}" fill="{INK}">{_xml(caption)}</text>']
+    groups = _unit_cells(exe)
+    order = sorted(groups, key=lambda u: (-sum(c.size for c in groups[u]),
+                                          min(c.start for c in groups[u]), u))  # fmt: skip
+    area = (x, y + EXE_HEADER, w, max(h - EXE_HEADER, 0.0))
+    sizes = [sum(c.size for c in groups[u]) for u in order]
+    for unit, unit_rect in zip(order, squarify(sizes, area), strict=True):
+        lines += _unit_svg(exe, unit, groups[unit], unit_rect)
+    # A wider gap than the units' between the two EXEs' maps.
+    lines.append(f'<rect {_box(area)} fill="none" stroke="{SURFACE}" stroke-width="4"/>')
+    lines.append("</g>")
+    return lines
+
+
+def _legend_svg(progress: Progress) -> list[str]:
+    combined = progress.combined
+    heading = (f"X-COM Apocalypse (DOS): {shield_message(combined.percent)} decompiled, "
+               f"{combined.matched_functions:,} of {combined.total_functions:,} functions")
+    lines = [f'<text x="8" y="20" font-weight="bold" fill="{INK}">{_xml(heading)}</text>']
+    widths = [LEGEND_GAP + LEGEND_CHAR * len(LEGEND_LABELS[s]) for s in CELL_STATUSES]
+    x = SVG_WIDTH - LEGEND_MARGIN - sum(widths)  # right-aligned, clear of the heading
+    for status in CELL_STATUSES:
+        label = LEGEND_LABELS[status]
+        lines.append(f'<circle cx="{_num(x + 5)}" cy="15" r="5" '
+                     f'fill="{TREEMAP_COLORS[status]}"/>')  # fmt: skip
+        lines.append(f'<text x="{_num(x + 14)}" y="19" fill="{SECONDARY_INK}">{_xml(label)}</text>')
+        x += LEGEND_GAP + LEGEND_CHAR * len(label)
+    return lines
+
+
+def render_svg(progress: Progress) -> str:
+    """progress.svg: a squarified treemap nested EXE, unit, then one cell per game, thunk and
+    runtime function sized by bytes, plus one cell per unit for its uncovered bytes, in the
+    fixed TREEMAP_COLORS (D-26, D-50). EXEs keep EXES order; units and cells go largest first,
+    then by address, so the same CSVs give the same bytes. Tooltips (<title>) sit on unit
+    groups and matched cells only, coordinates are rounded to 0.1, and no game byte is in it."""
+    lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" '
+             f'height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" '
+             f'aria-label="Decompilation progress mosaic" font-family="{FONT}" '
+             f'font-size="12">',
+             f'<rect x="0" y="0" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" fill="{SURFACE}"/>']
+    lines += _legend_svg(progress)
+    exes = [exe for exe in progress.exes if _drawn_bytes(exe) > 0]
+    area = (0.0, float(LEGEND_HEIGHT), float(SVG_WIDTH), float(SVG_HEIGHT - LEGEND_HEIGHT))
+    for exe, rect in zip(exes, squarify([_drawn_bytes(e) for e in exes], area), strict=True):
+        lines += _exe_svg(exe, rect)
+    lines.append("</svg>")
+    return "\n".join(lines) + "\n"
+
+
+def write_svg(progress: Progress, path: Path) -> None:
+    _write_atomic(path, render_svg(progress).encode("utf-8"))
+
+
 # ---- command line ----
 
 
@@ -619,7 +856,8 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="progress.py", description=__doc__.splitlines()[0])
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                    help="the config tree (default: %(default)s)")  # fmt: skip
-    p.add_argument("--out", type=Path, help="write progress.json and progress-shield.json here")
+    p.add_argument("--out", type=Path,
+                   help="write progress.json, progress-shield.json and progress.svg here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -632,6 +870,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda p, path: write_progress_json(p, path, args.commit)
         yield args.out / SHIELD_JSON, write_shield
+        yield args.out / PROGRESS_SVG, write_svg
     if args.report is not None:
         yield args.report, write_report
     if args.decomphub is not None:
