@@ -35,13 +35,13 @@ key-files:
 
 key-decisions:
   - "Spike 006 verdict INVALIDATED (D-02): unpatched fork mode stops at its own setup (auto False) and at check (no objdiff.json), registers no function, so compile_and_diff answers 'no function'; no build in WSL2 (ninja, wibo, objdiff-cli missing)"
-  - "Even with a build, the code evidence refuses the submission: _names spells the function func_X_ (objdiff's name), the C finder needs func_X(, and the _stub regex misses bare INCLUDE_ASM(func_X); so replace would append next to the marker, which configure.check_unit_source refuses"
+  - "Even with a build, the code evidence refuses the submission: _names spells the function func_X_ (objdiff's name), the C finder needs func_X(, and the _stub regex misses bare INCLUDE_ASM(func_X); so _attempt writes it through _insert_in_order (stub kept), and marker plus definition is what configure.check_unit_source refuses"
   - "Phase 6 uses the own agent layer (D-03, D-04); decomp.wtf is re-evaluated for Phase 7 claims (DEC-02/DEC-06)"
 
 patterns-established:
   - "Spike claim checkers over third-party code: ast-only extraction, cross-checked against the repo's own configure.py loaded by path"
 
-requirements-completed: [AGT-10]
+requirements-completed: []  # AGT-10 partial (spike only); 06-20, 06-21 and 06-27 also carry AGT-10
 
 coverage:
   - id: D1
@@ -53,7 +53,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: "linker_name.py: func_X_ lookup vs func_X( finder, _CHEAT on submissions only, replace appends, configure refuses marker+definition; --plant fails"
+    description: "linker_name.py: func_X_ lookup vs func_X( finder, _CHEAT on submissions only, _attempt inserts through _insert_in_order with the stub kept (planted control refused, csource.replace unused), configure refuses marker+definition; --plant fails"
     requirement: AGT-10
     verification:
       - kind: other
@@ -77,7 +77,7 @@ status: complete
 
 # Phase 6 Plan 01: decomp.wtf fork-mode spike (006) Summary
 
-**Spike 006: INVALIDATED. Unpatched decomp.wtf v0.10.6 fork mode clones the repo and then stops at its own setup with no objdiff.json, so no build runs in WSL2 (ninja, wibo and objdiff-cli are missing). The code evidence shows a submission would be refused even with a build: fork mode spells the function func_X_, its stub regex misses `INCLUDE_ASM(func_X);`, and it would append a second definition that the D-12 check refuses. Phase 6 uses the own agent layer.**
+**Spike 006: INVALIDATED. Unpatched decomp.wtf v0.10.6 fork mode clones the repo and then stops at its own setup with no objdiff.json, so no build runs in WSL2 (ninja, wibo and objdiff-cli are missing). The code evidence shows a submission would be refused even with a build: fork mode spells the function func_X_, its stub regex misses `INCLUDE_ASM(func_X);`, and `_insert_in_order` would add the definition with the stub kept, which the D-12 check refuses. Phase 6 uses the own agent layer.**
 
 ## Performance
 
@@ -91,12 +91,12 @@ status: complete
 
 - Pinned tarball `https://github.com/i12bp8/decomp.wtf/archive/refs/tags/v0.10.6.tar.gz`, sha256 `0eb7bddd809217222664509bd51c5ebc2be10864d361baeacb521cb49ce11b86`. It is extracted only under the gitignored `build/spike006/` and read as text.
 - `stub_regex.py` prints ALL PASS. `_stub`'s class before the name is `[\"/,\s]`, so `INCLUDE_ASM(func_000A34F0);` does not match and the quoted form does. None of the 12 INCLUDE_ASM markers under `src/` is found.
-- `linker_name.py` prints ALL PASS on 10 claims:
+- `linker_name.py` prints ALL PASS on 13 claims (10 before fix round 1):
   - `_names` ends with `meta["symbol"]`, which is objdiff's `f["name"]`, here `func_000A3980_`, and nothing strips the underscore.
   - `csource.find("func_000A3980_")` misses `int func_000A3980(void) {`.
   - `_attempt` raises when the submission has no span.
   - `_CHEAT.search` runs only on `source` in `_attempt` and on `new` in `edit_file`.
-  - `replace` appends when nothing is found.
+  - With no span in the unit file, `_attempt` calls `_insert_in_order`, which inserts the definition with the stub kept. All 3 of its returns keep all of the file text. A planted return that drops the span is refused, and nothing calls `csource.replace`.
   - Our `check_unit_source` returns `func_000A3980 is both defined in C and marked INCLUDE_ASM`.
 - Smoke-run failure, quoted verbatim from `build/spike006/smoke.log`:
   - `STEP setup: ERROR NetworkError: this project has its own setup: follow its README, then click Check again`
@@ -112,14 +112,14 @@ status: complete
 ## Files Created/Modified
 
 - `.planning/spikes/006-decompwtf-fork-stub/stub_regex.py`: the stub-regex claim checker (`SRC [--plant]`).
-- `.planning/spikes/006-decompwtf-fork-stub/linker_name.py`: checks the linker-name, `_CHEAT`, replace-appends and configure.py claims (`SRC [--plant]`).
+- `.planning/spikes/006-decompwtf-fork-stub/linker_name.py`: checks the linker-name, `_CHEAT`, `_attempt`/`_insert_in_order` (stub kept) and configure.py claims (`SRC [--plant]`).
 - `.planning/spikes/006-decompwtf-fork-stub/README.md`: the spike record, with `verdict: INVALIDATED`.
 - `.planning/spikes/MANIFEST.md`: the `### reporting-and-agent-pilot` idea entry and the `| 006 |` row.
 - `docs/tools.md`: the decomp.wtf row now records the spike 006 result and the D-03 consequence. Its status column reads "Phase 6: not used (spike 006); re-evaluated in Phase 7".
 
 ## Decisions Made
 
-- The verdict is INVALIDATED, not PARTIAL. Reaching PARTIAL would take a name-lookup patch, a stub-regex patch and a WSL2 build wrapper (ninja, wibo, objdiff-cli, Watcom, `objdiff.json` placement). With the WSL2 toolchain counted, that exceeds D-02's "about 50 lines plus a build wrapper". D-03 treats PARTIAL like INVALIDATED for the pilot in any case.
+- The verdict is INVALIDATED and rests only on D-02's "no build in WSL2" clause. The two patches the code evidence points to, the stub regex and the `name_` to `name` lookup, are exactly the patches D-02 lists for PARTIAL. They were not written or sized here; sizing them is left for the Phase 7 re-evaluation (D-03). D-03 treats PARTIAL like INVALIDATED for the pilot in any case.
 - The smoke driver calls the same `tools.call` handlers that `decomp mcp` dispatches to, without the stdio transport. v0.10.6 has no CLI for `compile_and_diff`; fork mode is reached through the GUI API or MCP.
 
 ## Deviations from Plan
@@ -145,7 +145,7 @@ Orchestrator rulings applied: none. rulings.md has no `## 06-01` section, and R-
 
 ## Issues Encountered
 
-- The start of `smoke.log` is lost, including the `== tools before install` block and part of the `setup` traceback. stdout and stderr went to one file through `wsl`, and uv's progress output overwrote the start. So the log cannot show whether uv was present before the run. The `== tools after install` block is intact and is what the README quotes.
+- The start of `smoke.log` is lost, including the `== tools before install` block and part of the `setup` traceback. stdout and stderr went to one file through `wsl`, and uv's progress output overwrote the start. So the log cannot show whether uv was present before the run. The lost block can only be recovered by another WSL2 run, which the executor cannot do (the worktree guard blocks `wsl`). A future run should send stderr to its own file inside smoke_wsl.sh. The `== tools after install` block is intact and is what the README quotes.
 - `uv run` created `.venv` in the worktree. It is gitignored and untracked.
 
 ## User Setup Required
@@ -155,7 +155,7 @@ None. No external service configuration is required.
 ## Next Phase Readiness
 
 - AGT-10 follows the own-agent-layer branch: the driver, hooks, `watcom-decomp` skill, context pack and CLI calls through the Bash allowlist (D-04, D-44). The other Phase 6 plans were already planned for it.
-- decomp.wtf goes to Phase 7 for claims (DEC-02/DEC-06). That evaluation would have to address the stub regex, the `func_X_` lookup, `objdiff.json` placement and a WSL2 build.
+- decomp.wtf goes to Phase 7 for claims (DEC-02/DEC-06). That evaluation has to size the stub-regex and `name_` lookup patches against D-02's PARTIAL budget, and provide a WSL2 build. `objdiff.json` is not an obstacle: configure.py writes it at the repo root, where `check` looks.
 
 ## Threat Flags
 
@@ -172,3 +172,20 @@ Execution context nonce: c222325c277cc369
 - FOUND: .planning/spikes/006-decompwtf-fork-stub/README.md, stub_regex.py, linker_name.py
 - FOUND: f0f79ea, b3b4636 (ancestors of HEAD)
 - Verified after commit b3b4636: `uv run ruff check .` passed, `uv run pytest -q` passed (1416 passed, 215 skipped), and `tests/test_hygiene.py` passed.
+
+## Fix round 1
+
+Review: `review-06-01.md`, FIX_BASE 9aa28e0. The verdict letter is unchanged.
+
+| # | Finding | Fix | Commit |
+|---|---------|-----|--------|
+| I1 | Third D-01 claim proven through `csource.replace`, which nothing calls | `replace-appends` replaced by `attempt-inserts` (`old_span` from `self._find(before, ...)`, else `_insert_in_order`) and `insert-keeps-stub` (all 3 returns keep all of `text`, fail-closed shape check). Added an `insert-control` planted span-dropping return (refused) and `replace-unused` (0 callers). Both checkers and both `--plant` runs re-run (ALL PASS / `1 FAILED`, exit 1). README output block refreshed from the new `linker_name.out`; README What-This-Validates, step 3, and SUMMARY key-decision, one-liner and accomplishments reworded to "inserted by `_insert_in_order` (stub kept)" | 013cbc8 (scripts), 81f2c3c (README), this commit (SUMMARY) |
+| I2 | PARTIAL ruled out by counting the toolchain against the patch budget | The verdict rests only on D-02's "no build in WSL2". The stub-regex and `name_` patches are named as D-02's PARTIAL list, unsized, left for the Phase 7 re-evaluation (D-03). README verdict, SUMMARY decision and docs/tools.md row updated | 81f2c3c, this commit |
+| m1 | `objdiff.json` placement called an obstacle | README and SUMMARY now say configure.py writes it next to `build.ninja` at the repo root, where `check` looks; it was missing only because no build ran | 81f2c3c, this commit |
+| m3 | `requirements-completed: [AGT-10]` premature | Set to `[]`, with a note: AGT-10 partial (spike only); 06-20, 06-21 and 06-27 also carry it | this commit |
+| m5 | EXPECTED comments in stub_regex.py read opposite to their values | Phrased as the question each value answers | 013cbc8 |
+| m6 | Shape errors always labelled `forkengine.py` | `shaped()` names the file each SpikeError came from (checked against an empty SRC: `FAIL forkengine.py shape expected one app/forkengine.py ...`) | 013cbc8 |
+| m2 | `_FINDER_PREFIX` copied 31 chars of decomp.wtf regex | Removed. The plain-name pattern is now located structurally, as the `re.compile` in the `else` of `find`'s `if "::" in name` | 013cbc8 |
+| m4 | Lost `tools before install` block | Recorded under Issues Encountered: it can only be recovered by another WSL2 run, which the executor cannot do. A future run should send stderr to its own file. Not run | this commit |
+
+After the fixes: `uv run ruff check .` passed, `uv run pytest -q` passed (1416 passed, 215 skipped), and `tests/test_hygiene.py` passed.
