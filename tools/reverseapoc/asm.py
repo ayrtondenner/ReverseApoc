@@ -242,9 +242,11 @@ def select_rows(
 
 
 def file_name(symbols: SymbolTable, row: FunctionRow) -> str:
-    """<C name>.s, or <kind>_<start>.s for a name that is not a safe file name."""
+    """<C name>.s, or <kind>_<start>.s for a name that is not a safe file name or that more than
+    one row carries (`symbols.ambiguous`, e.g. _Alphabet in rt_itoa and rt_ltoa), so every row
+    gets its own listing (DI-01)."""
     name = symbols.c_name(row.start)
-    if not _SAFE_FILE.fullmatch(name):
+    if not _SAFE_FILE.fullmatch(name) or name in symbols.ambiguous:
         name = f"{row.kind.replace('-', '_')}_{row.start:08X}"
     return name + LISTING_SUFFIX
 
