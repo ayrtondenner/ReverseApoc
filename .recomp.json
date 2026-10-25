@@ -39,11 +39,6 @@
       "url": "https://github.com/openapoc/openapoc"
     }
   ],
-  "help": [
-    "Watcom 10.x codegen knowledge",
-    "LE/OMF tooling",
-    "X-COM Apocalypse internals"
-  ],
   "tags": [
     "x-com",
     "dos",
