@@ -310,8 +310,10 @@ def _check_object_name(obj: Path) -> None:
 def _check_log_name(log: Path) -> None:
     """The log's lock sidecar is `<log>.lock`, so the log needs a file name, and the line is
     appended to it, so it may not be a directory. Checked before the compile, so a path without
-    a name (`--log .`, `--log /`) or an existing directory never reaches the runner."""
-    if not log.name:
+    a name (`--log .`, `--log /`, a path ending in `..`) or an existing directory never reaches
+    the runner. `..` is refused by name: `new/..` is a directory even while `new` does not
+    exist, and the lock probe would create `new` before the append failed."""
+    if log.name in ("", ".."):
         raise CompilerError(f"--log {log} names no file; the lock sidecar is <log>{LOCK_SUFFIX}")
     if log.is_dir():
         raise CompilerError(f"--log {log} is a directory; name a file in it")
