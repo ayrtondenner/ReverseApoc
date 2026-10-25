@@ -266,10 +266,7 @@ def test_attempt_dir_is_compared_with_exact_case():
 def test_attempt_check_budget(repo: Path, monkeypatch, capsys):
     """D-07: at most 25 check runs per attempt; the 26th is refused before anything runs."""
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=10.0)), 1))
-    (repo / "checks.jsonl").write_text(
-        "".join(json.dumps({"n": n}) + "\n" for n in range(1, attempt.CHECK_BUDGET)),
-        encoding="utf-8",
-    )
+    _reserve(repo, attempt.CHECK_BUDGET - 1, log=True)
     assert attempt.CHECK_BUDGET == 25
     assert _run(["attempt", "check"]) == 1  # the 25th still runs
     assert _lines(repo)[-1]["n"] == 25
@@ -278,6 +275,92 @@ def test_attempt_check_budget(repo: Path, monkeypatch, capsys):
     assert len(runner.calls) == 1
     assert "check budget" in capsys.readouterr().err
     assert len(_lines(repo)) == 25
+    assert not (repo / "checks" / "0026.c").exists()
+
+
+def _reserve(attempt_dir: Path, count: int, *, log: bool) -> None:
+    """`count` earlier runs: their snapshots (the reserved slots) and, with `log`, their lines."""
+    checks = attempt_dir / "checks"
+    checks.mkdir(exist_ok=True)
+    for n in range(1, count + 1):
+        (checks / f"{n:04d}.c").write_bytes(UNIT_TEXT)
+    if log:
+        lines = "".join(json.dumps({"n": n}) + "\n" for n in range(1, count + 1))
+        (attempt_dir / "checks.jsonl").write_text(lines, encoding="utf-8")
+
+
+def test_a_reserved_slot_counts_even_when_its_run_failed(repo: Path, monkeypatch, capsys):
+    """Security finding 1: the budget counts reserved slots (checks/NNNN.c), so a run that was
+    killed or crashed before it logged a line still counts."""
+    runner = _use(monkeypatch, FakeRunner("not json", returncode=2))
+    _reserve(repo, attempt.CHECK_BUDGET - 1, log=False)
+    assert _run(["attempt", "check"]) == 2  # an exit-2 run is a run
+    assert _lines(repo)[-1]["n"] == attempt.CHECK_BUDGET
+    capsys.readouterr()
+    assert _run(["attempt", "check"]) == 2
+    assert "check budget" in capsys.readouterr().err
+    assert len(runner.calls) == 1
+
+
+def test_attempt_check_refuses_a_concurrent_run(repo: Path, monkeypatch, capsys):
+    """Security finding 1: a second check while one runs (Bash run_in_background) is refused
+    at once, and the count stays right."""
+    import threading
+
+    entered, release = threading.Event(), threading.Event()
+    calls = []
+
+    def blocking(argv):
+        calls.append(tuple(argv))
+        entered.set()
+        assert release.wait(10)
+        return attempt.Ran(0, json.dumps(_check_doc(ok=True)), "")
+
+    monkeypatch.setattr(attempt, "RUNNER", blocking)
+    first: list[int] = []
+    thread = threading.Thread(target=lambda: first.append(_run(["attempt", "check"])))
+    thread.start()
+    try:
+        assert entered.wait(10)
+        assert _run(["attempt", "check"]) == 2
+        assert _run(["attempt", "check", "--sweep"]) == 2
+    finally:
+        release.set()
+        thread.join(10)
+    assert first == [0]
+    assert len(calls) == 1
+    assert "another check is running in this attempt" in capsys.readouterr().err
+    assert [line["n"] for line in _lines(repo)] == [1]
+    assert sorted(p.name for p in (repo / "checks").iterdir()) == ["0001.c", "0001.json"]
+    assert not (repo / "check.lock").exists()
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert [line["n"] for line in _lines(repo)] == [1, 2]
+
+
+def test_attempt_check_releases_the_lock_after_a_runner_exception(repo: Path, monkeypatch):
+    def broken(argv):
+        raise RuntimeError("made-up runner failure")
+
+    monkeypatch.setattr(attempt, "RUNNER", broken)
+    with pytest.raises(RuntimeError):
+        main(["attempt", "check"])
+    assert not (repo / "check.lock").exists()
+    assert (repo / "checks" / "0001.c").is_file()  # the slot stays reserved
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert _lines(repo)[-1]["n"] == 2
+
+
+def test_a_stale_lock_is_never_cleared(repo: Path, monkeypatch, capsys):
+    """A lock left by a killed run ends this attempt's checks (fail closed): the driver gives
+    every session a fresh attempt directory."""
+    (repo / "check.lock").write_text("12345\n", encoding="utf-8")
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 2
+    assert runner.calls == []
+    assert (repo / "check.lock").is_file()
+    assert "another check is running in this attempt" in capsys.readouterr().err
 
 
 def test_attempt_forms_match_the_hook(repo: Path, monkeypatch):
