@@ -7,10 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import build_le_image, fixup_record, write_manifest
-from reverseapoc.asm import AsmError, listing, select_rows, write_listings
+from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
+from reverseapoc.asm import AsmError, file_name, listing, select_rows, write_listings
 from reverseapoc.cli import main as cli_main
-from reverseapoc.functions import FunctionRow, write_functions_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    read_functions_csv,
+    read_symbols_csv,
+    write_functions_csv,
+)
 from reverseapoc.le import LE
 from reverseapoc.symbols import SymbolTable
 
@@ -171,3 +176,46 @@ def test_write_listings_report(tmp_path: Path):
         "func_00010010.s",
         "func_00010020.s",
     ]
+
+
+# ---- one listing per row (DI-01, backlog 999.3) ----
+
+ALPHABET_ITOA = CODE + 0x40
+ALPHABET_LTOA = CODE + 0x80
+ALPHABET = "_Alphabet"  # a module-local public of rt_itoa and of rt_ltoa
+
+
+def test_ambiguous_name_gets_one_listing_per_row(tmp_path: Path):
+    rows = [
+        FunctionRow(ALPHABET_ITOA, ALPHABET_ITOA + 0x10, ALPHABET, "runtime", "rt_itoa", "runtime"),
+        FunctionRow(ALPHABET_LTOA, ALPHABET_LTOA + 0x10, ALPHABET, "runtime", "rt_ltoa", "runtime"),
+    ]
+    symbols = SymbolTable.build(rows)
+    assert ALPHABET in symbols.ambiguous
+    flat = bytes(ALPHABET_LTOA + 0x10)
+    out = tmp_path / "asm"
+    report = write_listings(rows, flat=flat, fixups=(), symbols=symbols, out_dir=out)
+    assert report.count == 2
+    names = sorted(p.name for p in out.iterdir())
+    assert names == [f"runtime_{ALPHABET_ITOA:08X}.s", f"runtime_{ALPHABET_LTOA:08X}.s"]
+    for row in rows:
+        text = (out / f"runtime_{row.start:08X}.s").read_text(encoding="utf-8")
+        assert text.splitlines()[0].startswith(f"# {ALPHABET}  0x{row.start:08X}")
+
+
+@pytest.mark.parametrize("stem", ["ufo2p", "tacp"])
+def test_committed_listing_names_are_unique(stem: str):
+    """Every committed functions.csv row gets its own listing name, compared case-insensitively
+    (the asm/ bind mount is NTFS). CSVs only: no orig/, no LE (orchestrator ruling F6)."""
+    config = REPO_ROOT / "config" / stem
+    rows = read_functions_csv(config / "functions.csv")
+    symbols = SymbolTable.build(rows, read_symbols_csv(config / "symbols.csv"))
+    seen: dict[str, int] = {}
+    collisions = []
+    for row in rows:
+        key = file_name(symbols, row).casefold()
+        if key in seen:
+            collisions.append(f"0x{seen[key]:08X} and 0x{row.start:08X} -> {key}")
+        seen.setdefault(key, row.start)
+    assert collisions == []
+    assert len(seen) == len(rows)
