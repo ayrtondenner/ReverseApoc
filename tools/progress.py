@@ -24,9 +24,13 @@ an interrupted run leaves the previous file whole. The script is stdlib-only and
 syntax: the Pages runner runs it with its system `python3 -I` (D-27), where reverseapoc is not
 importable. `gate` loads it by path (functools.cache, like check._configure loads configure.py).
 
-    python -I tools/progress.py [--config DIR] [--out DIR] [--commit SHA]
+    python -I tools/progress.py [--config DIR] [--out DIR] [--report PATH]
+                                [--decomphub PATH] [--commit SHA]
 
---out DIR writes DIR/progress.json and DIR/progress-shield.json (the shields.io endpoint).
+--out DIR writes DIR/progress.json and DIR/progress-shield.json (the shields.io endpoint);
+--report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
+<exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
+also rewrites next to config/ after it writes matched rows. Every output's directory is created.
 Exit 0 on success, 2 when a CSV is malformed or an argument is wrong.
 """
 
@@ -41,7 +45,7 @@ import os
 import re
 import secrets
 import sys
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -440,6 +444,163 @@ def write_shield(progress: Progress, path: Path) -> None:
     _write_atomic(path, render(build_shield(progress)))
 
 
+# ---- report.json in objdiff's report shape (D-28, D-49) ----
+
+
+@dataclass(frozen=True)
+class _Tally:
+    """What objdiff's Measures sum over units. `fuzzy` is the size-weighted percent sum."""
+
+    code: int = 0
+    matched: int = 0
+    fuzzy: float = 0.0
+    functions: int = 0
+    matched_functions: int = 0
+    units: int = 0
+    complete_units: int = 0
+    complete_code: int = 0
+
+    def __add__(self, other: _Tally) -> _Tally:
+        return _Tally(*(getattr(self, f.name) + getattr(other, f.name)
+                        for f in dataclasses.fields(self)))  # fmt: skip
+
+    def measures(self) -> dict[str, object]:
+        """Every report.proto Measures field: u64 as decimal strings (pbjson's proto3 JSON
+        mapping), u32 and floats as numbers. No data is measured, so data totals are 0 and
+        their percents 100.0, objdiff's figure for a zero total."""
+        fuzzy = PERCENT_MAX if self.code == 0 else round(self.fuzzy / self.code, PERCENT_DECIMALS)
+        return {
+            "fuzzy_match_percent": fuzzy,
+            "total_code": str(self.code),
+            "matched_code": str(self.matched),
+            "matched_code_percent": percent(self.matched, self.code),
+            "total_data": "0",
+            "matched_data": "0",
+            "matched_data_percent": PERCENT_MAX,
+            "total_functions": self.functions,
+            "matched_functions": self.matched_functions,
+            "matched_functions_percent": percent(self.matched_functions, self.functions),
+            "complete_code": str(self.complete_code),
+            "complete_code_percent": percent(self.complete_code, self.code),
+            "complete_data": "0",
+            "complete_data_percent": PERCENT_MAX,
+            "total_units": self.units,
+            "complete_units": self.complete_units,
+        }
+
+
+UNCOVERED_UNIT = "uncovered"
+UNASSIGNED_UNIT = "unassigned"  # a functions.csv row whose unit cell is still empty
+REPORT_VERSION = 2  # objdiff-core's REPORT_VERSION
+
+
+def _unit_tally(functions: Sequence[Function]) -> _Tally:
+    code = sum(f.size for f in functions)
+    complete = all(f.status == MATCHED for f in functions)
+    return _Tally(code=code, matched=sum(f.size for f in functions if f.status == MATCHED),
+                  fuzzy=sum(f.size * f.best_percent for f in functions),
+                  functions=len(functions),
+                  matched_functions=sum(1 for f in functions if f.status == MATCHED),
+                  units=1, complete_units=int(complete),
+                  complete_code=code if complete else 0)  # fmt: skip
+
+
+def _item(f: Function) -> dict[str, object]:
+    return {"name": f.name, "size": str(f.size), "fuzzy_match_percent": f.best_percent,
+            "address": str(f.start)}  # fmt: skip
+
+
+def _report_units(exe: ExeProgress) -> list[tuple[dict[str, object], _Tally]]:
+    """One report unit per unit holding game/thunk rows, in address order, then the EXE's
+    uncovered bytes as one synthetic unit (D-50); runtime rows are in none (D-26)."""
+    by_unit: dict[str, list[Function]] = {}
+    for f in exe.functions:
+        by_unit.setdefault(f.unit or UNASSIGNED_UNIT, []).append(f)
+    out = []
+    for unit, functions in by_unit.items():
+        tally = _unit_tally(functions)
+        out.append(({"name": f"{exe.stem}/{unit}", "measures": tally.measures(),
+                     "functions": [_item(f) for f in functions],
+                     "metadata": {"complete": bool(tally.complete_units),
+                                  "progress_categories": [exe.stem]}}, tally))  # fmt: skip
+    # A bucket of bytes no row claims yet, never "complete": it cannot be finished, only
+    # attributed (a later phase), even when it is empty.
+    tally = _Tally(code=sum(exe.uncovered), units=1)
+    out.append(({"name": f"{exe.stem}/{UNCOVERED_UNIT}", "measures": tally.measures(),
+                 "metadata": {"complete": False, "progress_categories": [exe.stem],
+                              "auto_generated": True}}, tally))  # fmt: skip
+    return out
+
+
+def build_report(progress: Progress) -> dict[str, object]:
+    """report.json: objdiff's Report with `measures`, `units`, `version` and one category per
+    EXE (D-28, D-49). Its combined matched_code_percent is progress.json's combined percent:
+    both are matched bytes over game + thunk + uncovered bytes."""
+    units: list[dict[str, object]] = []
+    categories: list[dict[str, object]] = []
+    total = _Tally()
+    for exe in progress.exes:
+        listed = _report_units(exe)
+        category = _Tally()
+        for unit, tally in listed:
+            units.append(unit)
+            category = category + tally
+        categories.append({"id": exe.stem, "name": exe.label, "measures": category.measures()})
+        total = total + category
+    return {"measures": total.measures(), "units": units, "version": REPORT_VERSION,
+            "categories": categories}  # fmt: skip
+
+
+def write_report(progress: Progress, path: Path) -> None:
+    _write_atomic(path, render(build_report(progress)))
+
+
+# ---- decomphub.progress.json, DecompHub progress-v1 (D-29) ----
+
+DECOMPHUB_FORMAT = "decomphub.progress/v1"
+REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
+FUNCTIONS_UNIT = "functions"
+
+
+def _code_track(exe: ExeProgress) -> dict[str, object]:
+    return {
+        "id": f"{exe.stem}-code",
+        "label": f"{exe.label} code decompiled",
+        "scope": (f"Bytes of {exe.label}'s game and thunk functions rebuilt byte for byte from C, "
+                  "over all game and thunk bytes plus the bytes inside unit spans that no "
+                  "function row covers yet (mostly alignment filler). The Watcom runtime and "
+                  "data in code are excluded."),
+        "measurement": {"kind": "percent", "value": exe.totals.percent},
+    }  # fmt: skip
+
+
+def _functions_track(exe: ExeProgress) -> dict[str, object]:
+    totals = exe.totals
+    measurement = None if totals.total_functions == 0 else {
+        "kind": "ratio", "completed": totals.matched_functions,
+        "total": totals.total_functions, "unit": FUNCTIONS_UNIT}  # fmt: skip
+    return {
+        "id": f"{exe.stem}-functions",
+        "label": f"{exe.label} functions matched",
+        "scope": (f"Game and thunk functions of {exe.label} whose rebuilt C is byte-identical "
+                  "to the original (matched rows of status.csv), over all game and thunk "
+                  "functions in functions.csv."),
+        "measurement": measurement,
+    }  # fmt: skip
+
+
+def build_decomphub(progress: Progress) -> dict[str, object]:
+    """The progress-v1 feed: a code percent and a function ratio per EXE. No `revision` (a file
+    cannot hold its own commit hash) and no timestamp, so it is byte-stable (D-29)."""
+    tracks = [_code_track(exe) for exe in progress.exes]
+    tracks += [_functions_track(exe) for exe in progress.exes]
+    return {"format": DECOMPHUB_FORMAT, "repository": REPOSITORY, "tracks": tracks}
+
+
+def write_decomphub(progress: Progress, path: Path) -> None:
+    _write_atomic(path, render(build_decomphub(progress)))
+
+
 # ---- command line ----
 
 
@@ -448,28 +609,37 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                    help="the config tree (default: %(default)s)")  # fmt: skip
     p.add_argument("--out", type=Path, help="write progress.json and progress-shield.json here")
+    p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
+    p.add_argument("--decomphub", type=Path,
+                   help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
     p.add_argument("--commit", help="the commit the figures come from, recorded in progress.json")
     return p
 
 
-def _outputs(args: argparse.Namespace) -> Iterable[Path]:
+def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress, Path], None]]]:
+    """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
-        yield args.out / PROGRESS_JSON
+        yield args.out / PROGRESS_JSON, lambda p, path: write_progress_json(p, path, args.commit)
+        yield args.out / SHIELD_JSON, write_shield
+    if args.report is not None:
+        yield args.report, write_report
+    if args.decomphub is not None:
+        yield args.decomphub, write_decomphub
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.out is None:
-        parser.error("nothing to write: give --out")
+    writes = list(_writes(args))
+    if not writes:
+        parser.error("nothing to write: give --out, --report or --decomphub")
     if args.commit is not None and not _COMMIT.fullmatch(args.commit):
         parser.error(f"--commit {args.commit!r} is not a lower-case hex commit id")
     try:
         progress = derive(args.config)
-        for path in _outputs(args):  # ruling F17: every output's directory is created
-            path.parent.mkdir(parents=True, exist_ok=True)
-        write_progress_json(progress, args.out / PROGRESS_JSON, args.commit)
-        write_shield(progress, args.out / SHIELD_JSON)
+        for path, write in writes:
+            path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
+            write(progress, path)
     except (ProgressError, OSError) as exc:
         print(f"progress.py: error: {exc}", file=sys.stderr)
         return 2

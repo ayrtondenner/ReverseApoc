@@ -119,7 +119,7 @@ def test_report_units_are_the_units_with_game_rows(committed):
     progress = load_progress()
     derived = progress.derive(CONFIG)
     for exe in derived.exes:
-        expected = sorted({f.unit for f in exe.functions})
+        expected = list(dict.fromkeys(f.unit for f in exe.functions))  # address order
         listed = [u["name"].split("/", 1)[1] for u in committed["units"]
                   if u["name"].startswith(f"{exe.stem}/") and u["name"] != f"{exe.stem}/uncovered"]
         assert listed == expected
