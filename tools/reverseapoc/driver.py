@@ -214,6 +214,11 @@ def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
     return sorted(found.items())
 
 
+def transcript_paths(events: Sequence[dict], repo: Path) -> list[list[str] | None]:
+    """Stub (plan 06-23 Task 2 RED)."""
+    return []
+
+
 # ---- one claim ----
 
 

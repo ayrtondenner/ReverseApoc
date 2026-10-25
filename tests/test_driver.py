@@ -16,7 +16,9 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from reverseapoc import attempt
+import pytest
+
+from reverseapoc import attempt, driver
 from reverseapoc.driver import (
     COAUTHOR,
     MATCHED_BY,
@@ -162,6 +164,7 @@ class Night:
     unit_committed: bool = True
 
     def __post_init__(self) -> None:
+        self.tmp_path.mkdir(parents=True, exist_ok=True)
         self.env = _git_env(self.tmp_path)
         self.repo = _make_repo(self.tmp_path, self.env, unit=self.unit_committed)
         self.base = _git(self.repo, self.env, "rev-parse", "HEAD").strip()
@@ -174,6 +177,7 @@ class Night:
         self.scaffolded: list[Pick] = []
         self.sleeps: list[float] = []
         self.now = 1000.0
+        self.inject: list[str] = []
         self._current = Sess()
         self._git = git_runner(self.repo, env=self.env)
 
@@ -241,8 +245,16 @@ class Night:
         return code
 
     def _recorded_git(self, args):
+        """The real git in the tmp repo, recording every argv. After the first launch, a
+        `status` also reports the made-up untracked entries in `self.inject` (a name NTFS
+        cannot hold, such as `include/*.h`, can only reach the driver this way)."""
         self.git_calls.append(list(args))
-        return self._git(args)
+        done = self._git(args)
+        if "status" in args and self.launched and self.inject:
+            extra = b"".join(f"?? {path}\0".encode() for path in self.inject)
+            out = (done.stdout or b"") + extra
+            done = subprocess.CompletedProcess(done.args, done.returncode, out, done.stderr)
+        return done
 
     def _sleep(self, seconds: float) -> None:
         self.sleeps.append(seconds)
@@ -313,6 +325,11 @@ class Night:
 MATCH_SUBJECT = f"feat({EXE}): match {FUNC} in {UNIT} (C89)"
 
 
+def _verb(call: list[str]) -> str | None:
+    """The git subcommand of a recorded argv (the first token that is not a global option)."""
+    return next((token for token in call if not token.startswith("-")), None)
+
+
 # ---- Task 1: the tracer ----
 
 
@@ -330,11 +347,14 @@ def test_match_commits_one_function(tmp_path):
         assert needle in body, needle
     assert body.rstrip("\n").splitlines()[-2:] == [COAUTHOR, MATCHED_BY]
     assert night.gate_calls == [(PICK, 1)]
-    adds = [call for call in night.git_calls if call[:1] == ["add"]]
-    assert adds and all(call[1] == "--" for call in adds)
+    adds = [call for call in night.git_calls if _verb(call) == "add"]
+    assert adds and all(call[call.index("add") + 1] == "--" for call in adds)
     assert not [c for c in night.git_calls if "-A" in c or "--all" in c or c[-1:] == ["."]]
-    commit = next(call for call in night.git_calls if call[:1] == ["commit"])
-    assert "-F" in commit and commit[commit.index("--") + 1:] == adds[0][2:]
+    commit = next(call for call in night.git_calls if _verb(call) == "commit")
+    assert "-F" in commit and commit[commit.index("--") + 1:] == adds[0][adds[0].index("--") + 1:]
+    # Security ruling (06-23 commit_match): paths are never globs.
+    assert all(call[0] == "--literal-pathspecs" for call in night.git_calls
+               if _verb(call) in ("add", "commit"))  # fmt: skip
 
 
 def test_match_record_is_appended(tmp_path):
@@ -374,3 +394,323 @@ def test_match_commit_adds_new_files(tmp_path):
     assert night.scaffolded == [PICK]
     assert night.commit_files("feat(") == sorted(
         [UNIT_REL, "include/x.h", f"config/{EXE}/status.csv", "decomphub.progress.json", LOG])
+
+
+# ---- Task 2: caps, backoff, stop classes, the audit and the reset ----
+
+
+def _pick(i: int) -> Pick:
+    start = START + 0x10 * i
+    return Pick(EXE, start, f"func_{start:08X}", UNIT, 20, 100 + i)
+
+
+def _runs(night: Night) -> list[tuple[str, str]]:
+    return [(r["event"], r["reason"]) for r in night.kinds("run")]
+
+
+def _unit_text(night: Night) -> str:
+    return (night.repo / UNIT_REL).read_text(encoding="utf-8")
+
+
+def _one(items: list):
+    assert len(items) == 1, items
+    return items[0]
+
+
+def _feats(night: Night) -> list[str]:
+    return [s for s in night.commits() if s.startswith("feat(")]
+
+
+def test_partial_resets_and_logs(tmp_path):
+    """F10/F7: the best C is the checks/NNNN.c of the highest plain best_percent (ties go to the
+    earliest; sweep lines and null percents never count), saved under best/ and passed to the
+    partial gate as a repo-relative POSIX path."""
+    checks = (check_line(1, 40.0), check_line(2, 73.5), check_line(3, 73.5),
+              check_line(4, 100.0, sweep=True, exit_code=0, sweep_hit="wcc386@10.5 -4r -ox"),
+              check_line(5, None))  # fmt: skip
+    night = Night(tmp_path, sessions=[Sess(checks=checks)], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    assert _unit_text(night) == SCAFFOLD  # restored to HEAD
+    best = night.attempt_dir(1) / "best" / f"{UNIT}.c"
+    assert best.read_text(encoding="utf-8") == "/* made-up C of check 2 */\n"
+    src = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/best/{UNIT}.c"
+    assert [(p, s, n) for p, s, n, _ in night.partial_calls] == [(PICK, src, 1)]
+    record = _one(night.kinds("attempt"))
+    assert record["outcome"] == "PARTIAL"
+    assert record["check"]["best_percent"] == 73.5
+    assert record["check"]["runs"] == 5
+    assert record["check"]["sweep_hit"] == "wcc386@10.5 -4r -ox"
+    assert record["check"]["needs"] == "needs flags wcc386@10.5 -4r -ox"
+    assert _feats(night) == []
+
+
+def test_gave_up_resets(tmp_path):
+    night = Night(tmp_path, unit_committed=False,
+                  sessions=[Sess(checks=(check_line(1, 0.0), check_line(2, None)))])  # fmt: skip
+    night.run(config={"attempts_per_function": 1})
+    assert night.scaffolded == [PICK]
+    assert not (night.repo / UNIT_REL).exists()  # the unit scaffolded this attempt is deleted
+    record = _one(night.kinds("attempt"))
+    assert record["outcome"] == "GAVE_UP"
+    assert night.partial_calls == []
+
+
+def test_hundred_percent_with_failing_gate_is_partial(tmp_path):
+    """AGT-03 adjacency: objdiff 100.0 in the check log, but the gate exits 1 (a relocation
+    check fails): PARTIAL, never MATCHED, nothing committed."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 100.0, exit_code=0),))],
+                  gate_exits=[1])  # fmt: skip
+    night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    assert record["outcome"] == "PARTIAL"
+    assert night.gate_calls == [(PICK, 1)]
+    assert _feats(night) == []
+    assert night.report.matched == 0
+
+
+def _difficult(night: Night) -> list[dict]:
+    path = night.repo / "build" / "driver" / "difficult.json"
+    return json.loads(path.read_text(encoding="utf-8"))["difficult"]
+
+
+def test_three_attempts_then_difficult(tmp_path):
+    """AGT-02 adjacency: attempt 3 of 3 runs, no fourth session starts in the pass, and the
+    function lands on the difficult list exactly once."""
+    night = Night(tmp_path, sessions=[Sess(), Sess(), Sess(), Sess()])
+    night.run()
+    assert len(night.launched) == 3
+    assert [r["attempt"] for r in night.kinds("attempt")] == [1, 2, 3]
+    assert [(e["exe"], e["start"]) for e in _difficult(night)] == [(EXE, f"0x{START:08X}")]
+
+
+def test_difficult_returns_only_through_requeue(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()] * 3)
+    night.run()
+    night.run()  # the difficult function is skipped: requeue gives nothing back
+    assert len(night.launched) == 3
+    assert _runs(night)[-1] == ("ENDED", "nothing to do")
+    night.run(requeue=lambda difficult: tuple(difficult))  # requeued: eligible again
+    assert len(night.launched) == 6
+    assert len(_difficult(night)) == 1
+
+
+def test_empty_queue_runs_nothing(tmp_path):
+    night = Night(tmp_path, picks=())
+    report = night.run()
+    assert night.launched == []
+    assert _runs(night) == [("STARTED", "start"), ("ENDED", "nothing to do")]
+    assert (report.event, report.reason, report.exit_code) == ("ENDED", "nothing to do", 0)
+
+
+def test_max_sessions_and_target_matched(tmp_path):
+    night = Night(tmp_path / "a", picks=tuple(_pick(i) for i in range(3)))
+    report = night.run(config={"max_sessions": 2})
+    assert len(night.launched) == 2
+    assert (report.reason, report.sessions) == ("max sessions", 2)
+    night = Night(tmp_path / "b", picks=tuple(_pick(i) for i in range(3)),
+                  sessions=[Sess()] * 3, gate_exits=[0, 0, 0])  # fmt: skip
+    report = night.run(config={"target_matched": 2})
+    assert len(night.launched) == 2
+    assert (report.reason, report.matched) == ("target matched", 2)
+    assert len(_feats(night)) == 2
+
+
+def test_limit_backs_off_and_is_not_counted(tmp_path):
+    sessions = [Sess("rate_limit", write=None), Sess("rate_limit", write=None), Sess()]
+    night = Night(tmp_path, sessions=sessions, gate_exits=[0])
+    report = night.run()
+    assert night.sleeps == [60, 120]
+    assert report.sessions == 1
+    assert [(r["attempt"], r["outcome"]) for r in night.kinds("attempt")] == [(1, "MATCHED")]
+
+
+def test_limit_polls_every_five_minutes(tmp_path):
+    sessions = [Sess("rate_limit", write=None)] * 5 + [Sess()]
+    night = Night(tmp_path, sessions=sessions, gate_exits=[0])
+    night.run()
+    assert night.sleeps == [60, 120, 240, 300, 300]
+    assert night.report.sessions == 1
+
+
+def test_a_limit_relaunch_gets_a_fresh_attempt_dir(tmp_path):
+    """The uncounted launch's directory moves aside, so the counted session starts with no
+    stale checks.jsonl (its 90.0 must not make the attempt PARTIAL)."""
+    sessions = [Sess("rate_limit", write=None, checks=(check_line(1, 90.0),)), Sess()]
+    night = Night(tmp_path, sessions=sessions)
+    night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    assert record["outcome"] == "GAVE_UP"
+    aside = night.attempt_dir(1).parent / "attempt-1-uncounted-1"
+    assert (aside / "transcript.jsonl").is_file()
+    assert not (night.attempt_dir(1) / attempt.CHECK_LOG).exists()
+
+
+def test_limit_session_keeps_its_work(tmp_path):
+    """06-17 review: a session the stream classifies LIMIT keeps its work: the gate runs on it
+    as usual and a pass is a counted MATCHED, before the backoff."""
+    night = Night(tmp_path, sessions=[Sess("rejected")], gate_exits=[0])
+    report = night.run()
+    assert _feats(night) == [MATCH_SUBJECT]
+    assert night.sleeps == [60]
+    assert (report.sessions, report.matched) == (1, 1)
+
+
+@pytest.mark.parametrize(("scenario", "reason"), [
+    ("auth", "stop signal"), ("billing", "stop signal"), ("credits", "stop signal"),
+    ("not_logged_in", "stop signal"), ("bad_init_model", "init"), ("bad_init_v3", "init"),
+])  # fmt: skip
+def test_stop_classes_end_the_run(tmp_path, scenario, reason):
+    night = Night(tmp_path, sessions=[Sess(scenario)], picks=(_pick(0), _pick(1)))
+    report = night.run()
+    assert len(night.launched) == 1
+    assert [r for r in _runs(night) if r[0] == "STOPPED"] == [("STOPPED", reason)]
+    assert (report.event, report.reason, report.exit_code) == ("STOPPED", reason, 1)
+    assert _unit_text(night) == SCAFFOLD
+    assert night.kinds("attempt") == []
+
+
+def test_transient_retries_then_aborts(tmp_path):
+    """AGT-03 empty: no result three times -> one abort record, no tri-state record."""
+    sessions = [Sess("overloaded", write=None), Sess("no_result", write=None),
+                Sess("overloaded", write=None)]  # fmt: skip
+    night = Night(tmp_path, sessions=sessions)
+    report = night.run()
+    assert len(night.launched) == 3
+    abort = _one(night.kinds("abort"))
+    assert (abort["abort_reason"], abort["retries"], abort["attempt"]) == ("transient", 3, 1)
+    assert night.kinds("attempt") == []
+    assert report.sessions == 0
+
+
+def test_stray_write_resets_and_stops(tmp_path):
+    """D-17: a write outside the allowlist resets the attempt and stops the night. F11: the
+    session ran in the tmp checkout, so the real checkout never got the file."""
+    sess = Sess(write="tools/x.py", files=((UNIT_REL, "int edited;\n"),))
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)), sessions=[sess])
+    report = night.run()
+    assert len(night.launched) == 1
+    assert [r for r in _runs(night) if r[0] == "STOPPED"] == [("STOPPED", "guardrail")]
+    assert "tools/x.py" in report.detail
+    assert _unit_text(night) == SCAFFOLD
+    assert (night.repo / "tools" / "x.py").is_file()  # left for the owner to inspect
+    assert not (Path(__file__).resolve().parents[1] / "tools" / "x.py").exists()
+    assert night.gate_calls == []
+
+
+def test_session_editing_status_stops_the_night(tmp_path):
+    """F3: the session wrote config/ufo2p/status.csv, which only gate may write."""
+    night = Night(tmp_path, sessions=[Sess(write=f"config/{EXE}/status.csv")])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+
+
+def test_partial_then_second_session_has_no_guardrail_stop(tmp_path):
+    """F3: the driver's own uncommitted changes (attempts.jsonl, partial status.csv rows) sit
+    in the pre-session snapshot, so the next session is not a breach."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),)), Sess()])
+    report = night.run(config={"attempts_per_function": 2})
+    assert len(night.launched) == 2
+    assert [r["outcome"] for r in night.kinds("attempt")] == ["PARTIAL", "GAVE_UP"]
+    assert report.event == "ENDED"
+
+
+def test_timeout_is_counted(tmp_path):
+    night = Night(tmp_path, sessions=[Sess("no_result", write=None, timeout=True)])
+    report = night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["abort_reason"]) == ("GAVE_UP", "timeout")
+    assert report.sessions == 1
+
+
+def test_lint_failure_is_partial_and_commits_nothing(tmp_path):
+    """06-15 note: the C89 lint runs before a match is committed; a failed lint is PARTIAL
+    "lint" and the gate never runs, so status.csv is untouched."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0], lint_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    assert night.lint_calls == [PICK]
+    assert night.gate_calls == []
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["abort_reason"]) == ("PARTIAL", "lint")
+    assert _feats(night) == []
+
+
+def test_session_exception_stops_the_run(tmp_path):
+    """06-17 note: run_session re-raises after killing the tree; the driver records a STOP."""
+    night = Night(tmp_path, sessions=[Sess(raises=RuntimeError("made-up crash"))],
+                  picks=(_pick(0), _pick(1)))  # fmt: skip
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert "made-up crash" in report.detail
+    assert len(night.removed) == 1  # the orphan-container cleanup still ran
+    assert len(night.launched) == 1
+
+
+def test_gate_tool_error_stops_the_run(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[2], picks=(_pick(0), _pick(1)))
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert len(night.launched) == 1
+    assert _unit_text(night) == SCAFFOLD
+
+
+def test_records_are_in_order(tmp_path):
+    """AGT-03 ordering: records in execution order, attempts 1..3 per function per pass, and the
+    log only grows (the copy in the match commit is a prefix of the final log)."""
+    picks = (_pick(0), _pick(1))
+    night = Night(tmp_path, picks=picks, sessions=[Sess()] * 4, gate_exits=[1, 1, 0, 1])
+    night.run()
+    seq = [(r["kind"], r.get("event") or r.get("function"), r.get("attempt"))
+           for r in night.records()]  # fmt: skip
+    f0, f1 = picks[0].name, picks[1].name
+    assert seq[:5] == [("run", "STARTED", None), ("attempt", f0, 1), ("attempt", f0, 2),
+                       ("attempt", f0, 3), ("attempt", f1, 1)]  # fmt: skip
+    final = (night.repo / LOG).read_text(encoding="utf-8")
+    assert final.startswith(night.file_at("feat(", LOG))
+
+
+def test_transcript_paths_are_judged_against_the_checkout():
+    """The audit reads write-tool paths from the transcript: one under the session's cwd (the
+    CLI reports it in init) is repo-relative, one outside is None; reads and Bash are not
+    writes."""
+    events = [
+        {"type": "system", "subtype": "init", "cwd": "/repo"},
+        {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Edit", "input": {"file_path": "/repo/src/ufo2p/u.c"}},
+            {"type": "tool_use", "name": "Write", "input": {"file_path": "/elsewhere/x.c"}},
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "/elsewhere/y.c"}},
+            {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}},
+        ]}},
+    ]  # fmt: skip
+    repo = Path(__file__).resolve().parents[1]
+    assert driver.transcript_paths(events, repo) == [["src/ufo2p/u.c"], None]
+
+
+# ---- Security ruling (06-23 commit_match): only plain new headers, literal pathspecs ----
+
+
+@pytest.mark.parametrize("entry", ["include/*.h", "include/x[1].h", "include/a.txt"])
+def test_an_untracked_include_entry_outside_the_header_form_stops(tmp_path, entry):
+    """An untracked include/ entry that is not include/<name>.h ([A-Za-z0-9_] parts) is a
+    guardrail STOP: the gate never runs, nothing is committed, and the run record names it."""
+    night = Night(tmp_path, gate_exits=[0])
+    if "*" in entry:  # NTFS cannot hold the name: the fake git reports it
+        night.inject.append(entry)
+        night.sessions.append(Sess())
+    else:
+        night.sessions.append(Sess(files=((entry, "/* made up */\n"),)))
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert entry in report.detail
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    assert entry in stopped["detail"]
+    assert night.gate_calls == []
+    assert night.commits() == []
+
+
+def test_a_plain_new_header_is_committed_with_literal_pathspecs(tmp_path):
+    night = Night(tmp_path, gate_exits=[0],
+                  sessions=[Sess(files=(("include/fx_util.h", "/* made up */\n"),))])  # fmt: skip
+    night.run()
+    assert "include/fx_util.h" in night.commit_files("feat(")
+    calls = [call for call in night.git_calls if _verb(call) in ("add", "commit")]
+    assert calls and all(call[0] == "--literal-pathspecs" for call in calls)
