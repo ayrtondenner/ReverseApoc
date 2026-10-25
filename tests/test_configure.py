@@ -471,7 +471,7 @@ def test_config_dir_brings_its_own_manifest(tmp_path):
     assert configure.main(_split_tree(tmp_path, exe="SYN.EXE")) == 0
     text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
     obj = f"$builddir/syn/obj/{UNIT}.obj"
-    assert _edge(text, obj).startswith(f"build {obj}: cc src/syn/{UNIT}.c")
+    assert _edge(text, obj).startswith(f"build {obj} | {obj}.prov.json: cc src/syn/{UNIT}.c")
     assert "$builddir/ufo2p/" not in text
 
 
@@ -483,8 +483,21 @@ def test_config_dir_without_a_manifest_is_refused(tmp_path, capsys):
 
 
 def _edge(text: str, output: str) -> str:
-    """The `build <output>: ...` line of build.ninja text."""
-    return next(line for line in text.splitlines() if line.startswith(f"build {output}:"))
+    """The `build <output>: ...` line of build.ninja text (or `build <output> | <implicit>: ...`
+    for an edge with implicit outputs)."""
+    heads = (f"build {output}:", f"build {output} |")
+    return next(line for line in text.splitlines() if line.startswith(heads))
+
+
+def test_cc_edge_declares_the_stamp(tmp_path):
+    """DI-06 part a: the provenance stamp `reverseapoc cc` writes next to the object is an
+    implicit output of the cc edge, so ninja rebuilds an object that has no stamp yet."""
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
+    outputs, _, inputs = _edge(text, obj).partition(": cc ")
+    assert outputs == f"build {obj} | {obj}.prov.json"
+    assert inputs.startswith(f"src/ufo2p/{UNIT}.c")
 
 
 def test_unit_with_source_gets_compile_edges(tmp_path):
@@ -495,7 +508,7 @@ def test_unit_with_source_gets_compile_edges(tmp_path):
     obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
     base = f"$builddir/ufo2p/base/{UNIT}.o"
     target = f"$builddir/ufo2p/target/{UNIT}.o"
-    assert _edge(text, obj).startswith(f"build {obj}: cc src/ufo2p/{UNIT}.c")
+    assert _edge(text, obj).startswith(f"build {obj} | {obj}.prov.json: cc src/ufo2p/{UNIT}.c")
     assert _edge(text, base).startswith(f"build {base}: omf2elf {obj}")
     assert _edge(text, target).startswith(f"build {target}: target")
 
