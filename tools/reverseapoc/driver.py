@@ -1975,6 +1975,15 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
                     callees=dict(calls.callees), pack=pack, scaffold=scaffold)  # fmt: skip
 
 
+def preflight(options: DriveOptions, seams: Seams, *, check_cli: bool) -> None:
+    """Skeleton (06-25 Task 2)."""
+
+
+def compose_project(repo: Path) -> str:
+    """Skeleton (06-25 Task 2)."""
+    return ""
+
+
 def default_seams(repo: Path) -> Seams:
     """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
     (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
