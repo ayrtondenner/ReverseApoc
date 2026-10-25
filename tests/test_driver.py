@@ -1524,3 +1524,71 @@ def test_a_dirty_or_staged_table_refuses_the_start(tmp_path, rel):
     assert rel in report.detail
     assert night.launched == []
     assert (night.repo / LOG).read_text(encoding="utf-8") == ""
+
+
+# ---- Fix round 4 (rereview-06-23-r3, fixround-06-23-r4) ----
+
+
+def test_end_of_run_checks_land_in_the_ended_record_before_the_chore_commit(tmp_path):
+    """L1 (consumer contract for 06-25): end_of_run runs after the last session and before
+    the ENDED record; its failed checks are pinned under checks_failed and the night exits 1;
+    the chore commit comes after the record."""
+    night = Night(tmp_path, sessions=[Sess()])
+    seen: list[tuple[int, list[str], int]] = []
+
+    def end_of_run():
+        seen.append((len(night.launched), [r.get("event") for r in night.kinds("run")],
+                     len(night.commits())))  # fmt: skip
+        return ["ninja verify exit 1", "gate --all exit 1"]
+
+    report = night.run(end_of_run=end_of_run)
+    assert seen == [(3, ["STARTED"], 0)]
+    ended = night.records()[-1]
+    assert (ended["event"], ended.get("checks_failed")) == (
+        "ENDED", ["ninja verify exit 1", "gate --all exit 1"])  # fmt: skip
+    assert (report.event, report.exit_code) == ("ENDED", 1)
+    assert night.commits() == [CHORE]
+    assert '"checks_failed":["ninja verify exit 1"' in night.file_at(CHORE, LOG)
+
+
+def test_a_clean_end_of_run_keeps_exit_0(tmp_path):
+    night = Night(tmp_path, picks=())
+    report = night.run(end_of_run=lambda: [])
+    assert (report.event, report.exit_code) == ("ENDED", 0)
+    assert night.records()[-1].get("checks_failed") == []
+
+
+def test_a_raising_end_of_run_is_a_stopped_error(tmp_path):
+    def broken():
+        raise RuntimeError("made-up ninja crash")
+
+    night = Night(tmp_path, picks=())
+    report = _run_contained(night, end_of_run=broken)
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert "made-up ninja crash" in report.detail
+
+
+def test_a_stopped_night_names_its_uncommitted_partial_rows(tmp_path):
+    """L2: a STOPPED night that leaves a partial row uncommitted names it, so the owner knows
+    why the next drive is refused."""
+    night = Night(tmp_path, picks=(_pick(0), _pick(1)),
+                  sessions=[Sess(checks=(check_line(1, 50.0),)), Sess("auth")])  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert (report.event, report.reason) == ("STOPPED", "stop signal")
+    stopped = night.records()[-1]
+    assert stopped.get("uncommitted") == [f"config/{EXE}/status.csv: 0x{START:08X} partial"]
+    assert night.commit_files(CHORE) == [LOG]
+
+
+def test_a_failing_outputs_check_refuses_the_start(tmp_path):
+    """L3: the git call of the dirty-outputs check fails: REFUSED (exit 2), never an escape."""
+
+    def broken_git(args):
+        raise RuntimeError("made-up git failure")
+
+    night = Night(tmp_path, sessions=[Sess()])
+    report = _run_contained(night, git=broken_git)
+    assert (report.event, report.exit_code) == ("REFUSED", 2)
+    assert "made-up git failure" in report.detail
+    assert night.launched == []
+    assert (night.repo / LOG).read_text(encoding="utf-8") == ""
