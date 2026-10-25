@@ -28,7 +28,7 @@ import os
 import re
 import sys
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -156,8 +156,10 @@ _UNIT_NAME = re.compile(r"[a-z0-9_]+")
 # definitions from the compiled publics). Comments (block and //, which wcc386 and clang gnu89
 # both accept) and string or character literals are blanked first, keeping line breaks so
 # directive line numbers stay true; an unterminated block comment runs to the end of the file,
-# as it would for the compiler. A backslash-newline splices lines before comments and literals
-# are recognised (translation phase 2 before phase 3; DI-05, 06-03 review I1/M1), so a splice
+# as it would for the compiler. The text is normalised first (normalize_source: trigraphs, line
+# breaks, blanks after a splicing backslash; re-review N1). Then a backslash-newline splices
+# lines before comments and literals are recognised (translation phase 2 before phase 3;
+# DI-05, 06-03 review I1/M1), so a splice
 # may sit inside a comment delimiter (`/\<nl>*`, `*\<nl>/`, `/\<nl>/`) or between an escape's
 # backslash and its character, and a `//` comment runs on through one. _blank turns every line
 # break inside a comment or literal into a splice, so the logical line it sits in (a directive
@@ -171,11 +173,46 @@ def _literal(quote: str) -> str:
     return rf"{quote}(?:\\{_SPLICES}.|[^{quote}\\\n])*{quote}"
 
 
-_NOT_CODE = re.compile(
+_COMMENT_OR_LITERAL = re.compile(
     rf"/{_SPLICES}\*.*?(?:\*{_SPLICES}/|\Z)|/{_SPLICES}/(?:\\\n|[^\n])*"
     rf"|{_literal(chr(34))}|{_literal(chr(39))}",
     re.DOTALL,
 )
+
+# Translation phases 1-2 as wcc386 10.6 does them (06-03 re-review N1, observed with
+# `wcc386 -zq -p`): C89 trigraphs map first, everywhere, literals included; a CRLF or a lone CR
+# is one line break (a lone CR as read_text reads it, which is how configure and check read a
+# unit file; wcc386 itself does not break a line there, see 06-03-SUMMARY); and a backslash
+# followed by spaces or tabs and then a newline is a splice, as a backslash-newline is. A form
+# feed or vertical tab after the backslash is not. No rewrite adds or removes a line break.
+_TRIGRAPHS = {"=": "#", "/": "\\", "'": "^", "(": "[", ")": "]", "!": "|", "<": "{", ">": "}",
+              "-": "~"}  # fmt: skip
+_TRIGRAPH = re.compile(r"\?\?([=/'()!<>-])")
+_LINE_BREAK = re.compile(r"\r\n?")
+_BLANK_SPLICE = re.compile(r"\\[ \t]+\n")
+
+
+def normalize_source(text: str) -> str:
+    """`text` after translation phases 1-2 up to the splice itself: trigraphs mapped, CRLF and
+    CR made LF, and blanks between a splicing backslash and its newline removed. The line count
+    is that of `text` read with universal newlines."""
+    text = _TRIGRAPH.sub(lambda match: _TRIGRAPHS[match.group(1)], text)
+    return _BLANK_SPLICE.sub(_SPLICE + "\n", _LINE_BREAK.sub("\n", text))
+
+
+class _SourceScanner:
+    """The comment-and-literal scanner, run on normalize_source's output. check.source_marks
+    calls `_NOT_CODE.sub(_blank, text)` on the raw unit file, so the normalisation lives in
+    `sub` and every caller gets it; new callers use code_text."""
+
+    def __init__(self, pattern: re.Pattern[str]) -> None:
+        self.pattern = pattern
+
+    def sub(self, repl: Callable[[re.Match[str]], str], text: str) -> str:
+        return self.pattern.sub(repl, normalize_source(text))
+
+
+_NOT_CODE = _SourceScanner(_COMMENT_OR_LITERAL)
 # Preprocessor conditionals: only `#if 0` is understood (its block is dead, nested conditionals
 # included, and its #else branch is live); any other conditional is refused, never guessed.
 _DIRECTIVE = re.compile(r"[ \t]*#[ \t]*([A-Za-z_]+)(.*)")
@@ -296,8 +333,9 @@ def _live_code(code: str) -> str:
     dead = live_else = 0
     opened = 0  # the line of the outermost #if 0 or its #else still open
     for first, last, logical in _logical_lines(lines):
-        number = first + 1  # a directive is reported at its first physical line
         match = _DIRECTIVE.fullmatch(logical)
+        if match is not None:  # a directive is reported at the physical line of its `#`
+            number = _physical_line(lines, first, logical.index("#")) + 1
         if match is None:
             # Code is read spliced, as the compiler reads it: the logical line on its first
             # physical line, the lines it absorbed left empty so later numbers stay true.
@@ -315,6 +353,17 @@ def _live_code(code: str) -> str:
     if dead or live_else:
         raise _ConditionalError(f"line {opened}: #if 0 has no matching #endif")
     return "\n".join(lines)
+
+
+def _physical_line(lines: Sequence[str], first: int, position: int) -> int:
+    """The 0-based physical line holding character `position` of the logical line that starts
+    at `lines[first]` (each physical line counted without its splicing backslash)."""
+    index = first
+    while (index + 1 < len(lines) and lines[index].endswith(_SPLICE)
+           and position >= len(lines[index]) - len(_SPLICE)):  # fmt: skip
+        position -= len(lines[index]) - len(_SPLICE)
+        index += 1
+    return index
 
 
 def _logical_lines(lines: Sequence[str]) -> Iterator[tuple[int, int, str]]:
@@ -354,6 +403,14 @@ def _function_problem(name: str, defined: int, marked: int) -> str | None:
     return None
 
 
+def code_text(text: str) -> str:
+    """The live code of a unit file as the D-12 check reads it: translation phases 1-2
+    (normalize_source), comments and literals blanked, directives and dead #if 0 branches
+    removed, line count kept. The one entry point the D-12 check, check.source_marks (through
+    the same objects) and 06-12's hooks share. Raises _ConditionalError like _live_code."""
+    return _live_code(_NOT_CODE.sub(_blank, text))
+
+
 def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[str]:
     """The D-12 problems of one unit file: every game or thunk row of the unit is defined in C
     or marked INCLUDE_ASM, exactly once and not both, and no marker or definition names a
@@ -362,7 +419,7 @@ def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[
     (the check fails closed rather than guess). A K&R-style definition is not recognised, so it
     is reported as neither defined nor marked (a false refusal, never a false pass)."""
     try:
-        code = _live_code(_NOT_CODE.sub(_blank, text))
+        code = code_text(text)
     except _ConditionalError as exc:
         return [str(exc)]
     marked = Counter(_MARKER.findall(code))
