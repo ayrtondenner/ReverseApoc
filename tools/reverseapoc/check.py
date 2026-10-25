@@ -329,7 +329,8 @@ class LeadingTable:
 
     @property
     def public(self) -> OwnPublic:
-        """The table's own-public entry, sized as own_publics sizes every entry."""
+        """The table's own-public entry, sized as own_publics sizes every entry; with_relocs
+        offers it to the head's check only."""
         return OwnPublic(self.span.name, 0, min(self.size, self.span.end - self.span.start),
                          self.span.start)  # fmt: skip
 
@@ -367,8 +368,9 @@ def own_publics(
 ) -> tuple[OwnPublic, ...]:
     """The unit's public-to-row map relocs.check_function needs (05-09): every public of
     `segment` that names a row of `rows`, sized to the next public or the segment end but never
-    past its row's length (a table after a public is not that public's, 05-REVIEW IN-02), and
-    the leading table's span (`leading_table`, DI-02)."""
+    past its row's length (a table after a public is not that public's, 05-REVIEW IN-02). The
+    leading table's entry (`LeadingTable.public`) is not in it: with_relocs offers it to the
+    head alone."""
     by_name = _linker_names(rows, symbols)
     publics = [p for p in module.publics if p.segment_index == segment.index]
     offsets = sorted({p.offset for p in publics})
@@ -380,8 +382,7 @@ def own_publics(
             continue
         size = min(ends[p.offset] - p.offset, row.end - row.start)
         found.append(OwnPublic(p.name, p.offset, size, row.start))
-    table = leading_table(module, segment, rows, symbols)
-    return (table.public, *found) if table is not None else tuple(found)
+    return tuple(found)
 
 
 def _reloc(d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic]) -> RelocResult:
@@ -405,21 +406,57 @@ def _with_table(reloc: RelocResult, table: RelocResult) -> RelocResult:
     return dataclasses.replace(reloc, ok=False, problems=problems)
 
 
+@dataclass(frozen=True)
+class _SegmentMap:
+    """What with_relocs computes once per code segment of the unit (06-10 fix round 1, M3)."""
+
+    publics: tuple[OwnPublic, ...]  # own_publics, without the leading table
+    table: LeadingTable | None
+
+
+def _segment_map(
+    module: Module, segment: Segment, rows: Sequence[FunctionRow], symbols: SymbolTable
+) -> _SegmentMap:
+    return _SegmentMap(own_publics(module, segment, rows, symbols),
+                       leading_table(module, segment, rows, symbols))  # fmt: skip
+
+
+def _head_reloc(
+    d: Defined, exe: ExeInputs, seg_map: _SegmentMap, table: LeadingTable
+) -> RelocResult:
+    """The head's verdict: its own check with the table's entry added to the map, failed too by
+    the check of the table's span, whose only other own public is the head (so every entry must
+    land inside the head on the original's target)."""
+    reloc = _reloc(d, exe, (table.public, *seg_map.publics))
+    head = tuple(p for p in seg_map.publics if p.name == d.symbol)
+    span = Defined(table.span, table.span.name, d.segment, 0, table.size)
+    return _with_table(reloc, _reloc(span, exe, head))
+
+
 def with_relocs(
     module: Module, defined: Iterable[Defined], rows: Sequence[FunctionRow], exe: ExeInputs
 ) -> list[tuple[Defined, RelocResult]]:
-    """Each of `defined` with its relocation check. The function a leading table belongs to
-    passes only when the table, checked against its span like a function, passes too (DI-02):
-    each entry must land on the original's case label inside that function."""
+    """Each of `defined` with its relocation check. A leading table (DI-02) belongs to its head,
+    the function whose row follows the table's row:
+    - only the head's check may resolve a reference into the table, through its entry; any
+      other function's reference to [0, first public) is refused ("needs the unit's
+      public-to-row map"), as before 06-10;
+    - the head passes only when the table's span [table row start, head start) passes the
+      relocation check like a function: equal length, equal bytes (filler included), and each
+      entry an off32 to an address inside the head equal to the original LE fixup's target. An
+      entry into any other function is refused (06-10 fix round 1, C1 and M1).
+    If the account dropped the head, nothing resolves into the table."""
+    maps: dict[int, _SegmentMap] = {}
     out = []
     for d in defined:
-        publics = own_publics(module, d.segment, rows, exe.symbols)
-        reloc = _reloc(d, exe, publics)
-        table = leading_table(module, d.segment, rows, exe.symbols)
+        seg_map = maps.get(d.segment.index)
+        if seg_map is None:
+            seg_map = maps[d.segment.index] = _segment_map(module, d.segment, rows, exe.symbols)
+        table = seg_map.table
         if table is not None and table.head == d.row:
-            span = Defined(table.span, table.span.name, d.segment, 0, table.size)
-            reloc = _with_table(reloc, _reloc(span, exe, publics))
-        out.append((d, reloc))
+            out.append((d, _head_reloc(d, exe, seg_map, table)))
+        else:
+            out.append((d, _reloc(d, exe, seg_map.publics)))
     return out
 
 
