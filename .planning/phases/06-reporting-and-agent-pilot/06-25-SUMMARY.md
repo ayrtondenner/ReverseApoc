@@ -25,6 +25,10 @@ fix_round_1:
   base: d73dbb949f5f89cb5cf45d356aca10742642986e
   head_before_summary: a4615bc
   commits: 7  # git rev-list --count d73dbb9..a4615bc; the round's SUMMARY commit is one more
+fix_round_2:
+  base: 967625b230357ed24a13cfa40715cf03461630f4
+  head_before_summary: ad5f6ec
+  commits: 3  # git rev-list --count 967625b..ad5f6ec; the round's SUMMARY commit is one more
 
 tech-stack:
   added: []
@@ -250,6 +254,24 @@ Verification after fix round 1 (host, worktree):
 - Full suite (REVERSEAPOC_ORIG / WATCOM_DIR / GHIDRA_EXPORT at the main checkout): **2711 passed, 44 skipped** in 469 s, exit 0. None of the skips comes from test_drive*.py; the two `test_driver.py` R-A symlink skips are 06-23's.
 - `uv run ruff check .`: All checks passed.
 - Nothing reached the network. No `drive` without `--dry-run`, no `--canary`, no real claude and no docker were run; every command went through fakes.
+
+## Fix round 2 (FIX_BASE 967625b; rereview-06-25-r1-report.md approved r1, rulings in the coordinator's message)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| 1 (re-review minor 4) | A canary error after its session had run (git failing while measuring the tree or comparing refs) became REFUSED `canary`, exit 2 ("never started"), and the PASS/FAIL lines gathered so far were lost | Once the session has run, errors in the stream checks (`_after_session`), in measuring the tree and in comparing the refs become FAIL lines after the lines gathered so far. The canary then prints `CANARY FAIL` and exits 1. REFUSED 2 stays for refusals before the session (preflight, an existing attempt dir). The exit-code texts of `run_canary` and `_cmd_drive` now say this | `test_a_canary_error_after_the_session_is_a_fail_not_a_refusal[status, for-each-ref]`, `test_a_canary_error_after_the_session_ends_the_text_with_canary_fail` | db362dd, bf2c5d3 |
+| 2a (minor 1) | "the canary checks the first five" was false | Now reads: the canary checks items 1, 4, 5 and 6; items 2 (hook timing) and 3 (`CLAUDE_PROJECT_DIR`, partly shown) stay open after `CANARY PASS`; items 7 to 9 are operational | docs | ad5f6ec |
+| 2b (minor 2) | The `preflight` / `canary` row said a runner or git that cannot start lands there | Now reads: any other unexpected error. With the real runners, a git or docker that cannot start gives `worktree` or `docker`; a canary error after its session is a `CANARY FAIL`, exit 1 | docs | ad5f6ec |
+| 2c (minor 3) | Owner warnings were missing | Three warnings added: do not edit the checkout during a night (it stops on a guardrail, and the file is restored or quarantined); Ctrl+C gives STOPPED `interrupted` with no end checks; the canary is a real paid session whose `attempt check` can take up to 10 minutes | docs | ad5f6ec |
+| 2d (question 1) | No prerequisites and no ordered steps | "Before you start": Docker running and `docker compose build`, `ingest` + `check-orig`, `install-watcom` + `check-watcom`, `claude --version` major 2 and at least 2.1.302 (upgrade with `claude install stable`), a clean `git status`. Then the steps: `drive --dry-run`, then `drive --canary --run <fresh id>` until `CANARY PASS`, then the pilot command. Then where to read the results: the exit code, `progress/attempts.jsonl` records and the last `run` record, both status.csv files, the commits (`--grep='^Matched-By: reverseapoc drive$'`, `chore(driver): attempt log`), and `build/driver/<run>/`. Pushing `main` is the owner's step | docs | ad5f6ec |
+
+RED evidence (db362dd): 3 failures, all on assertions: `(2, 'REFUSED', None) == (1, None, 'FAIL')` twice and `assert 2 == 1`.
+
+Verification after fix round 2 (host, worktree):
+- `uv run pytest -q tests/test_drive.py`: 67 passed.
+- Full suite (REVERSEAPOC_ORIG / WATCOM_DIR / GHIDRA_EXPORT at the main checkout): **2714 passed, 44 skipped** in 472 s, exit 0. No skip comes from test_drive.py or test_drive_real.py.
+- `uv run ruff check .`: All checks passed. tests/test_hygiene.py passes, and the plan's three greps on docs/workflow.md pass.
+- Nothing reached the network. No `drive` without `--dry-run`, no `--canary`, no real claude and no docker were run.
 
 ## Known Stubs
 
