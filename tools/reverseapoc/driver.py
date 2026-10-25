@@ -64,10 +64,22 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from . import attempt, hooks, streamjson
+from .check import ExeInputs
+from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
+from .libmatch import read_runtime_csv, runtime_csv_path
 from .picker import EXE_ORDER, Key, Pick
-from .session import TIMEOUT_S, SessionResult, goal_prompt
+from .picker import pilot as picker_pilot
+from .picker import queue as picker_queue
+from .picker import requeue as picker_requeue
+from .probe import CHK_PUBLIC
+from .score import Candidate, assess, candidates
+from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, run_session
+from .status import MATCHED as STATUS_MATCHED
+from .status import PARTIAL as STATUS_PARTIAL
+from .status import read_status, status_path
 from .streamjson import Disposition
+from .units import scaffold_unit, write_unit_source
 
 ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
 DRIVER_DIR = Path(*attempt.DRIVER_PARTS)  # build/driver
@@ -85,6 +97,8 @@ BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
+TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
+MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
@@ -1670,13 +1684,17 @@ def drive(config: DriveConfig, deps: Deps) -> DriveReport:
     """Run one night (see the module docstring)."""
     return _Night(config, deps).run()
 
+# ---- the drive verb (plan 06-25; D-10, D-13, D-24, D-34, D-36, D-48) ----
 
-# ---- the drive verb (plan 06-25): skeleton ----
+COMPOSE_RUN = ("docker", "compose", "run", "--rm", "-T", "build")  # -T: output is captured
+CONTAINER_CLI = (*COMPOSE_RUN, "uv", "run", "--frozen", "reverseapoc")  # D-24: the gates
+COMMAND_TIMEOUT_S = 3600  # a gate re-checks a unit and rebuilds both EXEs; generous, never forever
+DRY_RUN_DIR = "dry-run"  # build/driver/<run>/dry-run/<exe>/<func>/context.md
 
 
 @dataclass(frozen=True)
 class DriveOptions:
-    """What `reverseapoc drive` was asked to do."""
+    """What `reverseapoc drive` was asked to do (D-48 defaults)."""
 
     repo: Path
     run_id: str
@@ -1686,46 +1704,282 @@ class DriveOptions:
     canary: bool = False
     json: bool = False
 
+    @property
+    def config_root(self) -> Path:
+        return Path(self.repo) / "config"
+
+    @property
+    def run_dir(self) -> Path:
+        return Path(self.repo).joinpath(DRIVER_DIR, self.run_id)
+
 
 @dataclass(frozen=True)
 class ExeWorld:
-    """One EXE as the picker and the session need it."""
+    """One EXE as the picker and a session need it: score's P16 survivors (`pool`, D-09), the
+    unit of every row start, the callees of every row start (picker.requeue), and the two
+    builders that touch files: the D-13 context pack into a directory under build/driver/ and
+    the D-12 unit scaffold."""
 
-    pool: Sequence
+    pool: Sequence[Candidate]
     units: Mapping[int, str]
     callees: Mapping[int, tuple[int, ...]]
     pack: Callable[[Pick, Path], PackInfo]
     scaffold: Callable[[Pick], None]
 
 
+Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
+
+
 @dataclass(frozen=True)
 class Seams:
-    """Every effect of the verb."""
+    """Every effect of the verb: `run` runs every command except git and the session (docker,
+    uv, `claude --version`) and returns its exit code and text output; `git` is git_runner;
+    `world` loads both EXEs; `session` is session.run_session and `argv` the claude argv
+    (session.build_argv with the resolved `claude`)."""
 
-    run: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    run: Runner
     git: Callable[[Sequence[str]], subprocess.CompletedProcess]
     world: Callable[[], Mapping[str, ExeWorld]]
-    session: Callable[..., SessionResult] | None = None
-    argv: Callable[[str], Sequence[str]] | None = None
+    session: Callable[..., SessionResult]
+    argv: Callable[[str], Sequence[str]]
     claude: str = "claude"
     base_env: Mapping[str, str] | None = None
 
 
+def command_runner(repo: Path, *, timeout_s: float = COMMAND_TIMEOUT_S) -> Runner:
+    """argv in `repo` (compose.yaml is at its root), never a shell, text output captured. A
+    missing program is exit 127 and a timeout exit 124, so no command can raise its way past a
+    refusal or a gate."""
+
+    def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+        try:
+            return subprocess.run(list(argv), cwd=repo, capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", timeout=timeout_s,
+                                  stdin=subprocess.DEVNULL, check=False)  # fmt: skip
+        except FileNotFoundError as exc:
+            return subprocess.CompletedProcess(list(argv), 127, "", f"{argv[0]}: {exc}")
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(list(argv), 124, "",
+                                               f"ran longer than {timeout_s:g} s")  # fmt: skip
+
+    return run
+
+
+def _target(pick: Pick) -> str:
+    return f"{pick.exe}/{pick.unit}"
+
+
+def gate_argv(pick: Pick, attempts: int) -> list[str]:
+    """D-24: the container gate of the claimed unit, recording `attempts`."""
+    return [*CONTAINER_CLI, "gate", _target(pick), "--attempts", str(attempts), "--json"]
+
+
+def partial_gate_argv(pick: Pick, src: str, attempts: int) -> list[str]:
+    """F7: `gate --partial` on the saved best C, a repo-relative POSIX path (/work in the
+    container)."""
+    return [*CONTAINER_CLI, "gate", _target(pick), "--partial", "--src", src,
+            "--attempts", str(attempts), "--json"]  # fmt: skip
+
+
+def lint_argv(pick: Pick) -> list[str]:
+    """The C89 lint of the claimed unit, in the container where clang is (06-15 notes)."""
+    return [*CONTAINER_CLI, "lint", f"src/{pick.exe}/{pick.unit}.c", "--json"]
+
+
+def _json_doc(text: str) -> Mapping | None:
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _status_rows(config_root: Path, exe: str) -> list:
+    return read_status(status_path(config_root, exe))
+
+
+def excluded_keys(config_root: Path, today: str) -> frozenset[Key]:
+    """D-09: the starts the picker skips besides the difficult list: every matched row, and
+    every partial row of this pass (dated `today`; a partial row from an earlier day is
+    eligible again)."""
+    out: set[Key] = set()
+    for exe in EXE_ORDER:
+        for row in _status_rows(config_root, exe):
+            if row.status == STATUS_MATCHED or (row.status == STATUS_PARTIAL and row.date == today):
+                out.add((exe, row.start))
+    return frozenset(out)
+
+
+def matched_keys(config_root: Path) -> frozenset[Key]:
+    return frozenset((exe, row.start) for exe in EXE_ORDER
+                     for row in _status_rows(config_root, exe)
+                     if row.status == STATUS_MATCHED)  # fmt: skip
+
+
+def _pools(worlds: Mapping[str, ExeWorld]) -> dict[str, Sequence[Candidate]]:
+    return {exe: worlds[exe].pool for exe in EXE_ORDER}
+
+
+def _units(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, str]]:
+    return {exe: worlds[exe].units for exe in EXE_ORDER}
+
+
+def _callee_keys(worlds: Mapping[str, ExeWorld], key: Key) -> tuple[Key, ...]:
+    exe, start = key
+    return tuple((exe, callee) for callee in worlds[exe].callees.get(start, ()))
+
+
+def _container_gate(run: Runner, argv: Sequence[str]) -> GateRun:
+    done = run(argv)
+    return GateRun(done.returncode, _json_doc(done.stdout or ""))
+
+
 def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
               today: str | None = None) -> Deps:  # fmt: skip
-    """Skeleton."""
-    return Deps(queue=lambda difficult: (), requeue=lambda difficult: (),
-                matched_callees=lambda pick: (), scaffold=lambda pick: None,
-                pack=lambda pick, d: PackInfo(0), argv=lambda p: [], session=lambda *a, **k: None,
-                lint=lambda pick: 2, gate=lambda pick, n: GateRun(2), partial_gate=lambda *a: 2,
-                remove_containers=lambda prefix: None, git=seams.git)  # fmt: skip
+    """The Deps a real night uses: the picker over both pools minus status.csv's matched and
+    this pass's partial rows (AGT-07), picker.requeue with the matched set read now, the
+    worlds' scaffold and pack, the claude argv and session, and the container lint and gates
+    (D-24). `today` (UTC) names this pass."""
+    day = today or _today()
+    config_root = options.config_root
+    excluded = excluded_keys(config_root, day)
+
+    def queue(difficult: Container[Key]) -> Iterable[Pick]:
+        return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
+                            difficult=difficult)  # fmt: skip
+
+    def requeue(difficult: Mapping[Key, tuple[Key, ...]]) -> Iterable[Key]:
+        keys = frozenset(difficult)
+        empty = next(iter(queue(keys)), None) is None
+        callees = {key: _callee_keys(worlds, key) for key in difficult}
+        return picker_requeue(difficult, matched=matched_keys(config_root), callees=callees,
+                              pool_empty=empty)  # fmt: skip
+
+    def matched_callees(pick: Pick) -> tuple[Key, ...]:
+        matched = matched_keys(config_root)
+        return tuple(k for k in _callee_keys(worlds, (pick.exe, pick.start)) if k in matched)
+
+    def lint(pick: Pick) -> int:
+        code = seams.run(lint_argv(pick)).returncode
+        return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
+
+    return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
+                scaffold=lambda pick: worlds[pick.exe].scaffold(pick),
+                pack=lambda pick, directory: worlds[pick.exe].pack(pick, directory),
+                argv=seams.argv, session=seams.session, lint=lint,
+                gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
+                partial_gate=lambda pick, src, n: seams.run(
+                    partial_gate_argv(pick, src, n)).returncode,
+                remove_containers=lambda prefix: None, git=seams.git,
+                today=lambda: day)  # fmt: skip
+
+
+def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
+    """F13: in --json mode stdout carries exactly this one JSON document; else the text."""
+    if options.json:
+        print(json.dumps(doc, separators=(",", ":")))
+    else:
+        for line in text:
+            print(line)
+
+
+def _pick_doc(options: DriveOptions, pick: Pick, pack: Path, info: PackInfo) -> dict:
+    return {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
+            "unit": pick.unit, "size": pick.size, "score": pick.score,
+            "pack": pack.relative_to(options.repo).as_posix(),
+            "pack_bytes": info.pack_bytes}  # fmt: skip
+
+
+def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], *, today: str) -> int:
+    """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule) with their packs built
+    under build/driver/<run>/dry-run/; no claude, no gate."""
+    difficult = load_difficult(Path(options.repo) / DIFFICULT)
+    picks = picker_pilot(_pools(worlds), units=_units(worlds),
+                         excluded=excluded_keys(options.config_root, today),
+                         difficult=frozenset(difficult))  # fmt: skip
+    docs, lines = [], []
+    for pick in picks:
+        directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
+        info = worlds[pick.exe].pack(pick, directory)
+        doc = _pick_doc(options, pick, directory / PACK_FILE, info)
+        docs.append(doc)
+        lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
+                     f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes)")
+    _emit(options, {"picks": docs}, lines)
+    return EXIT_OK
 
 
 def run_drive(options: DriveOptions, seams: Seams) -> int:
-    """Skeleton."""
-    return 0
+    """`reverseapoc drive`: the dry run (D-10) or one night (drive)."""
+    worlds = seams.world()
+    today = _today()
+    if options.dry_run:
+        return dry_run(options, worlds, today=today)
+    config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
+                         tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
+                         max_sessions=options.max_sessions,
+                         target_matched=options.target_matched,
+                         base_env=seams.base_env)  # fmt: skip
+    report = drive(config, real_deps(options, seams, worlds, today=today))
+    doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
+           "matched": report.matched, "detail": report.detail,
+           "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
+    _emit(options, doc, [f"{report.event} {report.reason}: {report.sessions} sessions, "
+                         f"{report.matched} matched" + (f" ({report.detail})" if report.detail
+                                                        else "")])  # fmt: skip
+    return report.exit_code
+
+
+# ---- the real worlds ----
+
+
+def _chk_targets(data: ExeInputs) -> set[int]:
+    """Where __CHK lives: rows named so, and the runtime public of that name (cli score)."""
+    targets = {row.start for row in data.rows if row.name == CHK_PUBLIC}
+    if CHK_PUBLIC in data.symbols.names:
+        targets.add(data.symbols.names[CHK_PUBLIC])
+    return targets
+
+
+def _runtime_starts(data: ExeInputs) -> set[int]:
+    path = runtime_csv_path(data.target.name)
+    return {row.start for row in read_runtime_csv(path)} if path.is_file() else set()
+
+
+def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
+    """One EXE loaded once with check's loader: score.assess's survivors as `score` ranks them
+    (D-09), the units, one CallIndex reused by every pack (06-15 notes), the context pack
+    (attempt.make_pack, written under build/driver/) and the units scaffold."""
+    data = attempt.exe_inputs(exe, orig=roots.orig, manifest=roots.manifest, config=roots.config)
+    assessments = assess(data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
+                         chk_targets=_chk_targets(data), runtime_starts=_runtime_starts(data),
+                         page_size=data.le.page_size)  # fmt: skip
+    calls = CallIndex.build(list(data.rows), data.flat, list(data.fixups))
+    rows = {row.start: row for row in data.rows}
+
+    def pack(pick: Pick, directory: Path) -> PackInfo:
+        built = attempt.make_pack(data, rows[pick.start], src=roots.src, config=roots.config,
+                                  asm_root=roots.asm, roots=roots, calls=calls)  # fmt: skip
+        write_pack(built, directory, root=roots.repo)
+        return PackInfo(built.pack_bytes, tuple(built.truncated))
+
+    def scaffold(pick: Pick) -> None:
+        unit = next((u for u in data.units if u.unit == pick.unit), None)
+        if unit is None:
+            raise DriverError(f"{pick.exe}: no unit {pick.unit} in units.csv")
+        path = Path(roots.src) / exe / f"{pick.unit}.c"
+        write_unit_source(path, scaffold_unit(data.target.name, unit, list(data.rows)))
+
+    return ExeWorld(pool=candidates(assessments, data.symbols),
+                    units={row.start: row.unit for row in data.rows},
+                    callees=dict(calls.callees), pack=pack, scaffold=scaffold)  # fmt: skip
 
 
 def default_seams(repo: Path) -> Seams:
-    """Skeleton."""
-    raise NotImplementedError
+    """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
+    (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
+    claude = shutil.which("claude") or "claude"
+    return Seams(run=command_runner(repo), git=git_runner(repo),
+                 world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
+                 session=run_session, argv=lambda prompt: build_argv(prompt, claude=claude),
+                 claude=claude)  # fmt: skip
