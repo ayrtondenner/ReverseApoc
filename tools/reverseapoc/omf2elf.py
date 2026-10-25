@@ -59,6 +59,7 @@ from .elf import (
     ElfSymbol,
     write_elf,
 )
+from .fileio import write_atomic
 from .omf import (
     COMDAT_ALLOC_CODE32,
     COMDAT_ALLOC_FAR_CODE,
@@ -74,7 +75,6 @@ from .omf import (
     Segment,
     read_object,
 )
-from .splice import _write_atomic
 from .x86 import decode, is_filler
 
 _CODE_ALLOCATIONS = (COMDAT_ALLOC_FAR_CODE, COMDAT_ALLOC_CODE32)  # COMDAT without a segment
@@ -446,5 +446,5 @@ def convert_file(src: Path, dst: Path) -> ConvertResult:
     except Omf2ElfError as exc:
         raise Omf2ElfError(f"{src}: {exc}") from exc
     dst.parent.mkdir(parents=True, exist_ok=True)
-    _write_atomic(dst, write_elf(obj))
+    write_atomic(dst, write_elf(obj))
     return ConvertResult(src, dst, len(obj.sections), len(obj.symbols), len(obj.relocs))

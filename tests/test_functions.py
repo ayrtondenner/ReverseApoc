@@ -515,6 +515,37 @@ def test_symbols_reader_refusals(tmp_path, rows, what):
         read_symbols_csv(path)
 
 
+def test_unit_and_symbol_follow_checks_keep_their_verdicts(tmp_path):
+    # Pins the uniqueness verdicts of _unit_follows and _symbol_follows (DI-19 row 7d): a
+    # duplicate is found however far back its first row is, and the message names the row.
+    units = [
+        UnitRow("a", 0x10000, 0x10010, "first"),
+        UnitRow("b", 0x10010, 0x10020, "hand"),
+        UnitRow("c", 0x10020, 0x10030, "hand"),
+    ]
+    path = tmp_path / "units.csv"
+    write_units_csv(path, units, name="UFO2P.EXE")
+    assert read_units_csv(path) == units
+    write_units_csv(path, [*units, UnitRow("a", 0x10030, 0x10040, "hand")], name="UFO2P.EXE")
+    with pytest.raises(FunctionsError, match="data row 4: duplicate unit name a"):
+        read_units_csv(path)
+
+    symbols = [
+        SymbolRow(0x10010, "main_", "func"),
+        SymbolRow(0x10020, "start_", "func"),
+        SymbolRow(0xD2000, "_errno", "data"),
+    ]
+    path = tmp_path / "symbols.csv"
+    write_symbols_csv(path, symbols, name="UFO2P.EXE")
+    assert read_symbols_csv(path) == symbols
+    write_symbols_csv(path, [*symbols, SymbolRow(0x10010, "other_", "func")], name="UFO2P.EXE")
+    with pytest.raises(FunctionsError, match="data row 4: address 0x00010010 is listed twice"):
+        read_symbols_csv(path)
+    write_symbols_csv(path, [*symbols, SymbolRow(0x10030, "main_", "func")], name="UFO2P.EXE")
+    with pytest.raises(FunctionsError, match="data row 4: name main_ is listed twice"):
+        read_symbols_csv(path)
+
+
 # ---- reconcile (D-07, D-08): made-up bytes patched into the synthetic LE of conftest.py ----
 
 CODE = 0x10000  # base of the synthetic code object (object 1)
