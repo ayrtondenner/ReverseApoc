@@ -97,7 +97,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 |----|------|-----------|-----------|--------|
 | DI-34 (feed) | decomphub.progress.json (progress-v1) written by progress.py (D-29) | 06-18 | none yet | planned 06-18 |
 | DI-34 (verification) | DecompHub maintainer verification file (D-31) | 06-22 | none yet | planned 06-22 |
-| DI-34 (CI POST) | CI POST to the DecompHub refresh endpoint behind a repo variable (D-30) | 06-24 | none yet | planned 06-24 |
+| DI-34 (CI POST) | CI POST to the DecompHub refresh endpoint behind a repo variable (D-30) | 06-24 (its plan carries this as D-30, the refresh POST, and does not name DI-34) | none yet | planned 06-24 |
 | DI-35 | Awesome-list PR drafts, files only; the owner opens or approves each (D-33) | 06-19 | none yet | planned 06-19 |
 | DI-36 | decomp.me msdos preset request draft; the owner files it by hand (D-33) | 06-19 | none yet | planned 06-19 |
 | DI-37 (links, notes) | .recomp.json links and notes (D-32) | 06-22 | none yet | planned 06-22 |
