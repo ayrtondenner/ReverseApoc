@@ -3,12 +3,13 @@ draft and LE byte below is made up, and every pack is written under pytest's tmp
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record
-from reverseapoc import contextpack
+from reverseapoc import asm, contextpack
 from reverseapoc.contextpack import (
     PACK_CAP,
     ContextPackError,
@@ -87,13 +88,75 @@ def test_pack_has_every_section_in_order():
 
 def test_write_pack_stays_under_build_driver(tmp_path: Path):
     pack = build_pack(**_inputs())
-    out = tmp_path / "build" / "driver" / "r" / "ufo2p" / "func_00010010"
-    written = write_pack(pack, out)
+    root = tmp_path / "repo"
+    out = root / "build" / "driver" / "r" / "ufo2p" / "func_00010010"
+    written = write_pack(pack, out, root=root)
     assert written == out / "context.md"
     assert written.read_bytes() == pack.text.encode("utf-8")
     with pytest.raises(ContextPackError, match="build/driver"):
-        write_pack(pack, tmp_path / "src")
-    assert not (tmp_path / "src").exists()
+        write_pack(pack, root / "src", root=root)
+    assert not (root / "src").exists()
+
+
+@pytest.mark.parametrize(
+    "where",
+    [
+        "repo/build/driver/../../src",  # `..` back out of build/driver
+        "repo/x/build/driver/r",  # a build/driver that is not the repository's
+        "elsewhere/build/driver/r",  # outside the repository
+        "repo/build/drivers/r",
+        "repo/build",
+    ],
+)
+def test_write_pack_refuses_paths_outside_the_repo_build_driver(tmp_path: Path, where: str):
+    pack = build_pack(**_inputs())
+    with pytest.raises(ContextPackError, match="build/driver"):
+        write_pack(pack, tmp_path / where, root=tmp_path / "repo")
+    assert not list((tmp_path).rglob("context.md"))
+
+
+def test_write_pack_compares_build_driver_with_exact_case(tmp_path: Path):
+    """`Build/Driver` is not ignored by .gitignore's `build/` on a case-sensitive file system
+    (the container's), so it is refused even where the host folds case."""
+    pack = build_pack(**_inputs())
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(ContextPackError, match="build/driver"):
+        write_pack(pack, root / "Build" / "Driver" / "r", root=root)
+
+
+def test_write_pack_refuses_a_link_out_of_build_driver(tmp_path: Path):
+    """A junction (Windows) or a symlink (POSIX) inside build/driver that points at src/ is
+    resolved before the check."""
+    pack = build_pack(**_inputs())
+    root = tmp_path / "repo"
+    (root / "build" / "driver").mkdir(parents=True)
+    (root / "src").mkdir()
+    link = root / "build" / "driver" / "r"
+    if sys.platform == "win32":
+        import _winapi
+
+        _winapi.CreateJunction(str(root / "src"), str(link))
+    else:
+        link.symlink_to(root / "src", target_is_directory=True)
+    with pytest.raises(ContextPackError, match="build/driver"):
+        write_pack(pack, link / "ufo2p", root=root)
+    assert not (root / "src" / "ufo2p").exists()
+
+
+def test_write_pack_refuses_a_symlink_out_of_build_driver(tmp_path: Path):
+    pack = build_pack(**_inputs())
+    root = tmp_path / "repo"
+    (root / "build" / "driver").mkdir(parents=True)
+    (root / "src").mkdir()
+    link = root / "build" / "driver" / "s"
+    try:
+        link.symlink_to(root / "src", target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation needs privileges on this host")
+    with pytest.raises(ContextPackError, match="build/driver"):
+        write_pack(pack, link, root=root)
+    assert not (root / "src" / "context.md").exists()
 
 
 def test_empty_inputs_say_none():
@@ -165,9 +228,8 @@ def _le_inputs():
         FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
         FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "call"),
     ]
-    data_ranges = [(obj.base, obj.end) for obj in le.objects if not obj.flags & 0x4]
     symbols = SymbolTable.build(
-        rows, [SymbolRow(0x20200, "_g_counter", "data")], data_ranges=data_ranges
+        rows, [SymbolRow(0x20200, "_g_counter", "data")], data_ranges=asm.data_ranges(le)
     )
     return rows, le.load_flat(relocate=False), le.fixups(), symbols
 
@@ -259,16 +321,32 @@ def test_callee_prototype_offsets_survive_comments_trigraphs_and_crlf():
     assert found["func_00010010"].head == "unsigned\r\nfunc_00010010(void)"  # not the #define
 
 
-def test_callee_prototype_on_the_real_tacp_unit():
-    """src/tacp/u_00054f20.c is the file R2-3 names: its comment block before the definition
-    holds braces and backticks, and code_text's offsets do not map onto it."""
-    text = (REPO_ROOT / "src" / "tacp" / "u_00054f20.c").read_text(encoding="utf-8")
+@pytest.mark.parametrize(
+    ("unit", "name", "head", "body"),
+    [
+        # R2-3 names this file: its comment block before the definition holds braces and
+        # backticks, and code_text's offsets do not map onto it
+        ("tacp/u_00054f20.c", "func_00055080", "void func_00055080(void)",
+         "\n{\n    D_0028DF70 = func_00011500();\n}"),
+        ("ufo2p/u_000a34f0.c", "func_000A3980", "int func_000A3980(void)", None),
+    ],
+)  # fmt: skip
+def test_callee_prototype_on_the_real_units(unit: str, name: str, head: str, body: str | None):
+    """The first match of each EXE, read as the unit readers read it (bytes, strict UTF-8,
+    no newline translation). Later matches add names, so only these are pinned."""
+    text = (REPO_ROOT / "src" / unit).read_bytes().decode("utf-8")
     found = contextpack.definitions(text)
-    assert set(found) == {"func_00055080"}
-    assert found["func_00055080"].head == "void func_00055080(void)"
-    assert found["func_00055080"].source == (
-        "void func_00055080(void)\n{\n    D_0028DF70 = func_00011500();\n}"
-    )
+    assert name in found
+    assert found[name].head == head
+    assert found[name].source.startswith(head + "\n{") and found[name].source.endswith("}")
+    assert found[name].source in text
+    if body is not None:
+        assert found[name].source == head + body
+
+
+def test_callee_prototype_head_skips_a_splice_before_it():
+    text = "int x = 1; \\  \t\nint func_00010000(void)\n{\n    return 0;\n}\n"
+    assert contextpack.definitions(text)["func_00010000"].head == "int func_00010000(void)"
 
 
 def test_callee_prototype_unreadable_unit_gives_none():
@@ -341,16 +419,18 @@ def test_pack_one_byte_over_is_truncated_in_order():
     looks = ("look-alike func_00013000", "look-alike func_00012000", "look-alike func_00011000")
     callers = ("caller func_00023000", "caller func_00022000", "caller func_00021000")
     stages = [
-        (_size(**_big_inputs()), looks[:1]),
-        (_size(**_big_inputs(lookalikes=())), (*looks, callers[0])),
-        (_size(**_big_inputs(lookalikes=(), callers=())), (*looks, *callers, "draft")),
-    ]
-    for full, expected in stages:
+        (_size(**_big_inputs()), looks[:1], "1 of 3 look-alikes"),
+        (_size(**_big_inputs(lookalikes=())), (*looks, callers[0]),
+         "3 of 3 look-alikes, 1 of 3 callers"),
+        (_size(**_big_inputs(lookalikes=(), callers=())), (*looks, *callers, "draft"),
+         "3 of 3 look-alikes, 3 of 3 callers, draft"),
+    ]  # fmt: skip
+    for full, expected, header in stages:
         pad = PACK_CAP - full + 2  # one byte over: the base has pad 1
         pack = build_pack(**_big_inputs(pad))
         assert pack.truncated == expected
         assert pack.pack_bytes <= PACK_CAP
-        assert f"Truncated: {', '.join(expected)}" in pack.text
+        assert f"\nTruncated: {header}\n" in pack.text
         whole = build_pack(**_big_inputs(pad), cap=10**9)
         required = ("Target listing", "Unit file", "Callees", "D_ externs", "include/common.h",
                     "Matching idioms", "Earlier notes")  # fmt: skip
@@ -360,8 +440,88 @@ def test_pack_one_byte_over_is_truncated_in_order():
 
 
 def test_required_sections_alone_over_the_cap():
-    with pytest.raises(ContextPackError, match=r"\d+ bytes"):
+    with pytest.raises(ContextPackError, match=r"required sections alone are \d+ bytes"):
         build_pack(**_big_inputs(unit_text="u" * PACK_CAP))
+
+
+def _many_callers(count: int) -> tuple[Neighbour, ...]:
+    return tuple(Neighbour(f"func_{0x30000 + n:08X}", "game", "unmatched") for n in range(count))
+
+
+def test_many_cut_callers_never_exhaust_the_cap():
+    """Review I-1: a per-name truncation header grew by 22 bytes per cut 35-byte caller line,
+    so 600 callers raised although the required sections fit. The header now summarises each
+    section with counts and stays small; the per-item list is only in `truncated`."""
+    required = 22_581
+    base = _size(**_inputs(callers=(), lookalikes=(), draft=None, idioms="i"))
+    pack = build_pack(**_inputs(callers=_many_callers(600), lookalikes=(), draft=None,
+                                idioms="i" * (required - base + 1)))  # fmt: skip
+    assert pack.pack_bytes <= PACK_CAP
+    cut = sum(1 for item in pack.truncated if item.startswith("caller "))
+    assert 0 < cut < 600
+    header = next(line for line in pack.text.splitlines() if line.startswith("Truncated: "))
+    assert header == f"Truncated: {cut} of 600 callers"
+    assert len(pack.to_json()["truncated"]) == cut
+
+
+def test_cut_sections_are_marked_in_place():
+    """Review M-3: a partly cut list ends with how many items were cut, and a fully cut
+    section says so instead of `none` (which means no input)."""
+    pad = PACK_CAP - _size(**_big_inputs(lookalikes=())) + 2
+    body = {s.title: s.body for s in build_pack(**_big_inputs(pad)).sections}
+    assert body["Look-alikes"] == "cut (3 items)"
+    assert body["Callers"].endswith("\n... 1 more cut")
+    assert body["Callers"].count("\n- ") == 1  # two of the three caller lines stay
+    pad = PACK_CAP - _size(**_big_inputs(lookalikes=(), callers=())) + 2
+    body = {s.title: s.body for s in build_pack(**_big_inputs(pad)).sections}
+    assert (body["Callers"], body["Ghidra draft"]) == ("cut (3 items)", "cut (1 item)")
+
+
+def test_cap_counts_utf8_bytes_not_characters():
+    """Review M-10: a 2-byte character where the character count fits but the byte count is
+    one over is cut; at exactly the cap in bytes the pack is kept whole."""
+    base = _size(**_big_inputs())  # its idioms is one ASCII byte
+
+    def idioms(size: int) -> str:  # `size` UTF-8 bytes, mostly 2-byte characters
+        return "é" * (size // 2) + "i" * (size % 2)
+
+    at_cap = PACK_CAP - base + 1
+    whole = build_pack(**_big_inputs(idioms=idioms(at_cap)))
+    assert (whole.pack_bytes, whole.truncated) == (PACK_CAP, ())
+    assert len(whole.text) < PACK_CAP
+    uncut = build_pack(**_big_inputs(idioms=idioms(at_cap + 1)), cap=10**9)
+    assert uncut.pack_bytes == PACK_CAP + 1 and len(uncut.text) < PACK_CAP
+    over = build_pack(**_big_inputs(idioms=idioms(at_cap + 1)))
+    assert over.truncated == ("look-alike func_00013000",)
+    assert over.pack_bytes <= PACK_CAP
+
+
+def test_prototypes_render_on_one_line():
+    """Review M-1: a head is printed outside any fence, so its whitespace is collapsed and
+    no CR, line break, `##` or `#if` from the C text can start a markdown line."""
+    callers = (
+        Neighbour("func_00010010", "game", "matched", "unsigned\r\nfunc_00010010(void)"),
+        Neighbour(
+            "func_00010000", "game", "matched", "int /*\n## injected\n*/ func_00010000(void)"
+        ),
+        Neighbour("func_00010020", "game", "matched", "int\n#if 0\n#endif\nfunc_00010020(void)"),
+    )
+    pack = build_pack(**_inputs(callers=callers))
+    assert "\r" not in pack.text
+    assert _headings(pack.text) == list(ORDER)
+    body = {s.title: s.body for s in pack.sections}["Callers"]
+    assert body.splitlines() == [
+        "- func_00010010 (game, matched): unsigned func_00010010(void);",
+        "- func_00010000 (game, matched): int /* ## injected */ func_00010000(void);",
+        "- func_00010020 (game, matched): int #if 0 #endif func_00010020(void);",
+    ]
+
+
+def test_gather_refuses_an_unknown_status(tmp_path: Path):
+    """Review M-6: a typo such as `Matched` would silently drop prototypes and look-alikes."""
+    assert contextpack.STATUSES == ("matched", "partial", "unmatched")
+    with pytest.raises(ContextPackError, match="Matched"):
+        _gather(1, tmp_path, {FUNC_A: "Matched"})
 
 
 def test_pack_is_deterministic():
