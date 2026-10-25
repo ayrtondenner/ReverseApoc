@@ -102,9 +102,10 @@ class SymbolTable:
         """`data_ranges` are the LE data objects, given by the caller from le.objects; `aliases`
         are functions.runtime_aliases, each naming a runtime row start.
 
-        A symbols.csv data row must lie in one of `data_ranges`, but only when they are given:
-        production callers always pass data_ranges(le) (check.load_exe, cli._split_inputs),
-        while a CSV-only caller has no LE and passes none (orchestrator ruling F6)."""
+        A symbols.csv data row must lie in one of `data_ranges`; the check runs when the caller
+        passes the LE's data ranges, as the production callers check.load_exe and
+        cli._split_inputs always do. A caller with only the CSVs and no LE passes none, and its
+        data rows are not range-checked."""
         rows = tuple(sorted(functions, key=lambda row: row.start))
         by_start = {row.start: row for row in rows}
         by_address = _symbols_by_address(symbols, by_start, data_ranges)
