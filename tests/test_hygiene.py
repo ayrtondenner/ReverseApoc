@@ -342,8 +342,9 @@ def test_round_trip_tests_never_copy_manifest_hashes():
     assert found == []
 
 
-# A bare exact pin: a PEP 508 project name, `==`, a version with no `=`, `;`, `[` or space.
-# Anything else (a range, a marker, an extra, a second `==`) is refused.
+# A bare exact pin: a PEP 508 project name, `==`, and a version of letters, digits and `.+!_-`
+# that starts with a letter or digit. Anything else (a range, a marker, an extra, a second `==`)
+# is refused.
 _EXACT_PIN = re.compile(
     r"(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)==(?P<version>[A-Za-z0-9][A-Za-z0-9.+!_-]*)"
 )
