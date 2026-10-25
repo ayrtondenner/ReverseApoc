@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import build_le_image, fixup_record, requires_capstone, write_manifest
+from conftest import REPO_ROOT, build_le_image, fixup_record, requires_capstone, write_manifest
 from reverseapoc import cli
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import (
@@ -306,3 +306,50 @@ def test_units_write_keeps_a_hand_recut(tmp_path: Path, monkeypatch, capsys):
     assert [u.unit for u in read_units_csv(units)] == ["grafix"]
     assert cli_main(["units", *args, "--write", "--redraft"]) == 0
     assert [u.unit for u in read_units_csv(units)] == ["u_00010000"]
+
+
+# ---- the committed CSVs, without orig/ (05-REVIEW row 16b) ----
+
+COMMITTED_EXES = ("ufo2p", "tacp")  # config/<stem>/ of the two split executables
+
+
+def tiling_problems(functions: list[FunctionRow], units: list[UnitRow]) -> list[str]:
+    """Every functions.csv row in exactly one unit span, no two unit spans overlapping, and no
+    check_unit_assignment problem; one line per violation."""
+    ordered = sorted(units, key=lambda unit: unit.start)
+    problems = [f"{a.unit} overlaps {b.unit}" for a, b in zip(ordered, ordered[1:], strict=False)
+                if a.end > b.start]  # fmt: skip
+    for row in functions:
+        holders = [u.unit for u in ordered if u.start <= row.start and row.end <= u.end]
+        if len(holders) != 1:
+            problems.append(f"{row.name} lies in {len(holders)} unit spans")
+    return problems + check_unit_assignment(functions, units)
+
+
+def plant_moved_end(units: list[UnitRow], functions: list[FunctionRow], path: Path) -> str:
+    """Write a copy of `units` to `path` with the end of the unit holding the first game row
+    moved into that row; returns the row's name."""
+    row = next(r for r in functions if r.kind == "game")
+    moved = [UnitRow(u.unit, u.start, row.end - 1, u.reason) if u.unit == row.unit else u
+             for u in units]  # fmt: skip
+    write_units_csv(path, moved, "PLANT.EXE")
+    return row.name
+
+
+@pytest.mark.parametrize("planted", [False, True], ids=["committed", "planted"])
+@pytest.mark.parametrize("stem", COMMITTED_EXES)
+def test_committed_units_tile_their_rows(stem, planted, tmp_path):
+    """D-11 on the committed config/<stem>/units.csv and functions.csv, with no game file: every
+    row lies in exactly one unit span and the spans do not overlap. The planted case moves one
+    unit end into a row on a tmp copy and must be caught, so the check cannot pass vacuously."""
+    config = REPO_ROOT / "config" / stem
+    functions = read_functions_csv(config / "functions.csv")
+    units_path = config / "units.csv"
+    units = read_units_csv(units_path)
+    assert functions and units
+    if not planted:
+        assert tiling_problems(functions, units) == []
+        return
+    name = plant_moved_end(units, functions, tmp_path / "units.csv")
+    problems = tiling_problems(functions, read_units_csv(tmp_path / "units.csv"))
+    assert any(name in problem for problem in problems)
