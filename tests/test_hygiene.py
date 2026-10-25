@@ -396,6 +396,19 @@ def test_dependency_doc_check_wants_an_exact_pin():
     assert len(_dependency_doc_problems(loose, _TOOLS_HEADER + row)) == 1
 
 
+@pytest.mark.parametrize(
+    "pin",
+    ["foo==1.0; python_version >= '3.14'", "foo[cli]==1.0", "foo==1.0==2.0", "foo ==1.0", "==1.0"],
+)
+def test_dependency_doc_check_refuses_anything_but_name_eq_version(pin):
+    # Only a bare `name==version` passes: a marker, an extra, a second `==`, a space or an empty
+    # name is refused even when a **Use** row holds the very same text.
+    pyproject = f'[project]\nname = "x"\ndependencies = ["{pin}"]\n'
+    row = f"| [foo](https://example.invalid) | **Use** | r | uv: `{pin}` | Phase 5 |\n"
+    problems = _dependency_doc_problems(pyproject, _TOOLS_HEADER + row)
+    assert problems == [f"{pin!r} is not an exact `name==version` pin"]
+
+
 def _skip_message(helper) -> str:
     with pytest.raises(pytest.skip.Exception) as skipped:
         helper()
