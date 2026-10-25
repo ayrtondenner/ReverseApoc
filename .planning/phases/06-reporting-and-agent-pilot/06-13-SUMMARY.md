@@ -238,6 +238,36 @@ None.
 - The three files exist: tools/reverseapoc/contextpack.py, tests/test_contextpack.py and this SUMMARY.
 - The six task commits (9e15bf3, 140e971, 1b31b0b, d36064e, d67ac29, 2304555) are on this branch. `git diff --name-only 325c606..HEAD` lists only these three files. STATE.md, ROADMAP.md, config/ and orig/ are untouched.
 
+## Fix round 1
+
+Source: review-06-13.md (spec approved; one Important finding, minors). FIX_BASE 1c379f5. RED `4c9320d` (test), GREEN `11fcb13` (fix).
+
+| Finding | Change | Test | RED evidence |
+|---|---|---|---|
+| I-1: the truncation header grew 22 bytes per cut item, so 600 unmatched callers raised although the required sections (22,581 bytes) fit | The `Truncated:` line counts cuts per section (`3 of 3 look-alikes, 118 of 400 callers, draft`), so it has a small fixed bound. The per-item list stays in `Pack.truncated` and `to_json()`. The error reads "the required sections alone are N bytes ..." and is raised only when the pack is still over with every optional section cut | `test_many_cut_callers_never_exhaust_the_cap`; `test_pack_one_byte_over_is_truncated_in_order` checks the new header | Raised the spurious `ContextPackError ... 35775 bytes` |
+| M-1: the prototype was printed raw | `Neighbour.line` prints `" ".join(head.split())` | `test_prototypes_render_on_one_line` (CRLF, `## injected` in a comment, `#if 0`) | Assertion: `\r` found in the pack |
+| M-2: a head could start with a stray backslash | `_declaration_start` skips backslash-newline splices as well as blanks | `test_callee_prototype_head_skips_a_splice_before_it` | Assertion: head `'\\  \t\nint ...'` |
+| M-3: cut sections were not marked | A fully cut section says `cut (N items)` (the draft says `cut (1 item)`). A partly cut list ends with `... N more cut`. `none` still means no input | `test_cut_sections_are_marked_in_place` | Assertion: `'none' == 'cut (3 items)'` |
+| M-4: the write guard accepted any build/driver pair, casefolded | `write_pack(pack, out_dir, *, root=REPO_ROOT)`: the resolved target must be `<resolved root>/build/driver` or below it, compared part by part as strings (exact case) | `test_write_pack_compares_build_driver_with_exact_case`, `test_write_pack_refuses_paths_outside_the_repo_build_driver` | TypeError: no `root` keyword yet |
+| M-5: no `..` or link cases | `..` back out, a foreign `x/build/driver`, outside the repo, `build/drivers`, `build` alone; a junction (Windows, `_winapi.CreateJunction`) or a symlink (POSIX), chosen by `sys.platform` in one test; a separate symlink test that skips only with R-A's `symlink creation needs privileges on this host` (it skips on this host) | the three tests above plus `test_write_pack_refuses_a_link_out_of_build_driver`, `test_write_pack_refuses_a_symlink_out_of_build_driver` | TypeError, as for M-4 |
+| M-6: no PARTIAL constant and no validation | `STATUS_MATCHED`, `STATUS_PARTIAL`, `STATUS_UNMATCHED`, `STATUSES`. `gather` refuses any other value and names it. A TODO(06-15) says to switch to 06-11's constants; 06-11's code is not imported | `test_gather_refuses_an_unknown_status` | AttributeError: no `STATUSES` |
+| M-7: the real-file test pinned the exact name set | Asserts membership, the exact head, a source that is a substring of the file, and the exact body for TACP. Now covers `src/ufo2p/u_000a34f0.c` too. Both files are read as `read_bytes().decode("utf-8")` | `test_callee_prototype_on_the_real_units[...]` | Test-only change; passed at RED |
+| M-9: bare `0x4` object flag | `asm.data_ranges(le)` | `_le_inputs` | Test-only change |
+| M-10: no non-ASCII case | 2-byte `é` in idioms: at exactly 24,576 bytes the pack is kept whole with fewer characters than that; one byte over, the first look-alike is cut | `test_cap_counts_utf8_bytes_not_characters` | Passed at RED: the code already measured bytes. This pins it |
+| M-8 (note only) | Not changed. `_normalized` repeats normalize_source's three steps and `_file_scope_matches` repeats `_file_scope_definitions`' brace-depth loop, using 8 private configure names (`_TRIGRAPH`, `_TRIGRAPHS`, `_BLANK_SPLICE`, `_SPLICE`, `_NOT_CODE`, `_DEFINITION`, `_ConditionalError`, and `code_text` and `normalize_source` alongside them). Two run-time checks catch drift: the result must equal `configure.normalize_source`, and the line count must equal `code_text`'s. The next change to configure.py could expose a match-yielding variant | n/a | n/a |
+
+Judgment calls:
+- "Required sections alone" includes the pack's fixed frame: the title, the preamble, the ten headings, the bounded `Truncated:` line and the short cut marks. These add up to a few hundred bytes and no longer grow with the number of cut items.
+- On Windows, a `Build/Driver` spelling of a directory that already exists as `build/driver` resolves to the on-disk case and is accepted. It is the same NTFS directory. A spelling that does not exist keeps its case and is refused, as it is on the container's case-sensitive file system.
+
+Verification after the fix: `uv run pytest -q tests/test_contextpack.py` gave 30 passed and 1 skipped (the R-A symlink reason). `uv run pytest -q` gave 1628 passed and 218 skipped. `uv run ruff check .` reported all checks passed.
+
+Points for 06-15, from the review's "cannot verify" list:
+- (a) Pass every unit text of the EXE in `unit_texts`, not just the claimed unit. Otherwise neighbours and look-alikes in other units get no C.
+- (b) Read unit files as `read_bytes().decode("utf-8")`, never `read_text`.
+- (c) Use exactly the status vocabulary `STATUSES`; `gather` now enforces it.
+- (d) Building the CallIndex took 6.3 s on UFO2P. That is fine once per `context` call.
+
 ---
 *Phase: 06-reporting-and-agent-pilot*
 *Completed: 2026-10-25*
