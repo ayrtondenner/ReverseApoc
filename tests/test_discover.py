@@ -307,10 +307,6 @@ def table_function(cases: list[int], after_table: bytes) -> tuple[LE, int]:
     return make_le(patches, entry=0, fixups=fixups, objects=small_code(NEXT_VSIZE)), table
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="05-REVIEW row 11: the fix moves 26 real ends (13 per EXE); owner decision pending",
-)
 def test_code_after_ret_and_table_is_not_absorbed():
     """ret, the function's jump table, then code no branch of the function reaches: the function
     ends at the table's end and the trailing code stays a gap (05-REVIEW row 11)."""
