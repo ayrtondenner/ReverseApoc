@@ -315,9 +315,10 @@ class _EndScan(_Image):
         return end
 
     def read_tables(self, insn: x86.Insn) -> Iterator[int]:
-        """The case labels of every jump table an indirect jmp reads (through a fixup in its
-        operand to a table start), wherever that table lies: a table past the scan position
-        can still reach code before it (review 06-04 minor 1)."""
+        """The case labels of every jump table an indirect jmp reads: for each LE fixup inside
+        the instruction whose target lies anywhere in a jump table, all the case labels of that
+        table, wherever the table lies. A table past the scan position can still reach code
+        before it (review 06-04 minor 1)."""
         if not insn.is_jump or insn.branch_target is not None:
             return
         for va in range(insn.va, insn.va + insn.size):
