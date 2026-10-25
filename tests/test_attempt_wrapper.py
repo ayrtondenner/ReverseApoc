@@ -232,6 +232,42 @@ def test_the_evidence_is_written_before_the_removal(repo: Path, monkeypatch):
     assert "made-up timeout" in saved["stderr"]
 
 
+def _failing_write(monkeypatch, which: str) -> None:
+    def broken(*args, **kwargs):
+        raise OSError(f"made-up {which} failure")
+
+    monkeypatch.setattr(attempt, which, broken)
+
+
+@pytest.mark.parametrize("which", ["write_atomic", "_append"])
+@pytest.mark.parametrize(("rm_code", "lock_kept"), [(0, False), (1, True)])
+def test_a_failed_evidence_write_still_removes_the_container(
+    repo: Path, monkeypatch, capsys, which, rm_code, lock_kept
+):
+    """Fix round 2 N7 (security finding, fail-open): after a timeout the lock is marked kept
+    before any evidence write, the removal runs in a `finally`, and only a removal that
+    succeeded releases the lock. The write error surfaces as exit 2."""
+    runner = TimeoutRunner(rm_code=rm_code)
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    _failing_write(monkeypatch, which)
+    assert _run(["attempt", "check"]) == 2
+    assert [call[:2] for call in runner.calls] == [("docker", "compose"), ("docker", "rm")]
+    assert (repo / "check.lock").is_file() is lock_kept
+    assert f"made-up {which} failure" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("which", ["write_atomic", "_append"])
+def test_a_failed_evidence_write_and_a_raising_removal_keep_the_lock(repo: Path, monkeypatch,
+                                                                     which):  # fmt: skip
+    """N7: a removal that raises after a failed evidence write still fails closed."""
+    runner = TimeoutRunner(rm_raises=True)
+    monkeypatch.setattr(attempt, "RUNNER", runner)
+    _failing_write(monkeypatch, which)
+    assert _run(["attempt", "check"]) == 2
+    assert len(runner.calls) == 2
+    assert (repo / "check.lock").is_file()
+
+
 def test_the_removal_has_its_own_short_timeout(repo: Path, monkeypatch):
     """Fix round 2 N2: `docker rm -f` gets RM_TIMEOUT (15 s), so 580 + 15 stays under the
     Bash tool's 600 s; the check run keeps the runner's own timeout."""
