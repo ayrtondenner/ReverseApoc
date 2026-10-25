@@ -1,8 +1,10 @@
 """The one atomic file writer of the package (DI-18, D-41).
 
 Every generated or committed file the tools write (rebuilt EXEs, listings, CSVs, stamps, status
-tables) goes through `write_atomic`, so a failed or interrupted write never leaves a torn file
-and a link at the target is replaced rather than written through.
+tables) goes through `write_atomic`. The target is either replaced whole by os.replace or left as
+it was, never half-written, and a link at the target is replaced rather than written through.
+Nothing is fsynced, so this is not a durability guarantee across a power loss, and a process
+killed mid-write can leave its `.<name>.<hex>.tmp` file next to the target.
 """
 
 from __future__ import annotations
