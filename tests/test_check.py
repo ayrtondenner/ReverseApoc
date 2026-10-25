@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -174,8 +175,14 @@ def make_env(
 
 
 @pytest.fixture
-def env(tmp_path):
-    return make_env(tmp_path)
+def env(tmp_path, monkeypatch):
+    """The synthetic tree, standing in for the committed src/ and config/ (DI-06 part b): check
+    compiles into ninja's build/<exe>/obj only for the default roots. raising=False keeps the
+    fixture usable on a check.py without the defaults; the path tests then fail on their own."""
+    env = make_env(tmp_path)
+    monkeypatch.setattr(check, "DEFAULT_SRC", env.src, raising=False)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config, raising=False)
+    return env
 
 
 def run_check(env: Env, compiler=None, objdiff=None, **kwargs):
@@ -767,6 +774,87 @@ def test_check_with_default_options_keeps_ninja_paths(env, monkeypatch, capsys):
     capsys.readouterr()
     assert [obj for _, obj, _ in compiler.calls] == [ninja_object(env)]
     assert not (env.build / check.CUSTOM_ROOT).exists()
+
+
+# ---- DI-06 part b: check --src/--config OTHER never writes ninja's objects either -------------
+
+
+def with_option(env: Env, option: str, value: Path) -> list[str]:
+    """env.argv() with `option` set to `value` instead of the env tree."""
+    argv = env.argv()
+    argv[argv.index(option) + 1] = str(value)
+    return argv
+
+
+def other_tree(env: Env, option: str) -> Path:
+    """A copy of the env's src or config tree elsewhere: the same files under another root."""
+    source = {"--src": env.src, "--config": env.config}[option]
+    other = env.root / f"other-{option.lstrip('-')}"
+    shutil.copytree(source, other)
+    return other
+
+
+def keeps_ninja_objects(env: Env, monkeypatch, capsys, option: str) -> None:
+    put_object(env, omf_object())
+    obj = ninja_object(env)
+    before = (obj.read_bytes(), obj.stat().st_mtime_ns)
+    compiler = FakeCompiler(omf_object(callee="func_00010020_"))  # another object than ninja's
+    patch_tools(monkeypatch, compiler=compiler)
+    argv = ["check", f"{STEM}/{UNIT}", *with_option(env, option, other_tree(env, option)),
+            "--json"]  # fmt: skip
+    assert cli_main(argv) == check.EXIT_MISMATCH
+    capsys.readouterr()
+    assert compiler.calls
+    for _, written, _ in compiler.calls:
+        assert written.is_relative_to(env.build / check.CUSTOM_ROOT), written
+    assert (obj.read_bytes(), obj.stat().st_mtime_ns) == before
+    for kind in ("base", "target"):
+        assert not (env.build / STEM / kind).exists(), kind
+
+
+def test_check_with_other_src_keeps_ninja_objects(env, monkeypatch, capsys):
+    """DI-06 part b: ninja's cc edge compiles the committed src/; `check --src OTHER` compiles
+    other files, so its objects go to build/check-custom/ and ninja's keep bytes and mtime."""
+    keeps_ninja_objects(env, monkeypatch, capsys, "--src")
+
+
+def test_check_with_other_config_keeps_ninja_objects(env, monkeypatch, capsys):
+    """DI-06 part b: likewise for `check --config OTHER`."""
+    keeps_ninja_objects(env, monkeypatch, capsys, "--config")
+
+
+def test_default_roots_keep_ninja_paths(env):
+    """The committed src/ and config/ (here the env tree, see the fixture) keep build/<exe>/obj,
+    for check_unit and for its land step."""
+    compiler = FakeCompiler()
+    result = run_check(env, compiler)
+    assert result.ok, result.format()
+    assert [obj for _, obj, _ in compiler.calls] == [ninja_object(env)]
+    assert not (env.build / check.CUSTOM_ROOT).exists()
+
+
+def test_object_root_keys_on_the_src_and_config_roots(env, tmp_path):
+    """Orchestrator ruling F7: CompileOptions carries src_root and config_root; None or the
+    committed default keeps the build dir, anything else is check-custom."""
+    build, custom = env.build, env.build / check.CUSTOM_ROOT
+    assert check.object_root(build, check.CompileOptions()) == build
+    defaults = check.CompileOptions(src_root=env.src, config_root=env.config)
+    assert check.object_root(build, defaults) == build
+    assert check.object_root(build, check.CompileOptions(src_root=tmp_path / "x")) == custom
+    assert check.object_root(build, check.CompileOptions(config_root=tmp_path / "x")) == custom
+
+
+def test_land_all_with_other_src_compiles_outside_ninja_paths(env):
+    """land_all compiling from another src root (check's land step) never writes ninja's
+    objects, even when its options carry no src_root."""
+    other = other_tree(env, "--src")
+    compiler = FakeCompiler()
+    kwargs = {**env.kwargs(), "src_root": other}
+    (landed,) = check.land_all(**kwargs, compile_fn=compiler)
+    assert landed.ok
+    assert compiler.calls
+    assert all(obj.is_relative_to(env.build / check.CUSTOM_ROOT) for _, obj, _ in compiler.calls)
+    assert not ninja_object(env).exists()
 
 
 def test_custom_root_is_no_exe_stem():
