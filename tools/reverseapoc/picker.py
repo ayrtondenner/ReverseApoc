@@ -2,21 +2,25 @@
 """The driver's picker (AGT-07, D-09, D-10): which function an agent attempts next.
 
 The pools are score's P16 survivors (`ScoreReport.candidates`, from `score.assess` as it is,
-D-09), one list per EXE. The picker adds status awareness on top: a start in `excluded`
-(matched, capped or partial in this pass) or in `difficult` is never picked.
+D-09), one list per EXE, keyed by the EXE stem in `order` ("ufo2p", "tacp"). The picker adds
+status awareness on top: a start in `excluded` (matched, capped or partial in this pass) or in
+`difficult` is never picked.
 
-Within an EXE the picks go easiest first, by (score, start), so equal scores come out by
-ascending start and the queue is the same on every run whatever order a pool arrives in. The
-EXEs are interleaved in `order`; when one runs out the others go on.
+Within an EXE the picks go easiest first by score's own rank, (__CHK, score, start): a function
+without a __CHK prologue comes first, because the default `-s` applies to it and cflags are
+owner-only (D-18), then the lower score, then the lower start. The queue is therefore the same
+on every run whatever order a pool arrives in. The EXEs are interleaved in `order`; when one
+ends the others go on.
 
 The variety rule (D-10) counts the picks yielded so far, per EXE: at most 2 per unit and at most
 3 per 64 KiB region (`start // 0x10000`), so look-alike neighbours such as UFO2P's eight 27-byte
 functions at 0x0008A0E0..0x0008A1C0 cannot crowd the pilot. When the rule blocks every remaining
-candidate the queue ends; it never breaks the rule. `requeue` says when capped functions (the
-difficult list) come back (D-07).
+candidate the EXE's stream ends; it never breaks the rule. `PickQueue.ended` says why each EXE
+ended (pool exhausted, or the rule blocks the rest), which is what `requeue`'s `pool_empty`
+needs (D-07). `pilot` refuses to return fewer picks than asked.
 
-Everything here is pure: the caller reads status.csv, functions.csv and the LE. `matched_starts`
-is the one seam to the status table, and takes the reader as an argument so tests can fake it.
+The picking is pure: the caller reads functions.csv and the LE. `matched_starts` is the one seam
+to the status table, and takes the path and the reader as arguments so tests can fake them.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from .score import Candidate
@@ -33,13 +38,18 @@ PILOT_PER_EXE = 5  # D-10: 5 UFO2P + 5 TACP
 MAX_PER_UNIT = 2  # D-10 variety rule
 MAX_PER_REGION = 3
 REGION_SIZE = 0x10000  # 64 KiB of linear address; D-10 fixes no alignment, so start // 0x10000
+# TODO(06-25): use 06-11's status.py vocabulary once both are merged (06-14 review M6).
 STATUS_MATCHED = "matched"
+
+END_EXHAUSTED = "pool exhausted"  # no eligible candidate left in the EXE's pool
+END_BLOCKED = "variety rule blocks the rest"  # candidates are left, the rule blocks them all
 
 Key = tuple[str, int]  # (EXE, row start): one functions.csv row, as in status.csv
 
 
 class PickerError(ValueError):
-    """The picker was given a pool it cannot pick from (e.g. a candidate with no unit)."""
+    """The picker was given something it cannot pick from (a candidate with no unit, an
+    unknown EXE key, a limit below 1), or a pilot that cannot be filled."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,26 +68,25 @@ class StatusRow(Protocol):
 
 
 def matched_starts(
-    exes: Iterable[str], *, read: Callable[[str], Iterable[StatusRow]]
+    exes: Iterable[str],
+    *,
+    path_of: Callable[[str], Path],
+    read: Callable[[Path], Iterable[StatusRow]],
 ) -> frozenset[Key]:
-    """The (EXE, start) of every matched row in each EXE's status table. `read(exe)` returns
-    the table's rows; a table that does not exist yet (FileNotFoundError) means nothing is
-    matched in that EXE."""
+    """The (EXE, start) of every matched row in each EXE's status table at `path_of(exe)`.
+
+    A table that does not exist yet in an existing config directory means nothing is matched in
+    that EXE (D-20). A missing config directory is a wrong EXE key and is refused. Everything
+    `read(path)` raises (a malformed table, any other missing file) propagates."""
     out: set[Key] = set()
     for exe in exes:
-        try:
-            rows = list(read(exe))
-        except FileNotFoundError:
+        path = path_of(exe)
+        if not path.parent.is_dir():
+            raise PickerError(f"{exe}: no config directory {path.parent} (wrong EXE key?)")
+        if not path.exists():
             continue
-        out.update((exe, row.start) for row in rows if row.status == STATUS_MATCHED)
+        out.update((exe, row.start) for row in read(path) if row.status == STATUS_MATCHED)
     return frozenset(out)
-
-
-def _unit(exe: str, start: int, units: Mapping[str, Mapping[int, str]]) -> str:
-    unit = units.get(exe, {}).get(start)
-    if not unit:
-        raise PickerError(f"{exe} candidate 0x{start:08X} has no unit")
-    return unit
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,34 +123,78 @@ class _Variety:
         self._regions[pick.start // self._rule.region_size] += 1
 
 
+def _easiest_first(c: Candidate) -> tuple[bool, int, int]:
+    """score.candidates' own rank: no __CHK prologue first, then score, then start."""
+    return (c.chk, c.score, c.address)
+
+
+class _ExeStream:
+    """One EXE's picks, easiest first, under the variety rule. The counts only grow, so a
+    candidate the rule blocks stays blocked: one pass in order is enough. `end` is None until
+    the stream is used up, then END_EXHAUSTED or END_BLOCKED."""
+
+    def __init__(self, picks: Sequence[Pick], rule: _Rule) -> None:
+        self._picks = iter(picks)
+        self._count = _Variety(rule)
+        self._blocked = False
+        self.end: str | None = None
+
+    def next(self) -> Pick | None:
+        for pick in self._picks:
+            if not self._count.allows(pick):
+                self._blocked = True
+                continue
+            self._count.take(pick)
+            return pick
+        self.end = END_BLOCKED if self._blocked else END_EXHAUSTED
+        return None
+
+
+class PickQueue(Iterator[Pick]):
+    """The picks, one EXE after another in `order`; an EXE whose stream ends drops out.
+    `ended` maps each EXE that has ended to why (END_EXHAUSTED or END_BLOCKED): a queue that
+    stopped does not by itself mean the pool is empty."""
+
+    def __init__(self, streams: Mapping[str, _ExeStream]) -> None:
+        self._streams = dict(streams)
+        self._live = list(self._streams.values())
+        self._turn = 0
+
+    def __next__(self) -> Pick:
+        while self._live:
+            turn = self._turn % len(self._live)
+            pick = self._live[turn].next()
+            if pick is None:
+                del self._live[turn]  # the next stream moves into this turn
+                continue
+            self._turn = turn + 1
+            return pick
+        raise StopIteration
+
+    @property
+    def ended(self) -> dict[str, str]:
+        return {exe: s.end for exe, s in self._streams.items() if s.end is not None}
+
+    def pool_empty(self, exe: str) -> bool:
+        """The EXE's stream ended because no eligible candidate is left (requeue's pool_empty)."""
+        return self.ended.get(exe) == END_EXHAUSTED
+
+
 def _exe_picks(
-    exe: str, pool: Sequence[Candidate], *, units: Mapping[str, Mapping[int, str]],
-    skip: Callable[[Key], bool], rule: _Rule,
-) -> Iterator[Pick]:  # fmt: skip
-    """One EXE's picks, easiest first by (score, start), under the variety rule. The counts only
-    grow, so a candidate the rule blocks stays blocked: one pass in order is enough, and the
-    stream ends when the rule blocks every candidate left."""
-    count = _Variety(rule)
-    for c in sorted(pool, key=lambda c: (c.score, c.address)):
+    exe: str, pool: Sequence[Candidate], *, units: Mapping[int, str],
+    skip: Callable[[Key], bool],
+) -> list[Pick]:  # fmt: skip
+    """The EXE's eligible candidates as picks, easiest first. Every one needs a unit; that is
+    checked here, before any pick is handed out."""
+    picks = []
+    for c in sorted(pool, key=_easiest_first):
         if skip((exe, c.address)):
             continue
-        pick = Pick(exe, c.address, c.name, _unit(exe, c.address, units), c.size, c.score)
-        if not count.allows(pick):
-            continue
-        count.take(pick)
-        yield pick
-
-
-def _interleave(streams: Sequence[Iterator[Pick]]) -> Iterator[Pick]:
-    """One pick from each stream in turn; an exhausted stream drops out."""
-    live = list(streams)
-    while live:
-        for stream in list(live):
-            pick = next(stream, None)
-            if pick is None:
-                live.remove(stream)
-                continue
-            yield pick
+        unit = units.get(c.address)
+        if not unit:
+            raise PickerError(f"{exe} candidate 0x{c.address:08X} has no unit")
+        picks.append(Pick(exe, c.address, c.name, unit, c.size, c.score))
+    return picks
 
 
 def queue(
@@ -154,18 +207,21 @@ def queue(
     max_per_region: int = MAX_PER_REGION,
     region_size: int = REGION_SIZE,
     order: Sequence[str] = EXE_ORDER,
-) -> Iterator[Pick]:
+) -> PickQueue:
     """Every pick, the EXEs in `order` interleaved, each easiest first under the variety rule
     (D-10, counted per EXE). `units` maps each EXE's row starts to their unit; `excluded` and
-    `difficult` hold (EXE, start) keys."""
+    `difficult` hold (EXE, start) keys. A pool key outside `order` is refused."""
     rule = _Rule(max_per_unit, max_per_region, region_size)
+    unknown = sorted(set(pools) - set(order))
+    if unknown:
+        raise PickerError(f"pool keys {unknown} are not in order {list(order)}")
 
     def skip(key: Key) -> bool:
         return key in excluded or key in difficult
 
-    streams = [_exe_picks(exe, pools.get(exe, ()), units=units, skip=skip, rule=rule)
-               for exe in order]  # fmt: skip
-    return _interleave(streams)
+    picks = {exe: _exe_picks(exe, pools.get(exe, ()), units=units.get(exe, {}), skip=skip)
+             for exe in order}  # fmt: skip
+    return PickQueue({exe: _ExeStream(p, rule) for exe, p in picks.items()})
 
 
 def pilot(
@@ -180,7 +236,10 @@ def pilot(
     region_size: int = REGION_SIZE,
     order: Sequence[str] = EXE_ORDER,
 ) -> list[Pick]:
-    """The pilot's picks (D-10): the first `per_exe` of each EXE, interleaved."""
+    """The pilot's picks (D-10): the first `per_exe` of each EXE, interleaved. An EXE that
+    cannot give `per_exe` picks is a PickerError naming it, its count and why it ended."""
+    if per_exe < 1:
+        raise PickerError(f"per_exe must be at least 1, not {per_exe}")
     taken: dict[str, int] = dict.fromkeys(order, 0)
     picks: list[Pick] = []
     stream = queue(pools, units=units, excluded=excluded, difficult=difficult,
@@ -191,8 +250,10 @@ def pilot(
             taken[pick.exe] += 1
             picks.append(pick)
         if all(n >= per_exe for n in taken.values()):
-            break
-    return picks
+            return picks
+    short = [f"{exe} {taken[exe]} of {per_exe} ({stream.ended[exe]})"
+             for exe in order if taken[exe] < per_exe]  # fmt: skip
+    raise PickerError("pilot short: " + "; ".join(short))
 
 
 def requeue(
@@ -206,8 +267,8 @@ def requeue(
 
     `difficult` maps each capped function to its callees that were already matched when it was
     capped; `matched` is every function matched now; `callees` maps a function to the functions
-    it calls. When the easy pool is exhausted (`pool_empty`) every difficult function comes
-    back; otherwise only those with a callee matched since the cap."""
+    it calls. When the easy pool is exhausted (`pool_empty`, e.g. `PickQueue.pool_empty`) every
+    difficult function comes back; otherwise only those with a callee matched since the cap."""
     if pool_empty:
         return tuple(difficult)
 
