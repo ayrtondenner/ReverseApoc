@@ -14,28 +14,36 @@ anything unknown fails closed (STOP), and only a known transient condition is no
   `billing_error`, or any api_retry error outside the known sets (`cloud_credential_error`,
   `model_not_found`, `invalid_request`, `max_output_tokens`, `unknown`, a missing or future
   code); a rate_limit_event with errorCode `credits_required`, or `rejected` with any other
-  errorCode; an `is_error: true` result whose `api_error_status` is neither 429 nor 5xx (401,
-  400, 403, a non-integer, ...); error text "Credit balance is too low" or "Not logged in".
+  errorCode; a result whose `subtype` is not `success`, `error_max_turns`,
+  `error_max_budget_usd` or `error_during_execution`; an error result whose `api_error_status`
+  is neither 429 nor 5xx (401, 400, 403, a non-integer, ...); error text "Credit balance is too
+  low" or "Not logged in"; and, last, a `success` error result that no known signal explains
+  (no phrase, no 429/5xx status, no LIMIT event), such as "Invalid API key" or an expired OAuth
+  token (fix round 2 R1).
 - LIMIT: api_retry `rate_limit`; a `rejected` rate_limit_event without errorCode; a result with
   `api_error_status` 429; error text "hit your ... limit".
-- TRANSIENT: an `is_error: true` result with a 5xx `api_error_status` (529 overloaded
-  included); or no result event and no wall-clock timeout (api_retry `overloaded` or
-  `server_error` with no result, a non-zero exit with no result, or no events at all).
-- ATTEMPT_DONE: any other result event (`success`, `error_max_turns`, `error_max_budget_usd`,
-  `error_during_execution`, ...) or a wall-clock timeout. It is counted, and the outcome comes
-  from the driver's gate, never from the result (T-06-39).
+- TRANSIENT: an error result with a 5xx `api_error_status` (529 overloaded included); or no
+  result event and no wall-clock timeout (api_retry `overloaded` or `server_error` with no
+  result, a non-zero exit with no result, or no events at all).
+- ATTEMPT_DONE: a clean `success` result, an `error_max_turns`, `error_max_budget_usd` or
+  `error_during_execution` result (the subtype explains the error), or a wall-clock timeout. It
+  is counted, and the outcome comes from the driver's gate, never from the result (T-06-39).
+
+An error result is any result but `is_error: false`: a missing or non-boolean flag counts as an
+error (fail closed, fix round 2 M1).
 
 Precedence when one stream carries several signals: STOP over LIMIT over TRANSIENT over
 ATTEMPT_DONE. A run with a credit problem must end even if a limit was also hit, and a limit is
 not an attempt even if a result followed it. TRANSIENT competes with ATTEMPT_DONE only through
 a 5xx error result (which beats it: the server, not the agent, ended the session); a session
 with no result is TRANSIENT by definition. An api_retry `overloaded`/`server_error` followed by
-a clean result is ATTEMPT_DONE, since the session recovered.
+a clean result is ATTEMPT_DONE, since the session recovered. The unexplained-error STOP is
+checked after LIMIT and TRANSIENT on purpose: it applies only when none of them explained the
+error result.
 
-Error text is the CLI's own: a result's `result` field only when the result has
-`is_error: true` (on a successful result it is the agent's last message), and `errors[]`. It is
-never read from the agent's messages, so the model cannot stop or stall the run by writing the
-words (fix round 1 I2).
+Error text is the CLI's own: a result's `result` field only on an error result (on a clean
+result it is the agent's last message), and `errors[]`. It is never read from the agent's
+messages, so the model cannot stop or stall the run by writing the words (fix round 1 I2).
 
 `check_init` asserts the `system/init` event (Pitfall 2, D-36, T-06-40); the driver treats any
 problem as STOP. `usage` and `tool_uses` feed the attempt log (AGT-03) and the transcript audit.
@@ -67,6 +75,9 @@ _LIMIT_RETRY_ERRORS = frozenset({"rate_limit"})
 _TRANSIENT_RETRY_ERRORS = frozenset({"overloaded", "server_error"})
 _KNOWN_RETRY_ERRORS = _STOP_RETRY_ERRORS | _LIMIT_RETRY_ERRORS | _TRANSIENT_RETRY_ERRORS
 _HTTP_SERVER_ERRORS = range(500, 600)  # 5xx, 529 (overloaded) included
+_SUCCESS = "success"
+_ERROR_SUBTYPES = frozenset({"error_max_turns", "error_max_budget_usd", "error_during_execution"})
+_KNOWN_SUBTYPES = _ERROR_SUBTYPES | {_SUCCESS}
 _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECASE)
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
@@ -166,11 +177,17 @@ def _rate_limits(events: Sequence[dict]) -> Iterator[Mapping]:
             yield _mapping(event.get("rate_limit_info"))
 
 
+def _is_error_result(result: Mapping) -> bool:
+    """Whether a result is an error result: anything but `is_error: false`, so a missing or
+    non-boolean flag counts as an error (fail closed, fix round 2 M1)."""
+    return result.get("is_error") is not False
+
+
 def _result_texts(results: Sequence[dict]) -> Iterator[str]:
-    """The CLI's own error text: `result` only on an `is_error: true` result (on a successful
-    result it is the agent's last message, fix round 1 I2), and every string in `errors[]`."""
+    """The CLI's own error text: `result` only on an error result (on a successful result it is
+    the agent's last message, fix round 1 I2), and every string in `errors[]`."""
     for result in results:
-        if result.get("is_error") is True and isinstance(result.get("result"), str):
+        if _is_error_result(result) and isinstance(result.get("result"), str):
             yield result["result"]
         errors = result.get("errors")
         if isinstance(errors, list):
@@ -178,12 +195,23 @@ def _result_texts(results: Sequence[dict]) -> Iterator[str]:
 
 
 def _error_statuses(results: Sequence[dict]) -> list[object]:
-    """The `api_error_status` of every `is_error: true` result that carries one."""
+    """The `api_error_status` of every error result that carries one."""
     return [
         result["api_error_status"]
         for result in results
-        if result.get("is_error") is True and result.get("api_error_status") is not None
+        if _is_error_result(result) and result.get("api_error_status") is not None
     ]
+
+
+def _unknown_subtype(results: Sequence[dict]) -> bool:
+    return any(result.get("subtype") not in _KNOWN_SUBTYPES for result in results)
+
+
+def _unexplained_error(results: Sequence[dict]) -> bool:
+    """An error result whose subtype is `success`: nothing but a known signal (a STOP or LIMIT
+    phrase, status 429 or 5xx, a LIMIT event) explains it, and classify asks this only after
+    every such signal failed to match (fix round 2 R1). The error subtypes explain themselves."""
+    return any(result.get("subtype") == _SUCCESS and _is_error_result(result) for result in results)
 
 
 def _is_server_error(status: object) -> bool:
@@ -197,6 +225,8 @@ def _is_server_error(status: object) -> bool:
 def _is_stop(events: Sequence[dict], results: Sequence[dict], texts: Sequence[str]) -> bool:
     if _retry_errors(events) - _KNOWN_RETRY_ERRORS or _retry_errors(events) & _STOP_RETRY_ERRORS:
         return True  # a known STOP code, or a code outside every known set (fail closed)
+    if _unknown_subtype(results):
+        return True  # fix round 2 R1
     for info in _rate_limits(events):
         code = info.get("errorCode")
         if code == _CREDITS_REQUIRED or (code and info.get("status") == _REJECTED):
@@ -230,6 +260,8 @@ def classify(events: Sequence[dict], exit_code: int | None, timed_out: bool) -> 
         return Disposition.LIMIT
     if any(_is_server_error(status) for status in _error_statuses(results)):
         return Disposition.TRANSIENT
+    if _unexplained_error(results):
+        return Disposition.STOP  # an error no known signal explained (fix round 2 R1)
     if results or timed_out:
         return Disposition.ATTEMPT_DONE
     return Disposition.TRANSIENT
