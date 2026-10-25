@@ -1160,8 +1160,7 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
 
 def _cmd_context(args: argparse.Namespace) -> int:
     roots = attempt.ROOTS
-    data = attempt.load_exe(args.exe, orig=args.orig, manifest=args.manifest, config=args.config,
-                            functions=args.functions, symbols=args.symbols)  # fmt: skip
+    data = attempt.exe_inputs(args.exe, orig=args.orig, manifest=args.manifest, config=args.config)
     row = attempt.resolve_row(data, args.function)
     out = args.out
     if out is None:
@@ -1185,7 +1184,10 @@ def _add_context_command(sub: argparse._SubParsersAction) -> None:
         help="write the D-13 context pack of one function to build/driver/ (gitignored; "
         "default build/driver/manual/<exe>/<func>/context.md)",
     )
-    _add_split_inputs(p)
+    # check's loader (fix round 1 M12): every CSV comes from --config, as for check.
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
     p.add_argument("function", metavar="FUNC", help="func_XXXXXXXX or the row's symbols.csv name")
     p.add_argument("--src", type=Path, default=DEFAULT_SRC, help=default)
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
