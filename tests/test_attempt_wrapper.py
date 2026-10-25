@@ -101,6 +101,7 @@ def repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv(attempt.CLAIM_ENV, CLAIM)
     monkeypatch.setenv(attempt.FUNC_ENV, FUNC)
     monkeypatch.setenv(attempt.DIR_ENV, str(attempt_dir))
+    monkeypatch.setenv(hooks.NOTES_ENV, str(attempt_dir / "notes.md"))
     return attempt_dir
 
 
@@ -446,13 +447,63 @@ def test_attempt_check_releases_the_lock_after_a_runner_exception(repo: Path, mo
         raise RuntimeError("made-up runner failure")
 
     monkeypatch.setattr(attempt, "RUNNER", broken)
-    with pytest.raises(RuntimeError):
-        main(["attempt", "check"])
+    assert _run(["attempt", "check"]) == 2  # M9: never 1, which means "mismatch"
     assert not (repo / "check.lock").exists()
     assert (repo / "checks" / "0001.c").is_file()  # the slot stays reserved
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0
     assert _lines(repo)[-1]["n"] == 2
+
+
+def test_an_unexpected_exception_is_a_tool_error(repo: Path, monkeypatch, capsys):
+    """M9: an exception outside cli._ERRORS exits 2 (a tool error), never 1, with one line on
+    stderr and no traceback on stdout."""
+
+    def broken(argv):
+        raise RuntimeError("made-up runner failure")
+
+    monkeypatch.setattr(attempt, "RUNNER", broken)
+    assert _run(["attempt", "check"]) == 2
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.out
+    (line,) = captured.err.strip().splitlines()
+    assert "RuntimeError" in line and "made-up runner failure" in line
+
+
+def test_attempt_check_prints_elapsed_seconds_and_checks_left(repo: Path, monkeypatch, capsys):
+    """M2: the summary line gives the run's elapsed seconds and the checks left, so the agent
+    budgets by measured time against the 30-minute clock."""
+    _reserve(repo, 6, log=False)
+    ticks = iter([100.0, 141.2])
+    monkeypatch.setattr(attempt, "CLOCK", lambda: next(ticks), raising=False)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=50.0)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    head = capsys.readouterr().out.splitlines()[0]
+    assert "check 7/25, 41 s" in head
+    assert "18 left" in head
+
+
+@pytest.mark.parametrize("notes", [None, "other.md", "../notes.md"])
+def test_attempt_refuses_a_notes_path_that_is_not_the_attempt_dirs(repo: Path, monkeypatch,
+                                                                   notes):  # fmt: skip
+    """M8: REVERSEAPOC_ATTEMPT_NOTES (the one path the hook lets the agent write) must be
+    <attempt dir>/notes.md; anything else is refused with exit 2 before a run."""
+    if notes is None:
+        monkeypatch.delenv(hooks.NOTES_ENV)
+    else:
+        monkeypatch.setenv(hooks.NOTES_ENV, str(repo / notes))
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 2
+    assert runner.calls == []
+
+
+def test_attempt_check_prints_the_notes_env_path(repo: Path, monkeypatch, capsys):
+    """M8: the printed notes path is REVERSEAPOC_ATTEMPT_NOTES as the driver set it."""
+    given = repo / "sub" / ".." / "notes.md"
+    monkeypatch.setenv(hooks.NOTES_ENV, str(given))
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert f"notes: {given.as_posix()}" in capsys.readouterr().out
 
 
 def test_a_stale_lock_is_never_cleared(repo: Path, monkeypatch, capsys):
@@ -576,6 +627,7 @@ def _claim_b(roots: attempt.Roots, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv(attempt.CLAIM_ENV, f"ufo2p/{UNIT_AB}")
     monkeypatch.setenv(attempt.FUNC_ENV, "func_00010010")
     monkeypatch.setenv(attempt.DIR_ENV, str(attempt_dir))
+    monkeypatch.setenv(hooks.NOTES_ENV, str(attempt_dir / "notes.md"))
     return attempt_dir
 
 
@@ -634,6 +686,17 @@ def test_attempt_asm_prints_the_claimed_listing(tree: attempt.Roots, monkeypatch
     assert "func_00099999" in capsys.readouterr().err
     assert _run(["attempt", "asm", "func_00010020"]) == 2  # a row with no listing yet
     assert "reverseapoc asm" in capsys.readouterr().err
+
+
+def test_attempt_asm_an_undecodable_listing_is_a_tool_error(tree: attempt.Roots, monkeypatch,
+                                                            capsys):  # fmt: skip
+    """M9: a UnicodeDecodeError (outside cli._ERRORS) is exit 2, one line, no traceback."""
+    _claim_b(tree, monkeypatch)
+    (tree.asm / "ufo2p" / "func_00010010.s").write_bytes(b"\xff\xfe made-up\n")
+    assert _run(["attempt", "asm"]) == 2
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "UnicodeDecodeError" in captured.err
 
 
 def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monkeypatch, capsys):
