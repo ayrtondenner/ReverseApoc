@@ -39,8 +39,10 @@ After each session, in this order:
    GAVE_UP; a failed lint is PARTIAL "lint".
 
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
-(tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb that wires the real ones
-follows in plan 06-25. Every git call goes through `--literal-pathspecs`, so no path is a glob.
+(tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
+this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
+dry run, the owner-run canary and the end-of-run checks (`finish`). Every git call goes through
+`--literal-pathspecs`, so no path is a glob.
 
 Layout of one session (gitignored): build/driver/<run>/<exe>/<func>/attempt-<n>/ holds
 transcript.jsonl, context.md, notes.md, the wrapper's checks/ and checks.jsonl, and best/. A
@@ -1835,9 +1837,30 @@ def _container_gate(run: Runner, argv: Sequence[str]) -> GateRun:
     return GateRun(done.returncode, _json_doc(done.stdout or ""))
 
 
+END_OF_RUN = (
+    ("ninja verify", "end-ninja-verify.log",
+     (*COMPOSE_RUN, "bash", "-lc",
+      "uv run --frozen python configure.py && ninja -t clean && ninja verify")),
+    ("gate --all", "end-gate-all.log", (*CONTAINER_CLI, "gate", "--all", "--json")),
+)  # fmt: skip
+
+
 def finish(run: Runner, *, run_dir: Path) -> list[str]:
-    """Skeleton (06-25 Task 3)."""
-    return ["skeleton"]
+    """D-24: the end-of-run checks, in the container and in this order: a from-clean ninja
+    verify (configure, clean, verify), then `gate --all`. Both always run; each one's output is
+    written by the driver to build/driver/<run>/end-*.log. Returns one string per failed check
+    (`ninja verify exit 1`), which the driver pins in the ENDED record before the chore commit
+    (06-23 fix round 4 L1: wired as Deps.end_of_run)."""
+    failed = []
+    run_dir.mkdir(parents=True, exist_ok=True)
+    for name, log, argv in END_OF_RUN:
+        done = run(list(argv))
+        text = (f"$ {' '.join(argv)}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
+                f"\n--- stderr\n{done.stderr or ''}\n")  # fmt: skip
+        (run_dir / log).write_text(text, encoding="utf-8", newline="\n")
+        if done.returncode != 0:
+            failed.append(f"{name} exit {done.returncode}")
+    return failed
 
 
 def compose_project(repo: Path) -> str:
@@ -1906,8 +1929,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
                 remove_containers=container_remover(options.repo, seams.run),
-                git=seams.git,
-                today=lambda: day)  # fmt: skip
+                git=seams.git, today=lambda: day,
+                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir))  # fmt: skip
 
 
 def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
