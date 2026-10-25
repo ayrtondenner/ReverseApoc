@@ -60,9 +60,15 @@ Nothing recorded yet. Known limit: objdiff compares at most one relocation per x
 
 How relocations in our compiled object must line up with the LE fixups of the original.
 
-Nothing recorded yet. Starting rules from KKND's build gate, to be confirmed in Phase 5:
+Starting rules from KKND's build gate, to be confirmed in Phase 5:
 
 - every non-relocated byte identical, and the function length equal;
 - every `call rel32` hits the same function;
 - every absolute fixup resolves to the same target as the original LE fixup;
 - references to local-segment data (string literals) are rejected until data placement is modelled; such data moves to an extern `D_` symbol.
+
+Confirmed rules for jump tables and statics (plan 06-10, D-39; `tools/reverseapoc/check.py` `leading_table` and `own_publics`):
+
+- **A switch with a jump table matches only when the table leads its unit.** wcc386 10.6 puts the table at `_TEXT+0`, before the function's public. `check` pairs it with the unit's data-in-code row (`D_XXXXXXXX` in functions.csv) that sits right before the function's row, and checks the table and the filler up to the function like a function: every entry must land on the original's case label. So a switch needs its table row in the same unit, as the unit's first compiled thing (rows marked `INCLUDE_ASM` emit nothing, so they may come before it).
+- **A jump table between two publics fails closed.** Each other public of the unit counts only up to its own row's length, so a table after a public belongs to no row and the function that jumps through it is refused. Keep such a function `INCLUDE_ASM` until Phase 7.
+- **Name a static after its row: `static <type> func_XXXXXXXX(...)`.** wcc386 emits it as an LPUBDEF `func_XXXXXXXX_`, and its callers call it through an EXTDEF of the same name, which `check` resolves to the row. A static with any other name fails ("a static (LPUBDEF) function, which check cannot pair with a row"); static data fails likewise.
