@@ -5,9 +5,18 @@ Run as `uv run --frozen python -I -m reverseapoc.hooks pre-tool-use --layer alwa
 with the hook payload on stdin. Two layers:
 
 - **always** (`.claude/settings.json`, every session in the repo, matcher
-  `Edit|Write|MultiEdit|NotebookEdit`): blocks edits of the oracle's inputs and generated trees
-  (D-16). Every other path stays editable, so GSD executors and the owner keep working on tools/,
-  tests/, configure.py, docs/ and .planning/.
+  `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
+  driver's one REVERSEAPOC_ATTEMPT_NOTES file, D-46), of config/targets.toml, config/watcom.toml
+  and any *.sha1, and inline asm (`_asm`, `__asm`, `_Pragma`, a code-emitting `#pragma aux`) in
+  src/ and include/ (D-16). Every other path stays editable, so GSD executors and the owner keep
+  working on tools/, tests/, configure.py, docs/ and .planning/.
+- **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
+  denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> a session may write
+  only its unit, a new include/*.h and its notes.md (`matching_write_allowed`, which the driver's
+  audit reuses), with no `#pragma aux` of any kind (D-18); read only inside the repository and
+  never a .env* file; and run Bash only as an exact attempt-wrapper form (ATTEMPT_PREFIX plus one
+  of ATTEMPT_FORMS, D-44). Every other tool is denied. The always rules apply here too, so a
+  matching session never depends on how Claude Code merges the two settings files.
 
 `decide` is the pure decision; `main` reads stdin, prints the deny JSON and exits 0, or prints
 nothing and exits 0 for no opinion (never an allow decision, so Claude Code's own permission rules
@@ -27,12 +36,14 @@ import ntpath
 import os
 import posixpath
 import re
+import shlex
 import sys
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 EXIT_OK = 0
+_GIT_TIMEOUT = 30  # seconds for `git ls-files`; the matching handler's own timeout is 120
 EXIT_BLOCK = 2  # the only exit code besides 0 that Claude Code treats as blocking
 LAYER_ALWAYS = "always"
 LAYER_MATCHING = "matching"
@@ -63,6 +74,28 @@ _PRAGMA_OPERATOR = re.compile(r"\b_Pragma\b")
 # A `#pragma aux` directive; \s also takes the form feed and vertical tab the compiler skips.
 _PRAGMA_AUX = re.compile(r"\s*#\s*pragma\s+aux(?![A-Za-z0-9_])(.*)", re.DOTALL)
 _CODE_BODY = "="  # `#pragma aux name = <bytes>` emits code; `parm [eax]` and the like do not
+
+# D-17: the matching-session layer. The claim and the notes path come from the driver's env.
+CLAIM_ENV = "REVERSEAPOC_CLAIM"
+_CLAIM = re.compile(r"(ufo2p|tacp)/[a-z0-9_]+")
+_READ_TOOLS = ("Read", "Glob", "Grep")
+_WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
+_MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
+_NEW_HEADER = re.compile(r"include/([a-z0-9_]+\.h)")
+_RESERVED_HEADERS = ("common.h", "watcom_compat.h")  # INCLUDE_ASM could be redefined there
+_SECRET_PREFIX = ".env"
+# D-44: the attempt wrapper's argv forms, shared with the wrapper itself (06-15, ruling F27).
+ATTEMPT_PREFIX = ("uv", "run", "--frozen", "reverseapoc", "attempt")
+ATTEMPT_NAME_SLOT = "<NAME>"
+ATTEMPT_FORMS = (
+    ("check",),
+    ("check", "--sweep"),
+    ("asm",),
+    ("asm", ATTEMPT_NAME_SLOT),
+    ("context",),
+)
+ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a func_/D_ placeholder or a symbol name
+_BASH_CHARS = re.compile(r"[A-Za-z0-9_ -]+")  # every character of every wrapper form, no more
 
 _DRIVE = re.compile(r"[A-Za-z]:")
 _GIT = ".git"
@@ -347,7 +380,198 @@ def decide(
         raise HookError("the payload is not a JSON object")
     if layer == LAYER_ALWAYS:
         return _always(payload, env)
+    if layer == LAYER_MATCHING:
+        return _matching(payload, env, tracked)
     raise HookError(f"unknown layer {layer!r}")
+
+
+# --- the matching-session layer (D-17, D-18, D-44, D-45, DI-07) ------------------------------
+
+
+def _claim(env: Mapping[str, str]) -> str | None:
+    claim = env.get(CLAIM_ENV)
+    return claim if isinstance(claim, str) and _CLAIM.fullmatch(claim) else None
+
+
+def attempt_form_matches(argv: Sequence[str]) -> bool:
+    """Whether `argv` (the arguments after ATTEMPT_PREFIX) is exactly one of ATTEMPT_FORMS:
+    the same length, the same tokens, and a name matching ATTEMPT_NAME where the form holds
+    ATTEMPT_NAME_SLOT. Shared with the attempt wrapper (06-15)."""
+    args = tuple(argv)
+    return any(len(form) == len(args) and all(map(_token_matches, form, args, strict=True))
+               for form in ATTEMPT_FORMS)  # fmt: skip
+
+
+def _token_matches(expected: str, given: str) -> bool:
+    if expected == ATTEMPT_NAME_SLOT:
+        return ATTEMPT_NAME.fullmatch(given) is not None
+    return expected == given
+
+
+def bash_allowed(command: object) -> bool:
+    """Whether a matching session may run `command`: only the characters of the wrapper forms
+    (so no shell metacharacter, quote, newline or tab can reach a shell), and its split argv
+    is ATTEMPT_PREFIX followed by one of ATTEMPT_FORMS (D-44)."""
+    if not isinstance(command, str) or not _BASH_CHARS.fullmatch(command):
+        return False
+    argv = shlex.split(command)
+    prefix = len(ATTEMPT_PREFIX)
+    return tuple(argv[:prefix]) == ATTEMPT_PREFIX and attempt_form_matches(argv[prefix:])
+
+
+def matching_write_allowed(
+    rel_path: str, *, claim: str | None, notes: str | None, tracked: Callable[[str], bool]
+) -> bool:
+    """The matching-session write allowlist (D-17), one predicate for the hook and the driver's
+    post-attempt `git status` audit: with a valid claim `<exe>/<unit>`, only src/<exe>/<unit>.c,
+    a new include/<name>.h that `tracked` does not know and that is not common.h or
+    watcom_compat.h, and the attempt's notes.md under build/driver/ (`notes`, repo-relative).
+    Paths compare casefolded."""
+    if claim is None or not _CLAIM.fullmatch(claim):
+        return False
+    rel = rel_path.replace("\\", "/").casefold()
+    exe, unit = claim.split("/")
+    if rel == f"src/{exe}/{unit}.c":
+        return True
+    if notes is not None and rel == notes.replace("\\", "/").casefold() and _is_notes(rel):
+        return True
+    header = _NEW_HEADER.fullmatch(rel)
+    return header is not None and header.group(1) not in _RESERVED_HEADERS and not tracked(rel)
+
+
+def _inside(path: str, root: tuple[str, ...]) -> str | None:
+    """`path` relative to the checkout (any form of `root`; casefolded, forward slashes), or
+    None outside it."""
+    folded = path.casefold()
+    for base in (form.casefold().rstrip("/") for form in root):
+        if folded == base:
+            return ""
+        if folded.startswith(base + "/"):
+            return folded[len(base) + 1 :]
+    return None
+
+
+def _session_root(payload: Mapping) -> tuple[str, ...]:
+    """The checkout of the session's cwd (the cwd itself or its nearest ancestor with `.git`),
+    as written and, when the host resolves it differently (a symlink, an 8.3 name), as real."""
+    cwd = _cwd(payload)
+    if not cwd:
+        raise HookError("the payload has no cwd, so the session's checkout is unknown")
+    start = Path(canonical(cwd))
+    for directory in (start, *start.parents):
+        if (directory / _GIT).exists():
+            return tuple(candidates(directory.as_posix()))
+    raise HookError(f"the session's cwd {cwd!r} is not inside a git checkout")
+
+
+def _repo_relatives(raw: str, payload: Mapping, root: tuple[str, ...]) -> list[str] | None:
+    """Every form of `raw` relative to the session's checkout, or None when one is outside it
+    or the raw path names a home directory (`~`), which the hook cannot expand."""
+    if raw.startswith("~"):
+        return None
+    rels = [_inside(path, root) for path in candidates(raw, _cwd(payload))]
+    return None if any(rel is None for rel in rels) else rels
+
+
+def _secret(rel: str) -> bool:
+    return any(part.startswith(_SECRET_PREFIX) for part in rel.split("/"))
+
+
+def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
+    """Read, Glob and Grep: inside the session's checkout and never a .env* file."""
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, Mapping):
+        raise HookError("the payload has no tool_input object")
+    tool = payload["tool_name"]
+    raw = tool_input.get("file_path") if tool == "Read" else tool_input.get("path")
+    if raw is None and tool != "Read":
+        raw = _cwd(payload)
+    if not isinstance(raw, str):
+        return _deny(f"{tool} without a path string is not allowed in a matching session")
+    rels = _repo_relatives(raw, payload, root)
+    if rels is None:
+        return _deny(f"{tool} outside the repository is not allowed in a matching session")
+    if any(_secret(rel) for rel in rels):
+        return _deny(f"{tool} of a .env file is not allowed in a matching session")
+    for key in ("pattern", "glob") if tool == "Glob" else ("glob",):
+        problem = _pattern_problem(tool_input.get(key))
+        if problem:
+            return _deny(f"{tool} {key} {problem} is not allowed in a matching session")
+    return NO_OPINION
+
+
+def _pattern_problem(pattern: object) -> str:
+    """Why a Glob pattern or Grep glob could leave the checkout or name a .env file, or ''."""
+    if pattern is None:
+        return ""
+    if not isinstance(pattern, str):
+        return "that is not a string"
+    parts = pattern.replace("\\", "/").split("/")
+    if pattern.startswith(("/", "\\", "~")) or _DRIVE.match(pattern) or ".." in parts:
+        return f"{pattern!r}, which can leave the repository,"
+    if any(part.casefold().startswith(_SECRET_PREFIX) for part in parts):
+        return f"{pattern!r}, which names a .env file,"
+    return ""
+
+
+def _matching_write(
+    payload: Mapping, env: Mapping[str, str], tracked: Callable[[str], bool], root: tuple[str, ...]
+) -> Decision:
+    claim = _claim(env)
+    if claim is None:
+        return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session writes nothing")
+    raw, tool_input = _target(payload)
+    rels = _repo_relatives(raw, payload, root)
+    notes_rel = _notes_relative(env, payload, root)
+    allowed = rels is not None and all(
+        matching_write_allowed(rel, claim=claim, notes=notes_rel, tracked=tracked) for rel in rels
+    )
+    if not allowed:
+        return _deny(
+            f"a matching session for {claim} may write only src/{claim}.c, a new include/*.h "
+            "and its attempt's notes.md (D-17)"
+        )
+    if _under(rels[0], "src") or _under(rels[0], "include"):
+        problem = _source_problem(payload["tool_name"], tool_input, canonical(raw, _cwd(payload)),
+                                  any_pragma_aux=True)  # fmt: skip
+        if problem:
+            return _deny(f"no inline asm and no #pragma aux of any kind (D-18): {problem}")
+    return NO_OPINION
+
+
+def _notes_relative(env: Mapping[str, str], payload: Mapping, root: tuple[str, ...]) -> str | None:
+    raw = env.get(NOTES_ENV, "")
+    if not raw:
+        return None
+    try:
+        rels = _repo_relatives(raw, payload, root)
+    except HookError:
+        return None
+    return rels[0] if rels and len(set(rels)) == 1 else None
+
+
+def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str], bool]) -> Decision:
+    """Deny by default (D-17): the always rules first, then Read/Glob/Grep inside the repo, the
+    allowlisted writes, and Bash only as an exact attempt-wrapper form."""
+    tool = payload.get("tool_name")
+    if not isinstance(tool, str):
+        raise HookError("the payload has no tool_name string")
+    if tool not in _MATCHING_TOOLS:
+        return _deny(f"{tool} is not available in a matching session (D-17, D-45)")
+    root = _session_root(payload)
+    if tool in _READ_TOOLS:
+        return _read(payload, root)
+    if tool == "Bash":
+        if _claim(env) is None:
+            return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session runs nothing")
+        tool_input = payload.get("tool_input")
+        command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
+        if not bash_allowed(command):
+            forms = ", ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in ATTEMPT_FORMS)
+            return _deny(f"a matching session runs only the attempt wrapper: {forms} (D-44)")
+        return NO_OPINION
+    decision = _always(payload, env)
+    return decision if decision.deny else _matching_write(payload, env, tracked, root)
 
 
 # --- the entry point -------------------------------------------------------------------------
@@ -362,8 +586,23 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _git_tracked(cwd: str) -> Callable[[str], bool]:
+    """main's `tracked`: whether git tracks repo-relative `rel` in the checkout holding `cwd`,
+    compared casefolded as NTFS opens it. Any failure to ask git blocks the call."""
+
     def tracked(rel: str) -> bool:
-        raise HookError(f"cannot tell whether {rel} is tracked in {cwd}")
+        import subprocess  # only a matching-session header write needs git
+
+        folded = rel.replace("\\", "/").casefold()
+        spec = f":(top,icase){posixpath.dirname(folded) or '.'}"
+        done = subprocess.run(
+            ["git", "-C", cwd, "ls-files", "-z", "--full-name", "--", spec],
+            capture_output=True, timeout=_GIT_TIMEOUT, check=False,
+        )  # fmt: skip
+        if done.returncode != 0:
+            why = done.stderr.decode("utf-8", "replace").strip()
+            raise HookError(f"git ls-files failed in {cwd!r}: {why}")
+        names = done.stdout.decode("utf-8", "surrogateescape").split("\0")
+        return folded in {name.casefold() for name in names if name}
 
     return tracked
 

@@ -391,7 +391,8 @@ def test_matching_allows_the_attempt_notes(repo):
 
 def test_matching_denies_every_pragma_aux(repo):
     unit = _unit(repo)
-    for text in ["#pragma aux f parm [eax];\n", "#pragma aux f = 0x90\n", "_asm int 3\n"]:
+    for text in ["#pragma aux f parm [eax];\n", "#pragma aux f = 0x90\n", "_asm int 3\n",
+                 "# pragma \\\n aux f parm [eax];\n", 'char *s = "a\rb";\n']:  # fmt: skip
         assert matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
     header = repo / "include" / "foo.h"
     assert matching(in_repo(write(native(header), "#pragma aux f parm [eax];\n"), repo)).deny
