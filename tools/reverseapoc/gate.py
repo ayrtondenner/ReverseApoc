@@ -573,6 +573,7 @@ def gate_units(
         src = roots.unit_file(target.stem, target.unit)
         if _hash_or_none(src) != sha:
             raise CheckError(f"{src} changed after its check; gate it again")
+    _progress()  # a checkout that cannot derive the feed fails before any table is written
     written = _write_tables(roots.config_root, tables, passed, attempts, _today(today), owners)
     write_feed(roots.config_root, sorted({w.path for w in written}, key=str))
     return GateResult(MODE_UNIT, labels, EXIT_OK, tuple(reports), tuple(docs), (), written)
