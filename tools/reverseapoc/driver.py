@@ -89,6 +89,7 @@ EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
 STARTED, STOPPED, ENDED = "STARTED", "STOPPED", "ENDED"
+REFUSED = "REFUSED"  # a report only: the night did not start, so no run record is written
 START = "start"
 NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED = (
     "nothing to do", "max sessions", "target matched", "queue exhausted")  # fmt: skip
@@ -204,7 +205,8 @@ class DriveReport:
 
     @property
     def exit_code(self) -> int:
-        return 0 if self.event == ENDED else 1
+        """0 ENDED, 2 REFUSED (the night never started), 1 STOPPED."""
+        return {ENDED: 0, REFUSED: 2}.get(self.event, 1)
 
 
 def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
@@ -810,6 +812,13 @@ class _Night:
         """Every night ends with a run record (fix round 1, I1): ENDED, a STOPPED reason, a
         STOPPED `error` for any other exception, or a STOPPED `interrupted` for a
         KeyboardInterrupt/SystemExit, which is then re-raised (minor 8)."""
+        dirty = self._dirty_outputs()
+        if dirty:  # fix round 3 minor 1: never start on another night's leftovers
+            detail = (
+                f"refusing to start: {_listed(dirty)} differ from HEAD or are staged "
+                "(an earlier night left them; inspect, then commit or restore them)"
+            )
+            return DriveReport(REFUSED, "dirty", 0, 0, detail)
         self._record_run(STARTED, START)
         try:
             event, reason, detail = ENDED, self._loop(), None
@@ -826,6 +835,18 @@ class _Night:
         ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
         return DriveReport(event, reason, self.sessions, self.matched, detail)
+
+    def _outputs(self) -> list[str]:
+        """The files the driver commits besides the unit: the log, both tables, the feed."""
+        return [ATTEMPT_LOG.as_posix(), *(f"config/{exe}/status.csv" for exe in EXE_ORDER), FEED]
+
+    def _dirty_outputs(self) -> list[str]:
+        """Those of `_outputs` that differ from HEAD in the worktree or the index (fix round 3
+        minor 1; 06-25's dirty-tree preflight is a second layer)."""
+        paths = self._outputs()
+        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "-z", "--", *paths])
+        dirty = parse_status(raw)
+        return [path for path in paths if path in dirty]
 
     def _commit_log(self, *, stopped: bool) -> None:
         """D-23: the night's remaining records in one `chore(driver): attempt log` commit, with
