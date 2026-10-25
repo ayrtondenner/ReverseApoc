@@ -265,6 +265,23 @@ Verification after fix round 2 (host, worktree):
 - Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2597 passed, 44 skipped in 433 s.
 - `uv run ruff check .`: All checks passed.
 
+## Fix round 3 (FIX_BASE e011f58; rereview-06-23-r2-report.md, rulings fixround-06-23-r3.md)
+
+| Item | Finding | Fix | Tests | Commits (RED, GREEN) |
+|---|---|---|---|---|
+| K1 | A failed undo of attempts.jsonl (named) still let the log-only chore commit publish the MATCHED record | when any `_undo_match` step fails (unstage, a pre-gate restore of the log, a table or the feed, the reset, the record) or a path stays staged, the sticky no-commit flag (`breached`) is set; the night commits nothing, and the record on disk names the failure | `test_a_failed_undo_step_commits_nothing[log, table, feed, unstage, reset]` (write_atomic refusing one file, or a git restore failing at the unstage or only at the reset) | 1d03bab, c22f020 |
+| Minor 1 | A breach or failed restore was not remembered across nights; the next night's commit could carry the leftovers | `drive()` checks progress/attempts.jsonl, both status.csv files and decomphub.progress.json against HEAD (worktree and index) before STARTED; any difference returns a `REFUSED` report (exit 2) naming the paths, with nothing written; 06-25's dirty-tree preflight is a second layer | `test_a_night_after_a_breach_refuses_to_start`, `test_a_dirty_or_staged_table_refuses_the_start[x3]` | ac9f6d1, 0b1f87e |
+| Minor 2 | A stray whose bytes were restored but whose `git restore --staged` failed was reported "not restored" | reported `restored; could not unstage: <path> (<error>)` | `test_a_restored_stray_that_cannot_be_unstaged_is_named_so` | 1d03bab, c22f020 |
+
+The harness gained `fail_plan` (a per-call failure schedule per git verb) and `fail_from_launch` (failures arm from the Nth session).
+
+RED evidence: 1d03bab failed with 6 assertions (`['chore(driver): attempt log'] == []` x5, and the wording assertion showing "not restored: config/ufo2p/status.csv (DriverError: git restore --staged failed ..."). ac9f6d1 failed with 4 assertions (`('ENDED', 0) == ('REFUSED', 2)`).
+
+Verification after fix round 3 (host, worktree):
+- `uv run pytest -q tests/test_driver.py tests/test_attempts_schema.py`: 127 passed, 2 skipped (both R-A symlink skips).
+- Full suite (REVERSEAPOC_ORIG/WATCOM_DIR at the main checkout, GHIDRA_EXPORT at its build/ghidra): 2607 passed, 44 skipped in 444 s.
+- `uv run ruff check .`: All checks passed.
+
 ## Issues Encountered
 
 - The harness refused some compound shell commands (heredocs, scripts mentioning git, `cd ... && git ...`); file edits ran through the Edit tool or small scripts in the scratchpad, and git steps as plain commands.
