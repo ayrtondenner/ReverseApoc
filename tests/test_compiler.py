@@ -555,7 +555,8 @@ def test_stale_object_is_removed_before_the_compile(ws):
 
 # DI-06 part a: every object carries a record of what built it --------------------------------
 
-PROV_KEYS = {"compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256", "version"}
+PROV_KEYS = {"compiler", "flags", "source_sha256", "cflags_sha256", "watcom_sha256",
+             "include_sha256", "object_sha256", "version"}  # fmt: skip
 
 
 def _sha256(data: bytes) -> str:
@@ -566,12 +567,25 @@ def _prov(obj: Path) -> Path:
     return obj.with_name(obj.name + ".prov.json")
 
 
+def _headers_sha256(files: dict[str, bytes]) -> str:
+    """The include_sha256 scheme: per file under include/, sorted by its POSIX path below
+    include/, a line `<path>\\0<SHA-256 of the content with CRLF as LF>\\n`, hashed."""
+    lines = "".join(f"{rel}\0{_sha256(data.replace(b'\r\n', b'\n'))}\n"
+                    for rel, data in sorted(files.items()))  # fmt: skip
+    return _sha256(lines.encode("utf-8"))
+
+
 def test_compile_writes_a_provenance_stamp(ws):
     """A successful compile writes <obj>.prov.json: the rule's compiler and flags, SHA-256 of the
-    source (CRLF read as LF), of the cflags table and the Watcom manifest it used, and the stamp
-    format version, nothing else. A failed compile removes it and writes none."""
+    source (CRLF read as LF), of the cflags table and the Watcom manifest it used, of the
+    project headers under include/ and of the finished object, and the stamp format version,
+    nothing else. A failed compile removes it and writes none."""
     src = ws.source()
     src.write_bytes(b"int x;\r\nint y;\n")
+    headers = {"common.h": b"#define A 1\r\n", "sub/b.h": b"int b;\n"}
+    for rel, data in headers.items():
+        (ws.root / "include" / rel).parent.mkdir(parents=True, exist_ok=True)
+        (ws.root / "include" / rel).write_bytes(data)
     obj = ws.root / "out" / "a.obj"
     result = ws.compile(src, obj, FakeCompiler())
     assert result.ok
@@ -582,7 +596,9 @@ def test_compile_writes_a_provenance_stamp(ws):
     assert doc["source_sha256"] == _sha256(b"int x;\nint y;\n")
     assert doc["cflags_sha256"] == _sha256(ws.cflags.read_bytes())
     assert doc["watcom_sha256"] == _sha256(ws.manifest.read_bytes())
-    assert doc["version"] == compiler.PROV_VERSION
+    assert doc["include_sha256"] == _headers_sha256(headers)
+    assert doc["object_sha256"] == _sha256(obj.read_bytes())
+    assert doc["version"] == compiler.PROV_VERSION == 2
     assert compiler.provenance_path(obj) == _prov(obj)
 
     failed = ws.compile(src, obj, FakeCompiler(rc=2))
@@ -598,6 +614,48 @@ def test_a_refused_compile_leaves_no_stamp(ws):
     with pytest.raises(CompilerError):
         ws.compile(src, obj, FakeCompiler(obj_bytes=b"not an object"))
     assert not obj.exists() and not _prov(obj).exists()
+
+
+class InterruptedCompiler(FakeCompiler):
+    """Writes part of the object, then the compile is killed (KeyboardInterrupt)."""
+
+    def __call__(self, argv, **kwargs):
+        argv = list(argv)
+        args = argv[self._exe_index(argv) + 1 :]
+        if args:
+            self._host_path(kwargs, args, "-fo=").write_bytes(b"\x80 partial")
+            raise KeyboardInterrupt
+        return super().__call__(argv, **kwargs)
+
+
+def test_an_interrupted_compile_leaves_no_stamp(ws):
+    """The old stamp goes before the compile runs, so a compile killed after writing part of
+    the new object leaves that object with no stamp, never beside the old one."""
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, FakeCompiler()).ok
+    assert _prov(obj).is_file()
+    with pytest.raises(KeyboardInterrupt):
+        ws.compile(src, obj, InterruptedCompiler())
+    assert obj.is_file()  # the partial object
+    assert not _prov(obj).exists()
+
+
+def test_a_refusal_before_the_compile_keeps_the_old_object_and_stamp(ws):
+    """A gate refusal runs nothing, so the old object and its stamp still belong together."""
+    src, obj = ws.source(), ws.root / "out" / "a.obj"
+    assert ws.compile(src, obj, FakeCompiler()).ok
+    before = (obj.read_bytes(), _prov(obj).read_bytes())
+    with pytest.raises(CompilerError):
+        ws.compile(src, obj, FakeCompiler(), watcom_dir=ws.root / "no-tree")
+    assert (obj.read_bytes(), _prov(obj).read_bytes()) == before
+
+
+def test_the_stamp_may_not_be_the_source(ws):
+    """The stamp is deleted before the compile, so it may not name the source."""
+    src = ws.source("out/a.obj.prov.json")
+    with pytest.raises(CompilerError, match="is the source"):
+        ws.compile(src, ws.root / "out" / "a.obj", FakeCompiler())
+    assert src.read_text() == "int x;\n"
 
 
 def test_provenance_stamp_is_written_atomically(ws, monkeypatch):
@@ -629,7 +687,7 @@ def test_a_provenance_stamp_that_cannot_be_written_fails_the_compile(ws, monkeyp
     assert not obj.exists() and not _prov(obj).exists()
 
 
-KEPT ="int kept;\n"  # what a file the compile must not touch holds
+KEPT = "int kept;\n"  # what a file the compile must not touch holds
 
 
 @pytest.mark.parametrize(

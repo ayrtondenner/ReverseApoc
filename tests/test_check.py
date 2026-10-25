@@ -4,6 +4,7 @@ run for real on synthetic inputs. Every byte, name and address is made up (tests
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -41,11 +42,12 @@ from reverseapoc import check
 from reverseapoc.asm import data_ranges
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
-from reverseapoc.compiler import provenance, provenance_path, source_rule
+from reverseapoc.compiler import provenance_path, source_rule
 from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.le import LE
 from reverseapoc.symbols import SymbolTable
 from reverseapoc.target import RawField, TargetResult, build_target
+from reverseapoc.watcom import DEFAULT_WATCOM_MANIFEST
 
 EXE = "SYN.EXE"
 STEM = "syn"
@@ -178,11 +180,11 @@ def make_env(
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """The synthetic tree, standing in for the committed src/ and config/ (DI-06 part b): check
-    compiles into ninja's build/<exe>/obj only for the default roots. raising=False keeps the
-    fixture usable on a check.py without the defaults; the path tests then fail on their own."""
+    compiles into ninja's build/<exe>/obj only for the default roots. The patch raises if the
+    constants are renamed, so a dead attribute cannot hide the change."""
     env = make_env(tmp_path)
-    monkeypatch.setattr(check, "DEFAULT_SRC", env.src, raising=False)
-    monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config, raising=False)
+    monkeypatch.setattr(check, "DEFAULT_SRC", env.src)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config)
     return env
 
 
@@ -352,15 +354,41 @@ def unit_source(env: Env) -> Path:
     return env.src / STEM / f"{UNIT}.c"
 
 
-def put_stamp(env: Env, *, cflags: Path | None = None) -> Path:
-    """The provenance stamp `reverseapoc cc` writes for the unit's object, from today's files:
-    the unit file, `cflags` (default config/cflags.txt) and config/watcom.toml. The env tree's
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _text_sha256(data: bytes) -> str:
+    return _sha256(data.replace(b"\r\n", b"\n"))
+
+
+def headers_sha256(include: Path) -> str:
+    """include_sha256, computed here from its definition: per file under include/, sorted by
+    its POSIX path below include/, `<path>\\0<SHA-256 of the content, CRLF as LF>\\n`, hashed."""
+    files = sorted((p.relative_to(include).as_posix(), p) for p in include.rglob("*")
+                   if p.is_file()) if include.is_dir() else []  # fmt: skip
+    lines = "".join(f"{rel}\0{_text_sha256(path.read_bytes())}\n" for rel, path in files)
+    return _sha256(lines.encode("utf-8"))
+
+
+def put_stamp(env: Env, *, cflags: Path | None = None, manifest: Path | None = None) -> Path:
+    """The provenance stamp `reverseapoc cc` writes for the unit's object (format 2), computed
+    here from today's files: the unit file, `cflags` (default config/cflags.txt), `manifest`
+    (default config/watcom.toml), the env's include/ and the object on disk. The env tree's
     root is the compile root, as REPO_ROOT is for src/."""
-    obj, src = env.build / STEM / "obj" / f"{UNIT}.obj", unit_source(env)
-    rule = source_rule(src, cflags=cflags, root=env.root)
+    obj, src = ninja_object(env), unit_source(env)
+    rule = source_rule(src, cflags=cflags, root=env.root, manifest=manifest)
+    doc = {
+        "compiler": rule.spec,
+        "flags": list(rule.flags),
+        "source_sha256": _text_sha256(src.read_bytes()),
+        "cflags_sha256": _sha256(Path(cflags or check.DEFAULT_CFLAGS).read_bytes()),
+        "watcom_sha256": _sha256(Path(manifest or DEFAULT_WATCOM_MANIFEST).read_bytes()),
+        "include_sha256": headers_sha256(env.root / "include"),
+        "object_sha256": _sha256(obj.read_bytes()),
+        "version": 2,
+    }
     stamp = provenance_path(obj)
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    doc = provenance(rule, src, cflags=cflags)
     stamp.write_text(json.dumps(doc), encoding="utf-8")
     return stamp
 
@@ -963,6 +991,60 @@ def test_land_refuses_a_stamp_of_another_format(env):
     doc = json.loads(stamp.read_text(encoding="utf-8"))
     stamp.write_text(json.dumps({**doc, "version": doc["version"] + 1}), encoding="utf-8")
     assert_stale(env, "stale object", "the stamp format")
+
+
+def test_land_refuses_an_old_format_stamp(env):
+    """A format-1 stamp (06-09's first round: six keys, no header or object hash) is stale."""
+    put_object(env, omf_object())
+    stamp = provenance_path(ninja_object(env))
+    doc = json.loads(stamp.read_text(encoding="utf-8"))
+    old = {key: doc[key] for key in ("compiler", "flags", "source_sha256", "cflags_sha256",
+                                     "watcom_sha256")} | {"version": 1}  # fmt: skip
+    stamp.write_text(json.dumps(old), encoding="utf-8")
+    assert_stale(env, "stale object", "format")
+
+
+def test_land_refuses_an_object_after_a_header_edit(env):
+    """I1: the compile reads include/; a header edit since the build makes the object stale."""
+    header = env.root / "include" / "common.h"
+    header.parent.mkdir()
+    header.write_text("#define INCLUDE_ASM(name) extern int INCLUDE_ASM_##name\n",
+                      encoding="utf-8")  # fmt: skip
+    put_object(env, omf_object())
+    (landed,) = ninja_land(env)  # the control: the stamp names today's headers
+    assert landed.ok
+    header.write_text(header.read_text(encoding="utf-8") + "#define MORE 1\n", encoding="utf-8")
+    assert_stale(env, "stale object", "the headers")
+
+
+def test_land_refuses_an_object_overwritten_after_its_stamp(env):
+    """I2 (T-06-17): another object copied over ninja's keeps the old, fresh-looking stamp; the
+    stamp binds the object's bytes, so it is refused."""
+    put_object(env, omf_object())
+    ninja_object(env).write_bytes(omf_object(callee="func_00010020_"))
+    assert_stale(env, "stale object", "the object")
+
+
+def test_land_refuses_an_object_after_a_watcom_manifest_change(env):
+    """M7: the Watcom manifest the compile used changed since the build."""
+    manifest = env.root / "watcom.toml"
+    manifest.write_bytes(DEFAULT_WATCOM_MANIFEST.read_bytes())
+    options = check.CompileOptions(watcom_manifest=manifest)
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, manifest=manifest)
+    (landed,) = ninja_land(env, options=options)  # the control
+    assert landed.ok
+    manifest.write_bytes(manifest.read_bytes() + b"# edited\n")
+    assert_stale(env, "stale object", str(manifest), options=options)
+
+
+def test_land_refuses_an_object_built_by_another_compiler(env):
+    """M7: the rule now names another compiler version, with the same flags."""
+    cflags = custom_cflags(env, "*  wcc386@10.6  -4r -s -fpi\n")
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, cflags=cflags)
+    custom_cflags(env, "*  wcc386@10.5  -4r -s -fpi\n")
+    assert_stale(env, "stale object", "the compiler", options=check.CompileOptions(cflags=cflags))
 
 
 def test_land_accepts_a_fresh_stamp(env):
