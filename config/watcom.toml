@@ -34,7 +34,7 @@ size = 9216
 crc32 = 0x8BB81BDD
 md5 = "5fad82c3afb9ea9a115580ed8a53f68b"
 sha1 = "712fb9a73ec7a61fc6635516825292a265b5a028"
-note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LE compiler)"
+note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LX compiler)"
 
 [[media.key_files]]
 path = "BINW/WCC386.EXE"
@@ -103,7 +103,7 @@ size = 9216
 crc32 = 0xD2507E2F
 md5 = "54ae8406f438c84e9a1272f98697d01d"
 sha1 = "ff50c91d70a9cc65913a0a4f0b4a11a794e9de6e"
-note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LE compiler)"
+note = "Win32 loader stub; runs BINW/WCC386.EXE (the real LX compiler)"
 
 [[media.key_files]]
 path = "BINW/WCC386.EXE"
