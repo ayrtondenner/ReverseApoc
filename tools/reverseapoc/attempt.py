@@ -37,7 +37,7 @@ from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
-from .functions import FunctionRow, read_functions_csv, read_symbols_csv
+from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv, read_symbols_csv
 from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, attempt_form_matches
 from .le import LE, Fixup
 from .libmatch import read_target, select_target
@@ -223,20 +223,40 @@ def _claimed(doc: Mapping[str, Any], claim: Claim) -> Mapping[str, Any] | None:
     return None
 
 
-def _check_line(
-    doc: Mapping[str, Any], claim: Claim, ran: Ran, n: int, source: str
-) -> CheckLogLine:
+def _passes(fn: Mapping[str, Any]) -> bool:
+    """The claimed function's own verdict: objdiff 100, relocations and bytes ok."""
+    perfect = float(fn["objdiff_percent"]) == PERFECT
+    return perfect and fn["reloc"]["ok"] is True and fn["bytes"]["ok"] is True
+
+
+def _verdict(doc: Mapping[str, Any], fn: Mapping[str, Any] | None, ran: Ran) -> int:
+    """Fix round 1 I1(b): exit 0 only when check exited 0 (agreeing with its `ok`) and the
+    claimed function itself passes. A claimed function check did not compile (still
+    INCLUDE_ASM: a stub, or absent from functions[]) is 1, whatever the unit's verdict. An exit
+    that disagrees with the JSON's `ok`, check's own 2 included, is 2."""
     ok = doc["ok"]
     if not isinstance(ok, bool):
         raise TypeError("ok is not a boolean")
+    expected = EXIT_OK if ok else EXIT_MISMATCH
+    if ran.returncode != expected:
+        return EXIT_TOOL
+    if fn is not None and ran.returncode == EXIT_OK and _passes(fn):
+        return EXIT_OK
+    return EXIT_MISMATCH
+
+
+def _check_line(
+    doc: Mapping[str, Any], claim: Claim, ran: Ran, n: int, source: str
+) -> CheckLogLine:
+    """A line for a plain check. A claimed function that was not compiled carries no
+    measurement (best_percent, reloc_ok and bytes_ok None)."""
     fn = _claimed(doc, claim)
     splices = doc["splice"]
-    expected = EXIT_OK if ok else EXIT_MISMATCH
     return CheckLogLine(
-        n, expected if ran.returncode == expected else EXIT_TOOL, False,
-        float(fn["objdiff_percent"]) if fn else 0.0,
-        fn["reloc"]["ok"] is True if fn else False,
-        fn["bytes"]["ok"] is True if fn else False,
+        n, _verdict(doc, fn, ran), False,
+        float(fn["objdiff_percent"]) if fn else None,
+        fn["reloc"]["ok"] is True if fn else None,
+        fn["bytes"]["ok"] is True if fn else None,
         bool(splices) and all(s["ok"] is True for s in splices),
         None, source,
     )  # fmt: skip
@@ -326,16 +346,26 @@ def _sweep_summary(doc: Mapping[str, Any], line: CheckLogLine) -> list[str]:
     return lines
 
 
-_VERDICT = {EXIT_OK: "OK", EXIT_MISMATCH: "MISMATCH", EXIT_TOOL: "TOOL ERROR"}
+_VERDICT = {EXIT_OK: "OK: the claimed function matches and its unit passes check",
+            EXIT_MISMATCH: "MISMATCH", EXIT_TOOL: "TOOL ERROR"}  # fmt: skip
+_SWEEP_VERDICT = {EXIT_OK: "SWEEP RAN (a diagnostic: never a match)", EXIT_TOOL: "TOOL ERROR"}
+
+
+def _not_compiled(claim: Claim) -> str:
+    return f"  {claim.function} was not compiled (still INCLUDE_ASM?)"
 
 
 def _summary(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran) -> str:
     kind = "check --sweep" if line.sweep else "check"
+    verdict = (_SWEEP_VERDICT if line.sweep else _VERDICT)[line.exit]
     head = (f"attempt {kind} {line.n}/{CHECK_BUDGET} {claim.target} {claim.function}: "
-            f"exit {line.exit} {_VERDICT[line.exit]}")  # fmt: skip
+            f"exit {line.exit} {verdict}")  # fmt: skip
     body = []
-    if doc is not None:
-        body = _sweep_summary(doc, line) if line.sweep else _check_summary(doc)
+    if doc is not None and line.sweep:
+        body = _sweep_summary(doc, line)
+    elif doc is not None:
+        missing = [_not_compiled(claim)] if _claimed(doc, claim) is None else []
+        body = missing + _check_summary(doc)
     else:
         body = ["  the check printed no usable JSON"] + _tail(ran.stdout)
     if line.exit == EXIT_TOOL or doc is None:
@@ -435,8 +465,26 @@ def _locked_check(claim: Claim, *, sweep: bool, runner: Runner, roots: Roots) ->
     return line.exit, summary
 
 
+CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for
+
+
+def claimed_row(rows: Sequence[FunctionRow], claim: Claim) -> FunctionRow:
+    """Fix round 1 I1(a): the claimed function's functions.csv row, which must be a game or
+    thunk row of the claimed unit (the rows check accounts for); AttemptError otherwise, so
+    a check of a unit that does not hold the function never runs."""
+    for row in rows:
+        if row.start != claim.address:
+            continue
+        if row.unit == claim.unit and row.kind in CLAIMABLE_KINDS:
+            return row
+        raise AttemptError(f"{claim.function} is a {row.kind} row of unit {row.unit!r}, not a "
+                           f"game or thunk row of the claimed {claim.target}")  # fmt: skip
+    raise AttemptError(f"{claim.function} is no functions.csv row of {claim.exe}")
+
+
 def cmd_check(*, sweep: bool) -> int:
     claim = Claim.from_env(os.environ, roots=ROOTS)
+    claimed_row(read_functions_csv(Path(ROOTS.config) / claim.exe / "functions.csv"), claim)
     code, text = run_check(claim, sweep=sweep, runner=RUNNER, roots=ROOTS)
     print(text)
     return code
@@ -604,11 +652,7 @@ def make_pack(
 def _claimed_row() -> tuple[Claim, ExeData, FunctionRow]:
     claim = Claim.from_env(os.environ, roots=ROOTS)
     data = load_exe(claim.exe, orig=ROOTS.orig, manifest=ROOTS.manifest, config=ROOTS.config)
-    row = resolve_row(data, claim.function)
-    if row.unit != claim.unit:
-        raise AttemptError(f"{claim.function} is in unit {row.unit!r}, not the claimed "
-                           f"{claim.unit}")  # fmt: skip
-    return claim, data, row
+    return claim, data, claimed_row(data.rows, claim)
 
 
 def cmd_asm(name: str | None) -> int:
