@@ -196,7 +196,7 @@ def test_data_symbol_inside_a_data_range_loads():
 
 
 def test_data_symbol_is_not_range_checked_without_data_ranges():
-    # Orchestrator ruling F6: a CSV-only caller has no LE, so it passes no data ranges.
+    # A caller with only the CSVs has no LE, so it passes no data ranges and nothing is checked.
     table = SymbolTable.build(FUNCTIONS, [SymbolRow(0xF0000, "_far", "data")])
     assert table.address_of("_far") == 0xF0000
 
