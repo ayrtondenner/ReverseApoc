@@ -2376,6 +2376,21 @@ def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
                (f"changed: {_listed(changed)}" if changed else "unchanged"))  # fmt: skip
 
 
+def canary_attempt_dir(options: DriveOptions) -> Path:
+    """build/driver/canary/<run>/ufo2p/func_000A3980/attempt-1 (F12)."""
+    return Path(options.repo).joinpath(DRIVER_DIR, CANARY_RUN_DIR, options.run_id, CANARY_EXE,
+                                       CANARY_FUNC, "attempt-1")  # fmt: skip
+
+
+def _refs(probe: _Night) -> dict[str, str]:
+    """HEAD and every ref with its object (fix round 1: a commit leaves `git status` clean)."""
+    head = _git_ok(probe.deps.git, ["rev-parse", "HEAD"]).decode("utf-8").strip()
+    raw = _git_ok(probe.deps.git, ["for-each-ref", "--format=%(refname) %(objectname)"])
+    refs = dict(line.split(" ", 1) for line in raw.decode("utf-8", "replace").splitlines()
+                if " " in line)  # fmt: skip
+    return {"HEAD": head, **refs}
+
+
 def run_canary(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
@@ -2383,12 +2398,15 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
     context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
     unknown event type carries an error, `git status --porcelain` is clean and
-    nothing the night's audit pins or fingerprints changed. The tree is left as the session
+    nothing the night's audit pins or fingerprints changed, HEAD and the refs did not move,
+    and the attempt's containers were removed (fix round 1). The tree is left as the session
     left it, for inspection. Exit 0 PASS, 1 FAIL."""
     repo = Path(options.repo)
-    attempt_dir = repo.joinpath(DRIVER_DIR, CANARY_RUN_DIR, options.run_id, CANARY_EXE,
-                                CANARY_FUNC, "attempt-1")  # fmt: skip
-    attempt_dir.mkdir(parents=True, exist_ok=True)
+    attempt_dir = canary_attempt_dir(options)
+    if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
+        raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
+                                "already ran with this --run ID; give a new one")  # fmt: skip
+    attempt_dir.mkdir(parents=True)
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
     claim = _Claim(pick, options.run_id, repo, 1)
     base = seams.base_env if seams.base_env is not None else os.environ
@@ -2396,6 +2414,7 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
            attempt.NOTES_ENV: str(attempt_dir / attempt.NOTES_FILE)}  # fmt: skip
     probe = _probe(options, seams)
     before = probe._snapshot()
+    refs_before = _refs(probe)
     checks = _Checks()
     try:
         result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
@@ -2405,7 +2424,16 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
         _canary_checks(options, result.events, attempt_dir, checks)
+    try:  # like the night: the attempt's containers go before anything is measured
+        container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
+    except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
+        checks.add(False, f"containers not removed: {type(exc).__name__}: {exc}")
     _tree_checks(probe, before, checks)
+    refs_after = _refs(probe)
+    moved = sorted(name for name in refs_before.keys() | refs_after.keys()
+                   if refs_before.get(name) != refs_after.get(name))  # fmt: skip
+    checks.add(not moved, "HEAD and refs " + (f"moved: {_listed(moved)}" if moved
+                                              else "did not move"))  # fmt: skip
     verdict = "PASS" if checks.ok else "FAIL"
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
