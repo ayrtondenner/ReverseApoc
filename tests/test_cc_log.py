@@ -189,11 +189,16 @@ posix_only = pytest.mark.skipif(
 
 @posix_only
 def test_dev_null_log_works_and_leaves_no_sidecar():
+    """Fails, never skips, when the device branch regresses: a sidecar this test created is
+    removed again, so a run as root cannot turn the next run's failure into a skip (IN-11)."""
     sidecar = Path("/dev/null" + compiler.LOCK_SUFFIX)
-    if sidecar.exists():
-        pytest.skip(f"{sidecar} already exists, left by something else")
-    compiler._append_log(Path("/dev/null"), _result("w0-0"))
-    assert not sidecar.exists()
+    existed = sidecar.exists()
+    try:
+        compiler._append_log(Path("/dev/null"), _result("w0-0"))
+        assert existed or not sidecar.exists(), f"{sidecar} was created"
+    finally:
+        if not existed:
+            sidecar.unlink(missing_ok=True)
 
 
 def test_a_killed_lock_holder_does_not_block_later_appends(shared_dir):

@@ -12,6 +12,7 @@ is written here as a literal.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from pathlib import Path
@@ -24,7 +25,10 @@ from reverseapoc.compiler import CompilerError, check_gate, compile_source
 
 STUB_ROOT = REPO_ROOT / "build" / "test-stub"
 VERSION = "10.6"  # the `*` rule's version in config/cflags.txt
-MARKER_PREFIX = "INCLUDE_ASM"
+# The extern a marker would leave, `INCLUDE_ASM_<placeholder>` (include/common.h) with the
+# Watcom decoration on either side, matched whole: a substring test would also count any name
+# that merely contains the text (05-REVIEW row 4).
+MARKER_EXTERN = re.compile(r"_?INCLUDE_ASM_func_[0-9A-F]{8}_?")
 
 # C89: declarations first, block comments only.
 DEFINED = """\
@@ -92,7 +96,12 @@ def _publics(module: omf.Module) -> tuple[str, ...]:
 
 
 def _marker_externs(module: omf.Module) -> list[str]:
-    return [name for name in module.externs if MARKER_PREFIX in name]
+    return [name for name in module.externs if MARKER_EXTERN.fullmatch(name)]
+
+
+def _text_sha1(module: omf.Module) -> str:
+    """SHA-1 of the _TEXT bytes, so a failing comparison prints hashes, never bytes (T-04-17)."""
+    return hashlib.sha1(_text(module)).hexdigest()
 
 
 def test_markers_emit_nothing(stub_root):
@@ -101,8 +110,8 @@ def test_markers_emit_nothing(stub_root):
     assert _publics(unit) == ("func_00012345_",)
     assert _marker_externs(unit) == []
     assert unit.externs == control.externs
-    assert _text(control)  # the function compiled to something
-    assert _text(unit) == _text(control)
+    assert len(_text(control)) > 0  # the function compiled to something
+    assert _text_sha1(unit) == _text_sha1(control)
 
 
 MARKERS_ONLY = """\
@@ -130,10 +139,28 @@ def test_markers_only_file(stub_root):
     assert module.publics == ()
     assert _marker_externs(module) == []
     assert module.externs == ()
-    assert _text(module) == b""
+    assert len(_text(module)) == 0
 
 
 def test_marker_next_to_a_defined_function(stub_root):
     module = _compile(stub_root, "next.c", NEXT_TO)
     assert _publics(module) == ("func_00012010_",)
     assert _marker_externs(module) == []
+
+
+REFERENCED = """/* a marker whose extern is referenced, so the compiler must emit it */
+#include "common.h"
+
+INCLUDE_ASM(func_00012000);
+int func_00012010(void)
+{
+    return INCLUDE_ASM_func_00012000;
+}
+"""
+
+
+def test_marker_extern_pattern_sees_a_referenced_marker(stub_root):
+    """The marker pattern is right: a referenced marker's extern, as Watcom spells it, matches,
+    so `_marker_externs(...) == []` above can fail."""
+    module = _compile(stub_root, "referenced.c", REFERENCED)
+    assert len(_marker_externs(module)) == 1, module.externs
