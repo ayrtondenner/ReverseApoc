@@ -1,0 +1,37 @@
+{
+  "enabledPlugins": {
+    "claude-md-management@claude-plugins-official": false,
+    "code-review@claude-plugins-official": false,
+    "code-simplifier@claude-plugins-official": false,
+    "security-guidance@claude-plugins-official": false,
+    "superpowers@claude-plugins-official": false,
+    "i-have-adhd@i-have-adhd": false,
+    "clangd-lsp@claude-plugins-official": false
+  },
+  "autoMemoryEnabled": false,
+  "disableClaudeAiConnectors": true,
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --frozen --project \"$CLAUDE_PROJECT_DIR\" python -I -m reverseapoc.hooks pre-tool-use --layer always || exit 2"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "uv run --frozen --project \"$CLAUDE_PROJECT_DIR\" python -I -m reverseapoc.hooks pre-tool-use --layer matching || exit 2",
+            "timeout": 120,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
