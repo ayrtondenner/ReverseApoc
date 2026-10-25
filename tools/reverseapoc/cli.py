@@ -1153,6 +1153,9 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
     except _ERRORS as exc:
         print(f"reverseapoc attempt: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
+    except Exception as exc:  # M9: any other failure is a tool error (2), never a mismatch (1)
+        print(f"reverseapoc attempt: error: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_TOOL
 
 
 def _cmd_context(args: argparse.Namespace) -> int:
