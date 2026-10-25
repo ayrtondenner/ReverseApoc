@@ -57,7 +57,7 @@ import stat
 import subprocess
 import time
 from collections.abc import Callable, Container, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -433,10 +433,10 @@ def parse_status(raw: bytes) -> dict[str, str]:
     listed too, with the same code."""
     entries: dict[str, str] = {}
     fields = iter(raw.decode("utf-8", "surrogateescape").split("\0"))
-    for field in fields:
-        if len(field) < 4:
+    for entry in fields:
+        if len(entry) < 4:
             continue
-        code, path = field[:2], field[3:]
+        code, path = entry[:2], entry[3:]
         entries[path] = code
         if code[0] in "RC":
             source = next(fields, "")
@@ -752,6 +752,16 @@ class _Session:
     def has_work(self) -> bool:
         unit = self.claim.unit_rel.casefold()
         return bool(self.new_headers) or any(p.casefold() == unit for p in self.changed)
+
+
+@dataclass
+class _Contained:
+    """What containment did, file by file (fourth security pass)."""
+
+    restored: list[str] = field(default_factory=list)
+    quarantined: list[str] = field(default_factory=list)
+    not_contained: list[str] = field(default_factory=list)
+    refused: list[str] = field(default_factory=list)
 
 
 class _Stop(Exception):
@@ -1092,14 +1102,14 @@ class _Night:
         again, and describe all of it. A refused quarantine write (a link) writes nothing more
         and is named."""
         files = [s for s in stray if not s.endswith(_TRANSCRIPT_MARK)]
-        try:
-            restored, quarantined = self._contain(session, files)
-            refused = ""
-        except _Stop as stop:
-            restored, quarantined, refused = [], [], f"; {stop.detail}"
+        done = self._contain(session, files)
         self._reset(session)
-        detail = (f"stray paths: {_listed(list(stray))}; restored: {_listed(restored)}"
-                  f"; quarantined: {_listed(quarantined)}{refused}")  # fmt: skip
+        detail = (f"stray paths: {_listed(list(stray))}; restored: {_listed(done.restored)}"
+                  f"; quarantined: {_listed(done.quarantined)}")  # fmt: skip
+        if done.not_contained:
+            detail += f"; not contained: {_listed(done.not_contained)}"
+        if done.refused:
+            detail += "; " + "; ".join(done.refused)
         still = self._still_changed(session)
         return f"{detail}; still changed after containment: {_listed(still)}" if still else detail
 
@@ -1160,24 +1170,39 @@ class _Night:
             path.unlink()
         return f"{name} -> {target.relative_to(self.repo).as_posix()}"
 
-    def _contain(self, session: _Session, files: Sequence[str]) -> tuple[list[str], list[str]]:
+    def _keep(self, done: _Contained, name: str, path: Path, *, move: bool) -> bool:
+        """Quarantine one file; a refusal is recorded for that file alone (fourth pass)."""
+        try:
+            done.quarantined.append(self._quarantine(name, path, move=move))
+            return True
+        except _Stop as stop:
+            done.refused.append(f"refused {name}: {stop.detail}")
+            return False
+
+    def _contain(self, session: _Session, files: Sequence[str]) -> _Contained:
         """Put each stray path back as it was before the session, keeping what the session left
-        in quarantine. Tracked: back to HEAD, or to the driver's own pre-session bytes when the
-        driver had changed it; pinned or untracked: back to the earlier bytes, or moved out
-        when the session created it. The attempt's own unit and new headers are kept too."""
+        in quarantine. Tracked: copied, then back to HEAD, or to the driver's own pre-session
+        bytes when the driver had changed it; pinned: copied, then back to the earlier bytes;
+        new (untracked, or a pinned or fingerprinted file the session created): moved out.
+        Fourth pass: each file is handled alone, and restoring never depends on the copy; a new
+        file whose quarantine is refused stays in place, named "not contained". The attempt's
+        own unit and new headers are copied too."""
         tracked = self._tracked()
         before = session.before
-        restored: list[str] = []
-        quarantined: list[str] = []
+        done = _Contained()
         for name in files:
             pinned = name in session.pinned_changed and name.casefold() not in tracked
             path = self._pinned_path(name) if pinned else self.repo / name
             earlier = before.pinned.get(name) if pinned else before.data.get(name)
             # A fingerprinted file has no saved bytes: a new one moves out, a changed one is
             # copied and stays (named again under "still changed").
-            move = earlier is None and not (name in session.print_changed and name in before.prints)
+            changed_print = name in session.print_changed and name in before.prints
+            move = earlier is None and name.casefold() not in tracked and not changed_print
             if path.is_file() or _is_link(path):
-                quarantined.append(self._quarantine(name, path, move=move))
+                if not self._keep(done, name, path, move=move) and move:
+                    done.not_contained.append(name)
+                    continue
+            restored = done.restored
             if not pinned and name.casefold() in tracked and earlier is None:
                 _git_ok(self.deps.git, ["restore", "--source=HEAD", "--staged", "--worktree",
                                         "--", name])  # fmt: skip
@@ -1189,8 +1214,8 @@ class _Night:
                 restored.append(name)
         for name in (session.claim.unit_rel, *session.new_headers):
             if name in session.changed and (self.repo / name).is_file():
-                quarantined.append(self._quarantine(name, self.repo / name, move=False))
-        return restored, quarantined
+                self._keep(done, name, self.repo / name, move=False)
+        return done
 
     def _check_init(self, session: _Session) -> None:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
