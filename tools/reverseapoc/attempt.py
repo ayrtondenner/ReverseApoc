@@ -341,8 +341,9 @@ def _summary(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ra
     if line.exit == EXIT_TOOL or doc is None:
         body += _tail(ran.stderr)
     source = claim.attempt_dir / line.source
-    saved = (f"saved {source.with_suffix('.json')} (full JSON) and {source} (the C checked)\n"
-             f"notes: {claim.attempt_dir / NOTES_FILE}")  # fmt: skip
+    saved = (f"saved {source.with_suffix('.json').as_posix()} (full JSON) and "
+             f"{source.as_posix()} (the C checked)\n"
+             f"notes: {(claim.attempt_dir / NOTES_FILE).as_posix()}")  # fmt: skip
     return "\n".join([head, *body, saved])
 
 
@@ -626,5 +627,6 @@ def cmd_context() -> int:
                      roots=ROOTS)  # fmt: skip
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     sys.stdout.write(pack.text)
-    print(f"wrote {path}; notes: {claim.attempt_dir / NOTES_FILE}", file=sys.stderr)
+    notes = (claim.attempt_dir / NOTES_FILE).as_posix()
+    print(f"wrote {path.as_posix()}; notes: {notes}", file=sys.stderr)
     return EXIT_OK
