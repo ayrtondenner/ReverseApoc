@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, fetch-watcom, install-watcom, check-watcom."""
+gate, attempt, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -12,8 +12,9 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import probe
+from . import attempt, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
+from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .check import (
     DEFAULT_CONFIG,
@@ -1129,6 +1130,61 @@ def _cmd_check_watcom(args: argparse.Namespace) -> int:
     return 0 if report.ok else 1
 
 
+# ---- the attempt wrapper: the only Bash a matching session runs (D-44) ----
+
+
+def _cmd_attempt(args: argparse.Namespace) -> int:
+    """Exit 0 matched, 1 mismatch, 2 for a refusal or any tool error (never a pass). The
+    arguments after `attempt` must be one of hooks.ATTEMPT_FORMS exactly (ruling F27)."""
+    raw = args.raw_argv
+    rest = raw[raw.index("attempt") + 1 :]
+    try:
+        if not attempt.form_allowed(rest):
+            raise AttemptError(f"accepts only: {attempt.forms_text()}")
+        if args.attempt_command == "check":
+            return attempt.cmd_check(sweep=args.sweep)
+        raise AttemptError(f"attempt {args.attempt_command} is not available yet")
+    except _ERRORS as exc:
+        print(f"reverseapoc attempt: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "attempt",
+        allow_abbrev=False,
+        help="the matching session's wrapper: check, asm or context for the function the "
+        "driver claimed (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC, REVERSEAPOC_ATTEMPT_DIR; D-44)",
+        description="Takes its target only from the driver's environment. Exit 0 matched, 1 "
+        "mismatch, 2 refused or tool error.",
+    )
+    asub = p.add_subparsers(dest="attempt_command", required=True, metavar="{check,asm,context}")
+    c = asub.add_parser(
+        "check",
+        allow_abbrev=False,
+        help=f"run `reverseapoc check <claim> --json` in the container (at most "
+        f"{attempt.CHECK_BUDGET} runs per attempt) and log it under the attempt directory",
+    )
+    c.add_argument(
+        "--sweep",
+        action="store_true",
+        help="run the D-17 flag matrix for the claimed function instead (a diagnostic; a hit "
+        "is logged for the owner, cflags.txt is owner-only)",
+    )
+    a = asub.add_parser(
+        "asm",
+        allow_abbrev=False,
+        help="print the listing of the claimed function, or of NAME (another row of its EXE)",
+    )
+    a.add_argument("name", nargs="?", metavar="NAME", help="a func_XXXXXXXX or symbols.csv name")
+    asub.add_parser(
+        "context",
+        allow_abbrev=False,
+        help="rebuild the claimed function's context pack into the attempt directory and print it",
+    )
+    p.set_defaults(func=_cmd_attempt)
+
+
 def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     def common(p: argparse.ArgumentParser, *, media: bool, dest: bool) -> None:
         default = "default: %(default)s"
@@ -1226,6 +1282,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
+    _add_attempt_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1258,12 +1315,15 @@ _ERRORS = (
     LandError,
     SpliceError,
     StatusError,
+    AttemptError,
     OSError,
 )
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else list(argv)
     args = build_parser().parse_args(argv)
+    args.raw_argv = tuple(argv)  # the attempt wrapper checks its own argv against the hook's forms
     try:
         return args.func(args)
     except _ERRORS as exc:
