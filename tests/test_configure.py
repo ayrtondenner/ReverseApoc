@@ -471,7 +471,7 @@ def test_config_dir_brings_its_own_manifest(tmp_path):
     assert configure.main(_split_tree(tmp_path, exe="SYN.EXE")) == 0
     text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
     obj = f"$builddir/syn/obj/{UNIT}.obj"
-    assert _edge(text, obj).startswith(f"build {obj}: cc src/syn/{UNIT}.c")
+    assert _edge(text, obj).startswith(f"build {obj} | {obj}.prov.json: cc src/syn/{UNIT}.c")
     assert "$builddir/ufo2p/" not in text
 
 
@@ -483,8 +483,45 @@ def test_config_dir_without_a_manifest_is_refused(tmp_path, capsys):
 
 
 def _edge(text: str, output: str) -> str:
-    """The `build <output>: ...` line of build.ninja text."""
-    return next(line for line in text.splitlines() if line.startswith(f"build {output}:"))
+    """The `build <output>: ...` line of build.ninja text (or `build <output> | <implicit>: ...`
+    for an edge with implicit outputs)."""
+    heads = (f"build {output}:", f"build {output} |")
+    return next(line for line in text.splitlines() if line.startswith(heads))
+
+
+def test_cc_edge_headers_are_the_stamped_headers(tmp_path, monkeypatch):
+    """Fix round 2, N1: one definition of the project headers. The cc edge's implicit header
+    inputs are compiler.project_headers of the repository, the same files the stamp's
+    include_sha256 covers, so a refusal for a header is always one `ninja objects` clears."""
+    from reverseapoc import compiler
+
+    real = compiler.project_headers(configure.ROOT)
+    assert real and all(p.parent == configure.ROOT / "include" and p.suffix == ".h" for p in real)
+    fake = tmp_path / "only.h"
+    monkeypatch.setattr(configure, "project_headers", lambda root: [fake])
+    layout = configure.Layout.for_base(tmp_path, config=tmp_path / "config", src=tmp_path / "src",
+                                       output=tmp_path / "build.ninja")  # fmt: skip
+    assert [p for p in layout.cc_inputs if p.endswith(".h")] == ["only.h"]
+
+
+def test_regeneration_edge_watches_the_include_dir(tmp_path):
+    """Fix round 2, N1: a header added to include/ changes the cc edges' inputs, so the
+    directory is a regeneration input, as each src/<exe> is."""
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    include = configure.ninja_path(configure._relative(configure.ROOT / "include", tmp_path))
+    assert include in _edge(text, "build.ninja").split(" | ", 1)[1].split()
+
+
+def test_cc_edge_declares_the_stamp(tmp_path):
+    """DI-06 part a: the provenance stamp `reverseapoc cc` writes next to the object is an
+    implicit output of the cc edge, so ninja rebuilds an object that has no stamp yet."""
+    assert configure.main(_split_tree(tmp_path)) == 0
+    text = (tmp_path / "build.ninja").read_text(encoding="utf-8")
+    obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
+    outputs, _, inputs = _edge(text, obj).partition(": cc ")
+    assert outputs == f"build {obj} | {obj}.prov.json"
+    assert inputs.startswith(f"src/ufo2p/{UNIT}.c")
 
 
 def test_unit_with_source_gets_compile_edges(tmp_path):
@@ -495,7 +532,7 @@ def test_unit_with_source_gets_compile_edges(tmp_path):
     obj = f"$builddir/ufo2p/obj/{UNIT}.obj"
     base = f"$builddir/ufo2p/base/{UNIT}.o"
     target = f"$builddir/ufo2p/target/{UNIT}.o"
-    assert _edge(text, obj).startswith(f"build {obj}: cc src/ufo2p/{UNIT}.c")
+    assert _edge(text, obj).startswith(f"build {obj} | {obj}.prov.json: cc src/ufo2p/{UNIT}.c")
     assert _edge(text, base).startswith(f"build {base}: omf2elf {obj}")
     assert _edge(text, target).startswith(f"build {target}: target")
 
@@ -1218,7 +1255,8 @@ build $builddir/ufo2p/target/u_00010000.o: target | orig/UFO2P.EXE config/ufo2p/
 config/ufo2p/units.csv
   exe = ufo2p
   unit = u_00010000
-build $builddir/ufo2p/obj/u_00010000.obj: cc src/ufo2p/u_00010000.c
+build $builddir/ufo2p/obj/u_00010000.obj | $builddir/ufo2p/obj/u_00010000.obj.prov.json: cc \
+src/ufo2p/u_00010000.c
 build $builddir/ufo2p/base/u_00010000.o: omf2elf $builddir/ufo2p/obj/u_00010000.obj
 build objects: phony $builddir/ufo2p/base/u_00010000.o $builddir/ufo2p/target/u_00010000.o
 

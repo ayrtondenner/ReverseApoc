@@ -15,6 +15,8 @@ from . import probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .check import (
+    DEFAULT_CONFIG,
+    DEFAULT_SRC,
     EXIT_TOOL,
     CheckError,
     check_unit,
@@ -840,8 +842,6 @@ def _add_ghidra_export_command(sub: argparse._SubParsersAction) -> None:
 
 # ---- the C89 lint gate: lint (container, SPL-12) ----
 
-DEFAULT_SRC = REPO_ROOT / "src"
-
 
 def _cmd_lint(args: argparse.Namespace) -> int:
     # Before plan 05-13 writes the first unit there is no src/: that is 0 files, not an error.
@@ -873,7 +873,7 @@ def _add_lint_command(sub: argparse._SubParsersAction) -> None:
 
 # ---- the single-unit check (SPL-11, D-16) ----
 
-DEFAULT_CONFIG = REPO_ROOT / "config"
+# DEFAULT_SRC and DEFAULT_CONFIG come from check.py, the one definition object_root also uses.
 DEFAULT_BUILD = REPO_ROOT / "build"
 
 

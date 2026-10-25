@@ -4,8 +4,10 @@ run for real on synthetic inputs. Every byte, name and address is made up (tests
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -40,10 +42,12 @@ from reverseapoc import check
 from reverseapoc.asm import data_ranges
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
+from reverseapoc.compiler import provenance_path, source_rule
 from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.le import LE
 from reverseapoc.symbols import SymbolTable
-from reverseapoc.target import build_target
+from reverseapoc.target import RawField, TargetResult, build_target
+from reverseapoc.watcom import DEFAULT_WATCOM_MANIFEST
 
 EXE = "SYN.EXE"
 STEM = "syn"
@@ -174,8 +178,14 @@ def make_env(
 
 
 @pytest.fixture
-def env(tmp_path):
-    return make_env(tmp_path)
+def env(tmp_path, monkeypatch):
+    """The synthetic tree, standing in for the committed src/ and config/ (DI-06 part b): check
+    compiles into ninja's build/<exe>/obj only for the default roots. The patch raises if the
+    constants are renamed, so a dead attribute cannot hide the change."""
+    env = make_env(tmp_path)
+    monkeypatch.setattr(check, "DEFAULT_SRC", env.src)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config)
+    return env
 
 
 def run_check(env: Env, compiler=None, objdiff=None, **kwargs):
@@ -340,10 +350,57 @@ def test_land_verb_without_units(tmp_path, capsys):
     assert not (env.build / "land").exists()
 
 
-def put_object(env: Env, data: bytes) -> None:
+def unit_source(env: Env) -> Path:
+    return env.src / STEM / f"{UNIT}.c"
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _text_sha256(data: bytes) -> str:
+    return _sha256(data.replace(b"\r\n", b"\n"))
+
+
+def headers_sha256(include: Path) -> str:
+    """include_sha256, computed here from its definition: per top-level include/*.h (the
+    headers build.ninja's cc edge declares), sorted by name, `<name>\\0<SHA-256 of the content,
+    CRLF as LF>\\n`, hashed."""
+    files = sorted((p.name, p) for p in include.glob("*.h") if p.is_file())
+    lines = "".join(f"{rel}\0{_text_sha256(path.read_bytes())}\n" for rel, path in files)
+    return _sha256(lines.encode("utf-8"))
+
+
+def put_stamp(env: Env, *, cflags: Path | None = None, manifest: Path | None = None) -> Path:
+    """The provenance stamp `reverseapoc cc` writes for the unit's object (format 2), computed
+    here from today's files: the unit file, `cflags` (default config/cflags.txt), `manifest`
+    (default config/watcom.toml), the env's include/ and the object on disk. The env tree's
+    root is the compile root, as REPO_ROOT is for src/."""
+    obj, src = ninja_object(env), unit_source(env)
+    rule = source_rule(src, cflags=cflags, root=env.root, manifest=manifest)
+    doc = {
+        "compiler": rule.spec,
+        "flags": list(rule.flags),
+        "source_sha256": _text_sha256(src.read_bytes()),
+        "cflags_sha256": _sha256(Path(cflags or check.DEFAULT_CFLAGS).read_bytes()),
+        "watcom_sha256": _sha256(Path(manifest or DEFAULT_WATCOM_MANIFEST).read_bytes()),
+        "include_sha256": headers_sha256(env.root / "include"),
+        "object_sha256": _sha256(obj.read_bytes()),
+        "version": 2,
+    }
+    stamp = provenance_path(obj)
+    stamp.write_text(json.dumps(doc), encoding="utf-8")
+    return stamp
+
+
+def put_object(env: Env, data: bytes, *, stamp: bool = True) -> None:
+    """The object ninja's cc edge built, with its fresh provenance stamp unless `stamp` is
+    False."""
     obj = env.build / STEM / "obj" / f"{UNIT}.obj"
     obj.parent.mkdir(parents=True, exist_ok=True)
     obj.write_bytes(data)
+    if stamp:
+        put_stamp(env)
 
 
 def test_land_verb_with_a_matched_unit(env, capsys):
@@ -769,6 +826,96 @@ def test_check_with_default_options_keeps_ninja_paths(env, monkeypatch, capsys):
     assert not (env.build / check.CUSTOM_ROOT).exists()
 
 
+# ---- DI-06 part b: check --src/--config OTHER never writes ninja's objects either -------------
+
+
+def with_option(env: Env, option: str, value: Path) -> list[str]:
+    """env.argv() with `option` set to `value` instead of the env tree."""
+    argv = env.argv()
+    argv[argv.index(option) + 1] = str(value)
+    return argv
+
+
+def other_tree(env: Env, option: str) -> Path:
+    """A copy of the env's src or config tree elsewhere: the same files under another root."""
+    source = {"--src": env.src, "--config": env.config}[option]
+    other = env.root / f"other-{option.lstrip('-')}"
+    shutil.copytree(source, other)
+    return other
+
+
+def keeps_ninja_objects(env: Env, monkeypatch, capsys, option: str) -> None:
+    put_object(env, omf_object())
+    obj = ninja_object(env)
+    before = (obj.read_bytes(), obj.stat().st_mtime_ns)
+    compiler = FakeCompiler(omf_object(callee="func_00010020_"))  # another object than ninja's
+    patch_tools(monkeypatch, compiler=compiler)
+    argv = ["check", f"{STEM}/{UNIT}", *with_option(env, option, other_tree(env, option)),
+            "--json"]  # fmt: skip
+    assert cli_main(argv) == check.EXIT_MISMATCH
+    capsys.readouterr()
+    assert compiler.calls
+    for _, written, _ in compiler.calls:
+        assert written.is_relative_to(env.build / check.CUSTOM_ROOT), written
+    assert (obj.read_bytes(), obj.stat().st_mtime_ns) == before
+    for kind in ("base", "target"):
+        assert not (env.build / STEM / kind).exists(), kind
+
+
+def test_check_with_other_src_keeps_ninja_objects(env, monkeypatch, capsys):
+    """DI-06 part b: ninja's cc edge compiles the committed src/; `check --src OTHER` compiles
+    other files, so its objects go to build/check-custom/ and ninja's keep bytes and mtime."""
+    keeps_ninja_objects(env, monkeypatch, capsys, "--src")
+
+
+def test_check_with_other_config_keeps_ninja_objects(env, monkeypatch, capsys):
+    """DI-06 part b: likewise for `check --config OTHER`."""
+    keeps_ninja_objects(env, monkeypatch, capsys, "--config")
+
+
+def test_default_roots_keep_ninja_paths(env):
+    """The committed src/ and config/ (here the env tree, see the fixture) keep build/<exe>/obj,
+    for check_unit and for its land step."""
+    compiler = FakeCompiler()
+    result = run_check(env, compiler)
+    assert result.ok, result.format()
+    assert [obj for _, obj, _ in compiler.calls] == [ninja_object(env)]
+    assert not (env.build / check.CUSTOM_ROOT).exists()
+
+
+def test_object_root_keys_on_the_src_and_config_roots(env, tmp_path):
+    """Orchestrator ruling F7: CompileOptions carries src_root and config_root; None or the
+    committed default keeps the build dir, anything else is check-custom."""
+    build, custom = env.build, env.build / check.CUSTOM_ROOT
+    assert check.object_root(build, check.CompileOptions()) == build
+    defaults = check.CompileOptions(src_root=env.src, config_root=env.config)
+    assert check.object_root(build, defaults) == build
+    assert check.object_root(build, check.CompileOptions(src_root=tmp_path / "x")) == custom
+    assert check.object_root(build, check.CompileOptions(config_root=tmp_path / "x")) == custom
+
+
+def test_land_all_with_other_src_compiles_outside_ninja_paths(env):
+    """land_all compiling from another src root (check's land step) never writes ninja's
+    objects, even when its options carry no src_root."""
+    other = other_tree(env, "--src")
+    compiler = FakeCompiler()
+    kwargs = {**env.kwargs(), "src_root": other}
+    (landed,) = check.land_all(**kwargs, compile_fn=compiler)
+    assert landed.ok
+    assert compiler.calls
+    assert all(obj.is_relative_to(env.build / check.CUSTOM_ROOT) for _, obj, _ in compiler.calls)
+    assert not ninja_object(env).exists()
+
+
+def test_cli_takes_its_default_roots_from_check():
+    """Fix round 1, M8: one definition of the committed src/ and config/ trees, so the CLI's
+    defaults and object_root's can never drift apart."""
+    from reverseapoc import cli
+
+    assert cli.DEFAULT_SRC is check.DEFAULT_SRC
+    assert cli.DEFAULT_CONFIG is check.DEFAULT_CONFIG
+
+
 def test_custom_root_is_no_exe_stem():
     """build/<stem>/ belongs to ninja; the custom root can never be an EXE config stem."""
     assert not check._UNIT_NAME.fullmatch(check.CUSTOM_ROOT)
@@ -784,3 +931,284 @@ def test_configure_parser_loads_by_path(monkeypatch):
         assert Path(check._configure().__file__).name == "configure.py"
     finally:
         check._configure.cache_clear()
+
+
+# ---- DI-06 part a: ninja's land step lands only objects ninja built from today's files ---------
+
+
+def ninja_land(env: Env, **kwargs) -> list[check.ExeLand]:
+    """`ninja verify`'s land step: land_all without compile_fn."""
+    return check.land_all(**{**env.kwargs(), **kwargs})
+
+
+def assert_stale(env: Env, *words: str, **kwargs) -> None:
+    with pytest.raises(check.CheckError) as info:
+        ninja_land(env, **kwargs)
+    message = str(info.value)
+    assert str(ninja_object(env)) in message and "run ninja" in message, message
+    for word in words:
+        assert word in message, message
+
+
+def test_land_refuses_an_object_without_a_stamp(env):
+    put_object(env, omf_object(), stamp=False)
+    assert_stale(env, "stale object", "no provenance stamp")
+
+
+def test_land_refuses_an_object_with_a_stale_source(env):
+    put_object(env, omf_object())
+    unit_source(env).write_text(SOURCE + "/* edited after the build */\n", encoding="utf-8")
+    assert_stale(env, "stale object", "the source")
+
+
+def custom_cflags(env: Env, text: str) -> Path:
+    path = env.root / "cflags.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_land_refuses_an_object_with_stale_cflags(env):
+    """The table changed since the build, even where the unit's rule did not."""
+    cflags = custom_cflags(env, "*  wcc386@10.6  -4r -s -fpi\n")
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, cflags=cflags)
+    options = check.CompileOptions(cflags=cflags)
+    (landed,) = ninja_land(env, options=options)  # the control: the stamp is fresh
+    assert landed.ok
+    custom_cflags(env, "# a comment\n*  wcc386@10.6  -4r -s -fpi\n")
+    assert_stale(env, "stale object", str(cflags), options=options)
+
+
+def test_land_refuses_an_object_built_with_other_flags(env):
+    cflags = custom_cflags(env, "*  wcc386@10.6  -4r -s -fpi\n")
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, cflags=cflags)
+    custom_cflags(env, "*  wcc386@10.6  -4r -fpi\n")
+    assert_stale(env, "stale object", "the flags", options=check.CompileOptions(cflags=cflags))
+
+
+@pytest.mark.parametrize("text", ["", "{torn", "[]", '{"compiler": "wcc386@10.6"}'])
+def test_land_refuses_an_unreadable_or_wrong_shaped_stamp(env, text):
+    put_object(env, omf_object())
+    provenance_path(ninja_object(env)).write_text(text, encoding="utf-8")
+    assert_stale(env, "stale object", "unreadable")
+
+
+def test_land_refuses_a_stamp_of_another_format(env):
+    put_object(env, omf_object())
+    stamp = provenance_path(ninja_object(env))
+    doc = json.loads(stamp.read_text(encoding="utf-8"))
+    stamp.write_text(json.dumps({**doc, "version": doc["version"] + 1}), encoding="utf-8")
+    assert_stale(env, "stale object", "the stamp format")
+
+
+def test_land_refuses_an_old_format_stamp(env):
+    """A format-1 stamp (06-09's first round: six keys, no header or object hash) is stale."""
+    put_object(env, omf_object())
+    stamp = provenance_path(ninja_object(env))
+    doc = json.loads(stamp.read_text(encoding="utf-8"))
+    old = {key: doc[key] for key in ("compiler", "flags", "source_sha256", "cflags_sha256",
+                                     "watcom_sha256")} | {"version": 1}  # fmt: skip
+    stamp.write_text(json.dumps(old), encoding="utf-8")
+    assert_stale(env, "stale object", "format")
+
+
+def test_land_refuses_an_object_after_a_header_edit(env):
+    """I1: the compile reads include/; a header edit since the build makes the object stale."""
+    header = env.root / "include" / "common.h"
+    header.parent.mkdir()
+    header.write_text("#define INCLUDE_ASM(name) extern int INCLUDE_ASM_##name\n",
+                      encoding="utf-8")  # fmt: skip
+    put_object(env, omf_object())
+    (landed,) = ninja_land(env)  # the control: the stamp names today's headers
+    assert landed.ok
+    header.write_text(header.read_text(encoding="utf-8") + "#define MORE 1\n", encoding="utf-8")
+    assert_stale(env, "stale object", "the headers")
+
+
+def test_land_ignores_files_in_include_that_are_no_project_header(env):
+    """Fix round 2, N1: a README, an editor backup or a header in a subdirectory of include/ is
+    nothing build.ninja's cc edge declares, so `ninja objects` could never clear a refusal for
+    it; the stamp covers exactly the top-level include/*.h."""
+    include = env.root / "include"
+    include.mkdir()
+    (include / "common.h").write_text("#define A 1\n", encoding="utf-8")
+    put_object(env, omf_object())
+    (include / "README.md").write_text("notes\n", encoding="utf-8")
+    (include / "common.h~").write_text("backup\n", encoding="utf-8")
+    (include / "sub").mkdir()
+    (include / "sub" / "x.h").write_text("int x;\n", encoding="utf-8")
+    (landed,) = ninja_land(env)
+    assert landed.ok, landed.format()
+
+
+def test_land_reads_the_object_once(env, monkeypatch):
+    """Fix round 2, N3: the bytes land hashes are the bytes it parses and lands."""
+    put_object(env, omf_object())
+    obj = ninja_object(env)
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == obj:
+            reads.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    (landed,) = ninja_land(env)
+    assert landed.ok
+    assert len(reads) == 1
+
+
+def test_land_refuses_an_object_overwritten_after_its_stamp(env):
+    """I2 (T-06-17): another object copied over ninja's keeps the old, fresh-looking stamp; the
+    stamp binds the object's bytes, so it is refused."""
+    put_object(env, omf_object())
+    ninja_object(env).write_bytes(omf_object(callee="func_00010020_"))
+    assert_stale(env, "stale object", "the object")
+
+
+def test_land_refuses_an_object_after_a_watcom_manifest_change(env):
+    """M7: the Watcom manifest the compile used changed since the build."""
+    manifest = env.root / "watcom.toml"
+    manifest.write_bytes(DEFAULT_WATCOM_MANIFEST.read_bytes())
+    options = check.CompileOptions(watcom_manifest=manifest)
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, manifest=manifest)
+    (landed,) = ninja_land(env, options=options)  # the control
+    assert landed.ok
+    manifest.write_bytes(manifest.read_bytes() + b"# edited\n")
+    assert_stale(env, "stale object", str(manifest), options=options)
+
+
+def test_land_refuses_an_object_built_by_another_compiler(env):
+    """M7: the rule now names another compiler version, with the same flags."""
+    cflags = custom_cflags(env, "*  wcc386@10.6  -4r -s -fpi\n")
+    put_object(env, omf_object(), stamp=False)
+    put_stamp(env, cflags=cflags)
+    custom_cflags(env, "*  wcc386@10.5  -4r -s -fpi\n")
+    assert_stale(env, "stale object", "the compiler", options=check.CompileOptions(cflags=cflags))
+
+
+def test_land_accepts_a_fresh_stamp(env):
+    put_object(env, omf_object())
+    (landed,) = ninja_land(env)
+    assert landed.ok, landed.format()
+    assert landed.result.landed == (ROW.start,)
+
+
+def test_land_reads_a_crlf_checkout_as_the_same_source(env):
+    """A Windows checkout of the same commit (CRLF) is the same source to the stamp."""
+    put_object(env, omf_object())
+    unit_source(env).write_bytes(SOURCE.replace("\n", "\r\n").encode("utf-8"))
+    (landed,) = ninja_land(env)
+    assert landed.ok, landed.format()
+
+
+def test_land_verb_refuses_a_stale_object(env, capsys):
+    put_object(env, omf_object(), stamp=False)
+    assert cli_main(land_argv(env)) != 0
+    assert "run ninja" in capsys.readouterr().err
+
+
+def test_check_compiles_past_a_stale_ninja_object(env):
+    """The compiling land step (check's) never reads ninja's stamps: it compiles the unit."""
+    put_object(env, omf_object(), stamp=False)
+    result = run_check(env)
+    assert result.ok, result.format()
+
+
+# ---- 05-REVIEW rows 17a, 17b, 17c and 18b -----------------------------------------------------
+
+
+def data_public_object(name: str) -> bytes:
+    """omf_object's code with `name` exported from a data segment as well."""
+    return module(
+        "u_00010000", lnames("", "_TEXT", "CODE", "_DATA", "DATA", FLAT_LNAME),
+        segdef32(2, 3, len(GOOD_OURS)), segdef32(4, 5, 4), grpdef(6),
+        pubdef32(1, [(SYMBOL, 0)]), pubdef32(2, [(name, 0)]),
+        extdef("func_00010010_", "_D_00020004"), ledata32(2, 0, b"\0\0\0\0"),
+        ledata32(1, 0, GOOD_OURS), fixupp32(call(1, 1), absolute(6, 2)),  # fixups follow code
+    )  # fmt: skip
+
+
+def test_marked_row_with_a_data_public_is_refused():
+    """17a: func_00010010 is marked INCLUDE_ASM, but the object exports its linker name as
+    data: that is a mismatch naming the row, not a stub."""
+    table = SymbolTable.build([ROW, OTHER, FAR])
+    module_ = check.read_object(data_public_object("func_00010010_"))
+    account = check.account_unit(module_, [ROW, OTHER], table, SOURCE)
+    assert OTHER not in account.stubs
+    (problem,) = [p for p in account.problems if p.name == OTHER.name]
+    assert problem.va == OTHER.start
+    assert problem.reason == ("marked INCLUDE_ASM but exported as func_00010010_ outside a code "
+                              "segment (data)")  # fmt: skip
+
+
+def test_land_refuses_a_marked_row_with_a_data_public(env, capsys):
+    put_object(env, data_public_object("func_00010010_"))
+    assert cli_main(land_argv(env)) == 1
+    assert "REFUSED func_00010010 at 0x00010010: marked INCLUDE_ASM" in capsys.readouterr().out
+
+
+def test_non_utf8_unit_file_is_refused(env):
+    """17b: a unit file that is not UTF-8 is refused as configure refuses it, never read with
+    replacement characters."""
+    unit_source(env).write_bytes(SOURCE.encode("utf-8") + b"/* \xff */\n")
+    with pytest.raises(check.CheckError, match="not UTF-8"):
+        run_check(env)
+    put_object(env, omf_object())
+    with pytest.raises(check.CheckError, match="not UTF-8"):
+        ninja_land(env)
+
+
+def test_unit_file_with_a_lone_cr_is_a_source_problem(env):
+    """read_source keeps the file's line breaks as they are (no newline translation), so the
+    D-12 parser refuses a lone CR as configure does (06-03 fix round 3)."""
+    unit_source(env).write_bytes(SOURCE.encode("utf-8") + b"int y;\rint z;\n")
+    result = run_check(env)
+    assert not result.ok
+    reasons = [p.reason for p in result.problems if p.name == check.SOURCE_PROBLEM]
+    assert any("carriage return" in reason for reason in reasons), reasons
+
+
+def test_stray_data_public_message_says_data():
+    """17c: a public data symbol that names no row is reported as data."""
+    table = SymbolTable.build([ROW, OTHER, FAR])
+    module_ = check.read_object(data_public_object("counter"))
+    account = check.account_unit(module_, [ROW, OTHER], table, SOURCE)
+    (stray,) = [p for p in account.problems if p.name == "counter"]
+    assert stray.reason == "public counter is data, not a function of the unit"
+
+
+def test_a_code_public_check_does_not_take_is_not_called_data(monkeypatch):
+    """Fix round 1, M3: `elsewhere` is any public of the row's linker name that
+    defined_functions did not take, which can be a code public too (here simulated by a
+    defined_functions that takes none). The reason says data only for a public outside a code
+    segment, as 17c's does; the row is still a mismatch, never a stub."""
+    monkeypatch.setattr(check, "defined_functions", lambda *args: [])
+    table = SymbolTable.build([ROW, OTHER, FAR])
+    data = omf_object(GOOD_OURS + b"\xc3", extra=(("func_00010010_", len(GOOD_OURS)),))
+    account = check.account_unit(check.read_object(data), [ROW, OTHER], table, SOURCE)
+    assert account.stubs == ()
+    reasons = {p.name: p.reason for p in account.problems}
+    in_code = "in a code segment, but not as a function check can pair with its row"
+    assert reasons[OTHER.name] == f"marked INCLUDE_ASM but exported as func_00010010_ {in_code}"
+    assert reasons[ROW.name] == f"exported as {SYMBOL} {in_code}"
+
+
+def test_check_json_lists_raw_fields_per_function(env, monkeypatch, capsys):
+    """18b: each function's JSON lists the unit's raw fields inside its row; the unit-level
+    target.raw_fields keeps all of them."""
+    real = check.build_target
+    fields = (RawField(ROW.start + 1, "branch"), RawField(OTHER.start + 2, "off32"))
+
+    def with_raw_fields(*args, **kwargs) -> TargetResult:
+        return TargetResult(real(*args, **kwargs).data, fields)
+
+    monkeypatch.setattr(check, "build_target", with_raw_fields)
+    _, doc = check_json(env, monkeypatch, capsys, FakeCompiler())
+    (fn,) = doc["functions"]
+    assert fn["raw_fields"] == [{"va": "0x00010001", "kind": "branch"}]
+    assert doc["target"]["raw_fields"] == [{"va": "0x00010001", "kind": "branch"},
+                                           {"va": "0x00010012", "kind": "off32"}]  # fmt: skip
