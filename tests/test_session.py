@@ -94,6 +94,10 @@ def test_run_session_with_fakeclaude_success(tmp_path):
 _STILL_ACTIVE = 259  # GetExitCodeProcess's code for a running process
 _QUERY_LIMITED_INFORMATION = 0x1000  # PROCESS_QUERY_LIMITED_INFORMATION
 _GONE_WITHIN_S = 10.0
+# The plan says 1 s; 3 s leaves a slow host time to start fakeclaude and its child (two Python
+# start-ups, through the venv launcher on Windows) before the deadline, and is still a tenth of
+# the stand-in's 30 s sleep.
+_TREE_TIMEOUT_S = 3
 
 
 def _alive(pid: int) -> bool:
@@ -148,7 +152,7 @@ def test_timeout_kills_the_tree(tmp_path):
         cwd=tmp_path,
         env=_env(),
         transcript=transcript,
-        timeout_s=1,
+        timeout_s=_TREE_TIMEOUT_S,
     )
     elapsed = time.monotonic() - started
     assert result.timed_out is True
