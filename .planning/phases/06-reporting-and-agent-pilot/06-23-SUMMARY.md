@@ -161,7 +161,7 @@ Execution context nonce: a614de404c7eae94
 
 - `uv run pytest -q tests/test_attempts_schema.py tests/test_driver.py`: 89 passed, 1 skipped (`symlink creation needs privileges on this host`, R-A; its junction twin runs on this host).
 - `git ls-files --error-unmatch progress/attempts.jsonl`: tracked, 0 bytes.
-- Full host suite (worktree, REVERSEAPOC_ORIG/WATCOM_DIR/GHIDRA_EXPORT at the main checkout) at 855a1b1 (third pass): 2568 passed, 43 skipped in 436.72 s. The skips are tools absent on the host (objdiff-cli, ninja, clang, Ghidra), watcom-media absent from a worktree, POSIX-only and privilege cases, plus this plan's one R-A symlink skip.
+- Full host suite (worktree, REVERSEAPOC_ORIG/WATCOM_DIR/GHIDRA_EXPORT at the main checkout) at e02b4c2 (final code): 2569 passed, 43 skipped in 432.29 s (at 855a1b1: 2568 passed, 43 skipped). The skips are tools absent on the host (objdiff-cli, ninja, clang, Ghidra), watcom-media absent from a worktree, POSIX-only and privilege cases, plus this plan's one R-A symlink skip.
 - `uv run ruff check .`: All checks passed. `ruff format --check` on the three Python files: formatted.
 - Acceptance: driver.py contains `Matched-By: reverseapoc drive` and `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`; a test records the git argv and asserts no `-A`, `--all` or `.` and `--literal-pathspecs` on every add/commit; tests/test_driver.py contains `test_stray_write_resets_and_stops` and `test_three_attempts_then_difficult`.
 - No test or command ran the real claude, `drive`, docker or anything that reaches the network. The tests run local git in tmp repos and fakeclaude by absolute path through sys.executable.
