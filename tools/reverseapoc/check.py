@@ -871,7 +871,7 @@ def check_provenance(obj: Path, src: Path, options: CompileOptions, *, src_root:
              "include_sha256": f"the headers under {root / INCLUDE_DIR}"}  # fmt: skip
     changed = [names[key] for key in PROV_KEYS
                if key != "object_sha256" and found.get(key) != today[key]]  # fmt: skip
-    why = [f"built from another {', '.join(changed)} than today's"] if changed else []
+    why = [f"{', '.join(changed)} changed since it was built"] if changed else []
     if found.get("object_sha256") != today["object_sha256"]:
         why.append("the object is not the one its stamp was written for (its bytes changed)")
     if why:
