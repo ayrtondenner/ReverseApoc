@@ -63,8 +63,9 @@ class Tree:
 
     def argv(self) -> list[str]:
         r = self.roots
-        return ["--orig", str(r.orig_dir), "--manifest", str(r.manifest), "--config",
-                str(r.config_root), "--src", str(r.src_root), "--build", str(r.build_dir)]  # fmt: skip
+        pairs = {"--orig": r.orig_dir, "--manifest": r.manifest, "--config": r.config_root,
+                 "--src": r.src_root, "--build": r.build_dir}  # fmt: skip
+        return [part for option, path in pairs.items() for part in (option, str(path))]
 
     def source(self, exe: str, unit: str) -> Path:
         return self.src / STEMS[exe] / f"{unit}.c"
@@ -101,9 +102,8 @@ def make_tree(root: Path) -> Tree:
         config = root / "config" / STEMS[exe]
         functions = [FunctionRow(s, s + 0x10, fname(s), "game", u, "call") for s, u in rows]
         write_functions_csv(config / "functions.csv", functions, exe)
-        units = sorted({u for _, u in rows})
-        spans = [UnitRow(u, min(s for s, x in rows if x == u),
-                         max(s for s, x in rows if x == u) + 0x10, "hand") for u in units]  # fmt: skip
+        starts = {u: [s for s, x in rows if x == u] for _, u in rows}
+        spans = [UnitRow(u, min(s), max(s) + 0x10, "hand") for u, s in sorted(starts.items())]
         write_units_csv(config / "units.csv", spans, exe)
     return Tree(root)
 

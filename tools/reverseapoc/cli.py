@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, fetch-watcom,
-install-watcom, check-watcom."""
+cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
+gate, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -50,6 +50,7 @@ from .functions import (
     write_functions_csv,
     write_units_csv,
 )
+from .gate import GateRoots, gate_units
 from .ghidra import (
     DEFAULT_ASM_DIR,
     DEFAULT_EXPORT_DIR,
@@ -84,6 +85,7 @@ from .probe import CHK_PUBLIC, ProbeError
 from .relocs import RelocError
 from .score import ScoreError, ScoreReport, assess
 from .splice import DEFAULT_OUT, SpliceError, rebuild
+from .status import StatusError
 from .symbols import SymbolError, SymbolTable
 from .target import TargetError
 from .targets import (
@@ -1003,6 +1005,52 @@ def _add_land_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_land)
 
 
+# ---- the status table writer and zero-regression gate (D-21, D-24) ----
+
+
+def _gate_roots(args: argparse.Namespace) -> GateRoots:
+    return GateRoots(orig_dir=args.orig, manifest=args.manifest, config_root=args.config,
+                     src_root=args.src, build_dir=args.build, watcom_dir=args.watcom_dir,
+                     cflags=args.cflags, watcom_manifest=args.watcom_manifest,
+                     log=args.log)  # fmt: skip
+
+
+def _run_gate(args: argparse.Namespace) -> int:
+    targets = [_split_unit(text) for text in args.targets]
+    result = gate_units(targets, roots=_gate_roots(args), attempts=args.attempts)
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    return result.exit_code
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    """Exit 0 gated and written, 1 mismatch (nothing written), 2 for any tool or usage error
+    (nothing written, never a pass)."""
+    try:
+        return _run_gate(args)
+    except (*_ERRORS, CheckError, StatusError) as exc:
+        print(f"reverseapoc gate: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_gate_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "gate",
+        help="run check for each EXE/UNIT and, only when every check exits 0, write matched rows "
+        "to config/<exe>/status.csv (D-21; the only writer of status.csv; in the container)",
+    )
+    p.add_argument("targets", nargs="+", metavar="EXE/UNIT", help="e.g. ufo2p/u_000a1b2c")
+    _add_unit_roots(p)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.add_argument("--watcom-manifest", type=Path, default=DEFAULT_WATCOM_MANIFEST, help=default)
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--log", type=Path, default=DEFAULT_LOG, help=default)
+    p.add_argument("--attempts", type=int, default=0, metavar="N",
+                   help="matching attempts the rows record; 0 (the default) = matched by hand")
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_gate)
+
+
 # ---- Watcom media: fetch-watcom, install-watcom, check-watcom ----
 
 
@@ -1132,6 +1180,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)
+    _add_gate_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1163,6 +1212,7 @@ _ERRORS = (
     RelocError,
     LandError,
     SpliceError,
+    StatusError,
     OSError,
 )
 
