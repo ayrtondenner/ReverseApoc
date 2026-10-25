@@ -119,3 +119,22 @@ def test_undecodable_stops():
     assert [i.va for i in x86.decode(code, VA)] == [VA]
     assert x86.decode_one(b"\x0f\x0a", VA) is None
     assert x86.decode_one(b"", VA) is None
+
+
+# ---- field positions (asm names a fixup operand by them, 05-REVIEW row 9c) ----
+
+
+@pytest.mark.parametrize(
+    ("code", "disp_offset", "imm_offset"),
+    [
+        (b"\xc7\x05" + struct.pack("<II", 0x1234, 0x5678), 2, 6),  # mov dword ptr [0x1234], 0x5678
+        (b"\xc7\x04\x85" + struct.pack("<II", 4, 4), 3, 7),  # mov dword ptr [eax*4 + 4], 4
+        (b"\xa1" + struct.pack("<I", 0x1234), 1, 0),  # mov eax, dword ptr [0x1234] (moffs)
+        (b"\x68" + struct.pack("<I", 0x10), 0, 1),  # push 0x10
+        (b"\x50", 0, 0),  # push eax
+    ],
+)
+def test_field_offsets(code, disp_offset, imm_offset):
+    insn = x86.decode_one(code, VA)
+    assert insn is not None
+    assert (insn.disp_offset, insn.imm_offset) == (disp_offset, imm_offset)
