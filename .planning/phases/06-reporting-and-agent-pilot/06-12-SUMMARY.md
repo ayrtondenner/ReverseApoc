@@ -196,7 +196,7 @@ See key-decisions in the frontmatter.
   - `ATTEMPT_FORMS` is the tuple of argv tuples after `ATTEMPT_PREFIX`: `("check",)`, `("check", "--sweep")`, `("asm",)`, `("asm", "<NAME>")`, `("context",)`. `"<NAME>"` is the constant `ATTEMPT_NAME_SLOT`.
   - `ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")` is matched with fullmatch.
   - `attempt_form_matches(argv)` takes the arguments after the prefix and requires equal length and equal tokens, with `<NAME>` matched by ATTEMPT_NAME. 06-15's wrapper and test_skill should reuse it with their own argv.
-- **Orchestrator ruling F32 (record only).** The always layer fails open if `uv` is missing or `reverseapoc.hooks` cannot be imported: the command then exits 1, which Claude Code treats as non-blocking. D-15 locks the command. The matching handler has `onFailure: block`. Inside the module, every failure exits 2.
+- **Orchestrator ruling F32, rewritten in fix round 1 (C3): the hook fails closed.** Both settings files run `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks pre-tool-use --layer always|matching || exit 2`. The project is pinned, so the session's cwd does not matter. Any failure of the command itself becomes exit 2, which blocks: a missing `uv` (127), a missing project or module (1), or a crash. Inside the module every failure already exits 2, and the matching handler also keeps `onFailure: block`. The first version's statement that "the always layer fails open if uv is missing" no longer holds.
 - **Rulings R-A and R-B.** test_hooks.py has no skip; a test that needs a platform's path form picks it by `sys.platform` inside one test. **From this plan's merge on, the Write and Edit tools are denied under build/ for every Claude session in this repo (the orchestrator's included). Later executors write evidence under build/ by shell redirection or by the program's own writes.**
 
 ### Auto-fixed Issues
@@ -241,9 +241,25 @@ See key-decisions in the frontmatter.
 
 - Research A1: whether hooks in a `--settings` file merge with or replace project hooks is unknown. The driver file carries the always handler and the matching layer re-applies the always rules, so the matching layer does not depend on merging. Plan 06-25's canary (run by the owner) proves the denials.
 - A5: the MultiEdit (`edits[]`) and NotebookEdit (`notebook_path`, `new_source`) field names are assumed. An unknown shape is a HookError (exit 2) in both layers, and NotebookEdit is denied in src/, in include/ and in every matching session.
-- A6: the token set is `_asm`, `__asm`, `_Pragma` and `#pragma aux ... =`. Asm assembled by token pasting (`_as ## m`) is not detected; it still cannot pass `check` unless it really matches. `_asm` inside `#if 0` is denied (conservative).
-- An Edit whose `old_string` cannot be placed on the current file (the tool will fail) is judged on the current file and each `new_string` alone. Out of context this can over-deny, never under-deny.
-- Grep without a `path` searches from the session cwd. ripgrep skips hidden and gitignored files such as `.env` by default; an explicit `.env` path or glob is denied.
+- A6: the token set is `_asm`, `__asm`, `_Pragma` and `#pragma aux ... =`. `_asm` inside `#if 0` is denied (conservative). These are not detected, and none of them has been checked against wcc386:
+  - asm assembled by token pasting (`_as ## m`);
+  - a `#pragma aux` whose `=` comes from a macro (`#define EQ =` then `#pragma aux f EQ 0x90`), which matters only if wcc386 macro-expands pragma bodies;
+  - the digraph `%:pragma aux f = 0x90`, which matters only if wcc386 10.6 accepts digraphs.
+
+  None of them can pass `check` unless the function really matches.
+- **Corrected in fix round 1 (I2):** the first version scanned "the current file and each `new_string` alone" when an Edit's `old_string` could not be placed, and claimed this could "never under-deny". That claim was wrong. A curly-quote `old_string` that Claude Code's Edit tool may place loosely completed `_asm` behind the scan. In src/ and include/, an Edit or MultiEdit whose `old_string` is not in the file verbatim is now denied. That includes a CRLF file edited with an LF `old_string`; src/ is LF under `.gitattributes`. An empty `old_string` places only on a file that does not exist yet.
+- Grep without a `path` searches from the session cwd. ripgrep skips hidden and gitignored files such as `.env` by default. An explicit `.env` path or glob is denied, and so is any Glob pattern or Grep glob holding `{ } [ ]` (fix round 1 M2).
+- **Bash is not covered by the always layer** (security finding 3, orchestrator ruling). An owner or executor session can still change orig/ or the manifests with a shell command. Mitigations: `check-orig` hash-verifies orig/ against config/targets.toml, and the matching layer parses every Bash call and allows only the exact attempt-wrapper forms.
+- **M1, accepted fail-closed limit:** because a path is judged against every ancestor holding `.git` (fix round 1 C2), the always layer also denies build/, orig/, asm/ and `*.sha1`, and scans src/ and include/, in *other* git checkouts that a session in this repo writes to (for example `otherproject/build/x`).
+- **Unmappable device paths block.** A `\\?\GLOBALROOT\...` path whose device the host cannot open (a wrong HarddiskVolume number) and an unknown `Volume{GUID}`, `\\.\pipe\...` or `\\.\PhysicalDrive0` raise HookError, so the call exits 2. A UNC path (`\\server\share\...`) stays an accepted form. It is judged lexically and through the `.git` ancestors reached over the share.
+
+## Threat model notes
+
+- **Security finding 2 (guardrail self-protection), by design.** The always layer is narrow (D-16): .claude/settings.json, tools/reverseapoc/hooks.py, config/driver/*, pyproject.toml and uv.lock stay editable, so owner and executor sessions can maintain the tooling. The matching layer is deny-by-default (D-17): a matching session cannot edit any of them. `test_matching_denies_the_guardrail_files` pins this, for Write and Edit.
+- T-06-24/T-06-26 after fix round 1:
+  - every path form NT opens is placed or blocked (C1);
+  - a planted `.git` no longer moves the root (C2);
+  - the command can no longer fail open (C3).
 
 ## Issues Encountered
 
@@ -256,10 +272,46 @@ See key-decisions in the frontmatter.
 - 06-23: the post-attempt audit calls `hooks.matching_write_allowed(rel, claim=..., notes=<repo-relative notes path>, tracked=...)` on each `git status --porcelain` path.
 - 06-25: the canary should show a denied `ls`, a denied write outside the claim and an allowed wrapper call.
 
+## Fix round 1 (review-06-12.md and security-findings-06-12.md, FIX_BASE f54ba0a)
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| C1 (security finding 1) | On an NT host every path is a Windows path. `/` becomes `\`. The device prefixes `\\?\`, `\\.\` and `\??\` map `X:\` and `UNC\` forms. A rooted path with no drive takes the cwd's drive. Git Bash `/c/...` is judged both as `C:\c\...` (how NT opens it) and as `C:\...`. The host realpath of the raw path joined to the cwd is an extra candidate, and so is the realpath of the lexical form: this maps Volume{GUID}, GLOBALROOT, `//./C:` and 8.3 names to `C:\`. A device form that maps to no drive or share, a GLOBALROOT path the host cannot open, and a drive-relative path on another drive all raise HookError (exit 2). Realpath is not applied to raw `\??\` paths, because Python reads those as rooted on the current drive. The matching layer's Read/Grep/Glob use the same `candidates`. The tests use one parametrized case per form (15 forms, both layers, R-A analogues on POSIX), plus 6 unmappable forms (`decide` raises) and the entry point's exit 2. | `151f650` | `60527d5` |
+| C2 | A path is judged against the project root (`$CLAUDE_PROJECT_DIR`, else the checkout holding hooks.py, `project_roots`) and against every ancestor holding `.git`. It is denied if any anchoring lands in a protected area. Tests: `config/.git` then `config/targets.toml`; `src/.git` and `src/ufo2p/.git` then a unit with `_asm`; `orig/.git`; a project dir with no `.git`. The resulting over-deny in other checkouts (M1) is recorded as a fail-closed limit. | `151f650` | `60527d5` |
+| C3 (security finding 3) | Both settings files now run `uv run --frozen --project "$CLAUDE_PROJECT_DIR" ... --layer always \|\| exit 2`, and the matching handler has the same form. The two always handlers are byte-identical (`test_the_always_handlers_are_byte_identical`). `test_settings_commands_fail_closed_through_the_hook_shell` runs each handler's literal command string from both files through the hook shell, from a tmp directory outside the project. (a) With `CLAUDE_PROJECT_DIR` set, a protected path is denied and an allowed tooling path (or the wrapper Bash) gives exit 0 with no output. With no project to find, both exit 2. (b) With uv removed from PATH, it exits 2. Interpretation: in (a), with the project pinned, the protected payload is blocked by the deny JSON with exit 0 (the D-15 contract), not by exit 2; exit 2 is what the command returns when the hook cannot run. Before the fix, the same test reproduced the reviewer's exit 1 from outside the project. **How the shell was checked:** the research's hooks contract says a command handler runs under `bash` by default, which on Windows is Git for Windows' bash (CLAUDE_CODE_GIT_BASH_PATH when set). The existing `.claude/settings.local.json` hooks already use bash syntax with `"$CLAUDE_PROJECT_DIR"`. On this host `SHELL` is `C:\Program Files\Git\bin\bash.exe`, and the test resolves that same `bin/bash.exe` above `git` (bash on PATH on POSIX). F32 is rewritten under Deviations, and "Bash is not covered by the always layer" is recorded as a known limit. | `151f650` | `60527d5` |
+| I1 (security finding 2) | `test_matching_denies_the_guardrail_files`: matching Write and Edit to tools/reverseapoc/hooks.py, .claude/settings.json, config/driver/claude-settings.json, config/driver/x.json, pyproject.toml and uv.lock are denied, and the always layer leaves them alone. It passed at RED, as the reviewer expected: the behaviour was already right. The threat-model note is under "Threat model notes". | `151f650` | n/a |
+| I2 | In src/ and include/, an Edit or MultiEdit whose `old_string` is not in the file verbatim is denied. The new-string-alone fallback and the CRLF retry are gone. An empty `old_string` places only on a missing file. Tests: the curly-quote probe, a straight-quote edit, an absent string, MultiEdit, a missing file, and tools/ unaffected (`test_always_denies_an_edit_that_cannot_be_placed_exactly`, `test_always_scans_an_edit_that_creates_a_file`). The "never under-deny" claim is corrected under Known limitations. | `151f650` | `60527d5` |
+| M2 | A Glob pattern or Grep glob holding `{ } [ ]` is refused in the matching layer (`test_matching_refuses_brace_and_class_globs`). | `151f650` | `60527d5` |
+| M3 | test_hooks.py imports `INLINE_ASM_PROBES` from tests/test_configure.py instead of copying it. | `151f650` | n/a (test-only) |
+| M4 | `_UNC = "UNC\\"` and `len(_UNC)` replace the bare 4. `_NT_OBJECT` and `_DEVICE_PREFIXES` are named. | n/a | `60527d5` |
+| M5 | The A6 note now lists the macro-supplied `=` and the `%:pragma` digraph; neither has been checked against wcc386. | n/a | (this SUMMARY commit) |
+| M6 | `_always` loops once over `_judged(paths, project)`, a generator of (path, rel) pairs. | n/a | `60527d5` |
+
+Also fixed: the new module docstring holds backslashes, so it is a raw string. `compile` with `-W error` is clean for hooks.py and test_hooks.py.
+
+RED (`151f650`): 31 failed, all assertions or missing names:
+- 6 path forms, which got no denial;
+- 2 matching reads, which were allowed;
+- 6 unmappable forms and the exit-2 run, where nothing was raised;
+- 3 shell runs, which exited 1 from outside the project;
+- the settings and command shapes;
+- the planted `.git` and project-root cases;
+- the 2 I2 tests;
+- 5 M2 globs;
+- `project_roots`, an AttributeError.
+
+The I1 guardrail-file test and the 9 already-denied forms passed, and they stay pinned.
+
+Verification (evidence written by shell redirection under build/06-12/: `fix1-test_hooks.txt`, `fix1-pytest.txt`, `fix1-ruff.txt`):
+- `uv run pytest -q tests/test_hooks.py`: 194 passed, exit 0.
+- `uv run pytest -q`: 1792 passed, 217 skipped, exit 0.
+- `uv run ruff check .`: all checks passed, exit 0.
+- The reviewer's `probe_hooks.py` against the fixed module: every form of config/targets.toml is denied, the rooted, Volume{GUID} and `//./` src/ `_asm` writes are denied, and every credentials read is denied. The GLOBALROOT form with the probe's wrong volume number raises HookError (exit 2). Both nested-`.git` walks are denied, and so is the curly-quote edit.
+
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/hooks.py, tests/test_hooks.py, config/driver/claude-settings.json, .claude/settings.json
-- FOUND commits (ancestors of HEAD): 1c63e94, 566dc0f, b28c4d8, 148abec, a53ebcc, 1c1a616
+- FOUND commits (ancestors of HEAD): 1c63e94, 566dc0f, b28c4d8, 148abec, a53ebcc, 1c1a616, 151f650, 60527d5
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
