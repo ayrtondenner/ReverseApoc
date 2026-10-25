@@ -160,6 +160,16 @@ def test_attempt_check_passes_exit_codes_and_logs(repo: Path, monkeypatch, capsy
     assert _run(["attempt", "check"]) == 2  # exit 0 with no JSON is never a pass
 
 
+def test_attempt_check_names_the_attempt_dir(repo: Path, monkeypatch, capsys):
+    """The goal prompt does not give the attempt directory; the summary does, so the agent can
+    Read checks/NNNN.json and write notes.md there."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    out = capsys.readouterr().out
+    assert str(repo / "checks" / "0001.json") in out
+    assert str(repo / "notes.md") in out
+
+
 def test_attempt_check_snapshots_the_source(repo: Path, monkeypatch):
     """F10: each check keeps the C it checked next to its JSON, and the log line names it."""
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=50.0)), returncode=1))
@@ -541,6 +551,7 @@ def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monk
     assert printed == saved
     assert saved.startswith("# Context pack: func_00010010")
     assert "made-up listing of B" in saved
+    assert str(attempt_dir / "notes.md") in capsys.readouterr().err
 
 
 def test_context_and_attempt_help_exit_0(capsys):
