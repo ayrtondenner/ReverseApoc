@@ -22,11 +22,19 @@ from reverseapoc.check import (
     ExeLand,
     FunctionCheck,
     SourceCheck,
+    Unaccounted,
     UnitPaths,
     object_root,
 )
 from reverseapoc.cli import main as cli_main
-from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    SymbolRow,
+    UnitRow,
+    write_functions_csv,
+    write_symbols_csv,
+    write_units_csv,
+)
 from reverseapoc.land import LandResult
 from reverseapoc.relocs import RelocResult
 from reverseapoc.status import MATCHED, StatusRow, lf_sha256, read_status, status_path, write_status
@@ -118,9 +126,17 @@ def make_tree(root: Path) -> Tree:
     return Tree(root)
 
 
+def as_committed(tree: Tree, monkeypatch) -> Tree:
+    """The tmp tree stands in for the committed src/ and config/: gate without --partial
+    compiles only the committed src tree (fix round 1, M4), and object_root keys on both."""
+    monkeypatch.setattr(check, "DEFAULT_SRC", tree.src)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", tree.config)
+    return tree
+
+
 @pytest.fixture
-def tree(tmp_path) -> Tree:
-    return make_tree(tmp_path)
+def tree(tmp_path, monkeypatch) -> Tree:
+    return as_committed(make_tree(tmp_path), monkeypatch)
 
 
 def ok_function(start: int, percent: float = 100.0, *, ok: bool = True) -> FunctionCheck:
@@ -139,7 +155,8 @@ class FakeCheck:
     """Stands in for check_unit. It defines the functions the tree's unit file defines, all at
     100.0 unless `percent` says otherwise, and lands every function every present unit file
     defines (or `landed[exe]` when given). `mismatch` makes the gated unit's check fail;
-    `error` raises it as a tool error."""
+    `error` raises it as a tool error. Like check_unit, it raises when the gated unit's C
+    defines no function of the unit."""
 
     def __init__(self, tree: Tree, *, mismatch: bool = False, error: Exception | None = None,
                  landed: dict[str, set[int]] | None = None) -> None:  # fmt: skip
@@ -152,6 +169,8 @@ class FakeCheck:
         if self.error is not None:
             raise self.error
         name = next(n for n, s in STEMS.items() if s == exe.lower() or n.lower() == exe.lower())
+        if not self.tree.defined.get((name, unit)):
+            raise CheckError(f"{self.tree.source(name, unit)} defines no function of unit {unit}")
         functions = tuple(ok_function(s, 50.0 if self.mismatch else 100.0)
                           for s in self.tree.defined.get((name, unit), []))  # fmt: skip
         splices = []
@@ -375,9 +394,9 @@ def test_a_match_replaces_a_partial_row(tree):
                                       sha=lf_sha256(text))]  # fmt: skip
 
 
-def test_merge_is_order_independent(tmp_path):
+def test_merge_is_order_independent(tmp_path, monkeypatch):
     def run(order):
-        tree = make_tree(tmp_path / "-".join(order))
+        tree = as_committed(make_tree(tmp_path / "-".join(order)), monkeypatch)
         for unit in order:
             tree.write_unit(UFO, unit, {UNIT_A: [A1], UNIT_B: [B1]}[unit])
             assert run_gate(tree, f"ufo2p/{unit}", attempts=1).exit_code == 0
@@ -421,8 +440,10 @@ class FakeAll:
     def source(self, exe, unit, src, rows, **kwargs) -> SourceCheck:
         assert Path(src) == self.tree.source(exe.target.name, unit)
         self.sources.append((exe.target.name, unit))
-        functions = tuple(ok_function(s, self.percent.get(s, 100.0))
-                          for s in self.tree.defined.get((exe.target.name, unit), []))  # fmt: skip
+        starts = self.tree.defined.get((exe.target.name, unit), [])
+        if not starts:  # as the real check_source does
+            raise CheckError(f"{src} defines no function of unit {unit}")
+        functions = tuple(ok_function(s, self.percent.get(s, 100.0)) for s in starts)
         return SourceCheck("wcc386", ("-4r",), functions, None, "")
 
     def land(self, manifest, **kwargs) -> list[ExeLand]:
@@ -442,11 +463,11 @@ def run_all(tree: Tree, fake: FakeAll) -> gate.GateResult:
 
 
 def seeded_tree(tree: Tree) -> dict[str, bytes]:
-    tree.write_unit(UFO, UNIT_A, [A1])
-    tree.write_unit(UFO, UNIT_B, [B1])
-    tree.write_unit(TACP, UNIT_T, [T1])
-    return {UFO: seed(tree, UFO, [matched(A1, UNIT_A), matched(B1, UNIT_B)]),
-            TACP: seed(tree, TACP, [matched(T1, UNIT_T)])}  # fmt: skip
+    a = lf_sha256(tree.write_unit(UFO, UNIT_A, [A1]))
+    b = lf_sha256(tree.write_unit(UFO, UNIT_B, [B1]))
+    t = lf_sha256(tree.write_unit(TACP, UNIT_T, [T1]))
+    return {UFO: seed(tree, UFO, [matched(A1, UNIT_A, sha=a), matched(B1, UNIT_B, sha=b)]),
+            TACP: seed(tree, TACP, [matched(T1, UNIT_T, sha=t)])}  # fmt: skip
 
 
 def test_gate_all_passes_and_writes_nothing(tree):
@@ -530,8 +551,10 @@ class FakePartial(FakeAll):
     file defines, and writes its object where the real check_source would (object_root of the
     options gate passes), so a test sees which build tree it went to."""
 
-    def __init__(self, tree: Tree, percent: dict[int, float]) -> None:
+    def __init__(self, tree: Tree, percent: dict[int, float],
+                 problems: tuple[Unaccounted, ...] = ()) -> None:  # fmt: skip
         super().__init__(tree, percent=percent)
+        self.problems = problems
         self.options: list = []
         self.objects: list[Path] = []
 
@@ -545,15 +568,13 @@ class FakePartial(FakeAll):
         unit_starts = {row.start for row in rows}
         functions = tuple(ok_function(s, p) for s, p in sorted(self.percent.items())
                           if s in unit_starts)  # fmt: skip
-        return SourceCheck("wcc386", ("-4r",), functions, None, "")
+        return SourceCheck("wcc386", ("-4r",), functions, None, "", self.problems)
 
 
 @pytest.fixture
-def committed(tree, monkeypatch) -> Tree:
-    """The tmp tree stands in for the committed src/ and config/, so only the saved file's own
-    root can send a compile to check-custom (DI-06 part b)."""
-    monkeypatch.setattr(check, "DEFAULT_SRC", tree.src)
-    monkeypatch.setattr(check, "DEFAULT_CONFIG", tree.config)
+def committed(tree) -> Tree:
+    """The tree fixture already stands in for the committed src/ and config/, so only the
+    saved file's own root can send a compile to check-custom (DI-06 part b)."""
     return tree
 
 
@@ -666,3 +687,160 @@ def test_partial_cli_usage(committed, capsys, case):
     assert cli_main(argv) == 2
     assert "reverseapoc gate: error:" in capsys.readouterr().err
     assert not tree.status(UFO).exists()
+
+
+# ---- fix round 1 -------------------------------------------------------------------------------
+
+
+def test_gate_all_exits_1_on_a_fully_reverted_unit(tree):
+    """Important 1: a matched unit whose only C function is back to INCLUDE_ASM is a regression
+    (exit 1), not a tool error; it is not compiled, so the land lands nothing of it."""
+    before = seeded_tree(tree)
+    tree.write_unit(UFO, UNIT_B, [])
+    fake = FakeAll(tree)
+    result = run_all(tree, fake)
+    assert result.exit_code == 1
+    assert any(fname(B1) in p and "INCLUDE_ASM" in p for p in result.problems), result.problems
+    assert (UFO, UNIT_B) not in fake.sources
+    assert (UFO, UNIT_B) not in set(fake.lands[0]["fresh"])
+    assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def test_gating_a_fully_reverted_matched_unit_exits_1(tree):
+    before = seed(tree, UFO, [matched(A1, UNIT_A)])
+    tree.write_unit(UFO, UNIT_A, [])
+    fake = FakeCheck(tree)
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert result.exit_code == 1
+    assert any(fname(A1) in p and "INCLUDE_ASM" in p for p in result.problems), result.problems
+    assert fake.calls == []
+    assert tree.status(UFO).read_bytes() == before
+
+
+def rename(tree: Tree, start: int, name: str) -> None:
+    write_symbols_csv(tree.config / "ufo2p" / "symbols.csv", [SymbolRow(start, name, "func")], UFO)
+
+
+def test_regating_a_renamed_function_updates_its_name(tree):
+    """Orchestrator ruling (minor 3): a matched row is keyed by (EXE, start); a passing re-gate
+    takes the name symbols.csv gives the start, keeping attempts and date (F29)."""
+    seed(tree, UFO, [matched(A1, UNIT_A, attempts=3, day="2026-10-01")])
+    rename(tree, A1, "UnitInit")
+    text = tree.write_unit(UFO, UNIT_A, [A1])
+    assert run_gate(tree, f"ufo2p/{UNIT_A}", attempts=1).exit_code == 0
+    assert tree.rows(UFO) == [dataclasses.replace(
+        matched(A1, UNIT_A, attempts=3, day="2026-10-01", sha=lf_sha256(text)), name="UnitInit")]
+
+
+def test_a_stale_name_is_refused(tree):
+    """The cross-check compares by start; a matched row not re-gated must still carry the name
+    functions.csv/symbols.csv give its start."""
+    before = seed(tree, UFO, [matched(A1, UNIT_A)])
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(UFO, UNIT_B, [B1])
+    rename(tree, A1, "UnitInit")
+    result = run_gate(tree, f"ufo2p/{UNIT_B}")
+    assert result.exit_code == 1
+    assert any("UnitInit" in p and fname(A1) in p for p in result.problems), result.problems
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_a_failed_second_write_names_the_written_table(tree, monkeypatch):
+    """M2: an OS error on the second table names the one already written."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+    real = gate.write_status
+
+    def failing(path, rows):
+        if "ufo2p" in Path(path).parts:
+            raise OSError("disk full")
+        real(path, rows)
+
+    monkeypatch.setattr(gate, "write_status", failing)
+    with pytest.raises(CheckError) as caught:
+        run_gate(tree, f"ufo2p/{UNIT_A}", f"tacp/{UNIT_T}")
+    message = str(caught.value)
+    assert str(tree.status(TACP)) in message and str(tree.status(UFO)) in message
+    assert "disk full" in message
+    assert tree.status(TACP).exists() and not tree.status(UFO).exists()
+
+
+def test_cmd_gate_docstring_names_the_half_write():
+    from reverseapoc import cli
+
+    assert "(nothing written)" not in (cli._cmd_gate.__doc__ or "")
+    assert "already written" in (cli._cmd_gate.__doc__ or "")
+
+
+def test_gate_refuses_a_non_default_src(tree, tmp_path):
+    """M4: gate writes the public status.csv, so it compiles only the committed src tree."""
+    other = tmp_path / "elsewhere"
+    tree.write_unit(UFO, UNIT_A, [A1])
+    roots = dataclasses.replace(tree.roots, src_root=other)
+    with pytest.raises(CheckError, match="--src"):
+        gate.gate_units([("ufo2p", UNIT_A)], roots=roots, today=TODAY, check_fn=FakeCheck(tree))
+    with pytest.raises(CheckError, match="--src"):
+        gate.gate_all(roots=roots)
+    assert not tree.status(UFO).exists()
+
+
+@pytest.mark.parametrize("extra", [[f"ufo2p/{UNIT_A}"], ["--all"]], ids=["unit", "all"])
+def test_gate_cli_refuses_src_without_partial(tree, tmp_path, monkeypatch, capsys, extra):
+    tree.write_unit(UFO, UNIT_A, [A1])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    argv = ["gate", *extra, *tree.argv()]
+    argv[argv.index("--src") + 1] = str(tmp_path / "elsewhere")
+    assert cli_main(argv) == 2
+    assert "--src" in capsys.readouterr().err
+    assert not tree.status(UFO).exists()
+
+
+def test_partial_with_source_problems_writes_nothing(committed):
+    """M5: a saved file with D-12 account problems scores no partial row."""
+    tree = committed
+    problem = Unaccounted("func_00099999", None, "is not a function of the unit")
+    fake = FakePartial(tree, {B1: 70.0}, problems=(problem,))
+    result = run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), fake)
+    assert result.exit_code == 1
+    assert any("func_00099999" in p for p in result.problems)
+    assert not tree.status(UFO).exists()
+
+
+def test_a_unit_file_changed_before_the_write_is_refused(tree):
+    """M7: each unit file is hashed again just before the write."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+
+    class EditsA(FakeCheck):
+        def __call__(self, exe, unit, **kwargs):
+            if unit == UNIT_T:
+                path = self.tree.source(UFO, UNIT_A)
+                path.write_bytes(path.read_bytes() + b"/* edited */\n")
+            return super().__call__(exe, unit, **kwargs)
+
+    with pytest.raises(CheckError, match="changed"):
+        run_gate(tree, f"ufo2p/{UNIT_A}", f"tacp/{UNIT_T}", check=EditsA(tree))
+    assert not tree.status(UFO).exists() and not tree.status(TACP).exists()
+
+
+def test_gate_all_refuses_a_stale_source_sha(tree):
+    """M9: gate --all compares each matched row's source_sha256 with the unit file."""
+    before = seeded_tree(tree)
+    path = tree.source(UFO, UNIT_A)
+    path.write_bytes(path.read_bytes() + b"/* a comment pass */\n")
+    result = run_all(tree, FakeAll(tree))
+    assert result.exit_code == 1
+    assert any("source_sha256" in p and UNIT_A in p for p in result.problems), result.problems
+    assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def test_gate_all_output_shape(tree):
+    """M10: --all never says it did not write; its checks are per unit, its splices apart."""
+    seeded_tree(tree)
+    failing = run_all(tree, FakeAll(tree, percent={B1: 99.5}))
+    text = failing.format()
+    assert text.rstrip().endswith("MISMATCH") and "not written" not in text
+    assert run_all(tree, FakeAll(tree)).format().rstrip().endswith("ok")
+    doc = failing.to_json()
+    assert {tuple(sorted(c)) for c in doc["checks"]} == {("exe", "functions", "unit")}
+    assert [s["exe"] for s in doc["splice"]] == [UFO, TACP]

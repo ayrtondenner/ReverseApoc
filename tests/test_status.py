@@ -84,10 +84,14 @@ GOOD = f"0x00010000,func_00010000,u_00010000,matched,100.00,0,{SHA},2026-10-25"
         (f"{STATUS_COMMENT}\n{HEADER}\n{GOOD},extra\n", "line 3"),
         (f"{STATUS_COMMENT}\r\n{HEADER}\r\n{GOOD}\r\n", "LF"),
         (f"{STATUS_COMMENT}\n{HEADER}\n\n{GOOD}\n", "line 3"),
+        (f"{STATUS_COMMENT}\n{HEADER}\n{GOOD.replace('func_00010000', '"func_00010000"')}\n",
+         "line 3"),
+        (f"{STATUS_COMMENT}\n{HEADER}\n{GOOD}", "final LF"),
+        (f"{STATUS_COMMENT}\n{HEADER}", "final LF"),
     ],
     ids=["header", "no-comment", "duplicate", "status", "sha-hex", "sha-short", "date-form",
          "date-value", "start-form", "percent-form", "matched-not-100", "attempts", "extra-field",
-         "crlf", "blank-line"],  # fmt: skip
+         "crlf", "blank-line", "quoted-cell", "no-final-lf", "header-no-final-lf"],  # fmt: skip
 )
 def test_status_refuses_bad_tables(tmp_path, body, message):
     path = tmp_path / "status.csv"
