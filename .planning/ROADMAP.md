@@ -285,7 +285,7 @@ Plans:
   1. `config/mechanics.toml` maps each answerable item of OpenApoc #263, #264, #265 and #997 to its EXE and the functions behind it, located from UI strings and data-table cross-references, and the owner has signed the list off (DEC-01)
   2. The driver works through the list callees first, with claims so parallel agents never take the same function and a single owner of the shared naming state (DEC-02, DEC-06)
   3. For every function in `config/mechanics.toml`, `check` prints objdiff 100% and a passing relocation check, and after the last commit `rebuild` plus `cmp` against `orig/` are silent for both EXEs with zero regressions (DEC-03)
-  4. `uv run reverseapoc readlint src/` exits 0, and negative tests show it fails on a `FUN_`/`sub_`/`DAT_` placeholder name, a function without a header comment, and an unnamed struct field or magic constant in a matched unit; pytest and ruff pass on the host and in the container (DEC-04)
+  4. `uv run reverseapoc readlint src/` exits 0, and negative tests show it fails on a `FUN_`/`sub_`/`DAT_` placeholder name and on our own `func_XXXXXXXX` / `D_XXXXXXXX` placeholders (backlog 999.2), a function without a header comment, and an unnamed struct field or magic constant in a matched unit; pytest and ruff pass on the host and in the container (DEC-04)
   5. The progress page shows coverage per checklist item, and every target reads matched (DEC-05)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
@@ -332,7 +332,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Source phase:** 04
 **Deferred at:** 2026-10-23 during /gsd-verify-work 04 session completion
 **Follow-ups:**
-- [ ] Test 5: Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
+- [x] Test 5 (closed by plan 06-07, b328679): Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
 
 ### Phase 999.2: Follow-up — Phase 05 deferred UAT follow-up: Test 1 (BACKLOG)
 
@@ -350,4 +350,4 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Target phase:** 6 (agents start relying on asm/ listings)
 **Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
 **Follow-ups:**
-- [ ] Test 5: `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)
+- [x] Test 5 (closed by plan 06-06, a56080d, 6d535c1): `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)

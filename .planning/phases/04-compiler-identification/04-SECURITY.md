@@ -54,7 +54,7 @@ created: "2026-10-21"
 | T-04-10 | Information disclosure | errors, tests and summaries | low | mitigate | messages name record types, offsets and counts only; fixtures are synthetic literals in tests/omfimage.py | closed |
 | T-04-11 | Denial of service | decode_member output | medium | mitigate | output bounded by the member length, which must equal expected_size (the manifest size) before decoding starts; overruns raise WpackError | closed |
 | T-04-12 | Tampering | malformed archives | medium | mitigate | signature, info-table bounds and the compressed-span CRC-32 are checked before decoding; truncated streams raise WpackError (tests per case) | closed |
-| T-04-13 | Tampering (licence) | tools/reverseapoc/wpack.py | medium | mitigate | format description committed first (verify checks ancestry), header states no OWPL code or comments copied; owner confirms A1 | open — below high threshold (non-blocking): owner sign-off of A1 pending |
+| T-04-13 | Tampering (licence) | tools/reverseapoc/wpack.py | medium | mitigate | format description committed first (verify checks ancestry), header states no OWPL code or comments copied; owner confirms A1 | closed: owner confirmed A1 in [04-UAT.md](04-UAT.md) test 3 (recorded 2026-10-22, commit 38b3b6b); recorded here by plan 06-21 (DI-26, D-41) |
 | T-04-14 | Tampering | archive-embedded names | low | mitigate | the decoder returns bytes only and never writes a file under an archive-supplied name; plan 04-06 writes only the manifest path | closed |
 | T-04-15 | Tampering | option injection through WCC386/INCLUDE | high | mitigate | test_env_injection_has_no_effect proves on real codegen that the scrubbed environment neutralises them (normalized SHA-1 equal) | closed |
 | T-04-16 | Tampering | stray files from failed compiles | medium | mitigate | test_compile_error_cleans_up asserts no object at -o and no .err in the repository root | closed |
@@ -106,8 +106,9 @@ created: "2026-10-21"
 
 ---
 
-## Open Item for the Owner
+## Open Item for the Owner (resolved)
 
+- **RESOLVED 2026-10-25 (plan 06-21, DI-26).** The owner signed off A1 in [04-UAT.md](04-UAT.md) test 3: "Owner reviewed all 12 grouped prohibition rows and signed off A1 (T-04-13): no OWPL code or comments in tools/reverseapoc/wpack.py". The UAT recorded it on 2026-10-22 in commit 38b3b6b. Phase 6 ruling D-41 (06-CONTEXT.md) has Claude record that existing sign-off here instead of re-running `/gsd-secure-phase 4`. T-04-13 is closed, and no threat is open. The paragraph below is the item as it stood before.
 - **T-04-13 (licence, medium, non-blocking).** Two of its three mitigations are verified: the wpack format description was committed first (43eb1fa is an ancestor of b5d8e3d) and wpack.py's header states no OWPL code or comments were copied (an independent review compared it against the OW reference copies and found nothing copied; the LZHUF tables equal the published 1988 values). The third, "owner confirms A1" after implementation, is not recorded: D-15 records the approach decided beforehand. Close it by confirming A1 (or recording the remainder as an accepted risk) and re-running `/gsd-secure-phase 4`.
 
 ---
@@ -118,8 +119,14 @@ created: "2026-10-21"
 |------------|---------------|--------|------|--------|
 | 2026-10-21 | 41 | 40 | 1 (non-blocking, below high) | gsd-security-auditor (ASVS L1, block_on high) via /gsd-execute-phase 4 verify:post |
 | 2026-10-22 | 48 | 47 | 1 (T-04-13, unchanged, non-blocking, below high) | orchestrator L1 grep short-circuit via /gsd-execute-phase 04 --gaps-only verify:post (04-13 adds T-04-41..47, all closed) |
+| 2026-10-25 | 48 | 48 | 0 | plan 06-21 (DI-26, DI-23): records the owner's A1 sign-off from 04-UAT.md test 3 (T-04-13) and closes the audit observations below with plan 06-07's commits; no code re-audited |
 
 Observations from the audit (status unchanged): the real env-injection and failed-compile cleanup proofs (T-04-15/16) still run for 10.6 and 11.0 only (`tests/test_compiler_real.py` RUNNABLE); a failing assertion in those tests would print a shortened repr of in-repo probe object bytes (T-04-17); three supplementary doc claims rest on scratch checks cited in 04-11-SUMMARY rather than build/gate logs (T-04-36).
+
+Closed by plan 06-07 (1b34ae3, e23cbcc, fdf0e0a; DI-23, recorded by plan 06-21 on 2026-10-25; evidence in [06-07-SUMMARY.md](../06-reporting-and-agent-pilot/06-07-SUMMARY.md)):
+- T-04-15/16: the observation was out of date. The 10.5 cases already ran unskipped at 06-07's base. 06-07's host run of the real tests for 10.5, 10.6 and 11.0 against the main checkout's Watcom trees gave 21 passed, 0 skipped. 1b34ae3 hardened `tests/test_compiler_real.py`.
+- T-04-17: the real codegen asserts compare a `Codegen(and_mask, movzx, sha1)` value (1b34ae3). The stub asserts read a byte-free `StubFacts` value (e23cbcc, 06-07 fix round 1). A failing assertion prints booleans, names, sizes and SHA-1s, never object bytes. Fifteen scratch mutations showed this.
+- T-04-36: docs/toolchain.md labels the `-s` "most code" count, the `-fpi` same-object claim and the `-fpi`/`-fpi87` record equality "(scratch check, not logged)" (fdf0e0a).
 
 ---
 
@@ -130,4 +137,4 @@ Observations from the audit (status unchanged): the real env-injection and faile
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-21; 04-13 threats verified 2026-10-22 (T-04-13 owner sign-off pending, non-blocking)
+**Approval:** verified 2026-10-21; 04-13 threats verified 2026-10-22; T-04-13 closed 2026-10-25 by recording the owner's A1 sign-off ([04-UAT.md](04-UAT.md) test 3, commit 38b3b6b, plan 06-21)
