@@ -1835,6 +1835,11 @@ def _container_gate(run: Runner, argv: Sequence[str]) -> GateRun:
     return GateRun(done.returncode, _json_doc(done.stdout or ""))
 
 
+def finish(run: Runner, *, run_dir: Path) -> list[str]:
+    """Skeleton (06-25 Task 3)."""
+    return ["skeleton"]
+
+
 def compose_project(repo: Path) -> str:
     """The compose project name of the checkout: its directory name, lower case, with every
     character but [a-z0-9_-] dropped (compose's own normalization)."""
