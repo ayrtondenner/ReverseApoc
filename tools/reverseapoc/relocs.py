@@ -19,7 +19,8 @@ independent of objdiff and fails that case:
      resolved by assuming our whole `_TEXT` sits in the original as in our object. The caller
      owes the map: it builds `own_publics` from the unit's units.csv and functions.csv rows
      (05-17 `check`, 05-18), and two entries over one offset are refused (RelocError);
-   a fixup framed other than F1 FLAT, the frame wcc386 10.6 emits for flat code, fails;
+   a fixup whose frame method is not F1 (a group frame, the method wcc386 10.6 emits for flat
+   code; the frame datum is not checked) fails;
    then by the fixup's kind:
    - self-relative: have = F + 4 + int32(original field), and the LE has no fixup at F (a rel32
      call is not an LE fixup) (`_self_relative`);
@@ -57,9 +58,12 @@ _ADDRESS_MASK = 0xFFFFFFFF  # VAs and targets are compared modulo 2**32
 _TARGET_EXTERN = "extern"
 _TARGET_SEGMENT = "segment"
 LOCAL_SEGMENT_PROBLEM = "local segment reference, move data to an extern D_ symbol"
-# OMF frame method F1: the frame is the group named by the datum. Every fixup of the real
-# wcc386 10.6 objects (both Phase 5 matched units, 06-03) is framed F1 FLAT; the check accepts
-# exactly that observed set (05-REVIEW 10a).
+# OMF frame method F1: the frame is a group, named by the datum. Every fixup of the real
+# wcc386 10.6 objects (both Phase 5 matched units, 06-03) has frame method F1 (its datum names
+# FLAT there); the check accepts exactly that observed set of methods (05-REVIEW 10a). Only the
+# method is checked: omf.py does not keep the frame datum, so which group an F1 fixup names is
+# not checked. The sample held extern targets only; a fixup to the unit's own _TEXT framed
+# otherwise would fail closed here.
 FRAME_GROUP = 1
 FLAT_CODE_FRAMES = frozenset({FRAME_GROUP})
 _FLAT_CODE_FRAME_NAMES = " or ".join(f"F{method}" for method in sorted(FLAT_CODE_FRAMES))
@@ -301,7 +305,7 @@ def _fixup(pair: _Pair, fx: OMFFixup) -> Iterator[str]:
     if fx.frame_method not in FLAT_CODE_FRAMES:
         yield (
             f"{_va(field)}: {fx.target_name}: fixup frame method F{fx.frame_method} is not "
-            f"{_FLAT_CODE_FRAME_NAMES}, the frame wcc386 10.6 emits for flat code"
+            f"{_FLAT_CODE_FRAME_NAMES}, the frame method wcc386 10.6 emits for flat code"
         )
         return
     target = _want(pair, field, fx)
