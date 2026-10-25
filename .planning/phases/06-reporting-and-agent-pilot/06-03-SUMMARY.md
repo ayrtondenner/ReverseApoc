@@ -9,7 +9,7 @@ requires:
     provides: "configure.py D-12 parser, relocs.check_function, the two matched units and 05-REVIEW items 10/12/15"
 provides:
   - "configure.py D-12 parser that splices backslash-newline like translation phase 2 (DI-05)"
-  - "relocs refusal of overlapping/duplicate own publics (DI-04 12a) and of fixup frames other than F1 FLAT (10a)"
+  - "relocs refusal of overlapping/duplicate own publics (DI-04 12a) and of a fixup frame method other than F1, a group frame; the frame datum is not checked (10a)"
   - "build.ninja rules that carry a non-default --config tree (DI-06 part c)"
 affects: [06-12 hooks.py (reuses the D-12 parser), 06-09 (updates the default-render golden), driver plans, 06-16 container re-run]
 
@@ -18,16 +18,16 @@ actuals:
   # alone are 39,633 chars = 9,908). The 80000 estimate is far above this realized diff: the plan
   # touched few lines in each file. The first SUMMARY's 9024 was the same measure before the fix
   # round (36,094 chars of diff, no SUMMARY).
-  tokens: 14374
+  tokens: 17925  # fix round 2: chars/4 over git diff 021a58b..0aff168 (71,699 chars; 49,401 without .planning)
   tasks: 3
-  commits: 11  # git rev-list --count 021a58b..17ac24d, the first SUMMARY commit 9ab2390 included
+  commits: 15  # git rev-list --count 021a58b..0aff168, the SUMMARY commits included
 plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: 17ac24df3ae2400c9e9d886be29a2bd68f48784c
+plan_head_after: 0aff168f6decc0cf9c1c0d92d4c272b5bff49d8b
 
 tech-stack:
   added: []
   patterns:
-    - "D-12 parser reads logical lines: a directive and its backslash continuations are one directive, reported at its first physical line"
+    - "D-12 parser reads logical lines: a directive and its backslash continuations are one directive, reported at the physical line of its #"
     - "relocs accepts exactly the observed set of fixup frame methods (FLAT_CODE_FRAMES), named, never a bare number"
     - "configure emits config-tree arguments only for a non-default --config, so the default text is byte-identical"
 
@@ -71,7 +71,7 @@ coverage:
         status: pass
     human_judgment: false
   - id: D3
-    description: "A fixup framed other than F1 FLAT is refused at the field VA (10a); relocpair names LE kinds (10c); byte-dump regex case-insensitive (10d)"
+    description: "A fixup whose frame method is not F1 (a group frame; the datum is not checked) is refused at the field VA (10a); relocpair names LE kinds (10c); byte-dump regex case-insensitive (10d)"
     requirement: "AGT-06"
     verification:
       - kind: unit
@@ -97,7 +97,7 @@ status: complete
 
 # Phase 6 Plan 03: Oracle hardening (D-12 continuation, relocs own publics and frame, config-consistent rules) Summary
 
-**The D-12 parser now splices backslash-newline the way the compiler does, relocs refuses overlapping own publics and any fixup frame other than the F1 FLAT that real wcc386 10.6 objects use, and build.ninja rules pass a non-default `--config` tree to every verb that reads config/.**
+**The D-12 parser now splices backslash-newline the way the compiler does, relocs refuses overlapping own publics and any fixup frame method other than F1 (a group frame), the method real wcc386 10.6 objects use (the frame datum is not checked), and build.ninja rules pass a non-default `--config` tree to every verb that reads config/.**
 
 Execution context nonce: 8576cea0285a1181
 
@@ -113,7 +113,7 @@ Execution context nonce: 8576cea0285a1181
 
 - DI-05: a `//` comment runs on through a backslash-newline, a directive plus its continuation lines is one logical directive (so `#if \` + `0` is `#if 0`, and an `#ifdef` inside a `#define` body is not a directive), and a spliced literal keeps its line breaks. `check.source_marks` agrees with configure on the three probe texts, and check.py is unchanged.
 - DI-04: `_check_own_publics` raises RelocError naming both publics when two own publics share a byte (same offset or overlapping spans), before any fixup is resolved. The 12b (target at an own public's end) and 12c (`_TEXT+0x5 resolves to 0x00010005, the original lands on 0x00010006`) behaviours are pinned. `test_own_segment_layout_coincidence_is_not_trusted` still passes, and own-public sizes are not widened.
-- 10a: `FRAME_GROUP = 1` and `FLAT_CODE_FRAMES = frozenset({FRAME_GROUP})` in relocs.py. A fixup with any other frame method gives `0xVVVVVVVV: <target>: fixup frame method F<n> is not F1, the frame wcc386 10.6 emits for flat code`.
+- 10a: `FRAME_GROUP = 1` and `FLAT_CODE_FRAMES = frozenset({FRAME_GROUP})` in relocs.py. A fixup with any other frame method gives `0xVVVVVVVV: <target>: fixup frame method F<n> is not F1, the frame method wcc386 10.6 emits for flat code` (fix round 1 wording; the frame datum is not checked).
 - 10c/10d: relocpair and test_relocs use `SRC_OFF32` / `SRC_SEL16` from le.py, and `_BYTE_DUMP` is `re.IGNORECASE`.
 - DI-06 part c: for a non-default `--config DIR`, `check-orig` and `rebuild` get `--manifest DIR/targets.toml`, `target` and `land` also get `--config DIR`, and `asm` gets `--manifest`, `--functions DIR/$exe/functions.csv` and `--symbols DIR/$exe/symbols.csv`. All escape through `ninja_path` after the same safe-path check as the regeneration command. The default text is unchanged, byte for byte.
 
@@ -162,7 +162,7 @@ Both compiled `OK ... wcc386@10.6 ... Version 10.6`. Every FIXUPP:
 | u_00054f20.obj | _TEXT+0x1 | F1 | extern func_00011500_ | self-relative, loc 9 |
 | u_00054f20.obj | _TEXT+0x6 | F1 | extern _D_0028DF70 | segment-relative, loc 9 |
 
-The raw FIXUPP bytes (`a4 01 16 02 01 ...`) give frame datum 2, and the module's GRPDEFs are DGROUP (1) and FLAT (2), so the frame is F1 FLAT. The allowed set is {F1}. After the change, `check.checked_functions` on both real objects still returns `func_000A3980 ok` and `func_00055080 ok`. The flagged assumption holds: one frame method.
+The raw FIXUPP bytes (`a4 01 16 02 01 ...`) give frame datum 2, and the module's GRPDEFs are DGROUP (1) and FLAT (2), so the frame is F1 FLAT. The allowed set is the frame method {F1}; the datum (FLAT here) is not checked, since omf.py keeps none. After the change, `check.checked_functions` on both real objects still returns `func_000A3980 ok` and `func_00055080 ok`. The flagged assumption holds: one frame method.
 
 ## Files Created/Modified
 
@@ -248,10 +248,38 @@ Verification after the round:
 - RED for `8a0a536`: 7 failures, all on assertions. Six probes returned the wrong marked set in source_marks and configure, and `closer-splice` gave no problem where one was expected. `code-comment-in-marker` and the `define-string`/`define-comment` line-number cases passed before the fix and pin behaviour that must stay.
 - Real files: `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 committed units. `check.source_marks` on both matched unit files reports their definitions with no problems. `check.checked_functions` on `build/06-03/*.obj` still gives `func_000A3980 ok` and `func_00055080 ok`.
 
+## Fix round 2 (rereview-06-03-r1.md, FIX_BASE 54a7040)
+
+| Item | What was done | Test commit | Fix commit |
+|------|---------------|-------------|------------|
+| N1 (Important, predates this plan) | New shared entry point. `configure.normalize_source` performs translation phases 1-2 the way wcc386 10.6 does: (a) C89 trigraphs are mapped everywhere, string literals included; (b) CRLF and a lone CR become LF; (c) a backslash followed by spaces or tabs and then a newline becomes a backslash-newline (a form feed or vertical tab is not treated so). None of these adds or removes a line break; a lone CR counts as one, as `read_text` already reads it. `_NOT_CODE` is now a small scanner object whose `sub` runs `normalize_source` before the comment/literal regex. `check.source_marks` calls `cfg._NOT_CODE.sub(cfg._blank, text)`, so it gets the normalisation with no check.py change. `configure.code_text(text)` (= `_live_code(_NOT_CODE.sub(_blank, text))`) is the one entry point, and `check_unit_source` uses it. Probes added to CONTINUATION_PROBES: `blank-splice-closer-definition`, `blank-splice-string-definition`, `blank-splice-name`, `blank-splice-define`, `tab-splice-define`, `blank-splice-line-comment`, `blank-splice-if0`, `formfeed-is-no-splice`, `vtab-is-no-splice`, `trigraph-line-comment`, `trigraph-closer`, `trigraph-directive`, `crlf-closer`, `crlf-string`. New tests: `test_blank_splice_closer_hides_no_definition` (D-12 reports "both"), `test_inline_asm_stays_visible_to_the_scanner` (4 probes), `test_code_text_is_the_shared_entry_point` and `test_normalisation_keeps_the_line_count`. | `5b6eeb5` | `0aff168` |
+| N2 (Minor, new in 31b01ce) | A directive is now reported at the physical line of its `#` (`_physical_line`), so `/* a⏎b */ #ifdef FOO` reports line 4, as both bases did. `test_directive_after_a_multiline_comment_keeps_its_line` covers this and the unclosed `#if 0` form. | `5b6eeb5` | `0aff168` |
+| N3 (Minor) | The SUMMARY frontmatter `provides`, the coverage D3 description, the headline and the F20 section now say "frame method other than F1 (a group frame)" and that the frame datum is not checked. | n/a | (this SUMMARY commit) |
+
+**Against the real compiler.** Scratch harnesses (in the session scratchpad; probe files under the gitignored `build/06-03/probes/`) ran each probe through `third_party/watcom/10.6/BINNT/WCC386.EXE -zq -p` from the main checkout. They compared its marked/defined sets with `configure`'s reading of the same file after `read_text`.
+- All 15 non-CR probes agree after the fix: the blank, tab, trigraph and CRLF splice probes, plus the form feed and vertical tab non-splices. Before the fix, 10 of them differed.
+- The 5 inline-asm probes agree on `_asm int 3`: live in 4, and inside the comment for the form-feed one.
+- One difference remains, on purpose. wcc386 does **not** treat a lone CR as a line break: `INCLUDE_ASM(..)⏎CR#define X \⏎CR INCLUDE_ASM(..)` gives both markers live for wcc386. Python's `read_text`, which configure and check use, and `normalize_source` turn a lone CR into a line break. For D-12 this fails closed: a marker reads as dead, so the row reports "neither".
+
+Verification:
+- `uv run pytest -q`: 1470 passed, 215 skipped.
+- `uv run ruff check .`: clean.
+- `python configure.py --orig <main>/orig --output <scratch>/build.ninja` accepts all 841 committed units.
+- `check.source_marks` on `src/ufo2p/u_000a34f0.c` gives defined `func_000A3980`, 2 marked, no problems. On `src/tacp/u_00054f20.c` it gives defined `func_00055080`, 10 marked, no problems.
+- RED for `5b6eeb5`: 18 failures.
+  - 15 are assertions on the wrong reading or line.
+  - 2 are `AttributeError` for the two new entry points, `code_text` and `normalize_source`, which do not exist before the fix.
+  - `crlf-string` and `blank-splice-string-definition` already agreed at HEAD and pin that behaviour.
+
+**Notes for 06-12:**
+- hooks.py must call the shared entry point `configure.code_text(text)` (or at least `configure.normalize_source` before any scan). It must never run `_COMMENT_OR_LITERAL` on raw tool-input text.
+- A lone CR is the one place our reading differs from wcc386's. A hook scanning `src/` should refuse a lone CR outright, which fails closed.
+- `code_text` puts a spliced code line on its first physical line, so a hook that reports line numbers for code should say "line N (logical line start)". Directives are reported at the line of their `#`.
+
 ## Self-Check: PASSED
 
 - FOUND: configure.py, tools/reverseapoc/relocs.py, tests/test_configure.py, tests/test_relocs.py, tests/relocpair.py
-- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b, 9ab2390, 8a0a536, 31b01ce, 5f3f806, 17ac24d (`git log 021a58b..HEAD`, 11 commits before this SUMMARY update)
+- FOUND commits: dee1491, a71dd7a, 5eab11a, 426e8ff, 19a4f5b, de94a5b, 9ab2390, 8a0a536, 31b01ce, 5f3f806, 17ac24d, 2d90b08, 54a7040, 5b6eeb5, 0aff168 (`git log 021a58b..HEAD`, 15 commits before this SUMMARY update)
 
 ---
 *Phase: 06-reporting-and-agent-pilot*
