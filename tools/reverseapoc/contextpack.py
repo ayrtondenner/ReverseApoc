@@ -28,6 +28,7 @@ from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .le import SRC_OFF32, Fixup
 from .symbols import SymbolTable
+from .targets import REPO_ROOT
 from .x86 import Insn
 
 PACK_CAP = 24576  # bytes of UTF-8 (D-14: 24 KB)
@@ -74,8 +75,12 @@ class Neighbour:
     prototype: str | None = None
 
     def line(self) -> str:
+        """One list line. The prototype is the one C text outside a fence, so its whitespace
+        is collapsed: no CR or line break from the unit file can start a markdown line."""
         text = f"- {self.name} ({self.kind}, {self.status})"
-        return text + (f": {self.prototype};" if self.prototype else "")
+        if not self.prototype:
+            return text
+        return f"{text}: {' '.join(self.prototype.split())};"
 
 
 @dataclass(frozen=True, slots=True)
@@ -126,6 +131,23 @@ def _lines(lines: Sequence[str]) -> str:
     return "\n".join(lines) if lines else NONE
 
 
+def _cut_mark(count: int) -> str:
+    """The body of a section whose `count` items were all cut to fit the cap."""
+    return f"cut ({count} item{'' if count == 1 else 's'})"
+
+
+def _kept(entries: Sequence[str], total: int, separator: str) -> str:
+    """The body of a list section that keeps the first len(entries) of `total` items: `none`
+    for no input, a cut mark when all were cut, else the entries and how many more were cut."""
+    if not total:
+        return NONE
+    if not entries:
+        return _cut_mark(total)
+    more = total - len(entries)
+    tail = [f"... {more} more cut"] if more else []
+    return separator.join([*entries, *tail])
+
+
 def _neighbours(neighbours: Sequence[Neighbour]) -> str:
     return _lines([neighbour.line() for neighbour in neighbours])
 
@@ -135,15 +157,10 @@ def _lookalike(lookalike: Lookalike) -> str:
     return f"{head}\n\n{_fenced(lookalike.source, 'c')}"
 
 
-def _lookalikes(lookalikes: Sequence[Lookalike]) -> str:
-    return "\n\n".join(_lookalike(item) for item in lookalikes) if lookalikes else NONE
-
-
 # ---- the pack ----
 
 
-def _render(function: str, sections: Sequence[Section], truncated: Sequence[str]) -> str:
-    cut = ", ".join(truncated) if truncated else NONE
+def _render(function: str, sections: Sequence[Section], cut: str) -> str:
     parts = [f"# Context pack: {function}", f"{_PREAMBLE}\nTruncated: {cut}"]
     parts += [f"## {section.title}\n\n{section.body}" for section in sections]
     return "\n\n".join(parts) + "\n"
@@ -167,9 +184,11 @@ def build_pack(
     """The pack of one function, its sections in the D-13 order, at most `cap` bytes of UTF-8
     (D-14). Required sections are never cut. Until the pack fits, the optional ones are cut in
     a fixed order: look-alikes from the last (least similar) one, then callers from the last,
-    then the draft; each cut is recorded in `truncated` and in the pack's header line. A cut
-    section that is left empty says `none`. ContextPackError when the pack is still over the
-    cap with every optional section cut."""
+    then the draft. Each cut item is listed in `truncated` (and to_json); the header line
+    `Truncated:` only counts them per section, so it stays a few dozen bytes however many are
+    cut (review I-1). A cut section says so in place: `cut (N items)` when nothing is left,
+    `... N more cut` after the items it keeps. ContextPackError when the required sections
+    alone (with the pack's fixed headings and those short marks) are over the cap."""
     required = {
         TITLE_LISTING: _fenced(listing, "asm"),
         TITLE_UNIT: _fenced(unit_text, "c"),
@@ -179,48 +198,72 @@ def build_pack(
         TITLE_IDIOMS: _fenced(idioms, "markdown"),
         TITLE_NOTES: _fenced(notes, "text"),
     }
-    optional = _Optional(list(lookalikes), list(callers), draft)
+    optional = _Optional(tuple(lookalikes), tuple(callers), draft)
     truncated: list[str] = []
     while True:
         sections = optional.sections(required)
-        text = _render(function, sections, truncated)
+        text = _render(function, sections, optional.summary())
         size = len(text.encode("utf-8"))
         if size <= cap:
             return Pack(text, sections, size, tuple(truncated))
         cut = optional.cut()
         if cut is None:
             raise ContextPackError(
-                f"the context pack of {function} is {size} bytes with every optional section "
-                f"cut, over the {cap}-byte cap; required sections are never cut"
+                f"the required sections alone are {size} bytes of the context pack of "
+                f"{function} (every optional section cut), over the {cap}-byte cap; required "
+                "sections are never cut"
             )
         truncated.append(cut)
 
 
 @dataclass
 class _Optional:
-    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft."""
+    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft. Items
+    are cut from the end of each list; the `*_kept` counts say how many remain."""
 
-    lookalikes: list[Lookalike]
-    callers: list[Neighbour]
+    lookalikes: tuple[Lookalike, ...]
+    callers: tuple[Neighbour, ...]
     draft: str | None
+
+    def __post_init__(self) -> None:
+        self.lookalikes_kept = len(self.lookalikes)
+        self.callers_kept = len(self.callers)
+        self.draft_kept = bool(self.draft)
 
     def cut(self) -> str | None:
         """Cut the next item and name it; None when nothing is left to cut."""
-        if self.lookalikes:
-            return f"look-alike {self.lookalikes.pop().name}"
-        if self.callers:
-            return f"caller {self.callers.pop().name}"
-        if self.draft:
-            self.draft = None
+        if self.lookalikes_kept:
+            self.lookalikes_kept -= 1
+            return f"look-alike {self.lookalikes[self.lookalikes_kept].name}"
+        if self.callers_kept:
+            self.callers_kept -= 1
+            return f"caller {self.callers[self.callers_kept].name}"
+        if self.draft_kept:
+            self.draft_kept = False
             return "draft"
         return None
 
+    def summary(self) -> str:
+        """The header's account of the cuts: per section, with counts (bounded in size)."""
+        parts = []
+        if self.lookalikes_kept < len(self.lookalikes):
+            cut = len(self.lookalikes) - self.lookalikes_kept
+            parts.append(f"{cut} of {len(self.lookalikes)} look-alikes")
+        if self.callers_kept < len(self.callers):
+            parts.append(f"{len(self.callers) - self.callers_kept} of {len(self.callers)} callers")
+        if self.draft and not self.draft_kept:
+            parts.append("draft")
+        return ", ".join(parts) if parts else NONE
+
     def sections(self, required: Mapping[str, str]) -> tuple[Section, ...]:
+        callers = [n.line() for n in self.callers[: self.callers_kept]]
+        lookalikes = [_lookalike(item) for item in self.lookalikes[: self.lookalikes_kept]]
+        draft = _fenced(self.draft, "c") if self.draft_kept or not self.draft else _cut_mark(1)
         bodies = {
             **required,
-            TITLE_CALLERS: _neighbours(self.callers),
-            TITLE_DRAFT: _fenced(self.draft, "c"),
-            TITLE_LOOKALIKES: _lookalikes(self.lookalikes),
+            TITLE_CALLERS: _kept(callers, len(self.callers), "\n"),
+            TITLE_DRAFT: draft,
+            TITLE_LOOKALIKES: _kept(lookalikes, len(self.lookalikes), "\n\n"),
         }
         return tuple(Section(title, bodies[title]) for title in ORDER)
 
@@ -234,8 +277,13 @@ class _Optional:
 # #if 0 lines are blanked to same-length filler, and a definition found in that text is sliced
 # from the original through the map. Only names code_text defines at file scope are kept.
 
+# TODO(06-15): switch to 06-11's status constants once both have merged; this plan does not
+# import 06-11's code.
 STATUS_MATCHED = "matched"
-STATUS_UNMATCHED = "unmatched"  # a row with no status given
+STATUS_PARTIAL = "partial"
+STATUS_UNMATCHED = "unmatched"  # also a row with no status given
+STATUSES = (STATUS_MATCHED, STATUS_PARTIAL, STATUS_UNMATCHED)
+_SPLICE_TEXT = "\\\n"  # a backslash-newline in normalised text (blanks after `\` removed)
 _CRLF = re.compile(r"\r\n")
 _NOT_NEWLINE = re.compile(r"[^\n]")
 _SPLICE_NEWLINE = re.compile(r"\\\n")  # a backslash-newline outside comments and literals
@@ -335,9 +383,13 @@ def _declaration_start(live: str, position: int) -> int:
     """The first code character of the declaration holding `position`: after the last `;`,
     `{` or `}` before it."""
     start = max(live.rfind(end, 0, position) for end in _DECLARATION_ENDS) + 1
-    while live[start].isspace():
-        start += 1
-    return start
+    while True:  # blanks and splices (review M-2) are not part of the head
+        if live[start].isspace():
+            start += 1
+        elif live.startswith(_SPLICE_TEXT, start):
+            start += len(_SPLICE_TEXT)
+        else:
+            return start
 
 
 def _closing_brace(live: str, brace: int) -> int | None:
@@ -532,6 +584,15 @@ class _Prototypes:
         return self.parsed[row.unit].get(name)
 
 
+def _check_statuses(status: Mapping[int, str]) -> None:
+    unknown = sorted({value for value in status.values() if value not in STATUSES})
+    if unknown:
+        raise ContextPackError(
+            f"unknown match status {', '.join(map(repr, unknown))}; expected one of "
+            f"{', '.join(STATUSES)}"
+        )
+
+
 def _neighbour(
     va: int, symbols: SymbolTable, status: Mapping[int, str], prototypes: _Prototypes
 ) -> Neighbour:
@@ -566,7 +627,10 @@ def gather(
     listing is listing_dir/<asm.file_name> and the draft draft_dir/<ghidra.draft_name>, and a
     missing file becomes `none`. Look-alikes are the matched rows whose C the unit texts hold,
     ranked by `lookalikes` with `lookalike_floor`. Pass `calls` to reuse one CallIndex across
-    functions."""
+    functions. ContextPackError for a status outside STATUSES (a typo would silently drop
+    prototypes and look-alikes; review M-6). Unit texts should be read as bytes decoded as
+    strict UTF-8, as check and configure read them, so a lone CR is refused, not translated."""
+    _check_statuses(status)
     calls = calls if calls is not None else CallIndex.build(rows, flat, fixups)
     prototypes = _Prototypes(unit_texts)
     similar = _lookalike_inputs(row, rows=rows, flat=flat, index=asm.FixupIndex(fixups),
@@ -592,21 +656,25 @@ def gather(
 # ---- writing ----
 
 
-def _under_driver(path: Path) -> bool:
-    parts = [part.casefold() for part in path.parts]
-    width = len(DRIVER_PARTS)
-    return any(tuple(parts[i : i + width]) == DRIVER_PARTS for i in range(len(parts)))
+def _inside(path: Path, anchor: Path) -> bool:
+    """`path` is `anchor` or below it, compared part by part with exact case. Path's own
+    comparison folds case on Windows, but the container's file system does not, and there
+    .gitignore's `build/` does not cover `Build/` (review M-4)."""
+    return tuple(path.parts[: len(anchor.parts)]) == tuple(anchor.parts)
 
 
-def write_pack(pack: Pack, out_dir: Path) -> Path:
+def write_pack(pack: Pack, out_dir: Path, *, root: Path = REPO_ROOT) -> Path:
     """Write `pack` to out_dir/context.md atomically and return that path. ContextPackError,
-    before anything is written, when the resolved out_dir is not under build/driver/ (threat
-    T-06-29: the pack is game-derived and must stay in the gitignored tree)."""
+    before anything is written, when the resolved out_dir (links and `..` followed) is not
+    `root`/build/driver or below it, with exact case (threat T-06-29: the pack is game-derived
+    and must stay in the repository's gitignored tree). `root` is the repository root; tests
+    pass their own."""
     out_dir = Path(out_dir)
-    if not _under_driver(out_dir.resolve()):
+    anchor = Path(root).resolve().joinpath(*DRIVER_PARTS)
+    if not _inside(out_dir.resolve(), anchor):
         raise ContextPackError(
-            f"{out_dir}: a context pack is game-derived and is written only under build/driver/ "
-            "(gitignored, D-14)"
+            f"{out_dir}: a context pack is game-derived and is written only under "
+            f"{anchor} (the repository's gitignored build/driver/, D-14)"
         )
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / PACK_FILE
