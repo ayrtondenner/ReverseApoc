@@ -25,7 +25,7 @@ from omfimage import (
 )
 from reverseapoc.functions import FunctionRow, game_name
 from reverseapoc.le import LE, SRC_OFF32, Fixup
-from reverseapoc.omf import Segment, read_object
+from reverseapoc.omf import Module, Segment, read_object
 from reverseapoc.relocs import FRAME_GROUP
 from reverseapoc.symbols import SymbolTable
 
@@ -85,6 +85,20 @@ def our_segment(
 ) -> Segment:
     """Our `_TEXT` (SEGDEF 1) holding `data`, with a module-local data segment named `local`
     (SEGDEF 2) beside it and the FLAT group (GRPDEF 1) the fixup frames name."""
+    obj = our_module(data, fixups, externs, publics=publics, local=local)
+    return next(seg for seg in obj.segments if seg.name == "_TEXT")
+
+
+def our_module(
+    data: bytes,
+    fixups: Sequence[bytes] = (),
+    externs: Sequence[str] = (),
+    *,
+    publics: Sequence[tuple[str, int]] = (("func_00010000_", 0),),
+    local: str = "CONST",
+) -> Module:
+    """The whole module our_segment's `_TEXT` comes from, for callers that need its publics
+    (check.checked_functions)."""
     records = [
         lnames("", "_TEXT", "CODE", local, "DATA", FLAT_LNAME),
         segdef32(2, 3, len(data)),
@@ -97,8 +111,7 @@ def our_segment(
     records.append(ledata32(TEXT_INDEX, 0, data))
     if fixups:
         records.append(fixupp32(*fixups))
-    obj = read_object(module("unit", *records))
-    return next(seg for seg in obj.segments if seg.name == "_TEXT")
+    return read_object(module("unit", *records))
 
 
 @dataclass(frozen=True)
