@@ -12,9 +12,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from conftest import PAGE_SIZE, build_le_image, fixup_record
-from omfimage import extdef, fixup, fixupp32, ledata32, lnames, module, pubdef32, segdef32
+from omfimage import (
+    extdef,
+    fixup,
+    fixupp32,
+    grpdef,
+    ledata32,
+    lnames,
+    module,
+    pubdef32,
+    segdef32,
+)
 from reverseapoc.functions import FunctionRow, game_name
-from reverseapoc.le import LE, Fixup
+from reverseapoc.le import LE, SRC_OFF32, Fixup
 from reverseapoc.omf import Segment, read_object
 from reverseapoc.symbols import SymbolTable
 
@@ -22,6 +32,10 @@ CODE_BASE = 0x10000  # object 1
 DATA_RANGES = [(0x20000, 0x23000)]  # object 2
 TEXT_INDEX = 1  # SEGDEF numbers in our module
 CONST_INDEX = 2
+FRAME_GROUP = 1  # OMF frame method F1: the frame datum is a GRPDEF index
+FLAT_LNAME = "FLAT"  # the group wcc386 10.6 names as the frame of every flat-code fixup
+FLAT_GROUP = 1  # its GRPDEF number in our module
+FLAT_FRAME = (FRAME_GROUP, FLAT_GROUP)  # F1 FLAT, the frame the real 10.6 objects use (06-03)
 _PAGES = 3  # logical pages of the conftest image: two code, one data
 
 
@@ -43,22 +57,22 @@ LOAD_FIELD = CODE_BASE + 6
 
 def le_off32(field_va: int, target_off: int, *, obj: int = 2) -> bytes:
     """One off32 LE fixup record for a field on the first code page."""
-    return fixup_record(7, field_va - CODE_BASE, obj, target_off, off32=True)
+    return fixup_record(SRC_OFF32, field_va - CODE_BASE, obj, target_off, off32=True)
 
 
-def call(offset: int, extern: int) -> bytes:
+def call(offset: int, extern: int, *, frame: tuple = FLAT_FRAME) -> bytes:
     """A self-relative fixup of our field at `offset` to extern number `extern`."""
-    return fixup(offset, segment_relative=False, target=(2, extern))
+    return fixup(offset, segment_relative=False, frame=frame, target=(2, extern))
 
 
-def absolute(offset: int, extern: int) -> bytes:
+def absolute(offset: int, extern: int, *, frame: tuple = FLAT_FRAME) -> bytes:
     """A segment-relative fixup of our field at `offset` to extern number `extern`."""
-    return fixup(offset, target=(2, extern))
+    return fixup(offset, frame=frame, target=(2, extern))
 
 
 def to_segment(offset: int, segment: int, *, relative: bool = False) -> bytes:
     """A fixup of our field at `offset` to one of our own segments (by SEGDEF number)."""
-    return fixup(offset, segment_relative=not relative, target=(0, segment))
+    return fixup(offset, segment_relative=not relative, frame=FLAT_FRAME, target=(0, segment))
 
 
 def our_segment(
@@ -70,11 +84,12 @@ def our_segment(
     local: str = "CONST",
 ) -> Segment:
     """Our `_TEXT` (SEGDEF 1) holding `data`, with a module-local data segment named `local`
-    (SEGDEF 2) beside it."""
+    (SEGDEF 2) beside it and the FLAT group (GRPDEF 1) the fixup frames name."""
     records = [
-        lnames("", "_TEXT", "CODE", local, "DATA"),
+        lnames("", "_TEXT", "CODE", local, "DATA", FLAT_LNAME),
         segdef32(2, 3, len(data)),
         segdef32(4, 5, 8),
+        grpdef(6),
         pubdef32(TEXT_INDEX, list(publics)),
     ]
     if externs:
