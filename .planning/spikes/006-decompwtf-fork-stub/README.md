@@ -58,7 +58,9 @@ ALL PASS
 `linker_name.py SRC` reads every `.py` file of the package with ast. The finder pattern is located
 structurally: it is the `re.compile` in the `else` branch of `find`'s `if "::" in name`. The
 script cross-checks the result against our own `configure.py` (loaded by path) and
-`reverseapoc.symbols`. Output, kept in `build/spike006/linker_name.out`:
+`reverseapoc.symbols`. Some lines below (`names-symbol`, `attempt-refuses`, `cheat-sites`) quote
+short `ast.unparse` excerpts of decomp.wtf v0.10.6 (MIT, © Sam Wolfs), for verification only.
+Output, kept in `build/spike006/linker_name.out`:
 
 ```
 PASS symbols.py linker-suffix func_000A3980 -> func_000A3980_
@@ -66,10 +68,11 @@ PASS forkengine.py names-symbol last spelling "out.append(meta.get('symbol') or 
 PASS forkengine.py symbol-source symbol dicts [('sync', 'sym', "f['name']")]
 PASS csource.py finder-linker-name find('func_000A3980_') on `int func_000A3980(void) {` matched False
 PASS csource.py finder-c-name find('func_000A3980') on `int func_000A3980(void) {` matched True
+PASS csource.py finder-on-marker find on `INCLUDE_ASM(func_000A3980);` matched {'func_000A3980': False, 'func_000A3980_': False}
 PASS forkengine.py attempt-refuses if span is None: raise NetworkError(f'send the complete definition of {names[0]} (with its body)'
 PASS forkengine.py cheat-sites [('_attempt', '_strip_comments(source)'), ('edit_file', '_strip_comments(new)')], 2 uses
 PASS forkengine.py attempt-inserts old_span from self._find(before, ...) True, 1 `if old_span` branch, else calls _insert_in_order True
-PASS forkengine.py insert-keeps-stub 3 returns, 3 keep all of `text` around `code`
+PASS forkengine.py insert-keeps-stub 3 returns, 3 keep all of `text` around `code`, `text` rebound at lines []
 PASS linker_name.py insert-control keep-check on `text[:span[0]] + code + '\n' + text[span[1]:]` accepted False
 PASS package replace-unused csource.replace callers []
 PASS configure.py check-refuses marker+definition -> ['func_000A3980 is both defined in C and marked INCLUDE_ASM']
@@ -85,11 +88,24 @@ How the insert claims work:
 - `insert-keeps-stub`: each of `_insert_in_order`'s 3 returns is a concatenation that holds
   `code` and either `text` whole or `text[:x]` followed by `text[x:]` with the same `x`. Only
   newlines are trimmed at the seam, so no part of the file, the stub included, is dropped. The
-  check refuses any other shape.
+  check also refuses any store to `text` inside `_insert_in_order`. It fails closed only for the
+  shapes it checks: a return of another shape, a rebound `text`, or a missing `else` call.
 - `insert-control`: a planted return that drops `text[span[0]:span[1]]` is refused by the same
-  check, so the check can fail.
+  check, so the check can fail. A planted copy of forkengine.py that rebinds `text`
+  (`text = text.replace("INCLUDE_ASM", "")`) fails `insert-keeps-stub`.
+- `finder-on-marker`: the plain-name finder does not match `INCLUDE_ASM(func_000A3980);` for
+  either spelling of the name.
 - `replace-unused`: nothing in the package calls `csource.replace`, so the claim rests on
-  `_insert_in_order`, not on `replace`.
+  `_insert_in_order`, not on `replace`. The scan fails if it does not include forkengine.py.
+
+Links confirmed only by reading the pinned source, with no claim in the script:
+
+- `_with_includes` (forkengine.py:278-287), which runs on `after` before `path.write_text`, only
+  inserts. It returns `text`, `text[:last.end()] + block + text[last.end():]` or `block + text`.
+  The script does not check this step, or any other rebinding of `after` in `_attempt`.
+- `_find` loops over `csource.find(text, n)` (forkengine.py:1499-1504).
+- `find` ends with `return _stub(text, simple)`, so a name the finder misses falls back to `_stub`.
+  `finder-on-marker` covers the finder half of that chain, and `stub_regex.py` covers `_stub`.
 
 Each script was also run with `--plant`, which flips one expectation (`bare-marker` and
 `finder-linker-name`). Each then printed `1 FAILED` and exited 1 (`build/spike006/plant.out`,
@@ -158,8 +174,8 @@ because the project is not one it can set up by itself (`auto: False`). `check` 
 there is no `objdiff.json`. This repo does not track one (it is gitignored). `configure.py` writes
 it next to `build.ninja`, at the repo root, which is exactly where `check` looks
 (`fp.root / "objdiff.json"`). So the file's location is not a problem; it was missing only because
-no build ran in WSL2. No function row is ever registered, so `compile_and_diff` answers "no function". The C is never
-written into the unit, never built and never scored.
+no build ran in WSL2. No function row is ever registered, so `compile_and_diff` answers "no
+function". The C is never written into the unit, never built and never scored.
 
 ### WSL2 tools
 
