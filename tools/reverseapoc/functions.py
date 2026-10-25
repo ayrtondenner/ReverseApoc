@@ -428,16 +428,24 @@ def _parse_unit(record: dict[str, str]) -> UnitRow:
     return row
 
 
-def _unit_follows(rows: list[UnitRow], row: UnitRow) -> None:
-    if any(earlier.unit == row.unit for earlier in rows):
-        raise ValueError(f"duplicate unit name {row.unit}")
-    if rows:
-        _check_after(rows[-1].start, rows[-1].end, row.start)
+def _unit_follows() -> Callable[[list[UnitRow], UnitRow], None]:
+    """The units.csv row check for one read: the names seen so far live in a set, so a duplicate
+    costs one lookup instead of a scan of every earlier row (05-REVIEW row 7d)."""
+    names: set[str] = set()
+
+    def follows(rows: list[UnitRow], row: UnitRow) -> None:
+        if row.unit in names:
+            raise ValueError(f"duplicate unit name {row.unit}")
+        if rows:
+            _check_after(rows[-1].start, rows[-1].end, row.start)
+        names.add(row.unit)
+
+    return follows
 
 
 def read_units_csv(path: Path) -> list[UnitRow]:
     """The rows of a units.csv: names unique and [a-z0-9_]+, sorted, non-overlapping."""
-    return _load(path, UNITS_CSV_COLUMNS, _parse_unit, _unit_follows)
+    return _load(path, UNITS_CSV_COLUMNS, _parse_unit, _unit_follows())
 
 
 def units_csv_path(name: str) -> Path:
@@ -517,18 +525,28 @@ def _parse_symbol(record: dict[str, str]) -> SymbolRow:
     return row
 
 
-def _symbol_follows(rows: list[SymbolRow], row: SymbolRow) -> None:
-    if any(earlier.address == row.address for earlier in rows):
-        raise ValueError(f"address {_address(row.address)} is listed twice")
-    if any(earlier.name == row.name for earlier in rows):
-        raise ValueError(f"name {row.name} is listed twice")
+def _symbol_follows() -> Callable[[list[SymbolRow], SymbolRow], None]:
+    """The symbols.csv row check for one read: addresses and names seen so far live in sets,
+    one lookup each instead of a scan of every earlier row (05-REVIEW row 7d)."""
+    addresses: set[int] = set()
+    names: set[str] = set()
+
+    def follows(rows: list[SymbolRow], row: SymbolRow) -> None:
+        if row.address in addresses:
+            raise ValueError(f"address {_address(row.address)} is listed twice")
+        if row.name in names:
+            raise ValueError(f"name {row.name} is listed twice")
+        addresses.add(row.address)
+        names.add(row.name)
+
+    return follows
 
 
 def read_symbols_csv(path: Path) -> list[SymbolRow]:
     """The rows of a symbols.csv; the file is optional, so a missing one reads as no rows."""
     if not Path(path).exists():
         return []
-    return _load(path, SYMBOLS_CSV_COLUMNS, _parse_symbol, _symbol_follows)
+    return _load(path, SYMBOLS_CSV_COLUMNS, _parse_symbol, _symbol_follows())
 
 
 def symbols_csv_path(name: str) -> Path:
