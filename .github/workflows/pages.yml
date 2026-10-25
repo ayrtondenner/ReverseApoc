@@ -1,0 +1,97 @@
+name: Pages
+
+# D-27, D-28: publish the progress page from the committed CSVs. tools/progress.py is stdlib
+# only and Python 3.12 syntax, so the runner's own python3 runs it under -I (no uv, no install).
+# The site holds progress.json, progress-shield.json and progress.svg; build/report.json goes to
+# recomp.fyi as one artifact. Only derived counts and names leave CI, never game bytes: no game
+# file exists in a checkout of this repository.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "config/*/status.csv"
+      - "config/*/functions.csv"
+      - "config/*/units.csv"
+      - "tools/progress.py"
+      - "decomphub.progress.json"
+      - ".github/workflows/pages.yml"
+  # Weekly; also renews the 90-day report artifact before it expires.
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+# Read-only by default; build runs repository code with only this. deploy alone gets the Pages
+# write and the OIDC token that actions/deploy-pages needs (fix round 1: permissions per job).
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Derive the progress files from the committed CSVs
+        run: python3 -I tools/progress.py --out _site --report build/report.json --commit "$GITHUB_SHA"
+
+      # D-28: recomp.fyi reads this artifact by name, daily, from a default-branch run.
+      - name: Upload the recomp.fyi report
+        uses: actions/upload-artifact@v7
+        with:
+          name: X-COM_Apocalypse_DOS_report
+          path: build/report.json
+          retention-days: 90
+          if-no-files-found: error
+
+      - name: Upload the Pages site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
+
+  # D-30 (owner-approved outward call): ask DecompHub to re-read decomphub.progress.json. It runs
+  # only in this repository (never a fork), only on a push, and only after the owner sets the
+  # repository variable DECOMPHUB_REFRESH to true; otherwise the job is skipped. No secret and
+  # no token: the body is public data. The step fails before posting if jq builds no body.
+  notify-decomphub:
+    needs: deploy
+    if: github.repository == 'ayrtondenner/ReverseApoc' && github.event_name == 'push' && vars.DECOMPHUB_REFRESH == 'true'
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Notify DecompHub
+        shell: bash
+        env:
+          PROJECT_REPOSITORY: https://github.com/${{ github.repository }}
+          PROJECT_REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          body="$(jq -n --arg repository "$PROJECT_REPOSITORY" --arg revision "$PROJECT_REVISION" \
+            '{repository: $repository, revision: $revision}')"
+          if [ -z "$body" ]; then
+            echo "::error::jq built no request body; not posting to DecompHub"
+            exit 1
+          fi
+          printf '%s\n' "$body" |
+            curl --fail --silent --show-error --max-time 20 \
+              -H "Content-Type: application/json" --data-binary @- \
+              https://app.decomphub.com/api/progress/refresh
