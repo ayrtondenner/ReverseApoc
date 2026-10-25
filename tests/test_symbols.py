@@ -218,6 +218,12 @@ def test_symbol_kind_func_is_one_of_symbol_kinds():
     assert '"func"' not in source and "'func'" not in source  # no second literal for the kind
 
 
+def test_symbol_kind_constants_pin_the_order_of_symbol_kinds():
+    # SYMBOL_KIND_FUNC and SYMBOL_KIND_DATA index SYMBOL_KINDS: reordering it must fail here.
+    assert (symbols_module.SYMBOL_KIND_FUNC, symbols_module.SYMBOL_KIND_DATA) == ("func", "data")
+    assert set(SYMBOL_KINDS) == {"func", "data"}
+
+
 @pytest.mark.parametrize(
     "symbol",
     [
