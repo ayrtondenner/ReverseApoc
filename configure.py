@@ -156,11 +156,25 @@ _UNIT_NAME = re.compile(r"[a-z0-9_]+")
 # definitions from the compiled publics). Comments (block and //, which wcc386 and clang gnu89
 # both accept) and string or character literals are blanked first, keeping line breaks so
 # directive line numbers stay true; an unterminated block comment runs to the end of the file,
-# as it would for the compiler. A backslash-newline splices lines first (translation phase 2,
-# DI-05): a `//` comment runs on through it, and so do string and character literals (`\\.`
-# under DOTALL); block comments span lines anyway.
+# as it would for the compiler. A backslash-newline splices lines before comments and literals
+# are recognised (translation phase 2 before phase 3; DI-05, 06-03 review I1/M1), so a splice
+# may sit inside a comment delimiter (`/\<nl>*`, `*\<nl>/`, `/\<nl>/`) or between an escape's
+# backslash and its character, and a `//` comment runs on through one. _blank turns every line
+# break inside a comment or literal into a splice, so the logical line it sits in (a directive
+# included) runs on, as it does for the compiler, which sees a comment as one space.
+_SPLICES = r"(?:\\\n)*"
+
+
+def _literal(quote: str) -> str:
+    """A string or character literal: escapes (splices allowed after the backslash, and a
+    splice is itself `\\` + newline) or any character but the quote, a backslash or a newline."""
+    return rf"{quote}(?:\\{_SPLICES}.|[^{quote}\\\n])*{quote}"
+
+
 _NOT_CODE = re.compile(
-    r"/\*.*?(?:\*/|\Z)|//(?:\\\n|[^\n])*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", re.DOTALL
+    rf"/{_SPLICES}\*.*?(?:\*{_SPLICES}/|\Z)|/{_SPLICES}/(?:\\\n|[^\n])*"
+    rf"|{_literal(chr(34))}|{_literal(chr(39))}",
+    re.DOTALL,
 )
 # Preprocessor conditionals: only `#if 0` is understood (its block is dead, nested conditionals
 # included, and its #else branch is live); any other conditional is refused, never guessed.
@@ -226,12 +240,15 @@ def _check_name(what: str, name: str) -> str:
 
 
 def _blank(match: re.Match[str]) -> str:
-    """A comment becomes spaces with its line breaks kept; a literal becomes an empty one that
-    keeps the line breaks of its spliced lines between its quotes, so line numbers stay true."""
+    """A comment becomes spaces and a literal an empty one. Every line break inside either
+    becomes a splice (backslash-newline): the line count stays true for directive numbers, and
+    the logical line the comment or literal sits in runs on, as it does for the compiler (a
+    comment is one space; a literal holds only spliced line breaks)."""
     found = match.group()
+    breaks = found.count("\n")
     if found.startswith("/"):
-        return re.sub(r"[^\n]", " ", found)
-    return found[0] + "\n" * found.count("\n") + found[0]
+        return re.sub(r"[^\n]", " ", found).replace("\n", _SPLICE + "\n")
+    return found[0] + (_SPLICE + "\n") * breaks + found[-1]
 
 
 class _ConditionalError(ValueError):
@@ -282,8 +299,10 @@ def _live_code(code: str) -> str:
         number = first + 1  # a directive is reported at its first physical line
         match = _DIRECTIVE.fullmatch(logical)
         if match is None:
-            if dead:
-                lines[first : last + 1] = [""] * (last + 1 - first)
+            # Code is read spliced, as the compiler reads it: the logical line on its first
+            # physical line, the lines it absorbed left empty so later numbers stay true.
+            rest = [""] * (last - first)
+            lines[first : last + 1] = [""] * (last + 1 - first) if dead else [logical, *rest]
             continue
         # A directive's text (a macro body and its continuation lines included) is not code.
         lines[first : last + 1] = [""] * (last + 1 - first)
