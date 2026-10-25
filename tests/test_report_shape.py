@@ -10,6 +10,7 @@ import json
 
 import pytest
 
+from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
 from reverseapoc.status import MATCHED, StatusRow, status_path, write_status
 from test_progress import (
     CONFIG,
@@ -172,3 +173,19 @@ def test_report_is_byte_stable(tmp_path):
     data = (tmp_path / "a.json").read_bytes()
     assert data == (tmp_path / "b.json").read_bytes() and data.endswith(b"}\n")
     assert json.loads(data)["version"] == REPORT_VERSION
+
+
+def test_report_puts_rows_without_a_unit_in_an_unassigned_unit(tmp_path):
+    """A functions.csv row whose unit cell is still empty (not drafted yet, functions.py's F1
+    rule) lands in a synthetic `<exe>/unassigned` unit, so its bytes stay in the totals."""
+    config = synthetic_config(tmp_path)
+    row = FunctionRow(0x20020, 0x20030, "func_00020020", "game", "", "call")
+    write_functions_csv(config / "tacp" / "functions.csv", [T_GAME, row], "TACP.EXE")
+    write_units_csv(config / "tacp" / "units.csv", [UnitRow("u_00020000", 0x20000, 0x20020,
+                                                            "hand")], "TACP.EXE")  # fmt: skip
+    doc = report(config)
+    unit = next(u for u in doc["units"] if u["name"] == "tacp/unassigned")
+    assert unit["measures"]["total_code"] == "16" and unit["measures"]["total_functions"] == 1
+    assert [f["name"] for f in unit["functions"]] == ["func_00020020"]
+    tacp = next(c for c in doc["categories"] if c["id"] == "tacp")["measures"]
+    assert tacp["total_code"] == str(size(T_GAME) + 16)
