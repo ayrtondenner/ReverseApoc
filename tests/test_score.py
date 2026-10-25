@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+import conftest
 from conftest import PAGE_SIZE, build_le_image, fixup_record, write_manifest
 from reverseapoc.asm import data_ranges
 from reverseapoc.cli import main as cli_main
@@ -18,6 +19,7 @@ from reverseapoc.le import LE, SRC_OFF32, SRC_SEL16
 from reverseapoc.score import (
     Candidate,
     ScoreError,
+    ScoreReport,
     features,
     rank,
     rejections,
@@ -317,3 +319,81 @@ def test_score_verb_refuses_a_bad_top(tmp_path: Path, capsys):
 def test_score_error_is_a_value_error():
     with pytest.raises(ValueError):
         raise ScoreError("x")
+
+
+# ---- 05-REVIEW rows 9a, 9b, 9d ----
+
+SMALL_PAGE = 0x800  # a page size other than wlink's 0x1000, written into LE header field 0x28
+
+
+def _small_page_image(funcs: list[Func]) -> bytes:
+    """An LE whose header says SMALL_PAGE: every fixup record and code patch is cut at
+    SMALL_PAGE (conftest.PAGE_SIZE is patched by the caller)."""
+    pages = [b"", b"", b""]
+    patches = {DATA + DATA_PLAIN: b"\x01\x00\x00\x00"}
+    for f in funcs:
+        for va, kind, obj, off in f.fixups:
+            pages[(va - CODE) // SMALL_PAGE] += fixup_record(kind, (va - CODE) % SMALL_PAGE, obj,
+                                                             off, off32=True)  # fmt: skip
+        boundary = (f.start // SMALL_PAGE + 1) * SMALL_PAGE
+        patches[f.start] = f.code[: boundary - f.start]
+        if len(f.code) > boundary - f.start:
+            patches[boundary] = f.code[boundary - f.start :]
+    return build_le_image(fixups=pages, patches=patches).data
+
+
+def test_score_takes_the_page_size_from_the_le(tmp_path: Path, monkeypatch, capsys):
+    """Row 9a: `score` checks straddling against the LE header's page size, not 0x1000."""
+    monkeypatch.setattr(conftest, "PAGE_SIZE", SMALL_PAGE)
+    callee = Func(CODE + 0x100, RET)
+    f = framed(CODE + SMALL_PAGE - 11, call=callee.start)
+    field_va = f.fixups[0][0]
+    assert field_va < CODE + SMALL_PAGE < field_va + 4  # crosses a SMALL_PAGE boundary only
+    assert field_va // 0x1000 == (field_va + 3) // 0x1000
+    data = _small_page_image([f, callee])
+    assert LE(data).page_size == SMALL_PAGE
+    orig = tmp_path / "orig"
+    orig.mkdir()
+    (orig / "SYN.EXE").write_bytes(data)
+    manifest = write_manifest(tmp_path / "targets.toml", {"SYN.EXE": data})
+    functions = tmp_path / "functions.csv"
+    write_functions_csv(functions, [callee.row, f.row], "SYN.EXE")
+    rc = cli_main(["score", "SYN.EXE", "--orig", str(orig), "--manifest", str(manifest),
+                   "--functions", str(functions), "--json"])  # fmt: skip
+    captured = capsys.readouterr()
+    assert rc == 0, captured.err
+    report = json.loads(captured.out)
+    assert report["rejected"].get("straddling fixup") == 1
+    assert report["candidates"] == []
+
+
+def test_top_is_checked_once(tmp_path: Path, monkeypatch, capsys):
+    """Row 9b: ScoreReport.build is the one place that refuses a --top below 1."""
+    args = _verb_setup(tmp_path, [framed(CODE)])
+    calls = []
+    build = ScoreReport.build
+
+    def spy(*a, **k):
+        calls.append(a)
+        return build(*a, **k)
+
+    monkeypatch.setattr(ScoreReport, "build", staticmethod(spy))
+    rc = cli_main(["score", *args, "--top", "0"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert len(calls) == 1  # the refusal came from build, not from an earlier check in cli
+    assert err.count("--top must be at least 1, not 0") == 1
+
+
+def test_has_chk_needs_a_chk_call():
+    """Row 9d: only `push <immediate>; call __CHK` is a stack-check prologue; a register push
+    before the call is not."""
+    f = Func(CODE)
+    f.emit(b"\x50")  # push eax
+    f.call(CHK)
+    f.emit(PUSH_EBP + MOV_EBP_ESP)
+    f.call(CALLEE)
+    f.load(DATA_PLAIN)
+    f.emit(POP_EBP + RET)
+    assert not _features(f).chk
+    assert _features(framed(CODE, chk=True)).chk  # push 0x10; call __CHK still counts

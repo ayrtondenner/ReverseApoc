@@ -16,7 +16,7 @@ from reverseapoc.functions import (
     read_symbols_csv,
     write_functions_csv,
 )
-from reverseapoc.le import LE
+from reverseapoc.le import LE, SRC_OFF32, Fixup
 from reverseapoc.symbols import SymbolTable
 
 CODE = 0x10000
@@ -219,3 +219,27 @@ def test_committed_listing_names_are_unique(stem: str):
         seen.setdefault(key, row.start)
     assert collisions == []
     assert len(seen) == len(rows)
+
+
+# ---- the fixup field's operand, by position (05-REVIEW row 9c) ----
+
+# mov dword ptr [eax*4 + 4], 4: the scale, the displacement and the immediate all read 4.
+EQUAL_NUMBERS = b"\xc7\x04\x85" + b"\x04\x00\x00\x00" + b"\x04\x00\x00\x00"
+EQUAL_DISP_AT = 3  # byte offset of the disp32 field in EQUAL_NUMBERS
+EQUAL_IMM_AT = 7  # byte offset of the imm32 field
+
+
+def _equal_numbers_line(field_at: int) -> str:
+    row = FunctionRow(CODE, CODE + len(EQUAL_NUMBERS), "func_00010000", "game", "", "call")
+    flat = bytearray(row.end)
+    flat[CODE:] = EQUAL_NUMBERS
+    fixup = Fixup(CODE + field_at, SRC_OFF32, DATA + 4, 2, 4, 4)
+    symbols = SymbolTable.build([row], data_ranges=[(DATA, DATA + 0x1000)])
+    return _instruction_lines(listing(row, flat=flat, fixups=[fixup], symbols=symbols))[0]
+
+
+def test_substitute_leaves_an_equal_displacement_alone():
+    """Only the operand holding the fixup field is renamed; the scale, displacement or
+    immediate that merely has the same value stays a number."""
+    assert _equal_numbers_line(EQUAL_DISP_AT).endswith("mov dword ptr [eax*4 + D_00020004], 4")
+    assert _equal_numbers_line(EQUAL_IMM_AT).endswith("mov dword ptr [eax*4 + 4], D_00020004")
