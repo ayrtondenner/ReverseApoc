@@ -11,15 +11,16 @@ provides:
   - "RelocResult.start / .length / .sha1: the row start and the length and SHA-1 (hex) of the bytes a verdict judged, set by check_function (defaults None, ruling F24)"
   - "land/build_patch refusal, with a LandError naming the row, of an ok verdict that lacks those fields or names another row or other bytes (05-REVIEW 10b)"
   - "relocs.bytes_sha1, the one SHA-1 helper both sides use"
-  - "the raw-field guarantee stated as relocation rule 4 plus rule 5 in target.py and docs/learnings.md (18a), pinned end to end (18c)"
+  - "the raw-field guarantee stated per kind in target.py and docs/learnings.md (18a; fix round 1): off32 to no row always fails rules 4/5; branch to no row fails every fixup of ours and rests on wcc386 relocating every call; branch outside the code object can pass via a _D_ name; residual risk bounded by byte identity plus the SHA-1 gate. Pinned end to end (18c)"
 affects: [06-09 (check.py may surface the new fields per function; check.py:300 keeps its positional RelocResult), 06-16 container re-run]
 
 actuals:
-  tokens: 5773  # chars/4 over git diff a9e13ed..b10cdbc (23,092 chars, code, tests and docs; SUMMARY not included)
+  # first round: chars/4 over git diff a9e13ed..b10cdbc = 23,092 chars -> 5773, 4 code commits
+  tokens: 7517  # fix round 1: chars/4 over git diff a9e13ed..8293123 outside .planning (30,070 chars)
   tasks: 2
-  commits: 4  # git rev-list --count a9e13ed..b10cdbc, measured before the SUMMARY commit (5 with it)
+  commits: 8  # git rev-list --count a9e13ed..8293123: 7 code/docs commits + the first SUMMARY commit (this SUMMARY update makes 9)
 plan_head_before: a9e13ed54f72aafb7389d1415f1707e516d1581d
-plan_head_after: b10cdbcb79187261484fb8e4ea8d547ec543ec14
+plan_head_after: 82931230c2874c9c4dc75e42a6bec54c614a70cd
 
 tech-stack:
   added: []
@@ -36,6 +37,7 @@ key-files:
     - docs/learnings.md
     - tests/test_land.py
     - tests/test_target.py
+    - tests/relocpair.py
 
 key-decisions:
   - "The verdict-binding check lives in build_patch (which land calls for every function before any splice), after the ok check and before the row-length check, so a mismatched verdict is named as such"
@@ -45,7 +47,7 @@ key-decisions:
 patterns-established:
   - "LandError messages for a misfiled verdict name addresses (0x%08X), lengths and SHA-1s only, never a bytes repr"
 
-requirements-completed: [AGT-06]
+requirements-completed: []  # AGT-06 partial (land-step verdict binding); 06-09, 06-11, 06-16, 06-27 also carry AGT-06 (fix round 1, M3)
 
 coverage:
   - id: D1
@@ -60,19 +62,20 @@ coverage:
         status: pass
     human_judgment: false
   - id: D2
-    description: "target.py's docstring and docs/learnings.md state the raw-field guarantee as rule 4 plus rule 5, not 'our side relocates the field' (05-REVIEW 18a)"
+    description: "target.py's docstring and docs/learnings.md state the raw-field guarantee per kind, with what rules 4 and 5 check and what they cannot; for branches it also rests on wcc386 relocating every call, and the residual risk is bounded by byte identity plus the SHA-1 gate (05-REVIEW 18a, fix round 1 I1)"
     requirement: "AGT-06"
     verification:
       - kind: other
-        ref: "grep -q 'rule 4' tools/reverseapoc/target.py; grep 'rule 4.*rule 5' docs/learnings.md"
+        ref: "grep -q 'rule 4' tools/reverseapoc/target.py; grep 'rule 5' docs/learnings.md"
         status: pass
-    human_judgment: false
+    human_judgment: true
+    rationale: "Whether the per-kind prose is accurate is a reading judgment; the behaviour it describes is pinned by D3's tests"
   - id: D3
-    description: "An end-to-end test cuts a unit with a raw field (branch or off32 into no row), compiles nothing, and shows check_function failing at the field VA under rule 4 or rule 5; a control of the same shapes aimed at a row passes (05-REVIEW 18c)"
+    description: "End-to-end tests cut a unit with a raw field and compile nothing: off32/branch to no row with a fixup or constant of ours fail check_function at the field VA (rule 4 or 5); the two limits (an unrelocated byte-identical branch to no row, a _D_-named branch outside the code object) pass and land the original bytes; with rules 4 and 5 off every refused case passes; a control aimed at a row passes (05-REVIEW 18c)"
     requirement: "AGT-06"
     verification:
       - kind: unit
-        ref: "tests/test_target.py#test_raw_field_reference_fails_check_function (5 cases), test_the_same_reference_to_a_named_row_passes (2 cases)"
+        ref: "tests/test_target.py#test_raw_field_reference_fails_check_function (5), test_raw_field_failures_come_from_rules_4_and_5 (5), test_the_same_reference_to_a_named_row_passes (2), test_an_unrelocated_branch_to_no_row_passes_the_relocation_check, test_a_branch_outside_the_code_object_to_a_data_name_passes_the_relocation_check"
         status: pass
     human_judgment: false
 
@@ -83,7 +86,7 @@ status: complete
 
 # Phase 6 Plan 08: Relocation verdicts tied to their row and bytes, and the raw-field guarantee corrected Summary
 
-**`check_function` now records the row start and the length and SHA-1 of the bytes it judged in its `RelocResult`, and `land` refuses, with a LandError naming the row, any ok verdict that lacks them or belongs to another row or other bytes. The raw-field reasoning in target.py and docs/learnings.md now names the real guarantee, relocation rule 4 plus rule 5, and an end-to-end test proves it.**
+**`check_function` now records the row start and the length and SHA-1 of the bytes it judged in its `RelocResult`, and `land` refuses, with a LandError naming the row, any ok verdict that lacks them or belongs to another row or other bytes. The raw-field reasoning in target.py and docs/learnings.md now states the guarantee per raw kind (after fix round 1): `off32 to no row` always fails rules 4/5; `branch to no row` fails every fixup of ours and otherwise rests on wcc386 relocating every call; `branch outside the code object` can pass through a `_D_` name. In the passing cases the risk is bounded by byte identity plus the SHA-1 gate. End-to-end tests pin every kind.**
 
 Execution context nonce: 56ce7980c36493d9
 
@@ -99,7 +102,7 @@ Execution context nonce: 56ce7980c36493d9
 
 - 10b: `RelocResult` gains `start`, `length` and `sha1`, each defaulting to None (F24). `check_function` sets them on both of its returns, through one `_verdict` helper. `build_patch` (which `land` runs for every function before any splice) refuses an ok verdict whose fields are missing (`the relocation verdict names no row start, length or SHA-1 ...`), whose start is another row's (`... is for the row at 0x00010100, not this row at 0x00010110`), or whose length or SHA-1 differ from our bytes (`... is for 11 bytes with SHA-1 <a>, not these 12 bytes with SHA-1 <b>`). Every message starts with the row name and holds addresses, lengths and SHA-1s only.
 - The check.py producer, `LandedFunction(d.row, d.ours, reloc)` from one `Defined`, is unchanged and still lands (`test_land_accepts_the_producer_shape`, and the full test_check.py suite). check.py:300 still builds its RelocError verdict positionally; that verdict is never ok, so it is refused as before.
-- 18a: target.py's docstring (the raw-field paragraph) and the 05-18 entry in docs/learnings.md now say that wcc386 emits a fixup for every call, even to a static, so compiled C relocates the field, but that this is not the guarantee. The guarantee is rule 4 (each of our fixups must land on a nameable start equal to the original target, and a raw target lies in no row) plus rule 5 (every LE fixup field in the row is one of ours). The same wrong reason in a test_target.py comment was fixed too.
+- 18a (as corrected in fix round 1): target.py's docstring (the raw-field paragraph), the 05-18 entry in docs/learnings.md and the test_target.py comments now state the guarantee per kind. The first-round wording ("cannot pass", "no name reaches it") was wrong for both branch kinds; see "Fix round 1" below.
 - 18c: `test_raw_field_reference_fails_check_function` cuts a one-row unit with `build_target` and checks it with `check_function` on the same synthetic image, with nothing compiled. It runs five cases, each asserting the cut's `raw_fields == (RawField(0x00010001, kind),)` and exactly one problem at 0x00010001:
   - branch to no row, extern at the gap: rule 4, `func_00010400_: no game or thunk row starts at 0x00010400`
   - branch to no row, another nameable start: rule 4, `resolves to 0x00010010, the original lands on 0x00010400`
@@ -164,16 +167,34 @@ pytest's console report is not one of the formats `check tdd-red-evidence` suppo
 - **Commit:** `80c5789`
 
 **3. [Plan text interpretation] Task 2's "deliberately wrong expectation as a second case"**
-- The test asserts, inside each raw case, that the passing expectation (`_assert_passes`: no raw field and an ok verdict) raises AssertionError. A separate control test (`test_the_same_reference_to_a_named_row_passes`) shows the same shapes aimed at a row start do pass. The temporary rule-4/5 mutation above is the proof that the test can fail on broken code.
+- First round: each raw case asserted that the passing expectation raised AssertionError. Review M1 showed that block could never fail. Fix round 1 replaced it with `test_raw_field_failures_come_from_rules_4_and_5`, a real negative case: with rules 4 and 5 monkeypatched off, every refused case passes. The control test (`test_the_same_reference_to_a_named_row_passes`) stays.
 - The expected rule-4 text for an extern at the gap is the real SymbolError, `no game or thunk row starts at 0x00010400`. It is not `unknown symbol`, which the first draft of the test expected.
 
 **4. [Scope] Stale reason in a test comment**
 - tests/test_target.py's 05-18 comment ("our side relocates that field, so objdiff and the relocation check both disagree") repeated the 18a reason. It was reworded in `b10cdbc`. The file is in the plan's list.
 
+- **Orchestrator ruling (fix round 1, I1): no behaviour change for raw-field functions.** The project's match criterion is byte identity, proven by the relocation check plus the SHA-1 gate. Refusing raw-field functions outright would be a stricter policy, not a correctness fix. So the guarantee was rewritten per raw kind, accurately, in target.py, docs/learnings.md and the test_target.py comments. The reviewer's two probes are pinned as passing tests, with docstrings naming why that is acceptable: the bytes are identical. Commits `fda9fc3`, `8293123`.
+
+**5. [Fix round 1 - test helper] relocpair.our_module**
+- M2 needed the whole OMF module for `check.checked_functions`, so `our_segment` now delegates to a new `our_module`. tests/relocpair.py is not in the plan's file list; the change is test-only and behaviour-preserving (every relocpair test passes). Commit `7c36461`.
+
 ---
 
-**Total deviations:** 1 orchestrator ruling applied, 4 auto-handled (1 test kept meaningful, 1 missing test, 1 plan-text interpretation, 1 stale comment)
-**Impact on plan:** no scope creep. check.py was not edited, as the plan required.
+**Total deviations:** 2 orchestrator rulings applied (F24; fix-round-1 I1), 5 auto-handled (1 test kept meaningful, 1 missing test, 1 plan-text interpretation, 1 stale comment, 1 test helper)
+**Impact on plan:** no scope creep. check.py was not edited, as the plan required, and no tool behaviour changed in fix round 1.
+
+## Fix round 1
+
+Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-08.md`. FIX_BASE `6a3a0cc`. The review confirmed the 10b binding is correct and complete.
+
+| Finding | What changed | Commit |
+|---------|--------------|--------|
+| I1: the 18a wording overstated the guarantee for both branch kinds | Per-kind guarantee in target.py, docs/learnings.md and test_target.py (comments at :307 and the end-to-end header). `off32 to no row`: rules 4+5 refuse every object. `branch to no row`: rule 4 refuses every fixup; an unrelocated byte-identical displacement passes, and that this does not happen rests on wcc386 relocating every call. `branch outside the code object`: a `_D_` data destination is nameable and passes rule 4. Residual risk bounded by byte identity plus the SHA-1 gate. The probes are pinned: `test_an_unrelocated_branch_to_no_row_passes_the_relocation_check` and `test_a_branch_outside_the_code_object_to_a_data_name_passes_the_relocation_check`, each also asserting that build_patch lands the original bytes | `fda9fc3` (test), `8293123` (docs) |
+| M1: the in-test "second case" could never fail | Removed. Added `test_raw_field_failures_come_from_rules_4_and_5` (rules 4 and 5 monkeypatched off, every refused case passes), which moves the mutation proof into the suite | `fda9fc3` |
+| M2: the producer-shape test rebuilt the call by hand | `test_land_accepts_the_producer_shape` runs `check.checked_functions` (through `check.with_relocs`) on a synthetic `ExeInputs`; `relocpair.our_module` added | `7c36461` |
+| M3: `requirements-completed: [AGT-06]` was premature | `requirements-completed: []`, with a note that AGT-06 is partial (06-09, 06-11, 06-16 and 06-27 also carry it) | this SUMMARY commit |
+
+Verification after fix round 1 (host): `uv run pytest -q` 1534 passed, 216 skipped; `uv run ruff check .` all checks passed. The tests went in before the docs fix, as test commits. They pin behaviour that was already correct (no code change), so there is no RED.
 
 ## Issues Encountered
 
@@ -187,12 +208,14 @@ None. No external service configuration is required.
 ## Next Phase Readiness
 
 - 06-09 (wave 3) owns check.py and can surface `start`/`length`/`sha1` per function in `check --json` if it wants. Today `to_json` does not emit them.
-- Verification: `uv run pytest -q` 1527 passed, 216 skipped. `uv run ruff check .` all checks passed (host).
+- If the owner wants the stronger raw-field claim, check_function (or check.py in 06-09) would have to refuse a function whose cut lists a raw field. That is a policy decision, out of this plan's scope.
+- After merge, re-run `uv run reverseapoc land` (or `ninja verify`) on the main checkout to confirm the two Phase 5 matches still land with the binding check (review note; the worktree has no orig/).
+- Verification: `uv run pytest -q` 1534 passed, 216 skipped. `uv run ruff check .` all checks passed (host, after fix round 1).
 
 ## Self-Check: PASSED
 
-- FOUND: tools/reverseapoc/relocs.py, tools/reverseapoc/land.py, tools/reverseapoc/target.py, docs/learnings.md, tests/test_land.py, tests/test_target.py
-- FOUND commits on HEAD: 80c5789, 884e810, c6f004e, b10cdbc
+- FOUND: tools/reverseapoc/relocs.py, tools/reverseapoc/land.py, tools/reverseapoc/target.py, docs/learnings.md, tests/test_land.py, tests/test_target.py, tests/relocpair.py
+- FOUND commits on HEAD: 80c5789, 884e810, c6f004e, b10cdbc, fda9fc3, 7c36461, 8293123
 - tests/test_land.py has `test_land_refuses_a_verdict_for_another_row` and `test_land_refuses_a_verdict_for_other_bytes`. tests/test_target.py has `test_raw_field_reference_fails_check_function`. docs/learnings.md names rule 4 and rule 5. target.py contains `rule 4`.
 
 ---
