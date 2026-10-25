@@ -436,6 +436,9 @@ PILOT_PRAGMAS = [  # fix round 1 M14(b): every #pragma, not only aux
     "#pragma \\\n off (check_stack)\n",
     "#pragma/* x */off (check_stack)\n",
     "??=pragma off (check_stack)\n",
+    "%:pragma off (check_stack)\n",  # fix round 2 N6: the digraph spelling of `#`
+    "%:  pragma pack(1)\n",
+    "  %: pragma once\n",
 ]
 
 
@@ -455,7 +458,8 @@ def test_matching_denies_every_pragma(repo, text):
 def test_matching_allows_pragma_words_outside_code(repo):
     unit = _unit(repo)
     for text in ["/* #pragma off (check_stack) */\n", 'char *s = "#pragma once";\n',
-                 "int pragma_count;\n"]:  # fmt: skip
+                 "int pragma_count;\n", "/* %:pragma once */\n",
+                 'char *t = "%:pragma once";\n']:  # fmt: skip
         assert not matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
 
 
