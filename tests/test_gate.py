@@ -428,7 +428,8 @@ class FakeAll:
 
 def run_all(tree: Tree, fake: FakeAll) -> gate.GateResult:
     return gate.gate_all(roots=tree.roots, load_fn=fake.load, check_source_fn=fake.source,
-                         land_fn=fake.land, compile_fn=lambda *a, **k: None)  # fmt: skip
+                         land_fn=fake.land, compile_fn=lambda *a, **k: None,
+                         objdiff_runner=lambda argv: "")  # fmt: skip
 
 
 def seeded_tree(tree: Tree) -> dict[str, bytes]:
@@ -499,6 +500,7 @@ def test_gate_cli_all(tree, monkeypatch, capsys):
     monkeypatch.setattr(gate, "check_source", fake.source)
     monkeypatch.setattr(gate, "land_all", fake.land)
     monkeypatch.setattr(gate, "compile_source", lambda *a, **k: None)
+    monkeypatch.setattr(gate, "default_objdiff_runner", lambda target: lambda argv: "")
     assert cli_main(["gate", "--all", *tree.argv(), "--json"]) == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["mode"] == "all" and doc["ok"] is True and doc["written"] == []
