@@ -433,9 +433,10 @@ def code_text(text: str) -> str:
     return _live_code(_NOT_CODE.sub(_blank, text))
 
 
-# 06-REVIEW CR-02: an #include names a bare header of include/ (`"name.h"` or `<name.h>`), never
-# a path, another extension or a macro, so no file outside include/ (an attempt's notes.md under
-# build/driver/, say) can carry a #pragma or inline asm into the compile past the scan.
+# 06-REVIEW CR-02: an #include names a bare header name (`"name.h"` from include/, `<name.h>` from
+# include/ or the compiler's own headers), never a path, another extension or a macro, so no file
+# outside those (an attempt's notes.md under build/driver/, say) can carry a #pragma or inline asm
+# into the compile past the scan.
 _INCLUDE_DIRECTIVE = re.compile(r"\s*(?:#|%:)\s*include(.*)", re.DOTALL)
 _BARE_HEADER = re.compile(r'\s*(?:"[A-Za-z0-9_]+\.h"|<[A-Za-z0-9_]+\.h>)\s*')
 
@@ -448,8 +449,10 @@ def _blank_comment(match: re.Match[str]) -> str:
 
 
 def include_problems(text: str) -> list[str]:
-    """CR-02: one problem per #include whose operand is not a bare include/<name>.h, read
-    through translation phases 1-2 with comments blanked, at its logical line's first line. An
+    """CR-02: one problem per #include whose operand is not a bare header name, read through
+    translation phases 1-2 with comments blanked, at its logical line's first line. "name.h"
+    resolves in include/; <name.h> in include/ or Watcom's own H directory (-i=include/;<watcom>/H),
+    which game code may need (conio.h, i86.h), so angle includes are not restricted further. An
     #include in a dead #if 0 branch is refused too (fail closed). Raises _UnreadableSource for
     text normalize_source refuses."""
     problems = []
@@ -458,8 +461,9 @@ def include_problems(text: str) -> list[str]:
         if match is None or _BARE_HEADER.fullmatch(match.group(1)):
             continue
         problems.append(
-            f"line {first + 1}: an #include of {match.group(1).strip()!r}; only a bare header "
-            'of include/ may be included (#include "name.h" or #include <name.h>)'
+            f"line {first + 1}: an #include of {match.group(1).strip()!r}; an #include names only "
+            'a bare header name: "name.h" from include/, or <name.h> from include/ or the '
+            "compiler's own headers"
         )
     return problems
 
@@ -471,7 +475,7 @@ def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[
     dead #if 0 branches do not count; any other preprocessor conditional is itself a problem
     (the check fails closed rather than guess). A K&R-style definition is not recognised, so it
     is reported as neither defined nor marked (a false refusal, never a false pass). Any
-    #include of something other than a bare include/<name>.h is a problem too (CR-02)."""
+    #include of something other than a bare header name is a problem too (CR-02)."""
     try:
         code = code_text(text)
         includes = include_problems(text)
