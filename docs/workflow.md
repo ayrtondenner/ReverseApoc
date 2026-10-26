@@ -12,10 +12,34 @@ The rule that ties them together: deterministic checks decide what is done. An a
 
 Starts in Phase 5 (by hand) and becomes unattended in Phase 6.
 
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 260}}}%%
+flowchart TD
+    A["Step 1: preflight<br/>Docker, CLI checked<br/>clean git tree<br/>asm regenerated"] -->|a check fails| R["REFUSED<br/>nothing starts"]
+    A -->|all checks pass| B["Step 2: pick a function<br/>easiest first<br/>Ghidra draft as hint"]
+    B --> C["Step 3: context pack<br/>target asm<br/>neighbours and draft<br/>compiler rules"]
+    C --> D
+    subgraph S["Step 4: one Claude Code session, guardrails on"]
+        D["Edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>up to 25 per attempt"]
+        E --> F["Watcom C 10.6<br/>compile in container"]
+        F --> G["objdiff score<br/>relocation check<br/>splice into EXE copy<br/>whole-EXE SHA-1"]
+        G -->|not identical yet| D
+    end
+    G -->|session ends| H["Step 6: driver check<br/>file audit, C89 lint<br/>full gate"]
+    H -->|byte-identical| M["MATCHED<br/>one commit with<br/>explicit paths"]
+    H -->|not identical| P["PARTIAL<br/>best C kept as notes<br/>unit reset"]
+    H -->|write outside the claim| X["Guardrail stop<br/>strays restored<br/>night ends<br/>nothing committed"]
+    P -->|under 3 attempts| C
+    P -->|3 attempts| L["Difficult list<br/>retried next pass"]
+    classDef matched fill:#008300,stroke:#005a00,color:#ffffff
+    classDef partial fill:#eda100,stroke:#a86f00,color:#0b0b0b
+    classDef stop fill:#52514e,stroke:#2b2a28,color:#ffffff
+    class M matched
+    class P,L partial
+    class R,X stop
 ```
-select function -> decompile attempt -> compile (Watcom under wibo)
-  -> objdiff compare + relocation check -> splice + whole-EXE SHA-1 -> commit
-```
+
+The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same one as the README's "How an agent session matches a function"); [Running the driver](#running-the-driver) has the details.
 
 1. **Select.** A scorer picks the next function. Start with easiest-first (KKND's `score_functions.py`); switch to similarity-first once enough functions are matched, because Lewis found that ordering by similarity to matched functions beat ordering by difficulty in the long tail. Twin functions between UFO2P (`ufo24`) and TACP (`tac4`), and Watcom runtime functions found by library matching, are the cheapest wins.
 2. **Attempt.** One fresh headless session per function (`claude -p "/goal ..."`), given the target asm, callers and callees, shared headers, a Ghidra draft and notes from earlier attempts.

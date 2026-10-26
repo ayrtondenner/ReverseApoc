@@ -91,6 +91,8 @@ On the first pilot night (run `20261026-005209`), 40 sessions gave 3 MATCHED and
 reached 87.5% and 87.2%. At the end of every night the driver rebuilds both EXEs, checks their SHA-1s and re-runs the
 gate on every match before it commits the attempt log.
 
+Details (flags, the refusal reasons, the canary, reset rules and the console): [docs/workflow.md](docs/workflow.md#running-the-driver).
+
 ## Supported versions
 
 Only the DOS release is supported. Steam and GOG ship byte-identical game executables, so either store works (Steam is preferred, GOG is the fallback).
