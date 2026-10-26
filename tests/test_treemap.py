@@ -6,6 +6,7 @@ bytes)."""
 
 from __future__ import annotations
 
+import csv
 import random
 import re
 import xml.etree.ElementTree as ET
@@ -162,7 +163,7 @@ def test_treemap_nesting_and_colours(tmp_path):
     assert [r.get("fill") for r in cells(tacp_units[0])] == [COLORS["unmatched"]]  # no gap
 
 
-def test_treemap_titles_on_unit_groups_and_matched_cells_only(tmp_path):
+def test_treemap_titles_on_unit_groups_matched_and_partial_cells_only(tmp_path):
     progress = treemap()
     root = parse(progress.render_svg(progress.derive(synthetic_config(tmp_path))))
     for group in root.findall(f".//{SVG_NS}g[@data-unit]"):
@@ -172,8 +173,136 @@ def test_treemap_titles_on_unit_groups_and_matched_cells_only(tmp_path):
             titled = rect.find(f"{SVG_NS}title")
             if rect.get("fill") == COLORS["matched"]:
                 assert titled is not None and U_MATCHED.name in titled.text
+            elif rect.get("fill") == COLORS["partial"]:
+                assert titled is not None and U_PARTIAL.name in titled.text
             else:
                 assert titled is None
+
+
+# ---- tooltips (owner request of 2026-10-26: partials are named, the counting is unchanged) ----
+
+SYNTHETIC_UNIT_TITLE = ("UFO2P.EXE u_00010000: 16 of 228 code bytes matched, 4 functions; "
+                        "8 library bytes; 16 uncovered bytes")  # fmt: skip
+
+
+def cell_titles(group: ET.Element, colour: str) -> list[str]:
+    return [r.find(f"{SVG_NS}title").text for r in cells(group) if r.get("fill") == colour]
+
+
+def unit_group(root: ET.Element, unit: str) -> ET.Element:
+    group = root.find(f".//{SVG_NS}g[@data-unit='{unit}']")
+    assert group is not None, unit
+    return group
+
+
+def test_partial_cell_title_names_its_best_score(tmp_path):
+    """A partial cell's tooltip: name, size, "partial" and status.csv's best_percent, 2 decimals."""
+    progress = treemap()
+    root = parse(progress.render_svg(progress.derive(synthetic_config(tmp_path))))
+    group = unit_group(root, U_PARTIAL.unit)
+    assert cell_titles(group, COLORS["partial"]) == [
+        f"{U_PARTIAL.name}: {size(U_PARTIAL)} bytes, partial, best 50.00%"]
+
+
+def test_matched_cell_title_is_unchanged(tmp_path):
+    progress = treemap()
+    root = parse(progress.render_svg(progress.derive(synthetic_config(tmp_path))))
+    group = unit_group(root, U_MATCHED.unit)
+    assert cell_titles(group, COLORS["matched"]) == [
+        f"{U_MATCHED.name}: {size(U_MATCHED)} bytes, matched"]
+
+
+def test_unit_title_counts_partials_after_the_matched_bytes(tmp_path):
+    """A unit with partials adds "<k> partial (best <max>%)" right after the matched-bytes part;
+    the matched bytes still count no partial byte."""
+    progress = treemap()
+    root = parse(progress.render_svg(progress.derive(synthetic_config(tmp_path))))
+    assert unit_group(root, U_PARTIAL.unit).find(f"{SVG_NS}title").text == (
+        "UFO2P.EXE u_00010000: 16 of 228 code bytes matched, 4 functions; "
+        "1 partial (best 50.00%); 8 library bytes; 16 uncovered bytes")
+
+
+@pytest.mark.parametrize(("other", "best"), [(12.5, "50.00"), (61.87, "61.87")])
+def test_unit_title_takes_the_best_of_two_partials(tmp_path, other, best):
+    """The larger partial (U_UNMATCHED made partial, 64 bytes) is drawn first; the max is taken
+    over both, whichever comes first or last."""
+    progress = treemap()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    functions = tuple(replace(f, status="partial", best_percent=other)
+                      if f.start == U_UNMATCHED.start else f for f in exe.functions)  # fmt: skip
+    patched = replace(exe, functions=functions)
+    root = parse(progress.render_svg(replace(derived, exes=(patched, derived.exes[1]))))
+    group = unit_group(root, U_UNMATCHED.unit)
+    assert group.find(f"{SVG_NS}title").text == (
+        "UFO2P.EXE u_00010000: 16 of 228 code bytes matched, 4 functions; "
+        f"2 partial (best {best}%); 8 library bytes; 16 uncovered bytes")
+    assert sorted(cell_titles(group, COLORS["partial"])) == sorted([
+        f"{U_PARTIAL.name}: {size(U_PARTIAL)} bytes, partial, best 50.00%",
+        f"{U_UNMATCHED.name}: {size(U_UNMATCHED)} bytes, partial, best {other:.2f}%"])
+
+
+def test_unit_title_without_partials_is_unchanged(tmp_path):
+    progress = treemap()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    functions = tuple(replace(f, status="unmatched", best_percent=0.0)
+                      if f.status == "partial" else f for f in exe.functions)  # fmt: skip
+    patched = replace(exe, functions=functions)
+    root = parse(progress.render_svg(replace(derived, exes=(patched, derived.exes[1]))))
+    assert unit_group(root, U_PARTIAL.unit).find(f"{SVG_NS}title").text == SYNTHETIC_UNIT_TITLE
+    tacp = unit_group(root, T_GAME.unit)
+    assert tacp.find(f"{SVG_NS}title").text == (
+        "TACP.EXE u_00020000: 0 of 32 code bytes matched, 1 functions")
+    assert all(r.find(f"{SVG_NS}title") is None for r in cells(tacp))  # unmatched: no tooltip
+
+
+def test_partial_title_is_escaped(tmp_path):
+    progress = treemap()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    functions = tuple(replace(f, name=f"{f.name}<&\">") for f in exe.functions)
+    patched = replace(exe, functions=functions)
+    svg = progress.render_svg(replace(derived, exes=(patched, derived.exes[1])))
+    escaped = f"{U_PARTIAL.name}&lt;&amp;&quot;&gt;"
+    assert f"<title>{escaped}: 32 bytes, partial, best 50.00%</title>" in svg
+    group = unit_group(parse(svg), U_PARTIAL.unit)
+    assert cell_titles(group, COLORS["partial"]) == [
+        f"{U_PARTIAL.name}<&\">: 32 bytes, partial, best 50.00%"]
+
+
+def test_partial_titles_are_deterministic(tmp_path):
+    progress = treemap()
+    config = synthetic_config(tmp_path)
+    first = progress.render_svg(progress.derive(config))
+    assert first == progress.render_svg(progress.derive(config))
+    assert "partial, best 50.00%" in first
+
+
+def _committed_partials(stem: str, unit: str) -> list[str]:
+    """The best_percent cells, as status.csv stores them, of the unit's partial rows."""
+    lines = (CONFIG / stem / "status.csv").read_text(encoding="utf-8").splitlines()
+    rows = csv.DictReader(line for line in lines if not line.startswith("#"))
+    return [row["best_percent"] for row in rows
+            if row["unit"] == unit and row["status"] == "partial"]  # fmt: skip
+
+
+def test_committed_partial_unit_names_its_partials():
+    """u_000c483f (TACP) has a partial row: its unit tooltip counts it with status.csv's best
+    score, and every partial cell of the committed mosaic carries a tooltip."""
+    progress = treemap()
+    derived = progress.derive(CONFIG)
+    root = parse(progress.render_svg(derived))
+    scores = _committed_partials("tacp", "u_000c483f")
+    assert scores, "u_000c483f has no partial row in config/tacp/status.csv"
+    best = max(scores, key=float)
+    title = unit_group(root, "u_000c483f").find(f"{SVG_NS}title").text
+    assert f"; {len(scores)} partial (best {best}%)" in title
+    partial = [r for r in root.iter(f"{SVG_NS}rect") if r.get("fill") == COLORS["partial"]]
+    assert len(partial) == derived.combined.partial_functions
+    for rect in partial:
+        assert re.search(r": [0-9,]+ bytes, partial, best [0-9]+\.[0-9]{2}%$",
+                         rect.find(f"{SVG_NS}title").text)
 
 
 def test_treemap_coordinates_are_rounded(tmp_path):
