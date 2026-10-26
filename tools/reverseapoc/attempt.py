@@ -231,7 +231,8 @@ class CheckLogLine:
     """One line of checks.jsonl. best_percent, reloc_ok and bytes_ok are the claimed
     function's (a sweep: its best cell's). They are None (null) when the run printed no usable
     JSON (exit 2), and when the claimed function was not compiled: a stub, or absent from
-    check's functions[] (exit 1, fix round 1 I1). `sweep` is true for a sweep line, which is
+    check's functions[] (exit 1, fix round 1 I1), or for a sweep that measured no cell (review
+    IN-01). `sweep` is true for a sweep line, which is
     never the best C (06-23)."""
 
     n: int
@@ -331,7 +332,7 @@ def _sweep_line(
     hit = next((_cell_spec(c) for c in cells if _is_hit(c, default)), None)
     return CheckLogLine(
         n, EXIT_OK if ran.returncode == EXIT_OK else EXIT_TOOL, True,
-        float(best["objdiff_percent"]) if best else 0.0,
+        float(best["objdiff_percent"]) if best else None,
         best["reloc_ok"] is True if best else None,
         best["differing"] == 0 if best else None,
         None, hit, source,
