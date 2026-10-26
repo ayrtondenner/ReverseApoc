@@ -25,6 +25,9 @@ ALWAYS_COMMAND = (
     "pre-tool-use --layer always || exit 2"
 )
 EDIT_TOOLS = "Edit|Write|MultiEdit|NotebookEdit"
+# Review WR-02: the always handler fails closed on a slow or hung hook too, like the matching one.
+ALWAYS_HANDLER = {"type": "command", "command": ALWAYS_COMMAND, "timeout": 120,
+                  "onFailure": "block"}  # fmt: skip
 # git's safe.directory=* for the tests that run real git against this checkout (ruling F2b): in
 # the container the bind mount belongs to another user, and git refuses it ("dubious
 # ownership"). Passed through the environment, as tests/test_githooks.py does; hooks.py itself
@@ -142,11 +145,10 @@ def test_project_settings_wire_the_always_layer():
         "PreToolUse": [
             {
                 "matcher": EDIT_TOOLS,
-                "hooks": [{"type": "command", "command": ALWAYS_COMMAND}],
+                "hooks": [ALWAYS_HANDLER],
             }
         ]
     }
-    assert "onFailure" not in json.dumps(settings)
 
 
 # --- Task 2: the full always-on layer (D-16, D-46, F16) ----------------------------------------
@@ -881,9 +883,20 @@ def _without_uv(env: dict) -> dict:
     return {**env, "PATH": os.pathsep.join(keep)}
 
 
+def _always_handler_text(name: str) -> str:
+    """The raw text of the always handler's object in settings file `name`."""
+    text = (REPO_ROOT / name).read_text(encoding="utf-8")
+    start = text.rindex("{", 0, text.index("--layer always"))
+    return text[start:text.index("}", start) + 1]
+
+
 def test_the_always_handlers_are_byte_identical():
     commands = [c for _, c in _settings_commands() if "--layer always" in c]
     assert commands == [ALWAYS_COMMAND, ALWAYS_COMMAND]
+    texts = [_always_handler_text(n) for n in [".claude/settings.json",
+                                               "config/driver/claude-settings.json"]]  # fmt: skip
+    assert texts[0] == texts[1]
+    assert json.loads(texts[0]) == ALWAYS_HANDLER
 
 
 @pytest.mark.parametrize("index", range(3))

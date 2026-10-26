@@ -3,7 +3,8 @@ r"""Claude Code PreToolUse guardrail hooks (AGT-05, D-15..D-18, D-44..D-46, DI-0
 
 Run as `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks
 pre-tool-use --layer always|matching || exit 2` with the hook payload on stdin (the `|| exit 2`
-turns a failure of uv or the import into a block). Two layers:
+turns a failure of uv or the import into a block, and each handler's `"timeout": 120,
+"onFailure": "block"` turns a slow or hung run into one). Two layers:
 
 - **always** (`.claude/settings.json`, every session in the repo, matcher
   `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
@@ -52,7 +53,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 EXIT_OK = 0
-_GIT_TIMEOUT = 30  # seconds for `git ls-files`; the matching handler's own timeout is 120
+_GIT_TIMEOUT = 30  # seconds for `git ls-files`; each handler's own timeout is 120
 EXIT_BLOCK = 2  # the only exit code besides 0 that Claude Code treats as blocking
 LAYER_ALWAYS = "always"
 LAYER_MATCHING = "matching"

@@ -203,7 +203,7 @@ Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" an
 - Bash only as one of the attempt wrapper's exact forms, never in the background;
 - every other tool is denied, and without a valid claim every write and every Bash call is denied.
 
-**Both layers fail closed.** Each handler runs `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks ... || exit 2`. A missing `uv`, a missing module, or an unset or foreign `CLAUDE_PROJECT_DIR` blocks every Edit and Write (exit 2). The matching handler also sets `onFailure: block`.
+**Both layers fail closed.** Each handler runs `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks ... || exit 2`. A missing `uv`, a missing module, or an unset or foreign `CLAUDE_PROJECT_DIR` blocks every Edit and Write (exit 2). Both handlers also set `"timeout": 120` and `"onFailure": "block"`, so a hook that runs past 120 s blocks the call too (`onFailure` needs CLI 2.1.295).
 
 Known limits:
 
