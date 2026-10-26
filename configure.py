@@ -433,21 +433,55 @@ def code_text(text: str) -> str:
     return _live_code(_NOT_CODE.sub(_blank, text))
 
 
+# 06-REVIEW CR-02: an #include names a bare header of include/ (`"name.h"` or `<name.h>`), never
+# a path, another extension or a macro, so no file outside include/ (an attempt's notes.md under
+# build/driver/, say) can carry a #pragma or inline asm into the compile past the scan.
+_INCLUDE_DIRECTIVE = re.compile(r"\s*(?:#|%:)\s*include(.*)", re.DOTALL)
+_BARE_HEADER = re.compile(r'\s*(?:"[A-Za-z0-9_]+\.h"|<[A-Za-z0-9_]+\.h>)\s*')
+
+
+def _blank_comment(match: re.Match[str]) -> str:
+    """A comment blanked as _blank does it; a literal kept as it is (the `"name.h"` of an
+    #include is a header name, which _blank would empty)."""
+    found = match.group()
+    return _blank(match) if found.startswith("/") else found
+
+
+def include_problems(text: str) -> list[str]:
+    """CR-02: one problem per #include whose operand is not a bare include/<name>.h, read
+    through translation phases 1-2 with comments blanked, at its logical line's first line. An
+    #include in a dead #if 0 branch is refused too (fail closed). Raises _UnreadableSource for
+    text normalize_source refuses."""
+    problems = []
+    for first, _last, logical in _logical_lines(_NOT_CODE.sub(_blank_comment, text).split("\n")):
+        match = _INCLUDE_DIRECTIVE.match(logical)
+        if match is None or _BARE_HEADER.fullmatch(match.group(1)):
+            continue
+        problems.append(
+            f"line {first + 1}: an #include of {match.group(1).strip()!r}; only a bare header "
+            'of include/ may be included (#include "name.h" or #include <name.h>)'
+        )
+    return problems
+
+
 def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[str]:
     """The D-12 problems of one unit file: every game or thunk row of the unit is defined in C
     or marked INCLUDE_ASM, exactly once and not both, and no marker or definition names a
     func_ placeholder outside the unit. The order of the file does not matter. Comments and
     dead #if 0 branches do not count; any other preprocessor conditional is itself a problem
     (the check fails closed rather than guess). A K&R-style definition is not recognised, so it
-    is reported as neither defined nor marked (a false refusal, never a false pass)."""
+    is reported as neither defined nor marked (a false refusal, never a false pass). Any
+    #include of something other than a bare include/<name>.h is a problem too (CR-02)."""
     try:
         code = code_text(text)
+        includes = include_problems(text)
     except _ConditionalError as exc:
         return [str(exc)]
     marked = Counter(_MARKER.findall(code))
     defined = Counter(_file_scope_definitions(code))
     required = [row.name for row in unit_functions if row.kind in _CHECKED_KINDS]
-    problems = [_function_problem(name, defined[name], marked[name]) for name in required]
+    problems = [*includes]
+    problems += [_function_problem(name, defined[name], marked[name]) for name in required]
     known = set(required)
     for name in sorted(marked.keys() - known):
         problems.append(f"{name} is marked INCLUDE_ASM but is not a function of the unit")

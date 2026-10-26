@@ -903,3 +903,66 @@ def test_settings_commands_fail_closed_through_the_hook_shell(tmp_path, index):
     assert _through_shell(command, protected, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, allowed, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, protected, cwd=tmp_path, env=_without_uv(env))[0] == 2, name
+
+
+# --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
+# A path include could pull an unscanned file (the attempt's notes.md under build/driver/, or any
+# other) into the compile, carrying a #pragma or inline asm past the scan.
+
+NOTES_INCLUDE = '#include "../../build/driver/r/ufo2p/func_000A3980/attempt-1/notes.md"\n'
+PATH_INCLUDES = {
+    "quoted-path": '#include "sub/x.h"\n',
+    "angle-path": "#include <../build/x.h>\n",
+    "dotdot": '#include "../include/common.h"\n',
+    "not-h": '#include "notes.md"\n',
+    "notes-md": NOTES_INCLUDE,
+    "backslash": '#include "sub\\x.h"\n',
+    "absolute": "#include </work/include/common.h>\n",
+    "macro": "#include HEADER\n",
+    "spaced": '  #  include   "../x.h"\n',
+    "continued": '#include \\\n "../x.h"\n',
+    "digraph": '%:include "../x.h"\n',
+    "trigraph": '??=include "../x.h"\n',
+    "comment-split": '#/* x */include "../x.h"\n',
+}
+BARE_INCLUDES = {
+    "quoted": '#include "common.h"\n',
+    "angle": "#include <common.h>\n",
+    "trailing-comment": '#include "foo.h" /* a note */\n',
+    "spaced": '  #  include  <foo_2.h>\n',
+}
+
+
+@pytest.mark.parametrize("name", sorted(PATH_INCLUDES))
+@pytest.mark.parametrize("rel", [UNIT, "include/new.h"])
+def test_matching_denies_a_path_include(repo, name, rel):
+    path = _unit(repo, rel=rel)
+    decision = matching(in_repo(write(native(path), SCAFFOLD + PATH_INCLUDES[name]), repo))
+    assert decision.deny, name
+    assert "#include" in decision.reason, decision.reason
+    assert always(write(native(path), SCAFFOLD + PATH_INCLUDES[name])).deny, name
+
+
+@pytest.mark.parametrize("name", sorted(BARE_INCLUDES))
+@pytest.mark.parametrize("rel", [UNIT, "include/new.h"])
+def test_matching_allows_a_bare_header_include(repo, name, rel):
+    path = _unit(repo, rel=rel)
+    assert not matching(in_repo(write(native(path), SCAFFOLD + BARE_INCLUDES[name]), repo)).deny
+    assert not always(write(native(path), SCAFFOLD + BARE_INCLUDES[name])).deny
+
+
+def test_include_words_outside_a_directive_are_allowed(repo):
+    path = _unit(repo)
+    for text in ['/* #include "../x.h" */\n', 'char *s = "#include <../x.h>";\n',
+                 'int include_count;\n']:  # fmt: skip
+        assert not matching(in_repo(write(native(path), SCAFFOLD + text), repo)).deny, text
+
+
+def test_an_edit_that_introduces_a_path_include_is_denied(repo):
+    unit = _unit(repo)
+    payload = in_repo(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n")), repo)
+    decision = matching(payload)
+    assert decision.deny and "#include" in decision.reason
+    assert always(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n"))).deny
+    # completing a path out of a bare name is caught on the post-edit text
+    assert matching(in_repo(edit(native(unit), '"common.h"', '"../common.h"'), repo)).deny

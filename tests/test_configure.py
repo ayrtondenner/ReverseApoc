@@ -569,6 +569,30 @@ def test_unit_source_complete_file_has_no_problems():
     assert configure.check_unit_source(UNIT_SOURCE, TWO_GAME) == []
 
 
+@pytest.mark.parametrize("include", [
+    '#include "../../build/driver/r/ufo2p/func_00010010/attempt-1/notes.md"',
+    '#include "sub/x.h"', "#include <../build/x.h>", '#include "notes.md"',
+    "#include HEADER", '#include \\\n "../x.h"',
+])  # fmt: skip
+def test_unit_source_refuses_a_path_include(include, tmp_path):
+    """06-REVIEW CR-02: only a bare include/<name>.h may be included, so the build and the gate
+    refuse a unit that pulls in any other file (the hook's rule, defence in depth)."""
+    text = UNIT_SOURCE.replace('#include "common.h"', include)
+    (problem,) = configure.check_unit_source(text, TWO_GAME)
+    assert "#include" in problem and "line 1" in problem
+    path = tmp_path / f"{UNIT}.c"
+    path.write_bytes(text.encode("utf-8"))
+    with pytest.raises(configure.ConfigureError, match="#include"):
+        configure._check_source(path, TWO_GAME)
+
+
+@pytest.mark.parametrize("include", ['#include "common.h"', "#include <common.h>",
+                                     '  #  include "foo_2.h" /* note */'])  # fmt: skip
+def test_unit_source_allows_a_bare_header_include(include):
+    text = UNIT_SOURCE.replace('#include "common.h"', include)
+    assert configure.check_unit_source(text, TWO_GAME) == []
+
+
 def test_unit_source_neither_defined_nor_marked():
     text = "int func_00010000(void) { return 0; }\n"
     (problem,) = configure.check_unit_source(text, TWO_GAME)
