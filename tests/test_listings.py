@@ -197,6 +197,14 @@ def test_readme_shows_one_shield_per_exe():
     assert f"`{COMBINED_SHIELD}`" in section
 
 
+def test_readme_describes_the_mosaic_labels():
+    # Owner ruling 2 (2026-10-26): a game unit is labelled with its unit name, a library unit
+    # with its largest runtime function; small units carry none.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert "unit name" in section
+    assert "largest runtime function" in section
+
+
 def test_readme_percentage_counts_uncovered_bytes():
     # D-50: tools/progress.py divides by game + thunk + uncovered bytes.
     section = _section(README.read_text(encoding="utf-8"), "Progress")

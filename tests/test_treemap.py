@@ -14,9 +14,15 @@ from pathlib import Path
 
 import pytest
 
+from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
+from reverseapoc.status import MATCHED, StatusRow, status_path, write_status
 from test_progress import (
     CONFIG,
+    DAY,
+    EXE_NAMES,
+    SHA,
     T_GAME,
+    T_UNIT,
     U_MATCHED,
     U_PARTIAL,
     U_RUNTIME,
@@ -204,6 +210,7 @@ def test_treemap_escapes_names(tmp_path):
     group = root.find(f".//{SVG_NS}g[@data-unit='{odd}']")
     assert group is not None
     assert odd in group.find(f"{SVG_NS}title").text
+    assert [t.text for t in group.findall(f"{SVG_NS}text")] == [odd]  # the label, escaped
 
 
 def test_svg_is_deterministic_and_bounded():
@@ -239,3 +246,165 @@ def test_main_creates_output_dirs(tmp_path):
     svg = (out / "progress.svg").read_bytes()
     assert svg == progress.render_svg(progress.derive(config)).encode("utf-8")
     assert not list(Path(out).glob(".*.tmp"))
+
+
+# ---- unit labels (owner ruling 2, 2026-10-26) ----
+
+# UFO2P: a big game unit (one matched row filling it), a library unit whose three runtime rows
+# test the tie-break, and a sliver of a game unit too small for a label. Computed against today's
+# squarify: u_00010000 913.3 x 750 px, rt_big 285.8 x 748.8, u_0001a800 285.8 x 1.2; TACP's one
+# unit is 0.9 px wide.
+L_GAME = FunctionRow(0x10000, 0x18000, "func_00010000", "game", "u_00010000", "call")
+L_SMALL = FunctionRow(0x18000, 0x18800, "small_", "runtime", "rt_big", "runtime")  # first, small
+L_ZETA = FunctionRow(0x18800, 0x19800, "zeta_", "runtime", "rt_big", "runtime")  # largest, low
+L_ALPHA = FunctionRow(0x19800, 0x1A800, "alpha_", "runtime", "rt_big", "runtime")  # tie, high
+L_TINY = FunctionRow(0x1A800, 0x1A810, "func_0001A800", "game", "u_0001a800", "call")
+L_UNITS = [UnitRow("u_00010000", 0x10000, 0x18000, "hand"),
+           UnitRow("rt_big", 0x18000, 0x1A800, "hand"),
+           UnitRow("u_0001a800", 0x1A800, 0x1A810, "hand")]  # fmt: skip
+EXPECTED_LABELS = {"u_00010000": "u_00010000", "rt_big": "zeta_"}
+BAND = 0.15  # the 0.1 coordinate rounding, with room: inside it either outcome is accepted
+
+
+def labelled_config(root: Path) -> Path:
+    """A config tree whose UFO2P mosaic has two units large enough for a label and one not."""
+    config = root / "config"
+    tables = {"ufo2p": ([L_GAME, L_SMALL, L_ZETA, L_ALPHA, L_TINY], L_UNITS),
+              "tacp": ([T_GAME], [T_UNIT])}  # fmt: skip
+    for exe, (rows, units) in tables.items():
+        write_functions_csv(config / exe / "functions.csv", rows, EXE_NAMES[exe])
+        write_units_csv(config / exe / "units.csv", units, EXE_NAMES[exe])
+    write_status(status_path(config, "ufo2p"), [
+        StatusRow(L_GAME.start, L_GAME.name, L_GAME.unit, MATCHED, 100.0, 0, SHA, DAY)])
+    return config
+
+
+def labelled():
+    """progress.py with its label API; a missing name fails the test on this assert."""
+    progress = treemap()
+    for name in ("LABEL_FONT_SIZE", "LABEL_CHAR", "LABEL_PAD", "LABEL_MIN_WIDTH",
+                 "LABEL_MIN_HEIGHT"):  # fmt: skip
+        assert hasattr(progress, name), f"progress.py has no {name}"
+    return progress
+
+
+def unit_labels(root: ET.Element) -> dict[str, str]:
+    """unit -> label text, for every unit group holding a <text>."""
+    out = {}
+    for group in root.iter(f"{SVG_NS}g"):
+        texts = group.findall(f"{SVG_NS}text")
+        if group.get("data-unit") is not None and texts:
+            out[group.get("data-unit")] = " ".join(t.text or "" for t in texts)
+    return out
+
+
+def test_treemap_labels_large_units_only(tmp_path):
+    progress = labelled()
+    root = parse(progress.render_svg(progress.derive(labelled_config(tmp_path))))
+    assert unit_labels(root) == EXPECTED_LABELS
+    for unit in ("u_0001a800", T_UNIT.unit):
+        group = root.find(f".//{SVG_NS}g[@data-unit='{unit}']")
+        assert group is not None and group.findall(f"{SVG_NS}text") == [], unit
+
+
+def test_treemap_library_label_is_the_largest_runtime_function(tmp_path):
+    """A library unit is labelled with its largest runtime row, the lowest start on a size tie:
+    zeta_, not small_ (first by address but smaller) and not alpha_ (as large, a higher start;
+    alphabetical order would pick it)."""
+    progress = labelled()
+    root = parse(progress.render_svg(progress.derive(labelled_config(tmp_path))))
+    assert unit_labels(root)["rt_big"] == L_ZETA.name
+
+
+def test_treemap_labels_keep_the_tooltips(tmp_path):
+    """Labels come after every cell of their unit and ignore the pointer, so every <title>
+    (the unit group's, the matched cell's) stays reachable."""
+    progress = labelled()
+    root = parse(progress.render_svg(progress.derive(labelled_config(tmp_path))))
+    groups = [g for g in root.iter(f"{SVG_NS}g") if g.findall(f"{SVG_NS}text")
+              and g.get("data-unit") is not None]  # fmt: skip
+    assert len(groups) == len(EXPECTED_LABELS)
+    for group in groups:
+        children = list(group)
+        assert children[0].tag == f"{SVG_NS}title"
+        last_cell = max(i for i, c in enumerate(children)
+                        if c.tag == f"{SVG_NS}rect" and c.get("fill") != "none")  # fmt: skip
+        for i, child in enumerate(children):
+            if child.tag != f"{SVG_NS}text":
+                continue
+            assert i > last_cell
+            assert child.get("pointer-events") == "none"
+    game = root.find(f".//{SVG_NS}g[@data-unit='u_00010000']")
+    matched = [r for r in cells(game) if r.get("fill") == COLORS["matched"]]
+    assert len(matched) == 1
+    assert L_GAME.name in matched[0].find(f"{SVG_NS}title").text
+
+
+def test_treemap_labels_are_deterministic(tmp_path):
+    progress = labelled()
+    config = labelled_config(tmp_path)
+    assert progress.render_svg(progress.derive(config)) == progress.render_svg(
+        progress.derive(config))
+
+
+def _expected_labels(derived) -> dict[tuple[str, str], str]:
+    """(exe stem, unit) -> the label the rule gives: the unit name, unless the unit holds runtime
+    rows and no game/thunk function; then its largest runtime row, the lowest start on a tie."""
+    out = {}
+    for exe in derived.exes:
+        code_units = {f.unit or "unassigned" for f in exe.functions}
+        library: dict[str, list] = {}
+        for row in exe.library_rows:
+            library.setdefault(row.unit or "unassigned", []).append(row)
+        for unit in code_units:
+            out[(exe.stem, unit)] = unit
+        for unit, rows in library.items():
+            if unit in code_units:
+                continue
+            out[(exe.stem, unit)] = min(rows, key=lambda r: (-r.size, r.start)).name
+        for unit in exe.units:
+            out.setdefault((exe.stem, unit.unit), unit.unit)
+    return out
+
+
+def _outline(group: ET.Element) -> tuple[float, float, float, float]:
+    rect = next(r for r in group.findall(f"{SVG_NS}rect") if r.get("fill") == "none")
+    return tuple(float(rect.get(a)) for a in ("x", "y", "width", "height"))
+
+
+def _check_label(progress, label: str, text: ET.Element, box) -> None:
+    x, y, w, h = box
+    tx, ty = text.get("x"), text.get("y")
+    assert _ROUNDED.fullmatch(tx) and _ROUNDED.fullmatch(ty), (tx, ty)
+    assert float(tx) >= x
+    assert float(tx) + progress.LABEL_CHAR * len(label) <= x + w + BAND, label
+    assert y <= float(ty) <= y + h, label
+    assert text.get("font-size") == str(progress.LABEL_FONT_SIZE)
+
+
+def test_treemap_labels_fit_their_unit():
+    """On the committed CSVs, every unit that fits its label carries it, every unit that does not
+    carries none, and each label lies inside its unit."""
+    progress = labelled()
+    derived = progress.derive(CONFIG)
+    expected = _expected_labels(derived)
+    root = parse(progress.render_svg(derived))
+    seen = {"game": 0, "library": 0}
+    for exe_group in root.findall(f".//{SVG_NS}g[@data-exe]"):
+        stem = exe_group.get("data-exe")
+        for group in exe_group.findall(f"{SVG_NS}g[@data-unit]"):
+            unit = group.get("data-unit")
+            label = expected[(stem, unit)]
+            x, y, w, h = _outline(group)
+            need = max(progress.LABEL_MIN_WIDTH,
+                       2 * progress.LABEL_PAD + progress.LABEL_CHAR * len(label))  # fmt: skip
+            texts = group.findall(f"{SVG_NS}text")
+            if w >= need + BAND and h >= progress.LABEL_MIN_HEIGHT + BAND:
+                assert [t.text for t in texts] == [label], (stem, unit)
+            elif w < need - BAND or h < progress.LABEL_MIN_HEIGHT - BAND:
+                assert texts == [], (stem, unit)
+            for text in texts:
+                assert text.text == label, (stem, unit)
+                _check_label(progress, label, text, (x, y, w, h))
+                seen["game" if label == unit else "library"] += 1
+    assert seen["game"] >= 1 and seen["library"] >= 1, seen

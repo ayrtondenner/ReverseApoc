@@ -717,8 +717,19 @@ EXE_HEADER = 20  # each EXE's caption strip
 SURFACE, INK, SECONDARY_INK = "#fcfcfb", "#0b0b0b", "#52514e"
 FONT = "system-ui, -apple-system, 'Segoe UI', sans-serif"
 LEGEND_MARGIN = 8  # the legend ends this far from the right edge
-LEGEND_CHAR = 6.6  # px per label character at 12 px, for spacing the legend items
+FONT_SIZE = 12  # the SVG's base font size: the legend and the captions
+LEGEND_CHAR = 6.6  # px per label character at FONT_SIZE, for spacing the legend items
 LEGEND_GAP = 26  # dot, padding and gap between legend items
+# Unit labels (owner ruling 2, 2026-10-26): a unit gets one only when it has room for it.
+LABEL_FONT_SIZE = 11
+LABEL_CHAR = LEGEND_CHAR * LABEL_FONT_SIZE / FONT_SIZE  # px per label character
+LABEL_PAD = 4  # inset from the unit's left edge, and the room kept on its right
+LABEL_BASELINE = 14  # the baseline below the unit's top edge, as the EXE caption's
+LABEL_MIN_WIDTH = 40  # the fixed minimum unit size for a label
+LABEL_MIN_HEIGHT = LABEL_BASELINE + LABEL_PAD
+# px of SURFACE stroke under the ink, so a label reads on every cell colour (INK alone on the
+# grey and blue cells is not enough), without picking a colour per cell.
+LABEL_HALO = 3
 
 
 @dataclass(frozen=True)
@@ -729,6 +740,7 @@ class _Cell:
     start: int
     status: str  # one of CELL_STATUSES
     title: str | None = None  # a tooltip, matched cells only
+    name: str | None = None  # the function's name; None for uncovered bytes (not in `key`)
 
     @property
     def key(self) -> tuple[int, int, int]:
@@ -762,10 +774,10 @@ def _unit_cells(exe: ExeProgress) -> dict[str, list[_Cell]]:
     for f in exe.functions:
         title = f"{f.name}: {f.size:,} bytes, matched" if f.status == MATCHED else None
         groups.setdefault(f.unit or UNASSIGNED_UNIT, []).append(
-            _Cell(f.size, f.start, f.status, title))
+            _Cell(f.size, f.start, f.status, title, f.name))
     for row in exe.library_rows:
         groups.setdefault(row.unit or UNASSIGNED_UNIT, []).append(
-            _Cell(row.size, row.start, LIBRARY))
+            _Cell(row.size, row.start, LIBRARY, name=row.name))
     for unit, uncovered in zip(exe.units, exe.uncovered, strict=True):
         if uncovered:
             groups.setdefault(unit.unit, []).append(_Cell(uncovered, unit.start, UNCOVERED))
@@ -793,11 +805,39 @@ def _cell_svg(cell: _Cell, rect: Rect) -> str:
     return f'<rect {_box(rect)} fill="{fill}"><title>{_xml(cell.title)}</title></rect>'
 
 
+def _unit_label(unit: str, ordered: Sequence[_Cell]) -> str:
+    """The label a unit carries (owner ruling 2): a library unit (runtime rows, no game or thunk
+    function) its largest runtime function, the first LIBRARY cell of the key-sorted `ordered`,
+    so a size tie goes to the lowest start; any other unit its own name."""
+    if any(c.status in (MATCHED, PARTIAL, UNMATCHED) for c in ordered):
+        return unit
+    library = next((c for c in ordered if c.status == LIBRARY), None)
+    if library is None or library.name is None:
+        return unit
+    return library.name
+
+
+def _label_svg(label: str, rect: Rect) -> str | None:
+    """A unit's label at its top left, or None when the unit is smaller than the fixed minimum
+    or too narrow for the text (decided on the unrounded rect). The label ignores the pointer, so
+    the tooltips under it stay reachable."""
+    x, y, w, h = rect
+    if w < max(LABEL_MIN_WIDTH, 2 * LABEL_PAD + LABEL_CHAR * len(label)) or h < LABEL_MIN_HEIGHT:
+        return None
+    return (f'<text x="{_num(x + LABEL_PAD)}" y="{_num(y + LABEL_BASELINE)}" '
+            f'font-size="{LABEL_FONT_SIZE}" fill="{INK}" stroke="{SURFACE}" '
+            f'stroke-width="{LABEL_HALO}" stroke-linejoin="round" paint-order="stroke" '
+            f'pointer-events="none">{_xml(label)}</text>')  # fmt: skip
+
+
 def _unit_svg(exe: ExeProgress, unit: str, cells: Sequence[_Cell], rect: Rect) -> list[str]:
     ordered = sorted(cells, key=lambda c: c.key)
     lines = [f'<g data-unit="{_xml(unit)}"><title>{_xml(_unit_title(exe, unit, ordered))}</title>']
     rects = squarify([c.size for c in ordered], rect)
     lines += [_cell_svg(cell, r) for cell, r in zip(ordered, rects, strict=True)]
+    label = _label_svg(_unit_label(unit, ordered), rect)
+    if label is not None:
+        lines.append(label)
     lines.append(f'<rect {_box(rect)} fill="none" stroke="{SURFACE}" stroke-width="1"/></g>')
     return lines
 
@@ -848,11 +888,14 @@ def render_svg(progress: Progress) -> str:
     runtime function sized by bytes, plus one cell per unit for its uncovered bytes, in the
     fixed TREEMAP_COLORS (D-26, D-50). EXEs keep EXES order; units and cells go largest first,
     then by address, so the same CSVs give the same bytes. Tooltips (<title>) sit on unit
-    groups and matched cells only, coordinates are rounded to 0.1, and no game byte is in it."""
+    groups and matched cells only, coordinates are rounded to 0.1, and no game byte is in it.
+    Units large enough carry a label (a game unit its unit name, a library unit its largest
+    runtime function), small units none; labels ignore the pointer, so the tooltips stay
+    reachable."""
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" '
              f'height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" '
              f'aria-label="Decompilation progress mosaic" font-family="{FONT}" '
-             f'font-size="12">',
+             f'font-size="{FONT_SIZE}">',
              f'<rect x="0" y="0" width="{SVG_WIDTH}" height="{SVG_HEIGHT}" fill="{SURFACE}"/>']
     lines += _legend_svg(progress)
     exes = [exe for exe in progress.exes if _drawn_bytes(exe) > 0]
