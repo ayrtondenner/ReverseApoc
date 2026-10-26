@@ -1,6 +1,6 @@
-"""tools/progress.py's progress.html (owner rulings 3 and 4 of 2026-10-26): a static,
+"""tools/progress.py's progress page (owner rulings 3 and 4 of 2026-10-26): a static,
 self-contained, deterministic page with one percent bar, the text figures and one function strip
-per EXE, the labelled mosaic inline and a short "How it is measured" section. It is also written
+per EXE, the labelled mosaic inline and a short "How it is measured" section. It is written once,
 as index.html, so the Pages root serves it. progress.py is loaded by path (it runs under
 `python3 -I`); the synthetic tables are test_progress's, the committed-file tests read config/
 only (no game bytes)."""
@@ -36,7 +36,7 @@ def page_module():
     """progress.py with its page API; called in each test body, so a missing name fails the test
     on this assert."""
     progress = load_progress()
-    for name in ("render_html", "write_html", "PROGRESS_HTML", "INDEX_HTML"):
+    for name in ("render_html", "write_html", "INDEX_HTML"):
         assert hasattr(progress, name), f"progress.py has no {name}"
     return progress
 
@@ -383,23 +383,29 @@ def test_main_writes_the_page(tmp_path):
     for target in (out, again):
         assert progress.main(["--config", str(config), "--out", str(target),
                               "--commit", SHA]) == 0  # fmt: skip
-    data = (out / progress.PROGRESS_HTML).read_bytes()
+    data = (out / progress.INDEX_HTML).read_bytes()
     assert data == progress.render_html(progress.derive(config), SHA).encode("utf-8")
     assert data.endswith(b"</html>\n") and b"\r" not in data
-    assert (again / progress.PROGRESS_HTML).read_bytes() == data
+    assert (again / progress.INDEX_HTML).read_bytes() == data
     assert not list(Path(out).glob(".*.tmp"))
 
 
-def test_main_publishes_the_page_at_the_site_root(tmp_path):
-    """Orchestrator ruling of 2026-10-26: the same bytes as index.html, so the Pages root (which
-    .recomp.json's Progress link and the docs/listings.md drafts point at) serves the page."""
+def test_main_writes_the_page_once_at_the_site_root(tmp_path):
+    """Owner ruling of 2026-10-26: the page is written once, as index.html, which the Pages root
+    (linked by the README, .recomp.json and the docs/listings.md drafts) serves; progress.html,
+    a byte-identical duplicate, is no longer written."""
     progress = page_module()
     assert progress.INDEX_HTML == "index.html"
+    assert not hasattr(progress, "PROGRESS_HTML")
     config = synthetic_config(tmp_path)
-    for name, extra in (("with", ["--commit", SHA]), ("without", [])):
+    for name, commit in (("with", SHA), ("without", None)):
         out = tmp_path / name
+        extra = [] if commit is None else ["--commit", commit]
         assert progress.main(["--config", str(config), "--out", str(out), *extra]) == 0
-        assert (out / "index.html").read_bytes() == (out / "progress.html").read_bytes(), name
+        page = progress.render_html(progress.derive(config), commit).encode("utf-8")
+        assert (out / "index.html").read_bytes() == page, name
+        assert not (out / "progress.html").exists(), name
+        assert sorted(path.name for path in out.glob("*.html")) == ["index.html"], name
 
 
 def test_script_writes_the_page_isolated(tmp_path):
@@ -408,8 +414,8 @@ def test_script_writes_the_page_isolated(tmp_path):
     done = subprocess.run([sys.executable, "-I", str(PROGRESS), "--out", str(out), "--commit",
                            SHA], capture_output=True, text=True, timeout=120)  # fmt: skip
     assert done.returncode == 0, done.stderr
-    data = (out / "progress.html").read_bytes()
+    data = (out / "index.html").read_bytes()
     assert data.startswith(b"<!DOCTYPE html>")
     for needle in (b"UFO2P.EXE", b"TACP.EXE", f"{COMMIT_URL}{SHA}".encode("ascii")):
         assert needle in data, needle
-    assert (out / "index.html").read_bytes() == data
+    assert not (out / "progress.html").exists()

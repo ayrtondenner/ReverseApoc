@@ -11,7 +11,7 @@ ReverseApoc is a byte-matching decompilation of **X-COM: Apocalypse** (Mythos Ga
 
 ![Progress mosaic](https://ayrtondenner.github.io/ReverseApoc/progress.svg)
 
-The [progress page](https://ayrtondenner.github.io/ReverseApoc/progress.html) shows, for each EXE, its percent bar and a strip of one tick per game and thunk function in address order, then this mosaic. The same page is published as [index.html](https://ayrtondenner.github.io/ReverseApoc/index.html), so the site's root address opens it too.
+The [progress page](https://ayrtondenner.github.io/ReverseApoc/) shows, for each EXE, its percent bar and a strip of one tick per game and thunk function in address order, then this mosaic.
 
 The two badges (one per EXE, each coloured by its own percent), the mosaic, the progress page and the raw numbers ([progress.json](https://ayrtondenner.github.io/ReverseApoc/progress.json)) are regenerated on every push to `main`, together with the combined `progress-shield.json` endpoint (kept for existing consumers, not shown here) and the objdiff-shaped report.json, and published to GitHub Pages. They come from committed tables: the status tables that `reverseapoc gate` writes (`config/ufo2p/status.csv`, `config/tacp/status.csv`; never edited by hand) plus each EXE's `functions.csv` and `units.csv`. The percentage is matched bytes of game and thunk functions over all game and thunk bytes plus the uncovered bytes, per EXE and combined (thunks count as code); the combined figure comes from summed bytes, not an average. The function ratio is matched game and thunk functions over all game and thunk functions. The mosaic has one cell per function, grouped by EXE and unit and sized by bytes:
 
