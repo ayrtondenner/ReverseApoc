@@ -744,8 +744,9 @@ class _Cell:
     size: int
     start: int
     status: str  # one of CELL_STATUSES
-    title: str | None = None  # a tooltip, matched cells only
+    title: str | None = None  # a tooltip, matched and partial cells only
     name: str | None = None  # the function's name; None for uncovered bytes (not in `key`)
+    best_percent: float = 0.0  # Function.best_percent for a function cell (not in `key`)
 
     @property
     def key(self) -> tuple[int, int, int]:
@@ -772,14 +773,28 @@ def _box(rect: Rect) -> str:
             f'height="{_num(bottom - top)}"')  # fmt: skip
 
 
+def _best(value: float) -> str:
+    """A best_percent as status.csv stores it: 2 decimals (status.py's rule)."""
+    return f"{value:.2f}%"
+
+
+def _function_title(f: Function) -> str | None:
+    """A function cell's tooltip: matched and partial cells only, a partial one with its best
+    score (the counting is unchanged: a partial still adds no matched byte)."""
+    if f.status == MATCHED:
+        return f"{f.name}: {f.size:,} bytes, matched"
+    if f.status == PARTIAL:
+        return f"{f.name}: {f.size:,} bytes, partial, best {_best(f.best_percent)}"
+    return None
+
+
 def _unit_cells(exe: ExeProgress) -> dict[str, list[_Cell]]:
     """The cells of each unit: its game/thunk functions, runtime rows and uncovered bytes.
     Data-in-code is not drawn (D-26)."""
     groups: dict[str, list[_Cell]] = {}
     for f in exe.functions:
-        title = f"{f.name}: {f.size:,} bytes, matched" if f.status == MATCHED else None
         groups.setdefault(f.unit or UNASSIGNED_UNIT, []).append(
-            _Cell(f.size, f.start, f.status, title, f.name))
+            _Cell(f.size, f.start, f.status, _function_title(f), f.name, f.best_percent))
     for row in exe.library_rows:
         groups.setdefault(row.unit or UNASSIGNED_UNIT, []).append(
             _Cell(row.size, row.start, LIBRARY, name=row.name))
@@ -796,6 +811,9 @@ def _unit_title(exe: ExeProgress, unit: str, cells: Sequence[_Cell]) -> str:
     code = [c for c in cells if c.status in (MATCHED, PARTIAL, UNMATCHED)]
     parts = [f"{exe.label} {unit}: {total(MATCHED):,} of {total(MATCHED, PARTIAL, UNMATCHED):,} "
              f"code bytes matched, {len(code)} functions"]  # fmt: skip
+    partial = [c.best_percent for c in cells if c.status == PARTIAL]
+    if partial:
+        parts.append(f"{len(partial)} partial (best {_best(max(partial))})")
     if total(LIBRARY):
         parts.append(f"{total(LIBRARY):,} library bytes")
     if total(UNCOVERED):
@@ -921,10 +939,11 @@ def render_svg(progress: Progress) -> str:
     runtime function sized by bytes, plus one cell per unit for its uncovered bytes, in the
     fixed TREEMAP_COLORS (D-26, D-50). EXEs keep EXES order; units and cells go largest first,
     then by address, so the same CSVs give the same bytes. Tooltips (<title>) sit on unit
-    groups and matched cells only, coordinates are rounded to 0.1, and no game byte is in it.
-    Units large enough carry a label (a game unit its unit name, a library unit its largest
-    runtime function), cut with an ellipsis when the name is too long, small units none; labels
-    ignore the pointer, so the tooltips stay reachable."""
+    groups (a unit with partials names their count and best score) and on matched and partial
+    cells only (a partial one with its best score), coordinates are rounded to 0.1, and no
+    game byte is in it. Units large enough carry a label (a game unit its unit name, a library
+    unit its largest runtime function), cut with an ellipsis when the name is too long, small
+    units none; labels ignore the pointer, so the tooltips stay reachable."""
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" '
              f'height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" '
              f'aria-label="Decompilation progress mosaic" font-family="{FONT}" '
