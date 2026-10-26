@@ -1061,3 +1061,35 @@ def test_console_clock_is_local_time_by_default(tmp_path):
     assert driver.stamp(datetime(2026, 10, 26, 23, 59, 59)) == "[23:59:59] "
     assert driver.default_seams(tmp_path).now == datetime.now
     assert driver.STAMP_FORMAT == "[%H:%M:%S] "
+
+
+def test_console_real_deps_say_is_stamped_on_stderr_in_text_mode_only(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    deps = driver.real_deps(rig.options(), rig.seams(now=_fixed_now), _world(rig.packs))
+    deps.say("ufo2p func_00010010 attempt 1/3: started")
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "[21:04:05] drive: ufo2p func_00010010 attempt 1/3: started\n"
+    deps = driver.real_deps(rig.options(json=True), rig.seams(now=_fixed_now), _world(rig.packs))
+    deps.say("ufo2p func_00010010 attempt 1/3: started")
+    assert capsys.readouterr() == ("", "")
+
+
+def test_console_end_of_run_names_each_check_before_it_runs(tmp_path, capsys):
+    rig = Rig(tmp_path / "text")
+    peek = _Peek(capsys, rig.runner)
+    deps = driver.real_deps(rig.options(), rig.seams(run=peek, now=_fixed_now), _world(rig.packs))
+    capsys.readouterr()
+    assert list(deps.end_of_run()) == []
+    assert peek.seen == [(NINJA_VERIFY, "[21:04:05] drive: end of run: ninja verify: started\n"),
+                         (GATE_ALL, "[21:04:05] drive: end of run: gate --all: started\n")]
+    assert capsys.readouterr().err == ""
+    rig = Rig(tmp_path / "json")
+    peek = _Peek(capsys, rig.runner)
+    deps = driver.real_deps(rig.options(json=True), rig.seams(run=peek, now=_fixed_now),
+                            _world(rig.packs))  # fmt: skip
+    capsys.readouterr()
+    assert list(deps.end_of_run()) == []
+    assert [argv for argv, _ in peek.seen] == [NINJA_VERIFY, GATE_ALL]
+    assert all(held == "" for _, held in peek.seen)
+    assert capsys.readouterr() == ("", "")

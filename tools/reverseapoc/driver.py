@@ -196,7 +196,9 @@ class Deps:
     (session.build_argv); `session` is session.run_session; `lint(pick)` is the C89 lint of the
     unit (0/1/2); `gate(pick, n)` and `partial_gate(pick, src, n)` are the container gates;
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
-    checkout."""
+    checkout. `say(text)` names one progress line: an attempt's start, a usage-limit wait or
+    the attempt's outcome; the drive verb wires `console`, which stamps it and stays silent in
+    --json; the default prints nothing (quick 261026-9ue)."""
 
     queue: Callable[[Container[Key]], Iterable[Pick]]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
@@ -216,6 +218,7 @@ class Deps:
     # Fix round 4 L1: the end-of-run checks (06-25 wires ninja verify and gate --all); each
     # failed check is one string. Called after the last session, before the ENDED record.
     end_of_run: Callable[[], Sequence[str]] = tuple
+    say: Callable[[str], None] = _quiet
 
 
 @dataclass(frozen=True)
@@ -988,11 +991,27 @@ class _Night:
         for n in range(1, self.config.attempts_per_function + 1):
             if self._end():
                 return
-            outcome = self._guarded(pick, n)
+            outcome = self._announced(pick, n)
             if outcome in (MATCHED, None):
                 return
         difficult[(pick.exe, pick.start)] = tuple(self.deps.matched_callees(pick))
         save_difficult(self.repo / DIFFICULT, difficult)
+
+    def _label(self, pick: Pick, n: int) -> str:
+        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
+
+    def _announced(self, pick: Pick, n: int) -> str | None:
+        """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
+        attempt's wall time on Deps.clock, relaunches, backoffs and the gate included (the
+        record's `seconds` is the session alone). A stop or an interrupt prints no outcome line:
+        the STOPPED summary names why."""
+        label = self._label(pick, n)
+        self.deps.say(f"{label}: started")
+        start = self.deps.clock()
+        outcome = self._guarded(pick, n)
+        shown = outcome if outcome is not None else f"ABORTED ({TRANSIENT})"
+        self.deps.say(f"{label}: {shown} after {self.deps.clock() - start:.1f} s")
+        return outcome
 
     def _guarded(self, pick: Pick, n: int) -> str | None:
         """One attempt; any unexpected failure resets the live session and stops the night."""
@@ -1028,7 +1047,7 @@ class _Night:
             disposition = session.disposition
             if disposition is Disposition.LIMIT:
                 matched = self._salvage(session)
-                self._backoff()
+                self._backoff(pick, n)
                 if matched:
                     return MATCHED
                 continue
@@ -1042,9 +1061,11 @@ class _Night:
                 continue
             return self._counted(session)
 
-    def _backoff(self) -> None:
+    def _backoff(self, pick: Pick, n: int) -> None:
         streak = self.limit_streak
-        self.deps.sleep(BACKOFF_S[streak] if streak < len(BACKOFF_S) else POLL_S)
+        seconds = BACKOFF_S[streak] if streak < len(BACKOFF_S) else POLL_S
+        self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
+        self.deps.sleep(seconds)
         self.limit_streak += 1
 
     # --- one session ---
@@ -1882,15 +1903,17 @@ END_OF_RUN = (
 )  # fmt: skip
 
 
-def finish(run: Runner, *, run_dir: Path) -> list[str]:
+def finish(run: Runner, *, run_dir: Path, say: Callable[[str], None] = _quiet) -> list[str]:
     """D-24: the end-of-run checks, in the container and in this order: a from-clean ninja
     verify (configure, clean, verify), then `gate --all`. Both always run; each one's output is
     written by the driver to build/driver/<run>/end-*.log. Returns one string per failed check
     (`ninja verify exit 1`), which the driver pins in the ENDED record before the chore commit
-    (06-23 fix round 4 L1: wired as Deps.end_of_run)."""
+    (06-23 fix round 4 L1: wired as Deps.end_of_run). Each check's start is named through `say`
+    (the verb wires the stamped console; silent by default, quick 261026-9ue)."""
     failed = []
     run_dir.mkdir(parents=True, exist_ok=True)
     for name, log, argv in END_OF_RUN:
+        say(f"end of run: {name}: started")
         done = run(list(argv))
         text = (f"$ {' '.join(argv)}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
                 f"\n--- stderr\n{done.stderr or ''}\n")  # fmt: skip
@@ -1938,6 +1961,7 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     day = today or _today()
     config_root = options.config_root
     excluded = excluded_keys(config_root, day)
+    say = console(options, seams)
 
     def queue(difficult: Container[Key]) -> Iterable[Pick]:
         return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
@@ -1966,8 +1990,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
                 remove_containers=container_remover(options.repo, seams.run),
-                git=seams.git, today=lambda: day,
-                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir))  # fmt: skip
+                git=seams.git, today=lambda: day, say=say,
+                end_of_run=lambda: finish(seams.run, run_dir=options.run_dir, say=say))  # fmt: skip
 
 
 def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
