@@ -1093,3 +1093,72 @@ def test_console_end_of_run_names_each_check_before_it_runs(tmp_path, capsys):
     assert [argv for argv, _ in peek.seen] == [NINJA_VERIFY, GATE_ALL]
     assert all(held == "" for _, held in peek.seen)
     assert capsys.readouterr() == ("", "")
+
+
+def test_console_night_summary_is_stamped(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    code, out, err = rig.drive(capsys, max_sessions=0, seams=dict(now=_fixed_now))
+    assert code == 0
+    assert out == "[21:04:05] ENDED max sessions: 0 sessions, 0 matched\n"
+    lines = err.splitlines()
+    assert all(line.startswith("[21:04:05] drive: ") for line in lines), lines
+    assert lines[-2:] == ["[21:04:05] drive: end of run: ninja verify: started",
+                          "[21:04:05] drive: end of run: gate --all: started"]
+
+
+def test_console_night_json_is_one_unstamped_document(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    code, out, err = rig.drive(capsys, max_sessions=0, json=True, seams=dict(now=_fixed_now))
+    assert code == 0
+    assert out.count("\n") == 1
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"], doc["exit_code"]) == ("ENDED", "max sessions", 0)
+    assert "[21:04:05]" not in out
+    assert err == ""
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [
+        ("dirty", "[21:04:05] reverseapoc drive: refused (dirty): the working tree is dirty"),
+        ("run id", "[21:04:05] reverseapoc drive: refused (run id): "),
+    ],
+)
+def test_console_text_refusal_is_stamped(tmp_path, capsys, case, expected):
+    rig = Rig(tmp_path)
+    if case == "dirty":
+        _write(rig.repo / "stray.txt", "made up\n")
+        code, out, err = rig.drive(capsys, dry_run=True, seams=dict(now=_fixed_now))
+    else:
+        code, out, err = rig.drive(capsys, run_id="bad id", seams=dict(now=_fixed_now))
+    assert (code, out) == (2, "")
+    lines = err.splitlines()
+    assert len(lines) == 1, lines
+    assert lines[0].startswith(expected), lines[0]
+
+
+def test_console_canary_check_lines_and_verdict_stay_unstamped(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, out, err = rig.drive(capsys, canary=True, seams=dict(now=_fixed_now))
+    assert code == 0, out
+    lines = out.splitlines()
+    assert lines[-1] == "CANARY PASS"
+    assert all(line.startswith(("PASS: ", "FAIL: ", "CANARY ")) for line in lines), lines
+    assert not [line for line in lines if line.startswith("[")]
+    assert all(line.startswith("[21:04:05] drive: ") for line in err.splitlines())
+
+
+def test_console_canary_session_start_line_prints_before_the_session(tmp_path, capsys):
+    held = []
+
+    def peek(repo):
+        held.append(capsys.readouterr().err)
+
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", after=peek)
+    code, out, err = rig.drive(capsys, canary=True, seams=dict(now=_fixed_now))
+    assert code == 0, out
+    assert len(held) == 1
+    assert held[0].splitlines()[-1] == ("[21:04:05] drive: canary: ufo2p func_000A3980 session: "
+                                        "started (timeout 1200 s)")  # fmt: skip
+    assert (held[0] + err).count("session: started") == 1
+    assert out.splitlines()[-1] == "CANARY PASS"

@@ -2216,12 +2216,13 @@ def _load_worlds(seams: Seams) -> Mapping[str, ExeWorld]:
         raise Refused("world", f"cannot load the EXEs: {type(exc).__name__}: {exc}") from exc
 
 
-def _refusal(options: DriveOptions, refused: Refused) -> int:
+def _refusal(options: DriveOptions, seams: Seams, refused: Refused) -> int:
     doc = {"event": REFUSED, "reason": refused.reason, "detail": refused.detail}
     if options.json:
         _emit(options, doc, [])
     else:
-        print(f"reverseapoc drive: refused ({refused.reason}): {refused.detail}", file=sys.stderr)
+        print(f"{stamp(seams.now())}reverseapoc drive: refused ({refused.reason}): "
+              f"{refused.detail}", file=sys.stderr)  # fmt: skip
     return EXIT_TOOL
 
 
@@ -2241,7 +2242,8 @@ def _phase(reason: str) -> Iterator[None]:
 def run_drive(options: DriveOptions, seams: Seams) -> int:
     """`reverseapoc drive`: the preflight, then the canary, the dry run or one night."""
     if not _RUN_ID.fullmatch(options.run_id):
-        return _refusal(options, Refused("run id", f"{options.run_id!r} is not [A-Za-z0-9_.-]+"))
+        return _refusal(options, seams,
+                        Refused("run id", f"{options.run_id!r} is not [A-Za-z0-9_.-]+"))
     log = _Log(options, seams)
     try:
         with _phase("preflight"):
@@ -2262,7 +2264,7 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
-        return _refusal(options, refused)
+        return _refusal(options, seams, refused)
     config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
@@ -2272,9 +2274,9 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
            "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
-    _emit(options, doc, [f"{report.event} {report.reason}: {report.sessions} sessions, "
-                         f"{report.matched} matched" + (f" ({report.detail})" if report.detail
-                                                        else "")])  # fmt: skip
+    detail = f" ({report.detail})" if report.detail else ""
+    _emit(options, doc, [f"{stamp(seams.now())}{report.event} {report.reason}: "
+                         f"{report.sessions} sessions, {report.matched} matched{detail}"])
     return report.exit_code
 
 
@@ -2490,6 +2492,8 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
+    console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
+                            f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
         result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
@@ -2517,6 +2521,8 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
+    # No stamp on the check lines or the verdict: docs/workflow.md's owner steps match the
+    # literal last line `CANARY PASS` (quick 261026-9ue).
     _emit(options, doc, [*lines, f"CANARY {verdict}"])
     return EXIT_OK if checks.ok else EXIT_MISMATCH
 
