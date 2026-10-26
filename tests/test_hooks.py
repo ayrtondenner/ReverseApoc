@@ -132,6 +132,7 @@ def test_project_settings_wire_the_always_layer():
         "superpowers@claude-plugins-official": True,
         "i-have-adhd@i-have-adhd": True,
         "clangd-lsp@claude-plugins-official": True,
+        "frontend-design@anthropic-plugin-directory": True,
     }
     assert settings["extraKnownMarketplaces"] == {
         "i-have-adhd": {"source": {"source": "github", "repo": "ayghri/i-have-adhd"}}
