@@ -446,17 +446,19 @@ def asm_problem(text: str, *, any_pragma_aux: bool = False, any_pragma: bool = F
     any `#pragma` directive at all with `any_pragma`, M14) in its code, read through
     configure's D-12 scanner (translation phases 1-2, backslash continuations spliced, comments
     and literals blanked). Text the scanner cannot read as wcc386 does (a lone CR) is refused
-    too."""
+    too, and so is an #include of anything but a bare include/<name>.h (06-REVIEW CR-02:
+    configure's D-12 rule, so no unscanned file such as notes.md reaches the compile)."""
     cfg = _configure()
     try:
         code = cfg._NOT_CODE.sub(cfg._blank, text)
+        includes = cfg.include_problems(text)
     except cfg._ConditionalError as exc:
         return f"the text cannot be read as wcc386 reads it: {exc}"
     for first, _last, logical in cfg._logical_lines(code.split("\n")):
         found = _inline_asm(logical, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma)
         if found is not None:
             return f"line {first + 1} (logical line start): {found}"
-    return None
+    return includes[0] if includes else None
 
 
 def _source_problem(
