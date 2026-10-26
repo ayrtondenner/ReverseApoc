@@ -99,6 +99,8 @@ Recent decisions affecting current work:
 - [Phase 05]: 05-19: two leaf-sized matches separate no Phase 4 candidate (10.5/10.6/11.0, -4/-5, -o* tied); * default and __WATCOMC__ 1060 stay (D-18, D-14)
 - [Phase 05]: 05-20: Phase 5 gate green on main from a clean ninja graph (both units compiled by wcc386@10.6 under wibo, linted, landed SHA-1 identical); both first-match checks exit 0; host 1540p/25 platform skips, container 1563p/2 Windows-only skips, ruff clean; 05-VALIDATION.md signed off 13/13 with build/gate/05-evidence/ logs
 - [Phase 05]: UAT 2026-10-24 (5/5 passed): the owner accepted the 05-18 raw-fields deviation from 05-08 (override in 05-VERIFICATION.md), the 898 MB image and capstone 5.0.9 (in the uv venv volume, not the image), and the 7 hand boundary verdicts. Follow-ups: backlog 999.3 (`asm` `_Alphabet` collision, Phase 6) and 999.2 (readlint must reject `func_`/`D_` placeholders, Phase 7)
+- [Phase 06]: 06-27 pilot result (D-37): owner run 20261026-005209 reached 3 MATCHED in 40 sessions: ufo2p func_0008A0E0 (c83cf4e), tacp func_0006EE30 (d288ad6) and ufo2p func_0008A100 (955931f), so 2 UFO2P + 1 TACP, about USD 14 per match. The gate re-checked it independently: each match commit was re-gated in the container (gate --all exit 0, both SHA-1s identical), the final tree passed from clean (ninja verify and gate --all exit 0), the drift and schema tests passed, and no guardrail record was found. All three matches hold under the `*` default; the sweeps leave 10.5/10.6/11.0 and -4r/-5r tied (docs/toolchain.md Phase 6 match evidence)
+- [Phase 06]: Owner ruling 2026-10-26: the PARTIAL pilot is accepted. AGT-11 = partial, owner-accepted 2026-10-26 (3/10), and the 10-match target carries to Phase 7. AGT-11 is not marked complete in REQUIREMENTS.md
 
 ### Pending Todos
 
@@ -132,7 +134,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 | Category | Item | Status | Deferred At | Milestone |
 |----------|------|--------|-------------|-----------|
-| Phase 6 carry-in | DI-01..DI-37, the items carried into Phase 6 from Phases 1-5 and the owner's 2026-10-24 additions; one row each, with the closing commit or ruling, in [06-DEFERRED-LEDGER.md](phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md) | per row in the ledger; the 06-27 phase gate checks each | 2026-10-24 (Phase 6 discuss) | v1.0 |
+| Phase 6 carry-in | DI-01..DI-37, the items carried into Phase 6 from Phases 1-5 and the owner's 2026-10-24 additions; one row each, with the closing commit or ruling, in [06-DEFERRED-LEDGER.md](phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md) | every row closed or ruled; checked by the 06-27 phase gate (03b63e2) | 2026-10-24 (Phase 6 discuss) | v1.0 |
 
 ## Session Continuity
 
