@@ -1182,6 +1182,42 @@ def test_unit_file_with_a_lone_cr_is_a_source_problem(env):
     assert any("carriage return" in reason for reason in reasons), reasons
 
 
+# ---- 06-REVIEW CR-02 (fix round 2): a path include is refused before anything compiles ---------
+
+NOTES_INCLUDE = '#include "../../build/driver/r/syn/func_00010000/attempt-1/notes.md"\n'
+
+
+def test_source_marks_names_a_path_include():
+    """source_marks keeps configure's include problems (not only the out-of-unit ones), so the
+    account of check, the land step and gate --partial refuse a path include too."""
+    marks = check.source_marks(NOTES_INCLUDE + SOURCE, [ROW, OTHER])
+    assert any("#include" in p and "notes.md" in p for p in marks.problems), marks.problems
+    assert check.source_marks(SOURCE, [ROW, OTHER]).problems == ()
+
+
+@pytest.mark.parametrize("verb", ["check", "gate"])
+def test_a_path_include_is_refused_before_compiling(env, monkeypatch, capsys, verb):
+    """The attempt check (`check`) and the per-unit gate refuse a unit that includes a path,
+    naming the include, before the compiler ever reads the included file."""
+    unit_source(env).write_text(NOTES_INCLUDE + SOURCE, encoding="utf-8")
+    compiler = FakeCompiler()
+    patch_tools(monkeypatch, compiler=compiler)
+    assert cli_main([verb, f"{STEM}/{UNIT}", *env.argv()]) == check.EXIT_TOOL
+    err = capsys.readouterr().err
+    assert "#include" in err and "notes.md" in err, err
+    assert compiler.calls == []
+    assert not (env.config / STEM / "status.csv").exists()
+
+
+def test_land_all_refuses_a_path_include_before_compiling(env):
+    """land_all with compile_fn (check's land of the other units) refuses the unit too."""
+    unit_source(env).write_text(NOTES_INCLUDE + SOURCE, encoding="utf-8")
+    compiler = FakeCompiler()
+    with pytest.raises(check.CheckError, match="notes.md"):
+        check.land_all(**env.kwargs(), compile_fn=compiler)
+    assert compiler.calls == []
+
+
 def test_stray_data_public_message_says_data():
     """17c: a public data symbol that names no row is reported as data."""
     table = SymbolTable.build([ROW, OTHER, FAR])
