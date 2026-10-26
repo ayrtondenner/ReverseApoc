@@ -720,13 +720,17 @@ LEGEND_MARGIN = 8  # the legend ends this far from the right edge
 FONT_SIZE = 12  # the SVG's base font size: the legend and the captions
 LEGEND_CHAR = 6.6  # px per label character at FONT_SIZE, for spacing the legend items
 LEGEND_GAP = 26  # dot, padding and gap between legend items
-# Unit labels (owner ruling 2, 2026-10-26): a unit gets one only when it has room for it.
+# Unit labels (owner ruling 2, 2026-10-26): a unit gets one only when it has room for it. A name
+# too long for its unit is cut to the characters that fit and ends with one ellipsis (owner ruling
+# of 2026-10-26), unless fewer than LABEL_MIN_CHARS of the name would be left.
 LABEL_FONT_SIZE = 11
 LABEL_CHAR = LEGEND_CHAR * LABEL_FONT_SIZE / FONT_SIZE  # px per label character
 LABEL_PAD = 4  # inset from the unit's left edge, and the room kept on its right
 LABEL_BASELINE = 14  # the baseline below the unit's top edge, as the EXE caption's
 LABEL_MIN_WIDTH = 40  # the fixed minimum unit size for a label
 LABEL_MIN_HEIGHT = LABEL_BASELINE + LABEL_PAD
+LABEL_MIN_CHARS = 6  # a cut label keeps at least this many characters of the name
+LABEL_ELLIPSIS = "…"  # one character, counted as one in the width estimate
 # px of SURFACE stroke under the ink, so a label reads on every cell colour (INK alone on the
 # grey and blue cells is not enough), without picking a colour per cell.
 LABEL_HALO = 3
@@ -817,17 +821,45 @@ def _unit_label(unit: str, ordered: Sequence[_Cell]) -> str:
     return library.name
 
 
+def _label_room(width: float) -> int:
+    """The most label characters a unit `width` wide holds: n with 2 * LABEL_PAD + LABEL_CHAR * n
+    <= width. The quotient is only a first guess; the inequality decides, so a float rounding of
+    the division cannot move the boundary."""
+    room = max(int((width - 2 * LABEL_PAD) / LABEL_CHAR), 0)
+    if room > 0 and 2 * LABEL_PAD + LABEL_CHAR * room > width:
+        room -= 1
+    if 2 * LABEL_PAD + LABEL_CHAR * (room + 1) <= width:
+        room += 1
+    return room
+
+
+def _fit_label(label: str, width: float) -> str | None:
+    """The raw label text a unit `width` wide shows: the whole name when it fits, else its first
+    characters and LABEL_ELLIPSIS in the same room, or None when fewer than LABEL_MIN_CHARS of
+    the name would be left. The caller escapes the result, so no escape sequence is cut."""
+    room = _label_room(width)
+    if len(label) <= room:
+        return label
+    if room - 1 < LABEL_MIN_CHARS:
+        return None
+    return label[:room - 1] + LABEL_ELLIPSIS
+
+
 def _label_svg(label: str, rect: Rect) -> str | None:
-    """A unit's label at its top left, or None when the unit is smaller than the fixed minimum
-    or too narrow for the text (decided on the unrounded rect). The label ignores the pointer, so
-    the tooltips under it stay reachable."""
+    """A unit's label at its top left, cut with an ellipsis when the name is too long, or None
+    when the unit is smaller than the fixed minimum or too narrow even for a cut label (decided
+    on the unrounded rect). The label ignores the pointer, so the tooltips under it stay
+    reachable."""
     x, y, w, h = rect
-    if w < max(LABEL_MIN_WIDTH, 2 * LABEL_PAD + LABEL_CHAR * len(label)) or h < LABEL_MIN_HEIGHT:
+    if w < LABEL_MIN_WIDTH or h < LABEL_MIN_HEIGHT:
+        return None
+    text = _fit_label(label, w)
+    if text is None:
         return None
     return (f'<text x="{_num(x + LABEL_PAD)}" y="{_num(y + LABEL_BASELINE)}" '
             f'font-size="{LABEL_FONT_SIZE}" fill="{INK}" stroke="{SURFACE}" '
             f'stroke-width="{LABEL_HALO}" stroke-linejoin="round" paint-order="stroke" '
-            f'pointer-events="none">{_xml(label)}</text>')  # fmt: skip
+            f'pointer-events="none">{_xml(text)}</text>')  # fmt: skip
 
 
 def _unit_svg(exe: ExeProgress, unit: str, cells: Sequence[_Cell], rect: Rect) -> list[str]:
@@ -890,8 +922,8 @@ def render_svg(progress: Progress) -> str:
     then by address, so the same CSVs give the same bytes. Tooltips (<title>) sit on unit
     groups and matched cells only, coordinates are rounded to 0.1, and no game byte is in it.
     Units large enough carry a label (a game unit its unit name, a library unit its largest
-    runtime function), small units none; labels ignore the pointer, so the tooltips stay
-    reachable."""
+    runtime function), cut with an ellipsis when the name is too long, small units none; labels
+    ignore the pointer, so the tooltips stay reachable."""
     lines = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{SVG_WIDTH}" '
              f'height="{SVG_HEIGHT}" viewBox="0 0 {SVG_WIDTH} {SVG_HEIGHT}" role="img" '
              f'aria-label="Decompilation progress mosaic" font-family="{FONT}" '

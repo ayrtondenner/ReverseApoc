@@ -347,6 +347,88 @@ def test_treemap_labels_are_deterministic(tmp_path):
         progress.derive(config))
 
 
+# ---- cut labels (owner ruling of 2026-10-26: cut a long name instead of dropping it) ----
+
+ELLIPSIS = "…"  # one character, never three periods
+
+
+def cutting():
+    """progress.py with its label-cutting API; a missing name fails the test on this assert."""
+    progress = labelled()
+    for name in ("LABEL_MIN_CHARS", "LABEL_ELLIPSIS"):
+        assert hasattr(progress, name), f"progress.py has no {name}"
+    assert progress.LABEL_MIN_CHARS == 6
+    assert progress.LABEL_ELLIPSIS == ELLIPSIS
+    return progress
+
+
+def label_of(progress, name: str, width: float, height: float = 30.0) -> str | None:
+    """The text _label_svg draws for `name` in a unit of `width` x `height`, or None."""
+    svg = progress._label_svg(name, (0.0, 0.0, width, height))
+    if svg is None:
+        return None
+    return ET.fromstring(f'<svg xmlns="http://www.w3.org/2000/svg">{svg}</svg>')[0].text
+
+
+def test_label_that_fits_is_drawn_in_full():
+    progress = cutting()
+    for name in ("u_0003d8a0", "grafix", "__int7"):
+        assert label_of(progress, name, 80.0) == name
+
+
+def test_label_too_long_is_cut_with_one_ellipsis():
+    """A 62 px unit holds (62 - 2 * LABEL_PAD) // LABEL_CHAR = 8 characters: the first 7 of the
+    name, then the ellipsis, which counts as one."""
+    progress = cutting()
+    assert 2 * progress.LABEL_PAD + progress.LABEL_CHAR * 8 <= 62.0
+    assert 2 * progress.LABEL_PAD + progress.LABEL_CHAR * 9 > 62.0
+    assert label_of(progress, "u_0003d8a0", 62.0) == "u_0003d" + ELLIPSIS
+    assert "..." not in progress._label_svg("u_0003d8a0", (0.0, 0.0, 62.0, 30.0))
+
+
+def test_label_cut_below_six_characters_is_dropped():
+    """Six characters plus the ellipsis is the shortest cut label; five plus the ellipsis is
+    none. The fixed minimum size still applies."""
+    progress = cutting()
+    six = 2 * progress.LABEL_PAD + progress.LABEL_CHAR * 7  # 6 kept + the ellipsis
+    assert label_of(progress, "u_0003d8a0", six + 0.01) == "u_0003" + ELLIPSIS
+    assert label_of(progress, "u_0003d8a0", six - 0.01) is None  # 5 kept + the ellipsis
+    assert label_of(progress, "u_0003d8a0", 80.0, progress.LABEL_MIN_HEIGHT - 0.01) is None
+
+
+def test_short_label_needs_no_minimum_characters():
+    """The six-character floor is for cut names only: `zeta_` (5 characters) fits a unit of
+    the fixed minimum width and is drawn whole."""
+    progress = cutting()
+    assert label_of(progress, L_ZETA.name, float(progress.LABEL_MIN_WIDTH)) == L_ZETA.name
+    assert label_of(progress, L_ZETA.name, progress.LABEL_MIN_WIDTH - 0.01) is None
+
+
+def test_cut_label_is_escaped_after_cutting():
+    """The raw name is cut, then escaped: `u_<a&b>` keeps its 7 raw characters and no escape
+    sequence is split."""
+    progress = cutting()
+    svg = progress._label_svg("u_<a&b>cdefgh", (0.0, 0.0, 62.0, 30.0))
+    assert svg is not None
+    assert f">u_&lt;a&amp;b&gt;{ELLIPSIS}</text>" in svg
+    assert label_of(progress, "u_<a&b>cdefgh", 62.0) == "u_<a&b>" + ELLIPSIS
+
+
+def test_svg_file_carries_the_ellipsis_as_utf8(tmp_path):
+    """The committed CSVs give cut labels; write_svg keeps the ellipsis as UTF-8 bytes, one per
+    cut label, and the bytes are deterministic."""
+    progress = cutting()
+    derived = progress.derive(CONFIG)
+    path = tmp_path / "progress.svg"
+    progress.write_svg(derived, path)
+    data = path.read_bytes()
+    assert data == progress.render_svg(derived).encode("utf-8")
+    cut = [t for t in parse(data.decode("utf-8")).iter(f"{SVG_NS}text")
+           if (t.text or "").endswith(ELLIPSIS)]  # fmt: skip
+    assert cut and data.count(ELLIPSIS.encode("utf-8")) == len(cut)
+    assert b"..." not in data
+
+
 def _expected_labels(derived) -> dict[tuple[str, str], str]:
     """(exe stem, unit) -> the label the rule gives: the unit name, unless the unit holds runtime
     rows and no game/thunk function; then its largest runtime row, the lowest start on a tie."""
@@ -372,39 +454,56 @@ def _outline(group: ET.Element) -> tuple[float, float, float, float]:
     return tuple(float(rect.get(a)) for a in ("x", "y", "width", "height"))
 
 
-def _check_label(progress, label: str, text: ET.Element, box) -> None:
+def _check_label(progress, text: ET.Element, box) -> None:
     x, y, w, h = box
     tx, ty = text.get("x"), text.get("y")
     assert _ROUNDED.fullmatch(tx) and _ROUNDED.fullmatch(ty), (tx, ty)
     assert float(tx) >= x
-    assert float(tx) + progress.LABEL_CHAR * len(label) <= x + w + BAND, label
-    assert y <= float(ty) <= y + h, label
+    assert float(tx) + progress.LABEL_CHAR * len(text.text) <= x + w + BAND, text.text
+    assert y <= float(ty) <= y + h, text.text
     assert text.get("font-size") == str(progress.LABEL_FONT_SIZE)
 
 
+def _fitted(progress, label: str, w: float, h: float) -> str | None:
+    """The owner's rule, computed independently: the full name when it fits, else the most
+    characters that fit, the last one being the ellipsis, when at least LABEL_MIN_CHARS of the
+    name are left; None below that or below the fixed minimum size."""
+    if w < progress.LABEL_MIN_WIDTH or h < progress.LABEL_MIN_HEIGHT:
+        return None
+    room = 0
+    while 2 * progress.LABEL_PAD + progress.LABEL_CHAR * (room + 1) <= w:
+        room += 1
+    if len(label) <= room:
+        return label
+    if room - 1 < progress.LABEL_MIN_CHARS:
+        return None
+    return label[:room - 1] + ELLIPSIS
+
+
 def test_treemap_labels_fit_their_unit():
-    """On the committed CSVs, every unit that fits its label carries it, every unit that does not
-    carries none, and each label lies inside its unit."""
-    progress = labelled()
+    """On the committed CSVs, every unit carries exactly the full-or-cut label the rule gives
+    for its size, or none below the minimum, and each label lies inside its unit. The rule is
+    decided on the unrounded rect, the test sees the 0.1-rounded one: only inside that band may
+    the outcome be either neighbour's."""
+    progress = cutting()
     derived = progress.derive(CONFIG)
     expected = _expected_labels(derived)
     root = parse(progress.render_svg(derived))
-    seen = {"game": 0, "library": 0}
+    seen = {"game": 0, "library": 0, "full": 0, "cut": 0}
     for exe_group in root.findall(f".//{SVG_NS}g[@data-exe]"):
         stem = exe_group.get("data-exe")
         for group in exe_group.findall(f"{SVG_NS}g[@data-unit]"):
             unit = group.get("data-unit")
             label = expected[(stem, unit)]
             x, y, w, h = _outline(group)
-            need = max(progress.LABEL_MIN_WIDTH,
-                       2 * progress.LABEL_PAD + progress.LABEL_CHAR * len(label))  # fmt: skip
+            allowed = {_fitted(progress, label, w + dw, h + dh)
+                       for dw in (-BAND, 0.0, BAND) for dh in (-BAND, 0.0, BAND)}  # fmt: skip
             texts = group.findall(f"{SVG_NS}text")
-            if w >= need + BAND and h >= progress.LABEL_MIN_HEIGHT + BAND:
-                assert [t.text for t in texts] == [label], (stem, unit)
-            elif w < need - BAND or h < progress.LABEL_MIN_HEIGHT - BAND:
-                assert texts == [], (stem, unit)
+            drawn = texts[0].text if texts else None
+            assert len(texts) <= 1, (stem, unit)
+            assert drawn in allowed, (stem, unit, drawn, allowed)
             for text in texts:
-                assert text.text == label, (stem, unit)
-                _check_label(progress, label, text, (x, y, w, h))
+                _check_label(progress, text, (x, y, w, h))
                 seen["game" if label == unit else "library"] += 1
-    assert seen["game"] >= 1 and seen["library"] >= 1, seen
+                seen["cut" if text.text != label else "full"] += 1
+    assert min(seen.values()) >= 1, seen
