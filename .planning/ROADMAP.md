@@ -290,7 +290,76 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans**: TBD
+**Plans:** 42 plans
+
+Plans:
+**Wave 1**
+- [ ] 07-01-PLAN.md — D-05/D-06 paperwork: done-rule rewording (DEC-03, DEC-05, SC3, SC5, roadmap row), decomp.wtf not re-evaluated (DEC-03, DEC-05, DEC-06)
+- [ ] 07-02-PLAN.md — spike 007 part 1 *(main checkout)*: q1 time base, q2 tick rule, q3 training rule with planted failures (DEC-01)
+- [ ] 07-03-PLAN.md — D-27 P1/P2: cflags rule by logical unit path, gate refuses uncommitted flags, real view-compile test (DEC-03, DEC-02)
+- [ ] 07-04-PLAN.md — hooks: owner-only cflags files, view-mode allowlist, view-unit scan, D-19 denies, readability kind (DEC-02, DEC-03)
+- [ ] 07-05-PLAN.md — callgraph.py: typed edges, mid-row/indirect/orphan reports, closure, SCCs (DEC-01)
+- [ ] 07-06-PLAN.md — progress page backlog 999.4: phone mosaic, keyboard/touch tooltips, visible bar (DEC-05)
+- [ ] 07-07-PLAN.md — attempts.jsonl v2 schema: per-attempt fields, limit/rename kinds, nightly totals (DEC-07, DEC-06)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 07-08-PLAN.md — spike 007 part 2 *(main checkout, owner checkpoint)*: get_text, tables, call graph, verdict, #997 report to the owner (DEC-01)
+- [ ] 07-09-PLAN.md — D-29 part 1: shared renamed-aware unit finder, configure D-12, source_marks, drift test by start (DEC-02, DEC-04)
+- [ ] 07-10-PLAN.md — mechanics.py: TOML schema, members generator with member/hub/closure/asm roles, tier digests, `mechanics` verb (DEC-01)
+- [ ] 07-11-PLAN.md — attempt wrapper: checks rooted in the private view, env validation (DEC-02)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 07-12-PLAN.md — locate.py and the asm detector, `mechanics locate` and `mechanics asm` (DEC-01)
+- [ ] 07-13-PLAN.md — driver private views: HEAD snapshot, landing section, ledger and view-hash audit, no header writes (DEC-02)
+- [ ] 07-14-PLAN.md — D-15 second-stage sweep and the -zm spike (DEC-03)
+- [ ] 07-15-PLAN.md — progress coverage view per checklist item, asm group, Pages paths (DEC-05)
+- [ ] 07-16-PLAN.md — D-29 part 2: SymbolTable.c_name, gate._reverted by start, linker-name path pinned (DEC-02, DEC-04)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 07-17-PLAN.md — flags propose/regate/list, the review queue, D-16 re-derivation (DEC-03, AGT-11)
+- [ ] 07-18-PLAN.md — claims, drive.lock, gate and git locks, concurrency-safe writes (DEC-02)
+- [ ] 07-19-PLAN.md — D-19 naming-proposal format and validators (DEC-02, DEC-04)
+- [ ] 07-20-PLAN.md — asm list generated and signed off by the owner *(main checkout, owner checkpoint)* (DEC-01, DEC-03)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 07-21-PLAN.md — N worker threads, shared usage-limit pause, stop-all, shared night cap, new defaults (DEC-02, DEC-06)
+- [ ] 07-22-PLAN.md — Tier 1 drafted, mid-row refs classified, hub-rule numbers, owner sign-off *(main checkout, owner checkpoint)* (DEC-01)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 07-23-PLAN.md — v2 records written: hook blocks, gate verdicts, passes, nightly totals, limit records (DEC-06, DEC-07)
+- [ ] 07-24-PLAN.md — flags approve and default (owner-run), D-33 evidence bar, per-rule docs check (DEC-03)
+- [ ] 07-25-PLAN.md — Tier 2 (#263) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
+- [ ] 07-42-PLAN.md — model table: Opus passes 1-2 then Fable, per-model budget defaults, `build_argv` per-session values, requested-model init check (DEC-06, AGT-11)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 07-26-PLAN.md — tier picker: callees first by SCC level, hubs after members, unlimited passes (DEC-02, DEC-03)
+- [ ] 07-27-PLAN.md — readlint RL01-RL06 with allowlist, waivers and scoped modes (DEC-04)
+- [ ] 07-28-PLAN.md — Tier 3 (#264) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
+- [ ] 07-29-PLAN.md — D-13 pilot sweep hits: propose, container re-gate, owner approves the batch *(main checkout, owner checkpoint)* (DEC-03, AGT-11)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 07-30-PLAN.md — Opus-then-Fable escalation wired into the driver, per-model budgets, init check and co-author by requested model, cap flags, canary `--model` (AGT-11, DEC-06, DEC-02)
+- [ ] 07-31-PLAN.md — readability sessions' `attempt check` adds readlint on the view unit (DEC-04)
+- [ ] 07-32-PLAN.md — Tier 4 (#265) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
+- [ ] 07-33-PLAN.md — optional `*` default ruling on D-33 evidence *(main checkout, owner checkpoint)* (DEC-03)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 07-34-PLAN.md — driver applies rename and header proposals as gated commits (DEC-02, DEC-04)
+- [ ] 07-35-PLAN.md — watcom-decomp for private views (writing-skills) and Phase 7 driver docs (DEC-02, DEC-06)
+- [ ] 07-36-PLAN.md — new watcom-readability skill (writing-skills) and the readability pass in ceremonies (DEC-04)
+- [ ] 07-37-PLAN.md — `reverseapoc stats` over the Phase 6-7 history, match classes from git (DEC-07, AGT-11)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+- [ ] 07-38-PLAN.md — readability session kind in the driver, one unit per commit (DEC-04, DEC-02)
+
+**Wave 11** *(blocked on Wave 10 completion; main checkout)*
+- [ ] 07-39-PLAN.md — owner canaries (Opus, Fable) and matching nights until Tier 1 is matched, with a two-flat-nights stall decision (DEC-03, DEC-06, AGT-11)
+
+**Wave 12** *(blocked on Wave 11 completion; main checkout)*
+- [ ] 07-40-PLAN.md — owner readability nights, D-30 allowlist, `readlint src/` clean (DEC-04)
+
+**Wave 13** *(blocked on Wave 12 completion; main checkout)*
+- [ ] 07-41-PLAN.md — phase gate: done rule, sampled re-gates, rebuild + cmp, both suites, validation sign-off (all Phase 7 requirements)
 
 ### Phase 8: Clean-room specs for OpenApoc
 
@@ -323,7 +392,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 0/TBD | Not started | - |
+| 7. Mechanics-first decompilation | 0/41 | Planned | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
