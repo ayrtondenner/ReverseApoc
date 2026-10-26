@@ -958,6 +958,21 @@ COMMIT_SHORT = 7  # hex digits of the commit shown on the page
 PAGES_WORKFLOW_URL = REPOSITORY + "/actions/workflows/pages.yml"
 README_URL = REPOSITORY + "#progress"
 BAR_HEIGHT = 8  # px, the percent bar
+# The function strip: one tick per game and thunk function, in address order. A CSS flex-wrap
+# row, so it re-wraps at any width instead of scaling: 112 ticks per row at a 375 px viewport.
+TICK_CLASSES = {MATCHED: "m", PARTIAL: "p", UNMATCHED: "u"}
+TICK_WIDTH = 2  # px; with the 1 px gap a tick stays a distinct mark at 1x
+TICK_GAP = 1  # px between ticks
+# Matched and partial ticks stand taller, so status does not rest on colour alone (matched and
+# unmatched grey are only 1.38:1 apart in luminance); unmatched ticks sit on the same bottom.
+TICK_HEIGHT = 14  # px, matched and partial
+TICK_SHORT = 8  # px, unmatched, bottom-aligned through a top margin
+TICK_ROW_GAP = 3  # px between wrapped rows
+STRIP_KEY = ('<p class="key">Each tick is one game or thunk function, in address order: '
+             f'<i class="{TICK_CLASSES[MATCHED]}" aria-hidden="true"></i> matched, '
+             f'<i class="{TICK_CLASSES[PARTIAL]}" aria-hidden="true"></i> partial, '
+             f'<i class="{TICK_CLASSES[UNMATCHED]}" aria-hidden="true"></i> unmatched. Matched '
+             "and partial ticks stand taller. The bar is the share of code bytes matched.</p>")
 MEASURED = (
     "A function is matched when its C, built with the original Watcom compiler, is "
     "byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE "
@@ -997,6 +1012,14 @@ def _page_css() -> str:
         f".bar{{flex:1 1 12rem;height:{BAR_HEIGHT}px;background:{TREEMAP_COLORS[UNMATCHED]}}}",
         f".bar span{{display:block;height:100%;background:{TREEMAP_COLORS[MATCHED]}}}",
         ".figures{margin:0;font-size:.875rem;font-variant-numeric:tabular-nums}",
+        ".strip{display:flex;flex-wrap:wrap;align-items:flex-start;"
+        f"gap:{TICK_ROW_GAP}px {TICK_GAP}px;margin-top:.75rem}}",
+        f".strip i,.key i{{flex:none;width:{TICK_WIDTH}px;height:{TICK_HEIGHT}px}}",
+        ".key i{display:inline-block}",
+        # Two-class selectors, so the short tick outranks the base tick rule in any order.
+        f".strip .u,.key .u{{height:{TICK_SHORT}px;margin-top:{TICK_HEIGHT - TICK_SHORT}px}}",
+        *(f"i.{TICK_CLASSES[status]}{{background:{TREEMAP_COLORS[status]}}}"
+          for status in (MATCHED, PARTIAL, UNMATCHED)),
         ".mosaic{margin-top:.75rem}",
         ".mosaic svg{display:block;width:100%;height:auto}",
     ])
@@ -1008,8 +1031,29 @@ def _figures(exe: ExeProgress) -> str:
             f"{t.total_functions:,} functions matched, {t.partial_functions:,} partial")
 
 
+def _tick_html(f: Function) -> str:
+    """One strip tick; matched and partial ticks carry a tooltip."""
+    cls = TICK_CLASSES[f.status]
+    if f.status == UNMATCHED:
+        return f'<i class="{cls}"></i>'
+    return f'<i class="{cls}" title="{_xml(f"{f.name}: {f.size:,} bytes, {f.status}")}"></i>'
+
+
+def _strip_html(exe: ExeProgress) -> str:
+    """The function strip: one tick per game and thunk function in address order, as one
+    role=img element whose aria-label holds the counts."""
+    t = exe.totals
+    unmatched = t.total_functions - t.matched_functions - t.partial_functions
+    aria = (f"{exe.label}, one tick per game and thunk function in address order: "
+            f"{t.matched_functions:,} matched, {t.partial_functions:,} partial, "
+            f"{unmatched:,} unmatched")  # fmt: skip
+    ticks = "".join(_tick_html(f) for f in sorted(exe.functions, key=lambda f: f.start))
+    return f'<div class="strip" role="img" aria-label="{_xml(aria)}">{ticks}</div>'
+
+
 def _exe_html(exe: ExeProgress) -> list[str]:
-    """One EXE's section: its heading, then the percent bar and the figures in text."""
+    """One EXE's section: its heading, then the percent bar, the figures in text and the
+    function strip."""
     stem, width = _xml(exe.stem), shield_message(exe.totals.percent)
     return [f'<section class="exe" aria-labelledby="exe-{stem}">',
             f'<h2 id="exe-{stem}">{_xml(exe.label)}</h2>',
@@ -1018,14 +1062,17 @@ def _exe_html(exe: ExeProgress) -> list[str]:
             f'<div class="bar" aria-hidden="true"><span style="width:{width}"></span></div>',
             f'<p class="figures">{_xml(_figures(exe))}</p>',
             "</div>",
+            _strip_html(exe),
             "</div>",
             "</section>"]  # fmt: skip
 
 
 def render_html(progress: Progress, commit: str | None = None) -> str:
-    """progress.html (owner rulings 3 and 4, 2026-10-26): per EXE a heading, a percent bar and
-    the figures in text, then the labelled mosaic (render_svg's output, verbatim) and how the
-    figures are measured. Inline CSS only, no script and no external request: every link is
+    """progress.html (owner rulings 3 and 4, 2026-10-26): per EXE a heading, a percent bar, the
+    figures in text and the function strip (one tick per game and thunk function in address
+    order; matched and partial ticks stand taller and carry a tooltip; the strip wraps with the
+    width), then the strip's key, the labelled mosaic (render_svg's output, verbatim) and how
+    the figures are measured. Inline CSS only, no script and no external request: every link is
     relative or to the repository. The same CSVs and commit give the same bytes; without a
     commit only the "Updated from commit" line is missing."""
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
@@ -1037,7 +1084,8 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
                      f"{_xml(commit[:COMMIT_SHORT])}</a></p>")  # fmt: skip
     for exe in progress.exes:
         lines += _exe_html(exe)
-    lines += ["<h2>The mosaic</h2>",
+    lines += [STRIP_KEY,
+              "<h2>The mosaic</h2>",
               '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
               "bytes; large units carry their name.</p>",
               '<div class="mosaic">', render_svg(progress).removesuffix("\n"), "</div>",

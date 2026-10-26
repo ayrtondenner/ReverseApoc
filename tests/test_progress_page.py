@@ -7,6 +7,8 @@ only (no game bytes)."""
 
 from __future__ import annotations
 
+import dataclasses
+import re
 import subprocess
 import sys
 from html.parser import HTMLParser
@@ -164,6 +166,126 @@ def test_page_is_deterministic_and_bounded():
     assert len(first.encode("utf-8")) < PAGE_LIMIT
     for exe in derived.exes:
         assert figures(progress, exe.totals) in first, exe.label
+
+
+# ---- the function strip (owner ruling 4, the brief's one memorable element) ----
+
+_STRIP = re.compile(r'<div class="strip" role="img" aria-label="([^"]*)">(.*?)</div>', re.S)
+_TICK = re.compile(r'<i class="([a-z]+)"(?: title="([^"]*)")?></i>')
+STRIP_KEY = ('<p class="key">Each tick is one game or thunk function, in address order: '
+             '<i class="m" aria-hidden="true"></i> matched, <i class="p" aria-hidden="true"></i> '
+             'partial, <i class="u" aria-hidden="true"></i> unmatched. Matched and partial ticks '
+             "stand taller. The bar is the share of code bytes matched.</p>")  # fmt: skip
+
+
+def strips(page: str) -> list[tuple[str, list[tuple[str, str | None]]]]:
+    """Per strip in page order: its aria-label and the (class, title or None) of its ticks."""
+    out = []
+    for match in _STRIP.finditer(page):
+        ticks = [(cls, title if title else None) for cls, title in _TICK.findall(match[2])]
+        assert _TICK.sub("", match[2]) == "", "a strip holds ticks only, no separator"
+        out.append((match[1], ticks))
+    return out
+
+
+def strip_module():
+    """progress.py with its strip API; a missing name fails the test on this assert."""
+    progress = page_module()
+    for name in ("TICK_CLASSES", "TICK_WIDTH", "TICK_GAP", "TICK_HEIGHT", "TICK_SHORT",
+                 "TICK_ROW_GAP"):  # fmt: skip
+        assert hasattr(progress, name), f"progress.py has no {name}"
+    return progress
+
+
+def test_strip_one_tick_per_function(tmp_path):
+    progress = strip_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    found = strips(page)
+    assert [ticks for _aria, ticks in found] == [
+        [("m", "func_00010000: 16 bytes, matched"), ("p", "func_00010010: 32 bytes, partial"),
+         ("u", None), ("u", None)],
+        [("u", None)],
+    ]
+    for stem in ("ufo2p", "tacp"):
+        section = page.split(f'aria-labelledby="exe-{stem}">', 1)[1].split("</section>", 1)[0]
+        figures_at = section.index('<p class="figures">')
+        assert section.index('<div class="strip" role="img"') > figures_at, stem
+
+
+def test_strip_aria_labels(tmp_path):
+    progress = strip_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert [aria for aria, _ticks in strips(page)] == [
+        "UFO2P.EXE, one tick per game and thunk function in address order: 1 matched, "
+        "1 partial, 2 unmatched",
+        "TACP.EXE, one tick per game and thunk function in address order: 0 matched, "
+        "0 partial, 1 unmatched",
+    ]
+
+
+def test_strip_on_committed_csvs():
+    progress = strip_module()
+    derived = progress.derive(CONFIG)
+    found = strips(progress.render_html(derived, SHA))
+    assert len(found) == len(derived.exes)
+    for exe, (_aria, ticks) in zip(derived.exes, found, strict=True):
+        ordered = sorted(exe.functions, key=lambda f: f.start)
+        assert [cls for cls, _title in ticks] == [progress.TICK_CLASSES[f.status]
+                                                  for f in ordered]  # fmt: skip
+        assert sum(cls == "m" for cls, _title in ticks) == exe.totals.matched_functions
+        for f, (cls, title) in zip(ordered, ticks, strict=True):
+            if cls in ("m", "p"):
+                assert title is not None and title.startswith(f.name), (exe.label, f.name)
+
+
+def test_strip_colours_and_geometry(tmp_path):
+    """The tick geometry, and its phone budget: at a 375 px viewport the content is
+    375 - 2 * 0.05 * 375 = 337.5 px wide (5vw padding each side, one column below 40rem), so at
+    least 100 ticks fit a row and a 1,553-tick strip stays under 300 px tall."""
+    progress = strip_module()
+    assert progress.TICK_CLASSES == {"matched": "m", "partial": "p", "unmatched": "u"}
+    style = style_of(progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA))
+    for status, cls in progress.TICK_CLASSES.items():
+        assert f"i.{cls}{{background:{progress.TREEMAP_COLORS[status]}}}" in style, status
+    geometry = (progress.TICK_WIDTH, progress.TICK_GAP, progress.TICK_HEIGHT, progress.TICK_SHORT,
+                progress.TICK_ROW_GAP)  # fmt: skip
+    assert geometry == (2, 1, 14, 8, 3)
+    width, gap, tall, short, row_gap = geometry
+    for rule in (".strip{display:flex;flex-wrap:wrap;align-items:flex-start;"
+                 f"gap:{row_gap}px {gap}px;margin-top:.75rem}}",
+                 f".strip i,.key i{{flex:none;width:{width}px;height:{tall}px}}",
+                 ".key i{display:inline-block}",
+                 f".strip .u,.key .u{{height:{short}px;margin-top:{tall - short}px}}"):  # fmt: skip
+        assert rule in style, rule
+    content = 375 - 2 * 0.05 * 375
+    per_row = int((content + gap) // (width + gap))
+    assert per_row >= 100
+    rows = -(-1553 // per_row)
+    assert rows * tall + (rows - 1) * row_gap <= 300
+
+
+def test_key_explains_the_ticks(tmp_path):
+    progress = strip_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert page.count(STRIP_KEY) == 1
+    at = page.index(STRIP_KEY)
+    assert page.rindex("</section>") < at < page.index("<h2>The mosaic</h2>")
+
+
+def test_strip_escapes_names(tmp_path):
+    progress = strip_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    odd = 'func_"><script>x</script>'
+    functions = (dataclasses.replace(exe.functions[0], name=odd), *exe.functions[1:])
+    patched = dataclasses.replace(exe, functions=functions)
+    page = progress.render_html(dataclasses.replace(derived, exes=(patched, derived.exes[1])), SHA)
+    tags = tags_of(page)
+    assert "script" not in [tag for tag, _attrs in tags]
+    strip = next(i for i, (tag, attrs) in enumerate(tags)
+                 if tag == "div" and attrs.get("class") == "strip")  # fmt: skip
+    tag, attrs = tags[strip + 1]
+    assert tag == "i" and attrs["title"] == f"{odd}: 16 bytes, matched"
 
 
 # ---- publication ----
