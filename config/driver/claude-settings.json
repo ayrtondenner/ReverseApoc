@@ -6,7 +6,10 @@
     "security-guidance@claude-plugins-official": false,
     "superpowers@claude-plugins-official": false,
     "i-have-adhd@i-have-adhd": false,
-    "clangd-lsp@claude-plugins-official": false
+    "clangd-lsp@claude-plugins-official": false,
+    "agents-md@builtin": false,
+    "telemetry@builtin": false,
+    "plugin-authoring@builtin": false
   },
   "autoMemoryEnabled": false,
   "disableClaudeAiConnectors": true,

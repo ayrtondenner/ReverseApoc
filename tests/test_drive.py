@@ -829,6 +829,42 @@ def test_canary_names_a_failed_container_removal(tmp_path, capsys):
     assert any("containers" in text for text in _failed(doc)), _failed(doc)
 
 
+# --- 06-26 canary1: every check prints a line (docs/workflow.md, Canary) ---
+
+CONTAINERS_PASS = "the attempt's containers were removed"
+UNKNOWN_PASS = "no unknown stream event carries an error"
+
+
+def _passed(doc: dict) -> list[str]:
+    return [c["check"] for c in doc.get("checks", []) if c["ok"]]
+
+
+def test_canary_pass_prints_the_containers_and_unknown_event_lines(tmp_path, capsys):
+    """canary1: the containers check and the unknown-event check printed nothing on success,
+    against "each check prints one PASS: or FAIL: line"."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, out, _ = rig.drive(capsys, canary=True)
+    assert code == 0
+    lines = out.splitlines()
+    assert f"PASS: {CONTAINERS_PASS}" in lines
+    assert f"PASS: {UNKNOWN_PASS}" in lines
+
+
+def test_canary_failed_container_removal_has_no_containers_pass_line(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    rig.runner.replies.append((lambda a: a[:2] == ["docker", "ps"], (1, "", "made up\n")))
+    _, doc = _canary(rig, capsys)
+    assert CONTAINERS_PASS not in _passed(doc)
+    assert UNKNOWN_PASS in _passed(doc)
+
+
+def test_canary_unknown_event_error_has_no_unknown_event_pass_line(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_unknown_error", write=f"{CANARY_DIR}/context.md")
+    _, doc = _canary(rig, capsys)
+    assert UNKNOWN_PASS not in _passed(doc)
+    assert CONTAINERS_PASS in _passed(doc)
+
+
 def test_canary_refuses_a_reused_run_id(tmp_path, capsys):
     """A reused --run ID would let an earlier canary's context.md or checks.jsonl pass."""
     rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")

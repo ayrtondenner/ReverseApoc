@@ -2351,13 +2351,17 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
         checks.add(tried, f"{shown} was " + ("called" if tried else "never called"))
         checks.add(not denied, f"{shown} " + ("was denied" if denied else "was allowed"))
         checks.add(ok, f"{shown}: {evidence}")
+    carrying = False
     for event in events:
         kind = event.get("type")
         if kind in KNOWN_EVENT_TYPES:
             continue
         keys = _error_keys(event)
+        carrying = carrying or bool(keys)
         checks.add(not keys, f"unknown event type {kind!r}"
                              + (f" carries {', '.join(keys)}" if keys else " (ignored)"))
+    if not carrying:  # 06-26 canary1: every check prints a line, a passing one too
+        checks.add(True, "no unknown stream event carries an error")
 
 
 def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
@@ -2440,6 +2444,8 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
         checks.add(False, f"containers not removed: {type(exc).__name__}: {exc}")
+    else:  # 06-26 canary1: every check prints a line, a passing one too
+        checks.add(True, "the attempt's containers were removed")
     try:  # fix round 2: the session ran, so an error here is a FAIL (exit 1), never REFUSED
         _tree_checks(probe, before, checks)
         refs_after = _refs(probe)
