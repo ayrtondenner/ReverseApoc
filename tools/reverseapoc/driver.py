@@ -36,7 +36,7 @@ After each session, in this order:
    match (D-24): never the transcript, the result event or /goal's verdict. A match is one
    commit with explicit paths only (D-25). Otherwise the attempt is reset (D-34) and logged
    PARTIAL (best plain check above 0%, its C saved under best/ and `gate --partial` run) or
-   GAVE_UP; a failed lint is PARTIAL "lint".
+   GAVE_UP; a failed lint is the same outcome with abort_reason "lint" (review IN-02).
 
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
@@ -1614,10 +1614,9 @@ class _Night:
         if self._gate_matched(session, gate):
             self._commit_match(session, gate, summary, abort)
             return MATCHED
-        if gate is None:
-            outcome, abort = PARTIAL, LINT
-        else:
-            outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
+        outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
+        if gate is None:  # a failed lint; review IN-02: PARTIAL only with a score above 0%
+            abort = LINT
         self._reset(session)
         if outcome == PARTIAL and summary.best_source is not None:
             if self._partial_gate(session, summary) == EXIT_TOOL:

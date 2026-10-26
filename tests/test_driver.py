@@ -703,15 +703,29 @@ def test_timeout_is_counted(tmp_path):
     assert report.sessions == 1
 
 
-def test_lint_failure_is_partial_and_commits_nothing(tmp_path):
-    """06-15 note: the C89 lint runs before a match is committed; a failed lint is PARTIAL
-    "lint" and the gate never runs, so status.csv is untouched."""
-    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0], lint_exits=[1])
+def test_lint_failure_with_a_score_is_partial_and_commits_nothing(tmp_path):
+    """06-15 note: the C89 lint runs before a match is committed; a failed lint after a check
+    scored above 0% is PARTIAL "lint" and the gate never runs."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[0],
+                  lint_exits=[1])  # fmt: skip
     night.run(config={"attempts_per_function": 1})
     assert night.lint_calls == [PICK]
     assert night.gate_calls == []
     record = _one(night.kinds("attempt"))
     assert (record["outcome"], record["abort_reason"]) == ("PARTIAL", "lint")
+    assert _feats(night) == []
+
+
+def test_lint_failure_without_a_score_is_gave_up(tmp_path):
+    """Review IN-02: PARTIAL means a score above 0% in objdiff (README), so a failed lint with
+    no check above 0% is GAVE_UP "lint", and status.csv is untouched."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0], lint_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    assert night.lint_calls == [PICK]
+    assert night.gate_calls == []
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["abort_reason"]) == ("GAVE_UP", "lint")
+    assert record["check"]["best_percent"] is None
     assert _feats(night) == []
 
 
