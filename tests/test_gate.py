@@ -843,11 +843,26 @@ def test_a_failed_second_write_names_the_written_table(tree, monkeypatch):
     assert tree.status(TACP).exists() and not tree.status(UFO).exists()
 
 
-def test_cmd_gate_docstring_names_the_half_write():
-    from reverseapoc import cli
+def test_gate_cli_names_the_written_table_on_a_half_write(tree, monkeypatch, capsys):
+    """Review IN-03 (what _cmd_gate's docstring promises): a write that fails after another
+    EXE's table was written exits 2, and the CLI's error names the table already written."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    tree.write_unit(TACP, UNIT_T, [T1])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    real = gate.write_status
 
-    assert "(nothing written)" not in (cli._cmd_gate.__doc__ or "")
-    assert "already written" in (cli._cmd_gate.__doc__ or "")
+    def failing(path, rows):
+        if "ufo2p" in Path(path).parts:
+            raise OSError("disk full")
+        real(path, rows)
+
+    monkeypatch.setattr(gate, "write_status", failing)
+    assert cli_main(["gate", f"ufo2p/{UNIT_A}", f"tacp/{UNIT_T}", *tree.argv()]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("reverseapoc gate: error: ")
+    assert f"wrote {tree.status(TACP)} but not {tree.status(UFO)}" in err
+    assert "restore config/ before committing" in err
+    assert tree.status(TACP).exists() and not tree.status(UFO).exists()
 
 
 def test_gate_refuses_a_non_default_src(tree, tmp_path):
