@@ -194,6 +194,25 @@ Every hand match, with the cell that proved it. A row is written only from `reve
 
 Before any game C, plan 05-18 re-proved spike 005 through the production writers (`tests/test_check_real.py`): `check_source` on Watcom's own CMAIN386.C against the `__CMain` runtime row gives objdiff 100.0, a passing relocation check and equal bytes in both EXEs, landing it alone keeps both SHA-1s, and a planted wrong call target fails the relocation check. `tests/test_objdiff_real.py` repeats the objdiff blind spot (a wrong 2nd relocation of one instruction scores 100.0) through omf2elf, the target writer and objdiff-cli.
 
+### Phase 6 match evidence
+
+Every match of the owner-run pilot (run 20261026-005209, plan 06-26), each its own `Matched-By: reverseapoc drive` commit. Plan 06-27 re-gated each commit in order in the container (`gate --all` exit 0 after every commit, both EXEs SHA-1 identical to `config/targets.toml`), then swept each function with `reverseapoc check EXE/UNIT --sweep FUNC --json`. A sweep never lands and never edits `config/cflags.txt`. It runs 30 cells: 10.6, 10.5 and 11.0, times `-4r` and `-5r`, times no `-o`, `-ox`, `-os`, `-ot` and `-oneatx`, all with `-s -fpi`; cell 1 is the default rule. "Cells at 100.0" counts the cells with objdiff 100.0 and a passing relocation check. The evidence is `build/gate/06-evidence/11-regate-*.log` and `20-sweep-<function>.json`, and `build/logs/sweep-*.log` (all gitignored).
+
+| EXE | Function | Unit | Compiler | Flags | Evidence cell | Cells at 100.0 | objdiff | Reloc check | SHA-1 |
+|---|---|---|---|---|---|---|---|---|---|
+| UFO2P.EXE | func_0008A0E0 (27 bytes: one call with two constant arguments, then a 16-bit global set to 0) | u_00089980 (`src/ufo2p/u_00089980.c`, 14 INCLUDE_ASM stubs) | wcc386@10.6 | `-4r -s -fpi` | default (cell 1), commit c83cf4e | 24 of 30: every cell except `-os` (cells 3, 8, 13, 18, 23, 28 at 80.0, relocation check fails) | 100.0 | ok | UFO2P.EXE and TACP.EXE identical |
+| TACP.EXE | func_0006EE30 (15 bytes: `free` of a global pointer, then one call) | u_0006ee30 (`src/tacp/u_0006ee30.c`, no stubs) | wcc386@10.6 | `-4r -s -fpi` | default (cell 1), commit d288ad6 | 30 of 30 | 100.0 | ok | UFO2P.EXE and TACP.EXE identical |
+| UFO2P.EXE | func_0008A100 (27 bytes: the same shape as func_0008A0E0, with another constant) | u_00089980 (`src/ufo2p/u_00089980.c`, 14 INCLUDE_ASM stubs) | wcc386@10.6 | `-4r -s -fpi` | default (cell 1), commit 955931f | 18 of 30: not `-os` at either CPU (80.0), and not `-ot` or `-oneatx` at `-4r` (cells 4, 5, 14, 15, 24, 25 at 75.0); at `-5r` those two reach 100.0 | 100.0 | ok | UFO2P.EXE and TACP.EXE identical |
+
+**What the sweeps separate.**
+- **Versions:** not separated. In all three sweeps, 10.6, 10.5 and 11.0 give the same result for every flag set.
+- **`-4r` vs `-5r` under the default rule:** not separated. The default cell reaches 100.0 at both CPU targets (cells 1 and 6) for every function.
+- **`-o` sets:**
+  - `-os` reproduces neither UFO2P function.
+  - `-4r -ot` and `-4r -oneatx` do not reproduce func_0008A100. This is the first `-4`/`-5` difference measured on game code, but it shows up only under those `-o` sets, not under the default.
+
+All five matched functions agree with the `*` default (two from Phase 5, three from the pilot). It therefore stays `*  wcc386@10.6  -4r -s -fpi`; changing it is the owner's call.
+
 ### Fallbacks and candidates
 
 The owner accepted Phase 4 under D-08/D-10 on 2026-10-22 (override in `04-VERIFICATION.md`): the version and flags below are a preference order and a candidate list, not a proof. A match proves or drops an entry; record what each match proves in the Flags table above.

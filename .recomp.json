@@ -18,7 +18,7 @@
     }
   ],
   "project": "ReverseApoc",
-  "status": "exploring",
+  "status": "in-progress",
   "targets": [],
   "toolchain": [
     "Watcom C/C++ 10.x",
