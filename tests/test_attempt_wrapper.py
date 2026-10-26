@@ -379,6 +379,21 @@ def test_attempt_check_snapshots_the_source(repo: Path, monkeypatch):
     assert (repo / "checks" / "0002.c").read_bytes().endswith(b"/* second shape */\n")
 
 
+def test_attempt_sweep_with_no_measured_cell_logs_no_percent(repo: Path, monkeypatch, capsys):
+    """Review IN-01: a sweep that measured no cell carries no measurement, like a plain check
+    that compiled nothing: best_percent, reloc_ok and bytes_ok are all null, and the driver's
+    reader still takes the line."""
+    from reverseapoc import driver
+
+    failed = dict(_cell(1, "10.6", ["-4r", "-s", "-fpi"], 0.0), status="failed")
+    _use(monkeypatch, FakeRunner(json.dumps(_sweep_doc(failed))))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    (line,) = _lines(repo)
+    assert (line["best_percent"], line["reloc_ok"], line["bytes_ok"]) == (None, None, None)
+    summary = driver.read_checks(repo)
+    assert (summary.runs, summary.best_percent) == (1, None)
+
+
 def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
     """F33: a 100.0 cell under flags other than the unit's cflags rule is a sweep hit."""
     default = _cell(1, "10.6", ["-4r", "-s", "-fpi"], 62.5)
