@@ -185,6 +185,9 @@ class Night:
     partial_exits: list[int] = field(default_factory=list)
     picks: tuple[Pick, ...] = (PICK,)
     unit_committed: bool = True
+    # The starts a passing gate writes matched rows for, like the real gate's JSON `written`
+    # (every function of the unit that passed). None: the claimed pick's start only.
+    gate_written: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         self.tmp_path.mkdir(parents=True, exist_ok=True)
@@ -263,13 +266,20 @@ class Night:
     def _gate(self, pick: Pick, attempts: int) -> GateRun:
         self.gate_calls.append((pick, attempts))
         code = self.gate_exits.pop(0) if self.gate_exits else 1
+        written = []
         if code == 0:
-            status = self.repo / f"config/{pick.exe}/status.csv"
-            with status.open("a", encoding="utf-8", newline="\n") as fh:
-                fh.write(f"0x{pick.start:08X},{pick.name},{pick.unit},matched,100.00,{attempts}\n")
+            rel = f"config/{pick.exe}/status.csv"
+            starts = (pick.start,) if self.gate_written is None else self.gate_written
+            with (self.repo / rel).open("a", encoding="utf-8", newline="\n") as fh:
+                for start in starts:
+                    name = f"func_{start:08X}"
+                    fh.write(f"0x{start:08X},{name},{pick.unit},matched,100.00,{attempts}\n")
+                    written.append({"path": rel, "start": f"0x{start:08X}", "name": name,
+                                    "unit": pick.unit, "status": "matched"})  # fmt: skip
             _write(self.repo / "decomphub.progress.json", '{"matched": 1}\n')
         doc = {
             "ok": code == 0,
+            "written": written,
             "checks": [
                 {
                     "splice": [
@@ -1653,3 +1663,65 @@ def test_console_night_is_silent_by_default(tmp_path, capsys):
     Night(tmp_path, sessions=[Sess()], gate_exits=[0]).run()
     out, err = capsys.readouterr()
     assert (out, err) == ("", "")
+
+
+# ---- 06-REVIEW CR-01: a gate pass is a match only when it wrote the claimed function's row ----
+
+SIBLING = START - 0x10  # a function of the same unit, matched before tonight (made up)
+SIBLING_ROW = f"0x{SIBLING:08X},func_{SIBLING:08X},{UNIT},matched,100.00,1\n"
+
+
+def _night_with_matched_sibling(tmp_path: Path, **over) -> Night:
+    """A unit that already holds a matched function: its gate passes whatever the session did
+    to the claimed function (stubs are not checked), so the gate's exit alone proves nothing."""
+    night = Night(tmp_path, **over)
+    _write(night.repo / f"config/{EXE}/status.csv", STATUS_HEAD + SIBLING_ROW)
+    night.git("commit", "-q", "-am", "a sibling matched earlier")
+    night.base = night.git("rev-parse", "HEAD").strip()
+    return night
+
+
+def test_gate_pass_without_the_claimed_row_is_no_match(tmp_path):
+    night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
+                                        gate_written=(SIBLING,))  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert _feats(night) == []
+    assert report.matched == 0
+    record = _one(night.kinds("attempt"))
+    assert record["outcome"] == "GAVE_UP"
+    assert _unit_text(night) == SCAFFOLD  # D-34: the attempt was reset
+    # the gate's rewrite of the sibling's row and of the feed is undone
+    status = (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8")
+    assert status == STATUS_HEAD + SIBLING_ROW
+    assert (night.repo / FEED_NAME).read_text(encoding="utf-8") == "{}\n"
+
+
+def test_gate_pass_without_the_claimed_row_keeps_a_partial(tmp_path):
+    sess = Sess(checks=(check_line(1, 80.0),))
+    night = _night_with_matched_sibling(tmp_path, sessions=[sess], gate_exits=[0],
+                                        gate_written=(SIBLING,))  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert _feats(night) == []
+    assert report.matched == 0
+    assert _one(night.kinds("attempt"))["outcome"] == "PARTIAL"
+    assert len(night.partial_calls) == 1
+
+
+def test_limit_salvage_without_the_claimed_row_is_no_match(tmp_path):
+    night = _night_with_matched_sibling(tmp_path, sessions=[Sess("rejected")], gate_exits=[0],
+                                        gate_written=(SIBLING,))  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert _feats(night) == []
+    assert report.matched == 0
+    assert "MATCHED" not in [r["outcome"] for r in night.kinds("attempt")]
+    status = (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8")
+    assert status == STATUS_HEAD + SIBLING_ROW
+
+
+def test_gate_pass_with_the_claimed_row_beside_a_sibling_commits(tmp_path):
+    night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
+                                        gate_written=(SIBLING, START))  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert _feats(night) == [MATCH_SUBJECT]
+    assert report.matched == 1
+    assert _one(night.kinds("attempt"))["outcome"] == "MATCHED"
