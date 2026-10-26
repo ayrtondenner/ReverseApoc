@@ -1732,6 +1732,31 @@ def test_limit_salvage_without_the_claimed_row_is_no_match(tmp_path):
     assert status == STATUS_HEAD + SIBLING_ROW
 
 
+@pytest.mark.parametrize("refused", [f"config/{EXE}/status.csv", FEED_NAME])
+def test_unclaimed_pass_with_a_refused_restore_stops_the_night(tmp_path, monkeypatch, refused):
+    """Fix round 2: when the pre-gate bytes of status.csv or the feed cannot be put back after
+    a pass without the claimed row (_restore_bytes refuses a link or a path outside the
+    checkout), the night STOPS on a tool failure naming the file: no MATCHED record, no feat
+    commit, and nothing committed but the attempt log."""
+    real = driver._Night._restore_bytes
+
+    def refuse(self, name, path, data):
+        return False if name == refused else real(self, name, path, data)
+
+    monkeypatch.setattr(driver._Night, "_restore_bytes", refuse)
+    night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
+                                        gate_written=(SIBLING,))  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1})
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert driver._UNCLAIMED_PASS in report.detail
+    assert f"not restored: {refused} (refused: a link or outside the checkout)" in report.detail
+    assert report.matched == 0
+    assert all(r.get("outcome") != "MATCHED" for r in night.records())
+    assert _feats(night) == []
+    assert night.commits() == [CHORE]
+    assert night.commit_files(CHORE) == [LOG]
+
+
 def test_gate_pass_with_the_claimed_row_beside_a_sibling_commits(tmp_path):
     night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
                                         gate_written=(SIBLING, START))  # fmt: skip
