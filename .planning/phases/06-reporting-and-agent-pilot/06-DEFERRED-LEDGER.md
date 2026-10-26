@@ -19,7 +19,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 
 Completed by gate plan 06-27 (2026-10-26): every row still `planned` or `pending` was filled from the closing
 plan's SUMMARY and `git log --grep="(06-NN"`, and every hash was checked with `git cat-file -e`. Rows 06-27 closes
-itself point at its Task 2 commit, whose hash is in 06-27-SUMMARY.md. No row is left `planned` or `pending`.
+itself point at its Task 2 commit 03b63e2 (filled in by its Task 3 commit). No row is left `planned` or `pending`.
 
 ## A. Phase 6 targets and driver blockers
 
@@ -75,7 +75,7 @@ itself point at its Task 2 commit, whose hash is in 06-27-SUMMARY.md. No row is 
 | DI-23 | 04 security observations T-04-15/16 (10.5 real proofs), T-04-17 (failing assert printed bytes), T-04-36 (unlogged scratch checks) | 06-07 Tasks 2-3 and fix round 1; 04-SECURITY.md closure recorded by 06-21 Task 2 | 1b34ae3, e23cbcc, fdf0e0a; 225ec66 | closed |
 | DI-24 | Uncovered code: TACP ~0x29D4D..0x31040 and the UFO2P 3-byte tail at 0x000CFADA have no functions.csv rows | D-40 (counts as unmatched now; rows added when matching reaches it); D-50 (shown as an "uncovered" segment, implemented by 06-18) | none (ruling) | ruled (D-40, D-50) |
 | DI-25 (wording) | Compiler candidates unseparated: fix the stale toolchain.md wording | 06-20 Task 2 and fix round 1 | 0a2cf9b, 4a8eaa7 | closed |
-| DI-25 (evidence) | Compiler candidates unseparated: log the evidence from each pilot match | 06-27 Task 2: `### Phase 6 match evidence` in docs/toolchain.md, one row per pilot match (c83cf4e, d288ad6, 955931f), from the container sweeps build/gate/06-evidence/20-sweep-*.json; versions and `-4r`/`-5r` stay tied, `-os` drops for both UFO2P functions | the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
+| DI-25 (evidence) | Compiler candidates unseparated: log the evidence from each pilot match | 06-27 Task 2: `### Phase 6 match evidence` in docs/toolchain.md, one row per pilot match (c83cf4e, d288ad6, 955931f), from the container sweeps build/gate/06-evidence/20-sweep-*.json; versions and `-4r`/`-5r` stay tied, `-os` drops for both UFO2P functions | 03b63e2 | closed |
 
 ## C. Paperwork
 
@@ -84,7 +84,7 @@ itself point at its Task 2 commit, whose hash is in 06-27-SUMMARY.md. No row is 
 | DI-26 | T-04-13: owner signed A1 off in 04-UAT.md, but 04-SECURITY.md still said pending | 06-21 Task 2 (records the owner's A1 sign-off, 04-UAT.md test 3, 38b3b6b, D-41) | 225ec66 | closed |
 | DI-27 | 04-VALIDATION.md sign-off boxes unticked and "Approval: pending" against a validated frontmatter | 06-21 Task 2 (cites 04-UAT.md, f606a13, D-41) | 225ec66 | closed |
 | DI-28 | 05-VERIFICATION.md body said "Status: human_needed", frontmatter passed | 06-21 Task 2 (cites 05-UAT.md 5/5, c988bed, and the override, 4491f04) | 225ec66 | closed |
-| DI-29 | Spike 005 VALIDATED verdict needs the owner's recorded sign-off (owner line at the pilot checkpoint, D-41) | 06-26 (owner line "Spike 005 VALIDATED, confirmed by the owner on 2026-10-25", in its SUMMARY) and 06-27 Task 2 (quoted in 05-VALIDATION.md) | 273b999; the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
+| DI-29 | Spike 005 VALIDATED verdict needs the owner's recorded sign-off (owner line at the pilot checkpoint, D-41) | 06-26 (owner line "Spike 005 VALIDATED, confirmed by the owner on 2026-10-25", in its SUMMARY) and 06-27 Task 2 (quoted in 05-VALIDATION.md) | 273b999; 03b63e2 | closed |
 | DI-30 | STATE.md Phase 5 blocker repeats its RESOLVED text; Deferred Items table said none | 06-21 Task 3 | 80e9c17 | closed |
 | DI-31 | Backlog 999.2: Phase 7 SC4 (DEC-04) reworded so readlint also rejects `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit (readlint itself stays Phase 7) | 06-21 Task 3 | 80e9c17 | closed |
 
@@ -105,4 +105,4 @@ itself point at its Task 2 commit, whose hash is in 06-27-SUMMARY.md. No row is 
 | DI-35 | Awesome-list PR drafts, files only; the owner opens or approves each (D-33) | 06-19 Tasks 1-2 and fix round 1 (drafts in docs/listings.md; sending them is the owner's) | 90e4d0e, 74afbf8; 44a78ef | closed |
 | DI-36 | decomp.me msdos preset request draft; the owner files it by hand (D-33) | 06-19 Task 2 and fix round 1 (draft in docs/listings.md; filing it is the owner's) | 74afbf8; 44a78ef | closed |
 | DI-37 (links, notes) | .recomp.json links and notes (D-32) | 06-22 Task 1 and fix round 2 | a9011c7; e360d32 | closed |
-| DI-37 (status) | .recomp.json status after the pilot (D-32) | 06-27 Task 2 (`status` exploring -> in-progress; the pilot landed 3 matches) | the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
+| DI-37 (status) | .recomp.json status after the pilot (D-32) | 06-27 Task 2 (`status` exploring -> in-progress; the pilot landed 3 matches) | 03b63e2 | closed |
