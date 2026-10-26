@@ -182,6 +182,10 @@ def _today() -> str:
     return datetime.now(UTC).date().isoformat()
 
 
+def _quiet(text: str) -> None:
+    """The silent console: --json mode, and every Deps or finish no verb wired (261026-9ue)."""
+
+
 @dataclass(frozen=True)
 class Deps:
     """Every effect of the loop (D-05). `queue(difficult)` yields the picks, skipping the
@@ -1750,7 +1754,8 @@ class Seams:
     """Every effect of the verb: `run` runs every command except git and the session (docker,
     uv, `claude --version`) and returns its exit code and text output; `git` is git_runner;
     `world` loads both EXEs; `session` is session.run_session and `argv` the claude argv
-    (session.build_argv with the resolved `claude`)."""
+    (session.build_argv with the resolved `claude`). `now` is the wall clock the console
+    stamps read (local time; Deps.clock stays the monotonic clock for durations)."""
 
     run: Runner
     git: Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -1759,6 +1764,25 @@ class Seams:
     argv: Callable[[str], Sequence[str]]
     claude: str = "claude"
     base_env: Mapping[str, str] | None = None
+    now: Callable[[], datetime] = datetime.now
+
+
+def stamp(now: datetime) -> str:
+    """The `[HH:MM:SS] ` prefix of a console line: the time it printed."""
+    return now.strftime(STAMP_FORMAT)
+
+
+def console(options: DriveOptions, seams: Seams) -> Callable[[str], None]:
+    """F13: in --json mode stdout keeps one JSON document and the console prints nothing; in
+    text mode each progress line goes to stderr stamped with the local time it prints (quick
+    261026-9ue). The clock and sys.stderr are read on every call, never once per run."""
+    if options.json:
+        return _quiet
+
+    def say(text: str) -> None:
+        print(stamp(seams.now()) + CONSOLE_PREFIX + text, file=sys.stderr, flush=True)
+
+    return say
 
 
 def command_runner(repo: Path, *, timeout_s: float = COMMAND_TIMEOUT_S) -> Runner:
@@ -2000,6 +2024,8 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], picks: Sequen
 # ---- the preflight (D-13, D-34, D-36; F13, F14) ----
 
 PREFLIGHT_LOG = "preflight.log"
+STAMP_FORMAT = "[%H:%M:%S] "  # local wall-clock time on each console line (quick 261026-9ue)
+CONSOLE_PREFIX = "drive: "
 HOST_CLI = ("uv", "run", "--frozen", "reverseapoc")
 DOCKER_INFO = ("docker", "info")
 CONTAINER_SYNC = (*COMPOSE_RUN, "uv", "sync", "--locked")
@@ -2022,24 +2048,32 @@ class Refused(Exception):
 class _Log:
     """F13: every preflight command's argv, exit, stdout and stderr appended to
     build/driver/<run>/preflight.log, so stdout keeps one JSON document in --json mode. In text
-    mode each step is also named on stderr."""
+    mode each command is also named on stderr, stamped with the local time it starts, and each
+    note with the time it prints."""
 
     def __init__(self, options: DriveOptions, seams: Seams) -> None:
         self.options = options
         self.seams = seams
         self.path = options.run_dir / PREFLIGHT_LOG
+        self.say = console(options, seams)
 
-    def note(self, text: str) -> None:
+    def _write(self, text: str) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8", newline="\n") as fh:
             fh.write(text.rstrip("\n") + "\n")
-        if not self.options.json:
-            print(f"drive: {text.splitlines()[0]}", file=sys.stderr)
+
+    def note(self, text: str) -> None:
+        self._write(text)
+        self.say(text.splitlines()[0])
 
     def run(self, argv: Sequence[str]) -> subprocess.CompletedProcess:
+        shown = f"$ {' '.join(argv)}"
+        # Printed at the start so a long step is visible while it runs; its exit is in
+        # preflight.log and the next stamped line dates its finish (quick 261026-9ue).
+        self.say(shown)
         done = self.seams.run(list(argv))
-        self.note(f"$ {' '.join(argv)}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
-                  f"\n--- stderr\n{done.stderr or ''}")  # fmt: skip
+        self._write(f"{shown}\nexit {done.returncode}\n--- stdout\n{done.stdout or ''}"
+                    f"\n--- stderr\n{done.stderr or ''}")  # fmt: skip
         return done
 
     def must(self, argv: Sequence[str], reason: str, what: str) -> subprocess.CompletedProcess:

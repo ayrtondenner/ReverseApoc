@@ -14,6 +14,7 @@ import json
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -971,3 +972,92 @@ def test_real_deps_wire_finish_as_the_end_of_run(tmp_path):
     assert list(deps.end_of_run()) == []
     assert rig.runner.calls == [NINJA_VERIFY, GATE_ALL]
     assert (rig.repo / "build" / "driver" / RUN / "end-gate-all.log").is_file()
+
+
+# ---- quick 261026-9ue: drive timestamps (every console line stamped [HH:MM:SS]) ----
+
+CONSOLE_START = datetime(2026, 10, 26, 21, 4, 5)  # made up
+
+
+def _fixed_now() -> datetime:
+    return CONSOLE_START
+
+
+@dataclass
+class _Ticks:
+    """A clock one second later on each reading, from CONSOLE_START."""
+
+    k: int = 0
+
+    def __call__(self) -> datetime:
+        now = CONSOLE_START + timedelta(seconds=self.k)
+        self.k += 1
+        return now
+
+
+@dataclass
+class _Peek:
+    """A runner that records, for each command, what stderr received since the previous
+    command started, then answers through `inner`."""
+
+    capsys: object
+    inner: Runner
+    seen: list = field(default_factory=list)
+
+    def __call__(self, argv) -> subprocess.CompletedProcess:
+        self.seen.append((list(argv), self.capsys.readouterr().err))
+        return self.inner(argv)
+
+
+DRAFT_NOTE = "drive: ufo2p: no Ghidra draft for 0x00010000; their packs have none"
+
+
+def test_console_stamps_each_preflight_line_when_it_prints(tmp_path, capsys):
+    rig = Rig(tmp_path, runner=Runner(replies=[_ghidra_reply(1, MISSING_ONE)]))
+    code, out, err = rig.drive(capsys, dry_run=True, seams=dict(now=_Ticks()))
+    assert code == 0
+    lines = err.splitlines()
+    assert lines[0] == "[21:04:05] drive: $ docker info"
+    for i, line in enumerate(lines):
+        assert line.startswith((CONSOLE_START + timedelta(seconds=i)).strftime("[%H:%M:%S] ")
+                               + "drive: "), line  # fmt: skip
+    assert any(line.endswith(DRAFT_NOTE) for line in lines)
+    assert not [line for line in out.splitlines() if line.startswith("[")]
+
+
+def test_console_preflight_line_prints_when_the_command_starts(tmp_path, capsys):
+    rig = Rig(tmp_path, runner=Runner(replies=[_ghidra_reply(1, MISSING_ONE)]))
+    peek = _Peek(capsys, rig.runner)
+    code, out, err = rig.drive(capsys, dry_run=True, seams=dict(run=peek, now=_fixed_now))
+    assert code == 0
+    assert peek.seen[0][0] == ["docker", "info"]
+    for argv, held in peek.seen:
+        assert held.endswith(f"[21:04:05] drive: $ {' '.join(argv)}\n"), (argv, held)
+        assert held.count("drive: $ ") == 1, (argv, held)
+    assert any(DRAFT_NOTE in held for _, held in peek.seen)
+    assert "drive: $ " not in err
+
+
+def test_console_stamp_stays_out_of_json_and_preflight_log(tmp_path, capsys):
+    rig = Rig(tmp_path / "text")
+    code, _, _ = rig.drive(capsys, dry_run=True, seams=dict(now=_fixed_now))
+    assert code == 0
+    log = (rig.repo / "build" / "driver" / RUN / "preflight.log").read_text(encoding="utf-8")
+    assert "[21:04:05]" not in log
+    assert log.count("$ docker info\n") == 1
+    assert ("$ docker info\nexit 0\n--- stdout\nnoise on stdout\n\n--- stderr\n"
+            "noise on stderr\n") in log  # fmt: skip
+    rig = Rig(tmp_path / "json")
+    code, out, err = rig.drive(capsys, dry_run=True, json=True, seams=dict(now=_fixed_now))
+    assert code == 0
+    assert out.count("\n") == 1
+    json.loads(out)
+    assert "[21:04:05]" not in out
+    assert err == ""
+
+
+def test_console_clock_is_local_time_by_default(tmp_path):
+    assert driver.stamp(datetime(2026, 10, 26, 3, 7, 9)) == "[03:07:09] "
+    assert driver.stamp(datetime(2026, 10, 26, 23, 59, 59)) == "[23:59:59] "
+    assert driver.default_seams(tmp_path).now == datetime.now
+    assert driver.STAMP_FORMAT == "[%H:%M:%S] "
