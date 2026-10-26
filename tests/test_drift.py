@@ -128,12 +128,16 @@ def test_drift_catches_planted_changes(planted):
     unit = _unit_file(src_root)
     original = unit.read_bytes()
 
-    # 1. A matched row added by hand for a start the C still marks INCLUDE_ASM.
-    (real,) = [r for r in matched_rows(config_root, PLANT_EXE) if r.name == PLANT_FUNC]
+    # 1. A matched row added by hand for a start the C still marks INCLUDE_ASM. Every other row
+    # stays: the table holds other matches too (from the 06-26 pilot on), and dropping one would
+    # read as a definition with no matched row.
+    rows = read_status(table)
+    (real,) = [r for r in rows if r.status == MATCHED and r.name == PLANT_FUNC]
     stub = next(row for row in read_functions_csv(config_root / PLANT_EXE / FUNCTIONS_CSV)
                 if row.name == PLANT_STUB)  # fmt: skip
-    write_status(table, [real, StatusRow(stub.start, stub.name, PLANT_UNIT, MATCHED, 100.0, 0,
-                                         real.source_sha256, real.date)])  # fmt: skip
+    write_status(table, [*(r for r in rows if r.start != stub.start),
+                         StatusRow(stub.start, stub.name, PLANT_UNIT, MATCHED, 100.0, 0,
+                                   real.source_sha256, real.date)])  # fmt: skip
     assert drift(config_root, src_root, PLANT_EXE) == [
         f"{PLANT_EXE}: {PLANT_STUB} is matched in status.csv but not defined in C"]
     table.write_bytes(committed)
@@ -147,11 +151,14 @@ def test_drift_catches_planted_changes(planted):
     unit.write_bytes(original)
 
     # 3. One character of a comment edited: the C is the same code, but it was never gated.
+    # Every matched row of the unit hashes the whole file, so each one reports it.
     edited = original.replace(b"Neither name", b"neither name", 1)
     assert edited != original
     unit.write_bytes(edited)
+    stale = [r.name for r in matched_rows(config_root, PLANT_EXE) if r.unit == PLANT_UNIT]
+    assert PLANT_FUNC in stale
     assert drift(config_root, src_root, PLANT_EXE) == [
-        f"{PLANT_EXE}: {PLANT_FUNC}: {unit.name} changed since gate ran (re-gate it)"]
+        f"{PLANT_EXE}: {name}: {unit.name} changed since gate ran (re-gate it)" for name in stale]
     unit.write_bytes(original)
     assert drift(config_root, src_root, PLANT_EXE) == []
 
