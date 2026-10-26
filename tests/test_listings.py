@@ -199,10 +199,13 @@ def test_readme_shows_one_shield_per_exe():
 
 def test_readme_describes_the_mosaic_labels():
     # Owner ruling 2 (2026-10-26): a game unit is labelled with its unit name, a library unit
-    # with its largest runtime function; small units carry none.
+    # with its largest runtime function; small units carry none. A name too long for its unit is
+    # cut and ends with an ellipsis (owner ruling of 2026-10-26).
     section = _section(README.read_text(encoding="utf-8"), "Progress")
     assert "unit name" in section
     assert "largest runtime function" in section
+    assert "cut short and ends with an ellipsis" in section
+    assert "large enough for it" not in section
 
 
 def test_readme_percentage_counts_uncovered_bytes():
