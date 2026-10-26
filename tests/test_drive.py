@@ -681,6 +681,16 @@ def test_canary_pass(tmp_path, capsys):
     assert not rig.commands("gate")
 
 
+def test_canary_prompt_asks_for_the_check_timeout_the_hook_requires():
+    """Review WR-04: the matching hook denies an attempt check without the Bash tool's timeout
+    at hooks.CHECK_TIMEOUT_MS, so the canary's fifth call must ask for exactly that."""
+    from reverseapoc import hooks
+
+    step = (f"5. Run the Bash command `{driver.CANARY_CHECK}` with the Bash tool's timeout set "
+            f"to {hooks.CHECK_TIMEOUT_MS}.")  # fmt: skip
+    assert step in driver.CANARY_PROMPT
+
+
 @pytest.mark.parametrize("check", [dict(PASSING_CHECK, exit=2, best_percent=None), None])
 def test_canary_fails_unless_the_wrapper_check_passed(tmp_path, capsys, check):
     """Rule 2: the canary also runs `attempt check` on the matched claim, so the container

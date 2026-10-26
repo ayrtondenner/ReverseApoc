@@ -18,7 +18,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   audit reuses), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix round 1 M14:
   `#pragma on/off (check_stack)` changes code the way a flag does); read only inside the
   repository and never a .env* file; and run Bash only as an exact attempt-wrapper form
-  (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`).
+  (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`),
+  and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
   Every other tool is denied. The always rules apply here too, so a
   matching session never depends on how Claude Code merges the two settings files.
 
@@ -108,6 +109,9 @@ ATTEMPT_FORMS = (
     ("asm", ATTEMPT_NAME_SLOT),
     ("context",),
 )
+# Review WR-04: the Bash tool's timeout an `attempt check` needs (a run lasts up to 580 s plus
+# its clean-up); at the tool's 120 s default the wrapper is killed and check.lock stays behind.
+CHECK_TIMEOUT_MS = 600_000
 ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a func_/D_ placeholder or a symbol name
 _BASH_CHARS = re.compile(r"[A-Za-z0-9_ -]+")  # every character of every wrapper form, no more
 
@@ -687,6 +691,16 @@ def _backgrounded(tool_input: object) -> bool:
     return value is not None and value is not False
 
 
+def _short_check(command: str, tool_input: Mapping) -> bool:
+    """Review WR-04: whether an allowed wrapper `command` is an `attempt check` (plain or
+    --sweep) whose Bash timeout is missing, not a number, or below CHECK_TIMEOUT_MS."""
+    if shlex.split(command)[len(ATTEMPT_PREFIX)] != "check":
+        return False
+    timeout = tool_input.get("timeout")
+    number = isinstance(timeout, (int, float)) and not isinstance(timeout, bool)
+    return not (number and timeout >= CHECK_TIMEOUT_MS)
+
+
 def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str], bool]) -> Decision:
     """Deny by default (D-17): the always rules first, then Read/Glob/Grep inside the repo, the
     allowlisted writes, and Bash only as an exact attempt-wrapper form."""
@@ -709,6 +723,10 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
         if _backgrounded(tool_input):
             return _deny("checks run in the foreground, one at a time: no run_in_background "
                          "in a matching session (M14)")  # fmt: skip
+        if _short_check(command, tool_input):
+            return _deny("attempt check needs the Bash tool's timeout at its maximum, or the "
+                         "tool kills the run and leaves check.lock behind: rerun it with "
+                         f"`timeout: {CHECK_TIMEOUT_MS}`")  # fmt: skip
         return NO_OPINION
     decision = _always(payload, env)
     return decision if decision.deny else _matching_write(payload, env, tracked, root)

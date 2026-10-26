@@ -384,8 +384,13 @@ def tool(name: str, repo: Path, **tool_input) -> dict:
             "cwd": str(repo)}  # fmt: skip
 
 
-def bash(command: str, repo: Path) -> dict:
-    return tool("Bash", repo, command=command, description="x")
+CHECK_TIMEOUT_MS = 600_000  # the Bash tool's timeout every attempt check needs (review WR-04)
+
+
+def bash(command: str, repo: Path, timeout: object = CHECK_TIMEOUT_MS) -> dict:
+    """A Bash payload; `timeout` None leaves the tool's timeout out, as a session may."""
+    extra = {} if timeout is None else {"timeout": timeout}
+    return tool("Bash", repo, command=command, description="x", **extra)
 
 
 def in_repo(payload: dict, repo: Path) -> dict:
@@ -490,6 +495,27 @@ def test_matching_denies_a_background_bash(repo, value):
 def test_matching_allows_a_foreground_bash(repo):
     assert not matching(_background(f"{WRAPPER} check", repo, False)).deny
     assert not matching(bash(f"{WRAPPER} check", repo)).deny
+
+
+@pytest.mark.parametrize("form", ["check", "check --sweep"])
+@pytest.mark.parametrize("timeout", [None, 120_000, 599_999.5, True, "600000", float("nan")])
+def test_matching_denies_a_check_without_the_long_bash_timeout(repo, form, timeout):
+    """Review WR-04: the Bash tool kills a check at its 120 s default, check.lock stays behind
+    and every later check of the attempt is refused; a run needs up to 580 s plus clean-up."""
+    decision = matching(bash(f"{WRAPPER} {form}", repo, timeout))
+    assert decision.deny
+    assert "rerun it with `timeout: 600000`" in decision.reason
+
+
+@pytest.mark.parametrize("timeout", [600_000, 600_000.0, 600_001])
+def test_matching_allows_a_check_with_the_long_bash_timeout(repo, timeout):
+    assert not matching(bash(f"{WRAPPER} check --sweep", repo, timeout)).deny
+    assert hooks.CHECK_TIMEOUT_MS == CHECK_TIMEOUT_MS
+
+
+@pytest.mark.parametrize("form", ["asm", "asm func_000A3980", "context"])
+def test_matching_needs_no_bash_timeout_for_the_quick_forms(repo, form):
+    assert not matching(bash(f"{WRAPPER} {form}", repo, None)).deny
 
 
 def test_always_ignores_background_bash(repo):
