@@ -113,6 +113,14 @@ None yet.
 - [Cross-cutting]: OpenApoc offsets describe the CD v1.00 build (UFO2P CRC32 `0x4749ffc1`); re-locate before reuse
 - [Cross-cutting]: RESOLVED 2026-10-21: docs/toolchain.md and docs/learnings.md now say the installed UFO2P.EXE/TACP.EXE are the disc's `UFO2P4.EXE`/`TACP4.EXE` build (spike 003), not a store patch
 
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Status | Directory |
+|---|-------------|------|--------|--------|-----------|
+| 261026-9uc | Progress badges and mosaic labels: README Progress section shows two per-EXE shields (UFO2P.EXE, TACP.EXE; tools/progress.py writes one shields.io endpoint JSON per EXE, combined progress-shield.json stays published) and progress.svg draws a label on each large unit (game unit = unit name, library unit = its largest runtime function name; no label on small squares; deterministic bytes; tooltips kept). Brief: .superpowers/sdd/let-s-work-on-phase-effervescent-nebula/progress-visuals-brief.md. TDD. | 2026-10-26 | 058389b | — | .planning/quick/261026-9uc-progress-badges-and-mosaic-labels-readme-progress-section-sh |
+| 261026-9ue | Drive timestamps: prefix every `drive:` console line and each attempt's start and finish line printed by `reverseapoc drive` with local time [HH:MM:SS] through an injectable clock seam; exit codes and --json (exactly one document) unchanged. TDD. | 2026-10-26 | def199b | — | .planning/quick/261026-9ue-drive-timestamps-prefix-every-drive-console-line-and-each-at |
+| 261026-9ud | Progress page: new progress.html written by tools/progress.py and published by .github/workflows/pages.yml, linked from the README; per-EXE percent bar plus a one-tick-per-function strip and the labelled mosaic inline, design plan in the brief (system font, existing palette, dark scheme, no JavaScript, deterministic). Depends on the badges-and-labels task (same file tools/progress.py). TDD. | 2026-10-26 | 7cee997 | — | .planning/quick/261026-9ud-progress-page-new-progress-html-written-by-tools-progress-py |
+
 ### Roadmap Evolution
 
 - Phase 7 added: Mechanics-first decompilation (owner decision 2026-10-21; DEC-01..06)
