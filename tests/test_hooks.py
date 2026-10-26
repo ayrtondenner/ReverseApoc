@@ -982,8 +982,12 @@ def test_matching_denies_a_path_include(repo, name, rel):
     assert always(write(native(path), SCAFFOLD + PATH_INCLUDES[name])).deny, name
 
 
-INCLUDE_PREFIX = ("reverseapoc hooks: an #include names only a bare header of include/ (CR-02, "
+INCLUDE_PREFIX = ("reverseapoc hooks: an #include names only a bare header name (CR-02, "
                   "configure's D-12 rule): ")  # fmt: skip
+# Fix round 2 ruling: <name.h> also resolves in Watcom's own H directory, and game code may need
+# toolchain headers (conio.h, i86.h), so the wording names both places and restricts nothing.
+INCLUDE_WORDING = ('a bare header name: "name.h" from include/, or <name.h> from include/ or '
+                   "the compiler's own headers")  # fmt: skip
 
 
 @pytest.mark.parametrize("layer", ["matching", "always"])
@@ -993,6 +997,7 @@ def test_an_include_denial_has_its_own_prefix(repo, layer):
     decision = matching(payload) if layer == "matching" else always(payload)
     assert decision.deny
     assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
+    assert INCLUDE_WORDING in decision.reason, decision.reason
     assert "'\"sub/x.h\"'" in decision.reason
     assert "inline asm" not in decision.reason and "#pragma" not in decision.reason
     asm = in_repo(write(native(_unit(repo)), SCAFFOLD + "#pragma once\n"), repo)

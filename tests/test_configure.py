@@ -580,6 +580,8 @@ def test_unit_source_refuses_a_path_include(include, tmp_path):
     text = UNIT_SOURCE.replace('#include "common.h"', include)
     (problem,) = configure.check_unit_source(text, TWO_GAME)
     assert "#include" in problem and "line 1" in problem
+    assert problem.endswith('a bare header name: "name.h" from include/, or <name.h> from '
+                            "include/ or the compiler's own headers"), problem  # fmt: skip
     path = tmp_path / f"{UNIT}.c"
     path.write_bytes(text.encode("utf-8"))
     with pytest.raises(configure.ConfigureError, match="#include"):
@@ -587,7 +589,8 @@ def test_unit_source_refuses_a_path_include(include, tmp_path):
 
 
 @pytest.mark.parametrize("include", ['#include "common.h"', "#include <common.h>",
-                                     '  #  include "foo_2.h" /* note */'])  # fmt: skip
+                                     '  #  include "foo_2.h" /* note */',
+                                     "#include <conio.h>", "#include <i86.h>"])  # fmt: skip
 def test_unit_source_allows_a_bare_header_include(include):
     text = UNIT_SOURCE.replace('#include "common.h"', include)
     assert configure.check_unit_source(text, TWO_GAME) == []

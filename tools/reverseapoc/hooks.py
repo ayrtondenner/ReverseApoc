@@ -116,7 +116,7 @@ CHECK_TIMEOUT_MS = 600_000
 _ALWAYS_ASM_RULE = "no inline asm in src/ or include/ (D-16, coding rules)"
 _MATCHING_ASM_RULE = ("no inline asm and no #pragma of any kind during the pilot (D-18, M14; "
                       "flags and pragmas are owner-only)")  # fmt: skip
-INCLUDE_RULE = "an #include names only a bare header of include/ (CR-02, configure's D-12 rule)"
+INCLUDE_RULE = "an #include names only a bare header name (CR-02, configure's D-12 rule)"
 ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a func_/D_ placeholder or a symbol name
 _BASH_CHARS = re.compile(r"[A-Za-z0-9_ -]+")  # every character of every wrapper form, no more
 
@@ -471,8 +471,10 @@ def asm_problem(text: str, *, any_pragma_aux: bool = False, any_pragma: bool = F
 
 def include_problem(text: str) -> str | None:
     """Why `text` (a src/ or include/ file) is refused for an #include of anything but a bare
-    include/<name>.h, or None (06-REVIEW CR-02: configure's D-12 rule, so no unscanned file such
-    as notes.md reaches the compile)."""
+    header name: "name.h" from include/, or <name.h> from include/ or the compiler's own headers
+    (Watcom's H directory, which game code may need for conio.h or i86.h). None when it is not
+    (06-REVIEW CR-02: configure's D-12 rule, so no unscanned file such as notes.md reaches the
+    compile)."""
     cfg = _configure()
     try:
         includes = cfg.include_problems(text)
