@@ -1595,3 +1595,61 @@ def test_a_failing_outputs_check_refuses_the_start(tmp_path):
     assert "made-up git failure" in report.detail
     assert night.launched == []
     assert (night.repo / LOG).read_text(encoding="utf-8") == ""
+
+
+# ---- quick 261026-9ue: drive timestamps (the night says, the verb's console stamps) ----
+
+LABEL = "ufo2p func_00010010 attempt"
+
+
+def test_console_attempt_lines_name_the_attempt_and_its_outcome(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    lines = []
+    night.run(say=lines.append)
+    assert lines == [f"{LABEL} 1/3: started", f"{LABEL} 1/3: MATCHED after 45.0 s"]
+
+
+def test_console_attempt_lines_for_each_gave_up_attempt(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(), Sess(), Sess()])
+    lines = []
+    night.run(say=lines.append)
+    assert lines == [line for n in (1, 2, 3)
+                     for line in (f"{LABEL} {n}/3: started",
+                                  f"{LABEL} {n}/3: GAVE_UP after 45.0 s")]  # fmt: skip
+
+
+def test_console_attempt_seconds_cover_relaunches_and_backoffs(tmp_path):
+    night = Night(tmp_path, sessions=[Sess("rate_limit", write=None),
+                                      Sess("rate_limit", write=None), Sess()],
+                  gate_exits=[0])  # fmt: skip
+    lines = []
+    night.run(say=lines.append)
+    assert lines == [f"{LABEL} 1/3: started",
+                     f"{LABEL} 1/3: usage limit, next launch in 60 s",
+                     f"{LABEL} 1/3: usage limit, next launch in 120 s",
+                     f"{LABEL} 1/3: MATCHED after 315.0 s"]  # fmt: skip
+
+
+def test_console_attempt_aborted_after_transient_retries(tmp_path):
+    night = Night(tmp_path, sessions=[Sess("overloaded", write=None),
+                                      Sess("no_result", write=None),
+                                      Sess("overloaded", write=None),
+                                      Sess("no_result", write=None)])  # fmt: skip
+    lines = []
+    night.run(say=lines.append)
+    assert lines == [f"{LABEL} 1/3: started", f"{LABEL} 1/3: ABORTED (transient) after 180.0 s"]
+
+
+def test_console_attempt_stop_prints_only_the_start_line(tmp_path):
+    night = Night(tmp_path, sessions=[Sess(write="tools/x.py",
+                                           files=((UNIT_REL, "int edited;\n"),))])  # fmt: skip
+    lines = []
+    report = night.run(say=lines.append)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert lines == [f"{LABEL} 1/3: started"]
+
+
+def test_console_night_is_silent_by_default(tmp_path, capsys):
+    Night(tmp_path, sessions=[Sess()], gate_exits=[0]).run()
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "")
