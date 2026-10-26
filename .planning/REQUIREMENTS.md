@@ -61,7 +61,7 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 - [x] **RPT-02**: `progress.py` (stdlib) writes `progress.json`, a treemap `progress.svg` and a shields endpoint JSON
 - [x] **RPT-03**: A GitHub Pages workflow publishes the mosaic, badge and raw JSON on push to `main`
 - [x] **RPT-04**: An objdiff-shaped `report.json` is uploaded as a `<VERSION>_report` artifact for recomp.fyi
-- [ ] **RPT-05**: `.recomp.json` is updated and the decomphub.com submission is done once the repo is public
+- [x] **RPT-05**: `.recomp.json` is updated and the decomphub.com submission is done once the repo is public
 
 ### Agent pilot (Phase 6)
 
@@ -171,7 +171,7 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | RPT-02 | Phase 6 | Complete |
 | RPT-03 | Phase 6 | Complete |
 | RPT-04 | Phase 6 | Complete |
-| RPT-05 | Phase 6 | Pending |
+| RPT-05 | Phase 6 | Complete |
 | AGT-01 | Phase 6 | Complete |
 | AGT-02 | Phase 6 | Complete |
 | AGT-03 | Phase 6 | Complete |
