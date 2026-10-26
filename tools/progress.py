@@ -30,8 +30,8 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
 --out DIR writes DIR/progress.json, DIR/progress-shield.json (the combined shields.io endpoint),
 DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.json and
 progress-shield-tacp.json), DIR/progress.svg (the mosaic: a squarified treemap,
-EXE > unit > function), and DIR/progress.html and DIR/index.html (the progress page, under both
-names: per-EXE bars and function strips, the mosaic inline);
+EXE > unit > function), and DIR/index.html (the progress page, served at the Pages root:
+per-EXE bars and function strips, the mosaic inline);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -943,12 +943,11 @@ def write_svg(progress: Progress, path: Path) -> None:
     _write_atomic(path, render_svg(progress).encode("utf-8"))
 
 
-# ---- progress.html, the progress page ----
+# ---- index.html, the progress page ----
 
-PROGRESS_HTML = "progress.html"
-# The same page at the Pages root, which .recomp.json's Progress link and the docs/listings.md
-# drafts point at (orchestrator ruling of 2026-10-26). The page's links are relative or absolute,
-# so they resolve the same from both names.
+# Written once, as index.html, so the Pages root (which the README, .recomp.json's Progress link
+# and the docs/listings.md drafts point at) serves it (owner ruling of 2026-10-26: no second,
+# byte-identical progress.html).
 INDEX_HTML = "index.html"
 PAGE_TITLE = "ReverseApoc progress"
 PAGE_HEADING = "X-COM: Apocalypse (DOS) decompilation progress"
@@ -1084,15 +1083,15 @@ def _exe_html(exe: ExeProgress) -> list[str]:
 
 
 def render_html(progress: Progress, commit: str | None = None) -> str:
-    """progress.html (owner rulings 3 and 4, 2026-10-26): per EXE a heading, a percent bar, the
-    figures in text and the function strip (one tick per game and thunk function in address
-    order; matched and partial ticks stand taller and carry a tooltip; the strip wraps with the
-    width), then the strip's key, the labelled mosaic (render_svg's output, verbatim) and how
-    the figures are measured. Under prefers-color-scheme: dark only the surface, ink and
-    secondary swap (the mosaic follows through MOSAIC_PAINTS; status hues are unchanged); below
-    40rem the EXE heading stacks over its bar. Inline CSS only, no script and no external
-    request: every link is relative or to the repository. The same CSVs and commit give the
-    same bytes; without a commit only the "Updated from commit" line is missing."""
+    """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
+    heading, a percent bar, the figures in text and the function strip (one tick per game and
+    thunk function in address order; matched and partial ticks stand taller and carry a tooltip;
+    the strip wraps with the width), then the strip's key, the labelled mosaic (render_svg's
+    output, verbatim) and how the figures are measured. Under prefers-color-scheme: dark only the
+    surface, ink and secondary swap (the mosaic follows through MOSAIC_PAINTS; status hues are
+    unchanged); below 40rem the EXE heading stacks over its bar. Inline CSS only, no script and
+    no external request: every link is relative or to the repository. The same CSVs and commit
+    give the same bytes; without a commit only the "Updated from commit" line is missing."""
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
@@ -1127,7 +1126,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path,
                    help="write progress.json, progress-shield.json, one "
                         "progress-shield-<stem>.json per EXE, progress.svg and the progress "
-                        "page as progress.html and index.html here")
+                        "page as index.html here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -1144,11 +1143,7 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
                    functools.partial(write_exe_shield, stem=stem))
         yield args.out / PROGRESS_SVG, write_svg
-        # One (path, writer) per file: render_html is a pure function of (progress, commit),
-        # so the second render gives the same bytes.
-        page = functools.partial(write_html, commit=args.commit)
-        yield args.out / PROGRESS_HTML, page
-        yield args.out / INDEX_HTML, page
+        yield args.out / INDEX_HTML, functools.partial(write_html, commit=args.commit)
     if args.report is not None:
         yield args.report, write_report
     if args.decomphub is not None:

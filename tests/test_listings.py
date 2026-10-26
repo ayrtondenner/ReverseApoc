@@ -49,10 +49,11 @@ README = REPO_ROOT / "README.md"
 VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
 REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
 # The Pages files the README links: one shield per EXE (owner ruling of 2026-10-26), the
-# mosaic, the raw numbers and the progress page, also published as index.html so the Pages root
-# serves it (orchestrator ruling of 2026-10-26).
+# mosaic, the raw numbers and the progress page, published once as index.html (owner ruling of
+# 2026-10-26), which the README links at the site root (PAGES) because the root serves it.
+INDEX_HTML = "index.html"
 PAGES_FILES = ("progress-shield-ufo2p.json", "progress-shield-tacp.json", "progress.svg",
-               "progress.json", "progress.html", "index.html")  # fmt: skip
+               "progress.json", INDEX_HTML)  # fmt: skip
 # (config stem, EXE label) of each per-EXE shield the README shows.
 SHIELDS = (("ufo2p", "UFO2P.EXE"), ("tacp", "TACP.EXE"))
 # The combined shield: still published for existing consumers, no longer shown in the README.
@@ -176,7 +177,8 @@ def _sentences(text: str) -> int:
 def test_readme_progress_section():
     # DI-08, D-26, D-29, D-50: the Phase 6 placeholder gives way to what the figures count.
     section = _section(README.read_text(encoding="utf-8"), "Progress")
-    assert [name for name in PAGES_FILES if f"{PAGES}{name}" not in section] == []
+    links = {name: PAGES if name == INDEX_HTML else f"{PAGES}{name}" for name in PAGES_FILES}
+    assert [name for name, link in links.items() if f"{link})" not in section] == []
     assert "[Progress data](decomphub.progress.json)" in section
     # A bold `**name**:` label, so "matched" is not satisfied by "unmatched".
     undefined = [name for name in CATEGORIES if not re.search(rf"\*\*{name}\*\*:", section)]
@@ -210,11 +212,12 @@ def test_readme_describes_the_mosaic_labels():
 
 
 def test_readme_links_the_progress_page():
-    # Owner ruling 3 (2026-10-26): the README's Progress section links progress.html, also
-    # published as index.html at the Pages root.
-    section = _section(README.read_text(encoding="utf-8"), "Progress")
-    assert f"[progress page]({PAGES}progress.html)" in section
-    assert f"[index.html]({PAGES}index.html)" in section
+    # Owner rulings of 2026-10-26: the README's Progress section links the progress page at the
+    # site root, which serves index.html; the page is no longer also written as progress.html.
+    text = README.read_text(encoding="utf-8")
+    section = _section(text, "Progress")
+    assert f"[progress page]({PAGES})" in section
+    assert "progress.html" not in text
     assert "one tick per game and thunk function" in section
 
 
