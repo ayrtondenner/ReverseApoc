@@ -1,8 +1,8 @@
 """tools/progress.py (RPT-02, D-26, D-40, D-50): the committed CSVs become progress.json and the
-shield endpoint. progress.py runs under the Pages runner's system `python3 -I` (D-27), so it is a
-stdlib script loaded here by path, the way check._configure loads configure.py. The synthetic
-tables use made-up addresses and names; the committed-file tests read config/ only (no game
-bytes)."""
+shield endpoints (combined and per EXE). progress.py runs under the Pages runner's system
+`python3 -I` (D-27), so it is a stdlib script loaded here by path, the way check._configure loads
+configure.py. The synthetic tables use made-up addresses and names; the committed-file tests read
+config/ only (no game bytes)."""
 
 from __future__ import annotations
 
@@ -254,6 +254,46 @@ def test_script_runs_isolated(tmp_path):
     assert done.returncode == 0, done.stderr
     assert json.loads((out / "progress.json").read_text(encoding="utf-8"))["exes"]
     assert json.loads((out / "progress-shield.json").read_text(encoding="utf-8"))["label"]
+    for stem in EXES:
+        shield = json.loads((out / f"progress-shield-{stem}.json").read_text(encoding="utf-8"))
+        assert shield["label"] == EXE_NAMES[stem]
+
+
+def test_exe_shield_shape(tmp_path):
+    """Owner ruling 1 (2026-10-26): one shields.io endpoint document per EXE, labelled with the
+    EXE and coloured by its own percent, keys in the combined document's order."""
+    progress = load_progress()
+    assert hasattr(progress, "build_exe_shield"), "progress.py has no build_exe_shield"
+    derived = progress.derive(synthetic_config(tmp_path))
+    ufo = progress.build_exe_shield(derived.exe("ufo2p"))
+    assert ufo == {"schemaVersion": 1, "label": "UFO2P.EXE", "message": "6.5574%",
+                   "color": "orange"}  # fmt: skip
+    tacp = progress.build_exe_shield(derived.exe("tacp"))
+    assert tacp == {"schemaVersion": 1, "label": "TACP.EXE", "message": "0%", "color": "red"}
+    for doc in (ufo, tacp):
+        assert list(doc) == ["schemaVersion", "label", "message", "color"]
+        assert list(doc) == list(progress.build_shield(derived))
+
+
+def test_main_writes_one_shield_per_exe(tmp_path):
+    """--out writes progress-shield-<stem>.json per EXE, byte-stable and atomic, next to the
+    combined progress-shield.json, which keeps its label and figure."""
+    progress = load_progress()
+    assert hasattr(progress, "build_exe_shield"), "progress.py has no build_exe_shield"
+    config = synthetic_config(tmp_path)
+    first, second = tmp_path / "one", tmp_path / "two"
+    for out in (first, second):
+        assert progress.main(["--config", str(config), "--out", str(out)]) == 0
+    derived = progress.derive(config)
+    for stem in EXES:
+        name = f"progress-shield-{stem}.json"
+        data = (first / name).read_bytes()
+        assert data == progress.render(progress.build_exe_shield(derived.exe(stem)))
+        assert data.endswith(b"}\n") and b"\r" not in data
+        assert data == (second / name).read_bytes()
+    assert not list(first.glob(".*.tmp"))
+    combined = json.loads((first / "progress-shield.json").read_text(encoding="utf-8"))
+    assert (combined["label"], combined["message"]) == ("decompiled", "5.7971%")
 
 
 def test_main_creates_every_output_parent(tmp_path):

@@ -48,8 +48,15 @@ DROPPED_LOADER = "retrokit"
 README = REPO_ROOT / "README.md"
 VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
 REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
-# The file names published since Phase 1 and kept by D-26.
-PAGES_FILES = ("progress-shield.json", "progress.svg", "progress.json")
+# The Pages files the README links: one shield per EXE (owner ruling of 2026-10-26), the
+# mosaic and the raw numbers.
+PAGES_FILES = ("progress-shield-ufo2p.json", "progress-shield-tacp.json", "progress.svg",
+               "progress.json")  # fmt: skip
+# (config stem, EXE label) of each per-EXE shield the README shows.
+SHIELDS = (("ufo2p", "UFO2P.EXE"), ("tacp", "TACP.EXE"))
+# The combined shield: still published for existing consumers, no longer shown in the README.
+COMBINED_SHIELD = "progress-shield.json"
+SHIELDS_ENDPOINT = "https://img.shields.io/endpoint?url="
 # The mosaic's categories (D-26, D-50), each defined as a bold `**name**:` list item.
 CATEGORIES = ("matched", "partial", "unmatched", "library", "uncovered")
 # D-50: the uncovered bytes are counted in the denominator, as tools/progress.py does, and the
@@ -176,6 +183,18 @@ def test_readme_progress_section():
     assert [needle for needle in PROGRESS_NEEDLES if needle not in section] == []
     assert "Placeholder" not in section
     assert "coming in Phase 6" not in section
+
+
+def test_readme_shows_one_shield_per_exe():
+    # Owner ruling 1 (2026-10-26): one badge per EXE; the combined endpoint stays published and
+    # named in the prose, but its badge is gone. "progress-shield-ufo2p.json" does not contain
+    # "progress-shield.json", so the negative check is unambiguous.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    for stem, label in SHIELDS:
+        target = f"{SHIELDS_ENDPOINT}{PAGES}progress-shield-{stem}.json"
+        assert re.search(rf"!\[[^\]]*\]\({re.escape(target)}\)", section), label
+    assert f"{SHIELDS_ENDPOINT}{PAGES}{COMBINED_SHIELD}" not in section
+    assert f"`{COMBINED_SHIELD}`" in section
 
 
 def test_readme_percentage_counts_uncovered_bytes():
