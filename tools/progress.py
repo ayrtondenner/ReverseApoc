@@ -29,8 +29,9 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
 
 --out DIR writes DIR/progress.json, DIR/progress-shield.json (the combined shields.io endpoint),
 DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.json and
-progress-shield-tacp.json) and DIR/progress.svg (the mosaic: a squarified treemap,
-EXE > unit > function);
+progress-shield-tacp.json), DIR/progress.svg (the mosaic: a squarified treemap,
+EXE > unit > function), and DIR/progress.html and DIR/index.html (the progress page, under both
+names: per-EXE bars and function strips, the mosaic inline);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -942,6 +943,113 @@ def write_svg(progress: Progress, path: Path) -> None:
     _write_atomic(path, render_svg(progress).encode("utf-8"))
 
 
+# ---- progress.html, the progress page ----
+
+PROGRESS_HTML = "progress.html"
+# The same page at the Pages root, which .recomp.json's Progress link and the docs/listings.md
+# drafts point at (orchestrator ruling of 2026-10-26). The page's links are relative or absolute,
+# so they resolve the same from both names.
+INDEX_HTML = "index.html"
+PAGE_TITLE = "ReverseApoc progress"
+PAGE_HEADING = "X-COM: Apocalypse (DOS) decompilation progress"
+COMMIT_URL = REPOSITORY + "/commit/"
+COMMIT_SHORT = 7  # hex digits of the commit shown on the page
+# report.json is an artifact of the Pages run, not a Pages file: the page links the workflow.
+PAGES_WORKFLOW_URL = REPOSITORY + "/actions/workflows/pages.yml"
+README_URL = REPOSITORY + "#progress"
+BAR_HEIGHT = 8  # px, the percent bar
+MEASURED = (
+    "A function is matched when its C, built with the original Watcom compiler, is "
+    "byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE "
+    "SHA-1. A partial function scored above 0% in objdiff but is not byte-identical yet; it "
+    "counts for nothing in the percentage or the function ratio. Every other game or thunk "
+    "function is unmatched: the rebuilt EXE still carries its original bytes.",
+    "The percentage is matched bytes of game and thunk functions over all game and thunk bytes "
+    "plus the uncovered bytes, the bytes inside a unit that no function row covers (mostly "
+    "alignment filler). The function ratio is matched game and thunk functions over all game "
+    "and thunk functions. The Watcom runtime library (blue in the mosaic) is not decompiled and "
+    "stays outside both; data-in-code is excluded.",
+    "Every figure comes from committed tables: the status.csv files that reverseapoc gate "
+    "writes, plus each EXE's functions.csv and units.csv. This page is regenerated from them on "
+    "every push to main. The raw numbers are in <a href=\"progress.json\">progress.json</a>, the "
+    f'objdiff-shaped <a href="{PAGES_WORKFLOW_URL}">report.json</a> is attached to each run of '
+    f'the Pages workflow, and the <a href="{README_URL}">README</a> has the full definitions.',
+)
+
+
+def _page_css() -> str:
+    """The inline style sheet, one rule per line, from the SVG's own tokens."""
+    return "\n".join([
+        f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK}}}",
+        f"body{{margin:0;background:var(--surface);color:var(--ink);font-family:{FONT};"
+        f"font-size:1rem;line-height:1.5}}",
+        "main{max-width:75rem;padding:2rem clamp(1rem,5vw,4rem) 3rem}",
+        "h1{margin:0 0 .25rem;font-size:1.75rem;line-height:1.2;font-weight:700}",
+        "h2{margin:0;font-size:1.125rem;line-height:1.3;font-weight:600}",
+        "main>h2{margin-top:2.5rem}",
+        "p{max-width:70ch;margin:.5rem 0}",
+        ".meta,.key,.caption{color:var(--secondary);font-size:.875rem}",
+        "a{color:inherit;text-decoration-thickness:1px;text-underline-offset:.15em}",
+        "a:focus-visible{outline:2px solid var(--ink);outline-offset:2px}",
+        ".exe{display:grid;grid-template-columns:8rem minmax(0,1fr);column-gap:1.5rem;"
+        "align-items:start;margin:2rem 0}",
+        ".line{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1rem}",
+        f".bar{{flex:1 1 12rem;height:{BAR_HEIGHT}px;background:{TREEMAP_COLORS[UNMATCHED]}}}",
+        f".bar span{{display:block;height:100%;background:{TREEMAP_COLORS[MATCHED]}}}",
+        ".figures{margin:0;font-size:.875rem;font-variant-numeric:tabular-nums}",
+        ".mosaic{margin-top:.75rem}",
+        ".mosaic svg{display:block;width:100%;height:auto}",
+    ])
+
+
+def _figures(exe: ExeProgress) -> str:
+    t = exe.totals
+    return (f"{shield_message(t.percent)} of code bytes, {t.matched_functions:,} of "
+            f"{t.total_functions:,} functions matched, {t.partial_functions:,} partial")
+
+
+def _exe_html(exe: ExeProgress) -> list[str]:
+    """One EXE's section: its heading, then the percent bar and the figures in text."""
+    stem, width = _xml(exe.stem), shield_message(exe.totals.percent)
+    return [f'<section class="exe" aria-labelledby="exe-{stem}">',
+            f'<h2 id="exe-{stem}">{_xml(exe.label)}</h2>',
+            "<div>",
+            '<div class="line">',
+            f'<div class="bar" aria-hidden="true"><span style="width:{width}"></span></div>',
+            f'<p class="figures">{_xml(_figures(exe))}</p>',
+            "</div>",
+            "</div>",
+            "</section>"]  # fmt: skip
+
+
+def render_html(progress: Progress, commit: str | None = None) -> str:
+    """progress.html (owner rulings 3 and 4, 2026-10-26): per EXE a heading, a percent bar and
+    the figures in text, then the labelled mosaic (render_svg's output, verbatim) and how the
+    figures are measured. Inline CSS only, no script and no external request: every link is
+    relative or to the repository. The same CSVs and commit give the same bytes; without a
+    commit only the "Updated from commit" line is missing."""
+    lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
+             '<meta name="viewport" content="width=device-width, initial-scale=1">',
+             f"<title>{_xml(PAGE_TITLE)}</title>", "<style>", _page_css(), "</style>",
+             "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
+    if commit is not None:
+        lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
+                     f"{_xml(commit[:COMMIT_SHORT])}</a></p>")  # fmt: skip
+    for exe in progress.exes:
+        lines += _exe_html(exe)
+    lines += ["<h2>The mosaic</h2>",
+              '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
+              "bytes; large units carry their name.</p>",
+              '<div class="mosaic">', render_svg(progress).removesuffix("\n"), "</div>",
+              "<h2>How it is measured</h2>", *(f"<p>{text}</p>" for text in MEASURED),
+              "</main>", "</body>", "</html>"]  # fmt: skip
+    return "\n".join(lines) + "\n"
+
+
+def write_html(progress: Progress, path: Path, commit: str | None = None) -> None:
+    _write_atomic(path, render_html(progress, commit).encode("utf-8"))
+
+
 # ---- command line ----
 
 
@@ -951,7 +1059,8 @@ def _parser() -> argparse.ArgumentParser:
                    help="the config tree (default: %(default)s)")  # fmt: skip
     p.add_argument("--out", type=Path,
                    help="write progress.json, progress-shield.json, one "
-                        "progress-shield-<stem>.json per EXE and progress.svg here")
+                        "progress-shield-<stem>.json per EXE, progress.svg and the progress "
+                        "page as progress.html and index.html here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -968,6 +1077,11 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
                    functools.partial(write_exe_shield, stem=stem))
         yield args.out / PROGRESS_SVG, write_svg
+        # One (path, writer) per file: render_html is a pure function of (progress, commit),
+        # so the second render gives the same bytes.
+        page = functools.partial(write_html, commit=args.commit)
+        yield args.out / PROGRESS_HTML, page
+        yield args.out / INDEX_HTML, page
     if args.report is not None:
         yield args.report, write_report
     if args.decomphub is not None:

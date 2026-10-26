@@ -49,9 +49,10 @@ README = REPO_ROOT / "README.md"
 VERIFICATION = REPO_ROOT / "docs" / "DECOMPHUB_VERIFICATION.md"
 REPOSITORY = "https://github.com/ayrtondenner/ReverseApoc"
 # The Pages files the README links: one shield per EXE (owner ruling of 2026-10-26), the
-# mosaic and the raw numbers.
+# mosaic, the raw numbers and the progress page, also published as index.html so the Pages root
+# serves it (orchestrator ruling of 2026-10-26).
 PAGES_FILES = ("progress-shield-ufo2p.json", "progress-shield-tacp.json", "progress.svg",
-               "progress.json")  # fmt: skip
+               "progress.json", "progress.html", "index.html")  # fmt: skip
 # (config stem, EXE label) of each per-EXE shield the README shows.
 SHIELDS = (("ufo2p", "UFO2P.EXE"), ("tacp", "TACP.EXE"))
 # The combined shield: still published for existing consumers, no longer shown in the README.
@@ -206,6 +207,15 @@ def test_readme_describes_the_mosaic_labels():
     assert "largest runtime function" in section
     assert "cut short and ends with an ellipsis" in section
     assert "large enough for it" not in section
+
+
+def test_readme_links_the_progress_page():
+    # Owner ruling 3 (2026-10-26): the README's Progress section links progress.html, also
+    # published as index.html at the Pages root.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert f"[progress page]({PAGES}progress.html)" in section
+    assert f"[index.html]({PAGES}index.html)" in section
+    assert "one tick per game and thunk function" in section
 
 
 def test_readme_percentage_counts_uncovered_bytes():
