@@ -730,7 +730,9 @@ def _merge_partial(table: Iterable[StatusRow], functions: Iterable[FunctionCheck
                    sha: str, attempts: int, day: str
                    ) -> tuple[list[StatusRow], list[StatusRow]]:  # fmt: skip
     """The table with a partial row for each unmatched function scoring above 0% (the best
-    percent wins, ties keep the earlier row; attempts take the larger count), and those rows."""
+    percent wins, ties keep the earlier row's percent and sha; attempts take the larger count),
+    and those rows. Every such row takes `day`, so the picker skips it for the rest of the day
+    (D-09, review WR-03)."""
     by_start = {row.start: row for row in table}
     touched = []
     for fn in functions:
@@ -741,7 +743,7 @@ def _merge_partial(table: Iterable[StatusRow], functions: Iterable[FunctionCheck
         row = StatusRow(fn.va, fn.name, unit, PARTIAL, percent, attempts, sha, day)
         if old is not None:
             best = old if old.best_percent >= percent else row
-            row = dataclasses.replace(best, attempts=max(old.attempts, attempts))
+            row = dataclasses.replace(best, attempts=max(old.attempts, attempts), date=day)
         by_start[fn.va] = row
         touched.append(row)
     return sorted(by_start.values(), key=lambda r: r.start), touched
