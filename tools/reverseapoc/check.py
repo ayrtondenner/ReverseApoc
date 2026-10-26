@@ -507,17 +507,34 @@ class SourceMarks:
 
 def source_marks(text: str, rows: Sequence[FunctionRow]) -> SourceMarks:
     """The unit file read by configure.py's D-12 parser, so configure and check agree on what
-    is marked and defined. Its problems are those of check_unit_source that name something
-    outside the unit, or a conditional the parser refuses."""
+    is marked and defined. Its problems are configure's include problems (an #include of
+    anything but a bare header name, 06-REVIEW CR-02), those of check_unit_source that name
+    something outside the unit, or a conditional the parser refuses."""
     cfg = _configure()
     try:
         code = cfg._live_code(cfg._NOT_CODE.sub(cfg._blank, text))
+        includes = tuple(cfg.include_problems(text))
     except cfg._ConditionalError as exc:
         return SourceMarks(frozenset(), frozenset(), (str(exc),))
     outside = tuple(p for p in cfg.check_unit_source(text, rows)
                     if p.endswith("is not a function of the unit"))  # fmt: skip
     return SourceMarks(frozenset(cfg._MARKER.findall(code)),
-                       frozenset(cfg._file_scope_definitions(code)), outside)  # fmt: skip
+                       frozenset(cfg._file_scope_definitions(code)),
+                       includes + outside)  # fmt: skip
+
+
+def refuse_includes(src: Path, text: str) -> None:
+    """06-REVIEW CR-02: a unit file whose #include names anything but a bare header name is
+    refused before it is compiled (a CheckError naming each include), so the compiler never
+    reads an unscanned file such as an attempt's notes.md. configure's include_problems decides;
+    text it cannot read is left to the account, which reports it as a source problem."""
+    cfg = _configure()
+    try:
+        problems = cfg.include_problems(text)
+    except cfg._ConditionalError:
+        return
+    if problems:
+        raise CheckError(f"{src}: refused before compiling: {'; '.join(problems)}")
 
 
 @dataclass(frozen=True)
@@ -904,16 +921,20 @@ def check_source(
     defines among `rows` (objdiff, relocation check, bytes). `unit` names the outputs
     <root>/<exe>/obj|base|target/<unit>.*, where <root> is object_root(build_dir, options).
     Plan 05-18 calls this for the cmain386 runtime pair with `unit_file=False`: that source is
-    Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03)."""
+    Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03). A
+    unit file with a path include is refused before it compiles (refuse_includes)."""
     check_unit_name(unit)
     options = options or CompileOptions()
     paths = UnitPaths.of(object_root(build_dir, options), exe.stem, unit)
+    text = read_source(src)
+    if unit_file:
+        refuse_includes(src, text)
     compiled = _compile(compile_fn, Path(src), paths.obj, options)
     module = read_module(paths.obj)
     _write(paths.base, write_elf(convert(module)))
     target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
     _write(paths.target, target.data)
-    account = account_unit(module, rows, exe.symbols, read_source(src), unit_file=unit_file)
+    account = account_unit(module, rows, exe.symbols, text, unit_file=unit_file)
     checked = with_relocs(module, account.defined, rows, exe)
     if not checked and not account.problems:
         raise CheckError(f"{src} defines no function of unit {unit}")
@@ -1013,7 +1034,9 @@ def _land_exe(
         if not src.is_file():
             continue  # a unit without C has nothing to land
         obj = UnitPaths.of(root, exe.stem, unit.unit).obj
+        text = read_source(src)
         if compile_fn is not None and (exe.target.name, unit.unit) not in fresh:
+            refuse_includes(src, text)
             _compile(compile_fn, src, obj, options)
         elif not obj.is_file():
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
@@ -1023,7 +1046,7 @@ def _land_exe(
             check_provenance(obj, src, options, src_root=src_root, data=data)
         rows = [row for row in exe.rows if row.unit == unit.unit]
         module = parse_module(data, obj)
-        account = account_unit(module, rows, exe.symbols, read_source(src))
+        account = account_unit(module, rows, exe.symbols, text)
         refused += [Refused(p.name, p.va, (p.reason,)) for p in account.problems]
         for d, reloc in with_relocs(module, account.defined, rows, exe):
             if reloc.ok:
