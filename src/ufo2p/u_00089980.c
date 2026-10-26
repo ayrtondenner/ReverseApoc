@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_00089980);
 INCLUDE_ASM(func_0008A0C0);
-INCLUDE_ASM(func_0008A100);
 INCLUDE_ASM(func_0008A120);
 INCLUDE_ASM(func_0008A140);
 INCLUDE_ASM(func_0008A160);
@@ -25,6 +24,15 @@ INCLUDE_ASM(func_0008B530);
 
 /* void: EAX only holds the callee's result at ret; the callers decide. */
 void func_00089980(int a, int b);
+
+/* void: EAX only holds func_00089980's result at ret; the callers decide. */
+void func_0008A100(void)
+{
+    extern short D_001A714C;
+
+    func_00089980(4, -1);
+    D_001A714C = 0;
+}
 
 extern short D_001A714C;
 
