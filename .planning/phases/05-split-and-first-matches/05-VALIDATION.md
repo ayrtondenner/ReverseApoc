@@ -83,6 +83,8 @@ Wave 0 evidence: `build/gate/05-evidence/10-wave0.log` (the four helpers and `NE
 
 Recorded for the owner (gate plan 05-20): the spike 005 verdict is `VALIDATED` (`build/gate/05-evidence/05-spike.log`). The three manual checks above stay with the owner at `/gsd-verify-work 5`.
 
+Owner's spike 005 sign-off (DI-29, D-41), quoted from the owner's pilot report in plan 06-26 (`06-26-SUMMARY.md`, reported 2026-10-26), recorded by gate plan 06-27: "Spike 005 VALIDATED, confirmed by the owner on 2026-10-25". This settles the spike verdict row above (signed 2026-10-25).
+
 ---
 
 ## Validation Sign-Off

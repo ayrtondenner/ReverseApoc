@@ -17,6 +17,10 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 (DI-26..DI-28, DI-30, DI-31) and the rulings it records (DI-09, DI-10, DI-32) were filled in after its Tasks 2-3
 (225ec66, 80e9c17).
 
+Completed by gate plan 06-27 (2026-10-26): every row still `planned` or `pending` was filled from the closing
+plan's SUMMARY and `git log --grep="(06-NN"`, and every hash was checked with `git cat-file -e`. Rows 06-27 closes
+itself point at its Task 2 commit, whose hash is in 06-27-SUMMARY.md. No row is left `planned` or `pending`.
+
 ## A. Phase 6 targets and driver blockers
 
 | ID | Item | Closed by | Commit(s) | Status |
@@ -28,7 +32,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-05 | 05 minor 15: backslash continuation fail-open in the D-12 parser | 06-03 | dee1491, a71dd7a | closed |
 | DI-06 | WR-01 hardening: (a) `cc` provenance stamp and ninja land's stale-object refusal; (b) `check --src/--config OTHER` compiles under build/check-custom; (c) build.ninja rules carry a non-default `--config` tree | (a) 06-09 Tasks 2-3; (b) 06-09 Task 1; (c) 06-03 | (a) 8fcd36d, 3c56067, f8c8e48, 3533764; (b) 52e83b1, 47546f1; (c) 19a4f5b, de94a5b | closed |
 | DI-07 | AGT-05 hooks also guard the cc wrapper and config/cflags.txt (matching layer denies every write but the claimed unit) | 06-12 Task 3 | a53ebcc, 1c1a616 | closed |
-| DI-08 | README.md progress placeholder "coming in Phase 6" | 06-22 | none yet | planned 06-22 |
+| DI-08 | README.md progress placeholder "coming in Phase 6" | 06-22 Task 2 and fix round 1 | 3b250ce, cf5dec3; 0c858b0, 364f8ed | closed |
 | DI-09 (spike) | Phase 5 deferral: the decomp.wtf INCLUDE_ASM spike (spike 006, verdict INVALIDATED; own agent layer per D-03/D-04) | 06-01 | f0f79ea, b3b4636 | closed |
 | DI-09 (GhidraMCP) | Phase 5 deferral: GhidraMCP in the context pack | D-41 (DI-21 part: GhidraMCP becomes "Later (Phase 7 or later)"; the tools.md row edit is 06-20's) | none (ruling) | ruled (D-41) |
 | DI-09 (sweeps) | Phase 5 deferral: `-zp`/`-zm`/`-fp` and 11.0a/b flag sweeps | D-41: they run only if a pilot miss needs them; recorded in PROJECT.md Key Decisions by 06-21 | none (ruling); recorded in 80e9c17 | ruled (D-41) |
@@ -48,7 +52,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-17 | 04 IN-13: a CLI test's `assert not obj.exists()` could not fail; it now writes the object first and checks it survives | 06-07 Task 2 | 1b34ae3 | closed |
 | DI-18 | 04 IN-04: private `splice._write_atomic` imported by 7 modules; now public `fileio.write_atomic` (D-41) | 06-02 Tasks 1-2 | 1681fdc, cfb84d4, f90097f, 732a537 | closed |
 | DI-19 row 1 (spike) | "objdiff checks only one relocation per instruction" over-generalized: spike 005 README:175 | 06-05 Task 2 | 191d094 | closed |
-| DI-19 row 1 (toolchain) | the same over-generalization: the docs/toolchain.md part | 06-20 | none yet | planned 06-20 |
+| DI-19 row 1 (toolchain) | the same over-generalization: the docs/toolchain.md part | 06-20 Task 2 and fix round 1 | 0a2cf9b, 4a8eaa7 | closed |
 | DI-19 row 2 | spike 005 `Pair.module/segment: object`, `build_name_map` unannotated | 06-05 Task 2 | 191d094 | closed |
 | DI-19 row 3 | symbols.csv data rows validated in production (range check) | 06-02 Task 3 | 863114d, bc84d08 | closed |
 | DI-19 row 4 | `PROJECT_INCLUDE` unused; `MARKER_PREFIX` used as a substring | 06-07 Task 2 | 1b34ae3, d24e14d | closed |
@@ -59,19 +63,19 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-19 rows 10a-d | frame method not checked (10a, 06-03); `RelocResult` not tied to its row or bytes (10b, 06-08); bare LE kind numbers in tests (10c, 06-03); byte-dump regex lowercase-only (10d, 06-03) | 06-03; 06-08 Task 1 | 5eab11a, 426e8ff; 80c5789, 884e810 | closed |
 | DI-19 row 11 | ret, table, then non-start code absorbed into the function (owner option (a), functions.csv regenerated) | 06-04 Task 1 and fix round 1 | 5cf5392, f4e63a4, 47b633d, a2678ad, 446a7e9 | closed |
 | DI-19 rows 13a-b | Dockerfile "does not contain" list split (13a, 06-05); `lint.py` silently skips an explicit non-.c file (13b, 06-04) | 06-05 Task 2; 06-04 Task 2 | d8be60c; dbc3d42, 8078685 | closed |
-| DI-19 row 14 | docs/tools.md GhidraMCP verdict "Use" but status "Later" | 06-20 | none yet | planned 06-20 |
+| DI-19 row 14 | docs/tools.md GhidraMCP verdict "Use" but status "Later" | 06-20 Task 3 | 6e0c397 | closed |
 | DI-19 rows 16a-b | a test copies cli's version-selection logic (16a); `test_units_tile_the_code` skips without orig/ (16b) | 06-04 Task 3 and fix rounds 1-2 | f0dc6bf, 84033a0, 7a640d8, ed30004, 474a60a | closed |
 | DI-19 rows 17a-c | marked row with a non-code public counted as a stub (17a); non-strict UTF-8 read (17b); stray DATA public message (17c) | 06-09 Task 3 | f8c8e48, 3533764 | closed |
 | DI-19 rows 18a-c | raw-field reasoning stated per kind (18a, 06-08); per-function `raw_fields` in the check JSON (18b, 06-09); end-to-end raw-field test (18c, 06-08) | 06-08 Task 2 and fix round 1; 06-09 Task 3 | c6f004e, b10cdbc, fda9fc3, 8293123; f8c8e48, 3533764 | closed |
-| DI-19 row 19a | docs/toolchain.md "-s: consistent" should read tied / not separated | 06-20 | none yet | planned 06-20 |
+| DI-19 row 19a | docs/toolchain.md "-s: consistent" should read tied / not separated | 06-20 Task 2 and fix round 1 | 0a2cf9b, 4a8eaa7 | closed |
 | DI-19 row 19b | u_00054f20.c `void` choice gets a source comment (comment-only, token-identical) | 06-05 Task 1 | 43daac3 | closed |
-| DI-20 | Stale doc text: matching.md:57,63; learnings.md:86; toolchain.md:374 and :166 | 06-20 | none yet | planned 06-20 |
-| DI-21 | Owner-left doc items: tools.md:53 ast-grep, design spec :76, README :62/:139, tools.md:16 GhidraMCP (D-41) | 06-20 (docs) and 06-22 (README) | none yet | planned 06-20, 06-22 |
-| DI-22 | Phase 1 carry-overs: toolchain.md:13 SMKP entry point obj1:0x6CB0; .dockerignore `*.IMG`, `*.CUE`, `*.mdf` | 06-20 | none yet | planned 06-20 |
+| DI-20 | Stale doc text: matching.md:57,63; learnings.md:86; toolchain.md:374 and :166 | 06-20 Task 2 and fix round 1 | 0a2cf9b, 4a8eaa7 | closed |
+| DI-21 | Owner-left doc items: tools.md:53 ast-grep, design spec :76, README :62/:139, tools.md:16 GhidraMCP (D-41) | 06-20 Task 3 (docs) and 06-22 Task 2 (README annotations) | 6e0c397; cf5dec3 | closed |
+| DI-22 | Phase 1 carry-overs: toolchain.md:13 SMKP entry point obj1:0x6CB0; .dockerignore `*.IMG`, `*.CUE`, `*.mdf` | 06-20 Task 1 | 82acd9c, 9277149 | closed |
 | DI-23 | 04 security observations T-04-15/16 (10.5 real proofs), T-04-17 (failing assert printed bytes), T-04-36 (unlogged scratch checks) | 06-07 Tasks 2-3 and fix round 1; 04-SECURITY.md closure recorded by 06-21 Task 2 | 1b34ae3, e23cbcc, fdf0e0a; 225ec66 | closed |
 | DI-24 | Uncovered code: TACP ~0x29D4D..0x31040 and the UFO2P 3-byte tail at 0x000CFADA have no functions.csv rows | D-40 (counts as unmatched now; rows added when matching reaches it); D-50 (shown as an "uncovered" segment, implemented by 06-18) | none (ruling) | ruled (D-40, D-50) |
-| DI-25 (wording) | Compiler candidates unseparated: fix the stale toolchain.md wording | 06-20 | none yet | planned 06-20 |
-| DI-25 (evidence) | Compiler candidates unseparated: log the evidence from each pilot match | 06-27 (after the owner's pilot run) | none yet | pending 06-27 |
+| DI-25 (wording) | Compiler candidates unseparated: fix the stale toolchain.md wording | 06-20 Task 2 and fix round 1 | 0a2cf9b, 4a8eaa7 | closed |
+| DI-25 (evidence) | Compiler candidates unseparated: log the evidence from each pilot match | 06-27 Task 2: `### Phase 6 match evidence` in docs/toolchain.md, one row per pilot match (c83cf4e, d288ad6, 955931f), from the container sweeps build/gate/06-evidence/20-sweep-*.json; versions and `-4r`/`-5r` stay tied, `-os` drops for both UFO2P functions | the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
 
 ## C. Paperwork
 
@@ -80,7 +84,7 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 | DI-26 | T-04-13: owner signed A1 off in 04-UAT.md, but 04-SECURITY.md still said pending | 06-21 Task 2 (records the owner's A1 sign-off, 04-UAT.md test 3, 38b3b6b, D-41) | 225ec66 | closed |
 | DI-27 | 04-VALIDATION.md sign-off boxes unticked and "Approval: pending" against a validated frontmatter | 06-21 Task 2 (cites 04-UAT.md, f606a13, D-41) | 225ec66 | closed |
 | DI-28 | 05-VERIFICATION.md body said "Status: human_needed", frontmatter passed | 06-21 Task 2 (cites 05-UAT.md 5/5, c988bed, and the override, 4491f04) | 225ec66 | closed |
-| DI-29 | Spike 005 VALIDATED verdict needs the owner's recorded sign-off (owner line at the pilot checkpoint, D-41) | 06-26 (owner line) and 06-27 | none yet | pending 06-27 |
+| DI-29 | Spike 005 VALIDATED verdict needs the owner's recorded sign-off (owner line at the pilot checkpoint, D-41) | 06-26 (owner line "Spike 005 VALIDATED, confirmed by the owner on 2026-10-25", in its SUMMARY) and 06-27 Task 2 (quoted in 05-VALIDATION.md) | 273b999; the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
 | DI-30 | STATE.md Phase 5 blocker repeats its RESOLVED text; Deferred Items table said none | 06-21 Task 3 | 80e9c17 | closed |
 | DI-31 | Backlog 999.2: Phase 7 SC4 (DEC-04) reworded so readlint also rejects `func_XXXXXXXX` / `D_XXXXXXXX` in a matched unit (readlint itself stays Phase 7) | 06-21 Task 3 | 80e9c17 | closed |
 
@@ -95,10 +99,10 @@ fix-round commits that touched the item; the full list is in that plan's SUMMARY
 
 | ID | Item | Closed by | Commit(s) | Status |
 |----|------|-----------|-----------|--------|
-| DI-34 (feed) | decomphub.progress.json (progress-v1) written by progress.py (D-29) | 06-18 | none yet | planned 06-18 |
-| DI-34 (verification) | DecompHub maintainer verification file (D-31) | 06-22 | none yet | planned 06-22 |
-| DI-34 (CI POST) | CI POST to the DecompHub refresh endpoint behind a repo variable (D-30) | 06-24 (its plan carries this as D-30, the refresh POST, and does not name DI-34) | none yet | planned 06-24 |
-| DI-35 | Awesome-list PR drafts, files only; the owner opens or approves each (D-33) | 06-19 | none yet | planned 06-19 |
-| DI-36 | decomp.me msdos preset request draft; the owner files it by hand (D-33) | 06-19 | none yet | planned 06-19 |
-| DI-37 (links, notes) | .recomp.json links and notes (D-32) | 06-22 | none yet | planned 06-22 |
-| DI-37 (status) | .recomp.json status after the pilot (D-32) | 06-27 | none yet | pending 06-27 |
+| DI-34 (feed) | decomphub.progress.json (progress-v1) written by progress.py (D-29) | 06-18 Tasks 2-3 and fix round 1 | a8eba2d, e6d4cbe; 5364ffa | closed |
+| DI-34 (verification) | DecompHub maintainer verification file (D-31) | 06-22 Task 2 (docs/DECOMPHUB_VERIFICATION.md) | cf5dec3 | closed |
+| DI-34 (CI POST) | CI POST to the DecompHub refresh endpoint behind a repo variable (D-30) | 06-24 Task 3 and fix round 1 (its plan carries this as D-30, the refresh POST, and does not name DI-34) | 4bb7549, 9d9b52b; 6e9c2b0 | closed |
+| DI-35 | Awesome-list PR drafts, files only; the owner opens or approves each (D-33) | 06-19 Tasks 1-2 and fix round 1 (drafts in docs/listings.md; sending them is the owner's) | 90e4d0e, 74afbf8; 44a78ef | closed |
+| DI-36 | decomp.me msdos preset request draft; the owner files it by hand (D-33) | 06-19 Task 2 and fix round 1 (draft in docs/listings.md; filing it is the owner's) | 74afbf8; 44a78ef | closed |
+| DI-37 (links, notes) | .recomp.json links and notes (D-32) | 06-22 Task 1 and fix round 2 | a9011c7; e360d32 | closed |
+| DI-37 (status) | .recomp.json status after the pilot (D-32) | 06-27 Task 2 (`status` exploring -> in-progress; the pilot landed 3 matches) | the 06-27 Task 2 commit (hash in 06-27-SUMMARY.md) | closed |
