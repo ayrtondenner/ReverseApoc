@@ -25,6 +25,71 @@ Each unit with room for a label carries one: a game unit its unit name (the name
 
 The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json). That file changes only when a `gate EXE/UNIT` run passes.
 
+## How an agent session matches a function
+
+`uv run reverseapoc drive` runs unattended matching nights. Each attempt at one function is one fresh Claude Code
+session in a locked-down checkout, and nothing the session claims counts: the driver compiles and compares the bytes
+itself. In plain terms, Claude writes a recipe (the C), the original compiler bakes it, and only an exact copy of the
+original counts.
+
+```mermaid
+flowchart TD
+    A["Step 1: Preflight<br/>Docker, CLI version, clean tree,<br/>tooling compiled, asm regenerated"] -->|a check fails| R["REFUSED<br/>nothing starts"]
+    A -->|all checks pass| B["Step 2: Pick a function<br/>easiest first, from both EXEs,<br/>Ghidra draft as a hint"]
+    B --> C["Step 3: Build the context pack<br/>target asm, neighbours,<br/>draft, compiler rules"]
+    C --> D
+    subgraph S["Step 4: one Claude Code session behind guardrail hooks"]
+        D["Write or edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>at most 25 per attempt"]
+        E --> F["Compile with Watcom C 10.6<br/>in the container"]
+        F --> G["objdiff score, relocation check,<br/>splice into a copy of the EXE,<br/>whole-EXE SHA-1"]
+        G -->|not identical yet| D
+    end
+    G -->|session ends| H["Step 6: the driver checks the work<br/>file audit, C89 lint, full gate"]
+    H -->|byte-identical| M["MATCHED<br/>one commit: unit, status.csv,<br/>progress feed, attempt log"]
+    H -->|not identical| P["PARTIAL<br/>best C kept as notes,<br/>unit reset"]
+    H -->|write outside the claim| X["Guardrail stop<br/>strays restored or quarantined,<br/>night ends, nothing committed"]
+    P -->|under 3 attempts| C
+    P -->|3 attempts| L["Difficult list<br/>retried in a later pass"]
+    classDef matched fill:#008300,stroke:#005a00,color:#ffffff
+    classDef partial fill:#eda100,stroke:#a86f00,color:#0b0b0b
+    classDef stop fill:#52514e,stroke:#2b2a28,color:#ffffff
+    class M matched
+    class P,L partial
+    class R,X stop
+```
+
+1. **Preflight.** Before anything starts, the driver checks that Docker answers and the build container is in sync,
+   that the Claude CLI is in the tested range, and that the git tree is clean, so every later change can be traced to
+   a session. It compiles the Python tooling once (sessions never write cache files) and regenerates the disassembly
+   of both EXEs. Any failure is a refusal: nothing runs.
+2. **Pick a function.** The picker takes small, easy functions first, alternating UFO2P and TACP, at most two per
+   unit, and skips anything already matched or on the difficult list. Ghidra adds a rough C draft for each pick as a
+   hint (some picks have none).
+3. **Build the context pack.** One file per function with what a session needs: the target disassembly, the
+   neighbouring functions, the Ghidra draft and the Watcom coding rules.
+4. **One Claude Code session.** The driver starts a fresh `claude -p` session with the pack and the `watcom-decomp`
+   skill. Guardrail hooks deny almost everything: the session may edit only its one unit file (for example
+   `src/ufo2p/u_00089980.c`), add a header or write its notes, and it may run only three commands:
+   `attempt context` (re-read the pack), `attempt asm` (read the target disassembly) and `attempt check`. A canary
+   run proves the hooks deny before any night starts.
+5. **`attempt check`.** Inside the container, the unit is compiled with the original Watcom C 10.6 compiler and flags
+   (`-4r -s -fpi`). objdiff scores the new function against the original, a relocation check confirms every reference
+   lands on the same target, and the function is spliced into a copy of your own EXE, whose SHA-1 must equal the
+   retail file's. The session reads the result, edits the C (a type, the statement order, a loop's shape) and checks
+   again, at most 25 times per attempt.
+6. **The driver checks the work.** When the session ends, the driver audits every file it touched (a write outside
+   the claim stops the night), lints the unit as C89 and runs the full gate in the container. Only the gate's exit 0
+   makes a match.
+
+| Result | What it means | What the driver does |
+|---|---|---|
+| **MATCHED** | The C compiles to the original bytes: objdiff 100%, the relocations agree, and the spliced EXE keeps the retail SHA-1. | One commit with explicit paths (the unit, `status.csv`, `decomphub.progress.json`, `progress/attempts.jsonl`), marked `Matched-By: reverseapoc drive`. It counts in the progress figures. |
+| **PARTIAL** | The C scores above 0% in objdiff but is not byte-identical yet. | The best C is kept under `build/` with its score, the unit is reset, and the function goes back in the queue. After 3 attempts it moves to the difficult list for a later pass. It counts for nothing in the percentage. |
+
+On the first pilot night (run `20261026-005209`), 40 sessions gave 3 MATCHED and 37 PARTIAL; the closest partials
+reached 87.5% and 87.2%. At the end of every night the driver rebuilds both EXEs, checks their SHA-1s and re-runs the
+gate on every match before it commits the attempt log.
+
 ## Supported versions
 
 Only the DOS release is supported. Steam and GOG ship byte-identical game executables, so either store works (Steam is preferred, GOG is the fallback).
