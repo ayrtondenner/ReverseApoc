@@ -24,8 +24,8 @@ awaiting: user response
 expected: `CANARY PASS` before any further real night (a live `claude -p` session; owner-only)
 result: [pending]
 
-### 2. Review the 32 judgment-tier prohibitions
-expected: The owner confirms the table "Prohibitions (judgment tier)" in 06-VERIFICATION.md (every group held, in the verifier's verdict), or names any prohibition the verdict gets wrong
+### 2. Review the 39 judgment-tier prohibitions
+expected: The owner confirms the section "### Prohibitions (judgment tier, 39, all `status: resolved`)" in 06-VERIFICATION.md (39 rows, one per prohibition; the verifier's verdict is 34 held, 5 held with note, 0 not held), or names any prohibition the verdict gets wrong
 result: [pending]
 
 ### 3. Look at the progress page in a browser
