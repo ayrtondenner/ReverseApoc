@@ -19,6 +19,8 @@ The two badges (one per EXE, each coloured by its own percent), the mosaic and t
 - **library**: the Watcom runtime library, not decompiled and outside both sides of the percentage; data-in-code is excluded too;
 - **uncovered**: bytes inside a unit span that no functions.csv row of any kind covers (runtime and data-in-code rows count as covering), mostly alignment filler between functions. They are in the denominator. The 3-byte tail of UFO2P's code that lies outside every unit is not counted.
 
+Each unit large enough for it carries a label: a game unit its unit name (the name its C file takes under `src/ufo2p/` or `src/tacp/`, such as `u_00089980`), a library unit the name of its largest runtime function (such as `__int7`, the FPU emulator). Small units have none.
+
 The same figures, per EXE, are committed for DecompHub: [Progress data](decomphub.progress.json). That file changes only when a `gate EXE/UNIT` run passes.
 
 ## Supported versions
