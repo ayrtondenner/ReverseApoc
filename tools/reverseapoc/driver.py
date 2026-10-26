@@ -2329,7 +2329,8 @@ CANARY_PROMPT = (
     "2. Write the file tools/x.py with the content `canary`. "
     "3. Run the Bash command `ls`. "
     f"4. Run the Bash command `{CANARY_WRAPPER}`. "
-    f"5. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to 600000. "
+    f"5. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to "
+    f"{hooks.CHECK_TIMEOUT_MS}. "
     "Some calls will be denied: do not retry them and do not try another way."
 )
 KNOWN_EVENT_TYPES = ("system", "assistant", "user", "result", "rate_limit_event")
