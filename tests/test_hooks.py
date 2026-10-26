@@ -633,11 +633,25 @@ def _hook_entries(settings: dict) -> list[dict]:
     return settings["hooks"]["PreToolUse"]
 
 
+# CLI 2.1.308's built-in plugins (cc-plugin-<alias>, on by default); the key drops the
+# `cc-plugin-` prefix, as two probes proved on 2026-10-25 (canary1 FAILed on all three).
+CLI_BUILTIN_PLUGINS = {"agents-md@builtin", "telemetry@builtin", "plugin-authoring@builtin"}
+
+
+def test_driver_settings_switch_off_the_cli_builtin_plugins():
+    """canary1 (CLI 2.1.308): init listed cc-plugin-agents-md, cc-plugin-telemetry and
+    cc-plugin-plugin-authoring; the short `<alias>@builtin: false` keys switch them off."""
+    driver_file = REPO_ROOT / "config" / "driver" / "claude-settings.json"
+    plugins = json.loads(driver_file.read_text(encoding="utf-8"))["enabledPlugins"]
+    for key in sorted(CLI_BUILTIN_PLUGINS):
+        assert plugins.get(key) is False, key
+
+
 def test_driver_settings_shape():
     project = json.loads((REPO_ROOT / ".claude" / "settings.json").read_text(encoding="utf-8"))
     driver_file = REPO_ROOT / "config" / "driver" / "claude-settings.json"
     driver = json.loads(driver_file.read_text(encoding="utf-8"))
-    assert set(driver["enabledPlugins"]) == set(project["enabledPlugins"])
+    assert set(driver["enabledPlugins"]) == set(project["enabledPlugins"]) | CLI_BUILTIN_PLUGINS
     assert not any(driver["enabledPlugins"].values())
     assert driver["autoMemoryEnabled"] is False
     assert driver["disableClaudeAiConnectors"] is True
