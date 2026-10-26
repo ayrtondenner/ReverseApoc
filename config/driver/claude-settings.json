@@ -7,6 +7,7 @@
     "superpowers@claude-plugins-official": false,
     "i-have-adhd@i-have-adhd": false,
     "clangd-lsp@claude-plugins-official": false,
+    "frontend-design@anthropic-plugin-directory": false,
     "agents-md@builtin": false,
     "telemetry@builtin": false,
     "plugin-authoring@builtin": false
