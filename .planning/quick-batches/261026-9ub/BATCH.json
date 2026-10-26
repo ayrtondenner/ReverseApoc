@@ -1,0 +1,77 @@
+{
+  "schema_version": 1,
+  "batch_id": "261026-9ub",
+  "created_at": "2026-10-26T10:05:11.690Z",
+  "options": {},
+  "base_revision": "fe7149c7884c8ce136784003e50b60c1727bd855",
+  "items": [
+    {
+      "quick_id": "261026-9uc",
+      "client_id": null,
+      "description": "Progress badges and mosaic labels: README Progress section shows two per-EXE shields (UFO2P.EXE, TACP.EXE; tools/progress.py writes one shields.io endpoint JSON per EXE, combined progress-shield.json stays published) and progress.svg draws a label on each large unit (game unit = unit name, library unit = its largest runtime function name; no label on small squares; deterministic bytes; tooltips kept). Brief: .superpowers/sdd/let-s-work-on-phase-effervescent-nebula/progress-visuals-brief.md. TDD.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/progress.py",
+        "tests/test_progress.py",
+        "tests/test_treemap.py",
+        "tests/test_listings.py",
+        "README.md",
+        ".github/workflows/pages.yml"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "058389b",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261026-9ud",
+      "client_id": null,
+      "description": "Progress page: new progress.html written by tools/progress.py and published by .github/workflows/pages.yml, linked from the README; per-EXE percent bar plus a one-tick-per-function strip and the labelled mosaic inline, design plan in the brief (system font, existing palette, dark scheme, no JavaScript, deterministic). Depends on the badges-and-labels task (same file tools/progress.py). TDD.",
+      "status": "complete",
+      "depends_on": [
+        "261026-9uc"
+      ],
+      "planned_files": [
+        "tools/progress.py",
+        "tests/test_progress_page.py",
+        "tests/test_listings.py",
+        "README.md",
+        ".github/workflows/pages.yml"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "7cee997",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261026-9ue",
+      "client_id": null,
+      "description": "Drive timestamps: prefix every `drive:` console line and each attempt's start and finish line printed by `reverseapoc drive` with local time [HH:MM:SS] through an injectable clock seam; exit codes and --json (exactly one document) unchanged. TDD.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/driver.py",
+        "tests/test_drive.py",
+        "tests/test_driver.py",
+        "docs/workflow.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "def199b",
+      "failure_reason": null
+    }
+  ]
+}
