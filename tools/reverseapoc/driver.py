@@ -466,6 +466,22 @@ def commit_paths(git, *, message: str, message_file: Path, paths: Sequence[str])
     _git_ok(git, ["commit", "-q", "-F", str(message_file), "--", *paths])
 
 
+_UNCLAIMED_PASS = "the gate passed without a matched row for the claimed function"
+
+
+def claimed_matched(doc: Mapping | None, pick: Pick) -> bool:
+    """06-REVIEW CR-01: True when a gate's JSON `written` (the status.csv rows it wrote, one per
+    function of the unit that passed) holds a matched row for the claimed function, the same
+    rule attempt._verdict applies to the claimed function of a check (D-24)."""
+    want = f"0x{pick.start:08X}"
+    written = doc.get("written") if isinstance(doc, Mapping) else None
+    return isinstance(written, list) and any(
+        isinstance(row, Mapping) and row.get("start") == want and row.get("unit") == pick.unit
+        and row.get("status") == STATUS_MATCHED
+        for row in written
+    )  # fmt: skip
+
+
 def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
     """(EXE name, SHA-1) of each landed EXE in a gate's JSON (its checks' `splice` entries)."""
     found: dict[str, str] = {}
@@ -1561,12 +1577,28 @@ class _Night:
                                         f"{sorted(EXE_ORDER)}")  # fmt: skip
         return gate
 
+    def _gate_matched(self, session: _Session, gate: GateRun | None) -> bool:
+        """06-REVIEW CR-01: a gate run is a match of the claimed function only when it passed
+        AND wrote a matched row for that function. A unit that already holds matched functions
+        passes with the claimed one still a stub (stubs are not checked), so the exit alone
+        decides nothing about the claim. Such a pass has re-hashed the unit's rows and rewritten
+        the feed: those come back to their pre-gate bytes (a refused restore stops the night)."""
+        if gate is None or gate.exit_code != EXIT_OK:
+            return False
+        if claimed_matched(gate.doc, session.claim.pick):
+            return True
+        notes = self._restore_pre_gate()
+        if notes:
+            self._tool_failure(session, "; ".join([_UNCLAIMED_PASS, *notes]))
+        return False
+
     def _salvage(self, session: _Session) -> bool:
         """06-17 review: a LIMIT session keeps its work. When it changed the unit or wrote a
-        header, it is judged as usual; a pass is a counted MATCHED. Otherwise it is reset."""
+        header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
+        Otherwise it is reset."""
         if session.has_work():
             gate = self._judge(session)
-            if gate is not None and gate.exit_code == EXIT_OK:
+            if self._gate_matched(session, gate):
                 self.sessions += 1
                 self._commit_match(session, gate, read_checks(session.claim.attempt_dir))
                 return True
@@ -1579,7 +1611,7 @@ class _Night:
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
         gate = self._judge(session)
-        if gate is not None and gate.exit_code == EXIT_OK:
+        if self._gate_matched(session, gate):
             self._commit_match(session, gate, summary, abort)
             return MATCHED
         if gate is None:
