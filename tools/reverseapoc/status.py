@@ -15,7 +15,8 @@ source_sha256,date`:
 - `attempts`: a decimal count, 0 for a match by hand;
 - `source_sha256`: SHA-256 of the unit file read as UTF-8 with CRLF as LF (`lf_sha256`), so any
   edit of matched C must be re-gated (D-22); for a partial row, of the saved attempt it scored;
-- `date`: the UTC date of the gate run, `YYYY-MM-DD`.
+- `date`: the UTC date of the gate run, `YYYY-MM-DD`; for a partial row, of the last gate run
+  that scored the function above 0%, even when an older, better row keeps its percent and sha.
 
 There is no commit column: a commit cannot contain its own hash. The file starts with the
 comment line STATUS_COMMENT, then the exact header; rows are sorted by start, one per start, LF

@@ -638,7 +638,22 @@ def test_partial_keeps_the_higher_percent(committed):
     result = run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), FakePartial(tree, {B1: 60.0}),
                          attempts=2)  # fmt: skip
     assert result.exit_code == 0
-    assert tree.rows(UFO) == [dataclasses.replace(old, attempts=2)]
+    assert tree.rows(UFO) == [dataclasses.replace(old, attempts=2, date="2026-10-25")]
+
+
+def test_a_kept_better_partial_row_is_skipped_by_the_picker_today(committed):
+    """Review WR-03 (D-09): a function attempted today is not picked again today, even when an
+    older partial row scored better and keeps its percent and sha."""
+    from reverseapoc import driver
+
+    tree = committed
+    seed(tree, UFO, [StatusRow(B1, fname(B1), UNIT_B, "partial", 80.0, 1, "d" * 64,
+                               "2026-10-01")])  # fmt: skip
+    assert ("ufo2p", B1) not in driver.excluded_keys(tree.config, "2026-10-25")
+    assert run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), FakePartial(tree, {B1: 70.0}),
+                       attempts=2).ok  # fmt: skip
+    assert ("ufo2p", B1) in driver.excluded_keys(tree.config, "2026-10-25")
+    assert ("ufo2p", B1) not in driver.excluded_keys(tree.config, "2026-10-26")
 
 
 def test_partial_takes_a_higher_percent(committed):
