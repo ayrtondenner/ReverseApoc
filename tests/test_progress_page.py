@@ -11,12 +11,13 @@ import dataclasses
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
 from test_listings import DENOMINATOR, PARTIAL_RULE, RATIO
 from test_progress import CONFIG, PROGRESS, REPOSITORY, SHA, load_progress, synthetic_config
-from test_treemap import SVG_LIMIT
+from test_treemap import COLORS, SVG_LIMIT
 
 COMMIT_URL = f"{REPOSITORY}/commit/"
 WORKFLOW_URL = f"{REPOSITORY}/actions/workflows/pages.yml"
@@ -286,6 +287,90 @@ def test_strip_escapes_names(tmp_path):
                  if tag == "div" and attrs.get("class") == "strip")  # fmt: skip
     tag, attrs = tags[strip + 1]
     assert tag == "i" and attrs["title"] == f"{odd}: 16 bytes, matched"
+
+
+# ---- dark scheme, contrast and phone layout ----
+
+
+def dark_module():
+    """progress.py with its dark tokens; a missing name fails the test on this assert."""
+    progress = strip_module()
+    for name in ("DARK_SURFACE", "DARK_INK", "DARK_SECONDARY_INK", "MOSAIC_PAINTS"):
+        assert hasattr(progress, name), f"progress.py has no {name}"
+    return progress
+
+
+def _luminance(colour: str) -> float:
+    """WCAG 2.x relative luminance of a #rrggbb colour."""
+    def channel(c: float) -> float:
+        return c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4
+
+    r, g, b = (channel(int(colour[i:i + 2], 16) / 255) for i in (1, 3, 5))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def contrast(a: str, b: str) -> float:
+    lighter, darker = sorted((_luminance(a), _luminance(b)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_dark_scheme_swaps_surface_and_ink_only(tmp_path):
+    progress = dark_module()
+    assert (progress.DARK_SURFACE, progress.DARK_INK, progress.DARK_SECONDARY_INK) == (
+        "#161615", "#ecebe7", "#a8a6a0")
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    style = style_of(page)
+    assert (f":root{{--surface:{progress.SURFACE};--ink:{progress.INK};"
+            f"--secondary:{progress.SECONDARY_INK};color-scheme:light dark}}") in style
+    dark = (f"@media (prefers-color-scheme: dark){{:root{{--surface:{progress.DARK_SURFACE};"
+            f"--ink:{progress.DARK_INK};--secondary:{progress.DARK_SECONDARY_INK}}}}}")
+    assert dark in style.splitlines()
+    assert style.count("prefers-color-scheme") == 1  # no status hue is redefined
+    head = page.split("</head>", 1)[0]
+    assert '<meta name="color-scheme" content="light dark">' in head
+    assert progress.TREEMAP_COLORS == COLORS
+
+
+def test_palette_contrast():
+    """WCAG 2.x contrast. Measured: light ink 19.17, secondary 7.73; dark ink 15.18, secondary
+    7.44; on the dark surface matched 3.66, partial 8.36, unmatched 5.04, library 4.10,
+    uncovered 12.45 (all >= 3:1 for graphics, WCAG 1.4.11). On the light surface the owner's
+    unchanged-hue rule keeps partial at 2.11 and uncovered at 1.42 (the D-50 palette; partial
+    ticks also stand taller)."""
+    progress = dark_module()
+    assert contrast(progress.INK, progress.SURFACE) >= 7.0
+    assert contrast(progress.DARK_INK, progress.DARK_SURFACE) >= 7.0
+    assert contrast(progress.SECONDARY_INK, progress.SURFACE) >= 4.5
+    assert contrast(progress.DARK_SECONDARY_INK, progress.DARK_SURFACE) >= 4.5
+    for status, colour in progress.TREEMAP_COLORS.items():
+        assert contrast(colour, progress.DARK_SURFACE) >= 3.0, status
+
+
+def test_mosaic_follows_the_colour_scheme():
+    """Every paint of the inline mosaic is a status colour, "none" or a scheme token, and each
+    scheme token present is mapped to its CSS variable on the page (9uc's label fill and halo
+    stroke included); a later SVG paint with no mapping fails here."""
+    progress = dark_module()
+    derived = progress.derive(CONFIG)
+    root = ET.fromstring(progress.render_svg(derived))
+    tokens = {progress.SURFACE: "surface", progress.INK: "ink", progress.SECONDARY_INK: "secondary"}
+    allowed = set(progress.TREEMAP_COLORS.values()) | set(tokens) | {"none"}
+    pairs = {(attr, element.get(attr)) for element in root.iter() for attr in ("fill", "stroke")
+             if element.get(attr) is not None}  # fmt: skip
+    assert {value for _attr, value in pairs} <= allowed
+    style = style_of(progress.render_html(derived, SHA))
+    mapped = [(attr, value) for attr, value in sorted(pairs) if value in tokens]
+    assert len(mapped) >= 3, mapped
+    for attr, value in mapped:
+        assert f'.mosaic [{attr}="{value}"]{{{attr}:var(--{tokens[value]})}}' in style, attr
+
+
+def test_page_stacks_at_phone_width(tmp_path):
+    progress = dark_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}" in style_of(page)
+    head = page.split("</head>", 1)[0]
+    assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in head
 
 
 # ---- publication ----

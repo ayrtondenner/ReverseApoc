@@ -958,6 +958,15 @@ COMMIT_SHORT = 7  # hex digits of the commit shown on the page
 PAGES_WORKFLOW_URL = REPOSITORY + "/actions/workflows/pages.yml"
 README_URL = REPOSITORY + "#progress"
 BAR_HEIGHT = 8  # px, the percent bar
+# The dark scheme swaps surface, ink and secondary only, to warm near-blacks like the palette's
+# warm greys; the status hues stay the D-50 ones in both schemes. Measured (WCAG 2.x): ink
+# 15.18:1, secondary 7.44:1; on the dark surface matched 3.66, partial 8.36, unmatched 5.04,
+# library 4.10, uncovered 12.45 (all >= 3:1 for graphics, WCAG 1.4.11).
+DARK_SURFACE, DARK_INK, DARK_SECONDARY_INK = "#161615", "#ecebe7", "#a8a6a0"
+# The inline mosaic's scheme paints, each mapped to its page variable (render_svg is unchanged,
+# so progress.svg on its own stays light).
+MOSAIC_PAINTS = (("fill", SURFACE, "surface"), ("stroke", SURFACE, "surface"),
+                 ("fill", INK, "ink"), ("fill", SECONDARY_INK, "secondary"))  # fmt: skip
 # The function strip: one tick per game and thunk function, in address order. A CSS flex-wrap
 # row, so it re-wraps at any width instead of scaling: 112 ticks per row at a 375 px viewport.
 TICK_CLASSES = {MATCHED: "m", PARTIAL: "p", UNMATCHED: "u"}
@@ -995,7 +1004,10 @@ MEASURED = (
 def _page_css() -> str:
     """The inline style sheet, one rule per line, from the SVG's own tokens."""
     return "\n".join([
-        f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK}}}",
+        f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
+        "color-scheme:light dark}",
+        f"@media (prefers-color-scheme: dark){{:root{{--surface:{DARK_SURFACE};--ink:{DARK_INK};"
+        f"--secondary:{DARK_SECONDARY_INK}}}}}",
         f"body{{margin:0;background:var(--surface);color:var(--ink);font-family:{FONT};"
         f"font-size:1rem;line-height:1.5}}",
         "main{max-width:75rem;padding:2rem clamp(1rem,5vw,4rem) 3rem}",
@@ -1022,6 +1034,10 @@ def _page_css() -> str:
           for status in (MATCHED, PARTIAL, UNMATCHED)),
         ".mosaic{margin-top:.75rem}",
         ".mosaic svg{display:block;width:100%;height:auto}",
+        *(f'.mosaic [{attr}="{token}"]{{{attr}:var(--{var})}}'
+          for attr, token, var in MOSAIC_PAINTS),
+        "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
+        ".exe h2{margin-bottom:.5rem}}",
     ])
 
 
@@ -1072,11 +1088,14 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
     figures in text and the function strip (one tick per game and thunk function in address
     order; matched and partial ticks stand taller and carry a tooltip; the strip wraps with the
     width), then the strip's key, the labelled mosaic (render_svg's output, verbatim) and how
-    the figures are measured. Inline CSS only, no script and no external request: every link is
-    relative or to the repository. The same CSVs and commit give the same bytes; without a
-    commit only the "Updated from commit" line is missing."""
+    the figures are measured. Under prefers-color-scheme: dark only the surface, ink and
+    secondary swap (the mosaic follows through MOSAIC_PAINTS; status hues are unchanged); below
+    40rem the EXE heading stacks over its bar. Inline CSS only, no script and no external
+    request: every link is relative or to the repository. The same CSVs and commit give the
+    same bytes; without a commit only the "Updated from commit" line is missing."""
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
+             '<meta name="color-scheme" content="light dark">',
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>", _page_css(), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
