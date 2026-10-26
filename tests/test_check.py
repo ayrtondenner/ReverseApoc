@@ -1174,12 +1174,16 @@ def test_non_utf8_unit_file_is_refused(env):
 
 def test_unit_file_with_a_lone_cr_is_a_source_problem(env):
     """read_source keeps the file's line breaks as they are (no newline translation), so the
-    D-12 parser refuses a lone CR as configure does (06-03 fix round 3)."""
-    unit_source(env).write_bytes(SOURCE.encode("utf-8") + b"int y;\rint z;\n")
-    result = run_check(env)
-    assert not result.ok
-    reasons = [p.reason for p in result.problems if p.name == check.SOURCE_PROBLEM]
-    assert any("carriage return" in reason for reason in reasons), reasons
+    D-12 parser refuses a lone CR as configure does (06-03 fix round 3), and the account names
+    it as a source problem of the unit; check refuses such a file before compiling it."""
+    text = SOURCE + "int y;\rint z;\n"
+    marks = check.source_marks(text, [ROW, OTHER])
+    assert any("carriage return" in p for p in marks.problems), marks.problems
+    unit_source(env).write_bytes(text.encode("utf-8"))
+    compiler = FakeCompiler()
+    with pytest.raises(check.CheckError, match="carriage return"):
+        run_check(env, compiler=compiler)
+    assert compiler.calls == []
 
 
 # ---- 06-REVIEW CR-02 (fix round 2): a path include is refused before anything compiles ---------
@@ -1214,6 +1218,20 @@ def test_land_all_refuses_a_path_include_before_compiling(env):
     unit_source(env).write_text(NOTES_INCLUDE + SOURCE, encoding="utf-8")
     compiler = FakeCompiler()
     with pytest.raises(check.CheckError, match="notes.md"):
+        check.land_all(**env.kwargs(), compile_fn=compiler)
+    assert compiler.calls == []
+
+
+def test_a_lone_cr_unit_with_a_path_include_is_refused_before_compiling(env):
+    """Text configure cannot read (a lone CR) hides its includes from include_problems, so
+    refuse_includes refuses it outright, naming why, before the compiler reads any include."""
+    unit_source(env).write_bytes(NOTES_INCLUDE.encode("utf-8") + b"int y;\rint z;\n"
+                                 + SOURCE.encode("utf-8"))  # fmt: skip
+    compiler = FakeCompiler()
+    with pytest.raises(check.CheckError, match="refused before compiling.*carriage return"):
+        run_check(env, compiler=compiler)
+    assert compiler.calls == []
+    with pytest.raises(check.CheckError, match="carriage return"):
         check.land_all(**env.kwargs(), compile_fn=compiler)
     assert compiler.calls == []
 
