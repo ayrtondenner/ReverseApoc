@@ -127,7 +127,11 @@ def _alive(pid: int) -> bool:
         return False
     stat = Path(f"/proc/{pid}/stat")
     if stat.is_file():
-        return stat.read_text().rsplit(")", 1)[1].split()[0] != "Z"
+        try:
+            text = stat.read_text()
+        except (FileNotFoundError, ProcessLookupError):
+            return False  # reaped between is_file() and read_text()
+        return text.rsplit(")", 1)[1].split()[0] != "Z"
     return True
 
 
@@ -149,6 +153,21 @@ def test_alive_probe_sees_a_live_process():
         sleeper.kill()
         sleeper.wait()
     assert _gone(sleeper.pid)
+
+
+def test_alive_probe_counts_a_vanished_proc_entry_as_gone(monkeypatch):
+    """CI run 40368211910: the child was reaped between is_file() and read_text(), and the
+    probe raised FileNotFoundError instead of answering 'gone'. The POSIX branch is forced on
+    every host, so the race is replayed deterministically here."""
+
+    def vanished(self, *args, **kwargs):
+        raise FileNotFoundError(2, "No such file or directory", str(self))
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(os, "kill", lambda pid, sig: None)
+    monkeypatch.setattr(Path, "is_file", lambda self: True)
+    monkeypatch.setattr(Path, "read_text", vanished)
+    assert _alive(7366) is False
 
 
 def test_timeout_kills_the_tree(tmp_path):
