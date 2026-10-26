@@ -433,10 +433,10 @@ def code_text(text: str) -> str:
     return _live_code(_NOT_CODE.sub(_blank, text))
 
 
-# 06-REVIEW CR-02: an #include names a bare header name (`"name.h"` from include/, `<name.h>` from
-# include/ or the compiler's own headers), never a path, another extension or a macro, so no file
-# outside those (an attempt's notes.md under build/driver/, say) can carry a #pragma or inline asm
-# into the compile past the scan.
+# 06-REVIEW CR-02: an #include names a bare header name (`"name.h"` from src/<exe>/ or include/,
+# `<name.h>` from include/ or the compiler's own headers), never a path, another extension or a
+# macro, so no file outside those (an attempt's notes.md under build/driver/, say) can carry a
+# #pragma or inline asm into the compile past the scan.
 _INCLUDE_DIRECTIVE = re.compile(r"\s*(?:#|%:)\s*include(.*)", re.DOTALL)
 _BARE_HEADER = re.compile(r'\s*(?:"[A-Za-z0-9_]+\.h"|<[A-Za-z0-9_]+\.h>)\s*')
 
@@ -451,7 +451,8 @@ def _blank_comment(match: re.Match[str]) -> str:
 def include_problems(text: str) -> list[str]:
     """CR-02: one problem per #include whose operand is not a bare header name, read through
     translation phases 1-2 with comments blanked, at its logical line's first line. "name.h"
-    resolves in include/; <name.h> in include/ or Watcom's own H directory (-i=include/;<watcom>/H),
+    resolves in the including file's directory (src/<exe>/, which the agent cannot write) first,
+    then as <name.h> does: in include/, then Watcom's own H directory (-i=include/;<watcom>/H),
     which game code may need (conio.h, i86.h), so angle includes are not restricted further. An
     #include in a dead #if 0 branch is refused too (fail closed). Raises _UnreadableSource for
     text normalize_source refuses."""

@@ -527,12 +527,12 @@ def refuse_includes(src: Path, text: str) -> None:
     """06-REVIEW CR-02: a unit file whose #include names anything but a bare header name is
     refused before it is compiled (a CheckError naming each include), so the compiler never
     reads an unscanned file such as an attempt's notes.md. configure's include_problems decides;
-    text it cannot read is left to the account, which reports it as a source problem."""
+    text it cannot read (a lone CR) could hide an include, so it is refused here too, naming why."""
     cfg = _configure()
     try:
         problems = cfg.include_problems(text)
-    except cfg._ConditionalError:
-        return
+    except cfg._ConditionalError as exc:
+        raise CheckError(f"{src}: refused before compiling: {exc}") from None
     if problems:
         raise CheckError(f"{src}: refused before compiling: {'; '.join(problems)}")
 

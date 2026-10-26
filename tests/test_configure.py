@@ -575,8 +575,9 @@ def test_unit_source_complete_file_has_no_problems():
     "#include HEADER", '#include \\\n "../x.h"',
 ])  # fmt: skip
 def test_unit_source_refuses_a_path_include(include, tmp_path):
-    """06-REVIEW CR-02: only a bare include/<name>.h may be included, so the build and the gate
-    refuse a unit that pulls in any other file (the hook's rule, defence in depth)."""
+    """06-REVIEW CR-02: only a bare header name ("name.h" or <name.h>) may be included, so the
+    build and the gate refuse a unit that pulls in any other file (the hook's rule, defence in
+    depth)."""
     text = UNIT_SOURCE.replace('#include "common.h"', include)
     (problem,) = configure.check_unit_source(text, TWO_GAME)
     assert "#include" in problem and "line 1" in problem
