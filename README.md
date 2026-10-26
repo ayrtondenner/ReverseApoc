@@ -33,23 +33,24 @@ itself. In plain terms, Claude writes a recipe (the C), the original compiler ba
 original counts.
 
 ```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 260}}}%%
 flowchart TD
-    A["Step 1: Preflight<br/>Docker, CLI version, clean tree,<br/>tooling compiled, asm regenerated"] -->|a check fails| R["REFUSED<br/>nothing starts"]
-    A -->|all checks pass| B["Step 2: Pick a function<br/>easiest first, from both EXEs,<br/>Ghidra draft as a hint"]
-    B --> C["Step 3: Build the context pack<br/>target asm, neighbours,<br/>draft, compiler rules"]
+    A["Step 1: preflight<br/>Docker, CLI checked<br/>clean git tree<br/>asm regenerated"] -->|a check fails| R["REFUSED<br/>nothing starts"]
+    A -->|all checks pass| B["Step 2: pick a function<br/>easiest first<br/>Ghidra draft as hint"]
+    B --> C["Step 3: context pack<br/>target asm<br/>neighbours and draft<br/>compiler rules"]
     C --> D
-    subgraph S["Step 4: one Claude Code session behind guardrail hooks"]
-        D["Write or edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>at most 25 per attempt"]
-        E --> F["Compile with Watcom C 10.6<br/>in the container"]
-        F --> G["objdiff score, relocation check,<br/>splice into a copy of the EXE,<br/>whole-EXE SHA-1"]
+    subgraph S["Step 4: one Claude Code session, guardrails on"]
+        D["Edit the C<br/>of its one unit file"] --> E["Step 5: attempt check<br/>up to 25 per attempt"]
+        E --> F["Watcom C 10.6<br/>compile in container"]
+        F --> G["objdiff score<br/>relocation check<br/>splice into EXE copy<br/>whole-EXE SHA-1"]
         G -->|not identical yet| D
     end
-    G -->|session ends| H["Step 6: the driver checks the work<br/>file audit, C89 lint, full gate"]
-    H -->|byte-identical| M["MATCHED<br/>one commit: unit, status.csv,<br/>progress feed, attempt log"]
-    H -->|not identical| P["PARTIAL<br/>best C kept as notes,<br/>unit reset"]
-    H -->|write outside the claim| X["Guardrail stop<br/>strays restored or quarantined,<br/>night ends, nothing committed"]
+    G -->|session ends| H["Step 6: driver check<br/>file audit, C89 lint<br/>full gate"]
+    H -->|byte-identical| M["MATCHED<br/>one commit with<br/>explicit paths"]
+    H -->|not identical| P["PARTIAL<br/>best C kept as notes<br/>unit reset"]
+    H -->|write outside the claim| X["Guardrail stop<br/>strays restored<br/>night ends<br/>nothing committed"]
     P -->|under 3 attempts| C
-    P -->|3 attempts| L["Difficult list<br/>retried in a later pass"]
+    P -->|3 attempts| L["Difficult list<br/>retried next pass"]
     classDef matched fill:#008300,stroke:#005a00,color:#ffffff
     classDef partial fill:#eda100,stroke:#a86f00,color:#0b0b0b
     classDef stop fill:#52514e,stroke:#2b2a28,color:#ffffff
