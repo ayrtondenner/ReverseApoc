@@ -38,7 +38,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Byte-identical round trip** - KKND-style in-place page splice rebuilds both EXEs SHA-1 identical, with a gate proven able to fail (completed 2026-10-21)
 - [x] **Phase 4: Compiler identification** - Exact Watcom version and default flags proven by codegen probe and CLIB3R/MATH3R library match (completed 2026-10-23)
 - [x] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE (completed 2026-10-24)
-- [ ] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions
+- [x] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions (completed 2026-10-26; pilot 3/10, partial accepted by the owner, the target carries to Phase 7)
 - [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
 - [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0; findings docs (bugs, cut content, cheats and easter eggs, Learning AI)
 
@@ -223,7 +223,7 @@ Plans:
   5. An unattended pilot run matches 10 easy functions, one function per commit, with zero regressions: every previously matched function still matches and both EXEs stay SHA-1 identical after every commit; agent work runs through decomp.wtf v0.10.6 fork mode pinned in WSL2 as a subprocess if the spike passes, otherwise through a minimal own agent layer (AGT-06, AGT-10, AGT-11)
 
 **Spike**: decomp.wtf fork mode accepts the repo's stub convention.
-**Plans:** 27/27 plans executed
+**Plans:** 27/27 plans complete
 **UI hint**: yes
 
 Plans:
@@ -322,7 +322,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 3. Byte-identical round trip | 10/10 | Complete    | 2026-10-21 |
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
-| 6. Reporting and agent pilot | 27/27 | In Progress | - |
+| 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 

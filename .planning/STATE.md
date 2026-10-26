@@ -2,47 +2,48 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 milestone_name: Milestone 1
-current_phase: 6
-current_phase_name: Reporting and agent pilot
-status: executing
-stopped_at: Phase 6 context gathered
-last_updated: "2026-10-25T00:48:59.175Z"
-last_activity: 2026-10-24
-last_activity_desc: Phase 6 execution started
-state_head: 9f2d578a16a2f66e419dd46d6d7550164a9afcda
+current_phase: 07
+current_phase_name: Mechanics-first decompilation
+status: planning
+stopped_at: Phase 06 complete, ready to plan Phase 07
+last_updated: "2026-10-26T18:46:46.131Z"
+last_activity: 2026-10-26
+last_activity_desc: Phase 06 complete, transitioned to Phase 07
+state_head: 3025670944f0751f4322dd9e156caec071069b20
 progress:
   total_phases: 8
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 74
-  completed_plans: 47
+  completed_plans: 74
+  percent: 75
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-24)
+See: .planning/PROJECT.md (updated 2026-10-26)
 
 **Core value:** Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to the original, objdiff 100% for the function), never by an agent's own judgement.
-**Current focus:** Phase 6 — Reporting and agent pilot
+**Current focus:** Phase 7 — Mechanics-first decompilation
 
 ## Current Position
 
-Phase: 6 (Reporting and agent pilot) — EXECUTING
-Plan: 1 of 27
-Status: Executing Phase 6
-Last activity: 2026-10-24 — Phase 6 execution started
+Phase: 07 — Mechanics-first decompilation
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-26 — Phase 06 complete, transitioned to Phase 07
 
-Progress: [██████░░░░] 63%
+Progress: [████████░░] 75%
 
 Next steps:
-1. Phases 1-5 complete (Phase 5: VERIFICATION.md passed with 1 owner override, UAT passed 5/5 by the owner on 2026-10-24).
-2. Phase 6: `/gsd-discuss-phase 6`, then `/gsd-plan-phase 6`, then `/gsd-execute-phase 6` and `/gsd-verify-work 6`. Pick up backlog 999.3 (`asm` listing collision on `_Alphabet`) in Phase 6.
+1. Phases 1-6 complete (Phase 6: VERIFICATION.md passed, UAT passed 3/3 by the owner on 2026-10-26; pilot 3/10 accepted as partial, AGT-11 carries to Phase 7).
+2. Phase 7: `/gsd-discuss-phase 7`, then `/gsd-plan-phase 7`. Carry in: the 10-match pilot target (AGT-11), backlog 999.2 (readlint rejects `func_`/`D_` placeholders) and 999.4 (phone mosaic legibility and the 06-UI-REVIEW.md fixes).
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 47
+- Total plans completed: 74
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -55,6 +56,7 @@ Next steps:
 | 3 | 10 | - | - |
 | 04 | 13 | - | - |
 | 05 | 20 | - | - |
+| 06 | 27 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -101,6 +103,7 @@ Recent decisions affecting current work:
 - [Phase 05]: UAT 2026-10-24 (5/5 passed): the owner accepted the 05-18 raw-fields deviation from 05-08 (override in 05-VERIFICATION.md), the 898 MB image and capstone 5.0.9 (in the uv venv volume, not the image), and the 7 hand boundary verdicts. Follow-ups: backlog 999.3 (`asm` `_Alphabet` collision, Phase 6) and 999.2 (readlint must reject `func_`/`D_` placeholders, Phase 7)
 - [Phase 06]: 06-27 pilot result (D-37): owner run 20261026-005209 reached 3 MATCHED in 40 sessions: ufo2p func_0008A0E0 (c83cf4e), tacp func_0006EE30 (d288ad6) and ufo2p func_0008A100 (955931f), so 2 UFO2P + 1 TACP, about USD 14 per match. The gate re-checked it independently: each match commit was re-gated in the container (gate --all exit 0, both SHA-1s identical), the final tree passed from clean (ninja verify and gate --all exit 0), the drift and schema tests passed, and no guardrail record was found. All three matches hold under the `*` default; the sweeps leave 10.5/10.6/11.0 and -4r/-5r tied (docs/toolchain.md Phase 6 match evidence)
 - [Phase 06]: Owner ruling 2026-10-26: the PARTIAL pilot is accepted. AGT-11 = partial, owner-accepted 2026-10-26 (3/10), and the 10-match target carries to Phase 7. AGT-11 is not marked complete in REQUIREMENTS.md
+- [Phase 06]: UAT 2026-10-26 (3/3 passed): fresh owner canary3 = CANARY PASS under the post-review guardrails (CR-01, CR-02, WR-02, WR-04); the owner confirmed the 39 judgment-tier prohibitions incl. row 5 (47b633d timing); progress page passed (Playwright also checked desktop/phone, light/dark). Phone mosaic legibility deferred to backlog 999.4; 06-UI-REVIEW.md scored 17/24 (advisory)
 
 ### Pending Todos
 
@@ -138,6 +141,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T22:21:38.486Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-reporting-and-agent-pilot/06-CONTEXT.md
+Last session: 2026-10-26T18:50:00.000Z
+Stopped at: Phase 06 complete, ready to plan Phase 07
+Resume file: None
