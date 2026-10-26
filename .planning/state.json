@@ -31,7 +31,7 @@
     {
       "number": "6",
       "name": "Reporting and agent pilot",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "7",
@@ -46,8 +46,8 @@
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 6 of 8 · executing"
+    "label": "Advance to the next step (plan phase 07)",
+    "reason": "Phase 7 of 8 — needs a plan"
   },
-  "updated_at": "2026-10-25T00:48:59.225Z"
+  "updated_at": "2026-10-26T18:46:46.191Z"
 }

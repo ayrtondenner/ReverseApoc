@@ -182,7 +182,7 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | AGT-08 | Phase 6 | Complete |
 | AGT-09 | Phase 6 | Complete |
 | AGT-10 | Phase 6 | Complete |
-| AGT-11 | Phase 6 | Pending |
+| AGT-11 | Phase 6 | Partial (3/10, owner-accepted 2026-10-26; the 10-match target carries to Phase 7) |
 | DEC-01 | Phase 7 | Pending |
 | DEC-02 | Phase 7 | Pending |
 | DEC-03 | Phase 7 | Pending |
