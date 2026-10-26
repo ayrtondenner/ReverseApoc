@@ -119,19 +119,24 @@ def test_pages_permissions_and_concurrency():
 
 
 def test_every_checkout_drops_its_credentials():
-    """Fix round 1: no checkout leaves the job token in .git/config for later steps."""
-    lines = pages_text().splitlines()
-    checkouts = [i for i, line in enumerate(lines) if "actions/checkout@" in line]
-    assert checkouts
-    for i in checkouts:
-        step = []
-        for line in lines[i + 1:]:
-            if line.strip() and (indent(line) < indent(lines[i])
-                                 or line.lstrip().startswith("- ")):  # fmt: skip
-                break
-            step.append(line.strip())
-        assert "persist-credentials: false" in step, lines[i]
-    assert "persist-credentials: true" not in pages_text()
+    """Fix round 1, review WR-01: no checkout in any workflow leaves the job token in .git/config
+    for later steps (ci.yml runs a pull request's own code with it)."""
+    workflows = sorted(PAGES.parent.glob("*.yml"))
+    assert [w.name for w in workflows] == ["ci.yml", "pages.yml"]
+    for workflow in workflows:
+        text = workflow.read_text(encoding="utf-8")
+        lines = text.splitlines()
+        checkouts = [i for i, line in enumerate(lines) if "actions/checkout@" in line]
+        assert checkouts, workflow.name
+        for i in checkouts:
+            step = []
+            for line in lines[i + 1:]:
+                if line.strip() and (indent(line) < indent(lines[i])
+                                     or line.lstrip().startswith("- ")):  # fmt: skip
+                    break
+                step.append(line.strip())
+            assert "persist-credentials: false" in step, (workflow.name, lines[i])
+        assert "persist-credentials: true" not in text, workflow.name
 
 
 def test_pages_build_steps():
