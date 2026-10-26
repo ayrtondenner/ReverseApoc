@@ -37,19 +37,20 @@ key-files:
     - .planning/phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md
     - .planning/phases/06-reporting-and-agent-pilot/06-VALIDATION.md
     - .planning/STATE.md
+    - .planning/REQUIREMENTS.md
 
 key-decisions:
   - "Pilot result (D-37): run 20261026-005209, 3 MATCHED in 40 sessions (2 UFO2P + 1 TACP, about USD 14 per match). The re-gate after each commit, the final tree from clean, the drift test and the guardrail check all pass"
   - "Owner ruling 2026-10-26: PARTIAL pilot accepted; AGT-11 = partial, owner-accepted 2026-10-26 (3/10), carried to Phase 7; AGT-11 not marked complete (F39)"
   - "Compiler evidence: all three pilot matches hold under `*  wcc386@10.6  -4r -s -fpi`; 10.5/10.6/11.0 and -4r/-5r stay tied; config/cflags.txt unchanged"
-  - "RPT-05 left Pending in REQUIREMENTS.md: its automated row is green, but the requirement text includes the decomphub.com submission, which no evidence log here proves (owner-side)"
+  - "Owner ruling 2026-10-26 (F40): RPT-05 complete. .recomp.json is updated (status in-progress, listed and claimed on recomp.fyi 2026-10-25) and the owner submitted the DecompHub form on 2026-10-24 (pending DecompHub review); the requirement asks for the submission, not the approval"
 
 patterns-established:
   - "Phase-gate evidence under build/gate/<phase>-evidence/ is written only by shell redirection, each log ending exit=STATUS"
 
-requirements-completed: [AGT-06, AGT-03, RPT-01, RPT-02, RPT-03, RPT-04, AGT-01, AGT-02, AGT-04, AGT-05, AGT-07, AGT-08, AGT-09, AGT-10]
+requirements-completed: [AGT-06, AGT-03, RPT-01, RPT-02, RPT-03, RPT-04, RPT-05, AGT-01, AGT-02, AGT-04, AGT-05, AGT-07, AGT-08, AGT-09, AGT-10]
 # plan frontmatter requirements (verbatim): [AGT-11, AGT-06, AGT-03, RPT-01, RPT-02, RPT-03, RPT-04, RPT-05, AGT-01, AGT-02, AGT-04, AGT-05, AGT-07, AGT-08, AGT-09, AGT-10]
-# not completed here: AGT-11 (partial, owner-accepted, F39), RPT-05 (owner-side submission not evidenced)
+# not completed here: AGT-11 (partial, owner-accepted, F39). RPT-05 completed by owner ruling F40 (review fix round 1)
 
 coverage:
   - id: D1
@@ -103,7 +104,7 @@ completed: 2026-10-26
 
 # Phase 6 Plan 27: Phase 6 gate Summary
 
-**The phase gate re-checked the owner's pilot with the oracle rather than taking the driver's word. Each of the 3 match commits passes the container `gate --all`, both EXEs stay SHA-1 identical after every commit, and the final tree passes from clean. The three sweeps leave the compiler versions and -4r/-5r tied (-os is ruled out for both UFO2P functions), so the `*` default stays. Both suites are green with platform skips only. 06-VALIDATION.md is signed off, and AGT-11 is recorded as partial, owner-accepted (3/10).**
+**The phase gate re-checked the owner's pilot with the oracle rather than taking the driver's word. Each of the 3 match commits passes the container `gate --all`, both EXEs stay SHA-1 identical after every commit, and the final tree passes from clean. The three sweeps leave the compiler versions and -4r/-5r tied (-os is ruled out for both UFO2P functions), so the `*` default stays. Both suites are green with F2-allowed skips only (platform and tool). 06-VALIDATION.md is signed off, and AGT-11 is recorded as partial, owner-accepted (3/10).**
 
 Execution context nonce: e92135e16b8ef800
 
@@ -184,13 +185,13 @@ Tracer gate: `end-of-phase` mode with an automated-only verify. The Task 1 verif
 - `docs/toolchain.md`: the `### Phase 6 match evidence` table and the separation notes
 - `.recomp.json`: `status` changed from exploring to in-progress
 - `.planning/phases/05-split-and-first-matches/05-VALIDATION.md`: the owner's spike 005 line, with dates
-- `.planning/phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md`: 21 rows filled, with every hash checked by `git cat-file -e`; the rows this plan closes cite 03b63e2
+- `.planning/phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md`: 17 rows filled (recounted from `git diff f4056f1..d070e72`), with every hash checked by `git cat-file -e`; the rows this plan closes cite 03b63e2
 - `.planning/phases/06-reporting-and-agent-pilot/06-VALIDATION.md`: every row green with its evidence log, an AGT-11 partial row, the Wave 0 F31 note, the manual-only results, the sign-off and the approval
-- `.planning/STATE.md`: two Phase 06 Decisions lines (the pilot result and the PARTIAL ruling); the Deferred Items status
+- `.planning/STATE.md`: two Phase 06 Decisions lines (the pilot result and the PARTIAL ruling); the Deferred Items status; the repo-visibility blocker marked RESOLVED (review fix round 1)
 
 ## Decisions Made
 
-See key-decisions in the frontmatter. RPT-05 is the one judgement call. Its automated row (the .recomp.json schema and the DecompHub feed) is green. The requirement text also says "the decomphub.com submission is done", and that is third-party state no log here proves, so REQUIREMENTS.md keeps RPT-05 Pending for the owner or orchestrator to mark.
+See key-decisions in the frontmatter. RPT-05 is settled by owner ruling F40 (2026-10-26): it is complete. Its automated row (the .recomp.json schema and the DecompHub feed) is green; .recomp.json is updated (a9011c7/e360d32, 03b63e2 status in-progress; listed and claimed on recomp.fyi 2026-10-25); and the owner submitted the DecompHub form on 2026-10-24 (pending DecompHub review, 06-CONTEXT.md). The requirement asks for the submission, not the approval, so REQUIREMENTS.md marks RPT-05 Complete (review fix round 1). These stay open owner items, outside RPT-05's text: the D-31 DecompHub maintainer claim, the awesome-list PRs and the decomp.me preset issue.
 
 ## Deviations from Plan
 
@@ -204,21 +205,22 @@ See key-decisions in the frontmatter. RPT-05 is the one judgement call. Its auto
 6. **Orchestrator ruling F31:** in 06-VALIDATION.md the Wave 0 conftest helpers are recorded as not needed rather than ticked, and the RPT-05 feed row points at tests/test_progress.py.
 7. **Orchestrator ruling F38:** Task 1 ran on a clean tree with no commit flag and returned a checkpoint. Tasks 2 and 3 ran after the orchestrator set its flag. That file was never staged.
 8. **Orchestrator ruling F39:** AGT-11 is not marked complete. Its 06-VALIDATION row reads "partial, owner-accepted 2026-10-26 (3/10), carried to Phase 7".
+9. **Owner ruling F40 (2026-10-26, applied in review fix round 1):** RPT-05 is complete (submission done, DecompHub approval pending). REQUIREMENTS.md ticks it and its 06-VALIDATION row cites the owner submission and the ruling.
 
 **Minor execution choices (no rule change):**
 - The sweep commands ran as `uv sync --locked >/dev/null 2>&1 && uv run reverseapoc check ... --sweep ... --json`, so the JSON on stdout stays clean. stderr went to `20-sweep-<func>.stderr.log`. config/cflags.txt has the same md5 before and after.
 - 30-host.log appends `ruff_exit=STATUS` after the ruff output. The pytest `exit=STATUS` line comes before it, as in the plan's command.
 
-**Total deviations:** 8 ruling applications, 0 auto-fixes. **Impact:** no code, cflags, manifest or matched C changed. The gate's checks are as strict as planned, apart from the owner-accepted count.
+**Total deviations:** 9 ruling applications, 0 auto-fixes. **Impact:** no code, cflags, manifest or matched C changed. The gate's checks are as strict as planned, apart from the owner-accepted count.
 
 ## Issues Encountered
 
 - Skip lines show cross-environment file paths. The host log names `\work\tests\test_ghidra_real.py`, and the container log names `C:\Users\...\tests\test_cc_log.py`. This most likely comes from pytest's assertion-rewrite cache in `tests/__pycache__`, which the bind mount shares between host and container. The reasons and line numbers are right, and the audit matches on reasons (06-16 note). I changed nothing here and record it as an observation.
-- STATE.md still lists the Phase 6 blocker "Repo visibility must be settled before Pages and listings". 33-live.log shows Pages live, so the orchestrator may mark it resolved. This plan does not touch it (the orchestrator owns STATE position and blockers in this phase).
+- STATE.md listed the Phase 6 blocker "Repo visibility must be settled before Pages and listings". 33-live.log shows Pages live (root 200), so review fix round 1 marks it RESOLVED 2026-10-26.
 
 ## Next Phase Readiness
 
-- Phase 6 is ready for `/gsd-verify-work 6`. The validation map is signed off against evidence. AGT-11 is partial, owner-accepted. RPT-05's third-party submissions and the DecompHub claim stay with the owner.
+- Phase 6 is ready for `/gsd-verify-work 6`. The validation map is signed off against evidence. AGT-11 is partial, owner-accepted. RPT-05 is complete (F40). Open owner items outside RPT-05's text: the D-31 DecompHub maintainer claim, the awesome-list PRs and the decomp.me preset issue.
 - Phase 7 inherits the 10-match target. Measured rate from the pilot: 3 matches in 40 sessions, about USD 14 per match.
 - No tick-rate finding (OpenApoc #997) came up in this plan, its evidence or the pilot's logs.
 
