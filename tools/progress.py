@@ -27,8 +27,10 @@ importable. `gate` loads it by path (functools.cache, like check._configure load
     python -I tools/progress.py [--config DIR] [--out DIR] [--report PATH]
                                 [--decomphub PATH] [--commit SHA]
 
---out DIR writes DIR/progress.json, DIR/progress-shield.json (the shields.io endpoint) and
-DIR/progress.svg (the mosaic: a squarified treemap, EXE > unit > function);
+--out DIR writes DIR/progress.json, DIR/progress-shield.json (the combined shields.io endpoint),
+DIR/progress-shield-<stem>.json (one endpoint per EXE: progress-shield-ufo2p.json and
+progress-shield-tacp.json) and DIR/progress.svg (the mosaic: a squarified treemap,
+EXE > unit > function);
 --report PATH objdiff's report.json (D-28), one unit per unit holding game/thunk rows plus one
 <exe>/uncovered unit per EXE; --decomphub PATH the DecompHub progress-v1 feed (D-29), which gate
 also rewrites next to config/ after it writes matched rows. Every output's directory is created.
@@ -41,6 +43,7 @@ import argparse
 import bisect
 import csv
 import dataclasses
+import functools
 import json
 import os
 import re
@@ -74,6 +77,7 @@ PERCENT_DECIMALS = 4
 PERCENT_MAX = 100.0  # also objdiff's figure for a zero total (calc_matched_percent)
 PROGRESS_VERSION = 1
 PROGRESS_JSON, SHIELD_JSON = "progress.json", "progress-shield.json"
+EXE_SHIELD_JSON = "progress-shield-{stem}.json"  # one endpoint per EXE (owner ruling 1)
 SHIELD_SCHEMA_VERSION = 1
 SHIELD_LABEL = "decompiled"
 # (lowest percent, shields.io named colour), checked from the top.
@@ -442,11 +446,21 @@ def shield_message(value: float) -> str:
     return f"{value:.{PERCENT_DECIMALS}f}".rstrip("0").rstrip(".") + "%"
 
 
+def _shield_doc(label: str, value: float) -> dict[str, object]:
+    """A shields.io endpoint document for `value` percent, coloured by SHIELD_COLORS."""
+    return {"schemaVersion": SHIELD_SCHEMA_VERSION, "label": label,
+            "message": shield_message(value), "color": shield_color(value)}  # fmt: skip
+
+
 def build_shield(progress: Progress) -> dict[str, object]:
     """The shields.io endpoint document: the combined percent, labelled "decompiled" (D-26)."""
-    value = progress.combined.percent
-    return {"schemaVersion": SHIELD_SCHEMA_VERSION, "label": SHIELD_LABEL,
-            "message": shield_message(value), "color": shield_color(value)}  # fmt: skip
+    return _shield_doc(SHIELD_LABEL, progress.combined.percent)
+
+
+def build_exe_shield(exe: ExeProgress) -> dict[str, object]:
+    """One EXE's shields.io endpoint document, labelled with the EXE and coloured by its own
+    percent (owner ruling 1, 2026-10-26: the README shows one badge per EXE)."""
+    return _shield_doc(exe.label, exe.totals.percent)
 
 
 def write_progress_json(progress: Progress, path: Path, commit: str | None = None) -> None:
@@ -455,6 +469,10 @@ def write_progress_json(progress: Progress, path: Path, commit: str | None = Non
 
 def write_shield(progress: Progress, path: Path) -> None:
     _write_atomic(path, render(build_shield(progress)))
+
+
+def write_exe_shield(progress: Progress, path: Path, stem: str) -> None:
+    _write_atomic(path, render(build_exe_shield(progress.exe(stem))))
 
 
 # ---- report.json in objdiff's report shape (D-28, D-49) ----
@@ -857,7 +875,8 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG,
                    help="the config tree (default: %(default)s)")  # fmt: skip
     p.add_argument("--out", type=Path,
-                   help="write progress.json, progress-shield.json and progress.svg here")
+                   help="write progress.json, progress-shield.json, one "
+                        "progress-shield-<stem>.json per EXE and progress.svg here")
     p.add_argument("--report", type=Path, help="write objdiff's report.json here (D-28)")
     p.add_argument("--decomphub", type=Path,
                    help="write the DecompHub progress-v1 feed here (D-29)")  # fmt: skip
@@ -870,6 +889,9 @@ def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda p, path: write_progress_json(p, path, args.commit)
         yield args.out / SHIELD_JSON, write_shield
+        for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
+            yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
+                   functools.partial(write_exe_shield, stem=stem))
         yield args.out / PROGRESS_SVG, write_svg
     if args.report is not None:
         yield args.report, write_report
