@@ -982,6 +982,24 @@ def test_matching_denies_a_path_include(repo, name, rel):
     assert always(write(native(path), SCAFFOLD + PATH_INCLUDES[name])).deny, name
 
 
+INCLUDE_PREFIX = ("reverseapoc hooks: an #include names only a bare header of include/ (CR-02, "
+                  "configure's D-12 rule): ")  # fmt: skip
+
+
+@pytest.mark.parametrize("layer", ["matching", "always"])
+def test_an_include_denial_has_its_own_prefix(repo, layer):
+    """A path include is not inline asm or a #pragma, so its denial says what rule it broke."""
+    payload = in_repo(write(native(_unit(repo)), SCAFFOLD + PATH_INCLUDES["quoted-path"]), repo)
+    decision = matching(payload) if layer == "matching" else always(payload)
+    assert decision.deny
+    assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
+    assert "'\"sub/x.h\"'" in decision.reason
+    assert "inline asm" not in decision.reason and "#pragma" not in decision.reason
+    asm = in_repo(write(native(_unit(repo)), SCAFFOLD + "#pragma once\n"), repo)
+    if layer == "matching":
+        assert "no inline asm and no #pragma of any kind" in matching(asm).reason
+
+
 @pytest.mark.parametrize("name", sorted(BARE_INCLUDES))
 @pytest.mark.parametrize("rel", [UNIT, "include/new.h"])
 def test_matching_allows_a_bare_header_include(repo, name, rel):

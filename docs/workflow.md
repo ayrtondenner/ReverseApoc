@@ -203,6 +203,8 @@ Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" an
 - Bash only as one of the attempt wrapper's exact forms, never in the background, and `attempt check` (plain or `--sweep`) only with the Bash tool's `timeout` set to 600000: at the tool's 120 s default the tool kills the wrapper mid-run and its `check.lock` refuses every later check of the attempt;
 - every other tool is denied, and without a valid claim every write and every Bash call is denied.
 
+**Includes.** A file in `src/` or `include/` may `#include` only a bare header of `include/`, written `"name.h"` or `<name.h>`: no path, no `..`, no other suffix. Both layers deny any other `#include` under their own reason, and configure's D-12 check refuses the same file at build time, so no unscanned file (such as an attempt's `notes.md`) reaches the compile.
+
 **Both layers fail closed.** Each handler runs `uv run --frozen --project "$CLAUDE_PROJECT_DIR" python -I -m reverseapoc.hooks ... || exit 2`. A missing `uv`, a missing module, or an unset or foreign `CLAUDE_PROJECT_DIR` blocks every Edit and Write (exit 2). Both handlers also set `"timeout": 120` and `"onFailure": "block"`, so a hook that runs past 120 s blocks the call too (`onFailure` needs CLI 2.1.295).
 
 Known limits:

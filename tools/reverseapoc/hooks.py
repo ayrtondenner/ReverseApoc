@@ -112,6 +112,11 @@ ATTEMPT_FORMS = (
 # Review WR-04: the Bash tool's timeout an `attempt check` needs (a run lasts up to 580 s plus
 # its clean-up); at the tool's 120 s default the wrapper is killed and check.lock stays behind.
 CHECK_TIMEOUT_MS = 600_000
+# The rule each source denial names: an #include problem is neither inline asm nor a #pragma.
+_ALWAYS_ASM_RULE = "no inline asm in src/ or include/ (D-16, coding rules)"
+_MATCHING_ASM_RULE = ("no inline asm and no #pragma of any kind during the pilot (D-18, M14; "
+                      "flags and pragmas are owner-only)")  # fmt: skip
+INCLUDE_RULE = "an #include names only a bare header of include/ (CR-02, configure's D-12 rule)"
 ATTEMPT_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # a func_/D_ placeholder or a symbol name
 _BASH_CHARS = re.compile(r"[A-Za-z0-9_ -]+")  # every character of every wrapper form, no more
 
@@ -451,30 +456,47 @@ def asm_problem(text: str, *, any_pragma_aux: bool = False, any_pragma: bool = F
     any `#pragma` directive at all with `any_pragma`, M14) in its code, read through
     configure's D-12 scanner (translation phases 1-2, backslash continuations spliced, comments
     and literals blanked). Text the scanner cannot read as wcc386 does (a lone CR) is refused
-    too, and so is an #include of anything but a bare include/<name>.h (06-REVIEW CR-02:
-    configure's D-12 rule, so no unscanned file such as notes.md reaches the compile)."""
+    too."""
     cfg = _configure()
     try:
         code = cfg._NOT_CODE.sub(cfg._blank, text)
-        includes = cfg.include_problems(text)
     except cfg._ConditionalError as exc:
         return f"the text cannot be read as wcc386 reads it: {exc}"
     for first, _last, logical in cfg._logical_lines(code.split("\n")):
         found = _inline_asm(logical, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma)
         if found is not None:
             return f"line {first + 1} (logical line start): {found}"
+    return None
+
+
+def include_problem(text: str) -> str | None:
+    """Why `text` (a src/ or include/ file) is refused for an #include of anything but a bare
+    include/<name>.h, or None (06-REVIEW CR-02: configure's D-12 rule, so no unscanned file such
+    as notes.md reaches the compile)."""
+    cfg = _configure()
+    try:
+        includes = cfg.include_problems(text)
+    except cfg._ConditionalError as exc:
+        return f"the text cannot be read as wcc386 reads it: {exc}"
     return includes[0] if includes else None
 
 
 def _source_problem(
-    tool: str, tool_input: Mapping, path: str, *, any_pragma_aux: bool, any_pragma: bool = False
-) -> str:
+    tool: str, tool_input: Mapping, path: str, *, asm_rule: str, any_pragma_aux: bool,
+    any_pragma: bool = False,
+) -> str:  # fmt: skip
+    """The deny reason for an edit in src/ or include/, or '': an inline-asm or pragma problem
+    under `asm_rule`, an #include problem under INCLUDE_RULE."""
     if tool == "NotebookEdit":
-        return "a notebook edit in src/ or include/ cannot be scanned for inline asm"
+        return f"{asm_rule}: a notebook edit in src/ or include/ cannot be scanned for inline asm"
     text = _post_edit_text(tool, tool_input, path)
     if text is None:
-        return "an edit whose old_string is not in the file verbatim cannot be checked"
-    return asm_problem(text, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma) or ""
+        return f"{asm_rule}: an edit whose old_string is not in the file verbatim cannot be checked"
+    problem = asm_problem(text, any_pragma_aux=any_pragma_aux, any_pragma=any_pragma)
+    if problem:
+        return f"{asm_rule}: {problem}"
+    include = include_problem(text)
+    return f"{INCLUDE_RULE}: {include}" if include else ""
 
 
 def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
@@ -491,10 +513,9 @@ def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
         if reason is not None:
             return _deny(reason)
         scanned = scanned or any(_under(rel, d) for d in _SCANNED_DIRS)
-    problem = _source_problem(tool, tool_input, paths[0], any_pragma_aux=False) if scanned else ""
-    if problem:
-        return _deny(f"no inline asm in src/ or include/ (D-16, coding rules): {problem}")
-    return NO_OPINION
+    problem = _source_problem(tool, tool_input, paths[0], asm_rule=_ALWAYS_ASM_RULE,
+                              any_pragma_aux=False) if scanned else ""  # fmt: skip
+    return _deny(problem) if problem else NO_OPINION
 
 
 def decide(
@@ -666,10 +687,10 @@ def _matching_write(
         )
     if _under(rels[0], "src") or _under(rels[0], "include"):
         problem = _source_problem(payload["tool_name"], tool_input, canonical(raw, _cwd(payload)),
-                                  any_pragma_aux=True, any_pragma=True)  # fmt: skip
+                                  asm_rule=_MATCHING_ASM_RULE, any_pragma_aux=True,
+                                  any_pragma=True)  # fmt: skip
         if problem:
-            return _deny("no inline asm and no #pragma of any kind during the pilot (D-18, M14; "
-                         f"flags and pragmas are owner-only): {problem}")  # fmt: skip
+            return _deny(problem)
     return NO_OPINION
 
 
