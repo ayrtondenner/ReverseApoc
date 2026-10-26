@@ -36,7 +36,7 @@
     {
       "number": "7",
       "name": "Mechanics-first decompilation",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "8",
@@ -46,8 +46,8 @@
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step (plan phase 07)",
-    "reason": "Phase 7 of 8 — needs a plan"
+    "label": "Advance to the next step",
+    "reason": "Phase 7 of 8 · executing"
   },
-  "updated_at": "2026-10-26T18:46:46.191Z"
+  "updated_at": "2026-10-26T22:06:01.435Z"
 }
