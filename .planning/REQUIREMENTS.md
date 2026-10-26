@@ -57,24 +57,24 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 
 ### Reporting (Phase 6)
 
-- [ ] **RPT-01**: A committed per-function status table is written only by the local gate
-- [ ] **RPT-02**: `progress.py` (stdlib) writes `progress.json`, a treemap `progress.svg` and a shields endpoint JSON
-- [ ] **RPT-03**: A GitHub Pages workflow publishes the mosaic, badge and raw JSON on push to `main`
-- [ ] **RPT-04**: An objdiff-shaped `report.json` is uploaded as a `<VERSION>_report` artifact for recomp.fyi
+- [x] **RPT-01**: A committed per-function status table is written only by the local gate
+- [x] **RPT-02**: `progress.py` (stdlib) writes `progress.json`, a treemap `progress.svg` and a shields endpoint JSON
+- [x] **RPT-03**: A GitHub Pages workflow publishes the mosaic, badge and raw JSON on push to `main`
+- [x] **RPT-04**: An objdiff-shaped `report.json` is uploaded as a `<VERSION>_report` artifact for recomp.fyi
 - [ ] **RPT-05**: `.recomp.json` is updated and the decomphub.com submission is done once the repo is public
 
 ### Agent pilot (Phase 6)
 
-- [ ] **AGT-01**: A per-function driver runs one fresh `claude -p "/goal ..."` session per function, re-verifies compile/compare/splice/SHA-1 itself, and commits one function per commit or resets
-- [ ] **AGT-02**: Attempts are capped at 3-5 per function per pass; capped functions go to a difficult list and are re-queued later
-- [ ] **AGT-03**: Each attempt records a tri-state outcome (MATCHED / PARTIAL / GAVE_UP) with turns, tokens, time and verifier output
-- [ ] **AGT-04**: The driver backs off on usage limits and auth/credit errors and caps functions per night
-- [ ] **AGT-05**: Claude Code guardrail hooks block edits to `orig/`, hash manifests, build/verify scripts during matching sessions, inline asm and code-emitting `#pragma aux` in `src/`, and builds that bypass the verify script; hooks are tested with pytest
-- [ ] **AGT-06**: A zero-regression gate keeps every previously matched function matching and both EXEs SHA-1 identical after every commit
-- [ ] **AGT-07**: An easiest-first scorer, run by the driver, picks the next function
-- [ ] **AGT-08**: A per-function context pack (target asm, callers/callees, headers, Ghidra draft, notes) is supplied to each attempt
-- [ ] **AGT-09**: A `watcom-decomp` project skill documents calling convention, flags, C89 rules, pragma policy and relocation rules
-- [ ] **AGT-10**: decomp.wtf v0.10.6 fork mode runs pinned in WSL2 as a subprocess, if the Phase 6 stub-convention spike passes (otherwise a minimal own agent layer)
+- [x] **AGT-01**: A per-function driver runs one fresh `claude -p "/goal ..."` session per function, re-verifies compile/compare/splice/SHA-1 itself, and commits one function per commit or resets
+- [x] **AGT-02**: Attempts are capped at 3-5 per function per pass; capped functions go to a difficult list and are re-queued later
+- [x] **AGT-03**: Each attempt records a tri-state outcome (MATCHED / PARTIAL / GAVE_UP) with turns, tokens, time and verifier output
+- [x] **AGT-04**: The driver backs off on usage limits and auth/credit errors and caps functions per night
+- [x] **AGT-05**: Claude Code guardrail hooks block edits to `orig/`, hash manifests, build/verify scripts during matching sessions, inline asm and code-emitting `#pragma aux` in `src/`, and builds that bypass the verify script; hooks are tested with pytest
+- [x] **AGT-06**: A zero-regression gate keeps every previously matched function matching and both EXEs SHA-1 identical after every commit
+- [x] **AGT-07**: An easiest-first scorer, run by the driver, picks the next function
+- [x] **AGT-08**: A per-function context pack (target asm, callers/callees, headers, Ghidra draft, notes) is supplied to each attempt
+- [x] **AGT-09**: A `watcom-decomp` project skill documents calling convention, flags, C89 rules, pragma policy and relocation rules
+- [x] **AGT-10**: decomp.wtf v0.10.6 fork mode runs pinned in WSL2 as a subprocess, if the Phase 6 stub-convention spike passes (otherwise a minimal own agent layer)
 - [ ] **AGT-11**: The pilot matches 10 easy functions unattended with zero regressions and both EXEs identical
 
 ### Mechanics-first decompilation (Phase 7)
@@ -167,21 +167,21 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | SPL-11 | Phase 5 | Complete |
 | SPL-12 | Phase 5 | Complete |
 | SPL-13 | Phase 5 | Complete |
-| RPT-01 | Phase 6 | Pending |
-| RPT-02 | Phase 6 | Pending |
-| RPT-03 | Phase 6 | Pending |
-| RPT-04 | Phase 6 | Pending |
+| RPT-01 | Phase 6 | Complete |
+| RPT-02 | Phase 6 | Complete |
+| RPT-03 | Phase 6 | Complete |
+| RPT-04 | Phase 6 | Complete |
 | RPT-05 | Phase 6 | Pending |
-| AGT-01 | Phase 6 | Pending |
-| AGT-02 | Phase 6 | Pending |
-| AGT-03 | Phase 6 | Pending |
-| AGT-04 | Phase 6 | Pending |
-| AGT-05 | Phase 6 | Pending |
-| AGT-06 | Phase 6 | Pending |
-| AGT-07 | Phase 6 | Pending |
-| AGT-08 | Phase 6 | Pending |
-| AGT-09 | Phase 6 | Pending |
-| AGT-10 | Phase 6 | Pending |
+| AGT-01 | Phase 6 | Complete |
+| AGT-02 | Phase 6 | Complete |
+| AGT-03 | Phase 6 | Complete |
+| AGT-04 | Phase 6 | Complete |
+| AGT-05 | Phase 6 | Complete |
+| AGT-06 | Phase 6 | Complete |
+| AGT-07 | Phase 6 | Complete |
+| AGT-08 | Phase 6 | Complete |
+| AGT-09 | Phase 6 | Complete |
+| AGT-10 | Phase 6 | Complete |
 | AGT-11 | Phase 6 | Pending |
 | DEC-01 | Phase 7 | Pending |
 | DEC-02 | Phase 7 | Pending |
