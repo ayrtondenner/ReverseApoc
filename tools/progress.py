@@ -1066,11 +1066,13 @@ def _figures(exe: ExeProgress) -> str:
 
 
 def _tick_html(f: Function) -> str:
-    """One strip tick; matched and partial ticks carry a tooltip."""
+    """One strip tick; matched and partial ticks carry the mosaic cell's tooltip (a partial one
+    with its best score)."""
     cls = TICK_CLASSES[f.status]
-    if f.status == UNMATCHED:
+    title = _function_title(f)
+    if title is None:
         return f'<i class="{cls}"></i>'
-    return f'<i class="{cls}" title="{_xml(f"{f.name}: {f.size:,} bytes, {f.status}")}"></i>'
+    return f'<i class="{cls}" title="{_xml(title)}"></i>'
 
 
 def _strip_html(exe: ExeProgress) -> str:
@@ -1104,7 +1106,8 @@ def _exe_html(exe: ExeProgress) -> list[str]:
 def render_html(progress: Progress, commit: str | None = None) -> str:
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, a percent bar, the figures in text and the function strip (one tick per game and
-    thunk function in address order; matched and partial ticks stand taller and carry a tooltip;
+    thunk function in address order; matched and partial ticks stand taller and carry the mosaic
+    cell's tooltip, a partial one with its best score;
     the strip wraps with the width), then the strip's key, the labelled mosaic (render_svg's
     output, verbatim) and how the figures are measured. Under prefers-color-scheme: dark only the
     surface, ink and secondary swap (the mosaic follows through MOSAIC_PAINTS; status hues are

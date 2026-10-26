@@ -203,8 +203,8 @@ def test_strip_one_tick_per_function(tmp_path):
     page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
     found = strips(page)
     assert [ticks for _aria, ticks in found] == [
-        [("m", "func_00010000: 16 bytes, matched"), ("p", "func_00010010: 32 bytes, partial"),
-         ("u", None), ("u", None)],
+        [("m", "func_00010000: 16 bytes, matched"),
+         ("p", "func_00010010: 32 bytes, partial, best 50.00%"), ("u", None), ("u", None)],
         [("u", None)],
     ]
     for stem in ("ufo2p", "tacp"):
@@ -287,6 +287,45 @@ def test_strip_escapes_names(tmp_path):
                  if tag == "div" and attrs.get("class") == "strip")  # fmt: skip
     tag, attrs = tags[strip + 1]
     assert tag == "i" and attrs["title"] == f"{odd}: 16 bytes, matched"
+
+
+def test_strip_partial_tick_shows_its_best_score():
+    """A partial tick's title ends with ", best <pct>%", the mosaic cell's best_percent in the
+    same 2-decimal form; matched ticks keep "<name>: <size> bytes, matched" and unmatched
+    ticks keep no title."""
+    progress = strip_module()
+    derived = progress.derive(CONFIG)
+    found = strips(progress.render_html(derived, SHA))
+    titles = {}
+    for exe, (_aria, ticks) in zip(derived.exes, found, strict=True):
+        ordered = sorted(exe.functions, key=lambda f: f.start)
+        for f, (_cls, title) in zip(ordered, ticks, strict=True):
+            titles[f.name] = title
+            if f.status == progress.MATCHED:
+                assert title == f"{f.name}: {f.size:,} bytes, matched", f.name
+            elif f.status == progress.UNMATCHED:
+                assert title is None, f.name
+            else:
+                assert title == (f"{f.name}: {f.size:,} bytes, partial, "
+                                 f"best {f.best_percent:.2f}%"), f.name  # fmt: skip
+    assert titles["func_000C6287"] == "func_000C6287: 53 bytes, partial, best 61.87%"
+
+
+def test_strip_escapes_partial_names(tmp_path):
+    progress = strip_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    odd = 'func_"><script>x</script>&'
+    functions = (exe.functions[0], dataclasses.replace(exe.functions[1], name=odd),
+                 *exe.functions[2:])  # fmt: skip
+    patched = dataclasses.replace(exe, functions=functions)
+    page = progress.render_html(dataclasses.replace(derived, exes=(patched, derived.exes[1])), SHA)
+    tags = tags_of(page)
+    assert "script" not in [tag for tag, _attrs in tags]
+    strip = next(i for i, (tag, attrs) in enumerate(tags)
+                 if tag == "div" and attrs.get("class") == "strip")  # fmt: skip
+    tag, attrs = tags[strip + 2]
+    assert tag == "i" and attrs["title"] == f"{odd}: 32 bytes, partial, best 50.00%"
 
 
 # ---- dark scheme, contrast and phone layout ----
