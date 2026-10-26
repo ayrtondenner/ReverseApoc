@@ -3,8 +3,9 @@ name: Pages
 # D-27, D-28: publish the progress page from the committed CSVs. tools/progress.py is stdlib
 # only and Python 3.12 syntax, so the runner's own python3 runs it under -I (no uv, no install).
 # The site holds progress.json, the shields.io endpoints (progress-shield.json combined,
-# progress-shield-ufo2p.json and progress-shield-tacp.json per EXE) and progress.svg;
-# build/report.json goes to recomp.fyi as one artifact. Only derived counts and names leave CI,
+# progress-shield-ufo2p.json and progress-shield-tacp.json per EXE), progress.svg,
+# progress.html (the progress page the README links) and index.html (the same page, served at
+# the site root); build/report.json goes to recomp.fyi as one artifact. Only derived counts and names leave CI,
 # never game bytes: no game file exists in a checkout of this repository.
 
 on:
