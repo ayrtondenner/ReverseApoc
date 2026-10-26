@@ -353,3 +353,11 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
 **Follow-ups:**
 - [x] Test 5 (closed by plan 06-06, a56080d, 6d535c1): `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)
+
+### Phase 999.4: Follow-up — Phase 06 deferred UAT follow-up: Test 3 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 06 verification
+**Source phase:** 06
+**Deferred at:** 2026-10-26 during /gsd-verify-work 06 session completion
+**Follow-ups:**
+- [ ] Test 3: on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
