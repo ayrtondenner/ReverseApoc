@@ -40,7 +40,8 @@ key-files:
     - tests/test_check_real.py
 
 key-decisions:
-  - "_compile_root_for: a tree outside the repo compiles from its parent (the old _compile_root rule, kept); inside it, a tree named src whose parent holds include/ compiles from that parent (a D-24 view); any other tree from REPO_ROOT"
+  - "_compile_root_for (after fix round 1): only a D-24 view, <repo>/build/driver/.../view/src with include/ beside it, compiles from its view root; every other tree, outside the repository included, from REPO_ROOT"
+  - "gate --partial refuses a saved file outside the repository or whose compile root would not be REPO_ROOT"
   - "input_provenance gets no rule_path keyword: it receives the already-selected rule; selection lives in source_rule, which compile_source and check_provenance both call with rule_path"
   - "check_source takes rule_path (default unit_rule_path for a unit file); the cmain386 runtime pair (unit_file=False) keeps its own path's rule"
   - "sweep cells unchanged: one-rule `*` file, no rule_path, REPO_ROOT"
@@ -188,7 +189,6 @@ No REFACTOR commits were needed.
 
 ## Decisions Made
 
-- **Compile root rule.** A tree outside the repository compiles from its parent. This keeps the old `_compile_root` behaviour, which the existing provenance tests and trees outside the repo rely on, and it now applies to the compile too, not only to provenance. Inside the repository, a `src` whose parent holds `include/` compiles from that parent. Everything else compiles from REPO_ROOT. The plan's "the tree is not the default" condition is covered by `resolved.parent != repo`, because the committed `src/` has REPO_ROOT as its parent.
 - **check_source takes `rule_path`.** Its default for a unit file is `unit_rule_path(exe.stem, unit)`, so `gate --partial` threads it explicitly and a fake `check_source` can observe it. The cmain386 runtime pair (`unit_file=False`) keeps the rule of its own path.
 - **Sweep is untouched.** It keeps its one-rule `*` file, passes no `rule_path` and uses root REPO_ROOT, as today.
 
@@ -208,9 +208,23 @@ No REFACTOR commits were needed.
 - The first version of `published()` seeded a matched row without its unit file. That made the unpatched CLI gate exit 1 (cross-check), not 0, which was the wrong RED reason.
 - `published()` now writes that unit file, so a passing check really writes, and the refusal is what the test measures.
 
+**4. [Plan text vs. code, found in review, fixed in fix round 1] The compile root of trees that are not views.**
+- **Found during:** the orchestrator's task review (Important finding 1). My first version wrongly listed this under Decisions.
+- **Issue:** As first committed (`8cf9bc3`), `_compile_root_for` compiled any tree outside the repository from its parent. It also compiled any in-repo `<x>/src` with `<x>/include` beside it from `<x>`. The plan says REPO_ROOT for every tree that is not a D-24 view. Two consequences:
+  - `gate --partial` (`src_root=saved.parent`) could score a saved file outside the repo against the grandparent's `include/` and write that score to the public status.csv. Before 07-03, the compile refused that file.
+  - An in-repo `<x>/src` beside an `<x>/include` that is not a view compiled against non-committed headers.
+- **Fix (orchestrator ruling, fix round 1):**
+  - Only `<repo>/build/driver/.../view/src` with `include/` beside it compiles from its view root. Every other tree, including any outside the repository, compiles from REPO_ROOT.
+  - I did not keep the "parent" behaviour for the read-only `check` path. The `cc` edge always compiles from REPO_ROOT, so the only users of "parent" were tests. The `env`/`tree` test fixtures now stand their tmp root in for REPO_ROOT instead.
+  - In addition, `gate --partial` refuses a saved file outside the repository, or one whose compile root would not be REPO_ROOT, because its rows go to status.csv.
+- **Real test:** the K4 view moved from `build/test-view/` to `build/driver/test-view/<hex>/view`, so it really is a view. It now also asserts the view-relative `-fo=` guest path in the compile log.
+- **Commits:** RED `0d269b8`, fix `a0ac57e`.
+
 ---
 
-**Total deviations:** 1 orchestrator ruling applied (F40), 1 plan-text deviation (`input_provenance`), 1 test-fixture fix before RED. **Impact:** none on scope. Every plan truth holds except the inert `input_provenance` keyword. The behaviour that truth exists for (the stamp and the land check agree on the rule) is tested.
+**Total deviations:** 1 orchestrator ruling applied (F40), 2 plan-text deviations (`input_provenance`; the compile root, corrected in fix round 1), 1 test-fixture fix before RED.
+
+**Impact:** As first returned, the claim that every plan truth held except `input_provenance` was wrong. The compile root truth ("any other tree with the repository root") did not hold until fix round 1. It holds now. The only remaining gap is the inert `input_provenance` keyword. The behaviour that truth exists for (the stamp and the land check agree on the rule) is tested.
 
 ## Issues Encountered
 
@@ -223,6 +237,33 @@ None. No external service configuration is required.
 ## Next Phase Readiness
 
 - 07-11 (D-24 views), 07-17 (flag re-gates on `build/flags/<id>/src`), 07-24 (approve gates under the committed cflags) and 07-29 (container run of the K4 test) can build on `rule_path`, `_compile_root_for` and `_committed_options`.
+
+## Fix round 1
+
+The orchestrator's review raised Important finding 1: `_compile_root_for` compiled trees that are not views from their parent. The ruling was to follow the plan text, so only a `build/driver/.../view/src` view compiles from its own root. See Deviation 4.
+
+**What changed:**
+- `check.VIEW_PARTS` and `VIEW_DIR` define where views live.
+- `check._is_view(src)` holds only for `<repo>/build/driver/.../view/src` with `include/` beside it.
+- `_compile_root_for` returns the view directory for a view and REPO_ROOT for everything else.
+- `gate._saved_file` refuses a saved file outside the repository ("must be inside the repository") and one whose compile root would not be REPO_ROOT ("would compile from the compile root ...").
+- The test fixtures `env` (test_check.py) and `as_committed` (test_gate.py) stand their tmp root in for `check.REPO_ROOT`, loading configure.py first.
+- The real K4 view moved to `build/driver/test-view/<hex>/view` and asserts the view-relative `-fo=` guest path in `cc.log`.
+
+**New tests (RED `0d269b8`, 7 failed for the intended reason, either the parent returned instead of REPO_ROOT or `DID NOT RAISE CheckError`; fix `a0ac57e`):**
+- `tests/test_check.py::test_a_tree_outside_the_repository_compiles_from_the_repository`
+- `tests/test_check.py::test_an_in_repo_src_with_include_that_is_no_view_compiles_from_the_repository[flags-copy|elsewhere|driver-not-view|view-outside-driver]`
+- `tests/test_gate.py::test_partial_refuses_a_saved_file_outside_the_repository`
+- `tests/test_gate.py::test_partial_refuses_a_saved_file_compiled_from_a_view_root`
+- `tests/test_check.py::test_compile_root_for_each_kind_of_tree`, updated: its outside-repo assertion moved to the new test.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_check.py tests/test_gate.py tests/test_compiler.py`: 275 passed.
+- `uv run pytest -q` (worktree): 2706 passed, 230 skipped.
+- The same with `REVERSEAPOC_ORIG` and `REVERSEAPOC_WATCOM_DIR` pointing at the main checkout: 2885 passed, 51 skipped. The new real test skips with `objdiff-cli is not on PATH (run in the container)`, which F40 allows.
+- `uv run ruff check .`: All checks passed.
+
+The container step is still deferred to the orchestrator: `docker compose run --rm test`, which covers the K4 real test (plan 07-29).
 
 Execution context nonce: 4808b1bf97b2f35b
 
