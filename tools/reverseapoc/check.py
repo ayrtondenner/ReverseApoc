@@ -44,19 +44,18 @@ from __future__ import annotations
 
 import dataclasses
 import functools
-import importlib.util
 import json
 import math
 import re
 import shutil
 import subprocess
-import sys
 from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from types import ModuleType
 from typing import Any
 
+from . import unitdefs
 from .asm import data_ranges
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .compiler import (
@@ -525,47 +524,58 @@ _REQUIRED_KINDS = (KIND_GAME, KIND_THUNK)  # runtime and data-in-code rows stay 
 @functools.cache
 def _configure() -> ModuleType:
     """configure.py of this checkout, loaded by path (it is a script, not part of the
-    package), or the one already imported under that name from the same file."""
-    path = REPO_ROOT / CONFIGURE
-    loaded = sys.modules.get("configure")
-    if loaded is not None and Path(getattr(loaded, "__file__", "")).resolve() == path.resolve():
-        return loaded
-    spec = importlib.util.spec_from_file_location("_reverseapoc_configure", path)
-    if not path.is_file() or spec is None or spec.loader is None:
-        raise CheckError(f"{path} not found: check reads unit files with its D-12 parser")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # its dataclasses look their module up while it executes
+    package), or the one already imported from the same file (unitdefs.load_configure, which
+    the shared finder loads it with too, so both read through the same module)."""
     try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[spec.name]
-        raise
-    return module
+        return unitdefs.load_configure(REPO_ROOT / CONFIGURE)
+    except unitdefs.UnitDefsError as exc:
+        raise CheckError(str(exc)) from None
 
 
 @dataclass(frozen=True)
 class SourceMarks:
-    marked: frozenset[str]  # names marked INCLUDE_ASM in live code
-    defined: frozenset[str]  # func_ names defined in C at file scope
-    problems: tuple[str, ...]  # D-12 problems configure.py reports for the file
+    marked: frozenset[str]  # the names markers of the unit's rows use, as written
+    defined: frozenset[str]  # the names file-scope definitions of the unit's rows use
+    problems: tuple[str, ...]  # the file's own D-12 problems (not a row's completeness)
+    marked_starts: frozenset[int] = frozenset()  # starts of the rows marked INCLUDE_ASM
+    defined_starts: frozenset[int] = frozenset()  # starts of the rows defined in C
 
 
-def source_marks(text: str, rows: Sequence[FunctionRow]) -> SourceMarks:
-    """The unit file read by configure.py's D-12 parser, so configure and check agree on what
-    is marked and defined. Its problems are configure's include problems (an #include of
-    anything but a bare header name, 06-REVIEW CR-02), those of check_unit_source that name
-    something outside the unit, or a conditional the parser refuses."""
+def source_marks(
+    text: str,
+    rows: Sequence[FunctionRow],
+    *,
+    names: Mapping[str, int] | None = None,
+    all_names: Mapping[str, int] | None = None,
+) -> SourceMarks:
+    """The unit file read by the shared finder (unitdefs.find, through configure.py's
+    translation phases), so configure and check agree on what is marked and defined (D-29).
+    `names` and `all_names` map C names to starts as for unitdefs.find (account_unit passes the
+    EXE's C names as `all_names`; with neither, the rows' placeholders, the pre-rename reading).
+    Its problems are configure's include problems (an #include of anything but a bare header
+    name, 06-REVIEW CR-02) and the finder's source
+    problems: a conditional the parser refuses, a stale placeholder definition of a renamed row,
+    or a marker or definition naming something outside the unit."""
     cfg = _configure()
     try:
-        code = cfg._live_code(cfg._NOT_CODE.sub(cfg._blank, text))
         includes = tuple(cfg.include_problems(text))
     except cfg._ConditionalError as exc:
         return SourceMarks(frozenset(), frozenset(), (str(exc),))
-    outside = tuple(p for p in cfg.check_unit_source(text, rows)
-                    if p.endswith("is not a function of the unit"))  # fmt: skip
-    return SourceMarks(frozenset(cfg._MARKER.findall(code)),
-                       frozenset(cfg._file_scope_definitions(code)),
-                       includes + outside)  # fmt: skip
+    defs = unitdefs.find(text, rows, placeholders=unitdefs.placeholders(rows), names=names,
+                         all_names=all_names)  # fmt: skip
+    return SourceMarks(frozenset(defs.marked.values()), frozenset(defs.defined.values()),
+                       includes + defs.source_problems, frozenset(defs.marked),
+                       frozenset(defs.defined))  # fmt: skip
+
+
+def exe_c_names(symbols: SymbolTable) -> dict[str, int]:
+    """C name -> start for every game and thunk row of the EXE `symbols` describes (D-29):
+    unitdefs.c_names of its rows and symbols.csv names. CheckError for a func name without
+    Watcom's trailing `_`."""
+    try:
+        return unitdefs.c_names(symbols.rows, symbols.symbols.values())
+    except unitdefs.UnitDefsError as exc:
+        raise CheckError(f"symbols.csv: {exc}") from None
 
 
 def refuse_includes(src: Path, text: str) -> None:
@@ -671,18 +681,19 @@ def account_unit(
     code = {seg.index for seg in module.segments if seg.is_code}
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
     checked = unit_file or required
-    marks = source_marks(text, rows) if checked else SourceMarks(frozenset(), frozenset(), ())
+    marks = (source_marks(text, rows, all_names=exe_c_names(symbols)) if checked
+             else SourceMarks(frozenset(), frozenset(), ()))  # fmt: skip
     stubs, problems, failed = [], [], set()
     for row in required:
         linker = symbols.linker_name(row.start)
-        is_exported, is_marked = row.start in exported, row.name in marks.marked
+        is_exported, is_marked = row.start in exported, row.start in marks.marked_starts
         # A public of the row's name that defined_functions did not take (data, mostly).
         where = _place(first[linker], code) if linker in first and not is_exported else None
         if is_exported != is_marked and not (is_marked and where):
             stubs += [] if is_exported else [row]
             continue
         reason = _row_reason(linker, is_exported, is_marked, where,
-                             row.name in marks.defined)  # fmt: skip
+                             row.start in marks.defined_starts)  # fmt: skip
         problems.append(Unaccounted(row.name, row.start, reason))
         failed.add(row.start)
     names = _linker_names(rows, symbols)

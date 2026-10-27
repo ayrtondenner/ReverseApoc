@@ -428,7 +428,7 @@ def _live(flat: str, joined: frozenset[int], code: str) -> str:
 
 
 def _file_scope_matches(code: str, pattern: re.Pattern[str]) -> Iterator[re.Match[str]]:
-    """The definition matches at brace depth 0, as configure._file_scope_definitions counts."""
+    """The definition matches at brace depth 0, counted as unitdefs.find counts them."""
     depth = position = 0
     for match in pattern.finditer(code):
         between = code[position : match.start()]
