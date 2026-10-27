@@ -45,11 +45,12 @@ From the main checkout (orig/ is gitignored and absent from worktrees), host onl
 uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] [--mutant] [--plant-chain]
 uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant]
 uv run python .planning/spikes/007-locate-997-training/q3_training.py [--plant]
+uv run python .planning/spikes/007-locate-997-training/q4_strings.py [--plant]
 ```
 
 Each prints one `PASS/FAIL <file> <claim> <detail>` line per claim and `ALL PASS` or `N FAILED`,
 and exits 1 on any FAIL. Output is addresses, counts, booleans, keyword labels and protocol or
-rate constants only. q2 and q3 import q1's shared reader (`Image`, the constant tracker).
+rate constants only. q2, q3 and q4 import q1's shared reader (`Image`, the constant tracker).
 
 ## Results
 
@@ -115,7 +116,9 @@ second.
 - Same rule in its own functions [script]. Speed values 0, 1, 2 and 4 [script].
 - The start value is 4 when the byte `D_000E6D66` is set and 0 otherwise, and 1 when the byte
   `D_0027A805` is set [hand].
-- TACP's labels are not located yet (q4, plan 07-08).
+- The labels are Pause = 0, Slow = 1, Normal = 2 and Double = 4 [script: q4 `speed-labels`].
+  The battlescape has no Quadruple label. So TACP's Double is 2 times Normal, and Slow is half
+  of Normal.
 
 **PR #1688.** Our bytes confirm both halves of its claim in both EXEs:
 - the main loop busy-waits on the BIOS clock [script], which stays at 18.2 Hz under the sound
@@ -133,7 +136,7 @@ second.
 | sub-second accumulator (16-bit) | `D_000D4D6E` | `D_000E6C36` |
 | second / minute / hour words | `D_000D4D6C` / `D_000D4D6A` / `D_000D4D68` | `D_000E6C34` / `D_000E6C32` / `D_000E6C30` |
 | speed setters | `func_00050920` (0), `func_00050970` (1), `func_000509C0` (2), `func_00050A20` (4), `func_00050A80` (6), `func_00050AE0` (600) | stores in `func_00010EE0` and 7 more rows (q2 `speed-values`) |
-| speed labels | `get_text` `func_00063800` section 38, indexes 43-46. Call sites `0x000523C1` (Slow), `0x00052439` (Normal), `0x000524B1` (Double), `0x0005252C` (Quadruple), all in `func_00052150`, each under a compare of the speed with 1 / 2 / 4 / 6 | not located (q4) |
+| speed labels | `get_text` `func_00063800` section 38, indexes 43-46. Call sites `0x000523C1` (Slow), `0x00052439` (Normal), `0x000524B1` (Double), `0x0005252C` (Quadruple), all in `func_00052150`, each under a compare of the speed with 1 / 2 / 4 / 6 | `get_text` `func_0005B360` section 36, indexes 0-3. Call sites `0x000A751A` (Pause), `0x000A758C` (Slow), `0x000A75FE` (Normal), `0x000A7670` (Double), all in `func_000A7490`, each under a compare of the speed with 0 / 1 / 2 / 4 (q4 `speed-labels`) |
 | speed-indexed tables | three 6-slot jump tables in `func_00010940` (`D_000108EC`, `D_00010904`, `D_0001091C`) indexed by speed - 1. Active slots: speeds 1, 2, 4, 6; slots 3 and 5 fall to the default | - |
 | BIOS-tick readers (q1) | `func_00011430` (28 callers), `func_00010940` | `func_00011500` (35 callers), `func_000116B0` (10 callers) |
 
@@ -305,6 +308,92 @@ What the bytes show about #263-1:
 The TACP accrual is a known gap: the call-graph closure from `0x000156A0`'s callers into the
 battle code is the route to close it.
 
+### q4 strings through get_text
+
+`uv run python .planning/spikes/007-locate-997-training/q4_strings.py` (exit 1: two findings),
+kept in the gitignored `build/spike007-q4.out`:
+
+```
+PASS UFO2P.EXE get-text-table table 0x000F3794 slots 52 non-null 52 strings 2112 blob [0x000E7E2A..0x000F3794) dump-loop bound [50] expected slots 52 bound 50; self-consistent True
+FAIL UFO2P.EXE get-text-args sites 997 in 180 rows; full 742 = 74.4% (target 80%); section-only 227, index-only 0, neither 28; full pairs past their section 0 []
+PASS TACP.EXE get-text-table table 0x00292D18 slots 52 non-null 21 strings 672 blob [0x0028EC22..0x00292D18) dump-loop bound [] expected slots None bound None; self-consistent True
+PASS TACP.EXE get-text-args sites 315 in 88 rows; full 255 = 81.0% (target 80%); section-only 47, index-only 1, neither 12; full pairs past their section 3 [0x0003600C 0x000537CA 0x000539E7]
+PASS TACP.EXE speed-labels pause 36/0 sites [0x000A751A] rows [0x000A7490] speed [0]; slow speed 36/1 sites [0x000A758C] rows [0x000A7490] speed [1]; normal speed 36/2 sites [0x000A75FE] rows [0x000A7490] speed [2]; double speed 36/3 sites [0x000A7670] rows [0x000A7490] speed [4]; absent ['quadruple speed']; expected {'pause': 0, 'slow speed': 1, 'normal speed': 2, 'double speed': 4}
+FAIL q4 item 263-4 'chrysalis' rows found 0; UFO2P: strings 8 S rows 0 [] F rows 0 [] partial 8; TACP: strings 2 S rows 0 [] F rows 0 [] partial 1
+PASS q4 item 263-6 'funding assessment' rows found 1; UFO2P: strings 1 S rows 1 [0x00098A70] F rows 0 [] partial 0; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+PASS q4 item 263-9 'improve relations' rows found 1; UFO2P: strings 1 S rows 1 [0x000977F0] F rows 0 [] partial 7; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+PASS q4 item 263-13 'combat training' rows found 2; UFO2P: strings 2 S rows 2 [0x0004F100 0x00052150] F rows 0 [] partial 24; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+PASS q4 item 263-15 'transfer' rows found 8; UFO2P: strings 17 S rows 8 [0x00067930 0x0006B270 0x00091AF0 0x0009DA90 0x0009E0C0 0x000A0170 0x000A0A40 0x000A1990] F rows 1 [0x0009DA90] partial 26; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+PASS q4 item 263-22 'tactical.map' rows found 3; UFO2P: strings 1 S rows 0 [] F rows 2 [0x000B0F70 0x000B4590] partial 0; TACP: strings 1 S rows 0 [] F rows 1 [0x000141A0] partial 0
+PASS q4 item 264-3 'score' rows found 4; UFO2P: strings 3 S rows 3 [0x00060C80 0x00060F50 0x00098240] F rows 0 [] partial 20; TACP: strings 2 S rows 1 [0x000A6D10] F rows 0 [] partial 5
+PASS q4 item 264-10 'kills' rows found 2; UFO2P: strings 4 S rows 1 [0x000863F0] F rows 0 [] partial 19; TACP: strings 1 S rows 1 [0x000550C0] F rows 0 [] partial 1
+PASS q4 item 264-16 'treaty' rows found 1; UFO2P: strings 1 S rows 1 [0x00092970] F rows 0 [] partial 8; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+PASS q4 item 264-21 '/music/' rows found 2; UFO2P: strings 33 S rows 0 [] F rows 1 [0x000B63F0] partial 0; TACP: strings 33 S rows 0 [] F rows 1 [0x000B0200] partial 0
+PASS q4 item 265-1 'brain.dat' rows found 5; UFO2P: strings 1 S rows 0 [] F rows 3 [0x000A5F40 0x000A6040 0x000A61E0] partial 0; TACP: strings 2 S rows 0 [] F rows 2 [0x00014AF0 0x000B20B0] partial 0
+PASS q4 item 265-13 'new recruit' rows found 1; UFO2P: strings 1 S rows 1 [0x0007AFF0] F rows 0 [] partial 9; TACP: strings 0 S rows 0 [] F rows 0 [] partial 0
+q4 found 11 of 12
+2 FAILED
+```
+
+- **The section tables.** Both tables have 52 slots. UFO2P fills all 52. Research's "50
+  sections" is the loop bound of the dump routine that follows `get_text` in the same row: it
+  dumps only the first 50, but sections 50 and 51 exist and are called (q2's
+  `get-text-sections 50 of 50` checked the first 50 only). TACP fills 21 of its 52 slots; the
+  others are null, so the battlescape carries only the sections it uses. Every pointer starts a
+  string below the table, and no two share a start.
+- **Argument recovery rate (D-03 target 80%).**
+
+  | EXE | call sites (rows) | (section, index) recovered | section only | neither |
+  |---|---|---|---|---|
+  | UFO2P | 997 (180) | 742 = **74.4%** (below target: a finding) | 227 | 28 |
+  | TACP | 315 (88) | 255 = **81.0%** | 47 (+1 index only) | 12 |
+
+  - The rows match research's caller counts (180 / 88).
+  - Section-only sites take the index from a variable or a loop (base + i): lists, tables and
+    per-record names. They are the partial route: they give the section and the rows that use
+    it, not the string.
+  - "Neither" sites take both from variables or from registers set before an earlier call
+    (the tracker forgets eax/edx at every call, which is conservative).
+  - Three TACP sites ask for indexes past the end of their TACP section (`0x0003600C` 37/380,
+    `0x000537CA` and `0x000539E7` 38/25). Those indexes exist in UFO2P's numbering, so this is
+    code shared with the cityscape that never shows those strings in battle [hand: the reading
+    of why].
+- **TACP speed labels** (`speed-labels`): Pause, Slow, Normal and Double sit in section 36,
+  indexes 0-3, all shown by `func_000A7490`, each under a compare of the speed variable
+  `D_000E6C24` with 0, 1, 2 and 4. There is no Quadruple label in TACP. This fills the TACP
+  gap in the #997 lead.
+- **The 12-item sample: 11 of 12 get an entry row.** One keyword per item, matched inside the
+  data strings. Route S goes through `get_text` (section, index); route F through an exact
+  fixup (file names and hand-off files).
+
+  | Item | Keyword | Route | Rows |
+  |---|---|---|---|
+  | #263-4 eggs/chrysalis hatch | `chrysalis` | S partial only | **none** (8 UFO2P + 1 TACP section-only rows: the creature names are shown from lists) |
+  | #263-6 weekly funding | `funding assessment` | S | U `0x00098A70` (it also loads the funding screen image) |
+  | #263-9 bribes | `improve relations` | S | U `0x000977F0` |
+  | #263-13 base training | `combat training` | S | U `0x0004F100`, `0x00052150` |
+  | #263-15 transfers | `transfer` | S + F | 8 U rows, `0x0009DA90` also by file |
+  | #263-22 map spawn | `tactical.map` | F | U `0x000B0F70`, `0x000B4590`; T `0x000141A0` |
+  | #264-3 score and finances | `score` | S | U `0x00060C80`, `0x00060F50`, `0x00098240`; T `0x000A6D10` |
+  | #264-10 per-battle stats | `kills` | S | U `0x000863F0`; T `0x000550C0` |
+  | #264-16 treaties | `treaty` | S | U `0x00092970` |
+  | #264-21 dynamic music | `/music/` | F | U `0x000B63F0`; T `0x000B0200` |
+  | #265-1 battle AI | `brain.dat` | F | U `0x000A5F40`, `0x000A6040`, `0x000A61E0`; T `0x00014AF0`, `0x000B20B0` |
+  | #265-13 name generator | `new recruit` | S | U `0x0007AFF0` |
+
+  - **What "found" means.** The route gives at least one row that shows or loads text tied to
+    the item. It does not show that the row holds the rule. The tier drafts (07-25, 07-28,
+    07-32) confirm each entry by reading and by the call graph.
+  - **How the keywords were chosen.** The plan names the items. The keywords were picked after
+    reading the text blob privately, the way a tier drafter would; for example `improve
+    relations` is the bribe dialog and `kills` is the agent service record. So 11 of 12 measures
+    whether a drafter who reads the text can reach a row, not a blind keyword hit rate.
+  - **Weak entries.** `new recruit` is the arrival message, next to the name generator but not
+    in it. The names themselves are not in either EXE's text (no name list was found), so
+    #265-13 needs the call graph from the recruitment rows.
+  - **The miss.** Chrysalis and egg names appear only in lists (section-only sites), so the
+    hatch rule needs the data-table or call-graph route (`CREW_ALIEN_BUILDING`, research Q3).
+
 ## Planted failures
 
 | Run | What is planted | Result | Exit |
@@ -314,6 +403,7 @@ battle code is the route to close it.
 | `q1 --plant-chain` | expected BIOS-chain dividend 0x123333 -> 0x1234DC (the PIT clock: a BIOS tick that would follow the PIT rate) | `bios-chain-cadence` FAILs in both EXEs, `2 FAILED` | 1 |
 | `q2 --plant` | expected modulus 36 -> 144 (OpenApoc's assumed ticks per second) | `FAIL UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 144`, the same for TACP at `0x0003D184`, `2 FAILED` | 1 |
 | `q3 --plant` | TACP expected writer `0x000156A0` -> `0x000156B0` | `unitr-writer`, `record-layout`, `handoff-fields-agree`, `accrual-sites` and TACP `learning-ai-files` FAIL; `5 FAILED` | 1 |
+| `q4 --plant` | UFO2P expected get_text slot count 52 -> 0x10000 (impossible) | `FAIL UFO2P.EXE get-text-table ... expected slots 65536`, `3 FAILED` (the plant plus the two findings of the default run) | 1 |
 
 ## Investigation Trail
 
@@ -365,3 +455,10 @@ battle code is the route to close it.
   to its agent.
 - The android label is index 404 of section 37, so a walk capped at 400 strings per section
   misses it. q3 walks the section until it reaches the address.
+- q4 (plan 07-08) first bounded the section table at the next address any code row references.
+  For UFO2P that is 3 slots too far: the slots after slot 51 hold nonzero words without fixups.
+  The table now also ends at the first nonzero slot without a fixup, which gives 52 in both
+  EXEs (TACP's next referenced global is exactly slot 52).
+- q4 first counted a recovered pair past its section's end as a recovery error. The three TACP
+  cases are real constants (37/380 and 38/25, read in the private disassembly): shared code that
+  uses UFO2P's numbering. They are now reported, not failed.
