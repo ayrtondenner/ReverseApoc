@@ -171,3 +171,20 @@ def read_proposals(path: Path) -> list[Rename | Header]:
     text = _decode(path.read_bytes())
     lines = enumerate(text.split(_LINE_BREAK), start=1)  # only \n: U+2028 may sit in a string
     return [parse_line(line, lineno) for lineno, line in lines if line.strip()]
+
+
+# ---- Task 2 interface skeleton (behaviour follows in GREEN) ----
+
+HEADER_TEXT_MAX = 64 * 1024
+
+
+def name_problem(name: str) -> str | None:
+    return None
+
+
+def rename_problem(rename, *, symbols, functions, runtime_names, src_names, data_ranges=()):
+    return None
+
+
+def header_problem(header: Header) -> str | None:
+    return None

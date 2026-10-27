@@ -12,6 +12,7 @@ import json
 import pytest
 
 from reverseapoc import proposals
+from reverseapoc.functions import FunctionRow, SymbolRow
 from reverseapoc.proposals import Header, ProposalError, Rename
 
 RENAME = {"op": "rename", "exe": "ufo2p", "kind": "func", "address": "0x000A3980",
@@ -137,3 +138,176 @@ def test_evidence_kinds_are_readlints():
     assert proposals.EVIDENCE_KINDS == ("string", "table", "call", "vocab")
     assert proposals.OPS == ("rename", "header")
     assert proposals.KINDS == ("func", "data")
+
+
+# ---- Task 2: may a proposal be applied? ----
+
+UNIT = "u_00010010"
+FOO = FunctionRow(0x10010, 0x10020, "func_00010010", "game", UNIT, "call")
+MIXER = FunctionRow(0x10020, 0x10030, "func_00010020", "game", UNIT, "call")
+EXIT = FunctionRow(0x10030, 0x10038, "exit_", "runtime", "rt_exit", "runtime")
+THUNK = FunctionRow(0x10038, 0x10040, "func_00010038", "thunk", UNIT, "call")
+TABLE = FunctionRow(0x10040, 0x10050, "D_00010040", "data-in-code", UNIT, "fixup")
+FUNCTIONS = (FOO, MIXER, EXIT, THUNK, TABLE)
+SYMBOLS = (
+    SymbolRow(0x10020, "Mixer_", "func"),  # C Mixer
+    SymbolRow(0x20000, "_g_volume", "data"),  # C g_volume
+    SymbolRow(0x20010, "_Tick_", "data"),  # C Tick_, linker _Tick_
+)
+RUNTIME_NAMES = frozenset({"exit_", "_nmalloc_"})
+SRC_NAMES = {"Helper": "src/ufo2p/u_00010010.c"}
+DATA_RANGES = ((0x20000, 0x30000),)
+
+
+def _rename(name: str = "SoundVolume", *, kind: str = "func", address: int = FOO.start) -> Rename:
+    return Rename("ufo2p", kind, address, name, "call: called by every sound effect")
+
+
+def _problem(rename: Rename, **kwargs) -> str | None:
+    kwargs.setdefault("data_ranges", DATA_RANGES)
+    return proposals.rename_problem(rename, symbols=SYMBOLS, functions=FUNCTIONS,
+                                    runtime_names=RUNTIME_NAMES, src_names=SRC_NAMES,
+                                    **kwargs)  # fmt: skip
+
+
+BAD_NAMES = {
+    "2fast": "identifier",
+    "": "identifier",
+    "Sound-Volume": "identifier",
+    "café": "identifier",
+    "while": "keyword",
+    "__far": "keyword",
+    "_Packed": "keyword",
+    "FUN_1234": "placeholder",
+    "sub_00a1": "placeholder",
+    "DAT_0012efac": "placeholder",
+    "LAB_00a1": "placeholder",
+    "PTR_00A1": "placeholder",
+    "UNK_1": "placeholder",
+    "func_000A3980": "placeholder",
+    "D_0012EFAC": "placeholder",
+    "N" * 64: "63",
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "why"), BAD_NAMES.items(),
+                         ids=[name[:12] or "empty" for name in BAD_NAMES])  # fmt: skip
+def test_name_problems(name, why):
+    problem = proposals.name_problem(name)
+    assert problem is not None and why in problem
+
+
+@pytest.mark.parametrize("name", ["SoundVolume", "g_volume", "_x", "N" * 63, "func_000a3980x",
+                                  "FUNCTION_TABLE", "D_volume"])  # fmt: skip
+def test_name_passes(name):
+    assert proposals.name_problem(name) is None
+
+
+def test_placeholder_regex_is_readlints():
+    """R5 (owner-confirmed): Ghidra's LAB_/PTR_/UNK_ count as placeholders, as in readlint RL01."""
+    assert proposals.PLACEHOLDER.pattern == (
+        r"(?:FUN|sub|DAT|LAB|PTR|UNK)_[0-9A-Fa-f]+|func_[0-9A-F]{8}|D_[0-9A-F]{8}"
+    )
+
+
+def test_rename_passes():
+    assert _problem(_rename()) is None
+    assert _problem(_rename("g_master", kind="data", address=0x20100)) is None
+    assert _problem(_rename("Thunk", address=THUNK.start)) is None
+
+
+def test_rename_carries_name_problems():
+    assert "keyword" in _problem(_rename("while"))
+
+
+USED = {
+    "symbols-func": ("Mixer", "func", FOO.start, ("symbols.csv", "0x00010020")),
+    "symbols-data": ("g_volume", "data", 0x20100, ("symbols.csv", "0x00020000")),
+    "symbols-cross-kind": ("g_volume", "func", FOO.start, ("symbols.csv", "0x00020000")),
+    "symbols-linker": ("_Tick", "func", FOO.start, ("symbols.csv", "_Tick_")),
+    "runtime-linker": ("exit", "func", FOO.start, ("runtime", "exit_")),
+    "runtime-data": ("nmalloc_", "data", 0x20100, ("runtime", "_nmalloc_")),
+    "runtime-verbatim": ("exit_", "data", 0x20100, ("runtime", "exit_")),
+    "src": ("Helper", "func", FOO.start, ("src/ufo2p/u_00010010.c",)),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "kind", "address", "where"), USED.values(), ids=USED.keys())
+def test_rename_unique(name, kind, address, where):
+    problem = _problem(_rename(name, kind=kind, address=address))
+    assert problem is not None
+    for part in where:
+        assert part in problem
+
+
+def test_rename_to_its_current_name_is_refused():
+    problem = _problem(_rename("Mixer", address=MIXER.start))
+    assert problem is not None and "already" in problem
+
+
+TARGETS = {
+    "func-runtime-row": ("func", EXIT.start),
+    "func-data-in-code-row": ("func", TABLE.start),
+    "func-not-a-start": ("func", FOO.start + 4),
+    "func-no-row": ("func", 0x50000),
+    "data-inside-a-function": ("data", FOO.start + 8),
+    "data-data-in-code-row": ("data", TABLE.start),
+    "data-outside-the-data-objects": ("data", 0x40000),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(("kind", "address"), TARGETS.values(), ids=TARGETS.keys())
+def test_rename_target_kind(kind, address):
+    problem = _problem(_rename(kind=kind, address=address))
+    assert problem is not None and f"0x{address:08X}" in problem
+
+
+def test_data_rename_without_data_ranges_checks_code_only():
+    assert _problem(_rename(kind="data", address=0x40000), data_ranges=()) is None
+    assert _problem(_rename(kind="data", address=FOO.start), data_ranges=()) is not None
+
+
+PLAIN = ('/* sound.h: voice table types */\n#include "common.h"\n\n'
+         "typedef struct Voice {\n    int volume;\n} Voice;\n")  # fmt: skip
+
+
+def _header(path: str = "include/sound.h", text: str = PLAIN) -> Header:
+    return Header(path, text, "table: 0x0012F000")
+
+
+def test_plain_header_passes():
+    assert proposals.header_problem(_header()) is None
+
+
+def test_header_of_64_kib_passes():
+    filler = "/* " + "x" * (proposals.HEADER_TEXT_MAX - 7) + " */\n"
+    assert len(filler) == proposals.HEADER_TEXT_MAX
+    assert proposals.header_problem(_header(text=filler)) is None
+
+
+BAD_PATHS = ["include/common.h", "include/watcom_compat.h", "include/Common.h", "include/sub/x.h",
+             "include/../x.h", "src/ufo2p/x.h", "include/x.c", "include\\x.h", "x.h",
+             "/include/x.h", "include/.h"]  # fmt: skip
+
+
+@pytest.mark.parametrize("path", BAD_PATHS)
+def test_header_path_problems(path):
+    problem = proposals.header_problem(_header(path))
+    assert problem is not None and path in problem
+
+
+BAD_TEXTS = {
+    "inline-asm": ("void f(void) { __asm { nop } }\n", "inline assembly"),
+    "pragma-aux-code": ("#pragma aux f = 0x90\n", "#pragma"),
+    "pragma-pack": ("#pragma pack(1)\n", "#pragma"),
+    "pragma-operator": ('_Pragma("pack(1)")\n', "inline assembly"),
+    "include-path": ('#include "../x.h"\n', "include"),
+    "non-ascii": ("/* café */\n", "ASCII"),
+    "65-kib": ("/* " + "x" * (65 * 1024) + " */\n", "64 KiB"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(("text", "why"), BAD_TEXTS.values(), ids=BAD_TEXTS.keys())
+def test_header_problems(text, why):
+    problem = proposals.header_problem(_header(text=text))
+    assert problem is not None and why in problem
