@@ -1068,3 +1068,303 @@ def test_cli_approve_refusal_exits_2(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("REVERSEAPOC_CLAIM", f"ufo2p/{UNIT}")
     assert cli_main(["flags", "approve", "F-0001", "--by", OWNER, "--repo", str(a.repo)]) == 2
     assert "REVERSEAPOC_CLAIM" in capsys.readouterr().err
+
+
+# ---- 07-24 Task 3: flags default, D-33's evidence bar, pins and the docs update ----
+
+NEW = "wcc386@10.6 -4r -oneatx -s -fpi"  # the made-up candidate default
+OLD_STAR = "*  wcc386@10.6  -4r -s -fpi"
+NEW_STAR = "*  wcc386@10.6  -4r -oneatx -s -fpi"
+BRANCHY = b"\x85\xc0\x74\x02\x31\xc0\xc3"  # test eax,eax; je +2; xor eax,eax; ret
+TINY = b"\x31\xc0\xc3"  # xor eax,eax; ret
+TOOLCHAIN_DOC = (
+    "# Toolchain\n\n"
+    f"An old note: the `*` default stays `{OLD_STAR}` until three functions agree.\n\n"
+    f"The default rule in `config/cflags.txt` is `{OLD_STAR}`, written explicitly. More prose.\n"
+)
+DEFAULT_FILES = ("config/cflags.txt", "docs/matching.md", "docs/toolchain.md")
+
+
+@dataclasses.dataclass(frozen=True)
+class Fn:
+    """A made-up matched function: EXE, unit, start, and its body bytes (synthetic)."""
+
+    exe: str
+    unit: str
+    start: int
+    body: bytes = BRANCHY
+    ruled: bool = True  # its unit has a per-unit rule equal to NEW
+
+    @property
+    def name(self) -> str:
+        return f"func_{self.start:08X}"
+
+
+AGREEING = (Fn("ufo2p", "u_00026dd0", 0x26FD0), Fn("ufo2p", "u_0009c1a0", 0x9C3A0),
+            Fn("tacp", "u_0006fbd0", 0x6FBD0))  # fmt: skip
+UNRULED = (Fn("ufo2p", "u_00089980", 0x8A0E0, ruled=False),
+           Fn("tacp", "u_0006ee30", 0x6EE30, ruled=False))  # fmt: skip
+
+
+class FakeExe:
+    """What has_branch_or_loop and the bar read of an EXE: its functions.csv rows and flat
+    image (zeros with the made-up bodies placed at their starts)."""
+
+    def __init__(self, fns: list[Fn]) -> None:
+        self.rows = tuple(FunctionRow(f.start, f.start + len(f.body), f.name, "game", f.unit,
+                                      "call") for f in sorted(fns, key=lambda f: f.start))
+        size = max((f.start + len(f.body) for f in fns), default=0)
+        flat = bytearray(size)
+        for f in fns:
+            flat[f.start : f.start + len(f.body)] = f.body
+        self.flat = bytes(flat)
+
+
+class DefaultGate:
+    """The container gate stand-in for `gate --all`: records each argv with the text of the
+    cflags file it names (the committed one without --cflags); fails the kinds in `fail`
+    (`pinned`, `unpinned`, `final`)."""
+
+    def __init__(self, repo: Path, fail: tuple[str, ...] = ()) -> None:
+        self.repo, self.fail = repo, set(fail)
+        self.calls: list[list[str]] = []
+        self.seen: list[str] = []
+
+    def __call__(self, argv):
+        argv = list(argv)
+        self.calls.append(argv)
+        cflags = argv[argv.index("--cflags") + 1] if "--cflags" in argv else "config/cflags.txt"
+        self.seen.append((self.repo / cflags).read_text(encoding="utf-8"))
+        kind = ("final" if "--cflags" not in argv else
+                "unpinned" if "unpinned" in cflags else "pinned")  # fmt: skip
+        code = 1 if kind in self.fail else 0
+        return subprocess.CompletedProcess(argv, code, json.dumps({"ok": code == 0}),
+                                           "made-up gate output")  # fmt: skip
+
+
+@dataclasses.dataclass
+class Default:
+    repo: Path
+    env: dict
+    gate: DefaultGate
+    exes: dict[str, FakeExe]
+
+    def head(self) -> str:
+        return _git(self.repo, self.env, "rev-parse", "HEAD").strip()
+
+    def files(self) -> dict[str, bytes]:
+        return {rel: (self.repo / rel).read_bytes() for rel in DEFAULT_FILES}
+
+    def run(self, **kw):
+        kw.setdefault("env", {})
+        return flags.default(NEW, OWNER, repo=self.repo, today=DAY, runner=self.gate,
+                             git=driver.git_runner(self.repo, env=self.env),
+                             exe_loader=self.exes.__getitem__, **kw)  # fmt: skip
+
+
+def default_repo(tmp_path: Path, fns: tuple[Fn, ...] = AGREEING + UNRULED, *,
+                 toolchain: str = TOOLCHAIN_DOC,
+                 fail: tuple[str, ...] = ()) -> Default:  # fmt: skip
+    """A committed checkout: the `*` rule plus one approved rule equal to NEW per ruled unit,
+    their matching.md rows, every function matched in status.csv, and docs/toolchain.md."""
+    repo = make_repo(tmp_path)
+    env = GitEnv(tmp_path)
+    ruled = sorted({(f.exe, f.unit) for f in fns if f.ruled})
+    rules = "".join(f"src/{exe}/{unit}.c  {NEW}  # F-0001 approved {OWNER} 2026-10-27\n"
+                    for exe, unit in ruled)  # fmt: skip
+    rows = "".join(flags.doc_row(f"src/{exe}/{unit}.c", exe, NEW, "F-0001", "2026-10-27") + "\n"
+                   for exe, unit in ruled)  # fmt: skip
+    table_end = "| * | TACP.EXE | wcc386@10.6 | -4r -s -fpi | made up | 2026-10-21 |\n"
+    files = {
+        ".gitignore": "build/\n",
+        "config/cflags.txt": CFLAGS_TEXT + rules,
+        "docs/matching.md": MATCHING_DOC.replace(table_end, table_end + rows),
+        "docs/toolchain.md": toolchain,
+    }
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8", newline="\n")
+    for exe in flags.EXES:
+        write_status(repo, exe, [(f.start, f.name, f.unit, "matched", "100.00")
+                                 for f in fns if f.exe == exe])  # fmt: skip
+    _git(repo, env, "init", "-q")
+    _git(repo, env, "add", "-A")
+    _git(repo, env, "commit", "-q", "-m", "base")
+    exes = {exe: FakeExe([f for f in fns if f.exe == exe]) for exe in flags.EXES}
+    return Default(repo, env, DefaultGate(repo, fail), exes)
+
+
+@pytest.mark.parametrize(("body", "expected"), [
+    (BRANCHY, True),  # a conditional jump
+    (b"\x49\x75\xfd\xc3", True),  # dec ecx; jne back: a loop
+    (b"\x90\xeb\xfd", True),  # nop; jmp back to the nop: a backward jump
+    (b"\xe2\xfe\xc3", True),  # loop to itself
+    (TINY, False),
+    (b"\xeb\x00\xc3", False),  # a forward unconditional jump
+    (b"\xe8\x00\x00\x00\x00\xc3", False),  # a call is no branch
+])  # fmt: skip
+def test_has_branch_or_loop(body, expected):
+    fn = Fn("ufo2p", UNIT, 0x40, body)
+    exe = FakeExe([fn])
+    assert flags.has_branch_or_loop(exe.rows[0], exe) is expected
+
+
+BAR_REFUSALS = {
+    "two agreeing": (AGREEING[:2], "3"),
+    "three tiny": (tuple(dataclasses.replace(f, body=TINY) for f in AGREEING),
+                   "branch or loop"),
+    "one EXE": ((AGREEING[0], AGREEING[1], Fn("ufo2p", "u_000a34f0", 0xA3980)), "both EXEs"),
+    "one region": ((AGREEING[0], Fn("ufo2p", "u_00027100", 0x27100), AGREEING[2]),
+                   "0x10000 region"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", BAR_REFUSALS)
+def test_default_bar_refusals(tmp_path, case):
+    """D-33: three re-gated agreeing functions, each with a branch or loop or at least 64
+    bytes, from both EXEs and pairwise different 0x10000 regions; the error names what fails."""
+    fns, match = BAR_REFUSALS[case]
+    d = default_repo(tmp_path, fns + UNRULED)
+    base, before = d.head(), d.files()
+    with pytest.raises(flags.FlagsError, match=match):
+        d.run()
+    assert d.head() == base and d.files() == before and d.gate.calls == []
+
+
+def test_default_bar_counts_size_without_a_branch(tmp_path):
+    """D-33 (planner's value): 64 bytes or more counts without a branch or loop."""
+    big = b"\x90" * 63 + b"\xc3"
+    fns = tuple(dataclasses.replace(f, body=big) for f in AGREEING)
+    d = default_repo(tmp_path, fns + UNRULED)
+    evidence = flags.default_evidence(NEW, repo=d.repo, exe_loader=d.exes.__getitem__)
+    assert evidence.met and [f.size for f in evidence.functions] == [64, 64, 64]
+    short = tuple(dataclasses.replace(f, body=big[1:]) for f in AGREEING)
+    d2 = default_repo(tmp_path / "short", short + UNRULED)
+    assert not flags.default_evidence(NEW, repo=d2.repo, exe_loader=d2.exes.__getitem__).met
+
+
+def test_default_evidence_mode(tmp_path):
+    """--evidence prints the bar's inputs (function, size, branch/loop, EXE, region) and
+    writes nothing, met or not."""
+    d = default_repo(tmp_path)
+    base, before = d.head(), d.files()
+    report = d.run(evidence_only=True)
+    text = report.format()
+    for f in AGREEING:
+        named = [line for line in text.splitlines() if f.name in line]
+        assert named, f.name
+        line = named[0]
+        assert f.exe in line and f"{len(f.body)} bytes" in line and "branch/loop yes" in line
+        assert f"region 0x{f.start & 0xFFFF0000:08X}" in line
+    assert "met" in text
+    assert d.head() == base and d.files() == before and d.gate.calls == []
+    assert not (d.repo / "build" / "flags").exists()
+    d2 = default_repo(tmp_path / "unmet", AGREEING[:2] + UNRULED)
+    assert "not met" in d2.run(evidence_only=True).format()
+
+
+def test_default_pins_and_gates(tmp_path):
+    """D-14: the candidate has the new `*`, the per-unit rules, then one pin per matched unit
+    without a rule; gate --all on it, the unpinned dry run, then gate --all on the committed
+    file; the docs follow; one commit with the default trailer."""
+    d = default_repo(tmp_path)
+    base = d.head()
+    report = d.run()
+    assert report.exit_code == 0
+    cli = list(driver.CONTAINER_CLI)
+    pinned_rel = f"build/flags/default-{DAY}/cflags.txt"
+    unpinned_rel = f"build/flags/default-{DAY}/cflags-unpinned.txt"
+    assert d.gate.calls == [[*cli, "gate", "--all", "--cflags", pinned_rel, "--json"],
+                            [*cli, "gate", "--all", "--cflags", unpinned_rel, "--json"],
+                            [*cli, "gate", "--all", "--json"]]  # fmt: skip
+    pinned, unpinned, final = d.gate.seen
+    assert final == pinned and "pinned by D-14" not in unpinned
+    rules = parse_cflags(pinned, versions=("10.6", "10.5", "11.0"))
+    assert rules[0].glob == "*" and " ".join([rules[0].spec, *rules[0].flags]) == NEW
+    globs = [r.glob for r in rules[1:]]
+    ruled = sorted(f"src/{f.exe}/{f.unit}.c" for f in AGREEING)
+    pins = [f"src/{f.exe}/{f.unit}.c" for f in sorted(UNRULED, key=lambda f: (f.exe != "ufo2p",
+                                                                              f.unit))]
+    assert sorted(globs[: len(ruled)]) == ruled and globs[len(ruled) :] == pins
+    for pin in pins:
+        rule = select_rule(rules, pin)
+        assert " ".join([rule.spec, *rule.flags]) == BASE  # the old default, pinned
+    assert (d.repo / "config" / "cflags.txt").read_text(encoding="utf-8") == pinned
+    matching = (d.repo / "docs" / "matching.md").read_text(encoding="utf-8")
+    for exe in ("UFO2P.EXE", "TACP.EXE"):
+        assert f"| * | {exe} | wcc386@10.6 | -4r -oneatx -s -fpi |" in matching
+        assert f"| * | {exe} | wcc386@10.6 | -4r -s -fpi |" not in matching
+    for pin in pins:
+        assert f"| {pin} | " in matching and "pinned by D-14" in matching
+    toolchain = (d.repo / "docs" / "toolchain.md").read_text(encoding="utf-8")
+    assert f"The default rule in `config/cflags.txt` is `{NEW_STAR}`" in toolchain
+    assert f"the `*` default stays `{OLD_STAR}`" in toolchain  # the historical quote stays
+    assert _git(d.repo, d.env, "rev-list", "--count", f"{base}..HEAD").strip() == "1"
+    changed = set(_git(d.repo, d.env, "show", "--name-only", "--format=", "HEAD").split())
+    assert changed == set(DEFAULT_FILES)
+    lines = _git(d.repo, d.env, "log", "-1", "--format=%B").splitlines()
+    assert f"Flags-Approved-By: {OWNER} (default, {DAY})" in lines
+    assert any(f.name in line for f in AGREEING for line in lines)  # the evidence is quoted
+
+
+def test_default_refuses_unfound_doc_text(tmp_path):
+    """Ruling F16: only the canonical sentence of docs/toolchain.md is rewritten; when it is not
+    there exactly once, nothing is written and no gate runs."""
+    sentence = f"The default rule in `config/cflags.txt` is `{OLD_STAR}`, written explicitly."
+    for doc in (TOOLCHAIN_DOC.replace(sentence, "No sentence."),
+                TOOLCHAIN_DOC + "\n" + sentence + "\n"):
+        root = tmp_path / str(len(doc))
+        d = default_repo(root, toolchain=doc)
+        base, before = d.head(), d.files()
+        with pytest.raises(flags.FlagsError, match="toolchain.md"):
+            d.run()
+        assert d.head() == base and d.files() == before and d.gate.calls == []
+        assert not (d.repo / "build" / "flags").exists()
+
+
+@pytest.mark.parametrize("kind", ["pinned", "final"])
+def test_default_failed_gate_writes_nothing(tmp_path, kind):
+    """A failing gate --all on the pinned candidate, or on the committed file after the write,
+    leaves cflags.txt and both docs byte for byte as they were and commits nothing."""
+    d = default_repo(tmp_path, fail=(kind,))
+    base, before = d.head(), d.files()
+    with pytest.raises(flags.FlagsError, match="gate --all"):
+        d.run()
+    assert d.head() == base and d.files() == before
+
+
+def test_default_unpinned_dry_run_is_evidence_only(tmp_path):
+    d = default_repo(tmp_path, fail=("unpinned",))
+    report = d.run()
+    assert report.exit_code == 0 and "exit 1" in report.format()
+    assert "gate --all with the new default and no pins: exit 1" in _git(
+        d.repo, d.env, "log", "-1", "--format=%B")  # fmt: skip
+
+
+def test_default_refusals(tmp_path):
+    from reverseapoc.locks import DRIVE_LOCK, ProcessLock
+
+    d = default_repo(tmp_path)
+    before = d.files()
+    with pytest.raises(flags.FlagsError, match="REVERSEAPOC_CLAIM"):
+        d.run(env={"REVERSEAPOC_CLAIM": f"ufo2p/{UNIT}"})
+    other = ProcessLock(d.repo / DRIVE_LOCK)
+    assert other.try_acquire()
+    try:
+        with pytest.raises(flags.FlagsError, match="drive"):
+            d.run()
+    finally:
+        other.release()
+    with pytest.raises(flags.FlagsError, match="already"):
+        flags.default(BASE, OWNER, repo=d.repo, today=DAY, runner=d.gate, env={},
+                      git=driver.git_runner(d.repo, env=d.env), exe_loader=d.exes.__getitem__)
+    assert d.files() == before and d.gate.calls == []
+
+
+def test_cli_default_evidence(tmp_path, monkeypatch, capsys):
+    d = default_repo(tmp_path)
+    monkeypatch.setattr(flags, "_load_exe", lambda repo, exe: d.exes[exe])
+    argv = ["flags", "default", "--rule", NEW, "--by", OWNER, "--evidence", "--repo", str(d.repo)]
+    assert cli_main(argv) == 0
+    out = capsys.readouterr().out
+    assert all(f.name in out for f in AGREEING) and "met" in out
