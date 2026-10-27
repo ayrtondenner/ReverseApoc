@@ -420,15 +420,16 @@ def _notes_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
 def _env_forms(
     env: Mapping[str, str], name: str, cwd: str, fits: Callable[[str], bool]
 ) -> frozenset[str]:
-    """The casefolded forms of the path in env `name` when one of its repo-relative forms
-    `fits`; none when it is unset, unusable or misshapen."""
+    """The casefolded forms of the path in env `name` when it lies under build/ and every
+    repo-relative form of it there `fits`; none when it is unset, unusable or misshapen."""
     raw = env.get(name, "")
     try:
         paths = candidates(raw, cwd) if raw else []
     except HookError:
         return frozenset()
-    rels = (rel for _path, rel in _judged(paths, project_roots(env)))
-    return frozenset(path.casefold() for path in paths) if any(map(fits, rels)) else frozenset()
+    rels = [rel for _path, rel in _judged(paths, project_roots(env)) if _under(rel, "build")]
+    exact = bool(rels) and all(map(fits, rels))
+    return frozenset(path.casefold() for path in paths) if exact else frozenset()
 
 
 def _session_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
@@ -762,12 +763,19 @@ def _matching_write(
     claim = _claim(env)
     if claim is None:
         return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session writes nothing")
+    kind = env.get(SESSION_KIND_ENV, SESSION_KINDS[0])  # absent: a legacy matching run
+    if kind not in SESSION_KINDS:
+        return _deny(f"{SESSION_KIND_ENV}={kind!r} is not one of {', '.join(SESSION_KINDS)}, "
+                     "so the session writes nothing (D-18)")  # fmt: skip
+    view = bool(env.get(UNIT_FILE_ENV))
+    if kind == "readability" and not view:  # the legacy allowlist would reach include/ (D-19)
+        return _deny(f"a readability session writes only in view mode, and {UNIT_FILE_ENV} is "
+                     "unset (D-18, D-24)")  # fmt: skip
     raw, tool_input = _target(payload)
     rels = _repo_relatives(raw, payload, root)
     notes_rel = _session_relative(env, payload, root, NOTES_ENV)
     unit_rel = _session_relative(env, payload, root, UNIT_FILE_ENV)
     proposals_rel = _session_relative(env, payload, root, PROPOSALS_ENV)
-    view = bool(env.get(UNIT_FILE_ENV))
     if view and unit_rel is None:  # set but unusable: never fall back to the legacy allowlist
         return _deny(f"{UNIT_FILE_ENV} names no single path in the checkout, so the session "
                      "writes nothing (D-24)")  # fmt: skip
