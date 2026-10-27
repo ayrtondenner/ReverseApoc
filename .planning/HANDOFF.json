@@ -1,0 +1,42 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-10-27T21:52:33.217Z",
+  "phase": "07",
+  "phase_name": "Mechanics-first decompilation",
+  "phase_dir": ".planning/phases/07-mechanics-first-decompilation",
+  "plan": 21,
+  "task": null,
+  "total_tasks": 42,
+  "status": "paused",
+  "completed_tasks": [
+    {"id": "07-01..07-20", "name": "waves 1-4 (all 20 plans)", "status": "done", "commit": "merged; last 945dd71 (07-13), ccff87e (07-20 asm list signed)"},
+    {"id": "07-22", "name": "Tier 1 located, drafted and signed (owner sign-recommended)", "status": "done_review_pending", "commit": "4d82148 + ca01a69"},
+    {"id": "07-24", "name": "flags approve / flags default", "status": "done", "commit": "d2a072d (merge)"},
+    {"id": "07-27", "name": "readlint", "status": "done", "commit": "f50d69b (merge)"}
+  ],
+  "remaining_tasks": [
+    {"id": "07-21", "name": "concurrent driver: fix round 2 (N1 eol-normalised blob compare, N2 new^1==old guard) then scoped re-review, then merge", "status": "in_progress"},
+    {"id": "07-22", "name": "task review (SDD reviewer) of 4d82148/ca01a69", "status": "not_started"},
+    {"id": "07-23", "name": "wave 6", "status": "not_started"},
+    {"id": "07-25", "name": "Tier 2 (main, owner checkpoint)", "status": "not_started"},
+    {"id": "07-26", "name": "tier picker", "status": "not_started"},
+    {"id": "07-28..07-42 (except 07-27 done)", "name": "waves 6-13 incl. owner checkpoints 07-25/28/29/32/33/39/40 and gate 07-41", "status": "not_started"}
+  ],
+  "blockers": [],
+  "async_jobs": [],
+  "human_actions_pending": [
+    {"action": "Owner checkpoints later in the phase: Tier 2/3/4 sign-offs (07-25/28/32), flags approve of the pilot proposals (07-29), the * default ruling (07-33), canaries + matching nights (07-39), readability nights (07-40)", "context": "blocking-human gates in the plans", "blocking": false}
+  ],
+  "decisions": [
+    {"decision": "R4 confirmed: flag-approved matches count as unattended (subset reported)", "rationale": "owner 2026-10-27", "phase": "07"},
+    {"decision": "R5 confirmed: floats only in readlint --report; LAB_/PTR_/UNK_ are placeholders", "rationale": "owner 2026-10-27", "phase": "07"},
+    {"decision": "F5: allowlist RL01 refs to non-matched rows before the first readability night (07-40 Task 1, owner checkpoint)", "rationale": "owner 2026-10-27", "phase": "07"},
+    {"decision": "asm list signed with changes: all TACP u_000c483f rows -> asm (vendor sound C wrapper)", "rationale": "owner 2026-10-27", "phase": "07"},
+    {"decision": "Tier 1 signed: hub rule min_direct_callers=20, max_closure_share=0.2, largest_scc=false, min_items=0 (215 UFO2P + 306 TACP must-match); Q1 hub/SCC ignore midrow; Q2 keep strict table rule", "rationale": "owner 2026-10-27", "phase": "07"},
+    {"decision": "Spike 007 verdict PARTIAL per D-03 (training rule later located by 07-22: TACP 0x000B2510)", "rationale": "orchestrator ruling; owner may overrule", "phase": "07"},
+    {"decision": "All other orchestrator rulings are in .superpowers/sdd/let-s-execute-gsd-execute-phase-7-sorted-harp/rulings.md and progress.md", "rationale": "SDD ledger", "phase": "07"}
+  ],
+  "uncommitted_files": [],
+  "next_action": "Read .planning/phases/07-mechanics-first-decompilation/.continue-here.md, then the SDD ledger tail; send 07-21 fix round 2 (findings in rereview-07-21-r1.md) to a fresh executor in the existing worktree agent-ad0edafecf1fbf516 (FIX_BASE 26875a9), and dispatch the 07-22 task review in parallel.",
+  "context_notes": "Orchestrated via GSD execute-phase + SDD (bundle nonce per plan, reviewer per plan, fix rounds) + unlazy GATES.md (20 gates, owner-approved). main is 29 commits ahead of origin (last push 0fd6877); last full gate reverify at 0fd6877 (G3-G10, G15, G18 met); host suite green on 4d82148 (3834/38) but container not re-run since 07-24/07-27/07-22 merged. Placeholder grep hits in 07-09/13/16/19/27 SUMMARYs are the domain word 'placeholder' (func_ names), not unfinished summaries."
+}
