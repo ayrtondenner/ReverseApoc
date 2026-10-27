@@ -125,7 +125,7 @@ status: complete
   - `[[edge]]` hand edges join the graph through the new `callgraph.with_edges`.
   - Runtime rows never appear.
 - The members CSV is written through `write_atomic`, LF only, and is deterministic. `read_members` refuses any file that `mechanics write` would not have written byte for byte.
-- `tier_digest` hashes the hub-rule line plus one line per row a tier-N item reaches: `exe,address,<tier-N items>,<tier-N member items>,<tier-N role>`. `signed_tiers` lists the tiers whose sign-off is present and whose digest still matches.
+- `tier_digest` hashes the hub-rule line plus one line per row a tier-N item reaches: `exe,address,<tier-N items>,<tier-N member items>,<tier-N role>`. Since fix round 1 it also hashes the tier's signed TOML: its items, entries and hand edges. `signed_tiers` lists the tiers whose sign-off is present and whose digest still matches.
 - `check_committed` runs in CI without game files. It reports:
   - member rows that are not game or thunk rows;
   - items that are not `in`, and tiers that disagree with their items;
@@ -201,7 +201,7 @@ The key-decisions above, plus:
 - **Found during:** Task 3, the real-file run against the main `orig/`.
 - **Issue:** The other research steps match exactly: direct is 1,128 / 1,224 and direct+pointer is 1,412 / 1,479. Only UFO2P's table step differs. callgraph.py (07-05, as built) wires a pointer run only from the game/thunk rows that reference it. 31 UFO2P game targets sit in runs that only runtime code references, so they are not reached. A scratch measurement that treats those runs as reached gives 1,480 / 1,489, which brackets research's 1,471. This matches 07-05's "Issues Encountered" note (runs referenced from game/thunk rows: 3 vs research's 10).
 - **Fix:** The pin follows the built rule: UFO2P table step 1,429, with the reason in a comment. I also added a direct+pointer pin that matches research exactly. 07-05's table rule is not changed, because that is outside this plan's scope.
-- **For plan 07-22 / the orchestrator:** the Tier 1 checkpoint should state that 42 UFO2P functions are reachable from `main_` only through pointer runs that runtime code references (for example tables registered by init code). The owner should decide whether those runs count as roots.
+- **For plan 07-22 / the orchestrator:** research's table step is 42 functions above ours (1,471 minus 1,429). That is a difference between two totals, not a count of functions. Under the scratch rule (pointer runs referenced only from runtime code taken as reached), 51 more UFO2P functions are reachable from `main_` (1,480 minus 1,429), from those runs' 31 game targets. The Tier 1 checkpoint should state this, and the owner should decide whether such runs (for example tables registered by init code) count as roots. (Corrected in fix round 1; the first version called the 42 a count.)
 - **Files modified:** tests/test_mechanics_real.py. **Committed in:** `ed627c6`.
 
 **2. [Rule 1 - Test bug] Two Task 2 tests were wrong; fixed in the GREEN commit `628123a`**
@@ -243,6 +243,43 @@ Execution context nonce: 1ca40221f8453928
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
+
+## Fix round 1 (orchestrator review)
+
+Each finding got a RED commit and then a GREEN commit. Both RED records returned `RED_EVIDENCE_OK` (`target_test_failed`) from `gsd-tools check tdd-red-evidence`.
+
+**Finding 1: the tier digest missed edits to the signed TOML** (RED `643dba9`, GREEN `62680ef`).
+- **Ruling applied:** D-04 and T-07-28 take precedence over the plan's narrower digest.
+- **What `tier_digest` hashes now, in this order:**
+  1. the hub-rule line;
+  2. the tier's members rows, as before;
+  3. one JSON line per tier-N `[[item]]` of every scope (id, issue, title, url, scope, duplicate_of, reason, exes), sorted by (issue, number);
+  4. one JSON line per `[[entry]]` of those items (item, exe, address, evidence, detail, source), sorted by (item, EXE, address);
+  5. one JSON line per hand `[[edge]]` whose `from` row is one of the tier's rows (exe, from, to, evidence), sorted by (EXE, from, to).
+- The docstring documents this projection.
+- **Tests:**
+  - `test_signed_toml_edit_reopens_the_tier` has 7 cases: an entry's detail, evidence and source; an added out item; an added duplicate item; an item title; and a hand edge added without regenerating the members file. Each changes the digest, and `mechanics check` then reports "changed since sign-off: re-sign".
+  - `test_signed_out_item_reason_change_reopens_the_tier`.
+  - `test_other_tier_edits_leave_the_tier_alone`: a tier-2 out item and a hand edge between rows tier 1 does not reach leave `mechanics check` clean.
+  - The `_committed` helper now signs the digest of the TOML it writes.
+
+**Finding 2: `status --require-matched` passed when there was nothing to check** (RED `4e1132a`, GREEN `6a5dd6d`).
+- A new `mechanics.done_problems` decides the result. Under `--require-matched` the command exits 1, with the reason on stderr, when:
+  - there is no tier at all;
+  - a reported tier is not signed off;
+  - a tier changed since sign-off (the same `signed_tiers` comparison that `mechanics check` makes);
+  - a tier has no members, for example because the members file is missing;
+  - any member is not matched.
+- **Test:** `test_require_matched_refuses_an_empty_unsigned_or_stale_tier`.
+
+**SUMMARY correction:** the "42 functions" in deviation 1 is research's total minus ours (1,471 - 1,429), not a count of functions. The scratch rule gives 51 more reachable functions (1,480 - 1,429).
+
+**Commands and output:**
+- `uv run pytest -q tests/test_mechanics.py tests/test_callgraph.py`: 86 passed.
+- `REVERSEAPOC_ORIG=<main checkout>/orig uv run pytest -q tests/test_mechanics_real.py`: 5 passed.
+- `uv run pytest -q`: 2924 passed, 236 skipped. These are the same skips as before; the only `test_mechanics_real.py` skips are the 4 orig-absent ones in this worktree.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
 
 ## Self-Check: PASSED
 
