@@ -4,12 +4,30 @@ A sweep hit of a driver attempt (`attempt check --sweep`, D-17/D-15) is a 100% c
 other than its unit's rule. It is never a match and never evidence for the `*` default (D-28, D-33):
 `flags propose` turns it into a proposed per-unit rule in the committed review queue
 config/cflags-proposals.toml, with the C that hit copied to build/flags/<id>/<unit>.c (gitignored).
-`flags list` shows the queue. Nothing here writes config/cflags.txt or src/; only the owner's
-approve step (plan 07-24) does.
+`flags regate` re-proves it over the whole unit on a copy, and `flags list` shows the queue.
+Nothing here writes config/cflags.txt or src/; only the owner's approve step (plan 07-24) does.
 
 The queue holds no game bytes: names, flag strings, repo-relative paths under build/, percents,
 SHA-256 hex and dates, all printable ASCII. It is written only by `write_queue`, in a fixed key
-order, through write_atomic, and read back with tomllib.
+order, through write_atomic, and read back with tomllib. Its format, `version = 1` then one
+`[[proposal]]` table per proposal with the keys of `Proposal` in field order:
+
+- id, exe, unit, glob, rule, base: what is proposed (glob is always src/<exe>/<unit>.c).
+- functions, keeps: the functions that hit under `rule`; the unit's matched functions.
+- siblings (D-32, fix round 1): every other game and thunk row of the unit, each
+  `<name> <status> <percent>` from status.csv (`matched`/`partial`) or `<name> unattempted`.
+  The rule binds them all, so the owner's approval covers them knowingly.
+- alternatives, source, candidate, candidate_sha256, evidence: the other rules every function hit
+  under, sweep | sweep2 | owner, the C that hit (build/flags/<id>/<unit>.c) and its LF sha256,
+  the hits' checks/NNNN.json paths.
+- status, regate_exit, regate_variant, regate_cflags_sha256, regate_log: the review state and the
+  last re-gate (exit -1 and variant `empty` before one).
+- approved_by, approved_date, reason: the owner's approval (07-24) and why a proposal failed.
+- variant_sha256, reverted (fix round 1): set only when a re-gate passed on D-28's reduced
+  variant. `reverted` names the co-defined functions turned back into INCLUDE_ASM, and
+  `variant_sha256` is the LF sha256 of that C, written to build/flags/<id>/<unit>.reduced.c
+  (`variant_path`). Approve lands that file, not the candidate. Both are empty when the full
+  candidate passed or no re-gate passed.
 """
 
 from __future__ import annotations
@@ -28,8 +46,14 @@ from . import check, contextpack, driver, gate
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
-from .functions import read_functions_csv
-from .status import MATCHED, PARTIAL, format_percent, lf_sha256, read_status, status_path
+from .functions import (
+    KIND_GAME,
+    KIND_THUNK,
+    FunctionRow,
+    read_functions_csv,
+    read_symbols_csv,
+)
+from .status import MATCHED, format_percent, lf_sha256, read_status, status_path
 from .targets import load_manifest
 from .watcom import DEFAULT_WATCOM_MANIFEST, load_watcom_manifest
 
@@ -59,7 +83,9 @@ _UNIT = re.compile(r"[a-z0-9_]+")
 _C_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 _FUNC = re.compile(r"func_([0-9A-F]{8})")
 _SPEC = re.compile(r"wcc386@[0-9][0-9.]*( -[A-Za-z0-9_=.+]+)*")
-_SIBLING = re.compile(r"[A-Za-z_][A-Za-z0-9_]*( (0|[1-9][0-9]{0,2})\.[0-9]{2})")
+UNATTEMPTED = "unattempted"  # a sibling with no status.csv row
+_SIBLING = re.compile(r"[A-Za-z_][A-Za-z0-9_]* "
+                      r"(unattempted|(matched|partial) (0|[1-9][0-9]{0,2})\.[0-9]{2})")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 _RUN = re.compile(r"[A-Za-z0-9_.-]+")
@@ -85,7 +111,7 @@ class Proposal:
     base: str  # the unit's committed rule when proposed
     functions: tuple[str, ...]  # functions that hit under `rule`
     keeps: tuple[str, ...]  # matched functions of the unit the re-gate must keep matched
-    siblings: tuple[str, ...]  # `<name> <percent>` of the unit's other partial rows (D-32)
+    siblings: tuple[str, ...]  # every other game/thunk row: `<name> <status> <pct>`|`unattempted`
     alternatives: tuple[str, ...]  # other rules every function hit under, best first
     source: str  # sweep | sweep2 | owner
     candidate: str  # build/flags/<id>/<unit>.c, the C that hit (gitignored)
@@ -99,8 +125,8 @@ class Proposal:
     approved_by: str
     approved_date: str
     reason: str  # why it failed or was rejected
-    variant_sha256: str
-    reverted: tuple[str, ...]
+    variant_sha256: str  # the reduced variant that passed (variant_path), else ""
+    reverted: tuple[str, ...]  # functions that variant returned to INCLUDE_ASM, else ()
 
     def to_json(self) -> dict[str, Any]:
         return {key: list(value) if isinstance(value, tuple) else value
@@ -116,6 +142,10 @@ class Proposal:
         lines += [f"  sibling {text}" for text in self.siblings]
         lines += [f"  evidence {path}" for path in self.evidence]
         lines.append(f"  candidate {self.candidate}")
+        if self.reverted:
+            lines.append(f"  WARNING the re-gate passed only with {', '.join(self.reverted)} "
+                         f"returned to INCLUDE_ASM: approving lands {variant_path(self)}, "
+                         "not the candidate")  # fmt: skip
         if self.reason:
             lines.append(f"  reason {self.reason}")
         return "\n".join(lines)
@@ -164,6 +194,10 @@ def _field_problem(p: Proposal) -> str | None:
         "regate_cflags_sha256": p.regate_cflags_sha256 == ""
         or _SHA256.fullmatch(p.regate_cflags_sha256) is not None,
         "regate_log": p.regate_log in ("", (FLAGS_DIR / p.id / "regate.json").as_posix()),
+        "variant_sha256": p.variant_sha256 == ""
+        or _SHA256.fullmatch(p.variant_sha256) is not None,
+        "reverted": all(_C_NAME.fullmatch(name) for name in p.reverted)
+        and (p.variant_sha256 == "") == (not p.reverted),
         "approved_date": p.approved_date == "" or _DATE.fullmatch(p.approved_date) is not None,
     }
     bad = [key for key, ok in checks.items() if not ok]
@@ -388,11 +422,23 @@ class _Context:
         self.rules = load_cflags(self.config / "cflags.txt",
                                  versions=tuple(load_watcom_manifest(versions_from)))  # fmt: skip
         self.status = {exe: self._status(exe) for exe in EXES}
-        self._names: dict[str, dict[str, int]] = {}
+        self._rows: dict[str, list[FunctionRow]] = {}
 
     def _status(self, exe: str) -> list:
         path = status_path(self.config, exe)
         return read_status(path) if path.is_file() else []
+
+    def rows(self, exe: str) -> list[FunctionRow]:
+        """functions.csv's rows of `exe`, each named as symbols.csv names its start now (the
+        name gate writes to status.csv); [] when the EXE has no functions.csv."""
+        if exe not in self._rows:
+            path = self.config / exe / "functions.csv"
+            rows = read_functions_csv(path) if path.is_file() else []
+            symbols = read_symbols_csv(self.config / exe / "symbols.csv")
+            renames = {s.address: s.name for s in symbols if s.kind == gate.FUNC_SYMBOL}
+            self._rows[exe] = [dataclasses.replace(row, name=renames.get(row.start, row.name))
+                               for row in rows]  # fmt: skip
+        return self._rows[exe]
 
     def base(self, exe: str, unit: str) -> str:
         rule = select_rule(self.rules, unit_rule_path(exe, unit))
@@ -402,11 +448,7 @@ class _Context:
         found = _FUNC.fullmatch(function)
         if found:
             return int(found.group(1), _HEX)
-        if exe not in self._names:
-            path = self.config / exe / "functions.csv"
-            rows = read_functions_csv(path) if path.is_file() else []
-            self._names[exe] = {row.name: row.start for row in rows}
-        return self._names[exe].get(function)
+        return next((row.start for row in self.rows(exe) if row.name == function), None)
 
     def matched(self, exe: str, start: int, function: str) -> bool:
         return any(row.status == MATCHED and (row.start == start or row.name == function)
@@ -417,15 +459,34 @@ class _Context:
                      if row.unit == unit and row.status == MATCHED)  # fmt: skip
 
     def siblings(self, exe: str, unit: str, functions: Iterable[str]) -> tuple[str, ...]:
-        """`<name> <percent>` of the unit's partial rows other than `functions` (D-32): the
-        rule binds them too, so the owner's approval covers them knowingly."""
+        """Every game and thunk row of the unit other than `functions`, by start (D-32, fix
+        round 1): `<name> <status> <percent>` from status.csv, or `<name> unattempted`. The
+        rule binds them all, so the owner's approval covers them knowingly. Without a
+        functions.csv the unit's status.csv rows stand in."""
         skip = set(functions)
-        return tuple(f"{row.name} {format_percent(row.best_percent)}" for row in self.status[exe]
-                     if row.unit == unit and row.status == PARTIAL and row.name not in skip)
+        status = {row.start: row for row in self.status[exe]}
+        names = {row.start: row.name for row in self.rows(exe)
+                 if row.unit == unit and row.kind in (KIND_GAME, KIND_THUNK)}  # fmt: skip
+        if not self.rows(exe):
+            names = {row.start: row.name for row in self.status[exe] if row.unit == unit}
+        out = []
+        for start, name in sorted(names.items()):
+            row = status.get(start)
+            if name in skip or (row is not None and row.name in skip):
+                continue
+            out.append(f"{name} {UNATTEMPTED}" if row is None
+                       else f"{name} {row.status} {format_percent(row.best_percent)}")
+        return tuple(out)
+
+
+REDUCED_SUFFIX = ".reduced.c"  # the reduced variant a re-gate passed on, next to the candidate
 
 
 def variant_path(p: Proposal) -> str:
-    return ""
+    """build/flags/<id>/<unit>.reduced.c: where a re-gate that passed on the reduced variant
+    leaves that C (variant_sha256 is its LF sha256); approve lands it instead of the
+    candidate."""
+    return (FLAGS_DIR / p.id / f"{p.unit}{REDUCED_SUFFIX}").as_posix()
 
 
 def _relative(repo: Path, path: Path) -> str:
@@ -564,7 +625,7 @@ def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
     merged = dataclasses.replace(
         existing, evidence=(*existing.evidence, hit.evidence), status=PROPOSED,
         regate_exit=NOT_RUN, regate_variant=EMPTY, regate_cflags_sha256="", regate_log="",
-        reason="",
+        reason="", variant_sha256="", reverted=(),
     )  # fmt: skip
     if hit.function in existing.functions:
         return merged if existing.rule else dataclasses.replace(merged, status=FAILED,
@@ -847,19 +908,35 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
     if reduced is not None:
         runs.append(_variant(env, p, REDUCED, reduced, cflags)[0])
     final = runs[-1]
+    pinned = _pin_variant(env, p, final, reduced, neighbours)
     log = work / REGATE_LOG
     record = {"id": p.id, "exe": p.exe, "unit": p.unit, "rule": p.rule,
               "cflags": _relative(env.repo, cflags), "cflags_sha256": sha,
-              "candidate_sha256": p.candidate_sha256,
+              "candidate_sha256": p.candidate_sha256, "variant_sha256": pinned.variant_sha256,
+              "reverted": list(pinned.reverted),
               "variants": [run.to_json() for run in runs]}  # fmt: skip
     write_atomic(log, (json.dumps(record, indent=2) + "\n").encode("ascii"))
     reason = "" if final.exit == EXIT_OK else _ascii(
         f"re-gate exit {final.exit} ({final.name}): {'; '.join(final.problems)}")[:_REASON_CAP]
     return dataclasses.replace(
-        p, status=REGATED if final.exit == EXIT_OK else FAILED, regate_exit=final.exit,
+        pinned, status=REGATED if final.exit == EXIT_OK else FAILED, regate_exit=final.exit,
         regate_variant=final.name, regate_cflags_sha256=sha,
         regate_log=_relative(env.repo, log), reason=reason,
     ), tuple(runs)  # fmt: skip
+
+
+def _pin_variant(env: _Regate, p: Proposal, final: Variant, reduced: str | None,
+                 neighbours: Sequence[str]) -> Proposal:  # fmt: skip
+    """Fix round 1: a pass on the reduced variant writes that C to variant_path and records
+    its sha and the functions it returned to INCLUDE_ASM, so approve (07-24) lands exactly the C
+    that passed; any other outcome clears both fields and removes a stale variant file."""
+    path = env.repo / variant_path(p)
+    if final.name == REDUCED and final.exit == EXIT_OK and reduced is not None:
+        write_atomic(path, reduced.encode("utf-8"))
+        return dataclasses.replace(p, variant_sha256=lf_sha256(reduced),
+                                   reverted=tuple(neighbours))  # fmt: skip
+    path.unlink(missing_ok=True)
+    return dataclasses.replace(p, variant_sha256="", reverted=())
 
 
 def _check_unit(exe: str, unit: str, **roots: Any) -> check.CheckResult:
