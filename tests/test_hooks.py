@@ -497,17 +497,40 @@ def test_matching_denies_preprocessor_operators(repo, text):
     """The token scan reads source text, so `__a##sm` would rebuild `__asm` after it; the
     matching layer refuses `#`/`##` (and `%:`/`%:%:`) operators. The always layer keeps
     accepting them: include/common.h's INCLUDE_ASM uses `##` (F16)."""
-    unit = _unit(repo)
+    unit = _view_unit(repo)
     decision = matching(in_repo(write(native(unit), SCAFFOLD + text), repo))
     assert decision.deny
     assert "preprocessor operator" in decision.reason
-    assert not always(write(native(unit), SCAFFOLD + text)).deny
+    assert not always(write(native(unit), SCAFFOLD + text), view_env(repo)).deny
+    assert not always(write(native(_unit(repo)), SCAFFOLD + text)).deny
 
 
 def test_matching_allows_hashes_outside_code(repo):
-    unit = _unit(repo)
+    unit = _view_unit(repo)
     for text in ['char *s = "a##b";\n', "/* a ## b, #x, %:%: */\n", "char c = '#';\n",
                  "  #  define VOICES 8\n", "%:define VOICES 8\n"]:  # fmt: skip
+        assert not matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
+
+
+MSVC_STYLE = {  # 07-19 fix round 2 S3: the other spellings of a pragma and of emitted bytes
+    "pragma": ("__pragma(pack(1))\nint x;\n", "__pragma"),
+    "emit": ("void f(void) { __emit 0x90; }\n", "__emit"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize(("text", "token"), MSVC_STYLE.values(), ids=MSVC_STYLE.keys())
+def test_matching_denies_pragma_and_emit_keywords(repo, text, token):
+    unit = _view_unit(repo)
+    decision = matching(in_repo(write(native(unit), SCAFFOLD + text), repo))
+    assert decision.deny
+    assert token in decision.reason
+    assert not always(write(native(_unit(repo)), SCAFFOLD + text)).deny
+
+
+def test_matching_allows_pragma_and_emit_words_outside_code(repo):
+    unit = _view_unit(repo)
+    for text in ["/* __pragma __emit */\n", 'char *s = "__emit";\n', "int emit_count;\n",
+                 "int my__pragma;\n"]:  # fmt: skip
         assert not matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
 
 
