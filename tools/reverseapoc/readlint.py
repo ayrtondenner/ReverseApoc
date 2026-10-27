@@ -42,15 +42,24 @@ and the headers those include, are read once per run (strict UTF-8, no lone CR; 
 allowed) and checked for RL01 and RL04, reported against include/<name>.h.
 
 Allowlist (D-30). config/readlint-allow.csv (`exe,name,reason`) lists placeholder-named callees
-a matched unit may reference (a prototype, an extern, a call, a use) before they are named: hubs
-and asm rows that Tier 1 calls. It never exempts a definition: a function definition, or a
-declarator of a file-scope declaration without `extern` or `typedef`. Allowlisted references
-and tagged waivers are counted per file and reported. Headers get no allowlist.
+and data a matched unit may reference before they are named: hubs and asm rows that Tier 1
+calls. It exempts references only: a use in an expression, an `extern` declaration, or a
+prototype (not `static`) of a function defined elsewhere. It never exempts a declaration that
+introduces the name here, at any scope and in any declarator shape: a function or object
+definition, a pointer, function pointer or array, a local or block `static`, a parameter, a
+typedef, a struct or union member or tag with a body, an enum constant, a `#define`d macro
+(fix round 1, I1). Typedef names come from the unit and every project header it includes
+(common.h too), so `u8 x;` reads as a declaration. Allowlisted references and tagged waivers
+are counted per file and reported. A header takes the allowlist rows of every EXE whose units
+include it (fix round 1, I2).
 
 Selectors. `--units EXE/UNIT,...` and `--tier N` (the units holding the tier's `member` rows of
 config/mechanics-members.csv, mapped to units through functions.csv) narrow the files checked;
-the others are reported as skipped. `--src` and `--config` name other roots (plan 07-31 lints a
-view). `--report` exits 0 and adds per-file counts and the floating literals.
+the others are reported as skipped. `--tier` is a gate (fix round 1, I3): a missing members
+file, an unknown tier, a tier without a sign-off or with a stale one (its members_sha256 no
+longer matches), and a tier that leaves no matched unit to check are all exit 2. `--src` and
+`--config` name other roots (plan 07-31 lints a view). `--report` exits 0 and adds per-file
+counts and the floating literals.
 """
 
 from __future__ import annotations
@@ -119,7 +128,18 @@ _UNNAMED_FIELD = re.compile(
     r"(?i)(?:unk|unknown|field|pad|padding|gap|filler|undefined)(?:_?(?:0x)?[0-9a-f]*)?(?:_\w*)?"
 )
 _FIELD_ENDS = (";", ",", "[", ":")
-_DECLARATOR_ENDS = ("=", ",", ";", "[")
+# The allowlist's declaration classifier (fix round 1, I1)
+OWN, OUTSIDE = "own", "outside"  # declared here / declared as defined elsewhere
+_STATEMENT_KEYWORDS = frozenset({"break", "case", "continue", "default", "do", "else", "for",
+                                 "goto", "if", "return", "sizeof", "switch", "while"})  # fmt: skip
+_SPECIFIERS = unitdefs.C_KEYWORDS - _STATEMENT_KEYWORDS  # types, storage, qualifiers, modifiers
+_TYPE_KEYWORDS = frozenset({"void", "char", "short", "int", "long", "float", "double", "signed",
+                            "unsigned"})  # fmt: skip
+_TAG_KEYWORDS = ("struct", "union", "enum")
+_EXTERN, _STATIC, _TYPEDEF = "extern", "static", "typedef"
+_BLOCK_AFTER = (")", "else", "do", ";", "{", "}", ":")  # a `{` after these opens a block
+_PROTOTYPE_ENDS = (";", ",")
+_MACRO_DIRECTIVES = ("define", "undef")
 # RL06: the allowed literal contexts (D-20, research R5)
 WAIVER = re.compile(r"/\*\s*lit:\s*\S.*\*/")
 _U32 = 0xFFFFFFFF  # masks are 32-bit (wcc386 flat)
@@ -411,33 +431,6 @@ class _Source:
         return (self.depth[p] == 0 and self.tok(p).text == name and self.tok(p + 1).text == "("
                 and close is not None and self.tok(close + 1).text == "{")  # fmt: skip
 
-    def defined_positions(self) -> set[int]:
-        """Code positions of every name the file defines: function definitions and the
-        declarators of file-scope declarations without `extern` or `typedef`."""
-        found = set(self.definition_positions())
-        start = 0
-        for p in range(len(self.code)):
-            if not self._boundary(p):
-                continue
-            if self.tok(p).text == ";":
-                found.update(self._declarators(start, p))
-            start = p + 1
-        return found
-
-    def _declarators(self, start: int, end: int) -> Iterator[int]:
-        """The declarator names of the file-scope declaration at code positions start..end."""
-        level = [p for p in range(start, end) if self.inner[p] is None]
-        if any(self.tok(p).text in ("extern", "typedef") for p in level):
-            return
-        initializer = False
-        for p in level:
-            token = self.tok(p)
-            if token.text in ("=", ","):
-                initializer = token.text == "="
-            elif (not initializer and token.kind == IDENT and token.text not in unitdefs.C_KEYWORDS
-                  and self.tok(p + 1).text in _DECLARATOR_ENDS):  # fmt: skip
-                yield p
-
     def header_comment(self, position: int) -> Token | None:
         """The last comment between the previous depth-0 boundary (a `;`, a function body's
         `}`, a directive or the start of the file) and the declaration holding `position`."""
@@ -480,7 +473,7 @@ def _read(path: Path, shown: str, exe: str, cfg: ModuleType, *, unit: bool = Tru
 
 def _includes(src: _Source, here: Path, include_dir: Path) -> Iterator[Path]:
     """The project headers `src` includes that exist: `"name.h"` from `here` then include/,
-    `<name.h>` from include/; the reserved headers left out."""
+    `<name.h>` from include/ (the reserved headers too: their typedefs name types)."""
     for token in src.tokens:
         found = _INCLUDE.match(_COMMENTS.sub(" ", token.text)) if token.kind == DIRECTIVE else None
         if found is None:
@@ -488,7 +481,7 @@ def _includes(src: _Source, here: Path, include_dir: Path) -> Iterator[Path]:
         name = found.group(1) or found.group(2)
         places = [here / name, include_dir / name] if found.group(1) else [include_dir / name]
         path = next((p for p in places if p.is_file()), None)
-        if name not in RESERVED_HEADERS and path is not None:
+        if path is not None:
             yield path
 
 
@@ -594,25 +587,165 @@ def _literal_allowed(src: _Source, p: int, value: int | None) -> bool:
 # ---- the rules ----
 
 
-def _identifiers(src: _Source) -> Iterator[tuple[Token, int | None]]:
-    """Identifier tokens outside stubs with their code positions; those inside directives
-    have none (a directive defines no object)."""
+class _Declarations:
+    """Which placeholder occurrences a declaration introduces (never allowlisted) and which are
+    references (fix round 1, I1). `types` holds the typedef names in scope, so a declaration
+    that starts with one (`u8 x;`) is read as one."""
+
+    def __init__(self, src: _Source, types: Collection[str]) -> None:
+        self.src, self.types = src, types
+
+    def kind(self, x: int) -> str | None:
+        """OWN when the identifier (or declarator group) at code position `x` is declared here,
+        OUTSIDE when an `extern` declaration or a non-static prototype declares it, None for a
+        use."""
+        src = self.src
+        opened = src.parent[x]
+        opener = src.tok(opened).text if opened >= 0 else None
+        if opener == "[":
+            return None
+        if opener == "(" and self._group(opened):
+            inside = range(opened + 1, x)
+            if all(src.tok(q).text == "*" or src.tok(q).text in _SPECIFIERS for q in inside):
+                return self.kind(opened)
+            return None
+        if opener == "(" and not self._parameters(opened):
+            return None
+        if opener == "{" and self._enum_body(opened):
+            return OWN if src.tok(x - 1).text in ("{", ",") else None
+        start = self._start(x)
+        token = src.tok(start)
+        if token.kind != IDENT or token.text not in _SPECIFIERS and token.text not in self.types:
+            return None
+        return self._declarator(start, x, parameter=opener == "(")
+
+    def _start(self, x: int) -> int:
+        """The first position of the declaration holding `x` at its own level: after a `;`, a
+        block's `}` or the enclosing bracket (in parentheses also after a `,`); nested groups
+        (struct bodies, parameter lists, subscripts) are stepped over."""
+        src = self.src
+        opened = src.parent[x]
+        in_parentheses = opened >= 0 and src.tok(opened).text == "("
+        q = x - 1
+        while q > opened:
+            text = src.tok(q).text
+            if text in _CLOSERS and q in src.match:
+                if text == "}" and src.tok(src.match[q] - 1).text in _BLOCK_AFTER:
+                    break
+                q = src.match[q] - 1
+                continue
+            if text == ";" or text == "," and in_parentheses:
+                break
+            q -= 1
+        return q + 1
+
+    def _group(self, opened: int) -> bool:
+        return _is_group(self.src, opened)
+
+    def _parameters(self, opened: int) -> bool:
+        """True when the parentheses at `opened` are the parameter list of a declarator."""
+        src = self.src
+        before = src.tok(opened - 1)
+        if before.text == ")" and opened - 1 in src.match and self._group(src.match[opened - 1]):
+            return self.kind(src.match[opened - 1]) is not None
+        named = before.kind == IDENT and before.text not in unitdefs.C_KEYWORDS
+        return named and self.kind(opened - 1) is not None
+
+    def _enum_body(self, opened: int) -> bool:
+        src = self.src
+        before = src.tok(opened - 1)
+        return before.text == "enum" or before.kind == IDENT and src.tok(opened - 2).text == "enum"
+
+    def _declarator(self, start: int, x: int, *, parameter: bool) -> str | None:
+        """The kind of `x` in the declaration starting at `start`: None in an initializer, for
+        a typedef name used as the type, or for a tag without a body."""
+        src = self.src
+        storage, typed, initializer = set(), False, False
+        q = start
+        while q < x:
+            token = src.tok(q)
+            if token.text in _OPENERS and src.match.get(q, x) < x:
+                typed = typed or token.text == "{"
+                q = src.match[q] + 1
+                continue
+            if token.text in ("=", ","):
+                initializer = token.text == "="
+            elif token.kind == IDENT:
+                storage.add(token.text)
+                typed = typed or token.text in _TYPE_KEYWORDS or token.text in self.types or (
+                    src.tok(q - 1).text in _TAG_KEYWORDS)  # fmt: skip
+            q += 1
+        token = src.tok(x)
+        if initializer:
+            return None
+        if token.kind == IDENT and src.tok(x - 1).text in _TAG_KEYWORDS:
+            return OWN if src.tok(x + 1).text == "{" else None
+        if token.kind == IDENT and token.text in self.types and not typed:
+            return None
+        if _EXTERN in storage:
+            return OUTSIDE
+        close = src.match.get(x + 1) if src.tok(x + 1).text == "(" else None
+        prototype = close is not None and src.tok(close + 1).text in _PROTOTYPE_ENDS
+        if prototype and not parameter and storage.isdisjoint((_STATIC, _TYPEDEF)):
+            return OUTSIDE
+        return OWN
+
+
+def _is_group(src: _Source, opened: int) -> bool:
+    """`( * ... )` followed by `(` or `[`: a declarator group (a function or array pointer)."""
+    q = opened + 1
+    while src.tok(q).text in _SPECIFIERS:
+        q += 1
+    close = src.match.get(opened)
+    return src.tok(q).text == "*" and close is not None and src.tok(close + 1).text in "(["
+
+
+def typedef_names(src: _Source) -> set[str]:
+    """The names `src` declares with `typedef`, at any level."""
+    names = set()
+    for p in range(len(src.code)):
+        if src.tok(p).text == _TYPEDEF:
+            names.update(_typedef_declarators(src, p))
+    return names
+
+
+def _typedef_declarators(src: _Source, p: int) -> Iterator[str]:
+    q = p + 1
+    while q < len(src.code) and src.tok(q).text != ";":
+        token = src.tok(q)
+        skip = token.text == "{" or token.text == "(" and not _is_group(src, q)
+        if skip and q in src.match:
+            q = src.match[q] + 1
+            continue
+        named = token.kind == IDENT and token.text not in unitdefs.C_KEYWORDS
+        if named and src.tok(q - 1).text not in _TAG_KEYWORDS and src.tok(q + 1).text in ";,[)":
+            yield token.text
+        q += 1
+
+
+def _identifiers(src: _Source, kinds: _Declarations | None) -> Iterator[tuple[Token, str | None]]:
+    """Identifier tokens outside stubs with their declaration kind (None for a use; not
+    computed when `kinds` is None). A directive's macro name is declared by it (OWN)."""
     for p in src.checked():
         if src.tok(p).kind == IDENT:
-            yield src.tok(p), p
+            yield src.tok(p), kinds.kind(p) if kinds is not None else None
     for token in (t for t in src.tokens if t.kind == DIRECTIVE):
-        yield from ((t, None) for t in _directive_tokens(token) if t.kind == IDENT)
+        inner = [t for t in _directive_tokens(token) if t.kind == IDENT]
+        macro = len(inner) > 1 and inner[0].text in _MACRO_DIRECTIVES
+        for index, ident in enumerate(inner):
+            yield ident, OWN if macro and index == 1 else None
 
 
-def _rl01(src: _Source, allowed: Collection[str] = ()) -> tuple[list[Violation], int]:
+def _rl01(src: _Source, allowed: Collection[str] = (),
+          types: Collection[str] = ()) -> tuple[list[Violation], int]:  # fmt: skip
     """Placeholder identifiers in code and directives, stubs excepted; a reference to an
-    `allowed` name is counted instead, a definition of one never is (D-30)."""
-    defined = src.defined_positions() if allowed else set()
+    `allowed` name is counted instead, a declaration of one never is (D-30, fix round 1)."""
+    kinds = _Declarations(src, types) if allowed else None
     found, accepted = [], 0
-    for token, position in _identifiers(src):
+    for token, kind in _identifiers(src, kinds):
         if not PLACEHOLDER.fullmatch(token.text):
             continue
-        if token.text in allowed and position not in defined:
+        if token.text in allowed and kind in (None, OUTSIDE):
             accepted += 1
             continue
         why = f"{token.text} is a placeholder name: name it (a D-19 rename)"
@@ -785,9 +918,20 @@ def _parse_units(units: Sequence[str]) -> frozenset[tuple[str, str]]:
 def _tier_units(config_root: Path, tier: int) -> frozenset[tuple[str, str]]:
     """(exe, unit) of every `member` row of a tier-N item (mechanics-members.csv), mapped to
     its unit through functions.csv."""
+    members_path = config_root / mechanics.MEMBERS_CSV
+    if not members_path.is_file():
+        raise ReadlintError(f"--tier {tier}: {members_path} is missing; write it with "
+                            "`uv run reverseapoc mechanics write`")  # fmt: skip
     mech, members = mechanics.read_committed(config_root)
-    if mech.tier(tier) is None:
+    found = mech.tier(tier)
+    if found is None:
         raise ReadlintError(f"--tier {tier}: no [[tier]] with that id in mechanics.toml")
+    if not found.signed:
+        raise ReadlintError(f"--tier {tier}: the tier is not signed in mechanics.toml; a tier "
+                            "gate runs only on a signed tier")  # fmt: skip
+    if tier not in mechanics.signed_tiers(mech, members):
+        stale = f"--tier {tier}: the sign-off is stale (members_sha256 no longer matches "
+        raise ReadlintError(f"{stale}{mechanics.MEMBERS_CSV}); the owner re-signs first")
     items = {item.id for item in mech.items if item.tier == tier}
     member = mechanics.ROLE_MEMBER
     starts = {(row.exe, row.address) for row in members
@@ -810,7 +954,7 @@ def _selected(config_root: Path, units: Sequence[str] | None,
 
 @dataclass
 class _Run:
-    """One run's roots, tables (read once per EXE) and findings."""
+    """One run's roots, tables (read once per EXE), headers (read once) and findings."""
 
     src_root: Path
     config_root: Path
@@ -822,7 +966,8 @@ class _Run:
     waivers: dict[str, int] = field(default_factory=dict)
     allowlisted: dict[str, int] = field(default_factory=dict)
     floats: list[FloatLiteral] = field(default_factory=list)
-    headers: dict[Path, str] = field(default_factory=dict)  # resolved path -> as reported
+    headers: dict[Path, _Source] = field(default_factory=dict)  # resolved path -> header
+    header_exes: dict[Path, set[str]] = field(default_factory=dict)  # EXEs including it
 
     def c_names(self, exe: str) -> dict[str, int]:
         """C name -> row start of every game and thunk row of `exe` (unitdefs.c_names)."""
@@ -832,13 +977,18 @@ class _Run:
                                                read_symbols_csv(tables / SYMBOLS_CSV))  # fmt: skip
         return self.names[exe]
 
+    def allowed(self, exes: Collection[str]) -> set[str]:
+        return {name for exe, name in self.allow if exe in exes}
+
     def lint(self, path: Path, shown: str, exe: str) -> None:
         src = _read(path, shown, exe, self.cfg)
-        allowed = {name for allow_exe, name in self.allow if allow_exe == exe}
-        found, accepted = _rl01(src, allowed)
+        closure = self.closure(src, path.parent)
+        for header in closure:
+            self.header_exes.setdefault(header, set()).add(exe)
+        types = typedef_names(src).union(*(typedef_names(self.headers[h]) for h in closure))
+        found, accepted = _rl01(src, self.allowed((exe,)), types)
         self.violations += found
-        if accepted:
-            self.allowlisted[src.path] = accepted
+        self.count(src.path, accepted)
         if src.definitions:
             self.violations += _rl02_rl03(src, self.c_names(src.exe))
         self.violations += _rl04(src)
@@ -849,21 +999,42 @@ class _Run:
             self.waivers[src.path] = len(literals.waivers)
         if self.report:
             self.floats += literals.floats
-        self.lint_headers(src, path.parent)
 
-    def lint_headers(self, src: _Source, here: Path) -> None:
-        """RL01 (no allowlist) and RL04 over the project headers `src` includes, each once."""
+    def count(self, path: str, accepted: int) -> None:
+        if accepted:
+            self.allowlisted[path] = accepted
+
+    def closure(self, src: _Source, here: Path) -> list[Path]:
+        """The resolved paths of every project header `src` includes, directly or through
+        another header (the reserved ones too), each read once per run."""
         include_dir = self.src_root.parent / INCLUDE_DIR
-        pending = list(_includes(src, here, include_dir))
+        pending, found = list(_includes(src, here, include_dir)), []
         while pending:
             path = pending.pop(0)
-            if path.resolve() in self.headers:
+            key = path.resolve()
+            if key in found:
                 continue
-            shown = self.headers[path.resolve()] = _shown(path, self.src_root)
-            header = _read(path, shown, src.exe, self.cfg, unit=False)
-            self.violations += _rl01(header)[0]
+            found.append(key)
+            if key not in self.headers:
+                shown = _shown(path, self.src_root)
+                self.headers[key] = _read(path, shown, "", self.cfg, unit=False)
+            pending += _includes(self.headers[key], path.parent, include_dir)
+        return found
+
+    def lint_headers(self) -> tuple[str, ...]:
+        """RL01 (with the allowlist rows of every EXE including the header) and RL04 over the
+        included project headers but the reserved ones, each once; their paths as reported."""
+        types = set().union(*(typedef_names(h) for h in self.headers.values()))
+        linted = []
+        for key, header in sorted(self.headers.items(), key=lambda item: item[1].path):
+            if key.name in RESERVED_HEADERS:
+                continue
+            linted.append(header.path)
+            found, accepted = _rl01(header, self.allowed(self.header_exes[key]), types)
+            self.violations += found
+            self.count(header.path, accepted)
             self.violations += _rl04(header)
-            pending += _includes(header, path.parent, include_dir)
+        return tuple(linted)
 
 
 def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, tier,
@@ -889,9 +1060,13 @@ def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, 
         else:
             checked.append(shown)
             run.lint(path, shown, found[0])
+    if tier is not None and not checked:
+        raise ReadlintError(f"--tier {tier}: no matched unit to check under PATHS; for a gate, "
+                            "nothing to check is not a pass")  # fmt: skip
+    headers = run.lint_headers()
     violations, floats = tuple(sorted(run.violations)), tuple(sorted(run.floats))
-    return ReadlintResult(tuple(checked), tuple(sorted(run.headers.values())), tuple(skipped),
-                          violations, run.waivers, run.allowlisted, floats, report)  # fmt: skip
+    return ReadlintResult(tuple(checked), headers, tuple(skipped), violations, run.waivers,
+                          run.allowlisted, floats, report)  # fmt: skip
 
 
 def run_readlint(
