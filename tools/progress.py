@@ -1007,6 +1007,8 @@ STRIP_KEY = ('<p class="key">Each tick is one game or thunk function, in address
 MOSAIC_REGION = ('<div class="mosaic" tabindex="0" role="region" '
                  'aria-label="Decompilation mosaic, scrolls sideways">')  # fmt: skip
 SWATCH_SIZE = ".75rem"  # the HTML legend's colour square
+# Backlog 999.4 fix #1: the strip's tooltips need a mouse, so each EXE also lists them as text.
+TOOLTIP_LIST_SUMMARY = "Matched and partial functions"
 MEASURED = (
     "A function is matched when its C, built with the original Watcom compiler, is "
     "byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE "
@@ -1048,6 +1050,7 @@ def _page_css() -> str:
         ".line{display:flex;flex-wrap:wrap;align-items:center;gap:.25rem 1rem}",
         f".bar{{flex:1 1 12rem;height:{BAR_HEIGHT}px;background:{TREEMAP_COLORS[UNMATCHED]}}}",
         f".bar span{{display:block;height:100%;background:{TREEMAP_COLORS[MATCHED]}}}",
+        ".bar .nz{min-width:2px}",
         ".figures{margin:0;font-size:.875rem;font-variant-numeric:tabular-nums}",
         ".strip{display:flex;flex-wrap:wrap;align-items:flex-start;"
         f"gap:{TICK_ROW_GAP}px {TICK_GAP}px;margin-top:.75rem}}",
@@ -1057,6 +1060,9 @@ def _page_css() -> str:
         f".strip .u,.key .u{{height:{TICK_SHORT}px;margin-top:{TICK_HEIGHT - TICK_SHORT}px}}",
         *(f"i.{TICK_CLASSES[status]}{{background:{TREEMAP_COLORS[status]}}}"
           for status in (MATCHED, PARTIAL, UNMATCHED)),
+        "details{margin-top:.75rem;font-size:.875rem}",
+        "details ul{margin:.5rem 0 0;padding-left:1.25rem;font-variant-numeric:tabular-nums}",
+        "summary:focus-visible{outline:2px solid var(--ink);outline-offset:2px}",
         ".legend{display:flex;flex-wrap:wrap;gap:.25rem 1rem;margin:.75rem 0 0;padding:0;"
         "list-style:none;color:var(--secondary);font-size:.875rem}",
         f".swatch{{display:inline-block;width:{SWATCH_SIZE};height:{SWATCH_SIZE};"
@@ -1099,18 +1105,40 @@ def _strip_html(exe: ExeProgress) -> str:
     return f'<div class="strip" role="img" aria-label="{_xml(aria)}">{ticks}</div>'
 
 
+def _bar_html(percent: float) -> str:
+    """The percent bar. A non-zero share's segment gets the `nz` class, whose 2 px minimum width
+    keeps a tiny matched share visible (backlog 999.4 fix #3); the stated figure is unchanged."""
+    nonzero = ' class="nz"' if percent > 0 else ""
+    return (f'<div class="bar" aria-hidden="true"><span{nonzero} '
+            f'style="width:{shield_message(percent)}"></span></div>')  # fmt: skip
+
+
+def _tooltip_list_html(exe: ExeProgress) -> list[str]:
+    """Every matched and partial function's tooltip as a text list, in address order, so keyboard
+    and touch users reach what the strip's `title` attributes hold (backlog 999.4 fix #1). Empty
+    when the EXE has none."""
+    titles = [title for f in sorted(exe.functions, key=lambda f: f.start)
+              if (title := _function_title(f)) is not None]  # fmt: skip
+    if not titles:
+        return []
+    return [f"<details><summary>{TOOLTIP_LIST_SUMMARY} ({len(titles)})</summary><ul>",
+            *(f"<li>{_xml(title)}</li>" for title in titles),
+            "</ul></details>"]  # fmt: skip
+
+
 def _exe_html(exe: ExeProgress) -> list[str]:
-    """One EXE's section: its heading, then the percent bar, the figures in text and the
-    function strip."""
-    stem, width = _xml(exe.stem), shield_message(exe.totals.percent)
+    """One EXE's section: its heading, then the percent bar, the figures in text, the function
+    strip and the list of its matched and partial functions."""
+    stem = _xml(exe.stem)
     return [f'<section class="exe" aria-labelledby="exe-{stem}">',
             f'<h2 id="exe-{stem}">{_xml(exe.label)}</h2>',
             "<div>",
             '<div class="line">',
-            f'<div class="bar" aria-hidden="true"><span style="width:{width}"></span></div>',
+            _bar_html(exe.totals.percent),
             f'<p class="figures">{_xml(_figures(exe))}</p>',
             "</div>",
             _strip_html(exe),
+            *_tooltip_list_html(exe),
             "</div>",
             "</section>"]  # fmt: skip
 
@@ -1130,7 +1158,8 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
     heading, a percent bar, the figures in text and the function strip (one tick per game and
     thunk function in address order; matched and partial ticks stand taller and carry the mosaic
     cell's tooltip, a partial one with its best score;
-    the strip wraps with the width), then the strip's key, an HTML legend, the labelled mosaic
+    the strip wraps with the width) and those tooltips again as a text list in a <details>, then
+    the strip's key, an HTML legend, the labelled mosaic
     (render_svg's output, verbatim, in a focusable box) and how the figures are measured. Under
     prefers-color-scheme: dark only the surface, ink and secondary swap (the mosaic follows
     through MOSAIC_PAINTS; status hues are unchanged); below 40rem the EXE heading stacks over its
