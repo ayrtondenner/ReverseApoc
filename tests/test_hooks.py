@@ -1182,3 +1182,85 @@ def test_legacy_mode_unchanged(repo):
         "build/driver/r/proposals.jsonl", claim=claim, notes=None, tracked=lambda _: False,
         proposals="build/driver/r/proposals.jsonl",
     )  # fmt: skip
+
+
+def test_session_env_names():
+    assert hooks.UNIT_FILE_ENV == "REVERSEAPOC_UNIT_FILE"
+    assert hooks.PROPOSALS_ENV == "REVERSEAPOC_PROPOSALS"
+    assert hooks.SESSION_KIND_ENV == "REVERSEAPOC_SESSION_KIND"
+    assert hooks.SESSION_KINDS == ("matching", "readability")
+
+
+def test_readability_kind_same_allowlist(repo):
+    """D-17/D-18: a readability session gets the view-mode allowlist unchanged, and only in view
+    mode (the legacy allowlist would let it write include/, which is naming state, D-19)."""
+    unit = _view_unit(repo)
+    env = view_env(repo, kind="readability")
+    allowed = [unit, _attempt(repo) / "notes.md", _attempt(repo) / "proposals.jsonl"]
+    for target in allowed:
+        assert not matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+    denied = [_unit(repo), repo / "include" / "fx.h", repo / "config" / "ufo2p" / "symbols.csv",
+              repo / "tools" / "x.py", _view_path(repo, "ufo2p/u_other")]  # fmt: skip
+    for target in denied:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+    legacy = {**CLAIM, "REVERSEAPOC_SESSION_KIND": "readability"}
+    for target in [_unit(repo), repo / "include" / "fx.h"]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), legacy)
+        assert decision.deny and "REVERSEAPOC_UNIT_FILE" in decision.reason, decision.reason
+
+
+@pytest.mark.parametrize("kind", ["other", "", "Matching", "readability "])
+def test_unknown_kind_denies_writes(repo, kind):
+    unit = _view_unit(repo)
+    for env in [view_env(repo, kind=kind), {**CLAIM, "REVERSEAPOC_SESSION_KIND": kind}]:
+        for target in [unit, _attempt(repo) / "notes.md", _unit(repo)]:
+            decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+            assert decision.deny, (env, target)
+            assert "matching" in decision.reason and "readability" in decision.reason
+
+
+@pytest.mark.parametrize("claim", ["ufo2p/u_other", "tacp/u_000a34f0"])
+def test_unit_file_for_another_unit_is_not_exempt(repo, claim):
+    """T-07-12: a unit file env naming another unit than the claim stays under build/'s
+    protection, in both layers."""
+    other = _view_unit(repo, claim)
+    env = view_env(repo, unit_file=other)
+    decision = always(write(native(other), SCAFFOLD), env)
+    assert decision.deny and "build/" in decision.reason, decision.reason
+    assert matching(in_repo(write(native(other), SCAFFOLD), repo), env).deny
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [("build", "other", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "view", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "view", "src", "ufo2p", "u_000a34f0.h"),
+     ("view", "src", "ufo2p", "u_000a34f0.c")],
+)  # fmt: skip
+def test_unit_file_outside_build_driver_is_not_exempt(repo, parts):
+    path = repo.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(SCAFFOLD.encode("utf-8"))
+    env = view_env(repo, unit_file=path)
+    assert matching(in_repo(write(native(path), SCAFFOLD), repo), env).deny
+    if parts[0] == "build":
+        assert always(write(native(path), SCAFFOLD), env).deny
+    proposals = repo / "build" / "other" / "proposals.jsonl"
+    env = {**view_env(repo), "REVERSEAPOC_PROPOSALS": native(proposals)}
+    assert always(write(native(proposals), "{}\n"), env).deny
+
+
+@pytest.mark.parametrize("name", sorted(PATH_INCLUDES))
+def test_view_unit_include_rule(repo, name):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    text = SCAFFOLD + PATH_INCLUDES[name]
+    for decision in [always(write(native(unit), text), env),
+                     matching(in_repo(write(native(unit), text), repo), env)]:  # fmt: skip
+        assert decision.deny, name
+        assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
+    bare = SCAFFOLD + BARE_INCLUDES["quoted"]
+    assert not matching(in_repo(write(native(unit), bare), repo), env).deny
