@@ -180,9 +180,9 @@ def test_always_denies_protected_files(repo, rel):
 
 @pytest.mark.parametrize(
     "rel",
-    ["asm.md", "buildx/x", "orig_notes.md", "tools/reverseapoc/asm.py", "config/cflags.txt",
-     "configure.py", "tests/test_x.py", "docs/x.md", ".planning/x.md", "config/targets.toml.bak",
-     "src/README.md"],
+    ["asm.md", "buildx/x", "orig_notes.md", "tools/reverseapoc/asm.py", "config/cflags.txt.bak",
+     "config/cflags-proposals.toml.bak", "configure.py", "tests/test_x.py", "docs/x.md",
+     ".planning/x.md", "config/targets.toml.bak", "src/README.md"],
 )  # fmt: skip
 def test_always_allows_near_miss_paths(repo, rel):
     for form in _forms(repo, rel):
@@ -1028,3 +1028,321 @@ def test_an_edit_that_introduces_a_path_include_is_denied(repo):
     assert always(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n"))).deny
     # completing a path out of a bare name is caught on the post-edit text
     assert matching(in_repo(edit(native(unit), '"common.h"', '"../common.h"'), repo)).deny
+
+
+# --- 07-04: per-session views (D-24, P6), owner-only cflags (D-27 P3), naming state (D-19) -----
+
+VIEW_CLAIM = "ufo2p/u_000a34f0"
+ATTEMPT = ("build", "driver", "r", "ufo2p", "func_000A3980", "attempt-1")
+
+
+def _attempt(repo: Path) -> Path:
+    return repo.joinpath(*ATTEMPT)
+
+
+def _view_path(repo: Path, claim: str = VIEW_CLAIM) -> Path:
+    exe, unit = claim.split("/")
+    return _attempt(repo) / "view" / "src" / exe / f"{unit}.c"
+
+
+def _view_unit(repo: Path, claim: str = VIEW_CLAIM, text: str = SCAFFOLD) -> Path:
+    path = _view_path(repo, claim)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+def view_env(repo: Path, *, unit_file: Path | None = None, kind: str | None = None) -> dict:
+    """A view-mode session's env (D-24): claim, private unit file, notes and proposals."""
+    attempt = _attempt(repo)
+    env = {
+        "REVERSEAPOC_CLAIM": VIEW_CLAIM,
+        "REVERSEAPOC_UNIT_FILE": native(unit_file or _view_path(repo)),
+        "REVERSEAPOC_ATTEMPT_NOTES": native(attempt / "notes.md"),
+        "REVERSEAPOC_PROPOSALS": native(attempt / "proposals.jsonl"),
+    }
+    if kind is not None:
+        env["REVERSEAPOC_SESSION_KIND"] = kind
+    return env
+
+
+def test_view_unit_is_writable(repo):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    for form in [native(unit), unit.as_posix()]:
+        assert not always(write(form, SCAFFOLD), env).deny, form
+        assert not matching(in_repo(write(form, SCAFFOLD), repo), env).deny, form
+    change = edit(native(unit), "INCLUDE_ASM(func_00010010);", "int x;")
+    assert not always(change, env).deny
+    assert not matching(in_repo(change, repo), env).deny
+    notes = _attempt(repo) / "notes.md"
+    assert not matching(in_repo(write(native(notes), "# notes\n"), repo), env).deny
+
+
+def test_view_mode_denies_src_and_others(repo):
+    _view_unit(repo)
+    env = view_env(repo)
+    others = [_unit(repo), _view_path(repo, "ufo2p/u_other"),
+              _attempt(repo) / "view" / "include" / "x.h", repo / "include" / "x.h",
+              repo / "src" / "ufo2p" / "u_other.c", repo / "tools" / "x.py",
+              _attempt(repo) / "x.md"]  # fmt: skip
+    for target in others:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+
+
+def test_view_unit_is_scanned(repo):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    asm = edit(native(unit), "INCLUDE_ASM(func_00010010);", "void f(void) { __asm { int 3 } }")
+    decision = always(asm, env)
+    assert decision.deny and "no inline asm" in decision.reason, decision.reason
+    assert matching(in_repo(asm, repo), env).deny
+    pragma = edit(native(unit), "INCLUDE_ASM(func_00010010);", "#pragma once")
+    decision = matching(in_repo(pragma, repo), env)
+    assert decision.deny and "#pragma of any kind" in decision.reason, decision.reason
+    assert always(write(native(unit), SCAFFOLD + "_asm int 3\n"), env).deny
+
+
+def test_proposals_file_is_writable(repo):
+    env = view_env(repo)
+    proposals = _attempt(repo) / "proposals.jsonl"
+    line = '{"kind": "rename"}\n'
+    assert not always(write(native(proposals), line), env).deny
+    assert not matching(in_repo(write(native(proposals), line), repo), env).deny
+    for other in [_attempt(repo) / "proposal.jsonl", _attempt(repo) / "other.jsonl",
+                  _attempt(repo).parent / "attempt-2" / "proposals.jsonl"]:  # fmt: skip
+        assert always(write(native(other), line), env).deny, other
+        assert matching(in_repo(write(native(other), line), repo), env).deny, other
+
+
+def _every_edit_tool(path: str) -> list[dict]:
+    notebook = {"tool_name": "NotebookEdit",
+                "tool_input": {"notebook_path": path, "new_source": "x"}}  # fmt: skip
+    return [write(path), edit(path, "a", "b"), multi_edit(path, ("a", "b")), notebook]
+
+
+def _owner_only(repo: Path, rel: str) -> None:
+    """D-27 P3: every edit tool is denied the owner-only cflags file `rel` with no env at all,
+    naming D-12 and the owner's own verbs, in every path form."""
+    for form in _forms(repo, rel):
+        for payload in _every_edit_tool(form):
+            decision = always(payload)
+            assert decision.deny, (form, payload["tool_name"])
+            assert "D-12" in decision.reason, decision.reason
+            assert "reverseapoc flags" in decision.reason, decision.reason
+
+
+def test_always_layer_protects_cflags(repo):
+    _owner_only(repo, "config/cflags.txt")
+    reason = always(write(native(repo / "config" / "cflags.txt"))).reason
+    assert "flags approve" in reason and "flags default" in reason, reason
+
+
+def test_always_layer_protects_the_proposal_queue(repo):
+    _owner_only(repo, "config/cflags-proposals.toml")
+
+
+@pytest.mark.parametrize("exe", ["ufo2p", "tacp"])
+def test_view_mode_denies_symbols_csv_with_d19_reason(repo, exe):
+    _view_unit(repo)
+    symbols = repo / "config" / exe / "symbols.csv"
+    decision = matching(in_repo(write(native(symbols), "x\n"), repo), view_env(repo))
+    assert decision.deny
+    assert "D-19" in decision.reason and "proposals.jsonl" in decision.reason, decision.reason
+
+
+@pytest.mark.parametrize("name", ["fx.h", "common.h", "sub/x.h"])
+def test_view_mode_denies_headers_with_d19_reason(repo, name):
+    _view_unit(repo)
+    header = repo / "include" / name
+    decision = matching(in_repo(write(native(header), "int fx;\n"), repo), view_env(repo))
+    assert decision.deny
+    assert "D-19" in decision.reason, decision.reason
+    other = matching(in_repo(write(native(repo / "tools" / "x.py")), repo), view_env(repo))
+    assert other.deny and "D-24" in other.reason and "D-19" not in other.reason, other.reason
+
+
+def test_legacy_mode_unchanged(repo):
+    """Without REVERSEAPOC_UNIT_FILE the Phase 6 allowlist holds until 07-13 removes it."""
+    unit = _unit(repo)
+    notes = _attempt(repo) / "notes.md"
+    env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
+           "REVERSEAPOC_PROPOSALS": native(_attempt(repo) / "proposals.jsonl")}  # fmt: skip
+    assert not matching(in_repo(write(native(unit), SCAFFOLD), repo), env).deny
+    assert not matching(in_repo(write(native(repo / "include" / "fx.h"), "int fx;\n"), repo),
+                        env).deny  # fmt: skip
+    assert not matching(in_repo(write(native(notes), "# n\n"), repo), env).deny
+    symbols = matching(in_repo(write(native(repo / "config" / "ufo2p" / "symbols.csv")), repo), env)
+    assert symbols.deny and "(D-17)" in symbols.reason, symbols.reason
+    view = _view_unit(repo)
+    assert matching(in_repo(write(native(view), SCAFFOLD), repo), env).deny
+    claim = "ufo2p/u_000a34f0"
+    assert hooks.matching_write_allowed(UNIT, claim=claim, notes=None, tracked=lambda _: False)
+    assert not hooks.matching_write_allowed(
+        "build/driver/r/proposals.jsonl", claim=claim, notes=None, tracked=lambda _: False,
+        proposals="build/driver/r/proposals.jsonl",
+    )  # fmt: skip
+
+
+def test_session_env_names():
+    assert hooks.UNIT_FILE_ENV == "REVERSEAPOC_UNIT_FILE"
+    assert hooks.PROPOSALS_ENV == "REVERSEAPOC_PROPOSALS"
+    assert hooks.SESSION_KIND_ENV == "REVERSEAPOC_SESSION_KIND"
+    assert hooks.SESSION_KINDS == ("matching", "readability")
+
+
+def test_readability_kind_same_allowlist(repo):
+    """D-17/D-18: a readability session gets the view-mode allowlist unchanged, and only in view
+    mode (the legacy allowlist would let it write include/, which is naming state, D-19)."""
+    unit = _view_unit(repo)
+    env = view_env(repo, kind="readability")
+    allowed = [unit, _attempt(repo) / "notes.md", _attempt(repo) / "proposals.jsonl"]
+    for target in allowed:
+        assert not matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+    denied = [_unit(repo), repo / "include" / "fx.h", repo / "config" / "ufo2p" / "symbols.csv",
+              repo / "tools" / "x.py", _view_path(repo, "ufo2p/u_other")]  # fmt: skip
+    for target in denied:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+    legacy = {**CLAIM, "REVERSEAPOC_SESSION_KIND": "readability"}
+    for target in [_unit(repo), repo / "include" / "fx.h"]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), legacy)
+        assert decision.deny and "REVERSEAPOC_UNIT_FILE" in decision.reason, decision.reason
+
+
+@pytest.mark.parametrize("kind", ["other", "", "Matching", "readability "])
+def test_unknown_kind_denies_writes(repo, kind):
+    unit = _view_unit(repo)
+    notes = _attempt(repo) / "notes.md"
+    legacy = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
+              "REVERSEAPOC_SESSION_KIND": kind}  # fmt: skip
+    # each env's own allowlist, which an unknown kind closes
+    proposals = _attempt(repo) / "proposals.jsonl"
+    for env, targets in [(view_env(repo, kind=kind), [unit, notes, proposals]),
+                         (legacy, [notes, _unit(repo), repo / "include" / "fx.h"])]:  # fmt: skip
+        for target in targets:
+            decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+            assert decision.deny, (env, target)
+            assert "matching" in decision.reason and "readability" in decision.reason
+
+
+@pytest.mark.parametrize("claim", ["ufo2p/u_other", "tacp/u_000a34f0"])
+def test_unit_file_for_another_unit_is_not_exempt(repo, claim):
+    """T-07-12: a unit file env naming another unit than the claim stays under build/'s
+    protection, in both layers."""
+    other = _view_unit(repo, claim)
+    env = view_env(repo, unit_file=other)
+    decision = always(write(native(other), SCAFFOLD), env)
+    assert decision.deny and "build/" in decision.reason, decision.reason
+    assert matching(in_repo(write(native(other), SCAFFOLD), repo), env).deny
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [("build", "other", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "view", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "src", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "view", "ufo2p", "u_000a34f0.c"),
+     ("build", "driver", "r", "view", "src", "ufo2p", "u_000a34f0.h"),
+     ("view", "src", "ufo2p", "u_000a34f0.c")],
+)  # fmt: skip
+def test_unit_file_outside_build_driver_is_not_exempt(repo, parts):
+    path = repo.joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(SCAFFOLD.encode("utf-8"))
+    env = view_env(repo, unit_file=path)
+    assert matching(in_repo(write(native(path), SCAFFOLD), repo), env).deny
+    if parts[0] == "build":
+        assert always(write(native(path), SCAFFOLD), env).deny
+    proposals = repo / "build" / "other" / "proposals.jsonl"
+    env = {**view_env(repo), "REVERSEAPOC_PROPOSALS": native(proposals)}
+    assert always(write(native(proposals), "{}\n"), env).deny
+
+
+def test_session_paths_need_every_build_form_to_fit(repo):
+    """Only the exact shapes count: a unit file whose form against one checkout fits but whose
+    form against an enclosing checkout lies elsewhere under build/ is not a session path."""
+    env = view_env(repo)
+    found = hooks._session_paths(env, "")
+    assert native(_view_path(repo)).replace("\\", "/").casefold() in found
+    assert (_attempt(repo) / "proposals.jsonl").as_posix().casefold() in found
+    inner = repo / "build" / "inner"
+    (inner / ".git").mkdir(parents=True)
+    nested = inner.joinpath(*ATTEMPT, "view", "src", "ufo2p", "u_000a34f0.c")
+    assert hooks._session_paths({**env, "REVERSEAPOC_UNIT_FILE": native(nested),
+                                 "REVERSEAPOC_PROPOSALS": ""}, "") == frozenset()  # fmt: skip
+    assert hooks._session_paths({"REVERSEAPOC_PROPOSALS": native(nested)}, "") == frozenset()
+
+
+def _unusable_unit_file(repo: Path, form: str) -> str:
+    """A REVERSEAPOC_UNIT_FILE value the matching layer cannot place as one path in the
+    checkout, so `_session_relative` gives None."""
+    view = _view_unit(repo)
+    if form == "outside":
+        return native(repo.parent / "elsewhere" / view.relative_to(repo))
+    if form == "home":
+        return "~/" + view.relative_to(repo).as_posix()
+    if form == "nul":
+        return native(view) + "\0"
+    link = repo / "link.c"
+    target = view if form == "symlink-inside" else repo.parent / "elsewhere.c"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation needs privileges on this host")
+    return native(link)
+
+
+@pytest.mark.parametrize("form", ["outside", "home", "nul", "symlink-inside", "symlink-outside"])
+def test_unusable_unit_file_denies_every_write(repo, form):
+    """Fix round 1: a set but unusable REVERSEAPOC_UNIT_FILE denies every write; it never falls
+    back to the legacy allowlist (src/<exe>/<unit>.c, a new include/*.h, notes.md)."""
+    env = view_env(repo)
+    env["REVERSEAPOC_UNIT_FILE"] = _unusable_unit_file(repo, form)
+    for target in [_unit(repo), repo / "include" / "fx.h", _attempt(repo) / "notes.md"]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+        assert decision.deny, (form, target)
+        assert "REVERSEAPOC_UNIT_FILE" in decision.reason, decision.reason
+    for target in [_view_path(repo), _attempt(repo) / "proposals.jsonl"]:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, (form, target)
+
+
+def test_unit_file_with_two_forms_denies_every_write(repo, monkeypatch):
+    """The symlink case without symlink privileges: the host resolves the env path (an alias,
+    an 8.3 name) to another file in the checkout, so it has two forms and names no single path."""
+    view = _view_unit(repo)
+    alias = repo / "alias.c"
+    real = os.path.realpath
+
+    def aliased(path, **kwargs):
+        return str(view) if Path(path) == alias else real(path, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", aliased)
+    env = {**view_env(repo), "REVERSEAPOC_UNIT_FILE": native(alias)}
+    for target in [_unit(repo), repo / "include" / "fx.h", _attempt(repo) / "notes.md", view]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+        assert decision.deny, target
+    reason = matching(in_repo(write(native(_unit(repo)), SCAFFOLD), repo), env).reason
+    assert "REVERSEAPOC_UNIT_FILE" in reason, reason
+
+
+def test_wrong_shape_unit_file_keeps_the_view_allowlist(repo):
+    """A unit file under build/ at the wrong shape is placeable, so the session stays in view
+    mode: it never gains the legacy src/ and include/ allowlist, and the file is not writable."""
+    wrong = repo / "build" / "other" / "view" / "src" / "ufo2p" / "u_000a34f0.c"
+    env = view_env(repo, unit_file=wrong)
+    for target in [_unit(repo), repo / "include" / "fx.h", wrong, _view_path(repo)]:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+
+
+@pytest.mark.parametrize("name", sorted(PATH_INCLUDES))
+def test_view_unit_include_rule(repo, name):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    text = SCAFFOLD + PATH_INCLUDES[name]
+    for decision in [always(write(native(unit), text), env),
+                     matching(in_repo(write(native(unit), text), repo), env)]:  # fmt: skip
+        assert decision.deny, name
+        assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
+    bare = SCAFFOLD + BARE_INCLUDES["quoted"]
+    assert not matching(in_repo(write(native(unit), bare), repo), env).deny
