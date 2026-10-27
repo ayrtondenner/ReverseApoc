@@ -65,6 +65,8 @@ BAD_LINES = {
     "text-not-string": _line({**HEADER, "text": ["int x;"]}),
     "duplicate-key": _line(RENAME)[:-1] + ', "name": "Other"}',
     "nan": _line(RENAME)[:-1].replace('"SoundVolume"', "NaN") + "}",
+    "deep-nesting": "[" * 100_000,  # fix round 1 I1: json.loads raises RecursionError
+    "too-long": _line({**HEADER, "text": "x" * (3 * 64 * 1024)}),
 }  # fmt: skip
 
 
@@ -97,6 +99,26 @@ def test_empty_file(tmp_path, content):
 
 def test_missing_file(tmp_path):
     assert proposals.read_proposals(tmp_path / "proposals.jsonl") == []
+
+
+def test_size_caps():
+    """Fix round 1: a line holds at most one 64 KiB header after JSON escaping, a file at most
+    4 MiB."""
+    assert proposals.PROPOSAL_LINE_MAX == 3 * proposals.HEADER_TEXT_MAX
+    assert proposals.PROPOSALS_FILE_MAX == 4 * 1024 * 1024
+
+
+def test_largest_header_line_parses():
+    text = "\n" * proposals.HEADER_TEXT_MAX  # every character escaped to two
+    assert proposals.parse_line(_line({**HEADER, "text": text}), 1).text == text
+
+
+def test_file_over_the_cap_is_refused(tmp_path):
+    path = tmp_path / "proposals.jsonl"
+    line = _line(RENAME).encode() + b"\n"
+    path.write_bytes(line * (proposals.PROPOSALS_FILE_MAX // len(line) + 1))
+    with pytest.raises(ProposalError, match="more than 4 MiB"):
+        proposals.read_proposals(path)
 
 
 def test_crlf_lines_parse(tmp_path):
@@ -187,6 +209,24 @@ BAD_NAMES = {
     "func_000A3980": "placeholder",
     "D_0012EFAC": "placeholder",
     "N" * 64: "63",
+    # fix round 1 S2: identifiers the asm/pragma ban and the reserved headers rely on
+    "asm": "keyword",
+    "cdecl": "keyword",
+    "far": "keyword",
+    "near": "keyword",
+    "huge": "keyword",
+    "interrupt": "keyword",
+    "pascal": "keyword",
+    "fortran": "keyword",
+    "_asm": "keyword",
+    "_Pragma": "reserved",
+    "__pragma": "reserved",
+    "__emit": "reserved",
+    "INCLUDE_ASM": "reserved",
+    "COMMON_H": "reserved",
+    "WATCOM_COMPAT_H": "reserved",
+    "_Volume": "reserved",
+    "__volume": "reserved",
 }  # fmt: skip
 
 
@@ -262,9 +302,21 @@ def test_rename_target_kind(kind, address):
     assert problem is not None and f"0x{address:08X}" in problem
 
 
-def test_data_rename_without_data_ranges_checks_code_only():
-    assert _problem(_rename(kind="data", address=0x40000), data_ranges=()) is None
-    assert _problem(_rename(kind="data", address=FOO.start), data_ranges=()) is not None
+def test_data_ranges_are_required():
+    """Fix round 1 I2: no default that skips the data-object check (it would fail open)."""
+    with pytest.raises(TypeError):
+        proposals.rename_problem(_rename(), symbols=SYMBOLS, functions=FUNCTIONS,
+                                 runtime_names=RUNTIME_NAMES, src_names=SRC_NAMES)  # fmt: skip
+
+
+def test_data_rename_with_no_data_object_is_refused():
+    problem = _problem(_rename(kind="data", address=0x40000), data_ranges=())
+    assert problem is not None and "no data object" in problem
+
+
+def test_reserved_macros_are_read_from_the_reserved_headers():
+    names = proposals.reserved_macros()
+    assert {"INCLUDE_ASM", "COMMON_H", "WATCOM_COMPAT_H", "__far", "_cdecl"} <= names
 
 
 PLAIN = ('/* sound.h: voice table types */\n#include "common.h"\n\n'
@@ -287,7 +339,10 @@ def test_header_of_64_kib_passes():
 
 BAD_PATHS = ["include/common.h", "include/watcom_compat.h", "include/Common.h", "include/sub/x.h",
              "include/../x.h", "src/ufo2p/x.h", "include/x.c", "include\\x.h", "x.h",
-             "/include/x.h", "include/.h"]  # fmt: skip
+             "/include/x.h", "include/.h",
+             # fix round 1: DOS device names, which Windows opens as devices
+             "include/con.h", "include/nul.h", "include/aux.h", "include/prn.h",
+             "include/com1.h", "include/com9.h", "include/lpt1.h", "include/lpt9.h"]  # fmt: skip
 
 
 @pytest.mark.parametrize("path", BAD_PATHS)
@@ -304,6 +359,25 @@ BAD_TEXTS = {
     "include-path": ('#include "../x.h"\n', "include"),
     "non-ascii": ("/* café */\n", "ASCII"),
     "65-kib": ("/* " + "x" * (65 * 1024) + " */\n", "64 KiB"),
+    # fix round 1 S1: rebuilding a banned token or a reserved macro through the preprocessor
+    "paste": ("#define P(a, b) a##b\nP(__a, sm) int 3\n", "operator"),
+    "paste-spaced": ("#define P a ## b\n", "operator"),
+    "paste-digraph": ("#define P a %:%: b\n", "%:"),
+    "paste-trigraph": ("#define P a ??=??= b\n", "operator"),
+    "paste-across-lines": ("#define P a #\\\n# b\n", "operator"),
+    "stringize": ("#define S(x) #x\n", "operator"),
+    "digraph-directive": ("%:define VOICES 8\n", "%:"),
+    "function-like": ("#define MAX(a, b) ((a) > (b) ? (a) : (b))\n", "function-like"),
+    "define-include-asm": ("#define INCLUDE_ASM 1\n", "reserved"),
+    "undef-include-asm": ("#undef INCLUDE_ASM\n", "reserved"),
+    "define-keyword-macro": ("#define __far __huge\n", "reserved"),
+    "undef-keyword-macro": ("#  undef _cdecl\n", "reserved"),
+    "define-common-guard": ("#define COMMON_H\n", "reserved"),
+    "brace-body": ("#define BEGIN {\n", "constant"),
+    "statement-body": ("#define STOP return;\n", "constant"),
+    "nul": ("int x;\x00\n", "control"),
+    "vertical-tab": ("int x;\x0b\n", "control"),
+    "delete": ("int x;\x7f\n", "control"),
 }  # fmt: skip
 
 
