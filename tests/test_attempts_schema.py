@@ -149,3 +149,91 @@ def test_schema_accepts_an_ended_record_with_failed_checks():
     record = _run("ENDED", "queue exhausted")
     record["checks_failed"] = ["ninja verify exit 1", "gate --all exit 1"]
     assert _problem(record) is None
+
+
+# ---- schema 2 (Phase 7, DEC-06/DEC-07): v1 lines stay valid, v2 lines carry "schema": 2 ----
+
+
+def _attempt_v2() -> dict:
+    record = _attempt()
+    record.update({
+        "schema": 2, "session": "matching", "pass": 3, "model_requested": "claude-fable-5-1",
+        "budget_usd": 12.5, "worker": 2, "hook_blocks": 1,
+        "gate": {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []},
+        "sweep_source": "checks/0007.c", "sweep_cells_100": ["wcc386@10.6 -4r -oneatx -s -fpi"],
+    })  # fmt: skip
+    return record
+
+
+def test_v2_attempt_accepted():
+    assert _problem(_attempt_v2()) is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(gate=None, sweep_source=None, sweep_cells_100=[]),
+    lambda r: r["gate"].update(exit=None, claimed_ok=False, regressions=2, problems=["splice"]),
+])  # fmt: skip
+def test_v2_attempt_optional_parts(change):
+    assert _problem(_mutated(_attempt_v2, change)) is None
+
+
+@pytest.mark.parametrize(("session", "outcome", "ok"), [
+    ("readability", "LANDED", True), ("readability", "REFUSED", True),
+    ("readability", "PARTIAL", True), ("readability", "GAVE_UP", True),
+    ("readability", "MATCHED", False), ("matching", "LANDED", False),
+    ("matching", "REFUSED", False), ("matching", "MATCHED", True),
+])  # fmt: skip
+def test_v2_readability_outcomes(session, outcome, ok):
+    record = _mutated(_attempt_v2, lambda r: r.update(session=session, outcome=outcome))
+    assert (_problem(record) is None) is ok
+
+
+@pytest.mark.parametrize("schema", [1, 3, 2.0, "2", True, None])
+def test_v1_record_with_schema_key_refused(schema):
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt, lambda r: r.update(schema=schema)))
+
+
+def test_v2_record_with_another_schema_refused():
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt_v2, lambda r: r.update(schema=3)))
+
+
+def test_mixed_log_validates(tmp_path):
+    log = tmp_path / "attempts.jsonl"
+    for record in (_run("STARTED", "start"), _attempt(), _attempt_v2(), _attempt()):
+        append_record(log, record)
+    lines = log.read_text(encoding="ascii").splitlines()
+    assert len(lines) == 4
+    for line in lines:
+        validate_record(json.loads(line))
+    assert ["schema" in json.loads(line) for line in lines] == [False, False, True, False]
+
+
+def test_v2_function_accepts_a_renamed_name():
+    assert _problem(_mutated(_attempt_v2, lambda r: r.update(function="GetSoundVolume"))) is None
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt, lambda r: r.update(function="GetSoundVolume")))
+
+
+BAD_V2 = {
+    "v1 record lacks v2 keys": _mutated(_attempt, lambda r: r.update(schema=2)),
+    "unknown session": _mutated(_attempt_v2, lambda r: r.update(session="naming")),
+    "pass 0": _mutated(_attempt_v2, lambda r: r.update(**{"pass": 0})),
+    "budget 0": _mutated(_attempt_v2, lambda r: r.update(budget_usd=0)),
+    "negative worker": _mutated(_attempt_v2, lambda r: r.update(worker=-1)),
+    "hook_blocks text": _mutated(_attempt_v2, lambda r: r.update(hook_blocks="1")),
+    "model_requested null": _mutated(_attempt_v2, lambda r: r.update(model_requested=None)),
+    "gate missing key": _mutated(_attempt_v2, lambda r: r["gate"].pop("problems")),
+    "gate claimed_ok int": _mutated(_attempt_v2, lambda r: r["gate"].update(claimed_ok=1)),
+    "sweep_source path": _mutated(_attempt_v2, lambda r: r.update(sweep_source="src/x.c")),
+    "sweep_cells_100 text": _mutated(_attempt_v2, lambda r: r.update(sweep_cells_100="-4r")),
+    "function not a C name": _mutated(_attempt_v2, lambda r: r.update(function="1st")),
+    "start not the key": _mutated(_attempt_v2, lambda r: r.update(start="GetSoundVolume")),
+}
+
+
+@pytest.mark.parametrize("name", sorted(BAD_V2))
+def test_schema_refuses_bad_v2_records(name):
+    with pytest.raises(RecordError):
+        validate_record(BAD_V2[name])
