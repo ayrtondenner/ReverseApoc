@@ -78,6 +78,13 @@ def figures(progress, totals) -> str:
             f"{totals.partial_functions:,} partial")  # fmt: skip
 
 
+def bar_html(width: str, *, nonzero: bool = False) -> str:
+    """One EXE's percent bar; a non-zero share's segment carries the `nz` class (fix #3)."""
+    segment = f'<span class="nz" style="width:{width}">' if nonzero else (
+        f'<span style="width:{width}">')
+    return f'<div class="bar" aria-hidden="true">{segment}</span></div>'
+
+
 def commit_line(sha: str) -> str:
     return (f'<p class="meta">Updated from commit <a href="{COMMIT_URL}{sha}">{sha[:7]}</a>'
             f"</p>")  # fmt: skip
@@ -101,8 +108,7 @@ def test_page_shape(tmp_path):
     assert first == "6.5574% of code bytes, 1 of 4 functions matched, 1 partial"
     assert second == "0% of code bytes, 0 of 1 functions matched, 0 partial"
     assert page.index(first) < page.index(second)
-    bar = '<div class="bar" aria-hidden="true"><span style="width:{}"></span></div>'
-    assert page.index(bar.format("6.5574%")) < page.index(bar.format("0%"))
+    assert page.index(bar_html("6.5574%", nonzero=True)) < page.index(bar_html("0%"))
     assert page.endswith("</main>\n</body>\n</html>\n")
 
 
@@ -477,6 +483,103 @@ def test_html_legend_above_the_mosaic(tmp_path):
         assert progress._xml(progress.LEGEND_LABELS[status]) in svg, status
     rules = style_of(page).splitlines()
     assert any(rule.startswith(".legend{display:flex;flex-wrap:wrap;") for rule in rules)
+
+
+_DETAILS = re.compile(r'<details><summary>Matched and partial functions \((\d+)\)</summary><ul>\n'
+                      r"(.*?)\n</ul></details>", re.S)  # fmt: skip
+_ITEM = re.compile(r"<li>([^<]*)</li>")
+
+
+def exe_section(page: str, stem: str) -> str:
+    return page.split(f'aria-labelledby="exe-{stem}">', 1)[1].split("</section>", 1)[0]
+
+
+def listed(section: str) -> tuple[int, list[str]] | None:
+    """The section's tooltip list: its summary count and its items (raw, still escaped)."""
+    found = _DETAILS.findall(section)
+    assert len(found) <= 1, found
+    if not found:
+        return None
+    count, body = found[0]
+    items = body.split("\n")
+    assert [_ITEM.fullmatch(item) is not None for item in items] == [True] * len(items), items
+    return int(count), [_ITEM.fullmatch(item)[1] for item in items]
+
+
+def expected_items(progress, exe) -> list[str]:
+    ordered = sorted(exe.functions, key=lambda f: f.start)
+    return [progress._xml(progress._function_title(f)) for f in ordered
+            if f.status in (progress.MATCHED, progress.PARTIAL)]  # fmt: skip
+
+
+def test_details_lists_matched_and_partial(tmp_path):
+    """Fix #1: per EXE, after its strip, a <details> lists every matched and partial function in
+    address order with its tooltip text, so keyboard and touch users reach every tooltip."""
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    section = exe_section(page, "ufo2p")
+    assert listed(section) == (2, ["func_00010000: 16 bytes, matched",
+                                   "func_00010010: 32 bytes, partial, best 50.00%"])  # fmt: skip
+    assert section.index('<div class="strip" role="img"') < section.index("<details>")
+    assert 'title="func_00010000: 16 bytes, matched"' in section  # the tick tooltips stay
+
+
+def test_details_on_committed_csvs():
+    progress = page_module()
+    derived = progress.derive(CONFIG)
+    page = progress.render_html(derived, SHA)
+    for exe in derived.exes:
+        items = expected_items(progress, exe)
+        want = (len(items), items) if items else None
+        assert listed(exe_section(page, exe.stem)) == want, exe.label
+        t = exe.totals
+        assert len(items) == t.matched_functions + t.partial_functions, exe.label
+
+
+def test_details_absent_when_none(tmp_path):
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert "<details" not in exe_section(page, "tacp")
+    assert page.count("<details>") == 1
+
+
+def test_details_escapes_names(tmp_path):
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    odd = 'func_"><script>x</script>&'
+    functions = (exe.functions[0], dataclasses.replace(exe.functions[1], name=odd),
+                 *exe.functions[2:])  # fmt: skip
+    patched = dataclasses.replace(exe, functions=functions)
+    page = progress.render_html(dataclasses.replace(derived, exes=(patched, derived.exes[1])), SHA)
+    assert "script" not in [tag for tag, _attrs in tags_of(page)]
+    found = listed(exe_section(page, "ufo2p"))
+    assert found is not None, "no matched and partial list"
+    items = found[1]
+    assert items[1] == progress._xml(f"{odd}: 32 bytes, partial, best 50.00%")
+    assert "&lt;script&gt;" in items[1] and "&amp;" in items[1]
+
+
+def test_nonzero_bar_has_min_width(tmp_path):
+    """Fix #3: a non-zero share draws a segment at least 2 px wide, so a tiny matched share is
+    visible; a zero share draws no `nz` segment. The figures text is unchanged."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    ufo2p = derived.exes[0]
+    # 16 matched bytes of 4,000: pad the first unit's uncovered bytes up to that denominator.
+    extra = 4000 - ufo2p.totals.denominator_bytes
+    tiny = dataclasses.replace(ufo2p, uncovered=(ufo2p.uncovered[0] + extra,
+                                                 *ufo2p.uncovered[1:]))  # fmt: skip
+    assert progress.shield_message(tiny.totals.percent) == "0.4%"
+    page = progress.render_html(dataclasses.replace(derived, exes=(tiny, derived.exes[1])), SHA)
+    assert bar_html("0.4%", nonzero=True) in exe_section(page, "ufo2p")
+    tacp = exe_section(page, "tacp")
+    assert bar_html("0%") in tacp and 'class="nz"' not in tacp
+    assert figures(progress, tiny.totals) in page
+    rules = style_of(page).splitlines()
+    assert ".bar .nz{min-width:2px}" in rules
+    assert rules.index(".bar .nz{min-width:2px}") > rules.index(
+        f".bar span{{display:block;height:100%;background:{progress.TREEMAP_COLORS['matched']}}}")
 
 
 # ---- publication ----
