@@ -80,7 +80,7 @@ def defined_starts(config_root: Path, src_root: Path, exe: str) -> dict[int, str
     starts: set[int] = set()
     for path in sorted((Path(src_root) / exe).glob(f"*{UNIT_SUFFIX}")):
         unit_rows = [row for row in rows if row.unit == path.stem]
-        starts |= source_marks(_read(path), unit_rows, names=names).defined_starts
+        starts |= source_marks(_read(path), unit_rows, all_names=names).defined_starts
     return {start: by_start[start] for start in starts}
 
 

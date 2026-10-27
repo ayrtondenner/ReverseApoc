@@ -457,9 +457,10 @@ def check_unit_source(
     every game or thunk row of the unit is defined in C under its current C name or marked
     INCLUDE_ASM (under its C name or its old placeholder), exactly once and not both, and no
     marker or definition names a function outside the unit; a definition under the old
-    placeholder of a renamed row is refused. Problems name each row by its C name. `names` maps
-    C names to starts (unitdefs.c_names of the EXE's functions.csv and symbols.csv; default: the
-    rows' placeholders); `all_names` as for unitdefs.find. The order of the file does not
+    placeholder of a renamed row is refused. Problems name each row by its C name. `names` and
+    `all_names` map C names to starts as for unitdefs.find (the unit loop passes the EXE's
+    unitdefs.c_names as `all_names`; with neither, the rows' placeholders). The order of the file
+    does not
     matter. Comments and dead #if 0 branches do not count; any other preprocessor conditional is
     itself a problem (the check fails closed rather than guess). A K&R-style definition is not
     recognised, so it is reported as neither defined nor marked (a false refusal, never a false
@@ -468,9 +469,8 @@ def check_unit_source(
         includes = include_problems(text)
     except _ConditionalError as exc:
         return [str(exc)]
-    holders = unitdefs.placeholders(unit_functions)
-    found = unitdefs.find(text, unit_functions, names=holders if names is None else names,
-                          placeholders=holders, all_names=all_names)  # fmt: skip
+    found = unitdefs.find(text, unit_functions, placeholders=unitdefs.placeholders(unit_functions),
+                          names=names, all_names=all_names)  # fmt: skip
     return [*includes, *found.problems]
 
 
@@ -788,7 +788,7 @@ def _check_source(
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigureError(f"{path}: not UTF-8 ({exc})") from None
-    problems = check_unit_source(text, unit_functions, names=names)
+    problems = check_unit_source(text, unit_functions, all_names=names)
     if problems:
         raise ConfigureError(f"{path}: {'; '.join(problems)}")
 

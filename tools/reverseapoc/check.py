@@ -550,9 +550,10 @@ def source_marks(
 ) -> SourceMarks:
     """The unit file read by the shared finder (unitdefs.find, through configure.py's
     translation phases), so configure and check agree on what is marked and defined (D-29).
-    `names` maps C names to starts (default: the rows' placeholders, the pre-rename reading);
-    `all_names` as for unitdefs.find. Its problems are configure's include problems (an
-    #include of anything but a bare header name, 06-REVIEW CR-02) and the finder's source
+    `names` and `all_names` map C names to starts as for unitdefs.find (account_unit passes the
+    EXE's C names as `all_names`; with neither, the rows' placeholders, the pre-rename reading).
+    Its problems are configure's include problems (an #include of anything but a bare header
+    name, 06-REVIEW CR-02) and the finder's source
     problems: a conditional the parser refuses, a stale placeholder definition of a renamed row,
     or a marker or definition naming something outside the unit."""
     cfg = _configure()
@@ -560,9 +561,8 @@ def source_marks(
         includes = tuple(cfg.include_problems(text))
     except cfg._ConditionalError as exc:
         return SourceMarks(frozenset(), frozenset(), (str(exc),))
-    holders = unitdefs.placeholders(rows)
-    defs = unitdefs.find(text, rows, names=holders if names is None else names,
-                         placeholders=holders, all_names=all_names)  # fmt: skip
+    defs = unitdefs.find(text, rows, placeholders=unitdefs.placeholders(rows), names=names,
+                         all_names=all_names)  # fmt: skip
     return SourceMarks(frozenset(defs.marked.values()), frozenset(defs.defined.values()),
                        includes + defs.source_problems, frozenset(defs.marked),
                        frozenset(defs.defined))  # fmt: skip
@@ -681,7 +681,7 @@ def account_unit(
     code = {seg.index for seg in module.segments if seg.is_code}
     required = [row for row in rows if row.kind in _REQUIRED_KINDS]
     checked = unit_file or required
-    marks = (source_marks(text, rows, names=exe_c_names(symbols)) if checked
+    marks = (source_marks(text, rows, all_names=exe_c_names(symbols)) if checked
              else SourceMarks(frozenset(), frozenset(), ()))  # fmt: skip
     stubs, problems, failed = [], [], set()
     for row in required:
