@@ -341,7 +341,8 @@ BAD_V2.update({
     "totals by_model share shape": _mutated(
         _run_v2, lambda r: r["totals"]["by_model"]["claude-opus-5-5"].pop("matched")),
     "totals by_session unknown kind": _mutated(
-        _run_v2, lambda r: r["totals"].update(by_session={"naming": r["totals"]["sessions"]})),
+        _run_v2, lambda r: r["totals"]["by_session"].update(naming=_totals()["by_model"][
+            "claude-opus-5-5"])),
     "limit streak 0": _mutated(_limit, lambda r: r.update(streak=0)),
     "limit negative seconds": _mutated(_limit, lambda r: r.update(seconds=-1)),
     "limit extra key": _mutated(_limit, lambda r: r.update(session="matching")),

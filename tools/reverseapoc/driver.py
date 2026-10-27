@@ -413,7 +413,86 @@ _V2_SESSION_FIELDS = {
     "pass": lambda value: _is_int(value) and value >= 1,
     "worker": _is_int,
 }
+KIND_LIMIT = "limit"  # a usage-limit wait (D-07: it pauses every worker)
+KIND_RENAME = "rename"  # one applied, deferred or refused naming proposal (D-19)
+APPLIED, DEFERRED = "APPLIED", "DEFERRED"
+RENAME_OUTCOMES = (APPLIED, DEFERRED, REFUSED)
+OP_RENAME, OP_HEADER = "rename", "header"  # research section 6: the proposal ops
+# Orchestrator ruling F12: the keys each op fills; every other one of them is null. A line
+# the driver could not parse has op null and is always REFUSED.
+_RENAME_NAMED = ("exe", "address", "old", "new")
+_RENAME_OP_KEYS = {OP_RENAME: frozenset(_RENAME_NAMED), OP_HEADER: frozenset({"path"}),
+                   None: frozenset()}  # fmt: skip
+
+
+def _mapping_of(
+    key_ok: Callable[[object], bool], value_ok: Callable[[object], bool]
+) -> Callable[[object], bool]:
+    return lambda value: isinstance(value, dict) and all(
+        key_ok(key) and value_ok(item) for key, item in value.items())  # fmt: skip
+
+
+def _list_of(item_ok: Callable[[object], bool]) -> Callable[[object], bool]:
+    return lambda value: isinstance(value, list) and all(map(item_ok, value))
+
+
+def _at_least_one(value: object) -> bool:
+    return _is_int(value) and value >= 1
+
+
+_SHARE = _shaped({"sessions": _is_int, "matched": _is_int, "cost_usd": _is_number})
+_TOTALS = _shaped({
+    "sessions": _shaped(dict.fromkeys(_V2_OUTCOMES, _is_int)),  # counted sessions by outcome
+    "turns": _is_int,
+    "tokens": _shaped(dict.fromkeys(_COUNT_KEYS, _is_int)),
+    "cost_usd": _is_number,
+    "session_seconds": _is_number,  # the sum over sessions
+    "wall_seconds": _is_number,  # the night's wall clock
+    "hook_blocks": _is_int,
+    "regressions_stopped": _is_int,
+    "limit_waits": _shaped({"count": _is_int, "seconds": _is_number}),
+    "aborts": _is_int,
+    "by_model": _mapping_of(_is_text, _SHARE),
+    "by_session": _mapping_of(_one_of(*SESSIONS), _SHARE),
+})  # fmt: skip
+_RECOVERED = _shaped({key: _CLAIM_FIELDS[key] for key in ("exe", "unit", "run")})
 RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
+    KIND_ABORT: {
+        **RECORD_FIELDS[KIND_ABORT],
+        **_V2_SESSION_FIELDS,
+        "function": _matches(_C_NAME),  # F12: the same C-name rule as a v2 attempt
+    },
+    KIND_RUN: {
+        **RECORD_FIELDS[KIND_RUN],
+        **_SCHEMA_V2_FIELD,
+        "workers": _at_least_one,
+        "recovered": _list_of(_RECOVERED),  # stale claims recovered at STARTED
+        "totals": _optional(_TOTALS),  # null on STARTED only (_run_problem)
+    },
+    KIND_LIMIT: {
+        "kind": _one_of(KIND_LIMIT),
+        **_SCHEMA_V2_FIELD,
+        "run": _CLAIM_FIELDS["run"],
+        "worker": _is_int,
+        "seconds": _is_number,
+        "streak": _at_least_one,
+        "date": _CLAIM_FIELDS["date"],
+    },
+    KIND_RENAME: {
+        "kind": _one_of(KIND_RENAME),
+        **_SCHEMA_V2_FIELD,
+        "run": _CLAIM_FIELDS["run"],
+        "exe": _optional(_CLAIM_FIELDS["exe"]),
+        "address": _optional(_CLAIM_FIELDS["start"]),
+        "old": _optional(_matches(_C_NAME)),
+        "new": _optional(_matches(_C_NAME)),
+        "op": _one_of(None, *_RENAME_OP_KEYS),
+        "path": _optional(_matches(_HEADER)),
+        "outcome": _one_of(*RENAME_OUTCOMES),
+        "reason": _optional(_is_text),
+        "commit": _optional(_matches(_SHA1)),  # the APPLIED commit only
+        "date": _CLAIM_FIELDS["date"],
+    },
     KIND_ATTEMPT: {
         **RECORD_FIELDS[KIND_ATTEMPT],
         **_V2_SESSION_FIELDS,
@@ -458,10 +537,41 @@ def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
     return fields
 
 
+def _run_problem(obj: dict) -> str | None:
+    """A reason of the record's event (F30); a v2 record's totals null exactly on STARTED."""
+    if obj["reason"] not in RUN_REASONS[obj["event"]]:
+        return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
+    if "schema" not in obj or (obj["totals"] is None) == (obj["event"] == STARTED):
+        return None
+    if obj["event"] == STARTED:
+        return "run record: a STARTED record takes no totals"
+    return f"run record: a {obj['event']} record needs its totals"
+
+
+def _rename_problem(obj: dict) -> str | None:
+    """F12's per-op shapes: the op's keys filled and the others null, an unparseable line
+    (op null) only REFUSED, a commit exactly when APPLIED, a reason when not APPLIED."""
+    filled = {key for key in (*_RENAME_NAMED, "path") if obj[key] is not None}
+    wanted = _RENAME_OP_KEYS[obj["op"]]
+    if filled != wanted:
+        return f"rename record: op {obj['op']!r} fills {sorted(wanted)}, not {sorted(filled)}"
+    if obj["op"] is None and obj["outcome"] != REFUSED:
+        return "rename record: a line the driver could not parse is REFUSED"
+    if obj["outcome"] == APPLIED and obj["commit"] is None:
+        return "rename record: an APPLIED rename names its commit"
+    if obj["outcome"] != APPLIED and obj["commit"] is not None:
+        return f"rename record: a {obj['outcome']} rename has no commit"
+    if obj["outcome"] != APPLIED and obj["reason"] is None:
+        return f"rename record: {obj['outcome']} names its reason"
+    return None
+
+
 def _kind_problem(obj: dict) -> str | None:
     """The rule a record's key set and value types cannot state, or None."""
-    if obj["kind"] == KIND_RUN and obj["reason"] not in RUN_REASONS[obj["event"]]:
-        return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
+    if obj["kind"] == KIND_RUN:
+        return _run_problem(obj)
+    if obj["kind"] == KIND_RENAME:
+        return _rename_problem(obj)
     if "outcome" in obj and "session" in obj and obj["outcome"] not in SESSION_OUTCOMES[
             obj["session"]]:  # fmt: skip
         return f"{obj['kind']} record: {obj['outcome']!r} is no {obj['session']} outcome"
