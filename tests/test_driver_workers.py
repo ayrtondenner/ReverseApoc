@@ -9,6 +9,7 @@ test_driver.py (WNight for worker threads); every name and address is made up.
 
 from __future__ import annotations
 
+import _thread
 import json
 import re
 import subprocess
@@ -24,7 +25,7 @@ import pytest
 from reverseapoc import attempt, driver
 from reverseapoc.locks import ProcessLock
 from reverseapoc.picker import Pick
-from reverseapoc.session import run_session
+from reverseapoc.session import kill_tree, run_session
 from test_drive import RUN as DRIVE_RUN
 from test_drive import Rig, _canary_rig
 from test_driver import (
@@ -653,6 +654,10 @@ class WNight(Night):
         self.overlaps: list[str] = []  # a unit seen in two sessions at once
         self.threads: list[threading.Thread] = []
         self.pids: list[tuple[str, int]] = []  # (unit, pid) as each session reported its pid
+        self.on_pid = None  # called with (unit, pid) once the driver has the pid
+        self.slow: dict[str, float] = {}  # unit -> fakeclaude --sleep: runs until killed
+        self.events: list[tuple[str, int]] = []  # ("start" | "end", launch index), in order
+        self.at: list[float] = []  # the fake clock at each launch
 
     def _argv(self, prompt: str) -> list[str]:
         unit = re.search(r"\(claim [a-z0-9]+/([a-z0-9_]+)\)", prompt)[1]
@@ -664,7 +669,8 @@ class WNight(Night):
         argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths",
                 "--any-unit"]  # fmt: skip
         text = spec.unit_text or (SESSION_TEXT if spec.write == VIEW else None)
-        return argv + (["--write-env-unit", text] if text else [])
+        argv += ["--write-env-unit", text] if text else []
+        return argv + (["--sleep", str(self.slow[unit])] if unit in self.slow else [])
 
     def _session(self, argv, *, cwd, env, transcript, timeout_s, **hooks):
         spec = self.local.current
@@ -677,12 +683,16 @@ class WNight(Night):
                 self.overlaps.append(unit)
             self.active[unit] = self.active.get(unit, 0) + 1
             self.peak = max(self.peak, sum(self.active.values()))
+            self.events.append(("start", index))
+            self.at.append(self.now)
             self.now += 45.0
         try:
             if self.before is not None:
                 self.before(unit, index)
             result = run_session(argv, cwd=cwd, env=env, transcript=transcript,
                                  timeout_s=timeout_s, **self._hooks(unit, hooks))  # fmt: skip
+            for rel, text in spec.files:  # what the "agent" left (a stray), after the stream
+                _write(Path(cwd) / rel, text)
             attempt_dir = Path(env[attempt.DIR_ENV])
             for line in spec.checks:
                 _write(attempt_dir / line["source"], f"/* made-up C of check {line['n']} */\n")
@@ -694,17 +704,21 @@ class WNight(Night):
         finally:
             with self.lock:
                 self.active[unit] -= 1
+                self.events.append(("end", index))
 
     def _hooks(self, unit: str, hooks: dict) -> dict:
-        """The driver's on_start/on_end (07-21 Task 2), with each reported pid noted."""
+        """The driver's on_start/on_end (07-21 Task 2), with each reported pid noted once the
+        driver has it, then `on_pid(unit, pid)`."""
         on_start = hooks.get("on_start")
         if on_start is None:
             return hooks
 
         def started(pid: int) -> None:
+            on_start(pid)
             with self.lock:
                 self.pids.append((unit, pid))
-            on_start(pid)
+            if self.on_pid is not None:
+                self.on_pid(unit, pid)
 
         return {**hooks, "on_start": started}
 
@@ -832,3 +846,161 @@ def test_workers_one_is_serial(tmp_path):
     assert all(t is threading.main_thread() for t in night.threads)
     kinds = [(r["kind"], r.get("function") or r["event"]) for r in night.records()]
     assert kinds == [("run", "STARTED"), *(("attempt", p.name) for p in picks), ("run", "ENDED")]
+
+
+# ---- 07-21 Task 2: the shared usage-limit pause, stop-all, KeyboardInterrupt (D-07) ----
+
+
+def _held(night: driver._Night, n: int) -> bool:
+    """True once `n` workers wait at the shared pause (each wait is announced on the pause's
+    condition, so no polling sleep is needed)."""
+    pause = night.pause
+    with pause.cond:
+        return pause.cond.wait_for(lambda: pause.waiting >= n, timeout=WAIT_S)
+
+
+def _limit_night(tmp_path, monkeypatch, *, later: tuple[Sess, ...] = ()):
+    """Three workers start together; A's session ends LIMIT while B's and C's still run (they
+    end only once the pause has begun, i.e. once A's backoff sleep is called). `later` are the
+    scripts of the launches after those three."""
+    nights = _capture_nights(monkeypatch)
+    by_unit = {_unit(0): [Sess("rate_limit", write=None)], _unit(1): [Sess(write=None)],
+               _unit(2): [Sess(write=None)]}  # fmt: skip
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)), by_unit=by_unit,
+                   sessions=list(later))  # fmt: skip
+    start = threading.Barrier(3, timeout=WAIT_S)
+    paused = threading.Event()
+
+    def before(unit, index):
+        if index < 3:
+            start.wait()
+
+    def after(unit, index):
+        if index < 3 and unit != _unit(0):
+            assert paused.wait(WAIT_S), "the pause never began"
+
+    night.before, night.after = before, after
+    return night, nights, paused
+
+
+def test_limit_pauses_all(tmp_path, monkeypatch):
+    """D-07: A's LIMIT pauses every worker. B's and C's running sessions finish and are judged;
+    no worker launches until the 60 s backoff has passed on the fake clock."""
+    night, nights, paused = _limit_night(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def sleep(seconds):
+        paused.set()
+        seen["held"] = _held(nights[-1], 2)
+        seen["launched"] = len(night.launched)
+        seen["judged"] = sorted(r["unit"] for r in night.kinds("attempt"))
+        seen["now"] = night.now
+        night._sleep(seconds)
+
+    report = night.run(config=_workers(3, attempts_per_function=2), sleep=sleep)
+    assert report.event == "ENDED", report.detail
+    assert night.sleeps == [60]
+    assert seen["held"], "B and C never waited at the pause"
+    assert seen["launched"] == 3, "a worker launched during the pause"
+    assert seen["judged"] == [_unit(1), _unit(2)]
+    later = night.at[3:]
+    assert later and all(t >= seen["now"] + 60 for t in later), (seen["now"], later)
+
+
+def _alone(events: list[tuple[str, int]], index: int) -> bool:
+    """No other session started while launch `index` ran."""
+    begin, end = events.index(("start", index)), events.index(("end", index))
+    return all(kind != "start" for kind, _ in events[begin + 1 : end])
+
+
+def test_one_probe_after_backoff(tmp_path, monkeypatch):
+    """After each backoff exactly one worker launches (the probe). A second LIMIT advances the
+    shared streak (120 s); the probe that succeeds clears the pause and the others resume."""
+    night, nights, paused = _limit_night(tmp_path, monkeypatch,
+                                         later=(Sess("rate_limit", write=None),))  # fmt: skip
+    at_sleep: list[tuple[int, bool, int]] = []
+
+    def sleep(seconds):
+        paused.set()
+        at_sleep.append((seconds, _held(nights[-1], 2), len(night.launched)))
+        night._sleep(seconds)
+
+    report = night.run(config=_workers(3, attempts_per_function=2), sleep=sleep)
+    assert report.event == "ENDED", report.detail
+    assert at_sleep == [(60, True, 3), (120, True, 4)]
+    assert _alone(night.events, 3) and _alone(night.events, 4)
+    assert night.events.index(("start", 4)) > night.events.index(("end", 3))
+    assert len(night.launched) >= 6, "the other workers never resumed"
+
+
+def _recording_kill(kills: list[int]):
+    def kill(pid: int) -> None:
+        kills.append(pid)
+        kill_tree(pid)
+
+    return kill
+
+
+def _claims_left(night: Night) -> list[Path]:
+    return sorted((night.repo / "build" / "driver" / "claims").glob("*.json"))
+
+
+def test_stop_kills_all_live_sessions(tmp_path):
+    """A STOP signal from worker A kills B's and C's live session trees through the pid
+    registry; each of their attempts is contained (C's stray quarantined) and reset, nothing
+    of theirs is counted, and the night writes one STOPPED record."""
+    unit_a, unit_b, unit_c = (_unit(i) for i in range(3))
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
+                   by_unit={unit_a: [Sess("auth", write=None)],
+                            unit_c: [Sess(files=(("tools/x.py", "# made-up stray\n"),))]})
+    night.slow = {unit_b: 60.0, unit_c: 60.0}  # they run until killed
+    both_live = threading.Event()
+
+    def on_pid(unit, pid):
+        if {u for u, _ in night.pids} >= {unit_b, unit_c}:
+            both_live.set()
+
+    def before(unit, index):
+        if unit == unit_a:
+            assert both_live.wait(WAIT_S), "B's and C's sessions never reported their pids"
+
+    night.on_pid, night.before = on_pid, before
+    kills: list[int] = []
+    report = night.run(config=_workers(3, attempts_per_function=1), kill=_recording_kill(kills))
+    assert (report.event, report.reason) == ("STOPPED", "stop signal"), report.detail
+    live = {pid for unit, pid in night.pids if unit in (unit_b, unit_c)}
+    assert len(live) == 2 and live <= set(kills)
+    assert [r["event"] for r in night.kinds("run")] == ["STARTED", "STOPPED"]
+    assert night.kinds("attempt") == [] and report.sessions == 0
+    assert _src_changes(night) == []
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    assert "tools/x.py" in report.detail
+    assert _claims_left(night) == []
+
+
+def test_keyboard_interrupt_stops_workers(tmp_path):
+    """KeyboardInterrupt reaches only the main thread: it stops every worker, kills each
+    registered session pid, and the night records STOPPED `interrupted` before re-raising."""
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+    night.slow = {_unit(0): 60.0, _unit(1): 60.0}
+    fired: list[bool] = []
+
+    def on_pid(unit, pid):
+        with night.lock:
+            if len(night.pids) < 2 or fired:
+                return
+            fired.append(True)
+        _thread.interrupt_main()  # what Ctrl+C does: KeyboardInterrupt on the main thread
+
+    night.on_pid = on_pid
+    kills: list[int] = []
+    with pytest.raises(KeyboardInterrupt):
+        night.run(config=_workers(2, attempts_per_function=1), kill=_recording_kill(kills))
+    pids = {pid for _, pid in night.pids}
+    assert len(pids) == 2 and pids <= set(kills)
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    assert stopped["reason"] == "interrupted"
+    assert night.kinds("attempt") == []
+    assert _src_changes(night) == []
+    assert _claims_left(night) == []
