@@ -1165,8 +1165,15 @@ def _git_ok(git: Git, args: Sequence[str]) -> str:
     return (done.stdout or b"").decode("utf-8", "replace")
 
 
+def _status_paths() -> tuple[str, ...]:
+    """config/<exe>/status.csv of both EXEs: what the gates, the D-33 bar and the pins read."""
+    return tuple(status_path(Path("config"), exe).as_posix() for exe in EXES)
+
+
 def _refuse_dirty(git: Git, paths: Sequence[str]) -> None:
-    """A landing commits these paths whole, so none may hold someone else's change."""
+    """The owner verbs commit or read these paths as committed truth (fix round 1: both
+    status.csv files too), so none may hold an uncommitted change or a new untracked file."""
+    paths = list(dict.fromkeys([*paths, *_status_paths()]))
     dirty = _git_ok(git, ["status", "--porcelain", "--untracked-files=all", "--", *paths])
     if dirty.strip():
         listed = ", ".join(line[3:] for line in dirty.splitlines())

@@ -1378,7 +1378,7 @@ def test_default_refusals(tmp_path):
     # fix round 1: the bar, the pins and both gate --all runs read status.csv from disk, so an
     # uncommitted edit of either EXE's table (a dropped pin, an uncommitted match) is refused
     edits = {"ufo2p": lambda text: text.replace(f"{UNRULED[0].name},", "func_0008A0E1,"),
-             "tacp": lambda text: text + f"0x00012340,func_00012340,u_00012340,matched,100.00,"
+             "tacp": lambda text: text + f"0x000A0000,func_000A0000,u_000a0000,matched,100.00,"
                                          f"1,{SHA},{DAY}\n"}  # fmt: skip
     for exe, edit in edits.items():
         status = d.repo / "config" / exe / "status.csv"
