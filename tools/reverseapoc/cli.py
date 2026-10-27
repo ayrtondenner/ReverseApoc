@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, driver, locate, mechanics, probe
+from . import asmclass, attempt, driver, locate, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
+from .asmclass import AsmClassError
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .check import (
@@ -1452,7 +1453,7 @@ def _cmd_mechanics(args: argparse.Namespace) -> int:
     """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
     try:
         return args.mechanics_func(args)
-    except (*_ERRORS, MechanicsError, LocateError) as exc:
+    except (*_ERRORS, MechanicsError, LocateError, AsmClassError) as exc:
         print(f"reverseapoc mechanics {args.mechanics_command}: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
 
@@ -1537,12 +1538,41 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
 
 
 def _mechanics_asm(args: argparse.Namespace) -> int:
+    proposed = []
+    for exe in mechanics.EXES:
+        inputs = locate.load_inputs(args.config, args.orig, args.manifest, exe)
+        proposed += asmclass.classify(inputs)
+    path = Path(args.config) / mechanics.ASM_CSV
+    existing = mechanics.read_asm_list(path) if path.is_file() else []
+    rows, changed = asmclass.merge(existing, proposed)
+    if args.write:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(path, mechanics.format_asm_csv(rows).encode("ascii"))
+    counts = asmclass.verdict_counts(rows)
+    if args.json:
+        print(json.dumps({"rows": len(rows), "verdicts": counts, "changed": changed,
+                          "written": bool(args.write)}, indent=2))  # fmt: skip
+    else:
+        print(f"{len(rows)} rows: " + ", ".join(f"{n} {v}" for v, n in counts.items()))
+        print(f"{len(changed)} changed" + "".join(f"\n  {line}" for line in changed))
+    if args.write:
+        print(f"wrote {path}", file=sys.stderr)
     return 0
 
 
 def _add_asm_verb(verbs: argparse._SubParsersAction) -> None:
-    a = verbs.add_parser("asm", help="propose the D-23 asm list (stub)")
-    a.add_argument("--write", action="store_true")
+    a = verbs.add_parser(
+        "asm",
+        help="propose the D-23 asm list from orig/: unaligned and library-unit game rows with "
+        "evidence tags and a proposed verdict (asm or unclear); prints counts and the rows whose "
+        "tool-owned columns changed (addresses only)",
+    )
+    a.add_argument(
+        "--write",
+        action="store_true",
+        help="write config/asm-functions.csv, keeping every existing verdict and reason "
+        "(a changed list needs the owner's [asm_list] re-sign, D-23)",
+    )
     _mechanics_roots(a, game=True)
     a.set_defaults(mechanics_func=_mechanics_asm)
 
