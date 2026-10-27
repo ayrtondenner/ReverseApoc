@@ -47,6 +47,10 @@ SETTINGS = "config/driver/claude-settings.json"  # repo-relative (F11)
 SKILL = ".claude/skills/watcom-decomp/SKILL.md"  # repo-relative (F11)
 EXES = ("ufo2p", "tacp")
 _UNIT = re.compile(r"[a-z0-9_]+")
+_VIEW_UNIT = re.compile(  # 07-13 (D-24): the repo-relative view unit of one attempt
+    r"build/driver/(?P<run>[A-Za-z0-9_.-]+)/(?P<exe>[a-z0-9]+)/(?P<func>[A-Za-z0-9_]+)"
+    r"/attempt-[1-9][0-9]*/view/src/(?P<exe2>[a-z0-9]+)/(?P<unit>[a-z0-9_]+)\.c"
+)
 _TOOLS = ",".join(EXPECTED_TOOLS)
 _READ_WRITE_TOOLS = ",".join(tool for tool in EXPECTED_TOOLS if tool != "Bash")
 _WRAPPER = " ".join(ATTEMPT_PREFIX)
@@ -84,20 +88,42 @@ def build_argv(prompt: str, *, claude: str) -> list[str]:
     ]
 
 
-def goal_prompt(function: str, unit: str, exe: str) -> str:
-    """The /goal prompt for the claim `exe`/`unit` and its function (D-07). The names are
-    checked first, so nothing but a plain identifier reaches the prompt."""
+def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:
+    """Why `unit_path` is not the repo-relative view unit of this claim, or None (07-13, D-24):
+    `build/driver/<run>/<exe>/<function>/attempt-<n>/view/src/<exe>/<unit>.c`, forward slashes,
+    a run id of [A-Za-z0-9_.-]+ that is not `.` or `..`, and n >= 1."""
+    if not isinstance(unit_path, str):
+        return "is not a string"
+    match = _VIEW_UNIT.fullmatch(unit_path)
+    if match is None:
+        return ("is not build/driver/<run>/<exe>/<function>/attempt-<n>/view/src/<exe>/<unit>.c")
+    if match["run"] in (".", ".."):
+        return f"names the run {match['run']!r}"
+    named = (match["exe"], match["func"], match["exe2"], match["unit"])
+    if named != (exe, function, exe, unit):
+        return f"names another claim than {exe}/{unit} {function}"
+    return None
+
+
+def goal_prompt(function: str, unit: str, exe: str, *, unit_path: str) -> str:
+    """The /goal prompt for the claim `exe`/`unit` and its function (D-07). The session edits
+    its private view unit (07-13, D-24), so the prompt names `unit_path`, the repo-relative view
+    unit, as the file the function is in. The names and the path are checked first, so nothing
+    but a plain identifier or the view unit's exact shape reaches the prompt."""
     if exe not in EXES:
         raise ValueError(f"unknown EXE {exe!r}; expected one of {', '.join(EXES)}")
     if not _UNIT.fullmatch(unit):
         raise ValueError(f"unit {unit!r} is not a unit name ([a-z0-9_]+)")
     if not ATTEMPT_NAME.fullmatch(function):
         raise ValueError(f"function {function!r} is not a function name")
+    problem = _view_unit_problem(unit_path, function, unit, exe)
+    if problem:
+        raise ValueError(f"unit_path {unit_path!r} {problem}")
     return (
-        f"/goal Make `{_CHECK}` exit 0 for {function}, the claimed function in "
-        f"src/{exe}/{unit}.c (claim {exe}/{unit}), and write this attempt's notes.md (its path "
-        f"follows `notes:` in the check output); or stop after {MAX_CHECK_RUNS} check runs, "
-        "with notes.md written."
+        f"/goal Make `{_CHECK}` exit 0 for {function}, the claimed function in your private "
+        f"copy {unit_path} of the unit (claim {exe}/{unit}); edit only that file, and write this "
+        "attempt's notes.md (its path follows `notes:` in the check output); or stop after "
+        f"{MAX_CHECK_RUNS} check runs, with notes.md written."
     )
 
 
