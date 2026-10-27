@@ -377,6 +377,136 @@ RUN_REASONS = {
     ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED),
 }
 
+# Schema 2 (Phase 7, DEC-06/DEC-07, research section J): a v2 line carries "schema": 2 and
+# validates against RECORD_FIELDS_V2; a line without "schema" is v1 and validates against
+# RECORD_FIELDS unchanged, so the committed v1 history stays valid (D-23: never rewritten).
+SCHEMA_V2 = 2
+MATCHING, READABILITY = "matching", "readability"
+SESSIONS = (MATCHING, READABILITY)  # D-18: two session kinds, kept apart by stats
+LANDED = "LANDED"  # a readability session's unit landed; REFUSED (above) is its refusal
+SESSION_OUTCOMES = {
+    MATCHING: (MATCHED, PARTIAL, GAVE_UP),
+    READABILITY: (LANDED, PARTIAL, REFUSED, GAVE_UP),
+}
+_V2_OUTCOMES = tuple(dict.fromkeys(SESSION_OUTCOMES[MATCHING] + SESSION_OUTCOMES[READABILITY]))
+_C_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # v2: a renamed function keeps its C name (D-19)
+
+
+def _is_bool(value: object) -> bool:
+    return isinstance(value, bool)
+
+
+def _is_positive_number(value: object) -> bool:
+    return _number(value) and value > 0
+
+
+_GATE = _optional(_shaped({
+    "exit": _optional(_is_int),
+    "claimed_ok": _is_bool,
+    "regressions": _is_int,
+    "problems": _strings_list,
+}))  # fmt: skip
+_SCHEMA_V2_FIELD = {"schema": lambda value: type(value) is int and value == SCHEMA_V2}
+_V2_SESSION_FIELDS = {
+    **_SCHEMA_V2_FIELD,
+    "session": _one_of(*SESSIONS),
+    "pass": lambda value: _is_int(value) and value >= 1,
+    "worker": _is_int,
+}
+KIND_LIMIT = "limit"  # a usage-limit wait (D-07: it pauses every worker)
+KIND_RENAME = "rename"  # one applied, deferred or refused naming proposal (D-19)
+APPLIED, DEFERRED = "APPLIED", "DEFERRED"
+RENAME_OUTCOMES = (APPLIED, DEFERRED, REFUSED)
+OP_RENAME, OP_HEADER = "rename", "header"  # research section 6: the proposal ops
+# Orchestrator ruling F12: the keys each op fills; every other one of them is null. A line
+# the driver could not parse has op null and is always REFUSED.
+_RENAME_NAMED = ("exe", "address", "old", "new")
+_RENAME_OP_KEYS = {OP_RENAME: frozenset(_RENAME_NAMED), OP_HEADER: frozenset({"path"}),
+                   None: frozenset()}  # fmt: skip
+
+
+def _mapping_of(
+    key_ok: Callable[[object], bool], value_ok: Callable[[object], bool]
+) -> Callable[[object], bool]:
+    return lambda value: isinstance(value, dict) and all(
+        key_ok(key) and value_ok(item) for key, item in value.items())  # fmt: skip
+
+
+def _list_of(item_ok: Callable[[object], bool]) -> Callable[[object], bool]:
+    return lambda value: isinstance(value, list) and all(map(item_ok, value))
+
+
+def _at_least_one(value: object) -> bool:
+    return _is_int(value) and value >= 1
+
+
+_SHARE = _shaped({"sessions": _is_int, "matched": _is_int, "cost_usd": _is_number})
+_TOTALS = _shaped({
+    "sessions": _shaped(dict.fromkeys(_V2_OUTCOMES, _is_int)),  # counted sessions by outcome
+    "turns": _is_int,
+    "tokens": _shaped(dict.fromkeys(_COUNT_KEYS, _is_int)),
+    "cost_usd": _is_number,
+    "session_seconds": _is_number,  # the sum over sessions
+    "wall_seconds": _is_number,  # the night's wall clock
+    "hook_blocks": _is_int,
+    "regressions_stopped": _is_int,
+    "limit_waits": _shaped({"count": _is_int, "seconds": _is_number}),
+    "aborts": _is_int,
+    "by_model": _mapping_of(_is_text, _SHARE),
+    "by_session": _mapping_of(_one_of(*SESSIONS), _SHARE),
+})  # fmt: skip
+_RECOVERED = _shaped({key: _CLAIM_FIELDS[key] for key in ("exe", "unit", "run")})
+RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
+    KIND_ABORT: {
+        **RECORD_FIELDS[KIND_ABORT],
+        **_V2_SESSION_FIELDS,
+        "function": _matches(_C_NAME),  # F12: the same C-name rule as a v2 attempt
+    },
+    KIND_RUN: {
+        **RECORD_FIELDS[KIND_RUN],
+        **_SCHEMA_V2_FIELD,
+        "workers": _at_least_one,
+        "recovered": _list_of(_RECOVERED),  # stale claims recovered at STARTED
+        "totals": _optional(_TOTALS),  # null on STARTED only (_run_problem)
+    },
+    KIND_LIMIT: {
+        "kind": _one_of(KIND_LIMIT),
+        **_SCHEMA_V2_FIELD,
+        "run": _CLAIM_FIELDS["run"],
+        "worker": _is_int,
+        "seconds": _is_number,
+        "streak": _at_least_one,
+        "date": _CLAIM_FIELDS["date"],
+    },
+    KIND_RENAME: {
+        "kind": _one_of(KIND_RENAME),
+        **_SCHEMA_V2_FIELD,
+        "run": _CLAIM_FIELDS["run"],
+        "exe": _optional(_CLAIM_FIELDS["exe"]),
+        "address": _optional(_CLAIM_FIELDS["start"]),
+        "old": _optional(_matches(_C_NAME)),
+        "new": _optional(_matches(_C_NAME)),
+        "op": _one_of(None, *_RENAME_OP_KEYS),
+        "path": _optional(_matches(_HEADER)),
+        "outcome": _one_of(*RENAME_OUTCOMES),
+        "reason": _optional(_is_text),
+        "commit": _optional(_matches(_SHA1)),  # the APPLIED commit only
+        "date": _CLAIM_FIELDS["date"],
+    },
+    KIND_ATTEMPT: {
+        **RECORD_FIELDS[KIND_ATTEMPT],
+        **_V2_SESSION_FIELDS,
+        "function": _matches(_C_NAME),
+        "outcome": _one_of(*_V2_OUTCOMES),  # and one of its session's (_kind_problem)
+        "model_requested": _is_text,
+        "budget_usd": _is_positive_number,
+        "hook_blocks": _is_int,
+        "gate": _GATE,
+        "sweep_source": _optional(_matches(_SOURCE)),
+        "sweep_cells_100": _strings_list,
+    },  # fmt: skip
+}
+
 
 def _strings(value: object) -> Iterable[str]:
     if isinstance(value, str):
@@ -390,24 +520,82 @@ def _strings(value: object) -> Iterable[str]:
             yield from _strings(item)
 
 
+def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
+    """The field table of `obj`'s schema and kind: no `schema` key is v1, `"schema": 2` (an
+    int, not a bool or a float) is v2, anything else is a RecordError."""
+    if "schema" not in obj:
+        table = RECORD_FIELDS
+    elif _SCHEMA_V2_FIELD["schema"](obj["schema"]):
+        table = RECORD_FIELDS_V2
+    else:
+        raise RecordError(f"unknown schema {obj['schema']!r}")
+    kind = obj.get("kind")
+    fields = table.get(kind) if isinstance(kind, str) else None
+    if fields is None:
+        version = "v1" if table is RECORD_FIELDS else "v2"
+        raise RecordError(f"unknown {version} record kind {kind!r}")
+    return fields
+
+
+def _run_problem(obj: dict) -> str | None:
+    """A reason of the record's event (F30); a v2 record's totals null exactly on STARTED."""
+    if obj["reason"] not in RUN_REASONS[obj["event"]]:
+        return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
+    if "schema" not in obj or (obj["totals"] is None) == (obj["event"] == STARTED):
+        return None
+    if obj["event"] == STARTED:
+        return "run record: a STARTED record takes no totals"
+    return f"run record: a {obj['event']} record needs its totals"
+
+
+def _rename_problem(obj: dict) -> str | None:
+    """F12's per-op shapes: the op's keys filled and the others null, an unparseable line
+    (op null) only REFUSED, a commit exactly when APPLIED, a reason when not APPLIED."""
+    filled = {key for key in (*_RENAME_NAMED, "path") if obj[key] is not None}
+    wanted = _RENAME_OP_KEYS[obj["op"]]
+    if filled != wanted:
+        return f"rename record: op {obj['op']!r} fills {sorted(wanted)}, not {sorted(filled)}"
+    if obj["op"] is None and obj["outcome"] != REFUSED:
+        return "rename record: a line the driver could not parse is REFUSED"
+    if obj["outcome"] == APPLIED and obj["commit"] is None:
+        return "rename record: an APPLIED rename names its commit"
+    if obj["outcome"] != APPLIED and obj["commit"] is not None:
+        return f"rename record: a {obj['outcome']} rename has no commit"
+    if obj["outcome"] != APPLIED and obj["reason"] is None:
+        return f"rename record: {obj['outcome']} names its reason"
+    return None
+
+
+def _kind_problem(obj: dict) -> str | None:
+    """The rule a record's key set and value types cannot state, or None."""
+    if obj["kind"] == KIND_RUN:
+        return _run_problem(obj)
+    if obj["kind"] == KIND_RENAME:
+        return _rename_problem(obj)
+    if "outcome" in obj and "session" in obj and obj["outcome"] not in SESSION_OUTCOMES[
+            obj["session"]]:  # fmt: skip
+        return f"{obj['kind']} record: {obj['outcome']!r} is no {obj['session']} outcome"
+    return None
+
+
 def validate_record(obj: object) -> None:
     """Raise RecordError unless `obj` is one attempts.jsonl record (D-23): the exact key set
-    of its kind (`attempt`, `abort`, `run`), every value of the pinned type or enum, a run
-    record's `reason` one of its event's (F30), and no string anywhere holding a hex run
-    longer than 64 characters (no game bytes, T-06-55)."""
+    of its schema and kind (v1 `attempt`, `abort`, `run`; v2 lines carry `"schema": 2`), every
+    value of the pinned type or enum, a run record's `reason` one of its event's (F30), a v2
+    outcome one of its session's (D-18), and no string anywhere holding a hex run longer than
+    64 characters (no game bytes, T-06-55)."""
     if not isinstance(obj, dict):
         raise RecordError(f"a record is a JSON object, not {type(obj).__name__}")
-    fields = RECORD_FIELDS.get(obj.get("kind"))  # type: ignore[arg-type]
-    if fields is None:
-        raise RecordError(f"unknown record kind {obj.get('kind')!r}")
+    fields = _record_fields(obj)
     missing, extra = sorted(set(fields) - set(obj)), sorted(set(obj) - set(fields))
     if missing or extra:
         raise RecordError(f"{obj['kind']} record: missing {missing}, extra {extra}")
     bad = [key for key, ok in fields.items() if not ok(obj[key])]
     if bad:
         raise RecordError(f"{obj['kind']} record: bad value for {', '.join(bad)}")
-    if obj["kind"] == KIND_RUN and obj["reason"] not in RUN_REASONS[obj["event"]]:
-        raise RecordError(f"run record: {obj['reason']!r} is no reason for {obj['event']}")
+    problem = _kind_problem(obj)
+    if problem:
+        raise RecordError(problem)
     if any(_LONG_HEX.search(text) for text in _strings(obj)):
         raise RecordError(f"{obj['kind']} record holds a hex string longer than 64 characters")
 

@@ -96,6 +96,7 @@ BAD = {
     ),  # fmt: skip
     "65 hex characters in a list": _mutated(_attempt, lambda r: r.update(truncated=["F" * 65])),
     "not an object": ["kind", "attempt"],
+    "unhashable kind": _mutated(_attempt, lambda r: r.update(kind=["attempt"])),
 }
 
 
@@ -149,3 +150,227 @@ def test_schema_accepts_an_ended_record_with_failed_checks():
     record = _run("ENDED", "queue exhausted")
     record["checks_failed"] = ["ninja verify exit 1", "gate --all exit 1"]
     assert _problem(record) is None
+
+
+# ---- schema 2 (Phase 7, DEC-06/DEC-07): v1 lines stay valid, v2 lines carry "schema": 2 ----
+
+
+def _attempt_v2() -> dict:
+    record = _attempt()
+    record.update({
+        "schema": 2, "session": "matching", "pass": 3, "model_requested": "claude-fable-5-1",
+        "budget_usd": 12.5, "worker": 2, "hook_blocks": 1,
+        "gate": {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []},
+        "sweep_source": "checks/0007.c", "sweep_cells_100": ["wcc386@10.6 -4r -oneatx -s -fpi"],
+    })  # fmt: skip
+    return record
+
+
+def test_v2_attempt_accepted():
+    assert _problem(_attempt_v2()) is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(gate=None, sweep_source=None, sweep_cells_100=[]),
+    lambda r: r["gate"].update(exit=None, claimed_ok=False, regressions=2, problems=["splice"]),
+])  # fmt: skip
+def test_v2_attempt_optional_parts(change):
+    assert _problem(_mutated(_attempt_v2, change)) is None
+
+
+@pytest.mark.parametrize(("session", "outcome", "ok"), [
+    ("readability", "LANDED", True), ("readability", "REFUSED", True),
+    ("readability", "PARTIAL", True), ("readability", "GAVE_UP", True),
+    ("readability", "MATCHED", False), ("matching", "LANDED", False),
+    ("matching", "REFUSED", False), ("matching", "MATCHED", True),
+])  # fmt: skip
+def test_v2_readability_outcomes(session, outcome, ok):
+    record = _mutated(_attempt_v2, lambda r: r.update(session=session, outcome=outcome))
+    assert (_problem(record) is None) is ok
+
+
+@pytest.mark.parametrize("schema", [1, 3, 2.0, "2", True, None])
+def test_v1_record_with_schema_key_refused(schema):
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt, lambda r: r.update(schema=schema)))
+
+
+def test_v2_record_with_another_schema_refused():
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt_v2, lambda r: r.update(schema=3)))
+
+
+def test_mixed_log_validates(tmp_path):
+    log = tmp_path / "attempts.jsonl"
+    for record in (_run("STARTED", "start"), _attempt(), _attempt_v2(), _attempt()):
+        append_record(log, record)
+    lines = log.read_text(encoding="ascii").splitlines()
+    assert len(lines) == 4
+    for line in lines:
+        validate_record(json.loads(line))
+    assert ["schema" in json.loads(line) for line in lines] == [False, False, True, False]
+
+
+def test_v2_function_accepts_a_renamed_name():
+    assert _problem(_mutated(_attempt_v2, lambda r: r.update(function="GetSoundVolume"))) is None
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt, lambda r: r.update(function="GetSoundVolume")))
+
+
+BAD_V2 = {
+    "v1 record lacks v2 keys": _mutated(_attempt, lambda r: r.update(schema=2)),
+    "unknown session": _mutated(_attempt_v2, lambda r: r.update(session="naming")),
+    "pass 0": _mutated(_attempt_v2, lambda r: r.update(**{"pass": 0})),
+    "budget 0": _mutated(_attempt_v2, lambda r: r.update(budget_usd=0)),
+    "negative worker": _mutated(_attempt_v2, lambda r: r.update(worker=-1)),
+    "hook_blocks text": _mutated(_attempt_v2, lambda r: r.update(hook_blocks="1")),
+    "model_requested null": _mutated(_attempt_v2, lambda r: r.update(model_requested=None)),
+    "gate missing key": _mutated(_attempt_v2, lambda r: r["gate"].pop("problems")),
+    "gate claimed_ok int": _mutated(_attempt_v2, lambda r: r["gate"].update(claimed_ok=1)),
+    "sweep_source path": _mutated(_attempt_v2, lambda r: r.update(sweep_source="src/x.c")),
+    "sweep_cells_100 text": _mutated(_attempt_v2, lambda r: r.update(sweep_cells_100="-4r")),
+    "function not a C name": _mutated(_attempt_v2, lambda r: r.update(function="1st")),
+    "start not the key": _mutated(_attempt_v2, lambda r: r.update(start="GetSoundVolume")),
+}
+
+
+def _abort_v2() -> dict:
+    record = _abort()
+    record.update(schema=2, session="readability", worker=1, **{"pass": 2})
+    return record
+
+
+def _totals() -> dict:
+    share = {"sessions": 4, "matched": 1, "cost_usd": 3.5}
+    return {
+        "sessions": {"MATCHED": 1, "PARTIAL": 2, "GAVE_UP": 1, "LANDED": 0, "REFUSED": 0},
+        "turns": 120,
+        "tokens": {"input": 9000, "output": 2000, "cache_read": 40000, "cache_creation": 6000},
+        "cost_usd": 3.5, "session_seconds": 5400.0, "wall_seconds": 2000.5, "hook_blocks": 3,
+        "regressions_stopped": 1, "limit_waits": {"count": 1, "seconds": 60.0}, "aborts": 0,
+        "by_model": {"claude-opus-5-5": dict(share)},
+        "by_session": {"matching": dict(share)},
+    }  # fmt: skip
+
+
+def _run_v2(event: str = "ENDED", reason: str = "max sessions") -> dict:
+    record = _run(event, reason)
+    record.update(schema=2, workers=3, recovered=[], totals=_totals())
+    return record
+
+
+def _started_v2() -> dict:
+    record = _run_v2("STARTED", "start")
+    record.update(totals=None, recovered=[{"exe": "tacp", "unit": "u_00010000", "run": "night0"}])
+    return record
+
+
+def _limit() -> dict:
+    return {"kind": "limit", "schema": 2, "run": "night1", "worker": 0, "seconds": 60,
+            "streak": 1, "date": "2026-10-25"}  # fmt: skip
+
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"  # made up: 40 hex characters
+
+
+def _rename(op: str | None = "rename", outcome: str = "APPLIED") -> dict:
+    record = {"kind": "rename", "schema": 2, "run": "night1", "exe": "ufo2p",
+              "address": "0x000A3980", "old": "func_000A3980", "new": "GetSoundVolume",
+              "op": op, "path": None, "outcome": outcome, "reason": None,
+              "commit": _SHA, "date": "2026-10-25"}  # fmt: skip
+    if op == "header":
+        record.update(exe=None, address=None, old=None, new=None, path="include/sound.h")
+    if op is None:
+        record.update(exe=None, address=None, old=None, new=None)
+    if outcome != "APPLIED":
+        record.update(commit=None, reason="gate failed: u_000a34f0 regressed")
+    return record
+
+
+def test_v2_run_records():
+    assert _problem(_started_v2()) is None
+    assert _problem(_run_v2()) is None
+    assert _problem(_run_v2("STOPPED", "guardrail")) is None
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_run_v2, lambda r: r.update(totals=None)))
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_run_v2, lambda r: r["totals"].pop("limit_waits")))
+
+
+def test_limit_record():
+    assert _problem(_limit()) is None
+    with pytest.raises(RecordError, match="kind"):
+        validate_record(_mutated(_limit, lambda r: r.pop("schema")))
+
+
+@pytest.mark.parametrize(("op", "outcome"), [
+    ("rename", "APPLIED"), ("rename", "REFUSED"), ("rename", "DEFERRED"),
+    ("header", "APPLIED"), ("header", "REFUSED"), (None, "REFUSED"),
+])  # fmt: skip
+def test_rename_record(op, outcome):
+    assert _problem(_rename(op, outcome)) is None
+
+
+def test_v2_abort_record():
+    assert _problem(_abort_v2()) is None
+    assert _problem(_mutated(_abort_v2, lambda r: r.update(function="GetSoundVolume"))) is None
+
+
+def test_v2_hex_rule():
+    record = _attempt_v2()
+    record["gate"]["problems"] = ["splice " + "0123456789abcdef" * 4 + "f"]
+    with pytest.raises(RecordError, match="hex"):
+        validate_record(record)
+
+
+BAD_V2.update({
+    "abort without session": _mutated(_abort_v2, lambda r: r.pop("session")),
+    "abort pass 0": _mutated(_abort_v2, lambda r: r.update(**{"pass": 0})),
+    "run without workers": _mutated(_run_v2, lambda r: r.pop("workers")),
+    "run workers 0": _mutated(_run_v2, lambda r: r.update(workers=0)),
+    "started with totals": _mutated(_started_v2, lambda r: r.update(totals=_totals())),
+    "stopped without totals": _mutated(lambda: _run_v2("STOPPED", "error"),
+                                       lambda r: r.update(totals=None)),
+    "run reason of another event": _mutated(_run_v2, lambda r: r.update(reason="start")),
+    "recovered missing unit": _mutated(_started_v2, lambda r: r["recovered"][0].pop("unit")),
+    "recovered bad exe": _mutated(_started_v2, lambda r: r["recovered"][0].update(exe="x")),
+    "totals extra key": _mutated(_run_v2, lambda r: r["totals"].update(workers=3)),
+    "totals sessions missing outcome": _mutated(
+        _run_v2, lambda r: r["totals"]["sessions"].pop("LANDED")),
+    "totals limit_waits shape": _mutated(
+        _run_v2, lambda r: r["totals"]["limit_waits"].pop("seconds")),
+    "totals by_model share shape": _mutated(
+        _run_v2, lambda r: r["totals"]["by_model"]["claude-opus-5-5"].pop("matched")),
+    "totals by_session unknown kind": _mutated(
+        _run_v2, lambda r: r["totals"]["by_session"].update(naming=_totals()["by_model"][
+            "claude-opus-5-5"])),
+    "limit streak 0": _mutated(_limit, lambda r: r.update(streak=0)),
+    "limit negative seconds": _mutated(_limit, lambda r: r.update(seconds=-1)),
+    "limit extra key": _mutated(_limit, lambda r: r.update(session="matching")),
+    "rename outcome DONE": _mutated(_rename, lambda r: r.update(outcome="DONE")),
+    "rename new not a C name": _mutated(_rename, lambda r: r.update(new="Get Volume")),
+    "rename old not a C name": _mutated(_rename, lambda r: r.update(old="1func")),
+    "rename without address": _mutated(_rename, lambda r: r.update(address=None)),
+    "rename with a path": _mutated(_rename, lambda r: r.update(path="include/sound.h")),
+    "rename applied without commit": _mutated(_rename, lambda r: r.update(commit=None)),
+    "rename refused with commit": _mutated(
+        lambda: _rename("rename", "REFUSED"),
+        lambda r: r.update(commit=_SHA)),
+    "rename refused without reason": _mutated(
+        lambda: _rename("rename", "REFUSED"), lambda r: r.update(reason=None)),
+    "rename bad commit": _mutated(_rename, lambda r: r.update(commit="abc123")),
+    "header without path": _mutated(lambda: _rename("header"), lambda r: r.update(path=None)),
+    "header path outside include": _mutated(
+        lambda: _rename("header"), lambda r: r.update(path="src/ufo2p/x.h")),
+    "header with names": _mutated(lambda: _rename("header"), lambda r: r.update(new="Volume")),
+    "unparseable line applied": _mutated(lambda: _rename(None), lambda r: r.update(
+        outcome="APPLIED", reason=None, commit=_SHA)),
+    "unparseable line with an exe": _mutated(lambda: _rename(None), lambda r: r.update(exe="tacp")),
+    "unknown rename op": _mutated(_rename, lambda r: r.update(op="move")),
+})  # fmt: skip
+
+
+@pytest.mark.parametrize("name", sorted(BAD_V2))
+def test_schema_refuses_bad_v2_records(name):
+    with pytest.raises(RecordError):
+        validate_record(BAD_V2[name])
