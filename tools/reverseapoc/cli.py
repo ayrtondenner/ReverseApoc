@@ -1530,7 +1530,25 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     g.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
     _mechanics_roots(g, game=True)
     g.set_defaults(mechanics_func=_mechanics_graph)
+    _add_locate_verb(verbs)
     p.set_defaults(func=_cmd_mechanics)
+
+
+def _mechanics_locate(args: argparse.Namespace) -> int:
+    return 0
+
+
+def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
+    lo = verbs.add_parser("locate", help="locate entry candidates in one EXE (stub)")
+    lo.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
+    pick = lo.add_mutually_exclusive_group(required=True)
+    pick.add_argument("--string", metavar="KEYWORD")
+    pick.add_argument("--va", metavar="0xADDR")
+    pick.add_argument("--range", nargs=2, metavar=("0xA", "0xB"))
+    pick.add_argument("--get-text", nargs=2, metavar=("SECTION", "INDEX"))
+    pick.add_argument("--int", metavar="0x1A")
+    _mechanics_roots(lo, game=True)
+    lo.set_defaults(mechanics_func=_mechanics_locate)
 
 
 def build_parser() -> argparse.ArgumentParser:
