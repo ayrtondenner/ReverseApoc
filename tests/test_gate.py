@@ -137,6 +137,10 @@ def as_committed(tree: Tree, monkeypatch) -> Tree:
     compiles only the committed src tree (fix round 1, M4), and object_root keys on both."""
     monkeypatch.setattr(check, "DEFAULT_SRC", tree.src)
     monkeypatch.setattr(check, "DEFAULT_CONFIG", tree.config)
+    # ... and for the repository the compile root is taken from (07-03 fix round 1); configure.py
+    # is loaded first, from the real checkout.
+    check._configure()
+    monkeypatch.setattr(check, "REPO_ROOT", tree.root)
     return tree
 
 
@@ -1214,6 +1218,40 @@ def test_gate_all_accepts_other_cflags(tree, tmp_path):
     assert result.exit_code == 0 and result.written == ()
     assert fake.lands[0]["options"].cflags == cflags
     assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def partial_refused(tree: Tree, saved: Path, needle: str) -> None:
+    """gate --partial on `saved` raises a CheckError naming `needle`, before any check, and
+    writes nothing."""
+    fake = FakePartial(tree, {B1: 70.0})
+    with pytest.raises(CheckError, match=needle):
+        run_partial(tree, UNIT_B, saved, fake)
+    assert fake.sources == []
+    assert not tree.status(UFO).exists()
+
+
+def test_partial_refuses_a_saved_file_outside_the_repository(committed, tmp_path):
+    """Fix round 1: gate --partial writes the public status.csv, so it scores only a saved file
+    inside the repository, compiled from REPO_ROOT with the committed headers."""
+    tree = committed
+    outside = tmp_path.parent / f"{tmp_path.name}-outside" / "best"
+    outside.mkdir(parents=True)
+    (outside.parent / "include").mkdir()
+    saved = outside / f"{UNIT_B}.c"
+    saved.write_text("int saved(void) { return 1; }\n", encoding="utf-8")
+    partial_refused(tree, saved, "inside the repository")
+
+
+def test_partial_refuses_a_saved_file_compiled_from_a_view_root(committed):
+    """Fix round 1: a saved file whose compile root would be a view (it sits directly in a D-24
+    view's src/) would compile against the view's headers; gate --partial refuses it."""
+    tree = committed
+    view = tree.root / "build" / "driver" / "run1" / "view"
+    (view / "include").mkdir(parents=True)
+    (view / "src").mkdir()
+    saved = view / "src" / f"{UNIT_B}.c"
+    saved.write_text("int saved(void) { return 1; }\n", encoding="utf-8")
+    partial_refused(tree, saved, "compile root")
 
 
 def test_gate_partial_uses_the_unit_rule(committed):
