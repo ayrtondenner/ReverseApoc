@@ -292,12 +292,12 @@ def test_other_hub_criteria():
     rows = by_address(members(M(rule=mechanics.HubRule(max_closure_share=0.3)), g))
     assert (rows[A].role, rows[B].role) == ("hub", "closure")
     assert rows[E].role == "member"  # an entry is always a member (D-31)
-    # min_items: F is reached by two items
-    g = graph((E, F), (C, F), (F, Y))
+    # min_items: F and everything below it is reached by both items; A only by 997
+    g = graph((E, F), (C, F), (F, Y), (E, A))
     mech = M(items=(("997", 1), ("263-1", 1)), entries=(("997", E), ("263-1", C)),
              rule=mechanics.HubRule(min_items=2))  # fmt: skip
     rows = by_address(members(mech, g))
-    assert (rows[F].role, rows[Y].role) == ("hub", "closure")
+    assert (rows[F].role, rows[Y].role, rows[A].role) == ("hub", "hub", "member")
     assert rows[F].items == ("263-1", "997")
 
 
@@ -341,7 +341,7 @@ def asm_text(*rows: tuple[int, str]) -> str:
 
 def test_asm_list_round_trip(tmp_path):
     path = tmp_path / mechanics.ASM_CSV
-    path.write_text(asm_text((C, "asm"), (D, "unclear")), encoding="utf-8")
+    path.write_bytes(asm_text((C, "asm"), (D, "unclear")).encode("ascii"))  # LF on every host
     rows = mechanics.read_asm_list(path)
     got = [(r.exe, r.address, r.verdict) for r in rows]
     assert got == [("ufo2p", C, "asm"), ("ufo2p", D, "unclear")]
