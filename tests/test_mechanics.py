@@ -545,3 +545,109 @@ def test_digest_verb(tmp_path, capsys):
     assert cli.main(["mechanics", "digest", "--tier", "1", "--config", str(root)]) == 0
     assert capsys.readouterr().out.strip() == mechanics.tier_digest(mech, rows, 1)
     assert cli.main(["mechanics", "digest", "--tier", "7", "--config", str(root)]) == 2
+
+
+# ---- Task 3: hub-rule candidates, status, the committed data, graph reports ----
+
+
+def typed_graph(*edges: tuple[int, int, str]) -> CallGraph:
+    found: dict[int, list[Edge]] = {}
+    for src, dst, kind in edges:
+        found.setdefault(src, []).append(Edge(src, dst, kind))
+        found.setdefault(dst, [])
+    return CallGraph(edges={s: tuple(sorted(es)) for s, es in sorted(found.items())})
+
+
+def _hub_world() -> CallGraph:
+    """E -> H (3 direct callers: E, C, D) -> X; E -> A; E -pointer-> P; S on the asm list."""
+    P, S = F, G
+    return typed_graph((E, H, "direct"), (C, H, "direct"), (D, H, "direct"), (H, X, "direct"),
+                       (E, A, "direct"), (E, P, "pointer"), (A, S, "direct"))  # fmt: skip
+
+
+def test_hub_candidates_report():
+    g, asm = _hub_world(), frozenset({("ufo2p", G)})
+    rows = {"ufo2p": game_rows(*ALL)}
+    report = mechanics.hub_candidates(M(), {"ufo2p": g}, rows, asm, 1, (2, 3, 4))
+    by_k = {entry["k"]: entry for entry in report["exes"].get("ufo2p", [])}
+    assert sorted(by_k) == [2, 3, 4]
+    assert by_k[3]["must_match"] == 3  # E, A, P (H is a hub, X behind it, G asm)
+    assert by_k[3]["must_match_direct"] == 2  # without the pointer edge: E, A
+    assert by_k[3]["hubs"] == [{"address": f"0x{H:08X}", "callers": 3}]
+    assert by_k[3]["members_by_via"] == {"entry": 1, "direct": 1, "pointer": 1}
+    assert by_k[3]["asm_removed"] == 1
+    assert by_k[4]["must_match"] == 5 and by_k[4]["hubs"] == []  # H and X come back
+    again = mechanics.hub_candidates(M(), {"ufo2p": g}, rows, asm, 1, (4, 2, 3))
+    assert again == report  # deterministic, K in ascending order
+
+
+def test_cli_hubs_takes_several_k(tmp_path, monkeypatch, capsys):
+    root = _config(tmp_path, toml_text(**minimal_tables()), rows=game_rows(*ALL))
+    monkeypatch.setattr(mechanics, "load_graphs", lambda *a, **k: {"ufo2p": _hub_world()})
+    argv = ["mechanics", "hubs", "--tier", "1", "--k", "10", "20", "40", "80", "--json",
+            "--config", str(root)]  # fmt: skip
+    assert cli.main(argv) == 0
+    report = __import__("json").loads(capsys.readouterr().out)
+    assert [entry["k"] for entry in report["exes"]["ufo2p"]] == [10, 20, 40, 80]
+    assert cli.main(["mechanics", "hubs", "--tier", "1", "--config", str(root)]) == 0
+    assert "must-match" in capsys.readouterr().out
+
+
+def _status_csv(root: Path, matched: list[int], partial: list[int]) -> None:
+    from reverseapoc.status import MATCHED, PARTIAL, StatusRow, format_status
+
+    def row(start: int, status: str) -> StatusRow:
+        percent = 100.0 if status == MATCHED else 50.0
+        return StatusRow(start, f"func_{start:08X}", "u_main", status, percent, 1, "a" * 64,
+                         "2026-10-27")  # fmt: skip
+
+    rows = [row(s, MATCHED) for s in matched] + [row(s, PARTIAL) for s in partial]
+    (root / "ufo2p" / "status.csv").write_bytes(format_status(rows).encode("utf-8"))
+
+
+def test_status_counts_and_require_matched(tmp_path, capsys):
+    root = _committed(tmp_path)  # tier 1 members: E; hub H; closure X
+    rows = read_members(root / mechanics.MEMBERS_CSV)
+    mech = load(root / "mechanics.toml")
+    _status_csv(root, matched=[], partial=[E])
+    status = mechanics.tier_status(mech, rows, {("ufo2p", E): "partial"}, 1)
+    assert status == mechanics.TierStatus(total=1, matched=0, partial=1, unmatched=0,
+                                          unmatched_starts=(("ufo2p", E),))  # fmt: skip
+    argv = ["mechanics", "status", "--tier", "1", "--json", "--config", str(root)]
+    assert cli.main(argv) == 0
+    report = __import__("json").loads(capsys.readouterr().out)
+    assert report["tiers"]["1"] == {"total": 1, "matched": 0, "partial": 1, "unmatched": 0,
+                                    "unmatched_starts": [["ufo2p", f"0x{E:08X}"]]}  # fmt: skip
+    assert cli.main([*argv, "--require-matched"]) == 1
+    _status_csv(root, matched=[E, X], partial=[])
+    assert cli.main([*argv, "--require-matched"]) == 0
+    assert cli.main(["mechanics", "status", "--config", str(root)]) == 0
+    assert "tier 1" in capsys.readouterr().out
+
+
+def test_committed_mechanics_check():
+    # Before plan 07-20 commits config/mechanics.toml there is nothing to check (passes, F32).
+    assert mechanics.check_committed(Path(__file__).resolve().parents[1] / "config") == []
+
+
+def test_graph_report(tmp_path, monkeypatch, capsys):
+    from reverseapoc.callgraph import MidRowRef
+
+    ref = MidRowRef(0x00010104, A, 0x00010208, B, "code", True)
+    edges = {A: (Edge(A, B, "direct"), Edge(A, B, "midrow")), B: (Edge(B, A, "table"),), C: ()}
+    g = CallGraph(edges=edges, midrow=(ref,), indirect={C: 2}, orphan_tables=(0x000D0000,))
+    report = mechanics.graph_report(g)
+    assert report.get("edges") == {"direct": 1, "pointer": 0, "table": 1, "midrow": 1, "hand": 0}
+    assert report["midrow"] == [{"source": "0x00010104", "source_row": f"0x{A:08X}",
+                                 "target": "0x00010208", "target_row": f"0x{B:08X}",
+                                 "origin": "code", "boundary": True}]  # fmt: skip
+    assert report["indirect"] == [{"row": f"0x{C:08X}", "count": 2}]
+    assert report["orphan_tables"] == ["0x000D0000"]
+    assert report["largest_scc"] == {"direct": 1, "direct_pointer_table": 2, "all": 2}
+    root = _config(tmp_path, "schema = 1\n")
+    monkeypatch.setattr(mechanics, "load_graphs", lambda *a, **k: {"ufo2p": g})
+    assert cli.main(["mechanics", "graph", "--exe", "ufo2p", "--json", "--config", str(root)]) == 0
+    assert __import__("json").loads(capsys.readouterr().out) == report
+    assert cli.main(["mechanics", "graph", "--exe", "ufo2p", "--config", str(root)]) == 0
+    assert "midrow" in capsys.readouterr().out
+    assert cli.main(["mechanics", "graph", "--exe", "smkp", "--config", str(root)]) == 2
