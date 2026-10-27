@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import attempt, driver
+from reverseapoc import attempt, driver, hooks
 from reverseapoc.driver import (
     COAUTHOR,
     MATCHED_BY,
@@ -124,6 +124,7 @@ class Sess:
     raises: BaseException | None = None
     link: tuple[str, Path] | None = None
     append: tuple[tuple[str, str], ...] = ()  # (repo-relative file, text appended to it)
+    unit_text: str | None = None  # 07-13: fakeclaude --write-env-unit, the view unit's new text
 
 
 def _plant_dir_link(link: Path, target: Path) -> None:
@@ -201,12 +202,16 @@ class Night:
         self.lint_calls: list[Pick] = []
         self.removed: list[str] = []
         self.scaffolded: list[Pick] = []
+        self.scaffold_dests: list[Path | None] = []  # 07-13: where each scaffold was written
+        self.packed: list[tuple[Pick, Path, Path | None]] = []  # (pick, attempt dir, src root)
+        self.seen: list[dict] = []  # 07-13: the view and src/ unit as each session found them
         self.sleeps: list[float] = []
         self.now = 1000.0
         self.inject: list[str] = []
         self.on_git = None  # called with each git argv before it runs
         self.gate_names = ("UFO2P.EXE", "TACP.EXE")  # the EXE names the fake gate reports
         self.git_at_launch = -1
+        self.prompts: list[str] = []
         self.raise_verbs: dict[str, BaseException] = {}  # git verb -> exception, raised once
         self.fail_verbs: dict[str, int] = {}  # git verb -> how many calls fail with LOCK_ERROR
         self.fail_plan: dict[str, list[bool]] = {}  # git verb -> per-call schedule
@@ -219,23 +224,39 @@ class Night:
     def _queue(self, difficult):
         return [p for p in self.picks if (p.exe, p.start) not in difficult]
 
-    def _scaffold(self, pick: Pick) -> None:
+    def _scaffold(self, pick: Pick, dest: Path | None = None) -> None:
         self.scaffolded.append(pick)
-        _write(self.repo / f"src/{pick.exe}/{pick.unit}.c", SCAFFOLD)
+        self.scaffold_dests.append(dest)
+        _write(dest if dest is not None else self.repo / f"src/{pick.exe}/{pick.unit}.c", SCAFFOLD)
 
-    def _pack(self, pick: Pick, attempt_dir: Path) -> PackInfo:
+    def _pack(self, pick: Pick, attempt_dir: Path, src: Path | None = None) -> PackInfo:
+        self.packed.append((pick, attempt_dir, src))
         _write(attempt_dir / "context.md", "made-up pack\n")
         return PackInfo(2048, ("look-alikes",))
 
     def _argv(self, prompt: str) -> list[str]:
         self._current = self.sessions.pop(0) if self.sessions else Sess(write=None)
+        self.prompts.append(prompt)
         spec = self._current
-        argv = [sys.executable, str(FAKE), "--scenario", spec.scenario]
-        return argv + (["--write", spec.write] if spec.write else [])
+        argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths"]
+        argv += ["--write", spec.write] if spec.write else []
+        return argv + (["--write-env-unit", spec.unit_text] if spec.unit_text else [])
+
+    def _see(self, env: dict) -> None:
+        """07-13: what the session finds at launch: every file of its view (bytes), the view's
+        directories, and whether src/ holds the claimed unit."""
+        view = Path(env[attempt.DIR_ENV]) / "view"
+        files = {p.relative_to(view).as_posix(): p.read_bytes()
+                 for p in sorted(view.rglob("*")) if p.is_file()}  # fmt: skip
+        dirs = {p.relative_to(view).as_posix() for p in view.rglob("*") if p.is_dir()}
+        unit = self.repo / f"src/{EXE}/{UNIT}.c"
+        self.seen.append({"files": files, "dirs": dirs, "view": view.is_dir(),
+                          "src_unit": unit.read_bytes() if unit.is_file() else None})  # fmt: skip
 
     def _session(self, argv, *, cwd, env, transcript, timeout_s):
         spec = self._current
         self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
+        self._see(env)
         self.git_at_launch = len(self.git_calls)
         self.now += 45.0
         if spec.raises is not None:
@@ -1764,3 +1785,141 @@ def test_gate_pass_with_the_claimed_row_beside_a_sibling_commits(tmp_path):
     assert _feats(night) == [MATCH_SUBJECT]
     assert report.matched == 1
     assert _one(night.kinds("attempt"))["outcome"] == "MATCHED"
+
+
+# ---- 07-13 Task 1: private per-attempt views, landing (D-24) ----
+
+VIEW_TEXT = "/* made-up view edit */\nint view_edit;\n"
+VIEW_UNIT_REL = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/view/src/{EXE}/{UNIT}.c"
+STATUS_REL = f"config/{EXE}/status.csv"
+
+
+def _view_session(**over) -> Sess:
+    """A session that edits only its view unit (the stand-in writes REVERSEAPOC_UNIT_FILE)."""
+    return Sess(**{"write": None, "unit_text": VIEW_TEXT, **over})
+
+
+def test_view_is_head_snapshot(tmp_path):
+    """D-24: the view is HEAD's src/, include/ and config/ (git archive), never the worktree:
+    an uncommitted edit and an untracked unit in src/ are not in it, a file committed since the
+    base is, and nothing outside the three trees is."""
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    _write(night.repo / "include" / "extra.h", "/* made-up committed header */\n")
+    night.git("add", "--", "include/extra.h")
+    night.git("commit", "-q", "-m", "extra header")
+    _write(night.repo / UNIT_REL, "int dirty_worktree_edit;\n")
+    _write(night.repo / "src" / EXE / "u_untracked.c", "int untracked;\n")
+    night.run(config={"attempts_per_function": 1})
+    files = night.seen[0]["files"]
+    assert files[f"src/{EXE}/{UNIT}.c"] == SCAFFOLD.encode()
+    assert files["include/common.h"] == b"/* made up */\n"
+    assert files["include/extra.h"] == b"/* made-up committed header */\n"
+    assert files[STATUS_REL] == STATUS_HEAD.encode()
+    assert f"src/{EXE}/u_untracked.c" not in files
+    assert sorted({name.split("/")[0] for name in files}) == ["config", "include", "src"]
+
+
+def test_view_always_has_include(tmp_path):
+    """Orchestrator note (07-11 as built): a view without include/ would compile against the
+    committed headers, so the driver creates include/ in every view, even when HEAD has none."""
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    night.git("rm", "-q", "--", "include/common.h")
+    night.git("commit", "-q", "-m", "no headers")
+    night.run(config={"attempts_per_function": 1})
+    assert "include" in night.seen[0]["dirs"]
+
+
+def test_missing_unit_is_scaffolded_into_the_view(tmp_path):
+    """A unit HEAD lacks is scaffolded into the view (Deps.scaffold(pick, dest)), never into
+    src/: the session finds no src/ unit at launch."""
+    night = Night(tmp_path, unit_committed=False, sessions=[_view_session()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    view_unit = night.attempt_dir(1) / "view" / "src" / EXE / f"{UNIT}.c"
+    assert night.scaffolded == [PICK]
+    assert night.scaffold_dests == [view_unit]
+    assert night.seen[0]["files"][f"src/{EXE}/{UNIT}.c"] == SCAFFOLD.encode()
+    assert night.seen[0]["src_unit"] is None
+
+
+def test_session_env_has_view_paths(tmp_path):
+    """The stand-in claude sees the view unit (absolute), the attempt's proposals.jsonl and the
+    session kind next to the Phase 6 claim variables, and writes the unit the env names."""
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    env = night.launched[0].env
+    attempt_dir = night.attempt_dir(1)
+    view_unit = attempt_dir / "view" / "src" / EXE / f"{UNIT}.c"
+    assert env[hooks.UNIT_FILE_ENV] == str(view_unit)
+    assert Path(env[hooks.UNIT_FILE_ENV]).is_absolute()
+    assert env[hooks.PROPOSALS_ENV] == str(attempt_dir / "proposals.jsonl")
+    assert env[hooks.SESSION_KIND_ENV] == "matching"
+    assert env["REVERSEAPOC_CLAIM"] == f"{EXE}/{UNIT}"
+    assert view_unit.read_text(encoding="utf-8") == VIEW_TEXT  # the view is kept for inspection
+
+
+def test_goal_prompt_of_a_night_names_the_view_unit(tmp_path):
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    assert VIEW_UNIT_REL in night.prompts[0]
+
+
+def test_view_records_its_head_commit(tmp_path):
+    """Orchestrator ruling F34: the commit the view was taken from is recorded beside it (07-34's
+    renames-since check reads it)."""
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    head = (night.attempt_dir(1) / driver.VIEW_HEAD).read_text(encoding="utf-8").strip()
+    assert head == night.base
+
+
+def test_pack_reads_the_view_src(tmp_path):
+    night = Night(tmp_path, sessions=[_view_session()], gate_exits=[1])
+    night.run(config={"attempts_per_function": 1})
+    attempt_dir = night.attempt_dir(1)
+    assert night.packed == [(PICK, attempt_dir, attempt_dir / "view" / "src")]
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_view_unit_lands_and_commits(tmp_path, committed):
+    """The driver copies the view unit into src/ before the lint and the gate; at that moment
+    src/ differs from HEAD only in the claimed unit, and the match commit holds exactly the
+    unit, status.csv, the feed and the log."""
+    night = Night(tmp_path, unit_committed=committed, sessions=[_view_session()], gate_exits=[0])
+    seen_by: dict[str, list] = {"lint": [], "gate": []}
+
+    def src_state() -> tuple[str, str]:
+        status = night.git("status", "--porcelain=v1", "--untracked-files=all", "--", "src")
+        return status, (night.repo / UNIT_REL).read_text(encoding="utf-8")
+
+    def lint(pick):
+        seen_by["lint"].append(src_state())
+        return night._lint(pick)
+
+    def gate(pick, n):
+        seen_by["gate"].append(src_state())
+        return night._gate(pick, n)
+
+    night.run(lint=lint, gate=gate)
+    code = " M" if committed else "??"
+    assert seen_by["gate"] == [(f"{code} {UNIT_REL}\n", VIEW_TEXT)]
+    assert seen_by["lint"] == seen_by["gate"]
+    assert night.commit_files("feat(") == sorted([UNIT_REL, STATUS_REL, FEED_NAME, LOG])
+    assert night.file_at("feat(", UNIT_REL) == VIEW_TEXT
+    assert night.git("status", "--porcelain=v1", "--", "src") == ""
+
+
+@pytest.mark.parametrize("committed", [True, False])
+def test_failed_gate_restores_only_the_unit(tmp_path, committed):
+    """A mismatch puts back only the landed unit: to HEAD's bytes, or deleted when HEAD has no
+    such file; include/ is never restored (no restore of all of include/, D-27 P4)."""
+    night = Night(tmp_path, unit_committed=committed, sessions=[_view_session()],
+                  gate_exits=[1])  # fmt: skip
+    night.run(config={"attempts_per_function": 1})
+    if committed:
+        assert _unit_text(night) == SCAFFOLD
+    else:
+        assert not (night.repo / UNIT_REL).exists()
+    assert night.git("status", "--porcelain=v1", "--untracked-files=all", "--", "src") == ""
+    restores = [call for call in night.git_calls if _verb(call) == "restore"]
+    assert not [call for call in restores if any(a.startswith("include") for a in call)]
+    assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
