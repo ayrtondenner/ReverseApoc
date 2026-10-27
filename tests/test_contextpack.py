@@ -286,7 +286,9 @@ def test_matched_callee_carries_its_prototype(tmp_path: Path):
 
 
 def test_externs_are_the_d_symbols_the_row_touches(tmp_path: Path):
-    assert _gather(1, tmp_path, {})["externs"] == ("D_00020100", "_g_counter")
+    # The symbols.csv data row _g_counter is C g_counter (07-16, D-29: its C name, not its
+    # linker name).
+    assert _gather(1, tmp_path, {})["externs"] == ("D_00020100", "g_counter")
     assert _gather(0, tmp_path, {})["externs"] == ()  # its only off32 targets code
     assert _gather(2, tmp_path, {})["externs"] == ()
 
