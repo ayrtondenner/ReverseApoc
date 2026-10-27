@@ -189,7 +189,60 @@ ALL PASS
 
 ### q3 training rule
 
-Pending (plan 07-02 Task 3).
+`uv run python .planning/spikes/007-locate-997-training/q3_training.py` (exit 0), kept in the
+gitignored `build/spike007-q3.out`:
+
+```
+PASS UFO2P.EXE unitr-reader keyword unitr.dat strings 1 at [0x000D4170] refs from [0x000B2A90] expected 0x000B2A90; call 0x00013E30 buffer 0x00241D98
+PASS UFO2P.EXE stat-update rows copying >= 8 fields from 0x00241D98 [0x000B2E80] (17 buffer fields) into [0x00144918]; reached 96 rows
+PASS UFO2P.EXE android-label label 0x000F12B6 keywords android+training True get_text 37/404 sites [0x0004F41A] guard compares [0x0004F3F5]
+PASS UFO2P.EXE android-string keyword android exact strings [0x000D2C50] refs from [0x0009B840]
+PASS UFO2P.EXE learning-ai-files keyword strings 3 refs from [0x000A5F40 0x000A6040 0x000A61E0]; reached from 0x000B2A90 [0x000A6040] (none without 0x000A49D0: True)
+PASS TACP.EXE unitr-writer keyword unitr.dat strings 1 at [0x000E0CFC] refs from [0x000156A0] expected 0x000156A0; call 0x00013FF0 buffer 0x002B9310 bytes 0x2238
+PASS TACP.EXE record-layout unit array 0x00109ED0 step 0x49c, buffer step 0x92, bytes 0x2238 = 60 x 0x92
+PASS TACP.EXE handoff-fields-agree writer fills 30 buffer fields from the unit array; the UFO2P stat update (UFO2P.EXE) copies 17, all filled True; 17 unit fields reach agents
+PASS TACP.EXE accrual-sites 2 rows [0x00060080 0x000B26F0] (serialised unit fields 30, applied 17; heuristic, data-field)
+PASS TACP.EXE learning-ai-files keyword strings 5 refs from [0x00014AF0 0x00078FE0 0x00079050 0x000B20B0]; reached from 0x000156A0 []
+ALL PASS
+```
+
+What the bytes show about #263-1:
+
+- **The hand-off is a record copy.** TACP's `func_000156A0` fills a buffer of 60 records of
+  0x92 bytes, one per battle unit (unit array `D_00109ED0`, 0x49C bytes per unit), and writes it
+  to `scenario/unitr.dat`. UFO2P's `func_000B2A90` loads the file into `D_00241D98`, and its
+  callee `func_000B2E80` copies 17 of those fields into the agent records at `D_00144918`.
+- **UFO2P applies the stats; it does not compute them.** Each of the 17 fields UFO2P copies is
+  one the TACP writer filled from a unit field. So the stats an agent brings back are battle-unit
+  fields TACP holds at the end of the battle.
+- **The improvement rule is on the TACP side**, where those 17 unit fields change during the
+  battle. q3 finds only two candidate rows for that accrual: `func_00060080` writes two of the
+  fields through the unit-array base, and `func_000B26F0` adds to one through a register base. A
+  unit pointer passed in from a caller is invisible to this heuristic, so the TACP accrual is
+  **not located**. The call-graph route of D-03 (q6, plan 07-08) or reading is needed.
+- **Androids.** The cityscape training screen `func_0004F100` shows the label at `0x000F12B6`
+  (get_text 37/404, keywords `android` + `training`) only on the branch guarded by a compare of
+  an agent-record field at `0x0004F3F5`. That is the android test of base training (#263-13).
+  q3 does not show whether the battle side skips androids. The plain `android` string is
+  referenced only by `func_0009B840`.
+- **The Learning AI files stay out of #263-1** (D-26). Their rows are research's rows. The TACP
+  writer reaches none of them. The UFO2P reader reaches `func_000A6040` only because it first
+  reloads the savegame through `func_000A49D0`; without that loader it reaches none.
+
+**#263-1 entry candidates** (plan 07-22 copies these into `config/mechanics.toml`):
+
+| EXE | Address | Evidence kind | Why |
+|---|---|---|---|
+| tacp | `0x000156A0` | file | writes `scenario/unitr.dat` from the unit array (q3 `unitr-writer`, `record-layout`) |
+| tacp | `0x00060080` | data-field | writes serialised unit fields through the unit-array base (heuristic; q3 `accrual-sites`) |
+| tacp | `0x000B26F0` | data-field | adds to a unit field the agents receive (heuristic; q3 `accrual-sites`) |
+| ufo2p | `0x000B2A90` | file | reads `scenario/unitr.dat` into `D_00241D98` (q3 `unitr-reader`) |
+| ufo2p | `0x000B2E80` | data-field | copies 17 result fields into the agent records `D_00144918`; reached from the reader (q3 `stat-update`) |
+| ufo2p | `0x0004F100` | string | android branch of base training: get_text 37/404 site `0x0004F41A`, guard `0x0004F3F5` (q3 `android-label`) |
+| ufo2p | `0x0009B840` | string | the only reference to the plain `android` string (q3 `android-string`) |
+
+The TACP accrual is a known gap: the call-graph closure from `0x000156A0`'s callers into the
+battle code is the route to close it.
 
 ## Planted failures
 
@@ -198,6 +251,7 @@ Pending (plan 07-02 Task 3).
 | `q1 --plant` | UFO2P expected reader `0x00011430` -> `0x00011440` | `FAIL UFO2P.EXE int1a-readers immediate [0x00011430] expected [0x00011440]`, `1 FAILED` | 1 |
 | `q1 --mutant` | every `mov reg, 0x1a` immediate in game rows zeroed in an in-memory copy of the flat image | UFO2P `int1a-readers immediate []` and `int1a-pinned-readers []` FAIL; TACP `int1a-readers immediate []` FAIL; `3 FAILED` (the readers are reported missing) | 1 |
 | `q2 --plant` | expected modulus 36 -> 144 (OpenApoc's assumed ticks per second) | `FAIL UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 144`, the same for TACP at `0x0003D184`, `2 FAILED` | 1 |
+| `q3 --plant` | TACP expected writer `0x000156A0` -> `0x000156B0` | `unitr-writer`, `record-layout`, `handoff-fields-agree`, `accrual-sites` and TACP `learning-ai-files` FAIL; `5 FAILED` | 1 |
 
 ## Investigation Trail
 
@@ -230,3 +284,9 @@ Pending (plan 07-02 Task 3).
   - TACP's start value comes from the bytes `D_000E6D66` (4, else 0) and `D_0027A805` (then 1).
   - TACP's `get_text` (`func_0005B360`, table `0x00292D18`) has fixups on only 19 of its first 50
     slots, so its labels are left to q4.
+- q3 first used an accrual heuristic that also counted read-modify-writes on `[esp + k]` stack
+  locals. That gave 10 TACP rows; excluding esp-based operands leaves 2. Two more details were
+  read by hand: the agent records are 0xCE bytes apart, and `func_000B3360` maps a result record
+  to its agent.
+- The android label is index 404 of section 37, so a walk capped at 400 strings per section
+  misses it. q3 walks the section until it reaches the address.
