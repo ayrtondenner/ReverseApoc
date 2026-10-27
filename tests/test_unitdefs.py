@@ -147,8 +147,9 @@ def test_markers_only_define_nothing():
 
 
 def test_runtime_and_data_rows_are_exempt():
-    rows = (FOO, FunctionRow(0x10020, 0x10030, "exit_", "runtime", UNIT, "runtime"),
-            FunctionRow(0x10030, 0x10040, "D_00010030", "data-in-code", UNIT, "runtime"))  # fmt: skip
+    runtime = FunctionRow(0x10020, 0x10030, "exit_", "runtime", UNIT, "runtime")
+    data = FunctionRow(0x10030, 0x10040, "D_00010030", "data-in-code", UNIT, "runtime")
+    rows = (FOO, runtime, data)
     defs = find("void Foo(void) {}\n", rows=rows)
     assert defs.defined == {FOO.start: "Foo"} and defs.problems == ()
 
@@ -182,7 +183,8 @@ def test_c_names():
     rows = (*EVERY_ROW, FunctionRow(0x10040, 0x10050, "func_00010040", "thunk", UNIT, "call"),
             FunctionRow(0x10050, 0x10060, "exit_", "runtime", UNIT, "runtime"))  # fmt: skip
     symbols = [SymbolRow(0x10010, "Foo_", "func"), SymbolRow(0x10040, "Jump_", "func"),
-               SymbolRow(0x10050, "exit_", "func"), SymbolRow(0x20000, "_g_vol", "data")]  # fmt: skip
+               SymbolRow(0x10050, "exit_", "func"),
+               SymbolRow(0x20000, "_g_vol", "data")]  # fmt: skip
     assert unitdefs.c_names(rows, symbols) == {
         "Foo": 0x10010, "func_00010020": 0x10020, "func_00010030": 0x10030, "Jump": 0x10040}
 
