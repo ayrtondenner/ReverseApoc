@@ -504,12 +504,26 @@ def _configure():
     return load()
 
 
+# 07-19 fix round 1 S1: after a directive's own `#`, a `#` or `##` operator (or its `%:` /
+# `%:%:` digraph) could stringize or paste a banned token (`__a##sm`) past the token scan.
+# Only the strict scan (any_pragma) refuses it: include/common.h's INCLUDE_ASM uses `##` (F16).
+_DIRECTIVE_HASH = re.compile(r"\s*(?:#|%:)")
+_HASH_OPERATOR = re.compile(r"#|%:")
+
+
+def _preprocessor_operator(logical: str) -> bool:
+    lead = _DIRECTIVE_HASH.match(logical)
+    return _HASH_OPERATOR.search(logical, lead.end() if lead else 0) is not None
+
+
 def _inline_asm(logical: str, *, any_pragma_aux: bool, any_pragma: bool = False) -> str | None:
     found = _INLINE_ASM.search(logical) or _PRAGMA_OPERATOR.search(logical)
     if found is not None:
         return f"inline assembly `{found.group()}`"
     if any_pragma and _PRAGMA.match(logical):
         return "a #pragma directive"
+    if any_pragma and _preprocessor_operator(logical):
+        return "a # or ## preprocessor operator (it could stringize or paste a banned token)"
     aux = _PRAGMA_AUX.match(logical)
     if aux is not None and (any_pragma_aux or _CODE_BODY in aux.group(1)):
         return "a #pragma aux" if any_pragma_aux else "a code-emitting #pragma aux (`=` body)"
