@@ -377,6 +377,57 @@ RUN_REASONS = {
     ENDED: (NOTHING_TO_DO, MAX_SESSIONS, TARGET_MATCHED, QUEUE_EXHAUSTED),
 }
 
+# Schema 2 (Phase 7, DEC-06/DEC-07, research section J): a v2 line carries "schema": 2 and
+# validates against RECORD_FIELDS_V2; a line without "schema" is v1 and validates against
+# RECORD_FIELDS unchanged, so the committed v1 history stays valid (D-23: never rewritten).
+SCHEMA_V2 = 2
+MATCHING, READABILITY = "matching", "readability"
+SESSIONS = (MATCHING, READABILITY)  # D-18: two session kinds, kept apart by stats
+LANDED = "LANDED"  # a readability session's unit landed; REFUSED (above) is its refusal
+SESSION_OUTCOMES = {
+    MATCHING: (MATCHED, PARTIAL, GAVE_UP),
+    READABILITY: (LANDED, PARTIAL, REFUSED, GAVE_UP),
+}
+_V2_OUTCOMES = tuple(dict.fromkeys(SESSION_OUTCOMES[MATCHING] + SESSION_OUTCOMES[READABILITY]))
+_C_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # v2: a renamed function keeps its C name (D-19)
+
+
+def _is_bool(value: object) -> bool:
+    return isinstance(value, bool)
+
+
+def _is_positive_number(value: object) -> bool:
+    return _number(value) and value > 0
+
+
+_GATE = _optional(_shaped({
+    "exit": _optional(_is_int),
+    "claimed_ok": _is_bool,
+    "regressions": _is_int,
+    "problems": _strings_list,
+}))  # fmt: skip
+_SCHEMA_V2_FIELD = {"schema": lambda value: type(value) is int and value == SCHEMA_V2}
+_V2_SESSION_FIELDS = {
+    **_SCHEMA_V2_FIELD,
+    "session": _one_of(*SESSIONS),
+    "pass": lambda value: _is_int(value) and value >= 1,
+    "worker": _is_int,
+}
+RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
+    KIND_ATTEMPT: {
+        **RECORD_FIELDS[KIND_ATTEMPT],
+        **_V2_SESSION_FIELDS,
+        "function": _matches(_C_NAME),
+        "outcome": _one_of(*_V2_OUTCOMES),  # and one of its session's (_kind_problem)
+        "model_requested": _is_text,
+        "budget_usd": _is_positive_number,
+        "hook_blocks": _is_int,
+        "gate": _GATE,
+        "sweep_source": _optional(_matches(_SOURCE)),
+        "sweep_cells_100": _strings_list,
+    },  # fmt: skip
+}
+
 
 def _strings(value: object) -> Iterable[str]:
     if isinstance(value, str):
@@ -390,24 +441,51 @@ def _strings(value: object) -> Iterable[str]:
             yield from _strings(item)
 
 
+def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
+    """The field table of `obj`'s schema and kind: no `schema` key is v1, `"schema": 2` (an
+    int, not a bool or a float) is v2, anything else is a RecordError."""
+    if "schema" not in obj:
+        table = RECORD_FIELDS
+    elif _SCHEMA_V2_FIELD["schema"](obj["schema"]):
+        table = RECORD_FIELDS_V2
+    else:
+        raise RecordError(f"unknown schema {obj['schema']!r}")
+    kind = obj.get("kind")
+    fields = table.get(kind) if isinstance(kind, str) else None
+    if fields is None:
+        version = "v1" if table is RECORD_FIELDS else "v2"
+        raise RecordError(f"unknown {version} record kind {kind!r}")
+    return fields
+
+
+def _kind_problem(obj: dict) -> str | None:
+    """The rule a record's key set and value types cannot state, or None."""
+    if obj["kind"] == KIND_RUN and obj["reason"] not in RUN_REASONS[obj["event"]]:
+        return f"run record: {obj['reason']!r} is no reason for {obj['event']}"
+    if "outcome" in obj and "session" in obj and obj["outcome"] not in SESSION_OUTCOMES[
+            obj["session"]]:  # fmt: skip
+        return f"{obj['kind']} record: {obj['outcome']!r} is no {obj['session']} outcome"
+    return None
+
+
 def validate_record(obj: object) -> None:
     """Raise RecordError unless `obj` is one attempts.jsonl record (D-23): the exact key set
-    of its kind (`attempt`, `abort`, `run`), every value of the pinned type or enum, a run
-    record's `reason` one of its event's (F30), and no string anywhere holding a hex run
-    longer than 64 characters (no game bytes, T-06-55)."""
+    of its schema and kind (v1 `attempt`, `abort`, `run`; v2 lines carry `"schema": 2`), every
+    value of the pinned type or enum, a run record's `reason` one of its event's (F30), a v2
+    outcome one of its session's (D-18), and no string anywhere holding a hex run longer than
+    64 characters (no game bytes, T-06-55)."""
     if not isinstance(obj, dict):
         raise RecordError(f"a record is a JSON object, not {type(obj).__name__}")
-    fields = RECORD_FIELDS.get(obj.get("kind"))  # type: ignore[arg-type]
-    if fields is None:
-        raise RecordError(f"unknown record kind {obj.get('kind')!r}")
+    fields = _record_fields(obj)
     missing, extra = sorted(set(fields) - set(obj)), sorted(set(obj) - set(fields))
     if missing or extra:
         raise RecordError(f"{obj['kind']} record: missing {missing}, extra {extra}")
     bad = [key for key, ok in fields.items() if not ok(obj[key])]
     if bad:
         raise RecordError(f"{obj['kind']} record: bad value for {', '.join(bad)}")
-    if obj["kind"] == KIND_RUN and obj["reason"] not in RUN_REASONS[obj["event"]]:
-        raise RecordError(f"run record: {obj['reason']!r} is no reason for {obj['event']}")
+    problem = _kind_problem(obj)
+    if problem:
+        raise RecordError(problem)
     if any(_LONG_HEX.search(text) for text in _strings(obj)):
         raise RecordError(f"{obj['kind']} record holds a hex string longer than 64 characters")
 
