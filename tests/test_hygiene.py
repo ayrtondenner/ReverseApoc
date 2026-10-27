@@ -294,6 +294,50 @@ def test_default_rule_doc_check_wants_a_row_per_exe():
     assert _default_rule_doc_problems(rule, toolchain, one_row) != []
 
 
+_RULES_SECTION = "## Compiler and flags per module"
+
+
+def _matching_rule_globs(matching: str) -> set[str]:
+    """The glob cell of every row of docs/matching.md's "Compiler and flags per module" table
+    (that section only, header and separator rows left out)."""
+    lines = matching.splitlines()
+    start = lines.index(_RULES_SECTION) + 1
+    end = next((i for i in range(start, len(lines)) if lines[i].startswith("## ")), len(lines))
+    rows = [line.split("|")[1].strip() for line in lines[start:end] if line.startswith("|")]
+    return set(rows[2:])  # the header row and the |---| separator
+
+
+def _undocumented_rules(cflags_text: str, matching: str) -> list[str]:
+    """The non-`*` rule globs of a cflags text with no row in the rules table."""
+    rules = parse_cflags(cflags_text, versions=tuple(load_watcom_manifest()))
+    documented = _matching_rule_globs(matching)
+    return [rule.glob for rule in rules if rule.glob != "*" and rule.glob not in documented]
+
+
+def test_every_rule_documented():
+    # 07-24 (D-12): every non-`*` rule of config/cflags.txt (an approved per-unit rule or a
+    # D-14 pin) has its own "Compiler and flags per module" row in docs/matching.md.
+    cflags_text = (REPO_ROOT / "config" / "cflags.txt").read_text(encoding="utf-8")
+    matching = (REPO_ROOT / "docs" / "matching.md").read_text(encoding="utf-8")
+    assert _undocumented_rules(cflags_text, matching) == []
+
+
+def test_every_rule_documented_fails_when_missing(tmp_path):
+    glob = "src/ufo2p/u_00060c50.c"
+    cflags = tmp_path / "cflags.txt"
+    rule = f"{glob}  wcc386@10.6 -4r -ot -s -fpi  # F-0001\n"
+    cflags.write_text("*  wcc386@10.6  -4r -s -fpi\n" + rule, encoding="utf-8")
+    table = _matching_rows("wcc386@10.6 | -4r -s -fpi", "wcc386@10.6 | -4r -s -fpi")
+    doc = "## Compiler and flags per module\n\n" + table + "\n## Known idioms\n\n| x | y |\n"
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), doc) == [glob]
+    prose = doc + f"\nA row for {glob} outside the table does not count.\n| {glob} | z |\n"
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), prose) == [glob]
+    row = f"| {glob} | UFO2P.EXE | wcc386@10.6 | -4r -ot -s -fpi | F-0001 | 2026-10-28 |\n"
+    documented = doc.replace(table, table + row)
+    assert _matching_rule_globs(documented) == {"*", glob}
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), documented) == []
+
+
 _HASH_PREFIX_DIGITS = 8
 
 
