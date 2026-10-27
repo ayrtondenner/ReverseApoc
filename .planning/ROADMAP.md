@@ -291,17 +291,17 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans:** 42 plans
+**Plans:** 7/42 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 07-01-PLAN.md — D-05/D-06 paperwork: done-rule rewording (DEC-03, DEC-05, SC3, SC5, roadmap row), decomp.wtf not re-evaluated (DEC-03, DEC-05, DEC-06)
-- [ ] 07-02-PLAN.md — spike 007 part 1 *(main checkout)*: q1 time base, q2 tick rule, q3 training rule with planted failures (DEC-01)
-- [ ] 07-03-PLAN.md — D-27 P1/P2: cflags rule by logical unit path, gate refuses uncommitted flags, real view-compile test (DEC-03, DEC-02)
-- [ ] 07-04-PLAN.md — hooks: owner-only cflags files, view-mode allowlist, view-unit scan, D-19 denies, readability kind (DEC-02, DEC-03)
-- [ ] 07-05-PLAN.md — callgraph.py: typed edges, mid-row/indirect/orphan reports, closure, SCCs (DEC-01)
-- [ ] 07-06-PLAN.md — progress page backlog 999.4: phone mosaic, keyboard/touch tooltips, visible bar (DEC-05)
-- [ ] 07-07-PLAN.md — attempts.jsonl v2 schema: per-attempt fields, limit/rename kinds, nightly totals (DEC-07, DEC-06)
+- [x] 07-01-PLAN.md — D-05/D-06 paperwork: done-rule rewording (DEC-03, DEC-05, SC3, SC5, roadmap row), decomp.wtf not re-evaluated (DEC-03, DEC-05, DEC-06)
+- [x] 07-02-PLAN.md — spike 007 part 1 *(main checkout)*: q1 time base, q2 tick rule, q3 training rule with planted failures (DEC-01)
+- [x] 07-03-PLAN.md — D-27 P1/P2: cflags rule by logical unit path, gate refuses uncommitted flags, real view-compile test (DEC-03, DEC-02)
+- [x] 07-04-PLAN.md — hooks: owner-only cflags files, view-mode allowlist, view-unit scan, D-19 denies, readability kind (DEC-02, DEC-03)
+- [x] 07-05-PLAN.md — callgraph.py: typed edges, mid-row/indirect/orphan reports, closure, SCCs (DEC-01)
+- [x] 07-06-PLAN.md — progress page backlog 999.4: phone mosaic, keyboard/touch tooltips, visible bar (DEC-05)
+- [x] 07-07-PLAN.md — attempts.jsonl v2 schema: per-attempt fields, limit/rename kinds, nightly totals (DEC-07, DEC-06)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 07-08-PLAN.md — spike 007 part 2 *(main checkout, owner checkpoint)*: get_text, tables, call graph, verdict, #997 report to the owner (DEC-01)
@@ -393,7 +393,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 0/41 | Planned | - |
+| 7. Mechanics-first decompilation | 7/42 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
