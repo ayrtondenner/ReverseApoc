@@ -1735,3 +1735,99 @@ def test_stage2_skipped_when_stage1_hits(env):
     assert "stage2" in doc and doc["stage2"] is None
     assert report.stage2 is None and report.stage2_best is None
     assert len(compiler.calls) == 30
+
+
+def best_cell(*flags: str) -> check.SweepCell:
+    return check.SweepCell(1, "10.6", flags, "", 95.0, True, 2)
+
+
+def test_sweep2_cells_from_ot():
+    """D-15 composition for best `-4r -ot -s -fpi`: O1 replaces -ot (8 letters, KKND's set), O2
+    adds each letter to -ot, Z adds a packing, F an FP scheduling; all under 10.6, all keeping
+    -4r, -s and -fpi (M, -zm, is Task 3's)."""
+    cells = check.sweep2_cells(best_cell("-4r", "-ot", "-s", "-fpi"))
+    letters = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
+    o1 = [("-4r", letter, "-s", "-fpi") for letter in letters]
+    o1.append(("-4r", "-of+", "-omiler", "-s", "-fpi"))
+    o2 = [("-4r", "-ot", letter, "-s", "-fpi") for letter in letters]
+    z = [("-4r", "-ot", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
+    f = [("-4r", "-ot", "-s", "-fpi", fp) for fp in ("-fp3", "-fp5")]
+    flags = [cell_flags for _, cell_flags in cells]
+    assert flags[:9] == o1 and flags[9:17] == o2 and flags[17:21] == z and flags[-2:] == f
+    assert len(cells) <= 24
+    assert {version for version, _ in cells} == {"10.6"}
+    assert len(set(flags)) == len(flags)
+    assert all({"-4r", "-s", "-fpi"} <= set(cell_flags) for cell_flags in flags)
+    assert check.SWEEP2_LETTERS == letters and check.SWEEP2_KKND == ("-of+", "-omiler")
+    assert check.SWEEP2_PACK == ("-zp1", "-zp2", "-zp4", "-zp8")
+    assert check.SWEEP2_FP == ("-fp3", "-fp5")
+
+
+def test_sweep2_cells_from_no_o():
+    """A best cell without an -o set (`-5r -s -fpi`) has no O2 cell; a __CHK caller's best cell
+    without -s still has none in any stage-2 cell."""
+    cells = check.sweep2_cells(best_cell("-5r", "-s", "-fpi"))
+    flags = [cell_flags for _, cell_flags in cells]
+    o1 = [("-5r", letter, "-s", "-fpi") for letter in check.SWEEP2_LETTERS]
+    o1.append(("-5r", "-of+", "-omiler", "-s", "-fpi"))
+    assert flags[:9] == o1
+    assert flags[9:13] == [("-5r", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
+    assert flags[-2:] == [("-5r", "-s", "-fpi", fp) for fp in ("-fp3", "-fp5")]
+    assert not [f for f in flags if set(f) & {"-ox", "-os", "-ot", "-oneatx"}]
+    no_stack = [cell_flags for _, cell_flags in check.sweep2_cells(best_cell("-4r", "-ox", "-fpi"))]
+    assert all("-s" not in cell_flags for cell_flags in no_stack)
+    assert ("-4r", "-ox", "-od", "-fpi") in no_stack
+
+
+def reloc_fails() -> FakeCompiler:
+    return FakeCompiler(omf_object(callee="func_00010020_"))
+
+
+@pytest.mark.parametrize(
+    ("percent", "compiler", "reloc_ok", "runs"),
+    [(90.0, FakeCompiler, True, True), (89.99, FakeCompiler, True, False),
+     (95.0, reloc_fails, False, False)],
+    ids=["90.0-runs", "89.99-not", "reloc-failed-not"],
+)  # fmt: skip
+def test_trigger_edges(env, percent, compiler, reloc_ok, runs):
+    """D-15/DEC-03 adjacency, end to end: stage 2 runs when no stage-1 cell is perfect and the
+    best one reaches 90.0 with its relocations passing."""
+    report = run_near_miss(env, FakeObjdiff(percent), compiler())
+    best = report.best[0]
+    assert (best.percent, best.reloc_ok) == (percent, reloc_ok)
+    assert (report.stage2 is not None) is runs
+    assert (report.to_json()["stage2"] is not None) is runs
+
+
+def sweep_cell(number: int, percent: float, *, reloc_ok: bool = True, differing: int = 0):
+    return check.SweepCell(number, "10.6", ("-4r", "-s", "-fpi"), "", percent, reloc_ok, differing)
+
+
+def test_trigger_edges_perfect_needs_zero_differing():
+    """A stage-1 cell at 100.0 with one differing byte is not perfect: stage 2 still runs from it.
+    (check's relocation check compares bytes too, so a compiled object cannot show this; the
+    trigger is judged on the cells.) A perfect cell anywhere stops stage 2; so does a best cell
+    whose relocations fail, and an empty or unmeasured stage 1."""
+    near = sweep_cell(1, 100.0, differing=1)
+    assert check.sweep2_trigger([near, sweep_cell(2, 91.0)]) == near
+    assert check.sweep2_trigger([sweep_cell(1, 92.0), sweep_cell(2, 100.0)]) is None
+    assert check.sweep2_trigger([sweep_cell(1, 90.0)]) == sweep_cell(1, 90.0)
+    assert check.sweep2_trigger([sweep_cell(1, 89.99)]) is None
+    assert check.sweep2_trigger([sweep_cell(1, 95.0, reloc_ok=False)]) is None
+    assert check.sweep2_trigger([]) is None
+    assert check.sweep2_trigger([check.SweepCell(1, "10.6", ("-4r",), check.NOT_INSTALLED)]) is None
+
+
+def test_every_cell_rule_parses():
+    """Every second-stage cell's one-rule text, for the best of any stage-1 cell, passes
+    parse_cflags: each flag is _SAFE_FLAG-legal, one option and not wrapper-owned."""
+    from reverseapoc.cflags import WRAPPER_OWNED, parse_cflags
+
+    for version, flags in check.sweep_cells(chk=True):
+        best = check.SweepCell(1, version, flags, "", 95.0, True, 1)
+        for cell_version, cell_flags in check.sweep2_cells(best):
+            spec = f"{check.SWEEP_COMPILER}@{cell_version}"
+            text = check.SWEEP_RULE.format(spec=spec, flags=" ".join(cell_flags))
+            (rule,) = parse_cflags(text, versions=check.SWEEP_VERSIONS)
+            assert rule.flags == cell_flags
+            assert not any(f.lower().startswith(WRAPPER_OWNED) for f in cell_flags)
