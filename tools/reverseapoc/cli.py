@@ -1640,6 +1640,25 @@ def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
     lo.set_defaults(mechanics_func=_mechanics_locate)
 
 
+# ---- flags: the owner-approval queue of per-unit cflags rules (D-12) ----
+
+
+def _cmd_flags(args: argparse.Namespace) -> int:
+    return 0
+
+
+def _add_flags_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("flags", help="per-unit cflags proposals (D-12)")
+    verbs = p.add_subparsers(dest="flags_verb", required=True)
+    pr = verbs.add_parser("propose")
+    pr.add_argument("--from-attempts", nargs="*", metavar="RUN", required=True)
+    pr.add_argument("--repo", type=Path)
+    ls = verbs.add_parser("list")
+    ls.add_argument("--json", action="store_true")
+    ls.add_argument("--repo", type=Path)
+    p.set_defaults(func=_cmd_flags)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -1706,6 +1725,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_attempt_command(sub)
     _add_drive_command(sub)
     _add_mechanics_command(sub)
+    _add_flags_command(sub)
     _add_watcom_commands(sub)
     return parser
 
