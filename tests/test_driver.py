@@ -1375,7 +1375,8 @@ def _no_match_anywhere(night: Night) -> None:
 
 
 def test_a_raising_match_commit_leaves_no_trace_of_a_match(tmp_path):
-    """J1: commit_paths fails with something other than a DriverError (a raising git)."""
+    """J1: the match commit (_commit_with_retry since 07-18) fails with something other than a
+    DriverError (a raising git)."""
     night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
     night.raise_verbs["commit"] = RuntimeError("made-up git crash")
     report = _run_contained(night)
@@ -1398,9 +1399,10 @@ def test_an_unwritable_message_file_leaves_no_trace_of_a_match(tmp_path):
 
 def test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged(tmp_path):
     """J1: the commit fails on a lock that is still held for the unstage and the reset: the
-    GAVE_UP record is still written, and every path left staged is named."""
+    GAVE_UP record is still written, and every path left staged is named. 07-18: the commit
+    is retried once on index.lock, so the lock fails it twice."""
     night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
-    night.fail_verbs.update({"commit": 1, "restore": 2})
+    night.fail_verbs.update({"commit": 2, "restore": 2})
     report = _run_contained(night)
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert _one(night.kinds("attempt"))["abort_reason"] == "tool"
