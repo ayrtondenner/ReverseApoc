@@ -1340,6 +1340,17 @@ def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_check_watcom)
 
 
+# ---- mechanics: the DEC-01 item-to-function map (stub, plan 07-10 RED) ----
+
+
+def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser("mechanics", help="the DEC-01 mechanics map")
+    verbs = p.add_subparsers(dest="mechanics_command", required=True)
+    w = verbs.add_parser("write")
+    w.add_argument("--config", type=Path)
+    w.set_defaults(func=lambda args: 1)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -1405,6 +1416,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_context_command(sub)
     _add_attempt_command(sub)
     _add_drive_command(sub)
+    _add_mechanics_command(sub)
     _add_watcom_commands(sub)
     return parser
 
