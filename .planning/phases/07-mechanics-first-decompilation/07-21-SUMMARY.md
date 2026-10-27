@@ -301,6 +301,66 @@ Execution context nonce: 36b3c54a172149c8
 - FOUND commits on this branch: 18ca25f, ad04001, 3d0dc7a, d83a28c, 5ca097e, d247ee7. `git rev-list --count 0fd6877..HEAD` = 6 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
+## Fix round 1
+
+**Findings (task review plus two automated security findings), with the orchestrator's rulings:**
+- **C1 (Critical, security S2): pinned paths were checked against each session's launch snapshot.**
+  - The pinned paths are .git/config, the git hooks, the settings files and the .pth files.
+  - A session launched after another live session's stray had that stray in its baseline.
+  - Once stop-all killed it, its audit "restored" the stray.
+  - Ruling: one night-level baseline.
+- **I1 (Important, security S1): a live session's write between `_verify_landing` and `git commit -- <paths>` was committed.**
+  - `git commit` re-reads the worktree after the check.
+  - Ruling: verify the committed blobs after the commit. On a mismatch, move HEAD back off the driver's own commit only, then undo.
+- **The reviewer's open point: another session's write elsewhere in the tree (for example another unit's src/ file during A's gate) could ride along unchecked.**
+  - Ruling: right before the match commit, every other git-visible path must equal HEAD or hold the driver's bytes.
+- **I2 (Important): after Ctrl+C, a halted worker's own guardrail stop was never re-raised.**
+  - Its strays were missing from the STOPPED `interrupted` record.
+  - Ruling: list them.
+
+**What changed (`tools/reverseapoc/driver.py`, `c119c09`):**
+- **C1, the baseline:**
+  - `_loop` takes `pinned_base = _pinned_state()` once, before the first launch.
+  - `_measure`, `_contain_one` and `_still_changed` compare with it and restore to it, through `_pinned_baseline`. Outside a night (the canary's probe) the snapshot is used as before.
+- **C1, the launch check:** under the gate lock, each launch compares its snapshot with the baseline (`_pinned_drift`). A difference is contained (back to the baseline) and stops the night (STOPPED `guardrail`) before the session starts.
+- **I1, the commit check:**
+  - `_commit_match` records HEAD before the commit, then `_verify_commit` compares `cat-file blob <new>:<path>` for the four paths with `landed_bytes` and `ledger.expected`.
+  - On a difference, `git update-ref HEAD <old> <new>` moves HEAD back. Its old-value guard means it only acts while HEAD is still that commit, and nothing else is reset.
+  - Each path is then contained (`_breach`) and `_Breach` goes into the existing `_undo_match`.
+  - Commits still go through plain `git commit`, so hooks run.
+- **Open point, the clean-tree check:**
+  - `_verify_landing` now takes the session. After its existing checks it runs `git status`, and every path `_unexplained` names other than the landing unit is contained by `_contain` (tracked: copied, then back to HEAD; new: moved to the quarantine).
+  - The night is then marked breached and the commit refused through `_Breach`. A new helper, `_contained_text`, writes the detail.
+- **I2:** `_stopped_workers` adds the night's `failure` (a halted worker's `_Stop` reason and detail) to the interrupted text.
+
+**Tests (RED `2f4bb5b` and `4d5199a`, then the fix `c119c09`), all in tests/test_driver_workers.py:**
+- **C1:**
+  - `test_a_later_sessions_baseline_never_restores_anothers_stray` follows the reviewer's sequence: A writes a stray to `.claude/settings.local.json`, then B launches; A's session waits for B's start or the night's stop. It checks that the file ends with its pre-night bytes and that the stray is in the quarantine.
+  - `test_containment_restores_the_night_baseline_not_the_launch_snapshot` covers the audit half: `_measure` and `_contain` against the baseline. I added it in the second RED commit once the launch check meant the integration test no longer reaches B's audit.
+- **I1:** `test_a_write_between_the_landing_check_and_the_commit_is_never_committed[unit|status.csv]`. The write is injected at the match commit's `git add`. The test checks: STOPPED `guardrail`, no feat commit (HEAD back on the base), no tampered bytes in HEAD or the worktree, the attempt GAVE_UP, and the tampered copy quarantined.
+- **Open point:** `test_another_dirty_path_at_the_match_commit_is_a_breach[untracked src unit|tracked tools/keep.py]`. A file written during A's gate gives STOPPED `guardrail` with no feat commit, the path named in the detail, put back and quarantined.
+- **I2:** `test_an_interrupt_record_lists_a_halted_workers_strays`. Ctrl+C while the second worker's session leaves `tools/x.py`: the STOPPED `interrupted` detail names it, and it is quarantined and gone from the tree.
+- **RED:** the first commit's 6 tests failed on their planned assertions. Classifier `RED_EVIDENCE_OK`, target `test_a_later_sessions_baseline_never_restores_anothers_stray`, `build/red/f1.xml`.
+  - B wrote the stray back.
+  - The tampered unit and the tampered status.csv were committed (two cases).
+  - The night ENDED with another path dirty (two cases).
+  - The interrupted detail lacked `tools/x.py`.
+  - The second RED commit's audit-half test failed: B's measure still reported a pinned change against its launch bytes.
+- **One test assertion relaxed in the fix commit.**
+  - A's own audit also keeps a quarantine copy of the restored settings file, because the restore changed its mtime (a fingerprint). That copy holds the original bytes.
+  - The test now requires the stray among the kept copies and allows nothing but the stray or the original bytes, instead of only the stray.
+  - Old code still fails it: the file ended as the stray.
+
+**Residuals (recorded, not changed):**
+- A write made and reverted by another session inside the window of A's gate could still sway the gate's status.csv rows. Two things still catch the writer: its transcript audit and the clean-tree check at the next commit.
+- The chore commit at night end still has 07-13's window between `_ledger_breaches` and `git add`.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_driver_workers.py tests/test_driver.py tests/test_drive.py tests/test_session.py`: 318 passed, 3 skipped (the pre-existing skips).
+- `uv run pytest -q` (host, worktree): 3447 passed, 247 skipped. No new skip and no new skip reason.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
