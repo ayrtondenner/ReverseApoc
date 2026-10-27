@@ -30,7 +30,7 @@ tech-stack:
   patterns:
     - "A session edits only <attempt dir>/view/src/<exe>/<unit>.c; the driver lands it into src/ before the lint and the unchanged gate"
     - "The audit checks the tree against HEAD plus a ledger of the driver's own writes, not against a pre-session snapshot"
-    - "Every driver write of attempts.jsonl, status.csv or the feed is followed by ledger.note(...)"
+    - "Every driver write of attempts.jsonl, status.csv or the feed first checks ledger.holds(rel) (else a guardrail breach), then records the bytes the driver computed it wrote (ledger.set); only the gate subprocesses' output is read back (fix round 1)"
 
 key-files:
   created: []
@@ -134,7 +134,7 @@ status: complete
 - **Landing.** `_land` is the first step of `_judge`. It copies the view unit into `src/<exe>/<unit>.c`, refusing a link or a non-file.
   - `_reset` restores only that unit: `git restore --source=HEAD -- <unit>`, or it deletes the copy the driver landed when HEAD has no such unit. It never touches `include/`.
 - **Audit (Task 2).**
-  - `_Ledger` records the bytes after every driver write of the log, `status.csv` and the feed. It also covers records, the gate, the partial gate, the pre-gate restore and the F19 truncation.
+  - `_Ledger` holds the bytes the driver last wrote to the log, `status.csv` and the feed. As first built it read each file back after a driver write, which would have accepted a tamper as the driver's own bytes. Fix round 1 corrected this: every driver write now first checks that the file still holds the expected bytes, then records the computed bytes. See "Fix round 1" below.
   - `_unexplained` flags every git-visible path that neither equals HEAD nor holds, unstaged, the ledger's bytes.
   - `_view_hashes` covers every view file except the unit and `view/build/`. `_view_changes` adds the unit when it is no longer a regular file. Strays go through the Phase 6 `_guardrail` (quarantine, restore, STOPPED).
 - **No headers (D-19).** `_commit_headers`, `_Session.new_headers` and the `include/` arms are removed. `_judge`'s pre-gate snapshot holds only `status.csv` and the feed. `_undo_match` truncates the log to its length before the MATCHED record (F19).
@@ -272,6 +272,54 @@ Execution context nonce: 4f0f04e95e3d63b7
 - FOUND: tools/reverseapoc/driver.py, tools/reverseapoc/session.py, tools/reverseapoc/hooks.py, tests/fakeclaude.py, tests/test_driver.py, tests/test_session.py, tests/test_hooks.py, tests/test_drive.py
 - FOUND commits: fdd832a, aafa993, e4a9ce5, 2794edb, c4d4cb1, cd53dbb (`git rev-list --count 8a8f98e..HEAD` = 6 before this SUMMARY commit)
 - No STATE.md or ROADMAP.md change.
+
+## Fix round 1
+
+**Finding (Important, the review of 07-13):**
+- The problem: `_Ledger.note`, `_append` and the gate and partial-gate `finally` blocks recorded whatever bytes were on disk after each driver write, and nothing checked the file first.
+- The risk: with concurrent sessions, a tamper of attempts.jsonl, status.csv or the feed made before a driver append or during a gate would have been recorded as the driver's own bytes. The next commit would then have carried it to main without going through the gate.
+- An earlier version of this SUMMARY said the opposite. That claim, and the `_Ledger` docstring, are now corrected.
+
+**Ruling applied (orchestrator):**
+- Before every driver write to a ledgered path, the file must still match the ledger: HEAD's bytes, or the driver's last recorded bytes. Otherwise the night stops as a guardrail breach.
+- After the write, the ledger records the bytes the driver computed it wrote, never a read-back.
+
+**What changed (`tools/reverseapoc/driver.py`):**
+- **New `_Ledger` methods:**
+  - `expected(rel)` gives the driver's last bytes, or HEAD's through `git cat-file blob HEAD:<rel>`.
+  - `holds(rel)` requires a regular file (never a link) with exactly those bytes.
+  - `set(rel, data)` records the computed bytes.
+- **`note` is kept only for the gate.** `gate` and `gate --partial` are subprocesses that write status.csv and the feed. Their output is read back only after `_guard` checked that both files held the expected bytes when the gate started. **Residual (in the docstring):** a change made by someone else while the gate runs is taken for the gate's output.
+- **Breach handling (`_guard` and `_breach`).** A file that does not hold its bytes is copied to the quarantine (moved when no bytes are expected) and put back to the expected bytes. The attempt in progress is reset, `breached` is set so nothing is committed that night, and the night stops STOPPED `guardrail`.
+- **Where each write path records its bytes:**
+  - **`_append`, every record:** guard, then the ledger records the expected bytes plus the line (`record_line`, factored out of `append_record`).
+  - **`_judge` and `_partial_gate`:** guard status.csv and the feed before the gate. The pre-gate snapshot is now the ledger's expected bytes.
+  - **`_restore_pre_gate`:** a file changed since the gate wrote it is a breach (put back to the pre-gate bytes). A good restore records the pre-gate bytes.
+  - **`_drop_log_tail` (F19):** guard, truncate, then record the expected prefix.
+- **Commit checks:**
+  - `_commit_match` runs `_verify_landing` right before `git add`. It checks that status.csv, the feed and the log hold the driver's bytes and that src/ holds the unit it landed. A failure goes through `_undo_match` with reason `guardrail`.
+  - `run()` checks every ledgered file once more before the final record and the chore commit (`_ledger_breaches`).
+  - A STARTED record that finds the log changed refuses the night.
+  - **Residual:** a tamper in the instant between `_verify_landing` and `git add` is not seen.
+
+**Tests:**
+- **RED `2286cd0`.** 4 failed, 3 passed. Classifier `RED_EVIDENCE_OK` (target `test_a_log_tamper_between_driver_appends_stops_the_night`, JUnit XML `build/red/f1.xml`).
+  - `test_a_log_tamper_between_driver_appends_stops_the_night`: ENDED instead of STOPPED, and the tamper went into the chore commit.
+  - `test_a_table_tamper_before_the_gate_stops_the_night`: the gate ran.
+  - `test_a_feed_tamper_before_the_partial_gate_stops_the_night`: the partial gate ran.
+  - `test_a_log_tamper_before_the_match_commit_is_never_committed`: the match was committed.
+  - The 3 passes are `test_an_untampered_night_commits_the_match_and_the_log` (normal path, ruling (c)) and the two F19 tests.
+  - The F19 tests' other writer now appends through the driver's own `_append` (`_capture_nights`), as a 07-18 worker of the same process would. A foreign raw append is now, correctly, a breach.
+- **GREEN `b12e7c1`.**
+  - **Test fix:** the feed test's `git restore` hook re-tampered during the breach's own reset, so it now fires once.
+  - **Added in GREEN:** `test_a_table_tamper_before_the_chore_commit_is_never_committed`, for the end-of-night check. I proved it bites by disabling `_ledger_breaches`: it failed, and I then restored the check.
+  - **Not tested:** the pre-gate-restore breach branch. Nothing is called between the gate's return and that restore, so a fake has no point at which to tamper.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_driver.py tests/test_drive.py tests/test_session.py tests/test_hooks.py`: 574 passed, 5 skipped (the same 5 pre-existing skips).
+- `uv run pytest -q` (host, worktree): 3046 passed, 236 skipped. No new skip reason.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
 
 ---
 *Phase: 07-mechanics-first-decompilation*
