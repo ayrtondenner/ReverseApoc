@@ -90,6 +90,8 @@ from .mechanics import MechanicsError
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
+from .readlint import EXIT_TOOL as READLINT_EXIT_TOOL
+from .readlint import ReadlintError, run_readlint
 from .relocs import RelocError
 from .score import ScoreError, ScoreReport, assess
 from .splice import DEFAULT_OUT, SpliceError, rebuild
@@ -879,6 +881,50 @@ def _add_lint_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--stamp", type=Path, metavar="FILE", help="write FILE when the lint passes")
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_lint)
+
+
+# ---- the readability linter: readlint (host, DEC-04, D-20) ----
+
+
+def _cmd_readlint(args: argparse.Namespace) -> int:
+    units = [u for cell in args.units or () for u in cell.split(",") if u]
+    try:
+        result = run_readlint(args.paths or [args.src], src_root=args.src, config_root=args.config,
+                              units=units or None, tier=args.tier, report=args.report)  # fmt: skip
+    except ReadlintError as exc:
+        print(f"reverseapoc readlint: error: {exc}", file=sys.stderr)
+        return READLINT_EXIT_TOOL
+    print(json.dumps(result.to_json(), indent=2) if args.json else result.format())
+    return result.exit_code()
+
+
+def _add_readlint_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "readlint",
+        help="check matched units for readability: placeholder names, header comments, unnamed "
+        "fields, raw offsets, magic literals (D-20; exit 0 clean, 1 violations, 2 tool error)",
+    )
+    p.add_argument(
+        "paths", nargs="*", type=Path, metavar="PATHS", help="files or directories; default: --src"
+    )
+    p.add_argument(
+        "--units", action="append", metavar="EXE/UNIT,...",
+        help="check only these units (e.g. ufo2p/u_000a34f0)",
+    )  # fmt: skip
+    p.add_argument(
+        "--tier", type=int, metavar="N",
+        help="check only the units holding tier N members (config/mechanics-members.csv)",
+    )  # fmt: skip
+    p.add_argument(
+        "--report", action="store_true",
+        help="exit 0; print per-rule and per-file counts and the floating literals",
+    )  # fmt: skip
+    p.add_argument("--src", type=Path, default=DEFAULT_SRC, help="src root; default: %(default)s")
+    p.add_argument(
+        "--config", type=Path, default=DEFAULT_CONFIG, help="config root; default: %(default)s"
+    )
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+    p.set_defaults(func=_cmd_readlint)
 
 
 # ---- the single-unit check (SPL-11, D-16) ----
@@ -1778,6 +1824,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_units_command(sub)
     _add_ghidra_export_command(sub)
     _add_lint_command(sub)
+    _add_readlint_command(sub)
     _add_check_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)

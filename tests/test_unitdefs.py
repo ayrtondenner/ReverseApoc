@@ -244,3 +244,11 @@ def test_placeholders():
     rows = (*EVERY_ROW, FunctionRow(0x10050, 0x10060, "exit_", "runtime", UNIT, "runtime"))
     assert unitdefs.placeholders(rows) == {
         "func_00010010": 0x10010, "func_00010020": 0x10020, "func_00010030": 0x10030}
+
+
+def test_file_scope_definitions_by_any_identifier():
+    """The public depth-0 scan readlint places definitions with (07-27): any identifier, in file
+    order, keywords and nested braces left out."""
+    code = ("int tick_count(void)\n{\n    if (x) {\n    }\n}\n"
+            "void (*cb)(int);\nstatic int f(int (*g)(void))\n{\n}\n")  # fmt: skip
+    assert unitdefs.file_scope_definitions(code) == ["tick_count", "f"]
