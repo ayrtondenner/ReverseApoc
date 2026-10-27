@@ -315,6 +315,8 @@ def test_data_rename_with_no_data_object_is_refused():
 
 
 def test_reserved_macros_are_read_from_the_reserved_headers():
+    """Fix round 2 C1: proposals owns the reserved-header list (07-13 removed the hooks' copy)."""
+    assert proposals.RESERVED_HEADERS == ("common.h", "watcom_compat.h")
     names = proposals.reserved_macros()
     assert {"INCLUDE_ASM", "COMMON_H", "WATCOM_COMPAT_H", "__far", "_cdecl"} <= names
 
@@ -404,6 +406,27 @@ BAD_TEXTS = {
     "define-common-guard": ("#define COMMON_H\n", "reserved"),
     "brace-body": ("#define BEGIN {\n", "constant"),
     "statement-body": ("#define STOP return;\n", "constant"),
+    # fix round 2 S3: reserved identifiers and asm keywords anywhere in the code
+    "body-include-asm": ("#define MARK INCLUDE_ASM\n", "reserved"),
+    "body-pragma-keyword": ("#define P __pragma\n", "reserved"),
+    "body-emit": ("#define E __emit\n", "reserved"),
+    "body-pragma-operator": ("#define P _Pragma\n", "reserved"),
+    "body-bare-asm": ("#define A asm\n", "reserved"),
+    "body-asm": ("#define A _asm\n", "reserved"),
+    "body-asm2": ("#define A __asm\n", "reserved"),
+    "declaration-asm": ("extern int asm;\n", "reserved"),
+    "marker": ("INCLUDE_ASM(func_00010010);\n", "reserved"),
+    "across-lines": ("#define M \\\nINCLUDE_ASM\n", "reserved"),
+    # fix round 2 M1: compiler-predefined and C89-reserved macro names
+    "define-watcomc": ("#define __WATCOMC__ 1100\n", "reserved"),
+    "undef-clang": ("#undef __clang__\n", "reserved"),
+    "define-inline-functions": ("#define __INLINE_FUNCTIONS__\n", "reserved"),
+    "define-underscore-upper": ("#define _Foo 1\n", "reserved"),
+    # fix round 2 M2: digraphs and brackets in an object-like body
+    "brace-digraph": ("#define BEGIN <%\n", "constant"),
+    "close-digraph": ("#define END %>\n", "constant"),
+    "bracket-digraph": ("#define FIRST tbl<:0:>\n", "constant"),
+    "bracket": ("#define FIRST tbl[0]\n", "constant"),
     "nul": ("int x;\x00\n", "control"),
     "vertical-tab": ("int x;\x0b\n", "control"),
     "delete": ("int x;\x7f\n", "control"),
