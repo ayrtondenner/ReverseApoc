@@ -179,3 +179,169 @@ def test_placeholder_is_proposals():
     from reverseapoc import proposals
 
     assert readlint.PLACEHOLDER is proposals.PLACEHOLDER
+
+
+# ---- Task 2: RL02-RL06, the tagged waiver and floats in report mode ----
+
+
+def in_function(statements: str, prefix: str = "") -> str:
+    """A matched unit whose one definition, tick_count (renamed F1), holds `statements`."""
+    return (f'#include "common.h"\n\n{prefix}{GOOD_HEADER}'
+            f"int tick_count(int x, int *a, int i)\n{{\n    {statements}\n    return 0;\n}}\n")  # fmt: skip
+
+
+def test_clean_unit_has_no_violation(tmp_path):
+    result = lint(tmp_path, CLEAN, symbols=[TICK])
+    assert result.violations == ()
+    assert result.files_checked == (f"src/{EXE}/{UNIT}.c",)
+
+
+def test_rl02_no_comment(tmp_path):
+    text = '#include "common.h"\n\nint tick_count(void)\n{\n    return 0;\n}\n'
+    result = lint(tmp_path, text, symbols=[TICK])
+    assert [ln for ln, _m in hits(result, "RL02")] == [3]
+
+
+def test_rl02_comment_separated_by_a_declaration(tmp_path):
+    text = (f'#include "common.h"\n\n{GOOD_HEADER}int other;\n'
+            "int tick_count(void)\n{\n    return 0;\n}\n")  # fmt: skip
+    result = lint(tmp_path, text, symbols=[TICK])
+    assert [ln for ln, _m in hits(result, "RL02")] == [9]
+    assert hits(result, "RL03") == []
+
+
+def test_rl02_comment_inside_the_declaration_is_not_a_header(tmp_path):
+    text = '#include "common.h"\n\nint /* tick_count: a b c */ tick_count(void)\n{\n}\n'
+    assert [ln for ln, _m in hits(lint(tmp_path, text, symbols=[TICK]), "RL02")] == [3]
+
+
+BAD_HEADERS = {
+    "wrong-name": ("tick_count: returns", "other_count: returns"),
+    "two-word-purpose": ("returns the current tick count.", "returns count."),
+    "no-purpose": ("tick_count: returns the current tick count.", "tick_count returns ticks"),
+    "wrong-exe": ("UFO2P.EXE 0x00010000", "TACP.EXE 0x00010000"),
+    "wrong-address": ("UFO2P.EXE 0x00010000", "UFO2P.EXE 0x00010040"),
+    "lower-case-address": ("UFO2P.EXE 0x00010000", "UFO2P.EXE 0x0001000a"),
+    "no-address": (" * Address: UFO2P.EXE 0x00010000\n", ""),
+    "two-addresses": (" * Address: UFO2P.EXE 0x00010000\n",
+                      " * Address: UFO2P.EXE 0x00010000\n * Address: UFO2P.EXE 0x00010000\n"),
+    "evidence-kind": ("Evidence: call:", "Evidence: wiki:"),
+    "empty-evidence": ("Evidence: call: read by the timer loop", "Evidence: call:"),
+    "blank-evidence": ("Evidence: call: read by the timer loop", "Evidence: call:    "),
+    "no-evidence": (" * Evidence: call: read by the timer loop\n", ""),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", BAD_HEADERS)
+def test_rl03(tmp_path, case):
+    old, new = BAD_HEADERS[case]
+    assert old in CLEAN
+    result = lint(tmp_path, CLEAN.replace(old, new), symbols=[TICK])
+    assert hits(result, "RL03"), result.format()
+    assert hits(result, "RL02") == []
+
+
+def test_rl03_placeholder_row_and_second_evidence(tmp_path):
+    header = ("/*\n * func_00010040: clears the second counter value.\n"
+              " * Address: UFO2P.EXE 0x00010040\n * Evidence: string: 0x0012EFAC\n"
+              " * Evidence: vocab: Agent\n */\n")  # fmt: skip
+    text = f"{header}void func_00010040(void)\n{{\n}}\n"
+    result = lint(tmp_path, text)
+    assert hits(result, "RL03") == []
+    assert [ln for ln, _m in hits(result, "RL01")] == [7]
+
+
+def test_rl03_name_with_no_row(tmp_path):
+    text = CLEAN.replace("tick_count", "helper_count")
+    result = lint(tmp_path, text, symbols=[TICK])
+    assert any("helper_count" in m for _ln, m in hits(result, "RL03"))
+
+
+def test_rl03_tacp_unit(tmp_path):
+    text = CLEAN.replace("UFO2P.EXE", "TACP.EXE")
+    symbols = [SymbolRow(F1, "tick_count_", "func")]
+    assert lint(tmp_path, text, exe="tacp", symbols=symbols).violations == ()
+
+
+def test_rl04(tmp_path):
+    text = ("struct S { int unk_4; int field_0x8; char pad[2]; int ok; };\n"
+            "struct T { int padding_end; };\nstruct U { int paddle; int gaps2; };\n"
+            "union V { struct { int unk; } inner; long filler, undefined1; };\n"
+            "typedef struct { int Unknown; int fieldOfView; } W;\n")  # fmt: skip
+    result = lint(tmp_path, text)
+    found = sorted(m.split()[0] for _ln, m in hits(result, "RL04"))
+    assert found == sorted(["unk_4", "field_0x8", "pad", "padding_end", "unk", "filler",
+                            "undefined1", "Unknown"])  # fmt: skip
+
+
+def test_rl04_in_a_function(tmp_path):
+    result = lint(tmp_path, in_function("struct { int gap_0; } s;"), symbols=[TICK])
+    assert [m.split()[0] for _ln, m in hits(result, "RL04")] == ["gap_0"]
+
+
+RL05 = {
+    "*(int *)(a + 0x10)": 1,
+    "(short *)((char *)a + 16)": 1,
+    "*(int *)(a - 4)": 1,
+    "*(unsigned char *)(a + 2 + i)": 1,
+    "*(int *)a": 0,
+    "(T *)q": 0,
+    "*(int *)(a + i)": 0,
+    "*(int *)(a + 0)": 0,
+    "(int)(x + 4)": 0,
+    "f(a * 4)": 0,
+}
+
+
+@pytest.mark.parametrize("expr", RL05)
+def test_rl05(tmp_path, expr):
+    result = lint(tmp_path, in_function(f"x = {expr};"), symbols=[TICK])
+    assert len(hits(result, "RL05")) == RL05[expr]
+
+
+RL06 = [  # (file-scope prefix, statement, RL06 violations, waivers)
+    ("", "x = 36;", 1, 0),
+    ("", "switch (x) { case 36: break; }", 1, 0),
+    ("", "f(4);", 1, 0),
+    ("", "x = a[i * 4];", 0, 0),
+    ("", "x = a[4];", 0, 0),
+    ("", "x = x & 0xFF;", 0, 0),
+    ("", "x = x & 0xF0;", 1, 0),
+    ("", "x &= 0xFFFFFF00;", 0, 0),
+    ("", "x = ~0x7;", 0, 0),
+    ("", "x = x << 3;", 0, 0),
+    ("", "x = x << 32;", 1, 0),
+    ("", "x = 4 << i;", 0, 0),
+    ("", "x = x * 3;", 1, 0),
+    ("", "x = x * 4;", 0, 0),
+    ("", "x = 8 + i;", 0, 0),
+    ("", "x = -4;", 1, 0),
+    ("", "x = -1;", 0, 0),
+    ("", "x = 0;", 0, 0),
+    ("", "x = 1u;", 0, 0),
+    ("#define TICKS 36\n", "x = TICKS;", 0, 0),
+    ("enum { TICKS = 36 };\n", "x = TICKS;", 0, 0),
+    ("", "x = 36; /* lit: ticks per game second */", 0, 1),
+    ("", "x = 36; /* ticks per game second */", 1, 0),
+    ("", "x = 36; /* lit: */", 1, 0),
+    ("", "x = 'A';", 0, 0),
+]
+
+
+@pytest.mark.parametrize(("prefix", "statement", "count", "waivers"), RL06,
+                         ids=[case[0].strip() or case[1] for case in RL06])  # fmt: skip
+def test_rl06_table(tmp_path, prefix, statement, count, waivers):
+    result = lint(tmp_path, in_function(statement, prefix), symbols=[TICK])
+    assert len(hits(result, "RL06")) == count, result.format()
+    assert sum(result.waivers.values()) == waivers
+
+
+def test_floats_report_only(tmp_path):
+    text = in_function("x = 0.5;")
+    strict = lint(tmp_path, text, symbols=[TICK])
+    assert strict.violations == () and strict.floats == ()
+    report = lint(tmp_path, text, symbols=[TICK], report=True)
+    assert [(f.line, f.text) for f in report.floats] == [(10, "0.5")]
+    assert "0.5" in report.format()
+    assert report.to_json()["floats"] == [{"path": f"src/{EXE}/{UNIT}.c", "line": 10,
+                                           "text": "0.5"}]  # fmt: skip
