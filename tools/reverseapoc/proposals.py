@@ -24,14 +24,38 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
-from .functions import ADDRESS_DIGITS, SYMBOL_KINDS
+from . import hooks, unitdefs
+from .functions import (
+    ADDRESS_DIGITS,
+    KIND_GAME,
+    KIND_RUNTIME,
+    KIND_THUNK,
+    SYMBOL_KINDS,
+    FunctionRow,
+    SymbolRow,
+    data_name,
+    game_name,
+)
 
 OP_RENAME, OP_HEADER = "rename", "header"
 OPS = (OP_RENAME, OP_HEADER)
 KINDS = SYMBOL_KINDS  # symbols.csv kinds: ("func", "data")
+FUNC_KIND = KINDS[0]
+NAME_MAX = 63  # characters of a C name (C89 guarantees only 31 significant; Watcom reads more)
+_KIB = 1024
+HEADER_TEXT_MAX = 64 * _KIB  # characters (= bytes: the text is ASCII) of one header proposal
+# R5 (owner-confirmed 2026-10-27): Ghidra's and our placeholders; readlint RL01 uses the same.
+PLACEHOLDER = re.compile(r"(?:FUN|sub|DAT|LAB|PTR|UNK)_[0-9A-Fa-f]+|func_[0-9A-F]{8}|D_[0-9A-F]{8}")
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # ASCII only (\w would take letters like é)
+# The hooks' new-header shape: lower case only, so no case variant of a reserved name passes
+# on a case-insensitive file system.
+_HEADER_PATH = re.compile(r"include/([a-z0-9_]+\.h)")
+RESERVED_HEADERS = hooks._RESERVED_HEADERS  # common.h, watcom_compat.h: one list, the hooks'
+_RENAMED_KINDS = (KIND_GAME, KIND_THUNK)  # the functions.csv kinds a func rename may name
 EXES = ("ufo2p", "tacp")  # config/<exe> stems, as the driver's records name them
 EVIDENCE_KINDS = ("string", "table", "call", "vocab")
 EVIDENCE_TEXT_MAX = 200  # characters of evidence text after `<kind>: `
@@ -173,18 +197,152 @@ def read_proposals(path: Path) -> list[Rename | Header]:
     return [parse_line(line, lineno) for lineno, line in lines if line.strip()]
 
 
-# ---- Task 2 interface skeleton (behaviour follows in GREEN) ----
-
-HEADER_TEXT_MAX = 64 * 1024
+# ---- may a proposal be applied? (the driver asks under the gate lock, 07-34) ----
 
 
 def name_problem(name: str) -> str | None:
+    """Why `name` cannot be a C name the driver gives a row, or None: not an ASCII C
+    identifier, longer than NAME_MAX, a C89 or Watcom keyword, or placeholder-shaped (a
+    rename that keeps a placeholder look would still fail readlint RL01)."""
+    if not _IDENTIFIER.fullmatch(name):
+        return f"{name!r} is not a C identifier (ASCII letters, digits and _, no leading digit)"
+    if len(name) > NAME_MAX:
+        return f"{name} is {len(name)} characters, more than {NAME_MAX}"
+    if name in unitdefs.C_KEYWORDS:
+        return f"{name} is a C89 or Watcom keyword"
+    if PLACEHOLDER.fullmatch(name):
+        return f"{name} is placeholder-shaped (FUN_/sub_/DAT_/LAB_/PTR_/UNK_, func_, D_)"
     return None
 
 
-def rename_problem(rename, *, symbols, functions, runtime_names, src_names, data_ranges=()):
+def linker_name(name: str, kind: str) -> str:
+    """The linker name of C name `name` (unitdefs.c_name_of run backwards): `Foo` -> `Foo_`
+    for a func, `g_vol` -> `_g_vol` for data."""
+    if kind == FUNC_KIND:
+        return name + unitdefs.FUNC_LINK_SUFFIX
+    return unitdefs.DATA_LINK_PREFIX + name
+
+
+def rename_problem(
+    rename: Rename,
+    *,
+    symbols: Iterable[SymbolRow],
+    functions: Sequence[FunctionRow],
+    runtime_names: Iterable[str],
+    src_names: Mapping[str, str],
+    data_ranges: Sequence[tuple[int, int]] = (),
+) -> str | None:
+    """Why `rename` cannot be applied to its EXE's naming state, or None.
+
+    `symbols` and `functions` are the EXE's symbols.csv and functions.csv rows, `runtime_names`
+    its runtime publics and aliases (functions.csv runtime rows count too), `src_names` every
+    file-scope name of the committed src/ units mapped to where it is used (a repo-relative
+    path), `data_ranges` the LE data objects (checked when given, as SymbolTable.build does).
+
+    Refused: a name_problem; a func rename of an address that starts no game or thunk row; a
+    data rename of an address inside a functions.csv row (code) or outside the data objects;
+    the row's current C name (nothing to rename); and a name whose C or linker spelling another
+    symbols.csv row, a runtime public or a src/ file-scope name already uses (T-07-56). A
+    symbols.csv name without Watcom's `_` raises unitdefs.UnitDefsError: that is broken naming
+    state, not a bad proposal."""
+    problem = name_problem(rename.name) or _target_problem(rename, functions, data_ranges)
+    if problem is not None:
+        return problem
+    symbol_rows = list(symbols)
+    current = _current_name(rename, symbol_rows)
+    if rename.name == current:
+        return f"{rename.name} is already the C name of {rename.kind} {_hex(rename.address)}"
+    spellings = {rename.name, linker_name(rename.name, rename.kind)}
+    return (_symbols_use(rename, spellings, symbol_rows)
+            or _runtime_use(rename, spellings, runtime_names, functions)
+            or _src_use(rename, src_names))  # fmt: skip
+
+
+def _hex(address: int) -> str:
+    return f"0x{address:0{ADDRESS_DIGITS}X}"
+
+
+def _target_problem(
+    rename: Rename, functions: Sequence[FunctionRow], data_ranges: Sequence[tuple[int, int]]
+) -> str | None:
+    """Why the row `rename` names is not one its kind may rename, or None."""
+    where = f"{rename.kind} rename of {_hex(rename.address)}"
+    if rename.kind == FUNC_KIND:
+        row = next((r for r in functions if r.start == rename.address), None)
+        if row is None or row.kind not in _RENAMED_KINDS:
+            found = "no row" if row is None else f"the {row.kind} row {row.name}"
+            return f"{where}: {found} starts there, not a game or thunk row"
+        return None
+    row = next((r for r in functions if r.start <= rename.address < r.end), None)
+    if row is not None:
+        return f"{where}: the address is code, inside the {row.kind} row {row.name}"
+    if data_ranges and not any(start <= rename.address < end for start, end in data_ranges):
+        return f"{where}: the address lies in no data object"
     return None
+
+
+def _current_name(rename: Rename, symbols: Sequence[SymbolRow]) -> str:
+    """The C name the row has now: its symbols.csv name's, else its placeholder."""
+    for symbol in symbols:
+        if symbol.address == rename.address and symbol.kind == rename.kind:
+            return unitdefs.c_name_of(symbol.name, symbol.kind)
+    return game_name(rename.address) if rename.kind == FUNC_KIND else data_name(rename.address)
+
+
+def _symbols_use(rename: Rename, spellings: set[str], symbols: Sequence[SymbolRow]) -> str | None:
+    """Another symbols.csv row whose C or linker name is one of `spellings`, named."""
+    for symbol in symbols:
+        if symbol.address == rename.address and symbol.kind == rename.kind:
+            continue  # the row being renamed gives its name up
+        if spellings & {symbol.name, unitdefs.c_name_of(symbol.name, symbol.kind)}:
+            return (f"{rename.name} is already used by symbols.csv {symbol.kind} "
+                    f"{_hex(symbol.address)} ({symbol.name})")  # fmt: skip
+    return None
+
+
+def _runtime_use(
+    rename: Rename, spellings: set[str], runtime_names: Iterable[str],
+    functions: Sequence[FunctionRow],
+) -> str | None:  # fmt: skip
+    """A runtime public whose name, or its C name read as a func or as data, is one of
+    `spellings`, named (fail closed: a runtime public's own kind is not known here)."""
+    publics = {*runtime_names, *(row.name for row in functions if row.kind == KIND_RUNTIME)}
+    for public in sorted(publics):
+        taken = {public, public.removesuffix(unitdefs.FUNC_LINK_SUFFIX),
+                 public.removeprefix(unitdefs.DATA_LINK_PREFIX)}  # fmt: skip
+        if spellings & taken:
+            return f"{rename.name} is already used by the runtime public {public}"
+    return None
+
+
+def _src_use(rename: Rename, src_names: Mapping[str, str]) -> str | None:
+    where = src_names.get(rename.name)
+    if where is None:
+        return None
+    return f"{rename.name} is already a file-scope name in {where}"
 
 
 def header_problem(header: Header) -> str | None:
-    return None
+    """Why `header` cannot be written, or None: its path is not a bare lower-case
+    `include/<name>.h` or names a reserved header (common.h, watcom_compat.h: INCLUDE_ASM and
+    the Watcom keywords live there), or its text is not ASCII, is larger than
+    HEADER_TEXT_MAX, or fails the hooks' scans (inline asm or any #pragma, M14; an #include of
+    anything but a bare header name, CR-02) (T-07-55)."""
+    found = _HEADER_PATH.fullmatch(header.path)
+    if found is None:
+        return f"path '{header.path}' is not a bare lower-case include/<name>.h"
+    if found.group(1) in RESERVED_HEADERS:
+        return f"path '{header.path}' is reserved: the driver never writes it (D-19)"
+    return _header_text_problem(header.text)
+
+
+def _header_text_problem(text: str) -> str | None:
+    if not text.isascii():
+        return "header text is not ASCII"
+    if len(text) > HEADER_TEXT_MAX:
+        return f"header text is {len(text)} bytes, more than {HEADER_TEXT_MAX // _KIB} KiB"
+    problem = hooks.asm_problem(text, any_pragma=True)
+    if problem is not None:
+        return f"header text: {problem}"
+    include = hooks.include_problem(text)
+    return f"header text: {include}" if include is not None else None
