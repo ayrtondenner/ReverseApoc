@@ -257,7 +257,8 @@ class Night:
         self.seen.append({"files": files, "dirs": dirs, "view": view.is_dir(),
                           "src_unit": unit.read_bytes() if unit.is_file() else None})  # fmt: skip
 
-    def _session(self, argv, *, cwd, env, transcript, timeout_s):
+    def _session(self, argv, *, cwd, env, transcript, timeout_s, **hooks):
+        """`hooks`: the driver's on_start/on_end (07-21), passed on to run_session."""
         spec = self._current
         self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
         self._see(env)
@@ -269,7 +270,7 @@ class Night:
             raise spec.raises
         extra = {"clock": _JumpClock()} if spec.timeout else {}
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
-                             **extra)  # fmt: skip
+                             **extra, **hooks)  # fmt: skip
         for rel, text in spec.files:
             _write(Path(cwd) / rel, text)
         for rel, text in spec.append:

@@ -53,6 +53,16 @@ One gate lock serialises every shared write (the landing section, `gate --partia
 record append) and one git lock every driver git call; git and sessions run with
 GIT_OPTIONAL_LOCKS=0, and `git add`/`git commit` retry once on an index.lock error.
 
+Workers (07-21; D-06, D-07): the coordinator (the main thread, `_Coordinator`) owns the picker
+and hands each function's pass to one of `workers` worker threads (`_Worker`); a pick whose
+unit another pass holds is skipped for now and handed out later, never dropped. One worker runs
+on the calling thread, exactly the Phase 6 loop. Sessions run at once; the pre-session snapshot,
+the audit and every landing hold the gate lock, so a gate sees src/ equal to HEAD but the unit
+it lands. A LIMIT session pauses every worker (`_Pause`: one backoff, then exactly one probe
+launch). Any worker's stop (or an interrupt on the main thread) stops them all: every live
+session tree in the pid registry (run_session's on_start/on_end) is killed, each attempt is
+contained and reset uncounted, and the first stop writes the one STOPPED record.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -100,7 +110,7 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .score import Candidate, assess, candidates
-from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, run_session
+from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, kill_tree, run_session
 from .status import MATCHED as STATUS_MATCHED
 from .status import PARTIAL as STATUS_PARTIAL
 from .status import read_status, status_path
@@ -231,7 +241,8 @@ class Deps:
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
     checkout. `say(text)` names one progress line: an attempt's start, a usage-limit wait or
     the attempt's outcome; the drive verb wires `console`, which stamps it and stays silent in
-    --json; the default prints nothing (quick 261026-9ue)."""
+    --json; the default prints nothing (quick 261026-9ue). `kill(pid)` kills a live session's
+    whole tree (session.kill_tree) when the night stops (07-21 stop-all)."""
 
     queue: Callable[[Container[Key]], Iterable[Pick]]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
@@ -252,6 +263,7 @@ class Deps:
     # failed check is one string. Called after the last session, before the ENDED record.
     end_of_run: Callable[[], Sequence[str]] = tuple
     say: Callable[[str], None] = _quiet
+    kill: Callable[[int], None] = kill_tree  # 07-21 stop-all: a live session's whole tree
 
 
 @dataclass(frozen=True)
@@ -1293,6 +1305,76 @@ class _Halt(Exception):
 _TICK_S = 0.2  # the coordinator's wait between checks, so the main thread sees an interrupt
 
 
+class _Pause:
+    """D-07 with Phase 6 D-08: one usage-limit pause shared by every worker, under the
+    night's condition `cond`. A session that ends LIMIT while no pause holds starts it
+    (`on_limit`): its worker waits the backoff (60, 120, 240 s, then 300 s polls by the shared
+    `streak`) while no worker launches (`wait_to_launch` blocks); sessions already running
+    finish and are salvaged or judged as usual. When the backoff ends (`backoff_done`)
+    exactly one launch is the probe (`probe_taken`): a probe that is not LIMIT clears the
+    pause for all and restarts the streak (`on_clear`); another LIMIT renews the pause one
+    step longer. A LIMIT from a session launched before the pause leaves it as it is. With one
+    worker every launch after a LIMIT is the probe, which is the Phase 6 backoff exactly."""
+
+    def __init__(self, cond: threading.Condition, stop: threading.Event,
+                 clock: Callable[[], float]) -> None:  # fmt: skip
+        self.cond = cond
+        self.stop = stop
+        self.clock = clock
+        self.paused = False
+        self.paused_until = 0.0  # on `clock`: when the current backoff ends
+        self.streak = 0
+        self.due = False  # the backoff has been waited: the next launch is the probe
+        self.probe_taken = False
+        self.waiting = 0  # workers held right now (announced on `cond`)
+
+    def wait_to_launch(self) -> bool:
+        """Block while the pause holds; True when this launch is the probe. A stopping night
+        raises _Halt instead (nothing launches any more)."""
+        with self.cond:
+            self.waiting += 1
+            self.cond.notify_all()
+            try:
+                while True:
+                    if self.stop.is_set():
+                        raise _Halt()
+                    if not self.paused:
+                        return False
+                    if self.due and not self.probe_taken:
+                        self.probe_taken = True
+                        return True
+                    self.cond.wait(_TICK_S)
+            finally:
+                self.waiting -= 1
+
+    def on_limit(self, probe: bool) -> int | None:
+        """A session ended LIMIT: start (or, for the probe, renew) the pause and return the
+        backoff its worker waits; None when a pause already holds (the session ran before)."""
+        with self.cond:
+            if self.paused and not probe:
+                return None
+            seconds = BACKOFF_S[self.streak] if self.streak < len(BACKOFF_S) else POLL_S
+            self.streak += 1
+            self.paused, self.due, self.probe_taken = True, False, False
+            self.paused_until = self.clock() + seconds
+            self.cond.notify_all()
+            return seconds
+
+    def backoff_done(self) -> None:
+        """The backoff has been waited: the next launch, by any worker, is the probe."""
+        with self.cond:
+            self.due = True
+            self.cond.notify_all()
+
+    def on_clear(self, probe: bool) -> None:
+        """A session that was not LIMIT: the probe clears the pause for every worker and the
+        streak starts again; any other session leaves a holding pause alone."""
+        with self.cond:
+            if probe or not self.paused:
+                self.paused, self.due, self.probe_taken, self.streak = False, False, False, 0
+                self.cond.notify_all()
+
+
 class _Worker:
     """D-06: one worker of the night, numbered `ident` (0..workers-1, the claim's `worker`). It
     runs one function's pass (`_Night._function`: up to attempts_per_function sessions, each
@@ -1359,9 +1441,11 @@ class _Coordinator:
                 self.picked = True
                 self._dispatch(pick, difficult)
             self._drain()
-        except BaseException:  # an interrupt on the main thread: stop every worker first
+        except BaseException as exc:  # an interrupt on the main thread: stop every worker first
             night._stop_all()
             self._drain()
+            if not isinstance(exc, Exception) and self.threads:
+                night.interrupted += night._stopped_workers()
             raise
         night._raise_failure()
         with night.cond:
@@ -1444,17 +1528,22 @@ class _Night:
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
         self.matched = 0
-        self.limit_streak = 0
         self.done: set[Key] = set()
-        # D-06: per worker thread: `worker` (its number) and `live` (its session to reset if a
-        # later step raises).
+        # D-06: per worker thread: `worker` (its number), `live` (its session to reset if a
+        # later step raises) and `probe` (its launch is the usage-limit probe).
         self.local = threading.local()
-        # 07-21: the coordinator's condition: the counters, the dispatch and the stop. Taken
-        # only for short steps and never while waiting for the gate lock (order: gate, cond).
+        # 07-21: the coordinator's condition: the counters, the dispatch, the pause and the
+        # stop. Taken only for short steps and never while waiting for the gate lock (order:
+        # gate, then cond).
         self.cond = threading.Condition()
         self.stop = threading.Event()  # set by the first failure (stop-all) or an interrupt
         self.failure: BaseException | None = None  # the first worker failure, re-raised
         self.halt_notes: list[str] = []  # what each halted worker's containment did
+        self.pause = _Pause(self.cond, self.stop, deps.clock)  # D-07: one for every worker
+        # 07-21 stop-all: worker -> the pid of its live session (run_session's on_start/on_end)
+        self.pids: dict[int, int] = {}
+        self.pid_lock = threading.Lock()
+        self.killed: list[int] = []  # the pids stop-all killed
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
@@ -1507,10 +1596,47 @@ class _Night:
                 self.halt_notes.append(note)
 
     def _stop_all(self) -> None:
-        """Stop-all (D-08 with workers): no worker launches or lands anything more."""
+        """Stop-all (D-08 with workers): no worker launches or lands anything more, and every
+        live session tree in the pid registry is killed; each worker then contains and resets
+        its own attempt (`_launch`) and leaves (_Halt)."""
         with self.cond:
             self.stop.set()
             self.cond.notify_all()
+        with self.pid_lock:
+            pids = sorted(set(self.pids.values()))
+        for pid in pids:
+            self._kill(pid)
+
+    def _kill(self, pid: int) -> None:
+        try:
+            self.deps.kill(pid)
+        except Exception:  # noqa: BLE001 - a tree already gone; its worker still contains it
+            pass
+        with self.pid_lock:
+            self.killed.append(pid)
+
+    def _on_start(self, pid: int) -> None:
+        """run_session's on_start: this worker's session is live. Registered and checked under
+        one lock, so a session that starts as the night stops is killed too."""
+        with self.pid_lock:
+            self.pids[self.worker] = pid
+            stopping = self.stop.is_set()
+        if stopping:
+            self._kill(pid)
+
+    def _on_end(self, pid: int) -> None:
+        with self.pid_lock:
+            if self.pids.get(self.worker) == pid:
+                del self.pids[self.worker]
+
+    def _stopped_workers(self) -> str:
+        """What stop-all did on an interrupt, for the STOPPED `interrupted` record."""
+        with self.pid_lock:
+            killed = sorted(set(self.killed))
+        text = "; every worker stopped"
+        if killed:
+            text += f"; killed the session trees of pids {', '.join(map(str, killed))}"
+        return "; ".join([text, *self.halt_notes])
 
     def _halt_if_stopping(self) -> None:
         """Between steps of a pass: leave quietly once the night is stopping."""
@@ -1789,6 +1915,7 @@ class _Night:
         transient = 0
         while True:
             self._halt_if_stopping()
+            probe = self.pause.wait_to_launch()  # D-07: no launch while the pause holds
             claim = _Claim(pick, self.config.run_id, self.repo, n)
             session = self._launch(claim)
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
@@ -1797,12 +1924,11 @@ class _Night:
             disposition = session.disposition
             if disposition is Disposition.LIMIT:
                 matched = self._salvage(session)
-                self._backoff(pick, n)
+                self._limited(pick, n, probe)
                 if matched:
                     return MATCHED
                 continue
-            with self.cond:
-                self.limit_streak = 0
+            self.pause.on_clear(probe)
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 transient += 1
@@ -1812,13 +1938,28 @@ class _Night:
                 continue
             return self._counted(session)
 
-    def _backoff(self, pick: Pick, n: int) -> None:
-        with self.cond:
-            streak = self.limit_streak
-            self.limit_streak += 1
-        seconds = BACKOFF_S[streak] if streak < len(BACKOFF_S) else POLL_S
+    def _limited(self, pick: Pick, n: int, probe: bool) -> None:
+        """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
+        backoff, then the next launch of any worker is the probe; under a pause another worker
+        started, this worker just waits at its next launch."""
+        seconds = self.pause.on_limit(probe)
+        if seconds is None:
+            self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
+            return
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
-        self.deps.sleep(seconds)
+        try:
+            self._nap(seconds)
+        finally:
+            self.pause.backoff_done()
+
+    def _nap(self, seconds: float) -> None:
+        """The backoff wait. With the real clock it ends early when the night stops, so a stop
+        or an interrupt never waits out a 300 s poll; an injected `Deps.sleep` (the tests' fake
+        clock) is called as it is."""
+        if self.deps.sleep is time.sleep:
+            self.stop.wait(seconds)
+        else:
+            self.deps.sleep(seconds)
 
     # --- one session ---
 
@@ -1990,7 +2131,8 @@ class _Night:
             result = self.deps.session(self.deps.argv(prompt), cwd=self.repo,
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
-                                       timeout_s=self.config.wall_clock_s)  # fmt: skip
+                                       timeout_s=self.config.wall_clock_s,
+                                       on_start=self._on_start, on_end=self._on_end)  # fmt: skip
         except BaseException as exc:
             # Third pass: contain what the session left before the stop. Minor 8: an interrupt
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
@@ -2190,9 +2332,12 @@ class _Night:
         stray = self._strays(session)
         if not stray:
             return
-        if session.counted:
+        # 07-21 stop-all: a session the stop killed is contained like any other, but neither
+        # counted nor recorded (the first failure writes the night's STOPPED record).
+        counted = session.counted and not self.stop.is_set()
+        if counted:
             self._count()
-        self._guardrail(session, stray, record=session.counted)
+        self._guardrail(session, stray, record=counted)
 
     def _guardrail(
         self, session: _Session, stray: Sequence[str], *, record: bool, extra: Sequence[str] = ()
