@@ -29,6 +29,7 @@ Every mapping and tuple is sorted by address, so two builds of the same inputs a
 
 from __future__ import annotations
 
+import heapq
 from bisect import bisect_right
 from collections import defaultdict, deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
@@ -308,13 +309,142 @@ def closure(
     return frozenset(seen)
 
 
+# ---- strongly connected components (iterative Tarjan) ----
+
+
+class _Tarjan:
+    """Tarjan's algorithm with an explicit work stack, so a long chain cannot hit Python's
+    recursion limit. `succ` holds each node's successors inside the node set, sorted."""
+
+    def __init__(self, succ: Mapping[int, Sequence[int]]) -> None:
+        self.succ = succ
+        self.index: dict[int, int] = {}
+        self.low: dict[int, int] = {}
+        self.stack: list[int] = []
+        self.on_stack: set[int] = set()
+        self.found: list[frozenset[int]] = []
+
+    def run(self) -> list[frozenset[int]]:
+        for node in sorted(self.succ):
+            if node not in self.index:
+                self._component_walk(node)
+        return self.found
+
+    def _enter(self, node: int) -> None:
+        self.index[node] = self.low[node] = len(self.index)
+        self.stack.append(node)
+        self.on_stack.add(node)
+
+    def _component_walk(self, root: int) -> None:
+        self._enter(root)
+        work = [(root, 0)]
+        while work:
+            node, i = work[-1]
+            if i < len(self.succ[node]):
+                work[-1] = (node, i + 1)
+                self._step(node, self.succ[node][i], work)
+                continue
+            work.pop()
+            if work:
+                parent = work[-1][0]
+                self.low[parent] = min(self.low[parent], self.low[node])
+            if self.low[node] == self.index[node]:
+                self._pop_component(node)
+
+    def _step(self, node: int, nxt: int, work: list[tuple[int, int]]) -> None:
+        if nxt not in self.index:
+            self._enter(nxt)
+            work.append((nxt, 0))
+        elif nxt in self.on_stack:
+            self.low[node] = min(self.low[node], self.index[nxt])
+
+    def _pop_component(self, head: int) -> None:
+        members = set()
+        while True:
+            node = self.stack.pop()
+            self.on_stack.discard(node)
+            members.add(node)
+            if node == head:
+                break
+        self.found.append(frozenset(members))
+
+
+def _leaves_first(
+    components: Sequence[frozenset[int]], succ: Mapping[int, Sequence[int]]
+) -> tuple[frozenset[int], ...]:
+    """The components in a canonical leaves-first order: a component comes out once every
+    component it has an edge into is out, and among those ready the smallest address goes first."""
+    owner = {node: i for i, comp in enumerate(components) for node in comp}
+    outgoing = [{owner[d] for n in comp for d in succ[n]} - {i}
+                for i, comp in enumerate(components)]  # fmt: skip
+    incoming: defaultdict[int, list[int]] = defaultdict(list)
+    for i, targets in enumerate(outgoing):
+        for target in targets:
+            incoming[target].append(i)
+    pending = [len(targets) for targets in outgoing]
+    ready = [(min(comp), i) for i, comp in enumerate(components) if not pending[i]]
+    heapq.heapify(ready)
+    ordered = []
+    while ready:
+        _, i = heapq.heappop(ready)
+        ordered.append(components[i])
+        for caller in incoming[i]:
+            pending[caller] -= 1
+            if not pending[caller]:
+                heapq.heappush(ready, (min(components[caller]), caller))
+    return tuple(ordered)
+
+
 def sccs(graph: CallGraph, nodes: Iterable[int]) -> tuple[frozenset[int], ...]:
-    """RED stub."""
-    return ()
+    """The strongly connected components of the graph restricted to `nodes` (edges leaving the
+    set are ignored), leaves first, ties by smallest address. Pure and deterministic."""
+    members = frozenset(nodes)
+    succ = {node: sorted({e.dst for e in graph.callees(node) if e.dst in members})
+            for node in sorted(members)}  # fmt: skip
+    return _leaves_first(_Tarjan(succ).run(), succ)
+
+
+# ---- reach: hops and the weakest edge kind on the chosen shortest path ----
+
+ENTRY = "entry"  # the `via` of a root
+_ROOT_RANK = -1  # stronger than every edge kind
+
+
+def _next_level(
+    graph: CallGraph,
+    frontier: Iterable[int],
+    best: Mapping[int, tuple[int, int]],
+    stop: frozenset[int],
+) -> dict[int, int]:
+    """The nodes one hop past `frontier` not reached yet, each with the strongest weakest-edge
+    rank over the edges that reach it."""
+    level: dict[int, int] = {}
+    for node in frontier:
+        if node in stop:
+            continue
+        weakest = best[node][1]
+        for edge in graph.callees(node):
+            if edge.dst in best:
+                continue
+            rank = max(weakest, EDGE_KINDS.index(edge.kind))
+            level[edge.dst] = min(rank, level.get(edge.dst, rank))
+    return level
 
 
 def reach(
     graph: CallGraph, roots: Iterable[int], *, stop: frozenset[int] = frozenset()
 ) -> dict[int, tuple[int, str]]:
-    """RED stub."""
-    return {}
+    """Every node reachable from `roots`, mapped to (hops, via): `via` is the weakest edge kind on
+    a shortest path, choosing among shortest paths the one whose weakest edge is strongest (rank
+    = position in EDGE_KINDS). Roots map to (0, "entry"); a node in `stop` is reached but not
+    expanded. Sorted by address."""
+    best = {root: (0, _ROOT_RANK) for root in roots}
+    frontier = sorted(best)
+    hops = 0
+    while frontier:
+        hops += 1
+        level = _next_level(graph, frontier, best, stop)
+        best.update((node, (hops, rank)) for node, rank in level.items())
+        frontier = sorted(level)
+    return {node: (h, ENTRY if rank == _ROOT_RANK else EDGE_KINDS[rank])
+            for node, (h, rank) in sorted(best.items())}  # fmt: skip
