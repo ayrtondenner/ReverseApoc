@@ -291,7 +291,7 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans:** 19/42 plans executed
+**Plans:** 20/42 plans executed
 
 Plans:
 **Wave 1**
@@ -318,7 +318,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [x] 07-17-PLAN.md — flags propose/regate/list, the review queue, D-16 re-derivation (DEC-03, AGT-11)
-- [ ] 07-18-PLAN.md — claims, drive.lock, gate and git locks, concurrency-safe writes (DEC-02)
+- [x] 07-18-PLAN.md — claims, drive.lock, gate and git locks, concurrency-safe writes (DEC-02)
 - [x] 07-19-PLAN.md — D-19 naming-proposal format and validators (DEC-02, DEC-04)
 - [x] 07-20-PLAN.md — asm list generated and signed off by the owner *(main checkout, owner checkpoint)* (DEC-01, DEC-03)
 
@@ -393,7 +393,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 19/42 | In Progress | - |
+| 7. Mechanics-first decompilation | 20/42 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
