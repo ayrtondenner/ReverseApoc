@@ -56,6 +56,7 @@ CALL_DEPTH = 2  # functions called inside a loop span, then their callees
 ADD_WINDOW = 4  # instructions between the `add` and the `cmp` of an accumulator
 SUB_WINDOW = 12  # instructions between the `cmp` and the `sub` of the same modulus
 TABLE_WINDOW = 9  # instructions between a speed load and the jump-table `jmp` it indexes
+GUARD_WINDOW = 10  # instructions before a busy-wait head searched for its skip tests
 LOAD_OPS = frozenset({"mov", "movsx", "movzx"})
 JUMP_TABLE = re.compile(r"^dword ptr cs:\[(e[a-z]{2})\*4 \+ 0x[0-9a-f]+\]$|^dword ptr \[(e[a-z]{2})"
                         r"\*4 \+ 0x[0-9a-f]+\]$")  # fmt: skip
@@ -71,6 +72,9 @@ EXPECTED = {
         "clock": 0x0004AB30,  # located by this spike
         "accumulator": 0x000D4D6E,
         "speed": 0x000D4D58,
+        "no_wait": 0x000D4D5C,  # fix round 1: the no-wait frame counter
+        "speed_setters": {0x00050920, 0x00050970, 0x000509C0, 0x00050A20, 0x00050A80,
+                          0x00050AE0},
         "get_text": 0x00063800,
         "section_table": 0x000F3794,
         "sections": 50,
@@ -388,6 +392,60 @@ def claim_pacing(report: Report, img: Image, acc: Accumulator | None) -> None:
     name = "tacp-paces-on-same-bios-tick" if img.name == "TACP.EXE" else "paces-on-bios-tick"
     report.claim(img.name, bool(waits), name,
                  f"rows calling the clock {hxs(steps)}; busy-wait on int386 0x1A [{waits}]")
+    claim_wait_skip(report, img, acc, steps)
+
+
+def wait_guards(img: Image, row: int, wait: Loop) -> set[int]:
+    """Globals read just before the busy-wait head by a test whose conditional jump lands past
+    the wait (the conditions under which a frame does not wait)."""
+    insns = img.insns(img.starts[row])
+    k = next(n for n, i in enumerate(insns) if i.va == wait.head)
+    window = insns[max(0, k - GUARD_WINDOW) : k]
+    found: set[int] = set()
+    last_skip = 0
+    for n, insn in enumerate(window):
+        dest = img.target(insn) if insn.is_conditional else None
+        if dest is None or dest <= wait.back or n == 0:
+            continue
+        last_skip = n
+        test = window[n - 1]
+        if (g := mem_global(img, test)) is not None:
+            found.add(g)
+            continue
+        tested = full(operands(test)[0]) if test.op_str else None
+        for prior in reversed(window[max(0, n - 4) : n - 1]):
+            ops = operands(prior)
+            if ops and full(ops[0]) == tested:
+                if (g := mem_global(img, prior)) is not None:
+                    found.add(g)
+                break
+    if not found:  # the skip tests a flag computed earlier: every global read before it
+        found = {g for i in window[:last_skip] if (g := mem_global(img, i)) is not None}
+    return found
+
+
+def claim_wait_skip(report: Report, img: Image, acc: Accumulator | None, steps: dict) -> None:
+    """Fix round 1: the frame does not always wait. Report the globals guarding the wait and,
+    for UFO2P, that every speed setter also writes the no-wait counter."""
+    guards = set().union(*(wait_guards(img, va, lp) for va, lp in steps.items() if lp)) \
+        if steps else set()
+    exp = EXPECTED[img.name]
+    setters = set()
+    if acc is not None and exp.get("no_wait") is not None:
+        for row in img.walked():
+            hits = {mem_global(img, i) for i in img.insns(row)
+                    if i.mnemonic == "mov" and i.op_str and "[" in operands(i)[0]}
+            if {acc.speed, exp["no_wait"]} <= hits:
+                setters.add(row.start)
+    if exp.get("no_wait") is None:
+        ok = bool(guards)
+    else:
+        ok = exp["no_wait"] in guards and exp["speed_setters"] <= setters
+    detail = f"globals tested right before the busy-wait by a jump past it {hxs(guards)}"
+    if exp.get("no_wait") is not None:
+        detail += (f"; rows writing both the speed and {hx(exp['no_wait'])}: {len(setters)}, "
+                   f"the 6 speed setters among them {exp['speed_setters'] <= setters}")
+    report.claim(img.name, ok, "wait-skip-guards", detail)
 
 
 def claim_speeds(report: Report, img: Image, acc: Accumulator | None) -> None:
