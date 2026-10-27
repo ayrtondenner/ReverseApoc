@@ -1185,12 +1185,15 @@ def test_claim_without_unit_file_writes_nothing(repo):
     proposals = _attempt(repo) / "proposals.jsonl"
     env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
            "REVERSEAPOC_PROPOSALS": native(proposals)}  # fmt: skip
-    targets = [_unit(repo), repo / "include" / "fx.h", notes, proposals, _view_unit(repo),
+    targets = [_unit(repo), repo / "include" / "fx.h", notes, proposals,
                repo / "config" / "ufo2p" / "symbols.csv"]  # fmt: skip
     for target in targets:
         decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
         assert decision.deny, target
         assert LEGACY_REASON in decision.reason, decision.reason
+    # a view-shaped unit is build output to a session the driver gave no unit file
+    view = matching(in_repo(write(native(_view_unit(repo)), SCAFFOLD), repo), env)
+    assert view.deny and "build/ is protected" in view.reason, view.reason
     claim = "ufo2p/u_000a34f0"
     for rel in [UNIT, "include/new.h", "build/driver/r/proposals.jsonl"]:
         assert not hooks.matching_write_allowed(

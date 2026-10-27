@@ -2865,7 +2865,9 @@ def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
 
 def run_canary(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
-    ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
+    ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12), in view
+    mode like every session (07-13, D-24: a view of HEAD, which must hold that matched unit,
+    else the canary is refused before the session). PASS
     only when: the init event is clean (check_init), the three forbidden calls are in the
     result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
     context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
@@ -2880,13 +2882,17 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
         raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
                                 "already ran with this --run ID; give a new one")  # fmt: skip
-    attempt_dir.mkdir(parents=True)
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
-    claim = _Claim(pick, options.run_id, repo, 1)
-    base = seams.base_env if seams.base_env is not None else os.environ
-    env = {**claim.env(base), attempt.DIR_ENV: str(attempt_dir),
-           attempt.NOTES_ENV: str(attempt_dir / attempt.NOTES_FILE)}  # fmt: skip
+    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR)
     probe = _probe(options, seams)
+    listed = _git_ok(probe.deps.git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
+    if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
+        raise Refused("canary unit", f"HEAD has no {claim.unit_rel}, the matched unit the "
+                                     "canary's view and check need")  # fmt: skip
+    attempt_dir.mkdir(parents=True)
+    probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
+    base = seams.base_env if seams.base_env is not None else os.environ
+    env = claim.env(base)  # attempt dir, notes, view unit and proposals under build/driver/canary/
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
