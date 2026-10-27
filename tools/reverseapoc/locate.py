@@ -328,7 +328,7 @@ def interrupt_callers(exe: ExeInputs, vector: int) -> list[Site]:
 # spike 007 q4's measurement: both tables have 52 slots. UFO2P fills all 52 (research's "50
 # sections" is the loop bound of the dump routine next to get_text); TACP fills 21, the rest
 # are null.
-GET_TEXT: dict[str, tuple[int, int, int]] = {
+GET_TEXT = {
     "ufo2p": (0x00063800, 0x000F3794, 52),
     "tacp": (0x0005B360, 0x00292D18, 52),
 }
