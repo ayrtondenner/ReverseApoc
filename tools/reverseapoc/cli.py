@@ -1553,7 +1553,7 @@ def _locate_report(args: argparse.Namespace, exe) -> dict:
     if args.va is not None:
         return locate.report_va(exe, args.va)
     if args.get_text is not None:
-        raise LocateError("--get-text is not available yet")
+        return locate.report_get_text(exe, *args.get_text)
     return locate.report_interrupt(exe, args.int)
 
 
