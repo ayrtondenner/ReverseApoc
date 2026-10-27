@@ -263,6 +263,12 @@ None.
 
 Execution context nonce: 02135080c6292877
 
+## Self-Check: PASSED
+
+- FOUND: tools/reverseapoc/check.py, tools/reverseapoc/attempt.py, tests/test_check.py, tests/test_attempt_wrapper.py, docs/toolchain.md
+- FOUND commits on this branch: c853ab8, 70c6be4, 90ff858, 0e8b6d5, cc298ee, 4e39063 (`git rev-list --count 8a8f98e..4e39063` = 6 before the SUMMARY commit)
+- No STATE.md or ROADMAP.md change. The working tree was clean after the SUMMARY commit.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
