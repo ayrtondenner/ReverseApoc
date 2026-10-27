@@ -238,3 +238,49 @@ def test_a_placeholder_shaped_symbols_csv_name_is_refused(symbol):
     # linker_name would hand out the name, and address_of would read it back as a placeholder.
     with pytest.raises(SymbolError, match=f"0x{symbol.address:08X}.*placeholder"):
         SymbolTable.build(FUNCTIONS, [symbol], data_ranges=DATA_RANGES)
+
+
+# ---- 07-16 (D-29 point 1): C names of symbols.csv rows, through unitdefs.c_name_of ----------
+
+
+def test_c_name_of_symbols_rows(table):
+    """The C name of a symbols.csv row drops Watcom's `_`: a func's trailing one, a data row's
+    leading one. The linker name stays the symbols.csv name verbatim."""
+    assert table.c_name(0x10010) == "main"
+    assert table.linker_name(0x10010) == "main_"
+    assert table.c_name(0xD3000, data=True) == "errno"
+    renamed = SymbolTable.build(
+        FUNCTIONS, [SymbolRow(0x12345, "Foo_", "func"), SymbolRow(0xD3000, "_g_vol", "data")],
+        data_ranges=DATA_RANGES,
+    )  # fmt: skip
+    assert renamed.c_name(0x12345) == "Foo"
+    assert renamed.linker_name(0x12345) == "Foo_"
+    assert renamed.c_name(0xD3000, data=True) == "g_vol"
+    assert renamed.linker_name(0xD3000, data=True) == "_g_vol"
+
+
+def test_c_name_of_placeholder_and_runtime_rows_is_unchanged(table):
+    assert table.c_name(0x12345) == "func_00012345"
+    assert table.c_name(0x12360) == "exit_"  # a runtime public, verbatim
+    assert table.c_name(0x12380) == "D_00012380"
+
+
+@pytest.mark.parametrize(
+    "symbol",
+    [SymbolRow(0x12345, "Foo", "func"), SymbolRow(0xD3000, "g_vol", "data")],
+    ids=["func-without-trailing", "data-without-leading"],
+)
+def test_a_symbols_csv_name_without_watcoms_underscore_is_refused(symbol):
+    """A symbols.csv row whose linker name has no C name is refused when the table is built,
+    never later by a c_name caller."""
+    with pytest.raises(SymbolError, match=f"{symbol.name}.*0x{symbol.address:08X}"):
+        SymbolTable.build(FUNCTIONS, [symbol], data_ranges=DATA_RANGES)
+
+
+def test_address_of_still_refuses_the_old_placeholder_after_a_rename():
+    """D-29 point 4: the placeholder of a renamed row is no name of it, so a user not rewritten
+    in the rename's commit fails its relocation check."""
+    table = SymbolTable.build(FUNCTIONS, [SymbolRow(0x12345, "Foo_", "func")])
+    assert table.address_of("Foo_") == 0x12345
+    with pytest.raises(SymbolError, match="func_00012345_.*Foo_"):
+        table.address_of("func_00012345_")
