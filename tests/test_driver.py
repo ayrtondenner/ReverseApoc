@@ -1247,15 +1247,17 @@ def test_a_restore_write_through_a_link_is_refused(tmp_path):
 
 
 def test_an_untracked_header_from_before_the_session_is_named(tmp_path):
-    """Minor 5: an untracked include/<name>.h that the session did not write is not silently
-    left out of a match commit: the night stops naming it, and it stays in place."""
+    """Minor 5, 07-13 (D-24 invariant a): an untracked include/<name>.h that neither HEAD nor
+    the driver wrote is a stray at the audit, whoever left it: the night stops naming it before
+    any gate, and the file is moved into the quarantine, never deleted."""
     night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
     _write(night.repo / "include" / "old.h", "/* the owner's, uncommitted */\n")
     report = night.run()
-    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
     assert "include/old.h" in report.detail
     assert _feats(night) == []
-    assert (night.repo / "include" / "old.h").is_file()
+    assert night.gate_calls == []
+    assert (night.quarantine / "include" / "old.h").is_file()
 
 
 def test_a_gate_naming_other_exes_is_a_tool_failure(tmp_path):
@@ -1509,8 +1511,14 @@ def test_a_failed_undo_step_commits_nothing(tmp_path, monkeypatch, step):
     """K1: after a failed match commit, any undo step that fails sets the no-commit flag:
     nothing is committed that night, not even the log, and the record names the failure."""
     night = _failed_commit_night(tmp_path)
-    if step in ("log", "table", "feed"):
-        name = {"log": "attempts.jsonl", "table": "status.csv", "feed": FEED_NAME}[step]
+    if step == "log":  # F19: the log is truncated to its length before the MATCHED record
+
+        def refuse(path, size):
+            raise PermissionError("made-up: attempts.jsonl is held open")
+
+        monkeypatch.setattr(driver, "_truncate", refuse)
+    elif step in ("table", "feed"):
+        name = {"table": "status.csv", "feed": FEED_NAME}[step]
         _refuse_writes_to(monkeypatch, name)
     elif step == "unstage":
         night.fail_plan["restore"] = [True]
@@ -1916,3 +1924,141 @@ def test_failed_gate_restores_only_the_unit(tmp_path, committed):
     restores = [call for call in night.git_calls if _verb(call) == "restore"]
     assert not [call for call in restores if any(a.startswith("include") for a in call)]
     assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
+
+
+# ---- 07-13 Task 2: the ledger and the view-hash audit; no headers; the pre-gate restore ----
+
+VIEW_REL = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1/view"
+OTHER_RECORD = {"kind": "abort", "run": "other", "exe": EXE, "function": "func_00020000",
+                "unit": UNIT, "start": "0x00020000", "attempt": 1, "abort_reason": "transient",
+                "retries": 3, "date": "2026-10-25"}  # made up: another worker's record
+
+
+@pytest.mark.parametrize("rel", ["tools/keep.py", "tools/x.py", UNIT_REL])
+def test_tracked_edit_outside_the_view_stops_the_night(tmp_path, rel):
+    """D-24 edge (DEC-02 adjacency): a session that writes anything git can see, its own unit
+    in src/ included, is a stray: STOPPED `guardrail` naming the path, the gate never runs,
+    the file is quarantined and put back (HEAD's bytes, or moved out when new)."""
+    night = Night(tmp_path, sessions=[Sess(write=rel)], gate_exits=[0])
+    before = (night.repo / rel).read_bytes() if (night.repo / rel).is_file() else None
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert rel in report.detail
+    assert night.gate_calls == []
+    assert night.commits() == []
+    assert (night.quarantine / rel).is_file()
+    after = (night.repo / rel).read_bytes() if (night.repo / rel).is_file() else None
+    assert after == before
+
+
+@pytest.mark.parametrize("rel", ["include/common.h", f"src/{EXE}/u_other.c",
+                                 f"config/{EXE}/status.csv"])  # fmt: skip
+def test_view_edit_outside_the_unit_is_caught(tmp_path, rel):
+    """Invariant (b): every view file but the unit and view/build/ is hashed at launch and
+    again before landing; an edit or a new file elsewhere in the view stops the night."""
+    sess = Sess(files=((f"{VIEW_REL}/{rel}", "/* made-up tamper */\n"),))
+    night = Night(tmp_path, sessions=[sess], gate_exits=[0])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert f"{VIEW_REL}/{rel}" in report.detail
+    assert night.gate_calls == []
+    assert night.commits() == []
+
+
+def test_view_build_output_is_not_a_stray(tmp_path):
+    """The wrapper's container check writes the view's build/ (objects, logs): not hashed."""
+    sess = Sess(files=((f"{VIEW_REL}/build/logs/cc.log", "made-up log\n"),))
+    night = Night(tmp_path, sessions=[sess], gate_exits=[0])
+    report = night.run()
+    assert report.event == "ENDED"
+    assert _feats(night) == [MATCH_SUBJECT]
+
+
+def test_driver_written_files_are_not_strays(tmp_path):
+    """Invariant (a): after the first session the driver's own uncommitted status.csv row and
+    attempts.jsonl records differ from HEAD; the ledger explains them at the next audit."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),)), Sess()])
+    report = night.run(config={"attempts_per_function": 2})
+    assert [r["outcome"] for r in night.kinds("attempt")] == ["PARTIAL", "GAVE_UP"]
+    assert report.event == "ENDED"
+
+
+def test_a_table_change_the_driver_did_not_write_is_a_stray(tmp_path):
+    """Invariant (a): the audit compares the tree with HEAD plus the ledger, not with the
+    pre-session snapshot, so a status.csv change the driver did not write is a stray even when
+    it happened before the session's snapshot (another writer between sessions)."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),)), Sess()])
+
+    def tamper(args: list[str]) -> None:
+        if len(night.launched) == 1 and "HEAD^{commit}" in args:
+            with (night.repo / STATUS_REL).open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write("0x00099990,func_00099990,u_x,matched,100.00,1\n")
+
+    night.on_git = tamper
+    report = night.run(config={"attempts_per_function": 2})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert STATUS_REL in report.detail
+
+
+def test_ledger_explains_only_the_bytes_the_driver_wrote(tmp_path):
+    repo = tmp_path / "repo"
+    _write(repo / STATUS_REL, STATUS_HEAD)
+    ledger = driver._Ledger(repo)
+    assert not ledger.knows(STATUS_REL)
+    ledger.note(STATUS_REL)
+    assert ledger.knows(STATUS_REL)
+    assert ledger.matches(STATUS_REL)
+    _write(repo / STATUS_REL, STATUS_HEAD + "0x1,func_1,u,partial,1.00,1\n")
+    assert not ledger.matches(STATUS_REL)
+    ledger.note(STATUS_REL)
+    assert ledger.matches(STATUS_REL)
+    (repo / STATUS_REL).unlink()
+    assert not ledger.matches(STATUS_REL)
+
+
+def test_no_header_is_committed(tmp_path):
+    """D-19 (CONTEXT default): a matching session writes no include/ header. The old F5 case,
+    a new include/x.h beside a match, now stops the night and the header is quarantined."""
+    sess = Sess(files=(("include/x.h", "/* made-up header */\n"),))
+    night = Night(tmp_path, sessions=[sess], gate_exits=[0])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert "include/x.h" in report.detail
+    assert not (night.repo / "include" / "x.h").exists()
+    assert (night.quarantine / "include" / "x.h").is_file()
+    assert night.gate_calls == []
+    assert night.commits() == []
+
+
+def _gate_with_another_record(night: Night):
+    """A gate during which another writer appends one record to the log (07-18's workers)."""
+
+    def gate(pick, n):
+        with (night.repo / LOG).open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(OTHER_RECORD, separators=(",", ":")) + "\n")
+        return night._gate(pick, n)
+
+    return gate
+
+
+def test_pre_gate_restore_keeps_the_log(tmp_path):
+    """D-27 P4 (first half): after an unclaimed pass, status.csv and the feed go back to their
+    pre-gate bytes, and progress/attempts.jsonl keeps every record (never restored)."""
+    night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
+                                        gate_written=(SIBLING,))  # fmt: skip
+    night.run(config={"attempts_per_function": 1}, gate=_gate_with_another_record(night))
+    assert (night.repo / STATUS_REL).read_text(encoding="utf-8") == STATUS_HEAD + SIBLING_ROW
+    assert (night.repo / FEED_NAME).read_text(encoding="utf-8") == "{}\n"
+    assert OTHER_RECORD in night.records()
+    assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
+
+
+def test_undo_match_drops_only_its_matched_record(tmp_path):
+    """F19: a failed match commit truncates the log to its length before the MATCHED append,
+    so a record another writer appended before it stays."""
+    night = _failed_commit_night(tmp_path)
+    report = _run_contained(night, gate=_gate_with_another_record(night))
+    assert (report.event, report.reason) == ("STOPPED", "tool")
+    assert OTHER_RECORD in night.records()
+    assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
+    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
