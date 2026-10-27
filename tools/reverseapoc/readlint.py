@@ -139,6 +139,7 @@ _TAG_KEYWORDS = ("struct", "union", "enum")
 _EXTERN, _STATIC, _TYPEDEF = "extern", "static", "typedef"
 _BLOCK_AFTER = (")", "else", "do", ";", "{", "}", ":")  # a `{` after these opens a block
 _PROTOTYPE_ENDS = (";", ",")
+_DEFINITION_STARTS = ("=", "{")  # after a declarator: an initializer or a function body
 _MACRO_DIRECTIVES = ("define", "undef")
 # RL06: the allowed literal contexts (D-20, research R5)
 WAIVER = re.compile(r"/\*\s*lit:\s*\S.*\*/")
@@ -651,6 +652,16 @@ class _Declarations:
         named = before.kind == IDENT and before.text not in unitdefs.C_KEYWORDS
         return named and self.kind(opened - 1) is not None
 
+    def _defines(self, x: int) -> bool:
+        """True when the declarator at `x` (an identifier or a declarator group) is followed,
+        past its `[...]` and `(...)` suffixes, by an initializer `=` or a function body `{`:
+        a definition even under `extern` (fix round 2, N1)."""
+        src = self.src
+        q = src.match[x] + 1 if src.tok(x).text == "(" and x in src.match else x + 1
+        while src.tok(q).text in ("(", "[") and q in src.match:
+            q = src.match[q] + 1
+        return src.tok(q).text in _DEFINITION_STARTS
+
     def _enum_body(self, opened: int) -> bool:
         src = self.src
         before = src.tok(opened - 1)
@@ -682,6 +693,8 @@ class _Declarations:
             return OWN if src.tok(x + 1).text == "{" else None
         if token.kind == IDENT and token.text in self.types and not typed:
             return None
+        if self._defines(x):
+            return OWN
         if _EXTERN in storage:
             return OUTSIDE
         close = src.match.get(x + 1) if src.tok(x + 1).text == "(" else None
