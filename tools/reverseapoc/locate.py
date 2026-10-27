@@ -320,6 +320,34 @@ def interrupt_callers(exe: ExeInputs, vector: int) -> list[Site]:
             if regs.value("eax") == vector]  # fmt: skip
 
 
+# ---- get_text (stubs: plan 07-12 Task 2 RED) ----
+
+GET_TEXT: dict[str, tuple[int, int, int]] = {
+    "ufo2p": (0x00063800, 0x000F3794, 0),
+    "tacp": (0x0005B360, 0x00292D18, 0),
+}
+
+
+@dataclass(frozen=True)
+class TextSection:
+    section: int
+    start: int
+    end: int
+    strings: tuple[int, ...]
+
+
+def get_text_sections(exe: ExeInputs) -> tuple[TextSection, ...]:
+    return ()
+
+
+def get_text_index(sections: Sequence[TextSection], va: int) -> tuple[int, int] | None:
+    return None
+
+
+def get_text_sites(exe: ExeInputs) -> list[Site]:
+    return []
+
+
 # ---- the `mechanics locate` report ----
 
 
