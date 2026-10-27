@@ -238,6 +238,25 @@ def test_readme_partial_gets_no_credit():
     assert RATIO in section
 
 
+def test_readme_names_the_assembler_group():
+    # Ruling F37 (plan 07-15, D-23): functions on the owner-signed asm list sit outside the
+    # percentage with the library in the badges, the page, progress.json and report.json, while
+    # the DecompHub feed still counts them; the README says which is which.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    library = _category_line(section, "library")
+    assert "asm-functions.csv" in library
+    for artifact in ("badges", "progress.json", "report.json"):
+        assert artifact in library, artifact
+    assert "decomphub.progress.json still counts them" in library
+
+
+def test_readme_names_the_coverage_section():
+    # DEC-05 (plan 07-15): the progress page also shows each checklist item's coverage.
+    section = _section(README.read_text(encoding="utf-8"), "Progress")
+    assert "Mechanics coverage" in section
+    assert "must match" in section and "full closure" in section
+
+
 def test_readme_progress_makes_no_stub_claim():
     # Only units with C are compiled; every other function keeps the original EXE's bytes
     # through the splice, so "unmatched" must not be described as an INCLUDE_ASM stub.

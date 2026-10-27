@@ -13,8 +13,10 @@ from conftest import REPO_ROOT
 PAGES = REPO_ROOT / ".github" / "workflows" / "pages.yml"
 GITIGNORE = REPO_ROOT / ".gitignore"
 
-# D-27: the inputs of tools/progress.py and the workflow itself.
+# D-27: the inputs of tools/progress.py and the workflow itself; plan 07-15 adds the mechanics
+# coverage view's inputs and the signed asm list (DEC-05, D-23).
 PATHS = ("config/*/status.csv", "config/*/functions.csv", "config/*/units.csv",
+         "config/mechanics.toml", "config/mechanics-members.csv", "config/asm-functions.csv",
          "tools/progress.py", "decomphub.progress.json", ".github/workflows/pages.yml")  # fmt: skip
 PROGRESS_RUN = "python3 -I tools/progress.py --out _site --report build/report.json"
 # D-28: one combined artifact; recomp.fyi reads it by this name from the default branch.
