@@ -258,19 +258,30 @@ def unit_rule_path(stem: str, unit: str) -> str:
     return f"src/{stem}/{unit}{SOURCE_SUFFIX}"
 
 
+# Where D-24 views live (attempt.DRIVER_PARTS; check cannot import attempt) and the name of a
+# view's directory: build/driver/.../view/src/<exe>/<unit>.c, as 07-04's hooks recognise them.
+VIEW_PARTS = ("build", "driver")
+VIEW_DIR = "view"
+
+
+def _is_view(src: Path) -> bool:
+    """`src` (resolved) is a D-24 view's src tree: <repo>/build/driver/.../view/src with the
+    view's include/ beside it."""
+    view = src.parent
+    driver = Path(REPO_ROOT).resolve().joinpath(*VIEW_PARTS)
+    return (src.name == "src" and view.name == VIEW_DIR and view.is_relative_to(driver)
+            and (view / INCLUDE_DIR).is_dir())  # fmt: skip
+
+
 def _compile_root_for(src_root: Path | None) -> Path:
     """The compile root of a src tree (None: the committed one): the guest paths, the -i= list
-    and the stamp's headers are taken from it (D-27 P1, research K4). A tree outside the
-    repository compiles from its parent, so its units are src/<exe>/<unit>.c there too. Inside
-    it, a tree named src whose parent holds include/ (a D-24 view under build/driver/, the
-    committed src/ itself) compiles from that parent, with the view's own headers; any other
-    tree (a flag re-gate's copy of src/, a saved attempt's best/) from the repository root."""
+    and the stamp's headers are taken from it (D-27 P1, research K4). Only a D-24 view
+    (_is_view) compiles from its view directory, with the view's own headers; every other tree
+    (the committed src/, a flag re-gate's copy, a saved attempt's best/, any tree outside the
+    repository) compiles from the repository root with the committed headers, as ninja's cc
+    edge does. A source outside the repository is then refused by the compile itself."""
     resolved = Path(src_root if src_root is not None else DEFAULT_SRC).resolve()
-    repo = Path(REPO_ROOT).resolve()
-    if not resolved.is_relative_to(repo):
-        return resolved.parent
-    view = resolved.name == "src" and (resolved.parent / INCLUDE_DIR).is_dir()
-    return resolved.parent if view and resolved.parent != repo else REPO_ROOT
+    return resolved.parent if _is_view(resolved) else REPO_ROOT
 
 
 def _compile(
