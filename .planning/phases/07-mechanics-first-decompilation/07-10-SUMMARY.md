@@ -243,3 +243,8 @@ Execution context nonce: 1ca40221f8453928
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
+
+## Self-Check: PASSED
+
+- tools/reverseapoc/mechanics.py, tests/test_mechanics.py, tests/test_mechanics_real.py and this SUMMARY exist.
+- Commits e31baa6, d632877, b24f3ee, 628123a, ed627c6, 45e16a3 and 75a81a2 are on HEAD. The tree was clean before this line.
