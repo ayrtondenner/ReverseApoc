@@ -710,18 +710,28 @@ def _figures_over(members: Sequence[_Member], ids: Container[str],
 
 def _asm_signed(toml_path: Path, data: Mapping, list_path: Path) -> bool:
     """True when [asm_list] is signed off and its list_sha256 is the SHA-256 of the list's
-    bytes with CRLF read as LF (mechanics.asm_list_sha256's rule). An unsigned, edited or
-    missing list counts for nothing here; `mechanics check` reports it."""
+    bytes with CRLF read as LF (mechanics.asm_list_sha256's rule); False when it is not signed
+    off (ruling F2: an unsigned list counts for nothing, `mechanics check` reports it). A
+    signed list that is missing or changed since its sign-off is a ProgressError, as
+    mechanics.signed_asm refuses it: otherwise its rows would silently go back into the
+    published percentage (fix round 1)."""
     body = data.get("asm_list", {})
     who = _value(toml_path, "asm_list", body, "signed_off_by", str, required=False)
     digest = _value(toml_path, "asm_list", body, "list_sha256", str, required=False)
-    if not who or not digest or not list_path.is_file():
+    if not who or not digest:
         return False
+    if not list_path.is_file():
+        raise ProgressError(f"[asm_list] in {toml_path} is signed off but {list_path} is missing "
+                            "(D-23): restore it or re-sign [asm_list]")  # fmt: skip
     try:
         text = list_path.read_bytes().replace(b"\r\n", b"\n")
     except OSError as exc:
         raise ProgressError(f"{list_path}: cannot read ({exc})") from None
-    return hashlib.sha256(text).hexdigest() == digest
+    now = hashlib.sha256(text).hexdigest()
+    if now != digest:
+        raise ProgressError(f"{list_path} changed since its sign-off (D-23): re-sign [asm_list] "
+                            f"in {toml_path} (list_sha256 is now {now})")  # fmt: skip
+    return True
 
 
 def _assembler(path: Path, functions: Mapping[tuple[str, int], Function]
@@ -750,8 +760,9 @@ def derive_mechanics(config_dir: Path, progress: Progress) -> Mechanics | None:
     config_dir/mechanics-members.csv, joined by (exe, address) with `progress` (derive's
     output, so status.csv decides matched), and the rows of config_dir/asm-functions.csv when
     [asm_list] signs it off (D-23). None without mechanics.toml; no items when it has no `in`
-    item or the members file is absent (ruling F2). A malformed file, or a members or signed
-    asm row that is not a game or thunk row of functions.csv, is a ProgressError."""
+    item or the members file is absent (ruling F2). A malformed file, a members or signed asm
+    row that is not a game or thunk row of functions.csv, or a signed asm list that is missing
+    or changed since its sign-off, is a ProgressError."""
     config = Path(config_dir)
     path = config / MECHANICS_TOML
     if not path.exists():
