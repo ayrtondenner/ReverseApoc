@@ -16,3 +16,264 @@ schema = 1
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-27
 list_sha256 = "0f7093230df88290a923c0fdaf3eb8ec04b1916843b3692a493a847722790c09"
+
+# D-22, signed with Tier 1 by the owner on 2026-10-27 (plan 07-22): a reached row with at least 20
+# direct callers, or whose own closure covers more than 20% of its EXE's game and thunk rows, is a
+# hub (located, not required). Owner ruling: hub and SCC figures ignore midrow edges (switch-table
+# artefacts); the closure walk still follows them.
+[hub_rule]
+min_direct_callers = 20
+largest_scc = false
+max_closure_share = 0.2
+min_items = 0
+
+# ---- Tier 1 (D-04, D-26): #997 tick rate and #263-1 training from battle, androids included ----
+
+[[tier]]
+id = 1
+title = "Tick rate and battlescape training"
+signed_off_by = "ayrtondenner"
+signed_off_date = 2026-10-27
+members_sha256 = "0c668c5c1e612b5d1e6f633220649f271def650a831044fec3d2bfdb4bb318fc"
+
+[[item]]
+id = "997"
+issue = 997
+title = "Game time rate: how far the clock moves per frame at each speed setting"
+url = "https://github.com/OpenApoc/OpenApoc/issues/997"
+tier = 1
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "263-1"
+issue = 263
+title = "Agent stat gains earned in tactical combat, androids included"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 1
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+# #997, cityscape (UFO2P)
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00011430"
+evidence = "bios-tick"
+detail = "reads the BIOS tick through the DOS/4GW interrupt call with 0x1A as an immediate; 28 direct callers"
+source = "spike 007 q1"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00010940"
+evidence = "bios-tick"
+detail = "cityscape frame loop: busy-waits until the BIOS tick moves, then runs the clock once per frame"
+source = "spike 007 q1 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x0004AB30"
+evidence = "data-field"
+detail = "clock advance: adds the speed to a 16-bit accumulator, 36 units make one game second"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00011520"
+evidence = "data-field"
+detail = "time-skip path taken while the skip flag is set: rounds minutes up to a multiple of 5"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00052150"
+evidence = "string"
+detail = "speed panel: shows the four speed labels, text section 38 indexes 43-46, each under a speed compare"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00050920"
+evidence = "data-field"
+detail = "speed setter: stores 0 (pause) to the speed word and sets the no-wait frame counter"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00050970"
+evidence = "data-field"
+detail = "speed setter: stores 1 to the speed word and sets the no-wait frame counter"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x000509C0"
+evidence = "data-field"
+detail = "speed setter: stores 2 to the speed word and sets the no-wait frame counter"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00050A20"
+evidence = "data-field"
+detail = "speed setter: stores 4 to the speed word and sets the no-wait frame counter"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00050A80"
+evidence = "data-field"
+detail = "speed setter: stores 6 to the speed word and sets the no-wait frame counter"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00050AE0"
+evidence = "data-field"
+detail = "speed setter: stores 600 and sets the time-skip flag (a 5-minute skip, not a speed)"
+source = "spike 007 q2"
+
+# #997, battlescape (TACP)
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x00011500"
+evidence = "bios-tick"
+detail = "reads the BIOS tick through the DOS/4GW interrupt call with 0x1A as an immediate; 35 direct callers"
+source = "spike 007 q1"
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x000116B0"
+evidence = "bios-tick"
+detail = "battle frame step: busy-waits on the BIOS tick, then runs the clock when the speed is nonzero"
+source = "spike 007 q1 q2"
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x0003D160"
+evidence = "data-field"
+detail = "clock advance: adds the speed to a 16-bit accumulator, 36 units make one game second"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x00010EE0"
+evidence = "call-graph"
+detail = "battle loop called by the program entry; stores the start speed and calls the frame step"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x000B6E50"
+evidence = "call-graph"
+detail = "second caller of the clock advance; no BIOS-tick wait found in it (its pace is open)"
+source = "spike 007 q2"
+
+[[entry]]
+item = "997"
+exe = "tacp"
+address = "0x000A7490"
+evidence = "string"
+detail = "speed panel: shows the four speed labels, text section 36 indexes 0-3, each under a speed compare"
+source = "spike 007 q4"
+
+# #263-1, cityscape (UFO2P): reads the battle result and applies it to the agents
+
+[[entry]]
+item = "263-1"
+exe = "ufo2p"
+address = "0x000B2A90"
+evidence = "file"
+detail = "loads the battle-result hand-off file the battlescape writes into a 60-record buffer"
+source = "spike 007 q3"
+
+[[entry]]
+item = "263-1"
+exe = "ufo2p"
+address = "0x000B2E80"
+evidence = "data-field"
+detail = "copies 17 fields of each hand-off record into the agent records"
+source = "spike 007 q3"
+
+[[entry]]
+item = "263-1"
+exe = "ufo2p"
+address = "0x0004F100"
+evidence = "string"
+detail = "base training screen: the android-cannot-train label (text 37/404) sits behind an agent field compare"
+source = "spike 007 q3"
+
+[[entry]]
+item = "263-1"
+exe = "ufo2p"
+address = "0x0009B840"
+evidence = "string"
+detail = "the only row referencing the plain android word"
+source = "spike 007 q3"
+
+# #263-1, battlescape (TACP): raises unit stats from battle counters and writes the hand-off file
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x000156A0"
+evidence = "file"
+detail = "writes the battle-result hand-off file: 60 records of 0x92 bytes from the unit array"
+source = "spike 007 q3"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x000B2510"
+evidence = "call-graph"
+detail = "post-battle stat raise: called after the battle loop, before the hand-off writer; capped gains"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x00064B60"
+evidence = "data-field"
+detail = "raises the unit counter word at +0x6A that the post-battle raise divides into a stat gain"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x00067B60"
+evidence = "data-field"
+detail = "raises the unit counter word at +0x6E that the post-battle raise divides into a stat gain"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x00060080"
+evidence = "data-field"
+detail = "writes hand-off unit fields through the unit-array base (heuristic accrual lead)"
+source = "spike 007 q3"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x000B26F0"
+evidence = "data-field"
+detail = "adds to a hand-off unit field through a register base (heuristic accrual lead)"
+source = "spike 007 q3"
