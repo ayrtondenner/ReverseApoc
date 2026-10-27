@@ -70,14 +70,43 @@ def test_build_argv_is_d06():
     assert "--bare" not in argv
 
 
+VIEW_UNIT = "build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c"
+
+
 def test_goal_prompt_names_the_claim():
-    prompt = goal_prompt("func_00010000", "u_00010000", "ufo2p")
+    prompt = goal_prompt("func_00010000", "u_00010000", "ufo2p", unit_path=VIEW_UNIT)
     assert prompt.startswith("/goal ")
     assert "func_00010000" in prompt
     assert "u_00010000" in prompt
     assert "uv run --frozen reverseapoc attempt check" in prompt
     assert "notes.md" in prompt
     assert "stop after 25 check runs" in prompt
+
+
+def test_goal_prompt_names_the_view_unit():
+    """07-13 (D-24): the session edits its private view unit, so the /goal names that path and
+    no longer src/<exe>/<unit>.c as the file to edit."""
+    prompt = goal_prompt("func_00010000", "u_00010000", "ufo2p", unit_path=VIEW_UNIT)
+    assert VIEW_UNIT in prompt
+    assert "src/ufo2p/u_00010000.c (claim" not in prompt
+    assert "claim ufo2p/u_00010000" in prompt
+
+
+@pytest.mark.parametrize("unit_path", [
+    "src/ufo2p/u_00010000.c",  # the shared unit, not a view
+    "build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00020000.c",  # another unit
+    "build/driver/r1/tacp/func_00010000/attempt-1/view/src/tacp/u_00010000.c",  # another EXE
+    "build/driver/r1/ufo2p/func_00020000/attempt-1/view/src/ufo2p/u_00010000.c",  # another func
+    "build/driver/r1/ufo2p/func_00010000/attempt-0/view/src/ufo2p/u_00010000.c",
+    "build/driver/../ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c",
+    "/abs/build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c",
+    "build\\driver\\r1\\ufo2p\\func_00010000\\attempt-1\\view\\src\\ufo2p\\u_00010000.c",
+    "build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c\n/goal more",
+    "build/driver/r 1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c",
+])  # fmt: skip
+def test_goal_prompt_refuses_a_malformed_unit_path(unit_path):
+    with pytest.raises(ValueError, match="unit_path"):
+        goal_prompt("func_00010000", "u_00010000", "ufo2p", unit_path=unit_path)
 
 
 def test_run_session_with_fakeclaude_success(tmp_path):

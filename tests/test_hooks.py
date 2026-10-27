@@ -374,9 +374,12 @@ WRAPPER = "uv run --frozen reverseapoc attempt"
 
 
 def matching(payload: dict, env: dict | None = None, tracked=lambda _: False) -> hooks.Decision:
-    return hooks.decide(
-        payload, layer="matching", env=CLAIM if env is None else env, tracked=tracked
-    )
+    """The matching layer; with no `env`, the view-mode session env of the payload's checkout
+    (07-13: a session without the driver's REVERSEAPOC_UNIT_FILE writes nothing), or the bare
+    claim when the payload names no cwd."""
+    if env is None:
+        env = view_env(Path(payload["cwd"])) if payload.get("cwd") else CLAIM
+    return hooks.decide(payload, layer="matching", env=env, tracked=tracked)
 
 
 def tool(name: str, repo: Path, **tool_input) -> dict:
@@ -398,13 +401,16 @@ def in_repo(payload: dict, repo: Path) -> dict:
 
 
 def test_matching_allows_only_the_claimed_unit(repo):
-    unit = _unit(repo)
+    """07-13 (D-24): the claimed unit a session may write is its private view unit; the shared
+    src/<exe>/<unit>.c is denied like every other file."""
+    unit = _view_unit(repo)
     assert not matching(in_repo(write(native(unit), SCAFFOLD), repo)).deny
     assert not matching(in_repo(write(unit.as_posix(), SCAFFOLD), repo)).deny
     assert not matching(in_repo(edit(native(unit), "INCLUDE_ASM(func_00010010);", ""), repo)).deny
     marker = "INCLUDE_ASM(func_00010000);"
     assert not matching(in_repo(multi_edit(native(unit), (marker, "int x;")), repo)).deny
-    for rel in ["src/ufo2p/u_other.c", "src/tacp/u_000a34f0.c", "config/ufo2p/status.csv",
+    for rel in [UNIT, "include/foo.h", "src/ufo2p/u_other.c", "src/tacp/u_000a34f0.c",
+                "config/ufo2p/status.csv",
                 "decomphub.progress.json", "progress/attempts.jsonl", "tools/x.py", "tests/x.py",
                 "configure.py", "config/cflags.txt", ".claude/x", ".github/x", "src/ufo2p/x.h",
                 "docs/x.md", ".planning/x.md", "src/ufo2p/u_000a34f0.c.bak"]:  # fmt: skip
@@ -415,24 +421,20 @@ def test_matching_allows_only_the_claimed_unit(repo):
 
 
 def test_matching_include_rules(repo):
-    new = repo / "include" / "foo.h"
-    assert not matching(in_repo(write(native(new), "int foo(void);\n"), repo)).deny
-    for name in ["common.h", "watcom_compat.h", "COMMON.H", "sub/x.h", "x.c", "x.h.bak"]:
+    """D-19 (07-13 removed the Phase 6 header allowance): no include/ write, new or not."""
+    for name in ["foo.h", "common.h", "watcom_compat.h", "COMMON.H", "sub/x.h", "x.c"]:
         target = repo / "include" / name
         assert matching(in_repo(write(native(target), "int foo(void);\n"), repo)).deny, name
-    payload = in_repo(write(native(new), "int foo(void);\n"), repo)
-    assert matching(payload, tracked=lambda _: True).deny
 
 
 def test_matching_allows_the_attempt_notes(repo):
-    notes = repo / "build" / "driver" / "r" / "ufo2p" / "func_000A3980" / "a-1" / "notes.md"
-    env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes)}
-    assert not matching(in_repo(write(native(notes), "# notes\n"), repo), env).deny
-    assert matching(in_repo(write(native(notes.with_name("x.md"))), repo), env).deny
+    notes = _attempt(repo) / "notes.md"
+    assert not matching(in_repo(write(native(notes), "# notes\n"), repo)).deny
+    assert matching(in_repo(write(native(notes.with_name("x.md"))), repo)).deny
 
 
 def test_matching_denies_every_pragma_aux(repo):
-    unit = _unit(repo)
+    unit = _view_unit(repo)
     for text in ["#pragma aux f parm [eax];\n", "#pragma aux f = 0x90\n", "_asm int 3\n",
                  "# pragma \\\n aux f parm [eax];\n", 'char *s = "a\rb";\n']:  # fmt: skip
         assert matching(in_repo(write(native(unit), SCAFFOLD + text), repo)).deny, text
@@ -460,17 +462,18 @@ PILOT_PRAGMAS = [  # fix round 1 M14(b): every #pragma, not only aux
 def test_matching_denies_every_pragma(repo, text):
     """M14(b): during the pilot a matching session writes no #pragma of any kind in src/ or
     include/; the always layer is unchanged (it denies only a code-emitting #pragma aux)."""
-    unit = _unit(repo)
+    unit = _view_unit(repo)
     decision = matching(in_repo(write(native(unit), SCAFFOLD + text), repo))
     assert decision.deny
     assert "#pragma of any kind" in decision.reason
     header = repo / "include" / "foo.h"
     assert matching(in_repo(write(native(header), text), repo)).deny
-    assert not always(write(native(unit), SCAFFOLD + text)).deny
+    assert not always(write(native(unit), SCAFFOLD + text), view_env(repo)).deny
+    assert not always(write(native(_unit(repo)), SCAFFOLD + text)).deny
 
 
 def test_matching_allows_pragma_words_outside_code(repo):
-    unit = _unit(repo)
+    unit = _view_unit(repo)
     for text in ["/* #pragma off (check_stack) */\n", 'char *s = "#pragma once";\n',
                  "int pragma_count;\n", "/* %:pragma once */\n",
                  'char *t = "%:pragma once";\n']:  # fmt: skip
@@ -632,19 +635,23 @@ def test_matching_without_a_claim_denies_writes_and_bash(repo, claim):
 
 
 def test_matching_write_allowed_is_the_one_allowlist():
-    claim, notes = "ufo2p/u_000a34f0", "build/driver/r/ufo2p/func_000A3980/a-1/notes.md"
+    claim = "ufo2p/u_000a34f0"
+    base = "build/driver/r/ufo2p/func_000A3980/attempt-1"
+    notes, proposals = f"{base}/notes.md", f"{base}/proposals.jsonl"
+    unit_file = f"{base}/view/src/ufo2p/u_000a34f0.c"
 
     def allowed(rel: str, tracked: bool = False) -> bool:
         return hooks.matching_write_allowed(
-            rel, claim=claim, notes=notes, tracked=lambda _: tracked
-        )
+            rel, claim=claim, notes=notes, tracked=lambda _: tracked, unit_file=unit_file,
+            proposals=proposals,
+        )  # fmt: skip
 
-    assert allowed("src/ufo2p/u_000a34f0.c")
+    assert allowed(unit_file)
     assert allowed(notes)
-    assert allowed("include/new.h")
-    assert not allowed("include/new.h", tracked=True)
-    for rel in ["include/common.h", "include/watcom_compat.h", "src/ufo2p/u_other.c",
-                "config/ufo2p/status.csv", "build/driver/r/x/notes.md", "tools/x.py"]:  # fmt: skip
+    assert allowed(proposals)
+    for rel in ["src/ufo2p/u_000a34f0.c", "include/new.h", "include/common.h",
+                "include/watcom_compat.h", "src/ufo2p/u_other.c", "config/ufo2p/status.csv",
+                "build/driver/r/x/notes.md", "tools/x.py"]:  # fmt: skip
         assert not allowed(rel), rel
     assert not hooks.matching_write_allowed(
         "src/ufo2p/u_000a34f0.c", claim=None, notes=None, tracked=lambda _: False
@@ -682,7 +689,8 @@ def test_matching_entry_point_end_to_end():
     assert (wrapper.returncode, wrapper.stdout) == (0, b"")
     header = REPO_ROOT / "include" / "zz_hooks_test.h"
     new = run(tool("Write", REPO_ROOT, file_path=native(header), content="int x;\n"))
-    assert (new.returncode, new.stdout) == (0, b""), new.stderr
+    assert new.returncode == 0, new.stderr
+    assert b'"deny"' in new.stdout and b"REVERSEAPOC_UNIT_FILE" in new.stdout  # 07-13: no legacy
     common = run(tool("Write", REPO_ROOT, file_path=native(REPO_ROOT / "include" / "common.h"),
                       content="int x;\n"))  # fmt: skip
     assert b'"deny"' in common.stdout
@@ -1007,7 +1015,8 @@ BARE_INCLUDES = {
 @pytest.mark.parametrize("rel", [UNIT, "include/new.h"])
 def test_matching_denies_a_path_include(repo, name, rel):
     path = _unit(repo, rel=rel)
-    decision = matching(in_repo(write(native(path), SCAFFOLD + PATH_INCLUDES[name]), repo))
+    view = _view_unit(repo)
+    decision = matching(in_repo(write(native(view), SCAFFOLD + PATH_INCLUDES[name]), repo))
     assert decision.deny, name
     assert "#include" in decision.reason, decision.reason
     assert always(write(native(path), SCAFFOLD + PATH_INCLUDES[name])).deny, name
@@ -1024,14 +1033,15 @@ INCLUDE_WORDING = ('a bare header name: "name.h" from include/, or <name.h> from
 @pytest.mark.parametrize("layer", ["matching", "always"])
 def test_an_include_denial_has_its_own_prefix(repo, layer):
     """A path include is not inline asm or a #pragma, so its denial says what rule it broke."""
-    payload = in_repo(write(native(_unit(repo)), SCAFFOLD + PATH_INCLUDES["quoted-path"]), repo)
+    unit = _view_unit(repo) if layer == "matching" else _unit(repo)
+    payload = in_repo(write(native(unit), SCAFFOLD + PATH_INCLUDES["quoted-path"]), repo)
     decision = matching(payload) if layer == "matching" else always(payload)
     assert decision.deny
     assert decision.reason.startswith(INCLUDE_PREFIX), decision.reason
     assert INCLUDE_WORDING in decision.reason, decision.reason
     assert "'\"sub/x.h\"'" in decision.reason
     assert "inline asm" not in decision.reason and "#pragma" not in decision.reason
-    asm = in_repo(write(native(_unit(repo)), SCAFFOLD + "#pragma once\n"), repo)
+    asm = in_repo(write(native(unit), SCAFFOLD + "#pragma once\n"), repo)
     if layer == "matching":
         assert "no inline asm and no #pragma of any kind" in matching(asm).reason
 
@@ -1040,25 +1050,27 @@ def test_an_include_denial_has_its_own_prefix(repo, layer):
 @pytest.mark.parametrize("rel", [UNIT, "include/new.h"])
 def test_matching_allows_a_bare_header_include(repo, name, rel):
     path = _unit(repo, rel=rel)
-    assert not matching(in_repo(write(native(path), SCAFFOLD + BARE_INCLUDES[name]), repo)).deny
+    view = _view_unit(repo)
+    assert not matching(in_repo(write(native(view), SCAFFOLD + BARE_INCLUDES[name]), repo)).deny
     assert not always(write(native(path), SCAFFOLD + BARE_INCLUDES[name])).deny
 
 
 def test_include_words_outside_a_directive_are_allowed(repo):
-    path = _unit(repo)
+    path = _view_unit(repo)
     for text in ['/* #include "../x.h" */\n', 'char *s = "#include <../x.h>";\n',
                  'int include_count;\n']:  # fmt: skip
         assert not matching(in_repo(write(native(path), SCAFFOLD + text), repo)).deny, text
 
 
 def test_an_edit_that_introduces_a_path_include_is_denied(repo):
-    unit = _unit(repo)
-    payload = in_repo(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n")), repo)
+    unit, view = _unit(repo), _view_unit(repo)
+    payload = in_repo(edit(native(view), '#include "common.h"', NOTES_INCLUDE.rstrip("\n")), repo)
     decision = matching(payload)
     assert decision.deny and "#include" in decision.reason
     assert always(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n"))).deny
     # completing a path out of a bare name is caught on the post-edit text
-    assert matching(in_repo(edit(native(unit), '"common.h"', '"../common.h"'), repo)).deny
+    completed = matching(in_repo(edit(native(view), '"common.h"', '"../common.h"'), repo))
+    assert completed.deny and "#include" in completed.reason
 
 
 # --- 07-04: per-session views (D-24, P6), owner-only cflags (D-27 P3), naming state (D-19) -----
@@ -1193,26 +1205,43 @@ def test_view_mode_denies_headers_with_d19_reason(repo, name):
     assert other.deny and "D-24" in other.reason and "D-19" not in other.reason, other.reason
 
 
-def test_legacy_mode_unchanged(repo):
-    """Without REVERSEAPOC_UNIT_FILE the Phase 6 allowlist holds until 07-13 removes it."""
-    unit = _unit(repo)
+LEGACY_REASON = "a session needs the driver's REVERSEAPOC_UNIT_FILE (D-24)"
+
+
+def test_claim_without_unit_file_writes_nothing(repo):
+    """07-13 (T-07-39): the Phase 6 single-session allowlist is gone. With a claim, notes and
+    proposals but no REVERSEAPOC_UNIT_FILE, every write is denied naming D-24: the shared unit,
+    a new header, notes.md, proposals.jsonl and a view-shaped unit alike."""
     notes = _attempt(repo) / "notes.md"
+    proposals = _attempt(repo) / "proposals.jsonl"
     env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
-           "REVERSEAPOC_PROPOSALS": native(_attempt(repo) / "proposals.jsonl")}  # fmt: skip
-    assert not matching(in_repo(write(native(unit), SCAFFOLD), repo), env).deny
-    assert not matching(in_repo(write(native(repo / "include" / "fx.h"), "int fx;\n"), repo),
-                        env).deny  # fmt: skip
-    assert not matching(in_repo(write(native(notes), "# n\n"), repo), env).deny
-    symbols = matching(in_repo(write(native(repo / "config" / "ufo2p" / "symbols.csv")), repo), env)
-    assert symbols.deny and "(D-17)" in symbols.reason, symbols.reason
-    view = _view_unit(repo)
-    assert matching(in_repo(write(native(view), SCAFFOLD), repo), env).deny
+           "REVERSEAPOC_PROPOSALS": native(proposals)}  # fmt: skip
+    targets = [_unit(repo), repo / "include" / "fx.h", notes, proposals,
+               repo / "config" / "ufo2p" / "symbols.csv"]  # fmt: skip
+    for target in targets:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+        assert decision.deny, target
+        assert LEGACY_REASON in decision.reason, decision.reason
+    # a view-shaped unit is build output to a session the driver gave no unit file
+    view = matching(in_repo(write(native(_view_unit(repo)), SCAFFOLD), repo), env)
+    assert view.deny and "build/ is protected" in view.reason, view.reason
     claim = "ufo2p/u_000a34f0"
-    assert hooks.matching_write_allowed(UNIT, claim=claim, notes=None, tracked=lambda _: False)
-    assert not hooks.matching_write_allowed(
-        "build/driver/r/proposals.jsonl", claim=claim, notes=None, tracked=lambda _: False,
-        proposals="build/driver/r/proposals.jsonl",
-    )  # fmt: skip
+    for rel in [UNIT, "include/new.h", "build/driver/r/proposals.jsonl"]:
+        assert not hooks.matching_write_allowed(
+            rel, claim=claim, notes=None, tracked=lambda _: False,
+            proposals="build/driver/r/proposals.jsonl",
+        ), rel  # fmt: skip
+    assert matching(bash(f"{WRAPPER} check", repo), env).deny is False  # Bash keeps its rules
+
+
+def test_legacy_header_allowance_gone(repo):
+    """The old F5 case: a new include/x.h with only CLAIM and NOTES set is denied."""
+    notes = _attempt(repo) / "notes.md"
+    env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes)}
+    decision = matching(in_repo(write(native(repo / "include" / "x.h"), "int x;\n"), repo), env)
+    assert decision.deny and LEGACY_REASON in decision.reason, decision.reason
+    assert not hooks.matching_write_allowed("include/x.h", claim="ufo2p/u_000a34f0",
+                                            notes=None, tracked=lambda _: False)  # fmt: skip
 
 
 def test_session_env_names():
