@@ -1532,7 +1532,19 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     _mechanics_roots(g, game=True)
     g.set_defaults(mechanics_func=_mechanics_graph)
     _add_locate_verb(verbs)
+    _add_asm_verb(verbs)
     p.set_defaults(func=_cmd_mechanics)
+
+
+def _mechanics_asm(args: argparse.Namespace) -> int:
+    return 0
+
+
+def _add_asm_verb(verbs: argparse._SubParsersAction) -> None:
+    a = verbs.add_parser("asm", help="propose the D-23 asm list (stub)")
+    a.add_argument("--write", action="store_true")
+    _mechanics_roots(a, game=True)
+    a.set_defaults(mechanics_func=_mechanics_asm)
 
 
 def _number(value: str) -> int:
