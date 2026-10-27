@@ -43,7 +43,7 @@ From the main checkout (orig/ is gitignored and absent from worktrees), host onl
 
 ```
 uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] [--mutant] [--plant-chain]
-uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant]
+uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant] [--plant-guards]
 uv run python .planning/spikes/007-locate-997-training/q3_training.py [--plant]
 uv run python .planning/spikes/007-locate-997-training/q4_strings.py [--plant]
 ```
@@ -74,18 +74,21 @@ second.
   But it keeps the BIOS clock: it saves the old INT 8 vector, and an event callback far-returns
   into it, registered by the timer init [script: q1 `bios-chain-cadence`]. That event's
   increment is 0x123333 (18.2 in 16.16) divided by the PIT rate [script: the dividend; hand: the
-  divide by the PIT rate]. The ISR callback adds the increment on every interrupt [script] and
-  fires the event when the accumulator passes 1.0 [hand].
+  divide by the PIT rate]. A callback the timer init installs adds the increments to the event
+  accumulators [script]; that the INT 8 handler calls it on every interrupt, and that the event
+  fires when the accumulator passes 1.0, is [hand].
 - So the old handler runs about 18.2 times a second whatever the PIT rate: 0x123333 / 0x10000 =
   18.2000 Hz, or 18.2001 Hz with a 30 Hz event once integer rounding is counted. At the library's
   DOS rate (divisor 0xFFFF) it runs on every interrupt: 1,193,182 / 65,535 = 18.2068 Hz [hand].
 - That INT 1Ah returns the tick count this old handler keeps is standard BIOS behaviour under
   DOS/4GW [assumption].
-- There is no 36 Hz or 144 Hz game timer. The only PIT programming is in the sound library
-  [script: q1 `pit-int8-sites`].
+- There is no 36 Hz or 144 Hz game timer [derived: the only PIT programming is in the sound
+  library (script: q1 `pit-int8-sites`), and the 36-unit clock is called only from the frame
+  rows that wait on the BIOS tick (script: q2 `paces-on-bios-tick`, rows calling the clock)].
 - **Exception to "every frame waits".** The UFO2P frame skips the BIOS read and the wait while
   the no-wait counter `D_000D4D5C` is nonzero after the frame's own decrement, or while the byte
-  `D_00183BAC` is set [script: q2 `wait-skip-guards` finds both tests before the wait].
+  `D_00183BAC` is set [script: q2 `wait-skip-guards` finds both tests before the wait; both
+  globals pinned since plan 07-08].
   - All six speed setters write the counter, and the only constants any row stores to it are
     0, 1 and 600 [script].
   - A value of 1 is used up by the decrement before the test, so steady play at speeds 1/2/4/6
@@ -93,7 +96,8 @@ second.
   - The 600 setting stores 600, so frames skip the wait while it counts down [hand]. One more
     row stores a computed value (`func_0004B1B0`) [hand: not resolved].
   - TACP's frame step skips its wait when a flag computed from `D_000E6D64`, `D_001B7BAC` and
-    `D_0027A0EB` says so [script: the globals; hand: the condition].
+    `D_0027A0EB` says so [script: the three globals, pinned since plan 07-08; hand: the
+    condition].
 
 **Cityscape (UFO2P) speeds.**
 - The speed values are 1, 2, 4 and 6 units per frame [script: q2 `speed-values`]. The labels
@@ -216,7 +220,7 @@ PASS UFO2P.EXE loop-located-ufo2p loop rows 2 [0x000105D0:0x00010603..0x000108CE
 PASS UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 36 (PR #1688)
 PASS UFO2P.EXE one-second-per-frame `sub _, 36` count 1 in 0x0004AB30 (one per call: at most one game second per frame)
 PASS UFO2P.EXE paces-on-bios-tick rows calling the clock [0x00010940]; busy-wait on int386 0x1A [0x00010940:0x00011127..0x00011174]
-PASS UFO2P.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000D4D5C 0x00183BAC]; rows writing both the speed and 0x000D4D5C: 15, the 6 speed setters among them True; constants stored to it [0, 1, 600]
+PASS UFO2P.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000D4D5C 0x00183BAC] expected [0x000D4D5C 0x00183BAC]; rows writing both the speed and 0x000D4D5C: 15, the 6 speed setters among them True; constants stored to it [0, 1, 600]
 PASS UFO2P.EXE speed-values stored [0, 1, 2, 4, 6, 600] compared [0, 1, 2, 4, 6, 60, 600] at 0x000D4D58
 PASS UFO2P.EXE get-text-sections 50 of 50 section pointers at 0x000F3794
 PASS UFO2P.EXE speed-table-one-entry-per-label labels 4: slow 38/43 sites [0x000523C1] speed [1]; normal 38/44 sites [0x00052439] speed [2]; double 38/45 sites [0x000524B1] speed [4]; quadruple 38/46 sites [0x0005252C] speed [6]; tables [('0x000108EC', 6, [1, 2, 4, 6]), ('0x00010904', 6, [1, 2, 4, 6]), ('0x0001091C', 6, [1, 2, 4, 6])]
@@ -225,7 +229,7 @@ PASS TACP.EXE loop-located-tacp loop rows 9 [0x00010EE0:0x00010F40..0x0001135C 0
 PASS TACP.EXE accumulator-modulus-is-36 modulus 36 at 0x0003D184 expected 36 (PR #1688)
 PASS TACP.EXE one-second-per-frame `sub _, 36` count 1 in 0x0003D160 (one per call: at most one game second per frame)
 PASS TACP.EXE tacp-paces-on-same-bios-tick rows calling the clock [0x000116B0 0x000B6E50]; busy-wait on int386 0x1A [0x000116B0:0x00011909..0x00011959]
-PASS TACP.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000E6D64 0x001B7BAC 0x0027A0EB]
+PASS TACP.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000E6D64 0x001B7BAC 0x0027A0EB] expected [0x000E6D64 0x001B7BAC 0x0027A0EB]
 PASS TACP.EXE speed-values stored [0, 1, 2, 4] compared [0, 1, 2, 4] at 0x000E6C24
 ALL PASS
 ```
@@ -402,6 +406,7 @@ q4 found 11 of 12
 | `q1 --mutant` | every `mov reg, 0x1a` immediate in game rows zeroed in an in-memory copy of the flat image | UFO2P `int1a-readers immediate []` and `int1a-pinned-readers []` FAIL; TACP `int1a-readers immediate []` FAIL; `3 FAILED` (the readers are reported missing) | 1 |
 | `q1 --plant-chain` | expected BIOS-chain dividend 0x123333 -> 0x1234DC (the PIT clock: a BIOS tick that would follow the PIT rate) | `bios-chain-cadence` FAILs in both EXEs, `2 FAILED` | 1 |
 | `q2 --plant` | expected modulus 36 -> 144 (OpenApoc's assumed ticks per second) | `FAIL UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 144`, the same for TACP at `0x0003D184`, `2 FAILED` | 1 |
+| `q2 --plant-guards` (plan 07-08) | each EXE's expected wait-skip guard set without its last global (UFO2P without `0x00183BAC`, TACP without `0x0027A0EB`) | `wait-skip-guards` FAILs in both EXEs, `2 FAILED` | 1 |
 | `q3 --plant` | TACP expected writer `0x000156A0` -> `0x000156B0` | `unitr-writer`, `record-layout`, `handoff-fields-agree`, `accrual-sites` and TACP `learning-ai-files` FAIL; `5 FAILED` | 1 |
 | `q4 --plant` | UFO2P expected get_text slot count 52 -> 0x10000 (impossible) | `FAIL UFO2P.EXE get-text-table ... expected slots 65536`, `3 FAILED` (the plant plus the two findings of the default run) | 1 |
 
@@ -419,6 +424,19 @@ q4 found 11 of 12
 - Fix round 1: the lead said every frame waits a tick, but the no-wait counter lets frames skip
   the wait. q2 `wait-skip-guards` now finds the guards and the constants stored to the counter.
   How the decrement uses up a 1 was read by hand.
+
+- Plan 07-08, before the verdict (orchestrator ruling on the 07-02 re-review). Four evidence
+  tags in the lead claimed more than the scripts assert; they are corrected here, not in the
+  07-02 SUMMARY:
+  - "The ISR callback adds the increment on every interrupt [script]": q1 asserts only that a
+    callback the timer init installs adds increment-array entries to memory. The per-interrupt
+    call is now tagged [hand].
+  - UFO2P `wait-skip-guards` pinned only `D_000D4D5C`; TACP's passed on any non-empty set. q2
+    now requires the guard sets to equal EXPECTED in both EXEs (UFO2P `D_000D4D5C`,
+    `D_00183BAC`; TACP `D_000E6D64`, `D_001B7BAC`, `D_0027A0EB`), and `--plant-guards` gives the
+    claim its own planted failure.
+  - "There is no 36 Hz or 144 Hz game timer" had no tag; it is now [derived] from q1's PIT sites
+    and q2's rows calling the clock.
 
 - q1 started from research's capstone scan. A first run missed the pinned reader: the tracker
   treated `movsx`/`movzx` as string instructions (prefix match on `movs`), so every register
