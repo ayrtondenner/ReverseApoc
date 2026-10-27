@@ -1650,3 +1650,21 @@ def test_provenance_agrees_with_the_compile_rule(env, monkeypatch):
     doc = json.loads(stamp.read_text(encoding="utf-8"))
     stamp.write_text(json.dumps({**doc, "flags": ["-4r", "-s", "-fpi"]}), encoding="utf-8")
     assert_stale(env, "stale object", "the flags", src_root=copy, options=options)
+
+
+def test_sweep_compiles_a_view_against_the_views_include(env, monkeypatch):
+    """07-11 (orchestrator note on 07-03 as built): a sweep of a D-24 view compiles every cell
+    from the view root (its include/), with its objects in the view's build/; a sweep of any
+    other tree still compiles from the repository root."""
+    root = repo_stand_in(env, monkeypatch)
+    committed = FlagCompiler()
+    run_sweep(env, committed, versions=("10.6",))  # writes the env's watcom/10.6
+    assert {call_kwargs["root"] for _, _, call_kwargs in committed.calls} == {root}
+    src = view_tree(env, "build", "driver", "run1", "view")
+    compiler = FlagCompiler()
+    kwargs = {**env.kwargs(), "src_root": src, "build_dir": src.parent / "build"}
+    check.sweep(STEM, UNIT, "func_00010000", **kwargs, watcom_dir=env.root / "watcom",
+                compile_fn=compiler, objdiff_runner=FakeObjdiff(100.0))  # fmt: skip
+    assert compiler.calls
+    assert {call_kwargs["root"] for _, _, call_kwargs in compiler.calls} == {src.parent}
+    assert all(obj.is_relative_to(src.parent / "build") for _, obj, _ in compiler.calls)

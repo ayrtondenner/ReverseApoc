@@ -1344,8 +1344,7 @@ def _compile_cell(setup: _SweepSetup, number: int, version: str, flags: Sequence
     _write(rule, SWEEP_RULE.format(spec=spec, flags=" ".join(flags)).encode("ascii"))
     obj = setup.work / f"cell-{number:02d}{OBJECT_SUFFIX}"
     o = setup.options
-    _compile(setup.compile_fn, setup.src, obj,
-             CompileOptions(rule, o.watcom_manifest, o.watcom_dir, o.log))  # fmt: skip
+    _compile(setup.compile_fn, setup.src, obj, dataclasses.replace(o, cflags=rule))
     return obj
 
 
@@ -1408,7 +1407,9 @@ def sweep(
     target_o = work / f"target{ELF_SUFFIX}"
     cut = build_target(inputs.le, rows, inputs.symbols, flat=inputs.flat, fixups=inputs.fixups)
     _write(target_o, cut.data)
-    options = CompileOptions(None, watcom_manifest, watcom_dir, log)
+    # The src root picks the compile root (_compile_root_for): a D-24 view's cells compile against
+    # the view's include/ (07-11), every other tree's from the repository root, as before.
+    options = CompileOptions(None, watcom_manifest, watcom_dir, log, src_root=Path(src_root))
     setup = _SweepSetup(inputs, rows, row, src, work, target_o, compile_fn or compile_source,
                         runner, options)  # fmt: skip
     chk = calls_chk(row, inputs)

@@ -39,7 +39,17 @@ from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
 from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv
-from .hooks import ATTEMPT_FORMS, ATTEMPT_PREFIX, CLAIM_ENV, NOTES_ENV, attempt_form_matches
+from .hooks import (
+    ATTEMPT_FORMS,
+    ATTEMPT_PREFIX,
+    CLAIM_ENV,
+    NOTES_ENV,
+    PROPOSALS_ENV,
+    SESSION_KIND_ENV,
+    SESSION_KINDS,
+    UNIT_FILE_ENV,
+    attempt_form_matches,
+)
 from .status import read_status, status_path
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 
@@ -52,6 +62,16 @@ CHECKS_DIR = "checks"
 CHECK_LOG = "checks.jsonl"
 CHECK_LOCK = "check.lock"
 NOTES_FILE = "notes.md"  # REVERSEAPOC_ATTEMPT_NOTES must be <attempt dir>/notes.md (06-23, M8)
+# D-24 P7: the session's private view of HEAD, <attempt dir>/view/ with src/, include/, config/
+# (cflags.txt and the per-EXE CSVs) and build/; checks are rooted in it when the driver sets
+# REVERSEAPOC_UNIT_FILE, so concurrent sessions never see each other's edits.
+VIEW_DIR = "view"
+VIEW_SRC = "src"
+VIEW_CONFIG = "config"
+VIEW_BUILD = "build"
+VIEW_CFLAGS = Path(VIEW_CONFIG) / "cflags.txt"
+VIEW_LOG = Path(VIEW_BUILD) / "logs" / "cc.log"
+PROPOSALS_FILE = "proposals.jsonl"  # REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -152,6 +172,15 @@ class Claim:
     function: str  # func_XXXXXXXX
     attempt_dir: Path  # resolved, below build/driver/
     notes: Path  # REVERSEAPOC_ATTEMPT_NOTES as the driver set it: <attempt dir>/notes.md
+    # D-24 (07-11): REVERSEAPOC_UNIT_FILE, resolved: <attempt dir>/view/src/<exe>/<unit>.c; None
+    # is a legacy (Phase 6) session, whose checks read the shared src/.
+    unit_file: Path | None = None
+    proposals: Path | None = None  # REVERSEAPOC_PROPOSALS: <attempt dir>/proposals.jsonl
+    kind: str = SESSION_KINDS[0]  # REVERSEAPOC_SESSION_KIND; absent means matching
+
+    @property
+    def view_root(self) -> Path:
+        return self.attempt_dir / VIEW_DIR
 
     @property
     def target(self) -> str:
@@ -171,9 +200,13 @@ class Claim:
         if _FUNC.fullmatch(function) is None:
             raise AttemptError(f"{FUNC_ENV} must be set by the driver to func_XXXXXXXX "
                                "(8 upper-case hex digits)")  # fmt: skip
+        exe, unit = claim.group(1), claim.group(2)
         attempt_dir = _attempt_dir(env, roots)
-        return cls(claim.group(1), claim.group(2), function, attempt_dir,
-                   _notes(env, roots, attempt_dir))  # fmt: skip
+        unit_file = _unit_file(env, roots, attempt_dir, exe, unit)
+        view = unit_file is not None
+        return cls(exe, unit, function, attempt_dir, _notes(env, roots, attempt_dir), unit_file,
+                   _proposals(env, roots, attempt_dir, view=view),
+                   _kind(env, view=view))  # fmt: skip
 
 
 def _attempt_dir(env: Mapping[str, str], roots: Roots) -> Path:
@@ -200,6 +233,97 @@ def _notes(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path:
     return given
 
 
+def _names(value: str, expected: Path, attempt_dir: Path, roots: Roots) -> bool:
+    """Whether the driver's env `value` (absolute, or relative to the repository) names
+    `expected`, a path below `attempt_dir`: resolved, part by part, and with the parts below the
+    attempt directory spelled exactly as written (a case variant that a case-folding host would
+    resolve onto `expected` is refused: the hook's view-unit and proposals shapes are exact)."""
+    given = Path(roots.repo) / value
+    tail = expected.relative_to(attempt_dir).parts
+    written = Path(os.path.normpath(os.path.abspath(given))).parts
+    return given.resolve().parts == expected.parts and written[-len(tail) :] == tail
+
+
+def _unit_file(
+    env: Mapping[str, str], roots: Roots, attempt_dir: Path, exe: str, unit: str
+) -> Path | None:
+    """D-24, T-07-31: REVERSEAPOC_UNIT_FILE, when set, must be the claim's own view unit
+    <attempt dir>/view/src/<exe>/<unit>.c and exist, so a check never compiles another
+    session's file. Unset (or empty, as the hook reads it) is a legacy session: None."""
+    value = env.get(UNIT_FILE_ENV) or ""
+    if not value:
+        return None
+    expected = attempt_dir / VIEW_DIR / VIEW_SRC / exe / f"{unit}.c"
+    if not _names(value, expected, attempt_dir, roots) or not expected.is_file():
+        raise AttemptError(f"{UNIT_FILE_ENV} must be set by the driver to {expected} (the "
+                           f"claim's view unit, an existing file), got {value!r}")  # fmt: skip
+    return expected
+
+
+def _proposals(
+    env: Mapping[str, str], roots: Roots, attempt_dir: Path, *, view: bool
+) -> Path | None:
+    """T-07-31: REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl (it need not
+    exist yet), the one proposals path the hook lets the agent write. A view session must have
+    it; a legacy session may leave it unset (None)."""
+    value = env.get(PROPOSALS_ENV) or ""
+    if not value and not view:
+        return None
+    expected = attempt_dir / PROPOSALS_FILE
+    if not value or not _names(value, expected, attempt_dir, roots):
+        raise AttemptError(f"{PROPOSALS_ENV} must be set by the driver to {expected}, "
+                           f"got {value!r}")  # fmt: skip
+    return expected
+
+
+def _kind(env: Mapping[str, str], *, view: bool) -> str:
+    """REVERSEAPOC_SESSION_KIND: absent is a matching session; otherwise exactly one of
+    hooks.SESSION_KINDS (the hook denies any other value every write). A session other than
+    matching checks only a view (the hook denies it every write without one)."""
+    kind = env.get(SESSION_KIND_ENV)
+    if kind is None:
+        return SESSION_KINDS[0]
+    if kind not in SESSION_KINDS:
+        raise AttemptError(f"{SESSION_KIND_ENV}={kind!r} is not one of "
+                           f"{', '.join(SESSION_KINDS)}")  # fmt: skip
+    if kind != SESSION_KINDS[0] and not view:
+        raise AttemptError(f"a {kind} session checks only its view, and {UNIT_FILE_ENV} is not "
+                           "set")  # fmt: skip
+    return kind
+
+
+def src_root(claim: Claim, roots: Roots) -> Path:
+    """The src tree the claim's check and pack read: the view's in view mode, else the shared
+    one."""
+    return claim.view_root / VIEW_SRC if claim.unit_file is not None else Path(roots.src)
+
+
+def config_root(claim: Claim, roots: Roots) -> Path:
+    """The config tree the claim's check reads: the view's in view mode, else the shared one."""
+    return claim.view_root / VIEW_CONFIG if claim.unit_file is not None else Path(roots.config)
+
+
+def unit_path(claim: Claim, roots: Roots) -> Path:
+    """The claimed unit file a check compiles: the view unit in view mode, else src/'s."""
+    if claim.unit_file is not None:
+        return claim.unit_file
+    return Path(roots.src) / claim.exe / f"{claim.unit}.c"
+
+
+def _view_argv(claim: Claim, roots: Roots) -> tuple[str, ...]:
+    """D-24 P7: check's five root options, each a repo-relative POSIX path under the view (the
+    container runs from the repository root), so the check compiles this session's unit plus
+    HEAD's other units and nothing another session wrote. Empty in legacy mode."""
+    if claim.unit_file is None:
+        return ()
+    view, repo = claim.view_root, Path(roots.repo).resolve()
+    paths = (("--src", view / VIEW_SRC), ("--config", view / VIEW_CONFIG),
+             ("--cflags", view / VIEW_CFLAGS), ("--build", view / VIEW_BUILD),
+             ("--log", view / VIEW_LOG))  # fmt: skip
+    return tuple(item for flag, path in paths
+                 for item in (flag, path.relative_to(repo).as_posix()))  # fmt: skip
+
+
 # ---- attempt check ----
 
 
@@ -219,10 +343,12 @@ def container_name(claim: Claim, stem: str) -> str:
     return container_prefix(claim.attempt_dir) + stem
 
 
-def container_check_argv(claim: Claim, *, sweep: bool, name: str) -> tuple[str, ...]:
+def container_check_argv(claim: Claim, *, sweep: bool, name: str, roots: Roots) -> tuple[str, ...]:
     """`check <claim> --json` in the container's `build` service, named `name` (-T: no tty, so
-    the output is captured), plus `--sweep <function>` for the D-17 diagnostic."""
-    argv = (*CONTAINER_RUN, "--name", name, *CONTAINER_CHECK, claim.target, "--json")
+    the output is captured), plus `--sweep <function>` for the D-17 diagnostic. In view mode
+    (D-24) the view's five roots come before --json; no agent argument ever chooses them."""
+    argv = (*CONTAINER_RUN, "--name", name, *CONTAINER_CHECK, claim.target,
+            *_view_argv(claim, roots), "--json")  # fmt: skip
     return (*argv, "--sweep", claim.function) if sweep else argv
 
 
@@ -340,8 +466,10 @@ def _sweep_line(
 
 
 def _default_spec(claim: Claim, roots: Roots) -> str:
-    """The unit's own cflags.txt rule as a sweep cell names it: `wcc386@10.6 -4r -s -fpi`."""
-    rule = select_rule(load_cflags(roots.cflags), f"src/{claim.exe}/{claim.unit}.c")
+    """The unit's own cflags.txt rule as a sweep cell names it: `wcc386@10.6 -4r -s -fpi`; in
+    view mode the view's config/cflags.txt, the file the container check reads."""
+    cflags = claim.view_root / VIEW_CFLAGS if claim.unit_file is not None else roots.cflags
+    rule = select_rule(load_cflags(cflags), f"src/{claim.exe}/{claim.unit}.c")
     return " ".join([rule.spec, *rule.flags])
 
 
@@ -512,7 +640,7 @@ def _locked_check(
         raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
                            "(D-07); write notes.md and stop")  # fmt: skip
     default = _default_spec(claim, roots) if sweep else ""
-    unit = Path(roots.src) / claim.exe / f"{claim.unit}.c"
+    unit = unit_path(claim, roots)
     try:
         text = unit.read_bytes()
     except OSError as exc:
@@ -522,7 +650,7 @@ def _locked_check(
     _reserve(claim.attempt_dir / source, text)
     name = container_name(claim, stem)
     started = CLOCK()
-    ran = runner(container_check_argv(claim, sweep=sweep, name=name))
+    ran = runner(container_check_argv(claim, sweep=sweep, name=name, roots=roots))
     seconds = CLOCK() - started
     if ran.timed_out:
         held.keep = True  # N7: fail closed from here until a removal succeeds
@@ -580,7 +708,7 @@ def claimed_row(rows: Sequence[FunctionRow], claim: Claim) -> FunctionRow:
 
 def cmd_check(*, sweep: bool) -> int:
     claim = Claim.from_env(os.environ, roots=ROOTS)
-    claimed_row(read_functions_csv(Path(ROOTS.config) / claim.exe / "functions.csv"), claim)
+    claimed_row(read_functions_csv(config_root(claim, ROOTS) / claim.exe / "functions.csv"), claim)
     code, text = run_check(claim, sweep=sweep, runner=RUNNER, roots=ROOTS)
     print(text)
     return code
@@ -731,8 +859,8 @@ def cmd_asm(name: str | None) -> int:
 def cmd_context() -> int:
     """Rebuild the claimed function's pack into <attempt dir>/context.md and print it."""
     claim, data, row = _claimed_row()
-    pack = make_pack(data, row, src=ROOTS.src, config=ROOTS.config, asm_root=ROOTS.asm,
-                     roots=ROOTS)  # fmt: skip
+    pack = make_pack(data, row, src=src_root(claim, ROOTS), config=ROOTS.config,
+                     asm_root=ROOTS.asm, roots=ROOTS)  # fmt: skip
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     sys.stdout.write(pack.text)
     print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)
