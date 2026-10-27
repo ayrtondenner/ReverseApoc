@@ -43,6 +43,15 @@ After each session, in this order:
    PARTIAL (best plain check above 0%, its C saved under best/ and `gate --partial` run) or
    GAVE_UP; a failed lint is the same outcome with abort_reason "lint" (review IN-02).
 
+Claims and locks (07-18; D-06, D-24, D-27 P4): a night holds build/driver/drive.lock (an OS
+lock, locks.ProcessLock) from before its STARTED record to its end, so a second drive is
+refused and every earlier holder is known dead; with it held, each claim of another run under
+build/driver/claims/ is stale and moved to build/driver/<run>/stale-claims/, named in STARTED.
+Each attempt claims its unit with one O_EXCL file and releases it after its landing decision.
+One gate lock serialises every shared write (the landing section, `gate --partial`, every
+record append) and one git lock every driver git call; git and sessions run with
+GIT_OPTIONAL_LOCKS=0, and `git add`/`git commit` retry once on an index.lock error.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -116,6 +125,9 @@ MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
+OPTIONAL_LOCKS = "GIT_OPTIONAL_LOCKS"  # "0" in the driver's git env and every session's (D-27 P4)
+INDEX_LOCK = b"index.lock"  # in git's stderr: another process held the index (D-27 P4)
+INDEX_LOCK_WAIT_S = 1.0  # the wait before the one retry of `git add` / `git commit`
 BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
@@ -261,12 +273,14 @@ class DriveReport:
 
 
 def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
-    """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes."""
+    """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes. The
+    env (given, else this process's) carries GIT_OPTIONAL_LOCKS=0, so a read such as `git
+    status` never takes index.lock (D-27 P4)."""
+    run_env = {**(os.environ if env is None else env), OPTIONAL_LOCKS: "0"}
 
     def git(args: Sequence[str]) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(["git", *args], cwd=repo,
-                                  env=None if env is None else dict(env),
+            return subprocess.run(["git", *args], cwd=repo, env=dict(run_env),
                                   capture_output=True, check=False)  # fmt: skip
         except OSError as exc:  # fix round 1 I2: a missing or unrunnable git is a failed call
             return subprocess.CompletedProcess(["git", *args], _os_error_exit(exc), b"",
@@ -283,7 +297,12 @@ def _os_error_exit(exc: OSError) -> int:
 
 def _git_ok(git: Callable[[Sequence[str]], subprocess.CompletedProcess], args: list[str]) -> bytes:
     """`git --literal-pathspecs <args>`; a non-zero exit is a DriverError."""
-    done = git([LITERAL, *args])
+    return _git_stdout(git([LITERAL, *args]), args)
+
+
+def _git_stdout(done: subprocess.CompletedProcess, args: Sequence[str]) -> bytes:
+    """The stdout of a finished `git <args>`; a non-zero exit is a DriverError naming git's
+    stderr."""
     if done.returncode != 0:
         why = (done.stderr or b"").decode("utf-8", "replace").strip()
         raise DriverError(f"git {' '.join(args[:2])} failed: {why}")
@@ -667,15 +686,6 @@ def commit_message(
         MATCHED_BY,
     ]
     return "\n".join(lines) + "\n"
-
-
-def commit_paths(git, *, message: str, message_file: Path, paths: Sequence[str]) -> None:
-    """`git add -- <paths>` (a new unit or header is untracked, F5), then
-    `git commit -F <file> -- <paths>`: explicit literal paths only, never `-A` or `.`."""
-    message_file.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(message_file, message.encode("utf-8"))
-    _git_ok(git, ["add", "--", *paths])
-    _git_ok(git, ["commit", "-q", "-F", str(message_file), "--", *paths])
 
 
 _UNCLAIMED_PASS = "the gate passed without a matched row for the claimed function"
@@ -1096,6 +1106,7 @@ class _Claim:
                 hooks.UNIT_FILE_ENV: str(self.view_unit),
                 hooks.PROPOSALS_ENV: str(self.proposals),
                 hooks.SESSION_KIND_ENV: MATCHING_KIND,
+                OPTIONAL_LOCKS: "0",  # D-27 P4: the session's git reads never take index.lock
                 "PYTHONDONTWRITEBYTECODE": "1"}  # fmt: skip  # fix round 1 minor 3: no .pyc
 
 
@@ -1293,6 +1304,7 @@ class _Night:
         # (copy, lint, gate, commit or undo, reset), `gate --partial` and every record append.
         # Reentrant, because the landing section appends its own record while it holds it.
         self.gate_lock = threading.RLock()
+        self.git_lock = threading.Lock()  # D-27 P4: one driver git call at a time (_git)
 
     # --- the night ---
 
@@ -1380,7 +1392,7 @@ class _Night:
             except Exception as exc:  # noqa: BLE001 - named instead
                 out.append(f"{rel}: unknown ({type(exc).__name__}: {exc})")
         try:
-            if FEED in parse_status(_git_ok(self.deps.git, ["status", "--porcelain=v1", "-z",
+            if FEED in parse_status(_git_ok(self._git, ["status", "--porcelain=v1", "-z",
                                                             "--", FEED])):  # fmt: skip
                 out.append(f"{FEED}: changed")
         except Exception as exc:  # noqa: BLE001 - named instead
@@ -1391,7 +1403,7 @@ class _Night:
         """The rows of `rel` that HEAD does not have, as `<rel>: <start> <status>`."""
         path = self.repo / rel
         now = path.read_text(encoding="utf-8").splitlines() if path.is_file() else []
-        head = set(_git_ok(self.deps.git, ["show", f"HEAD:{rel}"]).decode("utf-8").splitlines())
+        head = set(_git_ok(self._git, ["show", f"HEAD:{rel}"]).decode("utf-8").splitlines())
         rows = [line.split(",") for line in now if line not in head and not line.startswith("#")]
         return [f"{rel}: {cells[0]} {cells[3]}" if len(cells) > 3 else f"{rel}: {cells[0]}"
                 for cells in rows]  # fmt: skip
@@ -1404,7 +1416,7 @@ class _Night:
         """Those of `_outputs` that differ from HEAD in the worktree or the index (fix round 3
         minor 1; 06-25's dirty-tree preflight is a second layer)."""
         paths = self._outputs()
-        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "-z", "--", *paths])
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "-z", "--", *paths])
         dirty = parse_status(raw)
         return [path for path in paths if path in dirty]
 
@@ -1415,14 +1427,39 @@ class _Night:
         paths = [ATTEMPT_LOG.as_posix()]
         if not stopped:
             paths += [*(f"config/{exe}/status.csv" for exe in EXE_ORDER), FEED]
-        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "-z", "--", *paths])
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "-z", "--", *paths])
         dirty = parse_status(raw)
         changed = [path for path in paths if path in dirty]
         if not changed:
             return
         message = f"{LOG_SUBJECT}\n\nAttempt records of run {self.config.run_id}.\n"
         message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LOG_MSG)
-        commit_paths(self.deps.git, message=message, message_file=message_file, paths=changed)
+        self._commit_with_retry(message=message, message_file=message_file, paths=changed)
+
+    def _git(self, args: Sequence[str]) -> subprocess.CompletedProcess:
+        """Every driver git call, one at a time behind the git lock (D-27 P4)."""
+        with self.git_lock:
+            return self.deps.git(args)
+
+    def _git_retry(self, args: list[str]) -> bytes:
+        """`git --literal-pathspecs <args>`, retried once after INDEX_LOCK_WAIT_S when git
+        names index.lock (someone else held the index); any other failure, or a second one,
+        is a DriverError."""
+        done = self._git([LITERAL, *args])
+        if done.returncode != 0 and INDEX_LOCK in (done.stderr or b""):
+            self.deps.sleep(INDEX_LOCK_WAIT_S)
+            done = self._git([LITERAL, *args])
+        return _git_stdout(done, args)
+
+    def _commit_with_retry(self, *, message: str, message_file: Path,
+                           paths: Sequence[str]) -> None:  # fmt: skip
+        """`git add -- <paths>` (a new unit is untracked, F5), then `git commit -F <file> --
+        <paths>`: explicit literal paths only, never `-A` or `.`; each step retried once on an
+        index.lock error before the caller undoes the match (D-27 P4)."""
+        message_file.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(message_file, message.encode("utf-8"))
+        self._git_retry(["add", "--", *paths])
+        self._git_retry(["commit", "-q", "-F", str(message_file), "--", *paths])
 
     def _end(self) -> str | None:
         if self.matched >= self.config.target_matched:
@@ -1580,14 +1617,14 @@ class _Night:
         committed headers, 07-11 as built). The claimed unit is HEAD's file, or the scaffold
         written into the view. The commit is recorded in <attempt dir>/view-head.txt (F34).
         Returns (that commit, whether the unit was scaffolded)."""
-        head = _git_ok(self.deps.git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
-        listed = _git_ok(self.deps.git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
+        head = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        listed = _git_ok(self._git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
         trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
                  if name in VIEW_TREES]  # fmt: skip
         view = claim.view_root
         view.mkdir()
         if trees:
-            archive = _git_ok(self.deps.git, ["archive", "--format=tar", head, "--", *trees])
+            archive = _git_ok(self._git, ["archive", "--format=tar", head, "--", *trees])
             with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
                 tar.extractall(view, filter="data")
         (view / "include").mkdir(exist_ok=True)
@@ -1621,7 +1658,7 @@ class _Night:
     def _snapshot(self) -> _Snapshot:
         """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
         paths git cannot see (security ruling)."""
-        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "--untracked-files=all", "-z"])
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "--untracked-files=all", "-z"])
         entries = parse_status(raw)
         data = {p: b for p in entries if (b := _read(self.repo / p)) is not None}
         status = {p: (code, _sha256(data.get(p))) for p, code in entries.items()}
@@ -1653,7 +1690,7 @@ class _Night:
         """Every gitignored file or tree under .claude/ but .claude/worktrees/ (fix round 1
         minor 2: GSD's hooks, gsd-core and the like)."""
         args = ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"]
-        raw = _git_ok(self.deps.git, [*args, "--", _CLAUDE])
+        raw = _git_ok(self._git, [*args, "--", _CLAUDE])
         names = [n.rstrip("/") for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
         return [self.repo / n for n in names
                 if n != _WORKTREES and not n.startswith(_WORKTREES + "/")]  # fmt: skip
@@ -1670,7 +1707,7 @@ class _Night:
     def _git_dir(self) -> Path:
         """The checkout's common git directory (.git; a worktree's shared one)."""
         if self.git_dir is None:
-            raw = _git_ok(self.deps.git, ["rev-parse", "--git-common-dir"]).decode().strip()
+            raw = _git_ok(self._git, ["rev-parse", "--git-common-dir"]).decode().strip()
             path = Path(raw)
             self.git_dir = path if path.is_absolute() else self.repo / path
         return self.git_dir
@@ -1698,7 +1735,7 @@ class _Night:
         return sorted(set(names))
 
     def _tracked(self) -> frozenset[str]:
-        raw = _git_ok(self.deps.git, ["ls-files", "-z"])
+        raw = _git_ok(self._git, ["ls-files", "-z"])
         names = raw.decode("utf-8", "surrogateescape").split("\0")
         return frozenset(name.casefold() for name in names if name)
 
@@ -1812,7 +1849,7 @@ class _Night:
 
     def _head_bytes(self, rel: str) -> bytes | None:
         """HEAD's blob of `rel`, or None when HEAD has none (or git cannot show it)."""
-        done = self.deps.git(["cat-file", "blob", f"HEAD:{rel}"])
+        done = self._git(["cat-file", "blob", f"HEAD:{rel}"])
         return done.stdout if done.returncode == 0 else None
 
     def _breach(self, rel: str, good: bytes | None, *, ledgered: bool = True) -> str:
@@ -2073,7 +2110,7 @@ class _Night:
                 done.not_contained.append(name)
                 return
         if not pinned and name.casefold() in tracked and earlier is None:
-            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--staged", "--worktree",
+            _git_ok(self._git, ["restore", "--source=HEAD", "--staged", "--worktree",
                                     "--", name])  # fmt: skip
             done.restored.append(name)
         elif earlier is not None:
@@ -2082,7 +2119,7 @@ class _Night:
                 return
             if name.casefold() in tracked:
                 try:
-                    _git_ok(self.deps.git, ["restore", "--staged", "--", name])
+                    _git_ok(self._git, ["restore", "--staged", "--", name])
                 except Exception as exc:  # noqa: BLE001 - minor 2: the bytes did come back
                     done.unstage_failed.append(f"{name} ({type(exc).__name__}: {exc})")
                     return
@@ -2137,7 +2174,7 @@ class _Night:
         claim = session.claim
         unit = self.repo / claim.unit_rel
         if claim.unit_rel.casefold() in self._tracked():
-            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--", claim.unit_rel])
+            _git_ok(self._git, ["restore", "--source=HEAD", "--", claim.unit_rel])
         elif self.landed == claim.unit_rel:
             unit.unlink(missing_ok=True)
         self.landed = None
@@ -2287,8 +2324,8 @@ class _Night:
                                      seconds=session.seconds,
                                      sha1s=gate_sha1s(gate.doc))  # fmt: skip
             self._verify_landing(claim)
-            commit_paths(self.deps.git, message=message,
-                         message_file=claim.attempt_dir / COMMIT_MSG, paths=paths)  # fmt: skip
+            self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
+                                    paths=paths)  # fmt: skip
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
             undone = self._undo_match(session, paths, summary, exc.detail, log_size)
             raise _Stop(GUARDRAIL, undone) from exc
@@ -2316,7 +2353,7 @@ class _Night:
         notes = [f"the match commit failed: {why}"]
         self.undo_reason = None
         try:
-            _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
+            _git_ok(self._git, ["restore", "--staged", "--", *paths])
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not unstage: {type(exc).__name__}: {exc}")
         try:
@@ -2357,7 +2394,7 @@ class _Night:
     def _staged(self) -> list[str]:
         """Every path staged in the index (best-effort: an unreadable index is named)."""
         try:
-            raw = _git_ok(self.deps.git, ["diff", "--cached", "--name-only", "-z"])
+            raw = _git_ok(self._git, ["diff", "--cached", "--name-only", "-z"])
         except Exception as exc:  # noqa: BLE001 - the caller names it
             return [f"<unknown: {type(exc).__name__}: {exc}>"]
         return [n for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
@@ -2402,17 +2439,20 @@ class _Night:
         """Every driver record goes through here (fix round 1): the log must still hold the
         driver's bytes, then the ledger records those bytes plus the line, never a read-back.
         After a breach (nothing is committed any more) the check is skipped, so the STOPPED
-        record can always be written."""
+        record can always be written. 07-18 (D-27 P4): every append holds the gate lock, so a
+        record of another worker waits while a landing runs, and F19's truncation of a failed
+        match commit can only drop that landing's own MATCHED line."""
         rel = ATTEMPT_LOG.as_posix()
-        line = record_line(record)
-        checked = guard and not self.breached
-        if checked:
-            self._guard(rel)
-        before = self.ledger.expected(rel) if checked else _read(self.log)
-        self.log.parent.mkdir(parents=True, exist_ok=True)
-        with self.log.open("ab") as fh:
-            fh.write(line)
-        self.ledger.set(rel, (before or b"") + line)
+        with self.gate_lock:
+            line = record_line(record)
+            checked = guard and not self.breached
+            if checked:
+                self._guard(rel)
+            before = self.ledger.expected(rel) if checked else _read(self.log)
+            self.log.parent.mkdir(parents=True, exist_ok=True)
+            with self.log.open("ab") as fh:
+                fh.write(line)
+            self.ledger.set(rel, (before or b"") + line)
 
 
 def drive(config: DriveConfig, deps: Deps) -> DriveReport:
@@ -3122,7 +3162,7 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
 
 def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
     """git status clean, and nothing the night's audit pins or fingerprints changed."""
-    raw = _git_ok(probe.deps.git, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    raw = _git_ok(probe._git, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     dirty = sorted(parse_status(raw))
     checks.add(not dirty, "git status --porcelain " + (f"is not clean: {_listed(dirty)}"
                                                        if dirty else "is clean"))  # fmt: skip
@@ -3144,8 +3184,8 @@ def canary_attempt_dir(options: DriveOptions) -> Path:
 
 def _refs(probe: _Night) -> dict[str, str]:
     """HEAD and every ref with its object (fix round 1: a commit leaves `git status` clean)."""
-    head = _git_ok(probe.deps.git, ["rev-parse", "HEAD"]).decode("utf-8").strip()
-    raw = _git_ok(probe.deps.git, ["for-each-ref", "--format=%(refname) %(objectname)"])
+    head = _git_ok(probe._git, ["rev-parse", "HEAD"]).decode("utf-8").strip()
+    raw = _git_ok(probe._git, ["for-each-ref", "--format=%(refname) %(objectname)"])
     refs = dict(line.split(" ", 1) for line in raw.decode("utf-8", "replace").splitlines()
                 if " " in line)  # fmt: skip
     return {"HEAD": head, **refs}
@@ -3183,7 +3223,7 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
     claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR)
     probe = _probe(options, seams)
-    listed = _git_ok(probe.deps.git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
+    listed = _git_ok(probe._git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
         raise Refused("canary unit", f"HEAD has no {claim.unit_rel}, the matched unit the "
                                      "canary's view and check need")  # fmt: skip
