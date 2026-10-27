@@ -306,3 +306,15 @@ def closure(
                 seen.add(edge.dst)
                 queue.append(edge.dst)
     return frozenset(seen)
+
+
+def sccs(graph: CallGraph, nodes: Iterable[int]) -> tuple[frozenset[int], ...]:
+    """RED stub."""
+    return ()
+
+
+def reach(
+    graph: CallGraph, roots: Iterable[int], *, stop: frozenset[int] = frozenset()
+) -> dict[int, tuple[int, str]]:
+    """RED stub."""
+    return {}
