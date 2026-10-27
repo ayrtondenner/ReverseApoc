@@ -855,6 +855,16 @@ def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...
     ), tuple(runs)  # fmt: skip
 
 
+def _check_unit(exe: str, unit: str, **roots: Any) -> check.CheckResult:
+    """check.check_unit, looked up when called (so the verb's tests can stand a fake in)."""
+    return check.check_unit(exe, unit, **roots)
+
+
+def _cross_check(splices: Any, matched: Any, defined: Any, **kwargs: Any) -> list[str]:
+    """gate.cross_check, looked up when called."""
+    return gate.cross_check(splices, matched, defined, **kwargs)
+
+
 def _regatable(proposals: Sequence[Proposal], ids: Sequence[str], repo: Path) -> list[Proposal]:
     """The proposals `ids` names, each refused unless open, with a rule and its candidate as
     queued (the C that hit, by its sha256)."""
@@ -900,8 +910,7 @@ def regate(
     queue = Path(queue) if queue is not None else repo / QUEUE
     proposals = read_queue(queue)
     env = _Regate(repo, Path(orig_dir) if orig_dir is not None else repo / "orig", build_dir,
-                  watcom_dir, check_fn or check.check_unit,
-                  cross_check_fn or gate.cross_check)  # fmt: skip
+                  watcom_dir, check_fn or _check_unit, cross_check_fn or _cross_check)  # fmt: skip
     done: list[Proposal] = []
     runs: list[tuple[Variant, ...]] = []
     for p in _regatable(proposals, ids, repo):
