@@ -1668,3 +1668,70 @@ def test_sweep_compiles_a_view_against_the_views_include(env, monkeypatch):
     assert compiler.calls
     assert {call_kwargs["root"] for _, _, call_kwargs in compiler.calls} == {src.parent}
     assert all(obj.is_relative_to(src.parent / "build") for _, obj, _ in compiler.calls)
+
+
+# ---- 07-14: the D-15 second-stage sweep ---------------------------------------------------------
+
+
+def cell_rule(base_elf: str) -> list[str]:
+    """The flags of the cell whose ELF objdiff is diffing: its temporary rule `cell-NN.cflags`
+    sits beside `cell-NN.elf` in the sweep's work directory."""
+    words = Path(base_elf).with_suffix(".cflags").read_text(encoding="utf-8").split()
+    return words[2:]  # drop the glob and the compiler spec
+
+
+class RuleObjdiff(FakeObjdiff):
+    """objdiff's percent per cell: `hits` (flag tuples) score 100.0, every other cell `near`."""
+
+    def __init__(self, near: float, *hits: tuple[str, ...]) -> None:
+        super().__init__(near)
+        self.near = near
+        self.hits = set(hits)
+
+    def __call__(self, argv):
+        self.argvs.append(list(argv))
+        percent = 100.0 if tuple(cell_rule(argv[5])) in self.hits else self.near
+        return objdiff_json(percent, argv[-1])
+
+
+def run_near_miss(env: Env, objdiff: FakeObjdiff, compiler=None):
+    """A sweep where every cell compiles the matching object; `objdiff` alone sets the score."""
+    return check.sweep(
+        STEM, UNIT, "func_00010000", **env.kwargs(), watcom_dir=watcom_tree(env),
+        compile_fn=compiler or FakeCompiler(), objdiff_runner=objdiff,
+    )  # fmt: skip
+
+
+OF_PLUS = ("-4r", "-of+", "-s", "-fpi")
+
+
+def test_stage2_runs_on_a_near_miss(env):
+    """D-15: stage 1's best is 92.0 with relocations passing, so stage 2 runs; its O1 cell
+    `-4r -of+ -s -fpi` (the -o set of the best cell, cell 01, replaced) measures 100.0."""
+    report = run_near_miss(env, RuleObjdiff(92.0, OF_PLUS))
+    doc = report.to_json()
+    assert doc.get("stage2") is not None
+    stage2 = report.stage2
+    assert 0 < len(stage2) <= 24
+    assert all(cell.version == "10.6" for cell in stage2)
+    assert [cell.number for cell in stage2] == list(range(31, 31 + len(stage2)))
+    (hit,) = [cell for cell in stage2 if cell.flags == OF_PLUS]
+    assert (hit.percent, hit.reloc_ok, hit.differing) == (100.0, True, 0)
+    assert report.stage2_best == (hit,)
+    assert doc["stage2"]["from"] == 1
+    assert doc["stage2"]["best"] == [hit.number]
+    assert hit.to_json() in doc["stage2"]["cells"]
+    log = report.log_path.read_text(encoding="utf-8")
+    assert f"stage 2 best: cell {hit.number}" in log
+    assert hit.line() in log.splitlines()
+
+
+def test_stage2_skipped_when_stage1_hits(env):
+    """A perfect stage-1 cell (objdiff 100.0, relocations passing, 0 differing) leaves stage 2
+    unrun: the report's stage2 is null and nothing past stage 1 compiles."""
+    compiler = FlagCompiler()
+    report = run_sweep(env, compiler)
+    doc = report.to_json()
+    assert "stage2" in doc and doc["stage2"] is None
+    assert report.stage2 is None and report.stage2_best is None
+    assert len(compiler.calls) == 30
