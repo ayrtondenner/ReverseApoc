@@ -322,6 +322,8 @@ def test_treemap_legend_names_every_status_and_the_filler(tmp_path):
     for status in COLORS:
         assert status in texts
     assert "uncovered: mostly alignment filler" in texts
+    # D-23: signed asm rows are drawn as library cells, so the library entry names both.
+    assert "library or assembler, not decompiled" in texts
 
 
 def test_treemap_escapes_names(tmp_path):
