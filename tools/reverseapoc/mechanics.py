@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import json
 import re
 import tomllib
 from collections import Counter
@@ -790,23 +791,55 @@ def _tier_role(row: MemberRow, tier_members: Sequence[str]) -> str:
     return ROLE_HUB if row.via == ENTRY else ROLE_CLOSURE
 
 
+def _toml_lines(mech: Mechanics, tier_id: int, reached: set[tuple[str, int]]) -> list[str]:
+    """The signed TOML side of a tier digest: its items (every scope), their entries and the hand
+    edges leaving its rows, each a JSON array (text fields escaped), in a fixed order."""
+    items = sorted((i for i in mech.items if i.tier == tier_id), key=lambda i: item_key(i.id))
+    ids = {item.id for item in items}
+    entries = sorted((e for e in mech.entries if e.item in ids),
+                     key=lambda e: (item_key(e.item), EXES.index(e.exe), e.address))  # fmt: skip
+    edges = sorted((e for e in mech.edges if (e.exe, e.src) in reached),
+                   key=lambda e: (EXES.index(e.exe), e.src, e.dst))  # fmt: skip
+    lines = [["item", i.id, i.issue, i.title, i.url, i.scope, i.duplicate_of, i.reason,
+              list(i.exes)] for i in items]  # fmt: skip
+    lines += [["entry", e.item, e.exe, _address(e.address), e.evidence, e.detail, e.source]
+              for e in entries]  # fmt: skip
+    lines += [["edge", e.exe, _address(e.src), _address(e.dst), e.evidence] for e in edges]
+    return [json.dumps(line, separators=(",", ":")) for line in lines]
+
+
 def tier_digest(mech: Mechanics, rows: Iterable[MemberRow], tier_id: int) -> str:
-    """SHA-256 (hex) of the hub-rule line plus one line `exe,address,<tier-N items>,<tier-N member
-    items>,<tier-N role>` per row a tier-N item reaches, in row order. Adding a later tier's item
-    leaves it unchanged, except through the min_items hub criterion (it counts items of every
-    tier), a hand edge, or a later-tier entry that is not a hub and that tier N reaches only
-    through hubs (see _tier_role); `mechanics check` then asks for a re-sign."""
+    """SHA-256 (hex) of tier N's canonical projection, the record the owner signs (D-04, T-07-28):
+
+    1. the hub-rule line (HubRule.line);
+    2. one line `exe,address,<tier-N items>,<tier-N member items>,<tier-N role>` per members row a
+       tier-N item reaches, by (EXES order, address);
+    3. one JSON line per tier-N `[[item]]` of every scope (id, issue, title, url, scope,
+       duplicate_of, reason, exes), by (issue, number);
+    4. one JSON line per `[[entry]]` of those items (item, exe, address, evidence, detail,
+       source), by (item, EXE, address);
+    5. one JSON line per hand `[[edge]]` whose `from` row is a row of step 2 (exe, from, to,
+       evidence), by (EXE, from, to).
+
+    So any edit of the tier's signed TOML, or of its generated rows, reopens the sign-off. Adding
+    a later tier's item leaves it unchanged, except through the min_items hub criterion (it
+    counts items of every tier), a hand edge from one of its rows, or a later-tier entry that is
+    not a hub and that tier N reaches only through hubs (see _tier_role); `mechanics check` then
+    asks for a re-sign."""
     if mech.tier(tier_id) is None:
         raise MechanicsError(f"no [[tier]] with id {tier_id} in mechanics.toml")
     ids = {item.id for item in mech.items if item.tier == tier_id}
     lines = [mech.hub_rule.line()]
+    reached: set[tuple[str, int]] = set()
     for row in sorted(rows, key=row_key):
         items = [i for i in row.items if i in ids]
         if not items:
             continue
+        reached.add((row.exe, row.address))
         members = [i for i in row.member_items if i in ids]
         lines.append(",".join((row.exe, _address(row.address), _LIST.join(items),
                                _LIST.join(members), _tier_role(row, members))))  # fmt: skip
+    lines += _toml_lines(mech, tier_id, reached)
     return hashlib.sha256(("\n".join(lines) + "\n").encode("ascii")).hexdigest()
 
 
