@@ -1412,8 +1412,12 @@ def _mechanics_status(args: argparse.Namespace) -> int:
         for tier, st in found.items():
             print(f"tier {tier}: {st.total} members, {st.matched} matched, {st.partial} partial, "
                   f"{st.unmatched} unmatched")  # fmt: skip
-    done = all(st.matched == st.total for st in found.values())
-    return 1 if args.require_matched and not done else 0
+    if not args.require_matched:
+        return 0
+    problems = mechanics.done_problems(mech, rows, found)
+    for problem in problems:
+        print(f"reverseapoc mechanics status: {problem}", file=sys.stderr)
+    return 1 if problems else 0
 
 
 def _format_graph_report(exe: str, report: dict) -> str:
@@ -1513,7 +1517,8 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     s.add_argument(
         "--require-matched",
         action="store_true",
-        help="exit 1 while any reported tier has a member that is not matched (the D-05 done rule)",
+        help="exit 1 unless every reported tier is signed off with a valid digest, has members "
+        "and has every member matched (the D-05 done rule)",
     )
     _mechanics_roots(s, game=False)
     s.set_defaults(mechanics_func=_mechanics_status)
