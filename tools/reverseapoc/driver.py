@@ -101,6 +101,7 @@ ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
 DRIVER_DIR = Path(*attempt.DRIVER_PARTS)  # build/driver
 DIFFICULT = DRIVER_DIR / "difficult.json"
 CLAIMS_DIR = DRIVER_DIR / "claims"  # D-06: build/driver/claims/<exe>__<unit>.json, one per unit
+STALE_CLAIMS = "stale-claims"  # build/driver/<run>/stale-claims/: claims of dead runs (D-06)
 CLAIM_KEYS = ("run", "worker", "exe", "unit", "function", "start", "kind", "pass", "model",
               "claimed_at")  # fmt: skip
 FEED = "decomphub.progress.json"  # gate-written, committed with status.csv
@@ -971,6 +972,50 @@ class Claims:
         """Unlink the unit's claim (gone already: nothing to do)."""
         self.path(exe, unit).unlink(missing_ok=True)
 
+    def recover(self) -> list[dict]:
+        """D-06's stale rule, only with drive.lock held (a DriverError otherwise, nothing
+        moved): every claim whose `run` is not this run was left by a dead drive, so it is
+        moved (os.replace) to build/driver/<run>/stale-claims/. A claim that cannot be read
+        names run "unknown". Returns {exe, unit, run} per moved claim, by file name."""
+        probe = ProcessLock(self.root / DRIVE_LOCK)
+        if probe.try_acquire():
+            probe.release()
+            raise DriverError(f"stale claims are recovered only with {DRIVE_LOCK.as_posix()} held")
+        if not self.directory.is_dir():
+            return []
+        stale = self.root.joinpath(DRIVER_DIR, self.run, STALE_CLAIMS)
+        found = []
+        for path in sorted(self.directory.iterdir()):
+            if path.suffix != ".json" or _is_link(path) or not path.is_file():
+                continue
+            run = _claim_run(path)
+            if run == self.run:
+                continue
+            stale.mkdir(parents=True, exist_ok=True)
+            os.replace(path, stale / path.name)
+            exe, _, unit = path.stem.partition("__")
+            found.append({"exe": exe, "unit": unit, "run": run or "unknown"})
+        return found
+
+
+def _claim_run(path: Path) -> str | None:
+    """The `run` of a claim file, None when it cannot be read or names no valid run."""
+    try:
+        doc = json.loads(path.read_bytes())
+    except (OSError, ValueError):
+        return None
+    run = doc.get("run") if isinstance(doc, dict) else None
+    return run if isinstance(run, str) and _RUN_ID.fullmatch(run) else None
+
+
+def recovered_detail(recovered: Sequence[Mapping]) -> str | None:
+    """The STARTED record's detail naming each recovered claim (plan 07-23 moves this to the
+    v2 `recovered` field), or None when there is none."""
+    if not recovered:
+        return None
+    return "recovered stale claims: " + _listed(
+        [f"{c['exe']}/{c['unit']} (run {c['run']})" for c in recovered])
+
 
 # ---- one claim ----
 
@@ -1289,7 +1334,13 @@ class _Night:
             )
             return DriveReport(REFUSED, "dirty", 0, 0, detail)
         try:
-            self._record_run(STARTED, START)
+            recovered = self.claims.recover()  # D-06: drive.lock is held, so they are stale
+        except Exception as exc:
+            why = _detail("refusing to start: stale claims could not be recovered: "
+                          f"{type(exc).__name__}: {exc}")  # fmt: skip
+            return DriveReport(REFUSED, "claims", 0, 0, why)
+        try:
+            self._record_run(STARTED, START, recovered_detail(recovered))
         except _Stop as stop:  # fix round 1: the log changed since the outputs check
             return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
