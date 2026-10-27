@@ -1274,6 +1274,67 @@ def test_session_paths_need_every_build_form_to_fit(repo):
     assert hooks._session_paths({"REVERSEAPOC_PROPOSALS": native(nested)}, "") == frozenset()
 
 
+def _unusable_unit_file(repo: Path, form: str) -> str:
+    """A REVERSEAPOC_UNIT_FILE value the matching layer cannot place as one path in the
+    checkout, so `_session_relative` gives None."""
+    view = _view_unit(repo)
+    if form == "outside":
+        return native(repo.parent / "elsewhere" / view.relative_to(repo))
+    if form == "home":
+        return "~/" + view.relative_to(repo).as_posix()
+    if form == "nul":
+        return native(view) + "\0"
+    link = repo / "link.c"
+    target = view if form == "symlink-inside" else repo.parent / "elsewhere.c"
+    try:
+        link.symlink_to(target)
+    except OSError:
+        pytest.skip("symlink creation needs privileges on this host")
+    return native(link)
+
+
+@pytest.mark.parametrize("form", ["outside", "home", "nul", "symlink-inside", "symlink-outside"])
+def test_unusable_unit_file_denies_every_write(repo, form):
+    """Fix round 1: a set but unusable REVERSEAPOC_UNIT_FILE denies every write; it never falls
+    back to the legacy allowlist (src/<exe>/<unit>.c, a new include/*.h, notes.md)."""
+    env = view_env(repo)
+    env["REVERSEAPOC_UNIT_FILE"] = _unusable_unit_file(repo, form)
+    for target in [_unit(repo), repo / "include" / "fx.h", _attempt(repo) / "notes.md"]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+        assert decision.deny, (form, target)
+        assert "REVERSEAPOC_UNIT_FILE" in decision.reason, decision.reason
+    for target in [_view_path(repo), _attempt(repo) / "proposals.jsonl"]:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, (form, target)
+
+
+def test_unit_file_with_two_forms_denies_every_write(repo, monkeypatch):
+    """The symlink case without symlink privileges: the host resolves the env path (an alias,
+    an 8.3 name) to another file in the checkout, so it has two forms and names no single path."""
+    view = _view_unit(repo)
+    alias = repo / "alias.c"
+    real = os.path.realpath
+
+    def aliased(path, **kwargs):
+        return str(view) if Path(path) == alias else real(path, **kwargs)
+
+    monkeypatch.setattr(os.path, "realpath", aliased)
+    env = {**view_env(repo), "REVERSEAPOC_UNIT_FILE": native(alias)}
+    for target in [_unit(repo), repo / "include" / "fx.h", _attempt(repo) / "notes.md", view]:
+        decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
+        assert decision.deny, target
+    reason = matching(in_repo(write(native(_unit(repo)), SCAFFOLD), repo), env).reason
+    assert "REVERSEAPOC_UNIT_FILE" in reason, reason
+
+
+def test_wrong_shape_unit_file_keeps_the_view_allowlist(repo):
+    """A unit file under build/ at the wrong shape is placeable, so the session stays in view
+    mode: it never gains the legacy src/ and include/ allowlist, and the file is not writable."""
+    wrong = repo / "build" / "other" / "view" / "src" / "ufo2p" / "u_000a34f0.c"
+    env = view_env(repo, unit_file=wrong)
+    for target in [_unit(repo), repo / "include" / "fx.h", wrong, _view_path(repo)]:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+
+
 @pytest.mark.parametrize("name", sorted(PATH_INCLUDES))
 def test_view_unit_include_rule(repo, name):
     unit = _view_unit(repo)
