@@ -163,12 +163,13 @@ def _proposal(**changes) -> flags.Proposal:
     fields = dict(
         id="F-0001", exe="ufo2p", unit=UNIT, glob=f"src/ufo2p/{UNIT}.c",
         rule="wcc386@10.6 -4r -ot -s -fpi", base=BASE, functions=(F30,), keeps=(),
-        siblings=(f"{F50} 46.45", f"{FA0} 67.50"),
+        siblings=(f"{F50} partial 46.45", f"{FA0} partial 67.50", "func_00061FC0 unattempted"),
         alternatives=("wcc386@10.6 -4r -oneatx -s -fpi",),
         source="sweep", candidate=f"build/flags/F-0001/{UNIT}.c", candidate_sha256=SHA,
         evidence=(f"build/driver/{RUN}/ufo2p/{F30}/attempt-3/checks/0010.json",),
         status="proposed", regate_exit=-1, regate_variant="empty", regate_cflags_sha256="",
-        regate_log="", approved_by="", approved_date="", reason="",
+        regate_log="", approved_by="", approved_date="", reason="", variant_sha256="",
+        reverted=(),
     )  # fmt: skip
     fields.update(changes)
     return flags.Proposal(**fields)
@@ -181,17 +182,34 @@ def test_queue_round_trip(tmp_path):
                                         siblings=(), alternatives=(),
                                         candidate="build/flags/F-0002/u_0006fbd0.c",
                                         evidence=(), status="failed", regate_exit=1,
-                                        regate_variant="reduced", reason='a "quoted" reason')]
+                                        regate_variant="reduced", reason='a "quoted" reason'),
+                 _proposal(id="F-0003", functions=("func_00026FD0",), unit="u_00026dd0",
+                           glob="src/ufo2p/u_00026dd0.c", siblings=("func_00026FF0 unattempted",),
+                           candidate="build/flags/F-0003/u_00026dd0.c", status="regated",
+                           regate_exit=0, regate_variant="reduced", variant_sha256="b" * 64,
+                           reverted=("func_00026FF0",))]  # fmt: skip
     flags.write_queue(path, proposals)
     assert flags.read_queue(path) == proposals
     text = path.read_text(encoding="ascii")
-    assert text.count("[[proposal]]") == 2 and "version = 1" in text
+    assert text.count("[[proposal]]") == 3 and "version = 1" in text
     head = text.index("[[proposal]]")
     first = text[head : text.index("[[proposal]]", head + 1)]
     keys = [line.split(" = ")[0] for line in first.splitlines() if " = " in line]
     assert keys == list(flags.FIELDS)
+    assert flags.FIELDS[-3:] == ("reason", "variant_sha256", "reverted")  # fix round 1
     flags.write_queue(path, flags.read_queue(path))
     assert path.read_text(encoding="ascii") == text  # byte-stable
+
+
+@pytest.mark.parametrize("changes", [
+    {"variant_sha256": "b" * 64},  # a variant sha without the functions it reverted
+    {"reverted": (F50,)},  # reverted functions without the variant's sha
+    {"siblings": (f"{F50} 46.45",)},  # a sibling without its status
+    {"siblings": (f"{F50} partial",)},  # a status without its percent
+])  # fmt: skip
+def test_queue_refuses_inconsistent_fields(tmp_path, changes):
+    with pytest.raises(flags.FlagsError):
+        flags.write_queue(tmp_path / "q.toml", [_proposal(**changes)])
 
 
 def test_queue_refuses_non_ascii(tmp_path):
@@ -388,19 +406,52 @@ def test_stage2_hit_source(tmp_path):
     assert p.source == "sweep2" and p.rule == "wcc386@10.6 -4r -ot -s -fpi -zp4"
 
 
+def _functions_csv(repo: Path, exe: str, rows: list[tuple[int, str, str, str]]) -> None:
+    """functions.csv of (start, name, kind, unit) rows, 0x10 bytes each."""
+    manifest = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}[exe]
+    write_functions_csv(repo / "config" / exe / "functions.csv",
+                        [FunctionRow(start, start + 0x10, name, kind, unit, "call")
+                         for start, name, kind, unit in sorted(rows)], manifest)  # fmt: skip
+
+
 def test_siblings_listed(tmp_path):
-    """D-32: every other partial row of the unit, with its percent; matched rows are keeps."""
+    """D-32 (fix round 1): every other game and thunk row of the unit, with its status.csv
+    status and percent, or `unattempted`; matched rows are also keeps."""
     repo = make_repo(tmp_path)
     write_status(repo, "ufo2p", [(0x60C50, "func_00060C50", UNIT, "matched", "100.00"),
                                  (0x61F30, F30, UNIT, "partial", "77.14"),
                                  (0x61F50, F50, UNIT, "partial", "46.45"),
                                  (0x61FA0, FA0, UNIT, "partial", "67.50"),
                                  (0x70000, "func_00070000", "u_00070000", "partial", "12.00")])
+    _functions_csv(repo, "ufo2p", [(0x60C50, "func_00060C50", "game", UNIT),
+                                   (0x61F30, F30, "game", UNIT), (0x61F50, F50, "game", UNIT),
+                                   (0x61F70, "func_00061F70", "thunk", UNIT),
+                                   (0x61FA0, FA0, "game", UNIT),
+                                   (0x61FC0, "D_00061FC0", "data-in-code", UNIT),
+                                   (0x70000, "func_00070000", "game", "u_00070000")])
     _pilot_attempt(repo)
     flags.propose([RUN], repo=repo)
     (p,) = flags.read_queue(queue_of(repo))
-    assert p.siblings == (f"{F50} 46.45", f"{FA0} 67.50")
+    assert p.siblings == ("func_00060C50 matched 100.00", f"{F50} partial 46.45",
+                          "func_00061F70 unattempted", f"{FA0} partial 67.50")  # fmt: skip
     assert p.keeps == ("func_00060C50",)
+    flags_list = flags.read_queue(queue_of(repo))[0].line()
+    assert "sibling func_00061F70 unattempted" in flags_list
+
+
+def test_siblings_include_the_unattempted_neighbour(tmp_path):
+    """tacp u_0006fbd0: no status rows at all, yet D-28's neighbour func_0006FC00 is listed."""
+    repo = make_repo(tmp_path)
+    unit, func = "u_0006fbd0", "func_0006FBD0"
+    _functions_csv(repo, "tacp", [(0x6FBD0, func, "game", unit),
+                                  (0x6FC00, "func_0006FC00", "game", unit),
+                                  (0x6FC40, "func_0006FC40", "game", unit)])
+    make_attempt(repo, func, exe="tacp", unit=unit,
+                 checks=[(1, True, sweep_doc(func, exe="tacp", unit=unit, hits={5}),
+                          c_text(func, "func_0006FC00"))])  # fmt: skip
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.siblings == ("func_0006FC00 unattempted", "func_0006FC40 unattempted")
 
 
 def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
@@ -411,14 +462,16 @@ def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
     flags.propose([RUN], repo=repo)
     (p,) = flags.read_queue(queue_of(repo))
     flags.write_queue(queue_of(repo), [dataclasses.replace(
-        p, functions=(F30,), status="regated", regate_exit=0, regate_variant="as-written",
-        regate_cflags_sha256=SHA, regate_log="build/flags/F-0001/regate.json")])
+        p, functions=(F30,), status="regated", regate_exit=0, regate_variant="reduced",
+        regate_cflags_sha256=SHA, regate_log="build/flags/F-0001/regate.json",
+        variant_sha256=SHA, reverted=(F50,))])
     # the evidence of F50's hit is already queued; a new run's F30 hit is the same function
     report = flags.propose(["20261027-000000"], repo=repo)
     (q,) = flags.read_queue(queue_of(repo))
     assert report.merged == ("F-0001",) and len(q.evidence) == 3
     assert (q.status, q.regate_exit, q.regate_variant, q.regate_cflags_sha256, q.regate_log) == (
         "proposed", -1, "empty", "", "")
+    assert (q.variant_sha256, q.reverted) == ("", ())
     assert q.candidate_sha256 == p.candidate_sha256  # same function: the candidate stays
 
 
@@ -510,6 +563,8 @@ def test_regate_writes_nothing_shared(tmp_path):
     assert select_rule(rules, "src/ufo2p/u_00089980.c").flags == ("-4r", "-s", "-fpi")
     (p,) = flags.read_queue(queue_of(repo))
     assert (p.status, p.regate_exit, p.regate_variant) == ("regated", 0, "as-written")
+    assert (p.variant_sha256, p.reverted) == ("", ())  # the full candidate passed
+    assert not (work / f"{UNIT}.reduced.c").exists()
     assert p.regate_log == "build/flags/F-0001/regate.json" and (repo / p.regate_log).is_file()
     assert report.exit_code == 0
 
@@ -576,6 +631,31 @@ def test_regate_reduced_variant(tmp_path):
     assert f"INCLUDE_ASM({F50});" in second["text"] and f"int {F50}(" not in second["text"]
     assert f"int {F30}(int a)" in second["text"]
     assert (repo / p.candidate).read_text(encoding="utf-8") == first["text"]  # kept as hit
+    # fix round 1: the variant that passed is pinned for 07-24's approve
+    reduced = repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c"
+    assert reduced.read_text(encoding="utf-8") == second["text"]
+    assert flags.variant_path(p) == f"build/flags/F-0001/{UNIT}.reduced.c"
+    assert p.variant_sha256 == lf_sha256(second["text"]) and p.reverted == (F50,)
+    listed = p.line()
+    assert "WARNING" in listed and F50 in listed and "INCLUDE_ASM" in listed
+
+
+def test_regate_failing_reduced_variant_pins_nothing(tmp_path):
+    repo = regate_repo(tmp_path, candidate=c_text(F30, F50, marked=(FA0,), tag="hit"))
+
+    class Neighbour(FakeCheck):
+        """F50 misses as written; as INCLUDE_ASM, the target misses too (research A13)."""
+
+        def __call__(self, exe, unit, **kw):
+            text = (Path(kw["src_root"]) / exe / f"{unit}.c").read_text(encoding="utf-8")
+            self.scores = {F50: 46.45} if f"int {F50}(" in text else {F30: 87.5}
+            return super().__call__(exe, unit, **kw)
+
+    flags.regate(["F-0001"], repo=repo, check_fn=Neighbour())
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_variant, p.variant_sha256, p.reverted) == (
+        "failed", "reduced", "", ())
+    assert not (repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c").exists()
 
 
 def test_regate_no_reduced_retry_when_the_target_misses(tmp_path):
