@@ -70,6 +70,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -82,6 +83,7 @@ from .check import ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
 from .libmatch import read_runtime_csv, runtime_csv_path
+from .locks import DRIVE_LOCK, ProcessLock
 from .picker import EXE_ORDER, Key, Pick
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
@@ -98,6 +100,9 @@ from .units import scaffold_unit, write_unit_source
 ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
 DRIVER_DIR = Path(*attempt.DRIVER_PARTS)  # build/driver
 DIFFICULT = DRIVER_DIR / "difficult.json"
+CLAIMS_DIR = DRIVER_DIR / "claims"  # D-06: build/driver/claims/<exe>__<unit>.json, one per unit
+CLAIM_KEYS = ("run", "worker", "exe", "unit", "function", "start", "kind", "pass", "model",
+              "claimed_at")  # fmt: skip
 FEED = "decomphub.progress.json"  # gate-written, committed with status.csv
 TRANSCRIPT = "transcript.jsonl"
 COMMIT_MSG = "commit-msg.txt"
@@ -921,6 +926,52 @@ def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
     write_atomic(path, (json.dumps({"difficult": entries}, indent=2) + "\n").encode("utf-8"))
 
 
+# ---- unit claims (D-06) ----
+
+
+class Claims:
+    """D-06: one claim file per unit, build/driver/claims/<exe>__<unit>.json under `root` (the
+    checkout), created with O_CREAT|O_EXCL (`_O_NEW`), so of any number of takers exactly one
+    wins and no claim is ever overwritten. The body is one JSON object with CLAIM_KEYS (UTC ISO
+    `claimed_at`). A claim is released by unlink after its landing decision."""
+
+    def __init__(self, root: Path, run: str) -> None:
+        self.root = Path(root)
+        self.run = run
+        self.directory = self.root / CLAIMS_DIR
+
+    def path(self, exe: str, unit: str) -> Path:
+        """The claim file of `exe`/`unit`; a name that could leave the claims directory is a
+        DriverError."""
+        if not (_CLAIM_FIELDS["exe"](exe) and _CLAIM_FIELDS["unit"](unit)):
+            raise DriverError(f"no claim name for {exe!r}/{unit!r}")
+        return self.directory / f"{exe}__{unit}.json"
+
+    def take(self, record: Mapping) -> bool:
+        """Create the unit's claim holding `record`; False when the unit is already claimed."""
+        missing = sorted(set(CLAIM_KEYS) - set(record))
+        if missing:
+            raise DriverError(f"a claim needs {', '.join(missing)}")
+        path = self.path(record["exe"], record["unit"])
+        data = (json.dumps(dict(record), separators=(",", ":")) + "\n").encode("utf-8")
+        self.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(path, _O_NEW, 0o644)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+        except BaseException:
+            path.unlink(missing_ok=True)  # a half-written claim is never left behind
+            raise
+        return True
+
+    def release(self, exe: str, unit: str) -> None:
+        """Unlink the unit's claim (gone already: nothing to do)."""
+        self.path(exe, unit).unlink(missing_ok=True)
+
+
 # ---- one claim ----
 
 
@@ -1192,10 +1243,35 @@ class _Night:
         self.ledger = _Ledger(self.repo, self._head_bytes)  # the driver's own writes (D-24 a)
         self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
+        self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
+        # D-06, D-27 P4: one in-process lock around every shared write: the landing section
+        # (copy, lint, gate, commit or undo, reset), `gate --partial` and every record append.
+        # Reentrant, because the landing section appends its own record while it holds it.
+        self.gate_lock = threading.RLock()
 
     # --- the night ---
 
     def run(self) -> DriveReport:
+        """D-06: the night holds build/driver/drive.lock (an OS lock, freed by the kernel when
+        this process exits) from before its STARTED record to its end. Failing to get it
+        refuses the start (exit 2, no record): another drive is running. Getting it proves
+        every earlier holder dead; no process id is probed (D-24)."""
+        lock = ProcessLock(self.repo / DRIVE_LOCK)
+        shown = DRIVE_LOCK.as_posix()
+        try:
+            got = lock.try_acquire()
+        except OSError as exc:
+            why = _detail(f"refusing to start: cannot lock {shown}: {type(exc).__name__}: {exc}")
+            return DriveReport(REFUSED, "drive lock", 0, 0, why)
+        if not got:
+            return DriveReport(REFUSED, "drive lock", 0, 0, "refusing to start: another "
+                               f"reverseapoc drive is running ({shown} is held)")  # fmt: skip
+        try:
+            return self._run_locked()
+        finally:
+            lock.release()
+
+    def _run_locked(self) -> DriveReport:
         """Every night ends with a run record (fix round 1, I1): ENDED, a STOPPED reason, a
         STOPPED `error` for any other exception, or a STOPPED `interrupted` for a
         KeyboardInterrupt/SystemExit, which is then re-raised (minor 8)."""
@@ -1360,19 +1436,38 @@ class _Night:
         return outcome
 
     def _guarded(self, pick: Pick, n: int) -> str | None:
-        """One attempt; any unexpected failure resets the live session and stops the night."""
+        """One attempt under its unit's claim; any unexpected failure resets the live session
+        and stops the night. The reset comes before the claim is released (D-06)."""
+        with self._claimed(pick):
+            try:
+                return self._attempt(pick, n)
+            except _Stop:
+                raise
+            except Exception as exc:
+                self._reset_live()
+                raise _Stop(ERROR, f"{type(exc).__name__}: {exc}") from exc
+            except BaseException:
+                self._reset_live()  # minor 8: an interrupt between steps still resets the attempt
+                raise
+            finally:
+                self.live = None
+
+    @contextmanager
+    def _claimed(self, pick: Pick) -> Iterator[None]:
+        """D-06: the unit's claim file, taken before the attempt's first view is made and
+        released after its landing decision, also when the night stops. A unit already claimed
+        stops the night (one worker: only a claim this run failed to release can be there)."""
+        record = {"run": self.config.run_id, "worker": 0, "exe": pick.exe, "unit": pick.unit,
+                  "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
+                  "kind": MATCHING_KIND, "pass": 1, "model": None,
+                  "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
+        if not self.claims.take(record):
+            shown = self.claims.path(pick.exe, pick.unit).relative_to(self.repo).as_posix()
+            raise _Stop(ERROR, f"{pick.exe}/{pick.unit} is already claimed ({shown})")
         try:
-            return self._attempt(pick, n)
-        except _Stop:
-            raise
-        except Exception as exc:
-            self._reset_live()
-            raise _Stop(ERROR, f"{type(exc).__name__}: {exc}") from exc
-        except BaseException:
-            self._reset_live()  # minor 8: an interrupt between steps still resets the attempt
-            raise
+            yield
         finally:
-            self.live = None
+            self.claims.release(pick.exe, pick.unit)
 
     def _reset_live(self) -> None:
         if self.live is None:
@@ -2072,35 +2167,41 @@ class _Night:
     def _salvage(self, session: _Session) -> bool:
         """06-17 review: a LIMIT session keeps its work. When it changed the unit or wrote a
         header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
-        Otherwise it is reset."""
-        if session.has_work():
-            gate = self._judge(session)
-            if self._gate_matched(session, gate):
-                self.sessions += 1
-                self._commit_match(session, gate, read_checks(session.claim.attempt_dir))
-                return True
-        self._reset(session)
-        return False
+        Otherwise it is reset. The whole landing runs under the gate lock (D-06)."""
+        with self.gate_lock:
+            if session.has_work():
+                gate = self._judge(session)
+                if self._gate_matched(session, gate):
+                    self.sessions += 1
+                    self._commit_match(session, gate, read_checks(session.claim.attempt_dir))
+                    return True
+            self._reset(session)
+            return False
 
     def _counted(self, session: _Session) -> str:
+        """A counted session's landing section, all of it under the gate lock (D-06, D-27 P4):
+        the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
+        `gate --partial` and the attempt record. Another worker's record waits for the landing
+        decision, so F19's log truncation can only drop this landing's own MATCHED line."""
         self.sessions += 1
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
-        gate = self._judge(session)
-        if self._gate_matched(session, gate):
-            self._commit_match(session, gate, summary, abort)
-            return MATCHED
-        outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
-        if gate is None:  # a failed lint; review IN-02: PARTIAL only with a score above 0%
-            abort = LINT
-        self._reset(session)
-        if outcome == PARTIAL and summary.best_source is not None:
-            if self._partial_gate(session, summary) == EXIT_TOOL:
-                self._record_attempt(session, outcome, TOOL, summary)
-                raise _Stop(TOOL, "gate --partial exited 2")
-        self._record_attempt(session, outcome, abort, summary)
-        return outcome
+        with self.gate_lock:
+            gate = self._judge(session)
+            if self._gate_matched(session, gate):
+                self._commit_match(session, gate, summary, abort)
+                return MATCHED
+            outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
+            if gate is None:  # a failed lint; review IN-02: PARTIAL only with a score above 0%
+                abort = LINT
+            self._reset(session)
+            if outcome == PARTIAL and summary.best_source is not None:
+                if self._partial_gate(session, summary) == EXIT_TOOL:
+                    self._record_attempt(session, outcome, TOOL, summary)
+                    raise _Stop(TOOL, "gate --partial exited 2")
+            self._record_attempt(session, outcome, abort, summary)
+            return outcome
 
     def _partial_gate(self, session: _Session, summary: CheckSummary) -> int | None:
         """Save the best C under best/<unit>.c and run `gate --partial` on it, passing the
