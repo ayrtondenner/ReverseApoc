@@ -1229,6 +1229,18 @@ def test_source_marks_with_c_names_finds_a_renamed_function():
     assert "func_00010000" in problem and "Foo" in problem
 
 
+def test_source_marks_with_all_names_reads_a_renamed_row_by_its_current_name():
+    """Fix round 1: all_names alone is authoritative for the unit's own rows."""
+    names = {"Foo": ROW.start, "Bar": OTHER.start}
+    marks = check.source_marks(RENAMED_SOURCE, [ROW, OTHER], all_names=names)
+    assert marks.defined_starts == {ROW.start} and marks.problems == ()
+    stale = RENAMED_SOURCE.replace("int Foo(", "int func_00010000(")
+    marks = check.source_marks(stale, [ROW, OTHER], all_names=names)
+    assert ROW.start not in marks.defined_starts
+    (problem,) = marks.problems
+    assert "func_00010000" in problem and "Foo" in problem
+
+
 def test_check_accounts_a_renamed_unit_by_start(env):
     """Orchestrator ruling F27 (b): account_unit reads the unit file with the EXE's C names, so a
     unit whose rows symbols.csv renames (Foo defined, Bar marked under its new name) checks and

@@ -165,6 +165,45 @@ def test_placeholder_names_by_default():
     assert defs.problems == ()
 
 
+# ---- fix round 1: the unit's own rows never fall back to a stale placeholder -----------------
+
+STALE = "void func_00010010(void) {}\nINCLUDE_ASM(func_00010020);\n"
+
+
+@pytest.mark.parametrize("how", ["all_names-only", "explicit-names"])
+def test_renamed_row_reads_by_its_current_name(how):
+    """The reviewer's probe: with the EXE's C names given (as all_names alone, or as names), a
+    stale placeholder definition of the renamed row is refused and the Foo definition is
+    accepted. Placeholders apply only when neither names nor all_names is given."""
+    holders = unitdefs.placeholders(EVERY_ROW)
+    given = {"all_names": NAMES} if how == "all_names-only" else {"names": NAMES,
+                                                                    "all_names": NAMES}
+    stale = unitdefs.find(STALE, ROWS, placeholders=holders, **given)
+    assert FOO.start not in stale.defined
+    (problem,) = stale.problems
+    assert "func_00010010" in problem and "Foo" in problem
+    good = unitdefs.find(COMPLETE, ROWS, placeholders=holders, **given)
+    assert good.defined == {FOO.start: "Foo"} and good.problems == ()
+
+
+def test_all_names_alone_decides_rows_outside_the_unit():
+    """names covers the unit; a definition of another unit's renamed C name is refused only
+    through all_names, whatever names holds for other starts."""
+    text = COMPLETE + "void Baz(void) {}\n"
+    holders = unitdefs.placeholders(EVERY_ROW)
+    with_other = {**NAMES, "Baz": FAR.start}
+    assert unitdefs.find(text, ROWS, names=with_other, placeholders=holders).problems == ()
+    (problem,) = unitdefs.find(text, ROWS, names=NAMES, placeholders=holders,
+                               all_names={"Baz": FAR.start}).problems  # fmt: skip
+    assert problem == "Baz is defined in C but is not a function of the unit"
+
+
+def test_neither_names_nor_all_names_reads_placeholders():
+    holders = unitdefs.placeholders(ROWS)
+    defs = unitdefs.find(STALE, ROWS, placeholders=holders)
+    assert defs.defined == {FOO.start: "func_00010010"} and defs.problems == ()
+
+
 def test_c_name_of():
     assert unitdefs.c_name_of("Foo_", "func") == "Foo"
     assert unitdefs.c_name_of("_g_vol", "data") == "g_vol"
