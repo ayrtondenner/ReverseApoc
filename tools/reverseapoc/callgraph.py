@@ -52,6 +52,18 @@ class Edge:
     kind: str
 
 
+@dataclass(frozen=True, slots=True)
+class MidRowRef:
+    """An address fixup into the middle of a game/thunk row (research R4)."""
+
+    src_va: int
+    src_row: int | None
+    target_va: int
+    target_row: int
+    origin: str
+    boundary: bool
+
+
 def _edge_key(edge: Edge) -> tuple[int, int]:
     return edge.dst, EDGE_KINDS.index(edge.kind)
 

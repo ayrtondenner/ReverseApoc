@@ -13,7 +13,16 @@ import pytest
 
 from conftest import build_le_image, fixup_record
 from reverseapoc import callgraph, contextpack
-from reverseapoc.callgraph import DIRECT, POINTER, CallGraph, Edge, closure
+from reverseapoc.callgraph import (
+    DIRECT,
+    MIDROW,
+    POINTER,
+    TABLE,
+    CallGraph,
+    Edge,
+    MidRowRef,
+    closure,
+)
 from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, KIND_THUNK, FunctionRow
 from reverseapoc.le import LE, SRC_OFF32
 
@@ -174,3 +183,131 @@ def test_build_for_takes_ranges_from_the_le_objects():
     le, flat, fixups = _inputs(PATCHES, FIXUPS)
     exe = SimpleNamespace(le=le, flat=flat, fixups=tuple(fixups), rows=tuple(ROWS))
     assert callgraph.build_for(exe) == _graph()
+
+
+# ---- task 2 image: a pointer table, mid-row references, a jump table, indirect calls ----
+
+A2 = CODE  # mov eax, [slot 2]; push offset B2+6; ret
+B2 = CODE + 0x20  # nop; mov eax, 0; ret  (instruction starts B2, B2+1, B2+6)
+C2 = CODE + 0x40  # push offset B2+2 (inside the mov); ret
+X1, X2, X3, X4 = CODE + 0x60, CODE + 0x70, CODE + 0x80, CODE + 0x90  # table targets: ret
+J = CODE + 0xA0  # jmp [eax*4 + T]; two case labels (ret, ret)
+T = CODE + 0xB0  # J's jump table: data-in-code, two slots onto J's labels
+K = CODE + 0xC0  # call eax; call [ebx+4]; call [D_00020050] (fixup on the field); ret
+END2 = CODE + 0xE0
+SLOTS = (DATA, DATA + 4, DATA + 0x10)  # 4 and 12 bytes apart: one run
+FOURTH_SLOT = DATA + 0x24  # 20 bytes after the third: a new run nothing references
+DATA_MIDROW = DATA + 0x40  # a data word holding B2+1
+_MOV_EAX_MOFFS = b"\xa1"  # mov eax, [moffs32]
+_MOV_EAX_IMM = b"\xb8"  # mov eax, imm32
+_JMP_TABLE = b"\xff\x24\x85"  # jmp [eax*4 + disp32]
+_CALL_EAX = b"\xff\xd0"
+_CALL_EBX_4 = b"\xff\x53\x04"  # call [ebx+4]
+_CALL_MEM = b"\xff\x15"  # call [disp32]
+_ZERO32 = b"\x00" * 4
+_LABEL_1 = J + len(_JMP_TABLE) + len(_ZERO32)  # the first case label, right after the jump
+ROWS2 = [
+    _row(A2, B2), _row(B2, C2), _row(C2, X1), _row(X1, X2), _row(X2, X3), _row(X3, X4),
+    _row(X4, J), _row(J, T), _row(T, T + 8, "data-in-code"), _row(K, END2),
+]  # fmt: skip
+PATCHES2 = {
+    A2: _padded(_MOV_EAX_MOFFS + _ZERO32 + _PUSH_IMM32 + _ZERO32 + _RET, 0x20),
+    B2: _padded(_NOP + _MOV_EAX_IMM + _ZERO32 + _RET, 0x20),
+    C2: _padded(_PUSH_IMM32 + _ZERO32 + _RET, 0x20),
+    X1: _padded(_RET, 0x10), X2: _padded(_RET, 0x10), X3: _padded(_RET, 0x10),
+    X4: _padded(_RET, 0x10),
+    J: _padded(_JMP_TABLE + _ZERO32 + _RET + _RET, 0x10),
+    T: _ZERO32 * 2,
+    K: _padded(_CALL_EAX + _CALL_EBX_4 + _CALL_MEM + _ZERO32 + _RET, 0x20),
+}  # fmt: skip
+K_MEM_FIELD = K + len(_CALL_EAX + _CALL_EBX_4 + _CALL_MEM)
+
+
+def _data_fixup(field: int, target: int) -> bytes:
+    """One off32 fixup record on the data page, field -> a code address."""
+    return fixup_record(SRC_OFF32, field - DATA, 1, target - CODE)
+
+
+def _to_data(field: int, target: int) -> bytes:
+    """One off32 fixup record on the first code page, field -> a data address."""
+    return fixup_record(SRC_OFF32, field - CODE, 2, target - DATA)
+
+
+FIXUPS2 = (
+    _to_data(A2 + 1, SLOTS[1])  # into the run
+    + _code_fixup(A2 + 6, B2 + 6)  # mid-row, an instruction start
+    + _code_fixup(C2 + 1, B2 + 2)  # mid-row, inside an instruction
+    + _code_fixup(J + len(_JMP_TABLE), T)  # the jump's own table
+    + _code_fixup(T, _LABEL_1) + _code_fixup(T + 4, _LABEL_1 + 1)  # the case labels
+    + _to_data(K_MEM_FIELD, DATA + 0x50)  # a call through a data word: not unresolvable
+)
+DATA_FIXUPS2 = (
+    _data_fixup(SLOTS[0], X1) + _data_fixup(SLOTS[1], X2) + _data_fixup(SLOTS[2], X3)
+    + _data_fixup(FOURTH_SLOT, X4) + _data_fixup(DATA_MIDROW, B2 + 1)
+)  # fmt: skip
+
+
+def _graph2() -> CallGraph:
+    _, flat, fixups = _inputs(PATCHES2, FIXUPS2, DATA_FIXUPS2)
+    return CallGraph.build(ROWS2, flat, fixups, code=CODE_RANGE, data=DATA_RANGE)
+
+
+def test_table_run_edges():
+    graph = _graph2()
+    tables = {(e.src, e.dst) for edges in graph.edges.values() for e in edges if e.kind == TABLE}
+    assert tables == {(A2, X1), (A2, X2), (A2, X3)}  # not X4: the fourth slot starts a new run
+
+
+def test_table_image_exact_edges():
+    _assert_edges(_graph2(), {
+        (A2, X1, TABLE), (A2, X2, TABLE), (A2, X3, TABLE), (A2, B2, MIDROW), (C2, B2, MIDROW),
+    })  # fmt: skip
+
+
+def test_table_slot_gap_of_16_keeps_one_run():
+    rows = [_row(X1, X2), _row(X2, X3)]
+    patches = {X1: _padded(_RET, 0x10), X2: _padded(_RET, 0x10)}
+    for second, runs in ((DATA + 0x10, (DATA,)), (DATA + 0x11, (DATA, DATA + 0x11))):
+        data_fixups = _data_fixup(DATA, X1) + _data_fixup(second, X2)
+        _, flat, fixups = _inputs(patches, b"", data_fixups)
+        graph = CallGraph.build(rows, flat, fixups, code=CODE_RANGE, data=DATA_RANGE)
+        assert graph.orphan_tables == runs
+
+
+def test_jump_table_gives_no_edge():
+    graph = _graph2()
+    assert graph.callees(J) == ()
+    assert T not in graph.edges  # a data-in-code row has no edges of its own
+    assert all(J not in (ref.src_row, ref.target_row) for ref in graph.midrow)
+
+
+def test_midrow_reference_reported_and_wired():
+    graph = _graph2()
+    assert Edge(A2, B2, MIDROW) in graph.callees(A2)
+    assert Edge(C2, B2, MIDROW) in graph.callees(C2)
+    code_refs = [ref for ref in graph.midrow if ref.origin == "code"]
+    assert code_refs == [
+        MidRowRef(A2 + 6, A2, B2 + 6, B2, "code", True),
+        MidRowRef(C2 + 1, C2, B2 + 2, B2, "code", False),
+    ]
+
+
+def test_data_midrow_reported():
+    graph = _graph2()
+    assert MidRowRef(DATA_MIDROW, None, B2 + 1, B2, "data", True) in graph.midrow
+    assert graph.midrow == tuple(sorted(graph.midrow, key=lambda ref: ref.src_va))
+    assert graph.callers(B2) == (A2, C2)  # the data reference adds no edge
+
+
+def test_indirect_calls_counted():
+    graph = _graph2()
+    assert graph.indirect == {K: 2}
+    assert graph.callees(K) == ()
+
+
+def test_orphan_table_listed():
+    assert _graph2().orphan_tables == (FOURTH_SLOT,)
+
+
+def test_task2_build_is_deterministic():
+    assert _graph2() == _graph2()
