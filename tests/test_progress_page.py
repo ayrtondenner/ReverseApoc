@@ -23,6 +23,10 @@ COMMIT_URL = f"{REPOSITORY}/commit/"
 WORKFLOW_URL = f"{REPOSITORY}/actions/workflows/pages.yml"
 README_URL = f"{REPOSITORY}#progress"
 PAGE_LIMIT = SVG_LIMIT + 200_000  # the SVG's bound plus the two strips
+# Backlog 999.4 fix #2: the mosaic is a focusable region, so a keyboard user can scroll it.
+MOSAIC_REGION = ('<div class="mosaic" tabindex="0" role="region" '
+                 'aria-label="Decompilation mosaic, scrolls sideways">')  # fmt: skip
+PHONE_QUERY = "@media (max-width: 40rem){"
 # Tags that load a resource or run code, and tags whose browser default face is monospace.
 FORBIDDEN_TAGS = ("script", "link", "img", "iframe", "object", "embed", "base", "audio", "video",
                   "source", "picture", "noscript", "code", "pre", "kbd", "samp", "tt")  # fmt: skip
@@ -109,7 +113,7 @@ def test_page_embeds_the_mosaic(tmp_path):
     svg = progress.render_svg(derived)
     assert svg in page
     assert page.count("<svg ") == 1
-    assert f'<div class="mosaic">\n{svg}</div>\n' in page
+    assert f"{MOSAIC_REGION}\n{svg}</div>\n" in page
 
 
 def test_page_states_the_commit(tmp_path):
@@ -410,6 +414,69 @@ def test_page_stacks_at_phone_width(tmp_path):
     assert "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}" in style_of(page)
     head = page.split("</head>", 1)[0]
     assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in head
+
+
+# ---- backlog 999.4 (06-UI-REVIEW.md fixes #1-#3) ----
+
+_LEGEND = re.compile(r'<ul class="legend">\n(.*?)\n</ul>', re.S)
+_LEGEND_ITEM = re.compile(
+    r'<li><span class="swatch" style="background:(#[0-9a-f]{6})" aria-hidden="true"></span>'
+    r"([^<]*)</li>")
+
+
+def phone_rules(style: str) -> str:
+    """The one style line that holds the 40rem (phone) media block."""
+    found = [line for line in style.splitlines() if line.startswith(PHONE_QUERY)]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_mosaic_scrolls_sideways_on_a_phone(tmp_path):
+    """Fix #2: below 40rem the mosaic keeps a 48rem minimum width and its box scrolls sideways,
+    instead of scaling the 1200 px SVG to about 31% (labels near 3.5 px)."""
+    progress = page_module()
+    style = style_of(progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA))
+    rules = style.splitlines()
+    assert ".mosaic{margin-top:.75rem;overflow-x:auto}" in rules
+    assert ".mosaic svg{display:block;width:100%;height:auto}" in rules
+    assert ".mosaic svg{min-width:48rem}" in phone_rules(style)
+    assert style.count("min-width:48rem") == 1  # the phone block only: wide screens still fit
+
+
+def test_mosaic_region_is_focusable(tmp_path):
+    """Fix #2: the scrolling box takes keyboard focus (tabindex 0) and names itself, so a
+    keyboard user can scroll it with the arrow keys; the focus ring is drawn."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    page = progress.render_html(derived, SHA)
+    assert page.count(MOSAIC_REGION) == 1
+    assert page.count('<div class="mosaic"') == 1
+    assert page.index(MOSAIC_REGION + "\n<svg ") > page.index("<h2>The mosaic</h2>")
+    assert ".mosaic:focus-visible{outline:2px solid var(--ink);outline-offset:2px}" in (
+        style_of(page).splitlines())
+
+
+def test_html_legend_above_the_mosaic(tmp_path):
+    """Fix #2: an HTML legend, one item per cell status in CELL_STATUSES order with the page's
+    status colour and LEGEND_LABELS text, sits right above the mosaic, so it stays readable
+    while the SVG scrolls; the SVG keeps its own legend (progress.svg is published alone)."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    page = progress.render_html(derived, SHA)
+    legends = _LEGEND.findall(page)
+    assert len(legends) == 1
+    items = legends[0].split("\n")
+    assert [_LEGEND_ITEM.fullmatch(item).groups() for item in items] == [
+        (progress.TREEMAP_COLORS[status], progress._xml(progress.LEGEND_LABELS[status]))
+        for status in progress.CELL_STATUSES]
+    legend_at = page.index('<ul class="legend">')
+    assert page.index("<h2>The mosaic</h2>") < legend_at < page.index(MOSAIC_REGION)
+    assert page[legend_at:page.index(MOSAIC_REGION)].endswith("</ul>\n")
+    svg = progress.render_svg(derived)
+    for status in progress.CELL_STATUSES:
+        assert progress._xml(progress.LEGEND_LABELS[status]) in svg, status
+    rules = style_of(page).splitlines()
+    assert any(rule.startswith(".legend{display:flex;flex-wrap:wrap;") for rule in rules)
 
 
 # ---- publication ----
