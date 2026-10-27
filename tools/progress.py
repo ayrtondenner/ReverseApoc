@@ -20,7 +20,10 @@ Every number comes from config/<exe>/functions.csv, units.csv and the gate-writt
 When config/mechanics.toml exists, `derive_mechanics` adds the per-item coverage view (DEC-05,
 D-22): each OpenApoc checklist item's must-match and full-closure figures from
 config/mechanics-members.csv, joined with the same status.csv rows; progress.json's "mechanics"
-is null without it.
+is null without it. When [asm_list] in it signs config/asm-functions.csv off (D-23),
+`exclude_assembler` moves the listed rows out of the percentage into an assembler group counted
+like the library, for every output but the DecompHub feed: gate writes that feed from `derive`
+alone, so committing the list never stales it.
 
 Outputs hold addresses, names, counts and percents only, never game bytes. Each is JSON with an
 indent of 2, LF line endings and a trailing newline, percents rounded to 4 decimals, written
@@ -51,6 +54,7 @@ import csv
 import dataclasses
 import datetime
 import functools
+import hashlib
 import json
 import os
 import re
@@ -98,6 +102,9 @@ NOTES = (
     "The 3 bytes of UFO2P past 0x000CFADA lie outside every unit span and are not counted (D-50).",
     "library: the Watcom runtime, not decompiled, kept outside the percentage; data-in-code is "
     "excluded (D-26).",
+    "assembler: game functions on the owner-signed config/asm-functions.csv, hand-written "
+    "assembly that cannot match from C, kept outside the percentage like the library here, in "
+    "the shields and in report.json; decomphub.progress.json still counts them as code (D-23).",
 )
 
 
@@ -263,6 +270,8 @@ class Totals:
     uncovered_bytes: int = 0
     library_bytes: int = 0
     library_functions: int = 0
+    assembler_bytes: int = 0  # signed asm rows (D-23), outside the percentage like the library
+    assembler_functions: int = 0
     data_in_code_bytes: int = 0
     total_functions: int = 0
     matched_functions: int = 0
@@ -298,6 +307,9 @@ class ExeProgress:
     library_functions: int
     data_in_code_bytes: int
     library_rows: tuple[Row, ...] = ()  # the runtime rows, one library cell each in the mosaic
+    # Game/thunk rows on the signed asm list (D-23), moved out of `functions` by
+    # exclude_assembler: drawn like library rows and counted like the library.
+    assembler_rows: tuple[Row, ...] = ()
 
     @property
     def totals(self) -> Totals:
@@ -311,6 +323,8 @@ class ExeProgress:
             uncovered_bytes=sum(self.uncovered),
             library_bytes=self.library_bytes,
             library_functions=self.library_functions,
+            assembler_bytes=sum(row.size for row in self.assembler_rows),
+            assembler_functions=len(self.assembler_rows),
             data_in_code_bytes=self.data_in_code_bytes,
             total_functions=len(self.functions),
             matched_functions=sum(1 for f in self.functions if f.status == MATCHED),
@@ -407,6 +421,11 @@ ROLE_MEMBER, ROLE_HUB, ROLE_CLOSURE, ROLE_ASM = ROLES
 VIAS = ("entry", "direct", "pointer", "table", "midrow", "hand")
 SCOPES = ("in", "out", "duplicate")
 SCOPE_IN, SCOPE_OUT, SCOPE_DUPLICATE = SCOPES
+# config/asm-functions.csv (D-23): the rows the owner signed off as hand-written assembly.
+ASM_CSV = "asm-functions.csv"
+ASM_COLUMNS = ("exe", "address", "evidence", "verdict", "reason")
+ASM_VERDICTS = ("asm", "c", "unclear")
+VERDICT_ASM = "asm"
 _ITEM_ID = re.compile(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?")
 _TIER_IDS = re.compile(r"[1-9][0-9]*(;[1-9][0-9]*)*")
 _LIST = ";"
@@ -509,11 +528,12 @@ class Duplicate:
 @dataclass(frozen=True)
 class Mechanics:
     """The coverage view: tiers by id, `in` items by (tier, issue, number), duplicates by
-    (issue, number)."""
+    (issue, number), and the (stem, start) of every row on the signed asm list (D-23)."""
 
     tiers: tuple[TierCoverage, ...] = ()
     items: tuple[ItemCoverage, ...] = ()
     duplicates: tuple[Duplicate, ...] = ()
+    assembler: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -688,12 +708,50 @@ def _figures_over(members: Sequence[_Member], ids: Container[str],
     return _coverage(must), _coverage(closure)
 
 
+def _asm_signed(toml_path: Path, data: Mapping, list_path: Path) -> bool:
+    """True when [asm_list] is signed off and its list_sha256 is the SHA-256 of the list's
+    bytes with CRLF read as LF (mechanics.asm_list_sha256's rule). An unsigned, edited or
+    missing list counts for nothing here; `mechanics check` reports it."""
+    body = data.get("asm_list", {})
+    who = _value(toml_path, "asm_list", body, "signed_off_by", str, required=False)
+    digest = _value(toml_path, "asm_list", body, "list_sha256", str, required=False)
+    if not who or not digest or not list_path.is_file():
+        return False
+    try:
+        text = list_path.read_bytes().replace(b"\r\n", b"\n")
+    except OSError as exc:
+        raise ProgressError(f"{list_path}: cannot read ({exc})") from None
+    return hashlib.sha256(text).hexdigest() == digest
+
+
+def _assembler(path: Path, functions: Mapping[tuple[str, int], Function]
+               ) -> tuple[tuple[str, int], ...]:  # fmt: skip
+    """(stem, start) of each `asm` row of the signed list, each a game or thunk row, once."""
+    stems = [stem for stem, _label in EXES]
+    found: list[tuple[str, int]] = []
+    for number, rec in enumerate(_records(path, ASM_COLUMNS), start=1):
+        if rec["exe"] not in stems or rec["verdict"] not in ASM_VERDICTS:
+            raise ProgressError(f"{path}: data row {number}: exe {rec['exe']!r} or verdict "
+                                f"{rec['verdict']!r} is not a known value")  # fmt: skip
+        key = (rec["exe"], _address(path, number, "address", rec["address"]))
+        if key in found:
+            raise ProgressError(f"{path}: data row {number}: 0x{key[1]:08X} appears twice")
+        if rec["verdict"] != VERDICT_ASM:
+            continue
+        if key not in functions:
+            raise ProgressError(f"{path}: data row {number}: the row at 0x{key[1]:08X} names no "
+                                f"game or thunk row of config/{key[0]}/{FUNCTIONS_CSV}")
+        found.append(key)
+    return tuple(sorted(found, key=lambda k: (stems.index(k[0]), k[1])))
+
+
 def derive_mechanics(config_dir: Path, progress: Progress) -> Mechanics | None:
     """The per-item coverage view (DEC-05) from config_dir/mechanics.toml and
     config_dir/mechanics-members.csv, joined by (exe, address) with `progress` (derive's
-    output, so status.csv decides matched). None without mechanics.toml; no items when it has
-    no `in` item or the members file is absent (ruling F2). A malformed file, or a members row
-    that is not a game or thunk row of functions.csv, is a ProgressError."""
+    output, so status.csv decides matched), and the rows of config_dir/asm-functions.csv when
+    [asm_list] signs it off (D-23). None without mechanics.toml; no items when it has no `in`
+    item or the members file is absent (ruling F2). A malformed file, or a members or signed
+    asm row that is not a game or thunk row of functions.csv, is a ProgressError."""
     config = Path(config_dir)
     path = config / MECHANICS_TOML
     if not path.exists():
@@ -702,10 +760,12 @@ def derive_mechanics(config_dir: Path, progress: Progress) -> Mechanics | None:
     tier_specs = _tier_specs(path, data)
     specs = _item_specs(path, data, (t[0] for t in tier_specs))
     in_items = [spec for spec in specs if spec.scope == SCOPE_IN]
+    functions = {(exe.stem, f.start): f for exe in progress.exes for f in exe.functions}
+    asm_path = config / ASM_CSV
+    assembler = _assembler(asm_path, functions) if _asm_signed(path, data, asm_path) else ()
     members_path = config / MEMBERS_CSV
     if not in_items or not members_path.exists():
-        return Mechanics()
-    functions = {(exe.stem, f.start): f for exe in progress.exes for f in exe.functions}
+        return Mechanics(assembler=assembler)
     members = _read_members(members_path, {spec.id for spec in in_items}, functions)
     items = sorted((ItemCoverage(spec.id, spec.issue, spec.number, spec.title, spec.tier,
                                  *_figures_over(members, {spec.id}, functions))
@@ -716,7 +776,32 @@ def derive_mechanics(config_dir: Path, progress: Progress) -> Mechanics | None:
     duplicates = sorted((Duplicate(s.id, s.issue, s.number, s.title, s.duplicate_of)
                          for s in specs if s.scope == SCOPE_DUPLICATE),
                         key=lambda d: (d.issue, d.number))  # fmt: skip
-    return Mechanics(tuple(tiers), tuple(items), tuple(duplicates))
+    return Mechanics(tuple(tiers), tuple(items), tuple(duplicates), assembler)
+
+
+def _without(exe: ExeProgress, starts: Container[int]) -> ExeProgress:
+    moved = tuple(Row(f.start, f.end, f.name, f.kind, f.unit)
+                  for f in exe.functions if f.start in starts)  # fmt: skip
+    if not moved:
+        return exe
+    return dataclasses.replace(
+        exe, functions=tuple(f for f in exe.functions if f.start not in starts),
+        assembler_rows=exe.assembler_rows + moved)  # fmt: skip
+
+
+def exclude_assembler(progress: Progress, asm_starts: Iterable[tuple[str, int]]) -> Progress:
+    """`progress` with each (stem, start) of the signed asm list moved from the EXE's functions
+    to its assembler_rows: outside the percentage and the function ratio, drawn and counted like
+    the library (D-23). For the page, progress.json, the shields, progress.svg and report.json
+    only; the DecompHub feed stays build_decomphub(derive(...)), so committing the list never
+    stales the gate-written feed. A start that is no function of `progress` is an error."""
+    wanted = set(asm_starts)
+    known = {(exe.stem, f.start) for exe in progress.exes for f in exe.functions}
+    stray = sorted(wanted - known)
+    if stray:
+        raise ProgressError(f"asm row {stray[0][0]} 0x{stray[0][1]:08X} is no game or thunk row")
+    return Progress(tuple(_without(exe, {start for stem, start in wanted if stem == exe.stem})
+                          for exe in progress.exes))  # fmt: skip
 
 
 # ---- outputs ----
@@ -754,6 +839,8 @@ def _totals_doc(totals: Totals) -> dict[str, object]:
         "percent": totals.percent,
         "library_bytes": totals.library_bytes,
         "library_functions": totals.library_functions,
+        "assembler_bytes": totals.assembler_bytes,
+        "assembler_functions": totals.assembler_functions,
         "data_in_code_bytes": totals.data_in_code_bytes,
         "functions": {"total": totals.total_functions, "matched": totals.matched_functions,
                       "partial": totals.partial_functions},  # fmt: skip
@@ -1081,7 +1168,9 @@ CELL_STATUSES = (MATCHED, PARTIAL, UNMATCHED, LIBRARY, UNCOVERED)
 TREEMAP_COLORS = {MATCHED: "#008300", PARTIAL: "#eda100", UNMATCHED: "#898781",
                   LIBRARY: "#2a78d6", UNCOVERED: "#d8d6cf"}  # fmt: skip
 LEGEND_LABELS = {MATCHED: "matched", PARTIAL: "partial", UNMATCHED: "unmatched",
-                 LIBRARY: "library (not decompiled)",
+                 # D-23: signed asm rows are library cells too. Not longer than this: the SVG
+                 # legend is right-aligned and a longer label meets the bold heading at 1200 px.
+                 LIBRARY: "library or assembler",
                  UNCOVERED: "uncovered: mostly alignment filler"}  # fmt: skip
 PROGRESS_SVG = "progress.svg"
 SVG_WIDTH, SVG_HEIGHT = 1200, 800
@@ -1161,13 +1250,13 @@ def _function_title(f: Function) -> str | None:
 
 
 def _unit_cells(exe: ExeProgress) -> dict[str, list[_Cell]]:
-    """The cells of each unit: its game/thunk functions, runtime rows and uncovered bytes.
-    Data-in-code is not drawn (D-26)."""
+    """The cells of each unit: its game/thunk functions, runtime and signed asm rows (both
+    library cells, D-23) and uncovered bytes. Data-in-code is not drawn (D-26)."""
     groups: dict[str, list[_Cell]] = {}
     for f in exe.functions:
         groups.setdefault(f.unit or UNASSIGNED_UNIT, []).append(
             _Cell(f.size, f.start, f.status, _function_title(f), f.name, f.best_percent))
-    for row in exe.library_rows:
+    for row in (*exe.library_rows, *exe.assembler_rows):
         groups.setdefault(row.unit or UNASSIGNED_UNIT, []).append(
             _Cell(row.size, row.start, LIBRARY, name=row.name))
     for unit, uncovered in zip(exe.units, exe.uncovered, strict=True):
@@ -1372,6 +1461,11 @@ STRIP_KEY = ('<p class="key">Each tick is one game or thunk function, in address
              f'<i class="{TICK_CLASSES[PARTIAL]}" aria-hidden="true"></i> partial, '
              f'<i class="{TICK_CLASSES[UNMATCHED]}" aria-hidden="true"></i> unmatched. Matched '
              "and partial ticks stand taller. The bar is the share of code bytes matched.</p>")
+# D-23: a signed asm row keeps its place in the strip as a short tick in the library colour.
+ASSEMBLER_TICK = "l"
+ASSEMBLER_KEY = (f'<p class="key"><i class="{ASSEMBLER_TICK}" aria-hidden="true"></i> assembler: '
+                 "hand-written assembly on the owner-signed list, not decompiled and outside the "
+                 "percentage like the runtime library.</p>")  # fmt: skip
 # Backlog 999.4 fix #2 (06-UI-REVIEW.md): below 40rem the 1200 px mosaic would scale to about 31%
 # (labels near 3.5 px), so there it keeps a 48rem minimum width (_page_css) and its box scrolls
 # sideways. The box takes keyboard focus so the arrow keys scroll it, and an HTML legend above it
@@ -1391,7 +1485,10 @@ MEASURED = (
     "plus the uncovered bytes, the bytes inside a unit that no function row covers (mostly "
     "alignment filler). The function ratio is matched game and thunk functions over all game "
     "and thunk functions. The Watcom runtime library (blue in the mosaic) is not decompiled and "
-    "stays outside both; data-in-code is excluded.",
+    "stays outside both; data-in-code is excluded. Game functions on the owner-signed assembler "
+    "list (config/asm-functions.csv: hand-written assembly, which cannot match from C) are drawn "
+    "and counted with the library, outside both, on this page, in progress.json, the badges and "
+    "report.json; the DecompHub feed decomphub.progress.json still counts them as game code.",
     "Every figure comes from committed tables: the status.csv files that reverseapoc gate "
     "writes, plus each EXE's functions.csv and units.csv. This page is regenerated from them on "
     "every push to main. The raw numbers are in <a href=\"progress.json\">progress.json</a>, the "
@@ -1415,9 +1512,16 @@ def _coverage_css() -> list[str]:
     ]
 
 
-def _page_css(coverage: bool = False) -> str:
+def _assembler_css() -> list[str]:
+    """The assembler tick: short like an unmatched one, in the library colour (D-23)."""
+    return [f"i.{ASSEMBLER_TICK}{{background:{TREEMAP_COLORS[LIBRARY]}}}",
+            f".strip .{ASSEMBLER_TICK},.key .{ASSEMBLER_TICK}{{height:{TICK_SHORT}px;"
+            f"margin-top:{TICK_HEIGHT - TICK_SHORT}px}}"]  # fmt: skip
+
+
+def _page_css(coverage: bool = False, assembler: bool = False) -> str:
     """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
-    section's rules only when the page has that section."""
+    section's and the assembler tick's rules only when the page has them."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
         "color-scheme:light dark}",
@@ -1448,6 +1552,7 @@ def _page_css(coverage: bool = False) -> str:
         f".strip .u,.key .u{{height:{TICK_SHORT}px;margin-top:{TICK_HEIGHT - TICK_SHORT}px}}",
         *(f"i.{TICK_CLASSES[status]}{{background:{TREEMAP_COLORS[status]}}}"
           for status in (MATCHED, PARTIAL, UNMATCHED)),
+        *(_assembler_css() if assembler else []),
         "details{margin-top:.75rem;font-size:.875rem}",
         "details ul{margin:.5rem 0 0;padding-left:1.25rem;font-variant-numeric:tabular-nums}",
         "summary:focus-visible{outline:2px solid var(--ink);outline-offset:2px}",
@@ -1468,8 +1573,13 @@ def _page_css(coverage: bool = False) -> str:
 
 def _figures(exe: ExeProgress) -> str:
     t = exe.totals
-    return (f"{shield_message(t.percent)} of code bytes, {t.matched_functions:,} of "
+    text = (f"{shield_message(t.percent)} of code bytes, {t.matched_functions:,} of "
             f"{t.total_functions:,} functions matched, {t.partial_functions:,} partial")
+    if not t.assembler_functions:
+        return text
+    plural = "" if t.assembler_functions == 1 else "s"
+    return (f"{text}; {t.assembler_functions:,} assembler function{plural} "
+            f"({t.assembler_bytes:,} bytes) outside the percentage")
 
 
 def _tick_html(f: Function) -> str:
@@ -1483,15 +1593,21 @@ def _tick_html(f: Function) -> str:
 
 
 def _strip_html(exe: ExeProgress) -> str:
-    """The function strip: one tick per game and thunk function in address order, as one
-    role=img element whose aria-label holds the counts."""
+    """The function strip: one tick per game and thunk function in address order, a signed asm
+    row as an assembler tick in its place (D-23), as one role=img element whose aria-label holds
+    the counts."""
     t = exe.totals
     unmatched = t.total_functions - t.matched_functions - t.partial_functions
     aria = (f"{exe.label}, one tick per game and thunk function in address order: "
             f"{t.matched_functions:,} matched, {t.partial_functions:,} partial, "
             f"{unmatched:,} unmatched")  # fmt: skip
-    ticks = "".join(_tick_html(f) for f in sorted(exe.functions, key=lambda f: f.start))
-    return f'<div class="strip" role="img" aria-label="{_xml(aria)}">{ticks}</div>'
+    if t.assembler_functions:
+        aria += f", {t.assembler_functions:,} assembler"
+    ticks = sorted([(f.start, _tick_html(f)) for f in exe.functions]
+                   + [(row.start, f'<i class="{ASSEMBLER_TICK}"></i>')
+                      for row in exe.assembler_rows])  # fmt: skip
+    return (f'<div class="strip" role="img" aria-label="{_xml(aria)}">'
+            f'{"".join(tick for _start, tick in ticks)}</div>')
 
 
 def _bar_html(percent: float) -> str:
@@ -1622,12 +1738,15 @@ def render_html(progress: Progress, commit: str | None = None,
     no external request: every link is relative or to the repository. The same CSVs and commit
     give the same bytes; without a commit only the "Updated from commit" line is missing. Given
     `mechanics` (derive_mechanics), the `Mechanics coverage` section follows the strip's key;
-    without it the page has no such section and no rule of it."""
+    without it the page has no such section and no rule of it. Signed asm rows that
+    exclude_assembler moved out are stated per EXE, drawn as assembler ticks and library cells,
+    and keyed under the strip's key (D-23)."""
+    assembler = any(exe.assembler_rows for exe in progress.exes)
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
              f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
-             _page_css(coverage=mechanics is not None), "</style>",
+             _page_css(coverage=mechanics is not None, assembler=assembler), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
@@ -1635,6 +1754,7 @@ def render_html(progress: Progress, commit: str | None = None,
     for exe in progress.exes:
         lines += _exe_html(exe)
     lines += [STRIP_KEY,
+              *([ASSEMBLER_KEY] if assembler else []),
               *_mechanics_html(mechanics),
               "<h2>The mosaic</h2>",
               '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
@@ -1670,36 +1790,39 @@ def _parser() -> argparse.ArgumentParser:
 
 @dataclass(frozen=True)
 class _Derived:
-    """What main derives once: the progress and the coverage view (None without
-    mechanics.toml)."""
+    """What main derives once: derive's progress (the DecompHub feed's, as gate writes it), the
+    same with the signed asm rows moved out (every other output, D-23), and the coverage view
+    (None without mechanics.toml)."""
 
     progress: Progress
+    shown: Progress
     mechanics: Mechanics | None
 
 
 Writer = Callable[[_Derived, Path], None]
 
 
-def _on_progress(write: Callable[[Progress, Path], None]) -> Writer:
-    return lambda derived, path: write(derived.progress, path)
+def _on_shown(write: Callable[[Progress, Path], None]) -> Writer:
+    return lambda derived, path: write(derived.shown, path)
 
 
 def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
         yield args.out / PROGRESS_JSON, lambda d, path: write_progress_json(
-            d.progress, path, args.commit, d.mechanics)
-        yield args.out / SHIELD_JSON, _on_progress(write_shield)
+            d.shown, path, args.commit, d.mechanics)
+        yield args.out / SHIELD_JSON, _on_shown(write_shield)
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
-                   _on_progress(functools.partial(write_exe_shield, stem=stem)))
-        yield args.out / PROGRESS_SVG, _on_progress(write_svg)
+                   _on_shown(functools.partial(write_exe_shield, stem=stem)))
+        yield args.out / PROGRESS_SVG, _on_shown(write_svg)
         yield args.out / INDEX_HTML, lambda d, path: write_html(
-            d.progress, path, args.commit, d.mechanics)
+            d.shown, path, args.commit, d.mechanics)
     if args.report is not None:
-        yield args.report, _on_progress(write_report)
+        yield args.report, _on_shown(write_report)
     if args.decomphub is not None:
-        yield args.decomphub, _on_progress(write_decomphub)
+        # gate writes this feed from derive() alone (T-07-44): the asm list never changes it.
+        yield args.decomphub, lambda d, path: write_decomphub(d.progress, path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1712,7 +1835,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--commit {args.commit!r} is not a lower-case hex commit id")
     try:
         progress = derive(args.config)
-        derived = _Derived(progress, derive_mechanics(args.config, progress))
+        found = derive_mechanics(args.config, progress)
+        shown = exclude_assembler(progress, found.assembler) if found else progress
+        derived = _Derived(progress, shown, found)
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
             write(derived, path)
