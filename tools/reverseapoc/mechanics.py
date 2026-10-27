@@ -989,3 +989,27 @@ def read_committed(config_root: Path) -> tuple[Mechanics, list[MemberRow]]:
     mech = load(root / MECHANICS_TOML)
     members_path = root / MEMBERS_CSV
     return mech, read_members(members_path) if members_path.is_file() else []
+
+
+# ---- plan 07-10 Task 3 API (stub, RED) ----
+
+
+@dataclass(frozen=True)
+class TierStatus:
+    total: int
+    matched: int
+    partial: int
+    unmatched: int
+    unmatched_starts: tuple[tuple[str, int], ...] = ()
+
+
+def hub_candidates(mech, graphs, rows_by_exe, asm, tier, ks) -> dict:
+    return {"tier": tier, "exes": {}}
+
+
+def tier_status(mech, rows, statuses, tier) -> TierStatus:
+    return TierStatus(0, 0, 0, 0)
+
+
+def graph_report(graph) -> dict:
+    return {}
