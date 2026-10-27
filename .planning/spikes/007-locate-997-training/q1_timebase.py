@@ -11,13 +11,22 @@ Claims, per EXE:
   call are exactly the EXPECTED readers (immediate in the block, or a register the row sets once);
 - callers-<addr>: each reader's direct caller count, from this script's own call scan, equals
   EXPECTED and the count reverseapoc.contextpack.CallIndex reports;
-- no-46c-read: no game or thunk row reads the BIOS tick word at linear 0x46C directly.
+- no-46c-read: no game or thunk row reads the BIOS tick word at linear 0x46C directly;
+- bios-chain-cadence (fix round 1): while the sound library owns INT 8, the BIOS tick still
+  advances at 18.2 Hz. The install saves the old INT 8 vector; one row far-returns into it (the
+  chain); an event callback calls that row and the timer init registers it; the rows that set
+  the event increments divide 0x123333 (18.2 in 16.16) by the PIT rate for that event (and store
+  0x10000, one fire per interrupt, at the DOS rate); the ISR callback the init installs adds the
+  increments to the event accumulators on every interrupt.
 
 Run from the main checkout (orig/ is gitignored):
-    uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] [--mutant]
+    uv run python .planning/spikes/007-locate-997-training/q1_timebase.py
+        [--plant] [--mutant] [--plant-chain]
 
 --plant swaps one EXPECTED reader address for a wrong one; --mutant zeroes every `mov reg, 0x1a`
-immediate of the game rows in an in-memory copy of the flat image. Both runs must FAIL.
+immediate of the game rows in an in-memory copy of the flat image; --plant-chain expects the PIT
+clock (0x1234DC) instead of 0x123333 as the chain dividend, i.e. a BIOS tick that follows the
+PIT rate. All three runs must FAIL.
 
 Reads orig/ only and writes nothing. Prints addresses, counts, booleans and protocol constants
 (interrupt numbers, ports, function codes), never game bytes or instruction text.
@@ -71,6 +80,13 @@ BIOS_TICK_WORD = 0x46C  # linear address of the BIOS tick count
 REGS_AX = 0  # union REGS: eax/ax at offset 0, ebx/bx/bl at offset 4
 REGS_BX = 4
 VECTOR_RUNTIME = ("_dos_getvect_", "_dos_setvect_")
+VECTOR_GETS = ("ax-0x200", "ax-0x204", "ah-0x35")  # site labels of a vector *get*
+GET_WINDOW = 2  # stores of the old vector right after the get
+DIV_WINDOW = 3  # instructions between a dividend load and its `div`
+PIT_CLOCK = 0x1234DC  # 1,193,180: the PIT input clock as the sound library writes it
+DOS_RATE_MARKER = 0xFF00  # the sound library's "DOS rate" event rate
+CHAIN_ONE = 0x10000  # an event fires when its 16.16 accumulator passes 1.0
+CHAIN_DIVIDEND = 0x123333  # 18.2 in 16.16 (this spike): chain increment = it / PIT Hz
 INT386 = ("int386_", "int386x_")
 
 # Copied from 07-R1-locate.md "#997 FINDING" and Q2 "Timer"; `pinned_readers` is this spike's
@@ -83,6 +99,9 @@ EXPECTED = {
         "readers": {0x00011430},
         "pinned_readers": {0x00010940},
         "callers": {0x00011430: 28},
+        "chain": {"chain_row": 0x000C9099, "thunk": 0x000C3692, "slot_writer": 0x000C2F1F,
+                  "rate_rows": {0x000C3035, 0x000C33BA}, "adder": 0x000C35C8,
+                  "constant": CHAIN_DIVIDEND},  # this spike
     },
     "TACP.EXE": {
         "sound_span": (0x000CC151, 0x000CC402),
@@ -91,6 +110,9 @@ EXPECTED = {
         "readers": {0x00011500, 0x000116B0},
         "pinned_readers": set(),
         "callers": {0x00011500: 35, 0x000116B0: 10},
+        "chain": {"chain_row": 0x000CC3A9, "thunk": 0x000C6386, "slot_writer": 0x000C5C13,
+                  "rate_rows": {0x000C5D29, 0x000C60AE}, "adder": 0x000C62BC,
+                  "constant": CHAIN_DIVIDEND},  # this spike
     },
 }
 PLANT = ("UFO2P.EXE", 0x00011430, 0x00011440)  # (exe, true reader, planted wrong address)
@@ -599,13 +621,130 @@ def claim_46c(report: Report, img: Image) -> None:
     report.claim(img.name, not found, "no-46c-read", f"absolute [0x46c] reads {len(found)}")
 
 
-def expected(plant: bool) -> dict:
+# ---- the BIOS-tick cadence while the sound timer owns INT 8 (fix round 1) ----
+
+
+def _field_target(img: Image, insn: Insn, offset: int) -> int | None:
+    if not offset:
+        return None
+    fld = img.fields.get(insn.va + offset)
+    return fld.target if fld is not None else None
+
+
+def saved_vector(img: Image, sites: Sites) -> set[int]:
+    """The globals the INT 8 install stores right after its vector *get* (the old handler's
+    offset and selector): `mov [G], reg` within GET_WINDOW instructions of the get site."""
+    found: set[int] = set()
+    for va, how in sites.int8.items():
+        if not how.endswith(VECTOR_GETS):
+            continue
+        insns = img.insns(img.row_at(va))
+        k = next(n for n, i in enumerate(insns) if i.va == va)
+        for insn in insns[k + 1 : k + 1 + GET_WINDOW]:
+            target = _field_target(img, insn, insn.disp_offset)
+            if insn.mnemonic == "mov" and target is not None and "[" in operands(insn)[0]:
+                found.add(target)
+    return found
+
+
+@dataclass
+class Chain:
+    saved: set[int]
+    chain_rows: set[int]  # load the saved old vector and far-return into it
+    thunks: set[int]  # call a chain row (the event callback)
+    slot_writers: set[int]  # store a thunk's address (register the event)
+    rate_rows: set[int]  # same unit: compare with the DOS-rate marker and divide
+    constants: set[int]  # the dividend of the chain increment (not the PIT clock)
+    increments: set[int]  # arrays the rate rows store 0x10000 (one fire per interrupt) into
+    adders: set[int]  # same unit: rows adding an increment-array entry to an accumulator
+    installed: set[int]  # code addresses the slot writers pass as immediates (ISR callback)
+
+
+def bios_chain(img: Image, sites: Sites) -> Chain:
+    saved = saved_vector(img, sites)
+    chain_rows = set()
+    for row in img.walked():
+        insns = img.insns(row)
+        loads = any(_field_target(img, i, i.disp_offset) in saved for i in insns
+                    if i.mnemonic == "mov" and reg_part(operands(i)[0] if i.op_str else ""))
+        if loads and any(i.mnemonic == "retf" for i in insns):
+            chain_rows.add(row.start)
+    thunks = {row.start for row in img.walked()
+              if any(i.is_call and img.target(i) in chain_rows for i in img.insns(row))}
+    writers = {row.start for row in img.walked()
+               if any(_field_target(img, i, i.imm_offset) in thunks for i in img.insns(row))}
+    units = {img.starts[w].unit for w in writers}
+    rate_rows, constants = set(), set()
+    for row in img.walked():
+        if row.unit not in units:
+            continue
+        insns = img.insns(row)
+        if not any(i.mnemonic == "cmp" and imm(operands(i)[-1]) == DOS_RATE_MARKER
+                   for i in insns if i.op_str):
+            continue
+        for k, insn in enumerate(insns):
+            ops = operands(insn)
+            if insn.mnemonic != "mov" or ops[:1] != ["eax"] or imm(ops[-1]) in (None, PIT_CLOCK):
+                continue
+            if any(i.mnemonic == "div" for i in insns[k + 1 : k + 1 + DIV_WINDOW]):
+                rate_rows.add(row.start)
+                constants.add(imm(ops[-1]))
+    increments = {t for va in rate_rows for i in img.insns(img.starts[va])
+                  if i.mnemonic == "mov" and i.op_str and imm(operands(i)[-1]) == CHAIN_ONE
+                  and (t := _field_target(img, i, i.disp_offset)) is not None}  # fmt: skip
+    adders = {row.start for row in img.walked() if row.unit in units
+              and _adds_from(img, img.insns(row), increments)}  # fmt: skip
+    installed = {t for w in writers for i in img.insns(img.starts[w])
+                 if (t := _field_target(img, i, i.imm_offset)) in img.starts}  # fmt: skip
+    return Chain(saved, chain_rows, thunks, writers, rate_rows, constants, increments, adders,
+                 installed)
+
+
+def _adds_from(img: Image, insns: list[Insn], arrays: set[int]) -> bool:
+    """`mov r, [x + A]` (A in arrays) followed by `add [y + B], r` within DIV_WINDOW."""
+    for k, insn in enumerate(insns):
+        ops = operands(insn)
+        if insn.mnemonic != "mov" or len(ops) != 2 or not reg_part(ops[0]):
+            continue
+        if _field_target(img, insn, insn.disp_offset) not in arrays:
+            continue
+        for later in insns[k + 1 : k + 1 + DIV_WINDOW]:
+            lops = operands(later)
+            if later.mnemonic == "add" and len(lops) == 2 and "[" in lops[0] and lops[1] == ops[0]:
+                return True
+    return False
+
+
+def claim_chain(report: Report, img: Image, sites: Sites, exp: dict) -> None:
+    chain = bios_chain(img, sites)
+    want = exp["chain"]
+    found = (chain.chain_rows, chain.thunks, chain.slot_writers, chain.rate_rows, chain.adders)
+    ok = found == ({want["chain_row"]}, {want["thunk"]}, {want["slot_writer"]},
+                   want["rate_rows"], {want["adder"]}) \
+        and chain.constants == {want["constant"]} and bool(chain.increments) \
+        and chain.adders <= chain.installed
+    rate = ", ".join(f"{c:#x}/0x10000 = {c / CHAIN_ONE:.4f} Hz" for c in sorted(chain.constants))
+    report.claim(img.name, ok, "bios-chain-cadence",
+                 f"saved old INT 8 vector {hxs(chain.saved)}; chain rows {hxs(chain.chain_rows)} "
+                 f"via event callback {hxs(chain.thunks)} registered by "
+                 f"{hxs(chain.slot_writers)}; increment dividend in {hxs(chain.rate_rows)}: "
+                 f"{rate or '-'} (expected {want['constant']:#x}); increments "
+                 f"{hxs(chain.increments)} added per interrupt in {hxs(chain.adders)}, the ISR "
+                 f"callback the same writer installs: {chain.adders <= chain.installed}")
+
+
+def expected(plant: bool, plant_chain: bool = False) -> dict:
     exp = {name: {k: (set(v) if isinstance(v, set) else dict(v) if isinstance(v, dict) else v)
                   for k, v in values.items()} for name, values in EXPECTED.items()}  # fmt: skip
     if plant:
         name, true, wrong = PLANT
         exp[name]["readers"] = (exp[name]["readers"] - {true}) | {wrong}
         print(f"PLANT {name} expected reader {hx(true)} -> {hx(wrong)}")
+    if plant_chain:
+        for name in EXES:
+            exp[name]["chain"] = dict(exp[name]["chain"], constant=PIT_CLOCK)
+        print(f"PLANT expected chain dividend {CHAIN_DIVIDEND:#x} -> {PIT_CLOCK:#x} "
+              "(the BIOS tick would follow the PIT rate)")
     return exp
 
 
@@ -613,8 +752,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--plant", action="store_true", help="one wrong EXPECTED reader")
     parser.add_argument("--mutant", action="store_true", help="zero the 0x1A immediates")
+    parser.add_argument("--plant-chain", action="store_true",
+                        help="expect the PIT clock as the BIOS-chain dividend")  # fmt: skip
     args = parser.parse_args(argv)
-    exp_all = expected(args.plant)
+    exp_all = expected(args.plant, args.plant_chain)
     report = Report()
     for name in EXES:
         img = Image(name)
@@ -628,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
         claim_readers(report, img, sites, exp)
         claim_callers(report, img, exp)
         claim_46c(report, img)
+        claim_chain(report, img, sites, exp)
     return report.finish()
 
 
