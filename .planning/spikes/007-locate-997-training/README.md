@@ -4,7 +4,7 @@ idea: mechanics-first-decompilation
 name: locate-997-training
 type: standard
 validates: "Given UFO2P.EXE and TACP.EXE, their LE fixups and the committed functions.csv, when the BIOS-tick readers, the UI strings through get_text and the data-table and hand-off-file xrefs are followed, then the #997 time-advance code and its rate constants are located in both EXEs, the #263-1 battle-to-agent stat rule (incl. androids) is located, and the same method gives an entry function for most remaining D-01 items"
-verdict: VALIDATED
+verdict: PARTIAL
 related: [003]
 tags: [mechanics, 997, training, get_text, bios-tick, d-01, d-03, d-26]
 ---
@@ -13,8 +13,8 @@ tags: [mechanics, 997, training, get_text, bios-tick, d-01, d-03, d-26]
 
 This is the Phase 7 roadmap spike (D-03, refined by D-26). Part 1 (plan 07-02) holds q1-q3: the
 time base, the tick rule and the training rule. Part 2 (plan 07-08) adds the string, table and
-call-graph questions (q4-q6), the verdict and the owner report. Verdict: **VALIDATED** by the
-D-03 formula, with the caveats in "Verdict".
+call-graph questions (q4-q6), the verdict and the owner report. Verdict: **PARTIAL** (D-03's
+definition; the plan's formula alone would read VALIDATED), see "Verdict".
 
 ## What This Validates
 
@@ -93,9 +93,14 @@ second.
   DOS rate (divisor 0xFFFF) it runs on every interrupt: 1,193,182 / 65,535 = 18.2068 Hz [hand].
 - That INT 1Ah returns the tick count this old handler keeps is standard BIOS behaviour under
   DOS/4GW [assumption].
-- There is no 36 Hz or 144 Hz game timer [derived: the only PIT programming is in the sound
-  library (script: q1 `pit-int8-sites`), and the 36-unit clock is called only from the frame
-  rows that wait on the BIOS tick (script: q2 `paces-on-bios-tick`, rows calling the clock)].
+- The game programs no 36 Hz or 144 Hz timer: the only PIT programming is in the sound library
+  [script: q1 `pit-int8-sites`].
+- Who calls the 36-unit clock [script: q2 `paces-on-bios-tick` lists the callers and passes when
+  at least one of them busy-waits on the BIOS tick]:
+  - UFO2P: only the frame loop `func_00010940`, which waits on the tick;
+  - TACP: the frame step `func_000116B0`, which waits, and `func_000B6E50`, in which q2 finds no
+    BIOS-tick wait. How often `func_000B6E50` runs, and so whether it advances battle time at
+    another pace, is not checked [open].
 - **Exception to "every frame waits".** The UFO2P frame skips the BIOS read and the wait while
   the no-wait counter `D_000D4D5C` is nonzero after the frame's own decrement, or while the byte
   `D_00183BAC` is set [script: q2 `wait-skip-guards` finds both tests before the wait; both
@@ -476,7 +481,13 @@ ALL PASS
 
 ## Verdict
 
-**VALIDATED**, by the D-03 formula from the scripts' own lines:
+**PARTIAL.** D-03 (07-CONTEXT.md, the owner's binding decision) defines VALIDATED as strings
+and xrefs locating the tick rate **and** the training rule. The tick rate is located in both EXEs
+(q1, q2). The training rule is not: q3 locates the hand-off, the UFO2P stat copy and the android
+branch, but not the TACP accrual where a battle raises the stats. D-03 then prescribes PARTIAL's
+remedy, call-graph walking, which the Consequence section below assigns to 07-22.
+
+The plan's formula alone would read VALIDATED (orchestrator ruling, fix round 1 of 07-08):
 
 | Input | Result | Formula |
 |---|---|---|
@@ -484,14 +495,14 @@ ALL PASS
 | q3 training rule | `ALL PASS` (plants fail) | pass |
 | q4 sample | `q4 found 11 of 12` | >= 10 |
 
-VALIDATED needs q2 and q3 to pass and q4 to find at least 10 of 12; PARTIAL one of q2/q3 or 6-9
-of 12; INVALIDATED otherwise. Research A18 expected PARTIAL to VALIDATED.
+The plan's formula: VALIDATED needs q2 and q3 to pass and q4 to find at least 10 of 12; PARTIAL
+one of q2/q3 or 6-9 of 12; INVALIDATED otherwise. It counts q3's `ALL PASS`, which does not
+include locating the accrual. Research A18 expected PARTIAL to VALIDATED.
 
 What the formula does not see:
-- **q3 passes, but the TACP accrual is not located.** q3 locates the hand-off, the UFO2P stat
-  copy and the android branch. Where the battle raises the 17 stat fields is only a heuristic
-  lead (`accrual-sites`, 2 rows). The improvement rule of #263-1 itself still needs the call
-  graph or reading (plan 07-22).
+- **q3 passes, but the TACP accrual is not located** (the reason for PARTIAL). Where the
+  battle raises the 17 stat fields is only a heuristic lead (`accrual-sites`, 2 rows). The
+  improvement rule of #263-1 itself still needs the call graph or reading (plan 07-22).
 - **The #997 route was the BIOS tick, not the PIT.** D-03 named the PIT / INT 8 setup; that
   leads to the sound library. D-26 moved the start to the BIOS-tick readers, and q2 found the
   rule from there.
@@ -563,6 +574,14 @@ What the formula does not see:
     claim its own planted failure.
   - "There is no 36 Hz or 144 Hz game timer" had no tag; it is now [derived] from q1's PIT sites
     and q2's rows calling the clock.
+- Fix round 1 of 07-08 (review):
+  - The verdict is PARTIAL, not VALIDATED. D-03 asks for the training rule to be located, and
+    the TACP accrual is not; the plan's formula alone would read VALIDATED.
+  - The [derived] sentence said the 36-unit clock is called only from rows that wait on the BIOS
+    tick. That holds for UFO2P only. In TACP, `func_000B6E50` also calls the clock and q2 finds no
+    wait in it, and q2's claim checks only that one caller waits. The lead now lists the callers
+    per EXE and keeps "no 36 Hz or 144 Hz timer" to what q1 shows: the game programs no such
+    timer.
 
 - q1 started from research's capstone scan. A first run missed the pinned reader: the tracker
   treated `movsx`/`movzx` as string instructions (prefix match on `movs`), so every register
