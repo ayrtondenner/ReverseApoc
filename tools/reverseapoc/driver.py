@@ -190,14 +190,16 @@ class DriverError(RuntimeError):
 
 @dataclass(frozen=True)
 class DriveConfig:
-    """One night. `max_sessions` counts counted sessions only (D-08, D-48)."""
+    """One night. `max_sessions` counts counted sessions only, across every worker (D-07,
+    D-08, D-48); `target_matched` 0 is off (the night cap governs; AGT-11 is counted by
+    `stats`)."""
 
     run_id: str
     repo_root: Path
     tested_major: int  # F28; plan 06-25 passes session's TESTED_MAJOR
     min_cli_version: tuple[int, int, int]  # F28; plan 06-25 passes MIN_CLI_VERSION
-    max_sessions: int = 30  # D-48
-    target_matched: int = 10  # D-48
+    max_sessions: int = 60  # D-07 (it was 30, D-48)
+    target_matched: int = 0  # D-07 CONTEXT default: off (it was 10, D-48)
     attempts_per_function: int = 3  # D-07, per pass
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
@@ -1528,9 +1530,10 @@ class _Night:
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
         self.matched = 0
+        self.reserved = 0  # D-07: night-cap slots held by attempts not yet counted (_reserve)
         self.done: set[Key] = set()
         # D-06: per worker thread: `worker` (its number), `live` (its session to reset if a
-        # later step raises) and `probe` (its launch is the usage-limit probe).
+        # later step raises) and `slot` (it holds a reserved slot of the night cap, D-07).
         self.local = threading.local()
         # 07-21: the coordinator's condition: the counters, the dispatch, the pause and the
         # stop. Taken only for short steps and never while waiting for the gate lock (order:
@@ -1575,10 +1578,38 @@ class _Night:
 
     # --- workers (07-21) ---
 
+    def _reserve(self) -> bool:
+        """D-07: the shared night cap. Before each attempt a worker reserves a slot while
+        `sessions + reserved < max_sessions`; the slot becomes a counted session (`_count`) or
+        is given back when the attempt ends uncounted (`_release`). A LIMIT or TRANSIENT
+        relaunch keeps its attempt's slot. While every free slot is reserved by attempts still
+        running, the worker waits, since one may end uncounted. False: the night is ending
+        (a cap reached, or a stop) and nothing more launches."""
+        with self.cond:
+            while True:
+                if self.stop.is_set() or self._end():
+                    return False
+                if self.sessions + self.reserved < self.config.max_sessions:
+                    self.reserved += 1
+                    self.local.slot = True
+                    return True
+                self.cond.wait(_TICK_S)
+
+    def _release(self) -> None:
+        """Give this worker's reserved slot back (an attempt that ended uncounted)."""
+        with self.cond:
+            if getattr(self.local, "slot", False):
+                self.local.slot = False
+                self.reserved -= 1
+                self.cond.notify_all()
+
     def _count(self) -> None:
-        """One counted session (D-07, D-48), from any worker."""
+        """One counted session (D-07, D-48), from any worker: its reserved slot becomes it."""
         with self.cond:
             self.sessions += 1
+            if getattr(self.local, "slot", False):
+                self.local.slot = False
+                self.reserved -= 1
             self.cond.notify_all()
 
     def _fail(self, exc: BaseException) -> None:
@@ -1810,8 +1841,11 @@ class _Night:
         self._git_retry(["commit", "-q", "-F", str(message_file), "--", *paths])
 
     def _end(self) -> str | None:
+        """Why the night ends now, counted sessions only (D-07): the match target (0: off),
+        then the night cap."""
         with self.cond:
-            if self.matched >= self.config.target_matched:
+            target = self.config.target_matched
+            if target and self.matched >= target:
                 return TARGET_MATCHED
             if self.sessions >= self.config.max_sessions:
                 return MAX_SESSIONS
@@ -1838,9 +1872,12 @@ class _Night:
         """At most attempts_per_function counted sessions (D-07); a function that used them all
         without a match goes to the difficult list once."""
         for n in range(1, self.config.attempts_per_function + 1):
-            if self.stop.is_set() or self._end():
+            if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return
-            outcome = self._announced(pick, n)
+            try:
+                outcome = self._announced(pick, n)
+            finally:
+                self._release()  # uncounted (an abort, a stop): the slot goes back
             if outcome in (MATCHED, None):
                 return
         callees = tuple(self.deps.matched_callees(pick))
@@ -2872,12 +2909,14 @@ DRY_RUN_DIR = "dry-run"  # build/driver/<run>/dry-run/<exe>/<func>/context.md
 
 @dataclass(frozen=True)
 class DriveOptions:
-    """What `reverseapoc drive` was asked to do (D-48 defaults)."""
+    """What `reverseapoc drive` was asked to do (D-07 defaults: 3 workers, a night cap of 60
+    counted sessions, no match target)."""
 
     repo: Path
     run_id: str
-    max_sessions: int = 30
-    target_matched: int = 10
+    max_sessions: int = 60
+    target_matched: int = 0  # 0: off
+    workers: int = 3
     dry_run: bool = False
     canary: bool = False
     json: bool = False
@@ -3437,7 +3476,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
-                         base_env=seams.base_env)  # fmt: skip
+                         base_env=seams.base_env, workers=options.workers)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
