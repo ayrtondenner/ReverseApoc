@@ -367,7 +367,8 @@ def test_allowlist_references_only(tmp_path):
     assert hits(result, "RL01") == []
     assert result.allowlisted == {f"src/{EXE}/{UNIT}.c": 1}
     header = ("/*\n * func_00010040: clears the second counter value.\n"
-              " * Address: UFO2P.EXE 0x00010040\n * Evidence: call: after the tick read\n */\n")  # fmt: skip
+              " * Address: UFO2P.EXE 0x00010040\n"
+              " * Evidence: call: after the tick read\n */\n")  # fmt: skip
     path.write_bytes(f"{header}void func_00010040(void)\n{{\n}}\n".encode("ascii"))
     result = run_readlint([src], src_root=src, config_root=config)
     assert [ln for ln, _m in hits(result, "RL01")] == [6]
