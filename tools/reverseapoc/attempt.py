@@ -450,12 +450,19 @@ def _best_cell(cells: Sequence[Mapping[str, Any]]) -> Mapping[str, Any] | None:
     return ranked[0] if ranked else None
 
 
+def _stage2(doc: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """The measured cells of check's D-15 second stage (07-14); none when it did not run."""
+    stage2 = doc.get("stage2")
+    return _measured(stage2) if isinstance(stage2, Mapping) else []
+
+
 def _sweep_line(
     doc: Mapping[str, Any], default: str, ran: Ran, n: int, source: str
 ) -> CheckLogLine:
+    """best_* describe stage 1; sweep_hit is stage 1's first hit, else stage 2's (D-15)."""
     cells = _measured(doc)
     best = _best_cell(cells)
-    hit = next((_cell_spec(c) for c in cells if _is_hit(c, default)), None)
+    hit = next((_cell_spec(c) for c in [*cells, *_stage2(doc)] if _is_hit(c, default)), None)
     return CheckLogLine(
         n, EXIT_OK if ran.returncode == EXIT_OK else EXIT_TOOL, True,
         float(best["objdiff_percent"]) if best else None,
@@ -500,15 +507,22 @@ def _check_summary(doc: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _best_text(label: str, best: Mapping[str, Any]) -> str:
+    return (f"  {label} {int(best['cell']):02d}  {_cell_spec(best)}  objdiff "
+            f"{best['objdiff_percent']:g}%  reloc {_ok(best['reloc_ok'])}  "
+            f"differing {best['differing']}")  # fmt: skip
+
+
 def _sweep_summary(doc: Mapping[str, Any], line: CheckLogLine) -> list[str]:
     best = _best_cell(_measured(doc))
     lines = ["  a sweep is a diagnostic: it never lands and never edits config/cflags.txt"]
     if best is None:
         lines.append("  no cell was measured")
     else:
-        lines.append(f"  best cell {int(best['cell']):02d}  {_cell_spec(best)}  objdiff "
-                     f"{best['objdiff_percent']:g}%  reloc {_ok(best['reloc_ok'])}  "
-                     f"differing {best['differing']}")  # fmt: skip
+        lines.append(_best_text("best cell", best))
+    stage2 = _best_cell(_stage2(doc))
+    if stage2 is not None:
+        lines.append(_best_text("stage 2 best cell", stage2))
     if line.sweep_hit:
         lines.append(f"  sweep hit: needs flags {line.sweep_hit} (the owner decides; "
                      "cflags.txt is owner-only)")  # fmt: skip

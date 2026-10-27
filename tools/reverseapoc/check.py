@@ -28,9 +28,12 @@ CLI lists: compile failure, objdiff-cli missing, unknown unit). A missing tool i
 11.0 x CPU -4r, -5r x optimisation none, -ox, -os, -ot, -oneatx, with -s toggled only when the
 function calls the runtime public __CHK. Each cell compiles with a temporary one-rule cflags file
 under build/sweep/<exe>/<unit>/ and is logged, one line per cell, to
-build/logs/sweep-<exe>-<unit>-<func>.log, then the best cells. The sweep never lands, never edits
-config/cflags.txt (DEFAULT_CFLAGS) and decides no match: a cell worth keeping becomes a per-glob
-rule (D-18) and is then proven by a plain `check`.
+build/logs/sweep-<exe>-<unit>-<func>.log, then the best cells. When no cell is perfect and the best
+one reaches SWEEP2_FLOOR (90.0) with its relocation check passing, a bounded second stage (D-15,
+`sweep2_cells`) tries docs/toolchain.md's candidate flags on that cell, under 10.6, through the
+same temporary rule file. The sweep never lands, never edits config/cflags.txt (DEFAULT_CFLAGS)
+and decides no match: a cell worth keeping becomes a per-glob rule (D-18) and is then proven by a
+plain `check`.
 
 Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
 Outputs go to build/<exe>/obj|base|target/<unit>.*, the paths of build.ninja's edges, when check
@@ -1286,15 +1289,33 @@ class SweepReport:
     cells: tuple[SweepCell, ...]
     best: tuple[SweepCell, ...]
     log_path: Path
+    # D-15's second stage: None when it did not run (ruling F11: defaults keep the seven-field
+    # positional construction working).
+    stage2: tuple[SweepCell, ...] | None = None
+    stage2_best: tuple[SweepCell, ...] | None = None
+
+    @property
+    def stage2_from(self) -> int | None:
+        """The stage-1 cell stage 2 varies: the first best cell."""
+        return self.best[0].number if self.stage2 is not None and self.best else None
 
     @property
     def lines(self) -> list[str]:
         caller = "yes" if self.chk else "no"
         head = f"sweep {self.exe}/{self.unit} {self.function}  calls __CHK: {caller}"
-        best = ", ".join(f"cell {cell.number:02d}" for cell in self.best) or "none"
-        return [head, *(cell.line() for cell in self.cells), f"best: {best}"]
+        lines = [head, *(cell.line() for cell in self.cells), f"best: {_cell_list(self.best)}"]
+        if self.stage2 is None:
+            return lines
+        return [*lines, f"stage 2 from cell {self.stage2_from:02d}",
+                *(cell.line() for cell in self.stage2),
+                f"stage 2 best: {_cell_list(self.stage2_best or ())}"]  # fmt: skip
 
     def to_json(self) -> dict[str, Any]:
+        stage2 = None
+        if self.stage2 is not None:
+            stage2 = {"from": self.stage2_from,
+                      "cells": [cell.to_json() for cell in self.stage2],
+                      "best": [cell.number for cell in self.stage2_best or ()]}  # fmt: skip
         return {
             "exe": self.exe,
             "unit": self.unit,
@@ -1302,8 +1323,13 @@ class SweepReport:
             "chk": self.chk,
             "cells": [cell.to_json() for cell in self.cells],
             "best": [cell.number for cell in self.best],
+            "stage2": stage2,
             "log": str(self.log_path),
         }
+
+
+def _cell_list(cells: Sequence[SweepCell]) -> str:
+    return ", ".join(f"cell {cell.number:02d}" for cell in cells) or "none"
 
 
 def calls_chk(row: FunctionRow, exe: ExeInputs) -> bool:
@@ -1376,6 +1402,30 @@ def _best(cells: Sequence[SweepCell]) -> tuple[SweepCell, ...]:
     return tuple(cell for cell in measured if cell.rank() == top)
 
 
+# ---- the D-15 second stage ----
+
+SWEEP2_VERSION = "10.6"
+SWEEP2_LETTERS = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
+SWEEP2_KKND = ("-of+", "-omiler")  # KKND's optimisation set (docs/toolchain.md)
+SWEEP2_FLOOR = 90.0  # the best stage-1 cell's objdiff percent at which stage 2 runs
+_OPT_PREFIX = "-o"
+
+
+def sweep2_cells(best: SweepCell) -> list[tuple[str, tuple[str, ...]]]:
+    """(version, flags) of every D-15 second-stage cell for the best stage-1 cell `best`: under
+    10.6, keeping its CPU, stack and -fpi flags. O1 replaces its -o set with each single letter
+    and with KKND's set."""
+    cpu, others = best.flags[0], tuple(f for f in best.flags[1:] if not f.startswith(_OPT_PREFIX))
+    sets = [*((letter,) for letter in SWEEP2_LETTERS), SWEEP2_KKND]
+    return [(SWEEP2_VERSION, (cpu, *opt, *others)) for opt in sets]
+
+
+def _runs_stage2(cells: Sequence[SweepCell], best: Sequence[SweepCell]) -> bool:
+    if not best or any(cell.percent == PERFECT for cell in cells if cell.measured):
+        return False
+    return best[0].percent >= SWEEP2_FLOOR
+
+
 def sweep(
     exe: str,
     unit: str,
@@ -1392,8 +1442,9 @@ def sweep(
     compile_fn: Callable[..., Any] | None = None,
     objdiff_runner: Runner | None = None,
 ) -> SweepReport:
-    """Run the D-17 matrix for one function of `unit` and log every cell (see the module
-    docstring). Never lands and never writes config/cflags.txt."""
+    """Run the D-17 matrix for one function of `unit`, then D-15's second stage when stage 1
+    comes close, and log every cell (see the module docstring). Never lands and never writes
+    config/cflags.txt."""
     check_unit_name(unit)
     target = select_exe(load_manifest(manifest), exe, manifest)
     runner = objdiff_runner or default_objdiff_runner(f"{exe}/{unit}")
@@ -1415,8 +1466,14 @@ def sweep(
     chk = calls_chk(row, inputs)
     cells = tuple(_measure(setup, n, version, flags)
                   for n, (version, flags) in enumerate(sweep_cells(chk=chk), start=1))  # fmt: skip
+    best = _best(cells)
+    stage2 = stage2_best = None
+    if _runs_stage2(cells, best):  # D-15: numbered on from stage 1, through the same _measure
+        stage2 = tuple(_measure(setup, n, version, flags) for n, (version, flags)
+                       in enumerate(sweep2_cells(best[0]), start=len(cells) + 1))  # fmt: skip
+        stage2_best = _best(stage2)
     log_path = Path(build_dir) / "logs" / f"sweep-{inputs.stem}-{unit}-{row.name}.log"
-    report = SweepReport(exe, unit, row.name, chk, cells, _best(cells), log_path)
+    report = SweepReport(exe, unit, row.name, chk, cells, best, log_path, stage2, stage2_best)
     _write(log_path, ("\n".join(report.lines) + "\n").encode("utf-8"))
     return report
 
