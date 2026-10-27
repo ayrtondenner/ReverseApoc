@@ -967,3 +967,82 @@ def test_context_verb_reads_config_like_check(capsys):
 def test_context_and_attempt_help_exit_0(capsys):
     assert _run(["context", "--help"]) == 0
     assert _run(["attempt", "--help"]) == 0
+
+
+# ---- 07-11 (D-24 P7): checks rooted in the session's private view ----
+
+VIEW_TEXT = UNIT_TEXT + b"/* the view unit, private to this session */\n"
+VIEW_CFLAGS = "* wcc386@10.6 -4r -s -fpi\nsrc/ufo2p/u_000a34f0.c wcc386@10.6 -4r -ot -s -fpi\n"
+PHASE6_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", hooks.ATTEMPT_NAME_SLOT),
+                ("context",))  # fmt: skip
+
+
+@pytest.fixture
+def view(repo: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`repo` plus the driver's D-24 view of HEAD under <attempt dir>/view (src/, include/,
+    config/ with cflags.txt and the CSVs) and the view env set: the view unit differs from
+    src/'s, so a test can tell which one was read."""
+    top = repo / "view"
+    unit = top / "src" / "ufo2p" / "u_000a34f0.c"
+    unit.parent.mkdir(parents=True)
+    unit.write_bytes(VIEW_TEXT)
+    (top / "include").mkdir()
+    write_functions_csv(top / "config" / "ufo2p" / "functions.csv", CHECK_ROWS, "UFO2P.EXE")
+    (top / "config" / "cflags.txt").write_text(VIEW_CFLAGS, encoding="utf-8")
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(unit))
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(repo / "proposals.jsonl"))
+    return top
+
+
+def _rel(path: Path) -> str:
+    return path.relative_to(attempt.ROOTS.repo.resolve()).as_posix()
+
+
+def test_view_mode_argv(view: Path, monkeypatch):
+    """D-24 P7: with REVERSEAPOC_UNIT_FILE set, the container check is rooted in the view: the
+    five root flags, each a repo-relative POSIX path under <attempt dir>/view/, then --json;
+    a sweep still appends --sweep <function>."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    roots = ("--src", _rel(view / "src"), "--config", _rel(view / "config"),
+             "--cflags", _rel(view / "config" / "cflags.txt"), "--build", _rel(view / "build"),
+             "--log", _rel(view / "build" / "logs" / "cc.log"))  # fmt: skip
+    check_argv = ("build", "uv", "run", "--frozen", "reverseapoc", "check", CLAIM)
+    assert runner.calls[0][7:] == (*check_argv, *roots, "--json")
+    assert all(not Path(p).is_absolute() and "\\" not in p for p in roots[1::2])
+    assert all(p.startswith(_rel(view) + "/") for p in roots[1::2])
+    runner.answer = attempt.Ran(0, json.dumps(_sweep_doc()), "")
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert runner.calls[1][7:] == (*check_argv, *roots, "--json", "--sweep", FUNC)
+
+
+def test_view_mode_snapshot_reads_the_view_unit(view: Path, monkeypatch):
+    """The check's snapshot checks/0001.c is the view unit's bytes, not src/'s."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    snapshot = view.parent / "checks" / "0001.c"
+    assert snapshot.read_bytes() == VIEW_TEXT != UNIT_TEXT
+    assert _lines(view.parent)[0]["source"] == "checks/0001.c"
+
+
+def test_view_mode_claim_row_comes_from_the_view_config(view: Path, monkeypatch, capsys):
+    """The claim's functions.csv row is read from the view's config/, the tree the container
+    check reads (--config <view>/config), not the shared one."""
+    other = [dataclasses.replace(row, unit="u_000a4000") if row.name == FUNC else row
+             for row in CHECK_ROWS]  # fmt: skip
+    write_functions_csv(view / "config" / "ufo2p" / "functions.csv", other, "UFO2P.EXE")
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 2
+    assert "u_000a4000" in capsys.readouterr().err
+    assert runner.calls == []
+
+
+def test_legacy_mode_argv_unchanged(repo: Path, monkeypatch):
+    """Without REVERSEAPOC_UNIT_FILE the argv is exactly Phase 6's, and the snapshot is src/'s
+    unit."""
+    monkeypatch.delenv(hooks.UNIT_FILE_ENV, raising=False)
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert runner.calls[0][7:] == ("build", "uv", "run", "--frozen", "reverseapoc", "check",
+                                   CLAIM, "--json")  # fmt: skip
+    assert (repo / "checks" / "0001.c").read_bytes() == UNIT_TEXT
