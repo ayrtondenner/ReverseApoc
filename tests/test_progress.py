@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
+from reverseapoc import mechanics
 from reverseapoc.functions import (
     FunctionRow,
     UnitRow,
@@ -26,6 +27,7 @@ from reverseapoc.functions import (
     write_functions_csv,
     write_units_csv,
 )
+from reverseapoc.mechanics import MemberRow
 from reverseapoc.status import MATCHED, PARTIAL, StatusRow, read_status, status_path, write_status
 
 PROGRESS = REPO_ROOT / "tools" / "progress.py"
@@ -394,3 +396,195 @@ def test_main_writes_report_and_feed(tmp_path):
     assert json.loads(report.read_text(encoding="utf-8"))["version"] == 2
     check_progress_v1(json.loads(hub.read_text(encoding="utf-8")))
     assert not (tmp_path / "progress.json").exists()
+
+
+# ---- the mechanics coverage view (DEC-05; D-05, D-22, D-23; plan 07-15) ----
+
+TIER_ONE = '[[tier]]\nid = 1\ntitle = "Tick rate and agent training"\n'
+ENTRY_997 = ('[[entry]]\nitem = "997"\nexe = "ufo2p"\naddress = "0x00010000"\n'
+             'evidence = "bios-tick"\ndetail = "reads the BIOS tick counter"\n')  # fmt: skip
+MUST_997 = {"functions": {"total": 3, "matched": 1, "partial": 1, "unmatched": 1},
+            "bytes": {"total": 112, "matched": 16, "partial": 32},
+            "percent": round(100 * 16 / 112, 4)}  # fmt: skip
+CLOSURE_997 = {"functions": {"total": 5, "matched": 1, "partial": 1, "unmatched": 3},
+               "bytes": {"total": 260, "matched": 16, "partial": 32},
+               "percent": round(100 * 16 / 260, 4)}  # fmt: skip
+
+
+def item_toml(item_id: str, title: str, *, tier: int = 1, scope: str = "in",
+              exes: tuple[str, ...] = EXES, duplicate_of: str = "") -> str:  # fmt: skip
+    """One [[item]] table in mechanics.toml's 07-10 format."""
+    lines = ["[[item]]", f'id = "{item_id}"', f"issue = {item_id.split('-')[0]}",
+             f'title = "{title}"', f"tier = {tier}", f'scope = "{scope}"']  # fmt: skip
+    if scope == "in":
+        lines.append("exes = [" + ", ".join(f'"{exe}"' for exe in exes) + "]")
+    if scope == "duplicate":
+        lines.append(f'duplicate_of = "{duplicate_of}"')
+    if scope == "out":
+        lines.append('reason = "not in the original game"')
+    return "\n".join(lines) + "\n"
+
+
+def write_mechanics(config: Path, *tables: str, members=None) -> None:
+    """config/mechanics.toml from `tables` (checked by 07-10's own loader, so the synthetic file
+    is valid committed data) and, given `members`, config/mechanics-members.csv written by
+    07-10's own writer."""
+    path = config / "mechanics.toml"
+    path.write_bytes(("schema = 1\n\n" + "\n".join(tables)).encode("ascii"))
+    mechanics.load(path)
+    if members is not None:
+        mechanics.write_members(config / mechanics.MEMBERS_CSV, members)
+
+
+def member(exe: str, row, items: tuple[str, ...], member_items: tuple[str, ...] = (),
+           *, tiers: tuple[int, ...] = (1,), via: str = "direct") -> MemberRow:  # fmt: skip
+    """A members row: role member when it has member items, else closure."""
+    role = "member" if member_items else "closure"
+    return MemberRow(exe, row.start, items, tiers, member_items, via, role)
+
+
+def tick_members() -> list[MemberRow]:
+    """Item 997: three UFO2P member rows (matched, partial, unmatched) and two closure rows (the
+    UFO2P thunk and the TACP game row)."""
+    one = ("997",)
+    return [member("ufo2p", U_MATCHED, one, one, via="entry"),
+            member("ufo2p", U_PARTIAL, one, one), member("ufo2p", U_UNMATCHED, one, one),
+            member("ufo2p", U_THUNK, one), member("tacp", T_GAME, one, via="pointer")]
+
+
+def tick_config(root: Path) -> Path:
+    config = synthetic_config(root)
+    write_mechanics(config, TIER_ONE, item_toml("997", "Tick rate"), ENTRY_997,
+                    members=tick_members())  # fmt: skip
+    return config
+
+
+def mechanics_module():
+    """progress.py with its mechanics API; a missing name fails the test on this assert."""
+    progress = load_progress()
+    for name in ("derive_mechanics", "Mechanics", "ItemCoverage", "TierCoverage"):
+        assert hasattr(progress, name), f"progress.py has no {name}"
+    return progress
+
+
+def test_mechanics_absent_gives_null(tmp_path):
+    """DEC-05 empty: without mechanics.toml, progress.json says "mechanics": null (version 1)
+    and the page has no coverage section, byte for byte the page it was before."""
+    progress = load_progress()
+    config = synthetic_config(tmp_path)
+    derived = progress.derive(config)
+    doc = progress.build_progress(derived)
+    assert doc["version"] == 1 and "mechanics" in doc and doc["mechanics"] is None
+    assert mechanics_module().derive_mechanics(config, derived) is None
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out)]) == 0
+    written = json.loads((out / "progress.json").read_text(encoding="utf-8"))
+    assert written["mechanics"] is None
+    page = (out / "index.html").read_text(encoding="utf-8")
+    assert "Mechanics coverage" not in page
+    assert page == progress.render_html(derived) == progress.render_html(derived, mechanics=None)
+
+
+def test_item_figures(tmp_path):
+    """D-22: an item's must-match set (role member rows naming it in member_items) and its full
+    closure (every row naming it in items, asm rows aside), from status.csv's matched and
+    partial rows: 3 members (1 matched, 1 partial) plus 2 closure rows."""
+    progress = mechanics_module()
+    config = tick_config(tmp_path)
+    derived = progress.derive(config)
+    found = progress.derive_mechanics(config, derived)
+    doc = progress.build_progress(derived, mechanics=found)["mechanics"]
+    (item,) = doc["items"]
+    assert (item["id"], item["issue"], item["title"], item["tier"]) == ("997", 997, "Tick rate", 1)
+    assert (item["signed_off_by"], item["signed_off_date"]) == (None, None)
+    assert item["must_match"] == MUST_997
+    assert item["full_closure"] == CLOSURE_997
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out)]) == 0
+    written = json.loads((out / "progress.json").read_text(encoding="utf-8"))
+    assert written["mechanics"] == json.loads(progress.render(doc))
+    assert written["version"] == 1
+
+
+def test_malformed_member_exits_2(tmp_path):
+    """A members row on a runtime row of functions.csv is refused (ProgressError), and the Pages
+    job's `main` exits 2."""
+    progress = mechanics_module()
+    config = synthetic_config(tmp_path)
+    stray = member("ufo2p", U_RUNTIME, ("997",), ("997",))
+    write_mechanics(config, TIER_ONE, item_toml("997", "Tick rate"), ENTRY_997,
+                    members=[*tick_members(), stray])  # fmt: skip
+    with pytest.raises(progress.ProgressError, match="0x00010070"):
+        progress.derive_mechanics(config, progress.derive(config))
+    assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 2
+
+
+def write_asm_list(config: Path, verdict: str = "asm") -> Path:
+    """config/asm-functions.csv in 07-10's format: the UFO2P unmatched row, with `verdict`."""
+    path = config / mechanics.ASM_CSV
+    rows = [mechanics.AsmRow("ufo2p", U_UNMATCHED.start, "off-alignment start", verdict)]
+    path.write_bytes(mechanics.format_asm_csv(rows).encode("ascii"))
+    return path
+
+
+def asm_signoff(path: Path) -> str:
+    """An [asm_list] table that signs the list at `path` off."""
+    return (f'[asm_list]\nsigned_off_by = "Owner"\nsigned_off_date = 2026-10-27\n'
+            f'list_sha256 = "{mechanics.asm_list_sha256(path)}"\n')  # fmt: skip
+
+
+def test_schema_only_mechanics_and_asm_list_exit_0(tmp_path):
+    """Ruling F2: plan 07-20 commits a schema-only mechanics.toml and an unsigned asm list before
+    any members file exists: no items, and the Pages job still exits 0."""
+    progress = mechanics_module()
+    config = synthetic_config(tmp_path)
+    write_asm_list(config)
+    write_mechanics(config)
+    found = progress.derive_mechanics(config, progress.derive(config))
+    assert found is not None and found.items == () and found.tiers == ()
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out)]) == 0
+    doc = json.loads((out / "progress.json").read_text(encoding="utf-8"))["mechanics"]
+    assert doc == {"tiers": [], "items": [], "duplicates": []}
+
+
+def test_members_file_absent_gives_no_items(tmp_path):
+    """Ruling F2: a mechanics.toml with items but no members file yet has no items to show."""
+    progress = mechanics_module()
+    config = synthetic_config(tmp_path)
+    write_mechanics(config, TIER_ONE, item_toml("997", "Tick rate"), ENTRY_997)
+    found = progress.derive_mechanics(config, progress.derive(config))
+    assert found is not None and found.items == ()
+    assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 0
+
+
+def test_every_mechanics_table_is_accepted(tmp_path):
+    """Ruling F2: every 07-10 table (schema, asm_list, hub_rule, tier, item, entry, edge) is
+    accepted; the page reads tiers and items only."""
+    progress = mechanics_module()
+    config = synthetic_config(tmp_path)
+    hub_rule = "[hub_rule]\nmin_direct_callers = 10\nmin_items = 2\n"
+    edge = ('[[edge]]\nexe = "ufo2p"\nfrom = "0x00010000"\nto = "0x00010030"\n'
+            'evidence = "a call through a table read by hand"\n')  # fmt: skip
+    write_mechanics(config, asm_signoff(write_asm_list(config, "c")), hub_rule, TIER_ONE,
+                    item_toml("997", "Tick rate"),
+                    item_toml("263-9", "Not in the game", scope="out"),
+                    item_toml("264-1", "Tick rate again", scope="duplicate", duplicate_of="997"),
+                    ENTRY_997, edge, members=tick_members())  # fmt: skip
+    found = progress.derive_mechanics(config, progress.derive(config))
+    assert [item.id for item in found.items] == ["997"]
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out)]) == 0
+
+
+@pytest.mark.parametrize("text", ["schema = 1\nsurprise = 1\n", "schema = 2\n",
+                                  "schema = 1\n[[item]\n", "schema = 1\ntier = 3\n"])
+def test_malformed_mechanics_toml_exits_2(tmp_path, text):
+    """An unknown top-level key, a wrong schema, broken TOML or a table of the wrong shape is a
+    ProgressError: the Pages job exits 2."""
+    progress = mechanics_module()
+    config = synthetic_config(tmp_path)
+    (config / "mechanics.toml").write_bytes(text.encode("ascii"))
+    with pytest.raises(progress.ProgressError, match="mechanics.toml"):
+        progress.derive_mechanics(config, progress.derive(config))
+    assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 2

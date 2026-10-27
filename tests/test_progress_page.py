@@ -16,7 +16,15 @@ from html.parser import HTMLParser
 from pathlib import Path
 
 from test_listings import DENOMINATOR, PARTIAL_RULE, RATIO
-from test_progress import CONFIG, PROGRESS, REPOSITORY, SHA, load_progress, synthetic_config
+from test_progress import (
+    CONFIG,
+    PROGRESS,
+    REPOSITORY,
+    SHA,
+    load_progress,
+    synthetic_config,
+    tick_config,
+)
 from test_treemap import COLORS, SVG_LIMIT
 
 COMMIT_URL = f"{REPOSITORY}/commit/"
@@ -628,3 +636,55 @@ def test_script_writes_the_page_isolated(tmp_path):
     for needle in (b"UFO2P.EXE", b"TACP.EXE", f"{COMMIT_URL}{SHA}".encode("ascii")):
         assert needle in data, needle
     assert not (out / "progress.html").exists()
+
+
+# ---- the mechanics coverage section (DEC-05; D-05, D-22; plan 07-15) ----
+
+COVERAGE_HEADING = "<h2>Mechanics coverage</h2>"
+_ITEMS = re.compile(r'<ul class="items">\n(.*?)\n</ul>', re.S)
+_COV_ITEM = re.compile(r"<li>(.*?)</li>", re.S)
+_COV_BAR = re.compile(r'<div class="cov" aria-hidden="true">(.*?)</div>', re.S)
+_SEGMENT = re.compile(r'<span class="([mpu]) nz" style="width:([0-9.]+%)"></span>')
+
+
+def coverage_items(page: str) -> list[str]:
+    """The raw <li> bodies of the coverage section's item list."""
+    lists = _ITEMS.findall(page)
+    assert len(lists) == 1, lists
+    return _COV_ITEM.findall(lists[0])
+
+
+def segments(body: str) -> list[tuple[str, str]]:
+    """The (class, width) of each segment of the one coverage bar in `body`."""
+    bars = _COV_BAR.findall(body)
+    assert len(bars) == 1, bars
+    found = _SEGMENT.findall(bars[0])
+    assert _SEGMENT.sub("", bars[0]) == "", "a coverage bar holds segments only"
+    return found
+
+
+def test_coverage_section_markup(tmp_path):
+    """The `Mechanics coverage` section sits after the EXE sections and their key, before the
+    mosaic: one <li> per `in` item, its text first (label, must-match and full-closure figures,
+    the tier and its sign-off state), then an aria-hidden bar of matched, partial and unmatched
+    segments by function count, each non-zero one with the 2 px `nz` minimum. No new link."""
+    progress = page_module()
+    config = tick_config(tmp_path)
+    derived = progress.derive(config)
+    assert hasattr(progress, "derive_mechanics"), "progress.py has no derive_mechanics"
+    page = progress.render_html(derived, SHA, mechanics=progress.derive_mechanics(config, derived))
+    assert page.count(COVERAGE_HEADING) == 1
+    at = page.index(COVERAGE_HEADING)
+    mosaic = page.index("<h2>The mosaic</h2>")
+    assert page.rindex("</section>") < page.index(STRIP_KEY) < at < mosaic
+    (body,) = coverage_items(page)
+    assert body.startswith("#997 Tick rate: must match 1 of 3 functions matched, 1 partial"), body
+    assert "full closure 1 of 5 functions matched, 1 partial" in body
+    assert "Tier 1: located, not signed off" in body
+    assert body.index("full closure") < body.index('<div class="cov"')
+    assert segments(body) == [("m", "33.3333%"), ("p", "33.3333%"), ("u", "33.3333%")]
+    _check_static(progress, page)
+    hrefs = {attrs["href"] for tag, attrs in tags_of(page) if tag == "a"}
+    assert hrefs == {attrs["href"] for tag, attrs in tags_of(progress.render_html(derived, SHA))
+                     if tag == "a"}  # fmt: skip
+    assert ".cov .nz{min-width:2px}" in style_of(page).splitlines()
