@@ -211,6 +211,21 @@ None.
   - `_PROTECTED_FILES` has the keys `config/cflags.txt` and `config/cflags-proposals.toml`.
   - `test_unit_file_for_another_unit_is_not_exempt` and `test_unknown_kind_denies_writes` are in tests/test_hooks.py.
 
+## Fix round 1
+
+**Finding (Important):** the guard in `_matching_write` that denies every write when `REVERSEAPOC_UNIT_FILE` is set but unusable (hooks.py, `if view and unit_rel is None`) had no test. With the guard removed, the suite stayed green, and such a session would have fallen back to the legacy src/ and include/ allowlist.
+
+**Tests added (commit `777fb76`, tests only, no production change):**
+- `test_unusable_unit_file_denies_every_write[outside|home|nul|symlink-inside|symlink-outside]`. For each unusable env value, a write to the legacy src/ unit, a new include/fx.h or notes.md is denied, and the reason names `REVERSEAPOC_UNIT_FILE`. The view unit and proposals.jsonl are denied too. The symlink cases skip on this host with the R-A reason "symlink creation needs privileges on this host"; they run in the container.
+- `test_unit_file_with_two_forms_denies_every_write`. This covers the symlink branch on this host. A patched `os.path.realpath` maps an alias in the checkout to the view unit, so the env path has two forms and does not name a single path. Every write is denied.
+- `test_wrong_shape_unit_file_keeps_the_view_allowlist`. A unit file under build/ with the wrong shape can be placed, so the guard does not handle it. The session stays in view mode and never gets the legacy allowlist: src/, include/, the wrong-shape file and the real view path are all denied. notes.md stays writable, as the view allowlist intends.
+
+**Revert proof:** I temporarily deleted the guard's three lines and ran `uv run pytest -q tests/test_hooks.py -k "unusable_unit_file or wrong_shape_unit_file or two_forms"`. Result: 4 failed, 1 passed, 2 skipped. The four failures were `[outside]`, `[home]`, `[nul]` and `two_forms`, and each one failed on the legacy write to `src/ufo2p/u_000a34f0.c` being allowed. The test that passed is the wrong-shape test, which does not depend on the guard (view mode itself denies). The 2 skips are the symlink cases on this host. I then restored the guard, and `git diff tools/reverseapoc/hooks.py` was empty.
+
+**Verification:**
+- `uv run pytest -q tests/test_hooks.py`: 315 passed, 2 skipped (the skips are the two symlink cases).
+- `uv run ruff check .`: all checks passed.
+
 Execution context nonce: c0d63afacb6537f7
 
 ---
