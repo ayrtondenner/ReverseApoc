@@ -334,6 +334,32 @@ Execution context nonce: a87993ade6db394c
 - FOUND commits: 53d6b68, 3bcb623, c1fe6ee, 13e8775, 6dbc8a9, c41c7ed. `git rev-list --count 0fd6877..HEAD` was 6 before the SUMMARY commit.
 - No STATE.md or ROADMAP.md change.
 
+## Fix round 1
+
+The orchestrator's task review raised one Important finding: `flags default` reads both `config/<exe>/status.csv` files from disk for the D-33 evidence, the pin set and both `gate --all` runs, but it refused only a dirty cflags.txt or a dirty doc. An uncommitted match could therefore meet the bar, or a dropped row could remove a pin without the gate noticing, and the flip would be committed anyway.
+
+**Fix (`14cfd56`).** `_refuse_dirty` now always adds both status.csv files (`_status_paths()`), so both verbs refuse an uncommitted edit, or a new untracked file, in either EXE's table before anything is written.
+- **`flags default`:** this is new.
+- **`flags approve`:**
+  - It already refused its own EXE's status.csv and the feed, because both are among the paths it commits. The refusal cases "dirty own status" and "dirty feed" in `test_approve_refusals` prove this; both passed at RED.
+  - The other EXE's status.csv is new. The gate's D-24 cross-check reads it. Case "dirty other status".
+
+**Tests (RED `ca4abe7`, fix `14cfd56`).**
+- **`test_default_refusals`:** gains two cases, each refused with "uncommitted changes in config/<exe>/status.csv", with no write, no gate call and no build/flags/:
+  - ufo2p's status.csv with a pin unit's matched row renamed away;
+  - tacp's status.csv with an uncommitted matched row added.
+- **`test_approve_refusals`:** gains three cases: "dirty own status", "dirty other status" and "dirty feed".
+- **RED:** 2 failed, 18 passed (`-k refusals`). The target `test_default_refusals` failed with "DID NOT RAISE": the flip ran on the edited ufo2p table. "dirty other status" failed the same way. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/07-24-fr1.xml`).
+- **Fixture fix in the GREEN commit:** the RED fixture's made-up tacp row was out of start order. Once the fix let the run reach that case, `read_status` raised StatusError, so the row is now sorted after the last start. At RED the ufo2p case had already failed first, on its planned assertion.
+
+**The Task 2 mutation script is a one-off.** `mutate_0724.py` stays in the session scratchpad and is not committed. It showed once that each of the nine approve refusal checks has a test that fails when the check is removed. It is not a repo test: it edits flags.py in place and runs pytest in a subprocess.
+
+**Verification:**
+- `uv run pytest -q tests/test_flags.py tests/test_hygiene.py`: 158 passed, 3 skipped. The skips are the pre-existing "only inside the container" ones.
+- `uv run pytest -q`: **3459 passed, 247 skipped**. The skip count is unchanged.
+- `uv run ruff check .`: All checks passed.
+- **Container step still deferred to the orchestrator:** `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
