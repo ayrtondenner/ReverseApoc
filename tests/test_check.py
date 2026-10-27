@@ -1668,3 +1668,230 @@ def test_sweep_compiles_a_view_against_the_views_include(env, monkeypatch):
     assert compiler.calls
     assert {call_kwargs["root"] for _, _, call_kwargs in compiler.calls} == {src.parent}
     assert all(obj.is_relative_to(src.parent / "build") for _, obj, _ in compiler.calls)
+
+
+# ---- 07-14: the D-15 second-stage sweep ---------------------------------------------------------
+
+
+def cell_rule(base_elf: str) -> list[str]:
+    """The flags of the cell whose ELF objdiff is diffing: its temporary rule `cell-NN.cflags`
+    sits beside `cell-NN.elf` in the sweep's work directory."""
+    words = Path(base_elf).with_suffix(".cflags").read_text(encoding="utf-8").split()
+    return words[2:]  # drop the glob and the compiler spec
+
+
+class RuleObjdiff(FakeObjdiff):
+    """objdiff's percent per cell: `hits` (flag tuples) score 100.0, every other cell `near`."""
+
+    def __init__(self, near: float, *hits: tuple[str, ...]) -> None:
+        super().__init__(near)
+        self.near = near
+        self.hits = set(hits)
+
+    def __call__(self, argv):
+        self.argvs.append(list(argv))
+        percent = 100.0 if tuple(cell_rule(argv[5])) in self.hits else self.near
+        return objdiff_json(percent, argv[-1])
+
+
+def run_near_miss(env: Env, objdiff: FakeObjdiff, compiler=None):
+    """A sweep where every cell compiles the matching object; `objdiff` alone sets the score."""
+    return check.sweep(
+        STEM, UNIT, "func_00010000", **env.kwargs(), watcom_dir=watcom_tree(env),
+        compile_fn=compiler or FakeCompiler(), objdiff_runner=objdiff,
+    )  # fmt: skip
+
+
+OF_PLUS = ("-4r", "-of+", "-s", "-fpi")
+
+
+def test_stage2_runs_on_a_near_miss(env):
+    """D-15: stage 1's best is 92.0 with relocations passing, so stage 2 runs; its O1 cell
+    `-4r -of+ -s -fpi` (the -o set of the best cell, cell 01, replaced) measures 100.0."""
+    report = run_near_miss(env, RuleObjdiff(92.0, OF_PLUS))
+    doc = report.to_json()
+    assert doc.get("stage2") is not None
+    stage2 = report.stage2
+    assert 0 < len(stage2) <= 24
+    assert all(cell.version == "10.6" for cell in stage2)
+    assert [cell.number for cell in stage2] == list(range(31, 31 + len(stage2)))
+    (hit,) = [cell for cell in stage2 if cell.flags == OF_PLUS]
+    assert (hit.percent, hit.reloc_ok, hit.differing) == (100.0, True, 0)
+    assert report.stage2_best == (hit,)
+    assert doc["stage2"]["from"] == 1
+    assert doc["stage2"]["best"] == [hit.number]
+    assert hit.to_json() in doc["stage2"]["cells"]
+    log = report.log_path.read_text(encoding="utf-8")
+    assert f"stage 2 best: cell {hit.number}" in log
+    assert hit.line() in log.splitlines()
+
+
+def test_stage2_skipped_when_stage1_hits(env):
+    """A perfect stage-1 cell (objdiff 100.0, relocations passing, 0 differing) leaves stage 2
+    unrun: the report's stage2 is null and nothing past stage 1 compiles."""
+    compiler = FlagCompiler()
+    report = run_sweep(env, compiler)
+    doc = report.to_json()
+    assert "stage2" in doc and doc["stage2"] is None
+    assert report.stage2 is None and report.stage2_best is None
+    assert len(compiler.calls) == 30
+
+
+def best_cell(*flags: str) -> check.SweepCell:
+    return check.SweepCell(1, "10.6", flags, "", 95.0, True, 2)
+
+
+def test_sweep2_cells_from_ot():
+    """D-15 composition for best `-4r -ot -s -fpi`: O1 replaces -ot (8 letters, KKND's set), O2
+    adds each letter to -ot, Z adds a packing, M -zm (test_zm_object_accounting: included), F an
+    FP scheduling; 24 cells, all under 10.6, all keeping -4r, -s and -fpi."""
+    cells = check.sweep2_cells(best_cell("-4r", "-ot", "-s", "-fpi"))
+    letters = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
+    o1 = [("-4r", letter, "-s", "-fpi") for letter in letters]
+    o1.append(("-4r", "-of+", "-omiler", "-s", "-fpi"))
+    o2 = [("-4r", "-ot", letter, "-s", "-fpi") for letter in letters]
+    z = [("-4r", "-ot", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
+    m = [("-4r", "-ot", "-s", "-fpi", "-zm")]
+    f = [("-4r", "-ot", "-s", "-fpi", fp) for fp in ("-fp3", "-fp5")]
+    flags = [cell_flags for _, cell_flags in cells]
+    assert flags == [*o1, *o2, *z, *m, *f]
+    assert len(cells) <= 24
+    assert len(cells) == 24
+    assert {version for version, _ in cells} == {"10.6"}
+    assert len(set(flags)) == len(flags)
+    assert all({"-4r", "-s", "-fpi"} <= set(cell_flags) for cell_flags in flags)
+    assert check.SWEEP2_LETTERS == letters and check.SWEEP2_KKND == ("-of+", "-omiler")
+    assert check.SWEEP2_PACK == ("-zp1", "-zp2", "-zp4", "-zp8")
+    assert check.SWEEP2_FP == ("-fp3", "-fp5")
+
+
+def test_sweep2_cells_from_no_o():
+    """A best cell without an -o set (`-5r -s -fpi`) has no O2 cell; a __CHK caller's best cell
+    without -s still has none in any stage-2 cell."""
+    cells = check.sweep2_cells(best_cell("-5r", "-s", "-fpi"))
+    flags = [cell_flags for _, cell_flags in cells]
+    o1 = [("-5r", letter, "-s", "-fpi") for letter in check.SWEEP2_LETTERS]
+    o1.append(("-5r", "-of+", "-omiler", "-s", "-fpi"))
+    assert flags[:9] == o1
+    assert flags[9:13] == [("-5r", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
+    assert flags[13:] == [("-5r", "-s", "-fpi", extra) for extra in ("-zm", "-fp3", "-fp5")]
+    assert not [f for f in flags if set(f) & {"-ox", "-os", "-ot", "-oneatx"}]
+    no_stack = [cell_flags for _, cell_flags in check.sweep2_cells(best_cell("-4r", "-ox", "-fpi"))]
+    assert all("-s" not in cell_flags for cell_flags in no_stack)
+    assert ("-4r", "-ox", "-od", "-fpi") in no_stack
+
+
+def reloc_fails() -> FakeCompiler:
+    return FakeCompiler(omf_object(callee="func_00010020_"))
+
+
+@pytest.mark.parametrize(
+    ("percent", "compiler", "reloc_ok", "runs"),
+    [(90.0, FakeCompiler, True, True), (89.99, FakeCompiler, True, False),
+     (95.0, reloc_fails, False, False)],
+    ids=["90.0-runs", "89.99-not", "reloc-failed-not"],
+)  # fmt: skip
+def test_trigger_edges(env, percent, compiler, reloc_ok, runs):
+    """D-15/DEC-03 adjacency, end to end: stage 2 runs when no stage-1 cell is perfect and the
+    best one reaches 90.0 with its relocations passing."""
+    report = run_near_miss(env, FakeObjdiff(percent), compiler())
+    best = report.best[0]
+    assert (best.percent, best.reloc_ok) == (percent, reloc_ok)
+    assert (report.stage2 is not None) is runs
+    assert (report.to_json()["stage2"] is not None) is runs
+
+
+def sweep_cell(number: int, percent: float, *, reloc_ok: bool = True, differing: int = 0):
+    return check.SweepCell(number, "10.6", ("-4r", "-s", "-fpi"), "", percent, reloc_ok, differing)
+
+
+def test_trigger_edges_perfect_needs_zero_differing():
+    """A stage-1 cell at 100.0 with one differing byte is not perfect: stage 2 still runs from it.
+    (check's relocation check compares bytes too, so a compiled object cannot show this; the
+    trigger is judged on the cells.) A perfect cell anywhere stops stage 2; so does a best cell
+    whose relocations fail, and an empty or unmeasured stage 1."""
+    near = sweep_cell(1, 100.0, differing=1)
+    assert check.sweep2_trigger([near, sweep_cell(2, 91.0)]) == near
+    assert check.sweep2_trigger([sweep_cell(1, 92.0), sweep_cell(2, 100.0)]) is None
+    assert check.sweep2_trigger([sweep_cell(1, 90.0)]) == sweep_cell(1, 90.0)
+    assert check.sweep2_trigger([sweep_cell(1, 89.99)]) is None
+    assert check.sweep2_trigger([sweep_cell(1, 95.0, reloc_ok=False)]) is None
+    assert check.sweep2_trigger([]) is None
+    assert check.sweep2_trigger([check.SweepCell(1, "10.6", ("-4r",), check.NOT_INSTALLED)]) is None
+
+
+def test_every_cell_rule_parses():
+    """Every second-stage cell's one-rule text, for the best of any stage-1 cell, passes
+    parse_cflags: each flag is _SAFE_FLAG-legal, one option and not wrapper-owned."""
+    from reverseapoc.cflags import WRAPPER_OWNED, parse_cflags
+
+    for version, flags in check.sweep_cells(chk=True):
+        best = check.SweepCell(1, version, flags, "", 95.0, True, 1)
+        for cell_version, cell_flags in check.sweep2_cells(best):
+            spec = f"{check.SWEEP_COMPILER}@{cell_version}"
+            text = check.SWEEP_RULE.format(spec=spec, flags=" ".join(cell_flags))
+            (rule,) = parse_cflags(text, versions=check.SWEEP_VERSIONS)
+            assert rule.flags == cell_flags
+            assert not any(f.lower().startswith(WRAPPER_OWNED) for f in cell_flags)
+
+
+# ---- 07-14 Task 3: the -zm spike (research A14) -------------------------------------------------
+
+OTHER_CODE = bytes.fromhex("b801000000" "4040" "c3")  # mov eax, 1; inc eax twice; ret: 8 bytes
+ZM_SOURCE = ("/* synthetic */\nint func_00010000(void) { return 0; }\n"
+             "int func_00010010(void) { return 1; }\n")  # fmt: skip
+
+
+def zm_object() -> bytes:
+    """The -zm layout of our unit: each function in its own code segment (`<name>_TEXT`, class
+    CODE), func_00010000_ in SEGDEF 1 calling func_00010010_ in SEGDEF 2 through a fixup to
+    that segment, and the absolute load of _D_00020004 as before."""
+    return module(
+        "u_00010000",
+        lnames("", f"{SYMBOL}_TEXT", "CODE", FLAT_LNAME, "func_00010010__TEXT"),
+        segdef32(2, 3, len(GOOD_OURS)),
+        segdef32(5, 3, len(OTHER_CODE)),
+        grpdef(4),
+        pubdef32(1, [(SYMBOL, 0)]),
+        pubdef32(2, [("func_00010010_", 0)]),
+        extdef("_D_00020004"),
+        ledata32(1, 0, GOOD_OURS),
+        fixupp32(to_segment(1, 2, relative=True), absolute(6, 1)),
+        ledata32(2, 0, OTHER_CODE),
+    )
+
+
+def test_zm_object_accounting(env):
+    """Research A14, settled on a synthetic object (no real -zm compile): check's unit accounting
+    takes a -zm object, one code segment per function. defined_functions finds both functions,
+    each in its own segment and sized to it, and account_unit accounts every row with no problem,
+    so stage 2 includes -zm (SWEEP2_ZM, the M cell).
+
+    The limit, pinned here too: a call into another function's own segment is a fixup to a
+    module-local segment, which the relocation check refuses ("local segment reference"). A -zm
+    cell of a function that calls a function of its own unit therefore fails its relocation
+    check and is never a hit (relocs is out of this plan's scope, like account_unit)."""
+    from reverseapoc.omf import read_object
+
+    best = best_cell("-4r", "-ot", "-s", "-fpi")
+    assert ("10.6", ("-4r", "-ot", "-s", "-fpi", "-zm")) in check.sweep2_cells(best)
+    assert check.SWEEP2_ZM is True
+
+    obj = read_object(zm_object())
+    table = SymbolTable.build([ROW, OTHER, FAR], data_ranges=data_ranges(LE(env.data)))
+    rows = [ROW, OTHER]
+    defined = check.defined_functions(obj, rows, table)
+    assert [(d.row, d.symbol, d.off, d.size) for d in defined] == [
+        (ROW, SYMBOL, 0, len(GOOD_OURS)), (OTHER, "func_00010010_", 0, len(OTHER_CODE))]
+    assert defined[0].segment.index != defined[1].segment.index
+    account = check.account_unit(obj, rows, table, ZM_SOURCE)
+    assert account.problems == () and account.stubs == ()
+    assert [d.row for d in account.defined] == rows
+
+    manifest = check.load_manifest(env.manifest)
+    exe = check.load_exe(check.select_exe(manifest, STEM, env.manifest), orig_dir=env.orig,
+                         manifest=env.manifest, config_root=env.config)  # fmt: skip
+    ((d, reloc), _) = check.checked_functions(obj, rows, exe)
+    assert d.row == ROW and not reloc.ok
+    (problem,) = reloc.problems
+    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: ") and "local segment reference" in problem

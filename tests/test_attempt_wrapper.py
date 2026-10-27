@@ -1198,3 +1198,31 @@ def test_view_mode_context_reads_the_view_units(tree: attempt.Roots, monkeypatch
     assert _run(["attempt", "context"]) == 0, capsys.readouterr().err
     assert VIEW_MARK.format(unit=UNIT_AB) in capsys.readouterr().out  # the claimed unit's text
     assert roots_read == [attempt_dir / "view" / "src"]  # every unit text: the view's tree
+
+
+# ---- 07-14: a stage-2 hit is reported through the same sweep line ----------------------------
+
+
+def test_wrapper_reports_stage2_hit(repo: Path, monkeypatch, capsys):
+    """D-15: when no stage-1 cell is a hit, a perfect stage-2 cell under non-default flags is
+    the sweep line's sweep_hit, still from `attempt check --sweep`."""
+    near = _cell(1, "10.6", ["-4r", "-s", "-fpi"], 92.0)
+    stage2_hit = _cell(31, "10.6", ["-4r", "-of+", "-s", "-fpi"], 100.0)
+    stage2_miss = _cell(32, "10.6", ["-4r", "-od", "-s", "-fpi"], 80.0)
+    doc = {**_sweep_doc(near), "stage2": {"from": 1, "cells": [stage2_miss, stage2_hit],
+                                          "best": [31]}}  # fmt: skip
+    runner = _use(monkeypatch, FakeRunner(json.dumps(doc)))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    (line,) = _lines(repo)
+    assert line["sweep"] is True
+    assert line["sweep_hit"] == "wcc386@10.6 -4r -of+ -s -fpi"
+    assert "needs flags wcc386@10.6 -4r -of+ -s -fpi" in capsys.readouterr().out
+
+    stage1_hit = _cell(7, "10.5", ["-4r", "-ox", "-s", "-fpi"], 100.0)
+    runner.answer = attempt.Ran(0, json.dumps({**doc, "cells": [near, stage1_hit]}), "")
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert _lines(repo)[1]["sweep_hit"] == "wcc386@10.5 -4r -ox -s -fpi"  # stage 1 first
+
+    runner.answer = attempt.Ran(0, json.dumps({**doc, "stage2": None}), "")
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert _lines(repo)[2]["sweep_hit"] is None
