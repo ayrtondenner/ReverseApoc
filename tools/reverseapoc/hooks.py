@@ -510,6 +510,11 @@ _DIRECTIVE_HASH = re.compile(r"\s*(?:#|%:)")
 _HASH_OPERATOR = re.compile(r"#|%:")
 
 
+# 07-19 fix round 2 S3: the keyword spellings of a pragma and of emitted bytes, refused by the
+# strict scan like a #pragma directive.
+_PRAGMA_KEYWORDS = re.compile(r"\b(?:__pragma|__emit)\b")
+
+
 def _preprocessor_operator(logical: str) -> bool:
     lead = _DIRECTIVE_HASH.match(logical)
     return _HASH_OPERATOR.search(logical, lead.end() if lead else 0) is not None
@@ -521,6 +526,9 @@ def _inline_asm(logical: str, *, any_pragma_aux: bool, any_pragma: bool = False)
         return f"inline assembly `{found.group()}`"
     if any_pragma and _PRAGMA.match(logical):
         return "a #pragma directive"
+    keyword = _PRAGMA_KEYWORDS.search(logical) if any_pragma else None
+    if keyword is not None:
+        return f"a pragma or emit keyword `{keyword.group()}`"
     if any_pragma and _preprocessor_operator(logical):
         return "a # or ## preprocessor operator (it could stringize or paste a banned token)"
     aux = _PRAGMA_AUX.match(logical)
