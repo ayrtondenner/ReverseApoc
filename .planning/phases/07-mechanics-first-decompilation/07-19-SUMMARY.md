@@ -245,3 +245,65 @@ None.
 *Completed: 2026-10-27*
 
 ## Self-Check: PASSED
+
+## Fix round 1
+
+The findings came from the task review (I1, I2) and an automated security review (S1, S2). The orchestrator ruled on each, and also asked for three minors.
+
+**Changes.**
+- **I1.** `json.loads` raises `RecursionError` on a deeply nested line, which escaped `parse_line`. `parse_line` now also catches `RecursionError` and raises it as a ProposalError naming the line. Covered by `BAD_LINES["deep-nesting"]`.
+- **I2.** `rename_problem`'s `data_ranges` is now a required keyword. An empty sequence means there is no data object, so every data rename is refused (fail closed, the `SymbolTable.build` rule).
+  - Tests: `test_data_ranges_are_required` and `test_data_rename_with_no_data_object_is_refused`. They replace `test_data_rename_without_data_ranges_checks_code_only`, which pinned the old fail-open default.
+- **S1 (header text).** `header_problem` runs its own preprocessor check on the text before the hooks' scans. The text is read the way configure reads it: trigraphs mapped, continuations spliced, comments and literals blanked. It refuses:
+  - any `%:` digraph;
+  - any `#` or `##` operator after a directive's own `#`;
+  - a function-like macro;
+  - a `#define` or `#undef` of a keyword (C89, prefixed Watcom or bare Watcom), of `_Pragma`, `__pragma`, `__emit` or `INCLUDE_ASM`, or of any macro the reserved headers define. `reserved_macros()` reads those names from include/common.h and include/watcom_compat.h at validation time; callers may pass `reserved=`;
+  - an object-like body containing `{`, `}` or `;`.
+
+  `test_header_allowed_forms_pass` pins what passes: include guards, typedef/struct/union/enum, prototypes, object-like constant `#define`s, and `##` inside a comment.
+- **S1 (hooks).** `hooks._inline_asm` (the scan function) refuses a `#`, `##`, `%:` or `%:%:` operator after a directive's own `#`. This applies only in the strict mode (`any_pragma=True`), which the matching layer and `header_problem` use. Covered by `tests/test_hooks.py::test_matching_denies_preprocessor_operators` (8 spellings: plain, spaced, digraph, trigraph, across a continuation, stringize) and `test_matching_allows_hashes_outside_code`.
+- **S2.** `name_problem` additionally refuses:
+  - the bare Watcom keywords (`asm`, `cdecl`, `far`, `near`, `huge`, `interrupt`, `pascal`, `fortran`, and the rest of `WATCOM_BARE_KEYWORDS`);
+  - `_Pragma`, `__pragma`, `__emit` and `INCLUDE_ASM`;
+  - the reserved headers' macro names (`COMMON_H`, `WATCOM_COMPAT_H`, `__far`, ...);
+  - every C89-reserved `_X` and `__x` name.
+- **Minors.**
+  - `PROPOSAL_LINE_MAX` is 196,608 bytes (192 KiB, 3 x `HEADER_TEXT_MAX`). The largest header line, 64 KiB of newlines escaped to 128 KiB, still parses.
+  - `PROPOSALS_FILE_MAX` is 4 MiB per file.
+  - Header text may hold no control character other than tab, LF and CR.
+  - The DOS device stems `con`, `nul`, `aux`, `prn`, `com1`-`com9` and `lpt1`-`lpt9` are refused as header names.
+
+**Deviations (fix round).**
+- **Hooks edit outside files_modified.** `tools/reverseapoc/hooks.py` and `tests/test_hooks.py` are not in this plan's files_modified, but the ruling asked for the edit.
+  - The change is local to the scan function: two constants, `_preprocessor_operator`, and one branch in `_inline_asm`.
+  - 07-13, not yet merged, also edits hooks.py. The rule's regexes are named `_DIRECTIVE_HASH` and `_HASH_OPERATOR` and sit right above `_inline_asm`.
+- **The hooks rule is tied to the strict scan, not to every scan.**
+  - `include/common.h:19` itself uses `##`: `#define INCLUDE_ASM(name) extern int INCLUDE_ASM_##name`.
+  - `tests/test_hooks.py::test_always_allows_the_committed_headers_and_units` (F16) requires the always layer to accept a write of that file.
+  - So the always layer (`any_pragma=False`) is unchanged, and the matching layer (`any_pragma=True`, every matching and readability session) refuses the operators. Header proposals use the strict scan too.
+- **Test fixture change.** The linker-collision case now uses data `_tick_` and func `_tick`. `_Tick` is C89-reserved after S2, so name_problem refused it before the collision check ran.
+- **Keywords as macro names.** `#define`/`#undef` of any keyword or reserved identifier is refused, not only of the reserved headers' macros. This goes beyond the ruling, which named only INCLUDE_ASM and the reserved headers' macros; it keeps a header from redefining `while` or `_asm`.
+
+**src/ grep (asked before adding the hooks rule).**
+- `grep -rn "%:\|##" src include` finds one hit: `include/common.h:19`, the INCLUDE_ASM macro above.
+- No committed src/ unit (`src/ufo2p/*.c`, `src/tacp/*.c`, 4 files) defines a macro with `#` or `##`.
+- No src/ file uses `%:`, and no `#` follows a directive's own `#`. So every committed unit passes the new strict rule.
+
+**RED evidence (`26107a8`).**
+- Target: `tests/test_proposals.py::test_header_problems[paste]`. `header_problem` returned None for a header that pastes `__a##sm`.
+- JUnit report: `build/red/07-19-fr1.xml`. Record: `build/red/07-19-fr1.json`.
+- Classifier: `RED_EVIDENCE_OK` / `target_test_failed`. 481 tests ran and 57 failed: every new rule failed, and the deep-nesting case raised `RecursionError`, not a ProposalError.
+- Characterization tests that passed before the fix: `test_largest_header_line_parses` and `test_matching_allows_hashes_outside_code`.
+- `test_header_allowed_forms_pass` was added with the fix commit as a pass-case pin.
+
+**Commits:** `26107a8` (test), `c7b466e` (fix: hooks), `ab9d04e` (fix: proposals).
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_proposals.py tests/test_hooks.py`: 480 passed, 2 skipped. The 2 skips are the existing "symlink creation needs privileges on this host"; none is new.
+- `uv run pytest -q` (full host suite): **3272 passed, 246 skipped**. No new skip.
+- `uv run ruff check .`: All checks passed. `ruff format --check` is clean on proposals.py and test_proposals.py.
+
+**Container step deferred to the orchestrator:** `docker compose run --rm test`.
+
+**Open for 07-34.** `src_names` should also carry the file-scope names of the shared headers under include/: the typedefs `s8`..`u32` in common.h, and the macros and types of the driver-written headers. A rename to `u8` or to another header's macro name is not refused here. The all-or-nothing gate would catch it at compile time.
