@@ -8,16 +8,20 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
 
 - **always** (`.claude/settings.json`, every session in the repo, matcher
   `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
-  driver's one REVERSEAPOC_ATTEMPT_NOTES file, D-46), of config/targets.toml, config/watcom.toml
-  and any *.sha1, and inline asm (`_asm`, `__asm`, `_Pragma`, a code-emitting `#pragma aux`) in
-  src/ and include/ (D-16). Every other path stays editable, so GSD executors and the owner keep
-  working on tools/, tests/, configure.py, docs/ and .planning/.
+  driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and the
+  REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS file, D-24), of
+  config/targets.toml, config/watcom.toml, any *.sha1 and the owner-only config/cflags.txt and
+  config/cflags-proposals.toml (D-12, D-27 P3), and inline asm (`_asm`, `__asm`,
+  `_Pragma`, a code-emitting `#pragma aux`) in src/, include/ and the view unit (D-16, P6).
+  Every other path stays editable, so GSD executors and the owner keep working on tools/,
+  tests/, configure.py, docs/ and .planning/.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> a session may write
-  only its unit, a new include/*.h and its notes.md (`matching_write_allowed`, which the driver's
-  audit reuses), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix round 1 M14:
-  `#pragma on/off (check_stack)` changes code the way a flag does); read only inside the
-  repository and never a .env* file; and run Bash only as an exact attempt-wrapper form
+  only its unit, a new include/*.h and its notes.md; in view mode (REVERSEAPOC_UNIT_FILE set,
+  D-24) only its view unit, notes.md and proposals.jsonl (`matching_write_allowed`, which the
+  driver's audit reuses), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix
+  round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
+  inside the repository and never a .env* file; and run Bash only as an exact attempt-wrapper form
   (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`),
   and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
   Every other tool is denied. The always rules apply here too, so a
@@ -72,6 +76,15 @@ _PROTECTED_DIRS = {
 _PROTECTED_FILES = {
     "config/targets.toml": "the hash manifest of the original executables",
     "config/watcom.toml": "the hash manifest of the Watcom toolchains",
+    # D-27 P3: no exemption, since the owner's verbs write from Python and no hook sees them.
+    "config/cflags.txt": (
+        "it is owner-only (D-12, Phase 5 D-18); only `reverseapoc flags approve` or "
+        "`reverseapoc flags default`, which the owner runs and which write from Python, change it"
+    ),
+    "config/cflags-proposals.toml": (
+        "it is the D-12 proposal queue, written only by `reverseapoc flags` from Python; a "
+        "session writes its proposals.jsonl instead"
+    ),
 }
 _MANIFEST_SUFFIX = ".sha1"
 _SCANNED_DIRS = ("src", "include")
@@ -79,6 +92,15 @@ _SCANNED_DIRS = ("src", "include")
 NOTES_ENV = "REVERSEAPOC_ATTEMPT_NOTES"
 _NOTES_DIR = "build/driver"
 _NOTES_NAME = "notes.md"
+# D-24 (P6): a session's private view unit and its proposals file, set per claude process by the
+# driver. The always layer exempts them from build/ like the notes file, at these shapes only,
+# and scans the unit file as it scans src/.
+UNIT_FILE_ENV = "REVERSEAPOC_UNIT_FILE"
+PROPOSALS_ENV = "REVERSEAPOC_PROPOSALS"
+SESSION_KIND_ENV = "REVERSEAPOC_SESSION_KIND"
+SESSION_KINDS = ("matching", "readability")  # D-17, D-18: one allowlist for both kinds
+_PROPOSALS_NAME = "proposals.jsonl"
+_VIEW_UNIT = re.compile(r"build/driver/(?:[^/]+/)+view/src/(ufo2p|tacp)/([a-z0-9_]+)\.c")
 # F16: inline-asm tokens, matched case-sensitively on configure's blanked, spliced code.
 _INLINE_ASM = re.compile(r"\b_{1,2}asm\b")
 _PRAGMA_OPERATOR = re.compile(r"\b_Pragma\b")
@@ -97,6 +119,7 @@ _WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
 _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _NEW_HEADER = re.compile(r"include/([a-z0-9_]+\.h)")
 _RESERVED_HEADERS = ("common.h", "watcom_compat.h")  # INCLUDE_ASM could be redefined there
+_SYMBOLS = re.compile(r"config/[^/]+/symbols\.csv")  # D-19: shared naming state, driver-only
 _SECRET_PREFIX = ".env"
 _GLOB_SETS = "{}[]"  # brace alternatives and character classes could spell .env
 # D-44: the attempt wrapper's argv forms, shared with the wrapper itself (06-15, ruling F27).
@@ -349,11 +372,29 @@ def _is_notes(rel: str) -> bool:
     return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == _NOTES_NAME
 
 
-def _protected(rel: str, *, notes: bool = False) -> str | None:
+def _is_proposals(rel: str) -> bool:
+    return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == _PROPOSALS_NAME
+
+
+def _is_view_unit(rel: str, claim: str | None = None) -> bool:
+    """Whether `rel` has the view-unit shape (D-24), for the claimed `<exe>/<unit>` if given."""
+    view = _VIEW_UNIT.fullmatch(rel)
+    return view is not None and (claim is None or f"{view.group(1)}/{view.group(2)}" == claim)
+
+
+def _exempt(rel: str, *, notes: bool, session: bool) -> bool:
+    """Whether `rel` under build/ is one of the driver's per-session files: the notes file
+    (D-46), or the view unit or proposals file (D-24), each at its shape only."""
+    return (notes and _is_notes(rel)) or (session and (_is_view_unit(rel) or _is_proposals(rel)))
+
+
+def _protected(rel: str, *, notes: bool = False, session: bool = False) -> str | None:
     """Why the always layer refuses an edit of repo-relative `rel`, or None. `notes`: the path
-    is the driver's REVERSEAPOC_ATTEMPT_NOTES (exempt only under build/driver/, D-46)."""
+    is the driver's REVERSEAPOC_ATTEMPT_NOTES (exempt only under build/driver/, D-46);
+    `session`: it is one of `_session_paths` (exempt only at the view-unit or proposals
+    shape, D-24)."""
     for directory, why in _PROTECTED_DIRS.items():
-        if _under(rel, directory) and not (notes and _is_notes(rel)):
+        if _under(rel, directory) and not _exempt(rel, notes=notes, session=session):
             return f"{directory}/ is protected for every session (D-16): {why}"
     if rel in _PROTECTED_FILES:
         return f"{rel} is protected for every session (D-16): {_PROTECTED_FILES[rel]}"
@@ -374,6 +415,31 @@ def _notes_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
         return frozenset(path.casefold() for path in candidates(raw, cwd)) if raw else frozenset()
     except HookError:
         return frozenset()
+
+
+def _env_forms(
+    env: Mapping[str, str], name: str, cwd: str, fits: Callable[[str], bool]
+) -> frozenset[str]:
+    """The casefolded forms of the path in env `name` when it lies under build/ and every
+    repo-relative form of it there `fits`; none when it is unset, unusable or misshapen."""
+    raw = env.get(name, "")
+    try:
+        paths = candidates(raw, cwd) if raw else []
+    except HookError:
+        return frozenset()
+    rels = [rel for _path, rel in _judged(paths, project_roots(env)) if _under(rel, "build")]
+    exact = bool(rels) and all(map(fits, rels))
+    return frozenset(path.casefold() for path in paths) if exact else frozenset()
+
+
+def _session_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
+    """The casefolded forms of the session's REVERSEAPOC_UNIT_FILE (only at the view shape
+    `build/driver/.../view/src/<exe>/<unit>.c` naming the claim) and REVERSEAPOC_PROPOSALS
+    (only proposals.jsonl under build/driver/), D-24 P6."""
+    claim = _claim(env)
+    unit = _env_forms(env, UNIT_FILE_ENV, cwd,
+                      lambda rel: claim is not None and _is_view_unit(rel, claim))  # fmt: skip
+    return unit | _env_forms(env, PROPOSALS_ENV, cwd, _is_proposals)
 
 
 def _target(payload: Mapping) -> tuple[str, Mapping]:
@@ -508,13 +574,17 @@ def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
     raw, tool_input = _target(payload)
     cwd = _cwd(payload)
     notes = _notes_paths(env, cwd)
+    session = _session_paths(env, cwd)
     paths = candidates(raw, cwd)
     scanned = False
     for path, rel in _judged(paths, project_roots(env)):
-        reason = _protected(rel, notes=path.casefold() in notes)
+        own = path.casefold() in session
+        reason = _protected(rel, notes=path.casefold() in notes, session=own)
         if reason is not None:
             return _deny(reason)
-        scanned = scanned or any(_under(rel, d) for d in _SCANNED_DIRS)
+        # P6: the view unit is a src/ file under build/, so it is scanned like src/
+        view = own and _is_view_unit(rel)
+        scanned = scanned or view or any(_under(rel, d) for d in _SCANNED_DIRS)
     problem = _source_problem(tool, tool_input, paths[0], asm_rule=_ALWAYS_ASM_RULE,
                               any_pragma_aux=False) if scanned else ""  # fmt: skip
     return _deny(problem) if problem else NO_OPINION
@@ -573,21 +643,38 @@ def bash_allowed(command: object) -> bool:
     return tuple(argv[:prefix]) == ATTEMPT_PREFIX and attempt_form_matches(argv[prefix:])
 
 
+def _fold(rel: str) -> str:
+    return rel.replace("\\", "/").casefold()
+
+
 def matching_write_allowed(
-    rel_path: str, *, claim: str | None, notes: str | None, tracked: Callable[[str], bool]
+    rel_path: str,
+    *,
+    claim: str | None,
+    notes: str | None,
+    tracked: Callable[[str], bool],
+    unit_file: str | None = None,
+    proposals: str | None = None,
 ) -> bool:
-    """The matching-session write allowlist (D-17), one predicate for the hook and the driver's
-    post-attempt `git status` audit: with a valid claim `<exe>/<unit>`, only src/<exe>/<unit>.c,
-    a new include/<name>.h that `tracked` does not know and that is not common.h or
-    watcom_compat.h, and the attempt's notes.md under build/driver/ (`notes`, repo-relative).
-    Paths compare casefolded."""
+    """The session write allowlist (D-17, D-24), one predicate for the hook and the driver's
+    post-attempt audit; every path is repo-relative and compared casefolded. With a valid claim
+    `<exe>/<unit>`, the attempt's notes.md under build/driver/ (`notes`) and, in view mode
+    (`unit_file` given): only the view unit `unit_file` (at its shape, naming the claim) and the
+    attempt's proposals.jsonl under build/driver/ (`proposals`), never src/, include/ or
+    config/<exe>/symbols.csv (D-19). Legacy mode (no `unit_file`, Phase 6 until 07-13):
+    src/<exe>/<unit>.c and a new include/<name>.h that `tracked` does not know and that is not
+    common.h or watcom_compat.h."""
     if claim is None or not _CLAIM.fullmatch(claim):
         return False
-    rel = rel_path.replace("\\", "/").casefold()
+    rel = _fold(rel_path)
+    if notes is not None and rel == _fold(notes) and _is_notes(rel):
+        return True
+    if unit_file is not None:
+        if rel == _fold(unit_file) and _is_view_unit(rel, claim):
+            return True
+        return proposals is not None and rel == _fold(proposals) and _is_proposals(rel)
     exe, unit = claim.split("/")
     if rel == f"src/{exe}/{unit}.c":
-        return True
-    if notes is not None and rel == notes.replace("\\", "/").casefold() and _is_notes(rel):
         return True
     header = _NEW_HEADER.fullmatch(rel)
     return header is not None and header.group(1) not in _RESERVED_HEADERS and not tracked(rel)
@@ -676,18 +763,32 @@ def _matching_write(
     claim = _claim(env)
     if claim is None:
         return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session writes nothing")
+    kind = env.get(SESSION_KIND_ENV, SESSION_KINDS[0])  # absent: a legacy matching run
+    if kind not in SESSION_KINDS:
+        return _deny(f"{SESSION_KIND_ENV}={kind!r} is not one of {', '.join(SESSION_KINDS)}, "
+                     "so the session writes nothing (D-18)")  # fmt: skip
+    view = bool(env.get(UNIT_FILE_ENV))
+    if kind == "readability" and not view:  # the legacy allowlist would reach include/ (D-19)
+        return _deny(f"a readability session writes only in view mode, and {UNIT_FILE_ENV} is "
+                     "unset (D-18, D-24)")  # fmt: skip
     raw, tool_input = _target(payload)
     rels = _repo_relatives(raw, payload, root)
-    notes_rel = _notes_relative(env, payload, root)
+    notes_rel = _session_relative(env, payload, root, NOTES_ENV)
+    unit_rel = _session_relative(env, payload, root, UNIT_FILE_ENV)
+    proposals_rel = _session_relative(env, payload, root, PROPOSALS_ENV)
+    if view and unit_rel is None:  # set but unusable: never fall back to the legacy allowlist
+        return _deny(f"{UNIT_FILE_ENV} names no single path in the checkout, so the session "
+                     "writes nothing (D-24)")  # fmt: skip
+    paths = {"notes": notes_rel, "unit_file": unit_rel, "proposals": proposals_rel}
     allowed = rels is not None and all(
-        matching_write_allowed(rel, claim=claim, notes=notes_rel, tracked=tracked) for rel in rels
+        matching_write_allowed(rel, claim=claim, tracked=tracked, **paths) for rel in rels
     )
     if not allowed:
-        return _deny(
+        return _deny(_view_denial(rels) if view else (
             f"a matching session for {claim} may write only src/{claim}.c, a new include/*.h "
             "and its attempt's notes.md (D-17)"
-        )
-    if _under(rels[0], "src") or _under(rels[0], "include"):
+        ))  # fmt: skip
+    if _under(rels[0], "src") or _under(rels[0], "include") or rels[0] == unit_rel:
         problem = _source_problem(payload["tool_name"], tool_input, canonical(raw, _cwd(payload)),
                                   asm_rule=_MATCHING_ASM_RULE, any_pragma_aux=True,
                                   any_pragma=True)  # fmt: skip
@@ -696,8 +797,25 @@ def _matching_write(
     return NO_OPINION
 
 
-def _notes_relative(env: Mapping[str, str], payload: Mapping, root: tuple[str, ...]) -> str | None:
-    raw = env.get(NOTES_ENV, "")
+def _naming_state(rel: str) -> bool:
+    """Whether repo-relative `rel` is shared naming state (D-19): a symbols.csv or include/."""
+    return _SYMBOLS.fullmatch(rel) is not None or _under(rel, "include")
+
+
+def _view_denial(rels: Sequence[str] | None) -> str:
+    """The deny reason for a write outside a view-mode session's allowlist, by path."""
+    if rels is not None and any(map(_naming_state, rels)):
+        return ("the driver is the only writer of shared naming state (D-19); write a proposal "
+                "to proposals.jsonl instead")  # fmt: skip
+    return "a session writes only its view unit, notes.md and proposals.jsonl (D-24)"
+
+
+def _session_relative(
+    env: Mapping[str, str], payload: Mapping, root: tuple[str, ...], name: str
+) -> str | None:
+    """The one repo-relative form (casefolded) of the driver's path in env `name`, or None when
+    it is unset, unusable, outside the checkout or has more than one form."""
+    raw = env.get(name, "")
     if not raw:
         return None
     try:
