@@ -177,7 +177,7 @@ Vacuous passes in RED, as expected:
 
 See key-decisions in the frontmatter. Two more points:
 - Violation lines are `path:line: RLnn message`, with paths relative to the directory that holds the src root (`src/ufo2p/u_x.c`, `include/snd.h`).
-- RL02 and RL02-free RL03 apply to every definition in a matched unit, helpers included. A helper whose name maps to no game or thunk row gets RL03 "names no game or thunk row".
+- RL02 and RL03 apply to every definition in a matched unit, helpers included. A helper whose name maps to no game or thunk row gets RL03 "names no game or thunk row".
 
 ## Deviations from Plan
 
