@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import json
 import struct
+from functools import cache
 from types import SimpleNamespace
 
 import pytest
 
-from conftest import build_le_image, fixup_record
+from conftest import ORIG_DIR, REPO_ROOT, build_le_image, fixup_record, requires_capstone
 from reverseapoc import cli, locate
 from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, FunctionRow
 from reverseapoc.le import LE, SRC_OFF32
@@ -110,8 +111,62 @@ FIXUPS = (
 )  # fmt: skip
 
 
-def _task1():
-    return _exe(ROWS, PATCHES, FIXUPS)
+# ---- task 2 parts of the same image: a get_text function, its callers, a sectioned blob ----
+
+GT = CODE + 0x100  # get_text(section in eax, index in edx): ret
+R1 = CODE + 0x120  # mov edx, 4; mov eax, 2; call GT; ret
+R2 = CODE + 0x140  # xor eax, eax; mov edx, 1; call GT; ret
+R3 = CODE + 0x160  # mov eax, 1; lea edx, [ebx + 3]; call GT; ret  (index computed)
+R4 = CODE + 0x180  # mov eax, 3; mov edx, 2; jmp GT  (a tail call)
+END2 = CODE + 0x1A0
+_MOV_EDX_IMM = b"\xba"  # mov edx, imm32
+_XOR_EAX_EAX = b"\x31\xc0"
+_LEA_EDX_EBX_3 = b"\x8d\x53\x03"  # lea edx, [ebx + 3]
+_JMP = b"\xe9"  # jmp rel32
+# The blob: NUL, then section 0 "a" "bb", section 1 "ccc", section 3 "d" "e" "f" (made up),
+# ending right below the table. Slot 2 is null; the word after slot 3 is page fill.
+BLOB = DATA + 0x80
+S0, S1, S3 = DATA + 0x81, DATA + 0x86, DATA + 0x8A
+TEXT_TABLE = DATA + 0x90
+TEXT_SLOTS = 4
+BLOB_BYTES = b"\x00a\x00bb\x00ccc\x00d\x00e\x00f\x00"
+SYNTHETIC_GET_TEXT = (GT, TEXT_TABLE, TEXT_SLOTS)
+ROWS2 = [_row(GT, R1), _row(R1, R2), _row(R2, R3), _row(R3, R4), _row(R4, END2)]
+
+
+def _imm(opcode: bytes, value: int) -> bytes:
+    return opcode + struct.pack("<I", value)
+
+
+PATCHES2 = {
+    GT: _padded(_RET, 0x20),
+    R1: _padded(_imm(_MOV_EDX_IMM, 4) + _imm(_MOV_EAX_IMM, 2) + _rel(_CALL, R1 + 10, GT) + _RET,
+                0x20),
+    R2: _padded(_XOR_EAX_EAX + _imm(_MOV_EDX_IMM, 1) + _rel(_CALL, R2 + 7, GT) + _RET, 0x20),
+    R3: _padded(_imm(_MOV_EAX_IMM, 1) + _LEA_EDX_EBX_3 + _rel(_CALL, R3 + 8, GT) + _RET, 0x20),
+    R4: _padded(_imm(_MOV_EAX_IMM, 3) + _imm(_MOV_EDX_IMM, 2) + _rel(_JMP, R4 + 10, GT), 0x20),
+    BLOB: BLOB_BYTES,
+    TEXT_TABLE: _ZERO32 * TEXT_SLOTS,
+}  # fmt: skip
+R1_CALL, R2_CALL, R3_CALL, R4_JMP = R1 + 10, R2 + 7, R3 + 8, R4 + 10
+
+
+def _slot(k: int, target: int) -> bytes:
+    """One off32 fixup record on the data page: get_text slot k -> a string start."""
+    return fixup_record(SRC_OFF32, TEXT_TABLE + 4 * k - DATA, 2, target - DATA)
+
+
+DATA_FIXUPS = _slot(0, S0) + _slot(1, S1) + _slot(3, S3)
+
+
+def _task1(data_fixups: bytes = DATA_FIXUPS):
+    return _exe(ROWS + ROWS2, PATCHES | PATCHES2, FIXUPS, data_fixups)
+
+
+@pytest.fixture
+def text_table(monkeypatch):
+    """The synthetic get_text function and section table stand in for UFO2P's."""
+    monkeypatch.setitem(locate.GET_TEXT, "ufo2p", SYNTHETIC_GET_TEXT)
 
 
 def test_string_refs():
@@ -152,13 +207,13 @@ def test_no_int386_row_gives_no_callers():
     assert locate.interrupt_callers(_exe(rows, PATCHES, FIXUPS), VECTOR_BIOS_TICK) == []
 
 
-def test_no_match_is_empty(monkeypatch, capsys):
+def test_no_match_is_empty(monkeypatch, capsys, text_table):
     exe = _task1()
     assert locate.string_refs(exe, "no-such-keyword") == []
     assert locate.table_refs(exe, DATA + 0x800, DATA + 0x900) == ()
     monkeypatch.setattr(locate, "load_inputs", lambda *a, **k: exe)
     for selector in (["--string", "no-such-keyword"], ["--range", "0x20800", "0x20900"],
-                     ["--int", "0x10"], ["--va", "0x20800"]):  # fmt: skip
+                     ["--int", "0x10"], ["--va", "0x20800"], ["--get-text", "9", "9"]):  # fmt: skip
         assert cli.main(["mechanics", "locate", "--exe", "ufo2p", *selector]) == 0
         assert "0 rows" in capsys.readouterr().out
 
@@ -178,7 +233,7 @@ def test_cli_locate_string_json(monkeypatch, capsys):
     assert report["rows"] == [f"0x{A:08X}"]
 
 
-def test_cli_locate_range_va_and_int_json(monkeypatch, capsys):
+def test_cli_locate_range_va_and_int_json(monkeypatch, capsys, text_table):
     rng = _locate_json(monkeypatch, capsys, "--range", hex(TABLE_LO), hex(TABLE_HI))
     assert rng["rows"] == [f"0x{A:08X}", f"0x{B:08X}"]
     va = _locate_json(monkeypatch, capsys, "--va", hex(TABLE_HI))
@@ -207,3 +262,163 @@ def test_cli_locate_selectors_are_exclusive(capsys):
         cli.main(["mechanics", "locate", "--exe", "ufo2p", "--string", "a", "--int", "0x1a"])
     with pytest.raises(SystemExit):
         cli.main(["mechanics", "locate", "--exe", "ufo2p"])
+
+
+# ---- task 2: the get_text route ----
+
+
+def test_get_text_table_holds_both_exes():
+    assert set(locate.GET_TEXT) == {"ufo2p", "tacp"}
+    assert locate.GET_TEXT["ufo2p"][:2] == (0x00063800, 0x000F3794)
+    assert locate.GET_TEXT["tacp"][:2] == (0x0005B360, 0x00292D18)
+
+
+def test_get_text_sections(text_table):
+    sections = locate.get_text_sections(_task1())
+    assert [(s.section, s.start, s.end) for s in sections] == [
+        (0, S0, S1), (1, S1, S3), (3, S3, TEXT_TABLE)]  # fmt: skip
+    assert [s.strings for s in sections] == [
+        (S0, S0 + 2), (S1,), (S3, S3 + 2, S3 + 4)]  # fmt: skip
+
+
+def test_get_text_index(text_table):
+    sections = locate.get_text_sections(_task1())
+    assert locate.get_text_index(sections, S0 + 2) == (0, 1)
+    assert locate.get_text_index(sections, S0 + 3) == (0, 1)  # inside "bb"
+    assert locate.get_text_index(sections, S1) == (1, 0)
+    assert locate.get_text_index(sections, S3 + 4) == (3, 2)
+    assert locate.get_text_index(sections, STRING) is None  # a data string outside the blob
+    assert locate.get_text_index(sections, TEXT_TABLE) is None
+
+
+def test_get_text_sites_constant(text_table):
+    sites = {site.call_va: site for site in locate.get_text_sites(_task1())}
+    assert sites[R1_CALL] == locate.Site(R1, R1_CALL, 2, 4, False)
+
+
+def test_get_text_sites_xor(text_table):
+    sites = {site.call_va: site for site in locate.get_text_sites(_task1())}
+    assert sites[R2_CALL] == locate.Site(R2, R2_CALL, 0, 1, False)
+
+
+def test_get_text_sites_computed(text_table):
+    sites = {site.call_va: site for site in locate.get_text_sites(_task1())}
+    assert sites[R3_CALL] == locate.Site(R3, R3_CALL, 1, None, True)
+
+
+def test_get_text_sites_tail_jump_and_order(text_table):
+    sites = locate.get_text_sites(_task1())
+    assert [site.call_va for site in sites] == [R1_CALL, R2_CALL, R3_CALL, R4_JMP]
+    assert sites[-1] == locate.Site(R4, R4_JMP, 3, 2, False)
+
+
+@pytest.mark.parametrize("slots", [TEXT_SLOTS - 1, TEXT_SLOTS + 1])
+def test_planted_section_count_fails(monkeypatch, slots):
+    monkeypatch.setitem(locate.GET_TEXT, "ufo2p", (GT, TEXT_TABLE, slots))
+    with pytest.raises(locate.LocateError, match="slot"):
+        locate.get_text_sections(_task1())
+
+
+def test_get_text_refuses_a_slot_inside_a_string(text_table):
+    planted = _slot(0, S0) + _slot(1, S1 + 1) + _slot(3, S3)  # S1 + 1 is inside "ccc"
+    with pytest.raises(locate.LocateError, match="string start"):
+        locate.get_text_sections(_task1(planted))
+
+
+def test_get_text_refuses_shared_starts(text_table):
+    planted = _slot(0, S0) + _slot(1, S1) + _slot(3, S1)
+    with pytest.raises(locate.LocateError, match="share"):
+        locate.get_text_sections(_task1(planted))
+
+
+def test_get_text_refuses_a_pointer_outside_the_blob(text_table):
+    planted = _slot(0, S0) + _slot(1, S1) + _slot(3, TEXT_TABLE + 0x100)  # past the table
+    with pytest.raises(locate.LocateError, match="below the table"):
+        locate.get_text_sections(_task1(planted))
+
+
+def test_cli_get_text_json(monkeypatch, capsys, text_table):
+    report = _locate_json(monkeypatch, capsys, "--get-text", "2", "4")
+    assert report["get_text"] == [2, 4]
+    assert report["sites"] == [{"caller": f"0x{R1:08X}", "call": f"0x{R1_CALL:08X}"}]
+    assert report["rows"] == [f"0x{R1:08X}"]
+    partial = _locate_json(monkeypatch, capsys, "--get-text", "1", "7")
+    assert partial["rows"] == []  # R3 asks for section 1 with a computed index
+    assert partial["partial_rows"] == [f"0x{R3:08X}"]
+
+
+def test_cli_va_on_a_text_string(monkeypatch, capsys, text_table):
+    report = _locate_json(monkeypatch, capsys, "--va", hex(S0 + 2))
+    assert report["get_text"] == {"section": 0, "index": 1}
+    assert report["sites"] == [{"caller": f"0x{R2:08X}", "call": f"0x{R2_CALL:08X}"}]
+    assert report["rows"] == [f"0x{R2:08X}"]
+    outside = _locate_json(monkeypatch, capsys, "--va", hex(STRING))
+    assert outside["get_text"] is None
+    assert outside["rows"] == [f"0x{A:08X}"]
+
+
+# ---- real files (skip without orig/) ----
+
+REAL_EXES = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}
+REAL_CONFIG = REPO_ROOT / "config"
+
+
+def _real_param(exe: str):
+    name = REAL_EXES[exe]
+    return pytest.param(exe, id=exe, marks=pytest.mark.skipif(
+        not (ORIG_DIR / name).is_file(),
+        reason=f"orig/{name} not present (run uv run reverseapoc ingest or set REVERSEAPOC_ORIG)"))
+
+
+@cache
+def _real(exe: str):
+    requires_capstone()
+    return locate.load_inputs(REAL_CONFIG, ORIG_DIR, REAL_CONFIG / "targets.toml", exe)
+
+
+@cache
+def _real_sites(exe: str) -> tuple[locate.Site, ...]:
+    return tuple(locate.get_text_sites(_real(exe)))
+
+
+# Spike 007 q4 (README "q4 strings"): both tables have 52 slots. UFO2P fills all 52; research's
+# "50 sections" is the loop bound of the dump routine next to get_text, not the table's size.
+# TACP fills 21 of its 52 slots.
+REAL_SECTIONS = {"ufo2p": 52, "tacp": 21}
+REAL_CALLER_ROWS = {"ufo2p": 180, "tacp": 88}  # research's get_text caller counts
+# q4 speed labels (README "#997" table): call site -> (section, index)
+SPEED_LABEL_SITES = {
+    "ufo2p": {0x000523C1: (38, 43), 0x00052439: (38, 44), 0x000524B1: (38, 45),
+              0x0005252C: (38, 46)},
+    "tacp": {0x000A751A: (36, 0), 0x000A758C: (36, 1), 0x000A75FE: (36, 2),
+             0x000A7670: (36, 3)},
+}  # fmt: skip
+INT_1A_CALLERS = {"ufo2p": {0x00011430}, "tacp": {0x00011500, 0x000116B0}}  # research, q1
+
+
+@pytest.mark.parametrize("exe", [_real_param("ufo2p")])
+def test_ufo2p_get_text_has_52_sections(exe):
+    sections = locate.get_text_sections(_real(exe))
+    assert [s.section for s in sections] == list(range(REAL_SECTIONS[exe]))
+
+
+@pytest.mark.parametrize("exe", [_real_param("tacp")])
+def test_tacp_get_text_has_21_sections(exe):
+    assert len(locate.get_text_sections(_real(exe))) == REAL_SECTIONS[exe]
+
+
+@pytest.mark.parametrize("exe", [_real_param(e) for e in REAL_EXES])
+def test_get_text_caller_rows(exe):
+    assert len({site.caller for site in _real_sites(exe)}) == REAL_CALLER_ROWS[exe]
+
+
+@pytest.mark.parametrize("exe", [_real_param(e) for e in REAL_EXES])
+def test_speed_label_sites(exe):
+    sites = {site.call_va: (site.section, site.index) for site in _real_sites(exe)}
+    assert {va: sites.get(va) for va in SPEED_LABEL_SITES[exe]} == SPEED_LABEL_SITES[exe]
+
+
+@pytest.mark.parametrize("exe", [_real_param(e) for e in REAL_EXES])
+def test_interrupt_0x1a_callers(exe):
+    callers = {site.caller for site in locate.interrupt_callers(_real(exe), VECTOR_BIOS_TICK)}
+    assert callers == INT_1A_CALLERS[exe]
