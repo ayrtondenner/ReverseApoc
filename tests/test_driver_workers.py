@@ -764,8 +764,9 @@ def test_same_unit_never_concurrent(tmp_path):
 
 def test_gates_never_overlap(tmp_path):
     """DEC-02 concurrency (T-07-63): with three sessions ending together, the fake gate's calls
-    never overlap, and at each call src/ differs from HEAD only in the landing unit."""
-    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    never overlap, and at each call src/ differs from HEAD only in the landing unit (each
+    session writes its view unit, so every landing changes src/)."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)), sessions=[Sess()] * 3)
     barrier = threading.Barrier(3, timeout=WAIT_S)
     night.before = lambda unit, index: barrier.wait()
     inside = threading.Lock()

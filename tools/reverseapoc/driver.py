@@ -191,6 +191,7 @@ class DriveConfig:
     attempts_per_function: int = 3  # D-07, per pass
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
+    workers: int = 1  # D-06: sessions at once; 1 is the Phase 6 serial driver (the verb: 3)
 
 
 @dataclass(frozen=True)
@@ -1279,10 +1280,164 @@ class _Stop(Exception):
         self.detail = _detail(detail)
 
 
+class _Halt(Exception):
+    """07-21: the night is stopping because of another worker (or an interrupt): this worker
+    contained and reset what it had and leaves quietly. `note` names what its containment did
+    (empty: nothing to report); the first failure alone writes the STOPPED record."""
+
+    def __init__(self, note: str = "") -> None:
+        super().__init__(note)
+        self.note = note
+
+
+_TICK_S = 0.2  # the coordinator's wait between checks, so the main thread sees an interrupt
+
+
+class _Worker:
+    """D-06: one worker of the night, numbered `ident` (0..workers-1, the claim's `worker`). It
+    runs one function's pass (`_Night._function`: up to attempts_per_function sessions, each
+    under its unit's claim) and hands any failure to the night, which stops every other
+    worker (stop-all). With one worker the pass runs on the calling thread (`inline`), exactly
+    the Phase 6 driver; otherwise on its own thread."""
+
+    def __init__(self, coordinator: _Coordinator, ident: int, pick: Pick,
+                 difficult: dict[Key, tuple[Key, ...]]) -> None:  # fmt: skip
+        self.coordinator = coordinator
+        self.night = coordinator.night
+        self.ident = ident
+        self.pick = pick
+        self.difficult = difficult
+        self.thread = threading.Thread(target=self._run, name=f"drive-worker-{ident}",
+                                       daemon=True)  # fmt: skip
+
+    def inline(self) -> None:
+        """The pass on the calling thread; a failure propagates as in Phase 6."""
+        self.night.local.worker = self.ident
+        try:
+            self.night._function(self.pick, self.difficult)
+        finally:
+            self.coordinator.release(self)
+
+    def _run(self) -> None:
+        night = self.night
+        night.local.worker = self.ident
+        try:
+            night._function(self.pick, self.difficult)
+        except _Halt as halt:
+            night._note(halt.note)
+        except BaseException as exc:  # noqa: BLE001 - handed to the main thread (stop-all)
+            night._fail(exc)
+        finally:
+            self.coordinator.release(self)
+
+
+class _Coordinator:
+    """D-06, D-07: the main thread's part of the night. It owns the picker: it hands each
+    function's pass to a free worker, skipping for now (never dropping) a pick whose unit
+    another worker's pass holds, and stops handing out passes once the night ends (the caps,
+    or a stop). Claims, counters and locks stay the night's (`_Night`), shared by every
+    worker; every shared write goes through the gate lock, every git call through the git
+    lock. Returns the night's end reason, or re-raises the first worker's failure once every
+    worker has finished."""
+
+    def __init__(self, night: _Night) -> None:
+        self.night = night
+        self.free = list(range(night.config.workers))  # the idle workers' numbers
+        self.busy: dict[tuple[str, str], _Worker] = {}  # (exe, unit) -> the worker on it
+        self.threads: list[threading.Thread] = []
+        self.deferred: list[Pick] = []  # picks whose unit was busy, in queue order
+        self.picks: Iterator[Pick] = iter(())
+        self.exhausted = False
+        self.picked = False
+
+    def run(self) -> str:
+        night = self.night
+        difficult = night._difficult()
+        self.picks = iter(night.deps.queue(frozenset(difficult)))
+        try:
+            while (pick := self._next()) is not None:
+                self.picked = True
+                self._dispatch(pick, difficult)
+            self._drain()
+        except BaseException:  # an interrupt on the main thread: stop every worker first
+            night._stop_all()
+            self._drain()
+            raise
+        night._raise_failure()
+        with night.cond:
+            end = night._end()
+        if end:
+            return end
+        return QUEUE_EXHAUSTED if self.picked else NOTHING_TO_DO
+
+    def release(self, worker: _Worker) -> None:
+        """A worker's pass ended: its unit and its number are free again."""
+        with self.night.cond:
+            self.busy.pop((worker.pick.exe, worker.pick.unit), None)
+            self.free.append(worker.ident)
+            self.free.sort()
+            self.night.cond.notify_all()
+
+    def _next(self) -> Pick | None:
+        """The next pick for a free worker, or None when the night hands out no more: stopping,
+        a cap reached (D-07), or no pick left (every deferred one has run)."""
+        night = self.night
+        with night.cond:
+            while True:
+                if night.stop.is_set() or night._end():
+                    return None
+                if self.free:
+                    pick = self._eligible()
+                    if pick is not None:
+                        return pick
+                    if self.exhausted and not self.deferred:
+                        return None
+                night.cond.wait(_TICK_S)
+
+    def _eligible(self) -> Pick | None:
+        """The first deferred pick whose unit is free, else the queue's next new pick; a pick
+        whose unit is busy is deferred, a pick already taken tonight is skipped."""
+        for i, pick in enumerate(self.deferred):
+            if (pick.exe, pick.unit) not in self.busy:
+                return self.deferred.pop(i)
+        while not self.exhausted:
+            pick = next(self.picks, None)
+            if pick is None:
+                self.exhausted = True
+                break
+            key = (pick.exe, pick.start)
+            if key in self.night.done:
+                continue
+            self.night.done.add(key)
+            if (pick.exe, pick.unit) in self.busy:
+                self.deferred.append(pick)
+                continue
+            return pick
+        return None
+
+    def _dispatch(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> None:
+        with self.night.cond:
+            worker = _Worker(self, self.free.pop(0), pick, difficult)
+            self.busy[(pick.exe, pick.unit)] = worker
+        if self.night.config.workers == 1:
+            worker.inline()
+            return
+        self.threads.append(worker.thread)
+        worker.thread.start()
+
+    def _drain(self) -> None:
+        """Wait for every started worker, in short joins so an interrupt reaches this thread."""
+        for thread in self.threads:
+            while thread.is_alive():
+                thread.join(_TICK_S)
+
+
 class _Night:
     def __init__(self, config: DriveConfig, deps: Deps) -> None:
         if not _RUN_ID.fullmatch(config.run_id):
             raise DriverError(f"run id {config.run_id!r} is not [A-Za-z0-9_.-]+")
+        if config.workers < 1:
+            raise DriverError(f"workers {config.workers} is below 1")
         self.config = config
         self.deps = deps
         self.repo = Path(config.repo_root)
@@ -1291,7 +1446,15 @@ class _Night:
         self.matched = 0
         self.limit_streak = 0
         self.done: set[Key] = set()
-        self.live: _Session | None = None  # the session to reset if a later step raises
+        # D-06: per worker thread: `worker` (its number) and `live` (its session to reset if a
+        # later step raises).
+        self.local = threading.local()
+        # 07-21: the coordinator's condition: the counters, the dispatch and the stop. Taken
+        # only for short steps and never while waiting for the gate lock (order: gate, cond).
+        self.cond = threading.Condition()
+        self.stop = threading.Event()  # set by the first failure (stop-all) or an interrupt
+        self.failure: BaseException | None = None  # the first worker failure, re-raised
+        self.halt_notes: list[str] = []  # what each halted worker's containment did
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
@@ -1306,6 +1469,63 @@ class _Night:
         # Reentrant, because the landing section appends its own record while it holds it.
         self.gate_lock = threading.RLock()
         self.git_lock = threading.Lock()  # D-27 P4: one driver git call at a time (_git)
+
+    @property
+    def live(self) -> _Session | None:
+        """This worker's session to reset if a later step raises (D-06: one per worker)."""
+        return getattr(self.local, "live", None)
+
+    @live.setter
+    def live(self, session: _Session | None) -> None:
+        self.local.live = session
+
+    @property
+    def worker(self) -> int:
+        """This thread's worker number (0 on the calling thread with one worker)."""
+        return getattr(self.local, "worker", 0)
+
+    # --- workers (07-21) ---
+
+    def _count(self) -> None:
+        """One counted session (D-07, D-48), from any worker."""
+        with self.cond:
+            self.sessions += 1
+            self.cond.notify_all()
+
+    def _fail(self, exc: BaseException) -> None:
+        """A worker failed: the first failure is the night's, and every worker stops."""
+        with self.cond:
+            if self.failure is None:
+                self.failure = exc
+            elif isinstance(exc, _Stop):  # a later stop's containment is still reported
+                self.halt_notes.append(f"{exc.reason}: {exc.detail}")
+        self._stop_all()
+
+    def _note(self, note: str) -> None:
+        if note:
+            with self.cond:
+                self.halt_notes.append(note)
+
+    def _stop_all(self) -> None:
+        """Stop-all (D-08 with workers): no worker launches or lands anything more."""
+        with self.cond:
+            self.stop.set()
+            self.cond.notify_all()
+
+    def _halt_if_stopping(self) -> None:
+        """Between steps of a pass: leave quietly once the night is stopping."""
+        if self.stop.is_set():
+            raise _Halt()
+
+    def _raise_failure(self) -> None:
+        """Once every worker has finished: re-raise the first failure on this thread, with what
+        each halted worker's containment did added to a stop's detail."""
+        failure = self.failure
+        if failure is None:
+            return
+        if isinstance(failure, _Stop) and self.halt_notes:
+            raise _Stop(failure.reason, "; ".join([failure.detail, *self.halt_notes])) from failure
+        raise failure
 
     # --- the night ---
 
@@ -1464,27 +1684,18 @@ class _Night:
         self._git_retry(["commit", "-q", "-F", str(message_file), "--", *paths])
 
     def _end(self) -> str | None:
-        if self.matched >= self.config.target_matched:
-            return TARGET_MATCHED
-        if self.sessions >= self.config.max_sessions:
-            return MAX_SESSIONS
-        return None
+        with self.cond:
+            if self.matched >= self.config.target_matched:
+                return TARGET_MATCHED
+            if self.sessions >= self.config.max_sessions:
+                return MAX_SESSIONS
+            return None
 
     def _loop(self) -> str:
+        """The coordinator hands the picks to the workers (D-06); one worker is Phase 6's
+        serial loop."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
-        difficult = self._difficult()
-        picked = False
-        for pick in self.deps.queue(frozenset(difficult)):
-            if end := self._end():
-                return end
-            if (pick.exe, pick.start) in self.done:
-                continue
-            picked = True
-            self.done.add((pick.exe, pick.start))
-            self._function(pick, difficult)
-        if not picked:
-            return NOTHING_TO_DO
-        return self._end() or QUEUE_EXHAUSTED
+        return _Coordinator(self).run()
 
     def _difficult(self) -> dict[Key, tuple[Key, ...]]:
         """The persisted difficult list, minus what `requeue` gives back (D-07)."""
@@ -1501,13 +1712,15 @@ class _Night:
         """At most attempts_per_function counted sessions (D-07); a function that used them all
         without a match goes to the difficult list once."""
         for n in range(1, self.config.attempts_per_function + 1):
-            if self._end():
+            if self.stop.is_set() or self._end():
                 return
             outcome = self._announced(pick, n)
             if outcome in (MATCHED, None):
                 return
-        difficult[(pick.exe, pick.start)] = tuple(self.deps.matched_callees(pick))
-        save_difficult(self.repo / DIFFICULT, difficult)
+        callees = tuple(self.deps.matched_callees(pick))
+        with self.cond:  # the list is shared by every worker
+            difficult[(pick.exe, pick.start)] = callees
+            save_difficult(self.repo / DIFFICULT, difficult)
 
     def _label(self, pick: Pick, n: int) -> str:
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
@@ -1531,7 +1744,7 @@ class _Night:
         with self._claimed(pick):
             try:
                 return self._attempt(pick, n)
-            except _Stop:
+            except (_Stop, _Halt):
                 raise
             except Exception as exc:
                 self._reset_live()
@@ -1546,8 +1759,10 @@ class _Night:
     def _claimed(self, pick: Pick) -> Iterator[None]:
         """D-06: the unit's claim file, taken before the attempt's first view is made and
         released after its landing decision, also when the night stops. A unit already claimed
-        stops the night (one worker: only a claim this run failed to release can be there)."""
-        record = {"run": self.config.run_id, "worker": 0, "exe": pick.exe, "unit": pick.unit,
+        stops the night: the coordinator never hands one unit to two workers, so only a claim
+        this run failed to release can be there."""
+        record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
+                  "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": MATCHING_KIND, "pass": 1, "model": None,
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
@@ -1573,8 +1788,12 @@ class _Night:
         with retries = TRANSIENT_RETRIES; D-08, fix round 1 minor 6)."""
         transient = 0
         while True:
+            self._halt_if_stopping()
             claim = _Claim(pick, self.config.run_id, self.repo, n)
             session = self._launch(claim)
+            if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
+                self._reset(session)
+                raise _Halt()
             disposition = session.disposition
             if disposition is Disposition.LIMIT:
                 matched = self._salvage(session)
@@ -1582,7 +1801,8 @@ class _Night:
                 if matched:
                     return MATCHED
                 continue
-            self.limit_streak = 0
+            with self.cond:
+                self.limit_streak = 0
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 transient += 1
@@ -1593,11 +1813,12 @@ class _Night:
             return self._counted(session)
 
     def _backoff(self, pick: Pick, n: int) -> None:
-        streak = self.limit_streak
+        with self.cond:
+            streak = self.limit_streak
+            self.limit_streak += 1
         seconds = BACKOFF_S[streak] if streak < len(BACKOFF_S) else POLL_S
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
         self.deps.sleep(seconds)
-        self.limit_streak += 1
 
     # --- one session ---
 
@@ -1761,7 +1982,8 @@ class _Night:
         prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
                              unit_path=claim.view_unit_rel)  # fmt: skip
         base = self.config.base_env if self.config.base_env is not None else os.environ
-        before = self._snapshot()
+        with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
+            before = self._snapshot()
         start = self.deps.clock()
         result = None
         try:
@@ -1774,13 +1996,14 @@ class _Night:
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
             note = self._remove_containers(claim)
-            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before,
-                                    view_head, view_hashes)
-            stray = self._strays(session)
-            contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
-            contained += f"; {note}" if note else ""
-            if not stray:
-                self._reset(session)
+            with self.gate_lock:
+                session = self._measure(claim, None, pack, 0.0, before, scaffolded,
+                                        unit_before, view_head, view_hashes)  # fmt: skip
+                stray = self._strays(session)
+                contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
+                contained += f"; {note}" if note else ""
+                if not stray:
+                    self._reset(session)
             if not isinstance(exc, Exception):
                 self.interrupted = f" during a session{contained}"
                 raise
@@ -1788,19 +2011,26 @@ class _Night:
             raise _Stop(ERROR, why) from exc
         note = self._remove_containers(claim)
         seconds = self.deps.clock() - start
-        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before,
-                                view_head, view_hashes)
-        self.live = session
-        try:
-            self._audit(session)
-        except _Stop as stop:
-            if note:
-                raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
-            raise
+        # 07-21: the audit runs under the gate lock, so it never meets another worker's landing
+        # half done (its unit in src/, its gate writing status.csv): git can see only HEAD and
+        # the driver's own bytes (D-24 a).
+        with self.gate_lock:
+            session = self._measure(claim, result, pack, seconds, before, scaffolded,
+                                    unit_before, view_head, view_hashes)  # fmt: skip
+            self.live = session
+            try:
+                self._audit(session)
+            except _Stop as stop:
+                if note:
+                    raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
+                raise
+        if self.stop.is_set():  # 07-21 stop-all: audited and contained; nothing lands now
+            self._reset(session)
+            raise _Halt(f"{claim.target}: {note}" if note else "")
         if note:  # S1: the night stops after the audit and containment ran
             self._reset(session)
             if session.counted:  # fix round 2 minor 4: the attempt is recorded like any stop
-                self.sessions += 1
+                self._count()
                 summary = read_checks(claim.attempt_dir)
                 self._record_attempt(session, GAVE_UP, TOOL, summary)
             raise _Stop(TOOL, note)
@@ -1902,7 +2132,10 @@ class _Night:
 
     def _verify_landing(self, claim: _Claim) -> None:
         """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
-        log hold the driver's bytes and src/ holds the unit it landed."""
+        log hold the driver's bytes and src/ holds the unit it landed. 07-21: after another
+        worker's breach (J2: sticky) nothing is committed any more."""
+        if self.breached:
+            raise _Breach("another worker's breach stopped the night: nothing is committed (J2)")
         for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix()):
             if not self.ledger.holds(rel):
                 raise _Breach(self._breach(rel, self.ledger.expected(rel)))
@@ -1958,7 +2191,7 @@ class _Night:
         if not stray:
             return
         if session.counted:
-            self.sessions += 1
+            self._count()
         self._guardrail(session, stray, record=session.counted)
 
     def _guardrail(
@@ -2264,7 +2497,7 @@ class _Night:
             if session.has_work():
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
-                    self.sessions += 1
+                    self._count()
                     self._commit_match(session, gate, read_checks(session.claim.attempt_dir))
                     return True
             self._reset(session)
@@ -2279,7 +2512,7 @@ class _Night:
         with self.gate_lock:
             try:
                 yield
-            except _Stop:
+            except (_Stop, _Halt):
                 raise
             except BaseException:
                 try:
@@ -2293,7 +2526,7 @@ class _Night:
         the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
         `gate --partial` and the attempt record. Another worker's record waits for the landing
         decision, so F19's log truncation can only drop this landing's own MATCHED line."""
-        self.sessions += 1
+        self._count()
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
@@ -2359,7 +2592,9 @@ class _Night:
             undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size)
             self.interrupted = f" during the match commit; {undone}"
             raise
-        self.matched += 1
+        with self.cond:
+            self.matched += 1
+            self.cond.notify_all()
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
                     why: str, log_size: int) -> str:  # fmt: skip
