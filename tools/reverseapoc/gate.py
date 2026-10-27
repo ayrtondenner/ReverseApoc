@@ -68,6 +68,7 @@ from typing import Any
 # check_unit, check_source, land_all, load_exe and compile_source are looked up at call time
 # (`check_fn or check_unit`), so a test can stand a fake in for each.
 from . import check as _check  # DEFAULT_SRC, read at call time (tests stand a tree in)
+from . import unitdefs
 from .cflags import DEFAULT_CFLAGS
 from .check import (
     EXIT_MISMATCH,
@@ -303,19 +304,40 @@ def _owners(config_root: Path, known: Iterable[Target]) -> dict[str, dict[int, F
     return out
 
 
+def _exe_c_names(config_root: Path, name: str) -> dict[str, int]:
+    """C name -> start for every game and thunk row of the EXE `name` (D-29): unitdefs.c_names
+    of its functions.csv and symbols.csv (either may be missing). CheckError naming symbols.csv
+    for a func name without Watcom's trailing `_`."""
+    exe_config = Path(config_root) / exe_stem(name)
+    functions, symbols = exe_config / FUNCTIONS_CSV, exe_config / SYMBOLS_CSV
+    rows = read_functions_csv(functions) if functions.is_file() else []
+    try:
+        return unitdefs.c_names(rows, read_symbols_csv(symbols) if symbols.is_file() else [])
+    except unitdefs.UnitDefsError as exc:
+        raise CheckError(f"{symbols}: {exc}") from None
+
+
+def _names_for(cache: dict[str, dict[str, int]], config_root: Path, name: str) -> dict[str, int]:
+    """_exe_c_names of `name`, read once per gate run."""
+    if name not in cache:
+        cache[name] = _exe_c_names(config_root, name)
+    return cache[name]
+
+
 def _reverted(name: str, src: Path, unit_rows: Sequence[FunctionRow],
-              matched: Iterable[StatusRow], unit: str) -> list[str]:  # fmt: skip
-    """When the unit file marks every game and thunk row of the unit INCLUDE_ASM
-    (configure.py's D-12 markers, as check reads them), every matched row of the unit is a
-    reverted match (Important 1); otherwise []. Keyed on the markers, not on definitions:
-    after a symbols.csv rename the C defines the new name, which the placeholder-only parser
-    does not see as a definition (fix round 2). A file with neither markers nor the expected
-    definitions goes to check, which refuses it as before."""
-    required = [row for row in unit_rows if row.kind in (KIND_GAME, KIND_THUNK)]
+              matched: Iterable[StatusRow], unit: str, *, names: Mapping[str, int]
+              ) -> list[str]:  # fmt: skip
+    """When the unit file marks every game and thunk row of the unit INCLUDE_ASM, every matched
+    row of the unit is a reverted match (Important 1); otherwise []. Decided by start through
+    the shared finder (D-29): `names` are the EXE's C names (_exe_c_names), so a marker counts
+    under the row's current C name or its old placeholder, whatever symbols.csv calls the row.
+    A file with neither markers nor the expected definitions goes to check, which refuses it as
+    before."""
+    required = [row.start for row in unit_rows if row.kind in (KIND_GAME, KIND_THUNK)]
     if not required or not Path(src).is_file():
         return []
-    marked = source_marks(read_source(src), unit_rows).marked
-    if not all(row.name in marked for row in required):
+    marked_starts = source_marks(read_source(src), unit_rows, all_names=names).marked_starts
+    if not all(start in marked_starts for start in required):
         return []
     return [_function_problem(name, row, None, unit) or "" for row in matched]
 
@@ -588,14 +610,17 @@ def gate_units(
     functions = _functions(roots.config_root, known)
     owners = _owners(roots.config_root, known)
     reports, docs, passed = [], [], []
+    c_names: dict[str, dict[str, int]] = {}
     for target in resolved:
         _check_names(target.name, target.unit, owners.get(target.name, {}))
     for target in resolved:
         matched_here = [r for r in _matched(tables).get(target.name, {}).values()
                         if r.unit == target.unit]  # fmt: skip
         unit_rows = [r for r in functions.get(target.name, {}).values() if r.unit == target.unit]
-        reverted = _reverted(target.name, roots.unit_file(target.stem, target.unit), unit_rows,
-                             matched_here, target.unit) if matched_here else []  # fmt: skip
+        reverted = _reverted(
+            target.name, roots.unit_file(target.stem, target.unit), unit_rows, matched_here,
+            target.unit, names=_names_for(c_names, roots.config_root, target.name),
+        ) if matched_here else []  # fmt: skip
         if reverted:
             return GateResult(MODE_UNIT, labels, EXIT_MISMATCH, tuple(reports), tuple(docs),
                               tuple(reverted))  # fmt: skip
@@ -663,6 +688,7 @@ class _AllRun:
     reports: list[str] = dataclasses.field(default_factory=list)
     checks: list[dict[str, Any]] = dataclasses.field(default_factory=list)
     fresh: set[tuple[str, str]] = dataclasses.field(default_factory=set)
+    c_names: dict[str, dict[str, int]] = dataclasses.field(default_factory=dict)  # _names_for
 
     def recheck(self, exe: Any, name: str, unit: str, rows: Sequence[StatusRow]) -> None:
         """check_source of one matched unit: every matched row still defined and ok, and its
@@ -683,7 +709,8 @@ class _AllRun:
             self.problems.append(f"{name}: unit {unit}: status.csv's source_sha256 is not "
                                  f"the hash of {src} (changed since it was gated); re-gate "
                                  "it")  # fmt: skip
-        reverted = _reverted(name, src, unit_rows, rows, unit)
+        names = _names_for(self.c_names, self.roots.config_root, name)
+        reverted = _reverted(name, src, unit_rows, rows, unit, names=names)
         if reverted:
             self.problems += reverted
             return
