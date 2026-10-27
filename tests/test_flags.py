@@ -10,12 +10,14 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from conftest import REPO_ROOT, write_manifest
-from reverseapoc import check, contextpack, flags
+from reverseapoc import check, contextpack, driver, flags
 from reverseapoc.cflags import parse_cflags, select_rule
 from reverseapoc.check import CheckError, CheckResult, ExeLand, FunctionCheck
 from reverseapoc.cli import main as cli_main
@@ -716,3 +718,265 @@ def test_cli_regate(tmp_path, monkeypatch, capsys):
     assert "F-0001" in capsys.readouterr().out
     monkeypatch.setattr(check, "check_unit", FakeCheck({F30: 50.0}))
     assert cli_main(["flags", "regate", "F-0001", "--repo", str(repo)]) == 1
+
+
+# ---- 07-24 Task 1: flags approve lands rule, C, docs row and status in one commit ----
+
+OWNER = "Owner Name"
+DAY = "2026-10-28"
+MODEL = "claude-opus-5-5"  # ruling F33: the only model with a known co-author line
+U2, F26 = "u_00026dd0", "func_00026FD0"
+SCAFFOLD = '#include "apoc.h"\n\nINCLUDE_ASM(func_00061F30);\nINCLUDE_ASM(func_00061F50);\n'
+MATCHING_DOC = (
+    "# Matching notes\n\n## Compiler and flags per module\n\n"
+    "| Module / file glob | EXE | Compiler@version | Flags | Evidence | Date |\n"
+    "|---|---|---|---|---|---|\n"
+    "| * | UFO2P.EXE | wcc386@10.6 | -4r -s -fpi | made up | 2026-10-21 |\n"
+    "| * | TACP.EXE | wcc386@10.6 | -4r -s -fpi | made up | 2026-10-21 |\n"
+    "\nProse after the table.\n\n## Known idioms\n\n| a | b |\n|---|---|\n| x | y |\n"
+)
+APPROVE_FILES = ("config/cflags.txt", f"src/ufo2p/{UNIT}.c", f"src/ufo2p/{U2}.c",
+                 "config/ufo2p/status.csv", "decomphub.progress.json", "docs/matching.md",
+                 "config/cflags-proposals.toml")  # fmt: skip
+
+
+class GitEnv(dict):
+    """The environment without CLAUDECODE and git overrides, an empty global config and a
+    made-up identity, so the user's git settings and hooks cannot leak into a tmp repo."""
+
+    def __init__(self, tmp_path: Path) -> None:
+        super().__init__((k, v) for k, v in os.environ.items()
+                         if k != "CLAUDECODE" and not (k.startswith("GIT_")
+                                                       and k != "GIT_EXEC_PATH"))  # fmt: skip
+        config = tmp_path / "global.gitconfig"
+        config.touch()
+        self["GIT_CONFIG_GLOBAL"] = str(config)
+        self["GIT_CONFIG_NOSYSTEM"] = "1"
+        identity = {"user.name": "Flags Test", "user.email": "flags@example.invalid",
+                    "init.defaultBranch": "main", "core.autocrlf": "false"}  # fmt: skip
+        for i, (key, value) in enumerate(identity.items()):
+            self[f"GIT_CONFIG_KEY_{i}"] = key
+            self[f"GIT_CONFIG_VALUE_{i}"] = value
+        self["GIT_CONFIG_COUNT"] = str(len(identity))
+
+    def __repr__(self) -> str:
+        return "<env>"
+
+
+def _git(repo: Path, env: dict, *args: str) -> str:
+    done = subprocess.run(["git", *args], cwd=repo, env=env, capture_output=True, check=True)
+    return done.stdout.decode("utf-8")
+
+
+def _attempt_record(function: str, unit: str, attempt: int, *,
+                    model: str | None = MODEL) -> dict:  # fmt: skip
+    record = _record(function, "PARTIAL", spec(4), attempt=attempt)
+    record.update(unit=unit, model=model, cli_version="2.1.308")
+    return record
+
+
+class FakeGate:
+    """The container `gate EXE/UNIT` stand-in: on a pass it writes the unit's functions as
+    matched rows to status.csv and rewrites the feed; on a failure it scribbles over both
+    (what a half-run tool might leave) and exits 1."""
+
+    def __init__(self, repo: Path, functions: dict[str, tuple[str, ...]], *,
+                 fail: tuple[str, ...] = ()) -> None:  # fmt: skip
+        self.repo, self.functions, self.fail = repo, functions, set(fail)
+        self.calls: list[list[str]] = []
+        self.cflags_seen: list[str] = []
+
+    def __call__(self, argv):
+        argv = list(argv)
+        self.calls.append(argv)
+        self.cflags_seen.append((self.repo / "config" / "cflags.txt").read_text(encoding="utf-8"))
+        exe, unit = argv[argv.index("gate") + 1].split("/")
+        status = self.repo / "config" / exe / "status.csv"
+        feed = self.repo / "decomphub.progress.json"
+        if unit in self.fail:
+            status.write_text("scribbled\n", encoding="utf-8")
+            feed.write_text('{"scribbled": true}\n', encoding="utf-8")
+            return subprocess.CompletedProcess(argv, 1, json.dumps({"ok": False}), "made-up miss")
+        names = self.functions[unit]
+        rows = [line for line in status.read_text(encoding="utf-8").splitlines()[2:]
+                if line and line.split(",")[1] not in names]  # fmt: skip
+        rows += [f"0x{int(n[5:], 16):08X},{n},{unit},matched,100.00,3,{SHA},{DAY}" for n in names]
+        status.write_text(STATUS_HEAD + "".join(r + "\n" for r in sorted(rows)),
+                          encoding="utf-8", newline="\n")  # fmt: skip
+        feed.write_text(json.dumps({"matched": len(rows)}) + "\n", encoding="utf-8", newline="\n")
+        return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True}), "")
+
+
+@dataclasses.dataclass
+class Approval:
+    """A tmp checkout with regated proposals, its git env and the fake container gate."""
+
+    repo: Path
+    env: dict
+    gate: FakeGate
+
+    def git(self):
+        return driver.git_runner(self.repo, env=self.env)
+
+    def head(self) -> str:
+        return _git(self.repo, self.env, "rev-parse", "HEAD").strip()
+
+    def files(self) -> dict[str, bytes | None]:
+        return {rel: ((self.repo / rel).read_bytes() if (self.repo / rel).is_file() else None)
+                for rel in APPROVE_FILES}  # fmt: skip
+
+    def approve(self, ids, **kw):
+        kw.setdefault("env", {})
+        return flags.approve(ids, OWNER, repo=self.repo, today=DAY, runner=self.gate,
+                             git=self.git(), **kw)  # fmt: skip
+
+
+def _queued(repo: Path, pid: str, unit: str, function: str, text: str, *, attempt: int = 3,
+            **changes) -> flags.Proposal:  # fmt: skip
+    path = repo / "build" / "flags" / pid / f"{unit}.c"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    fields = dict(id=pid, unit=unit, glob=f"src/ufo2p/{unit}.c", functions=(function,),
+                  candidate=f"build/flags/{pid}/{unit}.c", candidate_sha256=lf_sha256(text),
+                  evidence=(f"build/driver/{RUN}/ufo2p/{function}/attempt-{attempt}/checks/"
+                            "0005.json",),
+                  status="regated", regate_exit=0, regate_variant="as-written",
+                  regate_cflags_sha256=lf_sha256(CFLAGS_TEXT),
+                  regate_log=f"build/flags/{pid}/regate.json")  # fmt: skip
+    fields.update(changes)
+    return _proposal(**fields)
+
+
+def approve_repo(tmp_path: Path, *, fail: tuple[str, ...] = (), second: bool = False,
+                 records: tuple[dict, ...] | None = None, **changes) -> Approval:  # fmt: skip
+    """A committed checkout: cflags.txt (the `*` rule), docs/matching.md, the ufo2p status.csv,
+    the feed, attempts.jsonl, scaffolded units, and F-0001 (u_00060c50, func_00061F30)
+    regated; with `second`, also F-0002 (u_00026dd0, func_00026FD0)."""
+    repo = make_repo(tmp_path)
+    env = GitEnv(tmp_path)
+    if records is None:
+        records = (_attempt_record(F30, UNIT, 3), _attempt_record(F26, U2, 2))
+    files = {
+        ".gitignore": "build/\n",
+        "docs/matching.md": MATCHING_DOC,
+        "decomphub.progress.json": "{}\n",
+        f"src/ufo2p/{UNIT}.c": SCAFFOLD,
+        f"src/ufo2p/{U2}.c": f'#include "apoc.h"\n\nINCLUDE_ASM({F26});\n',
+        "progress/attempts.jsonl": "".join(json.dumps(r) + "\n" for r in records),
+    }
+    for rel, text in files.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text, encoding="utf-8", newline="\n")
+    write_status(repo, "ufo2p", [(0x61F30, F30, UNIT, "partial", "77.14"),
+                                 (0x61F50, F50, UNIT, "partial", "46.45"),
+                                 (0x26FD0, F26, U2, "partial", "50.00")])  # fmt: skip
+    proposals = [_queued(repo, "F-0001", UNIT, F30, c_text(F30, marked=(F50,), tag="hit"),
+                         **changes)]  # fmt: skip
+    if second:
+        proposals.append(_queued(repo, "F-0002", U2, F26, c_text(F26, tag="hit two"),
+                                 attempt=2, siblings=(), alternatives=()))  # fmt: skip
+    flags.write_queue(queue_of(repo), proposals)
+    _git(repo, env, "init", "-q")
+    _git(repo, env, "add", "-A")
+    _git(repo, env, "commit", "-q", "-m", "base")
+    return Approval(repo, env, FakeGate(repo, {UNIT: (F30,), U2: (F26,)}, fail=fail))
+
+
+def test_approve_lands_one_commit(tmp_path):
+    """D-12/D-13/D-32: one commit holds the rule, the C, status.csv, the feed, the queue and the
+    docs row; the message has the co-author, Matched-By and Flags-Approved-By lines."""
+    a = approve_repo(tmp_path)
+    base = a.head()
+    candidate = (a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.c").read_bytes()
+    report = a.approve(["F-0001"])
+    assert report.landed == ("F-0001",) and report.exit_code == 0
+    assert _git(a.repo, a.env, "rev-list", "--count", f"{base}..HEAD").strip() == "1"
+    changed = set(_git(a.repo, a.env, "show", "--name-only", "--format=", "HEAD").split())
+    assert changed == {"config/cflags.txt", f"src/ufo2p/{UNIT}.c", "config/ufo2p/status.csv",
+                       "decomphub.progress.json", "config/cflags-proposals.toml",
+                       "docs/matching.md"}  # fmt: skip
+    assert _git(a.repo, a.env, "status", "--porcelain") == ""
+    cflags_text = (a.repo / "config" / "cflags.txt").read_text(encoding="utf-8")
+    assert cflags_text == CFLAGS_TEXT + (f"src/ufo2p/{UNIT}.c  wcc386@10.6 -4r -ot -s -fpi  "
+                                         f"# F-0001 approved {OWNER} {DAY}\n")  # fmt: skip
+    assert (a.repo / "src" / "ufo2p" / f"{UNIT}.c").read_bytes() == candidate
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert (p.status, p.approved_by, p.approved_date) == ("landed", OWNER, DAY)
+    row = (f"| src/ufo2p/{UNIT}.c | UFO2P.EXE | wcc386@10.6 | -4r -ot -s -fpi | F-0001 approved "
+           f"by {OWNER} (re-gate log under build/flags/) | {DAY} |\n")  # fmt: skip
+    doc = (a.repo / "docs" / "matching.md").read_text(encoding="utf-8")
+    assert "| * | TACP.EXE | wcc386@10.6 | -4r -s -fpi | made up | 2026-10-21 |\n" + row in doc
+    assert doc.count(row) == 1
+    message = _git(a.repo, a.env, "log", "-1", "--format=%B")
+    lines = message.splitlines()
+    assert lines[0] == f"feat(ufo2p): match {F30} in {UNIT} under approved flags F-0001 (C89)"
+    assert driver.COAUTHOR in lines and driver.MATCHED_BY in lines
+    assert f"Flags-Approved-By: {OWNER} (F-0001, {DAY})" in lines
+    assert f"{F50} partial 46.45" in message  # D-32: the siblings the approval covers
+    assert a.gate.calls == [[*driver.CONTAINER_CLI, "gate", f"ufo2p/{UNIT}", "--attempts", "3",
+                             "--json"]]  # fmt: skip
+    assert "F-0001 approved" in a.gate.cflags_seen[0]  # the gate ran under the new rule
+    shown = report.format()
+    assert f"sibling {F50} partial 46.45" in shown and "F-0001" in shown
+
+
+def test_approve_lands_the_reduced_variant(tmp_path):
+    """07-17 note: a proposal that re-gated on D-28's reduced variant lands that C."""
+    reduced = c_text(F30, marked=(F50,), tag="reduced")
+    a = approve_repo(tmp_path, regate_variant="reduced", variant_sha256=lf_sha256(reduced),
+                     reverted=(F50,))  # fmt: skip
+    path = a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c"
+    path.write_text(reduced, encoding="utf-8", newline="\n")
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert (a.repo / "src" / "ufo2p" / f"{UNIT}.c").read_bytes() == path.read_bytes()
+
+
+def test_approve_restores_on_gate_failure(tmp_path):
+    """A failing gate: every file back byte for byte, the queue row failed with the reason,
+    no commit."""
+    a = approve_repo(tmp_path, fail=(UNIT,))
+    base, before = a.head(), a.files()
+    report = a.approve(["F-0001"])
+    assert report.exit_code == 1 and report.landed == () and report.failed == ("F-0001",)
+    assert a.head() == base
+    after = a.files()
+    for rel in APPROVE_FILES:
+        if rel != "config/cflags-proposals.toml":
+            assert after[rel] == before[rel], rel
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert p.status == "failed" and "gate" in p.reason and "made-up miss" in p.reason
+    assert (p.approved_by, p.approved_date) == ("", "")
+    assert _git(a.repo, a.env, "diff", "--cached", "--name-only") == ""
+
+
+def test_approve_order(tmp_path):
+    """DEC-03 ordering: a batch lands in the given ID order, one commit each; the second
+    proposal's re-gate on the pre-batch cflags.txt stays valid inside the batch."""
+    a = approve_repo(tmp_path, second=True)
+    base = a.head()
+    report = a.approve(["F-0002", "F-0001"])
+    assert report.landed == ("F-0002", "F-0001")
+    subjects = _git(a.repo, a.env, "log", "--format=%s", f"{base}..HEAD").splitlines()
+    assert subjects == [
+        f"feat(ufo2p): match {F30} in {UNIT} under approved flags F-0001 (C89)",
+        f"feat(ufo2p): match {F26} in {U2} under approved flags F-0002 (C89)",
+    ]
+    gated = [call[call.index("gate") + 1] for call in a.gate.calls]
+    assert gated == [f"ufo2p/{U2}", f"ufo2p/{UNIT}"]
+    text = (a.repo / "config" / "cflags.txt").read_text(encoding="utf-8")
+    rules = [line.split()[0] for line in text.splitlines() if "approved" in line]
+    assert rules == [f"src/ufo2p/{U2}.c", f"src/ufo2p/{UNIT}.c"]
+    assert {p.status for p in flags.read_queue(queue_of(a.repo))} == {"landed"}
+
+
+def test_cli_approve(tmp_path, monkeypatch, capsys):
+    a = approve_repo(tmp_path)
+    git = a.git()
+    monkeypatch.setattr(driver, "command_runner", lambda repo, **kw: a.gate)
+    monkeypatch.setattr(driver, "git_runner", lambda repo, **kw: git)
+    monkeypatch.delenv("REVERSEAPOC_CLAIM", raising=False)
+    assert cli_main(["flags", "approve", "F-0001", "--by", OWNER, "--repo", str(a.repo)]) == 0
+    out = capsys.readouterr().out
+    assert "F-0001" in out and "landed" in out
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert p.status == "landed" and p.approved_by == OWNER

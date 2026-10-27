@@ -1714,10 +1714,33 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
     rg.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
     rg.add_argument("--json", action="store_true", help="print the report as JSON")
     rg.set_defaults(flags_func=_flags_regate)
-    for verb in (pr, ls, rg):
+    for verb in (pr, ls, rg, *_add_flags_owner_verbs(verbs)):
         verb.add_argument("--repo", type=Path, default=REPO_ROOT,
                           help=f"the checkout whose config/ and build/ are read; {default}")
     p.set_defaults(func=_cmd_flags)
+
+
+# ---- flags approve / default: the owner's verbs (D-12, D-14, D-33; plan 07-24) ----
+
+
+def _flags_approve(args: argparse.Namespace) -> int:
+    """Exit 0 when every proposal landed, 1 when a gate failed (restored, marked failed)."""
+    report = flags.approve(args.ids, args.by, repo=args.repo)
+    print(report.format())
+    return report.exit_code
+
+
+def _add_flags_owner_verbs(verbs: argparse._SubParsersAction) -> tuple:
+    ap = verbs.add_parser(
+        "approve",
+        help="OWNER ONLY: land regated proposals in the given order, each as one gated match "
+        "commit (rule in config/cflags.txt, the C, status.csv, the feed, the queue, the "
+        "docs/matching.md row); refused while a drive runs (host; the gate runs in the container)",
+    )
+    ap.add_argument("ids", nargs="+", metavar="ID", help="e.g. F-0001; landed in this order")
+    ap.add_argument("--by", required=True, metavar="NAME", help="the approving owner's name")
+    ap.set_defaults(flags_func=_flags_approve)
+    return (ap,)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -1004,3 +1004,28 @@ def regate(
         done.append(updated)
         runs.append(variants)
     return RegateReport(tuple(done), tuple(runs))
+
+
+# ---- approve: the owner lands an approved per-unit rule (D-12, D-13, D-32; plan 07-24) ----
+
+
+@dataclass(frozen=True)
+class ApproveReport:
+    landed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    lines: tuple[str, ...] = ()
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_MISMATCH if self.failed else EXIT_OK
+
+    def format(self) -> str:
+        return "\n".join(self.lines)
+
+
+def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None,
+            runner: Callable[[Sequence[str]], Any] | None = None,
+            git: Callable[[Sequence[str]], Any] | None = None, queue: Path | None = None,
+            env: Mapping[str, str] | None = None) -> ApproveReport:  # fmt: skip
+    """RED stub (07-24 Task 1)."""
+    return ApproveReport()
