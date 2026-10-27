@@ -261,3 +261,73 @@ None.
 *Completed: 2026-10-27*
 
 ## Self-Check: PASSED
+
+## Fix round 1
+
+The findings came from the task review (I1, I2, I3). The orchestrator ruled on all three.
+
+**Changes.**
+- **I1: the allowlist never exempts a declaration.** A declaration classifier (`_Declarations`) replaces the old file-scope declarator scan, which missed most declaration shapes.
+  - A placeholder is never allowlisted when a declaration introduces it in this file. That covers every scope and every declarator shape:
+    - a function definition;
+    - an object (pointer, array or plain);
+    - a function pointer;
+    - a block `static` or a local;
+    - a parameter, including a function-pointer parameter;
+    - a typedef, including a function-pointer typedef;
+    - a struct or union member;
+    - a struct or union tag with a body;
+    - an enum constant;
+    - a `static` prototype;
+    - a `#define`/`#undef` macro name.
+  - Typedef names in scope come from the unit and every project header it includes, common.h included. So `s32 x;` reads as a declaration, and a typedef'd placeholder used as a type is a reference.
+- **I2: header references take the allowlist.**
+  - Headers are now linted after all units. Each header takes the allowlist rows of every EXE whose units include it. The rule is the same as in units: references only, never declarations.
+  - The reserved headers are read for their typedef names but are still not linted.
+- **I3: `--tier N` is a gate.** Each of these is exit 2 with a message that names the cause:
+  - a missing config/mechanics-members.csv;
+  - an unknown tier;
+  - a tier without a sign-off;
+  - a tier whose sign-off is stale, that is, `mechanics.signed_tiers` no longer accepts its digest;
+  - a tier that leaves no matched unit to check ("nothing to check is not a pass").
+  - The committed config has no tiers and no members file yet, so `--tier N` on the committed tree is exit 2 today.
+
+**Interpretation to confirm.** The ruling says "only uses (references) can be" exempt. I kept two declaration forms as references:
+- an `extern` declaration (any scope);
+- a non-static function prototype (at file or block scope, not a parameter).
+
+Both declare a row that is defined in another unit, and C89 needs them to reference unnamed data and callees: u_00089980's `void func_00089980(int a, int b);` and `extern short D_001A714C;`. If they also counted as never-exempt declarations, an allowlisted callee could never be declared, so strict exit 0 would be unreachable. That is the F5 deadlock again.
+
+The behaviour sits in one place, `_Declarations._declarator`: the `OUTSIDE` return for `extern` and for prototypes. If the owner wants those declarations refused too, flipping it is a one-line change, and `REFERENCES` in tests/test_readlint.py pins today's choice.
+
+**Tests (RED first, `f171a59`).** Each name below is a test function in tests/test_readlint.py.
+- I1:
+  - `test_allowlist_never_exempts_a_declaration[...]` covers 16 shapes. They include the reviewer's three probes (function pointer, block static, local), a parameter and a typedef, as the ruling asks.
+  - `test_allowlist_exempts_references[...]` covers 7 reference forms.
+- I2: `test_header_references_take_the_allowlist` and `test_header_allowlist_follows_the_including_exe`.
+- I3:
+  - `test_tier_without_members_file_is_a_tool_error`;
+  - `test_unsigned_tier_is_a_tool_error[not signed|stale]`;
+  - `test_tier_with_nothing_to_check_is_a_tool_error`.
+  - The `two_units` fixture now signs its tiers with the real `tier_digest`.
+
+**RED evidence.**
+- Target: `test_allowlist_never_exempts_a_declaration[function-pointer]`.
+- JUnit report: `build/red/07-27-fr1.xml`. Record: `build/red/07-27-fr1.json`.
+- Classifier: `RED_EVIDENCE_OK` / `target_test_failed`. 159 tests ran and 17 failed: 12 declaration shapes, the header-allowlist test and the 4 tier-gate tests.
+- Semantic assessment: the target failed on its assertion, `[] == [1]`, because the allowlisted function-pointer definition was exempted. This was not a setup fault.
+- Cases that already passed, as expected:
+  - the declaration shapes the old scan caught (array, second declarator, typedef-name type, function definition);
+  - every reference form;
+  - `test_header_allowlist_follows_the_including_exe`, since headers got no allowlist before.
+
+**Fix:** `0595ecc`.
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_readlint.py tests/test_unitdefs.py`: **191 passed**.
+- `uv run pytest -q` (full host suite): **3539 passed, 247 skipped**. The skip count is unchanged, and no skip reason is new.
+- `uv run ruff check .`: All checks passed.
+- `uv run reverseapoc readlint src/`: exit 1 with the same **37 violations** (RL01 24, RL02 1, RL03 10, RL06 2).
+- `uv run reverseapoc readlint --report src/`: exit 0.
+
+**Container step deferred to the orchestrator:** `docker compose build && docker compose run --rm test`.
