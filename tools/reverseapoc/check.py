@@ -252,9 +252,43 @@ def with_roots(options: CompileOptions, *, src_root: Path, config_root: Path) ->
                                                 DEFAULT_CONFIG))  # fmt: skip
 
 
-def _compile(compile_fn: Callable[..., Any], src: Path, obj: Path, options: CompileOptions) -> Any:
+def unit_rule_path(stem: str, unit: str) -> str:
+    """The logical path a unit's cflags rule is selected by, wherever its file is compiled
+    from (D-27 P1): the committed one, src/<exe>/<unit>.c."""
+    return f"src/{stem}/{unit}{SOURCE_SUFFIX}"
+
+
+def _compile_root_for(src_root: Path | None) -> Path:
+    """The compile root of a src tree (None: the committed one): the guest paths, the -i= list
+    and the stamp's headers are taken from it (D-27 P1, research K4). A tree outside the
+    repository compiles from its parent, so its units are src/<exe>/<unit>.c there too. Inside
+    it, a tree named src whose parent holds include/ (a D-24 view under build/driver/, the
+    committed src/ itself) compiles from that parent, with the view's own headers; any other
+    tree (a flag re-gate's copy of src/, a saved attempt's best/) from the repository root."""
+    resolved = Path(src_root if src_root is not None else DEFAULT_SRC).resolve()
+    repo = Path(REPO_ROOT).resolve()
+    if not resolved.is_relative_to(repo):
+        return resolved.parent
+    view = resolved.name == "src" and (resolved.parent / INCLUDE_DIR).is_dir()
+    return resolved.parent if view and resolved.parent != repo else REPO_ROOT
+
+
+def _compile(
+    compile_fn: Callable[..., Any],
+    src: Path,
+    obj: Path,
+    options: CompileOptions,
+    *,
+    rule_path: str | None = None,
+    root: Path | None = None,
+) -> Any:
+    """Compile `src` into `obj` with `options`. `rule_path` (unit_rule_path) picks the cflags
+    rule, None the source's own path; `root` is the compile root, None the one of
+    `options.src_root` (_compile_root_for)."""
+    root = root if root is not None else _compile_root_for(options.src_root)
     result = compile_fn(src, obj, cflags=options.cflags, manifest=options.watcom_manifest,
-                        watcom_dir=options.watcom_dir, log=options.log)  # fmt: skip
+                        watcom_dir=options.watcom_dir, log=options.log, rule_path=rule_path,
+                        root=root)  # fmt: skip
     if not result.ok:
         output = result.output.strip()
         raise CheckError(f"compile failed: {result.format()}" + (f"\n{output}" if output else ""))
@@ -916,12 +950,16 @@ def check_source(
     objdiff_runner: Runner,
     options: CompileOptions | None = None,
     unit_file: bool = True,
+    rule_path: str | None = None,
 ) -> SourceCheck:
     """Compile `src`, convert it, cut the target of `rows` and check every function the object
     defines among `rows` (objdiff, relocation check, bytes). `unit` names the outputs
     <root>/<exe>/obj|base|target/<unit>.*, where <root> is object_root(build_dir, options).
+    A unit file is compiled under its unit's cflags rule, selected by `rule_path` (None:
+    unit_rule_path of `exe` and `unit`), wherever `src` is (D-27 P1).
     Plan 05-18 calls this for the cmain386 runtime pair with `unit_file=False`: that source is
-    Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03). A
+    Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03), and
+    takes the rule of its own path unless `rule_path` is given. A
     unit file with a path include is refused before it compiles (refuse_includes)."""
     check_unit_name(unit)
     options = options or CompileOptions()
@@ -929,7 +967,8 @@ def check_source(
     text = read_source(src)
     if unit_file:
         refuse_includes(src, text)
-    compiled = _compile(compile_fn, Path(src), paths.obj, options)
+        rule_path = rule_path or unit_rule_path(exe.stem, unit)
+    compiled = _compile(compile_fn, Path(src), paths.obj, options, rule_path=rule_path)
     module = read_module(paths.obj)
     _write(paths.base, write_elf(convert(module)))
     target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
@@ -970,26 +1009,26 @@ def _unread_state(stamp: Path) -> str:
     return "unreadable or of the wrong shape"
 
 
-def _compile_root(src_root: Path) -> Path:
-    """The root `reverseapoc cc` selected the unit's cflags rule from: the repository (ninja's
-    cc edge runs there, as compile_source's default root) when the src tree is inside it, else
-    the src tree's parent, so a tree elsewhere names its units src/<exe>/<unit>.c as well."""
-    resolved = Path(src_root).resolve()
-    return REPO_ROOT if resolved.is_relative_to(REPO_ROOT.resolve()) else resolved.parent
-
-
 def _stale(obj: Path, src: Path, why: str) -> CheckError:
     return CheckError(f"stale object {obj}: {why}; run ninja (`ninja objects`) to rebuild it "
                       f"from {src}")  # fmt: skip
 
 
 def check_provenance(
-    obj: Path, src: Path, options: CompileOptions, *, src_root: Path, data: bytes
+    obj: Path,
+    src: Path,
+    options: CompileOptions,
+    *,
+    src_root: Path,
+    data: bytes,
+    rule_path: str | None = None,
 ) -> None:
     """DI-06 part a: ninja's land step lands `obj` only while its provenance stamp equals what
     `reverseapoc cc` would record for `src` today (the source, the cflags table and Watcom
     manifest of `options`, the rule the table assigns, the headers under include/) and for
-    `obj` as it is on disk (its bytes are the ones stamped). A stamp that is missing,
+    `obj` as it is on disk (its bytes are the ones stamped). The rule and the compile root are
+    selected as a compile of `src` selects them: by `rule_path` (unit_rule_path; None: the
+    source's own path) and _compile_root_for(`src_root`) (D-27 P1). A stamp that is missing,
     unreadable, of another shape or format, or stale is a CheckError naming the object. Nothing
     turns this off: the land step has no option or variable that skips it."""
     stamp = provenance_path(obj)
@@ -999,9 +1038,9 @@ def check_provenance(
     cflags = Path(options.cflags) if options.cflags is not None else DEFAULT_CFLAGS
     manifest = (Path(options.watcom_manifest) if options.watcom_manifest is not None
                 else DEFAULT_WATCOM_MANIFEST)  # fmt: skip
-    root = _compile_root(src_root)
+    root = _compile_root_for(src_root)
     try:
-        rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
+        rule = source_rule(src, cflags=cflags, root=root, manifest=manifest, rule_path=rule_path)
         today = provenance(rule, src, data, cflags=cflags, manifest=manifest, root=root)
     except (OSError, ValueError) as exc:
         raise CheckError(f"cannot check the provenance of {obj}: {exc}") from exc
@@ -1035,15 +1074,17 @@ def _land_exe(
             continue  # a unit without C has nothing to land
         obj = UnitPaths.of(root, exe.stem, unit.unit).obj
         text = read_source(src)
+        rule_path = unit_rule_path(exe.stem, unit.unit)
         if compile_fn is not None and (exe.target.name, unit.unit) not in fresh:
             refuse_includes(src, text)
-            _compile(compile_fn, src, obj, options)
+            _compile(compile_fn, src, obj, options, rule_path=rule_path,
+                     root=_compile_root_for(src_root))  # fmt: skip
         elif not obj.is_file():
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
                              f"{src}")  # fmt: skip
         data = obj.read_bytes()  # read once: the stamp check hashes what is parsed and landed
         if compile_fn is None:
-            check_provenance(obj, src, options, src_root=src_root, data=data)
+            check_provenance(obj, src, options, src_root=src_root, data=data, rule_path=rule_path)
         rows = [row for row in exe.rows if row.unit == unit.unit]
         module = parse_module(data, obj)
         account = account_unit(module, rows, exe.symbols, text)

@@ -617,13 +617,15 @@ def compile_source(
     platform: str | None = None,
     log: Path | str | None = None,
     stamps: Path | str | None = None,
+    rule_path: str | None = None,
 ) -> CompileResult:
-    """Pick the cflags rule for `src` (by its root-relative POSIX path) and compile with it.
+    """Pick the cflags rule for `src` (by `rule_path`, else its root-relative POSIX path; see
+    source_rule) and compile with it.
     A successful compile writes the provenance stamp `<obj>.prov.json` (provenance_path) once
     the object is complete. compile_rule removes the old stamp with the old object, right before
     the run, so a failed, refused-after-the-run or interrupted compile leaves none; a refusal
     before the run touches neither the old object nor its stamp."""
-    rule = source_rule(src, cflags=cflags, root=root, manifest=manifest)
+    rule = source_rule(src, cflags=cflags, root=root, manifest=manifest, rule_path=rule_path)
     # Taken before the compile: an input edited during it no longer matches the stamp.
     inputs = input_provenance(rule, src, cflags=cflags, manifest=manifest, root=root)
     result = compile_rule(
@@ -665,12 +667,16 @@ def source_rule(
     cflags: Path | str | None = None,
     root: Path | str | None = None,
     manifest: Path | str | None = None,
+    rule_path: str | None = None,
 ) -> Rule:
-    """The cflags rule compile_source compiles `src` with (the last rule matching its
-    root-relative POSIX path)."""
+    """The cflags rule compile_source compiles `src` with: the last rule matching `rule_path`,
+    the logical repo-relative path `src/<exe>/<unit>.c` of a unit compiled from elsewhere (a
+    D-24 view, a flag re-gate's copy, a saved attempt; D-27), else `src`'s own root-relative
+    POSIX path."""
     root = Path(root if root is not None else REPO_ROOT).resolve()
     versions = tuple(watcom.load_watcom_manifest(manifest))
-    return select_rule(load_cflags(cflags, versions=versions), _root_relative(src, root))
+    path = _root_relative(src, root) if rule_path is None else rule_path
+    return select_rule(load_cflags(cflags, versions=versions), path)
 
 
 # ---- the provenance stamp (DI-06 part a) -------------------------------------------------------
