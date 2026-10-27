@@ -778,9 +778,9 @@ def test_assembler_group_on_the_page(tmp_path):
     colors = progress.TREEMAP_COLORS
     style = style_of(page).splitlines()
     assert f"i.l{{background:{colors['library']}}}" in style
-    assert progress.LEGEND_LABELS["library"] == "library or assembler, not decompiled"
+    assert progress.LEGEND_LABELS["library"] == "library or assembler"
     assert "<li>" + '<span class="swatch" style="background:' + colors["library"] + (
-        '" aria-hidden="true"></span>library or assembler, not decompiled</li>') in page
+        '" aria-hidden="true"></span>library or assembler</li>') in page
     root = ET.fromstring((out / "progress.svg").read_text(encoding="utf-8"))
     fills = [r.get("fill") for r in root.iter("{http://www.w3.org/2000/svg}rect")]
     assert fills.count(colors["library"]) == 2  # the runtime row and the asm row
