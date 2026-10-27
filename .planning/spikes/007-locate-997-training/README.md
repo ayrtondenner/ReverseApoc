@@ -42,7 +42,7 @@ from them is committed, and no finding is posted anywhere: findings go to the ow
 From the main checkout (orig/ is gitignored and absent from worktrees), host only:
 
 ```
-uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] [--mutant]
+uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] [--mutant] [--plant-chain]
 uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant]
 uv run python .planning/spikes/007-locate-997-training/q3_training.py [--plant]
 ```
@@ -55,35 +55,73 @@ rate constants only. q2 and q3 import q1's shared reader (`Image`, the constant 
 
 ### #997 lead for the owner
 
-**Answer.** Both EXEs pace game time on the BIOS tick and advance the clock in 36ths of a game
-second. There is no 36 Hz or 144 Hz timer. Each frame waits until the BIOS tick (INT 1Ah, read
-through `int386_`, 1,193,182 / 65,536 = 18.2065 Hz) has moved at least once since the frame
-began. It then adds the current speed value to a 16-bit sub-second accumulator. When the
-accumulator reaches 36, it subtracts 36 and adds one game second. Seconds roll over at 60 into
-minutes, minutes at 60 into hours, hours at 24 into the calendar. One call advances at most one
-game second, so a frame never adds more than one second.
+**How to read this lead.** Each statement carries its evidence class:
+- **[script]** a spike script checks it (q1/q2/q3 below, each `ALL PASS`, each planted run fails);
+- **[hand]** read by hand in the private disassembly; no script asserts it;
+- **[assumption]** standard PC/BIOS behaviour or research, not checked in our bytes.
 
-- **Cityscape (UFO2P) speeds** are 1, 2, 4 and 6 units per frame. The speed labels map to them as
-  Slow = 1, Normal = 2, Double = 4 and Quadruple = 6. Quadruple is therefore 3 times Normal, not
-  4 times.
-- At most 18.2065 frames per real second, the clock runs at most at 0.506 / 1.011 / 2.023 / 3.034
-  game seconds per real second for Slow / Normal / Double / Quadruple. These are upper bounds: a
-  frame that takes longer than one tick runs slower.
-- At Normal speed a game second takes 18 frames, about 0.989 real seconds, so Normal is about real
+**Answer.** Both EXEs pace game time on the BIOS tick and advance the clock in 36ths of a game
+second.
+- The frame loop reads the BIOS tick through `int386_(0x1A)` and busy-waits until it has moved at
+  least once since the frame began [script: q1 readers, q2 `paces-on-bios-tick`].
+- Then it adds the current speed value to a 16-bit sub-second accumulator. At 36 it subtracts 36
+  and adds one game second [script: q2 `accumulator-modulus-is-36`, both EXEs]. At most one game
+  second per frame [script: q2 `one-second-per-frame`]. Seconds roll over at 60, minutes at 60
+  and hours at 24 into the calendar [hand].
+- **The BIOS tick stays at 18.2 Hz while the sound timer owns INT 8.** The sound library
+  reprograms the PIT for its fastest event (a 30 Hz event, per research) [assumption: research].
+  But it keeps the BIOS clock: it saves the old INT 8 vector, and an event callback far-returns
+  into it, registered by the timer init [script: q1 `bios-chain-cadence`]. That event's
+  increment is 0x123333 (18.2 in 16.16) divided by the PIT rate [script: the dividend; hand: the
+  divide by the PIT rate]. The ISR callback adds the increment on every interrupt [script] and
+  fires the event when the accumulator passes 1.0 [hand].
+- So the old handler runs about 18.2 times a second whatever the PIT rate: 0x123333 / 0x10000 =
+  18.2000 Hz, or 18.2001 Hz with a 30 Hz event once integer rounding is counted. At the library's
+  DOS rate (divisor 0xFFFF) it runs on every interrupt: 1,193,182 / 65,535 = 18.2068 Hz [hand].
+- That INT 1Ah returns the tick count this old handler keeps is standard BIOS behaviour under
+  DOS/4GW [assumption].
+- There is no 36 Hz or 144 Hz game timer. The only PIT programming is in the sound library
+  [script: q1 `pit-int8-sites`].
+- **Exception to "every frame waits".** The UFO2P frame skips the BIOS read and the wait while
+  the no-wait counter `D_000D4D5C` is nonzero after the frame's own decrement, or while the byte
+  `D_00183BAC` is set [script: q2 `wait-skip-guards` finds both tests before the wait].
+  - All six speed setters write the counter, and the only constants any row stores to it are
+    0, 1 and 600 [script].
+  - A value of 1 is used up by the decrement before the test, so steady play at speeds 1/2/4/6
+    waits every frame [hand].
+  - The 600 setting stores 600, so frames skip the wait while it counts down [hand]. One more
+    row stores a computed value (`func_0004B1B0`) [hand: not resolved].
+  - TACP's frame step skips its wait when a flag computed from `D_000E6D64`, `D_001B7BAC` and
+    `D_0027A0EB` says so [script: the globals; hand: the condition].
+
+**Cityscape (UFO2P) speeds.**
+- The speed values are 1, 2, 4 and 6 units per frame [script: q2 `speed-values`]. The labels
+  are Slow = 1, Normal = 2, Double = 4 and Quadruple = 6 [script: q2
+  `speed-table-one-entry-per-label`]. So Quadruple is 3 times Normal, not 4.
+- **Steady-state rates** (every frame waits one tick, and no frame overruns it): the clock runs
+  at about 0.506 / 1.011 / 2.022 / 3.033 game seconds per real second for Slow / Normal /
+  Double / Quadruple. That is speed x 18.2 / 36 [derived from script facts + the
+  18.2 Hz chain above]. A frame that takes longer than one tick runs slower, so these are upper
+  bounds for steady state only. While the no-wait counter is above 1, frames are not
+  rate-limited by the tick at all.
+- At Normal a game second takes 18 frames, about 0.989 real seconds, so Normal is about real
   time.
-- 0 is pause. A sixth setter writes 600 (0x258), which has no label among the four, and sets the
-  flag `D_000D5064`. While that flag is set, each frame takes a separate path, `func_00011520`.
-  That path does not use the 36-unit accumulator: it clears the seconds and the accumulator and
-  moves the minutes up to the next multiple of 5. So this mode advances in 5-minute steps, a
-  time skip rather than a speed. This was read by hand (see Investigation Trail), not checked by
-  a script.
-- **Battlescape (TACP)** uses the same rule in its own copies. The speed values seen there are 0,
-  1, 2 and 4. The start value is 4 when the byte `D_000E6D66` is set and 0 otherwise, and 1
-  when the byte `D_0027A805` is set. TACP's labels are not located yet (q4, plan 07-08).
-- **PR #1688.** Both halves of its claim are confirmed by our bytes in both EXEs:
-  - the main loop busy-waits on the BIOS clock (18.2065 Hz);
-  - the loop adds a speed value into a sub-second accumulator, and 36 units make one game second.
-  - Its "nothing runs at 36 Hz" also holds: the only PIT programming is in the sound library (q1).
+- 0 is pause [script: the setter stores 0]. The sixth setter writes 600 (0x258) and sets
+  `D_000D5064`. With that flag set, each frame takes a separate path, `func_00011520`, which does
+  not use the accumulator: it clears the seconds and the accumulator and moves the minutes up to
+  the next multiple of 5. So 600 is a 5-minute time skip, not a speed [hand].
+
+**Battlescape (TACP).**
+- Same rule in its own functions [script]. Speed values 0, 1, 2 and 4 [script].
+- The start value is 4 when the byte `D_000E6D66` is set and 0 otherwise, and 1 when the byte
+  `D_0027A805` is set [hand].
+- TACP's labels are not located yet (q4, plan 07-08).
+
+**PR #1688.** Our bytes confirm both halves of its claim in both EXEs:
+- the main loop busy-waits on the BIOS clock [script], which stays at 18.2 Hz under the sound
+  timer [script + hand + assumption, as above];
+- the loop adds a speed value into a sub-second accumulator, and 36 units make one game second
+  [script].
 
 **Addresses** (installed build, functions.csv names):
 
@@ -126,6 +164,7 @@ PASS UFO2P.EXE int1a-readers immediate [0x00011430] expected [0x00011430]
 PASS UFO2P.EXE int1a-pinned-readers via a register set once [0x00010940] expected [0x00010940]
 PASS UFO2P.EXE callers-0x00011430 own scan 28 CallIndex 28 expected 28
 PASS UFO2P.EXE no-46c-read absolute [0x46c] reads 0
+PASS UFO2P.EXE bios-chain-cadence saved old INT 8 vector [0x0013BD34 0x0013BD38]; chain rows [0x000C9099] via event callback [0x000C3692] registered by [0x000C2F1F]; increment dividend in [0x000C3035 0x000C33BA]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x0013D80B] added per interrupt in [0x000C35C8], the ISR callback the same writer installs: True
 PASS TACP.EXE raw-image objects 2 bytes-equal True fixups 24438 equal-to-le.py True
 PASS TACP.EXE pit-int8-sites pit 8 int8 3 all in 0x000CC151..0x000CC402 True rows [0x000CC1CD 0x000CC213 0x000CC32D]
 PASS TACP.EXE unresolved-vectors 6 sites in rows [0x000A5750 0x000A58A0]
@@ -134,6 +173,7 @@ PASS TACP.EXE int1a-pinned-readers via a register set once [] expected []
 PASS TACP.EXE callers-0x00011500 own scan 35 CallIndex 35 expected 35
 PASS TACP.EXE callers-0x000116B0 own scan 10 CallIndex 10 expected 10
 PASS TACP.EXE no-46c-read absolute [0x46c] reads 0
+PASS TACP.EXE bios-chain-cadence saved old INT 8 vector [0x002B4050 0x002B4054]; chain rows [0x000CC3A9] via event callback [0x000C6386] registered by [0x000C5C13]; increment dividend in [0x000C5D29 0x000C60AE]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x002B5B27] added per interrupt in [0x000C62BC], the ISR callback the same writer installs: True
 ALL PASS
 ```
 
@@ -149,6 +189,19 @@ ALL PASS
   block). It is the cityscape frame loop (q2). Research's caller count of 28 is for
   `func_00011430` only.
 - No game or thunk row reads the BIOS tick word at linear 0x46C directly.
+- `bios-chain-cadence` (fix round 1). The sound library keeps the BIOS clock running while it
+  owns INT 8.
+  - Its install saves the old vector (UFO2P `D_0013BD34`/`D_0013BD38`).
+  - `func_000C9099` far-returns into that saved vector. Only the event callback `func_000C3692`
+    calls it, and the timer init `func_000C2F1F` registers that callback.
+  - The rate rows `func_000C3035` and `func_000C33BA` compute that event's increment from the
+    dividend 0x123333, which is 18.2 in 16.16.
+  - The ISR callback `func_000C35C8`, which the same init installs, adds the increments on every
+    interrupt.
+  - TACP has the same chain at `func_000CC3A9`, `func_000C6386`, `func_000C5C13`,
+    `func_000C5D29`/`func_000C60AE` and `func_000C62BC`.
+  - The planted run that expects the PIT clock as the dividend (a BIOS tick that would follow the
+    PIT rate) fails in both EXEs.
 
 ### q2 tick rule
 
@@ -160,6 +213,7 @@ PASS UFO2P.EXE loop-located-ufo2p loop rows 2 [0x000105D0:0x00010603..0x000108CE
 PASS UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 36 (PR #1688)
 PASS UFO2P.EXE one-second-per-frame `sub _, 36` count 1 in 0x0004AB30 (one per call: at most one game second per frame)
 PASS UFO2P.EXE paces-on-bios-tick rows calling the clock [0x00010940]; busy-wait on int386 0x1A [0x00010940:0x00011127..0x00011174]
+PASS UFO2P.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000D4D5C 0x00183BAC]; rows writing both the speed and 0x000D4D5C: 15, the 6 speed setters among them True; constants stored to it [0, 1, 600]
 PASS UFO2P.EXE speed-values stored [0, 1, 2, 4, 6, 600] compared [0, 1, 2, 4, 6, 60, 600] at 0x000D4D58
 PASS UFO2P.EXE get-text-sections 50 of 50 section pointers at 0x000F3794
 PASS UFO2P.EXE speed-table-one-entry-per-label labels 4: slow 38/43 sites [0x000523C1] speed [1]; normal 38/44 sites [0x00052439] speed [2]; double 38/45 sites [0x000524B1] speed [4]; quadruple 38/46 sites [0x0005252C] speed [6]; tables [('0x000108EC', 6, [1, 2, 4, 6]), ('0x00010904', 6, [1, 2, 4, 6]), ('0x0001091C', 6, [1, 2, 4, 6])]
@@ -168,6 +222,7 @@ PASS TACP.EXE loop-located-tacp loop rows 9 [0x00010EE0:0x00010F40..0x0001135C 0
 PASS TACP.EXE accumulator-modulus-is-36 modulus 36 at 0x0003D184 expected 36 (PR #1688)
 PASS TACP.EXE one-second-per-frame `sub _, 36` count 1 in 0x0003D160 (one per call: at most one game second per frame)
 PASS TACP.EXE tacp-paces-on-same-bios-tick rows calling the clock [0x000116B0 0x000B6E50]; busy-wait on int386 0x1A [0x000116B0:0x00011909..0x00011959]
+PASS TACP.EXE wait-skip-guards globals tested right before the busy-wait by a jump past it [0x000E6D64 0x001B7BAC 0x0027A0EB]
 PASS TACP.EXE speed-values stored [0, 1, 2, 4] compared [0, 1, 2, 4] at 0x000E6C24
 ALL PASS
 ```
@@ -179,6 +234,12 @@ ALL PASS
 - The located addresses are pinned in q2's `EXPECTED` as "located by this spike". For TACP the
   plan kept `EXPECTED` at `None` (the battle loop was unknown), so the claim reports what it
   finds.
+- `wait-skip-guards` (fix round 1). Not every frame waits.
+  - UFO2P tests the no-wait counter `D_000D4D5C` and the byte `D_00183BAC` right before the
+    busy-wait, each with a jump past it.
+  - 15 rows write both the speed and the counter, including all six speed setters. The only
+    constants stored to the counter are 0, 1 and 600.
+  - TACP's skip tests a flag computed from `D_000E6D64`, `D_001B7BAC` and `D_0027A0EB`.
 - The UFO2P loop rows include `func_000105D0`, whose loop calls `func_00010940`.
 - In TACP, 9 loop rows reach the clock through the frame step `func_000116B0`. The battle loop
   called by `main_` is `func_00010EE0`; the other 8 are modal loops that keep the clock running.
@@ -250,10 +311,24 @@ battle code is the route to close it.
 |---|---|---|---|
 | `q1 --plant` | UFO2P expected reader `0x00011430` -> `0x00011440` | `FAIL UFO2P.EXE int1a-readers immediate [0x00011430] expected [0x00011440]`, `1 FAILED` | 1 |
 | `q1 --mutant` | every `mov reg, 0x1a` immediate in game rows zeroed in an in-memory copy of the flat image | UFO2P `int1a-readers immediate []` and `int1a-pinned-readers []` FAIL; TACP `int1a-readers immediate []` FAIL; `3 FAILED` (the readers are reported missing) | 1 |
+| `q1 --plant-chain` | expected BIOS-chain dividend 0x123333 -> 0x1234DC (the PIT clock: a BIOS tick that would follow the PIT rate) | `bios-chain-cadence` FAILs in both EXEs, `2 FAILED` | 1 |
 | `q2 --plant` | expected modulus 36 -> 144 (OpenApoc's assumed ticks per second) | `FAIL UFO2P.EXE accumulator-modulus-is-36 modulus 36 at 0x0004AB59 expected 144`, the same for TACP at `0x0003D184`, `2 FAILED` | 1 |
 | `q3 --plant` | TACP expected writer `0x000156A0` -> `0x000156B0` | `unitr-writer`, `record-layout`, `handoff-fields-agree`, `accrual-sites` and TACP `learning-ai-files` FAIL; `5 FAILED` | 1 |
 
 ## Investigation Trail
+
+- Fix round 1 (review): the lead first gave 18.2065 Hz as if a script had checked it. q1 only
+  showed where the PIT and INT 8 code sits, not how fast the BIOS tick runs while the sound timer
+  owns INT 8. So the sound library was read by hand. The timer init programs the PIT for its
+  fastest event, and slot 15 is a "DOS rate" (0xFF00) event whose callback far-returns into the
+  saved old INT 8 vector. Each interrupt adds the slot's increment to a 16.16 accumulator. The
+  event fires when bit 16 sets, and the high word is then cleared. The increment is
+  0x123333 / (1,193,180 / divisor), or 0x10000 at divisor 0xFFFF. q1 `bios-chain-cadence` now
+  checks the wiring and the dividend; the bit-16 fire test and the divide by the PIT rate stay
+  hand-read.
+- Fix round 1: the lead said every frame waits a tick, but the no-wait counter lets frames skip
+  the wait. q2 `wait-skip-guards` now finds the guards and the constants stored to the counter.
+  How the decrement uses up a 1 was read by hand.
 
 - q1 started from research's capstone scan. A first run missed the pinned reader: the tracker
   treated `movsx`/`movzx` as string instructions (prefix match on `movs`), so every register

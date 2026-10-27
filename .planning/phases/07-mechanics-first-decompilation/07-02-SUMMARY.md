@@ -39,7 +39,7 @@ key-files:
   modified: []
 
 key-decisions:
-  - "#997: both EXEs pace on the BIOS tick (>= 1 tick per frame, 18.2065 Hz) and advance game time in 36ths of a second (16-bit accumulator, speed added per frame, one second at most per frame); PR #1688 confirmed in both halves"
+  - "#997: both EXEs pace on the BIOS tick (>= 1 tick per frame outside the no-wait exception; the tick stays at 18.2 Hz under the sound timer via its INT 8 chain, q1 bios-chain-cadence) and advance game time in 36ths of a second (16-bit accumulator, speed added per frame, one second at most per frame); PR #1688 confirmed in both halves"
   - "UFO2P speeds 1/2/4/6 carry the labels Slow/Normal/Double/Quadruple (Quadruple = 3x Normal); 600 is a 5-minute time-skip path, not a speed"
   - "#263-1: UFO2P copies 17 stat fields from scenario/unitr.dat into agent records; the improvement rule is on the TACP side and its accrual is not located (gap for 07-08 call-graph route)"
   - "Located addresses are pinned in EXPECTED as 'this spike'; research candidates are checked by a separate refuted claim"
@@ -95,7 +95,7 @@ status: complete
 
 # Phase 7 Plan 02: Spike 007 part 1 (time base, tick rule, training rule) Summary
 
-**#997 located in both EXEs: frames wait at least one BIOS tick (INT 1Ah via int386_, 18.2065 Hz). Each frame adds the speed (UFO2P 1/2/4/6 = Slow/Normal/Double/Quadruple) to a 16-bit accumulator, and 36 units make one game second (UFO2P func_0004AB30, TACP func_0003D160). #263-1 is located as the scenario/unitr.dat record copy (TACP func_000156A0 -> UFO2P func_000B2A90 -> func_000B2E80, 17 stat fields). The TACP accrual is still a gap.**
+**#997 located in both EXEs: frames wait at least one BIOS tick (INT 1Ah via int386_). The tick stays at 18.2 Hz while the sound library owns INT 8, because it chains the old vector (fix round 1). The exception is UFO2P's no-wait counter. Each frame adds the speed (UFO2P 1/2/4/6 = Slow/Normal/Double/Quadruple) to a 16-bit accumulator, and 36 units make one game second (UFO2P func_0004AB30, TACP func_0003D160). #263-1 is located as the scenario/unitr.dat record copy (TACP func_000156A0 -> UFO2P func_000B2A90 -> func_000B2E80, 17 stat fields). The TACP accrual is still a gap.**
 
 Execution context nonce: 6330e2b3de9a849e
 
@@ -140,12 +140,21 @@ Execution context nonce: 6330e2b3de9a849e
 
 The full lead is in `.planning/spikes/007-locate-997-training/README.md` § "#997 lead for the
 owner".
-- **Answer.** Both EXEs pace on the BIOS tick: a frame lasts at least one tick (18.2065 Hz).
+This was superseded by fix round 1; the corrected lead is in the README and under "Fix round 1"
+below, with each statement marked script / hand / assumption.
+- **Answer.** Both EXEs pace on the BIOS tick: a frame waits until the tick moves [script].
   Each frame adds the speed value to a 16-bit sub-second accumulator, and 36 units make one game
-  second. A frame never adds more than one second. There is no 36 Hz or 144 Hz timer.
-- **UFO2P speeds:** Slow = 1, Normal = 2, Double = 4, "Quadruple" = 6 (3 times Normal). Upper
-  bounds: 0.506 / 1.011 / 2.023 / 3.034 game seconds per real second; Normal is about real time.
-  Pause is 0. 600 is a 5-minute time skip (read by hand).
+  second [script]. A frame never adds more than one second [script].
+- **The BIOS tick stays at about 18.2 Hz while the sound timer runs.** The sound library chains
+  the old INT 8 handler with a 0x123333 (18.2 in 16.16) increment [script: wiring and dividend;
+  hand: the fire test; assumption: INT 1Ah returns that handler's count].
+- **No-wait exception (UFO2P).** Frames skip the wait while the no-wait counter `D_000D4D5C` is
+  still nonzero after its per-frame decrement, or while `D_00183BAC` is set [script: guards and
+  the stored constants 0/1/600]. Steady play at 1/2/4/6 still waits every frame [hand]; the 600
+  setting does not [hand].
+- **UFO2P speeds:** Slow = 1, Normal = 2, Double = 4, "Quadruple" = 6 (3 times Normal)
+  [script]. Steady-state upper bounds: about 0.506 / 1.011 / 2.022 / 3.033 game seconds per real
+  second; Normal is about real time. Pause is 0. 600 is a 5-minute time skip [hand].
 - **TACP** uses the same rule with speeds 0/1/2/4.
 - **Matched code backs it: no.**
 
@@ -289,3 +298,44 @@ None.
 
 - FOUND: .planning/spikes/007-locate-997-training/README.md, q1_timebase.py, q2_tickrule.py, q3_training.py
 - FOUND commits: 510b6cf, 2b3c193, f874461 (ancestors of HEAD)
+
+## Fix round 1
+
+Orchestrator fix round after the task review. Findings and what changed:
+
+1. **18.2065 Hz read as script-proven, and "nothing runs at 36 Hz" too.** The ruling's first
+   option was taken: the bytes decide the cadence.
+   - q1 has a new claim, `bios-chain-cadence`, in both EXEs. It checks that the sound library
+     saves the old INT 8 vector and that a chain routine far-returns into it. That routine is
+     called only by an event callback the timer init registers.
+   - The event's increment dividend is 0x123333 (18.2 in 16.16), set in the rate rows. The ISR
+     callback the same init installs adds the increments on every interrupt.
+   - So the BIOS tick stays at about 18.2 Hz whatever rate the PIT runs at: 18.2000 nominal,
+     18.2001 with a 30 Hz event, 18.2068 at the DOS-rate divisor 0xFFFF.
+   - Hand-read: the bit-16 fire test and the divide by the PIT rate.
+   - Assumption: that INT 1Ah returns the count of the chained BIOS handler (standard BIOS under
+     DOS/4GW).
+   - Planted proof: `q1 --plant-chain` expects the PIT clock 0x1234DC as the dividend and fails in
+     both EXEs.
+   - The lead now labels every statement script / hand / assumption, and quotes the rates as
+     speed x 18.2 / 36.
+2. **"Every frame waits" versus the no-wait counter.**
+   - q2 has a new claim, `wait-skip-guards`. In UFO2P it finds the tests right before the
+     busy-wait that jump past it: the no-wait counter `D_000D4D5C` and the byte `D_00183BAC`.
+     It also checks that all six speed setters write the counter and that the only constants
+     ever stored to it are 0, 1 and 600.
+   - In TACP it reports the globals behind the computed skip flag.
+   - The lead now states the exception and limits "upper bounds" to steady state. That a counter
+     value of 1 is used up before the test, so steady play waits every frame, is hand-read.
+
+Commits:
+- `e3ca02b` spike(007): prove the BIOS-tick cadence and the no-wait guard
+- `adb0ec2` spike(007): pin the no-wait counter's stored constants
+- the README and SUMMARY commit (docs(07-02))
+
+Re-runs (host):
+- q1 ALL PASS; `--plant`, `--mutant` and `--plant-chain` exit 1.
+- q2 ALL PASS; `--plant` exits 1.
+- q3 ALL PASS (unchanged; it imports q1 and q2); `--plant` exits 1.
+- `uv run ruff check .` is clean.
+
