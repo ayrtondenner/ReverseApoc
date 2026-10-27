@@ -269,6 +269,12 @@ None.
 
 Execution context nonce: f621a742369d20ae
 
+## Self-Check: PASSED
+
+- FOUND: tools/reverseapoc/locks.py, tests/test_locks.py, tests/test_driver_workers.py, tools/reverseapoc/driver.py, tests/test_driver.py
+- FOUND commits: 1c128c1, 5657280, 3cf68be, 23d9ec5, a69df09, 3f35e74. `git rev-list --count 945dd71..HEAD` was 6 before the SUMMARY commit.
+- No STATE.md or ROADMAP.md change.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
