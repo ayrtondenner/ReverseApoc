@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, driver, mechanics, probe
+from . import attempt, driver, locate, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
@@ -84,6 +84,7 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .lint import LintError, run_lint
+from .locate import LocateError
 from .mechanics import MechanicsError
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
@@ -1451,7 +1452,7 @@ def _cmd_mechanics(args: argparse.Namespace) -> int:
     """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
     try:
         return args.mechanics_func(args)
-    except (*_ERRORS, MechanicsError) as exc:
+    except (*_ERRORS, MechanicsError, LocateError) as exc:
         print(f"reverseapoc mechanics {args.mechanics_command}: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
 
@@ -1534,19 +1535,65 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_mechanics)
 
 
+def _number(value: str) -> int:
+    try:
+        number = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number (0x1A or 26)") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"{value} is below 0")
+    return number
+
+
+def _locate_report(args: argparse.Namespace, exe) -> dict:
+    if args.string is not None:
+        return locate.report_string(exe, args.string)
+    if args.range is not None:
+        return locate.report_range(exe, *args.range)
+    if args.va is not None:
+        return locate.report_va(exe, args.va)
+    if args.get_text is not None:
+        raise LocateError("--get-text is not available yet")
+    return locate.report_interrupt(exe, args.int)
+
+
 def _mechanics_locate(args: argparse.Namespace) -> int:
+    if args.exe not in mechanics.EXES:
+        raise MechanicsError(f"--exe {args.exe!r} is not one of {', '.join(mechanics.EXES)}")
+    exe = locate.load_inputs(args.config, args.orig, args.manifest, args.exe)
+    report = {"exe": args.exe, **_locate_report(args, exe)}
+    print(json.dumps(report, indent=2) if args.json else locate.format_report(args.exe, report))
     return 0
 
 
 def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
-    lo = verbs.add_parser("locate", help="locate entry candidates in one EXE (stub)")
+    lo = verbs.add_parser(
+        "locate",
+        help="locate entry candidates in one EXE (D-01, D-03): rows referencing a string, an "
+        "address or a range, get_text call sites, int386_ callers (addresses and counts only; "
+        "needs orig/)",
+    )
     lo.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
     pick = lo.add_mutually_exclusive_group(required=True)
-    pick.add_argument("--string", metavar="KEYWORD")
-    pick.add_argument("--va", metavar="0xADDR")
-    pick.add_argument("--range", nargs=2, metavar=("0xA", "0xB"))
-    pick.add_argument("--get-text", nargs=2, metavar=("SECTION", "INDEX"))
-    pick.add_argument("--int", metavar="0x1A")
+    pick.add_argument(
+        "--string", metavar="KEYWORD", help="data strings holding KEYWORD and the rows "
+        "with an exact fixup to each (case-insensitive)"
+    )  # fmt: skip
+    pick.add_argument(
+        "--va", type=_hex_address, metavar="0xADDR", help="rows with a fixup to exactly ADDR"
+    )
+    pick.add_argument(
+        "--range", type=_hex_address, nargs=2, metavar=("0xA", "0xB"),
+        help="rows with a fixup into [A, B)",
+    )  # fmt: skip
+    pick.add_argument(
+        "--get-text", type=_number, nargs=2, metavar=("SECTION", "INDEX"),
+        help="get_text call sites asking for (SECTION, INDEX), and their rows",
+    )  # fmt: skip
+    pick.add_argument(
+        "--int", type=_number, metavar="0x1A",
+        help="rows calling int386_ with this interrupt number in eax",
+    )  # fmt: skip
     _mechanics_roots(lo, game=True)
     lo.set_defaults(mechanics_func=_mechanics_locate)
 
