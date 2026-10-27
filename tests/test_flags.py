@@ -84,7 +84,7 @@ def make_repo(tmp_path: Path) -> Path:
 
 def write_status(repo: Path, exe: str, rows: list[tuple[int, str, str, str, str]]) -> None:
     body = "".join(f"0x{start:08X},{name},{unit},{status},{percent},3,{SHA},2026-10-26\n"
-                   for start, name, unit, status, percent in rows)  # fmt: skip
+                   for start, name, unit, status, percent in sorted(rows))  # fmt: skip
     path = repo / "config" / exe / "status.csv"
     path.write_text(STATUS_HEAD + body, encoding="utf-8", newline="\n")
 
@@ -436,7 +436,7 @@ def regate_repo(tmp_path: Path, *, matched: tuple[str, ...] = (OTHER,),
     src/ unit of another unit, and F-0001 queued for func_00061F30 of u_00060c50."""
     repo = make_repo(tmp_path)
     write_manifest(repo / "config" / "targets.toml", {"UFO2P.EXE": b"u", "TACP.EXE": b"t"})
-    rows = [FunctionRow(start, start + 0x10, name, "game", UNITS[name], "made-up")
+    rows = [FunctionRow(start, start + 0x10, name, "game", UNITS[name], "call")
             for name, start in sorted(STARTS.items(), key=lambda item: item[1])]  # fmt: skip
     write_functions_csv(repo / "config" / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
     write_status(repo, "ufo2p", [(STARTS[n], n, UNITS[n], "matched", "100.00") for n in matched])

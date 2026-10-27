@@ -17,18 +17,20 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+import shutil
 import tomllib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import contextpack, driver
-from .cflags import load_cflags, select_rule
+from . import check, contextpack, driver, gate
+from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
 from .functions import read_functions_csv
 from .status import MATCHED, PARTIAL, format_percent, lf_sha256, read_status, status_path
+from .targets import load_manifest
 from .watcom import DEFAULT_WATCOM_MANIFEST, load_watcom_manifest
 
 QUEUE = Path("config/cflags-proposals.toml")
@@ -620,27 +622,292 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
                          tuple(proposals))  # fmt: skip
 
 
-# ---- regate (API stubs for the RED tests) ----
+# ---- regate: the whole-unit re-proof on a copy (D-12, D-28) ----
+
+REGATE_LOG = "regate.json"
+TEMP_CFLAGS = "cflags.txt"
+SRC_COPY = "src"
+BUILD_COPY = "build"
+EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2  # check's exit codes
+_REASON_CAP = 600  # characters of problems kept in a proposal's reason
+_NOT_PRINTABLE = re.compile(r"[^\x20-\x7e]")
+
+
+def _ascii(text: str) -> str:
+    return _NOT_PRINTABLE.sub("?", text)
+
+
+def cflags_sha256(path: Path) -> str:
+    """lf_sha256 of a cflags file: what regate_cflags_sha256 records and approve compares."""
+    try:
+        return lf_sha256(Path(path).read_bytes().decode("utf-8"))
+    except UnicodeDecodeError as exc:
+        raise FlagsError(f"{path}: not UTF-8 ({exc})") from None
+
+
+def _versions(config: Path) -> tuple[str, ...]:
+    watcom = config / "watcom.toml"
+    return tuple(load_watcom_manifest(watcom if watcom.is_file() else DEFAULT_WATCOM_MANIFEST))
+
+
+def temp_cflags(dest: Path, committed: Path, proposal: Proposal, *,
+                versions: Sequence[str] | None = None) -> str:  # fmt: skip
+    """Write `dest`: the committed cflags text plus one rule line for the proposal's exact unit
+    path, validated with parse_cflags. Refused when `dest` resolves to the committed file or to
+    config/cflags.txt (T-07-49, the T-05-38 guard): a re-gate never edits them."""
+    dest, committed = Path(dest), Path(committed)
+    if dest.resolve() in {committed.resolve(), DEFAULT_CFLAGS.resolve()}:
+        raise FlagsError(f"{dest} is the committed cflags file; a re-gate writes only "
+                         f"{FLAGS_DIR.as_posix()}/<id>/{TEMP_CFLAGS}")  # fmt: skip
+    text = committed.read_bytes().decode("utf-8").replace("\r\n", "\n")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += f"{proposal.glob}  {proposal.rule}  # {proposal.id} (proposed)\n"
+    try:
+        rules = parse_cflags(text, versions=versions or _versions(committed.parent),
+                             where=str(dest))  # fmt: skip
+        rule = select_rule(rules, proposal.glob)
+    except CflagsError as exc:
+        raise FlagsError(str(exc)) from None
+    if " ".join([rule.spec, *rule.flags]) != proposal.rule:
+        raise FlagsError(f"{proposal.id}: {proposal.rule!r} is not the rule {proposal.glob} "
+                         f"takes in {dest}")  # fmt: skip
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(dest, text.encode("utf-8"))
+    return text
+
+
+def _reduced(text: str, neighbour: str) -> str:
+    """`text` with the neighbour's definition slice (contextpack.definitions) turned back into
+    its INCLUDE_ASM marker (D-28's reduced variant)."""
+    found = contextpack.definitions(text).get(neighbour)
+    if found is None:
+        raise FlagsError(f"{neighbour} has no definition to turn back into INCLUDE_ASM")
+    return text.replace(found.source, f"INCLUDE_ASM({neighbour});", 1)
+
+
+@dataclass(frozen=True)
+class Variant:
+    """One check of the unit with one candidate text."""
+
+    name: str  # AS_WRITTEN or REDUCED
+    exit: int
+    problems: tuple[str, ...]
+    check: Mapping[str, Any] | None = None  # check's JSON; None when it raised
+
+    def to_json(self) -> dict[str, Any]:
+        return {"variant": self.name, "exit": self.exit, "problems": list(self.problems),
+                "check": self.check}  # fmt: skip
 
 
 @dataclass(frozen=True)
 class RegateReport:
-    proposals: tuple[Proposal, ...] = ()
-    exit_code: int = 0
+    proposals: tuple[Proposal, ...]  # each re-gated proposal as the queue now holds it
+    variants: tuple[tuple[Variant, ...], ...]  # the checks run for each, in order
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_OK if all(p.regate_exit == EXIT_OK for p in self.proposals) else EXIT_MISMATCH
+
+    def to_json(self) -> dict[str, Any]:
+        return {"ok": self.exit_code == EXIT_OK,
+                "proposals": [{**p.to_json(), "variants": [v.to_json() for v in runs]}
+                              for p, runs in zip(self.proposals, self.variants, strict=True)]}
+
+    def format(self) -> str:
+        lines = []
+        for p, runs in zip(self.proposals, self.variants, strict=True):
+            lines.append(f"{p.id}  {p.exe}/{p.unit} under {p.rule}: {p.status} (exit "
+                         f"{p.regate_exit}, {p.regate_variant}); log {p.regate_log}")  # fmt: skip
+            for run in runs:
+                lines.append(f"  {run.name}: exit {run.exit}")
+                lines += [f"    {problem}" for problem in run.problems]
+        lines.append("a re-gate is evidence for the owner's approval; it never edits "
+                     "config/cflags.txt or src/")  # fmt: skip
+        return "\n".join(lines)
 
 
-def cflags_sha256(path: Path) -> str:
-    return ""
+@dataclass(frozen=True)
+class _Regate:
+    """The roots and tools of one regate call."""
+
+    repo: Path
+    orig_dir: Path
+    build_dir: Path | None
+    watcom_dir: Path | None
+    check_fn: Callable[..., check.CheckResult]
+    cross_check_fn: Callable[..., list[str]]
+
+    @property
+    def config(self) -> Path:
+        return self.repo / "config"
+
+    @property
+    def manifest(self) -> Path:
+        return self.config / "targets.toml"
+
+    def work(self, p: Proposal) -> Path:
+        return self.repo / FLAGS_DIR / p.id
 
 
-def temp_cflags(dest: Path, committed: Path, proposal: Proposal) -> str:
-    return ""
+def _function_problem(fn: check.FunctionCheck) -> str:
+    reloc = "reloc ok" if fn.reloc.ok else "reloc FAILED"
+    same = "bytes ok" if fn.bytes_ok else f"{fn.differing} bytes differ"
+    return f"{fn.name} at 0x{fn.va:08X}: objdiff {fn.objdiff_percent:g}%, {reloc}, {same}"
 
 
-def _reduced(text: str, neighbour: str) -> str:
+def _src_copy(env: _Regate, p: Proposal, text: str) -> Path:
+    """build/flags/<id>/src: a fresh copy of src/ with the candidate text as the unit file."""
+    copy = env.work(p) / SRC_COPY
+    if not copy.resolve().is_relative_to((env.repo / FLAGS_DIR).resolve()):
+        raise FlagsError(f"{copy} is not under {env.repo / FLAGS_DIR}")
+    if copy.exists():
+        shutil.rmtree(copy)
+    src = env.repo / "src"
+    if src.is_dir():
+        shutil.copytree(src, copy)
+    unit_file = copy / p.exe / f"{p.unit}.c"
+    unit_file.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(unit_file, text.encode("utf-8"))
+    return copy
+
+
+def _cross(env: _Regate, p: Proposal, result: check.CheckResult) -> list[str]:
+    """gate's D-24 cross-check of the copy's land, as gate_units runs it for one unit."""
+    known = load_manifest(env.manifest)
+    name = check.select_exe(known, p.exe, env.manifest).name
+    tables = gate._tables(env.config, known)
+    defined = {name: {fn.va: p.unit for fn in result.functions}}
+    return list(env.cross_check_fn(result.splices, gate._matched(tables), defined,
+                                   owners=gate._owners(env.config, known)))  # fmt: skip
+
+
+def _variant(env: _Regate, p: Proposal, name: str, text: str, cflags: Path
+             ) -> tuple[Variant, check.CheckResult | None]:  # fmt: skip
+    """check_unit of the unit with `text` on a copy of src/ under the temporary cflags, then the
+    cross-check. A tool error (the compile, the land, the manifest) is exit 2."""
+    work = env.work(p)
+    watcom = env.config / "watcom.toml"
+    try:
+        result = env.check_fn(
+            p.exe, p.unit, orig_dir=env.orig_dir, manifest=env.manifest, config_root=env.config,
+            src_root=_src_copy(env, p, text), build_dir=env.build_dir or work / BUILD_COPY,
+            watcom_dir=env.watcom_dir, cflags=cflags,
+            watcom_manifest=watcom if watcom.is_file() else None, log=work / "cc.log",
+        )  # fmt: skip
+        problems = [_function_problem(fn) for fn in result.functions if not fn.ok]
+        problems += [item.format() for item in result.problems]
+        problems += [f"{s.exe}: the landed EXE is not SHA-1 identical"
+                     for s in result.splices if not s.ok]  # fmt: skip
+        problems += _cross(env, p, result)
+    except (ValueError, OSError, RuntimeError) as exc:
+        return Variant(name, EXIT_TOOL, (_ascii(f"{type(exc).__name__}: {exc}"),)), None
+    failed = result.exit_code != EXIT_OK or bool(problems)
+    return Variant(name, EXIT_MISMATCH if failed else EXIT_OK, tuple(problems),
+                   result.to_json()), result  # fmt: skip
+
+
+def _neighbours(p: Proposal, result: check.CheckResult) -> list[str]:
+    """The co-defined functions that alone kept the check from passing (D-28): every function
+    of the proposal and every kept one defined and passing, and only others failing."""
+    wanted = {*p.functions, *p.keeps}
+    by_name = {fn.name: fn for fn in result.functions}
+    if result.problems or not all(n in by_name and by_name[n].ok for n in wanted):
+        return []
+    return [fn.name for fn in result.functions if not fn.ok]
+
+
+def _reduce_all(text: str, neighbours: Sequence[str]) -> str | None:
+    try:
+        for name in neighbours:
+            text = _reduced(text, name)
+    except FlagsError:
+        return None
     return text
 
 
-def regate(ids: Sequence[str], *, repo: Path, queue: Path | None = None,
-           check_fn: Any = None, cross_check_fn: Any = None) -> RegateReport:  # fmt: skip
-    return RegateReport()
+def _regate_one(env: _Regate, p: Proposal) -> tuple[Proposal, tuple[Variant, ...]]:
+    committed = env.config / "cflags.txt"
+    sha = cflags_sha256(committed)
+    work = env.work(p)
+    cflags = work / TEMP_CFLAGS
+    temp_cflags(cflags, committed, p, versions=_versions(env.config))
+    text = (env.repo / p.candidate).read_bytes().decode("utf-8")
+    first, result = _variant(env, p, AS_WRITTEN, text, cflags)
+    runs = [first]
+    neighbours = _neighbours(p, result) if result is not None and first.exit else []
+    reduced = _reduce_all(text, neighbours) if neighbours else None
+    if reduced is not None:
+        runs.append(_variant(env, p, REDUCED, reduced, cflags)[0])
+    final = runs[-1]
+    log = work / REGATE_LOG
+    record = {"id": p.id, "exe": p.exe, "unit": p.unit, "rule": p.rule,
+              "cflags": _relative(env.repo, cflags), "cflags_sha256": sha,
+              "candidate_sha256": p.candidate_sha256,
+              "variants": [run.to_json() for run in runs]}  # fmt: skip
+    write_atomic(log, (json.dumps(record, indent=2) + "\n").encode("ascii"))
+    reason = "" if final.exit == EXIT_OK else _ascii(
+        f"re-gate exit {final.exit} ({final.name}): {'; '.join(final.problems)}")[:_REASON_CAP]
+    return dataclasses.replace(
+        p, status=REGATED if final.exit == EXIT_OK else FAILED, regate_exit=final.exit,
+        regate_variant=final.name, regate_cflags_sha256=sha,
+        regate_log=_relative(env.repo, log), reason=reason,
+    ), tuple(runs)  # fmt: skip
+
+
+def _regatable(proposals: Sequence[Proposal], ids: Sequence[str], repo: Path) -> list[Proposal]:
+    """The proposals `ids` names, each refused unless open, with a rule and its candidate as
+    queued (the C that hit, by its sha256)."""
+    by_id = {p.id: p for p in proposals}
+    if len(set(ids)) != len(ids) or not ids:
+        raise FlagsError(f"name each proposal once: {' '.join(ids) or '(none)'}")
+    out = []
+    for pid in ids:
+        p = by_id.get(pid)
+        if p is None:
+            raise FlagsError(f"{pid} is not in the queue")
+        if p.status not in OPEN_STATUSES:
+            raise FlagsError(f"{pid} is {p.status}; only {', '.join(OPEN_STATUSES)} proposals "
+                             "are re-gated")  # fmt: skip
+        if not p.rule:
+            raise FlagsError(f"{pid} has no rule to re-gate ({p.reason})")
+        path = repo / p.candidate
+        if not path.is_file() or cflags_sha256(path) != p.candidate_sha256:
+            raise FlagsError(f"{pid}: the candidate {p.candidate} is missing or changed since it "
+                             "was proposed; run `flags propose` again")  # fmt: skip
+        out.append(p)
+    return out
+
+
+def regate(
+    ids: Sequence[str],
+    *,
+    repo: Path,
+    queue: Path | None = None,
+    orig_dir: Path | None = None,
+    build_dir: Path | None = None,
+    watcom_dir: Path | None = None,
+    check_fn: Callable[..., check.CheckResult] | None = None,
+    cross_check_fn: Callable[..., list[str]] | None = None,
+) -> RegateReport:
+    """Re-prove each proposal over its whole unit and both EXEs (D-12): check_unit of a copy of
+    src/ with the candidate in place (build/flags/<id>/src) under the committed cflags plus the
+    proposal's one rule line (build/flags/<id>/cflags.txt), then gate's cross-check. When only
+    co-defined neighbours miss, the reduced variant retries with them as INCLUDE_ASM (D-28).
+    Writes regate_exit, regate_variant, regate_cflags_sha256, regate_log and the status to the
+    queue after each proposal; never writes src/ or config/cflags.txt."""
+    repo = Path(repo)
+    queue = Path(queue) if queue is not None else repo / QUEUE
+    proposals = read_queue(queue)
+    env = _Regate(repo, Path(orig_dir) if orig_dir is not None else repo / "orig", build_dir,
+                  watcom_dir, check_fn or check.check_unit,
+                  cross_check_fn or gate.cross_check)  # fmt: skip
+    done: list[Proposal] = []
+    runs: list[tuple[Variant, ...]] = []
+    for p in _regatable(proposals, ids, repo):
+        updated, variants = _regate_one(env, p)
+        proposals[proposals.index(p)] = updated
+        write_queue(queue, proposals)
+        done.append(updated)
+        runs.append(variants)
+    return RegateReport(tuple(done), tuple(runs))

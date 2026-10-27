@@ -1649,6 +1649,14 @@ def _flags_propose(args: argparse.Namespace) -> int:
     return 0
 
 
+def _flags_regate(args: argparse.Namespace) -> int:
+    """Exit 0 when every proposal re-gated, 1 when one failed (recorded in the queue)."""
+    report = flags.regate(args.ids, repo=args.repo, orig_dir=args.orig, build_dir=args.build,
+                          watcom_dir=args.watcom_dir)  # fmt: skip
+    print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
+    return report.exit_code
+
+
 def _flags_list(args: argparse.Namespace) -> int:
     proposals = flags.read_queue(args.repo / flags.QUEUE)
     if args.json:
@@ -1693,9 +1701,19 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
     )
     ls.add_argument("--json", action="store_true", help="print the queue as JSON")
     ls.set_defaults(flags_func=_flags_list)
-    rg = verbs.add_parser("regate")
-    rg.add_argument("ids", nargs="+", metavar="ID")
-    rg.set_defaults(flags_func=lambda args: 0)
+    rg = verbs.add_parser(
+        "regate",
+        help="re-prove proposals over their whole unit and both EXEs on a copy of src/ under "
+        "the committed cflags plus the proposed rule; writes only the queue and build/flags/ "
+        "(objdiff-cli: in the container)",
+    )
+    rg.add_argument("ids", nargs="+", metavar="ID", help="e.g. F-0001")
+    rg.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    rg.add_argument("--build", type=Path, default=None,
+                    help="check's build dir; default: build/flags/<id>/build")
+    rg.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    rg.add_argument("--json", action="store_true", help="print the report as JSON")
+    rg.set_defaults(flags_func=_flags_regate)
     for verb in (pr, ls, rg):
         verb.add_argument("--repo", type=Path, default=REPO_ROOT,
                           help=f"the checkout whose config/ and build/ are read; {default}")
