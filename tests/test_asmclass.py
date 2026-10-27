@@ -271,3 +271,20 @@ def test_asm_list_has_no_drift():
     assert changed == []
     assert mechanics.format_asm_csv(rows).encode("ascii") == committed.read_bytes().replace(
         b"\r\n", b"\n")  # fmt: skip
+
+
+UNALIGNED_GAME_ROWS = {"ufo2p": 213, "tacp": 216}  # research (D-23): game rows off alignment
+REAL_EXES = {"ufo2p": "UFO2P.EXE", "tacp": "TACP.EXE"}
+
+
+@pytest.mark.parametrize("exe", [pytest.param(exe, id=exe, marks=pytest.mark.skipif(
+    not (ORIG_DIR / name).is_file(),
+    reason=f"orig/{name} not present (run uv run reverseapoc ingest or set REVERSEAPOC_ORIG)"))
+    for exe, name in REAL_EXES.items()])  # fmt: skip
+def test_unaligned_counts_match_research(exe):
+    requires_capstone()
+    config = REPO_ROOT / "config"
+    rows = asmclass.classify(locate.load_inputs(config, ORIG_DIR, config / "targets.toml", exe))
+    unaligned = [r for r in rows if "unaligned" in r.evidence.split(asmclass.SEPARATOR)]
+    assert len(unaligned) == UNALIGNED_GAME_ROWS[exe]
+    assert {r.verdict for r in rows} <= {"asm", "unclear"}  # the detector never proposes `c`
