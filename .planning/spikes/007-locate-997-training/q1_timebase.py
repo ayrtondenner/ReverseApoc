@@ -16,8 +16,9 @@ Claims, per EXE:
   advances at 18.2 Hz. The install saves the old INT 8 vector; one row far-returns into it (the
   chain); an event callback calls that row and the timer init registers it; the rows that set
   the event increments divide 0x123333 (18.2 in 16.16) by the PIT rate for that event (and store
-  0x10000, one fire per interrupt, at the DOS rate); the ISR callback the init installs adds the
-  increments to the event accumulators on every interrupt.
+  0x10000, one fire per interrupt, at the DOS rate); a callback the init installs adds the
+  increments to the event accumulators (that the INT 8 handler calls it on every interrupt is
+  hand-read, not checked here).
 
 Run from the main checkout (orig/ is gitignored):
     uv run python .planning/spikes/007-locate-997-training/q1_timebase.py

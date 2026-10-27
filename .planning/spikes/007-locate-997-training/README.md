@@ -214,8 +214,8 @@ ALL PASS
     calls it, and the timer init `func_000C2F1F` registers that callback.
   - The rate rows `func_000C3035` and `func_000C33BA` compute that event's increment from the
     dividend 0x123333, which is 18.2 in 16.16.
-  - The ISR callback `func_000C35C8`, which the same init installs, adds the increments on every
-    interrupt.
+  - The callback `func_000C35C8`, which the same init installs, adds the increments to the
+    event accumulators. That the INT 8 handler calls it on every interrupt is hand-read.
   - TACP has the same chain at `func_000CC3A9`, `func_000C6386`, `func_000C5C13`,
     `func_000C5D29`/`func_000C60AE` and `func_000C62BC`.
   - The planted run that expects the PIT clock as the dividend (a BIOS tick that would follow the
