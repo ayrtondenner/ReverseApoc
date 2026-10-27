@@ -195,6 +195,10 @@ def env(tmp_path, monkeypatch):
     env = make_env(tmp_path)
     monkeypatch.setattr(check, "DEFAULT_SRC", env.src)
     monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config)
+    # The env root stands in for the repository too (07-03 fix round 1): every tree that is not a
+    # D-24 view compiles from REPO_ROOT. configure.py is loaded first, from the real checkout.
+    check._configure()
+    monkeypatch.setattr(check, "REPO_ROOT", env.root)
     return env
 
 
@@ -1479,3 +1483,119 @@ def test_no_leading_table_without_its_data_row(rows):
     field = f"0x{SWITCH_VA + JUMP_FIELD:08X}: "
     (problem,) = [p for p in switch.problems if p.startswith(field)]
     assert "needs the unit's public-to-row map" in problem
+
+
+# ---- 07-03 (D-27 P1): the cflags rule by the unit's logical path src/<exe>/<unit>.c ------------
+
+UNIT_RULE = f"src/{STEM}/{UNIT}.c"
+
+
+def repo_stand_in(env: Env, monkeypatch) -> Path:
+    """The env tree stands in for the repository, so a tree under it is "inside the repo" for
+    the compile root. configure.py is loaded first: check finds it under REPO_ROOT."""
+    check._configure()
+    monkeypatch.setattr(check, "REPO_ROOT", env.root)
+    return env.root
+
+
+def view_tree(env: Env, *parts: str, include: bool = True) -> Path:
+    """A copy of the env's src/ under env.root/<parts>/src, with an include/ beside it unless
+    `include` is False (a D-24 view holds one, a flag re-gate copy does not)."""
+    top = env.root.joinpath(*parts)
+    shutil.copytree(env.src, top / "src")
+    if include:
+        (top / "include").mkdir()
+    return top / "src"
+
+
+def test_check_compiles_a_view_unit_under_its_rule(env, monkeypatch):
+    """A D-24 view (build/driver/.../view/src with include/ beside it) compiles each unit with
+    its logical path src/<exe>/<unit>.c and the view as compile root, the claimed unit and every
+    unit the land step compiles alike."""
+    repo_stand_in(env, monkeypatch)
+    src = view_tree(env, "build", "driver", "run1", "view")
+    (src / STEM / f"{FAR_UNIT}.c").write_text("int func_00010020(void) { return 0; }\n",
+                                              encoding="utf-8")  # fmt: skip
+    compiler = FakeCompiler()
+    check.check_unit(STEM, UNIT, **{**env.kwargs(), "src_root": src}, compile_fn=compiler,
+                     objdiff_runner=FakeObjdiff())  # fmt: skip
+    seen = [(path.name, kwargs.get("rule_path"), kwargs.get("root"))
+            for path, _, kwargs in compiler.calls]  # fmt: skip
+    assert seen == [(f"{UNIT}.c", UNIT_RULE, src.parent),
+                    (f"{FAR_UNIT}.c", f"src/{STEM}/{FAR_UNIT}.c", src.parent)]  # fmt: skip
+
+
+def test_default_tree_compile_passes_repo_root(env, monkeypatch):
+    """The committed src tree compiles from the repository root, with its logical path."""
+    root = repo_stand_in(env, monkeypatch)
+    compiler = FakeCompiler()
+    assert run_check(env, compiler).ok
+    calls = [(kwargs.get("rule_path"), kwargs.get("root")) for _, _, kwargs in compiler.calls]
+    assert calls == [(UNIT_RULE, root)]
+
+
+def test_compile_root_for_each_kind_of_tree(env, monkeypatch, tmp_path):
+    """Only a D-24 view (build/driver/.../view/src with include/ beside it) compiles from its
+    view root; any other tree (a copy without include/, a saved attempt's best/, the committed
+    src/) from the repository root."""
+    root = repo_stand_in(env, monkeypatch)
+    view = view_tree(env, "build", "driver", "run1", "view")
+    copy = view_tree(env, "build", "flags", "p1", include=False)
+    best = env.root / "build" / "driver" / "run1" / "best"
+    best.mkdir(parents=True)
+    assert check._compile_root_for(view) == view.parent
+    assert check._compile_root_for(copy) == root
+    assert check._compile_root_for(best) == root
+    assert check._compile_root_for(env.src) == root
+
+
+def test_a_tree_outside_the_repository_compiles_from_the_repository(env, monkeypatch, tmp_path):
+    """Fix round 1: a tree outside the repository is no view, so it compiles from REPO_ROOT (and
+    compile_rule refuses its sources, as it did before 07-03), never from its parent's
+    include/."""
+    root = repo_stand_in(env, monkeypatch)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    (outside / "include").mkdir(parents=True)
+    assert check._compile_root_for(outside / "src") == root
+    assert check._compile_root_for(outside / "view" / "src") == root
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [("build", "flags", "p1"), ("elsewhere",), ("build", "driver", "run1", "notview"),
+     ("build", "test-view", "x", "view")],
+    ids=["flags-copy", "elsewhere", "driver-not-view", "view-outside-driver"],
+)  # fmt: skip
+def test_an_in_repo_src_with_include_that_is_no_view_compiles_from_the_repository(
+    env, monkeypatch, parts
+):
+    """Fix round 1: <x>/src with <x>/include beside it compiles from <x> only when it is a D-24
+    view, build/driver/.../view/src; otherwise from REPO_ROOT, with the committed headers."""
+    root = repo_stand_in(env, monkeypatch)
+    src = view_tree(env, *parts)  # include/ beside it
+    assert check._compile_root_for(src) == root
+
+
+def test_committed_src_compiles_from_the_repository():
+    """Unpatched: the committed src/ (and None, its stand-in) compile from REPO_ROOT."""
+    assert check._compile_root_for(None) == check.REPO_ROOT
+    assert check._compile_root_for(check.REPO_ROOT / "src") == check.REPO_ROOT
+
+
+def test_provenance_agrees_with_the_compile_rule(env, monkeypatch):
+    """An object ninja built under a per-unit rule lands from a copy of src/ (a flag re-gate's
+    tree, no include/): check_provenance selects the rule by the logical path, as the compile
+    did. The same stamp checked as if under `*` is stale."""
+    repo_stand_in(env, monkeypatch)
+    copy = view_tree(env, "build", "flags", "p1", include=False)
+    cflags = custom_cflags(env, f"*  wcc386@10.6  -4r -s -fpi\n"
+                                f"{UNIT_RULE}  wcc386@10.6  -4r -s -fpi -ot\n")  # fmt: skip
+    put_object(env, omf_object(), stamp=False)
+    stamp = put_stamp(env, cflags=cflags)  # env.src/syn/<unit>.c is UNIT_RULE: the unit's rule
+    assert json.loads(stamp.read_text(encoding="utf-8"))["flags"] == ["-4r", "-s", "-fpi", "-ot"]
+    options = check.CompileOptions(cflags=cflags)
+    (landed,) = ninja_land(env, src_root=copy, options=options)
+    assert landed.ok, landed.format()
+    doc = json.loads(stamp.read_text(encoding="utf-8"))
+    stamp.write_text(json.dumps({**doc, "flags": ["-4r", "-s", "-fpi"]}), encoding="utf-8")
+    assert_stale(env, "stale object", "the flags", src_root=copy, options=options)

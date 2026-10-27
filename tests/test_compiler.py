@@ -260,6 +260,34 @@ def test_two_sources_get_their_rules(tmp_path):
     assert [path for path, _ in b.gate.files] == ["BINNT/WCC386.EXE", "BINNT/WCCD386.DLL"]
 
 
+UNIT_RULES = "*  wcc386@10.6  -5r -s\nsrc/ufo2p/u_x.c  wcc386@10.6  -5r -s -ot\n"
+VIEW_FILE = "build/driver/run1/view/src/ufo2p/u_x.c"  # a D-24 view's copy of src/ufo2p/u_x.c
+
+
+def test_source_rule_by_logical_path(tmp_path):
+    """D-27 P1: a copy of a unit outside src/ takes its unit's rule when the logical path
+    src/<exe>/<unit>.c is given; without it, the rule of its own root-relative path."""
+    ws = make_workspace(tmp_path, rules=UNIT_RULES)
+    view_file = ws.source(VIEW_FILE)
+    kwargs = {"cflags": ws.cflags, "root": ws.root, "manifest": ws.manifest}
+    unit = compiler.source_rule(view_file, rule_path="src/ufo2p/u_x.c", **kwargs)
+    assert (unit.glob, unit.flags) == ("src/ufo2p/u_x.c", ("-5r", "-s", "-ot"))
+    assert compiler.source_rule(view_file, **kwargs).glob == "*"
+
+
+def test_compile_source_by_logical_path(tmp_path):
+    """compile_source compiles the copy with its unit's flags and stamps them, while the guest
+    paths stay the copy's own."""
+    ws = make_workspace(tmp_path, rules=UNIT_RULES)
+    runner = FakeCompiler()
+    obj = ws.root / "out" / "u_x.obj"
+    result = ws.compile(ws.source(VIEW_FILE), obj, runner, rule_path="src/ufo2p/u_x.c")
+    assert result.ok and result.rule.glob == "src/ufo2p/u_x.c"
+    (argv,) = runner.compiles
+    assert "-ot" in argv and VIEW_FILE.replace("/", "\\") in argv
+    assert json.loads(_prov(obj).read_text(encoding="utf-8"))["flags"] == ["-5r", "-s", "-ot"]
+
+
 def test_include_is_own_tree_only(tmp_path):
     ws = make_workspace(tmp_path, versions=("10.6", "11.0"), rules="*  wcc386@11.0  -3r\n")
     runner = FakeCompiler()
