@@ -43,9 +43,10 @@ After each session, in this order:
    PARTIAL (best plain check above 0%, its C saved under best/ and `gate --partial` run) or
    GAVE_UP; a failed lint is the same outcome with abort_reason "lint" (review IN-02).
 
-Claims and locks (07-18; D-06, D-24, D-27 P4): a night holds build/driver/drive.lock (an OS
-lock, locks.ProcessLock) from before its STARTED record to its end, so a second drive is
-refused and every earlier holder is known dead; with it held, each claim of another run under
+Claims and locks (07-18; D-06, D-24, D-27 P4): the drive verb (night, dry run or canary)
+holds build/driver/drive.lock (an OS lock, locks.ProcessLock) from before its preflight to its
+end and hands it to the night, so a second drive runs nothing and every earlier holder is
+known dead; drive() alone takes its own. With it held, each claim of another run under
 build/driver/claims/ is stale and moved to build/driver/<run>/stale-claims/, named in STARTED.
 Each attempt claims its unit with one O_EXCL file and releases it after its landing decision.
 One gate lock serialises every shared write (the landing section, `gate --partial`, every
@@ -1308,25 +1309,26 @@ class _Night:
 
     # --- the night ---
 
-    def run(self) -> DriveReport:
+    def run(self, lock: ProcessLock | None = None) -> DriveReport:
         """D-06: the night holds build/driver/drive.lock (an OS lock, freed by the kernel when
-        this process exits) from before its STARTED record to its end. Failing to get it
-        refuses the start (exit 2, no record): another drive is running. Getting it proves
-        every earlier holder dead; no process id is probed (D-24)."""
-        lock = ProcessLock(self.repo / DRIVE_LOCK)
-        shown = DRIVE_LOCK.as_posix()
+        this process exits) from before its STARTED record to its end. `lock` is the verb's,
+        already held since before the preflight (07-18 fix round 1); without one the night
+        takes its own and frees it at the end. Failing to get it refuses the start (exit 2, no
+        record): another drive is running. Getting it proves every earlier holder dead; no
+        process id is probed (D-24)."""
+        if lock is not None:
+            if not lock.held or Path(lock.path) != self.repo / DRIVE_LOCK:
+                return DriveReport(REFUSED, "drive lock", 0, 0, "refusing to start: the drive "
+                                   f"lock given is not {DRIVE_LOCK.as_posix()} held")  # fmt: skip
+            return self._run_locked()
         try:
-            got = lock.try_acquire()
-        except OSError as exc:
-            why = _detail(f"refusing to start: cannot lock {shown}: {type(exc).__name__}: {exc}")
-            return DriveReport(REFUSED, "drive lock", 0, 0, why)
-        if not got:
-            return DriveReport(REFUSED, "drive lock", 0, 0, "refusing to start: another "
-                               f"reverseapoc drive is running ({shown} is held)")  # fmt: skip
+            own = take_drive_lock(self.repo)
+        except Refused as refused:
+            return DriveReport(REFUSED, refused.reason, 0, 0, refused.detail)
         try:
             return self._run_locked()
         finally:
-            lock.release()
+            own.release()
 
     def _run_locked(self) -> DriveReport:
         """Every night ends with a run record (fix round 1, I1): ENDED, a STOPPED reason, a
@@ -2170,14 +2172,16 @@ class _Night:
         """D-34, D-24: put back only the claimed unit in src/: `git restore --source=HEAD --
         <unit>` when HEAD tracks it, else delete the copy the landing section wrote. The view
         is abandoned as it is (kept for inspection). Never all of include/, never `git add -A`,
-        never `git clean`."""
+        never `git clean`. src/ is shared by every worker's gate, so this runs under the gate
+        lock (07-18 fix round 1), from any caller: the landing, a TRANSIENT relaunch, a stop."""
         claim = session.claim
         unit = self.repo / claim.unit_rel
-        if claim.unit_rel.casefold() in self._tracked():
-            _git_ok(self._git, ["restore", "--source=HEAD", "--", claim.unit_rel])
-        elif self.landed == claim.unit_rel:
-            unit.unlink(missing_ok=True)
-        self.landed = None
+        with self.gate_lock:
+            if claim.unit_rel.casefold() in self._tracked():
+                _git_ok(self._git, ["restore", "--source=HEAD", "--", claim.unit_rel])
+            elif self.landed == claim.unit_rel:
+                unit.unlink(missing_ok=True)
+            self.landed = None
 
     # --- judging a session ---
 
@@ -2256,7 +2260,7 @@ class _Night:
         """06-17 review: a LIMIT session keeps its work. When it changed the unit or wrote a
         header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
         Otherwise it is reset. The whole landing runs under the gate lock (D-06)."""
-        with self.gate_lock:
+        with self._landing(session):
             if session.has_work():
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
@@ -2265,6 +2269,24 @@ class _Night:
                     return True
             self._reset(session)
             return False
+
+    @contextmanager
+    def _landing(self, session: _Session) -> Iterator[None]:
+        """The gate lock for one landing section (D-06, D-27 P4). An unexpected exception
+        inside it (not a _Stop: every stop path has reset already) puts the unit back while the
+        lock is still held, so no other worker's whole-EXE gate sees the failed C in src/
+        (07-18 fix round 1); a failing reset there is left to the stop that follows."""
+        with self.gate_lock:
+            try:
+                yield
+            except _Stop:
+                raise
+            except BaseException:
+                try:
+                    self._reset(session)
+                except Exception:  # noqa: BLE001 - _guarded's reset retries and names it
+                    pass
+                raise
 
     def _counted(self, session: _Session) -> str:
         """A counted session's landing section, all of it under the gate lock (D-06, D-27 P4):
@@ -2275,7 +2297,7 @@ class _Night:
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
-        with self.gate_lock:
+        with self._landing(session):
             gate = self._judge(session)
             if self._gate_matched(session, gate):
                 self._commit_match(session, gate, summary, abort)
@@ -2455,9 +2477,10 @@ class _Night:
             self.ledger.set(rel, (before or b"") + line)
 
 
-def drive(config: DriveConfig, deps: Deps) -> DriveReport:
-    """Run one night (see the module docstring)."""
-    return _Night(config, deps).run()
+def drive(config: DriveConfig, deps: Deps, *, lock: ProcessLock | None = None) -> DriveReport:
+    """Run one night (see the module docstring), under the verb's held drive.lock `lock`, or
+    under its own when none is given."""
+    return _Night(config, deps).run(lock)
 
 # ---- the drive verb (plan 06-25; D-10, D-13, D-24, D-34, D-36, D-48) ----
 
@@ -2804,6 +2827,22 @@ class Refused(Exception):
         self.detail = _detail(detail)
 
 
+def take_drive_lock(repo: Path) -> ProcessLock:
+    """D-06: build/driver/drive.lock of `repo`, now held by the caller (who releases it).
+    Refused ("drive lock") when another holder has it or it cannot be opened."""
+    lock = ProcessLock(Path(repo) / DRIVE_LOCK)
+    shown = DRIVE_LOCK.as_posix()
+    try:
+        got = lock.try_acquire()
+    except OSError as exc:
+        raise Refused("drive lock", f"refusing to start: cannot lock {shown}: "
+                                    f"{type(exc).__name__}: {exc}") from exc  # fmt: skip
+    if not got:
+        raise Refused("drive lock", f"refusing to start: another reverseapoc drive is running "
+                                    f"({shown} is held)")  # fmt: skip
+    return lock
+
+
 class _Log:
     """F13: every preflight command's argv, exit, stdout and stderr appended to
     build/driver/<run>/preflight.log, so stdout keeps one JSON document in --json mode. In text
@@ -2975,17 +3014,31 @@ def _phase(reason: str) -> Iterator[None]:
 
 
 def run_drive(options: DriveOptions, seams: Seams) -> int:
-    """`reverseapoc drive`: the preflight, then the canary, the dry run or one night."""
+    """`reverseapoc drive`: the preflight, then the canary, the dry run or one night. D-06
+    (07-18 fix round 1, orchestrator ruling): drive.lock is taken before anything else and held
+    to the end, so a second drive, dry run or canary runs nothing of its own (no git call, no
+    command, no file) while a night holds it: exit 2."""
     if not _RUN_ID.fullmatch(options.run_id):
         return _refusal(options, seams,
                         Refused("run id", f"{options.run_id!r} is not [A-Za-z0-9_.-]+"))
+    try:
+        lock = take_drive_lock(options.repo)
+    except Refused as refused:
+        return _refusal(options, seams, refused)
+    try:
+        return _run_drive_locked(options, seams, lock)
+    finally:
+        lock.release()
+
+
+def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) -> int:
     log = _Log(options, seams)
     try:
         with _phase("preflight"):
             preflight(options, seams, check_cli=not options.dry_run, log=log)
         if options.canary:
             with _phase("canary"):
-                return run_canary(options, seams)
+                return run_canary(options, seams, lock=lock)
         worlds = _load_worlds(seams)
         today = _today()
         with _phase("picks"):
@@ -3005,7 +3058,7 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
                          base_env=seams.base_env)  # fmt: skip
-    report = drive(config, deps)
+    report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
            "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
@@ -3201,7 +3254,20 @@ def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
         checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
 
 
-def run_canary(options: DriveOptions, seams: Seams) -> int:
+def run_canary(options: DriveOptions, seams: Seams, *, lock: ProcessLock | None = None) -> int:
+    """The canary under drive.lock (D-06, 07-18 fix round 1): `lock` is the verb's, already
+    held; called without one, the canary takes drive.lock itself before anything else (Refused,
+    exit 2, while a night holds it) and frees it at the end."""
+    if lock is not None:
+        return _run_canary_locked(options, seams)
+    own = take_drive_lock(options.repo)
+    try:
+        return _run_canary_locked(options, seams)
+    finally:
+        own.release()
+
+
+def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12), in view
     mode like every session (07-13, D-24: a view of HEAD, which must hold that matched unit,
