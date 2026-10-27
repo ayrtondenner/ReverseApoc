@@ -1130,8 +1130,10 @@ def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path, monke
                        kill=_recording_kill([]))  # fmt: skip
     assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
     assert settings.read_bytes() == original, "a halted session wrote the stray back"
-    kept = sorted(night.quarantine.rglob("settings.local.json*"))
-    assert kept and all(path.read_bytes() == STRAY for path in kept)
+    # The stray is kept; A's audit may also keep a copy of the restored file (its mtime, a
+    # fingerprint, changed during A's session), never anything but these two byte strings.
+    kept = [path.read_bytes() for path in night.quarantine.rglob("settings.local.json*")]
+    assert STRAY in kept and set(kept) <= {STRAY, original}
 
 
 def test_containment_restores_the_night_baseline_not_the_launch_snapshot(tmp_path):
