@@ -10,9 +10,10 @@ another, and has one of these kinds, strongest first (EDGE_KINDS):
   contextpack.CallIndex's callees;
 - `pointer`: an off32 or ptr16:32 fixup in a game or thunk row whose target is another such row's
   start (`push offset func`: callbacks, comparators, button handlers);
-- `table`: data pointer slots (off32 fixups in the data object onto a row start) grouped into runs
-  whose consecutive slots lie at most TABLE_SLOT_GAP bytes apart; every code row with a fixup into
-  a run's [first slot, last slot + 4) gets one edge per distinct slot target;
+- `table`: data pointer slots (off32 or ptr16:32 fixups in the data object onto any row's start,
+  research Q1's count) grouped into runs whose consecutive slots lie at most TABLE_SLOT_GAP bytes
+  apart; every code row with a fixup into a run's [first slot, end of the last slot) gets one edge
+  per distinct game/thunk slot target (a slot onto a runtime row keeps its run together only);
 - `midrow`: an address fixup from code row A into the middle of another row B. It is either a
   missed function start or a table base inside B, so the closure keeps B (conservative) and the
   reference is reported for classification before Tier 1 freezes;
@@ -22,7 +23,8 @@ Runtime rows are leaves: they are never walked and an edge into one is dropped (
 rows get no edges either way: a jump table's slots lie in one and point at its own function's case
 labels. A data fixup into the middle of a row is reported only. An indirect call (`call eax`,
 `call [ebx+4]`) with no fixup on its operand is counted per row and never guessed into an edge.
-Pointer runs no code row references are listed as orphan roots.
+Pointer runs that no game/thunk row references and that hold a game/thunk slot target are listed
+as orphan roots (by first slot address).
 
 Every mapping and tuple is sorted by address, so two builds of the same inputs are equal.
 """
@@ -51,7 +53,6 @@ EDGE_KINDS = (DIRECT, POINTER, TABLE, MIDROW, HAND)  # strongest first, weakest 
 WALKED_KINDS = (KIND_GAME, KIND_THUNK)  # the rows that have edges (D-02)
 POINTER_FIXUPS = (SRC_OFF32, SRC_PTR1632)  # the fixup kinds that hold a linear address
 TABLE_SLOT_GAP = 16  # research Q1: the largest address step between slots of one pointer run
-SLOT_SIZE = 4  # an off32 pointer slot
 ORIGIN_CODE = "code"  # a mid-row reference from a game/thunk row
 ORIGIN_DATA = "data"  # a mid-row reference from the data object
 
@@ -111,7 +112,8 @@ class CallGraph:
             found[edge.src].add(edge)
         edges = {start: tuple(sorted(found.get(start, ()), key=_edge_key))
                  for start in image.walked}  # fmt: skip
-        orphans = (run[0].src_va for run in image.table_runs() if not image.run_referrers(run))
+        orphans = (run[0].src_va for run in image.table_runs()
+                   if image.run_targets(run) and not image.run_referrers(run))  # fmt: skip
         return cls(
             edges=edges,
             midrow=tuple(sorted(image.midrow_refs(), key=lambda ref: ref.src_va)),
@@ -247,9 +249,10 @@ class _Image:
 
     @cached_property
     def _slots(self) -> list[Fixup]:
-        """Data-object off32 fixups onto a game/thunk row start, by slot address."""
-        return [fx for fx in self.from_data
-                if fx.kind == SRC_OFF32 and fx.target_va in self.walked]  # fmt: skip
+        """Data-object off32/ptr16:32 fixups onto any row's start, by slot address. Slots onto
+        runtime or data-in-code rows shape the runs (research Q1 counts them) but add no edge."""
+        starts = frozenset(self.starts)
+        return [fx for fx in self.from_data if fx.target_va in starts]
 
     def table_runs(self) -> list[tuple[Fixup, ...]]:
         """The slots split into runs where consecutive slots are more than TABLE_SLOT_GAP bytes
@@ -263,13 +266,17 @@ class _Image:
         return [tuple(run) for run in runs]
 
     def run_referrers(self, run: tuple[Fixup, ...]) -> list[int]:
-        """The game/thunk rows with a code fixup into [first slot, last slot + SLOT_SIZE)."""
-        span = (run[0].src_va, run[-1].src_va + SLOT_SIZE)
+        """The game/thunk rows with a code fixup into [first slot, end of the last slot)."""
+        span = (run[0].src_va, run[-1].src_va + run[-1].size)
         return sorted({row.start for row, fx in self.from_code if _inside(fx.target_va, span)})
+
+    def run_targets(self, run: tuple[Fixup, ...]) -> list[int]:
+        """The distinct game/thunk rows the run's slots point at."""
+        return sorted({fx.target_va for fx in run if fx.target_va in self.walked})
 
     def _table_edges(self) -> Iterator[Edge]:
         for run in self.table_runs():
-            targets = sorted({fx.target_va for fx in run})
+            targets = self.run_targets(run)
             for src in self.run_referrers(run):
                 yield from (Edge(src, dst, TABLE) for dst in targets if dst != src)
 
