@@ -1077,3 +1077,124 @@ def test_drive_config_defaults_follow_d07():
     assert (defaults["max_sessions"], defaults["target_matched"]) == (60, 0)
     options = driver.DriveOptions(repo=Path("."), run_id="r")
     assert (options.max_sessions, options.target_matched, options.workers) == (60, 0, 3)
+
+
+# ---- 07-21 fix round 1 ----
+
+STRAY = b'{"stray": "written by session A (made up)"}\n'
+
+
+def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path):
+    """C1 (security S2): A writes a stray to a pinned file outside git's view while it runs;
+    B launches after that (its launch snapshot holds the stray). A's audit contains the
+    stray and stops the night; the stop kills B, whose audit must compare with the night's
+    pinned baseline: the file ends with its pre-night bytes, never the stray again."""
+    unit_a, unit_b = _unit(0), _unit(1)
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+    settings = night.repo / ".claude" / "settings.local.json"
+    _write(settings, '{"made": "up"}\n')
+    original = settings.read_bytes()
+    night.slow = {unit_b: 60.0}  # B runs until stop-all kills it
+    a_strayed, b_live = threading.Event(), threading.Event()
+
+    def pack(pick, attempt_dir, src=None):
+        if pick.unit == unit_b:  # B's launch snapshot comes after A's stray
+            assert a_strayed.wait(WAIT_S), "A never wrote its stray"
+        return night._pack(pick, attempt_dir, src)
+
+    def before(unit, index):
+        if unit == unit_a:
+            settings.write_bytes(STRAY)
+            a_strayed.set()
+            assert b_live.wait(WAIT_S), "B's session never started"
+
+    def on_pid(unit, pid):
+        if unit == unit_b:
+            b_live.set()
+
+    night.before, night.on_pid = before, on_pid
+    report = night.run(config=_workers(2, attempts_per_function=1), pack=pack,
+                       kill=_recording_kill([]))  # fmt: skip
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert settings.read_bytes() == original, "a halted session wrote the stray back"
+    kept = sorted(night.quarantine.rglob("settings.local.json*"))
+    assert kept and all(path.read_bytes() == STRAY for path in kept)
+
+
+def _match_commit_add(args: list[str]) -> bool:
+    return _verb(args) == "add" and UNIT_REL in args
+
+
+@pytest.mark.parametrize("rel", [UNIT_REL, f"config/{EXE}/status.csv"])
+def test_a_write_between_the_landing_check_and_the_commit_is_never_committed(tmp_path, rel):
+    """I1 (security S1): another live session writes the landing unit or status.csv after
+    `_verify_landing` but before `git commit` reads it. The driver checks the committed blobs,
+    moves HEAD back off its own commit and undoes the match: nothing tampered stays committed
+    or in the worktree, and the night stops `guardrail`."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    marker = "/* made-up write of another live session */\n"
+    done: list[str] = []
+
+    def on_git(args):
+        if not done and _match_commit_add(args):
+            with (night.repo / rel).open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(marker)
+            done.append(rel)
+
+    night.on_git = on_git
+    report = _run_contained(night)
+    assert done == [rel]
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert MATCH_SUBJECT not in night.commits()
+    assert marker not in night.git("show", f"HEAD:{rel}")
+    assert marker not in (night.repo / rel).read_text(encoding="utf-8")
+    assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
+    kept = night.quarantine.joinpath(*rel.split("/"))
+    assert kept.is_file() and marker in kept.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("rel", "tracked"), [(f"src/{EXE}/u_00099990.c", False),
+                                              ("tools/keep.py", True)])  # fmt: skip
+def test_another_dirty_path_at_the_match_commit_is_a_breach(tmp_path, rel, tracked):
+    """The reviewer's open point (orchestrator ruling): right before the match commit every
+    git-visible path but the landing unit and the ledgered outputs must equal HEAD. Another
+    unit's src/ file (or any tracked file) written during A's gate stops the night before
+    anything is committed; the path is quarantined and put back."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    head = (night.repo / rel).read_bytes() if tracked else None
+
+    def gate(pick, n):
+        _write(night.repo / rel, "/* made-up file another live session wrote */\n")
+        return night._gate(pick, n)
+
+    report = _run_contained(night, gate=gate)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert MATCH_SUBJECT not in night.commits()
+    assert rel in report.detail
+    assert (night.repo / rel).read_bytes() == head if tracked else not (night.repo / rel).exists()
+    assert night.quarantine.joinpath(*rel.split("/")).is_file()
+
+
+def test_an_interrupt_record_lists_a_halted_workers_strays(tmp_path):
+    """I2: after Ctrl+C a halted worker's audit finds a stray and contains it; the STOPPED
+    `interrupted` record names that path (the security ruling: the record lists every path)."""
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)),
+                   by_unit={_unit(1): [Sess(files=(("tools/x.py", "# made-up stray\n"),))]})
+    night.slow = {_unit(0): 60.0, _unit(1): 60.0}
+    fired: list[bool] = []
+
+    def on_pid(unit, pid):
+        with night.lock:
+            if len(night.pids) < 2 or fired:
+                return
+            fired.append(True)
+        _thread.interrupt_main()
+
+    night.on_pid = on_pid
+    with pytest.raises(KeyboardInterrupt):
+        night.run(config=_workers(2, attempts_per_function=1), kill=_recording_kill([]))
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    assert stopped["reason"] == "interrupted"
+    assert "tools/x.py" in (stopped["detail"] or ""), stopped["detail"]
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
