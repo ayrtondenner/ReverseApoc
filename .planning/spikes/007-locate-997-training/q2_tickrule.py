@@ -20,9 +20,11 @@ paces-on-bios-tick (TACP: "TACP paces on the same BIOS tick"), speed-table-one-e
 (UFO2P), research-candidates (07-R1 A2). A FAIL is a finding: every claim is still printed.
 
 Run from the main checkout:
-    uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant]
+    uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant] [--plant-guards]
 
 --plant flips the expected modulus to 144 (the OpenApoc assumption); the run must FAIL.
+--plant-guards (plan 07-08) expects each EXE's wait-skip guard set without its last global;
+`wait-skip-guards` must FAIL in both EXEs.
 Prints addresses, counts, the modulus, speed values (rate constants), slot counts and keyword
 labels only; never strings, game bytes or instruction text. Reads orig/ only, writes nothing.
 """
@@ -74,6 +76,7 @@ EXPECTED = {
         "speed": 0x000D4D58,
         "no_wait": 0x000D4D5C,  # fix round 1: the no-wait frame counter
         "no_wait_values": {0, 1, 600},  # fix round 1: constants any row stores to it
+        "guards": {0x000D4D5C, 0x00183BAC},  # fix round 1 run, pinned by plan 07-08
         "speed_setters": {0x00050920, 0x00050970, 0x000509C0, 0x00050A20, 0x00050A80,
                           0x00050AE0},
         "get_text": 0x00063800,
@@ -90,6 +93,7 @@ EXPECTED = {
         "clock": None,
         "accumulator": None,
         "speed": None,
+        "guards": {0x000E6D64, 0x001B7BAC, 0x0027A0EB},  # fix round 1 run, pinned by 07-08
     },
 }
 PLANT_MODULUS = 144  # OpenApoc's assumed ticks per second
@@ -386,14 +390,15 @@ def claim_modulus(report: Report, img: Image, acc: Accumulator | None, modulus: 
                  f" (one per call: at most one game second per frame)")  # fmt: skip
 
 
-def claim_pacing(report: Report, img: Image, acc: Accumulator | None) -> None:
+def claim_pacing(report: Report, img: Image, acc: Accumulator | None,
+                 guards: set[int] | None = None) -> None:  # fmt: skip
     steps = frame_steps(img, acc.function) if acc else {}
     waits = " ".join(f"{hx(va)}:{hx(lp.head)}..{hx(lp.back)}"
                      for va, lp in sorted(steps.items()) if lp)  # fmt: skip
     name = "tacp-paces-on-same-bios-tick" if img.name == "TACP.EXE" else "paces-on-bios-tick"
     report.claim(img.name, bool(waits), name,
                  f"rows calling the clock {hxs(steps)}; busy-wait on int386 0x1A [{waits}]")
-    claim_wait_skip(report, img, acc, steps)
+    claim_wait_skip(report, img, acc, steps, guards)
 
 
 def wait_guards(img: Image, row: int, wait: Loop) -> set[int]:
@@ -425,9 +430,11 @@ def wait_guards(img: Image, row: int, wait: Loop) -> set[int]:
     return found
 
 
-def claim_wait_skip(report: Report, img: Image, acc: Accumulator | None, steps: dict) -> None:
+def claim_wait_skip(report: Report, img: Image, acc: Accumulator | None, steps: dict,
+                    want: set[int] | None = None) -> None:  # fmt: skip
     """Fix round 1: the frame does not always wait. Report the globals guarding the wait and,
-    for UFO2P, that every speed setter also writes the no-wait counter."""
+    for UFO2P, that every speed setter also writes the no-wait counter. Plan 07-08 pins the
+    guard sets: the globals found must equal EXPECTED `guards` (or `want`, the planted set)."""
     guards = set().union(*(wait_guards(img, va, lp) for va, lp in steps.items() if lp)) \
         if steps else set()
     exp = EXPECTED[img.name]
@@ -438,13 +445,15 @@ def claim_wait_skip(report: Report, img: Image, acc: Accumulator | None, steps: 
                     if i.mnemonic == "mov" and i.op_str and "[" in operands(i)[0]}
             if {acc.speed, exp["no_wait"]} <= hits:
                 setters.add(row.start)
+    want = exp["guards"] if want is None else want
     if exp.get("no_wait") is None:
-        ok = bool(guards)
+        ok = guards == want
     else:
         stored, _ = speed_values(img, exp["no_wait"])
-        ok = exp["no_wait"] in guards and exp["speed_setters"] <= setters
+        ok = guards == want and exp["speed_setters"] <= setters
         ok = ok and stored == exp["no_wait_values"]
-    detail = f"globals tested right before the busy-wait by a jump past it {hxs(guards)}"
+    detail = (f"globals tested right before the busy-wait by a jump past it {hxs(guards)} "
+              f"expected {hxs(want)}")
     if exp.get("no_wait") is not None:
         detail += (f"; rows writing both the speed and {hx(exp['no_wait'])}: {len(setters)}, "
                    f"the 6 speed setters among them {exp['speed_setters'] <= setters}; "
@@ -501,6 +510,8 @@ def claim_research(report: Report, img: Image, exp: dict, found: Found) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--plant", action="store_true", help="expect modulus 144 instead of 36")
+    parser.add_argument("--plant-guards", action="store_true",
+                        help="expect each wait-skip guard set without its last global")  # fmt: skip
     args = parser.parse_args(argv)
     modulus = EXPECTED["modulus"]
     if args.plant:
@@ -513,7 +524,11 @@ def main(argv: list[str] | None = None) -> int:
         found = locate(img)
         acc = claim_loop(report, img, found, exp)
         claim_modulus(report, img, acc, modulus)
-        claim_pacing(report, img, acc)
+        guards = None
+        if args.plant_guards:
+            guards = set(sorted(exp["guards"])[:-1])
+            print(f"PLANT {name} expected wait-skip guards {hxs(exp['guards'])} -> {hxs(guards)}")
+        claim_pacing(report, img, acc, guards)
         claim_speeds(report, img, acc)
         if name == "UFO2P.EXE":
             claim_labels(report, img, exp, acc)
