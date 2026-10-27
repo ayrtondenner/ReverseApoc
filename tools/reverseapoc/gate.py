@@ -773,10 +773,21 @@ def _merge_partial(table: Iterable[StatusRow], functions: Iterable[FunctionCheck
 
 
 def _saved_file(path: Path) -> Path:
+    """The saved attempt gate --partial scores. Its rows go to the public status.csv, so it must
+    sit inside the repository and compile from REPO_ROOT, with the committed headers (07-03 fix
+    round 1): never from a view's or another tree's include/."""
     saved = Path(path)
     if saved.suffix != SOURCE_SUFFIX or not saved.is_file():
         raise CheckError(f"--partial --src must name the saved attempt's existing "
                          f"{SOURCE_SUFFIX} file, got {saved}")  # fmt: skip
+    repo = Path(_check.REPO_ROOT).resolve()
+    if not saved.resolve().is_relative_to(repo):
+        raise CheckError(f"--partial --src {saved} must be inside the repository {repo} (its "
+                         "rows go to status.csv)")  # fmt: skip
+    root = Path(_check._compile_root_for(saved.parent)).resolve()
+    if root != repo:
+        raise CheckError(f"--partial --src {saved} would compile from the compile root {root} "
+                         f"with its headers, not from {repo}; save it outside a view's src/")
     return saved
 
 
