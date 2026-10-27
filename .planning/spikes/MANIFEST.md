@@ -69,6 +69,25 @@ The verdict follows D-02, and D-03 decides the AGT-10 agent layer for the Phase 
   it pass.
 - Record tool messages, names and addresses only, never listing or object bytes.
 
+### mechanics-first-decompilation
+Locate, before any Tier 1 matching, the code behind the OpenApoc checklist items of Phase 7
+(D-01): the #997 tick rate and the #263-1 battle-to-agent training rule first, then entry rows
+for most remaining items, by the BIOS-tick readers (D-26), UI strings through `get_text`, file
+and hand-off-file xrefs, OpenApoc data-table offsets re-located by VA identity, and the call
+graph. Spike 007 is the Phase 7 roadmap spike (D-03); its verdict decides how the Tier 2-4 drafts
+(07-25, 07-28, 07-32) locate entries, and any #997 finding goes to the owner at once.
+
+**Requirements:**
+
+- Read orig/, the Steam `cd.iso` and any OpenApoc headers read-only, in memory; write nothing.
+- Print and commit addresses, counts, booleans, rates, protocol or rate constants and keyword
+  labels only, never game strings, game bytes or instruction text.
+- OpenApoc offsets and headers are locators only: read from the gitignored
+  `build/openapoc-extractors/`, never committed (GPL; D-21). No OpenApoc contact: findings go to
+  the owner, who alone decides any #997 comment.
+- Rebuild what is tested (edges, caller counts) from rawle.py bytes and fixups; cross-check
+  `reverseapoc` modules, never take a fact from them as its own proof.
+
 ## Spikes
 
 | # | Idea | Name | Type | Validates | Verdict | Tags |
@@ -79,3 +98,4 @@ The verdict follows D-02, and D-03 decides the AGT-10 agent layer for the Phase 
 | 004 | compiler-identification | wibo-watcom | standard | Given wibo 1.2.0 in the reverseapoc-build image and the read-only third_party/watcom trees, when each version's BINNT/WCC386.EXE compiles a C89 probe, then 10.5 (decoded BINW), 10.6 and 11.0 produce objects whose normalized SHA-1 equals the native host compile | VALIDATED | watcom, wibo, compiler, d-01, d-03 |
 | 005 | split-and-first-matches | objdiff-omf-elf | standard | Given the cmain386 rows of UFO2P/TACP, CMAIN386.C read from the owner's 10.6 tree and objdiff-cli 3.8.2, when the reverseapoc cc object is converted to ELF32 and diffed against a target cut from le.py bytes with LE-fixup relocations, synthesized PC32 calls and an address-to-name map, then objdiff reports match_percent 100.0 for __CMain | VALIDATED | objdiff, omf, elf, d-01, d-02, d-19 |
 | 006 | reporting-and-agent-pilot | decompwtf-fork-stub | standard | Given pinned decomp.wtf v0.10.6 and the repo's bare INCLUDE_ASM(func_X); markers with objdiff names func_X_, when fork mode opens a clone in WSL2 and func_000A3980's C is sent through compile_and_diff, then it replaces the marker, builds with our ninja and objdiff and check exits 0 | INVALIDATED | decomp.wtf, fork-mode, d-01, d-02 |
+| 007 | mechanics-first-decompilation | locate-997-training | standard | Given UFO2P/TACP, their fixups and functions.csv, when the BIOS-tick readers, get_text strings, data-table and hand-off xrefs and the call graph are followed, then the #997 tick rule and the #263-1 training rule are located and most D-01 items get an entry row | VALIDATED | mechanics, 997, training, get_text, bios-tick, d-03, d-26 |
