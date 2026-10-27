@@ -11,11 +11,13 @@ import json
 
 import pytest
 
+from conftest import REPO_ROOT
 from reverseapoc import readlint
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, SymbolRow, write_functions_csv, write_symbols_csv
+from reverseapoc.mechanics import MEMBERS_CSV, MemberRow, write_members
 from reverseapoc.readlint import ReadlintError, run_readlint
-from reverseapoc.status import MATCHED, PARTIAL, StatusRow, status_path, write_status
+from reverseapoc.status import MATCHED, PARTIAL, StatusRow, read_status, status_path, write_status
 
 EXE = "ufo2p"
 UNIT = "u_00010000"
@@ -345,3 +347,232 @@ def test_floats_report_only(tmp_path):
     assert "0.5" in report.format()
     assert report.to_json()["floats"] == [{"path": f"src/{EXE}/{UNIT}.c", "line": 10,
                                            "text": "0.5"}]  # fmt: skip
+
+
+# ---- Task 3: allowlist, selectors, headers, report mode, the committed tree ----
+
+
+ALLOW_FILE = "readlint-allow.csv"  # under config/
+ALLOW_HEAD = "# references to callees not named yet (D-30); never definitions\nexe,name,reason\n"
+
+
+def write_allowlist(config, *rows):
+    (config / ALLOW_FILE).write_bytes((ALLOW_HEAD + "".join(rows)).encode("ascii"))
+
+
+def test_allowlist_references_only(tmp_path):
+    src, config, path = write_tree(tmp_path, in_function("func_00010040();"), symbols=[TICK])
+    write_allowlist(config, "ufo2p,func_00010040,a hub Tier 1 calls\n")
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert hits(result, "RL01") == []
+    assert result.allowlisted == {f"src/{EXE}/{UNIT}.c": 1}
+    header = ("/*\n * func_00010040: clears the second counter value.\n"
+              " * Address: UFO2P.EXE 0x00010040\n * Evidence: call: after the tick read\n */\n")  # fmt: skip
+    path.write_bytes(f"{header}void func_00010040(void)\n{{\n}}\n".encode("ascii"))
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert [ln for ln, _m in hits(result, "RL01")] == [6]
+    assert result.allowlisted == {}
+
+
+def test_allowlist_never_a_data_definition(tmp_path):
+    text = "extern int D_0001ABCD;\nint D_00012345 = 0, D_0001ABCD;\nint use(void);\n"
+    src, config, _path = write_tree(tmp_path, text)
+    write_allowlist(config, "ufo2p,D_0001ABCD,table read by the loop\n",
+                    "ufo2p,D_00012345,table read by the loop\n")  # fmt: skip
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert sorted(m.split()[0] for _ln, m in hits(result, "RL01")) == ["D_00012345",
+                                                                       "D_0001ABCD"]  # fmt: skip
+    assert result.allowlisted == {f"src/{EXE}/{UNIT}.c": 1}
+
+
+def test_allowlist_is_per_exe(tmp_path):
+    src, config, _path = write_tree(tmp_path, "void func_0001ABCD(void);\n")
+    write_allowlist(config, "tacp,func_0001ABCD,a TACP hub\n")
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert len(hits(result, "RL01")) == 1
+
+
+def test_read_allowlist(tmp_path):
+    path = tmp_path / ALLOW_FILE
+    path.write_bytes((ALLOW_HEAD + "ufo2p,func_0001ABCD,a hub\ntacp,D_00012345,a table\n").encode())
+    assert readlint.read_allowlist(path) == {("ufo2p", "func_0001ABCD"): "a hub",
+                                    ("tacp", "D_00012345"): "a table"}  # fmt: skip
+    assert readlint.read_allowlist(tmp_path / "missing.csv") == {}
+    assert (REPO_ROOT / "config" / ALLOW_FILE).read_bytes().startswith(ALLOW_HEAD.encode())
+    assert readlint.ALLOWLIST == ALLOW_FILE
+
+
+BAD_ALLOWLISTS = {
+    "header": "exe,name\nufo2p,func_0001ABCD\n",
+    "exe": ALLOW_HEAD + "ufo3,func_0001ABCD,a hub\n",
+    "name": ALLOW_HEAD + "ufo2p,tick_count,named already\n",
+    "reason": ALLOW_HEAD + "ufo2p,func_0001ABCD, \n",
+    "cells": ALLOW_HEAD + "ufo2p,func_0001ABCD,a,b\n",
+    "repeat": ALLOW_HEAD + "ufo2p,func_0001ABCD,a\nufo2p,func_0001ABCD,b\n",
+    "utf8": ALLOW_HEAD + "ufo2p,func_0001ABCD,\xe9\n",
+}
+
+
+@pytest.mark.parametrize("case", BAD_ALLOWLISTS)
+def test_bad_allowlist_is_a_tool_error(tmp_path, case):
+    src, config, _path = write_tree(tmp_path, CLEAN, symbols=[TICK])
+    data = BAD_ALLOWLISTS[case].encode("latin-1")
+    (config / ALLOW_FILE).write_bytes(data)
+    with pytest.raises(ReadlintError, match=ALLOW_FILE):
+        run_readlint([src], src_root=src, config_root=config)
+    assert cli_main(["readlint", "--src", str(src), "--config", str(config)]) == 2
+
+
+F3 = 0x00020000  # the second unit's matched function
+UNIT2 = "u_00020000"
+MECHANICS = """schema = 1
+
+[[tier]]
+id = 1
+title = "Tier 1"
+
+[[tier]]
+id = 2
+title = "Tier 2"
+
+[[item]]
+id = "997"
+issue = 997
+title = "Item 997"
+url = "https://github.com/OpenApoc/OpenApoc/issues/997"
+tier = 1
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "998"
+issue = 998
+title = "Item 998"
+url = "https://github.com/OpenApoc/OpenApoc/issues/998"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[entry]]
+item = "997"
+exe = "ufo2p"
+address = "0x00010000"
+evidence = "bios-tick"
+detail = "reads the tick"
+source = "spike 007"
+
+[[entry]]
+item = "998"
+exe = "ufo2p"
+address = "0x00020000"
+evidence = "bios-tick"
+detail = "reads the tick"
+source = "spike 007"
+"""
+
+
+def two_units(tmp_path):
+    """Two matched ufo2p units: UNIT (clean) and UNIT2 (one placeholder), Tier 1 and 2."""
+    src, config, _path = write_tree(tmp_path, CLEAN, symbols=[TICK])
+    (src / EXE / f"{UNIT2}.c").write_bytes(b"void func_0001ABCD(void);\n")
+    rows = [FunctionRow(F1, F2, f"func_{F1:08X}", "game", UNIT, "call"),
+            FunctionRow(F2, F2 + 0x10, f"func_{F2:08X}", "game", UNIT, "call"),
+            FunctionRow(F3, F3 + 0x10, f"func_{F3:08X}", "game", UNIT2, "call")]  # fmt: skip
+    write_functions_csv(config / EXE / "functions.csv", rows, EXE_FILE)
+    status = [StatusRow(start, f"func_{start:08X}", unit, MATCHED, 100.0, 1, SHA, DATE)
+              for start, unit in ((F1, UNIT), (F3, UNIT2))]  # fmt: skip
+    write_status(status_path(config, EXE), status)
+    (config / "mechanics.toml").write_bytes(MECHANICS.encode("ascii"))
+    members = [MemberRow(EXE, F1, ("997",), (1,), ("997",), "entry", "member"),
+               MemberRow(EXE, F3, ("998",), (2,), ("998",), "entry", "member")]  # fmt: skip
+    write_members(config / MEMBERS_CSV, members)
+    return src, config
+
+
+def test_units_and_tier_selectors(tmp_path):
+    src, config = two_units(tmp_path)
+    everything = run_readlint([src], src_root=src, config_root=config)
+    assert everything.files_checked == (f"src/{EXE}/{UNIT}.c", f"src/{EXE}/{UNIT2}.c")
+    only = run_readlint([src], src_root=src, config_root=config, units=[f"{EXE}/{UNIT}"])
+    assert only.files_checked == (f"src/{EXE}/{UNIT}.c",) and only.violations == ()
+    assert f"src/{EXE}/{UNIT2}.c" in [s.path for s in only.skipped]
+    tier1 = run_readlint([src], src_root=src, config_root=config, tier=1)
+    assert tier1.files_checked == (f"src/{EXE}/{UNIT}.c",)
+    tier2 = run_readlint([src], src_root=src, config_root=config, tier=2)
+    assert tier2.files_checked == (f"src/{EXE}/{UNIT2}.c",)
+    argv = ["readlint", "--src", str(src), "--config", str(config)]
+    assert cli_main([*argv, "--units", f"{EXE}/{UNIT}"]) == 0
+    assert cli_main([*argv, "--units", f"{EXE}/{UNIT},{EXE}/{UNIT2}"]) == 1
+    assert cli_main([*argv, "--tier", "1"]) == 0
+    assert cli_main([*argv, "--tier", "2"]) == 1
+
+
+@pytest.mark.parametrize("selector", [{"units": ["u_00010000"]}, {"units": ["ufo3/u_00010000"]},
+                                      {"units": ["ufo2p/u_00099999"]}, {"tier": 3}])  # fmt: skip
+def test_bad_selector_is_a_tool_error(tmp_path, selector):
+    src, config = two_units(tmp_path)
+    with pytest.raises(ReadlintError):
+        run_readlint([src], src_root=src, config_root=config, **selector)
+
+
+def test_included_header_scanned(tmp_path):
+    text = '#include "common.h"\n#include "snd.h"\n#include <snd.h>\n#include <conio.h>\n'
+    src, config, _path = write_tree(tmp_path, text)
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "common.h").write_bytes(b"struct C { int unk_0; };\nvoid func_0001ABCD(void);\n")
+    (include / "snd.h").write_bytes(b"#ifndef SND_H\n#define SND_H\n/* func_0001ABCD */\n"
+                                    b'#include "voice.h"\nstruct Snd {\n    int unk_0;\n'
+                                    b"    int volume;\n};\n#endif\n")  # fmt: skip
+    (include / "voice.h").write_bytes(b"extern int D_0001ABCD;\n")
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert result.headers_checked == ("include/snd.h", "include/voice.h")
+    assert [(v.path, v.line, v.rule) for v in result.violations] == [
+        ("include/snd.h", 6, "RL04"), ("include/voice.h", 1, "RL01")]  # fmt: skip
+
+
+def test_unreadable_header_is_a_tool_error(tmp_path):
+    src, config, _path = write_tree(tmp_path, '#include "snd.h"\n')
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "snd.h").write_bytes(b"int a;\rint b;\n")
+    with pytest.raises(ReadlintError, match="snd.h"):
+        run_readlint([src], src_root=src, config_root=config)
+
+
+def test_report_mode_exit_0(tmp_path, capsys):
+    src, config = two_units(tmp_path)
+    result = run_readlint([src], src_root=src, config_root=config, report=True)
+    assert result.violations and result.exit_code() == 0
+    text = result.format()
+    assert "RL01 1" in text
+    assert f"src/{EXE}/{UNIT}.c: 0 violations" in text
+    assert f"src/{EXE}/{UNIT2}.c: 1 violations (RL01 1)" in text
+    assert result.to_json()["per_file"][f"src/{EXE}/{UNIT2}.c"] == {
+        "violations": 1, "rules": {"RL01": 1}, "waivers": 0, "allowlisted": 0}  # fmt: skip
+    argv = ["readlint", "--src", str(src), "--config", str(config)]
+    assert cli_main([*argv, "--report"]) == 0
+    assert cli_main(argv) == 1
+
+
+def test_committed_tree_report(capsys):
+    """CI pin: `readlint --report src/` on the committed tree exits 0 and checks exactly the
+    units status.csv marks matched (strict mode stays the phase gate)."""
+    matched = {f"src/{exe}/{row.unit}.c" for exe in readlint.EXES
+               for row in read_status(status_path(REPO_ROOT / "config", exe))
+               if row.status == MATCHED}  # fmt: skip
+    result = run_readlint([REPO_ROOT / "src"], src_root=REPO_ROOT / "src",
+                          config_root=REPO_ROOT / "config", report=True)  # fmt: skip
+    assert set(result.files_checked) == matched
+    assert result.exit_code() == 0
+    assert cli_main(["readlint", "--report", str(REPO_ROOT / "src")]) == 0
+    out = capsys.readouterr().out
+    for path in matched:
+        assert f"{path}: " in out
+
+
+@pytest.mark.parametrize("text", ["", '#include "common.h"\n\nINCLUDE_ASM(func_00010000);\n'
+                                      "INCLUDE_ASM(func_00010040);\n"])  # fmt: skip
+def test_empty_unit(tmp_path, text):
+    result = lint(tmp_path, text)
+    assert result.files_checked == (f"src/{EXE}/{UNIT}.c",)
+    assert result.violations == ()
