@@ -1743,18 +1743,20 @@ def best_cell(*flags: str) -> check.SweepCell:
 
 def test_sweep2_cells_from_ot():
     """D-15 composition for best `-4r -ot -s -fpi`: O1 replaces -ot (8 letters, KKND's set), O2
-    adds each letter to -ot, Z adds a packing, F an FP scheduling; all under 10.6, all keeping
-    -4r, -s and -fpi (M, -zm, is Task 3's)."""
+    adds each letter to -ot, Z adds a packing, M -zm (test_zm_object_accounting: included), F an
+    FP scheduling; 24 cells, all under 10.6, all keeping -4r, -s and -fpi."""
     cells = check.sweep2_cells(best_cell("-4r", "-ot", "-s", "-fpi"))
     letters = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
     o1 = [("-4r", letter, "-s", "-fpi") for letter in letters]
     o1.append(("-4r", "-of+", "-omiler", "-s", "-fpi"))
     o2 = [("-4r", "-ot", letter, "-s", "-fpi") for letter in letters]
     z = [("-4r", "-ot", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
+    m = [("-4r", "-ot", "-s", "-fpi", "-zm")]
     f = [("-4r", "-ot", "-s", "-fpi", fp) for fp in ("-fp3", "-fp5")]
     flags = [cell_flags for _, cell_flags in cells]
-    assert flags[:9] == o1 and flags[9:17] == o2 and flags[17:21] == z and flags[-2:] == f
+    assert flags == [*o1, *o2, *z, *m, *f]
     assert len(cells) <= 24
+    assert len(cells) == 24
     assert {version for version, _ in cells} == {"10.6"}
     assert len(set(flags)) == len(flags)
     assert all({"-4r", "-s", "-fpi"} <= set(cell_flags) for cell_flags in flags)
@@ -1772,7 +1774,7 @@ def test_sweep2_cells_from_no_o():
     o1.append(("-5r", "-of+", "-omiler", "-s", "-fpi"))
     assert flags[:9] == o1
     assert flags[9:13] == [("-5r", "-s", "-fpi", pack) for pack in ("-zp1", "-zp2", "-zp4", "-zp8")]
-    assert flags[-2:] == [("-5r", "-s", "-fpi", fp) for fp in ("-fp3", "-fp5")]
+    assert flags[13:] == [("-5r", "-s", "-fpi", extra) for extra in ("-zm", "-fp3", "-fp5")]
     assert not [f for f in flags if set(f) & {"-ox", "-os", "-ot", "-oneatx"}]
     no_stack = [cell_flags for _, cell_flags in check.sweep2_cells(best_cell("-4r", "-ox", "-fpi"))]
     assert all("-s" not in cell_flags for cell_flags in no_stack)
@@ -1831,3 +1833,65 @@ def test_every_cell_rule_parses():
             (rule,) = parse_cflags(text, versions=check.SWEEP_VERSIONS)
             assert rule.flags == cell_flags
             assert not any(f.lower().startswith(WRAPPER_OWNED) for f in cell_flags)
+
+
+# ---- 07-14 Task 3: the -zm spike (research A14) -------------------------------------------------
+
+OTHER_CODE = bytes.fromhex("b801000000" "4040" "c3")  # mov eax, 1; inc eax twice; ret: 8 bytes
+ZM_SOURCE = ("/* synthetic */\nint func_00010000(void) { return 0; }\n"
+             "int func_00010010(void) { return 1; }\n")  # fmt: skip
+
+
+def zm_object() -> bytes:
+    """The -zm layout of our unit: each function in its own code segment (`<name>_TEXT`, class
+    CODE), func_00010000_ in SEGDEF 1 calling func_00010010_ in SEGDEF 2 through a fixup to
+    that segment, and the absolute load of _D_00020004 as before."""
+    return module(
+        "u_00010000",
+        lnames("", f"{SYMBOL}_TEXT", "CODE", FLAT_LNAME, "func_00010010__TEXT"),
+        segdef32(2, 3, len(GOOD_OURS)),
+        segdef32(5, 3, len(OTHER_CODE)),
+        grpdef(4),
+        pubdef32(1, [(SYMBOL, 0)]),
+        pubdef32(2, [("func_00010010_", 0)]),
+        extdef("_D_00020004"),
+        ledata32(1, 0, GOOD_OURS),
+        fixupp32(to_segment(1, 2, relative=True), absolute(6, 1)),
+        ledata32(2, 0, OTHER_CODE),
+    )
+
+
+def test_zm_object_accounting(env):
+    """Research A14, settled on a synthetic object (no real -zm compile): check's unit accounting
+    takes a -zm object, one code segment per function. defined_functions finds both functions,
+    each in its own segment and sized to it, and account_unit accounts every row with no problem,
+    so stage 2 includes -zm (SWEEP2_ZM, the M cell).
+
+    The limit, pinned here too: a call into another function's own segment is a fixup to a
+    module-local segment, which the relocation check refuses ("local segment reference"). A -zm
+    cell of a function that calls a function of its own unit therefore fails its relocation
+    check and is never a hit (relocs is out of this plan's scope, like account_unit)."""
+    from reverseapoc.omf import read_object
+
+    best = best_cell("-4r", "-ot", "-s", "-fpi")
+    assert ("10.6", ("-4r", "-ot", "-s", "-fpi", "-zm")) in check.sweep2_cells(best)
+    assert check.SWEEP2_ZM is True
+
+    obj = read_object(zm_object())
+    table = SymbolTable.build([ROW, OTHER, FAR], data_ranges=data_ranges(LE(env.data)))
+    rows = [ROW, OTHER]
+    defined = check.defined_functions(obj, rows, table)
+    assert [(d.row, d.symbol, d.off, d.size) for d in defined] == [
+        (ROW, SYMBOL, 0, len(GOOD_OURS)), (OTHER, "func_00010010_", 0, len(OTHER_CODE))]
+    assert defined[0].segment.index != defined[1].segment.index
+    account = check.account_unit(obj, rows, table, ZM_SOURCE)
+    assert account.problems == () and account.stubs == ()
+    assert [d.row for d in account.defined] == rows
+
+    manifest = check.load_manifest(env.manifest)
+    exe = check.load_exe(check.select_exe(manifest, STEM, env.manifest), orig_dir=env.orig,
+                         manifest=env.manifest, config_root=env.config)  # fmt: skip
+    ((d, reloc), _) = check.checked_functions(obj, rows, exe)
+    assert d.row == ROW and not reloc.ok
+    (problem,) = reloc.problems
+    assert problem.startswith(f"0x{CODE_BASE + 1:08X}: ") and "local segment reference" in problem
