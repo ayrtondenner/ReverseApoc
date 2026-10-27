@@ -331,3 +331,38 @@ The behaviour sits in one place, `_Declarations._declarator`: the `OUTSIDE` retu
 - `uv run reverseapoc readlint --report src/`: exit 0.
 
 **Container step deferred to the orchestrator:** `docker compose build && docker compose run --rm test`.
+
+## Fix round 2
+
+The finding came from the scoped re-review (N1). The orchestrator accepted the round 1 choice as its ruling: `extern` declarations and non-static prototypes count as references.
+
+**N1.** The `extern` exemption hid real definitions. `_declarator` returned OUTSIDE as soon as it saw `extern`, and it only checked the tokens before the declarator for an initializer.
+
+**Fix (`ceebe3d`).**
+- A new method, `_Declarations._defines`, looks past the declarator's `[...]` and `(...)` suffixes. For a declarator group it starts after the group.
+- If an `=` or a `{` follows, the declaration is a definition (OWN), even under `extern`.
+
+**Tests (RED first, `9fd4c75`).** Six new cases in `test_allowlist_never_exempts_a_declaration`. The first five are the reviewer's shapes; the sixth is an initialized second declarator.
+
+| Case | C |
+|------|---|
+| `extern-initialized` | `extern int D = 1;` |
+| `extern-array-initialized` | `extern int D[2] = {1, 2};` |
+| `extern-pointer-initialized` | `extern int *D = 0;` |
+| `extern-function-pointer-initialized` | `extern void (*D)(void) = 0;` |
+| `extern-function-definition` | `extern void f(void) { }` |
+| `extern-second-declarator-initialized` | `extern int a, D = 1;` |
+
+**RED evidence.**
+- Target: `test_allowlist_never_exempts_a_declaration[extern-initialized]`.
+- JUnit report: `build/red/07-27-fr2.xml`. Record: `build/red/07-27-fr2.json`.
+- Classifier: `RED_EVIDENCE_OK` / `target_test_failed`. 165 tests ran and 6 failed: exactly the six new cases.
+- Each failed on its assertion, `[] == [1]`, because the definition was counted as an allowlisted reference.
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_readlint.py`: **165 passed**.
+- `uv run pytest -q` (full host suite): **3545 passed, 247 skipped**. The skip count is unchanged.
+- `uv run ruff check .`: All checks passed.
+- `uv run reverseapoc readlint src/`: exit 1 with the same **37 violations** (RL01 24, RL02 1, RL03 10, RL06 2).
+
+**Container step deferred to the orchestrator:** `docker compose build && docker compose run --rm test`.
