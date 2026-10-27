@@ -616,11 +616,16 @@ def validate_record(obj: object) -> None:
 def append_record(path: Path, record: Mapping) -> None:
     """Validate `record`, then append it as one compact JSON line (LF) to `path`; a record is
     never rewritten (D-23)."""
-    validate_record(record)
-    line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
+    line = record_line(record)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as fh:
-        fh.write(line.encode("ascii"))
+        fh.write(line)
+
+
+def record_line(record: Mapping) -> bytes:
+    """`record` validated, as the one compact JSON line (LF, ASCII) append_record writes."""
+    validate_record(record)
+    return (json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
 
 
 # ---- the commit (D-25) ----
@@ -1065,20 +1070,49 @@ class _Session:
 
 class _Ledger:
     """D-24 invariant (a): the bytes the driver itself last wrote to each driver-owned file
-    git can see (progress/attempts.jsonl, config/<exe>/status.csv, the feed). Every driver write
-    of one of them is noted right after it happens; after a session each such path must hold
-    exactly these bytes, unstaged, and every other path git can see must equal HEAD. This
-    replaces the pre-session snapshot as the audit's reference, so the check no longer depends
-    on a quiet tree between sessions (07-18, 07-21)."""
+    git can see (progress/attempts.jsonl, config/<exe>/status.csv, the feed); a path the driver
+    has not written yet is expected to hold HEAD's bytes (`head`). After a session each such
+    path must hold exactly these bytes, unstaged, and every other path git can see must equal
+    HEAD. This replaces the pre-session snapshot as the audit's reference, so the check no
+    longer depends on a quiet tree between sessions (07-18, 07-21).
 
-    def __init__(self, repo: Path) -> None:
+    Fix round 1: before every driver write of such a path the file must still hold the
+    expected bytes (`holds`), else the night stops as a guardrail breach; after the write the
+    ledger records the bytes the driver computed it wrote (`set`: the earlier bytes plus the
+    appended line, a truncated prefix, the pre-gate bytes put back), never a read-back. The one
+    residual is the gate itself: `gate` and `gate --partial` are subprocesses that write
+    status.csv and the feed, so their output is read back (`note`), but only after the driver
+    checked that both files held the expected bytes when the gate started. A change made by
+    someone else while the gate runs is therefore taken for the gate's output."""
+
+    def __init__(self, repo: Path, head: Callable[[str], bytes | None] | None = None) -> None:
         self.repo = Path(repo)
         self._bytes: dict[str, bytes | None] = {}
+        self._head = head
 
     def note(self, *rels: str) -> None:
-        """Record the current bytes (None: no file) of each repo-relative path."""
+        """Record the current bytes (None: no file) of each repo-relative path: only for what a
+        gate subprocess wrote (see the class docstring)."""
         for rel in rels:
             self._bytes[rel] = _read(self.repo / rel)
+
+    def set(self, rel: str, data: bytes | None) -> None:
+        """Record the bytes the driver itself just wrote to `rel` (None: it removed it)."""
+        self._bytes[rel] = data
+
+    def expected(self, rel: str) -> bytes | None:
+        """The bytes `rel` must hold now: the driver's last write, else HEAD's (None: none)."""
+        if rel in self._bytes:
+            return self._bytes[rel]
+        return self._head(rel) if self._head is not None else None
+
+    def holds(self, rel: str) -> bool:
+        """`rel` is a regular file (never a link) with the expected bytes, or absent when no
+        bytes are expected."""
+        path = self.repo / rel
+        if _is_link(path):
+            return False
+        return _read(path) == self.expected(rel) and (path.is_file() or not path.exists())
 
     def knows(self, rel: str) -> bool:
         return rel in self._bytes
@@ -1118,6 +1152,15 @@ class _Contained:
     refused: list[str] = field(default_factory=list)
 
 
+class _Breach(Exception):
+    """Fix round 1: a driver-owned file no longer held the driver's bytes right before the
+    match commit; `detail` already describes the containment."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 class _Stop(Exception):
     """Ends the night with a STOPPED record. After any breach (containment ran) nothing is
     committed, whatever the reason (fix round 2, J2)."""
@@ -1146,7 +1189,8 @@ class _Night:
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
         self.pre_gate: dict[str, bytes | None] = {}  # status.csv and the feed right before the gate
         self.landed: str | None = None  # the unit the landing section copied into src/ (D-24)
-        self.ledger = _Ledger(self.repo)  # what the driver itself wrote (D-24 invariant a)
+        self.ledger = _Ledger(self.repo, self._head_bytes)  # the driver's own writes (D-24 a)
+        self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
 
     # --- the night ---
 
@@ -1167,7 +1211,10 @@ class _Night:
                 "(an earlier night left them; inspect, then commit or restore them)"
             )
             return DriveReport(REFUSED, "dirty", 0, 0, detail)
-        self._record_run(STARTED, START)
+        try:
+            self._record_run(STARTED, START)
+        except _Stop as stop:  # fix round 1: the log changed since the outputs check
+            return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
         try:
             event, reason, detail = ENDED, self._loop(), None
@@ -1178,8 +1225,13 @@ class _Night:
             event, reason, detail = STOPPED, ERROR, _detail(f"{type(exc).__name__}: {exc}")
         except BaseException as exc:
             why = _detail(type(exc).__name__ + self.interrupted)
-            self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows())
+            self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows(),
+                             guard=False)  # fmt: skip  # nothing is committed after an interrupt
             raise
+        found = [] if self.breached else self._ledger_breaches()
+        if found:  # fix round 1: never commit a driver-owned file holding bytes it did not write
+            event, reason = STOPPED, GUARDRAIL
+            detail = _detail("; ".join([*([detail] if detail else []), *found]))
         uncommitted = self._uncommitted_rows() if event == STOPPED else []
         self._record_run(event, reason, detail, checks_failed=failed, uncommitted=uncommitted)
         if (
@@ -1416,6 +1468,7 @@ class _Night:
         target = self.repo / claim.unit_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         self.landed = claim.unit_rel
+        self.landed_bytes = data
         write_atomic(target, data)
 
     def _snapshot(self) -> _Snapshot:
@@ -1609,6 +1662,64 @@ class _Night:
             if rels is None or not all(allowed(rel) for rel in rels):
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
+
+    def _head_bytes(self, rel: str) -> bytes | None:
+        """HEAD's blob of `rel`, or None when HEAD has none (or git cannot show it)."""
+        done = self.deps.git(["cat-file", "blob", f"HEAD:{rel}"])
+        return done.stdout if done.returncode == 0 else None
+
+    def _breach(self, rel: str, good: bytes | None, *, ledgered: bool = True) -> str:
+        """Fix round 1: `rel` changed since the driver last wrote it (or since HEAD, before its
+        first write). The file is kept in the quarantine (moved when no bytes are expected),
+        put back to `good`, the attempt in progress is reset, and nothing is committed this
+        night (sticky, as any breach). Returns the detail for the STOPPED record."""
+        self.breached = True
+        done = _Contained()
+        path = self.repo / rel
+        try:
+            if path.is_file() or _is_link(path):
+                self._keep(done, rel, path, move=good is None)
+            if good is not None and not self._restore_bytes(rel, path, good):
+                done.not_restored.append(rel)
+        except Exception as exc:  # noqa: BLE001 - named in the record
+            done.refused.append(f"{rel}: {type(exc).__name__}: {exc}")
+        if ledgered:
+            self.ledger.set(rel, good)
+        if self.live is not None:
+            try:
+                self._reset(self.live)
+            except Exception as exc:  # noqa: BLE001 - named in the record
+                done.refused.append(f"the attempt reset failed: {type(exc).__name__}: {exc}")
+        detail = (f"{rel} does not hold the bytes the driver last wrote (D-24 ledger breach); "
+                  f"quarantined: {_listed(done.quarantined)}")  # fmt: skip
+        if done.not_restored:
+            detail += f"; not restored: {_listed(done.not_restored)}"
+        if done.refused:
+            detail += "; " + "; ".join(done.refused)
+        return detail
+
+    def _guard(self, *rels: str) -> None:
+        """Fix round 1: right before a driver write, each driver-owned file must still hold the
+        bytes the driver last wrote (or HEAD's); otherwise the night stops as a breach."""
+        for rel in rels:
+            if not self.ledger.holds(rel):
+                raise _Stop(GUARDRAIL, self._breach(rel, self.ledger.expected(rel)))
+
+    def _ledger_breaches(self) -> list[str]:
+        """At the end of the night: each ledgered file that no longer holds its bytes, each one
+        contained (fix round 1)."""
+        return [self._breach(rel, self.ledger.expected(rel))
+                for rel in self.ledger.paths() if not self.ledger.holds(rel)]  # fmt: skip
+
+    def _verify_landing(self, claim: _Claim) -> None:
+        """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
+        log hold the driver's bytes and src/ holds the unit it landed."""
+        for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix()):
+            if not self.ledger.holds(rel):
+                raise _Breach(self._breach(rel, self.ledger.expected(rel)))
+        unit = self.repo / claim.unit_rel
+        if _is_link(unit) or _read(unit) != self.landed_bytes:
+            raise _Breach(self._breach(claim.unit_rel, self.landed_bytes, ledgered=False))
 
     def _unexplained(self, status: Mapping[str, tuple[str, str | None]]) -> list[str]:
         """Invariant (a): each path of `status` (git status after the session) or of the
@@ -1887,17 +1998,23 @@ class _Night:
         """status.csv and the feed back to their bytes right before the gate; never the log,
         which only grows (D-27 P4). Each file is tried alone; a refused or failed restore comes
         back as a note for the record (fix round 2 minor 1: never silent)."""
-        notes = []
+        notes, breaches = [], []
         for rel, data in self.pre_gate.items():
             if data is None:
                 continue
+            if not self.ledger.holds(rel):  # fix round 1: changed after the gate wrote it
+                breaches.append(self._breach(rel, data))
+                continue
             try:
-                if not self._restore_bytes(rel, self.repo / rel, data):
+                if self._restore_bytes(rel, self.repo / rel, data):
+                    self.ledger.set(rel, data)
+                else:
                     notes.append(f"not restored: {rel} (refused: a link or outside the checkout)")
             except Exception as exc:  # noqa: BLE001 - named in the record
                 notes.append(f"not restored: {rel} ({type(exc).__name__}: {exc})")
-        self.ledger.note(*self.pre_gate)
         self.pre_gate = {}
+        if breaches:
+            raise _Stop(GUARDRAIL, "; ".join([*breaches, *notes]))
         return notes
 
     def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP) -> None:
@@ -1919,11 +2036,12 @@ class _Night:
         if lint != EXIT_OK:
             return None
         claim = session.claim
-        self.pre_gate = {rel: _read(self.repo / rel) for rel in (claim.status_rel, FEED)}
+        self._guard(claim.status_rel, FEED)  # fix round 1: the gate starts from the driver's bytes
+        self.pre_gate = {rel: self.ledger.expected(rel) for rel in (claim.status_rel, FEED)}
         try:
             gate = self.deps.gate(pick, n)
         finally:
-            self.ledger.note(claim.status_rel, FEED)  # the gate writes them for the driver
+            self.ledger.note(claim.status_rel, FEED)  # the gate's output: the one read-back
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
             self._tool_failure(session, f"gate exited {gate.exit_code}")
         stems = sorted(PurePosixPath(name).stem.lower() for name, _ in gate_sha1s(gate.doc))
@@ -1990,11 +2108,12 @@ class _Night:
         best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
         best.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, best)
+        self._guard(claim.status_rel, FEED)  # fix round 1
         try:
             return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(),
                                           claim.n)  # fmt: skip
         finally:
-            self.ledger.note(claim.status_rel, FEED)
+            self.ledger.note(claim.status_rel, FEED)  # the partial gate's output (read back)
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None) -> None:  # fmt: skip
@@ -2011,8 +2130,12 @@ class _Night:
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
                                      sha1s=gate_sha1s(gate.doc))  # fmt: skip
+            self._verify_landing(claim)
             commit_paths(self.deps.git, message=message,
                          message_file=claim.attempt_dir / COMMIT_MSG, paths=paths)  # fmt: skip
+        except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
+            undone = self._undo_match(session, paths, summary, exc.detail, log_size)
+            raise _Stop(GUARDRAIL, undone) from exc
         except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
             why = f"{type(exc).__name__}: {exc}"
             raise _Stop(TOOL, self._undo_match(session, paths, summary, why, log_size)) from exc
@@ -2056,13 +2179,15 @@ class _Night:
     def _drop_log_tail(self, size: int) -> list[str]:
         """F19: the log back to `size` bytes; a refused or failed cut is a note."""
         rel = ATTEMPT_LOG.as_posix()
+        good = (self.ledger.expected(rel) or b"")[:size]
+        if not self.ledger.holds(rel):  # fix round 1: put back the driver's prefix
+            return [self._breach(rel, good)]
         try:
             if not _truncate(self.log, size):
                 return [f"not restored: {rel} (refused: a link or not a file)"]
         except Exception as exc:  # noqa: BLE001 - named in the record
             return [f"not restored: {rel} ({type(exc).__name__}: {exc})"]
-        finally:
-            self.ledger.note(rel)
+        self.ledger.set(rel, good)
         return []
 
     def _staged(self) -> list[str]:
@@ -2101,20 +2226,29 @@ class _Night:
         self._append(record)
 
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
-                    checks_failed: Sequence[str] = (),
-                    uncommitted: Sequence[str] = ()) -> None:  # fmt: skip
+                    checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
+                    guard: bool = True) -> None:  # fmt: skip
         record = {"kind": KIND_RUN, "run": self.config.run_id, "event": event, "reason": reason,
                   "detail": detail, "sessions": self.sessions, "matched": self.matched,
                   "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
                   "date": self.deps.today()}  # fmt: skip
-        self._append(record)
+        self._append(record, guard=guard)
 
-    def _append(self, record: Mapping) -> None:
-        """Every driver record goes through here, so the ledger holds the log's bytes."""
-        try:
-            append_record(self.log, record)
-        finally:
-            self.ledger.note(ATTEMPT_LOG.as_posix())
+    def _append(self, record: Mapping, *, guard: bool = True) -> None:
+        """Every driver record goes through here (fix round 1): the log must still hold the
+        driver's bytes, then the ledger records those bytes plus the line, never a read-back.
+        After a breach (nothing is committed any more) the check is skipped, so the STOPPED
+        record can always be written."""
+        rel = ATTEMPT_LOG.as_posix()
+        line = record_line(record)
+        checked = guard and not self.breached
+        if checked:
+            self._guard(rel)
+        before = self.ledger.expected(rel) if checked else _read(self.log)
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        with self.log.open("ab") as fh:
+            fh.write(line)
+        self.ledger.set(rel, (before or b"") + line)
 
 
 def drive(config: DriveConfig, deps: Deps) -> DriveReport:

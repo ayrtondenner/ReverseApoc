@@ -2148,8 +2148,11 @@ def test_a_feed_tamper_before_the_partial_gate_stops_the_night(tmp_path):
     reset's git restore); the partial gate never runs."""
     night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[1])
 
-    def tamper(args: list[str]) -> None:
-        if night.gate_calls and _verb(args) == "restore" and not night.partial_calls:
+    done: list[bool] = []
+
+    def tamper(args: list[str]) -> None:  # once, at the reset's restore after the gate
+        if night.gate_calls and _verb(args) == "restore" and not done:
+            done.append(True)
             _append_text(night.repo / FEED_NAME, TAMPER)
 
     night.on_git = tamper
@@ -2181,3 +2184,18 @@ def test_an_untampered_night_commits_the_match_and_the_log(tmp_path):
     report = night.run()
     assert (report.event, report.reason) == ("ENDED", "queue exhausted")
     assert night.commits() == [MATCH_SUBJECT, CHORE]
+
+
+def test_a_table_tamper_before_the_chore_commit_is_never_committed(tmp_path):
+    """Fix round 1: at the end of the night every ledgered file is checked once more before
+    the chore commit; a status.csv tamper made after the partial gate (here during the
+    end-of-run checks) stops the night and commits nothing."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[1])
+
+    def end_of_run():
+        _append_text(night.repo / STATUS_REL, TAMPER_ROW)
+        return ()
+
+    report = night.run(config={"attempts_per_function": 1}, end_of_run=end_of_run)
+    _assert_breach(night, report, STATUS_REL, TAMPER_ROW)
+    assert "partial" in (night.repo / STATUS_REL).read_text(encoding="utf-8")  # the driver's row
