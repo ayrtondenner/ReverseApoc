@@ -2199,3 +2199,61 @@ def test_a_table_tamper_before_the_chore_commit_is_never_committed(tmp_path):
     report = night.run(config={"attempts_per_function": 1}, end_of_run=end_of_run)
     _assert_breach(night, report, STATUS_REL, TAMPER_ROW)
     assert "partial" in (night.repo / STATUS_REL).read_text(encoding="utf-8")  # the driver's row
+
+
+# ---- 07-13 fix round 2: the chore commit's outputs, and a breach during a match undo ----
+
+OTHER_STATUS = "config/tacp/status.csv"
+
+
+def test_a_tamper_of_a_table_the_driver_never_wrote_is_never_committed(tmp_path):
+    """Fix round 2: the end-of-night check covers every output the chore commit may carry (the
+    log, both status.csv files, the feed), not only those the driver wrote tonight; an untouched
+    one must equal HEAD. Here the other EXE's table changes during the end-of-run checks."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[1])
+
+    def end_of_run():
+        _append_text(night.repo / OTHER_STATUS, TAMPER_ROW)
+        return ()
+
+    report = night.run(config={"attempts_per_function": 1}, end_of_run=end_of_run)
+    _assert_breach(night, report, OTHER_STATUS, TAMPER_ROW)
+    assert (night.repo / OTHER_STATUS).read_text(encoding="utf-8") == STATUS_HEAD
+
+
+def test_a_lint_only_night_checks_the_untouched_outputs_too(tmp_path):
+    """Fix round 2: every attempt failed the lint, so the driver never wrote the claimed table
+    or the feed; a feed tamper still never reaches the chore commit."""
+    night = Night(tmp_path, sessions=[Sess()], lint_exits=[1])
+
+    def end_of_run():
+        _append_text(night.repo / FEED_NAME, TAMPER)
+        return ()
+
+    report = night.run(config={"attempts_per_function": 1}, end_of_run=end_of_run)
+    _assert_breach(night, report, FEED_NAME, TAMPER)
+
+
+TAMPER_FEAT_HOOK = f"""#!/bin/sh
+case "$(head -n 1 "$1")" in
+  feat\\(*) printf '%s' '{TAMPER_ROW.strip()}' >> {STATUS_REL}; echo "made-up hook" >&2; exit 1 ;;
+esac
+exit 0
+"""
+
+
+def test_a_breach_during_the_match_undo_still_drops_the_matched_record(tmp_path):
+    """Fix round 2 minor: the undo of a failed match commit stays best-effort when its pre-gate
+    restore finds a breach (status.csv changed by the failing commit's hook): the MATCHED line
+    is still dropped, the attempt is GAVE_UP, and the night stops as a guardrail breach."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    hook = night.repo / ".git" / "hooks" / "commit-msg"
+    _write(hook, TAMPER_FEAT_HOOK)
+    hook.chmod(0o755)
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert STATUS_REL in report.detail
+    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
+    assert TAMPER_ROW.strip() not in (night.repo / STATUS_REL).read_text(encoding="utf-8")
+    assert night.commits() == []
