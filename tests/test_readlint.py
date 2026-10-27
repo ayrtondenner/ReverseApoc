@@ -15,7 +15,8 @@ from conftest import REPO_ROOT
 from reverseapoc import readlint
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import FunctionRow, SymbolRow, write_functions_csv, write_symbols_csv
-from reverseapoc.mechanics import MEMBERS_CSV, MemberRow, write_members
+from reverseapoc.mechanics import MEMBERS_CSV, MemberRow, tier_digest, write_members
+from reverseapoc.mechanics import load as load_mechanics
 from reverseapoc.readlint import ReadlintError, run_readlint
 from reverseapoc.status import MATCHED, PARTIAL, StatusRow, read_status, status_path, write_status
 
@@ -472,21 +473,37 @@ source = "spike 007"
 """
 
 
-def two_units(tmp_path):
-    """Two matched ufo2p units: UNIT (clean) and UNIT2 (one placeholder), Tier 1 and 2."""
+def write_mechanics(config, members, *, signed=(1, 2), stale=()):
+    """mechanics.toml and the members file; the `signed` tiers carry the owner's sign-off with
+    the digest of `members` (a wrong one for the `stale` tiers)."""
+    path = config / "mechanics.toml"
+    path.write_bytes(MECHANICS.encode("ascii"))
+    write_members(config / MEMBERS_CSV, members)
+    mech, text = load_mechanics(path), MECHANICS
+    for tier_id in signed:
+        digest = "0" * 64 if tier_id in stale else tier_digest(mech, members, tier_id)
+        title = f'title = "Tier {tier_id}"\n'
+        text = text.replace(title, f'{title}signed_off_by = "owner"\nsigned_off_date = {DATE}\n'
+                                   f'members_sha256 = "{digest}"\n')  # fmt: skip
+    path.write_bytes(text.encode("ascii"))
+
+
+def two_units(tmp_path, *, status2=MATCHED, **signing):
+    """Two ufo2p units: UNIT (clean, matched) and UNIT2 (one placeholder, `status2`), holding
+    the members of Tier 1 and Tier 2."""
     src, config, _path = write_tree(tmp_path, CLEAN, symbols=[TICK])
     (src / EXE / f"{UNIT2}.c").write_bytes(b"void func_0001ABCD(void);\n")
     rows = [FunctionRow(F1, F2, f"func_{F1:08X}", "game", UNIT, "call"),
             FunctionRow(F2, F2 + 0x10, f"func_{F2:08X}", "game", UNIT, "call"),
             FunctionRow(F3, F3 + 0x10, f"func_{F3:08X}", "game", UNIT2, "call")]  # fmt: skip
     write_functions_csv(config / EXE / "functions.csv", rows, EXE_FILE)
-    status = [StatusRow(start, f"func_{start:08X}", unit, MATCHED, 100.0, 1, SHA, DATE)
-              for start, unit in ((F1, UNIT), (F3, UNIT2))]  # fmt: skip
+    percent = 100.0 if status2 == MATCHED else 50.0
+    status = [StatusRow(F1, f"func_{F1:08X}", UNIT, MATCHED, 100.0, 1, SHA, DATE),
+              StatusRow(F3, f"func_{F3:08X}", UNIT2, status2, percent, 1, SHA, DATE)]  # fmt: skip
     write_status(status_path(config, EXE), status)
-    (config / "mechanics.toml").write_bytes(MECHANICS.encode("ascii"))
     members = [MemberRow(EXE, F1, ("997",), (1,), ("997",), "entry", "member"),
                MemberRow(EXE, F3, ("998",), (2,), ("998",), "entry", "member")]  # fmt: skip
-    write_members(config / MEMBERS_CSV, members)
+    write_mechanics(config, members, **signing)
     return src, config
 
 
@@ -577,3 +594,115 @@ def test_empty_unit(tmp_path, text):
     result = lint(tmp_path, text)
     assert result.files_checked == (f"src/{EXE}/{UNIT}.c",)
     assert result.violations == ()
+
+
+# ---- fix round 1: declarations are never allowlisted (I1), headers get the allowlist (I2),
+# ---- --tier is a gate (I3)
+
+
+ALLOWED = ("ufo2p,D_0001ABCD,a table\n", "ufo2p,func_0001ABCD,a hub\n")
+COMMON_H = b"typedef unsigned char u8;\ntypedef signed long s32;\n"
+
+DECLARATIONS = {  # C text -> the RL01 lines: declarations of allowlisted names are never exempt
+    "function-pointer": ("void (*D_0001ABCD)(void);\n", [1]),
+    "block-static": ("int g(void)\n{\n    static int D_0001ABCD = 0;\n    return D_0001ABCD;\n}\n",
+                     [3]),
+    "local": ("int g(void)\n{\n    int func_0001ABCD;\n    return 0;\n}\n", [3]),
+    "parameter": ("int g(int D_0001ABCD);\n", [1]),
+    "parameter-of-a-definition": ("int g(s32 D_0001ABCD)\n{\n    return D_0001ABCD;\n}\n", [1]),
+    "function-pointer-parameter": ("void g(void (*func_0001ABCD)(int));\n", [1]),
+    "typedef": ("typedef int D_0001ABCD;\n", [1]),
+    "typedef-function-pointer": ("typedef void (*func_0001ABCD)(void);\n", [1]),
+    "struct-member": ("struct S {\n    int a;\n    u8 *D_0001ABCD;\n};\n", [3]),
+    "struct-tag": ("struct D_0001ABCD {\n    int a;\n};\n", [1]),
+    "array": ("int D_0001ABCD[4];\n", [1]),
+    "pointer-and-second-declarator": ("u8 a, *D_0001ABCD = 0;\n", [1]),
+    "typedef-name-type": ("s32 D_0001ABCD;\n", [1]),
+    "enum-constant": ("enum { A, D_0001ABCD = 1 };\n", [1]),
+    "static-prototype": ("static void func_0001ABCD(void);\n", [1]),
+    "function-definition": ("/* x */\nvoid func_0001ABCD(void)\n{\n}\n", [2]),
+}
+
+
+@pytest.mark.parametrize("case", DECLARATIONS)
+def test_allowlist_never_exempts_a_declaration(tmp_path, case):
+    text, lines = DECLARATIONS[case]
+    src, config, _path = write_tree(tmp_path, '#include "common.h"\n' + text)
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "common.h").write_bytes(COMMON_H)
+    write_allowlist(config, *ALLOWED)
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert [ln - 1 for ln, _m in hits(result, "RL01")] == lines
+
+
+REFERENCES = {  # C text -> allowlisted references (no RL01): uses, externs, outside prototypes
+    "extern": ("extern int D_0001ABCD;\n", 1),
+    "extern-function-pointer": ("extern void (*D_0001ABCD)(void);\n", 1),
+    "prototype": ("void func_0001ABCD(int a);\n", 1),
+    "block-extern-and-use": ("int g(void)\n{\n    extern short D_0001ABCD;\n"
+                             "    return D_0001ABCD;\n}\n", 2),
+    "calls-and-derefs": ("int g(int *p)\n{\n    func_0001ABCD(*p);\n    (*D_0001ABCD)(1);\n"
+                         "    return sizeof(D_0001ABCD);\n}\n", 3),
+    "initializer-and-cast": ("int g(void)\n{\n    u8 x = func_0001ABCD(D_0001ABCD);\n"
+                             "    return x * (s32)D_0001ABCD;\n}\n", 3),
+    "file-scope-initializer": ("int *p = &D_0001ABCD, q[2] = {1, 2};\n", 1),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", REFERENCES)
+def test_allowlist_exempts_references(tmp_path, case):
+    text, count = REFERENCES[case]
+    src, config, _path = write_tree(tmp_path, '#include "common.h"\n' + text)
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "common.h").write_bytes(COMMON_H)
+    write_allowlist(config, *ALLOWED)
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert hits(result, "RL01") == []
+    assert result.allowlisted == {f"src/{EXE}/{UNIT}.c": count}
+
+
+def test_header_references_take_the_allowlist(tmp_path):
+    src, config, _path = write_tree(tmp_path, '#include "snd.h"\nD_00012345 volume;\n')
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "snd.h").write_bytes(
+        b"extern int D_0001ABCD;\nvoid func_0001ABCD(void);\nstruct Snd {\n"
+        b"    int D_0001ABCD;\n};\ntypedef int D_00012345;\n")  # fmt: skip
+    write_allowlist(config, *ALLOWED, "ufo2p,D_00012345,a type\n")
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert [(v.path, v.line) for v in result.violations if v.rule == "RL01"] == [
+        ("include/snd.h", 4), ("include/snd.h", 6)]  # fmt: skip
+    assert result.allowlisted == {"include/snd.h": 2, f"src/{EXE}/{UNIT}.c": 1}
+
+
+def test_header_allowlist_follows_the_including_exe(tmp_path):
+    src, config, _path = write_tree(tmp_path, '#include "snd.h"\n')
+    (tmp_path / "include").mkdir()
+    (tmp_path / "include" / "snd.h").write_bytes(b"extern int D_0001ABCD;\n")
+    write_allowlist(config, "tacp,D_0001ABCD,a TACP table\n")
+    result = run_readlint([src], src_root=src, config_root=config)
+    assert [(v.path, v.line) for v in result.violations] == [("include/snd.h", 1)]
+
+
+def test_tier_without_members_file_is_a_tool_error(tmp_path, capsys):
+    src, config = two_units(tmp_path)
+    (config / MEMBERS_CSV).unlink()
+    with pytest.raises(ReadlintError, match=MEMBERS_CSV):
+        run_readlint([src], src_root=src, config_root=config, tier=1)
+    assert cli_main(["readlint", "--src", str(src), "--config", str(config), "--tier", "1"]) == 2
+    assert MEMBERS_CSV in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("signing", "why"), [({"signed": (2,)}, "not signed"),
+                                              ({"stale": (1,)}, "stale")])  # fmt: skip
+def test_unsigned_tier_is_a_tool_error(tmp_path, signing, why):
+    src, config = two_units(tmp_path, **signing)
+    with pytest.raises(ReadlintError, match=why):
+        run_readlint([src], src_root=src, config_root=config, tier=1)
+    assert run_readlint([src], src_root=src, config_root=config, tier=2).files_checked
+
+
+def test_tier_with_nothing_to_check_is_a_tool_error(tmp_path):
+    src, config = two_units(tmp_path, status2=PARTIAL)
+    with pytest.raises(ReadlintError, match="nothing to check"):
+        run_readlint([src], src_root=src, config_root=config, tier=2)
+    assert cli_main(["readlint", "--src", str(src), "--config", str(config), "--tier", "2"]) == 2
