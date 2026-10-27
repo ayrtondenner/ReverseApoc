@@ -29,12 +29,12 @@ import re
 import tomllib
 from collections import Counter
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
 from . import callgraph
-from .callgraph import DIRECT, EDGE_KINDS, ENTRY, HAND, CallGraph
+from .callgraph import DIRECT, EDGE_KINDS, ENTRY, HAND, POINTER, TABLE, CallGraph
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -46,6 +46,7 @@ from .functions import (
     _read_records,
     read_functions_csv,
 )
+from .status import MATCHED, PARTIAL, read_status, status_path
 
 
 class MechanicsError(ValueError):
@@ -725,10 +726,14 @@ def compute_members(
     for exe in needed_exes(mech):
         if exe not in graphs or exe not in rows_by_exe:
             raise MechanicsError(f"no call graph or functions.csv rows for {exe}")
-        listed = frozenset(address for name, address in pairs if name == exe)
-        walk = _walk_exe(mech, exe, graphs[exe], _walked(rows_by_exe[exe]), listed)
-        rows += _exe_rows(mech, walk)
+        rows += _exe_members(mech, exe, graphs[exe], rows_by_exe[exe], pairs)
     return sorted(rows, key=row_key)
+
+
+def _exe_members(mech: Mechanics, exe: str, graph: CallGraph, rows: Sequence[FunctionRow],
+                 asm: frozenset[tuple[str, int]]) -> list[MemberRow]:  # fmt: skip
+    listed = frozenset(address for name, address in asm if name == exe)
+    return _exe_rows(mech, _walk_exe(mech, exe, graph, _walked(rows), listed))
 
 
 def needed_exes(mech: Mechanics) -> tuple[str, ...]:
@@ -991,11 +996,20 @@ def read_committed(config_root: Path) -> tuple[Mechanics, list[MemberRow]]:
     return mech, read_members(members_path) if members_path.is_file() else []
 
 
-# ---- plan 07-10 Task 3 API (stub, RED) ----
+def _tier_ids(mech: Mechanics, tier_id: int) -> frozenset[str]:
+    if mech.tier(tier_id) is None:
+        raise MechanicsError(f"no [[tier]] with id {tier_id} in mechanics.toml")
+    return frozenset(item.id for item in mech.items if item.tier == tier_id)
+
+
+# ---- the done rule: tier status (D-05) ----
 
 
 @dataclass(frozen=True)
 class TierStatus:
+    """A tier's must-match set (role member rows with a member item of the tier) against
+    status.csv. `unmatched_starts` lists every member not yet matched (partial included)."""
+
     total: int
     matched: int
     partial: int
@@ -1003,13 +1017,96 @@ class TierStatus:
     unmatched_starts: tuple[tuple[str, int], ...] = ()
 
 
-def hub_candidates(mech, graphs, rows_by_exe, asm, tier, ks) -> dict:
-    return {"tier": tier, "exes": {}}
+def tier_status(mech: Mechanics, rows: Iterable[MemberRow],
+                statuses: Mapping[tuple[str, int], str], tier_id: int) -> TierStatus:  # fmt: skip
+    """Matched/partial/unmatched counts of tier `tier_id`'s members; `statuses` maps (exe, start)
+    to a status.csv status (no entry = unmatched)."""
+    ids = _tier_ids(mech, tier_id)
+    members = [row for row in sorted(rows, key=row_key)
+               if row.role == ROLE_MEMBER and ids.intersection(row.member_items)]  # fmt: skip
+    found = Counter(statuses.get((row.exe, row.address), "") for row in members)
+    waiting = tuple((row.exe, row.address) for row in members
+                    if statuses.get((row.exe, row.address)) != MATCHED)  # fmt: skip
+    return TierStatus(len(members), found[MATCHED], found[PARTIAL],
+                      len(members) - found[MATCHED] - found[PARTIAL], waiting)  # fmt: skip
 
 
-def tier_status(mech, rows, statuses, tier) -> TierStatus:
-    return TierStatus(0, 0, 0, 0)
+def read_statuses(config_root: Path, exes: Iterable[str]) -> dict[tuple[str, int], str]:
+    """(exe, start) -> status from each EXE's config/<exe>/status.csv (absent: none)."""
+    return {(exe, row.start): row.status for exe in exes
+            for row in read_status(status_path(Path(config_root), exe))}  # fmt: skip
 
 
-def graph_report(graph) -> dict:
-    return {}
+# ---- graph reports and hub-rule candidates (D-22; plan 07-22 shows them to the owner) ----
+
+DEFAULT_HUB_KS = (10, 20, 40, 80)
+_RESEARCH_KINDS = (DIRECT, POINTER, TABLE)  # research Q1's edge set
+
+
+def _only(graph: CallGraph, kinds: Sequence[str]) -> CallGraph:
+    """`graph` with only the edges of `kinds` (the reports are not carried)."""
+    return CallGraph(edges={start: tuple(e for e in edges if e.kind in kinds)
+                            for start, edges in graph.edges.items()})  # fmt: skip
+
+
+def _largest_component(graph: CallGraph, kinds: Sequence[str]) -> int:
+    restricted = _only(graph, kinds)
+    return max((len(comp) for comp in callgraph.sccs(restricted, restricted.edges)), default=0)
+
+
+def graph_report(graph: CallGraph) -> dict:
+    """Addresses and counts only: edges per kind, every mid-row reference, the unresolvable
+    indirect calls per row, the orphan pointer runs and the largest SCC per edge set."""
+    kinds = Counter(edge.kind for edges in graph.edges.values() for edge in edges)
+    midrow = [{"source": _address(ref.src_va),
+               "source_row": None if ref.src_row is None else _address(ref.src_row),
+               "target": _address(ref.target_va), "target_row": _address(ref.target_row),
+               "origin": ref.origin, "boundary": ref.boundary} for ref in graph.midrow]  # fmt: skip
+    return {
+        "edges": {kind: kinds[kind] for kind in EDGE_KINDS},
+        "midrow": midrow,
+        "indirect": [{"row": _address(start), "count": n}
+                     for start, n in sorted(graph.indirect.items())],  # fmt: skip
+        "orphan_tables": [_address(start) for start in graph.orphan_tables],
+        "largest_scc": {"direct": _largest_component(graph, (DIRECT,)),
+                        "direct_pointer_table": _largest_component(graph, _RESEARCH_KINDS),
+                        "all": _largest_component(graph, EDGE_KINDS)},  # fmt: skip
+    }
+
+
+def _candidate(mech: Mechanics, exe: str, graph: CallGraph, rows: Sequence[FunctionRow],
+               asm: frozenset[tuple[str, int]], tier_id: int, k: int) -> dict:  # fmt: skip
+    trial = replace(mech, hub_rule=replace(mech.hub_rule, min_direct_callers=k))
+    ids = _tier_ids(mech, tier_id)
+    found = [r for r in _exe_members(trial, exe, graph, rows, asm) if ids.intersection(r.items)]
+    direct = _exe_members(trial, exe, _only(graph, (DIRECT,)), rows, asm)
+    must = [r for r in found if ids.intersection(r.member_items)]
+    callers = Counter(e.dst for edges in graph.edges.values() for e in edges if e.kind == DIRECT)
+    hubs = [r.address for r in found
+            if _tier_role(r, [i for i in r.member_items if i in ids]) == ROLE_HUB]  # fmt: skip
+    vias = Counter(r.via for r in must)
+    return {
+        "k": k,
+        "must_match": len(must),
+        "must_match_direct": sum(1 for r in direct if ids.intersection(r.member_items)),
+        "hubs": [{"address": _address(a), "callers": callers[a]} for a in hubs],
+        "members_by_via": {via: vias[via] for via in VIAS if vias[via]},
+        "asm_removed": sum(1 for r in found if r.role == ROLE_ASM),
+    }
+
+
+def hub_candidates(mech: Mechanics, graphs: Mapping[str, CallGraph],
+                   rows_by_exe: Mapping[str, Sequence[FunctionRow]],
+                   asm: Iterable[tuple[str, int]], tier_id: int,
+                   ks: Iterable[int] = DEFAULT_HUB_KS) -> dict:  # fmt: skip
+    """The numbers for choosing the hub rule (D-22) for tier `tier_id`, per EXE and per K (the
+    min_direct_callers value tried; the other [hub_rule] criteria stay as written): the tier's
+    must-match count over all edges and over direct edges only (hand edges kept), the hubs with
+    their direct caller counts, the members per `via` kind and the asm rows taken out."""
+    pairs = frozenset(asm)
+    _tier_ids(mech, tier_id)
+    report: dict = {"tier": tier_id, "exes": {}}
+    for exe in needed_exes(mech):
+        report["exes"][exe] = [_candidate(mech, exe, graphs[exe], rows_by_exe[exe], pairs,
+                                          tier_id, k) for k in sorted(set(ks))]  # fmt: skip
+    return report

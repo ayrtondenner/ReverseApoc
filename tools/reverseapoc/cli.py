@@ -1372,6 +1372,77 @@ def _mechanics_digest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _format_hub_candidates(report: dict) -> str:
+    lines = [f"tier {report['tier']} hub-rule candidates (K = min_direct_callers; the other "
+             "[hub_rule] criteria as written)"]  # fmt: skip
+    for exe, entries in report["exes"].items():
+        lines.append(f"{exe}:  K  must-match  direct-only  hubs  asm-removed  members by via")
+        for e in entries:
+            vias = ", ".join(f"{via} {n}" for via, n in e["members_by_via"].items())
+            lines.append(f"  {e['k']:>4}  {e['must_match']:>10}  {e['must_match_direct']:>11}  "
+                         f"{len(e['hubs']):>4}  {e['asm_removed']:>11}  {vias}")  # fmt: skip
+        for e in entries:
+            hubs = ", ".join(f"{h['address']} ({h['callers']})" for h in e["hubs"]) or "none"
+            lines.append(f"  hubs at K={e['k']}: {hubs}")
+    return "\n".join(lines)
+
+
+def _mechanics_hubs(args: argparse.Namespace) -> int:
+    mech = mechanics.load(Path(args.config) / mechanics.MECHANICS_TOML)
+    exes = mechanics.needed_exes(mech)
+    asm = mechanics.signed_asm(args.config, mech)
+    graphs = mechanics.load_graphs(args.config, args.orig, args.manifest, exes) if exes else {}
+    rows = mechanics.read_rows(args.config, exes)
+    report = mechanics.hub_candidates(mech, graphs, rows, asm, args.tier, args.k)
+    print(json.dumps(report, indent=2) if args.json else _format_hub_candidates(report))
+    return 0
+
+
+def _mechanics_status(args: argparse.Namespace) -> int:
+    mech, rows = mechanics.read_committed(args.config)
+    statuses = mechanics.read_statuses(args.config, sorted({r.exe for r in rows}))
+    tiers = [args.tier] if args.tier is not None else [t.id for t in mech.tiers]
+    found = {tier: mechanics.tier_status(mech, rows, statuses, tier) for tier in tiers}
+    if args.json:
+        report = {str(tier): {**dataclasses.asdict(st), "unmatched_starts": [
+            [exe, f"0x{start:08X}"] for exe, start in st.unmatched_starts]}
+            for tier, st in found.items()}  # fmt: skip
+        print(json.dumps({"tiers": report}, indent=2))
+    else:
+        for tier, st in found.items():
+            print(f"tier {tier}: {st.total} members, {st.matched} matched, {st.partial} partial, "
+                  f"{st.unmatched} unmatched")  # fmt: skip
+    done = all(st.matched == st.total for st in found.values())
+    return 1 if args.require_matched and not done else 0
+
+
+def _format_graph_report(exe: str, report: dict) -> str:
+    edges = ", ".join(f"{kind} {n}" for kind, n in report["edges"].items())
+    midrow = report["midrow"]
+    at_boundary = sum(1 for ref in midrow if ref["boundary"])
+    from_data = sum(1 for ref in midrow if ref["origin"] == "data")
+    indirect = report["indirect"]
+    scc = report["largest_scc"]
+    return "\n".join([
+        f"{exe} edges: {edges}",
+        f"midrow references: {len(midrow)} ({at_boundary} at an instruction start, "
+        f"{from_data} from data)",
+        f"indirect calls: {sum(e['count'] for e in indirect)} in {len(indirect)} rows",
+        f"orphan tables: {len(report['orphan_tables'])}",
+        f"largest SCC: direct {scc['direct']}, direct+pointer+table "
+        f"{scc['direct_pointer_table']}, all kinds {scc['all']}",
+    ])  # fmt: skip
+
+
+def _mechanics_graph(args: argparse.Namespace) -> int:
+    if args.exe not in mechanics.EXES:
+        raise MechanicsError(f"--exe {args.exe!r} is not one of {', '.join(mechanics.EXES)}")
+    graph = mechanics.load_graphs(args.config, args.orig, args.manifest, [args.exe])[args.exe]
+    report = mechanics.graph_report(graph)
+    print(json.dumps(report, indent=2) if args.json else _format_graph_report(args.exe, report))
+    return 0
+
+
 def _cmd_mechanics(args: argparse.Namespace) -> int:
     """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
     try:
@@ -1417,20 +1488,43 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     d.add_argument("--tier", type=_positive, required=True, metavar="N")
     _mechanics_roots(d, game=False)
     d.set_defaults(mechanics_func=_mechanics_digest)
-    h = verbs.add_parser("hubs")  # stub (plan 07-10 RED)
-    h.add_argument("--tier", type=_positive, required=True)
-    h.add_argument("--k", type=_positive, nargs="+")
+    h = verbs.add_parser(
+        "hubs",
+        help="print candidate hub-rule numbers for a tier (D-22): must-match counts per K with "
+        "all and direct-only edges, the hubs, members per via kind, asm rows removed",
+    )
+    h.add_argument("--tier", type=_positive, required=True, metavar="N")
+    h.add_argument(
+        "--k",
+        type=_positive,
+        nargs="+",
+        default=list(mechanics.DEFAULT_HUB_KS),
+        metavar="K",
+        help="min_direct_callers values to try (several allowed); default: %(default)s",
+    )
     _mechanics_roots(h, game=True)
-    h.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
-    s = verbs.add_parser("status")  # stub (plan 07-10 RED)
-    s.add_argument("--tier", type=_positive)
-    s.add_argument("--require-matched", action="store_true")
+    h.set_defaults(mechanics_func=_mechanics_hubs)
+    s = verbs.add_parser(
+        "status",
+        help="matched/partial/unmatched counts of each tier's must-match members from status.csv "
+        "(committed data only)",
+    )
+    s.add_argument("--tier", type=_positive, metavar="N", help="one tier; default: every tier")
+    s.add_argument(
+        "--require-matched",
+        action="store_true",
+        help="exit 1 while any reported tier has a member that is not matched (the D-05 done rule)",
+    )
     _mechanics_roots(s, game=False)
-    s.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
-    g = verbs.add_parser("graph")  # stub (plan 07-10 RED)
-    g.add_argument("--exe", required=True)
+    s.set_defaults(mechanics_func=_mechanics_status)
+    g = verbs.add_parser(
+        "graph",
+        help="print an EXE's call-graph report: edge counts per kind, mid-row references, "
+        "indirect calls, orphan tables, largest SCCs (addresses and counts only)",
+    )
+    g.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
     _mechanics_roots(g, game=True)
-    g.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
+    g.set_defaults(mechanics_func=_mechanics_graph)
     p.set_defaults(func=_cmd_mechanics)
 
 
