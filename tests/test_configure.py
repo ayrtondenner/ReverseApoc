@@ -1102,6 +1102,18 @@ def test_d12_default_names_unchanged():
     assert problem == "func_00010010 is neither defined in C nor marked INCLUDE_ASM (D-12)"
 
 
+@pytest.mark.parametrize("how", ["all_names-only", "explicit-names"])
+def test_d12_reads_a_renamed_row_by_its_current_name(how):
+    """Fix round 1 (the reviewer's probe): with the EXE's C names passed as all_names alone or as
+    names, the stale placeholder definition is refused and the Foo definition accepted."""
+    given = {"all_names": FOO_NAMES} if how == "all_names-only" else {"names": FOO_NAMES}
+    stale = "INCLUDE_ASM(func_00010000);\nint func_00010010(int a)\n{\n    return a;\n}\n"
+    (problem,) = configure.check_unit_source(stale, TWO_GAME, **given)
+    assert "func_00010010" in problem and "Foo" in problem
+    good = "INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION
+    assert configure.check_unit_source(good, TWO_GAME, **given) == []
+
+
 def _rename_foo(tmp_path, stem: str = "ufo2p") -> None:
     write_symbols_csv(tmp_path / "config" / stem / "symbols.csv", FOO_SYMBOLS, "UFO2P.EXE")
 
