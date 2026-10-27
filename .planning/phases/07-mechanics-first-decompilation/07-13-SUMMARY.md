@@ -321,6 +321,37 @@ Execution context nonce: 4f0f04e95e3d63b7
 - `uv run ruff check .`: All checks passed.
 - Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
 
+## Fix round 2
+
+**Finding (Important, the scoped re-review):** the end-of-night check (`_ledger_breaches`) only looked at files the driver had written that night, but the chore commit (`_commit_log`) commits any changed output: the log, both `status.csv` files and the feed. A tampered file the driver never wrote could still reach main through the chore commit, for example the other EXE's `status.csv`, or the claimed table and the feed on a night where every attempt failed the lint. The tamper only had to land after the last session's audit. Fix round 1's comment overclaimed here.
+
+**Fix (`b4a7a55`):**
+- `_ledger_breaches` now checks every output `self._outputs()` names plus every ledgered file.
+- A file the driver never wrote tonight passes only if it equals HEAD, because `holds` falls back to HEAD's blob.
+- A file that fails goes through the same breach path: quarantined, put back, nothing committed, STOPPED `guardrail`.
+
+**Minor (a), recorded:** the chore commit has the same gap as the match commit. Between the end-of-night check and the chore commit's `git add`, the final run record is appended and `_commit_log` writes its message. A tamper in that window is not seen. The match commit's window is from `_verify_landing` to its `git add`.
+
+**Minor (b), fixed:** `_undo_match` stays best-effort when its `_restore_pre_gate` raises `_Stop`, which happens when a ledger breach is found:
+- the breach detail becomes one more note, and its reason is kept in `self.undo_reason`;
+- the MATCHED line is still dropped (F19), the attempt is reset, and GAVE_UP is still recorded;
+- the caller stops the night with `undo_reason` (`guardrail`) instead of `tool`.
+
+**Tests (RED `cf1feb0`, then the fix `b4a7a55`):**
+- **New tests:**
+  - `test_a_tamper_of_a_table_the_driver_never_wrote_is_never_committed`: tampers `config/tacp/status.csv` during `end_of_run`.
+  - `test_a_lint_only_night_checks_the_untouched_outputs_too`: tampers the feed on a night where every attempt failed the lint.
+  - `test_a_breach_during_the_match_undo_still_drops_the_matched_record`: a commit-msg hook that refuses `feat` messages also appends a row to `status.csv`, so the undo's pre-gate restore finds the breach.
+- **RED:** 3 failed for the planned reasons. Classifier `RED_EVIDENCE_OK` (target `test_a_tamper_of_a_table_the_driver_never_wrote_is_never_committed`, `build/red/f2.xml`).
+  - The first two ENDED and the tamper went into the chore commit.
+  - The third stopped `guardrail` but left the MATCHED line in the log.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_driver.py tests/test_drive.py`: 234 passed, 2 skipped (the pre-existing skips).
+- `uv run pytest -q` (host, worktree): 3049 passed, 236 skipped. No new skip reason.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
