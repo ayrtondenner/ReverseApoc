@@ -999,6 +999,19 @@ def _dirty_unit(a: Approval) -> dict:
     return {}
 
 
+def _dirty(rel: str):
+    """A refusal preparer: an uncommitted edit (or a new untracked file) at `rel`."""
+
+    def prepare(a: Approval) -> dict:
+        path = a.repo / rel
+        old = path.read_text(encoding="utf-8") if path.is_file() else STATUS_HEAD
+        path.write_text(old + f"0x00099990,func_00099990,u_00099990,matched,100.00,1,{SHA},{DAY}\n",
+                        encoding="utf-8", newline="\n")  # fmt: skip
+        return {}
+
+    return prepare
+
+
 def _bad_variant(a: Approval) -> dict:
     path = a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c"
     path.write_text("not the C that passed\n", encoding="utf-8")
@@ -1015,6 +1028,10 @@ REFUSALS = {
     "claim set": ({}, None, _claim, "REVERSEAPOC_CLAIM"),
     "unit twice": ({}, None, lambda a: {"ids": ["F-0001", "F-0001"]}, "once"),
     "dirty unit": ({}, None, _dirty_unit, "uncommitted"),
+    # fix round 1: the gate reads both status.csv files and the feed (D-24 cross-check)
+    "dirty own status": ({}, None, _dirty("config/ufo2p/status.csv"), "uncommitted"),
+    "dirty other status": ({}, None, _dirty("config/tacp/status.csv"), "uncommitted"),
+    "dirty feed": ({}, None, _dirty("decomphub.progress.json"), "uncommitted"),
     "variant sha": (dict(regate_variant="reduced", variant_sha256="c" * 64, reverted=(F50,)),
                     None, _bad_variant, "reduced variant"),
     "unknown model": ({}, (_attempt_record(F30, UNIT, 3, model=None),), None, "model unknown"),
@@ -1358,7 +1375,20 @@ def test_default_refusals(tmp_path):
     with pytest.raises(flags.FlagsError, match="already"):
         flags.default(BASE, OWNER, repo=d.repo, today=DAY, runner=d.gate, env={},
                       git=driver.git_runner(d.repo, env=d.env), exe_loader=d.exes.__getitem__)
+    # fix round 1: the bar, the pins and both gate --all runs read status.csv from disk, so an
+    # uncommitted edit of either EXE's table (a dropped pin, an uncommitted match) is refused
+    edits = {"ufo2p": lambda text: text.replace(f"{UNRULED[0].name},", "func_0008A0E1,"),
+             "tacp": lambda text: text + f"0x00012340,func_00012340,u_00012340,matched,100.00,"
+                                         f"1,{SHA},{DAY}\n"}  # fmt: skip
+    for exe, edit in edits.items():
+        status = d.repo / "config" / exe / "status.csv"
+        committed = status.read_bytes()
+        status.write_bytes(edit(committed.decode("utf-8")).encode("utf-8"))
+        with pytest.raises(flags.FlagsError, match=f"uncommitted changes in config/{exe}/status"):
+            d.run()
+        status.write_bytes(committed)
     assert d.files() == before and d.gate.calls == []
+    assert not (d.repo / "build" / "flags").exists()
 
 
 def test_cli_default_evidence(tmp_path, monkeypatch, capsys):
