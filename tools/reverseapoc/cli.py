@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, context, attempt, drive, fetch-watcom, install-watcom, check-watcom."""
+gate, context, attempt, drive, mechanics, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, driver, probe
+from . import attempt, driver, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
@@ -84,6 +84,7 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .lint import LintError, run_lint
+from .mechanics import MechanicsError
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
@@ -1340,6 +1341,198 @@ def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_check_watcom)
 
 
+# ---- mechanics: the DEC-01 item-to-function map (D-01, D-02, D-04, D-22, D-23, D-31) ----
+
+
+def _mechanics_write(args: argparse.Namespace) -> int:
+    rows = mechanics.generate(args.config, args.orig, args.manifest)
+    out = Path(args.config) / mechanics.MEMBERS_CSV
+    mechanics.write_members(out, rows)
+    counts = Counter(row.role for row in rows)
+    report = {"rows": len(rows), "roles": {role: counts[role] for role in mechanics.ROLES}}
+    print(json.dumps(report, indent=2) if args.json else
+          f"{len(rows)} rows: " + ", ".join(f"{n} {r}" for r, n in report["roles"].items()))
+    print(f"wrote {out}", file=sys.stderr)
+    return 0
+
+
+def _mechanics_check(args: argparse.Namespace) -> int:
+    problems = mechanics.check_committed(args.config)
+    if args.json:
+        print(json.dumps({"problems": problems}, indent=2))
+    else:
+        print("\n".join(problems) if problems else "mechanics: no problems")
+    return 1 if problems else 0
+
+
+def _mechanics_digest(args: argparse.Namespace) -> int:
+    mech, rows = mechanics.read_committed(args.config)
+    digest = mechanics.tier_digest(mech, rows, args.tier)
+    print(json.dumps({"tier": args.tier, "members_sha256": digest}) if args.json else digest)
+    return 0
+
+
+def _format_hub_candidates(report: dict) -> str:
+    lines = [f"tier {report['tier']} hub-rule candidates (K = min_direct_callers; the other "
+             "[hub_rule] criteria as written)"]  # fmt: skip
+    for exe, entries in report["exes"].items():
+        lines.append(f"{exe}:  K  must-match  direct-only  hubs  asm-removed  members by via")
+        for e in entries:
+            vias = ", ".join(f"{via} {n}" for via, n in e["members_by_via"].items())
+            lines.append(f"  {e['k']:>4}  {e['must_match']:>10}  {e['must_match_direct']:>11}  "
+                         f"{len(e['hubs']):>4}  {e['asm_removed']:>11}  {vias}")  # fmt: skip
+        for e in entries:
+            hubs = ", ".join(f"{h['address']} ({h['callers']})" for h in e["hubs"]) or "none"
+            lines.append(f"  hubs at K={e['k']}: {hubs}")
+    return "\n".join(lines)
+
+
+def _mechanics_hubs(args: argparse.Namespace) -> int:
+    mech = mechanics.load(Path(args.config) / mechanics.MECHANICS_TOML)
+    exes = mechanics.needed_exes(mech)
+    asm = mechanics.signed_asm(args.config, mech)
+    graphs = mechanics.load_graphs(args.config, args.orig, args.manifest, exes) if exes else {}
+    rows = mechanics.read_rows(args.config, exes)
+    report = mechanics.hub_candidates(mech, graphs, rows, asm, args.tier, args.k)
+    print(json.dumps(report, indent=2) if args.json else _format_hub_candidates(report))
+    return 0
+
+
+def _mechanics_status(args: argparse.Namespace) -> int:
+    mech, rows = mechanics.read_committed(args.config)
+    statuses = mechanics.read_statuses(args.config, sorted({r.exe for r in rows}))
+    tiers = [args.tier] if args.tier is not None else [t.id for t in mech.tiers]
+    found = {tier: mechanics.tier_status(mech, rows, statuses, tier) for tier in tiers}
+    if args.json:
+        report = {str(tier): {**dataclasses.asdict(st), "unmatched_starts": [
+            [exe, f"0x{start:08X}"] for exe, start in st.unmatched_starts]}
+            for tier, st in found.items()}  # fmt: skip
+        print(json.dumps({"tiers": report}, indent=2))
+    else:
+        for tier, st in found.items():
+            print(f"tier {tier}: {st.total} members, {st.matched} matched, {st.partial} partial, "
+                  f"{st.unmatched} unmatched")  # fmt: skip
+    if not args.require_matched:
+        return 0
+    problems = mechanics.done_problems(mech, rows, found)
+    for problem in problems:
+        print(f"reverseapoc mechanics status: {problem}", file=sys.stderr)
+    return 1 if problems else 0
+
+
+def _format_graph_report(exe: str, report: dict) -> str:
+    edges = ", ".join(f"{kind} {n}" for kind, n in report["edges"].items())
+    midrow = report["midrow"]
+    at_boundary = sum(1 for ref in midrow if ref["boundary"])
+    from_data = sum(1 for ref in midrow if ref["origin"] == "data")
+    indirect = report["indirect"]
+    scc = report["largest_scc"]
+    return "\n".join([
+        f"{exe} edges: {edges}",
+        f"midrow references: {len(midrow)} ({at_boundary} at an instruction start, "
+        f"{from_data} from data)",
+        f"indirect calls: {sum(e['count'] for e in indirect)} in {len(indirect)} rows",
+        f"orphan tables: {len(report['orphan_tables'])}",
+        f"largest SCC: direct {scc['direct']}, direct+pointer+table "
+        f"{scc['direct_pointer_table']}, all kinds {scc['all']}",
+    ])  # fmt: skip
+
+
+def _mechanics_graph(args: argparse.Namespace) -> int:
+    if args.exe not in mechanics.EXES:
+        raise MechanicsError(f"--exe {args.exe!r} is not one of {', '.join(mechanics.EXES)}")
+    graph = mechanics.load_graphs(args.config, args.orig, args.manifest, [args.exe])[args.exe]
+    report = mechanics.graph_report(graph)
+    print(json.dumps(report, indent=2) if args.json else _format_graph_report(args.exe, report))
+    return 0
+
+
+def _cmd_mechanics(args: argparse.Namespace) -> int:
+    """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
+    try:
+        return args.mechanics_func(args)
+    except (*_ERRORS, MechanicsError) as exc:
+        print(f"reverseapoc mechanics {args.mechanics_command}: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _mechanics_roots(p: argparse.ArgumentParser, *, game: bool) -> None:
+    default = "default: %(default)s"
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    if game:
+        p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+        p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
+
+
+def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "mechanics",
+        help="the DEC-01 map of OpenApoc checklist items to functions: config/mechanics.toml "
+        "(hand-edited) and the generated config/mechanics-members.csv",
+    )
+    verbs = p.add_subparsers(dest="mechanics_command", required=True, metavar="VERB")
+    w = verbs.add_parser(
+        "write",
+        help="regenerate config/mechanics-members.csv from mechanics.toml, functions.csv and the "
+        "call graphs of orig/ (D-02)",
+    )
+    _mechanics_roots(w, game=True)
+    w.set_defaults(mechanics_func=_mechanics_write)
+    c = verbs.add_parser(
+        "check",
+        help="validate the committed mechanics files without game files: members rows, entries, "
+        "signed tier digests, the asm list sign-off (exit 1 on any problem)",
+    )
+    _mechanics_roots(c, game=False)
+    c.set_defaults(mechanics_func=_mechanics_check)
+    d = verbs.add_parser(
+        "digest", help="print a tier's members_sha256 from the committed rows, for its sign-off"
+    )
+    d.add_argument("--tier", type=_positive, required=True, metavar="N")
+    _mechanics_roots(d, game=False)
+    d.set_defaults(mechanics_func=_mechanics_digest)
+    h = verbs.add_parser(
+        "hubs",
+        help="print candidate hub-rule numbers for a tier (D-22): must-match counts per K with "
+        "all and direct-only edges, the hubs, members per via kind, asm rows removed",
+    )
+    h.add_argument("--tier", type=_positive, required=True, metavar="N")
+    h.add_argument(
+        "--k",
+        type=_positive,
+        nargs="+",
+        default=list(mechanics.DEFAULT_HUB_KS),
+        metavar="K",
+        help="min_direct_callers values to try (several allowed); default: %(default)s",
+    )
+    _mechanics_roots(h, game=True)
+    h.set_defaults(mechanics_func=_mechanics_hubs)
+    s = verbs.add_parser(
+        "status",
+        help="matched/partial/unmatched counts of each tier's must-match members from status.csv "
+        "(committed data only)",
+    )
+    s.add_argument("--tier", type=_positive, metavar="N", help="one tier; default: every tier")
+    s.add_argument(
+        "--require-matched",
+        action="store_true",
+        help="exit 1 unless every reported tier is signed off with a valid digest, has members "
+        "and has every member matched (the D-05 done rule)",
+    )
+    _mechanics_roots(s, game=False)
+    s.set_defaults(mechanics_func=_mechanics_status)
+    g = verbs.add_parser(
+        "graph",
+        help="print an EXE's call-graph report: edge counts per kind, mid-row references, "
+        "indirect calls, orphan tables, largest SCCs (addresses and counts only)",
+    )
+    g.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
+    _mechanics_roots(g, game=True)
+    g.set_defaults(mechanics_func=_mechanics_graph)
+    p.set_defaults(func=_cmd_mechanics)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -1405,6 +1598,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_context_command(sub)
     _add_attempt_command(sub)
     _add_drive_command(sub)
+    _add_mechanics_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1439,6 +1633,7 @@ _ERRORS = (
     StatusError,
     AttemptError,
     ContextPackError,
+    MechanicsError,
     OSError,
 )
 
