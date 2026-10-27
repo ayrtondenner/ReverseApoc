@@ -17,13 +17,23 @@ from pathlib import Path
 
 from test_listings import DENOMINATOR, PARTIAL_RULE, RATIO
 from test_progress import (
+    ASM_PERCENT,
     CONFIG,
+    ENTRY_997,
     PROGRESS,
     REPOSITORY,
     SHA,
+    TIER_ONE,
+    TIER_TWO,
+    U_THUNK,
+    asm_config,
+    item_toml,
     load_progress,
+    member,
     synthetic_config,
     tick_config,
+    tick_members,
+    write_mechanics,
 )
 from test_treemap import COLORS, SVG_LIMIT
 
@@ -688,3 +698,110 @@ def test_coverage_section_markup(tmp_path):
     assert hrefs == {attrs["href"] for tag, attrs in tags_of(progress.render_html(derived, SHA))
                      if tag == "a"}  # fmt: skip
     assert ".cov .nz{min-width:2px}" in style_of(page).splitlines()
+
+
+def coverage_page(progress, config) -> str:
+    derived = progress.derive(config)
+    return progress.render_html(derived, SHA, mechanics=progress.derive_mechanics(config, derived))
+
+
+def test_zero_member_item_markup(tmp_path):
+    """DEC-05 empty: an item with no rows reads 0 of 0 and its bar has no segment."""
+    progress = page_module()
+    config = synthetic_config(tmp_path)
+    write_mechanics(config, TIER_ONE, item_toml("997", "Tick rate"),
+                    item_toml("263-2", "Not reached yet"), ENTRY_997,
+                    members=tick_members())  # fmt: skip
+    bodies = coverage_items(coverage_page(progress, config))
+    labels = [body.split(":", 1)[0] for body in bodies]
+    assert labels == ["#263-2 Not reached yet", "#997 Tick rate"]
+    assert bodies[0].startswith("#263-2 Not reached yet: must match 0 of 0 functions matched, "
+                                "0 partial (0% of 0 bytes matched)")  # fmt: skip
+    assert segments(bodies[0]) == []
+
+
+def test_located_tier_text(tmp_path):
+    """D-05: the page names each tier's state and sign-off, and each item repeats its tier's."""
+    progress = page_module()
+    config = synthetic_config(tmp_path)
+    agents = ("263-1",)
+    members = [*tick_members()[:3],
+               member("ufo2p", U_THUNK, agents, agents, tiers=(2,), via="entry")]  # fmt: skip
+    entry = ENTRY_997.replace('"997"', '"263-1"').replace("0x00010000", "0x0001008C")
+    write_mechanics(config, TIER_ONE, TIER_TWO, item_toml("997", "Tick rate"),
+                    item_toml("263-1", "Agent training", tier=2), ENTRY_997, entry,
+                    members=members)  # fmt: skip
+    page = coverage_page(progress, config)
+    bodies = coverage_items(page)
+    assert "Tier 1: located, not signed off." in bodies[0]
+    assert "Tier 2: located, signed off by Owner on 2026-10-27." in bodies[1]
+    tiers = re.findall(r'<ul class="tiers">\n(.*?)\n</ul>', page, re.S)
+    assert len(tiers) == 1
+    lines = _COV_ITEM.findall(tiers[0])
+    assert lines[0].startswith("Tier 1 (Tick rate and agent training): located, not signed off;")
+    assert lines[1].startswith("Tier 2 (The rest of the agents): located, signed off by Owner")
+
+
+def test_duplicates_listed_once_on_the_page(tmp_path):
+    progress = page_module()
+    config = synthetic_config(tmp_path)
+    write_mechanics(config, TIER_ONE, item_toml("997", "Tick rate"),
+                    item_toml("264-1", "Tick rate again", scope="duplicate", duplicate_of="997"),
+                    ENTRY_997, members=tick_members())  # fmt: skip
+    page = coverage_page(progress, config)
+    assert page.count("#264-1") == 1
+    listed = '<ul class="duplicates">\n<li>#264-1 Tick rate again: a duplicate of #997</li>\n</ul>'
+    assert listed in page
+    assert len(coverage_items(page)) == 1
+
+
+ASM_TICKS = [("m", "func_00010000: 16 bytes, matched"),
+             ("p", "func_00010010: 32 bytes, partial, best 50.00%"), ("l", None), ("u", None)]
+
+
+def test_assembler_group_on_the_page(tmp_path):
+    """D-23: the signed asm rows leave the EXE's percent; the page states them outside the
+    percentage, the strip draws them in the library colour at their address, the mosaic as
+    library cells, and the legend reads library or assembler."""
+    progress = page_module()
+    config = asm_config(tmp_path)
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out), "--commit", SHA]) == 0
+    page = (out / "index.html").read_text(encoding="utf-8")
+    section = exe_section(page, "ufo2p")
+    assert (f"{ASM_PERCENT}% of code bytes, 1 of 3 functions matched, 1 partial; 1 assembler "
+            "function (64 bytes) outside the percentage") in section  # fmt: skip
+    found = strips(page)
+    assert found[0][1] == ASM_TICKS
+    assert found[0][0].endswith("1 matched, 1 partial, 1 unmatched, 1 assembler")
+    assert found[1][1] == [("u", None)] and not found[1][0].endswith("assembler")
+    colors = progress.TREEMAP_COLORS
+    style = style_of(page).splitlines()
+    assert f"i.l{{background:{colors['library']}}}" in style
+    assert progress.LEGEND_LABELS["library"] == "library or assembler, not decompiled"
+    assert "<li>" + '<span class="swatch" style="background:' + colors["library"] + (
+        '" aria-hidden="true"></span>library or assembler, not decompiled</li>') in page
+    root = ET.fromstring((out / "progress.svg").read_text(encoding="utf-8"))
+    fills = [r.get("fill") for r in root.iter("{http://www.w3.org/2000/svg}rect")]
+    assert fills.count(colors["library"]) == 2  # the runtime row and the asm row
+    assert "assembler" in page.split('<p class="key">', 2)[2].split("</p>", 1)[0]
+    _check_static(progress, page)
+
+
+def test_page_without_assembler_has_no_assembler_markup(tmp_path):
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert "assembler function" not in page and 'class="l"' not in page
+    assert "i.l{" not in style_of(page)
+
+
+def test_measured_states_the_assembler_group(tmp_path):
+    """Ruling F37: How it is measured says which artifacts leave the signed asm rows out of the
+    percentage and that the DecompHub feed keeps them."""
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    section = page.split("<h2>How it is measured</h2>", 1)[1].split("</main>", 1)[0]
+    for needle in ("asm-functions.csv", "progress.json", "report.json", "badges",
+                   "decomphub.progress.json still counts them"):  # fmt: skip
+        assert needle in section, needle
+    assert DENOMINATOR in section
