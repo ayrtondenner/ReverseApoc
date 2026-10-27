@@ -10,7 +10,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
   driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and the
   REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS file, D-24), of
-  config/targets.toml, config/watcom.toml and any *.sha1, and inline asm (`_asm`, `__asm`,
+  config/targets.toml, config/watcom.toml, any *.sha1 and the owner-only config/cflags.txt and
+  config/cflags-proposals.toml (D-12, D-27 P3), and inline asm (`_asm`, `__asm`,
   `_Pragma`, a code-emitting `#pragma aux`) in src/, include/ and the view unit (D-16, P6).
   Every other path stays editable, so GSD executors and the owner keep working on tools/,
   tests/, configure.py, docs/ and .planning/.
@@ -75,6 +76,15 @@ _PROTECTED_DIRS = {
 _PROTECTED_FILES = {
     "config/targets.toml": "the hash manifest of the original executables",
     "config/watcom.toml": "the hash manifest of the Watcom toolchains",
+    # D-27 P3: no exemption, since the owner's verbs write from Python and no hook sees them.
+    "config/cflags.txt": (
+        "it is owner-only (D-12, Phase 5 D-18); only `reverseapoc flags approve` or "
+        "`reverseapoc flags default`, which the owner runs and which write from Python, change it"
+    ),
+    "config/cflags-proposals.toml": (
+        "it is the D-12 proposal queue, written only by `reverseapoc flags` from Python; a "
+        "session writes its proposals.jsonl instead"
+    ),
 }
 _MANIFEST_SUFFIX = ".sha1"
 _SCANNED_DIRS = ("src", "include")
@@ -109,6 +119,7 @@ _WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
 _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _NEW_HEADER = re.compile(r"include/([a-z0-9_]+\.h)")
 _RESERVED_HEADERS = ("common.h", "watcom_compat.h")  # INCLUDE_ASM could be redefined there
+_SYMBOLS = re.compile(r"config/[^/]+/symbols\.csv")  # D-19: shared naming state, driver-only
 _SECRET_PREFIX = ".env"
 _GLOB_SETS = "{}[]"  # brace alternatives and character classes could spell .env
 # D-44: the attempt wrapper's argv forms, shared with the wrapper itself (06-15, ruling F27).
@@ -765,7 +776,7 @@ def _matching_write(
         matching_write_allowed(rel, claim=claim, tracked=tracked, **paths) for rel in rels
     )
     if not allowed:
-        return _deny(_view_denial() if view else (
+        return _deny(_view_denial(rels) if view else (
             f"a matching session for {claim} may write only src/{claim}.c, a new include/*.h "
             "and its attempt's notes.md (D-17)"
         ))  # fmt: skip
@@ -778,8 +789,16 @@ def _matching_write(
     return NO_OPINION
 
 
-def _view_denial() -> str:
-    """The deny reason for a write outside a view-mode session's allowlist (D-24)."""
+def _naming_state(rel: str) -> bool:
+    """Whether repo-relative `rel` is shared naming state (D-19): a symbols.csv or include/."""
+    return _SYMBOLS.fullmatch(rel) is not None or _under(rel, "include")
+
+
+def _view_denial(rels: Sequence[str] | None) -> str:
+    """The deny reason for a write outside a view-mode session's allowlist, by path."""
+    if rels is not None and any(map(_naming_state, rels)):
+        return ("the driver is the only writer of shared naming state (D-19); write a proposal "
+                "to proposals.jsonl instead")  # fmt: skip
     return "a session writes only its view unit, notes.md and proposals.jsonl (D-24)"
 
 
