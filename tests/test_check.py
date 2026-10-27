@@ -49,9 +49,11 @@ from reverseapoc.cli import main as cli_main
 from reverseapoc.compiler import provenance_path, source_rule
 from reverseapoc.functions import (
     FunctionRow,
+    SymbolRow,
     UnitRow,
     game_name,
     write_functions_csv,
+    write_symbols_csv,
     write_units_csv,
 )
 from reverseapoc.le import LE
@@ -1201,6 +1203,55 @@ def test_source_marks_names_a_path_include():
     marks = check.source_marks(NOTES_INCLUDE + SOURCE, [ROW, OTHER])
     assert any("#include" in p and "notes.md" in p for p in marks.problems), marks.problems
     assert check.source_marks(SOURCE, [ROW, OTHER]).problems == ()
+
+
+# ---- 07-09 (D-29): the unit's account by start, through the shared unitdefs finder ------------
+
+RENAMED_SOURCE = "/* synthetic */\nint Foo(void) { return 0; }\nINCLUDE_ASM(Bar);\n"
+RENAMES = [SymbolRow(ROW.start, "Foo_", "func"), SymbolRow(OTHER.start, "Bar_", "func")]
+
+
+def test_source_marks_reports_starts():
+    """source_marks keeps its name sets and adds the starts; by default names are the rows'
+    placeholders, as before D-29."""
+    marks = check.source_marks(SOURCE, [ROW, OTHER])
+    assert marks.marked == {"func_00010010"} and marks.defined == {"func_00010000"}
+    assert marks.marked_starts == {OTHER.start} and marks.defined_starts == {ROW.start}
+
+
+def test_source_marks_with_c_names_finds_a_renamed_function():
+    names = {"Foo": ROW.start, "Bar": OTHER.start}
+    marks = check.source_marks(RENAMED_SOURCE, [ROW, OTHER], names=names)
+    assert marks.defined_starts == {ROW.start} and marks.marked_starts == {OTHER.start}
+    assert marks.problems == ()
+    stale = RENAMED_SOURCE.replace("int Foo(", "int func_00010000(")
+    (problem,) = check.source_marks(stale, [ROW, OTHER], names=names).problems
+    assert "func_00010000" in problem and "Foo" in problem
+
+
+def test_source_marks_with_all_names_reads_a_renamed_row_by_its_current_name():
+    """Fix round 1: all_names alone is authoritative for the unit's own rows."""
+    names = {"Foo": ROW.start, "Bar": OTHER.start}
+    marks = check.source_marks(RENAMED_SOURCE, [ROW, OTHER], all_names=names)
+    assert marks.defined_starts == {ROW.start} and marks.problems == ()
+    stale = RENAMED_SOURCE.replace("int Foo(", "int func_00010000(")
+    marks = check.source_marks(stale, [ROW, OTHER], all_names=names)
+    assert ROW.start not in marks.defined_starts
+    (problem,) = marks.problems
+    assert "func_00010000" in problem and "Foo" in problem
+
+
+def test_check_accounts_a_renamed_unit_by_start(env):
+    """Orchestrator ruling F27 (b): account_unit reads the unit file with the EXE's C names, so a
+    unit whose rows symbols.csv renames (Foo defined, Bar marked under its new name) checks and
+    lands like the placeholder unit."""
+    write_symbols_csv(env.config / STEM / "symbols.csv", RENAMES, EXE)
+    unit_source(env).write_text(RENAMED_SOURCE, encoding="utf-8")
+    compiler = FakeCompiler(omf_object(callee="Bar_", public="Foo_"))
+    result = run_check(env, compiler=compiler, objdiff=FakeObjdiff())
+    assert result.ok, result.format()
+    (fn,) = result.functions
+    assert fn.va == ROW.start and fn.objdiff_percent == 100.0
 
 
 @pytest.mark.parametrize("verb", ["check", "gate"])

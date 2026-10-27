@@ -10,9 +10,9 @@ import pytest
 
 import configure
 from conftest import build_le_image, write_manifest
-from reverseapoc import check
+from reverseapoc import check, unitdefs
 from reverseapoc.cli import main as cli_main
-from reverseapoc.functions import FunctionRow
+from reverseapoc.functions import FunctionRow, SymbolRow, write_symbols_csv
 from reverseapoc.targets import load_manifest
 
 
@@ -952,8 +952,8 @@ def test_define_continuation_hides_a_definition():
     text, _, _ = CONTINUATION_PROBES["define-definition"]
     (problem,) = configure.check_unit_source(text, TWO_GAME)
     assert "func_00010000" in problem and "neither" in problem
-    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
-    assert list(configure._file_scope_definitions(code)) == []
+    holders = unitdefs.placeholders(TWO_GAME)  # the D-12 file-scope reading (07-09: unitdefs)
+    assert unitdefs.find(text, TWO_GAME, names=holders, placeholders=holders).defined == {}
 
 
 @pytest.mark.parametrize(
@@ -1053,6 +1053,91 @@ def test_order_does_not_matter(order):
     without_last = "".join(FOUR_PARTS[part] for part in order[:-1])
     (problem,) = configure.check_unit_source(without_last, FOUR_GAME)
     assert "neither" in problem
+
+
+# ---- 07-09 (D-29): the D-12 check reads symbols.csv C names through the shared finder --------
+
+FOO_SYMBOLS = [SymbolRow(0x10010, "Foo_", "func")]  # symbols.csv renames func_00010010 Foo_
+FOO_NAMES = unitdefs.c_names(TWO_GAME, FOO_SYMBOLS)
+FOO_DEFINITION = "int Foo(int a)\n{\n    return a;\n}\n"
+
+
+def test_d12_accepts_a_renamed_definition():
+    text = "INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION
+    assert configure.check_unit_source(text, TWO_GAME, names=FOO_NAMES) == []
+
+
+def test_d12_refuses_a_missing_row():
+    (problem,) = configure.check_unit_source("INCLUDE_ASM(func_00010000);\n", TWO_GAME,
+                                             names=FOO_NAMES)  # fmt: skip
+    assert problem == "Foo is neither defined in C nor marked INCLUDE_ASM (D-12)"
+
+
+def test_d12_old_marker_still_counts():
+    """A marker emits no bytes: a scaffold written before the rename still accounts for it."""
+    text = "INCLUDE_ASM(func_00010000);\nINCLUDE_ASM(func_00010010);\n"
+    assert configure.check_unit_source(text, TWO_GAME, names=FOO_NAMES) == []
+
+
+def test_d12_refuses_a_stale_placeholder_definition():
+    text = "INCLUDE_ASM(func_00010000);\nint func_00010010(int a)\n{\n    return a;\n}\n"
+    (problem,) = configure.check_unit_source(text, TWO_GAME, names=FOO_NAMES)
+    assert "func_00010010" in problem and "Foo" in problem
+
+
+def test_d12_refuses_another_units_renamed_function_with_all_names():
+    text = UNIT_SOURCE + "void Baz(void)\n{\n}\n"
+    assert configure.check_unit_source(text, TWO_GAME) == []  # a helper, without all_names
+    (problem,) = configure.check_unit_source(text, TWO_GAME, all_names={"Baz": 0x20000})
+    assert problem == "Baz is defined in C but is not a function of the unit"
+
+
+def test_d12_default_names_unchanged():
+    """Without names, the placeholder reading (every D-12 test above) holds."""
+    for text in (UNIT_SOURCE, "INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION):
+        assert (configure.check_unit_source(text, TWO_GAME, names=None)
+                == configure.check_unit_source(text, TWO_GAME))  # fmt: skip
+    (problem,) = configure.check_unit_source("INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION,
+                                             TWO_GAME)  # fmt: skip
+    assert problem == "func_00010010 is neither defined in C nor marked INCLUDE_ASM (D-12)"
+
+
+@pytest.mark.parametrize("how", ["all_names-only", "explicit-names"])
+def test_d12_reads_a_renamed_row_by_its_current_name(how):
+    """Fix round 1 (the reviewer's probe): with the EXE's C names passed as all_names alone or as
+    names, the stale placeholder definition is refused and the Foo definition accepted."""
+    given = {"all_names": FOO_NAMES} if how == "all_names-only" else {"names": FOO_NAMES}
+    stale = "INCLUDE_ASM(func_00010000);\nint func_00010010(int a)\n{\n    return a;\n}\n"
+    (problem,) = configure.check_unit_source(stale, TWO_GAME, **given)
+    assert "func_00010010" in problem and "Foo" in problem
+    good = "INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION
+    assert configure.check_unit_source(good, TWO_GAME, **given) == []
+
+
+def _rename_foo(tmp_path, stem: str = "ufo2p") -> None:
+    write_symbols_csv(tmp_path / "config" / stem / "symbols.csv", FOO_SYMBOLS, "UFO2P.EXE")
+
+
+def test_main_accepts_a_unit_defining_a_renamed_function(tmp_path):
+    """configure reads config/<exe>/symbols.csv once per EXE and passes its C names to D-12."""
+    argv = _split_tree(tmp_path, source="INCLUDE_ASM(func_00010000);\n" + FOO_DEFINITION)
+    _rename_foo(tmp_path)
+    assert configure.main(argv) == 0
+    assert f"src/ufo2p/{UNIT}.c" in (tmp_path / "build.ninja").read_text(encoding="utf-8")
+
+
+def test_main_refuses_a_stale_placeholder_definition(tmp_path, capsys):
+    stale = "INCLUDE_ASM(func_00010000);\nint func_00010010(void)\n{\n    return 0;\n}\n"
+    argv = _split_tree(tmp_path, source=stale)
+    _rename_foo(tmp_path)
+    _assert_refused(tmp_path, argv, capsys, f"{UNIT}.c", "func_00010010", "Foo")
+
+
+def test_main_refuses_a_symbols_csv_func_name_without_its_underscore(tmp_path, capsys):
+    argv = _split_tree(tmp_path)
+    write_symbols_csv(tmp_path / "config" / "ufo2p" / "symbols.csv",
+                      [SymbolRow(0x10010, "Foo", "func")], "UFO2P.EXE")  # fmt: skip
+    _assert_refused(tmp_path, argv, capsys, "symbols.csv", "Foo")
 
 
 def _assert_refused(tmp_path, argv, capsys, *needles):

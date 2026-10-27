@@ -27,14 +27,14 @@ import json
 import os
 import re
 import sys
-from collections import Counter
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 if importlib.util.find_spec("reverseapoc") is None:  # plain `python`, outside the uv environment
     sys.path.insert(0, str(Path(__file__).resolve().parent / "tools"))
 
+from reverseapoc import unitdefs
 from reverseapoc.compiler import PROV_SUFFIX, project_headers
 from reverseapoc.functions import (
     KIND_GAME,
@@ -42,6 +42,7 @@ from reverseapoc.functions import (
     FunctionRow,
     FunctionsError,
     read_functions_csv,
+    read_symbols_csv,
     read_units_csv,
 )
 from reverseapoc.lint import CLANGD_FLAGS
@@ -401,30 +402,6 @@ def _logical_lines(lines: Sequence[str]) -> Iterator[tuple[int, int, str]]:
         first = last + 1
 
 
-def _file_scope_definitions(code: str) -> Iterator[str]:
-    """The placeholder names defined at brace depth 0 of `code` (comments already blanked)."""
-    depth = 0
-    position = 0
-    for match in _DEFINITION.finditer(code):
-        between = code[position : match.start()]
-        depth += between.count("{") - between.count("}")
-        position = match.start()
-        if depth == 0:
-            yield match.group(1)
-
-
-def _function_problem(name: str, defined: int, marked: int) -> str | None:
-    if defined and marked:
-        return f"{name} is both defined in C and marked INCLUDE_ASM"
-    if marked > 1:
-        return f"{name} is marked INCLUDE_ASM {marked} times"
-    if defined > 1:
-        return f"{name} is defined {defined} times"
-    if not defined and not marked:
-        return f"{name} is neither defined in C nor marked INCLUDE_ASM (D-12)"
-    return None
-
-
 def code_text(text: str) -> str:
     """The live code of a unit file as the D-12 check reads it: translation phases 1-2
     (normalize_source), comments and literals blanked, directives and dead #if 0 branches
@@ -469,30 +446,32 @@ def include_problems(text: str) -> list[str]:
     return problems
 
 
-def check_unit_source(text: str, unit_functions: Sequence[FunctionRow]) -> list[str]:
-    """The D-12 problems of one unit file: every game or thunk row of the unit is defined in C
-    or marked INCLUDE_ASM, exactly once and not both, and no marker or definition names a
-    func_ placeholder outside the unit. The order of the file does not matter. Comments and
-    dead #if 0 branches do not count; any other preprocessor conditional is itself a problem
-    (the check fails closed rather than guess). A K&R-style definition is not recognised, so it
-    is reported as neither defined nor marked (a false refusal, never a false pass). Any
-    #include of something other than a bare header name is a problem too (CR-02)."""
+def check_unit_source(
+    text: str,
+    unit_functions: Sequence[FunctionRow],
+    *,
+    names: Mapping[str, int] | None = None,
+    all_names: Mapping[str, int] | None = None,
+) -> list[str]:
+    """The D-12 problems of one unit file, read by the shared finder (unitdefs.find, D-29):
+    every game or thunk row of the unit is defined in C under its current C name or marked
+    INCLUDE_ASM (under its C name or its old placeholder), exactly once and not both, and no
+    marker or definition names a function outside the unit; a definition under the old
+    placeholder of a renamed row is refused. Problems name each row by its C name. `names` and
+    `all_names` map C names to starts as for unitdefs.find (the unit loop passes the EXE's
+    unitdefs.c_names as `all_names`; with neither, the rows' placeholders). The order of the file
+    does not
+    matter. Comments and dead #if 0 branches do not count; any other preprocessor conditional is
+    itself a problem (the check fails closed rather than guess). A K&R-style definition is not
+    recognised, so it is reported as neither defined nor marked (a false refusal, never a false
+    pass). Any #include of something other than a bare header name is a problem too (CR-02)."""
     try:
-        code = code_text(text)
         includes = include_problems(text)
     except _ConditionalError as exc:
         return [str(exc)]
-    marked = Counter(_MARKER.findall(code))
-    defined = Counter(_file_scope_definitions(code))
-    required = [row.name for row in unit_functions if row.kind in _CHECKED_KINDS]
-    problems = [*includes]
-    problems += [_function_problem(name, defined[name], marked[name]) for name in required]
-    known = set(required)
-    for name in sorted(marked.keys() - known):
-        problems.append(f"{name} is marked INCLUDE_ASM but is not a function of the unit")
-    for name in sorted(defined.keys() - known):
-        problems.append(f"{name} is defined in C but is not a function of the unit")
-    return [problem for problem in problems if problem is not None]
+    found = unitdefs.find(text, unit_functions, placeholders=unitdefs.placeholders(unit_functions),
+                          names=names, all_names=all_names)  # fmt: skip
+    return [*includes, *found.problems]
 
 
 @dataclass(frozen=True)
@@ -769,12 +748,13 @@ def _exe_units(name: str, config: Path, src: Path, base: Path) -> Iterator[UnitB
     symbols_csv = exe_config / SYMBOLS_NAME
     inputs = [functions_csv, units_csv, *([symbols_csv] if symbols_csv.is_file() else [])]
     functions = read_functions_csv(functions_csv)
+    names = _exe_names(symbols_csv, functions)
     for row in read_units_csv(units_csv):
         source = src / exe / f"{row.unit}{SOURCE_SUFFIX}"
         unit_functions = tuple(f for f in functions if f.unit == row.unit)
         has_source = source.is_file()
         if has_source:
-            _check_source(source, unit_functions)
+            _check_source(source, unit_functions, names=names)
         yield UnitBuild(
             exe=exe,
             exe_name=name,
@@ -785,7 +765,18 @@ def _exe_units(name: str, config: Path, src: Path, base: Path) -> Iterator[UnitB
         )
 
 
-def _check_source(path: Path, unit_functions: Sequence[FunctionRow]) -> None:
+def _exe_names(symbols_csv: Path, functions: Sequence[FunctionRow]) -> dict[str, int]:
+    """The C names the D-12 check reads one EXE's unit files with (D-29): unitdefs.c_names of
+    its functions.csv rows and its symbols.csv (optional; a missing one renames nothing)."""
+    try:
+        return unitdefs.c_names(functions, read_symbols_csv(symbols_csv))
+    except ValueError as exc:  # a malformed row or a func name without its `_` (UnitDefsError)
+        raise ConfigureError(f"{symbols_csv}: {exc}") from None
+
+
+def _check_source(
+    path: Path, unit_functions: Sequence[FunctionRow], *, names: Mapping[str, int] | None = None
+) -> None:
     """Refuse a unit file that fails the D-12 completeness check. The bytes are read, not
     read_text: universal newlines would turn a lone CR into a line break and hide it from
     normalize_source's refusal (re-review R2-1)."""
@@ -797,7 +788,7 @@ def _check_source(path: Path, unit_functions: Sequence[FunctionRow]) -> None:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise ConfigureError(f"{path}: not UTF-8 ({exc})") from None
-    problems = check_unit_source(text, unit_functions)
+    problems = check_unit_source(text, unit_functions, all_names=names)
     if problems:
         raise ConfigureError(f"{path}: {'; '.join(problems)}")
 
