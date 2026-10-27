@@ -1547,6 +1547,11 @@ class _Night:
         self.pids: dict[int, int] = {}
         self.pid_lock = threading.Lock()
         self.killed: list[int] = []  # the pids stop-all killed
+        # 07-21 fix round 1 (C1): the pinned paths' bytes once, before the first launch. The
+        # driver never writes them, so every launch, audit and containment compares with
+        # (and restores to) this, never a session's own launch snapshot, which may hold
+        # another live session's stray. None until the night starts (the canary's probe).
+        self.pinned_base: dict[str, bytes | None] | None = None
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
@@ -1667,6 +1672,13 @@ class _Night:
         text = "; every worker stopped"
         if killed:
             text += f"; killed the session trees of pids {', '.join(map(str, killed))}"
+        # Fix round 1 (I2): a halted worker's own stop (its strays, what it quarantined) is
+        # the night's `failure` here, never re-raised, so its detail goes into this record.
+        failure = self.failure
+        if isinstance(failure, _Stop):
+            text += f"; {failure.reason}: {failure.detail}"
+        elif failure is not None:
+            text += f"; {type(failure).__name__}: {failure}"
         return "; ".join([text, *self.halt_notes])
 
     def _halt_if_stopping(self) -> None:
@@ -1855,7 +1867,19 @@ class _Night:
         """The coordinator hands the picks to the workers (D-06); one worker is Phase 6's
         serial loop."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
+        self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
         return _Coordinator(self).run()
+
+    def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
+        """The pinned bytes every check compares with: the night's baseline (C1), or, outside
+        a night, the given snapshot's."""
+        return self.pinned_base if self.pinned_base is not None else snapshot.pinned
+
+    def _pinned_drift(self, snapshot: _Snapshot) -> list[str]:
+        """The pinned paths whose bytes in `snapshot` differ from the baseline."""
+        base = self._pinned_baseline(snapshot)
+        return sorted(n for n in base.keys() | snapshot.pinned.keys()
+                      if base.get(n) != snapshot.pinned.get(n))  # fmt: skip
 
     def _difficult(self) -> dict[Key, tuple[Key, ...]]:
         """The persisted difficult list, minus what `requeue` gives back (D-07)."""
@@ -2162,6 +2186,14 @@ class _Night:
         base = self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
             before = self._snapshot()
+            drift = self._pinned_drift(before)
+            if drift:  # fix round 1 (C1): another live session's stray; nothing launches
+                session = _Session(claim, None, pack, 0.0, (), scaffolded, unit_before, before,
+                                   tuple(drift), (), view_head, before.status,
+                                   view_hashes)  # fmt: skip
+                self._guardrail(session, drift, record=False, extra=[
+                    f"pinned paths differed from the night's baseline at the launch of "
+                    f"{claim.target}: {_listed(drift)}"])  # fmt: skip
         start = self.deps.clock()
         result = None
         try:
@@ -2233,8 +2265,9 @@ class _Night:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
-        pinned = tuple(sorted(n for n in before.pinned.keys() | after.pinned.keys()
-                              if before.pinned.get(n) != after.pinned.get(n)))  # fmt: skip
+        base = self._pinned_baseline(before)  # C1: the night's, not this launch's
+        pinned = tuple(sorted(n for n in base.keys() | after.pinned.keys()
+                              if base.get(n) != after.pinned.get(n)))  # fmt: skip
         prints = tuple(sorted(n for n in before.prints.keys() | after.prints.keys()
                               if before.prints.get(n) != after.prints.get(n)))  # fmt: skip
         return _Session(claim, result, pack, seconds, changed, scaffolded, unit_before, before,
@@ -2309,10 +2342,13 @@ class _Night:
         return [self._breach(rel, self.ledger.expected(rel))
                 for rel in rels if not self.ledger.holds(rel)]  # fmt: skip
 
-    def _verify_landing(self, claim: _Claim) -> None:
+    def _verify_landing(self, session: _Session) -> None:
         """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
         log hold the driver's bytes and src/ holds the unit it landed. 07-21: after another
-        worker's breach (J2: sticky) nothing is committed any more."""
+        worker's breach (J2: sticky) nothing is committed any more; and (07-21 fix round 1,
+        the review's open point) every other path git can see equals HEAD or holds the
+        driver's own bytes, so no live session's write rides along with this landing."""
+        claim = session.claim
         if self.breached:
             raise _Breach("another worker's breach stopped the night: nothing is committed (J2)")
         for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix()):
@@ -2321,6 +2357,53 @@ class _Night:
         unit = self.repo / claim.unit_rel
         if _is_link(unit) or _read(unit) != self.landed_bytes:
             raise _Breach(self._breach(claim.unit_rel, self.landed_bytes, ledgered=False))
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "--untracked-files=all", "-z"])
+        status = {path: (code, None) for path, code in parse_status(raw).items()}
+        others = [p for p in self._unexplained(status) if p != claim.unit_rel]
+        if others:
+            self.breached = True
+            done = self._contain(session, others)
+            raise _Breach(f"paths changed besides the landing at the match commit: "
+                          f"{_listed(others)}; {self._contained_text(done)}")  # fmt: skip
+
+    def _contained_text(self, done: _Contained) -> str:
+        """What one containment did, for a STOPPED record."""
+        text = f"restored: {_listed(done.restored)}; quarantined: {_listed(done.quarantined)}"
+        for label, items in (("not contained", done.not_contained),
+                             ("not restored", done.not_restored),
+                             ("could not unstage", done.unstage_failed)):  # fmt: skip
+            if items:
+                text += f"; {label}: {_listed(items)}"
+        return "; ".join([text, *done.refused])
+
+    def _verify_commit(self, claim: _Claim, paths: Sequence[str], old: str) -> None:
+        """07-21 fix round 1 (I1): `git commit -- <paths>` reads the worktree again after
+        `_verify_landing`, so a live session's write in between would be committed. Each
+        committed blob must be the unit the driver landed or the driver's ledgered bytes. On a
+        difference the driver moves HEAD back off its own commit, only while HEAD is still that
+        commit (`git update-ref HEAD <old> <new>`), contains each path and raises _Breach,
+        which the caller's `_undo_match` takes from there."""
+        new = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        wanted = {rel: (self.landed_bytes if rel == claim.unit_rel else self.ledger.expected(rel))
+                  for rel in paths}  # fmt: skip
+        bad = []
+        for rel, want in wanted.items():
+            done = self._git(["cat-file", "blob", f"{new}:{rel}"])
+            if (done.stdout if done.returncode == 0 else None) != want:
+                bad.append(rel)
+        if not bad:
+            return
+        notes = [f"the match commit {new[:12]} holds bytes the driver did not write: "
+                 f"{_listed(bad)}"]  # fmt: skip
+        try:
+            _git_ok(self._git, ["update-ref", "-m", "reverseapoc drive: undo a tampered match",
+                                "HEAD", old, new])  # fmt: skip
+            notes.append(f"HEAD moved back to {old[:12]}")
+        except Exception as exc:  # noqa: BLE001 - named; the commit then stays, reported
+            notes.append(f"HEAD could not be moved back: {type(exc).__name__}: {exc}")
+        for rel in bad:
+            notes.append(self._breach(rel, wanted[rel], ledgered=rel != claim.unit_rel))
+        raise _Breach("; ".join(notes))
 
     def _unexplained(self, status: Mapping[str, tuple[str, str | None]]) -> list[str]:
         """Invariant (a): each path of `status` (git status after the session) or of the
@@ -2421,10 +2504,11 @@ class _Night:
         pre-session snapshot once containment is done (a pinned file restored from its bytes
         has a new mtime, so the fingerprint skips pinned names)."""
         before = session.before
+        base = self._pinned_baseline(before)  # C1
         pinned = self._pinned_state()
         prints = self._fingerprint()
-        still = [n for n in sorted(before.pinned.keys() | pinned.keys())
-                 if before.pinned.get(n) != pinned.get(n)]  # fmt: skip
+        still = [n for n in sorted(base.keys() | pinned.keys())
+                 if base.get(n) != pinned.get(n)]  # fmt: skip
         still += [n for n in sorted(before.prints.keys() | prints.keys())
                   if before.prints.get(n) != prints.get(n) and n not in pinned]  # fmt: skip
         return still
@@ -2509,8 +2593,8 @@ class _Night:
         before = session.before
         pinned = name in session.pinned_changed and name.casefold() not in tracked
         path = self._pinned_path(name) if pinned else self.repo / name
-        if pinned:
-            earlier = before.pinned.get(name)
+        if pinned:  # C1: back to the night's baseline, never a launch snapshot's stray
+            earlier = self._pinned_baseline(before).get(name)
         elif self.ledger.knows(name):  # 07-13: the driver's own file, back to its bytes
             earlier = self.ledger.bytes_of(name)
         else:
@@ -2760,9 +2844,11 @@ class _Night:
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
                                      sha1s=gate_sha1s(gate.doc))  # fmt: skip
-            self._verify_landing(claim)
+            self._verify_landing(session)
+            old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
                                     paths=paths)  # fmt: skip
+            self._verify_commit(claim, paths, old)  # fix round 1 (I1)
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
             undone = self._undo_match(session, paths, summary, exc.detail, log_size)
             raise _Stop(GUARDRAIL, undone) from exc
