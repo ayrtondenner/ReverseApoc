@@ -291,7 +291,7 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans:** 20/42 plans executed
+**Plans:** 23/42 plans executed
 
 Plans:
 **Wave 1**
@@ -324,17 +324,17 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 07-21-PLAN.md — N worker threads, shared usage-limit pause, stop-all, shared night cap, new defaults (DEC-02, DEC-06)
-- [ ] 07-22-PLAN.md — Tier 1 drafted, mid-row refs classified, hub-rule numbers, owner sign-off *(main checkout, owner checkpoint)* (DEC-01)
+- [x] 07-22-PLAN.md — Tier 1 drafted, mid-row refs classified, hub-rule numbers, owner sign-off *(main checkout, owner checkpoint)* (DEC-01)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 07-23-PLAN.md — v2 records written: hook blocks, gate verdicts, passes, nightly totals, limit records (DEC-06, DEC-07)
-- [ ] 07-24-PLAN.md — flags approve and default (owner-run), D-33 evidence bar, per-rule docs check (DEC-03)
+- [x] 07-24-PLAN.md — flags approve and default (owner-run), D-33 evidence bar, per-rule docs check (DEC-03)
 - [ ] 07-25-PLAN.md — Tier 2 (#263) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
 - [ ] 07-42-PLAN.md — model table: Opus passes 1-2 then Fable, per-model budget defaults, `build_argv` per-session values, requested-model init check (DEC-06, AGT-11)
 
 **Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 07-26-PLAN.md — tier picker: callees first by SCC level, hubs after members, unlimited passes (DEC-02, DEC-03)
-- [ ] 07-27-PLAN.md — readlint RL01-RL06 with allowlist, waivers and scoped modes (DEC-04)
+- [x] 07-27-PLAN.md — readlint RL01-RL06 with allowlist, waivers and scoped modes (DEC-04)
 - [ ] 07-28-PLAN.md — Tier 3 (#264) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
 - [ ] 07-29-PLAN.md — D-13 pilot sweep hits: propose, container re-gate, owner approves the batch *(main checkout, owner checkpoint)* (DEC-03, AGT-11)
 
@@ -393,7 +393,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 20/42 | In Progress | - |
+| 7. Mechanics-first decompilation | 23/42 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
