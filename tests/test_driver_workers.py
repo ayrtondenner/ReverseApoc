@@ -10,10 +10,14 @@ the Night harness of test_driver.py; every name and address is made up.
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from reverseapoc import driver
 from test_driver import EXE, FUNC, RUN, UNIT, Night, Sess, _capture_nights
 
 CLAIM_KEYS = {"run", "worker", "exe", "unit", "function", "start", "kind", "pass", "model",
@@ -154,3 +158,111 @@ def _message_of(args: list[str]) -> str:
     if "-F" not in args:
         return ""
     return Path(args[args.index("-F") + 1]).read_text(encoding="utf-8")
+
+
+# ---- Task 2: stale claims, the O_EXCL race, no PID probe ----
+
+TOOLS = Path(__file__).resolve().parent.parent / "tools" / "reverseapoc"
+
+
+def _claim_record(run: str, unit: str = "u_x", worker: int = 0) -> dict:
+    return {"run": run, "worker": worker, "exe": EXE, "unit": unit, "function": "func_00099990",
+            "start": "0x00099990", "kind": "matching", "pass": 1, "model": None,
+            "claimed_at": "2026-10-26T23:59:00+00:00"}  # fmt: skip
+
+
+def _plant_claim(night: Night, record: dict) -> Path:
+    path = _claim_path(night, record["exe"], record["unit"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record), encoding="utf-8")
+    return path
+
+
+def test_stale_claim_recovered(tmp_path):
+    """A claim left by run "old" (a crashed drive): with drive.lock held the new run moves it to
+    build/driver/<run>/stale-claims/ and its STARTED record names ufo2p/u_x and run old."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    planted = _plant_claim(night, _claim_record("old"))
+    body = planted.read_bytes()
+    report = night.run()
+    assert report.event == "ENDED"
+    started = night.kinds("run")[0]
+    assert started["event"] == "STARTED"
+    detail = started["detail"] or ""
+    assert "ufo2p/u_x" in detail and "run old" in detail
+    moved = night.repo / "build" / "driver" / RUN / "stale-claims" / planted.name
+    assert moved.read_bytes() == body
+    assert not planted.exists()
+
+
+def test_unreadable_stale_claim_is_recovered_too(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    planted = _claim_path(night, EXE, "u_y")
+    planted.parent.mkdir(parents=True, exist_ok=True)
+    planted.write_bytes(b"not json")
+    night.run()
+    assert "ufo2p/u_y" in (night.kinds("run")[0]["detail"] or "")
+    assert (night.repo / "build" / "driver" / RUN / "stale-claims" / planted.name).is_file()
+    assert not planted.exists()
+
+
+def test_no_stale_claim_leaves_the_started_detail_empty(tmp_path):
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.run()
+    assert night.kinds("run")[0]["detail"] is None
+
+
+def test_stale_recover_needs_the_drive_lock(tmp_path):
+    """Claims.recover is only callable with drive.lock held: without it, nothing moves."""
+    night = Night(tmp_path)
+    planted = _plant_claim(night, _claim_record("old"))
+    with pytest.raises(driver.DriverError, match="drive.lock"):
+        driver.Claims(night.repo, "new").recover()
+    assert planted.is_file()
+
+
+def test_stale_recover_returns_old_claims_and_keeps_the_current_runs(tmp_path):
+    from reverseapoc.locks import ProcessLock
+
+    night = Night(tmp_path)
+    _plant_claim(night, _claim_record("old"))
+    mine = _plant_claim(night, _claim_record("new", unit="u_z"))
+    with ProcessLock(night.repo / DRIVE_LOCK_REL):
+        found = driver.Claims(night.repo, "new").recover()
+    assert found == [{"exe": EXE, "unit": "u_x", "run": "old"}]
+    assert mine.is_file()
+
+
+def test_claim_race_one_winner(tmp_path):
+    """DEC-02 adjacency: 8 threads claim one unit at once behind a barrier: exactly one O_EXCL
+    create wins, the losers get False and the file holds the winner's worker id."""
+    claims = driver.Claims(tmp_path, "night1")
+    barrier = threading.Barrier(8)
+    results: dict[int, bool] = {}
+
+    def take(worker: int) -> None:
+        barrier.wait(timeout=30)
+        results[worker] = claims.take(_claim_record("night1", worker=worker))
+
+    threads = [threading.Thread(target=take, args=(w,)) for w in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=60)
+    winners = [w for w, won in results.items() if won]
+    assert len(results) == 8 and len(winners) == 1
+    path = claims.path(EXE, "u_x")
+    assert json.loads(path.read_text(encoding="utf-8"))["worker"] == winners[0]
+
+
+def test_no_pid_probe():
+    """D-24: liveness is the OS lock only. Neither driver.py nor locks.py calls the os module's
+    kill function (on Windows it terminates the process it names). The pattern is built from
+    parts, so this file does not hold the call either."""
+    name = "ki" + "ll"
+    call = re.compile(r"\bos\s*\.\s*" + name + r"\s*\(")
+    imported = re.compile(r"\bfrom\s+os\s+import\b[^\n]*\b" + name + r"\b")
+    for module in ("driver.py", "locks.py"):
+        text = (TOOLS / module).read_text(encoding="utf-8")
+        assert not call.search(text), module
+        assert not imported.search(text), module
