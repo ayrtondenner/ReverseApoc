@@ -455,3 +455,18 @@ def reach(
         frontier = sorted(level)
     return {node: (h, ENTRY if rank == _ROOT_RANK else EDGE_KINDS[rank])
             for node, (h, rank) in sorted(best.items())}  # fmt: skip
+
+
+def with_edges(graph: CallGraph, extra: Iterable[Edge]) -> CallGraph:
+    """A copy of `graph` with `extra` edges merged in (the `hand` edges of config/mechanics.toml):
+    each row's callees stay sorted by (target, kind rank), an edge already present is not added
+    twice, and the reports are kept. The input graph is not changed."""
+    found: defaultdict[int, set[Edge]] = defaultdict(set)
+    for start, edges in graph.edges.items():
+        found[start].update(edges)
+    for edge in extra:
+        found[edge.src].add(edge)
+        found.setdefault(edge.dst, set())
+    edges = {start: tuple(sorted(found[start], key=_edge_key)) for start in sorted(found)}
+    return CallGraph(edges=edges, midrow=graph.midrow, indirect=graph.indirect,
+                     orphan_tables=graph.orphan_tables)  # fmt: skip
