@@ -2062,3 +2062,16 @@ def test_undo_match_drops_only_its_matched_record(tmp_path):
     assert OTHER_RECORD in night.records()
     assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
     assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+
+
+def test_a_view_unit_that_is_no_longer_a_file_is_a_stray(tmp_path):
+    """The landing section copies only a regular file: a view unit the session replaced by a
+    directory link stops the night before anything lands."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    night = Night(tmp_path, sessions=[Sess(link=(VIEW_UNIT_REL, elsewhere))], gate_exits=[0])
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert VIEW_UNIT_REL in report.detail
+    assert night.gate_calls == []
+    assert _unit_text(night) == SCAFFOLD
