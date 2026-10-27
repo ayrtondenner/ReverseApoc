@@ -68,6 +68,7 @@ from typing import Any
 # check_unit, check_source, land_all, load_exe and compile_source are looked up at call time
 # (`check_fn or check_unit`), so a test can stand a fake in for each.
 from . import check as _check  # DEFAULT_SRC, read at call time (tests stand a tree in)
+from .cflags import DEFAULT_CFLAGS
 from .check import (
     EXIT_MISMATCH,
     EXIT_OK,
@@ -88,6 +89,7 @@ from .check import (
     read_source,
     select_exe,
     source_marks,
+    unit_rule_path,
 )
 from .compiler import compile_source
 from .fileio import write_atomic
@@ -114,8 +116,15 @@ from .status import (
     write_status,
 )
 from .targets import REPO_ROOT, Target, load_manifest
+from .watcom import DEFAULT_INSTALL, DEFAULT_WATCOM_MANIFEST
 
 MODE_UNIT, MODE_ALL, MODE_PARTIAL = "unit", "all", "partial"
+# The compile options a written row may come from, as (GateRoots field, CLI flag, committed
+# value): the owner-approved config/cflags.txt (D-12), config/watcom.toml and the default
+# Watcom tree (D-27 P2).
+COMMITTED_OPTIONS = (("cflags", "--cflags", DEFAULT_CFLAGS),
+                     ("watcom_manifest", "--watcom-manifest", DEFAULT_WATCOM_MANIFEST),
+                     ("watcom_dir", "--watcom-dir", DEFAULT_INSTALL))  # fmt: skip
 UNITS_CSV = "units.csv"
 FUNCTIONS_CSV = "functions.csv"
 SYMBOLS_CSV = "symbols.csv"
@@ -245,6 +254,18 @@ def _committed_src(roots: GateRoots) -> None:
     if Path(roots.src_root).resolve() != Path(_check.DEFAULT_SRC).resolve():
         raise CheckError(f"gate checks only the committed src tree {_check.DEFAULT_SRC}; --src "
                          f"{roots.src_root} is for --partial --src FILE only")  # fmt: skip
+
+
+def _committed_options(roots: GateRoots) -> None:
+    """gate writes matched and partial rows only under the committed compile options
+    (COMMITTED_OPTIONS; D-12, D-27 P2): another --cflags, --watcom-manifest or --watcom-dir is
+    for `gate --all`, which checks under it and writes nothing (the D-14 dry run)."""
+    for field, flag, default in COMMITTED_OPTIONS:
+        given = getattr(roots, field)
+        if given is not None and Path(given).resolve() != Path(default).resolve():
+            raise CheckError(f"gate writes status.csv only under the committed compile options: "
+                             f"{flag} {given} is not {default}; `gate --all {flag} ...` is the "
+                             "dry run, which writes nothing")  # fmt: skip
 
 
 def _tables(config_root: Path, known: Iterable[Target]) -> dict[str, list[StatusRow]]:
@@ -554,7 +575,9 @@ def gate_units(
     check_fn: Callable[..., CheckResult] | None = None,
 ) -> GateResult:
     """Check each (EXE, UNIT) of `targets`; when every check exits 0 and the cross-check passes,
-    write matched rows for every function they define, else write nothing (exit 1)."""
+    write matched rows for every function they define, else write nothing (exit 1). Only the
+    committed src tree and compile options are accepted (_committed_src, _committed_options)."""
+    _committed_options(roots)
     _check_attempts(attempts)
     _committed_src(roots)
     check_fn = check_fn or check_unit
@@ -750,10 +773,21 @@ def _merge_partial(table: Iterable[StatusRow], functions: Iterable[FunctionCheck
 
 
 def _saved_file(path: Path) -> Path:
+    """The saved attempt gate --partial scores. Its rows go to the public status.csv, so it must
+    sit inside the repository and compile from REPO_ROOT, with the committed headers (07-03 fix
+    round 1): never from a view's or another tree's include/."""
     saved = Path(path)
     if saved.suffix != SOURCE_SUFFIX or not saved.is_file():
         raise CheckError(f"--partial --src must name the saved attempt's existing "
                          f"{SOURCE_SUFFIX} file, got {saved}")  # fmt: skip
+    repo = Path(_check.REPO_ROOT).resolve()
+    if not saved.resolve().is_relative_to(repo):
+        raise CheckError(f"--partial --src {saved} must be inside the repository {repo} (its "
+                         "rows go to status.csv)")  # fmt: skip
+    root = Path(_check._compile_root_for(saved.parent)).resolve()
+    if root != repo:
+        raise CheckError(f"--partial --src {saved} would compile from the compile root {root} "
+                         f"with its headers, not from {repo}; save it outside a view's src/")
     return saved
 
 
@@ -772,7 +806,9 @@ def gate_partial(
 ) -> GateResult:
     """Score `saved_file` as unit `unit` and write partial rows (D-21): exit 0 when a function
     that is not matched scored above 0%, 1 when none did (nothing written), CheckError (exit 2)
-    for a tool or usage problem."""
+    for a tool or usage problem, an uncommitted compile option included (_committed_options).
+    The saved file is scored under its unit's cflags rule (unit_rule_path, D-27 P1)."""
+    _committed_options(roots)
     _check_attempts(attempts)
     saved = _saved_file(saved_file)
     known = load_manifest(roots.manifest)
@@ -792,6 +828,7 @@ def gate_partial(
         inputs, unit, saved, rows, build_dir=roots.build_dir,
         compile_fn=compile_fn or compile_source,
         objdiff_runner=objdiff_runner or default_objdiff_runner(f"{exe}/{unit}"), options=options,
+        rule_path=unit_rule_path(stem, unit),
     )  # fmt: skip
     if source_sha256(saved) != before:
         raise CheckError(f"{saved} changed while it was checked; gate it again")

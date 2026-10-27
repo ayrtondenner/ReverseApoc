@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import dataclasses
 import re
+import secrets
 import shutil
 import subprocess
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -29,7 +31,8 @@ import pytest
 import configure
 from conftest import ORIG_DIR, REPO_ROOT, WATCOM_DIR, requires_objdiff, requires_runner
 from reverseapoc import check
-from reverseapoc.compiler import compile_source
+from reverseapoc.cflags import load_cflags, select_rule
+from reverseapoc.compiler import compile_source, read_provenance
 from reverseapoc.land import LandedFunction, land
 from reverseapoc.relocs import check_function
 from reverseapoc.targets import load_manifest
@@ -183,3 +186,71 @@ def test_ninja_keeps_committed_objects_after_a_custom_check(request):
     assert "no work to do" in _ninja(base, "-n", rel)
     _ninja(base, rel)
     assert obj.read_bytes() == committed[0]
+
+
+# ---- 07-03 (D-27 P1, research K4): a D-24 view compiles from its own root, under the unit rule --
+
+# Inside the repository (the container mount sees it) and under build/driver/, where D-24 views
+# live: only build/driver/.../view/src compiles from its view root (07-03 fix round 1).
+VIEW_ROOT = REPO_ROOT / "build" / "driver" / "test-view"
+VIEW_EXE, VIEW_UNIT = "ufo2p", "u_000a34f0"  # a committed unit with a matched function
+UNIT_FLAG = "-ot"  # what the temporary per-unit rule adds to the `*` rule's flags
+
+
+@pytest.fixture
+def view() -> Iterator[Path]:
+    """build/driver/test-view/<random hex>/view: a snapshot of src/, include/ and config/ as D-24's
+    per-attempt view holds them; removed at teardown. Skips (orchestrator ruling F40: through
+    requires_runner/requires_objdiff first) before anything is copied."""
+    requires_runner()
+    requires_objdiff()
+    for target in load_manifest(MANIFEST):
+        if (CONFIG / check.exe_stem(target.name) / "units.csv").is_file() and not (
+            ORIG_DIR / target.name
+        ).is_file():
+            pytest.skip(f"orig/{target.name} not present (run in the container)")
+    if not (WATCOM_DIR / "10.6").is_dir():
+        pytest.skip(f"{WATCOM_DIR / '10.6'} not installed (run in the container)")
+    top = VIEW_ROOT / secrets.token_hex(4)
+    path = top / "view"
+    for tree in ("src", "include", "config"):
+        shutil.copytree(REPO_ROOT / tree, path / tree)
+    yield path
+    shutil.rmtree(top, ignore_errors=True)
+
+
+def test_view_unit_compiles_under_its_logical_rule(view):
+    """A copy of the unit inside a view, checked with the view's src/config/build and a
+    temporary cflags file that gives src/ufo2p/u_000a34f0.c the `*` rule's compiler and flags
+    plus -ot: the unit's object is compiled from the view root under that rule (its stamp records
+    -ot) into the view's build/check-custom/, and each unit the land step compiles keeps its
+    committed rule. It does not assert a match: the evidence is which rule and which root the
+    compile used."""
+    rule_path = check.unit_rule_path(VIEW_EXE, VIEW_UNIT)
+    star = next(rule for rule in load_cflags() if rule.glob == "*")
+    cflags = view / "unit-rule.cflags"
+    committed = (REPO_ROOT / "config" / "cflags.txt").read_text(encoding="utf-8")
+    cflags.write_text(f"{committed.rstrip()}\n{rule_path}  {star.spec}  "
+                      f"{' '.join((*star.flags, UNIT_FLAG))}\n", encoding="utf-8")  # fmt: skip
+    build = view / "build"
+    result = check.check_unit(
+        VIEW_EXE, VIEW_UNIT, orig_dir=ORIG_DIR, manifest=view / "config" / "targets.toml",
+        config_root=view / "config", src_root=view / "src", build_dir=build, cflags=cflags,
+        watcom_dir=WATCOM_DIR, log=build / "cc.log",
+    )  # fmt: skip
+    assert result.flags == (*star.flags, UNIT_FLAG)
+    custom = build / check.CUSTOM_ROOT
+    obj = check.UnitPaths.of(custom, VIEW_EXE, VIEW_UNIT).obj
+    assert obj.is_file()
+    # The compile ran from the view root: the guest object path in the log is view-relative.
+    assert check._compile_root_for(view / "src") == view.resolve()
+    guest_obj = obj.resolve().relative_to(view.resolve()).as_posix().replace("/", "\\")
+    log = (build / "cc.log").read_text(encoding="utf-8")
+    assert f"-fo={guest_obj}" in log, log
+    stamp = read_provenance(obj)
+    assert stamp is not None and UNIT_FLAG in stamp["flags"], stamp
+    others = [path for path in (custom / VIEW_EXE / "obj").glob("*.obj") if path != obj]
+    assert others  # the land step compiled the other units of the view too
+    for other in others:
+        committed_rule = select_rule(load_cflags(), check.unit_rule_path(VIEW_EXE, other.stem))
+        assert read_provenance(other)["flags"] == list(committed_rule.flags), other
