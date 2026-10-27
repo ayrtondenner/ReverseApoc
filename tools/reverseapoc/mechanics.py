@@ -1064,6 +1064,29 @@ def tier_status(mech: Mechanics, rows: Iterable[MemberRow],
                       len(members) - found[MATCHED] - found[PARTIAL], waiting)  # fmt: skip
 
 
+def done_problems(mech: Mechanics, rows: Sequence[MemberRow],
+                  found: Mapping[int, TierStatus]) -> list[str]:  # fmt: skip
+    """Why the D-05 done rule does not hold for the tiers in `found` (empty: it holds). A tier is
+    done only when it is signed off, its digest still matches (the comparison `mechanics check`
+    makes), it has members and every member is matched. No tier at all is not done."""
+    if not found:
+        return ["no tier to check: mechanics.toml has no [[tier]]"]
+    signed = signed_tiers(mech, rows)
+    problems = []
+    for tier_id, status in found.items():
+        tier = mech.tier(tier_id)
+        if tier is None or not tier.signed:
+            problems.append(f"tier {tier_id} is not signed off")
+        elif tier_id not in signed:
+            problems.append(f"tier {tier_id} changed since sign-off: re-sign")
+        if status.total == 0:
+            problems.append(f"tier {tier_id} has no members (is {MEMBERS_CSV} written?)")
+        elif status.matched != status.total:
+            problems.append(f"tier {tier_id}: {status.total - status.matched} of "
+                            f"{status.total} members not matched")  # fmt: skip
+    return problems
+
+
 def read_statuses(config_root: Path, exes: Iterable[str]) -> dict[tuple[str, int], str]:
     """(exe, start) -> status from each EXE's config/<exe>/status.csv (absent: none)."""
     return {(exe, row.start): row.status for exe in exes
