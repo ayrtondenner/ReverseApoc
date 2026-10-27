@@ -1356,6 +1356,22 @@ def _mechanics_write(args: argparse.Namespace) -> int:
     return 0
 
 
+def _mechanics_check(args: argparse.Namespace) -> int:
+    problems = mechanics.check_committed(args.config)
+    if args.json:
+        print(json.dumps({"problems": problems}, indent=2))
+    else:
+        print("\n".join(problems) if problems else "mechanics: no problems")
+    return 1 if problems else 0
+
+
+def _mechanics_digest(args: argparse.Namespace) -> int:
+    mech, rows = mechanics.read_committed(args.config)
+    digest = mechanics.tier_digest(mech, rows, args.tier)
+    print(json.dumps({"tier": args.tier, "members_sha256": digest}) if args.json else digest)
+    return 0
+
+
 def _cmd_mechanics(args: argparse.Namespace) -> int:
     """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
     try:
@@ -1388,13 +1404,19 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     )
     _mechanics_roots(w, game=True)
     w.set_defaults(mechanics_func=_mechanics_write)
-    c = verbs.add_parser("check")  # stub (plan 07-10 RED)
+    c = verbs.add_parser(
+        "check",
+        help="validate the committed mechanics files without game files: members rows, entries, "
+        "signed tier digests, the asm list sign-off (exit 1 on any problem)",
+    )
     _mechanics_roots(c, game=False)
-    c.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
-    d = verbs.add_parser("digest")  # stub (plan 07-10 RED)
-    d.add_argument("--tier", type=int, required=True)
+    c.set_defaults(mechanics_func=_mechanics_check)
+    d = verbs.add_parser(
+        "digest", help="print a tier's members_sha256 from the committed rows, for its sign-off"
+    )
+    d.add_argument("--tier", type=_positive, required=True, metavar="N")
     _mechanics_roots(d, game=False)
-    d.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
+    d.set_defaults(mechanics_func=_mechanics_digest)
     p.set_defaults(func=_cmd_mechanics)
 
 

@@ -24,14 +24,17 @@ Addresses are `0x%08X`; rows sort by EXE (EXES order) then address; ids sort by 
 from __future__ import annotations
 
 import datetime
+import hashlib
 import re
 import tomllib
-from collections.abc import Iterable, Mapping, Sequence
+from collections import Counter
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 
 from . import callgraph
-from .callgraph import EDGE_KINDS, ENTRY, CallGraph
+from .callgraph import DIRECT, EDGE_KINDS, ENTRY, HAND, CallGraph
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -177,6 +180,10 @@ class Mechanics:
 
     def entry_addresses(self, item_id: str, exe: str) -> list[int]:
         return sorted({e.address for e in self.entries if e.item == item_id and e.exe == exe})
+
+    def is_entry(self, exe: str, address: int) -> bool:
+        """True when some [[entry]] names `address` in `exe`."""
+        return any(e.exe == exe and e.address == address for e in self.entries)
 
 
 def item_key(item_id: str) -> tuple[int, int]:
@@ -560,13 +567,67 @@ def _walked(rows: Sequence[FunctionRow]) -> frozenset[int]:
     return frozenset(row.start for row in rows if row.kind in WALKED_KINDS)
 
 
+# ---- hubs (D-22) ----
+
+
+class HubStats:
+    """The numbers the hub rule reads, for one EXE's graph: direct callers per row, the largest
+    strongly connected component over all edge kinds, each row's own closure share (computed when
+    asked) and how many `in` items' full closures reach each row."""
+
+    def __init__(self, graph: CallGraph, walked: frozenset[int],
+                 closures: Mapping[str, frozenset[int]]) -> None:  # fmt: skip
+        self.graph, self.walked = graph, walked
+        self.direct_callers = Counter(edge.dst for edges in graph.edges.values()
+                                      for edge in edges if edge.kind == DIRECT)  # fmt: skip
+        self.item_counts = Counter(node for nodes in closures.values() for node in nodes)
+        self._sizes: dict[int, int] = {}
+
+    @cached_property
+    def largest_scc(self) -> frozenset[int]:
+        """The largest cycle (ties: the first in callgraph.sccs order); empty without a cycle."""
+        cycles = [comp for comp in callgraph.sccs(self.graph, self.walked) if len(comp) > 1]
+        return max(cycles, key=len, default=frozenset())
+
+    def closure_share(self, start: int) -> float:
+        """The share of the EXE's game/thunk rows that `start` reaches (itself included)."""
+        if start not in self._sizes:
+            self._sizes[start] = len(callgraph.closure(self.graph, [start]) & self.walked)
+        return self._sizes[start] / max(len(self.walked), 1)
+
+
+def hub_stats(graph: CallGraph, walked: frozenset[int],
+              closures: Mapping[str, frozenset[int]]) -> HubStats:  # fmt: skip
+    return HubStats(graph, walked, closures)
+
+
+def is_hub(start: int, rule: HubRule, graph: CallGraph, stats: HubStats) -> bool:
+    """True when `start` meets any enabled criterion of the hub rule (D-22): at least
+    min_direct_callers direct callers, in the largest SCC, an own closure above
+    max_closure_share of the EXE, or reached by at least min_items `in` items."""
+    if stats.graph is not graph:
+        raise MechanicsError("hub stats were computed for another graph")
+    return bool(
+        (rule.min_direct_callers and stats.direct_callers[start] >= rule.min_direct_callers)
+        or (rule.largest_scc and start in stats.largest_scc)
+        or (rule.max_closure_share and stats.closure_share(start) > rule.max_closure_share)
+        or (rule.min_items and stats.item_counts[start] >= rule.min_items)
+    )
+
+
+# ---- the walk ----
+
+
 @dataclass
 class _ExeWalk:
-    """One EXE's items, their full closures and the via of every reached row."""
+    """One EXE's full closures (D-02), hub-stopped member sets (D-22, D-31), hubs, asm rows and
+    the via of every reached row."""
 
     exe: str
-    full: dict[str, frozenset[int]]  # item id -> full closure (D-02)
+    full: dict[str, frozenset[int]]  # item id -> full closure
     members: dict[str, frozenset[int]]  # item id -> must-match members
+    hubs: frozenset[int]
+    asm: frozenset[int]
     via: dict[int, str]
 
 
@@ -584,13 +645,52 @@ def _roots(mech: Mechanics, exe: str, walked: frozenset[int]) -> dict[str, list[
     return roots
 
 
-def _walk_exe(mech: Mechanics, exe: str, graph: CallGraph, walked: frozenset[int]) -> _ExeWalk:
+def _with_hand_edges(mech: Mechanics, exe: str, graph: CallGraph,
+                     walked: frozenset[int]) -> CallGraph:  # fmt: skip
+    """`graph` plus this EXE's `[[edge]]` entries as `hand` edges (game/thunk rows only)."""
+    extra = []
+    for edge in (e for e in mech.edges if e.exe == exe):
+        if edge.src not in walked or edge.dst not in walked:
+            raise MechanicsError(f"edge {_address(edge.src)} -> {_address(edge.dst)} in {exe}: "
+                                 "both ends must be game or thunk rows")  # fmt: skip
+        extra.append(callgraph.Edge(edge.src, edge.dst, HAND))
+    return callgraph.with_edges(graph, extra) if extra else graph
+
+
+def _check_asm_entries(roots: Mapping[str, list[int]], exe: str, asm: frozenset[int]) -> None:
+    for item_id, addresses in roots.items():
+        if listed := asm.intersection(addresses):
+            raise MechanicsError(f"item {item_id}: entry {_address(min(listed))} in {exe} is on "
+                                 "the asm list (D-23): assembler cannot match from C")  # fmt: skip
+
+
+def _walk_exe(mech: Mechanics, exe: str, graph: CallGraph, walked: frozenset[int],
+              asm: frozenset[int]) -> _ExeWalk:  # fmt: skip
+    graph = _with_hand_edges(mech, exe, graph, walked)
     roots = _roots(mech, exe, walked)
+    _check_asm_entries(roots, exe, asm)
     full = {item_id: callgraph.closure(graph, addresses) & walked
             for item_id, addresses in roots.items()}  # fmt: skip
+    reached = frozenset().union(*full.values())
+    hubs: frozenset[int] = frozenset()
+    if mech.hub_rule.enabled:
+        stats = hub_stats(graph, walked, full)
+        hubs = frozenset(n for n in reached if is_hub(n, mech.hub_rule, graph, stats))
+    members = {}
+    for item_id, addresses in roots.items():
+        stop = (hubs | asm) - set(addresses)  # an item's entries are always its members (D-31)
+        members[item_id] = (callgraph.closure(graph, addresses, stop=stop) & walked) - stop
     all_roots = sorted({a for addresses in roots.values() for a in addresses})
     via = {node: kind for node, (_hops, kind) in callgraph.reach(graph, all_roots).items()}
-    return _ExeWalk(exe, full, dict(full), via)
+    return _ExeWalk(exe, full, members, hubs, asm & reached, via)
+
+
+def _role(walk: _ExeWalk, node: int, members: tuple[str, ...]) -> str:
+    if members:
+        return ROLE_MEMBER
+    if node in walk.asm:
+        return ROLE_ASM
+    return ROLE_HUB if node in walk.hubs else ROLE_CLOSURE
 
 
 def _exe_rows(mech: Mechanics, walk: _ExeWalk) -> list[MemberRow]:
@@ -601,7 +701,7 @@ def _exe_rows(mech: Mechanics, walk: _ExeWalk) -> list[MemberRow]:
         items = tuple(sorted((i for i, nodes in walk.full.items() if node in nodes), key=item_key))
         members = tuple(i for i in items if node in walk.members[i])
         rows.append(MemberRow(walk.exe, node, items, tuple(sorted({tier_of[i] for i in items})),
-                              members, walk.via[node], ROLE_MEMBER))  # fmt: skip
+                              members, walk.via[node], _role(walk, node, members)))  # fmt: skip
     return rows
 
 
@@ -609,16 +709,24 @@ def compute_members(
     mech: Mechanics,
     graphs: Mapping[str, CallGraph],
     rows_by_exe: Mapping[str, Sequence[FunctionRow]],
-    asm: frozenset = frozenset(),
+    asm: Iterable[tuple[str, int]] = frozenset(),
 ) -> list[MemberRow]:
-    """The members rows of every EXE with entries, sorted. `rows_by_exe` holds each EXE's
-    functions.csv rows; only game and thunk rows can be members (runtime rows are leaves and
-    never listed, D-02)."""
+    """The members rows of every EXE with entries, sorted.
+
+    `rows_by_exe` holds each EXE's functions.csv rows: only game and thunk rows appear (runtime
+    rows are leaves, D-02). `asm` holds the (exe, address) pairs the signed asm list marks `asm`
+    (D-23). Per `in` item: its full closure over every edge kind gives `items`/`tiers`; a walk
+    from its entries that does not expand hubs (rows meeting the hub rule, D-22) or asm rows
+    gives its members, the entries always included (D-31). A row's role is member when it is
+    some item's member, else asm when listed, else hub when it meets the rule, else closure (it
+    is reached only through hubs or asm rows). `[[edge]]` hand edges join the graph first."""
+    pairs = frozenset(asm)
     rows: list[MemberRow] = []
     for exe in needed_exes(mech):
         if exe not in graphs or exe not in rows_by_exe:
             raise MechanicsError(f"no call graph or functions.csv rows for {exe}")
-        walk = _walk_exe(mech, exe, graphs[exe], _walked(rows_by_exe[exe]))
+        listed = frozenset(address for name, address in pairs if name == exe)
+        walk = _walk_exe(mech, exe, graphs[exe], _walked(rows_by_exe[exe]), listed)
         rows += _exe_rows(mech, walk)
     return sorted(rows, key=row_key)
 
@@ -656,14 +764,63 @@ def generate(config_root: Path, orig_dir: Path, manifest: Path) -> list[MemberRo
     config_root = Path(config_root)
     mech = load(config_root / MECHANICS_TOML)
     exes = needed_exes(mech)
+    asm = signed_asm(config_root, mech)
     graphs = load_graphs(config_root, orig_dir, manifest, exes) if exes else {}
-    return compute_members(mech, graphs, read_rows(config_root, exes))
+    return compute_members(mech, graphs, read_rows(config_root, exes), asm)
 
 
-# ---- plan 07-10 Task 2 API (stub, RED) ----
+
+# ---- tier digests (D-04, T-07-28) ----
+
+
+def _tier_role(row: MemberRow, tier_members: Sequence[str]) -> str:
+    """The row's role as tier N sees it: member when a tier-N item has it as a member, else its
+    asm/hub/closure class. A row that is a member only of another tier's item carries no class
+    in the file: a hub is a member only as some item's entry (D-31), so such a row counts as hub
+    when it is an entry (`via` entry) and as closure otherwise."""
+    if tier_members:
+        return ROLE_MEMBER
+    if row.role != ROLE_MEMBER:
+        return row.role
+    return ROLE_HUB if row.via == ENTRY else ROLE_CLOSURE
+
+
+def tier_digest(mech: Mechanics, rows: Iterable[MemberRow], tier_id: int) -> str:
+    """SHA-256 (hex) of the hub-rule line plus one line `exe,address,<tier-N items>,<tier-N member
+    items>,<tier-N role>` per row a tier-N item reaches, in row order. Adding a later tier's item
+    leaves it unchanged, except through the min_items hub criterion (it counts items of every
+    tier), a hand edge, or a later-tier entry that is not a hub and that tier N reaches only
+    through hubs (see _tier_role); `mechanics check` then asks for a re-sign."""
+    if mech.tier(tier_id) is None:
+        raise MechanicsError(f"no [[tier]] with id {tier_id} in mechanics.toml")
+    ids = {item.id for item in mech.items if item.tier == tier_id}
+    lines = [mech.hub_rule.line()]
+    for row in sorted(rows, key=row_key):
+        items = [i for i in row.items if i in ids]
+        if not items:
+            continue
+        members = [i for i in row.member_items if i in ids]
+        lines.append(",".join((row.exe, _address(row.address), _LIST.join(items),
+                               _LIST.join(members), _tier_role(row, members))))  # fmt: skip
+    return hashlib.sha256(("\n".join(lines) + "\n").encode("ascii")).hexdigest()
+
+
+def signed_tiers(mech: Mechanics, rows: Sequence[MemberRow]) -> tuple[int, ...]:
+    """The ids of the tiers whose sign-off is present and whose digest still matches."""
+    return tuple(sorted(tier.id for tier in mech.tiers
+                        if tier.signed and tier.members_sha256 == tier_digest(mech, rows, tier.id)))
+
+
+# ---- the asm list (D-23; written by `mechanics asm`, plan 07-12) ----
 
 ASM_CSV = "asm-functions.csv"
+ASM_COMMENT = (
+    "# generated by: uv run reverseapoc mechanics asm --write; the tool owns exe, address and "
+    "evidence; verdict and reason are written by hand where the owner overrides (D-23)"
+)
 ASM_COLUMNS = ("exe", "address", "evidence", "verdict", "reason")
+ASM_VERDICTS = ("asm", "c", "unclear")
+VERDICT_ASM = "asm"
 
 
 @dataclass(frozen=True)
@@ -675,33 +832,160 @@ class AsmRow:
     reason: str = ""
 
 
-def hub_stats(graph, walked, closures):
-    return None
+def _asm_key(row: AsmRow) -> tuple[int, int]:
+    return EXES.index(row.exe), row.address
 
 
-def is_hub(start, rule, graph, stats) -> bool:
-    return False
+def format_asm_csv(rows: Iterable[AsmRow]) -> str:
+    """The asm list text: comment, header, rows by (EXES order, address), LF."""
+    cells = [[row.exe, _address(row.address), row.evidence, row.verdict, row.reason]
+             for row in sorted(rows, key=_asm_key)]  # fmt: skip
+    return _format_csv(ASM_COMMENT, ASM_COLUMNS, cells)
 
 
-def tier_digest(mech, rows, tier_id) -> str:
-    return "0" * 64
+def _parse_asm_row(record: Mapping[str, str]) -> AsmRow:
+    if None in record:
+        raise ValueError("more fields than the header")
+    where = "asm row"
+    return AsmRow(
+        exe=_choice(where, record, "exe", EXES),
+        address=_address_value(where, record, "address"),
+        evidence=_text(where, record, "evidence", required=True),
+        verdict=_choice(where, record, "verdict", ASM_VERDICTS),
+        reason=_text(where, record, "reason"),
+    )
 
 
-def signed_tiers(mech, rows) -> tuple[int, ...]:
-    return ()
+def read_asm_list(path: Path) -> list[AsmRow]:
+    """The rows of config/asm-functions.csv, validated; the file must be exactly what
+    format_asm_csv writes for them (CRLF read as LF)."""
+    path = Path(path)
+    try:
+        records = _read_records(path, ASM_COLUMNS)
+    except FunctionsError as exc:
+        raise MechanicsError(str(exc)) from exc
+    rows = []
+    for number, record in enumerate(records, start=1):
+        try:
+            rows.append(_parse_asm_row(record))
+        except (TypeError, ValueError) as exc:
+            raise MechanicsError(f"{path}: data row {number}: {exc}") from exc
+    keys = [_asm_key(row) for row in rows]
+    text = path.read_bytes().replace(b"\r\n", b"\n")
+    if keys != sorted(set(keys)) or text != format_asm_csv(rows).encode("utf-8"):
+        raise MechanicsError(f"{path}: not written the way format_asm_csv writes it (comment, "
+                             "order, repeats or spelling)")  # fmt: skip
+    return rows
 
 
-def read_asm_list(path) -> list[AsmRow]:
-    return []
+def asm_list_sha256(path: Path) -> str:
+    """SHA-256 (hex) of the asm list's bytes with CRLF read as LF: the [asm_list] sign-off."""
+    return hashlib.sha256(Path(path).read_bytes().replace(b"\r\n", b"\n")).hexdigest()
 
 
-def format_asm_csv(rows) -> str:
+def _asm_pairs(rows: Iterable[AsmRow]) -> frozenset[tuple[str, int]]:
+    return frozenset((row.exe, row.address) for row in rows if row.verdict == VERDICT_ASM)
+
+
+def _asm_signoff_problem(mech: Mechanics, path: Path) -> str:
+    if not path.is_file():
+        return f"[asm_list] is signed off but {path} is missing" if mech.asm_list.signed else ""
+    if not mech.asm_list.signed:
+        return f"{path} exists but [asm_list] in mechanics.toml is not signed off (D-23)"
+    now = asm_list_sha256(path)
+    if now != mech.asm_list.list_sha256:
+        return (f"{path} changed since its sign-off (D-23): re-sign [asm_list] "
+                f"(list_sha256 is now {now})")  # fmt: skip
     return ""
 
 
-def asm_list_sha256(path) -> str:
-    return ""
+def signed_asm(config_root: Path, mech: Mechanics) -> frozenset[tuple[str, int]]:
+    """The (exe, address) pairs the asm list marks `asm`. No list: none. A list that is not
+    signed off in [asm_list], or changed since, is refused (D-23)."""
+    path = Path(config_root) / ASM_CSV
+    if not path.is_file():
+        return frozenset()
+    if problem := _asm_signoff_problem(mech, path):
+        raise MechanicsError(problem)
+    return _asm_pairs(read_asm_list(path))
 
 
-def check_committed(config_root) -> list[str]:
-    return []
+# ---- the committed-data check (CI, no game files) ----
+
+
+def _row_problems(mech: Mechanics, rows: Sequence[MemberRow], walked: Mapping[str, frozenset[int]],
+                  asm: frozenset[tuple[str, int]]) -> Iterator[str]:  # fmt: skip
+    for row in rows:
+        where = f"{MEMBERS_CSV} {row.exe} {_address(row.address)}"
+        if row.address not in walked[row.exe]:
+            yield f"{where}: not a game or thunk row of config/{row.exe}/functions.csv"
+        items = [mech.item(i) for i in row.items]
+        if any(item is None or item.scope != SCOPE_IN for item in items):
+            yield f"{where}: items {_LIST.join(row.items)} are not all `in` items"
+        elif tuple(sorted({item.tier for item in items if item})) != row.tiers:
+            yield f"{where}: tiers {_LIST.join(map(str, row.tiers))} do not match its items"
+        if (row.role == ROLE_ASM) != ((row.exe, row.address) in asm):
+            yield f"{where}: role {row.role} disagrees with the asm list"
+        if row.via == ENTRY and not mech.is_entry(row.exe, row.address):
+            yield f"{where}: via entry but no [[entry]] names it"
+
+
+def _entry_problems(mech: Mechanics, rows: Sequence[MemberRow],
+                    asm: frozenset[tuple[str, int]]) -> Iterator[str]:  # fmt: skip
+    index = {(row.exe, row.address): row for row in rows}
+    for entry in mech.entries:
+        where = f"entry {entry.item} {entry.exe} {_address(entry.address)}"
+        if (entry.exe, entry.address) in asm:
+            yield f"{where}: on the asm list (D-23): assembler cannot match from C"
+        row = index.get((entry.exe, entry.address))
+        if row is None or row.via != ENTRY or entry.item not in row.member_items:
+            yield (f"{where}: not in {MEMBERS_CSV} with via entry as a member of its item "
+                   "(run `uv run reverseapoc mechanics write`)")  # fmt: skip
+
+
+def _tier_problems(mech: Mechanics, rows: Sequence[MemberRow]) -> Iterator[str]:
+    with_entries = {entry.item for entry in mech.entries}
+    for tier in (t for t in mech.tiers if t.signed):
+        bare = [i.id for i in mech.items
+                if i.tier == tier.id and i.scope == SCOPE_IN and i.id not in with_entries]
+        if bare:
+            yield f"tier {tier.id} is signed off but `in` items {', '.join(bare)} have no entry"
+        digest = tier_digest(mech, rows, tier.id)
+        if digest != tier.members_sha256:
+            yield (f"tier {tier.id} changed since sign-off: re-sign (members_sha256 is "
+                   f"{tier.members_sha256}, the rows now give {digest})")  # fmt: skip
+
+
+def check_committed(config_root: Path) -> list[str]:
+    """Problems in the committed mechanics files (no game files needed): members rows that are
+    not game/thunk rows of functions.csv, items that are not `in`, entries missing with via
+    entry, signed tiers whose digest changed or that hold an entry-less `in` item, and an asm
+    list that is unsigned, changed since its sign-off or lists an entry. No mechanics.toml:
+    nothing to check. A malformed file raises MechanicsError (a tool error, not a problem)."""
+    root = Path(config_root)
+    if not (root / MECHANICS_TOML).is_file():
+        return []
+    mech = load(root / MECHANICS_TOML)
+    asm_path = root / ASM_CSV
+    problems = [p for p in [_asm_signoff_problem(mech, asm_path)] if p]
+    asm = _asm_pairs(read_asm_list(asm_path)) if asm_path.is_file() else frozenset()
+    members_path = root / MEMBERS_CSV
+    rows: list[MemberRow] = []
+    if members_path.is_file():
+        rows = read_members(members_path)
+    elif mech.entries:
+        problems.append(f"{members_path} is missing: run `uv run reverseapoc mechanics write`")
+    exes = sorted({row.exe for row in rows}, key=EXES.index)
+    walked = {exe: _walked(found) for exe, found in read_rows(root, exes).items()}
+    problems += _row_problems(mech, rows, walked, asm)
+    problems += _entry_problems(mech, rows, asm)
+    problems += _tier_problems(mech, rows)
+    return problems
+
+
+def read_committed(config_root: Path) -> tuple[Mechanics, list[MemberRow]]:
+    """mechanics.toml and the members file (no rows when it is absent)."""
+    root = Path(config_root)
+    mech = load(root / MECHANICS_TOML)
+    members_path = root / MEMBERS_CSV
+    return mech, read_members(members_path) if members_path.is_file() else []
