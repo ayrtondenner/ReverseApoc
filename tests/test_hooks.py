@@ -180,9 +180,9 @@ def test_always_denies_protected_files(repo, rel):
 
 @pytest.mark.parametrize(
     "rel",
-    ["asm.md", "buildx/x", "orig_notes.md", "tools/reverseapoc/asm.py", "config/cflags.txt",
-     "configure.py", "tests/test_x.py", "docs/x.md", ".planning/x.md", "config/targets.toml.bak",
-     "src/README.md"],
+    ["asm.md", "buildx/x", "orig_notes.md", "tools/reverseapoc/asm.py", "config/cflags.txt.bak",
+     "config/cflags-proposals.toml.bak", "configure.py", "tests/test_x.py", "docs/x.md",
+     ".planning/x.md", "config/targets.toml.bak", "src/README.md"],
 )  # fmt: skip
 def test_always_allows_near_miss_paths(repo, rel):
     for form in _forms(repo, rel):
@@ -1113,3 +1113,72 @@ def test_proposals_file_is_writable(repo):
                   _attempt(repo).parent / "attempt-2" / "proposals.jsonl"]:  # fmt: skip
         assert always(write(native(other), line), env).deny, other
         assert matching(in_repo(write(native(other), line), repo), env).deny, other
+
+
+def _every_edit_tool(path: str) -> list[dict]:
+    notebook = {"tool_name": "NotebookEdit",
+                "tool_input": {"notebook_path": path, "new_source": "x"}}  # fmt: skip
+    return [write(path), edit(path, "a", "b"), multi_edit(path, ("a", "b")), notebook]
+
+
+def _owner_only(repo: Path, rel: str) -> None:
+    """D-27 P3: every edit tool is denied the owner-only cflags file `rel` with no env at all,
+    naming D-12 and the owner's own verbs, in every path form."""
+    for form in _forms(repo, rel):
+        for payload in _every_edit_tool(form):
+            decision = always(payload)
+            assert decision.deny, (form, payload["tool_name"])
+            assert "D-12" in decision.reason, decision.reason
+            assert "reverseapoc flags" in decision.reason, decision.reason
+
+
+def test_always_layer_protects_cflags(repo):
+    _owner_only(repo, "config/cflags.txt")
+    reason = always(write(native(repo / "config" / "cflags.txt"))).reason
+    assert "flags approve" in reason and "flags default" in reason, reason
+
+
+def test_always_layer_protects_the_proposal_queue(repo):
+    _owner_only(repo, "config/cflags-proposals.toml")
+
+
+@pytest.mark.parametrize("exe", ["ufo2p", "tacp"])
+def test_view_mode_denies_symbols_csv_with_d19_reason(repo, exe):
+    _view_unit(repo)
+    symbols = repo / "config" / exe / "symbols.csv"
+    decision = matching(in_repo(write(native(symbols), "x\n"), repo), view_env(repo))
+    assert decision.deny
+    assert "D-19" in decision.reason and "proposals.jsonl" in decision.reason, decision.reason
+
+
+@pytest.mark.parametrize("name", ["fx.h", "common.h", "sub/x.h"])
+def test_view_mode_denies_headers_with_d19_reason(repo, name):
+    _view_unit(repo)
+    header = repo / "include" / name
+    decision = matching(in_repo(write(native(header), "int fx;\n"), repo), view_env(repo))
+    assert decision.deny
+    assert "D-19" in decision.reason, decision.reason
+    other = matching(in_repo(write(native(repo / "tools" / "x.py")), repo), view_env(repo))
+    assert other.deny and "D-24" in other.reason and "D-19" not in other.reason, other.reason
+
+
+def test_legacy_mode_unchanged(repo):
+    """Without REVERSEAPOC_UNIT_FILE the Phase 6 allowlist holds until 07-13 removes it."""
+    unit = _unit(repo)
+    notes = _attempt(repo) / "notes.md"
+    env = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
+           "REVERSEAPOC_PROPOSALS": native(_attempt(repo) / "proposals.jsonl")}  # fmt: skip
+    assert not matching(in_repo(write(native(unit), SCAFFOLD), repo), env).deny
+    assert not matching(in_repo(write(native(repo / "include" / "fx.h"), "int fx;\n"), repo),
+                        env).deny  # fmt: skip
+    assert not matching(in_repo(write(native(notes), "# n\n"), repo), env).deny
+    symbols = matching(in_repo(write(native(repo / "config" / "ufo2p" / "symbols.csv")), repo), env)
+    assert symbols.deny and "(D-17)" in symbols.reason, symbols.reason
+    view = _view_unit(repo)
+    assert matching(in_repo(write(native(view), SCAFFOLD), repo), env).deny
+    claim = "ufo2p/u_000a34f0"
+    assert hooks.matching_write_allowed(UNIT, claim=claim, notes=None, tracked=lambda _: False)
+    assert not hooks.matching_write_allowed(
+        "build/driver/r/proposals.jsonl", claim=claim, notes=None, tracked=lambda _: False,
+        proposals="build/driver/r/proposals.jsonl",
+    )  # fmt: skip
