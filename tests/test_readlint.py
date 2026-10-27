@@ -621,6 +621,13 @@ DECLARATIONS = {  # C text -> the RL01 lines: declarations of allowlisted names 
     "enum-constant": ("enum { A, D_0001ABCD = 1 };\n", [1]),
     "static-prototype": ("static void func_0001ABCD(void);\n", [1]),
     "function-definition": ("/* x */\nvoid func_0001ABCD(void)\n{\n}\n", [2]),
+    # fix round 2 (N1): `extern` with an initializer or a body is a definition
+    "extern-initialized": ("extern int D_0001ABCD = 1;\n", [1]),
+    "extern-array-initialized": ("extern int D_0001ABCD[2] = {1, 2};\n", [1]),
+    "extern-pointer-initialized": ("extern int *D_0001ABCD = 0;\n", [1]),
+    "extern-function-pointer-initialized": ("extern void (*D_0001ABCD)(void) = 0;\n", [1]),
+    "extern-function-definition": ("extern void func_0001ABCD(void)\n{\n}\n", [1]),
+    "extern-second-declarator-initialized": ("extern int a, D_0001ABCD = 1;\n", [1]),
 }
 
 
