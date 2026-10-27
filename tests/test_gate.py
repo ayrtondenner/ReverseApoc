@@ -1260,3 +1260,95 @@ def test_gate_partial_uses_the_unit_rule(committed):
     fake = FakePartial(tree, {B1: 70.0})
     assert run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), fake).ok
     assert fake.rule_paths == [f"src/ufo2p/{UNIT_B}.c"]
+
+
+# ---- 07-16 (D-29): _reverted by start through the shared finder --------------------------------
+
+FOO = "Foo_"  # symbols.csv renames A2 (func_00010010) Foo_; the C writes Foo
+
+
+def renamed_unit_a(tree: Tree, a2_line: str) -> str:
+    """UNIT_A with A1 marked INCLUDE_ASM and `a2_line` for the renamed A2; A2 matched as Foo_."""
+    rename(tree, A2, FOO)
+    text = f'#include "common.h"\nINCLUDE_ASM({fname(A1)});\n{a2_line}\n'
+    path = tree.source(UFO, UNIT_A)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    tree.defined[(UFO, UNIT_A)] = [] if "INCLUDE_ASM" in a2_line else [A2]
+    return text
+
+
+def matched_foo(text: str) -> StatusRow:
+    return dataclasses.replace(matched(A2, UNIT_A, sha=lf_sha256(text)), name=FOO)
+
+
+def assert_reverted_foo(result: gate.GateResult) -> None:
+    assert result.exit_code == 1
+    assert any(FOO in p and f"0x{A2:08X}" in p and "reverted to INCLUDE_ASM" in p
+               for p in result.problems), result.problems  # fmt: skip
+
+
+@pytest.mark.parametrize("marker", ["Foo", fname(A2)], ids=["new-name", "old-placeholder"])
+def test_reverted_after_rename(tree, marker):
+    """A matched row renamed in symbols.csv and marked INCLUDE_ASM again, under its new C name
+    or its old placeholder, is a reverted match: gate of its unit exits 1 without check."""
+    text = renamed_unit_a(tree, f"INCLUDE_ASM({marker});")
+    before = seed(tree, UFO, [matched_foo(text)])
+    fake = FakeCheck(tree)
+    assert_reverted_foo(run_gate(tree, f"ufo2p/{UNIT_A}", check=fake))
+    assert fake.calls == []
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_reverted_with_old_placeholder_marker(tree):
+    """gate --all: the old placeholder marker of the renamed row counts as reverted too, and the
+    unit is not compiled."""
+    text = renamed_unit_a(tree, f"INCLUDE_ASM({fname(A2)});")
+    before = seed(tree, UFO, [matched_foo(text)])
+    fake = FakeAll(tree)
+    assert_reverted_foo(run_all(tree, fake))
+    assert (UFO, UNIT_A) not in fake.sources
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_reverted_after_rename_gate_all(tree):
+    text = renamed_unit_a(tree, "INCLUDE_ASM(Foo);")
+    before = seed(tree, UFO, [matched_foo(text)])
+    fake = FakeAll(tree)
+    assert_reverted_foo(run_all(tree, fake))
+    assert (UFO, UNIT_A) not in fake.sources
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_not_reverted_when_defined(tree):
+    """The unit defines Foo: no reverted problem; gate --all re-proves it."""
+    text = renamed_unit_a(tree, "int Foo(void) { return 1; }")
+    before = seed(tree, UFO, [matched_foo(text)])
+    fake = FakeAll(tree)
+    result = run_all(tree, fake)
+    assert result.exit_code == 0, result.problems
+    assert fake.sources == [(UFO, UNIT_A)]
+    assert tree.status(UFO).read_bytes() == before
+
+
+def test_gate_writes_renamed_name(tree):
+    """A passing (fake) check of the unit defining Foo writes A2's status.csv row under the
+    symbols.csv linker name Foo_ (gate's _owners reads symbols.csv)."""
+    text = renamed_unit_a(tree, "int Foo(void) { return 1; }")
+    result = run_gate(tree, f"ufo2p/{UNIT_A}", attempts=2)
+    assert result.exit_code == 0, result.problems
+    (row,) = tree.rows(UFO)
+    assert (row.start, row.name, row.status) == (A2, FOO, MATCHED)
+    assert row.source_sha256 == lf_sha256(text)
+
+
+def test_reverted_refuses_a_symbols_csv_name_without_its_underscore(tree):
+    """The C names come from symbols.csv through unitdefs.c_names: a func name without Watcom's
+    `_` is a tool error naming symbols.csv, never a silent 'not reverted'."""
+    text = renamed_unit_a(tree, "INCLUDE_ASM(Foo);")
+    rename(tree, A2, "Foo")
+    seed(tree, UFO, [dataclasses.replace(matched_foo(text), name="Foo")])
+    fake = FakeCheck(tree)
+    with pytest.raises(CheckError, match=r"symbols\.csv.*Foo"):
+        run_gate(tree, f"ufo2p/{UNIT_A}", check=fake)
+    assert fake.calls == []
