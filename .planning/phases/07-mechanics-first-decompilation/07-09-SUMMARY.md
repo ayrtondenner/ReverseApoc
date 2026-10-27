@@ -268,3 +268,44 @@ None.
 *Completed: 2026-10-27*
 
 ## Self-Check: PASSED
+
+## Fix round 1
+
+**Finding (Important, from the review).** `find` merged `{**all_names, **names}`, so for the unit's own rows the later map won. With the default `names` (the placeholders) and `all_names` set to the EXE's c_names, a renamed row was read under its old placeholder. The result: the stale placeholder definition was accepted, and the correct `Foo` definition was refused as "neither".
+
+**Orchestrator ruling, applied.** The API should be impossible to misuse.
+- A row of the unit takes its C name from `names` when the caller passes it. Otherwise it takes it from `all_names`, which holds the EXE's current C names and is authoritative. Only when neither map is given does the placeholder apply.
+- `all_names` alone decides which starts lie outside the unit. Entries of `names` for other starts are ignored.
+
+**Changes.**
+- `unitdefs.find`:
+  - `names` is now optional (`placeholders` is required, then `names=None, all_names=None`).
+  - `_Names.of` looks a row up in `names`, then `all_names`, then falls back to its placeholder. `other` is built from `placeholders` and `all_names` only.
+  - A map that gives one row of the unit two C names is refused with UnitDefsError. This is a new defensive guard; `test_two_c_names_for_one_row_are_refused` covers it and was added with the fix as a characterization test.
+- `configure.check_unit_source` and `check.source_marks` no longer pass placeholders as `names`. They pass `names` and `all_names` through unchanged.
+- Production callers now pass the EXE's C names as `all_names`: configure's unit loop (`_check_source`), `account_unit` and the drift test's `defined_starts`.
+
+**Tests (RED first, `bf58299`).**
+- `tests/test_unitdefs.py`:
+  - `test_renamed_row_reads_by_its_current_name[all_names-only|explicit-names]`: the reviewer's probe through `find`.
+  - `test_all_names_alone_decides_rows_outside_the_unit`.
+  - `test_neither_names_nor_all_names_reads_placeholders`.
+- `tests/test_configure.py`: `test_d12_reads_a_renamed_row_by_its_current_name[all_names-only|explicit-names]`, the probe through `check_unit_source`.
+- `tests/test_check.py`: `test_source_marks_with_all_names_reads_a_renamed_row_by_its_current_name`.
+
+**RED evidence.**
+- Results before the fix:
+  - The `all_names`-only probes in configure and check failed on their assertions; the stale definition was accepted, so `(problem,) =` unpacked an empty list.
+  - The `find` tests without `names` failed with TypeError, because `names` was a required keyword.
+  - `test_all_names_alone...` failed on its assertion, because `names` used to decide outside rows.
+  - The explicit-`names` cases already passed, as expected: the bug needed `names` to be the placeholders.
+- Classifier on `tests/test_configure.py::test_d12_reads_a_renamed_row_by_its_current_name[all_names-only]` (JUnit `build/red/07-09-fix1.xml`): `RED_EVIDENCE_OK` / `target_test_failed`.
+- Semantic assessment: the target failed on the planned behaviour, a stale definition being accepted. This was not a setup fault.
+
+**Fix:** `0278039`.
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_unitdefs.py tests/test_configure.py tests/test_check.py tests/test_drift.py`: 320 passed, 3 skipped.
+- `uv run pytest -q` (full host suite): 2911 passed, 232 skipped. The skips are the same platform and owner-file skips as before; none is new.
+- `uv run ruff check .`: All checks passed.
+- `uv run python configure.py --output <scratchpad>/build.ninja` on the committed tree: 841 units written, so D-12 passes.
