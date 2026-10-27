@@ -17,6 +17,11 @@ Every number comes from config/<exe>/functions.csv, units.csv and the gate-writt
 - bytes outside every unit span (the 3-byte UFO2P tail past 0x000CFADA) are not in any CSV row
   and are recorded as not counted (D-50).
 
+When config/mechanics.toml exists, `derive_mechanics` adds the per-item coverage view (DEC-05,
+D-22): each OpenApoc checklist item's must-match and full-closure figures from
+config/mechanics-members.csv, joined with the same status.csv rows; progress.json's "mechanics"
+is null without it.
+
 Outputs hold addresses, names, counts and percents only, never game bytes. Each is JSON with an
 indent of 2, LF line endings and a trailing newline, percents rounded to 4 decimals, written
 through a temporary file and os.replace, so two runs over the same CSVs give the same bytes and
@@ -44,13 +49,15 @@ import argparse
 import bisect
 import csv
 import dataclasses
+import datetime
 import functools
 import json
 import os
 import re
 import secrets
 import sys
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import tomllib
+from collections.abc import Callable, Container, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from xml.sax.saxutils import escape
@@ -384,6 +391,334 @@ def derive(config_dir: Path = DEFAULT_CONFIG,
                           for stem, label in EXES))  # fmt: skip
 
 
+# ---- the mechanics coverage view (DEC-05; D-05, D-22, D-23) ----
+#
+# config/mechanics.toml (hand-edited) and config/mechanics-members.csv (written by `reverseapoc
+# mechanics write`) are reverseapoc.mechanics' formats (plan 07-10); progress.py reads them with
+# its own stdlib readers, since reverseapoc is not importable under -I. tests/test_progress.py
+# pins these constants to mechanics.py's.
+
+MECHANICS_TOML, MEMBERS_CSV = "mechanics.toml", "mechanics-members.csv"
+MECHANICS_SCHEMA = 1
+MECHANICS_TABLES = ("schema", "asm_list", "hub_rule", "tier", "item", "entry", "edge")
+MEMBERS_COLUMNS = ("exe", "address", "items", "tiers", "member_items", "via", "role")
+ROLES = ("member", "hub", "closure", "asm")
+ROLE_MEMBER, ROLE_HUB, ROLE_CLOSURE, ROLE_ASM = ROLES
+VIAS = ("entry", "direct", "pointer", "table", "midrow", "hand")
+SCOPES = ("in", "out", "duplicate")
+SCOPE_IN, SCOPE_OUT, SCOPE_DUPLICATE = SCOPES
+_ITEM_ID = re.compile(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?")
+_TIER_IDS = re.compile(r"[1-9][0-9]*(;[1-9][0-9]*)*")
+_LIST = ";"
+# A tier's state on the page: matched only when status.csv says every must-match function is.
+TIER_MATCHED, TIER_LOCATED, TIER_UNLOCATED = "matched", "located", "not located yet"
+
+
+@dataclass(frozen=True)
+class Coverage:
+    """One figure set over game/thunk functions (D-22): counts and bytes by status."""
+
+    functions: int = 0
+    matched: int = 0
+    partial: int = 0
+    total_bytes: int = 0
+    matched_bytes: int = 0
+    partial_bytes: int = 0
+
+    @property
+    def unmatched(self) -> int:
+        return self.functions - self.matched - self.partial
+
+    @property
+    def percent(self) -> float:
+        """Matched bytes over the set's bytes; an empty set is 0.0, not done."""
+        if self.total_bytes == 0:
+            return 0.0
+        return percent(self.matched_bytes, self.total_bytes)
+
+
+def _coverage(functions: Iterable[Function]) -> Coverage:
+    found = list(functions)
+
+    def count(status: str) -> int:
+        return sum(1 for f in found if f.status == status)
+
+    def size(status: str) -> int:
+        return sum(f.size for f in found if f.status == status)
+
+    return Coverage(len(found), count(MATCHED), count(PARTIAL), sum(f.size for f in found),
+                    size(MATCHED), size(PARTIAL))  # fmt: skip
+
+
+@dataclass(frozen=True)
+class TierCoverage:
+    """A [[tier]]: its sign-off and the figures over the union of its `in` items' rows, so a
+    function two of its items share counts once."""
+
+    id: int
+    title: str
+    signed_off_by: str
+    signed_off_date: str  # ISO date, "" when not signed off
+    must_match: Coverage
+    full_closure: Coverage
+
+    @property
+    def state(self) -> str:
+        """Matched only when status.csv says every must-match function is (RPT-01)."""
+        must = self.must_match
+        if must.functions and must.matched == must.functions:
+            return TIER_MATCHED
+        return TIER_LOCATED if self.full_closure.functions else TIER_UNLOCATED
+
+    @property
+    def sign_off(self) -> str:
+        if not self.signed_off_by:
+            return "not signed off"
+        return f"signed off by {self.signed_off_by} on {self.signed_off_date}"
+
+
+@dataclass(frozen=True)
+class ItemCoverage:
+    """An `in` checklist item: the must-match set (role member rows naming it in member_items)
+    and the full closure (every row naming it in items, asm rows aside), D-22."""
+
+    id: str
+    issue: int
+    number: int  # 0 for the issue itself ("997"), else the n of "<issue>-<n>"
+    title: str
+    tier: int
+    must_match: Coverage
+    full_closure: Coverage
+
+    @property
+    def key(self) -> tuple[int, int, int]:
+        return self.tier, self.issue, self.number
+
+
+@dataclass(frozen=True)
+class Duplicate:
+    """A `duplicate` item: listed once, by the item it duplicates, never with figures."""
+
+    id: str
+    issue: int
+    number: int
+    title: str
+    duplicate_of: str
+
+
+@dataclass(frozen=True)
+class Mechanics:
+    """The coverage view: tiers by id, `in` items by (tier, issue, number), duplicates by
+    (issue, number)."""
+
+    tiers: tuple[TierCoverage, ...] = ()
+    items: tuple[ItemCoverage, ...] = ()
+    duplicates: tuple[Duplicate, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ItemSpec:
+    id: str
+    issue: int
+    number: int
+    title: str
+    tier: int
+    scope: str
+    duplicate_of: str
+
+
+@dataclass(frozen=True)
+class _Member:
+    exe: str
+    start: int
+    items: tuple[str, ...]
+    member_items: tuple[str, ...]
+    role: str
+
+
+def _toml_error(path: Path, where: str, problem: str) -> ProgressError:
+    return ProgressError(f"{path}: {where}: {problem}")
+
+
+def _read_toml(path: Path) -> dict:
+    """mechanics.toml's top level, each of 07-10's tables checked for its shape only; an
+    unknown top-level key or another schema is refused (ruling F2)."""
+    try:
+        data = tomllib.loads(Path(path).read_bytes().decode("utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        raise ProgressError(f"{path}: cannot read ({exc})") from None
+    unknown = sorted(set(data) - set(MECHANICS_TABLES))
+    if unknown:
+        raise _toml_error(path, "top level", f"unknown key {unknown[0]!r}")
+    schema = data.get("schema")
+    if isinstance(schema, bool) or schema != MECHANICS_SCHEMA:
+        raise _toml_error(path, "top level", f"schema {schema!r} is not {MECHANICS_SCHEMA}")
+    for key in ("asm_list", "hub_rule"):
+        if not isinstance(data.get(key, {}), dict):
+            raise _toml_error(path, "top level", f"{key} is not a table")
+    for key in ("tier", "item", "entry", "edge"):
+        value = data.get(key, [])
+        if not isinstance(value, list) or not all(isinstance(v, dict) for v in value):
+            raise _toml_error(path, "top level", f"{key} is not an array of tables")
+    return data
+
+
+def _value(path: Path, where: str, body: Mapping, key: str, kind: type, *,
+           required: bool = True) -> object:  # fmt: skip
+    """body[key] when it is a `kind` (bool is no int), None when absent and not required."""
+    if key not in body:
+        if required:
+            raise _toml_error(path, where, f"key {key!r} is missing")
+        return None
+    value = body[key]
+    wrong_bool = isinstance(value, bool) and kind is not bool
+    if wrong_bool or not isinstance(value, kind) or isinstance(value, datetime.datetime):
+        raise _toml_error(path, where, f"key {key!r}: {value!r} is not a {kind.__name__}")
+    return value
+
+
+def _tier_specs(path: Path, data: Mapping) -> list[tuple[int, str, str, str]]:
+    """(id, title, signed_off_by, ISO date) per [[tier]], ids unique; who and date together."""
+    tiers = []
+    for i, body in enumerate(data.get("tier", [])):
+        where = f"tier[{i}]"
+        tier_id = _value(path, where, body, "id", int)
+        title = _value(path, where, body, "title", str)
+        who = _value(path, where, body, "signed_off_by", str, required=False) or ""
+        date = _value(path, where, body, "signed_off_date", datetime.date, required=False)
+        if bool(who) != (date is not None):
+            raise _toml_error(path, where, "signed_off_by and signed_off_date come together")
+        if any(tier_id == t[0] for t in tiers):
+            raise _toml_error(path, where, f"id {tier_id} appears twice")
+        tiers.append((tier_id, title, who, date.isoformat() if date else ""))
+    return tiers
+
+
+def _item_spec(path: Path, i: int, body: Mapping) -> _ItemSpec:
+    where = f"item[{i}]"
+    item_id = _value(path, where, body, "id", str)
+    issue = _value(path, where, body, "issue", int)
+    match = _ITEM_ID.fullmatch(item_id)
+    if match is None or int(match.group(1)) != issue:
+        raise _toml_error(path, where, f"id {item_id!r} is not <issue> or <issue>-<n>")
+    scope = _value(path, where, body, "scope", str)
+    if scope not in SCOPES:
+        raise _toml_error(path, where, f"scope {scope!r} is not one of {', '.join(SCOPES)}")
+    duplicate_of = _value(path, where, body, "duplicate_of", str,
+                          required=scope == SCOPE_DUPLICATE) or ""  # fmt: skip
+    return _ItemSpec(item_id, issue, int(match.group(2) or 0),
+                     _value(path, where, body, "title", str),
+                     _value(path, where, body, "tier", int), scope, duplicate_of)  # fmt: skip
+
+
+def _item_specs(path: Path, data: Mapping, tier_ids: Iterable[int]) -> list[_ItemSpec]:
+    """Every [[item]]: ids unique, each tier a [[tier]] id, each duplicate_of an `in` item."""
+    specs = [_item_spec(path, i, body) for i, body in enumerate(data.get("item", []))]
+    known = set(tier_ids)
+    scopes = {}
+    for spec in specs:
+        if spec.id in scopes:
+            raise _toml_error(path, f"item {spec.id}", "id appears twice")
+        if spec.tier not in known:
+            raise _toml_error(path, f"item {spec.id}", f"tier {spec.tier} is not a [[tier]] id")
+        scopes[spec.id] = spec.scope
+    for spec in specs:
+        if spec.scope == SCOPE_DUPLICATE and scopes.get(spec.duplicate_of) != SCOPE_IN:
+            raise _toml_error(path, f"item {spec.id}",
+                              f"duplicate_of {spec.duplicate_of!r} is not an `in` item")
+    return specs
+
+
+def _id_cell(path: Path, number: int, column: str, cell: str, known: Container[str]
+             ) -> tuple[str, ...]:  # fmt: skip
+    ids = tuple(cell.split(_LIST)) if cell else ()
+    stray = [item_id for item_id in ids if item_id not in known]
+    if stray:
+        raise ProgressError(f"{path}: data row {number}: {column} names {stray[0]!r}, not an "
+                            f"`in` item of {MECHANICS_TOML}")  # fmt: skip
+    return ids
+
+
+def _member(path: Path, number: int, rec: Mapping[str, str], known: Container[str]) -> _Member:
+    exe = rec["exe"]
+    if exe not in (stem for stem, _label in EXES):
+        raise ProgressError(f"{path}: data row {number}: exe {exe!r} is not a config stem")
+    items = _id_cell(path, number, "items", rec["items"], known)
+    members = _id_cell(path, number, "member_items", rec["member_items"], known)
+    if not items or not set(members) <= set(items):
+        raise ProgressError(f"{path}: data row {number}: items is empty or misses a member item")
+    if not _TIER_IDS.fullmatch(rec["tiers"]):
+        raise ProgressError(f"{path}: data row {number}: tiers {rec['tiers']!r} is not a list")
+    if rec["via"] not in VIAS or rec["role"] not in ROLES:
+        raise ProgressError(f"{path}: data row {number}: via {rec['via']!r} or role "
+                            f"{rec['role']!r} is not a known value")  # fmt: skip
+    if (rec["role"] == ROLE_MEMBER) != bool(members):
+        raise ProgressError(f"{path}: data row {number}: role {rec['role']} disagrees with "
+                            "member_items")  # fmt: skip
+    return _Member(exe, _address(path, number, "address", rec["address"]), items, members,
+                   rec["role"])  # fmt: skip
+
+
+def _read_members(path: Path, known: Container[str],
+                  functions: Mapping[tuple[str, int], Function]) -> list[_Member]:  # fmt: skip
+    """The members rows; each must be a game or thunk row of its EXE's functions.csv, once."""
+    rows: list[_Member] = []
+    seen: set[tuple[str, int]] = set()
+    for number, rec in enumerate(_records(path, MEMBERS_COLUMNS), start=1):
+        row = _member(path, number, rec, known)
+        key = (row.exe, row.start)
+        if key not in functions:
+            raise ProgressError(f"{path}: data row {number}: the row at 0x{row.start:08X} names "
+                                f"no game or thunk row of config/{row.exe}/{FUNCTIONS_CSV}")
+        if key in seen:
+            raise ProgressError(f"{path}: data row {number}: 0x{row.start:08X} appears twice")
+        seen.add(key)
+        rows.append(row)
+    return rows
+
+
+def _figures_over(members: Sequence[_Member], ids: Container[str],
+                  functions: Mapping[tuple[str, int], Function]) -> tuple[Coverage, Coverage]:
+    """(must match, full closure) over the rows naming any of `ids`: a set of rows, so a row
+    two of the items share counts once."""
+    must = [functions[(m.exe, m.start)] for m in members
+            if m.role == ROLE_MEMBER and any(i in ids for i in m.member_items)]  # fmt: skip
+    closure = [functions[(m.exe, m.start)] for m in members
+               if m.role != ROLE_ASM and any(i in ids for i in m.items)]  # fmt: skip
+    return _coverage(must), _coverage(closure)
+
+
+def derive_mechanics(config_dir: Path, progress: Progress) -> Mechanics | None:
+    """The per-item coverage view (DEC-05) from config_dir/mechanics.toml and
+    config_dir/mechanics-members.csv, joined by (exe, address) with `progress` (derive's
+    output, so status.csv decides matched). None without mechanics.toml; no items when it has
+    no `in` item or the members file is absent (ruling F2). A malformed file, or a members row
+    that is not a game or thunk row of functions.csv, is a ProgressError."""
+    config = Path(config_dir)
+    path = config / MECHANICS_TOML
+    if not path.exists():
+        return None
+    data = _read_toml(path)
+    tier_specs = _tier_specs(path, data)
+    specs = _item_specs(path, data, (t[0] for t in tier_specs))
+    in_items = [spec for spec in specs if spec.scope == SCOPE_IN]
+    members_path = config / MEMBERS_CSV
+    if not in_items or not members_path.exists():
+        return Mechanics()
+    functions = {(exe.stem, f.start): f for exe in progress.exes for f in exe.functions}
+    members = _read_members(members_path, {spec.id for spec in in_items}, functions)
+    items = sorted((ItemCoverage(spec.id, spec.issue, spec.number, spec.title, spec.tier,
+                                 *_figures_over(members, {spec.id}, functions))
+                    for spec in in_items), key=lambda item: item.key)  # fmt: skip
+    tiers = sorted((TierCoverage(tier_id, title, who, date, *_figures_over(
+                        members, {s.id for s in in_items if s.tier == tier_id}, functions))
+                    for tier_id, title, who, date in tier_specs), key=lambda t: t.id)  # fmt: skip
+    duplicates = sorted((Duplicate(s.id, s.issue, s.number, s.title, s.duplicate_of)
+                         for s in specs if s.scope == SCOPE_DUPLICATE),
+                        key=lambda d: (d.issue, d.number))  # fmt: skip
+    return Mechanics(tuple(tiers), tuple(items), tuple(duplicates))
+
+
 # ---- outputs ----
 
 
@@ -425,14 +760,50 @@ def _totals_doc(totals: Totals) -> dict[str, object]:
     }
 
 
-def build_progress(progress: Progress, commit: str | None = None) -> dict[str, object]:
-    """progress.json: per EXE and combined counts, the percent, and the notes (D-26, D-50)."""
+def _coverage_doc(coverage: Coverage) -> dict[str, object]:
+    return {"functions": {"total": coverage.functions, "matched": coverage.matched,
+                          "partial": coverage.partial, "unmatched": coverage.unmatched},
+            "bytes": {"total": coverage.total_bytes, "matched": coverage.matched_bytes,
+                      "partial": coverage.partial_bytes},
+            "percent": coverage.percent}  # fmt: skip
+
+
+def _sign_off_doc(tier: TierCoverage) -> dict[str, object]:
+    return {"signed_off_by": tier.signed_off_by or None,
+            "signed_off_date": tier.signed_off_date or None}  # fmt: skip
+
+
+def build_mechanics(mechanics: Mechanics | None) -> dict[str, object] | None:
+    """progress.json's "mechanics": per tier and per `in` item the must-match and full-closure
+    figures and the tier's sign-off, and the duplicates; None without mechanics.toml."""
+    if mechanics is None:
+        return None
+    tiers = {tier.id: tier for tier in mechanics.tiers}
+    return {
+        "tiers": [{"id": t.id, "title": t.title, "state": t.state, **_sign_off_doc(t),
+                   "must_match": _coverage_doc(t.must_match),
+                   "full_closure": _coverage_doc(t.full_closure)}
+                  for t in mechanics.tiers],
+        "items": [{"id": i.id, "issue": i.issue, "title": i.title, "tier": i.tier,
+                   **_sign_off_doc(tiers[i.tier]), "must_match": _coverage_doc(i.must_match),
+                   "full_closure": _coverage_doc(i.full_closure)}
+                  for i in mechanics.items],
+        "duplicates": [{"id": d.id, "issue": d.issue, "title": d.title,
+                        "duplicate_of": d.duplicate_of} for d in mechanics.duplicates],
+    }  # fmt: skip
+
+
+def build_progress(progress: Progress, commit: str | None = None,
+                   mechanics: Mechanics | None = None) -> dict[str, object]:  # fmt: skip
+    """progress.json: per EXE and combined counts, the percent, the mechanics coverage view
+    (null without mechanics.toml) and the notes (D-26, D-50, DEC-05)."""
     return {
         "version": PROGRESS_VERSION,
         "commit": commit,
         "exes": {exe.stem: {"label": exe.label, **_totals_doc(exe.totals)}
                  for exe in progress.exes},  # fmt: skip
         "combined": _totals_doc(progress.combined),
+        "mechanics": build_mechanics(mechanics),
         "notes": list(NOTES),
     }
 
@@ -464,8 +835,9 @@ def build_exe_shield(exe: ExeProgress) -> dict[str, object]:
     return _shield_doc(exe.label, exe.totals.percent)
 
 
-def write_progress_json(progress: Progress, path: Path, commit: str | None = None) -> None:
-    _write_atomic(path, render(build_progress(progress, commit)))
+def write_progress_json(progress: Progress, path: Path, commit: str | None = None,
+                        mechanics: Mechanics | None = None) -> None:  # fmt: skip
+    _write_atomic(path, render(build_progress(progress, commit, mechanics)))
 
 
 def write_shield(progress: Progress, path: Path) -> None:
@@ -1028,8 +1400,24 @@ MEASURED = (
 )
 
 
-def _page_css() -> str:
-    """The inline style sheet, one rule per line, from the SVG's own tokens."""
+def _coverage_css() -> list[str]:
+    """The coverage section's rules: its lists, and its bar of matched, partial and unmatched
+    segments, each non-zero one at least 2 px wide (the 999.4 fix #3 rule)."""
+    return [
+        ".items,.tiers,.duplicates{max-width:70ch;margin:.75rem 0 0;padding-left:1.25rem}",
+        ".items li,.tiers li{margin-bottom:.75rem}",
+        f".cov{{display:flex;height:{BAR_HEIGHT}px;max-width:24rem;margin-top:.25rem;"
+        "overflow:hidden}",
+        ".cov span{flex:none;height:100%}",
+        ".cov .nz{min-width:2px}",
+        *(f".cov .{TICK_CLASSES[status]}{{background:{TREEMAP_COLORS[status]}}}"
+          for status in (MATCHED, PARTIAL, UNMATCHED)),
+    ]
+
+
+def _page_css(coverage: bool = False) -> str:
+    """The inline style sheet, one rule per line, from the SVG's own tokens; the coverage
+    section's rules only when the page has that section."""
     return "\n".join([
         f":root{{--surface:{SURFACE};--ink:{INK};--secondary:{SECONDARY_INK};"
         "color-scheme:light dark}",
@@ -1072,6 +1460,7 @@ def _page_css() -> str:
         ".mosaic svg{display:block;width:100%;height:auto}",
         *(f'.mosaic [{attr}="{token}"]{{{attr}:var(--{var})}}'
           for attr, token, var in MOSAIC_PAINTS),
+        *(_coverage_css() if coverage else []),
         "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
         ".exe h2{margin-bottom:.5rem}.mosaic svg{min-width:48rem}}",
     ])
@@ -1153,7 +1542,73 @@ def _legend_html() -> list[str]:
     return ['<ul class="legend">', *items, "</ul>"]
 
 
-def render_html(progress: Progress, commit: str | None = None) -> str:
+COVERAGE_HEADING = "Mechanics coverage"
+COVERAGE_CAPTION = (
+    "Each OpenApoc checklist item mapped to the original code, with two figures. Must match "
+    "counts the functions the item needs, stopping at hub functions many items share; full "
+    "closure counts every game or thunk function its call tree reaches. Hand-written assembly "
+    "is in neither. A function two items share counts for both, and once for their tier. A "
+    "tier reads matched only when status.csv says every must-match function is matched. The "
+    "bar shows the must-match functions: matched, partial and unmatched.")
+COVERAGE_EMPTY = "No checklist item is mapped to functions yet."
+
+
+def _coverage_text(coverage: Coverage) -> str:
+    return (f"{coverage.matched:,} of {coverage.functions:,} functions matched, "
+            f"{coverage.partial:,} partial ({shield_message(coverage.percent)} of "
+            f"{coverage.total_bytes:,} bytes matched)")  # fmt: skip
+
+
+def _coverage_bar(coverage: Coverage) -> str:
+    """The must-match bar: matched, partial and unmatched segments by function count, each
+    non-zero one with the `nz` 2 px minimum; an empty set draws no segment."""
+    parts = ((MATCHED, coverage.matched), (PARTIAL, coverage.partial),
+             (UNMATCHED, coverage.unmatched))  # fmt: skip
+    spans = "".join(f'<span class="{TICK_CLASSES[status]} nz" '
+                    f'style="width:{shield_message(percent(count, coverage.functions))}"></span>'
+                    for status, count in parts if count)  # fmt: skip
+    return f'<div class="cov" aria-hidden="true">{spans}</div>'
+
+
+def _figure_pair(must: Coverage, closure: Coverage) -> str:
+    return f"must match {_coverage_text(must)}; full closure {_coverage_text(closure)}"
+
+
+def _tier_state(tier: TierCoverage) -> str:
+    return f"{tier.state}, {tier.sign_off}"
+
+
+def _mechanics_html(mechanics: Mechanics | None) -> list[str]:
+    """The `Mechanics coverage` section (DEC-05): the tiers, then one <li> per `in` item in
+    (tier, issue, number) order, its text first and its bar after, then the duplicates, each
+    once, by the item it duplicates. Issue numbers are text, never links (no OpenApoc contact
+    in Milestone 1). Nothing without mechanics.toml."""
+    if mechanics is None:
+        return []
+    lines = [f"<h2>{COVERAGE_HEADING}</h2>", f'<p class="caption">{_xml(COVERAGE_CAPTION)}</p>']
+    if not mechanics.items:
+        return [*lines, f"<p>{_xml(COVERAGE_EMPTY)}</p>"]
+    tiers = {tier.id: tier for tier in mechanics.tiers}
+    lines.append('<ul class="tiers">')
+    lines += [f"<li>{_xml(f'Tier {t.id} ({t.title}): {_tier_state(t)}; ')}"
+              f"{_xml(_figure_pair(t.must_match, t.full_closure))}."
+              f"{_coverage_bar(t.must_match)}</li>" for t in mechanics.tiers]  # fmt: skip
+    lines += ["</ul>", '<ul class="items">']
+    lines += [f"<li>{_xml(f'#{i.id} {i.title}: ')}"
+              f"{_xml(_figure_pair(i.must_match, i.full_closure))}. "
+              f"{_xml(f'Tier {i.tier}: {_tier_state(tiers[i.tier])}.')}"
+              f"{_coverage_bar(i.must_match)}</li>" for i in mechanics.items]  # fmt: skip
+    lines.append("</ul>")
+    if mechanics.duplicates:
+        lines.append('<ul class="duplicates">')
+        lines += [f"<li>{_xml(f'#{d.id} {d.title}: a duplicate of #{d.duplicate_of}')}</li>"
+                  for d in mechanics.duplicates]  # fmt: skip
+        lines.append("</ul>")
+    return lines
+
+
+def render_html(progress: Progress, commit: str | None = None,
+                mechanics: Mechanics | None = None) -> str:  # fmt: skip
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, a percent bar, the figures in text and the function strip (one tick per game and
     thunk function in address order; matched and partial ticks stand taller and carry the mosaic
@@ -1165,11 +1620,14 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
     through MOSAIC_PAINTS; status hues are unchanged); below 40rem the EXE heading stacks over its
     bar and the mosaic keeps a 48rem width and scrolls sideways. Inline CSS only, no script and
     no external request: every link is relative or to the repository. The same CSVs and commit
-    give the same bytes; without a commit only the "Updated from commit" line is missing."""
+    give the same bytes; without a commit only the "Updated from commit" line is missing. Given
+    `mechanics` (derive_mechanics), the `Mechanics coverage` section follows the strip's key;
+    without it the page has no such section and no rule of it."""
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
              '<meta name="viewport" content="width=device-width, initial-scale=1">',
              '<meta name="color-scheme" content="light dark">',
-             f"<title>{_xml(PAGE_TITLE)}</title>", "<style>", _page_css(), "</style>",
+             f"<title>{_xml(PAGE_TITLE)}</title>", "<style>",
+             _page_css(coverage=mechanics is not None), "</style>",
              "</head>", "<body>", "<main>", f"<h1>{_xml(PAGE_HEADING)}</h1>"]  # fmt: skip
     if commit is not None:
         lines.append(f'<p class="meta">Updated from commit <a href="{_xml(COMMIT_URL + commit)}">'
@@ -1177,6 +1635,7 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
     for exe in progress.exes:
         lines += _exe_html(exe)
     lines += [STRIP_KEY,
+              *_mechanics_html(mechanics),
               "<h2>The mosaic</h2>",
               '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
               "bytes; large units carry their name.</p>",
@@ -1186,8 +1645,9 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_html(progress: Progress, path: Path, commit: str | None = None) -> None:
-    _write_atomic(path, render_html(progress, commit).encode("utf-8"))
+def write_html(progress: Progress, path: Path, commit: str | None = None,
+               mechanics: Mechanics | None = None) -> None:  # fmt: skip
+    _write_atomic(path, render_html(progress, commit, mechanics).encode("utf-8"))
 
 
 # ---- command line ----
@@ -1208,20 +1668,38 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
-def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Callable[[Progress, Path], None]]]:
+@dataclass(frozen=True)
+class _Derived:
+    """What main derives once: the progress and the coverage view (None without
+    mechanics.toml)."""
+
+    progress: Progress
+    mechanics: Mechanics | None
+
+
+Writer = Callable[[_Derived, Path], None]
+
+
+def _on_progress(write: Callable[[Progress, Path], None]) -> Writer:
+    return lambda derived, path: write(derived.progress, path)
+
+
+def _writes(args: argparse.Namespace) -> Iterable[tuple[Path, Writer]]:
     """(path, writer) for every output the arguments ask for."""
     if args.out is not None:
-        yield args.out / PROGRESS_JSON, lambda p, path: write_progress_json(p, path, args.commit)
-        yield args.out / SHIELD_JSON, write_shield
+        yield args.out / PROGRESS_JSON, lambda d, path: write_progress_json(
+            d.progress, path, args.commit, d.mechanics)
+        yield args.out / SHIELD_JSON, _on_progress(write_shield)
         for stem, _label in EXES:  # EXES, not the derived progress: this runs before derive
             yield (args.out / EXE_SHIELD_JSON.format(stem=stem),
-                   functools.partial(write_exe_shield, stem=stem))
-        yield args.out / PROGRESS_SVG, write_svg
-        yield args.out / INDEX_HTML, functools.partial(write_html, commit=args.commit)
+                   _on_progress(functools.partial(write_exe_shield, stem=stem)))
+        yield args.out / PROGRESS_SVG, _on_progress(write_svg)
+        yield args.out / INDEX_HTML, lambda d, path: write_html(
+            d.progress, path, args.commit, d.mechanics)
     if args.report is not None:
-        yield args.report, write_report
+        yield args.report, _on_progress(write_report)
     if args.decomphub is not None:
-        yield args.decomphub, write_decomphub
+        yield args.decomphub, _on_progress(write_decomphub)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1234,9 +1712,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"--commit {args.commit!r} is not a lower-case hex commit id")
     try:
         progress = derive(args.config)
+        derived = _Derived(progress, derive_mechanics(args.config, progress))
         for path, write in writes:
             path.parent.mkdir(parents=True, exist_ok=True)  # ruling F17
-            write(progress, path)
+            write(derived, path)
     except (ProgressError, OSError) as exc:
         print(f"progress.py: error: {exc}", file=sys.stderr)
         return 2
