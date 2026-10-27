@@ -17,6 +17,24 @@ Rules:
 - RL01: a placeholder identifier (proposals.PLACEHOLDER: `FUN_`, `sub_`, `DAT_`, `LAB_`,
   `PTR_`, `UNK_` + hex, `func_` + 8 upper-case hex digits, `D_` + 8 upper-case hex digits)
   outside stubs, comments and strings; directives included.
+- RL02: a definition (a depth-0 `name ( ... ) {` by any identifier, through
+  unitdefs.file_scope_definitions) without a header comment: the last comment between the
+  previous depth-0 boundary (a `;`, a function body's `}`, a directive, the start of the file)
+  and the declaration.
+- RL03: a malformed header (D-21): the first line `<name>: <purpose of 3 words or more>`; one
+  line `Address: <UFO2P.EXE|TACP.EXE> 0x%08X` naming the unit's EXE and the start of the row the
+  name maps to (unitdefs.c_names: symbols.csv for a renamed row, else the placeholder); one or
+  more `Evidence: <string|table|call|vocab>: <text>` lines (proposals.evidence_problem).
+- RL04: a struct or union field named like unk/unknown/field_0x/pad/padding/gap/filler/
+  undefined (plus an optional hex or `_` suffix), in bodies at any depth.
+- RL05: a pointer cast over a parenthesised additive expression holding a non-zero integer
+  literal, such as `*(int *)(p + 0x10)`.
+- RL06: an integer literal outside #define and enum bodies other than 0 and 1 (so -1 too);
+  masks (2^k, 2^k - 1, their 32-bit complement) in bitwise context; shift counts 1..31 and a
+  2^k shifted; 2, 4 or 8 as an operand of binary `* / + -` (or the compound forms) or inside
+  `[ ]`. A tagged waiver `/* lit: <reason> */` on the same line accepts it and is counted.
+  Character literals are not integers. Floating literals are no violation; `--report` lists
+  them (research R5, owner-confirmed).
 """
 
 from __future__ import annotations
@@ -25,7 +43,7 @@ import bisect
 import itertools
 import re
 from collections import Counter
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
@@ -33,14 +51,15 @@ from typing import Any
 
 from . import unitdefs
 from .check import CheckError, read_source
-from .functions import FunctionsError
+from .functions import FunctionsError, read_functions_csv, read_symbols_csv
 from .lint import LintError, collect_sources
-from .proposals import EXES, PLACEHOLDER
+from .proposals import EVIDENCE_KINDS, EXES, PLACEHOLDER, evidence_problem
 from .status import MATCHED, StatusError, read_status, status_path
 from .targets import REPO_ROOT
 
 EXIT_OK, EXIT_VIOLATIONS, EXIT_TOOL = 0, 1, 2
 UNIT_SUFFIX = ".c"
+FUNCTIONS_CSV, SYMBOLS_CSV = "functions.csv", "symbols.csv"  # under config/<exe>/
 
 COMMENT, STRING, CHAR, DIRECTIVE, NUMBER, IDENT, PUNCT = (
     "comment", "string", "char", "directive", "number", "ident", "punct")  # fmt: skip
@@ -64,6 +83,33 @@ _DIRECTIVE_TOKEN = re.compile(rf"(?:#|%:)(?:{_COMMENT_RE}|{_STRING_RE}|{_CHAR_RE
 _DIRECTIVE_NAME = re.compile(r"(?:#|%:)[ \t]*([A-Za-z_]+)(.*)", re.DOTALL)
 _COMMENTS = re.compile(_COMMENT_RE, re.DOTALL)
 _STUB = ("INCLUDE_ASM", "(", None, ")", ";")  # None: the stub's identifier
+_CLOSERS = {")": "(", "]": "[", "}": "{"}
+_OPENERS = frozenset(_CLOSERS.values())
+
+# RL03: the header comment (D-21)
+PURPOSE_WORDS = 3
+ADDRESS, EVIDENCE = "Address:", "Evidence:"
+_NAME_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*): (.+)")
+# RL04: Ghidra-style and padding field names, with an optional hex or `_` suffix
+_UNNAMED_FIELD = re.compile(
+    r"(?i)(?:unk|unknown|field|pad|padding|gap|filler|undefined)(?:_?(?:0x)?[0-9a-f]*)?(?:_\w*)?"
+)
+_FIELD_ENDS = (";", ",", "[", ":")
+# RL06: the allowed literal contexts (D-20, research R5)
+WAIVER = re.compile(r"/\*\s*lit:\s*\S.*\*/")
+_U32 = 0xFFFFFFFF  # masks are 32-bit (wcc386 flat)
+_SHIFT_LIMIT = 32  # a shift count of a 32-bit int is below this
+_PLAIN = (0, 1)
+_SIZES = (2, 4, 8)
+_BITWISE = ("&", "|", "^", "~", "&=", "|=", "^=")
+_BITWISE_BINARY = ("&", "|", "^")
+_SHIFTS = ("<<", ">>", "<<=", ">>=")
+_SHIFT_OPERATORS = ("<<", ">>")
+_ARITHMETIC = ("*", "/", "+", "-")
+_ARITHMETIC_ASSIGN = ("*=", "/=", "+=", "-=")
+
+
+_NONE_TEXT = ""
 
 
 class ReadlintError(ValueError):
@@ -86,6 +132,13 @@ class Violation:
     message: str
 
 
+@dataclass(frozen=True, order=True)
+class FloatLiteral:
+    path: str
+    line: int
+    text: str
+
+
 @dataclass(frozen=True)
 class Skipped:
     path: str
@@ -102,6 +155,7 @@ class ReadlintResult:
     violations: tuple[Violation, ...] = ()
     waivers: dict[str, int] = field(default_factory=dict)
     allowlisted: dict[str, int] = field(default_factory=dict)
+    floats: tuple[FloatLiteral, ...] = ()  # collected in --report mode only
     report: bool = False
 
     def exit_code(self) -> int:
@@ -122,10 +176,12 @@ class ReadlintResult:
             "rules": self.rule_counts(),
             "waivers": dict(self.waivers),
             "allowlisted": dict(self.allowlisted),
+            "floats": [{"path": f.path, "line": f.line, "text": f.text} for f in self.floats],
         }
 
     def format(self) -> str:
         lines = [f"{v.path}:{v.line}: {v.rule} {v.message}" for v in self.violations]
+        lines += [f"{f.path}:{f.line}: float {f.text}" for f in self.floats]
         verdict = "report" if self.report else ("ok" if not self.violations else "FAILED")
         rules = ", ".join(f"{rule} {n}" for rule, n in self.rule_counts().items())
         lines.append(
@@ -135,6 +191,9 @@ class ReadlintResult:
             f"allowlisted, {verdict}"
         )
         return "\n".join(lines)
+
+
+_NONE = Token(PUNCT, _NONE_TEXT, 0)  # what _Source.tok gives past either end
 
 
 # ---- reading and tokenizing ----
@@ -221,30 +280,52 @@ def _directive_tokens(token: Token) -> list[Token]:
 
 @dataclass
 class _Source:
-    """One file's live tokens, with the code tokens (no comments or directives) indexed."""
+    """One file's live tokens, with the code tokens (no comments or directives) indexed by
+    position: brace depth, matching brackets, the innermost open bracket, and stub tokens."""
 
     path: str  # as reported
     exe: str
     tokens: list[Token]
     definitions: list[str]  # unitdefs.file_scope_definitions, in file order
     code: list[int] = field(init=False)  # indices into tokens
-    depth: list[int] = field(init=False)  # brace depth before each code token
+    depth: list[int] = field(init=False)  # brace depth (a `}` gets the depth it closes to)
+    inner: list[str | None] = field(init=False)  # innermost open bracket around each token
+    parent: list[int] = field(init=False)  # its position (-1 at file level)
+    position: dict[int, int] = field(init=False)  # token index -> code position
+    match: dict[int, int] = field(init=False)  # open bracket position <-> close position
     stubs: set[int] = field(init=False)  # code positions of INCLUDE_ASM stub tokens
 
     def __post_init__(self) -> None:
         self.code = [i for i, t in enumerate(self.tokens) if t.kind not in (COMMENT, DIRECTIVE)]
+        self.position = {i: p for p, i in enumerate(self.code)}
+        self.depth, self.inner, self.parent, self.match = [], [], [], {}
         depth = 0
-        self.depth = []
-        for i in self.code:
+        stack: list[tuple[int, str]] = []
+        for position, i in enumerate(self.code):
             text = self.tokens[i].text
+            if text in _CLOSERS and stack and stack[-1][1] == _CLOSERS[text]:
+                opened = stack.pop()[0]
+                self.match[opened], self.match[position] = position, opened
             depth -= text == "}"
-            self.depth.append(max(depth, 0) if text == "}" else depth)
+            depth = max(depth, 0)
+            self.depth.append(depth)
+            self.inner.append(stack[-1][1] if stack else None)
+            self.parent.append(stack[-1][0] if stack else -1)
             depth += text == "{"
+            if text in _OPENERS:
+                stack.append((position, text))
         self.stubs = set(self._stub_positions())
 
     def tok(self, position: int) -> Token:
-        """The code token at `position` (an index into self.code)."""
-        return self.tokens[self.code[position]]
+        """The code token at `position` (an index into self.code); an empty punctuator past
+        either end."""
+        if 0 <= position < len(self.code):
+            return self.tokens[self.code[position]]
+        return _NONE
+
+    def checked(self) -> Iterator[int]:
+        """Code positions outside INCLUDE_ASM stubs."""
+        return (p for p in range(len(self.code)) if p not in self.stubs)
 
     def _stub_positions(self) -> Iterator[int]:
         size = len(_STUB)
@@ -253,6 +334,53 @@ class _Source:
             if all(want is None and t.kind == IDENT or t.text == want
                    for want, t in zip(_STUB, window, strict=True)):  # fmt: skip
                 yield from range(start, start + size)
+
+    def body(self, keyword: str) -> Iterator[tuple[int, int]]:
+        """(open, close) positions of every `struct`/`union`/`enum` body, at any depth."""
+        for p in self.checked():
+            if self.tok(p).text != keyword:
+                continue
+            opened = p + 1 if self.tok(p + 1).text == "{" else p + 2
+            if self.tok(opened).text == "{" and opened in self.match:
+                yield opened, self.match[opened]
+
+    def definition_positions(self) -> list[int]:
+        """The code position of each definition's name, paired in order with
+        unitdefs.file_scope_definitions: a depth-0 `name ( ... ) {`."""
+        found, start = [], 0
+        for name in self.definitions:
+            position = next((p for p in range(start, len(self.code)) if self._defines(p, name)),
+                            None)  # fmt: skip
+            if position is None:
+                raise ReadlintError(f"{self.path}: cannot place the definition of {name}")
+            found.append(position)
+            start = position + 1
+        return found
+
+    def _defines(self, p: int, name: str) -> bool:
+        close = self.match.get(p + 1)
+        return (self.depth[p] == 0 and self.tok(p).text == name and self.tok(p + 1).text == "("
+                and close is not None and self.tok(close + 1).text == "{")  # fmt: skip
+
+    def header_comment(self, position: int) -> Token | None:
+        """The last comment between the previous depth-0 boundary (a `;`, a function body's
+        `}`, a directive or the start of the file) and the declaration holding `position`."""
+        first = index = self.code[position]
+        while index > 0:
+            index -= 1
+            token = self.tokens[index]
+            if token.kind == DIRECTIVE or index in self.position and self._boundary(
+                    self.position[index]):  # fmt: skip
+                break
+            if token.kind != COMMENT:
+                first = index
+        before = self.tokens[first - 1] if first > 0 else None
+        return before if before is not None and before.kind == COMMENT else None
+
+    def _boundary(self, p: int) -> bool:
+        if self.depth[p] or self.tok(p).text not in (";", "}"):
+            return False
+        return self.tok(p).text == ";" or self.tok(self.match.get(p, 0) - 1).text == ")"
 
 
 def _read(path: Path, shown: str, exe: str, cfg: ModuleType) -> _Source:
@@ -270,18 +398,202 @@ def _read(path: Path, shown: str, exe: str, cfg: ModuleType) -> _Source:
     return _Source(shown, exe, tokens, unitdefs.file_scope_definitions(code))
 
 
+# ---- literals ----
+
+
+def _is_float(text: str) -> bool:
+    lower = text.lower()
+    if lower.startswith("0x"):
+        return "p" in lower
+    return "." in lower or "e" in lower
+
+
+def _int_value(text: str) -> int | None:
+    """The value of an integer literal (suffixes dropped), None when it is malformed."""
+    body = text.rstrip("uUlL")
+    try:
+        if body[:2].lower() == "0x":
+            return int(body[2:], 16)
+        return int(body, 8) if len(body) > 1 and body[0] == "0" else int(body, 10)
+    except ValueError:
+        return None
+
+
+def _is_pow2(value: int) -> bool:
+    return value > 0 and not value & (value - 1)
+
+
+def _is_mask(value: int) -> bool:
+    """2^k, 2^k - 1 or the 32-bit complement of 2^k - 1."""
+    if not 0 <= value <= _U32:
+        return False
+    return _is_pow2(value) or _is_pow2(value + 1) or _is_pow2((~value & _U32) + 1)
+
+
+def _ends_operand(token: Token) -> bool:
+    """True when `token` can end an operand, so an operator after it is binary."""
+    if token.kind == IDENT:
+        return token.text not in unitdefs.C_KEYWORDS
+    return token.kind in (NUMBER, STRING, CHAR) or token.text in (")", "]", "++", "--")
+
+
+def _literal_allowed(src: _Source, p: int, value: int | None) -> bool:
+    """RL06's allowed contexts for the integer literal at code position `p` (D-20, R5)."""
+    if value is None:
+        return False
+    if value in _PLAIN:
+        return True
+    before, after = src.tok(p - 1).text, src.tok(p + 1).text
+    if (before in _BITWISE or after in _BITWISE_BINARY) and _is_mask(value):
+        return True
+    if before in _SHIFTS and 0 < value < _SHIFT_LIMIT:
+        return True
+    if after in _SHIFT_OPERATORS and _is_pow2(value):
+        return True
+    if value not in _SIZES:
+        return False
+    binary_before = before in _ARITHMETIC and _ends_operand(src.tok(p - 2))
+    return binary_before or before in _ARITHMETIC_ASSIGN or after in _ARITHMETIC or (
+        src.inner[p] == "[")  # fmt: skip
+
+
 # ---- the rules ----
 
 
 def _rl01(src: _Source) -> Iterator[Violation]:
     """Placeholder identifiers in code and directives, stubs excepted."""
-    candidates = [src.tok(p) for p in range(len(src.code)) if p not in src.stubs]
+    candidates = [src.tok(p) for p in src.checked()]
     for token in (t for t in src.tokens if t.kind == DIRECTIVE):
         candidates += _directive_tokens(token)
     for token in candidates:
         if token.kind == IDENT and PLACEHOLDER.fullmatch(token.text):
             why = f"{token.text} is a placeholder name: name it (a D-19 rename)"
             yield Violation(src.path, token.line, "RL01", why)
+
+
+def _comment_lines(text: str) -> list[str]:
+    """The non-blank lines of a comment, its delimiters and leading `*` gutters removed."""
+    body = text[2:].removesuffix("*/") if text.startswith("/*") else text[2:]
+    lines = (line.strip() for line in body.split("\n"))
+    return [stripped for line in lines if (stripped := line.removeprefix("*").strip())]
+
+
+def _header_problems(lines: Sequence[str], name: str, exe: str,
+                     names: Mapping[str, int]) -> Iterator[str]:  # fmt: skip
+    """RL03 (D-21): `<name>: <purpose>`, one `Address: <EXE> 0x%08X` naming the row `name`
+    maps to, and one or more `Evidence: <kind>: <text>` lines."""
+    first = _NAME_LINE.fullmatch(lines[0]) if lines else None
+    if first is None or first.group(1) != name:
+        yield f"the first line is not '{name}: <purpose>'"
+    elif len(first.group(2).split()) < PURPOSE_WORDS:
+        yield f"the purpose '{first.group(2)}' has fewer than {PURPOSE_WORDS} words"
+    exe_file = f"{exe.upper()}.EXE"
+    addresses = [line.removeprefix(ADDRESS).strip() for line in lines if line.startswith(ADDRESS)]
+    start = names.get(name)
+    if start is None:
+        yield f"{name} names no game or thunk row of {exe_file}"
+    elif not addresses:
+        yield f"no '{ADDRESS} {exe_file} 0x{start:08X}' line"
+    elif len(addresses) > 1:
+        yield f"{len(addresses)} '{ADDRESS}' lines, not one"
+    elif addresses[0] != f"{exe_file} 0x{start:08X}":
+        yield f"'{ADDRESS} {addresses[0]}' is not '{ADDRESS} {exe_file} 0x{start:08X}'"
+    evidence = [line.removeprefix(EVIDENCE).strip() for line in lines if line.startswith(EVIDENCE)]
+    if not evidence:
+        yield f"no '{EVIDENCE} <{'|'.join(EVIDENCE_KINDS)}>: <text>' line"
+    yield from filter(None, map(evidence_problem, evidence))
+
+
+def _rl02_rl03(src: _Source, names: Mapping[str, int]) -> Iterator[Violation]:
+    """Each definition has a header comment (RL02) in the D-21 form (RL03)."""
+    for position in src.definition_positions():
+        token = src.tok(position)
+        header = src.header_comment(position)
+        if header is None:
+            why = f"{token.text} has no header comment (purpose, Address and Evidence, D-20)"
+            yield Violation(src.path, token.line, "RL02", why)
+            continue
+        for problem in _header_problems(_comment_lines(header.text), token.text, src.exe, names):
+            yield Violation(src.path, header.line, "RL03", f"{token.text}: {problem}")
+
+
+def _rl04(src: _Source) -> Iterator[Violation]:
+    """Unnamed struct or union fields, in bodies at any depth."""
+    for keyword in ("struct", "union"):
+        for opened, closed in src.body(keyword):
+            for p in range(opened + 1, closed):
+                token = src.tok(p)
+                own_level = src.depth[p] == src.depth[opened] + 1 and src.inner[p] == "{"
+                if not own_level or token.kind != IDENT or src.tok(p + 1).text not in _FIELD_ENDS:
+                    continue
+                if _UNNAMED_FIELD.fullmatch(token.text):
+                    why = f"{token.text} is an unnamed {keyword} field: name it"
+                    yield Violation(src.path, token.line, "RL04", why)
+
+
+def _pointer_cast(src: _Source, opened: int) -> bool:
+    """True when the parentheses at `opened` hold a cast to a pointer type: type words, then
+    one or more `*`."""
+    texts = [src.tok(p) for p in range(opened + 1, src.match.get(opened, opened))]
+    stars = len(texts) - len(list(itertools.dropwhile(lambda t: t.text == "*", reversed(texts))))
+    words = texts[: len(texts) - stars]
+    return bool(stars and words) and all(t.kind == IDENT for t in words)
+
+
+def _literal_offset(src: _Source, opened: int) -> bool:
+    """True when the parenthesised operand at `opened` adds or subtracts at its own level and
+    holds a non-zero integer literal."""
+    inside = range(opened + 1, src.match[opened])
+    level = [p for p in inside if src.parent[p] == opened]
+    additive = any(src.tok(p).text in ("+", "-") for p in level)
+    literal = any(src.tok(p).kind == NUMBER and not _is_float(src.tok(p).text)
+                  and _int_value(src.tok(p).text) != 0 for p in inside)  # fmt: skip
+    return additive and literal
+
+
+def _rl05(src: _Source) -> Iterator[Violation]:
+    """A pointer cast over a parenthesised additive expression with a literal offset."""
+    for p in src.checked():
+        if src.tok(p).text != "(" or p not in src.match or not _pointer_cast(src, p):
+            continue
+        operand = src.match[p] + 1
+        if src.tok(operand).text == "(" and operand in src.match and _literal_offset(src, operand):
+            why = "raw offset access: a pointer cast over an offset expression; use a named field"
+            yield Violation(src.path, src.tok(p).line, "RL05", why)
+
+
+@dataclass
+class _Literals:
+    """RL06's findings in one file: violations, the waiver comments used, the floats."""
+
+    violations: list[Violation] = field(default_factory=list)
+    waivers: set[int] = field(default_factory=set)  # token indices of waiver comments used
+    floats: list[FloatLiteral] = field(default_factory=list)
+
+
+def _rl06(src: _Source) -> _Literals:
+    """Magic integer literals outside #define and enum bodies, unless a tagged waiver
+    `/* lit: <reason> */` sits on the same line; floating literals are collected apart."""
+    found = _Literals()
+    enums = {p for opened, closed in src.body("enum") for p in range(opened, closed)}
+    waivers: dict[int, int] = {}
+    for index, token in enumerate(src.tokens):
+        if token.kind == COMMENT and WAIVER.fullmatch(token.text):
+            waivers.setdefault(token.line, index)
+    for p in src.checked():
+        token = src.tok(p)
+        if token.kind != NUMBER or p in enums:
+            continue
+        if _is_float(token.text):
+            found.floats.append(FloatLiteral(src.path, token.line, token.text))
+        elif not _literal_allowed(src, p, _int_value(token.text)):
+            if token.line in waivers:
+                found.waivers.add(waivers[token.line])
+                continue
+            why = (f"magic literal {token.text}: name it with #define or enum, or waive it on "
+                   "the line with /* lit: <reason> */")  # fmt: skip
+            found.violations.append(Violation(src.path, token.line, "RL06", why))
+    return found
 
 
 # ---- selection and the run ----
@@ -311,13 +623,48 @@ def _matched_units(config_root: Path, exe: str) -> frozenset[str]:
     return frozenset(row.unit for row in rows if row.status == MATCHED)
 
 
+@dataclass
+class _Run:
+    """One run's tables (read once per EXE) and findings."""
+
+    config_root: Path
+    report: bool
+    names: dict[str, dict[str, int]] = field(default_factory=dict)
+    violations: list[Violation] = field(default_factory=list)
+    waivers: dict[str, int] = field(default_factory=dict)
+    allowlisted: dict[str, int] = field(default_factory=dict)
+    floats: list[FloatLiteral] = field(default_factory=list)
+
+    def c_names(self, exe: str) -> dict[str, int]:
+        """C name -> row start of every game and thunk row of `exe` (unitdefs.c_names)."""
+        if exe not in self.names:
+            tables = self.config_root / exe
+            self.names[exe] = unitdefs.c_names(read_functions_csv(tables / FUNCTIONS_CSV),
+                                               read_symbols_csv(tables / SYMBOLS_CSV))  # fmt: skip
+        return self.names[exe]
+
+    def lint(self, src: _Source) -> None:
+        self.violations += _rl01(src)
+        if src.definitions:
+            self.violations += _rl02_rl03(src, self.c_names(src.exe))
+        self.violations += _rl04(src)
+        self.violations += _rl05(src)
+        literals = _rl06(src)
+        self.violations += literals.violations
+        if literals.waivers:
+            self.waivers[src.path] = len(literals.waivers)
+        if self.report:
+            self.floats += literals.floats
+
+
 def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, tier,
          report: bool) -> ReadlintResult:  # fmt: skip
     if units or tier is not None:
         raise ReadlintError("--units and --tier are not supported yet")
     cfg = _configure()
     matched = {exe: _matched_units(config_root, exe) for exe in EXES}
-    checked, skipped, violations = [], [], []
+    run = _Run(config_root, report)
+    checked, skipped = [], []
     for path in collect_sources(paths or [src_root]):
         shown = _shown(path, src_root)
         found = _unit_of(path, src_root)
@@ -329,8 +676,10 @@ def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, 
             skipped.append(Skipped(shown, "no matched row in status.csv"))
             continue
         checked.append(shown)
-        violations += _rl01(_read(path, shown, exe, cfg))
-    return ReadlintResult(tuple(checked), tuple(skipped), tuple(sorted(violations)), report=report)
+        run.lint(_read(path, shown, exe, cfg))
+    violations, floats = tuple(sorted(run.violations)), tuple(sorted(run.floats))
+    return ReadlintResult(tuple(checked), tuple(skipped), violations, run.waivers,
+                          run.allowlisted, floats, report)  # fmt: skip
 
 
 def run_readlint(

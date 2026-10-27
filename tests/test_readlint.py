@@ -186,8 +186,8 @@ def test_placeholder_is_proposals():
 
 def in_function(statements: str, prefix: str = "") -> str:
     """A matched unit whose one definition, tick_count (renamed F1), holds `statements`."""
-    return (f'#include "common.h"\n\n{prefix}{GOOD_HEADER}'
-            f"int tick_count(int x, int *a, int i)\n{{\n    {statements}\n    return 0;\n}}\n")  # fmt: skip
+    head = f'#include "common.h"\n\n{prefix}{GOOD_HEADER}int tick_count(int x, int *a, int i)\n'
+    return f"{head}{{\n    {statements}\n    return 0;\n}}\n"
 
 
 def test_clean_unit_has_no_violation(tmp_path):
