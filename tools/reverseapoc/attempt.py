@@ -71,6 +71,7 @@ VIEW_CONFIG = "config"
 VIEW_BUILD = "build"
 VIEW_CFLAGS = Path(VIEW_CONFIG) / "cflags.txt"
 VIEW_LOG = Path(VIEW_BUILD) / "logs" / "cc.log"
+PROPOSALS_FILE = "proposals.jsonl"  # REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -199,11 +200,13 @@ class Claim:
         if _FUNC.fullmatch(function) is None:
             raise AttemptError(f"{FUNC_ENV} must be set by the driver to func_XXXXXXXX "
                                "(8 upper-case hex digits)")  # fmt: skip
+        exe, unit = claim.group(1), claim.group(2)
         attempt_dir = _attempt_dir(env, roots)
-        return cls(claim.group(1), claim.group(2), function, attempt_dir,
-                   _notes(env, roots, attempt_dir), _unit_file(env, roots),
-                   _session_path(env, roots, PROPOSALS_ENV),
-                   env.get(SESSION_KIND_ENV, SESSION_KINDS[0]))  # fmt: skip
+        unit_file = _unit_file(env, roots, attempt_dir, exe, unit)
+        view = unit_file is not None
+        return cls(exe, unit, function, attempt_dir, _notes(env, roots, attempt_dir), unit_file,
+                   _proposals(env, roots, attempt_dir, view=view),
+                   _kind(env, view=view))  # fmt: skip
 
 
 def _attempt_dir(env: Mapping[str, str], roots: Roots) -> Path:
@@ -230,13 +233,69 @@ def _notes(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path:
     return given
 
 
-def _session_path(env: Mapping[str, str], roots: Roots, name: str) -> Path | None:
-    value = env.get(name) or ""
-    return (Path(roots.repo) / value).resolve() if value else None
+def _names(value: str, expected: Path, attempt_dir: Path, roots: Roots) -> bool:
+    """Whether the driver's env `value` (absolute, or relative to the repository) names
+    `expected`, a path below `attempt_dir`: resolved, part by part, and with the parts below the
+    attempt directory spelled exactly as written (a case variant that a case-folding host would
+    resolve onto `expected` is refused: the hook's view-unit and proposals shapes are exact)."""
+    given = Path(roots.repo) / value
+    tail = expected.relative_to(attempt_dir).parts
+    written = Path(os.path.normpath(os.path.abspath(given))).parts
+    return given.resolve().parts == expected.parts and written[-len(tail) :] == tail
 
 
-def _unit_file(env: Mapping[str, str], roots: Roots) -> Path | None:
-    return _session_path(env, roots, UNIT_FILE_ENV)
+def _unit_file(
+    env: Mapping[str, str], roots: Roots, attempt_dir: Path, exe: str, unit: str
+) -> Path | None:
+    """D-24, T-07-31: REVERSEAPOC_UNIT_FILE, when set, must be the claim's own view unit
+    <attempt dir>/view/src/<exe>/<unit>.c and exist, so a check never compiles another
+    session's file. Unset (or empty, as the hook reads it) is a legacy session: None."""
+    value = env.get(UNIT_FILE_ENV) or ""
+    if not value:
+        return None
+    expected = attempt_dir / VIEW_DIR / VIEW_SRC / exe / f"{unit}.c"
+    if not _names(value, expected, attempt_dir, roots) or not expected.is_file():
+        raise AttemptError(f"{UNIT_FILE_ENV} must be set by the driver to {expected} (the "
+                           f"claim's view unit, an existing file), got {value!r}")  # fmt: skip
+    return expected
+
+
+def _proposals(
+    env: Mapping[str, str], roots: Roots, attempt_dir: Path, *, view: bool
+) -> Path | None:
+    """T-07-31: REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl (it need not
+    exist yet), the one proposals path the hook lets the agent write. A view session must have
+    it; a legacy session may leave it unset (None)."""
+    value = env.get(PROPOSALS_ENV) or ""
+    if not value and not view:
+        return None
+    expected = attempt_dir / PROPOSALS_FILE
+    if not value or not _names(value, expected, attempt_dir, roots):
+        raise AttemptError(f"{PROPOSALS_ENV} must be set by the driver to {expected}, "
+                           f"got {value!r}")  # fmt: skip
+    return expected
+
+
+def _kind(env: Mapping[str, str], *, view: bool) -> str:
+    """REVERSEAPOC_SESSION_KIND: absent is a matching session; otherwise exactly one of
+    hooks.SESSION_KINDS (the hook denies any other value every write). A session other than
+    matching checks only a view (the hook denies it every write without one)."""
+    kind = env.get(SESSION_KIND_ENV)
+    if kind is None:
+        return SESSION_KINDS[0]
+    if kind not in SESSION_KINDS:
+        raise AttemptError(f"{SESSION_KIND_ENV}={kind!r} is not one of "
+                           f"{', '.join(SESSION_KINDS)}")  # fmt: skip
+    if kind != SESSION_KINDS[0] and not view:
+        raise AttemptError(f"a {kind} session checks only its view, and {UNIT_FILE_ENV} is not "
+                           "set")  # fmt: skip
+    return kind
+
+
+def src_root(claim: Claim, roots: Roots) -> Path:
+    """The src tree the claim's check and pack read: the view's in view mode, else the shared
+    one."""
+    return claim.view_root / VIEW_SRC if claim.unit_file is not None else Path(roots.src)
 
 
 def config_root(claim: Claim, roots: Roots) -> Path:
@@ -407,8 +466,10 @@ def _sweep_line(
 
 
 def _default_spec(claim: Claim, roots: Roots) -> str:
-    """The unit's own cflags.txt rule as a sweep cell names it: `wcc386@10.6 -4r -s -fpi`."""
-    rule = select_rule(load_cflags(roots.cflags), f"src/{claim.exe}/{claim.unit}.c")
+    """The unit's own cflags.txt rule as a sweep cell names it: `wcc386@10.6 -4r -s -fpi`; in
+    view mode the view's config/cflags.txt, the file the container check reads."""
+    cflags = claim.view_root / VIEW_CFLAGS if claim.unit_file is not None else roots.cflags
+    rule = select_rule(load_cflags(cflags), f"src/{claim.exe}/{claim.unit}.c")
     return " ".join([rule.spec, *rule.flags])
 
 
@@ -798,8 +859,8 @@ def cmd_asm(name: str | None) -> int:
 def cmd_context() -> int:
     """Rebuild the claimed function's pack into <attempt dir>/context.md and print it."""
     claim, data, row = _claimed_row()
-    pack = make_pack(data, row, src=ROOTS.src, config=ROOTS.config, asm_root=ROOTS.asm,
-                     roots=ROOTS)  # fmt: skip
+    pack = make_pack(data, row, src=src_root(claim, ROOTS), config=ROOTS.config,
+                     asm_root=ROOTS.asm, roots=ROOTS)  # fmt: skip
     path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
     sys.stdout.write(pack.text)
     print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)

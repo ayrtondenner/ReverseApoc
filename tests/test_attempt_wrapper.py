@@ -1191,7 +1191,10 @@ def test_view_mode_context_reads_the_view_units(tree: attempt.Roots, monkeypatch
     (attempt_dir / "view" / "include").mkdir()
     monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(src / f"{UNIT_AB}.c"))
     monkeypatch.setenv(hooks.PROPOSALS_ENV, str(attempt_dir / "proposals.jsonl"))
+    roots_read = []
+    real = attempt._unit_texts
+    monkeypatch.setattr(attempt, "_unit_texts",
+                        lambda src, *a: roots_read.append(Path(src)) or real(src, *a))  # fmt: skip
     assert _run(["attempt", "context"]) == 0, capsys.readouterr().err
-    out = capsys.readouterr().out
-    assert VIEW_MARK.format(unit=UNIT_AB) in out
-    assert VIEW_MARK.format(unit=UNIT_C) in out
+    assert VIEW_MARK.format(unit=UNIT_AB) in capsys.readouterr().out  # the claimed unit's text
+    assert roots_read == [attempt_dir / "view" / "src"]  # every unit text: the view's tree
