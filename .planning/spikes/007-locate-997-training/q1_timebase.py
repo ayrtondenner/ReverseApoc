@@ -729,8 +729,8 @@ def claim_chain(report: Report, img: Image, sites: Sites, exp: dict) -> None:
                  f"via event callback {hxs(chain.thunks)} registered by "
                  f"{hxs(chain.slot_writers)}; increment dividend in {hxs(chain.rate_rows)}: "
                  f"{rate or '-'} (expected {want['constant']:#x}); increments "
-                 f"{hxs(chain.increments)} added per interrupt in {hxs(chain.adders)}, the ISR "
-                 f"callback the same writer installs: {chain.adders <= chain.installed}")
+                 f"{hxs(chain.increments)} added in {hxs(chain.adders)}, a callback the same "
+                 f"writer installs: {chain.adders <= chain.installed}")
 
 
 def expected(plant: bool, plant_chain: bool = False) -> dict:

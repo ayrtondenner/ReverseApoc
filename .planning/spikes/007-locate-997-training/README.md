@@ -182,7 +182,7 @@ PASS UFO2P.EXE int1a-readers immediate [0x00011430] expected [0x00011430]
 PASS UFO2P.EXE int1a-pinned-readers via a register set once [0x00010940] expected [0x00010940]
 PASS UFO2P.EXE callers-0x00011430 own scan 28 CallIndex 28 expected 28
 PASS UFO2P.EXE no-46c-read absolute [0x46c] reads 0
-PASS UFO2P.EXE bios-chain-cadence saved old INT 8 vector [0x0013BD34 0x0013BD38]; chain rows [0x000C9099] via event callback [0x000C3692] registered by [0x000C2F1F]; increment dividend in [0x000C3035 0x000C33BA]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x0013D80B] added per interrupt in [0x000C35C8], the ISR callback the same writer installs: True
+PASS UFO2P.EXE bios-chain-cadence saved old INT 8 vector [0x0013BD34 0x0013BD38]; chain rows [0x000C9099] via event callback [0x000C3692] registered by [0x000C2F1F]; increment dividend in [0x000C3035 0x000C33BA]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x0013D80B] added in [0x000C35C8], a callback the same writer installs: True
 PASS TACP.EXE raw-image objects 2 bytes-equal True fixups 24438 equal-to-le.py True
 PASS TACP.EXE pit-int8-sites pit 8 int8 3 all in 0x000CC151..0x000CC402 True rows [0x000CC1CD 0x000CC213 0x000CC32D]
 PASS TACP.EXE unresolved-vectors 6 sites in rows [0x000A5750 0x000A58A0]
@@ -191,7 +191,7 @@ PASS TACP.EXE int1a-pinned-readers via a register set once [] expected []
 PASS TACP.EXE callers-0x00011500 own scan 35 CallIndex 35 expected 35
 PASS TACP.EXE callers-0x000116B0 own scan 10 CallIndex 10 expected 10
 PASS TACP.EXE no-46c-read absolute [0x46c] reads 0
-PASS TACP.EXE bios-chain-cadence saved old INT 8 vector [0x002B4050 0x002B4054]; chain rows [0x000CC3A9] via event callback [0x000C6386] registered by [0x000C5C13]; increment dividend in [0x000C5D29 0x000C60AE]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x002B5B27] added per interrupt in [0x000C62BC], the ISR callback the same writer installs: True
+PASS TACP.EXE bios-chain-cadence saved old INT 8 vector [0x002B4050 0x002B4054]; chain rows [0x000CC3A9] via event callback [0x000C6386] registered by [0x000C5C13]; increment dividend in [0x000C5D29 0x000C60AE]: 0x123333/0x10000 = 18.2000 Hz (expected 0x123333); increments [0x002B5B27] added in [0x000C62BC], a callback the same writer installs: True
 ALL PASS
 ```
 
@@ -555,6 +555,8 @@ What the formula does not see:
   - "The ISR callback adds the increment on every interrupt [script]": q1 asserts only that a
     callback the timer init installs adds increment-array entries to memory. The per-interrupt
     call is now tagged [hand].
+  - q1's `bios-chain-cadence` detail text said the increments are "added per interrupt"; it
+    now says "added in" the callback, which is what the claim checks.
   - UFO2P `wait-skip-guards` pinned only `D_000D4D5C`; TACP's passed on any non-empty set. q2
     now requires the guard sets to equal EXPECTED in both EXEs (UFO2P `D_000D4D5C`,
     `D_00183BAC`; TACP `D_000E6D64`, `D_001B7BAC`, `D_0027A0EB`), and `--plant-guards` gives the
