@@ -293,6 +293,53 @@ None. No external service configuration is required.
 - FOUND: tools/reverseapoc/flags.py, tests/test_flags.py, tools/reverseapoc/cli.py (modified)
 - FOUND commits: ddfdd12, 5e0db1a, f9d4597, e63f367, 809b271, 8943b01, 8133e34 (7 = `git rev-list --count aaa8121..HEAD`)
 
+## Fix round 1
+
+The orchestrator's task review raised two Important findings. Both rulings were applied test-first: RED `b11bbb2`, GREEN `e4a83e4`.
+
+**1. Siblings left out the never-attempted rows of the unit (D-32).**
+- **Before:** `_Context.siblings` listed only status.csv partial rows. u_00060c50 has 16 game rows but listed 2 siblings. u_0006fbd0 listed none, not even its D-28 neighbour func_0006FC00.
+- **Ruling:** D-32 outranks the plan's narrower list.
+- **Now:** `siblings` lists every game and thunk row of the unit other than the proposal's functions, sorted by start.
+  - Rows come from functions.csv, named as symbols.csv names them now.
+  - Each is `<name> <status> <percent>` from status.csv (`matched`/`partial`), or `<name> unattempted`.
+  - Data-in-code and runtime rows are excluded. Without a functions.csv, the unit's status.csv rows stand in.
+  - `flags list` prints one `sibling` line each.
+- **Scratchpad dry run on the real pilot data:** F-0005 (u_00060c50) now lists 15 siblings. F-0001 (u_0006fbd0) lists func_0006FC00 and func_0006FC40, both unattempted. u_0009c1a0 lists 10, its 3 data-in-code rows left out.
+- **Tests:** `test_siblings_listed` (rewritten: matched, partial, an unattempted thunk, a data-in-code row left out) and `test_siblings_include_the_unattempted_neighbour`.
+
+**2. A regate that passed on the reduced variant left no pinned record.**
+- **Before:** neither the reduced text, its sha nor the reverted names were recorded, and `reason` was cleared on a pass.
+- **Now:** a pass on the reduced variant writes that C to `build/flags/<id>/<unit>.reduced.c` (`flags.variant_path(p)`, `REDUCED_SUFFIX`).
+- **Two new queue fields, appended after `reason`:**
+  - `variant_sha256`: the LF sha256 of that C.
+  - `reverted`: the function names returned to INCLUDE_ASM.
+- **Empty when nothing passed reduced:** both are empty when the full candidate passed, when no variant passed, or after any merge, and a stale variant file is removed.
+- **Validation:** `read_queue`/`write_queue` validate them; one without the other is refused.
+- **Log:** regate.json records both.
+- **Owner-facing:** `flags list` prints `WARNING the re-gate passed only with <names> returned to INCLUDE_ASM: approving lands <variant path>, not the candidate`.
+- **Documentation:** the queue format, every field with the two new ones, is documented in the flags.py module docstring. 07-24's approve lands `variant_path` when `reverted` is non-empty.
+- **Tests:**
+  - `test_regate_reduced_variant`, extended: the file, its sha, `reverted == (F50,)`, the warning.
+  - `test_regate_writes_nothing_shared`, extended: both fields empty and no variant file after an as-written pass.
+  - `test_regate_failing_reduced_variant_pins_nothing` (new).
+  - `test_queue_refuses_inconsistent_fields`, 4 cases.
+  - `test_queue_round_trip`, extended: a reduced-pass row, and the field order ends `reason, variant_sha256, reverted`.
+  - `test_merge_into_a_regated_proposal_resets_its_regate`, extended: the merge clears both fields.
+
+**RED evidence:**
+- 7 failed. Target `test_siblings_listed` failed on its assertion: the old output `func_00061F50 46.45, ...` against the four-row expected list. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/07-17-fr1.xml`).
+- `test_regate_reduced_variant` failed with FileNotFoundError: the reduced file was never written.
+- At RED, three of the four `test_queue_refuses_inconsistent_fields` cases already passed, but for an unrelated reason: the old sibling regex refused the fixture's new-format siblings. After GREEN they fail only on the field each one targets.
+- The RED commit added `variant_sha256`, `reverted` and `variant_path` as API stubs only.
+
+**Verification:**
+- `uv run pytest -q tests/test_flags.py`: 39 passed.
+- `uv run pytest -q`: **3146 passed, 246 skipped**, no new skip.
+- `uv run ruff check .`: all checks passed.
+
+**New queue field names:** `variant_sha256`, `reverted` (after `reason`). The `siblings` entry format is now `<name> <status> <percent>` | `<name> unattempted`.
+
 Execution context nonce: 3bb854a1fc929c42
 
 ---
