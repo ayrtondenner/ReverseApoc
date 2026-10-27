@@ -1046,3 +1046,152 @@ def test_legacy_mode_argv_unchanged(repo: Path, monkeypatch):
     assert runner.calls[0][7:] == ("build", "uv", "run", "--frozen", "reverseapoc", "check",
                                    CLAIM, "--json")  # fmt: skip
     assert (repo / "checks" / "0001.c").read_bytes() == UNIT_TEXT
+
+
+def _view_unit(view: Path) -> Path:
+    return view / "src" / "ufo2p" / "u_000a34f0.c"
+
+
+def _env() -> dict[str, str]:
+    return dict(attempt.os.environ)
+
+
+def _refused(monkeypatch, capsys, *words: str) -> None:
+    """`attempt check` and `attempt check --sweep` exit 2 before any run, naming `words`."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    for argv in (["attempt", "check"], ["attempt", "check", "--sweep"]):
+        assert _run(argv) == 2
+        err = capsys.readouterr().err
+        assert all(word in err for word in words), (words, err)
+    assert runner.calls == []
+
+
+def _place(path: Path, text: bytes = VIEW_TEXT) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text)
+    return path
+
+
+def _given_unit_file(view: Path, where: str) -> Path:
+    """A REVERSEAPOC_UNIT_FILE value that is not the claim's view unit."""
+    expected = _view_unit(view)
+    if where == "other-attempt":
+        return _place(view.parent.parent / "attempt-2" / "view" / "src" / "ufo2p"
+                      / "u_000a34f0.c")  # fmt: skip
+    if where == "missing":
+        expected.unlink()
+        return expected
+    return {
+        "other-unit": lambda: _place(view / "src" / "ufo2p" / "u_000a4000.c"),
+        "other-exe": lambda: _place(view / "src" / "tacp" / "u_000a34f0.c"),
+        "other-case-dir": lambda: view / "SRC" / "ufo2p" / "u_000a34f0.c",
+        "other-case-file": lambda: view / "src" / "ufo2p" / "U_000A34F0.c",
+        "shared-src": lambda: attempt.ROOTS.src / "ufo2p" / "u_000a34f0.c",
+        "view-itself": lambda: view,
+    }[where]()
+
+
+@pytest.mark.parametrize(
+    "where",
+    ["other-attempt", "other-unit", "other-exe", "other-case-dir", "other-case-file", "missing",
+     "shared-src", "view-itself"],
+)  # fmt: skip
+def test_unit_file_must_be_the_view_unit(view: Path, monkeypatch, capsys, where):
+    """T-07-31: REVERSEAPOC_UNIT_FILE must be exactly <attempt dir>/view/src/<exe>/<unit>.c of
+    the claim (resolved, part by part, exact case) and exist; anything else is exit 2 naming
+    the env and the expected path."""
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(_given_unit_file(view, where)))
+    with pytest.raises(attempt.AttemptError, match=hooks.UNIT_FILE_ENV):
+        attempt.Claim.from_env(_env(), roots=attempt.ROOTS)
+    _refused(monkeypatch, capsys, hooks.UNIT_FILE_ENV, str(_view_unit(view)))
+    assert not (view.parent / "checks").exists()
+
+
+def test_unit_file_relative_to_the_repository_is_accepted(view: Path, monkeypatch):
+    """The driver may give the path repo-relative (as the hooks read it) or absolute."""
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, _rel(_view_unit(view)))
+    claim = attempt.Claim.from_env(_env(), roots=attempt.ROOTS)
+    assert claim.unit_file == _view_unit(view)
+    assert claim.view_root == view
+
+
+@pytest.mark.parametrize("value", ["other.jsonl", "../proposals.jsonl", "notes.md",
+                                   "PROPOSALS.JSONL", "view/proposals.jsonl", None])  # fmt: skip
+def test_proposals_must_be_in_the_attempt_dir(view: Path, monkeypatch, capsys, value):
+    """T-07-31: REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl (it need not exist
+    yet); in view mode it must be set. Anything else is exit 2."""
+    if value is None:
+        monkeypatch.delenv(hooks.PROPOSALS_ENV)
+    else:
+        monkeypatch.setenv(hooks.PROPOSALS_ENV, str(view.parent / value))
+    _refused(monkeypatch, capsys, hooks.PROPOSALS_ENV, str(view.parent / "proposals.jsonl"))
+
+
+def test_proposals_are_checked_in_legacy_mode_too(repo: Path, monkeypatch, capsys):
+    """A legacy session (no unit file) may leave REVERSEAPOC_PROPOSALS unset; set, it must be
+    the attempt dir's proposals.jsonl."""
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(repo / "elsewhere.jsonl"))
+    _refused(monkeypatch, capsys, hooks.PROPOSALS_ENV)
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(repo / "proposals.jsonl"))
+    claim = attempt.Claim.from_env(_env(), roots=attempt.ROOTS)
+    assert claim.proposals == repo / "proposals.jsonl"
+    assert claim.unit_file is None
+
+
+@pytest.mark.parametrize("kind", ["other", "Readability", "readability ", "", "MATCHING"])
+def test_session_kind_values(view: Path, monkeypatch, capsys, kind):
+    """REVERSEAPOC_SESSION_KIND: absent means matching, readability is accepted, any other
+    value (empty, other case, trailing space) is exit 2 listing hooks.SESSION_KINDS, as the
+    hook denies it every write."""
+    env = _env()
+    assert attempt.Claim.from_env(env, roots=attempt.ROOTS).kind == "matching"
+    env[hooks.SESSION_KIND_ENV] = "readability"
+    assert attempt.Claim.from_env(env, roots=attempt.ROOTS).kind == "readability"
+    monkeypatch.setenv(hooks.SESSION_KIND_ENV, kind)
+    _refused(monkeypatch, capsys, hooks.SESSION_KIND_ENV, *hooks.SESSION_KINDS)
+
+
+def test_a_readability_session_needs_a_view(repo: Path, monkeypatch, capsys):
+    """A readability session checks only its view (the hook denies it every write without one),
+    so without REVERSEAPOC_UNIT_FILE the wrapper refuses it."""
+    monkeypatch.setenv(hooks.SESSION_KIND_ENV, "readability")
+    _refused(monkeypatch, capsys, hooks.UNIT_FILE_ENV, "readability")
+
+
+def test_sweep_default_rule_from_view_cflags(view: Path, monkeypatch):
+    """In view mode the sweep's default rule (a cell under it is no hit) is the view's
+    config/cflags.txt rule for the unit, not the shared file's."""
+    view_default = _cell(1, "10.6", ["-4r", "-ot", "-s", "-fpi"], 100.0)
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_sweep_doc(view_default))))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert _lines(view.parent)[0]["sweep_hit"] is None
+    shared_default = _cell(2, "10.6", ["-4r", "-s", "-fpi"], 100.0)
+    runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(shared_default)), "")
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    assert _lines(view.parent)[1]["sweep_hit"] == "wcc386@10.6 -4r -s -fpi"
+
+
+def test_forms_unchanged():
+    """D-15, T-07-32: views add no agent form; the roots come only from the driver's env."""
+    assert hooks.ATTEMPT_FORMS == PHASE6_FORMS
+    for flag in ("--src", "--config", "--cflags", "--build", "--log"):
+        assert not attempt.form_allowed(["check", flag, "x"])
+
+
+VIEW_MARK = "/* made-up view text of unit {unit} */\n"
+
+
+def test_view_mode_context_reads_the_view_units(tree: attempt.Roots, monkeypatch, capsys):
+    """In view mode `attempt context` packs the view's unit texts (this session's unit and
+    HEAD's others), not the shared src/'s."""
+    attempt_dir = _claim_b(tree, monkeypatch)
+    src = attempt_dir / "view" / "src" / "ufo2p"
+    for unit, text in ((UNIT_AB, UNIT_AB_TEXT), (UNIT_C, UNIT_C_TEXT)):
+        _write(src / f"{unit}.c", text + VIEW_MARK.format(unit=unit))
+    (attempt_dir / "view" / "include").mkdir()
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(src / f"{UNIT_AB}.c"))
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(attempt_dir / "proposals.jsonl"))
+    assert _run(["attempt", "context"]) == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert VIEW_MARK.format(unit=UNIT_AB) in out
+    assert VIEW_MARK.format(unit=UNIT_C) in out
