@@ -2,9 +2,9 @@
 for the run's life, one O_EXCL claim file per unit, the stale-claim rule, the gate lock around
 every landing and shared write, the git lock, GIT_OPTIONAL_LOCKS=0 and the index.lock retry.
 
-The driver still runs one session at a time; "another worker" here is a thread of the same
-driver process, as plan 07-21's workers will be. Every session is tests/fakeclaude.py through
-the Night harness of test_driver.py; every name and address is made up.
+Plan 07-21 adds the workers (D-06, D-07): one coordinator hands passes to N worker threads of
+the same driver process. Every session is tests/fakeclaude.py through the Night harness of
+test_driver.py (WNight for worker threads); every name and address is made up.
 """
 
 from __future__ import annotations
@@ -12,27 +12,36 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from reverseapoc import driver
+from reverseapoc import attempt, driver
 from reverseapoc.locks import ProcessLock
+from reverseapoc.picker import Pick
+from reverseapoc.session import run_session
 from test_drive import RUN as DRIVE_RUN
 from test_drive import Rig, _canary_rig
 from test_driver import (
     EXE,
+    FAKE,
     FUNC,
     LOG,
     MATCH_SUBJECT,
     OTHER_RECORD,
     RUN,
     SCAFFOLD,
+    SESSION_TEXT,
+    START,
     UNIT,
     UNIT_REL,
+    VIEW,
+    Launch,
     Night,
     Sess,
     _capture_nights,
@@ -40,6 +49,7 @@ from test_driver import (
     _one,
     _run_contained,
     _verb,
+    _write,
     check_line,
 )
 
@@ -600,3 +610,224 @@ def test_run_canary_called_directly_takes_the_lock_itself(tmp_path):
     finally:
         holder.release()
     assert rig.launches == []
+
+
+# ---- 07-21 Task 1: workers (D-06, D-24) ----
+#
+# F39: overlap and ordering are proven with barriers and events, never with sleeps: a barrier
+# of N sessions can only be passed by N sessions running at once, and a session that waits for
+# another's event proves the order. Every wait has a generous timeout, so a broken driver fails
+# the assertion instead of hanging the suite.
+
+WAIT_S = 30.0  # the longest any barrier or event waits before the test fails
+WIDEN_S = 0.05  # a gate's pause that would let an unlocked second gate overlap it
+
+
+def _unit(i: int) -> str:
+    return f"u_{0x10000 * (i + 1):08x}"  # u_00010000 is the committed UNIT
+
+
+def _wpick(i: int, unit: str | None = None) -> Pick:
+    start = START + 0x10000 * i
+    return Pick(EXE, start, f"func_{start:08X}", unit or _unit(i), 20, 100 + i)
+
+
+@dataclass
+class WNight(Night):
+    """The Night harness for worker threads: each session's script is chosen by the unit its
+    prompt claims (`by_unit`, then the shared `sessions`, then a session that writes nothing),
+    kept per thread, so concurrent `argv`/`session` calls never mix. `before(unit, index)` and
+    `after(unit, index)` run in the session's thread around the stand-in claude; `active` and
+    `peak` count the sessions running at once."""
+
+    by_unit: dict[str, list[Sess]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.local = threading.local()
+        self.lock = threading.Lock()
+        self.before = None
+        self.after = None
+        self.active: dict[str, int] = {}
+        self.peak = 0
+        self.overlaps: list[str] = []  # a unit seen in two sessions at once
+        self.threads: list[threading.Thread] = []
+        self.pids: list[tuple[str, int]] = []  # (unit, pid) as each session reported its pid
+
+    def _argv(self, prompt: str) -> list[str]:
+        unit = re.search(r"\(claim [a-z0-9]+/([a-z0-9_]+)\)", prompt)[1]
+        with self.lock:
+            queue = self.by_unit.get(unit) or self.sessions
+            spec = queue.pop(0) if queue else Sess(write=None)
+            self.prompts.append(prompt)
+        self.local.current = spec
+        argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths",
+                "--any-unit"]  # fmt: skip
+        text = spec.unit_text or (SESSION_TEXT if spec.write == VIEW else None)
+        return argv + (["--write-env-unit", text] if text else [])
+
+    def _session(self, argv, *, cwd, env, transcript, timeout_s, **hooks):
+        spec = self.local.current
+        unit = env[attempt.CLAIM_ENV].split("/")[1]
+        with self.lock:
+            index = len(self.launched)
+            self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
+            self.threads.append(threading.current_thread())
+            if self.active.get(unit):
+                self.overlaps.append(unit)
+            self.active[unit] = self.active.get(unit, 0) + 1
+            self.peak = max(self.peak, sum(self.active.values()))
+            self.now += 45.0
+        try:
+            if self.before is not None:
+                self.before(unit, index)
+            result = run_session(argv, cwd=cwd, env=env, transcript=transcript,
+                                 timeout_s=timeout_s, **self._hooks(unit, hooks))  # fmt: skip
+            attempt_dir = Path(env[attempt.DIR_ENV])
+            for line in spec.checks:
+                _write(attempt_dir / line["source"], f"/* made-up C of check {line['n']} */\n")
+                with (attempt_dir / attempt.CHECK_LOG).open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(line, sort_keys=True) + "\n")
+            if self.after is not None:
+                self.after(unit, index)
+            return result
+        finally:
+            with self.lock:
+                self.active[unit] -= 1
+
+    def _hooks(self, unit: str, hooks: dict) -> dict:
+        """The driver's on_start/on_end (07-21 Task 2), with each reported pid noted."""
+        on_start = hooks.get("on_start")
+        if on_start is None:
+            return hooks
+
+        def started(pid: int) -> None:
+            with self.lock:
+                self.pids.append((unit, pid))
+            on_start(pid)
+
+        return {**hooks, "on_start": started}
+
+    def _sleep(self, seconds: float) -> None:
+        with self.lock:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+
+def _src_changes(night: Night) -> list[str]:
+    """The paths under src/ that differ from HEAD (staged, unstaged or untracked), read with
+    the test's own git and GIT_OPTIONAL_LOCKS=0, so it never takes index.lock."""
+    env = {**night.env, "GIT_OPTIONAL_LOCKS": "0"}
+    out = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all", "-z",
+                          "--", "src"], cwd=night.repo, env=env, capture_output=True,
+                         check=True).stdout  # fmt: skip
+    return sorted(entry[3:].decode() for entry in out.split(b"\0") if entry)
+
+
+def _workers(n: int, **over) -> dict:
+    return {"workers": n, **over}
+
+
+def test_three_workers_overlap(tmp_path):
+    """D-06: three picks in three units run three sessions at once. Each session waits at a
+    barrier of three, which only three concurrent sessions can pass."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    night.before = lambda unit, index: barrier.wait()
+    report = night.run(config=_workers(3, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted"), report.detail
+    assert len(night.launched) == 3 and night.peak == 3
+    assert sorted(r["unit"] for r in night.kinds("attempt")) == [_unit(i) for i in range(3)]
+
+
+def test_same_unit_never_concurrent(tmp_path):
+    """Two picks in one unit never hold sessions at the same time: the second is skipped for
+    now (the third pick, in another unit, starts while the first still runs) and still runs
+    after the first's landing decision."""
+    picks = (_wpick(0), _wpick(1, unit=_unit(0)), _wpick(2))
+    night = WNight(tmp_path, picks=picks)
+    other_started = threading.Event()
+
+    def before(unit, index):
+        if unit == _unit(2):
+            other_started.set()
+        elif index == 0:
+            assert other_started.wait(WAIT_S), "the pick in the free unit never started"
+
+    night.before = before
+    report = night.run(config=_workers(3, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted"), report.detail
+    assert night.overlaps == []
+    assert [r["function"] for r in night.kinds("attempt")][-1] == picks[1].name
+    assert sorted(r["function"] for r in night.kinds("attempt")) == sorted(p.name for p in picks)
+
+
+def test_gates_never_overlap(tmp_path):
+    """DEC-02 concurrency (T-07-63): with three sessions ending together, the fake gate's calls
+    never overlap, and at each call src/ differs from HEAD only in the landing unit."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    night.before = lambda unit, index: barrier.wait()
+    inside = threading.Lock()
+    seen: list[tuple[str, list[str], bool]] = []
+
+    def gate(pick, n):
+        alone = inside.acquire(blocking=False)
+        try:
+            seen.append((pick.unit, _src_changes(night), alone))
+            threading.Event().wait(WIDEN_S)  # room for a second, unlocked gate to overlap
+        finally:
+            if alone:
+                inside.release()
+        return night._gate(pick, n)
+
+    report = night.run(config=_workers(3, attempts_per_function=1), gate=gate)
+    assert report.event == "ENDED", report.detail
+    assert len(seen) == 3
+    for unit, changed, alone in seen:
+        assert alone, f"the gate of {unit} overlapped another gate"
+        assert changed == [f"src/{EXE}/{unit}.c"], (unit, changed)
+
+
+def test_broken_view_does_not_leak(tmp_path):
+    """D-24: worker B writes C that would not compile into its view unit and is still running
+    when worker A's gate runs: A's gate sees HEAD's version of B's unit in src/."""
+    unit_b = _unit(0)  # the committed unit: HEAD holds its scaffold
+    picks = (_wpick(0), _wpick(1))
+    night = WNight(tmp_path, picks=picks,
+                   by_unit={unit_b: [Sess(unit_text="this is not C {\n")]})  # fmt: skip
+    a_gated = threading.Event()
+    at_gate: list[str] = []
+
+    def after(unit, index):
+        if unit == unit_b:
+            assert a_gated.wait(WAIT_S), "worker A's gate never ran"
+
+    def gate(pick, n):
+        if pick.unit != unit_b:
+            at_gate.append((night.repo / UNIT_REL).read_text(encoding="utf-8"))
+            a_gated.set()
+        return night._gate(pick, n)
+
+    night.after = after
+    lint = {unit_b: 1}
+    report = night.run(config=_workers(3, attempts_per_function=1), gate=gate,
+                       lint=lambda pick: lint.get(pick.unit, 0))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert at_gate == [SCAFFOLD]
+    outcomes = {r["unit"]: (r["outcome"], r["abort_reason"]) for r in night.kinds("attempt")}
+    assert outcomes[unit_b] == ("GAVE_UP", "lint")
+    assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == SCAFFOLD
+
+
+def test_workers_one_is_serial(tmp_path):
+    """`workers=1` is the Phase 6 driver: one session at a time, on the calling thread, and
+    the records in queue order."""
+    picks = (_wpick(0), _wpick(1), _wpick(2, unit=_unit(0)))
+    night = WNight(tmp_path, picks=picks)
+    report = night.run(config=_workers(1, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted")
+    assert night.peak == 1
+    assert all(t is threading.main_thread() for t in night.threads)
+    kinds = [(r["kind"], r.get("function") or r["event"]) for r in night.records()]
+    assert kinds == [("run", "STARTED"), *(("attempt", p.name) for p in picks), ("run", "ENDED")]
