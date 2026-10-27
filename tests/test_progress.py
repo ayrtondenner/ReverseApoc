@@ -782,18 +782,13 @@ def test_assembler_group(tmp_path):
     assert report["measures"]["matched_code_percent"] == both["percent"]
 
 
-@pytest.mark.parametrize("change", ["unsigned", "changed"])
-def test_unsigned_or_changed_asm_list_moves_nothing(tmp_path, change):
-    """Only a signed list whose list_sha256 still equals the file's LF SHA-256 counts (D-23);
-    an unsigned or edited list leaves the figures as they were, without an error."""
+def test_unsigned_asm_list_moves_nothing(tmp_path):
+    """Ruling F2: an asm list not yet signed off in [asm_list] (07-20 commits one before the
+    owner's ruling) leaves the figures as they were, without an error."""
     progress = mechanics_module()
     config = synthetic_config(tmp_path)
-    path = write_asm_list(config)
-    if change == "unsigned":
-        write_mechanics(config)
-    else:
-        write_mechanics(config, asm_signoff(path))
-        path.write_bytes(path.read_bytes() + b"ufo2p,0x00010000,off-alignment start,c,\n")
+    write_asm_list(config)
+    write_mechanics(config)
     found = progress.derive_mechanics(config, progress.derive(config))
     assert hasattr(found, "assembler"), "Mechanics has no assembler"
     assert found.assembler == ()
@@ -802,6 +797,27 @@ def test_unsigned_or_changed_asm_list_moves_nothing(tmp_path, change):
     doc = json.loads((out / "progress.json").read_text(encoding="utf-8"))
     assert (doc["exes"]["ufo2p"]["assembler_functions"], doc["exes"]["ufo2p"]["code_bytes"]) == (
         0, 228)
+
+
+@pytest.mark.parametrize("change", ["edited", "deleted"])
+def test_stale_signed_asm_list_exits_2(tmp_path, change):
+    """Fix round 1: once [asm_list] signs the list off, a list edited since its sign-off or
+    deleted is refused (as mechanics.signed_asm refuses it), so the Pages job exits 2 instead of
+    silently putting the asm rows back into the published percentage."""
+    progress = mechanics_module()
+    config = asm_config(tmp_path)
+    found = progress.derive_mechanics(config, progress.derive(config))
+    assert found.assembler == (("ufo2p", U_UNMATCHED.start),)  # signed and matching: excluded
+    path = config / mechanics.ASM_CSV
+    if change == "edited":
+        path.write_bytes(path.read_bytes() + b"ufo2p,0x00010000,off-alignment start,c,\n")
+    else:
+        path.unlink()
+    with pytest.raises(progress.ProgressError, match=r"asm-functions\.csv.*re-sign"):
+        progress.derive_mechanics(config, progress.derive(config))
+    out = tmp_path / "out"
+    assert progress.main(["--config", str(config), "--out", str(out)]) == 2
+    assert not (out / "progress.json").exists()
 
 
 def test_asm_row_off_a_game_row_exits_2(tmp_path):
