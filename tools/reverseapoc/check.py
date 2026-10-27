@@ -1408,6 +1408,11 @@ SWEEP2_VERSION = "10.6"
 SWEEP2_LETTERS = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
 SWEEP2_KKND = ("-of+", "-omiler")  # KKND's optimisation set (docs/toolchain.md)
 SWEEP2_PACK = ("-zp1", "-zp2", "-zp4", "-zp8")
+# Research A14, settled by tests/test_check.py::test_zm_object_accounting: unit accounting takes
+# a -zm object (one code segment per function), so stage 2 tries -zm. A call into a sibling's own
+# segment fails the relocation check ("local segment reference"), so such a cell is never a hit.
+SWEEP2_ZM = True
+SWEEP2_SEGMENT = "-zm"
 SWEEP2_FP = ("-fp3", "-fp5")
 SWEEP2_FLOOR = 90.0  # the best stage-1 cell's objdiff percent at which stage 2 runs
 _OPT_PREFIX = "-o"
@@ -1417,14 +1422,15 @@ def sweep2_cells(best: SweepCell) -> list[tuple[str, tuple[str, ...]]]:
     """(version, flags) of every D-15 second-stage cell for the best stage-1 cell `best`, at most
     24, all under 10.6 and keeping its CPU, stack and -fpi flags: O1 replaces its -o set with each
     single letter and with KKND's set (9); O2 adds each letter to its -o set, when it has one (8);
-    Z appends a packing (4); F an FP scheduling (2). A cell equal to `best` or to an earlier cell
-    is left out."""
+    Z appends a packing (4); M -zm, when SWEEP2_ZM (1); F an FP scheduling (2). A cell equal to
+    `best` or to an earlier cell is left out."""
     cpu, rest = best.flags[0], best.flags[1:]
     opt = tuple(f for f in rest if f.startswith(_OPT_PREFIX))
     others = tuple(f for f in rest if not f.startswith(_OPT_PREFIX))
     o1 = [(cpu, *letters, *others) for letters in (*((x,) for x in SWEEP2_LETTERS), SWEEP2_KKND)]
     o2 = [(cpu, *opt, letter, *others) for letter in SWEEP2_LETTERS if opt and letter not in opt]
-    extra = [(*best.flags, flag) for flag in (*SWEEP2_PACK, *SWEEP2_FP)]
+    m = (SWEEP2_SEGMENT,) if SWEEP2_ZM else ()
+    extra = [(*best.flags, flag) for flag in (*SWEEP2_PACK, *m, *SWEEP2_FP)]
     unique = dict.fromkeys(flags for flags in (*o1, *o2, *extra) if flags != best.flags)
     return [(SWEEP2_VERSION, flags) for flags in unique]
 
