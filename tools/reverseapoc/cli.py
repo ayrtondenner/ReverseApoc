@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, context, attempt, drive, fetch-watcom, install-watcom, check-watcom."""
+gate, context, attempt, drive, mechanics, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, driver, probe
+from . import attempt, driver, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
@@ -84,6 +84,7 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .lint import LintError, run_lint
+from .mechanics import MechanicsError
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
 from .probe import CHK_PUBLIC, ProbeError
@@ -1340,15 +1341,54 @@ def _add_watcom_commands(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_check_watcom)
 
 
-# ---- mechanics: the DEC-01 item-to-function map (stub, plan 07-10 RED) ----
+# ---- mechanics: the DEC-01 item-to-function map (D-01, D-02, D-04, D-22, D-23, D-31) ----
+
+
+def _mechanics_write(args: argparse.Namespace) -> int:
+    rows = mechanics.generate(args.config, args.orig, args.manifest)
+    out = Path(args.config) / mechanics.MEMBERS_CSV
+    mechanics.write_members(out, rows)
+    counts = Counter(row.role for row in rows)
+    report = {"rows": len(rows), "roles": {role: counts[role] for role in mechanics.ROLES}}
+    print(json.dumps(report, indent=2) if args.json else
+          f"{len(rows)} rows: " + ", ".join(f"{n} {r}" for r, n in report["roles"].items()))
+    print(f"wrote {out}", file=sys.stderr)
+    return 0
+
+
+def _cmd_mechanics(args: argparse.Namespace) -> int:
+    """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
+    try:
+        return args.mechanics_func(args)
+    except (*_ERRORS, MechanicsError) as exc:
+        print(f"reverseapoc mechanics {args.mechanics_command}: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _mechanics_roots(p: argparse.ArgumentParser, *, game: bool) -> None:
+    default = "default: %(default)s"
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    if game:
+        p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+        p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--json", action="store_true", help="print the result as JSON")
 
 
 def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("mechanics", help="the DEC-01 mechanics map")
-    verbs = p.add_subparsers(dest="mechanics_command", required=True)
-    w = verbs.add_parser("write")
-    w.add_argument("--config", type=Path)
-    w.set_defaults(func=lambda args: 1)
+    p = sub.add_parser(
+        "mechanics",
+        help="the DEC-01 map of OpenApoc checklist items to functions: config/mechanics.toml "
+        "(hand-edited) and the generated config/mechanics-members.csv",
+    )
+    verbs = p.add_subparsers(dest="mechanics_command", required=True, metavar="VERB")
+    w = verbs.add_parser(
+        "write",
+        help="regenerate config/mechanics-members.csv from mechanics.toml, functions.csv and the "
+        "call graphs of orig/ (D-02)",
+    )
+    _mechanics_roots(w, game=True)
+    w.set_defaults(mechanics_func=_mechanics_write)
+    p.set_defaults(func=_cmd_mechanics)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1451,6 +1491,7 @@ _ERRORS = (
     StatusError,
     AttemptError,
     ContextPackError,
+    MechanicsError,
     OSError,
 )
 
