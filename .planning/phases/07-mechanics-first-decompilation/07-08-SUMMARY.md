@@ -11,7 +11,7 @@ provides:
   - "q4_strings.py: get_text section tables, call-site (section, index) recovery rate, TACP speed labels, 12-item Tier 2-4 sample (11 of 12)"
   - "q5_tables.py: CD-build data objects identical to the installed build by VA (pages and bytes); per-table OpenApoc check (skipped: headers absent)"
   - "q6_callgraph.py: direct edges equal CallIndex; research Q1 reachability reproduced (table runs need a 64-byte record lead-in)"
-  - "spike 007 verdict VALIDATED with caveats and the consequence for the tier drafts; MANIFEST idea block and 007 row"
+  - "spike 007 verdict PARTIAL (D-03; the plan's formula alone reads VALIDATED) and the consequence for the tier drafts; MANIFEST idea block and 007 row"
   - "the #997 owner report (delivered at the Task 3 checkpoint) and a draft OpenApoc comment for the owner (chat only)"
 affects: [07-22, 07-25, 07-28, 07-32]
 
@@ -21,6 +21,7 @@ actuals:
   commits: 5
 plan_head_before: d73427f8500018ff3be6d6b8c5f4394ecdd587c5
 plan_head_after: 601d42d
+# fix round 1: fd7d973 (README, MANIFEST) and this SUMMARY's update
 # Measured `git rev-list --count d73427f..HEAD` is 35 (HEAD 8a8f98e): main also took the wave-2
 # merges and other plans' commits while this sequential plan ran. This executor's own commits in
 # that range are the 5 spike(007) commits listed under Task Commits (F35), plus this SUMMARY.
@@ -43,7 +44,7 @@ key-files:
     - .planning/spikes/007-locate-997-training/q1_timebase.py
 
 key-decisions:
-  - "Spike 007 verdict VALIDATED by the D-03 formula (q2 ALL PASS, q3 ALL PASS, q4 11 of 12); caveats recorded: TACP accrual of #263-1 not located, q4 keywords chosen by reading the text, UFO2P get_text recovery 74.4% < 80%"
+  - "Spike 007 verdict PARTIAL (fix round 1, orchestrator ruling): D-03 asks for the tick rate and the training rule; the tick rate is located, the #263-1 TACP accrual is not. The plan's formula (q2 ALL PASS, q3 ALL PASS, q4 11 of 12) alone would read VALIDATED. Other caveats: q4 keywords chosen by reading the text, UFO2P get_text recovery 74.4% < 80%"
   - "TACP speed labels located: Pause 0, Slow 1, Normal 2, Double 4 (no Quadruple), get_text section 36 in func_000A7490"
   - "Both get_text tables have 52 slots; research's '50 sections' is the dump loop's bound"
   - "Research's table reach (UFO2P 1,471) needs code references up to 64 bytes before a pointer run (record bases); the strict rule of callgraph.py gives 1,429. Plan 07-22 decides the rule"
@@ -80,14 +81,14 @@ coverage:
         status: pass
     human_judgment: false
   - id: D4
-    description: "Verdict VALIDATED with caveats and the consequence for Phase 7; MANIFEST idea block and 007 row"
+    description: "Verdict PARTIAL (D-03) with the formula reading and the consequence for Phase 7; MANIFEST idea block and 007 row"
     requirement: "DEC-01"
     verification:
       - kind: other
-        ref: "grep '^verdict: VALIDATED$' README.md; grep '^| 007 ' MANIFEST.md"
+        ref: "grep '^verdict: PARTIAL$' README.md; grep '^| 007 ' MANIFEST.md"
         status: pass
     human_judgment: true
-    rationale: "Whether the caveats (TACP accrual, keyword choice, 74.4% recovery) leave VALIDATED the right call for the tier drafts is a judgment for the verifier and owner"
+    rationale: "The verdict applies D-03's definition over the plan's formula (orchestrator ruling); the verifier and owner judge it"
   - id: D5
     description: "#997 report delivered to the owner at the blocking checkpoint; nothing posted"
     verification: []
@@ -101,7 +102,8 @@ status: complete
 
 # Phase 7 Plan 08: Spike 007 part 2 (strings, tables, call graph, verdict) Summary
 
-**Spike 007 closed as VALIDATED. The UI-text route through get_text was measured on both EXEs.
+**Spike 007 closed as PARTIAL (D-03: the tick rate is located, the #263-1 TACP accrual is not;
+the plan's formula alone would read VALIDATED). The UI-text route through get_text was measured on both EXEs.
 Recovery is 74.4% for UFO2P and 81.0% for TACP, and 11 of 12 sampled Tier 2-4 items get an entry
 row. The TACP speed labels are located (Pause 0, Slow 1, Normal 2, Double 4). The CD and
 installed data objects are page-identical by VA except for 9 pages. q6 reproduces research's
@@ -312,6 +314,47 @@ None.
 
 - Created files exist: q4_strings.py, q5_tables.py and q6_callgraph.py.
 - Commits 97c33f4, 6ab9c34, 7c9a85b, 6a750da and 601d42d are ancestors of HEAD.
+
+## Fix round 1
+
+Orchestrator fix round after the task review. There were two Important findings.
+
+1. **Verdict label.**
+   - D-03 (07-CONTEXT.md, the owner's binding decision) defines VALIDATED as strings and xrefs
+     locating the tick rate and the training rule. The #263-1 TACP accrual is not located.
+   - Ruling: D-03 outranks the plan's formula.
+   - Changes: the README frontmatter, the intro, the Verdict section and the MANIFEST 007 row now
+     say **PARTIAL**, with the reason. They note that the formula (q2 and q3 ALL PASS, q4 11 of
+     12) alone would read VALIDATED. The Consequence section is unchanged: call-graph walking,
+     the PARTIAL remedy, is done in 07-22. The verdict text in this SUMMARY is corrected too.
+2. **An overclaim in the #997 lead.**
+   - The [derived] sentence said the 36-unit clock is called only from frame rows that wait on
+     the BIOS tick. That is true for UFO2P only.
+   - In TACP, `func_000B6E50` also calls the clock and q2 finds no wait there. q2's pass
+     condition is `bool(waits)`: at least one caller waits.
+   - The lead now says:
+     - The game programs no 36 Hz or 144 Hz timer: the only PIT programming is in the sound
+       library [script: q1 `pit-int8-sites`].
+     - Who calls the 36-unit clock [script: q2 `paces-on-bios-tick` lists the callers and passes
+       when at least one of them busy-waits on the BIOS tick]: in UFO2P, only the frame loop
+       `func_00010940`, which waits on the tick. In TACP, the frame step `func_000116B0`, which
+       waits, and `func_000B6E50`, in which q2 finds no BIOS-tick wait. How often
+       `func_000B6E50` runs, and so whether it advances battle time at another pace, is not
+       checked [open].
+
+The q2 lines this relies on (re-run, q2 ALL PASS):
+
+```
+PASS UFO2P.EXE paces-on-bios-tick rows calling the clock [0x00010940]; busy-wait on int386 0x1A [0x00010940:0x00011127..0x00011174]
+PASS TACP.EXE tacp-paces-on-same-bios-tick rows calling the clock [0x000116B0 0x000B6E50]; busy-wait on int386 0x1A [0x000116B0:0x00011909..0x00011959]
+```
+
+The draft OpenApoc comment from the checkpoint resume said there is no 36/144 Hz game timer
+because the clock "is called only from the frame code that waits on the BIOS tick". That sentence
+carries the same overclaim. The corrected wording goes to the owner through the orchestrator; the
+draft was never in a file.
+
+Commits: `fd7d973` (README, MANIFEST) and the docs(07-08) commit of this section.
 
 ---
 *Phase: 07-mechanics-first-decompilation*
