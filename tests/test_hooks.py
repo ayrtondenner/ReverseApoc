@@ -1212,8 +1212,14 @@ def test_readability_kind_same_allowlist(repo):
 @pytest.mark.parametrize("kind", ["other", "", "Matching", "readability "])
 def test_unknown_kind_denies_writes(repo, kind):
     unit = _view_unit(repo)
-    for env in [view_env(repo, kind=kind), {**CLAIM, "REVERSEAPOC_SESSION_KIND": kind}]:
-        for target in [unit, _attempt(repo) / "notes.md", _unit(repo)]:
+    notes = _attempt(repo) / "notes.md"
+    legacy = {**CLAIM, "REVERSEAPOC_ATTEMPT_NOTES": native(notes),
+              "REVERSEAPOC_SESSION_KIND": kind}  # fmt: skip
+    # each env's own allowlist, which an unknown kind closes
+    proposals = _attempt(repo) / "proposals.jsonl"
+    for env, targets in [(view_env(repo, kind=kind), [unit, notes, proposals]),
+                         (legacy, [notes, _unit(repo), repo / "include" / "fx.h"])]:  # fmt: skip
+        for target in targets:
             decision = matching(in_repo(write(native(target), SCAFFOLD), repo), env)
             assert decision.deny, (env, target)
             assert "matching" in decision.reason and "readability" in decision.reason
@@ -1251,6 +1257,21 @@ def test_unit_file_outside_build_driver_is_not_exempt(repo, parts):
     proposals = repo / "build" / "other" / "proposals.jsonl"
     env = {**view_env(repo), "REVERSEAPOC_PROPOSALS": native(proposals)}
     assert always(write(native(proposals), "{}\n"), env).deny
+
+
+def test_session_paths_need_every_build_form_to_fit(repo):
+    """Only the exact shapes count: a unit file whose form against one checkout fits but whose
+    form against an enclosing checkout lies elsewhere under build/ is not a session path."""
+    env = view_env(repo)
+    found = hooks._session_paths(env, "")
+    assert native(_view_path(repo)).replace("\\", "/").casefold() in found
+    assert (_attempt(repo) / "proposals.jsonl").as_posix().casefold() in found
+    inner = repo / "build" / "inner"
+    (inner / ".git").mkdir(parents=True)
+    nested = inner.joinpath(*ATTEMPT, "view", "src", "ufo2p", "u_000a34f0.c")
+    assert hooks._session_paths({**env, "REVERSEAPOC_UNIT_FILE": native(nested),
+                                 "REVERSEAPOC_PROPOSALS": ""}, "") == frozenset()  # fmt: skip
+    assert hooks._session_paths({"REVERSEAPOC_PROPOSALS": native(nested)}, "") == frozenset()
 
 
 @pytest.mark.parametrize("name", sorted(PATH_INCLUDES))
