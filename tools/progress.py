@@ -1000,6 +1000,13 @@ STRIP_KEY = ('<p class="key">Each tick is one game or thunk function, in address
              f'<i class="{TICK_CLASSES[PARTIAL]}" aria-hidden="true"></i> partial, '
              f'<i class="{TICK_CLASSES[UNMATCHED]}" aria-hidden="true"></i> unmatched. Matched '
              "and partial ticks stand taller. The bar is the share of code bytes matched.</p>")
+# Backlog 999.4 fix #2 (06-UI-REVIEW.md): below 40rem the 1200 px mosaic would scale to about 31%
+# (labels near 3.5 px), so there it keeps a 48rem minimum width (_page_css) and its box scrolls
+# sideways. The box takes keyboard focus so the arrow keys scroll it, and an HTML legend above it
+# stays in view.
+MOSAIC_REGION = ('<div class="mosaic" tabindex="0" role="region" '
+                 'aria-label="Decompilation mosaic, scrolls sideways">')  # fmt: skip
+SWATCH_SIZE = ".75rem"  # the HTML legend's colour square
 MEASURED = (
     "A function is matched when its C, built with the original Watcom compiler, is "
     "byte-identical to the original, proven by objdiff, the relocation check and the whole-EXE "
@@ -1050,12 +1057,17 @@ def _page_css() -> str:
         f".strip .u,.key .u{{height:{TICK_SHORT}px;margin-top:{TICK_HEIGHT - TICK_SHORT}px}}",
         *(f"i.{TICK_CLASSES[status]}{{background:{TREEMAP_COLORS[status]}}}"
           for status in (MATCHED, PARTIAL, UNMATCHED)),
-        ".mosaic{margin-top:.75rem}",
+        ".legend{display:flex;flex-wrap:wrap;gap:.25rem 1rem;margin:.75rem 0 0;padding:0;"
+        "list-style:none;color:var(--secondary);font-size:.875rem}",
+        f".swatch{{display:inline-block;width:{SWATCH_SIZE};height:{SWATCH_SIZE};"
+        "margin-right:.375rem;vertical-align:-.0625rem}",
+        ".mosaic{margin-top:.75rem;overflow-x:auto}",
+        ".mosaic:focus-visible{outline:2px solid var(--ink);outline-offset:2px}",
         ".mosaic svg{display:block;width:100%;height:auto}",
         *(f'.mosaic [{attr}="{token}"]{{{attr}:var(--{var})}}'
           for attr, token, var in MOSAIC_PAINTS),
         "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}"
-        ".exe h2{margin-bottom:.5rem}}",
+        ".exe h2{margin-bottom:.5rem}.mosaic svg{min-width:48rem}}",
     ])
 
 
@@ -1103,15 +1115,26 @@ def _exe_html(exe: ExeProgress) -> list[str]:
             "</section>"]  # fmt: skip
 
 
+def _legend_html() -> list[str]:
+    """The mosaic's legend in HTML, one item per cell status in CELL_STATUSES order: it stays in
+    view while the mosaic scrolls sideways on a phone (the SVG keeps its own legend, since
+    progress.svg is also published alone)."""
+    items = [f'<li><span class="swatch" style="background:{TREEMAP_COLORS[status]}" '
+             f'aria-hidden="true"></span>{_xml(LEGEND_LABELS[status])}</li>'
+             for status in CELL_STATUSES]  # fmt: skip
+    return ['<ul class="legend">', *items, "</ul>"]
+
+
 def render_html(progress: Progress, commit: str | None = None) -> str:
     """The progress page, written as index.html (owner rulings 3 and 4, 2026-10-26): per EXE a
     heading, a percent bar, the figures in text and the function strip (one tick per game and
     thunk function in address order; matched and partial ticks stand taller and carry the mosaic
     cell's tooltip, a partial one with its best score;
-    the strip wraps with the width), then the strip's key, the labelled mosaic (render_svg's
-    output, verbatim) and how the figures are measured. Under prefers-color-scheme: dark only the
-    surface, ink and secondary swap (the mosaic follows through MOSAIC_PAINTS; status hues are
-    unchanged); below 40rem the EXE heading stacks over its bar. Inline CSS only, no script and
+    the strip wraps with the width), then the strip's key, an HTML legend, the labelled mosaic
+    (render_svg's output, verbatim, in a focusable box) and how the figures are measured. Under
+    prefers-color-scheme: dark only the surface, ink and secondary swap (the mosaic follows
+    through MOSAIC_PAINTS; status hues are unchanged); below 40rem the EXE heading stacks over its
+    bar and the mosaic keeps a 48rem width and scrolls sideways. Inline CSS only, no script and
     no external request: every link is relative or to the repository. The same CSVs and commit
     give the same bytes; without a commit only the "Updated from commit" line is missing."""
     lines = ["<!DOCTYPE html>", '<html lang="en">', "<head>", '<meta charset="utf-8">',
@@ -1128,7 +1151,7 @@ def render_html(progress: Progress, commit: str | None = None) -> str:
               "<h2>The mosaic</h2>",
               '<p class="caption">One cell per function, grouped by EXE and unit and sized by '
               "bytes; large units carry their name.</p>",
-              '<div class="mosaic">', render_svg(progress).removesuffix("\n"), "</div>",
+              *_legend_html(), MOSAIC_REGION, render_svg(progress).removesuffix("\n"), "</div>",
               "<h2>How it is measured</h2>", *(f"<p>{text}</p>" for text in MEASURED),
               "</main>", "</body>", "</html>"]  # fmt: skip
     return "\n".join(lines) + "\n"
