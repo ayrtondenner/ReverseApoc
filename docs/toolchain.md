@@ -241,6 +241,8 @@ Candidate flags. Each axis lists the default-rule value first; the alternatives 
 
 Ruled out by the Phase 4 scans, so not permuted unless new evidence appears: `-3` (no `movzx` byte compare), the stack calling convention `-3s`/`-4s`/`-5s` (0 3S-only runtime rows), `-fpc` (inline x87 via MATH387), and any memory model other than flat `-mf`.
 
+The second-stage sweep (D-15, Phase 7) tries these candidates automatically when `check --sweep` (and so `attempt check --sweep`) misses narrowly: no first-stage cell is perfect (objdiff 100.0, relocation check passing, 0 differing bytes) and the best one reaches 90% with its relocation check passing. It keeps that cell's CPU, stack and `-fpi` flags under 10.6 and runs at most 24 cells: the single `-o` letters in place of its `-o` set, and KKND's `-of+ -omiler`; each letter added to its `-o` set; `-zp1/2/4/8`; `-zm`; `-fp3`/`-fp5`. `-zm` is in because a synthetic one-segment-per-function object passes check's unit accounting (`tests/test_check.py::test_zm_object_accounting`). The same test pins its limit: a call into another function's own segment fails the relocation check ("local segment reference"), so a `-zm` cell of a function that calls a function of its own unit cannot be a hit. A stage-2 hit is a proposal for the owner (D-12), never a match. The sweep never edits `config/cflags.txt`, and no agent chooses flags.
+
 ### C, not C++
 
 Both EXEs are C compiled with `wcc386` (CID-06). `uv run reverseapoc cppscan <EXE>` (plan 04-09) prints, per EXE:
