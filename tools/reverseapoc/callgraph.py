@@ -455,3 +455,7 @@ def reach(
         frontier = sorted(level)
     return {node: (h, ENTRY if rank == _ROOT_RANK else EDGE_KINDS[rank])
             for node, (h, rank) in sorted(best.items())}  # fmt: skip
+
+
+def with_edges(graph: CallGraph, extra: Iterable[Edge]) -> CallGraph:
+    return graph  # stub (plan 07-10 RED)

@@ -658,3 +658,50 @@ def generate(config_root: Path, orig_dir: Path, manifest: Path) -> list[MemberRo
     exes = needed_exes(mech)
     graphs = load_graphs(config_root, orig_dir, manifest, exes) if exes else {}
     return compute_members(mech, graphs, read_rows(config_root, exes))
+
+
+# ---- plan 07-10 Task 2 API (stub, RED) ----
+
+ASM_CSV = "asm-functions.csv"
+ASM_COLUMNS = ("exe", "address", "evidence", "verdict", "reason")
+
+
+@dataclass(frozen=True)
+class AsmRow:
+    exe: str
+    address: int
+    evidence: str
+    verdict: str
+    reason: str = ""
+
+
+def hub_stats(graph, walked, closures):
+    return None
+
+
+def is_hub(start, rule, graph, stats) -> bool:
+    return False
+
+
+def tier_digest(mech, rows, tier_id) -> str:
+    return "0" * 64
+
+
+def signed_tiers(mech, rows) -> tuple[int, ...]:
+    return ()
+
+
+def read_asm_list(path) -> list[AsmRow]:
+    return []
+
+
+def format_asm_csv(rows) -> str:
+    return ""
+
+
+def asm_list_sha256(path) -> str:
+    return ""
+
+
+def check_committed(config_root) -> list[str]:
+    return []

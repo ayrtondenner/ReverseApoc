@@ -5,6 +5,7 @@ is built by hand from made-up addresses."""
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 from pathlib import Path
 
@@ -228,3 +229,319 @@ def test_cli_write_with_injected_graphs(tmp_path, monkeypatch):
                          "ufo2p,0x00010200,997,1,997,direct,member"]  # fmt: skip
     (root / "mechanics.toml").write_text("schema = [\n", encoding="utf-8")
     assert cli.main(["mechanics", "write", "--config", str(root)]) == 2
+
+
+# ---- Task 2: hubs, entries always members, asm and closure roles, digests, check ----
+
+
+def M(*, items=(("997", 1),), entries=(("997", E),), rule=None, tiers=(1, 2), edges=(),
+      signed=None) -> mechanics.Mechanics:  # fmt: skip
+    """A Mechanics: items as (id, tier), entries as (item, address) in ufo2p."""
+    return mechanics.Mechanics(
+        hub_rule=rule or mechanics.HubRule(),
+        tiers=tuple(mechanics.Tier(t, f"Tier {t}", *(signed or {}).get(t, ())) for t in tiers),
+        items=tuple(mechanics.Item(i, int(i.split("-")[0]), f"Item {i}", "", t, "in",
+                                   exes=("ufo2p",)) for i, t in items),  # fmt: skip
+        entries=tuple(mechanics.Entry(i, "ufo2p", a, "hand", "proved") for i, a in entries),
+        edges=edges,
+    )
+
+
+def by_address(rows):
+    return {row.address: row for row in rows}
+
+
+def members(mech, g, nodes=ALL, asm=frozenset()):
+    return compute_members(mech, {"ufo2p": g}, {"ufo2p": game_rows(*nodes)}, asm)
+
+
+def test_hub_stops_the_member_walk():
+    g = graph((E, H), (C, H), (D, H), (H, X))
+    rows = by_address(members(M(rule=mechanics.HubRule(min_direct_callers=3)), g))
+    assert (rows[E].role, rows[H].role, rows[X].role) == ("member", "hub", "closure")
+    assert rows[H].member_items == () and rows[X].member_items == ()
+    assert rows[X].items == ("997",)  # still in the full closure (D-02)
+    assert set(rows) == {E, H, X}
+
+
+def test_hub_rule_off_walks_everything():
+    g = graph((E, H), (C, H), (D, H), (H, X))
+    rows = by_address(members(M(), g))
+    assert {a: r.role for a, r in rows.items()} == {E: "member", H: "member", X: "member"}
+
+
+def test_entry_that_is_a_hub_stays_a_member():
+    g = graph((E, H), (C, H), (D, H), (H, X))
+    mech = M(items=(("263-1", 1), ("263-2", 1)), entries=(("263-1", H), ("263-2", E)),
+             rule=mechanics.HubRule(min_direct_callers=3))  # fmt: skip
+    rows = by_address(members(mech, g))
+    assert rows[H].role == "member"
+    assert rows[H].member_items == ("263-1",)
+    assert rows[H].items == ("263-1", "263-2")
+    assert rows[X].member_items == ("263-1",)  # the entry is expanded for its own item
+    assert rows[E].member_items == ("263-2",)
+
+
+def test_other_hub_criteria():
+    # largest SCC: A <-> B is the only cycle; E -> A -> B -> Y
+    g = graph((E, A), (A, B), (B, A), (B, Y))
+    rows = by_address(members(M(rule=mechanics.HubRule(largest_scc=True)), g))
+    assert (rows[A].role, rows[B].role, rows[Y].role) == ("hub", "hub", "closure")
+    # closure share: A reaches 4 of 10 rows (A, B, C, D) > 0.3; B reaches 3 (not above)
+    g = graph((E, A), (A, B), (B, C), (C, D))
+    rows = by_address(members(M(rule=mechanics.HubRule(max_closure_share=0.3)), g))
+    assert (rows[A].role, rows[B].role) == ("hub", "closure")
+    assert rows[E].role == "member"  # an entry is always a member (D-31)
+    # min_items: F is reached by two items
+    g = graph((E, F), (C, F), (F, Y))
+    mech = M(items=(("997", 1), ("263-1", 1)), entries=(("997", E), ("263-1", C)),
+             rule=mechanics.HubRule(min_items=2))  # fmt: skip
+    rows = by_address(members(mech, g))
+    assert (rows[F].role, rows[Y].role) == ("hub", "closure")
+    assert rows[F].items == ("263-1", "997")
+
+
+def test_is_hub_reports_each_criterion():
+    g = graph((E, H), (C, H), (D, H))
+    stats = mechanics.hub_stats(g, frozenset(ALL), {"997": frozenset({E, H})})
+    assert mechanics.is_hub(H, mechanics.HubRule(min_direct_callers=3), g, stats)
+    assert not mechanics.is_hub(H, mechanics.HubRule(min_direct_callers=4), g, stats)
+    assert not mechanics.is_hub(H, mechanics.HubRule(), g, stats)
+
+
+def test_hand_edges_join_the_walk():
+    edge = mechanics.HandEdge("ufo2p", A, B, "call through a table (proved)")
+    rows = by_address(members(M(edges=(edge,)), graph((E, A), nodes=(B,))))
+    assert B in rows and rows[B].via == "hand" and rows[B].role == "member"
+    stray = mechanics.HandEdge("ufo2p", A, RUNTIME, "into the runtime")
+    with pytest.raises(MechanicsError, match="edge"):
+        members(M(edges=(stray,)), graph((E, A)))
+
+
+def test_asm_row_is_a_boundary():
+    S = C
+    g = graph((E, S), (S, Y))
+    rows = by_address(members(M(), g, asm=frozenset({("ufo2p", S)})))
+    assert (rows[E].role, rows[S].role, rows[Y].role) == ("member", "asm", "closure")
+    with pytest.raises(MechanicsError, match="D-23"):
+        members(M(entries=(("997", S),)), g, asm=frozenset({("ufo2p", S)}))
+
+
+ASM_COMMENT = (
+    "# generated by: uv run reverseapoc mechanics asm --write; the tool owns exe, address and "
+    "evidence; verdict and reason are written by hand where the owner overrides (D-23)"
+)
+
+
+def asm_text(*rows: tuple[int, str]) -> str:
+    lines = [ASM_COMMENT, "exe,address,evidence,verdict,reason"]
+    lines += [f"ufo2p,0x{a:08X},off-alignment,{v}," for a, v in rows]
+    return "\n".join(lines) + "\n"
+
+
+def test_asm_list_round_trip(tmp_path):
+    path = tmp_path / mechanics.ASM_CSV
+    path.write_text(asm_text((C, "asm"), (D, "unclear")), encoding="utf-8")
+    rows = mechanics.read_asm_list(path)
+    got = [(r.exe, r.address, r.verdict) for r in rows]
+    assert got == [("ufo2p", C, "asm"), ("ufo2p", D, "unclear")]
+    assert mechanics.format_asm_csv(rows) == path.read_text(encoding="utf-8")
+    assert mechanics.ASM_COLUMNS == ("exe", "address", "evidence", "verdict", "reason")
+    crlf = tmp_path / "crlf.csv"
+    crlf.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    assert mechanics.asm_list_sha256(crlf) == mechanics.asm_list_sha256(path)
+    path.write_text(asm_text((C, "maybe")), encoding="utf-8")
+    with pytest.raises(MechanicsError, match="verdict"):
+        mechanics.read_asm_list(path)
+
+
+def _asm_signoff(path: Path) -> dict:
+    return {"signed_off_by": "owner", "signed_off_date": datetime.date(2026, 11, 1),
+            "list_sha256": mechanics.asm_list_sha256(path)}  # fmt: skip
+
+
+def _asm_config(tmp_path, *, signed: bool) -> Path:
+    root = _config(tmp_path, "", rows=game_rows(E, A, C, Y))
+    (root / mechanics.ASM_CSV).write_text(asm_text((C, "asm")), encoding="utf-8")
+    top = {"schema": 1}
+    if signed:
+        top["asm_list"] = _asm_signoff(root / mechanics.ASM_CSV)
+    (root / "mechanics.toml").write_text(toml_text(top, **minimal_tables()), encoding="utf-8")
+    return root
+
+
+def test_write_refuses_an_unsigned_or_changed_asm_list(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(mechanics, "load_graphs",
+                        lambda *a, **k: {"ufo2p": graph((E, C), (C, Y))})  # fmt: skip
+    root = _asm_config(tmp_path / "unsigned", signed=False)
+    assert cli.main(["mechanics", "write", "--config", str(root)]) == 2
+    assert "D-23" in capsys.readouterr().err
+    root = _asm_config(tmp_path / "signed", signed=True)
+    assert cli.main(["mechanics", "write", "--config", str(root)]) == 0
+    rows = by_address(read_members(root / mechanics.MEMBERS_CSV))
+    assert (rows[C].role, rows[Y].role) == ("asm", "closure")
+    with (root / mechanics.ASM_CSV).open("a", encoding="utf-8") as fh:
+        fh.write("ufo2p,0x00010A00,off-alignment,asm,\n")
+    assert cli.main(["mechanics", "write", "--config", str(root)]) == 2
+    assert "changed since" in capsys.readouterr().err
+
+
+def test_shared_function_one_row():
+    g = graph((E, F), (C, F))
+    mech = M(items=(("997", 1), ("263-10", 2), ("263-2", 2)),
+             entries=(("997", E), ("263-10", C), ("263-2", C)))  # fmt: skip
+    shared = [r for r in members(mech, g) if r.address == F]
+    assert len(shared) == 1
+    assert shared[0].items == ("263-2", "263-10", "997")  # by (issue, number), not text
+    assert shared[0].tiers == (1, 2)
+    assert shared[0].member_items == ("263-2", "263-10", "997")
+
+
+def test_empty_item_and_empty_file(tmp_path, monkeypatch):
+    mech = M(items=(("997", 1), ("263-1", 1)))  # 263-1 has no entries
+    rows = members(mech, graph((E, A)))
+    assert rows and all("263-1" not in r.items for r in rows)
+    root = _config(tmp_path, "schema = 1\n")
+    monkeypatch.setattr(mechanics, "load_graphs", lambda *a, **k: pytest.fail("needs no EXE"))
+    assert cli.main(["mechanics", "write", "--config", str(root)]) == 0
+    text = (root / mechanics.MEMBERS_CSV).read_text(encoding="utf-8")
+    assert text == MEMBERS_COMMENT + "\n" + ",".join(MEMBERS_COLUMNS) + "\n"
+
+
+def _digest_world():
+    """E (tier 1) -> H (hub: callers E, C, D) -> X; D -> H and D -> X."""
+    return graph((E, H), (C, H), (D, H), (H, X), (D, X)), mechanics.HubRule(min_direct_callers=3)
+
+
+def test_tier_digest_changes_on_change():
+    g, rule = _digest_world()
+    base = M(rule=rule)
+    digest = mechanics.tier_digest(base, members(base, g), 1)
+    assert len(digest) == 64
+    assert mechanics.tier_digest(base, members(base, g), 1) == digest  # deterministic
+    other_rule = M(rule=mechanics.HubRule(min_direct_callers=4))
+    assert mechanics.tier_digest(other_rule, members(other_rule, g), 1) != digest
+    more = M(rule=rule, entries=(("997", E), ("997", C)))
+    assert mechanics.tier_digest(more, members(more, g), 1) != digest
+    as_asm = members(base, g, asm=frozenset({("ufo2p", X)}))
+    assert by_address(as_asm)[X].role == "asm"
+    assert mechanics.tier_digest(base, as_asm, 1) != digest
+    # a Tier 2 item that makes Tier 1's closure row X a Tier 2 member leaves Tier 1 alone
+    later = M(rule=rule, items=(("997", 1), ("263-2", 2)), entries=(("997", E), ("263-2", D)))
+    later_rows = members(later, g)
+    assert by_address(later_rows)[X].role == "member"
+    assert by_address(later_rows)[X].member_items == ("263-2",)
+    assert mechanics.tier_digest(later, later_rows, 1) == digest
+    assert mechanics.tier_digest(later, later_rows, 2) != digest
+
+
+def test_signed_tiers():
+    g, rule = _digest_world()
+    base = M(rule=rule)
+    rows = members(base, g)
+    digest = mechanics.tier_digest(base, rows, 1)
+    signed = M(rule=rule, signed={1: ("owner", datetime.date(2026, 11, 2), digest)})
+    assert mechanics.signed_tiers(signed, rows) == (1,)
+    stale = M(rule=rule, signed={1: ("owner", datetime.date(2026, 11, 2), "0" * 64)})
+    assert mechanics.signed_tiers(stale, rows) == ()
+
+
+def _committed(tmp_path, *, sign=True, asm=()) -> Path:
+    """A config root with mechanics.toml (tier 1 signed), members, functions.csv, asm list."""
+    g, rule = _digest_world()
+    nodes = (E, C, D, H, X)
+    root = _config(tmp_path, "", rows=game_rows(*nodes))
+    top = {"schema": 1, "hub_rule": {"min_direct_callers": 3}}
+    if asm:
+        path = root / mechanics.ASM_CSV
+        path.write_text(asm_text(*((a, "asm") for a in asm)), encoding="utf-8")
+        top["asm_list"] = _asm_signoff(path)
+    mech = M(rule=rule)
+    rows = members(mech, g, nodes=nodes, asm=frozenset(("ufo2p", a) for a in asm))
+    write_members(root / mechanics.MEMBERS_CSV, rows)
+    t1 = tier(1)
+    if sign:
+        t1 |= {"signed_off_by": "owner", "signed_off_date": datetime.date(2026, 11, 2),
+               "members_sha256": mechanics.tier_digest(mech, rows, 1)}  # fmt: skip
+    text = toml_text(top, tier=[t1, tier(2)], item=[item()], entry=[entry()])
+    (root / "mechanics.toml").write_text(text, encoding="utf-8")
+    return root
+
+
+def _rewrite(root: Path, change) -> None:
+    path = root / mechanics.MEMBERS_CSV
+    write_members(path, [change(row) for row in read_members(path)])
+
+
+def test_check_clean(tmp_path):
+    root = _committed(tmp_path)
+    assert mechanics.check_committed(root) == []
+    assert cli.main(["mechanics", "check", "--config", str(root)]) == 0
+    assert mechanics.check_committed(tmp_path / "nothing") == []  # no mechanics.toml yet
+
+
+def _runtime_member(root):
+    rows = read_members(root / mechanics.MEMBERS_CSV)
+    rows.append(MemberRow("ufo2p", RUNTIME, ("997",), (1,), ("997",), "direct", "member"))
+    write_members(root / mechanics.MEMBERS_CSV, rows)
+
+
+def _entry_not_entry(root):
+    _rewrite(root, lambda r: dataclasses.replace(r, via="direct") if r.address == E else r)
+
+
+def _digest_drift(root):
+    _rewrite(root, lambda r: dataclasses.replace(r, role="hub") if r.address == X else r)
+
+
+def _entryless_item(root):
+    text = (root / "mechanics.toml").read_text(encoding="utf-8")
+    extra = toml_text({}, item=[item("263-1")])
+    (root / "mechanics.toml").write_text(text + extra, encoding="utf-8")
+
+
+def _asm_entry(root):
+    (root / mechanics.ASM_CSV).write_text(asm_text((E, "asm")), encoding="utf-8")
+    table = toml_text({"asm_list": _asm_signoff(root / mechanics.ASM_CSV)})
+    text = (root / "mechanics.toml").read_text(encoding="utf-8")
+    text = text.replace("schema = 1\n", "schema = 1\n" + table, 1)
+    (root / "mechanics.toml").write_text(text, encoding="utf-8")
+
+
+def _changed_asm(root):
+    with (root / mechanics.ASM_CSV).open("a", encoding="utf-8") as fh:
+        fh.write("ufo2p,0x00010A00,off-alignment,asm,\n")
+
+
+@pytest.mark.parametrize(("change", "word", "asm"), [
+    pytest.param(_runtime_member, "game or thunk", (), id="runtime row"),
+    pytest.param(_entry_not_entry, "via entry", (), id="entry without via entry"),
+    pytest.param(_digest_drift, "re-sign", (), id="signed tier changed"),
+    pytest.param(_entryless_item, "no entry", (), id="signed tier entry-less item"),
+    pytest.param(_asm_entry, "asm list", (), id="asm-listed entry"),
+    pytest.param(_changed_asm, "changed since", (C,), id="changed asm list"),
+])  # fmt: skip
+def test_check_refuses(tmp_path, change, word, asm):
+    root = _committed(tmp_path, asm=asm)
+    assert mechanics.check_committed(root) == []
+    change(root)
+    problems = mechanics.check_committed(root)
+    assert problems and any(word in p for p in problems), problems
+    assert cli.main(["mechanics", "check", "--config", str(root)]) == 1
+
+
+def test_check_without_members_file(tmp_path):
+    root = _committed(tmp_path, sign=False)
+    (root / mechanics.MEMBERS_CSV).unlink()
+    assert any("mechanics write" in p for p in mechanics.check_committed(root))
+    (root / "mechanics.toml").write_text("schema = 1\n", encoding="utf-8")
+    assert mechanics.check_committed(root) == []  # nothing to generate yet
+
+
+def test_digest_verb(tmp_path, capsys):
+    root = _committed(tmp_path)
+    mech = load(root / "mechanics.toml")
+    rows = read_members(root / mechanics.MEMBERS_CSV)
+    assert cli.main(["mechanics", "digest", "--tier", "1", "--config", str(root)]) == 0
+    assert capsys.readouterr().out.strip() == mechanics.tier_digest(mech, rows, 1)
+    assert cli.main(["mechanics", "digest", "--tier", "7", "--config", str(root)]) == 2

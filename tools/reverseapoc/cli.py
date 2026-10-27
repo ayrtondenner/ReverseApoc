@@ -1388,6 +1388,13 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     )
     _mechanics_roots(w, game=True)
     w.set_defaults(mechanics_func=_mechanics_write)
+    c = verbs.add_parser("check")  # stub (plan 07-10 RED)
+    _mechanics_roots(c, game=False)
+    c.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
+    d = verbs.add_parser("digest")  # stub (plan 07-10 RED)
+    d.add_argument("--tier", type=int, required=True)
+    _mechanics_roots(d, game=False)
+    d.set_defaults(mechanics_func=lambda args: EXIT_TOOL)
     p.set_defaults(func=_cmd_mechanics)
 
 
