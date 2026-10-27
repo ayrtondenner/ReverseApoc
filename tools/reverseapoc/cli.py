@@ -1693,7 +1693,10 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
     )
     ls.add_argument("--json", action="store_true", help="print the queue as JSON")
     ls.set_defaults(flags_func=_flags_list)
-    for verb in (pr, ls):
+    rg = verbs.add_parser("regate")
+    rg.add_argument("ids", nargs="+", metavar="ID")
+    rg.set_defaults(flags_func=lambda args: 0)
+    for verb in (pr, ls, rg):
         verb.add_argument("--repo", type=Path, default=REPO_ROOT,
                           help=f"the checkout whose config/ and build/ are read; {default}")
     p.set_defaults(func=_cmd_flags)

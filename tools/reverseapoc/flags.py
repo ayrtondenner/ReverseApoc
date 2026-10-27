@@ -618,3 +618,29 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
         write_queue(queue, proposals)
     return ProposeReport(tuple(added), tuple(dict.fromkeys(merged)), tuple(skipped),
                          tuple(proposals))  # fmt: skip
+
+
+# ---- regate (API stubs for the RED tests) ----
+
+
+@dataclass(frozen=True)
+class RegateReport:
+    proposals: tuple[Proposal, ...] = ()
+    exit_code: int = 0
+
+
+def cflags_sha256(path: Path) -> str:
+    return ""
+
+
+def temp_cflags(dest: Path, committed: Path, proposal: Proposal) -> str:
+    return ""
+
+
+def _reduced(text: str, neighbour: str) -> str:
+    return text
+
+
+def regate(ids: Sequence[str], *, repo: Path, queue: Path | None = None,
+           check_fn: Any = None, cross_check_fn: Any = None) -> RegateReport:  # fmt: skip
+    return RegateReport()

@@ -8,14 +8,20 @@ hash here is made up; the only committed data read is progress/attempts.jsonl (t
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 
 import pytest
 
-from conftest import REPO_ROOT
-from reverseapoc import check, flags
+from conftest import REPO_ROOT, write_manifest
+from reverseapoc import check, contextpack, flags
+from reverseapoc.cflags import parse_cflags, select_rule
+from reverseapoc.check import CheckError, CheckResult, ExeLand, FunctionCheck
 from reverseapoc.cli import main as cli_main
+from reverseapoc.functions import FunctionRow, write_functions_csv
+from reverseapoc.land import LandResult
+from reverseapoc.relocs import RelocResult
 from reverseapoc.status import lf_sha256
 
 RUN = "20261026-005209"
@@ -310,8 +316,6 @@ def _two_function_unit(repo: Path, hits_a: set[int], hits_b: set[int]) -> None:
 def test_merge_by_intersection(tmp_path):
     """Two functions of one unit: one proposal whose rule is in both functions' 100% cells,
     and whose candidate defines both functions as each one hit."""
-    from reverseapoc import contextpack
-
     repo = make_repo(tmp_path)
     _two_function_unit(repo, {4, 5, 14}, {5, 15})
     report = flags.propose([RUN], repo=repo)
@@ -416,3 +420,219 @@ def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
     assert (q.status, q.regate_exit, q.regate_variant, q.regate_cflags_sha256, q.regate_log) == (
         "proposed", -1, "empty", "", "")
     assert q.candidate_sha256 == p.candidate_sha256  # same function: the candidate stays
+
+
+# ---- Task 3: flags regate ----
+
+KEEP, OTHER = "func_00060C50", "func_0008A0E0"
+STARTS = {KEEP: 0x60C50, F30: 0x61F30, F50: 0x61F50, FA0: 0x61FA0, OTHER: 0x8A0E0}
+UNITS = {KEEP: UNIT, F30: UNIT, F50: UNIT, FA0: UNIT, OTHER: "u_00089980"}
+SHA1 = "1" * 40
+
+
+def regate_repo(tmp_path: Path, *, matched: tuple[str, ...] = (OTHER,),
+                candidate: str | None = None) -> Path:  # fmt: skip
+    """A checkout with a manifest, functions.csv, status.csv (`matched` rows), a committed
+    src/ unit of another unit, and F-0001 queued for func_00061F30 of u_00060c50."""
+    repo = make_repo(tmp_path)
+    write_manifest(repo / "config" / "targets.toml", {"UFO2P.EXE": b"u", "TACP.EXE": b"t"})
+    rows = [FunctionRow(start, start + 0x10, name, "game", UNITS[name], "made-up")
+            for name, start in sorted(STARTS.items(), key=lambda item: item[1])]  # fmt: skip
+    write_functions_csv(repo / "config" / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+    write_status(repo, "ufo2p", [(STARTS[n], n, UNITS[n], "matched", "100.00") for n in matched])
+    (repo / "src" / "ufo2p").mkdir(parents=True)
+    (repo / "src" / "ufo2p" / "u_00089980.c").write_text(c_text(OTHER, tag="committed"),
+                                                         encoding="utf-8", newline="\n")
+    text = candidate if candidate is not None else c_text(F30, marked=(F50, FA0), tag="hit")
+    path = repo / "build" / "flags" / "F-0001" / f"{UNIT}.c"
+    path.parent.mkdir(parents=True)
+    path.write_text(text, encoding="utf-8", newline="\n")
+    keeps = tuple(n for n in matched if UNITS[n] == UNIT)
+    flags.write_queue(queue_of(repo), [_proposal(keeps=keeps, candidate_sha256=lf_sha256(text),
+                                                 siblings=())])  # fmt: skip
+    return repo
+
+
+class FakeCheck:
+    """check_unit stand-in: every function the unit file defines (contextpack.definitions) is
+    scored from `scores` (default 100); the land lands every matched start of other units plus
+    the defined ones, minus `drop`."""
+
+    def __init__(self, scores: dict[str, float] | None = None, drop: tuple[str, ...] = ()):
+        self.scores = scores or {}
+        self.drop = {STARTS[name] for name in drop}
+        self.calls: list[dict] = []
+
+    def __call__(self, exe, unit, **kw):
+        text = (Path(kw["src_root"]) / exe / f"{unit}.c").read_text(encoding="utf-8")
+        cflags_text = Path(kw["cflags"]).read_text(encoding="utf-8")
+        self.calls.append({**kw, "exe": exe, "unit": unit, "text": text,
+                           "cflags_text": cflags_text})  # fmt: skip
+        fns = []
+        for name in sorted(contextpack.definitions(text)):
+            percent = self.scores.get(name, 100.0)
+            ok = percent == 100.0
+            fns.append(FunctionCheck(name, STARTS[name], 16, percent,
+                                     RelocResult(ok, (), frozenset(), frozenset()), ok,
+                                     0 if ok else 3, None))  # fmt: skip
+        landed = ({STARTS[OTHER]} | {fn.va for fn in fns}) - self.drop
+        good = all(fn.ok for fn in fns) and not self.drop
+        land = LandResult(b"", SHA1 if good else "f" * 40, SHA1, tuple(sorted(landed)), 0)
+        return CheckResult(exe, unit, "wcc386@10.6", ("-4r",), tuple(fns),
+                           (ExeLand("UFO2P.EXE", land),))  # fmt: skip
+
+
+def _snapshot(repo: Path) -> dict[str, tuple[str, int]]:
+    """sha256 and mtime of config/cflags.txt and every file under src/."""
+    files = [repo / "config" / "cflags.txt", *sorted((repo / "src").rglob("*"))]
+    return {p.as_posix(): (hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+            for p in files if p.is_file()}  # fmt: skip
+
+
+def test_regate_writes_nothing_shared(tmp_path):
+    repo = regate_repo(tmp_path)
+    before = _snapshot(repo)
+    fake = FakeCheck()
+    report = flags.regate(["F-0001"], repo=repo, check_fn=fake)
+    assert _snapshot(repo) == before
+    (call,) = fake.calls
+    work = repo / "build" / "flags" / "F-0001"
+    assert Path(call["cflags"]) == work / "cflags.txt"
+    assert Path(call["src_root"]) == work / "src"
+    assert call["text"] == (work / f"{UNIT}.c").read_text(encoding="utf-8")
+    assert (work / "src" / "ufo2p" / "u_00089980.c").is_file()  # the rest of src/ is copied
+    committed = (repo / "config" / "cflags.txt").read_text(encoding="utf-8")
+    temp = call["cflags_text"]
+    assert temp.startswith(committed) and temp[len(committed) :].count("\n") == 1
+    rules = parse_cflags(temp, versions=("10.6", "10.5", "11.0"))
+    rule = select_rule(rules, f"src/ufo2p/{UNIT}.c")
+    assert " ".join([rule.spec, *rule.flags]) == "wcc386@10.6 -4r -ot -s -fpi"
+    assert select_rule(rules, "src/ufo2p/u_00089980.c").flags == ("-4r", "-s", "-fpi")
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit, p.regate_variant) == ("regated", 0, "as-written")
+    assert p.regate_log == "build/flags/F-0001/regate.json" and (repo / p.regate_log).is_file()
+    assert report.exit_code == 0
+
+
+def test_regate_refuses_the_committed_cflags(tmp_path):
+    repo = regate_repo(tmp_path)
+    committed = repo / "config" / "cflags.txt"
+    before = committed.read_bytes()
+    (p,) = flags.read_queue(queue_of(repo))
+    with pytest.raises(flags.FlagsError, match="committed"):
+        flags.temp_cflags(committed, committed, p)
+    with pytest.raises(flags.FlagsError, match="committed"):
+        flags.temp_cflags(repo / "config" / "." / "cflags.txt", committed, p)
+    assert committed.read_bytes() == before
+
+
+def test_regate_kept_function_drop(tmp_path):
+    """DEC-03 adjacency: a kept (matched) function of the unit at 99.99 under the rule."""
+    repo = regate_repo(tmp_path, matched=(OTHER, KEEP),
+                       candidate=c_text(KEEP, F30, marked=(F50, FA0), tag="hit"))
+    report = flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck({KEEP: 99.99}))
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.keeps == (KEEP,)
+    assert (p.status, p.regate_exit, p.regate_variant) == ("failed", 1, "as-written")
+    assert KEEP in p.reason and report.exit_code == 1
+
+
+def test_regate_cross_check_drop(tmp_path):
+    """A landed set one matched start short of status.csv fails the cross-check."""
+    repo = regate_repo(tmp_path)
+    flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck(drop=(OTHER,)))
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("failed", 1)
+    assert OTHER in p.reason
+
+
+def test_regate_cross_check_drop_with_a_passing_check(tmp_path):
+    """The check passes but the cross-check reports a problem: exit 1."""
+    repo = regate_repo(tmp_path)
+    seen = []
+
+    def cross(splices, matched, defined, *, owners=None):
+        seen.append((matched, defined))
+        return [f"ufo2p: {OTHER} at 0x0008A0E0 is matched but was not landed"]
+
+    flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck(), cross_check_fn=cross)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("failed", 1)
+    matched, defined = seen[0]
+    assert set(matched["UFO2P.EXE"]) == {STARTS[OTHER]}
+    assert defined == {"UFO2P.EXE": {STARTS[F30]: UNIT}}
+
+
+def test_regate_reduced_variant(tmp_path):
+    """D-28: as written, only the co-defined neighbour misses; the reduced candidate (the
+    neighbour back to INCLUDE_ASM) passes."""
+    repo = regate_repo(tmp_path, candidate=c_text(F30, F50, marked=(FA0,), tag="hit"))
+    fake = FakeCheck({F50: 46.45})
+    flags.regate(["F-0001"], repo=repo, check_fn=fake)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit, p.regate_variant) == ("regated", 0, "reduced")
+    first, second = fake.calls
+    assert f"int {F50}(int a)" in first["text"]
+    assert f"INCLUDE_ASM({F50});" in second["text"] and f"int {F50}(" not in second["text"]
+    assert f"int {F30}(int a)" in second["text"]
+    assert (repo / p.candidate).read_text(encoding="utf-8") == first["text"]  # kept as hit
+
+
+def test_regate_no_reduced_retry_when_the_target_misses(tmp_path):
+    repo = regate_repo(tmp_path, candidate=c_text(F30, F50, marked=(FA0,), tag="hit"))
+    fake = FakeCheck({F30: 90.0, F50: 46.45})
+    flags.regate(["F-0001"], repo=repo, check_fn=fake)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert len(fake.calls) == 1 and (p.status, p.regate_variant) == ("failed", "as-written")
+
+
+def test_reduced_swaps_the_neighbour_for_include_asm():
+    text = c_text(F30, F50, marked=(FA0,), tag="hit")
+    reduced = flags._reduced(text, F50)
+    assert f"INCLUDE_ASM({F50});" in reduced and f"int {F50}(" not in reduced
+    assert f"int {F30}(int a)" in reduced and f"INCLUDE_ASM({FA0});" in reduced
+
+
+def test_regate_records_cflags_sha(tmp_path):
+    repo = regate_repo(tmp_path)
+    flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
+    (p,) = flags.read_queue(queue_of(repo))
+    committed = (repo / "config" / "cflags.txt").read_text(encoding="utf-8")
+    assert p.regate_cflags_sha256 == lf_sha256(committed)
+    assert flags.cflags_sha256(repo / "config" / "cflags.txt") == lf_sha256(committed)
+
+
+def test_regate_check_error_is_exit_2(tmp_path):
+    repo = regate_repo(tmp_path)
+
+    def broken(exe, unit, **kw):
+        raise CheckError("compile failed: made-up")
+
+    flags.regate(["F-0001"], repo=repo, check_fn=broken)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert (p.status, p.regate_exit) == ("failed", 2) and "compile failed" in p.reason
+
+
+def test_regate_refusals(tmp_path):
+    repo = regate_repo(tmp_path)
+    with pytest.raises(flags.FlagsError, match="F-0009"):
+        flags.regate(["F-0009"], repo=repo, check_fn=FakeCheck())
+    candidate = repo / "build" / "flags" / "F-0001" / f"{UNIT}.c"
+    text = candidate.read_bytes()
+    candidate.write_text("changed\n", encoding="utf-8")
+    with pytest.raises(flags.FlagsError, match="candidate"):
+        flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
+    candidate.write_bytes(text)
+    (p,) = flags.read_queue(queue_of(repo))
+    flags.write_queue(queue_of(repo), [dataclasses.replace(p, status="landed")])
+    with pytest.raises(flags.FlagsError, match="landed"):
+        flags.regate(["F-0001"], repo=repo, check_fn=FakeCheck())
+
+
+def test_cli_regate(tmp_path, monkeypatch, capsys):
+    repo = regate_repo(tmp_path)
+    monkeypatch.setattr(check, "check_unit", FakeCheck())
+    assert cli_main(["flags", "regate", "F-0001", "--repo", str(repo)]) == 0
+    assert "F-0001" in capsys.readouterr().out
+    monkeypatch.setattr(check, "check_unit", FakeCheck({F30: 50.0}))
+    assert cli_main(["flags", "regate", "F-0001", "--repo", str(repo)]) == 1
