@@ -456,16 +456,80 @@ def _committed(tmp_path, *, sign=True, asm=()) -> Path:
         path = root / mechanics.ASM_CSV
         path.write_text(asm_text(*((a, "asm") for a in asm)), encoding="utf-8")
         top["asm_list"] = _asm_signoff(path)
-    mech = M(rule=rule)
-    rows = members(mech, g, nodes=nodes, asm=frozenset(("ufo2p", a) for a in asm))
+    rows = members(M(rule=rule), g, nodes=nodes, asm=frozenset(("ufo2p", a) for a in asm))
     write_members(root / mechanics.MEMBERS_CSV, rows)
+    path = root / "mechanics.toml"
+    path.write_text(toml_text(top, tier=[tier(1), tier(2)], item=[item()], entry=[entry()]),
+                    encoding="utf-8")  # fmt: skip
     t1 = tier(1)
-    if sign:
+    if sign:  # the digest of the TOML just written, as the owner's `mechanics digest` gives it
         t1 |= {"signed_off_by": "owner", "signed_off_date": datetime.date(2026, 11, 2),
-               "members_sha256": mechanics.tier_digest(mech, rows, 1)}  # fmt: skip
-    text = toml_text(top, tier=[t1, tier(2)], item=[item()], entry=[entry()])
-    (root / "mechanics.toml").write_text(text, encoding="utf-8")
+               "members_sha256": mechanics.tier_digest(load(path), rows, 1)}  # fmt: skip
+    path.write_text(toml_text(top, tier=[t1, tier(2)], item=[item()], entry=[entry()]),
+                    encoding="utf-8")  # fmt: skip
     return root
+
+
+def _append_toml(root: Path, **tables) -> None:
+    path = root / "mechanics.toml"
+    path.write_text(path.read_text(encoding="utf-8") + toml_text({}, **tables), encoding="utf-8")
+
+
+def _edit_toml(root: Path, old: str, new: str) -> None:
+    path = root / "mechanics.toml"
+    text = path.read_text(encoding="utf-8")
+    assert old in text
+    path.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+
+def _hand_edge(src: int, dst: int) -> dict:
+    return {"exe": "ufo2p", "from": f"0x{src:08X}", "to": f"0x{dst:08X}", "evidence": "proved"}
+
+
+SIGNED_TOML_EDITS = [
+    pytest.param(lambda r: _edit_toml(r, 'detail = "reads the tick"', 'detail = "reads it"'),
+                 id="entry detail"),
+    pytest.param(lambda r: _edit_toml(r, 'evidence = "bios-tick"', 'evidence = "string"'),
+                 id="entry evidence"),
+    pytest.param(lambda r: _edit_toml(r, 'source = "spike 007"', 'source = "spike 008"'),
+                 id="entry source"),
+    pytest.param(lambda r: _append_toml(r, item=[item("263-19", scope="out", reason="tooling")]),
+                 id="out item added"),
+    pytest.param(lambda r: _append_toml(r, item=[item("263-21", scope="duplicate",
+                                                      duplicate_of="997")]),
+                 id="duplicate item added"),
+    pytest.param(lambda r: _edit_toml(r, 'title = "Item 997"', 'title = "Ticks"'),
+                 id="item title"),
+    pytest.param(lambda r: _append_toml(r, edge=[_hand_edge(E, C)]),
+                 id="hand edge, members not regenerated"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize("edit", SIGNED_TOML_EDITS)
+def test_signed_toml_edit_reopens_the_tier(tmp_path, edit):
+    root = _committed(tmp_path)
+    rows = read_members(root / mechanics.MEMBERS_CSV)
+    before = mechanics.tier_digest(load(root / "mechanics.toml"), rows, 1)
+    edit(root)
+    assert mechanics.tier_digest(load(root / "mechanics.toml"), rows, 1) != before
+    problems = mechanics.check_committed(root)
+    assert any("changed since sign-off: re-sign" in p for p in problems), problems
+
+
+def test_signed_out_item_reason_change_reopens_the_tier(tmp_path):
+    root = _committed(tmp_path)
+    _append_toml(root, item=[item("263-19", scope="out", reason="tooling")])
+    rows = read_members(root / mechanics.MEMBERS_CSV)
+    before = mechanics.tier_digest(load(root / "mechanics.toml"), rows, 1)
+    _edit_toml(root, 'reason = "tooling"', 'reason = "a project item"')
+    assert mechanics.tier_digest(load(root / "mechanics.toml"), rows, 1) != before
+
+
+def test_other_tier_edits_leave_the_tier_alone(tmp_path):
+    root = _committed(tmp_path)
+    _append_toml(root, item=[item("263-20", tier_=2, scope="out", reason="tooling")])
+    _append_toml(root, edge=[_hand_edge(C, D)])  # C and D are not reached by tier 1
+    assert mechanics.check_committed(root) == []
 
 
 def _rewrite(root: Path, change) -> None:
