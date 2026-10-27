@@ -183,6 +183,14 @@ def _file_scope(code: str, pattern: re.Pattern[str]) -> list[str]:
     return found
 
 
+def file_scope_definitions(code: str) -> list[str]:
+    """The names of the function definitions at brace depth 0 of `code` (configure's code_text:
+    comments and literals blanked, directives and dead branches removed), in file order, by any
+    identifier but a C keyword. readlint (07-27) places each one on its token; it asks here so
+    the two never disagree about what a definition is."""
+    return _file_scope(code, DEFINITION_ANY)
+
+
 @dataclass(frozen=True)
 class _Names:
     """The names one find reads by: the unit's game and thunk rows by current C name and by old
