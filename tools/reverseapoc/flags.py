@@ -99,6 +99,8 @@ class Proposal:
     approved_by: str
     approved_date: str
     reason: str  # why it failed or was rejected
+    variant_sha256: str
+    reverted: tuple[str, ...]
 
     def to_json(self) -> dict[str, Any]:
         return {key: list(value) if isinstance(value, tuple) else value
@@ -120,7 +122,7 @@ class Proposal:
 
 
 FIELDS = tuple(f.name for f in dataclasses.fields(Proposal))
-_LIST_FIELDS = ("functions", "keeps", "siblings", "alternatives", "evidence")
+_LIST_FIELDS = ("functions", "keeps", "siblings", "alternatives", "evidence", "reverted")
 _INT_FIELDS = ("regate_exit",)
 
 
@@ -422,6 +424,10 @@ class _Context:
                      if row.unit == unit and row.status == PARTIAL and row.name not in skip)
 
 
+def variant_path(p: Proposal) -> str:
+    return ""
+
+
 def _relative(repo: Path, path: Path) -> str:
     return path.relative_to(repo).as_posix()
 
@@ -520,7 +526,8 @@ def _new_proposal(repo: Path, ctx: _Context, pid: str, hit: Hit) -> Proposal:
         siblings=ctx.siblings(hit.exe, hit.unit, (hit.function,)), alternatives=tuple(alternatives),
         source=hit.source, candidate=candidate, candidate_sha256=sha, evidence=(hit.evidence,),
         status=PROPOSED, regate_exit=NOT_RUN, regate_variant=EMPTY, regate_cflags_sha256="",
-        regate_log="", approved_by="", approved_date="", reason="",
+        regate_log="", approved_by="", approved_date="", reason="", variant_sha256="",
+        reverted=(),
     )  # fmt: skip
 
 
