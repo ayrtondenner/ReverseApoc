@@ -7,6 +7,7 @@ hash here is made up; the only committed data read is progress/attempts.jsonl (t
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
@@ -292,3 +293,126 @@ def test_cli_flags_error_exits_2(tmp_path, capsys):
     repo = make_repo(tmp_path)
     assert cli_main(["flags", "propose", "--from-attempts", "nope", "--repo", str(repo)]) == 2
     assert "nope" in capsys.readouterr().err
+
+
+# ---- Task 2: merging hits per unit, the tie-break, failed proposals, siblings ----
+
+
+def _two_function_unit(repo: Path, hits_a: set[int], hits_b: set[int]) -> None:
+    """func_00061F30 and func_00061F50 of one unit each hit in their own attempt, each snapshot
+    defining only its own function."""
+    make_attempt(repo, F30, checks=[(1, True, sweep_doc(F30, hits=hits_a),
+                                     c_text(F30, marked=(F50, FA0), tag="A"))])  # fmt: skip
+    make_attempt(repo, F50, checks=[(1, True, sweep_doc(F50, hits=hits_b),
+                                     c_text(F50, marked=(F30, FA0), tag="B"))])  # fmt: skip
+
+
+def test_merge_by_intersection(tmp_path):
+    """Two functions of one unit: one proposal whose rule is in both functions' 100% cells,
+    and whose candidate defines both functions as each one hit."""
+    from reverseapoc import contextpack
+
+    repo = make_repo(tmp_path)
+    _two_function_unit(repo, {4, 5, 14}, {5, 15})
+    report = flags.propose([RUN], repo=repo)
+    assert report.added == ("F-0001",) and report.merged == ("F-0001",)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.functions == (F30, F50) and p.rule == spec(5) and p.alternatives == ()
+    assert p.status == "proposed" and len(p.evidence) == 2
+    candidate = (repo / p.candidate).read_text(encoding="utf-8")
+    assert p.candidate_sha256 == lf_sha256(candidate)
+    defs = contextpack.definitions(candidate)
+    a = (repo / "build/driver" / RUN / "ufo2p" / F30 / "attempt-1/checks/0001.c").read_text()
+    b = (repo / "build/driver" / RUN / "ufo2p" / F50 / "attempt-1/checks/0001.c").read_text()
+    assert defs[F30].source == contextpack.definitions(a)[F30].source
+    assert defs[F50].source == contextpack.definitions(b)[F50].source
+    assert f"INCLUDE_ASM({F50});" not in candidate
+
+
+def test_merge_by_intersection_keeps_the_rest_as_alternatives(tmp_path):
+    repo = make_repo(tmp_path)
+    _two_function_unit(repo, {4, 5, 14, 15}, {4, 5, 15})
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.rule == spec(4) and p.alternatives == (spec(5), spec(15))
+
+
+def test_empty_intersection_fails(tmp_path):
+    repo = make_repo(tmp_path)
+    _two_function_unit(repo, {4}, {5})
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.status == "failed" and p.rule == "" and p.alternatives == ()
+    assert F30 in p.reason and F50 in p.reason
+
+
+def test_tie_break(tmp_path):
+    """DEC-03 ordering: fewer flags first, then the lower cell number."""
+    repo = make_repo(tmp_path)
+    # cell 11 is 10.5's `-4r -s -fpi` (three flags), cell 4 10.6's `-4r -ot -s -fpi` (four)
+    make_attempt(repo, F30, checks=[(1, True, sweep_doc(F30, hits={4, 11}), c_text(F30))])
+    # cells 5 (10.6 -oneatx) and 14 (10.5 -ot): four flags each, so the lower cell wins
+    make_attempt(repo, "func_000779C0", exe="tacp", unit="u_000778d0",
+                 checks=[(1, True, sweep_doc("func_000779C0", exe="tacp", unit="u_000778d0",
+                                             hits={5, 14}), c_text("func_000779C0"))])  # fmt: skip
+    make_attempt(repo, "func_0006FBD0", exe="tacp", unit="u_0006fbd0",
+                 checks=[(1, True, sweep_doc("func_0006FBD0", exe="tacp", unit="u_0006fbd0",
+                                             hits={4, 5}), c_text("func_0006FBD0"))])  # fmt: skip
+    flags.propose([RUN], repo=repo)
+    by_unit = {p.unit: p for p in flags.read_queue(queue_of(repo))}
+    fewer = by_unit[UNIT]
+    assert fewer.rule == "wcc386@10.5 -4r -s -fpi" == spec(11)  # the fewer-flags rule wins
+    assert fewer.alternatives == (spec(4),)
+    assert by_unit["u_000778d0"].rule == "wcc386@10.6 -4r -oneatx -s -fpi" == spec(5)
+    assert by_unit["u_0006fbd0"].rule == "wcc386@10.6 -4r -ot -s -fpi" == spec(4)
+    assert by_unit["u_0006fbd0"].alternatives == ("wcc386@10.6 -4r -oneatx -s -fpi",)
+    # numbered in the order hits are found, sorted by (exe, start): tacp first
+    assert [p.id for p in sorted(by_unit.values(), key=lambda p: p.id)] == ["F-0001", "F-0002",
+                                                                            "F-0003"]  # fmt: skip
+    assert (by_unit["u_0006fbd0"].id, by_unit["u_000778d0"].id, fewer.id) == (
+        "F-0001", "F-0002", "F-0003")
+
+
+def test_stage2_hit_source(tmp_path):
+    repo = make_repo(tmp_path)
+    stage2 = [cell(31, hit=False, version="10.6", cell_flags=("-4r", "-od", "-s", "-fpi")),
+              cell(32, hit=True, version="10.6", cell_flags=("-4r", "-ot", "-s", "-fpi", "-zp4"))]
+    make_attempt(repo, F30, checks=[(1, True, sweep_doc(F30, hits=set(), stage2=stage2),
+                                     c_text(F30))])  # fmt: skip
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.source == "sweep2" and p.rule == "wcc386@10.6 -4r -ot -s -fpi -zp4"
+
+
+def test_siblings_listed(tmp_path):
+    """D-32: every other partial row of the unit, with its percent; matched rows are keeps."""
+    repo = make_repo(tmp_path)
+    write_status(repo, "ufo2p", [(0x60C50, "func_00060C50", UNIT, "matched", "100.00"),
+                                 (0x61F30, F30, UNIT, "partial", "77.14"),
+                                 (0x61F50, F50, UNIT, "partial", "46.45"),
+                                 (0x61FA0, FA0, UNIT, "partial", "67.50"),
+                                 (0x70000, "func_00070000", "u_00070000", "partial", "12.00")])
+    _pilot_attempt(repo)
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    assert p.siblings == (f"{F50} 46.45", f"{FA0} 67.50")
+    assert p.keeps == ("func_00060C50",)
+
+
+def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
+    repo = make_repo(tmp_path)
+    _two_function_unit(repo, {4, 5}, {4, 5})
+    make_attempt(repo, F30, run="20261027-000000",
+                 checks=[(1, True, sweep_doc(F30, hits={4, 5}), c_text(F30, tag="A"))])
+    flags.propose([RUN], repo=repo)
+    (p,) = flags.read_queue(queue_of(repo))
+    flags.write_queue(queue_of(repo), [dataclasses.replace(
+        p, functions=(F30,), status="regated", regate_exit=0, regate_variant="as-written",
+        regate_cflags_sha256=SHA, regate_log="build/flags/F-0001/regate.json")])
+    # the evidence of F50's hit is already queued; a new run's F30 hit is the same function
+    report = flags.propose(["20261027-000000"], repo=repo)
+    (q,) = flags.read_queue(queue_of(repo))
+    assert report.merged == ("F-0001",) and len(q.evidence) == 3
+    assert (q.status, q.regate_exit, q.regate_variant, q.regate_cflags_sha256, q.regate_log) == (
+        "proposed", -1, "empty", "", "")
+    assert q.candidate_sha256 == p.candidate_sha256  # same function: the candidate stays
