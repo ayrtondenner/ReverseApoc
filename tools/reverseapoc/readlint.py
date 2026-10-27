@@ -35,31 +35,55 @@ Rules:
   `[ ]`. A tagged waiver `/* lit: <reason> */` on the same line accepts it and is counted.
   Character literals are not integers. Floating literals are no violation; `--report` lists
   them (research R5, owner-confirmed).
+
+Headers. The bare project headers a matched unit includes (`"name.h"` from the unit's directory
+or include/ beside the src root, `<name.h>` from include/; never common.h or watcom_compat.h),
+and the headers those include, are read once per run (strict UTF-8, no lone CR; include guards
+allowed) and checked for RL01 and RL04, reported against include/<name>.h.
+
+Allowlist (D-30). config/readlint-allow.csv (`exe,name,reason`) lists placeholder-named callees
+a matched unit may reference (a prototype, an extern, a call, a use) before they are named: hubs
+and asm rows that Tier 1 calls. It never exempts a definition: a function definition, or a
+declarator of a file-scope declaration without `extern` or `typedef`. Allowlisted references
+and tagged waivers are counted per file and reported. Headers get no allowlist.
+
+Selectors. `--units EXE/UNIT,...` and `--tier N` (the units holding the tier's `member` rows of
+config/mechanics-members.csv, mapped to units through functions.csv) narrow the files checked;
+the others are reported as skipped. `--src` and `--config` name other roots (plan 07-31 lints a
+view). `--report` exits 0 and adds per-file counts and the floating literals.
 """
 
 from __future__ import annotations
 
 import bisect
+import csv
 import itertools
 import re
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from . import unitdefs
+from . import mechanics, unitdefs
 from .check import CheckError, read_source
 from .functions import FunctionsError, read_functions_csv, read_symbols_csv
 from .lint import LintError, collect_sources
-from .proposals import EVIDENCE_KINDS, EXES, PLACEHOLDER, evidence_problem
+from .mechanics import MechanicsError
+from .proposals import EVIDENCE_KINDS, EXES, PLACEHOLDER, RESERVED_HEADERS, evidence_problem
 from .status import MATCHED, StatusError, read_status, status_path
 from .targets import REPO_ROOT
 
 EXIT_OK, EXIT_VIOLATIONS, EXIT_TOOL = 0, 1, 2
 UNIT_SUFFIX = ".c"
 FUNCTIONS_CSV, SYMBOLS_CSV = "functions.csv", "symbols.csv"  # under config/<exe>/
+ALLOWLIST = "readlint-allow.csv"  # under config/ (D-30)
+ALLOWLIST_COLUMNS = ("exe", "name", "reason")
+INCLUDE_DIR = "include"  # beside the src root
+_COMMENT_LINE = "#"
+_UNIT_SELECTOR = re.compile(r"([a-z0-9]+)/([a-z0-9_]+)")
+_INCLUDE = re.compile(r'(?:#|%:)[ \t]*include[ \t]*(?:"([A-Za-z0-9_]+\.h)"|<([A-Za-z0-9_]+\.h)>)')
 
 COMMENT, STRING, CHAR, DIRECTIVE, NUMBER, IDENT, PUNCT = (
     "comment", "string", "char", "directive", "number", "ident", "punct")  # fmt: skip
@@ -95,6 +119,7 @@ _UNNAMED_FIELD = re.compile(
     r"(?i)(?:unk|unknown|field|pad|padding|gap|filler|undefined)(?:_?(?:0x)?[0-9a-f]*)?(?:_\w*)?"
 )
 _FIELD_ENDS = (";", ",", "[", ":")
+_DECLARATOR_ENDS = ("=", ",", ";", "[")
 # RL06: the allowed literal contexts (D-20, research R5)
 WAIVER = re.compile(r"/\*\s*lit:\s*\S.*\*/")
 _U32 = 0xFFFFFFFF  # masks are 32-bit (wcc386 flat)
@@ -151,6 +176,7 @@ class ReadlintResult:
     waivers and allowlisted references the run accepted."""
 
     files_checked: tuple[str, ...] = ()
+    headers_checked: tuple[str, ...] = ()
     skipped: tuple[Skipped, ...] = ()
     violations: tuple[Violation, ...] = ()
     waivers: dict[str, int] = field(default_factory=dict)
@@ -165,11 +191,23 @@ class ReadlintResult:
     def rule_counts(self) -> dict[str, int]:
         return dict(sorted(Counter(v.rule for v in self.violations).items()))
 
+    def per_file(self) -> dict[str, dict[str, Any]]:
+        """Violations by rule, waivers and allowlisted references of every file checked."""
+        rules: dict[str, Counter[str]] = {}
+        for v in self.violations:
+            rules.setdefault(v.path, Counter())[v.rule] += 1
+        return {path: {"violations": sum(rules.get(path, Counter()).values()),
+                       "rules": dict(sorted(rules.get(path, Counter()).items())),
+                       "waivers": self.waivers.get(path, 0),
+                       "allowlisted": self.allowlisted.get(path, 0)}
+                for path in (*self.files_checked, *self.headers_checked)}  # fmt: skip
+
     def to_json(self) -> dict[str, Any]:
         return {
             "ok": not self.violations,
             "report": self.report,
             "files_checked": list(self.files_checked),
+            "headers_checked": list(self.headers_checked),
             "skipped": [{"path": s.path, "reason": s.reason} for s in self.skipped],
             "violations": [{"path": v.path, "line": v.line, "rule": v.rule, "message": v.message}
                            for v in self.violations],  # fmt: skip
@@ -177,6 +215,7 @@ class ReadlintResult:
             "waivers": dict(self.waivers),
             "allowlisted": dict(self.allowlisted),
             "floats": [{"path": f.path, "line": f.line, "text": f.text} for f in self.floats],
+            "per_file": self.per_file(),
         }
 
     def format(self) -> str:
@@ -184,8 +223,12 @@ class ReadlintResult:
         lines += [f"{f.path}:{f.line}: float {f.text}" for f in self.floats]
         verdict = "report" if self.report else ("ok" if not self.violations else "FAILED")
         rules = ", ".join(f"{rule} {n}" for rule, n in self.rule_counts().items())
+        if self.report:
+            lines += ["per file:", *(_file_line(path, counts)
+                                     for path, counts in self.per_file().items())]  # fmt: skip
         lines.append(
-            f"readlint: {len(self.files_checked)} files checked, {len(self.skipped)} skipped, "
+            f"readlint: {len(self.files_checked)} files checked, {len(self.headers_checked)} "
+            f"headers, {len(self.skipped)} skipped, "
             f"{len(self.violations)} violations{f' ({rules})' if rules else ''}, "
             f"{sum(self.waivers.values())} waivers, {sum(self.allowlisted.values())} "
             f"allowlisted, {verdict}"
@@ -194,6 +237,12 @@ class ReadlintResult:
 
 
 _NONE = Token(PUNCT, _NONE_TEXT, 0)  # what _Source.tok gives past either end
+
+
+def _file_line(path: str, counts: Mapping[str, Any]) -> str:
+    rules = ", ".join(f"{rule} {n}" for rule, n in counts["rules"].items())
+    return (f"  {path}: {counts['violations']} violations{f' ({rules})' if rules else ''}, "
+            f"{counts['waivers']} waivers, {counts['allowlisted']} allowlisted")  # fmt: skip
 
 
 # ---- reading and tokenizing ----
@@ -362,6 +411,33 @@ class _Source:
         return (self.depth[p] == 0 and self.tok(p).text == name and self.tok(p + 1).text == "("
                 and close is not None and self.tok(close + 1).text == "{")  # fmt: skip
 
+    def defined_positions(self) -> set[int]:
+        """Code positions of every name the file defines: function definitions and the
+        declarators of file-scope declarations without `extern` or `typedef`."""
+        found = set(self.definition_positions())
+        start = 0
+        for p in range(len(self.code)):
+            if not self._boundary(p):
+                continue
+            if self.tok(p).text == ";":
+                found.update(self._declarators(start, p))
+            start = p + 1
+        return found
+
+    def _declarators(self, start: int, end: int) -> Iterator[int]:
+        """The declarator names of the file-scope declaration at code positions start..end."""
+        level = [p for p in range(start, end) if self.inner[p] is None]
+        if any(self.tok(p).text in ("extern", "typedef") for p in level):
+            return
+        initializer = False
+        for p in level:
+            token = self.tok(p)
+            if token.text in ("=", ","):
+                initializer = token.text == "="
+            elif (not initializer and token.kind == IDENT and token.text not in unitdefs.C_KEYWORDS
+                  and self.tok(p + 1).text in _DECLARATOR_ENDS):  # fmt: skip
+                yield p
+
     def header_comment(self, position: int) -> Token | None:
         """The last comment between the previous depth-0 boundary (a `;`, a function body's
         `}`, a directive or the start of the file) and the declaration holding `position`."""
@@ -383,19 +459,77 @@ class _Source:
         return self.tok(p).text == ";" or self.tok(self.match.get(p, 0) - 1).text == ")"
 
 
-def _read(path: Path, shown: str, exe: str, cfg: ModuleType) -> _Source:
-    """A unit file read as configure reads it; ReadlintError for anything it refuses."""
+def _read(path: Path, shown: str, exe: str, cfg: ModuleType, *, unit: bool = True) -> _Source:
+    """A unit file read as configure reads it, or (unit=False) a header: the same strict UTF-8
+    and translation phases, but conditionals (include guards) are not evaluated and no
+    definitions are placed. ReadlintError for anything refused."""
     try:
         text = read_source(path)
     except CheckError as exc:
         raise ReadlintError(str(exc)) from None
     try:
         normalized = cfg.normalize_source(text)
-        code = cfg.code_text(text)
+        code = cfg.code_text(text) if unit else ""
     except cfg._ConditionalError as exc:
         raise ReadlintError(f"{shown}: {exc}") from None
-    tokens = _live(tokenize(normalized), cfg)
-    return _Source(shown, exe, tokens, unitdefs.file_scope_definitions(code))
+    tokens = tokenize(normalized)
+    if not unit:
+        return _Source(shown, exe, tokens, [])
+    return _Source(shown, exe, _live(tokens, cfg), unitdefs.file_scope_definitions(code))
+
+
+def _includes(src: _Source, here: Path, include_dir: Path) -> Iterator[Path]:
+    """The project headers `src` includes that exist: `"name.h"` from `here` then include/,
+    `<name.h>` from include/; the reserved headers left out."""
+    for token in src.tokens:
+        found = _INCLUDE.match(_COMMENTS.sub(" ", token.text)) if token.kind == DIRECTIVE else None
+        if found is None:
+            continue
+        name = found.group(1) or found.group(2)
+        places = [here / name, include_dir / name] if found.group(1) else [include_dir / name]
+        path = next((p for p in places if p.is_file()), None)
+        if name not in RESERVED_HEADERS and path is not None:
+            yield path
+
+
+def read_allowlist(path: Path) -> dict[tuple[str, str], str]:
+    """(exe, name) -> reason of config/readlint-allow.csv (D-30): `#` comment lines, the header
+    `exe,name,reason`, then one row per placeholder-named callee matched units may reference
+    before it is named. A missing file allows nothing; a malformed one raises ReadlintError."""
+    path = Path(path)
+    if not path.is_file():
+        return {}
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ReadlintError(f"{path}: not UTF-8 ({exc})") from None
+    lines = [line for line in text.splitlines() if line.strip() and not
+             line.startswith(_COMMENT_LINE)]  # fmt: skip
+    rows = list(csv.reader(lines))
+    if not rows or tuple(rows[0]) != ALLOWLIST_COLUMNS:
+        raise ReadlintError(f"{path}: the header is not {','.join(ALLOWLIST_COLUMNS)}")
+    allowed: dict[tuple[str, str], str] = {}
+    for number, cells in enumerate(rows[1:], start=1):
+        problem = _allow_problem(cells, allowed)
+        if problem is not None:
+            raise ReadlintError(f"{path}: data row {number}: {problem}")
+        allowed[(cells[0], cells[1])] = cells[2].strip()
+    return allowed
+
+
+def _allow_problem(cells: Sequence[str], allowed: Mapping[tuple[str, str], str]) -> str | None:
+    if len(cells) != len(ALLOWLIST_COLUMNS):
+        return f"{len(cells)} cells, not {len(ALLOWLIST_COLUMNS)}"
+    exe, name, reason = cells
+    if exe not in EXES:
+        return f"exe {exe!r} is not one of {', '.join(EXES)}"
+    if not PLACEHOLDER.fullmatch(name):
+        return f"{name!r} is not a placeholder name (a named callee needs no allowlist)"
+    if not reason.strip():
+        return f"{exe},{name} has no reason"
+    if (exe, name) in allowed:
+        return f"{exe},{name} is listed twice"
+    return None
 
 
 # ---- literals ----
@@ -460,15 +594,30 @@ def _literal_allowed(src: _Source, p: int, value: int | None) -> bool:
 # ---- the rules ----
 
 
-def _rl01(src: _Source) -> Iterator[Violation]:
-    """Placeholder identifiers in code and directives, stubs excepted."""
-    candidates = [src.tok(p) for p in src.checked()]
+def _identifiers(src: _Source) -> Iterator[tuple[Token, int | None]]:
+    """Identifier tokens outside stubs with their code positions; those inside directives
+    have none (a directive defines no object)."""
+    for p in src.checked():
+        if src.tok(p).kind == IDENT:
+            yield src.tok(p), p
     for token in (t for t in src.tokens if t.kind == DIRECTIVE):
-        candidates += _directive_tokens(token)
-    for token in candidates:
-        if token.kind == IDENT and PLACEHOLDER.fullmatch(token.text):
-            why = f"{token.text} is a placeholder name: name it (a D-19 rename)"
-            yield Violation(src.path, token.line, "RL01", why)
+        yield from ((t, None) for t in _directive_tokens(token) if t.kind == IDENT)
+
+
+def _rl01(src: _Source, allowed: Collection[str] = ()) -> tuple[list[Violation], int]:
+    """Placeholder identifiers in code and directives, stubs excepted; a reference to an
+    `allowed` name is counted instead, a definition of one never is (D-30)."""
+    defined = src.defined_positions() if allowed else set()
+    found, accepted = [], 0
+    for token, position in _identifiers(src):
+        if not PLACEHOLDER.fullmatch(token.text):
+            continue
+        if token.text in allowed and position not in defined:
+            accepted += 1
+            continue
+        why = f"{token.text} is a placeholder name: name it (a D-19 rename)"
+        found.append(Violation(src.path, token.line, "RL01", why))
+    return found, accepted
 
 
 def _comment_lines(text: str) -> list[str]:
@@ -623,17 +772,57 @@ def _matched_units(config_root: Path, exe: str) -> frozenset[str]:
     return frozenset(row.unit for row in rows if row.status == MATCHED)
 
 
+def _parse_units(units: Sequence[str]) -> frozenset[tuple[str, str]]:
+    found = set()
+    for cell in units:
+        match = _UNIT_SELECTOR.fullmatch(cell)
+        if match is None or match.group(1) not in EXES:
+            raise ReadlintError(f"--units {cell!r} is not <{'|'.join(EXES)}>/<unit>")
+        found.add((match.group(1), match.group(2)))
+    return frozenset(found)
+
+
+def _tier_units(config_root: Path, tier: int) -> frozenset[tuple[str, str]]:
+    """(exe, unit) of every `member` row of a tier-N item (mechanics-members.csv), mapped to
+    its unit through functions.csv."""
+    mech, members = mechanics.read_committed(config_root)
+    if mech.tier(tier) is None:
+        raise ReadlintError(f"--tier {tier}: no [[tier]] with that id in mechanics.toml")
+    items = {item.id for item in mech.items if item.tier == tier}
+    member = mechanics.ROLE_MEMBER
+    starts = {(row.exe, row.address) for row in members
+              if row.role == member and items.intersection(row.member_items)}  # fmt: skip
+    units = set()
+    for exe in sorted({exe for exe, _start in starts}):
+        rows = read_functions_csv(config_root / exe / FUNCTIONS_CSV)
+        units.update((exe, row.unit) for row in rows if (exe, row.start) in starts and row.unit)
+    return frozenset(units)
+
+
+def _selected(config_root: Path, units: Sequence[str] | None,
+              tier: int | None) -> frozenset[tuple[str, str]] | None:  # fmt: skip
+    """The units --units and --tier select (both: the units both select); None: every unit."""
+    chosen = [_parse_units(units)] if units else []
+    if tier is not None:
+        chosen.append(_tier_units(config_root, tier))
+    return frozenset.intersection(*chosen) if chosen else None
+
+
 @dataclass
 class _Run:
-    """One run's tables (read once per EXE) and findings."""
+    """One run's roots, tables (read once per EXE) and findings."""
 
+    src_root: Path
     config_root: Path
     report: bool
+    cfg: ModuleType
+    allow: dict[tuple[str, str], str]
     names: dict[str, dict[str, int]] = field(default_factory=dict)
     violations: list[Violation] = field(default_factory=list)
     waivers: dict[str, int] = field(default_factory=dict)
     allowlisted: dict[str, int] = field(default_factory=dict)
     floats: list[FloatLiteral] = field(default_factory=list)
+    headers: dict[Path, str] = field(default_factory=dict)  # resolved path -> as reported
 
     def c_names(self, exe: str) -> dict[str, int]:
         """C name -> row start of every game and thunk row of `exe` (unitdefs.c_names)."""
@@ -643,8 +832,13 @@ class _Run:
                                                read_symbols_csv(tables / SYMBOLS_CSV))  # fmt: skip
         return self.names[exe]
 
-    def lint(self, src: _Source) -> None:
-        self.violations += _rl01(src)
+    def lint(self, path: Path, shown: str, exe: str) -> None:
+        src = _read(path, shown, exe, self.cfg)
+        allowed = {name for allow_exe, name in self.allow if allow_exe == exe}
+        found, accepted = _rl01(src, allowed)
+        self.violations += found
+        if accepted:
+            self.allowlisted[src.path] = accepted
         if src.definitions:
             self.violations += _rl02_rl03(src, self.c_names(src.exe))
         self.violations += _rl04(src)
@@ -655,31 +849,49 @@ class _Run:
             self.waivers[src.path] = len(literals.waivers)
         if self.report:
             self.floats += literals.floats
+        self.lint_headers(src, path.parent)
+
+    def lint_headers(self, src: _Source, here: Path) -> None:
+        """RL01 (no allowlist) and RL04 over the project headers `src` includes, each once."""
+        include_dir = self.src_root.parent / INCLUDE_DIR
+        pending = list(_includes(src, here, include_dir))
+        while pending:
+            path = pending.pop(0)
+            if path.resolve() in self.headers:
+                continue
+            shown = self.headers[path.resolve()] = _shown(path, self.src_root)
+            header = _read(path, shown, src.exe, self.cfg, unit=False)
+            self.violations += _rl01(header)[0]
+            self.violations += _rl04(header)
+            pending += _includes(header, path.parent, include_dir)
 
 
 def _run(paths: Sequence[Path | str], src_root: Path, config_root: Path, units, tier,
          report: bool) -> ReadlintResult:  # fmt: skip
-    if units or tier is not None:
-        raise ReadlintError("--units and --tier are not supported yet")
-    cfg = _configure()
+    wanted = _selected(config_root, units, tier)
+    files = [(path, _shown(path, src_root), _unit_of(path, src_root))
+             for path in collect_sources(paths or [src_root])]  # fmt: skip
+    missing = sorted(_parse_units(units or ()) - {found for *_rest, found in files})
+    if missing:
+        raise ReadlintError(f"--units {', '.join(f'{e}/{u}' for e, u in missing)}: no such unit "
+                            "file under PATHS")  # fmt: skip
     matched = {exe: _matched_units(config_root, exe) for exe in EXES}
-    run = _Run(config_root, report)
+    run = _Run(src_root, config_root, report, _configure(),
+               read_allowlist(config_root / ALLOWLIST))  # fmt: skip
     checked, skipped = [], []
-    for path in collect_sources(paths or [src_root]):
-        shown = _shown(path, src_root)
-        found = _unit_of(path, src_root)
+    for path, shown, found in files:
         if found is None:
             skipped.append(Skipped(shown, "not src/<exe>/<unit>.c"))
-            continue
-        exe, unit = found
-        if unit not in matched[exe]:
+        elif wanted is not None and found not in wanted:
+            skipped.append(Skipped(shown, "not selected by --units/--tier"))
+        elif found[1] not in matched[found[0]]:
             skipped.append(Skipped(shown, "no matched row in status.csv"))
-            continue
-        checked.append(shown)
-        run.lint(_read(path, shown, exe, cfg))
+        else:
+            checked.append(shown)
+            run.lint(path, shown, found[0])
     violations, floats = tuple(sorted(run.violations)), tuple(sorted(run.floats))
-    return ReadlintResult(tuple(checked), tuple(skipped), violations, run.waivers,
-                          run.allowlisted, floats, report)  # fmt: skip
+    return ReadlintResult(tuple(checked), tuple(sorted(run.headers.values())), tuple(skipped),
+                          violations, run.waivers, run.allowlisted, floats, report)  # fmt: skip
 
 
 def run_readlint(
@@ -695,6 +907,6 @@ def run_readlint(
     other tables under `config_root`. ReadlintError (exit 2) for anything unreadable."""
     try:
         return _run(paths, Path(src_root), Path(config_root), units, tier, report)
-    except (CheckError, FunctionsError, LintError, StatusError, unitdefs.UnitDefsError,
-            OSError) as exc:  # fmt: skip
+    except (CheckError, FunctionsError, LintError, MechanicsError, StatusError,
+            unitdefs.UnitDefsError, OSError) as exc:  # fmt: skip
         raise ReadlintError(str(exc)) from exc
