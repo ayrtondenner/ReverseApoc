@@ -475,6 +475,56 @@ def test_an_exception_after_the_root_exited_kills_nothing_on_windows(tmp_path, m
     assert _interrupted_after_exit(tmp_path, monkeypatch, posix=False) == []
 
 
+# 07-21 (D-07 stop-all): run_session reports its child's pid to the driver's registry.
+
+
+def test_run_session_reports_the_pid_at_start_and_end(tmp_path):
+    """on_start gets the session's pid once, before the stream is read; on_end gets the same
+    pid once the session has ended."""
+    events: list[tuple[str, int]] = []
+    fake = _FakePopen((STREAMS / "success.jsonl").read_bytes().splitlines(keepends=True))
+    result = run_session(["claude-stand-in"], cwd=tmp_path, env={},
+                         transcript=tmp_path / "attempt" / "transcript.jsonl", popen=fake,
+                         on_start=lambda pid: events.append(("start", pid)),
+                         on_end=lambda pid: events.append(("end", pid)))  # fmt: skip
+    assert result.exit_code == 0
+    assert events == [("start", _FAKE_PID), ("end", _FAKE_PID)]
+
+
+def test_run_session_reports_a_real_childs_pid(tmp_path):
+    procs: list[subprocess.Popen] = []
+
+    def popen(argv, **kwargs) -> subprocess.Popen:
+        procs.append(subprocess.Popen(argv, **kwargs))
+        return procs[-1]
+
+    started: list[int] = []
+    run_session(_fake("--scenario", "success"), cwd=tmp_path, env=_env(),
+                transcript=tmp_path / "attempt" / "transcript.jsonl", popen=popen,
+                on_start=started.append)  # fmt: skip
+    assert started == [procs[0].pid]
+
+
+def test_on_end_runs_when_the_session_raises(tmp_path, monkeypatch):
+    """An interrupt mid-read still tells the registry the session is gone."""
+    monkeypatch.setattr(session, "kill_tree", lambda pid, **_: None)
+    ended: list[int] = []
+    calls: list[int] = []
+
+    def clock() -> float:  # the deadline is read before the launch; the next reading raises
+        calls.append(1)
+        if len(calls) > 1:
+            raise KeyboardInterrupt
+        return 0.0
+
+    fake = _FakePopen([b"{}\n"])
+    with pytest.raises(KeyboardInterrupt):
+        run_session(["claude-stand-in"], cwd=tmp_path, env={},
+                    transcript=tmp_path / "attempt" / "transcript.jsonl", popen=fake,
+                    clock=clock, on_end=ended.append)  # fmt: skip
+    assert ended == [_FAKE_PID]
+
+
 @pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only: taskkill /T cannot find children after the parent exits",
