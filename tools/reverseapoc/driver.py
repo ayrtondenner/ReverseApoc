@@ -1191,6 +1191,7 @@ class _Night:
         self.landed: str | None = None  # the unit the landing section copied into src/ (D-24)
         self.ledger = _Ledger(self.repo, self._head_bytes)  # the driver's own writes (D-24 a)
         self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
+        self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
 
     # --- the night ---
 
@@ -1706,10 +1707,13 @@ class _Night:
                 raise _Stop(GUARDRAIL, self._breach(rel, self.ledger.expected(rel)))
 
     def _ledger_breaches(self) -> list[str]:
-        """At the end of the night: each ledgered file that no longer holds its bytes, each one
-        contained (fix round 1)."""
+        """At the end of the night, before the chore commit: every output that commit may carry
+        (the log, both status.csv files, the feed; fix round 2) and every other ledgered file
+        must hold the driver's bytes, or HEAD's when the driver never wrote it tonight. Each
+        one that does not is contained (fix round 1)."""
+        rels = sorted({*self._outputs(), *self.ledger.paths()})
         return [self._breach(rel, self.ledger.expected(rel))
-                for rel in self.ledger.paths() if not self.ledger.holds(rel)]  # fmt: skip
+                for rel in rels if not self.ledger.holds(rel)]  # fmt: skip
 
     def _verify_landing(self, claim: _Claim) -> None:
         """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
@@ -2138,7 +2142,8 @@ class _Night:
             raise _Stop(GUARDRAIL, undone) from exc
         except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
             why = f"{type(exc).__name__}: {exc}"
-            raise _Stop(TOOL, self._undo_match(session, paths, summary, why, log_size)) from exc
+            undone = self._undo_match(session, paths, summary, why, log_size)
+            raise _Stop(self.undo_reason or TOOL, undone) from exc
         except BaseException as exc:  # minor 3: an interrupt is undone, then re-raised
             undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size)
             self.interrupted = f" during the match commit; {undone}"
@@ -2153,13 +2158,20 @@ class _Night:
         length before the MATCHED append (F19: the driver's own uncommitted MATCHED record goes,
         any record appended before it stays), reset the attempt. Then the attempt is always
         logged GAVE_UP `tool`, and the returned detail names the original error, every step
-        that failed and every path still staged. The caller stops the night."""
+        that failed and every path still staged. The caller stops the night. 07-13 fix round
+        2: a ledger breach the pre-gate restore finds is one more note (its stop reason kept in
+        `undo_reason`), so the MATCHED line is still dropped and the attempt still recorded."""
         notes = [f"the match commit failed: {why}"]
+        self.undo_reason = None
         try:
             _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not unstage: {type(exc).__name__}: {exc}")
-        notes += self._restore_pre_gate()
+        try:
+            notes += self._restore_pre_gate()
+        except _Stop as stop:  # a breach: contained already, the undo goes on
+            self.undo_reason = stop.reason
+            notes.append(stop.detail)
         notes += self._drop_log_tail(log_size)
         try:
             self._reset(session)
