@@ -44,7 +44,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from . import check, contextpack, driver, gate
+from . import check, contextpack, driver, gate, x86
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
@@ -1433,17 +1433,56 @@ def _approve_all(approver: _Approver, landings: Sequence[_Landing]) -> ApproveRe
 D33_MIN_FUNCTIONS = 3  # D-14/D-33: agreeing functions a default flip needs
 D33_MIN_BYTES = 64  # D-33's minimum size (the planner's value) for a function without a branch
 REGION_SIZE = 0x10000  # D-33: agreeing functions sit pairwise in different regions this large
+TOOLCHAIN_DOC = Path("docs") / "toolchain.md"
+DEFAULT_PATHS = (CFLAGS.as_posix(), MATCHING_DOC.as_posix(), TOOLCHAIN_DOC.as_posix())
+PINNED_CFLAGS, UNPINNED_CFLAGS = "cflags.txt", "cflags-unpinned.txt"  # build/flags/default-<day>/
+# Ruling F16: the one canonical sentence a flip rewrites; the historical quotes stay.
+_TOOLCHAIN_SENTENCE = re.compile(r"The default rule in `config/cflags\.txt` is `([^`]*)`")
+
+
+@dataclass(frozen=True)
+class Agreeing:
+    """One function matched under a per-unit rule equal to the proposed default (D-33)."""
+
+    exe: str
+    name: str
+    unit: str
+    start: int
+    size: int  # functions.csv end - start
+    branch: bool  # has_branch_or_loop
+
+    @property
+    def region(self) -> int:
+        return self.start // REGION_SIZE * REGION_SIZE
+
+    @property
+    def counts(self) -> bool:
+        """D-33: a tiny function without a branch or loop counts toward per-unit rules only."""
+        return self.branch or self.size >= D33_MIN_BYTES
+
+    def line(self) -> str:
+        return (f"{self.exe} {self.name} at 0x{self.start:08X} in {self.unit}: {self.size} bytes, "
+                f"branch/loop {'yes' if self.branch else 'no'}, region 0x{self.region:08X}")
 
 
 @dataclass(frozen=True)
 class Evidence:
-    rule: str = ""
-    functions: tuple = ()
-    problems: tuple[str, ...] = ("RED stub",)
+    """D-33's bar for a proposed `*` default: its inputs and what fails (empty = met)."""
+
+    rule: str
+    functions: tuple[Agreeing, ...]
+    problems: tuple[str, ...]
 
     @property
     def met(self) -> bool:
         return not self.problems
+
+    def lines(self) -> list[str]:
+        out = [f"D-33 evidence for the `*` default {self.rule}: {len(self.functions)} function(s) "
+               "matched under per-unit rules equal to it"]  # fmt: skip
+        out += [f"  {f.line()}" for f in self.functions]
+        out.append("D-33 bar met" if self.met else f"D-33 bar not met: {'; '.join(self.problems)}")
+        return out
 
 
 @dataclass(frozen=True)
@@ -1455,25 +1494,296 @@ class DefaultReport:
         return "\n".join(self.lines)
 
 
+_LOOPS = ("loop", "loope", "loopne")  # capstone 5 leaves these out of its jump group
+
+
 def has_branch_or_loop(row: FunctionRow, exe: Any) -> bool:
-    """RED stub (07-24 Task 3)."""
+    """D-33: any conditional jump (jcc, jecxz, loop*) or any jump back to a place inside the
+    row, decoded with reverseapoc.x86 from `exe.flat` (check.ExeInputs or alike) over
+    [start, end)."""
+    code = bytes(exe.flat[row.start : row.end])
+    for insn in x86.decode(code, row.start):
+        if insn.is_conditional or insn.mnemonic in _LOOPS:
+            return True
+        target = insn.branch_target
+        if insn.is_jump and target is not None and row.start <= target <= insn.va:
+            return True
     return False
 
 
-def _load_exe(repo: Path, exe: str) -> Any:
-    """RED stub (07-24 Task 3)."""
-    raise FlagsError("RED stub")
+def _load_exe(repo: Path, exe: str) -> check.ExeInputs:
+    """The EXE as check loads it (verified against the manifest) from <repo>/orig."""
+    manifest = repo / "config" / "targets.toml"
+    target = check.select_exe(load_manifest(manifest), exe, manifest)
+    return check.load_exe(target, orig_dir=repo / "orig", manifest=manifest,
+                          config_root=repo / "config")  # fmt: skip
+
+
+def _rule_text(rule: Any) -> str:
+    return " ".join([rule.spec, *rule.flags])
+
+
+def _same_rule(a: Any, b: Any) -> bool:
+    return a.spec == b.spec and frozenset(a.flags) == frozenset(b.flags)
+
+
+def _star_line(rule: Any) -> str:
+    """The `*` rule as cflags.txt and the docs write it: `*  <compiler@version>  <flags>`."""
+    return f"*  {rule.spec}  {' '.join(rule.flags)}"
+
+
+def _spec_rule(rule: str, versions: Sequence[str]) -> Any:
+    """`--rule SPEC` parsed as a `*` rule (compiler, version and flags checked by cflags.py)."""
+    if "\n" in rule or "#" in rule:
+        raise FlagsError(f"--rule {rule!r}: one `<compiler>@<version> <flags...>` spec")
+    try:
+        (parsed,) = parse_cflags(f"*  {rule}\n", versions=versions, where="--rule")
+    except (CflagsError, ValueError) as exc:
+        raise FlagsError(str(exc)) from None
+    return parsed
+
+
+def _committed_rules(repo: Path, versions: Sequence[str]) -> list:
+    try:
+        return load_cflags(repo / CFLAGS, versions=versions)
+    except CflagsError as exc:
+        raise FlagsError(str(exc)) from None
+
+
+def _bar_problems(functions: Sequence[Agreeing]) -> list[str]:
+    """What of D-33's bar the functions miss: at least D33_MIN_FUNCTIONS that each have a
+    branch or loop or D33_MIN_BYTES, from both EXEs, pairwise in different REGION_SIZE
+    regions (one function per region of an EXE suffices to pick such a set)."""
+    if len(functions) < D33_MIN_FUNCTIONS:
+        return [f"only {len(functions)} function(s) matched under per-unit rules equal to it; "
+                f"D-33 needs {D33_MIN_FUNCTIONS}"]  # fmt: skip
+    counted = [f for f in functions if f.counts]
+    if len(counted) < D33_MIN_FUNCTIONS:
+        return [f"only {len(counted)} of them have a branch or loop or at least {D33_MIN_BYTES} "
+                f"bytes; D-33 needs {D33_MIN_FUNCTIONS} (tiny-function hits count toward "
+                "per-unit rules only)"]  # fmt: skip
+    problems = []
+    exes = sorted({f.exe for f in counted})
+    if len(exes) < len(EXES):
+        problems.append(f"they all come from {', '.join(map(_exe_name, exes))}; D-33 needs "
+                        "both EXEs")  # fmt: skip
+    regions = {(f.exe, f.region) for f in counted}
+    if len(regions) < D33_MIN_FUNCTIONS:
+        problems.append(f"they sit in only {len(regions)} different 0x{REGION_SIZE:X} regions; "
+                        f"D-33 needs {D33_MIN_FUNCTIONS} pairwise in different 0x{REGION_SIZE:X} "
+                        "regions")  # fmt: skip
+    return problems
 
 
 def default_evidence(rule: str, *, repo: Path,
                      exe_loader: Callable[[str], Any] | None = None) -> Evidence:  # fmt: skip
-    """RED stub (07-24 Task 3)."""
-    return Evidence(rule)
+    """D-33's bar for `rule` as the `*` default: every status.csv-matched function whose unit's
+    committed rule is a per-unit rule equal to `rule` (spec and flag set), with its size and
+    branch-or-loop flag from the EXE (`exe_loader(exe)`: rows and flat, default check.load_exe
+    from <repo>/orig), and what of the bar fails. Reads only."""
+    repo = Path(repo)
+    config = repo / "config"
+    versions = _versions(config)
+    spec = _spec_rule(rule, versions)
+    rules = _committed_rules(repo, versions)
+    load = exe_loader or (lambda exe: _load_exe(repo, exe))
+    functions: list[Agreeing] = []
+    for exe in EXES:
+        path = status_path(config, exe)
+        rows = [r for r in (read_status(path) if path.is_file() else []) if r.status == MATCHED]
+        ruled = [r for r in rows if _agrees(select_rule(rules, unit_rule_path(exe, r.unit)), spec)]
+        if ruled:
+            functions += _agreeing(exe, ruled, load(exe))
+    return Evidence(_rule_text(spec), tuple(functions), tuple(_bar_problems(functions)))
+
+
+def _agrees(committed: Any, spec: Any) -> bool:
+    return committed.glob != "*" and _same_rule(committed, spec)
+
+
+def _agreeing(exe: str, rows: Sequence[Any], image: Any) -> list[Agreeing]:
+    by_start = {row.start: row for row in image.rows}
+    out = []
+    for r in rows:
+        row = by_start.get(r.start)
+        if row is None:
+            raise FlagsError(f"{exe} {r.name} at 0x{r.start:08X} is matched but no functions.csv "
+                             "row starts there")  # fmt: skip
+        out.append(Agreeing(exe, r.name, r.unit, r.start, row.end - row.start,
+                            has_branch_or_loop(row, image)))  # fmt: skip
+    return out
+
+
+def _pins(config: Path, rules: Sequence[Any]) -> list[tuple[str, str]]:
+    """(exe, unit glob) of every unit with matched rows whose committed rule is the `*`
+    default (D-14: pinned to it so a flip regresses nothing), in EXE then unit order."""
+    out = []
+    for exe in EXES:
+        path = status_path(config, exe)
+        rows = read_status(path) if path.is_file() else []
+        units = sorted({r.unit for r in rows if r.status == MATCHED})
+        out += [(exe, unit_rule_path(exe, unit)) for unit in units
+                if select_rule(rules, unit_rule_path(exe, unit)).glob == "*"]  # fmt: skip
+    return out
+
+
+def _with_toolchain_default(text: str, old: Any, new: Any) -> str:
+    """Ruling F16: docs/toolchain.md with its one canonical sentence quoting the new rule;
+    refused unless the sentence is there exactly once and quotes the committed default."""
+    found = list(_TOOLCHAIN_SENTENCE.finditer(text))
+    where = TOOLCHAIN_DOC.as_posix()
+    if len(found) != 1:
+        raise FlagsError(f"{where} holds 'The default rule in `config/cflags.txt` is `...`' "
+                         f"{len(found)} times, not once; nothing is written")  # fmt: skip
+    quoted = found[0].group(1)
+    if quoted.split() != _star_line(old).split():
+        raise FlagsError(f"{where} quotes the default as `{quoted}`, not the committed "
+                         f"`{_star_line(old)}`; nothing is written")  # fmt: skip
+    return text[: found[0].start(1)] + _star_line(new) + text[found[0].end(1) :]
+
+
+def _with_default_rows(text: str, new: Any, pins: Sequence[tuple[str, str]], old: Any,
+                       evidence: str, pinned: str, today: str) -> str:  # fmt: skip
+    """docs/matching.md with each EXE's `*` row naming the new rule and one row per pin."""
+    lines = text.splitlines(keepends=True)
+    for exe in EXES:
+        prefix = f"| * | {_exe_name(exe)} |"
+        at = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+        if len(at) != 1:
+            raise FlagsError(f"{MATCHING_DOC.as_posix()} has {len(at)} `*` rows for "
+                             f"{_exe_name(exe)}, not one; nothing is written")  # fmt: skip
+        newline = "\r\n" if lines[at[0]].endswith("\r\n") else "\n"
+        lines[at[0]] = doc_row("*", exe, _rule_text(new), evidence, today) + newline
+    rows = [doc_row(glob, exe, _rule_text(old), pinned, today) for exe, glob in pins]
+    return _with_doc_rows("".join(lines), rows) if rows else "".join(lines)
+
+
+def _with_star(text: str, old: Any, new: Any, comment: str) -> str:
+    """cflags text with the `*` rule's line (old.lineno) replaced by the new `*` rule."""
+    lines = text.replace("\r\n", "\n").splitlines(keepends=True)
+    lines[old.lineno - 1] = f"{_star_line(new)}  # {comment}\n"
+    out = "".join(lines)
+    return out if out.endswith("\n") else out + "\n"
 
 
 def default(rule: str, by: str, *, repo: Path, today: str | None = None,
             runner: Runner | None = None, git: Git | None = None, evidence_only: bool = False,
             env: Mapping[str, str] | None = None,
             exe_loader: Callable[[str], Any] | None = None) -> DefaultReport:  # fmt: skip
-    """RED stub (07-24 Task 3)."""
-    return DefaultReport()
+    """The owner's `*` default change (D-14, D-33). With `evidence_only`, print D-33's inputs
+    and verdict and change nothing. Otherwise refused unless REVERSEAPOC_CLAIM is unset,
+    drive.lock is free (held throughout), `rule` differs from the committed `*`, D-33's bar is
+    met and the docs hold exactly the text it rewrites. Then: the pinned candidate (new `*`,
+    the per-unit rules, one pin to the old `*` per matched unit without a rule) is proven by
+    `gate --all --cflags` (writes nothing), the unpinned candidate runs as a dry run (evidence
+    only), cflags.txt and the docs are written, `gate --all` runs on them, and one commit
+    carries `Flags-Approved-By: NAME (default, DATE)`. A failing gate restores every file."""
+    repo = Path(repo)
+    today = today or date.today().isoformat()
+    _check_owner(by, today)
+    evidence = default_evidence(rule, repo=repo, exe_loader=exe_loader)
+    if evidence_only:
+        return DefaultReport(tuple(evidence.lines()))
+    _refuse_claim(os.environ if env is None else env)
+    lock = _hold_drive_lock(repo)
+    try:
+        flip = _Flip(repo, by, today, runner or driver.command_runner(repo),
+                     git or driver.git_runner(repo))  # fmt: skip
+        return flip.run(rule, evidence)
+    finally:
+        lock.release()
+
+
+class _Flip:
+    """One `flags default` change: the texts it writes, the three gates, the commit."""
+
+    def __init__(self, repo: Path, by: str, today: str, runner: Runner, git: Git) -> None:
+        self.repo, self.by, self.today, self.runner, self.git = repo, by, today, runner, git
+        self.work = repo / FLAGS_DIR / f"default-{today}"
+
+    def _gate_all(self, *cflags: str) -> Any:
+        extra = ["--cflags", *cflags] if cflags else []
+        return self.runner([*driver.CONTAINER_CLI, "gate", "--all", *extra, "--json"])
+
+    def run(self, rule: str, evidence: Evidence) -> DefaultReport:
+        versions = _versions(self.repo / "config")
+        new = _spec_rule(rule, versions)
+        rules = _committed_rules(self.repo, versions)
+        old = rules[0]
+        if _same_rule(old, new):
+            raise FlagsError(f"the `*` default is already {_rule_text(old)}")
+        if not evidence.met:
+            raise FlagsError(f"D-33's evidence bar is not met for {evidence.rule}: "
+                             f"{'; '.join(evidence.problems)} (see `flags default --evidence`)")
+        pins = _pins(self.repo / "config", rules)
+        docs = self._docs(old, new, pins, evidence)
+        _refuse_dirty(self.git, DEFAULT_PATHS)
+        cflags = (self.repo / CFLAGS).read_bytes().decode("utf-8")
+        unpinned = _with_star(cflags, old, new,
+                              f"default changed by {self.by} {self.today} (D-14, D-33)")
+        pinned = unpinned + "".join(
+            f"{glob}  {old.spec}  {' '.join(old.flags)}  # pinned by D-14 (default changed by "
+            f"{self.by} {self.today})\n" for _, glob in pins)  # fmt: skip
+        for text in (unpinned, pinned):
+            parse_cflags(text, versions=versions, where=CFLAGS.as_posix())
+        return self._prove_and_commit(old, new, pins, evidence, docs, pinned, unpinned)
+
+    def _docs(self, old: Any, new: Any, pins: Sequence[tuple[str, str]],
+              evidence: Evidence) -> dict[str, str]:  # fmt: skip
+        toolchain = (self.repo / TOOLCHAIN_DOC).read_text(encoding="utf-8")
+        matching = (self.repo / MATCHING_DOC).read_text(encoding="utf-8")
+        shown = (f"D-33: {len(evidence.functions)} agreeing functions under approved per-unit "
+                 f"rules (flags default, approved by {self.by})")  # fmt: skip
+        pinned = f"pinned by D-14 when the default changed (approved by {self.by})"
+        return {
+            TOOLCHAIN_DOC.as_posix(): _with_toolchain_default(toolchain, old, new),
+            MATCHING_DOC.as_posix(): _with_default_rows(matching, new, pins, old, shown, pinned,
+                                                        self.today),
+        }  # fmt: skip
+
+    def _prove_and_commit(self, old: Any, new: Any, pins: Sequence[tuple[str, str]],
+                          evidence: Evidence, docs: Mapping[str, str], pinned: str,
+                          unpinned: str) -> DefaultReport:  # fmt: skip
+        candidate, dry = self.work / PINNED_CFLAGS, self.work / UNPINNED_CFLAGS
+        self.work.mkdir(parents=True, exist_ok=True)
+        write_atomic(candidate, pinned.encode("utf-8"))
+        write_atomic(dry, unpinned.encode("utf-8"))
+        shown = _relative(self.repo, candidate)
+        first = self._gate_all(shown)
+        if first.returncode != 0:
+            raise FlagsError(f"gate --all with the pinned candidate {shown} failed (exit "
+                             f"{first.returncode}): {_gate_output(first)}; nothing is "
+                             "written")  # fmt: skip
+        dry_exit = self._gate_all(_relative(self.repo, dry)).returncode
+        results = [f"gate --all with the pinned candidate: exit {first.returncode}",
+                   f"gate --all with the new default and no pins: exit {dry_exit}"]
+        snap = _snapshot_files(self.repo, DEFAULT_PATHS)
+        staged = False
+        try:
+            write_atomic(self.repo / CFLAGS, pinned.encode("utf-8"))
+            for rel, text in docs.items():
+                write_atomic(self.repo / rel, text.encode("utf-8"))
+            final = self._gate_all()
+            if final.returncode != 0:
+                raise FlagsError(f"gate --all on the written {CFLAGS.as_posix()} failed (exit "
+                                 f"{final.returncode}): {_gate_output(final)}; every file is "
+                                 "restored")  # fmt: skip
+            results.append(f"gate --all with the committed file: exit {final.returncode}")
+            lines = [f"feat(cflags): change the * default to {_rule_text(new)} (D-14, D-33)", "",
+                     f"was {_rule_text(old)}", *evidence.lines(),
+                     *(f"pinned {glob} to the old default" for _, glob in pins), *results, "",
+                     f"{APPROVED_TRAILER} {self.by} (default, {self.today})"]
+            message = self.work / COMMIT_MSG
+            write_atomic(message, ("\n".join(lines) + "\n").encode("utf-8"))
+            staged = True
+            _git_ok(self.git, ["add", "--", *DEFAULT_PATHS])
+            _git_ok(self.git, ["commit", "-q", "-F", str(message), "--", *DEFAULT_PATHS])
+        except BaseException:
+            if staged:
+                self.git([driver.LITERAL, "reset", "-q", "--", *DEFAULT_PATHS])
+            _restore_files(self.repo, snap)
+            raise
+        sha = _git_ok(self.git, ["rev-parse", "--short", "HEAD"]).strip()
+        return DefaultReport((*lines[2:-2], f"committed {sha}"))
+
+
