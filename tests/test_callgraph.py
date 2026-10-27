@@ -26,7 +26,7 @@ from reverseapoc.callgraph import (
     sccs,
 )
 from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, KIND_THUNK, FunctionRow
-from reverseapoc.le import LE, SRC_OFF32
+from reverseapoc.le import LE, SRC_OFF32, SRC_PTR1632
 
 CODE = 0x10000  # object 1
 DATA = 0x20000  # object 2
@@ -313,6 +313,26 @@ def test_orphan_table_listed():
 
 def test_task2_build_is_deterministic():
     assert _graph2() == _graph2()
+
+
+def test_table_runs_count_every_row_start_slot():
+    """Research Q1's slot count: a data off32 or ptr16:32 word onto any row's start is a slot,
+    so slots onto runtime rows keep a run together (and add no edge), and a ptr16:32 slot spans
+    its 6 bytes. A run whose slots reach no game/thunk row is no orphan root."""
+    rows = [_row(A2, B2), _row(X1, X2), _row(X2, X3), _row(R, TH, KIND_RUNTIME)]
+    patches = {A2: _padded(_MOV_EAX_MOFFS + _ZERO32 + _RET, 0x20), X1: _padded(_RET, 0x10),
+               X2: _padded(_RET, 0x10), R: _padded(_RET, 0x20)}  # fmt: skip
+    ptr_slot = DATA + 0x30
+    data_fixups = (
+        _data_fixup(DATA, X1) + _data_fixup(DATA + 0x10, R) + _data_fixup(DATA + 0x20, R)
+        + fixup_record(SRC_PTR1632, ptr_slot - DATA, 1, X2 - CODE, off32=True)
+        + _data_fixup(DATA + 0x100, R)  # a lone runtime slot: not an orphan root
+    )  # fmt: skip
+    code_fixups = _to_data(A2 + 1, ptr_slot + 4)  # the selector half of the far pointer
+    _, flat, fixups = _inputs(patches, code_fixups, data_fixups)
+    graph = CallGraph.build(rows, flat, fixups, code=CODE_RANGE, data=DATA_RANGE)
+    _assert_edges(graph, {(A2, X1, TABLE), (A2, X2, TABLE)})
+    assert graph.orphan_tables == ()
 
 
 # ---- task 3: SCCs and the `via` of each reached node, on hand-made graphs ----
