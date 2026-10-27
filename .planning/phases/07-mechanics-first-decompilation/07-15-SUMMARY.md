@@ -43,7 +43,7 @@ key-files:
 
 key-decisions:
   - "report.json is built from the asm-excluded view too, so its combined matched_code_percent stays progress.json's (test_report_shape's invariant); only the DecompHub feed keeps the asm rows"
-  - "An unsigned, edited or missing asm list moves nothing and raises nothing (07-20 commits an unsigned list first; mechanics check reports it)"
+  - "An unsigned asm list moves nothing and raises nothing (07-20 commits an unsigned list first; mechanics check reports it); a signed list that is missing or changed since sign-off is a ProgressError (fix round 1)"
   - "A tier reads matched only when its must-match set is non-empty and every member is matched in status.csv; else located (rows exist) or not located yet"
   - "The SVG/HTML legend's library label is 'library or assembler': the 36-character 'library or assembler, not decompiled' starts the right-aligned SVG legend about 4 px from the bold heading; 'not decompiled' is stated in the assembler key line, MEASURED and the README"
   - "A coverage set with no bytes has percent 0.0, not objdiff's 100.0 for an empty total"
@@ -135,7 +135,10 @@ coverage:
         ref: "tests/test_progress.py#test_assembler_group"
         status: pass
       - kind: unit
-        ref: "tests/test_progress.py#test_unsigned_or_changed_asm_list_moves_nothing"
+        ref: "tests/test_progress.py#test_unsigned_asm_list_moves_nothing"
+        status: pass
+      - kind: unit
+        ref: "tests/test_progress.py#test_stale_signed_asm_list_exits_2"
         status: pass
       - kind: unit
         ref: "tests/test_progress.py#test_feed_ignores_the_asm_list"
@@ -297,7 +300,7 @@ See key-decisions above.
 - **Fix:** The label is now "library or assembler" (20 characters, shorter than the old 24-character "library (not decompiled)"). The legend now starts at x=554. "Not decompiled" is still stated in the assembler key line, in MEASURED and in the README. The new `test_treemap_legend_clears_the_heading` checks the clearance against the worst-case heading ("100% decompiled, 3,079 of 3,079"). The pinned label tests were updated in the GREEN commit.
 - **Committed in:** `021aa49`.
 
-**3. [Rule 2 - Correctness] An unsigned or stale asm list is ignored, not an error**
+**3. [Rule 2 - Correctness] An unsigned or stale asm list is ignored, not an error** (the stale half was reversed in fix round 1, see below)
 - **Issue:** Plan 07-20 Task 1 commits an unsigned list (F38). Raising an error would make the Pages job exit 2.
 - **Fix:** Such a list moves nothing. `mechanics check` remains the place that reports it. A signed list's rows are validated strictly.
 - **Test:** `test_unsigned_or_changed_asm_list_moves_nothing`.
@@ -338,10 +341,41 @@ None.
 - Visual check of the coverage section on desktop and on a 390 px phone: the plan's flagged `<human-check>` for `/gsd-verify-work 7`.
 - STATE.md and ROADMAP.md were not touched.
 
+## Fix round 1 (orchestrator review)
+
+**Finding (Important): a stale or missing signed asm list was silently ignored.**
+
+Before this fix, `_asm_signed` returned False in two cases: when the owner had signed the list off and the CSV was later edited, and when the signed CSV was deleted. In either case about 430 asm functions would go back into the published percentage: the badges, the page, progress.json and report.json (recomp.fyi). Meanwhile "How it is measured" and the notes still said the signed list was excluded. pages.yml does not wait for the tests, so the changed figure would have been published even though `mechanics check` goes red.
+
+**Fix:**
+- `_asm_signed` raises `ProgressError` when `[asm_list]` is signed off and the list is in either of these states:
+  - **missing:** "... is signed off but ... asm-functions.csv is missing (D-23): restore it or re-sign [asm_list]";
+  - **changed:** its LF SHA-256 no longer equals list_sha256: "... asm-functions.csv changed since its sign-off (D-23): re-sign [asm_list] in ... (list_sha256 is now ...)".
+- In both cases `main` exits 2 and writes nothing, the same state `mechanics.signed_asm` refuses.
+- An unsigned list still moves nothing and exits 0 (ruling F2).
+- This replaces the "stale" half of deviation 3.
+
+**Tests:**
+- `test_stale_signed_asm_list_exits_2[edited|deleted]` (new). It first confirms that a signed, matching list excludes its row. Then it edits or deletes the CSV and expects a ProgressError matching `asm-functions\.csv.*re-sign`, `main` returning 2 and no progress.json written.
+- `test_unsigned_asm_list_moves_nothing` replaces `test_unsigned_or_changed_asm_list_moves_nothing`. Its `[changed]` case moved to the new test with the opposite expectation.
+- `test_assembler_group` still covers a signed, matching list.
+
+**Commits:**
+- RED `c40ad15` test(07-15): add failing tests for a stale signed asm list.
+  - Command: `uv run pytest -q tests/test_progress.py --junitxml=build/red/f1.xml`. Exit 1; 2 failed (both `DID NOT RAISE ProgressError`), 43 passed.
+  - `gsd-tools check tdd-red-evidence`: **RED_EVIDENCE_OK** (`target_test_failed`, target `test_stale_signed_asm_list_exits_2[edited]`). Semantic assessment: each case ran, passed its signed-and-matching precondition, and then failed on the planned `pytest.raises`.
+- GREEN `8f15f36` fix(07-15): refuse a signed asm list that is missing or changed since sign-off.
+
+**Commands and output after the fix:**
+- `uv run pytest -q tests/test_progress.py tests/test_progress_page.py tests/test_treemap.py tests/test_listings.py tests/test_workflows.py`: 157 passed.
+- `uv run pytest -q` (host, worktree): **3034 passed, 236 skipped**, 0 failed. Compared with before the fix: one removed parametrized pair, one new unsigned test and a new pair. The 236 skips are the same pre-existing reasons, and none of them is new.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ## Self-Check: PASSED
 
 - FOUND: tools/progress.py, tests/test_progress.py, tests/test_progress_page.py, tests/test_treemap.py, tests/test_listings.py, README.md, .github/workflows/pages.yml, tests/test_workflows.py
-- FOUND commits (ancestors of HEAD): 80aa237, eb7f9cd, 3cb2e24, 021aa49, f6b54c7
+- FOUND commits (ancestors of HEAD): 80aa237, eb7f9cd, 3cb2e24, 021aa49, f6b54c7, a9cad14, c40ad15, 8f15f36
 
 ---
 *Phase: 07-mechanics-first-decompilation*
