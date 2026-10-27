@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import asmclass, attempt, driver, locate, mechanics, probe
+from . import asmclass, attempt, driver, flags, locate, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
 from .attempt import AttemptError
@@ -1643,19 +1643,59 @@ def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
 # ---- flags: the owner-approval queue of per-unit cflags rules (D-12) ----
 
 
-def _cmd_flags(args: argparse.Namespace) -> int:
+def _flags_propose(args: argparse.Namespace) -> int:
+    report = flags.propose(args.from_attempts, repo=args.repo)
+    print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
     return 0
 
 
+def _flags_list(args: argparse.Namespace) -> int:
+    proposals = flags.read_queue(args.repo / flags.QUEUE)
+    if args.json:
+        print(json.dumps({"version": flags.QUEUE_VERSION,
+                          "proposals": [p.to_json() for p in proposals]}, indent=2))  # fmt: skip
+    else:
+        print("\n".join(p.line() for p in proposals) or f"{flags.QUEUE} holds no proposal")
+    return 0
+
+
+def _cmd_flags(args: argparse.Namespace) -> int:
+    """Exit 0 done, 2 for any tool or usage error. Nothing here writes config/cflags.txt or
+    src/ (D-12): approval is the owner's step."""
+    try:
+        return args.flags_func(args)
+    except _ERRORS as exc:
+        print(f"reverseapoc flags: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
 def _add_flags_command(sub: argparse._SubParsersAction) -> None:
-    p = sub.add_parser("flags", help="per-unit cflags proposals (D-12)")
-    verbs = p.add_subparsers(dest="flags_verb", required=True)
-    pr = verbs.add_parser("propose")
-    pr.add_argument("--from-attempts", nargs="*", metavar="RUN", required=True)
-    pr.add_argument("--repo", type=Path)
-    ls = verbs.add_parser("list")
-    ls.add_argument("--json", action="store_true")
-    ls.add_argument("--repo", type=Path)
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "flags",
+        help="per-unit cflags proposals from sweep hits (D-12): propose, re-gate, list; "
+        "config/cflags.txt changes only through the owner's approval",
+    )
+    verbs = p.add_subparsers(dest="flags_verb", required=True, metavar="VERB")
+    pr = verbs.add_parser(
+        "propose",
+        help="turn the sweep hits of driver attempts into proposals in "
+        f"{flags.QUEUE.as_posix()}, copying the C that hit to build/flags/<id>/ (host)",
+    )
+    pr.add_argument("--from-attempts", nargs="*", metavar="RUN", required=True,
+                    help="driver runs under build/driver/ to read; none named: every run")
+    pr.add_argument("--json", action="store_true", help="print the report as JSON")
+    pr.set_defaults(flags_func=_flags_propose)
+    ls = verbs.add_parser(
+        "list",
+        help="show the queue: functions, unit, rule, alternatives, siblings, evidence and "
+        "re-gate status",
+    )
+    ls.add_argument("--json", action="store_true", help="print the queue as JSON")
+    ls.set_defaults(flags_func=_flags_list)
+    for verb in (pr, ls):
+        verb.add_argument("--repo", type=Path, default=REPO_ROOT,
+                          help=f"the checkout whose config/ and build/ are read; {default}")
     p.set_defaults(func=_cmd_flags)
 
 
@@ -1761,6 +1801,7 @@ _ERRORS = (
     AttemptError,
     ContextPackError,
     MechanicsError,
+    flags.FlagsError,
     OSError,
 )
 
