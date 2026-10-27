@@ -22,6 +22,8 @@ from reverseapoc.callgraph import (
     Edge,
     MidRowRef,
     closure,
+    reach,
+    sccs,
 )
 from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, KIND_THUNK, FunctionRow
 from reverseapoc.le import LE, SRC_OFF32
@@ -311,3 +313,63 @@ def test_orphan_table_listed():
 
 def test_task2_build_is_deterministic():
     assert _graph2() == _graph2()
+
+
+# ---- task 3: SCCs and the `via` of each reached node, on hand-made graphs ----
+
+
+def _hand_graph(*edges: tuple[int, int, str]) -> CallGraph:
+    """A graph straight from (src, dst, kind) triples; every node gets an entry."""
+    nodes = {n for src, dst, _ in edges for n in (src, dst)}
+    out = {node: tuple(sorted((Edge(s, d, k) for s, d, k in edges if s == node),
+                              key=lambda e: (e.dst, callgraph.EDGE_KINDS.index(e.kind))))
+           for node in sorted(nodes)}  # fmt: skip
+    return CallGraph(out)
+
+
+def test_sccs_cycle_and_order():
+    graph = _hand_graph((A, B, DIRECT), (B, A, DIRECT), (B, C, DIRECT))
+    expected = (frozenset({C}), frozenset({A, B}))  # leaves first
+    assert sccs(graph, [A, B, C]) == expected
+    assert sccs(graph, [C, B, A]) == expected  # the order nodes are given in does not matter
+    assert sccs(graph, {A, B}) == (frozenset({A, B}),)  # restricted to the nodes given
+
+
+def test_sccs_ties_by_smallest_address():
+    graph = _hand_graph((A, C, DIRECT), (B, C, DIRECT))
+    assert sccs(graph, [B, A, C]) == (frozenset({C}), frozenset({A}), frozenset({B}))
+
+
+def test_sccs_deep_chain_no_recursion_limit():
+    count = 5000
+    chain = _hand_graph(*((n, n + 1, DIRECT) for n in range(count - 1)))
+    components = sccs(chain, range(count))
+    assert len(components) == count
+    assert components[0] == frozenset({count - 1})  # the leaf comes first
+    ring = _hand_graph(*((n, (n + 1) % count, DIRECT) for n in range(count)))
+    assert sccs(ring, range(count)) == (frozenset(range(count)),)
+
+
+def test_shortest_weakest_path():
+    graph = _hand_graph((A, B, DIRECT), (A, X1, POINTER), (X1, B, DIRECT))
+    assert reach(graph, {A}) == {A: (0, "entry"), B: (1, DIRECT), X1: (1, POINTER)}
+    # Two shortest paths to B: the one whose weakest edge is strongest wins.
+    tie = _hand_graph((A, X1, DIRECT), (X1, B, TABLE), (A, X2, DIRECT), (X2, B, POINTER))
+    assert reach(tie, {A})[B] == (2, POINTER)
+    both = _hand_graph((A, B, POINTER), (A, B, DIRECT))
+    assert reach(both, {A})[B] == (1, DIRECT)
+
+
+def test_reach_stops_and_keeps_roots():
+    graph = _hand_graph((A, X1, DIRECT), (X1, B, DIRECT), (B, A, MIDROW))
+    assert reach(graph, {A}, stop=frozenset({X1})) == {A: (0, "entry"), X1: (1, DIRECT)}
+    assert reach(graph, {A, B})[A] == (0, "entry")  # a root stays an entry
+
+
+def test_reach_is_deterministic():
+    graph = _graph2()
+    first = reach(graph, {A2, C2})
+    assert first == reach(graph, [C2, A2])
+    assert list(first) == sorted(first)
+    assert first.get(X1) == (1, TABLE)
+    assert first.get(B2) == (1, MIDROW)
