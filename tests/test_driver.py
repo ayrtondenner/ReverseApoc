@@ -2030,34 +2030,49 @@ def test_no_header_is_committed(tmp_path):
     assert night.commits() == []
 
 
-def _gate_with_another_record(night: Night):
-    """A gate during which another writer appends one record to the log (07-18's workers)."""
+def _capture_nights(monkeypatch) -> list:
+    """Every driver._Night the test builds, so a fake can act as another worker of the same
+    driver process (07-18): such a worker appends through the driver, and its ledger."""
+    nights: list = []
+    real = driver._Night.__init__
+
+    def init(self, config, deps):
+        real(self, config, deps)
+        nights.append(self)
+
+    monkeypatch.setattr(driver._Night, "__init__", init)
+    return nights
+
+
+def _gate_with_another_record(night: Night, nights: list):
+    """A gate during which another worker of the driver appends one record to the log."""
 
     def gate(pick, n):
-        with (night.repo / LOG).open("a", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(OTHER_RECORD, separators=(",", ":")) + "\n")
+        nights[-1]._append(OTHER_RECORD)
         return night._gate(pick, n)
 
     return gate
 
 
-def test_pre_gate_restore_keeps_the_log(tmp_path):
+def test_pre_gate_restore_keeps_the_log(tmp_path, monkeypatch):
     """D-27 P4 (first half): after an unclaimed pass, status.csv and the feed go back to their
     pre-gate bytes, and progress/attempts.jsonl keeps every record (never restored)."""
     night = _night_with_matched_sibling(tmp_path, sessions=[Sess()], gate_exits=[0],
                                         gate_written=(SIBLING,))  # fmt: skip
-    night.run(config={"attempts_per_function": 1}, gate=_gate_with_another_record(night))
+    nights = _capture_nights(monkeypatch)
+    night.run(config={"attempts_per_function": 1}, gate=_gate_with_another_record(night, nights))
     assert (night.repo / STATUS_REL).read_text(encoding="utf-8") == STATUS_HEAD + SIBLING_ROW
     assert (night.repo / FEED_NAME).read_text(encoding="utf-8") == "{}\n"
     assert OTHER_RECORD in night.records()
     assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
 
 
-def test_undo_match_drops_only_its_matched_record(tmp_path):
+def test_undo_match_drops_only_its_matched_record(tmp_path, monkeypatch):
     """F19: a failed match commit truncates the log to its length before the MATCHED append,
-    so a record another writer appended before it stays."""
+    so a record another worker appended before it stays."""
     night = _failed_commit_night(tmp_path)
-    report = _run_contained(night, gate=_gate_with_another_record(night))
+    nights = _capture_nights(monkeypatch)
+    report = _run_contained(night, gate=_gate_with_another_record(night, nights))
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert OTHER_RECORD in night.records()
     assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
@@ -2075,3 +2090,94 @@ def test_a_view_unit_that_is_no_longer_a_file_is_a_stray(tmp_path):
     assert VIEW_UNIT_REL in report.detail
     assert night.gate_calls == []
     assert _unit_text(night) == SCAFFOLD
+
+
+# ---- 07-13 fix round 1: every driver write checks the ledger first, and records what it wrote ----
+
+TAMPER = '{"made-up":"tamper"}\n'
+TAMPER_ROW = "0x00099990,func_00099990,u_x,matched,100.00,1\n"
+
+
+def _append_text(path: Path, text: str) -> None:
+    with path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+
+
+def _assert_breach(night: Night, report, rel: str, tamper: str) -> None:
+    """A ledger breach: STOPPED `guardrail` naming the file, the tampered bytes quarantined and
+    gone from the file, and nothing committed that night."""
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    assert rel in report.detail
+    assert tamper not in (night.repo / rel).read_text(encoding="utf-8")
+    kept = [p for p in night.quarantine.rglob("*") if p.is_file()]
+    assert any(tamper in p.read_text(encoding="utf-8") for p in kept), kept
+    assert night.commits() == []
+    assert _unit_text(night) == SCAFFOLD
+
+
+def test_a_log_tamper_between_driver_appends_stops_the_night(tmp_path):
+    """Fix round 1 (a): the log changed after the driver's last append (here during the gate,
+    as another process could); the driver's next append finds bytes it never wrote, stops the
+    night and never carries them into a commit."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[1])
+
+    def gate(pick, n):
+        _append_text(night.repo / LOG, TAMPER)
+        return night._gate(pick, n)
+
+    report = night.run(config={"attempts_per_function": 1}, gate=gate)
+    _assert_breach(night, report, LOG, TAMPER)
+
+
+def test_a_table_tamper_before_the_gate_stops_the_night(tmp_path):
+    """Fix round 1 (b): status.csv changed after the driver last wrote it (here during the
+    lint); the gate never runs, the table goes back to the driver's bytes, nothing commits."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+
+    def lint(pick):
+        _append_text(night.repo / STATUS_REL, TAMPER_ROW)
+        return night._lint(pick)
+
+    report = night.run(lint=lint)
+    assert night.gate_calls == []
+    _assert_breach(night, report, STATUS_REL, TAMPER_ROW)
+
+
+def test_a_feed_tamper_before_the_partial_gate_stops_the_night(tmp_path):
+    """Fix round 1 (b): the feed changed between the gate and `gate --partial` (here during the
+    reset's git restore); the partial gate never runs."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 50.0),))], gate_exits=[1])
+
+    def tamper(args: list[str]) -> None:
+        if night.gate_calls and _verb(args) == "restore" and not night.partial_calls:
+            _append_text(night.repo / FEED_NAME, TAMPER)
+
+    night.on_git = tamper
+    report = night.run(config={"attempts_per_function": 1})
+    assert night.partial_calls == []
+    _assert_breach(night, report, FEED_NAME, TAMPER)
+
+
+def test_a_log_tamper_before_the_match_commit_is_never_committed(tmp_path, monkeypatch):
+    """Fix round 1: the match commit checks the unit, status.csv, the feed and the log against
+    what the driver wrote right before `git add`; a tamper after the MATCHED append (here while
+    the message is built) stops the night with no match commit."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    real = driver.commit_message
+
+    def message(**fields):
+        _append_text(night.repo / LOG, TAMPER)
+        return real(**fields)
+
+    monkeypatch.setattr(driver, "commit_message", message)
+    report = night.run()
+    _assert_breach(night, report, LOG, TAMPER)
+    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+
+
+def test_an_untampered_night_commits_the_match_and_the_log(tmp_path):
+    """Fix round 1 (c): the normal path still commits the match, then the chore log."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    report = night.run()
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted")
+    assert night.commits() == [MATCH_SUBJECT, CHORE]
