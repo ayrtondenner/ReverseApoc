@@ -46,6 +46,8 @@ SHA_TACP = "2" * 40
 SCAFFOLD = f'#include "common.h"\n\nINCLUDE_ASM({FUNC});\n'
 STATUS_HEAD = "# written by: gate (made up)\nstart,name,unit,status,best_percent,attempts\n"
 LOG = "progress/attempts.jsonl"
+VIEW = "<view unit>"  # Sess.write: the session edits its view unit (fakeclaude --write-env-unit)
+SESSION_TEXT = "/* written by tests/fakeclaude.py */\nint fake_written;\n"
 
 
 class _Env(dict):
@@ -110,14 +112,15 @@ def _make_repo(tmp_path: Path, env: dict, *, unit: bool) -> Path:
 
 @dataclass(frozen=True)
 class Sess:
-    """One scripted session: the stream fixture fakeclaude replays, the repo-relative file it
-    writes (`--write`), extra files the "agent" leaves (written after the stream), the
+    """One scripted session: the stream fixture fakeclaude replays, the file it writes (VIEW,
+    the default: its view unit, 07-13; else a repo-relative path written directly, `--write`),
+    extra files the "agent" leaves (written after the stream), the
     checks.jsonl lines the wrapper would have logged, a wall-clock timeout, or an exception
     (raised after `files` are written). `link` plants (repo-relative link, target directory):
     a junction on Windows (no privilege needed), a symlink elsewhere."""
 
     scenario: str = "success"
-    write: str | None = UNIT_REL
+    write: str | None = VIEW
     files: tuple[tuple[str, str], ...] = ()
     checks: tuple[dict, ...] = ()
     timeout: bool = False
@@ -239,8 +242,9 @@ class Night:
         self.prompts.append(prompt)
         spec = self._current
         argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths"]
-        argv += ["--write", spec.write] if spec.write else []
-        return argv + (["--write-env-unit", spec.unit_text] if spec.unit_text else [])
+        text = spec.unit_text or (SESSION_TEXT if spec.write == VIEW else None)
+        argv += ["--write", spec.write] if spec.write and spec.write != VIEW else []
+        return argv + (["--write-env-unit", text] if text else [])
 
     def _see(self, env: dict) -> None:
         """07-13: what the session finds at launch: every file of its view (bytes), the view's
@@ -483,14 +487,14 @@ def test_session_env_names_the_claim(tmp_path):
 
 
 def test_match_commit_adds_new_files(tmp_path):
-    """F5: a unit scaffolded in the attempt (untracked) and a new include/x.h land in the
-    match commit through `git add -- <paths>`."""
-    night = Night(tmp_path, unit_committed=False, gate_exits=[0],
-                  sessions=[Sess(files=(("include/x.h", "/* made-up header */\n"),))])  # fmt: skip
+    """F5: a unit scaffolded in the attempt (untracked at HEAD) lands in the match commit
+    through `git add -- <paths>`. 07-13 (D-19): a matching session writes no header, so the old
+    include/x.h half of this test is now test_no_header_is_committed."""
+    night = Night(tmp_path, unit_committed=False, gate_exits=[0], sessions=[Sess()])
     night.run()
     assert night.scaffolded == [PICK]
     assert night.commit_files("feat(") == sorted(
-        [UNIT_REL, "include/x.h", f"config/{EXE}/status.csv", "decomphub.progress.json", LOG]
+        [UNIT_REL, f"config/{EXE}/status.csv", "decomphub.progress.json", LOG]
     )
 
 
@@ -821,15 +825,6 @@ def test_an_untracked_include_entry_outside_the_header_form_stops(tmp_path, entr
     assert entry in stopped["detail"]
     assert night.gate_calls == []
     assert night.commits() == []
-
-
-def test_a_plain_new_header_is_committed_with_literal_pathspecs(tmp_path):
-    night = Night(tmp_path, gate_exits=[0],
-                  sessions=[Sess(files=(("include/fx_util.h", "/* made up */\n"),))])  # fmt: skip
-    night.run()
-    assert "include/fx_util.h" in night.commit_files("feat(")
-    calls = [call for call in night.git_calls if _verb(call) in ("add", "commit")]
-    assert calls and all(call[0] == "--literal-pathspecs" for call in calls)
 
 
 # ---- Task 3: the end-of-night chore commit (D-23) ----
@@ -1184,10 +1179,9 @@ def test_a_failed_match_commit_leaves_no_trace_of_a_match(tmp_path):
 
 
 def test_a_failed_match_commit_unstages_new_files_too(tmp_path):
-    """I2 with untracked paths: a scaffolded unit and a new header were `git add`ed; after the
-    failed commit neither stays in the index or on disk."""
-    sess = Sess(files=(("include/fx_util.h", "/* made up */\n"),))
-    night = Night(tmp_path, unit_committed=False, sessions=[sess], gate_exits=[0])
+    """I2 with an untracked path: the landed unit HEAD lacks was `git add`ed; after the failed
+    commit it stays neither in the index nor on disk (07-13: no header is ever added)."""
+    night = Night(tmp_path, unit_committed=False, sessions=[Sess()], gate_exits=[0])
     hook = night.repo / ".git" / "hooks" / "commit-msg"
     _write(hook, REFUSE_FEAT_HOOK)
     hook.chmod(0o755)
@@ -1195,7 +1189,6 @@ def test_a_failed_match_commit_unstages_new_files_too(tmp_path):
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert night.git("diff", "--cached", "--name-only").strip() == ""
     assert not (night.repo / UNIT_REL).exists()
-    assert not (night.repo / "include" / "fx_util.h").exists()
 
 
 def test_a_third_transient_retry_that_succeeds_is_counted(tmp_path):

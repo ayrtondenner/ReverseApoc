@@ -53,6 +53,7 @@ each session starts in a fresh directory.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -60,6 +61,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -94,6 +96,9 @@ COMMIT_MSG = "commit-msg.txt"
 LOG_MSG = "commit-log.txt"  # under build/driver/<run>/
 LOG_SUBJECT = "chore(driver): attempt log"  # D-23
 BEST_DIR = "best"
+VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view came from (F34)
+VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
+MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
@@ -191,8 +196,9 @@ class Deps:
     """Every effect of the loop (D-05). `queue(difficult)` yields the picks, skipping the
     difficult keys; `requeue(difficult)` is picker.requeue wired with the matched set, callees
     and pool state; `matched_callees(pick)` is the snapshot kept with a capped function;
-    `scaffold(pick)` writes src/<exe>/<unit>.c from the committed CSVs; `pack(pick, dir)` runs
-    the context verb into the attempt dir; `argv(prompt)` is the claude argv
+    `scaffold(pick, dest)` writes the unit's scaffold from the committed CSVs to `dest` (the
+    view unit, 07-13); `pack(pick, dir, src)` builds the context pack into the attempt dir from
+    the src tree `src` (the view's, 07-13); `argv(prompt)` is the claude argv
     (session.build_argv); `session` is session.run_session; `lint(pick)` is the C89 lint of the
     unit (0/1/2); `gate(pick, n)` and `partial_gate(pick, src, n)` are the container gates;
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
@@ -203,8 +209,8 @@ class Deps:
     queue: Callable[[Container[Key]], Iterable[Pick]]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
     matched_callees: Callable[[Pick], tuple[Key, ...]]
-    scaffold: Callable[[Pick], None]
-    pack: Callable[[Pick, Path], PackInfo]
+    scaffold: Callable[[Pick, Path], None]
+    pack: Callable[[Pick, Path, Path], PackInfo]
     argv: Callable[[str], Sequence[str]]
     session: Callable[..., SessionResult]
     lint: Callable[[Pick], int]
@@ -908,12 +914,14 @@ def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
 
 @dataclass(frozen=True)
 class _Claim:
-    """One session's claim and where its files go."""
+    """One session's claim and where its files go: the attempt dir under `runs` (build/driver,
+    or the canary's build/driver/canary) and, inside it, the private view (D-24)."""
 
     pick: Pick
     run: str
     repo: Path
     n: int
+    runs: Path = DRIVER_DIR
 
     @property
     def key(self) -> Key:
@@ -937,7 +945,7 @@ class _Claim:
 
     @property
     def attempt_dir(self) -> Path:
-        return self.repo.joinpath(DRIVER_DIR, self.run, self.pick.exe, self.function,
+        return self.repo.joinpath(self.runs, self.run, self.pick.exe, self.function,
                                   f"attempt-{self.n}")  # fmt: skip
 
     @property
@@ -948,11 +956,38 @@ class _Claim:
     def notes_rel(self) -> str:
         return self.notes.relative_to(self.repo).as_posix()
 
+    @property
+    def view_root(self) -> Path:
+        """<attempt dir>/view: HEAD's src/, include/ and config/ for this session (D-24)."""
+        return self.attempt_dir / attempt.VIEW_DIR
+
+    @property
+    def view_unit(self) -> Path:
+        """The only C file the session edits: <view>/src/<exe>/<unit>.c (absolute)."""
+        return self.view_root.joinpath(attempt.VIEW_SRC, self.pick.exe, f"{self.pick.unit}.c")
+
+    @property
+    def view_unit_rel(self) -> str:
+        return self.view_unit.relative_to(self.repo).as_posix()
+
+    @property
+    def proposals(self) -> Path:
+        """<attempt dir>/proposals.jsonl, the session's naming proposals (D-19)."""
+        return self.attempt_dir / attempt.PROPOSALS_FILE
+
+    @property
+    def proposals_rel(self) -> str:
+        return self.proposals.relative_to(self.repo).as_posix()
+
     def env(self, base: Mapping[str, str]) -> dict[str, str]:
-        """The session's environment: the base plus the four claim variables (absolute, F28)."""
+        """The session's environment: the base plus the four claim variables and the three
+        view variables (absolute, F28; 07-13, D-24) that the hooks and the wrapper validate."""
         return {**base, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
+                hooks.UNIT_FILE_ENV: str(self.view_unit),
+                hooks.PROPOSALS_ENV: str(self.proposals),
+                hooks.SESSION_KIND_ENV: MATCHING_KIND,
                 "PYTHONDONTWRITEBYTECODE": "1"}  # fmt: skip  # fix round 1 minor 3: no .pyc
 
 
@@ -979,11 +1014,12 @@ class _Session:
     seconds: float
     changed: tuple[str, ...]  # paths whose status entry or content changed during the session
     new_headers: tuple[str, ...]  # untracked include/<name>.h the session wrote, allowlisted
-    scaffolded: bool
-    unit_before: bytes
+    scaffolded: bool  # the view unit was scaffolded (HEAD has no such unit)
+    unit_before: bytes  # the view unit's bytes at launch
     before: _Snapshot
     pinned_changed: tuple[str, ...] = ()  # pinned paths outside git's view that changed
     print_changed: tuple[str, ...] = ()  # fingerprinted files added, removed or changed
+    view_head: str = ""  # the commit the view was taken from (F34)
 
     @property
     def events(self) -> tuple[dict, ...]:
@@ -1015,8 +1051,8 @@ class _Session:
         return value
 
     def has_work(self) -> bool:
-        unit = self.claim.unit_rel.casefold()
-        return bool(self.new_headers) or any(p.casefold() == unit for p in self.changed)
+        """The session changed its view unit (D-24) or wrote a header."""
+        return bool(self.new_headers) or _read(self.claim.view_unit) != self.unit_before
 
 
 @dataclass
@@ -1058,6 +1094,7 @@ class _Night:
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
         self.pre_gate: dict[str, bytes | None] = {}  # status.csv, feed, log right before the gate
+        self.landed: str | None = None  # the unit the landing section copied into src/ (D-24)
 
     # --- the night ---
 
@@ -1284,15 +1321,50 @@ class _Night:
             directory.rename(aside)
         directory.mkdir(parents=True)
 
-    def _ensure_unit(self, claim: _Claim) -> bool:
-        """Scaffold the unit when it is missing; True when this attempt scaffolded it."""
-        unit = self.repo / claim.unit_rel
-        if unit.exists():
-            return False
-        self.deps.scaffold(claim.pick)
+    def _make_view(self, claim: _Claim) -> tuple[str, bool]:
+        """D-24: build/driver/<run>/<exe>/<func>/attempt-<n>/view/ from HEAD, never the
+        worktree: HEAD's tracked src/, include/ and config/ (those HEAD has) through
+        `git archive`, extracted with tarfile's `data` filter (no link, device or path that
+        leaves the view). include/ always exists (a view without it would compile against the
+        committed headers, 07-11 as built). The claimed unit is HEAD's file, or the scaffold
+        written into the view. The commit is recorded in <attempt dir>/view-head.txt (F34).
+        Returns (that commit, whether the unit was scaffolded)."""
+        head = _git_ok(self.deps.git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        listed = _git_ok(self.deps.git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
+        trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
+                 if name in VIEW_TREES]  # fmt: skip
+        view = claim.view_root
+        view.mkdir()
+        if trees:
+            archive = _git_ok(self.deps.git, ["archive", "--format=tar", head, "--", *trees])
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+                tar.extractall(view, filter="data")
+        (view / "include").mkdir(exist_ok=True)
+        write_atomic(claim.attempt_dir / VIEW_HEAD, f"{head}\n".encode("ascii"))
+        unit = claim.view_unit
+        if unit.is_file() and not _is_link(unit):
+            return head, False
+        if os.path.lexists(unit):
+            raise DriverError(f"{claim.view_unit_rel} is not a regular file at HEAD")
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        self.deps.scaffold(claim.pick, unit)
         if not unit.is_file():
-            raise DriverError(f"scaffold wrote no {claim.unit_rel}")
-        return True
+            raise DriverError(f"scaffold wrote no {claim.view_unit_rel}")
+        return head, True
+
+    def _land(self, session: _Session) -> None:
+        """The landing section's first step (D-06, D-24): the only writer of src/. The view
+        unit's bytes are copied to src/<exe>/<unit>.c, so the lint and the unchanged gate see
+        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit."""
+        claim = session.claim
+        source = claim.view_unit
+        if _is_link(source) or not source.is_file():
+            raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
+        data = source.read_bytes()
+        target = self.repo / claim.unit_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.landed = claim.unit_rel
+        write_atomic(target, data)
 
     def _snapshot(self) -> _Snapshot:
         """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
@@ -1382,18 +1454,20 @@ class _Night:
         def is_tracked(rel: str) -> bool:
             return rel.replace("\\", "/").casefold() in tracked
 
-        def allowed(rel: str) -> bool:
+        def allowed(rel: str) -> bool:  # view mode (07-13, D-24): the hook's own allowlist
             return hooks.matching_write_allowed(rel, claim=claim.target, notes=claim.notes_rel,
-                                                tracked=is_tracked)  # fmt: skip
+                                                tracked=is_tracked, unit_file=claim.view_unit_rel,
+                                                proposals=claim.proposals_rel)  # fmt: skip
 
         return allowed
 
     def _launch(self, claim: _Claim) -> _Session:
         self._fresh_dir(claim)
-        scaffolded = self._ensure_unit(claim)
-        unit_before = (self.repo / claim.unit_rel).read_bytes()
-        pack = self.deps.pack(claim.pick, claim.attempt_dir)
-        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe)
+        view_head, scaffolded = self._make_view(claim)
+        unit_before = claim.view_unit.read_bytes()
+        pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                             unit_path=claim.view_unit_rel)  # fmt: skip
         base = self.config.base_env if self.config.base_env is not None else os.environ
         before = self._snapshot()
         start = self.deps.clock()
@@ -1408,7 +1482,8 @@ class _Night:
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
             note = self._remove_containers(claim)
-            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before)
+            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before,
+                                    view_head)
             stray = self._strays(session)
             contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
             contained += f"; {note}" if note else ""
@@ -1421,7 +1496,8 @@ class _Night:
             raise _Stop(ERROR, why) from exc
         note = self._remove_containers(claim)
         seconds = self.deps.clock() - start
-        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before)
+        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before,
+                                view_head)
         self.live = session
         try:
             self._audit(session)
@@ -1451,7 +1527,8 @@ class _Night:
             return f"containers not removed: {type(exc).__name__}: {exc}"
         return ""
 
-    def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before) -> _Session:
+    def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before,
+                 view_head) -> _Session:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
@@ -1463,7 +1540,7 @@ class _Night:
         headers = tuple(p for p in changed if after.status.get(p, ("", None))[0] == _UNTRACKED
                         and _HEADER.fullmatch(p) and allowed(p))  # fmt: skip
         return _Session(claim, result, pack, seconds, changed, headers, scaffolded, unit_before,
-                        before, pinned, prints)  # fmt: skip
+                        before, pinned, prints, view_head)  # fmt: skip
 
     def _strays(self, session: _Session) -> list[str]:
         """Every path the session changed or wrote that the allowlist refuses (D-17, F3), and
@@ -1700,22 +1777,17 @@ class _Night:
             raise _Stop(INIT, "; ".join(problems))
 
     def _reset(self, session: _Session) -> None:
-        """D-34: `git restore --source=HEAD -- <unit> include/` for tracked files; a unit
-        scaffolded this attempt and the session's new headers are deleted. Never `git add -A`,
+        """D-34, D-24: put back only the claimed unit in src/: `git restore --source=HEAD --
+        <unit>` when HEAD tracks it, else delete the copy the landing section wrote. The view
+        is abandoned as it is (kept for inspection). Never all of include/, never `git add -A`,
         never `git clean`."""
         claim = session.claim
-        tracked = self._tracked()
         unit = self.repo / claim.unit_rel
-        paths = [claim.unit_rel] if claim.unit_rel.casefold() in tracked else []
-        if any(name.startswith("include/") for name in tracked):
-            paths.append("include/")
-        if paths:
-            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--", *paths])
-        if claim.unit_rel.casefold() not in tracked:
-            if session.scaffolded:
-                unit.unlink(missing_ok=True)
-            else:
-                write_atomic(unit, session.unit_before)
+        if claim.unit_rel.casefold() in self._tracked():
+            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--", claim.unit_rel])
+        elif self.landed == claim.unit_rel:
+            unit.unlink(missing_ok=True)
+        self.landed = None
         for header in session.new_headers:
             (self.repo / header).unlink(missing_ok=True)
 
@@ -1745,9 +1817,11 @@ class _Night:
         raise _Stop(TOOL, "; ".join([what, *notes]))
 
     def _judge(self, session: _Session) -> GateRun | None:
-        """The lint, then the gate (D-24). None when the lint failed (the gate never runs)."""
+        """The landing section (D-24): the view unit lands in src/, then the lint, then the
+        unchanged gate. None when the lint failed (the gate never runs)."""
         pick, n = session.claim.pick, session.claim.n
         self.pre_gate = {}
+        self._land(session)
         lint = self.deps.lint(pick)
         if lint == EXIT_TOOL:
             self._tool_failure(session, "the C89 lint could not run (exit 2)")
@@ -1982,8 +2056,8 @@ class ExeWorld:
     pool: Sequence[Candidate]
     units: Mapping[int, str]
     callees: Mapping[int, tuple[int, ...]]
-    pack: Callable[[Pick, Path], PackInfo]
-    scaffold: Callable[[Pick], None]
+    pack: Callable[..., PackInfo]  # (pick, directory[, src root]); the src default: src/
+    scaffold: Callable[[Pick, Path], None]  # (pick, the file to write)
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -2202,8 +2276,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
 
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
-                scaffold=lambda pick: worlds[pick.exe].scaffold(pick),
-                pack=lambda pick, directory: worlds[pick.exe].pack(pick, directory),
+                scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
+                pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
                 argv=seams.argv, session=seams.session, lint=lint,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
@@ -2774,18 +2848,19 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
     calls = CallIndex.build(list(data.rows), data.flat, list(data.fixups))
     rows = {row.start: row for row in data.rows}
 
-    def pack(pick: Pick, directory: Path) -> PackInfo:
-        built = attempt.make_pack(data, rows[pick.start], src=roots.src, config=roots.config,
+    def pack(pick: Pick, directory: Path, src: Path | None = None) -> PackInfo:
+        """07-13: a session's pack reads its view's src/ (`src`); the dry run reads src/."""
+        built = attempt.make_pack(data, rows[pick.start], src=roots.src if src is None else src,
+                                  config=roots.config,
                                   asm_root=roots.asm, roots=roots, calls=calls)  # fmt: skip
         write_pack(built, directory, root=roots.repo)
         return PackInfo(built.pack_bytes, tuple(built.truncated))
 
-    def scaffold(pick: Pick) -> None:
+    def scaffold(pick: Pick, dest: Path) -> None:
         unit = next((u for u in data.units if u.unit == pick.unit), None)
         if unit is None:
             raise DriverError(f"{pick.exe}: no unit {pick.unit} in units.csv")
-        path = Path(roots.src) / exe / f"{pick.unit}.c"
-        write_unit_source(path, scaffold_unit(data.target.name, unit, list(data.rows)))
+        write_unit_source(Path(dest), scaffold_unit(data.target.name, unit, list(data.rows)))
 
     return ExeWorld(pool=candidates(assessments, data.symbols),
                     units={row.start: row.unit for row in data.rows},
