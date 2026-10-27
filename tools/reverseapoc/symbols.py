@@ -12,6 +12,11 @@ Linker names follow Watcom's register calling convention, as the probe externs s
   at the same offset (`_nmalloc_` next to `malloc_`, orchestrator ruling F12);
 - a symbols.csv row (D-19) names its address verbatim and wins over the placeholder.
 
+C names (c_name) follow the linker names: a placeholder drops the `_` the convention adds, a
+runtime public stays verbatim, and a symbols.csv row goes through unitdefs.c_name_of, the one
+naming rule (D-29: `main_` is C `main`, `_g_vol` is C `g_vol`). A symbols.csv name without that
+`_` has no C name and is refused when the table is built.
+
 XXXXXXXX is the linear address at the preferred base as 8 uppercase hex digits.
 """
 
@@ -23,6 +28,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
+from . import unitdefs
 from .functions import (
     ADDRESS_DIGITS,
     DATA_PREFIX,
@@ -117,6 +123,7 @@ class SymbolTable:
         for symbol in by_address.values():
             if symbol.name in ambiguous:
                 raise SymbolError(f"symbols.csv name {symbol.name} is also a runtime public")
+            _symbol_c_name(symbol)
             _add_name(names, symbol.name, symbol.address)
         return cls(rows, tuple(row.start for row in rows), by_start, by_address, names,
                    tuple(data_ranges), ambiguous)  # fmt: skip
@@ -152,11 +159,12 @@ class SymbolTable:
         return row.name
 
     def c_name(self, va: int, *, data: bool = False) -> str:
-        """The name C source writes for `va`: func_<va> or D_<va> for placeholders, runtime
-        publics and symbols.csv names verbatim."""
+        """The name C source writes for `va`: func_<va> or D_<va> for placeholders, a runtime
+        public verbatim, and a symbols.csv name through unitdefs.c_name_of (`main_` -> `main`,
+        `_g_vol` -> `g_vol`; D-29)."""
         symbol = self.symbols.get(va)
         if symbol is not None:
-            return symbol.name
+            return _symbol_c_name(symbol)
         if data:
             return data_name(va)
         row = self._row_at(va)
@@ -251,6 +259,15 @@ def _check_symbol(
         return
     if not _in_data_range(symbol.address, data_ranges):
         raise SymbolError(f"symbols.csv data {where} lies in no data object")
+
+
+def _symbol_c_name(symbol: SymbolRow) -> str:
+    """unitdefs.c_name_of the symbols.csv row; SymbolError for a name without Watcom's `_`."""
+    try:
+        return unitdefs.c_name_of(symbol.name, symbol.kind)
+    except unitdefs.UnitDefsError as exc:
+        where = f"{symbol.name} at {_hex(symbol.address)}"
+        raise SymbolError(f"symbols.csv {symbol.kind} {where} has no C name: {exc}") from None
 
 
 def _check_alias(alias: str, va: int, by_start: Mapping[int, FunctionRow]) -> None:
