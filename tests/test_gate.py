@@ -563,10 +563,12 @@ class FakePartial(FakeAll):
         self.problems = problems
         self.options: list = []
         self.objects: list[Path] = []
+        self.rule_paths: list[str | None] = []
 
     def source(self, exe, unit, src, rows, *, build_dir, options, **kwargs) -> SourceCheck:
         self.sources.append((exe.target.name, unit))
         self.options.append(options)
+        self.rule_paths.append(kwargs.get("rule_path"))
         obj = UnitPaths.of(object_root(build_dir, options), exe.stem, unit).obj
         obj.parent.mkdir(parents=True, exist_ok=True)
         obj.write_bytes(b"custom object")
@@ -1114,3 +1116,109 @@ def test_gate_without_progress_py_writes_no_table(tree, tmp_path, monkeypatch):
     finally:
         gate._progress.cache_clear()
     assert not tree.status(UFO).exists() and not (tree.root / FEED).exists()
+
+
+# ---- 07-03 (D-27 P2): rows are written only under the committed compile options ---------------
+
+# The GateRoots field of each compile option and its CLI flag.
+OPTION_FLAGS = {"cflags": "--cflags", "watcom_manifest": "--watcom-manifest",
+                "watcom_dir": "--watcom-dir"}  # fmt: skip
+
+
+def other_option(tmp_path: Path, field: str) -> Path:
+    """An uncommitted value for `field`: a cflags table with other flags, another manifest file
+    or another Watcom directory."""
+    path = tmp_path / f"other-{field}"
+    if field == "watcom_dir":
+        path.mkdir()
+    else:
+        path.write_text("*  wcc386@10.6  -4r -s -fpi -ot\n", encoding="utf-8")
+    return path
+
+
+def published(tree: Tree) -> tuple[bytes, bytes]:
+    """status.csv of UFO2P with one matched row (its unit file in place, so a passing check of
+    another unit cross-checks clean), and the feed beside config/, as bytes."""
+    seed(tree, UFO, [matched(B1, UNIT_B, sha=lf_sha256(tree.write_unit(UFO, UNIT_B, [B1])))])
+    (tree.root / FEED).write_bytes(b"previous feed\n")
+    return tree.status(UFO).read_bytes(), (tree.root / FEED).read_bytes()
+
+
+def assert_unchanged(tree: Tree, before: tuple[bytes, bytes]) -> None:
+    assert (tree.status(UFO).read_bytes(), (tree.root / FEED).read_bytes()) == before
+
+
+@pytest.mark.parametrize("field", list(OPTION_FLAGS))
+def test_gate_unit_refuses_other_compile_options(tree, tmp_path, field):
+    """gate EXE/UNIT under an uncommitted --cflags, --watcom-manifest or --watcom-dir is refused
+    before any check: a passing check would write matched rows under unapproved flags."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    before = published(tree)
+    roots = dataclasses.replace(tree.roots, **{field: other_option(tmp_path, field)})
+    fake = FakeCheck(tree)
+    with pytest.raises(CheckError, match=OPTION_FLAGS[field]) as info:
+        gate.gate_units([("ufo2p", UNIT_A)], roots=roots, today=TODAY, check_fn=fake)
+    assert "gate --all" in str(info.value)
+    assert fake.calls == []
+    assert_unchanged(tree, before)
+
+
+@pytest.mark.parametrize("field", list(OPTION_FLAGS))
+def test_gate_cli_refuses_other_compile_options(tree, tmp_path, monkeypatch, capsys, field):
+    """DEC-03 edge: `gate ufo2p/<unit> --cflags tmp.txt` on a passing check exits 2 and leaves
+    status.csv and decomphub.progress.json byte-identical."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    before = published(tree)
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    argv = ["gate", f"ufo2p/{UNIT_A}", *tree.argv(), OPTION_FLAGS[field],
+            str(other_option(tmp_path, field))]  # fmt: skip
+    assert cli_main(argv) == 2
+    assert OPTION_FLAGS[field] in capsys.readouterr().err
+    assert_unchanged(tree, before)
+
+
+def test_gate_cli_with_the_committed_options_spelled_out_still_writes(tree, monkeypatch):
+    """The CLI passes every default explicitly; the committed paths given by hand are the
+    committed options, so gate still writes."""
+    tree.write_unit(UFO, UNIT_A, [A1])
+    monkeypatch.setattr(gate, "check_unit", FakeCheck(tree))
+    argv = ["gate", f"ufo2p/{UNIT_A}", *tree.argv(), "--cflags", str(check.DEFAULT_CFLAGS)]
+    assert cli_main(argv) == 0
+    assert [row.start for row in tree.rows(UFO)] == [A1]
+
+
+@pytest.mark.parametrize("field", list(OPTION_FLAGS))
+def test_gate_partial_refuses_other_compile_options(committed, tmp_path, field):
+    tree = committed
+    fake = FakePartial(tree, {B1: 70.0})
+    roots = dataclasses.replace(tree.roots, **{field: other_option(tmp_path, field)})
+    with pytest.raises(CheckError, match=OPTION_FLAGS[field]):
+        gate.gate_partial("ufo2p", UNIT_B, saved_copy(tree, UNIT_B), roots=roots, today=TODAY,
+                          load_fn=fake.load, check_source_fn=fake.source,
+                          compile_fn=lambda *a, **k: None,
+                          objdiff_runner=lambda argv: "")  # fmt: skip
+    assert fake.sources == []
+    assert not tree.status(UFO).exists()
+
+
+def test_gate_all_accepts_other_cflags(tree, tmp_path):
+    """`gate --all --cflags FILE` stays the D-14 dry run: it checks under FILE and writes
+    nothing."""
+    before = seeded_tree(tree)
+    cflags = other_option(tmp_path, "cflags")
+    fake = FakeAll(tree)
+    result = gate.gate_all(roots=dataclasses.replace(tree.roots, cflags=cflags),
+                           load_fn=fake.load, check_source_fn=fake.source, land_fn=fake.land,
+                           compile_fn=lambda *a, **k: None,
+                           objdiff_runner=lambda argv: "")  # fmt: skip
+    assert result.exit_code == 0 and result.written == ()
+    assert fake.lands[0]["options"].cflags == cflags
+    assert {exe: tree.status(exe).read_bytes() for exe in (UFO, TACP)} == before
+
+
+def test_gate_partial_uses_the_unit_rule(committed):
+    """D-27 P1 on a saved attempt: best/<unit>.c is scored under src/<exe>/<unit>.c's rule."""
+    tree = committed
+    fake = FakePartial(tree, {B1: 70.0})
+    assert run_partial(tree, UNIT_B, saved_copy(tree, UNIT_B), fake).ok
+    assert fake.rule_paths == [f"src/ufo2p/{UNIT_B}.c"]
