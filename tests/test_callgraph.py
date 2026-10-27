@@ -393,3 +393,18 @@ def test_reach_is_deterministic():
     assert list(first) == sorted(first)
     assert first.get(X1) == (1, TABLE)
     assert first.get(B2) == (1, MIDROW)
+
+
+def test_with_edges_merges_hand_edges_in_callee_order():
+    ref = MidRowRef(0x10, 1, 0x25, 2, "code", True)
+    base = CallGraph(edges={1: (Edge(1, 3, DIRECT),), 2: (), 3: ()}, midrow=(ref,),
+                     indirect={1: 2}, orphan_tables=(0x99,))  # fmt: skip
+    hand = [Edge(1, 2, callgraph.HAND), Edge(1, 3, callgraph.HAND), Edge(3, 1, callgraph.HAND)]
+    merged = callgraph.with_edges(base, hand)
+    assert merged.callees(1) == (Edge(1, 2, callgraph.HAND), Edge(1, 3, DIRECT),
+                                 Edge(1, 3, callgraph.HAND))  # fmt: skip
+    assert merged.callees(3) == (Edge(3, 1, callgraph.HAND),)
+    assert merged.callers(1) == (3,)
+    assert (merged.midrow, merged.indirect, merged.orphan_tables) == ((ref,), {1: 2}, (0x99,))
+    assert base.callees(1) == (Edge(1, 3, DIRECT),)  # the input graph is unchanged
+    assert callgraph.with_edges(base, [Edge(1, 3, DIRECT)]) == base  # no duplicate edge
