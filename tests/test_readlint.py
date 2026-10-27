@@ -50,8 +50,8 @@ def write_tree(tmp_path, text, *, unit=UNIT, exe=EXE, status=MATCHED, symbols=()
         write_symbols_csv(config / exe / "symbols.csv", symbols, f"{exe.upper()}.EXE")
     if status is not None:
         percent = 100.0 if status == MATCHED else 50.0
-        write_status(status_path(config, exe),
-                     [StatusRow(F1, f"func_{F1:08X}", unit, status, percent, 1, SHA, DATE)])  # fmt: skip
+        row = StatusRow(F1, f"func_{F1:08X}", unit, status, percent, 1, SHA, DATE)
+        write_status(status_path(config, exe), [row])
     return src, config, path
 
 
