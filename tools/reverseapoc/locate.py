@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING
 from . import asm
 from .callgraph import WALKED_KINDS
 from .functions import FunctionRow
+from .le import SRC_OFF32
 from .x86 import Insn
 
 if TYPE_CHECKING:
@@ -320,32 +321,133 @@ def interrupt_callers(exe: ExeInputs, vector: int) -> list[Site]:
             if regs.value("eax") == vector]  # fmt: skip
 
 
-# ---- get_text (stubs: plan 07-12 Task 2 RED) ----
+# ---- get_text: UI text by (section, index) ----
 
+# Per EXE: the get_text function (section in eax, index in edx), its section-pointer table and
+# the table's slot count. Research 07-R1 Q2 gives the function and table; the slot count is
+# spike 007 q4's measurement: both tables have 52 slots. UFO2P fills all 52 (research's "50
+# sections" is the loop bound of the dump routine next to get_text); TACP fills 21, the rest
+# are null.
 GET_TEXT: dict[str, tuple[int, int, int]] = {
-    "ufo2p": (0x00063800, 0x000F3794, 0),
-    "tacp": (0x0005B360, 0x00292D18, 0),
+    "ufo2p": (0x00063800, 0x000F3794, 52),
+    "tacp": (0x0005B360, 0x00292D18, 52),
 }
+_SLOT_SIZE = 4  # one off32 section pointer
 
 
 @dataclass(frozen=True)
 class TextSection:
+    """One non-null section: [start, end) of its strings in the text blob (end is the next
+    section's start, or the table for the last one) and each string's first byte."""
+
     section: int
     start: int
     end: int
     strings: tuple[int, ...]
 
 
+def _get_text(exe: ExeInputs) -> tuple[int, int, int]:
+    if exe.stem not in GET_TEXT:
+        raise LocateError(f"no get_text facts for {exe.stem!r} (GET_TEXT holds "
+                          f"{', '.join(GET_TEXT)})")  # fmt: skip
+    return GET_TEXT[exe.stem]
+
+
+def _word(flat: bytes, va: int) -> int:
+    return int.from_bytes(flat[va : va + _SLOT_SIZE], "little")
+
+
+class _Table:
+    """The section-pointer table of one EXE, checked slot by slot."""
+
+    def __init__(self, exe: ExeInputs) -> None:
+        _func, self.va, self.slots = _get_text(exe)
+        self.flat = exe.flat
+        _code, self.data = _ranges(exe)
+        end = self.va + (self.slots + 1) * _SLOT_SIZE  # the slot past the last is checked too
+        if not (self.data[0] <= self.va and end <= self.data[1]):
+            raise LocateError(f"get_text table 0x{self.va:08X} with {self.slots} slots does not "
+                              "fit in the data object")  # fmt: skip
+        self.fixups = {fx.src_va: fx for fx in exe.fixups if self.va <= fx.src_va < end}
+
+    def _slot_va(self, k: int) -> int:
+        return self.va + k * _SLOT_SIZE
+
+    def pointer(self, k: int) -> int | None:
+        """Slot k's string start, or None for a null slot."""
+        va = self._slot_va(k)
+        fx = self.fixups.get(va)
+        if fx is None:
+            if _word(self.flat, va):
+                raise LocateError(f"get_text slot {k} at 0x{va:08X} holds a value with no fixup: "
+                                  f"the slot count {self.slots} is wrong")  # fmt: skip
+            return None
+        if fx.kind != SRC_OFF32 or fx.size != _SLOT_SIZE:
+            raise LocateError(f"get_text slot {k} at 0x{va:08X} is not an off32 pointer")
+        if not self.data[0] <= fx.target_va < self.va:
+            raise LocateError(f"get_text slot {k} points at 0x{fx.target_va:08X}, not into the "
+                              "data object below the table")  # fmt: skip
+        if fx.target_va > self.data[0] and self.flat[fx.target_va - 1] != _NUL:
+            raise LocateError(f"get_text slot {k} points at 0x{fx.target_va:08X}, not at a "
+                              "string start")  # fmt: skip
+        return fx.target_va
+
+    def check_end(self) -> None:
+        """The slot past the last must not be one more text pointer (a count too small)."""
+        fx = self.fixups.get(self._slot_va(self.slots))
+        if fx is not None and fx.kind == SRC_OFF32 and self.data[0] <= fx.target_va < self.va:
+            raise LocateError(f"get_text slot {self.slots} past the last also points into the "
+                              f"text: the slot count {self.slots} is too small")  # fmt: skip
+
+
+def _strings_in(flat: bytes, start: int, end: int) -> tuple[int, ...]:
+    """The first byte of each NUL-terminated string in [start, end)."""
+    blob = bytes(flat[start:end])
+    starts = [start]
+    at = blob.find(_NUL)
+    while at >= 0 and start + at + 1 < end:
+        starts.append(start + at + 1)
+        at = blob.find(_NUL, at + 1)
+    return tuple(starts)
+
+
 def get_text_sections(exe: ExeInputs) -> tuple[TextSection, ...]:
-    return ()
+    """The non-null sections of the EXE's get_text table, by section number. LocateError when a
+    slot is not an off32 pointer to a string start below the table, two slots share a start, a
+    slot holds a value without a fixup, or the slot past the last is still a text pointer (the
+    last two catch a wrong slot count in GET_TEXT)."""
+    table = _Table(exe)
+    pointers = {k: start for k in range(table.slots) if (start := table.pointer(k)) is not None}
+    table.check_end()
+    if len(set(pointers.values())) != len(pointers):
+        raise LocateError("get_text slots share a string start")
+    by_start = sorted((start, k) for k, start in pointers.items())
+    ends = [start for start, _k in by_start[1:]] + [table.va]
+    sections = [TextSection(k, start, end, _strings_in(exe.flat, start, end))
+                for (start, k), end in zip(by_start, ends, strict=True)]  # fmt: skip
+    return tuple(sorted(sections, key=lambda s: s.section))
 
 
 def get_text_index(sections: Sequence[TextSection], va: int) -> tuple[int, int] | None:
-    return None
+    """(section, index) of the string holding `va`, or None outside every section."""
+    ordered = sorted(sections, key=lambda s: s.start)
+    i = bisect_right([s.start for s in ordered], va) - 1
+    if i < 0 or va >= ordered[i].end:
+        return None
+    section = ordered[i]
+    return section.section, bisect_right(section.strings, va) - 1
 
 
 def get_text_sites(exe: ExeInputs) -> list[Site]:
-    return []
+    """Every call (or tail jump) to get_text from a game/thunk row, by call address, with the
+    section (eax) and index (edx) its basic block last set; `partial` when either is not a
+    constant there (a list index, a loop, a value set before the block)."""
+    func = _get_text(exe)[0]
+    sites = []
+    for row, insn, regs in _calls_to(exe, frozenset({func})):
+        section, index = regs.value("eax"), regs.value("edx")
+        sites.append(Site(row.start, insn.va, section, index, section is None or index is None))
+    return sites
 
 
 # ---- the `mechanics locate` report ----
@@ -371,24 +473,60 @@ def report_range(exe: ExeInputs, lo: int, hi: int) -> dict:
     return {"range": [_hex(lo), _hex(hi)], "rows": _rows_of(table_refs(exe, lo, hi))}
 
 
+def _site_cells(sites: Sequence[Site]) -> list[dict]:
+    return [{"caller": _hex(s.caller), "call": _hex(s.call_va)} for s in sites]
+
+
+def _text_sites(exe: ExeInputs, section: int, index: int) -> tuple[list[Site], list[int]]:
+    """The get_text sites asking for exactly (section, index), and the rows of the section-only
+    sites of that section (their index is not a constant: they may or may not show it)."""
+    sites = get_text_sites(exe)
+    full = [s for s in sites if (s.section, s.index) == (section, index)]
+    partial = [s.caller for s in sites if s.section == section and s.index is None]
+    return full, partial
+
+
+def report_get_text(exe: ExeInputs, section: int, index: int) -> dict:
+    full, partial = _text_sites(exe, section, index)
+    return {"get_text": [section, index], "sites": _site_cells(full),
+            "rows": _rows_of(s.caller for s in full),
+            "partial_rows": _rows_of(partial)}  # fmt: skip
+
+
 def report_va(exe: ExeInputs, va: int) -> dict:
-    return {"va": _hex(va), "rows": _rows_of(table_refs(exe, va, va + 1))}
+    """The rows with a fixup to exactly `va`; when `va` lies in the get_text blob, also its
+    (section, index), the sites asking for it (their rows join `rows`) and the section-only
+    rows."""
+    rows = set(table_refs(exe, va, va + 1))
+    pair = get_text_index(get_text_sections(exe), va)
+    full: list[Site] = []
+    partial: list[int] = []
+    if pair is not None:
+        full, partial = _text_sites(exe, *pair)
+    text = None if pair is None else {"section": pair[0], "index": pair[1]}
+    return {"va": _hex(va), "get_text": text, "sites": _site_cells(full),
+            "rows": _rows_of(rows | {s.caller for s in full}),
+            "partial_rows": _rows_of(partial)}  # fmt: skip
 
 
 def report_interrupt(exe: ExeInputs, vector: int) -> dict:
     sites = interrupt_callers(exe, vector)
-    return {"int": f"0x{vector:02X}",
-            "sites": [{"caller": _hex(s.caller), "call": _hex(s.call_va)} for s in sites],
+    return {"int": f"0x{vector:02X}", "sites": _site_cells(sites),
             "rows": _rows_of(s.caller for s in sites)}  # fmt: skip
 
 
 def format_report(exe_name: str, report: dict) -> str:
-    """The text form: what was asked, each site or string by address, then `N rows`."""
+    """The text form: what was asked, each string or site by address, then `N rows`."""
     lines = []
     for ref in report.get("strings", ()):
         lines.append(f"  string {ref['address']}: rows {' '.join(ref['rows']) or 'none'}")
+    if text := report.get("get_text"):
+        pair = text if isinstance(text, list) else [text["section"], text["index"]]
+        lines.append(f"  get_text section {pair[0]} index {pair[1]}")
     for site in report.get("sites", ()):
         lines.append(f"  site {site['call']} in {site['caller']}")
+    if partial := report.get("partial_rows"):
+        lines.append(f"  section-only rows (index not a constant): {' '.join(partial)}")
     rows = report["rows"]
     lines.append(f"{exe_name}: {len(rows)} rows" + (f": {' '.join(rows)}" if rows else ""))
     return "\n".join(lines)
