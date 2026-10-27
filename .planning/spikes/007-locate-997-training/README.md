@@ -4,7 +4,7 @@ idea: mechanics-first-decompilation
 name: locate-997-training
 type: standard
 validates: "Given UFO2P.EXE and TACP.EXE, their LE fixups and the committed functions.csv, when the BIOS-tick readers, the UI strings through get_text and the data-table and hand-off-file xrefs are followed, then the #997 time-advance code and its rate constants are located in both EXEs, the #263-1 battle-to-agent stat rule (incl. androids) is located, and the same method gives an entry function for most remaining D-01 items"
-verdict: pending
+verdict: VALIDATED
 related: [003]
 tags: [mechanics, 997, training, get_text, bios-tick, d-01, d-03, d-26]
 ---
@@ -13,8 +13,8 @@ tags: [mechanics, 997, training, get_text, bios-tick, d-01, d-03, d-26]
 
 This is the Phase 7 roadmap spike (D-03, refined by D-26). Part 1 (plan 07-02) holds q1-q3: the
 time base, the tick rule and the training rule. Part 2 (plan 07-08) adds the string, table and
-call-graph questions (q4-q6), the verdict and the owner report. The verdict stays `pending` until
-then.
+call-graph questions (q4-q6), the verdict and the owner report. Verdict: **VALIDATED** by the
+D-03 formula, with the caveats in "Verdict".
 
 ## What This Validates
 
@@ -26,6 +26,13 @@ then.
 - **q3 training rule.** The `scenario/unitr.dat` hand-off (TACP writes, UFO2P reads), the UFO2P
   stat update reached from the reader, the android branch and the TACP accrual sites.
   EXPERIEN/BRAIN/WEAPEXP.DAT are the Learning AI files of #265, not #263-1 (D-26).
+- **q4 strings.** The `get_text` section tables, how often a call site's (section, index) can be
+  recovered, the TACP speed labels, and how many of 12 sampled Tier 2-4 items get an entry row
+  by string or file name.
+- **q5 tables.** Whether the CD build's data, where OpenApoc's extractor offsets point, sits at
+  the same linear addresses in the installed build (VA identity).
+- **q6 call graph.** Direct edges rebuilt independently against `CallIndex`, and research Q1's
+  reachability from `main_` reproduced.
 
 Stated deviation (spike CONVENTIONS allow shared inputs): instructions are decoded through
 `reverseapoc.x86`, the pinned capstone, because a raw opcode scan cannot find instruction
@@ -46,11 +53,15 @@ uv run python .planning/spikes/007-locate-997-training/q1_timebase.py [--plant] 
 uv run python .planning/spikes/007-locate-997-training/q2_tickrule.py [--plant] [--plant-guards]
 uv run python .planning/spikes/007-locate-997-training/q3_training.py [--plant]
 uv run python .planning/spikes/007-locate-997-training/q4_strings.py [--plant]
+uv run python .planning/spikes/007-locate-997-training/q5_tables.py [--plant] [--headers DIR]
+uv run python .planning/spikes/007-locate-997-training/q6_callgraph.py [--plant]
 ```
 
 Each prints one `PASS/FAIL <file> <claim> <detail>` line per claim and `ALL PASS` or `N FAILED`,
 and exits 1 on any FAIL. Output is addresses, counts, booleans, keyword labels and protocol or
-rate constants only. q2, q3 and q4 import q1's shared reader (`Image`, the constant tracker).
+rate constants only. q2-q6 import q1's shared reader (`Image`, the constant tracker). q5 also
+reads the Steam `cd.iso` in memory and, if present, OpenApoc's extractor headers from the
+gitignored `build/openapoc-extractors/` (text only, never committed).
 
 ## Results
 
@@ -287,7 +298,8 @@ What the bytes show about #263-1:
   battle. q3 finds only two candidate rows for that accrual: `func_00060080` writes two of the
   fields through the unit-array base, and `func_000B26F0` adds to one through a register base. A
   unit pointer passed in from a caller is invisible to this heuristic, so the TACP accrual is
-  **not located**. The call-graph route of D-03 (q6, plan 07-08) or reading is needed.
+  **not located**. The call-graph route of D-03 or reading is needed. q6 (plan 07-08) checks
+  the graph itself; it does not locate the accrual, so this gap passes to plan 07-22.
 - **Androids.** The cityscape training screen `func_0004F100` shows the label at `0x000F12B6`
   (get_text 37/404, keywords `android` + `training`) only on the branch guarded by a compare of
   an agent-record field at `0x0004F3F5`. That is the android test of base training (#263-13).
@@ -398,6 +410,116 @@ q4 found 11 of 12
   - **The miss.** Chrysalis and egg names appear only in lists (section-only sites), so the
     hatch rule needs the data-table or call-graph route (`CREW_ALIEN_BUILDING`, research Q3).
 
+### q5 tables by VA identity
+
+`uv run python .planning/spikes/007-locate-997-training/q5_tables.py` (exit 0), kept in the
+gitignored `build/spike007-q5.out`:
+
+```
+SKIP q5 headers absent (C:\Users\Ayrton\Documents\Gitprojects\ReverseApoc\build\openapoc-extractors)
+PASS UFO2P.EXE cd-build XCOM3/UFOEXE/UFO2P.EXE size 1702206 sha1 6be861d611548f5a00b0b3bc49a82ed29d25fd4a expected size 1702206 sha1 6be861d611548f5a00b0b3bc49a82ed29d25fd4a
+PASS UFO2P.EXE data-object-identity installed [0x000D0000..0x00251E20) CD [0x000D0000..0x00251E20) same True; identical pages 380 of 386; differing bytes 258; expected 380 of 386, 258
+PASS TACP.EXE cd-build XCOM3/TACEXE/TACP.EXE size 3170298 sha1 af32ccc371c153c514fb8e3cc80e765de380aef9 expected size 3170298 sha1 af32ccc371c153c514fb8e3cc80e765de380aef9
+PASS TACP.EXE data-object-identity installed [0x000E0000..0x0033F0B0) CD [0x000E0000..0x0033F0B0) same True; identical pages 605 of 608; differing bytes 190; expected 605 of 608, 190
+ALL PASS
+```
+
+- **The OpenApoc headers were absent in this session** (`build/openapoc-extractors/` does not
+  exist; agents have no network). So the per-table claim `tables-va-identity` was skipped, and
+  research Q3's "35 UFO2P + 12 TACP tables byte-identical, 23 / 10 with code refs" stays
+  research's measurement, not this spike's.
+- What q5 does show without the headers: the CD and installed data objects have the same base
+  and size, and 380 of 386 UFO2P pages (258 bytes differ) and 605 of 608 TACP pages (190 bytes
+  differ) are identical. A table re-located by VA identity therefore lands on identical bytes
+  unless it falls in one of those 9 pages, which the per-table check reports.
+- The header path was exercised with a synthetic header in the session scratchpad that holds two
+  of our own locators (the CD file offsets of the two `get_text` tables), never OpenApoc's.
+  Both mapped and were identical; with `--plant` the flipped UFO2P table was reported as
+  differing. The count check (47 spans) failed there, as it must for 2 spans. A span may map
+  into both EXEs, because the headers do not say which EXE a span belongs to; the claim then
+  requires identity in both.
+- q5 is not an input of the D-03 verdict formula.
+
+### q6 call graph
+
+`uv run python .planning/spikes/007-locate-997-training/q6_callgraph.py` (exit 0), kept in the
+gitignored `build/spike007-q6.out`:
+
+```
+PASS UFO2P.EXE direct-edges-equal-callindex own 5288 CallIndex 5288 only-own 0 only-CallIndex 0 expected 5288
+PASS UFO2P.EXE reach-direct from main_ 0x00010010: 1128 / 1553 walked rows (72.6%); research 1128 / 1553, off 0.00%; edges 5288
+PASS UFO2P.EXE reach-pointer from main_ 0x00010010: 1412 / 1553 walked rows (90.9%); research 1412 / 1553, off 0.00%; edges 5627
+PASS UFO2P.EXE reach-table from main_ 0x00010010: 1471 / 1553 walked rows (94.7%); research 1471 / 1553, off 0.00%; edges 6381
+INFO UFO2P.EXE pointer edges 343; table slots 66 in 13 runs; referenced from game/thunk code 10 with the 64-byte lead-in (edges 755), 3 without it (edges 18, reach 1429)
+PASS TACP.EXE direct-edges-equal-callindex own 4885 CallIndex 4885 only-own 0 only-CallIndex 0 expected 4885
+PASS TACP.EXE reach-direct from main_ 0x000102A0: 1224 / 1526 walked rows (80.2%); research 1224 / 1526, off 0.00%; edges 4885
+PASS TACP.EXE reach-pointer from main_ 0x000102A0: 1479 / 1526 walked rows (96.9%); research 1479 / 1526, off 0.00%; edges 5215
+PASS TACP.EXE reach-table from main_ 0x000102A0: 1479 / 1526 walked rows (96.9%); research 1479 / 1526, off 0.00%; edges 5266
+INFO TACP.EXE pointer edges 336; table slots 34 in 12 runs; referenced from game/thunk code 8 with the 64-byte lead-in (edges 52), 2 without it (edges 19, reach 1479)
+ALL PASS
+```
+
+- **Direct edges.** The own scan equals `CallIndex` edge for edge (5,288 / 4,885), as research
+  counted.
+- **Reachability from `main_`** reproduces research Q1 exactly in both EXEs: direct 1,128 /
+  1,224, + pointers 1,412 / 1,479, + tables 1,471 / 1,479 (of 1,553 / 1,526 game and thunk rows).
+- **The table rule needs a record lead-in to match research.** With the strict rule (a code
+  fixup into [first slot, last slot + 4)), which `tools/reverseapoc/callgraph.py` uses (plan
+  07-05), only 3 UFO2P / 2 TACP runs are referenced from game code and UFO2P's reach is 1,429,
+  42 rows (2.9%) short of research. Code often addresses the base of a record whose function
+  pointer sits a few bytes in: the bases observed lie 4, 20 (four runs) and 41 bytes before a
+  run's first slot. Counting references up to 64 bytes before the first slot wires 10 / 8 runs,
+  exactly research's "10 / 8 referenced", and gives 1,471. The 64 was chosen by trying 0-128:
+  20-64 give 1,471, 128 gives 1,472. TACP's reach is 1,479 either way.
+- The slot count is 66 against research's 67 for UFO2P because q6 drops slots onto
+  data-in-code rows (research and `callgraph.py` keep them to shape runs); TACP 34 against 35.
+
+## Verdict
+
+**VALIDATED**, by the D-03 formula from the scripts' own lines:
+
+| Input | Result | Formula |
+|---|---|---|
+| q2 tick rule | `ALL PASS` (both EXEs; plants fail) | pass |
+| q3 training rule | `ALL PASS` (plants fail) | pass |
+| q4 sample | `q4 found 11 of 12` | >= 10 |
+
+VALIDATED needs q2 and q3 to pass and q4 to find at least 10 of 12; PARTIAL one of q2/q3 or 6-9
+of 12; INVALIDATED otherwise. Research A18 expected PARTIAL to VALIDATED.
+
+What the formula does not see:
+- **q3 passes, but the TACP accrual is not located.** q3 locates the hand-off, the UFO2P stat
+  copy and the android branch. Where the battle raises the 17 stat fields is only a heuristic
+  lead (`accrual-sites`, 2 rows). The improvement rule of #263-1 itself still needs the call
+  graph or reading (plan 07-22).
+- **The #997 route was the BIOS tick, not the PIT.** D-03 named the PIT / INT 8 setup; that
+  leads to the sound library. D-26 moved the start to the BIOS-tick readers, and q2 found the
+  rule from there.
+- **q4's keywords were chosen by reading the text privately**, and "found" means an entry row
+  that shows or loads the item's text, not the rule. One miss (#263-4) and one weak entry
+  (#265-13) need other routes.
+- **UFO2P's `get_text` argument recovery is 74.4%**, below the 80% research target (TACP 81.0%).
+  A quarter of UFO2P's text sites take their index from data (lists, records), so the string
+  route finds those rows only by section.
+
+## Consequence for Phase 7
+
+- **The tier drafts (07-25, 07-28, 07-32) can locate entries by strings and xrefs**: the
+  `get_text` (section, index) route for UI text and exact fixups for file names and hand-off
+  files. q4's method (`decode_table`, `call_sites`, `search`) is the recipe.
+- **They still add the call graph where the text route stops**:
+  - items whose text is shown only from lists (section-only sites, such as #263-4's creature
+    names) and items with no text of their own (#265-13's names);
+  - #263-1's TACP accrual (07-22, Tier 1).
+- **Data tables re-located by VA identity are safe** for the data object: 380 / 386 and 605 /
+  608 pages are identical between the CD and installed builds (q5). Each table still gets its
+  own byte check when the headers are present.
+- **Table edges: plan 07-22 should decide the record lead-in.** The production call graph
+  (`callgraph.py`, 07-05) wires only runs whose first slot is addressed directly. Research's
+  numbers, and 42 more UFO2P rows reached from `main_`, come from code that addresses a record's
+  base a few bytes before its pointer slots (q6).
+- **#997:** nothing changes for Tier 1. q4 adds the TACP speed labels to the lead.
+
 ## Planted failures
 
 | Run | What is planted | Result | Exit |
@@ -409,6 +531,8 @@ q4 found 11 of 12
 | `q2 --plant-guards` (plan 07-08) | each EXE's expected wait-skip guard set without its last global (UFO2P without `0x00183BAC`, TACP without `0x0027A0EB`) | `wait-skip-guards` FAILs in both EXEs, `2 FAILED` | 1 |
 | `q3 --plant` | TACP expected writer `0x000156A0` -> `0x000156B0` | `unitr-writer`, `record-layout`, `handoff-fields-agree`, `accrual-sites` and TACP `learning-ai-files` FAIL; `5 FAILED` | 1 |
 | `q4 --plant` | UFO2P expected get_text slot count 52 -> 0x10000 (impossible) | `FAIL UFO2P.EXE get-text-table ... expected slots 65536`, `3 FAILED` (the plant plus the two findings of the default run) | 1 |
+| `q5 --plant` | one installed byte flipped in memory at `0x000D0000` (the first identical UFO2P data page; with headers, the first table) | `FAIL UFO2P.EXE data-object-identity ... identical pages 379 of 386; differing bytes 259`, `1 FAILED`; with the synthetic header the flipped table is listed as differing | 1 |
+| `q6 --plant` | expected direct edges + 1 in both EXEs (5,289 / 4,886) | `direct-edges-equal-callindex` FAILs in both EXEs, `2 FAILED` | 1 |
 
 ## Investigation Trail
 
@@ -477,6 +601,15 @@ q4 found 11 of 12
   For UFO2P that is 3 slots too far: the slots after slot 51 hold nonzero words without fixups.
   The table now also ends at the first nonzero slot without a fixup, which gives 52 in both
   EXEs (TACP's next referenced global is exactly slot 52).
+- q6 first wired a table run only from code addressing [first slot, last slot + 4). That
+  reproduced research's direct and pointer reach exactly but gave 1,429 instead of 1,471 for
+  UFO2P tables, with 3 runs referenced against research's 10. Listing each run's nearest code
+  reference showed record bases 4-41 bytes before the first slot; a 64-byte lead-in reproduces
+  research (see q6).
+- q5's first cross-EXE rule counted a span as identical if it matched in either EXE. A
+  synthetic header showed the flaw: a UFO2P span also maps into TACP's data and is identical
+  there, so the plant still passed. The claim now requires identity in every EXE a span maps
+  into.
 - q4 first counted a recovered pair past its section's end as a recovery error. The three TACP
   cases are real constants (37/380 and 38/25, read in the private disassembly): shared code that
   uses UFO2P's numbering. They are now reported, not failed.
