@@ -1426,3 +1426,54 @@ def _approve_all(approver: _Approver, landings: Sequence[_Landing]) -> ApproveRe
         landed.append(p.id)
         lines.append(f"{p.id} landed in commit {detail}")
     return ApproveReport(tuple(landed), (), tuple(lines))
+
+
+# ---- default: the owner changes the `*` default on D-33's evidence (D-14; plan 07-24) ----
+
+D33_MIN_FUNCTIONS = 3  # D-14/D-33: agreeing functions a default flip needs
+D33_MIN_BYTES = 64  # D-33's minimum size (the planner's value) for a function without a branch
+REGION_SIZE = 0x10000  # D-33: agreeing functions sit pairwise in different regions this large
+
+
+@dataclass(frozen=True)
+class Evidence:
+    rule: str = ""
+    functions: tuple = ()
+    problems: tuple[str, ...] = ("RED stub",)
+
+    @property
+    def met(self) -> bool:
+        return not self.problems
+
+
+@dataclass(frozen=True)
+class DefaultReport:
+    lines: tuple[str, ...] = ()
+    exit_code: int = EXIT_OK
+
+    def format(self) -> str:
+        return "\n".join(self.lines)
+
+
+def has_branch_or_loop(row: FunctionRow, exe: Any) -> bool:
+    """RED stub (07-24 Task 3)."""
+    return False
+
+
+def _load_exe(repo: Path, exe: str) -> Any:
+    """RED stub (07-24 Task 3)."""
+    raise FlagsError("RED stub")
+
+
+def default_evidence(rule: str, *, repo: Path,
+                     exe_loader: Callable[[str], Any] | None = None) -> Evidence:  # fmt: skip
+    """RED stub (07-24 Task 3)."""
+    return Evidence(rule)
+
+
+def default(rule: str, by: str, *, repo: Path, today: str | None = None,
+            runner: Runner | None = None, git: Git | None = None, evidence_only: bool = False,
+            env: Mapping[str, str] | None = None,
+            exe_loader: Callable[[str], Any] | None = None) -> DefaultReport:  # fmt: skip
+    """RED stub (07-24 Task 3)."""
+    return DefaultReport()
