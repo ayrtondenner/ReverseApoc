@@ -198,6 +198,13 @@ def test_all_names_alone_decides_rows_outside_the_unit():
     assert problem == "Baz is defined in C but is not a function of the unit"
 
 
+def test_two_c_names_for_one_row_are_refused():
+    """A map naming one row of the unit twice leaves its current name a guess: refused."""
+    with pytest.raises(ValueError, match="two C names"):
+        unitdefs.find(COMPLETE, ROWS, placeholders=unitdefs.placeholders(ROWS),
+                      all_names={**NAMES, "Foo2": FOO.start})  # fmt: skip
+
+
 def test_neither_names_nor_all_names_reads_placeholders():
     holders = unitdefs.placeholders(ROWS)
     defs = unitdefs.find(STALE, ROWS, placeholders=holders)

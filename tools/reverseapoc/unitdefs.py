@@ -194,16 +194,33 @@ class _Names:
     other: frozenset[str]  # C names and placeholders of rows outside the unit
 
     @classmethod
-    def of(cls, required: Sequence[int], names: Mapping[str, int],
-           holders: Mapping[str, int]) -> _Names:  # fmt: skip
+    def of(cls, required: Sequence[int], names: Mapping[str, int] | None,
+           all_names: Mapping[str, int] | None, holders: Mapping[str, int]) -> _Names:  # fmt: skip
+        """A row of the unit takes its C name from `names` when given, else from `all_names`
+        (the EXE's current C names are authoritative), else its placeholder: a placeholder never
+        overrides a C name passed in either map (fix round 1). Only `all_names` and
+        `placeholders` name rows outside the unit."""
         own = set(required)
-        by_start = {start: name for name, start in names.items() if start in own}
-        cname = {start: by_start.get(start, game_name(start)) for start in required}
+        given = [_own_names(m, own) for m in (names, all_names) if m is not None]
+        cname = {start: next((g[start] for g in given if start in g), game_name(start))
+                 for start in required}  # fmt: skip
         current = {name: start for start, name in cname.items()}
         own_holders = {**holders, **{game_name(start): start for start in required}}
         old = {p: s for p, s in own_holders.items() if s in own and p not in current}
-        other = frozenset(n for n, s in {**holders, **names}.items() if s not in own)
+        other = frozenset(n for n, s in {**holders, **(all_names or {})}.items() if s not in own)
         return cls(current, old, cname, other)
+
+
+def _own_names(names: Mapping[str, int], own: set[int]) -> dict[int, str]:
+    """start -> C name for the starts of `own` that `names` names; UnitDefsError when it gives
+    one start two names (which would make the row's current name a guess)."""
+    by_start: dict[int, str] = {}
+    for name, start in names.items():
+        if start not in own:
+            continue
+        if by_start.setdefault(start, name) != name:
+            raise UnitDefsError(f"0x{start:08X} has two C names: {by_start[start]} and {name}")
+    return by_start
 
 
 @dataclass
@@ -282,25 +299,27 @@ def find(
     text: str,
     unit_rows: Sequence[FunctionRow],
     *,
-    names: Mapping[str, int],
     placeholders: Mapping[str, int],
+    names: Mapping[str, int] | None = None,
     all_names: Mapping[str, int] | None = None,
 ) -> UnitDefs:
     """What `text` (a unit file) defines and marks, by start, and its D-12 problems.
 
-    `names` maps C names to starts and should cover the unit's game and thunk rows (c_names of
-    the EXE, or placeholders(unit_rows) for the pre-D-29 reading); a row it does not name is read
-    under its placeholder. `placeholders` maps placeholders to starts, so a renamed row's old
-    placeholder is recognised. `all_names` adds C names of other rows, so a definition of another
-    unit's renamed function is refused instead of read as a helper. #include problems are not
-    read here (configure.include_problems)."""
+    A game or thunk row of the unit is read under its current C name: from `names` when given
+    (C name -> start), else from `all_names` (the EXE's c_names, authoritative), else its
+    placeholder; with neither map given, the pre-D-29 placeholder reading applies. `all_names`
+    alone decides which known names belong to rows outside the unit, so a definition of another
+    unit's renamed function is refused instead of read as a helper; entries of `names` for other
+    starts are ignored. `placeholders` maps placeholders to starts, so a renamed row's old
+    placeholder is recognised. #include problems are not read here
+    (configure.include_problems)."""
     cfg = _configure()
     try:
         code = cfg.code_text(text)
     except cfg._ConditionalError as exc:
         return UnitDefs({}, {}, (str(exc),), (str(exc),))
     required = [row.start for row in unit_rows if _is_required(row)]
-    table = _Names.of(required, {**(all_names or {}), **names}, placeholders)
+    table = _Names.of(required, names, all_names, placeholders)
     marks, defs = _read_markers(code, table), _read_definitions(code, table)
     stale = {table.old[old] for old in defs.stale}
     rows = [_row_problem(table.cname[start], defs.count(start), marks.count(start))
