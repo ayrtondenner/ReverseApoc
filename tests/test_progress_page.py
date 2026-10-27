@@ -23,6 +23,10 @@ COMMIT_URL = f"{REPOSITORY}/commit/"
 WORKFLOW_URL = f"{REPOSITORY}/actions/workflows/pages.yml"
 README_URL = f"{REPOSITORY}#progress"
 PAGE_LIMIT = SVG_LIMIT + 200_000  # the SVG's bound plus the two strips
+# Backlog 999.4 fix #2: the mosaic is a focusable region, so a keyboard user can scroll it.
+MOSAIC_REGION = ('<div class="mosaic" tabindex="0" role="region" '
+                 'aria-label="Decompilation mosaic, scrolls sideways">')  # fmt: skip
+PHONE_QUERY = "@media (max-width: 40rem){"
 # Tags that load a resource or run code, and tags whose browser default face is monospace.
 FORBIDDEN_TAGS = ("script", "link", "img", "iframe", "object", "embed", "base", "audio", "video",
                   "source", "picture", "noscript", "code", "pre", "kbd", "samp", "tt")  # fmt: skip
@@ -74,6 +78,13 @@ def figures(progress, totals) -> str:
             f"{totals.partial_functions:,} partial")  # fmt: skip
 
 
+def bar_html(width: str, *, nonzero: bool = False) -> str:
+    """One EXE's percent bar; a non-zero share's segment carries the `nz` class (fix #3)."""
+    segment = f'<span class="nz" style="width:{width}">' if nonzero else (
+        f'<span style="width:{width}">')
+    return f'<div class="bar" aria-hidden="true">{segment}</span></div>'
+
+
 def commit_line(sha: str) -> str:
     return (f'<p class="meta">Updated from commit <a href="{COMMIT_URL}{sha}">{sha[:7]}</a>'
             f"</p>")  # fmt: skip
@@ -97,8 +108,7 @@ def test_page_shape(tmp_path):
     assert first == "6.5574% of code bytes, 1 of 4 functions matched, 1 partial"
     assert second == "0% of code bytes, 0 of 1 functions matched, 0 partial"
     assert page.index(first) < page.index(second)
-    bar = '<div class="bar" aria-hidden="true"><span style="width:{}"></span></div>'
-    assert page.index(bar.format("6.5574%")) < page.index(bar.format("0%"))
+    assert page.index(bar_html("6.5574%", nonzero=True)) < page.index(bar_html("0%"))
     assert page.endswith("</main>\n</body>\n</html>\n")
 
 
@@ -109,7 +119,7 @@ def test_page_embeds_the_mosaic(tmp_path):
     svg = progress.render_svg(derived)
     assert svg in page
     assert page.count("<svg ") == 1
-    assert f'<div class="mosaic">\n{svg}</div>\n' in page
+    assert f"{MOSAIC_REGION}\n{svg}</div>\n" in page
 
 
 def test_page_states_the_commit(tmp_path):
@@ -410,6 +420,166 @@ def test_page_stacks_at_phone_width(tmp_path):
     assert "@media (max-width: 40rem){.exe{grid-template-columns:minmax(0,1fr)}" in style_of(page)
     head = page.split("</head>", 1)[0]
     assert '<meta name="viewport" content="width=device-width, initial-scale=1">' in head
+
+
+# ---- backlog 999.4 (06-UI-REVIEW.md fixes #1-#3) ----
+
+_LEGEND = re.compile(r'<ul class="legend">\n(.*?)\n</ul>', re.S)
+_LEGEND_ITEM = re.compile(
+    r'<li><span class="swatch" style="background:(#[0-9a-f]{6})" aria-hidden="true"></span>'
+    r"([^<]*)</li>")
+
+
+def phone_rules(style: str) -> str:
+    """The one style line that holds the 40rem (phone) media block."""
+    found = [line for line in style.splitlines() if line.startswith(PHONE_QUERY)]
+    assert len(found) == 1, found
+    return found[0]
+
+
+def test_mosaic_scrolls_sideways_on_a_phone(tmp_path):
+    """Fix #2: below 40rem the mosaic keeps a 48rem minimum width and its box scrolls sideways,
+    instead of scaling the 1200 px SVG to about 31% (labels near 3.5 px)."""
+    progress = page_module()
+    style = style_of(progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA))
+    rules = style.splitlines()
+    assert ".mosaic{margin-top:.75rem;overflow-x:auto}" in rules
+    assert ".mosaic svg{display:block;width:100%;height:auto}" in rules
+    assert ".mosaic svg{min-width:48rem}" in phone_rules(style)
+    assert style.count("min-width:48rem") == 1  # the phone block only: wide screens still fit
+
+
+def test_mosaic_region_is_focusable(tmp_path):
+    """Fix #2: the scrolling box takes keyboard focus (tabindex 0) and names itself, so a
+    keyboard user can scroll it with the arrow keys; the focus ring is drawn."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    page = progress.render_html(derived, SHA)
+    assert page.count(MOSAIC_REGION) == 1
+    assert page.count('<div class="mosaic"') == 1
+    assert page.index(MOSAIC_REGION + "\n<svg ") > page.index("<h2>The mosaic</h2>")
+    assert ".mosaic:focus-visible{outline:2px solid var(--ink);outline-offset:2px}" in (
+        style_of(page).splitlines())
+
+
+def test_html_legend_above_the_mosaic(tmp_path):
+    """Fix #2: an HTML legend, one item per cell status in CELL_STATUSES order with the page's
+    status colour and LEGEND_LABELS text, sits right above the mosaic, so it stays readable
+    while the SVG scrolls; the SVG keeps its own legend (progress.svg is published alone)."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    page = progress.render_html(derived, SHA)
+    legends = _LEGEND.findall(page)
+    assert len(legends) == 1
+    items = legends[0].split("\n")
+    assert [_LEGEND_ITEM.fullmatch(item).groups() for item in items] == [
+        (progress.TREEMAP_COLORS[status], progress._xml(progress.LEGEND_LABELS[status]))
+        for status in progress.CELL_STATUSES]
+    legend_at = page.index('<ul class="legend">')
+    assert page.index("<h2>The mosaic</h2>") < legend_at < page.index(MOSAIC_REGION)
+    assert page[legend_at:page.index(MOSAIC_REGION)].endswith("</ul>\n")
+    svg = progress.render_svg(derived)
+    for status in progress.CELL_STATUSES:
+        assert progress._xml(progress.LEGEND_LABELS[status]) in svg, status
+    rules = style_of(page).splitlines()
+    assert any(rule.startswith(".legend{display:flex;flex-wrap:wrap;") for rule in rules)
+
+
+_DETAILS = re.compile(r'<details><summary>Matched and partial functions \((\d+)\)</summary><ul>\n'
+                      r"(.*?)\n</ul></details>", re.S)  # fmt: skip
+_ITEM = re.compile(r"<li>([^<]*)</li>")
+
+
+def exe_section(page: str, stem: str) -> str:
+    return page.split(f'aria-labelledby="exe-{stem}">', 1)[1].split("</section>", 1)[0]
+
+
+def listed(section: str) -> tuple[int, list[str]] | None:
+    """The section's tooltip list: its summary count and its items (raw, still escaped)."""
+    found = _DETAILS.findall(section)
+    assert len(found) <= 1, found
+    if not found:
+        return None
+    count, body = found[0]
+    items = body.split("\n")
+    assert [_ITEM.fullmatch(item) is not None for item in items] == [True] * len(items), items
+    return int(count), [_ITEM.fullmatch(item)[1] for item in items]
+
+
+def expected_items(progress, exe) -> list[str]:
+    ordered = sorted(exe.functions, key=lambda f: f.start)
+    return [progress._xml(progress._function_title(f)) for f in ordered
+            if f.status in (progress.MATCHED, progress.PARTIAL)]  # fmt: skip
+
+
+def test_details_lists_matched_and_partial(tmp_path):
+    """Fix #1: per EXE, after its strip, a <details> lists every matched and partial function in
+    address order with its tooltip text, so keyboard and touch users reach every tooltip."""
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    section = exe_section(page, "ufo2p")
+    assert listed(section) == (2, ["func_00010000: 16 bytes, matched",
+                                   "func_00010010: 32 bytes, partial, best 50.00%"])  # fmt: skip
+    assert section.index('<div class="strip" role="img"') < section.index("<details>")
+    assert 'title="func_00010000: 16 bytes, matched"' in section  # the tick tooltips stay
+
+
+def test_details_on_committed_csvs():
+    progress = page_module()
+    derived = progress.derive(CONFIG)
+    page = progress.render_html(derived, SHA)
+    for exe in derived.exes:
+        items = expected_items(progress, exe)
+        want = (len(items), items) if items else None
+        assert listed(exe_section(page, exe.stem)) == want, exe.label
+        t = exe.totals
+        assert len(items) == t.matched_functions + t.partial_functions, exe.label
+
+
+def test_details_absent_when_none(tmp_path):
+    progress = page_module()
+    page = progress.render_html(progress.derive(synthetic_config(tmp_path)), SHA)
+    assert "<details" not in exe_section(page, "tacp")
+    assert page.count("<details>") == 1
+
+
+def test_details_escapes_names(tmp_path):
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    exe = derived.exes[0]
+    odd = 'func_"><script>x</script>&'
+    functions = (exe.functions[0], dataclasses.replace(exe.functions[1], name=odd),
+                 *exe.functions[2:])  # fmt: skip
+    patched = dataclasses.replace(exe, functions=functions)
+    page = progress.render_html(dataclasses.replace(derived, exes=(patched, derived.exes[1])), SHA)
+    assert "script" not in [tag for tag, _attrs in tags_of(page)]
+    found = listed(exe_section(page, "ufo2p"))
+    assert found is not None, "no matched and partial list"
+    items = found[1]
+    assert items[1] == progress._xml(f"{odd}: 32 bytes, partial, best 50.00%")
+    assert "&lt;script&gt;" in items[1] and "&amp;" in items[1]
+
+
+def test_nonzero_bar_has_min_width(tmp_path):
+    """Fix #3: a non-zero share draws a segment at least 2 px wide, so a tiny matched share is
+    visible; a zero share draws no `nz` segment. The figures text is unchanged."""
+    progress = page_module()
+    derived = progress.derive(synthetic_config(tmp_path))
+    ufo2p = derived.exes[0]
+    # 16 matched bytes of 4,000: pad the first unit's uncovered bytes up to that denominator.
+    extra = 4000 - ufo2p.totals.denominator_bytes
+    tiny = dataclasses.replace(ufo2p, uncovered=(ufo2p.uncovered[0] + extra,
+                                                 *ufo2p.uncovered[1:]))  # fmt: skip
+    assert progress.shield_message(tiny.totals.percent) == "0.4%"
+    page = progress.render_html(dataclasses.replace(derived, exes=(tiny, derived.exes[1])), SHA)
+    assert bar_html("0.4%", nonzero=True) in exe_section(page, "ufo2p")
+    tacp = exe_section(page, "tacp")
+    assert bar_html("0%") in tacp and 'class="nz"' not in tacp
+    assert figures(progress, tiny.totals) in page
+    rules = style_of(page).splitlines()
+    assert ".bar .nz{min-width:2px}" in rules
+    assert rules.index(".bar .nz{min-width:2px}") > rules.index(
+        f".bar span{{display:block;height:100%;background:{progress.TREEMAP_COLORS['matched']}}}")
 
 
 # ---- publication ----
