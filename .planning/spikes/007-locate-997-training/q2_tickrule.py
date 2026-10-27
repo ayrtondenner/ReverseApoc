@@ -73,6 +73,7 @@ EXPECTED = {
         "accumulator": 0x000D4D6E,
         "speed": 0x000D4D58,
         "no_wait": 0x000D4D5C,  # fix round 1: the no-wait frame counter
+        "no_wait_values": {0, 1, 600},  # fix round 1: constants any row stores to it
         "speed_setters": {0x00050920, 0x00050970, 0x000509C0, 0x00050A20, 0x00050A80,
                           0x00050AE0},
         "get_text": 0x00063800,
@@ -440,11 +441,14 @@ def claim_wait_skip(report: Report, img: Image, acc: Accumulator | None, steps: 
     if exp.get("no_wait") is None:
         ok = bool(guards)
     else:
+        stored, _ = speed_values(img, exp["no_wait"])
         ok = exp["no_wait"] in guards and exp["speed_setters"] <= setters
+        ok = ok and stored == exp["no_wait_values"]
     detail = f"globals tested right before the busy-wait by a jump past it {hxs(guards)}"
     if exp.get("no_wait") is not None:
         detail += (f"; rows writing both the speed and {hx(exp['no_wait'])}: {len(setters)}, "
-                   f"the 6 speed setters among them {exp['speed_setters'] <= setters}")
+                   f"the 6 speed setters among them {exp['speed_setters'] <= setters}; "
+                   f"constants stored to it {sorted(stored)}")
     report.claim(img.name, ok, "wait-skip-guards", detail)
 
 
