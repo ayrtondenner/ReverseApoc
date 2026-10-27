@@ -174,7 +174,7 @@ FUNCTIONS = (FOO, MIXER, EXIT, THUNK, TABLE)
 SYMBOLS = (
     SymbolRow(0x10020, "Mixer_", "func"),  # C Mixer
     SymbolRow(0x20000, "_g_volume", "data"),  # C g_volume
-    SymbolRow(0x20010, "_Tick_", "data"),  # C Tick_, linker _Tick_
+    SymbolRow(0x20010, "_tick_", "data"),  # C tick_, linker _tick_
 )
 RUNTIME_NAMES = frozenset({"exit_", "_nmalloc_"})
 SRC_NAMES = {"Helper": "src/ufo2p/u_00010010.c"}
@@ -264,7 +264,7 @@ USED = {
     "symbols-func": ("Mixer", "func", FOO.start, ("symbols.csv", "0x00010020")),
     "symbols-data": ("g_volume", "data", 0x20100, ("symbols.csv", "0x00020000")),
     "symbols-cross-kind": ("g_volume", "func", FOO.start, ("symbols.csv", "0x00020000")),
-    "symbols-linker": ("_Tick", "func", FOO.start, ("symbols.csv", "_Tick_")),
+    "symbols-linker": ("_tick", "func", FOO.start, ("symbols.csv", "_tick_")),
     "runtime-linker": ("exit", "func", FOO.start, ("runtime", "exit_")),
     "runtime-data": ("nmalloc_", "data", 0x20100, ("runtime", "_nmalloc_")),
     "runtime-verbatim": ("exit_", "data", 0x20100, ("runtime", "exit_")),
@@ -329,6 +329,35 @@ def _header(path: str = "include/sound.h", text: str = PLAIN) -> Header:
 
 def test_plain_header_passes():
     assert proposals.header_problem(_header()) is None
+
+
+ALLOWED_HEADER = """/* sound.h: voice table types (a ## b and #x in a comment are text) */
+#ifndef SOUND_H
+#define SOUND_H
+#include "common.h"
+
+#define MAX_VOICES 8
+#define VOICE_MASK ((u32)0xFFFFFFFFUL)
+#define VOICE_NAME "voice#1"
+
+typedef enum VoiceState { VOICE_IDLE, VOICE_PLAYING = 2 } VoiceState;
+typedef struct Voice {
+    u8 volume;
+    VoiceState state;
+} Voice;
+union Sample { s16 word; u8 bytes[2]; };
+
+void StopVoice(Voice *voice);
+
+#endif /* SOUND_H */
+"""
+
+
+def test_header_allowed_forms_pass():
+    """Fix round 1 S1: include guards, typedef/struct/union/enum, prototypes and object-like
+    constant #defines pass."""
+    assert proposals.header_problem(_header(text=ALLOWED_HEADER)) is None
+    assert proposals.header_problem(_header(text=ALLOWED_HEADER.replace("\n", "\r\n"))) is None
 
 
 def test_header_of_64_kib_passes():
