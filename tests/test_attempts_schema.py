@@ -96,6 +96,7 @@ BAD = {
     ),  # fmt: skip
     "65 hex characters in a list": _mutated(_attempt, lambda r: r.update(truncated=["F" * 65])),
     "not an object": ["kind", "attempt"],
+    "unhashable kind": _mutated(_attempt, lambda r: r.update(kind=["attempt"])),
 }
 
 
