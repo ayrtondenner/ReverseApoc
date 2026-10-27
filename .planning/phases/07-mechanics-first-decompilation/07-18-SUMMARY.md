@@ -275,6 +275,51 @@ Execution context nonce: f621a742369d20ae
 - FOUND commits: 1c128c1, 5657280, 3cf68be, 23d9ec5, a69df09, 3f35e74. `git rev-list --count 945dd71..HEAD` was 6 before the SUMMARY commit.
 - No STATE.md or ROADMAP.md change.
 
+## Fix round 1
+
+**Findings (the task review):**
+1. **Important: a landing error reset src/ outside the gate lock.** An unexpected exception during a landing left `_counted`'s gate lock before `_guarded` → `_reset_live` → `_reset` restored or deleted `src/<unit>.c`. The failed C therefore sat in src/ unlocked, where another worker's whole-EXE gate could see it. The TRANSIENT reset ran unlocked too.
+2. **Important: drive.lock was first taken in `_Night.run`.** By then a second `reverseapoc drive` had already run the preflight (host `uv sync`, the asm regeneration, the container `ghidra-export --drafts`) over a running night. The canary never took the lock.
+
+**Orchestrator ruling on 2 (overrides the plan's placement):** D-06 means one drive process, so nothing of a second drive, dry run or canary may run while a night holds the lock. The fix:
+- `run_drive` and `run_canary` take drive.lock before anything else and hold it to the end;
+- the lock is passed into the night;
+- a held lock refuses with exit 2 before any preflight step;
+- `--dry-run` takes it too.
+
+**What changed (`tools/reverseapoc/driver.py`, `7d92ea6`):**
+- **`_reset` now holds the gate lock** (an RLock, so a nested take is safe). This covers every caller: the landing, `_reset_live`, the TRANSIENT relaunch, stops and containment.
+- **New `_landing(session)`** wraps the gate lock for `_counted` and `_salvage`. On an unexpected exception (not a `_Stop`, since every stop path has already reset) it puts the unit back while the lock is still held, then re-raises. A failing reset there is left to `_guarded`'s reset, which names it.
+- **New `take_drive_lock(repo)`** returns the held lock, or raises `Refused("drive lock", "refusing to start: another reverseapoc drive is running (build/driver/drive.lock is held)")`.
+- **`run_drive` takes the lock right after the run-id check**, before `_Log` and the preflight, and releases it in a `finally`. The old body is now `_run_drive_locked`. It passes the lock to `run_canary(..., lock=)` and to `drive(config, deps, lock=)`.
+- **`_Night.run(lock)`** uses the lock it is given. It refuses unless that lock is held and is this repository's drive.lock. Called without one, the night takes and frees its own; tests and direct `drive()` calls do that.
+- **`run_canary(..., lock=None)`** takes drive.lock itself when called alone (Refused while held); its old body is `_run_canary_locked`.
+- **The module docstring is updated.**
+
+**Tests (RED `3c45736`, then the fix `7d92ea6`), all in `tests/test_driver_workers.py`:**
+- `test_an_unexpected_landing_error_resets_the_unit_under_the_gate_lock`: tracked unit, `git restore`.
+- `test_an_unexpected_landing_error_removes_an_untracked_unit_under_the_gate_lock`: the landed copy is deleted.
+- `test_a_transient_reset_runs_under_the_gate_lock`
+- `test_a_held_drive_lock_refuses_before_any_preflight_step[night|dry_run|canary]`: exit 2, reason `drive lock`, no runner or git call, no run directory.
+- `test_run_drive_holds_the_lock_from_the_preflight_through_the_night`: every command and git call sees the lock held, the night is not refused by its own lock, and the lock is free afterwards.
+- `test_the_canary_holds_the_drive_lock`
+- `test_run_canary_called_directly_takes_the_lock_itself`
+
+**RED: 9 failed, 2 passed.**
+- Classifier `RED_EVIDENCE_OK` (target `test_an_unexpected_landing_error_resets_the_unit_under_the_gate_lock`, `build/red/f1.xml`). Every failure was on its planned assertion:
+  - the restores ran with the lock free;
+  - the refusal came only after `claude --version` and the preflight, or as `canary unit` for the canary;
+  - every preflight command saw the lock free;
+  - the canary's session ran with the lock free;
+  - `run_canary` alone did not refuse.
+- The 2 passes were tests already present from the plan, selected by the `-k` expression.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_locks.py tests/test_driver_workers.py tests/test_driver.py tests/test_drive.py`: 270 passed, 2 skipped (the pre-existing skips).
+- `uv run pytest -q` (host, worktree): 3190 passed, 247 skipped. No new skip and no new skip reason.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
