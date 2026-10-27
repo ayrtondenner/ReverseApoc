@@ -1084,11 +1084,24 @@ def test_drive_config_defaults_follow_d07():
 STRAY = b'{"stray": "written by session A (made up)"}\n'
 
 
-def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path):
+def _until(*events: threading.Event) -> bool:
+    """True once any of `events` is set (WAIT_S at most); a short wait per round, never an
+    ordering assertion on its own."""
+    deadline = time.monotonic() + WAIT_S
+    while time.monotonic() < deadline:
+        if any(event.is_set() for event in events):
+            return True
+        events[0].wait(0.01)
+    return False
+
+
+def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path, monkeypatch):
     """C1 (security S2): A writes a stray to a pinned file outside git's view while it runs;
-    B launches after that (its launch snapshot holds the stray). A's audit contains the
-    stray and stops the night; the stop kills B, whose audit must compare with the night's
-    pinned baseline: the file ends with its pre-night bytes, never the stray again."""
+    B launches after that, so B's launch snapshot holds the stray. Every launch and every
+    containment compares with the night's pinned baseline: B's launch (or, without that
+    check, B's audit after stop-all) contains the stray, and the file ends with its pre-night
+    bytes, never the stray again."""
+    nights = _capture_nights(monkeypatch)
     unit_a, unit_b = _unit(0), _unit(1)
     night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
     settings = night.repo / ".claude" / "settings.local.json"
@@ -1106,7 +1119,7 @@ def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path):
         if unit == unit_a:
             settings.write_bytes(STRAY)
             a_strayed.set()
-            assert b_live.wait(WAIT_S), "B's session never started"
+            assert _until(b_live, nights[-1].stop), "B neither started nor stopped the night"
 
     def on_pid(unit, pid):
         if unit == unit_b:
@@ -1119,6 +1132,30 @@ def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path):
     assert settings.read_bytes() == original, "a halted session wrote the stray back"
     kept = sorted(night.quarantine.rglob("settings.local.json*"))
     assert kept and all(path.read_bytes() == STRAY for path in kept)
+
+
+def test_containment_restores_the_night_baseline_not_the_launch_snapshot(tmp_path):
+    """C1, the audit half: a session whose launch snapshot held another's stray (now
+    contained) has no pinned change of its own, and a change it does make goes back to the
+    night's baseline, not to its launch bytes."""
+    night = Night(tmp_path)
+    settings = night.repo / ".claude" / "settings.local.json"
+    rel = ".claude/settings.local.json"
+    _write(settings, '{"made": "up"}\n')
+    original = settings.read_bytes()
+    probe = driver._Night(night.config(), night.deps())
+    probe.pinned_base = probe._pinned_state()  # the night's baseline, before any session
+    settings.write_bytes(STRAY)
+    launch = probe._snapshot()  # a later session's launch snapshot holds the stray
+    settings.write_bytes(original)  # the stray's owner was contained
+    claim = driver._Claim(_wpick(0), RUN, night.repo, 1)
+    calm = probe._measure(claim, None, driver.PackInfo(0), 0.0, launch, False, b"", "", {})
+    assert rel not in calm.pinned_changed
+    settings.write_bytes(b"{}\n")  # a change of its own
+    session = probe._measure(claim, None, driver.PackInfo(0), 0.0, launch, False, b"", "", {})
+    assert rel in session.pinned_changed
+    probe._contain(session, [rel])
+    assert settings.read_bytes() == original
 
 
 def _match_commit_add(args: list[str]) -> bool:
