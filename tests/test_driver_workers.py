@@ -20,6 +20,9 @@ from pathlib import Path
 import pytest
 
 from reverseapoc import driver
+from reverseapoc.locks import ProcessLock
+from test_drive import RUN as DRIVE_RUN
+from test_drive import Rig, _canary_rig
 from test_driver import (
     EXE,
     FUNC,
@@ -27,7 +30,9 @@ from test_driver import (
     MATCH_SUBJECT,
     OTHER_RECORD,
     RUN,
+    SCAFFOLD,
     UNIT,
+    UNIT_REL,
     Night,
     Sess,
     _capture_nights,
@@ -454,3 +459,144 @@ def test_gate_lock_keeps_other_appends_out_of_the_match_undo_window(tmp_path, mo
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert OTHER_RECORD in night.records()
     assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+
+
+# ---- Fix round 1: resets of src/ under the gate lock; drive.lock from the top of the verb ----
+
+
+def _unit_restores_held(night: Night, nights: list) -> list[bool]:
+    """Arm `night.on_git` to note, at each `git restore` of the claimed unit, whether the gate
+    lock was held (another thread could not take it). Returns the list it fills."""
+    held: list[bool] = []
+
+    def on_git(args):
+        if _verb(args) == "restore" and UNIT_REL in args:
+            held.append(_held_elsewhere(nights[-1].gate_lock))
+
+    night.on_git = on_git
+    return held
+
+
+def test_an_unexpected_landing_error_resets_the_unit_under_the_gate_lock(tmp_path, monkeypatch):
+    """A landing that raises something unexpected (here the lint) leaves the failed C in src/
+    only while the gate lock is held: the unit is put back before the lock is let go, so no
+    other worker's whole-EXE gate can see it."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    nights = _capture_nights(monkeypatch)
+    held = _unit_restores_held(night, nights)
+
+    def lint(pick):
+        raise RuntimeError("made-up lint crash")
+
+    report = night.run(lint=lint)
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert held and all(held), held
+    assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == SCAFFOLD
+
+
+def test_an_unexpected_landing_error_removes_an_untracked_unit_under_the_gate_lock(
+        tmp_path, monkeypatch):  # fmt: skip
+    """The same for a unit HEAD does not have: the landed copy is deleted before the gate lock
+    is let go."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0], unit_committed=False)
+    nights = _capture_nights(monkeypatch)
+    gone_while_held: list[bool] = []
+
+    def lint(pick):
+        raise RuntimeError("made-up lint crash")
+
+    real = driver._Night._reset
+
+    def reset(self, session):
+        real(self, session)
+        gone_while_held.append(not (night.repo / UNIT_REL).exists()
+                               and _held_elsewhere(nights[-1].gate_lock))  # fmt: skip
+
+    monkeypatch.setattr(driver._Night, "_reset", reset)
+    report = night.run(lint=lint)
+    assert (report.event, report.reason) == ("STOPPED", "error")
+    assert gone_while_held and gone_while_held[0], gone_while_held
+    assert not (night.repo / UNIT_REL).exists()
+
+
+def test_a_transient_reset_runs_under_the_gate_lock(tmp_path, monkeypatch):
+    """Every reset of the claimed unit in src/ holds the gate lock, the TRANSIENT one too."""
+    night = Night(tmp_path, sessions=[Sess("overloaded", write=None), Sess()])
+    nights = _capture_nights(monkeypatch)
+    held = _unit_restores_held(night, nights)
+    night.run(config={"attempts_per_function": 1})
+    assert len(night.launched) == 2
+    assert held and all(held), held
+
+
+def _lock_free(repo: Path) -> bool:
+    """True when drive.lock of `repo` can be taken right now (nobody holds it)."""
+    probe = ProcessLock(repo / DRIVE_LOCK_REL)
+    free = probe.try_acquire()
+    probe.release()
+    return free
+
+
+@pytest.mark.parametrize("mode", ["night", "dry_run", "canary"])
+def test_a_held_drive_lock_refuses_before_any_preflight_step(tmp_path, capsys, mode):
+    """D-06 (orchestrator ruling, fix round 1): a second `reverseapoc drive` (a night, a dry run
+    or the canary) runs nothing while a night holds drive.lock: exit 2 before any git call,
+    command or file of the preflight."""
+    rig = Rig(tmp_path)
+    holder = ProcessLock(rig.repo / DRIVE_LOCK_REL)
+    assert holder.try_acquire()
+    try:
+        flags = {mode: True} if mode != "night" else {}
+        code, out, _ = rig.drive(capsys, json=True, **flags)
+    finally:
+        holder.release()
+    assert code == 2
+    doc = json.loads(out)
+    assert (doc["event"], doc["reason"]) == ("REFUSED", "drive lock")
+    assert "another reverseapoc drive is running" in doc["detail"]
+    assert rig.runner.calls == [] and rig.git_calls == []
+    assert not (rig.repo / "build" / "driver" / DRIVE_RUN).exists()
+
+
+def test_run_drive_holds_the_lock_from_the_preflight_through_the_night(tmp_path, capsys):
+    """drive.lock is taken before the preflight and the same lock is the night's: every
+    command and git call of the verb sees it held, the night is not refused by its own lock,
+    and the lock is free once the verb returns."""
+    rig = Rig(tmp_path)
+    free_at: list[bool] = []
+    runner, git = rig.runner, rig.git
+
+    def run(argv):
+        free_at.append(_lock_free(rig.repo))
+        return runner(argv)
+
+    def recorded_git(args):
+        free_at.append(_lock_free(rig.repo))
+        return git(args)
+
+    code, out, _ = rig.drive(capsys, json=True, seams={"run": run, "git": recorded_git})
+    doc = json.loads(out)
+    assert doc["event"] in ("STOPPED", "ENDED"), doc  # the night ran, under the verb's lock
+    assert free_at and not any(free_at), free_at
+    assert _lock_free(rig.repo)
+
+
+def test_the_canary_holds_the_drive_lock(tmp_path, capsys):
+    held: list[bool] = []
+    rig = _canary_rig(tmp_path, "canary_pass", after=lambda repo: held.append(
+        not _lock_free(repo)))  # fmt: skip
+    rig.drive(capsys, canary=True, json=True)
+    assert held == [True]
+    assert _lock_free(rig.repo)
+
+
+def test_run_canary_called_directly_takes_the_lock_itself(tmp_path):
+    rig = _canary_rig(tmp_path, "canary_pass")
+    holder = ProcessLock(rig.repo / DRIVE_LOCK_REL)
+    assert holder.try_acquire()
+    try:
+        with pytest.raises(driver.Refused, match="another reverseapoc drive is running"):
+            driver.run_canary(rig.options(canary=True, json=True), rig.seams())
+    finally:
+        holder.release()
+    assert rig.launches == []
