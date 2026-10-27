@@ -70,7 +70,9 @@ _C_RESERVED = re.compile(r"_[A-Z_]")  # C89 7.1.3: `_` + upper case or a second 
 # The hooks' new-header shape: lower case only, so no case variant of a reserved name passes
 # on a case-insensitive file system.
 _HEADER_PATH = re.compile(r"include/([a-z0-9_]+)\.h")
-RESERVED_HEADERS = hooks._RESERVED_HEADERS  # common.h, watcom_compat.h: one list, the hooks'
+# D-19: the headers the driver never writes (INCLUDE_ASM and the Watcom keyword shims live
+# there). Owned here since 07-13 removed the hooks' copy (fix round 2 C1).
+RESERVED_HEADERS = ("common.h", "watcom_compat.h")
 INCLUDE_DIR = REPO_ROOT / "include"
 # Fix round 1: stems Windows opens as DOS devices whatever the extension (con.h is CON).
 DEVICE_STEMS = frozenset({"con", "nul", "aux", "prn", *(f"{port}{n}" for port in ("com", "lpt")
