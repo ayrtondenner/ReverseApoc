@@ -172,8 +172,24 @@ class Rig:
 
 def test_drive_defaults():
     args = cli.build_parser().parse_args(["drive"])
-    assert (args.max_sessions, args.target_matched) == (30, 10)  # D-48
+    assert (args.max_sessions, args.target_matched, args.workers) == (60, 0, 3)  # D-07 (07-21)
     assert (args.dry_run, args.canary, args.json, args.run) == (False, False, False, None)
+
+
+def test_the_night_gets_the_verbs_caps_and_workers(tmp_path, capsys, monkeypatch):
+    """07-21: run_drive hands --workers, --max-sessions and --target-matched to the night."""
+    rig = Rig(tmp_path)
+    seen = {}
+
+    def fake_drive(config, deps, *, lock=None):
+        seen["config"] = config
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, _, _ = rig.drive(capsys, json=True, workers=2, max_sessions=7, target_matched=0)
+    assert code == 0
+    config = seen["config"]
+    assert (config.workers, config.max_sessions, config.target_matched) == (2, 7, 0)
 
 
 def test_dry_run_prints_the_pilot(tmp_path, capsys):

@@ -1262,3 +1262,49 @@ def test_probe_scan_bad_calibration_json(tmp_path, capsys, text):
     err = capsys.readouterr().err
     assert err.startswith("reverseapoc probe: error:")
     assert str(cal_path) in err
+
+
+# ---- drive: workers and the night caps (07-21; D-07) ----
+
+
+def _drive_help(capsys) -> str:
+    with pytest.raises(SystemExit) as exc:
+        main(["drive", "--help"])
+    assert exc.value.code == 0
+    return " ".join(capsys.readouterr().out.split())  # argparse wraps the help text
+
+
+def test_cli_drive_defaults(capsys):
+    """D-07: `--workers` 3, `--max-sessions` 60 and `--target-matched` 0 (off), each shown
+    with its default in `drive --help`."""
+    args = build_parser().parse_args(["drive"])
+    assert (args.workers, args.max_sessions, args.target_matched) == (3, 60, 0)
+    text = _drive_help(capsys)
+    assert "--workers N" in text and "default: 3" in text
+    assert "default: 60" in text
+    assert "0 = off" in text and "default: 0" in text
+
+
+@pytest.mark.parametrize("argv", [["--workers", "0"], ["--workers", "-1"],
+                                  ["--max-sessions", "0"], ["--target-matched", "-1"],
+                                  ["--workers", "two"]])  # fmt: skip
+def test_cli_drive_refuses_bad_caps(argv, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", *argv])
+    assert exc.value.code == 2
+    assert "reverseapoc drive: error:" in capsys.readouterr().err
+
+
+def test_cli_drive_passes_workers_and_target_zero(monkeypatch):
+    from reverseapoc import driver
+
+    seen = {}
+
+    def run_drive(options, seams):
+        seen["o"] = options
+        return 0
+
+    monkeypatch.setattr(driver, "run_drive", run_drive)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: "seams")
+    assert main(["drive", "--workers", "2", "--target-matched", "0", "--run", "r1"]) == 0
+    assert (seen["o"].workers, seen["o"].target_matched) == (2, 0)

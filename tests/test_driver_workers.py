@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1004,3 +1004,76 @@ def test_keyboard_interrupt_stops_workers(tmp_path):
     assert night.kinds("attempt") == []
     assert _src_changes(night) == []
     assert _claims_left(night) == []
+
+
+# ---- 07-21 Task 3: the shared night cap with reservations, the new defaults (D-07) ----
+
+
+def test_cap_shared_across_workers(tmp_path):
+    """max_sessions=5 with three workers: a slot is reserved before each launch, so exactly 5
+    sessions launch and count. The first three start together; the fourth waits until those
+    three are judged, so without reservations every freed worker would launch again."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(8)))
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    first_three = threading.Event()
+
+    def before(unit, index):
+        if index < 3:
+            barrier.wait()
+        elif index == 3:
+            assert first_three.wait(WAIT_S), "the first three sessions were never judged"
+
+    def gate(pick, n):
+        done = night._gate(pick, n)
+        with night.lock:
+            night.gated = getattr(night, "gated", 0) + 1
+            if night.gated == 3:
+                first_three.set()
+        return done
+
+    night.before = before
+    report = night.run(config=_workers(3, attempts_per_function=1, max_sessions=5), gate=gate)
+    assert (report.event, report.reason, report.sessions) == ("ENDED", "max sessions", 5)
+    assert len(night.launched) == 5
+    assert len(night.kinds("attempt")) == 5
+
+
+def test_uncounted_session_releases_slot(tmp_path):
+    """A transient abort (four launches, none counted) gives its slot back: with max_sessions=2
+    the night still counts two sessions after it."""
+    transient = [Sess("overloaded", write=None)] * 4
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(4)),
+                   by_unit={_unit(0): list(transient)})  # fmt: skip
+    report = night.run(config=_workers(2, attempts_per_function=1, max_sessions=2))
+    assert (report.event, report.reason, report.sessions) == ("ENDED", "max sessions", 2)
+    assert _one(night.kinds("abort"))["unit"] == _unit(0)
+    assert len(night.kinds("attempt")) == 2
+    assert len(night.launched) == 6
+
+
+def test_target_matched_zero_is_off(tmp_path):
+    """target_matched=0 never ends the night on matches (the night cap governs); 2 still ends
+    it after two matches."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = WNight(tmp_path / "off", picks=picks, sessions=[Sess()] * 3, gate_exits=[0, 0, 0])
+    report = night.run(config=_workers(1, target_matched=0))
+    assert (report.event, report.reason, report.matched) == ("ENDED", "queue exhausted", 3)
+    night = WNight(tmp_path / "two", picks=picks, sessions=[Sess()] * 3, gate_exits=[0, 0, 0])
+    report = night.run(config=_workers(1, target_matched=2))
+    assert (report.reason, report.matched, len(night.launched)) == ("target matched", 2, 2)
+
+
+def test_empty_queue_no_session(tmp_path):
+    """Three workers and an empty queue: nothing launches, the night ends `nothing to do`."""
+    night = WNight(tmp_path, picks=())
+    report = night.run(config=_workers(3))
+    assert night.launched == []
+    assert (report.event, report.reason, report.exit_code) == ("ENDED", "nothing to do", 0)
+
+
+def test_drive_config_defaults_follow_d07():
+    """D-07: the night cap is 60 sessions and the match target is off (0) by default."""
+    defaults = {f.name: f.default for f in fields(driver.DriveConfig)}
+    assert (defaults["max_sessions"], defaults["target_matched"]) == (60, 0)
+    options = driver.DriveOptions(repo=Path("."), run_id="r")
+    assert (options.max_sessions, options.target_matched, options.workers) == (60, 0, 3)
