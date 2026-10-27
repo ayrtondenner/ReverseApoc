@@ -195,6 +195,10 @@ def env(tmp_path, monkeypatch):
     env = make_env(tmp_path)
     monkeypatch.setattr(check, "DEFAULT_SRC", env.src)
     monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config)
+    # The env root stands in for the repository too (07-03 fix round 1): every tree that is not a
+    # D-24 view compiles from REPO_ROOT. configure.py is loaded first, from the real checkout.
+    check._configure()
+    monkeypatch.setattr(check, "REPO_ROOT", env.root)
     return env
 
 
@@ -1531,9 +1535,9 @@ def test_default_tree_compile_passes_repo_root(env, monkeypatch):
 
 
 def test_compile_root_for_each_kind_of_tree(env, monkeypatch, tmp_path):
-    """Inside the repository: a src tree whose parent holds include/ (a view) compiles from that
-    parent, any other tree (a copy without include/, a saved attempt's best/) from the
-    repository root. A tree outside the repository is under its parent, as before."""
+    """Only a D-24 view (build/driver/.../view/src with include/ beside it) compiles from its
+    view root; any other tree (a copy without include/, a saved attempt's best/, the committed
+    src/) from the repository root."""
     root = repo_stand_in(env, monkeypatch)
     view = view_tree(env, "build", "driver", "run1", "view")
     copy = view_tree(env, "build", "flags", "p1", include=False)
@@ -1543,8 +1547,33 @@ def test_compile_root_for_each_kind_of_tree(env, monkeypatch, tmp_path):
     assert check._compile_root_for(copy) == root
     assert check._compile_root_for(best) == root
     assert check._compile_root_for(env.src) == root
-    outside = tmp_path.parent / f"{tmp_path.name}-outside" / "src"
-    assert check._compile_root_for(outside) == outside.parent
+
+
+def test_a_tree_outside_the_repository_compiles_from_the_repository(env, monkeypatch, tmp_path):
+    """Fix round 1: a tree outside the repository is no view, so it compiles from REPO_ROOT (and
+    compile_rule refuses its sources, as it did before 07-03), never from its parent's
+    include/."""
+    root = repo_stand_in(env, monkeypatch)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    (outside / "include").mkdir(parents=True)
+    assert check._compile_root_for(outside / "src") == root
+    assert check._compile_root_for(outside / "view" / "src") == root
+
+
+@pytest.mark.parametrize(
+    "parts",
+    [("build", "flags", "p1"), ("elsewhere",), ("build", "driver", "run1", "notview"),
+     ("build", "test-view", "x", "view")],
+    ids=["flags-copy", "elsewhere", "driver-not-view", "view-outside-driver"],
+)  # fmt: skip
+def test_an_in_repo_src_with_include_that_is_no_view_compiles_from_the_repository(
+    env, monkeypatch, parts
+):
+    """Fix round 1: <x>/src with <x>/include beside it compiles from <x> only when it is a D-24
+    view, build/driver/.../view/src; otherwise from REPO_ROOT, with the committed headers."""
+    root = repo_stand_in(env, monkeypatch)
+    src = view_tree(env, *parts)  # include/ beside it
+    assert check._compile_root_for(src) == root
 
 
 def test_committed_src_compiles_from_the_repository():
