@@ -1028,3 +1028,88 @@ def test_an_edit_that_introduces_a_path_include_is_denied(repo):
     assert always(edit(native(unit), '#include "common.h"', NOTES_INCLUDE.rstrip("\n"))).deny
     # completing a path out of a bare name is caught on the post-edit text
     assert matching(in_repo(edit(native(unit), '"common.h"', '"../common.h"'), repo)).deny
+
+
+# --- 07-04: per-session views (D-24, P6), owner-only cflags (D-27 P3), naming state (D-19) -----
+
+VIEW_CLAIM = "ufo2p/u_000a34f0"
+ATTEMPT = ("build", "driver", "r", "ufo2p", "func_000A3980", "attempt-1")
+
+
+def _attempt(repo: Path) -> Path:
+    return repo.joinpath(*ATTEMPT)
+
+
+def _view_path(repo: Path, claim: str = VIEW_CLAIM) -> Path:
+    exe, unit = claim.split("/")
+    return _attempt(repo) / "view" / "src" / exe / f"{unit}.c"
+
+
+def _view_unit(repo: Path, claim: str = VIEW_CLAIM, text: str = SCAFFOLD) -> Path:
+    path = _view_path(repo, claim)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    return path
+
+
+def view_env(repo: Path, *, unit_file: Path | None = None, kind: str | None = None) -> dict:
+    """A view-mode session's env (D-24): claim, private unit file, notes and proposals."""
+    attempt = _attempt(repo)
+    env = {
+        "REVERSEAPOC_CLAIM": VIEW_CLAIM,
+        "REVERSEAPOC_UNIT_FILE": native(unit_file or _view_path(repo)),
+        "REVERSEAPOC_ATTEMPT_NOTES": native(attempt / "notes.md"),
+        "REVERSEAPOC_PROPOSALS": native(attempt / "proposals.jsonl"),
+    }
+    if kind is not None:
+        env["REVERSEAPOC_SESSION_KIND"] = kind
+    return env
+
+
+def test_view_unit_is_writable(repo):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    for form in [native(unit), unit.as_posix()]:
+        assert not always(write(form, SCAFFOLD), env).deny, form
+        assert not matching(in_repo(write(form, SCAFFOLD), repo), env).deny, form
+    change = edit(native(unit), "INCLUDE_ASM(func_00010010);", "int x;")
+    assert not always(change, env).deny
+    assert not matching(in_repo(change, repo), env).deny
+    notes = _attempt(repo) / "notes.md"
+    assert not matching(in_repo(write(native(notes), "# notes\n"), repo), env).deny
+
+
+def test_view_mode_denies_src_and_others(repo):
+    _view_unit(repo)
+    env = view_env(repo)
+    others = [_unit(repo), _view_path(repo, "ufo2p/u_other"),
+              _attempt(repo) / "view" / "include" / "x.h", repo / "include" / "x.h",
+              repo / "src" / "ufo2p" / "u_other.c", repo / "tools" / "x.py",
+              _attempt(repo) / "x.md"]  # fmt: skip
+    for target in others:
+        assert matching(in_repo(write(native(target), SCAFFOLD), repo), env).deny, target
+
+
+def test_view_unit_is_scanned(repo):
+    unit = _view_unit(repo)
+    env = view_env(repo)
+    asm = edit(native(unit), "INCLUDE_ASM(func_00010010);", "void f(void) { __asm { int 3 } }")
+    decision = always(asm, env)
+    assert decision.deny and "no inline asm" in decision.reason, decision.reason
+    assert matching(in_repo(asm, repo), env).deny
+    pragma = edit(native(unit), "INCLUDE_ASM(func_00010010);", "#pragma once")
+    decision = matching(in_repo(pragma, repo), env)
+    assert decision.deny and "#pragma of any kind" in decision.reason, decision.reason
+    assert always(write(native(unit), SCAFFOLD + "_asm int 3\n"), env).deny
+
+
+def test_proposals_file_is_writable(repo):
+    env = view_env(repo)
+    proposals = _attempt(repo) / "proposals.jsonl"
+    line = '{"kind": "rename"}\n'
+    assert not always(write(native(proposals), line), env).deny
+    assert not matching(in_repo(write(native(proposals), line), repo), env).deny
+    for other in [_attempt(repo) / "proposal.jsonl", _attempt(repo) / "other.jsonl",
+                  _attempt(repo).parent / "attempt-2" / "proposals.jsonl"]:  # fmt: skip
+        assert always(write(native(other), line), env).deny, other
+        assert matching(in_repo(write(native(other), line), repo), env).deny, other
