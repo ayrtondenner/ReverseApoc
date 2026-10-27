@@ -14,8 +14,9 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import attempt, driver, mechanics, probe
+from . import asmclass, attempt, driver, locate, mechanics, probe
 from .asm import AsmError, data_ranges, select_rows, write_listings
+from .asmclass import AsmClassError
 from .attempt import AttemptError
 from .cflags import DEFAULT_CFLAGS, CflagsError
 from .check import (
@@ -84,6 +85,7 @@ from .libmatch import (
     write_runtime_csv,
 )
 from .lint import LintError, run_lint
+from .locate import LocateError
 from .mechanics import MechanicsError
 from .omf import OMFError
 from .omf2elf import Omf2ElfError, convert_file
@@ -1451,7 +1453,7 @@ def _cmd_mechanics(args: argparse.Namespace) -> int:
     """Exit 0 clean, 1 problems found (check, status --require-matched), 2 any tool error."""
     try:
         return args.mechanics_func(args)
-    except (*_ERRORS, MechanicsError) as exc:
+    except (*_ERRORS, MechanicsError, LocateError, AsmClassError) as exc:
         print(f"reverseapoc mechanics {args.mechanics_command}: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
 
@@ -1530,7 +1532,112 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     g.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
     _mechanics_roots(g, game=True)
     g.set_defaults(mechanics_func=_mechanics_graph)
+    _add_locate_verb(verbs)
+    _add_asm_verb(verbs)
     p.set_defaults(func=_cmd_mechanics)
+
+
+def _mechanics_asm(args: argparse.Namespace) -> int:
+    proposed = []
+    for exe in mechanics.EXES:
+        inputs = locate.load_inputs(args.config, args.orig, args.manifest, exe)
+        proposed += asmclass.classify(inputs)
+    path = Path(args.config) / mechanics.ASM_CSV
+    existing = mechanics.read_asm_list(path) if path.is_file() else []
+    rows, changed = asmclass.merge(existing, proposed)
+    if args.write:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(path, mechanics.format_asm_csv(rows).encode("ascii"))
+    counts = asmclass.verdict_counts(rows)
+    if args.json:
+        print(json.dumps({"rows": len(rows), "verdicts": counts, "changed": changed,
+                          "written": bool(args.write)}, indent=2))  # fmt: skip
+    else:
+        print(f"{len(rows)} rows: " + ", ".join(f"{n} {v}" for v, n in counts.items()))
+        print(f"{len(changed)} changed" + "".join(f"\n  {line}" for line in changed))
+    if args.write:
+        print(f"wrote {path}", file=sys.stderr)
+    return 0
+
+
+def _add_asm_verb(verbs: argparse._SubParsersAction) -> None:
+    a = verbs.add_parser(
+        "asm",
+        help="propose the D-23 asm list from orig/: unaligned and library-unit game rows with "
+        "evidence tags and a proposed verdict (asm or unclear); prints counts and the rows whose "
+        "tool-owned columns changed (addresses only)",
+    )
+    a.add_argument(
+        "--write",
+        action="store_true",
+        help="write config/asm-functions.csv, keeping every existing verdict and reason "
+        "(a changed list needs the owner's [asm_list] re-sign, D-23)",
+    )
+    _mechanics_roots(a, game=True)
+    a.set_defaults(mechanics_func=_mechanics_asm)
+
+
+def _number(value: str) -> int:
+    try:
+        number = int(value, 0)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number (0x1A or 26)") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"{value} is below 0")
+    return number
+
+
+def _locate_report(args: argparse.Namespace, exe) -> dict:
+    if args.string is not None:
+        return locate.report_string(exe, args.string)
+    if args.range is not None:
+        return locate.report_range(exe, *args.range)
+    if args.va is not None:
+        return locate.report_va(exe, args.va)
+    if args.get_text is not None:
+        return locate.report_get_text(exe, *args.get_text)
+    return locate.report_interrupt(exe, args.int)
+
+
+def _mechanics_locate(args: argparse.Namespace) -> int:
+    if args.exe not in mechanics.EXES:
+        raise MechanicsError(f"--exe {args.exe!r} is not one of {', '.join(mechanics.EXES)}")
+    exe = locate.load_inputs(args.config, args.orig, args.manifest, args.exe)
+    report = {"exe": args.exe, **_locate_report(args, exe)}
+    print(json.dumps(report, indent=2) if args.json else locate.format_report(args.exe, report))
+    return 0
+
+
+def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
+    lo = verbs.add_parser(
+        "locate",
+        help="locate entry candidates in one EXE (D-01, D-03): rows referencing a string, an "
+        "address or a range, get_text call sites, int386_ callers (addresses and counts only; "
+        "needs orig/)",
+    )
+    lo.add_argument("--exe", required=True, metavar="EXE", help="ufo2p or tacp")
+    pick = lo.add_mutually_exclusive_group(required=True)
+    pick.add_argument(
+        "--string", metavar="KEYWORD", help="data strings holding KEYWORD and the rows "
+        "with an exact fixup to each (case-insensitive)"
+    )  # fmt: skip
+    pick.add_argument(
+        "--va", type=_hex_address, metavar="0xADDR", help="rows with a fixup to exactly ADDR"
+    )
+    pick.add_argument(
+        "--range", type=_hex_address, nargs=2, metavar=("0xA", "0xB"),
+        help="rows with a fixup into [A, B)",
+    )  # fmt: skip
+    pick.add_argument(
+        "--get-text", type=_number, nargs=2, metavar=("SECTION", "INDEX"),
+        help="get_text call sites asking for (SECTION, INDEX), and their rows",
+    )  # fmt: skip
+    pick.add_argument(
+        "--int", type=_number, metavar="0x1A",
+        help="rows calling int386_ with this interrupt number in eax",
+    )  # fmt: skip
+    _mechanics_roots(lo, game=True)
+    lo.set_defaults(mechanics_func=_mechanics_locate)
 
 
 def build_parser() -> argparse.ArgumentParser:
