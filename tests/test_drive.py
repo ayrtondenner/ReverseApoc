@@ -614,6 +614,8 @@ def test_git_runner_maps_an_os_error(tmp_path, monkeypatch):
 # --- the canary ---
 
 CANARY_DIR = f"build/driver/canary/{RUN}/ufo2p/func_000A3980/attempt-1"
+CANARY_UNIT = "src/ufo2p/u_000a34f0.c"
+CANARY_TEXT = "/* made-up matched canary unit */\nint canary;\n"
 
 
 @dataclass
@@ -629,15 +631,22 @@ PASSING_CHECK = {"n": 1, "exit": 0, "sweep": False, "best_percent": 100.0, "relo
 
 
 def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None,
-                check: dict | None = PASSING_CHECK,
-                raises: BaseException | None = None) -> Rig:  # fmt: skip
+                check: dict | None = PASSING_CHECK, raises: BaseException | None = None,
+                unit: bool = True) -> Rig:  # fmt: skip
     """A rig whose session is fakeclaude replaying `scenario` through the real run_session,
     writing `write` (repo-relative) like a tool call that went through; `check` is the
     checks.jsonl line the wrapper's `attempt check` would have logged (None: no log);
     `after(repo)` runs once the stream ended (a stray the session left); `raises` is raised by
-    the session instead."""
+    the session instead. `unit`: HEAD holds the canary's matched unit and include/common.h, so
+    its view (07-13) has them."""
     rig = Rig(tmp_path)
     rig.launches = []
+    rig.views = []  # (view unit exists, its bytes, include/ exists) at session time
+    if unit:
+        _write(rig.repo / CANARY_UNIT, CANARY_TEXT)
+        _write(rig.repo / "include" / "common.h", "/* made up */\n")
+        _git(rig.repo, rig.env, "add", "--", CANARY_UNIT, "include/common.h")
+        _git(rig.repo, rig.env, "commit", "-q", "-m", "the canary's matched unit")
 
     def argv(prompt: str):
         rig.prompt = prompt
@@ -646,6 +655,10 @@ def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None
 
     def session(argv, *, cwd, env, transcript, timeout_s):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        view_unit = Path(env.get("REVERSEAPOC_UNIT_FILE", cwd))
+        view = Path(env["REVERSEAPOC_ATTEMPT_DIR"]) / "view"
+        rig.views.append((view_unit.is_file(), view_unit.read_bytes() if view_unit.is_file()
+                          else None, (view / "include").is_dir()))  # fmt: skip
         if raises is not None:
             raise raises
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
@@ -730,6 +743,40 @@ def test_canary_env_names_the_claim_with_absolute_paths(tmp_path, capsys):
                   "uv run --frozen reverseapoc attempt context",
                   "uv run --frozen reverseapoc attempt check"):  # fmt: skip
         assert words in rig.prompt, words
+
+
+def test_canary_runs_in_view_mode(tmp_path, capsys):
+    """07-13 (D-24): the canary's session gets a view of HEAD like any session (the view
+    unit, proposals.jsonl, kind matching, under build/driver/canary/), and its PASS rule is
+    unchanged: the forbidden writes must still be denied."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
+    env = rig.launches[0].env
+    attempt_dir = rig.repo / CANARY_DIR
+    view_unit = attempt_dir / "view" / CANARY_UNIT
+    assert env["REVERSEAPOC_UNIT_FILE"] == str(view_unit)
+    assert env["REVERSEAPOC_PROPOSALS"] == str(attempt_dir / "proposals.jsonl")
+    assert env["REVERSEAPOC_SESSION_KIND"] == "matching"
+    assert rig.views == [(True, CANARY_TEXT.encode(), True)]
+    assert (attempt_dir / driver.VIEW_HEAD).is_file()
+
+
+def test_canary_pass_rule_still_needs_the_denials(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_fail", write="tools/x.py")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert rig.views and rig.views[0][0]
+
+
+def test_canary_refuses_without_its_matched_unit(tmp_path, capsys):
+    """The canary's view needs HEAD's matched unit: without it the canary is refused before any
+    session (exit 2), never scaffolded."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", unit=False)
+    code, out, _ = rig.drive(capsys, canary=True, json=True)
+    assert code == 2
+    assert rig.launches == []
+    assert CANARY_UNIT in out
 
 
 def test_canary_fail(tmp_path, capsys):

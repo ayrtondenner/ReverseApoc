@@ -12,10 +12,13 @@ matches (D-48), whichever comes first.
 After each session, in this order:
 
 1. the containers whose name has the attempt's prefix are removed (attempt.container_prefix);
-2. the audit (D-17, F3): every path whose `git status --porcelain=v1 --untracked-files=all`
-   entry or content hash changed during the session, and every path a write tool names in the
-   transcript, must pass hooks.matching_write_allowed; an untracked include/ entry must also be
-   `include/<name>.h`; a fixed list of paths git cannot see (.git/config, .git/info/exclude
+2. the audit (D-17, F3; D-24 since 07-13): (a) every path `git status --porcelain=v1
+   --untracked-files=all` lists after the session must hold, unstaged, the bytes the driver
+   itself last wrote to it (the ledger: attempts.jsonl, status.csv, the feed), so every other
+   path git can see equals HEAD; (b) every file of the session's private view but its unit and
+   view/build/ is as it was at launch; every path a write tool names in the transcript must
+   pass hooks.matching_write_allowed in view mode (the view unit, notes.md, proposals.jsonl);
+   a fixed list of paths git cannot see (.git/config, .git/info/exclude
    and attributes, .git/hooks/, .githooks/, the two Claude settings files, the venv's
    pyvenv.cfg, .pth and *customize.py files) must keep their bytes; and the fingerprint (path,
    size, mtime_ns) of all of .venv, of every gitignored tree under .claude/ but
@@ -32,9 +35,11 @@ After each session, in this order:
    and 3 retries (D-08) writes an `abort` record, not counted; ATTEMPT_DONE (a result or a
    wall-clock timeout) is
    counted;
-4. a counted session: the C89 lint of the unit, then the container gate. Only gate exit 0 is a
-   match (D-24): never the transcript, the result event or /goal's verdict. A match is one
-   commit with explicit paths only (D-25). Otherwise the attempt is reset (D-34) and logged
+4. a counted session: the landing section copies the view unit into src/<exe>/<unit>.c (the
+   only writer of src/), then the C89 lint of the unit, then the container gate. Only gate
+   exit 0 is a match (D-24): never the transcript, the result event or /goal's verdict. A match
+   is one commit with explicit paths only (D-25). Otherwise the landed unit alone is put back
+   (D-34: HEAD's bytes, or deleted when HEAD has none) and the attempt is logged
    PARTIAL (best plain check above 0%, its C saved under best/ and `gate --partial` run) or
    GAVE_UP; a failed lint is the same outcome with abort_reason "lint" (review IN-02).
 
@@ -45,7 +50,10 @@ dry run, the owner-run canary and the end-of-run checks (`finish`). Every git ca
 `--literal-pathspecs`, so no path is a glob.
 
 Layout of one session (gitignored): build/driver/<run>/<exe>/<func>/attempt-<n>/ holds
-transcript.jsonl, context.md, notes.md, the wrapper's checks/ and checks.jsonl, and best/. A
+transcript.jsonl, context.md, notes.md, proposals.jsonl, the wrapper's checks/ and
+checks.jsonl, best/, view-head.txt (the commit the view came from, F34) and view/, the
+session's private copy of HEAD's src/, include/ and config/ (D-24; its unit is the only file
+the session edits, its build/ the wrapper's output). A
 launch that did not count (LIMIT, TRANSIENT) is moved aside to attempt-<n>-uncounted-<k>, so
 each session starts in a fresh directory.
 """
@@ -53,6 +61,7 @@ each session starts in a fresh directory.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -60,6 +69,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -94,6 +104,9 @@ COMMIT_MSG = "commit-msg.txt"
 LOG_MSG = "commit-log.txt"  # under build/driver/<run>/
 LOG_SUBJECT = "chore(driver): attempt log"  # D-23
 BEST_DIR = "best"
+VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view came from (F34)
+VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
+MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
 COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
@@ -123,7 +136,6 @@ _SOURCE = re.compile(r"checks/[0-9]{4}\.c")  # attempt.CheckLogLine.source
 _LONG_HEX = re.compile(r"[0-9A-Fa-f]{65,}")
 _DETAIL_CAP = 4000  # a guardrail record lists every stray, restored and quarantined path
 _TEXT_CAP = 200
-_UNTRACKED = "??"
 _TRANSCRIPT_MARK = " (transcript)"
 QUARANTINE = "quarantine"  # build/driver/<run>/quarantine/: a breach's files, never deleted
 _GIT_PREFIX = ".git/"  # a pinned name under the common git directory
@@ -191,8 +203,9 @@ class Deps:
     """Every effect of the loop (D-05). `queue(difficult)` yields the picks, skipping the
     difficult keys; `requeue(difficult)` is picker.requeue wired with the matched set, callees
     and pool state; `matched_callees(pick)` is the snapshot kept with a capped function;
-    `scaffold(pick)` writes src/<exe>/<unit>.c from the committed CSVs; `pack(pick, dir)` runs
-    the context verb into the attempt dir; `argv(prompt)` is the claude argv
+    `scaffold(pick, dest)` writes the unit's scaffold from the committed CSVs to `dest` (the
+    view unit, 07-13); `pack(pick, dir, src)` builds the context pack into the attempt dir from
+    the src tree `src` (the view's, 07-13); `argv(prompt)` is the claude argv
     (session.build_argv); `session` is session.run_session; `lint(pick)` is the C89 lint of the
     unit (0/1/2); `gate(pick, n)` and `partial_gate(pick, src, n)` are the container gates;
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
@@ -203,8 +216,8 @@ class Deps:
     queue: Callable[[Container[Key]], Iterable[Pick]]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
     matched_callees: Callable[[Pick], tuple[Key, ...]]
-    scaffold: Callable[[Pick], None]
-    pack: Callable[[Pick, Path], PackInfo]
+    scaffold: Callable[[Pick, Path], None]
+    pack: Callable[[Pick, Path, Path], PackInfo]
     argv: Callable[[str], Sequence[str]]
     session: Callable[..., SessionResult]
     lint: Callable[[Pick], int]
@@ -603,11 +616,16 @@ def validate_record(obj: object) -> None:
 def append_record(path: Path, record: Mapping) -> None:
     """Validate `record`, then append it as one compact JSON line (LF) to `path`; a record is
     never rewritten (D-23)."""
-    validate_record(record)
-    line = json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n"
+    line = record_line(record)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("ab") as fh:
-        fh.write(line.encode("ascii"))
+        fh.write(line)
+
+
+def record_line(record: Mapping) -> bytes:
+    """`record` validated, as the one compact JSON line (LF, ASCII) append_record writes."""
+    validate_record(record)
+    return (json.dumps(record, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
 
 
 # ---- the commit (D-25) ----
@@ -908,12 +926,14 @@ def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
 
 @dataclass(frozen=True)
 class _Claim:
-    """One session's claim and where its files go."""
+    """One session's claim and where its files go: the attempt dir under `runs` (build/driver,
+    or the canary's build/driver/canary) and, inside it, the private view (D-24)."""
 
     pick: Pick
     run: str
     repo: Path
     n: int
+    runs: Path = DRIVER_DIR
 
     @property
     def key(self) -> Key:
@@ -937,7 +957,7 @@ class _Claim:
 
     @property
     def attempt_dir(self) -> Path:
-        return self.repo.joinpath(DRIVER_DIR, self.run, self.pick.exe, self.function,
+        return self.repo.joinpath(self.runs, self.run, self.pick.exe, self.function,
                                   f"attempt-{self.n}")  # fmt: skip
 
     @property
@@ -948,11 +968,38 @@ class _Claim:
     def notes_rel(self) -> str:
         return self.notes.relative_to(self.repo).as_posix()
 
+    @property
+    def view_root(self) -> Path:
+        """<attempt dir>/view: HEAD's src/, include/ and config/ for this session (D-24)."""
+        return self.attempt_dir / attempt.VIEW_DIR
+
+    @property
+    def view_unit(self) -> Path:
+        """The only C file the session edits: <view>/src/<exe>/<unit>.c (absolute)."""
+        return self.view_root.joinpath(attempt.VIEW_SRC, self.pick.exe, f"{self.pick.unit}.c")
+
+    @property
+    def view_unit_rel(self) -> str:
+        return self.view_unit.relative_to(self.repo).as_posix()
+
+    @property
+    def proposals(self) -> Path:
+        """<attempt dir>/proposals.jsonl, the session's naming proposals (D-19)."""
+        return self.attempt_dir / attempt.PROPOSALS_FILE
+
+    @property
+    def proposals_rel(self) -> str:
+        return self.proposals.relative_to(self.repo).as_posix()
+
     def env(self, base: Mapping[str, str]) -> dict[str, str]:
-        """The session's environment: the base plus the four claim variables (absolute, F28)."""
+        """The session's environment: the base plus the four claim variables and the three
+        view variables (absolute, F28; 07-13, D-24) that the hooks and the wrapper validate."""
         return {**base, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
+                hooks.UNIT_FILE_ENV: str(self.view_unit),
+                hooks.PROPOSALS_ENV: str(self.proposals),
+                hooks.SESSION_KIND_ENV: MATCHING_KIND,
                 "PYTHONDONTWRITEBYTECODE": "1"}  # fmt: skip  # fix round 1 minor 3: no .pyc
 
 
@@ -978,12 +1025,14 @@ class _Session:
     pack: PackInfo
     seconds: float
     changed: tuple[str, ...]  # paths whose status entry or content changed during the session
-    new_headers: tuple[str, ...]  # untracked include/<name>.h the session wrote, allowlisted
-    scaffolded: bool
-    unit_before: bytes
+    scaffolded: bool  # the view unit was scaffolded (HEAD has no such unit)
+    unit_before: bytes  # the view unit's bytes at launch
     before: _Snapshot
     pinned_changed: tuple[str, ...] = ()  # pinned paths outside git's view that changed
     print_changed: tuple[str, ...] = ()  # fingerprinted files added, removed or changed
+    view_head: str = ""  # the commit the view was taken from (F34)
+    after: dict[str, tuple[str, str | None]] = field(default_factory=dict)  # git status after
+    view_hashes: dict[str, str] = field(default_factory=dict)  # the view at launch (D-24, b)
 
     @property
     def events(self) -> tuple[dict, ...]:
@@ -1015,8 +1064,80 @@ class _Session:
         return value
 
     def has_work(self) -> bool:
-        unit = self.claim.unit_rel.casefold()
-        return bool(self.new_headers) or any(p.casefold() == unit for p in self.changed)
+        """The session changed its view unit (D-24)."""
+        return _read(self.claim.view_unit) != self.unit_before
+
+
+class _Ledger:
+    """D-24 invariant (a): the bytes the driver itself last wrote to each driver-owned file
+    git can see (progress/attempts.jsonl, config/<exe>/status.csv, the feed); a path the driver
+    has not written yet is expected to hold HEAD's bytes (`head`). After a session each such
+    path must hold exactly these bytes, unstaged, and every other path git can see must equal
+    HEAD. This replaces the pre-session snapshot as the audit's reference, so the check no
+    longer depends on a quiet tree between sessions (07-18, 07-21).
+
+    Fix round 1: before every driver write of such a path the file must still hold the
+    expected bytes (`holds`), else the night stops as a guardrail breach; after the write the
+    ledger records the bytes the driver computed it wrote (`set`: the earlier bytes plus the
+    appended line, a truncated prefix, the pre-gate bytes put back), never a read-back. The one
+    residual is the gate itself: `gate` and `gate --partial` are subprocesses that write
+    status.csv and the feed, so their output is read back (`note`), but only after the driver
+    checked that both files held the expected bytes when the gate started. A change made by
+    someone else while the gate runs is therefore taken for the gate's output."""
+
+    def __init__(self, repo: Path, head: Callable[[str], bytes | None] | None = None) -> None:
+        self.repo = Path(repo)
+        self._bytes: dict[str, bytes | None] = {}
+        self._head = head
+
+    def note(self, *rels: str) -> None:
+        """Record the current bytes (None: no file) of each repo-relative path: only for what a
+        gate subprocess wrote (see the class docstring)."""
+        for rel in rels:
+            self._bytes[rel] = _read(self.repo / rel)
+
+    def set(self, rel: str, data: bytes | None) -> None:
+        """Record the bytes the driver itself just wrote to `rel` (None: it removed it)."""
+        self._bytes[rel] = data
+
+    def expected(self, rel: str) -> bytes | None:
+        """The bytes `rel` must hold now: the driver's last write, else HEAD's (None: none)."""
+        if rel in self._bytes:
+            return self._bytes[rel]
+        return self._head(rel) if self._head is not None else None
+
+    def holds(self, rel: str) -> bool:
+        """`rel` is a regular file (never a link) with the expected bytes, or absent when no
+        bytes are expected."""
+        path = self.repo / rel
+        if _is_link(path):
+            return False
+        return _read(path) == self.expected(rel) and (path.is_file() or not path.exists())
+
+    def knows(self, rel: str) -> bool:
+        return rel in self._bytes
+
+    def bytes_of(self, rel: str) -> bytes | None:
+        return self._bytes.get(rel)
+
+    def matches(self, rel: str) -> bool:
+        """The file holds exactly the bytes the driver last wrote (a missing file matches a
+        noted absence only)."""
+        return rel in self._bytes and _read(self.repo / rel) == self._bytes[rel]
+
+    def paths(self) -> list[str]:
+        return sorted(self._bytes)
+
+
+def _truncate(path: Path, size: int) -> bool:
+    """F19: cut `path` back to `size` bytes (never longer than it is), never through a link;
+    False when it is a link or not a regular file."""
+    if _is_link(path) or not path.is_file():
+        return False
+    with path.open("r+b") as fh:
+        if fh.seek(0, os.SEEK_END) > size:
+            fh.truncate(size)
+    return True
 
 
 @dataclass
@@ -1029,6 +1150,15 @@ class _Contained:
     not_restored: list[str] = field(default_factory=list)
     unstage_failed: list[str] = field(default_factory=list)  # bytes back, index entry not
     refused: list[str] = field(default_factory=list)
+
+
+class _Breach(Exception):
+    """Fix round 1: a driver-owned file no longer held the driver's bytes right before the
+    match commit; `detail` already describes the containment."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
 
 
 class _Stop(Exception):
@@ -1057,7 +1187,11 @@ class _Night:
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
-        self.pre_gate: dict[str, bytes | None] = {}  # status.csv, feed, log right before the gate
+        self.pre_gate: dict[str, bytes | None] = {}  # status.csv and the feed right before the gate
+        self.landed: str | None = None  # the unit the landing section copied into src/ (D-24)
+        self.ledger = _Ledger(self.repo, self._head_bytes)  # the driver's own writes (D-24 a)
+        self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
+        self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
 
     # --- the night ---
 
@@ -1078,7 +1212,10 @@ class _Night:
                 "(an earlier night left them; inspect, then commit or restore them)"
             )
             return DriveReport(REFUSED, "dirty", 0, 0, detail)
-        self._record_run(STARTED, START)
+        try:
+            self._record_run(STARTED, START)
+        except _Stop as stop:  # fix round 1: the log changed since the outputs check
+            return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
         try:
             event, reason, detail = ENDED, self._loop(), None
@@ -1089,8 +1226,13 @@ class _Night:
             event, reason, detail = STOPPED, ERROR, _detail(f"{type(exc).__name__}: {exc}")
         except BaseException as exc:
             why = _detail(type(exc).__name__ + self.interrupted)
-            self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows())
+            self._record_run(STOPPED, INTERRUPTED, why, uncommitted=self._uncommitted_rows(),
+                             guard=False)  # fmt: skip  # nothing is committed after an interrupt
             raise
+        found = [] if self.breached else self._ledger_breaches()
+        if found:  # fix round 1: never commit a driver-owned file holding bytes it did not write
+            event, reason = STOPPED, GUARDRAIL
+            detail = _detail("; ".join([*([detail] if detail else []), *found]))
         uncommitted = self._uncommitted_rows() if event == STOPPED else []
         self._record_run(event, reason, detail, checks_failed=failed, uncommitted=uncommitted)
         if (
@@ -1284,15 +1426,51 @@ class _Night:
             directory.rename(aside)
         directory.mkdir(parents=True)
 
-    def _ensure_unit(self, claim: _Claim) -> bool:
-        """Scaffold the unit when it is missing; True when this attempt scaffolded it."""
-        unit = self.repo / claim.unit_rel
-        if unit.exists():
-            return False
-        self.deps.scaffold(claim.pick)
+    def _make_view(self, claim: _Claim) -> tuple[str, bool]:
+        """D-24: build/driver/<run>/<exe>/<func>/attempt-<n>/view/ from HEAD, never the
+        worktree: HEAD's tracked src/, include/ and config/ (those HEAD has) through
+        `git archive`, extracted with tarfile's `data` filter (no link, device or path that
+        leaves the view). include/ always exists (a view without it would compile against the
+        committed headers, 07-11 as built). The claimed unit is HEAD's file, or the scaffold
+        written into the view. The commit is recorded in <attempt dir>/view-head.txt (F34).
+        Returns (that commit, whether the unit was scaffolded)."""
+        head = _git_ok(self.deps.git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        listed = _git_ok(self.deps.git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
+        trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
+                 if name in VIEW_TREES]  # fmt: skip
+        view = claim.view_root
+        view.mkdir()
+        if trees:
+            archive = _git_ok(self.deps.git, ["archive", "--format=tar", head, "--", *trees])
+            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+                tar.extractall(view, filter="data")
+        (view / "include").mkdir(exist_ok=True)
+        write_atomic(claim.attempt_dir / VIEW_HEAD, f"{head}\n".encode("ascii"))
+        unit = claim.view_unit
+        if unit.is_file() and not _is_link(unit):
+            return head, False
+        if os.path.lexists(unit):
+            raise DriverError(f"{claim.view_unit_rel} is not a regular file at HEAD")
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        self.deps.scaffold(claim.pick, unit)
         if not unit.is_file():
-            raise DriverError(f"scaffold wrote no {claim.unit_rel}")
-        return True
+            raise DriverError(f"scaffold wrote no {claim.view_unit_rel}")
+        return head, True
+
+    def _land(self, session: _Session) -> None:
+        """The landing section's first step (D-06, D-24): the only writer of src/. The view
+        unit's bytes are copied to src/<exe>/<unit>.c, so the lint and the unchanged gate see
+        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit."""
+        claim = session.claim
+        source = claim.view_unit
+        if _is_link(source) or not source.is_file():
+            raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
+        data = source.read_bytes()
+        target = self.repo / claim.unit_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.landed = claim.unit_rel
+        self.landed_bytes = data
+        write_atomic(target, data)
 
     def _snapshot(self) -> _Snapshot:
         """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
@@ -1382,18 +1560,21 @@ class _Night:
         def is_tracked(rel: str) -> bool:
             return rel.replace("\\", "/").casefold() in tracked
 
-        def allowed(rel: str) -> bool:
+        def allowed(rel: str) -> bool:  # view mode (07-13, D-24): the hook's own allowlist
             return hooks.matching_write_allowed(rel, claim=claim.target, notes=claim.notes_rel,
-                                                tracked=is_tracked)  # fmt: skip
+                                                tracked=is_tracked, unit_file=claim.view_unit_rel,
+                                                proposals=claim.proposals_rel)  # fmt: skip
 
         return allowed
 
     def _launch(self, claim: _Claim) -> _Session:
         self._fresh_dir(claim)
-        scaffolded = self._ensure_unit(claim)
-        unit_before = (self.repo / claim.unit_rel).read_bytes()
-        pack = self.deps.pack(claim.pick, claim.attempt_dir)
-        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe)
+        view_head, scaffolded = self._make_view(claim)
+        unit_before = claim.view_unit.read_bytes()
+        view_hashes = self._view_hashes(claim)
+        pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                             unit_path=claim.view_unit_rel)  # fmt: skip
         base = self.config.base_env if self.config.base_env is not None else os.environ
         before = self._snapshot()
         start = self.deps.clock()
@@ -1408,7 +1589,8 @@ class _Night:
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
             note = self._remove_containers(claim)
-            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before)
+            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before,
+                                    view_head, view_hashes)
             stray = self._strays(session)
             contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
             contained += f"; {note}" if note else ""
@@ -1421,7 +1603,8 @@ class _Night:
             raise _Stop(ERROR, why) from exc
         note = self._remove_containers(claim)
         seconds = self.deps.clock() - start
-        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before)
+        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before,
+                                view_head, view_hashes)
         self.live = session
         try:
             self._audit(session)
@@ -1451,7 +1634,8 @@ class _Night:
             return f"containers not removed: {type(exc).__name__}: {exc}"
         return ""
 
-    def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before) -> _Session:
+    def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before,
+                 view_head, view_hashes) -> _Session:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
@@ -1459,22 +1643,19 @@ class _Night:
                               if before.pinned.get(n) != after.pinned.get(n)))  # fmt: skip
         prints = tuple(sorted(n for n in before.prints.keys() | after.prints.keys()
                               if before.prints.get(n) != after.prints.get(n)))  # fmt: skip
-        allowed = self._allowed(claim, self._tracked())
-        headers = tuple(p for p in changed if after.status.get(p, ("", None))[0] == _UNTRACKED
-                        and _HEADER.fullmatch(p) and allowed(p))  # fmt: skip
-        return _Session(claim, result, pack, seconds, changed, headers, scaffolded, unit_before,
-                        before, pinned, prints)  # fmt: skip
+        return _Session(claim, result, pack, seconds, changed, scaffolded, unit_before, before,
+                        pinned, prints, view_head, after.status, view_hashes)  # fmt: skip
 
     def _strays(self, session: _Session) -> list[str]:
-        """Every path the session changed or wrote that the allowlist refuses (D-17, F3), and
-        every pinned path outside git's view that changed (security ruling)."""
+        """D-24's two invariants, plus the Phase 6 checks (D-17, F3, security rulings): (a)
+        every path git can see equals HEAD, or holds the bytes the driver last wrote (the
+        ledger), unstaged; (b) every file of the session's view but its unit and view/build/
+        is as it was at launch, and the unit is a regular file; every pinned path outside
+        git's view and every fingerprinted file is unchanged; every write tool the transcript
+        names passed the hook's view-mode allowlist."""
         allowed = self._allowed(session.claim, self._tracked())
-        stray = [p for p in session.changed if not allowed(p)]
-        stray += [
-            p
-            for p in session.changed
-            if p.startswith("include/") and not _HEADER.fullmatch(p) and p not in stray
-        ]
+        stray = [p for p in self._unexplained(session.after) if not allowed(p)]
+        stray += [name for name in self._view_changes(session) if name not in stray]
         stray += [name for name in session.pinned_changed if name not in stray]
         stray += [name for name in session.print_changed if name not in stray]
         raws = _write_targets(session.events)
@@ -1482,6 +1663,110 @@ class _Night:
             if rels is None or not all(allowed(rel) for rel in rels):
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
+
+    def _head_bytes(self, rel: str) -> bytes | None:
+        """HEAD's blob of `rel`, or None when HEAD has none (or git cannot show it)."""
+        done = self.deps.git(["cat-file", "blob", f"HEAD:{rel}"])
+        return done.stdout if done.returncode == 0 else None
+
+    def _breach(self, rel: str, good: bytes | None, *, ledgered: bool = True) -> str:
+        """Fix round 1: `rel` changed since the driver last wrote it (or since HEAD, before its
+        first write). The file is kept in the quarantine (moved when no bytes are expected),
+        put back to `good`, the attempt in progress is reset, and nothing is committed this
+        night (sticky, as any breach). Returns the detail for the STOPPED record."""
+        self.breached = True
+        done = _Contained()
+        path = self.repo / rel
+        try:
+            if path.is_file() or _is_link(path):
+                self._keep(done, rel, path, move=good is None)
+            if good is not None and not self._restore_bytes(rel, path, good):
+                done.not_restored.append(rel)
+        except Exception as exc:  # noqa: BLE001 - named in the record
+            done.refused.append(f"{rel}: {type(exc).__name__}: {exc}")
+        if ledgered:
+            self.ledger.set(rel, good)
+        if self.live is not None:
+            try:
+                self._reset(self.live)
+            except Exception as exc:  # noqa: BLE001 - named in the record
+                done.refused.append(f"the attempt reset failed: {type(exc).__name__}: {exc}")
+        detail = (f"{rel} does not hold the bytes the driver last wrote (D-24 ledger breach); "
+                  f"quarantined: {_listed(done.quarantined)}")  # fmt: skip
+        if done.not_restored:
+            detail += f"; not restored: {_listed(done.not_restored)}"
+        if done.refused:
+            detail += "; " + "; ".join(done.refused)
+        return detail
+
+    def _guard(self, *rels: str) -> None:
+        """Fix round 1: right before a driver write, each driver-owned file must still hold the
+        bytes the driver last wrote (or HEAD's); otherwise the night stops as a breach."""
+        for rel in rels:
+            if not self.ledger.holds(rel):
+                raise _Stop(GUARDRAIL, self._breach(rel, self.ledger.expected(rel)))
+
+    def _ledger_breaches(self) -> list[str]:
+        """At the end of the night, before the chore commit: every output that commit may carry
+        (the log, both status.csv files, the feed; fix round 2) and every other ledgered file
+        must hold the driver's bytes, or HEAD's when the driver never wrote it tonight. Each
+        one that does not is contained (fix round 1)."""
+        rels = sorted({*self._outputs(), *self.ledger.paths()})
+        return [self._breach(rel, self.ledger.expected(rel))
+                for rel in rels if not self.ledger.holds(rel)]  # fmt: skip
+
+    def _verify_landing(self, claim: _Claim) -> None:
+        """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
+        log hold the driver's bytes and src/ holds the unit it landed."""
+        for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix()):
+            if not self.ledger.holds(rel):
+                raise _Breach(self._breach(rel, self.ledger.expected(rel)))
+        unit = self.repo / claim.unit_rel
+        if _is_link(unit) or _read(unit) != self.landed_bytes:
+            raise _Breach(self._breach(claim.unit_rel, self.landed_bytes, ledgered=False))
+
+    def _unexplained(self, status: Mapping[str, tuple[str, str | None]]) -> list[str]:
+        """Invariant (a): each path of `status` (git status after the session) or of the
+        ledger that neither equals HEAD nor holds, unstaged, the bytes the driver wrote."""
+        out = []
+        for path in sorted(status.keys() | set(self.ledger.paths())):
+            code = status.get(path, ("  ", None))[0]
+            if self.ledger.knows(path):
+                if self.ledger.matches(path) and code[0] in (" ", "?"):
+                    continue
+            elif path not in status:
+                continue
+            out.append(path)
+        return out
+
+    def _view_hashes(self, claim: _Claim) -> dict[str, str]:
+        """Invariant (b): every file of the view but its unit and view/build/ (the wrapper's
+        objects and logs), repo-relative, with its content hash; a link is recorded by its
+        target, never followed."""
+        root = claim.view_root
+        unit = claim.view_unit
+        found: dict[str, str] = {}
+        for directory, names in _walk(root, skip_top=(attempt.VIEW_BUILD,)):
+            for name in names:
+                path = directory / name
+                if path == unit:
+                    continue
+                rel = path.relative_to(self.repo).as_posix()
+                found[rel] = (f"link:{os.readlink(path)}" if _is_link(path)
+                              else _sha256(_read(path)) or "unreadable")  # fmt: skip
+        return found
+
+    def _view_changes(self, session: _Session) -> list[str]:
+        """The view files added, removed or changed since launch, and the view unit when it
+        is no longer a regular file (a link, a directory or gone)."""
+        claim = session.claim
+        now = self._view_hashes(claim)
+        launch = session.view_hashes
+        changed = sorted(n for n in launch.keys() | now.keys() if launch.get(n) != now.get(n))
+        unit = claim.view_unit
+        if _is_link(unit) or not unit.is_file():
+            changed.append(claim.view_unit_rel)
+        return changed
 
     def _audit(self, session: _Session) -> None:
         stray = self._strays(session)
@@ -1603,8 +1888,8 @@ class _Night:
         bytes when the driver had changed it; pinned: copied, then back to the earlier bytes;
         new (untracked, or a pinned or fingerprinted file the session created): moved out.
         Fourth pass: each file is handled alone, and restoring never depends on the copy; a new
-        file whose quarantine is refused stays in place, named "not contained". The attempt's
-        own unit and new headers are copied too."""
+        file whose quarantine is refused stays in place, named "not contained". 07-13: a
+        driver-owned file goes back to the bytes the driver last wrote (the ledger)."""
         done = _Contained()
         try:
             tracked = self._tracked()
@@ -1616,12 +1901,6 @@ class _Night:
                 self._contain_one(done, session, name, tracked)
             except Exception as exc:  # noqa: BLE001 - named in the record
                 done.not_restored.append(f"{name} ({type(exc).__name__}: {exc})")
-        for name in (session.claim.unit_rel, *session.new_headers):
-            try:
-                if name in session.changed and (self.repo / name).is_file():
-                    self._keep(done, name, self.repo / name, move=False)
-            except Exception as exc:  # noqa: BLE001 - named in the record
-                done.refused.append(f"refused {name}: {type(exc).__name__}: {exc}")
         return done
 
     def _contain_one(self, done: _Contained, session: _Session, name: str,
@@ -1630,7 +1909,12 @@ class _Night:
         before = session.before
         pinned = name in session.pinned_changed and name.casefold() not in tracked
         path = self._pinned_path(name) if pinned else self.repo / name
-        earlier = before.pinned.get(name) if pinned else before.data.get(name)
+        if pinned:
+            earlier = before.pinned.get(name)
+        elif self.ledger.knows(name):  # 07-13: the driver's own file, back to its bytes
+            earlier = self.ledger.bytes_of(name)
+        else:
+            earlier = before.data.get(name)
         # A fingerprinted file has no saved bytes: a new one moves out, a changed one is
         # copied and stays (named again under "still changed").
         changed_print = name in session.print_changed and name in before.prints
@@ -1700,41 +1984,41 @@ class _Night:
             raise _Stop(INIT, "; ".join(problems))
 
     def _reset(self, session: _Session) -> None:
-        """D-34: `git restore --source=HEAD -- <unit> include/` for tracked files; a unit
-        scaffolded this attempt and the session's new headers are deleted. Never `git add -A`,
+        """D-34, D-24: put back only the claimed unit in src/: `git restore --source=HEAD --
+        <unit>` when HEAD tracks it, else delete the copy the landing section wrote. The view
+        is abandoned as it is (kept for inspection). Never all of include/, never `git add -A`,
         never `git clean`."""
         claim = session.claim
-        tracked = self._tracked()
         unit = self.repo / claim.unit_rel
-        paths = [claim.unit_rel] if claim.unit_rel.casefold() in tracked else []
-        if any(name.startswith("include/") for name in tracked):
-            paths.append("include/")
-        if paths:
-            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--", *paths])
-        if claim.unit_rel.casefold() not in tracked:
-            if session.scaffolded:
-                unit.unlink(missing_ok=True)
-            else:
-                write_atomic(unit, session.unit_before)
-        for header in session.new_headers:
-            (self.repo / header).unlink(missing_ok=True)
+        if claim.unit_rel.casefold() in self._tracked():
+            _git_ok(self.deps.git, ["restore", "--source=HEAD", "--", claim.unit_rel])
+        elif self.landed == claim.unit_rel:
+            unit.unlink(missing_ok=True)
+        self.landed = None
 
     # --- judging a session ---
 
     def _restore_pre_gate(self) -> list[str]:
-        """status.csv, the feed and the log back to their bytes right before the gate. Each
-        file is tried alone; a refused or failed restore comes back as a note for the record
-        (fix round 2 minor 1: never silent)."""
-        notes = []
+        """status.csv and the feed back to their bytes right before the gate; never the log,
+        which only grows (D-27 P4). Each file is tried alone; a refused or failed restore comes
+        back as a note for the record (fix round 2 minor 1: never silent)."""
+        notes, breaches = [], []
         for rel, data in self.pre_gate.items():
             if data is None:
                 continue
+            if not self.ledger.holds(rel):  # fix round 1: changed after the gate wrote it
+                breaches.append(self._breach(rel, data))
+                continue
             try:
-                if not self._restore_bytes(rel, self.repo / rel, data):
+                if self._restore_bytes(rel, self.repo / rel, data):
+                    self.ledger.set(rel, data)
+                else:
                     notes.append(f"not restored: {rel} (refused: a link or outside the checkout)")
             except Exception as exc:  # noqa: BLE001 - named in the record
                 notes.append(f"not restored: {rel} ({type(exc).__name__}: {exc})")
         self.pre_gate = {}
+        if breaches:
+            raise _Stop(GUARDRAIL, "; ".join([*breaches, *notes]))
         return notes
 
     def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP) -> None:
@@ -1745,18 +2029,23 @@ class _Night:
         raise _Stop(TOOL, "; ".join([what, *notes]))
 
     def _judge(self, session: _Session) -> GateRun | None:
-        """The lint, then the gate (D-24). None when the lint failed (the gate never runs)."""
+        """The landing section (D-24): the view unit lands in src/, then the lint, then the
+        unchanged gate. None when the lint failed (the gate never runs)."""
         pick, n = session.claim.pick, session.claim.n
         self.pre_gate = {}
+        self._land(session)
         lint = self.deps.lint(pick)
         if lint == EXIT_TOOL:
             self._tool_failure(session, "the C89 lint could not run (exit 2)")
         if lint != EXIT_OK:
             return None
         claim = session.claim
-        self.pre_gate = {rel: _read(self.repo / rel)
-                         for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix())}  # fmt: skip
-        gate = self.deps.gate(pick, n)
+        self._guard(claim.status_rel, FEED)  # fix round 1: the gate starts from the driver's bytes
+        self.pre_gate = {rel: self.ledger.expected(rel) for rel in (claim.status_rel, FEED)}
+        try:
+            gate = self.deps.gate(pick, n)
+        finally:
+            self.ledger.note(claim.status_rel, FEED)  # the gate's output: the one read-back
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
             self._tool_failure(session, f"gate exited {gate.exit_code}")
         stems = sorted(PurePosixPath(name).stem.lower() for name, _ in gate_sha1s(gate.doc))
@@ -1823,29 +2112,20 @@ class _Night:
         best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
         best.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, best)
-        return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(), claim.n)
-
-    def _commit_headers(self, session: _Session) -> list[str]:
-        """The untracked include/ entries to commit: only the audited new headers. Any other
-        untracked entry under include/ stops the night (security ruling)."""
-        raw = _git_ok(self.deps.git, ["status", "--porcelain=v1", "--untracked-files=all", "-z",
-                                      "--", "include/"])  # fmt: skip
-        untracked = [p for p, code in parse_status(raw).items() if code == _UNTRACKED]
-        odd = [p for p in untracked if not _HEADER.fullmatch(p)]
-        if odd:
-            notes = self._restore_pre_gate()
-            self._guardrail(session, odd, record=session.counted, extra=notes)
-        older = [p for p in untracked if p not in session.new_headers]
-        if older:  # fix round 1 minor 5: never silently left out of a match commit
-            why = f"untracked headers this session did not write: {_listed(older)}"
-            self._tool_failure(session, f"{why} (commit or remove them first)")
-        return list(untracked)
+        self._guard(claim.status_rel, FEED)  # fix round 1
+        try:
+            return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(),
+                                          claim.n)  # fmt: skip
+        finally:
+            self.ledger.note(claim.status_rel, FEED)  # the partial gate's output (read back)
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None) -> None:  # fmt: skip
+        """One match commit of explicit paths (D-25): the landed unit, status.csv, the feed and
+        the log; a matching session adds no header (D-19)."""
         claim = session.claim
-        headers = self._commit_headers(session)
-        paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix(), *headers]
+        paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
+        log_size = self.log.stat().st_size if self.log.is_file() else 0
         self._record_attempt(session, MATCHED, abort, summary)
         try:
             message = commit_message(exe=claim.pick.exe, function=claim.function,
@@ -1854,31 +2134,45 @@ class _Night:
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
                                      sha1s=gate_sha1s(gate.doc))  # fmt: skip
+            self._verify_landing(claim)
             commit_paths(self.deps.git, message=message,
                          message_file=claim.attempt_dir / COMMIT_MSG, paths=paths)  # fmt: skip
+        except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
+            undone = self._undo_match(session, paths, summary, exc.detail, log_size)
+            raise _Stop(GUARDRAIL, undone) from exc
         except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
             why = f"{type(exc).__name__}: {exc}"
-            raise _Stop(TOOL, self._undo_match(session, paths, summary, why)) from exc
+            undone = self._undo_match(session, paths, summary, why, log_size)
+            raise _Stop(self.undo_reason or TOOL, undone) from exc
         except BaseException as exc:  # minor 3: an interrupt is undone, then re-raised
-            undone = self._undo_match(session, paths, summary, type(exc).__name__)
+            undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size)
             self.interrupted = f" during the match commit; {undone}"
             raise
         self.matched += 1
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
-                    why: str) -> str:  # fmt: skip
+                    why: str, log_size: int) -> str:  # fmt: skip
         """Fix round 1 I2, completed in fix round 2 (J1): a match commit that failed leaves no
         trace of a match. Each step is best-effort with its own note: unstage what it added,
-        put status.csv, the feed and the log back to their pre-gate bytes (dropping the
-        driver's own uncommitted MATCHED record), reset the attempt. Then the attempt is
-        always logged GAVE_UP `tool`, and the returned detail names the original error, every
-        step that failed and every path still staged. The caller stops the night."""
+        put status.csv and the feed back to their pre-gate bytes, truncate the log to its
+        length before the MATCHED append (F19: the driver's own uncommitted MATCHED record goes,
+        any record appended before it stays), reset the attempt. Then the attempt is always
+        logged GAVE_UP `tool`, and the returned detail names the original error, every step
+        that failed and every path still staged. The caller stops the night. 07-13 fix round
+        2: a ledger breach the pre-gate restore finds is one more note (its stop reason kept in
+        `undo_reason`), so the MATCHED line is still dropped and the attempt still recorded."""
         notes = [f"the match commit failed: {why}"]
+        self.undo_reason = None
         try:
             _git_ok(self.deps.git, ["restore", "--staged", "--", *paths])
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not unstage: {type(exc).__name__}: {exc}")
-        notes += self._restore_pre_gate()
+        try:
+            notes += self._restore_pre_gate()
+        except _Stop as stop:  # a breach: contained already, the undo goes on
+            self.undo_reason = stop.reason
+            notes.append(stop.detail)
+        notes += self._drop_log_tail(log_size)
         try:
             self._reset(session)
         except Exception as exc:  # noqa: BLE001 - named below
@@ -1893,6 +2187,20 @@ class _Night:
         if len(notes) > 1:  # fix round 3 K1: an incomplete undo commits nothing tonight
             self.breached = True
         return "; ".join(notes)
+
+    def _drop_log_tail(self, size: int) -> list[str]:
+        """F19: the log back to `size` bytes; a refused or failed cut is a note."""
+        rel = ATTEMPT_LOG.as_posix()
+        good = (self.ledger.expected(rel) or b"")[:size]
+        if not self.ledger.holds(rel):  # fix round 1: put back the driver's prefix
+            return [self._breach(rel, good)]
+        try:
+            if not _truncate(self.log, size):
+                return [f"not restored: {rel} (refused: a link or not a file)"]
+        except Exception as exc:  # noqa: BLE001 - named in the record
+            return [f"not restored: {rel} ({type(exc).__name__}: {exc})"]
+        self.ledger.set(rel, good)
+        return []
 
     def _staged(self) -> list[str]:
         """Every path staged in the index (best-effort: an unreadable index is named)."""
@@ -1922,21 +2230,37 @@ class _Night:
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
                   "truncated": list(session.pack.truncated), "date": self.deps.today()}  # fmt: skip
-        append_record(self.log, record)
+        self._append(record)
 
     def _record_abort(self, claim: _Claim, retries: int) -> None:
         record = {**self._base(claim, KIND_ABORT), "abort_reason": TRANSIENT, "retries": retries,
                   "date": self.deps.today()}  # fmt: skip
-        append_record(self.log, record)
+        self._append(record)
 
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
-                    checks_failed: Sequence[str] = (),
-                    uncommitted: Sequence[str] = ()) -> None:  # fmt: skip
+                    checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
+                    guard: bool = True) -> None:  # fmt: skip
         record = {"kind": KIND_RUN, "run": self.config.run_id, "event": event, "reason": reason,
                   "detail": detail, "sessions": self.sessions, "matched": self.matched,
                   "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
                   "date": self.deps.today()}  # fmt: skip
-        append_record(self.log, record)
+        self._append(record, guard=guard)
+
+    def _append(self, record: Mapping, *, guard: bool = True) -> None:
+        """Every driver record goes through here (fix round 1): the log must still hold the
+        driver's bytes, then the ledger records those bytes plus the line, never a read-back.
+        After a breach (nothing is committed any more) the check is skipped, so the STOPPED
+        record can always be written."""
+        rel = ATTEMPT_LOG.as_posix()
+        line = record_line(record)
+        checked = guard and not self.breached
+        if checked:
+            self._guard(rel)
+        before = self.ledger.expected(rel) if checked else _read(self.log)
+        self.log.parent.mkdir(parents=True, exist_ok=True)
+        with self.log.open("ab") as fh:
+            fh.write(line)
+        self.ledger.set(rel, (before or b"") + line)
 
 
 def drive(config: DriveConfig, deps: Deps) -> DriveReport:
@@ -1982,8 +2306,8 @@ class ExeWorld:
     pool: Sequence[Candidate]
     units: Mapping[int, str]
     callees: Mapping[int, tuple[int, ...]]
-    pack: Callable[[Pick, Path], PackInfo]
-    scaffold: Callable[[Pick], None]
+    pack: Callable[..., PackInfo]  # (pick, directory[, src root]); the src default: src/
+    scaffold: Callable[[Pick, Path], None]  # (pick, the file to write)
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -2202,8 +2526,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
 
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
-                scaffold=lambda pick: worlds[pick.exe].scaffold(pick),
-                pack=lambda pick, directory: worlds[pick.exe].pack(pick, directory),
+                scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
+                pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
                 argv=seams.argv, session=seams.session, lint=lint,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
@@ -2687,7 +3011,9 @@ def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
 
 def run_canary(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
-    ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12). PASS
+    ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12), in view
+    mode like every session (07-13, D-24: a view of HEAD, which must hold that matched unit,
+    else the canary is refused before the session). PASS
     only when: the init event is clean (check_init), the three forbidden calls are in the
     result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
     context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
@@ -2702,13 +3028,17 @@ def run_canary(options: DriveOptions, seams: Seams) -> int:
     if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
         raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
                                 "already ran with this --run ID; give a new one")  # fmt: skip
-    attempt_dir.mkdir(parents=True)
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
-    claim = _Claim(pick, options.run_id, repo, 1)
-    base = seams.base_env if seams.base_env is not None else os.environ
-    env = {**claim.env(base), attempt.DIR_ENV: str(attempt_dir),
-           attempt.NOTES_ENV: str(attempt_dir / attempt.NOTES_FILE)}  # fmt: skip
+    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR)
     probe = _probe(options, seams)
+    listed = _git_ok(probe.deps.git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
+    if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
+        raise Refused("canary unit", f"HEAD has no {claim.unit_rel}, the matched unit the "
+                                     "canary's view and check need")  # fmt: skip
+    attempt_dir.mkdir(parents=True)
+    probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
+    base = seams.base_env if seams.base_env is not None else os.environ
+    env = claim.env(base)  # attempt dir, notes, view unit and proposals under build/driver/canary/
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
@@ -2774,18 +3104,19 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
     calls = CallIndex.build(list(data.rows), data.flat, list(data.fixups))
     rows = {row.start: row for row in data.rows}
 
-    def pack(pick: Pick, directory: Path) -> PackInfo:
-        built = attempt.make_pack(data, rows[pick.start], src=roots.src, config=roots.config,
+    def pack(pick: Pick, directory: Path, src: Path | None = None) -> PackInfo:
+        """07-13: a session's pack reads its view's src/ (`src`); the dry run reads src/."""
+        built = attempt.make_pack(data, rows[pick.start], src=roots.src if src is None else src,
+                                  config=roots.config,
                                   asm_root=roots.asm, roots=roots, calls=calls)  # fmt: skip
         write_pack(built, directory, root=roots.repo)
         return PackInfo(built.pack_bytes, tuple(built.truncated))
 
-    def scaffold(pick: Pick) -> None:
+    def scaffold(pick: Pick, dest: Path) -> None:
         unit = next((u for u in data.units if u.unit == pick.unit), None)
         if unit is None:
             raise DriverError(f"{pick.exe}: no unit {pick.unit} in units.csv")
-        path = Path(roots.src) / exe / f"{pick.unit}.c"
-        write_unit_source(path, scaffold_unit(data.target.name, unit, list(data.rows)))
+        write_unit_source(Path(dest), scaffold_unit(data.target.name, unit, list(data.rows)))
 
     return ExeWorld(pool=candidates(assessments, data.symbols),
                     units={row.start: row.unit for row in data.rows},

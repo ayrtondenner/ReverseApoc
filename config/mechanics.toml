@@ -1,0 +1,18 @@
+# The DEC-01 mechanics map, edited by hand (D-01, D-02, D-04, D-22, D-23, D-31). Read strictly by
+# tools/reverseapoc/mechanics.py: an unknown key, a wrong type, non-ASCII or overlong text, or a
+# partial sign-off is refused.
+#
+# Tables: `schema`; `[asm_list]` (the owner's sign-off of config/asm-functions.csv: signed_off_by,
+# signed_off_date, list_sha256, D-23); `[hub_rule]` (D-22); `[[tier]]` with its sign-off record;
+# `[[item]]` (an OpenApoc checklist item: in, out or duplicate); `[[entry]]` (an item's entry
+# function in one EXE, with its evidence); `[[edge]]` (a hand call edge a reader proved).
+# config/mechanics-members.csv is generated from this file by `uv run reverseapoc mechanics write`.
+# Addresses are 0x%08X. Only addresses, ids and short evidence text in our own words: never
+# function names, game strings or OpenApoc text (D-21).
+
+schema = 1
+
+[asm_list]
+signed_off_by = "ayrtondenner"
+signed_off_date = 2026-10-27
+list_sha256 = "0f7093230df88290a923c0fdaf3eb8ec04b1916843b3692a493a847722790c09"
