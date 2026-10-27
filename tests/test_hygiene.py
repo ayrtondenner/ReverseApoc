@@ -294,6 +294,40 @@ def test_default_rule_doc_check_wants_a_row_per_exe():
     assert _default_rule_doc_problems(rule, toolchain, one_row) != []
 
 
+def _matching_rule_globs(matching: str) -> set[str]:
+    """RED stub (07-24 Task 2)."""
+    return set()
+
+
+def _undocumented_rules(cflags_text: str, matching: str) -> list[str]:
+    """RED stub (07-24 Task 2)."""
+    return []
+
+
+def test_every_rule_documented():
+    # 07-24 (D-12): every non-`*` rule of config/cflags.txt (an approved per-unit rule or a
+    # D-14 pin) has its own "Compiler and flags per module" row in docs/matching.md.
+    cflags_text = (REPO_ROOT / "config" / "cflags.txt").read_text(encoding="utf-8")
+    matching = (REPO_ROOT / "docs" / "matching.md").read_text(encoding="utf-8")
+    assert _undocumented_rules(cflags_text, matching) == []
+
+
+def test_every_rule_documented_fails_when_missing(tmp_path):
+    glob = "src/ufo2p/u_00060c50.c"
+    cflags = tmp_path / "cflags.txt"
+    cflags.write_text(f"*  wcc386@10.6  -4r -s -fpi\n{glob}  wcc386@10.6 -4r -ot -s -fpi  # F-0001\n",
+                      encoding="utf-8")  # fmt: skip
+    table = _matching_rows("wcc386@10.6 | -4r -s -fpi", "wcc386@10.6 | -4r -s -fpi")
+    doc = "## Compiler and flags per module\n\n" + table + "\n## Known idioms\n\n| x | y |\n"
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), doc) == [glob]
+    prose = doc + f"\nA row for {glob} outside the table does not count.\n| {glob} | z |\n"
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), prose) == [glob]
+    row = f"| {glob} | UFO2P.EXE | wcc386@10.6 | -4r -ot -s -fpi | F-0001 | 2026-10-28 |\n"
+    documented = doc.replace(table, table + row)
+    assert _matching_rule_globs(documented) == {"*", glob}
+    assert _undocumented_rules(cflags.read_text(encoding="utf-8"), documented) == []
+
+
 _HASH_PREFIX_DIGITS = 8
 
 

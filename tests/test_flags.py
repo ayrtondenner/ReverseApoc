@@ -980,3 +980,91 @@ def test_cli_approve(tmp_path, monkeypatch, capsys):
     assert "F-0001" in out and "landed" in out
     (p,) = flags.read_queue(queue_of(a.repo))
     assert p.status == "landed" and p.approved_by == OWNER
+
+
+# ---- 07-24 Task 2: approve refusals ----
+
+
+def _stale_candidate(a: Approval) -> dict:
+    (a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.c").write_text("changed\n", encoding="utf-8")
+    return {}
+
+
+def _claim(a: Approval) -> dict:
+    return {"env": {"REVERSEAPOC_CLAIM": f"ufo2p/{UNIT}"}}
+
+
+def _dirty_unit(a: Approval) -> dict:
+    (a.repo / "src" / "ufo2p" / f"{UNIT}.c").write_text("someone's edit\n", encoding="utf-8")
+    return {}
+
+
+def _bad_variant(a: Approval) -> dict:
+    path = a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.reduced.c"
+    path.write_text("not the C that passed\n", encoding="utf-8")
+    return {}
+
+
+NOT_REGATED = dict(status="proposed", regate_exit=-1, regate_variant="empty",
+                   regate_cflags_sha256="", regate_log="")  # fmt: skip
+REFUSALS = {
+    "proposed": (NOT_REGATED, None, None, "proposed"),
+    "regate exit 1": (dict(regate_exit=1), None, None, "re-gate exit 1"),
+    "changed candidate": ({}, None, _stale_candidate, "candidate"),
+    "stale cflags sha": (dict(regate_cflags_sha256="b" * 64), None, None, "older"),
+    "claim set": ({}, None, _claim, "REVERSEAPOC_CLAIM"),
+    "unit twice": ({}, None, lambda a: {"ids": ["F-0001", "F-0001"]}, "once"),
+    "dirty unit": ({}, None, _dirty_unit, "uncommitted"),
+    "variant sha": (dict(regate_variant="reduced", variant_sha256="c" * 64, reverted=(F50,)),
+                    None, _bad_variant, "reduced variant"),
+    "unknown model": ({}, (_attempt_record(F30, UNIT, 3, model=None),), None, "model unknown"),
+    "other model": ({}, (_attempt_record(F30, UNIT, 3, model="claude-other-1"),), None,
+                    "claude-other-1"),
+    "no attempt record": ({}, (_attempt_record(F30, UNIT, 2),), None, "model unknown"),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", REFUSALS)
+def test_approve_refusals(tmp_path, case):
+    """D-12 refusals: each is a FlagsError (exit 2) before any write."""
+    changes, records, prepare, match = REFUSALS[case]
+    a = approve_repo(tmp_path, records=records, **changes)
+    extra = prepare(a) if prepare else {}
+    ids = extra.pop("ids", ["F-0001"])
+    base, before = a.head(), a.files()
+    with pytest.raises(flags.FlagsError, match=match):
+        a.approve(ids, **extra)
+    assert a.head() == base and a.files() == before and a.gate.calls == []
+
+
+def test_approve_refuses_while_a_drive_holds_the_lock(tmp_path):
+    from reverseapoc.locks import DRIVE_LOCK, ProcessLock
+
+    a = approve_repo(tmp_path)
+    base, before = a.head(), a.files()
+    other = ProcessLock(a.repo / DRIVE_LOCK)
+    assert other.try_acquire()
+    try:
+        with pytest.raises(flags.FlagsError, match="drive"):
+            a.approve(["F-0001"])
+    finally:
+        other.release()
+    assert a.head() == base and a.files() == before and a.gate.calls == []
+    assert a.approve(["F-0001"]).landed == ("F-0001",)  # the lock is free again
+
+
+def test_approve_refuses_two_proposals_on_one_unit(tmp_path):
+    """A batch never touches a unit twice (the queue itself keeps one open proposal a unit)."""
+    a = approve_repo(tmp_path)
+    (p,) = flags.read_queue(queue_of(a.repo))
+    twin = dataclasses.replace(p, id="F-0002", candidate=f"build/flags/F-0002/{UNIT}.c")
+    with pytest.raises(flags.FlagsError, match="both for"):
+        flags._approvable(a.repo, [p, twin], ["F-0001", "F-0002"], lf_sha256(CFLAGS_TEXT))
+
+
+def test_cli_approve_refusal_exits_2(tmp_path, monkeypatch, capsys):
+    a = approve_repo(tmp_path)
+    monkeypatch.setattr(driver, "command_runner", lambda repo, **kw: a.gate)
+    monkeypatch.setenv("REVERSEAPOC_CLAIM", f"ufo2p/{UNIT}")
+    assert cli_main(["flags", "approve", "F-0001", "--by", OWNER, "--repo", str(a.repo)]) == 2
+    assert "REVERSEAPOC_CLAIM" in capsys.readouterr().err
