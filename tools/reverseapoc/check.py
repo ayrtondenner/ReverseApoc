@@ -1407,23 +1407,41 @@ def _best(cells: Sequence[SweepCell]) -> tuple[SweepCell, ...]:
 SWEEP2_VERSION = "10.6"
 SWEEP2_LETTERS = ("-od", "-of+", "-or", "-oi", "-om", "-ol", "-on", "-op")
 SWEEP2_KKND = ("-of+", "-omiler")  # KKND's optimisation set (docs/toolchain.md)
+SWEEP2_PACK = ("-zp1", "-zp2", "-zp4", "-zp8")
+SWEEP2_FP = ("-fp3", "-fp5")
 SWEEP2_FLOOR = 90.0  # the best stage-1 cell's objdiff percent at which stage 2 runs
 _OPT_PREFIX = "-o"
 
 
 def sweep2_cells(best: SweepCell) -> list[tuple[str, tuple[str, ...]]]:
-    """(version, flags) of every D-15 second-stage cell for the best stage-1 cell `best`: under
-    10.6, keeping its CPU, stack and -fpi flags. O1 replaces its -o set with each single letter
-    and with KKND's set."""
-    cpu, others = best.flags[0], tuple(f for f in best.flags[1:] if not f.startswith(_OPT_PREFIX))
-    sets = [*((letter,) for letter in SWEEP2_LETTERS), SWEEP2_KKND]
-    return [(SWEEP2_VERSION, (cpu, *opt, *others)) for opt in sets]
+    """(version, flags) of every D-15 second-stage cell for the best stage-1 cell `best`, at most
+    24, all under 10.6 and keeping its CPU, stack and -fpi flags: O1 replaces its -o set with each
+    single letter and with KKND's set (9); O2 adds each letter to its -o set, when it has one (8);
+    Z appends a packing (4); F an FP scheduling (2). A cell equal to `best` or to an earlier cell
+    is left out."""
+    cpu, rest = best.flags[0], best.flags[1:]
+    opt = tuple(f for f in rest if f.startswith(_OPT_PREFIX))
+    others = tuple(f for f in rest if not f.startswith(_OPT_PREFIX))
+    o1 = [(cpu, *letters, *others) for letters in (*((x,) for x in SWEEP2_LETTERS), SWEEP2_KKND)]
+    o2 = [(cpu, *opt, letter, *others) for letter in SWEEP2_LETTERS if opt and letter not in opt]
+    extra = [(*best.flags, flag) for flag in (*SWEEP2_PACK, *SWEEP2_FP)]
+    unique = dict.fromkeys(flags for flags in (*o1, *o2, *extra) if flags != best.flags)
+    return [(SWEEP2_VERSION, flags) for flags in unique]
 
 
-def _runs_stage2(cells: Sequence[SweepCell], best: Sequence[SweepCell]) -> bool:
-    if not best or any(cell.percent == PERFECT for cell in cells if cell.measured):
-        return False
-    return best[0].percent >= SWEEP2_FLOOR
+def _perfect(cell: SweepCell) -> bool:
+    return cell.measured and cell.percent == PERFECT and cell.reloc_ok and cell.differing == 0
+
+
+def sweep2_trigger(cells: Sequence[SweepCell]) -> SweepCell | None:
+    """The stage-1 cell D-15's second stage varies, or None when it does not run: it runs only
+    when no cell is perfect (objdiff 100.0, relocation check passing, 0 differing bytes) and the
+    first best cell reaches SWEEP2_FLOOR with its relocation check passing."""
+    best = _best(cells)
+    if not best or any(_perfect(cell) for cell in cells):
+        return None
+    top = best[0]
+    return top if top.reloc_ok and top.percent >= SWEEP2_FLOOR else None
 
 
 def sweep(
@@ -1468,9 +1486,10 @@ def sweep(
                   for n, (version, flags) in enumerate(sweep_cells(chk=chk), start=1))  # fmt: skip
     best = _best(cells)
     stage2 = stage2_best = None
-    if _runs_stage2(cells, best):  # D-15: numbered on from stage 1, through the same _measure
+    near = sweep2_trigger(cells)
+    if near is not None:  # D-15: numbered on from stage 1, through the same _measure
         stage2 = tuple(_measure(setup, n, version, flags) for n, (version, flags)
-                       in enumerate(sweep2_cells(best[0]), start=len(cells) + 1))  # fmt: skip
+                       in enumerate(sweep2_cells(near), start=len(cells) + 1))  # fmt: skip
         stage2_best = _best(stage2)
     log_path = Path(build_dir) / "logs" / f"sweep-{inputs.stem}-{unit}-{row.name}.log"
     report = SweepReport(exe, unit, row.name, chk, cells, best, log_path, stage2, stage2_best)
