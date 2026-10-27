@@ -952,8 +952,8 @@ def test_define_continuation_hides_a_definition():
     text, _, _ = CONTINUATION_PROBES["define-definition"]
     (problem,) = configure.check_unit_source(text, TWO_GAME)
     assert "func_00010000" in problem and "neither" in problem
-    code = configure._live_code(configure._NOT_CODE.sub(configure._blank, text))
-    assert list(configure._file_scope_definitions(code)) == []
+    holders = unitdefs.placeholders(TWO_GAME)  # the D-12 file-scope reading (07-09: unitdefs)
+    assert unitdefs.find(text, TWO_GAME, names=holders, placeholders=holders).defined == {}
 
 
 @pytest.mark.parametrize(
