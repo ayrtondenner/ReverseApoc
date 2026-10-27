@@ -34,15 +34,17 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import re
 import shutil
 import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
-from . import check, contextpack, driver, gate
+from . import check, contextpack, driver, gate, x86
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
@@ -53,6 +55,8 @@ from .functions import (
     read_functions_csv,
     read_symbols_csv,
 )
+from .hooks import CLAIM_ENV
+from .locks import DRIVE_LOCK, ProcessLock
 from .status import MATCHED, format_percent, lf_sha256, read_status, status_path
 from .targets import load_manifest
 from .watcom import DEFAULT_WATCOM_MANIFEST, load_watcom_manifest
@@ -1004,3 +1008,789 @@ def regate(
         done.append(updated)
         runs.append(variants)
     return RegateReport(tuple(done), tuple(runs))
+
+
+# ---- approve: the owner lands an approved per-unit rule (D-12, D-13, D-32; plan 07-24) ----
+
+
+CFLAGS = Path("config") / "cflags.txt"
+MATCHING_DOC = Path("docs") / "matching.md"
+MATCHING_SECTION = "## Compiler and flags per module"
+KNOWN_MODEL = "claude-opus-5-5"  # ruling F33: the one model driver.COAUTHOR names (07-30 widens)
+COMMIT_MSG = "commit-msg.txt"  # build/flags/<id>/commit-msg.txt
+APPROVED_TRAILER = "Flags-Approved-By:"
+_OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._'-]{0,62}[A-Za-z0-9.])?")
+_EVIDENCE = re.compile(r"build/driver/([A-Za-z0-9_.-]+)/(ufo2p|tacp)/([A-Za-z_][A-Za-z0-9_]*)/"
+                       r"attempt-([0-9]+)/checks/[0-9]{4}\.json")  # fmt: skip
+_OUTPUT_CAP = 300  # characters of the gate's output kept in a failed proposal's reason
+
+Git = Callable[[Sequence[str]], Any]  # driver.git_runner: argv after `git` -> CompletedProcess
+Runner = Callable[[Sequence[str]], Any]  # driver.command_runner: argv -> CompletedProcess
+
+
+@dataclass(frozen=True)
+class ApproveReport:
+    landed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    lines: tuple[str, ...] = ()
+
+    @property
+    def exit_code(self) -> int:
+        return EXIT_MISMATCH if self.failed else EXIT_OK
+
+    def format(self) -> str:
+        return "\n".join(self.lines)
+
+
+class _GateFailed(Exception):
+    """The container gate did not pass; the landing is undone and the proposal failed."""
+
+
+def _check_owner(by: str, today: str) -> None:
+    if not _OWNER.fullmatch(by):
+        raise FlagsError(f"--by {by!r}: give the approving owner's name (letters, digits, "
+                         "space and . _ ' -; no #)")  # fmt: skip
+    if not _DATE.fullmatch(today):
+        raise FlagsError(f"today {today!r} is not YYYY-MM-DD")
+
+
+def _hitting_attempts(p: Proposal) -> list[tuple[str, str, str, int]]:
+    """(run, exe, function, attempt) of every attempt whose C the candidate holds."""
+    out = []
+    for path in p.evidence:
+        found = _EVIDENCE.fullmatch(path)
+        if found is None:
+            raise FlagsError(f"{p.id}: evidence {path} is not a driver attempt's checks/NNNN.json; "
+                             "its model (the co-author) is unknown")  # fmt: skip
+        run, exe, function, n = found.groups()
+        out.append((run, exe, function, int(n)))
+    if not out:
+        raise FlagsError(f"{p.id} has no evidence; the model that wrote its C is unknown")
+    return out
+
+
+def _attempt_models(log: Path) -> dict[tuple[str, str, str, int], str | None]:
+    """(run, exe, function, attempt) -> model of every attempt record of attempts.jsonl."""
+    models: dict[tuple[str, str, str, int], str | None] = {}
+    if not log.is_file():
+        return models
+    for number, raw in enumerate(log.read_text(encoding="utf-8").splitlines(), start=1):
+        try:
+            record = json.loads(raw)
+            driver.validate_record(record)
+        except ValueError as exc:
+            raise FlagsError(f"{log} line {number}: {exc}") from None
+        if record["kind"] == driver.KIND_ATTEMPT:
+            key = (record["run"], record["exe"], record["function"], int(record["attempt"]))
+            models[key] = record["model"]
+    return models
+
+
+def _coauthor(p: Proposal, models: Mapping[tuple[str, str, str, int], str | None]) -> str:
+    """Ruling F33: driver.COAUTHOR when every attempt that wrote the candidate ran
+    KNOWN_MODEL; any other or unknown model is refused."""
+    for key in _hitting_attempts(p):
+        model = models.get(key)
+        if model != KNOWN_MODEL:
+            run, exe, function, n = key
+            raise FlagsError(f"{p.id}: attempt {n} of {exe} {function} (run {run}) has model "
+                             f"{model or 'unknown'}; only {KNOWN_MODEL} has a known co-author "
+                             "line")  # fmt: skip
+    return driver.COAUTHOR
+
+
+def _landing_source(repo: Path, p: Proposal) -> Path:
+    """The C a landing copies: the reduced variant the re-gate passed on when it reverted
+    functions (07-17 fix round 1), else the candidate; refused when its LF sha256 is not the
+    one the queue pinned."""
+    if p.reverted:
+        path, want, what = repo / variant_path(p), p.variant_sha256, "reduced variant"
+    else:
+        path, want, what = repo / p.candidate, p.candidate_sha256, "candidate"
+    if not path.is_file() or cflags_sha256(path) != want:
+        raise FlagsError(f"{p.id}: the {what} {_relative(repo, path)} is missing or changed since "
+                         "it was re-gated; run `flags regate` again")  # fmt: skip
+    return path
+
+
+@dataclass(frozen=True)
+class _Landing:
+    """One approved proposal, checked and ready to land."""
+
+    proposal: Proposal
+    source: Path
+    coauthor: str
+    attempts: int  # the hitting attempt number gate records in status.csv
+
+    @property
+    def unit_rel(self) -> str:
+        return self.proposal.glob
+
+
+def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
+                sha_now: str) -> list[_Landing]:  # fmt: skip
+    """D-12: every refusal before anything is written. Each ID must be regated with exit 0 on
+    today's cflags.txt (a batch's own appends do not count: each rule names one exact unit),
+    its C as re-gated, no two on one unit, and the model of its attempts known."""
+    by_id = {p.id: p for p in proposals}
+    if not ids or len(set(ids)) != len(ids):
+        raise FlagsError(f"name each proposal once: {' '.join(ids) or '(none)'}")
+    models = _attempt_models(repo / driver.ATTEMPT_LOG)
+    units: dict[tuple[str, str], str] = {}
+    out = []
+    for pid in ids:
+        p = by_id.get(pid)
+        if p is None:
+            raise FlagsError(f"{pid} is not in the queue")
+        if p.status != REGATED or p.regate_exit != EXIT_OK:
+            raise FlagsError(f"{pid} is {p.status} (re-gate exit {p.regate_exit}); only a "
+                             "regated proposal with re-gate exit 0 is approved")  # fmt: skip
+        if p.regate_cflags_sha256 != sha_now:
+            raise FlagsError(f"{pid} was re-gated on an older {CFLAGS.as_posix()}; run "
+                             f"`flags regate {pid}` again")  # fmt: skip
+        other = units.setdefault((p.exe, p.unit), pid)
+        if other != pid:
+            raise FlagsError(f"{other} and {pid} are both for {p.exe}/{p.unit}; approve one")
+        attempts = max(n for *_, n in _hitting_attempts(p))
+        out.append(_Landing(p, _landing_source(repo, p), _coauthor(p, models), attempts))
+    return out
+
+
+def _git_ok(git: Git, args: Sequence[str]) -> str:
+    """`git --literal-pathspecs <args>`; a non-zero exit is a FlagsError naming git's stderr."""
+    done = git([driver.LITERAL, *args])
+    if done.returncode != 0:
+        why = (done.stderr or b"").decode("utf-8", "replace").strip()
+        raise FlagsError(f"git {' '.join(args[:2])} failed: {why}")
+    return (done.stdout or b"").decode("utf-8", "replace")
+
+
+def _status_paths() -> tuple[str, ...]:
+    """config/<exe>/status.csv of both EXEs: what the gates, the D-33 bar and the pins read."""
+    return tuple(status_path(Path("config"), exe).as_posix() for exe in EXES)
+
+
+def _refuse_dirty(git: Git, paths: Sequence[str]) -> None:
+    """The owner verbs commit or read these paths as committed truth (fix round 1: both
+    status.csv files too), so none may hold an uncommitted change or a new untracked file."""
+    paths = list(dict.fromkeys([*paths, *_status_paths()]))
+    dirty = _git_ok(git, ["status", "--porcelain", "--untracked-files=all", "--", *paths])
+    if dirty.strip():
+        listed = ", ".join(line[3:] for line in dirty.splitlines())
+        raise FlagsError(f"uncommitted changes in {listed}; commit or restore them first")
+
+
+def _hold_drive_lock(repo: Path) -> ProcessLock:
+    """D-06: no drive may run while the owner lands or flips rules."""
+    lock = ProcessLock(repo / DRIVE_LOCK)
+    try:
+        got = lock.try_acquire()
+    except OSError as exc:
+        raise FlagsError(f"cannot lock {DRIVE_LOCK.as_posix()}: {exc}") from None
+    if not got:
+        raise FlagsError(f"a reverseapoc drive is running ({DRIVE_LOCK.as_posix()} is held); "
+                         "run this when no drive runs")  # fmt: skip
+    return lock
+
+
+def _refuse_claim(env: Mapping[str, str]) -> None:
+    if env.get(CLAIM_ENV):
+        raise FlagsError(f"{CLAIM_ENV} is set: a matching session never approves flags; only "
+                         "the owner does, outside the driver")  # fmt: skip
+
+
+def _snapshot_files(repo: Path, rels: Iterable[str]) -> dict[str, bytes | None]:
+    return {rel: ((repo / rel).read_bytes() if (repo / rel).is_file() else None) for rel in rels}
+
+
+def _restore_files(repo: Path, snap: Mapping[str, bytes | None]) -> None:
+    """Every file back byte for byte; one that did not exist is removed."""
+    for rel, data in snap.items():
+        path = repo / rel
+        if data is None:
+            path.unlink(missing_ok=True)
+        else:
+            write_atomic(path, data)
+
+
+def _with_rule(repo: Path, text: str, glob: str, rule: str, comment: str) -> str:
+    """`text` (a cflags file) with `<glob>  <rule>  # <comment>` appended, checked to give
+    `glob` exactly `rule`."""
+    text = text.replace("\r\n", "\n")
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += f"{glob}  {rule}  # {comment}\n"
+    try:
+        found = select_rule(parse_cflags(text, versions=_versions(repo / "config"),
+                                         where=CFLAGS.as_posix()), glob)  # fmt: skip
+    except CflagsError as exc:
+        raise FlagsError(str(exc)) from None
+    if " ".join([found.spec, *found.flags]) != rule:
+        raise FlagsError(f"{rule!r} is not the rule {glob} takes after the append")
+    return text
+
+
+def _table_rows_end(lines: Sequence[str]) -> int:
+    """The index just past the last row of matching.md's "Compiler and flags per module"
+    table; FlagsError when the section or its table is missing."""
+    heads = [i for i, line in enumerate(lines) if line.rstrip("\r\n") == MATCHING_SECTION]
+    if len(heads) != 1:
+        raise FlagsError(f"{MATCHING_DOC.as_posix()} has {len(heads)} '{MATCHING_SECTION}' "
+                         "headings, not one")  # fmt: skip
+    i = heads[0] + 1
+    while i < len(lines) and not lines[i].startswith("|"):
+        if lines[i].startswith("#"):
+            break
+        i += 1
+    if i >= len(lines) or not lines[i].startswith("|"):
+        raise FlagsError(f"{MATCHING_DOC.as_posix()}: no table under '{MATCHING_SECTION}'")
+    while i < len(lines) and lines[i].startswith("|"):
+        i += 1
+    return i
+
+
+def _with_doc_rows(text: str, rows: Sequence[str]) -> str:
+    """matching.md with `rows` appended under the "Compiler and flags per module" table."""
+    lines = text.splitlines(keepends=True)
+    end = _table_rows_end(lines)
+    newline = "\r\n" if lines[end - 1].endswith("\r\n") else "\n"
+    return "".join([*lines[:end], *(row + newline for row in rows), *lines[end:]])
+
+
+def _exe_name(exe: str) -> str:
+    return f"{exe.upper()}.EXE"
+
+
+def doc_row(glob: str, exe: str, rule: str, evidence: str, day: str) -> str:
+    """One "Compiler and flags per module" row: glob, EXE, compiler@version, flags, evidence,
+    date."""
+    compiler, *rule_flags = rule.split()
+    cells = (glob, _exe_name(exe), compiler, " ".join(rule_flags), evidence, day)
+    return "| " + " | ".join(cells) + " |"
+
+
+def _approve_message(land: _Landing, by: str, today: str) -> str:
+    """D-25's match message with the approval: subject, what the rule binds, trailers."""
+    p = land.proposal
+    lines = [f"feat({p.exe}): match {', '.join(p.functions)} in {p.unit} under approved flags "
+             f"{p.id} (C89)", "",
+             f"rule {p.glob}  {p.rule} (was {p.base})",
+             f"re-gate exit {p.regate_exit} ({p.regate_variant}), log {p.regate_log}"]
+    if p.reverted:
+        lines.append(f"landed the reduced variant: {', '.join(p.reverted)} back to INCLUDE_ASM")
+    lines += [f"keeps {name}" for name in p.keeps]
+    lines += [f"sibling {text}" for text in p.siblings]
+    lines += [f"evidence {path}" for path in p.evidence]
+    lines += ["", land.coauthor, driver.MATCHED_BY,
+              f"{APPROVED_TRAILER} {by} ({p.id}, {today})"]
+    return "\n".join(lines) + "\n"
+
+
+def _confirmation(p: Proposal) -> list[str]:
+    """What the owner approves for one proposal: the rule and every sibling it binds (D-32)."""
+    lines = [f"{p.id}  {p.exe}/{p.unit}  {', '.join(p.functions)} under {p.rule} (was {p.base})"]
+    if p.reverted:
+        lines.append(f"  lands {variant_path(p)}: {', '.join(p.reverted)} back to INCLUDE_ASM")
+    if p.siblings:
+        lines.append("  the rule binds every sibling of the unit (D-32):")
+    lines += [f"  sibling {text}" for text in p.siblings]
+    return lines
+
+
+def _gate_output(done: Any) -> str:
+    text = f"{done.stderr or ''} {done.stdout or ''}".strip()
+    return _ascii(" ".join(text.split()))[:_OUTPUT_CAP]
+
+
+def _check_matched(repo: Path, p: Proposal) -> None:
+    """The gate passed: each function of the proposal now has a matched status.csv row."""
+    rows = read_status(status_path(repo / "config", p.exe))
+    for name in p.functions:
+        found = _FUNC.fullmatch(name)
+        start = int(found.group(1), _HEX) if found else None
+        if not any(r.status == MATCHED and (r.name == name or r.start == start) for r in rows):
+            raise _GateFailed(f"the gate passed without a matched row for {name}")
+
+
+class _Approver:
+    """One approve call: the repo, its tools and the queue as it is being rewritten."""
+
+    def __init__(self, repo: Path, queue: Path, by: str, today: str, runner: Runner,
+                 git: Git, proposals: list[Proposal]) -> None:  # fmt: skip
+        self.repo, self.queue, self.by, self.today = repo, queue, by, today
+        self.runner, self.git, self.proposals = runner, git, proposals
+
+    def paths(self, p: Proposal) -> list[str]:
+        """The files one landing writes and commits, repo-relative POSIX."""
+        status = status_path(Path("config"), p.exe).as_posix()
+        return [CFLAGS.as_posix(), p.glob, status, driver.FEED, _relative(self.repo, self.queue),
+                MATCHING_DOC.as_posix()]  # fmt: skip
+
+    def _put(self, p: Proposal) -> None:
+        self.proposals[[q.id for q in self.proposals].index(p.id)] = p
+        write_queue(self.queue, self.proposals)
+
+    def land(self, land: _Landing) -> tuple[bool, str]:
+        """Land one proposal: (True, commit) or (False, why) after a failed gate, with every
+        file restored and the proposal failed. Any other error restores too, then raises."""
+        p = land.proposal
+        snap = _snapshot_files(self.repo, self.paths(p))
+        staged: list[str] = []
+        try:
+            self._write(land)
+            done = self.runner([*driver.CONTAINER_CLI, "gate", f"{p.exe}/{p.unit}",
+                                "--attempts", str(land.attempts), "--json"])  # fmt: skip
+            if done.returncode != 0:
+                raise _GateFailed(f"gate exit {done.returncode}: {_gate_output(done)}")
+            _check_matched(self.repo, p)
+            self._put(dataclasses.replace(p, status=LANDED, approved_by=self.by,
+                                          approved_date=self.today, reason=""))  # fmt: skip
+            staged = [rel for rel in self.paths(p) if (self.repo / rel).is_file()]
+            return True, self._commit(land, staged)
+        except _GateFailed as exc:
+            self._undo(snap, staged)
+            why = _ascii(str(exc))[:_REASON_CAP]
+            self._put(dataclasses.replace(p, status=FAILED, reason=why))
+            return False, why
+        except BaseException as exc:
+            self._undo(snap, staged)
+            self._put(dataclasses.replace(p, status=FAILED, reason=_ascii(
+                f"approve stopped: {type(exc).__name__}: {exc}")[:_REASON_CAP]))  # fmt: skip
+            raise
+
+    def _write(self, land: _Landing) -> None:
+        p = land.proposal
+        cflags = self.repo / CFLAGS
+        text = _with_rule(self.repo, cflags.read_bytes().decode("utf-8"), p.glob, p.rule,
+                          f"{p.id} approved {self.by} {self.today}")  # fmt: skip
+        write_atomic(cflags, text.encode("utf-8"))
+        unit = self.repo / p.glob
+        unit.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(unit, land.source.read_bytes())
+        doc = self.repo / MATCHING_DOC
+        row = doc_row(p.glob, p.exe, p.rule, f"{p.id} approved by {self.by} (re-gate log under "
+                                             f"{FLAGS_DIR.as_posix()}/)", self.today)  # fmt: skip
+        write_atomic(doc, _with_doc_rows(doc.read_bytes().decode("utf-8"), [row]).encode("utf-8"))
+
+    def _commit(self, land: _Landing, paths: Sequence[str]) -> str:
+        p = land.proposal
+        message = _approve_message(land, self.by, self.today)
+        message_file = self.repo / FLAGS_DIR / p.id / COMMIT_MSG
+        message_file.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(message_file, message.encode("utf-8"))
+        _git_ok(self.git, ["add", "--", *paths])
+        _git_ok(self.git, ["commit", "-q", "-F", str(message_file), "--", *paths])
+        return _git_ok(self.git, ["rev-parse", "--short", "HEAD"]).strip()
+
+    def _undo(self, snap: Mapping[str, bytes | None], staged: Sequence[str]) -> None:
+        if staged:  # best effort: the index back to HEAD for what this landing staged
+            self.git([driver.LITERAL, "reset", "-q", "--", *staged])
+        _restore_files(self.repo, snap)
+
+
+def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None,
+            runner: Runner | None = None, git: Git | None = None, queue: Path | None = None,
+            env: Mapping[str, str] | None = None) -> ApproveReport:  # fmt: skip
+    """The owner's approval (D-12, D-13, D-32): for each ID in the given order, append its rule
+    to config/cflags.txt, copy its C (the reduced variant when the re-gate reverted functions)
+    to src/<exe>/<unit>.c, add its docs/matching.md row, run the container `gate EXE/UNIT` and
+    commit exactly cflags.txt, the unit, status.csv, the feed, the queue and matching.md with
+    the Flags-Approved-By trailer. A failed gate restores every file byte for byte, fails the
+    proposal and stops the batch (exit 1). Everything is refused before any write unless each
+    ID is regated with exit 0 on today's cflags.txt, its C is as re-gated, no two IDs share a
+    unit, REVERSEAPOC_CLAIM is unset and build/driver/drive.lock is free (held throughout)."""
+    repo = Path(repo)
+    queue = Path(queue) if queue is not None else repo / QUEUE
+    today = today or date.today().isoformat()
+    _check_owner(by, today)
+    _refuse_claim(os.environ if env is None else env)
+    lock = _hold_drive_lock(repo)
+    try:
+        proposals = read_queue(queue)
+        landings = _approvable(repo, proposals, ids, cflags_sha256(repo / CFLAGS))
+        approver = _Approver(repo, queue, by, today, runner or driver.command_runner(repo),
+                             git or driver.git_runner(repo), proposals)  # fmt: skip
+        _table_rows_end((repo / MATCHING_DOC).read_text(encoding="utf-8").splitlines())
+        for land in landings:
+            _refuse_dirty(approver.git, [r for r in approver.paths(land.proposal)
+                                         if r != _relative(repo, queue)])  # fmt: skip
+        return _approve_all(approver, landings)
+    finally:
+        lock.release()
+
+
+def _approve_all(approver: _Approver, landings: Sequence[_Landing]) -> ApproveReport:
+    landed: list[str] = []
+    lines: list[str] = []
+    for n, land in enumerate(landings):
+        p = land.proposal
+        lines += _confirmation(p)
+        ok, detail = approver.land(land)
+        if not ok:
+            lines.append(f"{p.id} failed: {detail}; every file is restored, nothing committed")
+            lines += [f"{q.proposal.id} not attempted" for q in landings[n + 1 :]]
+            return ApproveReport(tuple(landed), (p.id,), tuple(lines))
+        landed.append(p.id)
+        lines.append(f"{p.id} landed in commit {detail}")
+    return ApproveReport(tuple(landed), (), tuple(lines))
+
+
+# ---- default: the owner changes the `*` default on D-33's evidence (D-14; plan 07-24) ----
+
+D33_MIN_FUNCTIONS = 3  # D-14/D-33: agreeing functions a default flip needs
+D33_MIN_BYTES = 64  # D-33's minimum size (the planner's value) for a function without a branch
+REGION_SIZE = 0x10000  # D-33: agreeing functions sit pairwise in different regions this large
+TOOLCHAIN_DOC = Path("docs") / "toolchain.md"
+DEFAULT_PATHS = (CFLAGS.as_posix(), MATCHING_DOC.as_posix(), TOOLCHAIN_DOC.as_posix())
+PINNED_CFLAGS, UNPINNED_CFLAGS = "cflags.txt", "cflags-unpinned.txt"  # build/flags/default-<day>/
+# Ruling F16: the one canonical sentence a flip rewrites; the historical quotes stay.
+_TOOLCHAIN_SENTENCE = re.compile(r"The default rule in `config/cflags\.txt` is `([^`]*)`")
+
+
+@dataclass(frozen=True)
+class Agreeing:
+    """One function matched under a per-unit rule equal to the proposed default (D-33)."""
+
+    exe: str
+    name: str
+    unit: str
+    start: int
+    size: int  # functions.csv end - start
+    branch: bool  # has_branch_or_loop
+
+    @property
+    def region(self) -> int:
+        return self.start // REGION_SIZE * REGION_SIZE
+
+    @property
+    def counts(self) -> bool:
+        """D-33: a tiny function without a branch or loop counts toward per-unit rules only."""
+        return self.branch or self.size >= D33_MIN_BYTES
+
+    def line(self) -> str:
+        return (f"{self.exe} {self.name} at 0x{self.start:08X} in {self.unit}: {self.size} bytes, "
+                f"branch/loop {'yes' if self.branch else 'no'}, region 0x{self.region:08X}")
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """D-33's bar for a proposed `*` default: its inputs and what fails (empty = met)."""
+
+    rule: str
+    functions: tuple[Agreeing, ...]
+    problems: tuple[str, ...]
+
+    @property
+    def met(self) -> bool:
+        return not self.problems
+
+    def lines(self) -> list[str]:
+        out = [f"D-33 evidence for the `*` default {self.rule}: {len(self.functions)} function(s) "
+               "matched under per-unit rules equal to it"]  # fmt: skip
+        out += [f"  {f.line()}" for f in self.functions]
+        out.append("D-33 bar met" if self.met else f"D-33 bar not met: {'; '.join(self.problems)}")
+        return out
+
+
+@dataclass(frozen=True)
+class DefaultReport:
+    lines: tuple[str, ...] = ()
+    exit_code: int = EXIT_OK
+
+    def format(self) -> str:
+        return "\n".join(self.lines)
+
+
+_LOOPS = ("loop", "loope", "loopne")  # capstone 5 leaves these out of its jump group
+
+
+def has_branch_or_loop(row: FunctionRow, exe: Any) -> bool:
+    """D-33: any conditional jump (jcc, jecxz, loop*) or any jump back to a place inside the
+    row, decoded with reverseapoc.x86 from `exe.flat` (check.ExeInputs or alike) over
+    [start, end)."""
+    code = bytes(exe.flat[row.start : row.end])
+    for insn in x86.decode(code, row.start):
+        if insn.is_conditional or insn.mnemonic in _LOOPS:
+            return True
+        target = insn.branch_target
+        if insn.is_jump and target is not None and row.start <= target <= insn.va:
+            return True
+    return False
+
+
+def _load_exe(repo: Path, exe: str) -> check.ExeInputs:
+    """The EXE as check loads it (verified against the manifest) from <repo>/orig."""
+    manifest = repo / "config" / "targets.toml"
+    target = check.select_exe(load_manifest(manifest), exe, manifest)
+    return check.load_exe(target, orig_dir=repo / "orig", manifest=manifest,
+                          config_root=repo / "config")  # fmt: skip
+
+
+def _rule_text(rule: Any) -> str:
+    return " ".join([rule.spec, *rule.flags])
+
+
+def _same_rule(a: Any, b: Any) -> bool:
+    return a.spec == b.spec and frozenset(a.flags) == frozenset(b.flags)
+
+
+def _star_line(rule: Any) -> str:
+    """The `*` rule as cflags.txt and the docs write it: `*  <compiler@version>  <flags>`."""
+    return f"*  {rule.spec}  {' '.join(rule.flags)}"
+
+
+def _spec_rule(rule: str, versions: Sequence[str]) -> Any:
+    """`--rule SPEC` parsed as a `*` rule (compiler, version and flags checked by cflags.py)."""
+    if "\n" in rule or "#" in rule:
+        raise FlagsError(f"--rule {rule!r}: one `<compiler>@<version> <flags...>` spec")
+    try:
+        (parsed,) = parse_cflags(f"*  {rule}\n", versions=versions, where="--rule")
+    except (CflagsError, ValueError) as exc:
+        raise FlagsError(str(exc)) from None
+    return parsed
+
+
+def _committed_rules(repo: Path, versions: Sequence[str]) -> list:
+    try:
+        return load_cflags(repo / CFLAGS, versions=versions)
+    except CflagsError as exc:
+        raise FlagsError(str(exc)) from None
+
+
+def _bar_problems(functions: Sequence[Agreeing]) -> list[str]:
+    """What of D-33's bar the functions miss: at least D33_MIN_FUNCTIONS that each have a
+    branch or loop or D33_MIN_BYTES, from both EXEs, pairwise in different REGION_SIZE
+    regions (one function per region of an EXE suffices to pick such a set)."""
+    if len(functions) < D33_MIN_FUNCTIONS:
+        return [f"only {len(functions)} function(s) matched under per-unit rules equal to it; "
+                f"D-33 needs {D33_MIN_FUNCTIONS}"]  # fmt: skip
+    counted = [f for f in functions if f.counts]
+    if len(counted) < D33_MIN_FUNCTIONS:
+        return [f"only {len(counted)} of them have a branch or loop or at least {D33_MIN_BYTES} "
+                f"bytes; D-33 needs {D33_MIN_FUNCTIONS} (tiny-function hits count toward "
+                "per-unit rules only)"]  # fmt: skip
+    problems = []
+    exes = sorted({f.exe for f in counted})
+    if len(exes) < len(EXES):
+        problems.append(f"they all come from {', '.join(map(_exe_name, exes))}; D-33 needs "
+                        "both EXEs")  # fmt: skip
+    regions = {(f.exe, f.region) for f in counted}
+    if len(regions) < D33_MIN_FUNCTIONS:
+        problems.append(f"they sit in only {len(regions)} different 0x{REGION_SIZE:X} regions; "
+                        f"D-33 needs {D33_MIN_FUNCTIONS} pairwise in different 0x{REGION_SIZE:X} "
+                        "regions")  # fmt: skip
+    return problems
+
+
+def default_evidence(rule: str, *, repo: Path,
+                     exe_loader: Callable[[str], Any] | None = None) -> Evidence:  # fmt: skip
+    """D-33's bar for `rule` as the `*` default: every status.csv-matched function whose unit's
+    committed rule is a per-unit rule equal to `rule` (spec and flag set), with its size and
+    branch-or-loop flag from the EXE (`exe_loader(exe)`: rows and flat, default check.load_exe
+    from <repo>/orig), and what of the bar fails. Reads only."""
+    repo = Path(repo)
+    config = repo / "config"
+    versions = _versions(config)
+    spec = _spec_rule(rule, versions)
+    rules = _committed_rules(repo, versions)
+    load = exe_loader or (lambda exe: _load_exe(repo, exe))
+    functions: list[Agreeing] = []
+    for exe in EXES:
+        path = status_path(config, exe)
+        rows = [r for r in (read_status(path) if path.is_file() else []) if r.status == MATCHED]
+        ruled = [r for r in rows if _agrees(select_rule(rules, unit_rule_path(exe, r.unit)), spec)]
+        if ruled:
+            functions += _agreeing(exe, ruled, load(exe))
+    return Evidence(_rule_text(spec), tuple(functions), tuple(_bar_problems(functions)))
+
+
+def _agrees(committed: Any, spec: Any) -> bool:
+    return committed.glob != "*" and _same_rule(committed, spec)
+
+
+def _agreeing(exe: str, rows: Sequence[Any], image: Any) -> list[Agreeing]:
+    by_start = {row.start: row for row in image.rows}
+    out = []
+    for r in rows:
+        row = by_start.get(r.start)
+        if row is None:
+            raise FlagsError(f"{exe} {r.name} at 0x{r.start:08X} is matched but no functions.csv "
+                             "row starts there")  # fmt: skip
+        out.append(Agreeing(exe, r.name, r.unit, r.start, row.end - row.start,
+                            has_branch_or_loop(row, image)))  # fmt: skip
+    return out
+
+
+def _pins(config: Path, rules: Sequence[Any]) -> list[tuple[str, str]]:
+    """(exe, unit glob) of every unit with matched rows whose committed rule is the `*`
+    default (D-14: pinned to it so a flip regresses nothing), in EXE then unit order."""
+    out = []
+    for exe in EXES:
+        path = status_path(config, exe)
+        rows = read_status(path) if path.is_file() else []
+        units = sorted({r.unit for r in rows if r.status == MATCHED})
+        out += [(exe, unit_rule_path(exe, unit)) for unit in units
+                if select_rule(rules, unit_rule_path(exe, unit)).glob == "*"]  # fmt: skip
+    return out
+
+
+def _with_toolchain_default(text: str, old: Any, new: Any) -> str:
+    """Ruling F16: docs/toolchain.md with its one canonical sentence quoting the new rule;
+    refused unless the sentence is there exactly once and quotes the committed default."""
+    found = list(_TOOLCHAIN_SENTENCE.finditer(text))
+    where = TOOLCHAIN_DOC.as_posix()
+    if len(found) != 1:
+        raise FlagsError(f"{where} holds 'The default rule in `config/cflags.txt` is `...`' "
+                         f"{len(found)} times, not once; nothing is written")  # fmt: skip
+    quoted = found[0].group(1)
+    if quoted.split() != _star_line(old).split():
+        raise FlagsError(f"{where} quotes the default as `{quoted}`, not the committed "
+                         f"`{_star_line(old)}`; nothing is written")  # fmt: skip
+    return text[: found[0].start(1)] + _star_line(new) + text[found[0].end(1) :]
+
+
+def _with_default_rows(text: str, new: Any, pins: Sequence[tuple[str, str]], old: Any,
+                       evidence: str, pinned: str, today: str) -> str:  # fmt: skip
+    """docs/matching.md with each EXE's `*` row naming the new rule and one row per pin."""
+    lines = text.splitlines(keepends=True)
+    for exe in EXES:
+        prefix = f"| * | {_exe_name(exe)} |"
+        at = [i for i, line in enumerate(lines) if line.startswith(prefix)]
+        if len(at) != 1:
+            raise FlagsError(f"{MATCHING_DOC.as_posix()} has {len(at)} `*` rows for "
+                             f"{_exe_name(exe)}, not one; nothing is written")  # fmt: skip
+        newline = "\r\n" if lines[at[0]].endswith("\r\n") else "\n"
+        lines[at[0]] = doc_row("*", exe, _rule_text(new), evidence, today) + newline
+    rows = [doc_row(glob, exe, _rule_text(old), pinned, today) for exe, glob in pins]
+    return _with_doc_rows("".join(lines), rows) if rows else "".join(lines)
+
+
+def _with_star(text: str, old: Any, new: Any, comment: str) -> str:
+    """cflags text with the `*` rule's line (old.lineno) replaced by the new `*` rule."""
+    lines = text.replace("\r\n", "\n").splitlines(keepends=True)
+    lines[old.lineno - 1] = f"{_star_line(new)}  # {comment}\n"
+    out = "".join(lines)
+    return out if out.endswith("\n") else out + "\n"
+
+
+def default(rule: str, by: str, *, repo: Path, today: str | None = None,
+            runner: Runner | None = None, git: Git | None = None, evidence_only: bool = False,
+            env: Mapping[str, str] | None = None,
+            exe_loader: Callable[[str], Any] | None = None) -> DefaultReport:  # fmt: skip
+    """The owner's `*` default change (D-14, D-33). With `evidence_only`, print D-33's inputs
+    and verdict and change nothing. Otherwise refused unless REVERSEAPOC_CLAIM is unset,
+    drive.lock is free (held throughout), `rule` differs from the committed `*`, D-33's bar is
+    met and the docs hold exactly the text it rewrites. Then: the pinned candidate (new `*`,
+    the per-unit rules, one pin to the old `*` per matched unit without a rule) is proven by
+    `gate --all --cflags` (writes nothing), the unpinned candidate runs as a dry run (evidence
+    only), cflags.txt and the docs are written, `gate --all` runs on them, and one commit
+    carries `Flags-Approved-By: NAME (default, DATE)`. A failing gate restores every file."""
+    repo = Path(repo)
+    today = today or date.today().isoformat()
+    _check_owner(by, today)
+    evidence = default_evidence(rule, repo=repo, exe_loader=exe_loader)
+    if evidence_only:
+        return DefaultReport(tuple(evidence.lines()))
+    _refuse_claim(os.environ if env is None else env)
+    lock = _hold_drive_lock(repo)
+    try:
+        flip = _Flip(repo, by, today, runner or driver.command_runner(repo),
+                     git or driver.git_runner(repo))  # fmt: skip
+        return flip.run(rule, evidence)
+    finally:
+        lock.release()
+
+
+class _Flip:
+    """One `flags default` change: the texts it writes, the three gates, the commit."""
+
+    def __init__(self, repo: Path, by: str, today: str, runner: Runner, git: Git) -> None:
+        self.repo, self.by, self.today, self.runner, self.git = repo, by, today, runner, git
+        self.work = repo / FLAGS_DIR / f"default-{today}"
+
+    def _gate_all(self, *cflags: str) -> Any:
+        extra = ["--cflags", *cflags] if cflags else []
+        return self.runner([*driver.CONTAINER_CLI, "gate", "--all", *extra, "--json"])
+
+    def run(self, rule: str, evidence: Evidence) -> DefaultReport:
+        versions = _versions(self.repo / "config")
+        new = _spec_rule(rule, versions)
+        rules = _committed_rules(self.repo, versions)
+        old = rules[0]
+        if _same_rule(old, new):
+            raise FlagsError(f"the `*` default is already {_rule_text(old)}")
+        if not evidence.met:
+            raise FlagsError(f"D-33's evidence bar is not met for {evidence.rule}: "
+                             f"{'; '.join(evidence.problems)} (see `flags default --evidence`)")
+        pins = _pins(self.repo / "config", rules)
+        docs = self._docs(old, new, pins, evidence)
+        _refuse_dirty(self.git, DEFAULT_PATHS)
+        cflags = (self.repo / CFLAGS).read_bytes().decode("utf-8")
+        unpinned = _with_star(cflags, old, new,
+                              f"default changed by {self.by} {self.today} (D-14, D-33)")
+        pinned = unpinned + "".join(
+            f"{glob}  {old.spec}  {' '.join(old.flags)}  # pinned by D-14 (default changed by "
+            f"{self.by} {self.today})\n" for _, glob in pins)  # fmt: skip
+        for text in (unpinned, pinned):
+            parse_cflags(text, versions=versions, where=CFLAGS.as_posix())
+        return self._prove_and_commit(old, new, pins, evidence, docs, pinned, unpinned)
+
+    def _docs(self, old: Any, new: Any, pins: Sequence[tuple[str, str]],
+              evidence: Evidence) -> dict[str, str]:  # fmt: skip
+        toolchain = (self.repo / TOOLCHAIN_DOC).read_text(encoding="utf-8")
+        matching = (self.repo / MATCHING_DOC).read_text(encoding="utf-8")
+        shown = (f"D-33: {len(evidence.functions)} agreeing functions under approved per-unit "
+                 f"rules (flags default, approved by {self.by})")  # fmt: skip
+        pinned = f"pinned by D-14 when the default changed (approved by {self.by})"
+        return {
+            TOOLCHAIN_DOC.as_posix(): _with_toolchain_default(toolchain, old, new),
+            MATCHING_DOC.as_posix(): _with_default_rows(matching, new, pins, old, shown, pinned,
+                                                        self.today),
+        }  # fmt: skip
+
+    def _prove_and_commit(self, old: Any, new: Any, pins: Sequence[tuple[str, str]],
+                          evidence: Evidence, docs: Mapping[str, str], pinned: str,
+                          unpinned: str) -> DefaultReport:  # fmt: skip
+        candidate, dry = self.work / PINNED_CFLAGS, self.work / UNPINNED_CFLAGS
+        self.work.mkdir(parents=True, exist_ok=True)
+        write_atomic(candidate, pinned.encode("utf-8"))
+        write_atomic(dry, unpinned.encode("utf-8"))
+        shown = _relative(self.repo, candidate)
+        first = self._gate_all(shown)
+        if first.returncode != 0:
+            raise FlagsError(f"gate --all with the pinned candidate {shown} failed (exit "
+                             f"{first.returncode}): {_gate_output(first)}; nothing is "
+                             "written")  # fmt: skip
+        dry_exit = self._gate_all(_relative(self.repo, dry)).returncode
+        results = [f"gate --all with the pinned candidate: exit {first.returncode}",
+                   f"gate --all with the new default and no pins: exit {dry_exit}"]
+        snap = _snapshot_files(self.repo, DEFAULT_PATHS)
+        staged = False
+        try:
+            write_atomic(self.repo / CFLAGS, pinned.encode("utf-8"))
+            for rel, text in docs.items():
+                write_atomic(self.repo / rel, text.encode("utf-8"))
+            final = self._gate_all()
+            if final.returncode != 0:
+                raise FlagsError(f"gate --all on the written {CFLAGS.as_posix()} failed (exit "
+                                 f"{final.returncode}): {_gate_output(final)}; every file is "
+                                 "restored")  # fmt: skip
+            results.append(f"gate --all with the committed file: exit {final.returncode}")
+            lines = [f"feat(cflags): change the * default to {_rule_text(new)} (D-14, D-33)", "",
+                     f"was {_rule_text(old)}", *evidence.lines(),
+                     *(f"pinned {glob} to the old default" for _, glob in pins), *results, "",
+                     f"{APPROVED_TRAILER} {self.by} (default, {self.today})"]
+            message = self.work / COMMIT_MSG
+            write_atomic(message, ("\n".join(lines) + "\n").encode("utf-8"))
+            staged = True
+            _git_ok(self.git, ["add", "--", *DEFAULT_PATHS])
+            _git_ok(self.git, ["commit", "-q", "-F", str(message), "--", *DEFAULT_PATHS])
+        except BaseException:
+            if staged:
+                self.git([driver.LITERAL, "reset", "-q", "--", *DEFAULT_PATHS])
+            _restore_files(self.repo, snap)
+            raise
+        sha = _git_ok(self.git, ["rev-parse", "--short", "HEAD"]).strip()
+        return DefaultReport((*lines[2:-2], f"committed {sha}"))
+
+
