@@ -23,12 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import driver
+from . import contextpack, driver
 from .cflags import load_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
 from .functions import read_functions_csv
-from .status import MATCHED, lf_sha256, read_status, status_path
+from .status import MATCHED, PARTIAL, format_percent, lf_sha256, read_status, status_path
 from .watcom import DEFAULT_WATCOM_MANIFEST, load_watcom_manifest
 
 QUEUE = Path("config/cflags-proposals.toml")
@@ -314,10 +314,20 @@ def _perfect(cell: Mapping[str, Any], base: str) -> bool:
     return ok and _cell_spec(cell) != base
 
 
+def _flag_count(spec: str) -> int:
+    return len(spec.split()) - 1  # the fields after `wcc386@<version>`
+
+
 def _cells_100(doc: Mapping[str, Any], base: str) -> tuple[tuple[tuple[int, str], ...], str]:
-    """The 100% cells of a sweep's JSON as (number, spec), best first, and the hit's source."""
-    found = [(int(c["cell"]), _cell_spec(c)) for c in doc["cells"] if _perfect(c, base)]
-    return tuple(sorted(found)), SWEEP
+    """The 100% cells of a sweep's JSON over stage 1 and the D-15 stage 2 as (number, spec),
+    ranked by the number of flags, then the cell number (DEC-03 ordering), and the hit's
+    source: sweep when a stage-1 cell hit, else sweep2."""
+    stage2 = doc.get("stage2")
+    later = stage2["cells"] if isinstance(stage2, Mapping) else []
+    first = [(int(c["cell"]), _cell_spec(c)) for c in doc["cells"] if _perfect(c, base)]
+    second = [(int(c["cell"]), _cell_spec(c)) for c in later if _perfect(c, base)]
+    ranked = sorted([*first, *second], key=lambda c: (_flag_count(c[1]), c[0]))
+    return tuple(ranked), SWEEP if first else SWEEP2
 
 
 def _sweep_lines(attempt_dir: Path) -> Iterator[str]:
@@ -401,6 +411,13 @@ class _Context:
     def keeps(self, exe: str, unit: str) -> tuple[str, ...]:
         return tuple(row.name for row in self.status[exe]
                      if row.unit == unit and row.status == MATCHED)  # fmt: skip
+
+    def siblings(self, exe: str, unit: str, functions: Iterable[str]) -> tuple[str, ...]:
+        """`<name> <percent>` of the unit's partial rows other than `functions` (D-32): the
+        rule binds them too, so the owner's approval covers them knowingly."""
+        skip = set(functions)
+        return tuple(f"{row.name} {format_percent(row.best_percent)}" for row in self.status[exe]
+                     if row.unit == unit and row.status == PARTIAL and row.name not in skip)
 
 
 def _relative(repo: Path, path: Path) -> str:
@@ -497,16 +514,72 @@ def _new_proposal(repo: Path, ctx: _Context, pid: str, hit: Hit) -> Proposal:
     return Proposal(
         id=pid, exe=hit.exe, unit=hit.unit, glob=unit_rule_path(hit.exe, hit.unit), rule=rule,
         base=ctx.base(hit.exe, hit.unit), functions=(hit.function,),
-        keeps=ctx.keeps(hit.exe, hit.unit), siblings=(), alternatives=tuple(alternatives),
+        keeps=ctx.keeps(hit.exe, hit.unit),
+        siblings=ctx.siblings(hit.exe, hit.unit, (hit.function,)), alternatives=tuple(alternatives),
         source=hit.source, candidate=candidate, candidate_sha256=sha, evidence=(hit.evidence,),
         status=PROPOSED, regate_exit=NOT_RUN, regate_variant=EMPTY, regate_cflags_sha256="",
         regate_log="", approved_by="", approved_date="", reason="",
     )  # fmt: skip
 
 
-def _merge(existing: Proposal, hit: Hit) -> Proposal:
-    """A later hit of a unit with an open proposal: its evidence is recorded."""
-    return dataclasses.replace(existing, evidence=(*existing.evidence, hit.evidence))
+_MARKER = r"\bINCLUDE_ASM\s*\(\s*{name}\s*\)\s*;"
+
+
+def _spliced(candidate: str, function: str, hitting: str) -> str | None:
+    """`candidate` with `function` defined as `hitting` (the C that hit for it) defines it:
+    its definition slice (contextpack.definitions) replaces the candidate's own definition or
+    INCLUDE_ASM marker. None when either is not there."""
+    new = contextpack.definitions(hitting).get(function)
+    if new is None:
+        return None
+    old = contextpack.definitions(candidate).get(function)
+    if old is not None:
+        return candidate.replace(old.source, new.source, 1)
+    marker = re.search(_MARKER.format(name=re.escape(function)), candidate)
+    if marker is None:
+        return None
+    return candidate[: marker.start()] + new.source + candidate[marker.end() :]
+
+
+def _failed(p: Proposal, reason: str) -> Proposal:
+    return dataclasses.replace(p, status=FAILED, rule="", alternatives=(), reason=reason)
+
+
+def _merge(repo: Path, ctx: _Context, existing: Proposal, hit: Hit) -> Proposal:
+    """A later hit of a unit with an open proposal. Its evidence is recorded and any re-gate
+    result is void. Another hit of a function the proposal holds changes nothing else (the
+    candidate is that function's C that hit first). A new function narrows the rules to those
+    every function hit under (its order stays the DEC-03 ranking); none left is FAILED with a
+    reason naming the functions. Its definition from the C that hit is spliced into the
+    candidate."""
+    merged = dataclasses.replace(
+        existing, evidence=(*existing.evidence, hit.evidence), status=PROPOSED,
+        regate_exit=NOT_RUN, regate_variant=EMPTY, regate_cflags_sha256="", regate_log="",
+        reason="",
+    )  # fmt: skip
+    if hit.function in existing.functions:
+        return merged if existing.rule else dataclasses.replace(merged, status=FAILED,
+                                                                reason=existing.reason)
+    functions = (*existing.functions, hit.function)
+    merged = dataclasses.replace(merged, functions=functions,
+                                 keeps=ctx.keeps(hit.exe, hit.unit),
+                                 siblings=ctx.siblings(hit.exe, hit.unit, functions))  # fmt: skip
+    held = (existing.rule, *existing.alternatives) if existing.rule else ()
+    common = [rule for rule in held if rule in hit.specs]
+    if not common:
+        before = ", ".join(held) or "no rule in common"
+        return _failed(merged, f"no rule gives 100% for every function: "
+                               f"{', '.join(existing.functions)} under {before}; "
+                               f"{hit.function} under {', '.join(hit.specs)}")  # fmt: skip
+    path = repo / existing.candidate
+    text = _spliced(path.read_bytes().decode("utf-8"), hit.function,
+                    hit.snapshot.read_bytes().decode("utf-8"))  # fmt: skip
+    if text is None:
+        return _failed(merged, f"{hit.function}'s definition in {hit.evidence[:-5]}.c cannot "
+                               f"be put into {existing.candidate}")  # fmt: skip
+    write_atomic(path, text.encode("utf-8"))
+    return dataclasses.replace(merged, rule=common[0], alternatives=tuple(common[1:]),
+                               candidate_sha256=lf_sha256(text))  # fmt: skip
 
 
 def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> ProposeReport:
@@ -539,7 +612,7 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
             proposals.append(proposal)
             added.append(proposal.id)
             continue
-        proposals[proposals.index(current)] = _merge(current, hit)
+        proposals[proposals.index(current)] = _merge(repo, ctx, current, hit)
         merged.append(current.id)
     if added or merged:
         write_queue(queue, proposals)
