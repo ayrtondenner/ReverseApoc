@@ -81,7 +81,12 @@ _TEXT_CONTROLS = re.compile(r"[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]")  # all but tab
 # Fix round 1 S1: the directives of a header proposal, read after configure's blanking.
 _DIRECTIVE = re.compile(r"\s*(?:#|%:)\s*([A-Za-z_]+)(.*)", re.DOTALL)
 _MACRO = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*)(\()?(.*)", re.DOTALL)  # after define/undef
-_NOT_CONSTANT = re.compile(r"[{};]")  # an object-like body is a constant expression
+# An object-like body is a constant expression: no braces, brackets or `;`, nor their digraphs
+# (`<%` `%>` are { }, `<:` `:>` are [ ]; fix round 2 M2).
+_NOT_CONSTANT = re.compile(r"[{}\[\];]|<%|%>|<:|:>")
+# Fix round 2 S3: identifiers a header's code never names, anywhere (a body, a declaration, a
+# marker): the reserved identifiers and the asm keywords, bare or prefixed.
+_RESERVED_TOKEN = re.compile(r"\b(?:INCLUDE_ASM|_Pragma|__pragma|__emit|asm|_asm|__asm)\b")
 _DIGRAPH_HASH = "%:"
 _HASH = "#"
 _RENAMED_KINDS = (KIND_GAME, KIND_THUNK)  # the functions.csv kinds a func rename may name
@@ -441,12 +446,14 @@ def _macro_problem(directive: str, rest: str, reserved: Collection[str]) -> str 
     if (name in reserved or name in RESERVED_IDENTIFIERS or name in unitdefs.C_KEYWORDS
             or name in WATCOM_BARE_KEYWORDS):  # fmt: skip
         return f"#{directive} {name}: a reserved macro, keyword or identifier"
+    if _C_RESERVED.match(name):  # fix round 2 M1: __WATCOMC__, __clang__, _Foo flip branches
+        return f"#{directive} {name}: a reserved name (C89 keeps `_` + upper case and `__`)"
     if directive == "undef":
         return None
     if paren:
         return f"#define {name}(...): a function-like macro"
     if _NOT_CONSTANT.search(body):
-        return f"#define {name}: the body is not a constant expression ({{, }} or ;)"
+        return f"#define {name}: the body is not a constant expression (braces, brackets or ;)"
     return None
 
 
@@ -461,6 +468,10 @@ def _directive_problem(text: str, reserved: Collection[str]) -> str | None:
     for lineno, logical in lines:
         if _DIGRAPH_HASH in logical:
             return f"line {lineno}: a %: digraph (it spells # or ##)"
+        token = _RESERVED_TOKEN.search(logical)
+        if token is not None:
+            return (f"line {lineno}: `{token.group()}` (inline assembly, a pragma keyword or a "
+                    "reserved identifier)")  # fmt: skip
         directive = _DIRECTIVE.match(logical)
         if directive is None:
             continue
