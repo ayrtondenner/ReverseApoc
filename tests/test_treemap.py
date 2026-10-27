@@ -322,6 +322,20 @@ def test_treemap_legend_names_every_status_and_the_filler(tmp_path):
     for status in COLORS:
         assert status in texts
     assert "uncovered: mostly alignment filler" in texts
+    # D-23: signed asm rows are drawn as library cells, so the library entry names both.
+    assert "library or assembler" in texts
+
+
+def test_treemap_legend_clears_the_heading():
+    """The right-aligned legend starts clear of the bold heading on the left, even once every
+    function is matched ("100% decompiled, 3,079 of 3,079"), estimated at LEGEND_CHAR per
+    character plus a 16 px gap: a longer library label (plan 07-15) would collide."""
+    progress = treemap()
+    root = parse(progress.render_svg(progress.derive(CONFIG)))
+    first = next(root.iter(f"{SVG_NS}circle"))
+    legend_x = float(first.get("cx")) - 5
+    heading = "X-COM Apocalypse (DOS): 100% decompiled, 3,079 of 3,079 functions"
+    assert legend_x >= 8 + progress.LEGEND_CHAR * len(heading) + 16
 
 
 def test_treemap_escapes_names(tmp_path):
