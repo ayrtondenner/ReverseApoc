@@ -689,6 +689,29 @@ def test_status_counts_and_require_matched(tmp_path, capsys):
     assert "tier 1" in capsys.readouterr().out
 
 
+def _require(root: Path, *tier_args: str) -> int:
+    return cli.main(["mechanics", "status", *tier_args, "--require-matched", "--config", str(root)])
+
+
+def test_require_matched_refuses_an_empty_unsigned_or_stale_tier(tmp_path, capsys):
+    root = _committed(tmp_path / "signed")
+    _status_csv(root, matched=[E], partial=[])
+    assert _require(root, "--tier", "1") == 0  # signed, digest valid, every member matched
+    assert _require(root, "--tier", "2") == 1  # no members: nothing to check is not done
+    assert "no members" in capsys.readouterr().err
+    _edit_toml(root, 'detail = "reads the tick"', 'detail = "reads it"')
+    assert _require(root, "--tier", "1") == 1  # changed since sign-off
+    assert "sign" in capsys.readouterr().err
+    unsigned = _committed(tmp_path / "unsigned", sign=False)
+    _status_csv(unsigned, matched=[E], partial=[])
+    assert _require(unsigned, "--tier", "1") == 1
+    assert "not signed" in capsys.readouterr().err
+    (root / mechanics.MEMBERS_CSV).unlink()
+    assert _require(root, "--tier", "1") == 1  # members file missing: zero members
+    bare = _config(tmp_path / "bare", "schema = 1\n")
+    assert _require(bare) == 1  # no tier at all
+
+
 def test_committed_mechanics_check():
     # Before plan 07-20 commits config/mechanics.toml there is nothing to check (passes, F32).
     assert mechanics.check_committed(Path(__file__).resolve().parents[1] / "config") == []
