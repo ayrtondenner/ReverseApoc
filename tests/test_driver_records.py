@@ -150,6 +150,54 @@ def test_gate_counts_regressions_and_keeps_problems(tmp_path):
                               "problems": ["made-up problem of the gate"]}  # fmt: skip
 
 
+ELSEWHERE_ROW = "0x00090000,func_00090000,u_00090000,matched,100.00,1\n"  # another unit's
+
+
+def _regressions_night(tmp_path, doc: dict) -> dict:
+    """A one-session night whose unit holds OTHER_START matched before the gate (and another
+    unit holds a matched row), judged by a failing gate returning `doc`; its gate field."""
+    night = Night(tmp_path, sessions=[Sess()])
+    status = f"config/{EXE}/status.csv"
+    head = (night.repo / status).read_text(encoding="utf-8")
+    _commit(night, {status: head + OTHER_ROW + ELSEWHERE_ROW})
+
+    def gate(pick, n):
+        night.gate_calls.append((pick, n))
+        return driver.GateRun(1, {"ok": False, "written": [], **doc})
+
+    night.run(config={"attempts_per_function": 1}, gate=gate)
+    return _one(night.kinds("attempt"))["gate"]
+
+
+def test_a_reverted_unit_with_no_checks_counts_its_matched_functions(tmp_path):
+    """Fix round 1 (Important 1): every function of the unit went back to INCLUDE_ASM, so the
+    gate returns early with problems and no checks (gate.py's _reverted path). The unit's
+    previously matched function is one regression; another unit's matched row is none."""
+    problem = f"UFO2P: func_{OTHER_START:08X} at 0x{OTHER_START:08X} is matched but reverted"
+    field = _regressions_night(tmp_path, {"problems": [problem], "checks": []})
+    assert (field["exit"], field["claimed_ok"], field["regressions"]) == (1, False, 1)
+    assert field["problems"] == [problem]
+
+
+def test_a_matched_function_missing_from_the_checks_is_a_regression(tmp_path):
+    """Fix round 1 (Important 1): one matched function went back to INCLUDE_ASM, so the unit's
+    check omits it and only cross_check names it in problems. It still counts."""
+    failing = {"objdiff_percent": 90.0, "reloc": {"ok": True}, "bytes": {"ok": False}}
+    doc = {"problems": ["made-up cross-check problem"],
+           "checks": [{"exe": "UFO2P", "functions": [{"va": f"0x{START:08X}", **failing}]}]}
+    assert _regressions_night(tmp_path, doc)["regressions"] == 1
+
+
+def test_a_matched_function_the_failing_gate_shows_passing_is_no_regression(tmp_path):
+    """A failing gate whose checks show the unit's matched function still at 100% (only the
+    claimed function failed) counts no regression."""
+    failing = {"objdiff_percent": 90.0, "reloc": {"ok": True}, "bytes": {"ok": False}}
+    passing = {"objdiff_percent": 100.0, "reloc": {"ok": True}, "bytes": {"ok": True}}
+    doc = {"problems": [], "checks": [{"exe": "UFO2P", "functions": [
+        {"va": f"0x{START:08X}", **failing}, {"va": f"0x{OTHER_START:08X}", **passing}]}]}
+    assert _regressions_night(tmp_path, doc)["regressions"] == 0
+
+
 SPEC_A = "wcc386@10.6 -5r -s -made-up-a"
 SPEC_B = "wcc386@10.6 -4r -s -made-up-b"
 
