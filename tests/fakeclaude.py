@@ -1,6 +1,6 @@
 """A stand-in for the `claude` CLI in the driver tests (owner rule: no test runs the real claude).
 
-`python tests/fakeclaude.py --scenario NAME [--env-unit-paths] [--write PATH]
+`python tests/fakeclaude.py --scenario NAME [--env-unit-paths [--any-unit]] [--write PATH]
 [--write-env-unit TEXT] [--spawn-child] [--sleep S] [--exit N]` does, in this order:
 
 1. replays tests/fixtures/stream/NAME.jsonl to stdout, byte for byte, flushing after every line,
@@ -8,7 +8,9 @@
    when REVERSEAPOC_UNIT_FILE is set, a write tool's `file_path` that names the same
    `src/<exe>/<unit>.c` as that view unit is replayed as the view unit's path instead (one
    re-serialised line), as a session that edits the unit its /goal names would write it; every
-   other line stays byte for byte, and without the variable nothing changes;
+   other line stays byte for byte, and without the variable nothing changes. `--any-unit`
+   (07-21, workers): a path naming any `src/<exe>/<unit>.c` is replayed as the view unit, so
+   the one stream fixture serves sessions claiming other units;
 2. `--write PATH`: writes a small made-up C file at PATH, resolved against its own cwd (ruling
    F11), creating parent directories, as an agent's edit would. `--write-env-unit TEXT` writes
    TEXT to the file REVERSEAPOC_UNIT_FILE names (the driver's view unit, D-24); exit 3 when the
@@ -77,9 +79,10 @@ def _unit_tail(path: str) -> str | None:
     return "/".join(parts[-3:])
 
 
-def _retarget(line: bytes, unit_file: str) -> bytes:
+def _retarget(line: bytes, unit_file: str, *, any_unit: bool = False) -> bytes:
     """`line` with every write tool's file_path naming the view unit's `src/<exe>/<unit>.c`
-    replaced by `unit_file`; any other line (or one that is not JSON) is returned unchanged."""
+    (with `any_unit`: any such path) replaced by `unit_file`; any other line (or one that is
+    not JSON) is returned unchanged."""
     want = _unit_tail(unit_file)
     try:
         event = json.loads(line)
@@ -92,7 +95,8 @@ def _retarget(line: bytes, unit_file: str) -> bytes:
         if block.get("name") not in _EDIT_TOOLS or not isinstance(tool_input, dict):
             continue
         path = tool_input.get("file_path")
-        if isinstance(path, str) and want is not None and _unit_tail(path) == want:
+        tail = _unit_tail(path) if isinstance(path, str) else None
+        if want is not None and tail is not None and (any_unit or tail == want):
             tool_input["file_path"] = unit_file
             changed = True
     if not changed:
@@ -104,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fakeclaude", description=__doc__)
     parser.add_argument("--scenario", type=_scenario, required=True)
     parser.add_argument("--env-unit-paths", action="store_true")
+    parser.add_argument("--any-unit", action="store_true")
     parser.add_argument("--write", type=Path)
     parser.add_argument("--write-env-unit", metavar="TEXT")
     parser.add_argument("--spawn-child", action="store_true")
@@ -116,7 +121,9 @@ def main(argv: list[str] | None = None) -> int:
         return NO_UNIT_FILE
     out = sys.stdout.buffer
     for line in args.scenario.read_bytes().splitlines(keepends=True):
-        _emit(out, _retarget(line, unit_file) if args.env_unit_paths and unit_file else line)
+        if args.env_unit_paths and unit_file:
+            line = _retarget(line, unit_file, any_unit=args.any_unit)
+        _emit(out, line)
     if args.write is not None:
         target = Path.cwd() / args.write
         target.parent.mkdir(parents=True, exist_ok=True)

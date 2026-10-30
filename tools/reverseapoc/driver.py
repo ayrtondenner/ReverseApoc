@@ -53,6 +53,16 @@ One gate lock serialises every shared write (the landing section, `gate --partia
 record append) and one git lock every driver git call; git and sessions run with
 GIT_OPTIONAL_LOCKS=0, and `git add`/`git commit` retry once on an index.lock error.
 
+Workers (07-21; D-06, D-07): the coordinator (the main thread, `_Coordinator`) owns the picker
+and hands each function's pass to one of `workers` worker threads (`_Worker`); a pick whose
+unit another pass holds is skipped for now and handed out later, never dropped. One worker runs
+on the calling thread, exactly the Phase 6 loop. Sessions run at once; the pre-session snapshot,
+the audit and every landing hold the gate lock, so a gate sees src/ equal to HEAD but the unit
+it lands. A LIMIT session pauses every worker (`_Pause`: one backoff, then exactly one probe
+launch). Any worker's stop (or an interrupt on the main thread) stops them all: every live
+session tree in the pid registry (run_session's on_start/on_end) is killed, each attempt is
+contained and reset uncounted, and the first stop writes the one STOPPED record.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -100,7 +110,7 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .score import Candidate, assess, candidates
-from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, run_session
+from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, kill_tree, run_session
 from .status import MATCHED as STATUS_MATCHED
 from .status import PARTIAL as STATUS_PARTIAL
 from .status import read_status, status_path
@@ -180,17 +190,20 @@ class DriverError(RuntimeError):
 
 @dataclass(frozen=True)
 class DriveConfig:
-    """One night. `max_sessions` counts counted sessions only (D-08, D-48)."""
+    """One night. `max_sessions` counts counted sessions only, across every worker (D-07,
+    D-08, D-48); `target_matched` 0 is off (the night cap governs; AGT-11 is counted by
+    `stats`)."""
 
     run_id: str
     repo_root: Path
     tested_major: int  # F28; plan 06-25 passes session's TESTED_MAJOR
     min_cli_version: tuple[int, int, int]  # F28; plan 06-25 passes MIN_CLI_VERSION
-    max_sessions: int = 30  # D-48
-    target_matched: int = 10  # D-48
+    max_sessions: int = 60  # D-07 (it was 30, D-48)
+    target_matched: int = 0  # D-07 CONTEXT default: off (it was 10, D-48)
     attempts_per_function: int = 3  # D-07, per pass
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
+    workers: int = 1  # D-06: sessions at once; 1 is the Phase 6 serial driver (the verb: 3)
 
 
 @dataclass(frozen=True)
@@ -230,7 +243,8 @@ class Deps:
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
     checkout. `say(text)` names one progress line: an attempt's start, a usage-limit wait or
     the attempt's outcome; the drive verb wires `console`, which stamps it and stays silent in
-    --json; the default prints nothing (quick 261026-9ue)."""
+    --json; the default prints nothing (quick 261026-9ue). `kill(pid)` kills a live session's
+    whole tree (session.kill_tree) when the night stops (07-21 stop-all)."""
 
     queue: Callable[[Container[Key]], Iterable[Pick]]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
@@ -243,7 +257,7 @@ class Deps:
     gate: Callable[[Pick, int], GateRun]
     partial_gate: Callable[[Pick, str, int], int]
     remove_containers: Callable[[str], None]
-    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    git: Callable[..., subprocess.CompletedProcess]  # (args), or (args, input=bytes): stdin
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     today: Callable[[], str] = _today
@@ -251,6 +265,7 @@ class Deps:
     # failed check is one string. Called after the last session, before the ENDED record.
     end_of_run: Callable[[], Sequence[str]] = tuple
     say: Callable[[str], None] = _quiet
+    kill: Callable[[int], None] = kill_tree  # 07-21 stop-all: a live session's whole tree
 
 
 @dataclass(frozen=True)
@@ -276,12 +291,13 @@ class DriveReport:
 def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
     """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes. The
     env (given, else this process's) carries GIT_OPTIONAL_LOCKS=0, so a read such as `git
-    status` never takes index.lock (D-27 P4)."""
+    status` never takes index.lock (D-27 P4). `input`, when given, is git's stdin (07-21 fix
+    round 2: `hash-object --stdin`)."""
     run_env = {**(os.environ if env is None else env), OPTIONAL_LOCKS: "0"}
 
-    def git(args: Sequence[str]) -> subprocess.CompletedProcess:
+    def git(args: Sequence[str], input: bytes | None = None) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(["git", *args], cwd=repo, env=dict(run_env),
+            return subprocess.run(["git", *args], cwd=repo, env=dict(run_env), input=input,
                                   capture_output=True, check=False)  # fmt: skip
         except OSError as exc:  # fix round 1 I2: a missing or unrunnable git is a failed call
             return subprocess.CompletedProcess(["git", *args], _os_error_exit(exc), b"",
@@ -1269,6 +1285,17 @@ class _Breach(Exception):
         self.detail = detail
 
 
+class _Kept(Exception):
+    """07-21 fix round 2 (N2, N4): the driver's match commit exists and HEAD is left where it
+    is (a foreign commit came in, HEAD could not be moved back, or the post-commit check
+    itself failed). Nothing is undone under the kept commit; the night stops `guardrail`
+    and `detail` says why."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 class _Stop(Exception):
     """Ends the night with a STOPPED record. After any breach (containment ran) nothing is
     committed, whatever the reason (fix round 2, J2)."""
@@ -1279,19 +1306,264 @@ class _Stop(Exception):
         self.detail = _detail(detail)
 
 
+class _Halt(Exception):
+    """07-21: the night is stopping because of another worker (or an interrupt): this worker
+    contained and reset what it had and leaves quietly. `note` names what its containment did
+    (empty: nothing to report); the first failure alone writes the STOPPED record."""
+
+    def __init__(self, note: str = "") -> None:
+        super().__init__(note)
+        self.note = note
+
+
+_TICK_S = 0.2  # the coordinator's wait between checks, so the main thread sees an interrupt
+
+
+class _Pause:
+    """D-07 with Phase 6 D-08: one usage-limit pause shared by every worker, under the
+    night's condition `cond`. A session that ends LIMIT while no pause holds starts it
+    (`on_limit`): its worker waits the backoff (60, 120, 240 s, then 300 s polls by the shared
+    `streak`) while no worker launches (`wait_to_launch` blocks); sessions already running
+    finish and are salvaged or judged as usual. When the backoff ends (`backoff_done`)
+    exactly one launch is the probe (`probe_taken`): a probe that is not LIMIT clears the
+    pause for all and restarts the streak (`on_clear`); another LIMIT renews the pause one
+    step longer. A LIMIT from a session launched before the pause leaves it as it is. With one
+    worker every launch after a LIMIT is the probe, which is the Phase 6 backoff exactly."""
+
+    def __init__(self, cond: threading.Condition, stop: threading.Event,
+                 clock: Callable[[], float]) -> None:  # fmt: skip
+        self.cond = cond
+        self.stop = stop
+        self.clock = clock
+        self.paused = False
+        self.paused_until = 0.0  # on `clock`: when the current backoff ends
+        self.streak = 0
+        self.due = False  # the backoff has been waited: the next launch is the probe
+        self.probe_taken = False
+        self.waiting = 0  # workers held right now (announced on `cond`)
+
+    def wait_to_launch(self) -> bool:
+        """Block while the pause holds; True when this launch is the probe. A stopping night
+        raises _Halt instead (nothing launches any more)."""
+        with self.cond:
+            self.waiting += 1
+            self.cond.notify_all()
+            try:
+                while True:
+                    if self.stop.is_set():
+                        raise _Halt()
+                    if not self.paused:
+                        return False
+                    if self.due and not self.probe_taken:
+                        self.probe_taken = True
+                        return True
+                    self.cond.wait(_TICK_S)
+            finally:
+                self.waiting -= 1
+
+    def on_limit(self, probe: bool) -> int | None:
+        """A session ended LIMIT: start (or, for the probe, renew) the pause and return the
+        backoff its worker waits; None when a pause already holds (the session ran before)."""
+        with self.cond:
+            if self.paused and not probe:
+                return None
+            seconds = BACKOFF_S[self.streak] if self.streak < len(BACKOFF_S) else POLL_S
+            self.streak += 1
+            self.paused, self.due, self.probe_taken = True, False, False
+            self.paused_until = self.clock() + seconds
+            self.cond.notify_all()
+            return seconds
+
+    def backoff_done(self) -> None:
+        """The backoff has been waited: the next launch, by any worker, is the probe."""
+        with self.cond:
+            self.due = True
+            self.cond.notify_all()
+
+    def on_clear(self, probe: bool) -> None:
+        """A session that was not LIMIT: the probe clears the pause for every worker and the
+        streak starts again; any other session leaves a holding pause alone."""
+        with self.cond:
+            if probe or not self.paused:
+                self.paused, self.due, self.probe_taken, self.streak = False, False, False, 0
+                self.cond.notify_all()
+
+
+class _Worker:
+    """D-06: one worker of the night, numbered `ident` (0..workers-1, the claim's `worker`). It
+    runs one function's pass (`_Night._function`: up to attempts_per_function sessions, each
+    under its unit's claim) and hands any failure to the night, which stops every other
+    worker (stop-all). With one worker the pass runs on the calling thread (`inline`), exactly
+    the Phase 6 driver; otherwise on its own thread."""
+
+    def __init__(self, coordinator: _Coordinator, ident: int, pick: Pick,
+                 difficult: dict[Key, tuple[Key, ...]]) -> None:  # fmt: skip
+        self.coordinator = coordinator
+        self.night = coordinator.night
+        self.ident = ident
+        self.pick = pick
+        self.difficult = difficult
+        self.thread = threading.Thread(target=self._run, name=f"drive-worker-{ident}",
+                                       daemon=True)  # fmt: skip
+
+    def inline(self) -> None:
+        """The pass on the calling thread; a failure propagates as in Phase 6."""
+        self.night.local.worker = self.ident
+        try:
+            self.night._function(self.pick, self.difficult)
+        finally:
+            self.coordinator.release(self)
+
+    def _run(self) -> None:
+        night = self.night
+        night.local.worker = self.ident
+        try:
+            night._function(self.pick, self.difficult)
+        except _Halt as halt:
+            night._note(halt.note)
+        except BaseException as exc:  # noqa: BLE001 - handed to the main thread (stop-all)
+            night._fail(exc)
+        finally:
+            self.coordinator.release(self)
+
+
+class _Coordinator:
+    """D-06, D-07: the main thread's part of the night. It owns the picker: it hands each
+    function's pass to a free worker, skipping for now (never dropping) a pick whose unit
+    another worker's pass holds, and stops handing out passes once the night ends (the caps,
+    or a stop). Claims, counters and locks stay the night's (`_Night`), shared by every
+    worker; every shared write goes through the gate lock, every git call through the git
+    lock. Returns the night's end reason, or re-raises the first worker's failure once every
+    worker has finished."""
+
+    def __init__(self, night: _Night) -> None:
+        self.night = night
+        self.free = list(range(night.config.workers))  # the idle workers' numbers
+        self.busy: dict[tuple[str, str], _Worker] = {}  # (exe, unit) -> the worker on it
+        self.threads: list[threading.Thread] = []
+        self.deferred: list[Pick] = []  # picks whose unit was busy, in queue order
+        self.picks: Iterator[Pick] = iter(())
+        self.exhausted = False
+        self.picked = False
+
+    def run(self) -> str:
+        night = self.night
+        difficult = night._difficult()
+        self.picks = iter(night.deps.queue(frozenset(difficult)))
+        try:
+            while (pick := self._next()) is not None:
+                self.picked = True
+                self._dispatch(pick, difficult)
+            self._drain()
+        except BaseException as exc:  # an interrupt on the main thread: stop every worker first
+            night._stop_all()
+            self._drain()
+            if not isinstance(exc, Exception) and self.threads:
+                night.interrupted += night._stopped_workers()
+            raise
+        night._raise_failure()
+        with night.cond:
+            end = night._end()
+        if end:
+            return end
+        return QUEUE_EXHAUSTED if self.picked else NOTHING_TO_DO
+
+    def release(self, worker: _Worker) -> None:
+        """A worker's pass ended: its unit and its number are free again."""
+        with self.night.cond:
+            self.busy.pop((worker.pick.exe, worker.pick.unit), None)
+            self.free.append(worker.ident)
+            self.free.sort()
+            self.night.cond.notify_all()
+
+    def _next(self) -> Pick | None:
+        """The next pick for a free worker, or None when the night hands out no more: stopping,
+        a cap reached (D-07), or no pick left (every deferred one has run)."""
+        night = self.night
+        with night.cond:
+            while True:
+                if night.stop.is_set() or night._end():
+                    return None
+                if self.free:
+                    pick = self._eligible()
+                    if pick is not None:
+                        return pick
+                    if self.exhausted and not self.deferred:
+                        return None
+                night.cond.wait(_TICK_S)
+
+    def _eligible(self) -> Pick | None:
+        """The first deferred pick whose unit is free, else the queue's next new pick; a pick
+        whose unit is busy is deferred, a pick already taken tonight is skipped."""
+        for i, pick in enumerate(self.deferred):
+            if (pick.exe, pick.unit) not in self.busy:
+                return self.deferred.pop(i)
+        while not self.exhausted:
+            pick = next(self.picks, None)
+            if pick is None:
+                self.exhausted = True
+                break
+            key = (pick.exe, pick.start)
+            if key in self.night.done:
+                continue
+            self.night.done.add(key)
+            if (pick.exe, pick.unit) in self.busy:
+                self.deferred.append(pick)
+                continue
+            return pick
+        return None
+
+    def _dispatch(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> None:
+        with self.night.cond:
+            worker = _Worker(self, self.free.pop(0), pick, difficult)
+            self.busy[(pick.exe, pick.unit)] = worker
+        if self.night.config.workers == 1:
+            worker.inline()
+            return
+        self.threads.append(worker.thread)
+        worker.thread.start()
+
+    def _drain(self) -> None:
+        """Wait for every started worker, in short joins so an interrupt reaches this thread."""
+        for thread in self.threads:
+            while thread.is_alive():
+                thread.join(_TICK_S)
+
+
 class _Night:
     def __init__(self, config: DriveConfig, deps: Deps) -> None:
         if not _RUN_ID.fullmatch(config.run_id):
             raise DriverError(f"run id {config.run_id!r} is not [A-Za-z0-9_.-]+")
+        if config.workers < 1:
+            raise DriverError(f"workers {config.workers} is below 1")
         self.config = config
         self.deps = deps
         self.repo = Path(config.repo_root)
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
         self.matched = 0
-        self.limit_streak = 0
+        self.reserved = 0  # D-07: night-cap slots held by attempts not yet counted (_reserve)
         self.done: set[Key] = set()
-        self.live: _Session | None = None  # the session to reset if a later step raises
+        # D-06: per worker thread: `worker` (its number), `live` (its session to reset if a
+        # later step raises) and `slot` (it holds a reserved slot of the night cap, D-07).
+        self.local = threading.local()
+        # 07-21: the coordinator's condition: the counters, the dispatch, the pause and the
+        # stop. Taken only for short steps and never while waiting for the gate lock (order:
+        # gate, then cond).
+        self.cond = threading.Condition()
+        self.stop = threading.Event()  # set by the first failure (stop-all) or an interrupt
+        self.failure: BaseException | None = None  # the first worker failure, re-raised
+        self.halt_notes: list[str] = []  # what each halted worker's containment did
+        self.pause = _Pause(self.cond, self.stop, deps.clock)  # D-07: one for every worker
+        # 07-21 stop-all: worker -> the pid of its live session (run_session's on_start/on_end)
+        self.pids: dict[int, int] = {}
+        self.pid_lock = threading.Lock()
+        self.killed: list[int] = []  # the pids stop-all killed
+        # 07-21 fix round 1 (C1): the pinned paths' bytes once, before the first launch. The
+        # driver never writes them, so every launch, audit and containment compares with
+        # (and restores to) this, never a session's own launch snapshot, which may hold
+        # another live session's stray. None until the night starts (the canary's probe).
+        self.pinned_base: dict[str, bytes | None] | None = None
         self.git_dir: Path | None = None
         self.interrupted = ""  # what containment did before an interrupt was re-raised
         self.breached = False  # sticky (J2): set once any containment ran; nothing is committed
@@ -1306,6 +1578,135 @@ class _Night:
         # Reentrant, because the landing section appends its own record while it holds it.
         self.gate_lock = threading.RLock()
         self.git_lock = threading.Lock()  # D-27 P4: one driver git call at a time (_git)
+
+    @property
+    def live(self) -> _Session | None:
+        """This worker's session to reset if a later step raises (D-06: one per worker)."""
+        return getattr(self.local, "live", None)
+
+    @live.setter
+    def live(self, session: _Session | None) -> None:
+        self.local.live = session
+
+    @property
+    def worker(self) -> int:
+        """This thread's worker number (0 on the calling thread with one worker)."""
+        return getattr(self.local, "worker", 0)
+
+    # --- workers (07-21) ---
+
+    def _reserve(self) -> bool:
+        """D-07: the shared night cap. Before each attempt a worker reserves a slot while
+        `sessions + reserved < max_sessions`; the slot becomes a counted session (`_count`) or
+        is given back when the attempt ends uncounted (`_release`). A LIMIT or TRANSIENT
+        relaunch keeps its attempt's slot. While every free slot is reserved by attempts still
+        running, the worker waits, since one may end uncounted. False: the night is ending
+        (a cap reached, or a stop) and nothing more launches."""
+        with self.cond:
+            while True:
+                if self.stop.is_set() or self._end():
+                    return False
+                if self.sessions + self.reserved < self.config.max_sessions:
+                    self.reserved += 1
+                    self.local.slot = True
+                    return True
+                self.cond.wait(_TICK_S)
+
+    def _release(self) -> None:
+        """Give this worker's reserved slot back (an attempt that ended uncounted)."""
+        with self.cond:
+            if getattr(self.local, "slot", False):
+                self.local.slot = False
+                self.reserved -= 1
+                self.cond.notify_all()
+
+    def _count(self) -> None:
+        """One counted session (D-07, D-48), from any worker: its reserved slot becomes it."""
+        with self.cond:
+            self.sessions += 1
+            if getattr(self.local, "slot", False):
+                self.local.slot = False
+                self.reserved -= 1
+            self.cond.notify_all()
+
+    def _fail(self, exc: BaseException) -> None:
+        """A worker failed: the first failure is the night's, and every worker stops."""
+        with self.cond:
+            if self.failure is None:
+                self.failure = exc
+            elif isinstance(exc, _Stop):  # a later stop's containment is still reported
+                self.halt_notes.append(f"{exc.reason}: {exc.detail}")
+        self._stop_all()
+
+    def _note(self, note: str) -> None:
+        if note:
+            with self.cond:
+                self.halt_notes.append(note)
+
+    def _stop_all(self) -> None:
+        """Stop-all (D-08 with workers): no worker launches or lands anything more, and every
+        live session tree in the pid registry is killed; each worker then contains and resets
+        its own attempt (`_launch`) and leaves (_Halt)."""
+        with self.cond:
+            self.stop.set()
+            self.cond.notify_all()
+        with self.pid_lock:
+            pids = sorted(set(self.pids.values()))
+        for pid in pids:
+            self._kill(pid)
+
+    def _kill(self, pid: int) -> None:
+        try:
+            self.deps.kill(pid)
+        except Exception:  # noqa: BLE001 - a tree already gone; its worker still contains it
+            pass
+        with self.pid_lock:
+            self.killed.append(pid)
+
+    def _on_start(self, pid: int) -> None:
+        """run_session's on_start: this worker's session is live. Registered and checked under
+        one lock, so a session that starts as the night stops is killed too."""
+        with self.pid_lock:
+            self.pids[self.worker] = pid
+            stopping = self.stop.is_set()
+        if stopping:
+            self._kill(pid)
+
+    def _on_end(self, pid: int) -> None:
+        with self.pid_lock:
+            if self.pids.get(self.worker) == pid:
+                del self.pids[self.worker]
+
+    def _stopped_workers(self) -> str:
+        """What stop-all did on an interrupt, for the STOPPED `interrupted` record."""
+        with self.pid_lock:
+            killed = sorted(set(self.killed))
+        text = "; every worker stopped"
+        if killed:
+            text += f"; killed the session trees of pids {', '.join(map(str, killed))}"
+        # Fix round 1 (I2): a halted worker's own stop (its strays, what it quarantined) is
+        # the night's `failure` here, never re-raised, so its detail goes into this record.
+        failure = self.failure
+        if isinstance(failure, _Stop):
+            text += f"; {failure.reason}: {failure.detail}"
+        elif failure is not None:
+            text += f"; {type(failure).__name__}: {failure}"
+        return "; ".join([text, *self.halt_notes])
+
+    def _halt_if_stopping(self) -> None:
+        """Between steps of a pass: leave quietly once the night is stopping."""
+        if self.stop.is_set():
+            raise _Halt()
+
+    def _raise_failure(self) -> None:
+        """Once every worker has finished: re-raise the first failure on this thread, with what
+        each halted worker's containment did added to a stop's detail."""
+        failure = self.failure
+        if failure is None:
+            return
+        if isinstance(failure, _Stop) and self.halt_notes:
+            raise _Stop(failure.reason, "; ".join([failure.detail, *self.halt_notes])) from failure
+        raise failure
 
     # --- the night ---
 
@@ -1438,10 +1839,12 @@ class _Night:
         message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LOG_MSG)
         self._commit_with_retry(message=message, message_file=message_file, paths=changed)
 
-    def _git(self, args: Sequence[str]) -> subprocess.CompletedProcess:
-        """Every driver git call, one at a time behind the git lock (D-27 P4)."""
+    def _git(self, args: Sequence[str], *, input: bytes | None = None
+             ) -> subprocess.CompletedProcess:  # fmt: skip
+        """Every driver git call, one at a time behind the git lock (D-27 P4). `input` is git's
+        stdin (fix round 2); a call without one keeps the plain `git(args)` seam."""
         with self.git_lock:
-            return self.deps.git(args)
+            return self.deps.git(args) if input is None else self.deps.git(args, input=input)
 
     def _git_retry(self, args: list[str]) -> bytes:
         """`git --literal-pathspecs <args>`, retried once after INDEX_LOCK_WAIT_S when git
@@ -1464,27 +1867,33 @@ class _Night:
         self._git_retry(["commit", "-q", "-F", str(message_file), "--", *paths])
 
     def _end(self) -> str | None:
-        if self.matched >= self.config.target_matched:
-            return TARGET_MATCHED
-        if self.sessions >= self.config.max_sessions:
-            return MAX_SESSIONS
-        return None
+        """Why the night ends now, counted sessions only (D-07): the match target (0: off),
+        then the night cap."""
+        with self.cond:
+            target = self.config.target_matched
+            if target and self.matched >= target:
+                return TARGET_MATCHED
+            if self.sessions >= self.config.max_sessions:
+                return MAX_SESSIONS
+            return None
 
     def _loop(self) -> str:
+        """The coordinator hands the picks to the workers (D-06); one worker is Phase 6's
+        serial loop."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
-        difficult = self._difficult()
-        picked = False
-        for pick in self.deps.queue(frozenset(difficult)):
-            if end := self._end():
-                return end
-            if (pick.exe, pick.start) in self.done:
-                continue
-            picked = True
-            self.done.add((pick.exe, pick.start))
-            self._function(pick, difficult)
-        if not picked:
-            return NOTHING_TO_DO
-        return self._end() or QUEUE_EXHAUSTED
+        self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
+        return _Coordinator(self).run()
+
+    def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
+        """The pinned bytes every check compares with: the night's baseline (C1), or, outside
+        a night, the given snapshot's."""
+        return self.pinned_base if self.pinned_base is not None else snapshot.pinned
+
+    def _pinned_drift(self, snapshot: _Snapshot) -> list[str]:
+        """The pinned paths whose bytes in `snapshot` differ from the baseline."""
+        base = self._pinned_baseline(snapshot)
+        return sorted(n for n in base.keys() | snapshot.pinned.keys()
+                      if base.get(n) != snapshot.pinned.get(n))  # fmt: skip
 
     def _difficult(self) -> dict[Key, tuple[Key, ...]]:
         """The persisted difficult list, minus what `requeue` gives back (D-07)."""
@@ -1501,13 +1910,18 @@ class _Night:
         """At most attempts_per_function counted sessions (D-07); a function that used them all
         without a match goes to the difficult list once."""
         for n in range(1, self.config.attempts_per_function + 1):
-            if self._end():
+            if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return
-            outcome = self._announced(pick, n)
+            try:
+                outcome = self._announced(pick, n)
+            finally:
+                self._release()  # uncounted (an abort, a stop): the slot goes back
             if outcome in (MATCHED, None):
                 return
-        difficult[(pick.exe, pick.start)] = tuple(self.deps.matched_callees(pick))
-        save_difficult(self.repo / DIFFICULT, difficult)
+        callees = tuple(self.deps.matched_callees(pick))
+        with self.cond:  # the list is shared by every worker
+            difficult[(pick.exe, pick.start)] = callees
+            save_difficult(self.repo / DIFFICULT, difficult)
 
     def _label(self, pick: Pick, n: int) -> str:
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
@@ -1531,7 +1945,7 @@ class _Night:
         with self._claimed(pick):
             try:
                 return self._attempt(pick, n)
-            except _Stop:
+            except (_Stop, _Halt):
                 raise
             except Exception as exc:
                 self._reset_live()
@@ -1546,8 +1960,10 @@ class _Night:
     def _claimed(self, pick: Pick) -> Iterator[None]:
         """D-06: the unit's claim file, taken before the attempt's first view is made and
         released after its landing decision, also when the night stops. A unit already claimed
-        stops the night (one worker: only a claim this run failed to release can be there)."""
-        record = {"run": self.config.run_id, "worker": 0, "exe": pick.exe, "unit": pick.unit,
+        stops the night: the coordinator never hands one unit to two workers, so only a claim
+        this run failed to release can be there."""
+        record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
+                  "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": MATCHING_KIND, "pass": 1, "model": None,
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
@@ -1573,16 +1989,21 @@ class _Night:
         with retries = TRANSIENT_RETRIES; D-08, fix round 1 minor 6)."""
         transient = 0
         while True:
+            self._halt_if_stopping()
+            probe = self.pause.wait_to_launch()  # D-07: no launch while the pause holds
             claim = _Claim(pick, self.config.run_id, self.repo, n)
             session = self._launch(claim)
+            if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
+                self._reset(session)
+                raise _Halt()
             disposition = session.disposition
             if disposition is Disposition.LIMIT:
                 matched = self._salvage(session)
-                self._backoff(pick, n)
+                self._limited(pick, n, probe)
                 if matched:
                     return MATCHED
                 continue
-            self.limit_streak = 0
+            self.pause.on_clear(probe)
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
                 transient += 1
@@ -1592,12 +2013,28 @@ class _Night:
                 continue
             return self._counted(session)
 
-    def _backoff(self, pick: Pick, n: int) -> None:
-        streak = self.limit_streak
-        seconds = BACKOFF_S[streak] if streak < len(BACKOFF_S) else POLL_S
+    def _limited(self, pick: Pick, n: int, probe: bool) -> None:
+        """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
+        backoff, then the next launch of any worker is the probe; under a pause another worker
+        started, this worker just waits at its next launch."""
+        seconds = self.pause.on_limit(probe)
+        if seconds is None:
+            self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
+            return
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
-        self.deps.sleep(seconds)
-        self.limit_streak += 1
+        try:
+            self._nap(seconds)
+        finally:
+            self.pause.backoff_done()
+
+    def _nap(self, seconds: float) -> None:
+        """The backoff wait. With the real clock it ends early when the night stops, so a stop
+        or an interrupt never waits out a 300 s poll; an injected `Deps.sleep` (the tests' fake
+        clock) is called as it is."""
+        if self.deps.sleep is time.sleep:
+            self.stop.wait(seconds)
+        else:
+            self.deps.sleep(seconds)
 
     # --- one session ---
 
@@ -1761,26 +2198,37 @@ class _Night:
         prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
                              unit_path=claim.view_unit_rel)  # fmt: skip
         base = self.config.base_env if self.config.base_env is not None else os.environ
-        before = self._snapshot()
+        with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
+            before = self._snapshot()
+            drift = self._pinned_drift(before)
+            if drift:  # fix round 1 (C1): another live session's stray; nothing launches
+                session = _Session(claim, None, pack, 0.0, (), scaffolded, unit_before, before,
+                                   tuple(drift), (), view_head, before.status,
+                                   view_hashes)  # fmt: skip
+                self._guardrail(session, drift, record=False, extra=[
+                    f"pinned paths differed from the night's baseline at the launch of "
+                    f"{claim.target}: {_listed(drift)}"])  # fmt: skip
         start = self.deps.clock()
         result = None
         try:
             result = self.deps.session(self.deps.argv(prompt), cwd=self.repo,
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
-                                       timeout_s=self.config.wall_clock_s)  # fmt: skip
+                                       timeout_s=self.config.wall_clock_s,
+                                       on_start=self._on_start, on_end=self._on_end)  # fmt: skip
         except BaseException as exc:
             # Third pass: contain what the session left before the stop. Minor 8: an interrupt
             # is contained the same way, then re-raised for run() to record. Minor 1: nothing
             # is measured until the attempt's containers are gone.
             note = self._remove_containers(claim)
-            session = self._measure(claim, None, pack, 0.0, before, scaffolded, unit_before,
-                                    view_head, view_hashes)
-            stray = self._strays(session)
-            contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
-            contained += f"; {note}" if note else ""
-            if not stray:
-                self._reset(session)
+            with self.gate_lock:
+                session = self._measure(claim, None, pack, 0.0, before, scaffolded,
+                                        unit_before, view_head, view_hashes)  # fmt: skip
+                stray = self._strays(session)
+                contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
+                contained += f"; {note}" if note else ""
+                if not stray:
+                    self._reset(session)
             if not isinstance(exc, Exception):
                 self.interrupted = f" during a session{contained}"
                 raise
@@ -1788,19 +2236,26 @@ class _Night:
             raise _Stop(ERROR, why) from exc
         note = self._remove_containers(claim)
         seconds = self.deps.clock() - start
-        session = self._measure(claim, result, pack, seconds, before, scaffolded, unit_before,
-                                view_head, view_hashes)
-        self.live = session
-        try:
-            self._audit(session)
-        except _Stop as stop:
-            if note:
-                raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
-            raise
+        # 07-21: the audit runs under the gate lock, so it never meets another worker's landing
+        # half done (its unit in src/, its gate writing status.csv): git can see only HEAD and
+        # the driver's own bytes (D-24 a).
+        with self.gate_lock:
+            session = self._measure(claim, result, pack, seconds, before, scaffolded,
+                                    unit_before, view_head, view_hashes)  # fmt: skip
+            self.live = session
+            try:
+                self._audit(session)
+            except _Stop as stop:
+                if note:
+                    raise _Stop(stop.reason, f"{stop.detail}; {note}") from None
+                raise
+        if self.stop.is_set():  # 07-21 stop-all: audited and contained; nothing lands now
+            self._reset(session)
+            raise _Halt(f"{claim.target}: {note}" if note else "")
         if note:  # S1: the night stops after the audit and containment ran
             self._reset(session)
             if session.counted:  # fix round 2 minor 4: the attempt is recorded like any stop
-                self.sessions += 1
+                self._count()
                 summary = read_checks(claim.attempt_dir)
                 self._record_attempt(session, GAVE_UP, TOOL, summary)
             raise _Stop(TOOL, note)
@@ -1824,8 +2279,9 @@ class _Night:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
-        pinned = tuple(sorted(n for n in before.pinned.keys() | after.pinned.keys()
-                              if before.pinned.get(n) != after.pinned.get(n)))  # fmt: skip
+        base = self._pinned_baseline(before)  # C1: the night's, not this launch's
+        pinned = tuple(sorted(n for n in base.keys() | after.pinned.keys()
+                              if base.get(n) != after.pinned.get(n)))  # fmt: skip
         prints = tuple(sorted(n for n in before.prints.keys() | after.prints.keys()
                               if before.prints.get(n) != after.prints.get(n)))  # fmt: skip
         return _Session(claim, result, pack, seconds, changed, scaffolded, unit_before, before,
@@ -1900,15 +2356,109 @@ class _Night:
         return [self._breach(rel, self.ledger.expected(rel))
                 for rel in rels if not self.ledger.holds(rel)]  # fmt: skip
 
-    def _verify_landing(self, claim: _Claim) -> None:
+    def _verify_landing(self, session: _Session) -> None:
         """Fix round 1: right before the match commit's `git add`, status.csv, the feed and the
-        log hold the driver's bytes and src/ holds the unit it landed."""
+        log hold the driver's bytes and src/ holds the unit it landed. 07-21: after another
+        worker's breach (J2: sticky) nothing is committed any more; and (07-21 fix round 1,
+        the review's open point) every other path git can see equals HEAD or holds the
+        driver's own bytes, so no live session's write rides along with this landing."""
+        claim = session.claim
+        if self.breached:
+            raise _Breach("another worker's breach stopped the night: nothing is committed (J2)")
         for rel in (claim.status_rel, FEED, ATTEMPT_LOG.as_posix()):
             if not self.ledger.holds(rel):
                 raise _Breach(self._breach(rel, self.ledger.expected(rel)))
         unit = self.repo / claim.unit_rel
         if _is_link(unit) or _read(unit) != self.landed_bytes:
             raise _Breach(self._breach(claim.unit_rel, self.landed_bytes, ledgered=False))
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "--untracked-files=all", "-z"])
+        status = {path: (code, None) for path, code in parse_status(raw).items()}
+        others = [p for p in self._unexplained(status) if p != claim.unit_rel]
+        if others:
+            self.breached = True
+            done = self._contain(session, others)
+            raise _Breach(f"paths changed besides the landing at the match commit: "
+                          f"{_listed(others)}; {self._contained_text(done)}")  # fmt: skip
+
+    def _contained_text(self, done: _Contained) -> str:
+        """What one containment did, for a STOPPED record."""
+        text = f"restored: {_listed(done.restored)}; quarantined: {_listed(done.quarantined)}"
+        for label, items in (("not contained", done.not_contained),
+                             ("not restored", done.not_restored),
+                             ("could not unstage", done.unstage_failed)):  # fmt: skip
+            if items:
+                text += f"; {label}: {_listed(items)}"
+        return "; ".join([text, *done.refused])
+
+    def _verify_commit(self, claim: _Claim, paths: Sequence[str], old: str, subject: str
+                       ) -> None:  # fmt: skip
+        """07-21 fix round 1 (I1): `git commit -- <paths>` reads the worktree again after
+        `_verify_landing`, so a live session's write in between would be committed. Each
+        committed blob must be the unit the driver landed or the driver's ledgered bytes, as
+        git stores them (fix round 2, N1: object ids hashed with the path's attributes, so an
+        eol rule never reads as a breach). On a difference the driver moves HEAD back off its
+        own commit (`git update-ref HEAD <old> <new>`), contains each path and raises _Breach,
+        which the caller's `_undo_match` takes from there.
+
+        Fix round 2 (N2): HEAD is only ever moved back when it is the driver's own commit, made
+        on the HEAD it read: one parent, `old`, and the driver's subject. Otherwise a foreign
+        commit came in; HEAD stays, the record names it and `_Kept` stops the night. N4: a
+        failing check, or a failed move, also leaves the commit, and nothing is put back
+        under it (`_Kept`)."""
+        try:
+            new = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+            foreign = self._foreign_commits(old, new, subject)
+            wanted = {rel: (self.landed_bytes if rel == claim.unit_rel
+                            else self.ledger.expected(rel)) for rel in paths}  # fmt: skip
+            bad = [rel for rel, want in wanted.items() if not self._committed_as(new, rel, want)]
+        except Exception as exc:  # noqa: BLE001 - N4: the commit exists; named, nothing undone
+            raise _Kept(f"the match commit was made but could not be checked: "
+                        f"{type(exc).__name__}: {exc}; HEAD was not moved and nothing was "
+                        f"put back under the commit") from exc  # fmt: skip
+        if not bad and not foreign:
+            return
+        notes, kept = [], bool(foreign)
+        if foreign:
+            notes.append(f"commits the driver did not make came in during its match commit: "
+                         f"{_listed(foreign)}; HEAD left at {new[:12]}, "
+                         f"not moved back")  # fmt: skip
+        if bad:
+            notes.append(f"the match commit holds bytes the driver did not write: {_listed(bad)}")
+        if bad and not foreign:
+            try:
+                _git_ok(self._git, ["update-ref", "-m", "reverseapoc drive: undo a tampered match",
+                                    "HEAD", old, new])  # fmt: skip
+                notes.append(f"HEAD moved back to {old[:12]}")
+            except Exception as exc:  # noqa: BLE001 - named; the commit then stays (N4)
+                notes.append(f"HEAD could not be moved back: {type(exc).__name__}: {exc}")
+                kept = True
+        for rel in bad:
+            notes.append(self._breach(rel, wanted[rel], ledgered=rel != claim.unit_rel))
+        raise (_Kept if kept else _Breach)("; ".join(notes))
+
+    def _foreign_commits(self, old: str, new: str, subject: str) -> list[str]:
+        """N2: the commits from `old` to HEAD (`new`) the driver did not make, as "<sha> <subject>".
+        Empty when HEAD is the driver's own commit on `old`: exactly one parent, `old`, and the
+        driver's subject."""
+        parents = _git_ok(self._git, ["rev-list", "--parents", "-n", "1", new]).decode().split()
+        own = _git_ok(self._git, ["log", "-1", "--format=%s", new]).decode().strip()
+        if parents[1:] == [old] and own == subject:
+            return []
+        out = _git_ok(self._git, ["log", "--format=%H %s", f"{old}..{new}"]).decode()
+        found = [(line[:12], line.partition(" ")[2]) for line in out.splitlines() if line]
+        foreign = [f"{sha} {text}" for sha, text in found if text != subject]
+        listed = [f"{sha} {text}" for sha, text in found]
+        return foreign or listed or [f"HEAD {new[:12]} does not descend from {old[:12]}"]
+
+    def _committed_as(self, commit: str, rel: str, data: bytes | None) -> bool:
+        """N1: whether `commit` holds `rel` as git would store `data` there (None: no such
+        path). `data` is hashed with `hash-object --path=<rel> --stdin`, which applies the same
+        attributes (eol, filters) as the commit did; the object ids are compared."""
+        done = self._git([LITERAL, "rev-parse", "--verify", "--quiet", f"{commit}:{rel}"])
+        if data is None or done.returncode != 0:
+            return data is None and done.returncode != 0
+        hashed = self._git([LITERAL, "hash-object", f"--path={rel}", "--stdin"], input=data)
+        return _git_stdout(hashed, ["hash-object", rel]).strip() == done.stdout.strip()
 
     def _unexplained(self, status: Mapping[str, tuple[str, str | None]]) -> list[str]:
         """Invariant (a): each path of `status` (git status after the session) or of the
@@ -1957,9 +2507,12 @@ class _Night:
         stray = self._strays(session)
         if not stray:
             return
-        if session.counted:
-            self.sessions += 1
-        self._guardrail(session, stray, record=session.counted)
+        # 07-21 stop-all: a session the stop killed is contained like any other, but neither
+        # counted nor recorded (the first failure writes the night's STOPPED record).
+        counted = session.counted and not self.stop.is_set()
+        if counted:
+            self._count()
+        self._guardrail(session, stray, record=counted)
 
     def _guardrail(
         self, session: _Session, stray: Sequence[str], *, record: bool, extra: Sequence[str] = ()
@@ -2006,10 +2559,11 @@ class _Night:
         pre-session snapshot once containment is done (a pinned file restored from its bytes
         has a new mtime, so the fingerprint skips pinned names)."""
         before = session.before
+        base = self._pinned_baseline(before)  # C1
         pinned = self._pinned_state()
         prints = self._fingerprint()
-        still = [n for n in sorted(before.pinned.keys() | pinned.keys())
-                 if before.pinned.get(n) != pinned.get(n)]  # fmt: skip
+        still = [n for n in sorted(base.keys() | pinned.keys())
+                 if base.get(n) != pinned.get(n)]  # fmt: skip
         still += [n for n in sorted(before.prints.keys() | prints.keys())
                   if before.prints.get(n) != prints.get(n) and n not in pinned]  # fmt: skip
         return still
@@ -2092,10 +2646,14 @@ class _Night:
                      tracked: frozenset[str]) -> None:  # fmt: skip
         """Contain one stray (see _contain)."""
         before = session.before
-        pinned = name in session.pinned_changed and name.casefold() not in tracked
+        # 07-21 fix round 2 (N3): once the night's baseline is set (the night starts clean),
+        # every pinned change goes back to it, tracked or not; a launch snapshot may hold a
+        # stray. Outside a night an untracked pinned name keeps its snapshot bytes as before.
+        pinned = name in session.pinned_changed and (
+            self.pinned_base is not None or name.casefold() not in tracked)
         path = self._pinned_path(name) if pinned else self.repo / name
-        if pinned:
-            earlier = before.pinned.get(name)
+        if pinned:  # C1: back to the night's baseline, never a launch snapshot's stray
+            earlier = self._pinned_baseline(before).get(name)
         elif self.ledger.knows(name):  # 07-13: the driver's own file, back to its bytes
             earlier = self.ledger.bytes_of(name)
         else:
@@ -2264,7 +2822,7 @@ class _Night:
             if session.has_work():
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
-                    self.sessions += 1
+                    self._count()
                     self._commit_match(session, gate, read_checks(session.claim.attempt_dir))
                     return True
             self._reset(session)
@@ -2279,7 +2837,7 @@ class _Night:
         with self.gate_lock:
             try:
                 yield
-            except _Stop:
+            except (_Stop, _Halt):
                 raise
             except BaseException:
                 try:
@@ -2293,7 +2851,7 @@ class _Night:
         the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
         `gate --partial` and the attempt record. Another worker's record waits for the landing
         decision, so F19's log truncation can only drop this landing's own MATCHED line."""
-        self.sessions += 1
+        self._count()
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
@@ -2345,9 +2903,15 @@ class _Night:
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
                                      sha1s=gate_sha1s(gate.doc))  # fmt: skip
-            self._verify_landing(claim)
+            self._verify_landing(session)
+            old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
                                     paths=paths)  # fmt: skip
+            subject = message.partition("\n")[0]
+            self._verify_commit(claim, paths, old, subject)  # I1; fix round 2: N1, N2, N4
+        except _Kept as exc:  # fix round 2: the commit stays, so nothing is put back under it
+            self.breached = True
+            raise _Stop(GUARDRAIL, exc.detail) from exc
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
             undone = self._undo_match(session, paths, summary, exc.detail, log_size)
             raise _Stop(GUARDRAIL, undone) from exc
@@ -2359,7 +2923,9 @@ class _Night:
             undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size)
             self.interrupted = f" during the match commit; {undone}"
             raise
-        self.matched += 1
+        with self.cond:
+            self.matched += 1
+            self.cond.notify_all()
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
                     why: str, log_size: int) -> str:  # fmt: skip
@@ -2492,12 +3058,14 @@ DRY_RUN_DIR = "dry-run"  # build/driver/<run>/dry-run/<exe>/<func>/context.md
 
 @dataclass(frozen=True)
 class DriveOptions:
-    """What `reverseapoc drive` was asked to do (D-48 defaults)."""
+    """What `reverseapoc drive` was asked to do (D-07 defaults: 3 workers, a night cap of 60
+    counted sessions, no match target)."""
 
     repo: Path
     run_id: str
-    max_sessions: int = 30
-    target_matched: int = 10
+    max_sessions: int = 60
+    target_matched: int = 0  # 0: off
+    workers: int = 3
     dry_run: bool = False
     canary: bool = False
     json: bool = False
@@ -2537,7 +3105,7 @@ class Seams:
     stamps read (local time; Deps.clock stays the monotonic clock for durations)."""
 
     run: Runner
-    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    git: Callable[..., subprocess.CompletedProcess]  # Deps.git: (args) or (args, input=bytes)
     world: Callable[[], Mapping[str, ExeWorld]]
     session: Callable[..., SessionResult]
     argv: Callable[[str], Sequence[str]]
@@ -3057,7 +3625,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
-                         base_env=seams.base_env)  # fmt: skip
+                         base_env=seams.base_env, workers=options.workers)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,

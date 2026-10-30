@@ -1306,6 +1306,17 @@ def _positive(value: str) -> int:
     return number
 
 
+def _non_negative(value: str) -> int:
+    """A whole number of 0 or more (drive --target-matched: 0 is off, 07-21)."""
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number") from exc
+    if number < 0:
+        raise argparse.ArgumentTypeError(f"{value} is below 0")
+    return number
+
+
 def _run_id(value: str | None) -> str:
     """The run's id: `--run ID`, else the UTC time it starts (YYYYMMDD-HHMMSS)."""
     if value is None:
@@ -1322,7 +1333,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     session; once the canary's session ran, any error is a canary FAIL, exit 1)."""
     options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
                                   max_sessions=args.max_sessions,
-                                  target_matched=args.target_matched, dry_run=args.dry_run,
+                                  target_matched=args.target_matched, workers=args.workers,
+                                  dry_run=args.dry_run,
                                   canary=args.canary, json=args.json)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
@@ -1338,10 +1350,13 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
         f"{'.'.join(map(str, driver.MIN_CLI_VERSION))}, when Docker does not answer or the "
         "container's uv sync fails.",
     )
-    p.add_argument("--max-sessions", type=_positive, default=30, metavar="N",
-                   help="counted sessions before the night ends; " + default)  # fmt: skip
-    p.add_argument("--target-matched", type=_positive, default=10, metavar="N",
-                   help="matches before the night ends; " + default)  # fmt: skip
+    p.add_argument("--workers", type=_positive, default=3, metavar="N",
+                   help="sessions at once, one unit each (D-06, D-07); " + default)  # fmt: skip
+    p.add_argument("--max-sessions", type=_positive, default=60, metavar="N",
+                   help="counted sessions of all workers before the night ends; "
+                   + default)  # fmt: skip
+    p.add_argument("--target-matched", type=_non_negative, default=0, metavar="N",
+                   help="matches before the night ends, 0 = off; " + default)  # fmt: skip
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",
                       help="print the 10 pilot picks and build their packs; no claude, no gate")

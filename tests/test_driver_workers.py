@@ -2,37 +2,47 @@
 for the run's life, one O_EXCL claim file per unit, the stale-claim rule, the gate lock around
 every landing and shared write, the git lock, GIT_OPTIONAL_LOCKS=0 and the index.lock retry.
 
-The driver still runs one session at a time; "another worker" here is a thread of the same
-driver process, as plan 07-21's workers will be. Every session is tests/fakeclaude.py through
-the Night harness of test_driver.py; every name and address is made up.
+Plan 07-21 adds the workers (D-06, D-07): one coordinator hands passes to N worker threads of
+the same driver process. Every session is tests/fakeclaude.py through the Night harness of
+test_driver.py (WNight for worker threads); every name and address is made up.
 """
 
 from __future__ import annotations
 
+import _thread
 import json
 import re
 import subprocess
+import sys
 import threading
 import time
+from dataclasses import dataclass, field, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from reverseapoc import driver
+from reverseapoc import attempt, driver
 from reverseapoc.locks import ProcessLock
+from reverseapoc.picker import Pick
+from reverseapoc.session import kill_tree, run_session
 from test_drive import RUN as DRIVE_RUN
 from test_drive import Rig, _canary_rig
 from test_driver import (
     EXE,
+    FAKE,
     FUNC,
     LOG,
     MATCH_SUBJECT,
     OTHER_RECORD,
     RUN,
     SCAFFOLD,
+    SESSION_TEXT,
+    START,
     UNIT,
     UNIT_REL,
+    VIEW,
+    Launch,
     Night,
     Sess,
     _capture_nights,
@@ -40,6 +50,7 @@ from test_driver import (
     _one,
     _run_contained,
     _verb,
+    _write,
     check_line,
 )
 
@@ -600,3 +611,774 @@ def test_run_canary_called_directly_takes_the_lock_itself(tmp_path):
     finally:
         holder.release()
     assert rig.launches == []
+
+
+# ---- 07-21 Task 1: workers (D-06, D-24) ----
+#
+# F39: overlap and ordering are proven with barriers and events, never with sleeps: a barrier
+# of N sessions can only be passed by N sessions running at once, and a session that waits for
+# another's event proves the order. Every wait has a generous timeout, so a broken driver fails
+# the assertion instead of hanging the suite.
+
+WAIT_S = 30.0  # the longest any barrier or event waits before the test fails
+WIDEN_S = 0.05  # a gate's pause that would let an unlocked second gate overlap it
+
+
+def _unit(i: int) -> str:
+    return f"u_{0x10000 * (i + 1):08x}"  # u_00010000 is the committed UNIT
+
+
+def _wpick(i: int, unit: str | None = None) -> Pick:
+    start = START + 0x10000 * i
+    return Pick(EXE, start, f"func_{start:08X}", unit or _unit(i), 20, 100 + i)
+
+
+@dataclass
+class WNight(Night):
+    """The Night harness for worker threads: each session's script is chosen by the unit its
+    prompt claims (`by_unit`, then the shared `sessions`, then a session that writes nothing),
+    kept per thread, so concurrent `argv`/`session` calls never mix. `before(unit, index)` and
+    `after(unit, index)` run in the session's thread around the stand-in claude; `active` and
+    `peak` count the sessions running at once."""
+
+    by_unit: dict[str, list[Sess]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.local = threading.local()
+        self.lock = threading.Lock()
+        self.before = None
+        self.after = None
+        self.active: dict[str, int] = {}
+        self.peak = 0
+        self.overlaps: list[str] = []  # a unit seen in two sessions at once
+        self.threads: list[threading.Thread] = []
+        self.pids: list[tuple[str, int]] = []  # (unit, pid) as each session reported its pid
+        self.on_pid = None  # called with (unit, pid) once the driver has the pid
+        self.slow: dict[str, float] = {}  # unit -> fakeclaude --sleep: runs until killed
+        self.events: list[tuple[str, int]] = []  # ("start" | "end", launch index), in order
+        self.at: list[float] = []  # the fake clock at each launch
+
+    def _argv(self, prompt: str) -> list[str]:
+        unit = re.search(r"\(claim [a-z0-9]+/([a-z0-9_]+)\)", prompt)[1]
+        with self.lock:
+            queue = self.by_unit.get(unit) or self.sessions
+            spec = queue.pop(0) if queue else Sess(write=None)
+            self.prompts.append(prompt)
+        self.local.current = spec
+        argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths",
+                "--any-unit"]  # fmt: skip
+        text = spec.unit_text or (SESSION_TEXT if spec.write == VIEW else None)
+        argv += ["--write-env-unit", text] if text else []
+        return argv + (["--sleep", str(self.slow[unit])] if unit in self.slow else [])
+
+    def _session(self, argv, *, cwd, env, transcript, timeout_s, **hooks):
+        spec = self.local.current
+        unit = env[attempt.CLAIM_ENV].split("/")[1]
+        with self.lock:
+            index = len(self.launched)
+            self.launched.append(Launch(list(argv), dict(env), Path(cwd), timeout_s))
+            self.threads.append(threading.current_thread())
+            if self.active.get(unit):
+                self.overlaps.append(unit)
+            self.active[unit] = self.active.get(unit, 0) + 1
+            self.peak = max(self.peak, sum(self.active.values()))
+            self.events.append(("start", index))
+            self.at.append(self.now)
+            self.now += 45.0
+        try:
+            if self.before is not None:
+                self.before(unit, index)
+            result = run_session(argv, cwd=cwd, env=env, transcript=transcript,
+                                 timeout_s=timeout_s, **self._hooks(unit, hooks))  # fmt: skip
+            for rel, text in spec.files:  # what the "agent" left (a stray), after the stream
+                _write(Path(cwd) / rel, text)
+            attempt_dir = Path(env[attempt.DIR_ENV])
+            for line in spec.checks:
+                _write(attempt_dir / line["source"], f"/* made-up C of check {line['n']} */\n")
+                with (attempt_dir / attempt.CHECK_LOG).open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(line, sort_keys=True) + "\n")
+            if self.after is not None:
+                self.after(unit, index)
+            return result
+        finally:
+            with self.lock:
+                self.active[unit] -= 1
+                self.events.append(("end", index))
+
+    def _hooks(self, unit: str, hooks: dict) -> dict:
+        """The driver's on_start/on_end (07-21 Task 2), with each reported pid noted once the
+        driver has it, then `on_pid(unit, pid)`."""
+        on_start = hooks.get("on_start")
+        if on_start is None:
+            return hooks
+
+        def started(pid: int) -> None:
+            on_start(pid)
+            with self.lock:
+                self.pids.append((unit, pid))
+            if self.on_pid is not None:
+                self.on_pid(unit, pid)
+
+        return {**hooks, "on_start": started}
+
+    def _sleep(self, seconds: float) -> None:
+        with self.lock:
+            self.sleeps.append(seconds)
+            self.now += seconds
+
+
+def _src_changes(night: Night) -> list[str]:
+    """The paths under src/ that differ from HEAD (staged, unstaged or untracked), read with
+    the test's own git and GIT_OPTIONAL_LOCKS=0, so it never takes index.lock."""
+    env = {**night.env, "GIT_OPTIONAL_LOCKS": "0"}
+    out = subprocess.run(["git", "status", "--porcelain=v1", "--untracked-files=all", "-z",
+                          "--", "src"], cwd=night.repo, env=env, capture_output=True,
+                         check=True).stdout  # fmt: skip
+    return sorted(entry[3:].decode() for entry in out.split(b"\0") if entry)
+
+
+def _workers(n: int, **over) -> dict:
+    return {"workers": n, **over}
+
+
+def test_three_workers_overlap(tmp_path):
+    """D-06: three picks in three units run three sessions at once. Each session waits at a
+    barrier of three, which only three concurrent sessions can pass."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)))
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    night.before = lambda unit, index: barrier.wait()
+    report = night.run(config=_workers(3, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted"), report.detail
+    assert len(night.launched) == 3 and night.peak == 3
+    assert sorted(r["unit"] for r in night.kinds("attempt")) == [_unit(i) for i in range(3)]
+
+
+def test_same_unit_never_concurrent(tmp_path):
+    """Two picks in one unit never hold sessions at the same time: the second is skipped for
+    now (the third pick, in another unit, starts while the first still runs) and still runs
+    after the first's landing decision."""
+    picks = (_wpick(0), _wpick(1, unit=_unit(0)), _wpick(2))
+    night = WNight(tmp_path, picks=picks)
+    other_started = threading.Event()
+
+    def before(unit, index):
+        if unit == _unit(2):
+            other_started.set()
+        elif index == 0:
+            assert other_started.wait(WAIT_S), "the pick in the free unit never started"
+
+    night.before = before
+    report = night.run(config=_workers(3, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted"), report.detail
+    assert night.overlaps == []
+    assert [r["function"] for r in night.kinds("attempt")][-1] == picks[1].name
+    assert sorted(r["function"] for r in night.kinds("attempt")) == sorted(p.name for p in picks)
+
+
+def test_gates_never_overlap(tmp_path):
+    """DEC-02 concurrency (T-07-63): with three sessions ending together, the fake gate's calls
+    never overlap, and at each call src/ differs from HEAD only in the landing unit (each
+    session writes its view unit, so every landing changes src/)."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)), sessions=[Sess()] * 3)
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    night.before = lambda unit, index: barrier.wait()
+    inside = threading.Lock()
+    seen: list[tuple[str, list[str], bool]] = []
+
+    def gate(pick, n):
+        alone = inside.acquire(blocking=False)
+        try:
+            seen.append((pick.unit, _src_changes(night), alone))
+            threading.Event().wait(WIDEN_S)  # room for a second, unlocked gate to overlap
+        finally:
+            if alone:
+                inside.release()
+        return night._gate(pick, n)
+
+    report = night.run(config=_workers(3, attempts_per_function=1), gate=gate)
+    assert report.event == "ENDED", report.detail
+    assert len(seen) == 3
+    for unit, changed, alone in seen:
+        assert alone, f"the gate of {unit} overlapped another gate"
+        assert changed == [f"src/{EXE}/{unit}.c"], (unit, changed)
+
+
+def test_broken_view_does_not_leak(tmp_path):
+    """D-24: worker B writes C that would not compile into its view unit and is still running
+    when worker A's gate runs: A's gate sees HEAD's version of B's unit in src/."""
+    unit_b = _unit(0)  # the committed unit: HEAD holds its scaffold
+    picks = (_wpick(0), _wpick(1))
+    night = WNight(tmp_path, picks=picks,
+                   by_unit={unit_b: [Sess(unit_text="this is not C {\n")]})  # fmt: skip
+    a_gated = threading.Event()
+    at_gate: list[str] = []
+
+    def after(unit, index):
+        if unit == unit_b:
+            assert a_gated.wait(WAIT_S), "worker A's gate never ran"
+
+    def gate(pick, n):
+        if pick.unit != unit_b:
+            at_gate.append((night.repo / UNIT_REL).read_text(encoding="utf-8"))
+            a_gated.set()
+        return night._gate(pick, n)
+
+    night.after = after
+    lint = {unit_b: 1}
+    report = night.run(config=_workers(3, attempts_per_function=1), gate=gate,
+                       lint=lambda pick: lint.get(pick.unit, 0))  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert at_gate == [SCAFFOLD]
+    outcomes = {r["unit"]: (r["outcome"], r["abort_reason"]) for r in night.kinds("attempt")}
+    assert outcomes[unit_b] == ("GAVE_UP", "lint")
+    assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == SCAFFOLD
+
+
+def test_workers_one_is_serial(tmp_path):
+    """`workers=1` is the Phase 6 driver: one session at a time, on the calling thread, and
+    the records in queue order."""
+    picks = (_wpick(0), _wpick(1), _wpick(2, unit=_unit(0)))
+    night = WNight(tmp_path, picks=picks)
+    report = night.run(config=_workers(1, attempts_per_function=1))
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted")
+    assert night.peak == 1
+    assert all(t is threading.main_thread() for t in night.threads)
+    kinds = [(r["kind"], r.get("function") or r["event"]) for r in night.records()]
+    assert kinds == [("run", "STARTED"), *(("attempt", p.name) for p in picks), ("run", "ENDED")]
+
+
+# ---- 07-21 Task 2: the shared usage-limit pause, stop-all, KeyboardInterrupt (D-07) ----
+
+
+def _held(night: driver._Night, n: int) -> bool:
+    """True once `n` workers wait at the shared pause (each wait is announced on the pause's
+    condition, so no polling sleep is needed)."""
+    pause = night.pause
+    with pause.cond:
+        return pause.cond.wait_for(lambda: pause.waiting >= n, timeout=WAIT_S)
+
+
+def _limit_night(tmp_path, monkeypatch, *, later: tuple[Sess, ...] = ()):
+    """Three workers start together; A's session ends LIMIT while B's and C's still run (they
+    end only once the pause has begun, i.e. once A's backoff sleep is called). `later` are the
+    scripts of the launches after those three."""
+    nights = _capture_nights(monkeypatch)
+    by_unit = {_unit(0): [Sess("rate_limit", write=None)], _unit(1): [Sess(write=None)],
+               _unit(2): [Sess(write=None)]}  # fmt: skip
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)), by_unit=by_unit,
+                   sessions=list(later))  # fmt: skip
+    start = threading.Barrier(3, timeout=WAIT_S)
+    paused = threading.Event()
+
+    def before(unit, index):
+        if index < 3:
+            start.wait()
+
+    def after(unit, index):
+        if index < 3 and unit != _unit(0):
+            assert paused.wait(WAIT_S), "the pause never began"
+
+    night.before, night.after = before, after
+    return night, nights, paused
+
+
+def test_limit_pauses_all(tmp_path, monkeypatch):
+    """D-07: A's LIMIT pauses every worker. B's and C's running sessions finish and are judged;
+    no worker launches until the 60 s backoff has passed on the fake clock."""
+    night, nights, paused = _limit_night(tmp_path, monkeypatch)
+    seen: dict = {}
+
+    def sleep(seconds):
+        paused.set()
+        seen["held"] = _held(nights[-1], 2)
+        seen["launched"] = len(night.launched)
+        seen["judged"] = sorted(r["unit"] for r in night.kinds("attempt"))
+        seen["now"] = night.now
+        night._sleep(seconds)
+
+    report = night.run(config=_workers(3, attempts_per_function=2), sleep=sleep)
+    assert report.event == "ENDED", report.detail
+    assert night.sleeps == [60]
+    assert seen["held"], "B and C never waited at the pause"
+    assert seen["launched"] == 3, "a worker launched during the pause"
+    assert seen["judged"] == [_unit(1), _unit(2)]
+    later = night.at[3:]
+    assert later and all(t >= seen["now"] + 60 for t in later), (seen["now"], later)
+
+
+def _alone(events: list[tuple[str, int]], index: int) -> bool:
+    """No other session started while launch `index` ran."""
+    begin, end = events.index(("start", index)), events.index(("end", index))
+    return all(kind != "start" for kind, _ in events[begin + 1 : end])
+
+
+def test_one_probe_after_backoff(tmp_path, monkeypatch):
+    """After each backoff exactly one worker launches (the probe). A second LIMIT advances the
+    shared streak (120 s); the probe that succeeds clears the pause and the others resume."""
+    night, nights, paused = _limit_night(tmp_path, monkeypatch,
+                                         later=(Sess("rate_limit", write=None),))  # fmt: skip
+    at_sleep: list[tuple[int, bool, int]] = []
+
+    def sleep(seconds):
+        paused.set()
+        at_sleep.append((seconds, _held(nights[-1], 2), len(night.launched)))
+        night._sleep(seconds)
+
+    report = night.run(config=_workers(3, attempts_per_function=2), sleep=sleep)
+    assert report.event == "ENDED", report.detail
+    assert at_sleep == [(60, True, 3), (120, True, 4)]
+    assert _alone(night.events, 3) and _alone(night.events, 4)
+    assert night.events.index(("start", 4)) > night.events.index(("end", 3))
+    assert len(night.launched) >= 6, "the other workers never resumed"
+
+
+def _recording_kill(kills: list[int]):
+    def kill(pid: int) -> None:
+        kills.append(pid)
+        kill_tree(pid)
+
+    return kill
+
+
+def _claims_left(night: Night) -> list[Path]:
+    return sorted((night.repo / "build" / "driver" / "claims").glob("*.json"))
+
+
+def test_stop_kills_all_live_sessions(tmp_path):
+    """A STOP signal from worker A kills B's and C's live session trees through the pid
+    registry; each of their attempts is contained (C's stray quarantined) and reset, nothing
+    of theirs is counted, and the night writes one STOPPED record."""
+    unit_a, unit_b, unit_c = (_unit(i) for i in range(3))
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
+                   by_unit={unit_a: [Sess("auth", write=None)],
+                            unit_c: [Sess(files=(("tools/x.py", "# made-up stray\n"),))]})
+    night.slow = {unit_b: 60.0, unit_c: 60.0}  # they run until killed
+    both_live = threading.Event()
+
+    def on_pid(unit, pid):
+        if {u for u, _ in night.pids} >= {unit_b, unit_c}:
+            both_live.set()
+
+    def before(unit, index):
+        if unit == unit_a:
+            assert both_live.wait(WAIT_S), "B's and C's sessions never reported their pids"
+
+    night.on_pid, night.before = on_pid, before
+    kills: list[int] = []
+    report = night.run(config=_workers(3, attempts_per_function=1), kill=_recording_kill(kills))
+    assert (report.event, report.reason) == ("STOPPED", "stop signal"), report.detail
+    live = {pid for unit, pid in night.pids if unit in (unit_b, unit_c)}
+    assert len(live) == 2 and live <= set(kills)
+    assert [r["event"] for r in night.kinds("run")] == ["STARTED", "STOPPED"]
+    assert night.kinds("attempt") == [] and report.sessions == 0
+    assert _src_changes(night) == []
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+    assert "tools/x.py" in report.detail
+    assert _claims_left(night) == []
+
+
+def test_keyboard_interrupt_stops_workers(tmp_path):
+    """KeyboardInterrupt reaches only the main thread: it stops every worker, kills each
+    registered session pid, and the night records STOPPED `interrupted` before re-raising."""
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+    night.slow = {_unit(0): 60.0, _unit(1): 60.0}
+    fired: list[bool] = []
+
+    def on_pid(unit, pid):
+        with night.lock:
+            if len(night.pids) < 2 or fired:
+                return
+            fired.append(True)
+        _thread.interrupt_main()  # what Ctrl+C does: KeyboardInterrupt on the main thread
+
+    night.on_pid = on_pid
+    kills: list[int] = []
+    with pytest.raises(KeyboardInterrupt):
+        night.run(config=_workers(2, attempts_per_function=1), kill=_recording_kill(kills))
+    pids = {pid for _, pid in night.pids}
+    assert len(pids) == 2 and pids <= set(kills)
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    assert stopped["reason"] == "interrupted"
+    assert night.kinds("attempt") == []
+    assert _src_changes(night) == []
+    assert _claims_left(night) == []
+
+
+# ---- 07-21 Task 3: the shared night cap with reservations, the new defaults (D-07) ----
+
+
+def test_cap_shared_across_workers(tmp_path):
+    """max_sessions=5 with three workers: a slot is reserved before each launch, so exactly 5
+    sessions launch and count. The first three start together; the fourth waits until those
+    three are judged, so without reservations every freed worker would launch again."""
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(8)))
+    barrier = threading.Barrier(3, timeout=WAIT_S)
+    first_three = threading.Event()
+
+    def before(unit, index):
+        if index < 3:
+            barrier.wait()
+        elif index == 3:
+            assert first_three.wait(WAIT_S), "the first three sessions were never judged"
+
+    def gate(pick, n):
+        done = night._gate(pick, n)
+        with night.lock:
+            night.gated = getattr(night, "gated", 0) + 1
+            if night.gated == 3:
+                first_three.set()
+        return done
+
+    night.before = before
+    report = night.run(config=_workers(3, attempts_per_function=1, max_sessions=5), gate=gate)
+    assert (report.event, report.reason, report.sessions) == ("ENDED", "max sessions", 5)
+    assert len(night.launched) == 5
+    assert len(night.kinds("attempt")) == 5
+
+
+def test_uncounted_session_releases_slot(tmp_path):
+    """A transient abort (four launches, none counted) gives its slot back: with max_sessions=2
+    the night still counts two sessions after it."""
+    transient = [Sess("overloaded", write=None)] * 4
+    night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(4)),
+                   by_unit={_unit(0): list(transient)})  # fmt: skip
+    report = night.run(config=_workers(2, attempts_per_function=1, max_sessions=2))
+    assert (report.event, report.reason, report.sessions) == ("ENDED", "max sessions", 2)
+    assert _one(night.kinds("abort"))["unit"] == _unit(0)
+    assert len(night.kinds("attempt")) == 2
+    assert len(night.launched) == 6
+
+
+def test_target_matched_zero_is_off(tmp_path):
+    """target_matched=0 never ends the night on matches (the night cap governs); 2 still ends
+    it after two matches."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = WNight(tmp_path / "off", picks=picks, sessions=[Sess()] * 3, gate_exits=[0, 0, 0])
+    report = night.run(config=_workers(1, target_matched=0))
+    assert (report.event, report.reason, report.matched) == ("ENDED", "queue exhausted", 3)
+    night = WNight(tmp_path / "two", picks=picks, sessions=[Sess()] * 3, gate_exits=[0, 0, 0])
+    report = night.run(config=_workers(1, target_matched=2))
+    assert (report.reason, report.matched, len(night.launched)) == ("target matched", 2, 2)
+
+
+def test_empty_queue_no_session(tmp_path):
+    """Three workers and an empty queue: nothing launches, the night ends `nothing to do`."""
+    night = WNight(tmp_path, picks=())
+    report = night.run(config=_workers(3))
+    assert night.launched == []
+    assert (report.event, report.reason, report.exit_code) == ("ENDED", "nothing to do", 0)
+
+
+def test_drive_config_defaults_follow_d07():
+    """D-07: the night cap is 60 sessions and the match target is off (0) by default."""
+    defaults = {f.name: f.default for f in fields(driver.DriveConfig)}
+    assert (defaults["max_sessions"], defaults["target_matched"]) == (60, 0)
+    options = driver.DriveOptions(repo=Path("."), run_id="r")
+    assert (options.max_sessions, options.target_matched, options.workers) == (60, 0, 3)
+
+
+# ---- 07-21 fix round 1 ----
+
+STRAY = b'{"stray": "written by session A (made up)"}\n'
+
+
+def _until(*events: threading.Event) -> bool:
+    """True once any of `events` is set (WAIT_S at most); a short wait per round, never an
+    ordering assertion on its own."""
+    deadline = time.monotonic() + WAIT_S
+    while time.monotonic() < deadline:
+        if any(event.is_set() for event in events):
+            return True
+        events[0].wait(0.01)
+    return False
+
+
+def test_a_later_sessions_baseline_never_restores_anothers_stray(tmp_path, monkeypatch):
+    """C1 (security S2): A writes a stray to a pinned file outside git's view while it runs;
+    B launches after that, so B's launch snapshot holds the stray. Every launch and every
+    containment compares with the night's pinned baseline: B's launch (or, without that
+    check, B's audit after stop-all) contains the stray, and the file ends with its pre-night
+    bytes, never the stray again."""
+    nights = _capture_nights(monkeypatch)
+    unit_a, unit_b = _unit(0), _unit(1)
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)))
+    settings = night.repo / ".claude" / "settings.local.json"
+    _write(settings, '{"made": "up"}\n')
+    original = settings.read_bytes()
+    night.slow = {unit_b: 60.0}  # B runs until stop-all kills it
+    a_strayed, b_live = threading.Event(), threading.Event()
+
+    def pack(pick, attempt_dir, src=None):
+        if pick.unit == unit_b:  # B's launch snapshot comes after A's stray
+            assert a_strayed.wait(WAIT_S), "A never wrote its stray"
+        return night._pack(pick, attempt_dir, src)
+
+    def before(unit, index):
+        if unit == unit_a:
+            settings.write_bytes(STRAY)
+            a_strayed.set()
+            assert _until(b_live, nights[-1].stop), "B neither started nor stopped the night"
+
+    def on_pid(unit, pid):
+        if unit == unit_b:
+            b_live.set()
+
+    night.before, night.on_pid = before, on_pid
+    report = night.run(config=_workers(2, attempts_per_function=1), pack=pack,
+                       kill=_recording_kill([]))  # fmt: skip
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert settings.read_bytes() == original, "a halted session wrote the stray back"
+    # The stray is kept; A's audit may also keep a copy of the restored file (its mtime, a
+    # fingerprint, changed during A's session), never anything but these two byte strings.
+    kept = [path.read_bytes() for path in night.quarantine.rglob("settings.local.json*")]
+    assert STRAY in kept and set(kept) <= {STRAY, original}
+
+
+def test_containment_restores_the_night_baseline_not_the_launch_snapshot(tmp_path):
+    """C1, the audit half: a session whose launch snapshot held another's stray (now
+    contained) has no pinned change of its own, and a change it does make goes back to the
+    night's baseline, not to its launch bytes."""
+    night = Night(tmp_path)
+    settings = night.repo / ".claude" / "settings.local.json"
+    rel = ".claude/settings.local.json"
+    _write(settings, '{"made": "up"}\n')
+    original = settings.read_bytes()
+    probe = driver._Night(night.config(), night.deps())
+    probe.pinned_base = probe._pinned_state()  # the night's baseline, before any session
+    settings.write_bytes(STRAY)
+    launch = probe._snapshot()  # a later session's launch snapshot holds the stray
+    settings.write_bytes(original)  # the stray's owner was contained
+    claim = driver._Claim(_wpick(0), RUN, night.repo, 1)
+    calm = probe._measure(claim, None, driver.PackInfo(0), 0.0, launch, False, b"", "", {})
+    assert rel not in calm.pinned_changed
+    settings.write_bytes(b"{}\n")  # a change of its own
+    session = probe._measure(claim, None, driver.PackInfo(0), 0.0, launch, False, b"", "", {})
+    assert rel in session.pinned_changed
+    probe._contain(session, [rel])
+    assert settings.read_bytes() == original
+
+
+def _match_commit_add(args: list[str]) -> bool:
+    return _verb(args) == "add" and UNIT_REL in args
+
+
+@pytest.mark.parametrize("rel", [UNIT_REL, f"config/{EXE}/status.csv"])
+def test_a_write_between_the_landing_check_and_the_commit_is_never_committed(tmp_path, rel):
+    """I1 (security S1): another live session writes the landing unit or status.csv after
+    `_verify_landing` but before `git commit` reads it. The driver checks the committed blobs,
+    moves HEAD back off its own commit and undoes the match: nothing tampered stays committed
+    or in the worktree, and the night stops `guardrail`."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    marker = "/* made-up write of another live session */\n"
+    done: list[str] = []
+
+    def on_git(args):
+        if not done and _match_commit_add(args):
+            with (night.repo / rel).open("a", encoding="utf-8", newline="\n") as fh:
+                fh.write(marker)
+            done.append(rel)
+
+    night.on_git = on_git
+    report = _run_contained(night)
+    assert done == [rel]
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert MATCH_SUBJECT not in night.commits()
+    assert marker not in night.git("show", f"HEAD:{rel}")
+    assert marker not in (night.repo / rel).read_text(encoding="utf-8")
+    assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
+    kept = night.quarantine.joinpath(*rel.split("/"))
+    assert kept.is_file() and marker in kept.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("rel", "tracked"), [(f"src/{EXE}/u_00099990.c", False),
+                                              ("tools/keep.py", True)])  # fmt: skip
+def test_another_dirty_path_at_the_match_commit_is_a_breach(tmp_path, rel, tracked):
+    """The reviewer's open point (orchestrator ruling): right before the match commit every
+    git-visible path but the landing unit and the ledgered outputs must equal HEAD. Another
+    unit's src/ file (or any tracked file) written during A's gate stops the night before
+    anything is committed; the path is quarantined and put back."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    head = (night.repo / rel).read_bytes() if tracked else None
+
+    def gate(pick, n):
+        _write(night.repo / rel, "/* made-up file another live session wrote */\n")
+        return night._gate(pick, n)
+
+    report = _run_contained(night, gate=gate)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert MATCH_SUBJECT not in night.commits()
+    assert rel in report.detail
+    assert (night.repo / rel).read_bytes() == head if tracked else not (night.repo / rel).exists()
+    assert night.quarantine.joinpath(*rel.split("/")).is_file()
+
+
+def test_an_interrupt_record_lists_a_halted_workers_strays(tmp_path):
+    """I2: after Ctrl+C a halted worker's audit finds a stray and contains it; the STOPPED
+    `interrupted` record names that path (the security ruling: the record lists every path)."""
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)),
+                   by_unit={_unit(1): [Sess(files=(("tools/x.py", "# made-up stray\n"),))]})
+    night.slow = {_unit(0): 60.0, _unit(1): 60.0}
+    fired: list[bool] = []
+
+    def on_pid(unit, pid):
+        with night.lock:
+            if len(night.pids) < 2 or fired:
+                return
+            fired.append(True)
+        _thread.interrupt_main()
+
+    night.on_pid = on_pid
+    with pytest.raises(KeyboardInterrupt):
+        night.run(config=_workers(2, attempts_per_function=1), kill=_recording_kill([]))
+    stopped = _one([r for r in night.kinds("run") if r["event"] == "STOPPED"])
+    assert stopped["reason"] == "interrupted"
+    assert "tools/x.py" in (stopped["detail"] or ""), stopped["detail"]
+    assert not (night.repo / "tools" / "x.py").exists()
+    assert (night.quarantine / "tools" / "x.py").is_file()
+
+
+# ---- 07-21 fix round 2 ----
+
+CRLF_TEXT = "/* made-up unit with CRLF line endings */\r\nint fake_written;\r\n"
+FOREIGN = "chore: a made-up commit of another writer"
+PINNED_TRACKED = "config/driver/claude-settings.json"
+
+
+def _commit_files(night: Night, files: dict[str, str]) -> None:
+    """Write and commit `files` in the night's repo before the night starts."""
+    for rel, text in files.items():
+        _write(night.repo / rel, text)
+    night.git("add", "--", *files)
+    night.git("commit", "-q", "-m", "made-up setup")
+
+
+def test_a_crlf_unit_under_an_eol_rule_is_committed_without_a_guardrail_stop(tmp_path):
+    """N1: under `* text=auto eol=lf` git stores the LF form of a CRLF landed unit. The
+    post-commit check compares object ids hashed with the same attributes, so a genuine match
+    is committed, not undone as a breach. The rule is set in the test repo itself (the test
+    git env has no system config and core.autocrlf=false), so this holds on every host."""
+    night = Night(tmp_path, sessions=[Sess(write=None, unit_text=CRLF_TEXT)], gate_exits=[0])
+    _commit_files(night, {".gitattributes": "* text=auto eol=lf\n"})
+    report = _run_contained(night)
+    assert report.reason != "guardrail", report.detail
+    assert MATCH_SUBJECT in night.commits(), report.detail
+    assert night.file_at(MATCH_SUBJECT, UNIT_REL) == CRLF_TEXT.replace("\r\n", "\n")
+
+
+def _after_match_commit(action):
+    """An on_git hook running `action` once, at the first git call after the match commit's
+    `git commit`."""
+    state: list[str] = []
+
+    def on_git(args):
+        if state == ["committed"]:
+            state.append("done")
+            action()
+        elif not state and _verb(args) == "commit" and UNIT_REL in args:
+            state.append("committed")
+
+    return on_git
+
+
+def _at_match_commit_add(action):
+    """An on_git hook running `action` once, right before the match commit's `git add` (after
+    the driver read HEAD)."""
+    done: list[bool] = []
+
+    def on_git(args):
+        if not done and _match_commit_add(args):
+            done.append(True)
+            action()
+
+    return on_git
+
+
+def _both(*hooks):
+    def on_git(args):
+        for hook in hooks:
+            hook(args)
+
+    return on_git
+
+
+@pytest.mark.parametrize("tamper", [False, True], ids=["clean", "tampered"])
+@pytest.mark.parametrize("when", ["before the driver's commit", "after the driver's commit"])
+def test_a_foreign_commit_during_the_match_commit_never_moves_head(tmp_path, when, tamper):
+    """N2: another writer commits while the driver makes its match commit, (a) between the
+    driver's HEAD read and its commit, or (b) after its commit but before the post-commit
+    check. The driver's commit is then not anchored on the HEAD it read: HEAD is never moved
+    back (that would drop the other commit), the night stops `guardrail` and the record names
+    the foreign commit."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    status_rel = f"config/{EXE}/status.csv"
+    marker = "/* made-up write of another live session */\n"
+
+    def foreign() -> None:
+        night.git("commit", "--allow-empty", "-q", "-m", FOREIGN)
+
+    def tampered() -> None:
+        with (night.repo / status_rel).open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(marker)
+
+    at_add = [foreign] if when.startswith("before") else []
+    at_add += [tampered] if tamper else []
+    later = [] if when.startswith("before") else [foreign]
+    night.on_git = _both(*(_at_match_commit_add(f) for f in at_add),
+                         *(_after_match_commit(f) for f in later))  # fmt: skip
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    subjects = night.commits()
+    assert FOREIGN in subjects and MATCH_SUBJECT in subjects, "HEAD was moved back"
+    foreign_sha = night.sha(FOREIGN)
+    assert foreign_sha[:12] in (report.detail or ""), report.detail
+    if tamper:
+        assert status_rel in report.detail
+        assert marker not in (night.repo / status_rel).read_text(encoding="utf-8")
+
+
+def test_a_launch_check_puts_a_tracked_pinned_file_back_to_the_night_baseline(tmp_path):
+    """N3: a stray write to a TRACKED pinned path (no session owns it, so no later audit
+    puts it right) is caught at the launch check. It goes back to the night's baseline, never
+    to the launch snapshot that holds the stray, and the record never calls it restored while
+    it is still changed."""
+    night = Night(tmp_path, sessions=[Sess()])
+    _commit_files(night, {PINNED_TRACKED: '{"made": "up"}\n'})
+    settings = night.repo / PINNED_TRACKED
+    original = settings.read_bytes()
+
+    def pack(pick, attempt_dir, src=None):  # after the night's baseline, before the launch
+        settings.write_bytes(STRAY)
+        return night._pack(pick, attempt_dir, src)
+
+    report = _run_contained(night, pack=pack)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert night.launched == []
+    assert settings.read_bytes() == original, report.detail
+    assert "still changed after containment" not in report.detail, report.detail
+    assert night.git("status", "--porcelain", "--", PINNED_TRACKED) == ""
+    kept = [path.read_bytes() for path in night.quarantine.rglob("claude-settings.json*")]
+    assert STRAY in kept
+
+
+def test_a_failed_check_after_the_match_commit_keeps_the_commit_and_reverts_nothing(tmp_path):
+    """N4: the match commit exists, then the post-commit check itself fails (here its
+    `rev-parse`). That is a guardrail stop with the error in the detail: status.csv and the
+    log are never put back to their pre-match bytes under the kept commit, and no chore
+    commit follows."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    status_rel = f"config/{EXE}/status.csv"
+
+    def broken() -> None:
+        raise RuntimeError("made-up rev-parse failure")
+
+    night.on_git = _after_match_commit(broken)
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert "made-up rev-parse failure" in report.detail
+    assert night.commits() == [MATCH_SUBJECT]
+    head_status = night.git("show", f"HEAD:{status_rel}")
+    assert (night.repo / status_rel).read_text(encoding="utf-8") == head_status
+    head_log = night.git("show", f"HEAD:{LOG}")
+    assert (night.repo / LOG).read_text(encoding="utf-8").startswith(head_log)
