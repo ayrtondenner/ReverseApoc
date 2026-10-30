@@ -1237,3 +1237,148 @@ def test_an_interrupt_record_lists_a_halted_workers_strays(tmp_path):
     assert "tools/x.py" in (stopped["detail"] or ""), stopped["detail"]
     assert not (night.repo / "tools" / "x.py").exists()
     assert (night.quarantine / "tools" / "x.py").is_file()
+
+
+# ---- 07-21 fix round 2 ----
+
+CRLF_TEXT = "/* made-up unit with CRLF line endings */\r\nint fake_written;\r\n"
+FOREIGN = "chore: a made-up commit of another writer"
+PINNED_TRACKED = "config/driver/claude-settings.json"
+
+
+def _commit_files(night: Night, files: dict[str, str]) -> None:
+    """Write and commit `files` in the night's repo before the night starts."""
+    for rel, text in files.items():
+        _write(night.repo / rel, text)
+    night.git("add", "--", *files)
+    night.git("commit", "-q", "-m", "made-up setup")
+
+
+def test_a_crlf_unit_under_an_eol_rule_is_committed_without_a_guardrail_stop(tmp_path):
+    """N1: under `* text=auto eol=lf` git stores the LF form of a CRLF landed unit. The
+    post-commit check compares object ids hashed with the same attributes, so a genuine match
+    is committed, not undone as a breach. The rule is set in the test repo itself (the test
+    git env has no system config and core.autocrlf=false), so this holds on every host."""
+    night = Night(tmp_path, sessions=[Sess(write=None, unit_text=CRLF_TEXT)], gate_exits=[0])
+    _commit_files(night, {".gitattributes": "* text=auto eol=lf\n"})
+    report = _run_contained(night)
+    assert report.reason != "guardrail", report.detail
+    assert MATCH_SUBJECT in night.commits(), report.detail
+    assert night.file_at(MATCH_SUBJECT, UNIT_REL) == CRLF_TEXT.replace("\r\n", "\n")
+
+
+def _after_match_commit(action):
+    """An on_git hook running `action` once, at the first git call after the match commit's
+    `git commit`."""
+    state: list[str] = []
+
+    def on_git(args):
+        if state == ["committed"]:
+            state.append("done")
+            action()
+        elif not state and _verb(args) == "commit" and UNIT_REL in args:
+            state.append("committed")
+
+    return on_git
+
+
+def _at_match_commit_add(action):
+    """An on_git hook running `action` once, right before the match commit's `git add` (after
+    the driver read HEAD)."""
+    done: list[bool] = []
+
+    def on_git(args):
+        if not done and _match_commit_add(args):
+            done.append(True)
+            action()
+
+    return on_git
+
+
+def _both(*hooks):
+    def on_git(args):
+        for hook in hooks:
+            hook(args)
+
+    return on_git
+
+
+@pytest.mark.parametrize("tamper", [False, True], ids=["clean", "tampered"])
+@pytest.mark.parametrize("when", ["before the driver's commit", "after the driver's commit"])
+def test_a_foreign_commit_during_the_match_commit_never_moves_head(tmp_path, when, tamper):
+    """N2: another writer commits while the driver makes its match commit, (a) between the
+    driver's HEAD read and its commit, or (b) after its commit but before the post-commit
+    check. The driver's commit is then not anchored on the HEAD it read: HEAD is never moved
+    back (that would drop the other commit), the night stops `guardrail` and the record names
+    the foreign commit."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    status_rel = f"config/{EXE}/status.csv"
+    marker = "/* made-up write of another live session */\n"
+
+    def foreign() -> None:
+        night.git("commit", "--allow-empty", "-q", "-m", FOREIGN)
+
+    def tampered() -> None:
+        with (night.repo / status_rel).open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(marker)
+
+    at_add = [foreign] if when.startswith("before") else []
+    at_add += [tampered] if tamper else []
+    later = [] if when.startswith("before") else [foreign]
+    night.on_git = _both(*(_at_match_commit_add(f) for f in at_add),
+                         *(_after_match_commit(f) for f in later))  # fmt: skip
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    subjects = night.commits()
+    assert FOREIGN in subjects and MATCH_SUBJECT in subjects, "HEAD was moved back"
+    foreign_sha = night.sha(FOREIGN)
+    assert foreign_sha[:12] in (report.detail or ""), report.detail
+    if tamper:
+        assert status_rel in report.detail
+        assert marker not in (night.repo / status_rel).read_text(encoding="utf-8")
+
+
+def test_a_launch_check_puts_a_tracked_pinned_file_back_to_the_night_baseline(tmp_path):
+    """N3: a stray write to a TRACKED pinned path (no session owns it, so no later audit
+    puts it right) is caught at the launch check. It goes back to the night's baseline, never
+    to the launch snapshot that holds the stray, and the record never calls it restored while
+    it is still changed."""
+    night = Night(tmp_path, sessions=[Sess()])
+    _commit_files(night, {PINNED_TRACKED: '{"made": "up"}\n'})
+    settings = night.repo / PINNED_TRACKED
+    original = settings.read_bytes()
+
+    def pack(pick, attempt_dir, src=None):  # after the night's baseline, before the launch
+        settings.write_bytes(STRAY)
+        return night._pack(pick, attempt_dir, src)
+
+    report = _run_contained(night, pack=pack)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert night.launched == []
+    assert settings.read_bytes() == original, report.detail
+    assert "still changed after containment" not in report.detail, report.detail
+    assert night.git("status", "--porcelain", "--", PINNED_TRACKED) == ""
+    kept = [path.read_bytes() for path in night.quarantine.rglob("claude-settings.json*")]
+    assert STRAY in kept
+
+
+def test_a_failed_check_after_the_match_commit_keeps_the_commit_and_reverts_nothing(tmp_path):
+    """N4: the match commit exists, then the post-commit check itself fails (here its
+    `rev-parse`). That is a guardrail stop with the error in the detail: status.csv and the
+    log are never put back to their pre-match bytes under the kept commit, and no chore
+    commit follows."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    status_rel = f"config/{EXE}/status.csv"
+
+    def broken() -> None:
+        raise RuntimeError("made-up rev-parse failure")
+
+    night.on_git = _after_match_commit(broken)
+    report = _run_contained(night)
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert "made-up rev-parse failure" in report.detail
+    assert night.commits() == [MATCH_SUBJECT]
+    head_status = night.git("show", f"HEAD:{status_rel}")
+    assert (night.repo / status_rel).read_text(encoding="utf-8") == head_status
+    head_log = night.git("show", f"HEAD:{LOG}")
+    assert (night.repo / LOG).read_text(encoding="utf-8").startswith(head_log)
