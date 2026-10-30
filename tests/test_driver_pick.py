@@ -6,6 +6,7 @@ call graphs and mechanics data only: every address, name and unit below is made 
 from __future__ import annotations
 
 import datetime
+import json
 import random
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -700,3 +701,76 @@ def test_a_capped_function_returns_for_its_next_pass_the_same_night(tmp_path):
     attempts = [r for r in night.kinds("attempt") if r["run"] == RUN]
     assert [(r["pass"], r["attempt"]) for r in attempts] == [(1, 1), (1, 2), (1, 3), (2, 1)]
     assert (report.event, report.reason) == ("ENDED", "max sessions")
+
+
+# ---- the dry run's tier picks (07-26 Task 3; ruling F8) ----
+
+
+def test_tier_preview_is_distinct_and_callees_first():
+    """The first picks one worker would take if every pass ended capped: each function once, at
+    its next pass, a caller after its callee."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    passes = {(UFO2P, TC): 2}
+    q = _tq(rows, [(TA, TB), (TB, TC)], passes=passes)
+    got = [(i.pick.start, i.level, i.pass_n) for i in q.preview(10)]
+    assert got == [(TC, 0, 3), (TB, 1, 1), (TA, 2, 1)]
+    assert [(i.pick.start, i.pass_n) for i in q.preview(1)] == [(TC, 3)]
+    assert passes == {(UFO2P, TC): 2}  # a preview counts nothing
+    assert q.next_item().pick.start == TC  # and takes nothing
+
+
+def _rig_world(packs, starts, edges):
+    """`_world` with the drive rig's pack builder, every start in its own unit."""
+    worlds = _world(starts, edges)
+    return {exe: replace(world, pack=packs.for_exe(exe)) for exe, world in worlds.items()}
+
+
+def _signed_rig(tmp_path, rows):
+    from test_drive import Rig, _git
+
+    rig = Rig(tmp_path / "rig")
+    files = {**_signed_files(rows, tmp_path), **_empty_status()}
+    for rel, text in files.items():
+        (rig.repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (rig.repo / rel).write_text(text, encoding="utf-8", newline="\n")
+    _git(rig.repo, rig.env, "add", "--", *files)
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "tier 1 signed (made up)")
+    return rig
+
+
+def test_dry_run_tier_picks(tmp_path, capsys):
+    """Ruling F8: with a signed tier `drive --dry-run --json` lists the tier queue's first picks
+    with tier, level and pass, builds their packs and launches no claude."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    rig = _signed_rig(tmp_path, rows)
+    worlds = _rig_world(rig.packs, (TA, TB, TC), [(TA, TB), (TB, TC)])
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 0, out
+    picks = json.loads(out)["picks"]
+    assert [(p["start"], p["tier"], p["level"], p["pass"]) for p in picks] == [
+        (f"0x{TC:08X}", 1, 0, 1), (f"0x{TB:08X}", 1, 1, 1), (f"0x{TA:08X}", 1, 2, 1)]
+    assert set(picks[0]) == {"exe", "start", "name", "unit", "size", "score", "pack",
+                             "pack_bytes", "tier", "level", "pass"}  # fmt: skip
+    assert [start for _, start, _ in rig.packs.built] == [TC, TB, TA]
+    assert not [c for c in rig.runner.calls if c[:1] == ["claude"]]
+    assert not rig.commands("gate")
+
+
+def test_dry_run_text_names_tier_level_and_pass(tmp_path, capsys):
+    rows = [_member(TA)]
+    rig = _signed_rig(tmp_path, rows)
+    worlds = _rig_world(rig.packs, (TA,), ())
+    code, out, _ = rig.drive(capsys, dry_run=True, seams={"world": lambda: worlds})
+    assert code == 0
+    line = next(line for line in out.splitlines() if line.startswith(UFO2P))
+    assert line.endswith("tier 1 level 0 pass 1")
+
+
+def test_night_top_picks_draw_from_the_tier_queue(tmp_path):
+    """Ruling F8: the night's draft picks are the tier queue's first `max_sessions` functions."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    rig = _signed_rig(tmp_path, rows)
+    worlds = _world((TA, TB, TC), [(TA, TB), (TB, TC)])
+    picks = driver.night_top_picks(rig.options(max_sessions=2), worlds, today="2026-11-02")
+    assert [p.start for p in picks] == [TC, TB]
+    assert all(isinstance(p, Pick) for p in picks)
