@@ -371,6 +371,20 @@ class TierQueue:
         item = self.next_item(claimed_units)
         return None if item is None else item.pick
 
+    def preview(self, count: int) -> list[TierItem]:
+        """The first `count` distinct picks one worker would take if every pass ended capped,
+        each at its next pass (the dry run's and the drafts' list). Nothing is counted or taken
+        in this queue."""
+        passes = dict(self._passes)
+        trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes)
+        trial._flight = set(self._flight)
+        out: list[TierItem] = []
+        while len(out) < count and (item := trial.next_item()) is not None:
+            out.append(item)
+            trial.take(item.key)  # once each
+            passes[item.key] = passes.get(item.key, 0) + 1  # capped: its callers may follow
+        return out
+
     def take(self, key: Key) -> None:
         self._flight.add(key)
 
