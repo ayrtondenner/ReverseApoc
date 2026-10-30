@@ -69,7 +69,15 @@ event's permission_denials), the gate's verdict and the sweep evidence; `functio
 pick's C name. Each usage-limit wait is a `limit` record; STARTED names the workers and the
 recovered claims, and ENDED/STOPPED carry the totals summed over the night's own records. A
 function's pass is one more than its finished passes in the committed log (`pass_index`), read
-once per night; build/driver/difficult.json stays a cache for the picker.
+once per night; build/driver/difficult.json stays a cache for the Phase 6 picker only.
+
+Tiers (07-26; DEC-02, D-04, D-08, D-22, D-23): once config/mechanics.toml has a signed tier
+whose digest still matches, `real_deps` queues picker.tier_queue instead of the pools: the
+signed tiers' members callees first, then their hubs, never an asm row. The coordinator asks it
+for the best eligible pick each time a worker is free; a capped function goes back for its next
+pass the same night (night.passes counts it, and is the pass index the queue reads, so the
+queue never reads difficult.json). The dry run and the night's draft picks are the tier
+queue's first picks (`tier_picks`), the dry run's with their tier, level and pass.
 
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
@@ -116,7 +124,7 @@ from .fileio import write_atomic
 from .functions import KIND_GAME, KIND_THUNK
 from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
-from .picker import EXE_ORDER, Key, Pick, TierQueue, tier_queue
+from .picker import EXE_ORDER, PILOT_PER_EXE, Key, Pick, TierItem, TierQueue, tier_queue
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
@@ -3422,6 +3430,7 @@ COMPOSE_RUN = ("docker", "compose", "run", "--rm", "-T", "build")  # -T: output 
 CONTAINER_CLI = (*COMPOSE_RUN, "uv", "run", "--frozen", "reverseapoc")  # D-24: the gates
 COMMAND_TIMEOUT_S = 3600  # a gate re-checks a unit and rebuilds both EXEs; generous, never forever
 DRY_RUN_DIR = "dry-run"  # build/driver/<run>/dry-run/<exe>/<func>/context.md
+DRY_RUN_TIER_PICKS = PILOT_PER_EXE * len(EXE_ORDER)  # 07-26: the tier dry run shows as many
 
 
 @dataclass(frozen=True)
@@ -3736,16 +3745,43 @@ def _emit(options: DriveOptions, doc: Mapping, text: Sequence[str]) -> None:
             print(line)
 
 
-def _pick_doc(options: DriveOptions, pick: Pick, pack: Path, info: PackInfo) -> dict:
-    return {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
-            "unit": pick.unit, "size": pick.size, "score": pick.score,
-            "pack": pack.relative_to(options.repo).as_posix(),
-            "pack_bytes": info.pack_bytes}  # fmt: skip
+DryPick = Pick | TierItem  # a dry-run pick: a Phase 6 pick, or a tier pick with its place
 
 
-def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *, today: str) -> list[Pick]:
+def _pick_of(entry: DryPick) -> Pick:
+    return entry.pick if isinstance(entry, TierItem) else entry
+
+
+def _pick_doc(options: DriveOptions, entry: DryPick, pack: Path, info: PackInfo) -> dict:
+    """One dry-run pick; a tier pick (07-26, ruling F8) adds its tier, level and pass."""
+    pick = _pick_of(entry)
+    doc = {"exe": pick.exe, "start": f"0x{pick.start:08X}", "name": pick.name,
+           "unit": pick.unit, "size": pick.size, "score": pick.score,
+           "pack": pack.relative_to(options.repo).as_posix(),
+           "pack_bytes": info.pack_bytes}  # fmt: skip
+    if isinstance(entry, TierItem):
+        doc.update({"tier": entry.tier, "level": entry.level, "pass": entry.pass_n})
+    return doc
+
+
+def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
+               count: int) -> list[TierItem] | None:  # fmt: skip
+    """07-26 (ruling F8): the tier queue's first `count` distinct picks (TierQueue.preview), each
+    at its next pass by the committed log's pass index; None without a signed tier."""
+    source = tier_source(options.config_root, worlds)
+    if source is None:
+        return None
+    return source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count)
+
+
+def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
+                today: str) -> list[DryPick]:  # fmt: skip
     """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule), skipping status.csv's
-    matched and this pass's partial rows and the difficult list."""
+    matched and this pass's partial rows and the difficult list. With a signed tier (07-26,
+    ruling F8): the tier queue's first 10 picks instead, with their tier, level and pass."""
+    tiers = tier_picks(options, worlds, DRY_RUN_TIER_PICKS)
+    if tiers is not None:
+        return list(tiers)
     difficult = load_difficult(Path(options.repo) / DIFFICULT)
     return picker_pilot(_pools(worlds), units=_units(worlds),
                         excluded=excluded_keys(options.config_root, today),
@@ -3755,7 +3791,11 @@ def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *, today:
 def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
                     today: str) -> list[Pick]:  # fmt: skip
     """The queue's first `max_sessions` picks: no night attempts more functions than that, so
-    their Ghidra drafts are the ones worth precomputing (D-13)."""
+    their Ghidra drafts are the ones worth precomputing (D-13). With a signed tier (07-26,
+    ruling F8): the tier queue's first `max_sessions` distinct picks."""
+    tiers = tier_picks(options, worlds, options.max_sessions)
+    if tiers is not None:
+        return [item.pick for item in tiers]
     difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
     stream = picker_queue(_pools(worlds), units=_units(worlds),
                           excluded=excluded_keys(options.config_root, today),
@@ -3763,17 +3803,21 @@ def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
     return [pick for _, pick in zip(range(options.max_sessions), stream, strict=False)]
 
 
-def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], picks: Sequence[Pick]) -> int:
+def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
+            picks: Sequence[DryPick]) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
-    gate (D-10)."""
+    gate (D-10). A tier pick's line and document add its tier, level and pass (07-26)."""
     docs, lines = [], []
-    for pick in picks:
+    for entry in picks:
+        pick = _pick_of(entry)
         directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
         info = worlds[pick.exe].pack(pick, directory)
-        doc = _pick_doc(options, pick, directory / PACK_FILE, info)
+        doc = _pick_doc(options, entry, directory / PACK_FILE, info)
         docs.append(doc)
+        place = "" if "tier" not in doc else (
+            f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
         lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
-                     f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes)")
+                     f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes){place}")
     _emit(options, {"picks": docs}, lines)
     return EXIT_OK
 
@@ -4020,7 +4064,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
             picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
                                                                            today=today)
         with _phase("drafts"):
-            _drafts(log, picks)
+            _drafts(log, [_pick_of(entry) for entry in picks])
         if options.dry_run:
             with _phase("pack"):
                 return dry_run(options, worlds, picks)

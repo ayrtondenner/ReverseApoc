@@ -708,15 +708,18 @@ def test_a_capped_function_returns_for_its_next_pass_the_same_night(tmp_path):
 
 def test_tier_preview_is_distinct_and_callees_first():
     """The first picks one worker would take if every pass ended capped: each function once, at
-    its next pass, a caller after its callee."""
+    its next pass, a caller after its callee. C has 2 finished passes, so it frees B at once and
+    runs its pass 3 after B's and A's pass 1 (D-08)."""
     rows = [_member(a) for a in (TA, TB, TC)]
     passes = {(UFO2P, TC): 2}
     q = _tq(rows, [(TA, TB), (TB, TC)], passes=passes)
     got = [(i.pick.start, i.level, i.pass_n) for i in q.preview(10)]
-    assert got == [(TC, 0, 3), (TB, 1, 1), (TA, 2, 1)]
-    assert [(i.pick.start, i.pass_n) for i in q.preview(1)] == [(TC, 3)]
+    assert got == [(TB, 1, 1), (TA, 2, 1), (TC, 0, 3)]
+    assert [(i.pick.start, i.pass_n) for i in q.preview(1)] == [(TB, 1)]
     assert passes == {(UFO2P, TC): 2}  # a preview counts nothing
-    assert q.next_item().pick.start == TC  # and takes nothing
+    assert q.next_item().pick.start == TB  # and takes nothing
+    fresh = _tq(rows, [(TA, TB), (TB, TC)])
+    assert [i.pick.start for i in fresh.preview(10)] == [TC, TB, TA]
 
 
 def _rig_world(packs, starts, edges):
