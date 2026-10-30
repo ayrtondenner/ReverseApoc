@@ -27,9 +27,11 @@ Anything else, including "harmless" cleanups, goes through the full loop again a
 | `ruff` (lint and format) | Yes | n/a |
 | `clang-format` | n/a | C only, with pragma masking (below) |
 | Comment pass | Docstrings as needed | Yes: the main ceremony for matched code |
+| Readability pass (driver readability sessions) | n/a | Yes, on matched units: comments, local names, types the unit introduces and whitespace; function and global names and shared headers only through proposals |
 
 Notes:
 
+- **The readability pass** (D-17, D-18) is the comment pass done by the driver. The owner starts readability nights; the driver's readability sessions take matched units, Tier 1 first and bottom-up, one unit per session. A session edits only its private view of the unit: comments (a header comment per function: purpose, address, evidence), local and parameter names, types the unit introduces, `#define`s that keep a literal's exact spelling, and whitespace. Function and global names and the shared headers under `include/` change only through proposals in `proposals.jsonl`, which the driver checks and applies (D-19). The gate decides the bytes (any byte change is refused), and readlint decides readability: the driver commits a unit only when both pass. The session's rules and formats are in `.claude/skills/watcom-readability/SKILL.md`. It keeps "The one rule" above: the shape of matched C never changes.
 - The built-in `/code-review` and the plugin's `/code-review:code-review` are different commands; the plugin version needs a pull request.
 - `security-guidance` runs an LLM review hook every turn, which costs tokens. The owner may disable it if the cost is not worth it.
 
