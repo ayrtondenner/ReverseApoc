@@ -12,7 +12,7 @@ data only, so CI can run it.
   `human-written`. A missing trailer is not an error. `Flags-Approved-By:` keeps the class
   `unattended` (research R4, D-13) and is reported as its own subset, never hidden in it.
 - A function counts once in the class totals, by its latest event; one matched again after a
-  revert is listed under re-matched, one no longer matched at the end of the history under
+  revert is listed under re-matched, one not matched in HEAD's status tables under
   reverted (and is not counted). AGT-11 is the unattended count.
 
 Every git call passes `-c safe.directory=*` (ruling F13: the container's bind mount is owned by
@@ -104,7 +104,7 @@ class MatchEvent:
 @dataclass(frozen=True)
 class History:
     events: tuple[MatchEvent, ...]  # oldest first
-    matched: frozenset[Key]  # matched at the end of the walked history
+    matched: frozenset[Key]  # matched in HEAD's status tables
     shallow: bool
 
 
@@ -153,8 +153,10 @@ def _trailers(text: str) -> list[tuple[str, str]]:
 
 def _commits(repo: Path) -> list[tuple[str, str | None, list[tuple[str, str]]]]:
     """(hash, parent or None, trailers) of every non-merge commit changing a status.csv,
-    oldest first."""
-    raw = _git(repo, "log", "--reverse", "--no-merges", _LOG_FORMAT, "--", *STATUS_PATHS)
+    oldest first in topological order (never a child before its parent, whatever the dates;
+    fix round 1). A merge brings no match of its own: its branches' commits are walked."""
+    raw = _git(repo, "log", "--reverse", "--topo-order", "--no-merges", _LOG_FORMAT, "--",
+               *STATUS_PATHS)  # fmt: skip
     out = []
     for chunk in raw.decode("utf-8", "replace").split(_RECORD):
         if not chunk.strip():
@@ -183,35 +185,33 @@ def _matched(repo: Path, blob: str | None) -> frozenset[int]:
 
 
 def history(repo: Path) -> History:
-    """Every match event of the status.csv history with the matched set it ends with."""
+    """Every match event of the status.csv history, with the matched set of HEAD's own
+    status tables (fix round 1: the last walked commit is not HEAD once branches merge)."""
     repo = Path(repo)
     shallow = is_shallow(repo)
     if not _has_commits(repo):
         return History((), frozenset(), shallow)
     events: list[MatchEvent] = []
-    current: dict[str, frozenset[int]] = {}
     for commit, parent, trailers in _commits(repo):
+        if parent is None and shallow:
+            continue  # the shallow boundary: its table is the baseline, not a match
         after = _blobs(repo, commit)
         before = _blobs(repo, parent) if parent else {}
         cls, flagged = classify(trailers)
         for exe, path in zip(EXES, STATUS_PATHS, strict=True):
             if parent and after.get(path) == before.get(path):
                 continue
-            now = _matched(repo, after.get(path))
-            current[exe] = now
-            if parent is None and shallow:
-                continue  # the shallow boundary: its table is the baseline, not a match
-            new = now - _matched(repo, before.get(path))
+            new = _matched(repo, after.get(path)) - _matched(repo, before.get(path))
             events.extend(MatchEvent(commit, exe, start, cls, flagged) for start in sorted(new))
-    matched = frozenset((exe, start) for exe, starts in current.items() for start in starts)
+    head = _blobs(repo, "HEAD")
+    matched = frozenset((exe, start) for exe, path in zip(EXES, STATUS_PATHS, strict=True)
+                        for start in _matched(repo, head.get(path)))  # fmt: skip
     return History(tuple(events), matched, shallow)
 
 
 def match_history(repo: Path) -> list[MatchEvent]:
     """The match events of `repo`'s status.csv history, oldest first (DEC-07)."""
     return list(history(repo).events)
-
-
 
 
 # ---- the inputs the metrics join: sizes and tiers ----
