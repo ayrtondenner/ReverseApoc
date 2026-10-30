@@ -1099,6 +1099,48 @@ def load_difficult(path: Path) -> dict[Key, tuple[Key, ...]]:
         raise DriverError(f"{path} is not a difficult list: {exc}") from exc
 
 
+def _log_records(log: Path) -> Iterator[dict]:
+    """Each record of an attempts.jsonl, validated; a line that is not one is a DriverError
+    naming its number. A missing log has none."""
+    path = Path(log)
+    if not path.is_file():
+        return
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+            validate_record(record)
+        except ValueError as exc:  # json's and RecordError
+            raise DriverError(f"{path} line {number}: {exc}") from None
+        yield record
+
+
+def pass_index(log: Path) -> dict[Key, int]:
+    """D-08, D-09: each function's finished passes, from attempts.jsonl alone (committed, so
+    the count survives runs; build/driver/difficult.json is only a cache). A v2 attempt
+    record names its pass; for v1 lines (the Phase 6 pilot) each run's attempts on a function
+    form one pass. A function's count is the larger of the two, since the first v2 pass after
+    v1 runs is numbered after them. Abort, run, limit and rename records are no sessions."""
+    v1_runs: dict[Key, set[str]] = {}
+    v2_pass: dict[Key, int] = {}
+    for record in _log_records(log):
+        if record["kind"] != KIND_ATTEMPT:
+            continue
+        key = (record["exe"], int(record["start"], 16))
+        if "schema" in record:
+            v2_pass[key] = max(v2_pass.get(key, 0), record["pass"])
+        else:
+            v1_runs.setdefault(key, set()).add(record["run"])
+    return {key: max(len(v1_runs.get(key, ())), v2_pass.get(key, 0))
+            for key in v1_runs.keys() | v2_pass.keys()}  # fmt: skip
+
+
+def passes_of(log: Path, key: Key) -> int:
+    """The finished passes of one function (`pass_index`); its next pass is one more."""
+    return pass_index(log).get(key, 0)
+
+
 def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
     entries = [{**_key_text(key), "matched_callees": [_key_text(c) for c in callees]}
                for key, callees in difficult.items()]  # fmt: skip
@@ -1725,6 +1767,7 @@ class _Night:
         self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
+        self.passes: dict[Key, int] = {}  # D-08: finished passes per function (pass_index)
         # D-06, D-27 P4: one in-process lock around every shared write: the landing section
         # (copy, lint, gate, commit or undo, reset), `gate --partial` and every record append.
         # Reentrant, because the landing section appends its own record while it holds it.
@@ -2034,6 +2077,8 @@ class _Night:
         serial loop."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
         self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
+        with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
+            self.passes = pass_index(self.log)
         return _Coordinator(self).run()
 
     def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
@@ -3146,8 +3191,9 @@ class _Night:
     # --- records ---
 
     def _pass(self, pick: Pick) -> int:
-        """D-08: this function's pass tonight, one more than its finished passes."""
-        return 1
+        """D-08: this function's pass tonight, one more than its finished passes (read from
+        the committed log once per night; a function runs at most one pass a night)."""
+        return self.passes.get((pick.exe, pick.start), 0) + 1
 
     def _base(self, claim: _Claim, kind: str) -> dict:
         """The fields every v2 attempt and abort record shares (DEC-07): `function` is the
