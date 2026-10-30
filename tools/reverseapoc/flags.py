@@ -1043,7 +1043,14 @@ class ApproveReport:
 
 
 class _GateFailed(Exception):
-    """The container gate did not pass; the landing is undone and the proposal failed."""
+    """The container lint or gate did not pass; the landing is undone and the proposal
+    failed."""
+
+
+def approve_lint_argv(p: Proposal) -> list[str]:
+    """The container C89 lint (lint.run_lint behind the `lint` verb) of the unit a landing
+    wrote, src/<exe>/<unit>.c."""
+    return [*driver.CONTAINER_CLI, "lint", p.glob]
 
 
 def _check_owner(by: str, today: str) -> None:
@@ -1331,13 +1338,20 @@ class _Approver:
         write_queue(self.queue, self.proposals)
 
     def land(self, land: _Landing) -> tuple[bool, str]:
-        """Land one proposal: (True, commit) or (False, why) after a failed gate, with every
-        file restored and the proposal failed. Any other error restores too, then raises."""
+        """Land one proposal: (True, commit) or (False, why) after a failed lint or gate, with
+        every file restored and the proposal failed. Any other error restores too, then
+        raises."""
         p = land.proposal
         snap = _snapshot_files(self.repo, self.paths(p))
         staged: list[str] = []
         try:
             self._write(land)
+            # The C89 lint of the landed unit, in the container where clang is, as the driver
+            # lints before its gate. Any non-zero exit refuses: a lint error, a lint that cannot
+            # run (no clang) or no container; it is never skipped.
+            done = self.runner(approve_lint_argv(p))
+            if done.returncode != 0:
+                raise _GateFailed(f"lint exit {done.returncode}: {_gate_output(done)}")
             done = self.runner([*driver.CONTAINER_CLI, "gate", f"{p.exe}/{p.unit}",
                                 "--attempts", str(land.attempts), "--json"])  # fmt: skip
             if done.returncode != 0:
@@ -1393,12 +1407,14 @@ def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None
             env: Mapping[str, str] | None = None) -> ApproveReport:  # fmt: skip
     """The owner's approval (D-12, D-13, D-32): for each ID in the given order, append its rule
     to config/cflags.txt, copy its C (the reduced variant when the re-gate reverted functions)
-    to src/<exe>/<unit>.c, add its docs/matching.md row, run the container `gate EXE/UNIT` and
-    commit exactly cflags.txt, the unit, status.csv, the feed, the queue and matching.md with
-    the Flags-Approved-By trailer. A failed gate restores every file byte for byte, fails the
-    proposal and stops the batch (exit 1). Everything is refused before any write unless each
-    ID is regated with exit 0 on today's cflags.txt, its C is as re-gated, no two IDs share a
-    unit, REVERSEAPOC_CLAIM is unset and build/driver/drive.lock is free (held throughout)."""
+    to src/<exe>/<unit>.c, add its docs/matching.md row, run the container C89 `lint` of the
+    unit and then the container `gate EXE/UNIT`, and commit exactly cflags.txt, the unit,
+    status.csv, the feed, the queue and matching.md with the Flags-Approved-By trailer. A
+    failed lint (or one that cannot run) or a failed gate restores every file byte for byte,
+    fails the proposal and stops the batch (exit 1). Everything is refused before any write
+    unless each ID is regated with exit 0 on today's cflags.txt, its C is as re-gated, no two
+    IDs share a unit, REVERSEAPOC_CLAIM is unset and build/driver/drive.lock is free (held
+    throughout)."""
     repo = Path(repo)
     queue = Path(queue) if queue is not None else repo / QUEUE
     today = today or date.today().isoformat()
