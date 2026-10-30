@@ -286,3 +286,401 @@ address = "0x000B26F0"
 evidence = "data-field"
 detail = "adds to a hand-off unit field through a register base (heuristic accrual lead)"
 source = "spike 007 q3"
+
+# ---- Tier 2 (D-04): the rest of #263 (draft, plan 07-25; not signed) ----
+# Scopes are Claude's proposal (D-01): the UI-chrome items 10, 11, 14, 16, 17 and 18 are proposed
+# out for the owner to rule on. `in` items with no entry are unlocated (listed for the owner in
+# build/gate/07-evidence/25-tier2-summary.txt); they cannot be signed `in` without an entry.
+
+[[tier]]
+id = 2
+title = "OpenApoc #263: the rest of the city and agent mechanics"
+
+[[item]]
+id = "263-2"
+issue = 263
+title = "Alien infiltration of organisations: its pace and the infiltration graph"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-3"
+issue = 263
+title = "Aliens moving from one city building to another"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-4"
+issue = 263
+title = "Alien eggs and chrysalises hatching"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-5"
+issue = 263
+title = "City economy: building wages, incomes and organisation budgets"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-6"
+issue = 263
+title = "Weekly funding assessment of X-COM"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-7"
+issue = 263
+title = "Diplomacy: relations between organisations and with X-COM"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-8"
+issue = 263
+title = "Organisation agents moving through the city, and mission generation"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-9"
+issue = 263
+title = "Bribing an organisation to improve relations"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-10"
+issue = 263
+title = "Moving a vehicle's destination by dragging on the city map"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-11"
+issue = 263
+title = "Hover feedback in the city view"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-12"
+issue = 263
+title = "Vehicles repaired while docked at a base"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-13"
+issue = 263
+title = "Agent training at base: combat and psionic training"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-14"
+issue = 263
+title = "UFOpaedia screen display"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-15"
+issue = 263
+title = "Transfers of agents and goods between bases"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-16"
+issue = 263
+title = "Alert screen presentation"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-17"
+issue = 263
+title = "Tooltips"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-18"
+issue = 263
+title = "Editing text in name fields"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "263-19"
+issue = 263
+title = "Map editor"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "263-20"
+issue = 263
+title = "Checklist item 20: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "263-21"
+issue = 263
+title = "Game time rate, the same question as issue 997"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "duplicate"
+duplicate_of = "997"
+
+[[item]]
+id = "263-22"
+issue = 263
+title = "Battle map spawn and variation: what the city passes to the battlescape"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "263-23"
+issue = 263
+title = "Checklist item 23: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "263-24"
+issue = 263
+title = "Checklist item 24: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "263-25"
+issue = 263
+title = "Unit AI in battle and vehicle and UFO tactics in the city"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "263-26"
+issue = 263
+title = "The final mission into the alien dimension"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-27"
+issue = 263
+title = "Large UFO attacks on the city"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "263-28"
+issue = 263
+title = "Overspawn carrying and deploying other aliens"
+url = "https://github.com/OpenApoc/OpenApoc/issues/263"
+tier = 2
+scope = "in"
+exes = ["ufo2p"]
+
+# #263-2, cityscape (UFO2P)
+
+[[entry]]
+item = "263-2"
+exe = "ufo2p"
+address = "0x0006F3C0"
+evidence = "table"
+detail = "one of the three rows reading the infiltration-pace table at 0x000E0D48; called by the clock advance"
+source = "mechanics locate; research Q3"
+
+[[entry]]
+item = "263-2"
+exe = "ufo2p"
+address = "0x0006FC80"
+evidence = "table"
+detail = "second row reading the infiltration-pace table at 0x000E0D48"
+source = "mechanics locate; research Q3"
+
+[[entry]]
+item = "263-2"
+exe = "ufo2p"
+address = "0x0009A0A0"
+evidence = "string"
+detail = "infiltration graph screen: shows its title, text 22/80; opened from the city panel"
+source = "mechanics locate"
+
+# #263-5, cityscape (UFO2P)
+
+[[entry]]
+item = "263-5"
+exe = "ufo2p"
+address = "0x000946B0"
+evidence = "string"
+detail = "building screen: owner, workforce, wage and income figures (text 37/108-117)"
+source = "mechanics locate"
+
+# #263-6, cityscape (UFO2P)
+
+[[entry]]
+item = "263-6"
+exe = "ufo2p"
+address = "0x00098A70"
+evidence = "string"
+detail = "weekly funding screen: the assessment title and the funding change messages (text 40/0-10)"
+source = "mechanics locate; spike 007 q4"
+
+# #263-7, cityscape (UFO2P)
+
+[[entry]]
+item = "263-7"
+exe = "ufo2p"
+address = "0x00099710"
+evidence = "table"
+detail = "only row referencing the data at 0x0012799C and 0x0016F387 (the starting relations, research Q3)"
+source = "mechanics locate; research Q3"
+
+# #263-9, cityscape (UFO2P)
+
+[[entry]]
+item = "263-9"
+exe = "ufo2p"
+address = "0x000977F0"
+evidence = "string"
+detail = "bribe dialog: shows the improve-relations prompt, text 22/122"
+source = "mechanics locate; spike 007 q4"
+
+# #263-12, cityscape (UFO2P)
+
+[[entry]]
+item = "263-12"
+exe = "ufo2p"
+address = "0x0006CA40"
+evidence = "call-graph"
+detail = "called by the clock advance and the time-skip path; calls the repaired-vehicle message row"
+source = "mechanics locate; call graph"
+
+[[entry]]
+item = "263-12"
+exe = "ufo2p"
+address = "0x0006CB90"
+evidence = "string"
+detail = "shows the repaired-vehicle message, text 24/33"
+source = "mechanics locate"
+
+# #263-13, cityscape (UFO2P)
+
+[[entry]]
+item = "263-13"
+exe = "ufo2p"
+address = "0x0004F100"
+evidence = "string"
+detail = "base training screen: the training assignment and efficiency labels, text 37/241-243 and 37/331"
+source = "mechanics locate; spike 007 q4"
+
+# #263-15, cityscape (UFO2P)
+
+[[entry]]
+item = "263-15"
+exe = "ufo2p"
+address = "0x00067930"
+evidence = "string"
+detail = "refuses transfers while only one base exists, text 37/393"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-15"
+exe = "ufo2p"
+address = "0x00091AF0"
+evidence = "string"
+detail = "shows the arrival messages for transferred goods and specimens, text 37/356 and 37/384"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-15"
+exe = "ufo2p"
+address = "0x0009E0C0"
+evidence = "string"
+detail = "transfer screen confirm step, text 25/26"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-15"
+exe = "ufo2p"
+address = "0x000A1990"
+evidence = "string"
+detail = "shows the transfer-blocked-by-strike message, text 25/23"
+source = "mechanics locate"
+
+# #263-22, both EXEs: the battle hand-off files
+
+[[entry]]
+item = "263-22"
+exe = "ufo2p"
+address = "0x000ACDC0"
+evidence = "file"
+detail = "references the unresolved-units hand-off file name the battlescape reads (writer, research Q2)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "263-22"
+exe = "tacp"
+address = "0x00014EA0"
+evidence = "file"
+detail = "reads the city hand-off files (units, objects, relations, unresolved units) before battle"
+source = "mechanics locate; research Q2"
