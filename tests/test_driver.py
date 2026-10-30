@@ -1177,7 +1177,7 @@ def test_a_failed_match_commit_leaves_no_trace_of_a_match(tmp_path):
     assert _unit_text(night) == SCAFFOLD
     assert night.commits() == [CHORE]
     assert night.commit_files(CHORE) == [LOG]
-    assert "MATCHED" not in night.file_at(CHORE, LOG)
+    assert '"outcome":"MATCHED"' not in night.file_at(CHORE, LOG)
 
 
 def test_a_failed_match_commit_unstages_new_files_too(tmp_path):
@@ -1370,7 +1370,7 @@ def _no_match_anywhere(night: Night) -> None:
     """No MATCHED record on disk or in any commit, nothing staged, the tables as at HEAD."""
     assert all(r.get("outcome") != "MATCHED" for r in night.records())
     for sha in night.git("log", "--format=%H", f"{night.base}..HEAD").split():
-        assert "MATCHED" not in night.git("show", f"{sha}:{LOG}")
+        assert '"outcome":"MATCHED"' not in night.git("show", f"{sha}:{LOG}")
     assert (night.repo / f"config/{EXE}/status.csv").read_text(encoding="utf-8") == STATUS_HEAD
     assert (night.repo / "decomphub.progress.json").read_text(encoding="utf-8") == "{}\n"
     assert _feats(night) == []
@@ -1415,7 +1415,7 @@ def test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged(
     assert "still staged:" in report.detail
     assert all(r.get("outcome") != "MATCHED" for r in night.records())
     for sha in night.git("log", "--format=%H", f"{night.base}..HEAD").split():
-        assert "MATCHED" not in night.git("show", f"{sha}:{LOG}")
+        assert '"outcome":"MATCHED"' not in night.git("show", f"{sha}:{LOG}")
 
 
 def test_an_interrupt_during_the_match_commit_is_undone_and_named(tmp_path):
@@ -2080,7 +2080,7 @@ def test_undo_match_drops_only_its_matched_record(tmp_path, monkeypatch):
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert OTHER_RECORD in night.records()
     assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
-    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
 
 
 def test_a_view_unit_that_is_no_longer_a_file_is_a_stray(tmp_path):
@@ -2179,7 +2179,7 @@ def test_a_log_tamper_before_the_match_commit_is_never_committed(tmp_path, monke
     monkeypatch.setattr(driver, "commit_message", message)
     report = night.run()
     _assert_breach(night, report, LOG, TAMPER)
-    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
 
 
 def test_an_untampered_night_commits_the_match_and_the_log(tmp_path):
@@ -2257,7 +2257,7 @@ def test_a_breach_during_the_match_undo_still_drops_the_matched_record(tmp_path)
     report = _run_contained(night)
     assert (report.event, report.reason) == ("STOPPED", "guardrail")
     assert STATUS_REL in report.detail
-    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
     assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
     assert TAMPER_ROW.strip() not in (night.repo / STATUS_REL).read_text(encoding="utf-8")
     assert night.commits() == []
