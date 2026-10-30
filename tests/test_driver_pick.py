@@ -703,6 +703,36 @@ def test_a_capped_function_returns_for_its_next_pass_the_same_night(tmp_path):
     assert (report.event, report.reason) == ("ENDED", "max sessions")
 
 
+def test_the_coordinator_tells_the_tier_queue_a_pass_finished_capped(tmp_path):
+    """Orchestrator ruling (07-30, deferred minors): the coordinator reports a capped pass to
+    the queue (which clears its abort count); the pass the night cap cut short is not one."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import _commit
+
+    rows = [_member(START)]
+    night = Night(tmp_path / "night")
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((START,), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    finished: list[dict] = []
+
+    def queue(difficult):
+        tiers = deps.queue(difficult)
+        real = tiers.finish
+
+        def finish(key, **kw):
+            finished.append(kw)
+            real(key, **kw)
+
+        tiers.finish = finish
+        return tiers
+
+    night.run(config={"max_sessions": 4}, queue=queue, requeue=deps.requeue)
+    assert [(kw["matched"], kw["aborted"], kw["capped"]) for kw in finished] == [
+        (False, False, True), (False, False, False)]  # fmt: skip
+
+
 # ---- the dry run's tier picks (07-26 Task 3; ruling F8) ----
 
 
