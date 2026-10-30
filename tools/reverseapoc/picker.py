@@ -21,16 +21,33 @@ needs (D-07). `pilot` refuses to return fewer picks than asked.
 
 The picking is pure: the caller reads functions.csv and the LE. `matched_starts` is the one seam
 to the status table, and takes the path and the reader as arguments so tests can fake them.
+
+The tier queue (07-26; DEC-02, D-04, D-08, D-22, D-23) replaces the pools once a tier of
+config/mechanics.toml is signed with a digest that still matches (`mechanics.signed_tiers`).
+It queues each signed tier's must-match members (role member with a member item of the tier;
+never an asm or closure row), then the tier's hubs, every one whatever score's P16 filter says
+of it, ranked by score's own (__CHK, score, start). Within a group the order is callees first:
+the group's call graph (every edge kind but midrow, owner ruling Q1, plus the hand edges) is
+condensed to SCCs, leaves at level 0. An item is eligible when it is not matched, not in flight,
+its unit is not claimed, and every group callee of its SCC outside the SCC is matched or has
+finished a pass (capped at least once); hubs, asm and closure rows never block a member. The
+next pick is the eligible item with the least (tier, member before hub, aborted passes,
+finished passes, level, rank): a hub or a later tier's row runs only while no member of an
+earlier group is eligible (07-26 review I1), and inside a group every eligible function runs
+pass N before any runs pass N+1 (D-08), a pass a transient abort ended going last (review I2).
+No variety rule.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
+from .callgraph import HAND, CallGraph, Edge, sccs, with_edges
+from .mechanics import HUB_KINDS, ROLE_HUB, ROLE_MEMBER, Mechanics, MemberRow, signed_tiers
 from .score import Candidate
 from .status import MATCHED
 
@@ -277,3 +294,220 @@ def requeue(
         return any(c in matched and c not in before for c in callees.get(key, ()))
 
     return tuple(key for key in difficult if newly_matched(key))
+
+
+# ---- the tier queue (07-26) ----
+
+Rank = tuple[bool, int, int]  # score's own: (__CHK prologue, score, start)
+Passes = Mapping[Key, int]  # each function's finished passes (driver.pass_index)
+Ranks = Mapping[str, Mapping[int, Candidate]]  # EXE -> row start -> the row as score ranks it
+Units = Mapping[str, Mapping[int, str]]  # EXE -> row start -> unit
+
+
+@dataclass(frozen=True, slots=True)
+class TierItem:
+    """One queued function: its signed tier, its callees-first level in its group (0: a leaf),
+    its rank, the pick, whether it is one of the tier's hubs, and (set by `next_item`) the pass
+    it would run, one more than its finished passes."""
+
+    tier: int
+    level: int
+    rank: Rank
+    pick: Pick
+    hub: bool = False
+    pass_n: int = 0
+
+    @property
+    def key(self) -> Key:
+        return self.pick.exe, self.pick.start
+
+
+class TierQueue:
+    """The signed tiers' items and, for each, the group callees its SCC waits for (`callees`).
+
+    `matched` is every matched key; `passes` maps a key to its finished passes and is read live,
+    never written (the night counts the passes, `use_passes` binds the night's own index).
+    `take` marks an item in flight, `finish` ends that (`matched` adds it to the matched set;
+    `aborted`, a pass a transient abort ended, sends it behind its group's other work)."""
+
+    def __init__(self, items: Iterable[TierItem], callees: Mapping[Key, Iterable[Key]], *,
+                 matched: Iterable[Key] = (), passes: Passes | None = None) -> None:  # fmt: skip
+        self._items = tuple(items)
+        self._callees = {key: tuple(keys) for key, keys in callees.items()}
+        self._matched = set(matched)
+        self._passes: Passes = {} if passes is None else passes
+        self._flight: set[Key] = set()
+        self._aborts: Counter[Key] = Counter()  # passes a transient abort ended, this queue's life
+
+    @property
+    def items(self) -> tuple[TierItem, ...]:
+        return self._items
+
+    def use_passes(self, passes: Passes) -> None:
+        """Read finished passes from `passes` from now on (the night's pass index)."""
+        self._passes = passes
+
+    def _done_once(self, key: Key) -> bool:
+        return key in self._matched or self._passes.get(key, 0) > 0
+
+    def _eligible(self, item: TierItem, claimed: Container[tuple[str, str]]) -> bool:
+        key = item.key
+        if key in self._matched or key in self._flight:
+            return False
+        if (item.pick.exe, item.pick.unit) in claimed:
+            return False
+        return all(self._done_once(callee) for callee in self._callees.get(key, ()))
+
+    def _order(self, item: TierItem) -> tuple:
+        """07-26 review I1 (orchestrator ruling): the group (tier, member before hub) first, so
+        an eligible member is never passed over for a hub or a later tier; inside the group
+        aborted passes go last, then pass N before N+1 (D-08), then level and rank."""
+        key = item.key
+        return (item.tier, item.hub, self._aborts[key], self._passes.get(key, 0), item.level,
+                item.rank, EXE_ORDER.index(item.pick.exe))  # fmt: skip
+
+    def next_item(self, claimed_units: Container[tuple[str, str]] = frozenset()) -> TierItem | None:
+        """The eligible item with the least (tier, member before hub, aborted passes, finished
+        passes, level, rank), its `pass_n` set; None when no item is eligible now.
+        `claimed_units` holds the (EXE, unit) pairs other passes hold: their items are skipped,
+        not dropped."""
+        eligible = (item for item in self._items if self._eligible(item, claimed_units))
+        best = min(eligible, key=self._order, default=None)
+        if best is None:
+            return None
+        return replace(best, pass_n=self._passes.get(best.key, 0) + 1)
+
+    def next_eligible(self, claimed_units: Container[tuple[str, str]] = frozenset()) -> Pick | None:
+        item = self.next_item(claimed_units)
+        return None if item is None else item.pick
+
+    def preview(self, count: int) -> list[TierItem]:
+        """The first `count` distinct picks one worker would take if every pass ended capped,
+        each at its next pass (the dry run's and the drafts' list). Nothing is counted or taken
+        in this queue."""
+        passes = dict(self._passes)
+        trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes)
+        trial._flight = set(self._flight)
+        trial._aborts = Counter(self._aborts)
+        out: list[TierItem] = []
+        while len(out) < count and (item := trial.next_item()) is not None:
+            out.append(item)
+            trial.take(item.key)  # once each
+            passes[item.key] = passes.get(item.key, 0) + 1  # capped: its callers may follow
+        return out
+
+    def take(self, key: Key) -> None:
+        self._flight.add(key)
+
+    def finish(self, key: Key, *, matched: bool, aborted: bool = False) -> None:
+        self._flight.discard(key)
+        if matched:
+            self._matched.add(key)
+        if aborted:
+            self._aborts[key] += 1
+
+
+def _call_graph(mech: Mechanics, exe: str, graph: CallGraph) -> CallGraph:
+    """The calls the tier order follows: every edge kind but midrow (owner ruling Q1: a switch
+    table is no call), plus the hand edges of mechanics.toml."""
+    hand = (Edge(e.src, e.dst, HAND) for e in mech.edges if e.exe == exe)
+    full = with_edges(graph, hand)
+    return CallGraph(edges={start: tuple(e for e in edges if e.kind in HUB_KINDS)
+                            for start, edges in full.edges.items()})  # fmt: skip
+
+
+def _levels(graph: CallGraph, nodes: frozenset[int]) -> tuple[dict[int, int], dict[int, list[int]]]:
+    """Each node's level (its SCC's: 0 for a leaf, else one more than its deepest callee SCC)
+    and the group callees its SCC waits for (the edges from the SCC to other group SCCs)."""
+    components = sccs(graph, nodes)  # leaves first: every callee SCC comes before its callers
+    owner = {node: i for i, comp in enumerate(components) for node in comp}
+    level: dict[int, int] = {}
+    waits: dict[int, list[int]] = {}
+    for i, comp in enumerate(components):
+        out = sorted({e.dst for n in comp for e in graph.callees(n)
+                      if e.dst in nodes and owner[e.dst] != i})  # fmt: skip
+        comp_level = 1 + max((level[d] for d in out), default=-1)
+        for node in comp:
+            level[node], waits[node] = comp_level, out
+    return level, waits
+
+
+def _group_rows(rows: Sequence[MemberRow], ids: frozenset[str], tier_id: int,
+                hub: bool) -> list[MemberRow]:  # fmt: skip
+    """A tier's members (role member with a member item of the tier) or its hubs (role hub,
+    reached by a tier item). asm and closure rows are never in a group."""
+    if hub:
+        return [row for row in rows if row.role == ROLE_HUB and tier_id in row.tiers]
+    return [row for row in rows if row.role == ROLE_MEMBER and ids.intersection(row.member_items)]
+
+
+def _tier_pick(row: MemberRow, ranks: Ranks, units: Units) -> tuple[Rank, Pick]:
+    where = f"{row.exe} member 0x{row.address:08X}"
+    ranked = ranks.get(row.exe, {}).get(row.address)
+    if ranked is None:
+        raise PickerError(f"{where} has no rank")
+    unit = units.get(row.exe, {}).get(row.address)
+    if not unit:
+        raise PickerError(f"{where} has no unit")
+    pick = Pick(row.exe, row.address, ranked.name, unit, ranked.size, ranked.score)
+    return (ranked.chk, ranked.score, ranked.address), pick
+
+
+def tier_queue(
+    mech: Mechanics,
+    members: Sequence[MemberRow],
+    graphs: Mapping[str, CallGraph],
+    ranks: Ranks,
+    units: Units,
+    *,
+    matched: Iterable[Key] = (),
+    passes: Passes | None = None,
+) -> TierQueue:
+    """The tier queue of every signed tier (`mechanics.signed_tiers`: signed, digest matching),
+    in tier order: each tier's members, then its hubs, a row queued once (by its first tier).
+    `graphs` are the EXEs' call graphs, `ranks` every row as score ranks it (no P16 filter),
+    `units` each row's unit. A queued row without a rank, a unit or a call graph is refused."""
+    items: list[TierItem] = []
+    callees: dict[Key, tuple[Key, ...]] = {}
+    for group in _groups(mech, members):
+        if group.exe not in graphs:
+            raise PickerError(f"{group.exe}: no call graph for tier {group.tier}")
+        for item, waits in _group_items(mech, group, graphs[group.exe], ranks, units):
+            items.append(item)
+            callees[item.key] = waits
+    return TierQueue(items, callees, matched=matched, passes=passes)
+
+
+@dataclass(frozen=True)
+class _Group:
+    """One EXE's rows of one tier's members (hub False) or hubs (hub True)."""
+
+    tier: int
+    hub: bool
+    exe: str
+    rows: tuple[MemberRow, ...]
+
+
+def _groups(mech: Mechanics, members: Sequence[MemberRow]) -> Iterator[_Group]:
+    """The groups in queue order: signed tiers ascending, members before hubs, EXEs in order. A
+    row is in the first group that has it."""
+    queued: set[Key] = set()
+    for tier_id in signed_tiers(mech, members):
+        ids = frozenset(item.id for item in mech.items if item.tier == tier_id)
+        for hub in (False, True):
+            group = [row for row in _group_rows(members, ids, tier_id, hub)
+                     if (row.exe, row.address) not in queued]  # fmt: skip
+            queued.update((row.exe, row.address) for row in group)
+            for exe in sorted({row.exe for row in group}, key=EXE_ORDER.index):
+                yield _Group(tier_id, hub, exe, tuple(row for row in group if row.exe == exe))
+
+
+def _group_items(mech: Mechanics, group: _Group, graph: CallGraph, ranks: Ranks,
+                 units: Units) -> Iterator[tuple[TierItem, tuple[Key, ...]]]:  # fmt: skip
+    """Each row's item and the group keys its SCC waits for."""
+    level, waits = _levels(_call_graph(mech, group.exe, graph),
+                           frozenset(row.address for row in group.rows))  # fmt: skip
+    for row in group.rows:
+        rank, pick = _tier_pick(row, ranks, units)
+        item = TierItem(group.tier, level[row.address], rank, pick, group.hub)
+        yield item, tuple((group.exe, d) for d in waits[row.address])
