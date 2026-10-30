@@ -228,6 +228,51 @@ def test_expected_model_is_the_argv_model():
     assert EXPECTED_MODEL == session.MODEL == "claude-opus-5-5"
 
 
+def _init_with_model(model: str) -> dict:
+    """The success fixture's init event with only its model replaced (no new fixture file)."""
+    return dict(init_event(_events("success")), model=model)
+
+
+def test_escalated_argv_passes_its_init_check():
+    """07-42 tracer (D-09, D-25): pass 3 asks for Fable with the Fable budget, and the init a
+    Fable session reports passes the check for that same requested model."""
+    model = session.model_for_pass(3)
+    argv = session.build_argv(
+        "/goal x", claude="claude", model=model, max_budget_usd=session.FABLE_BUDGET_USD
+    )
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-1"
+    assert argv[argv.index("--max-budget-usd") + 1] == "12.5"
+    init = _init_with_model("claude-fable-5-1")
+    assert check_init(
+        init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model=model
+    ) == []
+
+
+def test_init_rejects_mismatch():
+    """D-09: a session that reports the other model is one model problem, either direction."""
+    pairs = [("claude-opus-5-5", "claude-fable-5-1"), ("claude-fable-5-1", "claude-opus-5-5")]
+    for reported, requested in pairs:
+        init = _init_with_model(reported)
+        problems = check_init(
+            init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model=requested
+        )
+        assert len(problems) == 1, problems
+        assert "model" in problems[0]
+        assert reported in problems[0]
+        assert requested in problems[0]
+        assert "D-09" in problems[0]
+
+
+def test_init_unknown_expected_model():
+    """T-07-124: an unknown requested model fails closed, even when the init echoes it."""
+    init = _init_with_model("claude-other-1")
+    problems = check_init(
+        init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model="claude-other-1"
+    )
+    assert len(problems) == 1, problems
+    assert "claude-other-1" in problems[0]
+
+
 @pytest.mark.parametrize(
     ("text", "version"),
     [("2.1.240", (2, 1, 240)), ("2.1.240 (Claude Code)\n", (2, 1, 240)), ("10.0.3", (10, 0, 3))],
