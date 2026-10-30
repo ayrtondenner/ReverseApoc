@@ -1497,7 +1497,7 @@ def _format_graph_report(exe: str, report: dict) -> str:
         f"indirect calls: {sum(e['count'] for e in indirect)} in {len(indirect)} rows",
         f"orphan tables: {len(report['orphan_tables'])}",
         f"largest SCC: direct {scc['direct']}, direct+pointer+table "
-        f"{scc['direct_pointer_table']}, all kinds {scc['all']}",
+        f"{scc['direct_pointer_table']}, all kinds but midrow {scc['all_but_midrow']}",
     ])  # fmt: skip
 
 
