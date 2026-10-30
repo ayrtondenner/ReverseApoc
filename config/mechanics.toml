@@ -35,7 +35,7 @@ id = 1
 title = "Tick rate and battlescape training"
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-30
-members_sha256 = "7f892df5689c656b1c8d0895326713140d1a2080ce7b7103dc4e9a6e84d39294"
+members_sha256 = "dfa42a061a3b44248387a1cc6284354879a3e126fa8589c7d684adc8087b1da6"
 
 [[item]]
 id = "997"
@@ -297,7 +297,7 @@ id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-30
-members_sha256 = "ab88dd39001cd17c755b3af18b54df95bbe1852ac65fa1bc018a49319210f6b7"
+members_sha256 = "8ab76363ba3a87165efdfef2b902441a0ad483fcb4a7e1fcc8eb4302b8191cd6"
 
 [[item]]
 id = "263-2"
@@ -700,7 +700,7 @@ id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-30
-members_sha256 = "a37cad5530791f9ec49d4038ea034ebb6309b641521a688736836320fcc052c6"
+members_sha256 = "5758c10f47f2e1b5c287153e9318438d0a3e0526ed5e837b73c91328da8e6313"
 
 [[item]]
 id = "264-1"
