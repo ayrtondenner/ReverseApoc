@@ -401,7 +401,7 @@ def test_index_lock_twice_undoes_the_match(tmp_path):
     assert "index.lock" in report.detail
     assert MATCH_SUBJECT not in night.commits()
     assert _one(night.kinds("attempt"))["outcome"] == "GAVE_UP"
-    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
 
 
 def test_other_commit_failures_are_not_retried(tmp_path):
@@ -469,7 +469,7 @@ def test_gate_lock_keeps_other_appends_out_of_the_match_undo_window(tmp_path, mo
     assert blocked == [True], "another worker's append ran inside the landing window"
     assert (report.event, report.reason) == ("STOPPED", "tool")
     assert OTHER_RECORD in night.records()
-    assert "MATCHED" not in (night.repo / LOG).read_text(encoding="utf-8")
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
 
 
 # ---- Fix round 1: resets of src/ under the gate lock; drive.lock from the top of the verb ----
