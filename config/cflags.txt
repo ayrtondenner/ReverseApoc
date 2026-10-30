@@ -35,3 +35,4 @@
 # a match misses: toolchain.md "Fallbacks and candidates".
 
 *  wcc386@10.6  -4r -s -fpi
+src/tacp/u_0006fbd0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0001 approved ayrtondenner 2026-10-30
