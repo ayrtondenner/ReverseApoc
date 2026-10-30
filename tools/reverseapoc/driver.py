@@ -4412,7 +4412,10 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
                                 "already ran with this --run ID; give a new one")  # fmt: skip
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
-    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR)
+    model = options.canary_model  # what the canary asks for and its init check expects (D-25)
+    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR, model=model,
+                   budget_usd=session_budget(model, options.max_budget_usd,
+                                             options.fable_budget_usd))  # fmt: skip
     probe = _probe(options, seams)
     listed = _git_ok(probe._git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
@@ -4425,14 +4428,11 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
-    model = options.canary_model  # what the canary asks for and its init check expects (D-25)
     events: Sequence[dict] = ()
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        argv = seams.argv(CANARY_PROMPT, model=model,
-                          max_budget_usd=session_budget(model, options.max_budget_usd,
-                                                        options.fable_budget_usd),
+        argv = seams.argv(CANARY_PROMPT, model=claim.model, max_budget_usd=claim.budget_usd,
                           max_turns=options.max_turns)  # fmt: skip
         result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
