@@ -15,9 +15,11 @@ import pytest
 
 import reverseapoc
 from reverseapoc import cli  # imports reverseapoc.stats with the verb
+from reverseapoc.attempt import ATTEMPT_LOG
 from reverseapoc.functions import FunctionRow, format_functions_csv
 from reverseapoc.mechanics import MemberRow, write_members
 from reverseapoc.status import StatusRow, format_status
+from reverseapoc.targets import REPO_ROOT
 from test_driver import _git, _git_env, _write
 
 _SHA = "0" * 64  # a made-up source_sha256
@@ -459,3 +461,97 @@ def test_one_commit_matching_two_functions(tmp_path, capsys):
         ("0x00010100", "unattended"),
     ]
     assert report["classes"]["unattended"] == 2
+
+
+# ---- Task 3: shallow clones, determinism, the committed log and history ----
+
+
+def _two_matches(tmp_path: Path) -> Path:
+    repo, env = _repo(tmp_path)
+    _commit(repo, env, "ufo2p", {0x10000: "matched"}, "feat: match a", _DRIVE)
+    _commit(repo, env, "ufo2p", {0x10000: "matched", 0x10100: "matched"}, "feat: match b", _DRIVE)
+    return repo
+
+
+def _clone(tmp_path: Path, repo: Path, depth: int) -> Path:
+    clone = tmp_path / "clone"
+    _git(tmp_path, _git_env(tmp_path), "clone", "-q", "--depth", str(depth), repo.as_uri(),
+         str(clone))  # fmt: skip
+    return clone
+
+
+def test_a_shallow_boundary_is_a_baseline(tmp_path):
+    """In a shallow clone the oldest commit's parent is missing: its table is the baseline and
+    gives no events (it would class every row it holds by its own trailers)."""
+    repo = _two_matches(tmp_path)
+    clone = _clone(tmp_path, repo, 1)
+    hist = reverseapoc.stats.history(clone)
+    assert hist.shallow is True
+    assert hist.events == ()
+    assert hist.matched == {("ufo2p", 0x10000), ("ufo2p", 0x10100)}
+    assert reverseapoc.stats.is_shallow(repo) is False
+
+
+def test_a_shallow_clone_sees_the_matches_after_its_boundary(tmp_path, capsys):
+    repo = _two_matches(tmp_path)
+    clone = _clone(tmp_path, repo, 2)
+    report = _json(capsys, clone, _empty_log(tmp_path))
+    assert [e["start"] for e in report["events"]] == ["0x00010100"]
+    assert report["shallow"] is True
+
+
+def test_a_failing_git_is_an_error_not_shallow(tmp_path):
+    with pytest.raises(reverseapoc.stats.StatsError, match="git"):
+        reverseapoc.stats.is_shallow(tmp_path / "not-a-repo")
+
+
+def test_deterministic(tmp_path, capsys):
+    repo = _classed_repo(tmp_path)
+    _functions(repo / "config", "ufo2p", {0x10010: 8, 0x10020: 100})
+    gate = {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []}
+    log = _log(tmp_path, _on(0x10010, outcome="MATCHED"),
+               _on_v2(0x10020, model_requested="m-b", gate=gate),
+               _on_v2(0x10030, model_requested="m-a", session="readability",
+                      outcome="LANDED"))  # fmt: skip
+    outputs = []
+    for _ in range(2):
+        assert _run(repo, log, "--json") == 0
+        outputs.append(capsys.readouterr().out)
+    assert outputs[0] == outputs[1]
+    assert json.dumps(json.loads(outputs[0]), indent=2, sort_keys=True) + "\n" == outputs[0]
+    texts = []
+    for _ in range(2):
+        assert _run(repo, log) == 0
+        texts.append(capsys.readouterr().out)
+    assert texts[0] == texts[1]
+
+
+def test_committed_log_reads():
+    records = reverseapoc.stats.read_attempts(REPO_ROOT / ATTEMPT_LOG)
+    assert records, "the committed attempt log holds the Phase 6 pilot"
+    assert all(r["kind"] in ("attempt", "abort", "run", "limit", "rename") for r in records)
+
+
+def test_stats_runs_on_the_committed_data(capsys):
+    assert cli.main(["stats", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["attempts"]["records"] > 0
+
+
+# The Phase 6 pilot's unattended matches (research R2 section 7) and the Phase 5 hand matches
+# seeded into status.csv by fc7d1cd (UFO2P func_000A3980, TACP func_00055080).
+_PILOT = ("c83cf4e", "d288ad6", "955931f")
+_PHASE5 = (("ufo2p", "0x000A3980"), ("tacp", "0x00055080"))
+
+
+def test_committed_history_classes():
+    """Inclusion, not totals, so later matches do not break it (ruling F13: the only test
+    that reads the real history; a shallow clone skips it, a failing probe is an error)."""
+    if reverseapoc.stats.is_shallow(REPO_ROOT):
+        pytest.skip("shallow clone: the committed match history is cut")
+    events = reverseapoc.stats.match_history(REPO_ROOT)
+    unattended = {e.commit[:7] for e in events if e.cls == "unattended"}
+    assert set(_PILOT) <= unattended
+    written = {(e.exe, f"0x{e.start:08X}") for e in events if e.cls == "human-written"}
+    assert set(_PHASE5) <= written
+    seed = [e for e in events if (e.exe, f"0x{e.start:08X}") in _PHASE5]
+    assert {e.commit[:7] for e in seed} == {"fc7d1cd"}
