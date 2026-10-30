@@ -63,6 +63,14 @@ launch). Any worker's stop (or an interrupt on the main thread) stops them all: 
 session tree in the pid registry (run_session's on_start/on_end) is killed, each attempt is
 contained and reset uncounted, and the first stop writes the one STOPPED record.
 
+Records (07-23; DEC-06, DEC-07, D-08): the driver writes only schema-2 records. An attempt
+carries its session kind, pass, worker, requested model and budget, hook blocks (the result
+event's permission_denials), the gate's verdict and the sweep evidence; `function` is the
+pick's C name. Each usage-limit wait is a `limit` record; STARTED names the workers and the
+recovered claims, and ENDED/STOPPED carry the totals summed over the night's own records. A
+function's pass is one more than its finished passes in the committed log (`pass_index`), read
+once per night; build/driver/difficult.json stays a cache for the picker.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -80,6 +88,7 @@ each session starts in a fresh directory.
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import io
 import json
@@ -94,12 +103,12 @@ import threading
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 from . import attempt, hooks, streamjson
-from .check import ExeInputs
+from .check import PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
 from .libmatch import read_runtime_csv, runtime_csv_path
@@ -110,7 +119,16 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .score import Candidate, assess, candidates
-from .session import TIMEOUT_S, SessionResult, build_argv, goal_prompt, kill_tree, run_session
+from .session import (
+    MAX_BUDGET_USD,
+    MODEL,
+    TIMEOUT_S,
+    SessionResult,
+    build_argv,
+    goal_prompt,
+    kill_tree,
+    run_session,
+)
 from .status import MATCHED as STATUS_MATCHED
 from .status import PARTIAL as STATUS_PARTIAL
 from .status import read_status, status_path
@@ -216,10 +234,13 @@ class PackInfo:
 
 @dataclass(frozen=True)
 class GateRun:
-    """`gate EXE/UNIT --attempts N --json` in the container: its exit code and parsed JSON."""
+    """`gate EXE/UNIT --attempts N --json` in the container: its exit code and parsed JSON.
+    `matched_before` (07-23) is set by the driver: the claimed unit's matched starts in
+    status.csv right before the gate ran, so the record can count regressions."""
 
     exit_code: int
     doc: Mapping | None = None
+    matched_before: frozenset[int] = frozenset()
 
 
 def _today() -> str:
@@ -919,6 +940,161 @@ def read_checks(attempt_dir: Path) -> CheckSummary:
     return CheckSummary(len(lines), float(best["best_percent"]), best["source"], hit)
 
 
+# ---- the v2 record's evidence (07-23; DEC-07, research section J, P10) ----
+
+
+def _items(value: object) -> list:
+    return value if isinstance(value, list) else []
+
+
+def _json_file(path: Path) -> Mapping:
+    """A JSON object file, {} when it is missing, unreadable or not an object."""
+    data = _read(path)
+    try:
+        doc = json.loads(data) if data is not None else None
+    except ValueError:
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def _record_text(value: object) -> str:
+    """A short string fit for a record: long hex runs masked, capped at _TEXT_CAP."""
+    return _LONG_HEX.sub("<hex>", str(value))[:_TEXT_CAP]
+
+
+def _perfect_cell(cell: object) -> bool:
+    """A measured sweep cell at objdiff 100% with a passing relocation check and no differing
+    byte (attempt._is_hit without the default-flags test)."""
+    return (isinstance(cell, Mapping) and cell.get("status") == attempt.MEASURED
+            and _number(cell.get("objdiff_percent")) and cell["objdiff_percent"] == PERFECT
+            and cell.get("reloc_ok") is True and cell.get("differing") == 0)  # fmt: skip
+
+
+def _cell_spec(cell: Mapping) -> str:
+    """A cell's compiler and flags as one spec (attempt._cell_spec's form)."""
+    return " ".join([str(cell.get("compiler")), *map(str, _items(cell.get("flags")))])
+
+
+def _sweep_evidence(attempt_dir: Path) -> tuple[str | None, list[str]]:
+    """P10: the snapshot of the first checks.jsonl sweep line that has a hit (`checks/NNNN.c`)
+    and the spec of every 100% cell of its saved JSON (`checks/NNNN.json`), stage 1 then stage
+    2 (07-14), each once; (None, []) when no sweep hit. A missing or unreadable JSON keeps the
+    source and names no cell."""
+    path = Path(attempt_dir) / attempt.CHECK_LOG
+    if not path.is_file():
+        return None, []
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = (line for raw in text.splitlines() if (line := _check_line(raw)) is not None)
+    hit = next((line for line in lines if line["sweep"] and line["sweep_hit"]), None)
+    if hit is None:
+        return None, []
+    source = hit["source"]
+    doc = _json_file(Path(attempt_dir) / PurePosixPath(source).with_suffix(".json"))
+    stage2 = doc.get("stage2")
+    cells = [*_items(doc.get("cells")),
+             *_items(stage2.get("cells") if isinstance(stage2, Mapping) else None)]  # fmt: skip
+    specs = [_record_text(_cell_spec(cell)) for cell in cells if _perfect_cell(cell)]
+    return source, list(dict.fromkeys(specs))
+
+
+def _hook_blocks(events: Sequence[Mapping]) -> int:
+    """The hook blocks of one session: the length of its last result event's
+    `permission_denials` (research section 3: hook and permission-mode denials alike)."""
+    results = [e for e in events if isinstance(e, Mapping) and e.get("type") == "result"]
+    return len(_items(results[-1].get("permission_denials"))) if results else 0
+
+
+def matched_starts(data: bytes | None, unit: str | None = None) -> frozenset[int]:
+    """The starts of the `matched` rows of a status.csv's bytes (None: no table), only those of
+    `unit` when one is given. Read loosely (any column order, `#` lines skipped), since only
+    start, unit and status are needed."""
+    if not data:
+        return frozenset()
+    text = data.decode("utf-8", "replace").splitlines()
+    out: set[int] = set()
+    for row in csv.DictReader(line for line in text if line and not line.startswith("#")):
+        start = row.get("start")
+        if row.get("status") != STATUS_MATCHED or not isinstance(start, str):
+            continue
+        if unit is not None and row.get("unit") != unit:
+            continue
+        try:
+            out.add(int(start, 16))
+        except ValueError:
+            continue
+    return frozenset(out)
+
+
+def _function_passes(fn: Mapping) -> bool:
+    """A gate check's function verdict: objdiff 100%, relocations and bytes ok."""
+    reloc, same = fn.get("reloc"), fn.get("bytes")
+    return (_number(fn.get("objdiff_percent")) and fn["objdiff_percent"] == PERFECT
+            and isinstance(reloc, Mapping) and reloc.get("ok") is True
+            and isinstance(same, Mapping) and same.get("ok") is True)  # fmt: skip
+
+
+def _same_exe(name: object, exe: str) -> bool:
+    """A check's `exe` (absent, a stem or an EXE file name) names `exe`."""
+    return name is None or (isinstance(name, str) and PurePosixPath(name).stem.lower() == exe)
+
+
+def _va(fn: Mapping) -> int | None:
+    try:
+        return int(fn["va"], 16)
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _checked(doc: Mapping | None, exe: str) -> dict[int, bool]:
+    """Each start a gate's checks of `exe` list, and whether it passed."""
+    seen: dict[int, bool] = {}
+    checks = doc.get("checks") if isinstance(doc, Mapping) else None
+    for check in _items(checks):
+        if not isinstance(check, Mapping) or not _same_exe(check.get("exe"), exe):
+            continue
+        for fn in _items(check.get("functions")):
+            va = _va(fn) if isinstance(fn, Mapping) else None
+            if va is not None:
+                seen[va] = seen.get(va, True) and _function_passes(fn)
+    return seen
+
+
+def regressions(doc: Mapping | None, pick: Pick, before: Iterable[int], *,
+                mismatch: bool = False) -> list[int]:  # fmt: skip
+    """The previously matched starts (`before`: the claimed unit's matched rows right before
+    the gate) that the gate found failing, sorted, each once; the claimed function is never
+    one. A gate that refused the unit (`mismatch`, exit 1) lists a function that went back to
+    INCLUDE_ASM in its problems only, never in its checks (the reverted-unit early return,
+    cross_check: fix round 1), so then every such start counts unless a check shows it
+    passing."""
+    seen = _checked(doc, pick.exe)
+    starts = sorted(set(before) - {pick.start})
+    if mismatch:
+        return [va for va in starts if not seen.get(va, False)]
+    return [va for va in starts if seen.get(va) is False]
+
+
+def _gate_field(gate: GateRun | None, pick: Pick) -> dict | None:
+    """DEC-07's `gate` of a v2 attempt record: null when no gate ran, else its exit, whether it
+    passed with a matched row for the claimed function, how many previously matched functions
+    it found failing, and its problems as text."""
+    if gate is None:
+        return None
+    doc = gate.doc if isinstance(gate.doc, Mapping) else {}
+    problems = [_record_text(p) for p in _items(doc.get("problems"))][:_LISTED_CAP]
+    return {"exit": gate.exit_code if _is_int(gate.exit_code) else None,
+            "claimed_ok": gate.exit_code == EXIT_OK and claimed_matched(doc, pick),
+            "regressions": len(regressions(doc, pick, gate.matched_before,
+                                           mismatch=gate.exit_code == EXIT_MISMATCH)),
+            "problems": problems}  # fmt: skip
+
+
+def c_name(pick: Pick) -> str:
+    """DEC-07 with D-19: a v2 record's `function`, the pick's C name (score.candidates names a
+    pick through the EXE's symbol table), else the placeholder. Ruling F12: aborts too."""
+    return pick.name if _C_NAME.fullmatch(pick.name or "") else f"func_{pick.start:08X}"
+
+
 # ---- the difficult list (D-07) ----
 
 
@@ -946,6 +1122,48 @@ def load_difficult(path: Path) -> dict[Key, tuple[Key, ...]]:
         return {_key(e): tuple(_key(c) for c in e.get("matched_callees", ())) for e in entries}
     except (ValueError, KeyError, TypeError) as exc:
         raise DriverError(f"{path} is not a difficult list: {exc}") from exc
+
+
+def _log_records(log: Path) -> Iterator[dict]:
+    """Each record of an attempts.jsonl, validated; a line that is not one is a DriverError
+    naming its number. A missing log has none."""
+    path = Path(log)
+    if not path.is_file():
+        return
+    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+            validate_record(record)
+        except ValueError as exc:  # json's and RecordError
+            raise DriverError(f"{path} line {number}: {exc}") from None
+        yield record
+
+
+def pass_index(log: Path) -> dict[Key, int]:
+    """D-08, D-09: each function's finished passes, from attempts.jsonl alone (committed, so
+    the count survives runs; build/driver/difficult.json is only a cache). A v2 attempt
+    record names its pass; for v1 lines (the Phase 6 pilot) each run's attempts on a function
+    form one pass. A function's count is the larger of the two, since the first v2 pass after
+    v1 runs is numbered after them. Abort, run, limit and rename records are no sessions."""
+    v1_runs: dict[Key, set[str]] = {}
+    v2_pass: dict[Key, int] = {}
+    for record in _log_records(log):
+        if record["kind"] != KIND_ATTEMPT:
+            continue
+        key = (record["exe"], int(record["start"], 16))
+        if "schema" in record:
+            v2_pass[key] = max(v2_pass.get(key, 0), record["pass"])
+        else:
+            v1_runs.setdefault(key, set()).add(record["run"])
+    return {key: max(len(v1_runs.get(key, ())), v2_pass.get(key, 0))
+            for key in v1_runs.keys() | v2_pass.keys()}  # fmt: skip
+
+
+def passes_of(log: Path, key: Key) -> int:
+    """The finished passes of one function (`pass_index`); its next pass is one more."""
+    return pass_index(log).get(key, 0)
 
 
 def save_difficult(path: Path, difficult: Mapping[Key, Sequence[Key]]) -> None:
@@ -1036,8 +1254,8 @@ def _claim_run(path: Path) -> str | None:
 
 
 def recovered_detail(recovered: Sequence[Mapping]) -> str | None:
-    """The STARTED record's detail naming each recovered claim (plan 07-23 moves this to the
-    v2 `recovered` field), or None when there is none."""
+    """The STARTED record's detail naming each recovered claim (07-23: the v2 `recovered` field
+    lists them too), or None when there is none."""
     if not recovered:
         return None
     return "recovered stale claims: " + _listed(
@@ -1057,6 +1275,7 @@ class _Claim:
     repo: Path
     n: int
     runs: Path = DRIVER_DIR
+    pass_n: int = 1  # 07-23 (D-08): this function's pass, from the committed log
 
     @property
     def key(self) -> Key:
@@ -1361,9 +1580,11 @@ class _Pause:
             finally:
                 self.waiting -= 1
 
-    def on_limit(self, probe: bool) -> int | None:
+    def on_limit(self, probe: bool) -> tuple[int, int] | None:
         """A session ended LIMIT: start (or, for the probe, renew) the pause and return the
-        backoff its worker waits; None when a pause already holds (the session ran before)."""
+        backoff its worker waits and the streak it makes (1 for the first wait); None when a
+        pause already holds (the session ran before). 07-23: its worker then writes the limit
+        record, outside the condition (lock order: gate, then cond)."""
         with self.cond:
             if self.paused and not probe:
                 return None
@@ -1372,7 +1593,7 @@ class _Pause:
             self.paused, self.due, self.probe_taken = True, False, False
             self.paused_until = self.clock() + seconds
             self.cond.notify_all()
-            return seconds
+            return seconds, self.streak
 
     def backoff_done(self) -> None:
         """The backoff has been waited: the next launch, by any worker, is the probe."""
@@ -1573,6 +1794,12 @@ class _Night:
         self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
+        self.passes: dict[Key, int] = {}  # D-08: finished passes per function (pass_index)
+        # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
+        # totals are the sums over the night's own records (F19's cut drops a line from both).
+        self.night_records: list[tuple[int, dict]] = []
+        self.night_start = 0.0  # Deps.clock at the night's start: the totals' wall_seconds
+        self.coordinator: _Coordinator | None = None
         # D-06, D-27 P4: one in-process lock around every shared write: the landing section
         # (copy, lint, gate, commit or undo, reset), `gate --partial` and every record append.
         # Reentrant, because the landing section appends its own record while it holds it.
@@ -1754,8 +1981,9 @@ class _Night:
             why = _detail("refusing to start: stale claims could not be recovered: "
                           f"{type(exc).__name__}: {exc}")  # fmt: skip
             return DriveReport(REFUSED, "claims", 0, 0, why)
+        self.night_start = self.deps.clock()
         try:
-            self._record_run(STARTED, START, recovered_detail(recovered))
+            self._record_run(STARTED, START, recovered_detail(recovered), recovered=recovered)
         except _Stop as stop:  # fix round 1: the log changed since the outputs check
             return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
@@ -1827,6 +2055,8 @@ class _Night:
         """D-23: the night's remaining records in one `chore(driver): attempt log` commit, with
         the status tables and the feed when partial rows changed them. After a STOP only the log
         is committed: a gate that failed may have left a half-written table."""
+        if self.coordinator is not None:  # research R5: only once every worker has drained
+            self.coordinator._drain()
         paths = [ATTEMPT_LOG.as_posix()]
         if not stopped:
             paths += [*(f"config/{exe}/status.csv" for exe in EXE_ORDER), FEED]
@@ -1882,7 +2112,10 @@ class _Night:
         serial loop."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
         self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
-        return _Coordinator(self).run()
+        with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
+            self.passes = pass_index(self.log)
+        self.coordinator = _Coordinator(self)
+        return self.coordinator.run()
 
     def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
         """The pinned bytes every check compares with: the night's baseline (C1), or, outside
@@ -1965,7 +2198,7 @@ class _Night:
         record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
-                  "kind": MATCHING_KIND, "pass": 1, "model": None,
+                  "kind": MATCHING_KIND, "pass": self._pass(pick), "model": None,
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
         if not self.claims.take(record):
             shown = self.claims.path(pick.exe, pick.unit).relative_to(self.repo).as_posix()
@@ -1991,7 +2224,7 @@ class _Night:
         while True:
             self._halt_if_stopping()
             probe = self.pause.wait_to_launch()  # D-07: no launch while the pause holds
-            claim = _Claim(pick, self.config.run_id, self.repo, n)
+            claim = _Claim(pick, self.config.run_id, self.repo, n, pass_n=self._pass(pick))
             session = self._launch(claim)
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
                 self._reset(session)
@@ -2017,12 +2250,14 @@ class _Night:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
         backoff, then the next launch of any worker is the probe; under a pause another worker
         started, this worker just waits at its next launch."""
-        seconds = self.pause.on_limit(probe)
-        if seconds is None:
+        limited = self.pause.on_limit(probe)
+        if limited is None:
             self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
             return
+        seconds, streak = limited
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
         try:
+            self._record_limit(seconds, streak)  # 07-23 (DEC-06): every wait is recorded
             self._nap(seconds)
         finally:
             self.pause.backoff_done()
@@ -2766,11 +3001,13 @@ class _Night:
             raise _Stop(GUARDRAIL, "; ".join([*breaches, *notes]))
         return notes
 
-    def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP) -> None:
+    def _tool_failure(self, session: _Session, what: str, outcome: str = GAVE_UP, *,
+                      gate: GateRun | None = None) -> None:  # fmt: skip
         notes = self._restore_pre_gate()  # a gate that passed or half-wrote leaves no row behind
         self._reset(session)
         if session.counted:
-            self._record_attempt(session, outcome, TOOL, read_checks(session.claim.attempt_dir))
+            self._record_attempt(session, outcome, TOOL, read_checks(session.claim.attempt_dir),
+                                 gate=gate)  # fmt: skip
         raise _Stop(TOOL, "; ".join([what, *notes]))
 
     def _judge(self, session: _Session) -> GateRun | None:
@@ -2787,16 +3024,17 @@ class _Night:
         claim = session.claim
         self._guard(claim.status_rel, FEED)  # fix round 1: the gate starts from the driver's bytes
         self.pre_gate = {rel: self.ledger.expected(rel) for rel in (claim.status_rel, FEED)}
+        before = matched_starts(self.pre_gate[claim.status_rel], pick.unit)  # `regressions`
         try:
-            gate = self.deps.gate(pick, n)
+            gate = replace(self.deps.gate(pick, n), matched_before=before)
         finally:
             self.ledger.note(claim.status_rel, FEED)  # the gate's output: the one read-back
         if gate.exit_code not in (EXIT_OK, EXIT_MISMATCH):
-            self._tool_failure(session, f"gate exited {gate.exit_code}")
+            self._tool_failure(session, f"gate exited {gate.exit_code}", gate=gate)
         stems = sorted(PurePosixPath(name).stem.lower() for name, _ in gate_sha1s(gate.doc))
         if gate.exit_code == EXIT_OK and stems != sorted(EXE_ORDER):  # minor 7
             self._tool_failure(session, f"gate passed but its SHA-1s name {stems}, not both of "
-                                        f"{sorted(EXE_ORDER)}")  # fmt: skip
+                                        f"{sorted(EXE_ORDER)}", gate=gate)  # fmt: skip
         return gate
 
     def _gate_matched(self, session: _Session, gate: GateRun | None) -> bool:
@@ -2811,7 +3049,7 @@ class _Night:
             return True
         notes = self._restore_pre_gate()
         if notes:
-            self._tool_failure(session, "; ".join([_UNCLAIMED_PASS, *notes]))
+            self._tool_failure(session, "; ".join([_UNCLAIMED_PASS, *notes]), gate=gate)
         return False
 
     def _salvage(self, session: _Session) -> bool:
@@ -2866,9 +3104,9 @@ class _Night:
             self._reset(session)
             if outcome == PARTIAL and summary.best_source is not None:
                 if self._partial_gate(session, summary) == EXIT_TOOL:
-                    self._record_attempt(session, outcome, TOOL, summary)
+                    self._record_attempt(session, outcome, TOOL, summary, gate=gate)
                     raise _Stop(TOOL, "gate --partial exited 2")
-            self._record_attempt(session, outcome, abort, summary)
+            self._record_attempt(session, outcome, abort, summary, gate=gate)
             return outcome
 
     def _partial_gate(self, session: _Session, summary: CheckSummary) -> int | None:
@@ -2895,7 +3133,7 @@ class _Night:
         claim = session.claim
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
         log_size = self.log.stat().st_size if self.log.is_file() else 0
-        self._record_attempt(session, MATCHED, abort, summary)
+        self._record_attempt(session, MATCHED, abort, summary, gate=gate)
         try:
             message = commit_message(exe=claim.pick.exe, function=claim.function,
                                      unit=claim.pick.unit, attempt_n=claim.n,
@@ -2913,14 +3151,15 @@ class _Night:
             self.breached = True
             raise _Stop(GUARDRAIL, exc.detail) from exc
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
-            undone = self._undo_match(session, paths, summary, exc.detail, log_size)
+            undone = self._undo_match(session, paths, summary, exc.detail, log_size, gate=gate)
             raise _Stop(GUARDRAIL, undone) from exc
         except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
             why = f"{type(exc).__name__}: {exc}"
-            undone = self._undo_match(session, paths, summary, why, log_size)
+            undone = self._undo_match(session, paths, summary, why, log_size, gate=gate)
             raise _Stop(self.undo_reason or TOOL, undone) from exc
         except BaseException as exc:  # minor 3: an interrupt is undone, then re-raised
-            undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size)
+            undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size,
+                                      gate=gate)  # fmt: skip
             self.interrupted = f" during the match commit; {undone}"
             raise
         with self.cond:
@@ -2928,7 +3167,7 @@ class _Night:
             self.cond.notify_all()
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
-                    why: str, log_size: int) -> str:  # fmt: skip
+                    why: str, log_size: int, *, gate: GateRun | None = None) -> str:  # fmt: skip
         """Fix round 1 I2, completed in fix round 2 (J1): a match commit that failed leaves no
         trace of a match. Each step is best-effort with its own note: unstage what it added,
         put status.csv and the feed back to their pre-gate bytes, truncate the log to its
@@ -2958,7 +3197,7 @@ class _Night:
         if staged:
             notes.append(f"still staged: {_listed(staged)}")
         try:
-            self._record_attempt(session, GAVE_UP, TOOL, summary)
+            self._record_attempt(session, GAVE_UP, TOOL, summary, gate=gate)
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not record the attempt: {type(exc).__name__}: {exc}")
         if len(notes) > 1:  # fix round 3 K1: an incomplete undo commits nothing tonight
@@ -2966,7 +3205,14 @@ class _Night:
         return "; ".join(notes)
 
     def _drop_log_tail(self, size: int) -> list[str]:
-        """F19: the log back to `size` bytes; a refused or failed cut is a note."""
+        """F19: the log back to `size` bytes, and the night's records cut with it (07-23: the
+        totals never count a dropped line); a refused or failed cut is a note."""
+        notes = self._cut_log_tail(size)
+        kept = len(self.ledger.expected(ATTEMPT_LOG.as_posix()) or b"")
+        self.night_records = [(at, r) for at, r in self.night_records if at < kept]
+        return notes
+
+    def _cut_log_tail(self, size: int) -> list[str]:
         rel = ATTEMPT_LOG.as_posix()
         good = (self.ledger.expected(rel) or b"")[:size]
         if not self.ledger.holds(rel):  # fix round 1: put back the driver's prefix
@@ -2989,14 +3235,27 @@ class _Night:
 
     # --- records ---
 
+    def _pass(self, pick: Pick) -> int:
+        """D-08: this function's pass tonight, one more than its finished passes (read from
+        the committed log once per night; a function runs at most one pass a night)."""
+        return self.passes.get((pick.exe, pick.start), 0) + 1
+
     def _base(self, claim: _Claim, kind: str) -> dict:
-        return {"kind": kind, "run": claim.run, "exe": claim.pick.exe,
-                "function": claim.function, "unit": claim.pick.unit,
-                "start": f"0x{claim.pick.start:08X}", "attempt": claim.n}  # fmt: skip
+        """The fields every v2 attempt and abort record shares (DEC-07): `function` is the
+        pick's C name (ruling F12: aborts too), `start` its address key."""
+        return {"kind": kind, "schema": SCHEMA_V2, "run": claim.run, "exe": claim.pick.exe,
+                "function": c_name(claim.pick), "unit": claim.pick.unit,
+                "start": f"0x{claim.pick.start:08X}", "attempt": claim.n,
+                "session": MATCHING, "pass": claim.pass_n, "worker": self.worker}  # fmt: skip
 
     def _record_attempt(self, session: _Session, outcome: str, abort: str | None,
-                        summary: CheckSummary) -> None:  # fmt: skip
+                        summary: CheckSummary, *, gate: GateRun | None = None
+                        ) -> None:  # fmt: skip
+        """A v2 attempt record (DEC-07): v1's fields plus the requested model and budget (the
+        session's argv, session.build_argv), the hook blocks, the gate's verdict (null when no
+        gate ran) and the sweep evidence (P10). No transcript, C text or game bytes (D-23)."""
         use = session.usage
+        source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
                   "abort_reason": abort, "turns": use.turns,
                   "tokens": {"input": use.input_tokens, "output": use.output_tokens,
@@ -3006,7 +3265,11 @@ class _Night:
                   "model": session.text("model"),
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
-                  "truncated": list(session.pack.truncated), "date": self.deps.today()}  # fmt: skip
+                  "truncated": list(session.pack.truncated), "date": self.deps.today(),
+                  "model_requested": MODEL, "budget_usd": MAX_BUDGET_USD,
+                  "hook_blocks": _hook_blocks(session.events),
+                  "gate": _gate_field(gate, session.claim.pick),
+                  "sweep_source": source, "sweep_cells_100": cells}  # fmt: skip
         self._append(record)
 
     def _record_abort(self, claim: _Claim, retries: int) -> None:
@@ -3014,14 +3277,36 @@ class _Night:
                   "date": self.deps.today()}  # fmt: skip
         self._append(record)
 
+    def _record_limit(self, seconds: int, streak: int) -> None:
+        """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker)."""
+        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V2, "run": self.config.run_id,
+                  "worker": self.worker, "seconds": seconds, "streak": streak,
+                  "date": self.deps.today()}  # fmt: skip
+        self._append(record)
+
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
                     checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
-                    guard: bool = True) -> None:  # fmt: skip
-        record = {"kind": KIND_RUN, "run": self.config.run_id, "event": event, "reason": reason,
-                  "detail": detail, "sessions": self.sessions, "matched": self.matched,
-                  "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
-                  "date": self.deps.today()}  # fmt: skip
-        self._append(record, guard=guard)
+                    guard: bool = True, recovered: Sequence[Mapping] = ()) -> None:  # fmt: skip
+        """A v2 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
+        and, on ENDED and STOPPED, the totals over the night's own records."""
+        with self.gate_lock:  # the totals and the append see the same records
+            totals = None if event == STARTED else self._night_totals()
+            record = {"kind": KIND_RUN, "schema": SCHEMA_V2, "run": self.config.run_id,
+                      "event": event, "reason": reason, "detail": detail,
+                      "sessions": self.sessions, "matched": self.matched,
+                      "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
+                      "date": self.deps.today(), "workers": self.config.workers,
+                      "recovered": [{key: c[key] for key in ("exe", "unit", "run")}
+                                    for c in recovered],
+                      "totals": totals}  # fmt: skip
+            self._append(record, guard=guard)
+
+    def _night_totals(self) -> dict:
+        """`_totals` over this night's attempt, abort and limit records."""
+        mine = [r for _, r in self.night_records if r.get("run") == self.config.run_id]
+        limits = [r for r in mine if r["kind"] == KIND_LIMIT]
+        sessions = [r for r in mine if r["kind"] in (KIND_ATTEMPT, KIND_ABORT)]
+        return _totals(sessions, max(0.0, self.deps.clock() - self.night_start), limits)
 
     def _append(self, record: Mapping, *, guard: bool = True) -> None:
         """Every driver record goes through here (fix round 1): the log must still hold the
@@ -3041,6 +3326,48 @@ class _Night:
             with self.log.open("ab") as fh:
                 fh.write(line)
             self.ledger.set(rel, (before or b"") + line)
+            self.night_records.append((len(before or b""), dict(record)))
+
+
+def _rounded(value: float) -> float:
+    return round(value, 6)
+
+
+def _share(records: Sequence[Mapping]) -> dict:
+    """One `by_model` or `by_session` entry: sessions, matches, cost."""
+    return {"sessions": len(records), "matched": sum(r["outcome"] == MATCHED for r in records),
+            "cost_usd": _rounded(sum(r["cost_usd"] for r in records))}  # fmt: skip
+
+
+def _group(records: Sequence[Mapping], key: str) -> dict:
+    keys = dict.fromkeys(r[key] for r in records)
+    return {name: _share([r for r in records if r[key] == name]) for name in keys}
+
+
+def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Mapping]) -> dict:
+    """DEC-06's nightly totals (research section 8), computed from the night's own records so
+    they add up by construction (T-07-68): `records` are its attempt and abort records, `limits`
+    its limit records, `wall_seconds` the night's wall clock. Counted sessions by outcome,
+    turns, the four token classes, cost and session seconds are sums over the attempt
+    records; hook blocks and the regressions the gate stopped too; then the limit waits, the
+    aborts, and sessions, matches and cost per requested model and per session kind."""
+    attempts = [r for r in records if r["kind"] == KIND_ATTEMPT]
+    gates = [r["gate"] for r in attempts if r["gate"] is not None]
+    return {
+        "sessions": {o: sum(r["outcome"] == o for r in attempts) for o in _V2_OUTCOMES},
+        "turns": sum(r["turns"] for r in attempts),
+        "tokens": {k: sum(r["tokens"][k] for r in attempts) for k in _COUNT_KEYS},
+        "cost_usd": _rounded(sum(r["cost_usd"] for r in attempts)),
+        "session_seconds": _rounded(sum(r["seconds"] for r in attempts)),
+        "wall_seconds": _rounded(wall_seconds),
+        "hook_blocks": sum(r["hook_blocks"] for r in attempts),
+        "regressions_stopped": sum(g["regressions"] for g in gates),
+        "limit_waits": {"count": len(limits),
+                        "seconds": _rounded(sum(r["seconds"] for r in limits))},
+        "aborts": sum(r["kind"] == KIND_ABORT for r in records),
+        "by_model": _group(attempts, "model_requested"),
+        "by_session": _group(attempts, "session"),
+    }  # fmt: skip
 
 
 def drive(config: DriveConfig, deps: Deps, *, lock: ProcessLock | None = None) -> DriveReport:
