@@ -178,7 +178,9 @@ See `key-decisions` in the frontmatter.
 **Orchestrator ruling F13: git in the container and shallow CI.**
 - Every git call in `match_history` (log, ls-tree, cat-file, rev-parse) passes `-c safe.directory=*`, and so does the shallow probe `is_shallow`.
 - A failing probe raises StatsError and is never treated as "shallow" (`test_a_failing_git_is_an_error_not_shallow`).
-- `test_deterministic` and every trailer test run on synthetic repos. Only `test_committed_history_classes` reads the real history, and it skips with the reason "shallow clone: the committed match history is cut" (R-A's 07-37 `shallow` reason).
+- `test_deterministic` and every trailer test run on synthetic repos. Two tests read the real history:
+  - `test_committed_history_classes` skips with the reason "shallow clone: the committed match history is cut" (R-A's 07-37 `shallow` reason).
+  - `test_stats_runs_on_the_committed_data` runs `stats --json` with the default `--repo` and asserts only exit 0 and a non-empty log, so it holds on a shallow clone (the boundary is a baseline) and needs no skip. (Corrected in fix round 1.)
 - I added two synthetic shallow-clone tests (`--depth 1` and `--depth 2`). They pin that a shallow boundary is a baseline: its rows are not classed by the boundary commit's own trailers.
 - Commits `2fbbe98`, `889fe57`.
 
@@ -256,6 +258,45 @@ Execution context nonce: 9cd63a164b737c3f
 - FOUND: tools/reverseapoc/stats.py, tests/test_stats.py, tools/reverseapoc/cli.py (modified)
 - FOUND commits on this branch: e3778f6, 2fbbe98, f0bd6d8, bc7dbef, 889fe57. `git rev-list --count 5f5bbb2..HEAD` = 5 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
+
+## Fix round 1
+
+**Finding (task review, Important 1):**
+- `history().matched`, the "matched at the end" set, came from the last commit the walk reached, not from HEAD.
+- `git log --reverse --no-merges` orders by date and drops merge commits. So when status.csv changes on two branches that are then merged, the last walked commit lacks the other branch's rows.
+- That undercounts AGT-11, and the missing match is wrongly listed as reverted. A date-later side commit could also overcount a match that was reverted on main.
+- The real history is linear today, so the count of 7 was right. Phase 7's merged worktrees could change that.
+
+**Fix (`tools/reverseapoc/stats.py`):**
+- `history` reads the end state from HEAD's own status tables (`_blobs(repo, "HEAD")`, then `_matched`).
+- The walk adds `--topo-order`, so "oldest first" never puts a child before its parent.
+- Events are unchanged in kind: each non-merge commit is still compared with its own parent and classed by its own trailers. A merge brings no match of its own.
+- The shallow-boundary skip now comes first in the loop, since the walk no longer tracks tables.
+
+**Tests (`tests/test_stats.py`):**
+- `test_a_merged_history_ends_with_heads_tables`: base {0x100}. A side branch adds 0x300 (drive). Main adds 0x108 by hand, dated after the side commit. Then a `--no-ff` merge.
+  - HEAD holds 3 matched rows, and `history().matched` now equals them. At RED it was 2.
+- `test_a_merged_history_classes_every_match`: 0x100 and 0x300 are unattended, 0x108 human-written, and nothing is reverted.
+- `test_a_revert_on_one_branch_is_not_counted`: main reverts 0x100, and a side commit dated later still holds the row.
+  - After the merge, HEAD lacks 0x100, so it is listed as reverted and not counted.
+
+**RED evidence:**
+- All 3 tests failed on their assertions (`build/red/f1.xml`). The target `test_a_merged_history_ends_with_heads_tables` was missing ('ufo2p', 0x300).
+- The classifier returned `RED_EVIDENCE_OK` / `target_test_failed`.
+
+**Minor fixed:** the F13 bullet under Deviations now names both tests that read the real history (`test_committed_history_classes` and `test_stats_runs_on_the_committed_data`). The other minors stay as the orchestrator ruled.
+
+**Commits:**
+- `4aca414` test(07-37): add failing tests for a merged status.csv history
+- `d4f8c6c` fix(07-37): stats reads the end-state matched set from HEAD and walks in topo order
+- this SUMMARY commit
+
+**Counts:**
+- `uv run pytest -q tests/test_stats.py`: 49 passed.
+- `uv run pytest -q` (host, worktree): 3772 passed, 248 skipped. That is the 3 new tests on top of 3769, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- `uv run reverseapoc stats` still reports unattended 7 (flag-approved 4) and human-written 2.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
 
 ---
 *Phase: 07-mechanics-first-decompilation*
