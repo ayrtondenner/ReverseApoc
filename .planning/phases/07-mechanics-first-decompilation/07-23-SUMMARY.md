@@ -265,6 +265,39 @@ Execution context nonce: 4f4de4badc053944
 - FOUND commits on this branch: ce61d3e, e81e945, 40b5098, 9da36af, 6fcb76f, e87b146. `git rev-list --count a5047e3..HEAD` = 6 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
+## Fix round 1
+
+**Finding (task review, Important 1):** a reverted matched function always counted as 0 regressions. This fed `gate.regressions` and `totals.regressions_stopped`, so a wrong count would go into permanent committed log lines. The gate never lists a function that went back to INCLUDE_ASM in `checks[].functions`. It names one only in `problems`, on two paths:
+- the whole unit reverted: an early return with no checks;
+- one matched function reverted: named by `cross_check`.
+
+**Fix (`tools/reverseapoc/driver.py`):**
+- `matched_starts(data, unit)` reads only the claimed unit's matched rows. `_judge` now stores those in `GateRun.matched_before`, not the whole EXE's.
+- `regressions(..., mismatch=)` works from `_checked`: each start the gate's checks of the EXE list, and whether it passed.
+  - When the gate refused the unit (exit 1), every previously matched start of the unit counts, unless a check shows it passing. The claimed function is never counted.
+  - Otherwise (exit 0, or a tool exit), only a start a check shows failing counts.
+- `_gate_field` passes `mismatch = (exit == 1)`.
+
+**Tests (`tests/test_driver_records.py`):**
+- `test_a_reverted_unit_with_no_checks_counts_its_matched_functions` (a): problems and no checks give 1 regression. Another unit's matched row does not count.
+- `test_a_matched_function_missing_from_the_checks_is_a_regression` (b): the checks list only the claimed function, failing, and the result is 1.
+- `test_a_matched_function_the_failing_gate_shows_passing_is_no_regression`: 0. It passed at RED, so it pins behaviour that already held.
+
+**RED evidence:** (a) and (b) failed on their assertions with regressions 0 (`build/red/f1.xml`). The classifier returned `RED_EVIDENCE_OK` for target (a).
+
+**Commits:**
+- `d7b63e2` test(07-23): add failing tests for regressions the gate names only in problems
+- `81f1a31` fix(07-23): count a refused unit's reverted matched functions as regressions
+- this SUMMARY commit
+
+**Counts:**
+- `uv run pytest -q tests/test_driver_records.py tests/test_attempts_schema.py`: 138 passed.
+- `uv run pytest -q` (host, worktree): 3690 passed, 248 skipped. That is the 3 new tests on top of the earlier 3687, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
+The concern "regressions undercounts one case" above is resolved by this round. The review's Minor findings stay deferred, as the orchestrator ruled.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-30*
