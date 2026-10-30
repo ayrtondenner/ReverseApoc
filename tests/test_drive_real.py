@@ -58,7 +58,8 @@ def _member_keys(mech, rows, tier_id: int) -> set[tuple[str, int]]:
 def test_real_tier_queue_holds_the_signed_tiers_members(worlds):
     """07-26 over the committed config/: the tier queue's members are exactly the signed tiers'
     must-match sets (a row of two tiers in the first), never an asm row; its first dry-run
-    picks are unmatched Tier 1 members, each once, a leaf first."""
+    picks are unmatched Tier 1 members, each once (whatever passes the log holds: members come
+    before hubs and later tiers, 07-26 review I1)."""
     config_root = REPO_ROOT / "config"
     mech, rows = mechanics.read_committed(config_root)
     signed = mechanics.signed_tiers(mech, rows)
@@ -77,7 +78,6 @@ def test_real_tier_queue_holds_the_signed_tiers_members(worlds):
     picks = driver.pilot_picks(options, worlds, today="2026-10-25")
     assert len(picks) == driver.DRY_RUN_TIER_PICKS
     assert len({p.key for p in picks}) == len(picks)
-    assert picks[0].level == 0
     matched = driver.matched_keys(config_root)
     for pick in picks:
         assert (pick.tier, pick.hub) == (1, False) and pick.key in tier1 - matched

@@ -31,8 +31,11 @@ the group's call graph (every edge kind but midrow, owner ruling Q1, plus the ha
 condensed to SCCs, leaves at level 0. An item is eligible when it is not matched, not in flight,
 its unit is not claimed, and every group callee of its SCC outside the SCC is matched or has
 finished a pass (capped at least once); hubs, asm and closure rows never block a member. The
-next pick is the eligible item with the least (finished passes, tier, member before hub, level,
-rank): every eligible function runs pass N before any runs pass N+1 (D-08). No variety rule.
+next pick is the eligible item with the least (tier, member before hub, aborted passes,
+finished passes, level, rank): a hub or a later tier's row runs only while no member of an
+earlier group is eligible (07-26 review I1), and inside a group every eligible function runs
+pass N before any runs pass N+1 (D-08), a pass a transient abort ended going last (review I2).
+No variety rule.
 """
 
 from __future__ import annotations
@@ -324,7 +327,8 @@ class TierQueue:
 
     `matched` is every matched key; `passes` maps a key to its finished passes and is read live,
     never written (the night counts the passes, `use_passes` binds the night's own index).
-    `take` marks an item in flight, `finish` ends that (`matched` adds it to the matched set)."""
+    `take` marks an item in flight, `finish` ends that (`matched` adds it to the matched set;
+    `aborted`, a pass a transient abort ended, sends it behind its group's other work)."""
 
     def __init__(self, items: Iterable[TierItem], callees: Mapping[Key, Iterable[Key]], *,
                  matched: Iterable[Key] = (), passes: Passes | None = None) -> None:  # fmt: skip
@@ -333,6 +337,7 @@ class TierQueue:
         self._matched = set(matched)
         self._passes: Passes = {} if passes is None else passes
         self._flight: set[Key] = set()
+        self._aborts: Counter[Key] = Counter()  # passes a transient abort ended, this queue's life
 
     @property
     def items(self) -> tuple[TierItem, ...]:
@@ -354,13 +359,18 @@ class TierQueue:
         return all(self._done_once(callee) for callee in self._callees.get(key, ()))
 
     def _order(self, item: TierItem) -> tuple:
-        return (self._passes.get(item.key, 0), item.tier, item.hub, item.level, item.rank,
-                EXE_ORDER.index(item.pick.exe))  # fmt: skip
+        """07-26 review I1 (orchestrator ruling): the group (tier, member before hub) first, so
+        an eligible member is never passed over for a hub or a later tier; inside the group
+        aborted passes go last, then pass N before N+1 (D-08), then level and rank."""
+        key = item.key
+        return (item.tier, item.hub, self._aborts[key], self._passes.get(key, 0), item.level,
+                item.rank, EXE_ORDER.index(item.pick.exe))  # fmt: skip
 
     def next_item(self, claimed_units: Container[tuple[str, str]] = frozenset()) -> TierItem | None:
-        """The eligible item with the least (finished passes, tier, member before hub, level,
-        rank), its `pass_n` set; None when no item is eligible now. `claimed_units` holds the
-        (EXE, unit) pairs other passes hold: their items are skipped, not dropped."""
+        """The eligible item with the least (tier, member before hub, aborted passes, finished
+        passes, level, rank), its `pass_n` set; None when no item is eligible now.
+        `claimed_units` holds the (EXE, unit) pairs other passes hold: their items are skipped,
+        not dropped."""
         eligible = (item for item in self._items if self._eligible(item, claimed_units))
         best = min(eligible, key=self._order, default=None)
         if best is None:
@@ -378,6 +388,7 @@ class TierQueue:
         passes = dict(self._passes)
         trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes)
         trial._flight = set(self._flight)
+        trial._aborts = Counter(self._aborts)
         out: list[TierItem] = []
         while len(out) < count and (item := trial.next_item()) is not None:
             out.append(item)
@@ -388,10 +399,12 @@ class TierQueue:
     def take(self, key: Key) -> None:
         self._flight.add(key)
 
-    def finish(self, key: Key, *, matched: bool) -> None:
+    def finish(self, key: Key, *, matched: bool, aborted: bool = False) -> None:
         self._flight.discard(key)
         if matched:
             self._matched.add(key)
+        if aborted:
+            self._aborts[key] += 1
 
 
 def _call_graph(mech: Mechanics, exe: str, graph: CallGraph) -> CallGraph:
