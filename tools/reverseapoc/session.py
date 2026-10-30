@@ -268,13 +268,17 @@ def run_session(
     timeout_s: float = TIMEOUT_S,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
     clock: Callable[[], float] = time.monotonic,
+    on_start: Callable[[int], None] | None = None,
+    on_end: Callable[[int], None] | None = None,
 ) -> SessionResult:
     """Run `argv` in `cwd` with exactly `env` and no stdin, as the root of a new process group.
     Each raw stdout line is appended to `transcript` (opened for append) as it arrives and
     parsed; a malformed line is counted, never fatal. When `timeout_s` passes on `clock`
     (monotonic) before the session ends, the whole tree is killed and the result says
     `timed_out` (D-07's 30-minute wall clock). stderr is inherited, so the driver's console
-    shows it."""
+    shows it. 07-21 (D-07 stop-all): `on_start(pid)` is called with the session's pid right
+    after it starts, before any line is read, and `on_end(pid)` once it has ended, also when
+    this raises, so the driver's registry can kill every live session tree on a stop."""
     transcript.parent.mkdir(parents=True, exist_ok=True)
     deadline = clock() + timeout_s
     proc = popen(
@@ -286,6 +290,19 @@ def run_session(
         **_group_options(),
     )
     try:
+        return _run_started(proc, transcript, deadline, clock, on_start)
+    finally:
+        if on_end is not None:
+            on_end(proc.pid)
+
+
+def _run_started(proc: subprocess.Popen, transcript: Path, deadline: float,
+                 clock: Callable[[], float],
+                 on_start: Callable[[int], None] | None) -> SessionResult:  # fmt: skip
+    """run_session once the process exists: report it, read it, reap it (see run_session)."""
+    try:
+        if on_start is not None:
+            on_start(proc.pid)
         reader = _Reader(proc.stdout)
         with transcript.open("ab") as log:
             record = _Transcript(log)
