@@ -257,7 +257,7 @@ class Deps:
     gate: Callable[[Pick, int], GateRun]
     partial_gate: Callable[[Pick, str, int], int]
     remove_containers: Callable[[str], None]
-    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    git: Callable[..., subprocess.CompletedProcess]  # (args), or (args, input=bytes): stdin
     clock: Callable[[], float] = time.monotonic
     sleep: Callable[[float], None] = time.sleep
     today: Callable[[], str] = _today
@@ -291,12 +291,13 @@ class DriveReport:
 def git_runner(repo: Path, *, env: Mapping[str, str] | None = None):
     """`git <args>` in `repo` as an argv list, never a shell; stdout and stderr as bytes. The
     env (given, else this process's) carries GIT_OPTIONAL_LOCKS=0, so a read such as `git
-    status` never takes index.lock (D-27 P4)."""
+    status` never takes index.lock (D-27 P4). `input`, when given, is git's stdin (07-21 fix
+    round 2: `hash-object --stdin`)."""
     run_env = {**(os.environ if env is None else env), OPTIONAL_LOCKS: "0"}
 
-    def git(args: Sequence[str]) -> subprocess.CompletedProcess:
+    def git(args: Sequence[str], input: bytes | None = None) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(["git", *args], cwd=repo, env=dict(run_env),
+            return subprocess.run(["git", *args], cwd=repo, env=dict(run_env), input=input,
                                   capture_output=True, check=False)  # fmt: skip
         except OSError as exc:  # fix round 1 I2: a missing or unrunnable git is a failed call
             return subprocess.CompletedProcess(["git", *args], _os_error_exit(exc), b"",
@@ -1284,6 +1285,17 @@ class _Breach(Exception):
         self.detail = detail
 
 
+class _Kept(Exception):
+    """07-21 fix round 2 (N2, N4): the driver's match commit exists and HEAD is left where it
+    is (a foreign commit came in, HEAD could not be moved back, or the post-commit check
+    itself failed). Nothing is undone under the kept commit; the night stops `guardrail`
+    and `detail` says why."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail)
+        self.detail = detail
+
+
 class _Stop(Exception):
     """Ends the night with a STOPPED record. After any breach (containment ran) nothing is
     committed, whatever the reason (fix round 2, J2)."""
@@ -1827,10 +1839,12 @@ class _Night:
         message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LOG_MSG)
         self._commit_with_retry(message=message, message_file=message_file, paths=changed)
 
-    def _git(self, args: Sequence[str]) -> subprocess.CompletedProcess:
-        """Every driver git call, one at a time behind the git lock (D-27 P4)."""
+    def _git(self, args: Sequence[str], *, input: bytes | None = None
+             ) -> subprocess.CompletedProcess:  # fmt: skip
+        """Every driver git call, one at a time behind the git lock (D-27 P4). `input` is git's
+        stdin (fix round 2); a call without one keeps the plain `git(args)` seam."""
         with self.git_lock:
-            return self.deps.git(args)
+            return self.deps.git(args) if input is None else self.deps.git(args, input=input)
 
     def _git_retry(self, args: list[str]) -> bytes:
         """`git --literal-pathspecs <args>`, retried once after INDEX_LOCK_WAIT_S when git
@@ -2376,34 +2390,75 @@ class _Night:
                 text += f"; {label}: {_listed(items)}"
         return "; ".join([text, *done.refused])
 
-    def _verify_commit(self, claim: _Claim, paths: Sequence[str], old: str) -> None:
+    def _verify_commit(self, claim: _Claim, paths: Sequence[str], old: str, subject: str
+                       ) -> None:  # fmt: skip
         """07-21 fix round 1 (I1): `git commit -- <paths>` reads the worktree again after
         `_verify_landing`, so a live session's write in between would be committed. Each
-        committed blob must be the unit the driver landed or the driver's ledgered bytes. On a
-        difference the driver moves HEAD back off its own commit, only while HEAD is still that
-        commit (`git update-ref HEAD <old> <new>`), contains each path and raises _Breach,
-        which the caller's `_undo_match` takes from there."""
-        new = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
-        wanted = {rel: (self.landed_bytes if rel == claim.unit_rel else self.ledger.expected(rel))
-                  for rel in paths}  # fmt: skip
-        bad = []
-        for rel, want in wanted.items():
-            done = self._git(["cat-file", "blob", f"{new}:{rel}"])
-            if (done.stdout if done.returncode == 0 else None) != want:
-                bad.append(rel)
-        if not bad:
-            return
-        notes = [f"the match commit {new[:12]} holds bytes the driver did not write: "
-                 f"{_listed(bad)}"]  # fmt: skip
+        committed blob must be the unit the driver landed or the driver's ledgered bytes, as
+        git stores them (fix round 2, N1: object ids hashed with the path's attributes, so an
+        eol rule never reads as a breach). On a difference the driver moves HEAD back off its
+        own commit (`git update-ref HEAD <old> <new>`), contains each path and raises _Breach,
+        which the caller's `_undo_match` takes from there.
+
+        Fix round 2 (N2): HEAD is only ever moved back when it is the driver's own commit, made
+        on the HEAD it read: one parent, `old`, and the driver's subject. Otherwise a foreign
+        commit came in; HEAD stays, the record names it and `_Kept` stops the night. N4: a
+        failing check, or a failed move, also leaves the commit, and nothing is put back
+        under it (`_Kept`)."""
         try:
-            _git_ok(self._git, ["update-ref", "-m", "reverseapoc drive: undo a tampered match",
-                                "HEAD", old, new])  # fmt: skip
-            notes.append(f"HEAD moved back to {old[:12]}")
-        except Exception as exc:  # noqa: BLE001 - named; the commit then stays, reported
-            notes.append(f"HEAD could not be moved back: {type(exc).__name__}: {exc}")
+            new = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+            foreign = self._foreign_commits(old, new, subject)
+            wanted = {rel: (self.landed_bytes if rel == claim.unit_rel
+                            else self.ledger.expected(rel)) for rel in paths}  # fmt: skip
+            bad = [rel for rel, want in wanted.items() if not self._committed_as(new, rel, want)]
+        except Exception as exc:  # noqa: BLE001 - N4: the commit exists; named, nothing undone
+            raise _Kept(f"the match commit was made but could not be checked: "
+                        f"{type(exc).__name__}: {exc}; HEAD was not moved and nothing was "
+                        f"put back under the commit") from exc  # fmt: skip
+        if not bad and not foreign:
+            return
+        notes, kept = [], bool(foreign)
+        if foreign:
+            notes.append(f"commits the driver did not make came in during its match commit: "
+                         f"{_listed(foreign)}; HEAD left at {new[:12]}, "
+                         f"not moved back")  # fmt: skip
+        if bad:
+            notes.append(f"the match commit holds bytes the driver did not write: {_listed(bad)}")
+        if bad and not foreign:
+            try:
+                _git_ok(self._git, ["update-ref", "-m", "reverseapoc drive: undo a tampered match",
+                                    "HEAD", old, new])  # fmt: skip
+                notes.append(f"HEAD moved back to {old[:12]}")
+            except Exception as exc:  # noqa: BLE001 - named; the commit then stays (N4)
+                notes.append(f"HEAD could not be moved back: {type(exc).__name__}: {exc}")
+                kept = True
         for rel in bad:
             notes.append(self._breach(rel, wanted[rel], ledgered=rel != claim.unit_rel))
-        raise _Breach("; ".join(notes))
+        raise (_Kept if kept else _Breach)("; ".join(notes))
+
+    def _foreign_commits(self, old: str, new: str, subject: str) -> list[str]:
+        """N2: the commits from `old` to HEAD (`new`) the driver did not make, as "<sha> <subject>".
+        Empty when HEAD is the driver's own commit on `old`: exactly one parent, `old`, and the
+        driver's subject."""
+        parents = _git_ok(self._git, ["rev-list", "--parents", "-n", "1", new]).decode().split()
+        own = _git_ok(self._git, ["log", "-1", "--format=%s", new]).decode().strip()
+        if parents[1:] == [old] and own == subject:
+            return []
+        out = _git_ok(self._git, ["log", "--format=%H %s", f"{old}..{new}"]).decode()
+        found = [(line[:12], line.partition(" ")[2]) for line in out.splitlines() if line]
+        foreign = [f"{sha} {text}" for sha, text in found if text != subject]
+        listed = [f"{sha} {text}" for sha, text in found]
+        return foreign or listed or [f"HEAD {new[:12]} does not descend from {old[:12]}"]
+
+    def _committed_as(self, commit: str, rel: str, data: bytes | None) -> bool:
+        """N1: whether `commit` holds `rel` as git would store `data` there (None: no such
+        path). `data` is hashed with `hash-object --path=<rel> --stdin`, which applies the same
+        attributes (eol, filters) as the commit did; the object ids are compared."""
+        done = self._git([LITERAL, "rev-parse", "--verify", "--quiet", f"{commit}:{rel}"])
+        if data is None or done.returncode != 0:
+            return data is None and done.returncode != 0
+        hashed = self._git([LITERAL, "hash-object", f"--path={rel}", "--stdin"], input=data)
+        return _git_stdout(hashed, ["hash-object", rel]).strip() == done.stdout.strip()
 
     def _unexplained(self, status: Mapping[str, tuple[str, str | None]]) -> list[str]:
         """Invariant (a): each path of `status` (git status after the session) or of the
@@ -2591,7 +2646,11 @@ class _Night:
                      tracked: frozenset[str]) -> None:  # fmt: skip
         """Contain one stray (see _contain)."""
         before = session.before
-        pinned = name in session.pinned_changed and name.casefold() not in tracked
+        # 07-21 fix round 2 (N3): once the night's baseline is set (the night starts clean),
+        # every pinned change goes back to it, tracked or not; a launch snapshot may hold a
+        # stray. Outside a night an untracked pinned name keeps its snapshot bytes as before.
+        pinned = name in session.pinned_changed and (
+            self.pinned_base is not None or name.casefold() not in tracked)
         path = self._pinned_path(name) if pinned else self.repo / name
         if pinned:  # C1: back to the night's baseline, never a launch snapshot's stray
             earlier = self._pinned_baseline(before).get(name)
@@ -2848,7 +2907,11 @@ class _Night:
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
                                     paths=paths)  # fmt: skip
-            self._verify_commit(claim, paths, old)  # fix round 1 (I1)
+            subject = message.partition("\n")[0]
+            self._verify_commit(claim, paths, old, subject)  # I1; fix round 2: N1, N2, N4
+        except _Kept as exc:  # fix round 2: the commit stays, so nothing is put back under it
+            self.breached = True
+            raise _Stop(GUARDRAIL, exc.detail) from exc
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
             undone = self._undo_match(session, paths, summary, exc.detail, log_size)
             raise _Stop(GUARDRAIL, undone) from exc
@@ -3042,7 +3105,7 @@ class Seams:
     stamps read (local time; Deps.clock stays the monotonic clock for durations)."""
 
     run: Runner
-    git: Callable[[Sequence[str]], subprocess.CompletedProcess]
+    git: Callable[..., subprocess.CompletedProcess]  # Deps.git: (args) or (args, input=bytes)
     world: Callable[[], Mapping[str, ExeWorld]]
     session: Callable[..., SessionResult]
     argv: Callable[[str], Sequence[str]]

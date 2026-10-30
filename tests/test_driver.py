@@ -327,10 +327,11 @@ class Night:
                 fh.write(f"0x{pick.start:08X},{pick.name},{pick.unit},partial,50.00,{attempts}\n")
         return code
 
-    def _recorded_git(self, args):
+    def _recorded_git(self, args, input=None):
         """The real git in the tmp repo, recording every argv. After the first launch, a
         `status` also reports the made-up untracked entries in `self.inject` (a name NTFS
-        cannot hold, such as `include/*.h`, can only reach the driver this way)."""
+        cannot hold, such as `include/*.h`, can only reach the driver this way). `input` is
+        git's stdin (07-21 fix round 2: `hash-object --stdin`)."""
         self.git_calls.append(list(args))
         if self.on_git is not None:
             self.on_git(list(args))
@@ -344,7 +345,7 @@ class Night:
         if armed and self.fail_plan.get(verb):  # per call: True fails, False runs
             if self.fail_plan[verb].pop(0):
                 return subprocess.CompletedProcess(args, 128, b"", LOCK_ERROR)
-        done = self._git(args)
+        done = self._git(args) if input is None else self._git(args, input=input)
         if "status" in args and self.launched and self.inject:
             extra = b"".join(f"?? {path}\0".encode() for path in self.inject)
             out = (done.stdout or b"") + extra
