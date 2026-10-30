@@ -555,3 +555,69 @@ def test_committed_history_classes():
     assert set(_PHASE5) <= written
     seed = [e for e in events if (e.exe, f"0x{e.start:08X}") in _PHASE5]
     assert {e.commit[:7] for e in seed} == {"fc7d1cd"}
+
+
+# ---- fix round 1: a merged status.csv history ----
+
+
+def _dated(env: dict, seconds: int) -> dict:
+    """`env` with author and committer dates fixed, so the date order is known."""
+    when = f"{1_800_000_000 + seconds} +0000"
+    return {**env, "GIT_AUTHOR_DATE": when, "GIT_COMMITTER_DATE": when}
+
+
+def _head_matched(repo: Path, env: dict) -> set[tuple[str, int]]:
+    """HEAD's matched rows, read straight from its status.csv."""
+    text = _git(repo, env, "show", "HEAD:config/ufo2p/status.csv")
+    return {("ufo2p", int(line.split(",")[0], 16)) for line in text.splitlines()
+            if ",matched," in line}  # fmt: skip
+
+
+def _merged_repo(tmp_path: Path) -> tuple[Path, dict]:
+    """status.csv changes on two branches, then a merge. The side branch adds 0x300 (drive);
+    main adds 0x108 by hand, dated after the side commit, so the last commit in date order
+    lacks the side branch's row. Eight partial rows keep the two edits apart (no conflict)."""
+    repo, env = _repo(tmp_path)
+    base = {0x100: "matched", **{0x110 + 0x10 * i: "partial" for i in range(8)}}
+    _commit(repo, _dated(env, 0), "ufo2p", base, "feat: base", _DRIVE)
+    _git(repo, env, "checkout", "-q", "-b", "side")
+    _commit(repo, _dated(env, 10), "ufo2p", {**base, 0x300: "matched"}, "feat: side", _DRIVE)
+    _git(repo, env, "checkout", "-q", "main")
+    _commit(repo, _dated(env, 20), "ufo2p", {**base, 0x108: "matched"}, "feat: main by hand")
+    _git(repo, _dated(env, 30), "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    return repo, env
+
+
+def test_a_merged_history_ends_with_heads_tables(tmp_path):
+    repo, env = _merged_repo(tmp_path)
+    expected = {("ufo2p", 0x100), ("ufo2p", 0x108), ("ufo2p", 0x300)}
+    assert _head_matched(repo, env) == expected
+    assert reverseapoc.stats.history(repo).matched == expected
+
+
+def test_a_merged_history_classes_every_match(tmp_path, capsys):
+    repo, _ = _merged_repo(tmp_path)
+    report = _json(capsys, repo, _empty_log(tmp_path))
+    classes = {e["start"]: e["class"] for e in report["events"]}
+    assert classes == {"0x00000100": "unattended", "0x00000108": "human-written",
+                       "0x00000300": "unattended"}  # fmt: skip
+    assert report["classes"] == {"human-hints": 0, "human-written": 1, "unattended": 2}
+    assert report["reverted"] == []
+
+
+def test_a_revert_on_one_branch_is_not_counted(tmp_path, capsys):
+    """Main reverts 0x100; a side commit dated later still holds the row. HEAD (the merge)
+    has no 0x100, so it is reverted, not counted."""
+    repo, env = _repo(tmp_path)
+    base = {0x100: "matched", **{0x110 + 0x10 * i: "partial" for i in range(8)}}
+    _commit(repo, _dated(env, 0), "ufo2p", base, "feat: base", _DRIVE)
+    _git(repo, env, "checkout", "-q", "-b", "side")
+    _commit(repo, _dated(env, 20), "ufo2p", {**base, 0x300: "matched"}, "feat: side", _DRIVE)
+    _git(repo, env, "checkout", "-q", "main")
+    reverted = {**base, 0x100: "partial"}
+    _commit(repo, _dated(env, 10), "ufo2p", reverted, "revert: 0x100")
+    _git(repo, _dated(env, 30), "merge", "-q", "--no-ff", "-m", "merge side", "side")
+    assert ("ufo2p", 0x100) not in _head_matched(repo, env)
+    report = _json(capsys, repo, _empty_log(tmp_path))
+    assert report["reverted"] == ["ufo2p 0x00000100"]
+    assert report["classes"] == {"human-hints": 0, "human-written": 0, "unattended": 1}
