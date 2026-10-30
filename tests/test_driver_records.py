@@ -75,11 +75,14 @@ def test_attempt_record_is_v2(tmp_path):
         "MATCHED", FUNC, f"0x{START:08X}")  # fmt: skip
 
 
-def test_every_record_of_a_night_is_v2(tmp_path):
-    """From this plan on the driver writes only v2 records: the run records too."""
-    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+def test_every_attempt_record_of_a_night_is_v2(tmp_path):
+    """From this plan on the driver writes only v2 attempt records (the run records follow in
+    Task 3, test_every_record_of_a_night_is_v2)."""
+    night = Night(tmp_path, sessions=[Sess(checks=(check_line(1, 30.0),))] * 3)
     night.run()
-    for record in night.records():
+    attempts = [r for r in night.records() if r["kind"] != "run"]
+    assert len(attempts) == 3
+    for record in attempts:
         driver.validate_record(record)
         assert record["schema"] == 2, record["kind"]
 
@@ -199,4 +202,3 @@ def test_abort_record_is_v2_with_the_c_name(tmp_path):
     driver.validate_record(abort)
     assert (abort["schema"], abort["function"], abort["session"], abort["pass"],
             abort["worker"], abort["retries"]) == (2, "GetMadeUpVolume", "matching", 1, 0, 3)
-
