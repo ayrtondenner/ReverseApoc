@@ -249,6 +249,33 @@ def test_escalated_argv_passes_its_init_check():
 
 
 @pytest.mark.parametrize(
+    ("reported", "requested"),
+    [("claude-opus-5-5", "claude-fable-5-1"), ("claude-fable-5-1", "claude-opus-5-5")],
+)
+def test_init_rejects_mismatch(reported, requested):
+    """D-09: a session that reports the other model is one model problem, either direction."""
+    init = _init_with_model(reported)
+    problems = check_init(
+        init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model=requested
+    )
+    assert len(problems) == 1, problems
+    assert "model" in problems[0]
+    assert reported in problems[0]
+    assert requested in problems[0]
+    assert "D-09" in problems[0]
+
+
+def test_init_unknown_expected_model():
+    """T-07-124: an unknown requested model fails closed, even when the init echoes it."""
+    init = _init_with_model("claude-other-1")
+    problems = check_init(
+        init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model="claude-other-1"
+    )
+    assert len(problems) == 1, problems
+    assert "claude-other-1" in problems[0]
+
+
+@pytest.mark.parametrize(
     ("text", "version"),
     [("2.1.240", (2, 1, 240)), ("2.1.240 (Claude Code)\n", (2, 1, 240)), ("10.0.3", (10, 0, 3))],
 )
