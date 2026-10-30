@@ -778,16 +778,23 @@ def _attempt_record(function: str, unit: str, attempt: int, *,
 class FakeGate:
     """The container `gate EXE/UNIT` stand-in: on a pass it writes the unit's functions as
     matched rows to status.csv and rewrites the feed; on a failure it scribbles over both
-    (what a half-run tool might leave) and exits 1."""
+    (what a half-run tool might leave) and exits 1. It also stands in for the container `lint
+    src/<exe>/<unit>.c` (recorded in `lints` with the unit's bytes): exit 0, or the (exit,
+    stderr) that `lint_fail` gives the unit."""
 
     def __init__(self, repo: Path, functions: dict[str, tuple[str, ...]], *,
-                 fail: tuple[str, ...] = ()) -> None:  # fmt: skip
+                 fail: tuple[str, ...] = (),
+                 lint_fail: dict[str, tuple[int, str]] | None = None) -> None:  # fmt: skip
         self.repo, self.functions, self.fail = repo, functions, set(fail)
+        self.lint_fail = dict(lint_fail or {})
         self.calls: list[list[str]] = []
         self.cflags_seen: list[str] = []
+        self.lints: list[tuple[list[str], bytes]] = []
 
     def __call__(self, argv):
         argv = list(argv)
+        if "lint" in argv:
+            return self._lint(argv)
         self.calls.append(argv)
         self.cflags_seen.append((self.repo / "config" / "cflags.txt").read_text(encoding="utf-8"))
         exe, unit = argv[argv.index("gate") + 1].split("/")
@@ -805,6 +812,12 @@ class FakeGate:
                           encoding="utf-8", newline="\n")  # fmt: skip
         feed.write_text(json.dumps({"matched": len(rows)}) + "\n", encoding="utf-8", newline="\n")
         return subprocess.CompletedProcess(argv, 0, json.dumps({"ok": True}), "")
+
+    def _lint(self, argv: list[str]):
+        src = argv[argv.index("lint") + 1]
+        self.lints.append((argv, (self.repo / src).read_bytes()))
+        code, stderr = self.lint_fail.get(Path(src).stem, (0, ""))
+        return subprocess.CompletedProcess(argv, code, "lint: 1 files", stderr)
 
 
 @dataclasses.dataclass
@@ -848,7 +861,9 @@ def _queued(repo: Path, pid: str, unit: str, function: str, text: str, *, attemp
 
 
 def approve_repo(tmp_path: Path, *, fail: tuple[str, ...] = (), second: bool = False,
-                 records: tuple[dict, ...] | None = None, **changes) -> Approval:  # fmt: skip
+                 records: tuple[dict, ...] | None = None,
+                 lint_fail: dict[str, tuple[int, str]] | None = None,
+                 **changes) -> Approval:  # fmt: skip
     """A committed checkout: cflags.txt (the `*` rule), docs/matching.md, the ufo2p status.csv,
     the feed, attempts.jsonl, scaffolded units, and F-0001 (u_00060c50, func_00061F30)
     regated; with `second`, also F-0002 (u_00026dd0, func_00026FD0)."""
@@ -879,7 +894,8 @@ def approve_repo(tmp_path: Path, *, fail: tuple[str, ...] = (), second: bool = F
     _git(repo, env, "init", "-q")
     _git(repo, env, "add", "-A")
     _git(repo, env, "commit", "-q", "-m", "base")
-    return Approval(repo, env, FakeGate(repo, {UNIT: (F30,), U2: (F26,)}, fail=fail))
+    return Approval(repo, env, FakeGate(repo, {UNIT: (F30,), U2: (F26,)}, fail=fail,
+                                        lint_fail=lint_fail))  # fmt: skip
 
 
 def test_approve_lands_one_commit(tmp_path):
@@ -947,6 +963,45 @@ def test_approve_restores_on_gate_failure(tmp_path):
     assert p.status == "failed" and "gate" in p.reason and "made-up miss" in p.reason
     assert (p.approved_by, p.approved_date) == ("", "")
     assert _git(a.repo, a.env, "diff", "--cached", "--name-only") == ""
+
+
+def test_approve_lints_the_landed_unit_before_the_gate(tmp_path):
+    """The landed C passes the container C89 lint (`lint src/<exe>/<unit>.c`) before the gate
+    runs, the same way the driver lints a unit before its gate."""
+    a = approve_repo(tmp_path)
+    candidate = (a.repo / "build" / "flags" / "F-0001" / f"{UNIT}.c").read_bytes()
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert a.gate.lints == [([*driver.CONTAINER_CLI, "lint", f"src/ufo2p/{UNIT}.c"], candidate)]
+    assert len(a.gate.calls) == 1  # then the gate, once
+
+
+LINT_MISS = f"src/ufo2p/{UNIT}.c:12:10: fatal error: 'stdio.h' file not found"
+NO_CLANG = ("reverseapoc lint: error: clang-18 / clang not found on PATH; the lint gate runs in "
+            "the container")  # fmt: skip
+
+
+@pytest.mark.parametrize(("code", "stderr"), [(1, LINT_MISS), (1, NO_CLANG), (127, "no docker")],
+                         ids=["lint-error", "no-clang", "no-container"])  # fmt: skip
+def test_approve_refuses_a_unit_that_fails_the_lint(tmp_path, code, stderr):
+    """A landed unit that fails the C89 lint, or a lint that cannot run, is refused like a
+    failed gate: every file restored, the proposal failed naming the lint, no commit, and the
+    gate never runs. A lint that cannot run is never skipped."""
+    a = approve_repo(tmp_path, lint_fail={UNIT: (code, stderr)})
+    base, before = a.head(), a.files()
+    report = a.approve(["F-0001"])
+    assert report.exit_code == 1 and report.landed == () and report.failed == ("F-0001",)
+    assert a.head() == base
+    after = a.files()
+    for rel in APPROVE_FILES:
+        if rel != "config/cflags-proposals.toml":
+            assert after[rel] == before[rel], rel
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert p.status == "failed" and p.reason.startswith(f"lint exit {code}")
+    assert stderr.split(":")[-1].strip() in p.reason
+    assert (p.approved_by, p.approved_date) == ("", "")
+    assert a.gate.calls == []  # the gate never ran
+    assert _git(a.repo, a.env, "diff", "--cached", "--name-only") == ""
+    assert "F-0001 failed: lint exit" in report.format()
 
 
 def test_approve_order(tmp_path):

@@ -20,4 +20,8 @@ paths:
   commits. Default `__watcall` needs no pragma.
 - Never touch `orig/`, hash manifests under `config/`, or build scripts to make a check pass.
 - Lint gate: `clang -fsyntax-only -std=gnu89 -Werror=declaration-after-statement` with the
-  compat header. clang-format only with pragma masking; formatting must never change the build.
+  compat header and `-nostdlibinc`: C89's freestanding headers (`<stdarg.h>`, `<stddef.h>`,
+  `<limits.h>`, `<float.h>`) are allowed, no system or Watcom header.
+  clang's other built-in headers (`<stdint.h>`, `<stdbool.h>`, `<iso646.h>`, intrinsics) pass
+  the lint but do not exist in Watcom 10.x: never include them.
+  clang-format only with pragma masking; formatting must never change the build.
