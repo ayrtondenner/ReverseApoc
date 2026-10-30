@@ -32,9 +32,13 @@ from typing import IO
 from .hooks import ATTEMPT_NAME, ATTEMPT_PREFIX
 from .streamjson import EXPECTED_TOOLS, parse_line
 
-MODEL = "claude-opus-5-5"  # D-35, the literal id
+OPUS_MODEL = "claude-opus-5-5"  # D-35, the literal id
+FABLE_MODEL = "claude-fable-5-1"  # Phase 7 D-09, the escalation model
+MODEL = OPUS_MODEL  # the default model of a session (passes 1 and 2)
+ESCALATE_AFTER_PASSES = 2  # Phase 7 D-09: two capped Opus passes, then Fable
 MAX_TURNS = 40  # D-07
-MAX_BUDGET_USD = 5  # D-06, a runaway guard
+MAX_BUDGET_USD = 5  # D-06 (Phase 7 D-07: per Opus session), a runaway guard
+FABLE_BUDGET_USD = 12.5  # Phase 7 D-25: per Fable session
 MAX_CHECK_RUNS = 25  # D-07's /goal clause
 TIMEOUT_S = 30 * 60  # D-07's wall clock per session
 _POLL_S = 1.0  # how often the reader looks at the clock while no line comes
@@ -57,8 +61,25 @@ _WRAPPER = " ".join(ATTEMPT_PREFIX)
 _CHECK = f"{_WRAPPER} check"
 
 
-def build_argv(prompt: str, *, claude: str) -> list[str]:
-    """D-06's argv for one session, `claude` being the CLI executable."""
+def model_for_pass(pass_number: int) -> str:
+    """The model of a function's pass `pass_number` (1-based, Phase 7 D-09): Opus while the pass
+    is within ESCALATE_AFTER_PASSES, Fable for every later pass."""
+    if pass_number < 1:
+        raise ValueError(f"pass number {pass_number} is below 1")
+    return OPUS_MODEL if pass_number <= ESCALATE_AFTER_PASSES else FABLE_MODEL
+
+
+def build_argv(
+    prompt: str,
+    *,
+    claude: str,
+    model: str = MODEL,
+    max_budget_usd: float = MAX_BUDGET_USD,
+    max_turns: int = MAX_TURNS,
+) -> list[str]:
+    """D-06's argv for one session, `claude` being the CLI executable. `model`, `max_budget_usd`
+    and `max_turns` are the session's own values (Phase 7 D-09, D-25); the defaults give D-06's
+    argv token for token."""
     return [
         claude,
         "-p",
@@ -67,9 +88,9 @@ def build_argv(prompt: str, *, claude: str) -> list[str]:
         "stream-json",
         "--verbose",
         "--max-turns",
-        str(MAX_TURNS),
+        str(max_turns),
         "--model",
-        MODEL,
+        model,
         "--permission-mode",
         "dontAsk",
         "--tools",
@@ -84,7 +105,7 @@ def build_argv(prompt: str, *, claude: str) -> list[str]:
         "--append-system-prompt-file",
         SKILL,
         "--max-budget-usd",
-        str(MAX_BUDGET_USD),
+        str(max_budget_usd),
     ]
 
 
