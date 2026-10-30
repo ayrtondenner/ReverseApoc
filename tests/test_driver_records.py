@@ -335,3 +335,186 @@ def test_next_pass_number(tmp_path, monkeypatch):
     assert [c["pass"] for c in claims] == [3, 1]
     assert len(reads) == 1
 
+
+# ---- Task 3: run records, limit records, totals, the log commit after the drain (DEC-06) ----
+
+DENIAL = {"tool_name": "Bash", "tool_use_id": "toolu_made_up", "tool_input": {}}
+OUTCOMES = ("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED")
+
+
+def _run_records(night: Night, event: str) -> list[dict]:
+    return [r for r in night.kinds("run") if r["event"] == event]
+
+
+def test_every_record_of_a_night_is_v2(tmp_path):
+    """From this plan on the driver writes only v2 records: attempts, limits and run records."""
+    sessions = [Sess("rate_limit", write=None), Sess(checks=(check_line(1, 30.0),)), Sess()]
+    night = Night(tmp_path, sessions=sessions, gate_exits=[1, 0])
+    night.run()
+    kinds = [r["kind"] for r in night.records()]
+    assert kinds == ["run", "limit", "attempt", "attempt", "run"]
+    for record in night.records():
+        driver.validate_record(record)
+        assert record["schema"] == 2, record["kind"]
+
+
+def test_started_record_v2(tmp_path):
+    """STARTED carries the night's workers and every stale claim moved at start as {exe, unit,
+    run}; its totals are null (the detail still names the claims)."""
+    from test_driver_workers import _claim_record, _plant_claim
+
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+    _plant_claim(night, _claim_record("old"))
+    night.run(config={"workers": 3, "attempts_per_function": 1})
+    started = _one(_run_records(night, "STARTED"))
+    assert (started["workers"], started["totals"]) == (3, None)
+    assert started["recovered"] == [{"exe": EXE, "unit": "u_x", "run": "old"}]
+    assert "ufo2p/u_x" in started["detail"]
+    ended = _one(_run_records(night, "ENDED"))
+    assert (ended["workers"], ended["recovered"]) == (3, [])
+    assert ended["totals"] is not None
+
+
+def test_limit_record_per_wait(tmp_path):
+    """Every usage-limit wait writes one limit record: the worker, the backoff it waits and the
+    pause's streak (1 for the first wait: the 07-07 schema counts from 1)."""
+    sessions = [Sess("rate_limit", write=None), Sess("rate_limit", write=None), Sess()]
+    night = Night(tmp_path, sessions=sessions, gate_exits=[0])
+    night.run()
+    assert night.sleeps == [60, 120]
+    limits = night.kinds("limit")
+    assert [(r["worker"], r["seconds"], r["streak"]) for r in limits] == [(0, 60, 1), (0, 120, 2)]
+    for record in limits:
+        driver.validate_record(record)
+
+
+def _sums(records: list[dict]) -> dict:
+    """DEC-06's totals recomputed by the test from the night's own attempt, abort and limit
+    records (wall_seconds aside)."""
+    attempts = [r for r in records if r["kind"] == "attempt"]
+    limits = [r for r in records if r["kind"] == "limit"]
+
+    def share(group: list[dict]) -> dict:
+        return {"sessions": len(group), "matched": sum(r["outcome"] == "MATCHED" for r in group),
+                "cost_usd": pytest.approx(sum(r["cost_usd"] for r in group))}  # fmt: skip
+
+    models = {r["model_requested"] for r in attempts}
+    kinds = {r["session"] for r in attempts}
+    return {
+        "sessions": {o: sum(r["outcome"] == o for r in attempts) for o in OUTCOMES},
+        "turns": sum(r["turns"] for r in attempts),
+        "tokens": {k: sum(r["tokens"][k] for r in attempts)
+                   for k in ("input", "output", "cache_read", "cache_creation")},
+        "cost_usd": pytest.approx(sum(r["cost_usd"] for r in attempts)),
+        "session_seconds": pytest.approx(sum(r["seconds"] for r in attempts)),
+        "hook_blocks": sum(r["hook_blocks"] for r in attempts),
+        "regressions_stopped": sum((r["gate"] or {}).get("regressions", 0) for r in attempts),
+        "limit_waits": {"count": len(limits),
+                        "seconds": pytest.approx(sum(r["seconds"] for r in limits))},
+        "aborts": sum(r["kind"] == "abort" for r in records),
+        "by_model": {m: share([r for r in attempts if r["model_requested"] == m]) for m in models},
+        "by_session": {k: share([r for r in attempts if r["session"] == k]) for k in kinds},
+    }  # fmt: skip
+
+
+def test_totals_equal_sums(tmp_path):
+    """DEC-06 (T-07-68): a night of 4 attempts on 2 workers and one usage-limit wait ends with
+    totals equal to the sums over its own records, per model and per session kind too; the
+    wall clock is the night's own."""
+    from test_driver_workers import WNight, _unit, _wpick
+
+    by_unit = {_unit(0): [Sess("rate_limit", write=None), Sess(checks=(check_line(1, 40.0),)),
+                          Sess()],
+               _unit(1): [Sess(), Sess()]}  # fmt: skip
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1)), by_unit=by_unit)
+
+    def gate(pick, n):  # unit 1's second attempt matches; every other gate fails
+        night.gate_exits = [0 if (pick.unit, n) == (_unit(1), 2) else 1]
+        return night._gate(pick, n)
+
+    def session(argv, **kw):
+        result = WNight._session(night, argv, **kw)
+        events = tuple({**e, "permission_denials": [DENIAL]} if e.get("type") == "result" else e
+                       for e in result.events)  # fmt: skip
+        return dataclasses.replace(result, events=events)
+
+    begin = night.now
+    report = night.run(config={"workers": 2, "attempts_per_function": 2}, gate=gate,
+                       session=session)  # fmt: skip
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    records = [r for r in night.records() if r["run"] == "night1"]
+    assert [r["kind"] for r in records].count("attempt") == 4
+    assert [r["kind"] for r in records].count("limit") == 1
+    totals = _one(_run_records(night, "ENDED"))["totals"]
+    expected = _sums(records)
+    assert {key: totals[key] for key in expected} == expected
+    assert totals["hook_blocks"] == 4 and totals["sessions"]["MATCHED"] == 1
+    assert totals["wall_seconds"] == pytest.approx(night.now - begin)
+
+
+def test_a_stopped_night_has_totals(tmp_path):
+    """A STOPPED record carries totals too (a guardrail stop after one recorded attempt)."""
+    sessions = [Sess(checks=(check_line(1, 20.0),)), Sess(write="tools/x.py")]
+    night = Night(tmp_path, sessions=sessions)
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    stopped = _one(_run_records(night, "STOPPED"))
+    driver.validate_record(stopped)
+    assert stopped["totals"]["sessions"]["PARTIAL"] == 1
+    assert stopped["totals"]["turns"] == _one(night.kinds("attempt"))["turns"]
+
+
+def test_an_interrupted_night_has_totals(tmp_path):
+    """The STOPPED `interrupted` record (written before the interrupt is re-raised) is v2."""
+    night = Night(tmp_path, sessions=[Sess(raises=KeyboardInterrupt())])
+    with pytest.raises(KeyboardInterrupt):
+        night.run()
+    stopped = _one(_run_records(night, "STOPPED"))
+    driver.validate_record(stopped)
+    assert (stopped["reason"], stopped["totals"]["sessions"]["GAVE_UP"]) == ("interrupted", 0)
+
+
+def test_a_failed_match_commit_drops_its_matched_record_from_the_totals(tmp_path):
+    """F19: an undone match commit truncates its MATCHED line from the log, so the totals count
+    the GAVE_UP `tool` record that replaces it, never the dropped one."""
+    from test_driver import REFUSE_FEAT_HOOK
+
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    hook = night.repo / ".git" / "hooks" / "commit-msg"
+    _write(hook, REFUSE_FEAT_HOOK)
+    hook.chmod(0o755)
+    report = night.run()
+    assert report.event == "STOPPED", report.detail
+    attempt_record = _one(night.kinds("attempt"))
+    assert (attempt_record["outcome"], attempt_record["abort_reason"]) == ("GAVE_UP", "tool")
+    totals = _one(_run_records(night, "STOPPED"))["totals"]
+    assert (totals["sessions"]["MATCHED"], totals["sessions"]["GAVE_UP"]) == (0, 1)
+
+
+def test_log_commit_after_drain(tmp_path):
+    """The night's chore commit of the log runs after every worker has drained: no worker thread
+    is alive at it, and the committed log holds every attempt record and the ENDED record."""
+    import threading
+
+    from test_driver import CHORE
+    from test_driver_workers import WNight, _message_of, _unit, _wpick
+
+    night = WNight(tmp_path, picks=(_wpick(0), _wpick(1), _wpick(2)),
+                   sessions=[Sess(checks=(check_line(1, 30.0),))] * 3)  # fmt: skip
+    alive: list[list[str]] = []
+
+    def on_git(args):
+        if "commit" in args and _message_of(args).startswith(CHORE):
+            alive.append([t.name for t in threading.enumerate()
+                          if t.name.startswith("drive-worker-") and t.is_alive()])  # fmt: skip
+
+    night.on_git = on_git
+    report = night.run(config={"workers": 3, "attempts_per_function": 1})
+    assert report.event == "ENDED", report.detail
+    assert alive == [[]]
+    committed = [json.loads(line) for line in night.file_at(CHORE, LOG).splitlines()]
+    assert committed == night.records()
+    assert sorted(r["unit"] for r in committed if r["kind"] == "attempt") == [
+        _unit(i) for i in range(3)]  # fmt: skip
+    assert committed[-1]["event"] == "ENDED" and committed[-1]["totals"]["sessions"]["PARTIAL"] == 3
+
