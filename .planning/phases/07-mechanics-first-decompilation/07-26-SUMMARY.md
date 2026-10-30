@@ -317,6 +317,56 @@ None.
 - FOUND commits on this branch: 198e276, 80d9557, f21d0a1, a315ed7, 999727c. `git rev-list --count 5f5bbb2..HEAD` = 5 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
+## Fix round 1
+
+The task review (`review-07-26.md`) found two Important issues. The orchestrator ruled on both. FIX_BASE was 6f741f1.
+
+**Orchestrator ruling (07-26 review I1): the order key is `(tier, hub, passes, level, rank)`.**
+- The problem: finished passes sorted before tier and member/hub. A fresh Tier 1 hub or a Tier 2 member on pass 1 was served before an eligible, idle Tier 1 member on pass 2. The reviewer's probe gave H, N, A.
+- `TierQueue._order` is now `(tier, member before hub, aborted passes, finished passes, level, rank, EXE)`. This overrides the key spelled in Task 2's action and supersedes key-decision 1 above.
+- Pass N before N+1 (D-08) still holds inside each (tier, member/hub) group.
+- The free-worker rule is unchanged. A hub or a later tier's row runs only while no member of an earlier group is eligible.
+- Test: `test_an_eligible_member_on_pass_2_comes_before_fresh_hubs_and_the_next_tier` (A, then H, then N).
+
+**Orchestrator ruling (07-26 review I2): every launched session counts toward the night cap, aborted ones included.**
+- The problem: after a transient abort the function was offered again at once, and the abort used no slot of the night cap. The reviewer's probe with `max_sessions 1` launched 9 sessions.
+- The cap:
+  - Each TRANSIENT launch now spends its night-cap slot (`_Night._spend`, counter `spent`).
+  - A retry reserves a new slot. When the cap leaves none, the attempt is aborted with the retries it made.
+  - `_reserve` and `_end` count `sessions + spent`.
+  - `DriveReport.sessions` and the record totals still count only counted sessions.
+  - LIMIT relaunches keep their slot, as before.
+- The re-queue:
+  - `_attempt` returns `ABORTED`, and `_function` passes it on.
+  - The coordinator calls `TierQueue.finish(..., aborted=True)`.
+  - The aborted function then sorts behind its group's other eligible work, through the aborted-passes term of the key.
+- Tests:
+  - `test_transient_aborts_are_bounded_by_the_night_cap`: the reviewer's scenario with max_sessions 2 gives at most 2 launches, ENDED "max sessions", and one abort record with retries 1.
+  - `test_an_aborted_function_goes_behind_the_other_eligible_work_of_its_group`.
+- **Changed existing test (outside files_modified).** `tests/test_driver_workers.py::test_uncounted_session_releases_slot` (07-21) pinned the opposite rule ("a transient abort gives its slot back"). Under the ruling it becomes `test_transient_launches_spend_the_night_cap`: with max_sessions 6, exactly 6 sessions launch, transient and counted together. This applies to the Phase 6 path too, since D-07's cap counts sessions in both modes.
+
+**Review Minor 2 (taken because it was cheap):** the real-file test no longer asserts that the first preview pick is level 0. That depended on the committed log. Its other invariants stay.
+
+**Not taken:** Minor 1 (re-reading status.csv after an in-night match) stays the documented concern above. Minor 3 is a process note.
+
+**RED evidence:** `build/red/f1.xml` / `f1.json`. The target was `test_an_eligible_member_on_pass_2_...`, and the classifier returned RED_EVIDENCE_OK / target_test_failed. 4 tests failed:
+- the order test: H came first;
+- the abort-order test: `finish()` had no `aborted` keyword;
+- the tier cap test: 10 launches, more than 2;
+- the workers cap test: "queue exhausted", not "max sessions".
+
+**Commits:**
+- `6f61ae6` test(07-26): add failing tests for member-first order and transient aborts under the night cap
+- `72d078f` fix(07-26): members before hubs and later tiers; transient launches spend the night cap
+- this SUMMARY commit
+
+**Counts:**
+- Covering suites (`test_driver_pick.py`, `test_drive.py`, `test_driver.py`, `test_driver_workers.py`, `test_driver_records.py`): 376 passed, 2 skipped.
+- `REVERSEAPOC_ORIG=<main>/orig uv run pytest -q tests/test_drive_real.py`: 3 passed.
+- `uv run pytest -q` (host, worktree): **3749 passed, 249 skipped**, exit 0, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-30*
