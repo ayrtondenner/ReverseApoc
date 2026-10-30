@@ -142,9 +142,9 @@ class Rig:
         self.session = _never_session
         self.argv = _never_argv
 
-    def git(self, args):
+    def git(self, args, input=None):
         self.git_calls.append(list(args))
-        return self._git(args)
+        return self._git(args) if input is None else self._git(args, input=input)
 
     def seams(self, **over) -> Seams:
         fields = dict(run=self.runner, git=self.git, world=lambda: _world(self.packs),
