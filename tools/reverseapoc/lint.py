@@ -8,9 +8,11 @@ command. `include/watcom_compat.h` empties Watcom's keywords and silences `#prag
 only, and `-D__WATCOMC__` is the version the game was built with (10.6 -> 1060; it changes only if
 the matches settle on 10.5 or 11.0). `-nostdlibinc` keeps the gate independent of Watcom's own H
 directory, which is user-supplied and absent in CI, and of the system headers, while clang's own
-freestanding headers (stdarg.h, stddef.h, limits.h, float.h, stdint.h) stay visible: C89
-guarantees them even in a freestanding implementation, and a matched varargs unit includes
-<stdarg.h>. (`-nostdinc` hid those too and failed such a unit.)
+C89 freestanding headers (stdarg.h, stddef.h, limits.h, float.h) stay visible: C89 guarantees
+them even in a freestanding implementation, and a matched varargs unit includes <stdarg.h>.
+(`-nostdinc` hid those too and failed such a unit.) clang's other built-in headers (stdint.h,
+stdbool.h, iso646.h, the intrinsics) also pass the lint but do not exist in Watcom 10.x, so a
+unit never includes them.
 """
 
 from __future__ import annotations
