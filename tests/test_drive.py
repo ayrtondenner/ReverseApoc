@@ -121,7 +121,7 @@ def _never_session(*args, **kwargs):
     raise AssertionError("a session was launched")
 
 
-def _never_argv(prompt: str):
+def _never_argv(prompt: str, **values):
     raise AssertionError("a claude argv was built")
 
 
@@ -664,8 +664,9 @@ def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None
         _git(rig.repo, rig.env, "add", "--", CANARY_UNIT, "include/common.h")
         _git(rig.repo, rig.env, "commit", "-q", "-m", "the canary's matched unit")
 
-    def argv(prompt: str):
+    def argv(prompt: str, *, model: str, max_budget_usd: float, max_turns: int):
         rig.prompt = prompt
+        rig.asked = (model, max_budget_usd, max_turns)  # 07-30: the canary's session values
         cmd = [sys.executable, str(FAKE), "--scenario", scenario]
         return cmd + (["--write", write] if write else [])
 

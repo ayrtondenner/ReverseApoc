@@ -1016,7 +1016,9 @@ def regate(
 CFLAGS = Path("config") / "cflags.txt"
 MATCHING_DOC = Path("docs") / "matching.md"
 MATCHING_SECTION = "## Compiler and flags per module"
-KNOWN_MODEL = "claude-opus-5-5"  # ruling F33: the one model driver.COAUTHOR names (07-30 widens)
+# Ruling F33 (07-30): the co-author of a flag-approved landing is driver.coauthor of each model
+# that wrote the candidate (session.MODEL_NAMES); a model that table does not name is refused.
+_PLACEHOLDER = re.compile(r"func_([0-9A-Fa-f]{8})")  # driver._Claim's attempt directory name
 COMMIT_MSG = "commit-msg.txt"  # build/flags/<id>/commit-msg.txt
 APPROVED_TRAILER = "Flags-Approved-By:"
 _OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._'-]{0,62}[A-Za-z0-9.])?")
@@ -1076,9 +1078,23 @@ def _hitting_attempts(p: Proposal) -> list[tuple[str, str, str, int]]:
     return out
 
 
-def _attempt_models(log: Path) -> dict[tuple[str, str, str, int], str | None]:
-    """(run, exe, function, attempt) -> model of every attempt record of attempts.jsonl."""
-    models: dict[tuple[str, str, str, int], str | None] = {}
+AttemptKey = tuple[str, str, int | str, int]  # (run, exe, start or function name, attempt)
+AttemptModel = tuple[int, str | None]  # (pass, the model that wrote the attempt)
+
+
+def _evidence_key(run: str, exe: str, function: str, n: int) -> AttemptKey:
+    """An attempt directory names its function by the func_ placeholder (driver._Claim), while
+    a v2 record names the C name (07-23): both are matched by the start when it is known."""
+    found = _PLACEHOLDER.fullmatch(function)
+    return run, exe, int(found[1], 16) if found else function, n
+
+
+def _attempt_models(log: Path) -> dict[AttemptKey, AttemptModel]:
+    """(run, exe, start, attempt) and (run, exe, function, attempt) -> (pass, model) of every
+    attempt record of attempts.jsonl. Ruling F33 (07-30): the model is a v2 record's
+    `model_requested` (the session's, which its init check matched), else v1's `model`; a v1
+    record is pass 1 (the Phase 6 pilot)."""
+    models: dict[AttemptKey, AttemptModel] = {}
     if not log.is_file():
         return models
     for number, raw in enumerate(log.read_text(encoding="utf-8").splitlines(), start=1):
@@ -1087,23 +1103,32 @@ def _attempt_models(log: Path) -> dict[tuple[str, str, str, int], str | None]:
             driver.validate_record(record)
         except ValueError as exc:
             raise FlagsError(f"{log} line {number}: {exc}") from None
-        if record["kind"] == driver.KIND_ATTEMPT:
-            key = (record["run"], record["exe"], record["function"], int(record["attempt"]))
-            models[key] = record["model"]
+        if record["kind"] != driver.KIND_ATTEMPT:
+            continue
+        v2 = record.get("schema") == driver.SCHEMA_V2
+        entry = (record["pass"] if v2 else 1,
+                 record["model_requested"] if v2 else record["model"])  # fmt: skip
+        run, exe, n = record["run"], record["exe"], int(record["attempt"])
+        models[(run, exe, int(record["start"], 16), n)] = entry
+        models.setdefault((run, exe, record["function"], n), entry)
     return models
 
 
-def _coauthor(p: Proposal, models: Mapping[tuple[str, str, str, int], str | None]) -> str:
-    """Ruling F33: driver.COAUTHOR when every attempt that wrote the candidate ran
-    KNOWN_MODEL; any other or unknown model is refused."""
-    for key in _hitting_attempts(p):
-        model = models.get(key)
-        if model != KNOWN_MODEL:
-            run, exe, function, n = key
+def _coauthors(p: Proposal, models: Mapping[AttemptKey, AttemptModel]) -> tuple[str, ...]:
+    """Ruling F33 (07-30): the Co-Authored-By line of each model that wrote the candidate,
+    through driver.coauthor, one per distinct model in pass order (then evidence order). An
+    attempt with no record, or a model the co-author table does not name, is refused."""
+    found: list[tuple[int, int, str]] = []
+    for index, (run, exe, function, n) in enumerate(_hitting_attempts(p)):
+        pass_n, model = models.get(_evidence_key(run, exe, function, n), (0, None))
+        try:
+            driver.coauthor(model)
+        except driver.DriverError as exc:
             raise FlagsError(f"{p.id}: attempt {n} of {exe} {function} (run {run}) has model "
-                             f"{model or 'unknown'}; only {KNOWN_MODEL} has a known co-author "
-                             "line")  # fmt: skip
-    return driver.COAUTHOR
+                             f"{model or 'unknown'}; {exc}") from None  # fmt: skip
+        found.append((pass_n, index, model))
+    ordered = dict.fromkeys(model for *_, model in sorted(found))
+    return tuple(driver.coauthor(model) for model in ordered)
 
 
 def _landing_source(repo: Path, p: Proposal) -> Path:
@@ -1126,7 +1151,7 @@ class _Landing:
 
     proposal: Proposal
     source: Path
-    coauthor: str
+    coauthors: tuple[str, ...]  # one Co-Authored-By line per model (ruling F33)
     attempts: int  # the hitting attempt number gate records in status.csv
 
     @property
@@ -1159,7 +1184,7 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
         if other != pid:
             raise FlagsError(f"{other} and {pid} are both for {p.exe}/{p.unit}; approve one")
         attempts = max(n for *_, n in _hitting_attempts(p))
-        out.append(_Landing(p, _landing_source(repo, p), _coauthor(p, models), attempts))
+        out.append(_Landing(p, _landing_source(repo, p), _coauthors(p, models), attempts))
     return out
 
 
@@ -1288,7 +1313,7 @@ def _approve_message(land: _Landing, by: str, today: str) -> str:
     lines += [f"keeps {name}" for name in p.keeps]
     lines += [f"sibling {text}" for text in p.siblings]
     lines += [f"evidence {path}" for path in p.evidence]
-    lines += ["", land.coauthor, driver.MATCHED_BY,
+    lines += ["", *land.coauthors, driver.MATCHED_BY,
               f"{APPROVED_TRAILER} {by} ({p.id}, {today})"]
     return "\n".join(lines) + "\n"
 

@@ -722,6 +722,36 @@ def test_a_capped_function_returns_for_its_next_pass_the_same_night(tmp_path):
     assert (report.event, report.reason) == ("ENDED", "max sessions")
 
 
+def test_the_coordinator_tells_the_tier_queue_a_pass_finished_capped(tmp_path):
+    """Orchestrator ruling (07-30, deferred minors): the coordinator reports a capped pass to
+    the queue (which clears its abort count); the pass the night cap cut short is not one."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import _commit
+
+    rows = [_member(START)]
+    night = Night(tmp_path / "night")
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((START,), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    finished: list[dict] = []
+
+    def queue(difficult):
+        tiers = deps.queue(difficult)
+        real = tiers.finish
+
+        def finish(key, **kw):
+            finished.append(kw)
+            real(key, **kw)
+
+        tiers.finish = finish
+        return tiers
+
+    night.run(config={"max_sessions": 4}, queue=queue, requeue=deps.requeue)
+    assert [(kw["matched"], kw["aborted"], kw["capped"]) for kw in finished] == [
+        (False, False, True), (False, False, False)]  # fmt: skip
+
+
 # ---- the dry run's tier picks (07-26 Task 3; ruling F8) ----
 
 
@@ -825,6 +855,32 @@ def test_an_aborted_function_goes_behind_the_other_eligible_work_of_its_group():
     q.take((UFO2P, TB))
     q.finish((UFO2P, TB), matched=True)
     assert q.next_eligible().start == TA
+
+
+def test_a_finished_pass_clears_the_abort_count():
+    """Orchestrator ruling (07-30, deferred minors of 07-26): an abort sends a function behind
+    its group only until it finishes a pass; once TA's next pass ends capped, TA and TB are both
+    on one finished pass and TA's better rank orders it first again."""
+    passes: dict = {}
+    q = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90}, passes=passes)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, aborted=True)
+    for start in (TB, TA):  # each finishes a pass, capped (the night counts it)
+        q.take((UFO2P, start))
+        passes[(UFO2P, start)] = 1
+        q.finish((UFO2P, start), matched=False, capped=True)
+    assert q.next_eligible().start == TA
+
+
+def test_a_pass_cut_short_keeps_the_abort_count():
+    """A pass the night cap or a stop cut short (no outcome) is no finished pass."""
+    passes: dict = {}
+    q = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90}, passes=passes)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, aborted=True)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False)
+    assert q.next_eligible().start == TB
 
 
 def test_transient_aborts_are_bounded_by_the_night_cap(tmp_path):

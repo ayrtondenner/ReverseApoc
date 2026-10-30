@@ -659,7 +659,9 @@ class WNight(Night):
         self.events: list[tuple[str, int]] = []  # ("start" | "end", launch index), in order
         self.at: list[float] = []  # the fake clock at each launch
 
-    def _argv(self, prompt: str) -> list[str]:
+    def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
+              max_turns: int) -> list[str]:  # fmt: skip
+        """Deps.argv's keyword signature (07-30); the stand-in ignores the session values."""
         unit = re.search(r"\(claim [a-z0-9]+/([a-z0-9_]+)\)", prompt)[1]
         with self.lock:
             queue = self.by_unit.get(unit) or self.sessions
