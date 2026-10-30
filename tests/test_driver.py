@@ -237,7 +237,9 @@ class Night:
         _write(attempt_dir / "context.md", "made-up pack\n")
         return PackInfo(2048, ("look-alikes",))
 
-    def _argv(self, prompt: str) -> list[str]:
+    def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
+              max_turns: int) -> list[str]:  # fmt: skip
+        """Deps.argv's keyword signature (07-30); the stand-in ignores the session values."""
         self._current = self.sessions.pop(0) if self.sessions else Sess(write=None)
         self.prompts.append(prompt)
         spec = self._current
