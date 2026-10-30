@@ -546,3 +546,157 @@ def test_driver_uses_tier_queue_when_signed(tmp_path):
         deps = driver.real_deps(options, _seams(night, worlds), worlds)
         night.run(config={"max_sessions": 1}, queue=deps.queue, requeue=deps.requeue)
         assert [p.start for p, _, _ in night.packed][:1] == [first], case
+
+
+# ---- passes, claimed units, hubs after members, tier order, empty queue (07-26 Task 2) ----
+
+
+def test_pass_ordering():
+    """D-08: A has one finished pass, B none: B's pass 1 comes before A's pass 2, although A
+    ranks first; A returns after, and so does B for its own pass 2."""
+    rows = [_member(TA), _member(TB)]
+    passes = {(UFO2P, TA): 1}
+    q = _tq(rows, passes=passes, scores={TA: 10, TB: 90})
+    first = q.next_item()
+    assert (first.pick.start, first.pass_n) == (TB, 1)
+    assert _serve(q, passes, limit=4) == [TB, TA, TB, TA]
+    assert passes == {(UFO2P, TA): 3, (UFO2P, TB): 2}
+
+
+def test_pass_ordering_lets_a_capped_callee_free_its_caller():
+    """A capped callee counts as done once: its caller runs its first pass before the callee's
+    second."""
+    rows = [_member(TA), _member(TB)]
+    passes: dict = {}
+    q = _tq(rows, [(TA, TB)], passes=passes)
+    assert _serve(q, passes, limit=3) == [TB, TA, TB]
+
+
+def test_claimed_unit_skipped_not_dropped():
+    """DEC-02 adjacency: a member whose unit another worker holds is skipped now and offered
+    again once the claim is released."""
+    rows = [_member(TA), _member(TB)]
+    q = _tq(rows, scores={TA: 10, TB: 90})
+    held = frozenset({(UFO2P, f"u_{TA:08x}")})
+    assert q.next_eligible(held).start == TB
+    q.take((UFO2P, TB))
+    assert q.next_eligible(held) is None
+    assert q.next_eligible().start == TA
+
+
+def _two_tiers(*, signed=(1, 2)):
+    """Tier 1: members M1, M2 and hubs H1 -> H2; tier 2: member N. Units are their own."""
+    m1, m2, h1, h2, n = TA, TB, TC, TD, TE
+    rows = [_member(m1), _member(m2), _member(h1, role=ROLE_HUB), _member(h2, role=ROLE_HUB),
+            _member(n, items=(T2_ITEM,))]  # fmt: skip
+    return rows, _mech(rows, tiers=(1, 2), signed=signed), [(h1, h2)]
+
+
+def test_hubs_after_members():
+    """D-22: once every Tier 1 member is matched or claimed, Tier 1's hubs come callees first,
+    then Tier 2's members."""
+    rows, mech, edges = _two_tiers()
+    q = _tq(rows, edges, mech=mech, matched=(TA,), scores={TC: 1, TD: 1, TE: 1})  # hubs rank first
+    first = q.next_item()
+    assert (first.pick.start, first.tier, first.hub) == (TB, 1, False)
+    q.take((UFO2P, TB))
+    order = _serve(q, {}, match=True)
+    assert order == [TD, TC, TE]
+    items = {i.pick.start: i for i in q.items}
+    assert (items[TD].hub, items[TD].level, items[TC].level) == (True, 0, 1)
+    assert (items[TE].tier, items[TE].hub) == (2, False)
+
+
+def test_a_row_of_two_tiers_is_queued_once_in_the_first():
+    rows = [_member(TA, items=(T1_ITEM, T2_ITEM)), _member(TB, items=(T2_ITEM,))]
+    q = _tq(rows, mech=_mech(rows, tiers=(1, 2), signed=(1, 2)))
+    assert [(i.pick.start, i.tier) for i in q.items] == [(TA, 1), (TB, 2)]
+
+
+def test_unsigned_tier_not_queued():
+    """D-04, T-07-76: a tier without a sign-off, or whose digest no longer matches the members,
+    contributes nothing."""
+    rows, mech, edges = _two_tiers(signed=(1,))
+    q = _tq(rows, edges, mech=mech)
+    assert {i.tier for i in q.items} == {1}
+    assert TE not in _serve(q, {}, match=True)
+    changed = [*rows, _member(TH)]  # a member added after the owner signed Tier 1
+    stale = _tq(changed, edges, mech=mech)
+    assert stale.items == ()
+    assert stale.next_eligible() is None
+
+
+def test_empty_queue():
+    """DEC-02 empty: all members matched and no hubs: next_eligible returns None."""
+    rows = [_member(TA), _member(TB)]
+    q = _tq(rows, [(TA, TB)], matched=(TA, TB))
+    assert q.next_eligible() is None
+
+
+def test_empty_queue_ends_the_night_with_nothing_to_do(tmp_path):
+    """DEC-02 empty: a signed tier whose members are all matched and that has no hubs: no
+    session, ENDED "nothing to do", exit 0."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import _commit
+
+    rows = [_member(START)]
+    night = Night(tmp_path / "night")
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status(START)})
+    worlds = _world((START,), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    report = night.run(queue=deps.queue, requeue=deps.requeue)
+    assert (report.event, report.reason, report.exit_code) == ("ENDED", "nothing to do", 0)
+    assert night.launched == []
+
+
+def test_ordering_deterministic():
+    """DEC-02 ordering: equal chk and score at one level run in address order; a __CHK member
+    goes after; two builds from rows in another order give the same queue."""
+    rows = [_member(a) for a in (TD, TB, TA, TC)]
+    q = _tq(rows, scores={TC: 10}, chk=(TA,))
+    order = _serve(q, {}, match=True)
+    assert order == [TC, TB, TD, TA]
+    again = _tq(list(reversed(rows)), scores={TC: 10}, chk=(TA,))
+    assert _serve(again, {}, match=True) == order
+
+
+def test_tier_queue_reads_passes_from_the_log_not_difficult_json(tmp_path):
+    """Orchestrator note (07-23 as built): the tier queue takes each function's passes from the
+    committed attempts log (the night's pass_index), never from build/driver/difficult.json, so
+    the two cannot disagree. The log says the leaf has one finished pass and difficult.json
+    lists the other member: the other member runs first, on pass 1."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import LOG, _commit, _lines, _v2
+
+    leaf, other = START, START + 0x10
+    rows = [_member(leaf), _member(other)]
+    night = Night(tmp_path / "night")
+    log = [_v2("night0", 1, n, start=leaf) for n in (1, 2, 3)]
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status(), LOG: _lines(log)})
+    (night.repo / driver.DIFFICULT).parent.mkdir(parents=True, exist_ok=True)
+    driver.save_difficult(night.repo / driver.DIFFICULT, {(UFO2P, other): ()})
+    worlds = _world((leaf, other), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    night.run(config={"max_sessions": 1}, queue=deps.queue, requeue=deps.requeue)
+    attempts = [r for r in night.kinds("attempt") if r["run"] == RUN]
+    assert [(r["start"], r["pass"]) for r in attempts] == [(f"0x{other:08X}", 1)]
+
+
+def test_a_capped_function_returns_for_its_next_pass_the_same_night(tmp_path):
+    """D-08: unlimited passes: a function capped tonight goes back into the queue and runs its
+    next pass the same night, numbered on; the night cap still ends the run."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import _commit
+
+    rows = [_member(START)]
+    night = Night(tmp_path / "night")
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((START,), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    report = night.run(config={"max_sessions": 4}, queue=deps.queue, requeue=deps.requeue)
+    attempts = [r for r in night.kinds("attempt") if r["run"] == RUN]
+    assert [(r["pass"], r["attempt"]) for r in attempts] == [(1, 1), (1, 2), (1, 3), (2, 1)]
+    assert (report.event, report.reason) == ("ENDED", "max sessions")
