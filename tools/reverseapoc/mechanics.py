@@ -35,7 +35,7 @@ from functools import cached_property
 from pathlib import Path
 
 from . import callgraph
-from .callgraph import DIRECT, EDGE_KINDS, ENTRY, HAND, POINTER, TABLE, CallGraph
+from .callgraph import DIRECT, EDGE_KINDS, ENTRY, HAND, MIDROW, POINTER, TABLE, CallGraph
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
@@ -72,6 +72,8 @@ ROLES = ("member", "hub", "closure", "asm")
 ROLE_MEMBER, ROLE_HUB, ROLE_CLOSURE, ROLE_ASM = ROLES
 VIAS = (ENTRY, *EDGE_KINDS)
 WALKED_KINDS = (KIND_GAME, KIND_THUNK)  # the rows that can be members (D-02)
+# The edge kinds hub and SCC figures count (owner ruling Q1, plan 07-22): every kind but midrow.
+HUB_KINDS = tuple(kind for kind in EDGE_KINDS if kind != MIDROW)
 
 _ADDRESS = re.compile(r"0x[0-9A-F]{8}")
 _ITEM_ID = re.compile(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?")
@@ -574,33 +576,41 @@ def _walked(rows: Sequence[FunctionRow]) -> frozenset[int]:
 
 class HubStats:
     """The numbers the hub rule reads, for one EXE's graph: direct callers per row, the largest
-    strongly connected component over all edge kinds, each row's own closure share (computed when
-    asked) and how many `in` items' full closures reach each row."""
+    strongly connected component, each row's own closure share (computed when asked) and how
+    many `in` items reach each row from their entries (`roots`: item id -> entry addresses).
+    The SCC, the closure share and the item counts ignore `midrow` edges (owner ruling Q1, plan
+    07-22: switch-table artefacts that pair neighbour rows); the member walk still follows them.
+    Direct callers count only direct edges."""
 
     def __init__(self, graph: CallGraph, walked: frozenset[int],
-                 closures: Mapping[str, frozenset[int]]) -> None:  # fmt: skip
+                 roots: Mapping[str, Iterable[int]]) -> None:  # fmt: skip
         self.graph, self.walked = graph, walked
+        self.hub_graph = _only(graph, HUB_KINDS)
         self.direct_callers = Counter(edge.dst for edges in graph.edges.values()
                                       for edge in edges if edge.kind == DIRECT)  # fmt: skip
-        self.item_counts = Counter(node for nodes in closures.values() for node in nodes)
+        self.item_counts = Counter(node for addresses in roots.values()
+                                   for node in callgraph.closure(self.hub_graph, addresses)
+                                   & walked)  # fmt: skip
         self._sizes: dict[int, int] = {}
 
     @cached_property
     def largest_scc(self) -> frozenset[int]:
-        """The largest cycle (ties: the first in callgraph.sccs order); empty without a cycle."""
-        cycles = [comp for comp in callgraph.sccs(self.graph, self.walked) if len(comp) > 1]
+        """The largest cycle without midrow edges (ties: the first in callgraph.sccs order);
+        empty without a cycle."""
+        cycles = [comp for comp in callgraph.sccs(self.hub_graph, self.walked) if len(comp) > 1]
         return max(cycles, key=len, default=frozenset())
 
     def closure_share(self, start: int) -> float:
-        """The share of the EXE's game/thunk rows that `start` reaches (itself included)."""
+        """The share of the EXE's game/thunk rows that `start` reaches without midrow edges
+        (itself included)."""
         if start not in self._sizes:
-            self._sizes[start] = len(callgraph.closure(self.graph, [start]) & self.walked)
+            self._sizes[start] = len(callgraph.closure(self.hub_graph, [start]) & self.walked)
         return self._sizes[start] / max(len(self.walked), 1)
 
 
 def hub_stats(graph: CallGraph, walked: frozenset[int],
-              closures: Mapping[str, frozenset[int]]) -> HubStats:  # fmt: skip
-    return HubStats(graph, walked, closures)
+              roots: Mapping[str, Iterable[int]]) -> HubStats:  # fmt: skip
+    return HubStats(graph, walked, roots)
 
 
 def is_hub(start: int, rule: HubRule, graph: CallGraph, stats: HubStats) -> bool:
@@ -676,7 +686,7 @@ def _walk_exe(mech: Mechanics, exe: str, graph: CallGraph, walked: frozenset[int
     reached = frozenset().union(*full.values())
     hubs: frozenset[int] = frozenset()
     if mech.hub_rule.enabled:
-        stats = hub_stats(graph, walked, full)
+        stats = hub_stats(graph, walked, roots)
         hubs = frozenset(n for n in reached if is_hub(n, mech.hub_rule, graph, stats))
     members = {}
     for item_id, addresses in roots.items():
@@ -1126,7 +1136,7 @@ def graph_report(graph: CallGraph) -> dict:
         "orphan_tables": [_address(start) for start in graph.orphan_tables],
         "largest_scc": {"direct": _largest_component(graph, (DIRECT,)),
                         "direct_pointer_table": _largest_component(graph, _RESEARCH_KINDS),
-                        "all": _largest_component(graph, EDGE_KINDS)},  # fmt: skip
+                        "all_but_midrow": _largest_component(graph, HUB_KINDS)},  # fmt: skip
     }
 
 
