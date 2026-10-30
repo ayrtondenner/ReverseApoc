@@ -34,7 +34,8 @@ finished a pass (capped at least once); hubs, asm and closure rows never block a
 next pick is the eligible item with the least (tier, member before hub, aborted passes,
 finished passes, level, rank): a hub or a later tier's row runs only while no member of an
 earlier group is eligible (07-26 review I1), and inside a group every eligible function runs
-pass N before any runs pass N+1 (D-08), a pass a transient abort ended going last (review I2).
+pass N before any runs pass N+1 (D-08), a pass a transient abort ended going last (review I2)
+until the function next finishes a pass (07-30).
 No variety rule.
 """
 
@@ -399,12 +400,18 @@ class TierQueue:
     def take(self, key: Key) -> None:
         self._flight.add(key)
 
-    def finish(self, key: Key, *, matched: bool, aborted: bool = False) -> None:
+    def finish(self, key: Key, *, matched: bool, aborted: bool = False,
+               capped: bool = False) -> None:  # fmt: skip
+        """End `key`'s pass. A finished pass (matched or `capped`) clears its abort count, so an
+        earlier transient abort sends it behind its group only until then (orchestrator ruling,
+        07-30); a pass cut short (neither) keeps it."""
         self._flight.discard(key)
         if matched:
             self._matched.add(key)
         if aborted:
             self._aborts[key] += 1
+        elif matched or capped:
+            self._aborts.pop(key, None)
 
 
 def _call_graph(mech: Mechanics, exe: str, graph: CallGraph) -> CallGraph:

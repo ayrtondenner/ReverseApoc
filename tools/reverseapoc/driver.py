@@ -6,7 +6,8 @@ D-34, D-48).
 `attempts_per_function` counted sessions per pass (D-07), each a fresh `claude -p` session
 (session.py) in the checkout root (F11). A function that used them all goes to the persisted
 difficult list (build/driver/difficult.json) and comes back only through `deps.requeue`
-(picker.requeue). The night ends at `max_sessions` counted sessions or `target_matched`
+(picker.requeue). The night ends at `max_sessions` launched sessions (every launch spends a
+slot of the night cap, a transient one included: 07-26 fix round 1) or `target_matched`
 matches (D-48), whichever comes first.
 
 After each session, in this order:
@@ -132,13 +133,19 @@ from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .score import Assessment, Candidate, assess, candidates, score, score_reasons
 from .session import (
+    FABLE_BUDGET_USD,
+    FABLE_MODEL,
     MAX_BUDGET_USD,
+    MAX_TURNS,
     MODEL,
+    MODEL_NAMES,
+    OPUS_MODEL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
     goal_prompt,
     kill_tree,
+    model_for_pass,
     run_session,
 )
 from .status import MATCHED as STATUS_MATCHED
@@ -163,7 +170,6 @@ BEST_DIR = "best"
 VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view came from (F34)
 VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
 MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
-COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
 OPTIONAL_LOCKS = "GIT_OPTIONAL_LOCKS"  # "0" in the driver's git env and every session's (D-27 P4)
@@ -220,11 +226,26 @@ class DriverError(RuntimeError):
     """A driver step failed in a way no session caused (git, the gate's output, a driver file)."""
 
 
+def coauthor(model: str) -> str:
+    """D-25 (07-30, D-09): the Co-Authored-By line of a commit `model` wrote, its display name
+    from session.MODEL_NAMES (07-42); a model the table does not name raises DriverError, so a
+    commit is never mislabelled (T-07-89)."""
+    name = MODEL_NAMES.get(model)
+    if name is None:
+        raise DriverError(f"model {model!r} has no co-author name in session.MODEL_NAMES; "
+                          "nothing is committed under an unknown model")  # fmt: skip
+    return f"Co-Authored-By: {name} <noreply@anthropic.com>"
+
+
+COAUTHOR = coauthor(OPUS_MODEL)  # D-25: the Opus line (passes 1 and 2), set explicitly
+
+
 @dataclass(frozen=True)
 class DriveConfig:
-    """One night. `max_sessions` counts counted sessions only, across every worker (D-07,
-    D-08, D-48); `target_matched` 0 is off (the night cap governs; AGT-11 is counted by
-    `stats`)."""
+    """One night. `max_sessions` caps the sessions launched across every worker, aborted and
+    counted ones alike (D-07, D-08, D-48; 07-26 fix round 1: a transient launch spends its slot,
+    a LIMIT relaunch keeps it); `target_matched` 0 is off (the night cap governs; AGT-11 is
+    counted by `stats`). 07-30: the per-model session budgets (D-07, D-25) and max_turns."""
 
     run_id: str
     repo_root: Path
@@ -236,6 +257,13 @@ class DriveConfig:
     wall_clock_s: float = TIMEOUT_S  # D-07
     base_env: Mapping[str, str] | None = None  # the sessions' environment; None: os.environ
     workers: int = 1  # D-06: sessions at once; 1 is the Phase 6 serial driver (the verb: 3)
+    max_budget_usd: float = MAX_BUDGET_USD  # D-07: per Opus session (07-30: a drive flag)
+    fable_budget_usd: float = FABLE_BUDGET_USD  # D-25: per Fable session
+    max_turns: int = MAX_TURNS  # D-07
+
+    def budget_for(self, model: str) -> float:
+        """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
+        return session_budget(model, self.max_budget_usd, self.fable_budget_usd)
 
 
 @dataclass(frozen=True)
@@ -257,6 +285,11 @@ class GateRun:
     matched_before: frozenset[int] = frozenset()
 
 
+def session_budget(model: str, max_budget_usd: float, fable_budget_usd: float) -> float:
+    """07-30 (D-07, D-25): a session's --max-budget-usd, picked by its requested model."""
+    return fable_budget_usd if model == FABLE_MODEL else max_budget_usd
+
+
 def _today() -> str:
     return datetime.now(UTC).date().isoformat()
 
@@ -274,8 +307,9 @@ class Deps:
     with a capped function;
     `scaffold(pick, dest)` writes the unit's scaffold from the committed CSVs to `dest` (the
     view unit, 07-13); `pack(pick, dir, src)` builds the context pack into the attempt dir from
-    the src tree `src` (the view's, 07-13); `argv(prompt)` is the claude argv
-    (session.build_argv); `session` is session.run_session; `lint(pick)` is the C89 lint of the
+    the src tree `src` (the view's, 07-13); `argv(prompt, *, model, max_budget_usd, max_turns)`
+    is the claude argv of one session (session.build_argv; 07-30: the pass's model and budget,
+    D-09, D-25); `session` is session.run_session; `lint(pick)` is the C89 lint of the
     unit (0/1/2); `gate(pick, n)` and `partial_gate(pick, src, n)` are the container gates;
     `remove_containers(prefix)` removes containers by name prefix; `git(args)` runs git in the
     checkout. `say(text)` names one progress line: an attempt's start, a usage-limit wait or
@@ -288,7 +322,7 @@ class Deps:
     matched_callees: Callable[[Pick], tuple[Key, ...]]
     scaffold: Callable[[Pick, Path], None]
     pack: Callable[[Pick, Path, Path], PackInfo]
-    argv: Callable[[str], Sequence[str]]
+    argv: Callable[..., Sequence[str]]  # (prompt, *, model, max_budget_usd, max_turns)
     session: Callable[..., SessionResult]
     lint: Callable[[Pick], int]
     gate: Callable[[Pick, int], GateRun]
@@ -721,8 +755,13 @@ def commit_message(
     usage: streamjson.Usage,
     seconds: float,
     sha1s: Sequence[tuple[str, str]],
+    requested_model: str,
 ) -> str:
-    """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers."""
+    """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers.
+    `model` is the init event's (the `model` line); `requested_model` the session's, which the
+    init check has matched, and names the co-author (07-30: coauthor raises DriverError for a
+    model it does not know, before anything is committed)."""
+    trailer = coauthor(requested_model)
     lines = [
         f"feat({exe}): match {function} in {unit} (C89)",
         "",
@@ -736,7 +775,7 @@ def commit_message(
         "relocation ok",
         *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
         "",
-        COAUTHOR,
+        trailer,
         MATCHED_BY,
     ]
     return "\n".join(lines) + "\n"
@@ -1292,6 +1331,8 @@ class _Claim:
     n: int
     runs: Path = DRIVER_DIR
     pass_n: int = 1  # 07-23 (D-08): this function's pass, from the committed log
+    model: str = MODEL  # 07-30 (D-09): the requested model, session.model_for_pass(pass_n)
+    budget_usd: float = MAX_BUDGET_USD  # 07-30 (D-07, D-25): that model's per-session budget
 
     @property
     def key(self) -> Key:
@@ -1726,7 +1767,8 @@ class _Coordinator:
             if self.tiers is not None:
                 self.tiers.finish((worker.pick.exe, worker.pick.start),
                                   matched=worker.outcome == MATCHED,
-                                  aborted=worker.outcome == ABORTED)  # fmt: skip
+                                  aborted=worker.outcome == ABORTED,
+                                  capped=worker.outcome == CAPPED)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -2265,7 +2307,8 @@ class _Night:
         record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
-                  "kind": MATCHING_KIND, "pass": self._pass(pick), "model": None,
+                  "kind": MATCHING_KIND, "pass": self._pass(pick),
+                  "model": model_for_pass(self._pass(pick)),
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
         if not self.claims.take(record):
             shown = self.claims.path(pick.exe, pick.unit).relative_to(self.repo).as_posix()
@@ -2293,7 +2336,7 @@ class _Night:
         while True:
             self._halt_if_stopping()
             probe = self.pause.wait_to_launch()  # D-07: no launch while the pause holds
-            claim = _Claim(pick, self.config.run_id, self.repo, n, pass_n=self._pass(pick))
+            claim = self._claim(pick, n)
             session = self._launch(claim)
             if self.stop.is_set():  # 07-21: another worker stopped the night: land nothing
                 self._reset(session)
@@ -2316,6 +2359,15 @@ class _Night:
                     return ABORTED
                 continue
             return self._counted(session)
+
+    def _claim(self, pick: Pick, n: int) -> _Claim:
+        """07-30 (D-09, D-25): attempt `n` of the function's pass tonight, on the model
+        session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3) and
+        with that model's budget."""
+        pass_n = self._pass(pick)
+        model = model_for_pass(pass_n)
+        return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
+                      budget_usd=self.config.budget_for(model))  # fmt: skip
 
     def _limited(self, pick: Pick, n: int, probe: bool) -> None:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
@@ -2517,7 +2569,9 @@ class _Night:
         start = self.deps.clock()
         result = None
         try:
-            result = self.deps.session(self.deps.argv(prompt), cwd=self.repo,
+            argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
+                                  max_turns=self.config.max_turns)  # fmt: skip
+            result = self.deps.session(argv, cwd=self.repo,
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
                                        timeout_s=self.config.wall_clock_s,
@@ -3022,12 +3076,15 @@ class _Night:
 
     def _check_init(self, session: _Session) -> None:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
-        judged only when it produced a result (a hang or a crash before init is not)."""
+        judged only when it produced a result (a hang or a crash before init is not). 07-30
+        (D-09): the init must name the model the session asked for (streamjson's accepted IDs),
+        so a Fable pass passes and a request answered by another model stops the night."""
         init = streamjson.init_event(session.events)
         if init is None and not (session.counted and not session.result.timed_out):
             return
         problems = streamjson.check_init(init, tested_major=self.config.tested_major,
-                                         min_version=self.config.min_cli_version)  # fmt: skip
+                                         min_version=self.config.min_cli_version,
+                                         expected_model=session.claim.model)  # fmt: skip
         if problems:
             self._reset(session)
             raise _Stop(INIT, "; ".join(problems))
@@ -3211,7 +3268,8 @@ class _Night:
                                      attempts=self.config.attempts_per_function,
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
-                                     sha1s=gate_sha1s(gate.doc))  # fmt: skip
+                                     sha1s=gate_sha1s(gate.doc),
+                                     requested_model=claim.model)  # fmt: skip
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -3324,8 +3382,9 @@ class _Night:
                         summary: CheckSummary, *, gate: GateRun | None = None
                         ) -> None:  # fmt: skip
         """A v2 attempt record (DEC-07): v1's fields plus the requested model and budget (the
-        session's argv, session.build_argv), the hook blocks, the gate's verdict (null when no
-        gate ran) and the sweep evidence (P10). No transcript, C text or game bytes (D-23)."""
+        session's argv, session.build_argv; 07-30: the pass's, D-09, D-25), the hook blocks,
+        the gate's verdict (null when no gate ran) and the sweep evidence (P10). No
+        transcript, C text or game bytes (D-23)."""
         use = session.usage
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
@@ -3338,7 +3397,8 @@ class _Night:
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
                   "truncated": list(session.pack.truncated), "date": self.deps.today(),
-                  "model_requested": MODEL, "budget_usd": MAX_BUDGET_USD,
+                  "model_requested": session.claim.model,
+                  "budget_usd": session.claim.budget_usd,
                   "hook_blocks": _hook_blocks(session.events),
                   "gate": _gate_field(gate, session.claim.pick),
                   "sweep_source": source, "sweep_cells_100": cells}  # fmt: skip
@@ -3459,7 +3519,8 @@ DRY_RUN_TIER_PICKS = PILOT_PER_EXE * len(EXE_ORDER)  # 07-26: the tier dry run s
 @dataclass(frozen=True)
 class DriveOptions:
     """What `reverseapoc drive` was asked to do (D-07 defaults: 3 workers, a night cap of 60
-    counted sessions, no match target)."""
+    launched sessions, no match target; 07-30: the per-model session budgets, the turns and
+    the per-session wall clock, and the canary's model)."""
 
     repo: Path
     run_id: str
@@ -3469,6 +3530,11 @@ class DriveOptions:
     dry_run: bool = False
     canary: bool = False
     json: bool = False
+    max_budget_usd: float = MAX_BUDGET_USD  # D-07: per Opus session
+    fable_budget_usd: float = FABLE_BUDGET_USD  # D-25: per Fable session
+    max_turns: int = MAX_TURNS  # D-07
+    session_minutes: int = TIMEOUT_S // 60  # D-07: each session's wall clock
+    canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
 
     @property
     def config_root(self) -> Path:
@@ -3505,14 +3571,15 @@ class Seams:
     """Every effect of the verb: `run` runs every command except git and the session (docker,
     uv, `claude --version`) and returns its exit code and text output; `git` is git_runner;
     `world` loads both EXEs; `session` is session.run_session and `argv` the claude argv
-    (session.build_argv with the resolved `claude`). `now` is the wall clock the console
-    stamps read (local time; Deps.clock stays the monotonic clock for durations)."""
+    (session.build_argv with the resolved `claude`; Deps.argv's keyword signature, 07-30).
+    `now` is the wall clock the console stamps read (local time; Deps.clock stays the
+    monotonic clock for durations)."""
 
     run: Runner
     git: Callable[..., subprocess.CompletedProcess]  # Deps.git: (args) or (args, input=bytes)
     world: Callable[[], Mapping[str, ExeWorld]]
     session: Callable[..., SessionResult]
-    argv: Callable[[str], Sequence[str]]
+    argv: Callable[..., Sequence[str]]  # (prompt, *, model, max_budget_usd, max_turns)
     claude: str = "claude"
     base_env: Mapping[str, str] | None = None
     now: Callable[[], datetime] = datetime.now
@@ -4099,7 +4166,11 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
-                         base_env=seams.base_env, workers=options.workers)  # fmt: skip
+                         base_env=seams.base_env, workers=options.workers,
+                         max_budget_usd=options.max_budget_usd,
+                         fable_budget_usd=options.fable_budget_usd,
+                         max_turns=options.max_turns,
+                         wall_clock_s=options.session_minutes * 60)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
@@ -4216,14 +4287,18 @@ def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
 
 
 def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
-                   checks: _Checks) -> None:  # fmt: skip
+                   checks: _Checks, *, model: str) -> None:  # fmt: skip
+    """07-30 (D-09, D-25): the init must name `model`, the model the canary asked for."""
     repo = Path(options.repo)
     init = streamjson.init_event(events)
     problems = streamjson.check_init(init, tested_major=TESTED_MAJOR,
-                                     min_version=MIN_CLI_VERSION)  # fmt: skip
-    checks.add(not problems, "init: " + ("; ".join(problems) if problems else
-                                         f"claude {(init or {}).get('claude_code_version')}, "
-                                         "model, tools, no MCP server, no plugin"))  # fmt: skip
+                                     min_version=MIN_CLI_VERSION,
+                                     expected_model=model)  # fmt: skip
+    shown = _init_text(events, "model")  # 07-30: the owner reports this string (research A9)
+    checks.add(not problems, "init: " + (f"{'; '.join(problems)} (init model {shown})" if problems
+                                         else f"claude {(init or {}).get('claude_code_version')}, "
+                                         f"model {shown}, tools, no MCP server, "
+                                         "no plugin"))  # fmt: skip
     checks.add(any(e.get("type") == "result" for e in events), "the session ended with a result")
     roots = _roots(repo, (init or {}).get("cwd"))
     denials = _denials(events)
@@ -4253,6 +4328,14 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
                              + (f" carries {', '.join(keys)}" if keys else " (ignored)"))
     if not carrying:  # 06-26 canary1: every check prints a line, a passing one too
         checks.add(True, "no unknown stream event carries an error")
+
+
+def _init_text(events: Sequence[dict], key: str) -> str | None:
+    """A short init field (the model string) fit for the canary's report, else None."""
+    value = (streamjson.init_event(events) or {}).get(key)
+    if not isinstance(value, str) or len(value) > _TEXT_CAP or _LONG_HEX.search(value):
+        return None
+    return value
 
 
 def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
@@ -4287,11 +4370,11 @@ def _refs(probe: _Night) -> dict[str, str]:
 
 
 def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
-                   attempt_dir: Path, checks: _Checks) -> None:  # fmt: skip
+                   attempt_dir: Path, checks: _Checks, *, model: str) -> None:  # fmt: skip
     """The stream checks; an error in them is a FAIL line after the lines so far (fix round
     2: the session ran, so the canary reports, it never refuses)."""
     try:
-        _canary_checks(options, events, attempt_dir, checks)
+        _canary_checks(options, events, attempt_dir, checks, model=model)
     except Exception as exc:  # noqa: BLE001 - reported, never a PASS
         checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
 
@@ -4329,7 +4412,10 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
                                 "already ran with this --run ID; give a new one")  # fmt: skip
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
-    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR)
+    model = options.canary_model  # what the canary asks for and its init check expects (D-25)
+    claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR, model=model,
+                   budget_usd=session_budget(model, options.max_budget_usd,
+                                             options.fable_budget_usd))  # fmt: skip
     probe = _probe(options, seams)
     listed = _git_ok(probe._git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
@@ -4342,16 +4428,20 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
+    events: Sequence[dict] = ()
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        result = seams.session(seams.argv(CANARY_PROMPT), cwd=repo, env=env,
+        argv = seams.argv(CANARY_PROMPT, model=claim.model, max_budget_usd=claim.budget_usd,
+                          max_turns=options.max_turns)  # fmt: skip
+        result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
                                timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
     except Exception as exc:  # a crash is a FAIL with the tree still measured
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
-        _after_session(options, seams, result.events, attempt_dir, checks)
+        events = result.events
+        _after_session(options, seams, events, attempt_dir, checks, model=model)
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
@@ -4369,6 +4459,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         checks.add(False, f"measuring the tree failed: {type(exc).__name__}: {exc}")
     verdict = "PASS" if checks.ok else "FAIL"
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
+           "model_requested": model, "init_model": _init_text(events, "model"),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
     # No stamp on the check lines or the verdict: docs/workflow.md's owner steps match the
@@ -4439,5 +4530,6 @@ def default_seams(repo: Path) -> Seams:
     claude = shutil.which("claude") or "claude"
     return Seams(run=command_runner(repo), git=git_runner(repo),
                  world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
-                 session=run_session, argv=lambda prompt: build_argv(prompt, claude=claude),
+                 session=run_session,
+                 argv=lambda prompt, **values: build_argv(prompt, claude=claude, **values),
                  claude=claude)  # fmt: skip

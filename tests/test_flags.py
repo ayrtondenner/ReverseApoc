@@ -775,6 +775,27 @@ def _attempt_record(function: str, unit: str, attempt: int, *,
     return record
 
 
+OPUS, FABLE = "claude-opus-5-5", "claude-fable-5-1"
+OPUS_LINE = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+FABLE_LINE = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+
+
+def _v2_attempt(function: str, attempt: int, *, requested: str, pass_n: int = 3,
+                run: str = RUN, name: str | None = None) -> dict:  # fmt: skip
+    """A v2 attempt record (07-23) of `function`'s start; `name` is its C name (the record's
+    `function`, while the attempt directory keeps the func_ placeholder)."""
+    record = _attempt_record(function, UNIT, attempt, model=requested)
+    record.update(run=run, function=name or function, schema=2, session="matching",
+                  worker=0, model_requested=requested,
+                  budget_usd=12.5 if requested == FABLE else 5, hook_blocks=0, gate=None,
+                  sweep_source=None, sweep_cells_100=[], **{"pass": pass_n})  # fmt: skip
+    return record
+
+
+def _evidence(run: str, function: str, attempt: int) -> str:
+    return f"build/driver/{run}/ufo2p/{function}/attempt-{attempt}/checks/0005.json"
+
+
 class FakeGate:
     """The container `gate EXE/UNIT` stand-in: on a pass it writes the unit's functions as
     matched rows to status.csv and rewrites the feed; on a failure it scribbles over both
@@ -1093,6 +1114,9 @@ REFUSALS = {
     "other model": ({}, (_attempt_record(F30, UNIT, 3, model="claude-other-1"),), None,
                     "claude-other-1"),
     "no attempt record": ({}, (_attempt_record(F30, UNIT, 2),), None, "model unknown"),
+    # 07-30 fix round 1 (ruling F33): a v2 record's requested model the table does not name
+    "v2 unknown model": ({}, (_v2_attempt(F30, 3, requested="claude-made-up-1"),), None,
+                         "claude-made-up-1"),
 }  # fmt: skip
 
 
@@ -1107,6 +1131,41 @@ def test_approve_refusals(tmp_path, case):
     with pytest.raises(flags.FlagsError, match=match):
         a.approve(ids, **extra)
     assert a.head() == base and a.files() == before and a.gate.calls == []
+
+
+def _trailers(a: Approval) -> list[str]:
+    lines = _git(a.repo, a.env, "log", "-1", "--format=%B").splitlines()
+    return [line for line in lines if line.startswith("Co-Authored-By:")]
+
+
+def test_approve_a_fable_candidate_names_fable(tmp_path):
+    """Orchestrator ruling F33 (07-30 fix round 1): a candidate a Fable attempt wrote (v2,
+    keyed on model_requested) approves with the Fable co-author, not the Opus one."""
+    a = approve_repo(tmp_path, records=(_v2_attempt(F30, 3, requested=FABLE),))
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [FABLE_LINE]
+
+
+def test_approve_finds_a_v2_record_named_by_its_c_name(tmp_path):
+    """07-23: a v2 record's `function` is the C name, its attempt directory keeps the func_
+    placeholder; the record is still found (by its start)."""
+    record = _v2_attempt(F30, 3, requested=FABLE, name="MadeUpVolume")
+    a = approve_repo(tmp_path, records=(record,))
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [FABLE_LINE]
+
+
+def test_approve_a_mixed_candidate_gets_one_trailer_per_model_in_pass_order(tmp_path):
+    """Ruling F33: hitting attempts on two models give one Co-Authored-By line per distinct
+    model, in pass order (Opus pass 1 before Fable pass 3), whatever the evidence order."""
+    later = "20261030-010101"
+    records = (_v2_attempt(F30, 2, requested=OPUS, pass_n=1),
+               _v2_attempt(F30, 3, requested=OPUS, pass_n=1),
+               _v2_attempt(F30, 1, requested=FABLE, pass_n=3, run=later))  # fmt: skip
+    evidence = (_evidence(later, F30, 1), _evidence(RUN, F30, 2), _evidence(RUN, F30, 3))
+    a = approve_repo(tmp_path, records=records, evidence=evidence)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [OPUS_LINE, FABLE_LINE]
 
 
 def test_approve_refuses_while_a_drive_holds_the_lock(tmp_path):

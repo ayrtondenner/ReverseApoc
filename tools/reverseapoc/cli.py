@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import math
 import re
 import sys
 from collections import Counter
@@ -14,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import asmclass, attempt, driver, flags, locate, mechanics, probe, stats
+from . import asmclass, attempt, driver, flags, locate, mechanics, probe, session, stats
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
 from .attempt import AttemptError
@@ -1317,6 +1318,25 @@ def _non_negative(value: str) -> int:
     return number
 
 
+def _positive_float(value: str) -> float:
+    """A finite number above 0 (drive's per-session budgets in USD, 07-30)."""
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a number") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise argparse.ArgumentTypeError(f"{value} is not above 0")
+    return number
+
+
+def _model(value: str) -> str:
+    """A model id the driver can run and attribute (session.MODEL_NAMES, 07-42)."""
+    if value not in session.MODEL_NAMES:
+        raise argparse.ArgumentTypeError(f"model {value!r} is not one of "
+                                         f"{', '.join(session.MODEL_NAMES)}")  # fmt: skip
+    return value
+
+
 def _run_id(value: str | None) -> str:
     """The run's id: `--run ID`, else the UTC time it starts (YYYYMMDD-HHMMSS)."""
     if value is None:
@@ -1330,12 +1350,23 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     """Exit 0 for a night that ENDED with every end-of-run check passing, a dry run or a
     passing canary; 1 for a STOPPED night, a failed end-of-run check or a failing canary; 2
     when it refused to start (preflight, dirty outputs, or a canary refused before its
-    session; once the canary's session ran, any error is a canary FAIL, exit 1)."""
+    session; once the canary's session ran, any error is a canary FAIL, exit 1). `--model`
+    without `--canary` is refused (exit 2): a night takes each pass's model from D-09."""
+    if args.model is not None and not args.canary:
+        print("reverseapoc drive: error: --model needs --canary (a night runs passes 1-2 on "
+              f"{session.OPUS_MODEL} and later passes on {session.FABLE_MODEL}, D-09)",
+              file=sys.stderr)  # fmt: skip
+        return 2
     options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
                                   max_sessions=args.max_sessions,
                                   target_matched=args.target_matched, workers=args.workers,
                                   dry_run=args.dry_run,
-                                  canary=args.canary, json=args.json)  # fmt: skip
+                                  canary=args.canary, json=args.json,
+                                  max_budget_usd=args.max_budget_usd,
+                                  fable_budget_usd=args.fable_budget_usd,
+                                  max_turns=args.max_turns,
+                                  session_minutes=args.session_minutes,
+                                  canary_model=args.model or session.MODEL)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1353,16 +1384,31 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--workers", type=_positive, default=3, metavar="N",
                    help="sessions at once, one unit each (D-06, D-07); " + default)  # fmt: skip
     p.add_argument("--max-sessions", type=_positive, default=60, metavar="N",
-                   help="counted sessions of all workers before the night ends; "
-                   + default)  # fmt: skip
+                   help="sessions all workers launch before the night ends, a transient one "
+                   "included; " + default)  # fmt: skip
     p.add_argument("--target-matched", type=_non_negative, default=0, metavar="N",
                    help="matches before the night ends, 0 = off; " + default)  # fmt: skip
+    p.add_argument("--max-budget-usd", type=_positive_float, default=session.MAX_BUDGET_USD,
+                   metavar="USD", help=f"per-session budget of an Opus session "
+                   f"({session.OPUS_MODEL}, passes 1-2, D-07); " + default)  # fmt: skip
+    p.add_argument("--fable-budget-usd", type=_positive_float,
+                   default=session.FABLE_BUDGET_USD, metavar="USD",
+                   help=f"per-session budget of a Fable session ({session.FABLE_MODEL}, "
+                   "pass 3 on, D-09, D-25); " + default)  # fmt: skip
+    p.add_argument("--max-turns", type=_positive, default=session.MAX_TURNS, metavar="N",
+                   help="turns per session (D-07); " + default)  # fmt: skip
+    p.add_argument("--session-minutes", type=_positive, default=session.TIMEOUT_S // 60,
+                   metavar="N", help="each session's wall clock in minutes (D-07); "
+                   + default)  # fmt: skip
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",
                       help="print the 10 pilot picks and build their packs; no claude, no gate")
     mode.add_argument("--canary", action="store_true",
                       help="owner only: one real session that proves the guardrails deny "
                       "(PASS/FAIL)")  # fmt: skip
+    p.add_argument("--model", type=_model, default=None, metavar="MODEL",
+                   help="with --canary only: the model the canary session asks for "
+                   f"({', '.join(session.MODEL_NAMES)}); default: {session.MODEL} (D-25)")
     p.add_argument("--run", type=_run_id, default=None, metavar="ID",
                    help="the run id under build/driver/; default: the UTC start time")
     p.add_argument("--json", action="store_true", help="print exactly one JSON document")

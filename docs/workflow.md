@@ -68,19 +68,27 @@ The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same on
 `reverseapoc drive` runs on the Windows host, in the main checkout (D-34). It starts one fresh `claude -p` session per attempt and runs every gate in the container.
 
 ```
-uv run reverseapoc drive [--max-sessions N] [--target-matched N] [--dry-run | --canary] [--run ID] [--json]
+uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--max-sessions N` | 30 | counted sessions before the night ends (D-48) |
-| `--target-matched N` | 10 | matches before the night ends (D-48) |
+| `--workers N` | 3 | sessions at once, one unit each (D-06, D-07) |
+| `--max-sessions N` | 60 | sessions all workers launch before the night ends (D-07). Every launched session counts toward this cap, an aborted (transient) one included; a usage-limit relaunch keeps its slot |
+| `--target-matched N` | 0 (off) | matches before the night ends |
+| `--max-budget-usd USD` | 5 | per-session budget of an Opus session (`claude-opus-5-5`, passes 1 and 2 of a function, D-07) |
+| `--fable-budget-usd USD` | 12.5 | per-session budget of a Fable session (`claude-fable-5-1`, pass 3 and later, D-09, D-25) |
+| `--max-turns N` | 40 | turns per session (D-07) |
+| `--session-minutes N` | 30 | each session's wall clock in minutes (D-07) |
 | `--dry-run` | off | print the 10 pilot picks and build their packs; no claude, no gate |
 | `--canary` | off | owner only: one real session that proves the guardrails deny (PASS/FAIL) |
+| `--model MODEL` | `claude-opus-5-5` | with `--canary` only: the model the canary asks for and its init check expects; `--model claude-fable-5-1` is the owner's Fable canary (D-25). The canary's init line and its JSON (`init_model`) name the model string the init event reported |
 | `--run ID` | the UTC start time | the run directory `build/driver/<ID>/` |
 | `--json` | off | print exactly one JSON document on stdout |
 
 The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
+
+**Model escalation (D-09).** A function's pass comes from the committed `progress/attempts.jsonl`. Passes 1 and 2 run on `claude-opus-5-5` with `--max-budget-usd`; pass 3 and every later pass run on `claude-fable-5-1` with `--fable-budget-usd`. Each attempt record names `model_requested` and `budget_usd` next to the init event's `model`. The init check expects the requested model, so an answer from another model stops the night (STOPPED `init`). Each match commit's `Co-Authored-By:` line names the requested model (`Claude Opus 5.5` or `Claude Fable 5.1`).
 
 **Before you start** (the preflight refuses without most of these):
 
@@ -131,7 +139,7 @@ The night's own refusal (`dirty` outputs: `progress/attempts.jsonl`, a `status.c
 
 **Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for five calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, `uv run --frozen reverseapoc attempt context` and `uv run --frozen reverseapoc attempt check`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
 
-- the session's init event is clean (CLI version, model, the six tools, no MCP server, no plugin). CLI built-in plugins count as plugins. The driver settings switch them off with short `<alias>@builtin: false` keys. CLI 2.1.308 ships `cc-plugin-agents-md`, `cc-plugin-telemetry` and `cc-plugin-plugin-authoring`; the key drops the `cc-plugin-` prefix (`"agents-md@builtin": false`), as probed on 2026-10-25;
+- the session's init event is clean (CLI version, the model the canary asked for, the six tools, no MCP server, no plugin). The canary asks for `claude-opus-5-5`, or for the model given with `--model` (the owner's Fable canary is `uv run reverseapoc drive --canary --model claude-fable-5-1 --run <fresh id>`, D-25); its budget is that model's (`--max-budget-usd` or `--fable-budget-usd`). The init line names the model string the init event reported, so the owner can report it. CLI built-in plugins count as plugins. The driver settings switch them off with short `<alias>@builtin: false` keys. CLI 2.1.308 ships `cc-plugin-agents-md`, `cc-plugin-telemetry` and `cc-plugin-plugin-authoring`; the key drops the `cc-plugin-` prefix (`"agents-md@builtin": false`), as probed on 2026-10-25;
 - the first three calls are in the result's `permission_denials`;
 - both wrapper calls were made and not denied, `attempt context` wrote `context.md`, and `attempt check` logged exit 0 (the claimed function is already matched, so this proves the container path);
 - no unknown stream event type carries an error;
