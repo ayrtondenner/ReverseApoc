@@ -20,7 +20,7 @@ import pytest
 from conftest import REPO_ROOT
 from reverseapoc import session
 from reverseapoc.session import build_argv, goal_prompt, kill_tree, run_session
-from reverseapoc.streamjson import Disposition, classify
+from reverseapoc.streamjson import ACCEPTED_INIT_MODELS, Disposition, classify
 
 FAKECLAUDE = REPO_ROOT / "tests" / "fakeclaude.py"
 STREAMS = REPO_ROOT / "tests" / "fixtures" / "stream"
@@ -104,6 +104,14 @@ def test_model_for_pass(pass_number, model):
 def test_model_for_pass_refuses_a_pass_below_one(pass_number):
     with pytest.raises(ValueError):
         session.model_for_pass(pass_number)
+
+
+def test_model_tables_agree():
+    """T-07-125: every model the init check accepts has a co-author name, and no other."""
+    models = {session.OPUS_MODEL, session.FABLE_MODEL}
+    assert set(session.MODEL_NAMES) == set(ACCEPTED_INIT_MODELS) == models
+    assert session.MODEL_NAMES[session.OPUS_MODEL] == "Claude Opus 5.5"
+    assert session.MODEL_NAMES[session.FABLE_MODEL] == "Claude Fable 5.1"
 
 
 VIEW_UNIT ="build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c"
