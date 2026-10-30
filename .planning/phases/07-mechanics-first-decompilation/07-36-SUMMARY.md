@@ -119,6 +119,8 @@ RED is the orchestrator's baseline in `.superpowers/sdd/let-s-execute-gsd-execut
 | Soft violation: S1's `table:` citing mechanics.toml; S2's `call:` without addresses | Evidence-kind table: what each kind's text names (EXE addresses; `vocab:` a word only). "Project records such as `config/mechanics.toml` are not an evidence kind: cite the game fact they record, by its address." |
 | Soft violation: S4's name without a module prefix | Style line: `snake_case` with a module prefix (`docs/coding-style.md#naming`) |
 | Item 7: budgets unknown, turn counting | Quick reference: 40 turns, 25 checks, 30 minutes, elapsed seconds per check. Stop rule: about 25 of 30 minutes or 35 of 40 turns |
+| Item 4: S2 quoted RL06 findings on lines 45 and 46 of a 17-line unit | Fix round 1: "line numbers come only from this output: quote no line number you have not read here" ("The attempt wrapper", "Reading it"). The output example's line numbers are pinned by running the real readlint on the example unit |
+| Item 7, second half: S4 did not know whether parallel tool calls in one message count as one turn | Not taught. session.py only passes `--max-turns 40` to the claude CLI, and nothing in this repository says how the CLI counts turns, so the skill states only the 40-turn budget and the stop rule (35 of 40 turns). GREEN passed without it (S4 used 5 tool uses). |
 | Item 8: what lands; S4 re-checked restored text | "When to stop": the final view text lands, not the best check (planned). LANDED, PARTIAL or REFUSED. End on byte-identical text; restore from `<attempt dir>/checks/NNNN.c`, with no re-check needed |
 | Priority 5: which type changes are allowed | "What you may change": no type change to an existing declaration (`jl`/`jge` vs `jb`/`jae`, load widths); an alias typedef keeps the bytes; never change the defined or `INCLUDE_ASM` set |
 | Unnamed callees (D-30) | Placeholder stays; list it in notes.md for `config/readlint-allow.csv`, which sessions never edit. Allowlisted references explained |
@@ -168,3 +170,26 @@ None. The owner may optionally add `watcom-readability` to `.claude/rules/workfl
 - FOUND: .claude/skills/watcom-readability/SKILL.md (tracked)
 - FOUND: tests/test_skill_readability.py
 - FOUND: commits a504b54, 07f69d6, b1eca06 on HEAD
+
+## Fix round 1
+
+Source: the orchestrator's review (`review-07-36.md`, FIX_BASE e1da3be). The GREEN run passed: S1 to S4 made the right choices in 9, 4, 6 and 5 tool uses (RED: 23, 21, 21 and 13). The two Important issues were fixed as the writing-skills REFACTOR step, test first.
+
+- **RED** `e508953` test(07-36): 3 new tests, failing as expected:
+  - every prose block (outside fences) that states what the driver does after a session (lands, applies, writes, rewrites, commits, landing) carries "planned";
+  - the constants section states `unsigned int` and `unsigned long`, never "a decimal one is long", and keeps "exact spelling and suffix";
+  - the wrapper section says where line numbers come from.
+- **GREEN** `9b4dcd1` docs(skill):
+  - Important 1: three statements are now marked "(planned, not built yet)":
+    - the header write (07-34);
+    - strict readlint at landing (07-38);
+    - the closing "the driver will check everything again at landing", which sat outside the landing paragraph's marker.
+  - Important 2: the literal-type reason is now right for wcc386. `int` and `long` are both 32 bits, so `0x80000000` is `unsigned int` and `2147483648` is `unsigned long`; a `u` or `l` suffix changes the type again. The rule itself (copy the exact spelling and suffix) is unchanged.
+  - RED item 4: "line numbers come only from this output: quote no line number you have not read here".
+- The SUMMARY's RED-gap table gains two rows: item 4 (invented line numbers) and the turn-counting half of item 7 (not taught, because the repository does not say how the claude CLI counts `--max-turns`).
+- The other review minors are left as the orchestrator directed. One note: `actuals.tokens: 8300` is chars/4 over the realized diff (33,342 characters), the scale the template asks for, not a slip.
+- Verification:
+  - `uv run pytest -q tests/test_skill_readability.py`: 17 passed;
+  - `uv run pytest -q` (host, worktree): 3740 passed, 248 skipped (the same pre-existing real-file skips);
+  - `uv run ruff check .`: clean.
+- The skill is now 226 lines. The container run is still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
