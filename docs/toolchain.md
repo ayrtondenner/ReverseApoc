@@ -213,6 +213,31 @@ Every match of the owner-run pilot (run 20261026-005209, plan 06-26), each its o
 
 All five matched functions agree with the `*` default (two from Phase 5, three from the pilot). It therefore stays `*  wcc386@10.6  -4r -s -fpi`; changing it is the owner's call.
 
+### Phase 7 flag rules
+
+The D-13 batch (plan 07-29) covers the six never-matched functions of pilot run 20261026-005209 that had a sweep hit. `flags.pilot_hits` re-derived them from `progress/attempts.jsonl` (D-16).
+- `reverseapoc flags propose --from-attempts 20261026-005209` turned each one into a proposed per-unit rule in `config/cflags-proposals.toml`, built from the C that hit (`checks/NNNN.c`, D-28). No hitting C was missing, so nothing was re-queued.
+- `flags regate` ran in the container on a copy of `src/`: the whole unit under the committed rules plus one exact-path rule, with both EXEs required to stay SHA-1 identical. It tried the file as written first, then D-28's reduced variant (the co-defined neighbour turned back into `INCLUDE_ASM`).
+- The owner approved the two proposals that passed with `reverseapoc flags approve F-0001 F-0003 --by ayrtondenner` (D-12). Each landed as its own match commit with `Matched-By: reverseapoc drive` and `Flags-Approved-By:`.
+- Plan 07-29 then re-gated each approval commit in the container (`gate --all` exit 0, both EXEs SHA-1 identical to `config/targets.toml`), and then the final tree.
+
+The evidence is `build/gate/07-evidence/29-*.log`, `29-batch-summary.txt` and `build/flags/F-000n/regate.json` (all gitignored). Percentages are objdiff under the proposed rule; a sibling's status and percent come from status.csv under the base rule `wcc386@10.6 -4r -s -fpi`.
+
+| Proposal | EXE | Function | Unit | Rule | Variant | Siblings (D-32) | Re-gate | Commit |
+|---|---|---|---|---|---|---|---|---|
+| F-0001 | TACP.EXE | func_0006FBD0 (48 bytes) | u_0006fbd0 | `wcc386@10.6 -4r -oneatx -s -fpi` | as written: the target and the co-defined func_0006FC00 (64 bytes) both at 100.0 | func_0006FC00 unattempted (matched by this commit), func_0006FC40 unattempted | proposal exit 0; commit `gate --all` exit 0 | 864fb46 |
+| F-0002 | TACP.EXE | func_000779C0 (32 bytes) | u_000778d0 | `wcc386@10.6 -4r -ot -s -fpi` | none passed: as written, func_000779E0 at 1.03; reduced, the target at 66.67 | 11, all unattempted | exit 1 | not approved (failed the re-gate) |
+| F-0003 | UFO2P.EXE | func_00026FD0 (32 bytes) | u_00026dd0 | `wcc386@10.6 -4r -oneatx -s -fpi` | as written: the target and the co-defined func_00026FF0 (43 bytes) both at 100.0 | func_00026FF0 unattempted (matched by this commit); func_00026DD0, func_00026E20, func_00026FB0, func_00026FB2, func_00026FC0, func_00027020 unattempted | proposal exit 0; commit `gate --all` exit 0 | 6adc5c8 |
+| F-0004 | UFO2P.EXE | func_0004DFD0 (32 bytes) | u_0004dfd0 | `wcc386@10.6 -4r -ot -s -fpi` | none passed: as written, func_0004DFF0 at 33.19; reduced, the target at 66.67 | func_0004DFF0 partial 33.19, func_0004E0C0 unattempted | exit 1 | not approved (failed the re-gate) |
+| F-0005 | UFO2P.EXE | func_00061F30 (32 bytes) | u_00060c50 | `wcc386@10.6 -4r -ot -s -fpi` | none passed: as written, func_00061F50 at 53.50; reduced, the target at 68.57 | 15: func_00061F50 partial 46.45, func_00061FA0 partial 67.50, 13 unattempted | exit 1 | not approved (failed the re-gate) |
+| F-0006 | UFO2P.EXE | func_0009C3A0 (32 bytes) | u_0009c1a0 | `wcc386@10.6 -4r -oneatx -s -fpi` | none passed: as written, func_0009C3C0 at 85.64; reduced, the target at 75.00 | 10, all unattempted | exit 1 | not approved (failed the re-gate) |
+
+**What the re-gates showed.**
+- **The reduced variant never helped** (research open question 8). In all four failures, the target matched only while its neighbour's C definition was in the same file. With the neighbour back as `INCLUDE_ASM`, the target fell to 66.67-75.00 with a failing relocation check. So Watcom's same-module knowledge changes the caller's code (research A13), and a hit is a property of the whole file, not of the one function.
+- **Both passing proposals matched their neighbour as well.** The two approvals therefore landed four functions in two commits: func_0006FBD0, func_0006FC00, func_00026FD0 and func_00026FF0. All four are now matched under `-4r -oneatx` per-unit rules.
+
+**D-33 (the `*` default).** These pilot hits are 32-48-byte functions. Like their co-defined neighbours, they count toward per-unit rules only. A change of the `*` default needs at least 3 re-gated agreeing functions, each with a branch or loop or at least 64 bytes, from different regions of both EXEs (D-14, D-33). The `*` default is unchanged by this batch.
+
 ### Fallbacks and candidates
 
 The owner accepted Phase 4 under D-08/D-10 on 2026-10-22 (override in `04-VERIFICATION.md`): the version and flags below are a preference order and a candidate list, not a proof. A match proves or drops an entry; record what each match proves in the Flags table above.
