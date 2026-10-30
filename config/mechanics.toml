@@ -17,10 +17,11 @@ signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-27
 list_sha256 = "0f7093230df88290a923c0fdaf3eb8ec04b1916843b3692a493a847722790c09"
 
-# D-22, signed with Tier 1 by the owner on 2026-10-27 (plan 07-22): a reached row with at least 20
-# direct callers, or whose own closure covers more than 20% of its EXE's game and thunk rows, is a
-# hub (located, not required). Owner ruling: hub and SCC figures ignore midrow edges (switch-table
-# artefacts); the closure walk still follows them.
+# D-22, signed with Tier 1 by the owner on 2026-10-27, values kept at the re-sign on 2026-10-30
+# (plan 07-22): a reached row with at least 20 direct callers, or whose own closure covers more
+# than 20% of its EXE's game and thunk rows, is a hub (located, not required). Owner ruling Q1:
+# every hub figure (direct callers, closure share, min_items, largest SCC) ignores midrow edges
+# (switch-table artefacts); the member walk and the full closure still follow them.
 [hub_rule]
 min_direct_callers = 20
 largest_scc = false
@@ -33,8 +34,8 @@ min_items = 0
 id = 1
 title = "Tick rate and battlescape training"
 signed_off_by = "ayrtondenner"
-signed_off_date = 2026-10-27
-members_sha256 = "0c668c5c1e612b5d1e6f633220649f271def650a831044fec3d2bfdb4bb318fc"
+signed_off_date = 2026-10-30
+members_sha256 = "7f892df5689c656b1c8d0895326713140d1a2080ce7b7103dc4e9a6e84d39294"
 
 [[item]]
 id = "997"
@@ -243,7 +244,7 @@ item = "263-1"
 exe = "tacp"
 address = "0x000B2510"
 evidence = "call-graph"
-detail = "post-battle stat raise: called after the battle loop, before the hand-off writer; capped gains"
+detail = "post-battle stat raise, by call-order scan + hand read: after the battle loop, before the hand-off writer"
 source = "mechanics locate"
 
 [[entry]]
@@ -251,7 +252,7 @@ item = "263-1"
 exe = "tacp"
 address = "0x00064B60"
 evidence = "data-field"
-detail = "raises the unit counter word at +0x6A that the post-battle raise divides into a stat gain"
+detail = "counter scan + hand read: raises unit counter +0x6A, which the post-battle raise divides into a stat gain"
 source = "mechanics locate"
 
 [[entry]]
@@ -259,7 +260,15 @@ item = "263-1"
 exe = "tacp"
 address = "0x00067B60"
 evidence = "data-field"
-detail = "raises the unit counter word at +0x6E that the post-battle raise divides into a stat gain"
+detail = "counter scan + hand read: raises unit counter +0x6E, which the post-battle raise divides into a stat gain"
+source = "mechanics locate"
+
+[[entry]]
+item = "263-1"
+exe = "tacp"
+address = "0x0005CDD0"
+evidence = "data-field"
+detail = "hand read: adds a hit-scaled credit to unit counter +0x8C, which the post-battle raise reads to adjust +0x8E"
 source = "mechanics locate"
 
 [[entry]]
