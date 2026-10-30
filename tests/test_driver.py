@@ -31,7 +31,7 @@ from reverseapoc.driver import (
     git_runner,
 )
 from reverseapoc.picker import Pick
-from reverseapoc.session import run_session
+from reverseapoc.session import OPUS_MODEL, run_session
 
 FAKE = Path(__file__).resolve().parent / "fakeclaude.py"
 EXE = "ufo2p"
@@ -239,11 +239,14 @@ class Night:
 
     def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
               max_turns: int) -> list[str]:  # fmt: skip
-        """Deps.argv's keyword signature (07-30); the stand-in ignores the session values."""
+        """Deps.argv's keyword signature (07-30). The fixtures' init names Opus, the model of
+        passes 1 and 2; for any other requested model (Fable, pass 3 on, D-09) the stand-in
+        echoes it into its init event (`--model`), as the real CLI does."""
         self._current = self.sessions.pop(0) if self.sessions else Sess(write=None)
         self.prompts.append(prompt)
         spec = self._current
         argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths"]
+        argv += ["--model", model] if model != OPUS_MODEL else []
         text = spec.unit_text or (SESSION_TEXT if spec.write == VIEW else None)
         argv += ["--write", spec.write] if spec.write and spec.write != VIEW else []
         return argv + (["--write-env-unit", text] if text else [])
