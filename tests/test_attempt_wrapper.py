@@ -1451,21 +1451,41 @@ def test_pending_rename_does_not_fail_the_verdict(readable: Path, monkeypatch, c
     assert (line["exit"], line["readlint_violations"]) == (0, 0)
 
 
-@pytest.mark.parametrize("proposal", [
-    _rename("int"),  # not a name the driver may give
-    _rename("func_000A34F0"),  # placeholder-shaped
-    _rename(NAMED, address="0x000A34F0"),  # another row
-    _rename(NAMED, kind="data"),  # a data rename of a code address
+@pytest.mark.parametrize(("proposal", "refused"), [
+    (_rename("int"), "keyword"),  # not a name the driver may give
+    (_rename("func_000A34F0"), "placeholder-shaped"),
+    (_rename(NAMED, address="0x000A34F0"), None),  # another row: not this hit's
+    (_rename(NAMED, kind="data"), None),  # a data rename: not this func hit's
 ])  # fmt: skip
-def test_invalid_rename_keeps_the_violation(readable: Path, monkeypatch, capsys, proposal):
-    """F18: only a valid proposal for that very row covers an RL01 hit; an invalid one is named
-    as refused and the hit still fails the verdict."""
+def test_invalid_rename_keeps_the_violation(readable: Path, monkeypatch, capsys, proposal,
+                                            refused):  # fmt: skip
+    """F18: only a valid proposal for that very row covers an RL01 hit; an invalid one for it is
+    named as refused, and the hit still fails the verdict."""
     _readable_unit(readable, FUNC, renamed=False)
     _propose(readable, proposal)
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 1
-    assert "pending rename:" not in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "pending rename:" not in out
+    if refused is None:
+        assert "rename proposal refused" not in out
+    else:
+        assert "rename proposal refused:" in out and refused in out
     assert _lines(readable.parent)[0]["readlint_violations"] == 1
+
+
+def test_a_data_placeholder_rename_is_pending(readable: Path, monkeypatch, capsys):
+    """F18 for data: an RL01 hit on a D_ placeholder that a valid data rename covers is pending
+    (the host does not read the EXE's data objects; the driver checks them at landing)."""
+    text = _readable_text(NAMED).replace("return 0;", "return D_00200010;")
+    _view_unit(readable).write_bytes(("extern int D_00200010;\n" + text).encode("utf-8"))
+    write_symbols_csv(readable / "config" / "ufo2p" / "symbols.csv",
+                      [SymbolRow(0x000A3980, f"{NAMED}_", "func")], "UFO2P.EXE")  # fmt: skip
+    _propose(readable, _rename("g_ticks", kind="data", address="0x00200010"))
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    out = capsys.readouterr().out
+    assert "2 pending renames" in out and "D_00200010 -> g_ticks" in out
 
 
 def test_unreadable_proposals_count_no_pending_rename(readable: Path, monkeypatch, capsys):

@@ -40,11 +40,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack
+from . import asm, check, contextpack, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
-from .functions import KIND_GAME, KIND_THUNK, FunctionRow, read_functions_csv
+from .functions import (
+    KIND_GAME,
+    KIND_THUNK,
+    FunctionRow,
+    read_functions_csv,
+    read_symbols_csv,
+)
 from .hooks import (
     ATTEMPT_FORMS,
     ATTEMPT_PREFIX,
@@ -56,9 +62,11 @@ from .hooks import (
     UNIT_FILE_ENV,
     attempt_form_matches,
 )
-from .readlint import ReadlintResult, run_readlint
+from .proposals import Rename, read_proposals, rename_problem
+from .readlint import ReadlintResult, Violation, run_readlint
 from .status import read_status, status_path
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
+from .unitdefs import DATA_KIND, FUNC_KIND
 
 FUNC_ENV = "REVERSEAPOC_FUNC"
 DIR_ENV = "REVERSEAPOC_ATTEMPT_DIR"
@@ -92,6 +100,8 @@ _HEX = 16
 _TAIL_LINES = 40  # of a failed run's output shown to the agent
 MEASURED = "measured"  # a sweep cell's status once compiled and diffed
 READABILITY = SESSION_KINDS[1]  # the session kind whose check adds readlint (07-31)
+FUNCTIONS_CSV = "functions.csv"  # config/<exe>/ tables a check and a rename proposal read
+SYMBOLS_CSV = "symbols.csv"
 
 
 class AttemptError(ValueError):
@@ -378,6 +388,11 @@ class CheckLogLine:
     splice_ok: bool | None  # None for a sweep: it never lands
     sweep_hit: str | None  # "wcc386@V flags..." of a 100% cell under non-default flags
     source: str  # the C this run checked, relative to the attempt directory (F10)
+    # 07-31 (ruling F11: defaults, after source): a readability check's readlint violations
+    # (pending renames excluded, ruling F18) and accepted waivers; None for a matching or sweep
+    # line, and when readlint itself failed (a tool line).
+    readlint_violations: int | None = None
+    readlint_waivers: int | None = None
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -572,47 +587,152 @@ _CHECK_HALF = {
 # ---- the readability half (07-31; D-17, D-18, D-20) ----
 
 
+RL01 = "RL01"  # readlint's placeholder rule: the one a rename proposal can settle
+_DATA = re.compile(r"D_([0-9A-F]{8})")
+_RENAMABLE = ((_FUNC, FUNC_KIND), (_DATA, DATA_KIND))  # placeholder -> the row kind it names
+
+
+def _one_line(text: object) -> str:
+    return " ".join(str(text).split())
+
+
+@dataclass(frozen=True)
+class Pending:
+    """Ruling F18: an RL01 hit on a placeholder that the session's own valid rename proposal
+    renames. The driver applies the proposal after the session and lints again at landing."""
+
+    violation: Violation
+    name: str
+
+
 @dataclass(frozen=True)
 class Lint:
     """readlint's result on a readability session's view unit, or the tool error that stopped
-    it (`result` None: exit 2, fail closed)."""
+    it (`result` None: exit 2, fail closed). `failing` are the violations that count: all of
+    them but the `pending` renames; `notes` say why proposals covered nothing."""
 
     result: ReadlintResult | None
     error: str | None = None
+    failing: tuple[Violation, ...] = ()
+    pending: tuple[Pending, ...] = ()
+    notes: tuple[str, ...] = ()
 
     @property
     def exit(self) -> int:
         if self.result is None:
             return EXIT_TOOL
-        return EXIT_MISMATCH if self.result.violations else EXIT_OK
+        return EXIT_MISMATCH if self.failing else EXIT_OK
+
+    @property
+    def violation_count(self) -> int | None:
+        return None if self.result is None else len(self.failing)
+
+    @property
+    def waiver_count(self) -> int | None:
+        return None if self.result is None else sum(self.result.waivers.values())
 
     def lines(self) -> list[str]:
         if self.result is None:
             return [f"  readlint: TOOL ERROR: {self.error}"]
-        result = self.result
-        counts = (f"{sum(result.waivers.values())} waivers, "
-                  f"{sum(result.allowlisted.values())} allowlisted references")  # fmt: skip
-        if not result.violations:
-            return [f"  readlint: clean, {counts}"]
-        n = len(result.violations)
-        head = f"  readlint: {n} violation{'' if n == 1 else 's'}, {counts}"
-        return [head, *(f"    {v.path}:{v.line}: {v.rule} {v.message}" for v in result.violations)]
+        n, waived = len(self.failing), self.waiver_count
+        counts = (f"{waived} waiver{'' if waived == 1 else 's'}, "
+                  f"{sum(self.result.allowlisted.values())} allowlisted references")  # fmt: skip
+        if self.pending:
+            counts += f", {len(self.pending)} pending rename{'' if len(self.pending) == 1 else 's'}"
+        head = (f"  readlint: clean, {counts}" if not n
+                else f"  readlint: {n} violation{'' if n == 1 else 's'}, {counts}")  # fmt: skip
+        return [head,
+                *(f"    {v.path}:{v.line}: {v.rule} {v.message}" for v in self.failing),
+                *(f"    pending rename: {p.violation.path}:{p.violation.line}: "
+                  f"{_placeholder(p.violation)} -> {p.name} (your proposal; the driver applies "
+                  "it after the session and lints again at landing)" for p in self.pending),
+                *(f"    {note}" for note in self.notes)]  # fmt: skip
 
 
 def lint_view(claim: Claim) -> Lint:
     """readlint on the claim's view unit, with the view's src/ and config/ as its roots (the
     tree the container check compiled). A unit readlint does not check (not matched in the
-    view's status.csv) is a tool error: a readability verdict never passes unlinted."""
+    view's status.csv) is a tool error: a readability verdict never passes unlinted. RL01 hits
+    the session's own valid rename proposals cover are pending, not failing (ruling F18)."""
     view = claim.view_root
     try:
         result = run_readlint([unit_path(claim, ROOTS)], src_root=view / VIEW_SRC,
                               config_root=view / VIEW_CONFIG, units=[claim.target])  # fmt: skip
     except (ValueError, OSError) as exc:  # ReadlintError is a ValueError
-        return Lint(None, " ".join(str(exc).split()))
+        return Lint(None, _one_line(exc))
     if not result.files_checked:
         why = "; ".join(f"{s.path}: {s.reason}" for s in result.skipped) or "no file selected"
         return Lint(None, f"readlint checked no file ({why})")
-    return Lint(result)
+    names, notes = _proposed_names(claim, result.violations)
+    pending = tuple(Pending(v, names[key]) for v in result.violations
+                    if (key := _renamable(v)) is not None and key in names)  # fmt: skip
+    covered = {p.violation for p in pending}
+    failing = tuple(v for v in result.violations if v not in covered)
+    return Lint(result, failing=failing, pending=pending, notes=tuple(notes))
+
+
+def _placeholder(violation: Violation) -> str:
+    """The identifier an RL01 message names first (readlint: `<name> is a placeholder ...`)."""
+    return violation.message.split(" ", 1)[0]
+
+
+def _renamable(violation: Violation) -> tuple[str, int] | None:
+    """(kind, address) of the row an RL01 hit's func_/D_ placeholder names; None for any other
+    hit (FUN_, DAT_ and the like name no row a proposal can rename)."""
+    if violation.rule != RL01:
+        return None
+    word = _placeholder(violation)
+    for pattern, kind in _RENAMABLE:
+        if (found := pattern.fullmatch(word)) is not None:
+            return kind, int(found.group(1), _HEX)
+    return None
+
+
+def _proposed_names(
+    claim: Claim, violations: Sequence[Violation]
+) -> tuple[dict[tuple[str, int], str], list[str]]:
+    """(kind, address) -> name of the session's valid rename proposals for rows its RL01 hits
+    name (the last proposal for a row wins, as the driver applies them in order), and notes on
+    proposals that cover nothing. Unreadable proposals cover nothing (fail closed)."""
+    wanted = {key for v in violations if (key := _renamable(v)) is not None}
+    if not wanted or claim.proposals is None:
+        return {}, []
+    try:
+        latest = {(p.kind, p.address): p for p in read_proposals(claim.proposals)
+                  if isinstance(p, Rename) and p.exe == claim.exe
+                  and (p.kind, p.address) in wanted}  # fmt: skip
+        state = _naming_state(claim) if latest else {}
+        problems = {key: rename_problem(p, data_ranges=[(p.address, p.address + 1)], **state)
+                    for key, p in latest.items()}  # fmt: skip
+    except (ValueError, OSError) as exc:  # ProposalError, UnitDefsError, FunctionsError
+        return {}, [f"{PROPOSALS_FILE}: {_one_line(exc)}; no pending rename counted"]
+    names = {key: p.name for key, p in latest.items() if problems[key] is None}
+    notes = [f"rename proposal refused: {problem}" for problem in problems.values() if problem]
+    return names, notes
+
+
+def _naming_state(claim: Claim) -> dict[str, Any]:
+    """rename_problem's naming state, from the view: its config's symbols.csv and functions.csv
+    (runtime rows included) and the function definitions of its src/ units. The EXE's data
+    objects are not read on the host: a data rename is checked against the D_ placeholder's own
+    address, and the driver checks every proposal against the full state at landing (07-34)."""
+    config = claim.view_root / VIEW_CONFIG / claim.exe
+    symbols = config / SYMBOLS_CSV
+    return {"symbols": read_symbols_csv(symbols) if symbols.exists() else [],
+            "functions": read_functions_csv(config / FUNCTIONS_CSV), "runtime_names": (),
+            "src_names": _src_names(claim)}  # fmt: skip
+
+
+def _src_names(claim: Claim) -> dict[str, str]:
+    """Function name -> view unit defining it, over the view's src/<exe>/ units, read through
+    configure's translation phases like readlint (unitdefs.file_scope_definitions)."""
+    cfg = unitdefs.load_configure(REPO_ROOT / unitdefs.CONFIGURE)
+    names: dict[str, str] = {}
+    for path in sorted((claim.view_root / VIEW_SRC / claim.exe).glob("*.c")):
+        code = cfg.code_text(check.read_source(path))
+        for name in unitdefs.file_scope_definitions(code):
+            names.setdefault(name, f"src/{claim.exe}/{path.name}")
+    return names
 
 
 def _combined(check_exit: int, lint: Lint) -> int:
@@ -809,7 +929,9 @@ def _finish(
     """The line and summary of a run; a readability check's line takes the combined exit."""
     if lint is None:
         return line, _summary(claim, line, doc, ran, seconds)
-    combined = dataclasses.replace(line, exit=_combined(line.exit, lint))
+    combined = dataclasses.replace(line, exit=_combined(line.exit, lint),
+                                   readlint_violations=lint.violation_count,
+                                   readlint_waivers=lint.waiver_count)  # fmt: skip
     return combined, _summary(claim, combined, doc, ran, seconds, lint=lint, check_exit=line.exit)
 
 
@@ -832,7 +954,7 @@ def claimed_row(rows: Sequence[FunctionRow], claim: Claim) -> FunctionRow:
 
 def cmd_check(*, sweep: bool) -> int:
     claim = Claim.from_env(os.environ, roots=ROOTS)
-    claimed_row(read_functions_csv(config_root(claim, ROOTS) / claim.exe / "functions.csv"), claim)
+    claimed_row(read_functions_csv(config_root(claim, ROOTS) / claim.exe / FUNCTIONS_CSV), claim)
     code, text = run_check(claim, sweep=sweep, runner=RUNNER, roots=ROOTS)
     print(text)
     return code
