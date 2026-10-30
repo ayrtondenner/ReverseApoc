@@ -453,15 +453,20 @@ def test_totals_equal_sums(tmp_path):
 
 
 def test_a_stopped_night_has_totals(tmp_path):
-    """A STOPPED record carries totals too (a guardrail stop after one recorded attempt)."""
+    """A STOPPED record carries totals too: a PARTIAL attempt, then a guardrail stop whose
+    counted session is recorded GAVE_UP `guardrail`."""
     sessions = [Sess(checks=(check_line(1, 20.0),)), Sess(write="tools/x.py")]
     night = Night(tmp_path, sessions=sessions)
     report = night.run()
     assert (report.event, report.reason) == ("STOPPED", "guardrail")
     stopped = _one(_run_records(night, "STOPPED"))
     driver.validate_record(stopped)
-    assert stopped["totals"]["sessions"]["PARTIAL"] == 1
-    assert stopped["totals"]["turns"] == _one(night.kinds("attempt"))["turns"]
+    attempts = night.kinds("attempt")
+    assert [(r["outcome"], r["abort_reason"]) for r in attempts] == [
+        ("PARTIAL", None), ("GAVE_UP", "guardrail")]  # fmt: skip
+    totals = stopped["totals"]
+    assert (totals["sessions"]["PARTIAL"], totals["sessions"]["GAVE_UP"]) == (1, 1)
+    assert totals["turns"] == sum(r["turns"] for r in attempts)
 
 
 def test_an_interrupted_night_has_totals(tmp_path):

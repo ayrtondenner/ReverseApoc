@@ -63,6 +63,14 @@ launch). Any worker's stop (or an interrupt on the main thread) stops them all: 
 session tree in the pid registry (run_session's on_start/on_end) is killed, each attempt is
 contained and reset uncounted, and the first stop writes the one STOPPED record.
 
+Records (07-23; DEC-06, DEC-07, D-08): the driver writes only schema-2 records. An attempt
+carries its session kind, pass, worker, requested model and budget, hook blocks (the result
+event's permission_denials), the gate's verdict and the sweep evidence; `function` is the
+pick's C name. Each usage-limit wait is a `limit` record; STARTED names the workers and the
+recovered claims, and ENDED/STOPPED carry the totals summed over the night's own records. A
+function's pass is one more than its finished passes in the committed log (`pass_index`), read
+once per night; build/driver/difficult.json stays a cache for the picker.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -1229,8 +1237,8 @@ def _claim_run(path: Path) -> str | None:
 
 
 def recovered_detail(recovered: Sequence[Mapping]) -> str | None:
-    """The STARTED record's detail naming each recovered claim (plan 07-23 moves this to the
-    v2 `recovered` field), or None when there is none."""
+    """The STARTED record's detail naming each recovered claim (07-23: the v2 `recovered` field
+    lists them too), or None when there is none."""
     if not recovered:
         return None
     return "recovered stale claims: " + _listed(
@@ -1555,9 +1563,11 @@ class _Pause:
             finally:
                 self.waiting -= 1
 
-    def on_limit(self, probe: bool) -> int | None:
+    def on_limit(self, probe: bool) -> tuple[int, int] | None:
         """A session ended LIMIT: start (or, for the probe, renew) the pause and return the
-        backoff its worker waits; None when a pause already holds (the session ran before)."""
+        backoff its worker waits and the streak it makes (1 for the first wait); None when a
+        pause already holds (the session ran before). 07-23: its worker then writes the limit
+        record, outside the condition (lock order: gate, then cond)."""
         with self.cond:
             if self.paused and not probe:
                 return None
@@ -1566,7 +1576,7 @@ class _Pause:
             self.paused, self.due, self.probe_taken = True, False, False
             self.paused_until = self.clock() + seconds
             self.cond.notify_all()
-            return seconds
+            return seconds, self.streak
 
     def backoff_done(self) -> None:
         """The backoff has been waited: the next launch, by any worker, is the probe."""
@@ -1768,6 +1778,11 @@ class _Night:
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
         self.passes: dict[Key, int] = {}  # D-08: finished passes per function (pass_index)
+        # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
+        # totals are the sums over the night's own records (F19's cut drops a line from both).
+        self.night_records: list[tuple[int, dict]] = []
+        self.night_start = 0.0  # Deps.clock at the night's start: the totals' wall_seconds
+        self.coordinator: _Coordinator | None = None
         # D-06, D-27 P4: one in-process lock around every shared write: the landing section
         # (copy, lint, gate, commit or undo, reset), `gate --partial` and every record append.
         # Reentrant, because the landing section appends its own record while it holds it.
@@ -1949,8 +1964,9 @@ class _Night:
             why = _detail("refusing to start: stale claims could not be recovered: "
                           f"{type(exc).__name__}: {exc}")  # fmt: skip
             return DriveReport(REFUSED, "claims", 0, 0, why)
+        self.night_start = self.deps.clock()
         try:
-            self._record_run(STARTED, START, recovered_detail(recovered))
+            self._record_run(STARTED, START, recovered_detail(recovered), recovered=recovered)
         except _Stop as stop:  # fix round 1: the log changed since the outputs check
             return DriveReport(REFUSED, stop.reason, 0, 0, stop.detail)
         failed: list[str] = []
@@ -2022,6 +2038,8 @@ class _Night:
         """D-23: the night's remaining records in one `chore(driver): attempt log` commit, with
         the status tables and the feed when partial rows changed them. After a STOP only the log
         is committed: a gate that failed may have left a half-written table."""
+        if self.coordinator is not None:  # research R5: only once every worker has drained
+            self.coordinator._drain()
         paths = [ATTEMPT_LOG.as_posix()]
         if not stopped:
             paths += [*(f"config/{exe}/status.csv" for exe in EXE_ORDER), FEED]
@@ -2079,7 +2097,8 @@ class _Night:
         self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
         with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
             self.passes = pass_index(self.log)
-        return _Coordinator(self).run()
+        self.coordinator = _Coordinator(self)
+        return self.coordinator.run()
 
     def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
         """The pinned bytes every check compares with: the night's baseline (C1), or, outside
@@ -2214,12 +2233,14 @@ class _Night:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
         backoff, then the next launch of any worker is the probe; under a pause another worker
         started, this worker just waits at its next launch."""
-        seconds = self.pause.on_limit(probe)
-        if seconds is None:
+        limited = self.pause.on_limit(probe)
+        if limited is None:
             self.deps.say(f"{self._label(pick, n)}: usage limit, the night is already paused")
             return
+        seconds, streak = limited
         self.deps.say(f"{self._label(pick, n)}: usage limit, next launch in {seconds} s")
         try:
+            self._record_limit(seconds, streak)  # 07-23 (DEC-06): every wait is recorded
             self._nap(seconds)
         finally:
             self.pause.backoff_done()
@@ -3167,7 +3188,14 @@ class _Night:
         return "; ".join(notes)
 
     def _drop_log_tail(self, size: int) -> list[str]:
-        """F19: the log back to `size` bytes; a refused or failed cut is a note."""
+        """F19: the log back to `size` bytes, and the night's records cut with it (07-23: the
+        totals never count a dropped line); a refused or failed cut is a note."""
+        notes = self._cut_log_tail(size)
+        kept = len(self.ledger.expected(ATTEMPT_LOG.as_posix()) or b"")
+        self.night_records = [(at, r) for at, r in self.night_records if at < kept]
+        return notes
+
+    def _cut_log_tail(self, size: int) -> list[str]:
         rel = ATTEMPT_LOG.as_posix()
         good = (self.ledger.expected(rel) or b"")[:size]
         if not self.ledger.holds(rel):  # fix round 1: put back the driver's prefix
@@ -3232,14 +3260,36 @@ class _Night:
                   "date": self.deps.today()}  # fmt: skip
         self._append(record)
 
+    def _record_limit(self, seconds: int, streak: int) -> None:
+        """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker)."""
+        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V2, "run": self.config.run_id,
+                  "worker": self.worker, "seconds": seconds, "streak": streak,
+                  "date": self.deps.today()}  # fmt: skip
+        self._append(record)
+
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
                     checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
-                    guard: bool = True) -> None:  # fmt: skip
-        record = {"kind": KIND_RUN, "run": self.config.run_id, "event": event, "reason": reason,
-                  "detail": detail, "sessions": self.sessions, "matched": self.matched,
-                  "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
-                  "date": self.deps.today()}  # fmt: skip
-        self._append(record, guard=guard)
+                    guard: bool = True, recovered: Sequence[Mapping] = ()) -> None:  # fmt: skip
+        """A v2 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
+        and, on ENDED and STOPPED, the totals over the night's own records."""
+        with self.gate_lock:  # the totals and the append see the same records
+            totals = None if event == STARTED else self._night_totals()
+            record = {"kind": KIND_RUN, "schema": SCHEMA_V2, "run": self.config.run_id,
+                      "event": event, "reason": reason, "detail": detail,
+                      "sessions": self.sessions, "matched": self.matched,
+                      "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
+                      "date": self.deps.today(), "workers": self.config.workers,
+                      "recovered": [{key: c[key] for key in ("exe", "unit", "run")}
+                                    for c in recovered],
+                      "totals": totals}  # fmt: skip
+            self._append(record, guard=guard)
+
+    def _night_totals(self) -> dict:
+        """`_totals` over this night's attempt, abort and limit records."""
+        mine = [r for _, r in self.night_records if r.get("run") == self.config.run_id]
+        limits = [r for r in mine if r["kind"] == KIND_LIMIT]
+        sessions = [r for r in mine if r["kind"] in (KIND_ATTEMPT, KIND_ABORT)]
+        return _totals(sessions, max(0.0, self.deps.clock() - self.night_start), limits)
 
     def _append(self, record: Mapping, *, guard: bool = True) -> None:
         """Every driver record goes through here (fix round 1): the log must still hold the
@@ -3259,6 +3309,48 @@ class _Night:
             with self.log.open("ab") as fh:
                 fh.write(line)
             self.ledger.set(rel, (before or b"") + line)
+            self.night_records.append((len(before or b""), dict(record)))
+
+
+def _rounded(value: float) -> float:
+    return round(value, 6)
+
+
+def _share(records: Sequence[Mapping]) -> dict:
+    """One `by_model` or `by_session` entry: sessions, matches, cost."""
+    return {"sessions": len(records), "matched": sum(r["outcome"] == MATCHED for r in records),
+            "cost_usd": _rounded(sum(r["cost_usd"] for r in records))}  # fmt: skip
+
+
+def _group(records: Sequence[Mapping], key: str) -> dict:
+    keys = dict.fromkeys(r[key] for r in records)
+    return {name: _share([r for r in records if r[key] == name]) for name in keys}
+
+
+def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Mapping]) -> dict:
+    """DEC-06's nightly totals (research section 8), computed from the night's own records so
+    they add up by construction (T-07-68): `records` are its attempt and abort records, `limits`
+    its limit records, `wall_seconds` the night's wall clock. Counted sessions by outcome,
+    turns, the four token classes, cost and session seconds are sums over the attempt
+    records; hook blocks and the regressions the gate stopped too; then the limit waits, the
+    aborts, and sessions, matches and cost per requested model and per session kind."""
+    attempts = [r for r in records if r["kind"] == KIND_ATTEMPT]
+    gates = [r["gate"] for r in attempts if r["gate"] is not None]
+    return {
+        "sessions": {o: sum(r["outcome"] == o for r in attempts) for o in _V2_OUTCOMES},
+        "turns": sum(r["turns"] for r in attempts),
+        "tokens": {k: sum(r["tokens"][k] for r in attempts) for k in _COUNT_KEYS},
+        "cost_usd": _rounded(sum(r["cost_usd"] for r in attempts)),
+        "session_seconds": _rounded(sum(r["seconds"] for r in attempts)),
+        "wall_seconds": _rounded(wall_seconds),
+        "hook_blocks": sum(r["hook_blocks"] for r in attempts),
+        "regressions_stopped": sum(g["regressions"] for g in gates),
+        "limit_waits": {"count": len(limits),
+                        "seconds": _rounded(sum(r["seconds"] for r in limits))},
+        "aborts": sum(r["kind"] == KIND_ABORT for r in records),
+        "by_model": _group(attempts, "model_requested"),
+        "by_session": _group(attempts, "session"),
+    }  # fmt: skip
 
 
 def drive(config: DriveConfig, deps: Deps, *, lock: ProcessLock | None = None) -> DriveReport:
