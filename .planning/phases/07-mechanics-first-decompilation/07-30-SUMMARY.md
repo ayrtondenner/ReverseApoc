@@ -211,7 +211,7 @@ Execution context nonce: 9114c98bfc361942
   - the canary (`_canary_checks(model=)`, `_after_session(model=)`, `_init_text`, the argv and the JSON fields), `default_seams`.
 - `tools/reverseapoc/cli.py`: `_positive_float`, `_model`, the new `drive` flags, `_cmd_drive` (`--model` needs `--canary`), and the `--max-sessions` help text.
 - `tools/reverseapoc/picker.py`: `TierQueue.finish(capped=)` clears the abort count; the module docstring.
-- `tests/test_escalation.py` (new): 25 tests.
+- `tests/test_escalation.py` (new): 20 tests.
 - `tests/fakeclaude.py`: `--model` and `--init-model`.
 - `tests/test_driver.py`, `tests/test_driver_workers.py`, `tests/test_drive.py`: the argv fakes take the keyword signature. The night harness adds `--model` for any requested model other than Opus, and the canary rig records the requested values.
 - `tests/test_driver_pick.py`: 3 tests for the abort-count ruling.
