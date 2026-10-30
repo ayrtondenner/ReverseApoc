@@ -271,6 +271,43 @@ def test_skill_states_what_lands_and_marks_it_planned():
     assert "re-checked at landing" in names and "last" in names
 
 
+# ---- fix round 1 (review 07-36) ----
+
+# What the driver will do after a session (07-34 renames and headers, 07-38 landing): not built
+# at this HEAD, so every statement of it carries the word "planned".
+_DRIVER_ACTS = re.compile(r"\b(?:landing|lands|applies|writes|rewrites|commits)\b")
+
+
+def _prose_blocks(text: str) -> list[str]:
+    """The blank-line separated blocks outside fenced code (the wrapper's real output, quoted in
+    a fence, describes the driver in its own words and is pinned elsewhere)."""
+    prose = re.sub(r"(?ms)^```[a-z]*\n.*?^```\n?", "", text)
+    return [block for block in re.split(r"\n\s*\n", prose) if block.strip()]
+
+
+def test_every_statement_of_unbuilt_driver_behaviour_is_marked_planned():
+    """Review Important 1: the header write (07-34), strict readlint at landing (07-38) and the
+    last line's re-check at landing read as planned, like the landing paragraph."""
+    unmarked = [block for block in _prose_blocks(_text())
+                if re.search(r"\bdriver(?:'s)?\b", block) and _DRIVER_ACTS.search(block)
+                and "planned" not in block]  # fmt: skip
+    assert unmarked == []
+
+
+def test_literal_types_are_stated_for_wcc386():
+    """Review Important 2: int and long are both 32-bit under wcc386 (include/common.h), so an
+    unsuffixed decimal above INT_MAX is unsigned long, never long."""
+    constants = _section(_text(), "Constants without changing bytes")
+    assert "a decimal one is long" not in constants
+    assert "unsigned long" in constants and "unsigned int" in constants
+    assert "exact spelling and suffix" in constants
+
+
+def test_line_numbers_come_from_the_check_output():
+    """RED item 4: S2 quoted line numbers the unit does not have."""
+    assert "line number" in _section(_text(), "The attempt wrapper")
+
+
 def test_readlint_reports_the_example_unit_as_the_output_example_shows(tmp_path):
     """The example unit, linted for real as a matched unit, gives exactly the readlint hits and
     the waiver the output example shows (pending ones are RL01 hits a proposal covers)."""
