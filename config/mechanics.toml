@@ -687,3 +687,515 @@ address = "0x00014EA0"
 evidence = "file"
 detail = "reads the city hand-off files (units, objects, relations, unresolved units) before battle"
 source = "mechanics locate; research Q2"
+
+# ---- Tier 3 (D-04): OpenApoc #264, drafted by plan 07-28, not signed yet ----
+# Proposal: the UI-chrome items 24, 26 and 27 are out; 1, 22, 23 and 29-33 are out by D-01; 2 is a
+# duplicate of 997; 14 is not described in the research and waits for the owner. Entries that
+# would reopen the Tier 1 or Tier 2 digest are held back (F36) and listed in the plan summary.
+
+[[tier]]
+id = 3
+title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
+
+[[item]]
+id = "264-1"
+issue = 264
+title = "Checklist item 1: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-2"
+issue = 264
+title = "Game time rate, the same question as issue 997"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "duplicate"
+duplicate_of = "997"
+
+[[item]]
+id = "264-3"
+issue = 264
+title = "Nightly score and finance update"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-4"
+issue = 264
+title = "Weekly funding assessment"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-5"
+issue = 264
+title = "Victory and defeat conditions"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "264-6"
+issue = 264
+title = "Alien takeover of an organisation"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-7"
+issue = 264
+title = "Dimension gate (portal) locations"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-8"
+issue = 264
+title = "Dimension gate (portal) movement"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-9"
+issue = 264
+title = "Score and finance graphs and statistics"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-10"
+issue = 264
+title = "Medals and per-battle agent statistics"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "264-11"
+issue = 264
+title = "Umbilical collapse"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-12"
+issue = 264
+title = "Stopping UFO growth"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-13"
+issue = 264
+title = "UFO mushrooms"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-14"
+issue = 264
+title = "Not described in the research; owner to rule"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "not described in the research; owner to rule"
+
+[[item]]
+id = "264-15"
+issue = 264
+title = "Organisations buying and selling vehicles"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-16"
+issue = 264
+title = "Treaties between organisations, raids and storming"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "264-17"
+issue = 264
+title = "Illegal flyers"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-18"
+issue = 264
+title = "Craft retreating when damaged"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-19"
+issue = 264
+title = "Lanes for ground vehicles"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-20"
+issue = 264
+title = "Which side of the road ground vehicles drive on"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-21"
+issue = 264
+title = "Music that changes with the game situation"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "264-22"
+issue = 264
+title = "Checklist item 22: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-23"
+issue = 264
+title = "Checklist item 23: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-24"
+issue = 264
+title = "Scrolling the message history"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "264-25"
+issue = 264
+title = "Daily report"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-26"
+issue = 264
+title = "Camera following a unit or vehicle"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "264-27"
+issue = 264
+title = "Hover feedback"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+
+[[item]]
+id = "264-28"
+issue = 264
+title = "Number of agents at the start of a new game"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "264-29"
+issue = 264
+title = "Checklist item 29: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-30"
+issue = 264
+title = "Checklist item 30: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-31"
+issue = 264
+title = "Checklist item 31: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-32"
+issue = 264
+title = "Checklist item 32: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "264-33"
+issue = 264
+title = "Checklist item 33: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/264"
+tier = 3
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+# #264-3, cityscape (UFO2P)
+
+[[entry]]
+item = "264-3"
+exe = "ufo2p"
+address = "0x0004AAF0"
+evidence = "call-graph"
+detail = "time-skip twin of a clock-advance branch: calls the row that opens the score and finance screens"
+source = "mechanics locate; call graph"
+
+[[entry]]
+item = "264-3"
+exe = "ufo2p"
+address = "0x00098240"
+evidence = "string"
+detail = "score screen: the score by category for the week and in total, text 37/144-156"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-3"
+exe = "ufo2p"
+address = "0x00099050"
+evidence = "string"
+detail = "finance screen: starting funds, wages by staff type, base upkeep and overheads, text 44/0-9"
+source = "mechanics locate"
+
+# #264-4, cityscape (UFO2P)
+
+[[entry]]
+item = "264-4"
+exe = "ufo2p"
+address = "0x00098A70"
+evidence = "string"
+detail = "weekly funding screen: the assessment title and the funding change messages (text 40/0-10)"
+source = "mechanics locate; spike 007 q4"
+
+# #264-5, both EXEs
+
+[[entry]]
+item = "264-5"
+exe = "ufo2p"
+address = "0x00060C80"
+evidence = "string"
+detail = "defeat screen with the final score, text 44/17 and 44/19; the defeat causes 44/20-21 are section-only texts"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-5"
+exe = "ufo2p"
+address = "0x000B4A50"
+evidence = "call-graph"
+detail = "on the battle-result path; calls the row that opens the victory screen (text 44/18, 44/19, 44/22)"
+source = "mechanics locate; call graph"
+
+[[entry]]
+item = "264-5"
+exe = "tacp"
+address = "0x000127F0"
+evidence = "string"
+detail = "abort-mission dialog: the abort label and the units-lost count, text 35/81-82"
+source = "mechanics locate"
+
+# #264-6, cityscape (UFO2P)
+
+[[entry]]
+item = "264-6"
+exe = "ufo2p"
+address = "0x0004A9D0"
+evidence = "call-graph"
+detail = "periodic city update: the only caller of the alien-takeover message row (text 22/78-79)"
+source = "mechanics locate; call graph"
+
+# #264-9, cityscape (UFO2P)
+
+[[entry]]
+item = "264-9"
+exe = "ufo2p"
+address = "0x0009A5D0"
+evidence = "string"
+detail = "graph screen with score and finance views, text 44/26 and 38/129; calls both screens"
+source = "mechanics locate"
+
+# #264-10, both EXEs
+
+[[entry]]
+item = "264-10"
+exe = "ufo2p"
+address = "0x000B2A90"
+evidence = "file"
+detail = "loads the battle-result hand-off file (a Tier 1 entry); the per-battle results arrive through it"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "264-10"
+exe = "tacp"
+address = "0x000156A0"
+evidence = "file"
+detail = "writes the battle-result hand-off file (a Tier 1 entry)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "264-10"
+exe = "tacp"
+address = "0x000774C0"
+evidence = "call-graph"
+detail = "calls the unit service-record row, which shows the days, missions and kills labels (text 29/14-17)"
+source = "mechanics locate; call graph"
+
+# #264-16, both EXEs
+
+[[entry]]
+item = "264-16"
+exe = "ufo2p"
+address = "0x00092970"
+evidence = "string"
+detail = "city event messages: organisation raided, organisation stormed, treaty signed (text 24/16, 24/18, 24/22)"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-16"
+exe = "ufo2p"
+address = "0x00072AA0"
+evidence = "string"
+detail = "building panel: the raid-building order, text 38/118"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-16"
+exe = "ufo2p"
+address = "0x000B2A90"
+evidence = "file"
+detail = "reads the relations-result hand-off file the battlescape writes (a Tier 1 entry)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "264-16"
+exe = "tacp"
+address = "0x000156A0"
+evidence = "file"
+detail = "writes the relations-result hand-off file after battle (a Tier 1 entry)"
+source = "mechanics locate; research Q2"
+
+# #264-17, cityscape (UFO2P)
+
+[[entry]]
+item = "264-17"
+exe = "ufo2p"
+address = "0x00092970"
+evidence = "string"
+detail = "city event messages: the illegal-flyer alert, text 24/21 and 37/91"
+source = "mechanics locate"
+
+# #264-18, cityscape (UFO2P)
+
+[[entry]]
+item = "264-18"
+exe = "ufo2p"
+address = "0x000586C0"
+evidence = "string"
+detail = "shows the vehicle-returning-to-base-damaged message, text 24/34"
+source = "mechanics locate"
+
+# #264-21, both EXEs
+
+[[entry]]
+item = "264-21"
+exe = "ufo2p"
+address = "0x000B5950"
+evidence = "file"
+detail = "references music file names; one caller, near the program start (0x00012A90)"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-21"
+exe = "ufo2p"
+address = "0x000B5FD0"
+evidence = "call-graph"
+detail = "music switch called by the screens and loops; only caller of the row reading the music name table"
+source = "mechanics locate; call graph"
+
+[[entry]]
+item = "264-21"
+exe = "tacp"
+address = "0x000AF770"
+evidence = "file"
+detail = "references a music file name; one caller, near the program start (0x00012F00)"
+source = "mechanics locate"
+
+[[entry]]
+item = "264-21"
+exe = "tacp"
+address = "0x000AFDF0"
+evidence = "call-graph"
+detail = "music switch called by the battle rows; calls the rows that reference the music file names"
+source = "mechanics locate; call graph"
+
+# #264-28, cityscape (UFO2P)
+
+[[entry]]
+item = "264-28"
+exe = "ufo2p"
+address = "0x000BA360"
+evidence = "table"
+detail = "new-game setup: references the organisation data table (research Q3) and calls the starting-relations row"
+source = "mechanics locate; research Q3"
