@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import asmclass, attempt, driver, flags, locate, mechanics, probe
+from . import asmclass, attempt, driver, flags, locate, mechanics, probe, stats
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
 from .attempt import AttemptError
@@ -1823,6 +1823,48 @@ def _add_flags_owner_verbs(verbs: argparse._SubParsersAction) -> tuple:
     return (ap, df)
 
 
+# ---- stats: the research numbers from committed data (DEC-07, D-09, D-18; plan 07-37) ----
+
+
+def _cmd_stats(args: argparse.Namespace) -> int:
+    """Exit 0 done, 1 when the unattended count is below --min-unattended (AGT-11), 2 when the
+    attempt log or the git history cannot be read."""
+    repo = args.repo
+    log = args.log if args.log is not None else repo / attempt.ATTEMPT_LOG
+    config = args.config if args.config is not None else repo / "config"
+    try:
+        report = stats.collect(repo, log, config)
+    except stats.StatsError as exc:
+        print(f"reverseapoc stats: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    print(report.to_json() if args.json else report.format())
+    if args.min_unattended is not None and report.unattended < args.min_unattended:
+        print(f"reverseapoc stats: unattended {report.unattended} is below --min-unattended "
+              f"{args.min_unattended}", file=sys.stderr)  # fmt: skip
+        return 1
+    return 0
+
+
+def _add_stats_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "stats",
+        help="the research numbers (DEC-07): every match classed unattended, human-hints or "
+        "human-written from git trailers (the flag-approved subset shown apart), and match rate "
+        "by size, per-match cost, regressions, hook blocks, per-model/kind/tier splits from "
+        "progress/attempts.jsonl (host, stdlib; CI)",
+    )
+    p.add_argument("--json", action="store_true", help="print the report as JSON (sorted keys)")
+    p.add_argument("--log", type=Path, default=None, metavar="PATH",
+                   help="the attempt log; default: <repo>/progress/attempts.jsonl")
+    p.add_argument("--repo", type=Path, default=REPO_ROOT, metavar="PATH",
+                   help="the checkout whose git history is read; default: %(default)s")
+    p.add_argument("--config", type=Path, default=None, metavar="DIR",
+                   help="functions.csv sizes and the members file; default: <repo>/config")
+    p.add_argument("--min-unattended", type=_non_negative, default=None, metavar="N",
+                   help="exit 1 when fewer than N matches are unattended (AGT-11)")
+    p.set_defaults(func=_cmd_stats)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -1891,6 +1933,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_drive_command(sub)
     _add_mechanics_command(sub)
     _add_flags_command(sub)
+    _add_stats_command(sub)
     _add_watcom_commands(sub)
     return parser
 
@@ -1927,6 +1970,7 @@ _ERRORS = (
     ContextPackError,
     MechanicsError,
     flags.FlagsError,
+    stats.StatsError,
     OSError,
 )
 
