@@ -1,7 +1,8 @@
 """A stand-in for the `claude` CLI in the driver tests (owner rule: no test runs the real claude).
 
-`python tests/fakeclaude.py --scenario NAME [--env-unit-paths [--any-unit]] [--write PATH]
-[--write-env-unit TEXT] [--spawn-child] [--sleep S] [--exit N]` does, in this order:
+`python tests/fakeclaude.py --scenario NAME [--env-unit-paths [--any-unit]] [--model M]
+[--init-model M] [--write PATH] [--write-env-unit TEXT] [--spawn-child] [--sleep S] [--exit N]`
+does, in this order:
 
 1. replays tests/fixtures/stream/NAME.jsonl to stdout, byte for byte, flushing after every line,
    the way `claude -p --output-format stream-json` streams. `--env-unit-paths` (07-13, D-24):
@@ -10,7 +11,10 @@
    re-serialised line), as a session that edits the unit its /goal names would write it; every
    other line stays byte for byte, and without the variable nothing changes. `--any-unit`
    (07-21, workers): a path naming any `src/<exe>/<unit>.c` is replayed as the view unit, so
-   the one stream fixture serves sessions claiming other units;
+   the one stream fixture serves sessions claiming other units. `--model M` (07-30, D-09): the
+   init event's `model` is replayed as M, the model the session was asked for, as the real CLI
+   echoes its `--model`; `--init-model M` forces that string instead (a CLI answering a request
+   with another model). Without either the init line stays byte for byte;
 2. `--write PATH`: writes a small made-up C file at PATH, resolved against its own cwd (ruling
    F11), creating parent directories, as an agent's edit would. `--write-env-unit TEXT` writes
    TEXT to the file REVERSEAPOC_UNIT_FILE names (the driver's view unit, D-24); exit 3 when the
@@ -41,6 +45,7 @@ WRITTEN = "/* written by tests/fakeclaude.py */\nint fake_written;\n"
 UNIT_FILE_ENV = "REVERSEAPOC_UNIT_FILE"  # hooks.UNIT_FILE_ENV, spelled out: no tool import here
 NO_UNIT_FILE = 3  # --write-env-unit without the variable
 _EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+_INIT = ("system", "init")
 CHILD_SLEEP_S = 120  # far longer than any test's wall clock
 _CHILD = f"import os, time; print(os.getpid(), flush=True); time.sleep({CHILD_SLEEP_S})"
 
@@ -104,11 +109,25 @@ def _retarget(line: bytes, unit_file: str, *, any_unit: bool = False) -> bytes:
     return json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
 
 
+def _init_model(line: bytes, model: str) -> bytes:
+    """`line` with the init event's `model` set to `model`; any other line is unchanged."""
+    try:
+        event = json.loads(line)
+    except ValueError:
+        return line
+    if not isinstance(event, dict) or (event.get("type"), event.get("subtype")) != _INIT:
+        return line
+    event["model"] = model
+    return json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n"
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fakeclaude", description=__doc__)
     parser.add_argument("--scenario", type=_scenario, required=True)
     parser.add_argument("--env-unit-paths", action="store_true")
     parser.add_argument("--any-unit", action="store_true")
+    parser.add_argument("--model", metavar="M")
+    parser.add_argument("--init-model", metavar="M")
     parser.add_argument("--write", type=Path)
     parser.add_argument("--write-env-unit", metavar="TEXT")
     parser.add_argument("--spawn-child", action="store_true")
@@ -120,9 +139,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"fakeclaude: --write-env-unit needs {UNIT_FILE_ENV}", file=sys.stderr)
         return NO_UNIT_FILE
     out = sys.stdout.buffer
+    init_model = args.init_model or args.model
     for line in args.scenario.read_bytes().splitlines(keepends=True):
         if args.env_unit_paths and unit_file:
             line = _retarget(line, unit_file, any_unit=args.any_unit)
+        if init_model is not None:
+            line = _init_model(line, init_model)
         _emit(out, line)
     if args.write is not None:
         target = Path.cwd() / args.write
