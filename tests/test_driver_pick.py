@@ -1,13 +1,20 @@
 """The driver's picker (AGT-07, D-07, D-09, D-10): status-aware, variety-ruled picks over score's
-P16 survivors. Synthetic candidates only: every address, name and unit below is made up."""
+P16 survivors; and the tier queue (07-26; DEC-02, D-04, D-08, D-22, D-23): a signed tier's
+must-match members callees first, unlimited passes, hubs after members. Synthetic candidates,
+call graphs and mechanics data only: every address, name and unit below is made up."""
 
 from __future__ import annotations
 
+import datetime
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
 
+from reverseapoc import driver, mechanics, picker
+from reverseapoc.callgraph import DIRECT, MIDROW, CallGraph, Edge
+from reverseapoc.mechanics import ROLE_ASM, ROLE_CLOSURE, ROLE_HUB, ROLE_MEMBER, MemberRow
 from reverseapoc.picker import (
     END_BLOCKED,
     END_EXHAUSTED,
@@ -320,3 +327,213 @@ def test_requeue_on_matched_callee():
     callees = {newly: (callee_new,), known: (callee_old,), never: (callee_open,)}
     matched = frozenset({callee_new, callee_old})
     assert requeue(difficult, matched=matched, callees=callees, pool_empty=False) == (newly,)
+
+
+# ---- 07-26: the tier queue (DEC-02, D-04, D-08, D-22, D-23) ----
+
+T1_ITEM, T2_ITEM = "997", "263-2"  # item ids of tiers 1 and 2
+URLS = {T1_ITEM: "https://github.com/OpenApoc/OpenApoc/issues/997",
+        T2_ITEM: "https://github.com/OpenApoc/OpenApoc/issues/263"}  # fmt: skip
+SIGNED_ON = datetime.date(2026, 11, 2)
+TA, TB, TC, TD, TE, TH, TS = (0x00020000 + 0x100 * i for i in range(7))
+EXES = (UFO2P, TACP)
+
+
+def _member(address: int, *, role: str = ROLE_MEMBER, items: tuple[str, ...] = (T1_ITEM,),
+            exe: str = UFO2P) -> MemberRow:  # fmt: skip
+    """A members-file row reached by `items`; a member row has them as its member items."""
+    tiers = tuple(sorted({1 if i == T1_ITEM else 2 for i in items}))
+    return MemberRow(exe, address, items, tiers, items if role == ROLE_MEMBER else (), "direct",
+                     role)  # fmt: skip
+
+
+def _mech(rows, *, tiers=(1,), signed=(1,)) -> mechanics.Mechanics:
+    """Tiers `tiers` (item 997 is tier 1, item 263-2 tier 2); each tier in `signed` carries a
+    sign-off with the digest of `rows`, as the owner's `mechanics digest` gives it."""
+    items = tuple(mechanics.Item(i, int(i.split("-")[0]), f"Item {i}", URLS[i], t, "in",
+                                 exes=(UFO2P,))
+                  for i, t in ((T1_ITEM, 1), (T2_ITEM, 2)) if t in tiers)  # fmt: skip
+    base = mechanics.Mechanics(tiers=tuple(mechanics.Tier(t, f"Tier {t}") for t in tiers),
+                               items=items)  # fmt: skip
+    signed_tiers = tuple(
+        replace(t, signed_off_by="owner", signed_off_date=SIGNED_ON,
+                members_sha256=mechanics.tier_digest(base, rows, t.id))
+        if t.id in signed else t for t in base.tiers)  # fmt: skip
+    return replace(base, tiers=signed_tiers)
+
+
+def _graph(*edges) -> CallGraph:
+    """Edges (src, dst) are direct calls; (src, dst, kind) names the kind."""
+    found: dict[int, set[Edge]] = {}
+    for edge in edges:
+        src, dst, kind = (*edge, DIRECT) if len(edge) == 2 else edge
+        found.setdefault(src, set()).add(Edge(src, dst, kind))
+        found.setdefault(dst, set())
+    return CallGraph(edges={start: tuple(sorted(e)) for start, e in sorted(found.items())})
+
+
+def _ranked(starts, *, scores=None, chk=()) -> dict[int, Candidate]:
+    scores = scores or {}
+    return {s: Candidate(s, f"func_{s:08X}", 20, scores.get(s, 50), (), chk=s in chk)
+            for s in starts}  # fmt: skip
+
+
+def _tq(rows, edges=(), *, mech=None, matched=(), passes=None, scores=None, units=None,
+        chk=()):  # fmt: skip
+    """The tier queue of UFO2P `rows` over the graph of `edges`, each row in its own unit."""
+    starts = [r.address for r in rows]
+    units = units or {s: f"u_{s:08x}" for s in starts}
+    return picker.tier_queue(mech or _mech(rows), rows, {UFO2P: _graph(*edges)},
+                             {UFO2P: _ranked(starts, scores=scores, chk=chk)}, {UFO2P: units},
+                             matched=frozenset((UFO2P, m) for m in matched),
+                             passes={} if passes is None else passes)  # fmt: skip
+
+
+def _serve(q, passes: dict, *, match=(), limit=50) -> list[int]:
+    """One worker's night: take the next item, then finish it: matched when its start is in
+    `match` (True: every one), else capped (its finished passes + 1, as the night counts
+    them). The starts, in the order they were taken."""
+    order: list[int] = []
+    for _ in range(limit):
+        item = q.next_item()
+        if item is None:
+            break
+        key = (item.pick.exe, item.pick.start)
+        q.take(key)
+        order.append(item.pick.start)
+        if match is True or item.pick.start in match:
+            q.finish(key, matched=True)
+        else:
+            passes[key] = passes.get(key, 0) + 1
+            q.finish(key, matched=False)
+    return order
+
+
+def test_tier_queue_leaves_first():
+    """DEC-02: members A -> B -> C come out C, B, A, each once its callee is done."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    q = _tq(rows, [(TA, TB), (TB, TC)])
+    assert _serve(q, {}, match=True) == [TC, TB, TA]
+    assert q.next_eligible() is None
+
+
+def test_tier_queue_waits_for_an_in_flight_callee():
+    """A caller is not eligible while its callee is in flight and has never been capped."""
+    rows = [_member(a) for a in (TA, TB)]
+    q = _tq(rows, [(TA, TB)])
+    first = q.next_item()
+    assert (first.pick.start, first.level, first.tier) == (TB, 0, 1)
+    q.take((UFO2P, TB))
+    assert q.next_eligible() is None
+    q.finish((UFO2P, TB), matched=True)
+    second = q.next_item()
+    assert (second.pick.start, second.level) == (TA, 1)
+
+
+def test_scc_members_do_not_block_each_other():
+    """A <-> B recursion plus B -> C: C first; the SCC {A, B} waits for C as one node, then A
+    and B are both eligible (one in flight does not block the other)."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    q = _tq(rows, [(TA, TB), (TB, TA), (TB, TC)])
+    assert q.next_eligible().start == TC
+    q.take((UFO2P, TC))
+    assert q.next_eligible() is None
+    q.finish((UFO2P, TC), matched=True)
+    a = q.next_item()
+    assert (a.pick.start, a.level) == (TA, 1)
+    q.take((UFO2P, TA))
+    b = q.next_item()
+    assert (b.pick.start, b.level) == (TB, 1)
+
+
+def test_hub_and_asm_never_block():
+    """D-22, D-23: member A calls hub H and asm S, both unmatched: A is eligible at once; the asm
+    row is never queued, and a closure row neither."""
+    rows = [_member(TA), _member(TH, role=ROLE_HUB), _member(TS, role=ROLE_ASM),
+            _member(TC, role=ROLE_CLOSURE)]  # fmt: skip
+    q = _tq(rows, [(TA, TH), (TA, TS), (TA, TC)])
+    assert q.next_eligible().start == TA
+    order = _serve(q, {}, match=True)
+    assert order == [TA, TH]
+
+
+def test_midrow_edges_do_not_order_members():
+    """Owner ruling Q1 (07-22): a switch-table midrow edge is no call; it neither orders nor
+    blocks members."""
+    rows = [_member(a) for a in (TA, TB)]
+    q = _tq(rows, [(TA, TB, MIDROW)], scores={TA: 10, TB: 90})
+    item = q.next_item()
+    assert (item.pick.start, item.level) == (TA, 0)
+
+
+def test_tier_queue_picks_carry_unit_name_size_and_score():
+    q = _tq([_member(TA)], scores={TA: 77}, units={TA: "u_made_up"})
+    assert q.next_eligible() == Pick(UFO2P, TA, f"func_{TA:08X}", "u_made_up", 20, 77)
+
+
+def test_tier_queue_refuses_a_member_without_a_unit():
+    with pytest.raises(PickerError, match=f"0x{TA:08X}"):
+        _tq([_member(TA)], units={TB: "u_other"})
+
+
+# ---- the driver with a signed tier (07-26 Task 1) ----
+
+
+def _signed_files(rows, scratch: Path, *, sign: bool = True) -> dict[str, str]:
+    """config/mechanics.toml (tier 1, item 997, one entry; signed when `sign`) and the members
+    file of `rows`, as text for a commit. `scratch` holds the unsigned draft the digest reads."""
+    from test_mechanics import entry, item, tier, toml_text  # 07-10's TOML writer
+
+    tables = {"item": [item()], "entry": [entry(address=rows[0].address)]}
+    text = toml_text(None, tier=[tier(1)], **tables)
+    if sign:
+        draft = scratch / "draft-mechanics.toml"
+        draft.write_text(text, encoding="utf-8")
+        mech = mechanics.load(draft)
+        signed = tier(1, signed_off_by="owner", signed_off_date=SIGNED_ON,
+                      members_sha256=mechanics.tier_digest(mech, rows, 1))  # fmt: skip
+        text = toml_text(None, tier=[signed], **tables)
+    return {"config/mechanics.toml": text,
+            "config/mechanics-members.csv": mechanics.format_members_csv(rows)}  # fmt: skip
+
+
+def _never(*args, **kwargs):
+    raise AssertionError("a real_deps effect ran where the night's fake should have")
+
+
+def _world(starts, edges=(), *, pool=(), unit=None) -> dict[str, driver.ExeWorld]:
+    """Both EXEs' worlds for real_deps: `pool` (UFO2P's Phase 6 survivors), and for each UFO2P
+    start of `starts` its unit (`unit`, else its own), its rank and the call graph of `edges`."""
+    out = {}
+    for exe in EXES:
+        mine = tuple(starts) if exe == UFO2P else ()
+        units = {s: unit or f"u_{s:08x}" for s in (*mine, *(c.address for c in pool))}
+        graph = _graph(*edges) if exe == UFO2P else _graph()
+        out[exe] = driver.ExeWorld(pool=list(pool) if exe == UFO2P else [], units=units,
+                                   callees={}, pack=_never, scaffold=_never,
+                                   ranks=_ranked(mine), graph=lambda g=graph: g)  # fmt: skip
+    return out
+
+
+def _seams(night, worlds) -> driver.Seams:
+    return driver.Seams(run=_never, git=night._recorded_git, world=lambda: worlds,
+                        session=_never, argv=_never)  # fmt: skip
+
+
+def test_driver_uses_tier_queue_when_signed(tmp_path):
+    """DEC-02: with Tier 1 signed in config/mechanics.toml the night's first launch is the
+    tier's leaf; without a signed tier the Phase 6 pool is used."""
+    from test_driver import RUN, START, UNIT, Night
+    from test_driver_records import _commit
+
+    leaf, mid, top = START, START + 0x10, START + 0x20
+    rows = [_member(a) for a in (leaf, mid, top)]
+    pool = [Candidate(top, f"func_{top:08X}", 20, 10, ())]
+    for case, sign, first in (("signed", True, leaf), ("unsigned", False, top)):
+        night = Night(tmp_path / case)
+        _commit(night, _signed_files(rows, tmp_path, sign=sign))
+        worlds = _world((leaf, mid, top), [(top, mid), (mid, leaf)], pool=pool, unit=UNIT)
+        options = driver.DriveOptions(repo=night.repo, run_id=RUN)
+        deps = driver.real_deps(options, _seams(night, worlds), worlds)
+        night.run(config={"max_sessions": 1}, queue=deps.queue, requeue=deps.requeue)
+        assert [p.start for p, _, _ in night.packed][:1] == [first], case
