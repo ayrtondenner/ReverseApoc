@@ -309,6 +309,49 @@ def test_is_hub_reports_each_criterion():
     assert not mechanics.is_hub(H, mechanics.HubRule(), g, stats)
 
 
+def test_closure_share_ignores_midrow_edges_but_the_walk_follows_them():
+    # Owner ruling Q1 (07-22 review I1): A reaches B only through a midrow edge (a switch table
+    # in a neighbour's tail). A's own share is 1 of 10 rows, not 4 (A, B, C, D), so A is no hub;
+    # B reaches 3 of 10 (not above 0.3). The member walk still crosses the midrow edge.
+    g = typed_graph((E, A, "direct"), (A, B, "midrow"), (B, C, "direct"), (C, D, "direct"))
+    stats = mechanics.hub_stats(g, frozenset(ALL), {})
+    assert stats.closure_share(A) == pytest.approx(0.1)
+    rows = by_address(members(M(rule=mechanics.HubRule(max_closure_share=0.3)), g))
+    assert {a: r.role for a, r in rows.items()} == {E: "member", A: "member", B: "member",
+                                                     C: "member", D: "member"}  # fmt: skip
+    assert rows[B].via == "midrow"
+
+
+def test_largest_scc_ignores_midrow_edges():
+    # A -> B -> Y closes into a cycle only through Y -midrow-> A; the real cycle is C <-> D.
+    g = typed_graph((E, A, "direct"), (A, B, "direct"), (B, Y, "direct"), (Y, A, "midrow"),
+                    (Y, C, "direct"), (C, D, "direct"), (D, C, "direct"))  # fmt: skip
+    stats = mechanics.hub_stats(g, frozenset(ALL), {})
+    assert stats.largest_scc == frozenset({C, D})
+    rows = by_address(members(M(rule=mechanics.HubRule(largest_scc=True)), g))
+    assert {a: r.role for a in (A, B, Y, C, D) for r in [rows[a]]} == {
+        A: "member", B: "member", Y: "member", C: "hub", D: "hub"}  # fmt: skip
+
+
+def test_min_items_ignores_midrow_edges():
+    # 263-1 reaches F only through Y -midrow-> F, so without midrow F is reached by 997 alone:
+    # no hub under min_items = 2. Both member walks still reach F and X (the walk follows midrow).
+    g = typed_graph((E, F, "direct"), (C, Y, "direct"), (Y, F, "midrow"), (F, X, "direct"))
+    mech = M(items=(("997", 1), ("263-1", 1)), entries=(("997", E), ("263-1", C)),
+             rule=mechanics.HubRule(min_items=2))  # fmt: skip
+    rows = by_address(members(mech, g))
+    assert (rows[F].role, rows[X].role) == ("member", "member")
+    assert rows[F].member_items == ("263-1", "997") == rows[X].member_items
+    assert rows[F].items == ("263-1", "997")  # the full closure still follows midrow (D-02)
+
+
+def test_graph_report_scc_ignores_midrow_edges():
+    # A <-> B is a cycle only through the midrow edge B -> A: no cycle once midrow is ignored.
+    g = typed_graph((A, B, "direct"), (B, A, "midrow"))
+    assert mechanics.graph_report(g)["largest_scc"] == {
+        "direct": 1, "direct_pointer_table": 1, "all_but_midrow": 1}  # fmt: skip
+
+
 def test_hand_edges_join_the_walk():
     edge = mechanics.HandEdge("ufo2p", A, B, "call through a table (proved)")
     rows = by_address(members(M(edges=(edge,)), graph((E, A), nodes=(B,))))
@@ -730,7 +773,7 @@ def test_graph_report(tmp_path, monkeypatch, capsys):
                                  "origin": "code", "boundary": True}]  # fmt: skip
     assert report["indirect"] == [{"row": f"0x{C:08X}", "count": 2}]
     assert report["orphan_tables"] == ["0x000D0000"]
-    assert report["largest_scc"] == {"direct": 1, "direct_pointer_table": 2, "all": 2}
+    assert report["largest_scc"] == {"direct": 1, "direct_pointer_table": 2, "all_but_midrow": 2}
     root = _config(tmp_path, "schema = 1\n")
     monkeypatch.setattr(mechanics, "load_graphs", lambda *a, **k: {"ufo2p": g})
     assert cli.main(["mechanics", "graph", "--exe", "ufo2p", "--json", "--config", str(root)]) == 0
