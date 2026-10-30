@@ -6,7 +6,8 @@ D-34, D-48).
 `attempts_per_function` counted sessions per pass (D-07), each a fresh `claude -p` session
 (session.py) in the checkout root (F11). A function that used them all goes to the persisted
 difficult list (build/driver/difficult.json) and comes back only through `deps.requeue`
-(picker.requeue). The night ends at `max_sessions` counted sessions or `target_matched`
+(picker.requeue). The night ends at `max_sessions` launched sessions (every launch spends a
+slot of the night cap, a transient one included: 07-26 fix round 1) or `target_matched`
 matches (D-48), whichever comes first.
 
 After each session, in this order:
@@ -241,9 +242,10 @@ COAUTHOR = coauthor(OPUS_MODEL)  # D-25: the Opus line (passes 1 and 2), set exp
 
 @dataclass(frozen=True)
 class DriveConfig:
-    """One night. `max_sessions` counts counted sessions only, across every worker (D-07,
-    D-08, D-48); `target_matched` 0 is off (the night cap governs; AGT-11 is counted by
-    `stats`)."""
+    """One night. `max_sessions` caps the sessions launched across every worker, aborted and
+    counted ones alike (D-07, D-08, D-48; 07-26 fix round 1: a transient launch spends its slot,
+    a LIMIT relaunch keeps it); `target_matched` 0 is off (the night cap governs; AGT-11 is
+    counted by `stats`). 07-30: the per-model session budgets (D-07, D-25) and max_turns."""
 
     run_id: str
     repo_root: Path
@@ -1765,7 +1767,8 @@ class _Coordinator:
             if self.tiers is not None:
                 self.tiers.finish((worker.pick.exe, worker.pick.start),
                                   matched=worker.outcome == MATCHED,
-                                  aborted=worker.outcome == ABORTED)  # fmt: skip
+                                  aborted=worker.outcome == ABORTED,
+                                  capped=worker.outcome == CAPPED)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -3516,7 +3519,8 @@ DRY_RUN_TIER_PICKS = PILOT_PER_EXE * len(EXE_ORDER)  # 07-26: the tier dry run s
 @dataclass(frozen=True)
 class DriveOptions:
     """What `reverseapoc drive` was asked to do (D-07 defaults: 3 workers, a night cap of 60
-    counted sessions, no match target)."""
+    launched sessions, no match target; 07-30: the per-model session budgets, the turns and
+    the per-session wall clock, and the canary's model)."""
 
     repo: Path
     run_id: str
@@ -3526,6 +3530,11 @@ class DriveOptions:
     dry_run: bool = False
     canary: bool = False
     json: bool = False
+    max_budget_usd: float = MAX_BUDGET_USD  # D-07: per Opus session
+    fable_budget_usd: float = FABLE_BUDGET_USD  # D-25: per Fable session
+    max_turns: int = MAX_TURNS  # D-07
+    session_minutes: int = TIMEOUT_S // 60  # D-07: each session's wall clock
+    canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
 
     @property
     def config_root(self) -> Path:
@@ -4157,7 +4166,11 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
-                         base_env=seams.base_env, workers=options.workers)  # fmt: skip
+                         base_env=seams.base_env, workers=options.workers,
+                         max_budget_usd=options.max_budget_usd,
+                         fable_budget_usd=options.fable_budget_usd,
+                         max_turns=options.max_turns,
+                         wall_clock_s=options.session_minutes * 60)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
@@ -4281,9 +4294,11 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
     problems = streamjson.check_init(init, tested_major=TESTED_MAJOR,
                                      min_version=MIN_CLI_VERSION,
                                      expected_model=model)  # fmt: skip
-    checks.add(not problems, "init: " + ("; ".join(problems) if problems else
-                                         f"claude {(init or {}).get('claude_code_version')}, "
-                                         "model, tools, no MCP server, no plugin"))  # fmt: skip
+    shown = _init_text(events, "model")  # 07-30: the owner reports this string (research A9)
+    checks.add(not problems, "init: " + (f"{'; '.join(problems)} (init model {shown})" if problems
+                                         else f"claude {(init or {}).get('claude_code_version')}, "
+                                         f"model {shown}, tools, no MCP server, "
+                                         "no plugin"))  # fmt: skip
     checks.add(any(e.get("type") == "result" for e in events), "the session ended with a result")
     roots = _roots(repo, (init or {}).get("cwd"))
     denials = _denials(events)
@@ -4313,6 +4328,14 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
                              + (f" carries {', '.join(keys)}" if keys else " (ignored)"))
     if not carrying:  # 06-26 canary1: every check prints a line, a passing one too
         checks.add(True, "no unknown stream event carries an error")
+
+
+def _init_text(events: Sequence[dict], key: str) -> str | None:
+    """A short init field (the model string) fit for the canary's report, else None."""
+    value = (streamjson.init_event(events) or {}).get(key)
+    if not isinstance(value, str) or len(value) > _TEXT_CAP or _LONG_HEX.search(value):
+        return None
+    return value
 
 
 def _tree_checks(probe: _Night, before: _Snapshot, checks: _Checks) -> None:
@@ -4402,19 +4425,23 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
-    model = MODEL  # the model the canary asks for and its init check expects (07-30)
+    model = options.canary_model  # what the canary asks for and its init check expects (D-25)
+    events: Sequence[dict] = ()
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        argv = seams.argv(CANARY_PROMPT, model=model, max_budget_usd=MAX_BUDGET_USD,
-                          max_turns=MAX_TURNS)  # fmt: skip
+        argv = seams.argv(CANARY_PROMPT, model=model,
+                          max_budget_usd=session_budget(model, options.max_budget_usd,
+                                                        options.fable_budget_usd),
+                          max_turns=options.max_turns)  # fmt: skip
         result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
                                timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
     except Exception as exc:  # a crash is a FAIL with the tree still measured
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
-        _after_session(options, seams, result.events, attempt_dir, checks, model=model)
+        events = result.events
+        _after_session(options, seams, events, attempt_dir, checks, model=model)
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
@@ -4432,6 +4459,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         checks.add(False, f"measuring the tree failed: {type(exc).__name__}: {exc}")
     verdict = "PASS" if checks.ok else "FAIL"
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
+           "model_requested": model, "init_model": _init_text(events, "model"),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
     # No stamp on the check lines or the verdict: docs/workflow.md's owner steps match the
