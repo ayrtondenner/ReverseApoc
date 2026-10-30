@@ -16,7 +16,14 @@ import pytest
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
 from reverseapoc import attempt, check, hooks
 from reverseapoc.cli import build_parser, main
-from reverseapoc.functions import FunctionRow, UnitRow, write_functions_csv, write_units_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    SymbolRow,
+    UnitRow,
+    write_functions_csv,
+    write_symbols_csv,
+    write_units_csv,
+)
 from reverseapoc.status import StatusRow, lf_sha256, status_path, write_status
 from test_contextpack import (
     A_BYTES,
@@ -1226,3 +1233,109 @@ def test_wrapper_reports_stage2_hit(repo: Path, monkeypatch, capsys):
     runner.answer = attempt.Ran(0, json.dumps({**doc, "stage2": None}), "")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[2]["sweep_hit"] is None
+
+
+# ---- 07-31 (D-17, D-18, D-20): a readability session's check adds readlint on its view unit ----
+
+NAMED = "tick_count"
+READ_HEADER = """/*
+ * {name}: returns the current tick count.
+ * Address: UFO2P.EXE 0x000A3980
+ * Evidence: call: read by the timer loop
+ */
+"""
+DEFINITION_LINE = 10  # the line of `int <name>(void)` in _readable_text
+
+
+def _readable_text(name: str) -> str:
+    """A made-up view unit: OTHER still a stub, the claimed function defined under `name` with a
+    D-21 header comment."""
+    return ('#include "common.h"\n\nINCLUDE_ASM(func_000A34F0);\n\n' + READ_HEADER.format(name=name)
+            + f"int {name}(void)\n{{\n    return 0;\n}}\n")  # fmt: skip
+
+
+@pytest.fixture
+def readable(view: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """`view` as a readability session: REVERSEAPOC_SESSION_KIND=readability and the claimed
+    function matched in the view's status.csv (readlint lints matched units only)."""
+    monkeypatch.setenv(hooks.SESSION_KIND_ENV, "readability")
+    row = StatusRow(0x000A3980, FUNC, "u_000a34f0", "matched", 100.0, 1, "ab" * 32, "2026-10-30")
+    write_status(status_path(view / "config", "ufo2p"), [row])
+    return view
+
+
+def _readable_unit(view: Path, name: str, *, renamed: bool) -> None:
+    """Write the view unit with the claimed function named `name`; `renamed` also gives it that
+    name in the view's symbols.csv (the naming state readlint reads)."""
+    _view_unit(view).write_bytes(_readable_text(name).encode("utf-8"))
+    if renamed:
+        write_symbols_csv(view / "config" / "ufo2p" / "symbols.csv",
+                          [SymbolRow(0x000A3980, f"{name}_", "func")], "UFO2P.EXE")  # fmt: skip
+
+
+def test_readability_check_runs_readlint(readable: Path, monkeypatch, capsys):
+    """D-17, D-20: the container check passes, the view unit keeps one RL01 placeholder: the
+    summary shows the check OK, `readlint: 1 violation` with rule, line and message, and the
+    verdict line is not OK (exit 1)."""
+    _readable_unit(readable, FUNC, renamed=False)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out
+    head = out.splitlines()[0]
+    assert "exit 1 FAILED" in head and "OK" not in head
+    assert "  check: OK" in out
+    assert "  readlint: 1 violation," in out
+    assert (f"src/ufo2p/u_000a34f0.c:{DEFINITION_LINE}: RL01 {FUNC} is a placeholder name"
+            in out)  # fmt: skip
+
+
+def test_readability_clean(readable: Path, monkeypatch, capsys):
+    """DEC-04 empty: a view unit with no violation prints `readlint: clean`; with the check OK
+    the verdict is OK (exit 0)."""
+    _readable_unit(readable, NAMED, renamed=True)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    out = capsys.readouterr().out
+    assert "exit 0 OK" in out.splitlines()[0]
+    assert "  readlint: clean" in out
+
+
+def test_readability_check_failure_wins_over_a_clean_lint(readable: Path, monkeypatch, capsys):
+    """Both must pass: a clean unit whose container check fails is exit 1, and readlint is still
+    reported so the agent sees both halves."""
+    _readable_unit(readable, NAMED, renamed=True)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False, percent=87.5)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out
+    assert "exit 1 FAILED" in out.splitlines()[0]
+    assert "  check: FAILED" in out and "  readlint: clean" in out
+
+
+def test_readability_check_needs_every_function(readable: Path, monkeypatch, capsys):
+    """D-17: a readability edit must leave every defined function at objdiff 100%, not just the
+    claimed one: another function of the unit below 100% fails the check half."""
+    _readable_unit(readable, NAMED, renamed=True)
+    doc = _check_doc(ok=True)
+    other = {**doc["functions"][0], "name": OTHER, "va": "0x000A34F0", "objdiff_percent": 90.0}
+    doc["functions"].append(other)
+    _use(monkeypatch, FakeRunner(json.dumps(doc)))
+    assert _run(["attempt", "check"]) == 1
+    assert "  check: FAILED" in capsys.readouterr().out
+
+
+def test_matching_check_unchanged(view: Path, monkeypatch, capsys):
+    """A matching session's check prints exactly the Phase 6 summary: no readlint run, no
+    readlint line, the Phase 6 verdict, even over a unit readlint would fail."""
+    _readable_unit(view, FUNC, renamed=False)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("readlint ran in a matching session")
+
+    monkeypatch.setattr(attempt, "run_readlint", boom, raising=False)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    out = capsys.readouterr().out
+    assert "readlint" not in out
+    assert out.splitlines()[0].endswith(
+        "exit 0 OK: the claimed function matches and its unit passes check")
+    assert "  check:" not in out
