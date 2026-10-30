@@ -297,7 +297,7 @@ id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-30
-members_sha256 = "d8763a40e298fb7367aa776d7da7ef3f6d9898aa22436579726e0e06778df8ed"
+members_sha256 = "ab88dd39001cd17c755b3af18b54df95bbe1852ac65fa1bc018a49319210f6b7"
 
 [[item]]
 id = "263-2"
@@ -378,7 +378,7 @@ title = "Moving a vehicle's destination by dragging on the city map"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-11"
@@ -387,7 +387,7 @@ title = "Hover feedback in the city view"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-12"
@@ -414,7 +414,7 @@ title = "UFOpaedia screen display"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-15"
@@ -432,7 +432,7 @@ title = "Alert screen presentation"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-17"
@@ -441,7 +441,7 @@ title = "Tooltips"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-18"
@@ -450,7 +450,7 @@ title = "Editing text in name fields"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-19"
