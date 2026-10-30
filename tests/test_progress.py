@@ -519,6 +519,43 @@ def test_malformed_member_exits_2(tmp_path):
     assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 2
 
 
+def test_members_hub_column_is_read(tmp_path):
+    """Plan 07-43: the members file 07-10's writer writes ends in a hub column, and the coverage
+    figures read from it do not change."""
+    progress = mechanics_module()
+    config = tick_config(tmp_path)
+    header = (config / mechanics.MEMBERS_CSV).read_text(encoding="utf-8").splitlines()[1]
+    assert header.endswith(",role,hub")
+    derived = progress.derive(config)
+    doc = progress.build_progress(derived, mechanics=progress.derive_mechanics(config, derived))
+    (item,) = doc["mechanics"]["items"]
+    assert (item["must_match"], item["full_closure"]) == (MUST_997, CLOSURE_997)
+
+
+THUNK_PREFIX = f"ufo2p,0x{U_THUNK.start:08X},"  # data row 4: a closure row
+
+
+@pytest.mark.parametrize("cells", [
+    pytest.param(",closure,maybe", id="maybe"),
+    pytest.param(",hub,no", id="role hub with no"),
+    pytest.param(",closure,yes", id="role closure with yes"),
+])  # fmt: skip
+def test_malformed_hub_cell_exits_2(tmp_path, cells):
+    """A hub cell that is not yes/no, or that disagrees with the role (a hub row is yes, a
+    closure row no), is refused naming the data row, and the Pages job's `main` exits 2."""
+    progress = mechanics_module()
+    config = tick_config(tmp_path)
+    path = config / mechanics.MEMBERS_CSV
+    lines = path.read_text(encoding="utf-8").split("\n")
+    (number,) = [n for n, line in enumerate(lines) if line.startswith(THUNK_PREFIX)]
+    assert lines[number].endswith(",closure,no")
+    lines[number] = lines[number][: -len(",closure,no")] + cells
+    path.write_bytes("\n".join(lines).encode("ascii"))
+    with pytest.raises(progress.ProgressError, match="data row 4: .*hub"):
+        progress.derive_mechanics(config, progress.derive(config))
+    assert progress.main(["--config", str(config), "--out", str(tmp_path / "out")]) == 2
+
+
 def write_asm_list(config: Path, verdict: str = "asm") -> Path:
     """config/asm-functions.csv in 07-10's format: the UFO2P unmatched row, with `verdict`."""
     path = config / mechanics.ASM_CSV
