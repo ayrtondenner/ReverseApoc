@@ -16,6 +16,12 @@ the gitignored attempt directory in build/driver/. `--sweep` runs the
 D-17 flag matrix as a diagnostic: a cell at 100% under flags other than the unit's cflags.txt
 rule is logged as `sweep_hit`, for the owner to decide (D-18 of Phase 5; cflags.txt is
 owner-only).
+
+In a readability session (REVERSEAPOC_SESSION_KIND=readability, 07-31; D-17, D-18, D-20) a
+plain `attempt check` also runs readlint on the host over the view unit, after the container
+check, and its verdict is OK only when both pass: every defined function still at objdiff 100%
+with relocations and bytes ok and every splice identical, and readlint clean. The agent's
+command surface does not change (hooks.ATTEMPT_FORMS); the driver checks both again at landing.
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from .hooks import (
     UNIT_FILE_ENV,
     attempt_form_matches,
 )
+from .readlint import ReadlintResult, run_readlint
 from .status import read_status, status_path
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 
@@ -84,6 +91,7 @@ _FUNC = re.compile(r"func_([0-9A-F]{8})")
 _HEX = 16
 _TAIL_LINES = 40  # of a failed run's output shown to the agent
 MEASURED = "measured"  # a sweep cell's status once compiled and diffed
+READABILITY = SESSION_KINDS[1]  # the session kind whose check adds readlint (07-31)
 
 
 class AttemptError(ValueError):
@@ -412,19 +420,34 @@ def _verdict(doc: Mapping[str, Any], fn: Mapping[str, Any] | None, ran: Ran) -> 
     return EXIT_MISMATCH
 
 
-def _check_line(
-    doc: Mapping[str, Any], claim: Claim, ran: Ran, n: int, source: str
-) -> CheckLogLine:
-    """A line for a plain check. A claimed function that was not compiled carries no
-    measurement (best_percent, reloc_ok and bytes_ok None)."""
-    fn = _claimed(doc, claim)
+def _splices_ok(doc: Mapping[str, Any]) -> bool:
     splices = doc["splice"]
+    return bool(splices) and all(s["ok"] is True for s in splices)
+
+
+def _unit_passes(doc: Mapping[str, Any]) -> bool:
+    """D-17: every function the check compiled passes and every splice is identical; a
+    readability edit may not move any function's bytes, the claimed one or another."""
+    return all(_passes(fn) for fn in doc["functions"]) and _splices_ok(doc)
+
+
+def _check_line(
+    doc: Mapping[str, Any], claim: Claim, ran: Ran, n: int, source: str, *,
+    whole_unit: bool = False,
+) -> CheckLogLine:  # fmt: skip
+    """A line for a plain check. A claimed function that was not compiled carries no
+    measurement (best_percent, reloc_ok and bytes_ok None). `whole_unit` (a readability check)
+    also requires every other compiled function and every splice to pass for exit 0."""
+    fn = _claimed(doc, claim)
+    verdict = _verdict(doc, fn, ran)
+    if whole_unit and verdict == EXIT_OK and not _unit_passes(doc):
+        verdict = EXIT_MISMATCH
     return CheckLogLine(
-        n, _verdict(doc, fn, ran), False,
+        n, verdict, False,
         float(fn["objdiff_percent"]) if fn else None,
         fn["reloc"]["ok"] is True if fn else None,
         fn["bytes"]["ok"] is True if fn else None,
-        bool(splices) and all(s["ok"] is True for s in splices),
+        _splices_ok(doc),
         None, source,
     )  # fmt: skip
 
@@ -532,6 +555,72 @@ def _sweep_summary(doc: Mapping[str, Any], line: CheckLogLine) -> list[str]:
 _VERDICT = {EXIT_OK: "OK: the claimed function matches and its unit passes check",
             EXIT_MISMATCH: "MISMATCH", EXIT_TOOL: "TOOL ERROR"}  # fmt: skip
 _SWEEP_VERDICT = {EXIT_OK: "SWEEP RAN (a diagnostic: never a match)", EXIT_TOOL: "TOOL ERROR"}
+_READABILITY_VERDICT = {
+    EXIT_OK: "OK: every function still matches, every splice is identical and readlint is clean",
+    EXIT_MISMATCH: "FAILED: see the check and readlint lines (both must pass)",
+    EXIT_TOOL: "TOOL ERROR",
+}
+_CHECK_HALF = {
+    EXIT_OK: "  check: OK (every compiled function objdiff 100% with relocations and bytes ok, "
+             "every splice identical)",
+    EXIT_MISMATCH: "  check: FAILED (a function below 100%, a relocation or byte difference, or "
+                   "a splice that differs)",
+    EXIT_TOOL: "  check: TOOL ERROR",
+}  # fmt: skip
+
+
+# ---- the readability half (07-31; D-17, D-18, D-20) ----
+
+
+@dataclass(frozen=True)
+class Lint:
+    """readlint's result on a readability session's view unit, or the tool error that stopped
+    it (`result` None: exit 2, fail closed)."""
+
+    result: ReadlintResult | None
+    error: str | None = None
+
+    @property
+    def exit(self) -> int:
+        if self.result is None:
+            return EXIT_TOOL
+        return EXIT_MISMATCH if self.result.violations else EXIT_OK
+
+    def lines(self) -> list[str]:
+        if self.result is None:
+            return [f"  readlint: TOOL ERROR: {self.error}"]
+        result = self.result
+        counts = (f"{sum(result.waivers.values())} waivers, "
+                  f"{sum(result.allowlisted.values())} allowlisted references")  # fmt: skip
+        if not result.violations:
+            return [f"  readlint: clean, {counts}"]
+        n = len(result.violations)
+        head = f"  readlint: {n} violation{'' if n == 1 else 's'}, {counts}"
+        return [head, *(f"    {v.path}:{v.line}: {v.rule} {v.message}" for v in result.violations)]
+
+
+def lint_view(claim: Claim) -> Lint:
+    """readlint on the claim's view unit, with the view's src/ and config/ as its roots (the
+    tree the container check compiled). A unit readlint does not check (not matched in the
+    view's status.csv) is a tool error: a readability verdict never passes unlinted."""
+    view = claim.view_root
+    try:
+        result = run_readlint([unit_path(claim, ROOTS)], src_root=view / VIEW_SRC,
+                              config_root=view / VIEW_CONFIG, units=[claim.target])  # fmt: skip
+    except (ValueError, OSError) as exc:  # ReadlintError is a ValueError
+        return Lint(None, " ".join(str(exc).split()))
+    if not result.files_checked:
+        why = "; ".join(f"{s.path}: {s.reason}" for s in result.skipped) or "no file selected"
+        return Lint(None, f"readlint checked no file ({why})")
+    return Lint(result)
+
+
+def _combined(check_exit: int, lint: Lint) -> int:
+    """Both halves must pass: a tool error in either is 2, else a failure in either is 1."""
+    codes = (check_exit, lint.exit)
+    if EXIT_TOOL in codes:
+        return EXIT_TOOL
+    return EXIT_MISMATCH if EXIT_MISMATCH in codes else EXIT_OK
 
 
 def _not_compiled(claim: Claim) -> str:
@@ -539,13 +628,17 @@ def _not_compiled(claim: Claim) -> str:
 
 
 def _summary(
-    claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran, seconds: float
-) -> str:
+    claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran, seconds: float,
+    *, lint: Lint | None = None, check_exit: int | None = None,
+) -> str:  # fmt: skip
+    """The printed summary; `check_exit` is the container half's exit when `lint` (a
+    readability check) combined it with readlint's into line.exit."""
+    check_exit = line.exit if check_exit is None else check_exit
     kind = "check --sweep" if line.sweep else "check"
-    verdict = (_SWEEP_VERDICT if line.sweep else _VERDICT)[line.exit]
+    table = _SWEEP_VERDICT if line.sweep else _READABILITY_VERDICT if lint else _VERDICT
     head = (f"attempt {kind} {line.n}/{CHECK_BUDGET}, {round(seconds)} s "
             f"({CHECK_BUDGET - line.n} left) {claim.target} {claim.function}: "
-            f"exit {line.exit} {verdict}")  # fmt: skip
+            f"exit {line.exit} {table[line.exit]}")  # fmt: skip
     body = []
     if doc is not None and line.sweep:
         body = _sweep_summary(doc, line)
@@ -554,8 +647,10 @@ def _summary(
         body = missing + _check_summary(doc)
     else:
         body = ["  the check printed no usable JSON"] + _tail(ran.stdout)
-    if line.exit == EXIT_TOOL or doc is None:
+    if check_exit == EXIT_TOOL or doc is None:
         body += _tail(ran.stderr)
+    if lint is not None:
+        body = [_CHECK_HALF[check_exit], *body, *lint.lines()]
     source = claim.attempt_dir / line.source
     saved = (f"saved {source.with_suffix('.json').as_posix()} (full JSON) and "
              f"{source.as_posix()} (the C checked)\n"
@@ -670,8 +765,11 @@ def _locked_check(
         held.keep = True  # N7: fail closed from here until a removal succeeds
     removal: list[str] = []
     try:
+        # 07-31: the readability half, in the same run and slot (one budget step).
+        lint = lint_view(claim) if claim.kind == READABILITY and not sweep else None
         line, summary = _record(claim, ran, n, source, seconds, sweep=sweep, default=default,
-                                saved_path=checks / f"{stem}.json", log=log)  # fmt: skip
+                                saved_path=checks / f"{stem}.json", log=log,
+                                lint=lint)  # fmt: skip
     finally:
         # N2: the evidence is written first, so a slow removal cannot lose it; N7: the
         # removal still runs when that write raised (whose error then surfaces as exit 2).
@@ -682,25 +780,37 @@ def _locked_check(
 
 def _record(
     claim: Claim, ran: Ran, n: int, source: str, seconds: float, *, sweep: bool, default: str,
-    saved_path: Path, log: Path,
+    saved_path: Path, log: Path, lint: Lint | None = None,
 ) -> tuple[CheckLogLine, str]:
-    """The run's log line and summary, with its JSON saved and its line appended."""
+    """The run's log line and summary, with its JSON saved and its line appended. With `lint`
+    (a readability check) the line's exit is both halves combined."""
     doc = _parse(ran.stdout)
     try:
         if doc is None:
             raise ValueError("no JSON")
+        whole_unit = lint is not None
         line = (_sweep_line(doc, default, ran, n, source) if sweep
-                else _check_line(doc, claim, ran, n, source))  # fmt: skip
-        summary = _summary(claim, line, doc, ran, seconds)
+                else _check_line(doc, claim, ran, n, source, whole_unit=whole_unit))  # fmt: skip
+        line, summary = _finish(claim, line, doc, ran, seconds, lint)
     except (KeyError, TypeError, ValueError, AttributeError):
         doc = None
-        line = _tool_line(n, sweep, source)
-        summary = _summary(claim, line, None, ran, seconds)
+        line, summary = _finish(claim, _tool_line(n, sweep, source), None, ran, seconds, lint)
     saved = doc if doc is not None else {"error": "no usable JSON", "returncode": ran.returncode,
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(saved_path, (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
     _append(log, line)
     return line, summary
+
+
+def _finish(
+    claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None, ran: Ran, seconds: float,
+    lint: Lint | None,
+) -> tuple[CheckLogLine, str]:  # fmt: skip
+    """The line and summary of a run; a readability check's line takes the combined exit."""
+    if lint is None:
+        return line, _summary(claim, line, doc, ran, seconds)
+    combined = dataclasses.replace(line, exit=_combined(line.exit, lint))
+    return combined, _summary(claim, combined, doc, ran, seconds, lint=lint, check_exit=line.exit)
 
 
 CLAIMABLE_KINDS = (KIND_GAME, KIND_THUNK)  # the rows check requires a unit to account for
