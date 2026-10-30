@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import driver, mechanics, picker
+from reverseapoc import driver, mechanics, picker, status
 from reverseapoc.callgraph import DIRECT, MIDROW, CallGraph, Edge
 from reverseapoc.mechanics import ROLE_ASM, ROLE_CLOSURE, ROLE_HUB, ROLE_MEMBER, MemberRow
 from reverseapoc.picker import (
@@ -497,6 +497,15 @@ def _signed_files(rows, scratch: Path, *, sign: bool = True) -> dict[str, str]:
             "config/mechanics-members.csv": mechanics.format_members_csv(rows)}  # fmt: skip
 
 
+def _empty_status(*matched: int) -> dict[str, str]:
+    """Both EXEs' status tables as gate writes them (the night harness's own are made up), with
+    UFO2P's `matched` starts matched."""
+    rows = [status.StatusRow(s, f"func_{s:08X}", "u_x", "matched", 100.0, 1, "0" * 64,
+                             "2026-11-01") for s in matched]  # fmt: skip
+    return {"config/ufo2p/status.csv": status.format_status(rows),
+            "config/tacp/status.csv": status.format_status([])}  # fmt: skip
+
+
 def _never(*args, **kwargs):
     raise AssertionError("a real_deps effect ran where the night's fake should have")
 
@@ -531,7 +540,7 @@ def test_driver_uses_tier_queue_when_signed(tmp_path):
     pool = [Candidate(top, f"func_{top:08X}", 20, 10, ())]
     for case, sign, first in (("signed", True, leaf), ("unsigned", False, top)):
         night = Night(tmp_path / case)
-        _commit(night, _signed_files(rows, tmp_path, sign=sign))
+        _commit(night, {**_signed_files(rows, tmp_path, sign=sign), **_empty_status()})
         worlds = _world((leaf, mid, top), [(top, mid), (mid, leaf)], pool=pool, unit=UNIT)
         options = driver.DriveOptions(repo=night.repo, run_id=RUN)
         deps = driver.real_deps(options, _seams(night, worlds), worlds)

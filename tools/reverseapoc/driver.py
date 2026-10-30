@@ -89,6 +89,7 @@ each session starts in a fresh directory.
 from __future__ import annotations
 
 import csv
+import functools
 import hashlib
 import io
 import json
@@ -107,18 +108,20 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, hooks, streamjson
+from . import attempt, callgraph, hooks, mechanics, streamjson
+from .callgraph import CallGraph
 from .check import PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
+from .functions import KIND_GAME, KIND_THUNK
 from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
-from .picker import EXE_ORDER, Key, Pick
+from .picker import EXE_ORDER, Key, Pick, TierQueue, tier_queue
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
-from .score import Candidate, assess, candidates
+from .score import Assessment, Candidate, assess, candidates, score, score_reasons
 from .session import (
     MAX_BUDGET_USD,
     MODEL,
@@ -165,6 +168,7 @@ TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
 MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
+CAPPED = "capped"  # a pass that used every attempt without a match (never a record outcome)
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
 STARTED, STOPPED, ENDED = "STARTED", "STOPPED", "ENDED"
 REFUSED = "REFUSED"  # a report only: the night did not start, so no run record is written
@@ -254,8 +258,10 @@ def _quiet(text: str) -> None:
 @dataclass(frozen=True)
 class Deps:
     """Every effect of the loop (D-05). `queue(difficult)` yields the picks, skipping the
-    difficult keys; `requeue(difficult)` is picker.requeue wired with the matched set, callees
-    and pool state; `matched_callees(pick)` is the snapshot kept with a capped function;
+    difficult keys, or is a picker.TierQueue (07-26), which the coordinator asks for its next
+    eligible pick each time a worker is free; `requeue(difficult)` is picker.requeue wired
+    with the matched set, callees and pool state; `matched_callees(pick)` is the snapshot kept
+    with a capped function;
     `scaffold(pick, dest)` writes the unit's scaffold from the committed CSVs to `dest` (the
     view unit, 07-13); `pack(pick, dir, src)` builds the context pack into the attempt dir from
     the src tree `src` (the view's, 07-13); `argv(prompt)` is the claude argv
@@ -267,7 +273,7 @@ class Deps:
     --json; the default prints nothing (quick 261026-9ue). `kill(pid)` kills a live session's
     whole tree (session.kill_tree) when the night stops (07-21 stop-all)."""
 
-    queue: Callable[[Container[Key]], Iterable[Pick]]
+    queue: Callable[[Container[Key]], Iterable[Pick] | TierQueue]
     requeue: Callable[[Mapping[Key, tuple[Key, ...]]], Iterable[Key]]
     matched_callees: Callable[[Pick], tuple[Key, ...]]
     scaffold: Callable[[Pick, Path], None]
@@ -1624,6 +1630,7 @@ class _Worker:
         self.ident = ident
         self.pick = pick
         self.difficult = difficult
+        self.outcome: str | None = None  # the pass's end (`_Night._function`), None: cut short
         self.thread = threading.Thread(target=self._run, name=f"drive-worker-{ident}",
                                        daemon=True)  # fmt: skip
 
@@ -1631,7 +1638,7 @@ class _Worker:
         """The pass on the calling thread; a failure propagates as in Phase 6."""
         self.night.local.worker = self.ident
         try:
-            self.night._function(self.pick, self.difficult)
+            self.outcome = self.night._function(self.pick, self.difficult)
         finally:
             self.coordinator.release(self)
 
@@ -1639,7 +1646,7 @@ class _Worker:
         night = self.night
         night.local.worker = self.ident
         try:
-            night._function(self.pick, self.difficult)
+            self.outcome = night._function(self.pick, self.difficult)
         except _Halt as halt:
             night._note(halt.note)
         except BaseException as exc:  # noqa: BLE001 - handed to the main thread (stop-all)
@@ -1655,7 +1662,14 @@ class _Coordinator:
     or a stop). Claims, counters and locks stay the night's (`_Night`), shared by every
     worker; every shared write goes through the gate lock, every git call through the git
     lock. Returns the night's end reason, or re-raises the first worker's failure once every
-    worker has finished."""
+    worker has finished.
+
+    With a tier queue (07-26) the coordinator asks it, under the night's condition, for the
+    best eligible pick each time a worker is free (the busy units are its claimed units), marks
+    the pick in flight and tells the queue how the pass ended when the worker is released: a
+    capped function returns for its next pass (D-08) and the night's `passes`, which the queue
+    reads, already counts it. Nothing eligible while a pass runs: wait for it; nothing
+    eligible and nothing running: the queue is done."""
 
     def __init__(self, night: _Night) -> None:
         self.night = night
@@ -1664,13 +1678,19 @@ class _Coordinator:
         self.threads: list[threading.Thread] = []
         self.deferred: list[Pick] = []  # picks whose unit was busy, in queue order
         self.picks: Iterator[Pick] = iter(())
+        self.tiers: TierQueue | None = None  # 07-26: the tier queue, when a tier is signed
         self.exhausted = False
         self.picked = False
 
     def run(self) -> str:
         night = self.night
         difficult = night._difficult()
-        self.picks = iter(night.deps.queue(frozenset(difficult)))
+        source = night.deps.queue(frozenset(difficult))
+        if isinstance(source, TierQueue):
+            source.use_passes(night.passes)  # one pass index: the records' and the queue's
+            self.tiers = source
+        else:
+            self.picks = iter(source)
         try:
             while (pick := self._next()) is not None:
                 self.picked = True
@@ -1693,6 +1713,9 @@ class _Coordinator:
         """A worker's pass ended: its unit and its number are free again."""
         with self.night.cond:
             self.busy.pop((worker.pick.exe, worker.pick.unit), None)
+            if self.tiers is not None:
+                self.tiers.finish((worker.pick.exe, worker.pick.start),
+                                  matched=worker.outcome == MATCHED)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -1716,6 +1739,8 @@ class _Coordinator:
     def _eligible(self) -> Pick | None:
         """The first deferred pick whose unit is free, else the queue's next new pick; a pick
         whose unit is busy is deferred, a pick already taken tonight is skipped."""
+        if self.tiers is not None:
+            return self._tier_pick()
         for i, pick in enumerate(self.deferred):
             if (pick.exe, pick.unit) not in self.busy:
                 return self.deferred.pop(i)
@@ -1733,6 +1758,16 @@ class _Coordinator:
                 continue
             return pick
         return None
+
+    def _tier_pick(self) -> Pick | None:
+        """07-26: the tier queue's best eligible pick outside the busy units, now in flight.
+        None with no pass running ends the queue: nothing can become eligible tonight."""
+        pick = self.tiers.next_eligible(frozenset(self.busy))
+        if pick is None:
+            self.exhausted = not self.busy
+            return None
+        self.tiers.take((pick.exe, pick.start))
+        return pick
 
     def _dispatch(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> None:
         with self.night.cond:
@@ -2139,22 +2174,27 @@ class _Night:
             save_difficult(path, difficult)
         return difficult
 
-    def _function(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> None:
+    def _function(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> str | None:
         """At most attempts_per_function counted sessions (D-07); a function that used them all
-        without a match goes to the difficult list once."""
+        without a match goes to the difficult list once and has finished a pass: its count in
+        `passes` goes up, so a tier queue offers it again for its next pass (D-08). Returns
+        MATCHED, CAPPED, or None when the pass was cut short (the night cap, a stop)."""
         for n in range(1, self.config.attempts_per_function + 1):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
-                return
+                return None
             try:
                 outcome = self._announced(pick, n)
             finally:
                 self._release()  # uncounted (an abort, a stop): the slot goes back
             if outcome in (MATCHED, None):
-                return
+                return outcome
         callees = tuple(self.deps.matched_callees(pick))
-        with self.cond:  # the list is shared by every worker
-            difficult[(pick.exe, pick.start)] = callees
+        key = (pick.exe, pick.start)
+        with self.cond:  # the list and the pass counts are shared by every worker
+            difficult[key] = callees
             save_difficult(self.repo / DIFFICULT, difficult)
+            self.passes[key] = self.passes.get(key, 0) + 1
+        return CAPPED
 
     def _label(self, pick: Pick, n: int) -> str:
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
@@ -3237,7 +3277,8 @@ class _Night:
 
     def _pass(self, pick: Pick) -> int:
         """D-08: this function's pass tonight, one more than its finished passes (read from
-        the committed log once per night; a function runs at most one pass a night)."""
+        the committed log once per night, then counted up by every capped pass: a tier queue
+        offers a capped function again the same night)."""
         return self.passes.get((pick.exe, pick.start), 0) + 1
 
     def _base(self, claim: _Claim, kind: str) -> dict:
@@ -3411,13 +3452,17 @@ class ExeWorld:
     """One EXE as the picker and a session need it: score's P16 survivors (`pool`, D-09), the
     unit of every row start, the callees of every row start (picker.requeue), and the two
     builders that touch files: the D-13 context pack into a directory under build/driver/ and
-    the D-12 unit scaffold."""
+    the D-12 unit scaffold. For the tier queue (07-26): `ranks`, every game/thunk row as score
+    ranks it with no P16 filter, and `graph`, the EXE's call graph (callgraph.build_for, built
+    on first call; None: the world has none, so it cannot serve a signed tier)."""
 
     pool: Sequence[Candidate]
     units: Mapping[int, str]
     callees: Mapping[int, tuple[int, ...]]
     pack: Callable[..., PackInfo]  # (pick, directory[, src root]); the src default: src/
     scaffold: Callable[[Pick, Path], None]  # (pick, the file to write)
+    ranks: Mapping[int, Candidate] = field(default_factory=dict)
+    graph: Callable[[], CallGraph] | None = None
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -3605,24 +3650,59 @@ def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
     return remove
 
 
+TierSource = Callable[[Mapping[Key, int] | None], TierQueue]
+
+
+def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld]) -> TierSource | None:
+    """07-26 (DEC-02): when config/mechanics.toml has a signed tier whose digest still matches
+    (mechanics.signed_tiers), a builder of a fresh tier queue (picker.tier_queue) over the
+    committed members file, the worlds' call graphs, ranks and units, with the matched set of
+    status.csv read when it is called; the argument is the finished passes per function
+    (pass_index; a night binds its own). None without such a tier: the Phase 6 pools stay."""
+    root = Path(config_root)
+    if not (root / mechanics.MECHANICS_TOML).is_file():
+        return None
+    mech, rows = mechanics.read_committed(root)
+    if not mechanics.signed_tiers(mech, rows):
+        return None
+    exes = {row.exe for row in rows}
+    graphs = {exe: world.graph() for exe, world in worlds.items()
+              if exe in exes and world.graph is not None}  # fmt: skip
+    ranks = {exe: world.ranks for exe, world in worlds.items()}
+
+    def build(passes: Mapping[Key, int] | None = None) -> TierQueue:
+        return tier_queue(mech, rows, graphs, ranks, _units(worlds),
+                          matched=matched_keys(root), passes=passes)  # fmt: skip
+
+    return build
+
+
 def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld], *,
               today: str | None = None) -> Deps:  # fmt: skip
     """The Deps a real night uses: the picker over both pools minus status.csv's matched and
     this pass's partial rows (AGT-07), picker.requeue with the matched set read now, the
     worlds' scaffold and pack, the claude argv and session, and the container lint and gates
-    (D-24). `today` (UTC) names this pass."""
+    (D-24). `today` (UTC) names this pass. With a signed tier (07-26) `queue` is the tier
+    queue instead (`tier_source`): it never reads the difficult list, whose passes it takes
+    from the night's pass index (the committed log), and `requeue` gives nothing back."""
     day = today or _today()
     config_root = options.config_root
     excluded = excluded_keys(config_root, day)
     say = console(options, seams)
+    tiers = tier_source(config_root, worlds)
 
-    def queue(difficult: Container[Key]) -> Iterable[Pick]:
+    def pools(difficult: Container[Key]) -> Iterable[Pick]:
         return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
                             difficult=difficult)  # fmt: skip
 
+    def queue(difficult: Container[Key]) -> Iterable[Pick] | TierQueue:
+        return pools(difficult) if tiers is None else tiers(None)
+
     def requeue(difficult: Mapping[Key, tuple[Key, ...]]) -> Iterable[Key]:
+        if tiers is not None:
+            return ()
         keys = frozenset(difficult)
-        empty = next(iter(queue(keys)), None) is None
+        empty = next(iter(pools(keys)), None) is None
         callees = {key: _callee_keys(worlds, key) for key in difficult}
         return picker_requeue(difficult, matched=matched_keys(config_root), callees=callees,
                               pool_empty=empty)  # fmt: skip
@@ -4273,7 +4353,17 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
 
     return ExeWorld(pool=candidates(assessments, data.symbols),
                     units={row.start: row.unit for row in data.rows},
-                    callees=dict(calls.callees), pack=pack, scaffold=scaffold)  # fmt: skip
+                    callees=dict(calls.callees), pack=pack, scaffold=scaffold,
+                    ranks=_ranks(assessments, data),
+                    graph=functools.cache(lambda: callgraph.build_for(data)))  # fmt: skip
+
+
+def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Candidate]:
+    """07-26: every game/thunk row as score ranks it, the P16 filter not applied (a signed
+    tier's members are admitted whatever it says of them)."""
+    return {a.row.start: Candidate(a.row.start, data.symbols.c_name(a.row.start), a.features.size,
+                                   score(a.features), score_reasons(a.features), a.features.chk)
+            for a in assessments if a.row.kind in (KIND_GAME, KIND_THUNK)}  # fmt: skip
 
 
 def default_seams(repo: Path) -> Seams:
