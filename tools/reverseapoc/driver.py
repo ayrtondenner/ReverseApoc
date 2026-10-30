@@ -137,6 +137,8 @@ from .session import (
     MAX_BUDGET_USD,
     MAX_TURNS,
     MODEL,
+    MODEL_NAMES,
+    OPUS_MODEL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
@@ -167,7 +169,6 @@ BEST_DIR = "best"
 VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view came from (F34)
 VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
 MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
-COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"  # D-25, set explicitly
 MATCHED_BY = "Matched-By: reverseapoc drive"
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
 OPTIONAL_LOCKS = "GIT_OPTIONAL_LOCKS"  # "0" in the driver's git env and every session's (D-27 P4)
@@ -222,6 +223,20 @@ _O_NEW = (os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
 
 class DriverError(RuntimeError):
     """A driver step failed in a way no session caused (git, the gate's output, a driver file)."""
+
+
+def coauthor(model: str) -> str:
+    """D-25 (07-30, D-09): the Co-Authored-By line of a commit `model` wrote, its display name
+    from session.MODEL_NAMES (07-42); a model the table does not name raises DriverError, so a
+    commit is never mislabelled (T-07-89)."""
+    name = MODEL_NAMES.get(model)
+    if name is None:
+        raise DriverError(f"model {model!r} has no co-author name in session.MODEL_NAMES; "
+                          "nothing is committed under an unknown model")  # fmt: skip
+    return f"Co-Authored-By: {name} <noreply@anthropic.com>"
+
+
+COAUTHOR = coauthor(OPUS_MODEL)  # D-25: the Opus line (passes 1 and 2), set explicitly
 
 
 @dataclass(frozen=True)
@@ -738,8 +753,13 @@ def commit_message(
     usage: streamjson.Usage,
     seconds: float,
     sha1s: Sequence[tuple[str, str]],
+    requested_model: str,
 ) -> str:
-    """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers."""
+    """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers.
+    `model` is the init event's (the `model` line); `requested_model` the session's, which the
+    init check has matched, and names the co-author (07-30: coauthor raises DriverError for a
+    model it does not know, before anything is committed)."""
+    trailer = coauthor(requested_model)
     lines = [
         f"feat({exe}): match {function} in {unit} (C89)",
         "",
@@ -753,7 +773,7 @@ def commit_message(
         "relocation ok",
         *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
         "",
-        COAUTHOR,
+        trailer,
         MATCHED_BY,
     ]
     return "\n".join(lines) + "\n"
@@ -3245,7 +3265,8 @@ class _Night:
                                      attempts=self.config.attempts_per_function,
                                      model=session.text("model"), usage=session.usage,
                                      seconds=session.seconds,
-                                     sha1s=gate_sha1s(gate.doc))  # fmt: skip
+                                     sha1s=gate_sha1s(gate.doc),
+                                     requested_model=claim.model)  # fmt: skip
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -4253,11 +4274,13 @@ def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
 
 
 def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
-                   checks: _Checks) -> None:  # fmt: skip
+                   checks: _Checks, *, model: str) -> None:  # fmt: skip
+    """07-30 (D-09, D-25): the init must name `model`, the model the canary asked for."""
     repo = Path(options.repo)
     init = streamjson.init_event(events)
     problems = streamjson.check_init(init, tested_major=TESTED_MAJOR,
-                                     min_version=MIN_CLI_VERSION)  # fmt: skip
+                                     min_version=MIN_CLI_VERSION,
+                                     expected_model=model)  # fmt: skip
     checks.add(not problems, "init: " + ("; ".join(problems) if problems else
                                          f"claude {(init or {}).get('claude_code_version')}, "
                                          "model, tools, no MCP server, no plugin"))  # fmt: skip
@@ -4324,11 +4347,11 @@ def _refs(probe: _Night) -> dict[str, str]:
 
 
 def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
-                   attempt_dir: Path, checks: _Checks) -> None:  # fmt: skip
+                   attempt_dir: Path, checks: _Checks, *, model: str) -> None:  # fmt: skip
     """The stream checks; an error in them is a FAIL line after the lines so far (fix round
     2: the session ran, so the canary reports, it never refuses)."""
     try:
-        _canary_checks(options, events, attempt_dir, checks)
+        _canary_checks(options, events, attempt_dir, checks, model=model)
     except Exception as exc:  # noqa: BLE001 - reported, never a PASS
         checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
 
@@ -4379,10 +4402,11 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
+    model = MODEL  # the model the canary asks for and its init check expects (07-30)
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        argv = seams.argv(CANARY_PROMPT, model=MODEL, max_budget_usd=MAX_BUDGET_USD,
+        argv = seams.argv(CANARY_PROMPT, model=model, max_budget_usd=MAX_BUDGET_USD,
                           max_turns=MAX_TURNS)  # fmt: skip
         result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
@@ -4390,7 +4414,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     except Exception as exc:  # a crash is a FAIL with the tree still measured
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
-        _after_session(options, seams, result.events, attempt_dir, checks)
+        _after_session(options, seams, result.events, attempt_dir, checks, model=model)
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
