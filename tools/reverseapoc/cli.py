@@ -1785,7 +1785,8 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
 
 
 def _flags_approve(args: argparse.Namespace) -> int:
-    """Exit 0 when every proposal landed, 1 when a gate failed (restored, marked failed)."""
+    """Exit 0 when every proposal landed, 1 when a lint or gate failed (restored, marked
+    failed)."""
     report = flags.approve(args.ids, args.by, repo=args.repo)
     print(report.format())
     return report.exit_code
@@ -1802,7 +1803,8 @@ def _add_flags_owner_verbs(verbs: argparse._SubParsersAction) -> tuple:
         "approve",
         help="OWNER ONLY: land regated proposals in the given order, each as one gated match "
         "commit (rule in config/cflags.txt, the C, status.csv, the feed, the queue, the "
-        "docs/matching.md row); refused while a drive runs (host; the gate runs in the container)",
+        "docs/matching.md row); refused while a drive runs (host; the C89 lint and the gate run "
+        "in the container)",
     )
     ap.add_argument("ids", nargs="+", metavar="ID", help="e.g. F-0001; landed in this order")
     ap.add_argument("--by", required=True, metavar="NAME", help="the approving owner's name")

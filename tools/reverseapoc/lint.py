@@ -6,8 +6,11 @@ Watcom C 10.x is a C89 compiler; the gate catches what it would reject or compil
 the Docker image, so the gate runs in the container; on the host it fails early with the container
 command. `include/watcom_compat.h` empties Watcom's keywords and silences `#pragma aux` for clang
 only, and `-D__WATCOMC__` is the version the game was built with (10.6 -> 1060; it changes only if
-the matches settle on 10.5 or 11.0). `-nostdinc` keeps the gate independent of Watcom's own H
-directory, which is user-supplied and absent in CI.
+the matches settle on 10.5 or 11.0). `-nostdlibinc` keeps the gate independent of Watcom's own H
+directory, which is user-supplied and absent in CI, and of the system headers, while clang's own
+freestanding headers (stdarg.h, stddef.h, limits.h, float.h, stdint.h) stay visible: C89
+guarantees them even in a freestanding implementation, and a matched varargs unit includes
+<stdarg.h>. (`-nostdinc` hid those too and failed such a unit.)
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ LINT_FLAGS = (
     "-Werror=declaration-after-statement",
     "--target=i386-unknown-none",  # 32-bit int, long and pointers, like wcc386 flat
     "-ffreestanding",
-    "-nostdinc",
+    "-nostdlibinc",  # clang's freestanding headers only: no system or Watcom header
     "-funsigned-char",  # Watcom's char is unsigned by default
     "-D__386__",
     "-D__FLAT__",
