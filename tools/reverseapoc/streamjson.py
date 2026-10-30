@@ -61,6 +61,13 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 EXPECTED_MODEL = "claude-opus-5-5"  # D-35; session.MODEL passes the same id
+# Phase 7 D-09: the init `model` values accepted per requested model. Literal ids, because
+# session imports this module (never the other way round). The owner's Fable canary (07-39)
+# settles what CLI 2.1.308 reports for Fable; this table is the one place to extend.
+ACCEPTED_INIT_MODELS: Mapping[str, tuple[str, ...]] = {
+    "claude-opus-5-5": ("claude-opus-5-5",),
+    "claude-fable-5-1": ("claude-fable-5-1",),
+}
 EXPECTED_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep", "Bash")  # D-45's --tools
 _RESULT = "result"
 _SYSTEM = "system"
@@ -329,6 +336,18 @@ def _names(entries: object) -> str:
     return ", ".join(str(_mapping(entry).get("name", entry)) for entry in entries)
 
 
+def _model_problem(model: object, expected_model: str) -> str | None:
+    """Why the init's `model` is not accepted for the requested `expected_model`, or None
+    (Phase 7 D-09). A requested model with no accepted init ids fails closed, even when the init
+    echoes it."""
+    accepted = ACCEPTED_INIT_MODELS.get(expected_model)
+    if accepted is None:
+        return f"requested model {expected_model!r} has no accepted init IDs (D-09)"
+    if model not in accepted:
+        return f"model {model!r} is not accepted for the requested {expected_model} (D-09)"
+    return None
+
+
 def check_init(
     init: Mapping | None,
     *,
@@ -338,16 +357,15 @@ def check_init(
 ) -> list[str]:
     """Every problem with a session's `system/init` event; empty when it is clean. The driver
     treats any problem as STOP (fail closed, Pitfall 2): a missing init, a version outside the
-    tested major or below `min_version` (D-36), another model (D-35), tools other than exactly
+    tested major or below `min_version` (D-36), a model not accepted for `expected_model` or an
+    unknown `expected_model` (D-35, Phase 7 D-09), tools other than exactly
     D-45's six, any MCP server (D-44) or any plugin."""
     if init is None:
         return ["no system/init event"]
     if isinstance(min_version, str):
         min_version = parse_version(min_version)
     problems = [_version_problem(init, tested_major, min_version)]
-    model = init.get("model")
-    if model != expected_model:
-        problems.append(f"model {model!r} is not {expected_model} (D-35)")
+    problems.append(_model_problem(init.get("model"), expected_model))
     problems.append(_tools_problem(init))
     servers = init.get("mcp_servers")
     if servers != []:

@@ -20,7 +20,7 @@ import pytest
 from conftest import REPO_ROOT
 from reverseapoc import session
 from reverseapoc.session import build_argv, goal_prompt, kill_tree, run_session
-from reverseapoc.streamjson import Disposition, classify
+from reverseapoc.streamjson import ACCEPTED_INIT_MODELS, Disposition, classify
 
 FAKECLAUDE = REPO_ROOT / "tests" / "fakeclaude.py"
 STREAMS = REPO_ROOT / "tests" / "fixtures" / "stream"
@@ -70,7 +70,51 @@ def test_build_argv_is_d06():
     assert "--bare" not in argv
 
 
-VIEW_UNIT = "build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c"
+def _value_after(argv: list[str], flag: str) -> str:
+    return argv[argv.index(flag) + 1]
+
+
+def test_build_argv_kwargs():
+    """07-42 (D-09, D-25): the per-session model, budget and turns land in D-06's argv positions,
+    and the defaults are still D-06 token for token."""
+    argv = build_argv(
+        "/goal x", claude="claude", model="claude-fable-5-1", max_budget_usd=12.5, max_turns=40
+    )
+    assert _value_after(argv, "--model") == "claude-fable-5-1"
+    assert _value_after(argv, "--max-budget-usd") == "12.5"
+    assert _value_after(argv, "--max-turns") == "40"
+    assert build_argv("/goal stand-in", claude="claude") == D06_ARGV
+
+
+@pytest.mark.parametrize(
+    ("pass_number", "model"),
+    [
+        (1, "claude-opus-5-5"),
+        (2, "claude-opus-5-5"),
+        (3, "claude-fable-5-1"),
+        (7, "claude-fable-5-1"),
+    ],
+)
+def test_model_for_pass(pass_number, model):
+    """D-09: two capped Opus passes, then Fable for every later pass."""
+    assert session.model_for_pass(pass_number) == model
+
+
+@pytest.mark.parametrize("pass_number", [0, -1])
+def test_model_for_pass_refuses_a_pass_below_one(pass_number):
+    with pytest.raises(ValueError):
+        session.model_for_pass(pass_number)
+
+
+def test_model_tables_agree():
+    """T-07-125: every model the init check accepts has a co-author name, and no other."""
+    models = {session.OPUS_MODEL, session.FABLE_MODEL}
+    assert set(session.MODEL_NAMES) == set(ACCEPTED_INIT_MODELS) == models
+    assert session.MODEL_NAMES[session.OPUS_MODEL] == "Claude Opus 5.5"
+    assert session.MODEL_NAMES[session.FABLE_MODEL] == "Claude Fable 5.1"
+
+
+VIEW_UNIT ="build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c"
 
 
 def test_goal_prompt_names_the_claim():
