@@ -361,6 +361,86 @@ Execution context nonce: 36b3c54a172149c8
 - `uv run ruff check .`: All checks passed.
 - Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
 
+## Fix round 2
+
+**Findings:** these come from the re-review of fix round 1 (`rereview-07-21-r1.md`, "New Breakage in the Fix Diff"). The orchestrator ruled that the two Minor findings, N3 and N4, are also fixed in this round.
+
+- **N1 (Important): `_verify_commit` gave a false breach for a CRLF unit.**
+  - The repo has `* text=auto eol=lf`, so git stores the LF form, but the check compared raw bytes.
+  - Fix: the check now compares object ids, for every path it checks (`_committed_as`):
+    - the expected bytes are hashed with `git hash-object --path=<rel> --stdin`, which applies the path's attributes the same way the commit did;
+    - the result is compared with `git rev-parse --verify --quiet <new>:<rel>`;
+    - "no bytes expected" (None) means the path must be absent from the commit.
+  - To support this, the git seam now takes an optional stdin:
+    - `git_runner`'s `git(args, input=None)`;
+    - `_Night._git(args, *, input=None)`, which calls `deps.git(args)` unchanged when there is no input;
+    - the `Deps.git` and `Seams.git` annotations are now `Callable[..., CompletedProcess]`.
+- **N2 (Important): the `update-ref HEAD old new` guard was not tied to the driver's own commit.**
+  - Fix: `_foreign_commits` runs after the commit. HEAD counts as the driver's commit only if it has exactly one parent, that parent is `old`, and its subject equals the driver's message subject (the optional check, included).
+  - If it is not, HEAD is never moved:
+    - the record names each commit in `old..new` whose subject is not the driver's, as `<sha12> <subject>`;
+    - any blobs that are wrong are still named and contained (`_breach`);
+    - `_Kept` stops the night as `guardrail`, with no `_undo_match`.
+  - When HEAD is the driver's commit, the `update-ref` old-value guard remains a compare-and-swap on that verified commit.
+- **N3 (Minor): the launch check restored a tracked pinned path from the launch snapshot, which held the stray.**
+  - Fix: in `_contain_one`, once the night baseline is set, every name in `session.pinned_changed` is restored to `pinned_base[name]`, tracked or not, then unstaged as before. Outside a night (the canary), the old rule still applies.
+- **N4 (Minor): an exception from `_verify_commit` other than `_Breach` went into `_undo_match`'s no-commit path.**
+  - Fix: every check after the commit runs inside one `try`: `rev-parse`, the anchor check, `rev-parse <new>:<rel>` and `hash-object`.
+  - Any exception there becomes `_Kept`, with the error in the detail. `_commit_match` catches `_Kept` before `_Breach`, sets `breached=True` (so there is no chore commit) and stops as `guardrail`. status.csv and the log are never put back under the kept commit.
+  - The same applies when `update-ref` fails after a blob mismatch, which before this round also reached `_undo_match` while the commit stayed in history.
+
+**Tests (all in tests/test_driver_workers.py):**
+- `test_a_crlf_unit_under_an_eol_rule_is_committed_without_a_guardrail_stop` (N1):
+  - the test repo commits its own `.gitattributes` (`* text=auto eol=lf`);
+  - the test git env has `GIT_CONFIG_NOSYSTEM=1` and `core.autocrlf=false`, so the outcome is the same on this Windows host and in the Linux container;
+  - the session writes the view unit with CRLF;
+  - the match must be committed, with the LF form in the commit.
+- `test_a_foreign_commit_during_the_match_commit_never_moves_head` (N2), 4 cases: {(a) before the driver's commit, (b) after it} x {clean, tampered status.csv}.
+  - (a) is injected at the match commit's `git add`, after the driver has read `old`.
+  - (b) is injected at the first git call after the match `git commit`, which is the post-commit `rev-parse`.
+  - Each case requires: STOPPED `guardrail`, the foreign and match commits both still in history, and the foreign sha in the detail. The tampered cases also require the path to be named and the tampered bytes to be gone from the worktree.
+- `test_a_launch_check_puts_a_tracked_pinned_file_back_to_the_night_baseline` (N3):
+  - the test commits `config/driver/claude-settings.json`, and the stray is written in `pack` (after the baseline, before the launch snapshot);
+  - nothing launches, the file ends with its pre-night bytes and is clean in `git status`;
+  - the detail has no "still changed after containment";
+  - the stray is in the quarantine.
+- `test_a_failed_check_after_the_match_commit_keeps_the_commit_and_reverts_nothing` (N4):
+  - the post-commit `rev-parse` raises;
+  - the night stops `guardrail` with the error in the detail;
+  - the commits are exactly the match commit (no chore commit);
+  - worktree status.csv equals HEAD's, and the worktree log starts with HEAD's log.
+
+**RED evidence:** all 7 tests failed on their planned assertions. The classifier returned `RED_EVIDENCE_OK` for target `test_a_crlf_unit_under_an_eol_rule_is_committed_without_a_guardrail_stop` (`build/red/f2.json`, `build/red/f2.xml`). Semantic check of each failure:
+- N1: "the match commit ... holds bytes the driver did not write: src/ufo2p/u_00010000.c; HEAD moved back", a guardrail stop on a genuine match.
+- N2 clean cases: ENDED `queue exhausted`, with no stop.
+- N2 tampered cases: HEAD was moved back, and the foreign commit was dropped from history.
+- N3: the record said "restored: config/driver/claude-settings.json; ...; still changed after containment: config/driver/claude-settings.json", and the file ended as the stray.
+- N4: STOPPED `tool` through the undo path.
+
+**Commits:**
+- `09e8e01` test(07-21): add failing tests for fix round 2 (N1-N4)
+- `cabf847` fix(07-21): anchored, attribute-aware post-commit check; tracked pinned paths back to the night baseline
+- this SUMMARY commit
+
+**Deviations:**
+- **[Rule 3 - Blocking] tests/test_driver.py changed, though it is not in the plan's files_modified.**
+  - `Night._recorded_git`, the shared git fake of the driver tests, had to accept the new optional stdin (`input=None`) so that `hash-object --stdin` reaches the real git.
+  - The change is three lines. Every other call is unchanged, and an argv-only fake still works for any call without stdin.
+  - `Rig.git` in tests/test_drive.py got the same change (that file is in the plan).
+- **N2's optional subject check is implemented but has no dedicated test.** No test puts a commit with the driver's subject on `old`. The parent check is what the four N2 cases exercise.
+
+**Residuals (recorded, not changed):**
+- A KeyboardInterrupt raised inside `_verify_commit` after the commit still goes to `_commit_match`'s `BaseException` undo path. That path re-raises the interrupt and records `interrupted`. The window is the same few git calls as N4.
+- In the kept case with a tampered landed unit, `_breach` resets the live attempt, which runs `git restore --source=HEAD` on the unit. The worktree unit therefore ends as the kept commit's (tampered) blob. The tampered bytes are also in the quarantine and named in the record, and the night stops `guardrail` with nothing more committed.
+
+**Commands and output:**
+- `uv run pytest -q tests/test_driver_workers.py tests/test_driver.py tests/test_drive.py tests/test_session.py tests/test_cli.py`: 431 passed, 3 skipped (the pre-existing skips).
+- `uv run pytest -q` (host, worktree): 3454 passed, 247 skipped. That is 7 more passes than round 1 (3447 / 247). There are no new skips: every skip is a pre-existing real-file skip (orig/, Watcom, watcom-media, Ghidra export not present in the worktree).
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
+Execution context nonce: a596cd2757a044f9
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-27*
