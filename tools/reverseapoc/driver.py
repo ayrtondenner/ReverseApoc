@@ -235,7 +235,7 @@ class PackInfo:
 @dataclass(frozen=True)
 class GateRun:
     """`gate EXE/UNIT --attempts N --json` in the container: its exit code and parsed JSON.
-    `matched_before` (07-23) is set by the driver: the claimed EXE's matched starts in
+    `matched_before` (07-23) is set by the driver: the claimed unit's matched starts in
     status.csv right before the gate ran, so the record can count regressions."""
 
     exit_code: int
@@ -1004,9 +1004,10 @@ def _hook_blocks(events: Sequence[Mapping]) -> int:
     return len(_items(results[-1].get("permission_denials"))) if results else 0
 
 
-def matched_starts(data: bytes | None) -> frozenset[int]:
-    """The starts of the `matched` rows of a status.csv's bytes (None: no table). Read loosely
-    (any column order, `#` lines skipped), since only start and status are needed."""
+def matched_starts(data: bytes | None, unit: str | None = None) -> frozenset[int]:
+    """The starts of the `matched` rows of a status.csv's bytes (None: no table), only those of
+    `unit` when one is given. Read loosely (any column order, `#` lines skipped), since only
+    start, unit and status are needed."""
     if not data:
         return frozenset()
     text = data.decode("utf-8", "replace").splitlines()
@@ -1014,6 +1015,8 @@ def matched_starts(data: bytes | None) -> frozenset[int]:
     for row in csv.DictReader(line for line in text if line and not line.startswith("#")):
         start = row.get("start")
         if row.get("status") != STATUS_MATCHED or not isinstance(start, str):
+            continue
+        if unit is not None and row.get("unit") != unit:
             continue
         try:
             out.add(int(start, 16))
@@ -1042,20 +1045,33 @@ def _va(fn: Mapping) -> int | None:
         return None
 
 
-def regressions(doc: Mapping | None, pick: Pick, before: Container[int]) -> list[int]:
-    """The previously matched starts (`before`) of the claimed EXE that a gate's checks found
-    failing, sorted, each once; the claimed function itself is never one."""
-    found: set[int] = set()
+def _checked(doc: Mapping | None, exe: str) -> dict[int, bool]:
+    """Each start a gate's checks of `exe` list, and whether it passed."""
+    seen: dict[int, bool] = {}
     checks = doc.get("checks") if isinstance(doc, Mapping) else None
     for check in _items(checks):
-        if not isinstance(check, Mapping) or not _same_exe(check.get("exe"), pick.exe):
+        if not isinstance(check, Mapping) or not _same_exe(check.get("exe"), exe):
             continue
         for fn in _items(check.get("functions")):
             va = _va(fn) if isinstance(fn, Mapping) else None
-            if va is None or va == pick.start or va not in before or _function_passes(fn):
-                continue
-            found.add(va)
-    return sorted(found)
+            if va is not None:
+                seen[va] = seen.get(va, True) and _function_passes(fn)
+    return seen
+
+
+def regressions(doc: Mapping | None, pick: Pick, before: Iterable[int], *,
+                mismatch: bool = False) -> list[int]:  # fmt: skip
+    """The previously matched starts (`before`: the claimed unit's matched rows right before
+    the gate) that the gate found failing, sorted, each once; the claimed function is never
+    one. A gate that refused the unit (`mismatch`, exit 1) lists a function that went back to
+    INCLUDE_ASM in its problems only, never in its checks (the reverted-unit early return,
+    cross_check: fix round 1), so then every such start counts unless a check shows it
+    passing."""
+    seen = _checked(doc, pick.exe)
+    starts = sorted(set(before) - {pick.start})
+    if mismatch:
+        return [va for va in starts if not seen.get(va, False)]
+    return [va for va in starts if seen.get(va) is False]
 
 
 def _gate_field(gate: GateRun | None, pick: Pick) -> dict | None:
@@ -1068,7 +1084,8 @@ def _gate_field(gate: GateRun | None, pick: Pick) -> dict | None:
     problems = [_record_text(p) for p in _items(doc.get("problems"))][:_LISTED_CAP]
     return {"exit": gate.exit_code if _is_int(gate.exit_code) else None,
             "claimed_ok": gate.exit_code == EXIT_OK and claimed_matched(doc, pick),
-            "regressions": len(regressions(doc, pick, gate.matched_before)),
+            "regressions": len(regressions(doc, pick, gate.matched_before,
+                                           mismatch=gate.exit_code == EXIT_MISMATCH)),
             "problems": problems}  # fmt: skip
 
 
@@ -3007,7 +3024,7 @@ class _Night:
         claim = session.claim
         self._guard(claim.status_rel, FEED)  # fix round 1: the gate starts from the driver's bytes
         self.pre_gate = {rel: self.ledger.expected(rel) for rel in (claim.status_rel, FEED)}
-        before = matched_starts(self.pre_gate[claim.status_rel])  # 07-23: for `regressions`
+        before = matched_starts(self.pre_gate[claim.status_rel], pick.unit)  # `regressions`
         try:
             gate = replace(self.deps.gate(pick, n), matched_before=before)
         finally:
