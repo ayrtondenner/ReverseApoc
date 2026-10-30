@@ -369,3 +369,26 @@ def test_a_failed_canary_init_still_names_the_init_model(tmp_path, capsys):
     code, out, _ = rig.drive(capsys, canary=True, json=True, canary_model=FABLE_MODEL)
     doc = json.loads(out)
     assert (code, doc["canary"], doc["init_model"]) == (1, "FAIL", OPUS_MODEL)
+
+
+# ---- fix round 1: the canary's claim carries its requested model ----
+
+
+def test_the_canary_claim_carries_its_requested_model(tmp_path, capsys, monkeypatch):
+    """Review minor (07-30 fix round 1): the canary's _Claim names the model `--model` asked
+    for and that model's budget, not the Opus defaults."""
+    claims: list = []
+    real = driver._Night._make_view
+
+    def make_view(self, claim):
+        claims.append(claim)
+        return real(self, claim)
+
+    monkeypatch.setattr(driver._Night, "_make_view", make_view)
+    rig = _echoing(_canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md"))
+    code, out, _ = rig.drive(capsys, canary=True, json=True, canary_model=FABLE_MODEL,
+                             fable_budget_usd=20.0)  # fmt: skip
+    assert code == 0, out
+    claim = _one(claims)
+    assert (claim.model, claim.budget_usd) == (FABLE_MODEL, 20.0)
+    assert rig.asked[:2] == (claim.model, claim.budget_usd)
