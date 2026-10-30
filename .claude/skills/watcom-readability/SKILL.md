@@ -118,7 +118,7 @@ A struct, enum or constant several units share is a header proposal: the whole t
 {"op": "header", "path": "include/clock.h", "text": "#ifndef CLOCK_H\n#define CLOCK_H\n\n#define CLOCK_FRAME_WRAP 0x24\n\n#endif\n", "evidence": "call: 0x00012340 and 0x00012400 both wrap the clock fraction at 0x24"}
 ```
 
-The driver writes the header; units start to include it in a later session. A constant only this unit uses stays a `#define` in the unit.
+The driver writes the header after the session (planned, not built yet); units start to include it in a later session. A constant only this unit uses stays a `#define` in the unit.
 
 Write `proposals.jsonl` with the Write tool, one object per line. To change a proposal, edit its line or add a later line for the same row: the last line for a row wins.
 
@@ -134,7 +134,7 @@ Name a literal with a `#define` that copies its exact spelling and suffix:
 #define CLOCK_FRAME_WRAP 0x24
 ```
 
-In C89 the spelling and the suffix choose the constant's type (a hex literal above INT_MAX is unsigned, a decimal one is long; `u` and `l` change it), and the type picks the compare and extend instructions. A copied token keeps the type by construction, so `0x24` stays `0x24`, never `36`.
+In C89 the spelling and the suffix choose the constant's type, and the type picks the compare and extend instructions. Under wcc386 `int` and `long` are both 32 bits, so a literal above INT_MAX is unsigned either way, but not the same type: `0x80000000` is `unsigned int`, `2147483648` is `unsigned long`, and a `u` or `l` suffix changes the type again. A copied token keeps the type by construction, so `0x24` stays `0x24`, never `36`.
 
 Not:
 - `static const s32 X = 36;`: RL06 still flags the initializer, and it adds a data object or a load the original does not have;
@@ -146,7 +146,7 @@ Put the `#define`s above the externs, so the header stays the last comment befor
 
 ## Readlint
 
-readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your view unit, and the driver runs it strictly at landing.
+readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your view unit, and the driver will run it strictly at landing (planned, not built yet).
 
 | Rule | Fails on | Reach |
 |---|---|---|
@@ -191,6 +191,7 @@ notes: <notes path>
 
 Reading it:
 - pending renames are counted per hit, not per name: the extern and two uses of `D_000D1230` are three;
+- line numbers come only from this output: quote no line number you have not read here;
 - `rename proposal refused: <why>`: fix that proposal line and check again;
 - `check: FAILED`: a byte moved. Undo your last edit that was not a comment or a local rename, and check again;
 - here the only failures left are `func_00012400`, which nothing evidences: it goes to notes.md for the allowlist.
@@ -222,4 +223,4 @@ notes.md holds, in this order:
 4. The literals waived, and why.
 5. What the next session should try.
 
-Write notes.md before any optional last step. A clean check is never your claim: the driver checks everything again at landing.
+Write notes.md before any optional last step. A clean check is never your claim: the driver will check everything again at landing (planned, not built yet).
