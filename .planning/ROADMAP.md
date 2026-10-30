@@ -291,7 +291,7 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans:** 33/42 plans executed
+**Plans:** 33/43 plans executed
 
 Plans:
 **Wave 1**
@@ -341,6 +341,7 @@ Plans:
 **Wave 8** *(blocked on Wave 7 completion)*
 - [ ] 07-30-PLAN.md — Opus-then-Fable escalation wired into the driver, per-model budgets, init check and co-author by requested model, cap flags, canary `--model` (AGT-11, DEC-06, DEC-02)
 - [x] 07-31-PLAN.md — readability sessions' `attempt check` adds readlint on the view unit (DEC-04)
+- [ ] 07-43-PLAN.md — gap: tier digests cover must-match membership only, hub column in the members CSV, Tiers 1-3 re-signed *(main checkout, owner checkpoint)* (DEC-01)
 - [ ] 07-32-PLAN.md — Tier 4 (#265) drafted and signed off *(main checkout, owner checkpoint)* (DEC-01)
 - [ ] 07-33-PLAN.md — optional `*` default ruling on D-33 evidence *(main checkout, owner checkpoint)* (DEC-03)
 
@@ -393,7 +394,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 33/42 | In Progress | - |
+| 7. Mechanics-first decompilation | 33/43 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
