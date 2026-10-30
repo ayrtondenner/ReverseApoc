@@ -16,9 +16,9 @@ import json
 
 import pytest
 
-from reverseapoc import driver, session, streamjson
+from reverseapoc import cli, driver, session, streamjson
 from reverseapoc.session import FABLE_MODEL, OPUS_MODEL, build_argv
-from test_drive import CANARY_DIR, _canary, _canary_rig
+from test_drive import CANARY_DIR, Rig, _canary, _canary_rig
 from test_driver import EXE, LOG, Night, Sess, _one
 from test_driver_records import _commit, _lines, _v1, _v2
 
@@ -244,3 +244,128 @@ def test_an_unknown_model_is_never_committed(tmp_path, monkeypatch):
     assert "DriverError" in report.detail and OPUS_MODEL in report.detail
     assert not [s for s in night.commits() if s.startswith("feat(")]
     assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
+
+
+# ---- Task 3: every D-07 value is a drive flag; the canary's --model ----
+
+D07_FLAGS = {"--max-budget-usd": ("max_budget_usd", 5),
+             "--fable-budget-usd": ("fable_budget_usd", 12.5),
+             "--max-turns": ("max_turns", 40),
+             "--session-minutes": ("session_minutes", 30)}  # fmt: skip
+
+
+def _no_drive(monkeypatch) -> list:
+    """cli tests never reach a real drive: run_drive records its options, the seams are inert."""
+    seen: list = []
+
+    def run_drive(options, seams):
+        seen.append(options)
+        return 0
+
+    monkeypatch.setattr(driver, "run_drive", run_drive)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: None)
+    return seen
+
+
+def _exit_code(argv: list[str]) -> int:
+    with pytest.raises(SystemExit) as exc:
+        cli.main(argv)
+    return exc.value.code
+
+
+def test_drive_budget_flags(capsys, monkeypatch):
+    """D-07/D-25: the per-model budgets, the turns and the session wall clock are flags with
+    their defaults shown in --help; zero or a negative value exits 2."""
+    _no_drive(monkeypatch)
+    args = cli.build_parser().parse_args(["drive"])
+    assert {flag: getattr(args, dest) for flag, (dest, _) in D07_FLAGS.items()} == {
+        flag: default for flag, (_, default) in D07_FLAGS.items()}  # fmt: skip
+    assert args.model is None
+    assert _exit_code(["drive", "--help"]) == 0
+    text = " ".join(capsys.readouterr().out.split())
+    for flag, (_, default) in D07_FLAGS.items():
+        assert flag in text, flag
+        assert f"default: {default}" in text, (flag, default)
+    for flag in D07_FLAGS:
+        for bad in ("0", "-1", "x"):
+            assert _exit_code(["drive", flag, bad]) == 2, (flag, bad)
+
+
+def test_the_drive_flags_reach_the_options(monkeypatch):
+    seen = _no_drive(monkeypatch)
+    code = cli.main(["drive", "--max-budget-usd", "3", "--fable-budget-usd", "20", "--max-turns",
+                     "9", "--session-minutes", "7", "--run", "night9"])  # fmt: skip
+    assert code == 0
+    options = _one(seen)
+    assert (options.max_budget_usd, options.fable_budget_usd, options.max_turns,
+            options.session_minutes, options.canary_model) == (3.0, 20.0, 9, 7, OPUS_MODEL)
+
+
+def test_the_night_gets_the_budgets_turns_and_session_clock(tmp_path, capsys, monkeypatch):
+    """run_drive hands the D-07 values to the night: session_minutes is the per-session wall
+    clock."""
+    rig = Rig(tmp_path)
+    seen = {}
+
+    def fake_drive(config, deps, *, lock=None):
+        seen["config"] = config
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, _, _ = rig.drive(capsys, json=True, max_budget_usd=3.0, fable_budget_usd=20.0,
+                           max_turns=9, session_minutes=7)  # fmt: skip
+    assert code == 0
+    config = seen["config"]
+    assert (config.max_budget_usd, config.fable_budget_usd, config.max_turns,
+            config.wall_clock_s) == (3.0, 20.0, 9, 7 * 60)  # fmt: skip
+
+
+def _echoing(rig: Rig) -> Rig:
+    """The canary rig's stand-in echoes the requested model into its init (as the CLI does)."""
+    plain = rig.argv
+
+    def argv(prompt, **values):
+        return [*plain(prompt, **values), "--model", values["model"]]
+
+    rig.argv = argv
+    return rig
+
+
+def test_canary_model_flag(tmp_path, capsys, monkeypatch):
+    """D-25: `drive --canary --model claude-fable-5-1` asks for Fable with the Fable budget; an
+    unknown model exits 2, and so does --model without --canary."""
+    rig = _echoing(_canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md"))
+    code, out, _ = rig.drive(capsys, canary=True, json=True, canary_model=FABLE_MODEL,
+                             fable_budget_usd=20.0)  # fmt: skip
+    doc = json.loads(out)
+    assert (code, doc["canary"]) == (0, "PASS"), doc
+    assert rig.asked == (FABLE_MODEL, 20.0, 40)
+    seen = _no_drive(monkeypatch)
+    assert _exit_code(["drive", "--canary", "--model", "claude-made-up-1"]) == 2
+    assert cli.main(["drive", "--model", FABLE_MODEL]) == 2
+    assert "--model" in capsys.readouterr().err
+    assert cli.main(["drive", "--canary", "--model", FABLE_MODEL, "--run", "c1"]) == 0
+    assert _one(seen).canary_model == FABLE_MODEL
+    assert seen[0].canary
+
+
+def test_canary_prints_init_model(tmp_path, capsys):
+    """The owner reports the init event's model string (research A9, plan 07-39): the canary's
+    JSON names it and the requested model, and its text init line names it too."""
+    rig = _echoing(_canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md"))
+    code, out, _ = rig.drive(capsys, canary=True, json=True, canary_model=FABLE_MODEL)
+    doc = json.loads(out)
+    assert (doc["model_requested"], doc["init_model"]) == (FABLE_MODEL, FABLE_MODEL)
+    rig = _echoing(_canary_rig(tmp_path / "text", "canary_pass", write=f"{CANARY_DIR}/context.md"))
+    code, out, _ = rig.drive(capsys, canary=True, canary_model=FABLE_MODEL)
+    assert code == 0, out
+    init = next(line for line in out.splitlines() if line.startswith("PASS: init:"))
+    assert f"model {FABLE_MODEL}" in init
+    assert out.rstrip("\n").splitlines()[-1] == "CANARY PASS"
+
+
+def test_a_failed_canary_init_still_names_the_init_model(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, out, _ = rig.drive(capsys, canary=True, json=True, canary_model=FABLE_MODEL)
+    doc = json.loads(out)
+    assert (code, doc["canary"], doc["init_model"]) == (1, "FAIL", OPUS_MODEL)
