@@ -777,3 +777,53 @@ def test_night_top_picks_draw_from_the_tier_queue(tmp_path):
     picks = driver.night_top_picks(rig.options(max_sessions=2), worlds, today="2026-11-02")
     assert [p.start for p in picks] == [TC, TB]
     assert all(isinstance(p, Pick) for p in picks)
+
+
+# ---- fix round 1 (07-26 review I1, I2) ----
+
+
+def test_an_eligible_member_on_pass_2_comes_before_fresh_hubs_and_the_next_tier():
+    """Orchestrator ruling (review I1): the key is (tier, member before hub, passes, level,
+    rank). Tier 1 member A has one finished pass, Tier 1 hub H and Tier 2 member N are fresh,
+    nothing is in flight: A first, then H, then N."""
+    rows = [_member(TA), _member(TH, role=ROLE_HUB), _member(TE, items=(T2_ITEM,))]
+    passes = {(UFO2P, TA): 1}
+    q = _tq(rows, mech=_mech(rows, tiers=(1, 2), signed=(1, 2)), passes=passes)
+    first = q.next_item()
+    assert (first.pick.start, first.pass_n) == (TA, 2)
+    assert _serve(q, passes, match=True) == [TA, TH, TE]
+
+
+def test_an_aborted_function_goes_behind_the_other_eligible_work_of_its_group():
+    """Orchestrator ruling (review I2): a pass that ended in a transient abort is not offered
+    again at once; the group's other eligible work comes first, then the aborted function."""
+    rows = [_member(TA), _member(TB)]
+    q = _tq(rows, scores={TA: 10, TB: 90})
+    assert q.next_eligible().start == TA
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, aborted=True)
+    assert q.next_eligible().start == TB
+    q.take((UFO2P, TB))
+    q.finish((UFO2P, TB), matched=True)
+    assert q.next_eligible().start == TA
+
+
+def test_transient_aborts_are_bounded_by_the_night_cap(tmp_path):
+    """Orchestrator ruling (review I2; D-07): every launched session counts toward the night
+    cap, aborted ones included. One signed member and nothing but transient sessions with
+    max_sessions 2: at most 2 launches, then ENDED "max sessions"."""
+    from test_driver import RUN, START, UNIT, Night, Sess
+    from test_driver_records import _commit
+
+    rows = [_member(START)]
+    transient = [Sess("overloaded", write=None), Sess("no_result", write=None)] * 4
+    night = Night(tmp_path / "night", sessions=transient)
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((START,), unit=UNIT)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    report = night.run(config={"max_sessions": 2}, queue=deps.queue, requeue=deps.requeue)
+    assert len(night.launched) <= 2
+    assert (report.event, report.reason) == ("ENDED", "max sessions")
+    aborts = night.kinds("abort")
+    assert [(a["attempt"], a["retries"]) for a in aborts] == [(1, 1)]

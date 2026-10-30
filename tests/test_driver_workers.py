@@ -1038,16 +1038,18 @@ def test_cap_shared_across_workers(tmp_path):
     assert len(night.kinds("attempt")) == 5
 
 
-def test_uncounted_session_releases_slot(tmp_path):
-    """A transient abort (four launches, none counted) gives its slot back: with max_sessions=2
-    the night still counts two sessions after it."""
+def test_transient_launches_spend_the_night_cap(tmp_path):
+    """07-26 fix round 1 (orchestrator ruling, D-07: the cap counts sessions): every launched
+    session counts toward the night cap, a transient one included (it was given back before).
+    Unit 0 has four transient sessions, the other three units one counted session each: with
+    max_sessions=6 exactly 6 sessions launch, transient and counted together."""
     transient = [Sess("overloaded", write=None)] * 4
     night = WNight(tmp_path, picks=tuple(_wpick(i) for i in range(4)),
                    by_unit={_unit(0): list(transient)})  # fmt: skip
-    report = night.run(config=_workers(2, attempts_per_function=1, max_sessions=2))
-    assert (report.event, report.reason, report.sessions) == ("ENDED", "max sessions", 2)
+    report = night.run(config=_workers(2, attempts_per_function=1, max_sessions=6))
+    assert (report.event, report.reason) == ("ENDED", "max sessions")
     assert _one(night.kinds("abort"))["unit"] == _unit(0)
-    assert len(night.kinds("attempt")) == 2
+    assert report.sessions == len(night.kinds("attempt"))
     assert len(night.launched) == 6
 
 
