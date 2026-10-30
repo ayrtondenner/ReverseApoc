@@ -688,14 +688,19 @@ evidence = "file"
 detail = "reads the city hand-off files (units, objects, relations, unresolved units) before battle"
 source = "mechanics locate; research Q2"
 
-# ---- Tier 3 (D-04): OpenApoc #264, drafted by plan 07-28, not signed yet ----
-# Proposal: the UI-chrome items 24, 26 and 27 are out; 1, 22, 23 and 29-33 are out by D-01; 2 is a
-# duplicate of 997; 14 is not described in the research and waits for the owner. Entries that
-# would reopen the Tier 1 or Tier 2 digest are held back (F36) and listed in the plan summary.
+# ---- Tier 3 (D-04): OpenApoc #264, signed by the owner on 2026-10-30 (plan 07-28) ----
+# Owner ruling "sign-as-drafted": the UI-chrome items 24, 26 and 27 are out; 1, 22, 23 and 29-33
+# are out by D-01; 2 is a duplicate of 997; the items no locating route reached (7, 8, 11, 12, 13,
+# 15, 19, 20, 25) are out as not located yet; 14 is not described in the research and stays out
+# until the owner gives its text. Entries that would reopen Tier 1 or Tier 2 stay held back (F36).
+# Tier 3 keeps matching in Milestone 2 (D-05).
 
 [[tier]]
 id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
+signed_off_by = "ayrtondenner"
+signed_off_date = 2026-10-30
+members_sha256 = "a37cad5530791f9ec49d4038ea034ebb6309b641521a688736836320fcc052c6"
 
 [[item]]
 id = "264-1"
@@ -757,8 +762,8 @@ issue = 264
 title = "Dimension gate (portal) locations"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-8"
@@ -766,8 +771,8 @@ issue = 264
 title = "Dimension gate (portal) movement"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-9"
@@ -793,8 +798,8 @@ issue = 264
 title = "Umbilical collapse"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-12"
@@ -802,8 +807,8 @@ issue = 264
 title = "Stopping UFO growth"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-13"
@@ -811,8 +816,8 @@ issue = 264
 title = "UFO mushrooms"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-14"
@@ -829,8 +834,8 @@ issue = 264
 title = "Organisations buying and selling vehicles"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-16"
@@ -865,8 +870,8 @@ issue = 264
 title = "Lanes for ground vehicles"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-20"
@@ -874,8 +879,8 @@ issue = 264
 title = "Which side of the road ground vehicles drive on"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-21"
@@ -911,7 +916,7 @@ title = "Scrolling the message history"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-25"
@@ -919,8 +924,8 @@ issue = 264
 title = "Daily report"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-26"
@@ -929,7 +934,7 @@ title = "Camera following a unit or vehicle"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-27"
@@ -938,7 +943,7 @@ title = "Hover feedback"
 url = "https://github.com/OpenApoc/OpenApoc/issues/264"
 tier = 3
 scope = "out"
-reason = "UI chrome: no game rule or number OpenApoc needs (proposal, owner rules at sign-off)"
+reason = "UI chrome: no game rule or number OpenApoc needs (owner ruling 2026-10-30)"
 
 [[item]]
 id = "264-28"
