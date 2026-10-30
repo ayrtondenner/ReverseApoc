@@ -13,12 +13,19 @@ import dataclasses
 import json
 from pathlib import Path
 
+import pytest
+
+from conftest import REPO_ROOT
 from reverseapoc import attempt, driver
 from reverseapoc.picker import Pick
 from reverseapoc.session import MAX_BUDGET_USD, MODEL
+from test_attempts_schema import _attempt as _v1_template
+from test_attempts_schema import _attempt_v2 as _v2_template
 from test_driver import (
     EXE,
     FUNC,
+    LOG,
+    PICK,
     START,
     UNIT,
     Night,
@@ -202,3 +209,129 @@ def test_abort_record_is_v2_with_the_c_name(tmp_path):
     driver.validate_record(abort)
     assert (abort["schema"], abort["function"], abort["session"], abort["pass"],
             abort["worker"], abort["retries"]) == (2, "GetMadeUpVolume", "matching", 1, 0, 3)
+
+
+# ---- Task 2: pass counting from the committed log (D-08, D-09) ----
+
+PILOT_RUN = "20261026-005209"  # the Phase 6 pilot's run id in the committed log
+KEY = (EXE, START)
+
+
+def _v1(run: str, n: int, *, start: int = START, outcome: str = "PARTIAL") -> dict:
+    record = _v1_template()
+    record.update(run=run, attempt=n, outcome=outcome, start=f"0x{start:08X}",
+                  function=f"func_{start:08X}")  # fmt: skip
+    return record
+
+
+def _v2(run: str, pass_n: int, n: int, *, start: int = START, outcome: str = "PARTIAL") -> dict:
+    record = _v2_template()
+    record.update(run=run, attempt=n, outcome=outcome, start=f"0x{start:08X}",
+                  function=f"func_{start:08X}", **{"pass": pass_n})  # fmt: skip
+    return record
+
+
+def _lines(records: list[dict]) -> str:
+    for record in records:
+        driver.validate_record(record)
+    return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in records)
+
+
+def _log(tmp_path: Path, records: list[dict]) -> Path:
+    path = tmp_path / "attempts.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_lines(records), encoding="ascii", newline="\n")
+    return path
+
+
+def test_passes_v1(tmp_path):
+    """A v1 run's attempts on a function are one pass: three in one run without MATCHED are 1,
+    the same in two runs are 2; another function or another EXE's start counts nothing."""
+    one = _log(tmp_path / "a", [_v1("night0", n) for n in (1, 2, 3)])
+    assert driver.passes_of(one, KEY) == 1
+    two = _log(tmp_path / "b", [*(_v1("night0", n) for n in (1, 2, 3)),
+                                *(_v1("night9", n) for n in (1, 2, 3))])  # fmt: skip
+    assert driver.passes_of(two, KEY) == 2
+    assert driver.passes_of(two, (EXE, START + 0x10)) == 0
+    assert driver.passes_of(two, ("tacp", START)) == 0
+
+
+def test_passes_v2(tmp_path):
+    """A v2 record names its pass: pass 1 (three sessions) and pass 2 (three) are 2 passes."""
+    log = _log(tmp_path, [*(_v2("night0", 1, n) for n in (1, 2, 3)),
+                          *(_v2("night1", 2, n) for n in (1, 2, 3))])  # fmt: skip
+    assert driver.passes_of(log, KEY) == 2
+    assert driver.pass_index(log) == {KEY: 2}
+
+
+def test_passes_mixed_v1_then_v2(tmp_path):
+    """The pilot's v1 run is pass 1, so the first v2 night writes pass 2: together 2 passes."""
+    log = _log(tmp_path, [*(_v1("night0", n) for n in (1, 2, 3)), _v2("night1", 2, 1)])
+    assert driver.passes_of(log, KEY) == 2
+
+
+def test_passes_ignore_abort_records_and_a_missing_log(tmp_path):
+    """Only attempt records are sessions of a pass; a missing log has no pass."""
+    abort = {"kind": "abort", "schema": 2, "run": "night0", "exe": EXE, "function": FUNC,
+             "unit": UNIT, "start": f"0x{START:08X}", "attempt": 1, "abort_reason": "transient",
+             "retries": 3, "session": "matching", "pass": 1, "worker": 0,
+             "date": "2026-10-25"}  # fmt: skip
+    log = _log(tmp_path, [abort])
+    assert driver.pass_index(log) == {}
+    assert driver.pass_index(tmp_path / "missing.jsonl") == {}
+
+
+def test_a_corrupt_log_line_is_named_when_passes_are_counted(tmp_path):
+    log = _log(tmp_path, [_v1("night0", 1)])
+    with log.open("a", encoding="ascii", newline="\n") as fh:
+        fh.write("not json\n")
+    with pytest.raises(driver.DriverError, match="line 2"):
+        driver.pass_index(log)
+
+
+def test_committed_log_pilot_passes(tmp_path):
+    """D-08/D-09 on the committed log: the pilot run gave each of its 12 never-matched functions
+    one capped Opus pass (so their next pass is 2), and its matched functions are matched rows
+    of the committed status.csv, which the picker never re-queues."""
+    committed = (REPO_ROOT / LOG).read_text(encoding="utf-8").splitlines()
+    pilot = [r for r in map(json.loads, committed) if r["run"] == PILOT_RUN]
+    log = _log(tmp_path, pilot)
+    attempts = [r for r in pilot if r["kind"] == "attempt"]
+    keys = {(r["exe"], int(r["start"], 16)) for r in attempts}
+    matched = {(r["exe"], int(r["start"], 16)) for r in attempts if r["outcome"] == "MATCHED"}
+    never = keys - matched
+    assert (len(never), len(matched)) == (12, 3)
+    index = driver.pass_index(log)
+    assert {key: index[key] for key in never} == dict.fromkeys(never, 1)
+    assert matched <= driver.matched_keys(REPO_ROOT / "config")
+
+
+def test_next_pass_number(tmp_path, monkeypatch):
+    """The driver's next attempt record (and its claim) for a function with 2 finished passes
+    carries pass 3; a function without one is on pass 1. The log is read once per night."""
+    night = Night(tmp_path, sessions=[Sess(), Sess()], gate_exits=[1, 1])
+    log = [*(_v2("night0", 1, n) for n in (1, 2, 3)), *(_v2("night0b", 2, n) for n in (1, 2, 3))]
+    _commit(night, {LOG: _lines(log)})
+    claims: list[dict] = []
+    reads: list[Path] = []
+    real = driver.pass_index
+
+    def counted(path):
+        reads.append(Path(path))
+        return real(path)
+
+    def session(argv, **kw):
+        unit = kw["env"][attempt.CLAIM_ENV].split("/")[1]
+        claim = night.repo / "build" / "driver" / "claims" / f"{EXE}__{unit}.json"
+        claims.append(json.loads(claim.read_text(encoding="utf-8")))
+        return night._session(argv, **kw)
+
+    monkeypatch.setattr(driver, "pass_index", counted)
+    second = Pick(EXE, START + 0x10, f"func_{START + 0x10:08X}", UNIT, 20, 101)
+    night.picks = (PICK, second)
+    night.run(config={"attempts_per_function": 1}, session=session)
+    passes = {r["start"]: r["pass"] for r in night.kinds("attempt") if r["run"] == "night1"}
+    assert passes == {f"0x{START:08X}": 3, f"0x{START + 0x10:08X}": 1}
+    assert [c["pass"] for c in claims] == [3, 1]
+    assert len(reads) == 1
+
