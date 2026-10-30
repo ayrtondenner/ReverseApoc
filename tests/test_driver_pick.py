@@ -808,6 +808,32 @@ def test_an_aborted_function_goes_behind_the_other_eligible_work_of_its_group():
     assert q.next_eligible().start == TA
 
 
+def test_a_finished_pass_clears_the_abort_count():
+    """Orchestrator ruling (07-30, deferred minors of 07-26): an abort sends a function behind
+    its group only until it finishes a pass; once TA's next pass ends capped, TA and TB are both
+    on one finished pass and TA's better rank orders it first again."""
+    passes: dict = {}
+    q = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90}, passes=passes)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, aborted=True)
+    for start in (TB, TA):  # each finishes a pass, capped (the night counts it)
+        q.take((UFO2P, start))
+        passes[(UFO2P, start)] = 1
+        q.finish((UFO2P, start), matched=False, capped=True)
+    assert q.next_eligible().start == TA
+
+
+def test_a_pass_cut_short_keeps_the_abort_count():
+    """A pass the night cap or a stop cut short (no outcome) is no finished pass."""
+    passes: dict = {}
+    q = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90}, passes=passes)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, aborted=True)
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False)
+    assert q.next_eligible().start == TB
+
+
 def test_transient_aborts_are_bounded_by_the_night_cap(tmp_path):
     """Orchestrator ruling (review I2; D-07): every launched session counts toward the night
     cap, aborted ones included. One signed member and nothing but transient sessions with
