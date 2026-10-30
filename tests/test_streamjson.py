@@ -248,21 +248,19 @@ def test_escalated_argv_passes_its_init_check():
     ) == []
 
 
-@pytest.mark.parametrize(
-    ("reported", "requested"),
-    [("claude-opus-5-5", "claude-fable-5-1"), ("claude-fable-5-1", "claude-opus-5-5")],
-)
-def test_init_rejects_mismatch(reported, requested):
+def test_init_rejects_mismatch():
     """D-09: a session that reports the other model is one model problem, either direction."""
-    init = _init_with_model(reported)
-    problems = check_init(
-        init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model=requested
-    )
-    assert len(problems) == 1, problems
-    assert "model" in problems[0]
-    assert reported in problems[0]
-    assert requested in problems[0]
-    assert "D-09" in problems[0]
+    pairs = [("claude-opus-5-5", "claude-fable-5-1"), ("claude-fable-5-1", "claude-opus-5-5")]
+    for reported, requested in pairs:
+        init = _init_with_model(reported)
+        problems = check_init(
+            init, tested_major=TESTED_MAJOR, min_version=MIN_VERSION, expected_model=requested
+        )
+        assert len(problems) == 1, problems
+        assert "model" in problems[0]
+        assert reported in problems[0]
+        assert requested in problems[0]
+        assert "D-09" in problems[0]
 
 
 def test_init_unknown_expected_model():
