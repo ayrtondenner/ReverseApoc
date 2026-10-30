@@ -287,14 +287,17 @@ evidence = "data-field"
 detail = "adds to a hand-off unit field through a register base (heuristic accrual lead)"
 source = "spike 007 q3"
 
-# ---- Tier 2 (D-04): the rest of #263 (draft, plan 07-25; not signed) ----
-# Scopes are Claude's proposal (D-01): the UI-chrome items 10, 11, 14, 16, 17 and 18 are proposed
-# out for the owner to rule on. `in` items with no entry are unlocated (listed for the owner in
-# build/gate/07-evidence/25-tier2-summary.txt); they cannot be signed `in` without an entry.
+# ---- Tier 2 (D-04): the rest of #263, signed by the owner on 2026-10-30 (plan 07-25) ----
+# Owner ruling "sign-as-drafted": the UI-chrome items 10, 11, 14, 16, 17 and 18 are out; the items
+# no locating route reached (3, 4, 8, 25, 26, 27, 28) are out as not located yet. Tier 2 keeps
+# matching in Milestone 2 (D-05).
 
 [[tier]]
 id = 2
 title = "OpenApoc #263: the rest of the city and agent mechanics"
+signed_off_by = "ayrtondenner"
+signed_off_date = 2026-10-30
+members_sha256 = "d8763a40e298fb7367aa776d7da7ef3f6d9898aa22436579726e0e06778df8ed"
 
 [[item]]
 id = "263-2"
@@ -311,8 +314,8 @@ issue = 263
 title = "Aliens moving from one city building to another"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-4"
@@ -320,8 +323,8 @@ issue = 263
 title = "Alien eggs and chrysalises hatching"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-5"
@@ -356,8 +359,8 @@ issue = 263
 title = "Organisation agents moving through the city, and mission generation"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-9"
@@ -509,8 +512,8 @@ issue = 263
 title = "Unit AI in battle and vehicle and UFO tactics in the city"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p", "tacp"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-26"
@@ -518,8 +521,8 @@ issue = 263
 title = "The final mission into the alien dimension"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-27"
@@ -527,8 +530,8 @@ issue = 263
 title = "Large UFO attacks on the city"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 [[item]]
 id = "263-28"
@@ -536,8 +539,8 @@ issue = 263
 title = "Overspawn carrying and deploying other aliens"
 url = "https://github.com/OpenApoc/OpenApoc/issues/263"
 tier = 2
-scope = "in"
-exes = ["ufo2p"]
+scope = "out"
+reason = "not located yet (owner ruling 2026-10-30)"
 
 # #263-2, cityscape (UFO2P)
 
