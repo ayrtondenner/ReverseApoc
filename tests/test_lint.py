@@ -27,7 +27,7 @@ EXPECTED_FLAGS = (
     "-Werror=declaration-after-statement",
     "--target=i386-unknown-none",
     "-ffreestanding",
-    "-nostdinc",
+    "-nostdlibinc",  # clang's own freestanding headers, no system or Watcom header
     "-funsigned-char",
     "-D__386__",
     "-D__FLAT__",
@@ -66,6 +66,7 @@ def _source(path: Path, text: str = "int f(void);\n") -> Path:
 
 def test_lint_flags_are_the_d14_command():
     assert LINT_FLAGS == EXPECTED_FLAGS
+    assert "-nostdinc" not in LINT_FLAGS  # it hid stdarg.h from a matched varargs unit
     assert lint.WATCOMC_VALUE == "1060"
     assert lint.CLANGD_FLAGS == EXPECTED_FLAGS[1:]
 
@@ -194,6 +195,51 @@ def test_lint_fails_a_mixed_declaration(tmp_path):
     result = run_lint([_source(tmp_path / "unit.c", MIXED_DECLARATION)])
     assert not result.ok
     assert "mixing declarations and code" in result.output
+
+
+FREESTANDING_HEADERS = """\
+/* C89 freestanding headers clang ships: a varargs unit includes stdarg.h */
+#include "common.h"
+#include <float.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stddef.h>
+
+int func_00010030(int (*callee)(char *, va_list), char *fmt, ...);
+
+int func_00010030(int (*callee)(char *, va_list), char *fmt, ...)
+{
+    va_list args;
+    int done;
+
+    va_start(args, fmt);
+    done = callee(fmt, args);
+    va_end(args);
+    return done;
+}
+"""
+
+SYSTEM_HEADER = """\
+#include <stdio.h>
+
+int func_00010040(void);
+"""
+
+
+def test_lint_passes_freestanding_headers(tmp_path):
+    """-nostdlibinc keeps clang's own stdarg.h, stddef.h, limits.h and float.h (C89 guarantees
+    them even freestanding), so a matched varargs unit lints clean."""
+    requires_clang()
+    result = run_lint([_source(tmp_path / "unit.c", FREESTANDING_HEADERS)])
+    assert result.ok, result.output
+
+
+def test_lint_refuses_a_system_header(tmp_path):
+    """No system or Watcom header is visible: <stdio.h> is not found."""
+    requires_clang()
+    result = run_lint([_source(tmp_path / "unit.c", SYSTEM_HEADER)])
+    assert not result.ok
+    assert "stdio.h" in result.output and "not found" in result.output
 
 
 # ---- the compat header is inert for wcc386 ----
