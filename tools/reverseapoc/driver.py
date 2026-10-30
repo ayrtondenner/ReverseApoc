@@ -32,7 +32,8 @@ After each session, in this order:
 3. streamjson.classify (D-08): STOP stops the night; a check_init problem stops it too; LIMIT
    keeps the session's work (the gate runs on it as usual), then backs off 60, 120, 240 s and
    polls every 300 s, not counted; TRANSIENT resets and relaunches, and after the first launch
-   and 3 retries (D-08) writes an `abort` record, not counted; ATTEMPT_DONE (a result or a
+   and 3 retries (D-08) writes an `abort` record, not counted, though each transient launch
+   spends a slot of the night cap (07-26 fix round 1); ATTEMPT_DONE (a result or a
    wall-clock timeout) is
    counted;
 4. a counted session: the landing section copies the view unit into src/<exe>/<unit>.c (the
@@ -177,6 +178,7 @@ MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": th
 
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
 CAPPED = "capped"  # a pass that used every attempt without a match (never a record outcome)
+ABORTED = "aborted"  # an attempt a transient abort ended (an abort record; no attempt outcome)
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
 STARTED, STOPPED, ENDED = "STARTED", "STOPPED", "ENDED"
 REFUSED = "REFUSED"  # a report only: the night did not start, so no run record is written
@@ -1723,7 +1725,8 @@ class _Coordinator:
             self.busy.pop((worker.pick.exe, worker.pick.unit), None)
             if self.tiers is not None:
                 self.tiers.finish((worker.pick.exe, worker.pick.start),
-                                  matched=worker.outcome == MATCHED)  # fmt: skip
+                                  matched=worker.outcome == MATCHED,
+                                  aborted=worker.outcome == ABORTED)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -1807,6 +1810,7 @@ class _Night:
         self.sessions = 0
         self.matched = 0
         self.reserved = 0  # D-07: night-cap slots held by attempts not yet counted (_reserve)
+        self.spent = 0  # 07-26 fix round 1: night-cap slots spent by transient launches (_spend)
         self.done: set[Key] = set()
         # D-06: per worker thread: `worker` (its number), `live` (its session to reset if a
         # later step raises) and `slot` (it holds a reserved slot of the night cap, D-07).
@@ -1866,17 +1870,19 @@ class _Night:
     # --- workers (07-21) ---
 
     def _reserve(self) -> bool:
-        """D-07: the shared night cap. Before each attempt a worker reserves a slot while
-        `sessions + reserved < max_sessions`; the slot becomes a counted session (`_count`) or
-        is given back when the attempt ends uncounted (`_release`). A LIMIT or TRANSIENT
-        relaunch keeps its attempt's slot. While every free slot is reserved by attempts still
-        running, the worker waits, since one may end uncounted. False: the night is ending
-        (a cap reached, or a stop) and nothing more launches."""
+        """D-07: the shared night cap. Before each launch but a LIMIT relaunch a worker reserves
+        a slot while `sessions + spent + reserved < max_sessions`; the slot becomes a counted
+        session (`_count`), a spent transient launch (`_spend`, 07-26 fix round 1: every
+        launched session counts toward the cap, aborted ones included), or is given back when
+        the attempt ends otherwise (`_release`). A LIMIT relaunch keeps its attempt's slot.
+        While every free slot is reserved by attempts still running, the worker waits, since
+        one may end uncounted. False: the night is ending (a cap reached, or a stop) and
+        nothing more launches."""
         with self.cond:
             while True:
                 if self.stop.is_set() or self._end():
                     return False
-                if self.sessions + self.reserved < self.config.max_sessions:
+                if self.sessions + self.spent + self.reserved < self.config.max_sessions:
                     self.reserved += 1
                     self.local.slot = True
                     return True
@@ -1889,6 +1895,16 @@ class _Night:
                 self.local.slot = False
                 self.reserved -= 1
                 self.cond.notify_all()
+
+    def _spend(self) -> None:
+        """A transient launch (07-26 fix round 1): this worker's reserved slot is spent, so the
+        night cap bounds transient relaunches too; it is not a counted session."""
+        with self.cond:
+            self.spent += 1
+            if getattr(self.local, "slot", False):
+                self.local.slot = False
+                self.reserved -= 1
+            self.cond.notify_all()
 
     def _count(self) -> None:
         """One counted session (D-07, D-48), from any worker: its reserved slot becomes it."""
@@ -2140,13 +2156,14 @@ class _Night:
         self._git_retry(["commit", "-q", "-F", str(message_file), "--", *paths])
 
     def _end(self) -> str | None:
-        """Why the night ends now, counted sessions only (D-07): the match target (0: off),
-        then the night cap."""
+        """Why the night ends now (D-07): the match target (0: off), then the night cap, which
+        counts every launched session: the counted ones and the spent transient launches (07-26
+        fix round 1)."""
         with self.cond:
             target = self.config.target_matched
             if target and self.matched >= target:
                 return TARGET_MATCHED
-            if self.sessions >= self.config.max_sessions:
+            if self.sessions + self.spent >= self.config.max_sessions:
                 return MAX_SESSIONS
             return None
 
@@ -2186,15 +2203,17 @@ class _Night:
         """At most attempts_per_function counted sessions (D-07); a function that used them all
         without a match goes to the difficult list once and has finished a pass: its count in
         `passes` goes up, so a tier queue offers it again for its next pass (D-08). Returns
-        MATCHED, CAPPED, or None when the pass was cut short (the night cap, a stop)."""
+        MATCHED, CAPPED, ABORTED (a transient abort ended the pass; a tier queue sends it
+        behind its group's other work) or None when the pass was cut short (the night cap, a
+        stop)."""
         for n in range(1, self.config.attempts_per_function + 1):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return None
             try:
                 outcome = self._announced(pick, n)
             finally:
-                self._release()  # uncounted (an abort, a stop): the slot goes back
-            if outcome in (MATCHED, None):
+                self._release()  # not counted (a stop): a slot still held goes back
+            if outcome in (MATCHED, ABORTED, None):
                 return outcome
         callees = tuple(self.deps.matched_callees(pick))
         key = (pick.exe, pick.start)
@@ -2216,7 +2235,7 @@ class _Night:
         self.deps.say(f"{label}: started")
         start = self.deps.clock()
         outcome = self._guarded(pick, n)
-        shown = outcome if outcome is not None else f"ABORTED ({TRANSIENT})"
+        shown = f"ABORTED ({TRANSIENT})" if outcome in (ABORTED, None) else outcome
         self.deps.say(f"{label}: {shown} after {self.deps.clock() - start:.1f} s")
         return outcome
 
@@ -2266,8 +2285,10 @@ class _Night:
 
     def _attempt(self, pick: Pick, n: int) -> str | None:
         """Launch until one session counts (its outcome), a LIMIT session matches (MATCHED), or
-        the first launch and TRANSIENT_RETRIES retries were all transient (None, an abort record
-        with retries = TRANSIENT_RETRIES; D-08, fix round 1 minor 6)."""
+        the first launch and TRANSIENT_RETRIES retries were all transient (ABORTED, an abort
+        record with retries = TRANSIENT_RETRIES; D-08, fix round 1 minor 6). Each transient
+        launch spends its night-cap slot and a retry reserves a new one (07-26 fix round 1);
+        when the cap leaves none, the attempt is aborted with the retries it made."""
         transient = 0
         while True:
             self._halt_if_stopping()
@@ -2287,10 +2308,12 @@ class _Night:
             self.pause.on_clear(probe)
             if disposition is Disposition.TRANSIENT:
                 self._reset(session)
+                self._spend()
                 transient += 1
-                if transient > TRANSIENT_RETRIES:
+                if transient > TRANSIENT_RETRIES or not self._reserve():
+                    self._halt_if_stopping()
                     self._record_abort(claim, transient - 1)
-                    return None
+                    return ABORTED
                 continue
             return self._counted(session)
 
