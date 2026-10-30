@@ -187,9 +187,9 @@ def test_members_from_one_entry():
     assert text.splitlines()[0] == MEMBERS_COMMENT
     assert text.splitlines()[1] == ",".join(MEMBERS_COLUMNS)
     assert text.splitlines()[2:] == [
-        "ufo2p,0x00010000,997,1,997,entry,member",
-        "ufo2p,0x00010100,997,1,997,direct,member",
-        "ufo2p,0x00010200,997,1,997,direct,member",
+        "ufo2p,0x00010000,997,1,997,entry,member,no",
+        "ufo2p,0x00010100,997,1,997,direct,member,no",
+        "ufo2p,0x00010200,997,1,997,direct,member,no",
     ]
 
 
@@ -224,9 +224,9 @@ def test_cli_write_with_injected_graphs(tmp_path, monkeypatch):
                         lambda *a, **k: {"ufo2p": graph((E, A), (A, B))})  # fmt: skip
     assert cli.main(["mechanics", "write", "--config", str(root)]) == 0
     lines = (root / "mechanics-members.csv").read_text(encoding="utf-8").splitlines()
-    assert lines[2:] == ["ufo2p,0x00010000,997,1,997,entry,member",
-                         "ufo2p,0x00010100,997,1,997,direct,member",
-                         "ufo2p,0x00010200,997,1,997,direct,member"]  # fmt: skip
+    assert lines[2:] == ["ufo2p,0x00010000,997,1,997,entry,member,no",
+                         "ufo2p,0x00010100,997,1,997,direct,member,no",
+                         "ufo2p,0x00010200,997,1,997,direct,member,no"]  # fmt: skip
     (root / "mechanics.toml").write_text("schema = [\n", encoding="utf-8")
     assert cli.main(["mechanics", "write", "--config", str(root)]) == 2
 
@@ -468,7 +468,8 @@ def test_tier_digest_changes_on_change():
     assert mechanics.tier_digest(more, members(more, g), 1) != digest
     as_asm = members(base, g, asm=frozenset({("ufo2p", X)}))
     assert by_address(as_asm)[X].role == "asm"
-    assert mechanics.tier_digest(base, as_asm, 1) != digest
+    # a label only (owner ruling 2026-10-30): X is not in Tier 1's must-match set either way
+    assert mechanics.tier_digest(base, as_asm, 1) == digest
     # a Tier 2 item that makes Tier 1's closure row X a Tier 2 member leaves Tier 1 alone
     later = M(rule=rule, items=(("997", 1), ("263-2", 2)), entries=(("997", E), ("263-2", D)))
     later_rows = members(later, g)
@@ -598,7 +599,9 @@ def _entry_not_entry(root):
 
 
 def _digest_drift(root):
-    _rewrite(root, lambda r: dataclasses.replace(r, role="hub") if r.address == X else r)
+    """The must-match set changes: the closure row X becomes a member of 997."""
+    _rewrite(root, lambda r: dataclasses.replace(r, role="member", member_items=("997",))
+             if r.address == X else r)  # fmt: skip
 
 
 def _entryless_item(root):
@@ -652,6 +655,232 @@ def test_digest_verb(tmp_path, capsys):
     assert cli.main(["mechanics", "digest", "--tier", "1", "--config", str(root)]) == 0
     assert capsys.readouterr().out.strip() == mechanics.tier_digest(mech, rows, 1)
     assert cli.main(["mechanics", "digest", "--tier", "7", "--config", str(root)]) == 2
+
+
+# ---- plan 07-43: the hub column and the must-match-only digest (owner ruling 2026-10-30) ----
+
+
+def _regenerate(root: Path, g: CallGraph, nodes) -> None:
+    """`mechanics write` over `g`: the members of the root's TOML and signed asm list."""
+    mech = load(root / "mechanics.toml")
+    rows = compute_members(mech, {"ufo2p": g}, {"ufo2p": game_rows(*nodes)},
+                           mechanics.signed_asm(root, mech))  # fmt: skip
+    write_members(root / mechanics.MEMBERS_CSV, rows)
+
+
+def _signed_world(tmp_path, g, nodes, top, items, entries) -> Path:
+    """A config root over `g` whose Tier 1 is signed on the members of `items`/`entries`."""
+    root = _config(tmp_path, "", rows=game_rows(*nodes))
+    path = root / "mechanics.toml"
+    path.write_text(toml_text(top, tier=[tier(1), tier(2)], item=items, entry=entries),
+                    encoding="utf-8")  # fmt: skip
+    _regenerate(root, g, nodes)
+    digest = mechanics.tier_digest(load(path), read_members(root / mechanics.MEMBERS_CSV), 1)
+    t1 = tier(1) | {"signed_off_by": "owner", "signed_off_date": datetime.date(2026, 11, 2),
+                    "members_sha256": digest}  # fmt: skip
+    path.write_text(toml_text(top, tier=[t1, tier(2)], item=items, entry=entries),
+                    encoding="utf-8")  # fmt: skip
+    return root
+
+
+DIGEST_TOP = {"schema": 1, "hub_rule": {"min_direct_callers": 3}}
+MIN_ITEMS_TOP = {"schema": 1, "hub_rule": {"min_direct_callers": 3, "min_items": 2}}
+DIGEST_NODES = (E, C, D, H, X)
+
+
+def _digest_root(tmp_path, top=DIGEST_TOP) -> Path:
+    g, _rule = _digest_world()
+    return _signed_world(tmp_path, g, DIGEST_NODES, top, [item()], [entry()])
+
+
+def _tier1_digest(root: Path) -> str:
+    return mechanics.tier_digest(load(root / "mechanics.toml"),
+                                 read_members(root / mechanics.MEMBERS_CSV), 1)  # fmt: skip
+
+
+def _later_entry(address: int):
+    """Add Tier 2 item 263-2 with its entry at `address` and regenerate the members."""
+
+    def change(root: Path) -> None:
+        _append_toml(root, item=[item("263-2", tier_=2)], entry=[entry("263-2", address)])
+        _regenerate(root, _digest_world()[0], DIGEST_NODES)
+
+    return change
+
+
+def test_later_tier_entry_keeps_an_earlier_digest(tmp_path):
+    """Owner ruling 2026-10-30: a later tier's entry may turn an earlier tier's closure row into
+    a member of the later tier (a hub in the old projection) without re-signing the earlier."""
+    g, rule = _digest_world()
+    base = M(rule=rule)
+    digest = mechanics.tier_digest(base, members(base, g), 1)
+    later = M(rule=rule, items=(("997", 1), ("263-2", 2)), entries=(("997", E), ("263-2", X)))
+    later_rows = members(later, g)
+    assert mechanics.tier_digest(later, later_rows, 1) == digest
+    row = by_address(later_rows)[X]  # two callers (H, D): not a hub by the rule
+    assert (row.role, row.member_items, row.via) == ("member", ("263-2",), "entry")
+    assert getattr(row, "hub", None) is False
+    root = _digest_root(tmp_path)
+    assert mechanics.check_committed(root) == []
+    _later_entry(X)(root)
+    assert mechanics.check_committed(root) == []
+    on_hub = M(rule=rule, items=(("997", 1), ("263-2", 2)), entries=(("997", E), ("263-2", H)))
+    assert mechanics.tier_digest(on_hub, members(on_hub, g), 1) == digest
+
+
+def _tier1_entry_on_c(root: Path) -> None:
+    _append_toml(root, entry=[entry("997", C)])
+    _regenerate(root, _digest_world()[0], DIGEST_NODES)
+
+
+def _member_to_closure(root: Path) -> None:
+    _rewrite(root, lambda r: dataclasses.replace(r, role="closure", member_items=())
+             if r.address == E else r)  # fmt: skip
+
+
+def _hub_rule_change(root: Path) -> None:
+    _edit_toml(root, "min_direct_callers = 3", "min_direct_callers = 4")
+
+
+def _min_items_world(tmp_path) -> Path:
+    """E (Tier 1) -> A; C -> A. With min_items 2, a Tier 2 entry at C makes A a hub."""
+    g = graph((E, A), (C, A))
+    return _signed_world(tmp_path, g, (E, A, C), MIN_ITEMS_TOP, [item()], [entry()])
+
+
+def _min_items_tier2(root: Path) -> None:
+    _append_toml(root, item=[item("263-2", tier_=2)], entry=[entry("263-2", C)])
+    _regenerate(root, graph((E, A), (C, A)), (E, A, C))
+    assert by_address(read_members(root / mechanics.MEMBERS_CSV))[A].role == "hub"
+
+
+@pytest.mark.parametrize(("world", "change", "same_rule"), [
+    pytest.param(_digest_root, _tier1_entry_on_c, True, id="tier 1 entry adds a member"),
+    pytest.param(_digest_root, _member_to_closure, True, id="member rewritten to closure"),
+    pytest.param(_digest_root, _digest_drift, True, id="closure rewritten to a member"),
+    pytest.param(_digest_root, _hub_rule_change, False, id="hub rule"),
+    pytest.param(_min_items_world, _min_items_tier2, True, id="min_items makes a member a hub"),
+])  # fmt: skip
+def test_own_must_match_change_reopens_the_tier(tmp_path, world, change, same_rule):
+    root = world(tmp_path)
+    rule = load(root / "mechanics.toml").hub_rule.line()
+    before = _tier1_digest(root)
+    assert mechanics.check_committed(root) == []
+    change(root)
+    assert (load(root / "mechanics.toml").hub_rule.line() == rule) is same_rule
+    assert _tier1_digest(root) != before
+    problems = mechanics.check_committed(root)
+    assert any("tier 1 changed since sign-off: re-sign" in p for p in problems), problems
+
+
+def _x_on_the_asm_list(root: Path) -> None:
+    (root / mechanics.ASM_CSV).write_text(asm_text((X, "asm")), encoding="utf-8")
+    table = toml_text({"asm_list": _asm_signoff(root / mechanics.ASM_CSV)})
+    _edit_toml(root, "schema = 1\n", "schema = 1\n" + table)
+    _regenerate(root, _digest_world()[0], DIGEST_NODES)
+    assert by_address(read_members(root / mechanics.MEMBERS_CSV))[X].role == "asm"
+
+
+def _min_items_closure_to_hub(root: Path) -> None:
+    _later_entry(D)(root)  # D -> X: X is now reached by two items
+    assert by_address(read_members(root / mechanics.MEMBERS_CSV))[X].role == "hub"
+
+
+@pytest.mark.parametrize(("top", "change"), [
+    pytest.param(DIGEST_TOP, _x_on_the_asm_list, id="closure row on the asm list"),
+    pytest.param(MIN_ITEMS_TOP, _min_items_closure_to_hub, id="min_items turns closure to hub"),
+])  # fmt: skip
+def test_projection_only_change_keeps_the_digest(tmp_path, top, change):
+    root = _digest_root(tmp_path, top)
+    rule = load(root / "mechanics.toml").hub_rule.line()
+    before = _tier1_digest(root)
+    assert by_address(read_members(root / mechanics.MEMBERS_CSV))[X].role == "closure"
+    change(root)
+    assert load(root / "mechanics.toml").hub_rule.line() == rule
+    assert _tier1_digest(root) == before
+    assert mechanics.check_committed(root) == []
+
+
+def test_members_file_has_a_hub_column(tmp_path):
+    assert MEMBERS_COLUMNS == ("exe", "address", "items", "tiers", "member_items", "via", "role",
+                               "hub")  # fmt: skip
+    g, rule = _digest_world()
+    rows = members(M(rule=rule), g)
+    found = by_address(rows)
+    got = [(found[a].role, getattr(found[a], "hub", None)) for a in (H, X, E)]
+    assert got == [("hub", True), ("closure", False), ("member", False)]
+    lines = format_members_csv(rows).splitlines()
+    assert lines[1] == "exe,address,items,tiers,member_items,via,role,hub"
+    assert f"ufo2p,0x{H:08X},997,1,,direct,hub,yes" in lines
+    assert f"ufo2p,0x{X:08X},997,1,,direct,closure,no" in lines
+    g = graph((E, H), (C, H), (D, H), (H, X))  # test_entry_that_is_a_hub_stays_a_member's world
+    mech = M(items=(("263-1", 1), ("263-2", 1)), entries=(("263-1", H), ("263-2", E)),
+             rule=mechanics.HubRule(min_direct_callers=3))  # fmt: skip
+    entry_hub = by_address(members(mech, g))[H]
+    assert (entry_hub.role, getattr(entry_hub, "hub", None)) == ("member", True)  # D-31
+    out = tmp_path / "m.csv"
+    write_members(out, members(mech, g))
+    first = out.read_bytes()
+    write_members(out, list(reversed(members(mech, g))))
+    assert out.read_bytes() == first
+    assert read_members(out) == members(mech, g)
+
+
+def _hub_cell(text: str, address: int, old: str, new: str) -> str:
+    prefix = f"ufo2p,0x{address:08X},"
+    lines = text.split("\n")
+    (number,) = [n for n, line in enumerate(lines) if line.startswith(prefix)]
+    assert lines[number].endswith(old)
+    lines[number] = lines[number][: -len(old)] + new
+    return "\n".join(lines)
+
+
+def _old_header(text: str) -> str:
+    lines = text.split("\n")
+    return "\n".join(line.rsplit(",", 1)[0] if line and not line.startswith("#") else line
+                     for line in lines)  # fmt: skip
+
+
+@pytest.mark.parametrize(("edit", "word"), [
+    pytest.param(lambda t: _hub_cell(t, X, ",closure,no", ",closure,maybe"), "data row 3",
+                 id="maybe"),
+    pytest.param(lambda t: _hub_cell(t, H, ",hub,yes", ",hub,no"), "data row 2",
+                 id="role hub with no"),
+    pytest.param(lambda t: _hub_cell(t, X, ",closure,no", ",closure,yes"), "data row 3",
+                 id="role closure with yes"),
+    pytest.param(_old_header, "header", id="old 7-column header"),
+])  # fmt: skip
+def test_read_members_refuses_a_bad_hub_cell(tmp_path, edit, word):
+    g, rule = _digest_world()
+    path = tmp_path / "m.csv"
+    write_members(path, members(M(rule=rule), g))  # rows E, H, X
+    path.write_bytes(edit(path.read_text(encoding="utf-8")).encode("ascii"))
+    with pytest.raises(MechanicsError, match=word):
+        read_members(path)
+
+
+def test_check_reports_a_member_hub_that_is_not_its_entry(tmp_path):
+    """D-31: an entry is the only hub that can be a member."""
+    root = _committed(tmp_path)
+    _rewrite(root, lambda r: dataclasses.replace(r, hub=True) if r.address == E else r)
+    assert mechanics.check_committed(root) == []  # E is 997's entry
+    root = _committed(tmp_path / "other", sign=False)
+    _rewrite(root, lambda r: dataclasses.replace(r, role="member", member_items=("997",),
+                                                 hub=True) if r.address == X else r)  # fmt: skip
+    problems = mechanics.check_committed(root)
+    assert any("D-31" in p and f"0x{X:08X}" in p for p in problems), problems
+    assert cli.main(["mechanics", "check", "--config", str(root)]) == 1
+
+
+def test_tier_role_is_exact_for_another_tiers_entry():
+    """review-07-25 Minor 2, the reverse case: Tier 1 entry B (not a hub) reached by Tier 2's
+    entry F only through the hub H is closure in Tier 2's projection, not a hub."""
+    g = graph((F, H), (C, H), (D, H), (H, B))
+    mech = M(items=(("997", 1), ("263-2", 2)), entries=(("997", B), ("263-2", F)))
+    report = mechanics.hub_candidates(mech, {"ufo2p": g}, {"ufo2p": game_rows(*ALL)},
+                                      frozenset(), 2, (3,))  # fmt: skip
+    (found,) = report["exes"]["ufo2p"]
+    assert found["hubs"] == [{"address": f"0x{H:08X}", "callers": 3}]
 
 
 # ---- Task 3: hub-rule candidates, status, the committed data, graph reports ----

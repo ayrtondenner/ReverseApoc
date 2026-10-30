@@ -614,6 +614,25 @@ def test_a_row_of_two_tiers_is_queued_once_in_the_first():
     assert [(i.pick.start, i.tier) for i in q.items] == [(TA, 1), (TB, 2)]
 
 
+def test_a_later_tier_entry_keeps_an_earlier_tier_queued():
+    """Owner ruling 2026-10-30 (plan 07-43): Tier 1's closure row TB, reached through its hub TH,
+    becomes a Tier 2 entry member; Tier 1's signature still holds, so it stays queued first."""
+    before = [_member(TA), _member(TH, role=ROLE_HUB), _member(TB, role=ROLE_CLOSURE)]
+    signed_one = _mech(before, tiers=(1, 2), signed=(1,))
+    entry = replace(before[2], items=(T1_ITEM, T2_ITEM), tiers=(1, 2), member_items=(T2_ITEM,),
+                    via="entry", role=ROLE_MEMBER)  # fmt: skip
+    after = [*before[:2], entry]
+    digest = mechanics.tier_digest(signed_one, after, 2)
+    mech = replace(signed_one, tiers=tuple(
+        replace(t, signed_off_by="owner", signed_off_date=SIGNED_ON, members_sha256=digest)
+        if t.id == 2 else t for t in signed_one.tiers))  # fmt: skip
+    assert mechanics.signed_tiers(mech, after) == (1, 2)
+    assert getattr(entry, "hub", None) is False
+    q = _tq(after, [(TH, TB)], mech=mech)
+    first = q.next_item()
+    assert (first.pick.start, first.tier, first.hub) == (TA, 1, False)
+
+
 def test_unsigned_tier_not_queued():
     """D-04, T-07-76: a tier without a sign-off, or whose digest no longer matches the members,
     contributes nothing."""
