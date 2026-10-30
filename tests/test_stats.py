@@ -410,7 +410,11 @@ def test_precision(tmp_path, capsys):
 
 def test_precision_rate_and_text(tmp_path, capsys):
     _functions(tmp_path / "config", "ufo2p", {0x10000: 8, 0x10100: 8, 0x10200: 8})
-    records = [_on(0x10000, outcome="MATCHED", cost_usd=0.125), _on(0x10100), _on(0x10200)]
+    records = [
+        _on(0x10000, outcome="MATCHED", cost_usd=0.125),
+        _on(0x10100, cost_usd=0.0),
+        _on(0x10200, cost_usd=0.0),
+    ]
     report = _report(capsys, tmp_path, *records)
     assert report["by_size"][0]["rate_percent"] == "33.3"
     assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
