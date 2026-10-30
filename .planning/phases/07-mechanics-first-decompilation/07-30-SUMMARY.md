@@ -324,6 +324,49 @@ None.
 - FOUND on this branch (3201ace..HEAD, 7 commits): 2d47364, ffee7bf, b6532e9, 04a07dc, 91e05f3, 68096f1, 0b1a665.
 - No change to STATE.md, ROADMAP.md or REQUIREMENTS.md (the orchestrator owns them after the merge).
 
+## Fix round 1
+
+The task review (`review-07-30.md`) found one Important issue and one Minor issue I was asked to fix. FIX_BASE was 0e656bb. The branch guard passed (branch `worktree-agent-aabe21fd8e0241174`, agent namespace).
+
+**Orchestrator ruling F33: flag-approved landings name the co-author of each model that wrote them.**
+- The problem: `flags.KNOWN_MODEL` and `flags._coauthor` still refused any attempt that was not Opus, so a Fable-written candidate could never be flag-approved. The "07-30 widens" comment was false.
+- This was the "Concerns" item above. The orchestrator ruled that 07-30 owns F33, so `tools/reverseapoc/flags.py` and `tests/test_flags.py` join this plan as a recorded deviation.
+- The fix:
+  - `flags._attempt_models` maps each attempt record to its (pass, model). The model is the v2 record's `model_requested`, else v1's `model`. A v1 record counts as pass 1.
+  - `flags._coauthors` passes each hitting attempt's model through `driver.coauthor`. It returns one `Co-Authored-By:` line per distinct model, in pass order and then evidence order.
+  - An attempt with no record, or a model the table does not name, is refused as before. The FlagsError names the attempt and the model.
+  - `_Landing.coauthors` is now a tuple, and the approve message spreads it before `Matched-By`.
+  - `KNOWN_MODEL` and its stale comment are gone.
+  - The edit stays inside the co-author code and its two call sites, clear of the lint hotfix's approve change on main.
+- **[Rule 1, same fix] A v2 record is found by its start.** 07-23 gives a v2 record its C name as `function`, while the attempt directory in the evidence path keeps the `func_` placeholder. A function with a real C name would have been "model unknown". Records are now keyed by (run, exe, start, attempt), with the function-name key kept as a fallback.
+- Tests in `tests/test_flags.py`:
+  - `test_approve_a_fable_candidate_names_fable`;
+  - `test_approve_finds_a_v2_record_named_by_its_c_name`;
+  - `test_approve_a_mixed_candidate_gets_one_trailer_per_model_in_pass_order`. Its evidence lists the Fable attempt first, and the trailers come out Opus, then Fable;
+  - the refusal case `v2 unknown model`.
+  - The existing refusals (`unknown model`, `other model`, `no attempt record`) and `test_approve_lands_one_commit` (the Opus `COAUTHOR`) are unchanged and green.
+
+**Review minor: the canary's claim carries its requested model.**
+- `_run_canary_locked` builds its `_Claim` with `model=options.canary_model` and that model's budget. The canary argv now reads both from the claim.
+- Test: `tests/test_escalation.py::test_the_canary_claim_carries_its_requested_model`.
+
+**RED** (`5842529`): 4 failed.
+- The three approve tests were refused with "only claude-opus-5-5 has a known co-author line". The C-name case reported "model unknown".
+- The canary claim test got `('claude-opus-5-5', 5)` where `('claude-fable-5-1', 20.0)` was expected.
+- The new refusal case passed from the start, as a pin.
+
+**Commits:**
+- `5842529` test(07-30): add failing tests for per-model flag-approval co-authors and the canary claim's model
+- `637c113` fix(07-30): flag approvals name each model's co-author; the canary claim carries its model
+- this SUMMARY commit
+
+**Counts:**
+- Covering suites `tests/test_flags.py tests/test_escalation.py tests/test_drive.py`: 197 passed.
+- `uv run pytest -q` (host, worktree): **3847 passed, 251 skipped**, exit 0, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- `REVERSEAPOC_ORIG=<main>/orig uv run pytest -q tests/test_drive_real.py`: 3 passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-30*
