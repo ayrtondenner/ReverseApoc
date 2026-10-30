@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import json
 
-from reverseapoc import driver
+import pytest
+
+from reverseapoc import driver, session, streamjson
 from reverseapoc.session import FABLE_MODEL, OPUS_MODEL, build_argv
+from test_drive import CANARY_DIR, _canary, _canary_rig
 from test_driver import EXE, LOG, Night, Sess, _one
 from test_driver_records import _commit, _lines, _v1, _v2
 
@@ -58,8 +61,8 @@ def _capped_passes(passes: int) -> list[dict]:
     return records
 
 
-def _night(tmp_path, log: list[dict], **argv) -> tuple[Night, Argv]:
-    night = Night(tmp_path, sessions=[Sess()], gate_exits=[1])
+def _night(tmp_path, log: list[dict], *, gate_exits=(1,), **argv) -> tuple[Night, Argv]:
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=list(gate_exits))
     if log:  # the harness's base commit holds an empty log
         _commit(night, {LOG: _lines(log)})
     return night, Argv(night, **argv)
@@ -138,16 +141,106 @@ def test_budgets_and_turns_come_from_the_config(tmp_path):
     assert record["budget_usd"] == 20.0
 
 
-def test_the_claim_names_the_requested_model(tmp_path, monkeypatch):
+def test_the_claim_names_the_requested_model(tmp_path):
     """The unit's claim file (D-06) carries the pass's requested model."""
     night, argv = _night(tmp_path, _capped_passes(2))
     claims: list[dict] = []
 
-    def session(argv_, **kw):
+    def spy(argv_, **kw):
         unit = kw["env"]["REVERSEAPOC_CLAIM"].split("/")[1]
         claim = night.repo / "build" / "driver" / "claims" / f"{EXE}__{unit}.json"
         claims.append(json.loads(claim.read_text(encoding="utf-8")))
         return night._session(argv_, **kw)
 
-    night.run(config={"attempts_per_function": 1}, argv=argv, session=session)
+    night.run(config={"attempts_per_function": 1}, argv=argv, session=spy)
     assert [(c["pass"], c["model"]) for c in claims] == [(3, FABLE_MODEL)]
+
+
+# ---- Task 2: the canary checks its requested model; commits name the model that wrote them ----
+
+FABLE_COAUTHOR = "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+OPUS_COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+
+
+def _expected_models(monkeypatch) -> list:
+    """Every expected_model streamjson.check_init is called with (None: not passed)."""
+    seen: list = []
+    real = streamjson.check_init
+
+    def check_init(init, **kw):
+        seen.append(kw.get("expected_model"))
+        return real(init, **kw)
+
+    monkeypatch.setattr(streamjson, "check_init", check_init)
+    return seen
+
+
+def test_canary_passes_requested_model(tmp_path, capsys, monkeypatch):
+    """T-07-88: the canary passes the model it asked for to check_init (Phase 6 passed none)."""
+    seen = _expected_models(monkeypatch)
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    code, doc = _canary(rig, capsys)
+    assert (code, doc["canary"]) == (0, "PASS")
+    assert seen == [OPUS_MODEL]
+    assert rig.asked[0] == OPUS_MODEL
+
+
+def test_canary_fails_when_its_init_names_another_model(tmp_path, capsys):
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md")
+    plain = rig.argv
+
+    def argv(prompt, **values):
+        return [*plain(prompt, **values), "--init-model", FABLE_MODEL]
+
+    rig.argv = argv
+    code, doc = _canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert any(FABLE_MODEL in text and OPUS_MODEL in text for text in failed), failed
+
+
+def test_coauthor_by_model():
+    """07-42's MODEL_NAMES names each model; COAUTHOR stays the Opus line; an unknown model is
+    refused rather than mislabelled (T-07-89)."""
+    assert driver.coauthor(FABLE_MODEL) == FABLE_COAUTHOR
+    assert driver.coauthor(OPUS_MODEL) == driver.COAUTHOR == OPUS_COAUTHOR
+    with pytest.raises(driver.DriverError, match="claude-made-up-1"):
+        driver.coauthor("claude-made-up-1")
+
+
+def test_commit_message_uses_the_requested_models_coauthor():
+    fields = dict(exe=EXE, function="func_00010010", unit="u_00010000", attempt_n=1,
+                  attempts=3, model=FABLE_MODEL, usage=streamjson.usage({}), seconds=1.0,
+                  sha1s=())  # fmt: skip
+    message = driver.commit_message(**fields, requested_model=FABLE_MODEL)
+    assert message.rstrip("\n").splitlines()[-2:] == [FABLE_COAUTHOR, driver.MATCHED_BY]
+    with pytest.raises(driver.DriverError):
+        driver.commit_message(**fields, requested_model="claude-made-up-1")
+
+
+def test_a_fable_match_commit_names_fable(tmp_path):
+    night, argv = _night(tmp_path, _capped_passes(2), gate_exits=[0])
+    report = night.run(config={"attempts_per_function": 1}, argv=argv)
+    assert report.event == "ENDED", report.detail
+    body = night.message("feat(")
+    assert body.rstrip("\n").splitlines()[-2:] == [FABLE_COAUTHOR, driver.MATCHED_BY]
+    assert f"model {FABLE_MODEL}" in body
+
+
+def test_an_opus_match_commit_keeps_the_opus_line(tmp_path):
+    night, argv = _night(tmp_path, [], gate_exits=[0])
+    night.run(config={"attempts_per_function": 1}, argv=argv)
+    body = night.message("feat(")
+    assert body.rstrip("\n").splitlines()[-2:] == [OPUS_COAUTHOR, driver.MATCHED_BY]
+
+
+def test_an_unknown_model_is_never_committed(tmp_path, monkeypatch):
+    """T-07-89: a model the co-author table does not name raises DriverError before the match
+    commit; the night stops and the match is undone (no commit, no MATCHED record)."""
+    monkeypatch.delitem(session.MODEL_NAMES, OPUS_MODEL)
+    night, argv = _night(tmp_path, [], gate_exits=[0])
+    report = night.run(config={"attempts_per_function": 1}, argv=argv)
+    assert report.event == "STOPPED"
+    assert "DriverError" in report.detail and OPUS_MODEL in report.detail
+    assert not [s for s in night.commits() if s.startswith("feat(")]
+    assert '"outcome":"MATCHED"' not in (night.repo / LOG).read_text(encoding="utf-8")
