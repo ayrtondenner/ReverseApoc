@@ -415,9 +415,10 @@ def derive(config_dir: Path = DEFAULT_CONFIG,
 MECHANICS_TOML, MEMBERS_CSV = "mechanics.toml", "mechanics-members.csv"
 MECHANICS_SCHEMA = 1
 MECHANICS_TABLES = ("schema", "asm_list", "hub_rule", "tier", "item", "entry", "edge")
-MEMBERS_COLUMNS = ("exe", "address", "items", "tiers", "member_items", "via", "role")
+MEMBERS_COLUMNS = ("exe", "address", "items", "tiers", "member_items", "via", "role", "hub")
 ROLES = ("member", "hub", "closure", "asm")
 ROLE_MEMBER, ROLE_HUB, ROLE_CLOSURE, ROLE_ASM = ROLES
+_YES, _NO = "yes", "no"  # the members hub cell (plan 07-43)
 VIAS = ("entry", "direct", "pointer", "table", "midrow", "hand")
 SCOPES = ("in", "out", "duplicate")
 SCOPE_IN, SCOPE_OUT, SCOPE_DUPLICATE = SCOPES
@@ -675,8 +676,17 @@ def _member(path: Path, number: int, rec: Mapping[str, str], known: Container[st
     if (rec["role"] == ROLE_MEMBER) != bool(members):
         raise ProgressError(f"{path}: data row {number}: role {rec['role']} disagrees with "
                             "member_items")  # fmt: skip
+    _check_hub_cell(path, number, rec["role"], rec["hub"])
     return _Member(exe, _address(path, number, "address", rec["address"]), items, members,
                    rec["role"])  # fmt: skip
+
+
+def _check_hub_cell(path: Path, number: int, role: str, cell: str) -> None:
+    """The hub cell is yes or no, yes on a role hub row and no on a role closure row (07-43)."""
+    if cell not in (_YES, _NO):
+        raise ProgressError(f"{path}: data row {number}: hub {cell!r} is not {_YES} or {_NO}")
+    if (role == ROLE_HUB and cell == _NO) or (role == ROLE_CLOSURE and cell == _YES):
+        raise ProgressError(f"{path}: data row {number}: role {role} disagrees with hub {cell!r}")
 
 
 def _read_members(path: Path, known: Container[str],
