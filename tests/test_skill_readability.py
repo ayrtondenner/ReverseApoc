@@ -14,6 +14,8 @@ from conftest import REPO_ROOT
 from reverseapoc import attempt, hooks, proposals, readlint, session
 from reverseapoc.check import EXIT_MISMATCH, EXIT_OK
 from reverseapoc.cli import build_parser
+from reverseapoc.functions import FunctionRow, write_functions_csv
+from reverseapoc.status import MATCHED, StatusRow, status_path, write_status
 
 SKILL = REPO_ROOT / ".claude" / "skills" / "watcom-readability" / "SKILL.md"
 MAX_LINES = 300
@@ -199,19 +201,39 @@ def test_every_waiver_in_the_skill_is_a_readlint_waiver():
 
 
 def _example_lint() -> attempt.Lint:
-    """The readlint half the skill's output example shows: one failing RL01 on a callee, three
-    pending renames (counted per hit, not per name) and one waiver."""
+    """The readlint half the skill's output example shows for its example unit: two failing RL01
+    hits on an unnamed callee, four pending renames (counted per hit, not per name: the
+    definition, the extern and two uses) and one waiver."""
     unit = "src/ufo2p/u_00012340.c"
     why = "is a placeholder name: name it (a D-19 rename)"
-    fail = readlint.Violation(unit, 15, "RL01", f"func_00012400 {why}")
-    pending = tuple(attempt.Pending(readlint.Violation(unit, line, "RL01", f"D_000A1230 {why}"),
-                                    "clock_frame_fraction")
-                    for line in (4, 16, 19))  # fmt: skip
+    failing = tuple(readlint.Violation(unit, line, "RL01", f"func_00012400 {why}")
+                    for line in (6, 19))  # fmt: skip
+    renamed = ((5, "D_000D1230", "clock_frame_fraction"),
+               (14, "func_00012340", "clock_advance_frame"),
+               (16, "D_000D1230", "clock_frame_fraction"),
+               (21, "D_000D1230", "clock_frame_fraction"))  # fmt: skip
+    pending = tuple(attempt.Pending(readlint.Violation(unit, line, "RL01", f"{old} {why}"), new)
+                    for line, old, new in renamed)  # fmt: skip
     result = readlint.ReadlintResult(
         files_checked=(unit,), waivers={unit: 1}, allowlisted={unit: 0},
-        violations=(fail, *(p.violation for p in pending)),
+        violations=(*failing, *(p.violation for p in pending)),
     )  # fmt: skip
-    return attempt.Lint(result, failing=(fail,), pending=pending)
+    return attempt.Lint(result, failing=failing, pending=pending)
+
+
+def _example_unit(text: str) -> list[str]:
+    """The lines of the skill's example view unit (the fenced block holding the header)."""
+    return next(b for b in _fenced(text) if " * Address: " in b).splitlines()
+
+
+def test_output_example_line_numbers_match_the_example_unit():
+    """Each RL01 line the output example reports names a line of the example unit that holds
+    that placeholder."""
+    lines = _example_unit(_text())
+    lint = _example_lint()
+    for v in (*lint.failing, *(p.violation for p in lint.pending)):
+        word = v.message.split(" ", 1)[0]
+        assert re.search(rf"\b{word}\b", lines[v.line - 1]), (v.line, word)
 
 
 def test_output_example_is_the_real_format():
@@ -247,3 +269,22 @@ def test_skill_states_what_lands_and_marks_it_planned():
         assert outcome in stop, outcome
     names = _section(_text(), "Names, evidence and proposals")
     assert "re-checked at landing" in names and "last" in names
+
+
+def test_readlint_reports_the_example_unit_as_the_output_example_shows(tmp_path):
+    """The example unit, linted for real as a matched unit, gives exactly the readlint hits and
+    the waiver the output example shows (pending ones are RL01 hits a proposal covers)."""
+    start, unit = 0x00012340, "u_00012340"
+    src, config = tmp_path / "src", tmp_path / "config"
+    path = src / "ufo2p" / f"{unit}.c"
+    path.parent.mkdir(parents=True)
+    path.write_bytes(("\n".join(_example_unit(_text())) + "\n").encode("utf-8"))
+    rows = [FunctionRow(start, start + 0x40, f"func_{start:08X}", "game", unit, "call")]
+    write_functions_csv(config / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+    status = StatusRow(start, f"func_{start:08X}", unit, MATCHED, 100.0, 1, "ab" * 32, "2026-10-30")
+    write_status(status_path(config, "ufo2p"), [status])
+    result = readlint.run_readlint([src], src_root=src, config_root=config)
+    expected = _example_lint()
+    seen = sorted((v.line, v.rule, v.message) for v in result.violations)
+    assert seen == sorted((v.line, v.rule, v.message) for v in expected.result.violations)
+    assert sum(result.waivers.values()) == expected.waiver_count == 1
