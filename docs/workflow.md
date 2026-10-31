@@ -67,6 +67,17 @@ The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same on
 
 `reverseapoc drive` runs on the Windows host, in the main checkout (D-34). It starts one fresh `claude -p` session per attempt and runs every gate in the container.
 
+**What changed in Phase 7.** The Phase 6 facts below still hold unless this list says otherwise:
+
+- **One drive per checkout (D-06).** Every `drive` (night, dry run or canary) holds `build/driver/drive.lock`, an OS lock the kernel frees when the process dies, from before its preflight to its end. A second `drive` in the same checkout refuses to run.
+- **Workers on private views (D-06, D-24).** `--workers N` sessions run at once (default 3). Each session edits a private copy of its unit in a per-attempt view, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/`: HEAD's `src/`, `include/` and `config/`, taken with `git archive` at launch. It never edits `src/` itself, so sessions cannot see each other's half-edited C.
+- **Whole-unit claims and stale-claim recovery (D-06).** Each attempt claims its whole unit with one atomic file, `build/driver/claims/<exe>__<unit>.json`, and frees it after its landing decision. A pick whose unit another pass holds waits and is handed out later. Since `drive.lock` is held, any claim left by another run is stale: the night moves it to `build/driver/<run>/stale-claims/` and names it in the STARTED record.
+- **One landing at a time.** One gate lock serialises every shared write: the copy of a view unit into `src/`, the lint, the gate, the match commit or the reset, `gate --partial` and every record append. A gate therefore sees `src/` equal to HEAD except for the one unit it lands.
+- **The shared usage-limit pause (D-07).** A session that ends on a usage limit pauses every worker: one backoff (60, 120, 240 s, then every 300 s), then exactly one probe launch. A probe that is not limited clears the pause for all workers. Each wait is a `limit` record.
+- **The caps are flags (D-07, D-25).** The defaults are `--workers 3`, `--max-sessions 60`, `--target-matched` 0 (= off), `--max-budget-usd 5`, `--fable-budget-usd 12.50`, `--max-turns 40` and `--session-minutes 30` (table below). Every launched session counts toward `--max-sessions`.
+- **The tier queue (D-04, D-08, D-22, D-23).** Once `config/mechanics.toml` has a signed tier whose digest still matches, the night takes its picks from the tier queue instead of the Phase 6 easiest-first pools. The order is the signed tiers in turn; within a tier, its members, callees first, then its hubs. An `asm` row is never queued. A function capped in a pass (3 sessions) goes back for its next pass the same night, with more matched callees in its pack. Passes are unlimited: only the night cap bounds a run. The queue reads the pass count from the committed `progress/attempts.jsonl`, never from `difficult.json`.
+- **Opus, then Fable (D-09).** See "Model escalation" below. Before the first night that can reach a pass 3, the owner runs the Fable canary.
+
 ```
 uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
 ```
@@ -86,9 +97,9 @@ uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [
 | `--run ID` | the UTC start time | the run directory `build/driver/<ID>/` |
 | `--json` | off | print exactly one JSON document on stdout |
 
-The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
+A Phase 7 night is `uv run reverseapoc drive`, with the defaults. The Phase 6 pilot was `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
 
-**Model escalation (D-09).** A function's pass comes from the committed `progress/attempts.jsonl`. Passes 1 and 2 run on `claude-opus-5-5` with `--max-budget-usd`; pass 3 and every later pass run on `claude-fable-5-1` with `--fable-budget-usd`. Each attempt record names `model_requested` and `budget_usd` next to the init event's `model`. The init check expects the requested model, so an answer from another model stops the night (STOPPED `init`). Each match commit's `Co-Authored-By:` line names the requested model (`Claude Opus 5.5` or `Claude Fable 5.1`).
+**Model escalation (D-09).** A function's pass comes from the committed `progress/attempts.jsonl`. Passes 1 and 2 run on `claude-opus-5-5` with `--max-budget-usd`; pass 3 and every later pass run on `claude-fable-5-1` with `--fable-budget-usd`. Each attempt record names `model_requested` and `budget_usd` next to the init event's `model`. The init check expects the requested model, so an answer from another model stops the night (STOPPED `init`). Each match commit's `Co-Authored-By:` line names the requested model (`Claude Opus 5.5` or `Claude Fable 5.1`). The owner's Fable canary, `uv run reverseapoc drive --canary --model claude-fable-5-1 --run <fresh id>` (D-11, D-25), comes before the first Fable pass. It shows whether the CLI accepts `claude-fable-5-1` and which model id its init event reports. Run it before the first night in which a function has two capped passes in the log, because that function's next pass asks for Fable.
 
 **Before you start** (the preflight refuses without most of these):
 
@@ -100,16 +111,18 @@ The pilot command is `uv run reverseapoc drive --max-sessions 40 --target-matche
 
 **Then, in this order, from the main checkout:**
 
-1. `uv run reverseapoc drive --dry-run`: check the 10 picks and that it exits 0.
+1. `uv run reverseapoc drive --dry-run`: check the 10 picks and that it exits 0. With a signed tier they are the tier queue's first picks, each with its tier, level and pass.
 2. `uv run reverseapoc drive --canary --run <fresh id>` (for example `--run canary1`, then `canary2`): repeat with a new id, after the recovery steps below, until the last line is `CANARY PASS`.
-3. `uv run reverseapoc drive --max-sessions 40 --target-matched 10`: the pilot.
-4. Read the results:
+3. Before the first Fable pass: `uv run reverseapoc drive --canary --model claude-fable-5-1 --run <fresh id>`, the Fable canary, until `CANARY PASS`.
+4. `uv run reverseapoc drive`: the night, with the default caps (add `--target-matched N` or a smaller `--max-sessions N` for a short one).
+5. Read the results:
    - the exit code (0 ended clean, 1 stopped or a failed end check, 2 refused) and the printed summary (the last stdout line, stamped with the time the night ended);
    - `progress/attempts.jsonl`: one `attempt` record per counted session (outcome MATCHED, PARTIAL or GAVE_UP), `abort` records, and the `run` records; the last one is ENDED or STOPPED with its `reason`, `checks_failed` and `uncommitted`;
    - `config/ufo2p/status.csv` and `config/tacp/status.csv`: the matched and partial rows;
    - the commits: `git log --format='%h %s' --grep='^Matched-By: reverseapoc drive$'` lists one `feat(<exe>): match ...` commit per match; the night's last commit is `chore(driver): attempt log`;
-   - `build/driver/<run>/`: transcripts, check logs, notes, `end-ninja-verify.log`, `end-gate-all.log`.
-5. The commits are local. Pushing `main` is the owner's step, after reading the results.
+   - `build/driver/<run>/`: transcripts, check logs, notes, `end-ninja-verify.log`, `end-gate-all.log`;
+   - `uv run reverseapoc mechanics status`: the matched, partial and unmatched counts of each tier's must-match members.
+6. The commits are local. Pushing `main` is the owner's step, after reading the results.
 
 **The console.** In text mode every line `drive` prints while it runs starts with the host's local time as `[HH:MM:SS] ` (24-hour), and each long step gets its line when it starts, so the last line always says what is running and since when. Each preflight command prints as `[21:04:05] drive: $ docker info` when that command starts; its exit and output go to `preflight.log`, and the next line's time shows when it finished. Notes such as `drive: ufo2p: no Ghidra draft for ...` are stamped the same way. Each night attempt prints a line when it starts, for example `[22:10:31] drive: ufo2p func_0008A100 attempt 1/3: started`, a line before each usage-limit wait, for example `[22:11:20] drive: ufo2p func_0008A100 attempt 1/3: usage limit, next launch in 60 s`, and one with its outcome, for example `[22:19:02] drive: ufo2p func_0008A100 attempt 1/3: PARTIAL after 511.2 s`. The outcome is MATCHED, PARTIAL, GAVE_UP or ABORTED (transient); the seconds run from the start line to the outcome, relaunches, usage-limit waits and the gate included, so they can exceed the record's `seconds`. An attempt that stops the night prints no outcome line: the summary says why. Before each end-of-run check the night prints `[03:01:10] drive: end of run: ninja verify: started` and then `drive: end of run: gate --all: started`. The canary prints `drive: canary: ufo2p func_000A3980 session: started (timeout 1200 s)` before its session. The summary itself is stamped too, for example `[03:12:44] ENDED max sessions: 40 sessions, 3 matched`, and so is a refusal, for example `[21:04:05] reverseapoc drive: refused (dirty): ...`. Progress lines go to stderr and the summary to stdout. The dry run's pick lines, the canary's `PASS:` and `FAIL:` lines and its last line carry no time, so the last line is still exactly `CANARY PASS`. With `--json` no stamped line is printed: stdout is the one JSON document and stderr stays quiet. `preflight.log`, the `end-*.log` files, `progress/attempts.jsonl` and the transcripts carry no console time.
 
@@ -120,6 +133,8 @@ Any failure before the night starts is a refusal: exit 2, a reason, a detail, an
 | Reason | When |
 |---|---|
 | `run id` | `--run ID` is not `[A-Za-z0-9_.-]+`, or a canary with this ID already ran (its attempt directory exists) |
+| `drive lock` | another `reverseapoc drive` holds `build/driver/drive.lock` in this checkout, or the lock cannot be opened (D-06) |
+| `claims` | a stale claim under `build/driver/claims/` cannot be moved to `build/driver/<run>/stale-claims/` |
 | `worktree` | not the main checkout (a linked worktree has its own git dir) |
 | `dirty` | `git status --porcelain` is not empty; the detail names the paths |
 | `cli version` | `claude --version` fails, cannot be read, is not major 2, or is below **2.1.302**, the minimum CLI version (D-36; the dry run skips only this check). 2.1.302 is the release where `-p` has the documented permission default; `onFailure` needs 2.1.295 |
@@ -135,7 +150,7 @@ Any failure before the night starts is a refusal: exit 2, a reason, a detail, an
 
 The night's own refusal (`dirty` outputs: `progress/attempts.jsonl`, a `status.csv` or the feed differ from HEAD) also exits 2.
 
-**Dry run.** `uv run reverseapoc drive --dry-run` prints the 10 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10). It builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. The picker skips functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
+**Dry run.** `uv run reverseapoc drive --dry-run` prints 10 picks, builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. With a signed tier (Phase 7) they are the tier queue's first 10 picks, each with its tier, level and pass. Without one they are the Phase 6 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10), skipping functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
 
 **Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for five calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, `uv run --frozen reverseapoc attempt context` and `uv run --frozen reverseapoc attempt check`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
 
@@ -158,22 +173,30 @@ Each check prints one `PASS: ...` or `FAIL: ...` line, with no time stamp; the l
 4. If a container is named in a FAIL line, remove it with `docker rm -f <name>`.
 5. Run the canary again with a new `--run ID` until it prints `CANARY PASS`.
 
-**One attempt.** The driver scaffolds the unit if it is missing, builds the pack, and starts the session in the checkout root. The session gets `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES` (absolute paths). It may run only the attempt wrapper's three commands:
+**One attempt.** The driver claims the unit, builds the session's view from HEAD (`git archive` of `src/`, `include/` and `config/` into `<attempt dir>/view/`; Phase 7, D-24), scaffolds the unit inside the view if HEAD has none, builds the pack, and starts the session in the checkout root. The session gets these variables, as absolute paths:
 
-- `uv run --frozen reverseapoc attempt check` (and `check --sweep`, a diagnostic that is never a match), at most 25 runs per attempt;
-- `uv run --frozen reverseapoc attempt asm` (or `asm <NAME>` for another row of the same EXE);
+- `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES`, as in Phase 6;
+- `REVERSEAPOC_UNIT_FILE`: the view unit, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`, the only C file it edits (its /goal names it too);
+- `REVERSEAPOC_PROPOSALS`: `<attempt dir>/proposals.jsonl`, for naming proposals (D-19);
+- `REVERSEAPOC_SESSION_KIND`: `matching` (the hooks also know `readability`, for the readability sessions a later plan launches).
+
+It may run only the attempt wrapper's five forms (`hooks.ATTEMPT_FORMS`). Each runs against the view, so its check compiles the view unit with the view's `config/cflags.txt`:
+
+- `uv run --frozen reverseapoc attempt check`, at most 25 runs per attempt;
+- `uv run --frozen reverseapoc attempt check --sweep`: a diagnostic that is never a match. When no stage-1 cell is perfect and the best one reaches 90% with its relocation check ok, a second stage (D-15) tries up to 24 more cells under 10.6. Either stage's hit is reported as `sweep hit: needs flags <spec>`, which feeds the flag rules below;
+- `uv run --frozen reverseapoc attempt asm` and `uv run --frozen reverseapoc attempt asm <NAME>` (another row of the same EXE);
 - `uv run --frozen reverseapoc attempt context`.
 
-After the session the driver removes the attempt's containers, audits every changed path, then lints the unit (C89) and runs the container gate.
+After the session the driver removes the attempt's containers and audits every changed path: git's view of the checkout, and every file of the view except its unit and `view/build/`. Then, under the gate lock, its landing section copies the view unit's bytes to `src/<exe>/<unit>.c` (the driver is the only writer of `src/`), lints the unit (C89) and runs the unchanged container gate.
 
-**Reset rules (D-34).** A match is one commit with explicit paths: the unit, `status.csv`, `decomphub.progress.json`, `progress/attempts.jsonl` and any new header. Anything else resets the attempt: `git restore --source=HEAD -- <unit> include/` for tracked files, and a unit scaffolded by this attempt or a header it added is deleted. The driver never runs `git add -A` or `git clean`. A partial attempt keeps its best C under `best/` and is scored by `gate --partial`. A write outside the claim is a guardrail stop: the stray files are restored or moved into `build/driver/<run>/quarantine/` (never deleted), the night ends and nothing is committed. A night that stops with partial rows leaves `status.csv` uncommitted and names it; the next drive refuses to start until the owner commits or restores it.
+**Reset rules (D-34, D-24).** A match is one commit with explicit paths: the landed unit, `status.csv`, `decomphub.progress.json` and `progress/attempts.jsonl`. A matching session adds no header (D-19). Anything else resets the attempt: the driver puts back just the landed unit in `src/` (`git restore --source=HEAD -- <unit>` when HEAD tracks it, otherwise it deletes the copy it wrote) and abandons the view as it is, for inspection. It never touches all of `include/` and never runs `git add -A` or `git clean`. A partial attempt keeps its best C under `best/` and is scored by `gate --partial`. A write outside the session's allowlist is a guardrail stop: the stray files are restored or moved into `build/driver/<run>/quarantine/` (never deleted), the night ends and nothing is committed. A night that stops with partial rows leaves `status.csv` uncommitted and names it; the next drive refuses to start until the owner commits or restores it.
 
 **End of run.** When the night ENDS (nothing to do, max sessions, target matched, queue exhausted), the driver runs, in the container, `uv run --frozen python configure.py && ninja -t clean && ninja verify`, then `reverseapoc gate --all`, and logs both under `build/driver/<run>/` (`end-ninja-verify.log`, `end-gate-all.log`). A failed check is recorded in the ENDED run record and the night exits 1. Then the `chore(driver): attempt log` commit holds the night's records. **A STOPPED night skips both end checks**: it has no ninja verify or `gate --all` evidence, so run them by hand before trusting it. Exit codes: 0 ended clean, 1 stopped or a failed end check, 2 refused.
 
 **Warnings for the night.**
 
 - **Do not edit the checkout while the driver runs.** The audit compares the tree before and after each session, so your edit looks like a session stray: the night stops on a guardrail (STOPPED `guardrail`), your file is restored to HEAD or moved into `build/driver/<run>/quarantine/`, and nothing is committed.
-- **Ctrl+C** ends the night as STOPPED `interrupted` (the live attempt is reset and the record names what was undone). The end-of-run checks are skipped, as for any STOPPED night.
+- **Ctrl+C** ends the night as STOPPED `interrupted`: every live session is killed, each live attempt is reset uncounted, and the record names what was undone. The end-of-run checks are skipped, as for any STOPPED night.
 - **The canary is a real, paid Claude session.** Its `attempt check` alone can take up to 10 minutes (the wrapper's container check runs for at most 580 s).
 
 **Open assumptions to watch at the pilot checkpoint.** The tests prove the driver against synthetic streams and fake commands only. These hold only if the real CLI, Docker and host behave as assumed. The canary checks items 1, 4, 5, 6 and 7; items 2 (hook timing) and 3 (`CLAUDE_PROJECT_DIR`, partly shown) stay open after a `CANARY PASS`; items 8 to 10 are operational:
@@ -199,13 +222,14 @@ Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" an
 |---|---|
 | Any write under `orig/` | The original executables are the ground truth |
 | Writes to `config/targets.toml`, `config/watcom.toml` and any `*.sha1` | The SHA-1 is the done-gate |
-| Writes under `asm/` and `build/` (except the attempt's own `notes.md`) | Generated output; the same oracle for everyone |
-| Inline assembly in `src/` and `include/`: `_asm`, `__asm`, `_Pragma`, and `#pragma aux` bodies that emit code bytes | Matching must come from C |
+| Writes to `config/cflags.txt` and `config/cflags-proposals.toml`, with no exemption (Phase 7, D-12, D-27 P3) | Flags are owner-only: only `reverseapoc flags approve` and `reverseapoc flags default` change `config/cflags.txt`, and only `reverseapoc flags` writes the proposal queue, all from Python, which no hook sees |
+| Writes under `asm/` and `build/`, except the driver's per-session files at their exact shapes: the attempt's `notes.md` (`REVERSEAPOC_ATTEMPT_NOTES`), and in Phase 7 the view unit (`REVERSEAPOC_UNIT_FILE`) and `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`) | Generated output; the same oracle for everyone |
+| Inline assembly in `src/`, `include/` and the view unit: `_asm`, `__asm`, `_Pragma`, and `#pragma aux` bodies that emit code bytes | Matching must come from C |
 | An Edit in `src/` or `include/` whose old text is not in the file verbatim, and any lone CR | The scan must see the exact text the compiler will |
 
 **The matching layer** runs only in driver sessions (`config/driver/claude-settings.json`). It denies by default:
 
-- writes only to the claimed unit, a new untracked `include/<name>.h` and the attempt's `notes.md`;
+- **view mode (Phase 7, D-24):** with the driver's `REVERSEAPOC_CLAIM` and `REVERSEAPOC_UNIT_FILE` (at the view shape `build/driver/.../view/src/<exe>/<unit>.c`, naming the claim), a session writes only its view unit, the attempt's `notes.md` and its `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`). Without `REVERSEAPOC_UNIT_FILE` it writes nothing: Phase 7 removed the Phase 6 allowlist of `src/<exe>/<unit>.c` and new `include/*.h`. A write to `include/` or a `config/<exe>/symbols.csv` is denied as shared naming state, which only the driver writes (D-19). `REVERSEAPOC_SESSION_KIND` is `matching` or `readability`; any other value writes nothing, and a readability session writes only in view mode. The driver's post-session audit applies the same allowlist to every path a write tool names in the transcript;
 - **agents write no `#pragma aux` of any kind in the pilot, and no other `#pragma` either** (D-18); calling-convention pragmas come only in human-reviewed commits;
 - Read, Glob and Grep only inside the checkout, never `.env*`;
 - Bash only as one of the attempt wrapper's exact forms, never in the background, and `attempt check` (plain or `--sweep`) only with the Bash tool's `timeout` set to 600000: at the tool's 120 s default the tool kills the wrapper mid-run and its `check.lock` refuses every later check of the attempt;
@@ -221,6 +245,36 @@ Known limits:
 - A hard link made by Bash to a protected file is allowed: the hook does no inode check. Only Bash can make one, and the matching layer cannot run `ln`, `mklink` or `fsutil`.
 - Other git checkouts are over-denied: a path is judged against every ancestor holding `.git`, so `build/`, `orig/`, `asm/` and `*.sha1` are also blocked in another checkout a session writes to.
 - Whether a `--settings` file merges with or replaces project hooks, and whether each tool's hook runs right before that tool (not once for the whole turn), is proven only on the real CLI. The canary checks the denials; the driver's post-session audit and the gate stand behind both.
+
+### Flag rules (D-12, D-14)
+
+Flags are never a session's choice, and neither the agents nor the driver edit `config/cflags.txt` (Phase 5 D-18); both hook layers deny it. A sweep hit (`sweep hit: needs flags <spec>`, from either stage) is evidence. The driver writes it into the attempt record, and every sweep keeps its `checks/NNNN.json` and the C it ran (`checks/NNNN.c`). A hit is never a match and never evidence for the `*` default on its own (D-28, D-33). It becomes a per-unit rule through a queue, `config/cflags-proposals.toml`.
+
+Executor verbs (GSD executors or the owner, between nights):
+
+- `uv run reverseapoc flags propose --from-attempts <run> [<run> ...]` (host): reads every sweep line of every attempt of the named runs (all runs when none is named) and turns each hit into a proposed per-unit rule in the queue, copying the C that hit to `build/flags/<id>/<unit>.c`. Each proposal names its unit's siblings, which the rule would bind too (D-32).
+- `uv run reverseapoc flags regate <ID> [<ID> ...]` (in the container, for objdiff-cli): re-proves each proposal on a copy of `src/`, under the committed rules plus the proposed one. Every matched function of the unit must still match and both EXEs must stay SHA-1 identical. It tries the file as written first, then D-28's reduced variant. It writes only the queue and `build/flags/`.
+- `uv run reverseapoc flags list`: the queue, with the functions, unit, rule, alternatives, siblings, evidence and re-gate status.
+
+Owner-only verbs, run by the owner at a checkpoint and never by an agent:
+
+- `uv run reverseapoc flags approve <ID> [<ID> ...] --by <name>` (D-12): lands re-gated proposals in the order given, each as one gated match commit (the rule in `config/cflags.txt`, the C, `status.csv`, the feed, the queue and the `docs/matching.md` row) with a `Flags-Approved-By:` line. It is refused while a drive runs.
+- `uv run reverseapoc flags default --rule <spec> --by <name>` (D-14, D-33): changes the `*` default only on D-33's evidence (3 or more functions matched under per-unit rules equal to the spec, each with a branch, a loop or 64+ bytes, from both EXEs and different 0x10000 regions). It pins every matched unit without a rule to the old default and runs `gate --all` before and after. `--evidence` prints the bar's inputs and verdict and changes nothing.
+
+The batches so far are in [toolchain.md](toolchain.md#phase-7-flag-rules).
+
+**Mechanics data.** The tier queue reads `config/mechanics.toml` and `config/mechanics-members.csv` (D-02, D-04). `uv run reverseapoc mechanics <verb>` keeps them:
+
+- `mechanics write`: regenerates `config/mechanics-members.csv` from `mechanics.toml`, `functions.csv` and the call graphs of `orig/`;
+- `mechanics check`: validates the committed files without game files (member rows, entries, the signed tier digests, the asm list sign-off);
+- `mechanics status`: matched, partial and unmatched counts of each tier's must-match members, from `status.csv`;
+- `mechanics hubs`: candidate hub-rule numbers for a tier (D-22);
+- `mechanics digest`: a tier's `members_sha256`, for its sign-off;
+- `mechanics graph`: an EXE's call-graph report (edge counts, indirect calls, the largest cycles);
+- `mechanics locate`: entry candidates in one EXE (rows referencing a string, an address or a range, `get_text` call sites, `int386_` callers; needs `orig/`);
+- `mechanics asm`: proposes the D-23 list of hand-written assembly rows, which leave the queue.
+
+Each prints addresses, names and counts only.
 
 ## The GSD phase loop
 
