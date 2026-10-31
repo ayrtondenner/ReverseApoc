@@ -437,3 +437,16 @@ BAD_TEXTS = {
 def test_header_problems(text, why):
     problem = proposals.header_problem(_header(text=text))
     assert problem is not None and why in problem
+
+
+def test_proposals_are_read_once_and_bounded(tmp_path):
+    """07-34 fix round 2: one bounded read (at most PROPOSALS_FILE_MAX + 1 bytes from one
+    handle) gives the bytes that are parsed; parse_proposals reads those bytes."""
+    path = tmp_path / "proposals.jsonl"
+    assert proposals.read_bounded(path) is None
+    path.write_bytes(b"x" * (proposals.PROPOSALS_FILE_MAX + 10))
+    with pytest.raises(ProposalError, match="more than 4 MiB"):
+        proposals.read_bounded(path)
+    assert proposals.parse_proposals(b"") == []
+    assert proposals.parse_proposals(b"\n  \n") == []
+

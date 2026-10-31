@@ -1007,9 +1007,18 @@ def idioms(text: str | None) -> str | None:
     return "\n\n".join(parts) + "\n" if parts else None
 
 
+_FUNC_PLACEHOLDER = re.compile(r"func_([0-9A-F]{8})")
+
+
 def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
+    """This function's attempt records: those naming `func`, and, when `func` is its func_
+    placeholder (the driver's attempt directories keep it), those naming its start. v2 records
+    name the C name (07-23), so after a D-19 rename one function's records carry two names
+    (ruling note, 07-34)."""
     if not log.is_file():
         return []
+    found = _FUNC_PLACEHOLDER.fullmatch(func)
+    start = f"0x{found.group(1)}" if found else None
     records = []
     for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
         try:
@@ -1018,7 +1027,9 @@ def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
             continue
         if not isinstance(record, dict) or record.get("kind") != "attempt":
             continue
-        if record.get("exe") == stem and record.get("function") == func:
+        same = record.get("function") == func or (start is not None
+                                                  and record.get("start") == start)
+        if record.get("exe") == stem and same:
             records.append(json.dumps(record, sort_keys=True))
     return records
 
