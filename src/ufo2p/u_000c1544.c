@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_000C1549);
 INCLUDE_ASM(func_000C1557);
-INCLUDE_ASM(func_000C1566);
 
 /* Watcom runtime delay(); links as __delay_. */
 void __delay(unsigned ms);
@@ -18,4 +17,13 @@ void __delay(unsigned ms);
 void func_000C1544(unsigned ms)
 {
     __delay(ms);
+}
+
+/* Watcom runtime clock(); links as __clock_. */
+unsigned long __clock(void);
+
+/* unsigned long: EAX at the jmp holds __clock's result; the callers decide. */
+unsigned long func_000C1566(void)
+{
+    return __clock();
 }
