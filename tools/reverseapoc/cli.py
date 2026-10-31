@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import asmclass, attempt, driver, flags, locate, mechanics, probe, session, stats
+from . import asmclass, attempt, driver, flags, locate, mechanics, probe, session, splits, stats
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
 from .attempt import AttemptError
@@ -1661,6 +1661,7 @@ def _add_mechanics_command(sub: argparse._SubParsersAction) -> None:
     g.set_defaults(mechanics_func=_mechanics_graph)
     _add_locate_verb(verbs)
     _add_asm_verb(verbs)
+    _add_splits_verb(verbs)
     p.set_defaults(func=_cmd_mechanics)
 
 
@@ -1702,6 +1703,32 @@ def _add_asm_verb(verbs: argparse._SubParsersAction) -> None:
     )
     _mechanics_roots(a, game=True)
     a.set_defaults(mechanics_func=_mechanics_asm)
+
+
+def _mechanics_splits(args: argparse.Namespace) -> int:
+    exes = (args.exe,) if args.exe else mechanics.EXES
+    signed = splits.signed_list(Path(args.config))
+    pairs = []
+    for exe in exes:
+        inputs = locate.load_inputs(args.config, args.orig, args.manifest, exe)
+        pairs += splits.classify_splits(inputs, signed_list=signed)
+    if args.json:
+        print(json.dumps(splits.splits_json(pairs, exes), indent=2))
+    else:
+        print(splits.format_splits(pairs, exes))
+    return 0
+
+
+def _add_splits_verb(verbs: argparse._SubParsersAction) -> None:
+    s = verbs.add_parser(
+        "splits",
+        help="print evidence only (07-45): every pair of touching game rows whose first row "
+        "decodes no ret or jmp, with the references to the second row and a class (data, "
+        "fall-through, label, unclear); addresses, counts and mnemonics only, writes nothing",
+    )
+    s.add_argument("--exe", choices=mechanics.EXES, help="one EXE; default: both")
+    _mechanics_roots(s, game=True)
+    s.set_defaults(mechanics_func=_mechanics_splits)
 
 
 def _number(value: str) -> int:

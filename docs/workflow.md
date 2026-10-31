@@ -311,6 +311,7 @@ The batches so far are in [toolchain.md](toolchain.md#phase-7-flag-rules).
 - `mechanics graph`: an EXE's call-graph report (edge counts, indirect calls, the largest cycles);
 - `mechanics locate`: entry candidates in one EXE (rows referencing a string, an address or a range, `get_text` call sites, `int386_` callers; needs `orig/`);
 - `mechanics asm`: proposes the D-23 list of hand-written assembly rows, which leave the queue, and (07-44) game rows with data-in-code evidence (`no-terminator`, `text-run`, `zero-fill`, `bad-decode`), proposed as `unclear` for the owner to rule.
+- `mechanics splits`: every row of both EXEs that runs into the next row without a `ret` or `jmp`, with the evidence that tells a fall-through into the next function (the next row is called, tail-jumped to or has its address taken) from a label split (reached only by a jump table or a conditional jump), and a class per pair (07-45); evidence only, it writes nothing.
 
 Each prints addresses, names and counts only.
 
