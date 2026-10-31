@@ -20,11 +20,12 @@ from dataclasses import dataclass, field
 
 import pytest
 
-from reverseapoc import cli, driver, session
+from reverseapoc import cli, driver, picker, session
 from reverseapoc.driver import GateRun
 from reverseapoc.functions import FunctionRow, SymbolRow, write_functions_csv, write_symbols_csv
 from reverseapoc.picker import Pick
 from reverseapoc.status import MATCHED, StatusRow, lf_sha256, status_path, write_status
+from test_drive import Rig
 from test_driver import (
     EXE,
     FUNC,
@@ -330,3 +331,102 @@ def test_read_checks_picks_the_latest_readlint_clean_run(tmp_path):
     assert (summary.runs, summary.best_source, summary.best_percent) == (3, "checks/0002.c", 100.0)
     _write(tmp_path / "checks.jsonl", json.dumps(lines[0]) + "\n")
     assert driver.read_checks(tmp_path, readability=True).best_source is None
+
+
+# ---- Task 3: the readability queue and the dry run ----
+
+
+def _unit_pick(unit: str, start: int) -> Pick:
+    return Pick(EXE, start, f"name_{start:x}", unit, 0x10, 0)
+
+
+UNITS = {(EXE, f"u_{n}"): _unit_pick(f"u_{n}", 0x10000 * n) for n in range(1, 6)}
+
+
+def _keys(picks) -> list[str]:
+    return [p.unit for p in picks]
+
+
+def test_queue_order():
+    """Units holding Tier 1 members first, then other signed tiers', then the other matched
+    units; a unit already passing readlint is absent."""
+    tiers = {(EXE, "u_4"): 1, (EXE, "u_2"): 2, (EXE, "u_5"): 1}
+    picks = picker.readability_queue(UNITS, tiers, {}, passes_readlint={(EXE, "u_5")})
+    assert _keys(picks) == ["u_4", "u_2", "u_1", "u_3"]
+    assert picks[0] == UNITS[(EXE, "u_4")]
+
+
+def test_bottom_up():
+    """u_1 calls a matched function of u_2, which still fails readlint: u_2 comes first and u_1
+    is offered once u_2 passes. A unit's callees in its own SCC never block it."""
+    callees = {(EXE, "u_1"): [(EXE, "u_2")], (EXE, "u_3"): [(EXE, "u_4")],
+               (EXE, "u_4"): [(EXE, "u_3")]}  # fmt: skip
+    units = {key: UNITS[key] for key in [(EXE, f"u_{n}") for n in range(1, 5)]}
+    first = _keys(picker.readability_queue(units, {}, callees, passes_readlint=set()))
+    assert first == ["u_2", "u_3", "u_4"]  # u_3 and u_4 share an SCC
+    later = _keys(picker.readability_queue(units, {}, callees, passes_readlint={(EXE, "u_2")}))
+    assert later == ["u_1", "u_3", "u_4"]
+
+
+def test_readability_entries_read_the_committed_units(tmp_path):
+    """The real queue's input: each committed unit with a matched row, its lowest matched
+    function under its C name, and its strict readlint violation count."""
+    night = RdNight(tmp_path)
+    entries = driver.readability_entries(night.repo)
+    assert [(e.pick, e.violations) for e in entries] == [(READ_PICK, 1)]
+
+
+def test_empty_readability_queue(tmp_path):
+    """DEC-04 empty: every matched unit passes readlint, so no session runs: ENDED nothing to
+    do, exit 0."""
+    night = RdNight(tmp_path, head_text=READABLE)
+    report = night.readability(queue=driver.readability_source(night.repo))
+    assert (report.event, report.reason, report.exit_code) == (driver.ENDED,
+                                                              driver.NOTHING_TO_DO, 0)
+    assert night.launched == [] and night.attempts() == []
+
+
+def test_readability_source_runs_the_failing_unit(tmp_path):
+    night = RdNight(tmp_path, sessions=[Sess(unit_text=READABLE)], gate_exits=[0])
+    night.readability(queue=driver.readability_source(night.repo))
+    assert night.refactors() == [SUBJECT]
+    assert len(night.launched) == 1  # once it passes, the unit is no longer queued
+
+
+def _readability_rig(tmp_path):
+    rig = Rig(tmp_path)
+    rows = [FunctionRow(START, START + 0x10, FUNC, "game", UNIT, "call")]
+    write_functions_csv(rig.repo / FUNCTIONS_REL, rows, "UFO2P.EXE")
+    write_symbols_csv(rig.repo / SYMBOLS_REL, [SymbolRow(START, f"{NAME}_", "func")], "UFO2P.EXE")
+    write_status(status_path(rig.repo / "config", EXE),
+                 [StatusRow(START, NAME, UNIT, MATCHED, 100.0, 1, SHA, DATE)])
+    write_status(status_path(rig.repo / "config", "tacp"), [])
+    _write(rig.repo / UNIT_REL, HEAD_TEXT)
+    _write(rig.repo / "include/common.h", "/* made up */\n")
+    rels = [FUNCTIONS_REL, SYMBOLS_REL, STATUS_REL, "config/tacp/status.csv", UNIT_REL,
+            "include/common.h"]  # fmt: skip
+    _git(rig.repo, rig.env, "add", "--", *rels)
+    _git(rig.repo, rig.env, "commit", "-q", "-m", "readability fixtures")
+    return rig
+
+
+def test_readability_dry_run(tmp_path, capsys):
+    """`drive --session readability --dry-run --json` lists the queued units in order with their
+    readlint violation counts and launches nothing (no claude, no gate, no pack)."""
+    rig = _readability_rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, session=driver.READABILITY)
+    assert code == 0, out
+    doc = json.loads(out)
+    assert doc == {"session": driver.READABILITY,
+                   "units": [{"exe": EXE, "unit": UNIT, "start": f"0x{START:08X}",
+                              "function": NAME, "violations": 1}]}  # fmt: skip
+    assert rig.packs.built == [] and not rig.commands("gate")
+    assert not rig.commands("ghidra-export")
+    assert not [c for c in rig.runner.calls if c[:1] == ["claude"]]
+
+
+def test_readability_dry_run_text(tmp_path, capsys):
+    rig = _readability_rig(tmp_path)
+    code, out, _ = rig.drive(capsys, dry_run=True, session=driver.READABILITY)
+    assert code == 0
+    assert f"{EXE} {UNIT} 0x{START:08X} {NAME} readlint 1 violation" in out
