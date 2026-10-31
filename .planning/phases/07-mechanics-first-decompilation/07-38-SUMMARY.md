@@ -301,3 +301,53 @@ None.
 - FOUND commits: 4a8acd3, 67af004, 98eb92b, e5a652f, ea4da14, 272566c, e00b403, 85e07d9, 904fdeb (`git rev-list --count 9c7381c..HEAD` was 9 before the SUMMARY commit)
 - The full host suite ran at 904fdeb: 3950 passed, 251 skipped (the skip count equals 07-34's baseline; the reasons are the existing orig/, third_party/watcom, clang, objdiff-cli and taskkill ones).
 - No STATE.md or ROADMAP.md change.
+
+## Fix round 1
+
+FIX_BASE was 5fa83fb. The branch guard passed: branch `worktree-agent-a0320bae319c2ad3a`, in the agent namespace. The findings come from the task review (`review-07-38.md`): I1, I2 and M3, plus the skill facts from `GREEN-r2-notes.md` and M8.
+
+**Changes.**
+- **I1: every naming commit runs the C89 lint (the owner's "every landing path" ruling).**
+  - `_gated_commit` writes the plan, then runs `_naming_lint`, then the gate.
+  - `_naming_lint` lints every unit the plan gates. For each header the plan writes, it also lints a probe unit, `build/driver/<run>/lint-probe/<name>.c`, which holds `#include "common.h"` and then `#include "<name>.h"`. lint.py lints `.c` files only. Watcom accepts `//`, and the gate passes on unchanged bytes, so only the lint catches a non-C89 header. The probes are removed afterwards, and a linked probe directory is refused.
+  - A failing lint is REFUSED ("the C89 lint failed on ..."). A lint tool error stops the night (TOOL). In both cases every path is put back first, and no gate runs.
+  - New seam: `Deps.lint_paths(paths)` (fail closed by default). `real_deps` wires it to the container `reverseapoc lint <paths> --json`.
+- **I2: the readability queue reads HEAD.**
+  - `head_readability_entries` extracts HEAD's src/, include/ and config/ into a temporary directory and reads them there. The extraction is `extract_head`, the `git archive` step now shared with `_make_view`.
+  - `readability_source` and the dry run use it. So a landing still in flight (its unit in src/, its gate's rows in status.csv) never counts, and no file a landing replaces is held open.
+  - No lock is taken: the coordinator still reads under `night.cond` only, and git's object reads need none.
+- **M3: no write through a link at best/.**
+  - `_best_file` refuses (DriverError, so the night stops) when the attempt dir or `best/` is a link, before and after the mkdir. Both `_keep_best` and the matching `_partial_gate` use it.
+  - The matching `_partial_gate` also refuses a linked best source, and writes with `write_atomic` instead of `shutil.copyfile`.
+- **Skill facts (orchestrator ruling; the superpowers:writing-skills REFACTOR step).**
+  - watcom-readability now separates the in-session rename refusals from the wider rule the driver applies at landing:
+    - every file-scope name of the EXE's committed units, the view and every header (`common.h` included), which covers macros, typedefs such as `s32`, tags and extern'd globals;
+    - a data address outside the EXE's data objects.
+  - RL04 now states the real rule: any case; `unknown`, `padding` and bare `field` too; a hex or underscore tail. So `pad_left`, `field_count`, `gap_width`, `Padding` and `padded` all hit.
+  - watcom-decomp (M8): its three "planned" mentions now say the naming step runs, and writes headers, after readability sessions only.
+  - The GREEN scenarios are still the orchestrator's to run.
+- **Docs.** docs/workflow.md "Readability nights" says the queue is read from HEAD, and that each rename and header commit runs the C89 lint (with the header probe) before its gate.
+
+**RED (`cdebad7`): 9 failed, 111 passed.**
+- Target `test_header_rewrite_failing_c89_lint_is_refused`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0738-fr1.xml`).
+- It failed on its assertion: the header rewrite was gated and committed with no lint.
+- These also failed, on assertions:
+  - the other three naming-lint tests;
+  - `test_queue_reads_head_not_the_working_tree`, because the queue read the uncommitted unit;
+  - `test_best_through_a_link_is_refused`;
+  - the three skill-fact tests.
+- The RED skeleton added only the `Deps.lint_paths` field, so the tests failed on assertions, not on a TypeError.
+
+**Fixes:** `93b5736` (driver, docs, tests), `0e143e3` (both skills).
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_readability.py tests/test_rename.py`: 80 passed.
+- `uv run pytest -q tests/test_skill.py tests/test_skill_readability.py`: 41 passed.
+- `uv run pytest -q` (host, worktree): **3959 passed, 251 skipped**, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
+**Deviations (fix round).**
+- **The Night harness (tests/test_driver.py) wires `lint_paths`.** It records each call with the text of each file at lint time, so the 07-34 rename tests run the naming lint as a pass.
+- **The queue tests pass the harness's git** (`git=night._git`), because a tmp repo has no `.gitattributes`. In the checkout, `* text=auto eol=lf` keeps the snapshot LF, as it does for the views.
+- **The other minors stay open, as the orchestrator asked:** M1, M2, M4 to M7.
