@@ -146,7 +146,7 @@ Execution context nonce: a530f5bd60cfbd6d
 ## Tag counts and the negative control
 
 - **Rows per data tag** on the regenerated list: no-terminator 104, text-run 54, zero-fill 57, bad-decode 1.
-- **Rows with a data tag:** ufo2p 53 and tacp 67. The proposed list held 120 rows (verdict unclear with a data tag). After the owner's verdicts, 77 rows are held across both EXEs, and of those only the rows below are unmatched must-match members of a signed tier.
+- **Rows with a data tag:** ufo2p 53 and tacp 67. The proposed list held 120 rows (verdict unclear with a data tag). After the owner's verdicts, 77 list rows qualify for the hold (verdict unclear plus a data tag) across both EXEs. The tier queue holds 7 of them, the ones a signed tier would queue: 4 unmatched must-match members and 3 hubs (see "Held rows" below).
 - **Negative control** (`test_matched_rows_with_data_evidence_are_ruled_c`, real files, main): no status.csv `matched` game row carries a data tag. No threshold changed.
 - **Proposal check** (44-proposal-check.txt): ALL PASS. All 435 old rows are present with the same verdict and reason. 48 rows' evidence grew by data tags only, in TAGS order. 72 rows were added, all unclear with an empty reason. None were removed. All 14 expected Tier 1 rows have a data tag.
 
@@ -172,10 +172,17 @@ Across tiers 1-4 there are 54 distinct rows: 47 in Part A and 7 in Part B. All 1
 | 3 | 5758c10f47f2e1b5c287153e9318438d0a3e0526ed5e837b73c91328da8e6313 | fa5ae9aa491cf5c619feb453256064561a3d608eeae72a690c61f5c6efcb83f8 | 428 -> 412 | 11 / 5 | 2 | 2 | 408 | 2 |
 | 4 | 2d6a489a28f09b001a560b89b4377b4870d5751f4077ff85f5470b1b13642d4e | 142dc5088f393f160e318b74b4cfe7b9c4bfcf6cbfc5b031a58e83e2f6d40132 | 253 -> 248 | 5 / 0 | 0 | 1 | 247 | 0 |
 
-Held rows, from `mechanics status --json`, which equals 44-held-expected.json:
+The held column in the table counts must-match members only (4 / 2 / 2 / 0). Held members, from `mechanics status --json`, which equals 44-held-expected.json:
 - Tier 1: ufo2p 0x00051D80, 0x00061F30, 0x0009A5B0, 0x000B78A0.
 - Tiers 2 and 3: ufo2p 0x0009A5B0, 0x000B78A0.
 - Tier 4: none.
+
+**The queue holds 7 rows in all, not 4 (review fix round 1).** Besides the 4 members above it holds 3 hubs. Hubs are not must-match, so `mechanics status` does not count them, and they were never in the owner's report (Part A and Part B list must-match rows only):
+- ufo2p 0x00028320: text-run only; a hub of tiers 1-4 with 20 or more direct callers;
+- tacp 0x00024B20: no-terminator only;
+- tacp 0x000615A0: text-run only.
+
+The owner ruled on 2026-10-31 that these 3 hubs are ruled at 07-45's owner checkpoint. Until then the nights skip them. No done condition is affected, because hubs are not must-match.
 
 All four night rows have left Tier 1 as owner `asm`: ufo2p 0x000126F0, 0x000129F0, 0x000129F3 and 0x00012A33.
 
@@ -199,6 +206,7 @@ Signed tiers: (1, 2, 3, 4). `mechanics status --tier 1 --require-matched` exits 
 - **Tier 1:** 943 must-match members, down from 973 (30 owner-`asm` data rows left, and none were added). 3 are matched, 6 partial and 934 unmatched, so 940 are not matched. 4 of those are held: ufo2p 0x00051D80, 0x00061F30, 0x0009A5B0 and 0x000B78A0, which the owner kept `unclear` with a reason ("code without ret: boundary splits").
 - **What done needs.** Every one of the 936 non-held, not-matched members must match through the nights. On top of that, the owner must rule each of the 4 held rows: `c` queues it for the nights, and `asm` takes it out of must-match. A held row is never queued, so the nights cannot match it while it stays held. **07-39 therefore cannot finish while held rows remain, but its nights can run.**
 - **Stall rule.** The rule counts Tier 1's `matched` value, and the hold does not affect it. Held rows are never queued, so they cannot end a night flat by burning passes, and they never change `matched`.
+- **Held hubs.** The queue also holds 3 hubs: ufo2p 0x00028320, tacp 0x00024B20 and tacp 0x000615A0. They are ruled at 07-45's owner checkpoint (owner ruling 2026-10-31). Hubs are not must-match, so they affect neither the done condition nor the stall rule.
 - **Other tiers.**
   - Tier 2: 403 members, 1 matched, 402 unmatched, 2 held (ufo2p 0x0009A5B0, 0x000B78A0).
   - Tier 3: 412 members, 2 matched, 2 partial, 408 unmatched, 2 held (the same two rows).
@@ -253,19 +261,25 @@ None that blocked. The background-wait loops hit the Bash tool's auto-background
 
 ## Orchestrator steps (not run here)
 
-1. **Real dry run (R-C, needs a fully clean tree).** Once the commit flag is cleared, run `uv run reverseapoc drive --dry-run --json > build/gate/07-evidence/44-dryrun.json`. Every key in 44-held-expected.json's `held_starts` (tiers 1-4) must appear in the dry run's `held_starts`. The dry run counts queue rows, members and hubs each once, so its count may be higher.
+1. **Real dry run (R-C, needs a fully clean tree).** Once the commit flag is cleared, run `uv run reverseapoc drive --dry-run --json > build/gate/07-evidence/44-dryrun.json`. Every key in 44-held-expected.json's `held_starts` (tiers 1-4) must appear in the dry run's `held_starts`. The dry run counts queue rows, members and hubs each once, so its count is higher: it should report 7 held, the 4 members plus the 3 hubs ufo2p 0x00028320, tacp 0x00024B20 and tacp 0x000615A0.
 2. **Push** the three 07-44 commits and this SUMMARY together.
-3. **07-39.** Task 3 (the owner's nights) may resume now. The owner's first step is `drive --dry-run`, which now prints `held: N`. Tier 1 has 943 members, and 4 held rows need an owner ruling before Tier 1 can be done.
+3. **07-39.** Task 3 (the owner's nights) may resume now. The owner's first step is `drive --dry-run`, which now prints `held: N`, with N = 7:
+   - the 4 held Tier 1 members (ufo2p 0x00051D80, 0x00061F30, 0x0009A5B0, 0x000B78A0), which need an owner ruling before Tier 1 can be done;
+   - the 3 held hubs (ufo2p 0x00028320, tacp 0x00024B20, tacp 0x000615A0), which the owner ruled on 2026-10-31 are ruled at 07-45's owner checkpoint. Until then the nights skip them. They affect no done condition, because hubs are not must-match.
+
+   Tier 1 has 943 members.
 4. **07-41 follow-ups:**
    - its precondition names 07-44;
-   - its STATE decision line and 07-VALIDATION rows cite 07-44: the asm list re-signed with data-in-code evidence, tiers 1-4 re-signed, and the held counts 4 / 2 / 2 / 0;
-   - its phase-gate steps (`mechanics status --tier 1 --require-matched`, any `drive --dry-run`, the page render) run only on a tree whose asm list is signed. `mechanics status` now exits 2, and `drive` refuses with reason `picks`, on an unsigned or changed list.
+   - its STATE decision line and 07-VALIDATION rows cite 07-44: the asm list re-signed with data-in-code evidence, tiers 1-4 re-signed, held members 4 / 2 / 2 / 0, and 7 held queue rows in all (the 4 members plus the 3 hubs);
+   - its phase-gate steps (`mechanics status --tier 1 --require-matched`, any `drive --dry-run`, the page render) run only on a tree whose asm list is signed. `mechanics status` now exits 2, and `drive` refuses with reason `picks`, on an unsigned or changed list;
+   - the review's other Minors are deferred to 07-41: `tier_held` builds the queue twice in the dry run, and `held_pairs` splits evidence on `_LIST`.
 5. **rulings.md:** note that F36 applied to [asm_list] and tiers 1-4 in 07-44.
-6. **Later plans, not this one:**
+6. **07-45** (the boundary-split merge, being planned) also takes the 3 held hubs: ufo2p 0x00028320, tacp 0x00024B20 and tacp 0x000615A0. They are ruled at its owner checkpoint (owner ruling 2026-10-31).
+7. **Later plans, not this one:**
    - a separate `data` verdict;
    - re-kinding data rows as `data-in-code` in functions.csv;
    - re-pointing an [[entry]] that is data;
-   - ruling the 4 held rows.
+   - ruling the 4 held members.
 
 ## Known Stubs
 
@@ -277,7 +291,7 @@ None.
 
 ## Next Phase Readiness
 
-The hold and the signed data are in place. 07-39 Task 3 can resume. The 4 held Tier 1 rows remain for an owner ruling.
+The hold and the signed data are in place. 07-39 Task 3 can resume. The 4 held Tier 1 members remain for an owner ruling. The 3 held hubs (ufo2p 0x00028320, tacp 0x00024B20, tacp 0x000615A0) are ruled at 07-45's owner checkpoint, and until then the nights skip them.
 
 ## Self-Check: PASSED
 
