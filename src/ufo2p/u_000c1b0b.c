@@ -7,9 +7,14 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_000C1B0B);
-
 int fseek(void *fp, long offset, int whence);
+long ftell(void *fp);
+
+/* fgetpos-like: store ftell(fp) in *pos, nonzero on failure (-1) */
+int func_000C1B0B(void *fp, long *pos)
+{
+    return (*pos = ftell(fp)) == -1;
+}
 
 /* fsetpos-like: seek to *pos from the start (SEEK_SET) */
 int func_000C1B1E(void *fp, long *pos)
