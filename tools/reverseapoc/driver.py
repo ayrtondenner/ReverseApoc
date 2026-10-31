@@ -96,6 +96,16 @@ release (`_retry_deferred`); the proposing session's own unit never blocks, its 
 rewritten in place. At every landing the view unit first takes every rename committed since
 the view's HEAD (`_renames_since`), so a session that started before a rename still lands.
 
+Readability nights (07-38; D-17, D-18, D-20, DEC-04): `drive --session readability` runs one
+session per matched unit (DriveConfig.session), claimed with kind readability, on Opus, with
+session.readability_goal and the watcom-readability skill. The queue is
+`readability_source`: picker.readability_queue over the committed units that fail strict
+readlint (Tier 1 first, bottom-up), read again before each pick. `_land_readability` applies
+the proposals first, then GAVE_UP for an unchanged unit, REFUSED for a changed defined set, a
+failing C89 lint or gate, PARTIAL when strict readlint still fails (the view unit kept under
+best/), else LANDED: one `refactor(<exe>): name and document <unit> (readability)` commit with
+READABILITY_BY.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -152,7 +162,16 @@ from .functions import (
 )
 from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
-from .picker import EXE_ORDER, PILOT_PER_EXE, Key, Pick, TierItem, TierQueue, tier_queue
+from .picker import (
+    EXE_ORDER,
+    PILOT_PER_EXE,
+    Key,
+    Pick,
+    TierItem,
+    TierQueue,
+    readability_queue,
+    tier_queue,
+)
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
@@ -4799,22 +4818,28 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     worlds' scaffold and pack, the claude argv and session, and the container lint and gates
     (D-24). `today` (UTC) names this pass. With a signed tier (07-26) `queue` is the tier
     queue instead (`tier_source`): it never reads the difficult list, whose passes it takes
-    from the night's pass index (the committed log), and `requeue` gives nothing back."""
+    from the night's pass index (the committed log), and `requeue` gives nothing back. On a
+    readability night (07-38) `queue` is `readability_source` over the checkout and the
+    worlds' call index, and `requeue` gives nothing back."""
     day = today or _today()
     config_root = options.config_root
     excluded = excluded_keys(config_root, day)
     say = console(options, seams)
-    tiers = tier_source(config_root, worlds)
+    readability = options.session == READABILITY
+    tiers = None if readability else tier_source(config_root, worlds)
+    units_queue = readability_source(options.repo, _world_callees(worlds))  # 07-38
 
     def pools(difficult: Container[Key]) -> Iterable[Pick]:
         return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
                             difficult=difficult)  # fmt: skip
 
     def queue(difficult: Container[Key]) -> Iterable[Pick] | TierQueue:
+        if readability:
+            return units_queue(difficult)
         return pools(difficult) if tiers is None else tiers(None)
 
     def requeue(difficult: Mapping[Key, tuple[Key, ...]]) -> Iterable[Key]:
-        if tiers is not None:
+        if tiers is not None or readability:
             return ()
         keys = frozenset(difficult)
         empty = next(iter(pools(keys)), None) is None
@@ -4909,6 +4934,156 @@ def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
                           excluded=excluded_keys(options.config_root, today),
                           difficult=difficult)  # fmt: skip
     return [pick for _, pick in zip(range(options.max_sessions), stream, strict=False)]
+
+
+# ---- the readability queue (07-38; D-17, D-20, DEC-04) ----
+
+Callees = Mapping[str, Mapping[int, Sequence[int]]]  # EXE -> row start -> callee starts
+
+
+@dataclass(frozen=True)
+class ReadabilityEntry:
+    """One queued unit of a readability night: the pick of its lowest matched function (by C
+    name) and its strict readlint violations now."""
+
+    pick: Pick
+    violations: int
+
+
+def _matched_unit_picks(config_root: Path, src_root: Path) -> dict[tuple[str, str], Pick]:
+    """Each committed unit with a matched row (status.csv) mapped to the pick of its lowest
+    matched function: its C name (symbols.csv, else the placeholder) and its size. A unit
+    without a file under `src_root` is no readability unit."""
+    out: dict[tuple[str, str], Pick] = {}
+    for exe in EXE_ORDER:
+        functions = config_root / exe / "functions.csv"
+        if not functions.is_file() or not status_path(config_root, exe).is_file():
+            continue
+        rows = read_functions_csv(functions)
+        symbols_path = config_root / exe / "symbols.csv"
+        symbols = read_symbols_csv(symbols_path) if symbols_path.is_file() else []
+        names = {start: name for name, start in unitdefs.c_names(rows, symbols).items()}
+        by_start = {row.start: row for row in rows}
+        matched = sorted(row.start for row in _status_rows(config_root, exe)
+                         if row.status == STATUS_MATCHED)  # fmt: skip
+        for start in matched:
+            row = by_start.get(start)
+            if row is None or not row.unit or (exe, row.unit) in out:
+                continue
+            if not (src_root / exe / f"{row.unit}.c").is_file():
+                continue
+            out[(exe, row.unit)] = Pick(exe, start, names.get(start, f"func_{start:08X}"),
+                                        row.unit, row.end - row.start, 0)  # fmt: skip
+    return out
+
+
+def _tier_units(config_root: Path) -> dict[tuple[str, str], int]:
+    """Each unit holding a `member` row of a signed tier (mechanics.signed_tiers: signed, its
+    digest matching), mapped to the lowest such tier; units come from functions.csv."""
+    if not (config_root / mechanics.MECHANICS_TOML).is_file():
+        return {}
+    mech, members = mechanics.read_committed(config_root)
+    units: dict[str, dict[int, str]] = {}
+    out: dict[tuple[str, str], int] = {}
+    for tier in mechanics.signed_tiers(mech, members):
+        items = {item.id for item in mech.items if item.tier == tier}
+        for row in members:
+            if row.role != mechanics.ROLE_MEMBER or not items.intersection(row.member_items):
+                continue
+            if row.exe not in units:
+                path = config_root / row.exe / "functions.csv"
+                rows = read_functions_csv(path) if path.is_file() else []
+                units[row.exe] = {r.start: r.unit for r in rows}
+            unit = units[row.exe].get(row.address)
+            if unit:
+                out.setdefault((row.exe, unit), tier)  # tiers ascend: the first is the lowest
+    return out
+
+
+def _unit_callees(config_root: Path, picks: Mapping[tuple[str, str], Pick],
+                  callees: Callees) -> dict[tuple[str, str], list[tuple[str, str]]]:  # fmt: skip
+    """For each matched unit, the other matched units holding a matched callee of any of its
+    functions (`callees`: the worlds' call index)."""
+    out: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for exe in {key[0] for key in picks}:
+        rows = read_functions_csv(config_root / exe / "functions.csv")
+        unit_of = {row.start: row.unit for row in rows}
+        matched = matched_starts_of(config_root, exe)
+        calls = callees.get(exe, {})
+        for row in rows:
+            key = (exe, row.unit)
+            if key not in picks:
+                continue
+            found = {(exe, unit_of[c]) for c in calls.get(row.start, ())
+                     if c in matched and unit_of.get(c) and (exe, unit_of[c]) != key}  # fmt: skip
+            out.setdefault(key, []).extend(sorted(found))
+    return out
+
+
+def matched_starts_of(config_root: Path, exe: str) -> frozenset[int]:
+    """The matched starts of `exe`'s status.csv."""
+    return frozenset(row.start for row in _status_rows(config_root, exe)
+                     if row.status == STATUS_MATCHED)  # fmt: skip
+
+
+def readability_entries(repo: Path, callees: Callees | None = None) -> list[ReadabilityEntry]:
+    """07-38 (D-17): the readability queue of the checkout as it is now, in order
+    (picker.readability_queue), each unit with its strict readlint violation count. One
+    readlint run over src/ decides which matched units pass (a unit's own file; its included
+    headers count at its landing); `callees` (the worlds' call index; none: no callee blocks)
+    gives the bottom-up order. ReadlintError (an unreadable unit or table) propagates."""
+    repo = Path(repo)
+    config_root, src_root = repo / "config", repo / "src"
+    picks = _matched_unit_picks(config_root, src_root)
+    if not picks:
+        return []
+    result = run_readlint([src_root], src_root=src_root, config_root=config_root)
+    per_file = result.per_file()
+    counts = {key: per_file.get(f"src/{key[0]}/{key[1]}.c", {}).get("violations")
+              for key in picks}  # fmt: skip
+    passing = {key for key, n in counts.items() if n == 0}  # unchecked (None) is not passing
+    queue = readability_queue(picks, _tier_units(config_root),
+                              _unit_callees(config_root, picks, callees or {}), passing)
+    return [ReadabilityEntry(pick, counts[(pick.exe, pick.unit)] or 0) for pick in queue]
+
+
+def readability_source(repo: Path, callees: Callees | None = None
+                       ) -> Callable[[Container[Key]], Iterator[Pick]]:  # fmt: skip
+    """Deps.queue of a readability night: each time the coordinator asks, the queue is read
+    again from the committed state (so a unit offered once its callees pass is offered the
+    same night) and its first unit not yet offered tonight is the next pick. The difficult
+    list does not apply. With several workers a unit that waits for a callee still in flight
+    waits for the next night (the queue ends while nothing else is eligible)."""
+
+    def picks(difficult: Container[Key]) -> Iterator[Pick]:
+        offered: set[tuple[str, str]] = set()
+        while True:
+            entries = readability_entries(repo, callees)
+            pick = next((e.pick for e in entries if (e.pick.exe, e.pick.unit) not in offered),
+                        None)  # fmt: skip
+            if pick is None:
+                return
+            offered.add((pick.exe, pick.unit))
+            yield pick
+
+    return picks
+
+
+def readability_dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> int:
+    """`drive --session readability --dry-run`: the queued units in order with their readlint
+    violation counts; no pack, no claude, no gate."""
+    entries = readability_entries(options.repo, _world_callees(worlds))
+    units = [{"exe": e.pick.exe, "unit": e.pick.unit, "start": f"0x{e.pick.start:08X}",
+              "function": e.pick.name, "violations": e.violations} for e in entries]  # fmt: skip
+    lines = [f"{u['exe']} {u['unit']} {u['start']} {u['function']} readlint {u['violations']} "
+             f"violation{'' if u['violations'] == 1 else 's'}" for u in units]  # fmt: skip
+    _emit(options, {"session": READABILITY, "units": units},
+          lines or ["readability queue: empty (every matched unit passes readlint)"])
+    return EXIT_OK
+
+
+def _world_callees(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, tuple[int, ...]]]:
+    return {exe: world.callees for exe, world in worlds.items()}
 
 
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
@@ -5168,14 +5343,19 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                 return run_canary(options, seams, lock=lock)
         worlds = _load_worlds(seams)
         today = _today()
-        with _phase("picks"):
-            picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
-                                                                           today=today)
-        with _phase("drafts"):
-            _drafts(log, [_pick_of(entry) for entry in picks])
-        if options.dry_run:
-            with _phase("pack"):
-                return dry_run(options, worlds, picks)
+        if options.session == READABILITY:  # 07-38: no pilot picks and no Ghidra drafts
+            with _phase("picks"):
+                if options.dry_run:
+                    return readability_dry_run(options, worlds)
+        else:
+            with _phase("picks"):
+                picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
+                                                                               today=today)
+            with _phase("drafts"):
+                _drafts(log, [_pick_of(entry) for entry in picks])
+            if options.dry_run:
+                with _phase("pack"):
+                    return dry_run(options, worlds, picks)
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:

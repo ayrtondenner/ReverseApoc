@@ -8,8 +8,10 @@ wrapper use. `--bare` is never passed: it needs ANTHROPIC_API_KEY and would drop
 subscription login (D-06). `--settings` and `--append-system-prompt-file` are relative to the
 repository root, so the driver runs the session with `cwd` set to it (ruling F11).
 
-`goal_prompt` is the /goal prompt for one claim (D-07). `run_session` runs the argv, saves every
-stdout line as it arrives to the attempt's transcript.jsonl and parses it with streamjson. At
+`goal_prompt` is the /goal prompt for one claim (D-07); `readability_goal` that of a
+readability session, whose argv appends READABILITY_SKILL (07-38, D-18). `run_session` runs
+the argv, saves every stdout line as it arrives to the attempt's transcript.jsonl and parses it
+with streamjson. At
 the 30-minute wall clock it kills the whole process tree with `kill_tree` (Pitfall 7) and
 reports `timed_out`; streamjson.classify counts that as an attempt.
 """
