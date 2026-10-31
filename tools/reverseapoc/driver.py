@@ -407,6 +407,9 @@ class Deps:
     # rename must lie in one; none: every data rename is refused, fail closed).
     rename_gate: Callable[[Sequence[str]], GateRun] = lambda targets: GateRun(EXIT_TOOL)
     data_ranges: Callable[[str], Sequence[tuple[int, int]]] = lambda exe: ()
+    # 07-38 fix round 1 (owner ruling: every landing path lints): the C89 lint (0/1/2) of the
+    # repo-relative .c files a naming commit writes or reaches; none wired: a tool error.
+    lint_paths: Callable[[Sequence[str]], int] = lambda paths: EXIT_TOOL
 
 
 @dataclass(frozen=True)

@@ -430,3 +430,32 @@ def test_readability_dry_run_text(tmp_path, capsys):
     code, out, _ = rig.drive(capsys, dry_run=True, session=driver.READABILITY)
     assert code == 0
     assert f"{EXE} {UNIT} 0x{START:08X} {NAME} readlint 1 violation" in out
+
+
+# ---- fix round 1 (review 07-38) ----
+
+
+def test_queue_reads_head_not_the_working_tree(tmp_path):
+    """Review I2: another worker's landing sits in src/ uncommitted while the coordinator picks,
+    so the queue is read from HEAD: an uncommitted readable unit still fails, and an
+    uncommitted broken one still passes."""
+    night = RdNight(tmp_path)
+    _write(night.repo / UNIT_REL, READABLE)  # a landing in flight: in src/, not committed
+    assert list(driver.readability_source(night.repo)(frozenset())) == [READ_PICK]
+    clean = RdNight(tmp_path / "clean", head_text=READABLE)
+    _write(clean.repo / UNIT_REL, STILL_BAD)
+    assert list(driver.readability_source(clean.repo)(frozenset())) == []
+    assert clean.unit_text() == STILL_BAD  # the working tree is never touched
+
+
+def test_best_through_a_link_is_refused(tmp_path):
+    """Review M3: a PARTIAL landing never writes best/ through a link; the night stops."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    best_rel = f"build/driver/night1/{EXE}/{FUNC}/attempt-1/best"
+    sess = Sess(unit_text=STILL_BAD, link=(best_rel, elsewhere))
+    night = RdNight(tmp_path / "n", sessions=[sess], gate_exits=[0])
+    report = night.readability()
+    assert list(elsewhere.iterdir()) == []
+    assert report.event == driver.STOPPED and "best" in report.detail
+    assert night.unit_text() == HEAD_TEXT

@@ -404,7 +404,8 @@ def test_skill_says_proposals_are_allowed_but_not_applied():
     text = _text()
     writes = next(line for line in text.splitlines() if line.startswith("| What you may write"))
     assert "REVERSEAPOC_PROPOSALS" in writes and "proposals.jsonl" in writes
-    assert "writes none" in writes and "planned" in writes and "denial" in writes
+    assert "writes none" in writes and "readability sessions only" in writes
+    assert "denial" in writes
     assert "proposals.jsonl" in hooks._view_denial(["include/x.h"])  # the hint the line answers
     workflow = (REPO_ROOT / "docs" / "workflow.md").read_text(encoding="utf-8")
     env = next(line for line in workflow.splitlines()
@@ -414,10 +415,12 @@ def test_skill_says_proposals_are_allowed_but_not_applied():
     assert "matching" in env and "nothing reads" in env and "readability sessions only" in env
 
 
-def test_skill_marks_the_naming_landing_planned():
-    """Fix round 1 M1: the readability proposals that name things and write shared headers are
-    applied by a driver step that is planned (07-34); the skill marks both mentions planned."""
-    section = _section(_text(), "Replacing INCLUDE_ASM")
+def test_skill_states_the_naming_landing_as_built():
+    """Fix round 1 M1, refreshed by 07-38 fix round 1 (review M8): the driver step that applies
+    readability proposals (renames and shared headers) is built (07-34, 07-38), so the skill no
+    longer calls it planned; both mentions still say naming is the readability pass's work."""
+    text = _text()
+    assert "planned" not in text and "not built" not in text
+    section = _section(text, "Replacing INCLUDE_ASM")
     for phrase in ("through its proposals", "through readability proposals"):
-        start = section.index(phrase)
-        assert "(planned" in section[start : start + len(phrase) + 20], phrase
+        assert phrase in section, phrase
