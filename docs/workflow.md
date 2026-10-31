@@ -79,7 +79,7 @@ The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same on
 - **Opus, then Fable (D-09).** See "Model escalation" below. Before the first night that can reach a pass 3, the owner runs the Fable canary.
 
 ```
-uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
+uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--session matching|readability] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
 ```
 
 | Flag | Default | Meaning |
@@ -91,7 +91,8 @@ uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [
 | `--fable-budget-usd USD` | 12.5 | per-session budget of a Fable session (`claude-fable-5-1`, pass 3 and later, D-09, D-25) |
 | `--max-turns N` | 40 | turns per session (D-07) |
 | `--session-minutes N` | 30 | each session's wall clock in minutes (D-07) |
-| `--dry-run` | off | print the 10 pilot picks and build their packs; no claude, no gate |
+| `--session KIND` | `matching` | the night's session kind (D-17, D-18): `readability` runs the readability nights below |
+| `--dry-run` | off | print the 10 pilot picks and build their packs; no claude, no gate. With `--session readability`: the queued units and their readlint violation counts |
 | `--canary` | off | owner only: one real session that proves the guardrails deny (PASS/FAIL) |
 | `--model MODEL` | `claude-opus-5-5` | with `--canary` only: the model the canary asks for and its init check expects; `--model claude-fable-5-1` is the owner's Fable canary (D-25). The canary's init line and its JSON (`init_model`) name the model string the init event reported |
 | `--run ID` | the UTC start time | the run directory `build/driver/<ID>/` |
@@ -177,8 +178,8 @@ Each check prints one `PASS: ...` or `FAIL: ...` line, with no time stamp; the l
 
 - `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES`, as in Phase 6;
 - `REVERSEAPOC_UNIT_FILE`: the view unit, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`, the only C file it edits (its /goal names it too);
-- `REVERSEAPOC_PROPOSALS`: `<attempt dir>/proposals.jsonl`, for naming proposals (D-19) of readability sessions. For a matching session the hooks allow it, but nothing reads it: the rename landing is planned (07-34), for readability sessions only, so a matching session writes its name ideas in notes.md;
-- `REVERSEAPOC_SESSION_KIND`: `matching` (the hooks also know `readability`, for the readability sessions a later plan launches).
+- `REVERSEAPOC_PROPOSALS`: `<attempt dir>/proposals.jsonl`, for naming proposals (D-19) of readability sessions. For a matching session the hooks allow it, but nothing reads it: the driver applies proposals after readability sessions only (07-34, ruling F34), so a matching session writes its name ideas in notes.md;
+- `REVERSEAPOC_SESSION_KIND`: `matching`, or `readability` on a readability night (see "Readability nights" below).
 
 It may run only the attempt wrapper's five forms (`hooks.ATTEMPT_FORMS`). Each runs against the view, so its check compiles the view unit with the view's `config/cflags.txt`:
 
@@ -211,6 +212,43 @@ After the session the driver removes the attempt's containers and audits every c
 - **The `claude` executable** is found with `shutil.which("claude")` and is assumed to be the native `claude.exe` from `claude install`. A `.cmd` shim may not start under the driver's argv-list launch.
 - **`COMPOSE_PROJECT_NAME`.** Container cleanup filters on the compose project label, derived from the checkout's directory name (`reverseapoc`). If `COMPOSE_PROJECT_NAME` is set, the filter finds nothing and no error is raised, so a timed-out check container could keep running.
 - **Leaky canary leftovers** (for example `tools/x.py`) stay in place for inspection; clean up as above before the pilot.
+
+### Readability nights
+
+A readability night names, comments and types units that already match (D-17, D-18, DEC-04). It runs through the same driver as a matching night: the same preflight, caps, workers, views, hooks, claims and records. The session kind is the only difference.
+
+```
+uv run reverseapoc drive --session readability --dry-run   # the queue, with each unit's readlint violations
+uv run reverseapoc drive --session readability             # the night
+```
+
+**The queue.** It holds every committed unit with at least one `matched` row in `status.csv` that strict readlint does not pass yet. The four pre-phase units and the D-13 units are in it too: they need names before the phase gate. The order:
+
+1. units holding members of Tier 1;
+2. units holding members of the other signed tiers, in tier order;
+3. every other matched unit.
+
+The queue is bottom-up. A unit is offered once each matched callee it has in another unit passes readlint, or shares its call cycle (SCC). Then its callees are named first, and the callers are known. The queue is read again before each pick, so a caller can come up the same night once its callees have landed. With several workers, a caller whose callee is still in flight waits for the next night. When every matched unit passes readlint, the queue is empty: no session runs, and the night ENDS with `nothing to do`, exit 0.
+
+**One session per unit.** The claim has kind `readability`, and the session's environment has `REVERSEAPOC_SESSION_KIND=readability`. The claimed function is the unit's lowest matched function, which the attempt directory and the record name. The session runs on Opus with `--max-budget-usd` (escalation to Fable is a matching rule). Its argv appends `.claude/skills/watcom-readability/SKILL.md` instead of watcom-decomp. Its /goal asks for `attempt check` to report the check OK and readlint clean for the unit, with `notes.md` written. The goal also says that names are checked again at landing.
+
+**What a session may change.** In its view unit only: comments (above all each function's header comment), the names of locals and parameters, whitespace, `#define`s that name literals, and types the unit introduces. Function and global names change only through `proposals.jsonl` (D-19). Shared headers change only through header proposals. It never changes which functions the unit defines in C or marks `INCLUDE_ASM`.
+
+**The rename commits.** After the session's audit, the driver applies its proposals first (07-34). Each valid rename is its own `refactor(<exe>): rename <old> to <new>` commit (`Renamed-By: reverseapoc drive`), and each header proposal is a `refactor(include): write include/<name>.h` commit. The session's view unit is rewritten under the new names.
+
+**The landing.** It runs under the gate lock, in this order:
+
+1. If the unit is unchanged against HEAD (after the renames), the outcome is **GAVE_UP**, with no gate.
+2. The driver compares the set of functions the unit defines in C and marks `INCLUDE_ASM` (by start) with HEAD's. If the set changed, the outcome is **REFUSED**, before anything lands.
+3. The unit lands in `src/` and gets the C89 lint. A failing lint is **REFUSED**, with `abort_reason` `lint`.
+4. The container gate runs on the unit. A failing gate means a byte moved: **REFUSED**.
+5. Strict `readlint --units <exe>/<unit>` runs. If it is clean, the outcome is **LANDED**: one commit `refactor(<exe>): name and document <unit> (readability)`, with the model's `Co-Authored-By:` line and `Readability-By: reverseapoc drive`. The commit holds the unit, `status.csv` (with `source_sha256` refreshed by the gate), the feed and the log. If readlint still fails, the outcome is **PARTIAL**: the unit and `status.csv` go back, and the view unit is kept under `<attempt dir>/best/<unit>.c`.
+
+Every outcome is a v2 attempt record with `session: readability`. List the night's landings with `git log --format='%h %s' --grep='^Readability-By: reverseapoc drive$'`.
+
+**Callees left unnamed (D-30).** A matched unit may call a hub or an `asm` row that no session can name from evidence. Its RL01 reference then keeps the unit from landing. Before the first readability night, the executor lists every RL01 reference (never a definition) to a row that is not matched, in matched units, with its members role. The owner reviews the list at a short checkpoint, and the executor commits it to `config/readlint-allow.csv`. After the nights, rows whose reference is gone (renamed by a proposal) are pruned and new ones are added, again with the owner's review. Sessions never edit the allowlist; they name candidates in `notes.md`.
+
+**The done check.** `uv run reverseapoc readlint --tier 1` exits 0 (Tier 1 is fully named), and then `uv run reverseapoc readlint src/` exits 0 for every matched unit.
 
 ### Hooks (guardrails, Phase 6)
 
