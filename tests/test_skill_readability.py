@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 
 from conftest import REPO_ROOT
-from reverseapoc import attempt, hooks, proposals, readlint, session
+from reverseapoc import attempt, hooks, proposals, readlint, session, unitdefs
 from reverseapoc.check import EXIT_MISMATCH, EXIT_OK
 from reverseapoc.cli import build_parser
 from reverseapoc.functions import FunctionRow, write_functions_csv
@@ -259,39 +259,69 @@ def test_skill_states_the_budgets_from_the_code():
     assert str(proposals.EVIDENCE_TEXT_MAX) in text and str(proposals.NAME_MAX) in text
 
 
-def test_skill_states_what_lands_and_marks_it_planned():
-    """RED item 8 and ruling F18: the final view text lands, names are re-checked at landing,
-    and driver behaviour not built yet is said to be planned."""
+def test_skill_states_what_lands():
+    """RED item 8 and ruling F18: the final view text lands, names are re-checked at landing.
+    07-38: the landing is built, so the skill states every outcome the driver records (its
+    landing order: GAVE_UP, the defined-set and C89 lint refusals, the gate, strict readlint)."""
     stop = _section(_text(), "When to stop")
     assert "checks/NNNN.c" in stop and "byte-identical" in stop
-    assert "planned" in stop
-    for outcome in ("LANDED", "PARTIAL", "REFUSED"):
+    for outcome in ("LANDED", "PARTIAL", "REFUSED", "GAVE_UP"):
         assert outcome in stop, outcome
+    assert "C89 lint" in stop and "best/" in stop
     names = _section(_text(), "Names, evidence and proposals")
     assert "re-checked at landing" in names and "last" in names
 
 
-# ---- fix round 1 (review 07-36) ----
-
-# What the driver will do after a session (07-34 renames and headers, 07-38 landing): not built
-# at this HEAD, so every statement of it carries the word "planned".
-_DRIVER_ACTS = re.compile(r"\b(?:landing|lands|applies|writes|rewrites|commits)\b")
+# ---- fix round 1 (review 07-36); refreshed by 07-38 (orchestrator ruling: skill refresh) ----
 
 
-def _prose_blocks(text: str) -> list[str]:
-    """The blank-line separated blocks outside fenced code (the wrapper's real output, quoted in
-    a fence, describes the driver in its own words and is pinned elsewhere)."""
-    prose = re.sub(r"(?ms)^```[a-z]*\n.*?^```\n?", "", text)
-    return [block for block in re.split(r"\n\s*\n", prose) if block.strip()]
+def test_no_driver_behaviour_is_called_planned():
+    """07-34 built the rename and header step and 07-38 the readability landing, so the skill
+    no longer calls any driver behaviour planned or not built."""
+    text = _text()
+    assert "planned" not in text and "not built" not in text
 
 
-def test_every_statement_of_unbuilt_driver_behaviour_is_marked_planned():
-    """Review Important 1: the header write (07-34), strict readlint at landing (07-38) and the
-    last line's re-check at landing read as planned, like the landing paragraph."""
-    unmarked = [block for block in _prose_blocks(_text())
-                if re.search(r"\bdriver(?:'s)?\b", block) and _DRIVER_ACTS.search(block)
-                and "planned" not in block]  # fmt: skip
-    assert unmarked == []
+def test_rename_refusals_state_the_landing_rule():
+    """GREEN r2 note 1-2: the driver refuses at landing every file-scope name of the committed
+    units, the view and every header (macros, typedefs such as common.h's s32, tags), and a data
+    address outside the EXE's data objects; the skill states that rule, not only the narrower
+    in-session one."""
+    names = _section(_text(), "Names, evidence and proposals")
+    for needle in ("file-scope name", "`s32`", "tag", "data object", "in-session"):
+        assert needle in names, needle
+
+
+def test_rl04_states_the_real_rule():
+    """GREEN r2 note 4: RL04 matches any case, `unknown`, `padding` and bare `field` too, with a
+    hex or `_...` tail, so `pad_left`, `field_count` and even `padded` hit; the skill says so,
+    and every example it gives is an RL04 hit."""
+    row = next(line for line in _section(_text(), "Readlint").splitlines()
+               if line.startswith("| RL04"))  # fmt: skip
+    examples = [span for span in _SPAN.findall(row) if span.isidentifier()]
+    for name in ("pad_left", "field_count", "padded"):
+        assert name in examples, name
+    for name in examples:
+        assert readlint._UNNAMED_FIELD.fullmatch(name), name
+    assert "any case" in row
+
+
+def test_header_guidance_matches_the_driver_rules():
+    """07-34 fix rounds 1 and 2: a header proposal may declare no name another committed file
+    declares, so it cannot newly declare a prototype of an existing function, and promoting a
+    unit-local `#define` or struct under the same name is refused. The skill says so, and its
+    example header declares no name its example unit declares."""
+    names = _section(_text(), "Names, evidence and proposals")
+    assert "prototypes and object-like" not in names, "a header may not list prototypes"
+    assert "prototype of an existing function" in names
+    assert "same name" in names and "refused" in names
+    unit = "\n".join(_example_unit(_text()))
+    lines = _proposal_lines(_text())
+    headers = [p for n, line in enumerate(lines, start=1)
+               if isinstance(p := proposals.parse_line(line, n), proposals.Header)]  # fmt: skip
+    for header in headers:
+        shared = unitdefs.declared_names(header.text) & unitdefs.declared_names(unit)
+        assert not shared, shared
 
 
 def test_literal_types_are_stated_for_wcc386():

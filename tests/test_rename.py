@@ -779,3 +779,58 @@ def test_declared_names_of_units_and_tag_uses():
     assert unitdefs.declared_names(text) == {"get", "g_other", "fwd", "holder", "holder_t", "f",
                                              "g"}  # fmt: skip
 
+
+# ---- 07-38 fix round 1 (review I1): the C89 lint on every naming commit ----
+
+SND_SLASH = "#ifndef SND_H\n#define SND_H\n\n#define SND_MAX 8 // not C89\n\n#endif\n"
+PROBE_DIR = f"build/driver/{RUN}/lint-probe"
+
+
+def test_header_rewrite_failing_c89_lint_is_refused(tmp_path):
+    """Owner ruling (every landing path lints): a header rewrite with a `//` comment, included
+    by a committed unit, fails the C89 lint before the gate runs: REFUSED, every byte back,
+    nothing committed."""
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=SND_SLASH))],
+                   extra_files={SND_REL: SND_TEXT, UNIT_B_REL: B_SND})  # fmt: skip
+    night.lint_path_exits = [1]
+    before = night.bytes_of(SND_REL, UNIT_B_REL, STATUS_REL, FEED)
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and "C89 lint" in record["reason"]
+    assert night.rename_calls == [] and _refactors(night) == []
+    assert night.bytes_of(*before) == before
+    assert night.report.event == driver.ENDED
+
+
+def test_naming_lint_covers_every_target_and_the_header(tmp_path):
+    """The lint runs on the written files: every affected unit, and for a header a probe unit
+    that includes common.h and then the header (lint.py lints .c files only); the probe is
+    removed afterwards."""
+    night = RNight(tmp_path, sessions=[proposing(header_line())],
+                   extra_files={SND_REL: SND_TEXT, UNIT_B_REL: B_SND})  # fmt: skip
+    night.readability()
+    (call,) = night.lint_path_calls
+    probes = [rel for rel in call if rel.startswith(PROBE_DIR + "/")]
+    assert UNIT_B_REL in call and len(probes) == 1 and probes[0].endswith(".c")
+    assert call[probes[0]] == '#include "common.h"\n#include "snd.h"\n'
+    assert not (night.repo / probes[0]).exists()
+    assert night.renames()[0]["outcome"] == driver.APPLIED
+
+
+def test_rename_lints_every_user(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    night.readability()
+    (call,) = night.lint_path_calls
+    assert sorted(call) == sorted([UNIT_REL, UNIT_B_REL])
+    assert all(NEW in text for text in call.values())  # linted as written, under the new name
+
+
+def test_naming_lint_tool_error_restores_and_stops(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    night.lint_path_exits = [2]
+    before = night.bytes_of(SYMBOLS_REL, UNIT_REL, UNIT_B_REL)
+    night.readability()
+    assert night.bytes_of(*before) == before and _refactors(night) == []
+    assert (night.report.event, night.report.reason) == (driver.STOPPED, driver.TOOL)
+    assert "C89 lint" in night.report.detail
+
