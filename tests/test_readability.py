@@ -25,7 +25,7 @@ from reverseapoc.driver import GateRun
 from reverseapoc.functions import FunctionRow, SymbolRow, write_functions_csv, write_symbols_csv
 from reverseapoc.picker import Pick
 from reverseapoc.status import MATCHED, StatusRow, lf_sha256, status_path, write_status
-from test_drive import Rig
+from test_drive import Rig, _world
 from test_driver import (
     EXE,
     FUNC,
@@ -380,7 +380,7 @@ def test_empty_readability_queue(tmp_path):
     """DEC-04 empty: every matched unit passes readlint, so no session runs: ENDED nothing to
     do, exit 0."""
     night = RdNight(tmp_path, head_text=READABLE)
-    report = night.readability(queue=driver.readability_source(night.repo))
+    report = night.readability(queue=driver.readability_source(night.repo, git=night._git))
     assert (report.event, report.reason, report.exit_code) == (driver.ENDED,
                                                               driver.NOTHING_TO_DO, 0)
     assert night.launched == [] and night.attempts() == []
@@ -388,7 +388,7 @@ def test_empty_readability_queue(tmp_path):
 
 def test_readability_source_runs_the_failing_unit(tmp_path):
     night = RdNight(tmp_path, sessions=[Sess(unit_text=READABLE)], gate_exits=[0])
-    night.readability(queue=driver.readability_source(night.repo))
+    night.readability(queue=driver.readability_source(night.repo, git=night._git))
     assert night.refactors() == [SUBJECT]
     assert len(night.launched) == 1  # once it passes, the unit is no longer queued
 
@@ -441,11 +441,20 @@ def test_queue_reads_head_not_the_working_tree(tmp_path):
     uncommitted broken one still passes."""
     night = RdNight(tmp_path)
     _write(night.repo / UNIT_REL, READABLE)  # a landing in flight: in src/, not committed
-    assert list(driver.readability_source(night.repo)(frozenset())) == [READ_PICK]
+    assert list(driver.readability_source(night.repo, git=night._git)(frozenset())) == [READ_PICK]
     clean = RdNight(tmp_path / "clean", head_text=READABLE)
     _write(clean.repo / UNIT_REL, STILL_BAD)
-    assert list(driver.readability_source(clean.repo)(frozenset())) == []
+    assert list(driver.readability_source(clean.repo, git=clean._git)(frozenset())) == []
     assert clean.unit_text() == STILL_BAD  # the working tree is never touched
+
+
+def test_real_deps_lint_paths_runs_the_container_lint(tmp_path):
+    """The naming lint seam (review I1) is the container `lint` over the named files."""
+    rig = Rig(tmp_path)
+    deps = driver.real_deps(rig.options(), rig.seams(), _world(rig.packs))
+    assert deps.lint_paths(["src/ufo2p/u_x.c", "build/driver/r/lint-probe/snd.c"]) == 0
+    assert rig.runner.calls == [[*driver.CONTAINER_CLI, "lint", "src/ufo2p/u_x.c",
+                                 "build/driver/r/lint-probe/snd.c", "--json"]]  # fmt: skip
 
 
 def test_best_through_a_link_is_refused(tmp_path):
