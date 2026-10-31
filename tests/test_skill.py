@@ -399,7 +399,7 @@ def test_skill_keeps_names_placeholders():
 def test_skill_says_proposals_are_allowed_but_not_applied():
     """Fix round 1 I1: the hooks allow proposals.jsonl in every session (REVERSEAPOC_PROPOSALS,
     and the include/ denial points at it), but nothing applies a matching session's proposals:
-    the rename step (07-34) is planned, for readability sessions only. The skill says so where
+    the rename step (07-34) runs for readability sessions only. The skill says so where
     it lists the writes, and docs/workflow.md where it lists the variable."""
     text = _text()
     writes = next(line for line in text.splitlines() if line.startswith("| What you may write"))
@@ -409,7 +409,9 @@ def test_skill_says_proposals_are_allowed_but_not_applied():
     workflow = (REPO_ROOT / "docs" / "workflow.md").read_text(encoding="utf-8")
     env = next(line for line in workflow.splitlines()
                if line.startswith("- `REVERSEAPOC_PROPOSALS`"))  # fmt: skip
-    assert "matching" in env and "nothing reads" in env and "planned" in env
+    # 07-38: the rename step is built (07-34), so the docs say it runs after readability
+    # sessions only instead of calling it planned.
+    assert "matching" in env and "nothing reads" in env and "readability sessions only" in env
 
 
 def test_skill_marks_the_naming_landing_planned():
