@@ -27,6 +27,7 @@ from reverseapoc.functions import (
     write_functions_csv,
     write_symbols_csv,
 )
+from reverseapoc.gate import MODE_ALL, MODE_UNIT, GateResult
 from test_driver import (
     EXE,
     FUNC,
@@ -40,6 +41,7 @@ from test_driver import (
     Night,
     Sess,
     _git,
+    _plant_dir_link,
     _write,
 )
 
@@ -60,6 +62,21 @@ A_TEXT = (f'#include "common.h"\n\n/* {FUNC}: made-up purpose of three words */\
 B_TEXT = (f'#include "common.h"\n\nextern int {FUNC}(void);\n\n/* {FUNC_B}: calls {FUNC} */\n'
           f"int {FUNC_B}(void)\n{{\n    return {FUNC}();\n}}\n")  # fmt: skip
 EDITED = A_TEXT + "/* a readability comment */\n"  # what the session leaves in its view unit
+
+
+SPLICES = ({"exe": "UFO2P.EXE", "sha1": SHA_UFO2P, "ok": True},
+           {"exe": "TACP.EXE", "sha1": SHA_TACP, "ok": True})  # check.ExeLand.to_json's keys
+
+
+def gate_doc(targets, code: int) -> dict:
+    """The JSON a real `gate ... --json` prints (gate.GateResult.to_json): per-unit mode puts
+    each EXE's splice inside its check, `gate --all` (no targets) puts them at the top level."""
+    if targets:
+        result = GateResult(MODE_UNIT, tuple(targets), code,
+                            checks=tuple({"splice": list(SPLICES)} for _ in targets))  # fmt: skip
+    else:
+        result = GateResult(MODE_ALL, (), code, splices=SPLICES)
+    return result.to_json()
 
 
 def proposals_rel(func: str = FUNC, n: int = 1) -> str:
@@ -113,9 +130,7 @@ class RNight(Night):
                         name = names.get(row.start, row.name)
                         fh.write(f"0x{row.start:08X},{name},{unit},matched,100.00,0\n")
             _write(self.repo / FEED, '{"renamed": 1}\n')
-        doc = {"ok": code == 0, "written": [], "checks": [{"splice": [
-            {"exe": "UFO2P.EXE", "sha1": SHA_UFO2P}, {"exe": "TACP.EXE", "sha1": SHA_TACP}]}]}
-        return GateRun(code, doc)
+        return GateRun(code, gate_doc(targets, code))
 
     def _linker_names(self) -> dict[int, str]:
         text = (self.repo / SYMBOLS_REL).read_text(encoding="utf-8")
@@ -592,3 +607,134 @@ def test_gate_error_restores_and_stops(tmp_path):
     assert night.bytes_of(*before) == before
     (record,) = _validated(night.renames())
     assert record["outcome"] == driver.REFUSED
+
+
+# ---- fix round 1 ----
+
+
+def test_gate_sha1s_reads_both_gate_shapes():
+    """Review I1: a per-unit gate nests each EXE's splice in its check; `gate --all` prints them
+    at the top level (gate.py GateResult.to_json). Both name both EXEs."""
+    want = [("TACP.EXE", SHA_TACP), ("UFO2P.EXE", SHA_UFO2P)]
+    assert driver.gate_sha1s(gate_doc(["ufo2p/u_x"], 0)) == want
+    assert driver.gate_sha1s(gate_doc([], 0)) == want
+
+
+def test_rename_without_users_runs_gate_all_and_lands(tmp_path):
+    """A rename no committed unit names runs `gate --all` (the real shape) and is APPLIED."""
+    lone = 0x00030010
+    night = RNight(tmp_path, sessions=[proposing(rename_line(lone, "LoneWolf"))])
+    rows = [*night.rows, FunctionRow(lone, lone + 0x10, f"func_{lone:08X}", "game", "u_00030000",
+                                     "call")]  # fmt: skip
+    write_functions_csv(night.repo / FUNCTIONS_REL, rows, "UFO2P.EXE")
+    _git(night.repo, night.env, "commit", "-q", "-am", "a row without a unit file")
+    night.base = night.git("rev-parse", "HEAD").strip()
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED, record["reason"]
+    assert night.rename_calls == [[]]
+
+
+@pytest.mark.parametrize("text", [
+    "#define func_00010010 SoundVolume\n",
+    "typedef int func_00010010;\n",
+    "#define D_00012340 0\n",
+    "#define LAB_00012340 0\n",
+], ids=["define-func", "typedef-func", "define-data", "define-ghidra"])  # fmt: skip
+def test_header_declaring_a_placeholder_is_refused(tmp_path, text):
+    """Review I2: a header must not declare or define a placeholder-shaped name."""
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=text))])
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and "placeholder" in record["reason"]
+    assert night.rename_calls == [] and not (night.repo / SND_REL).exists()
+
+
+RUNTIME_CSV = ("start,end,segment,module,libraries,versions,publics,status,alternatives\n"
+               "0x00040000,0x00040010,_TEXT,printf,DOS/CLIB3R.LIB,10.6,printf_,matched,\n")
+COLLISIONS = {
+    "symbols": ("#define SoundVolume 1\n", "symbols.csv"),
+    "symbols-linker": ("typedef int SoundVolume_;\n", "symbols.csv"),
+    "runtime": ("int printf(void);\n", "runtime public"),
+    "unit": ("extern int helper_count;\n", UNIT_B_REL),
+    "header": ("enum snd_mode { SND_MAX };\n", "include/mix.h"),
+    "tag": ("struct mixer { int level; };\n", "include/mix.h"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(COLLISIONS))
+def test_header_name_collisions_are_refused(tmp_path, case):
+    """Review I2: every name a header declares or defines (macros, typedefs, tags, enumerators,
+    prototypes, objects) is checked like a rename against symbols.csv, runtime publics, other
+    files' file-scope names and other headers."""
+    text, where = COLLISIONS[case]
+    mix = "#ifndef MIX_H\n#define MIX_H\n#define SND_MAX 4\nstruct mixer { int gain; };\n#endif\n"
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=text))],
+                   extra_files={"include/mix.h": mix, UNIT_B_REL: B_STATIC,
+                                f"config/{EXE}/runtime.csv": RUNTIME_CSV})  # fmt: skip
+    write_symbols_csv(night.repo / SYMBOLS_REL, [SymbolRow(START_B, "SoundVolume_", "func")],
+                      "UFO2P.EXE")  # fmt: skip
+    _git(night.repo, night.env, "commit", "-q", "-am", "a named row")
+    night.base = night.git("rev-parse", "HEAD").strip()
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED, record
+    assert where in record["reason"]
+    assert night.rename_calls == []
+
+
+def test_rewriting_a_header_may_keep_its_own_names(tmp_path):
+    """The header's own committed names are its own, not a collision."""
+    night = RNight(tmp_path, sessions=[proposing(header_line())],
+                   extra_files={SND_REL: SND_TEXT, UNIT_B_REL: B_SND})  # fmt: skip
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED, record["reason"]
+
+
+def test_declared_names():
+    text = ("#ifndef SND_H\n#define SND_H\n#define SND_MAX 4\n"
+            "typedef unsigned char snd_level;\ntypedef int (*snd_cb)(u8 code);\n"
+            "enum snd_mode { SND_OFF, SND_ON = 2 };\nstruct mixer { u8 gain; };\n"
+            "extern u8 snd_volume, *snd_ptr, snd_table[SND_MAX];\n"
+            "int snd_play(u8 channel, struct mixer *m);\n#endif\n")
+    assert unitdefs.declared_names(text) == {
+        "SND_H", "SND_MAX", "snd_level", "snd_cb", "snd_mode", "SND_OFF", "SND_ON", "mixer",
+        "snd_volume", "snd_ptr", "snd_table", "snd_play"}
+
+
+def test_proposals_link_is_refused(tmp_path):
+    """S7: a proposals.jsonl that is a link (or not a regular file) is one REFUSED line; it is
+    never followed."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (elsewhere / "p.jsonl").write_text(rename_line() + "\n", encoding="utf-8")
+    night = RNight(tmp_path, sessions=[Sess(unit_text=EDITED)])
+    link = night.repo / proposals_rel()
+
+    def session(argv, **kwargs):
+        done = night._session(argv, **kwargs)
+        _plant_dir_link(link, elsewhere)  # a directory link: no privilege needed on Windows
+        return done
+
+    night.readability(session=session)
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and record["op"] is None
+    assert "not a regular file" in record["reason"]
+    assert night.rename_calls == []
+
+
+def test_raise_before_the_commit_restores(tmp_path, monkeypatch):
+    """Review minor 1: a failure after a passing gate but before `git commit` (the co-author
+    line, reading HEAD) puts every path back and stops the night."""
+    def coauthor(model):
+        raise driver.DriverError(f"no co-author line for {model}")
+
+    monkeypatch.setattr(driver, "coauthor", coauthor)
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    before = night.bytes_of(*TOUCHED)
+    night.readability()
+    assert night.report.event == driver.STOPPED and night.report.reason == driver.TOOL
+    assert night.bytes_of(*before) == before
+    assert night.git("status", "--porcelain", "--", *TOUCHED).strip() == ""
+
