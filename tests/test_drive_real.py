@@ -55,25 +55,37 @@ def _member_keys(mech, rows, tier_id: int) -> set[tuple[str, int]]:
     return set(status.unmatched_starts)
 
 
+def _data_tagged(row: mechanics.AsmRow) -> bool:
+    return bool(set(row.evidence.split(";")) & set(mechanics.DATA_TAGS))
+
+
 def test_real_tier_queue_holds_the_signed_tiers_members(worlds):
     """07-26 over the committed config/: the tier queue's members are exactly the signed tiers'
-    must-match sets (a row of two tiers in the first), never an asm row; its first dry-run
-    picks are unmatched Tier 1 members, each once (whatever passes the log holds: members come
-    before hubs and later tiers, 07-26 review I1)."""
+    must-match sets (a row of two tiers in the first) minus the rows it holds (07-44: verdict
+    `unclear` with data-in-code evidence on the signed asm list), never an asm row; its first
+    dry-run picks are unmatched Tier 1 members, each once (whatever passes the log holds:
+    members come before hubs and later tiers, 07-26 review I1)."""
     config_root = REPO_ROOT / "config"
     mech, rows = mechanics.read_committed(config_root)
     signed = mechanics.signed_tiers(mech, rows)
     assert signed and signed[0] == 1
     queue = driver.tier_source(config_root, worlds)({})
+    held = set(queue.held)
     queued = {i.key for i in queue.items if not i.hub}
     expected: set[tuple[str, int]] = set()
     for tier_id in signed:
         expected |= _member_keys(mech, rows, tier_id)
-    assert queued == expected
+    assert queued == expected - held
+    assert not {i.key for i in queue.items} & held
     tier1 = {i.key for i in queue.items if i.tier == 1 and not i.hub}
-    assert tier1 == _member_keys(mech, rows, 1)
+    assert tier1 == _member_keys(mech, rows, 1) - held
+    listed = {(r.exe, r.address): r for r in
+              mechanics.read_asm_list(config_root / mechanics.ASM_CSV)}  # fmt: skip
+    for key in held:  # each held key: on the signed list, `unclear`, with a data tag
+        assert key in listed and listed[key].verdict == "unclear" and _data_tagged(listed[key])
     asm = {(r.exe, r.address) for r in rows if r.role == mechanics.ROLE_ASM}
     assert not {i.key for i in queue.items} & asm
+    assert not held & asm
     options = driver.DriveOptions(repo=REPO_ROOT, run_id="real-test", dry_run=True)
     picks = driver.pilot_picks(options, worlds, today="2026-10-25")
     assert len(picks) == driver.DRY_RUN_TIER_PICKS

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import ORIG_DIR, REPO_ROOT, build_le_image, requires_capstone
-from reverseapoc import asmclass, cli, locate, mechanics
+from reverseapoc import asm, asmclass, cli, locate, mechanics
 from reverseapoc.functions import KIND_GAME, KIND_RUNTIME, FunctionRow, UnitRow, read_units_csv
 from reverseapoc.le import LE
 from reverseapoc.mechanics import AsmRow
@@ -99,8 +99,13 @@ def _by_address(rows) -> dict[int, AsmRow]:
 
 def test_tag_and_verdict_vocabulary():
     assert asmclass.TAGS == ("unaligned", "stack-frame", "enter", "pushal", "iretd", "nop-pad",
-                             "library-span")  # fmt: skip
+                             "library-span", *mechanics.DATA_TAGS)  # fmt: skip
+    assert asmclass.TAGS[-4:] == mechanics.DATA_TAGS == (
+        "no-terminator", "text-run", "zero-fill", "bad-decode")
     assert asmclass.ALIGNMENT == 16
+    assert (asmclass.TEXT_RUN, asmclass.ZERO_RUN, asmclass.MAX_INSN_BYTES) == (6, 16, 15)
+    assert asmclass.ZERO_RUN == asmclass.ALIGNMENT
+    assert set(asmclass.TERMINATORS) == {"ret", "retf", "iret", "iretd", "jmp", "ljmp"}
     assert set(asmclass.LIBRARY_UNITS) == set(mechanics.EXES)
 
 
@@ -151,6 +156,90 @@ def test_classify_reads_library_units_per_exe(monkeypatch):
 def test_no_unaligned_row_is_empty():
     aligned = [_row(P, E), _row(L, SF2), _row(E2, RT)]
     assert asmclass.classify(_exe(rows=aligned, units=()), library=()) == []
+
+
+# ---- data-in-code evidence (07-44, owner ruling 2026-10-31; D-23) ----
+
+_ZERO = b"\x00"
+_TEXT6, _TEXT5 = b"ABCDEF", b"ABCDE"  # six and five printable bytes (made up)
+_JMP_SELF = b"\xeb\xfe"  # jmp $ (a short jump to itself)
+_BAD = b"\xfe\xf8"  # fe /7 is no instruction (asm.walk yields a RawByte), then f8: clc
+DATA_ROW = 0x20  # every data-image row: 32 bytes, aligned, outside any library unit
+DATA_CASES = {  # id: (the row's code, NOP-padded to DATA_ROW; its evidence, None: not listed)
+    "all-zero": (_ZERO * DATA_ROW, "no-terminator;zero-fill"),
+    "ret-15-zeros": (_RET + _ZERO * 15, None),  # filler shorter than ZERO_RUN
+    "ret-16-zeros": (_RET + _ZERO * 16, "zero-fill"),
+    "ret-text6-zero": (_RET + _TEXT6 + _ZERO, "text-run"),
+    "ret-text5-zero": (_RET + _TEXT5 + _ZERO, None),
+    "text6-no-zero": (_TEXT6 + _RET, None),
+    "xor-only": (_XOR_EAX_EAX, "no-terminator"),
+    "jmp-no-ret": (_JMP_SELF, None),
+    "bad-16-before-end": (_XOR_EAX_EAX * 8 + _BAD + _RET, "bad-decode"),  # no nop-pad
+    "bad-15-before-end": (_RET + _NOP * 16 + _BAD, None),
+}  # fmt: skip
+DATA_START = {case: CODE + i * DATA_ROW for i, case in enumerate(DATA_CASES)}
+BAD_AT = {"bad-16-before-end": 16, "bad-15-before-end": 17}  # the RawByte's offset in its row
+
+
+def _data_exe():
+    rows = [_row(start, start + DATA_ROW) for start in DATA_START.values()]
+    patches = {DATA_START[case]: _padded(code, DATA_ROW) for case, (code, _) in DATA_CASES.items()}
+    le = LE(build_le_image(fixups=[b"", b"", b""], patches=patches).data)
+    flat = bytes(le.load_flat(relocate=False))
+    return SimpleNamespace(stem="ufo2p", le=le, flat=flat, fixups=tuple(le.fixups()),
+                           rows=tuple(rows), units=())  # fmt: skip
+
+
+@pytest.mark.parametrize("case", list(DATA_CASES))
+def test_data_tags(case):
+    start = DATA_START[case]
+    code, expected = DATA_CASES[case]
+    if case in BAD_AT:  # the planted byte really is one asm.walk cannot decode
+        va = start + BAD_AT[case]
+        items = asm.walk(_padded(code, DATA_ROW), start, {})
+        assert any(isinstance(i, asm.RawByte) and i.va == va for i in items)
+        assert start + DATA_ROW - va == (16 if expected else 15)
+    found = _by_address(asmclass.classify(_data_exe(), library=()))
+    if expected is None:
+        assert start not in found
+    else:
+        assert found[start].evidence == expected
+
+
+def test_data_facts_hold_counts_and_mnemonics():
+    exe = _data_exe()
+    index = asm.FixupIndex(exe.fixups)
+    rows = {row.start: row for row in exe.rows}
+    text = asmclass.data_facts(exe, index, rows[DATA_START["ret-text6-zero"]])
+    assert (text.size, text.terminator, text.text_run, text.zero_run, text.zeros,
+            text.early_raw) == (DATA_ROW, True, 6, 1, 1, 0)  # fmt: skip
+    zero = asmclass.data_facts(exe, index, rows[DATA_START["all-zero"]])
+    assert (zero.terminator, zero.zero_run, zero.zeros, zero.last_mnemonic) == (
+        False, DATA_ROW, DATA_ROW, "add")  # 00 00 decodes as add
+    bad = asmclass.data_facts(exe, index, rows[DATA_START["bad-16-before-end"]])
+    assert (bad.early_raw, bad.terminator) == (1, True)
+
+
+def test_data_rows_are_proposed_unclear():
+    """D-23: data tags never make a verdict `asm`; only the owner turns a data row into asm or
+    c. A library-span row stays asm."""
+    listed = asmclass.classify(_data_exe(), library=())
+    assert listed and {row.verdict for row in listed} == {"unclear"}
+    data = set(mechanics.DATA_TAGS)
+    assert asmclass._verdict(data | {"unaligned"}) == "unclear"
+    assert asmclass._verdict(data | {"library-span"}) == "asm"
+
+
+def test_merge_adds_data_tags_and_keeps_rulings():
+    new_row = DATA_START["all-zero"]
+    existing = [AsmRow("ufo2p", U, "unaligned", "unclear", "spot-check: x")]
+    proposed = [AsmRow("ufo2p", U, "unaligned;no-terminator", "unclear"),
+                AsmRow("ufo2p", new_row, "no-terminator;zero-fill", "unclear")]  # fmt: skip
+    rows, changed = asmclass.merge(existing, proposed)
+    found = _by_address(rows)
+    assert found[U] == AsmRow("ufo2p", U, "unaligned;no-terminator", "unclear", "spot-check: x")
+    assert found[new_row] == AsmRow("ufo2p", new_row, "no-terminator;zero-fill", "unclear", "")
+    assert changed == [f"ufo2p 0x{U:08X} evidence", f"ufo2p 0x{new_row:08X} added"]
 
 
 # ---- the verdict-preserving merge (orchestrator ruling F17) ----
@@ -288,3 +377,33 @@ def test_unaligned_counts_match_research(exe):
     unaligned = [r for r in rows if "unaligned" in r.evidence.split(asmclass.SEPARATOR)]
     assert len(unaligned) == UNALIGNED_GAME_ROWS[exe]
     assert {r.verdict for r in rows} <= {"asm", "unclear"}  # the detector never proposes `c`
+
+
+def test_matched_rows_with_data_evidence_are_ruled_c():
+    """07-44 negative control (real files): a status.csv `matched` game row is C that compiled
+    and matched, so a data-in-code tag on one is a false positive unless the owner ruled the row
+    `c` on the committed list."""
+    from reverseapoc.status import MATCHED, read_status, status_path
+
+    requires_capstone()
+    missing = [n for n in REAL_EXES.values() if not (ORIG_DIR / n).is_file()]
+    if missing:
+        pytest.skip(f"orig/{missing[0]} not present (run uv run reverseapoc ingest or set "
+                    "REVERSEAPOC_ORIG)")  # fmt: skip
+    config = REPO_ROOT / "config"
+    path = config / mechanics.ASM_CSV
+    rows = mechanics.read_asm_list(path) if path.is_file() else []
+    listed = {(r.exe, r.address): r for r in rows}
+    data, seen, flagged = set(mechanics.DATA_TAGS), 0, []
+    for exe in mechanics.EXES:
+        matched = {r.start for r in read_status(status_path(config, exe)) if r.status == MATCHED}
+        inputs = locate.load_inputs(config, ORIG_DIR, config / "targets.toml", exe)
+        game = {row.start for row in inputs.rows if row.kind == KIND_GAME}
+        seen += len(matched & game)
+        for row in asmclass.classify(inputs):
+            ruled_c = listed.get((exe, row.address), row).verdict == "c"
+            tagged = data & set(row.evidence.split(asmclass.SEPARATOR))
+            if row.address in matched and tagged and not ruled_c:
+                flagged.append(f"{exe} 0x{row.address:08X} {row.evidence}")
+    assert seen  # the control looks at real matched game rows
+    assert flagged == []

@@ -380,14 +380,16 @@ def _ranked(starts, *, scores=None, chk=()) -> dict[int, Candidate]:
 
 
 def _tq(rows, edges=(), *, mech=None, matched=(), passes=None, scores=None, units=None,
-        chk=()):  # fmt: skip
-    """The tier queue of UFO2P `rows` over the graph of `edges`, each row in its own unit."""
+        chk=(), held=None):  # fmt: skip
+    """The tier queue of UFO2P `rows` over the graph of `edges`, each row in its own unit;
+    `held` (07-44), when given, is the signed asm list's held keys."""
     starts = [r.address for r in rows]
     units = units or {s: f"u_{s:08x}" for s in starts}
+    hold = {} if held is None else {"held": held}
     return picker.tier_queue(mech or _mech(rows), rows, {UFO2P: _graph(*edges)},
                              {UFO2P: _ranked(starts, scores=scores, chk=chk)}, {UFO2P: units},
                              matched=frozenset((UFO2P, m) for m in matched),
-                             passes={} if passes is None else passes)  # fmt: skip
+                             passes={} if passes is None else passes, **hold)  # fmt: skip
 
 
 def _serve(q, passes: dict, *, match=(), limit=50) -> list[int]:
@@ -480,22 +482,31 @@ def test_tier_queue_refuses_a_member_without_a_unit():
 # ---- the driver with a signed tier (07-26 Task 1) ----
 
 
-def _signed_files(rows, scratch: Path, *, sign: bool = True) -> dict[str, str]:
+def _signed_files(rows, scratch: Path, *, sign: bool = True, asm=None) -> dict[str, str]:
     """config/mechanics.toml (tier 1, item 997, one entry; signed when `sign`) and the members
-    file of `rows`, as text for a commit. `scratch` holds the unsigned draft the digest reads."""
+    file of `rows`, as text for a commit. `scratch` holds the unsigned draft the digest reads.
+    `asm` (07-44): AsmRows of config/asm-functions.csv, signed off in [asm_list]."""
     from test_mechanics import entry, item, tier, toml_text  # 07-10's TOML writer
 
+    top, files = None, {}
+    if asm is not None:
+        listed = mechanics.format_asm_csv(asm)
+        draft_list = scratch / "draft-asm.csv"
+        draft_list.write_bytes(listed.encode("utf-8"))
+        top = {"schema": 1, "asm_list": {"signed_off_by": "owner", "signed_off_date": SIGNED_ON,
+                                         "list_sha256": mechanics.asm_list_sha256(draft_list)}}
+        files["config/asm-functions.csv"] = listed
     tables = {"item": [item()], "entry": [entry(address=rows[0].address)]}
-    text = toml_text(None, tier=[tier(1)], **tables)
+    text = toml_text(top, tier=[tier(1)], **tables)
     if sign:
         draft = scratch / "draft-mechanics.toml"
         draft.write_text(text, encoding="utf-8")
         mech = mechanics.load(draft)
         signed = tier(1, signed_off_by="owner", signed_off_date=SIGNED_ON,
                       members_sha256=mechanics.tier_digest(mech, rows, 1))  # fmt: skip
-        text = toml_text(None, tier=[signed], **tables)
+        text = toml_text(top, tier=[signed], **tables)
     return {"config/mechanics.toml": text,
-            "config/mechanics-members.csv": mechanics.format_members_csv(rows)}  # fmt: skip
+            "config/mechanics-members.csv": mechanics.format_members_csv(rows), **files}
 
 
 def _empty_status(*matched: int) -> dict[str, str]:
@@ -777,11 +788,11 @@ def _rig_world(packs, starts, edges):
     return {exe: replace(world, pack=packs.for_exe(exe)) for exe, world in worlds.items()}
 
 
-def _signed_rig(tmp_path, rows):
+def _signed_rig(tmp_path, rows, *, asm=None):
     from test_drive import Rig, _git
 
     rig = Rig(tmp_path / "rig")
-    files = {**_signed_files(rows, tmp_path), **_empty_status()}
+    files = {**_signed_files(rows, tmp_path, asm=asm), **_empty_status()}
     for rel, text in files.items():
         (rig.repo / rel).parent.mkdir(parents=True, exist_ok=True)
         (rig.repo / rel).write_text(text, encoding="utf-8", newline="\n")
@@ -826,6 +837,144 @@ def test_night_top_picks_draw_from_the_tier_queue(tmp_path):
     picks = driver.night_top_picks(rig.options(max_sessions=2), worlds, today="2026-11-02")
     assert [p.start for p in picks] == [TC, TB]
     assert all(isinstance(p, Pick) for p in picks)
+
+
+# ---- 07-44: the tier queue holds signed `unclear` data rows (owner ruling 2026-10-31, D-23) ----
+
+
+def _asm_row(address: int, evidence: str, verdict: str = "unclear") -> mechanics.AsmRow:
+    return mechanics.AsmRow(UFO2P, address, evidence, verdict)
+
+
+def _signed_list(root: Path, mech: mechanics.Mechanics, asm_rows) -> mechanics.Mechanics:
+    """config/asm-functions.csv of `asm_rows` under `root`, and `mech` with its [asm_list]
+    sign-off, as the owner gives it."""
+    path = root / mechanics.ASM_CSV
+    path.write_bytes(mechanics.format_asm_csv(asm_rows).encode("utf-8"))
+    signoff = mechanics.AsmSignoff("owner", SIGNED_ON, mechanics.asm_list_sha256(path))
+    return replace(mech, asm_list=signoff)
+
+
+def test_tier_queue_holds_unclear_data_rows():
+    """Owner ruling 2026-10-31 (07-44): Tier 1 members A -> B and A -> D, D held. D is never
+    served and nothing waits on it: A waits only for B; `held` lists D. Without the held set the
+    queue serves D too."""
+    rows = [_member(a) for a in (TA, TB, TD)]
+    edges = [(TA, TB), (TA, TD)]
+    assert _serve(_tq(rows, edges), {}, match=True) == [TB, TD, TA]
+    q = _tq(rows, edges, held=frozenset({(UFO2P, TD)}))
+    assert _serve(q, {}, match=True) == [TB, TA]
+    assert q.held == ((UFO2P, TD),)
+
+
+@pytest.mark.parametrize(("evidence", "verdict", "held"), [
+    ("no-terminator", "unclear", True),
+    ("unaligned;zero-fill", "unclear", True),
+    ("unaligned;text-run;bad-decode", "unclear", True),
+    ("unaligned", "unclear", False),
+    ("unaligned;no-terminatorx", "unclear", False),  # only exact tokens count
+    ("no-terminator", "c", False),
+    ("no-terminator", "asm", False),
+])  # fmt: skip
+def test_held_pairs(evidence, verdict, held):
+    got = mechanics.held_pairs([_asm_row(TA, evidence, verdict)])
+    assert got == (frozenset({(UFO2P, TA)}) if held else frozenset())
+
+
+def test_a_row_ruled_c_is_queued():
+    """D-23: an owner `c` always queues the row, whatever its evidence; a held hub of the tier is
+    left out of the hub group too, and listed once."""
+    rows = [_member(TA), _member(TB), _member(TH, role=ROLE_HUB)]
+    held = mechanics.held_pairs([_asm_row(TA, "no-terminator", "c"),
+                                 _asm_row(TH, "no-terminator")])  # fmt: skip
+    q = _tq(rows, [(TA, TB), (TB, TH)], held=held)
+    assert _serve(q, {}, match=True) == [TB, TA]
+    assert q.held == ((UFO2P, TH),)
+
+
+def test_signed_held_refuses_an_unsigned_or_changed_list(tmp_path):
+    """The hold reads the list only through its [asm_list] sign-off, as signed_asm does."""
+    rows = [_member(TA)]
+    mech = _mech(rows)
+    assert mechanics.signed_held(tmp_path, mech) == frozenset()  # no list: nothing held
+    signed = _signed_list(tmp_path, mech, [_asm_row(TA, "no-terminator")])
+    assert mechanics.signed_held(tmp_path, signed) == frozenset({(UFO2P, TA)})
+    with pytest.raises(mechanics.MechanicsError, match="D-23"):
+        mechanics.signed_held(tmp_path, mech)  # a list, but no [asm_list]
+    path = tmp_path / mechanics.ASM_CSV
+    path.write_bytes(mechanics.format_asm_csv([_asm_row(TA, "unaligned")]).encode("utf-8"))
+    with pytest.raises(mechanics.MechanicsError, match="changed since"):
+        mechanics.signed_held(tmp_path, signed)
+
+
+def test_hold_keeps_the_tier_signed(tmp_path):
+    """The hold is a queue filter: Tier 1 stays signed, the members rows are as they were, and
+    the queue still holds Tier 1's other members first."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    before = mechanics.format_members_csv(rows)
+    mech = _signed_list(tmp_path, _mech(rows), [_asm_row(TB, "unaligned;zero-fill")])
+    held = mechanics.signed_held(tmp_path, mech)
+    assert mechanics.signed_tiers(mech, rows) == (1,)
+    assert mechanics.format_members_csv(rows) == before
+    q = _tq(rows, [(TA, TB), (TB, TC)], mech=mech, held=held)
+    assert [i.pick.start for i in q.preview(10)] == [TA, TC]
+    assert q.held == ((UFO2P, TB),)
+
+
+def test_dry_run_counts_held_rows(tmp_path, capsys):
+    """07-44: with Tier 1 signed and a signed asm list marking TB `unclear`, `no-terminator`, the
+    dry run never picks TB and reports it as held (JSON and text); nothing waits on it."""
+    rows = [_member(a) for a in (TA, TB, TC)]
+    rigs = []
+    for name in ("json", "text"):
+        (tmp_path / name).mkdir()
+        rig = _signed_rig(tmp_path / name, rows, asm=[_asm_row(TB, "no-terminator")])
+        rigs.append((rig, _rig_world(rig.packs, (TA, TB, TC), [(TA, TB), (TB, TC)])))
+    (rig, worlds), (text_rig, text_worlds) = rigs
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 0, out
+    doc = json.loads(out)
+    assert [(p["start"], p["level"]) for p in doc["picks"]] == [
+        (f"0x{TA:08X}", 0), (f"0x{TC:08X}", 0)]
+    assert (doc["held"], doc["held_starts"]) == (1, [[UFO2P, f"0x{TB:08X}"]])
+    code, out, _ = text_rig.drive(capsys, dry_run=True, seams={"world": lambda: text_worlds})
+    assert code == 0, out
+    lines = out.splitlines()
+    picked = max(i for i, line in enumerate(lines) if line.startswith(UFO2P))
+    held = [i for i, line in enumerate(lines) if line.startswith("held: ")]
+    assert held == [picked + 1]
+    assert lines[held[0]].startswith("held: 1 (verdict unclear with data-in-code evidence")
+
+
+def test_dry_run_without_a_signed_tier_holds_nothing(tmp_path, capsys):
+    from test_drive import Rig
+
+    code, out, _ = Rig(tmp_path / "json").drive(capsys, dry_run=True, json=True)
+    assert code == 0
+    doc = json.loads(out)
+    assert (doc["held"], doc["held_starts"]) == (0, [])
+    code, out, _ = Rig(tmp_path / "text").drive(capsys, dry_run=True)
+    assert code == 0
+    assert not [line for line in out.splitlines() if "held:" in line]
+
+
+def test_dry_run_refuses_a_changed_asm_list(tmp_path, capsys):
+    """An asm list changed after its sign-off refuses the dry run in its picks phase (exit 2),
+    before any pack is built (D-23, T-07-129)."""
+    from test_drive import _git
+
+    rows = [_member(a) for a in (TA, TB, TC)]
+    rig = _signed_rig(tmp_path, rows, asm=[_asm_row(TB, "no-terminator")])
+    path = rig.repo / "config" / mechanics.ASM_CSV
+    path.write_bytes(mechanics.format_asm_csv([_asm_row(TB, "unaligned")]).encode("utf-8"))
+    _git(rig.repo, rig.env, "commit", "-q", "-am", "asm list edited after its sign-off")
+    worlds = _rig_world(rig.packs, (TA, TB, TC), [(TA, TB), (TB, TC)])
+    code, out, _ = rig.drive(capsys, dry_run=True, json=True, seams={"world": lambda: worlds})
+    assert code == 2, out
+    doc = json.loads(out)
+    assert doc["reason"] == "picks"
+    assert "changed since" in doc["detail"]
+    assert not rig.packs.built
 
 
 # ---- fix round 1 (07-26 review I1, I2) ----

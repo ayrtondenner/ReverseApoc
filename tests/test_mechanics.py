@@ -953,12 +953,76 @@ def test_status_counts_and_require_matched(tmp_path, capsys):
     assert cli.main(argv) == 0
     report = __import__("json").loads(capsys.readouterr().out)
     assert report["tiers"]["1"] == {"total": 1, "matched": 0, "partial": 1, "unmatched": 0,
-                                    "unmatched_starts": [["ufo2p", f"0x{E:08X}"]]}  # fmt: skip
+                                    "unmatched_starts": [["ufo2p", f"0x{E:08X}"]],
+                                    "held": 0, "held_starts": []}  # fmt: skip
     assert cli.main([*argv, "--require-matched"]) == 1
     _status_csv(root, matched=[E, X], partial=[])
     assert cli.main([*argv, "--require-matched"]) == 0
     assert cli.main(["mechanics", "status", "--config", str(root)]) == 0
     assert "tier 1" in capsys.readouterr().out
+
+
+def _held_root(tmp_path: Path, *, listed: bool = True) -> Path:
+    """Tier 1 signed with entry E and a non-entry member A (E -> A); with `listed`, a signed asm
+    list marks A `unclear`, `no-terminator` (07-44: a held row)."""
+    g, nodes = graph((E, A)), (E, A)
+    root = _config(tmp_path, "", rows=game_rows(*nodes))
+    top: dict = {"schema": 1}
+    if listed:
+        path = root / mechanics.ASM_CSV
+        held = mechanics.AsmRow("ufo2p", A, "no-terminator", "unclear")
+        path.write_bytes(mechanics.format_asm_csv([held]).encode("utf-8"))
+        top["asm_list"] = _asm_signoff(path)
+    rows = members(M(), g, nodes=nodes)
+    write_members(root / mechanics.MEMBERS_CSV, rows)
+    path = root / "mechanics.toml"
+    tables = {"item": [item()], "entry": [entry()]}
+    path.write_text(toml_text(top, tier=[tier(1)], **tables), encoding="utf-8")
+    t1 = tier(1, signed_off_by="owner", signed_off_date=datetime.date(2026, 11, 2),
+              members_sha256=mechanics.tier_digest(load(path), rows, 1))  # fmt: skip
+    path.write_text(toml_text(top, tier=[t1], **tables), encoding="utf-8")
+    _status_csv(root, matched=[], partial=[])
+    return root
+
+
+def _status_json(root: Path, capsys) -> dict:
+    argv = ["mechanics", "status", "--tier", "1", "--json", "--config", str(root)]
+    assert cli.main(argv) == 0
+    return __import__("json").loads(capsys.readouterr().out)["tiers"]["1"]
+
+
+def test_status_reports_held(tmp_path, capsys):
+    """07-44: a held member stays in every total; `held` / `held_starts` name it, the text line
+    says so, and --require-matched still fails over it, naming the held count (D-05)."""
+    root, bare = _held_root(tmp_path / "held"), _held_root(tmp_path / "bare", listed=False)
+    held, plain = _status_json(root, capsys), _status_json(bare, capsys)
+    assert plain["held"] == 0 and plain["held_starts"] == []
+    assert {k: v for k, v in held.items() if not k.startswith("held")} == {
+        k: v for k, v in plain.items() if not k.startswith("held")}
+    assert (held["total"], held["held"], held["held_starts"]) == (2, 1, [["ufo2p", f"0x{A:08X}"]])
+    assert cli.main(["mechanics", "status", "--tier", "1", "--config", str(bare)]) == 0
+    assert capsys.readouterr().out == "tier 1: 2 members, 0 matched, 0 partial, 2 unmatched\n"
+    assert cli.main(["mechanics", "status", "--tier", "1", "--config", str(root)]) == 0
+    assert capsys.readouterr().out == ("tier 1: 2 members, 0 matched, 0 partial, 2 unmatched "
+                                       "(1 of them held for an asm-list ruling)\n")  # fmt: skip
+    assert _require(root, "--tier", "1") == 1
+    assert "1 unmatched members are held for an asm-list ruling" in capsys.readouterr().err
+    with (root / mechanics.ASM_CSV).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(f"ufo2p,0x{E:08X},no-terminator,unclear,\n")
+    assert cli.main(["mechanics", "status", "--tier", "1", "--config", str(root)]) == 2
+    assert "D-23" in capsys.readouterr().err
+
+
+def test_a_held_row_changes_no_check(tmp_path, capsys):
+    """07-44: the hold is a queue filter: with the signed list holding a Tier 1 member, the
+    committed-data check stays clean and the tier's digest is the one without the list."""
+    root, bare = _held_root(tmp_path / "held"), _held_root(tmp_path / "bare", listed=False)
+    assert mechanics.check_committed(root) == []
+    digests = []
+    for config in (root, bare):
+        assert cli.main(["mechanics", "digest", "--tier", "1", "--config", str(config)]) == 0
+        digests.append(capsys.readouterr().out)
+    assert digests[0] == digests[1]
 
 
 def _require(root: Path, *tier_args: str) -> int:
