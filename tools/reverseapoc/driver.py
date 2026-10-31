@@ -140,6 +140,7 @@ from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
 from .functions import (
     KIND_GAME,
+    KIND_RUNTIME,
     KIND_THUNK,
     SymbolRow,
     data_name,
@@ -157,12 +158,14 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .proposals import (
+    PROPOSALS_FILE_MAX,
     RESERVED_HEADERS,
     Header,
     ProposalError,
     Rename,
     header_problem,
     linker_name,
+    name_problem,
     parse_line,
     read_proposals,
     rename_problem,
@@ -841,12 +844,23 @@ def claimed_matched(doc: Mapping | None, pick: Pick) -> bool:
     )  # fmt: skip
 
 
-def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
-    """(EXE name, SHA-1) of each landed EXE in a gate's JSON (its checks' `splice` entries)."""
-    found: dict[str, str] = {}
-    checks = doc.get("checks") if isinstance(doc, Mapping) else None
+def _splice_lists(doc: Mapping | None) -> Iterator[object]:
+    """The `splice` lists of a gate's JSON (gate.GateResult.to_json): each check's, which a
+    per-unit gate fills, and the top-level one, which `gate --all` fills (07-34 fix round 1)."""
+    if not isinstance(doc, Mapping):
+        return
+    checks = doc.get("checks")
     for check in checks if isinstance(checks, list) else ():
-        splices = check.get("splice") if isinstance(check, Mapping) else None
+        if isinstance(check, Mapping):
+            yield check.get("splice")
+    yield doc.get("splice")
+
+
+def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
+    """(EXE name, SHA-1) of each landed EXE in a gate's JSON: its checks' `splice` entries
+    (per-unit gate) and its top-level `splice` entries (`gate --all`)."""
+    found: dict[str, str] = {}
+    for splices in _splice_lists(doc):
         for entry in splices if isinstance(splices, list) else ():
             if not isinstance(entry, Mapping):
                 continue
@@ -3604,18 +3618,22 @@ class _Night:
                 "src_names": self._src_names(exe, own),
                 "data_ranges": tuple(self.deps.data_ranges(exe))}  # fmt: skip
 
-    def _src_names(self, exe: str, own: _Claim | None) -> dict[str, str]:
+    def _src_names(self, exe: str, own: _Claim | None, *, exclude: str | None = None
+                   ) -> dict[str, str]:  # fmt: skip
         """File-scope name -> where it is used (unitdefs.file_scope_names): the committed
         src/<exe>/ units, the proposing session's view unit (attempt check's in-session state
         reads the view too), and every committed header under include/: the typedefs of
         common.h (s8..u32) and every name a driver-written header declares (ruling, 07-19 as
         built), so a rename never collides with them."""
         sources = [(rel, self.repo / rel) for rel in self._committed_units(exe)]
-        if own is not None and own.pick.exe == exe and own.view_unit.is_file():
+        if (own is not None and own.pick.exe == exe and own.view_unit.is_file()
+                and not _is_link(own.view_unit)):  # fmt: skip
             sources.append((own.view_unit_rel, own.view_unit))
         sources += [(rel, self.repo / rel) for rel in self._committed_headers()]
         names: dict[str, str] = {}
         for rel, path in sources:
+            if rel == exclude:  # fix round 1: a header proposal's own committed text
+                continue
             for name in sorted(unitdefs.file_scope_names(path.read_bytes().decode("utf-8"))):
                 names.setdefault(name, rel)
         return names
@@ -3679,7 +3697,7 @@ class _Night:
         proposals.header_problem (reserved headers, inline asm, pragmas, function-like macros,
         ...); gated with every committed unit that includes it, in the same all-or-nothing
         gate (none: `gate --all`)."""
-        problem = header_problem(header)
+        problem = header_problem(header) or self._header_names_problem(header)
         if problem is not None:
             raise _Refusal(problem)
         data = header.text.encode("ascii")
@@ -3690,6 +3708,53 @@ class _Night:
                 f"committed units that include it"]  # fmt: skip
         return _NamingPlan({header.path: data}, _targets(includers),
                            f"refactor(include): write {header.path}", body, {})
+
+    def _header_names_problem(self, header: Header) -> str | None:
+        """Fix round 1 (review I2, D-19): every name the header declares or defines
+        (unitdefs.declared_names: macros, typedefs, tags, enumerators, prototypes, objects) is
+        checked by the rename path's rules: name_problem (keywords, reserved, placeholders such
+        as func_/D_/LAB_/PTR_/UNK_), then the C and linker names of both EXEs' symbols.csv rows,
+        their runtime publics, and the file-scope names of every other committed file (units of
+        both EXEs, other headers). The header's own committed names are its own."""
+        names = sorted(unitdefs.declared_names(header.text))
+        for name in names:
+            problem = name_problem(name)
+            if problem is not None:
+                return f"{header.path} declares {name}: {problem}"
+        taken = self._taken_names()
+        files: dict[str, str] = {}
+        for exe in EXE_ORDER:
+            for name, rel in self._src_names(exe, None, exclude=header.path).items():
+                files.setdefault(name, rel)
+        for name in names:
+            where = taken.get(name) or (f"a file-scope name in {files[name]}" if name in files
+                                        else None)  # fmt: skip
+            if where is not None:
+                return f"{header.path} declares {name}, which is already {where}"
+        return None
+
+    def _taken_names(self) -> dict[str, str]:
+        """Every C and linker spelling of both EXEs' symbols.csv rows and runtime publics (a
+        runtime public's C name read as a func and as data, fail closed), with where it is
+        used."""
+        taken: dict[str, str] = {}
+        for exe in EXE_ORDER:
+            config = self.repo / "config" / exe
+            for row in read_symbols_csv(config / "symbols.csv"):
+                where = f"used by symbols.csv {exe} {row.kind} 0x{row.address:08X} ({row.name})"
+                for spelling in (row.name, unitdefs.c_name_of(row.name, row.kind)):
+                    taken.setdefault(spelling, where)
+            publics = []
+            if (config / "runtime.csv").is_file():
+                publics += [n for r in read_runtime_csv(config / "runtime.csv") for n in r.publics]
+            if (config / "functions.csv").is_file():
+                publics += [r.name for r in read_functions_csv(config / "functions.csv")
+                            if r.kind == KIND_RUNTIME]  # fmt: skip
+            for public in publics:
+                for spelling in (public, public.removesuffix(unitdefs.FUNC_LINK_SUFFIX),
+                                 public.removeprefix(unitdefs.DATA_LINK_PREFIX)):  # fmt: skip
+                    taken.setdefault(spelling, f"used by the {exe} runtime public {public}")
+        return taken
 
     def _blocked(self, targets: Sequence[str], own: tuple[str, str] | None) -> str | None:
         """Why the proposal waits (D-19, CONTEXT default): an affected unit another live
@@ -3753,15 +3818,17 @@ class _Night:
             outputs = [*(f"config/{exe}/status.csv" for exe in _gated_exes(plan.targets)), FEED]
             self._guard(*outputs)
             self.pre_gate = {rel: self.ledger.expected(rel) for rel in outputs}
+            step = "the proposal's paths could not be written"
             try:
                 self._write_plan(plan)
+                step = "the rename gate could not run"
                 gate = self._naming_gate(plan.targets)
             except Exception as exc:
                 self.ledger.note(*outputs)  # what a gate that broke off may have written
                 self._put_back(originals)
                 notes = self._restore_pre_gate()
-                raise _Stop(TOOL, "; ".join([f"the rename gate could not run: "
-                                             f"{type(exc).__name__}: {exc}", *notes])) from exc
+                raise _Stop(TOOL, "; ".join([f"{step}: {type(exc).__name__}: {exc}",
+                                             *notes])) from exc  # fmt: skip
             self.ledger.note(*outputs)  # the gate's output: the one read-back (_Ledger)
             problem = _naming_gate_problem(gate, plan.targets)
             if problem is not None:
@@ -3812,9 +3879,15 @@ class _Night:
         co-author line and `Renamed-By: reverseapoc drive`. A commit that fails is undone and
         stops the night (TOOL); a commit that holds bytes the driver did not write, or a
         foreign commit under it, stops it as a breach (nothing more is committed tonight)."""
-        message = "\n".join([plan.subject, "", *plan.body, "", coauthor(pending.model),
-                             RENAMED_BY]) + "\n"  # fmt: skip
-        old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        try:  # fix round 1 (review minor 1): nothing written stays behind uncommitted
+            message = "\n".join([plan.subject, "", *plan.body, "", coauthor(pending.model),
+                                 RENAMED_BY]) + "\n"  # fmt: skip
+            old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        except Exception as exc:
+            self._put_back(originals)
+            notes = self._restore_pre_gate()
+            raise _Stop(TOOL, "; ".join([f"the naming commit could not be prepared: "
+                                         f"{type(exc).__name__}: {exc}", *notes])) from exc
         message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, RENAME_MSG)
         try:
             self._commit_with_retry(message=message, message_file=message_file, paths=paths)
@@ -4039,6 +4112,9 @@ def _read_proposal_file(path: Path) -> list[Rename | Header | str]:
     with a bad line is read again line by line (parse_line), each bad line a string naming it,
     so the good lines still apply; a file that cannot be read at all (too large, not UTF-8,
     unreadable) is one string."""
+    if os.path.lexists(path) and (_is_link(path) or not path.is_file()):  # fix round 1, S7
+        return [f"{path.name}: not a regular file (a link, a junction or a directory); refused "
+                "whole, never followed"]
     try:
         return list(read_proposals(path))
     except ProposalError as exc:
@@ -4048,6 +4124,8 @@ def _read_proposal_file(path: Path) -> list[Rename | Header | str]:
     if first.startswith(f"{path.name}:"):  # refused whole (its size): no line is read
         return [first]
     try:
+        if path.stat().st_size > PROPOSALS_FILE_MAX:  # it grew since read_proposals measured it
+            return [f"{path.name}: more than {PROPOSALS_FILE_MAX} bytes; refused whole"]
         text = path.read_bytes().decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return [f"{path.name} {first}"]
