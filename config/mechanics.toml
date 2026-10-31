@@ -692,8 +692,9 @@ source = "mechanics locate; research Q2"
 # Owner ruling "sign-as-drafted": the UI-chrome items 24, 26 and 27 are out; 1, 22, 23 and 29-33
 # are out by D-01; 2 is a duplicate of 997; the items no locating route reached (7, 8, 11, 12, 13,
 # 15, 19, 20, 25) are out as not located yet; 14 is not described in the research and stays out
-# until the owner gives its text. Entries that would reopen Tier 1 or Tier 2 stay held back (F36).
-# Tier 3 keeps matching in Milestone 2 (D-05).
+# until the owner gives its text. The 8 candidates once held back under F36 stay out by that
+# ruling; since plan 07-43 a later tier's entry no longer reopens an earlier tier, so none is held
+# back any more. Tier 3 keeps matching in Milestone 2 (D-05).
 
 [[tier]]
 id = 3
@@ -1204,3 +1205,840 @@ address = "0x000BA360"
 evidence = "table"
 detail = "new-game setup: references the organisation data table (research Q3) and calls the starting-relations row"
 source = "mechanics locate; research Q3"
+
+# ---- Tier 4 (D-04, D-26): OpenApoc #265, drafted by plan 07-32 ----
+# Items 1-8 are the battle AI group (research Q4: unit behaviour, modes, wounds, medkits); the
+# research did not record each item's own subject, so they share one entry set: the Learning AI
+# file readers and writers (EXPERIEN.DAT, BRAIN.DAT, WEAPEXP.DAT, D-26) and the TACP rows that use
+# the learning table those files fill. 9 is the cityscape vehicle AI, 10-11 alien movement between
+# buildings, 12 agent-to-vehicle retention, 13 the name generator; 14-18 are out by D-01.
+
+[[tier]]
+id = 4
+title = "OpenApoc #265: battle and city AI"
+
+[[item]]
+id = "265-1"
+issue = 265
+title = "Battle AI checklist item 1: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-2"
+issue = 265
+title = "Battle AI checklist item 2: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-3"
+issue = 265
+title = "Battle AI checklist item 3: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-4"
+issue = 265
+title = "Battle AI checklist item 4: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-5"
+issue = 265
+title = "Battle AI checklist item 5: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-6"
+issue = 265
+title = "Battle AI checklist item 6: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-7"
+issue = 265
+title = "Battle AI checklist item 7: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-8"
+issue = 265
+title = "Battle AI checklist item 8: unit behaviour, modes, wounds and medkits group (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p", "tacp"]
+
+[[item]]
+id = "265-9"
+issue = 265
+title = "Cityscape AI: how city vehicles and UFOs behave"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "265-10"
+issue = 265
+title = "Alien movement in the city, item 10 of the pair 10-11 (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "265-11"
+issue = 265
+title = "Alien movement in the city, item 11 of the pair 10-11 (research label)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "265-12"
+issue = 265
+title = "Agents staying assigned to their vehicle (borderline state rule)"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "265-13"
+issue = 265
+title = "Agent name generator"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "in"
+exes = ["ufo2p"]
+
+[[item]]
+id = "265-14"
+issue = 265
+title = "Checklist item 14: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "265-15"
+issue = 265
+title = "Checklist item 15: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "265-16"
+issue = 265
+title = "Checklist item 16: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "265-17"
+issue = 265
+title = "Checklist item 17: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+[[item]]
+id = "265-18"
+issue = 265
+title = "Checklist item 18: OpenApoc tooling, modding or project work"
+url = "https://github.com/OpenApoc/OpenApoc/issues/265"
+tier = 4
+scope = "out"
+reason = "OpenApoc-only tooling, modding or project item (D-01)"
+
+# #265-1
+
+[[entry]]
+item = "265-1"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-1"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-2
+
+[[entry]]
+item = "265-2"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-2"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-3
+
+[[entry]]
+item = "265-3"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-3"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-4
+
+[[entry]]
+item = "265-4"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-4"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-5
+
+[[entry]]
+item = "265-5"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-5"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-6
+
+[[entry]]
+item = "265-6"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-6"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-7
+
+[[entry]]
+item = "265-7"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-7"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-8
+
+[[entry]]
+item = "265-8"
+exe = "ufo2p"
+address = "0x000A5F40"
+evidence = "file"
+detail = "references the three Learning AI file names; called from the save-game reader (0x000A3BA0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "ufo2p"
+address = "0x000A6040"
+evidence = "file"
+detail = "references the Learning AI file names; called from the save-game writer (0x000A49D0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "ufo2p"
+address = "0x000A61E0"
+evidence = "file"
+detail = "references the Learning AI file names; called from the new-game setup (0x000BA360)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x00014AF0"
+evidence = "file"
+detail = "battle start: creates the brain file when absent, else loads it into the learning table"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x00078FE0"
+evidence = "file"
+detail = "references the experience file name; called from the save-game reader (0x00078720)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x00079050"
+evidence = "file"
+detail = "references the experience file name; called from the save-game writer (0x000788F0)"
+source = "mechanics locate; research Q2"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x0008E770"
+evidence = "call-graph"
+detail = "per-tick unit AI step called from the battle loop (0x000116B0); calls the learned scorer"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x0009F330"
+evidence = "data-field"
+detail = "learned scorer: normalises inputs and weighs them against a learning-table record"
+source = "mechanics locate --va; call graph; reading"
+
+[[entry]]
+item = "265-8"
+exe = "tacp"
+address = "0x000B20B0"
+evidence = "file"
+detail = "battle end: writes the learning table back to the brain file"
+source = "mechanics locate; research Q2"
+
+# #265-9
+
+[[entry]]
+item = "265-9"
+exe = "ufo2p"
+address = "0x00039960"
+evidence = "call-graph"
+detail = "per-frame update of every city vehicle, UFOs included, from the cityscape frame loop (0x00010940)"
+source = "mechanics locate; call graph; reading"
+
+# #265-10
+
+[[entry]]
+item = "265-10"
+exe = "ufo2p"
+address = "0x0006F600"
+evidence = "data-field"
+detail = "picks a neighbouring building from a building's centre; used by both alien move rows"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-10"
+exe = "ufo2p"
+address = "0x0006F750"
+evidence = "data-field"
+detail = "moves every alien count of a building to the neighbour 0x0006F600 picks"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-10"
+exe = "ufo2p"
+address = "0x0006F830"
+evidence = "data-field"
+detail = "moves a random share of a building's aliens to a neighbouring building"
+source = "call graph; reading"
+
+# #265-11
+
+[[entry]]
+item = "265-11"
+exe = "ufo2p"
+address = "0x0006F600"
+evidence = "data-field"
+detail = "picks a neighbouring building from a building's centre; used by both alien move rows"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-11"
+exe = "ufo2p"
+address = "0x0006F750"
+evidence = "data-field"
+detail = "moves every alien count of a building to the neighbour 0x0006F600 picks"
+source = "call graph; reading"
+
+[[entry]]
+item = "265-11"
+exe = "ufo2p"
+address = "0x0006F830"
+evidence = "data-field"
+detail = "moves a random share of a building's aliens to a neighbouring building"
+source = "call graph; reading"
+
+# #265-13
+
+[[entry]]
+item = "265-13"
+exe = "ufo2p"
+address = "0x00063A10"
+evidence = "table"
+detail = "draws random indexes into two fixed-slot name tables (0x000E7362, 0x000E7902) and builds the name"
+source = "mechanics locate --va; call graph; reading"
