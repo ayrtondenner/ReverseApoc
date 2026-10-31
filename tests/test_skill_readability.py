@@ -282,6 +282,30 @@ def test_no_driver_behaviour_is_called_planned():
     assert "planned" not in text and "not built" not in text
 
 
+def test_rename_refusals_state_the_landing_rule():
+    """GREEN r2 note 1-2: the driver refuses at landing every file-scope name of the committed
+    units, the view and every header (macros, typedefs such as common.h's s32, tags), and a data
+    address outside the EXE's data objects; the skill states that rule, not only the narrower
+    in-session one."""
+    names = _section(_text(), "Names, evidence and proposals")
+    for needle in ("file-scope name", "`s32`", "tag", "data object", "in-session"):
+        assert needle in names, needle
+
+
+def test_rl04_states_the_real_rule():
+    """GREEN r2 note 4: RL04 matches any case, `unknown`, `padding` and bare `field` too, with a
+    hex or `_...` tail, so `pad_left`, `field_count` and even `padded` hit; the skill says so,
+    and every example it gives is an RL04 hit."""
+    row = next(line for line in _section(_text(), "Readlint").splitlines()
+               if line.startswith("| RL04"))  # fmt: skip
+    examples = [span for span in _SPAN.findall(row) if span.isidentifier()]
+    for name in ("pad_left", "field_count", "padded"):
+        assert name in examples, name
+    for name in examples:
+        assert readlint._UNNAMED_FIELD.fullmatch(name), name
+    assert "any case" in row
+
+
 def test_header_guidance_matches_the_driver_rules():
     """07-34 fix rounds 1 and 2: a header proposal may declare no name another committed file
     declares, so it cannot newly declare a prototype of an existing function, and promoting a
