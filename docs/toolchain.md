@@ -236,7 +236,9 @@ The evidence is `build/gate/07-evidence/29-*.log`, `29-batch-summary.txt` and `b
 - **The reduced variant never helped** (research open question 8). In all four failures, the target matched only while its neighbour's C definition was in the same file. With the neighbour back as `INCLUDE_ASM`, the target fell to 66.67-75.00 with a failing relocation check. So Watcom's same-module knowledge changes the caller's code (research A13), and a hit is a property of the whole file, not of the one function.
 - **Both passing proposals matched their neighbour as well.** The two approvals therefore landed four functions in two commits: func_0006FBD0, func_0006FC00, func_00026FD0 and func_00026FF0. All four are now matched under `-4r -oneatx` per-unit rules.
 
-**D-33 (the `*` default).** These pilot hits are 32-48-byte functions. Like their co-defined neighbours, they count toward per-unit rules only. A change of the `*` default needs at least 3 re-gated agreeing functions, each with a branch or loop or at least 64 bytes, from different regions of both EXEs (D-14, D-33). The `*` default is unchanged by this batch.
+**D-33 (the `*` default).** These pilot hits are 32-48-byte functions. Like their co-defined neighbours, they count toward per-unit rules only. D-33 lets a change of the `*` default go ahead only with at least 3 re-gated agreeing functions with a branch or loop, or of a minimum size the planner sets, from different regions of both EXEs (D-14, D-33). The planner set that size at 64 bytes (`flags default`, plan 07-24). The `*` default is unchanged by this batch.
+
+Plan 07-33 printed the evidence with `flags default --rule "wcc386@10.6 -4r -oneatx -s -fpi" --evidence`. It found four agreeing functions, but only func_00026FF0 (branch) and func_0006FC00 (64 bytes) qualify, and they come from just two EXE regions, so the bar is not met. The `*` default `wcc386@10.6 -4r -s -fpi` was kept by owner ruling 2026-10-31 for Phase 7 (D-14, D-33).
 
 ### Fallbacks and candidates
 
