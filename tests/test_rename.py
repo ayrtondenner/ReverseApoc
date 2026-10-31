@@ -115,10 +115,12 @@ class RNight(Night):
         cells = [line.split(",") for line in text.splitlines()[2:] if line]
         return {int(c[0], 16): c[1] for c in cells}
 
-    def readability(self, **deps) -> driver.DriveReport:
-        """One readability night with the fake rename gate wired."""
+    def readability(self, config: dict | None = None, **deps) -> driver.DriveReport:
+        """One readability night (one attempt per function unless `config` says otherwise)
+        with the fake rename gate wired."""
         deps.setdefault("rename_gate", self._rename_gate)
-        return self.run({"session": driver.READABILITY}, **deps)
+        return self.run({"session": driver.READABILITY, "attempts_per_function": 1,
+                         **(config or {})}, **deps)  # fmt: skip
 
     def bytes_of(self, *rels: str) -> dict[str, bytes]:
         return {rel: (self.repo / rel).read_bytes() for rel in rels}
@@ -186,9 +188,9 @@ def test_matching_sessions_apply_no_proposal(tmp_path):
 def test_records_name_the_readability_session(tmp_path):
     night = RNight(tmp_path, sessions=[proposing(rename_line())])
     night.readability()
-    (attempt,) = night.kinds(driver.KIND_ATTEMPT)
-    assert attempt["session"] == driver.READABILITY
-    assert night.launched[0].env["REVERSEAPOC_SESSION_KIND"] == driver.READABILITY
+    attempts = night.kinds(driver.KIND_ATTEMPT)
+    assert attempts and {a["session"] for a in attempts} == {driver.READABILITY}
+    assert {s.env["REVERSEAPOC_SESSION_KIND"] for s in night.launched} == {driver.READABILITY}
 
 
 def test_log_lists_the_rename_after_its_commit(tmp_path):
