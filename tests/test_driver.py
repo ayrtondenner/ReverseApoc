@@ -31,7 +31,7 @@ from reverseapoc.driver import (
     git_runner,
 )
 from reverseapoc.picker import Pick
-from reverseapoc.session import OPUS_MODEL, run_session
+from reverseapoc.session import OPUS_MODEL, SKILL, run_session
 
 FAKE = Path(__file__).resolve().parent / "fakeclaude.py"
 EXE = "ufo2p"
@@ -215,6 +215,9 @@ class Night:
         self.gate_names = ("UFO2P.EXE", "TACP.EXE")  # the EXE names the fake gate reports
         self.git_at_launch = -1
         self.prompts: list[str] = []
+        self.skills: list[str] = []  # 07-38: the skill each session's argv appends
+        self.lint_path_calls: list[dict[str, str]] = []  # 07-38 fix round 1: Deps.lint_paths
+        self.lint_path_exits: list[int] = []
         self.raise_verbs: dict[str, BaseException] = {}  # git verb -> exception, raised once
         self.fail_verbs: dict[str, int] = {}  # git verb -> how many calls fail with LOCK_ERROR
         self.fail_plan: dict[str, list[bool]] = {}  # git verb -> per-call schedule
@@ -238,12 +241,14 @@ class Night:
         return PackInfo(2048, ("look-alikes",))
 
     def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
-              max_turns: int) -> list[str]:  # fmt: skip
-        """Deps.argv's keyword signature (07-30). The fixtures' init names Opus, the model of
-        passes 1 and 2; for any other requested model (Fable, pass 3 on, D-09) the stand-in
-        echoes it into its init event (`--model`), as the real CLI does."""
+              max_turns: int, skill: str = SKILL) -> list[str]:  # fmt: skip
+        """Deps.argv's keyword signature (07-30; 07-38: a readability session also names its
+        skill). The fixtures' init names Opus, the model of passes 1 and 2; for any other
+        requested model (Fable, pass 3 on, D-09) the stand-in echoes it into its init event
+        (`--model`), as the real CLI does."""
         self._current = self.sessions.pop(0) if self.sessions else Sess(write=None)
         self.prompts.append(prompt)
+        self.skills.append(skill)
         spec = self._current
         argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths"]
         argv += ["--model", model] if model != OPUS_MODEL else []
@@ -293,6 +298,13 @@ class Night:
     def _lint(self, pick: Pick) -> int:
         self.lint_calls.append(pick)
         return self.lint_exits.pop(0) if self.lint_exits else 0
+
+    def _lint_paths(self, paths) -> int:
+        """07-38 fix round 1: the C89 lint of a naming commit's files (Deps.lint_paths), with
+        the text of each file as it was when the lint ran (a header probe is removed after)."""
+        self.lint_path_calls.append({rel: (self.repo / rel).read_text(encoding="utf-8")
+                                     for rel in paths})  # fmt: skip
+        return self.lint_path_exits.pop(0) if self.lint_path_exits else 0
 
     def _gate(self, pick: Pick, attempts: int) -> GateRun:
         self.gate_calls.append((pick, attempts))
@@ -364,7 +376,8 @@ class Night:
     def deps(self, **over) -> Deps:
         fields = dict(queue=self._queue, requeue=lambda difficult: (),
                       matched_callees=lambda pick: (), scaffold=self._scaffold, pack=self._pack,
-                      argv=self._argv, session=self._session, lint=self._lint, gate=self._gate,
+                      argv=self._argv, session=self._session, lint=self._lint,
+                      lint_paths=self._lint_paths, gate=self._gate,
                       partial_gate=self._partial, remove_containers=self.removed.append,
                       git=self._recorded_git, clock=lambda: self.now, sleep=self._sleep,
                       today=lambda: "2026-10-25")  # fmt: skip

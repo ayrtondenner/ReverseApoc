@@ -8,8 +8,10 @@ wrapper use. `--bare` is never passed: it needs ANTHROPIC_API_KEY and would drop
 subscription login (D-06). `--settings` and `--append-system-prompt-file` are relative to the
 repository root, so the driver runs the session with `cwd` set to it (ruling F11).
 
-`goal_prompt` is the /goal prompt for one claim (D-07). `run_session` runs the argv, saves every
-stdout line as it arrives to the attempt's transcript.jsonl and parses it with streamjson. At
+`goal_prompt` is the /goal prompt for one claim (D-07); `readability_goal` that of a
+readability session, whose argv appends READABILITY_SKILL (07-38, D-18). `run_session` runs
+the argv, saves every stdout line as it arrives to the attempt's transcript.jsonl and parses it
+with streamjson. At
 the 30-minute wall clock it kills the whole process tree with `kill_tree` (Pitfall 7) and
 reports `timed_out`; streamjson.classify counts that as an attempt.
 """
@@ -53,6 +55,7 @@ _EOF = object()  # the reader's end-of-stdout marker
 _POSIX = os.name != "nt"
 SETTINGS = "config/driver/claude-settings.json"  # repo-relative (F11)
 SKILL = ".claude/skills/watcom-decomp/SKILL.md"  # repo-relative (F11)
+READABILITY_SKILL = ".claude/skills/watcom-readability/SKILL.md"  # 07-38 (D-18): readability
 EXES = ("ufo2p", "tacp")
 _UNIT = re.compile(r"[a-z0-9_]+")
 _VIEW_UNIT = re.compile(  # 07-13 (D-24): the repo-relative view unit of one attempt
@@ -80,10 +83,12 @@ def build_argv(
     model: str = MODEL,
     max_budget_usd: float = MAX_BUDGET_USD,
     max_turns: int = MAX_TURNS,
+    skill: str = SKILL,
 ) -> list[str]:
     """D-06's argv for one session, `claude` being the CLI executable. `model`, `max_budget_usd`
-    and `max_turns` are the session's own values (Phase 7 D-09, D-25); the defaults give D-06's
-    argv token for token."""
+    and `max_turns` are the session's own values (Phase 7 D-09, D-25), `skill` the repo-relative
+    skill appended to the system prompt (07-38, D-18: READABILITY_SKILL for a readability
+    session); the defaults give D-06's argv token for token."""
     return [
         claude,
         "-p",
@@ -107,7 +112,7 @@ def build_argv(
         "--settings",
         SETTINGS,
         "--append-system-prompt-file",
-        SKILL,
+        skill,
         "--max-budget-usd",
         str(max_budget_usd),
     ]
@@ -149,6 +154,36 @@ def goal_prompt(function: str, unit: str, exe: str, *, unit_path: str) -> str:
         f"copy {unit_path} of the unit (claim {exe}/{unit}); edit only that file, and write this "
         "attempt's notes.md (its path follows `notes:` in the check output); or stop after "
         f"{MAX_CHECK_RUNS} check runs, with notes.md written."
+    )
+
+
+def readability_goal(unit: str, exe: str, *, unit_path: str) -> str:
+    """07-38 (D-17, D-18): the /goal prompt of a readability session on the matched unit
+    `exe`/`unit`, whose private view unit is `unit_path` (its function directory names the
+    unit's lowest matched function). The session names, comments and types the unit without
+    moving a byte; names change only through proposals the driver applies after the session
+    (D-19) and are checked again at landing (ruling F18, the 07-31 note): the check's "pending
+    rename" is no guarantee. Names and path are checked as goal_prompt checks them."""
+    if exe not in EXES:
+        raise ValueError(f"unknown EXE {exe!r}; expected one of {', '.join(EXES)}")
+    if not _UNIT.fullmatch(unit):
+        raise ValueError(f"unit {unit!r} is not a unit name ([a-z0-9_]+)")
+    match = _VIEW_UNIT.fullmatch(unit_path) if isinstance(unit_path, str) else None
+    function = match["func"] if match is not None else ""
+    if not ATTEMPT_NAME.fullmatch(function):
+        raise ValueError(f"unit_path {unit_path!r} names no claimed function")
+    problem = _view_unit_problem(unit_path, function, unit, exe)
+    if problem:
+        raise ValueError(f"unit_path {unit_path!r} {problem}")
+    return (
+        f"/goal Make `{_CHECK}` report the check OK and readlint clean for the unit {exe}/{unit} "
+        f"in your private copy {unit_path} (claim {exe}/{unit}): name, comment and type its "
+        "matched functions without changing a byte of the compiled code. Edit only that file, "
+        "write every rename of a function or data row as a proposal in this attempt's "
+        "proposals.jsonl, and write this attempt's notes.md (its path follows `notes:` in the "
+        "check output). Names are checked again at landing, after the driver applies your "
+        "rename proposals, so a pending rename in the check output is no guarantee. Or stop "
+        f"after {MAX_CHECK_RUNS} check runs, with notes.md written."
     )
 
 

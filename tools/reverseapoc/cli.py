@@ -1366,7 +1366,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   fable_budget_usd=args.fable_budget_usd,
                                   max_turns=args.max_turns,
                                   session_minutes=args.session_minutes,
-                                  canary_model=args.model or session.MODEL)  # fmt: skip
+                                  canary_model=args.model or session.MODEL,
+                                  session=args.session)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1400,9 +1401,15 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--session-minutes", type=_positive, default=session.TIMEOUT_S // 60,
                    metavar="N", help="each session's wall clock in minutes (D-07); "
                    + default)  # fmt: skip
+    p.add_argument("--session", choices=driver.SESSIONS, default=driver.MATCHING,
+                   help="the night's session kind (D-17, D-18): matching sessions match "
+                   "functions; readability sessions name and document matched units, one "
+                   "commit per unit; " + default)  # fmt: skip
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",
-                      help="print the 10 pilot picks and build their packs; no claude, no gate")
+                      help="print the 10 pilot picks and build their packs (with --session "
+                      "readability: the queued units and their readlint violations); no "
+                      "claude, no gate")  # fmt: skip
     mode.add_argument("--canary", action="store_true",
                       help="owner only: one real session that proves the guardrails deny "
                       "(PASS/FAIL)")  # fmt: skip

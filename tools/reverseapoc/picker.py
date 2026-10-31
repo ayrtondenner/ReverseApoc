@@ -518,3 +518,52 @@ def _group_items(mech: Mechanics, group: _Group, graph: CallGraph, ranks: Ranks,
         rank, pick = _tier_pick(row, ranks, units)
         item = TierItem(group.tier, level[row.address], rank, pick, group.hub)
         yield item, tuple((group.exe, d) for d in waits[row.address])
+
+
+# ---- the readability queue (07-38; D-17, DEC-04) ----
+
+UnitKey = tuple[str, str]  # (EXE, unit)
+_UNTIERED = float("inf")  # a matched unit holding no signed tier's member sorts after every tier
+
+
+def _unit_graph(failing: Sequence[UnitKey],
+                unit_callees: Mapping[UnitKey, Iterable[UnitKey]]) -> CallGraph:  # fmt: skip
+    """The calls between the failing units as a CallGraph over their indexes in `failing`, so
+    callgraph.sccs condenses them (an edge into a passing unit, or into the unit itself, is
+    dropped: it blocks nothing)."""
+    index = {unit: i for i, unit in enumerate(failing)}
+    edges = {}
+    for i, unit in enumerate(failing):
+        targets = sorted({index[c] for c in unit_callees.get(unit, ()) if c in index} - {i})
+        edges[i] = tuple(Edge(i, j, HAND) for j in targets)
+    return CallGraph(edges=edges)
+
+
+def readability_queue(
+    matched_units: Mapping[UnitKey, Pick],
+    tier_units: Mapping[UnitKey, int],
+    unit_callees: Mapping[UnitKey, Iterable[UnitKey]],
+    passes_readlint: Container[UnitKey],
+) -> list[Pick]:
+    """The units a readability night offers now, in order (D-17). `matched_units` maps each
+    committed unit with a matched row to the pick of its lowest matched function;
+    `tier_units` maps a unit to the lowest signed tier whose members it holds; `unit_callees`
+    maps a unit to the other units holding its matched callees; `passes_readlint` holds the
+    units strict readlint already passes, which are never queued.
+
+    Bottom-up: a failing unit is eligible when every unit holding one of its matched callees
+    passes readlint or shares its SCC (a closed sub-tree, its callers known); the rest wait
+    until those pass. The eligible units go Tier 1 first, then the other signed tiers in
+    order, then the other matched units (the pre-phase and D-13 units need naming too), each
+    group by EXE order and start."""
+    failing = sorted(unit for unit in matched_units if unit not in passes_readlint)
+    graph = _unit_graph(failing, unit_callees)
+    owner = {i: comp for comp in sccs(graph, range(len(failing))) for i in comp}
+    eligible = [failing[i] for i in range(len(failing))
+                if all(e.dst in owner[i] for e in graph.callees(i))]  # fmt: skip
+
+    def order(unit: UnitKey) -> tuple:
+        pick = matched_units[unit]
+        return (tier_units.get(unit, _UNTIERED), EXE_ORDER.index(pick.exe), pick.start, unit)
+
+    return [matched_units[unit] for unit in sorted(eligible, key=order)]

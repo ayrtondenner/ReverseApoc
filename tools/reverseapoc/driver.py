@@ -96,6 +96,17 @@ release (`_retry_deferred`); the proposing session's own unit never blocks, its 
 rewritten in place. At every landing the view unit first takes every rename committed since
 the view's HEAD (`_renames_since`), so a session that started before a rename still lands.
 
+Readability nights (07-38; D-17, D-18, D-20, DEC-04): `drive --session readability` runs one
+session per matched unit (DriveConfig.session), claimed with kind readability, on Opus, with
+session.readability_goal and the watcom-readability skill. The queue is
+`readability_source`: picker.readability_queue over the committed units that fail strict
+readlint (Tier 1 first, bottom-up), read again from HEAD before each pick. Every naming
+commit runs the C89 lint over the units it touches and a probe of each header it writes.
+`_land_readability` applies the proposals first, then GAVE_UP for an unchanged unit, REFUSED
+for a changed defined set, a failing C89 lint or gate, PARTIAL when strict readlint still
+fails (the view unit kept under best/), else LANDED: one `refactor(<exe>): name and document
+<unit> (readability)` commit with READABILITY_BY.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -125,6 +136,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
@@ -152,7 +164,16 @@ from .functions import (
 )
 from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
-from .picker import EXE_ORDER, PILOT_PER_EXE, Key, Pick, TierItem, TierQueue, tier_queue
+from .picker import (
+    EXE_ORDER,
+    PILOT_PER_EXE,
+    Key,
+    Pick,
+    TierItem,
+    TierQueue,
+    readability_queue,
+    tier_queue,
+)
 from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
@@ -170,6 +191,7 @@ from .proposals import (
     read_bounded,
     rename_problem,
 )
+from .readlint import ReadlintError, run_readlint
 from .score import Assessment, Candidate, assess, candidates, score, score_reasons
 from .session import (
     FABLE_BUDGET_USD,
@@ -179,12 +201,14 @@ from .session import (
     MODEL,
     MODEL_NAMES,
     OPUS_MODEL,
+    READABILITY_SKILL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
     goal_prompt,
     kill_tree,
     model_for_pass,
+    readability_goal,
     run_session,
 )
 from .status import MATCHED as STATUS_MATCHED
@@ -210,6 +234,7 @@ VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view 
 VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
 MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
 MATCHED_BY = "Matched-By: reverseapoc drive"
+READABILITY_BY = "Readability-By: reverseapoc drive"  # 07-38: the trailer of a readability commit
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
 OPTIONAL_LOCKS = "GIT_OPTIONAL_LOCKS"  # "0" in the driver's git env and every session's (D-27 P4)
 INDEX_LOCK = b"index.lock"  # in git's stderr: another process held the index (D-27 P4)
@@ -384,6 +409,9 @@ class Deps:
     # rename must lie in one; none: every data rename is refused, fail closed).
     rename_gate: Callable[[Sequence[str]], GateRun] = lambda targets: GateRun(EXIT_TOOL)
     data_ranges: Callable[[str], Sequence[tuple[int, int]]] = lambda exe: ()
+    # 07-38 fix round 1 (owner ruling: every landing path lints): the C89 lint (0/1/2) of the
+    # repo-relative .c files a naming commit writes or reaches; none wired: a tool error.
+    lint_paths: Callable[[Sequence[str]], int] = lambda paths: EXIT_TOOL
 
 
 @dataclass(frozen=True)
@@ -828,6 +856,40 @@ def commit_message(
     return "\n".join(lines) + "\n"
 
 
+def readability_message(
+    *,
+    exe: str,
+    unit: str,
+    attempt_n: int,
+    model: str | None,
+    usage: streamjson.Usage,
+    seconds: float,
+    sha1s: Sequence[tuple[str, str]],
+    requested_model: str,
+) -> str:
+    """07-38 (D-17): the message of one readability landing, one unit per commit: the subject,
+    the session's figures, the gate's verdict (the bytes did not move) and both SHA-1s, then the
+    requested model's co-author line (coauthor raises DriverError for an unknown model, before
+    anything is committed) and READABILITY_BY."""
+    lines = [
+        f"refactor({exe}): name and document {unit} (readability)",
+        "",
+        f"attempt {attempt_n}",
+        f"model {model or 'unknown'}",
+        f"turns {usage.turns}",
+        f"tokens {usage.input_tokens} input, {usage.output_tokens} output, "
+        f"{usage.cache_read_tokens} cache read, {usage.cache_creation_tokens} cache creation",
+        f"seconds {round(seconds)}",
+        "gate ok: the unit's bytes are unchanged",
+        "readlint clean",
+        *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
+        "",
+        coauthor(requested_model),
+        READABILITY_BY,
+    ]
+    return "\n".join(lines) + "\n"
+
+
 _UNCLAIMED_PASS = "the gate passed without a matched row for the claimed function"
 
 
@@ -933,6 +995,23 @@ def _is_link(path: Path) -> bool:
     return stat.S_ISLNK(st.st_mode) or bool(reparse) or os.path.isjunction(path)
 
 
+def extract_head(git: Callable[..., subprocess.CompletedProcess], dest: Path) -> str:
+    """D-24 (07-13; shared with the readability queue, 07-38 fix round 1): HEAD's tracked
+    src/, include/ and config/ (those HEAD has) into the existing directory `dest` through
+    `git archive`, extracted with tarfile's `data` filter (no link, device or path that leaves
+    `dest`); include/ always exists. Never the worktree. Returns HEAD's commit."""
+    head = _git_ok(git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+    listed = _git_ok(git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
+    trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
+             if name in VIEW_TREES]  # fmt: skip
+    if trees:
+        archive = _git_ok(git, ["archive", "--format=tar", head, "--", *trees])
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            tar.extractall(dest, filter="data")
+    (dest / "include").mkdir(exist_ok=True)
+    return head
+
+
 def _write_new(target: Path, data: bytes) -> None:
     """Create `target` with O_CREAT|O_EXCL (and O_NOFOLLOW where it exists): never overwrites,
     never writes through a link."""
@@ -1032,10 +1111,20 @@ def _check_line(raw: str) -> dict | None:
     return line
 
 
-def read_checks(attempt_dir: Path) -> CheckSummary:
+def _readable(line: Mapping) -> bool:
+    """07-38 (the 07-31 review note): a readability check whose run passed with readlint clean:
+    a plain line of exit 0 with `readlint_violations` 0 (null: readlint did not run)."""
+    violations = line.get("readlint_violations")
+    return (not line["sweep"] and line["exit"] == EXIT_OK and _number(violations)
+            and violations == 0 and line["best_percent"] is not None)  # fmt: skip
+
+
+def read_checks(attempt_dir: Path, *, readability: bool = False) -> CheckSummary:
     """F10: the best C is the line with the highest best_percent among plain lines (never a
     sweep, whose percent is under other flags), skipping null percents and exit-2 runs; ties
-    go to the earliest."""
+    go to the earliest. 07-38 (the 07-31 review note): in a readability session every run is
+    100%, so `readability` picks the latest run whose readlint passed instead (none: no best).
+    The readability landing lands the view unit itself, never this line's C."""
     path = Path(attempt_dir) / attempt.CHECK_LOG
     if not path.is_file():
         return CheckSummary()
@@ -1043,6 +1132,9 @@ def read_checks(attempt_dir: Path) -> CheckSummary:
     lines = [line for raw in text.splitlines() if (line := _check_line(raw)) is not None]
     best = None
     for line in lines:
+        if readability:
+            best = line if _readable(line) else best
+            continue
         if line["sweep"] or line["exit"] == EXIT_TOOL or line["best_percent"] is None:
             continue
         if best is None or line["best_percent"] > best["best_percent"]:
@@ -2313,15 +2405,17 @@ class _Night:
         `passes` goes up, so a tier queue offers it again for its next pass (D-08). Returns
         MATCHED, CAPPED, ABORTED (a transient abort ended the pass; a tier queue sends it
         behind its group's other work) or None when the pass was cut short (the night cap, a
-        stop)."""
-        for n in range(1, self.config.attempts_per_function + 1):
+        stop). 07-38 (D-17): a readability night runs one session per unit and returns its
+        outcome; nothing goes to the difficult list."""
+        readability = self.config.session == READABILITY
+        for n in range(1, self._attempts() + 1):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return None
             try:
                 outcome = self._announced(pick, n)
             finally:
                 self._release()  # not counted (a stop): a slot still held goes back
-            if outcome in (MATCHED, ABORTED, None):
+            if readability or outcome in (MATCHED, ABORTED, None):
                 return outcome
         callees = tuple(self.deps.matched_callees(pick))
         key = (pick.exe, pick.start)
@@ -2331,8 +2425,19 @@ class _Night:
             self.passes[key] = self.passes.get(key, 0) + 1
         return CAPPED
 
+    def _attempts(self) -> int:
+        """Sessions per pass: attempts_per_function (D-07); one per unit on a readability night
+        (07-38, D-17)."""
+        return 1 if self.config.session == READABILITY else self.config.attempts_per_function
+
+    def _model(self, pick: Pick) -> str:
+        """The requested model of `pick`'s session: the pass's (D-09) on a matching night, Opus
+        on a readability night (07-38: escalation is a matching rule)."""
+        return OPUS_MODEL if self.config.session == READABILITY else model_for_pass(
+            self._pass(pick))  # fmt: skip
+
     def _label(self, pick: Pick, n: int) -> str:
-        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
+        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}"
 
     def _announced(self, pick: Pick, n: int) -> str | None:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
@@ -2374,7 +2479,7 @@ class _Night:
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": self.config.session, "pass": self._pass(pick),
-                  "model": model_for_pass(self._pass(pick)),
+                  "model": self._model(pick),
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
         if not self.claims.take(record):
             shown = self.claims.path(pick.exe, pick.unit).relative_to(self.repo).as_posix()
@@ -2434,7 +2539,7 @@ class _Night:
         session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3) and
         with that model's budget."""
         pass_n = self._pass(pick)
-        model = model_for_pass(pass_n)
+        model = self._model(pick)
         return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
                       budget_usd=self.config.budget_for(model),
                       session=self.config.session)  # fmt: skip
@@ -2484,17 +2589,9 @@ class _Night:
         committed headers, 07-11 as built). The claimed unit is HEAD's file, or the scaffold
         written into the view. The commit is recorded in <attempt dir>/view-head.txt (F34).
         Returns (that commit, whether the unit was scaffolded)."""
-        head = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
-        listed = _git_ok(self._git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
-        trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
-                 if name in VIEW_TREES]  # fmt: skip
         view = claim.view_root
         view.mkdir()
-        if trees:
-            archive = _git_ok(self._git, ["archive", "--format=tar", head, "--", *trees])
-            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-                tar.extractall(view, filter="data")
-        (view / "include").mkdir(exist_ok=True)
+        head = extract_head(self._git, view)
         write_atomic(claim.attempt_dir / VIEW_HEAD, f"{head}\n".encode("ascii"))
         unit = claim.view_unit
         if unit.is_file() and not _is_link(unit):
@@ -2515,6 +2612,18 @@ class _Night:
         (`_renames_since`) is rewritten in the view unit, so a session that started before a
         rename lands under the new names."""
         claim = session.claim
+        data = self._view_bytes(session)
+        target = self.repo / claim.unit_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.landed = claim.unit_rel
+        self.landed_bytes = data
+        write_atomic(target, data)
+
+    def _view_bytes(self, session: _Session) -> bytes:
+        """The bytes the landing would copy: the view unit with every rename committed since
+        the view's HEAD rewritten in (07-34), written back to the view when that changed it.
+        A view unit that is a link or no regular file is a DriverError: nothing lands."""
+        claim = session.claim
         source = claim.view_unit
         if _is_link(source) or not source.is_file():
             raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
@@ -2523,12 +2632,7 @@ class _Night:
         rewritten = _rewrite(data, mapping)
         if rewritten != data:
             write_atomic(source, rewritten)
-            data = rewritten
-        target = self.repo / claim.unit_rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        self.landed = claim.unit_rel
-        self.landed_bytes = data
-        write_atomic(target, data)
+        return rewritten
 
     def _snapshot(self) -> _Snapshot:
         """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
@@ -2631,9 +2735,8 @@ class _Night:
         unit_before = claim.view_unit.read_bytes()
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
-        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
-                             unit_path=claim.view_unit_rel)  # fmt: skip
-        base = self.config.base_env if self.config.base_env is not None else os.environ
+        prompt, skill = self._prompt(claim)
+        base =self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
             before = self._snapshot()
             drift = self._pinned_drift(before)
@@ -2648,7 +2751,7 @@ class _Night:
         result = None
         try:
             argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                                  max_turns=self.config.max_turns)  # fmt: skip
+                                  max_turns=self.config.max_turns, **skill)  # fmt: skip
             result = self.deps.session(argv, cwd=self.repo,
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
@@ -2702,6 +2805,17 @@ class _Night:
             raise _Stop(STOP_SIGNAL, "the session's stream carries a D-08 STOP signal")
         self._check_init(session)
         return session
+
+    def _prompt(self, claim: _Claim) -> tuple[str, dict[str, str]]:
+        """The session's /goal and the extra Deps.argv keywords of its kind: a matching
+        session's goal_prompt and the default skill (watcom-decomp); a readability session's
+        readability_goal and READABILITY_SKILL (07-38, D-18)."""
+        if claim.session == READABILITY:
+            goal = readability_goal(claim.pick.unit, claim.pick.exe,
+                                    unit_path=claim.view_unit_rel)  # fmt: skip
+            return goal, {"skill": READABILITY_SKILL}
+        return goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                           unit_path=claim.view_unit_rel), {}  # fmt: skip
 
     def _remove_containers(self, claim: _Claim) -> str:
         """Fix round 1 S1: remove the attempt's containers; a failure never gates the audit and
@@ -3261,9 +3375,11 @@ class _Night:
     def _salvage(self, session: _Session) -> bool:
         """06-17 review: a LIMIT session keeps its work. When it changed the unit or wrote a
         header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
-        Otherwise it is reset. The whole landing runs under the gate lock (D-06)."""
+        Otherwise it is reset. The whole landing runs under the gate lock (D-06). 07-38: a
+        readability session is never salvaged (it is reset, and the relaunch redoes it; its
+        proposals were applied already), so a LIMIT launch writes no readability record."""
         with self._landing(session):
-            if session.has_work():
+            if session.has_work() and session.claim.session != READABILITY:
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
                     self._count()
@@ -3294,7 +3410,10 @@ class _Night:
         """A counted session's landing section, all of it under the gate lock (D-06, D-27 P4):
         the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
         `gate --partial` and the attempt record. Another worker's record waits for the landing
-        decision, so F19's log truncation can only drop this landing's own MATCHED line."""
+        decision, so F19's log truncation can only drop this landing's own MATCHED line. A
+        readability session has its own landing (07-38, `_land_readability`)."""
+        if session.claim.session == READABILITY:
+            return self._land_readability(session)
         self._count()
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
@@ -3322,9 +3441,11 @@ class _Night:
         source = claim.attempt_dir / summary.best_source
         if not source.is_file():
             return None
-        best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
-        best.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, best)
+        if _is_link(source):
+            raise DriverError(f"{claim.attempt_dir / summary.best_source} is a link: best/ is "
+                              "not written")  # fmt: skip
+        best = self._best_file(claim)
+        write_atomic(best, source.read_bytes())
         self._guard(claim.status_rel, FEED)  # fix round 1
         try:
             return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(),
@@ -3332,22 +3453,144 @@ class _Night:
         finally:
             self.ledger.note(claim.status_rel, FEED)  # the partial gate's output (read back)
 
+    # --- the readability landing (07-38; D-17, D-18, D-20, DEC-04) ---
+
+    def _land_readability(self, session: _Session) -> str:
+        """A counted readability session's landing section, all of it under the gate lock. Its
+        proposals were applied already (`_after_session`, 07-34), so the view unit first takes
+        the renames committed since its HEAD. Then, in order:
+
+        - GAVE_UP when that leaves the unit as HEAD has it (nothing to land, no gate);
+        - REFUSED before anything lands when the set of functions the unit defines in C or
+          marks INCLUDE_ASM (by start, unitdefs.find) or its source problems differ from HEAD's:
+          a readability edit never turns a stub into C (or back) or moves a definition (D-17);
+        - the unit lands in src/, the C89 lint runs (owner ruling 2026-10-30: every landing
+          path lints before it commits; a failing lint is REFUSED with abort_reason lint) and
+          the container gate runs; a gate that fails, or passes without the unit's lowest
+          matched function matched, is REFUSED: the bytes changed;
+        - strict readlint on the landed unit (`run_readlint --units EXE/UNIT`, its included
+          headers too). Clean: one LANDED commit of the unit, status.csv (source_sha256
+          refreshed by the gate), the feed and the log (`readability_message`). Otherwise
+          PARTIAL: status.csv and the feed go back to their pre-gate bytes, the view unit is
+          kept under best/<unit>.c and the unit is put back.
+
+        Every refusal puts the unit back (D-34) and writes one v2 record of its outcome; the
+        record's check summary is the latest readlint-clean run (`read_checks(readability)`)."""
+        self._count()
+        claim = session.claim
+        summary = read_checks(claim.attempt_dir, readability=True)
+        abort = TIMEOUT if session.result.timed_out else None
+        with self._landing(session):
+            data = self._view_bytes(session)
+            head = self._head_bytes(claim.unit_rel)
+            if data == head:
+                return self._readability_end(session, GAVE_UP, abort, summary)
+            if self._defined_set(claim, data) != self._defined_set(claim, head):
+                return self._readability_end(session, REFUSED, abort, summary)
+            gate = self._judge(session)
+            if gate is None:  # the C89 lint failed: the gate never ran
+                return self._readability_end(session, REFUSED, LINT, summary)
+            if not self._gate_matched(session, gate):
+                return self._readability_end(session, REFUSED, abort, summary, gate=gate)
+            if not self._readlint_clean(claim):
+                notes = self._restore_pre_gate()  # the gate's refreshed rows are not kept
+                if notes:
+                    self._tool_failure(session, "; ".join(
+                        ["readlint failed and the gate's rows could not be put back", *notes]),
+                        PARTIAL, gate=gate)  # fmt: skip
+                self._keep_best(session)
+                return self._readability_end(session, PARTIAL, abort, summary, gate=gate)
+            self._commit_match(session, gate, summary, abort)
+            return LANDED
+
+    def _readability_end(self, session: _Session, outcome: str, abort: str | None,
+                         summary: CheckSummary, *, gate: GateRun | None = None) -> str:  # fmt: skip
+        """A readability landing that commits nothing: the unit back as HEAD has it, one
+        record."""
+        self._reset(session)
+        self._record_attempt(session, outcome, abort, summary, gate=gate)
+        return outcome
+
+    def _defined_set(self, claim: _Claim, data: bytes | None) -> tuple:
+        """07-38 (D-17): what a unit's bytes define in C and mark INCLUDE_ASM, by row start
+        (unitdefs.find under the EXE's current C names, so a rename moves nothing), with its
+        source problems. A text that is not UTF-8 compares unequal to every other."""
+        if data is None:
+            return (), (), ()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return (None, _sha256(data))
+        exe = claim.pick.exe
+        rows = read_functions_csv(self.repo / "config" / exe / "functions.csv")
+        symbols_path = self.repo / _symbols_rel(exe)
+        symbols = read_symbols_csv(symbols_path) if symbols_path.is_file() else []
+        unit_rows = [row for row in rows if row.unit == claim.pick.unit]
+        defs = unitdefs.find(text, unit_rows, placeholders=unitdefs.placeholders(unit_rows),
+                             all_names=unitdefs.c_names(rows, symbols))  # fmt: skip
+        return (frozenset(defs.defined), frozenset(defs.marked),
+                frozenset(defs.source_problems))  # fmt: skip
+
+    def _keep_best(self, session: _Session) -> None:
+        """PARTIAL: the view unit as it would have landed, under <attempt dir>/best/<unit>.c
+        (gitignored), for the next session or the owner."""
+        claim = session.claim
+        write_atomic(self._best_file(claim), self.landed_bytes or b"")
+
+    def _best_file(self, claim: _Claim) -> Path:
+        """<attempt dir>/best/<unit>.c, its directory made; a DriverError (nothing written, the
+        night stops) when the attempt dir or best/ is a link (07-38 fix round 1, review M3:
+        never a write through a link)."""
+        best_dir = claim.attempt_dir / BEST_DIR
+        for path in (claim.attempt_dir, best_dir):
+            if _is_link(path):
+                raise DriverError(f"{path.relative_to(self.repo).as_posix()} is a link: best/ "
+                                  "is not written")  # fmt: skip
+        best_dir.mkdir(parents=True, exist_ok=True)
+        if _is_link(best_dir):
+            raise DriverError(f"{best_dir.relative_to(self.repo).as_posix()} is a link: best/ "
+                              "is not written")  # fmt: skip
+        return best_dir / f"{claim.pick.unit}.c"
+
+    def _readlint_clean(self, claim: _Claim) -> bool:
+        """Strict readlint (D-20) on the landed unit alone, as `readlint --units EXE/UNIT`
+        runs it, over src/ and config/ as they are now (after the gate). Clean only when the
+        unit was checked and no violation was found, in it or in a header it includes; a
+        readlint error (an unreadable file or table) is not clean (fail closed)."""
+        try:
+            result = run_readlint([self.repo / claim.unit_rel], src_root=self.repo / "src",
+                                  config_root=self.repo / "config",
+                                  units=[claim.target])  # fmt: skip
+        except ReadlintError:
+            return False
+        return result.exit_code() == EXIT_OK and claim.unit_rel in result.files_checked
+
+    def _landing_message(self, session: _Session, gate: GateRun) -> str:
+        """The commit message of a landing: D-25's match message, or a readability session's
+        (07-38)."""
+        claim = session.claim
+        figures = dict(exe=claim.pick.exe, unit=claim.pick.unit, attempt_n=claim.n,
+                       model=session.text("model"), usage=session.usage,
+                       seconds=session.seconds, sha1s=gate_sha1s(gate.doc),
+                       requested_model=claim.model)  # fmt: skip
+        if claim.session == READABILITY:
+            return readability_message(**figures)
+        return commit_message(function=claim.function,
+                              attempts=self.config.attempts_per_function, **figures)
+
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None) -> None:  # fmt: skip
         """One match commit of explicit paths (D-25): the landed unit, status.csv, the feed and
-        the log; a matching session adds no header (D-19)."""
+        the log; a matching session adds no header (D-19). 07-38: a readability session's
+        landing is the same commit with its own message and a LANDED record; only a match
+        counts toward `matched`."""
         claim = session.claim
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
         log_size = self.log.stat().st_size if self.log.is_file() else 0
-        self._record_attempt(session, MATCHED, abort, summary, gate=gate)
+        outcome = LANDED if claim.session == READABILITY else MATCHED
+        self._record_attempt(session, outcome, abort, summary, gate=gate)
         try:
-            message = commit_message(exe=claim.pick.exe, function=claim.function,
-                                     unit=claim.pick.unit, attempt_n=claim.n,
-                                     attempts=self.config.attempts_per_function,
-                                     model=session.text("model"), usage=session.usage,
-                                     seconds=session.seconds,
-                                     sha1s=gate_sha1s(gate.doc),
-                                     requested_model=claim.model)  # fmt: skip
+            message = self._landing_message(session, gate)
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -3369,6 +3612,8 @@ class _Night:
                                       gate=gate)  # fmt: skip
             self.interrupted = f" during the match commit; {undone}"
             raise
+        if outcome != MATCHED:
+            return
         with self.cond:
             self.matched += 1
             self.cond.notify_all()
@@ -3827,7 +4072,9 @@ class _Night:
     def _gated_commit(self, pending: _Pending, plan: _NamingPlan,
                       own: tuple[str, str] | None) -> str:  # fmt: skip
         """D-19's all-or-nothing step: every path of the plan must equal HEAD, then each is
-        written, one container gate runs over every affected unit, and a pass is one commit
+        written, the C89 lint runs over every affected unit and written header (07-38 fix round
+        1, `_naming_lint`: a failure is a _Refusal, a lint tool error a TOOL stop, both after
+        the put-back), one container gate runs over every affected unit, and a pass is one commit
         of explicit paths (the plan's, the gated EXEs' status.csv and the feed). A failure puts
         every path back byte for byte and is a _Refusal naming the gate. Returns the commit."""
         start = pending.proposal.address if isinstance(pending.proposal, Rename) else None
@@ -3840,8 +4087,23 @@ class _Night:
             step = "the proposal's paths could not be written"
             try:
                 self._write_plan(plan)
+                step = "the C89 lint could not run"
+                lint = self._naming_lint(plan)
+                if lint != EXIT_OK:
+                    self._put_back(originals)
+                    self.pre_gate = {}  # no gate ran: status.csv and the feed are untouched
+                    units, headers = self._lint_files(plan)
+                    shown = _listed([*units, *headers])
+                    if lint != EXIT_MISMATCH:
+                        raise _Stop(TOOL, f"the C89 lint of {shown} exited {lint}; every "
+                                          "path was put back")  # fmt: skip
+                    raise _Refusal(f"the C89 lint failed on {shown} (lint.py: clang "
+                                   "-std=gnu89 with the Watcom compat header); nothing was "
+                                   "gated or committed")  # fmt: skip
                 step = "the rename gate could not run"
                 gate = self._naming_gate(plan.targets)
+            except (_Refusal, _Stop):
+                raise
             except Exception as exc:
                 self.ledger.note(*outputs)  # what a gate that broke off may have written
                 self._put_back(originals)
@@ -3882,6 +4144,41 @@ class _Night:
 
     def _naming_gate(self, targets: Sequence[str]) -> GateRun:
         return self.deps.rename_gate(list(targets))
+
+    def _lint_files(self, plan: _NamingPlan) -> tuple[list[str], list[str]]:
+        """The units a naming plan gates (src/<exe>/<unit>.c of each target) and the headers it
+        writes (include/<name>.h)."""
+        units = [f"src/{exe}/{unit}.c" for exe, unit in map(_unit_key, plan.targets)]
+        headers = [rel for rel, data in plan.changes.items()
+                   if data is not None and _HEADER.fullmatch(rel)]  # fmt: skip
+        return units, headers
+
+    def _naming_lint(self, plan: _NamingPlan) -> int:
+        """07-38 fix round 1 (owner ruling 2026-10-30: every landing path runs the C89 lint
+        before it commits; review I1): after the plan's files are written and before the gate,
+        `Deps.lint_paths` lints every unit the plan gates and, for each header it writes, a
+        probe unit under build/driver/<run>/lint-probe/ that includes common.h and then the
+        header, as a unit would (lint.py lints .c files only; Watcom accepts `//` and the gate
+        passes on unchanged bytes, so only the lint catches a non-C89 header). The probes are
+        removed afterwards. Returns the lint's exit (0 clean, 1 failed, 2 tool error)."""
+        units, headers = self._lint_files(plan)
+        probe_dir = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LINT_PROBE_DIR)
+        probes = []
+        try:
+            for header in headers:
+                name = PurePosixPath(header).relative_to("include")
+                probe = probe_dir / f"{str(name.with_suffix('')).replace('/', '__')}.c"
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                if _is_link(probe_dir) or _is_link(probe):
+                    raise DriverError(f"{probe_dir} or its probe is a link: nothing is linted")
+                write_atomic(probe, f'#include "common.h"\n#include "{name.as_posix()}"\n'
+                             .encode("ascii"))  # fmt: skip
+                probes.append(probe)
+            paths = [*units, *(p.relative_to(self.repo).as_posix() for p in probes)]
+            return self.deps.lint_paths(paths) if paths else EXIT_OK
+        finally:
+            for probe in probes:
+                probe.unlink(missing_ok=True)
 
     def _put_back(self, originals: Mapping[str, bytes | None]) -> None:
         """Every path of a failed proposal back to its bytes before (None: removed)."""
@@ -4077,6 +4374,7 @@ class _Night:
 
 RENAMED_BY = "Renamed-By: reverseapoc drive"  # the trailer of every naming commit (D-19)
 RENAME_MSG = "rename-msg.txt"  # under build/driver/<run>/: the last naming commit's message
+LINT_PROBE_DIR = "lint-probe"  # build/driver/<run>/lint-probe/: a header's lint probe unit
 _UNIT_DEPTH = 2  # src/<exe>/<unit>.c: two slashes
 _SUPERSEDED = "superseded by a later line for the same row (the last line for a row wins)"
 _RENAMING = object()  # a coordinator `busy` mark: a unit a naming commit holds (D-06)
@@ -4351,6 +4649,7 @@ class DriveOptions:
     max_turns: int = MAX_TURNS  # D-07
     session_minutes: int = TIMEOUT_S // 60  # D-07: each session's wall clock
     canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
+    session: str = MATCHING  # 07-38 (D-18): `drive --session matching|readability`
 
     @property
     def config_root(self) -> Path:
@@ -4601,22 +4900,29 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     worlds' scaffold and pack, the claude argv and session, and the container lint and gates
     (D-24). `today` (UTC) names this pass. With a signed tier (07-26) `queue` is the tier
     queue instead (`tier_source`): it never reads the difficult list, whose passes it takes
-    from the night's pass index (the committed log), and `requeue` gives nothing back."""
+    from the night's pass index (the committed log), and `requeue` gives nothing back. On a
+    readability night (07-38) `queue` is `readability_source` over the checkout and the
+    worlds' call index, and `requeue` gives nothing back."""
     day = today or _today()
     config_root = options.config_root
     excluded = excluded_keys(config_root, day)
     say = console(options, seams)
-    tiers = tier_source(config_root, worlds)
+    readability = options.session == READABILITY
+    tiers = None if readability else tier_source(config_root, worlds)
+    units_queue = readability_source(options.repo, _world_callees(worlds),
+                                     git=seams.git)  # 07-38: read from HEAD
 
     def pools(difficult: Container[Key]) -> Iterable[Pick]:
         return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
                             difficult=difficult)  # fmt: skip
 
     def queue(difficult: Container[Key]) -> Iterable[Pick] | TierQueue:
+        if readability:
+            return units_queue(difficult)
         return pools(difficult) if tiers is None else tiers(None)
 
     def requeue(difficult: Mapping[Key, tuple[Key, ...]]) -> Iterable[Key]:
-        if tiers is not None:
+        if tiers is not None or readability:
             return ()
         keys = frozenset(difficult)
         empty = next(iter(pools(keys)), None) is None
@@ -4632,10 +4938,14 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         code = seams.run(lint_argv(pick)).returncode
         return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
 
+    def lint_paths(paths: Sequence[str]) -> int:  # 07-38 fix round 1: a naming commit's files
+        code = seams.run([*CONTAINER_CLI, "lint", *paths, "--json"]).returncode
+        return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
+
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
-                argv=seams.argv, session=seams.session, lint=lint,
+                argv=seams.argv, session=seams.session, lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
@@ -4711,6 +5021,175 @@ def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
                           excluded=excluded_keys(options.config_root, today),
                           difficult=difficult)  # fmt: skip
     return [pick for _, pick in zip(range(options.max_sessions), stream, strict=False)]
+
+
+# ---- the readability queue (07-38; D-17, D-20, DEC-04) ----
+
+Callees = Mapping[str, Mapping[int, Sequence[int]]]  # EXE -> row start -> callee starts
+
+
+@dataclass(frozen=True)
+class ReadabilityEntry:
+    """One queued unit of a readability night: the pick of its lowest matched function (by C
+    name) and its strict readlint violations now."""
+
+    pick: Pick
+    violations: int
+
+
+def _matched_unit_picks(config_root: Path, src_root: Path) -> dict[tuple[str, str], Pick]:
+    """Each committed unit with a matched row (status.csv) mapped to the pick of its lowest
+    matched function: its C name (symbols.csv, else the placeholder) and its size. A unit
+    without a file under `src_root` is no readability unit."""
+    out: dict[tuple[str, str], Pick] = {}
+    for exe in EXE_ORDER:
+        functions = config_root / exe / "functions.csv"
+        if not functions.is_file() or not status_path(config_root, exe).is_file():
+            continue
+        rows = read_functions_csv(functions)
+        symbols_path = config_root / exe / "symbols.csv"
+        symbols = read_symbols_csv(symbols_path) if symbols_path.is_file() else []
+        names = {start: name for name, start in unitdefs.c_names(rows, symbols).items()}
+        by_start = {row.start: row for row in rows}
+        matched = sorted(row.start for row in _status_rows(config_root, exe)
+                         if row.status == STATUS_MATCHED)  # fmt: skip
+        for start in matched:
+            row = by_start.get(start)
+            if row is None or not row.unit or (exe, row.unit) in out:
+                continue
+            if not (src_root / exe / f"{row.unit}.c").is_file():
+                continue
+            out[(exe, row.unit)] = Pick(exe, start, names.get(start, f"func_{start:08X}"),
+                                        row.unit, row.end - row.start, 0)  # fmt: skip
+    return out
+
+
+def _tier_units(config_root: Path) -> dict[tuple[str, str], int]:
+    """Each unit holding a `member` row of a signed tier (mechanics.signed_tiers: signed, its
+    digest matching), mapped to the lowest such tier; units come from functions.csv."""
+    if not (config_root / mechanics.MECHANICS_TOML).is_file():
+        return {}
+    mech, members = mechanics.read_committed(config_root)
+    units: dict[str, dict[int, str]] = {}
+    out: dict[tuple[str, str], int] = {}
+    for tier in mechanics.signed_tiers(mech, members):
+        items = {item.id for item in mech.items if item.tier == tier}
+        for row in members:
+            if row.role != mechanics.ROLE_MEMBER or not items.intersection(row.member_items):
+                continue
+            if row.exe not in units:
+                path = config_root / row.exe / "functions.csv"
+                rows = read_functions_csv(path) if path.is_file() else []
+                units[row.exe] = {r.start: r.unit for r in rows}
+            unit = units[row.exe].get(row.address)
+            if unit:
+                out.setdefault((row.exe, unit), tier)  # tiers ascend: the first is the lowest
+    return out
+
+
+def _unit_callees(config_root: Path, picks: Mapping[tuple[str, str], Pick],
+                  callees: Callees) -> dict[tuple[str, str], list[tuple[str, str]]]:  # fmt: skip
+    """For each matched unit, the other matched units holding a matched callee of any of its
+    functions (`callees`: the worlds' call index)."""
+    out: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    for exe in {key[0] for key in picks}:
+        rows = read_functions_csv(config_root / exe / "functions.csv")
+        unit_of = {row.start: row.unit for row in rows}
+        matched = matched_starts_of(config_root, exe)
+        calls = callees.get(exe, {})
+        for row in rows:
+            key = (exe, row.unit)
+            if key not in picks:
+                continue
+            found = {(exe, unit_of[c]) for c in calls.get(row.start, ())
+                     if c in matched and unit_of.get(c) and (exe, unit_of[c]) != key}  # fmt: skip
+            out.setdefault(key, []).extend(sorted(found))
+    return out
+
+
+def matched_starts_of(config_root: Path, exe: str) -> frozenset[int]:
+    """The matched starts of `exe`'s status.csv."""
+    return frozenset(row.start for row in _status_rows(config_root, exe)
+                     if row.status == STATUS_MATCHED)  # fmt: skip
+
+
+def readability_entries(repo: Path, callees: Callees | None = None) -> list[ReadabilityEntry]:
+    """07-38 (D-17): the readability queue of the checkout as it is now, in order
+    (picker.readability_queue), each unit with its strict readlint violation count. One
+    readlint run over src/ decides which matched units pass (a unit's own file; its included
+    headers count at its landing); `callees` (the worlds' call index; none: no callee blocks)
+    gives the bottom-up order. ReadlintError (an unreadable unit or table) propagates."""
+    repo = Path(repo)
+    config_root, src_root = repo / "config", repo / "src"
+    picks = _matched_unit_picks(config_root, src_root)
+    if not picks:
+        return []
+    result = run_readlint([src_root], src_root=src_root, config_root=config_root)
+    per_file = result.per_file()
+    counts = {key: per_file.get(f"src/{key[0]}/{key[1]}.c", {}).get("violations")
+              for key in picks}  # fmt: skip
+    passing = {key for key, n in counts.items() if n == 0}  # unchecked (None) is not passing
+    queue = readability_queue(picks, _tier_units(config_root),
+                              _unit_callees(config_root, picks, callees or {}), passing)
+    return [ReadabilityEntry(pick, counts[(pick.exe, pick.unit)] or 0) for pick in queue]
+
+
+def head_readability_entries(repo: Path, callees: Callees | None = None, *,
+                             git: Callable[..., subprocess.CompletedProcess] | None = None
+                             ) -> list[ReadabilityEntry]:  # fmt: skip
+    """`readability_entries` of HEAD, never of the working tree (07-38 fix round 1, review
+    I2): HEAD's src/, include/ and config/ are extracted (`extract_head`, as a view is built)
+    into a fresh temporary directory and read there, then the directory is removed. So
+    another worker's landing in flight (its unit in src/, its gate's rows in status.csv) never
+    counts until its commit, and no file a landing replaces or restores is held open."""
+    git = git if git is not None else git_runner(Path(repo))
+    with tempfile.TemporaryDirectory(prefix="reverseapoc-queue-") as tmp:
+        root = Path(tmp)
+        extract_head(git, root)
+        return readability_entries(root, callees)
+
+
+def readability_source(repo: Path, callees: Callees | None = None, *,
+                       git: Callable[..., subprocess.CompletedProcess] | None = None
+                       ) -> Callable[[Container[Key]], Iterator[Pick]]:  # fmt: skip
+    """Deps.queue of a readability night: each time the coordinator asks, the queue is read
+    again from HEAD (`head_readability_entries`: the committed state, so a unit offered once
+    its callees' landings committed is offered the same night) and its first unit not yet
+    offered tonight is the next pick. The difficult list does not apply. A unit whose callee's
+    landing is still in flight reads as waiting for it; with several workers it waits for the
+    next night when the queue ends meanwhile (nothing else eligible)."""
+
+    def picks(difficult: Container[Key]) -> Iterator[Pick]:
+        offered: set[tuple[str, str]] = set()
+        while True:
+            entries = head_readability_entries(repo, callees, git=git)
+            pick = next((e.pick for e in entries if (e.pick.exe, e.pick.unit) not in offered),
+                        None)  # fmt: skip
+            if pick is None:
+                return
+            offered.add((pick.exe, pick.unit))
+            yield pick
+
+    return picks
+
+
+def readability_dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
+                        git: Callable[..., subprocess.CompletedProcess] | None = None
+                        ) -> int:  # fmt: skip
+    """`drive --session readability --dry-run`: the queued units of HEAD in order, with their
+    readlint violation counts; no pack, no claude, no gate."""
+    entries = head_readability_entries(options.repo, _world_callees(worlds), git=git)
+    units = [{"exe": e.pick.exe, "unit": e.pick.unit, "start": f"0x{e.pick.start:08X}",
+              "function": e.pick.name, "violations": e.violations} for e in entries]  # fmt: skip
+    lines = [f"{u['exe']} {u['unit']} {u['start']} {u['function']} readlint {u['violations']} "
+             f"violation{'' if u['violations'] == 1 else 's'}" for u in units]  # fmt: skip
+    _emit(options, {"session": READABILITY, "units": units},
+          lines or ["readability queue: empty (every matched unit passes readlint)"])
+    return EXIT_OK
+
+
+def _world_callees(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, tuple[int, ...]]]:
+    return {exe: world.callees for exe, world in worlds.items()}
 
 
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
@@ -4970,14 +5449,19 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                 return run_canary(options, seams, lock=lock)
         worlds = _load_worlds(seams)
         today = _today()
-        with _phase("picks"):
-            picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
-                                                                           today=today)
-        with _phase("drafts"):
-            _drafts(log, [_pick_of(entry) for entry in picks])
-        if options.dry_run:
-            with _phase("pack"):
-                return dry_run(options, worlds, picks)
+        if options.session == READABILITY:  # 07-38: no pilot picks and no Ghidra drafts
+            with _phase("picks"):
+                if options.dry_run:
+                    return readability_dry_run(options, worlds, git=seams.git)
+        else:
+            with _phase("picks"):
+                picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
+                                                                               today=today)
+            with _phase("drafts"):
+                _drafts(log, [_pick_of(entry) for entry in picks])
+            if options.dry_run:
+                with _phase("pack"):
+                    return dry_run(options, worlds, picks)
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
@@ -4990,7 +5474,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          max_budget_usd=options.max_budget_usd,
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
-                         wall_clock_s=options.session_minutes * 60)  # fmt: skip
+                         wall_clock_s=options.session_minutes * 60,
+                         session=options.session)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
