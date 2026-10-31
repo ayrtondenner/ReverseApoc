@@ -23,6 +23,7 @@ kind, exe and address forms and the evidence form. Whether a proposal may be app
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -222,22 +223,41 @@ def _decode(data: bytes) -> str:
         raise ProposalError(f"line {lineno}: not UTF-8 ({exc.reason})") from None
 
 
-def read_proposals(path: Path) -> list[Rename | Header]:
-    """Every proposal in the proposals.jsonl at `path`, in file order. A missing file, an empty
-    one, and lines holding only whitespace are no proposals (a session that proposes nothing,
-    DEC-02). ProposalError naming the first malformed line otherwise; a caller that wants every
-    good line of a partly bad file calls parse_line per line. A file larger than
-    PROPOSALS_FILE_MAX is refused whole (fix round 1)."""
+def read_bounded(path: Path) -> bytes | None:
+    """The bytes of the proposals.jsonl at `path`, read once from one handle and never more
+    than PROPOSALS_FILE_MAX + 1 bytes (07-34 fix round 2: no stat-then-read window); None when
+    there is no file. A larger file is refused whole (ProposalError, fix round 1)."""
     path = Path(path)
-    if not path.exists():
-        return []
-    size = path.stat().st_size
-    if size > PROPOSALS_FILE_MAX:
-        cap = PROPOSALS_FILE_MAX // _MIB
-        raise ProposalError(f"{path.name}: {size} bytes, more than {cap} MiB")
-    text = _decode(path.read_bytes())
+    try:
+        fh = path.open("rb")
+    except FileNotFoundError:
+        return None
+    with fh:
+        data = fh.read(PROPOSALS_FILE_MAX + 1)
+        if len(data) > PROPOSALS_FILE_MAX:
+            size = os.fstat(fh.fileno()).st_size
+            cap = PROPOSALS_FILE_MAX // _MIB
+            raise ProposalError(f"{path.name}: {size} bytes, more than {cap} MiB")
+    return data
+
+
+def parse_proposals(data: bytes) -> list[Rename | Header]:
+    """Every proposal in the bytes of one proposals.jsonl, in file order; lines holding only
+    whitespace are skipped. ProposalError naming the first malformed line."""
+    text = _decode(data)
     lines = enumerate(text.split(_LINE_BREAK), start=1)  # only \n: U+2028 may sit in a string
     return [parse_line(line, lineno) for lineno, line in lines if line.strip()]
+
+
+def read_proposals(path: Path) -> list[Rename | Header]:
+    """Every proposal in the proposals.jsonl at `path`, in file order (read_bounded, then
+    parse_proposals). A missing file, an empty one, and lines holding only whitespace are no
+    proposals (a session that proposes nothing, DEC-02). ProposalError naming the first
+    malformed line otherwise; a caller that wants every good line of a partly bad file calls
+    parse_line per line on the same bytes. A file larger than PROPOSALS_FILE_MAX is refused
+    whole (fix round 1)."""
+    data = read_bounded(path)
+    return [] if data is None else parse_proposals(data)
 
 
 # ---- may a proposal be applied? (the driver asks under the gate lock, 07-34) ----

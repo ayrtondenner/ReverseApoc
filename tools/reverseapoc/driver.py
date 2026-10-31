@@ -81,6 +81,21 @@ pass the same night (night.passes counts it, and is the pass index the queue rea
 queue never reads difficult.json). The dry run and the night's draft picks are the tier
 queue's first picks (`tier_picks`), the dry run's with their tier, level and pass.
 
+Naming proposals (07-34; D-19, D-29): the driver is the only writer of naming state. After a
+readability session (DriveConfig.session; ruling F34: never after a matching one) and before
+its landing, `_apply_proposals` reads the session's proposals.jsonl and applies each proposal
+in file order under the gate lock, against the naming state of that moment: a rename writes
+symbols.csv (the new linker name) and rewrites the exact old C name in every committed user
+in src/ and in the driver-written headers, a header proposal writes include/<name>.h; one
+container gate (`Deps.rename_gate`) runs over every affected unit and includer, all or
+nothing, and a pass is one `refactor(...)` commit with `Renamed-By: reverseapoc drive`, a
+failure a byte-for-byte restore. Every proposal is a v2 `rename` record (APPLIED, DEFERRED,
+REFUSED; ruling F12's shapes); a bad line is REFUSED, never a night stop. A proposal whose
+affected unit another live session holds is DEFERRED and tried again after each claim
+release (`_retry_deferred`); the proposing session's own unit never blocks, its view unit is
+rewritten in place. At every landing the view unit first takes every rename committed since
+the view's HEAD (`_renames_since`), so a session that started before a rename still lands.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -118,12 +133,23 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, callgraph, hooks, mechanics, streamjson
+from . import attempt, callgraph, hooks, mechanics, streamjson, unitdefs
 from .callgraph import CallGraph
 from .check import PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
-from .functions import KIND_GAME, KIND_THUNK
+from .functions import (
+    KIND_GAME,
+    KIND_RUNTIME,
+    KIND_THUNK,
+    SymbolRow,
+    data_name,
+    format_symbols_csv,
+    game_name,
+    read_functions_csv,
+    read_symbols_csv,
+    write_symbols_csv,
+)
 from .libmatch import read_runtime_csv, runtime_csv_path
 from .locks import DRIVE_LOCK, ProcessLock
 from .picker import EXE_ORDER, PILOT_PER_EXE, Key, Pick, TierItem, TierQueue, tier_queue
@@ -131,6 +157,19 @@ from .picker import pilot as picker_pilot
 from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
+from .proposals import (
+    RESERVED_HEADERS,
+    Header,
+    ProposalError,
+    Rename,
+    header_problem,
+    linker_name,
+    name_problem,
+    parse_line,
+    parse_proposals,
+    read_bounded,
+    rename_problem,
+)
 from .score import Assessment, Candidate, assess, candidates, score, score_reasons
 from .session import (
     FABLE_BUDGET_USD,
@@ -260,6 +299,9 @@ class DriveConfig:
     max_budget_usd: float = MAX_BUDGET_USD  # D-07: per Opus session (07-30: a drive flag)
     fable_budget_usd: float = FABLE_BUDGET_USD  # D-25: per Fable session
     max_turns: int = MAX_TURNS  # D-07
+    # 07-34 (D-18, ruling F34): the night's session kind. Only a readability session's
+    # proposals.jsonl is applied (D-19), so matching nights keep the placeholders (D-17).
+    session: str = MATCHING_KIND
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -337,6 +379,11 @@ class Deps:
     end_of_run: Callable[[], Sequence[str]] = tuple
     say: Callable[[str], None] = _quiet
     kill: Callable[[int], None] = kill_tree  # 07-21 stop-all: a live session's whole tree
+    # 07-34 (D-19): one container gate over the affected units of a rename or header proposal
+    # (`gate u1 u2 ... --json`, all or nothing), and the LE data objects of an EXE (a data
+    # rename must lie in one; none: every data rename is refused, fail closed).
+    rename_gate: Callable[[Sequence[str]], GateRun] = lambda targets: GateRun(EXIT_TOOL)
+    data_ranges: Callable[[str], Sequence[tuple[int, int]]] = lambda exe: ()
 
 
 @dataclass(frozen=True)
@@ -797,12 +844,23 @@ def claimed_matched(doc: Mapping | None, pick: Pick) -> bool:
     )  # fmt: skip
 
 
-def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
-    """(EXE name, SHA-1) of each landed EXE in a gate's JSON (its checks' `splice` entries)."""
-    found: dict[str, str] = {}
-    checks = doc.get("checks") if isinstance(doc, Mapping) else None
+def _splice_lists(doc: Mapping | None) -> Iterator[object]:
+    """The `splice` lists of a gate's JSON (gate.GateResult.to_json): each check's, which a
+    per-unit gate fills, and the top-level one, which `gate --all` fills (07-34 fix round 1)."""
+    if not isinstance(doc, Mapping):
+        return
+    checks = doc.get("checks")
     for check in checks if isinstance(checks, list) else ():
-        splices = check.get("splice") if isinstance(check, Mapping) else None
+        if isinstance(check, Mapping):
+            yield check.get("splice")
+    yield doc.get("splice")
+
+
+def gate_sha1s(doc: Mapping | None) -> list[tuple[str, str]]:
+    """(EXE name, SHA-1) of each landed EXE in a gate's JSON: its checks' `splice` entries
+    (per-unit gate) and its top-level `splice` entries (`gate --all`)."""
+    found: dict[str, str] = {}
+    for splices in _splice_lists(doc):
         for entry in splices if isinstance(splices, list) else ():
             if not isinstance(entry, Mapping):
                 continue
@@ -1333,6 +1391,7 @@ class _Claim:
     pass_n: int = 1  # 07-23 (D-08): this function's pass, from the committed log
     model: str = MODEL  # 07-30 (D-09): the requested model, session.model_for_pass(pass_n)
     budget_usd: float = MAX_BUDGET_USD  # 07-30 (D-07, D-25): that model's per-session budget
+    session: str = MATCHING_KIND  # 07-34 (D-18): the night's session kind (DriveConfig.session)
 
     @property
     def key(self) -> Key:
@@ -1398,7 +1457,7 @@ class _Claim:
                 attempt.NOTES_ENV: str(self.notes),
                 hooks.UNIT_FILE_ENV: str(self.view_unit),
                 hooks.PROPOSALS_ENV: str(self.proposals),
-                hooks.SESSION_KIND_ENV: MATCHING_KIND,
+                hooks.SESSION_KIND_ENV: self.session,
                 OPTIONAL_LOCKS: "0",  # D-27 P4: the session's git reads never take index.lock
                 "PYTHONDONTWRITEBYTECODE": "1"}  # fmt: skip  # fix round 1 minor 3: no .pyc
 
@@ -1845,6 +1904,8 @@ class _Night:
             raise DriverError(f"run id {config.run_id!r} is not [A-Za-z0-9_.-]+")
         if config.workers < 1:
             raise DriverError(f"workers {config.workers} is below 1")
+        if config.session not in SESSIONS:
+            raise DriverError(f"session {config.session!r} is not one of {', '.join(SESSIONS)}")
         self.config = config
         self.deps = deps
         self.repo = Path(config.repo_root)
@@ -1894,6 +1955,9 @@ class _Night:
         # Reentrant, because the landing section appends its own record while it holds it.
         self.gate_lock = threading.RLock()
         self.git_lock = threading.Lock()  # D-27 P4: one driver git call at a time (_git)
+        # 07-34 (D-19): rename and header proposals waiting for another live claim's release,
+        # in proposal order (_retry_deferred).
+        self.deferred_renames: list[_Pending] = []
 
     @property
     def live(self) -> _Session | None:
@@ -2217,7 +2281,9 @@ class _Night:
         with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
             self.passes = pass_index(self.log)
         self.coordinator = _Coordinator(self)
-        return self.coordinator.run()
+        end = self.coordinator.run()
+        self._retry_deferred()  # 07-34: every claim of the night is released now
+        return end
 
     def _pinned_baseline(self, snapshot: _Snapshot) -> dict[str, bytes | None]:
         """The pinned bytes every check compares with: the night's baseline (C1), or, outside
@@ -2307,7 +2373,7 @@ class _Night:
         record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
-                  "kind": MATCHING_KIND, "pass": self._pass(pick),
+                  "kind": self.config.session, "pass": self._pass(pick),
                   "model": model_for_pass(self._pass(pick)),
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
         if not self.claims.take(record):
@@ -2317,6 +2383,7 @@ class _Night:
             yield
         finally:
             self.claims.release(pick.exe, pick.unit)
+        self._retry_deferred(own=(pick.exe, pick.unit))  # 07-34: a claim was released
 
     def _reset_live(self) -> None:
         if self.live is None:
@@ -2343,6 +2410,7 @@ class _Night:
                 raise _Halt()
             disposition = session.disposition
             if disposition is Disposition.LIMIT:
+                self._after_session(session)
                 matched = self._salvage(session)
                 self._limited(pick, n, probe)
                 if matched:
@@ -2358,6 +2426,7 @@ class _Night:
                     self._record_abort(claim, transient - 1)
                     return ABORTED
                 continue
+            self._after_session(session)
             return self._counted(session)
 
     def _claim(self, pick: Pick, n: int) -> _Claim:
@@ -2367,7 +2436,8 @@ class _Night:
         pass_n = self._pass(pick)
         model = model_for_pass(pass_n)
         return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
-                      budget_usd=self.config.budget_for(model))  # fmt: skip
+                      budget_usd=self.config.budget_for(model),
+                      session=self.config.session)  # fmt: skip
 
     def _limited(self, pick: Pick, n: int, probe: bool) -> None:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
@@ -2440,12 +2510,20 @@ class _Night:
     def _land(self, session: _Session) -> None:
         """The landing section's first step (D-06, D-24): the only writer of src/. The view
         unit's bytes are copied to src/<exe>/<unit>.c, so the lint and the unchanged gate see
-        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit."""
+        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit. 07-34
+        (D-19, CONTEXT default): first every rename committed since the view's HEAD
+        (`_renames_since`) is rewritten in the view unit, so a session that started before a
+        rename lands under the new names."""
         claim = session.claim
         source = claim.view_unit
         if _is_link(source) or not source.is_file():
             raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
         data = source.read_bytes()
+        mapping = self._renames_since(session.view_head).get(claim.pick.exe, {})
+        rewritten = _rewrite(data, mapping)
+        if rewritten != data:
+            write_atomic(source, rewritten)
+            data = rewritten
         target = self.repo / claim.unit_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         self.landed = claim.unit_rel
@@ -3362,6 +3440,539 @@ class _Night:
             return [f"<unknown: {type(exc).__name__}: {exc}>"]
         return [n for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
 
+    # --- naming proposals (07-34; D-19, D-29) ---
+
+    def _after_session(self, session: _Session) -> None:
+        """Ruling F34: only a readability session's proposals are applied, so matching nights
+        keep the placeholders (D-17) and packs stay complete. Runs after the audit and before
+        the session's landing, so its own unit lands under the new names."""
+        if session.claim.session == READABILITY:
+            self._apply_proposals(session)
+
+    def _apply_proposals(self, session: _Session) -> None:
+        """D-19: the driver, the only writer of naming state, reads the session's
+        `<attempt dir>/proposals.jsonl` (proposals.read_proposals; a partly bad file line by
+        line through parse_line) and applies each proposal in file order under the gate lock.
+        The last line for a row (or a header path) wins, as the readability skill says; an
+        earlier one is REFUSED as superseded. A line that is not a proposal is a REFUSED record
+        with op null naming it, never a night stop. The proposing session's own claim never
+        blocks it: its view unit is rewritten in place instead (CONTEXT default). Nothing is
+        applied once the night is stopping or after a breach (J2: nothing more is committed)."""
+        claim = session.claim
+        with self.gate_lock:
+            if self.breached or self.stop.is_set():
+                return
+            for item in _latest_first(_read_proposal_file(claim.proposals)):
+                if isinstance(item, str):
+                    self._record_rename(None, REFUSED, reason=item)
+                elif isinstance(item, _Superseded):
+                    self._record_rename(item.proposal, REFUSED, old=self._old_name(item.proposal),
+                                        reason=_SUPERSEDED)  # fmt: skip
+                else:
+                    self._apply_pending(_Pending(item, claim.model, claim), own=_own_key(claim))
+
+    def _apply_pending(self, pending: _Pending, *, own: tuple[str, str] | None,
+                       retry: bool = False) -> None:  # fmt: skip
+        """One proposal against the naming state of this moment: REFUSED (with its reason),
+        DEFERRED behind another live claim (recorded once; `_retry_deferred` tries it again),
+        or APPLIED in one gated commit."""
+        proposal = pending.proposal
+        old = self._old_name(proposal)
+        try:
+            plan = self._plan_naming(pending, old)
+        except _Refusal as refusal:
+            self._record_rename(proposal, REFUSED, old=old, reason=refusal.reason)
+            return
+        blocked = self._blocked(plan.targets, own)
+        if blocked:
+            self.deferred_renames.append(replace(pending, own=None))
+            if not retry:
+                self._record_rename(proposal, DEFERRED, old=old, reason=blocked)
+            return
+        try:
+            commit = self._gated_commit(pending, plan, own)
+        except _Deferral as deferral:  # a subclass of _Refusal: caught first
+            self.deferred_renames.append(replace(pending, own=None))
+            if not retry:
+                self._record_rename(proposal, DEFERRED, old=old, reason=deferral.reason)
+            return
+        except _Refusal as refusal:
+            self._record_rename(proposal, REFUSED, old=old, reason=refusal.reason)
+            return
+        except _Stop as stop:  # the gate or the commit failed as a tool: recorded, then stopped
+            self._record_rename(proposal, REFUSED, old=old, reason=stop.detail)
+            raise
+        self._record_rename(proposal, APPLIED, old=old, commit=commit)
+        if pending.own is not None and plan.rewrite:
+            self._rewrite_view(pending.own, plan.rewrite)
+
+    def _retry_deferred(self, own: tuple[str, str] | None = None) -> None:
+        """D-19, CONTEXT default: the proposals DEFERRED behind another live claim are tried
+        again, in proposal order, after each claim release (`_claimed`) and once more at the
+        end of the night. Nothing is tried once the night is stopping or a breach happened (J2:
+        nothing is committed any more). `own` is the unit of the releasing worker's pass, which
+        never blocks."""
+        if not self.deferred_renames or self.breached or self.stop.is_set():
+            return
+        with self.gate_lock:
+            waiting, self.deferred_renames = self.deferred_renames, []
+            for pending in waiting:
+                self._apply_pending(pending, own=own, retry=True)
+
+    def _renames_since(self, head: str) -> dict[str, dict[str, str]]:
+        """Per EXE, every C name symbols.csv changed between commit `head` (a view's, F34) and
+        HEAD, old -> new; a row without a symbols.csv name at `head` had its placeholder. Empty
+        when `head` is HEAD (or not given)."""
+        now = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        if not head or head == now:
+            return {}
+        found: dict[str, dict[str, str]] = {}
+        for exe in EXE_ORDER:
+            before, after = self._c_names_at(head, exe), self._c_names_at(now, exe)
+            mapping = {}
+            for key in before.keys() | after.keys():
+                old = before.get(key, _placeholder(*key))
+                new = after.get(key, _placeholder(*key))
+                if old != new:
+                    mapping[old] = new
+            if mapping:
+                found[exe] = mapping
+        return found
+
+    def _c_names_at(self, commit: str, exe: str) -> dict[tuple[str, int], str]:
+        """(kind, address) -> C name of every symbols.csv row of `exe` at `commit` (none: the
+        file is not there)."""
+        done = self._git(["cat-file", "blob", f"{commit}:{_symbols_rel(exe)}"])
+        if done.returncode != 0:
+            return {}
+        lines = [line for line in done.stdout.decode("utf-8").splitlines()
+                 if line and not line.startswith("#")]  # fmt: skip
+        return {(row["kind"], int(row["address"], 16)): unitdefs.c_name_of(row["name"], row["kind"])
+                for row in csv.DictReader(lines)}  # fmt: skip
+
+    def _old_name(self, proposal: Rename | Header) -> str | None:
+        """The C name a rename proposal's row has now (its symbols.csv name's, else its
+        placeholder); None for a header, or when symbols.csv cannot be read."""
+        if not isinstance(proposal, Rename):
+            return None
+        try:
+            symbols = read_symbols_csv(self.repo / _symbols_rel(proposal.exe))
+        except (ValueError, OSError):
+            return _placeholder(proposal.kind, proposal.address)
+        return _current_c_name(proposal, symbols)
+
+    def _plan_naming(self, pending: _Pending, old: str | None) -> _NamingPlan:
+        """What one valid proposal writes and gates; _Refusal (its reason) when it is not
+        valid against the naming state of this moment, or when a file it must read cannot be
+        read (broken naming state is refused, never guessed)."""
+        try:
+            if isinstance(pending.proposal, Rename):
+                return self._plan_rename(pending, old)
+            return self._plan_header(pending.proposal)
+        except (ValueError, OSError) as exc:
+            raise _Refusal(f"a file the proposal needs could not be read: "
+                           f"{type(exc).__name__}: {exc}") from None  # fmt: skip
+
+    def _plan_rename(self, pending: _Pending, old: str | None) -> _NamingPlan:
+        """symbols.csv with the row's new linker name and every committed unit that uses the
+        old C name as a whole word (the INCLUDE_ASM marker included) with the token rewritten
+        (D-19, D-29: `address_of` refuses the old placeholder, so every user changes in the
+        same commit)."""
+        rename = pending.proposal
+        exe = rename.exe
+        try:
+            symbols = read_symbols_csv(self.repo / _symbols_rel(exe))
+            state = self._naming_state(exe, pending.own, symbols)
+            problem = rename_problem(rename, **state)
+        except (ValueError, OSError) as exc:  # broken naming state: refused, never guessed
+            raise _Refusal(f"the naming state of {exe} could not be read: "
+                           f"{type(exc).__name__}: {exc}") from None  # fmt: skip
+        if problem is not None:
+            raise _Refusal(problem)
+        rows = _renamed_rows(symbols, rename)
+        text = format_symbols_csv(rows, _manifest_name(exe))
+        changes: dict[str, bytes | None] = {_symbols_rel(exe): text.encode("utf-8")}
+        mapping = {old: rename.name}
+        units = self._affected_units(exe, old)
+        headers = self._affected_headers(old)
+        for rel, data in {**units, **headers}.items():
+            changes[rel] = _rewrite(data, mapping)
+        gated = {*units, *(self._includers({PurePosixPath(r).name for r in headers})
+                           if headers else ())}  # fmt: skip
+        subject = f"refactor({exe}): rename {old} to {rename.name}"
+        body = [f"{rename.kind} 0x{rename.address:08X} of {exe}: {old} -> {rename.name} "
+                f"(linker name {linker_name(rename.name, rename.kind)})"]  # fmt: skip
+        return _NamingPlan(changes, _targets(gated), subject, body, {exe: mapping},
+                           symbols=(exe, rows))  # fmt: skip
+
+    def _naming_state(self, exe: str, own: _Claim | None, symbols: Sequence[SymbolRow]) -> dict:
+        """rename_problem's naming state of `exe` read now: symbols.csv and functions.csv rows,
+        the runtime publics of runtime.csv, the file-scope names of the committed units (and
+        of the proposing session's view unit) and the EXE's LE data objects (Deps.data_ranges;
+        none means every data rename is refused, fail closed)."""
+        functions = read_functions_csv(self.repo / "config" / exe / "functions.csv")
+        runtime = self.repo / "config" / exe / "runtime.csv"
+        publics = ([name for row in read_runtime_csv(runtime) for name in row.publics]
+                   if runtime.is_file() else [])  # fmt: skip
+        return {"symbols": symbols, "functions": functions, "runtime_names": publics,
+                "src_names": self._src_names(exe, own),
+                "data_ranges": tuple(self.deps.data_ranges(exe))}  # fmt: skip
+
+    def _src_names(self, exe: str, own: _Claim | None, *, exclude: str | None = None
+                   ) -> dict[str, str]:  # fmt: skip
+        """File-scope name -> where it is used (unitdefs.file_scope_names): the committed
+        src/<exe>/ units, the proposing session's view unit (attempt check's in-session state
+        reads the view too), and every committed header under include/: the typedefs of
+        common.h (s8..u32) and every name a driver-written header declares (ruling, 07-19 as
+        built), so a rename never collides with them."""
+        sources = [(rel, self.repo / rel) for rel in self._committed_units(exe)]
+        if (own is not None and own.pick.exe == exe and own.view_unit.is_file()
+                and not _is_link(own.view_unit)):  # fmt: skip
+            sources.append((own.view_unit_rel, own.view_unit))
+        sources += [(rel, self.repo / rel) for rel in self._committed_headers()]
+        names: dict[str, str] = {}
+        for rel, path in sources:
+            if rel == exclude:  # fix round 1: a header proposal's own committed text
+                continue
+            for name in sorted(unitdefs.file_scope_names(path.read_bytes().decode("utf-8"))):
+                names.setdefault(name, rel)
+        return names
+
+    def _committed_headers(self) -> list[str]:
+        """Every header HEAD tracks directly under include/, repo-relative, sorted."""
+        raw = _git_ok(self._git, ["ls-files", "-z", "--", "include/"])
+        names = raw.decode("utf-8", "surrogateescape").split("\0")
+        return sorted(n for n in names if n.endswith(".h") and n.count("/") == 1)
+
+    def _affected_headers(self, old: str) -> dict[str, bytes]:
+        """The committed driver-written headers (never common.h or watcom_compat.h, D-19) that
+        use `old` as a whole word, with their bytes now: a renamed prototype or extern moves
+        with its row."""
+        token = _token(old)
+        found = {}
+        for rel in self._committed_headers():
+            if PurePosixPath(rel).name in RESERVED_HEADERS:
+                continue
+            data = _read(self.repo / rel)
+            if data is not None and token.search(data):
+                found[rel] = data
+        return found
+
+    def _includers(self, names: set[str]) -> list[str]:
+        """The committed units of both EXEs that include one of the headers `names`
+        (`snd.h`), directly or through other committed headers (unitdefs.included_headers)."""
+        includes = {PurePosixPath(rel).name: unitdefs.included_headers(
+            (self.repo / rel).read_bytes().decode("utf-8")) for rel in self._committed_headers()}
+        closure = set(names)
+        grown = True
+        while grown:
+            grown = False
+            for header, included in includes.items():
+                if header not in closure and included & closure:
+                    closure.add(header)
+                    grown = True
+        units = [rel for exe in EXE_ORDER for rel in self._committed_units(exe)]
+        return [rel for rel in units if unitdefs.included_headers(
+            (self.repo / rel).read_bytes().decode("utf-8")) & closure]  # fmt: skip
+
+    def _committed_units(self, exe: str) -> list[str]:
+        """Every unit file HEAD tracks under src/<exe>/, repo-relative, sorted."""
+        raw = _git_ok(self._git, ["ls-files", "-z", "--", f"src/{exe}/"])
+        names = raw.decode("utf-8", "surrogateescape").split("\0")
+        return sorted(n for n in names if n.endswith(".c") and n.count("/") == _UNIT_DEPTH)
+
+    def _affected_units(self, exe: str, old: str) -> dict[str, bytes]:
+        """The committed units of `exe` that use `old` as a whole word (definition, call,
+        extern, INCLUDE_ASM marker, comment), with their bytes now."""
+        token = _token(old)
+        found = {}
+        for rel in self._committed_units(exe):
+            data = _read(self.repo / rel)
+            if data is not None and token.search(data):
+                found[rel] = data
+        return found
+
+    def _plan_header(self, header: Header) -> _NamingPlan:
+        """D-19's shared-header proposal: the whole text of one include/<name>.h, refused by
+        proposals.header_problem (reserved headers, inline asm, pragmas, function-like macros,
+        ...); gated with every committed unit that includes it, in the same all-or-nothing
+        gate (none: `gate --all`)."""
+        problem = header_problem(header) or self._header_names_problem(header)
+        if problem is not None:
+            raise _Refusal(problem)
+        data = header.text.encode("ascii")
+        if _read(self.repo / header.path) == data:
+            raise _Refusal(f"{header.path} already holds this text")
+        includers = self._includers({PurePosixPath(header.path).name})
+        body = [f"header {header.path}: {len(data)} bytes, gated with the {len(includers)} "
+                f"committed units that include it"]  # fmt: skip
+        return _NamingPlan({header.path: data}, _targets(includers),
+                           f"refactor(include): write {header.path}", body, {})
+
+    def _header_names_problem(self, header: Header) -> str | None:
+        """Fix round 1 (review I2, D-19): every name the header declares or defines
+        (unitdefs.declared_names: macros, typedefs, tags, enumerators, prototypes, objects) is
+        checked by the rename path's rules: name_problem (keywords, reserved, placeholders such
+        as func_/D_/LAB_/PTR_/UNK_), then the C and linker names of both EXEs' symbols.csv rows,
+        their runtime publics, and the names every other committed file (units of
+        both EXEs, other headers) declares. The names the committed version of the
+        header already declares are its own (fix round 2)."""
+        names = sorted(unitdefs.declared_names(header.text))
+        for name in names:
+            problem = name_problem(name)
+            if problem is not None:
+                return f"{header.path} declares {name}: {problem}"
+        current = self.repo / header.path  # equals HEAD (_require_head), or is not there
+        own = (unitdefs.declared_names(current.read_bytes().decode("utf-8"))
+               if current.is_file() and not _is_link(current) else frozenset())  # fmt: skip
+        taken = self._taken_names()
+        files = self._declared_elsewhere(header.path)
+        for name in names:
+            if name in own:  # fix round 2: the committed header already declares it
+                continue
+            where = taken.get(name) or (f"declared in {files[name]}" if name in files
+                                        else None)  # fmt: skip
+            if where is not None:
+                return f"{header.path} declares {name}, which is already {where}"
+        return None
+
+    def _declared_elsewhere(self, exclude: str) -> dict[str, str]:
+        """Fix round 2 (re-review I1): name -> the first committed file that DECLARES it
+        (unitdefs.declared_names), over the units of both EXEs and every committed header but
+        `exclude`. A unit that only uses a header's type or tag (`extern snd_level g;`) does
+        not declare it, so the header can still be rewritten."""
+        rels = [*(rel for exe in EXE_ORDER for rel in self._committed_units(exe)),
+                *self._committed_headers()]  # fmt: skip
+        found: dict[str, str] = {}
+        for rel in rels:
+            if rel == exclude:
+                continue
+            for name in sorted(unitdefs.declared_names(
+                    (self.repo / rel).read_bytes().decode("utf-8"))):  # fmt: skip
+                found.setdefault(name, rel)
+        return found
+
+    def _taken_names(self) -> dict[str, str]:
+        """Every C and linker spelling of both EXEs' symbols.csv rows and runtime publics (a
+        runtime public's C name read as a func and as data, fail closed), with where it is
+        used."""
+        taken: dict[str, str] = {}
+        for exe in EXE_ORDER:
+            config = self.repo / "config" / exe
+            for row in read_symbols_csv(config / "symbols.csv"):
+                where = f"used by symbols.csv {exe} {row.kind} 0x{row.address:08X} ({row.name})"
+                for spelling in (row.name, unitdefs.c_name_of(row.name, row.kind)):
+                    taken.setdefault(spelling, where)
+            publics = []
+            if (config / "runtime.csv").is_file():
+                publics += [n for r in read_runtime_csv(config / "runtime.csv") for n in r.publics]
+            if (config / "functions.csv").is_file():
+                publics += [r.name for r in read_functions_csv(config / "functions.csv")
+                            if r.kind == KIND_RUNTIME]  # fmt: skip
+            for public in publics:
+                for spelling in (public, public.removesuffix(unitdefs.FUNC_LINK_SUFFIX),
+                                 public.removeprefix(unitdefs.DATA_LINK_PREFIX)):  # fmt: skip
+                    taken.setdefault(spelling, f"used by the {exe} runtime public {public}")
+        return taken
+
+    def _blocked(self, targets: Sequence[str], own: tuple[str, str] | None) -> str | None:
+        """Why the proposal waits (D-19, CONTEXT default): an affected unit another live
+        session holds (its claim file, or a worker's pass on it). The unit of `own` never
+        blocks."""
+        busy = self.coordinator.busy if self.coordinator is not None else {}
+        with self.cond:
+            for target in targets:
+                key = _unit_key(target)
+                if key == own:
+                    continue
+                path = self.claims.path(*key)
+                if path.exists() or key in busy:
+                    shown = path.relative_to(self.repo).as_posix()
+                    return (f"the affected unit {target} is held by another live session "
+                            f"({shown}); the proposal is tried again when it is released")
+        return None
+
+    @contextmanager
+    def _rename_claim(self, targets: Sequence[str], own: tuple[str, str] | None,
+                      start: int | None) -> Iterator[None]:  # fmt: skip
+        """D-06, D-19: one multi-unit claim of kind `rename` over the affected units (all but
+        `own`), and each marked busy so the coordinator hands none of them out meanwhile.
+        _Deferral when one is taken after all."""
+        busy = self.coordinator.busy if self.coordinator is not None else {}
+        taken: list[tuple[str, str]] = []
+        try:
+            with self.cond:
+                for target in targets:
+                    key = _unit_key(target)
+                    if key == own:
+                        continue
+                    record = {"run": self.config.run_id, "worker": self.worker, "exe": key[0],
+                              "unit": key[1], "function": None,
+                              "start": None if start is None else f"0x{start:08X}",
+                              "kind": KIND_RENAME, "pass": None, "model": None,
+                              "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}
+                    if key in busy or not self.claims.take(record):
+                        raise _Deferral(f"the affected unit {target} was claimed meanwhile")
+                    taken.append(key)
+                    busy[key] = _RENAMING
+            yield
+        finally:
+            with self.cond:
+                for key in taken:
+                    self.claims.release(*key)
+                    if busy.get(key) is _RENAMING:
+                        del busy[key]
+                self.cond.notify_all()
+
+    def _gated_commit(self, pending: _Pending, plan: _NamingPlan,
+                      own: tuple[str, str] | None) -> str:  # fmt: skip
+        """D-19's all-or-nothing step: every path of the plan must equal HEAD, then each is
+        written, one container gate runs over every affected unit, and a pass is one commit
+        of explicit paths (the plan's, the gated EXEs' status.csv and the feed). A failure puts
+        every path back byte for byte and is a _Refusal naming the gate. Returns the commit."""
+        start = pending.proposal.address if isinstance(pending.proposal, Rename) else None
+        self._require_head(plan.changes)
+        with self._rename_claim(plan.targets, own, start):
+            originals = {rel: _read(self.repo / rel) for rel in plan.changes}
+            outputs = [*(f"config/{exe}/status.csv" for exe in _gated_exes(plan.targets)), FEED]
+            self._guard(*outputs)
+            self.pre_gate = {rel: self.ledger.expected(rel) for rel in outputs}
+            step = "the proposal's paths could not be written"
+            try:
+                self._write_plan(plan)
+                step = "the rename gate could not run"
+                gate = self._naming_gate(plan.targets)
+            except Exception as exc:
+                self.ledger.note(*outputs)  # what a gate that broke off may have written
+                self._put_back(originals)
+                notes = self._restore_pre_gate()
+                raise _Stop(TOOL, "; ".join([f"{step}: {type(exc).__name__}: {exc}",
+                                             *notes])) from exc  # fmt: skip
+            self.ledger.note(*outputs)  # the gate's output: the one read-back (_Ledger)
+            problem = _naming_gate_problem(gate, plan.targets)
+            if problem is not None:
+                self._put_back(originals)
+                notes = self._restore_pre_gate()
+                raise _Refusal("; ".join([problem, *notes]))
+            commit = self._commit_naming(pending, plan, [*plan.changes, *outputs], originals)
+            self.pre_gate = {}
+            return commit
+
+    def _require_head(self, changes: Mapping[str, bytes | None]) -> None:
+        """Every path a proposal writes equals HEAD now (D-24 a), so a restore is HEAD's bytes."""
+        raw = _git_ok(self._git, ["status", "--porcelain=v1", "--untracked-files=all", "-z",
+                                  "--", *changes])  # fmt: skip
+        dirty = sorted(parse_status(raw))
+        if dirty:
+            raise _Refusal(f"paths the proposal writes differ from HEAD: {_listed(dirty)}")
+
+    def _write_plan(self, plan: _NamingPlan) -> None:
+        """Every path of the plan written atomically: symbols.csv through write_symbols_csv
+        (the bytes the plan computed with format_symbols_csv), the rest as their bytes."""
+        symbols_rel = _symbols_rel(plan.symbols[0]) if plan.symbols is not None else None
+        for rel, data in plan.changes.items():
+            path = self.repo / rel
+            if rel == symbols_rel:
+                write_symbols_csv(path, plan.symbols[1], _manifest_name(plan.symbols[0]))
+            elif data is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                write_atomic(path, data)
+
+    def _naming_gate(self, targets: Sequence[str]) -> GateRun:
+        return self.deps.rename_gate(list(targets))
+
+    def _put_back(self, originals: Mapping[str, bytes | None]) -> None:
+        """Every path of a failed proposal back to its bytes before (None: removed)."""
+        for rel, data in originals.items():
+            path = self.repo / rel
+            if data is None:
+                path.unlink(missing_ok=True)
+            else:
+                write_atomic(path, data)
+
+    def _commit_naming(self, pending: _Pending, plan: _NamingPlan, paths: Sequence[str],
+                       originals: Mapping[str, bytes | None]) -> str:  # fmt: skip
+        """The one naming commit (D-19, D-25): explicit literal paths, the proposing model's
+        co-author line and `Renamed-By: reverseapoc drive`. A commit that fails is undone and
+        stops the night (TOOL); a commit that holds bytes the driver did not write, or a
+        foreign commit under it, stops it as a breach (nothing more is committed tonight)."""
+        try:  # fix round 1 (review minor 1): nothing written stays behind uncommitted
+            message = "\n".join([plan.subject, "", *plan.body, "", coauthor(pending.model),
+                                 RENAMED_BY]) + "\n"  # fmt: skip
+            old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        except Exception as exc:
+            self._put_back(originals)
+            notes = self._restore_pre_gate()
+            raise _Stop(TOOL, "; ".join([f"the naming commit could not be prepared: "
+                                         f"{type(exc).__name__}: {exc}", *notes])) from exc
+        message_file = self.repo.joinpath(DRIVER_DIR, self.config.run_id, RENAME_MSG)
+        try:
+            self._commit_with_retry(message=message, message_file=message_file, paths=paths)
+        except Exception as exc:
+            moved = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+            if moved != old:
+                self.breached = True
+                raise _Stop(GUARDRAIL, f"the naming commit failed after HEAD moved: {exc}") from exc
+            notes = []
+            try:
+                _git_ok(self._git, ["restore", "--staged", "--", *paths])
+            except Exception as unstage:  # noqa: BLE001 - named in the record
+                notes.append(f"could not unstage: {unstage}")
+            self._put_back(originals)
+            notes += self._restore_pre_gate()
+            raise _Stop(TOOL, "; ".join([f"the naming commit failed: {exc}", *notes])) from exc
+        new = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        wanted = {**plan.changes, **{rel: self.ledger.expected(rel) for rel in paths
+                                     if rel not in plan.changes}}  # fmt: skip
+        bad = [rel for rel, data in wanted.items() if not self._committed_as(new, rel, data)]
+        foreign = self._foreign_commits(old, new, plan.subject)
+        if bad or foreign:
+            self.breached = True
+            raise _Stop(GUARDRAIL, f"the naming commit {new[:12]} holds bytes the driver did "
+                                   f"not write ({_listed(bad)}) or sits on commits it did not "
+                                   f"make ({_listed(foreign)}); nothing more is committed")
+        return new
+
+    def _rewrite_view(self, claim: _Claim, mappings: Mapping[str, Mapping[str, str]]) -> None:
+        """The proposing session's own view unit, rewritten in place, so it lands under the new
+        names (CONTEXT default: its own claim never blocks the rename)."""
+        mapping = mappings.get(claim.pick.exe)
+        unit = claim.view_unit
+        if not mapping or _is_link(unit) or not unit.is_file():
+            return
+        data = unit.read_bytes()
+        rewritten = _rewrite(data, mapping)
+        if rewritten != data:
+            write_atomic(unit, rewritten)
+
+    def _record_rename(self, proposal: Rename | Header | None, outcome: str, *,
+                       old: str | None = None, reason: str | None = None,
+                       commit: str | None = None) -> None:  # fmt: skip
+        """One v2 `rename` record in ruling F12's per-op shape: op rename fills exe, address,
+        old and new (C identifiers); op header fills path; a line that is not a proposal (or a
+        proposal those fields cannot hold, such as a name that is no C identifier) has op null
+        and is REFUSED, its reason naming it. A commit exactly when APPLIED."""
+        base = {"kind": KIND_RENAME, "schema": SCHEMA_V2, "run": self.config.run_id,
+                "exe": None, "address": None, "old": None, "new": None, "op": None,
+                "path": None, "outcome": outcome, "reason": _detail(reason) if reason else None,
+                "commit": commit, "date": self.deps.today()}  # fmt: skip
+        record = dict(base)
+        if isinstance(proposal, Rename):
+            record.update(op=OP_RENAME, exe=proposal.exe, address=f"0x{proposal.address:08X}",
+                          old=old, new=proposal.name)  # fmt: skip
+        elif isinstance(proposal, Header):
+            record.update(op=OP_HEADER, path=proposal.path)
+        try:
+            validate_record(record)
+        except RecordError:
+            if outcome != REFUSED:
+                raise
+            record = {**base, "outcome": REFUSED, "commit": None,
+                      "reason": _detail(f"{_described(proposal)}: {reason or outcome}")}
+        self._append(record)
+
     # --- records ---
 
     def _pass(self, pick: Pick) -> int:
@@ -3376,7 +3987,8 @@ class _Night:
         return {"kind": kind, "schema": SCHEMA_V2, "run": claim.run, "exe": claim.pick.exe,
                 "function": c_name(claim.pick), "unit": claim.pick.unit,
                 "start": f"0x{claim.pick.start:08X}", "attempt": claim.n,
-                "session": MATCHING, "pass": claim.pass_n, "worker": self.worker}  # fmt: skip
+                "session": claim.session, "pass": claim.pass_n,
+                "worker": self.worker}  # fmt: skip
 
     def _record_attempt(self, session: _Session, outcome: str, abort: str | None,
                         summary: CheckSummary, *, gate: GateRun | None = None
@@ -3459,6 +4071,210 @@ class _Night:
                 fh.write(line)
             self.ledger.set(rel, (before or b"") + line)
             self.night_records.append((len(before or b""), dict(record)))
+
+
+# ---- naming proposals (07-34; D-19) ----
+
+RENAMED_BY = "Renamed-By: reverseapoc drive"  # the trailer of every naming commit (D-19)
+RENAME_MSG = "rename-msg.txt"  # under build/driver/<run>/: the last naming commit's message
+_UNIT_DEPTH = 2  # src/<exe>/<unit>.c: two slashes
+_SUPERSEDED = "superseded by a later line for the same row (the last line for a row wins)"
+_RENAMING = object()  # a coordinator `busy` mark: a unit a naming commit holds (D-06)
+
+
+class _Refusal(Exception):
+    """A proposal the driver will not apply now; `reason` goes into its REFUSED record."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+class _Deferral(_Refusal):
+    """A proposal that waits for another live claim's release (DEFERRED)."""
+
+
+@dataclass(frozen=True)
+class _Pending:
+    """One proposal to apply: the model of the session that wrote it (its co-author line) and
+    that session's claim while it is live (its own unit never blocks; its view is rewritten)."""
+
+    proposal: Rename | Header
+    model: str
+    own: _Claim | None
+
+
+@dataclass(frozen=True)
+class _Superseded:
+    """A proposal a later line of the same file replaced (the same row, or the same header)."""
+
+    proposal: Rename | Header
+
+
+@dataclass(frozen=True)
+class _NamingPlan:
+    """What one valid proposal does: the bytes of every path it writes (None: removed), the
+    affected units the gate checks (`exe/unit`), the commit's subject and body, the symbols.csv
+    rows it writes (`symbols`: (exe, rows), written with write_symbols_csv), and per EXE the
+    C names it changes (old -> new), which the proposing session's view takes too."""
+
+    changes: dict[str, bytes | None]
+    targets: tuple[str, ...]
+    subject: str
+    body: list[str]
+    rewrite: dict[str, dict[str, str]]
+    symbols: tuple[str, tuple[SymbolRow, ...]] | None = None
+
+
+def _read_proposal_file(path: Path) -> list[Rename | Header | str]:
+    """The proposals of one proposals.jsonl in file order: the bytes proposals.read_proposals(
+    path) reads (read_bounded: one handle, at most PROPOSALS_FILE_MAX + 1 bytes; fix round 2),
+    parsed with parse_proposals. A file with a bad line is parsed again line by line from the
+    same bytes (parse_line), each bad line a string naming it, so the good lines still apply; a
+    file that cannot be read at all (a link or not a regular file, too large, not UTF-8,
+    unreadable) is one string."""
+    if os.path.lexists(path) and (_is_link(path) or not path.is_file()):  # fix round 1, S7
+        return [f"{path.name}: not a regular file (a link, a junction or a directory); refused "
+                "whole, never followed"]
+    try:
+        data = read_bounded(path)
+    except ProposalError as exc:  # refused whole (its size): no line is read
+        return [str(exc)]
+    except OSError as exc:
+        return [f"{path.name}: {type(exc).__name__}: {exc}"]
+    if data is None:
+        return []
+    try:
+        return list(parse_proposals(data))
+    except ProposalError as exc:
+        first = str(exc)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return [f"{path.name} {first}"]
+    found: list[Rename | Header | str] = []
+    for lineno, line in enumerate(text.split("\n"), start=1):
+        if not line.strip():
+            continue
+        try:
+            found.append(parse_line(line, lineno))
+        except ProposalError as exc:
+            found.append(f"{path.name} {exc}")
+    return found
+
+
+def _proposal_key(proposal: Rename | Header) -> tuple:
+    if isinstance(proposal, Rename):
+        return proposal.exe, proposal.kind, proposal.address
+    return (proposal.path,)
+
+
+def _latest_first(
+    items: Sequence[Rename | Header | str],
+) -> list[Rename | Header | str | _Superseded]:
+    """`items` in file order, each proposal a later one for the same row or header replaces
+    marked _Superseded (the readability skill: the last line for a row wins)."""
+    last = {_proposal_key(item): i for i, item in enumerate(items) if not isinstance(item, str)}
+    return [item if isinstance(item, str) or last[_proposal_key(item)] == i else _Superseded(item)
+            for i, item in enumerate(items)]  # fmt: skip
+
+
+def _own_key(claim: _Claim) -> tuple[str, str]:
+    return claim.pick.exe, claim.pick.unit
+
+
+def _unit_key(target: str) -> tuple[str, str]:
+    exe, _, unit = target.partition("/")
+    return exe, unit
+
+
+def _target_of(rel: str) -> str:
+    """`src/<exe>/<unit>.c` -> `<exe>/<unit>`, the gate's target spelling."""
+    path = PurePosixPath(rel)
+    return f"{path.parent.name}/{path.stem}"
+
+
+def _targets(units: Iterable[str]) -> tuple[str, ...]:
+    return tuple(sorted({_target_of(rel) for rel in units}))
+
+
+def _gated_exes(targets: Iterable[str]) -> list[str]:
+    exes = {_unit_key(target)[0] for target in targets}
+    return [exe for exe in EXE_ORDER if exe in exes]
+
+
+def _symbols_rel(exe: str) -> str:
+    return f"config/{exe}/symbols.csv"
+
+
+def _manifest_name(exe: str) -> str:
+    return f"{exe.upper()}.EXE"
+
+
+def _placeholder(kind: str, address: int) -> str:
+    return game_name(address) if kind == unitdefs.FUNC_KIND else data_name(address)
+
+
+def _current_c_name(rename: Rename, symbols: Sequence[SymbolRow]) -> str:
+    """The C name the row has now: its symbols.csv name's (unitdefs.c_name_of), else its
+    placeholder."""
+    for row in symbols:
+        if row.address == rename.address and row.kind == rename.kind:
+            return unitdefs.c_name_of(row.name, row.kind)
+    return _placeholder(rename.kind, rename.address)
+
+
+def _renamed_rows(symbols: Sequence[SymbolRow], rename: Rename) -> tuple[SymbolRow, ...]:
+    """symbols.csv's rows with the renamed row's new linker name (added when it had none),
+    sorted by address."""
+    new = SymbolRow(rename.address, linker_name(rename.name, rename.kind), rename.kind)
+    kept = [row for row in symbols if row.address != rename.address]
+    return tuple(sorted([*kept, new], key=lambda row: row.address))
+
+
+def _token(name: str) -> re.Pattern[bytes]:
+    """`name` as a whole word, the exact token (`\\b` on both sides: `_` and digits are word
+    characters, so func_00010010 never matches inside func_000100100)."""
+    return re.compile(rb"\b" + re.escape(name.encode("ascii")) + rb"\b")
+
+
+def _rewrite(data: bytes, mapping: Mapping[str, str]) -> bytes:
+    """Every whole-word use of each old name in `data` replaced by its new name, all at once
+    (a chain or a swap of names never cascades), byte for byte elsewhere."""
+    if not mapping:
+        return data
+    names = sorted(mapping, key=len, reverse=True)
+    pattern = re.compile(rb"\b(" + rb"|".join(re.escape(n.encode("ascii")) for n in names)
+                         + rb")\b")  # fmt: skip
+    return pattern.sub(lambda m: mapping[m.group(1).decode("ascii")].encode("ascii"), data)
+
+
+def _naming_gate_problem(gate: GateRun, targets: Sequence[str]) -> str | None:
+    """Why a naming gate run is no pass: any exit but 0, or a pass whose SHA-1s do not name
+    both EXEs (the landing's minor 7 rule)."""
+    shown = " ".join(targets) or "--all"
+    if gate.exit_code != EXIT_OK:
+        return f"gate {shown} exited {gate.exit_code}"
+    stems = sorted(PurePosixPath(name).stem.lower() for name, _ in gate_sha1s(gate.doc))
+    if stems != sorted(EXE_ORDER):
+        return f"gate {shown} passed but its SHA-1s name {stems}, not both of {sorted(EXE_ORDER)}"
+    return None
+
+
+def _described(proposal: Rename | Header | None) -> str:
+    """A proposal named for a record whose op is null (its fields cannot hold it)."""
+    if isinstance(proposal, Rename):
+        return (f"rename of {proposal.exe} {proposal.kind} 0x{proposal.address:08X} to "
+                f"{proposal.name!r}")  # fmt: skip
+    if isinstance(proposal, Header):
+        return f"header {proposal.path!r}"
+    return "proposal"
+
+
+def rename_gate_argv(targets: Sequence[str]) -> list[str]:
+    """D-19: one container gate over every affected unit, all or nothing; with none (nothing
+    in src/ names the row) `gate --all`, which re-checks every matched unit and writes nothing."""
+    return [*CONTAINER_CLI, "gate", *(targets or ("--all",)), "--json"]
 
 
 def _rounded(value: float) -> float:
@@ -3561,6 +4377,8 @@ class ExeWorld:
     scaffold: Callable[[Pick, Path], None]  # (pick, the file to write)
     ranks: Mapping[int, Candidate] = field(default_factory=dict)
     graph: Callable[[], CallGraph] | None = None
+    # 07-34 (D-19): the EXE's LE data objects, where a data rename must lie (SymbolTable's rule)
+    data_ranges: tuple[tuple[int, int], ...] = ()
 
 
 Runner = Callable[[Sequence[str]], subprocess.CompletedProcess]
@@ -3822,6 +4640,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
                 remove_containers=container_remover(options.repo, seams.run),
+                rename_gate=lambda targets: _container_gate(seams.run, rename_gate_argv(targets)),
+                data_ranges=lambda exe: worlds[exe].data_ranges,
                 git=seams.git, today=lambda: day, say=say,
                 end_of_run=lambda: finish(seams.run, run_dir=options.run_dir, say=say))  # fmt: skip
 
@@ -4513,7 +5333,8 @@ def load_world(exe: str, *, roots: attempt.Roots) -> ExeWorld:
                     units={row.start: row.unit for row in data.rows},
                     callees=dict(calls.callees), pack=pack, scaffold=scaffold,
                     ranks=_ranks(assessments, data),
-                    graph=functools.cache(lambda: callgraph.build_for(data)))  # fmt: skip
+                    graph=functools.cache(lambda: callgraph.build_for(data)),
+                    data_ranges=tuple(data.symbols.data_ranges))  # fmt: skip
 
 
 def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Candidate]:
