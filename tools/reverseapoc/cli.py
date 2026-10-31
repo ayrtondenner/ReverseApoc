@@ -1514,20 +1514,33 @@ def _mechanics_hubs(args: argparse.Namespace) -> int:
     return 0
 
 
+def _hex_starts(starts) -> list[list[str]]:
+    return [[exe, f"0x{start:08X}"] for exe, start in starts]
+
+
+def _status_doc(st: mechanics.TierStatus) -> dict:
+    """One tier's `mechanics status --json` entry; `held` (07-44) is held_starts' count."""
+    doc = dataclasses.asdict(st)
+    doc.pop("held_starts")
+    return {**doc, "unmatched_starts": _hex_starts(st.unmatched_starts),
+            "held": len(st.held_starts), "held_starts": _hex_starts(st.held_starts)}
+
+
 def _mechanics_status(args: argparse.Namespace) -> int:
     mech, rows = mechanics.read_committed(args.config)
     statuses = mechanics.read_statuses(args.config, sorted({r.exe for r in rows}))
     tiers = [args.tier] if args.tier is not None else [t.id for t in mech.tiers]
-    found = {tier: mechanics.tier_status(mech, rows, statuses, tier) for tier in tiers}
+    held = mechanics.signed_held(args.config, mech)  # 07-44: an unsigned or changed list exits 2
+    found = {tier: mechanics.tier_status(mech, rows, statuses, tier, held=held) for tier in tiers}
     if args.json:
-        report = {str(tier): {**dataclasses.asdict(st), "unmatched_starts": [
-            [exe, f"0x{start:08X}"] for exe, start in st.unmatched_starts]}
-            for tier, st in found.items()}  # fmt: skip
+        report = {str(tier): _status_doc(st) for tier, st in found.items()}
         print(json.dumps({"tiers": report}, indent=2))
     else:
         for tier, st in found.items():
+            note = f" ({len(st.held_starts)} of them held for an asm-list ruling)" if (
+                st.held_starts) else ""  # fmt: skip
             print(f"tier {tier}: {st.total} members, {st.matched} matched, {st.partial} partial, "
-                  f"{st.unmatched} unmatched")  # fmt: skip
+                  f"{st.unmatched} unmatched{note}")  # fmt: skip
     if not args.require_matched:
         return 0
     problems = mechanics.done_problems(mech, rows, found)

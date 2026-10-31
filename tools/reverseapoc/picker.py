@@ -36,7 +36,10 @@ finished passes, level, rank): a hub or a later tier's row runs only while no me
 earlier group is eligible (07-26 review I1), and inside a group every eligible function runs
 pass N before any runs pass N+1 (D-08), a pass a transient abort ended going last (review I2)
 until the function next finishes a pass (07-30).
-No variety rule.
+No variety rule. A held row (07-44, owner ruling 2026-10-31: verdict `unclear` with data-in-code
+evidence on the signed asm list, `mechanics.signed_held`) is left out of every group before the
+levels are built, like an asm row: it is never queued and no item waits on it; `TierQueue.held`
+lists it until the owner rules it.
 """
 
 from __future__ import annotations
@@ -332,8 +335,10 @@ class TierQueue:
     `aborted`, a pass a transient abort ended, sends it behind its group's other work)."""
 
     def __init__(self, items: Iterable[TierItem], callees: Mapping[Key, Iterable[Key]], *,
-                 matched: Iterable[Key] = (), passes: Passes | None = None) -> None:  # fmt: skip
+                 matched: Iterable[Key] = (), passes: Passes | None = None,
+                 held: Iterable[Key] = ()) -> None:  # fmt: skip
         self._items = tuple(items)
+        self._held = tuple(held)
         self._callees = {key: tuple(keys) for key, keys in callees.items()}
         self._matched = set(matched)
         self._passes: Passes = {} if passes is None else passes
@@ -343,6 +348,12 @@ class TierQueue:
     @property
     def items(self) -> tuple[TierItem, ...]:
         return self._items
+
+    @property
+    def held(self) -> tuple[Key, ...]:
+        """The rows a signed group would have queued but the hold leaves out (07-44), in queue
+        order (tier, member before hub, EXE order, address), each once."""
+        return self._held
 
     def use_passes(self, passes: Passes) -> None:
         """Read finished passes from `passes` from now on (the night's pass index)."""
@@ -387,7 +398,8 @@ class TierQueue:
         each at its next pass (the dry run's and the drafts' list). Nothing is counted or taken
         in this queue."""
         passes = dict(self._passes)
-        trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes)
+        trial = TierQueue(self._items, self._callees, matched=self._matched, passes=passes,
+                          held=self._held)  # fmt: skip
         trial._flight = set(self._flight)
         trial._aborts = Counter(self._aborts)
         out: list[TierItem] = []
@@ -469,20 +481,25 @@ def tier_queue(
     *,
     matched: Iterable[Key] = (),
     passes: Passes | None = None,
+    held: Iterable[Key] = (),
 ) -> TierQueue:
     """The tier queue of every signed tier (`mechanics.signed_tiers`: signed, digest matching),
     in tier order: each tier's members, then its hubs, a row queued once (by its first tier).
     `graphs` are the EXEs' call graphs, `ranks` every row as score ranks it (no P16 filter),
-    `units` each row's unit. A queued row without a rank, a unit or a call graph is refused."""
+    `units` each row's unit. A queued row without a rank, a unit or a call graph is refused.
+    `held` (07-44; `mechanics.signed_held`) is left out of every group before its levels, so
+    nothing waits on it; `TierQueue.held` lists the held rows a group would have queued."""
+    hold = frozenset(held)
     items: list[TierItem] = []
     callees: dict[Key, tuple[Key, ...]] = {}
-    for group in _groups(mech, members):
+    for group in _groups(mech, members, hold):
         if group.exe not in graphs:
             raise PickerError(f"{group.exe}: no call graph for tier {group.tier}")
         for item, waits in _group_items(mech, group, graphs[group.exe], ranks, units):
             items.append(item)
             callees[item.key] = waits
-    return TierQueue(items, callees, matched=matched, passes=passes)
+    return TierQueue(items, callees, matched=matched, passes=passes,
+                     held=_held_in_order(mech, members, hold))  # fmt: skip
 
 
 @dataclass(frozen=True)
@@ -495,9 +512,11 @@ class _Group:
     rows: tuple[MemberRow, ...]
 
 
-def _groups(mech: Mechanics, members: Sequence[MemberRow]) -> Iterator[_Group]:
+def _groups(mech: Mechanics, members: Sequence[MemberRow],
+            held: frozenset[Key] = frozenset()) -> Iterator[_Group]:  # fmt: skip
     """The groups in queue order: signed tiers ascending, members before hubs, EXEs in order. A
-    row is in the first group that has it."""
+    row is in the first group that has it; a `held` row is in none (07-44), and an EXE whose
+    rows are all held yields no group."""
     queued: set[Key] = set()
     for tier_id in signed_tiers(mech, members):
         ids = frozenset(item.id for item in mech.items if item.tier == tier_id)
@@ -505,8 +524,19 @@ def _groups(mech: Mechanics, members: Sequence[MemberRow]) -> Iterator[_Group]:
             group = [row for row in _group_rows(members, ids, tier_id, hub)
                      if (row.exe, row.address) not in queued]  # fmt: skip
             queued.update((row.exe, row.address) for row in group)
-            for exe in sorted({row.exe for row in group}, key=EXE_ORDER.index):
-                yield _Group(tier_id, hub, exe, tuple(row for row in group if row.exe == exe))
+            kept = [row for row in group if (row.exe, row.address) not in held]
+            for exe in sorted({row.exe for row in kept}, key=EXE_ORDER.index):
+                yield _Group(tier_id, hub, exe, tuple(row for row in kept if row.exe == exe))
+
+
+def _held_in_order(mech: Mechanics, members: Sequence[MemberRow],
+                   held: frozenset[Key]) -> tuple[Key, ...]:  # fmt: skip
+    """The `held` rows the unheld groups would have queued, in their queue order (tier, member
+    before hub, EXE order, address), each once (07-44)."""
+    if not held:
+        return ()
+    keys = ((row.exe, row.address) for group in _groups(mech, members) for row in group.rows)
+    return tuple(key for key in keys if key in held)
 
 
 def _group_items(mech: Mechanics, group: _Group, graph: CallGraph, ranks: Ranks,

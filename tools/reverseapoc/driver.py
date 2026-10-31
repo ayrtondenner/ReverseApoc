@@ -79,7 +79,10 @@ signed tiers' members callees first, then their hubs, never an asm row. The coor
 for the best eligible pick each time a worker is free; a capped function goes back for its next
 pass the same night (night.passes counts it, and is the pass index the queue reads, so the
 queue never reads difficult.json). The dry run and the night's draft picks are the tier
-queue's first picks (`tier_picks`), the dry run's with their tier, level and pass.
+queue's first picks (`tier_picks`), the dry run's with their tier, level and pass. The queue
+holds the signed asm list's `unclear` rows with data-in-code evidence (07-44, owner ruling
+2026-10-31; `mechanics.signed_held`): no pass is spent on them, and the dry run reports them as
+`held` (an unsigned or changed list refuses the picks).
 
 Naming proposals (07-34; D-19, D-29): the driver is the only writer of naming state. After a
 readability session (DriveConfig.session; ruling F34: never after a matching one) and before
@@ -4906,13 +4909,16 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld]) -> TierSource
     (mechanics.signed_tiers), a builder of a fresh tier queue (picker.tier_queue) over the
     committed members file, the worlds' call graphs, ranks and units, with the matched set of
     status.csv read when it is called; the argument is the finished passes per function
-    (pass_index; a night binds its own). None without such a tier: the Phase 6 pools stay."""
+    (pass_index; a night binds its own). None without such a tier: the Phase 6 pools stay.
+    The signed asm list's held rows (07-44, `mechanics.signed_held`) are never queued (D-09:
+    no pass on a span that cannot compile from C); an unsigned or changed list raises."""
     root = Path(config_root)
     if not (root / mechanics.MECHANICS_TOML).is_file():
         return None
     mech, rows = mechanics.read_committed(root)
     if not mechanics.signed_tiers(mech, rows):
         return None
+    held = mechanics.signed_held(root, mech)
     exes = {row.exe for row in rows}
     graphs = {exe: world.graph() for exe, world in worlds.items()
               if exe in exes and world.graph is not None}  # fmt: skip
@@ -4920,7 +4926,7 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld]) -> TierSource
 
     def build(passes: Mapping[Key, int] | None = None) -> TierQueue:
         return tier_queue(mech, rows, graphs, ranks, _units(worlds),
-                          matched=matched_keys(root), passes=passes)  # fmt: skip
+                          matched=matched_keys(root), passes=passes, held=held)  # fmt: skip
 
     return build
 
@@ -5024,6 +5030,13 @@ def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     if source is None:
         return None
     return source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count)
+
+
+def tier_held(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> tuple[Key, ...] | None:
+    """07-44: the rows the tier queue holds (TierQueue.held, queue order); None without a
+    signed tier."""
+    source = tier_source(options.config_root, worlds)
+    return None if source is None else source(None).held
 
 
 def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
@@ -5224,10 +5237,16 @@ def _world_callees(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, tup
     return {exe: world.callees for exe, world in worlds.items()}
 
 
+HELD_NOTE = ("verdict unclear with data-in-code evidence on the signed asm list; not queued "
+             "until the owner rules")  # 07-44: the dry run's `held:` line
+
+
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
-            picks: Sequence[DryPick]) -> int:  # fmt: skip
+            picks: Sequence[DryPick], held: Sequence[Key] | None = None) -> int:  # fmt: skip
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
-    gate (D-10). A tier pick's line and document add its tier, level and pass (07-26)."""
+    gate (D-10). A tier pick's line and document add its tier, level and pass (07-26). `held`
+    (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
+    `held_starts`, and with a signed tier one `held: N` line after the picks."""
     docs, lines = [], []
     for entry in picks:
         pick = _pick_of(entry)
@@ -5239,7 +5258,12 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
             f" tier {doc['tier']} level {doc['level']} pass {doc['pass']}")
         lines.append(f"{pick.exe} {doc['start']} {pick.name} {pick.unit} size {pick.size} "
                      f"score {pick.score} pack {doc['pack']} ({info.pack_bytes} bytes){place}")
-    _emit(options, {"picks": docs}, lines)
+    keys = tuple(held or ())
+    if held is not None:
+        lines.append(f"held: {len(keys)} ({HELD_NOTE})")
+    doc = {"picks": docs, "held": len(keys),
+           "held_starts": [[exe, f"0x{start:08X}"] for exe, start in keys]}  # fmt: skip
+    _emit(options, doc, lines)
     return EXIT_OK
 
 
@@ -5489,11 +5513,12 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
             with _phase("picks"):
                 picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
                                                                                today=today)
+                held = tier_held(options, worlds) if options.dry_run else None
             with _phase("drafts"):
                 _drafts(log, [_pick_of(entry) for entry in picks])
             if options.dry_run:
                 with _phase("pack"):
-                    return dry_run(options, worlds, picks)
+                    return dry_run(options, worlds, picks, held)
         with _phase("picks"):
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:

@@ -75,7 +75,7 @@ The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same on
 - **One landing at a time.** One gate lock serialises every shared write: the copy of a view unit into `src/`, the lint, the gate, the match commit or the reset, `gate --partial` and every record append. A gate therefore sees `src/` equal to HEAD except for the one unit it lands.
 - **The shared usage-limit pause (D-07).** A session that ends on a usage limit pauses every worker: one backoff (60, 120, 240 s, then every 300 s), then exactly one probe launch. A probe that is not limited clears the pause for all workers. Each wait is a `limit` record.
 - **The caps are flags (D-07, D-25).** The defaults are `--workers 3`, `--max-sessions 60`, `--target-matched` 0 (= off), `--max-budget-usd 5`, `--fable-budget-usd 12.50`, `--max-turns 40` and `--session-minutes 30` (table below). Every launched session counts toward `--max-sessions`.
-- **The tier queue (D-04, D-08, D-22, D-23).** Once `config/mechanics.toml` has a signed tier whose digest still matches, the night takes its picks from the tier queue instead of the Phase 6 easiest-first pools. The order is the signed tiers in turn; within a tier, its members, callees first, then its hubs. An `asm` row is never queued. A function capped in a pass (3 sessions) goes back for its next pass the same night, with more matched callees in its pack. Passes are unlimited: only the night cap bounds a run. The queue reads the pass count from the committed `progress/attempts.jsonl`, never from `difficult.json`.
+- **The tier queue (D-04, D-08, D-22, D-23).** Once `config/mechanics.toml` has a signed tier whose digest still matches, the night takes its picks from the tier queue instead of the Phase 6 easiest-first pools. The order is the signed tiers in turn; within a tier, its members, callees first, then its hubs. An `asm` row is never queued. A held row (verdict `unclear` with data-in-code evidence on the signed asm list) is never queued and never waited for; the dry run and `mechanics status` count it as `held`, and it stays held until the owner rules it `asm` or `c` (owner ruling 2026-10-31, 07-44). A function capped in a pass (3 sessions) goes back for its next pass the same night, with more matched callees in its pack. Passes are unlimited: only the night cap bounds a run. The queue reads the pass count from the committed `progress/attempts.jsonl`, never from `difficult.json`.
 - **Opus, then Fable (D-09).** See "Model escalation" below. Before the first night that can reach a pass 3, the owner runs the Fable canary.
 
 ```
@@ -151,7 +151,7 @@ Any failure before the night starts is a refusal: exit 2, a reason, a detail, an
 
 The night's own refusal (`dirty` outputs: `progress/attempts.jsonl`, a `status.csv` or the feed differ from HEAD) also exits 2.
 
-**Dry run.** `uv run reverseapoc drive --dry-run` prints 10 picks, builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. With a signed tier (Phase 7) they are the tier queue's first 10 picks, each with its tier, level and pass. Without one they are the Phase 6 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10), skipping functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
+**Dry run.** `uv run reverseapoc drive --dry-run` prints 10 picks, builds their context packs under `build/driver/<run>/dry-run/` and never launches claude or a gate. With a signed tier (Phase 7) they are the tier queue's first 10 picks, each with its tier, level and pass, followed by one `held: N` line: the rows the queue holds for an asm-list ruling (07-44). Without one they are the Phase 6 pilot picks: 5 UFO2P and 5 TACP, interleaved, easiest first, at most 2 per unit and 3 per 64 KiB region (D-10), skipping functions that are matched in `status.csv`, partial today (this pass), or on the difficult list.
 
 **Canary.** `uv run reverseapoc drive --canary` is run by the owner before the pilot. It launches one real session with the matching settings and a fixed prompt that asks for five calls: Write `config/targets.toml`, Write `tools/x.py`, Bash `ls`, `uv run --frozen reverseapoc attempt context` and `uv run --frozen reverseapoc attempt check`. The claim is `ufo2p/u_000a34f0`, function `func_000A3980`, with its attempt directory under `build/driver/canary/<run>/`. It prints PASS only when all of these hold:
 
@@ -305,12 +305,12 @@ The batches so far are in [toolchain.md](toolchain.md#phase-7-flag-rules).
 
 - `mechanics write`: regenerates `config/mechanics-members.csv` from `mechanics.toml`, `functions.csv` and the call graphs of `orig/`;
 - `mechanics check`: validates the committed files without game files (member rows, entries, the signed tier digests, the asm list sign-off);
-- `mechanics status`: matched, partial and unmatched counts of each tier's must-match members, from `status.csv`;
+- `mechanics status`: matched, partial and unmatched counts of each tier's must-match members, from `status.csv`, plus `held` (the unmatched members the queue holds for an asm-list ruling; they stay in every count, 07-44);
 - `mechanics hubs`: candidate hub-rule numbers for a tier (D-22);
 - `mechanics digest`: a tier's `members_sha256`, for its sign-off;
 - `mechanics graph`: an EXE's call-graph report (edge counts, indirect calls, the largest cycles);
 - `mechanics locate`: entry candidates in one EXE (rows referencing a string, an address or a range, `get_text` call sites, `int386_` callers; needs `orig/`);
-- `mechanics asm`: proposes the D-23 list of hand-written assembly rows, which leave the queue.
+- `mechanics asm`: proposes the D-23 list of hand-written assembly rows, which leave the queue, and (07-44) game rows with data-in-code evidence (`no-terminator`, `text-run`, `zero-fill`, `bad-decode`), proposed as `unclear` for the owner to rule.
 
 Each prints addresses, names and counts only.
 

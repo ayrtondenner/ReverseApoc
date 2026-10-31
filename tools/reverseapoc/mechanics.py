@@ -881,6 +881,10 @@ ASM_COMMENT = (
 ASM_COLUMNS = ("exe", "address", "evidence", "verdict", "reason")
 ASM_VERDICTS = ("asm", "c", "unclear")
 VERDICT_ASM = "asm"
+VERDICT_UNCLEAR = "unclear"
+# The D-23 list's data-in-code evidence (07-44), written by asmclass, which imports it: with
+# verdict `unclear` such a row is held out of the tier queue until the owner rules it.
+DATA_TAGS = ("no-terminator", "text-run", "zero-fill", "bad-decode")
 
 
 @dataclass(frozen=True)
@@ -959,15 +963,38 @@ def _asm_signoff_problem(mech: Mechanics, path: Path) -> str:
     return ""
 
 
+def held_pairs(rows: Iterable[AsmRow]) -> frozenset[tuple[str, int]]:
+    """The (exe, address) of each row with verdict `unclear` whose evidence holds a DATA_TAGS
+    token exactly (07-44, owner ruling 2026-10-31): the rows the tier queue holds until the
+    owner rules them `asm` or `c` (D-23)."""
+    data = frozenset(DATA_TAGS)
+    return frozenset((row.exe, row.address) for row in rows
+                     if row.verdict == VERDICT_UNCLEAR
+                     and data.intersection(row.evidence.split(_LIST)))  # fmt: skip
+
+
+def _signed_rows(config_root: Path, mech: Mechanics) -> list[AsmRow]:
+    """The asm list's rows, read only through its [asm_list] sign-off. No list: no rows. A list
+    that is not signed off, or changed since, is refused (D-23)."""
+    path = Path(config_root) / ASM_CSV
+    if not path.is_file():
+        return []
+    if problem := _asm_signoff_problem(mech, path):
+        raise MechanicsError(problem)
+    return read_asm_list(path)
+
+
 def signed_asm(config_root: Path, mech: Mechanics) -> frozenset[tuple[str, int]]:
     """The (exe, address) pairs the asm list marks `asm`. No list: none. A list that is not
     signed off in [asm_list], or changed since, is refused (D-23)."""
-    path = Path(config_root) / ASM_CSV
-    if not path.is_file():
-        return frozenset()
-    if problem := _asm_signoff_problem(mech, path):
-        raise MechanicsError(problem)
-    return _asm_pairs(read_asm_list(path))
+    return _asm_pairs(_signed_rows(config_root, mech))
+
+
+def signed_held(config_root: Path, mech: Mechanics) -> frozenset[tuple[str, int]]:
+    """`held_pairs` of the signed asm list (07-44), refused like `signed_asm`. The hold is a
+    queue filter only: no members row, tier digest or `mechanics check` reads it, and a held
+    row stays in its tier's must-match set (D-05)."""
+    return held_pairs(_signed_rows(config_root, mech))
 
 
 # ---- the committed-data check (CI, no game files) ----
@@ -1076,19 +1103,24 @@ def _tier_ids(mech: Mechanics, tier_id: int) -> frozenset[str]:
 @dataclass(frozen=True)
 class TierStatus:
     """A tier's must-match set (role member rows with a member item of the tier) against
-    status.csv. `unmatched_starts` lists every member not yet matched (partial included)."""
+    status.csv. `unmatched_starts` lists every member not yet matched (partial included);
+    `held_starts` (07-44) the ones among them the tier queue holds for an asm-list ruling, which
+    stay in every other field."""
 
     total: int
     matched: int
     partial: int
     unmatched: int
     unmatched_starts: tuple[tuple[str, int], ...] = ()
+    held_starts: tuple[tuple[str, int], ...] = ()
 
 
 def tier_status(mech: Mechanics, rows: Iterable[MemberRow],
-                statuses: Mapping[tuple[str, int], str], tier_id: int) -> TierStatus:  # fmt: skip
+                statuses: Mapping[tuple[str, int], str], tier_id: int, *,
+                held: frozenset[tuple[str, int]] = frozenset()) -> TierStatus:  # fmt: skip
     """Matched/partial/unmatched counts of tier `tier_id`'s members; `statuses` maps (exe, start)
-    to a status.csv status (no entry = unmatched)."""
+    to a status.csv status (no entry = unmatched). `held` (07-44, `signed_held`) fills
+    `held_starts` and changes no count: a hold never makes a tier done (D-05)."""
     ids = _tier_ids(mech, tier_id)
     members = [row for row in sorted(rows, key=row_key)
                if row.role == ROLE_MEMBER and ids.intersection(row.member_items)]  # fmt: skip
@@ -1096,7 +1128,8 @@ def tier_status(mech: Mechanics, rows: Iterable[MemberRow],
     waiting = tuple((row.exe, row.address) for row in members
                     if statuses.get((row.exe, row.address)) != MATCHED)  # fmt: skip
     return TierStatus(len(members), found[MATCHED], found[PARTIAL],
-                      len(members) - found[MATCHED] - found[PARTIAL], waiting)  # fmt: skip
+                      len(members) - found[MATCHED] - found[PARTIAL], waiting,
+                      tuple(key for key in waiting if key in held))  # fmt: skip
 
 
 def done_problems(mech: Mechanics, rows: Sequence[MemberRow],
@@ -1119,6 +1152,10 @@ def done_problems(mech: Mechanics, rows: Sequence[MemberRow],
         elif status.matched != status.total:
             problems.append(f"tier {tier_id}: {status.total - status.matched} of "
                             f"{status.total} members not matched")  # fmt: skip
+        if status.held_starts:
+            problems.append(f"tier {tier_id}: {len(status.held_starts)} unmatched members are "
+                            "held for an asm-list ruling (verdict unclear with data-in-code "
+                            "evidence): the owner rules them in config/asm-functions.csv (D-23)")
     return problems
 
 
