@@ -15,6 +15,7 @@ one. Every name and address below is made up; no game bytes.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 import pytest
@@ -224,3 +225,108 @@ def test_cli_session_flag(capsys, monkeypatch):
     monkeypatch.setattr(driver, "default_seams", lambda repo: "seams")
     assert cli.main(["drive", "--session", "readability", "--dry-run", "--run", "r1"]) == 0
     assert seen["o"].session == driver.READABILITY
+
+
+# ---- Task 2: the refusals and outcomes ----
+
+
+def _status_bytes(night: RdNight) -> bytes:
+    return (night.repo / STATUS_REL).read_bytes()
+
+
+def test_bytes_changed_refused(tmp_path):
+    """The gate decides: a readability edit that moves a byte fails it, and nothing lands."""
+    night = RdNight(tmp_path, sessions=[Sess(unit_text=READABLE)], gate_exits=[1])
+    before = _status_bytes(night)
+    night.readability()
+    assert night.refactors() == [] and len(night.gate_calls) == 1
+    assert night.unit_text() == HEAD_TEXT and _status_bytes(night) == before
+    (record,) = night.attempts()
+    assert (record["outcome"], record["gate"]["exit"]) == (driver.REFUSED, 1)
+    assert night.report.event == driver.ENDED
+
+
+def test_stub_turned_into_c_refused(tmp_path):
+    """A readability session never turns an INCLUDE_ASM stub into C (D-17): the defined-set
+    check refuses it before the lint and the gate run."""
+    stub_c = f"\nint {STUB}(void)\n{{\n    return 1;\n}}\n"
+    night = RdNight(tmp_path, stub=True, sessions=[Sess(unit_text=READABLE + stub_c)],
+                    gate_exits=[0])  # fmt: skip
+    head = night.unit_text()
+    night.readability()
+    assert night.gate_calls == [] and night.lint_calls == []
+    assert night.refactors() == [] and night.unit_text() == head
+    (record,) = night.attempts()
+    assert (record["outcome"], record["gate"]) == (driver.REFUSED, None)
+
+
+def test_dropped_definition_refused(tmp_path):
+    """The other direction: a defined function turned back into a stub is refused too."""
+    stubbed = f'#include "common.h"\n\nINCLUDE_ASM({FUNC});\n'
+    night = RdNight(tmp_path, sessions=[Sess(unit_text=stubbed)], gate_exits=[0])
+    night.readability()
+    assert night.gate_calls == [] and night.refactors() == []
+    assert night.attempts()[0]["outcome"] == driver.REFUSED
+
+
+def test_readlint_still_failing_partial(tmp_path):
+    """The gate passes (the bytes did not move) but strict readlint still reports RL02: the
+    unit and status.csv go back, the view unit is kept under best/, nothing is committed."""
+    night = RdNight(tmp_path, sessions=[Sess(unit_text=STILL_BAD)], gate_exits=[0])
+    before = _status_bytes(night)
+    night.readability()
+    assert len(night.gate_calls) == 1 and night.refactors() == []
+    assert night.unit_text() == HEAD_TEXT and _status_bytes(night) == before
+    best = night.attempt_dir(1) / "best" / f"{UNIT}.c"
+    assert best.read_text(encoding="utf-8") == STILL_BAD
+    (record,) = night.attempts()
+    assert record["outcome"] == driver.PARTIAL and record["gate"]["exit"] == 0
+    assert night.git("status", "--porcelain").strip() == ""
+
+
+def test_no_change_gave_up(tmp_path):
+    night = RdNight(tmp_path, sessions=[Sess(write=None)], gate_exits=[0])
+    night.readability()
+    assert night.gate_calls == [] and night.lint_calls == [] and night.refactors() == []
+    (record,) = night.attempts()
+    assert (record["outcome"], record["gate"]) == (driver.GAVE_UP, None)
+
+
+def _proposals_rel(n: int = 1) -> str:
+    return f"build/driver/night1/{EXE}/{FUNC}/attempt-{n}/proposals.jsonl"
+
+
+def test_proposals_applied_first(tmp_path):
+    """The session proposes the name of its unit's function and documents it under the
+    placeholder: the driver applies the rename first (its own commit, 07-34), rewrites the view
+    unit, then lands the unit's readability commit under the new name."""
+    line = json.dumps({"op": "rename", "exe": EXE, "kind": "func", "address": f"0x{START:08X}",
+                       "name": NAME, "evidence": "call: read by the timer loop"})  # fmt: skip
+    text = READABLE.replace(NAME, FUNC)
+    night = RdNight(tmp_path, named=False, head_text=HEAD_TEXT.replace(NAME, FUNC),
+                    picks=(Pick(EXE, START, FUNC, UNIT, 0x10, 0),),
+                    sessions=[Sess(unit_text=text, files=((_proposals_rel(), line + "\n"),))],
+                    gate_exits=[0])  # fmt: skip
+    night.readability()
+    rename = f"refactor({EXE}): rename {FUNC} to {NAME}"
+    assert night.refactors() == [rename, SUBJECT]
+    assert night.file_at(SUBJECT, UNIT_REL) == READABLE
+    assert [r["outcome"] for r in night.kinds(driver.KIND_RENAME)] == [driver.APPLIED]
+    assert night.attempts()[0]["outcome"] == driver.LANDED
+
+
+def test_read_checks_picks_the_latest_readlint_clean_run(tmp_path):
+    """The 07-31 review note: every readability run is 100%, so the record's check summary is
+    the latest run whose readlint passed, never simply the first 100% run."""
+    lines = [{"n": 1, "exit": 1, "sweep": False, "best_percent": 100.0, "source": "checks/0001.c",
+              "sweep_hit": None, "readlint_violations": 3},
+             {"n": 2, "exit": 0, "sweep": False, "best_percent": 100.0, "source": "checks/0002.c",
+              "sweep_hit": None, "readlint_violations": 0},
+             {"n": 3, "exit": 1, "sweep": False, "best_percent": 100.0, "source": "checks/0003.c",
+              "sweep_hit": None, "readlint_violations": 1}]  # fmt: skip
+    _write(tmp_path / "checks.jsonl", "".join(json.dumps(x) + "\n" for x in lines))
+    assert driver.read_checks(tmp_path).best_source == "checks/0001.c"
+    summary = driver.read_checks(tmp_path, readability=True)
+    assert (summary.runs, summary.best_source, summary.best_percent) == (3, "checks/0002.c", 100.0)
+    _write(tmp_path / "checks.jsonl", json.dumps(lines[0]) + "\n")
+    assert driver.read_checks(tmp_path, readability=True).best_source is None
