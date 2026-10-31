@@ -31,7 +31,7 @@ from reverseapoc.driver import (
     git_runner,
 )
 from reverseapoc.picker import Pick
-from reverseapoc.session import OPUS_MODEL, run_session
+from reverseapoc.session import OPUS_MODEL, SKILL, run_session
 
 FAKE = Path(__file__).resolve().parent / "fakeclaude.py"
 EXE = "ufo2p"
@@ -215,6 +215,7 @@ class Night:
         self.gate_names = ("UFO2P.EXE", "TACP.EXE")  # the EXE names the fake gate reports
         self.git_at_launch = -1
         self.prompts: list[str] = []
+        self.skills: list[str] = []  # 07-38: the skill each session's argv appends
         self.raise_verbs: dict[str, BaseException] = {}  # git verb -> exception, raised once
         self.fail_verbs: dict[str, int] = {}  # git verb -> how many calls fail with LOCK_ERROR
         self.fail_plan: dict[str, list[bool]] = {}  # git verb -> per-call schedule
@@ -238,12 +239,14 @@ class Night:
         return PackInfo(2048, ("look-alikes",))
 
     def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
-              max_turns: int) -> list[str]:  # fmt: skip
-        """Deps.argv's keyword signature (07-30). The fixtures' init names Opus, the model of
-        passes 1 and 2; for any other requested model (Fable, pass 3 on, D-09) the stand-in
-        echoes it into its init event (`--model`), as the real CLI does."""
+              max_turns: int, skill: str = SKILL) -> list[str]:  # fmt: skip
+        """Deps.argv's keyword signature (07-30; 07-38: a readability session also names its
+        skill). The fixtures' init names Opus, the model of passes 1 and 2; for any other
+        requested model (Fable, pass 3 on, D-09) the stand-in echoes it into its init event
+        (`--model`), as the real CLI does."""
         self._current = self.sessions.pop(0) if self.sessions else Sess(write=None)
         self.prompts.append(prompt)
+        self.skills.append(skill)
         spec = self._current
         argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths"]
         argv += ["--model", model] if model != OPUS_MODEL else []
