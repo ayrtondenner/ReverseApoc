@@ -110,7 +110,8 @@ Locals and parameters you rename in the unit. Each function or global name is on
 
 - Exactly the keys `op`, `exe`, `kind`, `address`, `name`, `evidence`, all strings. `exe` is `ufo2p` or `tacp`; `kind` is `func` or `data`; `address` is the row's start as `0x%08X`, upper case.
 - The name: ASCII letters, digits and `_`, no leading digit, at most 63 characters; not a C89 or Watcom keyword (`near`, `far`, `inline`, `cdecl`...); not `_` plus a capital or `__`; not placeholder-shaped (`func_` or `D_` plus 8 hex digits, `FUN_`, `sub_`, `DAT_`, `LAB_`, `PTR_`, `UNK_`).
-- Refused: a `func` address that starts no game or thunk row; a `data` address inside code; the row's current name; a name another symbols.csv row, a runtime public or a function defined in `src/` already uses.
+- Refused in-session by `attempt check`: a `func` address that starts no game or thunk row; a `data` address inside code; the row's current name; a name another symbols.csv row, a runtime public or a function defined in `src/` already uses.
+- Refused at landing too, by the wider rule the driver applies: a `data` address in no data object of the EXE; and a name that is already any file-scope name of a committed unit of the EXE, of your view unit or of any header under `include/` (`common.h` included). That covers every `#define` (your unit's own too), every typedef (`s32`, `u8`), every struct, union or enum tag, and every extern'd global's spelling. Pick a name that appears at file scope nowhere yet.
 
 A struct, enum or constant several units share is a header proposal: the whole text of one bare `include/<name>.h` (lower case, never common.h or watcom_compat.h). It may hold include guards, typedefs, struct, union and enum declarations and object-like `#define NAME <constant>`; no function-like macro, no `#` or `##` operator, no pragma:
 
@@ -153,7 +154,7 @@ readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your 
 | RL01 | a placeholder identifier: `func_`/`D_` plus 8 upper-case hex digits, `FUN_`, `sub_`, `DAT_`, `LAB_`, `PTR_`, `UNK_` | code and directives, not comments, strings or `INCLUDE_ASM` stubs. Every hit counts: an extern, a prototype and each use |
 | RL02 | a function definition with no header comment | the last comment after the previous `;`, `}` or directive |
 | RL03 | a header comment not in the form above | the same comment |
-| RL04 | a struct or union field named like `unk`, `field_0x`, `pad`, `gap`, `filler` or `undefined` | bodies at any depth, and the project headers the unit includes |
+| RL04 | a struct or union field whose name, in any case, is `unk`, `unknown`, `field`, `pad`, `padding`, `gap`, `filler` or `undefined`, alone or followed by hex digits or by an underscore and anything: `pad_left`, `field_count`, `gap_width`, `Padding` and even `padded` (pad plus the hex digits d, e, d) all hit | bodies at any depth, and the project headers the unit includes |
 | RL05 | a pointer cast over an offset expression, such as `*(s32 *)(p + 0x10)` | a fix needs a struct type and usually a type change: if the check cannot prove it, note it |
 | RL06 | an integer literal other than 0 and 1 | exempt: `#define` and enum bodies, masks in bitwise context, shift counts 1 to 31, 2, 4 or 8 in arithmetic or `[ ]`, a line with a waiver. Floating literals are no violation |
 
