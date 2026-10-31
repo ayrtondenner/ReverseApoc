@@ -539,3 +539,56 @@ def test_renamed_function_keeps_pass_count_and_history(tmp_path):
     assert names == [FUNC, NEW]
     models = flags._attempt_models(log)
     assert models[(RUN, EXE, START, 1)][0] == 1 and models[("night2", EXE, START, 1)][0] == 2
+
+
+# ---- failures inside the apply step (self-review, Rule 1) ----
+
+TOUCHED = (SYMBOLS_REL, UNIT_REL, UNIT_B_REL, STATUS_REL, FEED)
+
+
+def test_unit_claimed_meanwhile_is_deferred(tmp_path, monkeypatch):
+    """A rename claim that cannot be taken after all (another taker won the O_EXCL race) is
+    DEFERRED, never REFUSED, and nothing is written."""
+    real_take = driver.Claims.take
+
+    def take(self, record):
+        return False if record["kind"] == driver.KIND_RENAME else real_take(self, record)
+
+    monkeypatch.setattr(driver.Claims, "take", take)
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    before = night.bytes_of(*TOUCHED)
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.DEFERRED and "claimed meanwhile" in record["reason"]
+    assert night.rename_calls == [] and night.bytes_of(*before) == before
+
+
+def test_commit_failure_restores_and_stops(tmp_path):
+    """A naming commit that fails (index.lock twice) puts every path back, status.csv and the
+    feed to their bytes before the gate, records the proposal REFUSED and stops the night."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    night.fail_verbs = {"commit": 2}
+    before = night.bytes_of(*TOUCHED)
+    night.readability()
+    assert night.report.event == driver.STOPPED and night.report.reason == driver.TOOL
+    assert night.bytes_of(*before) == before
+    assert night.rename_calls == [[f"{EXE}/{UNIT}", f"{EXE}/{UNIT_B}"]]
+    assert _refactors(night) == []
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and "naming commit failed" in record["reason"]
+
+
+def test_gate_error_restores_and_stops(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    before = night.bytes_of(*TOUCHED)
+
+    def gate(targets):
+        _write(night.repo / STATUS_REL, "half written\n")
+        raise RuntimeError("the container went away")
+
+    night.readability(rename_gate=gate)
+    assert night.report.event == driver.STOPPED and night.report.reason == driver.TOOL
+    assert "the container went away" in night.report.detail
+    assert night.bytes_of(*before) == before
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED
