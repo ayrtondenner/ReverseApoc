@@ -170,6 +170,7 @@ from .proposals import (
     read_bounded,
     rename_problem,
 )
+from .readlint import ReadlintError, run_readlint
 from .score import Assessment, Candidate, assess, candidates, score, score_reasons
 from .session import (
     FABLE_BUDGET_USD,
@@ -179,12 +180,14 @@ from .session import (
     MODEL,
     MODEL_NAMES,
     OPUS_MODEL,
+    READABILITY_SKILL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
     goal_prompt,
     kill_tree,
     model_for_pass,
+    readability_goal,
     run_session,
 )
 from .status import MATCHED as STATUS_MATCHED
@@ -210,6 +213,7 @@ VIEW_HEAD = "view-head.txt"  # <attempt dir>/view-head.txt: the commit the view 
 VIEW_TREES = ("src", "include", "config")  # D-24: what a view holds of HEAD
 MATCHING_KIND = hooks.SESSION_KINDS[0]  # "matching" (D-18)
 MATCHED_BY = "Matched-By: reverseapoc drive"
+READABILITY_BY = "Readability-By: reverseapoc drive"  # 07-38: the trailer of a readability commit
 LITERAL = "--literal-pathspecs"  # security ruling (06-23 commit_match): paths are never globs
 OPTIONAL_LOCKS = "GIT_OPTIONAL_LOCKS"  # "0" in the driver's git env and every session's (D-27 P4)
 INDEX_LOCK = b"index.lock"  # in git's stderr: another process held the index (D-27 P4)
@@ -824,6 +828,40 @@ def commit_message(
         "",
         trailer,
         MATCHED_BY,
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def readability_message(
+    *,
+    exe: str,
+    unit: str,
+    attempt_n: int,
+    model: str | None,
+    usage: streamjson.Usage,
+    seconds: float,
+    sha1s: Sequence[tuple[str, str]],
+    requested_model: str,
+) -> str:
+    """07-38 (D-17): the message of one readability landing, one unit per commit: the subject,
+    the session's figures, the gate's verdict (the bytes did not move) and both SHA-1s, then the
+    requested model's co-author line (coauthor raises DriverError for an unknown model, before
+    anything is committed) and READABILITY_BY."""
+    lines = [
+        f"refactor({exe}): name and document {unit} (readability)",
+        "",
+        f"attempt {attempt_n}",
+        f"model {model or 'unknown'}",
+        f"turns {usage.turns}",
+        f"tokens {usage.input_tokens} input, {usage.output_tokens} output, "
+        f"{usage.cache_read_tokens} cache read, {usage.cache_creation_tokens} cache creation",
+        f"seconds {round(seconds)}",
+        "gate ok: the unit's bytes are unchanged",
+        "readlint clean",
+        *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
+        "",
+        coauthor(requested_model),
+        READABILITY_BY,
     ]
     return "\n".join(lines) + "\n"
 
@@ -2313,15 +2351,17 @@ class _Night:
         `passes` goes up, so a tier queue offers it again for its next pass (D-08). Returns
         MATCHED, CAPPED, ABORTED (a transient abort ended the pass; a tier queue sends it
         behind its group's other work) or None when the pass was cut short (the night cap, a
-        stop)."""
-        for n in range(1, self.config.attempts_per_function + 1):
+        stop). 07-38 (D-17): a readability night runs one session per unit and returns its
+        outcome; nothing goes to the difficult list."""
+        readability = self.config.session == READABILITY
+        for n in range(1, self._attempts() + 1):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return None
             try:
                 outcome = self._announced(pick, n)
             finally:
                 self._release()  # not counted (a stop): a slot still held goes back
-            if outcome in (MATCHED, ABORTED, None):
+            if readability or outcome in (MATCHED, ABORTED, None):
                 return outcome
         callees = tuple(self.deps.matched_callees(pick))
         key = (pick.exe, pick.start)
@@ -2331,8 +2371,19 @@ class _Night:
             self.passes[key] = self.passes.get(key, 0) + 1
         return CAPPED
 
+    def _attempts(self) -> int:
+        """Sessions per pass: attempts_per_function (D-07); one per unit on a readability night
+        (07-38, D-17)."""
+        return 1 if self.config.session == READABILITY else self.config.attempts_per_function
+
+    def _model(self, pick: Pick) -> str:
+        """The requested model of `pick`'s session: the pass's (D-09) on a matching night, Opus
+        on a readability night (07-38: escalation is a matching rule)."""
+        return OPUS_MODEL if self.config.session == READABILITY else model_for_pass(
+            self._pass(pick))  # fmt: skip
+
     def _label(self, pick: Pick, n: int) -> str:
-        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self.config.attempts_per_function}"
+        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}"
 
     def _announced(self, pick: Pick, n: int) -> str | None:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
@@ -2374,7 +2425,7 @@ class _Night:
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": self.config.session, "pass": self._pass(pick),
-                  "model": model_for_pass(self._pass(pick)),
+                  "model": self._model(pick),
                   "claimed_at": datetime.now(UTC).isoformat(timespec="seconds")}  # fmt: skip
         if not self.claims.take(record):
             shown = self.claims.path(pick.exe, pick.unit).relative_to(self.repo).as_posix()
@@ -2434,7 +2485,7 @@ class _Night:
         session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3) and
         with that model's budget."""
         pass_n = self._pass(pick)
-        model = model_for_pass(pass_n)
+        model = self._model(pick)
         return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
                       budget_usd=self.config.budget_for(model),
                       session=self.config.session)  # fmt: skip
@@ -2515,6 +2566,18 @@ class _Night:
         (`_renames_since`) is rewritten in the view unit, so a session that started before a
         rename lands under the new names."""
         claim = session.claim
+        data = self._view_bytes(session)
+        target = self.repo / claim.unit_rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        self.landed = claim.unit_rel
+        self.landed_bytes = data
+        write_atomic(target, data)
+
+    def _view_bytes(self, session: _Session) -> bytes:
+        """The bytes the landing would copy: the view unit with every rename committed since
+        the view's HEAD rewritten in (07-34), written back to the view when that changed it.
+        A view unit that is a link or no regular file is a DriverError: nothing lands."""
+        claim = session.claim
         source = claim.view_unit
         if _is_link(source) or not source.is_file():
             raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
@@ -2523,12 +2586,7 @@ class _Night:
         rewritten = _rewrite(data, mapping)
         if rewritten != data:
             write_atomic(source, rewritten)
-            data = rewritten
-        target = self.repo / claim.unit_rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        self.landed = claim.unit_rel
-        self.landed_bytes = data
-        write_atomic(target, data)
+        return rewritten
 
     def _snapshot(self) -> _Snapshot:
         """F3: each `git status` path with its entry, content hash and bytes, plus the pinned
@@ -2631,9 +2689,8 @@ class _Night:
         unit_before = claim.view_unit.read_bytes()
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
-        prompt = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
-                             unit_path=claim.view_unit_rel)  # fmt: skip
-        base = self.config.base_env if self.config.base_env is not None else os.environ
+        prompt, skill = self._prompt(claim)
+        base =self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
             before = self._snapshot()
             drift = self._pinned_drift(before)
@@ -2648,7 +2705,7 @@ class _Night:
         result = None
         try:
             argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                                  max_turns=self.config.max_turns)  # fmt: skip
+                                  max_turns=self.config.max_turns, **skill)  # fmt: skip
             result = self.deps.session(argv, cwd=self.repo,
                                        env=claim.env(base),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
@@ -2702,6 +2759,17 @@ class _Night:
             raise _Stop(STOP_SIGNAL, "the session's stream carries a D-08 STOP signal")
         self._check_init(session)
         return session
+
+    def _prompt(self, claim: _Claim) -> tuple[str, dict[str, str]]:
+        """The session's /goal and the extra Deps.argv keywords of its kind: a matching
+        session's goal_prompt and the default skill (watcom-decomp); a readability session's
+        readability_goal and READABILITY_SKILL (07-38, D-18)."""
+        if claim.session == READABILITY:
+            goal = readability_goal(claim.pick.unit, claim.pick.exe,
+                                    unit_path=claim.view_unit_rel)  # fmt: skip
+            return goal, {"skill": READABILITY_SKILL}
+        return goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                           unit_path=claim.view_unit_rel), {}  # fmt: skip
 
     def _remove_containers(self, claim: _Claim) -> str:
         """Fix round 1 S1: remove the attempt's containers; a failure never gates the audit and
@@ -3261,9 +3329,11 @@ class _Night:
     def _salvage(self, session: _Session) -> bool:
         """06-17 review: a LIMIT session keeps its work. When it changed the unit or wrote a
         header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
-        Otherwise it is reset. The whole landing runs under the gate lock (D-06)."""
+        Otherwise it is reset. The whole landing runs under the gate lock (D-06). 07-38: a
+        readability session is never salvaged (it is reset, and the relaunch redoes it; its
+        proposals were applied already), so a LIMIT launch writes no readability record."""
         with self._landing(session):
-            if session.has_work():
+            if session.has_work() and session.claim.session != READABILITY:
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
                     self._count()
@@ -3294,7 +3364,10 @@ class _Night:
         """A counted session's landing section, all of it under the gate lock (D-06, D-27 P4):
         the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
         `gate --partial` and the attempt record. Another worker's record waits for the landing
-        decision, so F19's log truncation can only drop this landing's own MATCHED line."""
+        decision, so F19's log truncation can only drop this landing's own MATCHED line. A
+        readability session has its own landing (07-38, `_land_readability`)."""
+        if session.claim.session == READABILITY:
+            return self._land_readability(session)
         self._count()
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
@@ -3332,22 +3405,91 @@ class _Night:
         finally:
             self.ledger.note(claim.status_rel, FEED)  # the partial gate's output (read back)
 
+    # --- the readability landing (07-38; D-17, D-18, D-20, DEC-04) ---
+
+    def _land_readability(self, session: _Session) -> str:
+        """A counted readability session's landing section, all of it under the gate lock. Its
+        proposals were applied already (`_after_session`, 07-34), so the view unit lands under
+        the renames committed since its HEAD. Then, in order:
+
+        - the unit lands in src/, the C89 lint runs (owner ruling 2026-10-30: every landing
+          path lints before it commits; a failing lint is REFUSED with abort_reason lint) and
+          the container gate runs; a gate that fails, or passes without the unit's lowest
+          matched function matched, is REFUSED: the bytes changed;
+        - strict readlint on the landed unit (`run_readlint --units EXE/UNIT`, its included
+          headers too). Clean: one LANDED commit of the unit, status.csv (source_sha256
+          refreshed by the gate), the feed and the log (`readability_message`). Otherwise
+          PARTIAL: status.csv and the feed go back to their pre-gate bytes and the unit is put
+          back.
+
+        Every refusal puts the unit back (D-34) and writes one v2 record of its outcome."""
+        self._count()
+        claim = session.claim
+        summary = read_checks(claim.attempt_dir)
+        abort = TIMEOUT if session.result.timed_out else None
+        with self._landing(session):
+            gate = self._judge(session)
+            if gate is None:  # the C89 lint failed: the gate never ran
+                return self._readability_end(session, REFUSED, LINT, summary)
+            if not self._gate_matched(session, gate):
+                return self._readability_end(session, REFUSED, abort, summary, gate=gate)
+            if not self._readlint_clean(claim):
+                notes = self._restore_pre_gate()  # the gate's refreshed rows are not kept
+                if notes:
+                    self._tool_failure(session, "; ".join(
+                        ["readlint failed and the gate's rows could not be put back", *notes]),
+                        PARTIAL, gate=gate)  # fmt: skip
+                return self._readability_end(session, PARTIAL, abort, summary, gate=gate)
+            self._commit_match(session, gate, summary, abort)
+            return LANDED
+
+    def _readability_end(self, session: _Session, outcome: str, abort: str | None,
+                         summary: CheckSummary, *, gate: GateRun | None = None) -> str:  # fmt: skip
+        """A readability landing that commits nothing: the unit back as HEAD has it, one
+        record."""
+        self._reset(session)
+        self._record_attempt(session, outcome, abort, summary, gate=gate)
+        return outcome
+
+    def _readlint_clean(self, claim: _Claim) -> bool:
+        """Strict readlint (D-20) on the landed unit alone, as `readlint --units EXE/UNIT`
+        runs it, over src/ and config/ as they are now (after the gate). Clean only when the
+        unit was checked and no violation was found, in it or in a header it includes; a
+        readlint error (an unreadable file or table) is not clean (fail closed)."""
+        try:
+            result = run_readlint([self.repo / claim.unit_rel], src_root=self.repo / "src",
+                                  config_root=self.repo / "config",
+                                  units=[claim.target])  # fmt: skip
+        except ReadlintError:
+            return False
+        return result.exit_code() == EXIT_OK and claim.unit_rel in result.files_checked
+
+    def _landing_message(self, session: _Session, gate: GateRun) -> str:
+        """The commit message of a landing: D-25's match message, or a readability session's
+        (07-38)."""
+        claim = session.claim
+        figures = dict(exe=claim.pick.exe, unit=claim.pick.unit, attempt_n=claim.n,
+                       model=session.text("model"), usage=session.usage,
+                       seconds=session.seconds, sha1s=gate_sha1s(gate.doc),
+                       requested_model=claim.model)  # fmt: skip
+        if claim.session == READABILITY:
+            return readability_message(**figures)
+        return commit_message(function=claim.function,
+                              attempts=self.config.attempts_per_function, **figures)
+
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None) -> None:  # fmt: skip
         """One match commit of explicit paths (D-25): the landed unit, status.csv, the feed and
-        the log; a matching session adds no header (D-19)."""
+        the log; a matching session adds no header (D-19). 07-38: a readability session's
+        landing is the same commit with its own message and a LANDED record; only a match
+        counts toward `matched`."""
         claim = session.claim
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
         log_size = self.log.stat().st_size if self.log.is_file() else 0
-        self._record_attempt(session, MATCHED, abort, summary, gate=gate)
+        outcome = LANDED if claim.session == READABILITY else MATCHED
+        self._record_attempt(session, outcome, abort, summary, gate=gate)
         try:
-            message = commit_message(exe=claim.pick.exe, function=claim.function,
-                                     unit=claim.pick.unit, attempt_n=claim.n,
-                                     attempts=self.config.attempts_per_function,
-                                     model=session.text("model"), usage=session.usage,
-                                     seconds=session.seconds,
-                                     sha1s=gate_sha1s(gate.doc),
-                                     requested_model=claim.model)  # fmt: skip
+            message = self._landing_message(session, gate)
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -3369,6 +3511,8 @@ class _Night:
                                       gate=gate)  # fmt: skip
             self.interrupted = f" during the match commit; {undone}"
             raise
+        if outcome != MATCHED:
+            return
         with self.cond:
             self.matched += 1
             self.cond.notify_all()
@@ -4351,6 +4495,7 @@ class DriveOptions:
     max_turns: int = MAX_TURNS  # D-07
     session_minutes: int = TIMEOUT_S // 60  # D-07: each session's wall clock
     canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
+    session: str = MATCHING  # 07-38 (D-18): `drive --session matching|readability`
 
     @property
     def config_root(self) -> Path:
@@ -4990,7 +5135,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          max_budget_usd=options.max_budget_usd,
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
-                         wall_clock_s=options.session_minutes * 60)  # fmt: skip
+                         wall_clock_s=options.session_minutes * 60,
+                         session=options.session)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
