@@ -215,22 +215,101 @@ def file_scope_names(text: str) -> frozenset[str]:
     parentheses and brackets but the C keywords (function definitions, declarators, typedef
     names, tags, and the names such declarations use), plus every macro a `#define` names. A
     superset of the declared names, on purpose: a rename to any of them is refused."""
-    names: set[str] = set()
-    code: list[str] = []
-    for logical in _logical(text, _configure()._blank):
-        define = _DEFINE.match(logical)
-        if define is not None:
-            names.add(define.group(1))
-        if _DIRECTIVE_LINE.match(logical) is None:
-            code.append(logical)
+    names, code = _code_lines(text)
     depth = 0
-    for token in _SCOPE_TOKEN.findall("\n".join(code)):
+    for token in _SCOPE_TOKEN.findall(code):
         if token in _OPEN:
             depth += 1
         elif token in _CLOSE:
             depth = max(0, depth - 1)
         elif depth == 0 and not token[0].isdigit() and token not in C_KEYWORDS:
             names.add(token)
+    return frozenset(names)
+
+
+_TAG = re.compile(rf"\b(?:struct|union|enum)\s+({_IDENT})")
+_ENUM_BODY = re.compile(rf"\benum\s*(?:{_IDENT}\s*)?\{{([^{{}}]*)\}}")
+_ENUMERATOR = re.compile(rf"\s*({_IDENT})")
+_BRACED = re.compile(r"\{[^{}]*\}")
+_PAREN_NAME = re.compile(rf"\(\s*[*&\s]*({_IDENT})")
+
+
+def _code_lines(text: str) -> tuple[set[str], str]:
+    """(the macro names `text` #defines, its code with comments, literals and directives
+    removed)."""
+    macros: set[str] = set()
+    code: list[str] = []
+    for logical in _logical(text, _configure()._blank):
+        define = _DEFINE.match(logical)
+        if define is not None:
+            macros.add(define.group(1))
+        if _DIRECTIVE_LINE.match(logical) is None:
+            code.append(logical)
+    return macros, "\n".join(code)
+
+
+def _outside(text: str, opener: str, closer: str) -> str:
+    """`text` with every `opener`...`closer` group (nested) replaced by one space."""
+    out, depth = [], 0
+    for char in text:
+        if char == opener:
+            depth += 1
+        elif char == closer and depth:
+            depth -= 1
+            if not depth:
+                out.append(" ")
+        elif not depth:
+            out.append(char)
+    return "".join(out)
+
+
+def _declarator_name(declarator: str) -> str | None:
+    """The name one declarator declares: its last identifier outside parentheses and brackets
+    (`int f(u8 x)` -> f, `u8 *p[4]` -> p), else the first one in its first parenthesis (a
+    function pointer: `int (*cb)(int)` -> cb)."""
+    flat = _outside(_outside(declarator, "[", "]"), "(", ")")
+    names = [n for n in re.findall(_IDENT, flat) if n not in C_KEYWORDS]
+    if names:
+        return names[-1]
+    inner = _PAREN_NAME.search(declarator)
+    return inner.group(1) if inner is not None else None
+
+
+def _split_top(text: str, sep: str) -> list[str]:
+    """`text` split at each `sep` outside parentheses and brackets."""
+    parts, depth, start = [], 0, 0
+    for i, char in enumerate(text):
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth = max(0, depth - 1)
+        elif char == sep and not depth:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return parts
+
+
+def declared_names(text: str) -> frozenset[str]:
+    """07-34 fix round 1 (review I2, D-19): every name a header (or unit) declares or defines
+    at file scope: each `#define`d macro, each struct/union/enum tag, each enumerator, and the
+    name of each declarator of each declaration (typedef names, objects, prototypes, function
+    pointers). A name a declaration only uses (a type, a parameter) is not one."""
+    names, code = _code_lines(text)
+    names.update(_TAG.findall(code))
+    for body in _ENUM_BODY.findall(code):
+        for item in _split_top(body, ","):
+            found = _ENUMERATOR.match(item)
+            if found is not None:
+                names.add(found.group(1))
+    flat = code
+    while _BRACED.search(flat):  # every brace group, innermost first
+        flat = _BRACED.sub(" ", flat)
+    for statement in _split_top(flat, ";"):
+        for declarator in _split_top(statement, ","):
+            name = _declarator_name(_split_top(declarator, "=")[0])
+            if name is not None:
+                names.add(name)
     return frozenset(names)
 
 
