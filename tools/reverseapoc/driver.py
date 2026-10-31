@@ -3377,9 +3377,11 @@ class _Night:
         header, it is judged as usual; a pass that matched the claim is a counted MATCHED.
         Otherwise it is reset. The whole landing runs under the gate lock (D-06). 07-38: a
         readability session is never salvaged (it is reset, and the relaunch redoes it; its
-        proposals were applied already), so a LIMIT launch writes no readability record."""
+        proposals were applied already), so a LIMIT launch writes no readability record.
+        Hotfix 2026-10-31: a unit that still defines no C is reset unjudged (`_defines_c`)."""
         with self._landing(session):
-            if session.has_work() and session.claim.session != READABILITY:
+            judged = session.has_work() and session.claim.session != READABILITY
+            if judged and self._defines_c(session):
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
                     self._count()
@@ -3411,7 +3413,9 @@ class _Night:
         the copy into src/, the lint, the gate, then the commit (or its undo) or the reset,
         `gate --partial` and the attempt record. Another worker's record waits for the landing
         decision, so F19's log truncation can only drop this landing's own MATCHED line. A
-        readability session has its own landing (07-38, `_land_readability`)."""
+        readability session has its own landing (07-38, `_land_readability`). Hotfix
+        2026-10-31: a unit that defines no C is not landed, linted or gated (`_defines_c`); it
+        ends as any other no-match, with no gate verdict in its record."""
         if session.claim.session == READABILITY:
             return self._land_readability(session)
         self._count()
@@ -3419,13 +3423,16 @@ class _Night:
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
         with self._landing(session):
-            gate = self._judge(session)
-            if self._gate_matched(session, gate):
-                self._commit_match(session, gate, summary, abort)
-                return MATCHED
+            gate = None
+            if self._defines_c(session):
+                gate = self._judge(session)
+                if self._gate_matched(session, gate):
+                    self._commit_match(session, gate, summary, abort)
+                    return MATCHED
+                if gate is None:  # a failed lint
+                    abort = LINT
+            # review IN-02: PARTIAL only with a score above 0%
             outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
-            if gate is None:  # a failed lint; review IN-02: PARTIAL only with a score above 0%
-                abort = LINT
             self._reset(session)
             if outcome == PARTIAL and summary.best_source is not None:
                 if self._partial_gate(session, summary) == EXIT_TOOL:
@@ -3521,15 +3528,36 @@ class _Night:
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             return (None, _sha256(data))
+        defs = self._unit_defs(claim, text)
+        return (frozenset(defs.defined), frozenset(defs.marked),
+                frozenset(defs.source_problems))  # fmt: skip
+
+    def _unit_defs(self, claim: _Claim, text: str) -> unitdefs.UnitDefs:
+        """unitdefs.find of a unit text under the EXE's current C names (functions.csv and
+        symbols.csv as they are now), so a rename moves nothing."""
         exe = claim.pick.exe
-        rows = read_functions_csv(self.repo / "config" / exe / "functions.csv")
+        rows = read_functions_csv(self.repo / _functions_rel(exe))
         symbols_path = self.repo / _symbols_rel(exe)
         symbols = read_symbols_csv(symbols_path) if symbols_path.is_file() else []
         unit_rows = [row for row in rows if row.unit == claim.pick.unit]
-        defs = unitdefs.find(text, unit_rows, placeholders=unitdefs.placeholders(unit_rows),
+        return unitdefs.find(text, unit_rows, placeholders=unitdefs.placeholders(unit_rows),
                              all_names=unitdefs.c_names(rows, symbols))  # fmt: skip
-        return (frozenset(defs.defined), frozenset(defs.marked),
-                frozenset(defs.source_problems))  # fmt: skip
+
+    def _defines_c(self, session: _Session) -> bool:
+        """Hotfix 2026-10-31: the gate refuses a unit with no C (check.py: `<src> defines no
+        function of unit <unit>`, exit 2, which stops the night), so a no-C give-up never
+        reaches it. False when the bytes that would land (`_view_bytes`, 07-34 renames in)
+        define no function of the unit in C (`_unit_defs`): a scaffold left as it was, or a
+        unit that gained only a comment or a struct. True when they do, and when the function
+        table is missing or the text is not UTF-8: the gate decides those as before."""
+        claim = session.claim
+        if not (self.repo / _functions_rel(claim.pick.exe)).is_file():
+            return True
+        try:
+            text = self._view_bytes(session).decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+        return bool(self._unit_defs(claim, text).defined)
 
     def _keep_best(self, session: _Session) -> None:
         """PARTIAL: the view unit as it would have landed, under <attempt dir>/best/<unit>.c
@@ -4503,6 +4531,10 @@ def _gated_exes(targets: Iterable[str]) -> list[str]:
 
 def _symbols_rel(exe: str) -> str:
     return f"config/{exe}/symbols.csv"
+
+
+def _functions_rel(exe: str) -> str:
+    return f"config/{exe}/functions.csv"
 
 
 def _manifest_name(exe: str) -> str:
