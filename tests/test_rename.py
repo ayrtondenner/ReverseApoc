@@ -738,3 +738,44 @@ def test_raise_before_the_commit_restores(tmp_path, monkeypatch):
     assert night.bytes_of(*before) == before
     assert night.git("status", "--porcelain", "--", *TOUCHED).strip() == ""
 
+
+# ---- fix round 2 ----
+
+
+def test_header_rewrite_keeps_the_types_its_users_name(tmp_path):
+    """Re-review I1: a unit that includes the header and names its type at file scope
+    (`extern snd_level g_level;`) uses the name, it does not declare it: rewriting the header
+    (D-19's "add a field or a constant") is accepted."""
+    old = ("#ifndef SND_H\n#define SND_H\ntypedef int snd_level;\n"
+           "struct mixer { int gain; };\n#endif\n")
+    new = old.replace("int gain; }", "int gain; int pan; }")
+    b_uses = B_SND.replace("extern int", "extern snd_level g_level;\nextern struct mixer g_mix;\n"
+                           "extern int")  # fmt: skip
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=new))],
+                   extra_files={SND_REL: old, UNIT_B_REL: b_uses})  # fmt: skip
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED, record["reason"]
+    assert night.rename_calls == [[f"{EXE}/{UNIT_B}"]]
+
+
+def test_new_header_may_use_another_headers_tag(tmp_path):
+    """Re-review: a tag a header only refers to (`struct mixer *`) is not one it declares."""
+    mix = "#ifndef MIX_H\n#define MIX_H\nstruct mixer { int gain; };\n#endif\n"
+    text = "#ifndef SND_H\n#define SND_H\nextern struct mixer *snd_mixer;\n#endif\n"
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=text))],
+                   extra_files={"include/mix.h": mix})  # fmt: skip
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED, record["reason"]
+
+
+def test_declared_names_of_units_and_tag_uses():
+    """Function definitions are declarations; a tag is declared only with a body or as a bare
+    forward declaration; a tag a declaration only names is a use."""
+    text = ("struct other *get(void);\nextern struct other g_other;\nstruct fwd;\n"
+            "typedef struct holder { struct inner *p; } holder_t;\n"
+            "int f(void)\n{\n    return 1;\n}\nint g(void)\n{\n    return 2;\n}\n")
+    assert unitdefs.declared_names(text) == {"get", "g_other", "fwd", "holder", "holder_t", "f",
+                                             "g"}  # fmt: skip
+
