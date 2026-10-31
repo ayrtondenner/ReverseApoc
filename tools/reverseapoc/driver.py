@@ -260,6 +260,9 @@ class DriveConfig:
     max_budget_usd: float = MAX_BUDGET_USD  # D-07: per Opus session (07-30: a drive flag)
     fable_budget_usd: float = FABLE_BUDGET_USD  # D-25: per Fable session
     max_turns: int = MAX_TURNS  # D-07
+    # 07-34 (D-18, ruling F34): the night's session kind. Only a readability session's
+    # proposals.jsonl is applied (D-19), so matching nights keep the placeholders (D-17).
+    session: str = "matching"
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -337,6 +340,11 @@ class Deps:
     end_of_run: Callable[[], Sequence[str]] = tuple
     say: Callable[[str], None] = _quiet
     kill: Callable[[int], None] = kill_tree  # 07-21 stop-all: a live session's whole tree
+    # 07-34 (D-19): one container gate over the affected units of a rename or header proposal
+    # (`gate u1 u2 ... --json`, all or nothing), and the LE data objects of an EXE (a data
+    # rename must lie in one; none: every data rename is refused, fail closed).
+    rename_gate: Callable[[Sequence[str]], GateRun] = lambda targets: GateRun(EXIT_TOOL)
+    data_ranges: Callable[[str], Sequence[tuple[int, int]]] = lambda exe: ()
 
 
 @dataclass(frozen=True)
