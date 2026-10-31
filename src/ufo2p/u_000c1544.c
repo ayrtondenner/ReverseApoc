@@ -1,0 +1,21 @@
+/*
+ * src/ufo2p/u_000c1544.c: translation unit u_000c1544 of UFO2P.EXE, 0x000C1544..0x000C156B (D-11).
+ *
+ * Scaffolded by `uv run reverseapoc units UFO2P.EXE --write-src u_000c1544`, which never
+ * overwrites this file. Each INCLUDE_ASM marker stands for a function that is not matched
+ * yet (D-12); a matched function replaces its marker with its C.
+ */
+#include "common.h"
+
+INCLUDE_ASM(func_000C1549);
+INCLUDE_ASM(func_000C1557);
+INCLUDE_ASM(func_000C1566);
+
+/* Watcom runtime delay(); links as __delay_. */
+void __delay(unsigned ms);
+
+/* void: EAX at the jmp holds the argument only; the callers decide. */
+void func_000C1544(unsigned ms)
+{
+    __delay(ms);
+}
