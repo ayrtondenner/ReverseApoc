@@ -22,6 +22,7 @@ import pytest
 from reverseapoc import cli, driver, session
 from reverseapoc.driver import GateRun
 from reverseapoc.functions import FunctionRow, SymbolRow, write_functions_csv, write_symbols_csv
+from reverseapoc.picker import Pick
 from reverseapoc.status import MATCHED, StatusRow, lf_sha256, status_path, write_status
 from test_driver import (
     EXE,
@@ -56,6 +57,7 @@ HEADER = (f"/*\n * {NAME}: returns the current tick count.\n * Address: UFO2P.EX
 HEAD_TEXT = '#include "common.h"\n\n' + BODY  # matched, named, but no header comment (RL02)
 READABLE = '#include "common.h"\n\n' + HEADER + BODY  # what a good session leaves
 STILL_BAD = HEAD_TEXT + "\n/* a comment after the function is no header */\n"
+READ_PICK = Pick(EXE, START, NAME, UNIT, 0x10, 0)  # the unit's lowest matched function, by C name
 
 
 @dataclass
@@ -66,6 +68,7 @@ class RdNight(Night):
     real gate does. `head_text` is the unit at HEAD; `stub` adds a second row of the unit that
     HEAD keeps INCLUDE_ASM."""
 
+    picks: tuple[Pick, ...] = (READ_PICK,)
     head_text: str = HEAD_TEXT
     stub: bool = False
     named: bool = True  # symbols.csv names the matched row (else it keeps its placeholder)
