@@ -15,7 +15,7 @@ schema = 1
 [asm_list]
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-31
-list_sha256 = "8cb4649b4907678075cff7ae0a03bc6dfac0bfde0b040aec048e09b083d62578"
+list_sha256 = "332908805a55b7c73def9f7e99586ef110efab913285771a3fb2827475376488"
 
 # D-22, signed with Tier 1 by the owner on 2026-10-27, values kept at the re-sign on 2026-10-30
 # (plan 07-22): a reached row with at least 20 direct callers, or whose own closure covers more
@@ -701,7 +701,7 @@ id = 3
 title = "OpenApoc #264: city-wide rules, score, endgame and vehicles"
 signed_off_by = "ayrtondenner"
 signed_off_date = 2026-10-31
-members_sha256 = "fa5ae9aa491cf5c619feb453256064561a3d608eeae72a690c61f5c6efcb83f8"
+members_sha256 = "e53efeeef88245471835b9b3b482674cd70bcc0ebdcf23765f36ae6a358c4a62"
 
 [[item]]
 id = "264-1"
