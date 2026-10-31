@@ -30,6 +30,7 @@ from reverseapoc.driver import (
     drive,
     git_runner,
 )
+from reverseapoc.functions import FunctionRow, write_functions_csv
 from reverseapoc.picker import Pick
 from reverseapoc.session import OPUS_MODEL, SKILL, run_session
 
@@ -2279,3 +2280,102 @@ def test_a_breach_during_the_match_undo_still_drops_the_matched_record(tmp_path)
     assert [r.get("outcome") for r in night.kinds("attempt")] == ["GAVE_UP"]
     assert TAMPER_ROW.strip() not in (night.repo / STATUS_REL).read_text(encoding="utf-8")
     assert night.commits() == []
+
+
+# ---- hotfix 2026-10-31: a session that leaves no C in its unit never reaches the gate ----
+
+FUNC2 = f"func_{START + 0x10:08X}"  # _pick(1), a second made-up function of the unit
+FUNCTIONS_REL = f"config/{EXE}/functions.csv"
+C_DEF = "(void)\n{"  # how every C definition below is written
+NO_C_TEXT = (f'#include "common.h"\n\nINCLUDE_ASM({FUNC});\n\n/* a note, no C yet */\n'
+             "struct made_up { int x; };\n")  # fmt: skip
+WITH_C_TEXT = (f'#include "common.h"\n\nINCLUDE_ASM({FUNC});\n\n'
+               f"int {FUNC2}(void)\n{{\n    return 0;\n}}\n")  # fmt: skip
+FUNC_C_TEXT = f'#include "common.h"\n\nint {FUNC}(void)\n{{\n    return 0;\n}}\n'
+
+
+def _night_with_table(tmp_path: Path, **over) -> Night:
+    """A Night whose HEAD holds the unit's function table (FUNC and FUNC2), as the real
+    checkout does, so the driver can read what a unit defines in C (unitdefs)."""
+    night = Night(tmp_path, **over)
+    rows = [FunctionRow(START, START + 0x10, FUNC, "game", UNIT, "call"),
+            FunctionRow(START + 0x10, START + 0x20, FUNC2, "game", UNIT, "call")]  # fmt: skip
+    write_functions_csv(night.repo / FUNCTIONS_REL, rows, "UFO2P.EXE")
+    night.git("add", "--", FUNCTIONS_REL)
+    night.git("commit", "-q", "-m", "a made-up function table")
+    night.base = night.git("rev-parse", "HEAD").strip()
+    return night
+
+
+def _refusing_gate(night: Night):
+    """check.py in miniature: the gate exits 2 on a unit that defines no function in C (`<src>
+    defines no function of unit <unit>`), else it is the harness's gate."""
+
+    def gate(pick: Pick, attempts: int) -> GateRun:
+        text = (night.repo / f"src/{pick.exe}/{pick.unit}.c").read_text(encoding="utf-8")
+        if C_DEF not in text:
+            night.gate_exits.insert(0, 2)
+        return night._gate(pick, attempts)
+
+    return gate
+
+
+def test_a_no_c_give_up_on_a_fresh_unit_never_gates_and_the_night_goes_on(tmp_path):
+    """Night 20261031-143342: a session on a unit HEAD lacks gave up and left its view unit the
+    scaffold. Nothing lands, no lint, no gate (which would exit 2 and stop the night): one
+    GAVE_UP record with no abort reason and no gate verdict, and the next session runs."""
+    night = _night_with_table(tmp_path, unit_committed=False, picks=(_pick(0), _pick(1)),
+                              sessions=[Sess(write=None), Sess(unit_text=WITH_C_TEXT)],
+                              gate_exits=[1])  # fmt: skip
+    report = night.run(config={"attempts_per_function": 1}, gate=_refusing_gate(night))
+    assert (report.event, report.sessions) == ("ENDED", 2), report
+    assert len(night.launched) == 2
+    first, second = night.kinds("attempt")
+    assert (first["function"], first["outcome"]) == (FUNC, "GAVE_UP")
+    assert (first["abort_reason"], first["gate"]) == (None, None)
+    assert second["function"] == FUNC2 and second["gate"] is not None
+    assert night.lint_calls == [_pick(1)]  # the session with C only
+    assert night.gate_calls == [(_pick(1), 1)]
+    assert night.partial_calls == []
+    assert not (night.repo / UNIT_REL).exists()  # src/ as HEAD has it
+    assert night.git("status", "--porcelain=v1", "--untracked-files=all") == ""
+
+
+def test_a_changed_unit_with_still_no_c_is_partial_without_the_unit_gate(tmp_path):
+    """The session changed its unit (a comment and a struct) but defined no function in C, and
+    a check scored 60%: PARTIAL, the unit is never gated, `gate --partial` runs as usual."""
+    sess = Sess(unit_text=NO_C_TEXT, checks=(check_line(1, 60.0),))
+    night = _night_with_table(tmp_path, sessions=[sess])
+    report = night.run(config={"attempts_per_function": 1}, gate=_refusing_gate(night))
+    assert report.event == "ENDED", report
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["abort_reason"], record["gate"]) == ("PARTIAL", None, None)
+    assert night.lint_calls == [] and night.gate_calls == []
+    assert len(night.partial_calls) == 1
+    assert _unit_text(night) == SCAFFOLD
+
+
+def test_a_unit_with_c_still_lints_and_gates(tmp_path):
+    """Regression guard: a unit whose bytes define a function in C lands, lints and gates as
+    before (test_gate_tool_error_stops_the_run keeps a real gate exit 2 a night stop)."""
+    night = _night_with_table(tmp_path, sessions=[Sess(unit_text=FUNC_C_TEXT)], gate_exits=[0])
+    report = night.run(config={"attempts_per_function": 1})
+    assert (report.event, report.matched) == ("ENDED", 1), report
+    assert night.lint_calls == [PICK]
+    assert night.gate_calls == [(PICK, 1)]
+    assert night.file_at("feat(", UNIT_REL) == FUNC_C_TEXT
+
+
+def test_a_limit_session_with_no_c_is_reset_without_a_gate(tmp_path):
+    """The LIMIT salvage: the session changed its unit but defined no C, so it is reset like a
+    session with no work, never gated, and the relaunch runs."""
+    sessions = [Sess("rejected", unit_text=NO_C_TEXT), Sess(write=None)]
+    night = _night_with_table(tmp_path, unit_committed=False, sessions=sessions)
+    report = night.run(config={"attempts_per_function": 1}, gate=_refusing_gate(night))
+    assert report.event == "ENDED", report
+    assert night.sleeps == [60]
+    assert len(night.launched) == 2
+    assert night.lint_calls == [] and night.gate_calls == []
+    record = _one(night.kinds("attempt"))
+    assert (record["outcome"], record["gate"]) == ("GAVE_UP", None)
+    assert not (night.repo / UNIT_REL).exists()
