@@ -342,7 +342,8 @@ def test_skill_does_not_send_agents_to_src():
     A line may name the repo-root unit only to say the session never writes it."""
     text = _text()
     assert "src/" not in _frontmatter(text)["description"]
-    lines = [line for line in text.splitlines() if _SRC_UNIT in line]
+    outside_view = text.replace("view/" + _SRC_UNIT, "view unit")  # the view path is the file
+    lines = [line for line in outside_view.splitlines() if _SRC_UNIT in line]
     assert lines, "the skill says the repo-root unit is not the session's file"
     for line in lines:
         assert "never" in line.lower(), line
