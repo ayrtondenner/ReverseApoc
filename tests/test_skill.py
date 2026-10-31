@@ -223,8 +223,10 @@ def _made_up_json_keys() -> set[str]:
     cell = check.SweepCell(1, "10.6", ("-4r", "-s", "-fpi"), "", 87.5, True, 3)
     sweep = check.SweepReport("ufo2p", "u_00010000", "func_00010000", False, (cell,), (cell,),
                               Path("sweep.log"))  # fmt: skip
+    staged = _stage2_sweep().to_json()  # 07-35: a sweep whose D-15 second stage ran
     line = attempt.CheckLogLine(1, 1, False, 87.5, False, False, False, None, "checks/0001.c")
-    paths = _key_paths(result.to_json()) | _key_paths(sweep.to_json()) | set(line.to_json())
+    paths = (_key_paths(result.to_json()) | _key_paths(sweep.to_json()) | _key_paths(staged)
+             | set(line.to_json()))  # fmt: skip
     return {path.split(".", i)[-1] for path in paths for i in range(path.count(".") + 1)}
 
 
@@ -304,3 +306,116 @@ def test_pragma_policy_is_every_pragma():
         text = path.read_text(encoding="utf-8")
         assert "no `#pragma` of any kind" in text, path
         assert "human-reviewed" in text, path
+
+
+# ---- 07-35: view mode (D-15, D-19, D-24) ----
+
+_STAGE1_SPEC = "wcc386@10.6 -4r -s -fpi"  # the `*` default, the stage-1 cell the sample keeps
+_SRC_UNIT = "src/<exe>/<unit>.c"
+
+
+def _stage2_sweep():
+    """A made-up sweep shaped like the skill's sample: no perfect stage-1 cell, the best at 98.9%
+    with its relocation check passing, so stage 2 ran (from cell 31) and its cell 42 hit."""
+    from reverseapoc import check
+
+    best = check.SweepCell(1, "10.6", ("-4r", "-s", "-fpi"), "", 98.9, True, 6)
+    hit = check.SweepCell(42, "10.6", ("-4r", "-s", "-fpi", "-zp4"), "", 100.0, True, 0)
+    return check.SweepReport("ufo2p", "u_00089980", "func_0008AAF0", False, (best,), (best,),
+                             Path("sweep.log"), (hit,), (hit,))  # fmt: skip
+
+
+def test_skill_names_the_view_unit():
+    """07-35: the session's only C file is its private view unit, named by the driver's
+    REVERSEAPOC_UNIT_FILE (and in its /goal), in the description, the quick reference and the
+    two sections that send the agent to the file."""
+    text = _text()
+    assert "REVERSEAPOC_UNIT_FILE" in text
+    assert "view unit" in _frontmatter(text)["description"]
+    for title in ("Replacing INCLUDE_ASM", "The attempt wrapper"):
+        assert "REVERSEAPOC_UNIT_FILE" in _section(text, title), title
+    assert "build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c" in text
+
+
+def test_skill_does_not_send_agents_to_src():
+    """07-35 (07-13 as built): no instruction to edit src/<exe>/<unit>.c or to add a header.
+    A line may name the repo-root unit only to say the session never writes it."""
+    text = _text()
+    assert "src/" not in _frontmatter(text)["description"]
+    outside_view = text.replace("view/" + _SRC_UNIT, "view unit")  # the view path is the file
+    lines = [line for line in outside_view.splitlines() if _SRC_UNIT in line]
+    assert lines, "the skill says the repo-root unit is not the session's file"
+    for line in lines:
+        assert "never" in line.lower(), line
+    assert "a new header" not in text
+    assert "no header" in text.lower()
+    assert "view/include/" in text and "view/config/" in text  # the copies the Never list names
+
+
+def test_skill_states_the_view_flags_rule():
+    """RED-FINDINGS teach 2: the check's rule is the unit's rule in the view's config/cflags.txt
+    (HEAD's copy); a sweep hit goes to the executor's `flags propose`, the owner approves."""
+    flags = _section(_text(), "Flags")
+    assert "view's `config/cflags.txt`" in flags
+    assert "flags propose" in flags and "flags approve" in flags
+    assert "checks/NNNN.c" in flags
+
+
+def test_skill_states_the_second_sweep_stage():
+    """D-15 (07-14 as built): stage 2 runs after a near miss (no perfect cell, the best at or above
+    check.SWEEP2_FLOOR with reloc ok), under 10.6, numbered on from the stage-1 cells, and its
+    hit comes through the same sweep hit line."""
+    from reverseapoc import check
+
+    wrapper = _section(_text(), "The attempt wrapper")
+    assert "stage 2" in wrapper and "`stage2`" in wrapper
+    assert f"{check.SWEEP2_FLOOR:g}%" in wrapper
+    widest = check.SweepCell(1, "10.6", ("-4r", "-ox", "-s", "-fpi"))  # a cell with an -o set
+    assert f"up to {len(check.sweep2_cells(widest))} cells" in wrapper
+    assert "31 or 61" in wrapper
+
+
+def test_skill_quotes_the_real_sweep_output():
+    """RED-FINDINGS teach 5: the sample's body lines are exactly what attempt check --sweep
+    prints for the same cells (attempt._sweep_summary), so the agent reads the stage."""
+    from reverseapoc import attempt
+
+    doc = _stage2_sweep().to_json()
+    line = attempt._sweep_line(doc, _STAGE1_SPEC, attempt.Ran(0, "", ""), 16, "checks/0016.c")
+    assert line.sweep_hit == "wcc386@10.6 -4r -s -fpi -zp4"
+    wrapper = _section(_text(), "The attempt wrapper")
+    for printed in attempt._sweep_summary(doc, line):
+        assert printed in wrapper, printed
+
+
+def test_skill_keeps_names_placeholders():
+    """RED-FINDINGS teach 3: a matching session renames nothing; a name idea goes in notes.md
+    and naming is the readability pass (D-19), as the watcom-readability skill says."""
+    text = _text()
+    assert "readability" in text and "D-19" in text
+    assert "rename" in _section(text, "Replacing INCLUDE_ASM")
+
+
+def test_skill_says_proposals_are_allowed_but_not_applied():
+    """Fix round 1 I1: the hooks allow proposals.jsonl in every session (REVERSEAPOC_PROPOSALS,
+    and the include/ denial points at it), but nothing applies a matching session's proposals:
+    the rename step (07-34) is planned, for readability sessions only. The skill says so where
+    it lists the writes, and docs/workflow.md where it lists the variable."""
+    text = _text()
+    writes = next(line for line in text.splitlines() if line.startswith("| What you may write"))
+    assert "REVERSEAPOC_PROPOSALS" in writes and "proposals.jsonl" in writes
+    assert "writes none" in writes and "planned" in writes and "denial" in writes
+    assert "proposals.jsonl" in hooks._view_denial(["include/x.h"])  # the hint the line answers
+    workflow = (REPO_ROOT / "docs" / "workflow.md").read_text(encoding="utf-8")
+    env = next(line for line in workflow.splitlines()
+               if line.startswith("- `REVERSEAPOC_PROPOSALS`"))  # fmt: skip
+    assert "matching" in env and "nothing reads" in env and "planned" in env
+
+
+def test_skill_marks_the_naming_landing_planned():
+    """Fix round 1 M1: the readability proposals that name things and write shared headers are
+    applied by a driver step that is planned (07-34); the skill marks both mentions planned."""
+    section = _section(_text(), "Replacing INCLUDE_ASM")
+    for phrase in ("through its proposals", "through readability proposals"):
+        start = section.index(phrase)
+        assert "(planned" in section[start : start + len(phrase) + 20], phrase
