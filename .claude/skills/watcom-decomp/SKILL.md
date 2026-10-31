@@ -12,7 +12,7 @@ You make one claimed function byte-identical to the original, proven by `attempt
 | Question | Answer |
 |---|---|
 | Your file | the private view unit at `$REVERSEAPOC_UNIT_FILE`. The /goal names its path, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`. It is the only C you edit. |
-| What you may write | that view unit and this attempt's notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr). No header anywhere. Nothing else. |
+| What you may write | that view unit and this attempt's notes.md (its full path follows `notes:` in `attempt check` output, and `attempt context` prints it on stderr). No header anywhere. The hooks also allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`), but a matching session writes none: nothing applies a matching session's proposals (the driver's rename step is planned, for readability sessions only). A name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl. Nothing else. |
 | Types you need | declared in the view unit, at file scope (see "Replacing INCLUDE_ASM"). |
 | Names | placeholders stay: `func_XXXXXXXX`, `D_XXXXXXXX` and your own function's name. A name idea goes in notes.md. |
 | The only Bash | the five wrapper commands under "The attempt wrapper". Anything else (`ls`, `cat`, `sed`, a host `reverseapoc check`, `docker`, `objdiff-cli`) is denied and costs a turn. Look around with Read, Grep and Glob. |
@@ -95,9 +95,9 @@ Work in your view unit, `$REVERSEAPOC_UNIT_FILE`. The view is the driver's priva
 - Put the types, prototypes and externs it needs, then its definition, after the marker block, as in `src/ufo2p/u_000a34f0.c`. All of them at file scope, each before its first use.
 - File order does not change check's verdict (calls resolve through fixups), except for a jump-table function, whose table must come first in the unit (`docs/matching.md#relocation-rules`). The pilot has none.
 - The definition keeps the row's name (`func_XXXXXXXX`, or its symbols.csv name).
-- Use `D_XXXXXXXX` and `func_XXXXXXXX` placeholders for data and callees. Never invent names, and never rename one: a rename in a matching session is not applied anywhere. Naming is the readability pass's work (D-19), through its proposals; a name idea, with its evidence, goes in notes.md.
+- Use `D_XXXXXXXX` and `func_XXXXXXXX` placeholders for data and callees. Never invent names, and never rename one: a rename in a matching session is not applied anywhere. Naming is the readability pass's work (D-19), through its proposals (planned: the driver's rename step is not built yet); a name idea, with its evidence, goes in notes.md.
 
-A struct the function needs is declared in the unit, never in a header: a header would not land (only the unit's bytes do), and the gate never compiles from a view's `include/`. Shared types and headers come later, through readability proposals (D-19). Use `struct unk_XXXX` (its size in hex), the `s8`/`u8`/`s16`/`u16`/`s32`/`u32` typedefs of `include/common.h`, an offset comment per field, a size comment, and explicit padding where an offset must be pinned (the packing is not known yet, `docs/coding-style.md#watcom-specifics`):
+A struct the function needs is declared in the unit, never in a header: a header would not land (only the unit's bytes do), and the gate never compiles from a view's `include/`. Shared types and headers come later, through readability proposals (planned: the driver writes no header yet, D-19). Use `struct unk_XXXX` (its size in hex), the `s8`/`u8`/`s16`/`u16`/`s32`/`u32` typedefs of `include/common.h`, an offset comment per field, a size comment, and explicit padding where an offset must be pinned (the packing is not known yet, `docs/coding-style.md#watcom-specifics`):
 
 ```c
 struct unk_002C {

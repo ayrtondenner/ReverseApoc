@@ -177,7 +177,7 @@ Each check prints one `PASS: ...` or `FAIL: ...` line, with no time stamp; the l
 
 - `REVERSEAPOC_CLAIM`, `REVERSEAPOC_FUNC`, `REVERSEAPOC_ATTEMPT_DIR` and `REVERSEAPOC_ATTEMPT_NOTES`, as in Phase 6;
 - `REVERSEAPOC_UNIT_FILE`: the view unit, `build/driver/<run>/<exe>/<func>/attempt-<n>/view/src/<exe>/<unit>.c`, the only C file it edits (its /goal names it too);
-- `REVERSEAPOC_PROPOSALS`: `<attempt dir>/proposals.jsonl`, for naming proposals (D-19);
+- `REVERSEAPOC_PROPOSALS`: `<attempt dir>/proposals.jsonl`, for naming proposals (D-19) of readability sessions. For a matching session the hooks allow it, but nothing reads it: the rename landing is planned (07-34), for readability sessions only, so a matching session writes its name ideas in notes.md;
 - `REVERSEAPOC_SESSION_KIND`: `matching` (the hooks also know `readability`, for the readability sessions a later plan launches).
 
 It may run only the attempt wrapper's five forms (`hooks.ATTEMPT_FORMS`). Each runs against the view, so its check compiles the view unit with the view's `config/cflags.txt`:
