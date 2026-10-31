@@ -100,11 +100,12 @@ Readability nights (07-38; D-17, D-18, D-20, DEC-04): `drive --session readabili
 session per matched unit (DriveConfig.session), claimed with kind readability, on Opus, with
 session.readability_goal and the watcom-readability skill. The queue is
 `readability_source`: picker.readability_queue over the committed units that fail strict
-readlint (Tier 1 first, bottom-up), read again before each pick. `_land_readability` applies
-the proposals first, then GAVE_UP for an unchanged unit, REFUSED for a changed defined set, a
-failing C89 lint or gate, PARTIAL when strict readlint still fails (the view unit kept under
-best/), else LANDED: one `refactor(<exe>): name and document <unit> (readability)` commit with
-READABILITY_BY.
+readlint (Tier 1 first, bottom-up), read again from HEAD before each pick. Every naming
+commit runs the C89 lint over the units it touches and a probe of each header it writes.
+`_land_readability` applies the proposals first, then GAVE_UP for an unchanged unit, REFUSED
+for a changed defined set, a failing C89 lint or gate, PARTIAL when strict readlint still
+fails (the view unit kept under best/), else LANDED: one `refactor(<exe>): name and document
+<unit> (readability)` commit with READABILITY_BY.
 
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
@@ -135,6 +136,7 @@ import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Sequence
@@ -991,6 +993,23 @@ def _is_link(path: Path) -> bool:
         stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
     )
     return stat.S_ISLNK(st.st_mode) or bool(reparse) or os.path.isjunction(path)
+
+
+def extract_head(git: Callable[..., subprocess.CompletedProcess], dest: Path) -> str:
+    """D-24 (07-13; shared with the readability queue, 07-38 fix round 1): HEAD's tracked
+    src/, include/ and config/ (those HEAD has) into the existing directory `dest` through
+    `git archive`, extracted with tarfile's `data` filter (no link, device or path that leaves
+    `dest`); include/ always exists. Never the worktree. Returns HEAD's commit."""
+    head = _git_ok(git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+    listed = _git_ok(git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
+    trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
+             if name in VIEW_TREES]  # fmt: skip
+    if trees:
+        archive = _git_ok(git, ["archive", "--format=tar", head, "--", *trees])
+        with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+            tar.extractall(dest, filter="data")
+    (dest / "include").mkdir(exist_ok=True)
+    return head
 
 
 def _write_new(target: Path, data: bytes) -> None:
@@ -2570,17 +2589,9 @@ class _Night:
         committed headers, 07-11 as built). The claimed unit is HEAD's file, or the scaffold
         written into the view. The commit is recorded in <attempt dir>/view-head.txt (F34).
         Returns (that commit, whether the unit was scaffolded)."""
-        head = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
-        listed = _git_ok(self._git, ["ls-tree", "-z", "--name-only", head, "--", *VIEW_TREES])
-        trees = [name for name in listed.decode("utf-8", "surrogateescape").split("\0")
-                 if name in VIEW_TREES]  # fmt: skip
         view = claim.view_root
         view.mkdir()
-        if trees:
-            archive = _git_ok(self._git, ["archive", "--format=tar", head, "--", *trees])
-            with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-                tar.extractall(view, filter="data")
-        (view / "include").mkdir(exist_ok=True)
+        head = extract_head(self._git, view)
         write_atomic(claim.attempt_dir / VIEW_HEAD, f"{head}\n".encode("ascii"))
         unit = claim.view_unit
         if unit.is_file() and not _is_link(unit):
@@ -3430,9 +3441,11 @@ class _Night:
         source = claim.attempt_dir / summary.best_source
         if not source.is_file():
             return None
-        best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
-        best.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, best)
+        if _is_link(source):
+            raise DriverError(f"{claim.attempt_dir / summary.best_source} is a link: best/ is "
+                              "not written")  # fmt: skip
+        best = self._best_file(claim)
+        write_atomic(best, source.read_bytes())
         self._guard(claim.status_rel, FEED)  # fix round 1
         try:
             return self.deps.partial_gate(claim.pick, best.relative_to(self.repo).as_posix(),
@@ -3522,9 +3535,22 @@ class _Night:
         """PARTIAL: the view unit as it would have landed, under <attempt dir>/best/<unit>.c
         (gitignored), for the next session or the owner."""
         claim = session.claim
-        best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
-        best.parent.mkdir(parents=True, exist_ok=True)
-        write_atomic(best, self.landed_bytes or b"")
+        write_atomic(self._best_file(claim), self.landed_bytes or b"")
+
+    def _best_file(self, claim: _Claim) -> Path:
+        """<attempt dir>/best/<unit>.c, its directory made; a DriverError (nothing written, the
+        night stops) when the attempt dir or best/ is a link (07-38 fix round 1, review M3:
+        never a write through a link)."""
+        best_dir = claim.attempt_dir / BEST_DIR
+        for path in (claim.attempt_dir, best_dir):
+            if _is_link(path):
+                raise DriverError(f"{path.relative_to(self.repo).as_posix()} is a link: best/ "
+                                  "is not written")  # fmt: skip
+        best_dir.mkdir(parents=True, exist_ok=True)
+        if _is_link(best_dir):
+            raise DriverError(f"{best_dir.relative_to(self.repo).as_posix()} is a link: best/ "
+                              "is not written")  # fmt: skip
+        return best_dir / f"{claim.pick.unit}.c"
 
     def _readlint_clean(self, claim: _Claim) -> bool:
         """Strict readlint (D-20) on the landed unit alone, as `readlint --units EXE/UNIT`
@@ -4046,7 +4072,9 @@ class _Night:
     def _gated_commit(self, pending: _Pending, plan: _NamingPlan,
                       own: tuple[str, str] | None) -> str:  # fmt: skip
         """D-19's all-or-nothing step: every path of the plan must equal HEAD, then each is
-        written, one container gate runs over every affected unit, and a pass is one commit
+        written, the C89 lint runs over every affected unit and written header (07-38 fix round
+        1, `_naming_lint`: a failure is a _Refusal, a lint tool error a TOOL stop, both after
+        the put-back), one container gate runs over every affected unit, and a pass is one commit
         of explicit paths (the plan's, the gated EXEs' status.csv and the feed). A failure puts
         every path back byte for byte and is a _Refusal naming the gate. Returns the commit."""
         start = pending.proposal.address if isinstance(pending.proposal, Rename) else None
@@ -4059,8 +4087,23 @@ class _Night:
             step = "the proposal's paths could not be written"
             try:
                 self._write_plan(plan)
+                step = "the C89 lint could not run"
+                lint = self._naming_lint(plan)
+                if lint != EXIT_OK:
+                    self._put_back(originals)
+                    self.pre_gate = {}  # no gate ran: status.csv and the feed are untouched
+                    units, headers = self._lint_files(plan)
+                    shown = _listed([*units, *headers])
+                    if lint != EXIT_MISMATCH:
+                        raise _Stop(TOOL, f"the C89 lint of {shown} exited {lint}; every "
+                                          "path was put back")  # fmt: skip
+                    raise _Refusal(f"the C89 lint failed on {shown} (lint.py: clang "
+                                   "-std=gnu89 with the Watcom compat header); nothing was "
+                                   "gated or committed")  # fmt: skip
                 step = "the rename gate could not run"
                 gate = self._naming_gate(plan.targets)
+            except (_Refusal, _Stop):
+                raise
             except Exception as exc:
                 self.ledger.note(*outputs)  # what a gate that broke off may have written
                 self._put_back(originals)
@@ -4101,6 +4144,41 @@ class _Night:
 
     def _naming_gate(self, targets: Sequence[str]) -> GateRun:
         return self.deps.rename_gate(list(targets))
+
+    def _lint_files(self, plan: _NamingPlan) -> tuple[list[str], list[str]]:
+        """The units a naming plan gates (src/<exe>/<unit>.c of each target) and the headers it
+        writes (include/<name>.h)."""
+        units = [f"src/{exe}/{unit}.c" for exe, unit in map(_unit_key, plan.targets)]
+        headers = [rel for rel, data in plan.changes.items()
+                   if data is not None and _HEADER.fullmatch(rel)]  # fmt: skip
+        return units, headers
+
+    def _naming_lint(self, plan: _NamingPlan) -> int:
+        """07-38 fix round 1 (owner ruling 2026-10-30: every landing path runs the C89 lint
+        before it commits; review I1): after the plan's files are written and before the gate,
+        `Deps.lint_paths` lints every unit the plan gates and, for each header it writes, a
+        probe unit under build/driver/<run>/lint-probe/ that includes common.h and then the
+        header, as a unit would (lint.py lints .c files only; Watcom accepts `//` and the gate
+        passes on unchanged bytes, so only the lint catches a non-C89 header). The probes are
+        removed afterwards. Returns the lint's exit (0 clean, 1 failed, 2 tool error)."""
+        units, headers = self._lint_files(plan)
+        probe_dir = self.repo.joinpath(DRIVER_DIR, self.config.run_id, LINT_PROBE_DIR)
+        probes = []
+        try:
+            for header in headers:
+                name = PurePosixPath(header).relative_to("include")
+                probe = probe_dir / f"{str(name.with_suffix('')).replace('/', '__')}.c"
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                if _is_link(probe_dir) or _is_link(probe):
+                    raise DriverError(f"{probe_dir} or its probe is a link: nothing is linted")
+                write_atomic(probe, f'#include "common.h"\n#include "{name.as_posix()}"\n'
+                             .encode("ascii"))  # fmt: skip
+                probes.append(probe)
+            paths = [*units, *(p.relative_to(self.repo).as_posix() for p in probes)]
+            return self.deps.lint_paths(paths) if paths else EXIT_OK
+        finally:
+            for probe in probes:
+                probe.unlink(missing_ok=True)
 
     def _put_back(self, originals: Mapping[str, bytes | None]) -> None:
         """Every path of a failed proposal back to its bytes before (None: removed)."""
@@ -4296,6 +4374,7 @@ class _Night:
 
 RENAMED_BY = "Renamed-By: reverseapoc drive"  # the trailer of every naming commit (D-19)
 RENAME_MSG = "rename-msg.txt"  # under build/driver/<run>/: the last naming commit's message
+LINT_PROBE_DIR = "lint-probe"  # build/driver/<run>/lint-probe/: a header's lint probe unit
 _UNIT_DEPTH = 2  # src/<exe>/<unit>.c: two slashes
 _SUPERSEDED = "superseded by a later line for the same row (the last line for a row wins)"
 _RENAMING = object()  # a coordinator `busy` mark: a unit a naming commit holds (D-06)
@@ -4830,7 +4909,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     say = console(options, seams)
     readability = options.session == READABILITY
     tiers = None if readability else tier_source(config_root, worlds)
-    units_queue = readability_source(options.repo, _world_callees(worlds))  # 07-38
+    units_queue = readability_source(options.repo, _world_callees(worlds),
+                                     git=seams.git)  # 07-38: read from HEAD
 
     def pools(difficult: Container[Key]) -> Iterable[Pick]:
         return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
@@ -4858,10 +4938,14 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         code = seams.run(lint_argv(pick)).returncode
         return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
 
+    def lint_paths(paths: Sequence[str]) -> int:  # 07-38 fix round 1: a naming commit's files
+        code = seams.run([*CONTAINER_CLI, "lint", *paths, "--json"]).returncode
+        return code if code in (EXIT_OK, EXIT_MISMATCH) else EXIT_TOOL
+
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
-                argv=seams.argv, session=seams.session, lint=lint,
+                argv=seams.argv, session=seams.session, lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
@@ -5050,18 +5134,35 @@ def readability_entries(repo: Path, callees: Callees | None = None) -> list[Read
     return [ReadabilityEntry(pick, counts[(pick.exe, pick.unit)] or 0) for pick in queue]
 
 
-def readability_source(repo: Path, callees: Callees | None = None
+def head_readability_entries(repo: Path, callees: Callees | None = None, *,
+                             git: Callable[..., subprocess.CompletedProcess] | None = None
+                             ) -> list[ReadabilityEntry]:  # fmt: skip
+    """`readability_entries` of HEAD, never of the working tree (07-38 fix round 1, review
+    I2): HEAD's src/, include/ and config/ are extracted (`extract_head`, as a view is built)
+    into a fresh temporary directory and read there, then the directory is removed. So
+    another worker's landing in flight (its unit in src/, its gate's rows in status.csv) never
+    counts until its commit, and no file a landing replaces or restores is held open."""
+    git = git if git is not None else git_runner(Path(repo))
+    with tempfile.TemporaryDirectory(prefix="reverseapoc-queue-") as tmp:
+        root = Path(tmp)
+        extract_head(git, root)
+        return readability_entries(root, callees)
+
+
+def readability_source(repo: Path, callees: Callees | None = None, *,
+                       git: Callable[..., subprocess.CompletedProcess] | None = None
                        ) -> Callable[[Container[Key]], Iterator[Pick]]:  # fmt: skip
     """Deps.queue of a readability night: each time the coordinator asks, the queue is read
-    again from the committed state (so a unit offered once its callees pass is offered the
-    same night) and its first unit not yet offered tonight is the next pick. The difficult
-    list does not apply. With several workers a unit that waits for a callee still in flight
-    waits for the next night (the queue ends while nothing else is eligible)."""
+    again from HEAD (`head_readability_entries`: the committed state, so a unit offered once
+    its callees' landings committed is offered the same night) and its first unit not yet
+    offered tonight is the next pick. The difficult list does not apply. A unit whose callee's
+    landing is still in flight reads as waiting for it; with several workers it waits for the
+    next night when the queue ends meanwhile (nothing else eligible)."""
 
     def picks(difficult: Container[Key]) -> Iterator[Pick]:
         offered: set[tuple[str, str]] = set()
         while True:
-            entries = readability_entries(repo, callees)
+            entries = head_readability_entries(repo, callees, git=git)
             pick = next((e.pick for e in entries if (e.pick.exe, e.pick.unit) not in offered),
                         None)  # fmt: skip
             if pick is None:
@@ -5072,10 +5173,12 @@ def readability_source(repo: Path, callees: Callees | None = None
     return picks
 
 
-def readability_dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> int:
-    """`drive --session readability --dry-run`: the queued units in order with their readlint
-    violation counts; no pack, no claude, no gate."""
-    entries = readability_entries(options.repo, _world_callees(worlds))
+def readability_dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
+                        git: Callable[..., subprocess.CompletedProcess] | None = None
+                        ) -> int:  # fmt: skip
+    """`drive --session readability --dry-run`: the queued units of HEAD in order, with their
+    readlint violation counts; no pack, no claude, no gate."""
+    entries = head_readability_entries(options.repo, _world_callees(worlds), git=git)
     units = [{"exe": e.pick.exe, "unit": e.pick.unit, "start": f"0x{e.pick.start:08X}",
               "function": e.pick.name, "violations": e.violations} for e in entries]  # fmt: skip
     lines = [f"{u['exe']} {u['unit']} {u['start']} {u['function']} readlint {u['violations']} "
@@ -5349,7 +5452,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
         if options.session == READABILITY:  # 07-38: no pilot picks and no Ghidra drafts
             with _phase("picks"):
                 if options.dry_run:
-                    return readability_dry_run(options, worlds)
+                    return readability_dry_run(options, worlds, git=seams.git)
         else:
             with _phase("picks"):
                 picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
