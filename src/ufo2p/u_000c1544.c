@@ -7,8 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_000C1557);
-
 /* Watcom runtime delay(); links as __delay_. */
 void __delay(unsigned ms);
 
@@ -27,7 +25,16 @@ int func_000C1549(int c)
     return c;
 }
 
-/* Watcom runtime clock(); links as __clock_. */
+/* tolower-like: 'A'..'Z' become 'a'..'z', anything else is returned as is. */
+int func_000C1557(int c)
+{
+    if (c >= 0x41 && c <= 0x5a) {
+        c += 0x20;
+    }
+    return c;
+}
+
+/* Watcom runtime clock();links as __clock_. */
 unsigned long __clock(void);
 
 /* unsigned long: EAX at the jmp holds __clock's result; the callers decide. */
