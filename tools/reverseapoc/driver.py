@@ -81,6 +81,21 @@ pass the same night (night.passes counts it, and is the pass index the queue rea
 queue never reads difficult.json). The dry run and the night's draft picks are the tier
 queue's first picks (`tier_picks`), the dry run's with their tier, level and pass.
 
+Naming proposals (07-34; D-19, D-29): the driver is the only writer of naming state. After a
+readability session (DriveConfig.session; ruling F34: never after a matching one) and before
+its landing, `_apply_proposals` reads the session's proposals.jsonl and applies each proposal
+in file order under the gate lock, against the naming state of that moment: a rename writes
+symbols.csv (the new linker name) and rewrites the exact old C name in every committed user
+in src/ and in the driver-written headers, a header proposal writes include/<name>.h; one
+container gate (`Deps.rename_gate`) runs over every affected unit and includer, all or
+nothing, and a pass is one `refactor(...)` commit with `Renamed-By: reverseapoc drive`, a
+failure a byte-for-byte restore. Every proposal is a v2 `rename` record (APPLIED, DEFERRED,
+REFUSED; ruling F12's shapes); a bad line is REFUSED, never a night stop. A proposal whose
+affected unit another live session holds is DEFERRED and tried again after each claim
+release (`_retry_deferred`); the proposing session's own unit never blocks, its view unit is
+rewritten in place. At every landing the view unit first takes every rename committed since
+the view's HEAD (`_renames_since`), so a session that started before a rename still lands.
+
 Every effect is an injected dependency (`Deps`), so the tests run the stand-in claude
 (tests/fakeclaude.py), fake gates and a tmp git repo. The `drive` verb (plan 06-25, at the end of
 this module) wires the real ones (`real_deps`) behind a fail-closed `preflight`, and adds the
@@ -2481,12 +2496,20 @@ class _Night:
     def _land(self, session: _Session) -> None:
         """The landing section's first step (D-06, D-24): the only writer of src/. The view
         unit's bytes are copied to src/<exe>/<unit>.c, so the lint and the unchanged gate see
-        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit."""
+        src/ equal to HEAD but for that one unit; `_reset` puts back just that unit. 07-34
+        (D-19, CONTEXT default): first every rename committed since the view's HEAD
+        (`_renames_since`) is rewritten in the view unit, so a session that started before a
+        rename lands under the new names."""
         claim = session.claim
         source = claim.view_unit
         if _is_link(source) or not source.is_file():
             raise DriverError(f"{claim.view_unit_rel} is not a regular file: nothing landed")
         data = source.read_bytes()
+        mapping = self._renames_since(session.view_head).get(claim.pick.exe, {})
+        rewritten = _rewrite(data, mapping)
+        if rewritten != data:
+            write_atomic(source, rewritten)
+            data = rewritten
         target = self.repo / claim.unit_rel
         target.parent.mkdir(parents=True, exist_ok=True)
         self.landed = claim.unit_rel
@@ -3419,9 +3442,12 @@ class _Night:
         The last line for a row (or a header path) wins, as the readability skill says; an
         earlier one is REFUSED as superseded. A line that is not a proposal is a REFUSED record
         with op null naming it, never a night stop. The proposing session's own claim never
-        blocks it: its view unit is rewritten in place instead (CONTEXT default)."""
+        blocks it: its view unit is rewritten in place instead (CONTEXT default). Nothing is
+        applied once the night is stopping or after a breach (J2: nothing more is committed)."""
         claim = session.claim
         with self.gate_lock:
+            if self.breached or self.stop.is_set():
+                return
             for item in _latest_first(_read_proposal_file(claim.proposals)):
                 if isinstance(item, str):
                     self._record_rename(None, REFUSED, reason=item)
@@ -3451,14 +3477,17 @@ class _Night:
             return
         try:
             commit = self._gated_commit(pending, plan, own)
-        except _Refusal as refusal:
-            self._record_rename(proposal, REFUSED, old=old, reason=refusal.reason)
-            return
-        except _Deferral as deferral:
+        except _Deferral as deferral:  # a subclass of _Refusal: caught first
             self.deferred_renames.append(replace(pending, own=None))
             if not retry:
                 self._record_rename(proposal, DEFERRED, old=old, reason=deferral.reason)
             return
+        except _Refusal as refusal:
+            self._record_rename(proposal, REFUSED, old=old, reason=refusal.reason)
+            return
+        except _Stop as stop:  # the gate or the commit failed as a tool: recorded, then stopped
+            self._record_rename(proposal, REFUSED, old=old, reason=stop.detail)
+            raise
         self._record_rename(proposal, APPLIED, old=old, commit=commit)
         if pending.own is not None and plan.rewrite:
             self._rewrite_view(pending.own, plan.rewrite)
@@ -3475,6 +3504,37 @@ class _Night:
             waiting, self.deferred_renames = self.deferred_renames, []
             for pending in waiting:
                 self._apply_pending(pending, own=own, retry=True)
+
+    def _renames_since(self, head: str) -> dict[str, dict[str, str]]:
+        """Per EXE, every C name symbols.csv changed between commit `head` (a view's, F34) and
+        HEAD, old -> new; a row without a symbols.csv name at `head` had its placeholder. Empty
+        when `head` is HEAD (or not given)."""
+        now = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
+        if not head or head == now:
+            return {}
+        found: dict[str, dict[str, str]] = {}
+        for exe in EXE_ORDER:
+            before, after = self._c_names_at(head, exe), self._c_names_at(now, exe)
+            mapping = {}
+            for key in before.keys() | after.keys():
+                old = before.get(key, _placeholder(*key))
+                new = after.get(key, _placeholder(*key))
+                if old != new:
+                    mapping[old] = new
+            if mapping:
+                found[exe] = mapping
+        return found
+
+    def _c_names_at(self, commit: str, exe: str) -> dict[tuple[str, int], str]:
+        """(kind, address) -> C name of every symbols.csv row of `exe` at `commit` (none: the
+        file is not there)."""
+        done = self._git(["cat-file", "blob", f"{commit}:{_symbols_rel(exe)}"])
+        if done.returncode != 0:
+            return {}
+        lines = [line for line in done.stdout.decode("utf-8").splitlines()
+                 if line and not line.startswith("#")]  # fmt: skip
+        return {(row["kind"], int(row["address"], 16)): unitdefs.c_name_of(row["name"], row["kind"])
+                for row in csv.DictReader(lines)}  # fmt: skip
 
     def _old_name(self, proposal: Rename | Header) -> str | None:
         """The C name a rename proposal's row has now (its symbols.csv name's, else its
@@ -3697,18 +3757,20 @@ class _Night:
                 self._write_plan(plan)
                 gate = self._naming_gate(plan.targets)
             except Exception as exc:
+                self.ledger.note(*outputs)  # what a gate that broke off may have written
                 self._put_back(originals)
-                raise _Stop(TOOL, f"the rename gate could not run: {type(exc).__name__}: "
-                                  f"{exc}") from exc  # fmt: skip
-            finally:
-                self.ledger.note(*outputs)
+                notes = self._restore_pre_gate()
+                raise _Stop(TOOL, "; ".join([f"the rename gate could not run: "
+                                             f"{type(exc).__name__}: {exc}", *notes])) from exc
+            self.ledger.note(*outputs)  # the gate's output: the one read-back (_Ledger)
             problem = _naming_gate_problem(gate, plan.targets)
             if problem is not None:
                 self._put_back(originals)
                 notes = self._restore_pre_gate()
                 raise _Refusal("; ".join([problem, *notes]))
+            commit = self._commit_naming(pending, plan, [*plan.changes, *outputs], originals)
             self.pre_gate = {}
-            return self._commit_naming(pending, plan, [*plan.changes, *outputs], originals)
+            return commit
 
     def _require_head(self, changes: Mapping[str, bytes | None]) -> None:
         """Every path a proposal writes equals HEAD now (D-24 a), so a restore is HEAD's bytes."""
