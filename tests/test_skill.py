@@ -394,3 +394,28 @@ def test_skill_keeps_names_placeholders():
     text = _text()
     assert "readability" in text and "D-19" in text
     assert "rename" in _section(text, "Replacing INCLUDE_ASM")
+
+
+def test_skill_says_proposals_are_allowed_but_not_applied():
+    """Fix round 1 I1: the hooks allow proposals.jsonl in every session (REVERSEAPOC_PROPOSALS,
+    and the include/ denial points at it), but nothing applies a matching session's proposals:
+    the rename step (07-34) is planned, for readability sessions only. The skill says so where
+    it lists the writes, and docs/workflow.md where it lists the variable."""
+    text = _text()
+    writes = next(line for line in text.splitlines() if line.startswith("| What you may write"))
+    assert "REVERSEAPOC_PROPOSALS" in writes and "proposals.jsonl" in writes
+    assert "writes none" in writes and "planned" in writes and "denial" in writes
+    assert "proposals.jsonl" in hooks._view_denial(["include/x.h"])  # the hint the line answers
+    workflow = (REPO_ROOT / "docs" / "workflow.md").read_text(encoding="utf-8")
+    env = next(line for line in workflow.splitlines()
+               if line.startswith("- `REVERSEAPOC_PROPOSALS`"))  # fmt: skip
+    assert "matching" in env and "nothing reads" in env and "planned" in env
+
+
+def test_skill_marks_the_naming_landing_planned():
+    """Fix round 1 M1: the readability proposals that name things and write shared headers are
+    applied by a driver step that is planned (07-34); the skill marks both mentions planned."""
+    section = _section(_text(), "Replacing INCLUDE_ASM")
+    for phrase in ("through its proposals", "through readability proposals"):
+        start = section.index(phrase)
+        assert "(planned" in section[start : start + len(phrase) + 20], phrase
