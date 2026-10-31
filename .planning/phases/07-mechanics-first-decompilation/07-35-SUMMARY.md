@@ -239,3 +239,35 @@ None.
 ---
 *Phase: 07-mechanics-first-decompilation*
 *Completed: 2026-10-31*
+
+## Fix round 1
+
+GREEN (the orchestrator's re-run of V1 to V4 with the skill and the fixed prompts) passed, with correct choices in all four:
+
+| Scenario | RED tool uses | GREEN tool uses | GREEN bar |
+|---|---|---|---|
+| V1 | 28 | 7 | at most 10 |
+| V2 | 26 | 8 | at most 8 |
+| V3 | 14 | 7 | at most 5 |
+| V4 | 18 | 6 | at most 6 |
+
+V3 used 7 tool uses against a bar of 5, with the right choice. The review (`review-07-35.md`) found one Important gap and five Minors. This round fixes I1 and M1 through superpowers:writing-skills (its REFACTOR step: close the gap GREEN found).
+
+- **I1: proposals.jsonl is allowed but not applied.**
+  - The skill's "What you may write" row now says three things:
+    - the hooks allow `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`);
+    - a matching session writes none, because nothing applies its proposals (the driver's rename step is planned, for readability sessions only);
+    - a name or header idea goes in notes.md, even when a denial message suggests proposals.jsonl.
+  - docs/workflow.md's `REVERSEAPOC_PROPOSALS` line says the same.
+- **M1: future 07-34 work is marked planned.** These are the two readability-proposal mentions in "Replacing INCLUDE_ASM" (the rename step and the shared headers). This corrects the earlier claim in this SUMMARY that the skill says nothing about 07-34's work.
+- **Tests:** `test_skill_says_proposals_are_allowed_but_not_applied` and `test_skill_marks_the_naming_landing_planned`. The first also checks that the hook's include/ denial does name proposals.jsonl (`hooks._view_denial`), which is the hint the new sentence answers.
+- **Left as the orchestrator asked:** M2 (the Fable canary trigger wording), M3 (stage and cell "as printed"), M4 (cell 42 tied to `sweep2_cells`) and M5 (V3's comment in the unit).
+
+Commits:
+- `19e6e48` test(07-35): RED. Both new tests failed because the text was missing.
+- `19ce2c9` docs(skill): GREEN.
+
+Tests:
+- `tests/test_skill.py`: 21 passed.
+- `uv run pytest -q`: 3875 passed, 251 skipped. `uv run ruff check .`: clean.
+- SKILL.md is still 191 lines.
