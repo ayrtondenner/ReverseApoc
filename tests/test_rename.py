@@ -21,7 +21,12 @@ import pytest
 
 from reverseapoc import driver, unitdefs
 from reverseapoc.driver import GateRun
-from reverseapoc.functions import FunctionRow, write_functions_csv, write_symbols_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    SymbolRow,
+    write_functions_csv,
+    write_symbols_csv,
+)
 from test_driver import (
     EXE,
     FUNC,
@@ -436,3 +441,101 @@ def test_file_scope_names():
 def test_included_headers():
     text = '#include "snd.h"\n# include <mix.h>\n/* #include "no.h" */\n#include "common.h"\n'
     assert unitdefs.included_headers(text) == {"snd.h", "mix.h", "common.h"}
+
+
+# ---- Task 3: renames carried into views at landing; the own claim never blocks ----
+
+MUTE = "SoundMute"
+# u_a calls u_b's function too, so a rename of func_00020010 reaches the claimed unit u_a.
+A_CALLS_B = A_TEXT.replace('#include "common.h"\n',
+                           f'#include "common.h"\n\nextern int {FUNC_B}(void);\n').replace(
+    "    return 1;", f"    return {FUNC_B}();")  # fmt: skip
+
+
+def _rename_mid_session(night: RNight) -> None:
+    """Another worker's rename commit lands while the session runs: func_00020010 becomes
+    SoundMute in symbols.csv and in both committed units."""
+    write_symbols_csv(night.repo / SYMBOLS_REL,
+                      [SymbolRow(START_B, f"{MUTE}_", "func")], "UFO2P.EXE")  # fmt: skip
+    for rel in (UNIT_REL, UNIT_B_REL):
+        path = night.repo / rel
+        path.write_bytes(path.read_bytes().replace(FUNC_B.encode(), MUTE.encode()))
+    _git(night.repo, night.env, "add", "--", SYMBOLS_REL, UNIT_REL, UNIT_B_REL)
+    _git(night.repo, night.env, "commit", "-q", "-m", f"refactor({EXE}): rename {FUNC_B} to {MUTE}")
+
+
+def test_view_picks_up_rename_at_landing(tmp_path):
+    night = RNight(tmp_path, sessions=[Sess(unit_text=A_CALLS_B + "/* edited */\n")],
+                   extra_files={UNIT_REL: A_CALLS_B})  # fmt: skip
+    landed: list[str] = []
+
+    def session(argv, **kwargs):
+        done = night._session(argv, **kwargs)
+        _rename_mid_session(night)
+        return done
+
+    def lint(pick):
+        landed.append((night.repo / UNIT_REL).read_text(encoding="utf-8"))
+        return 0
+
+    night.run({"attempts_per_function": 1}, session=session, lint=lint)
+    assert night.seen[0]["files"][f"src/{EXE}/{UNIT}.c"].count(FUNC_B.encode()) == 2
+    (text,) = landed
+    assert MUTE in text and FUNC_B not in text and "/* edited */" in text
+    view = night.attempt_dir() / "view" / UNIT_REL
+    assert FUNC_B not in view.read_text(encoding="utf-8")
+    assert night.report.event == driver.ENDED
+
+
+def test_renames_since_maps_old_to_new(tmp_path):
+    """_renames_since(view head): per EXE, every C name symbols.csv changed between the view's
+    commit and HEAD, old -> new (a placeholder when the row had no symbols.csv name)."""
+    night = RNight(tmp_path)
+    before = night.base
+    _rename_mid_session(night)
+    probe = driver._Night(night.config(), night.deps())
+    assert probe._renames_since(before) == {EXE: {FUNC_B: MUTE}}
+    assert probe._renames_since(night.git("rev-parse", "HEAD").strip()) == {}
+
+
+def test_own_claim_not_blocking(tmp_path):
+    """The session renames its own unit's function: no DEFERRED, its view unit is rewritten in
+    place and lands under the new name, the other committed user is rewritten too."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    landed: list[str] = []
+
+    def lint(pick):
+        landed.append((night.repo / UNIT_REL).read_text(encoding="utf-8"))
+        return 0
+
+    night.readability(lint=lint)
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED
+    view = (night.attempt_dir() / "view" / UNIT_REL).read_text(encoding="utf-8")
+    assert NEW in view and FUNC not in view and "a readability comment" in view
+    (text,) = landed
+    assert NEW in text and FUNC not in text and "a readability comment" in text
+    assert FUNC not in night.file_at(SUBJECT, UNIT_B_REL)
+
+
+def test_renamed_function_keeps_pass_count_and_history(tmp_path):
+    """Ruling note (07-23 as built): records name the C name, so after a rename a function's
+    records carry two names; every reader keys them by (exe, start)."""
+    from reverseapoc import attempt, flags
+
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    night.readability()
+    (first,) = night.kinds(driver.KIND_ATTEMPT)
+    assert first["function"] == FUNC and first["pass"] == 1
+    later = {**first, "function": NEW, "pass": 2, "run": "night2"}
+    driver.validate_record(later)
+    with (night.repo / LOG).open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(later, separators=(",", ":")) + "\n")
+    log = night.repo / LOG
+    assert driver.pass_index(log)[(EXE, START)] == 2
+    assert driver.passes_of(log, (EXE, START)) == 2
+    notes = attempt.earlier_notes(night.repo, EXE, FUNC)
+    names = [json.loads(r)["function"] for r in notes.records]
+    assert names == [FUNC, NEW]
+    models = flags._attempt_models(log)
+    assert models[(RUN, EXE, START, 1)][0] == 1 and models[("night2", EXE, START, 1)][0] == 2
