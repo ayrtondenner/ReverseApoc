@@ -351,3 +351,41 @@ FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2
 **Deviations (fix round).**
 - `unitdefs.py` gained `declared_names`, and `file_scope_names` now shares the directive scan (`_code_lines`) with it.
 - The match landing's `gate_sha1s` reads the top-level splice too. That changes nothing for a per-unit gate, whose top-level list is empty.
+
+## Fix round 2
+
+FIX_BASE was 636f960. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The finding comes from the re-review (`rereview-07-34-r1.md`): one new Important issue in the I2 fix, plus the bounded-read minor.
+
+**Changes.**
+- **I1: a header rewrite was refused because of names its users only use.**
+  - The problem: `_header_names_problem` compared the header's names with `file_scope_names` of the other files. That function also lists names a file only uses, such as `extern snd_level g_level;` or `extern struct mixer g_mix;`.
+  - So every header that a unit refers to at file scope could not be rewritten. That blocked D-19's "add a struct field".
+  - The fix: the other files' names now come from `unitdefs.declared_names` (`_declared_elsewhere`, over the units of both EXEs and the other committed headers).
+  - The names the committed version of the header already declares are allowed.
+- **Tags.** `declared_names` counts a struct/union/enum tag only with a body (`struct x {`) or as a bare forward declaration (`struct x;`). A use such as `struct x *p` no longer counts, so a new header may refer to another header's tag.
+- **Function definitions.** A function body (a brace group after `)`) now ends its statement in `declared_names`, so every definition's name counts. Before, only the last one did.
+- **Bounded read (Minor).**
+  - `proposals.read_bounded` opens the file once and reads at most PROPOSALS_FILE_MAX + 1 bytes from that handle. A larger file is refused whole; the size in the message comes from fstat.
+  - `proposals.parse_proposals(data)` parses those bytes. `read_proposals` is now these two steps.
+  - `driver._read_proposal_file` reads once through `read_bounded` and parses the same bytes, with `parse_proposals` and then line by line, so there is no second read.
+
+**RED (`bbb9fdb`).**
+- Target `test_header_rewrite_keeps_the_types_its_users_name`: the re-review's probe. It was REFUSED: "snd.h declares mixer, which is already a file-scope name in src/ufo2p/u_00020000.c".
+- Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0734-fr2.xml`).
+- Also failing:
+  - `test_new_header_may_use_another_headers_tag` and `test_declared_names_of_units_and_tag_uses`, on assertions;
+  - `test_proposals_are_read_once_and_bounded` (test_proposals.py), on AttributeError: it tests new API.
+- The fix-round-1 collision tests stayed green. They still refuse for the right reason, which is now "declared in include/mix.h" or the unit's own declaration.
+
+**Fix:** `2258aa3`.
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_rename.py tests/test_proposals.py`: 227 passed.
+- `uv run pytest -q` (host, worktree): **3920 passed, 251 skipped**, with no new skip.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
+**Deviations (fix round 2).**
+- `tools/reverseapoc/proposals.py` (07-19's module) gained `read_bounded` and `parse_proposals`, and `read_proposals` is now built from them. Its behaviour and messages are unchanged.
+- The plan's key link to `read_proposals(` is now `read_bounded` plus `parse_proposals`, which are the same read in two steps. `_read_proposal_file`'s docstring names it.
+- With the fix-round-1 rule, a header still cannot newly declare a prototype of an existing function. A rewrite may keep one the committed header already declares.
