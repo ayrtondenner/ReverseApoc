@@ -15,7 +15,7 @@ The unit already matches: its C compiles to the original bytes. You make it read
 | The only Bash | the five wrapper commands under "The attempt wrapper". Look around with Read, Grep and Glob. |
 | Budgets | 40 turns (`--max-turns`), 25 checks per attempt, 30 minutes. Each check prints its elapsed seconds and the checks left (`check 3/25, 88 s (22 left)`); budget by those against the clock. |
 | The verdict | `attempt check` exits `0` only when every function still matches and readlint is clean. A pending rename does not fail it. |
-| What lands | the final text of your view unit, not your best check (planned, see "When to stop"). |
+| What lands | the final text of your view unit, not your best check (see "When to stop"). |
 | Evidence of each run | `<attempt dir>/checks/NNNN.c` (the exact C checked) and `checks/NNNN.json`. |
 
 Never:
@@ -78,7 +78,7 @@ void func_00012340(s32 speed) {
 }
 ```
 
-Write the current placeholder name on the header's first line. The driver's rename step (planned, not built yet) rewrites every whole-word use of the old name in the unit, comments included, so the header follows the rename.
+Write the current placeholder name on the header's first line. The driver's rename step rewrites every whole-word use of the old name in the unit, comments included, so the header follows the rename.
 
 ## Names, evidence and proposals
 
@@ -112,17 +112,17 @@ Locals and parameters you rename in the unit. Each function or global name is on
 - The name: ASCII letters, digits and `_`, no leading digit, at most 63 characters; not a C89 or Watcom keyword (`near`, `far`, `inline`, `cdecl`...); not `_` plus a capital or `__`; not placeholder-shaped (`func_` or `D_` plus 8 hex digits, `FUN_`, `sub_`, `DAT_`, `LAB_`, `PTR_`, `UNK_`).
 - Refused: a `func` address that starts no game or thunk row; a `data` address inside code; the row's current name; a name another symbols.csv row, a runtime public or a function defined in `src/` already uses.
 
-A struct, enum or constant several units share is a header proposal: the whole text of one bare `include/<name>.h` (lower case, never common.h or watcom_compat.h). It may hold include guards, typedefs, struct, union and enum declarations, prototypes and object-like `#define NAME <constant>`; no function-like macro, no `#` or `##` operator, no pragma:
+A struct, enum or constant several units share is a header proposal: the whole text of one bare `include/<name>.h` (lower case, never common.h or watcom_compat.h). It may hold include guards, typedefs, struct, union and enum declarations and object-like `#define NAME <constant>`; no function-like macro, no `#` or `##` operator, no pragma:
 
 ```
-{"op": "header", "path": "include/clock.h", "text": "#ifndef CLOCK_H\n#define CLOCK_H\n\n#define CLOCK_FRAME_WRAP 0x24\n\n#endif\n", "evidence": "call: 0x00012340 and 0x00012400 both wrap the clock fraction at 0x24"}
+{"op": "header", "path": "include/clock.h", "text": "#ifndef CLOCK_H\n#define CLOCK_H\n\n#define CLOCK_STEP_UNITS 0x24\n\n#endif\n", "evidence": "call: 0x00012340 and 0x00012400 both wrap the clock fraction at 0x24"}
 ```
 
-The driver writes the header after the session (planned, not built yet); units start to include it in a later session. A constant only this unit uses stays a `#define` in the unit.
+Every name the header declares must be new: one that no symbols.csv row, runtime public or other committed file declares. So a header cannot newly declare a prototype of an existing function (units keep their own externs), and promoting a unit-local `#define` or struct into a header under the same name is refused while the unit still declares it: give the shared one a new name, as above. A rewrite of a header may keep the names it already declares. The driver writes the header after the session, in its own commit; units start to include it in a later session. A constant only this unit uses stays a `#define` in the unit.
 
 Write `proposals.jsonl` with the Write tool, one object per line. To change a proposal, edit its line or add a later line for the same row: the last line for a row wins.
 
-Write the proposals before you run `attempt check`. The check counts an RL01 hit as a `pending rename` only when your own valid proposal covers it, and prints `rename proposal refused: <why>` for one it refuses. That in-session check is narrower than the driver's. Every name is re-checked at landing, after the driver applies the proposals (planned), and can still be refused there.
+Write the proposals before you run `attempt check`. The check counts an RL01 hit as a `pending rename` only when your own valid proposal covers it, and prints `rename proposal refused: <why>` for one it refuses. That in-session check is narrower than the driver's. Every name is re-checked at landing, after the driver applies the proposals, and can still be refused there.
 
 A callee or global nothing evidences stays a placeholder. List it in notes.md for the owner's allowlist (`config/readlint-allow.csv`, D-30). A reference to a name already on it counts as an allowlisted reference, not a violation.
 
@@ -146,7 +146,7 @@ Put the `#define`s above the externs, so the header stays the last comment befor
 
 ## Readlint
 
-readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your view unit, and the driver will run it strictly at landing (planned, not built yet).
+readlint (`reverseapoc readlint`) is the judge: `attempt check` runs it on your view unit, and the driver runs it strictly at landing, on the unit and the headers it includes.
 
 | Rule | Fails on | Reach |
 |---|---|---|
@@ -209,10 +209,11 @@ The session, in order:
 
 Stop when the check exits `0`; when the only failures left are placeholders nothing evidences; when the check budget is used; or at about 25 of 30 minutes or 35 of 40 turns.
 
-What lands (planned: the driver's readability landing and rename step are not built yet). The driver applies your proposals, then takes the final text of the view unit, not your best check, and runs the gate and strict readlint:
-- LANDED: bytes identical and readlint clean. One commit for the unit;
-- PARTIAL: bytes identical, readlint still failing. The view unit is kept under `best/` for a later session;
-- REFUSED: a byte changed, or the set of defined or `INCLUDE_ASM` functions changed. The unit is restored and the session's work is lost.
+What lands. The driver applies your proposals first (each rename and header is its own commit), then takes the final text of the view unit, not your best check, and decides in this order:
+- GAVE_UP: the unit is unchanged against HEAD. Nothing runs;
+- REFUSED: the set of defined or `INCLUDE_ASM` functions changed (checked before anything runs), the C89 lint fails, or the gate finds a changed byte. The unit is restored and the session's work is lost;
+- PARTIAL: bytes identical, strict readlint still failing. The view unit is kept under `best/` for a later session;
+- LANDED: bytes identical and readlint clean. One commit for the unit.
 
 So end on byte-identical text. If the last run said `check: FAILED` and you cannot fix it, restore the C of the last run that said `check: OK`: Read `<attempt dir>/checks/NNNN.c` and Write it over the view unit. That text was already checked, so it needs no re-check.
 
@@ -223,4 +224,4 @@ notes.md holds, in this order:
 4. The literals waived, and why.
 5. What the next session should try.
 
-Write notes.md before any optional last step. A clean check is never your claim: the driver will check everything again at landing (planned, not built yet).
+Write notes.md before any optional last step. A clean check is never your claim: the driver checks everything again at landing.
