@@ -158,7 +158,6 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .proposals import (
-    PROPOSALS_FILE_MAX,
     RESERVED_HEADERS,
     Header,
     ProposalError,
@@ -167,7 +166,8 @@ from .proposals import (
     linker_name,
     name_problem,
     parse_line,
-    read_proposals,
+    parse_proposals,
+    read_bounded,
     rename_problem,
 )
 from .score import Assessment, Candidate, assess, candidates, score, score_reasons
@@ -3714,24 +3714,43 @@ class _Night:
         (unitdefs.declared_names: macros, typedefs, tags, enumerators, prototypes, objects) is
         checked by the rename path's rules: name_problem (keywords, reserved, placeholders such
         as func_/D_/LAB_/PTR_/UNK_), then the C and linker names of both EXEs' symbols.csv rows,
-        their runtime publics, and the file-scope names of every other committed file (units of
-        both EXEs, other headers). The header's own committed names are its own."""
+        their runtime publics, and the names every other committed file (units of
+        both EXEs, other headers) declares. The names the committed version of the
+        header already declares are its own (fix round 2)."""
         names = sorted(unitdefs.declared_names(header.text))
         for name in names:
             problem = name_problem(name)
             if problem is not None:
                 return f"{header.path} declares {name}: {problem}"
+        current = self.repo / header.path  # equals HEAD (_require_head), or is not there
+        own = (unitdefs.declared_names(current.read_bytes().decode("utf-8"))
+               if current.is_file() and not _is_link(current) else frozenset())  # fmt: skip
         taken = self._taken_names()
-        files: dict[str, str] = {}
-        for exe in EXE_ORDER:
-            for name, rel in self._src_names(exe, None, exclude=header.path).items():
-                files.setdefault(name, rel)
+        files = self._declared_elsewhere(header.path)
         for name in names:
-            where = taken.get(name) or (f"a file-scope name in {files[name]}" if name in files
+            if name in own:  # fix round 2: the committed header already declares it
+                continue
+            where = taken.get(name) or (f"declared in {files[name]}" if name in files
                                         else None)  # fmt: skip
             if where is not None:
                 return f"{header.path} declares {name}, which is already {where}"
         return None
+
+    def _declared_elsewhere(self, exclude: str) -> dict[str, str]:
+        """Fix round 2 (re-review I1): name -> the first committed file that DECLARES it
+        (unitdefs.declared_names), over the units of both EXEs and every committed header but
+        `exclude`. A unit that only uses a header's type or tag (`extern snd_level g;`) does
+        not declare it, so the header can still be rewritten."""
+        rels = [*(rel for exe in EXE_ORDER for rel in self._committed_units(exe)),
+                *self._committed_headers()]  # fmt: skip
+        found: dict[str, str] = {}
+        for rel in rels:
+            if rel == exclude:
+                continue
+            for name in sorted(unitdefs.declared_names(
+                    (self.repo / rel).read_bytes().decode("utf-8"))):  # fmt: skip
+                found.setdefault(name, rel)
+        return found
 
     def _taken_names(self) -> dict[str, str]:
         """Every C and linker spelling of both EXEs' symbols.csv rows and runtime publics (a
@@ -4108,26 +4127,30 @@ class _NamingPlan:
 
 
 def _read_proposal_file(path: Path) -> list[Rename | Header | str]:
-    """The proposals of one proposals.jsonl in file order (proposals.read_proposals). A file
-    with a bad line is read again line by line (parse_line), each bad line a string naming it,
-    so the good lines still apply; a file that cannot be read at all (too large, not UTF-8,
+    """The proposals of one proposals.jsonl in file order: the bytes proposals.read_proposals(
+    path) reads (read_bounded: one handle, at most PROPOSALS_FILE_MAX + 1 bytes; fix round 2),
+    parsed with parse_proposals. A file with a bad line is parsed again line by line from the
+    same bytes (parse_line), each bad line a string naming it, so the good lines still apply; a
+    file that cannot be read at all (a link or not a regular file, too large, not UTF-8,
     unreadable) is one string."""
     if os.path.lexists(path) and (_is_link(path) or not path.is_file()):  # fix round 1, S7
         return [f"{path.name}: not a regular file (a link, a junction or a directory); refused "
                 "whole, never followed"]
     try:
-        return list(read_proposals(path))
-    except ProposalError as exc:
-        first = str(exc)
+        data = read_bounded(path)
+    except ProposalError as exc:  # refused whole (its size): no line is read
+        return [str(exc)]
     except OSError as exc:
         return [f"{path.name}: {type(exc).__name__}: {exc}"]
-    if first.startswith(f"{path.name}:"):  # refused whole (its size): no line is read
-        return [first]
+    if data is None:
+        return []
     try:
-        if path.stat().st_size > PROPOSALS_FILE_MAX:  # it grew since read_proposals measured it
-            return [f"{path.name}: more than {PROPOSALS_FILE_MAX} bytes; refused whole"]
-        text = path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError):
+        return list(parse_proposals(data))
+    except ProposalError as exc:
+        first = str(exc)
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
         return [f"{path.name} {first}"]
     found: list[Rename | Header | str] = []
     for lineno, line in enumerate(text.split("\n"), start=1):

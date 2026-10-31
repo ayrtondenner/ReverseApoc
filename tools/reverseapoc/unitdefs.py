@@ -227,10 +227,11 @@ def file_scope_names(text: str) -> frozenset[str]:
     return frozenset(names)
 
 
-_TAG = re.compile(rf"\b(?:struct|union|enum)\s+({_IDENT})")
+# A tag is declared only with a body (`struct x {`) or as a bare forward declaration
+# (`struct x;`, caught as a declarator); `struct x *p` only uses it (fix round 2).
+_TAG_BODY = re.compile(rf"\b(?:struct|union|enum)\s+({_IDENT})\s*\{{")
 _ENUM_BODY = re.compile(rf"\benum\s*(?:{_IDENT}\s*)?\{{([^{{}}]*)\}}")
 _ENUMERATOR = re.compile(rf"\s*({_IDENT})")
-_BRACED = re.compile(r"\{[^{}]*\}")
 _PAREN_NAME = re.compile(rf"\(\s*[*&\s]*({_IDENT})")
 
 
@@ -290,21 +291,39 @@ def _split_top(text: str, sep: str) -> list[str]:
     return parts
 
 
+def _flatten_braces(code: str) -> str:
+    """`code` with each outermost brace group removed: a function body (after `)`) becomes a
+    `;`, so the definition ends its statement; any other body (struct, enum, initializer)
+    becomes a space, so the declarators after it stay in the statement."""
+    out: list[str] = []
+    depth = 0
+    for char in code:
+        if char == "{":
+            if not depth:
+                body_of_function = "".join(out).rstrip().endswith(")")
+                out.append(";" if body_of_function else " ")
+            depth += 1
+        elif char == "}" and depth:
+            depth -= 1
+        elif not depth:
+            out.append(char)
+    return "".join(out)
+
+
 def declared_names(text: str) -> frozenset[str]:
     """07-34 fix round 1 (review I2, D-19): every name a header (or unit) declares or defines
     at file scope: each `#define`d macro, each struct/union/enum tag, each enumerator, and the
     name of each declarator of each declaration (typedef names, objects, prototypes, function
-    pointers). A name a declaration only uses (a type, a parameter) is not one."""
+    pointers, function definitions). A name a declaration only uses (a type, a tag without a
+    body, a parameter) is not one (fix round 2)."""
     names, code = _code_lines(text)
-    names.update(_TAG.findall(code))
+    flat = _flatten_braces(code)
+    names.update(_TAG_BODY.findall(code))
     for body in _ENUM_BODY.findall(code):
         for item in _split_top(body, ","):
             found = _ENUMERATOR.match(item)
             if found is not None:
                 names.add(found.group(1))
-    flat = code
-    while _BRACED.search(flat):  # every brace group, innermost first
-        flat = _BRACED.sub(" ", flat)
     for statement in _split_top(flat, ";"):
         for declarator in _split_top(statement, ","):
             name = _declarator_name(_split_top(declarator, "=")[0])
