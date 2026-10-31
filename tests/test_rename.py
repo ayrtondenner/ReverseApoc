@@ -17,7 +17,9 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
-from reverseapoc import driver
+import pytest
+
+from reverseapoc import driver, unitdefs
 from reverseapoc.driver import GateRun
 from reverseapoc.functions import FunctionRow, write_functions_csv, write_symbols_csv
 from test_driver import (
@@ -202,3 +204,235 @@ def test_log_lists_the_rename_after_its_commit(tmp_path):
     committed = night.git("show", f"HEAD:{LOG}")
     assert '"kind":"rename"' in committed
 
+
+# ---- Task 2: collisions, refusals, header proposals, deferral ----
+
+SND_REL = "include/snd.h"
+SND_TEXT = "#ifndef SND_H\n#define SND_H\n\n#define SND_MAX 4\n\n#endif\n"
+SND_NEW = "#ifndef SND_H\n#define SND_H\n\n#define SND_MAX 8\n\n#endif\n"
+B_SND = B_TEXT.replace('#include "common.h"\n', '#include "common.h"\n#include "snd.h"\n')
+CLAIM_REL = f"build/driver/claims/{EXE}__{UNIT_B}.json"
+
+
+def header_line(path: str = SND_REL, text: str = SND_NEW) -> str:
+    return json.dumps({"op": "header", "path": path, "text": text,
+                       "evidence": "call: made-up evidence"})  # fmt: skip
+
+
+def _refactors(night: RNight) -> list[str]:
+    return [s for s in night.commits() if s.startswith("refactor(")]
+
+
+def test_collision_refused(tmp_path):
+    """DEC-02 adjacency: one name for two addresses; the second proposal meets the first's
+    symbols.csv row and is refused."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line(), rename_line(START_B))])
+    night.readability()
+    first, second = _validated(night.renames())
+    assert first["outcome"] == driver.APPLIED and first["new"] == NEW
+    assert second["outcome"] == driver.REFUSED and second["address"] == f"0x{START_B:08X}"
+    assert "already used" in second["reason"]
+    assert _refactors(night) == [SUBJECT]
+
+
+def test_malformed_file_refused(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing("{not json", rename_line())])
+    night.readability()
+    bad, good = _validated(night.renames())
+    assert bad["outcome"] == driver.REFUSED and bad["op"] is None
+    assert "line 1" in bad["reason"]
+    assert good["outcome"] == driver.APPLIED
+    assert night.report.event == driver.ENDED
+
+
+def test_unreadable_file_is_one_refusal(tmp_path):
+    """A proposals.jsonl that is not UTF-8 cannot be split into trusted lines: one REFUSED
+    record, and the night goes on."""
+    sess = Sess(unit_text=EDITED)
+    night = RNight(tmp_path, sessions=[sess])
+    path = night.repo / proposals_rel()
+
+    def session(argv, **kwargs):
+        done = night._session(argv, **kwargs)
+        path.write_bytes(b"\xff\xfe" + rename_line().encode() + b"\n")
+        return done
+
+    night.readability(session=session)
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and record["op"] is None
+    assert "UTF-8" in record["reason"]
+    assert night.report.event == driver.ENDED
+
+
+def test_name_that_is_no_identifier_is_a_null_op_refusal(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line(name="9lives"))])
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and record["op"] is None
+    assert "9lives" in record["reason"] and "identifier" in record["reason"]
+
+
+def test_last_line_for_a_row_wins(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line(name="SoundLevel"), rename_line())])
+    night.readability()
+    early, late = _validated(night.renames())
+    assert early["outcome"] == driver.REFUSED and "superseded" in early["reason"]
+    assert late["outcome"] == driver.APPLIED and late["new"] == NEW
+    assert _refactors(night) == [SUBJECT]
+
+
+def test_header_proposal_gates_includers(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(header_line())],
+                   extra_files={SND_REL: SND_TEXT, UNIT_B_REL: B_SND})  # fmt: skip
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED and record["op"] == "header"
+    assert record["path"] == SND_REL
+    assert night.rename_calls == [[f"{EXE}/{UNIT_B}"]]
+    subject = f"refactor(include): write {SND_REL}"
+    assert subject in night.commits()
+    assert SND_REL in night.commit_files(subject)
+    assert night.file_at(subject, SND_REL) == SND_NEW
+    assert TRAILER in night.message(subject).splitlines()
+
+
+def test_header_includers_through_other_headers(tmp_path):
+    """An includer of a header that includes the proposed one is gated too."""
+    mix = '#ifndef MIX_H\n#define MIX_H\n#include "snd.h"\n#endif\n'
+    b_mix = B_TEXT.replace('#include "common.h"\n', '#include "common.h"\n#include <mix.h>\n')
+    night = RNight(tmp_path, sessions=[proposing(header_line())],
+                   extra_files={SND_REL: SND_TEXT, "include/mix.h": mix, UNIT_B_REL: b_mix})
+    night.readability()
+    assert night.rename_calls == [[f"{EXE}/{UNIT_B}"]]
+
+
+def test_header_proposal_failing_gate_restores(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(header_line())], rename_exits=[1],
+                   extra_files={SND_REL: SND_TEXT, UNIT_B_REL: B_SND})  # fmt: skip
+    night.readability()
+    assert (night.repo / SND_REL).read_text(encoding="utf-8") == SND_TEXT
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and "exited 1" in record["reason"]
+
+
+def test_new_header_without_includers_writes_it(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(header_line(text=SND_TEXT))])
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.APPLIED
+    assert night.rename_calls == [[]]  # no includer: `gate --all` checks every matched unit
+    assert night.git("show", f"HEAD:{SND_REL}") == SND_TEXT
+
+
+def test_reserved_header_refused(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(header_line("include/common.h"))])
+    before = night.bytes_of("include/common.h")
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED and "reserved" in record["reason"]
+    assert night.bytes_of("include/common.h") == before
+    assert night.rename_calls == []
+
+
+def test_rename_rewrites_a_header_that_names_it(tmp_path):
+    proto = f"#ifndef SND_H\n#define SND_H\nint {FUNC}(void);\n#endif\n"
+    night = RNight(tmp_path, sessions=[proposing(rename_line())],
+                   extra_files={SND_REL: proto, UNIT_B_REL: B_SND})  # fmt: skip
+    night.readability()
+    assert SND_REL in night.commit_files(SUBJECT)
+    assert f"int {NEW}(void);" in night.file_at(SUBJECT, SND_REL)
+
+
+COMMON = "#ifndef COMMON_H\n#define COMMON_H\ntypedef unsigned char u8;\n#endif\n"
+B_STATIC = B_SND.replace("extern int", "static int helper_count;\nextern int")
+
+
+@pytest.mark.parametrize(("name", "where"), [("u8", "include/common.h"),
+                                             ("SND_MAX", SND_REL),
+                                             ("helper_count", UNIT_B_REL)])  # fmt: skip
+def test_src_names_hold_header_and_file_scope_names(tmp_path, name, where):
+    """Ruling (07-19 as built): the typedefs of include/common.h, every name a driver-written
+    header declares, and every file-scope name of a committed unit are taken."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line(START_B, name))],
+                   extra_files={"include/common.h": COMMON, SND_REL: SND_TEXT,
+                                UNIT_B_REL: B_STATIC})  # fmt: skip
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.REFUSED
+    assert f"{name} is already a file-scope name in {where}" in record["reason"]
+    assert night.rename_calls == []
+
+
+def test_deferred_behind_live_claim(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    claim = night.repo / CLAIM_REL
+    _write(claim, json.dumps({"run": RUN, "worker": 1, "exe": EXE, "unit": UNIT_B}) + "\n")
+    seen: list[list[str]] = []
+
+    def lint(pick):  # the other worker's claim is released while this session lands
+        seen.append([r["outcome"] for r in night.renames()])
+        claim.unlink()
+        return 0
+
+    night.readability(lint=lint)
+    assert seen == [[driver.DEFERRED]]
+    deferred, applied = _validated(night.renames())
+    assert deferred["outcome"] == driver.DEFERRED and UNIT_B in deferred["reason"]
+    assert deferred["commit"] is None
+    assert applied["outcome"] == driver.APPLIED and applied["commit"] == night.sha(SUBJECT)
+    assert night.rename_calls == [[f"{EXE}/{UNIT}", f"{EXE}/{UNIT_B}"]]
+
+
+def test_deferred_still_held_at_the_end_stays_deferred(tmp_path):
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    _write(night.repo / CLAIM_REL, json.dumps({"run": RUN, "worker": 1}) + "\n")
+    night.readability()
+    (record,) = _validated(night.renames())
+    assert record["outcome"] == driver.DEFERRED
+    assert _refactors(night) == [] and night.rename_calls == []
+
+
+def test_two_renames_one_unit_in_order(tmp_path):
+    """DEC-02 adjacency: two renames that both touch u_b land as two commits in proposal
+    order, the second on the first."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line(), rename_line(START_B, "SoundMute"))])
+    night.readability()
+    second = f"refactor({EXE}): rename {FUNC_B} to SoundMute"
+    assert _refactors(night) == [SUBJECT, second]
+    text = night.file_at(second, UNIT_B_REL)
+    assert NEW in text and "SoundMute" in text and FUNC not in text and FUNC_B not in text
+    symbols = night.file_at(second, SYMBOLS_REL).splitlines()
+    assert f"0x{START:08X},{NEW}_,func" in symbols and f"0x{START_B:08X},SoundMute_,func" in symbols
+
+
+def test_rename_claim_is_released(tmp_path):
+    """The multi-unit claim of kind rename (D-06) is gone once the commit is made."""
+    night = RNight(tmp_path, sessions=[proposing(rename_line())])
+    held: list[bool] = []
+
+    def gate(targets):
+        held.append((night.repo / CLAIM_REL).is_file())
+        kind = json.loads((night.repo / CLAIM_REL).read_text(encoding="utf-8"))["kind"]
+        held.append(kind == driver.KIND_RENAME)
+        return night._rename_gate(targets)
+
+    night.readability(rename_gate=gate)
+    assert held == [True, True]
+    assert not (night.repo / CLAIM_REL).exists()
+
+
+def test_file_scope_names():
+    """unitdefs.file_scope_names: what a unit or header gives at file scope (07-34)."""
+    text = ('#include "common.h"\n#define LIMIT 4\nstatic int count = 0x1F;\n'
+            "static char table[SIZE_OF];\ntypedef struct tag { int inner; } thing_t;\n"
+            "/* comment_word */\nint f(int param)\n"
+            "{\n    int local = 0x10;\n    return local;\n}\n")
+    names = unitdefs.file_scope_names(text)
+    assert {"LIMIT", "count", "table", "tag", "thing_t", "f"} <= names
+    assert not names & {"inner", "param", "local", "comment_word", "x1F", "SIZE_OF", "int",
+                        "static", "common", "h"}  # fmt: skip
+
+
+def test_included_headers():
+    text = '#include "snd.h"\n# include <mix.h>\n/* #include "no.h" */\n#include "common.h"\n'
+    assert unitdefs.included_headers(text) == {"snd.h", "mix.h", "common.h"}
