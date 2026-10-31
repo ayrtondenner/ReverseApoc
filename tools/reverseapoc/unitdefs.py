@@ -191,6 +191,57 @@ def file_scope_definitions(code: str) -> list[str]:
     return _file_scope(code, DEFINITION_ANY)
 
 
+# 07-34: the file-scope names a rename may not take, and the headers a file includes. Both read
+# the text through configure's translation phases 1-2 with comments (and, for names, literals)
+# blanked; preprocessor conditionals are not evaluated, so every branch counts (fail closed).
+_SCOPE_TOKEN = re.compile(rf"[0-9][A-Za-z0-9_.]*|{_IDENT}|[{{}}()\[\]]")  # a number is skipped
+_OPEN, _CLOSE = "{([", "})]"
+_DEFINE = re.compile(rf"[ \t]*(?:#|%:)[ \t]*define[ \t]+({_IDENT})")
+_DIRECTIVE_LINE = re.compile(r"[ \t]*(?:#|%:)")
+_INCLUDE = re.compile(r'[ \t]*(?:#|%:)[ \t]*include[ \t]*["<]([A-Za-z0-9_]+\.h)[">]')
+
+
+def _logical(text: str, blank: object) -> list[str]:
+    """The logical lines of `text` after configure's `_NOT_CODE.sub(blank, ...)`. Raises
+    configure's _UnreadableSource (a ValueError) for a lone CR."""
+    cfg = _configure()
+    code = cfg._NOT_CODE.sub(blank, text)
+    return [logical for _first, _last, logical in cfg._logical_lines(code.split("\n"))]
+
+
+def file_scope_names(text: str) -> frozenset[str]:
+    """07-34 (D-19, T-07-56): every name a unit or header gives at file scope, for the rename
+    collision check (proposals.rename_problem's `src_names`): each identifier outside braces,
+    parentheses and brackets but the C keywords (function definitions, declarators, typedef
+    names, tags, and the names such declarations use), plus every macro a `#define` names. A
+    superset of the declared names, on purpose: a rename to any of them is refused."""
+    names: set[str] = set()
+    code: list[str] = []
+    for logical in _logical(text, _configure()._blank):
+        define = _DEFINE.match(logical)
+        if define is not None:
+            names.add(define.group(1))
+        if _DIRECTIVE_LINE.match(logical) is None:
+            code.append(logical)
+    depth = 0
+    for token in _SCOPE_TOKEN.findall("\n".join(code)):
+        if token in _OPEN:
+            depth += 1
+        elif token in _CLOSE:
+            depth = max(0, depth - 1)
+        elif depth == 0 and not token[0].isdigit() and token not in C_KEYWORDS:
+            names.add(token)
+    return frozenset(names)
+
+
+def included_headers(text: str) -> frozenset[str]:
+    """07-34: the bare header names (`snd.h`) every `#include "x.h"` or `<x.h>` of `text`
+    names, comments blanked (an #include in any conditional branch counts)."""
+    cfg = _configure()
+    found = (_INCLUDE.match(line) for line in _logical(text, cfg._blank_comment))
+    return frozenset(match.group(1) for match in found if match is not None)
+
+
 @dataclass(frozen=True)
 class _Names:
     """The names one find reads by: the unit's game and thunk rows by current C name and by old

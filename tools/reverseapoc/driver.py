@@ -142,9 +142,11 @@ from .picker import queue as picker_queue
 from .picker import requeue as picker_requeue
 from .probe import CHK_PUBLIC
 from .proposals import (
+    RESERVED_HEADERS,
     Header,
     ProposalError,
     Rename,
+    header_problem,
     linker_name,
     parse_line,
     read_proposals,
@@ -171,7 +173,6 @@ from .status import MATCHED as STATUS_MATCHED
 from .status import PARTIAL as STATUS_PARTIAL
 from .status import read_status, status_path
 from .streamjson import Disposition
-from .targets import REPO_ROOT
 from .units import scaffold_unit, write_unit_source
 
 ATTEMPT_LOG = attempt.ATTEMPT_LOG  # progress/attempts.jsonl, committed (D-23)
@@ -3488,10 +3489,15 @@ class _Night:
 
     def _plan_naming(self, pending: _Pending, old: str | None) -> _NamingPlan:
         """What one valid proposal writes and gates; _Refusal (its reason) when it is not
-        valid against the naming state of this moment."""
-        if isinstance(pending.proposal, Rename):
-            return self._plan_rename(pending, old)
-        return self._plan_header(pending.proposal)
+        valid against the naming state of this moment, or when a file it must read cannot be
+        read (broken naming state is refused, never guessed)."""
+        try:
+            if isinstance(pending.proposal, Rename):
+                return self._plan_rename(pending, old)
+            return self._plan_header(pending.proposal)
+        except (ValueError, OSError) as exc:
+            raise _Refusal(f"a file the proposal needs could not be read: "
+                           f"{type(exc).__name__}: {exc}") from None  # fmt: skip
 
     def _plan_rename(self, pending: _Pending, old: str | None) -> _NamingPlan:
         """symbols.csv with the row's new linker name and every committed unit that uses the
@@ -3514,12 +3520,15 @@ class _Night:
         changes: dict[str, bytes | None] = {_symbols_rel(exe): text.encode("utf-8")}
         mapping = {old: rename.name}
         units = self._affected_units(exe, old)
-        for rel, data in units.items():
+        headers = self._affected_headers(old)
+        for rel, data in {**units, **headers}.items():
             changes[rel] = _rewrite(data, mapping)
+        gated = {*units, *(self._includers({PurePosixPath(r).name for r in headers})
+                           if headers else ())}  # fmt: skip
         subject = f"refactor({exe}): rename {old} to {rename.name}"
         body = [f"{rename.kind} 0x{rename.address:08X} of {exe}: {old} -> {rename.name} "
                 f"(linker name {linker_name(rename.name, rename.kind)})"]  # fmt: skip
-        return _NamingPlan(changes, _targets(units), subject, body, {exe: mapping},
+        return _NamingPlan(changes, _targets(gated), subject, body, {exe: mapping},
                            symbols=(exe, rows))  # fmt: skip
 
     def _naming_state(self, exe: str, own: _Claim | None, symbols: Sequence[SymbolRow]) -> dict:
@@ -3536,18 +3545,57 @@ class _Night:
                 "data_ranges": tuple(self.deps.data_ranges(exe))}  # fmt: skip
 
     def _src_names(self, exe: str, own: _Claim | None) -> dict[str, str]:
-        """File-scope name -> where it is used, over the committed src/<exe>/ units, and the
-        proposing session's view unit (attempt.check's in-session state reads the view too)."""
-        names: dict[str, str] = {}
+        """File-scope name -> where it is used (unitdefs.file_scope_names): the committed
+        src/<exe>/ units, the proposing session's view unit (attempt check's in-session state
+        reads the view too), and every committed header under include/: the typedefs of
+        common.h (s8..u32) and every name a driver-written header declares (ruling, 07-19 as
+        built), so a rename never collides with them."""
         sources = [(rel, self.repo / rel) for rel in self._committed_units(exe)]
         if own is not None and own.pick.exe == exe and own.view_unit.is_file():
             sources.append((own.view_unit_rel, own.view_unit))
-        cfg = unitdefs.load_configure(REPO_ROOT / unitdefs.CONFIGURE)
+        sources += [(rel, self.repo / rel) for rel in self._committed_headers()]
+        names: dict[str, str] = {}
         for rel, path in sources:
-            code = cfg.code_text(path.read_bytes().decode("utf-8"))
-            for name in unitdefs.file_scope_definitions(code):
+            for name in sorted(unitdefs.file_scope_names(path.read_bytes().decode("utf-8"))):
                 names.setdefault(name, rel)
         return names
+
+    def _committed_headers(self) -> list[str]:
+        """Every header HEAD tracks directly under include/, repo-relative, sorted."""
+        raw = _git_ok(self._git, ["ls-files", "-z", "--", "include/"])
+        names = raw.decode("utf-8", "surrogateescape").split("\0")
+        return sorted(n for n in names if n.endswith(".h") and n.count("/") == 1)
+
+    def _affected_headers(self, old: str) -> dict[str, bytes]:
+        """The committed driver-written headers (never common.h or watcom_compat.h, D-19) that
+        use `old` as a whole word, with their bytes now: a renamed prototype or extern moves
+        with its row."""
+        token = _token(old)
+        found = {}
+        for rel in self._committed_headers():
+            if PurePosixPath(rel).name in RESERVED_HEADERS:
+                continue
+            data = _read(self.repo / rel)
+            if data is not None and token.search(data):
+                found[rel] = data
+        return found
+
+    def _includers(self, names: set[str]) -> list[str]:
+        """The committed units of both EXEs that include one of the headers `names`
+        (`snd.h`), directly or through other committed headers (unitdefs.included_headers)."""
+        includes = {PurePosixPath(rel).name: unitdefs.included_headers(
+            (self.repo / rel).read_bytes().decode("utf-8")) for rel in self._committed_headers()}
+        closure = set(names)
+        grown = True
+        while grown:
+            grown = False
+            for header, included in includes.items():
+                if header not in closure and included & closure:
+                    closure.add(header)
+                    grown = True
+        units = [rel for exe in EXE_ORDER for rel in self._committed_units(exe)]
+        return [rel for rel in units if unitdefs.included_headers(
+            (self.repo / rel).read_bytes().decode("utf-8")) & closure]  # fmt: skip
 
     def _committed_units(self, exe: str) -> list[str]:
         """Every unit file HEAD tracks under src/<exe>/, repo-relative, sorted."""
@@ -3567,8 +3615,21 @@ class _Night:
         return found
 
     def _plan_header(self, header: Header) -> _NamingPlan:
-        """Placeholder until Task 2: header proposals are refused."""
-        raise _Refusal(f"{header.path}: header proposals are not applied yet")
+        """D-19's shared-header proposal: the whole text of one include/<name>.h, refused by
+        proposals.header_problem (reserved headers, inline asm, pragmas, function-like macros,
+        ...); gated with every committed unit that includes it, in the same all-or-nothing
+        gate (none: `gate --all`)."""
+        problem = header_problem(header)
+        if problem is not None:
+            raise _Refusal(problem)
+        data = header.text.encode("ascii")
+        if _read(self.repo / header.path) == data:
+            raise _Refusal(f"{header.path} already holds this text")
+        includers = self._includers({PurePosixPath(header.path).name})
+        body = [f"header {header.path}: {len(data)} bytes, gated with the {len(includers)} "
+                f"committed units that include it"]  # fmt: skip
+        return _NamingPlan({header.path: data}, _targets(includers),
+                           f"refactor(include): write {header.path}", body, {})
 
     def _blocked(self, targets: Sequence[str], own: tuple[str, str] | None) -> str | None:
         """Why the proposal waits (D-19, CONTEXT default): an affected unit another live
