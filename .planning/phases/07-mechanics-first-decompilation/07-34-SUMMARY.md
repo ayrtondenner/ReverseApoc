@@ -301,3 +301,53 @@ None.
 - FOUND: tests/test_rename.py, tools/reverseapoc/driver.py, tools/reverseapoc/unitdefs.py, tools/reverseapoc/attempt.py
 - FOUND commits: 32b2859, b0bdd1b, 791c750, 999c9ec, e7eee84, 35fd906 (`git rev-list --count ce7fc2d..HEAD` was 6 before the SUMMARY commit)
 - No STATE.md or ROADMAP.md change.
+
+## Fix round 1
+
+FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The findings come from the task review (`review-07-34.md`): two Important issues and two Minors I was asked to fix.
+
+**Changes.**
+- **I1: `gate --all`'s splices.**
+  - The problem: `gate_sha1s` read splices only from `checks[].splice`. A real `gate --all --json` puts them at the top-level `splice` (gate.GateResult.to_json).
+  - So in production every naming run through `gate --all` was refused: a new header with no includer, and a rename with no committed user.
+  - The fix: `_splice_lists` yields both shapes, so the match landing reads them the same way.
+  - The fake rename gate in tests/test_rename.py now builds its JSON with `GateResult(...).to_json()`: per-unit splices inside each check, `--all` splices at the top level. That is the shape that had hidden the bug.
+- **I2: header proposals' names.** `_plan_header` now also runs `_header_names_problem`.
+  - The names come from the new `unitdefs.declared_names`: every macro a header `#define`s, every struct/union/enum tag, every enumerator, and the declared name of each declarator (typedef names, objects, prototypes, function pointers). Names a declaration only uses, such as types and parameters, are not included.
+  - Each name first passes the rename path's `name_problem`: keywords, reserved names, and placeholders (func_/D_/FUN_/sub_/DAT_/LAB_/PTR_/UNK_).
+  - Then it must not already be:
+    - a C or linker name of a symbols.csv row of either EXE;
+    - a runtime public of either EXE (runtime.csv publics and functions.csv runtime rows, read as func and as data);
+    - a file-scope name of any other committed file: units of both EXEs and other headers (`_src_names(..., exclude=<the header>)`).
+  - The header's own committed names stay its own, so rewriting it may keep them.
+  - **Consequence:** a header can no longer carry a prototype of an existing function, because that name is a symbols.csv or unit name. Units keep their own externs. This is the reviewer's fail-closed rule.
+- **S7 (Minor).**
+  - `_read_proposal_file` refuses a `proposals.jsonl` that is a link, a junction or not a regular file, as one REFUSED line; it never follows it.
+  - The fallback re-read is capped at PROPOSALS_FILE_MAX.
+  - `_src_names` never reads the view unit through a link.
+- **Minor 1.**
+  - The commit message (`coauthor()`) and the read of HEAD now run inside the restore path. A raise there puts every path back, restores status.csv and the feed, and stops the night (TOOL).
+  - A `_write_plan` failure is now reported as "the proposal's paths could not be written", not as a gate failure.
+
+**RED (`544475e`): 16 failed, 33 passed.**
+- Target `test_gate_sha1s_reads_both_gate_shapes`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0734-fr1.xml`).
+- These failed on assertions:
+  - the `gate --all` rename;
+  - `test_new_header_without_includers_writes_it`, now that the fake prints the real shape;
+  - the four placeholder-header cases and the six collision cases (symbols, symbols-linker, runtime, unit, other header, tag);
+  - the link refusal;
+  - the pre-commit raise.
+- `test_declared_names` failed on AttributeError: it tests new API.
+- `test_rewriting_a_header_may_keep_its_own_names` passed as a pin.
+
+**Fix:** `25800c8`.
+
+**Commands and output after the fix.**
+- `uv run pytest -q tests/test_rename.py`: 49 passed. The link test ran, with a directory junction; it did not skip.
+- `uv run pytest -q` (host, worktree): **3916 passed, 251 skipped**, with no new skip. That run includes test_driver.py, test_driver_workers.py and test_drive.py.
+- `uv run ruff check .`: All checks passed.
+- Container step still deferred to the orchestrator: `docker compose build && docker compose run --rm test`.
+
+**Deviations (fix round).**
+- `unitdefs.py` gained `declared_names`, and `file_scope_names` now shares the directive scan (`_code_lines`) with it.
+- The match landing's `gate_sha1s` reads the top-level splice too. That changes nothing for a per-unit gate, whose top-level list is empty.
