@@ -1070,10 +1070,20 @@ def _check_line(raw: str) -> dict | None:
     return line
 
 
-def read_checks(attempt_dir: Path) -> CheckSummary:
+def _readable(line: Mapping) -> bool:
+    """07-38 (the 07-31 review note): a readability check whose run passed with readlint clean:
+    a plain line of exit 0 with `readlint_violations` 0 (null: readlint did not run)."""
+    violations = line.get("readlint_violations")
+    return (not line["sweep"] and line["exit"] == EXIT_OK and _number(violations)
+            and violations == 0 and line["best_percent"] is not None)  # fmt: skip
+
+
+def read_checks(attempt_dir: Path, *, readability: bool = False) -> CheckSummary:
     """F10: the best C is the line with the highest best_percent among plain lines (never a
     sweep, whose percent is under other flags), skipping null percents and exit-2 runs; ties
-    go to the earliest."""
+    go to the earliest. 07-38 (the 07-31 review note): in a readability session every run is
+    100%, so `readability` picks the latest run whose readlint passed instead (none: no best).
+    The readability landing lands the view unit itself, never this line's C."""
     path = Path(attempt_dir) / attempt.CHECK_LOG
     if not path.is_file():
         return CheckSummary()
@@ -1081,6 +1091,9 @@ def read_checks(attempt_dir: Path) -> CheckSummary:
     lines = [line for raw in text.splitlines() if (line := _check_line(raw)) is not None]
     best = None
     for line in lines:
+        if readability:
+            best = line if _readable(line) else best
+            continue
         if line["sweep"] or line["exit"] == EXIT_TOOL or line["best_percent"] is None:
             continue
         if best is None or line["best_percent"] > best["best_percent"]:
@@ -3409,9 +3422,13 @@ class _Night:
 
     def _land_readability(self, session: _Session) -> str:
         """A counted readability session's landing section, all of it under the gate lock. Its
-        proposals were applied already (`_after_session`, 07-34), so the view unit lands under
+        proposals were applied already (`_after_session`, 07-34), so the view unit first takes
         the renames committed since its HEAD. Then, in order:
 
+        - GAVE_UP when that leaves the unit as HEAD has it (nothing to land, no gate);
+        - REFUSED before anything lands when the set of functions the unit defines in C or
+          marks INCLUDE_ASM (by start, unitdefs.find) or its source problems differ from HEAD's:
+          a readability edit never turns a stub into C (or back) or moves a definition (D-17);
         - the unit lands in src/, the C89 lint runs (owner ruling 2026-10-30: every landing
           path lints before it commits; a failing lint is REFUSED with abort_reason lint) and
           the container gate runs; a gate that fails, or passes without the unit's lowest
@@ -3419,15 +3436,22 @@ class _Night:
         - strict readlint on the landed unit (`run_readlint --units EXE/UNIT`, its included
           headers too). Clean: one LANDED commit of the unit, status.csv (source_sha256
           refreshed by the gate), the feed and the log (`readability_message`). Otherwise
-          PARTIAL: status.csv and the feed go back to their pre-gate bytes and the unit is put
-          back.
+          PARTIAL: status.csv and the feed go back to their pre-gate bytes, the view unit is
+          kept under best/<unit>.c and the unit is put back.
 
-        Every refusal puts the unit back (D-34) and writes one v2 record of its outcome."""
+        Every refusal puts the unit back (D-34) and writes one v2 record of its outcome; the
+        record's check summary is the latest readlint-clean run (`read_checks(readability)`)."""
         self._count()
         claim = session.claim
-        summary = read_checks(claim.attempt_dir)
+        summary = read_checks(claim.attempt_dir, readability=True)
         abort = TIMEOUT if session.result.timed_out else None
         with self._landing(session):
+            data = self._view_bytes(session)
+            head = self._head_bytes(claim.unit_rel)
+            if data == head:
+                return self._readability_end(session, GAVE_UP, abort, summary)
+            if self._defined_set(claim, data) != self._defined_set(claim, head):
+                return self._readability_end(session, REFUSED, abort, summary)
             gate = self._judge(session)
             if gate is None:  # the C89 lint failed: the gate never ran
                 return self._readability_end(session, REFUSED, LINT, summary)
@@ -3439,6 +3463,7 @@ class _Night:
                     self._tool_failure(session, "; ".join(
                         ["readlint failed and the gate's rows could not be put back", *notes]),
                         PARTIAL, gate=gate)  # fmt: skip
+                self._keep_best(session)
                 return self._readability_end(session, PARTIAL, abort, summary, gate=gate)
             self._commit_match(session, gate, summary, abort)
             return LANDED
@@ -3450,6 +3475,34 @@ class _Night:
         self._reset(session)
         self._record_attempt(session, outcome, abort, summary, gate=gate)
         return outcome
+
+    def _defined_set(self, claim: _Claim, data: bytes | None) -> tuple:
+        """07-38 (D-17): what a unit's bytes define in C and mark INCLUDE_ASM, by row start
+        (unitdefs.find under the EXE's current C names, so a rename moves nothing), with its
+        source problems. A text that is not UTF-8 compares unequal to every other."""
+        if data is None:
+            return (), (), ()
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return (None, _sha256(data))
+        exe = claim.pick.exe
+        rows = read_functions_csv(self.repo / "config" / exe / "functions.csv")
+        symbols_path = self.repo / _symbols_rel(exe)
+        symbols = read_symbols_csv(symbols_path) if symbols_path.is_file() else []
+        unit_rows = [row for row in rows if row.unit == claim.pick.unit]
+        defs = unitdefs.find(text, unit_rows, placeholders=unitdefs.placeholders(unit_rows),
+                             all_names=unitdefs.c_names(rows, symbols))  # fmt: skip
+        return (frozenset(defs.defined), frozenset(defs.marked),
+                frozenset(defs.source_problems))  # fmt: skip
+
+    def _keep_best(self, session: _Session) -> None:
+        """PARTIAL: the view unit as it would have landed, under <attempt dir>/best/<unit>.c
+        (gitignored), for the next session or the owner."""
+        claim = session.claim
+        best = claim.attempt_dir / BEST_DIR / f"{claim.pick.unit}.c"
+        best.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(best, self.landed_bytes or b"")
 
     def _readlint_clean(self, claim: _Claim) -> bool:
         """Strict readlint (D-20) on the landed unit alone, as `readlint --units EXE/UNIT`
