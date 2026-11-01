@@ -38,7 +38,7 @@ struct unk_049C {
     /* 0x002 */ u8 pad_002[0x49A];
 }; /* size: 0x49C */
 
-/* Only the fields func_000220C0 reads; the full size is not known. */
+/* Only the fields tacrec_count_live_slots reads; the full size is not known. */
 struct unk_0286 {
     /* 0x000 */ u8 pad_000[0x64];
     /* 0x064 */ s16 x64;
@@ -51,7 +51,7 @@ struct unk_0286 {
 
 extern struct unk_049C D_00109ED0[];
 
-int func_000220C0(struct unk_0286 *s)
+int tacrec_count_live_slots(struct unk_0286 *s)
 {
     int count;
     int i;
