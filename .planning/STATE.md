@@ -6,10 +6,10 @@ current_phase: 07
 current_phase_name: Mechanics-first decompilation
 status: executing
 stopped_at: Phase 7 context gathered
-last_updated: "2026-11-01T11:51:39.872Z"
-last_activity: 2026-10-27
+last_updated: "2026-11-01T17:47:49.888Z"
+last_activity: 2026-11-01
 last_activity_desc: Phase 07 execution started
-state_head: def90fb47649fbc3b3cb36d751b2ea23d11e3e34
+state_head: eb12f3bee968f7742c7b5ae794e5122b66236ce9
 progress:
   total_phases: 8
   completed_phases: 6
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 Phase: 07 (Mechanics-first decompilation) — EXECUTING
 Plan: 1 of 42
 Status: Executing Phase 07
-Last activity: 2026-11-01 — Completed quick task 261101-b5f: drive --fable-trial
+Last activity: 2026-11-01 — Completed quick task 261101-js8: stream cost lower bound for timed-out sessions
 
 Progress: [████████░░] 75%
 
@@ -125,6 +125,7 @@ None yet.
 | 261026-9ue | Drive timestamps: prefix every `drive:` console line and each attempt's start and finish line printed by `reverseapoc drive` with local time [HH:MM:SS] through an injectable clock seam; exit codes and --json (exactly one document) unchanged. TDD. | 2026-10-26 | def199b | — | .planning/quick/261026-9ue-drive-timestamps-prefix-every-drive-console-line-and-each-at |
 | 261026-9ud | Progress page: new progress.html written by tools/progress.py and published by .github/workflows/pages.yml, linked from the README; per-EXE percent bar plus a one-tick-per-function strip and the labelled mosaic inline, design plan in the brief (system font, existing palette, dark scheme, no JavaScript, deterministic). Depends on the badges-and-labels task (same file tools/progress.py). TDD. | 2026-10-26 | 7cee997 | — | .planning/quick/261026-9ud-progress-page-new-progress-html-written-by-tools-progress-py |
 | 261101-b5f | drive --fable-trial: opt-in Fable night on Opus-PARTIAL functions (D-09 owner opt-in, A/B) | 2026-11-01 | def90fb | — | [261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh](./quick/261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh/) |
+| 261101-js8 | Timed-out drive sessions record a stream cost lower bound instead of zeros | 2026-11-01 | eb12f3b | — | [261101-js8-record-a-lower-bound-cost-for-timed-out-](./quick/261101-js8-record-a-lower-bound-cost-for-timed-out-/) |
 
 ### Roadmap Evolution
 
