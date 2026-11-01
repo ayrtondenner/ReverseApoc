@@ -13,11 +13,11 @@ INCLUDE_ASM(func_00067550);
 INCLUDE_ASM(func_00067870);
 INCLUDE_ASM(func_00067930);
 
-extern int D_001A3EF8;
+extern int confirm_is_accepted;
 
 void confirm_on_accept(void)
 {
-    D_001A3EF8 = 1;
+    confirm_is_accepted = 1;
 }
 
 extern int D_001A3EF0;
