@@ -18,7 +18,7 @@ struct unk_0010 {
 
 extern struct unk_0010 D_0014D9F0[];
 
-int func_0005E5E0(void)
+int slot_table_has_zero_id(void)
 {
     s16 i;
     int r;
