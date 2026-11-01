@@ -10,10 +10,10 @@
 INCLUDE_ASM(func_000105D0);
 INCLUDE_ASM(func_00010940);
 
-extern int D_000E1328;
+extern int confirm_flag;
 
 /* void: EAX is not set before the ret. */
 void confirm_flag_set(void)
 {
-    D_000E1328 = 1;
+    confirm_flag = 1;
 }

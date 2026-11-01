@@ -10,6 +10,7 @@ address,name,kind
 0x00062210,flag_e7304_set_,func
 0x00066760,dialog_button_press_cb_,func
 0x000C9357,stackavail_,func
+0x000E1328,_confirm_flag,data
 0x0013BBA4,__ASTACKSIZ,data
 0x0013BBA8,__ASTACKPTR,data
 0x0014D9F0,_slot_table,data
