@@ -14,12 +14,12 @@ INCLUDE_ASM(func_00089920);
 extern short D_001A714C;
 
 /* void: EAX is not set before ret */
-void func_00089930(void)
+void state_code_set_3(void)
 {
     D_001A714C = 3;
 }
 
-/* defined right after func_00089930 so wcc386 emits the lea filler that ends its row */
+/* defined right after state_code_set_3 so wcc386 emits the lea filler that ends its row */
 void func_00089940(void)
 {
     D_001A714C = 4;
