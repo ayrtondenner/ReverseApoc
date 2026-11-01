@@ -13,6 +13,12 @@ INCLUDE_ASM(func_00066780);
 
 extern int D_001A3EFC;
 
+/* dialog_button_press_cb: button callback that raises a flag
+ * Sets the 32-bit flag D_001A3EFC to 1. The flag's readers are not traced yet.
+ * Address: UFO2P.EXE 0x00066760
+ * Evidence: call: 0x00066580 passes it twice (0x00066685, 0x000666CD) as a button callback to 0x0002E640
+ * Evidence: call: same shape as 0x00066C50, which 0x00066780 hands to 0x0002E640 and whose flag ends its loop
+ */
 void dialog_button_press_cb(void)
 {
     D_001A3EFC = 1;
