@@ -36,6 +36,7 @@ address,name,kind
 0x000C1440,file_delete_,func
 0x000C1544,sys_delay_,func
 0x000C1549,char_to_upper_,func
+0x000C1557,char_to_lower_,func
 0x000C1B0B,stream_save_position_,func
 0x000C1B1E,stream_restore_position_,func
 0x000C9357,stackavail_,func

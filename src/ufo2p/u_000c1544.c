@@ -26,7 +26,7 @@ int char_to_upper(int c)
 }
 
 /* tolower-like: 'A'..'Z' become 'a'..'z', anything else is returned as is. */
-int func_000C1557(int c)
+int char_to_lower(int c)
 {
     if (c >= 0x41 && c <= 0x5a) {
         c += 0x20;
