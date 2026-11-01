@@ -31,6 +31,7 @@ address,name,kind
 0x0013BBA8,__ASTACKPTR,data
 0x0013F4C8,_daily_history,data
 0x0013F4CC,_daily_history_from_slot1,data
+0x00144918,_slot_table_records,data
 0x0014D9F0,_slot_table,data
 0x00179A5C,_rec15e_table,data
 0x00183A78,_hover_info_changed,data

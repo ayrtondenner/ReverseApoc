@@ -15,7 +15,7 @@ struct unk_00CE {
     /* 0x7E */ u8 pad_7E[0x50];
 }; /* size: 0xCE */
 
-extern struct unk_00CE D_00144918[];
+extern struct unk_00CE slot_table_records[];
 
 int slot_table_find_by_id(int id)
 {
@@ -24,7 +24,7 @@ int slot_table_find_by_id(int id)
     struct unk_00CE *p;
 
     r = -1;
-    p = D_00144918;
+    p = slot_table_records;
     i = 0;
     do {
         if (p->state != -1 && p->id == id) {
