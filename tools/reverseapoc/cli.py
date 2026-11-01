@@ -1041,30 +1041,36 @@ def _compile_failure(compiled: batch.Compiled) -> str:
     return " | ".join(lines[:4])
 
 
-def _verdict_line(name: str, rule, compiled: batch.Compiled, verdict) -> str:
-    flags = " ".join(rule.flags)
+def _cell_line(record: dict, compiled: batch.Compiled) -> str:
+    head = f"{record['cell']} [{record['flags']}]"
     if not compiled.ok:
-        return f"{name} [{flags}] COMPILE FAILED: {_compile_failure(compiled)}"
-    return (f"{name} [{flags}] exact={verdict.exact} score={verdict.score} len ours/row="
-            f"{verdict.len_ours}/{verdict.len_row} first diff: {verdict.key or '-'}")  # fmt: skip
+        return f"{head} COMPILE FAILED: {_compile_failure(compiled)}"
+    ours, row = record["len"]
+    return (f"{head} exact={record['exact']} score={record['score']} len ours/row={ours}/{row} "
+            f"first diff: {record['key'] or '-'}")  # fmt: skip
 
 
 def _run_judge(args: argparse.Namespace) -> int:
     text = _judged_text(args.file)
     start = batch.parse_address(args.address)
+    rules = load_cflags(args.cflags)
+    batch.cells_for(rules[0], args.cell)  # every --cell is refused before anything loads
     exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
                                 config_root=args.config)  # fmt: skip
     row = batch.row_at(exe, start)
-    rule = batch.committed_rule(load_cflags(args.cflags), exe.stem, row.unit)
+    cells = batch.cells_for(batch.committed_rule(rules, exe.stem, row.unit), args.cell)
     out = batch.BUILD_ROOT / "judge" / exe.stem / f"{start:08x}"
-    src = out / "committed.c"
-    out.mkdir(parents=True, exist_ok=True)
-    write_atomic(src, text.encode("ascii"))
-    job = batch.Job(src, src.with_suffix(".obj"), rule)
-    (compiled,) = batch.compile_batch([job], 1, watcom_dir=args.watcom_dir).compiled
-    verdict = batch.judge(exe, job.obj, start) if compiled.ok else None
-    print(_verdict_line("committed", rule, compiled, verdict))
-    return 0 if verdict is not None and verdict.exact else 1
+    jobs = batch.write_cell_jobs(out, text, exe.flat[row.start : row.end], row.start, cells)
+    result = batch.compile_batch(jobs, len(jobs), watcom_dir=args.watcom_dir)
+    records = [batch.judged_record(exe, start, name, compiled)
+               for (name, _rule), compiled in zip(cells, result.compiled, strict=True)]  # fmt: skip
+    if args.json:
+        doc = {"exe": exe.stem, "address": f"0x{start:08X}", "cells": records}
+        print(json.dumps(doc, indent=2))
+    else:
+        for record, compiled in zip(records, result.compiled, strict=True):
+            print(_cell_line(record, compiled))
+    return 0 if any(record["exact"] for record in records) else 1
 
 
 def _cmd_judge(args: argparse.Namespace) -> int:
@@ -1095,7 +1101,17 @@ def _add_judge_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
     p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
     p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    _add_cell_option(p)
+    p.add_argument("--json", action="store_true", help="print one JSON document")
     p.set_defaults(func=_cmd_judge)
+
+
+def _add_cell_option(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--cell", action="append", default=[], metavar="FLAGS",
+        help="also compile under these flags, e.g. --cell \"-4r -oneatx -s -fpi\" (one flag: "
+        "--cell=-ox); validated like a cflags.txt rule; repeatable",
+    )  # fmt: skip
 
 
 def _cmd_target(args: argparse.Namespace) -> int:

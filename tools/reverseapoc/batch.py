@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from . import compiler
-from .cflags import Rule, select_rule
+from .cflags import Rule, parse_cflags, select_rule
 from .check import (
     DEFAULT_CONFIG,
     CheckError,
@@ -47,12 +47,13 @@ from .check import (
     unit_rule_path,
     with_relocs,
 )
+from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, FunctionRow
-from .omf import OMFError
+from .omf import Module, OMFError
 from .relocs import FIELD_SIZE
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from .watcom import DEFAULT_INSTALL
-from .x86 import decode
+from .x86 import Insn, decode, is_filler
 
 BUILD_ROOT = REPO_ROOT / "build" / "batch"
 ERR_SUFFIX = ".err"
@@ -256,6 +257,71 @@ def diff_summary(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> tuple
     return round(100.0 * sm.ratio(), 2), _first_diff(a, b, sm)
 
 
+# ---- Watcom alignment filler and the pad ----
+
+_REG = r"[a-z][a-z0-9]*"
+_SELF_MOVE = re.compile(rf"({_REG}), \1")  # mov r, r
+_SELF_LEA = re.compile(rf"({_REG}), \[\1\]")  # lea r, [r]: a zero displacement prints as none
+
+
+def is_alignment_filler(insn: Insn) -> bool:
+    """Watcom filler in any register: x86.is_filler's encodings, nop, mov r, r and lea r, [r].
+    `mov eax, dword ptr [eax]` is a load, not filler (the spike's regex took it as filler)."""
+    if is_filler(insn) or insn.mnemonic == "nop":
+        return True
+    if insn.mnemonic == "mov":
+        return bool(_SELF_MOVE.fullmatch(insn.op_str))
+    return insn.mnemonic == "lea" and bool(_SELF_LEA.fullmatch(insn.op_str))
+
+
+def ends_in_filler(code: bytes, va: int) -> bool:
+    """The last instruction of `code` (loaded at `va`) is alignment filler."""
+    last = None
+    for last in decode(code, va):  # noqa: B007 - the loop keeps the last instruction
+        pass
+    return last is not None and is_alignment_filler(last)
+
+
+def filler_tail(code: bytes, va: int, n: int) -> bool:
+    """The bytes of `code` after its first `n` decode exactly to the end, as at least one
+    instruction, and every one is alignment filler (an alignment gap after our function)."""
+    tail = list(decode(code[n:], va + n))
+    return (bool(tail) and sum(i.size for i in tail) == len(code) - n
+            and all(is_alignment_filler(i) for i in tail))  # fmt: skip
+
+
+# Watcom 10.6 aligns the next function only under a `t` optimisation (measured on tacp
+# 0x000A68B0 in spike 010), so a row that ends in filler needs a next function under these.
+ALIGNING_FLAGS = ("-ot", "-oneatx")
+PAD_NAME = "reverseapoc_pad"
+PAD_RETURN = 0x5A5A5A5A
+# Not empty: an empty pad's `ret` is tail-merged into the previous function's `ret` (measured).
+_PAD = f"\nint {PAD_NAME}(void)\n{{\n    return 0x{PAD_RETURN:08x};\n}}\n"
+
+
+def aligns_functions(flags: Sequence[str]) -> bool:
+    return any(flag in ALIGNING_FLAGS for flag in flags)
+
+
+def needs_pad(code: bytes, va: int, flags: Sequence[str]) -> bool:
+    """The row's original bytes end in filler and the cell aligns the next function."""
+    return aligns_functions(flags) and ends_in_filler(code, va)
+
+
+def pad_source(text: str) -> str:
+    """`text` followed by the pad function, so Watcom aligns our function as in the original."""
+    return text + _PAD
+
+
+def cell_rule(base: Rule, flags_text: str) -> Rule:
+    """`base` with the flags of one --cell, validated by cflags' own parser (no wrapper-owned
+    flag such as -fo= or -i=, no path character, no second `-` in a flag)."""
+    if not flags_text.strip():
+        raise BatchError("a --cell needs at least one flag")
+    parsed = parse_cflags(f"* {base.spec} {flags_text}", versions=(base.version,), where="--cell")
+    return dataclasses.replace(base, flags=parsed[0].flags)
+
+
 # ---- judge ----
 
 
@@ -303,7 +369,69 @@ def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
         key = ""
     elif not key and not reloc.ok:
         key = _reloc_key(reloc.problems)
-    return Verdict(exact, reloc.ok, cmp.ok, cmp.differing, len(d.ours), length, score, key)
+    verdict = Verdict(exact, reloc.ok, cmp.ok, cmp.differing, len(d.ours), length, score, key)
+    n = len(d.ours)
+    if exact or not 0 < n < length or not filler_tail(exe.flat[row.start : row.end], row.start, n):
+        return verdict
+    return dataclasses.replace(verdict, exact_trim=_trimmed_exact(module, exe, rows, row, n))
+
+
+def _trimmed_exact(
+    module: Module, exe: ExeInputs, rows: Sequence[FunctionRow], row: FunctionRow, n: int
+) -> bool:
+    """check's verdict against the row cut at our length `n`: exact up to the trailing filler,
+    which the original linker or a 16-byte function alignment put there (a unit-boundary
+    question, never a match)."""
+    cut = dataclasses.replace(row, end=row.start + n)
+    cut_rows = [cut if r is row else r for r in rows]
+    defined = [d for d in defined_functions(module, cut_rows, exe.symbols)
+               if d.row.start == row.start]  # fmt: skip
+    if not defined:
+        return False
+    ((d, reloc),) = with_relocs(module, defined, cut_rows, exe)
+    return reloc.ok and compare_bytes(d.ours, cut, exe.flat, reloc).ok
+
+
+def unjudged(len_row: int, key: str = "") -> Verdict:
+    """The verdict of a cell that was never judged (refused, or its compile failed)."""
+    return Verdict(False, False, False, -1, 0, len_row, 0.0, key)
+
+
+COMMITTED_CELL = "committed"
+
+
+def _compile_key(compiled: Compiled) -> str:
+    lines = [ln.strip() for ln in compiled.output.splitlines() if ln.strip()]
+    first = next((ln for ln in lines if "Error" in ln), lines[0] if lines else "no output")
+    return f"compile failed: {first}"
+
+
+def cell_record(
+    stem: str,
+    start: int,
+    cell: str,
+    rule: Rule,
+    compiled: Compiled | None,
+    verdict: Verdict,
+    key: str | None = None,
+) -> dict[str, Any]:
+    """One JSON record for (function, cell): `cell` is "committed" or the --cell text. A cell
+    that was refused (`compiled` None) or failed to compile is never exact and scores 0.0."""
+    ok = compiled is not None and compiled.ok
+    if key is None:
+        key = verdict.key if ok or compiled is None else _compile_key(compiled)
+    return {
+        "exe": stem,
+        "address": f"0x{start:08X}",
+        "cell": cell,
+        "flags": " ".join(rule.flags),
+        "compiled": ok,
+        "exact": ok and verdict.exact,
+        "exact_trim": ok and verdict.exact_trim,
+        "score": verdict.score if ok else 0.0,
+        "len": [verdict.len_ours if ok else 0, verdict.len_row],
+        "key": key,
+    }
 
 
 # ---- source intake ----
@@ -334,3 +462,38 @@ def parse_address(text: str) -> int:
         return int(text, 16)
     except ValueError as exc:
         raise BatchError(f"expected a hex address (e.g. 0x000108E0), got {text!r}") from exc
+
+
+# ---- cells and their sources ----
+
+
+def cells_for(base: Rule, cell_texts: Sequence[str]) -> list[tuple[str, Rule]]:
+    """(name, rule) per cell: the committed rule first, then one validated rule per --cell."""
+    return [(COMMITTED_CELL, base), *((text, cell_rule(base, text)) for text in cell_texts)]
+
+
+def _cell_file(index: int) -> str:
+    """committed.c, then cell-1.c, cell-2.c ...: flag text never becomes a path."""
+    return f"{COMMITTED_CELL}.c" if index == 0 else f"cell-{index}.c"
+
+
+def write_cell_jobs(
+    out_dir: Path, text: str, row_code: bytes, va: int, cells: Sequence[tuple[str, Rule]]
+) -> list[Job]:
+    """One source per cell under `out_dir` (padded when needs_pad holds for its flags) and the
+    Job that compiles it to the object beside it."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    jobs = []
+    for index, (_name, rule) in enumerate(cells):
+        src = out_dir / _cell_file(index)
+        body = pad_source(text) if needs_pad(row_code, va, rule.flags) else text
+        write_atomic(src, body.encode("ascii"))
+        jobs.append(Job(src, src.with_suffix(compiler.OBJ_SUFFIX), rule))
+    return jobs
+
+
+def judged_record(exe: ExeInputs, start: int, cell: str, compiled: Compiled) -> dict[str, Any]:
+    """cell_record of one compiled cell, judged when its compile succeeded."""
+    row = row_at(exe, start)
+    verdict = judge(exe, compiled.job.obj, start) if compiled.ok else unjudged(row.end - row.start)
+    return cell_record(exe.stem, start, cell, compiled.job.rule, compiled, verdict)
