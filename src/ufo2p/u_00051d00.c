@@ -14,7 +14,7 @@ INCLUDE_ASM(func_00051DA0);
 INCLUDE_ASM(func_00051DD0);
 
 extern int D_000D5058;
-extern short D_00183A78;
+extern short hover_info_changed;
 extern short D_00183A80;
 
 /* flags_set_d5058_and_pair: set three engine flags to one
@@ -29,6 +29,6 @@ extern short D_00183A80;
 void flags_set_d5058_and_pair(void)
 {
     D_000D5058 = 1;
-    D_00183A78 = 1;
+    hover_info_changed = 1;
     D_00183A80 = 1;
 }

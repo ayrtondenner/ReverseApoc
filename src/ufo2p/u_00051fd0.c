@@ -11,11 +11,11 @@ INCLUDE_ASM(func_00051FD0);
 
 extern int D_000E12F0;
 extern short D_00183A80;
-extern short D_00183A78;
+extern short hover_info_changed;
 
 /* button_group_select_0: select button zero of a six-button group
  * Button callback: stores index 0 as the group's selection (D_000E12F0) and sets
- * the two short flags D_00183A80 and D_00183A78 to 1, as every sibling setter does.
+ * the two short flags D_00183A80 and hover_info_changed to 1, as every sibling setter does.
  * The siblings 0x00052080, 0x000520A0, 0x000520C0, 0x000520E0 and 0x00052100
  * store 1, 2, 3, 4 and 5 instead.
  * Address: UFO2P.EXE 0x00052060
@@ -26,5 +26,5 @@ void button_group_select_0(void)
 {
     D_000E12F0 = 0;
     D_00183A80 = 1;
-    D_00183A78 = 1;
+    hover_info_changed = 1;
 }
