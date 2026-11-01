@@ -17,7 +17,7 @@ INCLUDE_ASM(func_0002B320);
 extern int D_001A112C;
 
 /* void: EAX is not set before ret */
-void func_0002A220(void)
+void ui_request_screen_exit(void)
 {
     D_001A112C = 1;
 }
