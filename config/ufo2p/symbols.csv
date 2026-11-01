@@ -4,6 +4,7 @@ address,name,kind
 0x000108E0,confirm_flag_set_,func
 0x000126E0,debug_log_printf_,func
 0x00051DB0,flags_set_d5058_and_pair_,func
+0x00052060,button_group_select_0_,func
 0x00052080,button_group_select_1_,func
 0x0005E5B0,rec15e_table_any_used_,func
 0x0005E5E0,slot_table_has_zero_id_,func
