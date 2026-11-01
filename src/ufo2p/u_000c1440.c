@@ -11,7 +11,13 @@ INCLUDE_ASM(func_000C1445);
 
 int unlink(const char *path);
 
-int file_delete(const char *path)
+/* file_delete: delete a file by path
+ * A five-byte thunk: jumps straight to the runtime unlink with the path in EAX
+ * and returns its result (0 on success, -1 on failure).
+ * Address: UFO2P.EXE 0x000C1440
+ * Evidence: call: its whole body is jmp unlink_ (runtime); called from 0x0001DF40 and 0x000A3AF0
+ */
+int file_delete(const char *file_path)
 {
-    return unlink(path);
+    return unlink(file_path);
 }
