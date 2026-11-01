@@ -358,3 +358,11 @@ def test_cell_record_of_a_refused_source():
     record = batch.cell_record("tacp", 0x10, "committed", RULE_106, None, batch.unjudged(4),
                                key="refused: '#pragma'")  # fmt: skip
     assert record["compiled"] is False and record["key"] == "refused: '#pragma'"
+
+
+def test_check_cells_refuses_an_empty_rule_list_and_a_bad_cell():
+    with pytest.raises(batch.BatchError, match="no rule"):
+        batch.check_cells([], ["-4r -ox -s -fpi"])
+    with pytest.raises(CflagsError):
+        batch.check_cells([RULE_106], ["-4r -fo=x.obj"])
+    batch.check_cells([RULE_106], ["-4r -ox -s -fpi"])

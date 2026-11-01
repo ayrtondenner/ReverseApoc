@@ -1056,7 +1056,7 @@ def _run_judge(args: argparse.Namespace) -> int:
     text = _judged_text(args.file)
     start = batch.parse_address(args.address)
     rules = load_cflags(args.cflags)
-    batch.cells_for(rules[0], args.cell)  # every --cell is refused before anything loads
+    batch.check_cells(rules, args.cell)  # every --cell is refused before anything loads
     exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
                                 config_root=args.config)  # fmt: skip
     row = batch.row_at(exe, start)
@@ -1193,7 +1193,7 @@ def _run_batch(args: argparse.Namespace) -> int:
     if not sources:
         raise batch.BatchError(f"{args.dir}: no <exe>/f_<addr8hex>.c files")
     rules = load_cflags(args.cflags)
-    batch.cells_for(rules[0], args.cell)  # every --cell is refused before anything loads
+    batch.check_cells(rules, args.cell)  # every --cell is refused before anything loads
     exes = _batch_exes(args, sources)
     items = [_batch_file(args, rules, exes[name], start, path) for name, start, path in sources]
     jobs = [job for item in items for job in item.jobs]

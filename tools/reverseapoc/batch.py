@@ -472,6 +472,14 @@ def cells_for(base: Rule, cell_texts: Sequence[str]) -> list[tuple[str, Rule]]:
     return [(COMMITTED_CELL, base), *((text, cell_rule(base, text)) for text in cell_texts)]
 
 
+def check_cells(rules: Sequence[Rule], cell_texts: Sequence[str]) -> None:
+    """Refuse a bad --cell before anything loads: each is validated against the `*` rule's
+    compiler and version (the first rule of a cflags file)."""
+    if not rules:
+        raise BatchError("the cflags file holds no rule")
+    cells_for(rules[0], cell_texts)
+
+
 def _cell_file(index: int) -> str:
     """committed.c, then cell-1.c, cell-2.c ...: flag text never becomes a path."""
     return f"{COMMITTED_CELL}.c" if index == 0 else f"cell-{index}.c"
