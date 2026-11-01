@@ -1613,7 +1613,9 @@ class _Session:
     @property
     def usage(self) -> streamjson.Usage:
         results = [e for e in self.events if e.get("type") == "result"]
-        return streamjson.usage(results[-1] if results else {})
+        if results:
+            return streamjson.usage(results[-1])
+        return streamjson.stream_usage(self.events, self.init.get("model"))
 
     def text(self, key: str) -> str | None:
         """A short init field (model, CLI version) fit for a record, else None."""
@@ -4334,7 +4336,13 @@ class _Night:
         """A v2 attempt record (DEC-07): v1's fields plus the requested model and budget (the
         session's argv, session.build_argv; 07-30: the pass's, D-09, D-25), the hook blocks,
         the gate's verdict (null when no gate ran) and the sweep evidence (P10). No
-        transcript, C text or game bytes (D-23)."""
+        transcript, C text or game bytes (D-23).
+
+        turns, tokens and cost_usd are the CLI's result figures. A session that ended without
+        a CLI result event (the wall clock killed it: abort_reason timeout, or lint, tool or
+        guardrail when one of those followed the timeout) carries the stream lower bound of
+        `streamjson.stream_usage` in them instead, not the CLI's totals. The record shape does
+        not change, and committed records are never rewritten (D-23)."""
         use = session.usage
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
