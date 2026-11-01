@@ -22,6 +22,7 @@ address,name,kind
 0x0008A0E0,pager_open_section_3_,func
 0x0008A100,pager_open_section_4_,func
 0x0008A120,pager_open_section_6_,func
+0x0008A140,pager_open_section_8_,func
 0x000989C0,stat_tally_add_,func
 0x000AAD20,list_screen_on_close_,func
 0x000AB6A0,flag_record_state_,func
