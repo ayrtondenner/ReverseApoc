@@ -18,7 +18,7 @@ INCLUDE_ASM(func_0006F9B0);
 INCLUDE_ASM(func_0006FC80);
 INCLUDE_ASM(func_0006FD20);
 
-extern int D_0013F4C8[27][56];
+extern int daily_history[27][56];
 extern int D_0013F4CC[27][56];
 
 /* Shifts each of 27 rows of 56 ints up by one slot (row stride 0xE0). EAX is unused: void. */
@@ -29,7 +29,7 @@ void daily_history_age(void)
 
     for (i = 0; i < 27; i++) {
         for (j = 55; j > 0; j--) {
-            D_0013F4CC[i][j - 1] = D_0013F4C8[i][j - 1];
+            D_0013F4CC[i][j - 1] = daily_history[i][j - 1];
         }
     }
 }
