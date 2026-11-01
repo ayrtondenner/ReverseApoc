@@ -20,9 +20,9 @@ void confirm_on_accept(void)
     confirm_is_accepted = 1;
 }
 
-extern int D_001A3EF0;
+extern int confirm_is_cancelled;
 
 void confirm_on_cancel(void)
 {
-    D_001A3EF0 = 1;
+    confirm_is_cancelled = 1;
 }
