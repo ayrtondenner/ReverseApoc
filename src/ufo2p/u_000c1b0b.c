@@ -17,7 +17,7 @@ int stream_save_position(void *fp, long *pos)
 }
 
 /* fsetpos-like: seek to *pos from the start (SEEK_SET) */
-int func_000C1B1E(void *fp, long *pos)
+int stream_restore_position(void *fp, long *pos)
 {
     return fseek(fp, *pos, 0);
 }
