@@ -48,7 +48,8 @@ result it is the agent's last message), and `errors[]`. It is never read from th
 messages, so the model cannot stop or stall the run by writing the words (fix round 1 I2).
 
 `check_init` asserts the `system/init` event (Pitfall 2, D-36, T-06-40); the driver treats any
-problem as STOP. `usage` and `tool_uses` feed the attempt log (AGT-03) and the transcript audit.
+problem as STOP. `usage` (or `stream_usage`, the lower bound of a session with no result) and
+`tool_uses` feed the attempt log (AGT-03) and the transcript audit.
 """
 
 from __future__ import annotations
@@ -68,6 +69,25 @@ ACCEPTED_INIT_MODELS: Mapping[str, tuple[str, ...]] = {
     "claude-opus-5-5": ("claude-opus-5-5",),
     "claude-fable-5-1": ("claude-fable-5-1",),
 }
+
+
+class Price(NamedTuple):
+    """A model's price in USD per million tokens, per token class."""
+
+    input: float
+    output: float
+    cache_read: float
+    cache_creation: float
+
+
+# The price of each init model, for `stream_usage`'s lower bound of a session with no result.
+# Literal ids, like ACCEPTED_INIT_MODELS; a model added there needs its price here. Fitted with
+# zero residual from the CLI's own modelUsage costUSD (orchestrator, 2026-11-01).
+PRICES_PER_MTOK: Mapping[str, Price] = {
+    "claude-opus-5-5": Price(input=4.0, output=20.0, cache_read=0.20, cache_creation=8.0),
+    "claude-fable-5-1": Price(input=10.0, output=50.0, cache_read=0.25, cache_creation=20.0),
+}
+TOKENS_PER_MTOK = 1_000_000
 EXPECTED_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep", "Bash")  # D-45's --tools
 _RESULT = "result"
 _SYSTEM = "system"
@@ -91,6 +111,14 @@ _STOP_TEXT = re.compile(r"credit balance is too low|not logged in", re.IGNORECAS
 _LIMIT_TEXT = re.compile(r"hit your\b.*?\blimit", re.IGNORECASE | re.DOTALL)
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\s+\(Claude Code\))?")
 _TARGET_FIELDS = ("file_path", "notebook_path", "command", "path")
+_ASSISTANT = "assistant"
+_THINKING_TOKENS = "thinking_tokens"
+_THINKING_DELTA = "estimated_tokens_delta"
+_MESSAGE_INPUT = "input_tokens"
+_MESSAGE_OUTPUT = "output_tokens"
+_MESSAGE_CACHE_READ = "cache_read_input_tokens"
+_MESSAGE_CACHE_CREATION = "cache_creation_input_tokens"
+_COST_DIGITS = 6  # the precision of the driver's rounded totals (driver._rounded)
 
 
 class Disposition(enum.Enum):
@@ -114,7 +142,8 @@ class Parsed:
 @dataclass(frozen=True)
 class Usage:
     """A session's accounting (AGT-03): tokens summed over the result's modelUsage per class,
-    and turns, cost and duration copied from the result."""
+    and turns, cost and duration copied from the result (`usage`); or, for a stream with no
+    result, the lower bound `stream_usage` reads from the stream."""
 
     input_tokens: int
     output_tokens: int
@@ -403,6 +432,61 @@ def usage(result: Mapping) -> Usage:
         turns=_count(result.get("num_turns")),
         cost_usd=_amount(result.get("total_cost_usd")),
         duration_ms=_count(result.get("duration_ms")),
+    )
+
+
+def _message_usages(events: Sequence[dict]) -> dict[str, Mapping]:
+    """The usage of each assistant message, keyed by its `message.id`: the CLI streams one
+    event per content block, each with the message's usage so far, so the last one wins. An
+    event whose message has no string id is skipped, which keeps the bound low."""
+    usages: dict[str, Mapping] = {}
+    for event in events:
+        if event.get("type") != _ASSISTANT:
+            continue
+        message = _mapping(event.get("message"))
+        message_id = message.get("id")
+        if isinstance(message_id, str):
+            usages[message_id] = _mapping(message.get("usage"))
+    return usages
+
+
+def _thinking_estimate(events: Sequence[dict]) -> int:
+    """The sum of every `system/thinking_tokens` event's `estimated_tokens_delta`."""
+    return sum(_count(event.get(_THINKING_DELTA)) for event in _system(events, _THINKING_TOKENS))
+
+
+def _price(model: object) -> Price | None:
+    return PRICES_PER_MTOK.get(model) if isinstance(model, str) else None
+
+
+def stream_usage(events: Sequence[dict], model: object) -> Usage:
+    """A lower bound of a session's accounting read from its stream, for a session with no
+    `result` event (the wall clock killed it). Turns are the distinct assistant message ids;
+    input and the cache classes are summed over those messages; output is the larger of their
+    output sum and the thinking-token estimate; the cost prices the four counts per million
+    tokens for the init event's `model` (PRICES_PER_MTOK), 0.0 for a model with no price or a
+    model that is not a string. duration_ms is 0: the driver measures seconds itself."""
+    usages = list(_message_usages(events).values())
+
+    def total(key: str) -> int:
+        return sum(_count(entry.get(key)) for entry in usages)
+
+    counts = (total(_MESSAGE_INPUT), max(total(_MESSAGE_OUTPUT), _thinking_estimate(events)),
+              total(_MESSAGE_CACHE_READ), total(_MESSAGE_CACHE_CREATION))  # fmt: skip
+    price = _price(model)
+    cost = 0.0
+    if price is not None:  # Price's fields are in the order of `counts`
+        cost = round(sum(n * p for n, p in zip(counts, price, strict=True)) / TOKENS_PER_MTOK,
+                     _COST_DIGITS)  # fmt: skip
+    input_tokens, output_tokens, cache_read, cache_creation = counts
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_creation,
+        turns=len(usages),
+        cost_usd=cost,
+        duration_ms=0,
     )
 
 
