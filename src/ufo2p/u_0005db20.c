@@ -19,29 +19,41 @@ INCLUDE_ASM(func_0005E430);
 INCLUDE_ASM(func_0005E500);
 INCLUDE_ASM(func_0005E550);
 
-struct unk_015E {
+/* Records of 0x15E bytes; an id of -1 marks a free slot. Only offset 0 is read so far. */
+#define REC15E_BODY_SIZE 0x15C
+#define REC15E_ID_FREE -1
+#define REC15E_TABLE_COUNT 50
+
+struct rec15e {
     /* 0x000 */ s16 id;
-    /* 0x002 */ u8 data[0x15C];
+    /* 0x002 */ u8 body[REC15E_BODY_SIZE];
 }; /* size: 0x15E */
 
-extern struct unk_015E rec15e_table[];
+extern struct rec15e rec15e_table[];
 
+/* rec15e_table_any_used: report whether any table slot is in use
+ * Walks the 50 records of the table at 0x00179A5C and returns 1 at the first one whose
+ * id is not -1 (free), else 0.
+ * Address: UFO2P.EXE 0x0005E5B0
+ * Evidence: table: 0x00179A5C holds 50 records of 0x15E bytes, an s16 id of -1 at +0 marks a free one
+ * Evidence: call: the main loop 0x00010940 calls it with 0x0005E5E0 and 0x0005E610 before it advances the counter at 0x000D4D64
+ */
 int rec15e_table_any_used(void)
 {
-    s16 i;
-    int r;
-    struct unk_015E *p;
+    s16 index;
+    int is_used;
+    struct rec15e *rec;
 
-    p = rec15e_table;
-    r = 0;
-    i = 0;
+    rec = rec15e_table;
+    is_used = 0;
+    index = 0;
     do {
-        if (p->id != -1) {
-            r = 1;
+        if (rec->id != REC15E_ID_FREE) {
+            is_used = 1;
             break;
         }
-        i++;
-        p++;
-    } while (i < 50);
-    return r;
+        index++;
+        rec++;
+    } while (index < REC15E_TABLE_COUNT);
+    return is_used;
 }
