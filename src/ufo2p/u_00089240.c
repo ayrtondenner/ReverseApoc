@@ -20,7 +20,7 @@ void state_code_set_3(void)
 }
 
 /* defined right after state_code_set_3 so wcc386 emits the lea filler that ends its row */
-void func_00089940(void)
+void state_code_set_4(void)
 {
     D_001A714C = 4;
 }
