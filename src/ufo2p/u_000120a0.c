@@ -13,7 +13,16 @@ INCLUDE_ASM(func_00012220);
 INCLUDE_ASM(func_00012310);
 INCLUDE_ASM(func_00012350);
 
-/* An empty stub: the target is a lone `ret`. void, since EAX is not set before the ret. */
+/* debug_log_printf: debug log printf, compiled out
+ * The target is a lone `ret`: the body was removed from the release build. Callers push a
+ * format string and its values and pop them afterwards (a caller-cleaned varargs call), so
+ * the original was printf-shaped. Kept as (void): an empty body emits the same `ret`, and
+ * the prototype is left for a session that can prove it. void, since EAX is not set.
+ * Address: UFO2P.EXE 0x000126E0
+ * Evidence: call: 0x000120D0 pushes D_000D00F0 and one value, calls it, then add esp, 8
+ * Evidence: call: 0x000120D0 also pushes D_000D0164 and two words, then add esp, 0xc
+ * Evidence: call: 18 callers, main among them; it has no callees and no body
+ */
 void debug_log_printf(void)
 {
 }
