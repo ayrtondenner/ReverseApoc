@@ -25,6 +25,7 @@ address,name,kind
 0x000B5FC0,level_update_disable_,func
 0x000B7710,key_take_first_pressed_,func
 0x000C1440,file_delete_,func
+0x000C1B0B,stream_save_position_,func
 0x000C9357,stackavail_,func
 0x000DE2B8,_flag_records,data
 0x000E0C5C,_stat_tally_table,data

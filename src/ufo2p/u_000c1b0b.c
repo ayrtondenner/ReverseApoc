@@ -11,7 +11,7 @@ int fseek(void *fp, long offset, int whence);
 long ftell(void *fp);
 
 /* fgetpos-like: store ftell(fp) in *pos, nonzero on failure (-1) */
-int func_000C1B0B(void *fp, long *pos)
+int stream_save_position(void *fp, long *pos)
 {
     return (*pos = ftell(fp)) == -1;
 }
