@@ -17,7 +17,7 @@ struct unk_000A {
     /* 0x01 */ u8 pad_01[9];
 }; /* size: 0x0A */
 
-extern struct unk_000A D_000DE2B8[];
+extern struct unk_000A flag_records[];
 
 char flag_record_state(int a)
 {
@@ -27,7 +27,7 @@ char flag_record_state(int a)
     if ((short)a == -1) {
         r = 0xff;
     }
-    if (D_000DE2B8[(short)a].b0 != 0) {
+    if (flag_records[(short)a].b0 != 0) {
         r = 1;
     }
     return r;
