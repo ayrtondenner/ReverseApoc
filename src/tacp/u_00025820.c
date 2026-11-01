@@ -76,7 +76,7 @@ struct unk_049C {
     /* 0x082 */ u8 pad_082[0x41A];
 }; /* size: 0x49C */
 
-extern struct unk_049C D_00109ED0[];
+extern struct unk_049C tacrec_table[];
 
 int func_000259B0(void)
 {
@@ -85,7 +85,7 @@ int func_000259B0(void)
     int result;
 
     result = 1;
-    p = D_00109ED0;
+    p = tacrec_table;
     for (i = 0; i < 60; i++, p++) {
         if ((p->kind == 1 || p->kind == 12) && p->unk_064 > p->unk_080) {
             result = 0;

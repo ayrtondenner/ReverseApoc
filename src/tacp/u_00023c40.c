@@ -38,14 +38,14 @@ struct unk_049C {
     /* 0x2C0 */ u8 pad_2C0[0x1DC];
 }; /* size: 0x49C */
 
-extern struct unk_049C D_00109ED0[];
+extern struct unk_049C tacrec_table[];
 
 int func_00023C40(short idx) {
     struct unk_049C *p;
     s16 v;
     int result;
 
-    p = &D_00109ED0[idx];
+    p = &tacrec_table[idx];
     v = p->unk_0F8;
     result = 0;
     if (v != 0 &&p->unk_0F4 == 0 && p->unk_106 == 0) {

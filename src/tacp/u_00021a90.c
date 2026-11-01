@@ -49,7 +49,7 @@ struct unk_0286 {
     /* 0x280 */ u8 active[6];
 }; /* size: 0x286 (at least) */
 
-extern struct unk_049C D_00109ED0[];
+extern struct unk_049C tacrec_table[];
 
 int tacrec_count_live_slots(struct unk_0286 *s)
 {
@@ -59,7 +59,7 @@ int tacrec_count_live_slots(struct unk_0286 *s)
     count = 0;
     if (s->x64 > s->x80) {
         for (i = 0; i < 6; i++) {
-            if (s->active[i] != 0 && D_00109ED0[s->idx[i]].id != -1) {
+            if (s->active[i] != 0 && tacrec_table[s->idx[i]].id != -1) {
                 count++;
             }
         }
