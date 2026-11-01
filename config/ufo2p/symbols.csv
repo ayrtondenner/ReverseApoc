@@ -25,6 +25,7 @@ address,name,kind
 0x0008A140,pager_open_section_8_,func
 0x0008A160,pager_open_section_9_,func
 0x0008A180,pager_open_section_7_,func
+0x0008A1A0,pager_open_section_1_,func
 0x000989C0,stat_tally_add_,func
 0x000AAD20,list_screen_on_close_,func
 0x000AB6A0,flag_record_state_,func
