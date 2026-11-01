@@ -17,7 +17,7 @@ void sys_delay(unsigned ms)
 }
 
 /* toupper-like: 'a'..'z' become 'A'..'Z', anything else is returned as is. */
-int func_000C1549(int c)
+int char_to_upper(int c)
 {
     if (c >= 0x61 && c <= 0x7a) {
         c -= 0x20;
