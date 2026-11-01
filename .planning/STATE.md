@@ -6,10 +6,10 @@ current_phase: 07
 current_phase_name: Mechanics-first decompilation
 status: executing
 stopped_at: Phase 7 context gathered
-last_updated: "2026-10-27T14:03:01.607Z"
+last_updated: "2026-11-01T11:51:39.872Z"
 last_activity: 2026-10-27
 last_activity_desc: Phase 07 execution started
-state_head: 9630d30d5544a38ea25f5256310c869c939616f5
+state_head: def90fb47649fbc3b3cb36d751b2ea23d11e3e34
 progress:
   total_phases: 8
   completed_phases: 6
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 Phase: 07 (Mechanics-first decompilation) — EXECUTING
 Plan: 1 of 42
 Status: Executing Phase 07
-Last activity: 2026-10-27 — Phase 07 execution started
+Last activity: 2026-11-01 — Completed quick task 261101-b5f: drive --fable-trial
 
 Progress: [████████░░] 75%
 
@@ -124,6 +124,7 @@ None yet.
 | 261026-9uc | Progress badges and mosaic labels: README Progress section shows two per-EXE shields (UFO2P.EXE, TACP.EXE; tools/progress.py writes one shields.io endpoint JSON per EXE, combined progress-shield.json stays published) and progress.svg draws a label on each large unit (game unit = unit name, library unit = its largest runtime function name; no label on small squares; deterministic bytes; tooltips kept). Brief: .superpowers/sdd/let-s-work-on-phase-effervescent-nebula/progress-visuals-brief.md. TDD. | 2026-10-26 | 058389b | — | .planning/quick/261026-9uc-progress-badges-and-mosaic-labels-readme-progress-section-sh |
 | 261026-9ue | Drive timestamps: prefix every `drive:` console line and each attempt's start and finish line printed by `reverseapoc drive` with local time [HH:MM:SS] through an injectable clock seam; exit codes and --json (exactly one document) unchanged. TDD. | 2026-10-26 | def199b | — | .planning/quick/261026-9ue-drive-timestamps-prefix-every-drive-console-line-and-each-at |
 | 261026-9ud | Progress page: new progress.html written by tools/progress.py and published by .github/workflows/pages.yml, linked from the README; per-EXE percent bar plus a one-tick-per-function strip and the labelled mosaic inline, design plan in the brief (system font, existing palette, dark scheme, no JavaScript, deterministic). Depends on the badges-and-labels task (same file tools/progress.py). TDD. | 2026-10-26 | 7cee997 | — | .planning/quick/261026-9ud-progress-page-new-progress-html-written-by-tools-progress-py |
+| 261101-b5f | drive --fable-trial: opt-in Fable night on Opus-PARTIAL functions (D-09 owner opt-in, A/B) | 2026-11-01 | def90fb | — | [261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh](./quick/261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh/) |
 
 ### Roadmap Evolution
 

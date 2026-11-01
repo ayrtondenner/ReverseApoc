@@ -18,7 +18,7 @@ function. Owner-authorized (2026-11-01): the orchestrator runs the real night.
 
 ## How to Run
 ```
-uv run reverseapoc drive --fable-trial --dry-run
+uv run reverseapoc drive --fable-trial --dry-run --max-sessions 24
 uv run reverseapoc drive --fable-trial --workers 6 --max-sessions 24 --fable-budget-usd 12.50
 uv run python .planning/spikes/008-fable-trial-matching/compare.py <run id>
 ```
