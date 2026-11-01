@@ -10,24 +10,34 @@
 INCLUDE_ASM(func_000B76D0);
 INCLUDE_ASM(func_000B76F0);
 
+#define KEY_FLAG_COUNT 100
+
 extern unsigned char key_pressed_flags[];
 
+/* key_take_first_pressed: take the first pressed key code
+ * Scans the key flag bytes from code 1 up to 99, clearing each flag it reads, and returns
+ * the first code whose flag was set (that flag is cleared too). Returns 0 when none is set;
+ * entry 0 is never read.
+ * Address: UFO2P.EXE 0x000B7710
+ * Evidence: call: the text entry loop at 0x00029910 calls it each pass and turns the code into characters with 0x000B7870 or 0x000B78A0
+ * Evidence: call: 0x00029910 first calls 0x000B76F0 for every code 0..99 before it starts reading keys
+ */
 int key_take_first_pressed(void)
 {
-    int i;
-    int r;
-    int c;
+    int code;
+    int found;
+    int flag;
 
-    i = 1;
-    r = 0;
+    code = 1;
+    found = 0;
     do {
-        c = key_pressed_flags[i];
-        key_pressed_flags[i] = 0;
-        if (c != 0) {
-            r = i;
+        flag = key_pressed_flags[code];
+        key_pressed_flags[code] = 0;
+        if (flag != 0) {
+            found = code;
             break;
         }
-        i++;
-    } while (i < 100);
-    return r;
+        code++;
+    } while (code < KEY_FLAG_COUNT);
+    return found;
 }
