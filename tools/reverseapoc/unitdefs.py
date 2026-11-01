@@ -30,6 +30,7 @@ import functools
 import importlib.util
 import re
 import sys
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -50,6 +51,10 @@ from .targets import REPO_ROOT
 CONFIGURE = "configure.py"  # owns the translation phases; loaded by path, never copied
 _LOADED_AS = "_reverseapoc_configure"  # the module name a by-path load registers under
 _SCRIPT_NAMES = ("configure", "__main__", _LOADED_AS)  # where configure.py may already be loaded
+# One load at a time: a drive night's workers ask together, and a module registered before it
+# runs must not reach another thread half-run (night 20261101-123417). Reentrant, so a load
+# the module body itself triggers still finds its own module, as before.
+_LOAD_LOCK = threading.RLock()
 FUNC_KIND, DATA_KIND = SYMBOL_KINDS  # symbols.csv kinds: (func, data)
 FUNC_LINK_SUFFIX = "_"  # Watcom register convention: C Foo links as Foo_
 DATA_LINK_PREFIX = "_"  # and C g_vol as _g_vol
@@ -145,23 +150,26 @@ def c_names(rows: Iterable[FunctionRow], symbol_rows: Iterable[SymbolRow]) -> di
 def load_configure(path: Path) -> ModuleType:
     """configure.py at `path`: the module already imported from that file (as `configure`, as
     the running script, or by an earlier by-path load), else loaded by path (it is a script, not
-    part of the package). UnitDefsError when the file is missing."""
+    part of the package). UnitDefsError when the file is missing. Thread-safe (_LOAD_LOCK): a
+    thread that asks while another runs the module waits for the whole module."""
     resolved = Path(path).resolve()
-    for name in _SCRIPT_NAMES:
-        loaded = sys.modules.get(name)
-        if loaded is not None and Path(getattr(loaded, "__file__", "") or "").resolve() == resolved:
-            return loaded
-    spec = importlib.util.spec_from_file_location(_LOADED_AS, path)
-    if not Path(path).is_file() or spec is None or spec.loader is None:
-        raise UnitDefsError(f"{path} not found: unit files are read with its D-12 parser")
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module  # its dataclasses look their module up while it executes
-    try:
-        spec.loader.exec_module(module)
-    except BaseException:
-        del sys.modules[spec.name]
-        raise
-    return module
+    with _LOAD_LOCK:
+        for name in _SCRIPT_NAMES:
+            loaded = sys.modules.get(name)
+            loaded_from = Path(getattr(loaded, "__file__", "") or "").resolve()
+            if loaded is not None and loaded_from == resolved:
+                return loaded
+        spec = importlib.util.spec_from_file_location(_LOADED_AS, path)
+        if not Path(path).is_file() or spec is None or spec.loader is None:
+            raise UnitDefsError(f"{path} not found: unit files are read with its D-12 parser")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module  # its dataclasses look their module up while it executes
+        try:
+            spec.loader.exec_module(module)
+        except BaseException:
+            del sys.modules[spec.name]
+            raise
+        return module
 
 
 @functools.cache
