@@ -17,7 +17,7 @@ struct unk_00CE {
 
 extern struct unk_00CE D_00144918[];
 
-int func_000B3360(int id)
+int slot_table_find_by_id(int id)
 {
     int i;
     int r;
