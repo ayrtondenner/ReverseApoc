@@ -12,7 +12,7 @@ INCLUDE_ASM(func_000B76F0);
 
 extern unsigned char D_00138EFC[];
 
-int func_000B7710(void)
+int key_take_first_pressed(void)
 {
     int i;
     int r;
