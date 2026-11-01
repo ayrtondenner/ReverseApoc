@@ -79,7 +79,7 @@ The flowchart is one `reverseapoc drive` attempt as Phase 6 runs it (the same on
 - **Opus, then Fable (D-09).** See "Model escalation" below. Before the first night that can reach a pass 3, the owner runs the Fable canary.
 
 ```
-uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--session matching|readability] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
+uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [--max-budget-usd USD] [--fable-budget-usd USD] [--max-turns N] [--session-minutes N] [--session matching|readability] [--fable-trial] [--dry-run | --canary [--model MODEL]] [--run ID] [--json]
 ```
 
 | Flag | Default | Meaning |
@@ -92,6 +92,7 @@ uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [
 | `--max-turns N` | 40 | turns per session (D-07) |
 | `--session-minutes N` | 30 | each session's wall clock in minutes (D-07) |
 | `--session KIND` | `matching` | the night's session kind (D-17, D-18): `readability` runs the readability nights below |
+| `--fable-trial` | off | owner opt-in: every matching session runs on `claude-fable-5-1` with `--fable-budget-usd`, queued from partial `status.csv` rows only (see "Fable trial" below). Refused with `--canary` and with `--session readability` (exit 2) |
 | `--dry-run` | off | print the 10 pilot picks and build their packs; no claude, no gate. With `--session readability`: the queued units and their readlint violation counts |
 | `--canary` | off | owner only: one real session that proves the guardrails deny (PASS/FAIL) |
 | `--model MODEL` | `claude-opus-5-5` | with `--canary` only: the model the canary asks for and its init check expects; `--model claude-fable-5-1` is the owner's Fable canary (D-25). The canary's init line and its JSON (`init_model`) name the model string the init event reported |
@@ -101,6 +102,8 @@ uv run reverseapoc drive [--workers N] [--max-sessions N] [--target-matched N] [
 A Phase 7 night is `uv run reverseapoc drive`, with the defaults. The Phase 6 pilot was `uv run reverseapoc drive --max-sessions 40 --target-matched 10` (D-37, D-48).
 
 **Model escalation (D-09).** A function's pass comes from the committed `progress/attempts.jsonl`. Passes 1 and 2 run on `claude-opus-5-5` with `--max-budget-usd`; pass 3 and every later pass run on `claude-fable-5-1` with `--fable-budget-usd`. Each attempt record names `model_requested` and `budget_usd` next to the init event's `model`. The init check expects the requested model, so an answer from another model stops the night (STOPPED `init`). Each match commit's `Co-Authored-By:` line names the requested model (`Claude Opus 5.5` or `Claude Fable 5.1`). The owner's Fable canary, `uv run reverseapoc drive --canary --model claude-fable-5-1 --run <fresh id>` (D-11, D-25), comes before the first Fable pass. It shows whether the CLI accepts `claude-fable-5-1` and which model id its init event reports. Run it before the first night in which a function has two capped passes in the log, because that function's next pass asks for Fable.
+
+**Fable trial (owner opt-in to D-09).** `uv run reverseapoc drive --fable-trial` is an owner-run matching night for an A/B of Fable against Opus. Every session asks for `claude-fable-5-1` with `--fable-budget-usd`, whatever the function's pass. The queue holds only functions whose `status.csv` row is partial (any date) and not matched. It comes from the signed tier queue in its own order (held and asm rows are never queued) or, without a signed tier, from the Phase 6 pools. Passes, attempts, records and gates are those of any night, so a trial session is the function's next pass and later nights count it. `--fable-trial --dry-run` prints a `fable trial:` line and the trial picks (up to `--max-sessions`). A night without the flag is unchanged. To read the result, run `uv run reverseapoc stats`: its `per model:` lines give each model's sessions, matches and cost (a trial attempt is the only kind of record with `model_requested` `claude-fable-5-1` at pass 1 or 2). The account's usage bars, read before and after the night, show what it spent.
 
 **Before you start** (the preflight refuses without most of these):
 

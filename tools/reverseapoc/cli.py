@@ -1351,11 +1351,17 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     passing canary; 1 for a STOPPED night, a failed end-of-run check or a failing canary; 2
     when it refused to start (preflight, dirty outputs, or a canary refused before its
     session; once the canary's session ran, any error is a canary FAIL, exit 1). `--model`
-    without `--canary` is refused (exit 2): a night takes each pass's model from D-09."""
+    without `--canary` is refused (exit 2): a night takes each pass's model from D-09.
+    `--fable-trial` (quick 261101-b5f) is for a matching night: with `--canary` or
+    `--session readability` it is refused (exit 2) before any preflight."""
     if args.model is not None and not args.canary:
         print("reverseapoc drive: error: --model needs --canary (a night runs passes 1-2 on "
               f"{session.OPUS_MODEL} and later passes on {session.FABLE_MODEL}, D-09)",
               file=sys.stderr)  # fmt: skip
+        return 2
+    conflict = _fable_trial_conflict(args)
+    if conflict is not None:
+        print(FABLE_TRIAL_REFUSED.format(conflict=conflict), file=sys.stderr)
         return 2
     options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
                                   max_sessions=args.max_sessions,
@@ -1367,8 +1373,24 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   max_turns=args.max_turns,
                                   session_minutes=args.session_minutes,
                                   canary_model=args.model or session.MODEL,
-                                  session=args.session)  # fmt: skip
+                                  session=args.session,
+                                  fable_trial=args.fable_trial)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
+
+
+FABLE_TRIAL_REFUSED = ("reverseapoc drive: error: --fable-trial is for a matching night; it "
+                       "cannot be used with {conflict}")  # quick 261101-b5f (OD-1)
+
+
+def _fable_trial_conflict(args: argparse.Namespace) -> str | None:
+    """The flag `--fable-trial` cannot run with (OD-1), or None."""
+    if not args.fable_trial:
+        return None
+    if args.canary:
+        return "--canary"
+    if args.session == driver.READABILITY:
+        return "--session readability"
+    return None
 
 
 def _add_drive_command(sub: argparse._SubParsersAction) -> None:
@@ -1405,6 +1427,11 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
                    help="the night's session kind (D-17, D-18): matching sessions match "
                    "functions; readability sessions name and document matched units, one "
                    "commit per unit; " + default)  # fmt: skip
+    p.add_argument("--fable-trial", action="store_true",
+                   help="owner opt-in to D-09 for an A/B night (quick 261101-b5f): every "
+                   f"matching session runs on {session.FABLE_MODEL} with --fable-budget-usd, "
+                   "whatever its pass, queued only from partial status.csv rows; refused with "
+                   "--canary and --session readability")  # fmt: skip
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true",
                       help="print the 10 pilot picks and build their packs (with --session "
