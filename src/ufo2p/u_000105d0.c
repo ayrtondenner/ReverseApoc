@@ -12,7 +12,13 @@ INCLUDE_ASM(func_00010940);
 
 extern int confirm_flag;
 
-/* void: EAX is not set before the ret. */
+/* confirm_flag_set: set the prompt confirmed flag
+ * Stores 1 in a 32-bit flag; nothing in this function clears it.
+ * Returns void: EAX is not set before the ret.
+ * Address: UFO2P.EXE 0x000108E0
+ * Evidence: call: the only caller, 0x00051FD0, calls it only when the two-button prompt 0x00088720 returns nonzero
+ * Evidence: call: 0x00088720 draws a message box with two buttons and returns 1 for one button, 0 for the other
+ */
 void confirm_flag_set(void)
 {
     confirm_flag = 1;
