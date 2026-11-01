@@ -15,11 +15,23 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import asmclass, attempt, driver, flags, locate, mechanics, probe, session, splits, stats
+from . import (
+    asmclass,
+    attempt,
+    batch,
+    driver,
+    flags,
+    locate,
+    mechanics,
+    probe,
+    session,
+    splits,
+    stats,
+)
 from .asm import AsmError, data_ranges, select_rows, write_listings
 from .asmclass import AsmClassError
 from .attempt import AttemptError
-from .cflags import DEFAULT_CFLAGS, CflagsError
+from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags
 from .check import (
     DEFAULT_CONFIG,
     DEFAULT_SRC,
@@ -1006,6 +1018,84 @@ def _add_check_command(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument("--json", action="store_true", help="print the result as JSON")
     p.set_defaults(func=_cmd_check)
+
+
+# ---- the batch judge (spikes 010/011, ported; never a match, D-16) ----
+
+
+class _Refused(Exception):
+    """A source the batch verbs will not compile (#pragma or inline assembly)."""
+
+
+def _judged_text(path: Path) -> str:
+    """FILE as ASCII; _Refused for a #pragma or inline assembly."""
+    text = batch.read_ascii(path)
+    reason = batch.refusal(text)
+    if reason is not None:
+        raise _Refused(f"{path}: {reason}")
+    return text
+
+
+def _compile_failure(compiled: batch.Compiled) -> str:
+    lines = [ln for ln in compiled.output.splitlines() if "Error" in ln or "Warning" in ln]
+    return " | ".join(lines[:4])
+
+
+def _verdict_line(name: str, rule, compiled: batch.Compiled, verdict) -> str:
+    flags = " ".join(rule.flags)
+    if not compiled.ok:
+        return f"{name} [{flags}] COMPILE FAILED: {_compile_failure(compiled)}"
+    return (f"{name} [{flags}] exact={verdict.exact} score={verdict.score} len ours/row="
+            f"{verdict.len_ours}/{verdict.len_row} first diff: {verdict.key or '-'}")  # fmt: skip
+
+
+def _run_judge(args: argparse.Namespace) -> int:
+    text = _judged_text(args.file)
+    start = batch.parse_address(args.address)
+    exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
+                                config_root=args.config)  # fmt: skip
+    row = batch.row_at(exe, start)
+    rule = batch.committed_rule(load_cflags(args.cflags), exe.stem, row.unit)
+    out = batch.BUILD_ROOT / "judge" / exe.stem / f"{start:08x}"
+    src = out / "committed.c"
+    out.mkdir(parents=True, exist_ok=True)
+    write_atomic(src, text.encode("ascii"))
+    job = batch.Job(src, src.with_suffix(".obj"), rule)
+    (compiled,) = batch.compile_batch([job], 1, watcom_dir=args.watcom_dir).compiled
+    verdict = batch.judge(exe, job.obj, start) if compiled.ok else None
+    print(_verdict_line("committed", rule, compiled, verdict))
+    return 0 if verdict is not None and verdict.exact else 1
+
+
+def _cmd_judge(args: argparse.Namespace) -> int:
+    """Exit 0 when some cell is exact, 1 otherwise, 2 for any tool or usage error."""
+    try:
+        return _run_judge(args)
+    except _Refused as exc:
+        print(f"reverseapoc judge: refused: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    except (*_ERRORS, batch.BatchError) as exc:
+        print(f"reverseapoc judge: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_judge_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "judge",
+        help="compile one function file under its unit's committed cflags rule and judge it "
+        "like `check` (relocation check + byte compare); never lands, never writes status.csv "
+        "(exit 0 exact, 1 not, 2 tool error)",
+    )
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("address", metavar="ADDR", help="the function's start, hex (0x optional)")
+    p.add_argument("file", type=Path, metavar="FILE", help="C89 source: no #pragma, no asm")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.set_defaults(func=_cmd_judge)
 
 
 def _cmd_target(args: argparse.Namespace) -> int:
@@ -2047,6 +2137,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_lint_command(sub)
     _add_readlint_command(sub)
     _add_check_command(sub)
+    _add_judge_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
