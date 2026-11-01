@@ -26,7 +26,7 @@ struct unk_015E {
 
 extern struct unk_015E D_00179A5C[];
 
-int func_0005E5B0(void)
+int rec15e_table_any_used(void)
 {
     s16 i;
     int r;
