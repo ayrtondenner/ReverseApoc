@@ -7,7 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00066C60);
 INCLUDE_ASM(func_00066C70);
 INCLUDE_ASM(func_000670B0);
 INCLUDE_ASM(func_00067550);
@@ -19,4 +18,11 @@ extern int D_001A3EF8;
 void func_00066C50(void)
 {
     D_001A3EF8 = 1;
+}
+
+extern int D_001A3EF0;
+
+void func_00066C60(void)
+{
+    D_001A3EF0 = 1;
 }
