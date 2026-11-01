@@ -6,10 +6,10 @@ current_phase: 07
 current_phase_name: Mechanics-first decompilation
 status: executing
 stopped_at: Phase 7 context gathered
-last_updated: "2026-11-01T17:47:49.888Z"
+last_updated: "2026-11-01T23:04:37.304Z"
 last_activity: 2026-11-01
 last_activity_desc: Phase 07 execution started
-state_head: eb12f3bee968f7742c7b5ae794e5122b66236ce9
+state_head: 582b7f43358f6b34be7844de5ec66f90b538a669
 progress:
   total_phases: 8
   completed_phases: 6
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 Phase: 07 (Mechanics-first decompilation) — EXECUTING
 Plan: 1 of 42
 Status: Executing Phase 07
-Last activity: 2026-11-01 — Completed quick task 261101-js8: stream cost lower bound for timed-out sessions
+Last activity: 2026-11-01 — Completed quick task 261101-qvp: batch harness (reverseapoc judge, reverseapoc batch) in tools/
 
 Progress: [████████░░] 75%
 
@@ -126,6 +126,7 @@ None yet.
 | 261026-9ud | Progress page: new progress.html written by tools/progress.py and published by .github/workflows/pages.yml, linked from the README; per-EXE percent bar plus a one-tick-per-function strip and the labelled mosaic inline, design plan in the brief (system font, existing palette, dark scheme, no JavaScript, deterministic). Depends on the badges-and-labels task (same file tools/progress.py). TDD. | 2026-10-26 | 7cee997 | — | .planning/quick/261026-9ud-progress-page-new-progress-html-written-by-tools-progress-py |
 | 261101-b5f | drive --fable-trial: opt-in Fable night on Opus-PARTIAL functions (D-09 owner opt-in, A/B) | 2026-11-01 | def90fb | — | [261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh](./quick/261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh/) |
 | 261101-js8 | Timed-out drive sessions record a stream cost lower bound instead of zeros | 2026-11-01 | eb12f3b | — | [261101-js8-record-a-lower-bound-cost-for-timed-out-](./quick/261101-js8-record-a-lower-bound-cost-for-timed-out-/) |
+| 261101-qvp | Batch harness in tools/reverseapoc/batch.py with reverseapoc judge and batch verbs (spike 010/011 port, TDD) | 2026-11-01 | 582b7f4 | complete | [261101-qvp-move-the-spike-010-011-batch-harness-int](./quick/261101-qvp-move-the-spike-010-011-batch-harness-int/) |
 
 ### Roadmap Evolution
 
