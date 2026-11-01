@@ -11,7 +11,7 @@
 void __delay(unsigned ms);
 
 /* void: EAX at the jmp holds the argument only; the callers decide. */
-void func_000C1544(unsigned ms)
+void sys_delay(unsigned ms)
 {
     __delay(ms);
 }
