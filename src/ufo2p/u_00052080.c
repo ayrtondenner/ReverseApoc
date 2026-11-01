@@ -17,7 +17,7 @@ extern int D_000E12F0;
 extern short D_00183A80;
 extern short D_00183A78;
 
-void func_00052080(void)
+void button_group_select_1(void)
 {
     D_000E12F0 = 1;
     D_00183A80 = 1;
