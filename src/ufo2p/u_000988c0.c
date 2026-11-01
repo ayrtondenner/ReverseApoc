@@ -17,7 +17,7 @@ struct unk_0008 {
 extern struct unk_0008 D_000E0C5C[];
 
 /* void: EAX holds only the masked index at ret; the callers decide. */
-void func_000989C0(u16 idx, s32 delta)
+void stat_tally_add(u16 idx, s32 delta)
 {
     D_000E0C5C[idx].unk_00 += delta;
 }
