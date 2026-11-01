@@ -24,7 +24,7 @@ struct unk_015E {
     /* 0x002 */ u8 data[0x15C];
 }; /* size: 0x15E */
 
-extern struct unk_015E D_00179A5C[];
+extern struct unk_015E rec15e_table[];
 
 int rec15e_table_any_used(void)
 {
@@ -32,7 +32,7 @@ int rec15e_table_any_used(void)
     int r;
     struct unk_015E *p;
 
-    p = D_00179A5C;
+    p = rec15e_table;
     r = 0;
     i = 0;
     do {
