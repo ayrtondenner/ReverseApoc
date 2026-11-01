@@ -8,7 +8,14 @@
 #include "common.h"
 
 INCLUDE_ASM(func_000A34F0);
-INCLUDE_ASM(func_000A3970);
+
+extern int D_0012EFB0;
+
+/* func_000A3970: sets the dword at D_0012EFB0 to 1. EAX is unused at ret, so void. */
+void func_000A3970(void)
+{
+    D_0012EFB0 = 1;
+}
 
 void func_000A3990(void);
 
