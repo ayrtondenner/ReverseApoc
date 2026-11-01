@@ -16,7 +16,7 @@ struct unk_0120 {
     /* 0x11A */ s16 slots[3];
 }; /* size: 0x120 (not read past 0x120) */
 
-short func_000602A0(struct unk_0120 *p)
+short rec276_count_filled_slots(struct unk_0120 *p)
 {
     short n;
     short i;

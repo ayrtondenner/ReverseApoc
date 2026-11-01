@@ -8,6 +8,7 @@ address,name,kind
 0x00052080,button_group_select_1_,func
 0x0005E5B0,rec15e_table_any_used_,func
 0x0005E5E0,slot_table_has_zero_id_,func
+0x000602A0,rec276_count_filled_slots_,func
 0x00062210,flag_e7304_set_,func
 0x00066760,dialog_button_press_cb_,func
 0x00066C50,confirm_on_accept_,func
