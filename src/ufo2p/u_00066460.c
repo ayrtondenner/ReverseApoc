@@ -13,7 +13,7 @@ INCLUDE_ASM(func_00066780);
 
 extern int D_001A3EFC;
 
-void func_00066760(void)
+void dialog_button_press_cb(void)
 {
     D_001A3EFC = 1;
 }
