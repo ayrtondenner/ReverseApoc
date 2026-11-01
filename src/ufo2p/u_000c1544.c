@@ -38,7 +38,7 @@ int char_to_lower(int c)
 unsigned long __clock(void);
 
 /* unsigned long: EAX at the jmp holds __clock's result; the callers decide. */
-unsigned long func_000C1566(void)
+unsigned long sys_clock(void)
 {
     return __clock();
 }
