@@ -11,29 +11,42 @@ INCLUDE_ASM(func_0005E610);
 INCLUDE_ASM(func_0005E650);
 INCLUDE_ASM(func_0005E690);
 
-struct unk_0010 {
+/* Number of entries in the slot table at 0x0014D9F0 (the loop bound, 0x12C). */
+#define SLOT_TABLE_COUNT 300
+/* Bytes of an entry after its id; the entry is 0x10 bytes (the pointer step). */
+#define SLOT_ENTRY_REST_SIZE 0x0E
+
+/* One 16-byte entry of the slot table; only the leading s16 id is read here. */
+struct slot_entry {
     /* 0x00 */ s16 id;
-    /* 0x02 */ u8 pad_02[0x0E];
+    /* 0x02 */ u8 rest_02[SLOT_ENTRY_REST_SIZE];
 }; /* size: 0x10 */
 
-extern struct unk_0010 slot_table[];
+extern struct slot_entry slot_table[];
 
+/* slot_table_has_zero_id: report whether any slot has id zero
+ * Walks all 300 entries of the table at 0x0014D9F0 and returns 1 at the first
+ * entry whose s16 id is 0, else 0. What a zero id means is not known yet.
+ * Address: UFO2P.EXE 0x0005E5E0
+ * Evidence: table: scans 300 entries of 0x10 bytes at 0x0014D9F0, testing the s16 at offset 0 against 0
+ * Evidence: call: the main loop 0x00010940 tests it after 0x0005E5B0 and before 0x0005E610 at 0x00011307
+ */
 int slot_table_has_zero_id(void)
 {
-    s16 i;
-    int r;
-    struct unk_0010 *p;
+    s16 index;
+    int has_zero_id;
+    struct slot_entry *entry;
 
-    p = slot_table;
-    r = 0;
-    i = 0;
+    entry = slot_table;
+    has_zero_id = 0;
+    index = 0;
     do {
-        if (p->id == 0) {
-            r = 1;
+        if (entry->id == 0) {
+            has_zero_id = 1;
             break;
         }
-        i++;
-        p++;
-    } while (i < 300);
-    return r;
+        index++;
+        entry++;
+    } while (index < SLOT_TABLE_COUNT);
+    return has_zero_id;
 }
