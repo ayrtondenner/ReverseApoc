@@ -16,6 +16,7 @@ derives from the committed CSVs, the same derivation gate writes it with (06-18)
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -23,7 +24,13 @@ import pytest
 
 from conftest import REPO_ROOT
 from reverseapoc.check import source_marks
-from reverseapoc.functions import SymbolRow, read_functions_csv, read_symbols_csv, write_symbols_csv
+from reverseapoc.functions import (
+    FunctionRow,
+    SymbolRow,
+    read_functions_csv,
+    read_symbols_csv,
+    write_symbols_csv,
+)
 from reverseapoc.status import (
     MATCHED,
     StatusRow,
@@ -43,7 +50,6 @@ SYMBOLS_CSV = "symbols.csv"
 UNIT_SUFFIX = ".c"
 # The Phase 5 matches the table holds from 06-16 on; the planted cases work on the UFO2P one.
 PLANT_EXE, PLANT_UNIT, PLANT_FUNC = "ufo2p", "u_000a34f0", "func_000A3980"
-PLANT_STUB = "func_000A3970"  # an INCLUDE_ASM row of the same unit
 PLANT_START = 0x000A3980  # PLANT_FUNC's start
 PLANT_NAME = "SoundVolume"  # the planted rename's C name (symbols.csv SoundVolume_)
 FEED = REPO_ROOT / "decomphub.progress.json"
@@ -140,6 +146,35 @@ def _unit_file(src_root: Path) -> Path:
     return src_root / PLANT_EXE / f"{PLANT_UNIT}{UNIT_SUFFIX}"
 
 
+def _stub_candidates(config_root: Path, src_root: Path) -> Iterator[tuple[FunctionRow, str]]:
+    """(row, source_sha256) of every PLANT_EXE row that status.csv does not mark matched and
+    the C still marks INCLUDE_ASM, in a unit with a matched row (whose hash it borrows):
+    PLANT_UNIT's first, then the other units by name."""
+    rows = read_functions_csv(Path(config_root) / PLANT_EXE / FUNCTIONS_CSV)
+    names = exe_names(config_root, PLANT_EXE)
+    matched = matched_rows(config_root, PLANT_EXE)
+    digests = {row.unit: row.source_sha256 for row in matched}
+    matched_starts = {row.start for row in matched}
+    for unit in sorted(digests, key=lambda name: (name != PLANT_UNIT, name)):
+        unit_rows = [row for row in rows if row.unit == unit]
+        text = _read(Path(src_root) / PLANT_EXE / f"{unit}{UNIT_SUFFIX}")
+        marked = source_marks(text, unit_rows, all_names=names).marked_starts
+        for row in unit_rows:
+            if row.start in marked and row.start not in matched_starts:
+                yield row, digests[unit]
+
+
+def plant_stub(config_root: Path, src_root: Path) -> tuple[FunctionRow, str]:
+    """The stub the hand-added row plants, chosen at run time: nights match the INCLUDE_ASM
+    rows one by one (func_000A3970, the old fixed stub, matched in run 20261031-231600), so no
+    fixed name stays a stub. Skips once every unit with a match is fully matched."""
+    stub = next(_stub_candidates(config_root, src_root), None)
+    if stub is None:
+        pytest.skip(f"no {PLANT_EXE} unit with a matched row still has an unmatched "
+                    "INCLUDE_ASM row to plant a hand-added matched row on")
+    return stub
+
+
 def test_drift_catches_planted_changes(planted):
     """A hand-added row, a removed definition and a one-character comment edit each fail."""
     config_root, src_root = planted
@@ -152,16 +187,16 @@ def test_drift_catches_planted_changes(planted):
 
     # 1. A matched row added by hand for a start the C still marks INCLUDE_ASM. Every other row
     # stays: the table holds other matches too (from the 06-26 pilot on), and dropping one would
-    # read as a definition with no matched row.
+    # read as a definition with no matched row. The row carries its unit's committed hash, so
+    # only the name check can catch it.
     rows = read_status(table)
     (real,) = [r for r in rows if r.status == MATCHED and r.name == PLANT_FUNC]
-    stub = next(row for row in read_functions_csv(config_root / PLANT_EXE / FUNCTIONS_CSV)
-                if row.name == PLANT_STUB)  # fmt: skip
+    stub, digest = plant_stub(config_root, src_root)
     write_status(table, [*(r for r in rows if r.start != stub.start),
-                         StatusRow(stub.start, stub.name, PLANT_UNIT, MATCHED, 100.0, 0,
-                                   real.source_sha256, real.date)])  # fmt: skip
+                         StatusRow(stub.start, stub.name, stub.unit, MATCHED, 100.0, 0,
+                                   digest, real.date)])  # fmt: skip
     assert drift(config_root, src_root, PLANT_EXE) == [
-        f"{PLANT_EXE}: {PLANT_STUB} at {_hex(stub.start)} is matched in status.csv but not "
+        f"{PLANT_EXE}: {stub.name} at {_hex(stub.start)} is matched in status.csv but not "
         "defined in C"]
     table.write_bytes(committed)
 

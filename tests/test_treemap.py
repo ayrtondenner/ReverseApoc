@@ -279,24 +279,48 @@ def test_partial_titles_are_deterministic(tmp_path):
     assert "partial, best 50.00%" in first
 
 
-def _committed_partials(stem: str, unit: str) -> list[str]:
-    """The best_percent cells, as status.csv stores them, of the unit's partial rows."""
+PARTIAL_UNIT = ("tacp", "u_000c483f")  # the unit first pinned here, preferred while it is partial
+
+
+def _committed_partial_rows(stem: str) -> list[dict[str, str]]:
+    """The partial rows of config/<stem>/status.csv, as status.csv stores them."""
     lines = (CONFIG / stem / "status.csv").read_text(encoding="utf-8").splitlines()
     rows = csv.DictReader(line for line in lines if not line.startswith("#"))
-    return [row["best_percent"] for row in rows
-            if row["unit"] == unit and row["status"] == "partial"]  # fmt: skip
+    return [row for row in rows if row["status"] == "partial"]
+
+
+def _committed_partials(stem: str, unit: str) -> list[str]:
+    """The best_percent cells, as status.csv stores them, of the unit's partial rows."""
+    return [row["best_percent"] for row in _committed_partial_rows(stem) if row["unit"] == unit]
+
+
+def _partial_unit() -> tuple[str, str]:
+    """A committed (EXE stem, unit) with a partial row, chosen at run time: a matching night can
+    turn any partial row matched, so no fixed unit stays partial. PARTIAL_UNIT while it has
+    one, else the lowest such unit of the first EXE with one; skips when none is left."""
+    if _committed_partials(*PARTIAL_UNIT):
+        return PARTIAL_UNIT
+    for stem in EXE_NAMES:
+        units = sorted({row["unit"] for row in _committed_partial_rows(stem)})
+        if units:
+            return stem, units[0]
+    pytest.skip("no committed status.csv holds a partial row")
 
 
 def test_committed_partial_unit_names_its_partials():
-    """u_000c483f (TACP) has a partial row: its unit tooltip counts it with status.csv's best
-    score, and every partial cell of the committed mosaic carries a tooltip."""
+    """A unit with a partial row (u_000c483f of TACP while it has one): its unit tooltip counts
+    them with status.csv's best score, and every partial cell of the committed mosaic carries a
+    tooltip."""
     progress = treemap()
     derived = progress.derive(CONFIG)
     root = parse(progress.render_svg(derived))
-    scores = _committed_partials("tacp", "u_000c483f")
-    assert scores, "u_000c483f has no partial row in config/tacp/status.csv"
+    stem, unit = _partial_unit()
+    scores = _committed_partials(stem, unit)
+    assert scores, f"{unit} has no partial row in config/{stem}/status.csv"
     best = max(scores, key=float)
-    title = unit_group(root, "u_000c483f").find(f"{SVG_NS}title").text
+    exe_group = root.find(f".//{SVG_NS}g[@data-exe='{stem}']")
+    assert exe_group is not None, stem
+    title = unit_group(exe_group, unit).find(f"{SVG_NS}title").text
     assert f"; {len(scores)} partial (best {best}%)" in title
     partial = [r for r in root.iter(f"{SVG_NS}rect") if r.get("fill") == COLORS["partial"]]
     assert len(partial) == derived.combined.partial_functions

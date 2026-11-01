@@ -15,11 +15,13 @@ import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
 
+from reverseapoc.functions import read_functions_csv
 from test_listings import DENOMINATOR, PARTIAL_RULE, RATIO
 from test_progress import (
     ASM_PERCENT,
     CONFIG,
     ENTRY_997,
+    EXE_NAMES,
     PROGRESS,
     REPOSITORY,
     SHA,
@@ -35,7 +37,7 @@ from test_progress import (
     tick_members,
     write_mechanics,
 )
-from test_treemap import COLORS, SVG_LIMIT
+from test_treemap import COLORS, SVG_LIMIT, _committed_partial_rows
 
 COMMIT_URL = f"{REPOSITORY}/commit/"
 WORKFLOW_URL = f"{REPOSITORY}/actions/workflows/pages.yml"
@@ -317,6 +319,23 @@ def test_strip_escapes_names(tmp_path):
     assert tag == "i" and attrs["title"] == f"{odd}: 16 bytes, matched"
 
 
+PINNED_PARTIAL = ("tacp", "func_000C6287")  # the tick first pinned here (53 bytes, 61.87%)
+
+
+def _pinned_partial() -> tuple[str, str, str] | None:
+    """(EXE stem, name, expected title) of a committed partial row, from status.csv's
+    best_percent cell and functions.csv's row size: PINNED_PARTIAL while it is partial, else
+    the first partial row in EXE and status.csv order; None when no row is partial."""
+    rows = [(stem, row) for stem in EXE_NAMES for row in _committed_partial_rows(stem)]
+    if not rows:
+        return None
+    stem, row = next(((s, r) for s, r in rows if (s, r["name"]) == PINNED_PARTIAL), rows[0])
+    start = int(row["start"], 16)
+    (fn,) = [f for f in read_functions_csv(CONFIG / stem / "functions.csv") if f.start == start]
+    return stem, row["name"], (f"{row['name']}: {fn.end - fn.start:,} bytes, partial, "
+                               f"best {row['best_percent']}%")  # fmt: skip
+
+
 def test_strip_partial_tick_shows_its_best_score():
     """A partial tick's title ends with ", best <pct>%", the mosaic cell's best_percent in the
     same 2-decimal form; matched ticks keep "<name>: <size> bytes, matched" and unmatched
@@ -328,7 +347,7 @@ def test_strip_partial_tick_shows_its_best_score():
     for exe, (_aria, ticks) in zip(derived.exes, found, strict=True):
         ordered = sorted(exe.functions, key=lambda f: f.start)
         for f, (_cls, title) in zip(ordered, ticks, strict=True):
-            titles[f.name] = title
+            titles[(exe.stem, f.name)] = title
             if f.status == progress.MATCHED:
                 assert title == f"{f.name}: {f.size:,} bytes, matched", f.name
             elif f.status == progress.UNMATCHED:
@@ -336,7 +355,13 @@ def test_strip_partial_tick_shows_its_best_score():
             else:
                 assert title == (f"{f.name}: {f.size:,} bytes, partial, "
                                  f"best {f.best_percent:.2f}%"), f.name  # fmt: skip
-    assert titles["func_000C6287"] == "func_000C6287: 53 bytes, partial, best 61.87%"
+    # One partial tick against status.csv's own text and functions.csv's size, not the derived
+    # row: TACP func_000C6287 while it is partial, else the first committed partial row (a
+    # night can match or improve any of them, so none is pinned by value).
+    pinned = _pinned_partial()
+    if pinned is not None:
+        stem, name, text = pinned
+        assert titles[(stem, name)] == text
 
 
 def test_strip_escapes_partial_names(tmp_path):

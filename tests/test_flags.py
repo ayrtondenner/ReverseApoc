@@ -124,14 +124,40 @@ def queue_of(repo: Path) -> Path:
 # ---- Task 1: pilot_hits, the queue, propose, the verb ----
 
 
-def test_pilot_hits_from_committed_log():
+COMMITTED_LOG = REPO_ROOT / "progress" / "attempts.jsonl"
+PILOT_RUNS = frozenset({RUN})  # the Phase 6 pilot: the log's only v1 (no "schema") run
+PILOT_HITS = [("tacp", "func_0006FBD0"), ("tacp", "func_000779C0"),
+              ("ufo2p", "func_00026FD0"), ("ufo2p", "func_0004DFD0"),
+              ("ufo2p", "func_00061F30"), ("ufo2p", "func_0009C3A0")]  # fmt: skip
+
+
+def pilot_log(tmp_path: Path) -> Path:
+    """The committed log's pilot-era records, as written: matching nights append records (and
+    sweep hits) of later runs, so the pilot's D-16 facts are read from its own slice."""
+    lines = COMMITTED_LOG.read_text(encoding="utf-8").splitlines(keepends=True)
+    pilot = [line for line in lines if json.loads(line)["run"] in PILOT_RUNS]
+    assert all("schema" not in json.loads(line) for line in pilot), "a pilot record is not v1"
+    log = tmp_path / "pilot-attempts.jsonl"
+    log.write_text("".join(pilot), encoding="utf-8", newline="\n")
+    return log
+
+
+def test_pilot_hits_from_committed_log(tmp_path):
     """D-16 (ruling F15: from attempts.jsonl alone): the six never-matched pilot sweep hits;
     func_0008A100 hit and later matched, so it is out."""
-    hits = flags.pilot_hits(REPO_ROOT / "progress" / "attempts.jsonl")
-    assert hits == [("tacp", "func_0006FBD0"), ("tacp", "func_000779C0"),
-                    ("ufo2p", "func_00026FD0"), ("ufo2p", "func_0004DFD0"),
-                    ("ufo2p", "func_00061F30"), ("ufo2p", "func_0009C3A0")]  # fmt: skip
+    hits = flags.pilot_hits(pilot_log(tmp_path))
+    assert hits == PILOT_HITS
     assert ("ufo2p", "func_0008A100") not in hits
+
+
+def test_live_log_keeps_the_unmatched_pilot_hits():
+    """Later runs add hits but never hide one: each pilot hit with no MATCHED record in the
+    whole committed log is still among the live log's hits."""
+    records = map(json.loads, COMMITTED_LOG.read_text(encoding="utf-8").splitlines())
+    matched = {(r["exe"], r["function"]) for r in records
+               if r["kind"] == driver.KIND_ATTEMPT and r["outcome"] == driver.MATCHED}  # fmt: skip
+    live = set(flags.pilot_hits(COMMITTED_LOG))
+    assert {hit for hit in PILOT_HITS if hit not in matched} <= live
 
 
 def _record(function: str, outcome: str, hit: str | None, attempt: int = 1) -> dict:
