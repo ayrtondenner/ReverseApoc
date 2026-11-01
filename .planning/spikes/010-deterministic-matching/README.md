@@ -38,6 +38,17 @@ converter.
 | Q4 variant search | **3 more matches.** With Q3 that makes 23 of 200 (11.5%), at 0.10 s per variant. |
 | Q5 gate fit | **Passed for 3 of 5.** Three converter matches pass the real `check` (objdiff 100%, relocation check, both whole-EXE SHA-1s) and the C89 lint. Two failed on unit-context declarations. |
 
+> **Correction (spike 011, 2026-11-01).** The flags reading below is mostly wrong. Spike 011
+> shows the trailing filler is mostly linker alignment of one-function original objects:
+> - of the 51 matches under the inferred cell, 32 are byte-identical under the committed rule
+>   once the filler is cut, and 13 really need `-oneatx`;
+> - matched functions in "aligned" default-rule units keep their bytes under `-ox` but break
+>   under `-oneatx` (9 of 29).
+>
+> The lever is mainly the gate's length rule, or one-function units, plus a per-function
+> `-oneatx` cell where an exact match proves it. See
+> [spike 011](../011-flags-from-filler/README.md).
+
 **The real finding is about flags, not the converter** (iteration 7, below). Watcom 10.6 puts
 alignment filler after a function only under a `t` optimisation (`-ot`, `-oneatx`). 532 of the
 886 not-matched Tier 1 rows end in filler under the committed `*` default, which has no `-o`.
