@@ -37,3 +37,4 @@
 *  wcc386@10.6  -4r -s -fpi
 src/tacp/u_0006fbd0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0001 approved ayrtondenner 2026-10-30
 src/ufo2p/u_00026dd0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0003 approved ayrtondenner 2026-10-30
+src/tacp/u_00021a90.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0008 approved ayrtondenner 2026-11-01
