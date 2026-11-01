@@ -16,7 +16,8 @@ from pathlib import Path
 import pytest
 
 from reverseapoc import batch, compiler
-from reverseapoc.cflags import Rule
+from reverseapoc.cflags import CflagsError, Rule
+from reverseapoc.x86 import decode_one
 
 FLAGS = ("-4r", "-s", "-fpi")
 RULE_106 = Rule("*", "wcc386", "10.6", FLAGS, 1)
@@ -217,3 +218,143 @@ def test_refusal_names_pragma_and_inline_asm(text):
 def test_refusal_accepts_plain_c89():
     text = "extern int g_count;\nint f(int a)\n{\n    return a + g_count;\n}\n"
     assert batch.refusal(text) is None
+
+
+# ---- filler, pad and cells ----
+
+RET_TAIL = bytes.fromhex("31c0c3")  # xor eax, eax; ret
+
+
+def _insn(hex_bytes: str):
+    insn = decode_one(bytes.fromhex(hex_bytes), VA)
+    assert insn is not None and insn.size == len(hex_bytes) // 2
+    return insn
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    ["90", "89c0", "8bc0", "89db", "8d4000", "8d00", "8d1b"],
+)
+def test_alignment_filler(encoding):
+    assert batch.is_alignment_filler(_insn(encoding)) is True
+
+
+@pytest.mark.parametrize(
+    "encoding",
+    [
+        "89c1",  # mov ecx, eax
+        "8b00",  # mov eax, dword ptr [eax]: a load
+        "8d4004",  # lea eax, [eax + 4]
+        "c3",  # ret
+    ],
+)
+def test_not_alignment_filler(encoding):
+    assert batch.is_alignment_filler(_insn(encoding)) is False
+
+
+@pytest.mark.parametrize(
+    ("tail", "expected"),
+    [("8d4000", True), ("89db", True), ("", False), ("89c1", False)],
+)
+def test_ends_in_filler(tail, expected):
+    assert batch.ends_in_filler(RET_TAIL + bytes.fromhex(tail), VA) is expected
+
+
+def test_ends_in_filler_empty_code():
+    assert batch.ends_in_filler(b"", VA) is False
+
+
+def test_filler_tail():
+    code = RET_TAIL + bytes.fromhex("8d400090")
+    assert batch.filler_tail(code, VA, len(RET_TAIL)) is True
+    assert batch.filler_tail(code, VA, len(code)) is False  # no tail at all
+    mixed = RET_TAIL + bytes.fromhex("9089c1")
+    assert batch.filler_tail(mixed, VA, len(RET_TAIL)) is False
+
+
+@pytest.mark.parametrize(
+    ("flags", "expected"),
+    [
+        (("-4r", "-ot", "-s", "-fpi"), True),
+        (("-4r", "-oneatx", "-s", "-fpi"), True),
+        (("-4r", "-s", "-fpi"), False),
+        (("-4r", "-ox", "-s", "-fpi"), False),
+    ],
+)
+def test_aligns_functions(flags, expected):
+    assert batch.aligns_functions(flags) is expected
+
+
+@pytest.mark.parametrize(
+    ("tail", "flags", "expected"),
+    [
+        ("8d4000", ("-4r", "-oneatx", "-s", "-fpi"), True),
+        ("8d4000", ("-4r", "-s", "-fpi"), False),
+        ("", ("-4r", "-ot", "-s", "-fpi"), False),
+        ("", ("-4r", "-s", "-fpi"), False),
+    ],
+)
+def test_needs_pad(tail, flags, expected):
+    assert batch.needs_pad(RET_TAIL + bytes.fromhex(tail), VA, flags) is expected
+
+
+def test_pad_source_appends_a_non_empty_function():
+    text = "int f(void)\n{\n    return 1;\n}\n"
+    padded = batch.pad_source(text)
+    assert batch.PAD_NAME == "reverseapoc_pad"
+    assert batch.PAD_RETURN == 0x5A5A5A5A
+    assert padded.startswith(text)
+    tail = padded[len(text) :]
+    assert f"int {batch.PAD_NAME}(void)" in tail
+    assert "return 0x5a5a5a5a;" in tail
+    assert batch.refusal(padded) is None
+
+
+def test_cell_rule_keeps_the_base_spec():
+    base = Rule("src/ufo2p/u_00000000.c", "wcc386", "10.6", FLAGS, 7)
+    cell = batch.cell_rule(base, "-4r -oneatx -s -fpi")
+    assert (cell.glob, cell.compiler, cell.version) == (base.glob, "wcc386", "10.6")
+    assert cell.flags == ("-4r", "-oneatx", "-s", "-fpi")
+
+
+@pytest.mark.parametrize("text", ["-fo=x.obj", "-i=foo", "-4r -s-ifoo", "-4r /x"])
+def test_cell_rule_refuses_wrapper_owned_and_unsafe_flags(text):
+    with pytest.raises((CflagsError, batch.BatchError)):
+        batch.cell_rule(RULE_106, text)
+
+
+@pytest.mark.parametrize("text", ["", "   "])
+def test_cell_rule_refuses_a_blank_cell(text):
+    with pytest.raises(batch.BatchError):
+        batch.cell_rule(RULE_106, text)
+
+
+def _compiled(ok: bool, output: str = "") -> batch.Compiled:
+    job = batch.Job(Path("a.c"), Path("a.obj"), RULE_106)
+    return batch.Compiled(job, ok, 0.1, output)
+
+
+def test_cell_record_of_a_judged_cell():
+    verdict = batch.Verdict(True, True, True, 0, 11, 11, 100.0, "")
+    record = batch.cell_record("ufo2p", 0x108E0, "committed", RULE_106, _compiled(True), verdict)
+    assert record == {
+        "exe": "ufo2p", "address": "0x000108E0", "cell": "committed", "flags": "-4r -s -fpi",
+        "compiled": True, "exact": True, "exact_trim": False, "score": 100.0, "len": [11, 11],
+        "key": "",
+    }  # fmt: skip
+
+
+def test_cell_record_of_a_failed_compile():
+    output = "a.c(3): Error! E1011: Symbol 'x' has not been declared\nother\n"
+    verdict = batch.unjudged(11)
+    record = batch.cell_record("tacp", 0x10, "-4r -ot -s -fpi", RULE_106, _compiled(False, output),
+                               verdict)  # fmt: skip
+    assert record["compiled"] is False and record["exact"] is False
+    assert record["score"] == 0.0 and record["len"] == [0, 11]
+    assert record["key"] == "compile failed: a.c(3): Error! E1011: Symbol 'x' has not been declared"
+
+
+def test_cell_record_of_a_refused_source():
+    record = batch.cell_record("tacp", 0x10, "committed", RULE_106, None, batch.unjudged(4),
+                               key="refused: '#pragma'")  # fmt: skip
+    assert record["compiled"] is False and record["key"] == "refused: '#pragma'"

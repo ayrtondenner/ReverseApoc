@@ -66,3 +66,21 @@ def test_judge_parses_its_arguments():
     args = cli.build_parser().parse_args(["judge", "ufo2p", ADDRESS, "f.c"])
     assert (args.exe, args.address, str(args.file)) == ("ufo2p", ADDRESS, "f.c")
     assert args.func is cli._cmd_judge
+
+
+def test_judge_parses_cells_and_json():
+    args = cli.build_parser().parse_args(
+        ["judge", "ufo2p", ADDRESS, "f.c", "--cell", "-4r -ot -s -fpi",
+         "--cell", "-4r -oneatx -s -fpi", "--json"]
+    )  # fmt: skip
+    assert args.cell == ["-4r -ot -s -fpi", "-4r -oneatx -s -fpi"]
+    assert args.json is True
+    assert cli.build_parser().parse_args(["judge", "ufo2p", ADDRESS, "f.c"]).cell == []
+
+
+@pytest.mark.parametrize("cell", ["--cell=-fo=x.obj", "--cell=-i=foo", "--cell=  "])
+def test_judge_refuses_a_bad_cell_before_any_compile(tmp_path, capsys, no_load, cell):
+    source = tmp_path / "f.c"
+    source.write_text("int f(void) { return 0; }\n", encoding="ascii")
+    assert _judge(tmp_path, source, cell) == 2
+    assert "reverseapoc judge: error:" in capsys.readouterr().err
