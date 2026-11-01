@@ -31,6 +31,7 @@ address,name,kind
 0x000E1328,_confirm_flag,data
 0x0012F4C8,_list_screen_is_closed,data
 0x00135818,_is_level_update_enabled,data
+0x00138EFC,_key_pressed_flags,data
 0x0013BBA4,__ASTACKSIZ,data
 0x0013BBA8,__ASTACKPTR,data
 0x0013F4C8,_daily_history,data

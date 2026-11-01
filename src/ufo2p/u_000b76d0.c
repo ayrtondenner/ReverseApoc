@@ -10,7 +10,7 @@
 INCLUDE_ASM(func_000B76D0);
 INCLUDE_ASM(func_000B76F0);
 
-extern unsigned char D_00138EFC[];
+extern unsigned char key_pressed_flags[];
 
 int key_take_first_pressed(void)
 {
@@ -21,8 +21,8 @@ int key_take_first_pressed(void)
     i = 1;
     r = 0;
     do {
-        c = D_00138EFC[i];
-        D_00138EFC[i] = 0;
+        c = key_pressed_flags[i];
+        key_pressed_flags[i] = 0;
         if (c != 0) {
             r = i;
             break;
