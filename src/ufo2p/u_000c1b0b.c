@@ -1,23 +1,30 @@
 /*
  * src/ufo2p/u_000c1b0b.c: translation unit u_000c1b0b of UFO2P.EXE, 0x000C1B0B..0x000C1B2A (D-11).
  *
- * Scaffolded by `uv run reverseapoc units UFO2P.EXE --write-src u_000c1b0b`, which never
- * overwrites this file. Each INCLUDE_ASM marker stands for a function that is not matched
- * yet (D-12); a matched function replaces its marker with its C.
+ * Two small wrappers over the C runtime's ftell and fseek that read and restore a stream
+ * position through a pointer, in the shape of fgetpos and fsetpos.
  */
 #include "common.h"
 
 int fseek(void *fp, long offset, int whence);
 long ftell(void *fp);
 
-/* fgetpos-like: store ftell(fp) in *pos, nonzero on failure (-1) */
-int stream_save_position(void *fp, long *pos)
+/* stream_save_position: save the stream position
+ * Stores ftell(stream) in *position; returns nonzero when ftell failed (returned -1).
+ * Address: UFO2P.EXE 0x000C1B0B
+ * Evidence: call: calls the runtime ftell and stores its result through the second argument
+ */
+int stream_save_position(void *stream, long *position)
 {
-    return (*pos = ftell(fp)) == -1;
+    return (*position = ftell(stream)) == -1;
 }
 
-/* fsetpos-like: seek to *pos from the start (SEEK_SET) */
-int stream_restore_position(void *fp, long *pos)
+/* stream_restore_position: restore a saved stream position
+ * Seeks the stream to *position from its start (whence 0, SEEK_SET); returns fseek's result.
+ * Address: UFO2P.EXE 0x000C1B1E
+ * Evidence: call: calls the runtime fseek with the value read through the second argument and whence 0
+ */
+int stream_restore_position(void *stream, long *position)
 {
-    return fseek(fp, *pos, 0);
+    return fseek(stream, *position, 0);
 }
