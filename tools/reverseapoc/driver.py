@@ -4850,6 +4850,12 @@ def _pools(worlds: Mapping[str, ExeWorld]) -> dict[str, Sequence[Candidate]]:
     return {exe: worlds[exe].pool for exe in EXE_ORDER}
 
 
+def _trial_pools(worlds: Mapping[str, ExeWorld],
+                 keys: Container[Key]) -> dict[str, Sequence[Candidate]]:  # fmt: skip
+    """Quick 261101-b5f: each EXE's pool candidates a Fable trial may queue (`keys`)."""
+    return {exe: [c for c in worlds[exe].pool if (exe, c.address) in keys] for exe in EXE_ORDER}
+
+
 def _units(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, str]]:
     return {exe: worlds[exe].units for exe in EXE_ORDER}
 
@@ -4965,19 +4971,23 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     from the night's pass index (the committed log), and `requeue` gives nothing back. On a
     readability night (07-38) `queue` is `readability_source` over the checkout and the
     worlds' call index, and `requeue` gives nothing back. On a Fable trial night (quick
-    261101-b5f) the tier queue keeps only `fable_trial_keys`, in its own order."""
+    261101-b5f, OD-3) both queues keep only `fable_trial_keys`: the tier queue in its own
+    order, the pools without a signed tier with only the matched rows excluded (a partial row
+    of today is a trial row), and `requeue` gives back trial keys only, so the night never
+    takes another function off the difficult list."""
     day = today or _today()
     config_root = options.config_root
-    excluded = excluded_keys(config_root, day)
     say = console(options, seams)
     readability = options.session == READABILITY
     trial = fable_trial_keys(config_root) if options.fable_trial else None
+    excluded = excluded_keys(config_root, day) if trial is None else matched_keys(config_root)
     tiers = None if readability else tier_source(config_root, worlds, only=trial)
     units_queue = readability_source(options.repo, _world_callees(worlds),
                                      git=seams.git)  # 07-38: read from HEAD
+    candidates = _pools(worlds) if trial is None else _trial_pools(worlds, trial)
 
     def pools(difficult: Container[Key]) -> Iterable[Pick]:
-        return picker_queue(_pools(worlds), units=_units(worlds), excluded=excluded,
+        return picker_queue(candidates, units=_units(worlds), excluded=excluded,
                             difficult=difficult)  # fmt: skip
 
     def queue(difficult: Container[Key]) -> Iterable[Pick] | TierQueue:
@@ -4991,8 +5001,9 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
         keys = frozenset(difficult)
         empty = next(iter(pools(keys)), None) is None
         callees = {key: _callee_keys(worlds, key) for key in difficult}
-        return picker_requeue(difficult, matched=matched_keys(config_root), callees=callees,
+        back = picker_requeue(difficult, matched=matched_keys(config_root), callees=callees,
                               pool_empty=empty)  # fmt: skip
+        return back if trial is None else tuple(key for key in back if key in trial)
 
     def matched_callees(pick: Pick) -> tuple[Key, ...]:
         matched = matched_keys(config_root)
@@ -5058,6 +5069,24 @@ def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     return source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count)
 
 
+def fable_trial_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
+                      count: int) -> list[DryPick]:  # fmt: skip
+    """Quick 261101-b5f (OD-3, OD-5): a Fable trial's first `count` picks, from
+    `fable_trial_keys` only: the signed tier queue's (TierQueue.only, each at its next pass by
+    the committed log's pass index) when a tier is signed, else the Phase 6 pools' minus the
+    matched rows and the difficult list. The trial dry run and the night's drafts both list
+    them (discretion (b): no 5 + 5 pilot, which a short partial set could not fill)."""
+    keys = fable_trial_keys(options.config_root)
+    source = tier_source(options.config_root, worlds, only=keys)
+    if source is not None:
+        return list(source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count))
+    difficult = frozenset(load_difficult(Path(options.repo) / DIFFICULT))
+    stream = picker_queue(_trial_pools(worlds, keys), units=_units(worlds),
+                          excluded=matched_keys(options.config_root),
+                          difficult=difficult)  # fmt: skip
+    return [pick for _, pick in zip(range(count), stream, strict=False)]
+
+
 def tier_held(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> tuple[Key, ...] | None:
     """07-44: the rows the tier queue holds (TierQueue.held, queue order); None without a
     signed tier."""
@@ -5069,7 +5098,10 @@ def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
                 today: str) -> list[DryPick]:  # fmt: skip
     """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule), skipping status.csv's
     matched and this pass's partial rows and the difficult list. With a signed tier (07-26,
-    ruling F8): the tier queue's first 10 picks instead, with their tier, level and pass."""
+    ruling F8): the tier queue's first 10 picks instead, with their tier, level and pass. On a
+    Fable trial (quick 261101-b5f): `fable_trial_picks` up to `max_sessions`."""
+    if options.fable_trial:
+        return fable_trial_picks(options, worlds, options.max_sessions)
     tiers = tier_picks(options, worlds, DRY_RUN_TIER_PICKS)
     if tiers is not None:
         return list(tiers)
@@ -5083,7 +5115,11 @@ def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
                     today: str) -> list[Pick]:  # fmt: skip
     """The queue's first `max_sessions` picks: no night attempts more functions than that, so
     their Ghidra drafts are the ones worth precomputing (D-13). With a signed tier (07-26,
-    ruling F8): the tier queue's first `max_sessions` distinct picks."""
+    ruling F8): the tier queue's first `max_sessions` distinct picks. On a Fable trial (quick
+    261101-b5f, discretion (b)): the picks of `fable_trial_picks`, as its dry run lists them."""
+    if options.fable_trial:
+        return [_pick_of(entry) for entry in
+                fable_trial_picks(options, worlds, options.max_sessions)]  # fmt: skip
     tiers = tier_picks(options, worlds, options.max_sessions)
     if tiers is not None:
         return [item.pick for item in tiers]
@@ -5265,6 +5301,11 @@ def _world_callees(worlds: Mapping[str, ExeWorld]) -> dict[str, Mapping[int, tup
 
 HELD_NOTE = ("verdict unclear with data-in-code evidence on the signed asm list; not queued "
              "until the owner rules")  # 07-44: the dry run's `held:` line
+# quick 261101-b5f (OD-5, discretion (c)): the Fable trial's dry-run line and night console line
+FABLE_TRIAL_DRY_RUN = ("fable trial: {count} picks, every session would run on {model} at USD "
+                       "{budget:g} per session; queued from partial status.csv rows only")
+FABLE_TRIAL_NIGHT = ("fable trial: every session runs on {model} at USD {budget:g} per "
+                     "session; queued from partial status.csv rows only")
 
 
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
@@ -5272,8 +5313,13 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     """The pilot picks with their packs built under build/driver/<run>/dry-run/; no claude, no
     gate (D-10). A tier pick's line and document add its tier, level and pass (07-26). `held`
     (07-44, `tier_held`; None without a signed tier) is the document's `held` count and
-    `held_starts`, and with a signed tier one `held: N` line after the picks."""
+    `held_starts`, and with a signed tier one `held: N` line after the picks. On a Fable trial
+    (quick 261101-b5f, OD-5) a first `fable trial:` line names the model and budget every
+    session would run on, and the document adds `fable_trial` {model, budget_usd}."""
     docs, lines = [], []
+    if options.fable_trial:
+        lines.append(FABLE_TRIAL_DRY_RUN.format(count=len(picks), model=FABLE_MODEL,
+                                                budget=options.fable_budget_usd))  # fmt: skip
     for entry in picks:
         pick = _pick_of(entry)
         directory = options.run_dir / DRY_RUN_DIR / pick.exe / f"func_{pick.start:08X}"
@@ -5289,6 +5335,8 @@ def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
         lines.append(f"held: {len(keys)} ({HELD_NOTE})")
     doc = {"picks": docs, "held": len(keys),
            "held_starts": [[exe, f"0x{start:08X}"] for exe, start in keys]}  # fmt: skip
+    if options.fable_trial:
+        doc["fable_trial"] = {"model": FABLE_MODEL, "budget_usd": options.fable_budget_usd}
     _emit(options, doc, lines)
     return EXIT_OK
 
@@ -5560,6 +5608,9 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          wall_clock_s=options.session_minutes * 60,
                          session=options.session,
                          fable_trial=options.fable_trial)  # fmt: skip
+    if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
+        console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
+                                                         budget=options.fable_budget_usd))
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,
