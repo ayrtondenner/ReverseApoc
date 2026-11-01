@@ -5,6 +5,7 @@ address,name,kind
 0x00023C00,type_name_is_shown_,func
 0x000CA446,stackavail_,func
 0x00109ED0,_tacrec_table,data
+0x001ED2C8,_type_hide_enabled,data
 0x002B3E50,__ASTACKSIZ,data
 0x002B3E54,__ASTACKPTR,data
 0x00336BF8,____Argc,data

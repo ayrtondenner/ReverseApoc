@@ -7,7 +7,7 @@
  */
 #include "common.h"
 
-extern int D_001ED2C8;
+extern int type_hide_enabled;
 extern unsigned char D_0027A809[];
 
 int type_name_is_shown(int a, unsigned int b)
@@ -17,7 +17,7 @@ int type_name_is_shown(int a, unsigned int b)
     if (a < 0 || a >= 0x57) {
         return 0;
     }
-    if (D_001ED2C8 != 0) {
+    if (type_hide_enabled != 0) {
         switch (b) {
         case 0:
             if (D_0027A809[a] != 0) {
