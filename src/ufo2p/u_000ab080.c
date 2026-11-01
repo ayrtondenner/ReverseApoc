@@ -19,7 +19,7 @@ struct unk_000A {
 
 extern struct unk_000A D_000DE2B8[];
 
-char func_000AB6A0(int a)
+char flag_record_state(int a)
 {
     char r;
 
