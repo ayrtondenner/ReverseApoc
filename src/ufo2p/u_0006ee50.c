@@ -22,7 +22,7 @@ extern int D_0013F4C8[27][56];
 extern int D_0013F4CC[27][56];
 
 /* Shifts each of 27 rows of 56 ints up by one slot (row stride 0xE0). EAX is unused: void. */
-void func_0006FDD0(void)
+void daily_history_age(void)
 {
     int i;
     int j;
