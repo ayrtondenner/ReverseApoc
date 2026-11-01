@@ -13,6 +13,15 @@ extern int D_000E12F0;
 extern short D_00183A80;
 extern short D_00183A78;
 
+/* button_group_select_0: select button zero of a six-button group
+ * Button callback: stores index 0 as the group's selection (D_000E12F0) and sets
+ * the two short flags D_00183A80 and D_00183A78 to 1, as every sibling setter does.
+ * The siblings 0x00052080, 0x000520A0, 0x000520C0, 0x000520E0 and 0x00052100
+ * store 1, 2, 3, 4 and 5 instead.
+ * Address: UFO2P.EXE 0x00052060
+ * Evidence: call: no direct caller; the sibling 0x00052080 is a button callback pushed by 0x00052150
+ * Evidence: call: 0x00052150 draws a group button pressed by comparing D_000E12F0 with its index
+ */
 void button_group_select_0(void)
 {
     D_000E12F0 = 0;
