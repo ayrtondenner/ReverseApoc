@@ -11,7 +11,7 @@ INCLUDE_ASM(func_000C1445);
 
 int unlink(const char *path);
 
-int func_000C1440(const char *path)
+int file_delete(const char *path)
 {
     return unlink(path);
 }

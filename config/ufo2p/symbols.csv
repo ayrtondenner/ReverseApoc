@@ -23,6 +23,7 @@ address,name,kind
 0x000AB6A0,flag_record_state_,func
 0x000B3360,slot_table_find_by_id_,func
 0x000B5FC0,level_update_disable_,func
+0x000C1440,file_delete_,func
 0x000C9357,stackavail_,func
 0x000DE2B8,_flag_records,data
 0x000E0C5C,_stat_tally_table,data
