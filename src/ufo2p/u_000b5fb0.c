@@ -12,7 +12,7 @@ INCLUDE_ASM(func_000B5FD0);
 
 extern int D_00135818;
 
-void func_000B5FC0(void)
+void level_update_disable(void)
 {
     D_00135818 = 0;
 }
