@@ -14,6 +14,6 @@ INCLUDE_ASM(func_00012310);
 INCLUDE_ASM(func_00012350);
 
 /* An empty stub: the target is a lone `ret`. void, since EAX is not set before the ret. */
-void func_000126E0(void)
+void debug_log_printf(void)
 {
 }
