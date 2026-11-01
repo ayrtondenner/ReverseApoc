@@ -9,15 +9,22 @@
 
 INCLUDE_ASM(func_000988C0);
 
-struct unk_0008 {
-    /* 0x00 */ s32 unk_00;
-    /* 0x04 */ s32 unk_04;
+/* One 8-byte tally record; the callers pass a small category number as the index. */
+struct stat_tally_rec {
+    /* 0x00 */ s32 amount; /* running total that stat_tally_add adds to */
+    /* 0x04 */ s32 aux_04;  /* not written here; meaning unknown */
 }; /* size: 0x08 */
 
-extern struct unk_0008 stat_tally_table[];
+extern struct stat_tally_rec stat_tally_table[];
 
-/* void: EAX holds only the masked index at ret; the callers decide. */
-void stat_tally_add(u16 idx, s32 delta)
+/* stat_tally_add: add an amount to one tally category
+ * Adds delta to the first dword of record category of stat_tally_table.
+ * void: EAX holds only the masked index at ret; the callers ignore it.
+ * Address: UFO2P.EXE 0x000989C0
+ * Evidence: call: 0x000AB720 calls it with category 1 and a per-entry word once an entry's progress reaches its target
+ * Evidence: call: 0x000B3FA0 calls it with category 0 and with category 7, each with an amount it loads first
+ */
+void stat_tally_add(u16 category, s32 delta)
 {
-    stat_tally_table[idx].unk_00 += delta;
+    stat_tally_table[category].amount += delta;
 }
