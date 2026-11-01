@@ -101,6 +101,27 @@ units already matched. The owner authorized the orchestrator to run these nights
   a PARTIAL as the baseline for the Fable trial.
 - Record counts, rates, dollars, addresses and flag cells only; no game bytes or C source.
 
+### deterministic-matching
+Can Phase 7 go tool-first, as Daggerfall, Theme Hospital and NHL95PC did, with Claude sessions
+only for the long tail? A batch harness compiles with the real wcc386 10.6 and judges like
+`check`. A converter turns assembly into C89, a fix loop works the biggest failure group, a
+scripted variant search tries Watcom's sensitivities, and the matches go through the real gate.
+Unreadable C comes first; readability comes later (owner decision, 2026-11-01).
+
+**Requirements:**
+
+- Tool-first; Claude sessions only for the tail. No `uv run reverseapoc drive` and no
+  `claude -p` in a spike. Check that no drive is running before writing under the checkout.
+- The real compiler is the judge, with `check`'s relocation masking. A control (every matched
+  Tier 1 function exact, plus a planted mutant that fails) runs before any converter number
+  counts.
+- A seeded, committed sample, stratified by size bucket. Every number comes from a command
+  that was run.
+- Generated C and logs live under build/spike-NNN/. No inline asm, no `#pragma`, C89 only.
+  config/cflags.txt is never edited: other flag cells go through temporary rule files, as
+  `check --sweep` does.
+- The rule for restructuring matched code is only drafted; the owner applies it.
+
 ## Spikes
 
 | # | Idea | Name | Type | Validates | Verdict | Tags |
@@ -114,3 +135,4 @@ units already matched. The owner authorized the orchestrator to run these nights
 | 007 | mechanics-first-decompilation | locate-997-training | standard | Given UFO2P/TACP, their fixups and functions.csv, when the BIOS-tick readers, get_text strings, data-table and hand-off xrefs and the call graph are followed, then the #997 tick rule and the #263-1 training rule are located and most D-01 items get an entry row | PARTIAL (tick rule located; the #263-1 TACP accrual is not; the plan's formula alone reads VALIDATED) | mechanics, 997, training, get_text, bios-tick, d-03, d-26 |
 | 008 | night-economics | fable-trial-matching | comparison | Given functions Opus left PARTIAL, when a drive --fable-trial night runs them on claude-fable-5-1, then its match rate, cost per match and minutes per session beat Opus retries | INVALIDATED (0/24 Fable vs 0/134 Opus retries; the backlog is a flags problem: 55 of 102 partials hit 100% under another flag cell) | fable, opus, d-09, d-12, cost, flags |
 | 009 | night-economics | readability-pilot | standard | Given the units with matched functions, when a small drive --session readability night runs, then units land readlint-clean with bytes unchanged, renames go through proposals, and the cost per unit is known | VALIDATED (12/12 LANDED, 20 renames, $4.48, gate --all SHA-1 identical) | readability, readlint, d-17, d-19, d-30, renames |
+| 010 | deterministic-matching | deterministic-matching | standard | Given Tier 1's unmatched must-match functions, when a converter plus a scripted variant search compiles every candidate with the real wcc386 10.6 and judges it like check, then 60%+ of a seeded stratified sample matches and Tier 1 compiles and compares in 10 minutes or less | PARTIAL (throughput GO: Tier 1 in 10 s host, 25 s container; converter plus variants 23/200 = 11.5%, 0/100 at 256 B and up; 532 of 886 rows end in filler that only -ot/-oneatx produce, so most of Tier 1 likely compiles under wrong flags) | converter, lifter, batch, variants, flags, filler, oneatx, d-12 |
