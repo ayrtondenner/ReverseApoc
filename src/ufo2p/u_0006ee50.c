@@ -12,7 +12,27 @@ INCLUDE_ASM(func_0006EEF0);
 INCLUDE_ASM(func_0006F3C0);
 INCLUDE_ASM(func_0006F600);
 INCLUDE_ASM(func_0006F750);
-INCLUDE_ASM(func_0006F800);
+
+extern char D_000D5060[];
+void func_0006F830(int);
+extern char D_00183A68[];
+
+void func_0006F800(void)
+{
+    int r_edx;
+
+    if ((*(signed char *)((D_000D5060))) != 0) goto L6F822;
+    r_edx = 0;
+    goto L6F816;
+L6F80E:;
+    func_0006F830(r_edx);
+    r_edx = r_edx + 1;
+L6F816:;
+    if (r_edx < (*(unsigned short *)((D_00183A68)))) goto L6F80E;
+L6F822:;
+    return;
+}
+
 INCLUDE_ASM(func_0006F830);
 INCLUDE_ASM(func_0006F9B0);
 INCLUDE_ASM(func_0006FC80);

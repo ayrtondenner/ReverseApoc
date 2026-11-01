@@ -7,7 +7,14 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_000B5FB0);
+
+extern int is_level_update_enabled;
+void func_000B5FB0(void)
+{
+    *(int *)((((char *)&is_level_update_enabled))) = 1;
+    return;
+}
+
 INCLUDE_ASM(func_000B5FD0);
 
 extern int is_level_update_enabled;
