@@ -312,7 +312,9 @@ class DriveConfig:
     """One night. `max_sessions` caps the sessions launched across every worker, aborted and
     counted ones alike (D-07, D-08, D-48; 07-26 fix round 1: a transient launch spends its slot,
     a LIMIT relaunch keeps it); `target_matched` 0 is off (the night cap governs; AGT-11 is
-    counted by `stats`). 07-30: the per-model session budgets (D-07, D-25) and max_turns."""
+    counted by `stats`). 07-30: the per-model session budgets (D-07, D-25) and max_turns.
+    `fable_trial` (quick 261101-b5f) is the owner's opt-in to D-09 for an A/B night: every
+    matching session runs on FABLE_MODEL with the Fable budget, whatever its pass."""
 
     run_id: str
     repo_root: Path
@@ -330,6 +332,9 @@ class DriveConfig:
     # 07-34 (D-18, ruling F34): the night's session kind. Only a readability session's
     # proposals.jsonl is applied (D-19), so matching nights keep the placeholders (D-17).
     session: str = MATCHING_KIND
+    # quick 261101-b5f: the owner's opt-in to D-09 (`drive --fable-trial`): every matching
+    # session on FABLE_MODEL with the Fable budget; off, each pass takes model_for_pass.
+    fable_trial: bool = False
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -2434,10 +2439,14 @@ class _Night:
         return 1 if self.config.session == READABILITY else self.config.attempts_per_function
 
     def _model(self, pick: Pick) -> str:
-        """The requested model of `pick`'s session: the pass's (D-09) on a matching night, Opus
-        on a readability night (07-38: escalation is a matching rule)."""
-        return OPUS_MODEL if self.config.session == READABILITY else model_for_pass(
-            self._pass(pick))  # fmt: skip
+        """The requested model of `pick`'s session: Opus on a readability night (07-38:
+        escalation is a matching rule), Fable on a Fable trial night (quick 261101-b5f, the
+        owner's opt-in to D-09), else the pass's (D-09)."""
+        if self.config.session == READABILITY:
+            return OPUS_MODEL
+        if self.config.fable_trial:
+            return FABLE_MODEL
+        return model_for_pass(self._pass(pick))
 
     def _label(self, pick: Pick, n: int) -> str:
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}"
@@ -2539,8 +2548,9 @@ class _Night:
 
     def _claim(self, pick: Pick, n: int) -> _Claim:
         """07-30 (D-09, D-25): attempt `n` of the function's pass tonight, on the model
-        session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3) and
-        with that model's budget."""
+        session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3), or
+        on Fable for every pass of a Fable trial night (quick 261101-b5f), and with that model's
+        budget (`DriveConfig.budget_for`)."""
         pass_n = self._pass(pick)
         model = self._model(pick)
         return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
@@ -4685,6 +4695,7 @@ class DriveOptions:
     session_minutes: int = TIMEOUT_S // 60  # D-07: each session's wall clock
     canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
     session: str = MATCHING  # 07-38 (D-18): `drive --session matching|readability`
+    fable_trial: bool = False  # quick 261101-b5f: `drive --fable-trial`
 
     @property
     def config_root(self) -> Path:
@@ -4826,6 +4837,15 @@ def matched_keys(config_root: Path) -> frozenset[Key]:
                      if row.status == STATUS_MATCHED)  # fmt: skip
 
 
+def fable_trial_keys(config_root: Path) -> frozenset[Key]:
+    """Quick 261101-b5f (OD-3): the functions a Fable trial night may queue: every status.csv
+    row of each EXE that is partial, whatever its date (today's included, unlike
+    `excluded_keys`), minus the matched ones."""
+    partial = {(exe, row.start) for exe in EXE_ORDER
+               for row in _status_rows(config_root, exe) if row.status == STATUS_PARTIAL}
+    return frozenset(partial - matched_keys(config_root))
+
+
 def _pools(worlds: Mapping[str, ExeWorld]) -> dict[str, Sequence[Candidate]]:
     return {exe: worlds[exe].pool for exe in EXE_ORDER}
 
@@ -4904,14 +4924,17 @@ def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
 TierSource = Callable[[Mapping[Key, int] | None], TierQueue]
 
 
-def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld]) -> TierSource | None:
+def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld], *,
+                only: Container[Key] | None = None) -> TierSource | None:  # fmt: skip
     """07-26 (DEC-02): when config/mechanics.toml has a signed tier whose digest still matches
     (mechanics.signed_tiers), a builder of a fresh tier queue (picker.tier_queue) over the
     committed members file, the worlds' call graphs, ranks and units, with the matched set of
     status.csv read when it is called; the argument is the finished passes per function
     (pass_index; a night binds its own). None without such a tier: the Phase 6 pools stay.
     The signed asm list's held rows (07-44, `mechanics.signed_held`) are never queued (D-09:
-    no pass on a span that cannot compile from C); an unsigned or changed list raises."""
+    no pass on a span that cannot compile from C); an unsigned or changed list raises.
+    `only` (quick 261101-b5f, a Fable trial) restricts each built queue to those keys
+    (`TierQueue.only`: the queue's own order, no wait on a key outside them)."""
     root = Path(config_root)
     if not (root / mechanics.MECHANICS_TOML).is_file():
         return None
@@ -4925,8 +4948,9 @@ def tier_source(config_root: Path, worlds: Mapping[str, ExeWorld]) -> TierSource
     ranks = {exe: world.ranks for exe, world in worlds.items()}
 
     def build(passes: Mapping[Key, int] | None = None) -> TierQueue:
-        return tier_queue(mech, rows, graphs, ranks, _units(worlds),
-                          matched=matched_keys(root), passes=passes, held=held)  # fmt: skip
+        queue = tier_queue(mech, rows, graphs, ranks, _units(worlds),
+                           matched=matched_keys(root), passes=passes, held=held)  # fmt: skip
+        return queue if only is None else queue.only(only)
 
     return build
 
@@ -4940,13 +4964,15 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     queue instead (`tier_source`): it never reads the difficult list, whose passes it takes
     from the night's pass index (the committed log), and `requeue` gives nothing back. On a
     readability night (07-38) `queue` is `readability_source` over the checkout and the
-    worlds' call index, and `requeue` gives nothing back."""
+    worlds' call index, and `requeue` gives nothing back. On a Fable trial night (quick
+    261101-b5f) the tier queue keeps only `fable_trial_keys`, in its own order."""
     day = today or _today()
     config_root = options.config_root
     excluded = excluded_keys(config_root, day)
     say = console(options, seams)
     readability = options.session == READABILITY
-    tiers = None if readability else tier_source(config_root, worlds)
+    trial = fable_trial_keys(config_root) if options.fable_trial else None
+    tiers = None if readability else tier_source(config_root, worlds, only=trial)
     units_queue = readability_source(options.repo, _world_callees(worlds),
                                      git=seams.git)  # 07-38: read from HEAD
 
@@ -5532,7 +5558,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
                          wall_clock_s=options.session_minutes * 60,
-                         session=options.session)  # fmt: skip
+                         session=options.session,
+                         fable_trial=options.fable_trial)  # fmt: skip
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "detail": report.detail,

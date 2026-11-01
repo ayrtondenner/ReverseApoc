@@ -40,6 +40,8 @@ No variety rule. A held row (07-44, owner ruling 2026-10-31: verdict `unclear` w
 evidence on the signed asm list, `mechanics.signed_held`) is left out of every group before the
 levels are built, like an asm row: it is never queued and no item waits on it; `TierQueue.held`
 lists it until the owner rules it.
+`TierQueue.only` (quick 261101-b5f, the owner's Fable trial) keeps the items of a key set in
+the queue's own order and drops every wait on a key outside it.
 """
 
 from __future__ import annotations
@@ -408,6 +410,17 @@ class TierQueue:
             trial.take(item.key)  # once each
             passes[item.key] = passes.get(item.key, 0) + 1  # capped: its callers may follow
         return out
+
+    def only(self, keys: Container[Key]) -> TierQueue:
+        """The queue's own items whose key is in `keys`, in the same order, each waiting only
+        on callees in `keys` (quick 261101-b5f, OD-3: a Fable trial never offers the rest, so
+        nothing may wait on them); the matched set, the passes (read live) and the held rows
+        are kept, and the order rules are untouched."""
+        items = [item for item in self._items if item.key in keys]
+        callees = {item.key: [c for c in self._callees.get(item.key, ()) if c in keys]
+                   for item in items}  # fmt: skip
+        return TierQueue(items, callees, matched=self._matched, passes=self._passes,
+                         held=self._held)  # fmt: skip
 
     def take(self, key: Key) -> None:
         self._flight.add(key)
