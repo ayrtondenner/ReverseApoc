@@ -497,3 +497,21 @@ def judged_record(exe: ExeInputs, start: int, cell: str, compiled: Compiled) -> 
     row = row_at(exe, start)
     verdict = judge(exe, compiled.job.obj, start) if compiled.ok else unjudged(row.end - row.start)
     return cell_record(exe.stem, start, cell, compiled.job.rule, compiled, verdict)
+
+
+# ---- a directory of converter outputs ----
+
+_SOURCE_NAME = re.compile(r"f_([0-9a-f]{8})\.c")  # lower hex, as the spike converter writes
+_SOURCE_GLOB = "*/f_*.c"
+
+
+def batch_sources(root_dir: Path) -> list[tuple[str, int, Path]]:
+    """(exe dir name, address, path) for every <root_dir>/<exe>/f_<addr8hex>.c, sorted; a
+    malformed f_*.c name is a BatchError naming the file."""
+    found = []
+    for path in Path(root_dir).glob(_SOURCE_GLOB):
+        match = _SOURCE_NAME.fullmatch(path.name)
+        if match is None:
+            raise BatchError(f"{path}: expected f_<8 lower-case hex digits>.c")
+        found.append((path.parent.name, int(match.group(1), 16), path))
+    return sorted(found)

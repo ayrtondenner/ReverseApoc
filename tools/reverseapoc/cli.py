@@ -37,9 +37,11 @@ from .check import (
     DEFAULT_SRC,
     EXIT_TOOL,
     CheckError,
+    ExeInputs,
     check_unit,
     format_target,
     land_all,
+    select_exe,
     sweep,
     write_target,
 )
@@ -1114,6 +1116,129 @@ def _add_cell_option(p: argparse.ArgumentParser) -> None:
     )  # fmt: skip
 
 
+@dataclass
+class _BatchFile:
+    """One converter output: its cells, and either its jobs or the records that refused it."""
+
+    exe: ExeInputs
+    start: int
+    cells: list
+    jobs: list
+    refused: list
+
+
+def _batch_out(out: Path) -> Path:
+    build = DEFAULT_BUILD.resolve()
+    if not out.resolve().is_relative_to(build):
+        raise batch.BatchError(f"--out {out} must lie inside {build}")
+    return out
+
+
+def _batch_exes(args: argparse.Namespace, sources) -> dict:
+    """Every exe dir name, checked against the manifest first, then each EXE loaded once."""
+    targets = load_manifest(args.manifest)
+    names = sorted({exe for exe, _, _ in sources})
+    for name in names:
+        select_exe(targets, name, args.manifest)
+    return {name: batch.load_exe_inputs(name, orig_dir=args.orig, manifest=args.manifest,
+                                        config_root=args.config) for name in names}  # fmt: skip
+
+
+def _batch_file(args, rules, exe, start: int, path: Path) -> _BatchFile:
+    try:
+        row = batch.row_at(exe, start)
+    except batch.BatchError as exc:
+        raise batch.BatchError(f"{path}: {exc}") from exc
+    cells = batch.cells_for(batch.committed_rule(rules, exe.stem, row.unit), args.cell)
+    try:
+        text = _judged_text(path)
+    except (_Refused, batch.BatchError) as exc:
+        never = batch.unjudged(row.end - row.start)
+        refused = [batch.cell_record(exe.stem, start, name, rule, None, never,
+                                     key=f"refused: {exc}") for name, rule in cells]  # fmt: skip
+        return _BatchFile(exe, start, cells, [], refused)
+    out = batch.BUILD_ROOT / "run" / exe.stem / f"{start:08x}"
+    jobs = batch.write_cell_jobs(out, text, exe.flat[row.start : row.end], row.start, cells)
+    return _BatchFile(exe, start, cells, jobs, [])
+
+
+def _file_records(item: _BatchFile, compiled: dict) -> list[dict]:
+    if item.refused:
+        return item.refused
+    return [batch.judged_record(item.exe, item.start, name, compiled[job])
+            for (name, _rule), job in zip(item.cells, item.jobs, strict=True)]  # fmt: skip
+
+
+def _cell_summary(records: list[dict]) -> list[str]:
+    """Per cell: compiled C/N, exact E, exact_trim T, refused R."""
+    lines = []
+    for cell in dict.fromkeys(record["cell"] for record in records):
+        mine = [record for record in records if record["cell"] == cell]
+        flags = sorted({record["flags"] for record in mine})
+        shown = flags[0] if len(flags) == 1 else f"{len(flags)} rules"
+        refused = sum(record["key"].startswith("refused: ") for record in mine)
+        lines.append(
+            f"{cell} [{shown}]: compiled {sum(r['compiled'] for r in mine)}/{len(mine)}, "
+            f"exact {sum(r['exact'] for r in mine)}, exact_trim "
+            f"{sum(r['exact_trim'] for r in mine)}, refused {refused}"
+        )
+    return lines
+
+
+def _run_batch(args: argparse.Namespace) -> int:
+    out = _batch_out(args.out)
+    if args.workers < 1:
+        raise batch.BatchError(f"--workers must be at least 1, got {args.workers}")
+    sources = batch.batch_sources(args.dir)
+    if not sources:
+        raise batch.BatchError(f"{args.dir}: no <exe>/f_<addr8hex>.c files")
+    rules = load_cflags(args.cflags)
+    batch.cells_for(rules[0], args.cell)  # every --cell is refused before anything loads
+    exes = _batch_exes(args, sources)
+    items = [_batch_file(args, rules, exes[name], start, path) for name, start, path in sources]
+    jobs = [job for item in items for job in item.jobs]
+    result = batch.compile_batch(jobs, args.workers, watcom_dir=args.watcom_dir)
+    compiled = {c.job: c for c in result.compiled}
+    records = [record for item in items for record in _file_records(item, compiled)]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(out, "".join(json.dumps(record) + "\n" for record in records).encode("utf-8"))
+    for line in _cell_summary(records):
+        print(line)
+    print(f"batch: {len(items)} files, {len(jobs)} compiles, gate {result.gate_s:.2f}s, "
+          f"compile wall {result.compile_wall_s:.2f}s, wrote {out}")  # fmt: skip
+    return 0  # the JSONL is evidence, never a match (D-16), as `check --sweep`
+
+
+def _cmd_batch(args: argparse.Namespace) -> int:
+    """Exit 0 when the run completes (even with nothing exact), 2 for a tool or usage error."""
+    try:
+        return _run_batch(args)
+    except (*_ERRORS, batch.BatchError) as exc:
+        print(f"reverseapoc batch: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_batch_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    p = sub.add_parser(
+        "batch",
+        help="compile and judge every DIR/<exe>/f_<addr8hex>.c under its unit's committed rule "
+        "and each --cell in one batch, and write one JSONL record per (file, cell); evidence, "
+        "never a match (exit 0 done, 2 tool error)",
+    )
+    p.add_argument("dir", type=Path, metavar="DIR", help="holds <exe>/f_<addr8hex>.c files")
+    p.add_argument("--workers", type=int, default=8, help=default)
+    p.add_argument("--out", type=Path, default=batch.BUILD_ROOT / "batch.jsonl",
+                   help="the JSONL to write, inside build/; " + default)  # fmt: skip
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    _add_cell_option(p)
+    p.set_defaults(func=_cmd_batch)
+
+
 def _cmd_target(args: argparse.Namespace) -> int:
     # The target object is cut from the game: never written inside orig/ or the Watcom tree.
     refuse_output(args.output, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
@@ -2154,6 +2279,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_readlint_command(sub)
     _add_check_command(sub)
     _add_judge_command(sub)
+    _add_batch_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
