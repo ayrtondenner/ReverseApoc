@@ -21,7 +21,7 @@ struct unk_000C {
 extern short D_00183A78;
 extern struct unk_000C D_001A113C;
 
-void func_0002ED10(struct unk_000C *p)
+void hover_info_publish(struct unk_000C *p)
 {
     D_00183A78 = 1;
     D_001A113C = *p;
