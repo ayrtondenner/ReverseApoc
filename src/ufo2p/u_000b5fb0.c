@@ -10,9 +10,9 @@
 INCLUDE_ASM(func_000B5FB0);
 INCLUDE_ASM(func_000B5FD0);
 
-extern int D_00135818;
+extern int is_level_update_enabled;
 
 void level_update_disable(void)
 {
-    D_00135818 = 0;
+    is_level_update_enabled = 0;
 }
