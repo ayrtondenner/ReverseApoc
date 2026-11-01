@@ -121,7 +121,7 @@ A Phase 7 night is `uv run reverseapoc drive`, with the defaults. The Phase 6 pi
 4. `uv run reverseapoc drive`: the night, with the default caps (add `--target-matched N` or a smaller `--max-sessions N` for a short one).
 5. Read the results:
    - the exit code (0 ended clean, 1 stopped or a failed end check, 2 refused) and the printed summary (the last stdout line, stamped with the time the night ended);
-   - `progress/attempts.jsonl`: one `attempt` record per counted session (outcome MATCHED, PARTIAL or GAVE_UP), `abort` records, and the `run` records; the last one is ENDED or STOPPED with its `reason`, `checks_failed` and `uncommitted`;
+   - `progress/attempts.jsonl`: one `attempt` record per counted session (outcome MATCHED, PARTIAL or GAVE_UP), `abort` records, and the `run` records; the last one is ENDED or STOPPED with its `reason`, `checks_failed` and `uncommitted`. A session the wall clock killed has no CLI totals, so its record's `turns`, `tokens` and `cost_usd` are a lower bound read from the stream (its distinct assistant messages, their token counts, and the larger of their output and the thinking-token estimate, priced per model in `streamjson.PRICES_PER_MTOK`), not the CLI's figures; such a record's `abort_reason` is `timeout`, or `lint`, `tool` or `guardrail` when one of those followed the timeout;
    - `config/ufo2p/status.csv` and `config/tacp/status.csv`: the matched and partial rows;
    - the commits: `git log --format='%h %s' --grep='^Matched-By: reverseapoc drive$'` lists one `feat(<exe>): match ...` commit per match; the night's last commit is `chore(driver): attempt log`;
    - `build/driver/<run>/`: transcripts, check logs, notes, `end-ninja-verify.log`, `end-gate-all.log`;
