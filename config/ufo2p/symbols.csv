@@ -18,6 +18,7 @@ address,name,kind
 0x00089930,state_code_set_3_,func
 0x00089940,state_code_set_4_,func
 0x00089950,state_code_set_5_,func
+0x00089980,pager_screen_run_,func
 0x000989C0,stat_tally_add_,func
 0x000AAD20,list_screen_on_close_,func
 0x000AB6A0,flag_record_state_,func
