@@ -7,7 +7,6 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00079C50);
 INCLUDE_ASM(func_00079C60);
 INCLUDE_ASM(func_00079C70);
 INCLUDE_ASM(func_00079C80);
@@ -19,4 +18,11 @@ extern unsigned char D_000FF2DB[];
 unsigned char func_00079C40(int i)
 {
     return D_000FF2DB[i * 0x56 + D_0029304C];
+}
+
+extern unsigned char D_000F9CDB[];
+
+unsigned char func_00079C50(int i)
+{
+    return D_000F9CDB[i * 0x56 + D_0029304C];
 }
