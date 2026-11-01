@@ -8,7 +8,7 @@
 #include "common.h"
 
 extern int type_hide_enabled;
-extern unsigned char D_0027A809[];
+extern unsigned char type_hidden_flags[];
 
 int type_name_is_shown(int a, unsigned int b)
 {
@@ -20,7 +20,7 @@ int type_name_is_shown(int a, unsigned int b)
     if (type_hide_enabled != 0) {
         switch (b) {
         case 0:
-            if (D_0027A809[a] != 0) {
+            if (type_hidden_flags[a] != 0) {
                 r = 0;
             }
             break;

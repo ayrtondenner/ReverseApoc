@@ -6,6 +6,7 @@ address,name,kind
 0x000CA446,stackavail_,func
 0x00109ED0,_tacrec_table,data
 0x001ED2C8,_type_hide_enabled,data
+0x0027A809,_type_hidden_flags,data
 0x002B3E50,__ASTACKSIZ,data
 0x002B3E54,__ASTACKPTR,data
 0x00336BF8,____Argc,data
