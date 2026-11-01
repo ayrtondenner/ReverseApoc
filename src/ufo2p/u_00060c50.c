@@ -25,7 +25,7 @@ INCLUDE_ASM(func_00062220);
 
 extern int D_000E7304;
 
-void func_00062210(void)
+void flag_e7304_set(void)
 {
     D_000E7304 = 1;
 }
