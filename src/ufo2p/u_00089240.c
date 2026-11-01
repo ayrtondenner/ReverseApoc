@@ -25,7 +25,7 @@ void state_code_set_4(void)
     D_001A714C = 4;
 }
 
-void func_00089950(void)
+void state_code_set_5(void)
 {
     D_001A714C = 5;
 }
