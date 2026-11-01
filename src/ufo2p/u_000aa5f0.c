@@ -11,9 +11,9 @@ INCLUDE_ASM(func_000AA5F0);
 INCLUDE_ASM(func_000AA690);
 INCLUDE_ASM(func_000AAD30);
 
-extern int D_0012F4C8;
+extern int list_screen_is_closed;
 
 void list_screen_on_close(void)
 {
-    D_0012F4C8 = 1;
+    list_screen_is_closed = 1;
 }
