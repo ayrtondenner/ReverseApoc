@@ -74,7 +74,7 @@ void pager_open_section_1(void)
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
-void func_0008A1C0(void)
+void pager_open_section_2(void)
 {
     extern short pager_screen_action;
 
