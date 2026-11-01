@@ -9,5 +9,6 @@ address,name,kind
 0x000C9357,stackavail_,func
 0x0013BBA4,__ASTACKSIZ,data
 0x0013BBA8,__ASTACKPTR,data
+0x0014D9F0,_slot_table,data
 0x00249968,____Argc,data
 0x0024996C,____Argv,data

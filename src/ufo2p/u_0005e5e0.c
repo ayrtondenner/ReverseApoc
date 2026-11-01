@@ -16,7 +16,7 @@ struct unk_0010 {
     /* 0x02 */ u8 pad_02[0x0E];
 }; /* size: 0x10 */
 
-extern struct unk_0010 D_0014D9F0[];
+extern struct unk_0010 slot_table[];
 
 int slot_table_has_zero_id(void)
 {
@@ -24,7 +24,7 @@ int slot_table_has_zero_id(void)
     int r;
     struct unk_0010 *p;
 
-    p = D_0014D9F0;
+    p = slot_table;
     r = 0;
     i = 0;
     do {
