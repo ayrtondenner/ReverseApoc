@@ -88,6 +88,19 @@ graph. Spike 007 is the Phase 7 roadmap spike (D-03); its verdict decides how th
 - Rebuild what is tested (edges, caller counts) from rawle.py bytes and fixups; cross-check
   `reverseapoc` modules, never take a fact from them as its own proof.
 
+### night-economics
+What a matching or readability night buys per unit of the owner's Ultra usage: whether Fable
+(claude-fable-5-1) matches functions Opus left PARTIAL at a better cost per match (`drive
+--fable-trial`, quick task 261101-b5f), and what a first readability night costs and lands on the
+units already matched. The owner authorized the orchestrator to run these nights (2026-11-01).
+
+**Requirements:**
+
+- Owner-authorized real nights only; nothing else writes under the checkout while one runs.
+- Compare on the committed attempt log (model, outcome, cost, minutes), with Opus retries after
+  a PARTIAL as the baseline for the Fable trial.
+- Record counts, rates, dollars, addresses and flag cells only; no game bytes or C source.
+
 ## Spikes
 
 | # | Idea | Name | Type | Validates | Verdict | Tags |
@@ -99,3 +112,4 @@ graph. Spike 007 is the Phase 7 roadmap spike (D-03); its verdict decides how th
 | 005 | split-and-first-matches | objdiff-omf-elf | standard | Given the cmain386 rows of UFO2P/TACP, CMAIN386.C read from the owner's 10.6 tree and objdiff-cli 3.8.2, when the reverseapoc cc object is converted to ELF32 and diffed against a target cut from le.py bytes with LE-fixup relocations, synthesized PC32 calls and an address-to-name map, then objdiff reports match_percent 100.0 for __CMain | VALIDATED | objdiff, omf, elf, d-01, d-02, d-19 |
 | 006 | reporting-and-agent-pilot | decompwtf-fork-stub | standard | Given pinned decomp.wtf v0.10.6 and the repo's bare INCLUDE_ASM(func_X); markers with objdiff names func_X_, when fork mode opens a clone in WSL2 and func_000A3980's C is sent through compile_and_diff, then it replaces the marker, builds with our ninja and objdiff and check exits 0 | INVALIDATED | decomp.wtf, fork-mode, d-01, d-02 |
 | 007 | mechanics-first-decompilation | locate-997-training | standard | Given UFO2P/TACP, their fixups and functions.csv, when the BIOS-tick readers, get_text strings, data-table and hand-off xrefs and the call graph are followed, then the #997 tick rule and the #263-1 training rule are located and most D-01 items get an entry row | PARTIAL (tick rule located; the #263-1 TACP accrual is not; the plan's formula alone reads VALIDATED) | mechanics, 997, training, get_text, bios-tick, d-03, d-26 |
+| 008 | night-economics | fable-trial-matching | comparison | Given functions Opus left PARTIAL, when a drive --fable-trial night runs them on claude-fable-5-1, then its match rate, cost per match and minutes per session beat Opus retries | INVALIDATED (0/24 Fable vs 0/134 Opus retries; the backlog is a flags problem: 55 of 102 partials hit 100% under another flag cell) | fable, opus, d-09, d-12, cost, flags |
