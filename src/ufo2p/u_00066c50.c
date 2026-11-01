@@ -22,7 +22,7 @@ void confirm_on_accept(void)
 
 extern int D_001A3EF0;
 
-void func_00066C60(void)
+void confirm_on_cancel(void)
 {
     D_001A3EF0 = 1;
 }
