@@ -13,7 +13,7 @@ INCLUDE_ASM(func_00010940);
 extern int D_000E1328;
 
 /* void: EAX is not set before the ret. */
-void func_000108E0(void)
+void confirm_flag_set(void)
 {
     D_000E1328 = 1;
 }

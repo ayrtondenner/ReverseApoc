@@ -1,6 +1,7 @@
 # linker names for addresses that are neither func_/D_ placeholders nor runtime publics (D-19); addresses and names only
 address,name,kind
 0x00010010,main_,func
+0x000108E0,confirm_flag_set_,func
 0x000126E0,debug_log_printf_,func
 0x00051DB0,flags_set_d5058_and_pair_,func
 0x00052080,button_group_select_1_,func
