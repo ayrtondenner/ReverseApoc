@@ -22,71 +22,71 @@ void pager_screen_run(int a, int b);
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A100(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(4, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A120(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(6, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A140(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(8, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A160(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(9, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A180(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(7, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A1A0(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(1, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A1C0(void)
 {
-    extern short D_001A714C;
+    extern short pager_screen_action;
 
     pager_screen_run(2, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }
 
-extern short D_001A714C;
+extern short pager_screen_action;
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
 void func_0008A0E0(void)
 {
     pager_screen_run(3, -1);
-    D_001A714C = 0;
+    pager_screen_action = 0;
 }

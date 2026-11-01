@@ -6,7 +6,7 @@
  * yet (D-12); a matched function replaces its marker with its C.
  *
  * The rows 0x00089910..0x00089950 are five one-store setters of the 16-bit global
- * D_001A714C (values 1 to 5); the 0x0008A0E0 family in u_00089980 resets it to 0.
+ * pager_screen_action (values 1 to 5); the 0x0008A0E0 family in u_00089980 resets it to 0.
  */
 #include "common.h"
 
@@ -18,7 +18,7 @@ INCLUDE_ASM(func_00089240);
 INCLUDE_ASM(func_00089360);
 INCLUDE_ASM(func_00089910);
 INCLUDE_ASM(func_00089920);
-extern short D_001A714C;
+extern short pager_screen_action;
 
 /* state_code_set_3: store state code 3
  * void: EAX is not set before ret.
@@ -28,7 +28,7 @@ extern short D_001A714C;
  */
 void state_code_set_3(void)
 {
-    D_001A714C = STATE_CODE_3;
+    pager_screen_action = STATE_CODE_3;
 }
 
 /* state_code_set_4: store state code 4
@@ -38,7 +38,7 @@ void state_code_set_3(void)
  */
 void state_code_set_4(void)
 {
-    D_001A714C = STATE_CODE_4;
+    pager_screen_action = STATE_CODE_4;
 }
 
 /* state_code_set_5: store state code 5
@@ -47,5 +47,5 @@ void state_code_set_4(void)
  */
 void state_code_set_5(void)
 {
-    D_001A714C = STATE_CODE_5;
+    pager_screen_action = STATE_CODE_5;
 }

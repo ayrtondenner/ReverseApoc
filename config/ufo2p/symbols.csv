@@ -46,5 +46,6 @@ address,name,kind
 0x001A113C,_hover_info_shown,data
 0x001A3EF0,_confirm_is_cancelled,data
 0x001A3EF8,_confirm_is_accepted,data
+0x001A714C,_pager_screen_action,data
 0x00249968,____Argc,data
 0x0024996C,____Argv,data
