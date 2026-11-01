@@ -19,10 +19,10 @@ struct unk_000C {
 }; /* size: 0x0C */
 
 extern short hover_info_changed;
-extern struct unk_000C D_001A113C;
+extern struct unk_000C hover_info_shown;
 
 void hover_info_publish(struct unk_000C *p)
 {
     hover_info_changed = 1;
-    D_001A113C = *p;
+    hover_info_shown = *p;
 }
