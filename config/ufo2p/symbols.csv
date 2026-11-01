@@ -13,6 +13,7 @@ address,name,kind
 0x00066C50,confirm_on_accept_,func
 0x00066C60,confirm_on_cancel_,func
 0x000989C0,stat_tally_add_,func
+0x000AAD20,list_screen_on_close_,func
 0x000C9357,stackavail_,func
 0x000E0C5C,_stat_tally_table,data
 0x000E1328,_confirm_flag,data

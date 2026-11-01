@@ -13,7 +13,7 @@ INCLUDE_ASM(func_000AAD30);
 
 extern int D_0012F4C8;
 
-void func_000AAD20(void)
+void list_screen_on_close(void)
 {
     D_0012F4C8 = 1;
 }
