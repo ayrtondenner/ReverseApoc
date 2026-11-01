@@ -16,7 +16,13 @@ INCLUDE_ASM(func_0002B320);
 
 extern int ui_screen_exit_requested;
 
-/* void: EAX is not set before ret */
+/* ui_request_screen_exit: button callback requesting the screen exit
+ * Sets the exit flag ui_screen_exit_requested; the screen loop in func_0002A250 clears it on entry and
+ * leaves the loop once it is nonzero. void: EAX is not set before ret.
+ * Address: UFO2P.EXE 0x0002A220
+ * Evidence: call: 0x0002A250 pushes it as a callback to 0x0002E640 at 0x0002A3B7 and 0x0002A404
+ * Evidence: call: 0x0002A250 tests the flag at 0x0002AD13 to end its loop
+ */
 void ui_request_screen_exit(void)
 {
     ui_screen_exit_requested = 1;
