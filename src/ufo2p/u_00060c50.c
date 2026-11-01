@@ -25,6 +25,12 @@ INCLUDE_ASM(func_00062220);
 
 extern int D_000E7304;
 
+/* flag_e7304_set: set the flag at 0x000E7304
+ * Stores 1 to the 32-bit global and returns; EAX is not set, so it returns nothing.
+ * No direct caller is known; what the flag means is not read yet.
+ * Address: UFO2P.EXE 0x00062210
+ * Evidence: call: no direct caller; the body is one store of 1 to 0x000E7304, then ret
+ */
 void flag_e7304_set(void)
 {
     D_000E7304 = 1;
