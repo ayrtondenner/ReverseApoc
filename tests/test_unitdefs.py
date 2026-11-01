@@ -7,6 +7,10 @@ address here is made up."""
 
 from __future__ import annotations
 
+import sys
+import threading
+import types
+
 import pytest
 
 from reverseapoc import unitdefs
@@ -252,3 +256,40 @@ def test_file_scope_definitions_by_any_identifier():
     code = ("int tick_count(void)\n{\n    if (x) {\n    }\n}\n"
             "void (*cb)(int);\nstatic int f(int (*g)(void))\n{\n}\n")  # fmt: skip
     assert unitdefs.file_scope_definitions(code) == ["tick_count", "f"]
+
+
+GATE_MODULE = "_test_unitdefs_load_gate"  # the stand-in configure.py's body waits on it
+GATE_WAIT_S = 5.0  # the body's own bound, so a broken test never hangs the suite
+SECOND_LOAD_S = 0.5  # how long the second load may take before it counts as waiting
+
+
+def test_load_configure_waits_for_a_load_in_another_thread(tmp_path, monkeypatch):
+    """Night 20261101-123417 stopped at its first sessions (AttributeError: configure has no
+    _ConditionalError): load_configure registered the module before running it, so a worker
+    asking at the same moment got the half-run module. A second thread waits for the whole
+    module, and both get the same one."""
+    gate = types.SimpleNamespace(entered=threading.Event(), release=threading.Event())
+    monkeypatch.setitem(sys.modules, GATE_MODULE, gate)
+    monkeypatch.setitem(sys.modules, unitdefs._LOADED_AS, None)  # restored at teardown
+    script = tmp_path / unitdefs.CONFIGURE
+    body = (f"import {GATE_MODULE} as gate", "gate.entered.set()",
+            f"gate.release.wait({GATE_WAIT_S})", "LATE = True", "")  # fmt: skip
+    script.write_text("\n".join(body), encoding="utf-8")
+    loaded = {}
+
+    def load(who: str) -> None:
+        loaded[who] = unitdefs.load_configure(script)
+
+    first = threading.Thread(target=load, args=("first",))
+    first.start()
+    assert gate.entered.wait(GATE_WAIT_S)  # the first load is running the module body
+    second = threading.Thread(target=load, args=("second",))
+    second.start()
+    second.join(SECOND_LOAD_S)
+    waited = second.is_alive()
+    gate.release.set()
+    first.join()
+    second.join()
+    assert waited, "the second load returned while the first was still running the module"
+    assert loaded["second"] is loaded["first"]
+    assert loaded["second"].LATE is True
