@@ -20,7 +20,7 @@ INCLUDE_ASM(func_0008B530);
 void pager_screen_run(int a, int b);
 
 /* void: EAX only holds pager_screen_run's result at ret; the callers decide. */
-void func_0008A100(void)
+void pager_open_section_4(void)
 {
     extern short pager_screen_action;
 
