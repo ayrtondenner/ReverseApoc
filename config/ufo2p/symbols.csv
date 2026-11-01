@@ -56,6 +56,7 @@ address,name,kind
 0x0014D9F0,_slot_table,data
 0x00179A5C,_rec15e_table,data
 0x00183A78,_hover_info_changed,data
+0x001A112C,_ui_screen_exit_requested,data
 0x001A113C,_hover_info_shown,data
 0x001A3EF0,_confirm_is_cancelled,data
 0x001A3EF8,_confirm_is_accepted,data

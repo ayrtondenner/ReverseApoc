@@ -14,10 +14,10 @@ INCLUDE_ASM(func_0002AD90);
 INCLUDE_ASM(func_0002AF40);
 INCLUDE_ASM(func_0002B320);
 
-extern int D_001A112C;
+extern int ui_screen_exit_requested;
 
 /* void: EAX is not set before ret */
 void ui_request_screen_exit(void)
 {
-    D_001A112C = 1;
+    ui_screen_exit_requested = 1;
 }
