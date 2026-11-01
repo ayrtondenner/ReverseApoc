@@ -15,7 +15,7 @@ INCLUDE_ASM(func_00067930);
 
 extern int D_001A3EF8;
 
-void func_00066C50(void)
+void confirm_on_accept(void)
 {
     D_001A3EF8 = 1;
 }
