@@ -2,6 +2,7 @@
 address,name,kind
 0x00010010,main_,func
 0x000126E0,debug_log_printf_,func
+0x00051DB0,flags_set_d5058_and_pair_,func
 0x000C9357,stackavail_,func
 0x0013BBA4,__ASTACKSIZ,data
 0x0013BBA8,__ASTACKPTR,data

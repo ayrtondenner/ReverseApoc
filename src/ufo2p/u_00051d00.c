@@ -17,7 +17,7 @@ extern int D_000D5058;
 extern short D_00183A78;
 extern short D_00183A80;
 
-void func_00051DB0(void)
+void flags_set_d5058_and_pair(void)
 {
     D_000D5058 = 1;
     D_00183A78 = 1;
