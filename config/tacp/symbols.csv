@@ -2,6 +2,7 @@
 address,name,kind
 0x000102A0,main_,func
 0x000220C0,tacrec_count_live_slots_,func
+0x00023C00,type_name_is_shown_,func
 0x000CA446,stackavail_,func
 0x00109ED0,_tacrec_table,data
 0x002B3E50,__ASTACKSIZ,data

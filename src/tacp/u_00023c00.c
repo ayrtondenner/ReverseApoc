@@ -10,7 +10,7 @@
 extern int D_001ED2C8;
 extern unsigned char D_0027A809[];
 
-int func_00023C00(int a, unsigned int b)
+int type_name_is_shown(int a, unsigned int b)
 {
     int r = 1;
 
