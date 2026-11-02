@@ -1538,3 +1538,335 @@ def test_cli_default_evidence(tmp_path, monkeypatch, capsys):
     assert cli_main(argv) == 0
     out = capsys.readouterr().out
     assert all(f.name in out for f in AGREEING) and "met" in out
+
+
+# ---- 07-48c: batch-sourced proposals (`flags propose --from-batch`) ----
+#
+# A `reverseapoc batch` results file (JSON lines, one record per function and cell) names the C
+# file each record judged (`source`, `source_sha256`). propose_batch turns the exact records of
+# one cell into one proposal per (exe, unit), with the row's C at its INCLUDE_ASM marker. The
+# results, records and C below are made up.
+
+CELL = "-4r -oneatx -s -fpi"
+CELL_RULE = "wcc386@10.6 -4r -oneatx -s -fpi"
+LIFT, SPIKE = "reverseapoc lift", "claude subagent (spike 011)"  # the design's two authors
+UA, UB = "u_00010000", "u_00020000"
+A1, A2, A3 = "func_00010000", "func_00010040", "func_00010080"
+B1, B2 = "func_00020000", "func_00020040"
+UNIT_A = c_text(marked=(A1, A2, A3), tag="unit a")  # the committed src/ufo2p/u_00010000.c
+RESULTS = "build/batch/48c.jsonl"
+
+
+def row_c(name: str, tag: str = "row", *also: str) -> str:
+    """A converter-style file defining `name` (and `also`), made-up bodies."""
+    lines = [f"/* {tag} */", '#include "common.h"']
+    for fn in (name, *also):
+        lines += ["", f"int {fn}(int a)", "{", f"    return a + {len(tag)};", "}"]
+    return "\n".join(lines) + "\n"
+
+
+def batch_repo(tmp_path: Path) -> Path:
+    """make_repo plus a functions.csv and units.csv of two units: u_00010000 (A1-A3, committed
+    src, every row a marker) and u_00020000 (B1-B2, no src file)."""
+    from reverseapoc.functions import UnitRow, write_units_csv
+
+    repo = make_repo(tmp_path)
+    _functions_csv(repo, "ufo2p", [(0x10000, A1, "game", UA), (0x10040, A2, "game", UA),
+                                   (0x10080, A3, "game", UA), (0x20000, B1, "game", UB),
+                                   (0x20040, B2, "game", UB)])  # fmt: skip
+    write_units_csv(repo / "config" / "ufo2p" / "units.csv",
+                    [UnitRow(UA, 0x10000, 0x20000, "first"),
+                     UnitRow(UB, 0x20000, 0x30000, "hand")], "UFO2P.EXE")  # fmt: skip
+    write_status(repo, "ufo2p", [(0x10080, A3, UA, "partial", "40.00")])
+    src = repo / "src" / "ufo2p" / f"{UA}.c"
+    src.parent.mkdir(parents=True)
+    src.write_text(UNIT_A, encoding="utf-8", newline="\n")
+    return repo
+
+
+def row_file(repo: Path, start: int, text: str, exe: str = "ufo2p") -> str:
+    """Write the row's C to build/batch/in/<exe>/f_<addr>.c; its repo-relative path."""
+    rel = f"build/batch/in/{exe}/f_{start:08x}.c"
+    (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+    (repo / rel).write_text(text, encoding="ascii", newline="\n")
+    return rel
+
+
+def batch_record(repo: Path, start: int, *, exact: bool = True, cell: str = CELL,
+                 cell_flags: str | None = None, source: str | None = None,
+                 sha: str | None = None, exe: str = "ufo2p") -> dict:  # fmt: skip
+    """One record of `reverseapoc batch` for the row at `start` under `cell`, naming its source
+    (the row's file under build/batch/in/ unless given) and that file's LF sha256."""
+    if source is None:
+        source = f"build/batch/in/{exe}/f_{start:08x}.c"
+    if sha is None:
+        path = repo / source
+        sha = lf_sha256(path.read_text(encoding="ascii")) if path.is_file() else SHA
+    return {"exe": exe, "address": f"0x{start:08X}", "cell": cell,
+            "flags": cell if cell_flags is None else cell_flags, "compiled": True,
+            "exact": exact, "exact_trim": False, "score": 100.0 if exact else 80.0,
+            "len": [16, 16], "key": "" if exact else "mov", "source": source,
+            "source_sha256": sha}  # fmt: skip
+
+
+def results_file(repo: Path, records: list[dict], rel: str = RESULTS) -> Path:
+    """The JSONL, each record preceded by its committed-cell twin (never exact here)."""
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    for record in records:
+        committed = dict(record, cell="committed", flags="-4r -s -fpi", exact=False)
+        lines += [json.dumps(committed), json.dumps(record)]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def _three_rows(repo: Path) -> Path:
+    """A1 and A2 of u_00010000 and B1 of u_00020000, each exact under CELL."""
+    for start, name in ((0x10000, A1), (0x10040, A2), (0x20000, B1)):
+        row_file(repo, start, row_c(name, f"row {name}"))
+    return results_file(repo, [batch_record(repo, s) for s in (0x10000, 0x10040, 0x20000)])
+
+
+def _queue_bytes(repo: Path) -> bytes | None:
+    path = queue_of(repo)
+    return path.read_bytes() if path.is_file() else None
+
+
+# negatives first
+
+
+def test_propose_batch_skips_a_record_that_is_not_exact(tmp_path):
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000, exact=False)])
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == ()
+    assert any("ufo2p 0x00010000" in text and "not exact" in text for text in report.skipped)
+    assert _queue_bytes(repo) is None and not (repo / "build" / "flags").exists()
+
+
+def test_propose_batch_refuses_a_cell_whose_flags_differ(tmp_path):
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000, cell_flags="-4r -ot -s -fpi")])
+    with pytest.raises(flags.FlagsError, match="0x00010000"):
+        flags.propose_batch(results, CELL, LIFT, repo=repo)
+    with pytest.raises(flags.FlagsError, match="no record"):
+        flags.propose_batch(results, "-4r -ot -s -fpi", LIFT, repo=repo)
+    assert _queue_bytes(repo) is None and not (repo / "build" / "flags").exists()
+
+
+def test_propose_batch_refuses_paths_outside_build(tmp_path):
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    record = batch_record(repo, 0x10000)
+    for rel in ("results.jsonl", "config/results.jsonl"):
+        with pytest.raises(flags.FlagsError, match="build/"):
+            flags.propose_batch(results_file(repo, [record], rel), CELL, LIFT, repo=repo)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    with pytest.raises(flags.FlagsError, match="build/"):
+        flags.propose_batch(outside, CELL, LIFT, repo=repo)
+    (repo / "src" / "f_00010000.c").write_text(row_c(A1), encoding="ascii", newline="\n")
+    for source in ("src/f_00010000.c", "build/../src/f_00010000.c"):
+        stray = batch_record(repo, 0x10000, source=source, sha=lf_sha256(row_c(A1)))
+        with pytest.raises(flags.FlagsError, match="build/"):
+            flags.propose_batch(results_file(repo, [stray]), CELL, LIFT, repo=repo)
+    assert _queue_bytes(repo) is None and not (repo / "build" / "flags").exists()
+
+
+def test_propose_batch_refuses_an_unknown_author(tmp_path):
+    repo = batch_repo(tmp_path)
+    results = _three_rows(repo)
+    with pytest.raises(flags.FlagsError) as caught:
+        flags.propose_batch(results, CELL, "someone", repo=repo)
+    assert LIFT in str(caught.value) and SPIKE in str(caught.value)
+    assert _queue_bytes(repo) is None
+
+
+def _held(status: str, rule: str, pid: str = "F-0001") -> flags.Proposal:
+    return _proposal(id=pid, unit=UA, glob=f"src/ufo2p/{UA}.c", rule=rule, functions=(A1,),
+                     siblings=(), alternatives=(), candidate=f"build/flags/{pid}/{UA}.c",
+                     status=status)  # fmt: skip
+
+
+def test_propose_batch_skips_a_duplicate_exe_unit_rule(tmp_path):
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000)])
+    flags.write_queue(queue_of(repo), [_held("landed", CELL_RULE)])
+    before = _queue_bytes(repo)
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == () and _queue_bytes(repo) == before
+    assert any("duplicate of F-0001" in text for text in report.skipped)
+    flags.write_queue(queue_of(repo), [_held("proposed", "wcc386@10.6 -4r -ot -s -fpi")])
+    before = _queue_bytes(repo)
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == () and _queue_bytes(repo) == before
+    assert any("F-0001" in text and "is open" in text for text in report.skipped)
+
+
+def test_propose_batch_refuses_a_changed_source(tmp_path):
+    repo = batch_repo(tmp_path)
+    rel = row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000)])
+    (repo / rel).write_text(row_c(A1, "edited after the batch"), encoding="ascii", newline="\n")
+    with pytest.raises(flags.FlagsError, match="changed since the batch judged it"):
+        flags.propose_batch(results, CELL, LIFT, repo=repo)
+    old = {k: v for k, v in batch_record(repo, 0x10000).items()
+           if k not in ("source", "source_sha256")}  # fmt: skip
+    with pytest.raises(flags.FlagsError, match="re-run reverseapoc batch"):
+        flags.propose_batch(results_file(repo, [old]), CELL, LIFT, repo=repo)
+    assert _queue_bytes(repo) is None and not (repo / "build" / "flags").exists()
+
+
+def test_propose_batch_skips_matched_and_committed_rule(tmp_path):
+    repo = batch_repo(tmp_path)
+    write_status(repo, "ufo2p", [(0x10000, A1, UA, "matched", "100.00")])
+    row_file(repo, 0x10000, row_c(A1))
+    report = flags.propose_batch(results_file(repo, [batch_record(repo, 0x10000)]), CELL, LIFT,
+                                 repo=repo)  # fmt: skip
+    assert report.added == ()
+    assert any(A1 in text and "matched" in text for text in report.skipped)
+    committed = "-4r -s -fpi"
+    row_file(repo, 0x20040, row_c(B2))
+    results = results_file(repo, [batch_record(repo, 0x20040, cell=committed)])
+    report = flags.propose_batch(results, committed, LIFT, repo=repo)
+    assert report.added == ()
+    assert any(B2 in text and "committed rule" in text for text in report.skipped)
+    assert _queue_bytes(repo) is None
+
+
+def test_propose_batch_skips_a_file_defining_another_row(tmp_path):
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1, "row", A2))
+    report = flags.propose_batch(results_file(repo, [batch_record(repo, 0x10000)]), CELL, LIFT,
+                                 repo=repo)  # fmt: skip
+    assert report.added == ()
+    assert any(A2 in text and "also defines" in text for text in report.skipped)
+    assert _queue_bytes(repo) is None
+
+
+def test_queue_refuses_author_rules(tmp_path):
+    path = tmp_path / "q.toml"
+    bad = [dict(source="batch"),  # a batch proposal without its author
+           dict(author=LIFT),  # a sweep proposal with an author
+           dict(source="batch", author="someone")]  # an author outside AUTHORS
+    for changes in bad:
+        with pytest.raises(flags.FlagsError, match="source|author"):
+            flags.write_queue(path, [_proposal(**changes)])
+    assert not path.exists()
+
+
+def _exit(argv: list[str]) -> int:
+    try:
+        return cli_main(argv)
+    except SystemExit as exc:  # argparse's own usage errors
+        return int(exc.code)
+
+
+def test_cli_propose_needs_exactly_one_source(tmp_path, capsys):
+    repo = batch_repo(tmp_path)
+    results = str(_three_rows(repo))
+    base = ["flags", "propose", "--repo", str(repo)]
+    assert _exit(base) == 2
+    err = capsys.readouterr().err
+    assert "one of the arguments --from-attempts --from-batch is required" in err
+    both = [*base, "--from-attempts", RUN, "--from-batch", results, "--cell", CELL,
+            "--author", LIFT]  # fmt: skip
+    assert _exit(both) == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+    for extra in ([], ["--cell", CELL], ["--author", LIFT]):
+        assert _exit([*base, "--from-batch", results, *extra]) == 2
+        assert "reverseapoc flags: error: --from-batch needs" in capsys.readouterr().err
+    for extra in (["--cell", CELL], ["--author", LIFT]):
+        assert _exit([*base, "--from-attempts", *extra]) == 2
+        assert "reverseapoc flags: error: --cell and --author" in capsys.readouterr().err
+    assert _queue_bytes(repo) is None
+
+
+# positives
+
+
+def test_propose_batch_adds_one_proposal_per_unit(tmp_path):
+    """The tracer: two exact rows of u_00010000 (committed src) and one of u_00020000 (no src,
+    scaffolded) become F-0001 and F-0002, each with the unit's C and the rows' C at their
+    markers."""
+    from reverseapoc import units
+    from reverseapoc.functions import UnitRow
+
+    repo = batch_repo(tmp_path)
+    cflags_before = (repo / "config" / "cflags.txt").read_bytes()
+    results = _three_rows(repo)
+    report = flags.propose_batch(results, CELL, SPIKE, repo=repo)
+    assert report.added == ("F-0001", "F-0002")
+    pa, pb = flags.read_queue(queue_of(repo))
+    common = dict(rule=CELL_RULE, base=BASE, alternatives=(), source="batch", author=SPIKE,
+                  evidence=(RESULTS,), status="proposed", regate_exit=-1, regate_variant="empty",
+                  regate_cflags_sha256="", regate_log="", reason="", reverted=())  # fmt: skip
+    for p in (pa, pb):
+        assert {key: getattr(p, key) for key in common} == common
+    assert (pa.id, pa.exe, pa.unit, pa.glob) == ("F-0001", "ufo2p", UA, f"src/ufo2p/{UA}.c")
+    assert pa.functions == (A1, A2) and pa.keeps == ()
+    assert pa.siblings == (f"{A3} partial 40.00",)
+    want_a = UNIT_A
+    for name in (A1, A2):
+        want_a = want_a.replace(f"INCLUDE_ASM({name});", row_c(name, f"row {name}"))
+    assert pa.candidate == f"build/flags/F-0001/{UA}.c"
+    assert (repo / pa.candidate).read_text(encoding="utf-8") == want_a
+    assert pa.candidate_sha256 == lf_sha256(want_a)
+    assert (pb.id, pb.unit, pb.functions) == ("F-0002", UB, (B1,))
+    assert pb.siblings == (f"{B2} unattempted",)
+    rows = [FunctionRow(0x20000, 0x20010, B1, "game", UB, "call"),
+            FunctionRow(0x20040, 0x20050, B2, "game", UB, "call")]  # fmt: skip
+    scaffold = units.scaffold_unit("UFO2P.EXE", UnitRow(UB, 0x20000, 0x30000, "hand"), rows)
+    want_b = scaffold.replace(f"INCLUDE_ASM({B1});", row_c(B1, f"row {B1}"))
+    assert (repo / pb.candidate).read_text(encoding="utf-8") == want_b
+    assert pb.candidate_sha256 == lf_sha256(want_b)
+    assert (repo / "config" / "cflags.txt").read_bytes() == cflags_before
+    assert not (repo / "src" / "ufo2p" / f"{UB}.c").exists()
+
+
+def test_propose_batch_is_idempotent(tmp_path):
+    repo = batch_repo(tmp_path)
+    results = _three_rows(repo)
+    flags.propose_batch(results, CELL, LIFT, repo=repo)
+    before = _queue_bytes(repo)
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == () and _queue_bytes(repo) == before
+
+
+def test_queue_round_trips_a_batch_proposal(tmp_path):
+    path = tmp_path / "q.toml"
+    batch_p = _proposal(id="F-0002", source="batch", author=LIFT, alternatives=(),
+                        candidate=f"build/flags/F-0002/{UNIT}.c", evidence=(RESULTS,))
+    flags.write_queue(path, [_proposal(), batch_p])
+    assert flags.read_queue(path) == [_proposal(), batch_p]
+    text = path.read_text(encoding="ascii")
+    first, second = text.split("[[proposal]]")[1:]
+    assert "author" not in first
+    assert second.rstrip("\n").splitlines()[-1] == 'author = "reverseapoc lift"'
+
+
+def test_committed_queue_round_trips_byte_identical():
+    """A guard (green before 07-48c too): the committed queue parses, no entry has an author,
+    and format_queue reproduces the file byte for byte."""
+    path = REPO_ROOT / "config" / "cflags-proposals.toml"
+    proposals = flags.read_queue(path)
+    assert len(proposals) == 44
+    assert all(getattr(p, "author", "") == "" for p in proposals)
+    assert flags.format_queue(proposals) == path.read_bytes().decode("ascii")
+
+
+def test_cli_propose_from_batch(tmp_path, capsys):
+    repo = batch_repo(tmp_path)
+    results = str(_three_rows(repo))
+    argv = ["flags", "propose", "--from-batch", results, "--cell", CELL, "--author", LIFT,
+            "--repo", str(repo)]  # fmt: skip
+    assert cli_main(argv) == 0
+    out = capsys.readouterr().out
+    assert "added F-0001" in out and "added F-0002" in out
+    assert cli_main([*argv, "--json"]) == 0
+    doc = json.loads(capsys.readouterr().out)
+    assert doc["added"] == [] and any("duplicate of F-0001" in s for s in doc["skipped"])

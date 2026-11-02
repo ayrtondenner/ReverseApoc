@@ -156,3 +156,35 @@ def test_batch_parses_its_arguments():
     assert args.workers == 8
     assert args.out == batch.BUILD_ROOT / "batch.jsonl"
     assert args.func is cli._cmd_batch
+
+
+def test_batch_records_name_their_source(tmp_path, monkeypatch):
+    """07-48c: every record of `batch` names its input C file (repo-relative POSIX) and the
+    file's LF sha256, a refused record too. The EXE loader is a stub holding one row, and
+    nothing compiles (a #pragma source is refused before any compile)."""
+    import json
+    from types import SimpleNamespace
+
+    from reverseapoc.functions import FunctionRow
+    from reverseapoc.status import lf_sha256
+
+    text = '#pragma aux f "*"\nint func_000108E0(void) { return 0; }\n'
+    source = tmp_path / "in" / "ufo2p" / "f_000108e0.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(text, encoding="ascii", newline="\n")
+    row = FunctionRow(0x108E0, 0x108F0, "func_000108E0", "game", "u_000108e0", "call")
+    stub = SimpleNamespace(stem="ufo2p", rows=(row,), flat=b"\0" * 0x20000,
+                           target=SimpleNamespace(name="UFO2P.EXE"))  # fmt: skip
+    monkeypatch.setattr(batch, "load_exe_inputs", lambda *a, **kw: stub)
+    monkeypatch.setattr(batch, "compile_batch",
+                        lambda jobs, *a, **kw: batch.BatchResult((), 0.0, 0.0))  # fmt: skip
+    monkeypatch.setattr(batch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli, "DEFAULT_BUILD", tmp_path / "build")
+    out = tmp_path / "build" / "out.jsonl"
+    assert _batch(tmp_path, tmp_path / "in", "--out", str(out), "--cell", "-4r -ot -s -fpi") == 0
+    records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert [r["cell"] for r in records] == ["committed", "-4r -ot -s -fpi"]
+    for record in records:
+        assert record["key"].startswith("refused: ")
+        assert record["source"] == "in/ufo2p/f_000108e0.c"
+        assert record["source_sha256"] == lf_sha256(text)

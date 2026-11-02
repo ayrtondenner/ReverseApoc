@@ -394,3 +394,23 @@ def test_judge_exact_on_a_filler_pair(tmp_path):
     assert verdict.exact is True
     assert verdict.exact_trim is False
     assert verdict.len_ours < verdict.len_row
+
+
+def test_with_source_names_the_path_and_lf_sha256(tmp_path):
+    """07-48c: a record names the C it judged, so `flags propose --from-batch` can find it: a
+    repo-relative POSIX path inside the repo (absolute outside), and the text's LF sha256."""
+    import hashlib
+
+    verdict = batch.Verdict(True, True, True, 0, 11, 11, 100.0, "")
+    record = batch.cell_record("ufo2p", 0x108E0, "committed", RULE_106, _compiled(True), verdict)
+    text = "int f(void)\r\n{\r\n    return 0;\r\n}\r\n"
+    lf = hashlib.sha256(text.replace("\r\n", "\n").encode("ascii")).hexdigest()
+    inside = batch.REPO_ROOT / "build" / "batch" / "in" / "ufo2p" / "f_000108e0.c"
+    named = batch.with_source(record, inside, text)
+    assert named == {**record, "source": "build/batch/in/ufo2p/f_000108e0.c",
+                     "source_sha256": lf}  # fmt: skip
+    outside = tmp_path / "f_000108e0.c"
+    assert batch.with_source(record, outside, text.replace("\r\n", "\n"))["source"] == (
+        outside.resolve().as_posix())  # fmt: skip
+    assert batch.with_source(record, outside, None)["source_sha256"] == ""
+    assert "source" not in record  # the record itself is unchanged
