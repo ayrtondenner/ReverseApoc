@@ -20,7 +20,14 @@ INCLUDE_ASM(func_00061FE0);
 INCLUDE_ASM(func_000620C0);
 INCLUDE_ASM(func_000621A0);
 INCLUDE_ASM(func_000621D0);
-INCLUDE_ASM(func_00062200);
+
+void func_000B7170(int);
+
+void func_00062200(int r_eax)
+{
+    func_000B7170(r_eax); return;
+}
+
 INCLUDE_ASM(func_00062220);
 
 extern int D_000E7304;

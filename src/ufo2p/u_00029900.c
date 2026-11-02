@@ -7,7 +7,14 @@
  */
 #include "common.h"
 
-INCLUDE_ASM(func_00029900);
+
+int sys_delay(int);
+
+int func_00029900(void)
+{
+    return sys_delay(12);
+}
+
 INCLUDE_ASM(func_00029910);
 INCLUDE_ASM(func_0002A250);
 INCLUDE_ASM(func_0002AD90);

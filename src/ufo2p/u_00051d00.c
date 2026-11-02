@@ -10,7 +10,12 @@
 INCLUDE_ASM(func_00051D00);
 INCLUDE_ASM(func_00051D40);
 INCLUDE_ASM(func_00051D80);
-INCLUDE_ASM(func_00051DA0);
+
+void func_00051DA0(void)
+{
+    return;
+}
+
 INCLUDE_ASM(func_00051DD0);
 
 extern int D_000D5058;
