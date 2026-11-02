@@ -330,8 +330,8 @@ class Verdict:
     score: float
     key: str  # the first differing instruction pair as mnemonic shapes, or why there is none
     # A diagnostic, never a match: exact once the row's trailing filler is cut off, for a filler
-    # tail the 07-48 rule refused (an end off 16-byte alignment, more than 15 bytes, or an LE
-    # fixup in the tail).
+    # tail the 07-48 rule refused (an end off 16-byte alignment, more than 15 bytes, an LE fixup
+    # in the tail, or our last instruction not terminal, so our code would run into the filler).
     exact_trim: bool = False
 
     def to_json(self) -> dict[str, Any]:

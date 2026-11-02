@@ -828,9 +828,11 @@ class FunctionCheck:
     def _bytes_line(self) -> str:
         if not self.bytes_ok:
             return f"bytes {self.differing} differ from {_hex(self.first_va or self.va)}"
-        if self.filler:
-            return f"bytes ok, {self.filler} bytes of trailing filler kept"
-        return "bytes ok"
+        if not self.filler:
+            return "bytes ok"
+        # Only a passing verdict lands, so only then is the original's filler kept (07-48).
+        kept = " kept" if self.reloc.ok else ""
+        return f"bytes ok, {self.filler} bytes of trailing filler{kept}"
 
     def format(self) -> list[str]:
         reloc = "reloc ok" if self.reloc.ok else f"reloc FAILED ({len(self.reloc.problems)})"
@@ -1026,6 +1028,9 @@ def check_source(
     compiled = _compile(compile_fn, Path(src), paths.obj, options, rule_path=rule_path)
     module = read_module(paths.obj)
     _write(paths.base, write_elf(convert(module)))
+    # The target is written only after the relocation check (its rows depend on the verdicts),
+    # so an earlier run's target must not outlive a run that raises before it (07-48 review).
+    paths.target.unlink(missing_ok=True)
     account = account_unit(module, rows, exe.symbols, text, unit_file=unit_file)
     checked = with_relocs(module, account.defined, rows, exe)
     if not checked and not account.problems:
@@ -1421,8 +1426,23 @@ def _measure(setup: _SweepSetup, number: int, version: str, flags: tuple[str, ..
     base = setup.work / f"cell-{number:02d}{ELF_SUFFIX}"
     _write(base, write_elf(convert(module)))
     same = compare_bytes(d.ours, d.row, setup.exe.flat, reloc)
-    percent = objdiff_percent(setup.target_o, base, d.symbol, runner=setup.runner)
+    percent = objdiff_percent(_cell_target(setup, number, d, reloc), base, d.symbol,
+                              runner=setup.runner)  # fmt: skip
     return SweepCell(number, version, flags, "", percent, reloc.ok, same.differing)
+
+
+def _cell_target(setup: _SweepSetup, number: int, d: Defined, reloc: RelocResult) -> Path:
+    """The objdiff target of one cell: the sweep's whole-row target, or, for a cell whose
+    verdict kept trailing filler, its own target with the row cut at our length, as
+    check_source cuts it (07-48 review), so a cell check would pass scores 100."""
+    rows = _target_rows(setup.rows, [(d, reloc)])
+    if rows == list(setup.rows):
+        return setup.target_o
+    exe = setup.exe
+    cut = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
+    path = setup.work / f"cell-{number:02d}-target{ELF_SUFFIX}"
+    _write(path, cut.data)
+    return path
 
 
 def _best(cells: Sequence[SweepCell]) -> tuple[SweepCell, ...]:
