@@ -21,6 +21,7 @@ from relocpair import (
     GOOD_ROW,
     LOAD_FIELD,
     TEXT_INDEX,
+    FillerPair,
     absolute,
     call,
     filler_pair,
@@ -512,3 +513,15 @@ def test_filler_still_compares_the_bytes_before_the_tail():
 def test_filler_refuses_ours_without_a_terminal_last_instruction():
     body = bytes.fromhex("b801000000" "40" "40")  # mov eax, 1; inc eax; inc eax
     assert "terminal instruction" in refusal(filler_pair(body=body))
+
+
+def test_filler_refuses_ours_ending_in_inline_data():
+    """Condition 4 decodes ours as x86.decode does everywhere: an instruction start at one of our
+    fixup fields is inline data (a jump table), so it ends our code there, even when the data's
+    bytes would happen to decode on to a `ret`."""
+    body = bytes.fromhex("c3" "909090c3")  # ret, then a 4-byte table entry (a fixup field)
+    tail = bytes.fromhex("8d7600" "89ff" "8d4900" "90" "8d7600")  # 12 bytes: end aligned
+    plain = filler_pair(tail, body=body)
+    segment = our_segment(body, [absolute(1, 1)], ["_D_00020004"])
+    pair = FillerPair(segment, body, plain.row, plain.orig)
+    assert "terminal instruction" in refusal(pair)
