@@ -5,16 +5,16 @@ milestone_name: Milestone 1
 current_phase: 07
 current_phase_name: Mechanics-first decompilation
 status: executing
-stopped_at: Completed 07-48b-PLAN.md
-last_updated: "2026-11-02T04:14:55.336Z"
+stopped_at: Completed 07-48c-PLAN.md
+last_updated: "2026-11-02T05:37:15.396Z"
 last_activity: 2026-11-01
 last_activity_desc: Phase 07 execution started
-state_head: abc6563eecca4a66a323937a3dc809933859473f
+state_head: bdc7442c1cfd31282ef7e21893c4b7d255d7416c
 progress:
   total_phases: 8
   completed_phases: 6
   total_plans: 122
-  completed_plans: 118
+  completed_plans: 119
 ---
 
 # Project State
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 ## Current Position
 
 Phase: 07 (Mechanics-first decompilation) — EXECUTING
-Plan: 3 of 42
+Plan: 4 of 42
 Status: Ready to execute
 Last activity: 2026-11-01 — Completed quick task 261101-qvp: batch harness (reverseapoc judge, reverseapoc batch) in tools/
 
@@ -76,6 +76,7 @@ Next steps:
 | Phase 05 P20 | 25min | 3 tasks | 2 files |
 | Phase 07 P48 | 54 min | 4 tasks | 16 files |
 | Phase 07 P48b | 48 min | 3 tasks | 8 files |
+| Phase 07 P48c | 53 min | 3 tasks | 8 files |
 
 ## Accumulated Context
 
@@ -109,6 +110,8 @@ Recent decisions affecting current work:
 - [Phase 07]: 07-48 objdiff branch B: tacp func_0006BEE0 scored 89.6552% against the full row, so check_source cuts a filler-accepted row's objdiff target at start + reloc.length (100% after)
 - [Phase 07]: 07-48b: the leading table's span accepts ours short of the original only by alignment filler before a 16-aligned head (07-48 conditions 1, 2, 3, 5; not 4), through check_function(table=True), passed only by check._head_reloc
 - [Phase 07]: 07-48b: tacp func_0001E860 (f_0001e860.c) is exact only under -4r -oneatx -s -fpi; it joins Task 2b's D-12 proposal list via 07-48c, not Task 2a; the orchestrator lands it
+- [Phase 07]: 07-48c: flags propose --from-batch turns a reverseapoc batch cell's exact records into one D-12 proposal per unit (source batch, author one of AUTHORS, evidence the results JSONL, candidate the whole unit with each row's C at its marker); batch records carry source and source_sha256
+- [Phase 07]: 07-48c: the queue's author key is optional and written only when set, so the 44 committed entries round-trip byte for byte; a batch landing carries only Matched-By: <author> with gate attempts 0, so stats classes it human-written
 
 ### Pending Todos
 
@@ -149,6 +152,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-02T04:14:53.746Z
-Stopped at: Completed 07-48b-PLAN.md
+Last session: 2026-11-02T05:37:13.804Z
+Stopped at: Completed 07-48c-PLAN.md
 Resume file: None
