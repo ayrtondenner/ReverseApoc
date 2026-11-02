@@ -22,6 +22,13 @@ relocation that sits where an instruction would start as inline data (a jump tab
 `is_filler` recognises the padding Watcom puts after a terminal instruction to align the next
 function: nop, both encodings of mov eax, eax, and lea eax, [eax+0].
 
+Two filler predicates, kept apart on purpose (07-48). `is_filler` stays eax-only: omf2elf trims
+our own code's trailing filler with it, so our sizes never move. `is_alignment_filler` (the
+Insn field, from capstone operand detail, never from op_str) takes any register: nop, mov r, r
+with one register twice, and lea r, [r] with base r, no index, displacement 0 and no segment
+override, plus the `FILLER_ENCODINGS`. It reads the original's tail (relocs' trailing-filler
+rule) and batch's filler checks; the linker pads a one-function object's `_TEXT` with it.
+
 The installed capstone is checked through `importlib.metadata`, never through the package's own
 version attribute, which reports 5.0.7 for the 5.0.9 release.
 """
@@ -43,7 +50,17 @@ from capstone import (
     Cs,
     CsInsn,
 )
-from capstone.x86 import X86_INS_JMP, X86_INS_LJMP, X86_OP_IMM
+from capstone.x86 import (
+    X86_INS_JMP,
+    X86_INS_LEA,
+    X86_INS_LJMP,
+    X86_INS_MOV,
+    X86_INS_NOP,
+    X86_OP_IMM,
+    X86_OP_MEM,
+    X86_OP_REG,
+    X86_REG_INVALID,
+)
 
 CAPSTONE_VERSION = "5.0.9"  # the pin in pyproject.toml and docs/tools.md
 
@@ -91,6 +108,7 @@ class Insn:
     is_terminal: bool  # flow does not fall through: ret, iret, unconditional jmp
     disp_offset: int = 0  # byte offset of the memory displacement field in `raw`; 0: none
     imm_offset: int = 0  # byte offset of the immediate field in `raw`; 0: none
+    is_alignment_filler: bool = False  # filler in any register (`_alignment_filler`)
 
 
 @functools.cache
@@ -110,6 +128,39 @@ def _branch_target(ci: CsInsn) -> int | None:
     if len(operands) != 1 or operands[0].type != X86_OP_IMM:
         return None
     return operands[0].imm & _ADDRESS_MASK
+
+
+def _self_move(ci: CsInsn) -> bool:
+    """mov r, r: two register operands naming one register."""
+    operands = ci.operands
+    if len(operands) != 2 or any(op.type != X86_OP_REG for op in operands):
+        return False
+    return operands[0].reg == operands[1].reg
+
+
+def _self_lea(ci: CsInsn) -> bool:
+    """lea r, [r]: the memory operand's base is the register, with no index, displacement 0
+    and no segment override."""
+    operands = ci.operands
+    if len(operands) != 2:
+        return False
+    reg, mem = operands
+    if reg.type != X86_OP_REG or mem.type != X86_OP_MEM:
+        return False
+    if mem.mem.index != X86_REG_INVALID or mem.mem.segment != X86_REG_INVALID:
+        return False
+    return mem.mem.base == reg.reg and mem.mem.disp == 0
+
+
+def _alignment_filler(ci: CsInsn) -> bool:
+    """Alignment filler in any register, from capstone's operand detail (module docstring)."""
+    if bytes(ci.bytes) in FILLER_ENCODINGS or ci.id == X86_INS_NOP:
+        return True
+    if ci.id == X86_INS_MOV:
+        return _self_move(ci)
+    if ci.id == X86_INS_LEA:
+        return _self_lea(ci)
+    return False
 
 
 def _insn(ci: CsInsn) -> Insn:
@@ -134,6 +185,7 @@ def _insn(ci: CsInsn) -> Insn:
         is_terminal=returns or unconditional,
         disp_offset=ci.disp_offset,
         imm_offset=ci.imm_offset,
+        is_alignment_filler=_alignment_filler(ci),
     )
 
 
@@ -157,3 +209,9 @@ def decode_one(code: bytes, va: int) -> Insn | None:
 def is_filler(insn: Insn) -> bool:
     """True for the Watcom alignment filler encodings (see FILLER_ENCODINGS)."""
     return insn.raw in FILLER_ENCODINGS
+
+
+def is_alignment_filler(insn: Insn) -> bool:
+    """True for alignment filler in any register (the Insn field; module docstring). Reads
+    the original's trailing tail; our own sizes use the eax-only `is_filler`."""
+    return insn.is_alignment_filler

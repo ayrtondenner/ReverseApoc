@@ -88,23 +88,42 @@ def _check_verdict_is_for(fn: LandedFunction) -> None:
         )
 
 
+def _check_fits_row(fn: LandedFunction) -> None:
+    """Our bytes plus the verdict's kept filler fill the row exactly (rule 1, 07-48): a verdict
+    built elsewhere with filler 0, or a wrong count, cannot land short bytes."""
+    name, ours, row = fn.row.name, len(fn.ours), fn.row.end - fn.row.start
+    if ours > row:
+        raise LandError(f"{name}: {ours} bytes of ours are longer than its row of {row} bytes")
+    if ours + fn.reloc.filler != row:
+        raise LandError(
+            f"{name}: {ours} bytes of ours and {fn.reloc.filler} bytes of kept filler for a row "
+            f"of {row} bytes"
+        )
+
+
 def build_patch(fn: LandedFunction, flat: bytes) -> bytes:
     """Our bytes for `fn`, with every field in ours | theirs holding the original bytes from
-    `flat` (le.load_flat(relocate=False)). Refuses a function whose check did not pass, and one
-    whose verdict judged another row or other bytes."""
-    start, end = fn.row.start, fn.row.end
+    `flat` (le.load_flat(relocate=False)). Refuses a function whose check did not pass, one
+    whose verdict judged another row or other bytes, and bytes that with the verdict's kept
+    filler do not fill the row.
+
+    Under the 07-48 trailing-filler rule ours may be shorter than the row by the original's
+    filler (`reloc.filler`). The patch is our bytes only, so the tail keeps the original bytes
+    in the spliced EXE; fields must lie inside our bytes and each copy is clipped there."""
+    start = fn.row.start
     if not fn.reloc.ok:
         raise LandError(f"{fn.row.name}: the relocation check did not pass; not landing it")
     _check_verdict_is_for(fn)
-    if len(fn.ours) != end - start:
-        raise LandError(
-            f"{fn.row.name}: {len(fn.ours)} bytes of ours for a row of {end - start} bytes"
-        )
+    _check_fits_row(fn)
+    stop_at = start + len(fn.ours)
     patch = bytearray(fn.ours)
     for va in sorted(fn.reloc.ours | fn.reloc.theirs):
-        if not start <= va < end:
-            raise LandError(f"{fn.row.name}: field at {_hex(va)} lies outside the row")
-        stop = min(va + FIELD_SIZE, end)
+        if not start <= va < stop_at:
+            raise LandError(
+                f"{fn.row.name}: field at {_hex(va)} lies outside our {len(fn.ours)} bytes of "
+                "the row"
+            )
+        stop = min(va + FIELD_SIZE, stop_at)
         patch[va - start : stop - start] = flat[va:stop]
     return bytes(patch)
 

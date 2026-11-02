@@ -6,7 +6,19 @@ objdiff is not the gate. Spike 005 (plant P3) showed it scores 100.0 when only t
 relocation of one instruction (`mov dword [A], imm32 B`) names the wrong target. This check is
 independent of objdiff and fails that case:
 
-1. Length: our public's size equals the row's end - start (`_length`).
+1. Length: our public's size equals the row's end - start, or falls short of it only by the
+   original's trailing Watcom filler (`_trailing_filler`, plan 07-48, owner ruling: option A).
+   Each original object held one function and the linker aligned its `_TEXT` to 16, so the row
+   can end in up to 15 bytes of filler that our unit (the next function an INCLUDE_ASM stub)
+   never emits (spike 011). The shortfall is accepted when all five conditions hold, checked in
+   this order: (1) 0 < shortfall <= `_MAX_FILLER`; (2) the row end is a multiple of `_ALIGN`;
+   (3) no LE fixup field overlaps the tail [start + size, end); (4) ours decodes exactly to its
+   size and its last instruction is terminal; (5) the tail decodes exactly to the row end and
+   every instruction is `x86.is_alignment_filler`. Any other length difference is refused as
+   `length differs: ours N bytes, original M bytes; <the first failing condition's reason>`.
+   An accepted tail is recorded in `RelocResult.filler`, and rules 2-5 then run over
+   [start, start + size). land patches our bytes only, so the tail keeps the original bytes and
+   the whole-EXE SHA-1 still decides.
 2. Fields: `ours` are the VAs our OMF fixups cover (segment offset mapped to start + offset - off);
    `theirs` are the LE fixup fields inside the row.
 3. Bytes: every byte outside the fields of both sides is equal (`_bytes`).
@@ -55,6 +67,7 @@ from .functions import FunctionRow
 from .le import SRC_OFF32, SRC_SIZE, Fixup
 from .omf import LOC_OFFSET32, OMFFixup, Segment
 from .symbols import SymbolError, SymbolTable
+from .x86 import decode
 
 FIELD_SIZE = SRC_SIZE[SRC_OFF32]  # every field the check accepts: offset32 / rel32
 _MAX_LE_FIELD = max(SRC_SIZE.values())
@@ -72,6 +85,17 @@ LOCAL_SEGMENT_PROBLEM = "local segment reference, move data to an extern D_ symb
 FRAME_GROUP = 1
 FLAT_CODE_FRAMES = frozenset({FRAME_GROUP})
 _FLAT_CODE_FRAME_NAMES = " or ".join(f"F{method}" for method in sorted(FLAT_CODE_FRAMES))
+
+# Rule 1's trailing filler (07-48, option A).
+_ALIGN = 16  # the linker's _TEXT alignment of a one-function original object (spike 011)
+_MAX_FILLER = _ALIGN - 1  # alignment to _ALIGN never pads a full _ALIGN bytes
+REASON_LONGER = "ours is longer than the row"
+REASON_SHORTFALL = f"more than {_MAX_FILLER} bytes short, more than alignment filler"
+REASON_UNALIGNED = f"the row does not end on a {_ALIGN}-byte boundary"
+REASON_TAIL_FIXUP = "an LE fixup field lies in the original's tail"
+REASON_OURS_OPEN = "ours does not decode to a terminal instruction at its end"
+REASON_TAIL_UNDECODED = "the original's tail does not decode to the row end"
+REASON_TAIL_NOT_FILLER = "the original's tail is not alignment filler"
 
 
 class RelocError(ValueError):
@@ -97,7 +121,10 @@ class RelocResult:
     `start`, `length` and `sha1` name what the verdict judged: the row's start VA, and the
     length and SHA-1 (hex) of our bytes checked against it. check_function always sets them;
     land refuses an ok verdict that lacks them or names another row or other bytes
-    (05-REVIEW row 10b). A verdict built elsewhere for a RelocError leaves them None."""
+    (05-REVIEW row 10b). A verdict built elsewhere for a RelocError leaves them None.
+
+    `filler` is the bytes of original trailing filler the verdict accepted after our bytes
+    (rule 1, 07-48): land requires `length + filler` to equal the row's length."""
 
     ok: bool
     problems: tuple[str, ...]
@@ -106,6 +133,7 @@ class RelocResult:
     start: int | None = None
     length: int | None = None
     sha1: str | None = None
+    filler: int = 0
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -113,6 +141,7 @@ class RelocResult:
             "problems": list(self.problems),
             "ours": sorted(self.ours),
             "theirs": sorted(self.theirs),
+            "filler": self.filler,
         }
 
 
@@ -200,12 +229,75 @@ def _our_fixups(pair: _Pair) -> Iterator[OMFFixup]:
 # ---- one helper per rule ----
 
 
-def _length(pair: _Pair) -> Iterator[str]:
-    """Rule 1: equal length, in bytes."""
+def _shortfall_reason(shortfall: int) -> str | None:
+    """Condition 1: 0 < shortfall <= _MAX_FILLER (a negative shortfall: ours is longer)."""
+    if shortfall < 0:
+        return REASON_LONGER
+    if shortfall > _MAX_FILLER:
+        return REASON_SHORTFALL
+    return None
+
+
+def _alignment_reason(row: FunctionRow) -> str | None:
+    """Condition 2: the row ends on an _ALIGN boundary, where the linker's padding stops."""
+    return None if row.end % _ALIGN == 0 else REASON_UNALIGNED
+
+
+def _tail_fixup_reason(pair: _Pair) -> str | None:
+    """Condition 3: no LE fixup field overlaps the tail [start + size, end)."""
+    tail = pair.row.start + pair.size
+    fields = pair.theirs.values()
+    if any(fx.src_va < pair.row.end and fx.src_va + fx.size > tail for fx in fields):
+        return REASON_TAIL_FIXUP
+    return None
+
+
+def _ours_reason(pair: _Pair) -> str | None:
+    """Condition 4: ours decodes exactly to its size and ends in a terminal instruction, so
+    no code of ours could run on into the tail."""
+    code = pair.segment.data[pair.off : pair.off + pair.size]
+    insns = list(decode(bytes(code), pair.row.start))
+    if sum(insn.size for insn in insns) != pair.size or not insns[-1].is_terminal:
+        return REASON_OURS_OPEN
+    return None
+
+
+def _tail_reason(pair: _Pair) -> str | None:
+    """Condition 5: the original's tail decodes exactly to the row end, all alignment
+    filler. The reason names the first other instruction by mnemonic and VA, never bytes."""
+    tail = pair.row.start + pair.size
+    insns = list(decode(pair.flat[tail : pair.row.end], tail))
+    if sum(insn.size for insn in insns) != pair.row.end - tail:
+        return REASON_TAIL_UNDECODED
+    other = next((insn for insn in insns if not insn.is_alignment_filler), None)
+    if other is not None:
+        return f"{REASON_TAIL_NOT_FILLER} ({other.mnemonic} at {_va(other.va)})"
+    return None
+
+
+def _trailing_filler(pair: _Pair) -> int | str:
+    """Rule 1: 0 for equal lengths; the shortfall when it is the original's trailing Watcom
+    filler (the five conditions, in the module docstring's order); else the first failing
+    condition's reason."""
+    shortfall = pair.row.end - pair.row.start - pair.size
+    if shortfall == 0:
+        return 0
+    reason = (
+        _shortfall_reason(shortfall)
+        or _alignment_reason(pair.row)
+        or _tail_fixup_reason(pair)
+        or _ours_reason(pair)
+        or _tail_reason(pair)
+    )
+    return shortfall if reason is None else reason
+
+
+def _length(pair: _Pair, reason: str) -> str:
+    """Rule 1's problem: the length prefix (attempt keys and the docs read it), then why the
+    difference is not the original's trailing filler."""
     length = pair.row.end - pair.row.start
-    if pair.size != length:
-        at = pair.row.start + min(pair.size, length)
-        yield f"{_va(at)}: length differs: ours {pair.size} bytes, original {length} bytes"
+    at = pair.row.start + min(pair.size, length)
+    return f"{_va(at)}: length differs: ours {pair.size} bytes, original {length} bytes; {reason}"
 
 
 def _masked(pair: _Pair, ours: Sequence[OMFFixup]) -> set[int]:
@@ -363,15 +455,15 @@ def check_function(
     pair = _Pair(segment, off, size, row, flat, symbols, theirs, publics)
     ours = list(_our_fixups(pair))
     fields = {pair.va(fx.offset) for fx in ours}
-    length = tuple(_length(pair))
-    if length:  # the rest compares [start, end) byte for byte, which needs equal lengths
-        return _verdict(pair, length, fields)
+    filler = _trailing_filler(pair)
+    if isinstance(filler, str):  # the rest compares [start, start + size) with the row's bytes
+        return _verdict(pair, [_length(pair, filler)], fields)
     problems = [
         *_bytes(pair, _masked(pair, ours)),
         *(problem for fx in ours for problem in _fixup(pair, fx)),
         *_reverse_coverage(pair, fields),
     ]
-    return _verdict(pair, problems, fields)
+    return _verdict(pair, problems, fields, filler)
 
 
 def bytes_sha1(data: bytes) -> str:
@@ -379,10 +471,13 @@ def bytes_sha1(data: bytes) -> str:
     return hashlib.sha1(data).hexdigest()
 
 
-def _verdict(pair: _Pair, problems: Sequence[str], fields: set[int]) -> RelocResult:
-    """The result for `pair`, naming the row start and the length and SHA-1 of our bytes."""
+def _verdict(
+    pair: _Pair, problems: Sequence[str], fields: set[int], filler: int = 0
+) -> RelocResult:
+    """The result for `pair`, naming the row start, the length and SHA-1 of our bytes, and the
+    original trailing filler accepted after them."""
     ours = pair.segment.data[pair.off : pair.off + pair.size]
     return RelocResult(
         not problems, tuple(sorted(problems)), frozenset(fields), frozenset(pair.theirs),
-        start=pair.row.start, length=pair.size, sha1=bytes_sha1(bytes(ours)),
+        start=pair.row.start, length=pair.size, sha1=bytes_sha1(bytes(ours)), filler=filler,
     )  # fmt: skip
