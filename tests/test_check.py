@@ -1617,6 +1617,17 @@ def test_table_gap_accepts_original_filler_before_the_head():
     assert head.filler == 0
 
 
+def test_table_gap_refuses_a_tail_inside_the_table_row():
+    """07-48b review: the tail may start only at or after the data-in-code row's end. When the
+    original's D_ row itself holds the filler-shaped bytes (data, not alignment), ours lacking
+    them is a short table, never kept filler."""
+    rows = [replace(TABLE_ROW, end=SWITCH_VA), SWITCH_ROW]  # the D_ row runs up to the head
+    verdicts = table_check(table_module(filler=GAP_LESS), table_original(), rows)
+    head = verdicts[SWITCH_ROW.name]
+    assert not head.ok
+    assert any("shorter than its data-in-code row" in p for p in head.problems), head.problems
+
+
 def test_only_the_table_span_is_checked_as_a_table(monkeypatch):
     """Only `_head_reloc`'s check of the table span passes `table=True`: every function's check
     keeps condition 4 (07-48b, T-07-145)."""
