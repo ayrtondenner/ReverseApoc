@@ -291,7 +291,7 @@ Plans:
   6. `uv run reverseapoc stats` prints match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks and the `unattended` / `human-hints` / `human-written` split over the whole Phase 6-7 history, and tests show it refuses a malformed `attempts.jsonl` line and classes a hand-landed match without the `Matched-By` trailer as `human-written` (DEC-07)
 
 **Spike**: Locate the #997 tick-rate and training code from the timer setup and strings within a time box; decides whether "find via strings and data xrefs" scales to the whole list.
-**Plans:** 42/48 plans executed
+**Plans:** 43/48 plans executed
 
 Plans:
 **Wave 1**
@@ -362,7 +362,7 @@ Plans:
 - [x] 07-45-PLAN.md — gap: split-row detector, fall-through pairs ruled by the owner (keep, recut, or merge), the 7 held rows and the 07-44 conflict rows ruled, re-sign of what moves *(main checkout, owner checkpoints; runs inside 07-39's pause)* (DEC-01, DEC-02, DEC-03)
 
 **Wave 13** *(blocked on Wave 12 completion; main checkout)*
-- [ ] 07-48-PLAN.md — gap: `check` accepts original trailing Watcom filler under the five option-A conditions (spike 011), land keeps the tail original, objdiff measured on tacp func_0006BEE0 *(main checkout; runs inside 07-39's pause)* (DEC-02, DEC-03)
+- [x] 07-48-PLAN.md — gap: `check` accepts original trailing Watcom filler under the five option-A conditions (spike 011), land keeps the tail original, objdiff measured on tacp func_0006BEE0 *(main checkout; runs inside 07-39's pause)* (DEC-02, DEC-03)
 
 **Wave 14** *(blocked on Wave 13 completion; main checkout)*
 - [ ] 07-48b-PLAN.md — gap: the same tail rule for filler between a leading jump table and its head (conditions 1, 2, 3, 5), tacp func_0001E860 re-judged *(main checkout)* (DEC-02, DEC-03)
@@ -407,7 +407,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 4. Compiler identification | 13/13 | Complete    | 2026-10-23 |
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
-| 7. Mechanics-first decompilation | 42/45 | In Progress | - |
+| 7. Mechanics-first decompilation | 43/48 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
