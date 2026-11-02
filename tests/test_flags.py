@@ -482,6 +482,20 @@ def test_siblings_include_the_unattempted_neighbour(tmp_path):
     assert p.siblings == ("func_0006FC00 unattempted", "func_0006FC40 unattempted")
 
 
+def test_propose_never_merges_a_driver_hit_into_a_batch_proposal(tmp_path):
+    """07-48c review: a batch proposal lands under its author alone (no co-authors, attempts
+    0), so a driver hit in the same unit is held back, never merged into it."""
+    repo = make_repo(tmp_path)
+    batch = _proposal(source="batch", author=LIFT, evidence=("build/batch/x.jsonl",))
+    flags.write_queue(queue_of(repo), [batch])
+    before = queue_of(repo).read_bytes()
+    make_attempt(repo, F30, checks=[(1, True, sweep_doc(F30, hits={5}), c_text(F30))])
+    report = flags.propose([RUN], repo=repo)
+    assert report.added == () and report.merged == ()
+    assert any("F-0001" in text and "batch" in text for text in report.skipped)
+    assert queue_of(repo).read_bytes() == before
+
+
 def test_merge_into_a_regated_proposal_resets_its_regate(tmp_path):
     repo = make_repo(tmp_path)
     _two_function_unit(repo, {4, 5}, {4, 5})
@@ -1748,6 +1762,34 @@ def test_propose_batch_skips_a_file_defining_another_row(tmp_path):
     assert _queue_bytes(repo) is None
 
 
+def test_propose_batch_skips_a_file_that_does_not_define_the_row(tmp_path):
+    """07-48c review: a row renamed in symbols.csv keeps its name in the unit's marker, so a
+    file that defines only another name (a func_ placeholder) is skipped, never proposed."""
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c("func_99999999"))
+    report = flags.propose_batch(results_file(repo, [batch_record(repo, 0x10000)]), CELL, LIFT,
+                                 repo=repo)  # fmt: skip
+    assert report.added == ()
+    assert any(A1 in text and "does not define" in text for text in report.skipped)
+    assert _queue_bytes(repo) is None
+
+
+def test_propose_batch_does_not_repropose_rejected_evidence(tmp_path):
+    """07-48c review: a proposal the owner rejected comes back only with new evidence."""
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000)])
+    rejected = dataclasses.replace(_held("rejected", CELL_RULE), source="batch", author=LIFT,
+                                   evidence=(RESULTS,))  # fmt: skip
+    flags.write_queue(queue_of(repo), [rejected])
+    before = _queue_bytes(repo)
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == () and _queue_bytes(repo) == before
+    assert any("F-0001" in text and "rejected" in text for text in report.skipped)
+    other = results_file(repo, [batch_record(repo, 0x10000)], "build/batch/48c-again.jsonl")
+    assert flags.propose_batch(other, CELL, LIFT, repo=repo).added == ("F-0002",)
+
+
 def test_queue_refuses_author_rules(tmp_path):
     path = tmp_path / "q.toml"
     bad = [dict(source="batch"),  # a batch proposal without its author
@@ -1855,8 +1897,8 @@ def test_committed_queue_round_trips_byte_identical():
     and format_queue reproduces the file byte for byte."""
     path = REPO_ROOT / "config" / "cflags-proposals.toml"
     proposals = flags.read_queue(path)
-    assert len(proposals) == 44
-    assert all(getattr(p, "author", "") == "" for p in proposals)
+    assert len(proposals) >= 44  # grows with every committed proposal
+    assert all((p.author != "") == (p.source == "batch") for p in proposals)  # 07-48c review
     assert flags.format_queue(proposals) == path.read_bytes().decode("ascii")
 
 
