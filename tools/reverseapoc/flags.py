@@ -156,6 +156,8 @@ class Proposal:
             f"re-gate exit {self.regate_exit} ({self.regate_variant})")  # fmt: skip
         lines = [f"{self.id}  {self.status}  {self.exe}/{self.unit}  {', '.join(self.functions)}",
                  f"  rule {self.rule or '(none)'}  (base {self.base}; {regate}; {self.source})"]
+        if self.author:
+            lines.append(f"  author {self.author}")
         lines += [f"  alternative {rule}" for rule in self.alternatives]
         lines += [f"  keeps {name}" for name in self.keeps]
         lines += [f"  sibling {text}" for text in self.siblings]
@@ -1278,6 +1280,10 @@ _OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9 ._'-]{0,62}[A-Za-z0-9.])?")
 _EVIDENCE = re.compile(r"build/driver/([A-Za-z0-9_.-]+)/(ufo2p|tacp)/([A-Za-z_][A-Za-z0-9_]*)/"
                        r"attempt-([0-9]+)/checks/[0-9]{4}\.json")  # fmt: skip
 _OUTPUT_CAP = 300  # characters of the gate's output kept in a failed proposal's reason
+# 07-48c: a batch landing's trailer is `<MATCHED_BY_KEY> <author>`, the key of the driver's own
+# trailer (stats classes by it), so it can never read as `Matched-By: reverseapoc drive`.
+MATCHED_BY_KEY = driver.MATCHED_BY.split(":", 1)[0] + ":"
+BY_HAND_ATTEMPTS = 0  # gate's --attempts for a landing no driver attempt wrote ("by hand")
 
 Git = Callable[[Sequence[str]], Any]  # driver.git_runner: argv after `git` -> CompletedProcess
 Runner = Callable[[Sequence[str]], Any]  # driver.command_runner: argv -> CompletedProcess
@@ -1416,11 +1422,13 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
                 sha_now: str) -> list[_Landing]:  # fmt: skip
     """D-12: every refusal before anything is written. Each ID must be regated with exit 0 on
     today's cflags.txt (a batch's own appends do not count: each rule names one exact unit),
-    its C as re-gated, no two on one unit, and the model of its attempts known."""
+    its C as re-gated, no two on one unit, and the model of its attempts known. A batch
+    proposal (07-48c) has no attempt: its C was written by its author, so it has no co-author
+    and lands with gate's attempts 0 (BY_HAND_ATTEMPTS); attempts.jsonl is not read for it."""
     by_id = {p.id: p for p in proposals}
     if not ids or len(set(ids)) != len(ids):
         raise FlagsError(f"name each proposal once: {' '.join(ids) or '(none)'}")
-    models = _attempt_models(repo / driver.ATTEMPT_LOG)
+    models: dict[AttemptKey, AttemptModel] | None = None
     units: dict[tuple[str, str], str] = {}
     out = []
     for pid in ids:
@@ -1436,6 +1444,11 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
         other = units.setdefault((p.exe, p.unit), pid)
         if other != pid:
             raise FlagsError(f"{other} and {pid} are both for {p.exe}/{p.unit}; approve one")
+        if p.source == BATCH:
+            out.append(_Landing(p, _landing_source(repo, p), (), BY_HAND_ATTEMPTS))
+            continue
+        if models is None:
+            models = _attempt_models(repo / driver.ATTEMPT_LOG)
         attempts = max(n for *_, n in _hitting_attempts(p))
         out.append(_Landing(p, _landing_source(repo, p), _coauthors(p, models), attempts))
     return out
@@ -1555,7 +1568,11 @@ def doc_row(glob: str, exe: str, rule: str, evidence: str, day: str) -> str:
 
 
 def _approve_message(land: _Landing, by: str, today: str) -> str:
-    """D-25's match message with the approval: subject, what the rule binds, trailers."""
+    """D-25's match message with the approval: subject, what the rule binds, trailers. A sweep
+    landing's trailers are the attempts' co-authors and `Matched-By: reverseapoc drive`; a batch
+    landing's (07-48c) is `Matched-By: <author>` alone, because the converter or a spike
+    subagent wrote that C, not a driver attempt, so no attempt co-authors it and stats classes
+    the landing human-written, never unattended (AGT-11)."""
     p = land.proposal
     lines = [f"feat({p.exe}): match {', '.join(p.functions)} in {p.unit} under approved flags "
              f"{p.id} (C89)", "",
@@ -1566,14 +1583,18 @@ def _approve_message(land: _Landing, by: str, today: str) -> str:
     lines += [f"keeps {name}" for name in p.keeps]
     lines += [f"sibling {text}" for text in p.siblings]
     lines += [f"evidence {path}" for path in p.evidence]
-    lines += ["", *land.coauthors, driver.MATCHED_BY,
-              f"{APPROVED_TRAILER} {by} ({p.id}, {today})"]
+    by_whom = ([f"{MATCHED_BY_KEY} {p.author}"] if p.source == BATCH
+               else [*land.coauthors, driver.MATCHED_BY])  # fmt: skip
+    lines += ["", *by_whom, f"{APPROVED_TRAILER} {by} ({p.id}, {today})"]
     return "\n".join(lines) + "\n"
 
 
 def _confirmation(p: Proposal) -> list[str]:
     """What the owner approves for one proposal: the rule and every sibling it binds (D-32)."""
     lines = [f"{p.id}  {p.exe}/{p.unit}  {', '.join(p.functions)} under {p.rule} (was {p.base})"]
+    if p.author:
+        lines.append(f"  the C was written by {p.author}; the commit says "
+                     f"{MATCHED_BY_KEY} {p.author}")  # fmt: skip
     if p.reverted:
         lines.append(f"  lands {variant_path(p)}: {', '.join(p.reverted)} back to INCLUDE_ASM")
     if p.siblings:
@@ -1687,7 +1708,9 @@ def approve(ids: Sequence[str], by: str, *, repo: Path, today: str | None = None
     to config/cflags.txt, copy its C (the reduced variant when the re-gate reverted functions)
     to src/<exe>/<unit>.c, add its docs/matching.md row, run the container C89 `lint` of the
     unit and then the container `gate EXE/UNIT`, and commit exactly cflags.txt, the unit,
-    status.csv, the feed, the queue and matching.md with the Flags-Approved-By trailer. A
+    status.csv, the feed, the queue and matching.md with the Flags-Approved-By trailer (a
+    batch proposal, 07-48c: `Matched-By: <author>` in place of the attempts' co-authors and the
+    driver's Matched-By, and the gate's attempts 0, since no driver attempt wrote its C). A
     failed lint (or one that cannot run) or a failed gate restores every file byte for byte,
     fails the proposal and stops the batch (exit 1). Everything is refused before any write
     unless each ID is regated with exit 0 on today's cflags.txt, its C is as re-gated, no two

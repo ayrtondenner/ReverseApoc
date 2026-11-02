@@ -1885,7 +1885,7 @@ def batch_approval(tmp_path: Path) -> Approval:
 
 
 def _message(a: Approval) -> list[str]:
-    return _git(a.repo, a.env, "log", "-1", "--format=%B").splitlines()
+    return _git(a.repo, a.env, "log", "-1", "--format=%B").rstrip("\n").splitlines()
 
 
 def test_approve_a_batch_proposal_has_no_driver_trailer(tmp_path):
