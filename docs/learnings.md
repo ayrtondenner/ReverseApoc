@@ -11,6 +11,13 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-01: original trailing filler passes `check` (Phase 7, plan 07-48, spike 011)
+
+- **A row may end in the original linker's alignment filler that we never emit.** Each original object held one function and the linker aligned its `_TEXT` to 16; in our unit the next function is an `INCLUDE_ASM` stub, so our object stops at the last `ret`. `check` refused that byte-correct C with `length differs`. The owner ruled option A: accept a 1-15 byte shortfall under five conditions (16-aligned row end, no LE fixup in the tail, ours ends in a terminal instruction, the tail decodes to the row end as filler in any register). Rule: [matching.md "Relocation rules"](matching.md#relocation-rules).
+- **Measured on tacp func_0006BEE0** (row 0x0006BEE0..0x0006BF30, the spike 011 b064 agent's C, now `tests/fixtures/filler/tacp/f_0006bee0.c`): 65 of 80 bytes, 15 bytes of filler kept, relocation check and byte compare pass, both whole-EXE SHA-1s equal the manifest. objdiff scored it 89.6552% against the full row, because it sees the filler as instructions we lack, so `check` now cuts a filler-accepted row's objdiff target at our length (branch B): 100%.
+- **The negatives assert the refusal reason, not just a refusal.** Before 07-48 every length difference was refused with the bare prefix, so a test that only checked "refused" would have passed on the old code and proved nothing. Each negative names the condition that must refuse it, which also pins the order; a mutant run disabled each guard in turn and saw its test fail.
+- **Condition 4 decodes ours with our fixup fields as data sites**, as `x86.decode` does everywhere: inline table data could otherwise decode on to a `ret` by chance.
+
 ## 2026-10-25: jump tables and statics in `check` (Phase 6, plan 06-10, D-39)
 
 - **A jump table that leads its function now passes `check`.** wcc386 10.6 puts a switch's table at `_TEXT+0`, before the function's public, and jumps through `jmp cs:[eax*4+_TEXT+0]` (05-REVIEW IN-02, observed again on a 6-case switch: six off32 entries at 0x0..0x14, the public at 0x18, no filler between). `check` pairs `[0, first public)` with the unit's data-in-code row right before the function's row, filler up to the function's row included, and checks that span like a function: equal length, equal bytes, and every table entry an off32 LE fixup to the original's case label. A wrong entry fails the function, naming the entry's VA. The real switch, laid into a synthetic LE built from its own object, passes; a planted wrong case target fails (`tests/test_check_tables_real.py`).
