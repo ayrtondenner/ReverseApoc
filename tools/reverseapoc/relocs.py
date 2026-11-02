@@ -254,9 +254,11 @@ def _tail_fixup_reason(pair: _Pair) -> str | None:
 
 def _ours_reason(pair: _Pair) -> str | None:
     """Condition 4: ours decodes exactly to its size and ends in a terminal instruction, so
-    no code of ours could run on into the tail."""
+    no code of ours could run on into the tail. An instruction start at one of our fixup
+    fields is inline data and ends the decode there (x86.decode's data sites)."""
     code = pair.segment.data[pair.off : pair.off + pair.size]
-    insns = list(decode(bytes(code), pair.row.start))
+    sites = frozenset(pair.va(fx.offset) for fx in _our_fixups(pair))
+    insns = list(decode(bytes(code), pair.row.start, data_sites=sites))
     if sum(insn.size for insn in insns) != pair.size or not insns[-1].is_terminal:
         return REASON_OURS_OPEN
     return None
