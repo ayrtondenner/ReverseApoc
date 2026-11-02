@@ -1871,3 +1871,57 @@ def test_cli_propose_from_batch(tmp_path, capsys):
     assert cli_main([*argv, "--json"]) == 0
     doc = json.loads(capsys.readouterr().out)
     assert doc["added"] == [] and any("duplicate of F-0001" in s for s in doc["skipped"])
+
+
+# ---- 07-48c: a batch landing names who wrote the C, never a driver attempt ----
+
+
+def batch_approval(tmp_path: Path) -> Approval:
+    """approve_repo with F-0001 a regated batch proposal (made-up results file as evidence)
+    written by the spike subagent; the attempts log holds only another function's record, so
+    nothing in it names F-0001's C."""
+    return approve_repo(tmp_path, records=(_attempt_record(F26, U2, 2),), source="batch",
+                        author=SPIKE, evidence=(RESULTS,), alternatives=())  # fmt: skip
+
+
+def _message(a: Approval) -> list[str]:
+    return _git(a.repo, a.env, "log", "-1", "--format=%B").splitlines()
+
+
+def test_approve_a_batch_proposal_has_no_driver_trailer(tmp_path):
+    a = batch_approval(tmp_path)
+    report = a.approve(["F-0001"])
+    assert report.landed == ("F-0001",)
+    lines = _message(a)
+    assert driver.MATCHED_BY not in lines
+    assert not [line for line in lines if line.startswith("Co-Authored-By:")]
+
+
+def test_approve_a_batch_proposal_gates_with_attempts_0(tmp_path):
+    a = batch_approval(tmp_path)
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert a.gate.calls == [[*driver.CONTAINER_CLI, "gate", f"ufo2p/{UNIT}", "--attempts", "0",
+                             "--json"]]  # fmt: skip
+
+
+def test_approve_a_batch_proposal_writes_matched_by_author(tmp_path):
+    """The trailer block of a batch landing is exactly `Matched-By: <author>` and the owner's
+    Flags-Approved-By line; stats then classes it human-written, never unattended (AGT-11)."""
+    a = batch_approval(tmp_path)
+    base = a.head()
+    report = a.approve(["F-0001"])
+    assert report.landed == ("F-0001",)
+    assert _git(a.repo, a.env, "rev-list", "--count", f"{base}..HEAD").strip() == "1"
+    lines = _message(a)
+    blank = len(lines) - 1 - lines[::-1].index("")
+    assert lines[blank + 1 :] == [f"Matched-By: {SPIKE}",
+                                  f"Flags-Approved-By: {OWNER} (F-0001, {DAY})"]  # fmt: skip
+    (p,) = flags.read_queue(queue_of(a.repo))
+    assert (p.status, p.author, p.approved_by) == ("landed", SPIKE, OWNER)
+
+
+def test_list_shows_the_author(tmp_path):
+    p = _proposal(source="batch", author=SPIKE, evidence=(RESULTS,))
+    assert f"  author {SPIKE}" in p.line().splitlines()
+    assert any(SPIKE in line for line in flags._confirmation(p))
+    assert not any("author" in line for line in _proposal().line().splitlines())
