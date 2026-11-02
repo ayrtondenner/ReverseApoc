@@ -368,6 +368,9 @@ class LeadingTable:
     """A jump table wcc386 put at `_TEXT+0`, before the unit's first public (05-REVIEW IN-02,
     DI-02): our span [0, size) is the original's [span.start, span.end), the data-in-code row
     the table is plus the filler up to the row of the function the first public names (`head`).
+    The span is checked like a function, except that ours may lack original alignment filler
+    before a 16-aligned head, under 07-48's conditions 1, 2, 3 and 5 (07-48b); it is never
+    landed.
     """
 
     span: FunctionRow  # the data-in-code row, its end moved to head.start
@@ -390,7 +393,9 @@ def leading_table(
     past offset 0; every public there names one row, the head; the row of `rows` right before
     the head is a data-in-code row that ends at or before the head's start. The table is then
     checked against [row start, head start) like a function, filler included, and its length
-    rule refuses a layout of ours that differs (D-39)."""
+    rule refuses a layout of ours that differs (D-39), except that ours may lack original
+    alignment filler before a 16-aligned head, under 07-48's conditions 1, 2, 3 and 5
+    (07-48b)."""
     publics = [p for p in module.publics if p.segment_index == segment.index]
     if not publics:
         return None
@@ -432,13 +437,16 @@ def own_publics(
     return tuple(found)
 
 
-def _reloc(d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic]) -> RelocResult:
+def _reloc(
+    d: Defined, exe: ExeInputs, publics: Sequence[OwnPublic], *, table: bool = False
+) -> RelocResult:
     """The relocation check of `d`; a RelocError (a public or row it cannot compare) is a
-    failed check naming the function, not a crash of the whole report."""
+    failed check naming the function, not a crash of the whole report. `table` is passed on to
+    check_function: only `_head_reloc`'s check of a leading table's span sets it (07-48b)."""
     try:
         return check_function(
             d.segment, off=d.off, size=d.size, row=d.row, flat=exe.flat, fixups=exe.fixups,
-            symbols=exe.symbols, own_publics=publics,
+            symbols=exe.symbols, own_publics=publics, table=table,
         )  # fmt: skip
     except RelocError as exc:
         return RelocResult(False, (f"{_hex(d.row.start)}: {exc}",), frozenset(), frozenset())
@@ -474,11 +482,12 @@ def _head_reloc(
     """The head's verdict: its own check with the table's entry added to the map, failed too by
     the check of the table's span, whose only other own public is the head: an entry is accepted
     when it resolves inside the head or inside the span itself, at the VA the original LE fixup
-    targets."""
+    targets. The span is checked as a table (07-48b): ours may lack the original's alignment
+    filler before a 16-aligned head, under 07-48's conditions 1, 2, 3 and 5."""
     reloc = _reloc(d, exe, (table.public, *seg_map.publics))
     head = tuple(p for p in seg_map.publics if p.name == d.symbol)
     span = Defined(table.span, table.span.name, d.segment, 0, table.size)
-    return _with_table(reloc, _reloc(span, exe, head))
+    return _with_table(reloc, _reloc(span, exe, head, table=True))
 
 
 def with_relocs(
@@ -490,10 +499,11 @@ def with_relocs(
       other function's reference to [0, first public) is refused ("needs the unit's
       public-to-row map"), as before 06-10;
     - the head passes only when the table's span [table row start, head start) passes the
-      relocation check like a function: equal length, equal bytes (filler included), and each
-      entry an off32 that resolves inside the head or inside the span itself to the VA the
-      original LE fixup targets. An entry into any other function is refused (06-10 fix round
-      1, C1 and M1).
+      relocation check like a function: equal length (or ours short only by original alignment
+      filler before a 16-aligned head, 07-48's conditions 1, 2, 3 and 5, 07-48b), equal bytes
+      (filler included), and each entry an off32 that resolves inside the head or inside the
+      span itself to the VA the original LE fixup targets. An entry into any other function is
+      refused (06-10 fix round 1, C1 and M1).
     If the account dropped the head, nothing resolves into the table."""
     maps: dict[int, _SegmentMap] = {}
     out = []

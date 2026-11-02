@@ -18,7 +18,10 @@ independent of objdiff and fails that case:
    `length differs: ours N bytes, original M bytes; <the first failing condition's reason>`.
    An accepted tail is recorded in `RelocResult.filler`, and rules 2-5 then run over
    [start, start + size). land patches our bytes only, so the tail keeps the original bytes and
-   the whole-EXE SHA-1 still decides.
+   the whole-EXE SHA-1 still decides. `check_function(..., table=True)` is for the span of a
+   leading jump table only (check.py `_head_reloc`, plan 07-48b): a table is data and has no
+   terminal instruction, so condition 4 is skipped there and conditions 1, 2, 3 and 5 accept
+   the original's filler between the table and its 16-aligned head. The table is never landed.
 2. Fields: `ours` are the VAs our OMF fixups cover (segment offset mapped to start + offset - off);
    `theirs` are the LE fixup fields inside the row.
 3. Bytes: every byte outside the fields of both sides is equal (`_bytes`).
@@ -277,10 +280,11 @@ def _tail_reason(pair: _Pair) -> str | None:
     return None
 
 
-def _trailing_filler(pair: _Pair) -> int | str:
+def _trailing_filler(pair: _Pair, *, table: bool) -> int | str:
     """Rule 1: 0 for equal lengths; the shortfall when it is the original's trailing Watcom
     filler (the five conditions, in the module docstring's order); else the first failing
-    condition's reason."""
+    condition's reason. With `table` (the span of a leading jump table, 07-48b) condition 4 is
+    skipped: a table is data, so it has no terminal instruction."""
     shortfall = pair.row.end - pair.row.start - pair.size
     if shortfall == 0:
         return 0
@@ -288,7 +292,7 @@ def _trailing_filler(pair: _Pair) -> int | str:
         _shortfall_reason(shortfall)
         or _alignment_reason(pair.row)
         or _tail_fixup_reason(pair)
-        or _ours_reason(pair)
+        or (None if table else _ours_reason(pair))
         or _tail_reason(pair)
     )
     return shortfall if reason is None else reason
@@ -443,12 +447,16 @@ def check_function(
     fixups: Sequence[Fixup],
     symbols: SymbolTable,
     own_publics: Sequence[OwnPublic] = (),
+    table: bool = False,
 ) -> RelocResult:
     """Check our public [off, off + size) of `segment` against `row` of the original. `flat` is
     le.load_flat(relocate=False) and `fixups` le.fixups() (any order). `own_publics` maps our
     unit's other publics to their original rows (rule 4); a reference to our own `_TEXT` outside
-    the checked public fails without it. Raises RelocError for a zero-size public, a zero-length
-    row, or a public, own public or row outside its data."""
+    the checked public fails without it. `table=True` is for the span of a leading jump table
+    only (check.py `_head_reloc`, 07-48b): a table is data with no terminal instruction, so rule
+    1 skips condition 4 for it; the table is never landed. Every function check keeps the
+    default. Raises RelocError for a zero-size public, a zero-length row, or a public, own public
+    or row outside its data."""
     _check_inputs(segment, off, size, row, flat)
     _check_own_publics(own_publics, segment)
     ordered = sorted(fixups, key=lambda fx: fx.src_va)
@@ -457,7 +465,7 @@ def check_function(
     pair = _Pair(segment, off, size, row, flat, symbols, theirs, publics)
     ours = list(_our_fixups(pair))
     fields = {pair.va(fx.offset) for fx in ours}
-    filler = _trailing_filler(pair)
+    filler = _trailing_filler(pair, table=table)
     if isinstance(filler, str):  # the rest compares [start, start + size) with the row's bytes
         return _verdict(pair, [_length(pair, filler)], fields)
     problems = [
