@@ -13,6 +13,9 @@ from relocpair import (
     CALL_FIELD,
     CODE_BASE,
     CONST_INDEX,
+    FILLER_BODY,
+    FILLER_TAIL,
+    GOOD_FILLER_ROW,
     GOOD_ORIGINAL,
     GOOD_OURS,
     GOOD_ROW,
@@ -20,7 +23,9 @@ from relocpair import (
     TEXT_INDEX,
     absolute,
     call,
+    filler_pair,
     game_row,
+    good_filler_original,
     good_original,
     good_segment,
     le_off32,
@@ -75,6 +80,7 @@ def test_good_pair_passes():
         "problems": [],
         "ours": [CALL_FIELD, LOAD_FIELD],
         "theirs": [LOAD_FIELD],
+        "filler": 0,
     }
 
 
@@ -417,3 +423,92 @@ def test_problems_sorted():
     b = problems_of(check(backward, GOOD_ROW, good_original()))
     assert a == b
     assert [p[:10] for p in a] == [f"0x{CALL_FIELD:08X}", f"0x{LOAD_FIELD:08X}"]
+
+
+# ---- original trailing Watcom filler (07-48, owner ruling: option A) ----------------------------
+#
+# HEAD refused every length difference with the bare `length differs` prefix, so each negative
+# asserts the reason of the condition that must refuse it: that proves the order too.
+
+_LENGTH = re.compile(r"length differs: ours \d+ bytes, original \d+ bytes; ")
+
+
+def check_filler(pair, *, size=None):
+    return check(pair.segment, pair.row, pair.orig, size=len(pair.ours) if size is None else size)
+
+
+def refusal(pair, *, size=None) -> str:
+    """The one problem of a refused filler pair: the length prefix, then a reason."""
+    (problem,) = problems_of(check_filler(pair, size=size))
+    assert _LENGTH.search(problem), problem
+    return problem
+
+
+def test_filler_accepts_a_mixed_nine_byte_tail():
+    pair = filler_pair()
+    result = check_filler(pair)
+    assert result.ok, result.problems
+    assert result.filler == len(FILLER_TAIL) == 9
+    assert result.length == len(pair.ours)
+    assert result.to_json()["filler"] == 9
+
+
+def test_filler_with_fixups_checks_fields_over_ours():
+    result = check(good_segment(), GOOD_FILLER_ROW, good_filler_original())
+    assert result.ok, result.problems
+    assert result.filler == 5
+    assert result.theirs == frozenset({LOAD_FIELD})
+    assert result.ours == result.theirs | {CALL_FIELD}
+
+
+def test_filler_refuses_ours_longer_than_the_row():
+    body = FILLER_BODY + FILLER_TAIL
+    pair = filler_pair(b"", ours=body + bytes.fromhex("90"), body=body)  # one nop too many
+    problem = refusal(pair)
+    assert "; ours is longer than the row" in problem
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "cc" "8d7600" "89ff" "8d4900",  # int3, then filler
+        "8b00" "8d7600" "8d4900" "90",  # mov eax, dword ptr [eax]: a load
+        "8d7601" "89ff" "8d4900" "90",  # lea esi, [esi + 1]
+        "8d3406" "89ff" "8d4900" "90",  # lea esi, [esi + eax]
+    ],
+)
+def test_filler_refuses_a_tail_that_is_not_filler(tail):
+    tail = bytes.fromhex(tail)
+    assert len(tail) == len(FILLER_TAIL)
+    assert "is not alignment filler" in refusal(filler_pair(tail))
+
+
+def test_filler_refuses_a_tail_that_does_not_decode_to_the_end():
+    tail = bytes.fromhex("8d7600" "89ff" "8d4900" "8d")  # the last lea is cut off by the row end
+    assert "does not decode to the row end" in refusal(filler_pair(tail))
+
+
+def test_filler_refuses_an_unaligned_row_end():
+    assert "16-byte boundary" in refusal(filler_pair(shift=1))
+
+
+def test_filler_refuses_a_shortfall_of_16():
+    tail = bytes.fromhex("90" * 16)  # sixteen nops, the row end still aligned
+    assert "more than 15 bytes" in refusal(filler_pair(tail))
+
+
+def test_filler_refuses_an_le_fixup_in_the_tail():
+    pair = filler_pair(tail_fixup_at=2)
+    assert "LE fixup field lies in the original's tail" in refusal(pair)
+
+
+def test_filler_still_compares_the_bytes_before_the_tail():
+    changed = bytes.fromhex("b802000000" "40" "c3")  # mov eax, 2 where the original has 1
+    problems = problems_of(check_filler(filler_pair(ours=changed)))
+    assert any("differing bytes" in problem for problem in problems), problems
+    assert not any("length differs" in problem for problem in problems), problems
+
+
+def test_filler_refuses_ours_without_a_terminal_last_instruction():
+    body = bytes.fromhex("b801000000" "40" "40")  # mov eax, 1; inc eax; inc eax
+    assert "terminal instruction" in refusal(filler_pair(body=body))

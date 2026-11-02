@@ -145,3 +145,62 @@ def good_segment() -> Segment:
 
 def good_original() -> Original:
     return original({CODE_BASE: GOOD_ORIGINAL}, page1=le_off32(LOAD_FIELD, 0x4))
+
+
+# ---- the filler pair (07-48): ours is the body, the original row also holds trailing filler ----
+
+FILLER_BODY = bytes.fromhex(
+    "b801000000"  # mov eax, 1
+    "40"  # inc eax
+    "c3"  # ret
+)
+FILLER_TAIL = bytes.fromhex(  # 9 bytes of mixed-register alignment filler
+    "8d7600"  # lea esi, [esi + 0] (disp8 0)
+    "89ff"  # mov edi, edi
+    "8d4900"  # lea ecx, [ecx + 0] (disp8 0)
+    "90"  # nop
+)
+FILLER_END = CODE_BASE + 0x40  # a 16-byte aligned row end, clear of the CALLEES rows
+FILLER_ROW = game_row(FILLER_END - len(FILLER_BODY) - len(FILLER_TAIL), FILLER_END)
+GOOD_FILLER_TAIL = bytes.fromhex(
+    "8d7600"  # lea esi, [esi + 0]
+    "89ff"  # mov edi, edi
+)  # the good pair (11 bytes) plus these 5 ends at CODE_BASE + 0x10
+
+
+@dataclass(frozen=True)
+class FillerPair:
+    segment: Segment  # our _TEXT: `ours` only
+    ours: bytes
+    row: FunctionRow  # the original's row: its body and its tail
+    orig: Original
+
+
+def filler_pair(
+    tail: bytes = FILLER_TAIL,
+    *,
+    shift: int = 0,
+    body: bytes = FILLER_BODY,
+    ours: bytes | None = None,
+    tail_fixup_at: int | None = None,
+) -> FillerPair:
+    """The original row holds `body` + `tail` and ends at FILLER_END + `shift`; ours is `ours`
+    (default `body`). `tail_fixup_at` puts an off32 LE fixup record at that offset into the
+    tail."""
+    end = FILLER_END + shift
+    start = end - len(body) - len(tail)
+    page1 = b""
+    if tail_fixup_at is not None:
+        page1 = le_off32(start + len(body) + tail_fixup_at, 0x4)
+    orig = original({start: body + tail}, page1=page1)
+    ours = body if ours is None else ours
+    return FillerPair(our_segment(ours), ours, game_row(start, end), orig)
+
+
+def good_filler_original() -> Original:
+    """The good pair's original followed by GOOD_FILLER_TAIL, its row CODE_BASE + 0x10."""
+    patch = {CODE_BASE: GOOD_ORIGINAL + GOOD_FILLER_TAIL}
+    return original(patch, page1=le_off32(LOAD_FIELD, 0x4))
+
+
+GOOD_FILLER_ROW = game_row(CODE_BASE, CODE_BASE + len(GOOD_ORIGINAL) + len(GOOD_FILLER_TAIL))

@@ -4,6 +4,7 @@ address is made up (tests/relocpair.py)."""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 
@@ -13,12 +14,14 @@ from conftest import write_manifest
 from relocpair import (
     CALL_FIELD,
     CODE_BASE,
+    FILLER_TAIL,
     GOOD_ORIGINAL,
     GOOD_OURS,
     GOOD_ROW,
     LOAD_FIELD,
     absolute,
     call,
+    filler_pair,
     game_row,
     good_original,
     good_segment,
@@ -332,3 +335,56 @@ def test_write_landed_refuses_orig_and_the_source(tmp_path):
     with pytest.raises(LandError, match="same file"):
         write_landed(result, source, orig_dir=orig_dir, source=source)
     assert source.read_bytes() == orig.data
+
+
+# ---- original trailing filler (07-48): our bytes land, the tail keeps the original's ----------
+
+
+def filler_checked():
+    pair = filler_pair()
+    verdict = check_function(
+        pair.segment, off=0, size=len(pair.ours), row=pair.row, flat=pair.orig.flat,
+        fixups=pair.orig.fixups, symbols=table(pair.row),
+    )  # fmt: skip
+    return pair, LandedFunction(pair.row, pair.ours, verdict)
+
+
+def test_trailing_filler_lands_original_bytes():
+    pair, fn = filler_checked()
+    assert fn.reloc.ok, fn.reloc.problems
+    assert fn.reloc.filler == len(FILLER_TAIL)
+    patch = build_patch(fn, pair.orig.flat)
+    assert len(patch) == len(pair.ours)
+    result = land(pair.orig.le, [fn], expected_sha1=sha1(pair.orig.data))
+    assert result.ok, result.format()
+    assert result.first_difference is None
+    assert result.data == pair.orig.data
+
+
+def test_land_refuses_short_bytes_with_filler_0():
+    pair = filler_pair()
+    with pytest.raises(LandError, match="kept filler"):
+        build_patch(forged(pair.row, pair.ours), pair.orig.flat)
+
+
+def test_land_refuses_a_wrong_filler_count():
+    pair = filler_pair()
+    verdict = verdict_for(pair.row, pair.ours)
+    short = dataclasses.replace(verdict, filler=len(FILLER_TAIL) - 1)
+    with pytest.raises(LandError, match="kept filler"):
+        build_patch(LandedFunction(pair.row, pair.ours, short), pair.orig.flat)
+
+
+def test_land_refuses_ours_longer_than_the_row():
+    orig = good_original()
+    with pytest.raises(LandError, match="longer than its row"):
+        build_patch(forged(GOOD_ROW, GOOD_OURS + b"\x00"), orig.flat)
+
+
+def test_land_refuses_a_field_in_the_kept_filler():
+    pair = filler_pair()
+    tail_va = pair.row.start + len(pair.ours)
+    verdict = verdict_for(pair.row, pair.ours, theirs_fields={tail_va})
+    kept = dataclasses.replace(verdict, filler=len(FILLER_TAIL))
+    with pytest.raises(LandError, match="outside our"):
+        build_patch(LandedFunction(pair.row, pair.ours, kept), pair.orig.flat)

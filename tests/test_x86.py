@@ -138,3 +138,62 @@ def test_field_offsets(code, disp_offset, imm_offset):
     insn = x86.decode_one(code, VA)
     assert insn is not None
     assert (insn.disp_offset, insn.imm_offset) == (disp_offset, imm_offset)
+
+
+# ---- alignment filler in any register (07-48: the original's trailing tail) ----
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        b"\x90",  # nop
+        b"\x89\xc0",  # mov eax, eax (89 /r)
+        b"\x8b\xc0",  # mov eax, eax (8b /r)
+        b"\x89\xdb",  # mov ebx, ebx
+        b"\x89\xf6",  # mov esi, esi
+        b"\x8d\x40\x00",  # lea eax, [eax + 0] (disp8)
+        b"\x8d\x00",  # lea eax, [eax]
+        b"\x8d\x74\x26\x00",  # lea esi, [esi + 0] with a SIB byte and no index
+        b"\x8d\xbf\x00\x00\x00\x00",  # lea edi, [edi + 0] (disp32 0)
+    ],
+    ids=bytes.hex,
+)
+def test_alignment_filler_any_register(code):
+    insn = x86.decode_one(code, VA)
+    assert insn is not None and insn.size == len(code)
+    assert x86.is_alignment_filler(insn) is True
+    assert insn.is_alignment_filler == x86.is_alignment_filler(insn)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        b"\xcc",  # int3
+        b"\x8b\x00",  # mov eax, dword ptr [eax]: a load
+        b"\x8d\x76\x01",  # lea esi, [esi + 1]: a displacement
+        b"\x8d\x34\x06",  # lea esi, [esi + eax]: an index
+        b"\x89\xc1",  # mov ecx, eax: two registers
+        b"\x26\x8d\x36",  # lea esi, es:[esi]: a segment override
+        b"\xc3",  # ret
+    ],
+    ids=bytes.hex,
+)
+def test_not_alignment_filler_any_register(code):
+    insn = x86.decode_one(code, VA)
+    assert insn is not None and insn.size == len(code)
+    assert x86.is_alignment_filler(insn) is False
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        b"\x89\xdb",  # mov ebx, ebx
+        b"\x8d\x76\x00",  # lea esi, [esi + 0]
+    ],
+    ids=bytes.hex,
+)
+def test_is_filler_stays_eax_only(code):
+    """omf2elf trims our own filler with is_filler, so our sizes must not move (07-48)."""
+    insn = x86.decode_one(code, VA)
+    assert x86.is_alignment_filler(insn) is True
+    assert x86.is_filler(insn) is False
