@@ -31,6 +31,7 @@ from relocpair import (
     CODE_BASE,
     FILLER_TAIL,
     FLAT_LNAME,
+    GOOD_FILLER_TAIL,
     GOOD_ORIGINAL,
     GOOD_OURS,
     LOAD_FIELD,
@@ -1950,3 +1951,55 @@ def test_function_check_without_filler_reports_bytes_ok():
     assert "bytes ok" in line and "trailing filler" not in line
     assert fn.to_json()["bytes"]["filler"] == 0
     assert fn.filler == 0
+
+
+# ---- the objdiff target of a filler-accepted row (07-48, branch B) ------------------------------
+
+
+def _filler_env(env: Env) -> FunctionRow:
+    """`env` with ROW grown to CODE_BASE + 0x10: the original holds GOOD_ORIGINAL then
+    GOOD_FILLER_TAIL; our object stays GOOD_OURS (11 bytes). Returns the grown row."""
+    row = replace(ROW, end=CODE_BASE + len(GOOD_ORIGINAL) + len(GOOD_FILLER_TAIL))
+    data = original({CODE_BASE: GOOD_ORIGINAL + GOOD_FILLER_TAIL},
+                    page1=le_off32(LOAD_FIELD, 0x4)).data  # fmt: skip
+    (env.orig / EXE).write_bytes(data)
+    write_manifest(env.manifest, {EXE: data})
+    write_functions_csv(env.config / STEM / "functions.csv", [row, OTHER, FAR], EXE)
+    return row
+
+
+def _target_rows(monkeypatch) -> list[list[FunctionRow]]:
+    """Each rows argument check passes to build_target, recorded around the real one."""
+    calls: list[list[FunctionRow]] = []
+    real = check.build_target
+
+    def recording(le, rows, *args, **kwargs):
+        calls.append(list(rows))
+        return real(le, rows, *args, **kwargs)
+
+    monkeypatch.setattr(check, "build_target", recording)
+    return calls
+
+
+def test_check_source_keeps_full_rows_without_kept_filler(env, monkeypatch):
+    calls = _target_rows(monkeypatch)
+    exact = run_check(env)  # ROW is exactly our length
+    assert exact.ok, exact.format()
+    assert ROW in calls[0]
+    row = _filler_env(env)
+    calls.clear()
+    failed = run_check(env, compiler=FakeCompiler(omf_object(callee="func_00010020_")))
+    (fn,) = failed.functions
+    assert not fn.reloc.ok  # a failed check keeps nothing: its target row stays whole
+    assert row in calls[0]
+
+
+def test_check_source_cuts_the_target_at_kept_filler(env, monkeypatch):
+    calls = _target_rows(monkeypatch)
+    row = _filler_env(env)
+    result = run_check(env)
+    (fn,) = result.functions
+    assert fn.reloc.ok and fn.filler == len(GOOD_FILLER_TAIL), fn.reloc.problems
+    cut = replace(row, end=row.start + len(GOOD_OURS))
+    assert cut in calls[0] and row not in calls[0]
+    assert result.ok, result.format()
