@@ -2003,3 +2003,44 @@ def test_check_source_cuts_the_target_at_kept_filler(env, monkeypatch):
     cut = replace(row, end=row.start + len(GOOD_OURS))
     assert cut in calls[0] and row not in calls[0]
     assert result.ok, result.format()
+
+
+def test_function_check_keeps_no_filler_on_a_failed_verdict():
+    """07-48 review: a verdict that failed lands nothing, so the report never says filler is
+    kept; it still names the filler the length rule accepted."""
+    pair = filler_pair()
+    good = _filler_verdict(pair)
+    failed = replace(good, ok=False, problems=("0x00010000: planted",))
+    line = _function_check(pair, failed).format()[0]
+    assert "9 bytes of trailing filler" in line
+    assert "kept" not in line
+    assert "kept" in _function_check(pair, good).format()[0]
+
+
+def test_sweep_cuts_the_target_at_kept_filler(env, monkeypatch):
+    """07-48 review: sweep scores a filler-accepted cell against the row cut at our length,
+    as check does, so a cell check would pass reaches objdiff 100 (flags `_perfect`)."""
+    calls = _target_rows(monkeypatch)
+    row = _filler_env(env)
+    report = run_sweep(env, FakeCompiler())
+    cut = replace(row, end=row.start + len(GOOD_OURS))
+    assert any(cut in rows for rows in calls), calls
+    assert all(cell.reloc_ok for cell in report.cells if cell.measured)
+
+
+def test_check_source_drops_a_stale_target(env, monkeypatch):
+    """07-48 review: the target is written after the relocation check, so a run that raises
+    before it must not leave an earlier run's (cut) target beside its fresh base."""
+    _filler_env(env)
+    assert run_check(env).ok
+    target = check.UnitPaths.of(check.object_root(env.build, check.CompileOptions()),
+                                STEM, UNIT).target  # fmt: skip
+    assert target.is_file()
+
+    def boom(*args, **kwargs):
+        raise check.CheckError("planted")
+
+    monkeypatch.setattr(check, "with_relocs", boom)
+    with pytest.raises(check.CheckError, match="planted"):
+        run_check(env)
+    assert not target.exists()
