@@ -1118,13 +1118,16 @@ def _add_cell_option(p: argparse.ArgumentParser) -> None:
 
 @dataclass
 class _BatchFile:
-    """One converter output: its cells, and either its jobs or the records that refused it."""
+    """One converter output: its cells, and either its jobs or the records that refused it, with
+    its path and text (None when not ASCII), which every record names (batch.with_source)."""
 
     exe: ExeInputs
     start: int
     cells: list
     jobs: list
     refused: list
+    path: Path
+    text: str | None
 
 
 def _batch_out(out: Path) -> Path:
@@ -1150,23 +1153,28 @@ def _batch_file(args, rules, exe, start: int, path: Path) -> _BatchFile:
     except batch.BatchError as exc:
         raise batch.BatchError(f"{path}: {exc}") from exc
     cells = batch.cells_for(batch.committed_rule(rules, exe.stem, row.unit), args.cell)
+    text: str | None = None
     try:
-        text = _judged_text(path)
+        text = batch.read_ascii(path)  # read once: compiled, and named by every record
+        reason = batch.refusal(text)
+        if reason is not None:
+            raise _Refused(f"{path}: {reason}")
     except (_Refused, batch.BatchError) as exc:
         never = batch.unjudged(row.end - row.start)
         refused = [batch.cell_record(exe.stem, start, name, rule, None, never,
                                      key=f"refused: {exc}") for name, rule in cells]  # fmt: skip
-        return _BatchFile(exe, start, cells, [], refused)
+        return _BatchFile(exe, start, cells, [], refused, path, text)
     out = batch.BUILD_ROOT / "run" / exe.stem / f"{start:08x}"
     jobs = batch.write_cell_jobs(out, text, exe.flat[row.start : row.end], row.start, cells)
-    return _BatchFile(exe, start, cells, jobs, [])
+    return _BatchFile(exe, start, cells, jobs, [], path, text)
 
 
 def _file_records(item: _BatchFile, compiled: dict) -> list[dict]:
-    if item.refused:
-        return item.refused
-    return [batch.judged_record(item.exe, item.start, name, compiled[job])
-            for (name, _rule), job in zip(item.cells, item.jobs, strict=True)]  # fmt: skip
+    records = item.refused or [
+        batch.judged_record(item.exe, item.start, name, compiled[job])
+        for (name, _rule), job in zip(item.cells, item.jobs, strict=True)
+    ]  # fmt: skip
+    return [batch.with_source(record, item.path, item.text) for record in records]
 
 
 def _cell_summary(records: list[dict]) -> list[str]:
@@ -2056,7 +2064,16 @@ def _add_locate_verb(verbs: argparse._SubParsersAction) -> None:
 
 
 def _flags_propose(args: argparse.Namespace) -> int:
-    report = flags.propose(args.from_attempts, repo=args.repo)
+    """--from-attempts (sweep hits of driver attempts) or --from-batch with its --cell and
+    --author (07-48c); --cell and --author belong to --from-batch only."""
+    if args.from_batch is None:
+        if args.cell is not None or args.author is not None:
+            raise flags.FlagsError("--cell and --author go with --from-batch only")
+        report = flags.propose(args.from_attempts, repo=args.repo)
+    elif args.cell is None or args.author is None:
+        raise flags.FlagsError("--from-batch needs --cell FLAGS and --author WHO")
+    else:
+        report = flags.propose_batch(args.from_batch, args.cell, args.author, repo=args.repo)
     print(json.dumps(report.to_json(), indent=2) if args.json else report.format())
     return 0
 
@@ -2099,11 +2116,24 @@ def _add_flags_command(sub: argparse._SubParsersAction) -> None:
     verbs = p.add_subparsers(dest="flags_verb", required=True, metavar="VERB")
     pr = verbs.add_parser(
         "propose",
-        help="turn the sweep hits of driver attempts into proposals in "
-        f"{flags.QUEUE.as_posix()}, copying the C that hit to build/flags/<id>/ (host)",
+        help="turn the sweep hits of driver attempts, or the exact records of one cell of a "
+        f"`reverseapoc batch` results file, into proposals in {flags.QUEUE.as_posix()}, copying "
+        "the candidate C to build/flags/<id>/ (host); each still needs `flags regate` and the "
+        "owner's `flags approve`",
     )
-    pr.add_argument("--from-attempts", nargs="*", metavar="RUN", required=True,
-                    help="driver runs under build/driver/ to read; none named: every run")
+    source = pr.add_mutually_exclusive_group(required=True)
+    source.add_argument("--from-attempts", nargs="*", metavar="RUN",
+                        help="driver runs under build/driver/ to read; none named: every run")
+    source.add_argument("--from-batch", type=Path, metavar="FILE",
+                        help="a `reverseapoc batch` results file under build/: one proposal per "
+                        "unit from the cell's exact records, the whole unit with each row's C "
+                        "at its INCLUDE_ASM marker (07-48c)")  # fmt: skip
+    pr.add_argument("--cell", metavar="FLAGS",
+                    help="with --from-batch: the cell, as given to `batch --cell`, e.g. "
+                    "--cell \"-4r -oneatx -s -fpi\"")  # fmt: skip
+    pr.add_argument("--author", metavar="WHO", choices=flags.AUTHORS,
+                    help=f"with --from-batch: who wrote the C, one of {' | '.join(flags.AUTHORS)}"
+                    "; a batch landing names it in `Matched-By:`")  # fmt: skip
     pr.add_argument("--json", action="store_true", help="print the report as JSON")
     pr.set_defaults(flags_func=_flags_propose)
     ls = verbs.add_parser(

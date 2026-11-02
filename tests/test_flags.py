@@ -1839,8 +1839,9 @@ def test_propose_batch_is_idempotent(tmp_path):
 
 def test_queue_round_trips_a_batch_proposal(tmp_path):
     path = tmp_path / "q.toml"
-    batch_p = _proposal(id="F-0002", source="batch", author=LIFT, alternatives=(),
-                        candidate=f"build/flags/F-0002/{UNIT}.c", evidence=(RESULTS,))
+    batch_p = _proposal(id="F-0002", unit=UA, glob=f"src/ufo2p/{UA}.c", functions=(A1,),
+                        siblings=(), source="batch", author=LIFT, alternatives=(),
+                        candidate=f"build/flags/F-0002/{UA}.c", evidence=(RESULTS,))
     flags.write_queue(path, [_proposal(), batch_p])
     assert flags.read_queue(path) == [_proposal(), batch_p]
     text = path.read_text(encoding="ascii")

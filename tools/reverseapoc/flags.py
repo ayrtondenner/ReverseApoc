@@ -28,6 +28,15 @@ order, through write_atomic, and read back with tomllib. Its format, `version = 
   `variant_sha256` is the LF sha256 of that C, written to build/flags/<id>/<unit>.reduced.c
   (`variant_path`). Approve lands that file, not the candidate. Both are empty when the full
   candidate passed or no re-gate passed.
+- author (07-48c, optional): who wrote a batch proposal's C, one of AUTHORS. It is written only
+  when set, after the required keys, so an entry without it keeps its exact text; it is set
+  exactly when `source` is batch.
+
+A batch proposal (07-48c, `flags propose --from-batch`, `propose_batch`) comes from a
+`reverseapoc batch` results file (JSON lines under build/) and one of its cells, not from a
+driver attempt. Its evidence is that results file; its candidate is the whole unit (the
+committed src/<exe>/<unit>.c, or the INCLUDE_ASM scaffold when there is none) with each exact
+row's C, the file the record names, at the row's marker, copied to build/flags/<id>/<unit>.c.
 """
 
 from __future__ import annotations
@@ -44,7 +53,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from . import check, contextpack, driver, gate, x86
+from . import batch, check, contextpack, driver, gate, x86
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
@@ -54,11 +63,13 @@ from .functions import (
     FunctionRow,
     read_functions_csv,
     read_symbols_csv,
+    read_units_csv,
 )
 from .hooks import CLAIM_ENV
 from .locks import DRIVE_LOCK, ProcessLock
 from .status import MATCHED, format_percent, lf_sha256, read_status, status_path
 from .targets import load_manifest
+from .units import UnitsError, scaffold_unit
 from .watcom import DEFAULT_WATCOM_MANIFEST, load_watcom_manifest
 
 QUEUE = Path("config/cflags-proposals.toml")
@@ -71,8 +82,11 @@ PROPOSED, REGATED, FAILED = "proposed", "regated", "failed"
 APPROVED, LANDED, REJECTED, SUPERSEDED = "approved", "landed", "rejected", "superseded"
 STATUSES = (PROPOSED, REGATED, FAILED, APPROVED, LANDED, REJECTED, SUPERSEDED)
 OPEN_STATUSES = (PROPOSED, REGATED, FAILED)  # a unit has at most one; a new hit merges into it
-SWEEP, SWEEP2, OWNER = "sweep", "sweep2", "owner"
-SOURCES = (SWEEP, SWEEP2, OWNER)
+SWEEP, SWEEP2, OWNER, BATCH = "sweep", "sweep2", "owner", "batch"
+SOURCES = (SWEEP, SWEEP2, OWNER, BATCH)
+# 07-48c: who wrote a batch proposal's C (the design's two names); a batch landing names it.
+AUTHORS = ("reverseapoc lift", "claude subagent (spike 011)")
+OPTIONAL_FIELDS: dict[str, str] = {"author": ""}  # key -> default; written only when set
 AS_WRITTEN, REDUCED, EMPTY = "as-written", "reduced", "empty"
 VARIANTS = (AS_WRITTEN, REDUCED, EMPTY)  # EMPTY: no re-gate has run
 NOT_RUN = -1  # regate_exit before a re-gate
@@ -117,10 +131,10 @@ class Proposal:
     keeps: tuple[str, ...]  # matched functions of the unit the re-gate must keep matched
     siblings: tuple[str, ...]  # every other game/thunk row: `<name> <status> <pct>`|`unattempted`
     alternatives: tuple[str, ...]  # other rules every function hit under, best first
-    source: str  # sweep | sweep2 | owner
+    source: str  # sweep | sweep2 | owner | batch
     candidate: str  # build/flags/<id>/<unit>.c, the C that hit (gitignored)
     candidate_sha256: str  # of the candidate's text with CRLF read as LF
-    evidence: tuple[str, ...]  # the hits' checks/NNNN.json paths under build/
+    evidence: tuple[str, ...]  # the hits' checks/NNNN.json paths (batch: the results file)
     status: str
     regate_exit: int  # NOT_RUN, else the re-gate's exit code
     regate_variant: str  # as-written | reduced | empty
@@ -131,6 +145,7 @@ class Proposal:
     reason: str  # why it failed or was rejected
     variant_sha256: str  # the reduced variant that passed (variant_path), else ""
     reverted: tuple[str, ...]  # functions that variant returned to INCLUDE_ASM, else ()
+    author: str = ""  # optional (07-48c): who wrote a batch proposal's C, one of AUTHORS
 
     def to_json(self) -> dict[str, Any]:
         return {key: list(value) if isinstance(value, tuple) else value
@@ -155,7 +170,8 @@ class Proposal:
         return "\n".join(lines)
 
 
-FIELDS = tuple(f.name for f in dataclasses.fields(Proposal))
+FIELDS = tuple(f.name for f in dataclasses.fields(Proposal) if f.name not in OPTIONAL_FIELDS)
+_ALL_FIELDS = (*FIELDS, *OPTIONAL_FIELDS)  # the required keys, then the optional ones
 _LIST_FIELDS = ("functions", "keeps", "siblings", "alternatives", "evidence", "reverted")
 _INT_FIELDS = ("regate_exit",)
 
@@ -203,6 +219,7 @@ def _field_problem(p: Proposal) -> str | None:
         "reverted": all(_C_NAME.fullmatch(name) for name in p.reverted)
         and (p.variant_sha256 == "") == (not p.reverted),
         "approved_date": p.approved_date == "" or _DATE.fullmatch(p.approved_date) is not None,
+        "author": p.author in ("", *AUTHORS) and (p.source == BATCH) == (p.author != ""),
     }
     bad = [key for key, ok in checks.items() if not ok]
     return f"{p.id}: bad value for {', '.join(bad)}" if bad else None
@@ -212,7 +229,7 @@ def _check_queue(proposals: Sequence[Proposal], where: str) -> None:
     seen: set[str] = set()
     open_units: dict[tuple[str, str], str] = {}
     for p in proposals:
-        for key in FIELDS:
+        for key in _ALL_FIELDS:
             value = getattr(p, key)
             for text in value if isinstance(value, tuple) else (value,):
                 if isinstance(text, str):
@@ -231,12 +248,13 @@ def _check_queue(proposals: Sequence[Proposal], where: str) -> None:
 
 
 def _proposal(table: object, where: str) -> Proposal:
-    if not isinstance(table, dict) or set(table) != set(FIELDS):
-        keys = sorted(table) if isinstance(table, dict) else type(table).__name__
-        raise FlagsError(f"{where}: a [[proposal]] has exactly the keys {', '.join(FIELDS)}, "
-                         f"got {keys}")  # fmt: skip
+    keys = set(table) if isinstance(table, dict) else set()
+    if not isinstance(table, dict) or not set(FIELDS) <= keys or keys - set(_ALL_FIELDS):
+        got = sorted(table) if isinstance(table, dict) else type(table).__name__
+        raise FlagsError(f"{where}: a [[proposal]] has exactly the keys {', '.join(FIELDS)} "
+                         f"(and optionally {', '.join(OPTIONAL_FIELDS)}), got {got}")  # fmt: skip
     values: dict[str, Any] = {}
-    for key in FIELDS:
+    for key in (*FIELDS, *(key for key in OPTIONAL_FIELDS if key in keys)):
         value = table[key]
         if key in _LIST_FIELDS:
             if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
@@ -282,12 +300,14 @@ def _toml_value(value: str | int | tuple[str, ...]) -> str:
 
 
 def format_queue(proposals: Sequence[Proposal]) -> str:
-    """The queue's text: the header, `version`, then each proposal's keys in FIELDS order."""
+    """The queue's text: the header, `version`, then each proposal's keys in FIELDS order, then
+    each optional key whose value is not its default (so an entry without one keeps its text)."""
     _check_queue(proposals, str(QUEUE))
     parts = [QUEUE_HEADER, f"version = {QUEUE_VERSION}\n"]
     for p in proposals:
         parts.append("\n[[proposal]]\n")
-        parts += [f"{key} = {_toml_value(getattr(p, key))}\n" for key in FIELDS]
+        keys = [*FIELDS, *(k for k, default in OPTIONAL_FIELDS.items() if getattr(p, k) != default)]
+        parts += [f"{key} = {_toml_value(getattr(p, key))}\n" for key in keys]
     return "".join(parts)
 
 
@@ -692,6 +712,239 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
         write_queue(queue, proposals)
     return ProposeReport(tuple(added), tuple(dict.fromkeys(merged)), tuple(skipped),
                          tuple(proposals))  # fmt: skip
+
+
+# ---- propose from a batch: `flags propose --from-batch` (07-48c) ----
+
+_ADDRESS = re.compile(r"0x[0-9A-F]{8}")  # batch.cell_record's address form
+_NOT_HELD = (REJECTED, SUPERSEDED)  # a queue entry that no longer holds its (exe, unit, rule)
+
+
+@dataclass(frozen=True)
+class _BatchRow:
+    """One exact batch record of the cell: its functions.csv row and the C it judged."""
+
+    exe: str
+    unit: str
+    start: int
+    name: str
+    rule: str  # the unit's committed spec plus the cell's flags
+    source: str  # the record's repo-relative path under build/
+    text: str  # the C the record judged, CRLF read as LF
+
+
+def _batch_results(repo: Path, results: Path) -> tuple[str, list[dict[str, Any]]]:
+    """The results file's repo-relative POSIX path (it must lie under build/) and its records."""
+    path = Path(results)
+    path = (path if path.is_absolute() else Path.cwd() / path).resolve()
+    root = repo.resolve()
+    rel = path.relative_to(root).as_posix() if path.is_relative_to(root) else None
+    if rel is None or not _build_path(rel):
+        raise FlagsError(f"{results}: a batch results file must lie under build/ in {repo}")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FlagsError(f"{rel}: cannot read the batch results ({exc})") from None
+    records = []
+    for number, raw in enumerate(lines, start=1):
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+        except ValueError as exc:
+            raise FlagsError(f"{rel} line {number}: {exc}") from None
+        if not isinstance(record, dict):
+            raise FlagsError(f"{rel} line {number}: a batch record is a JSON object")
+        records.append(record)
+    return rel, records
+
+
+def _record_row(ctx: _Context, record: Mapping[str, Any], where: str) -> FunctionRow:
+    """The functions.csv row a record names by exe and address; FlagsError when there is none."""
+    exe, address = record.get("exe"), record.get("address")
+    if exe not in EXES or not isinstance(address, str) or not _ADDRESS.fullmatch(address):
+        raise FlagsError(f"{where}: expected an exe of {', '.join(EXES)} and a 0x%08X address, "
+                         f"got {exe!r} {address!r}")  # fmt: skip
+    start = int(address, _HEX)
+    row = next((r for r in ctx.rows(exe) if r.start == start), None)
+    if row is None:
+        raise FlagsError(f"{where}: {exe} {address} is no functions.csv row")
+    return row
+
+
+def _cell_rule_text(ctx: _Context, exe: str, unit: str, cell: str) -> tuple[str, str]:
+    """(the proposed rule as `spec flags`, the cell's flags as a record writes them): the unit's
+    committed rule with the cell's flags (batch.cell_rule)."""
+    committed = select_rule(ctx.rules, unit_rule_path(exe, unit))
+    try:
+        rule = batch.cell_rule(committed, cell)
+    except (batch.BatchError, CflagsError) as exc:
+        raise FlagsError(f"--cell {cell!r}: {exc}") from None
+    return " ".join([rule.spec, *rule.flags]), " ".join(rule.flags)
+
+
+def _source_text(repo: Path, record: Mapping[str, Any], where: str) -> tuple[str, str]:
+    """(source, its text) of a record: under build/, and unchanged since the batch judged it."""
+    source, sha = record.get("source"), record.get("source_sha256")
+    if not isinstance(source, str) or not isinstance(sha, str):
+        raise FlagsError(f"{where}: the record names no source C file; re-run reverseapoc batch "
+                         "(07-48c records name their source and its sha256)")  # fmt: skip
+    if not _build_path(source):
+        raise FlagsError(f"{where}: source {source!r} is not a path under build/")
+    try:
+        text = (repo / source).read_bytes().decode("ascii")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise FlagsError(f"{where}: cannot read source {source} ({exc})") from None
+    if lf_sha256(text) != sha:
+        raise FlagsError(f"{where}: {source} changed since the batch judged it; re-run "
+                         "reverseapoc batch")  # fmt: skip
+    return source, text.replace("\r\n", "\n")
+
+
+def _batch_row(ctx: _Context, record: Mapping[str, Any], cell: str,
+               where: str) -> _BatchRow | str:  # fmt: skip
+    """The record as a _BatchRow, or why it is skipped (it is not exact). A record judged under
+    other flags than the proposed rule, or with a missing, stray or changed source, is a
+    FlagsError."""
+    row = _record_row(ctx, record, where)
+    exe, address = record["exe"], record["address"]
+    rule, cell_flags = _cell_rule_text(ctx, exe, row.unit, cell)
+    if record.get("flags") != cell_flags:
+        raise FlagsError(f"{where}: {exe} {address} was judged under {record.get('flags')!r}, "
+                         f"not the proposed rule's flags {cell_flags!r}")  # fmt: skip
+    if record.get("exact") is not True:
+        return f"{exe} {address}: not exact under {cell!r}"
+    source, text = _source_text(ctx.repo, record, where)
+    return _BatchRow(exe, row.unit, row.start, row.name, rule, source, text)
+
+
+def _batch_groups(ctx: _Context, records: Sequence[Mapping[str, Any]], cell: str, rel: str,
+                  skipped: list[str]) -> dict[tuple[str, str], list[_BatchRow]]:  # fmt: skip
+    """The cell's exact records grouped by (exe, unit), each group in start order; the skip
+    reasons of the others go to `skipped`. A cell with no record is a FlagsError."""
+    mine = [(n, r) for n, r in enumerate(records, start=1) if r.get("cell") == cell]
+    if not mine:
+        raise FlagsError(f"{rel}: no record of the cell {cell!r}")
+    groups: dict[tuple[str, str], dict[int, _BatchRow]] = {}
+    for number, record in mine:
+        found = _batch_row(ctx, record, cell, f"{rel} record {number}")
+        if isinstance(found, str):
+            skipped.append(found)
+            continue
+        groups.setdefault((found.exe, found.unit), {}).setdefault(found.start, found)
+    return {key: [rows[s] for s in sorted(rows)] for key, rows in sorted(groups.items())}
+
+
+def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_BatchRow]
+                ) -> str | None:  # fmt: skip
+    """Why a unit's rows add no proposal, or None: the cell is the committed rule, a function is
+    matched, the queue already holds (exe, unit, rule), or the unit has a proposal in review."""
+    exe, unit, rule = rows[0].exe, rows[0].unit, rows[0].rule
+    where = f"{exe}/{unit} {', '.join(r.name for r in rows)}"
+    if rule == ctx.base(exe, unit):
+        return f"{where}: {rule} is the unit's committed rule"
+    matched = [r.name for r in rows if ctx.matched(exe, r.start, r.name)]
+    if matched:
+        return f"{where}: {', '.join(matched)} matched in status.csv"
+    unit_ps = [p for p in proposals if (p.exe, p.unit) == (exe, unit)]
+    same = next((p for p in unit_ps if p.rule == rule and p.status not in _NOT_HELD), None)
+    if same is not None:
+        return f"{where}: duplicate of {same.id} ({exe}/{unit} under {rule}, {same.status})"
+    held = next((p for p in unit_ps if p.status in (*OPEN_STATUSES, APPROVED)), None)
+    if held is not None:
+        state = "approved and awaits landing" if held.status == APPROVED else (
+            f"open ({held.status})")  # fmt: skip
+        return f"{where}: {held.id} for {unit} is {state}"
+    return None
+
+
+def _unit_text(ctx: _Context, exe: str, unit: str) -> str:
+    """The committed src/<exe>/<unit>.c, or its INCLUDE_ASM scaffold when there is none."""
+    path = ctx.repo / unit_rule_path(exe, unit)
+    if path.is_file():
+        return path.read_bytes().decode("utf-8")
+    units_csv = ctx.config / exe / "units.csv"
+    try:
+        unit_row = next((u for u in read_units_csv(units_csv) if u.unit == unit), None)
+    except (OSError, ValueError) as exc:  # FunctionsError is a ValueError
+        raise FlagsError(f"{exe}/{unit}: cannot read {units_csv.name} ({exc})") from None
+    if unit_row is None:
+        raise FlagsError(f"{exe}: no unit {unit} in {units_csv.name}")
+    try:
+        return scaffold_unit(_exe_name(exe), unit_row, ctx.rows(exe))
+    except UnitsError as exc:
+        raise FlagsError(f"{exe}/{unit}: cannot scaffold the unit ({exc})") from None
+
+
+def _batch_candidate(ctx: _Context, rows: Sequence[_BatchRow]) -> tuple[str | None, str]:
+    """(the unit's text with each row's C, verbatim, at its INCLUDE_ASM marker, "") or (None,
+    why not): a row with no marker (the unit defines it already) or a row's file that defines
+    another of the unit's placeholders, so only the row's own function is proposed."""
+    exe, unit = rows[0].exe, rows[0].unit
+    names = {r.name for r in ctx.rows(exe) if r.unit == unit and r.kind in (KIND_GAME, KIND_THUNK)}
+    text = _unit_text(ctx, exe, unit)
+    where = f"{exe}/{unit}"
+    for row in rows:
+        others = sorted(set(contextpack.definitions(row.text)) & (names - {row.name}))
+        if others:
+            return None, f"{where} {row.name}: {row.source} also defines {', '.join(others)}"
+        marker = re.search(_MARKER.format(name=re.escape(row.name)), text)
+        if marker is None:
+            return None, (f"{where} {row.name}: no INCLUDE_ASM({row.name}) marker in "
+                          f"{unit_rule_path(exe, unit)} (the unit defines it already)")  # fmt: skip
+        text = text[: marker.start()] + row.text + text[marker.end() :]
+    return text, ""
+
+
+def _batch_proposal(ctx: _Context, pid: str, rows: Sequence[_BatchRow], rel: str,
+                    author: str, text: str) -> Proposal:  # fmt: skip
+    exe, unit = rows[0].exe, rows[0].unit
+    functions = tuple(r.name for r in rows)
+    return Proposal(
+        id=pid, exe=exe, unit=unit, glob=unit_rule_path(exe, unit), rule=rows[0].rule,
+        base=ctx.base(exe, unit), functions=functions, keeps=ctx.keeps(exe, unit),
+        siblings=ctx.siblings(exe, unit, functions), alternatives=(), source=BATCH,
+        candidate=(FLAGS_DIR / pid / f"{unit}.c").as_posix(), candidate_sha256=lf_sha256(text),
+        evidence=(rel,), status=PROPOSED, regate_exit=NOT_RUN, regate_variant=EMPTY,
+        regate_cflags_sha256="", regate_log="", approved_by="", approved_date="", reason="",
+        variant_sha256="", reverted=(), author=author,
+    )  # fmt: skip
+
+
+def propose_batch(results: Path, cell: str, author: str, *, repo: Path,
+                  queue: Path | None = None) -> ProposeReport:  # fmt: skip
+    """Turn the exact records of one cell of a `reverseapoc batch` results file into proposals
+    (D-12, D-32): one per (exe, unit), source batch, its `author` (one of AUTHORS), evidence the
+    results file, rule the unit's committed spec plus the cell's flags. The candidate is the
+    whole unit with each row's C at its marker, written to build/flags/<id>/<unit>.c. Every
+    refusal comes before any write; a re-run adds nothing (the duplicate is skipped). The
+    proposals still need `flags regate` and the owner's `flags approve`."""
+    if author not in AUTHORS:
+        raise FlagsError(f"--author {author!r}: one of {' | '.join(AUTHORS)}")
+    repo = Path(repo)
+    queue = Path(queue) if queue is not None else repo / QUEUE
+    rel, records = _batch_results(repo, results)
+    proposals = read_queue(queue)
+    ctx = _Context(repo)
+    skipped: list[str] = []
+    planned: list[tuple[Proposal, str]] = []
+    for rows in _batch_groups(ctx, records, cell, rel, skipped).values():
+        why = _group_skip(ctx, proposals, rows)
+        text, why = (None, why) if why else _batch_candidate(ctx, rows)
+        if text is None:
+            skipped.append(why)
+            continue
+        proposal = _batch_proposal(ctx, _next_id(proposals), rows, rel, author, text)
+        proposals.append(proposal)
+        planned.append((proposal, text))
+    if planned:
+        format_queue(proposals)  # validates the whole queue before any candidate is written
+        for proposal, text in planned:
+            path = repo / proposal.candidate
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_atomic(path, text.encode("utf-8"))
+        write_queue(queue, proposals)
+    return ProposeReport(tuple(p.id for p, _ in planned), (), tuple(skipped), tuple(proposals))
 
 
 # ---- regate: the whole-unit re-proof on a copy (D-12, D-28) ----

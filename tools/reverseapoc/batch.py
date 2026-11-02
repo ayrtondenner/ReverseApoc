@@ -15,7 +15,10 @@ mnemonic shapes) only rank and diagnose; they decide nothing.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). Records hold addresses, counts,
-percentages and mnemonic shapes, never bytes.
+percentages and mnemonic shapes, never bytes. Each record also names the C file it judged
+(`with_source`: `source`, repo-relative when inside the repo, and `source_sha256`, its LF
+sha256), so `flags propose --from-batch` (07-48c) can find that C and refuse one that changed
+since; the compiled cell sources under build/batch/run/ are overwritten by the next batch.
 """
 
 from __future__ import annotations
@@ -52,6 +55,7 @@ from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, FunctionRow
 from .omf import Module, OMFError
 from .relocs import FIELD_SIZE
+from .status import lf_sha256
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from .watcom import DEFAULT_INSTALL
 from .x86 import Insn, decode
@@ -431,6 +435,17 @@ def cell_record(
         "len": [verdict.len_ours if ok else 0, verdict.len_row],
         "key": key,
     }
+
+
+def with_source(record: dict[str, Any], path: Path, text: str | None) -> dict[str, Any]:
+    """`record` plus the C file it judged: `source`, a repo-relative POSIX path when `path` lies
+    inside REPO_ROOT (absolute POSIX otherwise), and `source_sha256`, the LF sha256 of `text`
+    ("" when the file could not be read as ASCII). The record itself is not changed."""
+    resolved = Path(path).resolve()
+    root = REPO_ROOT.resolve()
+    name = resolved.relative_to(root) if resolved.is_relative_to(root) else resolved
+    sha = "" if text is None else lf_sha256(text)
+    return {**record, "source": name.as_posix(), "source_sha256": sha}
 
 
 # ---- source intake ----
