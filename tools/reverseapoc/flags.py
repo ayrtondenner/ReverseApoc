@@ -703,6 +703,12 @@ def propose(runs: Sequence[str], *, repo: Path, queue: Path | None = None) -> Pr
                            f"and awaits landing ({hit.evidence})")  # fmt: skip
             continue
         current = next((p for p in unit if p.status in OPEN_STATUSES), None)
+        if current is not None and current.source == BATCH:
+            # A batch proposal lands under its author alone, with no attempt co-authors and
+            # attempts 0, so a driver hit is never merged into it (07-48c review).
+            skipped.append(f"{hit.exe} {hit.function}: {current.id} for {hit.unit} is an open "
+                           f"batch proposal ({hit.evidence})")  # fmt: skip
+            continue
         if current is None:
             proposal = _new_proposal(repo, ctx, _next_id(proposals), hit)
             proposals.append(proposal)
@@ -837,10 +843,11 @@ def _batch_groups(ctx: _Context, records: Sequence[Mapping[str, Any]], cell: str
     return {key: [rows[s] for s in sorted(rows)] for key, rows in sorted(groups.items())}
 
 
-def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_BatchRow]
-                ) -> str | None:  # fmt: skip
+def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_BatchRow],
+                rel: str) -> str | None:  # fmt: skip
     """Why a unit's rows add no proposal, or None: the cell is the committed rule, a function is
-    matched, the queue already holds (exe, unit, rule), or the unit has a proposal in review."""
+    matched, the queue already holds (exe, unit, rule), the owner rejected (exe, unit, rule) on
+    this same results file `rel`, or the unit has a proposal in review."""
     exe, unit, rule = rows[0].exe, rows[0].unit, rows[0].rule
     where = f"{exe}/{unit} {', '.join(r.name for r in rows)}"
     if rule == ctx.base(exe, unit):
@@ -852,6 +859,10 @@ def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_Ba
     same = next((p for p in unit_ps if p.rule == rule and p.status not in _NOT_HELD), None)
     if same is not None:
         return f"{where}: duplicate of {same.id} ({exe}/{unit} under {rule}, {same.status})"
+    rejected = next((p for p in unit_ps if p.rule == rule and p.status == REJECTED
+                     and rel in p.evidence), None)  # fmt: skip
+    if rejected is not None:  # 07-48c review: only new evidence brings it back to the owner
+        return f"{where}: {rejected.id} ({exe}/{unit} under {rule}) was rejected on {rel}"
     held = next((p for p in unit_ps if p.status in (*OPEN_STATUSES, APPROVED)), None)
     if held is not None:
         state = "approved and awaits landing" if held.status == APPROVED else (
@@ -887,7 +898,10 @@ def _batch_candidate(ctx: _Context, rows: Sequence[_BatchRow]) -> tuple[str | No
     text = _unit_text(ctx, exe, unit)
     where = f"{exe}/{unit}"
     for row in rows:
-        others = sorted(set(contextpack.definitions(row.text)) & (names - {row.name}))
+        defined = set(contextpack.definitions(row.text))
+        if row.name not in defined:  # a renamed row's marker keeps its name (07-48c review)
+            return None, f"{where} {row.name}: {row.source} does not define {row.name}"
+        others = sorted(defined & (names - {row.name}))
         if others:
             return None, f"{where} {row.name}: {row.source} also defines {', '.join(others)}"
         marker = re.search(_MARKER.format(name=re.escape(row.name)), text)
@@ -931,7 +945,7 @@ def propose_batch(results: Path, cell: str, author: str, *, repo: Path,
     skipped: list[str] = []
     planned: list[tuple[Proposal, str]] = []
     for rows in _batch_groups(ctx, records, cell, rel, skipped).values():
-        why = _group_skip(ctx, proposals, rows)
+        why = _group_skip(ctx, proposals, rows, rel)
         text, why = (None, why) if why else _batch_candidate(ctx, rows)
         if text is None:
             skipped.append(why)
