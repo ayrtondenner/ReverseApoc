@@ -17,10 +17,11 @@ alignment filler up to its 16-byte aligned end. tests/fixtures/filler/ is also a
 
 The leading-table gap rule (plan 07-48b) on its real row, tacp func_0001E860 (row [0x0001E860,
 0x0001E900) in unit u_0001df90): a 32-byte leading jump table row, then 8 bytes of filler, then
-the function aligned to 16. tests/fixtures/filler/tacp/f_0001e860.c is a byte-identical copy of
-the spike 011 b064 agent's build/spike-011/agents/b064/f_0001e860.c, never edited (the agent wrote
-it for the inferred `-4r -oneatx -s -fpi` cell; its variant f_0001e860_with_neighbour.c judged
-exact under no cell, 48b-rejudge-neighbour.txt). Our object lays the function right after the
+the function aligned to 16. tests/fixtures/filler/tacp/f_0001e860.c is a copy of the spike 011
+b064 agent's build/spike-011/agents/b064/f_0001e860.c, never edited, byte-identical but for its
+CRLF line ends, which .gitattributes (eol=lf) stores as LF (the agent wrote it for the inferred
+`-4r -oneatx -s -fpi` cell; its variant f_0001e860_with_neighbour.c judged exact under no cell,
+48b-rejudge-neighbour.txt). Our object lays the function right after the
 table, so the table span is 8 bytes short of the original's: the 07-48b rule accepts that gap.
 
 Asserts on addresses, counts, percents, booleans and SHA-1 checks only. Writes only under
