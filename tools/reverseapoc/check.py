@@ -376,6 +376,7 @@ class LeadingTable:
     span: FunctionRow  # the data-in-code row, its end moved to head.start
     head: FunctionRow
     size: int  # the first public's offset
+    table_end: int  # the data-in-code row's own end: kept filler may only start there
 
     @property
     def public(self) -> OwnPublic:
@@ -412,7 +413,7 @@ def leading_table(
     if table.kind != KIND_DATA_IN_CODE or table.end > head.start:
         return None
     span = dataclasses.replace(table, name=symbols.linker_name(table.start), end=head.start)
-    return LeadingTable(span, head, first)
+    return LeadingTable(span, head, first, table.end)
 
 
 def own_publics(
@@ -487,7 +488,19 @@ def _head_reloc(
     reloc = _reloc(d, exe, (table.public, *seg_map.publics))
     head = tuple(p for p in seg_map.publics if p.name == d.symbol)
     span = Defined(table.span, table.span.name, d.segment, 0, table.size)
-    return _with_table(reloc, _reloc(span, exe, head, table=True))
+    return _with_table(reloc, _short_table(table) or _reloc(span, exe, head, table=True))
+
+
+def _short_table(table: LeadingTable) -> RelocResult | None:
+    """A failed verdict when our table ends before its data-in-code row does: the kept tail may
+    start only at the row's end, so bytes of the row itself (data that may read as filler) are
+    never taken for alignment filler (07-48b review). None when ours covers the row."""
+    end = table.span.start + table.size
+    if end >= table.table_end:
+        return None
+    problem = (f"{_hex(end)}: our table is {table.size} bytes, shorter than its data-in-code row "
+               f"{table.span.name} [{_hex(table.span.start)}, {_hex(table.table_end)})")
+    return RelocResult(False, (problem,), frozenset(), frozenset())
 
 
 def with_relocs(
