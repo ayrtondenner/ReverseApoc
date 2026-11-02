@@ -716,13 +716,15 @@ class ByteCompare:
 
 def compare_bytes(ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult) -> ByteCompare:
     """Our bytes against the row, ignoring every relocated field of either side (as land.py's
-    patch builder keeps the original there)."""
+    patch builder keeps the original there). The verdict's kept filler (`reloc.filler`) is the
+    original's trailing Watcom filler, judged by relocs (07-48): land keeps those bytes, so they
+    count as ours; any other length difference counts as differing bytes."""
     masked = {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
     length = row.end - row.start
     common = min(len(ours), length)
     diffs = [row.start + i for i in range(common)
              if row.start + i not in masked and ours[i] != flat[row.start + i]]  # fmt: skip
-    extra = abs(len(ours) - length)
+    extra = abs(len(ours) + reloc.filler - length)
     first = diffs[0] if diffs else (row.start + common if extra else None)
     return ByteCompare(not diffs and not extra, len(diffs) + extra, first)
 
@@ -804,6 +806,12 @@ class FunctionCheck:
     def ok(self) -> bool:
         return self.objdiff_percent == PERFECT and self.reloc.ok and self.bytes_ok
 
+    @property
+    def filler(self) -> int:
+        """The original trailing filler kept after our bytes: the verdict's own count, the one
+        land reads too (07-48)."""
+        return self.reloc.filler
+
     def to_json(self) -> dict[str, Any]:
         return {
             "name": self.name,
@@ -812,14 +820,21 @@ class FunctionCheck:
             "objdiff_percent": self.objdiff_percent,
             "reloc": {"ok": self.reloc.ok, "problems": list(self.reloc.problems)},
             "bytes": {"ok": self.bytes_ok, "differing": self.differing,
-                      "first_va": None if self.first_va is None else _hex(self.first_va)},
+                      "first_va": None if self.first_va is None else _hex(self.first_va),
+                      "filler": self.filler},
             "raw_fields": _raw_fields_json(self.raw_fields),
         }  # fmt: skip
 
+    def _bytes_line(self) -> str:
+        if not self.bytes_ok:
+            return f"bytes {self.differing} differ from {_hex(self.first_va or self.va)}"
+        if self.filler:
+            return f"bytes ok, {self.filler} bytes of trailing filler kept"
+        return "bytes ok"
+
     def format(self) -> list[str]:
         reloc = "reloc ok" if self.reloc.ok else f"reloc FAILED ({len(self.reloc.problems)})"
-        same = "bytes ok" if self.bytes_ok else (
-            f"bytes {self.differing} differ from {_hex(self.first_va or self.va)}")  # fmt: skip
+        same = self._bytes_line()
         head = "OK      " if self.ok else "MISMATCH"
         lines = [f"{head}  {self.name}  {_hex(self.va)}  {self.size} bytes  "
                  f"objdiff {self.objdiff_percent:g}%  {reloc}  {same}"]  # fmt: skip

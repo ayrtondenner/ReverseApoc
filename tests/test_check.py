@@ -249,7 +249,7 @@ def test_check_passes_a_matching_unit(env, monkeypatch, capsys):
     assert set(fn_doc) >= {"name", "va", "size", "objdiff_percent", "reloc", "bytes"}
     assert fn_doc["objdiff_percent"] == 100.0
     assert fn_doc["reloc"] == {"ok": True, "problems": []}
-    assert fn_doc["bytes"] == {"ok": True, "differing": 0, "first_va": None}
+    assert fn_doc["bytes"] == {"ok": True, "differing": 0, "first_va": None, "filler": 0}
     (splice,) = doc["splice"]
     assert set(splice) >= {"exe", "sha1", "expected", "ok", "landed"}
     assert splice["exe"] == EXE and splice["ok"] is True and splice["landed"] == 1

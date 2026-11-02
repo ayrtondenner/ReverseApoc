@@ -8,9 +8,10 @@ Ported from the spike 010/011 harness (.planning/spikes/010-deterministic-matchi
 compiler.build_argv commands in a thread pool. There is no cc.log and no provenance stamp: only
 `check` and ninja need those. `judge` is check.py's own pieces: defined_functions, with_relocs
 (the relocation check with the unit's public map and a leading jump table) and compare_bytes. A
-function is exact when both pass. `score` (difflib over decoded instructions, relocated fields
-masked) and `key` (the first differing instruction as mnemonic shapes) only rank and diagnose;
-they decide nothing.
+function is exact when both pass: check's own verdict, which accepts the original's trailing
+Watcom filler under the 07-48 rule (relocs.py rule 1, docs/matching.md). `score` (difflib over
+decoded instructions, relocated fields masked) and `key` (the first differing instruction as
+mnemonic shapes) only rank and diagnose; they decide nothing.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). Records hold addresses, counts,
@@ -33,7 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import compiler
+from . import compiler, x86
 from .cflags import Rule, parse_cflags, select_rule
 from .check import (
     DEFAULT_CONFIG,
@@ -53,7 +54,7 @@ from .omf import Module, OMFError
 from .relocs import FIELD_SIZE
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from .watcom import DEFAULT_INSTALL
-from .x86 import Insn, decode, is_filler
+from .x86 import Insn, decode
 
 BUILD_ROOT = REPO_ROOT / "build" / "batch"
 ERR_SUFFIX = ".err"
@@ -259,19 +260,12 @@ def diff_summary(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> tuple
 
 # ---- Watcom alignment filler and the pad ----
 
-_REG = r"[a-z][a-z0-9]*"
-_SELF_MOVE = re.compile(rf"({_REG}), \1")  # mov r, r
-_SELF_LEA = re.compile(rf"({_REG}), \[\1\]")  # lea r, [r]: a zero displacement prints as none
-
-
 def is_alignment_filler(insn: Insn) -> bool:
-    """Watcom filler in any register: x86.is_filler's encodings, nop, mov r, r and lea r, [r].
-    `mov eax, dword ptr [eax]` is a load, not filler (the spike's regex took it as filler)."""
-    if is_filler(insn) or insn.mnemonic == "nop":
-        return True
-    if insn.mnemonic == "mov":
-        return bool(_SELF_MOVE.fullmatch(insn.op_str))
-    return insn.mnemonic == "lea" and bool(_SELF_LEA.fullmatch(insn.op_str))
+    """Watcom filler in any register: x86.is_alignment_filler (07-48), from capstone's operand
+    detail: nop, mov r, r, lea r, [r] with no index, displacement 0 and no segment override,
+    and x86's FILLER_ENCODINGS. `mov eax, dword ptr [eax]` is a load, not filler (the spike's
+    regex took it as filler)."""
+    return x86.is_alignment_filler(insn)
 
 
 def ends_in_filler(code: bytes, va: int) -> bool:
@@ -335,7 +329,10 @@ class Verdict:
     len_row: int
     score: float
     key: str  # the first differing instruction pair as mnemonic shapes, or why there is none
-    exact_trim: bool = False  # exact once the row's trailing filler is cut off
+    # A diagnostic, never a match: exact once the row's trailing filler is cut off, for a filler
+    # tail the 07-48 rule refused (an end off 16-byte alignment, more than 15 bytes, or an LE
+    # fixup in the tail).
+    exact_trim: bool = False
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -349,7 +346,9 @@ def _reloc_key(problems: Sequence[str]) -> str:
 
 def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
     """check's verdict for the row at `start` from our object `obj`: the relocation check (with
-    the data-in-code row right before it as its leading table) and the byte compare."""
+    the data-in-code row right before it as its leading table) and the byte compare. `exact` is
+    check's own verdict, so it accepts original trailing filler under the 07-48 rule;
+    `exact_trim` is only looked for when that rule refused a filler tail."""
     row = row_at(exe, start)
     rows = [r for r in (table_row(exe, row), row) if r is not None]
     length = row.end - row.start
