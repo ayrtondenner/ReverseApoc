@@ -979,6 +979,17 @@ def read_source(src: Path) -> str:
         raise CheckError(f"{src}: not UTF-8 ({exc})") from None
 
 
+def _target_rows(
+    rows: Sequence[FunctionRow], checked: Iterable[tuple[Defined, RelocResult]]
+) -> list[FunctionRow]:
+    """`rows` with each row whose verdict passed with kept trailing filler cut at our length
+    (start + reloc.length, 07-48): objdiff then compares only what relocs proved, never the
+    original's filler as instructions we lack. Every other row stays whole."""
+    cut = {d.row.start: dataclasses.replace(d.row, end=d.row.start + reloc.length)
+           for d, reloc in checked if reloc.ok and reloc.filler and reloc.length}  # fmt: skip
+    return [cut.get(row.start, row) for row in rows]
+
+
 def check_source(
     exe: ExeInputs,
     unit: str,
@@ -1000,7 +1011,11 @@ def check_source(
     Plan 05-18 calls this for the cmain386 runtime pair with `unit_file=False`: that source is
     Watcom's own CMAIN386.C, read in place, not a unit file configure.py checks (IN-03), and
     takes the rule of its own path unless `rule_path` is given. A
-    unit file with a path include is refused before it compiles (refuse_includes)."""
+    unit file with a path include is refused before it compiles (refuse_includes).
+
+    The target is cut after the relocation check: a row whose verdict passed with kept
+    trailing filler (07-48) is cut at our length (`_target_rows`), so objdiff compares only
+    what relocs proved. The land step, `write_target` and the sweep's own cut are unchanged."""
     check_unit_name(unit)
     options = options or CompileOptions()
     paths = UnitPaths.of(object_root(build_dir, options), exe.stem, unit)
@@ -1011,12 +1026,13 @@ def check_source(
     compiled = _compile(compile_fn, Path(src), paths.obj, options, rule_path=rule_path)
     module = read_module(paths.obj)
     _write(paths.base, write_elf(convert(module)))
-    target = build_target(exe.le, rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
-    _write(paths.target, target.data)
     account = account_unit(module, rows, exe.symbols, text, unit_file=unit_file)
     checked = with_relocs(module, account.defined, rows, exe)
     if not checked and not account.problems:
         raise CheckError(f"{src} defines no function of unit {unit}")
+    target_rows = _target_rows(rows, checked)
+    target = build_target(exe.le, target_rows, exe.symbols, flat=exe.flat, fixups=exe.fixups)
+    _write(paths.target, target.data)
     functions = []
     for d, reloc in checked:
         same = compare_bytes(d.ours, d.row, exe.flat, reloc)
