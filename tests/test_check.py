@@ -1365,17 +1365,19 @@ def _entries(base: int, cases: tuple[int, ...]) -> bytes:
     return b"".join((base + case).to_bytes(4, "little") for case in cases)
 
 
-def table_module(prefix: bytes = b"", publics: tuple[tuple[str, int], ...] = ()):
-    """Our compiled unit: `prefix` (with `publics` in it), the table, the filler and the
-    function. Table entries and the jmp's table address are fixups to our own _TEXT."""
+def table_module(prefix: bytes = b"", publics: tuple[tuple[str, int], ...] = (), *,
+                 filler: bytes = TABLE_FILLER, symbol: str = SWITCH_SYMBOL):  # fmt: skip
+    """Our compiled unit: `prefix` (with `publics` in it), the table, `filler` and the function
+    `symbol` (an empty `filler` lays the function right after the table, 07-48b). Table entries
+    and the jmp's table address are fixups to our own _TEXT."""
     table_off = len(prefix)
-    switch_off = table_off + SWITCH_OFF
-    data = prefix + _entries(switch_off, CASES) + TABLE_FILLER + SWITCH_BODY
+    switch_off = table_off + TABLE_SIZE + len(filler)
+    data = prefix + _entries(switch_off, CASES) + filler + SWITCH_BODY
     fixups = [to_segment(table_off + 4 * i, TEXT_INDEX) for i in range(TABLE_ENTRIES)]
     jump = switch_off + JUMP_FIELD
     data = data[:jump] + table_off.to_bytes(4, "little") + data[jump + 4 :]
     fixups.append(to_segment(jump, TEXT_INDEX))
-    return our_module(data, fixups, publics=(*publics, (SWITCH_SYMBOL, switch_off)))
+    return our_module(data, fixups, publics=(*publics, (symbol, switch_off)))
 
 
 def table_original(cases: tuple[int, ...] = CASES, prefix: bytes = b""):
@@ -1537,6 +1539,101 @@ def test_no_leading_table_without_its_data_row(rows):
     field = f"0x{SWITCH_VA + JUMP_FIELD:08X}: "
     (problem,) = [p for p in switch.problems if p.startswith(field)]
     assert "needs the unit's public-to-row map" in problem
+
+
+# ---- 07-48b: ours lacks the original's alignment filler between a leading table and its head ----
+#
+# The span [table row start, head start) passes its length rule when ours is short only by the
+# original's alignment filler before a 16-aligned head: 07-48's conditions 1, 2, 3 and 5, never 4
+# (a table is data, with no terminal instruction). Ours here is table_module(filler=b""): the
+# switch right after the table. The negatives assert their reason: on 07-48's HEAD the span also
+# needed a terminal instruction (condition 4).
+
+GAP_LESS = b""
+INT3_GAP = bytes.fromhex("cccccccc")  # int3 four times: code, not alignment filler
+MOV_GAP = bytes.fromhex("8bc0" "8bc0")  # mov eax, eax twice: 4 bytes of alignment filler
+SIXTEEN_GAP = bytes.fromhex("8bc0" * 8)  # mov eax, eax eight times: 16 bytes of filler
+SHIFTED_TABLE_VA = TABLE_VA + 4  # the table 4 bytes past a 16-byte boundary
+
+
+def _gap_layout(table_va: int, gap: bytes):
+    """A made-up original: the 3-entry table row at `table_va`, `gap`, then the switch, with
+    their rows and the switch's linker symbol, for ours = table_module(filler=b"", symbol=...)."""
+    head = table_va + TABLE_SIZE + len(gap)
+    patch = bytes(TABLE_SIZE) + gap + SWITCH_BODY
+    records = [le_off32(table_va + 4 * i, head - CODE_BASE + case, obj=1)
+               for i, case in enumerate(CASES)]  # fmt: skip
+    records.append(le_off32(head + JUMP_FIELD, table_va - CODE_BASE, obj=1))
+    rows = [FunctionRow(table_va, table_va + TABLE_SIZE, f"D_{table_va:08X}", "data-in-code", UNIT,
+                        "fixup"),
+            FunctionRow(head, head + len(SWITCH_BODY), game_name(head), "game", UNIT, "call")]
+    return original({table_va: patch}, page1=b"".join(records)), rows, f"{game_name(head)}_"
+
+
+def _gap_refusal(verdicts, rows, reason: str) -> None:
+    """The head fails with the span's length problem at the table's end, holding `reason`."""
+    head = verdicts[rows[-1].name]
+    assert not head.ok
+    at = f"0x{rows[0].start + TABLE_SIZE:08X}: length differs: "
+    found = [p for p in head.problems if p.startswith(at)]
+    assert len(found) == 1, head.problems
+    assert reason in found[0], found[0]
+
+
+def test_table_gap_refuses_a_gap_that_is_not_filler():
+    rows = [TABLE_ROW, SWITCH_ROW]
+    verdicts = table_check(table_module(filler=GAP_LESS), _table_original_with(INT3_GAP), rows)
+    _gap_refusal(verdicts, rows, "is not alignment filler")
+
+
+def test_table_gap_refuses_an_unaligned_head():
+    orig, rows, symbol = _gap_layout(SHIFTED_TABLE_VA, MOV_GAP)  # the head 4 bytes off 16
+    assert rows[-1].start % 16 == 4
+    verdicts = table_check(table_module(filler=GAP_LESS, symbol=symbol), orig, rows)
+    _gap_refusal(verdicts, rows, "16-byte boundary")
+
+
+def test_table_gap_refuses_a_gap_of_16():
+    orig, rows, symbol = _gap_layout(SHIFTED_TABLE_VA, SIXTEEN_GAP)  # the head 16-aligned
+    assert rows[-1].start % 16 == 0
+    verdicts = table_check(table_module(filler=GAP_LESS, symbol=symbol), orig, rows)
+    _gap_refusal(verdicts, rows, "more than 15 bytes")
+
+
+def test_table_gap_refuses_an_le_fixup_in_the_gap():
+    rows = [TABLE_ROW, SWITCH_ROW]
+    orig = _table_original_with(bytes(4), extra_entry=True)  # a 4th LE entry where ours has none
+    verdicts = table_check(table_module(filler=GAP_LESS), orig, rows)
+    _gap_refusal(verdicts, rows, "LE fixup field lies in the original's tail")
+
+
+def test_table_gap_accepts_original_filler_before_the_head():
+    """The tracer: ours lays the switch right after the table; the original keeps its 4 bytes
+    of filler before SWITCH_VA, which is 16-aligned. The head passes, itself full length."""
+    assert SWITCH_VA % 16 == 0
+    verdicts = table_check(table_module(filler=GAP_LESS), table_original(), [TABLE_ROW, SWITCH_ROW])
+    head = verdicts[SWITCH_ROW.name]
+    assert head.ok, head.problems
+    assert head.filler == 0
+
+
+def test_only_the_table_span_is_checked_as_a_table(monkeypatch):
+    """Only `_head_reloc`'s check of the table span passes `table=True`: every function's check
+    keeps condition 4 (07-48b, T-07-145)."""
+    calls = []
+    real = check.check_function
+
+    def spy(*args, **kwargs):
+        calls.append((kwargs["row"], kwargs.get("table", False)))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(check, "check_function", spy)
+    table_check(table_module(filler=GAP_LESS), table_original(), [TABLE_ROW, SWITCH_ROW])
+    table_check(not_head_module(), not_head_original(), NOT_HEAD_ROWS)
+    spans = [row for row, as_table in calls if as_table]
+    assert [(row.start, row.kind) for row in spans] == [(TABLE_VA, "data-in-code")] * 2
+    functions = [row for row, as_table in calls if not as_table]
+    assert [row.name for row in functions] == [SWITCH_ROW.name, LEAF_ROW.name, JUMPER_ROW.name]
 
 
 # ---- 07-03 (D-27 P1): the cflags rule by the unit's logical path src/<exe>/<unit>.c ------------

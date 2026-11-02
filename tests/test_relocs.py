@@ -525,3 +525,22 @@ def test_filler_refuses_ours_ending_in_inline_data():
     segment = our_segment(body, [absolute(1, 1)], ["_D_00020004"])
     pair = FillerPair(segment, body, plain.row, plain.orig)
     assert "terminal instruction" in refusal(pair)
+
+
+# ---- 07-48b: a leading jump table is data, so only its span skips condition 4 ------------------
+
+DATA_ONLY = b"DATA"  # made-up non-code bytes: inc esp; inc ecx; push esp; inc ecx, no terminal
+
+
+def test_check_function_without_table_keeps_condition_4():
+    """A data-only "public" short of its 16-aligned row by filler: a function check (the
+    default) refuses it for its missing terminal instruction; only `table=True`, the span of a
+    leading jump table (check.py `_head_reloc`), accepts the gap as filler."""
+    pair = filler_pair(body=DATA_ONLY)
+    assert "terminal instruction" in refusal(pair)
+    result = check_function(
+        pair.segment, off=0, size=len(pair.ours), row=pair.row, flat=pair.orig.flat,
+        fixups=pair.orig.fixups, symbols=table(pair.row), table=True,
+    )  # fmt: skip
+    assert result.ok, result.problems
+    assert result.filler == len(FILLER_TAIL)

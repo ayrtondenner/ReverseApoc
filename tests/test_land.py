@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +39,7 @@ from reverseapoc.le import LE
 from reverseapoc.relocs import RelocResult, check_function
 from reverseapoc.splice import SpliceError, splice
 from reverseapoc.targets import load_manifest
+from test_check import SWITCH_ROW, TABLE_ROW, table_module, table_original
 
 FIELD = 4
 NEXT_CODE = bytes.fromhex("31c0" "c3")  # xor eax,eax; ret: touches the good pair's end
@@ -388,3 +390,22 @@ def test_land_refuses_a_field_in_the_kept_filler():
     kept = dataclasses.replace(verdict, filler=len(FILLER_TAIL))
     with pytest.raises(LandError, match="outside our"):
         build_patch(LandedFunction(pair.row, pair.ours, kept), pair.orig.flat)
+
+
+# ---- 07-48b: a leading table is never landed: the head's row alone is spliced -----------------
+
+
+def test_table_gap_lands_the_head_only():
+    """The gap-less leading-table unit of test_check: the head lands, and the table and the
+    original's filler before the head keep the original bytes, so the image equals the original."""
+    rows = [TABLE_ROW, SWITCH_ROW]
+    orig = table_original()
+    exe = SimpleNamespace(flat=orig.flat, fixups=tuple(orig.fixups), symbols=table(*rows))
+    ((d, reloc),) = checked_functions(table_module(filler=b""), rows, exe)
+    assert d.row == SWITCH_ROW and reloc.ok, reloc.problems
+    fn = LandedFunction(d.row, bytes(d.segment.data[d.off : d.off + d.size]), reloc)
+    assert len(build_patch(fn, orig.flat)) == SWITCH_ROW.end - SWITCH_ROW.start
+    result = land(orig.le, [fn], expected_sha1=sha1(orig.data))
+    assert result.ok, result.format()
+    assert result.first_difference is None
+    assert result.data == orig.data
