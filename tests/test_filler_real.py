@@ -15,6 +15,14 @@ alignment filler up to its 16-byte aligned end. tests/fixtures/filler/ is also a
   relocation check and the byte compare pass with the filler kept, and both whole-EXE SHA-1s
   equal the manifest.
 
+The leading-table gap rule (plan 07-48b) on its real row, tacp func_0001E860 (row [0x0001E860,
+0x0001E900) in unit u_0001df90): a 32-byte leading jump table row, then 8 bytes of filler, then
+the function aligned to 16. tests/fixtures/filler/tacp/f_0001e860.c is a byte-identical copy of
+the spike 011 b064 agent's build/spike-011/agents/b064/f_0001e860.c, never edited (the agent wrote
+it for the inferred `-4r -oneatx -s -fpi` cell; its variant f_0001e860_with_neighbour.c judged
+exact under no cell, 48b-rejudge-neighbour.txt). Our object lays the function right after the
+table, so the table span is 8 bytes short of the original's: the 07-48b rule accepts that gap.
+
 Asserts on addresses, counts, percents, booleans and SHA-1 checks only. Writes only under
 build/test-filler/ and build/driver/test-view/. Skips through the existing helpers only (R-A,
 F40).
@@ -63,9 +71,9 @@ def _require_orig() -> None:
                     "REVERSEAPOC_ORIG)")  # fmt: skip
 
 
-def _committed_rule():
+def _committed_rule(unit: str = UNIT):
     rules = load_cflags()
-    rule = batch.committed_rule(rules, STEM, UNIT)
+    rule = batch.committed_rule(rules, STEM, unit)
     requires_version(rule.version)
     try:
         check_gate("wcc386", rule.version, watcom_dir=WATCOM_DIR)
@@ -163,3 +171,52 @@ def test_real_filler_check_tacp_0006bee0(view):
     # objdiff decision B (48-objdiff-measure.log: 89.6552 over the full row): check_source cuts
     # the target of a filler-accepted row at our length, so objdiff compares what relocs proved.
     assert fn.ok, fn.format()
+
+
+# ---- 07-48b: the leading-table gap of tacp func_0001E860 --------------------------------------
+
+TABLE_START, TABLE_END = 0x0001E860, 0x0001E900  # the head's row: 160 bytes
+TABLE_UNIT, TABLE_NAME = "u_0001df90", "func_0001E860"
+TABLE_FIXTURE = REPO_ROOT / "tests" / "fixtures" / "filler" / STEM / f"f_{TABLE_START:08x}.c"
+ONEATX = "-4r -oneatx -s -fpi"  # the cell spike 011 inferred for this row
+# The cells build/gate/07-evidence/48b-rejudge.txt (07-48b) found exact for the fixture: the
+# committed cell differs in code (first diff `mov esi, edx | mov edi, edx`), so only -oneatx.
+EXACT_CELLS_0001E860 = (ONEATX,)
+
+
+def _problem_va(problem: str) -> int:
+    return int(problem.split(":", 1)[0], 16)
+
+
+def test_real_leading_table_gap_tacp_0001e860():
+    _require_orig()
+    requires_capstone()
+    requires_runner()
+    rule = _committed_rule(TABLE_UNIT)
+    exe = batch.load_exe_inputs(EXE, orig_dir=ORIG_DIR)
+    row = batch.row_at(exe, TABLE_START)
+    assert (row.end, row.unit, row.name) == (TABLE_END, TABLE_UNIT, TABLE_NAME)
+    table = batch.table_row(exe, row)
+    assert table is not None and table.end < row.start  # original filler between them
+    assert row.start % 16 == 0
+    text = batch.read_ascii(TABLE_FIXTURE)
+    assert batch.refusal(text) is None
+    out = BUILD_ROOT / "table"
+    shutil.rmtree(out, ignore_errors=True)
+    cells = batch.cells_for(rule, [ONEATX])
+    jobs = batch.write_cell_jobs(out, text, exe.flat[row.start : row.end], row.start, cells)
+    compiled = batch.compile_batch(jobs, len(jobs), watcom_dir=WATCOM_DIR).compiled
+    assert all(c.ok for c in compiled), [c.output for c in compiled]
+    objs = {name: job.obj for (name, _rule), job in zip(cells, jobs, strict=True)}
+    module = check.parse_module(objs[ONEATX].read_bytes(), objs[ONEATX])
+    rows = [table, row]
+    defined = [d for d in check.defined_functions(module, rows, exe.symbols)
+               if d.row.start == TABLE_START]  # fmt: skip
+    ((_d, reloc),) = check.with_relocs(module, defined, rows, exe)
+    span = [p for p in reloc.problems if table.start <= _problem_va(p) < row.start]
+    assert span == [], span
+    for name in EXACT_CELLS_0001E860:
+        verdict = batch.judge(exe, objs[name], TABLE_START)
+        assert verdict.exact is True, (name, verdict.key)
+        print(f"JUDGE {TABLE_NAME} [{name}] exact len ours/row "
+              f"{verdict.len_ours}/{verdict.len_row} gap {row.start - table.end}")  # fmt: skip
