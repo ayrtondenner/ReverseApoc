@@ -12,9 +12,11 @@ from __future__ import annotations
 import subprocess
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from relocpair import filler_pair, our_object, table
 from reverseapoc import batch, compiler
 from reverseapoc.cflags import CflagsError, Rule
 from reverseapoc.x86 import decode_one
@@ -366,3 +368,29 @@ def test_check_cells_refuses_an_empty_rule_list_and_a_bad_cell():
     with pytest.raises(CflagsError):
         batch.check_cells([RULE_106], ["-4r -fo=x.obj"])
     batch.check_cells([RULE_106], ["-4r -ox -s -fpi"])
+
+
+# ---- judge on original trailing filler (07-48) --------------------------------------------------
+
+
+def _judged(tmp_path: Path, pair):
+    """batch.judge of `pair`: our body as an OMF object on disk, the original as ExeInputs."""
+    symbols = table(pair.row)
+    obj = tmp_path / "f.obj"
+    obj.write_bytes(our_object(pair.ours, publics=[(symbols.linker_name(pair.row.start), 0)]))
+    exe = SimpleNamespace(rows=(pair.row,), flat=pair.orig.flat, fixups=tuple(pair.orig.fixups),
+                          symbols=symbols, target=SimpleNamespace(name="SYNTH.EXE"))  # fmt: skip
+    return batch.judge(exe, obj, pair.row.start)
+
+
+def test_judge_refused_tail_is_not_exact_but_exact_trim(tmp_path):
+    verdict = _judged(tmp_path, filler_pair(shift=1))  # the row end off 16-byte alignment
+    assert verdict.exact is False
+    assert verdict.exact_trim is True
+
+
+def test_judge_exact_on_a_filler_pair(tmp_path):
+    verdict = _judged(tmp_path, filler_pair())
+    assert verdict.exact is True
+    assert verdict.exact_trim is False
+    assert verdict.len_ours < verdict.len_row

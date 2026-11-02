@@ -29,6 +29,7 @@ from omfimage import (
 )
 from relocpair import (
     CODE_BASE,
+    FILLER_TAIL,
     FLAT_LNAME,
     GOOD_ORIGINAL,
     GOOD_OURS,
@@ -36,6 +37,7 @@ from relocpair import (
     TEXT_INDEX,
     absolute,
     call,
+    filler_pair,
     le_off32,
     original,
     our_module,
@@ -1895,3 +1897,56 @@ def test_zm_object_accounting(env):
     assert d.row == ROW and not reloc.ok
     (problem,) = reloc.problems
     assert problem.startswith(f"0x{CODE_BASE + 1:08X}: ") and "local segment reference" in problem
+
+
+# ---- original trailing filler kept (07-48) ------------------------------------------------------
+
+
+def _filler_verdict(pair):
+    from reverseapoc.relocs import check_function
+
+    return check_function(
+        pair.segment, off=0, size=len(pair.ours), row=pair.row, flat=pair.orig.flat,
+        fixups=pair.orig.fixups, symbols=symbol_table(pair.row),
+    )  # fmt: skip
+
+
+def _function_check(pair, verdict):
+    cmp = check.compare_bytes(pair.ours, pair.row, pair.orig.flat, verdict)
+    return check.FunctionCheck(pair.row.name, pair.row.start, len(pair.ours), 100.0, verdict,
+                               cmp.ok, cmp.differing, cmp.first_va)  # fmt: skip
+
+
+def test_compare_bytes_without_kept_filler_counts_the_shortfall():
+    pair = filler_pair()
+    verdict = replace(_filler_verdict(pair), filler=0)
+    cmp = check.compare_bytes(pair.ours, pair.row, pair.orig.flat, verdict)
+    assert not cmp.ok
+    assert cmp.differing == len(FILLER_TAIL)
+    assert cmp.first_va == pair.row.start + len(pair.ours)
+
+
+def test_compare_bytes_counts_kept_filler():
+    pair = filler_pair()
+    verdict = _filler_verdict(pair)
+    assert verdict.ok and verdict.filler == len(FILLER_TAIL)
+    cmp = check.compare_bytes(pair.ours, pair.row, pair.orig.flat, verdict)
+    assert (cmp.ok, cmp.differing, cmp.first_va) == (True, 0, None)
+
+
+def test_function_check_reports_kept_filler():
+    pair = filler_pair()
+    fn = _function_check(pair, _filler_verdict(pair))
+    assert fn.filler == 9
+    assert "bytes ok, 9 bytes of trailing filler kept" in fn.format()[0]
+    assert fn.to_json()["bytes"]["filler"] == 9
+    assert fn.ok
+
+
+def test_function_check_without_filler_reports_bytes_ok():
+    pair = filler_pair(b"", body=bytes.fromhex("b801000000" "40" "c3"))  # no tail at all
+    fn = _function_check(pair, _filler_verdict(pair))
+    line = fn.format()[0]
+    assert "bytes ok" in line and "trailing filler" not in line
+    assert fn.to_json()["bytes"]["filler"] == 0
+    assert fn.filler == 0

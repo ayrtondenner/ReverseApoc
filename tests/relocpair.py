@@ -99,6 +99,18 @@ def our_module(
 ) -> Module:
     """The whole module our_segment's `_TEXT` comes from, for callers that need its publics
     (check.checked_functions)."""
+    return read_object(our_object(data, fixups, externs, publics=publics, local=local))
+
+
+def our_object(
+    data: bytes,
+    fixups: Sequence[bytes] = (),
+    externs: Sequence[str] = (),
+    *,
+    publics: Sequence[tuple[str, int]] = (("func_00010000_", 0),),
+    local: str = "CONST",
+) -> bytes:
+    """our_module's OMF object file bytes, for callers that read an object from disk."""
     records = [
         lnames("", "_TEXT", "CODE", local, "DATA", FLAT_LNAME),
         segdef32(2, 3, len(data)),
@@ -111,7 +123,7 @@ def our_module(
     records.append(ledata32(TEXT_INDEX, 0, data))
     if fixups:
         records.append(fixupp32(*fixups))
-    return read_object(module("unit", *records))
+    return module("unit", *records)
 
 
 @dataclass(frozen=True)
