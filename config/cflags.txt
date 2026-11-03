@@ -52,3 +52,4 @@ src/ufo2p/u_000b76d0.c  wcc386@10.6 -4r -ox -s -fpi  # F-0044 approved ayrtonden
 src/tacp/u_00015f80.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0045 approved ayrtondenner 2026-11-03
 src/tacp/u_000a6100.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0046 approved ayrtondenner 2026-11-03
 src/tacp/u_000a87c0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0048 approved ayrtondenner 2026-11-03
+src/ufo2p/u_00041ef0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0049 approved ayrtondenner 2026-11-03
