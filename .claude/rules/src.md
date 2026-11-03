@@ -9,6 +9,9 @@ paths:
   no `//`, no mixed declarations and code, no VLAs, no `inline`, no C99 or C++ features.
 - A matched function is byte-identical to the original. Never restructure, simplify, reorder
   declarations, or "modernize" a function that already matches: any shape change alters codegen.
+- The YAGNI section in `.claude/rules/tools.md` does not apply here, nor to any C or header file
+  elsewhere: the original binary alone dictates the shape, and no edit simplifies, de-duplicates
+  or reuses code.
 - Allowed edits to matched code: renaming identifiers, comments, struct/field names in headers
   that do not change layout or packing (`-zp`), and documentation of original bugs as
   `/* BUG(original): ... */`.

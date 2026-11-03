@@ -66,7 +66,7 @@ Common advice that we reject for matched code, and why:
 | Adding `const` or `static`, reordering headers or includes | general advice | Can change symbol layout, data placement and include-dependent code |
 | Bounds checks and fixing original bugs | SEI CERT C, general advice | Changes the code; document with `BUG(original):` instead |
 | Replacing magic numbers with enums everywhere | general advice | Fine only where the type stays the same (Theme Hospital: enumerators replace literals only) |
-| Extracting helpers, de-duplicating, flattening control flow | Ponytail, `/simplify`, thermo-nuclear review | Any shape change alters codegen |
+| Extracting helpers, de-duplicating, reusing an existing helper or a neighbour's shape, flattening control flow | Ponytail, YAGNI, `/simplify`, thermo-nuclear review | Any shape change alters codegen |
 
 These rules still apply to new, non-matching code such as test harnesses and the compat header.
 
@@ -90,7 +90,11 @@ These rules still apply to new, non-matching code such as test harnesses and the
 
 ## Python tooling
 
-Tooling under `tools/` and `tests/` follows ruff (rules E, F, I, UP and B, line length 100) and is written test first with pytest ([.claude/rules/tools.md](../.claude/rules/tools.md)). The rules below came out of reviewing the Watcom media tooling in PR #1:
+Tooling under `tools/` and `tests/` follows ruff (rules E, F, I, UP and B, line length 100) and is written test first with pytest ([.claude/rules/tools.md](../.claude/rules/tools.md)).
+
+**Build only what is asked (YAGNI).** YAGNI means don't build it yet, not don't build it well. Tooling gets what the task or plan asks for now: no option, flag, layer or one-implementation abstraction for later, and one approach rather than a menu. It never cuts tests, error context, boundary validation or licence headers. The rules and the never-cut list are in the YAGNI section of [.claude/rules/tools.md](../.claude/rules/tools.md#yagni-scope-not-effort). They never apply to C or headers anywhere (src/, include/, view units, fixtures), matched or not (see [What conflicts with "match the original"](#what-conflicts-with-match-the-original)).
+
+The rules below came out of reviewing the Watcom media tooling in PR #1:
 
 - **Keep nesting shallow.** A loop inside a loop inside a `try`, with `if`s nested under it, is a sign to split. Move the inner loop into a small generator or helper, and skip cases with an early `continue` instead of another `if` level. In `iso9660.py`, `_records` yields raw directory records, `_entries` filters and checks them, and `_walk_dir` only recurses. In `watcom.py`, `fetch_media` hands the download to `_download` and `_copy_hashed`.
 - **Name binary-format offsets after the spec.** No bare offsets such as `rec[33]` or `desc[1:6]`. Each one becomes a module constant named after its field, with the spec section cited (ECMA-119 for ISO9660). Derive related values instead of writing a second literal: `_MIN_RECORD = _REC_NAME + 1`. Test helpers that build fixtures, such as `tests/isoimage.py`, keep their own literals, so the tests check the reader against the format rather than against its own constants.

@@ -21,6 +21,7 @@ Anything else, including "harmless" cleanups, goes through the full loop again a
 | `/code-review` (built-in, local diff) | Yes | Comments, names and docs only; restructuring findings are not applied |
 | `/code-review:code-review` (plugin, PR-only via `gh`) | Yes, once work flows through PRs | Same rule as above |
 | `/simplify` and the `code-simplifier` agent | Yes | Never |
+| YAGNI (a planning and writing rule; a lens in review) | Yes: the section in `.claude/rules/tools.md` | Never: the binary dictates the shape |
 | `/security-review` (built-in) | Occasionally: Docker, CI, scripts that read user-supplied files | No (offline 1997 game code) |
 | `security-guidance` plugin (hooks, LLM review on Stop) | Runs automatically; installed at project scope by the owner's choice | Its web-vulnerability focus is noise here; ignore its suggestions on matched code |
 | `/verify` (built-in) | Yes, with a recorded recipe that builds and runs pytest | Yes, where "verify" means rebuild and whole-EXE SHA-1 identical |
@@ -46,7 +47,7 @@ clang-format rewrites the inside of `#pragma aux` (`parm [eax]` becomes `parm[ea
 ## When to run them
 
 - **After a batch of matches** (or the end of a plan inside a phase): the comment pass on the new functions, `/code-review` on the diff, rebuild and compare.
-- **After tooling changes:** `/code-review`, `/simplify`, ruff, pytest; `/security-review` when Docker, CI or file-reading code changed. A refactor made by `/simplify` or the `code-simplifier` agent gets its own `/code-review` afterwards. On PR #1 that second pass caught two behaviour changes the refactors had introduced: a directory walk that stopped being lazy, and a cleanup that deleted an older `.part` file.
+- **After tooling changes:** `/code-review`, `/simplify`, ruff, pytest; `/security-review` when Docker, CI or file-reading code changed. A refactor made by `/simplify` or the `code-simplifier` agent gets its own `/code-review` afterwards. On PR #1 that second pass caught two behaviour changes the refactors had introduced: a directory walk that stopped being lazy, and a cleanup that deleted an older `.part` file. The review also looks for YAGNI breaks: an option, layer or single-implementation abstraction nobody asked for is an `IN-` finding. YAGNI never makes a review shorter, and `/simplify` does not replace it: `/simplify` tidies what was built, YAGNI decides what gets built.
 - **At the end of a phase**, before `/gsd-verify-work`: `/claude-md-management:revise-claude-md` to capture what the session learned, then `/claude-md-management:claude-md-improver` to audit CLAUDE.md. Keep CLAUDE.md under 150 lines and move detail into `docs/`.
 
 ## Finding ids
@@ -58,7 +59,7 @@ Every finding recorded in a review (`NN-REVIEW.md`) or its disposition ledger (`
 | Tool | Why it is skipped |
 |---|---|
 | [thermo-nuclear code quality review](https://github.com/cursor/plugins/blob/main/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md) | Its "code judo" restructuring breaks matches; TypeScript-flavoured examples; the repo has no licence, and it is not installable as a Claude plugin |
-| [Ponytail](https://github.com/dietrichgebert/ponytail) | "Write less code" does not apply when the binary dictates the shape; overlaps superpowers |
+| [Ponytail](https://github.com/dietrichgebert/ponytail) | "Write less code" does not apply when the binary dictates the shape; overlaps superpowers. In the owner's private benchmark (2026-11) it lowered reviewer recall and wrote the only critical defect, and its hooks inject into every session and subagent, reviewers included, with no path filter. Plain YAGNI text in `.claude/rules/tools.md` kept most of the saving, so that is what tooling uses |
 | [pstack](https://github.com/backnotprop/pstack) | A third workflow system on top of GSD and superpowers; delegates code to Grok by default; some parts are Cursor-only. Its read-only `comment-sicko` reviewer is the one idea worth remembering |
 
 ## i-have-adhd

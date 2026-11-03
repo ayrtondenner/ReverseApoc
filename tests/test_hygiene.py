@@ -97,6 +97,17 @@ def test_no_doc_mentions_a_phase_zero():
     assert not hits
 
 
+def test_yagni_is_scoped_to_tooling():
+    # YAGNI is a rule for writing Python tooling only: the path-scoped tools.md carries it, and
+    # src.md says it never reaches matched C, whose shape the original binary dictates.
+    rules = REPO_ROOT / ".claude" / "rules"
+    tools = (rules / "tools.md").read_text(encoding="utf-8")
+    assert "## YAGNI: scope, not effort" in tools
+    assert "never about the care taken" in tools
+    src = (rules / "src.md").read_text(encoding="utf-8")
+    assert "YAGNI section in `.claude/rules/tools.md` does not apply" in src
+
+
 def test_toolchain_records_the_confirmed_le_layout():
     # RT-05: the LE layout section carries the spike-confirmed facts, the trailer after the last
     # page of UFO2P and TACP included, instead of the old EOF claim and the open question.

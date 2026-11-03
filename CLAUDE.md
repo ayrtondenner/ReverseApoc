@@ -43,6 +43,8 @@ Every project skill we create or update goes through superpowers' `writing-skill
 
 - `docs/toolchain.md`: targets, LE layout, compiler evidence, what is in the container
 - `docs/coding-style.md`, `docs/matching.md`, `docs/learnings.md`: C89/Watcom rules and what we learn
+- Python tooling follows the YAGNI section in `.claude/rules/tools.md`; never apply it to C or
+  headers anywhere (src/, include/, view units, fixtures), matched or not
 - `docs/tools.md`: every tool and skill with its Use/Skip/Later verdict and install status
 - `docs/legal.md`: assets, licenses (tools/ is GPLv3), AI-use statement
 - `docs/superpowers/specs/2026-10-19-reverseapoc-design.md` and `docs/research/`: the design and
