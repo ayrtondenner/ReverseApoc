@@ -22,7 +22,20 @@ INCLUDE_ASM(func_000A64C0);
 INCLUDE_ASM(func_000A6500);
 INCLUDE_ASM(func_000A6580);
 INCLUDE_ASM(func_000A65D0);
-INCLUDE_ASM(func_000A6640);
+int func_000A65D0(int, int);
+extern char D_00284CEE[];
+extern char D_000E6CC0[];
+
+int func_000A6640(void)
+{
+    int r_eax;
+
+    r_eax = func_000A65D0(4, 0);
+    *(short *)((D_00284CEE)) = 1;
+    *(short *)((D_000E6CC0)) = 1;
+    return r_eax;
+}
+
 
 int func_000A65D0(int, int);
 extern char D_00284CEE[];
@@ -42,12 +55,49 @@ INCLUDE_ASM(func_000A66A0);
 INCLUDE_ASM(func_000A66D0);
 INCLUDE_ASM(func_000A6740);
 INCLUDE_ASM(func_000A67B0);
-INCLUDE_ASM(func_000A6820);
+int func_000A65D0(int, int);
+extern char D_00284CEE[];
+extern char D_000E6CC0[];
+
+int func_000A6820(void)
+{
+    int r_eax;
+
+    r_eax = func_000A65D0(22, 0);
+    *(short *)((D_00284CEE)) = 1;
+    *(short *)((D_000E6CC0)) = 1;
+    return r_eax;
+}
+
 INCLUDE_ASM(func_000A6850);
 INCLUDE_ASM(func_000A6880);
 INCLUDE_ASM(func_000A68B0);
 INCLUDE_ASM(func_000A68E0);
-INCLUDE_ASM(func_000A69C0);
+extern char D_000E6D42[];
+extern char D_000E6D44[];
+extern char D_001B24AC[];
+extern char D_00109EFE[];
+extern char D_001EBDDC[];
+int func_000AF990(int, int, int, int, int);
+
+int func_000A69C0(void)
+{
+    int r_eax;
+
+    if ((*(short *)((D_000E6D42))) == 0) goto LA6A0E;
+    r_eax = *(signed char *)((D_00109EFE + ((((short *)D_001B24AC)[*(short *)((D_000E6D44))]) * 1180)));
+    if ((*(signed char *)((D_00109EFE + ((((short *)D_001B24AC)[*(short *)((D_000E6D44))]) * 1180)))) != -1) goto LA6A0E;
+    if ((*(int *)((D_001EBDDC))) == 0) goto LA6A00;
+    *(int *)((D_001EBDDC)) = r_eax;
+    return r_eax;
+LA6A00:;
+    *(int *)((D_001EBDDC)) = 2;
+    return r_eax;
+LA6A0E:;
+    r_eax = func_000AF990(185, -11, -1, -1, 0);
+    return r_eax;
+}
+
 INCLUDE_ASM(func_000A6A30);
 INCLUDE_ASM(func_000A6B60);
 INCLUDE_ASM(func_000A6C90);
