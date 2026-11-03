@@ -17,8 +17,8 @@ actuals:
   tokens: 12100
   tasks: 3
   commits: 5
-plan_head_before: 5f5bbb2f564847cc9863bfa887e76cfa40aa7c6a
-plan_head_after: 889fe57de2886311b11984e9aee5bf508d3cef0b
+plan_head_before: 8f8ca5832faa99e97ca981985010be2891e9fc69
+plan_head_after: 0577b6bc0f2be90692d3c9ae9e83a7f86cd54fd9
 
 tech-stack:
   added: []
@@ -124,10 +124,10 @@ status: complete
   - Exact Decimal sums, displayed with ROUND_HALF_EVEN.
 - **Task 3: committed data, shallow clones, determinism.**
   - The real log reads, and `stats --json` exits 0 on it.
-  - The full-clone history includes c83cf4e, d288ad6 and 955931f as unattended, and fc7d1cd's two Phase 5 matches as human-written.
+  - The full-clone history includes 07e3ecc, 3d005bb and 558f35a as unattended, and 58eba4d's two Phase 5 matches as human-written.
   - Two `--json` runs give identical bytes with sorted keys.
 
-Output of `uv run reverseapoc stats` on the base history (main 5f5bbb2 plus this plan):
+Output of `uv run reverseapoc stats` on the base history (main 8f8ca58 plus this plan):
 - Matches: unattended 7 (flag-approved 4), human-hints 0, human-written 2.
 - Attempt log: 42 v1 records, 40 sessions, cost $42.93.
 - Match rate: [0, 64) 5 of 15 (33.3%).
@@ -136,11 +136,11 @@ Output of `uv run reverseapoc stats` on the base history (main 5f5bbb2 plus this
 
 ## Task Commits
 
-1. **Task 1 (tracer): classes from git trailers, AGT-11, refusals, the verb.** RED `e3778f6`, GREEN `2fbbe98`.
+1. **Task 1 (tracer): classes from git trailers, AGT-11, refusals, the verb.** RED `b8edaf9`, GREEN `349576b`.
    - Tracer feedback gate: the run is interactive, `end-of-phase`, and the verify is automated only. I re-ran `uv run pytest -q tests/test_stats.py` (15 passed) and `uv run reverseapoc stats --help` (lists `--min-unattended` and `--json`), then expanded.
    - Tracer verified end-to-end.
-2. **Task 2: the metrics.** RED `f0bd6d8`, GREEN `bc7dbef`.
-3. **Task 3: committed history and determinism.** `889fe57`: characterization tests (ruling F28), proven by mutation as described below.
+2. **Task 2: the metrics.** RED `ac59b0e`, GREEN `6e9ba23`.
+3. **Task 3: committed history and determinism.** `0577b6b`: characterization tests (ruling F28), proven by mutation as described below.
 
 ## TDD Gate Compliance
 
@@ -182,7 +182,7 @@ See `key-decisions` in the frontmatter.
   - `test_committed_history_classes` skips with the reason "shallow clone: the committed match history is cut" (R-A's 07-37 `shallow` reason).
   - `test_stats_runs_on_the_committed_data` runs `stats --json` with the default `--repo` and asserts only exit 0 and a non-empty log, so it holds on a shallow clone (the boundary is a baseline) and needs no skip. (Corrected in fix round 1.)
 - I added two synthetic shallow-clone tests (`--depth 1` and `--depth 2`). They pin that a shallow boundary is a baseline: its rows are not classed by the boundary commit's own trailers.
-- Commits `2fbbe98`, `889fe57`.
+- Commits `349576b`, `0577b6b`.
 
 **Orchestrator ruling F28: Task 3 has no genuine RED.** Task 3's tests are characterization tests, committed once as `test(07-37): committed history and determinism`. Each was proven to fail against a mutated stats.py (see TDD Gate Compliance).
 
@@ -196,7 +196,7 @@ See `key-decisions` in the frontmatter.
 
 **2. [Plan clarification] Functions no longer matched are not counted.** The plan's truths cover re-matches (counted once, by the latest event). A function whose match was undone and not redone is listed under `reverted` and is left out of the class totals, so AGT-11 never counts a match that no longer holds (`test_a_reverted_match_is_not_counted`).
 
-**3. [Test fix inside a GREEN commit] `test_precision_rate_and_text`.** The test meant a total cost of 0.125, but its two other records kept the default 0.25 each. They now cost 0, and the behaviour it pins (33.3% and $0.12) is unchanged. Commit `bc7dbef`.
+**3. [Test fix inside a GREEN commit] `test_precision_rate_and_text`.** The test meant a total cost of 0.125, but its two other records kept the default 0.25 each. They now cost 0, and the behaviour it pins (33.3% and $0.12) is unchanged. Commit `6e9ba23`.
 
 **4. [TDD sequencing] Five Task 2 tests passed at RED.** These are test_precision, test_full_precision_sums and the three match-adjacency tests, because Task 1's Report already held the Decimal totals and the latest-event rule. They are characterization tests within Task 2. The target test and 18 others failed for the missing metrics.
 
@@ -213,7 +213,7 @@ See `key-decisions` in the frontmatter.
 ## Concerns
 
 - **Siblings matched by a flags approval count as unattended.**
-  - 864fb46 also turned `func_0006FC00` matched (a sibling marked "unattempted"), and 6adc5c8 did the same for `func_00026FF0`. Both carry `Matched-By: reverseapoc drive` and `Flags-Approved-By:`.
+  - 9c95c07 also turned `func_0006FC00` matched (a sibling marked "unattempted"), and 21edaca did the same for `func_00026FF0`. Both carry `Matched-By: reverseapoc drive` and `Flags-Approved-By:`.
   - Under the classing rule (a newly matched start takes its commit's class), they are unattended and flag-approved. So 2 of today's 7 unattended functions never had a session of their own.
   - The flag-approved subset (4) makes this visible. The owner may want 07-41's docs to state it, or a fourth subset ("matched as a sibling, no session").
 - **The real count today is 7 unattended**, so `stats --min-unattended 10` (G14) exits 1 on this history.
@@ -256,7 +256,7 @@ Execution context nonce: 9cd63a164b737c3f
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/stats.py, tests/test_stats.py, tools/reverseapoc/cli.py (modified)
-- FOUND commits on this branch: e3778f6, 2fbbe98, f0bd6d8, bc7dbef, 889fe57. `git rev-list --count 5f5bbb2..HEAD` = 5 before this SUMMARY commit.
+- FOUND commits on this branch: b8edaf9, 349576b, ac59b0e, 6e9ba23, 0577b6b. `git rev-list --count 8f8ca58..HEAD` = 5 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
 ## Fix round 1
@@ -287,8 +287,8 @@ Execution context nonce: 9cd63a164b737c3f
 **Minor fixed:** the F13 bullet under Deviations now names both tests that read the real history (`test_committed_history_classes` and `test_stats_runs_on_the_committed_data`). The other minors stay as the orchestrator ruled.
 
 **Commits:**
-- `4aca414` test(07-37): add failing tests for a merged status.csv history
-- `d4f8c6c` fix(07-37): stats reads the end-state matched set from HEAD and walks in topo order
+- `8348321` test(07-37): add failing tests for a merged status.csv history
+- `8bdcf62` fix(07-37): stats reads the end-state matched set from HEAD and walks in topo order
 - this SUMMARY commit
 
 **Counts:**

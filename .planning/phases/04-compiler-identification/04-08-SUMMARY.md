@@ -21,8 +21,8 @@ actuals:
   tokens: 12764
   tasks: 2
   commits: 4
-plan_head_before: 7088b0f9524174b8cbf559a42c5eb5a999d7f155
-plan_head_after: a491fa17792028c37ad0bf1cd4fe2abb1f8b12e6
+plan_head_before: ce0e9e5464178fc3b5a7445f0f53eade1d26a72f
+plan_head_after: 59730fa57959b47e84b6e5d6d180ba38f8facfcd
 
 tech-stack:
   added: []
@@ -156,17 +156,17 @@ Not a research row, but relevant to 04-10: 10.6 at `-5r -s -os` emits `movzx`, s
 ## Task Commits
 
 1. **Task 1: Tracer - the probe through omf and the byte-compare counter**
-   - RED `cb8891f` test(04-08): add failing tests for the byte-compare idiom counter and probe tracer
-   - GREEN `8e9bec2` feat(04-08): add the clean-room probe and the byte-compare idiom counters
+   - RED `324190a` test(04-08): add failing tests for the byte-compare idiom counter and probe tracer
+   - GREEN `e0a9ce3` feat(04-08): add the clean-room probe and the byte-compare idiom counters
 2. **Task 2: All idiom counters, stack checks, default libraries, the calibration matrix with ties**
-   - RED `5f2ee36` test(04-08): add failing tests for every idiom counter and the calibration matrix
-   - GREEN `a491fa1` feat(04-08): count every probe idiom and calibrate 10.6 and 11.0 per flag set
+   - RED `3e7e0db` test(04-08): add failing tests for every idiom counter and the calibration matrix
+   - GREEN `59730fa` feat(04-08): count every probe idiom and calibrate 10.6 and 11.0 per flag set
 
 **Plan metadata:** committed with this SUMMARY (docs(04-08)).
 
 ## TDD record
 
-- **RED (Task 1):** tests/test_probe.py and tests/test_probe_real.py were committed before `reverseapoc.probe` existed. The run stopped at collection with `ModuleNotFoundError: No module named 'reverseapoc.probe'`. Semantic assessment: this fails for the intended reason (the feature is missing) and matches earlier RED commits in this phase (e.g. 1cda9d4 for libmatch), but under the strict GSD classifier it is a load failure, not an assertion failure. `gsd_run check tdd-red-evidence` was not run.
+- **RED (Task 1):** tests/test_probe.py and tests/test_probe_real.py were committed before `reverseapoc.probe` existed. The run stopped at collection with `ModuleNotFoundError: No module named 'reverseapoc.probe'`. Semantic assessment: this fails for the intended reason (the feature is missing) and matches earlier RED commits in this phase (e.g. d94f3fb for libmatch), but under the strict GSD classifier it is a load failure, not an assertion failure. `gsd_run check tdd-red-evidence` was not run.
 - **RED (Task 2):** the new tests imported names that did not exist yet (`FLAG_SETS`, `Calibration`, `Cell`, `calibrate`, `chk_sites`): `ImportError` at collection, the same classification as above.
 - **GREEN:** 19 unit tests pass. Real: 22 passed, 1 skipped (10.5). The first real run failed three assertions: the two research rows above, with 10.6 and 11.0 each asserting clib3s. Those assertions were changed to the measured values. The probe and the counters were not changed.
 - **REFACTOR:** none as a separate commit. The compare opcodes got names and the calibrate loop was split into `_compile_probe` before the GREEN commit.
@@ -196,7 +196,7 @@ None. The two research rows that did not reproduce were handled as the plan says
 ### Environment adaptations
 
 - The sandbox refused the plan's `REVERSEAPOC_WATCOM_DIR="$(git rev-parse --path-format=absolute --git-common-dir)/../third_party/watcom"` form. The real tests ran with the relative `REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom` from the worktree root, as the orchestrator allowed. The gate resolves it to the main checkout's tree; the log shows the 10.6 and 11.0 gate SHA-1s.
-- The plan-commit ledger file could not be written into the worktree's git dir (the sandbox refused). The base 7088b0f is the dispatch base from the branch check, and the commit count above is measured with `git rev-list --count 7088b0f..HEAD`.
+- The plan-commit ledger file could not be written into the worktree's git dir (the sandbox refused). The base ce0e9e5 is the dispatch base from the branch check, and the commit count above is measured with `git rev-list --count ce0e9e5..HEAD`.
 
 **Total deviations:** 0 auto-fixed. **Impact:** none on scope.
 
@@ -220,7 +220,7 @@ None.
 ## Self-Check: PASSED
 
 - All six files exist: probe/cg_basic.c, probe/README.md, tools/reverseapoc/probe.py, tests/test_probe.py, tests/test_probe_real.py, and this SUMMARY.
-- Commits cb8891f, 8e9bec2, 5f2ee36 and a491fa1 are on this branch (`git log 7088b0f..HEAD`). No file was deleted (`git diff --diff-filter=D 7088b0f HEAD` is empty), and the working tree is clean.
+- Commits 324190a, e0a9ce3, 3e7e0db and 59730fa are on this branch (`git log ce0e9e5..HEAD`). No file was deleted (`git diff --diff-filter=D ce0e9e5 HEAD` is empty), and the working tree is clean.
 - Acceptance checks:
   - `uv run pytest -q`: 729 passed, 92 skipped. `uv run ruff check .`: clean.
   - `grep -c "//" probe/cg_basic.c` prints 0, and `grep -c "Calibration (host" probe/README.md` prints 1.
@@ -234,10 +234,10 @@ The 04-08 review found two counters that would mislead plan 04-10 (Important I-1
 
 | Commit | Change |
 |---|---|
-| `6dbaeeb` fix(04-08) | Switch chains (I-1). A compare that turns the direction used to drop the compare before it. It now starts the next chain together with that compare. The next compare must also start within `SWITCH_STEP_GAP` = 12 bytes of the previous jcc; before, only the 64-byte window bounded the gap. A compare past the window still starts a new chain on its own. |
-| `5c1a58a` fix(04-08) | rep_movsd_small (I-2) now counts the measured shape: `mov ecx,imm32` with a count of 1..16 (`SMALL_COPY_DWORDS`), up to `SMALL_COPY_MOVES` = 4 register-to-register `mov` (89 /r or 8B /r with ModRM mod=11), then `rep movsd`. The pattern is built from named constants. It is still one span, so a masked byte anywhere from `mov ecx` to `rep movsd` drops the hit, as before. The FLAG_SETS comments now state measured facts (M1). |
-| `c66477a` fix(04-08) | movsd_unrolled (M5). The relocated value of a fixup byte beside a run no longer decides the count. The byte after the run had the same defect as the lookbehind byte: a masked A5 there extended the run into the fixup, while any other masked value ended the run. This commit dropped the run whenever a neighbour was a fixup; fix round 2 (`4790973`, below) replaced that with "a fixup byte is a run boundary". |
-| `a764f03` fix(04-08) | Real rows. Every cell except `-oneatx`, on both versions, asserts one ascending chain and no descending chain. rep_movsd_small is asserted >= 1 at `-3r` and `-4r` and == 0 at `-5r`, on both versions. The `-4r` row was `==0` with id `10.6-4r-small-rep-measured-0`. |
+| `8ae329f` fix(04-08) | Switch chains (I-1). A compare that turns the direction used to drop the compare before it. It now starts the next chain together with that compare. The next compare must also start within `SWITCH_STEP_GAP` = 12 bytes of the previous jcc; before, only the 64-byte window bounded the gap. A compare past the window still starts a new chain on its own. |
+| `d0c5776` fix(04-08) | rep_movsd_small (I-2) now counts the measured shape: `mov ecx,imm32` with a count of 1..16 (`SMALL_COPY_DWORDS`), up to `SMALL_COPY_MOVES` = 4 register-to-register `mov` (89 /r or 8B /r with ModRM mod=11), then `rep movsd`. The pattern is built from named constants. It is still one span, so a masked byte anywhere from `mov ecx` to `rep movsd` drops the hit, as before. The FLAG_SETS comments now state measured facts (M1). |
+| `d78822a` fix(04-08) | movsd_unrolled (M5). The relocated value of a fixup byte beside a run no longer decides the count. The byte after the run had the same defect as the lookbehind byte: a masked A5 there extended the run into the fixup, while any other masked value ended the run. This commit dropped the run whenever a neighbour was a fixup; fix round 2 (`6fb5431`, below) replaced that with "a fixup byte is a run boundary". |
+| `0a67776` fix(04-08) | Real rows. Every cell except `-oneatx`, on both versions, asserts one ascending chain and no descending chain. rep_movsd_small is asserted >= 1 at `-3r` and `-4r` and == 0 at `-5r`, on both versions. The `-4r` row was `==0` with id `10.6-4r-small-rep-measured-0`. |
 
 ### Re-run calibration table (host, 2026-10-21; counts only)
 
@@ -299,7 +299,7 @@ The `-5s -s` default-library deviation is unchanged.
 - `REVERSEAPOC_WATCOM_DIR="<repo>/third_party/watcom" uv run pytest -q -rs tests/test_probe_real.py`: 44 passed, 1 skipped. The only skip is "Watcom 10.5: gate refused".
 - `uv run pytest -q`: 884 passed, 8 skipped. `uv run ruff check .`: All checks passed!
 
-**Fix round 2 (2026-10-21, `4790973`):** a fixup byte beside an unrolled movsd run is now a run boundary (an operand is never A5 or F3), so the run is counted instead of dropped. The probe calibration is unchanged: every count and every normalized SHA-1 matches the table above. Verification is the same as above (25 unit and 44 real passed, the 10.5 gate skip, 884 passed and 8 skipped overall, ruff clean).
+**Fix round 2 (2026-10-21, `6fb5431`):** a fixup byte beside an unrolled movsd run is now a run boundary (an operand is never A5 or F3), so the run is counted instead of dropped. The probe calibration is unchanged: every count and every normalized SHA-1 matches the table above. Verification is the same as above (25 unit and 44 real passed, the 10.5 gate skip, 884 passed and 8 skipped overall, ruff clean).
 
 ---
 *Phase: 04-compiler-identification*

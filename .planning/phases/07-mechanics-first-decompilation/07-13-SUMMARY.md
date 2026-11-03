@@ -22,8 +22,8 @@ actuals:
   tokens: 26800
   tasks: 3
   commits: 6
-plan_head_before: 8a8f98e5278614aa181fd6101c5ecb58ef29bead
-plan_head_after: cd53dbb3492ce3d9625b516c0b8ab06220172056
+plan_head_before: e4988ecb4646bcd3811bfc6ae8fb881aa7501ff2
+plan_head_after: 92e0651445ffe838a809721c6d3a2b4b89711a1c
 
 tech-stack:
   added: []
@@ -146,10 +146,10 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): views and the landing section.** RED `fdd832a`, GREEN `aafa993`.
+1. **Task 1 (tracer): views and the landing section.** RED `c2c193f`, GREEN `32a8c4f`.
    - Tracer feedback gate: the run was interactive, in end-of-phase mode, with an automated-only verify. I re-ran `uv run pytest -q tests/test_driver.py tests/test_session.py` (green) before expanding.
-2. **Task 2: the ledger and view-hash audit, no headers, pre-gate restore.** RED `e4a9ce5`, GREEN `2794edb`.
-3. **Task 3: hook legacy removed, canary in view mode.** RED `c4d4cb1`, GREEN `cd53dbb`.
+2. **Task 2: the ledger and view-hash audit, no headers, pre-gate restore.** RED `8604bf0`, GREEN `53cd02a`.
+3. **Task 3: hook legacy removed, canary in view mode.** RED `9760bb9`, GREEN `92e0651`.
 
 ## TDD evidence (RED)
 
@@ -198,7 +198,7 @@ See `key-decisions` in the frontmatter.
 
 ## Deviations from Plan
 
-**Orchestrator ruling F19:** `_undo_match` no longer restores the log from a pre-gate snapshot. It truncates `progress/attempts.jsonl` to its size just before the MATCHED append (`_drop_log_tail` / `_truncate`), so a record appended before it stays. The failed-commit tests are kept. The "log" case of `test_a_failed_undo_step_commits_nothing` now makes `_truncate` fail. New test: `test_undo_match_drops_only_its_matched_record`. Commits `e4a9ce5` and `2794edb`.
+**Orchestrator ruling F19:** `_undo_match` no longer restores the log from a pre-gate snapshot. It truncates `progress/attempts.jsonl` to its size just before the MATCHED append (`_drop_log_tail` / `_truncate`), so a record appended before it stays. The failed-commit tests are kept. The "log" case of `test_a_failed_undo_step_commits_nothing` now makes `_truncate` fail. New test: `test_undo_match_drops_only_its_matched_record`. Commits `8604bf0` and `53cd02a`.
 
 **Orchestrator ruling F34:**
 - **Applied.** The view's commit id is recorded in `<attempt dir>/view-head.txt` and in `_Session.view_head` (`test_view_records_its_head_commit`).
@@ -210,7 +210,7 @@ See `key-decisions` in the frontmatter.
 - Every view gets `include/`, even when HEAD has none (`test_view_always_has_include`).
 - **Known gap, recorded:** in view mode, `attempt context` and `attempt asm` still read the shared config and `common.h`. The driver's own pack does the same: `make_pack` takes `config=roots.config` and `common_h=roots.common_h`, and only `src` comes from the view.
 
-**1. [Rule 3 - Blocking] The audit's view-mode allowlist moved into Task 1.** Once sessions edit the view, the transcript names the view unit. The legacy `_allowed` would call every session a stray. `_allowed` therefore passes `unit_file`/`proposals` from Task 1 on, and the header halves of `test_match_commit_adds_new_files` and `test_a_failed_match_commit_unstages_new_files_too`, plus `test_a_plain_new_header_is_committed_with_literal_pathspecs`, were retired in Task 1's GREEN commit (`aafa993`). The plan had them in Task 2.
+**1. [Rule 3 - Blocking] The audit's view-mode allowlist moved into Task 1.** Once sessions edit the view, the transcript names the view unit. The legacy `_allowed` would call every session a stray. `_allowed` therefore passes `unit_file`/`proposals` from Task 1 on, and the header halves of `test_match_commit_adds_new_files` and `test_a_failed_match_commit_unstages_new_files_too`, plus `test_a_plain_new_header_is_committed_with_literal_pathspecs`, were retired in Task 1's GREEN commit (`32a8c4f`). The plan had them in Task 2.
 
 **2. [Rule 3 - Test harness] `fakeclaude --env-unit-paths`.** This is not in the plan. The stream fixtures name `/repo/src/ufo2p/u_00010000.c` in their Edit event. With the flag, the stand-in replays that one `file_path` as `REVERSEAPOC_UNIT_FILE`, as a session editing its view unit would. Without the variable, nothing changes. The Night harness passes it always, and a plain `Sess()` now writes its view unit (`--write-env-unit`).
 
@@ -222,7 +222,7 @@ See `key-decisions` in the frontmatter.
 - `test_an_untracked_header_from_before_the_session_is_named` changed from STOPPED `tool` to STOPPED `guardrail`. The file is copied into quarantine.
 - `drive`'s preflight already refuses a dirty tree, so this changes nothing for a real night.
 
-**6. [Test fix during GREEN] `test_claim_without_unit_file_writes_nothing`.** A view-shaped path without the env is denied first by the always layer's build/ rule, not the D-24 reason. The test now asserts that reason for that one target. Commit `cd53dbb`.
+**6. [Test fix during GREEN] `test_claim_without_unit_file_writes_nothing`.** A view-shaped path without the env is denied first by the always layer's build/ rule, not the D-24 reason. The test now asserts that reason for that one target. Commit `92e0651`.
 
 **7. [Plan clarification] Signatures.** `ExeWorld.pack` gained an optional `src` (the dry run still passes two arguments). `ExeWorld.scaffold` takes `dest`. `matching_write_allowed` keeps its `tracked` keyword, which no rule reads any more.
 
@@ -270,7 +270,7 @@ Execution context nonce: 4f0f04e95e3d63b7
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/driver.py, tools/reverseapoc/session.py, tools/reverseapoc/hooks.py, tests/fakeclaude.py, tests/test_driver.py, tests/test_session.py, tests/test_hooks.py, tests/test_drive.py
-- FOUND commits: fdd832a, aafa993, e4a9ce5, 2794edb, c4d4cb1, cd53dbb (`git rev-list --count 8a8f98e..HEAD` = 6 before this SUMMARY commit)
+- FOUND commits: c2c193f, 32a8c4f, 8604bf0, 53cd02a, 9760bb9, 92e0651 (`git rev-list --count e4988ec..HEAD` = 6 before this SUMMARY commit)
 - No STATE.md or ROADMAP.md change.
 
 ## Fix round 1
@@ -303,14 +303,14 @@ Execution context nonce: 4f0f04e95e3d63b7
   - **Residual:** a tamper in the instant between `_verify_landing` and `git add` is not seen.
 
 **Tests:**
-- **RED `2286cd0`.** 4 failed, 3 passed. Classifier `RED_EVIDENCE_OK` (target `test_a_log_tamper_between_driver_appends_stops_the_night`, JUnit XML `build/red/f1.xml`).
+- **RED `063fb4a`.** 4 failed, 3 passed. Classifier `RED_EVIDENCE_OK` (target `test_a_log_tamper_between_driver_appends_stops_the_night`, JUnit XML `build/red/f1.xml`).
   - `test_a_log_tamper_between_driver_appends_stops_the_night`: ENDED instead of STOPPED, and the tamper went into the chore commit.
   - `test_a_table_tamper_before_the_gate_stops_the_night`: the gate ran.
   - `test_a_feed_tamper_before_the_partial_gate_stops_the_night`: the partial gate ran.
   - `test_a_log_tamper_before_the_match_commit_is_never_committed`: the match was committed.
   - The 3 passes are `test_an_untampered_night_commits_the_match_and_the_log` (normal path, ruling (c)) and the two F19 tests.
   - The F19 tests' other writer now appends through the driver's own `_append` (`_capture_nights`), as a 07-18 worker of the same process would. A foreign raw append is now, correctly, a breach.
-- **GREEN `b12e7c1`.**
+- **GREEN `876533c`.**
   - **Test fix:** the feed test's `git restore` hook re-tampered during the breach's own reset, so it now fires once.
   - **Added in GREEN:** `test_a_table_tamper_before_the_chore_commit_is_never_committed`, for the end-of-night check. I proved it bites by disabling `_ledger_breaches`: it failed, and I then restored the check.
   - **Not tested:** the pre-gate-restore breach branch. Nothing is called between the gate's return and that restore, so a fake has no point at which to tamper.
@@ -325,7 +325,7 @@ Execution context nonce: 4f0f04e95e3d63b7
 
 **Finding (Important, the scoped re-review):** the end-of-night check (`_ledger_breaches`) only looked at files the driver had written that night, but the chore commit (`_commit_log`) commits any changed output: the log, both `status.csv` files and the feed. A tampered file the driver never wrote could still reach main through the chore commit, for example the other EXE's `status.csv`, or the claimed table and the feed on a night where every attempt failed the lint. The tamper only had to land after the last session's audit. Fix round 1's comment overclaimed here.
 
-**Fix (`b4a7a55`):**
+**Fix (`8088627`):**
 - `_ledger_breaches` now checks every output `self._outputs()` names plus every ledgered file.
 - A file the driver never wrote tonight passes only if it equals HEAD, because `holds` falls back to HEAD's blob.
 - A file that fails goes through the same breach path: quarantined, put back, nothing committed, STOPPED `guardrail`.
@@ -337,7 +337,7 @@ Execution context nonce: 4f0f04e95e3d63b7
 - the MATCHED line is still dropped (F19), the attempt is reset, and GAVE_UP is still recorded;
 - the caller stops the night with `undo_reason` (`guardrail`) instead of `tool`.
 
-**Tests (RED `cf1feb0`, then the fix `b4a7a55`):**
+**Tests (RED `0087ddc`, then the fix `8088627`):**
 - **New tests:**
   - `test_a_tamper_of_a_table_the_driver_never_wrote_is_never_committed`: tampers `config/tacp/status.csv` during `end_of_run`.
   - `test_a_lint_only_night_checks_the_untouched_outputs_too`: tampers the feed on a night where every attempt failed the lint.

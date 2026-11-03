@@ -15,11 +15,11 @@ provides:
 affects: [06-11 gate --partial (routes to check-custom through CompileOptions.src_root), 06-16 container re-proof of the stamp flow, driver plans (DI-06 is a D-38 prerequisite)]
 
 actuals:
-  tokens: 24847  # fix round 2: chars/4 over git diff 370e3e2..b49be21 (99,387 chars, SUMMARY included); round 1: 21418, first round: 12000
+  tokens: 24847  # fix round 2: chars/4 over git diff ebdfa4b..1cdf2fd (99,387 chars, SUMMARY included); round 1: 21418, first round: 12000
   tasks: 3
-  commits: 15  # git rev-list --count 370e3e2..b49be21, the earlier SUMMARY commits included
-plan_head_before: 370e3e2b30f632f72b5dd6935253fc0d2598c59e
-plan_head_after: b49be21e337fb1b6657c510f418c919ace1820d1
+  commits: 15  # git rev-list --count ebdfa4b..1cdf2fd, the earlier SUMMARY commits included
+plan_head_before: ebdfa4b71f90582f53fdb1cd050af27367a90983
+plan_head_after: 1cdf2fd99da7bf2d83de0c822c946f0dda271b6a
 
 tech-stack:
   added: []
@@ -125,9 +125,9 @@ Execution context nonce: 1e3c1d7fb3d2c278
 
 ## Task Commits
 
-1. **Task 1 (tracer): `check --src/--config OTHER` keeps ninja's objects (DI-06 part b).** RED `52e83b1` (test), GREEN `47546f1` (fix). Tracer gate: interactive mode, `end-of-phase`, automated-only verify. I re-ran `uv run pytest -q tests/test_check.py tests/test_land.py tests/test_cli.py tests/test_check_real.py` (184 passed, 4 skipped, the real-file skips), then expanded to Task 2.
-2. **Task 2: cc writes a provenance stamp declared to ninja (DI-06 part a, writer).** RED `8fcd36d` (test), GREEN `3c56067` (feat)
-3. **Task 3: ninja's land refuses stale objects; the check minors.** RED `f8c8e48` (test), GREEN `3533764` (fix)
+1. **Task 1 (tracer): `check --src/--config OTHER` keeps ninja's objects (DI-06 part b).** RED `af52195` (test), GREEN `02083fb` (fix). Tracer gate: interactive mode, `end-of-phase`, automated-only verify. I re-ran `uv run pytest -q tests/test_check.py tests/test_land.py tests/test_cli.py tests/test_check_real.py` (184 passed, 4 skipped, the real-file skips), then expanded to Task 2.
+2. **Task 2: cc writes a provenance stamp declared to ninja (DI-06 part a, writer).** RED `c89f442` (test), GREEN `f3f1891` (feat)
+3. **Task 3: ninja's land refuses stale objects; the check minors.** RED `3319304` (test), GREEN `1e66aa6` (fix)
 
 **Plan metadata:** this SUMMARY commit (docs).
 
@@ -137,17 +137,17 @@ The plan is `type: execute`, not `type: tdd`. The GREEN commit types follow the 
 
 pytest's console report is not one of the formats `check tdd-red-evidence` supports. I judged RED by reading each target assertion, as 06-03 and 06-08 did.
 
-- Task 1 (`52e83b1`): 4 targets failed.
+- Task 1 (`af52195`): 4 targets failed.
   - `test_check_with_other_src_keeps_ninja_objects` and `..._config_...` failed on `written.is_relative_to(build/check-custom)`: the compile went to `build/syn/obj/u_00010000.obj`.
   - `test_land_all_with_other_src_compiles_outside_ninja_paths` failed on the same assertion.
   - `test_object_root_keys_on_the_src_and_config_roots` failed with `TypeError: unexpected keyword argument 'src_root'`, because the field does not exist yet.
   - `test_default_roots_keep_ninja_paths` passed, as planned: it pins the default behaviour.
-- Task 2 (`8fcd36d`): 6 targets failed, all on assertions.
+- Task 2 (`c89f442`): 6 targets failed, all on assertions.
   - The three stamp tests found no `a.obj.prov.json` (the atomic-write test saw only the gate stamp written).
   - `test_cc_edge_declares_the_stamp` got `build $builddir/ufo2p/obj/u_00010000.obj` where it expected the `| ...prov.json` implicit output.
   - The two updated edge-prefix tests failed the same way.
   - The golden test still passed: it is updated in GREEN.
-- Task 3 (`f8c8e48`): 16 targets failed on their assertions. No collection or import faults.
+- Task 3 (`3319304`): 16 targets failed on their assertions. No collection or import faults.
   - 9 land refusals: `DID NOT RAISE CheckError`.
   - The land verb returned 0.
   - 17a: the row was in `stubs`, and the land verb returned 0.
@@ -191,33 +191,33 @@ See key-decisions in the frontmatter. The stamp path is a `$builddir` path, buil
 - **Issue:** every test_check.py test runs on a tmp tree, which under F7 would route to check-custom, so the tests that pin ninja's paths (`test_check_passes_a_matching_unit`, `test_check_with_default_options_keeps_ninja_paths`) would break.
 - **Fix:** the `env` fixture monkeypatches `check.DEFAULT_SRC`/`check.DEFAULT_CONFIG` to the env tree, so that tree stands for the committed one. `object_root` reads the constants at call time. Tests that build their env with `make_env` directly still run on non-default roots and stay consistent: both compile and land go to check-custom.
 - **Files modified:** tests/test_check.py, tools/reverseapoc/check.py
-- **Commit:** `52e83b1`, `47546f1`
+- **Commit:** `af52195`, `02083fb`
 
 **2. [Rule 2 - Missing critical] A provenance stamp that cannot be written fails the compile**
 - **Found during:** Task 2 (`test_a_stamp_that_cannot_be_written_never_fails_a_compile[write]` failed every write_atomic, the new stamp's included)
 - **Issue:** the gate stamp is a best-effort cache. The provenance stamp is what the land step trusts, so silently missing it would report a successful compile whose declared ninja output does not exist.
 - **Fix:** `_write_provenance` raises CompilerError and deletes the object. The gate-stamp test now fails only the gate cache path. New test: `test_a_provenance_stamp_that_cannot_be_written_fails_the_compile`. `test_stamp_written_atomically` now expects both writes, the gate stamp first.
 - **Files modified:** tools/reverseapoc/compiler.py, tests/test_compiler.py
-- **Commit:** `3c56067`
+- **Commit:** `f3f1891`
 
 **3. [Rule 1 - Bug] `-o .` crashed computing the stamp path**
 - **Found during:** Task 2 (`tests/test_cli.py::test_cc_object_without_a_name_is_an_error_line`)
 - **Issue:** `Path('.').with_name(...)` raised ValueError before compile_rule's own refusal of a nameless object.
 - **Fix:** the stamp path is computed only once compile_rule has run or refused. `_drop_orphan_stamp` skips a path with no name and only removes the stamp of an object that is gone, so a refusal before the compile keeps the old object's stamp.
 - **Files modified:** tools/reverseapoc/compiler.py
-- **Commit:** `3c56067`
+- **Commit:** `f3f1891`
 
 **4. [Rule 2 - Missing critical] Unreadable sources raise CompilerError**
 - **Found during:** Task 2
 - **Issue:** the source is now hashed before compile_rule's path checks, so a missing source would surface as a bare OSError.
 - **Fix:** `source_sha256` turns the read failure into `CompilerError("<src>: cannot read the source (...)")`. `check_provenance` converts any OSError/ValueError while computing today's stamp into a CheckError naming the object.
-- **Commit:** `3c56067`, `3533764`
+- **Commit:** `f3f1891`, `1e66aa6`
 
 **5. [Rule 2 - Missing critical] 17b: no newline translation either**
 - **Found during:** Task 3
 - **Issue:** `read_text` translates a lone CR into a line break, which hides it from 06-03's `normalize_source` refusal. configure's `_check_source` reads bytes for that reason (06-03 fix round 3).
 - **Fix:** `read_source` decodes the bytes. New test: `test_unit_file_with_a_lone_cr_is_a_source_problem`.
-- **Commit:** `3533764`
+- **Commit:** `1e66aa6`
 
 **6. [Additional tests]** `test_object_root_keys_on_the_src_and_config_roots`, `test_land_all_with_other_src_compiles_outside_ninja_paths`, `test_land_refuses_an_object_built_with_other_flags`, `test_land_refuses_an_unreadable_or_wrong_shaped_stamp` (4 cases), `test_land_refuses_a_stamp_of_another_format`, `test_land_reads_a_crlf_checkout_as_the_same_source`, `test_land_verb_refuses_a_stale_object`, `test_check_compiles_past_a_stale_ninja_object`, `test_land_refuses_a_marked_row_with_a_data_public` and `test_a_refused_compile_leaves_no_stamp`, beyond the plan's list.
 
@@ -248,26 +248,26 @@ See key-decisions in the frontmatter. The stamp path is a `$builddir` path, buil
 - 06-11 can route `gate --partial` to check-custom with `CompileOptions(src_root=<file's parent>)`. land_all keeps that root.
 - 06-16: the first container `ninja verify` after this merge rebuilds both matched objects, because their implicit `.prov.json` outputs are missing. Then land checks the stamps.
 
-## Fix round 1 (review-06-09.md, FIX_BASE a264884)
+## Fix round 1 (review-06-09.md, FIX_BASE 74b5bab)
 
 Orchestrator ruling: extend the stamp so that a stale or substituted object can never land through a direct `land`. The stamp format is now 2 (`PROV_VERSION = 2`) with eight keys. A format-1 stamp is refused as stale, and the message names its format.
 
 | Item | What was done | Test commit | Fix commit |
 |------|---------------|-------------|------------|
-| I1 (Important) | New key `include_sha256`. It hashes every file under the compile root's `include/`, the `-i=` directory the compile reads first: per file, sorted by its POSIX path below include/, the line `<path>\0<SHA-256 of the content with CRLF as LF>\n`, then SHA-256 over all lines. The writer uses compile_source's root (REPO_ROOT by default). The reader uses `_compile_root(src_root)`. After a header edit, a direct `reverseapoc land` refuses with `the headers under <root>/include changed since it was built; run ninja ...`. | `620a584` | `162557e` |
-| I2 (Important) | New key `object_sha256`: SHA-256 of the object's bytes, taken in `_write_provenance` once compile_rule has returned ok, so from the finished object. `check_provenance` hashes the object on disk and refuses on a difference: `the object is not the one its stamp was written for (its bytes changed)`. `compile_rule` now deletes the old stamp together with the old object, right before the run, so an interrupted compile (simulated with a runner that writes part of the object, then raises KeyboardInterrupt) leaves no stamp. A refusal before the run (path checks, gate) still leaves the old object and its stamp as a matching pair. Because the stamp is deleted before the compile, `_check_outputs` also refuses a stamp path that is the source. A stamp that cannot be written still fails the compile and deletes the object. `_drop_orphan_stamp` is gone: nothing needs it now. | `620a584` | `162557e` |
-| M7 | New tests: `test_land_refuses_an_object_after_a_watcom_manifest_change` (names the manifest path) and `test_land_refuses_an_object_built_by_another_compiler` (10.6 -> 10.5, same flags; names "the compiler"). | `620a584` | (passed with `162557e`) |
-| Old format | `test_land_refuses_an_old_format_stamp`: a six-key format-1 stamp gives `... is of stamp format 1, not format 2`. | `620a584` | `162557e` |
-| M3 | 17a now names the public's place the way 17c does. It says `outside a code segment (data)` only when the public is outside every code segment. Inside one, the reason is `in a code segment, but not as a function check can pair with its row`. The not-marked `exported as ...` reason uses the same phrase. Test: `test_a_code_public_check_does_not_take_is_not_called_data`, with defined_functions monkeypatched to take nothing. An absolute public could not be used as a fixture, because omf2elf refuses it as a tool error. | `b3c2049` | `30aa93c` |
-| M5 | Restored `KEPT = "int kept;\n"` at tests/test_compiler.py (stray whitespace edit). | `620a584` | n/a |
-| M6 | The env fixture's monkeypatch no longer passes `raising=False`. | `620a584` | n/a |
-| M8 | cli.py imports `DEFAULT_SRC` and `DEFAULT_CONFIG` from check.py (no import cycle: check.py does not import cli). Test: `test_cli_takes_its_default_roots_from_check`. **Deviation:** cli.py is outside the plan's `files_modified`; the coordinator asked for it. | `b3c2049` | `30aa93c` |
-| Wording | The stale message now reads `<fields> changed since it was built`, because "built from another the headers ... than today's" did not parse. | n/a | `5294bdb` |
-| put_stamp | tests/test_check.py's `put_stamp` computes the format-2 stamp from its definition (`headers_sha256`, `_text_sha256`). It does not call compiler.py, so the reader is checked against an independent writer. The compiler-side test pins the same `include_sha256` scheme (`_headers_sha256`). | `620a584` | n/a |
+| I1 (Important) | New key `include_sha256`. It hashes every file under the compile root's `include/`, the `-i=` directory the compile reads first: per file, sorted by its POSIX path below include/, the line `<path>\0<SHA-256 of the content with CRLF as LF>\n`, then SHA-256 over all lines. The writer uses compile_source's root (REPO_ROOT by default). The reader uses `_compile_root(src_root)`. After a header edit, a direct `reverseapoc land` refuses with `the headers under <root>/include changed since it was built; run ninja ...`. | `093179d` | `9aeea64` |
+| I2 (Important) | New key `object_sha256`: SHA-256 of the object's bytes, taken in `_write_provenance` once compile_rule has returned ok, so from the finished object. `check_provenance` hashes the object on disk and refuses on a difference: `the object is not the one its stamp was written for (its bytes changed)`. `compile_rule` now deletes the old stamp together with the old object, right before the run, so an interrupted compile (simulated with a runner that writes part of the object, then raises KeyboardInterrupt) leaves no stamp. A refusal before the run (path checks, gate) still leaves the old object and its stamp as a matching pair. Because the stamp is deleted before the compile, `_check_outputs` also refuses a stamp path that is the source. A stamp that cannot be written still fails the compile and deletes the object. `_drop_orphan_stamp` is gone: nothing needs it now. | `093179d` | `9aeea64` |
+| M7 | New tests: `test_land_refuses_an_object_after_a_watcom_manifest_change` (names the manifest path) and `test_land_refuses_an_object_built_by_another_compiler` (10.6 -> 10.5, same flags; names "the compiler"). | `093179d` | (passed with `9aeea64`) |
+| Old format | `test_land_refuses_an_old_format_stamp`: a six-key format-1 stamp gives `... is of stamp format 1, not format 2`. | `093179d` | `9aeea64` |
+| M3 | 17a now names the public's place the way 17c does. It says `outside a code segment (data)` only when the public is outside every code segment. Inside one, the reason is `in a code segment, but not as a function check can pair with its row`. The not-marked `exported as ...` reason uses the same phrase. Test: `test_a_code_public_check_does_not_take_is_not_called_data`, with defined_functions monkeypatched to take nothing. An absolute public could not be used as a fixture, because omf2elf refuses it as a tool error. | `e907600` | `fbb3134` |
+| M5 | Restored `KEPT = "int kept;\n"` at tests/test_compiler.py (stray whitespace edit). | `093179d` | n/a |
+| M6 | The env fixture's monkeypatch no longer passes `raising=False`. | `093179d` | n/a |
+| M8 | cli.py imports `DEFAULT_SRC` and `DEFAULT_CONFIG` from check.py (no import cycle: check.py does not import cli). Test: `test_cli_takes_its_default_roots_from_check`. **Deviation:** cli.py is outside the plan's `files_modified`; the coordinator asked for it. | `e907600` | `fbb3134` |
+| Wording | The stale message now reads `<fields> changed since it was built`, because "built from another the headers ... than today's" did not parse. | n/a | `82c0828` |
+| put_stamp | tests/test_check.py's `put_stamp` computes the format-2 stamp from its definition (`headers_sha256`, `_text_sha256`). It does not call compiler.py, so the reader is checked against an independent writer. The compiler-side test pins the same `include_sha256` scheme (`_headers_sha256`). | `093179d` | n/a |
 
 RED evidence:
-- `620a584`: 21 failures in test_check.py and 3 in test_compiler.py, all on assertions. The stamp tests got 6 keys instead of 8. The interrupted compile kept its stamp. `test_the_stamp_may_not_be_the_source`: `DID NOT RAISE` (the stamp overwrote the source). The format-1 stamp was accepted. The header, object, manifest and compiler tests raised the wrong refusal (the format-1 reader read the format-2 stamp as the wrong shape, so their named words were missing). The accept and land tests failed because the format-1 reader refused the format-2 stamp `put_stamp` writes, which is the format change itself. `test_a_refusal_before_the_compile_keeps_the_old_object_and_stamp` passed: it pins behaviour that must stay.
-- `b3c2049`: 2 failures on assertions: the reason ended `outside a code segment (data)`, and `cli.DEFAULT_SRC is not check.DEFAULT_SRC`.
+- `093179d`: 21 failures in test_check.py and 3 in test_compiler.py, all on assertions. The stamp tests got 6 keys instead of 8. The interrupted compile kept its stamp. `test_the_stamp_may_not_be_the_source`: `DID NOT RAISE` (the stamp overwrote the source). The format-1 stamp was accepted. The header, object, manifest and compiler tests raised the wrong refusal (the format-1 reader read the format-2 stamp as the wrong shape, so their named words were missing). The accept and land tests failed because the format-1 reader refused the format-2 stamp `put_stamp` writes, which is the format change itself. `test_a_refusal_before_the_compile_keeps_the_old_object_and_stamp` passed: it pins behaviour that must stay.
+- `e907600`: 2 failures on assertions: the reason ended `outside a code segment (data)`, and `cli.DEFAULT_SRC is not check.DEFAULT_SRC`.
 
 Notes recorded, no change (coordinator ruling):
 - **M1:** `land_all` without a compiler takes the cflags table and manifest it compares with from `options`. No CLI path passes them (`_cmd_land` passes no options), so the no-bypass prohibition holds; this is a latent API surface only.
@@ -286,14 +286,14 @@ Host re-proof with real files (main checkout's Watcom 10.6 tree and orig/):
 
 Verification: `uv run pytest -q` gives 1594 passed, 217 skipped. `uv run ruff check .`: all checks passed. No CR in any changed file.
 
-## Fix round 2 (rereview-06-09-r1.md, FIX_BASE 0c336e6)
+## Fix round 2 (rereview-06-09-r1.md, FIX_BASE 5bca907)
 
 | Item | What was done | Test commit | Fix commit |
 |------|---------------|-------------|------------|
-| N1 (Minor; it failed closed but blocked every unit) | **Problem:** the stamp hashed every file under include/, recursively. The cc edge declares only the top-level `include/*.h`, so a README, an editor backup or `include/sub/x.h` would make every unit refuse with "run ninja", and `ninja objects` could never clear it. **Fix:** there is now ONE definition, `compiler.project_headers(root)`: every top-level `<root>/include/*.h` file, sorted by name. `include_sha256` hashes exactly that list, one line `<name>\0<SHA-256, CRLF as LF>\n` per header. configure.py's `Layout.for_base` takes the cc edge's implicit header inputs from the same function. The regeneration edge now also depends on the include/ directory (new `Layout.header_dirs`, the same mechanism as `src_dirs`), so adding or removing a header re-runs configure and then rebuilds. The cheap option was available, so I did not need the "re-run configure.py" message variant. The default render does not change: the golden uses `Layout()`, whose `header_dirs` is empty, so `DEFAULT_RENDER_GOLDEN` is untouched and there is no diff to show. **Tests:** `test_land_ignores_files_in_include_that_are_no_project_header` (README, `common.h~` and `sub/x.h` added after the stamp, and the unit still lands); `test_cc_edge_headers_are_the_stamped_headers` (configure's header inputs are whatever `project_headers` returns; the real repository's set is top-level `include/*.h`); `test_regeneration_edge_watches_the_include_dir`. The compiler-side stamp test now also writes a README, a backup and `sub/c.h`, and pins `include_sha256` over `common.h` and `b.h` only. The test helper `headers_sha256` follows the same definition. | `3b06a55` | `b49be21` |
-| N3 | `_land_exe` reads the object's bytes once. `check_provenance(..., data=)` hashes them through `provenance(rule, src, obj_data, ...)`, and the new `parse_module(data, path)` parses the same buffer, so what is hashed is exactly what lands. `read_module(path)` is now `parse_module(path.read_bytes(), path)`. `compiler.object_sha256` takes bytes. Test: `test_land_reads_the_object_once` counts `Path.read_bytes` calls on the object. | `3b06a55` | `b49be21` |
+| N1 (Minor; it failed closed but blocked every unit) | **Problem:** the stamp hashed every file under include/, recursively. The cc edge declares only the top-level `include/*.h`, so a README, an editor backup or `include/sub/x.h` would make every unit refuse with "run ninja", and `ninja objects` could never clear it. **Fix:** there is now ONE definition, `compiler.project_headers(root)`: every top-level `<root>/include/*.h` file, sorted by name. `include_sha256` hashes exactly that list, one line `<name>\0<SHA-256, CRLF as LF>\n` per header. configure.py's `Layout.for_base` takes the cc edge's implicit header inputs from the same function. The regeneration edge now also depends on the include/ directory (new `Layout.header_dirs`, the same mechanism as `src_dirs`), so adding or removing a header re-runs configure and then rebuilds. The cheap option was available, so I did not need the "re-run configure.py" message variant. The default render does not change: the golden uses `Layout()`, whose `header_dirs` is empty, so `DEFAULT_RENDER_GOLDEN` is untouched and there is no diff to show. **Tests:** `test_land_ignores_files_in_include_that_are_no_project_header` (README, `common.h~` and `sub/x.h` added after the stamp, and the unit still lands); `test_cc_edge_headers_are_the_stamped_headers` (configure's header inputs are whatever `project_headers` returns; the real repository's set is top-level `include/*.h`); `test_regeneration_edge_watches_the_include_dir`. The compiler-side stamp test now also writes a README, a backup and `sub/c.h`, and pins `include_sha256` over `common.h` and `b.h` only. The test helper `headers_sha256` follows the same definition. | `d29c8b1` | `1cdf2fd` |
+| N3 | `_land_exe` reads the object's bytes once. `check_provenance(..., data=)` hashes them through `provenance(rule, src, obj_data, ...)`, and the new `parse_module(data, path)` parses the same buffer, so what is hashed is exactly what lands. `read_module(path)` is now `parse_module(path.read_bytes(), path)`. `compiler.object_sha256` takes bytes. Test: `test_land_reads_the_object_once` counts `Path.read_bytes` calls on the object. | `d29c8b1` | `1cdf2fd` |
 
-RED evidence (`3b06a55`): 5 failures.
+RED evidence (`d29c8b1`): 5 failures.
 - The stamp test's `include_sha256` differed, because the old code hashed the README, the backup and `sub/c.h`.
 - The include-files test refused with "the headers under ... changed since it was built".
 - The read-once test counted 2 reads.
@@ -322,7 +322,7 @@ Verification:
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/check.py, tools/reverseapoc/compiler.py, configure.py, tests/test_check.py, tests/test_compiler.py, tests/test_configure.py
-- FOUND commits (ancestors of HEAD): 52e83b1, 47546f1, 8fcd36d, 3c56067, f8c8e48, 3533764, a264884; fix round 1: 620a584, 162557e, b3c2049, 30aa93c, 5294bdb, 0c336e6; fix round 2: 3b06a55, b49be21
+- FOUND commits (ancestors of HEAD): af52195, 02083fb, c89f442, f3f1891, 3319304, 1e66aa6, 74b5bab; fix round 1: 093179d, 9aeea64, e907600, fbb3134, 82c0828, 5bca907; fix round 2: d29c8b1, 1cdf2fd
 - FOUND: tools/reverseapoc/cli.py (fix round 1)
 
 ---

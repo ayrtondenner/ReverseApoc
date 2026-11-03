@@ -19,8 +19,8 @@ actuals:
   tokens: 6800
   tasks: 2
   commits: 4
-plan_head_before: 2815ddb72530220a0d7d474ae1abe1284dda210f
-plan_head_after: 4dfc7f07927e11922c438127fdf739b392dffe32
+plan_head_before: 23844224dd76ff1e062fb8e525e323752c39657e
+plan_head_after: 57ba5f37810d8aaa1b45dbd9e57da1d7d5880f26
 
 tech-stack:
   added: []
@@ -142,18 +142,18 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): view-rooted argv and snapshot.** RED `15ee9a2` (test), GREEN `9ebcf04` (feat).
+1. **Task 1 (tracer, TDD): view-rooted argv and snapshot.** RED `cad562b` (test), GREEN `4f94072` (feat).
    - Tracer feedback gate (interactive, end-of-phase, automated-only verify): I re-ran `uv run pytest -q tests/test_attempt_wrapper.py` after GREEN (83 passed), then went on to Task 2.
-2. **Task 2 (TDD): env validation, view cflags, view units, view sweeps.** RED `b3075f8` (test), GREEN `4dfc7f0` (feat).
+2. **Task 2 (TDD): env validation, view cflags, view units, view sweeps.** RED `8061102` (test), GREEN `57ba5f3` (feat).
 
 ## TDD evidence (RED)
 
-- **Task 1 RED (`15ee9a2`):** 3 failed, 1 passed (the legacy pin). The classifier ran on the pytest JUnit XML (`build/red/t1.xml`, gitignored) with target `test_view_mode_argv` and returned `RED_EVIDENCE_OK` / `target_test_failed`.
+- **Task 1 RED (`cad562b`):** 3 failed, 1 passed (the legacy pin). The classifier ran on the pytest JUnit XML (`build/red/t1.xml`, gitignored) with target `test_view_mode_argv` and returned `RED_EVIDENCE_OK` / `target_test_failed`.
   - The argv had `--json` at index 7 where `--src` was expected.
   - The snapshot held src/'s bytes.
   - The claim row came from the shared config.
   - Semantic assessment: every target ran and failed on its planned assertion. There was no import or collection fault.
-- **Task 2 RED (`b3075f8`):** 24 failed, 5 passed. The classifier ran on `build/red/t2.xml` with target `test_unit_file_must_be_the_view_unit[other-unit]` and returned `RED_EVIDENCE_OK` / `target_test_failed`.
+- **Task 2 RED (`8061102`):** 24 failed, 5 passed. The classifier ran on `build/red/t2.xml` with target `test_unit_file_must_be_the_view_unit[other-unit]` and returned `RED_EVIDENCE_OK` / `target_test_failed`.
   - 8 failures were `DID NOT RAISE AttemptError` (unit file).
   - 13 were `assert 0 == 2`: proposals, legacy proposals, session kinds and readability without a view.
   - The sweep hit was `'wcc386@10.6 -4r -ot -s -fpi'` instead of None, because the shared cflags were read.
@@ -192,19 +192,19 @@ See `key-decisions` in the frontmatter. Each one is fail-closed or consistency-d
 - The rulings say sweep cells must compile against the view's `include/` (pass the view's src root), not `src_root=None`.
 - **Fix:** `check.sweep` passes `src_root=Path(src_root)` in its `CompileOptions`, so `_compile_root_for` returns the view directory only for a D-24 view. Every other tree still compiles from REPO_ROOT, as before.
 - **Files:** `tools/reverseapoc/check.py` and `tests/test_check.py`. Neither is in the plan's `files_modified`; the ruling directed the change.
-- **Commits:** `b3075f8` (test), `4dfc7f0` (feat).
+- **Commits:** `8061102` (test), `57ba5f3` (feat).
 - The other parts of the note already hold. A view is checked with `--build <view>/build`. `default_runner` runs with `cwd=ROOTS.repo` (the repository root), and the container argv paths are repo-relative.
 
 **2. [Rule 2 - Missing critical] Readability sessions need a view.**
 - **Found during:** Task 2.
 - **Issue:** The plan lists the accepted kinds but does not say what happens to a readability session without a unit file. 07-04's hook denies that session every write.
 - **Fix:** `_kind` refuses any non-matching kind when `REVERSEAPOC_UNIT_FILE` is unset. Test: `test_a_readability_session_needs_a_view`.
-- **Commit:** `4dfc7f0`.
+- **Commit:** `57ba5f3`.
 
 **3. [Rule 2 - Missing critical] Exact spelling below the attempt dir.**
 - **Issue:** On a case-folding host, `Path.resolve()` returns the on-disk case, so `_notes`'s resolved comparison alone would accept `view/SRC/...`.
 - **Fix:** `_names` also compares the written (normalised, unresolved) parts below the attempt dir. It does not compare the whole path, so a short-name or drive-letter spelling of the repository prefix still passes. The hooks' shapes are exact only in that tail.
-- **Commit:** `4dfc7f0`.
+- **Commit:** `57ba5f3`.
 
 **4. [Plan clarification] Proposals required in view mode, optional in legacy mode.**
 - **Issue:** The plan says "must be `<attempt dir>/proposals.jsonl`" without saying when the variable may be absent.
@@ -217,7 +217,7 @@ See `key-decisions` in the frontmatter. Each one is fail-closed or consistency-d
 **6. [Test fix during GREEN] The context test observes the unit-text root.**
 - **Issue:** The RED version also asserted that the text of another (unclaimed) view unit appears in the pack. The pack holds only matched neighbours' definition heads, never a whole other unit, so that assertion could never hold.
 - **Fix:** In GREEN, that assertion became a spy on `attempt._unit_texts` asserting that it reads the view's `src/`. The claimed unit's view text is still asserted in the printed pack.
-- **Commit:** `4dfc7f0`.
+- **Commit:** `57ba5f3`.
 
 ---
 
@@ -243,7 +243,7 @@ Execution context nonce: c57f5f5d16affe2a
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/attempt.py, tools/reverseapoc/check.py, tests/test_attempt_wrapper.py, tests/test_check.py
-- FOUND commits: 15ee9a2, 9ebcf04, b3075f8, 4dfc7f0 (`git rev-list --count 2815ddb..HEAD` = 4 before this SUMMARY commit)
+- FOUND commits: cad562b, 4f94072, 8061102, 57ba5f3 (`git rev-list --count 2384422..HEAD` = 4 before this SUMMARY commit)
 - No STATE.md or ROADMAP.md change.
 
 ---

@@ -27,8 +27,8 @@ actuals:
   tokens: 19142
   tasks: 2
   commits: 3
-plan_head_before: ce7fc2dacd79b9f2cfefe62b4aea4676d34c2c13
-plan_head_after: a9428f6367d0c519f0be0c88a04ecadab9157375
+plan_head_before: 32f56215d7896962cfd1857c5f4a54437366345d
+plan_head_after: df04e1a6ab9a5b31c2c125a047b04ffaa3d10324
 
 tech-stack:
   added: []
@@ -110,9 +110,9 @@ Execution context nonce: a909b2c906d4afd5
 
 ## Task Commits
 
-1. **Task 1 RED: skill tests** - `1dfc265` (test)
-2. **Task 1 GREEN: watcom-decomp for private views (writing-skills)** - `1add168` (docs)
-3. **Task 2: Phase 7 driver, hooks and flag rules** - `a9428f6` (docs)
+1. **Task 1 RED: skill tests** - `fa916c9` (test)
+2. **Task 1 GREEN: watcom-decomp for private views (writing-skills)** - `5c70e27` (docs)
+3. **Task 2: Phase 7 driver, hooks and flag rules** - `df04e1a` (docs)
 
 ## superpowers:writing-skills
 
@@ -182,19 +182,19 @@ The skill keeps the two skills consistent about names: matching keeps placeholde
 - **Found during:** Task 1.
 - **Issue:** the plan names one Task 1 commit, but the phase 7 rules require a failing test commit before GREEN.
 - **Fix:** two commits, `test(07-35)` RED (all 6 new tests failing because the content was missing), then `docs(skill)` GREEN with the plan's message. The GREEN commit also refines the src/ test: it strips the view path, which itself contains `src/<exe>/<unit>.c`.
-- **Commits:** 1dfc265, 1add168.
+- **Commits:** fa916c9, 5c70e27.
 
 **2. [Rule 2 - Missing critical] More skill tests than the plan's two.**
 - **Found during:** Task 1.
 - **Issue:** RED-FINDINGS' GREEN criteria and the ruling notes (07-14: stage 2 through `sweep_hit`) need the view flags rule, stage 2 and the output sample pinned, or they can go stale.
 - **Fix:** four more tests, and the JSON-field check now covers a sweep whose stage 2 ran.
-- **Files:** tests/test_skill.py. **Commit:** 1dfc265.
+- **Files:** tests/test_skill.py. **Commit:** fa916c9.
 
 **3. [Rule 1 - Bug] Stale Phase 6 text elsewhere in docs/workflow.md.**
 - **Found during:** Task 2.
 - **Issue:** the plan named "Running the driver" and the hooks section. RED-FINDINGS also lists the stale "One attempt" (L160, L163), reset rules (L169) and always-layer table (L202) lines, all inside those sections.
 - **Fix:** all of them rewritten. The dry-run paragraph also gained the tier picks, and the refusal table gained the existing `drive lock` and `claims` reasons. Ctrl+C now names every live session.
-- **Commit:** a9428f6.
+- **Commit:** df04e1a.
 
 **Orchestrator ruling F20:** the orchestrator ran the RED baseline and runs GREEN after this return. No subagents were dispatched, and writing-skills' micro-tests were not run (they need subagents).
 
@@ -234,7 +234,7 @@ None.
 
 - FOUND: .claude/skills/watcom-decomp/SKILL.md (191 lines, at most 300)
 - FOUND: tests/test_skill.py, docs/workflow.md
-- FOUND commits: 1dfc265, 1add168, a9428f6 (ancestors of HEAD)
+- FOUND commits: fa916c9, 5c70e27, df04e1a (ancestors of HEAD)
 
 ---
 *Phase: 07-mechanics-first-decompilation*
@@ -264,8 +264,8 @@ V3 used 7 tool uses against a bar of 5, with the right choice. The review (`revi
 - **Left as the orchestrator asked:** M2 (the Fable canary trigger wording), M3 (stage and cell "as printed"), M4 (cell 42 tied to `sweep2_cells`) and M5 (V3's comment in the unit).
 
 Commits:
-- `19e6e48` test(07-35): RED. Both new tests failed because the text was missing.
-- `19ce2c9` docs(skill): GREEN.
+- `07ebce4` test(07-35): RED. Both new tests failed because the text was missing.
+- `9aaa6d7` docs(skill): GREEN.
 
 Tests:
 - `tests/test_skill.py`: 21 passed.

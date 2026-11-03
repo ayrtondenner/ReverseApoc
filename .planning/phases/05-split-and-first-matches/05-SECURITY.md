@@ -12,7 +12,7 @@ created: "2026-10-24"
 
 > Per-phase security contract: threat register, accepted risks, and audit trail.
 > Register: the `<threat_model>` blocks of plans 05-01..05-20 (T-05-01..46 plus T-05-SC, which appears in all 20 plans: accepted at low in 18, mitigated in 05-03 (capstone install, high) and 05-12 (apt packages, medium)). SUMMARY threat flags (05-07, 05-08, 05-10, 05-13, 05-16, 05-18, 05-19, 05-20) report no new surface.
-> Verified at L1 grep depth against main at 25c5c49 (short-circuit: threats_open 0, plan-time register, ASVS 1, block_on high). Evidence per threat is in the Mitigation column; gate logs are in the gitignored build/gate/05-evidence/.
+> Verified at L1 grep depth against main at e225c7d (short-circuit: threats_open 0, plan-time register, ASVS 1, block_on high). Evidence per threat is in the Mitigation column; gate logs are in the gitignored build/gate/05-evidence/.
 
 ---
 
@@ -85,12 +85,12 @@ created: "2026-10-24"
 | T-05-38 | Tampering | sweep side effects | medium | mitigate | sweep work dir build/sweep/<exe>/<unit>; never lands; test_sweep_leaves_cflags_alone | closed |
 | T-05-39 | Spoofing | the UFO2P match claim | high | mitigate | build/gate/05-evidence/02-check-ufo2p.json: objdiff_percent 100.0, no `"ok": false`, exit 0; 01-ninja.log `ninja verify` landed SHA-1 identical | closed |
 | T-05-40 | Tampering | src/ unit files | high | mitigate | `git grep` for `_asm`/`__asm`/`#pragma aux`/`asm(` in src/ is empty; ninja `lint` rule runs over every unit | closed |
-| T-05-41 | Tampering | config/cflags.txt default | medium | mitigate | the only rule is `*  wcc386@10.6  -4r -s -fpi`; no Phase 5 commit touches config/cflags.txt (last change 0965dbf, Phase 4) | closed |
-| T-05-42 | Information disclosure | asm/ listings and Ghidra drafts | high | mitigate | asm/ and build/ gitignored; no tracked path under them at 25c5c49 | closed |
+| T-05-41 | Tampering | config/cflags.txt default | medium | mitigate | the only rule is `*  wcc386@10.6  -4r -s -fpi`; no Phase 5 commit touches config/cflags.txt (last change 365fa59, Phase 4) | closed |
+| T-05-42 | Information disclosure | asm/ listings and Ghidra drafts | high | mitigate | asm/ and build/ gitignored; no tracked path under them at e225c7d | closed |
 | T-05-43 | Spoofing | TACP match claim | high | mitigate | build/gate/05-evidence/03-check-tacp.json: objdiff_percent 100.0, no `"ok": false`, exit 0; `ninja verify` re-lands both units | closed |
 | T-05-44 | Tampering | regression of the UFO2P match | high | mitigate | 01-ninja.log (clean graph) lands UFO2P.EXE and TACP.EXE SHA-1 identical; 04-rebuild.log `== manifest` x3 | closed |
 | T-05-45 | Repudiation | validation sign-off | medium | mitigate | 05-VALIDATION.md rows cite logs 01..11, each ending `exit=0`; 09-rows.log runs every row command | closed |
-| T-05-46 | Information disclosure | tracked files | high | mitigate | 08-hygiene.log: 345 tracked files, 0 forbidden matches; re-run at 25c5c49 also finds none | closed |
+| T-05-46 | Information disclosure | tracked files | high | mitigate | 08-hygiene.log: 345 tracked files, 0 forbidden matches; re-run at e225c7d also finds none | closed |
 | T-05-SC (05-03) | Tampering | `uv add capstone==5.0.9` | high | mitigate | docs/tools.md records the reason; owner approved at the blocking-human checkpoint on 2026-10-23 before install (05-03-SUMMARY); exact pin in pyproject.toml, sha256 in uv.lock | closed |
 | T-05-SC (05-12) | Tampering | apt packages (JDK, clang) | medium | mitigate | every apt package version-pinned on `ubuntu:24.04@sha256:68ee...`; no pip or npm install in the Dockerfile | closed |
 | T-05-SC (other 18 plans) | Tampering | package installs | low | accept | AR-05-01 | closed |
@@ -105,7 +105,7 @@ created: "2026-10-24"
 
 | Risk ID | Threat Ref | Rationale | Accepted By | Date |
 |---------|------------|-----------|-------------|------|
-| AR-05-01 | T-05-SC | Supply chain: the 18 plans other than 05-03 and 05-12 install no package. pyproject.toml and uv.lock change once in Phase 5 (b398159, capstone, covered by the 05-03 mitigation). | plan threat models (owner-approved plans), recorded by the orchestrator | 2026-10-24 |
+| AR-05-01 | T-05-SC | Supply chain: the 18 plans other than 05-03 and 05-12 install no package. pyproject.toml and uv.lock change once in Phase 5 (0d5fae3, capstone, covered by the 05-03 mitigation). | plan threat models (owner-approved plans), recorded by the orchestrator | 2026-10-24 |
 
 *Accepted risks do not resurface in future audit runs.*
 

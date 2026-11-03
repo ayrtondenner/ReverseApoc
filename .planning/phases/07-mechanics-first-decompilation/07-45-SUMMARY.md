@@ -23,8 +23,8 @@ actuals:
   tokens: 11045
   tasks: 8
   commits: 3
-plan_head_before: d966610383a612e9759ac6a837ff918d650b1a75
-plan_head_after: 71229738090674e7343d06e12836dcbffda321cb
+plan_head_before: 56b921b6bd12f9e92cf7f16796aba05a7b8db991
+plan_head_after: 0837edc6b448f3e52ff7560b1bc0d303dd9ad830
 
 tech-stack:
   added: []
@@ -189,9 +189,9 @@ non-data pairs.
 
 ## Task Commits
 
-1. **Task 7 (a): RED tests.** `1d60b13` `test(07-45): the split-row detector (RED)`
-2. **Task 7 (b): the detector and docs.** `3ca3470` `feat(07-45): mechanics splits, the split-row detector (owner ruling 2026-10-31)`
-3. **Task 7 (c): owner data and sign-offs.** `7122973` `data(07-45): split-row and held-row rulings; asm list signed by ayrtondenner; tier 3 re-signed (D-23, D-11, F36)`
+1. **Task 7 (a): RED tests.** `4af3d36` `test(07-45): the split-row detector (RED)`
+2. **Task 7 (b): the detector and docs.** `0f130e9` `feat(07-45): mechanics splits, the split-row detector (owner ruling 2026-10-31)`
+3. **Task 7 (c): owner data and sign-offs.** `0837edc` `data(07-45): split-row and held-row rulings; asm list signed by ayrtondenner; tier 3 re-signed (D-23, D-11, F36)`
 
 The SUMMARY commit is `docs(07-45): complete the split-row rulings and re-sign plan`. By plan design, no commit was made
 before Task 7.
@@ -199,13 +199,13 @@ before Task 7.
 ## RED evidence assessment
 
 - **Record.** 45-red-record.json, target `test_split_pairs_classes[a]`: `RED_EVIDENCE_OK` (target_test_failed). All 18
-  tests failed on HEAD d966610.
+  tests failed on HEAD 56b921b.
 - **Semantic assessment.** The target ran and failed in its call phase on `ModuleNotFoundError: reverseapoc.splits`. HEAD
   lists no split pair, which is exactly the planned missing behaviour. There was no collection or fixture fault.
 - **The Task 7 test fix.** It touched only `test_real_split_pairs` pins, not the target.
 - **Merge override.** None built, so there is no merge RED record.
 
-## Suite and gate results (all logs head=7122973)
+## Suite and gate results (all logs head=0837edc)
 
 - **Host** (`uv run pytest -q -rs`): 4222 passed, 40 skipped, exit 0. Every skip reason is R-A, and none is new. Ruff:
   All checks passed.
@@ -292,7 +292,7 @@ All rulings are the owner's (above). The executor wrote no ruling, verdict, reas
 - **Fix:** test only, with no production change. The recut pair now pins `same_unit True`. `REAL_CONFLICT` is now ufo2p
   0x000477B0 (07-44 asm, owner `confirm`). A new `REAL_RERULED` pin asserts that 0x0005CCF0 has `a_verdict` `c` and
   `conflict` False.
-- **Files modified:** tests/test_splits.py (in the RED commit 1d60b13; the RED target is untouched).
+- **Files modified:** tests/test_splits.py (in the RED commit 4af3d36; the RED target is untouched).
 - **Verification:** tests/test_splits.py passed 18 of 18. Targeted suite run 2: 425 passed, exit 0. Ruff is clean.
 
 The earlier Task 1 test-only fix (the operand check in test_split_output_has_no_bytes) is recorded in 45-notes.txt.
@@ -334,7 +334,7 @@ None.
 ## Self-Check: PASSED
 
 - The created files exist: tools/reverseapoc/splits.py, tests/test_splits.py and this SUMMARY.
-- The commits 1d60b13, 3ca3470 and 7122973 are ancestors of HEAD. `git rev-list --count d966610..7122973` = 3.
+- The commits 4af3d36, 0f130e9 and 0837edc are ancestors of HEAD. `git rev-list --count 56b921b..0837edc` = 3.
 - The Task 7 and Task 8 automated verifies passed. The Task 8 verify is re-run after this commit.
 
 ---

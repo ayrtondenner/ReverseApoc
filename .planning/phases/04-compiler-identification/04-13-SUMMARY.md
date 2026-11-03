@@ -20,8 +20,8 @@ actuals:
   tokens: 3840
   tasks: 3
   commits: 3
-plan_head_before: 9b4dca2a90df8e797a421558ac0c64e4eb8ce1e9
-plan_head_after: 53a50217d1d237d3b708c24b11f9c062a2fd68ba
+plan_head_before: 14aee516b32ca37e8316185016a6638702156fce
+plan_head_after: af8c31ab78a3121c6b7b77671b0429e5e71b34c5
 
 tech-stack:
   added: []
@@ -123,9 +123,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 RED: regression tests** - `c2d4054` (test) `test(04-13): concurrent cc.log appends lose no line (G-04-2, red)`
-2. **Task 1 GREEN: the sidecar OS lock** - `97f75ac` (fix) `fix(04-13): serialise cc.log appends with an OS lock on <log>.lock (G-04-2)`
-3. **Task 2: mutants (not committed) and docs** - `53a5021` (docs) `docs(04-13): cc.log lock and the O_APPEND learning (G-04-2)`
+1. **Task 1 RED: regression tests** - `0513942` (test) `test(04-13): concurrent cc.log appends lose no line (G-04-2, red)`
+2. **Task 1 GREEN: the sidecar OS lock** - `efa36cc` (fix) `fix(04-13): serialise cc.log appends with an OS lock on <log>.lock (G-04-2)`
+3. **Task 2: mutants (not committed) and docs** - `af8c31a` (docs) `docs(04-13): cc.log lock and the O_APPEND learning (G-04-2)`
 4. **Task 3: done gate** - no commit (logs are gitignored; reproduced below)
 
 ## Files Created/Modified
@@ -136,7 +136,7 @@ status: complete
 - `docs/toolchain.md` - "wibo" section: cc.log lock bullet
 - `docs/learnings.md` - 2026-10-22 entry "O_APPEND is not atomic on the bind mount or the Windows host"
 
-## TDD: RED results (at c2d4054, before the fix)
+## TDD: RED results (at 0513942, before the fix)
 
 Logs: build/gate/04-13/red/ (gitignored). Command per environment as in the plan:
 host `uv run pytest -q -rs tests/test_cc_log.py tests/test_compiler_real.py::test_parallel_cc_keeps_one_log_line_per_compile`,
@@ -156,7 +156,7 @@ container the same inside `docker compose run --rm build bash -lc "uv sync --loc
 - Machine RED check: a fourth host run, `uv run pytest -q tests/test_cc_log.py --junitxml=build/gate/04-13/red/host-junit.xml` (exit 1, 7 failed), fed to `gsd-tools check tdd-red-evidence` with target `test_concurrent_appends_keep_every_line[repo-build]`, returned `RED_EVIDENCE_OK` (`target_test_failed`, format junit, no report errors).
 - Semantic assessment: every target test executed and failed on its planned assertion (lost or torn lines, missing sidecar, missing `_lock_path`, holder could not take the lock, msvcrt never called); no collection, import or fixture error.
 
-## TDD: GREEN results (at 97f75ac)
+## TDD: GREEN results (at efa36cc)
 
 - Host: `8 passed in 3.94s` (exit 0, no skip). Container: `6 passed, 2 skipped in 4.02s` (exit 0), both skips `Windows-only: msvcrt lock path`.
 - Host `uv run pytest -q && uv run ruff check .`: `1035 passed, 6 skipped`, `All checks passed!` (exit 0).
@@ -191,7 +191,7 @@ None - plan executed exactly as written. Two execution details, neither changing
 
 ## TDD Gate Compliance
 
-RED `c2d4054 test(04-13): ...` precedes GREEN `97f75ac fix(04-13): ...`. The GREEN commit uses the `fix` type the plan prescribes for this gap closure instead of `feat`; no REFACTOR commit was needed.
+RED `0513942 test(04-13): ...` precedes GREEN `efa36cc fix(04-13): ...`. The GREEN commit uses the `fix` type the plan prescribes for this gap closure instead of `feat`; no REFACTOR commit was needed.
 
 ## Issues Encountered
 
@@ -209,7 +209,7 @@ None - no external service configuration required.
 
 ## Phase gate output
 
-The five gate steps ran once each, in order, from the main checkout at 53a5021, each in a subshell with stdout and stderr redirected into build/gate/04-13/0N-NAME.log and one appended `exit=STATUS` line (Docker steps redirected on the host side). The logs are reproduced verbatim below (CRLF normalised to LF).
+The five gate steps ran once each, in order, from the main checkout at af8c31a, each in a subshell with stdout and stderr redirected into build/gate/04-13/0N-NAME.log and one appended `exit=STATUS` line (Docker steps redirected on the host side). The logs are reproduced verbatim below (CRLF normalised to LF).
 
 ### Step 1: 01-host-suite.log
 
@@ -869,8 +869,8 @@ exit=1
 ## Self-Check: PASSED
 
 - FOUND: tests/test_cc_log.py, tests/test_compiler_real.py, tools/reverseapoc/compiler.py, docs/toolchain.md, docs/learnings.md
-- FOUND (ancestors of HEAD): c2d4054, 97f75ac, 53a5021
-- `git rev-list --count 9b4dca2..53a5021` = 3; `gsd-tools check evaluation-scope --plan 04-13 --commits-only` resolved the same 3 commits
+- FOUND (ancestors of HEAD): 0513942, efa36cc, af8c31a
+- `git rev-list --count 14aee51..af8c31a` = 3; `gsd-tools check evaluation-scope --plan 04-13 --commits-only` resolved the same 3 commits
 - Task 1, Task 2 and Task 3 verify blocks: every check exited 0
 
 ---

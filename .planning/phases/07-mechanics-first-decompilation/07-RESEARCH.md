@@ -555,7 +555,7 @@ Detail in R2 §7-§8.
     - with `Match-Hints:` → `human-hints`;
     - no `Matched-By` → `human-written`;
     - `Flags-Approved-By:` → per the R4 ruling below.
-  - Today: 3 unattended (c83cf4e, d288ad6, 955931f), 2 human-written (5ab2e79, a463163). AGT-11 is the unattended count. [VERIFIED: R2 §7 trailer read]
+  - Today: 3 unattended (07e3ecc, 3d005bb, 558f35a), 2 human-written (f73b50e, c0e4b93). AGT-11 is the unattended count. [VERIFIED: R2 §7 trailer read]
   - DEC-07's "owner notes in manual packs" cannot be read in CI (manual packs are gitignored). The `Match-Hints:` trailer is the committed carrier for them. Record this reading in the plan.
 - **Output:** match rate by function-size bucket, attempts per match, turns, tokens, cost and time per matched function, regressions stopped, hook blocks, the three-way split, and the per-model (D-09), per-kind (D-18) and per-tier splits. Over the whole Phase 6-7 history (v1 records lack some fields; report them as "n/a for v1").
 - **Refusals (ROADMAP SC6):** exit 2 naming the line number for non-JSON, non-object, or a line failing its version's schema. A missing trailer is not an error; it is classed `human-written`.

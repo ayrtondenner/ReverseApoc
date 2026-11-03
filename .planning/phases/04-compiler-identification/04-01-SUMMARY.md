@@ -21,8 +21,8 @@ actuals:
   tokens: 14224
   tasks: 3
   commits: 6
-plan_head_before: e24d37a624e84c4cc601e0eff8abc7681673f327
-plan_head_after: 1bf0f0465b34278b51474c5cd35287ea56cbd4d4
+plan_head_before: 46fdcdf1ea072ff4bee65ec9e60a38dd29d74af0
+plan_head_after: 1566f0333670af8dd649fdcc5598722a9d6466e7
 
 tech-stack:
   added: []
@@ -196,9 +196,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1: Tracer, `reverseapoc cc` through the hash gate**: `04898bc` (test, RED), `168de28` (feat, GREEN)
-2. **Task 2: cflags.txt validation and per-file rules (CID-02)**: `1d2da24` (test, RED), `792c44e` (feat, GREEN)
-3. **Task 3: path allowlist, atomic gate stamp, failed-compile cleanup**: `5fbd03e` (test, RED), `1bf0f04` (feat, GREEN)
+1. **Task 1: Tracer, `reverseapoc cc` through the hash gate**: `5aae034` (test, RED), `6d788a2` (feat, GREEN)
+2. **Task 2: cflags.txt validation and per-file rules (CID-02)**: `9ff88f7` (test, RED), `0e5d571` (feat, GREEN)
+3. **Task 3: path allowlist, atomic gate stamp, failed-compile cleanup**: `99aa643` (test, RED), `1566f03` (feat, GREEN)
 
 **Plan metadata:** recorded in the docs(04-01) commit that adds this file.
 
@@ -237,7 +237,7 @@ Every task has a `test(04-01)` commit before its `feat(04-01)` commit; no REFACT
 - **Fix:** compile_rule computes and checks all guest paths, then the gate, then the compile.
 - **Files modified:** tools/reverseapoc/compiler.py
 - **Verification:** test_guest_path_refusals (8 cases) and test_guest_path_outside_root_refused assert `runner.calls == []`
-- **Committed in:** 168de28, 1bf0f04
+- **Committed in:** 6d788a2, 1566f03
 
 **2. [Rule 1 - Bug] Stamp write races between parallel `cc` processes**
 - **Found during:** Task 3
@@ -245,7 +245,7 @@ Every task has a `test(04-01)` commit before its `feat(04-01)` commit; no REFACT
 - **Fix:** _write_stamp swallows OSError. The stamp only ever appears whole (os.replace), so the worst outcome is a torn or missing stamp, which the reader treats as a miss and re-hashes.
 - **Files modified:** tools/reverseapoc/compiler.py
 - **Verification:** test_stamp_written_atomically, and test_stamp_with_the_wrong_shape_is_a_miss (4 cases, empty file included)
-- **Committed in:** 1bf0f04
+- **Committed in:** 1566f03
 
 **3. [Rule 2 - Correctness] `--json` keeps stdout parseable**
 - **Found during:** Task 1
@@ -253,25 +253,25 @@ Every task has a `test(04-01)` commit before its `feat(04-01)` commit; no REFACT
 - **Fix:** In `--json` mode the messages go to stderr. Text mode prints them to stdout as planned.
 - **Files modified:** tools/reverseapoc/cli.py
 - **Verification:** tests/test_cli.py#test_cc_json
-- **Committed in:** 168de28
+- **Committed in:** 6d788a2
 
 **4. [Rule 3 - Blocking] Shared test helper module**
 - **Found during:** Task 1
 - **Issue:** test_compiler.py and test_cli.py both need the fake tree, the manifest writer and the fake runner, and tests/watcomtree.py is not in the plan's file list.
 - **Fix:** Added tests/watcomtree.py, following tests/isoimage.py. It holds made-up bytes only, and the manifest is built from their hashlib digests.
-- **Committed in:** 04898bc, 5fbd03e
+- **Committed in:** 5aae034, 99aa643
 
 **5. [Rule 1 - Bug] Flag errors showed backslashes doubled**
 - **Found during:** Task 2
 - **Issue:** repr() doubled the backslash in `-i=C:\x`, so the error did not show the flag as the file spells it.
 - **Fix:** Flags are quoted with backticks.
-- **Committed in:** 792c44e
+- **Committed in:** 0e5d571
 
 **6. [Test adjustment] test_argv_shape's linux leg uses its own stamp directory**
 - **Found during:** Task 3
 - **Issue:** Once the cache existed, the linux leg reused the win32 leg's valid stamp, so no wibo banner probe ran for the test to see. That is correct cache behaviour.
 - **Fix:** The linux leg passes `stamps=<root>/cache-linux`.
-- **Committed in:** 1bf0f04
+- **Committed in:** 1566f03
 
 ---
 
@@ -303,5 +303,5 @@ None.
 ## Self-Check: PASSED
 
 - Files found: tools/reverseapoc/cflags.py, tools/reverseapoc/compiler.py, config/cflags.txt, tests/test_cflags.py, tests/test_compiler.py, tests/watcomtree.py, this SUMMARY.
-- Commits found on this branch: 04898bc, 168de28, 1d2da24, 792c44e, 5fbd03e, 1bf0f04.
+- Commits found on this branch: 5aae034, 6d788a2, 9ff88f7, 0e5d571, 99aa643, 1566f03.
 - Last full run: `uv run pytest -q` gave 514 passed, 45 skipped. `uv run ruff check .` was clean. The real host compile (OK line, object, stamp, cc.log line with two SHA-1s, no `.err` in the root) passed.

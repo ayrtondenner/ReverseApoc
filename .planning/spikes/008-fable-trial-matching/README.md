@@ -34,10 +34,10 @@ bars before and after.
   134 sessions, 0 matched, $0.89/session, 13.1 min. Opus has never matched a function after its
   first PARTIAL.
 - Run 20261101-123417 STOPPED after 11 s, 0 sessions: a thread race in unitdefs.load_configure
-  (6 workers loading configure.py at once). Fixed with TDD (e4c5ef0 RED, 67f18fa GREEN).
+  (6 workers loading configure.py at once). Fixed with TDD (8bd0e61 RED, 253dedc GREEN).
 - Run 20261101-132005 was killed by a power outage after 9 finished sessions (records committed by
-  hand, 057f0d1). Its 6 in-flight sessions have no record.
-- Run 20261101-153646 (`--max-sessions 15`) ENDED: 15 sessions, 0 matched (369e17b). The first
+  hand, f26808f). Its 6 in-flight sessions have no record.
+- Run 20261101-153646 (`--max-sessions 15`) ENDED: 15 sessions, 0 matched (37c1594). The first
   24-pick queue had spent 3 attempts per function on the 7 larger never-passed partials; after
   they got their pass, the tiny 16-32 byte Opus partials came next.
 - Every Fable session ended on the 41-turn cap or the 30-minute clock, at $2-7 each.

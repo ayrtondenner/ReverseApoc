@@ -18,8 +18,8 @@ actuals:
   tokens: 9000
   tasks: 3
   commits: 5
-plan_head_before: 325c6066b67916ec70c794d79ebfabfcea2178c1
-plan_head_after: 02a6ca1bea1ed6353a83b87d7484fe38276d41b5
+plan_head_before: aaa02cd988922543affc9bd139cd100df2c5113d
+plan_head_after: a7c19fb6591a38e30ac6c16aad68be0ea970ebc5
 
 tech-stack:
   added: []
@@ -141,9 +141,9 @@ Execution context nonce: cc94622c737ece6f
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): leading jump table (DI-02)**: RED `930a173` (test), GREEN `a314bb9` (feat). The tracer gate re-ran the automated verify green before expansion (end-of-phase mode, automated only).
-2. **Task 2 (TDD): row-named statics (DI-03)**: `55edbe4` (test; GREEN needed no code, see Deviations), plus `2efa21c` (docs: the omf2elf docstring).
-3. **Task 3: docs**: `02a6ca1` (docs).
+1. **Task 1 (tracer, TDD): leading jump table (DI-02)**: RED `98b2886` (test), GREEN `176e4e5` (feat). The tracer gate re-ran the automated verify green before expansion (end-of-phase mode, automated only).
+2. **Task 2 (TDD): row-named statics (DI-03)**: `5ccee1c` (test; GREEN needed no code, see Deviations), plus `d87af75` (docs: the omf2elf docstring).
+3. **Task 3: docs**: `a7c19fb` (docs).
 
 ## Files Created/Modified
 
@@ -171,7 +171,7 @@ Execution context nonce: cc94622c737ece6f
 - **Fix:** `own_publics` sizes each entry `min(next public - offset, row length)`. This narrows the map, never widens it.
 - **Files modified:** tools/reverseapoc/check.py
 - **Verification:** the mid-unit test refuses it with `needs the unit's public-to-row map`, and the full suite is green.
-- **Committed in:** a314bb9
+- **Committed in:** 176e4e5
 
 **3. [TDD - unexpected GREEN] Task 2 needed no implementation**
 - **Found during:** the Task 2 probe.
@@ -191,8 +191,8 @@ Execution context nonce: cc94622c737ece6f
 
 ## TDD Gate Compliance
 
-- Task 1: RED `930a173` (the synthetic tests failed on the missing pairing, and the mid-unit test failed because the switch passed; the real test failed with `own _TEXT target 0x0 outside func_00010140 needs the unit's public-to-row map`, the IN-02 refusal), then GREEN `a314bb9`.
-- Task 2: RED commit `55edbe4` has no failing run. The behaviour already existed (unexpected GREEN, investigated above), so there is no `feat(06-10)` commit for Task 2.
+- Task 1: RED `98b2886` (the synthetic tests failed on the missing pairing, and the mid-unit test failed because the switch passed; the real test failed with `own _TEXT target 0x0 outside func_00010140 needs the unit's public-to-row map`, the IN-02 refusal), then GREEN `176e4e5`.
+- Task 2: RED commit `5ccee1c` has no failing run. The behaviour already existed (unexpected GREEN, investigated above), so there is no `feat(06-10)` commit for Task 2.
 
 ## Issues Encountered
 
@@ -217,15 +217,15 @@ None.
 
 ## Fix round 1
 
-Review: `review-06-10.md` (FIX_BASE db8c803). TDD order: RED `2861c12`, then GREEN `9c16f06`.
+Review: `review-06-10.md` (FIX_BASE 6da53ef). TDD order: RED `0a245f9`, then GREEN `ef176b8`.
 
 | Item | Finding | Fix | Commit | Proof |
 |---|---|---|---|---|
-| C1 (Critical) | The table's own-public entry was offered to every function, but the table was checked only in the head's verdict. A later function jumping through `_TEXT+0` passed with a wrong table and would have been landed. | `own_publics` no longer carries the table entry. `with_relocs` adds it only to the head's map, so any other function's reference to `[0, first public)` is refused ("needs the unit's public-to-row map"). If the account dropped the head, nothing resolves into the table. | 9c16f06 | `test_leading_table_used_by_another_function_is_refused[same-table]` and `[planted-entry]` (the reviewer's layout): RED in 2861c12, green after 9c16f06 |
-| M1 | The `with_relocs` docstring said entries land "inside that function", but entries into any function of the unit were accepted. | Tightened to the claim: the span is checked with the head as its only other own public, so every entry must land inside the head on the original's target. The docstring states exactly that. | 9c16f06 | `test_leading_table_entry_outside_the_head_fails`: RED in 2861c12, green after |
-| M2 | `leading_table`'s refusal branches and the span's filler and length comparison had no committed tests. | Pinned (they fail closed today) with `test_no_leading_table_without_its_data_row` (`game-row-before-head`, `data-row-past-head-start`, `no-data-row`) and `test_leading_table_span_compares_filler_and_length` (`filler-differs`, `original-table-longer`). | 2861c12 | pass |
-| M3 | `leading_table` ran twice per function, and `own_publics` once per function. | `_SegmentMap` computes both once per code segment in `with_relocs`. | 9c16f06 | suite green |
-| M4 | learnings.md cited D-09 for "drafts stay non-static", which D-09 does not say. | Reworded: the scorer has no static filter yet, and adding one is Phase 7 tuning (D-09). Also added the head-only rule to learnings.md and matching.md. | 3287ee8 | `tests/test_hygiene.py` pass |
+| C1 (Critical) | The table's own-public entry was offered to every function, but the table was checked only in the head's verdict. A later function jumping through `_TEXT+0` passed with a wrong table and would have been landed. | `own_publics` no longer carries the table entry. `with_relocs` adds it only to the head's map, so any other function's reference to `[0, first public)` is refused ("needs the unit's public-to-row map"). If the account dropped the head, nothing resolves into the table. | ef176b8 | `test_leading_table_used_by_another_function_is_refused[same-table]` and `[planted-entry]` (the reviewer's layout): RED in 0a245f9, green after ef176b8 |
+| M1 | The `with_relocs` docstring said entries land "inside that function", but entries into any function of the unit were accepted. | Tightened to the claim: the span is checked with the head as its only other own public, so every entry must land inside the head on the original's target. The docstring states exactly that. | ef176b8 | `test_leading_table_entry_outside_the_head_fails`: RED in 0a245f9, green after |
+| M2 | `leading_table`'s refusal branches and the span's filler and length comparison had no committed tests. | Pinned (they fail closed today) with `test_no_leading_table_without_its_data_row` (`game-row-before-head`, `data-row-past-head-start`, `no-data-row`) and `test_leading_table_span_compares_filler_and_length` (`filler-differs`, `original-table-longer`). | 0a245f9 | pass |
+| M3 | `leading_table` ran twice per function, and `own_publics` once per function. | `_SegmentMap` computes both once per code segment in `with_relocs`. | ef176b8 | suite green |
+| M4 | learnings.md cited D-09 for "drafts stay non-static", which D-09 does not say. | Reworded: the scorer has no static filter yet, and adding one is Phase 7 tuning (D-09). Also added the head-only rule to learnings.md and matching.md. | f7e5818 | `tests/test_hygiene.py` pass |
 | M5 | The SUMMARY quoted `[10.6]` ids that do not exist. | Deviation 1 now gives the real names and says why they carry no id. | this SUMMARY commit | n/a |
 
 The 06-08 binding is kept: the head's verdict keeps its own `start`, `length`, `sha1`, `ours` and `theirs`. Only `ok` and `problems` take the span's result (`_with_table`).
@@ -238,7 +238,7 @@ Evidence re-run after the fix (`REVERSEAPOC_WATCOM_DIR=../../../third_party/watc
 ## Self-Check: PASSED
 
 - Files: tests/test_check_tables_real.py, tools/reverseapoc/check.py, docs/matching.md and docs/learnings.md exist.
-- Commits are on this branch: the plan's 930a173, a314bb9, 55edbe4, 2efa21c, 02a6ca1 and the SUMMARY db8c803; fix round 1's 2861c12, 9c16f06, 3287ee8 and 6eb867a; and fix round 2's wording commit. `git rev-list --count 325c606..HEAD` was 10 before the fix round 2 commit, so it is 11 after it.
+- Commits are on this branch: the plan's 98b2886, 176e4e5, 5ccee1c, d87af75, a7c19fb and the SUMMARY 6da53ef; fix round 1's 0a245f9, ef176b8, f7e5818 and cb53b63; and fix round 2's wording commit. `git rev-list --count aaa02cd..HEAD` was 10 before the fix round 2 commit, so it is 11 after it.
 - Acceptance: all three synthetic test names are in tests/test_check.py; `test_self_extdef_resolves_to_the_local_public` and `test_real_static_probe_passes` exist; tests/test_check_tables_real.py holds only its C sources and a synthetic LE; learnings.md no longer says a static cannot pass without naming the row-name condition.
 - `uv run pytest -q` (fresh run in fix round 2, on the code as it stands after fix round 1): 1610 passed, 221 skipped. `uv run ruff check .`: all checks passed. The figures before the fix rounds were 1602 passed, 221 skipped.
 - Fix round 2 (re-review N1, N2) was wording only: the `with_relocs` and `_head_reloc` docstrings now say that an entry is accepted when it resolves inside the head or inside the table span itself, at the VA the original LE fixup targets. This Self-Check now shows current figures. No behaviour changed.

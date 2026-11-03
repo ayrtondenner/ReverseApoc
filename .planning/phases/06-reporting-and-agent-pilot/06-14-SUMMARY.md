@@ -19,9 +19,9 @@ affects: [06-25, 06-driver]
 actuals:
   tokens: 6920  # chars/4 over the realized code diff (27678 bytes, 4 files, +605/-1), fix round 1 included
   tasks: 2
-  commits: 7  # measured: git rev-list --count 325c606..8ef5059 (4 task commits, 1 docs, 2 fix round 1), before this SUMMARY commit
-plan_head_before: 325c6066b67916ec70c794d79ebfabfcea2178c1
-plan_head_after: 8ef5059a2bb5921efd50adb0357d9fc1ae456e32
+  commits: 7  # measured: git rev-list --count aaa02cd..b8ca91d (4 task commits, 1 docs, 2 fix round 1), before this SUMMARY commit
+plan_head_before: aaa02cd988922543affc9bd139cd100df2c5113d
+plan_head_after: b8ca91d4bbd03e65683956d31bb78c29a3946c30
 tech-stack:
   added: []
   patterns:
@@ -193,16 +193,16 @@ Execution context nonce: 9e44d077205bafaf
 ## Task Commits
 
 1. **Task 1 (tracer): interleaved 5 + 5 pilot, exclusions, tie order**
-   - RED `0b49ddf` (test): collection failed with `ModuleNotFoundError: reverseapoc.picker`, so the feature was absent. This follows the repo's precedent for a new module (04-08, 06-02).
-   - GREEN `a93ffb0` (feat): 8 passed. Tracer gate: I re-ran the verify end to end, and it passed before Task 2.
+   - RED `97440a6` (test): collection failed with `ModuleNotFoundError: reverseapoc.picker`, so the feature was absent. This follows the repo's precedent for a new module (04-08, 06-02).
+   - GREEN `6109d0e` (feat): 8 passed. Tracer gate: I re-ran the verify end to end, and it passed before Task 2.
 2. **Task 2: variety rule and difficult re-queue**
-   - RED `f000d54` (test): collection failed with `ImportError: requeue`.
+   - RED `abe127b` (test): collection failed with `ImportError: requeue`.
    - With only `requeue` added, every variety test failed on its own assertion (for example `[10, 11, 12, 13, 14, 15, ...] != [10, 11, 50, 51, 52]`), plus `TypeError: unexpected keyword argument 'max_per_unit'`.
-   - GREEN `b5159fc` (feat): 18 passed.
-3. **Plan metadata:** `af68d9b` (docs).
+   - GREEN `a1fb5d9` (feat): 18 passed.
+3. **Plan metadata:** `5c87e35` (docs).
 4. **Fix round 1**
-   - RED `3e3c45b` (test): test_driver_pick failed at collection with `ImportError: END_BLOCKED`. test_score's new `chk` assertion failed on its own line (1 failed, 22 passed).
-   - GREEN `8ef5059` (fix): 29 picker tests and 23 score tests passed. Host suite: 1627 passed, 217 skipped. ruff clean.
+   - RED `0fa6385` (test): test_driver_pick failed at collection with `ImportError: END_BLOCKED`. test_score's new `chk` assertion failed on its own line (1 failed, 22 passed).
+   - GREEN `b8ca91d` (fix): 29 picker tests and 23 score tests passed. Host suite: 1627 passed, 217 skipped. ruff clean.
 
 ## Files Created/Modified
 - `tools/reverseapoc/picker.py`: `Pick`, `PickerError`, `PickQueue`, `END_EXHAUSTED`, `END_BLOCKED`, `queue`, `pilot`, `requeue`, `matched_starts`.
@@ -245,19 +245,19 @@ See key-decisions in the frontmatter. The AGT-02 edge must_have, as built, reads
 - **Fix:** `PickerError` names the bad limit or the start that has no unit.
 - **Files modified:** tools/reverseapoc/picker.py, tests/test_driver_pick.py
 - **Verification:** `test_variety_limits_below_one_are_refused` (3 cases), `test_queue_refuses_a_candidate_without_a_unit`
-- **Committed in:** a93ffb0, b5159fc
+- **Committed in:** 6109d0e, a1fb5d9
 
 **2. [Formatting] Test assertion reflowed in the GREEN commit**
 - **Found during:** Task 1 GREEN
 - **Issue:** `ruff format --check` wanted a different layout for one assertion in the RED test file.
 - **Fix:** I split it into a variable plus an assert. Behaviour is unchanged.
-- **Committed in:** a93ffb0
+- **Committed in:** 6109d0e
 
 **3. [Rule 1 - Bug, test] Wrong expectation in a fix-round RED test**
 - **Found during:** fix round 1 GREEN
 - **Issue:** `test_skipped_candidates_do_not_count_as_blocked` expected `ended == {ufo2p: ...}` only. TACP is in `order` with no pool, so it ends exhausted too.
 - **Fix:** the test now asserts `ended[ufo2p]` and `pool_empty(tacp)`.
-- **Committed in:** 8ef5059
+- **Committed in:** b8ca91d
 
 ---
 
@@ -265,7 +265,7 @@ See key-decisions in the frontmatter. The AGT-02 edge must_have, as built, reads
 **Impact on plan:** No scope creep. Picking stays pure; the only filesystem access is the existence checks in `matched_starts`. score.py's change is one defaulted field, and its JSON output is unchanged.
 
 ## Issues Encountered
-- tools/reverseapoc/score.py was already failing `ruff format --check` at base 325c606 (the `assess` loop, L311-312). That is outside this plan's scope, and `ruff check` is clean.
+- tools/reverseapoc/score.py was already failing `ruff format --check` at base aaa02cd (the `assess` loop, L311-312). That is outside this plan's scope, and `ruff check` is clean.
 
 ## User Setup Required
 None. No external service configuration is required.
@@ -285,14 +285,14 @@ None. No external service configuration is required.
 
 | Finding | Ruling / fix | Test | Commit |
 |---------|--------------|------|--------|
-| I1 sort key drops score's __CHK-last rank | `Candidate.chk` in score.py; picker orders by (`chk`, score, start) | `test_chk_candidates_come_last`, test_score `test_rank_puts_a_chk_caller_after_a_non_caller` | 3e3c45b (RED), 8ef5059 |
-| I2 pilot silently short; queue silent on why it ended | `pilot` raises PickerError per short EXE with count and end reason; `PickQueue.ended` / `pool_empty` | `test_pilot_refuses_a_short_exe`, `test_pilot_names_a_variety_shortfall`, `test_queue_says_why_each_exe_ended`, `test_skipped_candidates_do_not_count_as_blocked` | 3e3c45b, 8ef5059 |
-| M1 any FileNotFoundError meant nothing matched | `matched_starts(exes, *, path_of, read)`: existence check first, missing config dir refused, reader errors propagate | `test_missing_status_means_nothing_matched`, `test_matched_starts_refuses_an_exe_without_a_config_dir`, `test_matched_starts_lets_reader_errors_through` (ValueError, other FileNotFoundError) | 3e3c45b, 8ef5059 |
-| M2 unknown pool keys ignored | refused with PickerError | `test_queue_refuses_pool_keys_outside_order` | 3e3c45b, 8ef5059 |
-| M3 unit check lazy, mid-stream | checked in `queue` before any pick | `test_queue_refuses_a_candidate_without_a_unit`, `test_a_skipped_candidate_needs_no_unit` | 3e3c45b, 8ef5059 |
-| M4 per_exe unvalidated | below 1 refused | `test_pilot_refuses_per_exe_below_one` | 3e3c45b, 8ef5059 |
-| M5 no region-boundary test | added | `test_region_boundary_is_start_floor_64k` | 3e3c45b |
-| M6 STATUS_MATCHED duplicates 06-11 | TODO in picker.py and in Next Phase Readiness for 06-25 | none (note only) | 8ef5059 |
+| I1 sort key drops score's __CHK-last rank | `Candidate.chk` in score.py; picker orders by (`chk`, score, start) | `test_chk_candidates_come_last`, test_score `test_rank_puts_a_chk_caller_after_a_non_caller` | 0fa6385 (RED), b8ca91d |
+| I2 pilot silently short; queue silent on why it ended | `pilot` raises PickerError per short EXE with count and end reason; `PickQueue.ended` / `pool_empty` | `test_pilot_refuses_a_short_exe`, `test_pilot_names_a_variety_shortfall`, `test_queue_says_why_each_exe_ended`, `test_skipped_candidates_do_not_count_as_blocked` | 0fa6385, b8ca91d |
+| M1 any FileNotFoundError meant nothing matched | `matched_starts(exes, *, path_of, read)`: existence check first, missing config dir refused, reader errors propagate | `test_missing_status_means_nothing_matched`, `test_matched_starts_refuses_an_exe_without_a_config_dir`, `test_matched_starts_lets_reader_errors_through` (ValueError, other FileNotFoundError) | 0fa6385, b8ca91d |
+| M2 unknown pool keys ignored | refused with PickerError | `test_queue_refuses_pool_keys_outside_order` | 0fa6385, b8ca91d |
+| M3 unit check lazy, mid-stream | checked in `queue` before any pick | `test_queue_refuses_a_candidate_without_a_unit`, `test_a_skipped_candidate_needs_no_unit` | 0fa6385, b8ca91d |
+| M4 per_exe unvalidated | below 1 refused | `test_pilot_refuses_per_exe_below_one` | 0fa6385, b8ca91d |
+| M5 no region-boundary test | added | `test_region_boundary_is_start_floor_64k` | 0fa6385 |
+| M6 STATUS_MATCHED duplicates 06-11 | TODO in picker.py and in Next Phase Readiness for 06-25 | none (note only) | b8ca91d |
 
 Verification after the fix round:
 - `uv run pytest -q tests/test_driver_pick.py tests/test_score.py`: 52 passed.
@@ -302,6 +302,6 @@ Verification after the fix round:
 
 ## Self-Check: PASSED
 - FOUND: tools/reverseapoc/picker.py, tests/test_driver_pick.py
-- FOUND commits, all ancestors of HEAD: 0b49ddf, a93ffb0, f000d54, b5159fc, af68d9b, 3e3c45b, 8ef5059
+- FOUND commits, all ancestors of HEAD: 97440a6, 6109d0e, abe127b, a1fb5d9, 5c87e35, 0fa6385, b8ca91d
 - Acceptance: picker.py contains `def queue(` and `def pilot(`. The tests contain `test_at_most_three_per_region` and `test_requeue_on_matched_callee`.
 - Verification results are listed under "Fix round 1" above.

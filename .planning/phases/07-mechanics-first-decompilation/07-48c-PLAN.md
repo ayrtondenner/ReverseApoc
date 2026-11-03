@@ -153,7 +153,7 @@ the SUMMARY.
 @.superpowers/sdd/let-s-execute-gsd-execute-phase-7-sorted-harp/rulings.md
 
 <interfaces>
-As built on main at 8943cce. flags.py is not touched by 07-48 or 07-48b. batch.py and cli.py are, so find each
+As built on main at feac4c9. flags.py is not touched by 07-48 or 07-48b. batch.py and cli.py are, so find each
 function there by name.
 
 **flags.py**
@@ -206,7 +206,7 @@ dict), `COMMITTED_CELL`, `read_ascii`, `refusal`, `parse_address`.
 - tests/test_batch.py L332-362 (cell_record tests, unchanged). tests/test_cli_batch.py: the `no_load` fixture L19
   (refuses loading and compiling), and the batch CLI refusal tests.
 
-**Committed queue** (measured at 8943cce): 44 entries, all `source = "sweep"`, statuses failed and landed.
+**Committed queue** (measured at feac4c9): 44 entries, all `source = "sweep"`, statuses failed and landed.
 `format_queue(read_queue(path))` already equals the file byte for byte at HEAD, so the compatibility pin is a guard
 that must stay green, not a RED test.
 
@@ -357,7 +357,7 @@ Run the three test files green, plus tests/test_cli_batch.py, ruff and `git diff
   </action>
   <verify>
     <automated>uv run pytest -q tests/test_flags.py tests/test_batch.py tests/test_cli_batch.py && uv run ruff check . && test "$(grep -c '^def propose_batch' tools/reverseapoc/flags.py)" -eq 1 && test "$(grep -c '^def with_source' tools/reverseapoc/batch.py)" -eq 1 && test "$(grep -c -- '--from-batch' tools/reverseapoc/cli.py)" -ge 1 && cmp config/cflags-proposals.toml build/gate/07-evidence/48c-queue-before.toml && git diff --quiet "$(cat build/gate/07-evidence/48c-head-before.txt)" HEAD -- config/ src/ decomphub.progress.json && grep -qx "exit=0" build/gate/07-evidence/48c-gate-all-before.log</automated>
-    <fails_when>Non-zero exit in any of these cases: a flags, batch or CLI batch test fails; ruff fails; propose_batch, with_source or the --from-batch option is missing (all absent at 8943cce); the committed queue changed; config/, src/ or the feed changed; or the pre-change gate log did not exit 0</fails_when>
+    <fails_when>Non-zero exit in any of these cases: a flags, batch or CLI batch test fails; ruff fails; propose_batch, with_source or the --from-batch option is missing (all absent at feac4c9); the committed queue changed; config/, src/ or the feed changed; or the pre-change gate log did not exit 0</fails_when>
   </verify>
   <acceptance_criteria>
     - RED_EVIDENCE_OK for build/gate/07-evidence/48c-red-record.json, and 48c-notes.txt names how each negative failed on HEAD
@@ -420,7 +420,7 @@ build/gate/07-evidence/48c-regate-before.txt`, the same `sed` on the working fil
   </action>
   <verify>
     <automated>uv run pytest -q tests/test_flags.py tests/test_batch.py tests/test_cli_batch.py && uv run ruff check . && git show "$(cat build/gate/07-evidence/48c-head-before.txt)":tools/reverseapoc/flags.py > build/gate/07-evidence/48c-flags-before.py && sed -n '/^# ---- regate/,/^CFLAGS = /p' build/gate/07-evidence/48c-flags-before.py > build/gate/07-evidence/48c-regate-before.txt && sed -n '/^# ---- regate/,/^CFLAGS = /p' tools/reverseapoc/flags.py > build/gate/07-evidence/48c-regate-after.txt && test -s build/gate/07-evidence/48c-regate-before.txt && cmp build/gate/07-evidence/48c-regate-before.txt build/gate/07-evidence/48c-regate-after.txt && test "$(grep -c 'BY_HAND_ATTEMPTS' tools/reverseapoc/flags.py)" -ge 2 && cmp config/cflags-proposals.toml build/gate/07-evidence/48c-queue-before.toml</automated>
-    <fails_when>Non-zero exit in any of these cases: a flags or batch test fails (the existing sweep approve tests included); ruff fails; the regate section is empty or differs from HEAD's; BY_HAND_ATTEMPTS is not defined and used (absent at 8943cce); or the committed queue changed</fails_when>
+    <fails_when>Non-zero exit in any of these cases: a flags or batch test fails (the existing sweep approve tests included); ruff fails; the regate section is empty or differs from HEAD's; BY_HAND_ATTEMPTS is not defined and used (absent at feac4c9); or the committed queue changed</fails_when>
   </verify>
   <acceptance_criteria>
     - RED_EVIDENCE_OK for build/gate/07-evidence/48c-red2-record.json
@@ -483,7 +483,7 @@ build/gate/07-evidence/48c-regate-before.txt`, the same `sed` on the working fil
   </action>
   <verify>
     <automated>E=build/gate/07-evidence; grep -qx "exit=0" $E/48c-host.log && grep -qx "exit=0" $E/48c-ruff.log && grep -qx "exit=0" $E/48c-container.log && grep -qx "exit=0" $E/48c-gate-all-after.log && grep -q "^OK UFO2P.EXE sha1 " $E/48c-gate-all-after.log && grep -q "^OK TACP.EXE sha1 " $E/48c-gate-all-after.log && ! grep -q "MISMATCH" $E/48c-gate-all-after.log && ! grep "^SKIPPED" $E/48c-host.log | grep -vqE "GHIDRA_INSTALL_DIR|run in the container|only inside the container|POSIX-only|Windows file names cannot hold|non-UTF-8 byte names|symlink creation needs privileges on this host" && ! grep "^SKIPPED" $E/48c-container.log | grep -vq "Windows-only: msvcrt lock path" && test "$(grep -c -- '--from-batch' docs/workflow.md)" -ge 1 && test "$(grep -c 'source_sha256' docs/toolchain.md)" -ge 1 && test -f .planning/phases/07-mechanics-first-decompilation/07-48c-SUMMARY.md && cmp config/cflags-proposals.toml $E/48c-queue-before.toml && uv run reverseapoc check-orig && git diff --quiet "$(cat $E/48c-head-before.txt)" HEAD -- config/ src/ decomphub.progress.json configure.py && S=$(git status --porcelain) && test -z "$(printf '%s\n' "$S" | grep -v '^ M .planning/config.json$' | grep -v '^$')"</automated>
-    <fails_when>Non-zero exit in any of these cases: a suite, ruff or the container gate failed; a SHA-1 line is missing or a MISMATCH appears; a skip reason outside R-A appears; the docs do not name `--from-batch` or `source_sha256` (both absent at 8943cce); the SUMMARY is missing; the committed queue, config/, src/, the feed or configure.py changed; `check-orig` fails; or the tree is dirty beyond R-C's flag</fails_when>
+    <fails_when>Non-zero exit in any of these cases: a suite, ruff or the container gate failed; a SHA-1 line is missing or a MISMATCH appears; a skip reason outside R-A appears; the docs do not name `--from-batch` or `source_sha256` (both absent at feac4c9); the SUMMARY is missing; the committed queue, config/, src/, the feed or configure.py changed; `check-orig` fails; or the tree is dirty beyond R-C's flag</fails_when>
     <human-check>The orchestrator re-runs the reported checks (end-of-phase mode) before it fast-forwards main and starts Task 2b</human-check>
   </verify>
   <acceptance_criteria>

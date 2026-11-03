@@ -52,15 +52,15 @@ recorded: 2026-10-26
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | fixed | 02f513e, plus the refused-restore test bab4a2b |
-| CR-02 | critical | fixed | c7b88c3, completed by 9232499 (check, gate and land refuse a path include before compiling), dbe31f7, f0d88f6, 060a001 |
-| WR-01 | warning | fixed | c574493 |
-| WR-02 | warning | fixed | 036d478 |
-| WR-03 | warning | fixed | 82cba76 |
-| WR-04 | warning | fixed | 6937c8f, plus the canary fixtures a446a3c |
-| IN-01 | info | fixed | 1d858ef |
-| IN-02 | info | fixed | b2efb15 |
-| IN-03 | info | fixed | 15f9657 |
+| CR-01 | critical | fixed | 0b96364, plus the refused-restore test 67ec06f |
+| CR-02 | critical | fixed | 3457f72, completed by de724a8 (check, gate and land refuse a path include before compiling), e7ae703, 3a00807, 27f30d6 |
+| WR-01 | warning | fixed | 23ce78f |
+| WR-02 | warning | fixed | 15a9398 |
+| WR-03 | warning | fixed | 3fc9c68 |
+| WR-04 | warning | fixed | 8da5c2c, plus the canary fixtures 48bdb3b |
+| IN-01 | info | fixed | 8bd7ed4 |
+| IN-02 | info | fixed | 31fe0a9 |
+| IN-03 | info | fixed | f8e6577 |
 | IN-04 | info | deferred | SHA pinning needs network lookups and is an owner supply-chain decision; kept as a residual in 06-SECURITY.md |
 
 Fix verification: a fresh SDD re-reviewer, r1, found 8 of 9 fixes closed, with a gap in the CR-02 gate. Round 2 closed it and r2 APPROVED. Round 3 minors were diff-checked by the orchestrator. Host suite after round 3: 2862 passed, 35 skipped; ruff clean.

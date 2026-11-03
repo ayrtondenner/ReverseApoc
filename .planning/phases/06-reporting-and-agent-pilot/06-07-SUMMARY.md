@@ -12,17 +12,17 @@ provides:
   - "cc opens <log>.lock before the gate and the compile; an OSError there is a CompilerError (DI-13, IN-09 option b)"
   - "docs/toolchain.md cc.log bullet: --log must name a file, both platforms' messages, device branch covers directories (DI-11, backlog 999.1)"
   - "Phase 4 info items IN-10..IN-13 closed (DI-14..DI-17); PROJECT_INCLUDE removed; whole-name marker match (05-REVIEW row 4)"
-  - "real codegen and stub assertions print booleans, names, sizes and SHA-1s, never object bytes (T-04-17; the stub half was completed in fix round 1, e23cbcc, and proven by mutation); 10.5 env-injection and cleanup proofs run unskipped on the host (DI-23)"
-  - "config/watcom.toml notes on lines 37 and 106 say LX, in one owner-authorized commit 28342e1 (DI-33, D-43, D-47)"
+  - "real codegen and stub assertions print booleans, names, sizes and SHA-1s, never object bytes (T-04-17; the stub half was completed in fix round 1, 9e4e2d6, and proven by mutation); 10.5 env-injection and cleanup proofs run unskipped on the host (DI-23)"
+  - "config/watcom.toml notes on lines 37 and 106 say LX, in one owner-authorized commit 78a767c (DI-33, D-43, D-47)"
   - "toolchain.md -s and -fpi scratch-check claims labelled (T-04-36)"
 affects: [06-12, 06-21, cc, check, gate]
 
 actuals:
-  tokens: 6971  # chars/4 over `git diff a9e13ed..fdf0e0a` (27,885 chars)
+  tokens: 6971  # chars/4 over `git diff 963bb48..f75c3d4` (27,885 chars)
   tasks: 3
   commits: 6
-plan_head_before: a9e13ed54f72aafb7389d1415f1707e516d1581d
-plan_head_after: fdf0e0a7048fea98f015608918fe30256590f98a
+plan_head_before: 963bb48c124b57b1f9d248ad05f0fb5ba6d6b3ea
+plan_head_after: f75c3d4db6e732585be3df385f4c9390f15aeb28
 
 tech-stack:
   added: []
@@ -95,10 +95,10 @@ coverage:
         status: pass
     human_judgment: false
   - id: D5
-    description: "config/watcom.toml lines 37 and 106 say LX in commit 28342e1 (2 -note / 2 +note lines, message quotes the 2026-10-24 authorization)"
+    description: "config/watcom.toml lines 37 and 106 say LX in commit 78a767c (2 -note / 2 +note lines, message quotes the 2026-10-24 authorization)"
     verification:
       - kind: other
-        ref: "git show --format= --numstat 28342e1 -> '2 2 config/watcom.toml'; uv run pytest -q tests/test_watcom.py tests/test_compiler.py"
+        ref: "git show --format= --numstat 78a767c -> '2 2 config/watcom.toml'; uv run pytest -q tests/test_watcom.py tests/test_compiler.py"
         status: pass
     human_judgment: true
     rationale: "A protected manifest changed under an owner authorization; the owner should see the commit"
@@ -115,14 +115,14 @@ status: complete
 
 # Phase 6 Plan 07: cc --log refusals, Phase 4 review closures and the LX note fix Summary
 
-**`reverseapoc cc` now refuses a directory `--log` and an unopenable `<log>.lock` before the gate and the compile. The Phase 4 IN-10..IN-13 test and docstring items are closed. The real 10.5 proofs run on the host with assertions that print no object bytes. The two config/watcom.toml notes say LX, in the single commit the owner authorized (28342e1).**
+**`reverseapoc cc` now refuses a directory `--log` and an unopenable `<log>.lock` before the gate and the compile. The Phase 4 IN-10..IN-13 test and docstring items are closed. The real 10.5 proofs run on the host with assertions that print no object bytes. The two config/watcom.toml notes say LX, in the single commit the owner authorized (78a767c).**
 
 Execution context nonce: 8587be25404e1913
 
 ## Performance
 
 - **Duration:** about 70 min
-- **Started:** 2026-10-25T01:30Z (approximate; first commit 711b829 at 02:32:54Z)
+- **Started:** 2026-10-25T01:30Z (approximate; first commit 78286e5 at 02:32:54Z)
 - **Completed:** 2026-10-25T02:40:09Z
 - **Tasks:** 3
 - **Files modified:** 8
@@ -133,15 +133,15 @@ Execution context nonce: 8587be25404e1913
 - The docs/toolchain.md cc.log bullet now says `--log` must name a file. It lists what is refused before the compile and quotes `[Errno 21] Is a directory` (container) and `[Errno 13] Permission denied` (Windows host, observed here). It also says `_append_log`'s device branch covers directories (DI-11, backlog 999.1).
 - IN-10: `cc_root` fails if `rmtree` could not remove the directory, and `_reap`'s docstring says it reaps only the `cc` processes. IN-11: the `/dev/null` sidecar test fails instead of skipping and removes any sidecar it created. IN-12: `_append_log`'s docstring names the Windows host. IN-13: the CLI refusal test writes the object first and checks it survives.
 - `PROJECT_INCLUDE` is removed; nothing in tools/, tests/ or configure.py read it. test_stub_real.py now matches the whole marker extern name (`_?INCLUDE_ASM_func_[0-9A-F]{8}_?`, fullmatch) instead of a substring. A new test shows the pattern matches a referenced marker as Watcom 10.6 spells it: `_INCLUDE_ASM_func_00012000`.
-- DI-23: the real tests for 10.5, 10.6 and 11.0 ran on the host against the main checkout's Watcom trees: 21 passed, 0 skipped. The codegen checks now compare a `Codegen(and_mask, movzx, sha1)` dataclass. The stub tests assert on a `StubFacts` dataclass (names, `_TEXT` size and SHA-1). A failure therefore prints booleans, names and hashes, never object bytes (T-04-17). Correction from fix round 1: the first version (1b34ae3) still printed bytes in two ways, through `len(_text(module))` and through any assert on an `omf.Module`, whose repr holds the segment data. Commit e23cbcc fixed both, and fifteen scratch mutations showed it (see Fix round 1).
-- D-43/D-47: commit 28342e1 changes only the two `note` values (2 lines removed, 2 added, one file). Its message quotes the owner's 2026-10-24 authorization.
+- DI-23: the real tests for 10.5, 10.6 and 11.0 ran on the host against the main checkout's Watcom trees: 21 passed, 0 skipped. The codegen checks now compare a `Codegen(and_mask, movzx, sha1)` dataclass. The stub tests assert on a `StubFacts` dataclass (names, `_TEXT` size and SHA-1). A failure therefore prints booleans, names and hashes, never object bytes (T-04-17). Correction from fix round 1: the first version (5ee72e8) still printed bytes in two ways, through `len(_text(module))` and through any assert on an `omf.Module`, whose repr holds the segment data. Commit 9e4e2d6 fixed both, and fifteen scratch mutations showed it (see Fix round 1).
+- D-43/D-47: commit 78a767c changes only the two `note` values (2 lines removed, 2 added, one file). Its message quotes the owner's 2026-10-24 authorization.
 - T-04-36: the `-s` "most code" count, the `-fpi` same-object claim and the `-fpi`/`-fpi87` record equality each carry "(scratch check, not logged)".
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): --log refusals before the compile.** RED `711b829` (test), GREEN `b328679` (fix).
-2. **Task 2 (TDD): IN-10..IN-13, dead constant, DI-23.** `1b34ae3` (test), `d24e14d` (fix).
-3. **Task 3: the watcom.toml note fix and the evidence labels.** `28342e1` (docs; **the watcom.toml commit**), `fdf0e0a` (docs).
+1. **Task 1 (tracer, TDD): --log refusals before the compile.** RED `78286e5` (test), GREEN `e5c25c3` (fix).
+2. **Task 2 (TDD): IN-10..IN-13, dead constant, DI-23.** `5ee72e8` (test), `76e377b` (fix).
+3. **Task 3: the watcom.toml note fix and the evidence labels.** `78a767c` (docs; **the watcom.toml commit**), `f75c3d4` (docs).
 
 **Plan metadata:** the SUMMARY commit that follows this file.
 
@@ -164,7 +164,7 @@ pytest's console report is not a format that `check tdd-red-evidence` supports, 
 - `tests/test_compiler_real.py`: the IN-10 `cc_root` and `_reap` changes; the `Codegen` dataclass; byte-free codegen assertions.
 - `tests/test_stub_real.py`: `MARKER_EXTERN` fullmatch; `StubFacts` and `_facts` (fix round 1, replacing `_text_sha1`); byte-free assertions; the referenced-marker test.
 - `docs/toolchain.md`: the cc.log bullet (999.1) and three scratch-check labels.
-- `config/watcom.toml`: lines 37 and 106, `LE` -> `LX` (commit 28342e1 only).
+- `config/watcom.toml`: lines 37 and 106, `LE` -> `LX` (commit 78a767c only).
 
 ## Decisions Made
 
@@ -190,20 +190,20 @@ pytest's console report is not a format that `check tdd-red-evidence` supports, 
 **2. [Rule 2 - Missing critical] Byte-free assertions in test_stub_real.py too**
 - **Found during:** Task 2
 - **Issue:** `assert _text(unit) == _text(control)` and `assert _text(module) == b""` would print object bytes on failure (T-04-17). This is the same defect as the codegen asserts, and the file is in this plan's list.
-- **Fix:** I compare SHA-1s and lengths through `_text_sha1`. That was incomplete: `len(_text(module))` and asserts on `omf.Module` still printed bytes. Fix round 1 (e23cbcc) replaced it with `StubFacts`.
-- **Committed in:** 1b34ae3
+- **Fix:** I compare SHA-1s and lengths through `_text_sha1`. That was incomplete: `len(_text(module))` and asserts on `omf.Module` still printed bytes. Fix round 1 (9e4e2d6) replaced it with `StubFacts`.
+- **Committed in:** 5ee72e8
 
 **3. [Rule 2 - Missing critical] Show the marker check can fail**
 - **Found during:** Task 2 (05-REVIEW row 4)
 - **Issue:** Replacing the substring match with a whole-name regex could make `_marker_externs(...) == []` pass forever if the regex missed Watcom's spelling.
 - **Fix:** I added `test_marker_extern_pattern_sees_a_referenced_marker`. The real 10.6 compile emits `_INCLUDE_ASM_func_00012000`, and the regex matches it.
-- **Committed in:** 1b34ae3
+- **Committed in:** 5ee72e8
 
 **4. [Rule 2 - Missing critical] Label the `-fpi`/`-fpi87` record equality too**
 - **Found during:** Task 3
 - **Issue:** The FPU row's claim that the LEDATA and FIXUPP records are equal comes from a 04-11 review-round comparison. 04-11-SUMMARY:275 says the calibration log shows only the default-library column, so the claim is unlogged in the same way.
 - **Fix:** That sentence is labelled as well, which gives three labels in total.
-- **Committed in:** fdf0e0a
+- **Committed in:** f75c3d4
 
 ---
 
@@ -217,16 +217,16 @@ pytest's console report is not a format that `check tdd-red-evidence` supports, 
 
 ## Follow-ups for later plans (not done here, outside this plan's files)
 
-- docs/learnings.md L58 still says the watcom.toml notes "stay until the owner edits it". Commit 28342e1 has now made that edit.
+- docs/learnings.md L58 still says the watcom.toml notes "stay until the owner edits it". Commit 78a767c has now made that edit.
 - docs/matching.md:28 states the `-fpi`/`-fpi87` LEDATA/FIXUPP equality without the scratch-check label.
-- 04-SECURITY.md L122: T-04-15/16 (10.5 now runs), T-04-17 (assertions byte-free since e23cbcc, proven by the build/06-07-mutation-*.out runs) and T-04-36 (labels added) can be closed by 06-21.
+- 04-SECURITY.md L122: T-04-15/16 (10.5 now runs), T-04-17 (assertions byte-free since 9e4e2d6, proven by the build/06-07-mutation-*.out runs) and T-04-36 (labels added) can be closed by 06-21.
 
 ## Verification
 
 - Task 1: `uv run pytest -q tests/test_compiler.py tests/test_cc_log.py`: 66 passed, 1 skipped (`POSIX-only: /dev/null and its directory /dev`). The grep for `Is a directory` and `Permission denied` in toolchain.md passed. The tracer gate (end-of-phase mode, `<automated>` only) re-ran the verify, it passed, and I continued.
 - Task 2: the real verify per F18 gave 21 passed and 0 skipped. `uv run pytest -q tests/test_cc_log.py tests/test_cli.py tests/test_compiler.py`: 165 passed, 1 skipped. `grep -n PROJECT_INCLUDE tools/reverseapoc/*.py tests/*.py` prints nothing. The `/dev/null` test has no `pytest.skip(`.
-- Task 3: exactly 2 `the real LX compiler`, 0 `real LE compiler`, and `tests/test_watcom.py tests/test_compiler.py` 156 passed. Commit 28342e1 numstat is `2 2 config/watcom.toml` and its diff is exactly two `-note` and two `+note` lines. The message contains `2026-10-24`.
-- Before the change I ran `git grep -n "watcom.toml"` over tests/, tools/ and configure.py. Readers load its keys, `configure.CC_CONFIG` lists it as an implicit ninja input, and nothing hashes its bytes. config/targets.toml does not mention it and is unchanged (`git diff --stat a9e13ed HEAD` does not list it).
+- Task 3: exactly 2 `the real LX compiler`, 0 `real LE compiler`, and `tests/test_watcom.py tests/test_compiler.py` 156 passed. Commit 78a767c numstat is `2 2 config/watcom.toml` and its diff is exactly two `-note` and two `+note` lines. The message contains `2026-10-24`.
+- Before the change I ran `git grep -n "watcom.toml"` over tests/, tools/ and configure.py. Readers load its keys, `configure.CC_CONFIG` lists it as an implicit ninja input, and nothing hashes its bytes. config/targets.toml does not mention it and is unchanged (`git diff --stat 963bb48 HEAD` does not list it).
 - Whole host suite: `uv run pytest -q` gave 1517 passed and 217 skipped (the real tests skip without orig/ in the worktree). `uv run ruff check .` reported "All checks passed!".
 
 ## User Setup Required
@@ -235,25 +235,25 @@ None.
 
 ## Next Phase Readiness
 
-- 06-12, the always-on hooks, can protect config/watcom.toml from the moment it lands; the only authorized edit (28342e1) is done.
+- 06-12, the always-on hooks, can protect config/watcom.toml from the moment it lands; the only authorized edit (78a767c) is done.
 - 06-21 can close the 04-SECURITY.md observations listed above.
 
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/compiler.py, tests/test_compiler.py, tests/test_cc_log.py, tests/test_cli.py, tests/test_compiler_real.py, tests/test_stub_real.py, docs/toolchain.md, config/watcom.toml
-- FOUND commits on this branch: 711b829, b328679, 1b34ae3, d24e14d, 28342e1, fdf0e0a (`git rev-list --count a9e13ed..fdf0e0a` = 6)
+- FOUND commits on this branch: 78286e5, e5c25c3, 5ee72e8, 76e377b, 78a767c, f75c3d4 (`git rev-list --count 963bb48..f75c3d4` = 6)
 
-## Fix round 1 (review-06-07, FIX_BASE 6b9d2b0)
+## Fix round 1 (review-06-07, FIX_BASE 1fd0101)
 
 | Finding | Fix | Commit | Proof |
 |---------|-----|--------|-------|
-| Important: `assert len(_text(module)) == 0` (test_stub_real.py:142) printed `_TEXT` bytes on failure. A grep of the other asserts found the same leak in every assert on an `omf.Module` (`module.publics`, `module.externs`, `_publics(module)`, `_marker_externs(module)`): pytest prints the Module repr, whose segments hold `data: bytes` | `_compile` returns `StubFacts(publics, externs, marker_externs, text_size, text_sha1)` and every stub assert reads it. The empty-segment check is `(text_size, text_sha1) == (0, sha1(b""))`, and the referenced-marker test pins `("_INCLUDE_ASM_func_00012000",)`. test_compiler_real.py's asserts already worked on `Codegen`, `CompileResult` (no bytes field), names and SHA-1s | e23cbcc (test) | 15 scratch mutations, each assertion flipped, over 5 runs: build/06-07-mutation-1.out (8 failed: 4 stub, 3 env_injection, 1 two_sources) and -2..-5 (3, 2, 1, 1 failed). The failures print only tuples of names, ints, SHA-1s, `StubFacts(...)` and `Codegen(...)`. A grep for a `b'` or `b"` literal finds 0 lines in every file. Each mutation was reverted with `git checkout -- <file>`, and `git status` is clean |
-| Minor 1: the probe and `_log_lock` each spelled `open(..., "a+b")` | `_open_lock(log)` is the only opener of the sidecar, and both use it | 45d1e94 (refactor) | with the opener's mode changed to `rb`, 40 compiler/log tests fail; after the revert, 68 pass |
-| Minor 2: on POSIX, `--log new/..` with no `new` passed `is_dir()`, the probe created `new`, and the append failed after the compile | `_check_log_name` refuses a name of `..` like an empty name ("names no file"), before anything is created. The docs bullet lists it | b8d1f75 (RED), 7a5178a (fix) | RED: `test_log_ending_in_dotdot_names_no_file[parts0]` (`new/..`) and `[parts1]` (`..`) failed on the host, because Windows refused them via `is_dir()` as "is a directory", not by name. GREEN: both pass and `new` is not created |
-| Minor 3: build/06-07-real.out was older than the last code commit | re-ran `REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom uv run pytest -v -rs tests/test_compiler_real.py tests/test_stub_real.py` after 45d1e94 | none | 21 passed, 0 SKIPPED, 6 env_injection/cleanup cases PASSED. The file was written at 23:53:33, after 45d1e94 at 23:53:19 |
+| Important: `assert len(_text(module)) == 0` (test_stub_real.py:142) printed `_TEXT` bytes on failure. A grep of the other asserts found the same leak in every assert on an `omf.Module` (`module.publics`, `module.externs`, `_publics(module)`, `_marker_externs(module)`): pytest prints the Module repr, whose segments hold `data: bytes` | `_compile` returns `StubFacts(publics, externs, marker_externs, text_size, text_sha1)` and every stub assert reads it. The empty-segment check is `(text_size, text_sha1) == (0, sha1(b""))`, and the referenced-marker test pins `("_INCLUDE_ASM_func_00012000",)`. test_compiler_real.py's asserts already worked on `Codegen`, `CompileResult` (no bytes field), names and SHA-1s | 9e4e2d6 (test) | 15 scratch mutations, each assertion flipped, over 5 runs: build/06-07-mutation-1.out (8 failed: 4 stub, 3 env_injection, 1 two_sources) and -2..-5 (3, 2, 1, 1 failed). The failures print only tuples of names, ints, SHA-1s, `StubFacts(...)` and `Codegen(...)`. A grep for a `b'` or `b"` literal finds 0 lines in every file. Each mutation was reverted with `git checkout -- <file>`, and `git status` is clean |
+| Minor 1: the probe and `_log_lock` each spelled `open(..., "a+b")` | `_open_lock(log)` is the only opener of the sidecar, and both use it | c265cfc (refactor) | with the opener's mode changed to `rb`, 40 compiler/log tests fail; after the revert, 68 pass |
+| Minor 2: on POSIX, `--log new/..` with no `new` passed `is_dir()`, the probe created `new`, and the append failed after the compile | `_check_log_name` refuses a name of `..` like an empty name ("names no file"), before anything is created. The docs bullet lists it | 0fbd207 (RED), 400ca88 (fix) | RED: `test_log_ending_in_dotdot_names_no_file[parts0]` (`new/..`) and `[parts1]` (`..`) failed on the host, because Windows refused them via `is_dir()` as "is a directory", not by name. GREEN: both pass and `new` is not created |
+| Minor 3: build/06-07-real.out was older than the last code commit | re-ran `REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom uv run pytest -v -rs tests/test_compiler_real.py tests/test_stub_real.py` after c265cfc | none | 21 passed, 0 SKIPPED, 6 env_injection/cleanup cases PASSED. The file was written at 23:53:33, after c265cfc at 23:53:19 |
 | Minor 4: the mutation proof was prose only | this round's mutation outputs are kept as build/06-07-mutation-1..5.out (gitignored) | none | as above |
 
-After the round: `uv run pytest -q` gives 1519 passed and 217 skipped (the real tests skip in the worktree without the env var). `uv run ruff check .` reports "All checks passed!". The branch has 11 commits from a9e13ed to 45d1e94, 4 of them in this round, plus this SUMMARY update.
+After the round: `uv run pytest -q` gives 1519 passed and 217 skipped (the real tests skip in the worktree without the env var). `uv run ruff check .` reports "All checks passed!". The branch has 11 commits from 963bb48 to c265cfc, 4 of them in this round, plus this SUMMARY update.
 
 Execution context nonce: 8587be25404e1913
 

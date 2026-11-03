@@ -23,8 +23,8 @@ actuals:
   tokens: 19214
   tasks: 3
   commits: 6
-plan_head_before: a6cbc0f0426b24b68ab6aa07e9067bc7bbdd87ee
-plan_head_after: 5c07c04d2c9b358c5a8211c894db042866dd2dc8
+plan_head_before: 627dee2e6bb7c0ef58fceeb64891e1c79377ceeb
+plan_head_after: d9b117f39e6425b1cc5bb1cecbabf68a5e414d7f
 
 tech-stack:
   added: []
@@ -136,9 +136,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1: Tracer, the functions verb**: `9c03823` (test, RED), `5319c6b` (feat, GREEN). Tracer gate: the interactive end-of-phase mode with an automated-only verify, so the verify was re-run and passed before expanding.
-2. **Task 2: Full D-07/D-08 rules and the SPL-02 edges**: `930edcb` (test, RED), `93d598c` (feat, GREEN)
-3. **Task 3: Units draft, assignment, scaffold and the units verb**: `14b27b9` (test, RED), `5c07c04` (feat, GREEN)
+1. **Task 1: Tracer, the functions verb**: `f310809` (test, RED), `782ce66` (feat, GREEN). Tracer gate: the interactive end-of-phase mode with an automated-only verify, so the verify was re-run and passed before expanding.
+2. **Task 2: Full D-07/D-08 rules and the SPL-02 edges**: `3166254` (test, RED), `f85a6da` (feat, GREEN)
+3. **Task 3: Units draft, assignment, scaffold and the units verb**: `7bf57ac` (test, RED), `d9b117f` (feat, GREEN)
 
 ## TDD Gate Compliance
 
@@ -175,9 +175,9 @@ See key-decisions in the frontmatter. The main ones:
 
 ### Notes from merged plans applied (05-04, 05-07, 05-12)
 
-- **[Rule 2 - Missing critical] Bytes before a module's first public (05-04 note).** These bytes become a data-in-code row of the module (evidence runtime). A disagreement inside them, or inside any runtime row, is decided `rule` with reason `runtime (inside <name>)`. This needed the runtime.csv rows as a new keyword `modules=` of reconcile (the plan's signature is otherwise unchanged). Tests: `test_runtime_public_inside_a_module` and `test_runtime_public_start_inside_a_runtime_row`. Commits 930edcb, 93d598c.
-- **[Rule 2 - Missing critical] Alignment gaps after a jmp (05-07 note).** A gap that Ghidra's function spans is merged back into the function. Test: `test_gap_merged_into_ghidra_function`. Commits 930edcb, 93d598c.
-- **[Rule 2 - Missing critical] Ghidra data-object entry (05-12 note).** Entries outside every code object are dropped, counted in `Reconciled.dropped_ghidra`, and printed by the verb. Tests: `test_ghidra_entry_outside_code_is_dropped` and `test_no_starts`. Commits 930edcb, 93d598c.
+- **[Rule 2 - Missing critical] Bytes before a module's first public (05-04 note).** These bytes become a data-in-code row of the module (evidence runtime). A disagreement inside them, or inside any runtime row, is decided `rule` with reason `runtime (inside <name>)`. This needed the runtime.csv rows as a new keyword `modules=` of reconcile (the plan's signature is otherwise unchanged). Tests: `test_runtime_public_inside_a_module` and `test_runtime_public_start_inside_a_runtime_row`. Commits 3166254, f85a6da.
+- **[Rule 2 - Missing critical] Alignment gaps after a jmp (05-07 note).** A gap that Ghidra's function spans is merged back into the function. Test: `test_gap_merged_into_ghidra_function`. Commits 3166254, f85a6da.
+- **[Rule 2 - Missing critical] Ghidra data-object entry (05-12 note).** Entries outside every code object are dropped, counted in `Reconciled.dropped_ghidra`, and printed by the verb. Tests: `test_ghidra_entry_outside_code_is_dropped` and `test_no_starts`. Commits 3166254, f85a6da.
 
 ### Auto-fixed Issues
 
@@ -185,13 +185,13 @@ See key-decisions in the frontmatter. The main ones:
 - **Found during:** Task 1
 - **Issue:** the synthetic EXE has no committed config/syn/runtime.csv, and a missing runtime.csv must not silently mean "no runtime rows" for the real EXEs.
 - **Fix:** both verbs take `--runtime CSV` (default: the committed file) and refuse a missing file with the libmatch hint, as `cppscan` does.
-- **Commit:** 5319c6b
+- **Commit:** 782ce66
 
 **2. [Rule 2 - Missing critical] `--units CSV` on the units verb**
 - **Found during:** Task 3
 - **Issue:** ruling F2's on-its-own mode had to be testable without writing into the repo's config/.
 - **Fix:** `--units CSV` overrides the committed units.csv. `test_units_write_keeps_a_hand_recut` monkeypatches `cli.config_dir` to a tmp tree.
-- **Commit:** 5c07c04
+- **Commit:** d9b117f
 
 **Total deviations:** 2 orchestrator rulings, 3 notes applied, 2 auto-fixed (1 blocking, 1 missing critical). **Impact:** all are additive keyword or option inputs; the plan's verbs and signatures are otherwise as written.
 
@@ -223,7 +223,7 @@ Execution context nonce: a6e90a49d73f316c
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/units.py, tests/test_units.py, tools/reverseapoc/functions.py, tools/reverseapoc/cli.py, tests/test_functions.py
-- FOUND commits: 9c03823, 5319c6b, 930edcb, 93d598c, 14b27b9, 5c07c04
+- FOUND commits: f310809, 782ce66, 3166254, f85a6da, 7bf57ac, d9b117f
 - Acceptance:
   - the tracer test passes with exactly two boundaries rows;
   - `functions --help` lists `--ghidra-export`, `--write` and `--output`;
@@ -253,7 +253,7 @@ The orchestrator ruled: the rule still wins where it decides (D-07), but nothing
 
 **Minor: `--units` was ignored when drafting.** `units` now refuses `--units` together with `--write` or `--output`. The error names `--units`, and nothing is written. Test: `test_units_option_refused_when_drafting`.
 
-Commits: `ef62903` (test, RED: 5 failed, 77 passed), `e89eea1` (fix).
+Commits: `61fd717` (test, RED: 5 failed, 77 passed), `f713d03` (fix).
 
 Commands and output:
 - `uv run pytest -q tests/test_functions.py tests/test_units.py`: `82 passed in 0.75s`

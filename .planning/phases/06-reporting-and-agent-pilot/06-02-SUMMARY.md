@@ -16,9 +16,9 @@ affects: [06-status-table, 06-gate, 06-progress, 06-driver, 06-06, 06-16]
 actuals:
   tokens: 7974
   tasks: 3
-  commits: 13  # 021a58ba..564b4b5: 6 task commits, the first SUMMARY commit, 6 fix-round-1 commits
-plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: 564b4b513c307d14dd21f162cceec676ab910eb9
+  commits: 13  # 69d5878b..8133a6d: 6 task commits, the first SUMMARY commit, 6 fix-round-1 commits
+plan_head_before: 69d5878bdc8b0201e2f73f7644e343eef4c15fd2
+plan_head_after: 8133a6dd437474e4f8802ae9df59be76801380c2
 
 tech-stack:
   added: []
@@ -117,9 +117,9 @@ Execution context nonce: 23c816a0c70e2f32
 
 | DI row | Task | RED | GREEN |
 |--------|------|-----|-------|
-| DI-18 (fileio + splice alias + compiler) | 1 (tracer) | `1681fdc` test | `cfb84d4` refactor |
-| DI-18 (seven remaining importers) | 2 | `f90097f` test | `732a537` refactor |
-| DI-19 rows 3, 7a, 7b, 7c, 7d | 3 | `863114d` test | `bc84d08` fix |
+| DI-18 (fileio + splice alias + compiler) | 1 (tracer) | `4f88972` test | `e5b41d2` refactor |
+| DI-18 (seven remaining importers) | 2 | `4a5e647` test | `9639291` refactor |
+| DI-19 rows 3, 7a, 7b, 7c, 7d | 3 | `302e129` test | `ca3908c` fix |
 
 Tracer gate (Task 1): interactive mode with end-of-phase verification, and the verify is automated only. I re-ran `uv run pytest -q tests/test_fileio.py tests/test_compiler.py tests/test_splice.py`: 179 passed, 1 skipped (symlink). Then I continued to Task 2.
 
@@ -142,9 +142,9 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 
 ### Orchestrator rulings applied
 
-- **Orchestrator ruling F6: when the data-range check applies.** symbols.csv `data` rows are checked against `data_ranges` only when the table gets non-empty ranges, and `SymbolTable.build`'s docstring says so. Tests cover both sides: `test_data_symbol_is_not_range_checked_without_data_ranges` (loads with `data_ranges=()`) and `test_data_symbol_outside_every_data_range_is_refused[past|at-end|before]` (raises naming the address when ranges are given). Commits `863114d`, `bc84d08`.
-- **Orchestrator ruling F22: alias sites and the 7a spelling.** compiler.py's stamp comment now names `fileio.write_atomic` instead of `splice._write_atomic`. All three test_compiler.py sites were renamed (:437, :443, :458). The 7a test uses the linker spelling `address_of("func_00010010_")` and expects `main_` in the error. Commits `cfb84d4`, `863114d`.
-- **Orchestrator ruling F2 / R-A: the symlink skip.** `test_write_atomic_replaces_a_link` skips only when `symlink_to` raises OSError, with exactly the reason `symlink creation needs privileges on this host`. It skips on this Windows host and runs in the container. Commit `1681fdc`.
+- **Orchestrator ruling F6: when the data-range check applies.** symbols.csv `data` rows are checked against `data_ranges` only when the table gets non-empty ranges, and `SymbolTable.build`'s docstring says so. Tests cover both sides: `test_data_symbol_is_not_range_checked_without_data_ranges` (loads with `data_ranges=()`) and `test_data_symbol_outside_every_data_range_is_refused[past|at-end|before]` (raises naming the address when ranges are given). Commits `302e129`, `ca3908c`.
+- **Orchestrator ruling F22: alias sites and the 7a spelling.** compiler.py's stamp comment now names `fileio.write_atomic` instead of `splice._write_atomic`. All three test_compiler.py sites were renamed (:437, :443, :458). The 7a test uses the linker spelling `address_of("func_00010010_")` and expects `main_` in the error. Commits `e5b41d2`, `302e129`.
+- **Orchestrator ruling F2 / R-A: the symlink skip.** `test_write_atomic_replaces_a_link` skips only when `symlink_to` raises OSError, with exactly the reason `symlink creation needs privileges on this host`. It skips on this Windows host and runs in the container. Commit `4f88972`.
 
 ### Auto-fixed / minor deviations
 
@@ -152,7 +152,7 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 - **Found during:** Tasks 1 and 3
 - **Issue:** Each behaviour change needs a test (rulings preamble). The plan's list did not cover writing a new file, the D_ side of 7a, or the in-range boundary.
 - **Fix:** Added `test_write_atomic_creates_a_missing_file`, `test_address_of_refuses_the_data_placeholder_of_a_renamed_address` and `test_data_symbol_inside_a_data_range_loads` (first and last byte of the range).
-- **Committed in:** `1681fdc`, `863114d`
+- **Committed in:** `4f88972`, `302e129`
 
 **2. [Plan text] The 7c test was RED, not a passing pin**
 - **Found during:** Task 3 RED
@@ -165,12 +165,12 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 **4. [Plan text] fileio.py has no GPLv3 header line**
 - **Found during:** Task 1 GREEN
 - **Issue:** The plan asked for a "GPLv3 header like its neighbours". No module under tools/reverseapoc carries a license header; the only header lines are the "Derived from ..." provenance lines of modules taken from KKND-Decomp or Theme Hospital.
-- **Fix:** fileio.py has a module docstring and no header line. `_write_atomic` was written in this project (`d4de0d8`, WR-03), not taken from KKND-Decomp, so no provenance line applies. tools/ stays GPLv3 as a whole (docs/legal.md).
-- **Committed in:** `cfb84d4`
+- **Fix:** fileio.py has a module docstring and no header line. `_write_atomic` was written in this project (`eae690a`, WR-03), not taken from KKND-Decomp, so no provenance line applies. tools/ stays GPLv3 as a whole (docs/legal.md).
+- **Committed in:** `e5b41d2`
 
 **5. [Rule 3 - Tooling] Plan ledger not written to the git dir**
 - **Issue:** The worktree sandbox refused writes to `.git/worktrees/<id>/gsd-plan-head-before-06-02`.
-- **Fix:** `commits:` was measured directly as `git rev-list --count 021a58ba..HEAD` = 6, starting from the dispatch base.
+- **Fix:** `commits:` was measured directly as `git rev-list --count 69d5878b..HEAD` = 6, starting from the dispatch base.
 
 ---
 
@@ -180,7 +180,7 @@ Tracer gate (Task 1): interactive mode with end-of-phase verification, and the v
 ## Issues Encountered
 
 - While checking Task 2's grep scan I mistakenly redirected its output to `C:/Users/Ayrton/Documents/Gitprojects/scan.tmp`, outside both checkouts. It held only the scan text (`tools/reverseapoc/splice.py `). I deleted it right away.
-- `uv run ruff format --check tools tests` reports files that would be reformatted. Most were unformatted before this plan, and formatting is outside the done gate (`ruff check`). The first pass left one regression: an extra blank line in tests/test_functions.py, which was formatted at base. Fix round 1 removed it (`556620b`). check.py, cli.py, compiler.py and splice.py were already unformatted at base, and `ruff format --diff` gives the same number of changed lines for each at base and at HEAD, so none of the drift comes from lines this plan changed. Every other file this plan touched is formatted.
+- `uv run ruff format --check tools tests` reports files that would be reformatted. Most were unformatted before this plan, and formatting is outside the done gate (`ruff check`). The first pass left one regression: an extra blank line in tests/test_functions.py, which was formatted at base. Fix round 1 removed it (`bfde4f9`). check.py, cli.py, compiler.py and splice.py were already unformatted at base, and `ruff format --diff` gives the same number of changed lines for each at base and at HEAD, so none of the drift comes from lines this plan changed. Every other file this plan touched is formatted.
 - Real-file check on the host: I ran `REVERSEAPOC_ORIG/REVERSEAPOC_WATCOM_DIR/REVERSEAPOC_GHIDRA_EXPORT=<main checkout>` with `uv run pytest tests/test_functions_real.py tests/test_check_real.py tests/test_symbols.py`: 43 passed, 4 skipped (objdiff-cli or ninja not on PATH). The committed symbols.csv files load under the stricter table built from the real LE's data ranges. The container suite in 06-16 re-proves this.
 
 ## User Setup Required
@@ -195,7 +195,7 @@ None - no external service configuration required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/fileio.py, tests/test_fileio.py
-- FOUND commits: 1681fdc, cfb84d4, f90097f, 732a537, 863114d, bc84d08 (all ancestors of HEAD)
+- FOUND commits: 4f88972, e5b41d2, 4a5e647, 9639291, 302e129, ca3908c (all ancestors of HEAD)
 - Acceptance: `def write_atomic(path: Path, data: bytes) -> None:` in fileio.py; `from .fileio import write_atomic as _write_atomic` in splice.py; `"write_atomic"` monkeypatched twice in test_compiler.py; eight modules import write_atomic from .fileio; both named test_symbols tests exist; `SYMBOL_KIND_FUNC = SYMBOL_KINDS[0]`.
 - Plan verification: `uv run pytest -q` 1430 passed / 216 skipped, `uv run ruff check .` clean, only splice.py names `_write_atomic`.
 
@@ -205,15 +205,15 @@ None - no external service configuration required.
 
 ## Fix round 1
 
-Review approved with no Critical or Important findings. Fix base `81da71f`. Each minor and its commit:
+Review approved with no Critical or Important findings. Fix base `f5e5689`. Each minor and its commit:
 
 | # | Minor | Commit(s) |
 |---|-------|-----------|
-| 1 | tests/test_functions.py had three blank lines before the follows pin, so `ruff format --check` newly flagged a file that was formatted at base. Reformatted. The other touched files that are not formatted (check, cli, compiler, splice) were already unformatted at base, with the same `ruff format --diff` size at base and HEAD. | `556620b` style |
-| 2 | symbols.py's `SymbolTable.build` docstring and a test_symbols.py comment cited "orchestrator ruling F6". Both now state the behaviour: the data-range check runs when the caller passes the LE's data ranges, as check.load_exe and cli._split_inputs always do, and a CSV-only caller passes none. | `43c7178` docs |
-| 3 | symbols.csv could give an address a placeholder-shaped name, which `linker_name` would return and `address_of` would refuse. `SymbolTable.build` now refuses any symbols.csv name that fullmatches `func_XXXXXXXX_` or `_D_XXXXXXXX`, with the address in the error. RED first: `test_a_placeholder_shaped_symbols_csv_name_is_refused[own-func\|other-func\|own-data\|other-data]` failed with DID NOT RAISE, then passed after the fix. The real-LE tests still pass on the committed symbols.csv (16 passed, 4 tool skips). | `6d02177` test, `ccb09fe` fix |
-| 4 | `SYMBOL_KIND_FUNC = SYMBOL_KINDS[0]` and `SYMBOL_KIND_DATA = SYMBOL_KINDS[1]` depend on tuple order. Added the pin `test_symbol_kind_constants_pin_the_order_of_symbol_kinds`; it fails when SYMBOL_KINDS is reordered by hand (checked, then restored with `git checkout`). | `1decc86` test |
-| 5 | fileio.py's module docstring overstated the guarantee. It now says the target is replaced whole by os.replace or left untouched, nothing is fsynced, and a killed process can leave its `.<name>.<hex>.tmp` file. | `564b4b5` docs |
+| 1 | tests/test_functions.py had three blank lines before the follows pin, so `ruff format --check` newly flagged a file that was formatted at base. Reformatted. The other touched files that are not formatted (check, cli, compiler, splice) were already unformatted at base, with the same `ruff format --diff` size at base and HEAD. | `bfde4f9` style |
+| 2 | symbols.py's `SymbolTable.build` docstring and a test_symbols.py comment cited "orchestrator ruling F6". Both now state the behaviour: the data-range check runs when the caller passes the LE's data ranges, as check.load_exe and cli._split_inputs always do, and a CSV-only caller passes none. | `5540eb6` docs |
+| 3 | symbols.csv could give an address a placeholder-shaped name, which `linker_name` would return and `address_of` would refuse. `SymbolTable.build` now refuses any symbols.csv name that fullmatches `func_XXXXXXXX_` or `_D_XXXXXXXX`, with the address in the error. RED first: `test_a_placeholder_shaped_symbols_csv_name_is_refused[own-func\|other-func\|own-data\|other-data]` failed with DID NOT RAISE, then passed after the fix. The real-LE tests still pass on the committed symbols.csv (16 passed, 4 tool skips). | `4c34253` test, `337c85a` fix |
+| 4 | `SYMBOL_KIND_FUNC = SYMBOL_KINDS[0]` and `SYMBOL_KIND_DATA = SYMBOL_KINDS[1]` depend on tuple order. Added the pin `test_symbol_kind_constants_pin_the_order_of_symbol_kinds`; it fails when SYMBOL_KINDS is reordered by hand (checked, then restored with `git checkout`). | `c047b84` test |
+| 5 | fileio.py's module docstring overstated the guarantee. It now says the target is replaced whole by os.replace or left untouched, nothing is fsynced, and a killed process can leave its `.<name>.<hex>.tmp` file. | `8133a6d` docs |
 | 6 | SUMMARY corrections: the formatting claim (Issues Encountered), the alias's remaining users including splice.py:739 `rebuild` (Next Phase Readiness), and the GPLv3-header decision moved from Decisions to Deviations (item 4). | this SUMMARY commit |
 
 Recorded note, not fixed (reviewer minor 6): no unit test asserts that check.load_exe and cli._split_inputs pass `data_ranges(le)`. The real-LE tests cover those paths (test_functions_real builds the table with the real LE's ranges).

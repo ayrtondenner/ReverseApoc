@@ -15,12 +15,12 @@ provides:
 affects: [06-09 (check.py may surface the new fields per function; check.py:300 keeps its positional RelocResult), 06-16 container re-run]
 
 actuals:
-  # first round: chars/4 over git diff a9e13ed..b10cdbc = 23,092 chars -> 5773, 4 code commits
-  tokens: 7517  # fix round 1: chars/4 over git diff a9e13ed..8293123 outside .planning (30,070 chars)
+  # first round: chars/4 over git diff 963bb48..0f905d5 = 23,092 chars -> 5773, 4 code commits
+  tokens: 7517  # fix round 1: chars/4 over git diff 963bb48..ae0261e outside .planning (30,070 chars)
   tasks: 2
-  commits: 8  # git rev-list --count a9e13ed..8293123: 7 code/docs commits + the first SUMMARY commit (this SUMMARY update makes 9)
-plan_head_before: a9e13ed54f72aafb7389d1415f1707e516d1581d
-plan_head_after: 82931230c2874c9c4dc75e42a6bec54c614a70cd
+  commits: 8  # git rev-list --count 963bb48..ae0261e: 7 code/docs commits + the first SUMMARY commit (this SUMMARY update makes 9)
+plan_head_before: 963bb48c124b57b1f9d248ad05f0fb5ba6d6b3ea
+plan_head_after: ae0261e14026c14ad521da93598788fa636fce67
 
 tech-stack:
   added: []
@@ -112,8 +112,8 @@ Execution context nonce: 56ce7980c36493d9
 
 ## Task Commits
 
-1. **Task 1 (tracer): land refuses a verdict for another row or other bytes.** RED `80c5789` (test), GREEN `884e810` (fix).
-2. **Task 2: raw-field reasoning corrected and proven end to end.** Test `c6f004e` (test), docs `b10cdbc` (docs).
+1. **Task 1 (tracer): land refuses a verdict for another row or other bytes.** RED `024f11d` (test), GREEN `35a4cb5` (fix).
+2. **Task 2: raw-field reasoning corrected and proven end to end.** Test `afddead` (test), docs `0f905d5` (docs).
 
 **Plan metadata:** this SUMMARY commit (docs).
 
@@ -123,14 +123,14 @@ Task 1 is a tracer. After GREEN, the tracer gate ran in interactive `end-of-phas
 
 pytest's console report is not one of the formats `check tdd-red-evidence` supports, so RED was judged by inspecting each target assertion, as 06-03 and 06-04 did.
 
-- Task 1 (`80c5789`): 5 targets failed on their planned assertions, with no import, collection or fixture faults:
+- Task 1 (`024f11d`): 5 targets failed on their planned assertions, with no import, collection or fixture faults:
   - `test_check_function_names_the_row_and_bytes_it_judged`: `assert None == 65536` (the verdict had no `start`).
   - `test_land_refuses_a_verdict_for_another_row`: `DID NOT RAISE LandError`.
   - `test_land_refuses_a_verdict_for_other_bytes[sha1]`: `DID NOT RAISE LandError`.
   - `test_land_refuses_a_verdict_for_other_bytes[length]`: the regex did not match. The old row-length LandError (`12 bytes of ours for a row of 11 bytes`) fired instead of the verdict refusal.
   - `test_land_refuses_a_verdict_without_its_row_and_bytes`: `DID NOT RAISE LandError`.
   - `test_land_accepts_the_producer_shape` passed, as planned: it pins the producer path.
-- Task 2 (`c6f004e`): the plan expected the test to pass on the code as it stood, and all 7 cases did. To show it can fail, relocs.py was mutated temporarily: `_fixup` returned before resolving the target (rule 4 off) and `_reverse_coverage` returned at once (rule 5 off). All 5 raw cases then failed and both controls still passed. The file was restored with `git checkout -- tools/reverseapoc/relocs.py`, and the suite ran green again before the commit.
+- Task 2 (`afddead`): the plan expected the test to pass on the code as it stood, and all 7 cases did. To show it can fail, relocs.py was mutated temporarily: `_fixup` returned before resolving the target (rule 4 off) and `_reverse_coverage` returned at once (rule 5 off). All 5 raw cases then failed and both controls still passed. The file was restored with `git checkout -- tools/reverseapoc/relocs.py`, and the suite ran green again before the commit.
 
 ## Files Created/Modified
 
@@ -149,7 +149,7 @@ pytest's console report is not one of the formats `check tdd-red-evidence` suppo
 
 ## Deviations from Plan
 
-- **Orchestrator ruling F24: defaults for the new fields.** `RelocResult` gains `start: int | None = None`, `length: int | None = None` and `sha1: str | None = None`, so check.py:300's positional construction is untouched. `land` refuses, with a LandError naming the row, any ok verdict whose start, length or sha1 is missing or differs from the LandedFunction (`test_land_refuses_a_verdict_without_its_row_and_bytes` is the added test for the missing case). The helper at tests/test_land.py:68 (`forged`) now builds complete verdicts through `verdict_for`. Commits `80c5789`, `884e810`.
+- **Orchestrator ruling F24: defaults for the new fields.** `RelocResult` gains `start: int | None = None`, `length: int | None = None` and `sha1: str | None = None`, so check.py:300's positional construction is untouched. `land` refuses, with a LandError naming the row, any ok verdict whose start, length or sha1 is missing or differs from the LandedFunction (`test_land_refuses_a_verdict_without_its_row_and_bytes` is the added test for the missing case). The helper at tests/test_land.py:68 (`forged`) now builds complete verdicts through `verdict_for`. Commits `024f11d`, `35a4cb5`.
 
 ### Auto-fixed Issues
 
@@ -158,25 +158,25 @@ pytest's console report is not one of the formats `check tdd-red-evidence` suppo
 - **Issue:** `test_mutated_byte_changes_the_sha1` paired the good verdict with changed bytes. GREEN now correctly refuses that pairing before the SHA-1 gate is reached, so the test no longer exercised what it is named for.
 - **Fix:** it now forges a complete verdict for the changed bytes (`verdict_for`, with the good check's fields), so it still proves that the SHA-1 compare is independent of the check.
 - **Files modified:** tests/test_land.py
-- **Commit:** `884e810`
+- **Commit:** `35a4cb5`
 
 **2. [Rule 2 - Missing test] The `RelocResult` fields are pinned at the producer**
 - **Found during:** Task 1 RED
 - **Issue:** the plan's behaviour list tests land's refusal but not that `check_function` sets the fields.
 - **Fix:** added `test_check_function_names_the_row_and_bytes_it_judged` (in tests/test_land.py, which is inside the plan's files, rather than test_relocs.py).
-- **Commit:** `80c5789`
+- **Commit:** `024f11d`
 
 **3. [Plan text interpretation] Task 2's "deliberately wrong expectation as a second case"**
 - First round: each raw case asserted that the passing expectation raised AssertionError. Review M1 showed that block could never fail. Fix round 1 replaced it with `test_raw_field_failures_come_from_rules_4_and_5`, a real negative case: with rules 4 and 5 monkeypatched off, every refused case passes. The control test (`test_the_same_reference_to_a_named_row_passes`) stays.
 - The expected rule-4 text for an extern at the gap is the real SymbolError, `no game or thunk row starts at 0x00010400`. It is not `unknown symbol`, which the first draft of the test expected.
 
 **4. [Scope] Stale reason in a test comment**
-- tests/test_target.py's 05-18 comment ("our side relocates that field, so objdiff and the relocation check both disagree") repeated the 18a reason. It was reworded in `b10cdbc`. The file is in the plan's list.
+- tests/test_target.py's 05-18 comment ("our side relocates that field, so objdiff and the relocation check both disagree") repeated the 18a reason. It was reworded in `0f905d5`. The file is in the plan's list.
 
-- **Orchestrator ruling (fix round 1, I1): no behaviour change for raw-field functions.** The project's match criterion is byte identity, proven by the relocation check plus the SHA-1 gate. Refusing raw-field functions outright would be a stricter policy, not a correctness fix. So the guarantee was rewritten per raw kind, accurately, in target.py, docs/learnings.md and the test_target.py comments. The reviewer's two probes are pinned as passing tests, with docstrings naming why that is acceptable: the bytes are identical. Commits `fda9fc3`, `8293123`.
+- **Orchestrator ruling (fix round 1, I1): no behaviour change for raw-field functions.** The project's match criterion is byte identity, proven by the relocation check plus the SHA-1 gate. Refusing raw-field functions outright would be a stricter policy, not a correctness fix. So the guarantee was rewritten per raw kind, accurately, in target.py, docs/learnings.md and the test_target.py comments. The reviewer's two probes are pinned as passing tests, with docstrings naming why that is acceptable: the bytes are identical. Commits `d14bff9`, `ae0261e`.
 
 **5. [Fix round 1 - test helper] relocpair.our_module**
-- M2 needed the whole OMF module for `check.checked_functions`, so `our_segment` now delegates to a new `our_module`. tests/relocpair.py is not in the plan's file list; the change is test-only and behaviour-preserving (every relocpair test passes). Commit `7c36461`.
+- M2 needed the whole OMF module for `check.checked_functions`, so `our_segment` now delegates to a new `our_module`. tests/relocpair.py is not in the plan's file list; the change is test-only and behaviour-preserving (every relocpair test passes). Commit `d4e0985`.
 
 ---
 
@@ -185,13 +185,13 @@ pytest's console report is not one of the formats `check tdd-red-evidence` suppo
 
 ## Fix round 1
 
-Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-08.md`. FIX_BASE `6a3a0cc`. The review confirmed the 10b binding is correct and complete.
+Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-08.md`. FIX_BASE `ed967e2`. The review confirmed the 10b binding is correct and complete.
 
 | Finding | What changed | Commit |
 |---------|--------------|--------|
-| I1: the 18a wording overstated the guarantee for both branch kinds | Per-kind guarantee in target.py, docs/learnings.md and test_target.py (comments at :307 and the end-to-end header). `off32 to no row`: rules 4+5 refuse every object. `branch to no row`: rule 4 refuses every fixup; an unrelocated byte-identical displacement passes, and that this does not happen rests on wcc386 relocating every call. `branch outside the code object`: a `_D_` data destination is nameable and passes rule 4. Residual risk bounded by byte identity plus the SHA-1 gate. The probes are pinned: `test_an_unrelocated_branch_to_no_row_passes_the_relocation_check` and `test_a_branch_outside_the_code_object_to_a_data_name_passes_the_relocation_check`, each also asserting that build_patch lands the original bytes | `fda9fc3` (test), `8293123` (docs) |
-| M1: the in-test "second case" could never fail | Removed. Added `test_raw_field_failures_come_from_rules_4_and_5` (rules 4 and 5 monkeypatched off, every refused case passes), which moves the mutation proof into the suite | `fda9fc3` |
-| M2: the producer-shape test rebuilt the call by hand | `test_land_accepts_the_producer_shape` runs `check.checked_functions` (through `check.with_relocs`) on a synthetic `ExeInputs`; `relocpair.our_module` added | `7c36461` |
+| I1: the 18a wording overstated the guarantee for both branch kinds | Per-kind guarantee in target.py, docs/learnings.md and test_target.py (comments at :307 and the end-to-end header). `off32 to no row`: rules 4+5 refuse every object. `branch to no row`: rule 4 refuses every fixup; an unrelocated byte-identical displacement passes, and that this does not happen rests on wcc386 relocating every call. `branch outside the code object`: a `_D_` data destination is nameable and passes rule 4. Residual risk bounded by byte identity plus the SHA-1 gate. The probes are pinned: `test_an_unrelocated_branch_to_no_row_passes_the_relocation_check` and `test_a_branch_outside_the_code_object_to_a_data_name_passes_the_relocation_check`, each also asserting that build_patch lands the original bytes | `d14bff9` (test), `ae0261e` (docs) |
+| M1: the in-test "second case" could never fail | Removed. Added `test_raw_field_failures_come_from_rules_4_and_5` (rules 4 and 5 monkeypatched off, every refused case passes), which moves the mutation proof into the suite | `d14bff9` |
+| M2: the producer-shape test rebuilt the call by hand | `test_land_accepts_the_producer_shape` runs `check.checked_functions` (through `check.with_relocs`) on a synthetic `ExeInputs`; `relocpair.our_module` added | `d4e0985` |
 | M3: `requirements-completed: [AGT-06]` was premature | `requirements-completed: []`, with a note that AGT-06 is partial (06-09, 06-11, 06-16 and 06-27 also carry it) | this SUMMARY commit |
 
 Verification after fix round 1 (host): `uv run pytest -q` 1534 passed, 216 skipped; `uv run ruff check .` all checks passed. The tests went in before the docs fix, as test commits. They pin behaviour that was already correct (no code change), so there is no RED.
@@ -215,7 +215,7 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/relocs.py, tools/reverseapoc/land.py, tools/reverseapoc/target.py, docs/learnings.md, tests/test_land.py, tests/test_target.py, tests/relocpair.py
-- FOUND commits on HEAD: 80c5789, 884e810, c6f004e, b10cdbc, fda9fc3, 7c36461, 8293123
+- FOUND commits on HEAD: 024f11d, 35a4cb5, afddead, 0f905d5, d14bff9, d4e0985, ae0261e
 - tests/test_land.py has `test_land_refuses_a_verdict_for_another_row` and `test_land_refuses_a_verdict_for_other_bytes`. tests/test_target.py has `test_raw_field_reference_fails_check_function`. docs/learnings.md names rule 4 and rule 5. target.py contains `rule 4`.
 
 ---

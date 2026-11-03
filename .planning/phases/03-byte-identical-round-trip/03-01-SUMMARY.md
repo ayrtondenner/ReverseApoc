@@ -18,8 +18,8 @@ actuals:
   tokens: 10400
   tasks: 3
   commits: 5
-plan_head_before: 0eb58d6fab08caa1f672ef7a6630d8712c292474
-plan_head_after: 72f15b475a938a176df3a4f14c17e812928365f9
+plan_head_before: cc33ce25f87fa393779c5e6ea2d4ed5e114cf925
+plan_head_after: 52498043aa9a073213d25770953635fe0995fab6
 
 tech-stack:
   added: []
@@ -149,13 +149,13 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): `reverseapoc rebuild` reassembles each LE from its regions**
-   - RED `41bf5f5` test(03-01): add failing tests for the rebuild tracer
-   - GREEN `6b39282` feat(03-01): rebuild each LE target from its region map into build/
+   - RED `8e9844f` test(03-01): add failing tests for the rebuild tracer
+   - GREEN `8ca84ac` feat(03-01): rebuild each LE target from its region map into build/
 2. **Task 2: region map refuses what it cannot tile and labels every offset**
-   - RED `7a7498b` test(03-01): add failing tests for region map edges and labels
-   - GREEN `b7a325d` feat(03-01): region map refuses what it cannot tile and labels offsets
+   - RED `4038e1b` test(03-01): add failing tests for region map edges and labels
+   - GREEN `f45ebcc` feat(03-01): region map refuses what it cannot tile and labels offsets
 3. **Task 3: prove "rebuilt, not copied"**
-   - `72f15b4` test(03-01): prove the rebuild is reassembled, not copied (pin tests; green on commit, then proven by mutants)
+   - `5249804` test(03-01): prove the rebuild is reassembled, not copied (pin tests; green on commit, then proven by mutants)
 
 ## TDD record
 
@@ -197,7 +197,7 @@ Only the synthetic fixtures catch (b) and (c): the real files have all-zero obj1
 
 None in scope or behaviour. Mechanical notes:
 - The plan's real-file commands use `"$(git rev-parse --path-format=absolute --git-common-dir)/../orig"`. The worktree sandbox refused `git` inside a command substitution, so the commands ran with that expression's resolved value, `C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/.git/../orig` (same directory, still read only).
-- The plan-head ledger file under `.git/worktrees/<id>/` could not be written from the sandbox; the base SHA was taken from the dispatch (`0eb58d6`) and the commit count measured with `git rev-list --count 0eb58d6..HEAD` = 5.
+- The plan-head ledger file under `.git/worktrees/<id>/` could not be written from the sandbox; the base SHA was taken from the dispatch (`cc33ce2`) and the commit count measured with `git rev-list --count cc33ce2..HEAD` = 5.
 
 **Total deviations:** 0 auto-fixed. **Impact:** none.
 
@@ -226,7 +226,7 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 
-All 8 key files exist on disk; all 5 task commits (41bf5f5, 6b39282, 7a7498b, b7a325d, 72f15b4) are ancestors of HEAD; tests/test_hygiene.py passes with this SUMMARY present (24 passed, 3 container-only skips).
+All 8 key files exist on disk; all 5 task commits (8e9844f, 8ca84ac, 4038e1b, f45ebcc, 5249804) are ancestors of HEAD; tests/test_hygiene.py passes with this SUMMARY present (24 passed, 3 container-only skips).
 
 ---
 *Phase: 03-byte-identical-round-trip*

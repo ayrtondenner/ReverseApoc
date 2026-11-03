@@ -19,8 +19,8 @@ actuals:
   tokens: 17100
   tasks: 3
   commits: 8
-plan_head_before: e24d37a624e84c4cc601e0eff8abc7681673f327
-plan_head_after: 01a2100b293c6d6bc58d5cee9efdea3a58fe1de4
+plan_head_before: 46fdcdf1ea072ff4bee65ec9e60a38dd29d74af0
+plan_head_after: 32a5246b38735ec6d14ddc5f2a2cb63ce27a7f17
 
 tech-stack:
   added: []
@@ -136,9 +136,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1: Tracer - read_library walks a LIB** - `c175aad` (test, RED), `1be538d` (feat, GREEN). Tracer gate: interactive, `end-of-phase`, automated-only verify; re-ran it (13 unit, 3 real, ruff clean) and continued.
-2. **Task 2: FIXUPP threads, LIDATA, Easy OMF, BAKPAT, metadata** - `bdf593d` (test, RED), `f15b036` (feat, GREEN), then `82a1651` (test, RED) and `7c10476` (fix, GREEN) for the Easy OMF LIDATA rule.
-3. **Task 3: COMDAT32, normalized hash, LIB386 sweep** - `c4b0eea` (test, RED), `01a2100` (feat, GREEN).
+1. **Task 1: Tracer - read_library walks a LIB** - `4d6f051` (test, RED), `2dd91b6` (feat, GREEN). Tracer gate: interactive, `end-of-phase`, automated-only verify; re-ran it (13 unit, 3 real, ruff clean) and continued.
+2. **Task 2: FIXUPP threads, LIDATA, Easy OMF, BAKPAT, metadata** - `7fd12bf` (test, RED), `9b9ae92` (feat, GREEN), then `319ed07` (test, RED) and `8f3ddd0` (fix, GREEN) for the Easy OMF LIDATA rule.
+3. **Task 3: COMDAT32, normalized hash, LIB386 sweep** - `e1089f7` (test, RED), `32a5246` (feat, GREEN).
 
 ### RED evidence (semantic assessment)
 
@@ -169,27 +169,27 @@ See `key-decisions` in the frontmatter. One decision needs a closer look in revi
 - **Fix:** repeat counts are 32-bit only in the odd (32-bit) record types; Easy OMF widens just the data offset. A test pins it.
 - **Files modified:** tools/reverseapoc/omf.py, tests/omfimage.py (`lidata16`), tests/test_omf.py
 - **Verification:** test RED then GREEN; GRAPH.LIB 10.5 and 10.6 now parse with 0 failures. This is a format rule, not a GRAPH.LIB special case.
-- **Committed in:** `82a1651` (test), `7c10476` (fix)
+- **Committed in:** `319ed07` (test), `8f3ddd0` (fix)
 
 **2. [Rule 1 - Wrong planned fact] "10.6 EMU387.LIB: every module easy_omf True"**
 - **Found during:** Task 3 (pre-RED probe)
 - **Issue:** 10.6 EMU387.LIB has two modules. Only `386inite` carries COMENT 0xAA; `emu387` uses true 32-bit records (0xA1/0xA3/0x9D) and has no 0xAA.
 - **Fix:** `test_emu387_is_easy_omf` pins the measured fact: the Easy OMF modules are exactly `["386inite"]`, every module has a public, and there are no failures. The 11.0 page-512 check is its own test, `test_emu387_page_size_512_in_11_0`.
 - **Files modified:** tests/test_omf_real.py
-- **Committed in:** `c4b0eea`
+- **Committed in:** `e1089f7`
 
 **3. [Rule 2 - Missing critical] Records needed for correct extern numbering and C++ data**
 - **Found during:** Task 2
 - **Issue:** The plan says fixup target names come from the "EXTDEF/LEXTDEF/COMDEF order". COMDEF/LCOMDEF and CEXTDEF also take external numbers, so skipping them would misname every later extern.
 - **Fix:** handlers for COMDEF/LCOMDEF (communal length encoding 0x81/0x84/0x88) and CEXTDEF; GRPDEF/PUBDEF group indexes are validated; `Module.nbkpat_records` counts NBKPAT records (the plan said "record count only"); `Comdat` gained `unmaskable` and `mask` to match `Segment`.
 - **Files modified:** tools/reverseapoc/omf.py, tests
-- **Committed in:** `f15b036`, `01a2100`
+- **Committed in:** `9b9ae92`, `32a5246`
 
 **4. [Rule 1 - Test bug] COMDAT continuation test**
 - **Found during:** Task 3 GREEN
 - **Issue:** my own test placed a 2-byte fixup at offset 4 of a 5-byte COMDAT. The reader correctly raised.
 - **Fix:** moved the fixup to offset 3 and added `test_comdat32_fixup_past_block_raises` to pin the overrun error.
-- **Committed in:** `01a2100`
+- **Committed in:** `32a5246`
 
 **5. [Minor] `OMFFixup` dataclass defined in Task 1**
 - `Segment.mask` and `Segment.fixups` are part of the Task 1 API, so the data type came in Task 1. Decoding came in Task 2, test-first.
@@ -218,7 +218,7 @@ None. Real-file tests skip until `uv run reverseapoc install-watcom <version>` h
 ## Self-Check: PASSED
 
 - Files: tools/reverseapoc/omf.py, tests/omfimage.py, tests/test_omf.py (56 tests collected), tests/test_omf_real.py, tests/conftest.py, this SUMMARY: all present.
-- Commits on this branch since e24d37a: c175aad, 1be538d, bdf593d, f15b036, 82a1651, 7c10476, c4b0eea, 01a2100 (8 task commits), plus this SUMMARY's docs commit.
+- Commits on this branch since 46fdcdf: 4d6f051, 2dd91b6, 7fd12bf, 9b9ae92, 319ed07, 8f3ddd0, e1089f7, 32a5246 (8 task commits), plus this SUMMARY's docs commit.
 - Acceptance greps: `class OMFError(ValueError)`, `REVERSEAPOC_WATCOM_DIR` in conftest, `def requires_version` and `def requires_runner`, `LOC_SIZES|LIDATA_MAX_DEPTH|COMENT_EASY_OMF` (8 lines), `def normalized_object_sha1`: all print.
 
 ---

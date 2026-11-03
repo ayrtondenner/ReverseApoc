@@ -17,8 +17,8 @@ actuals:
   tokens: 2491
   tasks: 3
   commits: 2
-plan_head_before: 2abb069410f761ebd3ed18899093c3eb0be2142e
-plan_head_after: 6a5dc521a56406be464f736f19582135bf9c46ac
+plan_head_before: c67430379057a83fd1d1a4c25318f9a6e08f4621
+plan_head_after: 58b13630dd51307e11b5070baff12489ac4e0604
 
 tech-stack:
   added: []
@@ -151,8 +151,8 @@ I restored the original C from a scratchpad copy (checked with `cmp`), and the c
 ## Task Commits
 
 1. **Task 1 (tracer): candidate scored, unit scaffolded, drafted, linted and checked.** It needed no units.csv/functions.csv re-cut, so it made no commit. The plan has Task 2 commit the C once check says it matches. Tracer gate: an interactive run, `human_verify_mode` end-of-phase, automated-only verify. The verify passed (lint ok, check exit 0), so I expanded.
-2. **Task 2: the TACP match:** `a463163` (feat)
-3. **Task 3: evidence in the docs, graph and both suites:** `6a5dc52` (docs)
+2. **Task 2: the TACP match:** `c0e4b93` (feat)
+3. **Task 3: evidence in the docs, graph and both suites:** `58b1363` (docs)
 
 ## Verification
 
@@ -241,7 +241,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: src/tacp/u_00054f20.c, docs/toolchain.md, docs/matching.md, docs/learnings.md
-- FOUND commits (ancestors of HEAD): a463163, 6a5dc52. `git rev-list --count 2abb069..HEAD` = 2 before this SUMMARY commit.
+- FOUND commits (ancestors of HEAD): c0e4b93, 58b1363. `git rev-list --count c674303..HEAD` = 2 before this SUMMARY commit.
 
 ---
 *Phase: 05-split-and-first-matches*

@@ -27,8 +27,8 @@ actuals:
   tokens: 12366
   tasks: 3
   commits: 4
-plan_head_before: 1cfbaed9cec8860b9391fac8825b679466c51865
-plan_head_after: 48df72042c129ce6e5eb640f77ea603d448bf1b6
+plan_head_before: 12ab6caaa47f1d8ac0a87b03cd362caf1e863298
+plan_head_after: 48d2e3a2f647e57f303c2b37d3495b6946f23f5d
 
 tech-stack:
   added: []
@@ -192,11 +192,11 @@ Cells not from a log, each cited where it appears: the "about two more" skipped 
 
 ## Task Commits
 
-1. **Task 1 (tracer): main-checkout evidence and spike record** - `d7573a2` (docs). The logs are gitignored by design and stay under `build/gate/`.
+1. **Task 1 (tracer): main-checkout evidence and spike record** - `c7648a5` (docs). The logs are gitignored by design and stay under `build/gate/`.
 2. **Task 2 (TDD): toolchain.md result and hygiene tests**
-   - RED `94cb90c` test(04-11): two failing hygiene tests
-   - GREEN `d9b874d` feat(04-11): toolchain.md (and the two matching.md rows, see Deviations)
-3. **Task 3: cflags default, matching.md idioms and pitfalls, learnings** - `48df720` (docs; amended once before the SUMMARY to put the entry naming wpack/env/NT/normalized hash first)
+   - RED `41a4196` test(04-11): two failing hygiene tests
+   - GREEN `04db041` feat(04-11): toolchain.md (and the two matching.md rows, see Deviations)
+3. **Task 3: cflags default, matching.md idioms and pitfalls, learnings** - `48d2e3a` (docs; amended once before the SUMMARY to put the entry naming wpack/env/NT/normalized hash first)
 
 **Plan metadata:** the docs(04-11) commit holding this SUMMARY.
 
@@ -223,11 +223,11 @@ Cells not from a log, each cited where it appears: the "about two more" skipped 
 - **Found during:** Task 2 GREEN
 - **Issue:** Task 2's own test `test_cflags_default_rule_is_documented` requires the spec in docs/matching.md, but matching.md is a Task 3 file; Task 2's verify (whole hygiene file green) could not pass otherwise.
 - **Fix:** the two `| * | <EXE> | wcc386@10.6 | -4r -s -fpi | ...` rows and their note went into the Task 2 GREEN commit; Task 3 wrote the rest of matching.md.
-- **Commit:** d9b874d
+- **Commit:** 04db041
 
 **2. [Minor] probe/README.md corrected (not in the plan's file list)**
 - The "Running the calibration" paragraph said the verb "arrives with plan 04-10"; it now names the verb and says 10.5 is calibrated and byte-identical to 10.6. The controller's notes allowed this.
-- **Commit:** 48df720
+- **Commit:** 48d2e3a
 
 **3. [Minor] Plan text vs current tools**
 - `probe scan` prints seven evidence lines, not five (plan line 113); the docs use all seven.
@@ -266,7 +266,7 @@ None. Contributors with a pre-Phase-4 10.5 install run `uv run reverseapoc insta
 ## Self-Check: PASSED
 
 - Files found: .planning/spikes/004-wibo-watcom/README.md, .planning/spikes/MANIFEST.md, docs/toolchain.md, docs/matching.md, docs/learnings.md, config/cflags.txt, tests/test_hygiene.py, probe/README.md, build/gate/04-native-vs-wibo.txt, build/gate/04-evidence/01..05 logs.
-- Commits d7573a2, 94cb90c, d9b874d, 48df720 are ancestors of HEAD; `git rev-list --count 1cfbaed..HEAD` = 4 before this SUMMARY; no commit deletes a file.
+- Commits c7648a5, 41a4196, 04db041, 48d2e3a are ancestors of HEAD; `git rev-list --count 12ab6ca..HEAD` = 4 before this SUMMARY; no commit deletes a file.
 
 ## Review fix round 1 (2026-10-21)
 
@@ -276,7 +276,7 @@ A review of this plan found wording that overstated the evidence and a test that
 2. **"Proven" default rule (toolchain.md paragraph after the Flags notes, config/cflags.txt comment).** Now "consistent with and supported by the scans, not proven": 10.6 is consistent with the probe (10.5 byte-identical, 11.0 tied at `-4r`) and the linked runtime (10.6, D-07); `-4r` from the register convention plus "no `-5` evidence" (5-dword struct copies use `rep`); the first Phase 5 matches confirm or change the rule.
 3. **learnings.md switch-chain claim.** "Every cell has one ascending chain" now reads "every cell except `-oneatx` (none)", as in 03-probe-calibrate.log, 04-08-SUMMARY and probe/README.md.
 4. **D-02 disposition (toolchain.md Result, "10.6 vs 11.0").** Records that 11.0a/11.0b were not swept and why (11.0 is only a codegen tie at `-4r`; the linked runtime is 10.6 with zero 11.0-only rows); they are swept if the first Phase 5 matches favour 11.0 over 10.6 (trees and manifest entries exist). The cflags.txt comment points to it.
-5. **Hygiene test (tests/test_hygiene.py, commit e9b54d0).** `test_cflags_default_rule_is_documented` now requires the whole rule text (`*  wcc386@10.6  -4r -s -fpi`, whitespace-normalised) as one code span in toolchain.md and, in matching.md, a `*` row per EXE with the same spec and flag set. Fifteen tests pin it: nine drifted rules (`-5r -s`, `-5r -s -fpi`, `-fpi87`, `-3s`, `-zm -zp1`, `-oneatx`, a prefix of the rule, 11.0, 10.5), three drifted matching rows, a missing row, and a flag-reordered row that must pass. RED against the old check: 8 of the 9 drifted rules were not caught.
+5. **Hygiene test (tests/test_hygiene.py, commit df1806e).** `test_cflags_default_rule_is_documented` now requires the whole rule text (`*  wcc386@10.6  -4r -s -fpi`, whitespace-normalised) as one code span in toolchain.md and, in matching.md, a `*` row per EXE with the same spec and flag set. Fifteen tests pin it: nine drifted rules (`-5r -s`, `-5r -s -fpi`, `-fpi87`, `-3s`, `-zm -zp1`, `-oneatx`, a prefix of the rule, 11.0, 10.5), three drifted matching rows, a missing row, and a flag-reordered row that must pass. RED against the old check: 8 of the 9 drifted rules were not caught.
 6. **STATE.md.** The 2026-10-19 BINNT line called the `BINW\WCC386.EXE` compiler "LE" for both versions; it now says LE (10.6) or LX (10.5). Nothing else in STATE.md changed.
 
 Left alone (review Minors 1 and 2): the `-s` "most code" count and the `-fpi` same-object claim still rest on throwaway scratch checks that are not logged under `build/gate/`.

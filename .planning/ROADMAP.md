@@ -57,7 +57,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Spike**: none
 **Plans**: TBD
-**Note**: Built before GSD was set up (commits `d7d4d65`…`e50784f`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
+**Note**: Built before GSD was set up (commits `1543145`…`9754497`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 2: Container and target ingest
 
@@ -73,7 +73,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 **Spike**: none
 **Plans**: TBD
-**Note**: Built before GSD was set up (commits `29f9327` and `8418027`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
+**Note**: Built before GSD was set up (commits `8e8ccb5` and `051bf73`). Verified retroactively; marked complete separately once its `VERIFICATION.md` passes.
 
 ### Phase 3: Byte-identical round trip
 
@@ -418,7 +418,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Source phase:** 04
 **Deferred at:** 2026-10-23 during /gsd-verify-work 04 session completion
 **Follow-ups:**
-- [x] Test 5 (closed by plan 06-07, b328679): Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
+- [x] Test 5 (closed by plan 06-07, e5c25c3): Update docs/toolchain.md (the cc.log bullet) to say --log must name a file: `--log .` or `--log /` is refused before the compile, and an existing folder compiles first and then fails ('Is a directory' in the container, 'Permission denied' on the Windows host); also say the `_append_log` device branch covers directories (deferred 2026-10-23)
 
 ### Phase 999.2: Follow-up — Phase 05 deferred UAT follow-up: Test 1 (BACKLOG)
 
@@ -436,7 +436,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 **Target phase:** 6 (agents start relying on asm/ listings)
 **Deferred at:** 2026-10-24 during /gsd-verify-work 05 session completion
 **Follow-ups:**
-- [x] Test 5 (closed by plan 06-06, a56080d, 6d535c1): `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)
+- [x] Test 5 (closed by plan 06-06, 7fbc2b7, c65533c): `reverseapoc asm` writes a name that SymbolTable.ambiguous lists (`_Alphabet`: UFO2P 0x000C06FA / 0x000C92CD, TACP 0x000C2826 / 0x000CD0AF) as `<kind>_<start>.s`, so no listing overwrites another (one file per functions.csv row), with a test (deferred 2026-10-24)
 
 ### Phase 999.4: Follow-up — Phase 06 deferred UAT follow-up: Test 3 (BACKLOG)
 

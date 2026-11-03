@@ -28,8 +28,8 @@ actuals:
   tokens: 20000
   tasks: 3
   commits: 6
-plan_head_before: ce7fc2dacd79b9f2cfefe62b4aea4676d34c2c13
-plan_head_after: 35fd9069c0a139bb18b06b39343be88ed8cda561
+plan_head_before: 32f56215d7896962cfd1857c5f4a54437366345d
+plan_head_after: e66d0fc2d8937e0e09da7d3dd05f7ee460b958c3
 
 tech-stack:
   added: []
@@ -162,10 +162,10 @@ Execution context nonce: ebf90bafa37f689a
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): one rename proposal becomes one gated commit.** RED `32b2859`, GREEN `b0bdd1b`.
+1. **Task 1 (tracer, TDD): one rename proposal becomes one gated commit.** RED `f0d3c8b`, GREEN `4e4843b`.
    - Tracer feedback gate: interactive, end-of-phase, automated-only verify. I re-ran `uv run pytest -q tests/test_rename.py` (6 passed) and the driver suites (453 passed, 2 skipped), then expanded.
-2. **Task 2 (TDD): collisions, refusals, header proposals, deferral.** RED `791c750`, GREEN `999c9ec`.
-3. **Task 3 (TDD): renames carried into views at landing; own claim never blocks.** RED `e7eee84`, GREEN `35fd906`.
+2. **Task 2 (TDD): collisions, refusals, header proposals, deferral.** RED `bd5569b`, GREEN `1fb8be1`.
+3. **Task 3 (TDD): renames carried into views at landing; own claim never blocks.** RED `e540827`, GREEN `e66d0fc`.
 
 ## TDD evidence (RED)
 
@@ -240,8 +240,8 @@ See key-decisions in the frontmatter.
 
 1. **[Rule 2 - Correctness] Rename claims also mark the coordinator's busy map.**
    - The issue: a claim file alone would let the coordinator hand a renamed unit to another worker mid-rename. That worker's `_claimed` would then stop the night with "already claimed".
-   - Commit `b0bdd1b`.
-2. **[Rule 1 - Bug, self-review] Three failure-path bugs, fixed in `35fd906`.**
+   - Commit `4e4843b`.
+2. **[Rule 1 - Bug, self-review] Three failure-path bugs, fixed in `e66d0fc`.**
    - `_Deferral` (a `_Refusal` subclass) was caught as REFUSED.
    - `pre_gate` was cleared before the commit, so a failing commit could not restore status.csv and the feed.
    - A gate exception did not restore them either.
@@ -299,12 +299,12 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tests/test_rename.py, tools/reverseapoc/driver.py, tools/reverseapoc/unitdefs.py, tools/reverseapoc/attempt.py
-- FOUND commits: 32b2859, b0bdd1b, 791c750, 999c9ec, e7eee84, 35fd906 (`git rev-list --count ce7fc2d..HEAD` was 6 before the SUMMARY commit)
+- FOUND commits: f0d3c8b, 4e4843b, bd5569b, 1fb8be1, e540827, e66d0fc (`git rev-list --count 32f5621..HEAD` was 6 before the SUMMARY commit)
 - No STATE.md or ROADMAP.md change.
 
 ## Fix round 1
 
-FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The findings come from the task review (`review-07-34.md`): two Important issues and two Minors I was asked to fix.
+FIX_BASE was cd50f9f. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The findings come from the task review (`review-07-34.md`): two Important issues and two Minors I was asked to fix.
 
 **Changes.**
 - **I1: `gate --all`'s splices.**
@@ -329,7 +329,7 @@ FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2
   - The commit message (`coauthor()`) and the read of HEAD now run inside the restore path. A raise there puts every path back, restores status.csv and the feed, and stops the night (TOOL).
   - A `_write_plan` failure is now reported as "the proposal's paths could not be written", not as a gate failure.
 
-**RED (`544475e`): 16 failed, 33 passed.**
+**RED (`3067ddd`): 16 failed, 33 passed.**
 - Target `test_gate_sha1s_reads_both_gate_shapes`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0734-fr1.xml`).
 - These failed on assertions:
   - the `gate --all` rename;
@@ -340,7 +340,7 @@ FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2
 - `test_declared_names` failed on AttributeError: it tests new API.
 - `test_rewriting_a_header_may_keep_its_own_names` passed as a pin.
 
-**Fix:** `25800c8`.
+**Fix:** `f8d57ee`.
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_rename.py`: 49 passed. The link test ran, with a directory junction; it did not skip.
@@ -354,7 +354,7 @@ FIX_BASE was d65b874. The branch guard passed: branch `worktree-agent-a7b5b519f2
 
 ## Fix round 2
 
-FIX_BASE was 636f960. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The finding comes from the re-review (`rereview-07-34-r1.md`): one new Important issue in the I2 fix, plus the bounded-read minor.
+FIX_BASE was efe5e61. The branch guard passed: branch `worktree-agent-a7b5b519f2c68f44a`, in the agent namespace. The finding comes from the re-review (`rereview-07-34-r1.md`): one new Important issue in the I2 fix, plus the bounded-read minor.
 
 **Changes.**
 - **I1: a header rewrite was refused because of names its users only use.**
@@ -369,7 +369,7 @@ FIX_BASE was 636f960. The branch guard passed: branch `worktree-agent-a7b5b519f2
   - `proposals.parse_proposals(data)` parses those bytes. `read_proposals` is now these two steps.
   - `driver._read_proposal_file` reads once through `read_bounded` and parses the same bytes, with `parse_proposals` and then line by line, so there is no second read.
 
-**RED (`bbb9fdb`).**
+**RED (`acbf1f9`).**
 - Target `test_header_rewrite_keeps_the_types_its_users_name`: the re-review's probe. It was REFUSED: "snd.h declares mixer, which is already a file-scope name in src/ufo2p/u_00020000.c".
 - Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0734-fr2.xml`).
 - Also failing:
@@ -377,7 +377,7 @@ FIX_BASE was 636f960. The branch guard passed: branch `worktree-agent-a7b5b519f2
   - `test_proposals_are_read_once_and_bounded` (test_proposals.py), on AttributeError: it tests new API.
 - The fix-round-1 collision tests stayed green. They still refuse for the right reason, which is now "declared in include/mix.h" or the unit's own declaration.
 
-**Fix:** `2258aa3`.
+**Fix:** `613bcdd`.
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_rename.py tests/test_proposals.py`: 227 passed.

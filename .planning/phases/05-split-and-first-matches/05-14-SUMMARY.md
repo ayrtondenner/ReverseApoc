@@ -18,8 +18,8 @@ actuals:
   tokens: 14000
   tasks: 3
   commits: 6
-plan_head_before: a6cbc0f0426b24b68ab6aa07e9067bc7bbdd87ee
-plan_head_after: 8c04aa550b3454f086591457f09345bef270ae97
+plan_head_before: 627dee2e6bb7c0ef58fceeb64891e1c79377ceeb
+plan_head_after: 060481b918b54d7360922620c2c01f7fa6abe4de
 
 tech-stack:
   added: []
@@ -154,9 +154,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): unit compile, convert and cut edges plus objdiff and clangd metadata** - RED `8130e2f` (test), GREEN `52249f4` (feat)
-2. **Task 2: D-12 completeness refusal and the unit-name and source checks** - RED `2a30ab5` (test), GREEN `bdee4d2` (feat)
-3. **Task 3: lint, asm, land and regeneration edges, default objects, .gitignore** - RED `ced1dd5` (test), GREEN `8c04aa5` (feat)
+1. **Task 1 (tracer): unit compile, convert and cut edges plus objdiff and clangd metadata** - RED `bc414ed` (test), GREEN `48c7c4c` (feat)
+2. **Task 2: D-12 completeness refusal and the unit-name and source checks** - RED `9907394` (test), GREEN `2c984ef` (feat)
+3. **Task 3: lint, asm, land and regeneration edges, default objects, .gitignore** - RED `d1e2443` (test), GREEN `060481b` (feat)
 
 ## TDD Gate Compliance
 
@@ -178,9 +178,9 @@ See `key-decisions` above. In short: D-12 membership by the functions.csv unit c
 
 ## Deviations from Plan
 
-**Orchestrator ruling F5:** the D-12 check covers every `game` and `thunk` row of a unit; `runtime` and `data-in-code` rows are exempt (`_CHECKED_KINDS`). Test: `test_unit_source_covers_thunk_rows_and_exempts_runtime_and_data`. Commit `bdee4d2`.
+**Orchestrator ruling F5:** the D-12 check covers every `game` and `thunk` row of a unit; `runtime` and `data-in-code` rows are exempt (`_CHECKED_KINDS`). Test: `test_unit_source_covers_thunk_rows_and_exempts_runtime_and_data`. Commit `2c984ef`.
 
-**Orchestrator ruling F8:** the configure.py header/docstring rewrite and the rewrite of the two "Phase 5" wording tests (`test_render_has_phony_targets_and_compile_rules`, `test_no_stale_phase_wording`) happened together in Task 3, so Tasks 1 and 2 ended with the suite green. Commits `ced1dd5`, `8c04aa5`.
+**Orchestrator ruling F8:** the configure.py header/docstring rewrite and the rewrite of the two "Phase 5" wording tests (`test_render_has_phony_targets_and_compile_rules`, `test_no_stale_phase_wording`) happened together in Task 3, so Tasks 1 and 2 ended with the suite green. Commits `d1e2443`, `060481b`.
 
 ### Auto-fixed Issues
 
@@ -189,26 +189,26 @@ See `key-decisions` above. In short: D-12 membership by the functions.csv unit c
 - **Issue:** `FileNotFoundError` for a not-yet-existing output dir (the Phase 3 configure never created it)
 - **Fix:** `args.output.parent.mkdir(parents=True, exist_ok=True)` after all three files are encoded
 - **Verification:** `test_main_creates_the_output_directory`; smoke exits 0 and writes all three files
-- **Committed in:** `52249f4`
+- **Committed in:** `48c7c4c`
 
 **2. [Rule 3 - Blocking] Phase 3 test's monkeypatched render signature**
 - **Found during:** Task 1
 - **Issue:** `test_main_never_truncates_on_an_encoding_failure` replaced `render` with `lambda exes, *, orig:`; main now also passes `units=` and `layout=`
 - **Fix:** the lambda takes `**_units` too; the test's intent (bytes encoded before build.ninja is opened) is unchanged. This is a third touched Phase 3 test besides the two wording tests the plan names.
-- **Committed in:** `52249f4`
+- **Committed in:** `48c7c4c`
 
 **3. [Rule 2 - Missing critical, T-05-31] Paths in the regeneration command are checked like orig**
 - **Found during:** Task 3
 - **Issue:** the `configure` rule writes configure.py, --config and --src paths unquoted into a command
 - **Fix:** `_check_command_path` (the `_SAFE_ORIG` rule plus `_refuse_option_like`) for those three; `_check_orig_dir` now uses it
 - **Verification:** `test_regeneration_rule_refuses_an_unsafe_config_dir` (nothing written)
-- **Committed in:** `8c04aa5`
+- **Committed in:** `060481b`
 
 **4. [Rule 3 - Blocking] plain `python configure.py` could not import reverseapoc**
 - **Found during:** Task 1 (the plan's command is `python configure.py`; configure now imports reverseapoc)
 - **Fix:** when `importlib.util.find_spec("reverseapoc")` is None, `tools/` goes on sys.path; ruff accepts it before the imports
 - **Verification:** `python configure.py --output build/cfg-smoke2/build.ninja` exits 0 with the system Python 3.14
-- **Committed in:** `52249f4`
+- **Committed in:** `48c7c4c`
 
 **5. Interface shape differences from the plan text (no behaviour lost)**
 - `render_objdiff(units)` takes no `base`: UnitBuild paths are already relative to the build.ninja dir, which is objdiff.json's dir. `render_compile_commands(units, base)` as planned.
@@ -243,12 +243,12 @@ Execution context nonce: ba396fd0c5bc0597
 ## Self-Check: PASSED
 
 - FOUND: configure.py, tests/test_configure.py, .gitignore (modified), this SUMMARY
-- FOUND commits: 8130e2f, 52249f4, 2a30ab5, bdee4d2, ced1dd5, 8c04aa5 (ancestors of HEAD)
+- FOUND commits: bc414ed, 48c7c4c, 9907394, 2c984ef, d1e2443, 060481b (ancestors of HEAD)
 - `uv run pytest -q` 1252 passed, 200 skipped; `uv run ruff check .` clean; `git check-ignore` lists both generated files; `grep -n "arrive in Phase 5" configure.py` prints nothing
 
 ## Review fixes (round 1)
 
-Two Important findings in the D-12 completeness check, fixed test-first (RED `fed1fc3`, fix `1a8e891`).
+Two Important findings in the D-12 completeness check, fixed test-first (RED `8783d48`, fix `3af5e22`).
 
 **1. `//` line comments were not blanked.** wcc386 and clang gnu89 accept them, so `// INCLUDE_ASM(func_X);` or a `//`-commented definition counted as marked or defined. `_NOT_CODE` now also blanks `//[^\n]*`, in the same left-to-right alternation as block comments and string/char literals, so a `//` inside a string is not a comment. Comment blanking now keeps line breaks, so directive line numbers stay true.
 Tests: `test_unit_source_ignores_line_comments[marker]` and `[definition]` (both refused as "neither"), `test_unit_source_line_comment_inside_a_string_is_not_a_comment`.

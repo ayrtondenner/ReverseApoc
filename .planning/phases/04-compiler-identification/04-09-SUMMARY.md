@@ -20,8 +20,8 @@ actuals:
   tokens: 8600
   tasks: 2
   commits: 4
-plan_head_before: 7088b0f9524174b8cbf559a42c5eb5a999d7f155
-plan_head_after: a6cb965f46cb647caa42cb2e2fc81d55d620c88f
+plan_head_before: ce0e9e5464178fc3b5a7445f0f53eade1d26a72f
+plan_head_after: ffe4898fdab2cc2aa2631f790096ffc6eb1b8e1b
 
 tech-stack:
   added: []
@@ -141,8 +141,8 @@ The table addresses and priority profiles match the research prototype (04-RESEA
 
 ## Task Commits
 
-1. **Task 1: Tracer - cppscan reads the XI/YI tables through inirt386 and prints a verdict:** `87c528d` (test, RED), `a046803` (feat, GREEN). Tracer gate: the run is interactive, the mode is `end-of-phase` and the verify is automated-only. I re-ran it: 75 synthetic tests passed, the 2 real tests passed with no skip, and the real CLI check printed `C (wcc386)` for both EXEs. Then I continued to Task 2.
-2. **Task 2: C++-only runtime rows, mangled strings and vtable-shaped candidates:** `a0808ad` (test, RED), `a6cb965` (feat, GREEN).
+1. **Task 1: Tracer - cppscan reads the XI/YI tables through inirt386 and prints a verdict:** `fe1cc9e` (test, RED), `d8117db` (feat, GREEN). Tracer gate: the run is interactive, the mode is `end-of-phase` and the verify is automated-only. I re-ran it: 75 synthetic tests passed, the 2 real tests passed with no skip, and the real CLI check printed `C (wcc386)` for both EXEs. Then I continued to Task 2.
+2. **Task 2: C++-only runtime rows, mangled strings and vtable-shaped candidates:** `1938464` (test, RED), `ffe4898` (feat, GREEN).
 
 ### RED evidence (semantic assessment)
 
@@ -169,7 +169,7 @@ See `key-decisions` in the frontmatter. The COMDAT decision is the one to read w
 - **Found during:** Task 1
 - **Issue:** The runtime CSV names the library and version that cppscan opens. A tampered row could point outside the Watcom tree. Two sites for the same bound could also disagree without anyone noticing.
 - **Fix:** The version must be a bare name (`check_versions`) and the resolved library path must stay under `<watcom>/<version>/LIB386`. Bound sites that disagree raise CppScanError. Tests: `test_library_path_must_stay_in_the_tree`, `test_missing_le_fixup_at_a_bound_site`.
-- **Committed in:** `a046803`
+- **Committed in:** `d8117db`
 
 **2. [Minor] tests/cpptree.py added, and a `bounds` field on CppScanReport**
 - The plan's file list names only the test files. The builders live in their own helper (not libtree.py), so they do not conflict with other wave-3 plans and test_cli.py can share them.
@@ -185,7 +185,7 @@ See `key-decisions` in the frontmatter. The COMDAT decision is the one to read w
 
 ## Issues Encountered
 
-- The worktree sandbox refuses `$(git rev-parse ...)` in commands and writes into the shared `.git` directory. I ran the plan's real commands with `../../../orig` and `../../../third_party/watcom` (read-only), and took the plan base (7088b0f) from the dispatch rather than from an on-disk ledger.
+- The worktree sandbox refuses `$(git rev-parse ...)` in commands and writes into the shared `.git` directory. I ran the plan's real commands with `../../../orig` and `../../../third_party/watcom` (read-only), and took the plan base (ce0e9e5) from the dispatch rather than from an on-disk ledger.
 - My first scripted edit of cli.py wrote CRLF line endings (Python text mode on Windows). I normalized it to LF before the commit.
 
 ## User Setup Required
@@ -201,7 +201,7 @@ None.
 ## Self-Check: PASSED
 
 - Files present: tools/reverseapoc/cppscan.py, tests/cpptree.py, tests/test_cppscan.py, tests/test_cppscan_real.py, this SUMMARY. `grep -n "class CppScanError(ValueError)" tools/reverseapoc/cppscan.py` prints line 30.
-- The task commits 87c528d, a046803, a0808ad and a6cb965 are all ancestors of HEAD (`git rev-list --count 7088b0f..a6cb965` = 4). No commit deletes a file. The working tree is clean.
+- The task commits fe1cc9e, d8117db, 1938464 and ffe4898 are all ancestors of HEAD (`git rev-list --count ce0e9e5..ffe4898` = 4). No commit deletes a file. The working tree is clean.
 - Acceptance: `uv run pytest -q tests/test_cppscan.py` gives 18 passed. The `-k "cpp_only or string_counts or vtable or cpp_verdict or empty_tables"` selection gives 7 passed. The real tests give 4 passed with no SKIPPED line. `cppscan --help` lists `--orig`, `--manifest`, `--watcom-dir`, `--runtime` and `--json`. `uv run pytest -q && uv run ruff check .` gives 734 passed, 73 skipped, and ruff is clean.
 
 
@@ -211,7 +211,7 @@ The plan review found one Important defect: the C++-only-module signal read only
 
 ### Changes
 
-- `9c81fa7` fix(04-09), one commit with its tests:
+- `69931a3` fix(04-09), one commit with its tests:
   - **Important (signal not computed).** `scan` now calls `cpp_only_gap(rows, watcom_dir)`. For every Watcom version the runtime map names, `<watcom>/<version>/LIB386` must hold C++ libraries (file name starting PLIB, PLBX or CPLX) and each must parse completely: not an OMF library, a parse error and any unparsed module (what `libmatch.load_libraries` would record as skipped) all count as a gap. A version name that is not a bare directory name raises CppScanError, as before. The reason is stored in `CppScanReport.cpp_only_gap` (empty when the signal was computed) and shown in the text report (`C++-only runtime rows: not computed (...)`) and the JSON (`cpp_only_modules_computed`, `cpp_only_modules_gap`).
   - **Minor 1 (W? end to end).** `test_mangled_names_alone_are_cpp_evidence`: an EXE whose only signal is one `W?abc$` string gets a `C++ evidence:` verdict naming `W? strings x1`. With the `W? strings` entry deleted from `_signals` it fails.
   - **Minor 2 (library/version pairing).** `_init_segment` no longer pairs `row.libraries[0]` with `row.versions[0]`. It tries the (version, library) pairs in row order, versions outermost, keeps the pairs whose library file exists in that version's LIB386, and takes the first one that holds the module's CODE segment. It refuses when no pair exists ("... not found in Watcom ...") or no existing pair holds the segment ("no inirt386 CODE segment ... in <pairs tried>").

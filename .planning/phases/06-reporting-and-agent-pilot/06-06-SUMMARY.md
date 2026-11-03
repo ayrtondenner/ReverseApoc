@@ -19,8 +19,8 @@ actuals:
   tokens: 4481  # chars/4 over the realized diff (17923 bytes, 6 files, +221/-24)
   tasks: 2
   commits: 4
-plan_head_before: a9e13ed54f72aafb7389d1415f1707e516d1581d
-plan_head_after: ec55400151655b6dbfcfa7d801183b728818ae7d
+plan_head_before: 963bb48c124b57b1f9d248ad05f0fb5ba6d6b3ea
+plan_head_after: 65d91cdf3c136c4b66ccc713a646675f3ff4a745
 
 tech-stack:
   added: []
@@ -133,11 +133,11 @@ The full JSON reports (`--top 2000`) of both EXEs are byte-identical before and 
 ## Task Commits
 
 1. **Task 1 (tracer): one listing per row, unique case-insensitively (DI-01)**
-   - RED `a56080d` (test): `test_ambiguous_name_gets_one_listing_per_row`, `test_committed_listing_names_are_unique[ufo2p|tacp]`
-   - GREEN `6d535c1` (fix): `file_name` falls back for names in `symbols.ambiguous`
+   - RED `7fbc2b7` (test): `test_ambiguous_name_gets_one_listing_per_row`, `test_committed_listing_names_are_unique[ufo2p|tacp]`
+   - GREEN `c65533c` (fix): `file_name` falls back for names in `symbols.ambiguous`
 2. **Task 2: scorer and listing minors (rows 9a-9d)**
-   - RED `940b974` (test): the four tests
-   - GREEN `ec55400` (fix): score.py, cli.py, asm.py, x86.py
+   - RED `8c41ac1` (test): the four tests
+   - GREEN `65d91cd` (fix): score.py, cli.py, asm.py, x86.py
 
 ## TDD evidence
 
@@ -181,13 +181,13 @@ The full JSON reports (`--top 2000`) of both EXEs are byte-identical before and 
 - **Fix:** Added `disp_offset` and `imm_offset` to `Insn`, both taken from capstone's detail (defaults of 0 mean none). The module docstring names them.
 - **Files modified:** tools/reverseapoc/x86.py
 - **Verification:** test_x86.py and the full suite pass, and all real listings are unchanged.
-- **Committed in:** ec55400
+- **Committed in:** 65d91cd
 
 **2. [Test setup] a 0x800-page synthetic LE for 9a**
 - **Found during:** Task 2 RED
 - **Issue:** conftest's LE builder always writes 0x1000 pages.
 - **Fix:** The 9a test monkeypatches `conftest.PAGE_SIZE` to 0x800, so the header, page layout and patch mapping all agree. It cuts its own fixup records and code patches at 0x800 and asserts `LE(data).page_size == 0x800`. Nothing in conftest itself changed.
-- **Committed in:** 940b974
+- **Committed in:** 8c41ac1
 
 ---
 
@@ -207,20 +207,20 @@ The full JSON reports (`--top 2000`) of both EXEs are byte-identical before and 
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/asm.py, tools/reverseapoc/score.py, tools/reverseapoc/cli.py, tools/reverseapoc/x86.py, tests/test_asm.py, tests/test_score.py
-- FOUND commits on HEAD: a56080d, 6d535c1, 940b974, ec55400
-- RED commits precede GREEN for both tdd tasks: test(06-06) a56080d < fix(06-06) 6d535c1; test(06-06) 940b974 < fix(06-06) ec55400
+- FOUND commits on HEAD: 7fbc2b7, c65533c, 8c41ac1, 65d91cd
+- RED commits precede GREEN for both tdd tasks: test(06-06) 7fbc2b7 < fix(06-06) c65533c; test(06-06) 8c41ac1 < fix(06-06) 65d91cd
 
 ## Fix round 1
 
-Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-06.md` (approved, minors only). FIX_BASE c0f925f.
+Review: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/review-06-06.md` (approved, minors only). FIX_BASE cd3bc29.
 
 | # | Review minor | Change | Commits |
 |---|---|---|---|
 | 1 | `requirements-completed` premature | Set to `[]`, with a note: AGT-07 and AGT-08 are only partial here. The driver (06-14, 06-25) and the context pack (06-13, 06-15) carry them. | this docs commit |
-| 2 | Case-only clashes caught only by the test (T-06-12) | `write_listings` first names every row through `_listing_files`. If two names are equal under `str.casefold`, it raises `AsmError` naming both addresses, before creating `out_dir` or writing any file. RED: planted `Foo`/`foo` pair. | 82caaad (RED), c16d75c (fix) |
-| 3 | Far pointers break "immediate printed last" | Chose the safe fallback: `_field_operand` returns None for `ljmp`/`lcall`, so every fixup inside a ptr16:32 stays a note. A docstring-only fix would have been wrong, because a sel16 fixup whose value equals the offset renamed the offset part (RED showed `ljmp 0x100:D_00020000` and `lcall 0x100, D_00020000`). The `_substitute` / `_field_operand` docstrings now say so. | 0c86e28 (RED), c16d75c (fix) |
-| 4 | Bare `0x1000` / `- 11` in the 9a test | Named `OFF32_SIZE`, `FRAMED_FIELD = 1 + 2 + 5 + 1`, `FIELD_BEFORE_PAGE` and `LE_PAGE_SIZE`. The `conftest.PAGE_SIZE` patch stays, with a comment: `build_le_image` has no page-size parameter, and that one global drives header field 0x28, the page layout and the patch mapping together. | 3e0acf3 |
-| 5 | Offsets pinned only indirectly; memory push untested | `test_x86.py::test_field_offsets` covers five made-up encodings (`C7 05`, `C7 04 85`, moffs `A1`, `push imm32`, `push eax`). `test_has_chk_needs_a_chk_call` now runs for a register push and a memory push (`FF 35`). Both pin existing behaviour, so there is no RED. | 3e0acf3 |
+| 2 | Case-only clashes caught only by the test (T-06-12) | `write_listings` first names every row through `_listing_files`. If two names are equal under `str.casefold`, it raises `AsmError` naming both addresses, before creating `out_dir` or writing any file. RED: planted `Foo`/`foo` pair. | bbf449d (RED), 5f9d481 (fix) |
+| 3 | Far pointers break "immediate printed last" | Chose the safe fallback: `_field_operand` returns None for `ljmp`/`lcall`, so every fixup inside a ptr16:32 stays a note. A docstring-only fix would have been wrong, because a sel16 fixup whose value equals the offset renamed the offset part (RED showed `ljmp 0x100:D_00020000` and `lcall 0x100, D_00020000`). The `_substitute` / `_field_operand` docstrings now say so. | 478702d (RED), 5f9d481 (fix) |
+| 4 | Bare `0x1000` / `- 11` in the 9a test | Named `OFF32_SIZE`, `FRAMED_FIELD = 1 + 2 + 5 + 1`, `FIELD_BEFORE_PAGE` and `LE_PAGE_SIZE`. The `conftest.PAGE_SIZE` patch stays, with a comment: `build_le_image` has no page-size parameter, and that one global drives header field 0x28, the page layout and the patch mapping together. | 09d0e8c |
+| 5 | Offsets pinned only indirectly; memory push untested | `test_x86.py::test_field_offsets` covers five made-up encodings (`C7 05`, `C7 04 85`, moffs `A1`, `push imm32`, `push eax`). `test_has_chk_needs_a_chk_call` now runs for a register push and a memory push (`FF 35`). Both pin existing behaviour, so there is no RED. | 09d0e8c |
 | - | Late `--top 0` refusal (review minor 4) | Left as written, because the plan mandates it. | - |
 
 Verification after round 1:

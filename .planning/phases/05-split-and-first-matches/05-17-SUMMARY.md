@@ -17,8 +17,8 @@ actuals:
   tokens: 16373
   tasks: 3
   commits: 7
-plan_head_before: 2c027c27e11a7c267f17ba2cae9bffefc01cd151
-plan_head_after: cfef46d355dda5927161e6a39698de3ae85480b3
+plan_head_before: 879ed8379e2462908736846c3aca5f0ab5db03a6
+plan_head_after: 365038a521ae5feece173e33e61a8348776a8eb5
 
 tech-stack:
   added: []
@@ -133,10 +133,10 @@ Execution context nonce: 6114660a28185e3f
 
 ## Task Commits
 
-1. **Task 1 (tracer): the check pipeline on a synthetic unit:** RED `ddedceb`, GREEN `956d0a7`
-2. **Task 2: exit codes, objdiff edge cases, target and land verbs:** RED `221f8f7`, GREEN `2279217`
-3. **Task 3: the logged D-17 sweep:** RED `b578ccb`, GREEN `fb75147`
-4. **Test strengthened after a surviving mutation:** `cfef46d`
+1. **Task 1 (tracer): the check pipeline on a synthetic unit:** RED `7eeb57f`, GREEN `e0ac35b`
+2. **Task 2: exit codes, objdiff edge cases, target and land verbs:** RED `232f8c7`, GREEN `160a925`
+3. **Task 3: the logged D-17 sweep:** RED `ccf4497`, GREEN `c8d2a4f`
+4. **Test strengthened after a surviving mutation:** `365038a`
 
 Tracer gate: an interactive run with `human_verify_mode` end-of-phase and an automated-only verify. After the GREEN commit I re-ran both verify commands (tracer test passed, ruff clean) before starting the expansion.
 
@@ -146,7 +146,7 @@ Tracer gate: an interactive run with `human_verify_mode` end-of-phase and an aut
 - **Task 2 RED:** 12 tests failed on their planned assertions: the `target` and `land` verbs did not exist (argparse exit 2) and `match_percent` was not public. 11 passed at RED: Task 1's `check_unit` already raised CheckError for the unknown unit, compile failure and missing objdiff, and its `land_all` already refused failing functions and skipped EXEs without units.csv.
 - **Task 3 RED:** 8 tests failed with `AttributeError` (no `SWEEP_VERSIONS` or `sweep`) or with argparse exit 2 (no `--sweep`).
 - **Mutation probes after GREEN:**
-  - Dropping `reloc.ok` from `FunctionCheck.ok` survived at first: the splice refusal still failed the result. `cfef46d` now asserts the function verdict itself, and the mutation then fails a test.
+  - Dropping `reloc.ok` from `FunctionCheck.ok` survived at first: the splice refusal still failed the result. `365038a` now asserts the function verdict itself, and the mutation then fails a test.
   - Dropping `refused` from `ExeLand.ok` fails 2 tests.
   - Accepting any `match_percent` value fails 3 tests.
   - All mutations were reverted with `git checkout -- tools/reverseapoc/check.py`.
@@ -183,7 +183,7 @@ See key-decisions in the frontmatter. The ones later plans depend on:
 - **Fix:** `land_all -> list[ExeLand]`, where `ExeLand(exe, result: LandResult, refused)`. `ok` holds only when the SHA-1 matches and nothing was refused. `land` and `check` print each refused function with its problems.
 - **Files modified:** tools/reverseapoc/check.py
 - **Verification:** test_reloc_failure_beats_objdiff, test_land_verb_refuses_a_failing_function, and the `ExeLand.ok` mutation probe
-- **Committed in:** 956d0a7
+- **Committed in:** e0ac35b
 
 **2. [Rule 2 - Missing critical] No defined function is a tool error, and nonsense objdiff values are 0.0**
 - **Found during:** Tasks 1-2
@@ -191,21 +191,21 @@ See key-decisions in the frontmatter. The ones later plans depend on:
 - **Fix:** Such a unit raises CheckError (exit 2). Those `match_percent` values give 0.0 (T-05-37).
 - **Files modified:** tools/reverseapoc/check.py
 - **Verification:** test_absent_percent_or_nonsense_is_zero_not_a_match (5 cases)
-- **Committed in:** 956d0a7, 2279217
+- **Committed in:** e0ac35b, 160a925
 
 **3. [Rule 3 - Blocking] Root options on check, land and the sweep**
 - **Found during:** Task 1
 - **Issue:** The plan's option lists have no way to point the verbs at a test tree.
 - **Fix:** Added `--config`, `--src` and `--build` (all three verbs), and `--watcom-manifest`, `--cflags` and `--log` (check). Each defaults to the repository's own path, so ninja's argv does not change.
 - **Files modified:** tools/reverseapoc/cli.py
-- **Committed in:** 956d0a7, 2279217
+- **Committed in:** e0ac35b, 160a925
 
 **4. [Rule 1 - Bug] A test passed with the gate broken**
 - **Found during:** mutation probe after Task 3
 - **Issue:** see TDD notes.
 - **Fix:** assert `fn.ok` false and the function line `MISMATCH`.
 - **Files modified:** tests/test_check.py
-- **Committed in:** cfef46d
+- **Committed in:** 365038a
 
 ---
 
@@ -214,7 +214,7 @@ See key-decisions in the frontmatter. The ones later plans depend on:
 
 ## Issues Encountered
 
-- The harness refused compound shell commands that wrote under `.git/` (the plan ledger sentinel), so I kept the plan's base SHA (`2c027c2`) and start time in this SUMMARY instead of a ledger file.
+- The harness refused compound shell commands that wrote under `.git/` (the plan ledger sentinel), so I kept the plan's base SHA (`879ed83`) and start time in this SUMMARY instead of a ledger file.
 
 ## Known Stubs
 
@@ -233,7 +233,7 @@ None. objdiff-cli is in the container image; on the host `check` exits 2 and nam
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/check.py, tests/test_check.py, tools/reverseapoc/cli.py
-- FOUND commits: ddedceb, 956d0a7, 221f8f7, 2279217, b578ccb, fb75147, cfef46d (all ancestors of HEAD)
+- FOUND commits: 7eeb57f, e0ac35b, 232f8c7, 160a925, ccf4497, c8d2a4f, 365038a (all ancestors of HEAD)
 - `uv run pytest -q`: 1336 passed, 200 skipped; `uv run ruff check .`: all checks passed
 - Acceptance: Task 2 `-k` selection 21 passed (>= 8); `uv run reverseapoc check ufo2p/nonexistent` exit 2; `-k sweep` 8 passed
 
@@ -263,7 +263,7 @@ Anything else is a mismatch: exit 1, `ok: false`, the row named under `problems`
   - `land` refuses every problem as `REFUSED <name>[ at <va>]: <reason>`;
   - "defines no function" stays exit 2 only when there are no problems either.
 
-**Tests (test-first):** `b9cb6d5` added 7 tests, all failing before the fix:
+**Tests (test-first):** `fe5f058` added 7 tests, all failing before the fix:
 - defined but misnamed: exit 1, naming the row and the stray public;
 - neither exported nor marked;
 - marked stub reported and not landed, while the other function still decides ok;
@@ -272,7 +272,7 @@ Anything else is a mismatch: exit 1, `ok: false`, the row named under `problems`
 - land refuses a misnamed row;
 - land refuses an extra public.
 
-`5117bbb` pinned the result-level gate: a mutation removing `not self.problems` survived at first, because the splice refusal also failed the result. It also tests the by-path configure.py load.
+`0730a18` pinned the result-level gate: a mutation removing `not self.problems` survived at first, because the splice refusal also failed the result. It also tests the by-path configure.py load.
 
 **Commands and output:**
 - `uv run pytest -q tests/test_check.py`: `40 passed in 2.06s`
@@ -280,7 +280,7 @@ Anything else is a mismatch: exit 1, `ok: false`, the row named under `problems`
 - `uv run ruff check .`: `All checks passed!`
 - Mutation `and not self.problems` -> `and True`: `1 failed, 39 passed` (reverted from a scratchpad copy)
 
-**Commits:** `b9cb6d5` (test), `6b64402` (fix), `5117bbb` (test)
+**Commits:** `fe5f058` (test), `6b237fe` (fix), `0730a18` (test)
 
 **Concerns for 05-18:**
 - `check_source` on the cmain386 runtime pair applies the extra-public rule. If Watcom's CMAIN386.C object exports any public besides the cmain386 row's linker name, that public is a mismatch.

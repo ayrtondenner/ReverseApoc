@@ -21,8 +21,8 @@ actuals:
   tokens: 11075
   tasks: 3
   commits: 7
-plan_head_before: 0d0698272a81c121ad2960096e5280a56b7c6f08
-plan_head_after: 1c47087b3d02c95a597d5a00d2fafbce5e238f0f
+plan_head_before: 3b4a3a5022c67ef15d4eddbf2c90e9949a2f9bc1
+plan_head_after: 78f02f866a747904c60a50939912db04b1c286c3
 
 tech-stack:
   added: []
@@ -211,15 +211,15 @@ calibration skipped: 10.5
 ## Task Commits
 
 1. **Task 1: Tracer - `probe scan` counts the idioms in non-library code**
-   - RED `ea51e75` test(04-10): add failing tests for the probe scan of an EXE's non-library code
-   - GREEN `805bf01` feat(04-10): count the probe idioms in an EXE's non-library code with probe scan
+   - RED `7a4dd02` test(04-10): add failing tests for the probe scan of an EXE's non-library code
+   - GREEN `2714da7` feat(04-10): count the probe idioms in an EXE's non-library code with probe scan
 2. **Task 2: Stack-check calls, per-flag evidence lines, consistent cells**
-   - RED `f94203c` test(04-10): add failing tests for stack-check calls, flag evidence and consistent cells
-   - GREEN `4839bae` feat(04-10): stack-check calls by block, per-flag evidence lines and consistent cells
+   - RED `f7b1af8` test(04-10): add failing tests for stack-check calls, flag evidence and consistent cells
+   - GREEN `c2c21b4` feat(04-10): stack-check calls by block, per-flag evidence lines and consistent cells
 3. **Task 3: `probe calibrate` and `probe scan --calibration`**
-   - RED `e586fac` test(04-10): add failing tests for probe calibrate and scan --calibration
-   - GREEN `dfa813d` feat(04-10): probe calibrate and probe scan --calibration on the command line
-   - REFACTOR `1c47087` refactor(04-10): move the runtime-map read and refusal into probe.runtime_rows
+   - RED `3f924a9` test(04-10): add failing tests for probe calibrate and scan --calibration
+   - GREEN `dec3b10` feat(04-10): probe calibrate and probe scan --calibration on the command line
+   - REFACTOR `78f02f8` refactor(04-10): move the runtime-map read and refusal into probe.runtime_rows
 
 **Plan metadata:** committed with this SUMMARY (docs(04-10)).
 
@@ -234,7 +234,7 @@ calibration skipped: 10.5
   - `rep_movsd_small == 0` failed: the measured value is 4 and 2.
   - The consistent-cells "no 11.0 / no -4r" assertions failed: the measured value is the ten-cell list.
   The counters, the rule and the runtime maps were not changed.
-- **REFACTOR.** `1c47087` only moves code. It was pinned by the CLI tests that had failed in RED (missing map message, default path).
+- **REFACTOR.** `78f02f8` only moves code. It was pinned by the CLI tests that had failed in RED (missing map message, default path).
 - **Tracer gate:** interactive run, `end-of-phase` mode, automated-only verify. The Task 1 verify was re-run after its GREEN commit and passed, so expansion continued.
 
 ## Files Created/Modified
@@ -257,7 +257,7 @@ See `key-decisions` in the frontmatter.
 - **Found during:** Task 1
 - **Issue:** the plan's action names only `exclude`. Without a mask, relocated operand bytes could be read as idioms.
 - **Fix:** the mask is every LE fixup byte inside the code object (the "production mask" the plan's context names), pinned by `test_scan_masks_le_fixup_bytes`.
-- **Commit:** 805bf01
+- **Commit:** 2714da7
 
 **2. ProbeError arrived in Task 1, not Task 3.** The Task 1 missing-runtime refusal needed an error class in main()'s tuple. Task 3 then used it for the calibration JSON.
 
@@ -271,7 +271,7 @@ See `key-decisions` in the frontmatter.
 - `scan --json --calibration` adds `consistent`, `ties` and `calibration_skipped` keys.
 - The text output adds a `calibration skipped:` line per skipped version.
 
-**5. Refactor: `probe.runtime_rows`.** The plan's key link expects `read_runtime_csv(` in probe.py, so the read-and-refuse helper moved from cli.py into probe.py (1c47087, no behaviour change).
+**5. Refactor: `probe.runtime_rows`.** The plan's key link expects `read_runtime_csv(` in probe.py, so the read-and-refuse helper moved from cli.py into probe.py (78f02f8, no behaviour change).
 
 ### Real assertions recorded as measured (not code deviations)
 
@@ -281,7 +281,7 @@ See `key-decisions` in the frontmatter.
 ### Environment adaptations
 
 - The sandbox refused the plan's `$(git rev-parse --path-format=absolute --git-common-dir)/../...` form, as in earlier waves. Every real test and command ran with `REVERSEAPOC_ORIG=../../../orig` and `REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom` (or `--orig ../../../orig` / `--watcom-dir ../../../third_party/watcom`) from the worktree root, read-only. The gate log names the main checkout's 10.6 and 11.0 trees.
-- I did not write the plan-commit ledger file. Commits are measured against the dispatch base: `git rev-list --count 0d06982..HEAD` = 7 before this SUMMARY.
+- I did not write the plan-commit ledger file. Commits are measured against the dispatch base: `git rev-list --count 3b4a3a5..HEAD` = 7 before this SUMMARY.
 
 ---
 
@@ -309,7 +309,7 @@ None.
 ## Self-Check: PASSED
 
 - Files exist: tools/reverseapoc/probe.py, tools/reverseapoc/cli.py, tests/test_probe.py, tests/test_probe_real.py, tests/test_cli.py, config/ufo2p/runtime.csv, config/tacp/runtime.csv, and this SUMMARY.
-- Commits ea51e75, 805bf01, f94203c, 4839bae, e586fac, dfa813d and 1c47087 are ancestors of HEAD. No plan commit deletes a file.
+- Commits 7a4dd02, 2714da7, f7b1af8, c2c21b4, 3f924a9, dec3b10 and 78f02f8 are ancestors of HEAD. No plan commit deletes a file.
 - Acceptance checks:
   - `uv run pytest -q tests/test_probe.py -k scan`: 4 passed. `-k "chk or flag_evidence or consistent"`: 8 passed.
   - `probe scan --help` lists --orig, --manifest, --runtime, --calibration and --json. `probe --help` lists calibrate and scan. `probe calibrate --help` lists --versions, --manifest, --watcom-dir, --output and --json (tested).
@@ -325,8 +325,8 @@ The 04-10 review found that the struct-copy reading 04-11 would use understates 
 
 | Commit | Change |
 |---|---|
-| `0fe2dfc` test(04-10) | Failing tests first: synthetic encodings for the run-length histogram and the sized rep-copy recogniser, the sibling evidence line, the scan JSON key and the new header. Real tests pin the measured breakdown per EXE and check the breakdown on the probe's own objects. Seen failing against the pre-fix code: 16 failed (missing `copy_sizes`, JSON key, line and header), every older test passed. |
-| `ca2486f` fix(04-10) | `probe.copy_sizes` and `CopySizes`; `ExeScan.copy_sizes`; `struct_copy_sizes` in the scan JSON; a `struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):` line right after the `cpu:` line; the header `consistent (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines): N of M calibration cells`. *(Superseded in fix round 2: the header is now `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`.)* |
+| `8674f8c` test(04-10) | Failing tests first: synthetic encodings for the run-length histogram and the sized rep-copy recogniser, the sibling evidence line, the scan JSON key and the new header. Real tests pin the measured breakdown per EXE and check the breakdown on the probe's own objects. Seen failing against the pre-fix code: 16 failed (missing `copy_sizes`, JSON key, line and header), every older test passed. |
+| `cb46104` fix(04-10) | `probe.copy_sizes` and `CopySizes`; `ExeScan.copy_sizes`; `struct_copy_sizes` in the scan JSON; a `struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom):` line right after the `cpu:` line; the header `consistent (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines): N of M calibration cells`. *(Superseded in fix round 2: the header is now `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`.)* |
 
 ### What the sized count recognises
 
@@ -395,7 +395,7 @@ TACP:  struct-copy sizes (cpu -4/-5 evidence, not a calibrated idiom): unrolled 
 
 The re-review of round 1 found that the new header broke this plan's committed Task 3 verify (`grep -q "^consistent:"`, 04-10-PLAN.md:195), plus three smaller points in the sized-copy reading. Under the controller's ruling the counters, the consistency rule, the calibration and the JSON are unchanged.
 
-- **Header keeps the `consistent:` prefix.** `probe scan --calibration` now prints `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`. The qualifier moved after the count, so the line still starts `consistent:`. The cell lines and the `ties:` line are unchanged, and the JSON never carried the header. Commit `df52a39` fix(04-10). `test_probe_scan_with_calibration` pins the line and now selects it by `startswith("consistent:")`; it was seen failing against the round 1 wording first. The round 1 mentions of the old header above (frontmatter, key-link check, Self-Check, the round 1 table) are marked superseded in place.
+- **Header keeps the `consistent:` prefix.** `probe scan --calibration` now prints `consistent: N of M calibration cells (decisive idiom families byte_compare, struct_copy only; not checked against the other evidence lines)`. The qualifier moved after the count, so the line still starts `consistent:`. The cell lines and the `ties:` line are unchanged, and the JSON never carried the header. Commit `5df2178` fix(04-10). `test_probe_scan_with_calibration` pins the line and now selects it by `startswith("consistent:")`; it was seen failing against the round 1 wording first. The round 1 mentions of the old header above (frontmatter, key-link check, Self-Check, the round 1 table) are marked superseded in place.
 - **UFO2P's `-4r` rests on about four sites in two regions, not two.** The round 1 line on the loose 5-dword pairs said UFO2P's 3 skipped ones have no load ending at the `rep movsd`. For two of them that is wrong. Both the `mov ecx,5` pairs at 0xa3a33 and 0x73f09 also load esi and edi, so they are likely 5-dword copies. The recogniser skips them because an instruction it does not accept (a byte load at 0xa3a33, shift/sub/add at 0x73f09) sits between the count and the `rep movsd`. They sit next to the two recognised `5+2` copies: 0xa3a33 and the recognised 0xa3bc8 and 0xa49f8 are within 4 KiB (block 0xa0000), and 0x73f09 is a second region. The fifth loose pair (0x23df7) does not decode as a setup. The direction is unchanged (no unrolled run of 5 or more in either EXE), but the evidence is stronger than "two sites". The same line's TACP detail is also corrected: its 2 skipped pairs have `lea esi` and two 32-bit stores after the count, not three loads.
 - **Scope of the size calibration.** The size table and `test_calibration_copy_sizes` cover Watcom 10.6 and 11.0 only. 10.5 is uncalibrated (the gate refused its install), so nothing here says 10.5 shares the 5-dword rep/unroll split. Plan 04-11 re-checks it after it reinstalls 10.5. Read "Phase 5 matches confirm it" in the round 1 conclusion as "will confirm".
 

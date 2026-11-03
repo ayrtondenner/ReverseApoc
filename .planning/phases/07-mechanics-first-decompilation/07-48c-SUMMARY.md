@@ -18,11 +18,11 @@ provides:
 affects: ["Task 2b (the 18 -oneatx rows plus tacp 0x0001E860)", "flags approve", "stats (AGT-11 classes)"]
 
 actuals:
-  tokens: 16236  # chars/4 over `git diff d1a8e19 fccbc67` (64945 chars)
+  tokens: 16236  # chars/4 over `git diff e015096 648ea5b` (64945 chars)
   tasks: 3
-  commits: 5  # MEASURED: git rev-list --count d1a8e19..HEAD at SUMMARY write; the SUMMARY commit follows
-plan_head_before: d1a8e19e30b80703fd172362266329558f01c060
-plan_head_after: fccbc67abfa9490ae785b87ffa76e62ff7a14b53
+  commits: 5  # MEASURED: git rev-list --count e015096..HEAD at SUMMARY write; the SUMMARY commit follows
+plan_head_before: e0150960d5fae00cc1f24dbfb12803c9cb710084
+plan_head_after: 648ea5b5c31be6d077c7c1e9ff773db495b25c49
 
 tech-stack:
   added: []
@@ -153,13 +153,13 @@ Bundle nonce: c9a7f0592875
 - **Queue schema.** `Proposal.author: str = ""` is the last field; `OPTIONAL_FIELDS = {"author": ""}`; `FIELDS` stays the 24 required keys. `_proposal` accepts the required keys plus any optional one; `format_queue` writes an optional key only when it differs from its default; `_field_problem` requires `author in ("", *AUTHORS)` and `(source == "batch") == (author != "")`.
 - **Queue compatibility evidence.** `read_queue(config/cflags-proposals.toml)` gives 44 entries, every author "", and `format_queue` reproduces the file byte for byte (test_committed_queue_round_trips_byte_identical, and the acceptance one-liner). `cmp config/cflags-proposals.toml build/gate/07-evidence/48c-queue-before.toml` passes.
 - **Approve.** For `source == "batch"`, `_approvable` builds `_Landing(p, _landing_source(...), (), BY_HAND_ATTEMPTS)` without `_hitting_attempts`/`_coauthors` (attempts.jsonl is read only for sweep proposals); every other refusal (regated exit 0, today's cflags sha, one per unit, the candidate's sha, drive lock, claim env, owner name, lint, container gate) holds for both. `_approve_message` writes `f"{MATCHED_BY_KEY} {p.author}"` then Flags-Approved-By; `MATCHED_BY_KEY` is derived from `driver.MATCHED_BY` (`grep -c '"Matched-By' flags.py` is 0). `Proposal.line()` shows `  author <author>`; `_confirmation` names it. stats then classes such a landing human-written.
-- **regate** is byte-identical: the `# ---- regate` .. `CFLAGS = ` section (320 lines) cmp-equal to d1a8e19's.
+- **regate** is byte-identical: the `# ---- regate` .. `CFLAGS = ` section (320 lines) cmp-equal to e015096's.
 
 ## Task Commits
 
-1. **Task 1 (tracer): flags propose --from-batch** - `bd43eed` (test, RED), `ff5e82c` (feat, GREEN)
-2. **Task 2: the batch landing trailer** - `78a4156` (test, RED), `27bc9f5` (feat, GREEN)
-3. **Task 3: docs** - `fccbc67` (docs)
+1. **Task 1 (tracer): flags propose --from-batch** - `ad30b23` (test, RED), `76f18d5` (feat, GREEN)
+2. **Task 2: the batch landing trailer** - `b410ddf` (test, RED), `3d819c7` (feat, GREEN)
+3. **Task 3: docs** - `648ea5b` (docs)
 
 **Plan metadata:** the SUMMARY commit `docs(07-48c): complete the batch-sourced flag proposals plan`, then STATE/ROADMAP.
 
@@ -175,18 +175,18 @@ Bundle nonce: c9a7f0592875
 
 | Run | Result |
 |---|---|
-| host `uv run pytest -q -rs` (48c-host.log, head fccbc67) | 4412 passed, 41 skipped, exit=0; every skip an R-A reason (Ghidra, run in the container, only inside the container, POSIX-only, Windows file names, non-UTF-8 names, symlink privileges) |
+| host `uv run pytest -q -rs` (48c-host.log, head 648ea5b) | 4412 passed, 41 skipped, exit=0; every skip an R-A reason (Ghidra, run in the container, only inside the container, POSIX-only, Windows file names, non-UTF-8 names, symlink privileges) |
 | host `uv run ruff check .` (48c-ruff.log) | exit=0 |
 | `docker compose build` (48c-container-build.log) | exit=0 |
-| container suite + ruff (48c-container.log, head fccbc67) | 4451 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff green, exit=0 |
-| container `gate --all` before (48c-gate-all-before.log, d1a8e19) | exit=0; `OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 57`; `OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 38` |
-| container `gate --all` after (48c-gate-all-after.log, fccbc67) | exit=0; the same two lines: UFO2P sha1 e7488bf3...c56 landed 57, TACP sha1 48ef0096...393 landed 38 |
+| container suite + ruff (48c-container.log, head 648ea5b) | 4451 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff green, exit=0 |
+| container `gate --all` before (48c-gate-all-before.log, e015096) | exit=0; `OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 57`; `OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 38` |
+| container `gate --all` after (48c-gate-all-after.log, 648ea5b) | exit=0; the same two lines: UFO2P sha1 e7488bf3...c56 landed 57, TACP sha1 48ef0096...393 landed 38 |
 
-**48c-gate-all.diff**: three hunks, all run noise. Lines 1-2: the compose run container name (`reverseapoc-build-run-aff0ad9b2a10` before, `-104a60b319c4` after) on its Creating and Created lines. Line 4: uv's `Checked 8 packages in 4ms` before, `3ms` after. No function line differs; newly passing functions: none (none expected). config/, src/, the feed and configure.py are unchanged since d1a8e19; `check-orig` OK.
+**48c-gate-all.diff**: three hunks, all run noise. Lines 1-2: the compose run container name (`reverseapoc-build-run-aff0ad9b2a10` before, `-104a60b319c4` after) on its Creating and Created lines. Line 4: uv's `Checked 8 packages in 4ms` before, `3ms` after. No function line differs; newly passing functions: none (none expected). config/, src/, the feed and configure.py are unchanged since e015096; `check-orig` OK.
 
 ## Review
 
-Code review deferred to the orchestrator (orchestrator ruling: the executor runs no `/code-review`). Command: `/code-review` at the default level over `git diff d1a8e19...HEAD` (tools/reverseapoc/flags.py, cli.py, batch.py and the three test files).
+Code review deferred to the orchestrator (orchestrator ruling: the executor runs no `/code-review`). Command: `/code-review` at the default level over `git diff e015096...HEAD` (tools/reverseapoc/flags.py, cli.py, batch.py and the three test files).
 
 ## Files Created/Modified
 
@@ -210,12 +210,12 @@ Code review deferred to the orchestrator (orchestrator ruling: the executor runs
 **1. [Rule 1 - Bug] Test fixture: two open proposals on one unit**
 - **Found during:** Task 1 GREEN
 - **Issue:** test_queue_round_trips_a_batch_proposal put the batch proposal on the sweep proposal's unit, which `_check_queue` correctly refuses.
-- **Fix:** the batch proposal moved to u_00010000. Committed in `ff5e82c`.
+- **Fix:** the batch proposal moved to u_00010000. Committed in `76f18d5`.
 
 **2. [Rule 1 - Bug] Test helper: git's trailing newline**
 - **Found during:** Task 2 GREEN
 - **Issue:** `git log --format=%B` ends in a blank line, so the trailer-block slice was empty.
-- **Fix:** the helper strips trailing newlines before splitting. Committed in `27bc9f5`.
+- **Fix:** the helper strips trailing newlines before splitting. Committed in `3d819c7`.
 
 No fix-forward commit after the done gate.
 
@@ -249,7 +249,7 @@ All from the main checkout's root after this plan is on main. One author per bat
    uv run reverseapoc flags propose --from-batch build/48c-2b/agents.jsonl --cell "-4r -oneatx -s -fpi" --author "claude subagent (spike 011)"
    ```
 3. **Re-gate** the new ids in the container: `docker compose run --rm build bash -lc "uv sync --locked && uv run reverseapoc flags regate F-0045 F-0046 ..."`. A proposal whose regate fails (a broken matched sibling, or a declaration clash between a row's C and its unit, which fails the compile and records `failed` with the reason) is reported, not pushed.
-4. **Commit** only config/cflags-proposals.toml, as b006bf3 did (`chore(flags): D-12 proposals ..., re-gated`). Never `flags approve`; the owner approves, and each row lands through approve's gated commit with `Matched-By: <author>`.
+4. **Commit** only config/cflags-proposals.toml, as 1be68fe did (`chore(flags): D-12 proposals ..., re-gated`). Never `flags approve`; the owner approves, and each row lands through approve's gated commit with `Matched-By: <author>`.
 
 Watch for: a unit that holds both a converter row and an agent row gets its proposal from the first run only; the second run reports it `is open` (the queue allows one open proposal per unit). A row whose file defines another row's placeholder is skipped with that name.
 
@@ -259,7 +259,7 @@ Task 2b can start once this branch is on main. The stats classes are unchanged: 
 
 ## Self-Check: PASSED
 
-- All 8 modified files exist; commits bd43eed, ff5e82c, 78a4156, 27bc9f5, fccbc67 are ancestors of HEAD.
+- All 8 modified files exist; commits ad30b23, 76f18d5, b410ddf, 3d819c7, 648ea5b are ancestors of HEAD.
 - Task 1 and Task 2 acceptance criteria and automated verifies re-run green; the regate section cmp-equal; the committed queue cmp-equal to its baseline.
 
 ---

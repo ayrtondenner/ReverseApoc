@@ -16,8 +16,8 @@ actuals:
   tokens: 5600
   tasks: 2
   commits: 5
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: e320cba
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: 4a152d9
 
 tech-stack:
   added: []
@@ -129,13 +129,13 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): v1 and v2 attempt records side by side**
-   - RED `59146f8` test(07-07): add failing tests for v2 attempt records beside v1
-   - GREEN `6f3c142` feat(07-07): validate v2 attempt records beside v1 lines
+   - RED `a744fc5` test(07-07): add failing tests for v2 attempt records beside v1
+   - GREEN `9062676` feat(07-07): validate v2 attempt records beside v1 lines
    - Tracer gate: interactive, `human_verify_mode` end-of-phase, automated-only verify; re-ran `uv run pytest -q tests/test_attempts_schema.py` (68 passed) and expanded.
 2. **Task 2: v2 abort/run/limit/rename kinds and the nightly totals shape**
-   - RED `454123e` test(07-07): add failing tests for v2 abort, run, limit and rename records
-   - GREEN `2e3efd6` feat(07-07): v2 abort, run, limit and rename records and the nightly totals
-   - Pin `e320cba` test(07-07): pin RecordError for a record whose kind is not a string
+   - RED `15fb335` test(07-07): add failing tests for v2 abort, run, limit and rename records
+   - GREEN `093f909` feat(07-07): v2 abort, run, limit and rename records and the nightly totals
+   - Pin `4a152d9` test(07-07): pin RecordError for a record whose kind is not a string
 
 ## TDD Gate Compliance
 
@@ -163,13 +163,13 @@ status: complete
 **1. Orchestrator ruling F12: per-op rename shapes; v2 `abort.function` takes C names.**
 - op `rename`: exe/address/old/new required (old/new C identifiers), path null; op `header`: path required, exe/address/old/new null; unparseable line: op null, exe/address/old/new/path null, outcome REFUSED, reason non-null; commit only for APPLIED. v2 abort `function` relaxed to `_C_NAME`.
 - Tests: `test_rename_record` (six op/outcome shapes) and the rename/header/unparseable rows of `BAD_V2`; `test_v2_abort_record` checks a renamed name.
-- Commits: `454123e` (RED), `2e3efd6` (GREEN).
+- Commits: `15fb335` (RED), `093f909` (GREEN).
 
 **2. [Rule 1 - Bug] A record whose `kind` is unhashable (e.g. a list) raised TypeError, not RecordError.**
 - Found during: Task 1 (rewriting the kind lookup into `_record_fields`).
-- Fix: a non-string kind is an unknown kind (RecordError). Pinned by the `unhashable kind` row of `BAD` in `e320cba`. A test written after the fix (characterisation); on the base commit `dict.get` with a list raises TypeError, which `pytest.raises(RecordError)` does not catch.
+- Fix: a non-string kind is an unknown kind (RecordError). Pinned by the `unhashable kind` row of `BAD` in `4a152d9`. A test written after the fix (characterisation); on the base commit `dict.get` with a list raises TypeError, which `pytest.raises(RecordError)` does not catch.
 
-**3. Test refinements inside the Task 2 GREEN commit.** Two refusal messages were reworded while GREEN ("an APPLIED rename names its commit", "a STOPPED record needs its totals") and the `by_session` refusal case was tightened so only the key is wrong (a valid share under an unknown session kind). Both are in `2e3efd6`.
+**3. Test refinements inside the Task 2 GREEN commit.** Two refusal messages were reworded while GREEN ("an APPLIED rename names its commit", "a STOPPED record needs its totals") and the `by_session` refusal case was tightened so only the key is wrong (a valid share under an unknown session kind). Both are in `093f909`.
 
 **Total deviations:** 1 orchestrator ruling applied, 1 auto-fixed (Rule 1), 1 process note. **Impact:** F12 makes the schema fit what 07-34 and 07-23 write; no scope creep.
 
@@ -187,7 +187,7 @@ R-B: no docker in worktrees. After merge, run: `docker compose run --rm test` (t
 - `uv run pytest -q tests/test_attempts_schema.py`: 111 passed.
 - `uv run pytest -q` (host, worktree): 2755 passed, 229 skipped before the last pin commit; every skip is a pre-existing real-file or tool skip (orig/ EXEs, Watcom installs, watcom-media, the POSIX-only taskkill test). No new skip reason.
 - `uv run ruff check .`: all checks passed.
-- `git diff 0f9de36 HEAD -- progress/attempts.jsonl`: empty (no committed line rewritten).
+- `git diff 99f4659 HEAD -- progress/attempts.jsonl`: empty (no committed line rewritten).
 - Acceptance: `RECORD_FIELDS_V2` and `SCHEMA_V2 = 2` present; `KIND_LIMIT = "limit"` and `KIND_RENAME = "rename"` present (driver.py:416-417); `test_committed_log_follows_the_schema` passes on the 42 committed lines.
 
 ## Known Stubs
@@ -207,7 +207,7 @@ Execution context nonce: ba2304cc8a42a495
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/driver.py, tests/test_attempts_schema.py
-- FOUND commits: 59146f8, 6f3c142, 454123e, 2e3efd6, e320cba (all ancestors of HEAD)
+- FOUND commits: a744fc5, 9062676, 15fb335, 093f909, 4a152d9 (all ancestors of HEAD)
 
 ---
 *Phase: 07-mechanics-first-decompilation*

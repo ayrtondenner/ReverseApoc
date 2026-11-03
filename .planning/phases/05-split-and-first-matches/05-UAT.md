@@ -28,7 +28,7 @@ result: pass
 note: The 7 rows are the only disagreements with no LE evidence that the runtime rule does not settle (evidence column empty). 2 capstone (shared exit blocks 0x0007BDB7 / 0x00028CA7) and 5 ghidra (reached through a stub or thunk, or called from code the capstone descent did not reach).
 
 ### 4. Decide on the superseded 05-08 truth (raw fields instead of refusal)
-expected: The owner accepts that build_target leaves a branch or off32 field whose destination is in no functions.csv row (or outside the code object) raw and lists it in raw_fields (since e5120a9, plan 05-18), instead of refusing the unit as 05-08 planned, and an `overrides:` entry is added to 05-VERIFICATION.md; or asks for the refusal back. The relocation check still fails such references (relocs rules 4/5), so no false match is possible on them.
+expected: The owner accepts that build_target leaves a branch or off32 field whose destination is in no functions.csv row (or outside the code object) raw and lists it in raw_fields (since 4c98ca0, plan 05-18), instead of refusing the unit as 05-08 planned, and an `overrides:` entry is added to 05-VERIFICATION.md; or asks for the refusal back. The relocation check still fails such references (relocs rules 4/5), so no false match is possible on them.
 result: pass
 note: Owner accepted the deviation; the overrides entry is in 05-VERIFICATION.md frontmatter (accepted 2026-10-24T19:56:37Z). At HEAD all 841 units cut with raw fields none. Milestone 1 converts only the functions in config/mechanics.toml (Phase 7); the others stay stubs.
 

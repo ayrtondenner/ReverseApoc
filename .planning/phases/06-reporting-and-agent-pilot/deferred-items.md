@@ -2,7 +2,7 @@
 
 - 06-16 Task 3: five tests/test_hooks.py tests (plan 06-12) failed in the container.
   status: resolved
-  **Resolved by:** `f9222ad` fix(06-16), orchestrator ruling F2b. These were test-environment defects, fixed in
+  **Resolved by:** `0ed4ec8` fix(06-16), orchestrator ruling F2b. These were test-environment defects, fixed in
   tests/test_hooks.py only; hooks.py, the image, compose, the Dockerfile and the build scripts are unchanged.
   After the fix, build/gate/06-seed/07b-container.log gives 2305 passed, 2 skipped (msvcrt only), ruff clean,
   `exit=0`.

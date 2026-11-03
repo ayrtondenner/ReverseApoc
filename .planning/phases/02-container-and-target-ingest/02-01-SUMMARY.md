@@ -74,7 +74,7 @@ coverage:
     requirement: ING-05
     verification:
       - kind: other
-        ref: "gh run list -> CI success on main for 29f9327 through e50784f"
+        ref: "gh run list -> CI success on main for 8e8ccb5 through 9754497"
         status: pass
     human_judgment: false
 
@@ -89,8 +89,8 @@ status: complete
 
 ## Retroactive note
 
-Built before GSD had project state: commit `29f9327` (container, hash manifest, LE parser and
-CI, 22 files) and `8418027` (CD v1.00 builds
+Built before GSD had project state: commit `8e8ccb5` (container, hash manifest, LE parser and
+CI, 22 files) and `051bf73` (CD v1.00 builds
 added to the manifest). This SUMMARY was written on 2026-10-19 when GSD was bootstrapped, from
 fresh command output on that day.
 
@@ -101,7 +101,7 @@ fresh command output on that day.
 - `uv run reverseapoc check-orig`: UFO2P.EXE, TACP.EXE, SMKP.EXE OK; `3 ok, 0 mismatched, 0 missing`
 - `parse-le orig/UFO2P.EXE`: stub 0x000352a4, LE header 0x00037f34, 303 pages, objects 0x00010000 (vsize 0xbfadd) and 0x000d0000 (vsize 0x181e20), 28197 fixups (sel16 10, ptr16:32 4, off32 28183)
 - `parse-le orig/TACP.EXE`: stub 0x000352a4, LE header 0x00037f34, 666 pages, objects 0x00010000 (vsize 0xc254f) and 0x000e0000 (vsize 0x25f0b0), 24438 fixups (sel16 10, ptr16:32 4, off32 24424)
-- `gh run list`: CI `success` on main for every push from `29f9327` to `e50784f`
+- `gh run list`: CI `success` on main for every push from `8e8ccb5` to `9754497`
 
 ## Findings carried into Phase 3
 

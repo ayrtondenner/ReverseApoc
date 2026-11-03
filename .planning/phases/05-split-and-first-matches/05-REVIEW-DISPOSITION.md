@@ -36,12 +36,12 @@ recorded: 2026-10-24T05:48:26.387Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | bcf46d7 (05-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-01 | info | fixed | 1fecd6b (05-REVIEW-FIX.md; scoped re-review: addressed) |
+| WR-01 | warning | fixed | f317a58 (05-REVIEW-FIX.md; scoped re-review: addressed) |
+| IN-01 | info | fixed | 8131d8c (05-REVIEW-FIX.md; scoped re-review: addressed) |
 | IN-02 | info | deferred | fails closed (jump-table functions refused, never passed); pairing the leading table with its row is Phase 6/7 work |
-| IN-03 | info | fixed | 300ee86 (05-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-04 | info | fixed | aaa08e6 (05-REVIEW-FIX.md; scoped re-review: addressed) |
-| IN-05 | info | fixed | 2d74826 (05-REVIEW-FIX.md; scoped re-review: addressed) |
+| IN-03 | info | fixed | 1bef7c5 (05-REVIEW-FIX.md; scoped re-review: addressed) |
+| IN-04 | info | fixed | dab3dc1 (05-REVIEW-FIX.md; scoped re-review: addressed) |
+| IN-05 | info | fixed | 71e228c (05-REVIEW-FIX.md; scoped re-review: addressed) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.

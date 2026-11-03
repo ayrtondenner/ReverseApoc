@@ -16,8 +16,8 @@ actuals:
   tokens: 9000
   tasks: 2
   commits: 2
-plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: b3b4636a0b8118f57ac88bb004656f029195b7b0
+plan_head_before: 69d5878bdc8b0201e2f73f7644e343eef4c15fd2
+plan_head_after: b8448016c68813dbca3a69b0eeecc1918cb8f788
 
 tech-stack:
   added: []
@@ -106,8 +106,8 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1: Tracer, the D-01 code claims through two claim checkers** - `f0f79ea` (test)
-2. **Task 2: WSL2 smoke run, D-02 verdict, MANIFEST row, docs/tools.md result** - `b3b4636` (docs)
+1. **Task 1: Tracer, the D-01 code claims through two claim checkers** - `18990c7` (test)
+2. **Task 2: WSL2 smoke run, D-02 verdict, MANIFEST row, docs/tools.md result** - `b844801` (docs)
 
 ## Files Created/Modified
 
@@ -128,7 +128,7 @@ status: complete
 - **Found during:** Task 2
 - **Issue:** the worktree isolation guard refuses every `wsl` call from the executor.
 - **Fix:** the executor wrote `build/spike006/smoke_wsl.sh` (gitignored, sha256 `8a50e8d18849f053346a63ada8c379ae111161ae0ae14fbf4267e8faca1d055a`) and returned a checkpoint. The orchestrator ran `MSYS_NO_PATHCONV=1 wsl -d ubuntu-recovered -- bash -l /mnt/c/.../build/spike006/smoke_wsl.sh > build/spike006/smoke.log 2>&1` once from the main session, with exit 0. A first attempt without `MSYS_NO_PATHCONV=1` failed before the script started, because Git Bash rewrote the `/mnt/c` path. The verdict rests only on the log and the Task 1 evidence.
-- **Commit:** b3b4636
+- **Commit:** b844801
 
 **2. [Rule 3 - Blocking] The verify lines containing `$(...)` were run with literal paths**
 - **Found during:** Task 1
@@ -170,36 +170,36 @@ Execution context nonce: c222325c277cc369
 ## Self-Check: PASSED
 
 - FOUND: .planning/spikes/006-decompwtf-fork-stub/README.md, stub_regex.py, linker_name.py
-- FOUND: f0f79ea, b3b4636 (ancestors of HEAD)
-- Verified after commit b3b4636: `uv run ruff check .` passed, `uv run pytest -q` passed (1416 passed, 215 skipped), and `tests/test_hygiene.py` passed.
+- FOUND: 18990c7, b844801 (ancestors of HEAD)
+- Verified after commit b844801: `uv run ruff check .` passed, `uv run pytest -q` passed (1416 passed, 215 skipped), and `tests/test_hygiene.py` passed.
 
 ## Fix round 1
 
-Review: `review-06-01.md`, FIX_BASE 9aa28e0. The verdict letter is unchanged.
+Review: `review-06-01.md`, FIX_BASE 0401a69. The verdict letter is unchanged.
 
 | # | Finding | Fix | Commit |
 |---|---------|-----|--------|
-| I1 | Third D-01 claim proven through `csource.replace`, which nothing calls | `replace-appends` replaced by `attempt-inserts` (`old_span` from `self._find(before, ...)`, else `_insert_in_order`) and `insert-keeps-stub` (all 3 returns keep all of `text`; fail-closed only for the shapes it checks, narrowed in fix round 2). Added an `insert-control` planted span-dropping return (refused) and `replace-unused` (0 callers). Both checkers and both `--plant` runs re-run (ALL PASS / `1 FAILED`, exit 1). README output block refreshed from the new `linker_name.out`; README What-This-Validates, step 3, and SUMMARY key-decision, one-liner and accomplishments reworded to "inserted by `_insert_in_order` (stub kept)" | 013cbc8 (scripts), 81f2c3c (README), this commit (SUMMARY) |
-| I2 | PARTIAL ruled out by counting the toolchain against the patch budget | The verdict rests only on D-02's "no build in WSL2". The stub-regex and `name_` patches are named as D-02's PARTIAL list, unsized, left for the Phase 7 re-evaluation (D-03). README verdict, SUMMARY decision and docs/tools.md row updated | 81f2c3c, this commit |
-| m1 | `objdiff.json` placement called an obstacle | README and SUMMARY now say configure.py writes it next to `build.ninja` at the repo root, where `check` looks; it was missing only because no build ran | 81f2c3c, this commit |
+| I1 | Third D-01 claim proven through `csource.replace`, which nothing calls | `replace-appends` replaced by `attempt-inserts` (`old_span` from `self._find(before, ...)`, else `_insert_in_order`) and `insert-keeps-stub` (all 3 returns keep all of `text`; fail-closed only for the shapes it checks, narrowed in fix round 2). Added an `insert-control` planted span-dropping return (refused) and `replace-unused` (0 callers). Both checkers and both `--plant` runs re-run (ALL PASS / `1 FAILED`, exit 1). README output block refreshed from the new `linker_name.out`; README What-This-Validates, step 3, and SUMMARY key-decision, one-liner and accomplishments reworded to "inserted by `_insert_in_order` (stub kept)" | 0ef62bc (scripts), 6a43bfd (README), this commit (SUMMARY) |
+| I2 | PARTIAL ruled out by counting the toolchain against the patch budget | The verdict rests only on D-02's "no build in WSL2". The stub-regex and `name_` patches are named as D-02's PARTIAL list, unsized, left for the Phase 7 re-evaluation (D-03). README verdict, SUMMARY decision and docs/tools.md row updated | 6a43bfd, this commit |
+| m1 | `objdiff.json` placement called an obstacle | README and SUMMARY now say configure.py writes it next to `build.ninja` at the repo root, where `check` looks; it was missing only because no build ran | 6a43bfd, this commit |
 | m3 | `requirements-completed: [AGT-10]` premature | Set to `[]`, with a note: AGT-10 partial (spike only); 06-20, 06-21 and 06-27 also carry it | this commit |
-| m5 | EXPECTED comments in stub_regex.py read opposite to their values | Phrased as the question each value answers | 013cbc8 |
-| m6 | Shape errors always labelled `forkengine.py` | `shaped()` names the file each SpikeError came from (checked against an empty SRC: `FAIL forkengine.py shape expected one app/forkengine.py ...`) | 013cbc8 |
-| m2 | `_FINDER_PREFIX` copied 31 chars of decomp.wtf regex | Removed. The plain-name pattern is now located structurally, as the `re.compile` in the `else` of `find`'s `if "::" in name`. The README output lines that quote `ast.unparse` excerpts are kept and labelled (fix round 2) | 013cbc8, 612cd9d |
+| m5 | EXPECTED comments in stub_regex.py read opposite to their values | Phrased as the question each value answers | 0ef62bc |
+| m6 | Shape errors always labelled `forkengine.py` | `shaped()` names the file each SpikeError came from (checked against an empty SRC: `FAIL forkengine.py shape expected one app/forkengine.py ...`) | 0ef62bc |
+| m2 | `_FINDER_PREFIX` copied 31 chars of decomp.wtf regex | Removed. The plain-name pattern is now located structurally, as the `re.compile` in the `else` of `find`'s `if "::" in name`. The README output lines that quote `ast.unparse` excerpts are kept and labelled (fix round 2) | 0ef62bc, b69a708 |
 | m4 | Lost `tools before install` block | Recorded under Issues Encountered: it can only be recovered by another WSL2 run, which the executor cannot do. A future run should send stderr to its own file. Not run | this commit |
 
 After the fixes: `uv run ruff check .` passed, `uv run pytest -q` passed (1416 passed, 215 skipped), and `tests/test_hygiene.py` passed.
 
 ## Fix round 2
 
-Re-review: `rereview-06-01-r1.md`, FIX_BASE 43a54aa. Both Important findings were confirmed fixed. The verdict is unchanged.
+Re-review: `rereview-06-01-r1.md`, FIX_BASE ef3763a. Both Important findings were confirmed fixed. The verdict is unchanged.
 
 | # | Finding | Fix | Commit |
 |---|---------|-----|--------|
-| N1 | Two stub-dropping mutations still printed ALL PASS, so "fail-closed" said more than the checker proved | Partly hardened: `insert-keeps-stub` now also refuses any store to `text` in `_insert_in_order`. A scratchpad mutant with `text = text.replace("INCLUDE_ASM", "")` now gives `FAIL ... text rebound at lines [1999]`, exit 1. A new `finder-on-marker` claim shows the plain-name finder misses `INCLUDE_ASM(func_000A3980);` for both spellings. The rewrite of `after` in `_attempt` (the `_with_includes` step) is still not checked. The README and this SUMMARY now say "fail-closed only for the shapes it checks", and list what is confirmed by reading the pinned source only, with no claim: `_with_includes` (forkengine.py:278-287) only inserts; `_find` calls `csource.find` (:1499-1504); `find` falls back to `_stub` (csource.py:91) | fd3e056 (script), 612cd9d (README), this commit |
-| m2 | README output lines quote `ast.unparse` excerpts of decomp.wtf | One sentence above the linker_name.py block: those lines quote short excerpts of decomp.wtf v0.10.6 (MIT, © Sam Wolfs) for verification only. m2 row above updated | 612cd9d, this commit |
-| N2 | linker_name.py docstring named only two files | The docstring lists every file read: forkengine.py, csource.py, every `src/decompnet/**/*.py`, our configure.py, and reverseapoc.functions/symbols | fd3e056 |
-| N3 | `replace_callers` could pass on an empty glob | It raises a shape error unless `src/decompnet/app/forkengine.py` is among the scanned files. A scratchpad layout without `src/decompnet/` gives `FAIL package shape src/decompnet/**/*.py ... (0 files) lacks forkengine.py`, exit 1 | fd3e056 |
-| N4 | README.md:161 overlong | Rewrapped; no README prose line is over 100 chars | 612cd9d |
+| N1 | Two stub-dropping mutations still printed ALL PASS, so "fail-closed" said more than the checker proved | Partly hardened: `insert-keeps-stub` now also refuses any store to `text` in `_insert_in_order`. A scratchpad mutant with `text = text.replace("INCLUDE_ASM", "")` now gives `FAIL ... text rebound at lines [1999]`, exit 1. A new `finder-on-marker` claim shows the plain-name finder misses `INCLUDE_ASM(func_000A3980);` for both spellings. The rewrite of `after` in `_attempt` (the `_with_includes` step) is still not checked. The README and this SUMMARY now say "fail-closed only for the shapes it checks", and list what is confirmed by reading the pinned source only, with no claim: `_with_includes` (forkengine.py:278-287) only inserts; `_find` calls `csource.find` (:1499-1504); `find` falls back to `_stub` (csource.py:91) | f83b475 (script), b69a708 (README), this commit |
+| m2 | README output lines quote `ast.unparse` excerpts of decomp.wtf | One sentence above the linker_name.py block: those lines quote short excerpts of decomp.wtf v0.10.6 (MIT, © Sam Wolfs) for verification only. m2 row above updated | b69a708, this commit |
+| N2 | linker_name.py docstring named only two files | The docstring lists every file read: forkengine.py, csource.py, every `src/decompnet/**/*.py`, our configure.py, and reverseapoc.functions/symbols | f83b475 |
+| N3 | `replace_callers` could pass on an empty glob | It raises a shape error unless `src/decompnet/app/forkengine.py` is among the scanned files. A scratchpad layout without `src/decompnet/` gives `FAIL package shape src/decompnet/**/*.py ... (0 files) lacks forkengine.py`, exit 1 | f83b475 |
+| N4 | README.md:161 overlong | Rewrapped; no README prose line is over 100 chars | b69a708 |
 
 Re-runs: `stub_regex.py` ALL PASS (exit 0), with `--plant` 1 FAILED (exit 1). `linker_name.py` ALL PASS on 14 claims (exit 0), with `--plant` 1 FAILED, `finder-linker-name` only (exit 1). The README linker_name.py block was rebuilt from the new `linker_name.out`; the stub_regex.py output did not change. `uv run ruff check .` and `tests/test_hygiene.py` (60 passed, 3 skipped) pass.

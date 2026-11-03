@@ -18,8 +18,8 @@ actuals:
   tokens: 7660
   tasks: 2
   commits: 3
-plan_head_before: a6cbc0f0426b24b68ab6aa07e9067bc7bbdd87ee
-plan_head_after: 2d60e8aabc4a528accc57bce59beb2ea370b64ee
+plan_head_before: 627dee2e6bb7c0ef58fceeb64891e1c79377ceeb
+plan_head_after: c72f79281009f9820cac1ec8c0f485efb96276e0
 
 tech-stack:
   added: []
@@ -55,7 +55,7 @@ coverage:
     requirement: SPL-01
     verification:
       - kind: unit
-        ref: "tests/test_hygiene.py#test_docs_place_ghidra_in_the_image (failed at RED c396653 with 8 hits, passes at e78e7ea)"
+        ref: "tests/test_hygiene.py#test_docs_place_ghidra_in_the_image (failed at RED bd756f3 with 8 hits, passes at 0f79570)"
         status: pass
     human_judgment: false
   - id: D2
@@ -111,11 +111,11 @@ Execution context nonce: e4c43a1b18a20923
 
 ## Task Commits
 
-1. **Task 1 (tracer): stale-phrase test, then the corrections**: `c396653` (test, RED), `e78e7ea` (docs, GREEN). Tracer gate (interactive, `end-of-phase`, automated-only verify): `uv run pytest -q tests/test_hygiene.py` re-run, 59 passed and 3 skipped, then expanded to Task 2.
-2. **Task 2: spike 005 in toolchain.md and the learnings journal**: `2d60e8a` (docs, with `test_toolchain_records_spike_005`).
+1. **Task 1 (tracer): stale-phrase test, then the corrections**: `bd756f3` (test, RED), `0f79570` (docs, GREEN). Tracer gate (interactive, `end-of-phase`, automated-only verify): `uv run pytest -q tests/test_hygiene.py` re-run, 59 passed and 3 skipped, then expanded to Task 2.
+2. **Task 2: spike 005 in toolchain.md and the learnings journal**: `c72f792` (docs, with `test_toolchain_records_spike_005`).
 
 ## TDD notes (RED evidence, semantic assessment)
-- Task 1 RED `c396653`: `uv run pytest -q tests/test_hygiene.py -k ghidra_in_the_image` gave 1 failed, `AssertionError: assert [...8 items...] == []` on the stale-phrase assertion, with the first hit `docs\coding-style.md: Its path is decided in Phase 5`. The target test ran and failed on its planned assertion for the intended reason, with no collection, import or fixture fault. GREEN `e78e7ea`: 59 passed.
+- Task 1 RED `bd756f3`: `uv run pytest -q tests/test_hygiene.py -k ghidra_in_the_image` gave 1 failed, `AssertionError: assert [...8 items...] == []` on the stale-phrase assertion, with the first hit `docs\coding-style.md: Its path is decided in Phase 5`. The target test ran and failed on its planned assertion for the intended reason, with no collection, import or fixture fault. GREEN `0f79570`: 59 passed.
 - `test_toolchain_records_spike_005` (Task 2, a `type="auto"` task) was committed with the doc change. To prove it can fail, I ran it against the base toolchain.md (`git show HEAD:docs/toolchain.md` before the Task 2 edit): that text still holds `The Phase 5 spike decides` (1 hit) and no `005-objdiff-omf-elf` (0 hits), so both assertions would fail.
 
 ## Files Created/Modified
@@ -149,13 +149,13 @@ I also followed the "For 05-16 and 05-15 (notes from 05-12)" items:
   - docs/tools.md's retrokit row was `**Use** (alternative LE loader and export)`, status Phase 5.
 - **Fix:** the pins table now names the loader alone (sha256-pinned), adds clang 18.1.3 and capstone 5.0.9 rows, and marks GhidraMCP Later. The retrokit row is Skip (not used, D-03).
 - **Files modified:** docs/toolchain.md, docs/tools.md
-- **Committed in:** `e78e7ea`
+- **Committed in:** `0f79570`
 
 **2. [Rule 1 - Accuracy] Learnings wording narrowed to what was measured**
 - **Found during:** Task 2
 - **Issue:** a first draft said the loader "refused" the old synthetic fixture. The research says this was read from LeLoader.java and not run against Ghidra.
 - **Fix:** the entry says the loader would refuse it, "read from LeLoader.java's source, not run".
-- **Committed in:** `2d60e8a`
+- **Committed in:** `c72f792`
 
 ---
 
@@ -177,7 +177,7 @@ None.
 - `grep -q "005-objdiff-omf-elf" docs/toolchain.md && grep -qE "^## 2026-1[0-2]-[0-9]{2}: .*(capstone|objdiff|Ghidra|splice)" docs/learnings.md`: exit 0.
 - `uv run pytest -q && uv run ruff check .` in the worktree: 1224 passed, 200 skipped, ruff clean.
   - The skips are the real-file, Ghidra, clang and container-only tests: the worktree has no orig/ or Watcom tree, and this plan changes no code they exercise.
-- `git diff --name-only a6cbc0f..HEAD -- docs/research .planning/research`: empty.
+- `git diff --name-only 627dee2..HEAD -- docs/research .planning/research`: empty.
 
 ## Next Phase Readiness
 - 05-16 can cite docs/toolchain.md "Ghidra and loaders" for the drop-the-data-object-entry rule.
@@ -185,7 +185,7 @@ None.
 
 ## Self-Check: PASSED
 - FOUND: tests/test_hygiene.py, docs/workflow.md, docs/toolchain.md, docs/tools.md, docs/coding-style.md, docs/superpowers/specs/2026-10-19-reverseapoc-design.md, README.md, docs/learnings.md
-- FOUND commits: c396653, e78e7ea, 2d60e8a (`git rev-list --count a6cbc0f..HEAD` = 3 before this SUMMARY commit)
+- FOUND commits: bd756f3, 0f79570, c72f792 (`git rev-list --count 627dee2..HEAD` = 3 before this SUMMARY commit)
 
 ---
 *Phase: 05-split-and-first-matches*

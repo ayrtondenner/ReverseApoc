@@ -418,7 +418,7 @@ Every row ends Phase 6 closed by a commit, or carried forward under an owner rul
   - `objdiff.json` already carries `progress_categories` (ufo2p, tacp);
   - `check_unit_source` L315 refuses a function both defined and marked.
 - `tests/conftest.py`: `ORIG_DIR` and skip helpers (`requires_objdiff`, `requires_runner`, `requires_clang`, `requires_ghidra`, ...).
-- Phase 5 match commits 5ab2e79 and a463163 (`feat(05-18)`, `feat(05-19)`): the shape of a match.
+- Phase 5 match commits f73b50e and c0e4b93 (`feat(05-18)`, `feat(05-19)`): the shape of a match.
 
 ### Established Patterns
 - Stdlib-only Python, tested with pytest; real-file tests skip unless `orig/` exists. CI has no game files.

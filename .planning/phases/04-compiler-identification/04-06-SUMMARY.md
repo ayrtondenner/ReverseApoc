@@ -21,8 +21,8 @@ actuals:
   tokens: 3984
   tasks: 2
   commits: 4
-plan_head_before: 5f2d1866396e45929706467c19f53ad018b4e985
-plan_head_after: 6c4681cd48d93433cc84f9bd95245385ee7426ef
+plan_head_before: bb3000a56bb6ae7426947db63d5c1c0a11c6769c
+plan_head_after: 1ebccf9429b2fc07cf5757876163bf4e2b0a72bd
 
 tech-stack:
   added: []
@@ -128,7 +128,7 @@ status: complete
 - `KeyFile` gains `wpack` (parts in order) and `wpack_member`. `_parse_wpack` checks both fields: the parts must be a list of non-empty strings, the member must be a string, and the two come together or not at all. Each error names the key file.
 - `install_version` calls `_decode_wpack_key_files(media, partial)` after `extract_all` and before the final replace. That runs `decode_member(join_parts(parts), kf.wpack_member, expected_size=kf.size)` and writes the result to `partial / kf.path` only. A missing part, a CRC failure or a size mismatch raises `WatcomError` naming the version, the key file and the parts, and nothing is left behind.
 - When a wpack key file is MISMATCH, `VersionCheck.format()` adds `(re-run \`uv run reverseapoc install-watcom <ver> --force\` to decode it)`.
-- The 10.5 `BINW/WCC386.EXE` is pinned as one reviewed commit (`6c4681c`) that touches only that entry.
+- The 10.5 `BINW/WCC386.EXE` is pinned as one reviewed commit (`1ebccf9`) that touches only that entry.
 
 ## Real-media evidence (D-01)
 
@@ -147,11 +147,11 @@ All numbers come from this plan's run against the owner's ISO, read-only from th
 ## Task Commits
 
 1. **Task 1 (tracer): install-watcom decodes a wpack key file inside the partial tree**
-   - RED `ba5abd8` test(04-06): 15 failing tests (manifest parse/validation, install decode, corrupt/size/missing part, previous install kept, check hint)
-   - GREEN `4e1012c` feat(04-06): watcom.py support plus the manifest header comment (comment only)
+   - RED `65b7ca9` test(04-06): 15 failing tests (manifest parse/validation, install decode, corrupt/size/missing part, previous install kept, check hint)
+   - GREEN `9d8ef7b` feat(04-06): watcom.py support plus the manifest header comment (comment only)
 2. **Task 2: Pin the decoded 10.5 compiler**
-   - RED `9480ec5` test(04-06): test_decoded_compiler_matches_manifest and the updated test_default_manifest_pinned_values, failing against the unpinned manifest
-   - GREEN `6c4681c` feat(04-06): the pin, config/watcom.toml alone, with the derivation in the message
+   - RED `9446247` test(04-06): test_decoded_compiler_matches_manifest and the updated test_default_manifest_pinned_values, failing against the unpinned manifest
+   - GREEN `1ebccf9` feat(04-06): the pin, config/watcom.toml alone, with the derivation in the message
 
 **Plan metadata:** this SUMMARY commit (docs)
 
@@ -178,7 +178,7 @@ All numbers come from this plan's run against the owner's ISO, read-only from th
 **1. [Ordering] Task 2's test commit comes before the pin commit**
 - **Found during:** Task 2, steps 4-5
 - **Issue:** The plan orders the pin commit (step 4) before the tests (step 5). That would leave a commit where `test_default_manifest_pinned_values` fails, and the new tests would never be seen failing (no RED).
-- **Fix:** The values were derived and the banner checked first (steps 2-3), exactly as planned. Then the pinned file was set aside, the HEAD manifest restored, the tests written and run RED against it and committed (`9480ec5`), and finally the pinned manifest restored and committed alone (`6c4681c`).
+- **Fix:** The values were derived and the banner checked first (steps 2-3), exactly as planned. Then the pinned file was set aside, the HEAD manifest restored, the tests written and run RED against it and committed (`9446247`), and finally the pinned manifest restored and committed alone (`1ebccf9`).
 - **Effect on the plan's checks:** none fail. The pin is still one commit touching only the 10.5 BINW entry, it is still separate from the test commit, and the derivation is in its message.
 
 **2. [Rule 2 - Missing critical] Two extra tests in Task 1**
@@ -203,7 +203,7 @@ All numbers come from this plan's run against the owner's ISO, read-only from th
 - `uv run pytest -q tests/test_watcom.py -k wpack`: 15 passed.
 - Container: `docker compose run --rm test` gave 644 passed, 52 skipped, and `uv run ruff check .` in the build container reported "All checks passed!".
 - `grep -v '^#' config/watcom.toml | grep -c known_bad` gives 0. `grep -v '^#' config/watcom.toml | grep -c 'wpack_member = "wcc386.exe"'` gives 1.
-- `git show 6c4681c -- config/watcom.toml` changes only lines inside the 10.5 BINW/WCC386.EXE entry.
+- `git show 1ebccf9 -- config/watcom.toml` changes only lines inside the 10.5 BINW/WCC386.EXE entry.
 - `build/watcom-scratch`, `build/watcom-old` and `build/cc-105` were deleted after the gate proof.
 
 ## User Setup Required
@@ -217,7 +217,7 @@ Plans 04-11 and 04-12 can take their LANDED branches. The 10.5 compiler installs
 ## Self-Check: PASSED
 
 - Files found: tools/reverseapoc/watcom.py, config/watcom.toml, tests/test_watcom.py, tests/test_wpack_real.py, this SUMMARY.
-- Commits on the branch: ba5abd8, 4e1012c, 9480ec5, 6c4681c, 6e1f051. The working tree is clean.
+- Commits on the branch: 65b7ca9, 9d8ef7b, 9446247, 1ebccf9, bf74842. The working tree is clean.
 
 ---
 *Phase: 04-compiler-identification*

@@ -21,8 +21,8 @@ actuals:
   tokens: 16000  # chars/4 over the tools/tests/docs diff (64103 chars)
   tasks: 4
   commits: 10  # git rev-list --count plan_head_before..plan_head_after; the SUMMARY commit follows
-plan_head_before: bb6356a3df026bfb803d832d3f17ab0975897902
-plan_head_after: d2f37d1a10df14341ed477627b77de329e5265e3
+plan_head_before: 68084cb530c1e2cac211b27beae6c6054e358038
+plan_head_after: 4396f49e99c6dd765f0ca417f08c34d8760bb464
 
 tech-stack:
   added: []
@@ -143,7 +143,7 @@ Bundle nonce: 8a96802f5a2c
   3. no LE fixup field overlaps the tail;
   4. ours decodes exactly to its size and ends in a terminal instruction;
   5. the original's tail decodes exactly to the row end, and every instruction is `x86.is_alignment_filler`.
-- Nothing broader: no unit was recut, and orig/, config/, src/, configure.py, the build scripts and omf2elf are unchanged since bb6356a.
+- Nothing broader: no unit was recut, and orig/, config/, src/, configure.py, the build scripts and omf2elf are unchanged since 68084cb.
 - Tier 1, before and after: `943 members, 63 matched, 76 partial, 804 unmatched`. The two counts are equal, as expected, because no src/ file changed.
 
 ## Accomplishments
@@ -164,18 +164,18 @@ Bundle nonce: 8a96802f5a2c
 ## Task Commits
 
 1. **Task 1 (tracer): the rule, the predicate, land's guard**
-   - `9bb404f` test: failing tests, negatives first
-   - `15fe4ef` feat: the five option-A conditions
-   - `9ad52dd` test and `3d9608e` fix: condition 4 stops at inline data (deviation 1)
+   - `57215eb` test: failing tests, negatives first
+   - `a92ea9c` feat: the five option-A conditions
+   - `995a0b2` test and `f3fcbff` fix: condition 4 stops at inline data (deviation 1)
 2. **Task 2: the kept-filler report and batch's delegate**
-   - `d00bb31` test
-   - `c977e9a` feat
+   - `c9d6eeb` test
+   - `3a2cdfc` feat
 3. **Task 3: the real fixture and objdiff branch B**
-   - `658deb9` test: target cut (RED)
-   - `da64e86` feat: cut the objdiff target at kept filler
-   - `f7a756d` test: real-file fixture and tests
+   - `cf4ff45` test: target cut (RED)
+   - `93370e5` feat: cut the objdiff target at kept filler
+   - `3989ad1` test: real-file fixture and tests
 4. **Task 4: docs, suites and gate**
-   - `d2f37d1` docs: the trailing-filler rule
+   - `4396f49` docs: the trailing-filler rule
    - then this SUMMARY's commit
 
 ## RED evidence (TDD)
@@ -195,7 +195,7 @@ How the negatives failed on the old code:
   - test_judge_refused_tail_is_not_exact_but_exact_trim;
   - test_check_source_keeps_full_rows_without_kept_filler.
 
-TDD gate compliance: every `feat(07-48)` commit is preceded by its `test(07-48)` commit (9bb404f before 15fe4ef, d00bb31 before c977e9a, 658deb9 before da64e86).
+TDD gate compliance: every `feat(07-48)` commit is preceded by its `test(07-48)` commit (57215eb before a92ea9c, c9d6eeb before 3a2cdfc, cf4ff45 before 93370e5).
 
 ## Mutant proof (48-mutants.txt)
 
@@ -228,8 +228,8 @@ In each run, one guard was disabled and its negative test was run. Then the file
 
 ## Suites and gate
 
-- **Host** (HEAD d2f37d1, 48-host.log): 4378 passed, 41 skipped, exit=0. Every skip reason is an R-A one. ruff is clean (48-ruff.log, exit=0).
-- **Container** (HEAD d2f37d1, 48-container.log, after `docker compose build`): 4417 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff clean, exit=0.
+- **Host** (HEAD 4396f49, 48-host.log): 4378 passed, 41 skipped, exit=0. Every skip reason is an R-A one. ruff is clean (48-ruff.log, exit=0).
+- **Container** (HEAD 4396f49, 48-container.log, after `docker compose build`): 4417 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff clean, exit=0.
 - **Container `gate --all`** (48-gate-all-after.log): exit=0.
   - `OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 48`
   - `OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 24`
@@ -262,12 +262,12 @@ In each run, one guard was disabled and its negative test was run. Then the file
 - **Issue:** The table data of a leading jump table span, or an inline table at our end, could decode by chance into instructions that end on a `ret`. Condition 4 would then accept a filler tail for data. That would quietly widen 07-48b's ground.
 - **Fix:** `_ours_reason` passes `data_sites` (the VAs of our fixups), the rule `x86.decode` and omf2elf already use. An instruction start at a fixup field ends the decode, so condition 4 refuses.
 - **Files modified:** tools/reverseapoc/relocs.py, tests/test_relocs.py
-- **Verification:** test_filler_refuses_ours_ending_in_inline_data was RED on 15fe4ef and green after. Its mutant fails.
-- **Committed in:** 9ad52dd (test) and 3d9608e (fix)
+- **Verification:** test_filler_refuses_ours_ending_in_inline_data was RED on a92ea9c and green after. Its mutant fails.
+- **Committed in:** 995a0b2 (test) and f3fcbff (fix)
 
 **2. [Rule 1 - JSON shape] Two exact-dict tests gain `filler: 0`**
 - `test_good_pair_passes` (RelocResult.to_json) and `test_check_passes_a_matching_unit` (`bytes`) assert whole dicts, so each gained the new key.
-- Both edits are part of their task commits (9bb404f and c977e9a).
+- Both edits are part of their task commits (57215eb and 3a2cdfc).
 
 **Sweep note (from the objective, not a code change):** `check --sweep` is not edited. Its byte compare follows the rule through check_function, but its target cut stays a full row, so a sweep cell on a filler row may still rank below objdiff 100. It only ranks, and nothing is gated on it.
 
@@ -298,5 +298,5 @@ None.
 - The key files exist: x86.py, relocs.py, land.py, check.py, batch.py, test_filler_real.py, the fixture, matching.md.
 - All 10 task commits are ancestors of HEAD.
 - `def _trailing_filler` is present.
-- config/, src/, decomphub.progress.json, configure.py and omf2elf.py are unchanged since bb6356a.
+- config/, src/, decomphub.progress.json, configure.py and omf2elf.py are unchanged since 68084cb.
 - `check-orig`: 3 ok.

@@ -19,8 +19,8 @@ actuals:
   tokens: 2640
   tasks: 2
   commits: 4
-plan_head_before: a5047e3521ecae15a67151287e4cd51c8360af58
-plan_head_after: b239bfc1f3cdf9d8277422ae3da7b025c2d23890
+plan_head_before: 6e5da060adcfffd7f79e1bf8e83a3993642d2de9
+plan_head_after: d90ce8f596b2ba56460c4301f21ca998d97d491c
 
 tech-stack:
   added: []
@@ -117,18 +117,18 @@ Execution context nonce: 3094d2df17690933
 ## Task Commits
 
 1. **Task 1 (tracer): pass 3 asks for Fable and its init passes**
-   - RED `6f4442e` test(07-42): add failing tests for pass-to-model rule and per-session argv
-   - GREEN `8e8dabb` feat(07-42): pass-to-model rule, per-session argv values, accepted init models
+   - RED `7ea4cf1` test(07-42): add failing tests for pass-to-model rule and per-session argv
+   - GREEN `776515f` feat(07-42): pass-to-model rule, per-session argv values, accepted init models
 2. **Task 2: mismatches and unknown models fail closed; the tables agree**
-   - RED `dd367c3` test(07-42): add failing tests for model mismatch, unknown model, table agreement
-   - GREEN `b239bfc` feat(07-42): fail-closed init model check and MODEL_NAMES table
+   - RED `c395dc4` test(07-42): add failing tests for model mismatch, unknown model, table agreement
+   - GREEN `d90ce8f` feat(07-42): fail-closed init model check and MODEL_NAMES table
 
 ## TDD Gate Compliance
 
 `workflow.tdd_mode` is not set in `.planning/config.json`, so the `tdd-red-evidence` classifier gate does not apply. The phase-7 rule still holds: each task has a RED test commit before its GREEN commit.
 
-- **Task 1 RED** (`6f4442e`): 8 new cases failed. `test_build_argv_kwargs` raised TypeError (unexpected keyword `model`). The `test_model_for_pass*` cases and the tracer raised AttributeError (no `session.model_for_pass`). Semantic assessment: each test ran and failed because the feature under test was missing. There were no collection, import or fixture faults, and the other 157 tests passed.
-- **Task 2 RED** (`dd367c3`): 4 failures. Both mismatch directions failed on `assert "D-09" in problem` (the old message cited D-35). `test_init_unknown_expected_model` failed on `assert len(problems) == 1` because the unknown model was accepted (`[]`). `test_model_tables_agree` raised AttributeError (no `MODEL_NAMES`). Semantic assessment: every failure hit the planned assertion or the missing export. Note that rejecting a mismatch already worked before this plan (Phase 6 D-35). What this RED proved missing was the D-09 citation and the fail-closed handling of unknown models.
+- **Task 1 RED** (`7ea4cf1`): 8 new cases failed. `test_build_argv_kwargs` raised TypeError (unexpected keyword `model`). The `test_model_for_pass*` cases and the tracer raised AttributeError (no `session.model_for_pass`). Semantic assessment: each test ran and failed because the feature under test was missing. There were no collection, import or fixture faults, and the other 157 tests passed.
+- **Task 2 RED** (`c395dc4`): 4 failures. Both mismatch directions failed on `assert "D-09" in problem` (the old message cited D-35). `test_init_unknown_expected_model` failed on `assert len(problems) == 1` because the unknown model was accepted (`[]`). `test_model_tables_agree` raised AttributeError (no `MODEL_NAMES`). Semantic assessment: every failure hit the planned assertion or the missing export. Note that rejecting a mismatch already worked before this plan (Phase 6 D-35). What this RED proved missing was the D-09 citation and the fail-closed handling of unknown models.
 - **GREEN:** `uv run pytest -q tests/test_session.py tests/test_streamjson.py` gave 168 passed, 1 skipped (the existing POSIX-only skip).
 - **Tracer gate:** row 3 (interactive, `human_verify_mode: end-of-phase`, automated-only verify). The verify was re-run after the Task 1 GREEN commit (165 passed, 1 skipped), so expansion went ahead with no checkpoint.
 
@@ -161,7 +161,7 @@ No orchestrator ruling applies to 07-42 (rulings.md has no 07-42 section).
 - **Fix:** One test function loops over both (reported, requested) pairs with the same assertions, including the D-09 one that failed in RED.
 - **Files modified:** tests/test_streamjson.py
 - **Verification:** the selector reports `2 passed`. Both directions are still asserted.
-- **Committed in:** `b239bfc` (Task 2 GREEN)
+- **Committed in:** `d90ce8f` (Task 2 GREEN)
 
 **Total deviations:** 1 auto-fixed (1 blocking). **Impact:** test shape only, with the same coverage. No change in scope.
 
@@ -185,7 +185,7 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/session.py, tools/reverseapoc/streamjson.py, tests/test_session.py, tests/test_streamjson.py
-- FOUND on this branch (a5047e3..HEAD): 6f4442e, 8e8dabb, dd367c3, b239bfc
+- FOUND on this branch (6e5da06..HEAD): 7ea4cf1, 776515f, c395dc4, d90ce8f
 
 ---
 *Phase: 07-mechanics-first-decompilation*

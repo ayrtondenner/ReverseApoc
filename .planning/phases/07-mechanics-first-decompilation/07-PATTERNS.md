@@ -4,7 +4,7 @@
 **Files analyzed:** 38 (new + modified, from 07-CONTEXT.md and 07-RESEARCH.md § Prerequisite fixes / § Recommended plan ordering)
 **Analogs found:** 35 / 38
 
-All analog paths below are git-tracked source (checked with `git ls-files`). No game-derived content is quoted; excerpts are committed repo code only. Line numbers are as of commit c3461d2.
+All analog paths below are git-tracked source (checked with `git ls-files`). No game-derived content is quoted; excerpts are committed repo code only. Line numbers are as of commit c0d4c87.
 
 ## File Classification
 

@@ -17,8 +17,8 @@ actuals:
   tokens: 45000
   tasks: 3
   commits: 2
-plan_head_before: e7f001eecd247c6493964acaad710fec2e5246ae
-plan_head_after: 8599827e0cafd3a186811b5bf79881a5d037b391
+plan_head_before: dc423aa50ddef54e27f9d6dbbea4d9ba96060d57
+plan_head_after: 1e83f18b942f860357b29d57aca2768f25e75a9a
 
 tech-stack:
   added: []
@@ -60,7 +60,7 @@ coverage:
         ref: "uv run reverseapoc mechanics check; signed tiers 2; full host suite 3,933 passed, 38 skipped"
         status: pass
     human_judgment: true
-    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit 8599827"
+    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit 1e83f18"
 
 duration: 85min
 completed: 2026-10-30
@@ -159,9 +159,9 @@ Execution context nonce: 9a69c09a0e6dcce3
 
 ## Task Commits
 
-1. **Task 1: draft Tier 2 (tracer).** Commit `c43b175`: `data(07-25): draft Tier 2 (#263)`. It holds config/mechanics.toml and config/mechanics-members.csv. The tracer verify was re-run before the checkpoint and passed (end-of-phase mode, automated verify only).
+1. **Task 1: draft Tier 2 (tracer).** Commit `82ec93a`: `data(07-25): draft Tier 2 (#263)`. It holds config/mechanics.toml and config/mechanics-members.csv. The tracer verify was re-run before the checkpoint and passed (end-of-phase mode, automated verify only).
 2. **Task 2: the owner's ruling.** A checkpoint, so there was nothing to commit.
-3. **Task 3: record the sign-off.** Commit `8599827`: `data(07-25): Tier 2 signed off by ayrtondenner (D-04)`. Its body quotes the ruling. It holds config/mechanics.toml only, because the members file did not change.
+3. **Task 3: record the sign-off.** Commit `1e83f18`: `data(07-25): Tier 2 signed off by ayrtondenner (D-04)`. Its body quotes the ruling. It holds config/mechanics.toml only, because the members file did not change.
 
 ## Files Created/Modified
 
@@ -229,7 +229,7 @@ None.
 ## Self-Check: PASSED
 
 - config/mechanics.toml and config/mechanics-members.csv exist; build/gate/07-evidence/25-tier2-summary.txt exists.
-- Commits c43b175 and 8599827 are on HEAD.
+- Commits 82ec93a and 1e83f18 are on HEAD.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

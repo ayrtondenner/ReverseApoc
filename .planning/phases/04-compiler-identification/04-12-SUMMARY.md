@@ -19,8 +19,8 @@ actuals:
   tokens: 7500
   tasks: 2
   commits: 1
-plan_head_before: b347206c8563a6e5119f531fc1c94e5cfefc2fdb
-plan_head_after: 4bb80f6e79d043bc7300074fb2dfb940b79356b0
+plan_head_before: 661b8fa3270e95a46c5a560d37d74e0e2f35c072
+plan_head_after: 9e9081f1d0757bf24dbc12f729f73eb76b856254
 
 tech-stack:
   added: []
@@ -129,7 +129,7 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): the Phase 4 gate on host and container** — no commit. Its only outputs are the gitignored logs under build/gate/04-12/, which are reproduced below. This follows the Phase 3 gate plan 03-10, which also committed no logs.
-2. **Task 2: record the gate in 04-VALIDATION.md** — `4bb80f6` (docs)
+2. **Task 2: record the gate in 04-VALIDATION.md** — `9e9081f` (docs)
 
 **Plan metadata:** the commit that adds this SUMMARY together with STATE.md, ROADMAP.md and REQUIREMENTS.md.
 
@@ -433,8 +433,8 @@ Task 2 verify: `wave_0_complete: true` is set and no table row is pending. Exit 
 ## Self-Check: PASSED
 
 - Files found: .planning/phases/04-compiler-identification/04-VALIDATION.md, build/gate/04-12/01..08 logs, build/gate/04-native-vs-wibo.txt.
-- Commit found on HEAD's history: 4bb80f6 (`git merge-base --is-ancestor`).
-- No source, test, config, tools or Docker file changed (`git diff --stat b347206..HEAD` touches only 04-VALIDATION.md).
+- Commit found on HEAD's history: 9e9081f (`git merge-base --is-ancestor`).
+- No source, test, config, tools or Docker file changed (`git diff --stat 661b8fa..HEAD` touches only 04-VALIDATION.md).
 
 ---
 *Phase: 04-compiler-identification*

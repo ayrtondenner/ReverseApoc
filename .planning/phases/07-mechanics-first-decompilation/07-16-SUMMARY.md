@@ -20,8 +20,8 @@ actuals:
   tokens: 6200
   tasks: 2
   commits: 4
-plan_head_before: 8a8f98e5278614aa181fd6101c5ecb58ef29bead
-plan_head_after: 2b4ef6229eb62074ee61f026cd2844c58f47b85c
+plan_head_before: e4988ecb4646bcd3811bfc6ae8fb881aa7501ff2
+plan_head_after: 5fc8d3ba7eab4a9e7985667791539f69cc08bdf8
 
 tech-stack:
   added: []
@@ -139,21 +139,21 @@ Execution context nonce: be7dc94350ad588e
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): symbols.csv C names and the rename path.** RED `8077b80` (test), GREEN `3324288` (feat).
-2. **Task 2 (TDD): gate._reverted by start through the shared finder.** RED `7fab713` (test), GREEN `2b4ef62` (feat).
+1. **Task 1 (tracer, TDD): symbols.csv C names and the rename path.** RED `ad33191` (test), GREEN `625cd9b` (feat).
+2. **Task 2 (TDD): gate._reverted by start through the shared finder.** RED `1b13d01` (test), GREEN `5fc8d3b` (feat).
 
 No REFACTOR commits were needed.
 
 ## TDD evidence
 
-- **Task 1 RED (`8077b80`):**
+- **Task 1 RED (`ad33191`):**
   - Target `tests/test_symbols.py::test_c_name_of_symbols_rows`. It failed on `assert table.c_name(0x10010) == "main"`: c_name returned `main_` verbatim.
   - JUnit report `build/red/07-16-t1.xml` (gitignored), record `build/red/07-16-t1.json`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed`.
   - Semantic assessment: the target ran and failed on the planned assertion. This was not a setup, import or collection fault.
   - Also failing in RED: both cases of `test_a_symbols_csv_name_without_watcoms_underscore_is_refused` (no SymbolError raised) and `test_contextpack.py::test_externs_are_the_d_symbols_the_row_touches` (`_g_counter` != `g_counter`).
   - Characterization (passed before GREEN, ruling F28): every test in `tests/test_rename_path.py`, `test_c_name_of_placeholder_and_runtime_rows_is_unchanged`, `test_address_of_still_refuses_the_old_placeholder_after_a_rename`. They pin behaviour 05/06 already built (linker_name and address_of follow symbols.csv), which is what D-19 asks to verify.
 - **Tracer feedback gate** (interactive, end-of-phase, automated-only verify): after GREEN I re-ran `uv run pytest -q tests/test_symbols.py tests/test_rename_path.py tests/test_contextpack.py tests/test_asm.py`: 91 passed, 1 skipped (symlink privileges). Then I expanded to Task 2.
-- **Task 2 RED (`7fab713`):**
+- **Task 2 RED (`1b13d01`):**
   - Target `tests/test_gate.py::test_reverted_after_rename[new-name]`. The unit marked `INCLUDE_ASM(Foo);`, but `_reverted` read markers by placeholder only. So gate did not see a full revert, called check, and the fake check raised `defines no function`. The planned outcome was exit 1 naming the reverted `Foo_` without check.
   - JUnit `build/red/07-16-t2.xml`, record `build/red/07-16-t2.json`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed`.
   - Semantic assessment: the failure is the behaviour under test (the gate call), not a fixture fault.
@@ -197,7 +197,7 @@ See key-decisions in the frontmatter.
 ## Deviations from Plan
 
 **1. Orchestrator ruling F10: test_contextpack.py expects `g_counter`; the flagged assumption corrected.**
-- `tests/test_contextpack.py` joins files_modified. `test_externs_are_the_d_symbols_the_row_touches` now expects `("D_00020100", "g_counter")`. It was a RED test in `8077b80`.
+- `tests/test_contextpack.py` joins files_modified. `test_externs_are_the_d_symbols_the_row_touches` now expects `("D_00020100", "g_counter")`. It was a RED test in `ad33191`.
 - tests/test_asm.py checked: no test pins a listing name of a symbols.csv row. `test_committed_listing_names_are_unique` (committed CSVs) still passes with the new names.
 - **Correction to the plan's flagged assumption:** the existing tests pinned the old behaviour (C name = linker name verbatim), not the new. What the c_name fix changes at HEAD:
   - Listing file names of the committed symbols.csv func rows become `main.s` and `stackavail.s` instead of `main_.s` and `stackavail_.s`. asm/ is gitignored and rebuilt by `ninja asm`.
@@ -213,7 +213,7 @@ See key-decisions in the frontmatter.
 - `SymbolTable.build` now refuses it with a `SymbolError` naming the row. All committed data rows start with `_`.
 - The check runs after the runtime-collision check, so `test_one_name_for_two_addresses_is_refused` keeps its meaning.
 - Tests: `test_a_symbols_csv_name_without_watcoms_underscore_is_refused[data-without-leading]`.
-- Committed in `3324288`.
+- Committed in `625cd9b`.
 
 **4. Design: where gate gets the C names.**
 - The plan says `_reverted` "takes the unit's C names (built from symbols.csv through unitdefs.c_names)".

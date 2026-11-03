@@ -9,7 +9,7 @@ behavior_unverified: 0
 overrides_applied: 1
 overrides:
   - must_have: "build_target refuses a branch destination outside every functions.csv row"
-    reason: "05-18 (e5120a9) keeps such fields raw and lists them in raw_fields so every unit stays cuttable (F11 principle, D-13); relocs.check_function still fails any reference into no row (rules 4/5), so nothing can pass on it"
+    reason: "05-18 (4c98ca0) keeps such fields raw and lists them in raw_fields so every unit stays cuttable (F11 principle, D-13); relocs.check_function still fails any reference into no row (rules 4/5), so nothing can pass on it"
     accepted_by: "ayrtondenner"
     accepted_at: "2026-10-24T19:56:37Z"
 decision_coverage:
@@ -30,7 +30,7 @@ human_verification:
   - test: "Review the 7 hand verdicts in config/ufo2p/boundaries.csv (1 ghidra, 1 capstone) and config/tacp/boundaries.csv (4 ghidra, 1 capstone) against the gitignored listings"
     expected: "Each hand verdict and its reason is right"
     why_human: "Hand verdicts are a person's reading of listings; the tests only pin that they exist, carry a reason and survive regeneration"
-  - test: "Decide on the superseded 05-08 truth: build_target was planned to REFUSE a branch destination outside every functions.csv row; since 05-18 (e5120a9) it leaves such fields raw and lists them in raw_fields (kinds `off32 to no row`, `branch to no row`, `branch outside the code object`)"
+  - test: "Decide on the superseded 05-08 truth: build_target was planned to REFUSE a branch destination outside every functions.csv row; since 05-18 (4c98ca0) it leaves such fields raw and lists them in raw_fields (kinds `off32 to no row`, `branch to no row`, `branch outside the code object`)"
     expected: "Owner accepts the deviation (add an `overrides:` entry), or asks for the refusal back"
     why_human: "A plan truth was reversed by a later plan's recorded deviation, not by an orchestrator ruling; the orchestrator review approved it and the relocation check still fails such references (rules 4/5), but only the owner can accept a must-have change"
   - test: "Decide on the asm listing collision: `uv run reverseapoc asm UFO2P.EXE` reports 1892 listings but writes 1891 files, because two runtime rows are both named `_Alphabet` (rt_itoa 0x000C06FA and rt_ltoa 0x000C92CD; TACP likewise 0x000C2826 / 0x000CD0AF) and the second overwrites asm/<exe>/_Alphabet.s"
@@ -43,12 +43,12 @@ human_verification:
 **Phase Goal:** The matching pipeline works end to end: functions are found and grouped into units, C compiles with the identified compiler, objdiff and an independent relocation check compare it to the target cut from the LE, and one hand-matched function per EXE splices back with both EXEs still SHA-1 identical.
 **Verified:** 2026-10-24
 **Status:** passed
-**Owner sign-off:** the 2026-10-24 UAT passed 5/5 ([05-UAT.md](05-UAT.md), commit c988bed). The owner accepted the 05-08 deviation through the frontmatter `overrides:` entry (accepted_at 2026-10-24T19:56:37Z, commit 4491f04), and the frontmatter was set to `passed` in commit f96343f. Plan 06-21 updated this body line on 2026-10-25 to match (DI-28, D-41). The UAT settled the frontmatter's `human_verification` items, which were still open at verification time.
+**Owner sign-off:** the 2026-10-24 UAT passed 5/5 ([05-UAT.md](05-UAT.md), commit 000db93). The owner accepted the 05-08 deviation through the frontmatter `overrides:` entry (accepted_at 2026-10-24T19:56:37Z, commit 837baac), and the frontmatter was set to `passed` in commit ab60421. Plan 06-21 updated this body line on 2026-10-25 to match (DI-28, D-41). The UAT settled the frontmatter's `human_verification` items, which were still open at verification time.
 **Re-verification:** No, initial verification
 
-## Evidence I produced myself (at HEAD 50bc3d0, after the review fix wave)
+## Evidence I produced myself (at HEAD 1d7dc15, after the review fix wave)
 
-The gate logs under build/gate/05-evidence/ were written at 5403794, before the fix wave changed check.py, configure.py and functions.py, so I re-ran the decisive commands myself:
+The gate logs under build/gate/05-evidence/ were written at db05c1d, before the fix wave changed check.py, configure.py and functions.py, so I re-ran the decisive commands myself:
 
 | Command (container unless marked) | Result |
 |---|---|
@@ -79,7 +79,7 @@ All plan truths were checked against the code, the committed config and the test
 
 | Plan | Truth | Status | Note |
 |---|---|---|---|
-| 05-08 | "build_target refuses (TargetError naming the VA) ... a branch destination outside every functions.csv row" | ? UNCERTAIN (owner decision) | Since e5120a9 (05-18), such fields stay raw and are listed in raw_fields. Recorded as a deviation in 05-18-SUMMARY, reviewed and approved by the orchestrator (progress.md line 118-119). The relocation check still fails such a reference (rules 4/5), so nothing can pass on it. Not a ruling, so it needs an owner override. The non-off32 part of the same truth was changed by ruling F11 and holds as amended. |
+| 05-08 | "build_target refuses (TargetError naming the VA) ... a branch destination outside every functions.csv row" | ? UNCERTAIN (owner decision) | Since 4c98ca0 (05-18), such fields stay raw and are listed in raw_fields. Recorded as a deviation in 05-18-SUMMARY, reviewed and approved by the orchestrator (progress.md line 118-119). The relocation check still fails such a reference (rules 4/5), so nothing can pass on it. Not a ruling, so it needs an owner override. The non-off32 part of the same truth was changed by ruling F11 and holds as amended. |
 | 05-11 | "`asm EXE` writes one Intel-syntax listing per functions.csv row" | ⚠ WARNING (owner decision) | 1892 rows, 1891 files: both `_Alphabet` runtime rows map to asm/<exe>/_Alphabet.s (asm.file_name uses SymbolTable.c_name; the name is ambiguous by design, 05-04). Every game function gets its listing. |
 | 05-20 | "container suite passes with zero skipped tests" | ✓ VERIFIED (as amended by F6) | 2 skips, both `Windows-only: msvcrt lock path`, the reason F6 allows. |
 | 05-01 | spike 005 PASS lines and objdiff 100 for `__CMain` | ✓ VERIFIED | README `verdict: VALIDATED`, MANIFEST row; 05-spike.log; re-proved by production code in test_cmain386_pair_matches (container, both EXEs). |
@@ -191,7 +191,7 @@ No TBD/FIXME/XXX debt markers in any file the phase changed.
 
 ### Host suite
 
-Run once by the verifier at HEAD 50bc3d0: `uv run pytest -q -rs` 1605 passed, 26 skipped, exit 0; `uv run ruff check .` all checks passed. Every skip has a platform reason (objdiff-cli, Ghidra, clang, ninja not on the host PATH; only inside the container; POSIX-only; Windows file names; non-UTF-8 names). No test_*_real.py test skipped for a missing orig/ or Watcom tree (ruling F6).
+Run once by the verifier at HEAD 1d7dc15: `uv run pytest -q -rs` 1605 passed, 26 skipped, exit 0; `uv run ruff check .` all checks passed. Every skip has a platform reason (objdiff-cli, Ghidra, clang, ninja not on the host PATH; only inside the container; POSIX-only; Windows file names; non-UTF-8 names). No test_*_real.py test skipped for a missing orig/ or Watcom tree (ruling F6).
 
 ### Gaps Summary
 
@@ -202,7 +202,7 @@ If the owner accepts the 05-08 deviation, add to this frontmatter:
 ```yaml
 overrides:
   - must_have: "build_target refuses a branch destination outside every functions.csv row"
-    reason: "05-18 (e5120a9) keeps such fields raw and lists them in raw_fields so every unit stays cuttable (F11 principle, D-13); relocs.check_function still fails any reference into no row (rules 4/5), so nothing can pass on it"
+    reason: "05-18 (4c98ca0) keeps such fields raw and lists them in raw_fields so every unit stays cuttable (F11 principle, D-13); relocs.check_function still fails any reference into no row (rules 4/5), so nothing can pass on it"
     accepted_by: "<owner>"
     accepted_at: "<ISO timestamp>"
 ```

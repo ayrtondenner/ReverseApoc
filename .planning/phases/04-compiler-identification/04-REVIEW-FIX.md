@@ -16,8 +16,8 @@ status: all_fixed
 **Iteration:** 1
 
 This report replaces the earlier one for this review, which covered WR-01..03 under the
-`critical_warning` scope. That report is still in git history (9b78244, 0c2a9b2). This run used
-scope `all`. WR-01..03 were not re-applied: they were checked on HEAD (44b2a3e) and are carried
+`critical_warning` scope. That report is still in git history (ad2e806, aa9fd6a). This run used
+scope `all`. WR-01..03 were not re-applied: they were checked on HEAD (a534d46) and are carried
 forward below with their original commits. IN-01..03 were fixed in this run.
 
 **Summary:**
@@ -30,7 +30,7 @@ forward below with their original commits. IN-01..03 were fixed in this run.
 ### WR-01: A `--log` without a final name component (`.`, `C:/`, `/`) now crashes with an uncaught ValueError, after the compile has run
 
 **Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cli.py`
-**Commit:** 37b104f (previous fix run; carried forward)
+**Commit:** e1a6384 (previous fix run; carried forward)
 **Applied fix:** Added `_check_log_name(log)`, which raises
 `CompilerError("--log <log> names no file; the lock sidecar is <log>.lock")` when `log.name` is
 empty. `compile_rule` calls it right after `_check_object_name(obj)`, before the gate and the
@@ -43,7 +43,7 @@ runner, so a bad `--log` never compiles and never writes an object. Tests
 ### WR-02: `--log /dev/null` (and any log in a directory the user cannot create files in) now fails a successful compile
 
 **Files modified:** `tools/reverseapoc/compiler.py`, `tests/test_cc_log.py`, `docs/toolchain.md`
-**Commit:** 83053f9 (previous fix run; carried forward)
+**Commit:** 5c27a24 (previous fix run; carried forward)
 **Applied fix:** The owner's option (a). `_append_log` writes a log that exists and is not a
 regular file (`/dev/null`, a FIFO, a console) without the lock and without a sidecar. Every
 other log keeps the lock as before. The toolchain bullet says the log's directory must be
@@ -56,7 +56,7 @@ both bullet additions are still in `docs/toolchain.md` after this run's edits.
 ### WR-03: The new concurrency tests wait on child processes with no timeout, and the real parallel test leaks processes on its first failure
 
 **Files modified:** `tests/test_cc_log.py`, `tests/test_compiler_real.py`
-**Commit:** c01df4c (previous fix run; carried forward)
+**Commit:** cba0f31 (previous fix run; carried forward)
 **Applied fix:** `WAIT_SECONDS = 120` and a `_reap` helper in `tests/test_cc_log.py`, and
 `CC_WAIT_SECONDS = 300` and a `_reap` helper in `tests/test_compiler_real.py`. Every wait on a
 child is bounded and every child still running is killed and reaped in `finally`. The return
@@ -68,7 +68,7 @@ codes are asserted only after that.
 ### IN-01: `_try_lock` retries on EACCES, but the UCRT maps more than lock contention to EACCES, and the spin has no deadline or diagnostic
 
 **Files modified:** `tools/reverseapoc/compiler.py`
-**Commit:** 1ad7417
+**Commit:** deb7571
 **Applied fix:** Docstring only, by owner decision. The `_try_lock` docstring no longer says
 "False only on contention (EACCES)". It now says:
 - the call returns False on EACCES and raises any other error;
@@ -84,7 +84,7 @@ path "treats only EACCES as busy", which is accurate, so it was left alone.
 ### IN-02: The sidecar comes from the `--log` spelling, not the file it names
 
 **Files modified:** `docs/toolchain.md`
-**Commit:** 9f4f5bc
+**Commit:** e6e6da8
 **Applied fix:** Documentation only, by owner decision; `_lock_path` is unchanged. The cc.log
 bullet in the "wibo" section now says that every writer of one log must name it by the same
 path, because the sidecar is derived from the `--log` spelling, not from the file it reaches. A
@@ -96,19 +96,19 @@ the WR-02 sentence about the writable directory and device logs.
 ### IN-03: The toolchain bullet states Windows-host facts as general ones
 
 **Files modified:** `docs/toolchain.md`
-**Commit:** 862159b
+**Commit:** 5e743c8
 **Applied fix:** The bullet now says "The Windows host and a container writing the same log at
 the same time is not supported ..." and "Lines written on the Windows host end in CRLF ...".
 Nothing else in the bullet changed in this commit.
 
 **Commit split for IN-02 and IN-03:** both touch the same bullet, but they are separate
-sentences, so they went in as two atomic commits: IN-03 first (862159b), then IN-02 (9f4f5bc).
+sentences, so they went in as two atomic commits: IN-03 first (5e743c8), then IN-02 (e6e6da8).
 
 ## Verification
 
 The edits and gates ran inside the isolated worktree
 `.claude/worktrees/rf-04-18022-1792772439`, on branch `gsd-reviewfix/04-18022` created from
-`main` at 44b2a3e. After the gates passed, `main` was fast-forwarded to 9f4f5bc, the worktree was
+`main` at a534d46. After the gates passed, `main` was fast-forwarded to e6e6da8, the worktree was
 removed, the temp branch was deleted and the recovery sentinel was removed. The worktree had no
 `third_party/`, so the real-compiler tests skipped there.
 
@@ -125,7 +125,7 @@ container.
 
 None of these were touched: `_lock_path`, `_try_lock`'s code, `_acquire`, `_log_line`,
 `DEFAULT_LOG`, the `--log` option, any test, `pyproject.toml`, `uv.lock`, `orig/`,
-`third_party/`, `config/*.toml` and the Docker files. The total diff from 44b2a3e is
+`third_party/`, `config/*.toml` and the Docker files. The total diff from a534d46 is
 `docs/toolchain.md` (1 line) and `tools/reverseapoc/compiler.py` (docstring, +6 -2).
 
 ---

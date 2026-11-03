@@ -20,8 +20,8 @@ actuals:
   tokens: 16870
   tasks: 3
   commits: 9
-plan_head_before: 5d391a95fc7e771f05cab9d5985e9a315bc99097
-plan_head_after: f3bfdfc0a8a92f1aea7b229b25f9e211de88c54c
+plan_head_before: 1c48675aac13d363ce5011a7b4e83c195f3d2922
+plan_head_after: cfcd560f270c83ddc81ac826218e2c86d998bcd7
 
 tech-stack:
   added: []
@@ -115,7 +115,7 @@ Execution context nonce: 5384026ff95d1b82
 - **Tasks:** 3 (Task 1 tracer, verified end-to-end before expanding)
 - **Files modified:** 7
 
-## Current figures (committed CSVs, base 5d391a9)
+## Current figures (committed CSVs, base 1c48675)
 
 | | UFO2P | TACP | combined |
 |---|---|---|---|
@@ -152,10 +152,10 @@ pins the literals and recomputes the sets in the test.
 
 ## Task Commits
 
-1. Task 1 (tracer): `985cdd8` test RED, `ecdc340` test (shield message), `a08043b` feat GREEN
-2. Task 2: `596cf36` test RED, `a8eba2d` feat GREEN
-3. Task 3: `609e4f5` test RED, `e6d4cbe` feat GREEN (gate + committed feed), `5a43a97` test RED
-   (load order), `f3bfdfc` fix GREEN
+1. Task 1 (tracer): `1f60b5f` test RED, `1507344` test (shield message), `3604c7c` feat GREEN
+2. Task 2: `63b6c91` test RED, `8f937a8` feat GREEN
+3. Task 3: `241087e` test RED, `259b828` feat GREEN (gate + committed feed), `8800768` test RED
+   (load order), `cfcd560` fix GREEN
 
 ## TDD Gate Compliance
 
@@ -171,7 +171,7 @@ Each RED run was classified with `gsd-tools check tdd-red-evidence` on pytest JU
 - Task 3: RED_EVIDENCE_OK, target `test_gate_rewrites_the_decomphub_feed`, failing on the stale
   feed bytes (gate did not write it); 4 failing, 78 passing.
 - Load-order follow-up: `test_gate_without_progress_py_writes_no_table` failed on the written
-  status.csv before `f3bfdfc`.
+  status.csv before `cfcd560`.
 
 ## Files Created/Modified
 
@@ -193,29 +193,29 @@ would publish 0.00% today.
 - **Orchestrator ruling F8: gate writes the feed to `config_root.parent / "decomphub.progress.json"`**
   instead of a separate repo-root parameter. Tests: `test_gate_rewrites_the_decomphub_feed`
   (feed under the tmp root) and `test_gate_with_a_tmp_config_root_leaves_the_repo_feed` (the
-  repo's feed byte-identical, or still absent, after a tmp-config gate). Commit `e6d4cbe`.
+  repo's feed byte-identical, or still absent, after a tmp-config gate). Commit `259b828`.
 - **Orchestrator ruling F17: `main()` creates the parent directory of every output** (`--out`,
   `--report`, `--decomphub`). Tests: `test_main_creates_every_output_parent`,
   `test_main_writes_report_and_feed`, `test_script_runs_isolated`. 06-24 adds its own
   `test_main_creates_output_dirs`; mine has a different name, so the two do not collide.
-  Commits `a08043b`, `a8eba2d`.
+  Commits `3604c7c`, `8f937a8`.
 - **06-16 notes: uncovered figures re-measured** independently (25,787 / 35,349, not the plan's
-  25,691 / 35,241, which predate 06-04's 26 shorter rows) and pinned. Commit `985cdd8`.
+  25,691 / 35,241, which predate 06-04's 26 shorter rows) and pinned. Commit `1f60b5f`.
 
 ### Auto-fixed issues
 
 **1. [Rule 1 - Bug] Shield message would read 0.00%**
 - Found during: Task 1, running the second verify on the real CSVs.
 - Issue: a two-decimal message turns the combined 0.0016% into "0.00%".
-- Fix: `shield_message` prints the 4-decimal percent with trailing zeros dropped; test first (`ecdc340`).
+- Fix: `shield_message` prints the 4-decimal percent with trailing zeros dropped; test first (`1507344`).
 
 **2. [Rule 1 - Bug] My Task 2 RED test assumed name order equals address order for units**
 - Found during: Task 2 GREEN. Hand-named units (`grafix`) sort before `u_...`.
-- Fix: the test expects address order (first game/thunk row), which the report uses. Commit `a8eba2d`.
+- Fix: the test expects address order (first game/thunk row), which the report uses. Commit `8f937a8`.
 
 **3. [Rule 2 - Missing critical] A gate that cannot load progress.py wrote status.csv first**
 - Found during: Task 3 self-review.
-- Fix: gate calls `_progress()` before `_write_tables`; RED `5a43a97`, GREEN `f3bfdfc`.
+- Fix: gate calls `_progress()` before `_write_tables`; RED `8800768`, GREEN `cfcd560`.
 
 **Total deviations:** 3 rulings applied, 3 auto-fixed (2 bugs, 1 missing-critical). **Impact:**
 no scope change; files stayed within files_modified.
@@ -232,7 +232,7 @@ no scope change; files stayed within files_modified.
 - `uv run python -I tools/progress.py --out build/progress-check` and both `test -s`: exit 0.
 - `uv run pytest -q tests/test_report_shape.py tests/test_progress.py`: 28 passed.
 - `uv run pytest -q tests/test_gate.py tests/test_drift.py`: 83 passed.
-- Full host suite: 2119 passed, 224 skipped (baseline at 5d391a9: 2083 passed, 224 skipped). The
+- Full host suite: 2119 passed, 224 skipped (baseline at 1c48675: 2083 passed, 224 skipped). The
   skip count is unchanged, and none of the skips is in a file this plan touched. They are the
   existing real-file skips: orig/ is not in the worktree, and the real tests ran without the
   REVERSEAPOC_* variables.
@@ -261,17 +261,17 @@ None.
 `ExeProgress.uncovered`) and run `python -I tools/progress.py --out _site --report <path>` in Pages.
 The tick rate (OpenApoc #997) was not touched by this plan.
 
-## Fix round 1 (FIX_BASE 6f9c066, review-06-18.md: approved, minors only)
+## Fix round 1 (FIX_BASE 21ea155, review-06-18.md: approved, minors only)
 
 | # | Minor | Change | Test | Commits |
 |---|---|---|---|---|
-| 1 | Pre-write guard only loaded progress.py | `progress.derive(config, status_texts=...)` reads status.csv text in memory. gate's `_write_tables` derives the merged tables before any write, so a table progress.py refuses exits 2 with nothing written | `test_gate_refuses_tables_progress_cannot_derive` (RED: status.csv was written first; RED_EVIDENCE_OK) | `8188945` RED, `5364ffa` GREEN |
-| 2 | gate.py docstring claimed "writes nothing" on every tool error | Docstring now gives the real contract: exit 2 writes nothing, except an OS error after a table was written (a second status.csv, or the feed), whose message names every written table | docstring only | `5364ffa` |
-| 3 | Feed rewrite not reported | `GateResult.feed`; text line `wrote decomphub.progress.json -> <path> (commit it with status.csv)`; `--json` key `feed` (null when nothing was written) | `test_gate_output_names_the_rewritten_feed`, `test_gate_output_has_no_feed_when_nothing_was_written` | `8188945` RED, `5364ffa` GREEN |
-| 4 | Sole-writer scan missed tools/progress.py | `test_only_gate_writes_the_table` also scans tools/progress.py | test-only, passes (progress.py has no write_status) | `b96b761` |
-| 5 | Five dead docstrings in tests/test_progress.py | Docstrings moved above `load_progress()` | test-only | `b96b761` |
-| 6 | UNASSIGNED_UNIT branch untested | Synthetic row with an empty unit cell lands in `tacp/unassigned`, bytes in the totals | `test_report_puts_rows_without_a_unit_in_an_unassigned_unit` (coverage of an existing branch, passes) | `b96b761` |
-| 7 | Report item `address` semantics | Comment in `_item`: linear address, not objdiff's section-relative offset | comment only | `5364ffa` |
+| 1 | Pre-write guard only loaded progress.py | `progress.derive(config, status_texts=...)` reads status.csv text in memory. gate's `_write_tables` derives the merged tables before any write, so a table progress.py refuses exits 2 with nothing written | `test_gate_refuses_tables_progress_cannot_derive` (RED: status.csv was written first; RED_EVIDENCE_OK) | `04054ff` RED, `fe2b9df` GREEN |
+| 2 | gate.py docstring claimed "writes nothing" on every tool error | Docstring now gives the real contract: exit 2 writes nothing, except an OS error after a table was written (a second status.csv, or the feed), whose message names every written table | docstring only | `fe2b9df` |
+| 3 | Feed rewrite not reported | `GateResult.feed`; text line `wrote decomphub.progress.json -> <path> (commit it with status.csv)`; `--json` key `feed` (null when nothing was written) | `test_gate_output_names_the_rewritten_feed`, `test_gate_output_has_no_feed_when_nothing_was_written` | `04054ff` RED, `fe2b9df` GREEN |
+| 4 | Sole-writer scan missed tools/progress.py | `test_only_gate_writes_the_table` also scans tools/progress.py | test-only, passes (progress.py has no write_status) | `c318847` |
+| 5 | Five dead docstrings in tests/test_progress.py | Docstrings moved above `load_progress()` | test-only | `c318847` |
+| 6 | UNASSIGNED_UNIT branch untested | Synthetic row with an empty unit cell lands in `tacp/unassigned`, bytes in the totals | `test_report_puts_rows_without_a_unit_in_an_unassigned_unit` (coverage of an existing branch, passes) | `c318847` |
+| 7 | Report item `address` semantics | Comment in `_item`: linear address, not objdiff's section-relative offset | comment only | `fe2b9df` |
 | 8 | Hooks do not cover the feed | Recorded only, as a known limit (below) | none | this commit |
 
 Files outside the plan's files_modified: `tests/test_status.py` (minor 4, at the coordinator's request).
@@ -294,4 +294,4 @@ copy. A follow-up in 06-23 or later could add the feed to the always layer.
 ## Self-Check: PASSED
 
 - Files: tools/progress.py, decomphub.progress.json, tests/test_progress.py, tests/test_report_shape.py exist.
-- Commits 985cdd8, ecdc340, a08043b, 596cf36, a8eba2d, 609e4f5, e6d4cbe, 5a43a97, f3bfdfc are ancestors of HEAD.
+- Commits 1f60b5f, 1507344, 3604c7c, 63b6c91, 8f937a8, 241087e, 259b828, 8800768, cfcd560 are ancestors of HEAD.

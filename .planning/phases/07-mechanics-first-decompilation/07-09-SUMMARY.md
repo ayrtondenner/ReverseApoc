@@ -19,8 +19,8 @@ actuals:
   tokens: 14100
   tasks: 2
   commits: 4
-plan_head_before: 2815ddb72530220a0d7d474ae1abe1284dda210f
-plan_head_after: 278db5fadbfd52ba2dab4fb65953fcd9622a56a5
+plan_head_before: 23844224dd76ff1e062fb8e525e323752c39657e
+plan_head_after: 908ac5fbae52adc39b17f1396cfd559de116e6cf
 
 tech-stack:
   added: []
@@ -146,21 +146,21 @@ Execution context nonce: a7b91ec209b9020e
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): unitdefs finder; source_marks and the drift test by start.** RED `0168774` (test), GREEN `65d12ec` (feat).
-2. **Task 2 (TDD): configure's D-12 check through the finder with symbols.csv C names.** RED `3279635` (test), GREEN `278db5f` (feat).
+1. **Task 1 (tracer, TDD): unitdefs finder; source_marks and the drift test by start.** RED `e8a4285` (test), GREEN `a1874ae` (feat).
+2. **Task 2 (TDD): configure's D-12 check through the finder with symbols.csv C names.** RED `1d70d28` (test), GREEN `908ac5f` (feat).
 
 No REFACTOR commits were needed.
 
 ## TDD evidence
 
-- **Task 1 RED (`0168774`):**
+- **Task 1 RED (`e8a4285`):**
   - Target `tests/test_check.py::test_check_accounts_a_renamed_unit_by_start`.
   - It failed on `assert result.ok`. The account reported `func_00010010 ... neither exported nor marked INCLUDE_ASM (expected public Bar_)`, because the pre-D-29 parser does not see the marker `INCLUDE_ASM(Bar);`.
   - JUnit report: `build/red/07-09-t1.xml`, gitignored. Classifier: `RED_EVIDENCE_OK` / `target_test_failed`.
   - Semantic assessment: the target ran and failed on the planned behaviour (a renamed marker is unseen). This was not a setup fault.
   - The other two new check tests failed with `AttributeError` (no `marked_starts`) and `TypeError` (no `names` keyword).
   - `tests/test_unitdefs.py` and `tests/test_drift.py` failed at collection with `ModuleNotFoundError: reverseapoc.unitdefs`. That is a load failure, not RED evidence by itself, which is why the check test was the classified target.
-- **Task 2 RED (`3279635`):**
+- **Task 2 RED (`1d70d28`):**
   - Target `tests/test_configure.py::test_main_accepts_a_unit_defining_a_renamed_function`.
   - It failed on `assert 1 == 0`: configure refused the unit because D-12 read `func_00010010` as neither defined nor marked.
   - JUnit report: `build/red/07-09-t2.xml`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed`.
@@ -219,11 +219,11 @@ See key-decisions in the frontmatter. In short:
 - Found during: Task 2.
 - Issue: `test_define_continuation_hides_a_definition` called the private helper that moved into unitdefs.
 - Fix: the same assertion now runs through `unitdefs.find(...).defined == {}`.
-- Committed in: `278db5f`.
+- Committed in: `908ac5f`.
 
 **3. [Rule 1 - Consistency] Stale docstring in contextpack.py.**
 - `contextpack.py` is outside the plan's files_modified. I changed one docstring line that named the removed helper. No behaviour change.
-- Committed in: `278db5f`.
+- Committed in: `908ac5f`.
 
 **4. Loader sharing (not in the plan text).**
 - The plan says unitdefs loads configure.py by path "the same way" as check.
@@ -285,7 +285,7 @@ None.
 - `configure.check_unit_source` and `check.source_marks` no longer pass placeholders as `names`. They pass `names` and `all_names` through unchanged.
 - Production callers now pass the EXE's C names as `all_names`: configure's unit loop (`_check_source`), `account_unit` and the drift test's `defined_starts`.
 
-**Tests (RED first, `bf58299`).**
+**Tests (RED first, `4954b7d`).**
 - `tests/test_unitdefs.py`:
   - `test_renamed_row_reads_by_its_current_name[all_names-only|explicit-names]`: the reviewer's probe through `find`.
   - `test_all_names_alone_decides_rows_outside_the_unit`.
@@ -302,7 +302,7 @@ None.
 - Classifier on `tests/test_configure.py::test_d12_reads_a_renamed_row_by_its_current_name[all_names-only]` (JUnit `build/red/07-09-fix1.xml`): `RED_EVIDENCE_OK` / `target_test_failed`.
 - Semantic assessment: the target failed on the planned behaviour, a stale definition being accepted. This was not a setup fault.
 
-**Fix:** `0278039`.
+**Fix:** `06b738b`.
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_unitdefs.py tests/test_configure.py tests/test_check.py tests/test_drift.py`: 320 passed, 3 skipped.

@@ -15,8 +15,8 @@ actuals:
   tokens: 6715
   tasks: 2
   commits: 5
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: 3c9a32af6a7dd05e11104e9f31b3af602355ee59
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: 258f1b7b4605ac59e577e5a281efd4c58e5721b3
 tech-stack:
   added: []
   patterns:
@@ -112,12 +112,12 @@ Execution context nonce: a03e2f62b0bbe543
 ## Task Commits
 
 1. **Task 1: Tracer: recursive descent, real EXEs**
-   - `c721536` test(05-07): add failing tests for capstone recursive-descent discovery (RED: ModuleNotFoundError, module absent)
-   - `14e3dd7` test(05-07): add failing jump-table test; keep real-file failures counts-only (RED: `assert () == ((0x10200, 0x1020c),)`)
-   - `2129261` feat(05-07): capstone recursive-descent discovery with LE evidence (GREEN)
+   - `e6234e7` test(05-07): add failing tests for capstone recursive-descent discovery (RED: ModuleNotFoundError, module absent)
+   - `63a19e4` test(05-07): add failing jump-table test; keep real-file failures counts-only (RED: `assert () == ((0x10200, 0x1020c),)`)
+   - `62fe9dd` feat(05-07): capstone recursive-descent discovery with LE evidence (GREEN)
 2. **Task 2: Jump tables, padding, inline data, object edges**
-   - `0ffcf4d` test(05-07): add failing tests for the D-07 end rule, leading tables and object edges (RED: 4 tests fail with `AttributeError: ... no attribute 'ends'`; test_inline_data and test_seed_outside_code_object passed at RED, see Deviations)
-   - `3c9a32a` feat(05-07): D-07 function ends with padding, leading tables and fall-through (GREEN)
+   - `7104d5a` test(05-07): add failing tests for the D-07 end rule, leading tables and object edges (RED: 4 tests fail with `AttributeError: ... no attribute 'ends'`; test_inline_data and test_seed_outside_code_object passed at RED, see Deviations)
+   - `258f1b7` feat(05-07): D-07 function ends with padding, leading tables and fall-through (GREEN)
 
 ## Files Created/Modified
 
@@ -136,17 +136,17 @@ See key-decisions in the frontmatter. One addition: only the two game EXEs are p
 **1. [Rule 3 - Blocking] Jump-table detection pulled from Task 2 into Task 1**
 - **Found during:** Task 1 (tracer real-file verify)
 - **Issue:** Without jump tables, every table entry was seeded as a `fixup` start. That gave 2,954 / 2,772 starts, above the plan's 2,500 bound, so the tracer verify failed.
-- **Fix:** Added `test_jump_table` as a second Task 1 RED commit (`14e3dd7`), then implemented table detection in the Task 1 GREEN commit, together with fixed-point pointer seeding that excludes table entries.
+- **Fix:** Added `test_jump_table` as a second Task 1 RED commit (`63a19e4`), then implemented table detection in the Task 1 GREEN commit, together with fixed-point pointer seeding that excludes table entries.
 - **Files modified:** tools/reverseapoc/discover.py, tests/test_discover.py
 - **Verification:** The real test passed with 1,946 / 1,930 starts.
-- **Committed in:** 14e3dd7, 2129261
+- **Committed in:** 63a19e4, 62fe9dd
 
 **2. [Rule 1 - Bug] Real-file assertions could dump addresses**
 - **Found during:** Task 1 (first real run)
 - **Issue:** pytest printed the whole `Discovery` repr, with addresses and evidence, in the failure output. The plan requires that real tests print nothing beyond counts.
 - **Fix:** Assertions now compare local counts, and `Discovery.__repr__` returns the counts-only `format()`.
 - **Files modified:** tests/test_discover_real.py, tools/reverseapoc/discover.py
-- **Committed in:** 14e3dd7, 2129261
+- **Committed in:** 63a19e4, 62fe9dd
 
 **3. Added beyond the plan**
 - `test_evidence_merges` (call plus runtime on one start), `test_report_has_counts_only`, `test_no_read_past_object_edges` (exact decoded-byte count past the object end) and the real `test_ends_tile` (every end lies in (start, next start]).
@@ -188,7 +188,7 @@ None - no external service configuration required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/discover.py, tests/test_discover.py, tests/test_discover_real.py
-- FOUND commits: c721536, 14e3dd7, 2129261, 0ffcf4d, 3c9a32a
+- FOUND commits: e6234e7, 63a19e4, 62fe9dd, 7104d5a, 258f1b7
 - Acceptance: line 1 is the KKND header; `-k "jump or leading or inline or ends or outside or edges"` selects 7 tests, all passing; the real test passes for both EXEs, unskipped; `uv run pytest -q` gives 1012 passed, 185 skipped; `uv run ruff check .` is clean.
 
 ## Review fixes (round 1)
@@ -201,7 +201,7 @@ None - no external service configuration required.
 - `test_report_has_counts_only` now asserts that `format()`, `repr()` and `to_json()` contain no `0x` and no run of 5 or more digits.
 - New `test_errors_carry_no_address_in_assertions` checks `DiscoverError` by type only, for a start outside the code object and for an LE without an executable object. No real-file test raises it.
 
-**Commits:** `c3e06f3` test(05-07) (RED), `2842afe` fix(05-07) (GREEN).
+**Commits:** `6f6599b` test(05-07) (RED), `aa310a1` fix(05-07) (GREEN).
 
 **Commands and output:**
 - `uv run pytest -q tests/test_discover.py`: `14 passed`

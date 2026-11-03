@@ -15,8 +15,8 @@ actuals:
   tokens: 7138
   tasks: 2
   commits: 2
-plan_head_before: 5d391a95fc7e771f05cab9d5985e9a315bc99097
-plan_head_after: 74afbf895018a1e1e2a607c679dc2fc0a5d6ddd3
+plan_head_before: 1c48675aac13d363ce5011a7b4e83c195f3d2922
+plan_head_after: e170f912c7be8c1aebdd2527b1b7432997080af0
 
 tech-stack:
   added: []
@@ -108,8 +108,8 @@ Execution context nonce: 4313982a6d6a4591
 
 ## Task Commits
 
-1. **Task 1 (tracer): awesome-rea draft read from upstream** - `90e4d0e` (docs)
-2. **Task 2: awesome-decomp-games, awesome-game-decompilations and decomp.me drafts** - `74afbf8` (docs)
+1. **Task 1 (tracer): awesome-rea draft read from upstream** - `e4b3499` (docs)
+2. **Task 2: awesome-decomp-games, awesome-game-decompilations and decomp.me drafts** - `e170f91` (docs)
 
 Tracer gate: interactive run, `human_verify_mode` end-of-phase, `<verify>` automated only, so the verify was re-run after the Task 1 commit (exit 0) and the plan expanded without a checkpoint.
 
@@ -140,7 +140,7 @@ Flagged assumption check: all three upstream files exist at the paths D-33 names
 
 ### Fix round 1
 
-The review (`review-06-19.md`, base 976ec58) found one Important and four Minor issues. The coordinator ruled that all five be fixed; they are fixed in docs/listings.md and in this SUMMARY.
+The review (`review-06-19.md`, base e1c179e) found one Important and four Minor issues. The coordinator ruled that all five be fixed; they are fixed in docs/listings.md and in this SUMMARY.
 
 | Finding | Ruling | What changed |
 |---|---|---|
@@ -180,5 +180,5 @@ None. At the pilot checkpoint the owner sends each draft by hand after the befor
 ## Self-Check: PASSED
 
 - FOUND: docs/listings.md
-- FOUND: 90e4d0e (ancestor of HEAD)
-- FOUND: 74afbf8 (ancestor of HEAD)
+- FOUND: e4b3499 (ancestor of HEAD)
+- FOUND: e170f91 (ancestor of HEAD)

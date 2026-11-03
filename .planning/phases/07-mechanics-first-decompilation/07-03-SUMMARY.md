@@ -19,8 +19,8 @@ actuals:
   tokens: 8200
   tasks: 3
   commits: 5
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: a957fcb806b1f651587dd91e3399e9f3af07d7dd
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: cfa75201f250e3e22f2e920cb162ba63d0a76b7a
 
 tech-stack:
   added: []
@@ -152,9 +152,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): rule by logical path through check_unit**: RED `fb154a4` (test), GREEN `8cf9bc3` (feat)
-2. **Task 2 (TDD): gate refuses uncommitted options; --partial scores under the unit rule**: RED `783eceb` (test), GREEN `efb1f9b` (feat)
-3. **Task 3: real view compile test (K4) and the full host suite**: `a957fcb` (test)
+1. **Task 1 (tracer, TDD): rule by logical path through check_unit**: RED `262586c` (test), GREEN `65458f8` (feat)
+2. **Task 2 (TDD): gate refuses uncommitted options; --partial scores under the unit rule**: RED `d098afb` (test), GREEN `9c00e7e` (feat)
+3. **Task 3: real view compile test (K4) and the full host suite**: `cfa7520` (test)
 
 No REFACTOR commits were needed.
 
@@ -210,7 +210,7 @@ No REFACTOR commits were needed.
 
 **4. [Plan text vs. code, found in review, fixed in fix round 1] The compile root of trees that are not views.**
 - **Found during:** the orchestrator's task review (Important finding 1). My first version wrongly listed this under Decisions.
-- **Issue:** As first committed (`8cf9bc3`), `_compile_root_for` compiled any tree outside the repository from its parent. It also compiled any in-repo `<x>/src` with `<x>/include` beside it from `<x>`. The plan says REPO_ROOT for every tree that is not a D-24 view. Two consequences:
+- **Issue:** As first committed (`65458f8`), `_compile_root_for` compiled any tree outside the repository from its parent. It also compiled any in-repo `<x>/src` with `<x>/include` beside it from `<x>`. The plan says REPO_ROOT for every tree that is not a D-24 view. Two consequences:
   - `gate --partial` (`src_root=saved.parent`) could score a saved file outside the repo against the grandparent's `include/` and write that score to the public status.csv. Before 07-03, the compile refused that file.
   - An in-repo `<x>/src` beside an `<x>/include` that is not a view compiled against non-committed headers.
 - **Fix (orchestrator ruling, fix round 1):**
@@ -218,7 +218,7 @@ No REFACTOR commits were needed.
   - I did not keep the "parent" behaviour for the read-only `check` path. The `cc` edge always compiles from REPO_ROOT, so the only users of "parent" were tests. The `env`/`tree` test fixtures now stand their tmp root in for REPO_ROOT instead.
   - In addition, `gate --partial` refuses a saved file outside the repository, or one whose compile root would not be REPO_ROOT, because its rows go to status.csv.
 - **Real test:** the K4 view moved from `build/test-view/` to `build/driver/test-view/<hex>/view`, so it really is a view. It now also asserts the view-relative `-fo=` guest path in the compile log.
-- **Commits:** RED `0d269b8`, fix `a0ac57e`.
+- **Commits:** RED `17f614c`, fix `4a39ff7`.
 
 ---
 
@@ -250,7 +250,7 @@ The orchestrator's review raised Important finding 1: `_compile_root_for` compil
 - The test fixtures `env` (test_check.py) and `as_committed` (test_gate.py) stand their tmp root in for `check.REPO_ROOT`, loading configure.py first.
 - The real K4 view moved to `build/driver/test-view/<hex>/view` and asserts the view-relative `-fo=` guest path in `cc.log`.
 
-**New tests (RED `0d269b8`, 7 failed for the intended reason, either the parent returned instead of REPO_ROOT or `DID NOT RAISE CheckError`; fix `a0ac57e`):**
+**New tests (RED `17f614c`, 7 failed for the intended reason, either the parent returned instead of REPO_ROOT or `DID NOT RAISE CheckError`; fix `4a39ff7`):**
 - `tests/test_check.py::test_a_tree_outside_the_repository_compiles_from_the_repository`
 - `tests/test_check.py::test_an_in_repo_src_with_include_that_is_no_view_compiles_from_the_repository[flags-copy|elsewhere|driver-not-view|view-outside-driver]`
 - `tests/test_gate.py::test_partial_refuses_a_saved_file_outside_the_repository`
@@ -270,7 +270,7 @@ Execution context nonce: 4808b1bf97b2f35b
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/compiler.py, tools/reverseapoc/check.py, tools/reverseapoc/gate.py, tests/test_compiler.py, tests/test_check.py, tests/test_gate.py, tests/test_check_real.py
-- FOUND commits: fb154a4, 8cf9bc3, 783eceb, efb1f9b, a957fcb (all ancestors of HEAD)
+- FOUND commits: 262586c, 65458f8, d098afb, 9c00e7e, cfa7520 (all ancestors of HEAD)
 - No STATE.md or ROADMAP.md change.
 
 ---

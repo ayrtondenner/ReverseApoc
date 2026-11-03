@@ -17,8 +17,8 @@ actuals:
   tokens: 8258
   tasks: 3
   commits: 7
-plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: f0dc6bf9a8ad8f31f93a36e2fa46c26fb9301e19
+plan_head_before: 69d5878bdc8b0201e2f73f7644e343eef4c15fd2
+plan_head_after: 8cd67f2c62e1c44b58844d4c9a36c7f459315768
 
 tech-stack:
   added: []
@@ -190,15 +190,15 @@ How the CSVs were regenerated:
 ## Task Commits
 
 1. **Task 1: row 11**
-   - `5cf5392` (test, RED)
-   - `2114911` (test: strict xfail while the owner decided)
-   - `f4e63a4` (fix, GREEN, xfail removed)
-   - `47b633d` (chore: functions.csv regeneration)
+   - `df15bc6` (test, RED)
+   - `cb60666` (test: strict xfail while the owner decided)
+   - `0562c90` (fix, GREEN, xfail removed)
+   - `6180802` (chore: functions.csv regeneration)
 2. **Task 2: rows 13b and 8**
-   - `dbc3d42` (test, RED)
-   - `8078685` (fix, GREEN)
+   - `e3fc0f2` (test, RED)
+   - `5744f83` (fix, GREEN)
 3. **Task 3: rows 16b and 16a**
-   - `f0dc6bf` (test)
+   - `8cd67f2` (test)
 
 ## TDD evidence
 
@@ -233,8 +233,8 @@ How the CSVs were regenerated:
 
 - **Orchestrator ruling F19 (06-04):** Task 3's real verify ran with REVERSEAPOC_ORIG, REVERSEAPOC_WATCOM_DIR and REVERSEAPOC_GHIDRA_EXPORT pointing at the main checkout. The `-rs` output was written to `build/06-04-real.out` and has no SKIPPED for tests/test_functions_real.py and tests/test_discover_real.py.
   - The harness refused inline env-var command prefixes and `$(git rev-parse ...)`, so the variables were set by a scratchpad wrapper (`run_real.py`). It runs `python -m pytest` with the literal main-checkout paths and writes the output file itself, which satisfies R-B (program's own write).
-- **Orchestrator ruling (row 11 checkpoint, 2026-10-25):** owner option (a). The fix landed in f4e63a4, after the plan's checkpoint path had first reverted it and held the test as strict xfail (2114911).
-- **Orchestrator ruling (2026-10-25), CSV regeneration moved into 06-04:** the plan prohibited changing functions.csv in this plan and handed regeneration to 06-16. The orchestrator instead had 06-04 regenerate both functions.csv files (47b633d), previewed first and limited to the 26 end cells, so main never carries a stale CSV between waves. boundaries.csv, units.csv and symbols.csv are untouched.
+- **Orchestrator ruling (row 11 checkpoint, 2026-10-25):** owner option (a). The fix landed in 0562c90, after the plan's checkpoint path had first reverted it and held the test as strict xfail (cb60666).
+- **Orchestrator ruling (2026-10-25), CSV regeneration moved into 06-04:** the plan prohibited changing functions.csv in this plan and handed regeneration to 06-16. The orchestrator instead had 06-04 regenerate both functions.csv files (6180802), previewed first and limited to the 26 end cells, so main never carries a stale CSV between waves. boundaries.csv, units.csv and symbols.csv are untouched.
 - **Orchestrator correction (2026-10-25):** no xfail, skip or expected-change marker was added to any real-file test.
 - **Rules R-A / R-B:** no new skip was added. Everything under build/ was written by shell redirection or by the program's own writes.
 
@@ -245,12 +245,12 @@ How the CSVs were regenerated:
 - **Issue:** removing the copied version rule left `test_symbols_resolve` needing the LIB386 for `runtime_entries`. cli has no public helper that returns libraries, and cli.py is read-only in this plan.
 - **Fix:** `_libraries` now loads only RUNTIME_VERSION (10.6). The shared `_require_runtime_tree` asserts that every committed runtime.csv row lists 10.6, which is exactly the tree cli's rule loads. The runtime rows themselves come from `cli._seeded_runtime_rows`.
 - **Verification:** the F19 real run passes, 24 tests.
-- **Committed in:** f0dc6bf.
+- **Committed in:** 8cd67f2.
 
 **2. [Extra pin] `test_case_label_after_the_table_stays_in_the_function`**
 - **Found during:** Task 1.
 - **Issue:** the plan names two tests. A third pin guards the common Watcom layout where case labels follow the table, so the new rule cannot cut a real function short.
-- **Committed in:** 5cf5392.
+- **Committed in:** df15bc6.
 
 **Total deviations:** 4 orchestrator rulings applied (plus the R-A/R-B rules honoured), 1 blocking fix, 1 extra pin.
 **Impact on plan:** the CSV prohibition was lifted by the owner and the orchestrator. Everything else is as planned.
@@ -280,21 +280,21 @@ DI-19 rows 8, 11, 13b, 16a and 16b are closed by commits. The new real-file pins
 ## Self-Check: PASSED
 
 - Files exist: tools/reverseapoc/discover.py, lint.py, ghidra_scripts/ExportDrafts.java, tests/test_discover.py, test_lint.py, test_ghidra.py, test_units.py, test_functions_real.py, config/ufo2p/functions.csv, config/tacp/functions.csv.
-- Commits on HEAD: 5cf5392, 2114911, f4e63a4, 47b633d, dbc3d42, 8078685, f0dc6bf (7, measured with `git rev-list --count 021a58b..HEAD`).
+- Commits on HEAD: df15bc6, cb60666, 0562c90, 6180802, e3fc0f2, 5744f83, 8cd67f2 (7, measured with `git rev-list --count 69d5878..HEAD`).
 
 ## Fix round 1
 
-The review approved the plan with no Critical or Important findings (review-06-04.md). This round fixes its 7 minors. FIX_BASE is 9665feb; there are 6 commits from there, and every test commit comes before the fix commit it pins.
+The review approved the plan with no Critical or Important findings (review-06-04.md). This round fixes its 7 minors. FIX_BASE is 0374ab8; there are 6 commits from there, and every test commit comes before the fix commit it pins.
 
 | # | Minor | Fix | Commit | Proof |
 |---|-------|-----|--------|-------|
-| 1 | The row 11 rule could cut code reached only through a later table's case label | `end_of` now adds the case labels of every table an indirect jmp in the scanned code reads, wherever that table lies (`_EndScan.read_tables`). RED first: the reviewer's layout ended at T1's end, 0x1001C. | a2678ad (RED), 446a7e9 (fix) | `test_case_label_of_a_later_table_keeps_the_code`. Re-measured on both EXEs into build/di19-11/after.json: identical to the approved set, still exactly the 26 ends (13 UFO2P + 13 TACP). No CSV regeneration needed. |
-| 2 | No CI pin for the direct-branch and skipped-table halves of the guard | Two synthetic layouts: a `ja L` over the trailing table, and an inline table stepped over whose case label lies past the next table | a2678ad | Mutation-checked against the fixed code. Deleting `reached.add(insn.branch_target)` fails `test_forward_jump_past_the_table_keeps_the_code`; deleting `reached.update(self.case_targets(pos))` fails `test_case_label_of_a_skipped_table_keeps_the_code`. |
-| 3 | The `ends()` docstring described the old rule | `ends()` and `end_of` docstrings now describe the trailing-table end and which case labels are counted | 446a7e9 | Read in the diff |
-| 4 | `set(reached)` was copied on every terminal instruction | `after_tables` returns early when no table follows, and checks `reached` and the tables' cases in place, without a copy | 446a7e9 | Synthetic suite green |
-| 5 | The text test did not pin that the batch goes on | The catch block must hold `println("ERROR "` and `return false;`, with no `throw` and no `System.exit` | 783ed9a | Mutation-checked: replacing `return false;` with `throw e;` fails the test |
-| 6 | `_require_runtime_tree` enforced "every row lists 10.6", which cli does not | `_listed_versions`: the LIB386 tree of every version any runtime row lists must be installed, else a loud failure (never a skip). cli._seeded_runtime_rows and functions.runtime_entries pick each row's version themselves. | 84033a0 | An empty REVERSEAPOC_WATCOM_DIR gives an AssertionError naming 10.5, 10.6 and 11.0. The F19 real run passes. |
-| 7 | The gap-free tiling checks sat only in the orig/-gated test | The `a.end == b.start` and last-end checks moved into the CSV-only `tiling_problems`; `test_units_tile_the_code` keeps only the code-object bounds. Added a planted one-byte-gap case. | 474a60a | Mutation-checked: weakening the gap check to an overlap-only check fails both `[*-gap]` cases |
+| 1 | The row 11 rule could cut code reached only through a later table's case label | `end_of` now adds the case labels of every table an indirect jmp in the scanned code reads, wherever that table lies (`_EndScan.read_tables`). RED first: the reviewer's layout ended at T1's end, 0x1001C. | 26c4182 (RED), f3702c8 (fix) | `test_case_label_of_a_later_table_keeps_the_code`. Re-measured on both EXEs into build/di19-11/after.json: identical to the approved set, still exactly the 26 ends (13 UFO2P + 13 TACP). No CSV regeneration needed. |
+| 2 | No CI pin for the direct-branch and skipped-table halves of the guard | Two synthetic layouts: a `ja L` over the trailing table, and an inline table stepped over whose case label lies past the next table | 26c4182 | Mutation-checked against the fixed code. Deleting `reached.add(insn.branch_target)` fails `test_forward_jump_past_the_table_keeps_the_code`; deleting `reached.update(self.case_targets(pos))` fails `test_case_label_of_a_skipped_table_keeps_the_code`. |
+| 3 | The `ends()` docstring described the old rule | `ends()` and `end_of` docstrings now describe the trailing-table end and which case labels are counted | f3702c8 | Read in the diff |
+| 4 | `set(reached)` was copied on every terminal instruction | `after_tables` returns early when no table follows, and checks `reached` and the tables' cases in place, without a copy | f3702c8 | Synthetic suite green |
+| 5 | The text test did not pin that the batch goes on | The catch block must hold `println("ERROR "` and `return false;`, with no `throw` and no `System.exit` | eac52b2 | Mutation-checked: replacing `return false;` with `throw e;` fails the test |
+| 6 | `_require_runtime_tree` enforced "every row lists 10.6", which cli does not | `_listed_versions`: the LIB386 tree of every version any runtime row lists must be installed, else a loud failure (never a skip). cli._seeded_runtime_rows and functions.runtime_entries pick each row's version themselves. | 2a1f6ca | An empty REVERSEAPOC_WATCOM_DIR gives an AssertionError naming 10.5, 10.6 and 11.0. The F19 real run passes. |
+| 7 | The gap-free tiling checks sat only in the orig/-gated test | The `a.end == b.start` and last-end checks moved into the CSV-only `tiling_problems`; `test_units_tile_the_code` keeps only the code-object bounds. Added a planted one-byte-gap case. | e9d6a72 | Mutation-checked: weakening the gap check to an overlap-only check fails both `[*-gap]` cases |
 
 Verification after the round:
 - Synthetic suites (discover, lint, ghidra, units): 77 passed, 3 skipped. The skips are the pre-existing clang/Ghidra ones.
@@ -305,12 +305,12 @@ Verification after the round:
 
 ## Fix round 2
 
-The re-review (rereview-06-04-r1.md) confirmed all 7 minors fixed, the 26 ends unchanged, and that no function swallows its neighbour. This round fixes its two notes. FIX_BASE is 367dba9; there are 3 code commits from there, with the test commit first.
+The re-review (rereview-06-04-r1.md) confirmed all 7 minors fixed, the 26 ends unchanged, and that no function swallows its neighbour. This round fixes its two notes. FIX_BASE is adf940e; there are 3 code commits from there, with the test commit first.
 
 | # | Note | Fix | Commit | Proof |
 |---|------|-----|--------|-------|
-| N1 | `_listed_versions` required every listed version (10.5, 10.6 and 11.0), but the rule loads only the version it picks per row | Orchestrator ruling applied: `_required_versions` is `{_row_version(m, RUNTIME_VERSION) for m in matches}`, computed with the verb's own helper, called by its private name. It stays strict: a missing tree fails with an AssertionError naming the version and its LIB386 path, and never skips (R-A). | 7a640d8 (RED), ed30004 (fix) | New test `test_required_versions_are_what_the_rule_loads[UFO2P.EXE, TACP.EXE]`. It needs no orig/ and no Watcom tree. It takes the committed runtime.csv plus one row without 10.6, records the versions `cli._seeded_runtime_rows` passes to `load_libraries`, and compares them with `_required_versions`. RED: ['10.5', '10.6', '11.0'] != ['10.6', '11.0']. GREEN: equal. With an empty REVERSEAPOC_WATCOM_DIR the error reads "runtime.csv rows need Watcom 10.6 (<dir>/10.6/LIB386), not installed ...". |
-| N2 | The `read_tables` docstring said "table start", but the code accepts any target inside a table | The docstring now says: any LE fixup inside the jmp whose target lies anywhere in a jump table yields all of that table's case labels. No behaviour change. | 19edb01 | tests/test_discover.py: 20 passed |
+| N1 | `_listed_versions` required every listed version (10.5, 10.6 and 11.0), but the rule loads only the version it picks per row | Orchestrator ruling applied: `_required_versions` is `{_row_version(m, RUNTIME_VERSION) for m in matches}`, computed with the verb's own helper, called by its private name. It stays strict: a missing tree fails with an AssertionError naming the version and its LIB386 path, and never skips (R-A). | a645589 (RED), 52e180c (fix) | New test `test_required_versions_are_what_the_rule_loads[UFO2P.EXE, TACP.EXE]`. It needs no orig/ and no Watcom tree. It takes the committed runtime.csv plus one row without 10.6, records the versions `cli._seeded_runtime_rows` passes to `load_libraries`, and compares them with `_required_versions`. RED: ['10.5', '10.6', '11.0'] != ['10.6', '11.0']. GREEN: equal. With an empty REVERSEAPOC_WATCOM_DIR the error reads "runtime.csv rows need Watcom 10.6 (<dir>/10.6/LIB386), not installed ...". |
+| N2 | The `read_tables` docstring said "table start", but the code accepts any target inside a table | The docstring now says: any LE fixup inside the jmp whose target lies anywhere in a jump table yields all of that table's case labels. No behaviour change. | 40cbfc3 | tests/test_discover.py: 20 passed |
 
 Verification after the round:
 - F19 real run, tests/test_functions_real.py and tests/test_discover_real.py: 26 passed, 0 SKIPPED (build/06-04-real.out).

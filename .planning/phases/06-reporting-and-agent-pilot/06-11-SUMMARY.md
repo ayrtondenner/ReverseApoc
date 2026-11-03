@@ -14,11 +14,11 @@ provides:
 affects: [06-12 hooks deny agent edits of status.csv, 06-16 seeding (one gate run of both Phase 5 units) and the D-22 drift test, 06-18 gate writes decomphub.progress.json, 06-23/06-25 the driver's gate and partial-gate calls]
 
 actuals:
-  tokens: 23000  # chars/4 over git diff 325c606..4f3beb7 (79,794 chars) plus this SUMMARY
+  tokens: 23000  # chars/4 over git diff aaa02cd..1395e29 (79,794 chars) plus this SUMMARY
   tasks: 3
-  commits: 7  # MEASURED: git rev-list --count 325c606..4f3beb7, before this SUMMARY commit
-plan_head_before: 325c6066b67916ec70c794d79ebfabfcea2178c1
-plan_head_after: 4f3beb75475bcdd932ee6017207e7d62b0459d61
+  commits: 7  # MEASURED: git rev-list --count aaa02cd..1395e29, before this SUMMARY commit
+plan_head_before: aaa02cd988922543affc9bd139cd100df2c5113d
+plan_head_after: 1395e29aa4d1ae8bb9785a57ca3f06646cfb3bb6
 
 tech-stack:
   added: []
@@ -130,10 +130,10 @@ Execution context nonce: 4cd196affae39523
 
 ## Task Commits
 
-1. **Task 1 (tracer): gate writes one matched row through status.py.** RED `1401e62` (test), GREEN `4808d0a` (feat). Tracer gate: interactive run, `end-of-phase`, verify automated-only. I re-ran `uv run pytest -q tests/test_status.py tests/test_gate.py` (41 passed), then expanded.
-2. **Task 2: the cross-check and `gate --all`.** RED `1da0ee2` (test), GREEN `8a554d1` (feat).
-3. **Task 3: `gate --partial`.** RED `873997a` (test), GREEN `309f360` (feat).
-4. Guard: `4f3beb7` (test), only gate.py calls write_status.
+1. **Task 1 (tracer): gate writes one matched row through status.py.** RED `66b11d9` (test), GREEN `5bf7486` (feat). Tracer gate: interactive run, `end-of-phase`, verify automated-only. I re-ran `uv run pytest -q tests/test_status.py tests/test_gate.py` (41 passed), then expanded.
+2. **Task 2: the cross-check and `gate --all`.** RED `8c9749d` (test), GREEN `4742e6b` (feat).
+3. **Task 3: `gate --partial`.** RED `357c869` (test), GREEN `0335c4b` (feat).
+4. Guard: `1395e29` (test), only gate.py calls write_status.
 
 **Plan metadata:** this SUMMARY commit (docs).
 
@@ -141,13 +141,13 @@ Execution context nonce: 4cd196affae39523
 
 `workflow.tdd_mode` is off, and pytest's console report is not a format `check tdd-red-evidence` reads. I judged RED from the failing assertions, as 06-02, 06-08 and 06-09 did.
 
-- Task 1 (`1401e62`): both files failed at collection. `reverseapoc.status` and `reverseapoc.gate` did not exist yet (ImportError). This is the new-module case 06-02 recorded.
-- Task 2 (`1da0ee2`): 21 targets failed, all on the planned behaviour.
+- Task 1 (`66b11d9`): both files failed at collection. `reverseapoc.status` and `reverseapoc.gate` did not exist yet (ImportError). This is the new-module case 06-02 recorded.
+- Task 2 (`8c9749d`): 21 targets failed, all on the planned behaviour.
   - The gate tests failed on assertions. The cross-check cases returned exit 0 where 1 was expected (`assert 0 == 1`). Re-gating had attempts 1 where 3 was kept.
   - `cross_check` and `gate_all` did not exist yet (AttributeError on the module).
   - The CLI usage cases hit argparse's `SystemExit: 2` where `main` should return 2.
   - `test_merge_is_order_independent` first failed on a test-helper bug (the tmp root did not exist). I fixed that before the RED commit. It then passed on Task 1's code, as a pin.
-- Task 3 (`873997a`): 12 targets failed.
+- Task 3 (`357c869`): 12 targets failed.
   - 5 failed because `gate_partial` did not exist (AttributeError).
   - 7 CLI cases hit `SystemExit: 2`: `--partial` was not an option yet.
 
@@ -186,31 +186,31 @@ See key-decisions in the frontmatter. Two points on interfaces later plans call:
 - **Issue:** "a matched row whose function moved to another unit is refused" only held when the gated unit was the new owner. When a third unit was gated, the landed set still equalled the expected set, and the move went unseen.
 - **Fix:** `cross_check(..., owners=)` takes the functions.csv rows. A matched row whose start has no row, or whose row names another unit or name, is a problem. `gate_units` reads functions.csv. `gate_all` uses `ExeInputs.rows`.
 - **Files modified:** tools/reverseapoc/gate.py, tests/test_gate.py (`test_crosscheck_refuses_a_moved_function[a-third-unit]`)
-- **Commit:** `1da0ee2`, `8a554d1`
+- **Commit:** `8c9749d`, `4742e6b`
 
 **2. [Rule 2 - Missing critical] The unit file is hashed before and after the check**
 - **Found during:** Task 1
 - **Issue:** a hash taken only after check could record a file other than the one check proved.
 - **Fix:** gate hashes before and after. A difference is a CheckError (exit 2), and nothing is written. The same applies to the saved file in `--partial`.
 - **Files modified:** tools/reverseapoc/gate.py
-- **Commit:** `4808d0a`, `309f360`
+- **Commit:** `5bf7486`, `0335c4b`
 
 **3. [Rule 2 - Missing critical] A scan test that only gate.py calls write_status**
 - **Found during:** final review against the D-21 prohibition
 - **Fix:** `test_only_gate_writes_the_table` scans tools/reverseapoc/*.py and configure.py.
-- **Commit:** `4f3beb7`
+- **Commit:** `1395e29`
 
 **4. [Rule 1 - Test bug] Binary writes where the LF rule is under test**
 - **Found during:** Task 1 GREEN
 - **Issue:** `write_text` translates `\n` to CRLF on Windows, so `test_status_refuses_unsorted_rows` saw the CR refusal first.
 - **Fix:** the test writes bytes.
-- **Commit:** `4808d0a`
+- **Commit:** `5bf7486`
 
 **5. [Rule 3 - Blocking] Test fakes pass an objdiff runner**
 - **Found during:** Task 2 GREEN
 - **Issue:** `default_objdiff_runner` refuses at construction when objdiff-cli is not on PATH (correct in production), and the host has no objdiff-cli.
 - **Fix:** the gate --all and --partial tests pass a fake runner or monkeypatch `gate.default_objdiff_runner`. No production change.
-- **Commit:** `8a554d1`
+- **Commit:** `4742e6b`
 
 ---
 
@@ -242,7 +242,7 @@ None.
 
 ## Fix round 1
 
-Fix base `ae38da9`. The review approved, with one Important finding (it fails closed) and nine minors. RED `a22f512` (test), GREEN `1230849` (fix).
+Fix base `175aed2`. The review approved, with one Important finding (it fails closed) and nine minors. RED `aacf599` (test), GREEN `7e9cdf0` (fix).
 
 | Finding | What changed | Test (tests/test_gate.py unless named) |
 |---|---|---|
@@ -257,20 +257,20 @@ Fix base `ae38da9`. The review approved, with one Important finding (it fails cl
 | M9: `--all` and source_sha256 | `recheck` compares each matched row's `source_sha256` with the unit file and reports a difference (exit 1). | `test_gate_all_refuses_a_stale_source_sha` |
 | M10: `--all` output | `--all` ends with `ok` or `MISMATCH`, never "status.csv not written". `checks` holds one `{exe, unit, functions}` entry per matched unit. The land's per-EXE results go under the new top-level `splice` key. | `test_gate_all_output_shape` |
 
-RED (`a22f512`): 16 new targets failed on their assertions. The full-revert cases raised CheckError, or wrongly exited 0. The rename kept the old name; the stale name passed; the half-write raised a bare OSError; the non-default src passed. The partial with problems wrote a row, the edited file passed, and the stale sha passed. The `--all` text ended "status.csv not written". The three status tables were read without error. Existing tests stayed green; seeded_tree now seeds the real file hashes.
+RED (`aacf599`): 16 new targets failed on their assertions. The full-revert cases raised CheckError, or wrongly exited 0. The rename kept the old name; the stale name passed; the half-write raised a bare OSError; the non-default src passed. The partial with problems wrote a row, the edited file passed, and the stale sha passed. The `--all` text ended "status.csv not written". The three status tables were read without error. Existing tests stayed green; seeded_tree now seeds the real file hashes.
 
 After the fix: `uv run pytest -q tests/test_gate.py tests/test_status.py` gives 95 passed. `uv run pytest -q` gives 1693 passed and 217 skipped (the worktree's real-file skips). `uv run ruff check .` is clean.
 
 ## Fix round 2
 
-Fix base `fb18d0c`. The re-review approved fix round 1 (spec compliant), with one new Important finding and one Minor. RED `a777840` (test), GREEN `c661557` (fix).
+Fix base `4a72ce8`. The re-review approved fix round 1 (spec compliant), with one new Important finding and one Minor. RED `402a508` (test), GREEN `1f2f533` (fix).
 
 | Finding | What changed | Test (tests/test_gate.py) |
 |---|---|---|
 | Important: `_reverted` read a renamed function as reverted (it looked for `func_` definitions), so re-gating a renamed match and `gate --all` exited 1 | Ruling applied: `_reverted` keys on configure's D-12 INCLUDE_ASM markers (`source_marks(...).marked`). It reports "reverted to INCLUDE_ASM" and skips check only when every game or thunk row of the unit carries a marker. A unit with neither markers nor the expected definitions goes to check, which refuses it as before (exit 2). | `test_regating_a_renamed_function_updates_its_name` (rewritten: the C defines `UnitInit`, symbols.csv names the start `UnitInit_`), `test_gate_all_passes_with_a_renamed_match` (new), `test_a_unit_with_neither_markers_nor_definitions_goes_to_check` (new). `test_gate_all_exits_1_on_a_fully_reverted_unit` and `test_gating_a_fully_reverted_matched_unit_exits_1` stay green with their C fully marked. |
 | Minor (ruling): the `name` column | status.py's docstring states it: D-20's `name` is the name the build links and check verifies, which is the symbols.csv name verbatim when the start has one, else the functions.csv name. progress.py and the D-22 drift test (06-16/06-17) read this exact name. New `status.check_name`. `gate` and `gate --partial` check every row of the gated unit with it before check runs, so an unwritable name (one containing `$?@.`) exits 2 up front, naming the name, the start and the unit. | `test_an_unwritable_name_is_refused_before_check`, `test_partial_refuses_an_unwritable_name_before_check` |
 
-RED (`a777840`): 5 targets failed.
+RED (`402a508`): 5 targets failed.
 - The rewritten rename test and the `--all` rename case exited 1 with "reverted to INCLUDE_ASM".
 - The two name tests got a StatusError after the check had run, not a CheckError before it.
 - The neither-markers case returned exit 1, where check should have raised (`DID NOT RAISE CheckError`).
@@ -282,7 +282,7 @@ After the fix:
 
 ## Fix round 3
 
-Fix base `938cefc`. The r2 re-review approved fix round 2 (spec compliant), with two Minors. This round adds tests only; no code behaviour changed.
+Fix base `307978e`. The r2 re-review approved fix round 2 (spec compliant), with two Minors. This round adds tests only; no code behaviour changed.
 
 | Finding | What changed | Test (tests/test_gate.py) |
 |---|---|---|
@@ -296,7 +296,7 @@ After the change, `uv run pytest -q tests/test_gate.py tests/test_status.py` giv
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/status.py, tools/reverseapoc/gate.py, tests/test_status.py, tests/test_gate.py
-- FOUND commits: 1401e62, 4808d0a, 1da0ee2, 8a554d1, 873997a, 309f360, 4f3beb7 (all ancestors of HEAD)
+- FOUND commits: 66b11d9, 5bf7486, 8c9749d, 4742e6b, 357c869, 0335c4b, 1395e29 (all ancestors of HEAD)
 - Acceptance: STATUS_COLUMNS line present; `gate --help` lists `--attempts`, `--json`, `--partial`, `--all`; gate.py has `def cross_check(` and `def gate_all(`; tests/test_gate.py has `test_partial_never_downgrades_a_matched_row`
 - Verify: `uv run pytest -q tests/test_status.py tests/test_gate.py` (79 passed); `-k "crosscheck or gate_all or order_independent"` (16 passed); `-k partial` (13 passed); `uv run pytest -q` (1676 passed, 217 skipped); `uv run ruff check .` (all checks passed)
 

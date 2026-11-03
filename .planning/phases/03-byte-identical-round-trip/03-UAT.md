@@ -27,11 +27,11 @@ reported: "Can we do the following: Fix now: 02, 05, 06 / 01 and 03: fix during 
 severity: major
 
 ### 4. 03-06 changed nothing outside WR-02, WR-05 and WR-06 (judgment-tier prohibition)
-expected: `git diff 9158a03 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the masked-count line (splice.py:635) and two comments; cli.py unchanged; configure.py HEADER comments/descriptions byte-identical apart from the two `--orig {orig}` command lines (verifier's non-authoritative check: holds)
+expected: `git diff 651909b HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py` shows only the masked-count line (splice.py:635) and two comments; cli.py unchanged; configure.py HEADER comments/descriptions byte-identical apart from the two `--orig {orig}` command lines (verifier's non-authoritative check: holds)
 result: pass
 
 ### 5. 03-06 did not edit orig/, config/ or the Docker files, nor configure.py during the gate (judgment-tier prohibition)
-expected: no commit after 918b4f9 touches configure.py; gate logs stamped after it; `git diff 9158a03 HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest (verifier's non-authoritative check: holds)
+expected: no commit after cda43f2 touches configure.py; gate logs stamped after it; `git diff 651909b HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest (verifier's non-authoritative check: holds)
 result: pass
 
 ### 6. Triage of the open review findings after the re-review (03-REVIEW-DISPOSITION.md)
@@ -46,7 +46,7 @@ result: pass
 reason: "Owner: WR-08 and IN-12: lets fix both in Phase 5; VN-01 renamed IN-13"
 
 ### 8. 03-07 did not edit orig/, config/ or the Docker files and puts no game bytes in tests (judgment-tier prohibition)
-expected: `git diff 0269b2a HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest; test_configure.py writes only synthetic names and markers (verifier's non-authoritative check: holds)
+expected: `git diff ae1cc12 HEAD -- config docker compose.yaml` empty; orig/ SHA-1s equal the manifest; test_configure.py writes only synthetic names and markers (verifier's non-authoritative check: holds)
 result: pass
 
 ### 9. 03-08 did not implement the deferred WR-01, WR-03 or WR-04 (judgment-tier prohibition)
@@ -104,7 +104,7 @@ blocked: 0
   test: 6
   resolved_by: 03-10-PLAN.md
   resolved_at: 2026-10-21
-  root_cause: "All 13 confirmed at 786edec (4 wider than reported). configure.py: WR-07 ninja_path does not check UTF-8 encodability and main() truncates build.ninja before encoding; IN-09 a leading dash is allowed in the --orig dir and in exe paths (parse-le then prints help and exits 0); IN-10 constant orig/ labels; IN-11 the rebuild rule lacks --out so verify writes REPO_ROOT/build; IN-08 Phase 2 skeleton wording. splice.py: IN-01 describe() uses the global logical page; IN-02 _unwritable_reason never locates the page; IN-03 docstring vs kept zero-length page regions; VN-01 REFUSED/MISSING hard-code orig/NAME and config/targets.toml. targets.py: IN-06 load_manifest does not wrap TOML/UTF-8/shape errors (tracebacks); IN-07 _check_bare_name raises SpliceError, accepts Windows reserved names, host-dependent. Tests/docs: IN-05 test_splice_real.py copies splice.py's page-backed-end arithmetic and MAX_FIELD; IN-04 the toolchain.md container row omits SMKP.EXE."
+  root_cause: "All 13 confirmed at d8e98ba (4 wider than reported). configure.py: WR-07 ninja_path does not check UTF-8 encodability and main() truncates build.ninja before encoding; IN-09 a leading dash is allowed in the --orig dir and in exe paths (parse-le then prints help and exits 0); IN-10 constant orig/ labels; IN-11 the rebuild rule lacks --out so verify writes REPO_ROOT/build; IN-08 Phase 2 skeleton wording. splice.py: IN-01 describe() uses the global logical page; IN-02 _unwritable_reason never locates the page; IN-03 docstring vs kept zero-length page regions; VN-01 REFUSED/MISSING hard-code orig/NAME and config/targets.toml. targets.py: IN-06 load_manifest does not wrap TOML/UTF-8/shape errors (tracebacks); IN-07 _check_bare_name raises SpliceError, accepts Windows reserved names, host-dependent. Tests/docs: IN-05 test_splice_real.py copies splice.py's page-backed-end arithmetic and MAX_FIELD; IN-04 the toolchain.md container row omits SMKP.EXE."
   artifacts:
     - path: "configure.py"
       issue: "WR-07, IN-08, IN-09, IN-10, IN-11"

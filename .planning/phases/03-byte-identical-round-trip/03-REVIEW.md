@@ -33,9 +33,9 @@ status: issues_found
 ## Summary
 
 This is an incremental re-review after gap-closure plans 03-07, 03-08, 03-09 and 03-10. It
-covers the commits from `46ac0a2` (the previous review) to `f93c4cb`. The source commits are
-`231ee0d` and `bf341b5` (configure.py), `51a6efc` and `09781cf` (targets.py, splice.py),
-`154a73c` (docs/toolchain.md) and `e3abcc6` (test_splice_real.py), plus their RED-test commits.
+covers the commits from `eaf3ff9` (the previous review) to `ec6d1b5`. The source commits are
+`f248f9b` and `310be05` (configure.py), `15a1e4f` and `e9fb075` (targets.py, splice.py),
+`29e8118` (docs/toolchain.md) and `8ded749` (test_splice_real.py), plus their RED-test commits.
 `tools/reverseapoc/cli.py` and `tools/reverseapoc/le.py` did not change. I read both to check
 the call sites.
 
@@ -96,7 +96,7 @@ Fixed by 03-06. I re-checked it because 03-07 edited `ninja_path` and `_check_or
 
 ### WR-07: A file name that cannot be encoded as UTF-8 truncates `build.ninja` and escapes as a traceback
 
-Fixed (03-07, `231ee0d`):
+Fixed (03-07, `f248f9b`):
 
 - `ninja_path` refuses a path that does not encode as UTF-8 with a `ConfigureError`
   (`configure.py:76-81`).
@@ -116,7 +116,7 @@ Fixed (03-07, `231ee0d`):
 
 ### IN-09: The `--orig` allowlist accepts a leading `-`, which argparse reads as an option
 
-Fixed (03-07, `231ee0d`):
+Fixed (03-07, `f248f9b`):
 
 - `_refuse_option_like` (`configure.py:85-92`) is applied to the orig dir (`:102`) and to every
   exe path before `ninja_path` (`:129`).
@@ -128,7 +128,7 @@ Fixed (03-07, `231ee0d`):
 
 ### IN-10: Rule descriptions and header comments still say `orig/` after `--orig` points elsewhere
 
-Fixed (03-07, `bf341b5`):
+Fixed (03-07, `310be05`):
 
 - `description = CHECK-ORIG {orig}` (`configure.py:37`).
 - The header comments say "the orig dir" (`:25-26`).
@@ -137,7 +137,7 @@ Fixed (03-07, `bf341b5`):
 
 ### IN-11: `--output` does not reach the rebuild output directory, so `verify` writes `<repo>/build` whatever `builddir` says
 
-Fixed (03-07, `bf341b5`):
+Fixed (03-07, `310be05`):
 
 - The rebuild rule passes `--out build` (`configure.py:46`). `build` is the same literal as
   `builddir = build` (`:33`), and the render docstring says so (`:116`).
@@ -149,7 +149,7 @@ Fixed (03-07, `bf341b5`):
 
 ### IN-01: The mismatch label "page N of object M" uses the global logical page number
 
-Fixed (03-08, `09781cf`):
+Fixed (03-08, `e9fb075`):
 
 - `_page_label` (`splice.py:101-108`) prints the page's position in its object. When the object
   does not start at logical page 1, it adds `(logical page L)`.
@@ -167,7 +167,7 @@ Fixed (03-08, `09781cf`):
 
 ### IN-02: `_unwritable_reason` gives misleading reasons on unusual layouts
 
-Fixed (03-08, `09781cf`), with the exception recorded under WR-08:
+Fixed (03-08, `e9fb075`), with the exception recorded under WR-08:
 
 - `_unwritable_reason` (`splice.py:333-354`) separates four cases:
   - no object
@@ -182,18 +182,18 @@ Fixed (03-08, `09781cf`), with the exception recorded under WR-08:
 
 ### IN-03: `layout()` says zero-length regions are left out, but zero-length page regions are kept
 
-Fixed (03-08, `09781cf`). This was a docstring-only change. The `layout()` docstring
+Fixed (03-08, `e9fb075`). This was a docstring-only change. The `layout()` docstring
 (`splice.py:178-180`) now says that zero-length fixed regions are dropped and every page keeps
 its region. That matches `:198-199`.
 
 ### IN-04: `docs/toolchain.md` still says the container's `orig/` holds only UFO2P.EXE and TACP.EXE
 
-Fixed (03-09, `154a73c`). `docs/toolchain.md:136` now lists UFO2P.EXE, TACP.EXE and SMKP.EXE,
+Fixed (03-09, `29e8118`). `docs/toolchain.md:136` now lists UFO2P.EXE, TACP.EXE and SMKP.EXE,
 which matches the three `[[targets]]` names in `config/targets.toml`.
 
 ### IN-05: The real-file test helpers copy the implementation's arithmetic instead of checking it independently
 
-Fixed (03-09, `e3abcc6`):
+Fixed (03-09, `8ded749`):
 
 - `tests/test_splice_real.py` no longer copies `MAX_FIELD` or the
   `page_index + page_count - 2` index.
@@ -208,7 +208,7 @@ Fixed (03-09, `e3abcc6`):
 
 ### IN-06: A malformed TOML manifest crashes `rebuild` with a traceback
 
-Fixed (03-08, `51a6efc`):
+Fixed (03-08, `15a1e4f`):
 
 - `load_manifest` wraps `TOMLDecodeError` and `UnicodeDecodeError` in a `ManifestError` that
   names the manifest (`targets.py:121-125`). It also refuses a `targets` value that is not an
@@ -220,7 +220,7 @@ Fixed (03-08, `51a6efc`):
 
 ### IN-07: `_check_bare_name` raises `SpliceError` for a manifest problem and accepts Windows device names
 
-Fixed (03-08, `51a6efc`):
+Fixed (03-08, `15a1e4f`):
 
 - `targets.check_bare_name` (`targets.py:76-91`) raises `ManifestError`. It checks both
   `PurePosixPath` and `PureWindowsPath`, and uses `ntpath.isreserved`, which catches device
@@ -234,13 +234,13 @@ Fixed (03-08, `51a6efc`):
 
 ### IN-08: `configure.py` still calls itself a "Phase 2 skeleton"
 
-Fixed (03-07, `bf341b5`). The module docstring (`configure.py:4-5`) and the header
+Fixed (03-07, `310be05`). The module docstring (`configure.py:4-5`) and the header
 (`configure.py:24`) now say "Verification targets only (check-orig, parse-le, verify)". Pinned by
 `test_no_stale_phase_wording`.
 
 ### IN-13 (formerly VN-01): REFUSED and MISSING lines always name orig/<NAME> and config/targets.toml, whatever --orig and --manifest say
 
-Fixed (03-08, `09781cf`):
+Fixed (03-08, `e9fb075`):
 
 - `RebuildResult.source` (`splice.py:539`) is set to `check.path` for every status
   (`:660`, `:662`, `:672`).

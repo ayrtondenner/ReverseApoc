@@ -16,8 +16,8 @@ actuals:
   tokens: 19175  # chars/4 over the full text of the six changed files (76699 chars)
   tasks: 2
   commits: 6
-plan_head_before: 021a58ba7441665b1eb5486caef92c91f23ad9c2
-plan_head_after: d8be60c
+plan_head_before: 69d5878bdc8b0201e2f73f7644e343eef4c15fd2
+plan_head_after: 8219627
 
 tech-stack:
   added: []
@@ -49,7 +49,7 @@ coverage:
     requirement: AGT-06
     verification:
       - kind: other
-        ref: "uv run python -c '... configure._NOT_CODE blank + whitespace collapse, compare with 43daac3~1 ...' (plan Task 1 verify)"
+        ref: "uv run python -c '... configure._NOT_CODE blank + whitespace collapse, compare with 3a4b133~1 ...' (plan Task 1 verify)"
         status: pass
       - kind: unit
         ref: "uv run pytest -q tests/test_configure.py tests/test_check.py"
@@ -80,7 +80,7 @@ coverage:
     requirement: AGT-06
     verification:
       - kind: other
-        ref: "non-comment lines of d8be60c~1:docker/Dockerfile equal those of docker/Dockerfile, file differs"
+        ref: "non-comment lines of 8219627~1:docker/Dockerfile equal those of docker/Dockerfile, file differs"
         status: pass
     human_judgment: false
 
@@ -121,13 +121,13 @@ Execution context nonce: 787955882886fbc5
 
 ## Task Commits
 
-1. **Task 1: comment-only edit of matched TACP C** - `43daac3` (docs)
+1. **Task 1: comment-only edit of matched TACP C** - `3a4b133` (docs)
 2. **Task 2: spike wording/annotations, test hygiene, Dockerfile comment**
-   - `9d817e4` (test) test_le MZ constants from conftest
-   - `02031f8` (test) RED: exact pin test
-   - `d7e4601` (test) GREEN: exact pin regex
-   - `191d094` (docs) spike 005 README and spike.py
-   - `d8be60c` (docs) Dockerfile comment
+   - `289d494` (test) test_le MZ constants from conftest
+   - `1c7cec6` (test) RED: exact pin test
+   - `6bda9db` (test) GREEN: exact pin regex
+   - `9397822` (docs) spike 005 README and spike.py
+   - `8219627` (docs) Dockerfile comment
 
 ## Files Created/Modified
 
@@ -147,15 +147,15 @@ Execution context nonce: 787955882886fbc5
 
 **1. Orchestrator ruling F21: where the MZ constants live.** le.py defines no MZ constants, so tests/test_le.py
 imports `MZ_E_LFARLC`, `MZ_E_LFANEW` and `NEW_FORMAT_LFARLC` from tests/conftest.py instead of le.py; le.py is not
-edited. Commit `9d817e4`.
+edited. Commit `289d494`.
 
 **2. [Rule 2 - test for a behaviour change] Exact-pin regex test.** The rulings ask for a test per behaviour change,
 and the regex is stricter than `partition`. Added `test_dependency_doc_check_refuses_anything_but_name_eq_version`
-(5 cases), committed RED (`02031f8`, all 5 failing against `partition`) before GREEN (`d7e4601`).
+(5 cases), committed RED (`1c7cec6`, all 5 failing against `partition`) before GREEN (`6bda9db`).
 
 **3. [Rule 3 - blocking] Dockerfile verify run in an equivalent form.** The harness refused the plan's one-line
 Dockerfile verify (git inside `$(...)` with `&&` chains) as unverifiable for a worktree agent. Ran the same check
-in separate steps: `git show d8be60c~1:docker/Dockerfile` into the scratchpad, then a Python comparison of
+in separate steps: `git show 8219627~1:docker/Dockerfile` into the scratchpad, then a Python comparison of
 non-comment, non-blank lines (equal) and of the whole file (differs). Result: pass.
 
 **4. Task 2 split into five commits** by file group (the plan allows `chore`/`test`/`docs` per file group), with the
@@ -174,7 +174,7 @@ real-file and container-only skips; this plan adds no skip.
 ## Verification
 
 - Task 1 verify (comment-only proof): exit 0. `uv run pytest -q tests/test_configure.py tests/test_check.py`: 145
-  passed, 3 skipped. `git show --stat 43daac3` lists only src/tacp/u_00054f20.c; no `//` in the file.
+  passed, 3 skipped. `git show --stat 3a4b133` lists only src/tacp/u_00054f20.c; no `//` in the file.
 - Task 1 is a tracer: verify re-run after commit passed, then expanded to Task 2.
 - Task 2: `uv run pytest -q tests/test_le.py tests/test_hygiene.py` 103 passed, 3 skipped; `ruff check .` clean;
   `partition("==")` absent; Dockerfile instructions unchanged.
@@ -192,24 +192,24 @@ None.
 
 ## Self-Check: PASSED
 
-- All six modified files exist; commits 43daac3, 9d817e4, 02031f8, d7e4601, 191d094, d8be60c are ancestors of HEAD.
+- All six modified files exist; commits 3a4b133, 289d494, 1c7cec6, 6bda9db, 9397822, 8219627 are ancestors of HEAD.
 
 ## Fix round 1
 
 The review approved the plan with no Critical or Important findings and asked for three cosmetic minors
-(FIX_BASE 4b4c4c9).
+(FIX_BASE 05bdd8a).
 
 1. **The pin regex comment matches the regex.** tests/test_hygiene.py's comment on `_EXACT_PIN` now says the
    version is letters, digits and `.+!_-` starting with a letter or digit (an allow-list), instead of "no `=`,
    `;`, `[` or space". The same wording is fixed in this SUMMARY's key-decisions and "Decisions Made".
-   Code comment: `6b7531b`; SUMMARY lines: this fix-round SUMMARY commit.
+   Code comment: `770c671`; SUMMARY lines: this fix-round SUMMARY commit.
 2. **`actuals.tokens` re-measured.** 2214 was chars/4 over the diff text only. It is now 19175, chars/4 over the
    full text of the six changed files (76699 chars), the scale the plan estimate uses. `commits: 6` and
-   `plan_head_after: d8be60c` still describe the plan's task commits; the fix-round commits are listed here.
+   `plan_head_after: 8219627` still describe the plan's task commits; the fix-round commits are listed here.
    Commit: this fix-round SUMMARY commit.
 3. **Spike 005 P3 paragraph rewrapped and reworded.** README.md:175-181 no longer has the ragged short line, and
    "a blind spot of the observed shape" is now "where objdiff missed a wrong symbol". The claim is the same.
-   Commit: `a3adc21`.
+   Commit: `4192c6c`.
 
 Re-run after the fixes: `uv run pytest -q tests/test_hygiene.py` 65 passed, 3 skipped (container-only, pre-existing);
 `uv run ruff check .` all checks passed.

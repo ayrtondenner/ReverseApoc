@@ -28,8 +28,8 @@ actuals:
   tokens: 33000
   tasks: 3
   commits: 9
-plan_head_before: 9c7381c57e24669cbae65de4efa5e9d8588456e1
-plan_head_after: 904fdeb08c974e78dd0ccfbaa4ffb89dc6fd3802
+plan_head_before: 79389a605dd1d23e0f2377a9851946cf1409d311
+plan_head_after: e29050e4695aa7fcb5c38c7a16dd65d064d245b9
 
 tech-stack:
   added: []
@@ -164,11 +164,11 @@ Execution context nonce: ca184395c01f3f37
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): one readability session lands a named unit.** RED `4a8acd3`, GREEN `67af004`.
+1. **Task 1 (tracer, TDD): one readability session lands a named unit.** RED `b20a9bd`, GREEN `3d72611`.
    - Tracer feedback gate: interactive, end-of-phase, verify automated only. I re-ran `uv run pytest -q tests/test_readability.py` (7 passed) plus test_rename.py and test_session.py (98 passed, 1 skipped), then expanded.
-2. **Task 2 (TDD): refusals and outcomes.** RED `98eb92b`, GREEN `e5a652f`.
-3. **Task 3 (TDD): the readability queue, dry run and docs.** RED `ea4da14`, GREEN `272566c`.
-4. **Orchestrator ruling (skill refresh).** RED `e00b403` (test_skill_readability.py), GREEN `904fdeb` (SKILL.md); test fix `85e07d9`.
+2. **Task 2 (TDD): refusals and outcomes.** RED `52c3f1f`, GREEN `3518b8e`.
+3. **Task 3 (TDD): the readability queue, dry run and docs.** RED `f3a2cd0`, GREEN `0f7d60d`.
+4. **Orchestrator ruling (skill refresh).** RED `b25059b` (test_skill_readability.py), GREEN `e29050e` (SKILL.md); test fix `e24c776`.
 
 ## TDD evidence (RED)
 
@@ -246,7 +246,7 @@ See key-decisions in the frontmatter.
 
 **Auto-fixed and design deviations:**
 
-1. **[Rule 1 - Bug] test_skill.py pinned the old "planned" wording of the REVERSEAPOC_PROPOSALS docs line.** The docs now say the rename step runs after readability sessions only; the pin follows (`85e07d9`).
+1. **[Rule 1 - Bug] test_skill.py pinned the old "planned" wording of the REVERSEAPOC_PROPOSALS docs line.** The docs now say the rename step runs after readability sessions only; the pin follows (`e24c776`).
 2. **Task boundaries.** The first GREEN draft held all of Task 2. I cut it back to Task 1 before committing, so Task 2's RED target failed as planned; then I restored it. The restored file was diffed against the draft (identical but a docstring line), and the draft had passed the 709-test driver suites.
 3. **API beyond the plan's list:**
    - `driver.readability_message`, `ReadabilityEntry`, `readability_entries`, `readability_source`, `readability_dry_run`;
@@ -298,13 +298,13 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tests/test_readability.py, tools/reverseapoc/driver.py, tools/reverseapoc/session.py, tools/reverseapoc/picker.py, tools/reverseapoc/cli.py, docs/workflow.md, .claude/skills/watcom-readability/SKILL.md
-- FOUND commits: 4a8acd3, 67af004, 98eb92b, e5a652f, ea4da14, 272566c, e00b403, 85e07d9, 904fdeb (`git rev-list --count 9c7381c..HEAD` was 9 before the SUMMARY commit)
-- The full host suite ran at 904fdeb: 3950 passed, 251 skipped (the skip count equals 07-34's baseline; the reasons are the existing orig/, third_party/watcom, clang, objdiff-cli and taskkill ones).
+- FOUND commits: b20a9bd, 3d72611, 52c3f1f, 3518b8e, f3a2cd0, 0f7d60d, b25059b, e24c776, e29050e (`git rev-list --count 79389a6..HEAD` was 9 before the SUMMARY commit)
+- The full host suite ran at e29050e: 3950 passed, 251 skipped (the skip count equals 07-34's baseline; the reasons are the existing orig/, third_party/watcom, clang, objdiff-cli and taskkill ones).
 - No STATE.md or ROADMAP.md change.
 
 ## Fix round 1
 
-FIX_BASE was 5fa83fb. The branch guard passed: branch `worktree-agent-a0320bae319c2ad3a`, in the agent namespace. The findings come from the task review (`review-07-38.md`): I1, I2 and M3, plus the skill facts from `GREEN-r2-notes.md` and M8.
+FIX_BASE was 6c146b4. The branch guard passed: branch `worktree-agent-a0320bae319c2ad3a`, in the agent namespace. The findings come from the task review (`review-07-38.md`): I1, I2 and M3, plus the skill facts from `GREEN-r2-notes.md` and M8.
 
 **Changes.**
 - **I1: every naming commit runs the C89 lint (the owner's "every landing path" ruling).**
@@ -328,7 +328,7 @@ FIX_BASE was 5fa83fb. The branch guard passed: branch `worktree-agent-a0320bae31
   - The GREEN scenarios are still the orchestrator's to run.
 - **Docs.** docs/workflow.md "Readability nights" says the queue is read from HEAD, and that each rename and header commit runs the C89 lint (with the header probe) before its gate.
 
-**RED (`cdebad7`): 9 failed, 111 passed.**
+**RED (`ea25cc1`): 9 failed, 111 passed.**
 - Target `test_header_rewrite_failing_c89_lint_is_refused`. Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (`build/red/0738-fr1.xml`).
 - It failed on its assertion: the header rewrite was gated and committed with no lint.
 - These also failed, on assertions:
@@ -338,7 +338,7 @@ FIX_BASE was 5fa83fb. The branch guard passed: branch `worktree-agent-a0320bae31
   - the three skill-fact tests.
 - The RED skeleton added only the `Deps.lint_paths` field, so the tests failed on assertions, not on a TypeError.
 
-**Fixes:** `93b5736` (driver, docs, tests), `0e143e3` (both skills).
+**Fixes:** `cc4792c` (driver, docs, tests), `31f2cf1` (both skills).
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_readability.py tests/test_rename.py`: 80 passed.

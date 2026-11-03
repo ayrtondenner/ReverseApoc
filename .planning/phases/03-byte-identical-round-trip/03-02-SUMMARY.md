@@ -18,8 +18,8 @@ actuals:
   tokens: 1619
   tasks: 2
   commits: 4
-plan_head_before: 0eb58d6fab08caa1f672ef7a6630d8712c292474
-plan_head_after: dd00383ec0cb559ce3e0f0595247c5919a5eb520
+plan_head_before: cc33ce25f87fa393779c5e6ea2d4ed5e114cf925
+plan_head_after: d71cc5feb329555b29546f37d7b7d8a60e21ccbb
 
 tech-stack:
   added: []
@@ -105,10 +105,10 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 RED: failing tests for the verify edge**: `ffddbff` (test)
-2. **Task 1 GREEN: rule rebuild and the phony verify edge**: `700c6bd` (feat)
-3. **Task 2 RED: failing self-test for the manifest-hash scan**: `db20946` (test)
-4. **Task 2 GREEN: the D-15 guard over tests/**: `dd00383` (feat)
+1. **Task 1 RED: failing tests for the verify edge**: `37b61dc` (test)
+2. **Task 1 GREEN: rule rebuild and the phony verify edge**: `69c0125` (feat)
+3. **Task 2 RED: failing self-test for the manifest-hash scan**: `2deb17f` (test)
+4. **Task 2 GREEN: the D-15 guard over tests/**: `d71cc5f` (feat)
 
 No REFACTOR commits: nothing needed cleaning after GREEN.
 
@@ -116,8 +116,8 @@ No REFACTOR commits: nothing needed cleaning after GREEN.
 
 | Task | RED | GREEN | REFACTOR |
 |------|-----|-------|----------|
-| 1 (tracer) | `ffddbff` | `700c6bd` | not needed |
-| 2 | `db20946` | `dd00383` | not needed |
+| 1 (tracer) | `37b61dc` | `69c0125` | not needed |
+| 2 | `2deb17f` | `d71cc5f` | not needed |
 
 - **Task 1 RED:** `uv run pytest -q tests/test_configure.py -k verify --junitxml=build/red/t1.xml` exited 1 with 3 failed. The target `test_render_has_verify_edge` failed on `assert 'rule rebuild' in ...`, and the other two failed on `assert 'build verify: phony' in ...`. Classifier: `gsd-tools check tdd-red-evidence` returned `RED_EVIDENCE_OK` (format junit, reason target_test_failed). Semantic assessment: every failure was the planned assertion on missing build.ninja text, with no import, collection or fixture faults.
 - **Task 1 tracer gate:** interactive run, `human_verify_mode=end-of-phase`, verify is `<automated>` only. The verify was re-run after the GREEN commit: 9 passed, ruff clean. Expansion continued with no checkpoint.
@@ -153,14 +153,14 @@ No REFACTOR commits: nothing needed cleaning after GREEN.
 - **Fix:** I reworded it to `... check its SHA-1 (config/targets.toml)`. It still contains `ninja verify`, which the test asserts.
 - **Files modified:** configure.py
 - **Verification:** ruff clean, 9 configure tests pass.
-- **Committed in:** `700c6bd`
+- **Committed in:** `69c0125`
 
 **2. [Rule 1 - TDD correctness] RED against a stub instead of a missing name**
 - **Found during:** Task 2 RED
 - **Issue:** the plan says to write the self-test "against a helper that does not exist yet". A NameError is a load-style fault, not a failure on the planned assertion, so it would not be valid RED evidence.
 - **Fix:** the RED commit added a one-line stub `_files_with_manifest_hashes` that returns `[]`, so the target test failed on its assertion (RED_EVIDENCE_OK). GREEN replaced the stub.
 - **Files modified:** tests/test_hygiene.py
-- **Committed in:** `db20946` (RED), `dd00383` (GREEN)
+- **Committed in:** `2deb17f` (RED), `d71cc5f` (GREEN)
 
 ---
 
@@ -192,7 +192,7 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - Files present: configure.py, tests/test_configure.py, tests/test_hygiene.py, this SUMMARY.
-- Commits on this branch: `ffddbff`, `700c6bd`, `db20946`, `dd00383`, and the SUMMARY commit `00c8421`.
+- Commits on this branch: `37b61dc`, `69c0125`, `2deb17f`, `d71cc5f`, and the SUMMARY commit `da56629`.
 - `uv run pytest -q tests/test_hygiene.py` after the SUMMARY was written: 26 passed, 3 skipped (container-only). The phase-zero and TBD doc checks still pass with this file in .planning/.
 - Working tree clean after the commits.
 

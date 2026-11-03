@@ -19,8 +19,8 @@ actuals:
   tokens: 540
   tasks: 3
   commits: 1
-plan_head_before: 7d2b21c92ef10d42f9c1e2df9c4d096113c4ed7c
-plan_head_after: 53b5b3f0abfa66764dad6099ab7ebf658dd3f5b1
+plan_head_before: 85808deef25f3cd63e0829b6731e17db0532c0af
+plan_head_after: d5da41f179fd44a62d2c6748dbf46b786444b8c7
 
 tech-stack:
   added: []
@@ -100,7 +100,7 @@ status: complete
 
 1. **Task 1: D-33 evidence.** No commit; the plan asks for none. The evidence is gitignored and the tree stayed clean.
 2. **Task 2: owner ruling.** No commit; this was the owner's decision.
-3. **Task 3: record the outcome.** `53b5b3f` (docs).
+3. **Task 3: record the outcome.** `d5da41f` (docs).
 
 **Plan metadata:** this SUMMARY's own commit, `docs(07-33): complete the cflags default ruling plan`.
 
@@ -126,7 +126,7 @@ status: complete
 - **Committed in:** n/a
 
 **2. [Dispatch note] D-33 wording correction**
-- The orchestrator asked me to correct the docs/toolchain.md D-33 paragraph in this plan. It had stated 64 bytes as if D-33 itself said so, but 64 bytes is the planner's number. I did that in the Task 3 commit `53b5b3f`.
+- The orchestrator asked me to correct the docs/toolchain.md D-33 paragraph in this plan. It had stated 64 bytes as if D-33 itself said so, but 64 bytes is the planner's number. I did that in the Task 3 commit `d5da41f`.
 
 **Total deviations:** 1 auto-fixed (blocking), plus 1 dispatch-directed doc fix. **Impact:** no scope change.
 
@@ -154,7 +154,7 @@ None: no external service configuration required.
 
 - FOUND: docs/toolchain.md (contains "kept by owner ruling 2026-10-31")
 - FOUND: build/gate/07-evidence/33-evidence.txt, 33-summary.txt
-- FOUND commit 53b5b3f (ancestor of HEAD)
+- FOUND commit d5da41f (ancestor of HEAD)
 
 EXECUTION-CONTEXT-END-NONCE: d3dbcd4a99d4cc1d
 

@@ -19,8 +19,8 @@ actuals:
   tokens: 3041
   tasks: 2
   commits: 3
-plan_head_before: 6463d471f6040396d790fc8b1d9243901a6200e3
-plan_head_after: 18db2609e99139503bfdc7271924ef75b567cdaf
+plan_head_before: 531db2dfe6ec7af4db3ff846858ffc38b0eec596
+plan_head_after: df8b79e1da6622227ba01f69260bbef5db6499af
 
 tech-stack:
   added: []
@@ -115,9 +115,9 @@ Execution context nonce: c896afd8ee27029e
 ## Task Commits
 
 1. **Task 1: Tracer, unit-shaped file includes common.h and markers emit nothing**
-   - RED `e2b93c8` (test): new argv test plus the three include-list expectations; real test failed on `E1055: Unable to open 'common.h'`
-   - GREEN `3eb40fd` (feat): include/common.h and the include list
-2. **Task 2: Edges of the stub convention and the include list** - `18db260` (test): four pinning tests; no code change was needed
+   - RED `92dc689` (test): new argv test plus the three include-list expectations; real test failed on `E1055: Unable to open 'common.h'`
+   - GREEN `e75f4c7` (feat): include/common.h and the include list
+2. **Task 2: Edges of the stub convention and the include list** - `df8b79e` (test): four pinning tests; no code change was needed
 
 **Plan metadata:** see the docs(05-05) commit that adds this file.
 
@@ -155,7 +155,7 @@ Execution context nonce: c896afd8ee27029e
 - **Fix:** Added `INCLUDE_DIR = "include"` and built the entry as `root / INCLUDE_DIR`. `PROJECT_INCLUDE = REPO_ROOT / INCLUDE_DIR` stays as the documented constant.
 - **Files modified:** tools/reverseapoc/compiler.py
 - **Verification:** full suite 881 passed, 166 skipped before Task 2; the real stub test still passes
-- **Committed in:** 3eb40fd (the Task 1 GREEN commit; the broken draft was never committed)
+- **Committed in:** e75f4c7 (the Task 1 GREEN commit; the broken draft was never committed)
 
 ---
 
@@ -190,7 +190,7 @@ None. No external service configuration required.
 ## Self-Check: PASSED
 
 - FOUND: include/common.h, tests/test_stub_real.py, tools/reverseapoc/compiler.py, tests/test_compiler.py
-- FOUND commits on HEAD: e2b93c8, 3eb40fd, 18db260
+- FOUND commits on HEAD: 92dc689, e75f4c7, df8b79e
 
 ---
 *Phase: 05-split-and-first-matches*

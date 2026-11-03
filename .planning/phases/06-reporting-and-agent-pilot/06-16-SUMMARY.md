@@ -18,8 +18,8 @@ actuals:
   tokens: 3178
   tasks: 3
   commits: 5
-plan_head_before: 28e211dc5ac054634f7f9bed431cacb27928c0d7
-plan_head_after: f9222adf9971b72dbd0b524c77ddcb43f2fa8e5c
+plan_head_before: aecbd17b31807c9e91f3f19e55adb7aca37ee5cf
+plan_head_after: 0ed4ec8d799aa1d562c426e48ef06eba77110e13
 
 tech-stack:
   added: []
@@ -87,7 +87,7 @@ coverage:
     description: "Host suite and ruff, with platform-only skips"
     verification:
       - kind: integration
-        ref: "build/gate/06-seed/06-host.log (2275 passed, 32 skipped, exit=0, ruff clean); uv run pytest -q tests/test_hooks.py after f9222ad (211 passed)"
+        ref: "build/gate/06-seed/06-host.log (2275 passed, 32 skipped, exit=0, ruff clean); uv run pytest -q tests/test_hooks.py after 0ed4ec8 (211 passed)"
         status: pass
     human_judgment: false
   - id: D6
@@ -150,7 +150,7 @@ Execution context nonce: 9c70041144e97752
   | EXE | rows | units | unit span | row bytes | uncovered | unit gaps | rows outside their unit |
   |-----|------|-------|-----------|-----------|-----------|-----------|-------------------------|
   | UFO2P now | 1892 | 408 | 785,114 | 759,327 | 25,787 | 0 | 0 |
-  | UFO2P before 06-04 (47b633d^) | 1892 | 408 | 785,114 | 759,423 | 25,691 | 0 | 0 |
+  | UFO2P before 06-04 (6180802^) | 1892 | 408 | 785,114 | 759,423 | 25,691 | 0 | 0 |
   | TACP now | 1874 | 433 | 795,983 | 760,634 | 35,349 | 0 | 0 |
   | TACP before 06-04 | 1874 | 433 | 795,983 | 760,742 | 35,241 | 0 | 0 |
 
@@ -161,19 +161,19 @@ Execution context nonce: 9c70041144e97752
 ## Task Commits
 
 1. **Task 1 (tracer, TDD): drift test, then gate seeds both tables**
-   - RED `004f89d` (test): all 5 failed on their assertions (`config/<exe>/status.csv has no matched row` x4; the planted test's copy reported `func_000A3980 is defined in C but has no matched row`). There was no collection, import or fixture error.
-   - GREEN `fc7d1cd` (feat): the two gate-written tables only; the test is unchanged. 5 passed.
+   - RED `aef3ed6` (test): all 5 failed on their assertions (`config/<exe>/status.csv has no matched row` x4; the planted test's copy reported `func_000A3980 is defined in C but has no matched row`). There was no collection, import or fixture error.
+   - GREEN `58eba4d` (feat): the two gate-written tables only; the test is unchanged. 5 passed.
    - Tracer gate: interactive, `end-of-phase`, verify automated only. I re-ran it after the commit (5 passed, 1 row per table), then expanded.
-2. **Task 2 (TDD): real gate cross-check**: `9ac110a` (test).
+2. **Task 2 (TDD): real gate cross-check**: `577c98d` (test).
    - No GREEN code was needed: gate_all (06-11) already behaves as pinned. This is the same precedent as 06-10 Task 2.
    - The two tests require opposite verdicts (exit 0 and exit 1) from the same gate_all path, so neither passes vacuously.
    - On the host both skip only for objdiff-cli. In the container both pass (5.3 s).
 3. **Task 3: both suites with the skip audit**
-   - First run: the host passed. The container failed: 5 tests in tests/test_hooks.py (07-container.log). That halt is `c33ec7a` (docs).
-   - Ruling F2b: RED is 07-container.log. GREEN is `f9222ad` (fix), tests/test_hooks.py only.
+   - First run: the host passed. The container failed: 5 tests in tests/test_hooks.py (07-container.log). That halt is `13ea468` (docs).
+   - Ruling F2b: RED is 07-container.log. GREEN is `0ed4ec8` (fix), tests/test_hooks.py only.
    - Then test_hooks on the host (211 passed), the container suite and ruff (07b-container.log, exit=0), and the F2 container verify, which passed.
 
-**Plan metadata:** `c33ec7a` (the halted SUMMARY), then this SUMMARY commit (docs).
+**Plan metadata:** `13ea468` (the halted SUMMARY), then this SUMMARY commit (docs).
 
 ## Evidence logs (gitignored, build/gate/06-seed/)
 
@@ -216,7 +216,7 @@ SKIPPED [1] C:\Users\Ayrton\Documents\Gitprojects\ReverseApoc\tests\test_cc_log.
 SKIPPED [1] C:\Users\Ayrton\Documents\Gitprojects\ReverseApoc\tests\test_cc_log.py:255: Windows-only: msvcrt lock path
 ```
 
-Ruff: `All checks passed!` on the host (06-host.log, and again after f9222ad) and in the container (07b-container.log).
+Ruff: `All checks passed!` on the host (06-host.log, and again after 0ed4ec8) and in the container (07b-container.log).
 
 ## Files Created/Modified
 
@@ -245,7 +245,7 @@ The second verify was F1's form (`test "$(cat 01-gate-seed.exit)" = "0"` plus th
 
 **Orchestrator ruling F2: the skip audit.** I used F2's host and container regexes and listed every skip line above. I "fixed" no skip.
 
-**Orchestrator ruling F2b: 06-12's container failures fixed in tests/test_hooks.py (`f9222ad`).**
+**Orchestrator ruling F2b: 06-12's container failures fixed in tests/test_hooks.py (`0ed4ec8`).**
 - **Found during:** Task 3. 07-container.log had 5 failed. I reproduced both causes in the container:
   1. git "dubious ownership" on the uid-0 bind mount;
   2. `_session_env` stripping the image's `UV_PROJECT_ENVIRONMENT`, after which uv tried to replace the host's /work/.venv and failed with an I/O error.
@@ -289,7 +289,7 @@ None.
 
 - FOUND: config/ufo2p/status.csv, config/tacp/status.csv, tests/test_drift.py, tests/test_gate_real.py, tests/test_hooks.py
 - FOUND: build/gate/06-seed/01-gate-seed.{json,exit}, 03-real.log, 04-ninja.log, 04b-ninja-rebuild.log, 05-stamps.log, 06-host.log, 07-container.log, 07b-container.log
-- FOUND commits: 004f89d, fc7d1cd, 9ac110a, c33ec7a, f9222ad. `git rev-list --count 28e211d..f9222ad` = 5, with no file deletions.
+- FOUND commits: aef3ed6, 58eba4d, 577c98d, 13ea468, 0ed4ec8. `git rev-list --count aecbd17..0ed4ec8` = 5, with no file deletions.
 - Every task's acceptance criteria re-run: PASS. 06-host.log `exit=0`; 07b-container.log `exit=0`; the F2 container verify passed.
 
 ---

@@ -30,7 +30,7 @@ coverage:
     requirement: HYG-04
     verification:
       - kind: unit
-        ref: "tests/test_hygiene.py::test_live_docs_carry_no_bare_tbd_markers (fails on the docs before d2bf040, passes after)"
+        ref: "tests/test_hygiene.py::test_live_docs_carry_no_bare_tbd_markers (fails on the docs before d700614, passes after)"
         status: pass
     human_judgment: false
 completed: 2026-10-19
@@ -39,10 +39,10 @@ status: complete
 
 # Phase 1 Plan 02: Hygiene gap closure Summary
 
-**`.dockerignore` now excludes executables and disc images at any depth, pinned by tests; no bare TBD marker left in the live docs (commits fa9c1a0, d2bf040).**
+**`.dockerignore` now excludes executables and disc images at any depth, pinned by tests; no bare TBD marker left in the live docs (commits 35b748a, d700614).**
 
-- TDD: `tests/test_hygiene.py` failed 6 dockerignore cases before the fix and passes after (commit `fa9c1a0`).
+- TDD: `tests/test_hygiene.py` failed 6 dockerignore cases before the fix and passes after (commit `35b748a`).
 - `.gitignore` also ignores the `/watcom/` mountpoint Docker creates and `*.img`/`*.cue`/`*.mdf`.
 - Host `uv run pytest -q`: 87 passed, 3 skipped (container-only); container: 90 passed.
-- Re-verification round 1 found five more TBDs (toolchain.md, tools.md) and four stale ones; all replaced in `d2bf040` and pinned by `test_live_docs_carry_no_bare_tbd_markers`, which fails on the pre-fix docs.
-- Host `uv run pytest -q` after `d2bf040`: 88 passed, 3 skipped.
+- Re-verification round 1 found five more TBDs (toolchain.md, tools.md) and four stale ones; all replaced in `d700614` and pinned by `test_live_docs_carry_no_bare_tbd_markers`, which fails on the pre-fix docs.
+- Host `uv run pytest -q` after `d700614`: 88 passed, 3 skipped.

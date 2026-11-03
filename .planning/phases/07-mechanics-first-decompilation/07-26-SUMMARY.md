@@ -18,8 +18,8 @@ actuals:
   tokens: 15450
   tasks: 3
   commits: 5
-plan_head_before: 5f5bbb2f564847cc9863bfa887e76cfa40aa7c6a
-plan_head_after: 999727c95224860e7422c793168c4c7f0bcac27c
+plan_head_before: 8f8ca5832faa99e97ca981985010be2891e9fc69
+plan_head_after: 1260b8da4445df0029f26d7ef95c0c7314bcae8b
 
 tech-stack:
   added: []
@@ -150,10 +150,10 @@ Execution context nonce: ea1443b12c5c0bd1
 
 ## Task Commits
 
-1. **Task 1 (tracer): the tier queue and the driver wiring.** RED `198e276`, GREEN `80d9557`.
+1. **Task 1 (tracer): the tier queue and the driver wiring.** RED `665aac0`, GREEN `f88ec56`.
    - Tracer feedback gate: the run is interactive in end-of-phase mode, and the verify is automated only. I re-ran `uv run pytest -q tests/test_driver_pick.py` after the GREEN commit: 37 passed. The acceptance grep found `class TierQueue` and `def tier_queue(`. Tracer verified end-to-end; I then expanded.
-2. **Task 2: passes, claimed units, hubs after members, tier order, empty queue.** One test-only commit, `f21d0a1`, with no feat commit (see TDD Gate Compliance).
-3. **Task 3: the dry run's tier picks.** RED `a315ed7`, GREEN `999727c`.
+2. **Task 2: passes, claimed units, hubs after members, tier order, empty queue.** One test-only commit, `749b8c0`, with no feat commit (see TDD Gate Compliance).
+3. **Task 3: the dry run's tier picks.** RED `7542ebf`, GREEN `1260b8d`.
 
 ## TDD Gate Compliance
 
@@ -210,7 +210,7 @@ See `key-decisions` in the frontmatter.
 - `_pick_doc` adds `tier`, `level` and `pass` only for tier picks.
 - tests/test_drive.py is unchanged, and its Phase 6 dry-run tests still pin the 8 keys and the 10 pilot picks.
 - `test_dry_run_tier_picks` goes through `run_drive` with seams.
-- Commits `a315ed7` and `999727c`.
+- Commits `7542ebf` and `1260b8d`.
 
 **Orchestrator note (07-23 as built): difficult.json is dropped from the tier picker.**
 - With a signed tier, `real_deps.queue` ignores the difficult list and `requeue` returns `()`.
@@ -241,13 +241,13 @@ See `key-decisions` in the frontmatter.
   - Tier 1's equal its own;
   - no asm row is queued;
   - the 10 dry-run picks are distinct, unmatched Tier 1 members, a leaf first.
-- With `REVERSEAPOC_ORIG` set to the main checkout's orig/: 3 passed. Commit `999727c`.
+- With `REVERSEAPOC_ORIG` set to the main checkout's orig/: 3 passed. Commit `1260b8d`.
 
 **6. [Test fix inside a GREEN commit] The night tests commit status tables in gate's own format.**
-- The night harness's made-up `status.csv` is refused by `status.read_status`, which `real_deps` reads. Commit `80d9557`.
+- The night harness's made-up `status.csv` is refused by `status.read_status`, which `real_deps` reads. Commit `f88ec56`.
 
 **7. [Test fix inside a GREEN commit] The preview test's expectation.**
-- It expected the leaf, which already has 2 finished passes, first. D-08 puts the pass-1 picks it frees before its pass 3. The code was right. Commit `999727c`.
+- It expected the leaf, which already has 2 finished passes, first. D-08 puts the pass-1 picks it frees before its pass 3. The code was right. Commit `1260b8d`.
 
 **8. [TDD] Task 2 has no feat commit.** See TDD Gate Compliance.
 
@@ -314,12 +314,12 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/picker.py, tools/reverseapoc/driver.py, tests/test_driver_pick.py, tests/test_drive_real.py.
-- FOUND commits on this branch: 198e276, 80d9557, f21d0a1, a315ed7, 999727c. `git rev-list --count 5f5bbb2..HEAD` = 5 before this SUMMARY commit.
+- FOUND commits on this branch: 665aac0, f88ec56, 749b8c0, 7542ebf, 1260b8d. `git rev-list --count 8f8ca58..HEAD` = 5 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
 ## Fix round 1
 
-The task review (`review-07-26.md`) found two Important issues. The orchestrator ruled on both. FIX_BASE was 6f741f1.
+The task review (`review-07-26.md`) found two Important issues. The orchestrator ruled on both. FIX_BASE was a796480.
 
 **Orchestrator ruling (07-26 review I1): the order key is `(tier, hub, passes, level, rank)`.**
 - The problem: finished passes sorted before tier and member/hub. A fresh Tier 1 hub or a Tier 2 member on pass 1 was served before an eligible, idle Tier 1 member on pass 2. The reviewer's probe gave H, N, A.
@@ -356,8 +356,8 @@ The task review (`review-07-26.md`) found two Important issues. The orchestrator
 - the workers cap test: "queue exhausted", not "max sessions".
 
 **Commits:**
-- `6f61ae6` test(07-26): add failing tests for member-first order and transient aborts under the night cap
-- `72d078f` fix(07-26): members before hubs and later tiers; transient launches spend the night cap
+- `ae218a6` test(07-26): add failing tests for member-first order and transient aborts under the night cap
+- `720b2de` fix(07-26): members before hubs and later tiers; transient launches spend the night cap
 - this SUMMARY commit
 
 **Counts:**

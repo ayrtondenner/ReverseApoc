@@ -20,8 +20,8 @@ actuals:
   tokens: 14800
   tasks: 3
   commits: 6
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: 2d49bbdc46f7d30b4a58d215ed1ddea39e128f98
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: 75c84c8dfc06c2be8ed017419391740e0a312d54
 
 tech-stack:
   added: []
@@ -125,18 +125,18 @@ Execution context nonce: 806793b9c9dab08d
 
 ## Task Commits
 
-1. **Task 1 (tracer): 0xC2 COMDAT + NBKPAT -> WEAK section**: `39284b5` (test, RED), `a8c0a3e` (feat, GREEN). Tracer gate: interactive run, `end-of-phase`, automated-only verify. I re-ran it: test_omf + test_omf2elf 90 passed, LIB386 sweep 9 passed with 0 SKIPPED lines, full suite 1006 passed / 177 skipped. Then I expanded to the other tasks.
-2. **Task 2: remaining record kinds, LOCAL, filler-trimmed sizes**: `2ce1461` (test, RED), `5a54037` (feat, GREEN)
-3. **Task 3: refusals**: `c1bab34` (test, RED), `2d49bbd` (feat, GREEN)
+1. **Task 1 (tracer): 0xC2 COMDAT + NBKPAT -> WEAK section**: `b99f8f3` (test, RED), `22d52b3` (feat, GREEN). Tracer gate: interactive run, `end-of-phase`, automated-only verify. I re-ran it: test_omf + test_omf2elf 90 passed, LIB386 sweep 9 passed with 0 SKIPPED lines, full suite 1006 passed / 177 skipped. Then I expanded to the other tasks.
+2. **Task 2: remaining record kinds, LOCAL, filler-trimmed sizes**: `877c8c3` (test, RED), `032c129` (feat, GREEN)
+3. **Task 3: refusals**: `3028f51` (test, RED), `75c84c8` (feat, GREEN)
 
 **Plan metadata:** this SUMMARY commit (docs).
 
 ## TDD notes (RED evidence, semantic assessment)
 
-- Task 1 RED (`39284b5`): 6 failed on the planned behaviour. 0xC2 was skipped as an unknown record, so the following FIXUPP had no data record. NBKPAT left the bytes unpatched. The unknown-name and past-end NBKPAT cases did not raise. `Public` had no `local`. The ELF had no COMDAT symbol.
-- Task 2 RED (`2ce1461`): 4 failed on their assertions. LPUBDEF was bound GLOBAL, the two trimming cases kept the filler, and the kitchen sink had the wrong sizes and binding. Its sections, bytes and relocations were already correct. LIDATA, BAKPAT, CEXTDEF, the non-trimming cases and the jump-table stop passed at RED by design: omf.py already provides those, and the tests pin it.
+- Task 1 RED (`b99f8f3`): 6 failed on the planned behaviour. 0xC2 was skipped as an unknown record, so the following FIXUPP had no data record. NBKPAT left the bytes unpatched. The unknown-name and past-end NBKPAT cases did not raise. `Public` had no `local`. The ELF had no COMDAT symbol.
+- Task 2 RED (`877c8c3`): 4 failed on their assertions. LPUBDEF was bound GLOBAL, the two trimming cases kept the filler, and the kitchen sink had the wrong sizes and binding. Its sections, bytes and relocations were already correct. LIDATA, BAKPAT, CEXTDEF, the non-trimming cases and the jump-table stop passed at RED by design: omf.py already provides those, and the tests pin it.
 - Task 2 GREEN needed one correction to a RED test: `test_lpubdef_is_local_in_elf` compared list positions with `symtab_info`, but elfread leaves out the null symbol, so the positions were off by one. The fixed assertion still fails on the RED code, where LPUBDEF was GLOBAL.
-- Task 3 RED (`c1bab34`): 19 failed. 3 did not raise (public past the end, public in a debug segment, iterated COMDAT). 10 raised with the wrong message. The overflow case raised `struct.error`. Easy OMF location 5 was refused. The new omf.py fields did not exist. elfread wrapped symbol 0 to the last symbol.
+- Task 3 RED (`3028f51`): 19 failed. 3 did not raise (public past the end, public in a debug segment, iterated COMDAT). 10 raised with the wrong message. The overflow case raised `struct.error`. Easy OMF location 5 was refused. The new omf.py fields did not exist. elfread wrapped symbol 0 to the last symbol.
 
 ## Files Created/Modified
 
@@ -157,10 +157,10 @@ See key-decisions in the frontmatter. The one that matters downstream: COMDAT se
 ### Orchestrator notes applied (rulings.md "For 05-06", 05-02 review minors)
 
 No ruling amends 05-06. I applied each of the four review minors and tested it:
-- **`_relocation` struct.error**: a 32-bit field past the data and an addend outside int32 now raise `Omf2ElfError` naming the segment or COMDAT and the offset (`_refuse_field`). Tests: `REFUSALS["location-5-field-past-the-data"]`, `REFUSALS["addend-overflows-int32"]`. In `2d49bbd`.
-- **public offset past the segment end**: refused (`REFUSALS["public-past-the-segment-end"]`). A public at exactly the end (size 0) is allowed. In `2d49bbd`.
-- **publics in dropped debug segments**: refused rather than omitted (`REFUSALS["public-in-a-debug-segment"]`). In `2d49bbd`.
-- **tests/elfread.py symbol-0 wrap**: my tests read every converted object through elfread, so I fixed it as the dispatch allowed. `_entries` raises `ValueError` for symbol index 0 or past the table (`tests/test_elf.py#test_reader_refuses_a_relocation_against_symbol_0`). tests/elfread.py and tests/test_elf.py are outside the plan's files_modified. In `c1bab34`, `2d49bbd`.
+- **`_relocation` struct.error**: a 32-bit field past the data and an addend outside int32 now raise `Omf2ElfError` naming the segment or COMDAT and the offset (`_refuse_field`). Tests: `REFUSALS["location-5-field-past-the-data"]`, `REFUSALS["addend-overflows-int32"]`. In `75c84c8`.
+- **public offset past the segment end**: refused (`REFUSALS["public-past-the-segment-end"]`). A public at exactly the end (size 0) is allowed. In `75c84c8`.
+- **publics in dropped debug segments**: refused rather than omitted (`REFUSALS["public-in-a-debug-segment"]`). In `75c84c8`.
+- **tests/elfread.py symbol-0 wrap**: my tests read every converted object through elfread, so I fixed it as the dispatch allowed. `_entries` raises `ValueError` for symbol index 0 or past the table (`tests/test_elf.py#test_reader_refuses_a_relocation_against_symbol_0`). tests/elfread.py and tests/test_elf.py are outside the plan's files_modified. In `3028f51`, `75c84c8`.
 
 ### Auto-fixed Issues
 
@@ -169,16 +169,16 @@ No ruling amends 05-06. I applied each of the four review minors and tested it:
 - **Issue:** `Segment.unmaskable`/`Comdat.unmaskable` are booleans, and an iterated COMDAT left no flag at all. The plan requires the refusal to name the offset.
 - **Fix:** I added `unmaskable_at` (data offset of the first LIDATA a FIXUPP addressed) to Segment and Comdat, and `iterated_at` to Comdat, all defaulting to None. The `unmaskable` refusal runs before the iterated-COMDAT one, so both can be reached from real bytes.
 - **Files modified:** tools/reverseapoc/omf.py, tests/test_omf.py
-- **Committed in:** `c1bab34`, `2d49bbd`
+- **Committed in:** `3028f51`, `75c84c8`
 
 **2. [Rule 2 - Missing critical] NBKPAT bytes in the COMDAT mask**
 - **Found during:** Task 1
 - **Issue:** after linking, the bytes NBKPAT patches differ, just as BAKPAT bytes do (which `Segment.mask` already covers). `Comdat.mask` covered only fixups.
 - **Fix:** `Comdat.backpatched`, now part of `mask`. `test_nbkpat_patches_the_comdat` asserts the mask. The libmatch real sweep still passes.
-- **Committed in:** `a8c0a3e`
+- **Committed in:** `22d52b3`
 
 **3. [Rule 3 - Blocking] Test builders the plan's module needed**
-- `lextdef` (the kitchen sink lists LEXTDEF), `nbkpat32` (the plan names "its 32-bit sibling"), an `offset32` option on `comdat16`/`nbkpat` (Easy OMF widens both), and a u16 datum for a frame-number target in `fixup()`, which the frame-target refusal needs. Committed in `39284b5`, `2ce1461`, `c1bab34`.
+- `lextdef` (the kitchen sink lists LEXTDEF), `nbkpat32` (the plan names "its 32-bit sibling"), an `offset32` option on `comdat16`/`nbkpat` (Easy OMF widens both), and a u16 datum for a frame-number target in `fixup()`, which the frame-target refusal needs. Committed in `b99f8f3`, `877c8c3`, `3028f51`.
 
 **4. [Rule 3 - Blocking] Verify commands split for the worktree sandbox**
 - The sandbox refused the `$(git rev-parse ...)` form, as it did in 05-02. I ran the same steps with the resolved main-checkout path `C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/third_party/watcom`: `tests/test_omf_real.py` exit 0, 9 passed, 0 SKIPPED lines. I copied nothing into the worktree.
@@ -191,7 +191,7 @@ No ruling amends 05-06. I applied each of the four review minors and tested it:
 ## Issues Encountered
 
 - The worktree sandbox refused heredoc and `cd`-prefixed shell commands. I made edits with the Edit tool and with small patch scripts in the session scratchpad. All touched files are LF.
-- The plan-head ledger file would live in the shared git dir, outside the worktree, so I did not write it. The base `532a745` comes from the dispatch prompt, and `git rev-list --count 532a745..HEAD` = 6 before this SUMMARY commit.
+- The plan-head ledger file would live in the shared git dir, outside the worktree, so I did not write it. The base `c6dc6b8` comes from the dispatch prompt, and `git rev-list --count c6dc6b8..HEAD` = 6 before this SUMMARY commit.
 
 ## Verification
 
@@ -214,11 +214,11 @@ None. No external service configuration required.
 ## Self-Check: PASSED
 
 - All 7 modified files exist and are in the commits above.
-- `39284b5`, `a8c0a3e`, `2ce1461`, `5a54037`, `c1bab34` and `2d49bbd` are ancestors of HEAD.
+- `b99f8f3`, `22d52b3`, `877c8c3`, `032c129`, `3028f51` and `75c84c8` are ancestors of HEAD.
 
 ## Review fixes (round 1)
 
-Commits: `aa9c27d` (test, RED: 10 failed, 128 passed) and `c1f5abb` (fix).
+Commits: `7c86733` (test, RED: 10 failed, 128 passed) and `93538f6` (fix).
 
 **Important: Easy OMF location 5 and its mask.** Under Easy OMF, omf2elf converts location 5 as a 32-bit offset, but `OMFFixup.size` stayed 2 (`LOC_SIZES[5]`). `Segment.mask` and `Comdat.mask` therefore covered only half of the patched field. Now `_fixup` gives such a fixup `EASY_OMF_LOC5_SIZE` (4) bytes, and `LOC_LOADER_OFFSET16 = 5` is defined in omf.py and imported by omf2elf. Without Easy OMF the size stays 2, and conversion refuses the fixup. Because omf.py now bounds the whole 4-byte field, a location-5 field past the segment end is refused while reading (`OMFError`), wrapped by convert_file. Tests:
 - `tests/test_omf.py#test_easy_omf_location_5_patches_a_32bit_field[segment|comdat]` (size 4, mask `range(1, 5)`)

@@ -17,8 +17,8 @@ actuals:
   tokens: 18800
   tasks: 3
   commits: 6
-plan_head_before: 0fd68778633ad39c153ad7d3e7093c3e340240fa
-plan_head_after: c41c7edbbbeb8a9cd8e67b576aac5517d68f5f26
+plan_head_before: 7e46eae32981ab076a2cddc0d35f9b3dda7edba2
+plan_head_after: 773bda1aa250629d8e1d94f70e66f6ad8c2c88b3
 
 tech-stack:
   added: []
@@ -165,11 +165,11 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): `flags approve` lands one gated commit.** RED `53d6b68`, GREEN `3bcb623`.
+1. **Task 1 (tracer, TDD): `flags approve` lands one gated commit.** RED `3a9046c`, GREEN `784b2b0`.
    - Tracer feedback gate: the run is interactive, in end-of-phase mode, with an automated-only verify.
    - I re-ran `uv run pytest -q tests/test_flags.py -k approve`: 5 passed. Then I expanded.
-2. **Task 2 (TDD): approve refusals and the per-rule hygiene check.** RED `c1fe6ee`, GREEN `13e8775`.
-3. **Task 3 (TDD): `flags default` with D-33's bar, pins, dry runs and the docs update.** RED `6dbc8a9`, GREEN `c41c7ed`.
+2. **Task 2 (TDD): approve refusals and the per-rule hygiene check.** RED `a2b2b7c`, GREEN `5175bec`.
+3. **Task 3 (TDD): `flags default` with D-33's bar, pins, dry runs and the docs update.** RED `c3e613c`, GREEN `773bda1`.
 
 ## TDD evidence (RED)
 
@@ -194,7 +194,7 @@ Each RED run wrote pytest JUnit XML to `build/red/07-24-t{1,2,3}.xml` (gitignore
 - `uv run pytest -q tests/test_flags.py -k approve`: 5 passed (Task 1 verify).
 - `uv run pytest -q tests/test_flags.py -k refus`: 24 passed. `uv run pytest -q tests/test_hygiene.py`: 77 passed, 3 skipped (Task 2 verify). The 3 skips are pre-existing: "only inside the container".
 - `uv run pytest -q tests/test_flags.py`: 78 passed, 0 skipped.
-- `uv run pytest -q` (host, worktree, at `c41c7ed`): **3456 passed, 247 skipped**.
+- `uv run pytest -q` (host, worktree, at `773bda1`): **3456 passed, 247 skipped**.
   - That is the same skip count 07-18 reported.
   - This plan adds no skipping test and no new skip reason.
 - `uv run ruff check .`: All checks passed.
@@ -224,12 +224,12 @@ See `key-decisions` in the frontmatter.
 **Orchestrator ruling F7: cli.py placement.**
 - The new functions sit right after `_add_flags_command`, and `_add_flags_command` registers them (`for verb in (pr, ls, rg, *_add_flags_owner_verbs(verbs))`).
 - `build_parser`, `_ERRORS` and the docstring are untouched; FlagsError was already in `_ERRORS`.
-- Commits: `53d6b68`, `6dbc8a9`.
+- Commits: `3a9046c`, `c3e613c`.
 
 **Orchestrator ruling F16: only the canonical toolchain.md sentence is rewritten.**
 - `default` rewrites only "The default rule in `config/cflags.txt` is `<rule>`" (`_TOOLCHAIN_SENTENCE`). It refuses unless that sentence is there exactly once and quotes the committed `*`. The historical quotes stay.
 - Tests: `test_default_pins_and_gates` (the historical quote is kept) and `test_default_refuses_unfound_doc_text` (missing, or twice, on a tmp doc).
-- Commits: `6dbc8a9`, `c41c7ed`.
+- Commits: `c3e613c`, `773bda1`.
 
 **Orchestrator ruling F33: the co-author line.**
 - The co-author line is `driver.COAUTHOR` when every hitting attempt (from the proposal's evidence paths) has model `claude-opus-5-5` in attempts.jsonl.
@@ -256,7 +256,7 @@ See `key-decisions` in the frontmatter.
 - **Fix:** `has_branch_or_loop` names those mnemonics (`_LOOPS`).
 - **Test:** `test_has_branch_or_loop[\xe2\xfe\xc3-True]`.
 - The shared decoder is not changed (see Deferred Issues).
-- Commit `c41c7ed`.
+- Commit `773bda1`.
 
 **3. [Rule 2 - Missing critical] approve and default refuse when the paths they commit hold uncommitted changes.**
 - **Why:** a landing or flip commits those paths whole, so it would otherwise sweep someone's edit into an approval commit.
@@ -293,7 +293,7 @@ See `key-decisions` in the frontmatter.
 ## Issues Encountered
 
 - The worktree harness refused compound shell commands that touch git, as well as heredoc appends. I used the Edit tool and plain one-step commands instead.
-- I could not write the GSD plan ledger file under `.git/worktrees/`, because it is outside the worktree. The base `0fd6877` is recorded in `plan_head_before`.
+- I could not write the GSD plan ledger file under `.git/worktrees/`, because it is outside the worktree. The base `7e46eae` is recorded in `plan_head_before`.
 - The scratchpad's `red_record.py` was rewritten during the run by another session (a parallel executor, by its content). I used `red_record_0724.py` for the later records.
 
 ## Known Stubs
@@ -331,20 +331,20 @@ Execution context nonce: a87993ade6db394c
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/flags.py, tools/reverseapoc/cli.py, tests/test_flags.py, tests/test_hygiene.py (all modified).
-- FOUND commits: 53d6b68, 3bcb623, c1fe6ee, 13e8775, 6dbc8a9, c41c7ed. `git rev-list --count 0fd6877..HEAD` was 6 before the SUMMARY commit.
+- FOUND commits: 3a9046c, 784b2b0, a2b2b7c, 5175bec, c3e613c, 773bda1. `git rev-list --count 7e46eae..HEAD` was 6 before the SUMMARY commit.
 - No STATE.md or ROADMAP.md change.
 
 ## Fix round 1
 
 The orchestrator's task review raised one Important finding: `flags default` reads both `config/<exe>/status.csv` files from disk for the D-33 evidence, the pin set and both `gate --all` runs, but it refused only a dirty cflags.txt or a dirty doc. An uncommitted match could therefore meet the bar, or a dropped row could remove a pin without the gate noticing, and the flip would be committed anyway.
 
-**Fix (`14cfd56`).** `_refuse_dirty` now always adds both status.csv files (`_status_paths()`), so both verbs refuse an uncommitted edit, or a new untracked file, in either EXE's table before anything is written.
+**Fix (`0bdc1f2`).** `_refuse_dirty` now always adds both status.csv files (`_status_paths()`), so both verbs refuse an uncommitted edit, or a new untracked file, in either EXE's table before anything is written.
 - **`flags default`:** this is new.
 - **`flags approve`:**
   - It already refused its own EXE's status.csv and the feed, because both are among the paths it commits. The refusal cases "dirty own status" and "dirty feed" in `test_approve_refusals` prove this; both passed at RED.
   - The other EXE's status.csv is new. The gate's D-24 cross-check reads it. Case "dirty other status".
 
-**Tests (RED `ca4abe7`, fix `14cfd56`).**
+**Tests (RED `28e7158`, fix `0bdc1f2`).**
 - **`test_default_refusals`:** gains two cases, each refused with "uncommitted changes in config/<exe>/status.csv", with no write, no gate call and no build/flags/:
   - ufo2p's status.csv with a pin unit's matched row renamed away;
   - tacp's status.csv with an uncommitted matched row added.

@@ -16,8 +16,8 @@ actuals:
   tokens: 3435
   tasks: 2
   commits: 2
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: 5fa287e874795775fb26aff7e27de0bbc5ae487d
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: 9a8192e05f55798fa3ac9b074ed4fbedf06cd766
 
 tech-stack:
   added: []
@@ -98,8 +98,8 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): reword the Phase 7 done rule** - `8d846d4` (docs)
-2. **Task 2: record D-06/D-24** - `5fa287e` (docs)
+1. **Task 1 (tracer): reword the Phase 7 done rule** - `1c3fa5c` (docs)
+2. **Task 2: record D-06/D-24** - `9a8192e` (docs)
 
 **Plan metadata:** this SUMMARY commit (docs)
 
@@ -138,7 +138,7 @@ None.
 - Container step deferred to the orchestrator (R-B): `docker compose run --rm test`. This plan changes docs only.
 
 ## Issues Encountered
-- The worktree-isolation harness refused shell commands that combine `git rev-parse --git-dir` with writes. So the plan-commit ledger (base `0f9de36`) was kept in the session scratchpad rather than under the git dir. `commits: 2` was measured with `git rev-list --count 0f9de36..HEAD`.
+- The worktree-isolation harness refused shell commands that combine `git rev-parse --git-dir` with writes. So the plan-commit ledger (base `99f4659`) was kept in the session scratchpad rather than under the git dir. `commits: 2` was measured with `git rev-list --count 99f4659..HEAD`.
 
 ## User Setup Required
 
@@ -156,4 +156,4 @@ Execution context nonce: 4e4a84359403051a
 
 ## Self-Check: PASSED
 - FOUND: .planning/REQUIREMENTS.md, .planning/ROADMAP.md, docs/workflow.md, .planning/PROJECT.md (modified)
-- FOUND: 8d846d4, 5fa287e (ancestors of HEAD)
+- FOUND: 1c3fa5c, 9a8192e (ancestors of HEAD)

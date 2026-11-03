@@ -20,8 +20,8 @@ actuals:
   tokens: 11700
   tasks: 3
   commits: 5
-plan_head_before: 6463d471f6040396d790fc8b1d9243901a6200e3
-plan_head_after: a6537e7c3c6a5a28209cfb84d26f4a7583d57d3e
+plan_head_before: 531db2dfe6ec7af4db3ff846858ffc38b0eec596
+plan_head_after: 9502ffc3eb312dddc34bd1fbddf9bb0b31a1f64b
 
 tech-stack:
   added: []
@@ -114,15 +114,15 @@ Execution context nonce: bc0cd06d8adb00ce
 
 ## Task Commits
 
-1. **Task 1: Tracer, synthetic module through `reverseapoc omf2elf`**: `ddbe2c5` (test, RED), `2f764ed` (feat, GREEN)
-2. **Task 2: Writer shape and full core rules**: `e116ec6` (test, RED), `9b67c47` (feat, GREEN)
-3. **Task 3: Real Watcom 10.6 object**: `a6537e7` (test)
+1. **Task 1: Tracer, synthetic module through `reverseapoc omf2elf`**: `2e49088` (test, RED), `402c3a0` (feat, GREEN)
+2. **Task 2: Writer shape and full core rules**: `08ee10a` (test, RED), `8ac02ae` (feat, GREEN)
+3. **Task 3: Real Watcom 10.6 object**: `9502ffc` (test)
 
 ## TDD Gate Compliance
 
-- Task 1 RED (`ddbe2c5`): both tracer tests failed on the planned behaviour, because argparse rejected `omf2elf` as an invalid choice (the verb did not exist). GREEN `2f764ed`: both pass.
-- Task 2 RED (`e116ec6`): 4 tests failed on their planned assertions: data/BSS sections absent, a data public missing, a segment target refused as "not supported", and no refusal for iterated data. The writer tests in test_elf.py, plus the extern-addend, THREAD, location, group and convert_file tests, already passed at RED, because Task 1's action specified the writer's full shape and the extern/location handling. They pin existing behaviour. The first RED run also crashed in a Task 1 helper (deviation 3); I fixed that before recording RED, so the recorded failures are the planned assertions. GREEN `9b67c47`: all pass.
-- Task 3 (`a6537e7`): a test-only task. As the plan expected ("the core is already built"), it passed on its first run. No feat commit was needed.
+- Task 1 RED (`2e49088`): both tracer tests failed on the planned behaviour, because argparse rejected `omf2elf` as an invalid choice (the verb did not exist). GREEN `402c3a0`: both pass.
+- Task 2 RED (`08ee10a`): 4 tests failed on their planned assertions: data/BSS sections absent, a data public missing, a segment target refused as "not supported", and no refusal for iterated data. The writer tests in test_elf.py, plus the extern-addend, THREAD, location, group and convert_file tests, already passed at RED, because Task 1's action specified the writer's full shape and the extern/location handling. They pin existing behaviour. The first RED run also crashed in a Task 1 helper (deviation 3); I fixed that before recording RED, so the recorded failures are the planned assertions. GREEN `8ac02ae`: all pass.
+- Task 3 (`9502ffc`): a test-only task. As the plan expected ("the core is already built"), it passed on its first run. No feat commit was needed.
 
 ## Files Created/Modified
 
@@ -144,9 +144,9 @@ Execution context nonce: bc0cd06d8adb00ce
 
 ### Orchestrator rulings applied
 
-**Orchestrator ruling F9: tracer module without a filler byte.** The Task 1 tracer's SEGDEF32 `_TEXT` holds exactly the 6 code bytes `e8 00000000 c3`, and the test asserts `func_00010000_` is sized 6 by the next-public-or-segment-end rule. Filler trimming stays with 05-06. Test: `tests/test_omf2elf.py#test_cli_converts_a_synthetic_module`. Committed in `ddbe2c5`.
+**Orchestrator ruling F9: tracer module without a filler byte.** The Task 1 tracer's SEGDEF32 `_TEXT` holds exactly the 6 code bytes `e8 00000000 c3`, and the test asserts `func_00010000_` is sized 6 by the next-public-or-segment-end rule. Filler trimming stays with 05-06. Test: `tests/test_omf2elf.py#test_cli_converts_a_synthetic_module`. Committed in `2e49088`.
 
-**Orchestrator ruling F10: index-based section access in tests/elfread.py.** `SectionView.index` is the section header number. `ElfView.section(key)` and `ElfView.relocs(key)` accept a section index or a name, and the name form raises `KeyError("2 sections named '_TEXT'; address it by index")` when the name is ambiguous. `SymbolView.section_index` and `RelocView.symbol_section_index` report the section index alongside the name. Test: `tests/test_elf.py#test_two_sections_with_one_name_stay_two_sections` writes two `_TEXT` sections, reads the second one's relocations and its symbol by index, and checks that the name form refuses. Committed in `ddbe2c5` (reader) and `e116ec6` (test).
+**Orchestrator ruling F10: index-based section access in tests/elfread.py.** `SectionView.index` is the section header number. `ElfView.section(key)` and `ElfView.relocs(key)` accept a section index or a name, and the name form raises `KeyError("2 sections named '_TEXT'; address it by index")` when the name is ambiguous. `SymbolView.section_index` and `RelocView.symbol_section_index` report the section index alongside the name. Test: `tests/test_elf.py#test_two_sections_with_one_name_stay_two_sections` writes two `_TEXT` sections, reads the second one's relocations and its symbol by index, and checks that the name form refuses. Committed in `2e49088` (reader) and `08ee10a` (test).
 
 ### Auto-fixed Issues
 
@@ -156,14 +156,14 @@ Execution context nonce: bc0cd06d8adb00ce
 - **Fix:** `strict=False`; the empty case yields no symbols.
 - **Files modified:** tools/reverseapoc/omf2elf.py
 - **Verification:** the Task 2 tests that build a `_TEXT` with no public now reach their assertions and pass.
-- **Committed in:** `9b67c47`
+- **Committed in:** `8ac02ae`
 
 **4. [Rule 2 - Missing critical] Refusals beyond the plan's list (threat T-05-04)**
 - **Found during:** Task 2
 - **Issue:** without them, an absolute public, initialised bytes in a BSS segment, or a fixup targeting a dropped debug segment would produce a wrong ELF silently or crash with KeyError. A relocation naming an unknown symbol is a related case in the writer.
 - **Fix:** `Omf2ElfError` for the first three and `ElfError` for the unknown symbol, each with a test (`test_absolute_public_is_refused`, `test_initialised_bytes_in_bss_are_refused`, `test_fixup_to_a_dropped_debug_segment_is_refused`, `test_relocation_naming_an_unknown_symbol_is_refused`). `convert_file` also refuses non-OMF data up front (first record not THEADR) and prefixes `OMFError`/`Omf2ElfError` with the source path.
 - **Files modified:** tools/reverseapoc/omf2elf.py, tools/reverseapoc/elf.py, tests/test_omf2elf.py, tests/test_elf.py
-- **Committed in:** `2f764ed`, `e116ec6`, `9b67c47`
+- **Committed in:** `402c3a0`, `08ee10a`, `8ac02ae`
 
 **5. [Rule 3 - Blocking] Task 3 verify command split for the worktree sandbox**
 - **Found during:** Task 3
@@ -203,7 +203,7 @@ None. No external service configuration required.
 ## Self-Check: PASSED
 
 - All 6 created files exist on disk, and cli.py is modified.
-- Commits `ddbe2c5`, `2f764ed`, `e116ec6`, `9b67c47` and `a6537e7` are ancestors of HEAD (`git rev-list --count 6463d47..HEAD` = 5 before this SUMMARY commit).
+- Commits `2e49088`, `402c3a0`, `08ee10a`, `8ac02ae` and `9502ffc` are ancestors of HEAD (`git rev-list --count 531db2d..HEAD` = 5 before this SUMMARY commit).
 
 ---
 *Phase: 05-split-and-first-matches*

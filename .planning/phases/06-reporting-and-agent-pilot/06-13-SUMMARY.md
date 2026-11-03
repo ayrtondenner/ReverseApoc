@@ -21,8 +21,8 @@ actuals:
   tokens: 9701  # chars/4 over the realized diff: 38,805 bytes in 2 new files
   tasks: 3
   commits: 6
-plan_head_before: 325c6066b67916ec70c794d79ebfabfcea2178c1
-plan_head_after: 23045554325e21e6ca61531db345027958b4d1ff
+plan_head_before: aaa02cd988922543affc9bd139cd100df2c5113d
+plan_head_after: 4128955ef326c66bde8c8dc9d01a96f897409742
 
 tech-stack:
   added: []
@@ -140,11 +140,11 @@ Execution context nonce: 10c9d726ea2bb85e
 ## Task Commits
 
 1. **Task 1 (tracer): sections, writer, empty inputs**
-   - RED `9e15bf3` (test), GREEN `140e971` (feat)
+   - RED `31d6d05` (test), GREEN `d27c80d` (feat)
 2. **Task 2: callers, callees, externs, prototypes (D-13)**
-   - RED `1b31b0b` (test), GREEN `d36064e` (feat)
+   - RED `c0c9757` (test), GREEN `79ee54d` (feat)
 3. **Task 3: look-alikes and the 24 KB cap (D-13, D-14)**
-   - RED `d67ac29` (test), GREEN `2304555` (feat)
+   - RED `0219141` (test), GREEN `4128955` (feat)
 
 **Plan metadata:** the SUMMARY commit that follows (docs).
 
@@ -193,18 +193,18 @@ See `key-decisions` in the frontmatter. In short:
 - **Fix:** `gather` takes `common_h`, an optional `calls: CallIndex` (one index reused across functions) and `lookalike_floor` (default 0.6). It drops `matched_sources`: a matched row's C comes from `definitions(unit_texts[row.unit])`.
 - **Files modified:** tools/reverseapoc/contextpack.py
 - **Verification:** `test_callers_and_callees_from_the_le` passes `gather`'s dict straight to `build_pack`, and `test_lookalikes_come_from_matched_rows_with_c` covers the look-alike path.
-- **Committed in:** d36064e, 2304555
+- **Committed in:** 79ee54d, 4128955
 
 **2. [Plan text] GPLv3 header**
 - **Issue:** The plan asks for a GPLv3 header, but no file in tools/reverseapoc/ that is not derived from another project carries one.
 - **Fix:** `# SPDX-License-Identifier: GPL-3.0-or-later` as line 1 of contextpack.py. docs/legal.md already covers tools/ as GPLv3.
-- **Committed in:** 140e971
+- **Committed in:** d27c80d
 
 **3. [Test helper] fenced headings**
 - **Found during:** Task 1 GREEN
 - **Issue:** The test's `_headings` read `## ` lines inside fenced inputs.
 - **Fix:** The helper skips fenced blocks.
-- **Committed in:** 140e971
+- **Committed in:** d27c80d
 
 ---
 
@@ -236,11 +236,11 @@ None.
 ## Self-Check: PASSED
 
 - The three files exist: tools/reverseapoc/contextpack.py, tests/test_contextpack.py and this SUMMARY.
-- The six task commits (9e15bf3, 140e971, 1b31b0b, d36064e, d67ac29, 2304555) are on this branch. `git diff --name-only 325c606..HEAD` lists only these three files. STATE.md, ROADMAP.md, config/ and orig/ are untouched.
+- The six task commits (31d6d05, d27c80d, c0c9757, 79ee54d, 0219141, 4128955) are on this branch. `git diff --name-only aaa02cd..HEAD` lists only these three files. STATE.md, ROADMAP.md, config/ and orig/ are untouched.
 
 ## Fix round 1
 
-Source: review-06-13.md (spec approved; one Important finding, minors). FIX_BASE 1c379f5. RED `4c9320d` (test), GREEN `11fcb13` (fix).
+Source: review-06-13.md (spec approved; one Important finding, minors). FIX_BASE d39d0ab. RED `6883db8` (test), GREEN `e2a7bf6` (fix).
 
 | Finding | Change | Test | RED evidence |
 |---|---|---|---|
@@ -264,7 +264,7 @@ Verification after the fix: `uv run pytest -q tests/test_contextpack.py` gave 30
 
 ## Fix round 2
 
-Source: rereview-06-13-r1.md (fix round 1 approved; one Minor). FIX_BASE 7e185ef. This round changes wording only; behaviour is unchanged.
+Source: rereview-06-13-r1.md (fix round 1 approved; one Minor). FIX_BASE dbad655. This round changes wording only; behaviour is unchanged.
 
 | Finding | Change | Test |
 |---|---|---|

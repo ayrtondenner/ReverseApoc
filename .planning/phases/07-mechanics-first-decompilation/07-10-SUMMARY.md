@@ -18,8 +18,8 @@ actuals:
   tokens: 24258
   tasks: 3
   commits: 6
-plan_head_before: 2815ddb72530220a0d7d474ae1abe1284dda210f
-plan_head_after: 45e16a34122d5aff27a08baaa3c1d0a4f5a4b22d
+plan_head_before: 23844224dd76ff1e062fb8e525e323752c39657e
+plan_head_after: bf86b2186d5a13581257b189fb92bfa93cc31b0d
 
 tech-stack:
   added: []
@@ -154,9 +154,9 @@ Real-file numbers (main checkout `orig/`, read-only, counts only), for plan 07-2
 
 ## Task Commits
 
-1. **Task 1 (tracer): loader, members from entries, `mechanics write`.** RED `e31baa6`, GREEN `d632877`. Tracer gate: the run is interactive, in `end-of-phase` mode, and the verify is automated only. The verify was re-run (21 passed), so expansion went ahead.
-2. **Task 2: hub roles, asm boundary, digests, `check`/`digest`.** RED `b24f3ee`, GREEN `628123a`.
-3. **Task 3: `hubs`, `status`, `graph`, real-file tests.** RED `ed627c6`, GREEN `45e16a3`.
+1. **Task 1 (tracer): loader, members from entries, `mechanics write`.** RED `2728692`, GREEN `e926708`. Tracer gate: the run is interactive, in `end-of-phase` mode, and the verify is automated only. The verify was re-run (21 passed), so expansion went ahead.
+2. **Task 2: hub roles, asm boundary, digests, `check`/`digest`.** RED `a8edf17`, GREEN `466fa1d`.
+3. **Task 3: `hubs`, `status`, `graph`, real-file tests.** RED `cfb1888`, GREEN `bf86b21`.
 
 ## TDD Gate Compliance
 
@@ -202,14 +202,14 @@ The key-decisions above, plus:
 - **Issue:** The other research steps match exactly: direct is 1,128 / 1,224 and direct+pointer is 1,412 / 1,479. Only UFO2P's table step differs. callgraph.py (07-05, as built) wires a pointer run only from the game/thunk rows that reference it. 31 UFO2P game targets sit in runs that only runtime code references, so they are not reached. A scratch measurement that treats those runs as reached gives 1,480 / 1,489, which brackets research's 1,471. This matches 07-05's "Issues Encountered" note (runs referenced from game/thunk rows: 3 vs research's 10).
 - **Fix:** The pin follows the built rule: UFO2P table step 1,429, with the reason in a comment. I also added a direct+pointer pin that matches research exactly. 07-05's table rule is not changed, because that is outside this plan's scope.
 - **For plan 07-22 / the orchestrator:** research's table step is 42 functions above ours (1,471 minus 1,429). That is a difference between two totals, not a count of functions. Under the scratch rule (pointer runs referenced only from runtime code taken as reached), 51 more UFO2P functions are reachable from `main_` (1,480 minus 1,429), from those runs' 31 game targets. The Tier 1 checkpoint should state this, and the owner should decide whether such runs (for example tables registered by init code) count as roots. (Corrected in fix round 1; the first version called the 42 a count.)
-- **Files modified:** tests/test_mechanics_real.py. **Committed in:** `ed627c6`.
+- **Files modified:** tests/test_mechanics_real.py. **Committed in:** `cfb1888`.
 
-**2. [Rule 1 - Test bug] Two Task 2 tests were wrong; fixed in the GREEN commit `628123a`**
+**2. [Rule 1 - Test bug] Two Task 2 tests were wrong; fixed in the GREEN commit `466fa1d`**
 - The asm-list CRLF test wrote its file with `write_text`, which writes CRLF on Windows. It now writes bytes, so the file is LF on every host.
 - The min_items case expected the row below a shared hub to be `closure`. Every row below a row that two items reach is also reached by both items, so it is a hub too. The test now checks a row that only one item reaches.
 
 **3. [Rule 3 - Blocking] Plan commit ledger**
-- The `.git/worktrees/...` ledger file was not written. The commit count is measured against the dispatch base instead: `git rev-list --count 2815ddb..45e16a3` = 6.
+- The `.git/worktrees/...` ledger file was not written. The commit count is measured against the dispatch base instead: `git rev-list --count 2384422..bf86b21` = 6.
 
 ---
 
@@ -248,7 +248,7 @@ Execution context nonce: 1ca40221f8453928
 
 Each finding got a RED commit and then a GREEN commit. Both RED records returned `RED_EVIDENCE_OK` (`target_test_failed`) from `gsd-tools check tdd-red-evidence`.
 
-**Finding 1: the tier digest missed edits to the signed TOML** (RED `643dba9`, GREEN `62680ef`).
+**Finding 1: the tier digest missed edits to the signed TOML** (RED `b11ba65`, GREEN `276d6b0`).
 - **Ruling applied:** D-04 and T-07-28 take precedence over the plan's narrower digest.
 - **What `tier_digest` hashes now, in this order:**
   1. the hub-rule line;
@@ -263,7 +263,7 @@ Each finding got a RED commit and then a GREEN commit. Both RED records returned
   - `test_other_tier_edits_leave_the_tier_alone`: a tier-2 out item and a hand edge between rows tier 1 does not reach leave `mechanics check` clean.
   - The `_committed` helper now signs the digest of the TOML it writes.
 
-**Finding 2: `status --require-matched` passed when there was nothing to check** (RED `4e1132a`, GREEN `6a5dd6d`).
+**Finding 2: `status --require-matched` passed when there was nothing to check** (RED `ba05014`, GREEN `d6cf9c3`).
 - A new `mechanics.done_problems` decides the result. Under `--require-matched` the command exits 1, with the reason on stderr, when:
   - there is no tier at all;
   - a reported tier is not signed off;
@@ -284,4 +284,4 @@ Each finding got a RED commit and then a GREEN commit. Both RED records returned
 ## Self-Check: PASSED
 
 - tools/reverseapoc/mechanics.py, tests/test_mechanics.py, tests/test_mechanics_real.py and this SUMMARY exist.
-- Commits e31baa6, d632877, b24f3ee, 628123a, ed627c6, 45e16a3 and 75a81a2 are on HEAD. The tree was clean before this line.
+- Commits 2728692, e926708, a8edf17, 466fa1d, cfb1888, bf86b21 and 8e7d57e are on HEAD. The tree was clean before this line.

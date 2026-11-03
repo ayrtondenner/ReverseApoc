@@ -179,7 +179,7 @@ symbols.c_name for func and data symbols.csv rows; configure D-12 with renamed r
 - `attempts.jsonl` v1 schema: `_CLAIM_FIELDS` + `outcome` (`MATCHED`, `PARTIAL`, `GAVE_UP`), `abort_reason` (`None`, `lint`, `timeout`, `guardrail`, `tool`), `turns`, `tokens` {`input`,`output`,`cache_read`,`cache_creation`}, `cost_usd`, `seconds`, `model`, `cli_version`, `check` {`runs`,`best_percent`,`sweep_hit`,`needs`}, `pack_bytes`, `truncated`, `date`; `abort` and `run` kinds (driver.py:322-378). `validate_record` demands the exact key set (393-412) and `test_committed_log_follows_the_schema` validates every committed line (tests/test_attempts_schema.py:45-50).
 - Log contents: 42 records, one run `20261026-005209`: 40 attempts (3 MATCHED, 37 PARTIAL; 3 with abort_reason `lint`), STARTED, ENDED `max sessions` 40/3.
 - Function size: `functions.csv` start/end; matched set: status.csv (5 matched rows today: tacp 0x00055080 attempts 0, 0x0006EE30 attempts 1; ufo2p 0x0008A0E0 attempts 1, 0x0008A100 attempts 2, 0x000A3980 attempts 0).
-- Trailers: the 3 pilot match commits (c83cf4e, d288ad6, 955931f) carry `Matched-By: reverseapoc drive` (driver.py:98); the Phase 5 hand matches (5ab2e79, a463163) and the status seed (fc7d1cd) carry none.
+- Trailers: the 3 pilot match commits (07e3ecc, 3d005bb, 558f35a) carry `Matched-By: reverseapoc drive` (driver.py:98); the Phase 5 hand matches (f73b50e, c0e4b93) and the status seed (58eba4d) carry none.
 - Hook blocks: only in the gitignored transcripts (`permission_denials`, 41 in 40 sessions).
 
 ### Missing, and where it comes from

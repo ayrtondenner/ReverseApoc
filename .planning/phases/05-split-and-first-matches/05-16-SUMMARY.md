@@ -20,8 +20,8 @@ actuals:
   tokens: 78248
   tasks: 3
   commits: 5
-plan_head_before: 2c027c27e11a7c267f17ba2cae9bffefc01cd151
-plan_head_after: d9345acc5bc0a15a3572720986abbd6e607b24fe
+plan_head_before: 879ed8379e2462908736846c3aca5f0ab5db03a6
+plan_head_after: 549b8ef7bed36edbefa6bad268997e6ae631ac31
 
 tech-stack:
   added: []
@@ -176,22 +176,22 @@ I wrote each verdict after reading the listing of the row that contains the addr
 
 ## Task Commits
 
-1. **Task 1 (tracer): UFO2P functions.csv and boundaries.csv**: `0fd5628` (test, RED), `6d849fe` (feat, GREEN). Tracer gate: interactive run, `human_verify_mode` end-of-phase, automated-only verify. I re-ran the verify (`-k UFO2P`: 4 passed, 0 SKIPPED) before expanding.
-2. **Task 2: TACP functions.csv and boundaries.csv**: `b90037a` (feat). The Task 1 test module already covers TACP through its parameters, so this task needed no new test commit (see TDD notes).
-3. **Task 3: unit drafts and symbols.csv**: `2f604c0` (test, RED), `d9345ac` (feat, GREEN).
+1. **Task 1 (tracer): UFO2P functions.csv and boundaries.csv**: `c6cc54f` (test, RED), `7b20744` (feat, GREEN). Tracer gate: interactive run, `human_verify_mode` end-of-phase, automated-only verify. I re-ran the verify (`-k UFO2P`: 4 passed, 0 SKIPPED) before expanding.
+2. **Task 2: TACP functions.csv and boundaries.csv**: `1a3b35b` (feat). The Task 1 test module already covers TACP through its parameters, so this task needed no new test commit (see TDD notes).
+3. **Task 3: unit drafts and symbols.csv**: `20c7b10` (test, RED), `549b8ef` (feat, GREEN).
 
 ## TDD notes (RED evidence, semantic assessment)
 
-- Task 1 RED (`0fd5628`): I ran the verb once, leaving the CSVs uncommitted, then ran the tests. `test_every_disagreement_has_a_verdict[UFO2P.EXE]` failed on its planned assertion: `['0x0007BDB7', '0x000B7170'] == []`. The drift tests passed against the freshly generated files, which confirms the regeneration is deterministic. The TACP cases skipped on the missing committed CSV, as planned.
+- Task 1 RED (`c6cc54f`): I ran the verb once, leaving the CSVs uncommitted, then ran the tests. `test_every_disagreement_has_a_verdict[UFO2P.EXE]` failed on its planned assertion: `['0x0007BDB7', '0x000B7170'] == []`. The drift tests passed against the freshly generated files, which confirms the regeneration is deterministic. The TACP cases skipped on the missing committed CSV, as planned.
 - Task 2 RED: no test change. The same parametrized test failed on its assertion for TACP (5 open addresses, starting with 0x00028CA7) before the verdicts were written. There is no separate `test(...)` commit for Task 2. The plan is `type: execute` and `workflow.tdd_mode` is unset, so the plan-level gate does not apply. This is recorded here for the end-of-phase TDD review.
-- Task 3 RED (`2f604c0`): 6 tests failed on their planned assertions: units.csv and symbols.csv missing for both EXEs. These tests fail rather than skip on a missing file this plan commits.
+- Task 3 RED (`20c7b10`): 6 tests failed on their planned assertions: units.csv and symbols.csv missing for both EXEs. These tests fail rather than skip on a missing file this plan commits.
 
 ## Verification
 
 - `tests/test_functions_real.py` against the real inputs (REVERSEAPOC_ORIG, REVERSEAPOC_WATCOM_DIR, REVERSEAPOC_GHIDRA_EXPORT pointing at the main checkout): `14 passed in 83.90s`, 0 SKIPPED (build/functions-real.out).
 - Full suite without the real inputs: `uv run pytest -q`: `1311 passed, 208 skipped`. `uv run ruff check .`: `All checks passed!`.
 - Full suite with the real inputs: `1489 passed, 30 skipped` (the skips are the Ghidra, clang, container-only and POSIX-only kinds).
-- `git diff --name-only 2c027c2 HEAD` lists the 8 CSVs and the test only. runtime.csv, asm/ and build/ are untouched in every commit. `git ls-files config/ufo2p config/tacp` lists functions, boundaries, units, symbols and runtime.csv for each EXE.
+- `git diff --name-only 879ed83 HEAD` lists the 8 CSVs and the test only. runtime.csv, asm/ and build/ are untouched in every commit. `git ls-files config/ufo2p config/tacp` lists functions, boundaries, units, symbols and runtime.csv for each EXE.
 - A scan of every committed reason, unit and symbol cell for instruction mnemonics finds nothing.
 
 ## Files Created/Modified
@@ -221,13 +221,13 @@ No orchestrator ruling amends 05-16. I applied the notes addressed to 05-16 and 
 - **Issue:** The plan named a functions.csv drift test and a verdict test. A hand edit of a tool-owned boundaries.csv column, or a hand verdict lost on regeneration (the 05-13 review finding), would pass both.
 - **Fix:** I added `test_boundaries_csv_has_no_drift` and `test_no_hand_verdict_lost`. The first compares the regenerated boundaries.csv text; the second asserts that `Reconciled.replaced` and `dropped_hand` are empty. The verdict test also requires a non-empty reason.
 - **Files modified:** tests/test_functions_real.py
-- **Commit:** 0fd5628
+- **Commit:** c6cc54f
 
 **2. [Rule 2 - Missing critical] Runtime aliases in the symbols test**
 - **Found during:** Task 3
 - **Issue:** A SymbolTable built without aliases would accept a symbols.csv name that duplicates a runtime alias at another address.
 - **Fix:** `test_symbols_resolve` passes `runtime_aliases(runtime_entries(...))` over the installed LIB386 versions.
-- **Commit:** 2f604c0
+- **Commit:** 20c7b10
 
 ---
 
@@ -235,7 +235,7 @@ No orchestrator ruling amends 05-16. I applied the notes addressed to 05-16 and 
 
 ## Issues Encountered
 
-- The worktree guard refused compound shell commands that named the main checkout path together with variables. I split them into single commands with literal paths. The ledger and sentinel files under the worktree's git dir could not be written for the same reason; I took the plan base (2c027c2) from the dispatch prompt instead.
+- The worktree guard refused compound shell commands that named the main checkout path together with variables. I split them into single commands with literal paths. The ledger and sentinel files under the worktree's git dir could not be written for the same reason; I took the plan base (879ed83) from the dispatch prompt instead.
 
 ## Known Stubs
 
@@ -258,7 +258,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: config/ufo2p/{functions,boundaries,units,symbols}.csv, config/tacp/{functions,boundaries,units,symbols}.csv, tests/test_functions_real.py
-- FOUND commits: 0fd5628, 6d849fe, b90037a, 2f604c0, d9345ac. `git rev-list --count 2c027c2..HEAD` = 5 before this SUMMARY commit.
+- FOUND commits: c6cc54f, 7b20744, 1a3b35b, 20c7b10, 549b8ef. `git rev-list --count 879ed83..HEAD` = 5 before this SUMMARY commit.
 
 *Phase: 05-split-and-first-matches*
 *Completed: 2026-10-24*
@@ -292,7 +292,7 @@ The "other starts" counts exclude the three hand-verdict starts themselves. The 
 
 **Minor: `_export_csv` wrote into build/ghidra even when REVERSEAPOC_GHIDRA_EXPORT pointed elsewhere.** It now exports into `_export_root()`, the env var when set, else build/ghidra.
 
-Commits: `43fe476` (fix: tests), `d9f3ff6` (fix: TACP reasons).
+Commits: `91d2674` (fix: tests), `3b7427a` (fix: TACP reasons).
 
 Commands and output:
 - `REVERSEAPOC_ORIG=.../orig REVERSEAPOC_WATCOM_DIR=.../third_party/watcom REVERSEAPOC_GHIDRA_EXPORT=.../build/ghidra uv run pytest -q -rs tests/test_functions_real.py` (literal main-checkout paths): `16 passed in 84.95s (0:01:24)`, 0 SKIPPED

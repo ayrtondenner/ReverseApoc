@@ -42,5 +42,5 @@ status: complete
 **The Watcom folder is no longer writable through the rw repo mount: `../third_party:/work/third_party:ro` overlays it, pinned by host and in-container tests.**
 
 - Reproduced before the fix: `/work/third_party/watcom WRITABLE` (`test -w` in the container).
-- After the fix (commit `fa9c1a0`): `/work/orig`, `/work/watcom`, `/work/third_party`, `/work/third_party/watcom` all `read-only`; container `90 passed`.
+- After the fix (commit `35b748a`): `/work/orig`, `/work/watcom`, `/work/third_party`, `/work/third_party/watcom` all `read-only`; container `90 passed`.
 - TDD: `test_protected_dir_is_read_only_at_its_own_path_inside_the_repo_mount[third_party]` failed before, passes after.

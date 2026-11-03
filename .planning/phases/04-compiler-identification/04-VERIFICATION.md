@@ -13,7 +13,7 @@ overrides:
     accepted_by: "ayrtondenner"
     accepted_at: "2026-10-22T19:25:11Z"
   - must_have: "_log_line, the bytes-free line content (names, paths, argv, SHA-1s, exit codes), the --log option and the default build/logs/cc.log are unchanged, and no dependency is added"
-    reason: "_log_line, DEFAULT_LOG, cli.py and the --log interface are byte-identical to c2d4054~1 and dependencies = []. Behaviour as shipped after review fixes WR-01/WR-02: a --log without a file name (., /) is refused before the compile (CompilerError, one error line, no object); a device log such as /dev/null is appended without the lock and gets no sidecar; a regular log needs a directory where <log>.lock can be created (documented in docs/toolchain.md:321); an existing folder as --log fails after the compile as it did before 04-13. Owner accepted the changed behaviour in 04-UAT.md test 5; a docs note on the nameless and folder cases is deferred to ROADMAP backlog 999.1 (commit 6ab386b)"
+    reason: "_log_line, DEFAULT_LOG, cli.py and the --log interface are byte-identical to 0513942~1 and dependencies = []. Behaviour as shipped after review fixes WR-01/WR-02: a --log without a file name (., /) is refused before the compile (CompilerError, one error line, no object); a device log such as /dev/null is appended without the lock and gets no sidecar; a regular log needs a directory where <log>.lock can be created (documented in docs/toolchain.md:321); an existing folder as --log fails after the compile as it did before 04-13. Owner accepted the changed behaviour in 04-UAT.md test 5; a docs note on the nameless and folder cases is deferred to ROADMAP backlog 999.1 (commit 0d4dcf2)"
     accepted_by: "ayrtondenner"
     accepted_at: "2026-10-23"
 re_verification:
@@ -45,22 +45,22 @@ behavior_unverified_items: []
 
 ## What changed since the previous verification
 
-`git diff ff8fdb6 HEAD` over tools/, tests/, docs/, config/, probe/, docker/, pyproject.toml and uv.lock
+`git diff 12eee06 HEAD` over tools/, tests/, docs/, config/, probe/, docker/, pyproject.toml and uv.lock
 touches exactly five files, all from the review-fix commits:
 
 | Commit | File | Change |
 |---|---|---|
-| 37b104f (WR-01) | tools/reverseapoc/compiler.py | `_check_log_name(log)` raises `CompilerError` for a `--log` with no name. It is called in `compile_rule` (:521), before the gate, the unlink and the runner |
-| 37b104f (WR-01) | tests/test_cli.py | +17 lines, no line removed: `test_cc_log_without_a_name_is_an_error_line[.]` and `[/]` (one error line, no traceback, `runner.calls == []`) |
-| 83053f9 (WR-02) | tools/reverseapoc/compiler.py | `_append_log`: `if log.exists() and not log.is_file()` appends without `_log_lock` (:487-490). The regular-file path is still `with _log_lock(log): with log.open("a")` (:491-493) |
-| 83053f9 (WR-02) | tests/test_cc_log.py | `test_a_device_log_is_appended_without_the_lock` (os.devnull, monkeypatched `_log_lock` raises if taken); POSIX-only `test_dev_null_log_works_and_leaves_no_sidecar` |
-| c01df4c (WR-03) | tests/test_cc_log.py, tests/test_compiler_real.py | bounded `wait(timeout=120)` / `communicate(timeout=300)`, and `_reap` in `finally` |
-| 1ad7417 (IN-01) | tools/reverseapoc/compiler.py | `_try_lock` docstring only |
-| 862159b, 9f4f5bc (IN-03, IN-02) | docs/toolchain.md:321 | the cc.log bullet now covers the writable-directory requirement, device logs, the same-path rule and "the Windows host" |
+| e1a6384 (WR-01) | tools/reverseapoc/compiler.py | `_check_log_name(log)` raises `CompilerError` for a `--log` with no name. It is called in `compile_rule` (:521), before the gate, the unlink and the runner |
+| e1a6384 (WR-01) | tests/test_cli.py | +17 lines, no line removed: `test_cc_log_without_a_name_is_an_error_line[.]` and `[/]` (one error line, no traceback, `runner.calls == []`) |
+| 5c27a24 (WR-02) | tools/reverseapoc/compiler.py | `_append_log`: `if log.exists() and not log.is_file()` appends without `_log_lock` (:487-490). The regular-file path is still `with _log_lock(log): with log.open("a")` (:491-493) |
+| 5c27a24 (WR-02) | tests/test_cc_log.py | `test_a_device_log_is_appended_without_the_lock` (os.devnull, monkeypatched `_log_lock` raises if taken); POSIX-only `test_dev_null_log_works_and_leaves_no_sidecar` |
+| cba0f31 (WR-03) | tests/test_cc_log.py, tests/test_compiler_real.py | bounded `wait(timeout=120)` / `communicate(timeout=300)`, and `_reap` in `finally` |
+| deb7571 (IN-01) | tools/reverseapoc/compiler.py | `_try_lock` docstring only |
+| 5e743c8, e6e6da8 (IN-03, IN-02) | docs/toolchain.md:321 | the cc.log bullet now covers the writable-directory requirement, device logs, the same-path rule and "the Windows host" |
 
-`_log_line` is byte-identical to c2d4054~1 (extracted and diffed). `DEFAULT_LOG` is unchanged. cli.py,
+`_log_line` is byte-identical to 0513942~1 (extracted and diffed). `DEFAULT_LOG` is unchanged. cli.py,
 pyproject.toml, uv.lock, config/, the Docker files and tests/test_compiler.py are all unchanged since
-c2d4054~1. libmatch, probe, cppscan, omf, wpack, watcom and cflags are unchanged since the previous report.
+0513942~1. libmatch, probe, cppscan, omf, wpack, watcom and cflags are unchanged since the previous report.
 
 ## Goal Achievement
 
@@ -79,7 +79,7 @@ truth whose files the fixes touched (8, 9, 20-26) was re-checked in full.
 | 6 | SC5 (CID-06): C vs C++ scan confirms `wcc386` | ✓ VERIFIED | `cppscan` run by me: `UFO2P.EXE: C (wcc386): ...; 5 vtable-shaped candidate runs`, `TACP.EXE: C (wcc386): ...; 3 ...` |
 | 7 | Goal wording: exact version and default flags "known and proven" | ✓ PASSED (override) | Override: D-08/D-10 bar, accepted by ayrtondenner on 2026-10-22T19:25:11Z (UAT test 1 pass) |
 | 8 | 04-01: `cc` wrapper (gate, banner, argv, scrubbed env, path allowlist, cleanup, ordering, atomic stamp) | ✓ VERIFIED | The new `_check_log_name` sits beside `_check_object_name`, before the gate, and keeps the "refused path never reaches the runner" ordering (test_cli `runner.calls == []`). test_compiler.py unchanged and green |
-| 9 | 04-01 backstop: parallel `cc` processes never trust a half-written stamp; the log keeps every line | ✓ VERIFIED | Owner-observed behaviour, 04-UAT.md test 4: 320 parallel compiles per environment (round 1 with no stamp, round 2 with a torn stamp planted), 320/320 exit 0. I checked the artifacts in build/uat-retest/: container/cc.log and host/cc.log each hold 320 lines matching the timestamp pattern and `exit 0`, 0 duplicate `-fo=` objects, `cc.log.lock` 0 bytes. File times (14:07-14:08 local) come after the last code fix (83053f9, 11:51 -0300), so the fixes do not invalidate the observation |
+| 9 | 04-01 backstop: parallel `cc` processes never trust a half-written stamp; the log keeps every line | ✓ VERIFIED | Owner-observed behaviour, 04-UAT.md test 4: 320 parallel compiles per environment (round 1 with no stamp, round 2 with a torn stamp planted), 320/320 exit 0. I checked the artifacts in build/uat-retest/: container/cc.log and host/cc.log each hold 320 lines matching the timestamp pattern and `exit 0`, 0 duplicate `-fo=` objects, `cc.log.lock` 0 bytes. File times (14:07-14:08 local) come after the last code fix (5c27a24, 11:51 -0300), so the fixes do not invalidate the observation |
 | 10 | 04-02: stdlib OMF reader | ✓ VERIFIED | omf.py unchanged; test_omf*.py green in both suites |
 | 11 | 04-03: wpack doc before decoder, real decode | ✓ VERIFIED | unchanged; test_wpack_real green |
 | 12 | 04-04: object and normalized SHA-1 logged; real compiles per version | ✓ VERIFIED | `_log_line` byte-identical; real compile tests green in both suites |
@@ -94,7 +94,7 @@ truth whose files the fixes touched (8, 9, 20-26) was re-checked in full.
 | 21 | 04-13: 16 parallel real `reverseapoc cc` (10.6) sharing one --log all exit 0, 16 intact lines naming the 16 objects, host native and container wibo | ✓ VERIFIED | `test_parallel_cc_keeps_one_log_line_per_compile` passed with no skip in my host suite and in my container runs. It is now bounded by `communicate(timeout=300)` and reaped in `finally`. The owner's 320-compile re-test agrees (truth 9) |
 | 22 | 04-13: `_append_log` holds the OS lock on `<log>.lock` from before open to after close; flock LOCK_EX; win32 LK_NBLCK spin retrying only EACCES; release-before-close mutant fails | ✓ VERIFIED | For any log that is not an existing non-regular file, compiler.py:491-493 is still `with _log_lock(log): with log.open("a") ...`. `_try_lock` code is unchanged (only its docstring); `_acquire`/`_release` unchanged. The new device branch (:487-490) bypasses the lock only for `exists() and not is_file()` (devices, FIFOs, directories), not for a regular cc.log. EACCES-only and retry tests green on the host |
 | 23 | 04-13: a killed lock holder does not block later appends; a second appender waits; the sidecar stays, empty, never deleted | ✓ VERIFIED | `test_a_killed_lock_holder_does_not_block_later_appends` passes on host and container (it now uses the shared `_reap`). There is still no unlink of the sidecar in compiler.py. The owner's re-test left `cc.log.lock` at 0 bytes in both environments |
-| 24 | 04-13: `_log_line`, the bytes-free line content, the `--log` option and the default build/logs/cc.log are unchanged; no dependency added | ✓ PASSED (override) | The interface holds: `_log_line` diff empty, `DEFAULT_LOG` line exact, cli.py/pyproject.toml/uv.lock unchanged since c2d4054~1, `dependencies = []`. Behaviour changed for edge values (nameless `--log` now refused before the compile; a log whose directory refuses new files fails). Override: owner accepted in UAT test 5, accepted by ayrtondenner on 2026-10-23 |
+| 24 | 04-13: `_log_line`, the bytes-free line content, the `--log` option and the default build/logs/cc.log are unchanged; no dependency added | ✓ PASSED (override) | The interface holds: `_log_line` diff empty, `DEFAULT_LOG` line exact, cli.py/pyproject.toml/uv.lock unchanged since 0513942~1, `dependencies = []`. Behaviour changed for edge values (nameless `--log` now refused before the compile; a log whose directory refuses new files fails). Override: owner accepted in UAT test 5, accepted by ayrtondenner on 2026-10-23 |
 | 25 | 04-13: toolchain.md states parallel-safe within one environment, sidecar cc.log.lock, host plus container on one log not supported; learnings.md records O_APPEND not atomic on 9p and the Windows host | ✓ VERIFIED | toolchain.md:321 still carries `cc.log.lock`, "parallel `cc` processes in one environment", and "The Windows host and a container writing the same log at the same time is not supported". learnings.md:14 is `## 2026-10-22: O_APPEND is not atomic on the bind mount or the Windows host ...` |
 | 26 | 04-13: done gate green on host and container; concurrency tests 5 in a row on each; every step logged under build/gate/04-13/ and in the SUMMARY | ✓ VERIFIED | build/gate/04-13/01..05 all end `exit=0`. The gate also holds at HEAD, after the fixes (my runs). Host: `uv run pytest -q -rs` 1038 passed, 7 skipped (platform/container-only only), `ruff check .` All checks passed. Container: full suite + ruff 1043 passed, 2 Windows-only skips, All checks passed. The POSIX-only `/dev/null` test ran (not skipped) there as user `dev` |
 
@@ -173,7 +173,7 @@ appears in at least one plan's `requirements`.
 | # | Prohibition | Tier | Enforcement | Verdict |
 |---|---|---|---|---|
 | P1 | MUST NOT change `_log_line`, line text, `--log` or DEFAULT_LOG, or move the default log | test | `test_default_log_and_its_lock` pins DEFAULT_LOG; `test_cc_log_without_a_name_is_an_error_line` pins the nameless case; `_log_line` diff empty | Interface held; the edge-value behaviour change is owner-accepted (truth 24 override, UAT test 5) |
-| P2 | MUST NOT add a third-party dependency | test | no committed test | No wired test. The owner confirmed it at HEAD (UAT test 6), and my re-check agrees: `dependencies = []`, pyproject.toml/uv.lock unchanged since c2d4054~1 |
+| P2 | MUST NOT add a third-party dependency | test | no committed test | No wired test. The owner confirmed it at HEAD (UAT test 6), and my re-check agrees: `dependencies = []`, pyproject.toml/uv.lock unchanged since 0513942~1 |
 | P3 | MUST NOT use blocking msvcrt modes or treat every OSError as contention | test | `test_lock_retries_while_busy`, `test_lock_does_not_swallow_other_errors` | ✓ enforced, held (`_try_lock` code unchanged) |
 | P4 | MUST NOT use mkdir/O_EXCL lock or delete the sidecar | test | killed-holder test, sidecar-exists test | ✓ enforced, held |
 | P5 | MUST NOT import, run or name the gitignored prototype from a committed test | test | no committed test | No wired test. The owner confirmed it (UAT test 6), and my grep agrees: no `debug-cclog`/`debug_cclog` anywhere in tests/ |

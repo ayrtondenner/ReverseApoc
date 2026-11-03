@@ -27,8 +27,8 @@ status: issues_found
 ## Summary
 
 This is the incremental re-review of the fixes for the 04-13 review (cc.log sidecar lock,
-G-04-2). It covers `git diff 8a77590..HEAD` over the five files: commits 37b104f (WR-01), 83053f9
-(WR-02), c01df4c (WR-03), 1ad7417 (IN-01), 862159b (IN-03) and 9f4f5bc (IN-02). Code that did not
+G-04-2). It covers `git diff 233b331..HEAD` over the five files: commits e1a6384 (WR-01), 5c27a24
+(WR-02), cba0f31 (WR-03), deb7571 (IN-01), 5e743c8 (IN-03) and e6e6da8 (IN-02). Code that did not
 change was dispositioned in earlier rounds and is not reported again.
 
 Finding IDs continue from the highest ID in 04-REVIEW-DISPOSITION.md (IN-07). The disposition

@@ -16,8 +16,8 @@ actuals:
   tokens: 6240
   tasks: 2
   commits: 4
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: 8ad11737d23c0a07a83bfaa84d265336c8d96c02
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: abcbcf590173aab01d69bd8c87c88fb1e120ead7
 
 tech-stack:
   added: []
@@ -116,8 +116,8 @@ Execution context nonce: 404087e15cf95fdb
 
 ## Task Commits
 
-1. **Task 1 (tracer): one function with a data fixup and a call:** RED `a964c65`, GREEN `b468c3f`
-2. **Task 2: every target rule, F11, refusals:** RED `d14c7a2`, GREEN `8ad1173`
+1. **Task 1 (tracer): one function with a data fixup and a call:** RED `a546212`, GREEN `0dea84e`
+2. **Task 2: every target rule, F11, refusals:** RED `041f4c0`, GREEN `abcbcf5`
 
 Tracer gate: interactive run, `human_verify_mode` end-of-phase, automated-only verify. I re-ran both verify commands after the GREEN commit (1 passed, ruff clean) and then started the expansion.
 
@@ -152,9 +152,9 @@ See key-decisions in the frontmatter. The two that affect later plans:
 - `test_non_off32_field_stays_raw[ptr16:32]`
 - `test_rel32_field_with_an_le_fixup_gets_no_pc32`
 
-Commits `d14c7a2`, `8ad1173`.
+Commits `041f4c0`, `abcbcf5`.
 
-**Orchestrator ruling F10 (consumer side):** the tests read the second and later `_TEXT` sections through `view.section(symbol.section_index)` and `view.relocs(section_index)` (`_section_of`, `_relocs` in tests/test_target.py). Commits `a964c65`, `d14c7a2`.
+**Orchestrator ruling F10 (consumer side):** the tests read the second and later `_TEXT` sections through `view.section(symbol.section_index)` and `view.relocs(section_index)` (`_section_of`, `_relocs` in tests/test_target.py). Commits `a546212`, `041f4c0`.
 
 ### Auto-fixed Issues
 
@@ -163,31 +163,31 @@ Commits `d14c7a2`, `8ad1173`.
 - **Issue:** ruling F11 needs the raw sites in the result, but the plan's signature returned bytes.
 - **Fix:** `TargetResult(data: bytes, raw_fields: tuple[RawField, ...])`.
 - **Files modified:** tools/reverseapoc/target.py
-- **Committed in:** `b468c3f`
+- **Committed in:** `0dea84e`
 
 **2. [Rule 1 - Naming] Data-in-code symbol named by `linker_name` (`_D_<start>`)**
 - **Found during:** Task 2
 - **Issue:** the behavior line wrote `D_<start>`, while the plan's key_link and acceptance criterion require every name to come from SymbolTable, which gives `_D_<start>` for a data-in-code row.
 - **Fix:** used `linker_name`, so the table's own R_386_32 resolves by that name.
-- **Committed in:** `8ad1173`
+- **Committed in:** `abcbcf5`
 
 **3. [Rule 2 - Missing critical] Refusal of an LE fixup field split by a row boundary**
 - **Found during:** Task 2
 - **Issue:** a field that starts in one row and ends in the next would either break `write_elf` (field outside its section) or be left half-relocated in the other unit, silently.
 - **Fix:** TargetError naming the field VA, from either side.
 - **Tests:** `test_refuses_a_field_split_by_a_row_boundary[a]`, `[b]`.
-- **Committed in:** `8ad1173`
+- **Committed in:** `abcbcf5`
 
 **4. [Rule 2 - Missing critical] Decoding resumes after an undecodable byte**
 - **Found during:** Task 2
 - **Issue:** `x86.decode` stops at an undecodable byte, so every branch after it would be silently missed.
 - **Fix:** `_instructions` skips one byte and resumes.
 - **Test:** `test_decoding_resumes_after_an_undecodable_byte`.
-- **Committed in:** `8ad1173`
+- **Committed in:** `abcbcf5`
 
 **5. [Rule 3 - Signature] `branch_fields(row, flat, fixup_sites)` without `le`**
 - The plan's `le` parameter had no use, so it was dropped. `fixup_sites` is a `{field VA: size}` map, because skipping inline data needs the field size.
-- **Committed in:** `b468c3f`
+- **Committed in:** `0dea84e`
 
 ---
 
@@ -196,7 +196,7 @@ Commits `d14c7a2`, `8ad1173`.
 
 ## Issues Encountered
 
-- The worktree sandbox refused compound shell commands containing `$(git ...)` or heredocs. The plan ledger base came from the dispatch prompt (532a745). File edits went through the Write/Edit tools.
+- The worktree sandbox refused compound shell commands containing `$(git ...)` or heredocs. The plan ledger base came from the dispatch prompt (c6dc6b8). File edits went through the Write/Edit tools.
 - `ruff format --check .` reports 33 pre-existing files in the repo that would be reformatted. Formatting is not part of the done gate; I formatted only the new test file.
 
 ## Threat Flags
@@ -224,11 +224,11 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/target.py, tests/test_target.py
-- FOUND on this branch: a964c65, b468c3f, d14c7a2, 8ad1173 (`git rev-list --count 532a745..HEAD` = 4 before this SUMMARY commit)
+- FOUND on this branch: a546212, 0dea84e, 041f4c0, abcbcf5 (`git rev-list --count c6dc6b8..HEAD` = 4 before this SUMMARY commit)
 
 ## Review fixes (round 1)
 
-Both findings were fixed test-first. RED is commit `ec3d39a` and GREEN is commit `d9b7530`.
+Both findings were fixed test-first. RED is commit `7a4e7cb` and GREEN is commit `57ca0e8`.
 
 1. **Important: resuming one byte past an undecodable byte could desynchronise.** A misaligned e8/e9/0f 8x inside a later immediate or table entry could be read as a rel32 branch. That gave either a TargetError at a wrong VA or a spurious R_386_PC32 whose rewritten field corrupted bytes that must equal load_flat. It also went against the 05-03 contract that decoding stops at an undecodable byte.
    - **Orchestrator ruling:** do not refuse the unit (D-13, F11). Stop branch synthesis for the rest of the row and report the site.
@@ -247,7 +247,7 @@ Commands and their output lines:
 
 For 05-17: print `TargetResult.undecoded` beside `raw_fields`. A function with an undecoded site has unsynthesized branches, so 05-11 should treat it like an F11 site and exclude it from first-match candidates.
 
-actuals.commits in the frontmatter still counts the 4 original task commits. Round 1 added `ec3d39a` and `d9b7530`, and this SUMMARY update is one more commit.
+actuals.commits in the frontmatter still counts the 4 original task commits. Round 1 added `7a4e7cb` and `57ca0e8`, and this SUMMARY update is one more commit.
 
 ---
 *Phase: 05-split-and-first-matches*

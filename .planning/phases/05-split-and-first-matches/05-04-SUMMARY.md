@@ -20,8 +20,8 @@ actuals:
   tokens: 14969
   tasks: 3
   commits: 6
-plan_head_before: 6463d471f6040396d790fc8b1d9243901a6200e3
-plan_head_after: 770d70a1ca4b577ab9b729d7eb6e5b511cfc16fe
+plan_head_before: 531db2dfe6ec7af4db3ff846858ffc38b0eec596
+plan_head_after: 0ca0b6037f41271f613a652b37fe9501d1c1cbc8
 
 tech-stack:
   added: []
@@ -118,9 +118,9 @@ Execution context nonce: e8c3b25a8b359a4a
 
 ## Task Commits
 
-1. **Task 1 (tracer): runtime.csv + LIB386 -> runtime rows of a functions.csv that round-trips.** RED `a89eb35`, GREEN `1d34f86`
-2. **Task 2: validation rules and the boundaries, units, symbols schemas.** RED `58dc9f2`, GREEN `9adfc3e`
-3. **Task 3: symbols.py.** RED `0470238`, GREEN `770d70a`
+1. **Task 1 (tracer): runtime.csv + LIB386 -> runtime rows of a functions.csv that round-trips.** RED `8ea2c0e`, GREEN `b9155be`
+2. **Task 2: validation rules and the boundaries, units, symbols schemas.** RED `9adf8c3`, GREEN `2c74e72`
+3. **Task 3: symbols.py.** RED `6ac7565`, GREEN `0ca0b60`
 
 Tracer gate (Task 1): interactive, `human_verify_mode` end-of-phase, automated-only verify. Both verify commands were re-run and passed (real test unskipped), then expansion went ahead.
 
@@ -142,9 +142,9 @@ See key-decisions in the frontmatter. In short: a runtime.csv row resolves throu
 
 ## Deviations from Plan
 
-**Orchestrator ruling F1: the functions.csv reader accepts an empty unit column** as well as `[a-z0-9_]+`. Checking that every function is in exactly one unit stays the job of `check_unit_assignment`. Tests: `test_functions_reader_accepts_an_empty_unit` and the `refused-unit-name` case (`Bad-Name`). Commit `9adfc3e`.
+**Orchestrator ruling F1: the functions.csv reader accepts an empty unit column** as well as `[a-z0-9_]+`. Checking that every function is in exactly one unit stays the job of `check_unit_assignment`. Tests: `test_functions_reader_accepts_an_empty_unit` and the `refused-unit-name` case (`Bad-Name`). Commit `2c74e72`.
 
-**Orchestrator ruling F12: one seeded row per distinct offset, never zero-length**, named by the alias without a leading underscore, else the first in sorted order. Every alias still resolves: `runtime_entries` records each entry's aliases, `runtime_aliases(entries)` maps them to the row start, and `SymbolTable.build(..., aliases=...)` feeds `address_of`. Tests: `test_seed_aliases_at_one_offset_give_one_row`, `test_runtime_aliases_resolve_to_their_row`, `test_an_alias_must_name_a_runtime_row_start`, and the real `test_every_alias_shares_its_rows_start` and `test_runtime_names_and_aliases_build_one_symbol_table`. Commits `1d34f86` and `770d70a`.
+**Orchestrator ruling F12: one seeded row per distinct offset, never zero-length**, named by the alias without a leading underscore, else the first in sorted order. Every alias still resolves: `runtime_entries` records each entry's aliases, `runtime_aliases(entries)` maps them to the row start, and `SymbolTable.build(..., aliases=...)` feeds `address_of`. Tests: `test_seed_aliases_at_one_offset_give_one_row`, `test_runtime_aliases_resolve_to_their_row`, `test_an_alias_must_name_a_runtime_row_start`, and the real `test_every_alias_shares_its_rows_start` and `test_runtime_names_and_aliases_build_one_symbol_table`. Commits `b9155be` and `0ca0b60`.
 
 ### Auto-fixed Issues
 
@@ -154,7 +154,7 @@ See key-decisions in the frontmatter. In short: a runtime.csv row resolves throu
 - **Fix:** Take every 10.6 code segment whose (module, library) is the row's module in any listed library or one of its alternatives, and whose length equals the row span. Publics are unioned over those segments, per offset. A row with no match raises FunctionsError naming the row.
 - **Files modified:** tools/reverseapoc/functions.py
 - **Verification:** `test_seed_finds_a_module_named_by_another_version`, `test_seed_refuses_a_module_whose_segment_length_differs`; the real tests resolve every row of both EXEs
-- **Committed in:** `1d34f86`
+- **Committed in:** `b9155be`
 
 **2. [Rule 1 - Bug] End labels made zero-length rows**
 - **Found during:** Task 1 (real test)
@@ -162,7 +162,7 @@ See key-decisions in the frontmatter. In short: a runtime.csv row resolves throu
 - **Fix:** A public at or past the segment end starts no row.
 - **Files modified:** tools/reverseapoc/functions.py
 - **Verification:** `test_seed_ignores_a_public_at_the_segment_end`; real test
-- **Committed in:** `1d34f86`
+- **Committed in:** `b9155be`
 
 **3. [Rule 1 - Bug] `_Alphabet` named two addresses and broke SymbolTable.build on real data**
 - **Found during:** Task 3 (added real test)
@@ -170,11 +170,11 @@ See key-decisions in the frontmatter. In short: a runtime.csv row resolves throu
 - **Fix:** Runtime names and aliases at more than one address go to `SymbolTable.ambiguous`. `address_of` refuses them with "ambiguous" and lists every address. `linker_name` of each row is still the name. A symbols.csv name that clashes with a runtime or other name is still a build error.
 - **Files modified:** tools/reverseapoc/symbols.py, tests/test_symbols.py, tests/test_functions_lib_real.py
 - **Verification:** `test_a_runtime_name_at_two_addresses_is_ambiguous`; the real test pins `set(table.ambiguous) == {"_Alphabet"}` for both EXEs
-- **Committed in:** `770d70a`
+- **Committed in:** `0ca0b60`
 
 **4. [Rule 2 - Missing critical] Extra reader hardening (T-05-08)**
 - Rows with more fields than the header are refused. Runtime and symbols.csv names must match a linker-name pattern. An unparsable address gets an error naming its column.
-- **Committed in:** `9adfc3e`
+- **Committed in:** `2c74e72`
 
 ---
 
@@ -211,11 +211,11 @@ Wave 3 plans (05-08, 05-09, 05-11, 05-13, 05-14) can import functions.py and sym
 ## Self-Check: PASSED
 
 - Files exist: tools/reverseapoc/functions.py, tools/reverseapoc/symbols.py, tests/test_functions.py, tests/test_symbols.py, tests/test_functions_lib_real.py
-- Commits on this branch: a89eb35, 1d34f86, 58dc9f2, 9adfc3e, 0470238, 770d70a
+- Commits on this branch: 8ea2c0e, b9155be, 9adf8c3, 2c74e72, 6ac7565, 0ca0b60
 
 ## Review fixes (round 1)
 
-Both review findings were fixed test-first. RED was commit `20246ef`: both new tests failed with `DID NOT RAISE FunctionsError`. GREEN was commit `2673166`.
+Both review findings were fixed test-first. RED was commit `15407ee`: both new tests failed with `DID NOT RAISE FunctionsError`. GREEN was commit `07bbf24`.
 
 1. **Important 1: `_offset_aliases` took the union of publics without checking their offsets.** If two matching segments of the same length put one public at different offsets, seeding would silently split the row in the wrong place. It now raises FunctionsError naming the row, the public and both offsets (`_check_one_offset`). Test: `test_seed_refuses_a_public_at_two_offsets` plants a module `zork` in DOS/CLIB3R.LIB with `zork_` at 0 and in DOS/CLIB3S.LIB with `zork_` at 2.
 2. **Important 2: `_row_owners` ignored `row.segment`.** Candidate segments must now have `name == row.segment` as well as the row's length. Test: `test_seed_refuses_a_segment_with_another_name` (an `OTHER_TEXT` segment of the right length does not match a `_TEXT` row).
@@ -227,4 +227,4 @@ Commands and their output lines:
 - `uv run ruff check .`: `All checks passed!`
 - `uv run pytest -q`: `945 passed, 172 skipped in 12.30s`
 
-actuals.commits in the frontmatter still counts the 6 original task commits. Round 1 added `20246ef` and `2673166`, and this SUMMARY update is one more commit.
+actuals.commits in the frontmatter still counts the 6 original task commits. Round 1 added `15407ee` and `07bbf24`, and this SUMMARY update is one more commit.

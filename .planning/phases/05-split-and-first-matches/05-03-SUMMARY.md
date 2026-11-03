@@ -18,8 +18,8 @@ actuals:
   tokens: 7400
   tasks: 3
   commits: 5
-plan_head_before: 6463d471f6040396d790fc8b1d9243901a6200e3
-plan_head_after: 8a523e77153bb3535008e26ca3dc2fa9b1bb9e8d
+plan_head_before: 531db2dfe6ec7af4db3ff846858ffc38b0eec596
+plan_head_after: d25cdac9f71aae2de2d26d388fb2441c7dfa4a49
 
 tech-stack:
   added: ["capstone 5.0.9 (py3-none wheels, C library via ctypes)"]
@@ -136,9 +136,9 @@ Execution context nonce: 54502af6a74b8b7f
 
 ## Task Commits
 
-1. **Task 1 (tracer): dependency policy and Wave 0 test helpers**: `00aaf43` (test, RED), `6a662fd` (feat, GREEN). The tracer gate re-ran the verify end to end: 7 passed, full suite 887 passed / 165 skipped, ruff clean.
+1. **Task 1 (tracer): dependency policy and Wave 0 test helpers**: `f2abaa4` (test, RED), `23a8144` (feat, GREEN). The tracer gate re-ran the verify end to end: 7 passed, full suite 887 passed / 165 skipped, ruff clean.
 2. **Task 2: Owner approves capstone 5.0.9 before install**: no commit. Approved by the owner on 2026-10-23, before install (details below).
-3. **Task 3: capstone 5.0.9 and shared x86 decode helpers**: `b398159` (chore, `uv add`), `ac76ad5` (test, RED), `8a523e7` (feat, GREEN).
+3. **Task 3: capstone 5.0.9 and shared x86 decode helpers**: `0d5fae3` (chore, `uv add`), `d72bfbb` (test, RED), `d25cdac` (feat, GREEN).
 
 **Plan metadata:** this SUMMARY commit (docs).
 
@@ -150,7 +150,7 @@ The orchestrator showed the owner the following, and the owner answered "Approve
 - https://github.com/capstone-engine/capstone/releases/tag/5.0.9 resolves (HTTP 200).
 - One discrepancy was shown to the owner: PyPI `project_urls` lists only capstone-engine.org, not the GitHub repository.
 
-Order on disk: the docs row (`6a662fd`) comes before the install (`b398159`). The uv.lock entry matches the facts above: sdist and wheels uploaded 2026-05-28, the same 11 py3-none wheel filenames.
+Order on disk: the docs row (`23a8144`) comes before the install (`0d5fae3`). The uv.lock entry matches the facts above: sdist and wheels uploaded 2026-05-28, the same 11 py3-none wheel filenames.
 
 ## Files Created/Modified
 - `docs/tools.md`: capstone 5.0.9 Use row.
@@ -162,8 +162,8 @@ Order on disk: the docs row (`6a662fd`) comes before the install (`b398159`). Th
 - `tests/test_x86.py` (new): 17 tests on made-up bytes.
 
 ## TDD notes (RED evidence, semantic assessment)
-- Task 1 RED (`00aaf43`): 6 failed, 1 passed. The two doc-check tests failed on their assertions against a stub helper returning `[]`. The skip-helper tests failed with AttributeError and the image tests with TypeError (unexpected kwarg), because that API did not exist yet. `test_every_runtime_dependency_is_documented` passed at HEAD by design, since there were no dependencies yet.
-- Task 3 RED (`ac76ad5`): collection ImportError (`reverseapoc.x86` did not exist). This is a load-level failure, not an assertion-level RED. The plan is `type: execute`, so the plan-level TDD gate does not apply, but this is noted for the end-of-phase TDD review.
+- Task 1 RED (`f2abaa4`): 6 failed, 1 passed. The two doc-check tests failed on their assertions against a stub helper returning `[]`. The skip-helper tests failed with AttributeError and the image tests with TypeError (unexpected kwarg), because that API did not exist yet. `test_every_runtime_dependency_is_documented` passed at HEAD by design, since there were no dependencies yet.
+- Task 3 RED (`d72bfbb`): collection ImportError (`reverseapoc.x86` did not exist). This is a load-level failure, not an assertion-level RED. The plan is `type: execute`, so the plan-level TDD gate does not apply, but this is noted for the end-of-phase TDD review.
 - Mutation check on the ghidra_loadable fix: undoing the data-pages rebase makes `LE.load_flat()` differ from the default image, so the test pins it.
 
 ## Decisions Made
@@ -178,24 +178,24 @@ Order on disk: the docs row (`6a662fd`) comes before the install (`b398159`). Th
 - **Issue:** When the first MZ's e_lfanew points at the LE header, le.py (and the LE format) treat that MZ as the owner, so the data-pages field is read relative to the start of the file. The default bound image writes it relative to the inner stub (0x180 later). Only setting e_lfarlc/e_lfanew would have shifted every page by 0x180, for le.py and for Ghidra.
 - **Fix:** with `ghidra_loadable=True` the data-pages field is written relative to the first MZ, so the pages stay put. The test checks objects, entry, `data_pages_offset`, `load_flat()` and `fixups()` against the default image, for both bound and unbound.
 - **Files modified:** tests/conftest.py, tests/test_le.py
-- **Committed in:** 6a662fd
+- **Committed in:** 23a8144
 
 **2. [Rule 3 - Blocking] GHIDRA_DIR "read at call time" cannot be a module constant**
 - **Fix:** `GHIDRA_DIR = Path("/opt/ghidra")` is the default, and `ghidra_dir()` reads GHIDRA_INSTALL_DIR at call time. `requires_ghidra()` uses it and returns the dir.
-- **Committed in:** 6a662fd
+- **Committed in:** 23a8144
 
 **3. [Rule 2 - Missing] `Insn.raw` field and a loose-pin check**
-- `is_filler` must match exact encodings (`8d 40 00` vs `8d 00` disassemble the same), so `Insn` carries its bytes (`8a523e7`). `_dependency_doc_problems` also rejects a non-`==` pin, and the pin must appear as a code span so `foo==1.0` is not satisfied by `foo==1.0.1` (`6a662fd`).
+- `is_filler` must match exact encodings (`8d 40 00` vs `8d 00` disassemble the same), so `Insn` carries its bytes (`d25cdac`). `_dependency_doc_problems` also rejects a non-`==` pin, and the pin must appear as a code span so `foo==1.0` is not satisfied by `foo==1.0.1` (`23a8144`).
 
 **4. [Process] Install committed separately from the RED tests**
-- `uv add` was committed alone (`b398159`) so the install is its own auditable commit after the approval and the docs row.
+- `uv add` was committed alone (`0d5fae3`) so the install is its own auditable commit after the approval and the docs row.
 
 **Total deviations:** 3 auto-fixed (1 bug, 1 blocking, 1 missing critical) plus 1 process note.
 **Impact on plan:** No scope creep. Without fix 1, the D-06 Ghidra smoke test would have imported shifted page bytes.
 
 ## Issues Encountered
 - A Python edit of conftest.py briefly wrote CRLF line endings (Windows text mode). They were converted back to LF before the commit, and all touched files were checked to be CRLF-free.
-- The plan's commit ledger file lives in the shared git dir, outside the worktree, so it was not written. The base 6463d47 was taken from the dispatch prompt and used for the measured commit count.
+- The plan's commit ledger file lives in the shared git dir, outside the worktree, so it was not written. The base 531db2d was taken from the dispatch prompt and used for the measured commit count.
 
 ## User Setup Required
 
@@ -208,7 +208,7 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 - FOUND: tools/reverseapoc/x86.py, tests/test_x86.py, docs/tools.md row, conftest helpers (4 defs)
-- FOUND commits: 00aaf43, 6a662fd, b398159, ac76ad5, 8a523e7 (5 = `git rev-list --count 6463d47..HEAD` before this SUMMARY commit)
+- FOUND commits: f2abaa4, 23a8144, 0d5fae3, d72bfbb, d25cdac (5 = `git rev-list --count 531db2d..HEAD` before this SUMMARY commit)
 - Verify: `uv sync --locked && uv run pytest -q` 905 passed / 165 skipped; `uv run ruff check .` clean; capstone metadata 5.0.9
 
 ---

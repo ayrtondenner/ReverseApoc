@@ -16,11 +16,11 @@ provides:
 affects: [07-20, 07-22, 07-41, gsd-verify-work 7]
 
 actuals:
-  tokens: 21564     # chars/4 over the realized diff (86,256 chars, git diff 8a8f98e..f6b54c7)
+  tokens: 21564     # chars/4 over the realized diff (86,256 chars, git diff e4988ec..bf03910)
   tasks: 3
   commits: 5        # git rev-list --count plan_head_before..HEAD, before the SUMMARY commit
-plan_head_before: 8a8f98e5278614aa181fd6101c5ecb58ef29bead
-plan_head_after: f6b54c7bc93547ae0429ccd876b94c23196ff7d6
+plan_head_before: e4988ecb4646bcd3811bfc6ae8fb881aa7501ff2
+plan_head_after: bf03910a7278c868ef08b7936c7a8dcd419282f3
 
 tech-stack:
   added: []
@@ -216,9 +216,9 @@ Execution context nonce: 0db1d6c93f0e5010
 
 ## Task Commits
 
-1. **Task 1 (tracer): the coverage line on the page and in progress.json.** RED `80aa237`, GREEN `eb7f9cd`. Tracer gate: the run is interactive in end-of-phase mode and the verify is automated only. The verify was re-run (62 passed), so expansion went ahead.
-2. **Task 2: tier unions, duplicates, located tiers, the assembler group.** RED `3cb2e24`, GREEN `021aa49`.
-3. **Task 3: Pages trigger paths.** `f6b54c7` (ci).
+1. **Task 1 (tracer): the coverage line on the page and in progress.json.** RED `b410c19`, GREEN `7631187`. Tracer gate: the run is interactive in end-of-phase mode and the verify is automated only. The verify was re-run (62 passed), so expansion went ahead.
+2. **Task 2: tier unions, duplicates, located tiers, the assembler group.** RED `f0dd2af`, GREEN `d0cc2e4`.
+3. **Task 3: Pages trigger paths.** `bf03910` (ci).
 
 No REFACTOR commits.
 
@@ -243,7 +243,7 @@ Each RED record was built from pytest JUnit XML. `gsd-tools check tdd-red-eviden
 - `uv run pytest -q tests/test_workflows.py`: 13 passed. `grep -q '"config/mechanics-members.csv"' .github/workflows/pages.yml`: ok.
 - **Host suite:** `uv run pytest -q` gave **3033 passed, 236 skipped**. The skip count equals 07-10's fix-round count. Every skip is a pre-existing real-file or tool skip: orig/*.EXE not present, Watcom 10.5/10.6/11.0 or watcom-media not installed in the worktree, symlink privileges, non-UTF-8 names, and objdiff-cli, ninja or clang off PATH ("run in the container"). No new skip reason. None of the new tests skips (R-A).
 - `uv run ruff check .`: all checks passed.
-- `uv run python -I tools/progress.py --help`: exit 0. `uv run python -I tools/progress.py --out build/page-check --commit 3cb2e24` on the committed config (no mechanics.toml yet): exit 0. The page has no coverage section, and progress.json has `"mechanics": null`.
+- `uv run python -I tools/progress.py --help`: exit 0. `uv run python -I tools/progress.py --out build/page-check --commit f0dd2af` on the committed config (no mechanics.toml yet): exit 0. The page has no coverage section, and progress.json has `"mechanics": null`.
 - Acceptance greps: `def derive_mechanics(`, `Mechanics coverage` and `def exclude_assembler(` are each in tools/progress.py.
 - **Container step deferred to the orchestrator:** `docker compose build && docker compose run --rm test` (R-B). No docker was run from the worktree.
 
@@ -292,19 +292,19 @@ See key-decisions above.
 - **Found during:** Task 2.
 - **Issue:** The plan applies `exclude_assembler` to "the page and progress.json path". build_report's docstring and test_report_shape pin report.json's combined matched_code_percent to progress.json's percent. Leaving report.json on `derive()` would break that invariant once a list is signed, and recomp.fyi would publish a different percent from the badges.
 - **Fix:** `main` builds report.json, like every `--out` file, from the excluded view. Only `--decomphub`, and gate, use `derive()`. `test_assembler_group` checks that the two percents are equal.
-- **Committed in:** `021aa49`.
+- **Committed in:** `d0cc2e4`.
 
 **2. [Rule 1 - Bug, layout] Legend label shortened to "library or assembler"**
 - **Found during:** Task 2, a render of the committed config.
 - **Issue:** The plan's wording, "library or assembler, not decompiled" (36 characters), moves the right-aligned SVG legend to x=448. The bold heading "X-COM Apocalypse (DOS): 0.0063% decompiled, 5 of 3,079 functions" ends near x=444, so the labels would touch, and they would overlap once the figures grow.
 - **Fix:** The label is now "library or assembler" (20 characters, shorter than the old 24-character "library (not decompiled)"). The legend now starts at x=554. "Not decompiled" is still stated in the assembler key line, in MEASURED and in the README. The new `test_treemap_legend_clears_the_heading` checks the clearance against the worst-case heading ("100% decompiled, 3,079 of 3,079"). The pinned label tests were updated in the GREEN commit.
-- **Committed in:** `021aa49`.
+- **Committed in:** `d0cc2e4`.
 
 **3. [Rule 2 - Correctness] An unsigned or stale asm list is ignored, not an error** (the stale half was reversed in fix round 1, see below)
 - **Issue:** Plan 07-20 Task 1 commits an unsigned list (F38). Raising an error would make the Pages job exit 2.
 - **Fix:** Such a list moves nothing. `mechanics check` remains the place that reports it. A signed list's rows are validated strictly.
 - **Test:** `test_unsigned_or_changed_asm_list_moves_nothing`.
-- **Committed in:** `021aa49`.
+- **Committed in:** `d0cc2e4`.
 
 **4. [Scope addition] Extra tests**
 - `test_mechanics_constants_agree`: progress.py's format copies match mechanics.py's.
@@ -317,7 +317,7 @@ See key-decisions above.
 ## Issues Encountered
 
 - The worktree harness refuses compound or heredoc commands. Tests were appended with Edit, and the RED evidence records were built by a scratch script (outside the repo) from the JUnit XML under the gitignored build/red/.
-- No ledger file was written under `.git/worktrees/`. The commit count is measured against the dispatch base 8a8f98e.
+- No ledger file was written under `.git/worktrees/`. The commit count is measured against the dispatch base e4988ec.
 
 ## Threat Flags
 
@@ -361,10 +361,10 @@ Before this fix, `_asm_signed` returned False in two cases: when the owner had s
 - `test_assembler_group` still covers a signed, matching list.
 
 **Commits:**
-- RED `c40ad15` test(07-15): add failing tests for a stale signed asm list.
+- RED `11aa0b3` test(07-15): add failing tests for a stale signed asm list.
   - Command: `uv run pytest -q tests/test_progress.py --junitxml=build/red/f1.xml`. Exit 1; 2 failed (both `DID NOT RAISE ProgressError`), 43 passed.
   - `gsd-tools check tdd-red-evidence`: **RED_EVIDENCE_OK** (`target_test_failed`, target `test_stale_signed_asm_list_exits_2[edited]`). Semantic assessment: each case ran, passed its signed-and-matching precondition, and then failed on the planned `pytest.raises`.
-- GREEN `8f15f36` fix(07-15): refuse a signed asm list that is missing or changed since sign-off.
+- GREEN `dbc4a72` fix(07-15): refuse a signed asm list that is missing or changed since sign-off.
 
 **Commands and output after the fix:**
 - `uv run pytest -q tests/test_progress.py tests/test_progress_page.py tests/test_treemap.py tests/test_listings.py tests/test_workflows.py`: 157 passed.
@@ -375,7 +375,7 @@ Before this fix, `_asm_signed` returned False in two cases: when the owner had s
 ## Self-Check: PASSED
 
 - FOUND: tools/progress.py, tests/test_progress.py, tests/test_progress_page.py, tests/test_treemap.py, tests/test_listings.py, README.md, .github/workflows/pages.yml, tests/test_workflows.py
-- FOUND commits (ancestors of HEAD): 80aa237, eb7f9cd, 3cb2e24, 021aa49, f6b54c7, a9cad14, c40ad15, 8f15f36
+- FOUND commits (ancestors of HEAD): b410c19, 7631187, f0dd2af, d0cc2e4, bf03910, cd26c1b, 11aa0b3, dbc4a72
 
 ---
 *Phase: 07-mechanics-first-decompilation*

@@ -18,8 +18,8 @@ actuals:
   tokens: 3650
   tasks: 3
   commits: 6
-plan_head_before: 87f917720a897e76bf4926bdf1392cbb20e1668d
-plan_head_after: 039e741
+plan_head_before: 03893cbb93fba14e869cf07b76db12ee12baa1fa
+plan_head_after: 4470491
 
 tech-stack:
   added: []
@@ -136,14 +136,14 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): `rebuild --json`**
-   - RED `548edf7` test(03-04): add failing tests for rebuild --json
-   - GREEN `1ae5fdf` feat(03-04): print rebuild results as JSON with --json
+   - RED `f7add02` test(03-04): add failing tests for rebuild --json
+   - GREEN `0de7972` feat(03-04): print rebuild results as JSON with --json
 2. **Task 2: `--exe NAME`, the CLI mismatch path and the defaults**
-   - RED `8af3cc0` test(03-04): add failing tests for rebuild --exe, the CLI mismatch path and defaults
-   - GREEN `8ea8759` feat(03-04): rebuild only one manifest target with --exe NAME
+   - RED `dc4c137` test(03-04): add failing tests for rebuild --exe, the CLI mismatch path and defaults
+   - GREEN `69c57ce` feat(03-04): rebuild only one manifest target with --exe NAME
 3. **Task 3: parse-le trailer report (D-11)**
-   - RED `a0310b1` test(03-04): add failing tests for the parse-le trailer report
-   - GREEN `039e741` feat(03-04): report the trailer in parse-le as offset, length and SHA-1
+   - RED `44afc3d` test(03-04): add failing tests for the parse-le trailer report
+   - GREEN `4470491` feat(03-04): report the trailer in parse-le as offset, length and SHA-1
 
 ## TDD record
 
@@ -188,7 +188,7 @@ Each mutant was applied to one source file by a scratch script (outside the repo
 
 None in scope or behaviour. Mechanical notes:
 - The plan's real-file commands use `"$(git rev-parse --path-format=absolute --git-common-dir)/../orig"`. The worktree sandbox refuses git inside a command substitution, so they ran with the literal `C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/orig` (read only; `rebuild` wrote to this worktree's build/).
-- The plan-head ledger was not written under `.git/worktrees/`; the base SHA comes from the dispatch (`87f9177`) and the commit count was measured with `git rev-list --count 87f9177..HEAD` = 6.
+- The plan-head ledger was not written under `.git/worktrees/`; the base SHA comes from the dispatch (`03893cb`) and the commit count was measured with `git rev-list --count 03893cb..HEAD` = 6.
 - Mutants were driven by a scratch Python script that restores the file's original bytes, because the sandbox refused the compound shell form with `git checkout`; `git diff --exit-code` was run separately after each set.
 
 **Total deviations:** 0 auto-fixed. **Impact:** none.
@@ -219,7 +219,7 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 
-All 5 modified files exist; all 6 commits (548edf7, 1ae5fdf, 8af3cc0, 8ea8759, a0310b1, 039e741) are ancestors of HEAD; `git rev-list --count 87f9177..HEAD` = 6 before this SUMMARY commit.
+All 5 modified files exist; all 6 commits (f7add02, 0de7972, dc4c137, 69c57ce, 44afc3d, 4470491) are ancestors of HEAD; `git rev-list --count 03893cb..HEAD` = 6 before this SUMMARY commit.
 
 ---
 *Phase: 03-byte-identical-round-trip*

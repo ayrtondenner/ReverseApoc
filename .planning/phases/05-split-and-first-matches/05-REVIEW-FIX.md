@@ -29,7 +29,7 @@ on `main` in the main checkout. No worktree was used.
 ### WR-01: `check` overwrites ninja's unit objects with objects built under its own `--cflags`/`--watcom-dir`
 
 **Files modified:** `tools/reverseapoc/check.py`, `tests/test_check.py`, `tests/test_check_real.py`
-**Commit:** bcf46d7
+**Commit:** f317a58
 **Applied fix:** A new `check.object_root(build_dir, options)` returns `build_dir` only when
 `--cflags`, `--watcom-manifest` and `--watcom-dir` are all the committed defaults that ninja's `cc`
 edge uses. Otherwise it returns `build_dir/check-custom`. `check_source` and the compiling path of
@@ -58,7 +58,7 @@ ninja's paths) is met by the separation.
 ### IN-01: A `static` function always fails `check`, and the messages do not say why
 
 **Files modified:** `tools/reverseapoc/check.py`, `tests/test_check.py`, `docs/learnings.md`
-**Commit:** 1fecd6b
+**Commit:** 8131d8c
 **Applied fix:** A public that names no row of the unit and comes from an LPUBDEF
 (`Public.local`) now gets a specific reason. For code it reads: "public X is a static (LPUBDEF)
 function, which check cannot pair with a row: give it its row's func_ name or keep the row
@@ -68,7 +68,7 @@ docs/learnings.md records the limit. Tests cover check JSON, land output and sta
 ### IN-03: `check` skips the D-12 source checks for a unit with no game or thunk rows
 
 **Files modified:** `tools/reverseapoc/check.py`, `tests/test_check.py`, `tests/test_check_real.py`
-**Commit:** 300ee86
+**Commit:** 1bef7c5
 **Applied fix:** `account_unit` now runs `source_marks` for every unit file, even when the unit has
 no game or thunk row, so its problems (a refused conditional, a marker or definition naming another
 unit's function) are mismatches, matching configure.py.
@@ -85,7 +85,7 @@ tests (the CMAIN386 pair) still pass.
 ### IN-04: `configure.py --config DIR` swaps the CSVs but not the manifest
 
 **Files modified:** `configure.py`, `tests/test_configure.py`
-**Commit:** aaa08e6
+**Commit:** dab3dc1
 **Applied fix:** `collect_units` reads `DIR/targets.toml`. A config dir without one is refused with
 a ConfigureError naming the file, and nothing is written. The default `config/` resolves to the same
 manifest as before. No refusal was weakened, and no hash manifest or build script was touched to
@@ -98,7 +98,7 @@ carries its own manifest.
 ### IN-05: The committed-CSV address parser accepts more than `0x%08X`
 
 **Files modified:** `tools/reverseapoc/functions.py`, `tests/test_functions.py`
-**Commit:** 2d74826
+**Commit:** 71e228c
 **Applied fix:** `_parse_address` requires `0x` followed by 8 upper-case hex digits, which is
 exactly what the writers emit, before calling `int()`. Any other cell is refused as
 `<file>: data row N: <column> '<cell>' is not a hex address written as 0x%08X ...`. All committed

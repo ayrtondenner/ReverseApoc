@@ -15,7 +15,7 @@ updated: 2026-10-20T14:37:22.901Z
 ### 1. Docs skeleton, README, .recomp.json and design spec are coherent
 expected: The docs state the owner's decisions consistently with PROJECT.md and Phases 1-6, with no earlier numbering anywhere; the automated items 2-7 are confirmed by the owner
 result: pass
-evidence: "Owner reviewed the docs after the old-numbering cleanup (5422eba, 5adc4c5) and answered 'pass' on 2026-10-20."
+evidence: "Owner reviewed the docs after the old-numbering cleanup (4bb6eb6, f4e3daa) and answered 'pass' on 2026-10-20."
 
 ### 2. git ls-files contains no game file, disassembly, build output, compiler binary, .env or API key
 expected: git ls-files contains no game file, disassembly, build output, compiler binary, .env or API key

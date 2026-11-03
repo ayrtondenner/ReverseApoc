@@ -89,8 +89,8 @@ coverage:
 duration: 30min
 completed: 2026-10-27
 status: complete
-plan_head_before: 7469bf1211abaaf1037bea1a8e1407451b2628d8
-plan_head_after: dc35f311d73dfa3ce8767f171db8c654c7930d11
+plan_head_before: a7ae7f23fd3fe7d31c178e568d9ee6acfb38bdac
+plan_head_after: 2fece951a90cb4c968857afe7b4fa2e5077439cd
 ---
 
 # Phase 7 Plan 12: Locate and asm-detector tools Summary
@@ -153,13 +153,13 @@ Execution context nonce: 4c21cd77dc1fc281
 ## Task Commits
 
 1. **Task 1 (tracer): `mechanics locate --string` end to end**
-   - RED `57a1f73`, GREEN `0827206`.
+   - RED `83968c0`, GREEN `1ae1299`.
    - Tracer gate (interactive, end-of-phase, automated-only verify): verify re-run green (14 passed), expanded.
 2. **Task 2: the get_text route**
-   - RED `f00ced7`, GREEN `d2b4631`.
-   - REFACTOR `0cb5b89`: the `GET_TEXT = {` spelling the acceptance grep reads. No behaviour change.
+   - RED `9d1e51f`, GREEN `647c3ac`.
+   - REFACTOR `98a98d7`: the `GET_TEXT = {` spelling the acceptance grep reads. No behaviour change.
 3. **Task 3: the asm detector and `mechanics asm --write`**
-   - RED `86eb805`, GREEN `dc35f31`.
+   - RED `981fc7c`, GREEN `2fece95`.
 
 ## TDD Gate Compliance
 
@@ -217,7 +217,7 @@ See key-decisions in the frontmatter. In addition:
   - The pin is `test_ufo2p_get_text_has_52_sections`, plus `test_tacp_get_text_has_21_sections`.
   - A wrong count is refused both ways (planted 3 and 5 slots).
 - **Verification:** both real pins pass against orig/.
-- **Commits:** `f00ced7`, `d2b4631`.
+- **Commits:** `9d1e51f`, `647c3ac`.
 
 **2. [Rule 2 - Missing critical] Extra real pins and refusals**
 - **Added real pins:**
@@ -226,14 +226,14 @@ See key-decisions in the frontmatter. In addition:
   - the unaligned counts 213 / 216;
   - the library units against the committed units.csv. This test needs no game files and also checks research's VESA span 0x161B4-0x18970.
 - **Added refusals:** an empty or non-ASCII keyword, an empty range, a library unit missing from units.csv.
-- **Commits:** `f00ced7`, `86eb805`, `dc35f31`.
+- **Commits:** `9d1e51f`, `981fc7c`, `2fece95`.
 
 **3. [Rule 3 - Blocking] The `load_inputs` seam lives in locate.py**
 - The plan says to load "through the same seam as mechanics.load_graphs". mechanics.py is outside this plan's files.
 - So `locate.load_inputs` is the seam for both verbs, and the tests monkeypatch it.
 - `asmclass.classify` takes a `library=` override, so synthetic tests need no real unit names.
 
-**4. Refactor commit `0cb5b89`**
+**4. Refactor commit `98a98d7`**
 - The acceptance check greps the literal `GET_TEXT = {`. The first GREEN annotated the name.
 
 **5. The asm list row set is tool-owned**
@@ -266,7 +266,7 @@ See key-decisions in the frontmatter. In addition:
 ## Issues Encountered
 
 - The worktree harness refused compound shell commands that write into the `.git/worktrees/...` directory. So the commit ledger file of protocol 0c could not be written.
-- The base is taken from the dispatch's expected base, `7469bf1`. The commit count, 7, is measured with `git rev-list --count 7469bf1..HEAD`.
+- The base is taken from the dispatch's expected base, `a7ae7f2`. The commit count, 7, is measured with `git rev-list --count a7ae7f2..HEAD`.
 
 ## Verification
 
@@ -306,7 +306,7 @@ None. The RED stubs were replaced in each GREEN commit.
 ## Self-Check: PASSED
 
 - All four created files exist; cli.py is modified.
-- Commits `57a1f73`, `0827206`, `f00ced7`, `d2b4631`, `0cb5b89`, `86eb805` and `dc35f31` are on this branch.
+- Commits `83968c0`, `1ae1299`, `9d1e51f`, `647c3ac`, `98a98d7`, `981fc7c` and `2fece95` are on this branch.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

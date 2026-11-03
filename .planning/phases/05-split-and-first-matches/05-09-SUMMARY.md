@@ -20,8 +20,8 @@ actuals:
   tokens: 10287
   tasks: 3
   commits: 6
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: 691a978b0fa4bf6f52cb177147485ba24abc8ff8
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: 12091014b414bf0aaeb023ba00bc8327edae07e8
 
 tech-stack:
   added: []
@@ -117,9 +117,9 @@ Execution context nonce: efd221352bbcc3eb
 
 ## Task Commits
 
-1. **Task 1 (tracer): a synthetic good pair passes the check and lands to the original SHA-1.** RED `3a20959`, GREEN `bfecdb4`
-2. **Task 2: the negative suite and the edges of the relocation check.** RED `d18fe01`, GREEN `b071705`
-3. **Task 3: land step edges, refusals and the landed-EXE writer.** RED `919c9d5`, GREEN `691a978`
+1. **Task 1 (tracer): a synthetic good pair passes the check and lands to the original SHA-1.** RED `6a0376f`, GREEN `b29fee4`
+2. **Task 2: the negative suite and the edges of the relocation check.** RED `cc1b469`, GREEN `acd1b7a`
+3. **Task 3: land step edges, refusals and the landed-EXE writer.** RED `713a0ab`, GREEN `1209101`
 
 Tracer gate (Task 1): interactive run, `human_verify_mode` end-of-phase, automated-only verify. Both verify commands were re-run and passed (2 passed, ruff clean) before expansion.
 
@@ -150,24 +150,24 @@ No orchestrator ruling amends 05-09. The "For 05-09 and 05-11" note (aliases nee
 - **Found during:** Task 1
 - **Issue:** test_relocs.py and test_land.py need the same synthetic original-LE / our-OMF pair. Duplicating it, or importing one test module from another, would be fragile.
 - **Fix:** a test-only helper module next to `omfimage.py` and `libtree.py`, with the same made-up-bytes rule.
-- **Committed in:** `3a20959` (extended in `d18fe01`)
+- **Committed in:** `6a0376f` (extended in `cc1b469`)
 
 **2. [Rule 2 - Missing critical] land refuses two functions at one start**
 - **Found during:** Task 3
 - **Issue:** `splice(le, {start: patch})` takes a dict, so a second function at the same start would silently replace the first.
 - **Fix:** `_patches` raises LandError naming the VA. Test: `test_two_functions_at_one_start_are_refused`.
-- **Committed in:** `919c9d5` / `691a978`
+- **Committed in:** `713a0ab` / `1209101`
 
 **3. [Rule 2 - Missing critical] Extra refusals in the check and the patch builder (T-05-18, T-05-19)**
 - A public outside its segment, or a row past the image, raises RelocError instead of an IndexError.
 - A fixup field crossing the public's boundary, a non-offset32 location, and a group or frame target are problems.
 - build_patch refuses bytes whose length differs from the row, and a field outside the row.
 - Tests: `test_public_past_the_segment_end_is_refused`, `test_our_field_crossing_the_public_end_fails`, `test_refuses_bytes_of_the_wrong_length`, `test_refuses_a_field_outside_the_row`.
-- **Committed in:** `b071705`, `691a978`
+- **Committed in:** `acd1b7a`, `1209101`
 
 **4. [Rule 2 - Missing critical] Own-_TEXT tests**
 - The must-have truth names the own-`_TEXT` rule, but Task 2's behaviour list had no test for it. Added `test_own_segment_absolute_reference_resolves`, `test_own_segment_call_resolves` and `test_own_segment_reference_to_the_wrong_label_fails`.
-- **Committed in:** `d18fe01`
+- **Committed in:** `cc1b469`
 
 ---
 
@@ -203,11 +203,11 @@ None.
 ## Self-Check: PASSED
 
 - Files exist: tools/reverseapoc/relocs.py, tools/reverseapoc/land.py, tests/relocpair.py, tests/test_relocs.py, tests/test_land.py
-- Commits on this branch: 3a20959, bfecdb4, d18fe01, b071705, 919c9d5, 691a978
+- Commits on this branch: 6a0376f, b29fee4, cc1b469, acd1b7a, 713a0ab, 1209101
 
 ## Review fixes (round 1)
 
-Fixed test-first. RED was commit `b6a5ae6`, GREEN was commit `ea4a8c3`.
+Fixed test-first. RED was commit `3febc56`, GREEN was commit `ae0a067`.
 
 **I1 (Important): the own-`_TEXT` rule assumed a layout.** `_own_segment` resolved any target in our own `_TEXT` to `start - off + stored`. That is only right if our whole `_TEXT` sits in the original exactly as in our object, and nothing checked that. A call to another public of our unit could pass while the original's field landed on a different function. build_patch keeps the original field, so the SHA-1 would not catch it either.
 
@@ -246,4 +246,4 @@ Commands and their output lines:
 - `uv run ruff check .`: `All checks passed!`
 - Mutation run (each of `_segment_relative`, `_self_relative`, `_reverse_coverage`, `_bytes`, `_length` disabled in turn): the suite fails every time.
 
-The `actuals.commits` value in the frontmatter still counts the 6 original task commits. Round 1 added `b6a5ae6` and `ea4a8c3`, and this SUMMARY update is one more commit.
+The `actuals.commits` value in the frontmatter still counts the 6 original task commits. Round 1 added `3febc56` and `ae0a067`, and this SUMMARY update is one more commit.

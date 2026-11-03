@@ -17,8 +17,8 @@ affects: [phase-5-landing, phase-6-driver]
 actuals:
   tasks: 2
   commits: 1
-plan_head_before: edd85b5
-plan_head_after: edd85b5
+plan_head_before: 701dc96
+plan_head_after: 701dc96
 
 tech-stack:
   added: []
@@ -82,12 +82,12 @@ Commits were cross-checked as ancestors of main with `git merge-base --is-ancest
 
 | Finding | Fixed in | GREEN commit |
 |---|---|---|
-| WR-07, IN-09 | 03-07 Task 1 | `231ee0d` |
-| IN-10, IN-11, IN-08 | 03-07 Task 2 | `bf341b5` |
-| IN-06, IN-07 | 03-08 Task 1 | `51a6efc` |
-| IN-01, IN-02, IN-03, VN-01 | 03-08 Task 2 | `09781cf` (IN-03 proof: a docstring grep that fails at HEAD) |
-| IN-05 | 03-09 Task 1 | `e3abcc6` (proof: reverted mutants; it is a test refactor) |
-| IN-04 | 03-09 Task 2 | `154a73c` (proof: a docs grep that fails at HEAD) |
+| WR-07, IN-09 | 03-07 Task 1 | `f248f9b` |
+| IN-10, IN-11, IN-08 | 03-07 Task 2 | `310be05` |
+| IN-06, IN-07 | 03-08 Task 1 | `15a1e4f` |
+| IN-01, IN-02, IN-03, VN-01 | 03-08 Task 2 | `e9fb075` (IN-03 proof: a docstring grep that fails at HEAD) |
+| IN-05 | 03-09 Task 1 | `8ded749` (proof: reverted mutants; it is a test refactor) |
+| IN-04 | 03-09 Task 2 | `29e8118` (proof: a docs grep that fails at HEAD) |
 
 - VN-01, the verifier's note, gained its row (19th) and a frontmatter entry.
 - The record now has `open: 0` and `total: 19`.
@@ -114,7 +114,7 @@ The default build.ninja was regenerated at the end of step 7.
 
 ## Phase gate output
 
-The gate ran on the main checkout at HEAD edd85b5 with Docker Desktop 29.6.2 up. Nothing was edited between the steps. Each step ran in a subshell, with stdout and stderr redirected on the host into `build/gate/03-10/0N-*.log`, followed by one `exit=STATUS` line. The eight logs are reproduced verbatim.
+The gate ran on the main checkout at HEAD 701dc96 with Docker Desktop 29.6.2 up. Nothing was edited between the steps. Each step ran in a subshell, with stdout and stderr redirected on the host into `build/gate/03-10/0N-*.log`, followed by one `exit=STATUS` line. The eight logs are reproduced verbatim.
 
 ### 1. Host suite: `uv run pytest -q -rs && uv run ruff check .` (build/gate/03-10/01-host-suite.log)
 

@@ -22,8 +22,8 @@ actuals:
   tokens: 5843
   tasks: 2
   commits: 4
-plan_head_before: 0269b2ae4057c5a94e96266de82d24e510915def
-plan_head_after: 09781cf53980dde5df05ffecf162f927cd29afac
+plan_head_before: ae1cc12d0a417e05eef89b4fa17677d39606dd4a
+plan_head_after: e9fb075bc11ee3b9ce43bacfb90543008a0620d5
 
 tech-stack:
   added: []
@@ -160,18 +160,18 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 RED: failing tests for malformed manifests and non-bare names** - `284b321` (test)
-2. **Task 1 GREEN: IN-06 and IN-07** - `51a6efc` (fix)
-3. **Task 2 RED: failing tests for within-object labels and real input paths** - `e1b02ca` (test)
-4. **Task 2 GREEN: IN-01, IN-02, IN-03 and VN-01** - `09781cf` (fix)
+1. **Task 1 RED: failing tests for malformed manifests and non-bare names** - `30b7740` (test)
+2. **Task 1 GREEN: IN-06 and IN-07** - `15a1e4f` (fix)
+3. **Task 2 RED: failing tests for within-object labels and real input paths** - `548bd8c` (test)
+4. **Task 2 GREEN: IN-01, IN-02, IN-03 and VN-01** - `e9fb075` (fix)
 
-GREEN hashes for 03-REVIEW-DISPOSITION.md (plan 03-10): IN-06 and IN-07 -> `51a6efc`; IN-01, IN-02, IN-03 and VN-01 -> `09781cf`.
+GREEN hashes for 03-REVIEW-DISPOSITION.md (plan 03-10): IN-06 and IN-07 -> `15a1e4f`; IN-01, IN-02, IN-03 and VN-01 -> `e9fb075`.
 
 **Plan metadata:** recorded in the docs(03-08) commit that adds this SUMMARY.
 
 ## RED evidence
 
-### Task 1 (run at 0269b2a with the new tests, then committed as 284b321): 26 failed, 118 passed
+### Task 1 (run at ae1cc12 with the new tests, then committed as 30b7740): 26 failed, 118 passed
 
 | Test (ids) | Failure at HEAD |
 |---|---|
@@ -189,7 +189,7 @@ GREEN hashes for 03-REVIEW-DISPOSITION.md (plan 03-10): IN-06 and IN-07 -> `51a6
 
 Semantic assessment: each target test ran and failed on the planned behaviour (the wrong exception type, no exception, or a raise out of main()). None failed through a collection, import or fixture error.
 
-### Task 2 (run at 51a6efc with the new tests, then committed as e1b02ca): 9 failed, 115 passed
+### Task 2 (run at 15a1e4f with the new tests, then committed as 548bd8c): 9 failed, 115 passed
 
 | Test (ids) | Failure at HEAD |
 |---|---|
@@ -203,7 +203,7 @@ Semantic assessment: each target test ran and failed on the planned behaviour (t
 | test_rebuild_refused_names_the_input_and_manifest | the line read `REFUSED   SYNTH.EXE  orig/SYNTH.EXE does not match config/targets.toml; ...` |
 | test_rebuild_missing_names_the_input | the line read `MISSING   SYNTH.EXE  (orig/SYNTH.EXE not found; ...)` |
 
-**JSON control:** test_rebuild_json_refused_keeps_the_eight_keys passed at 51a6efc (before VN-01) and still passes after it. The refused --json object has exactly JSON_KEYS and status "refused".
+**JSON control:** test_rebuild_json_refused_keeps_the_eight_keys passed at 15a1e4f (before VN-01) and still passes after it. The refused --json object has exactly JSON_KEYS and status "refused".
 
 Semantic assessment: every failure is the planned assertion on the label, reason or line text. The one AttributeError is the planned "RebuildResult has no source field".
 
@@ -252,7 +252,7 @@ None. The plan was executed as written. Both tasks were TDD, with RED committed 
 
 ## TDD Gate Compliance
 
-Each task has a `test(03-08)` commit before its `fix(03-08)` commit: 284b321 then 51a6efc, and e1b02ca then 09781cf. The plan specified `fix(...)` rather than `feat(...)` as the GREEN commit type. No refactor commit was needed.
+Each task has a `test(03-08)` commit before its `fix(03-08)` commit: 30b7740 then 15a1e4f, and 548bd8c then e9fb075. The plan specified `fix(...)` rather than `feat(...)` as the GREEN commit type. No refactor commit was needed.
 
 ## Issues Encountered
 
@@ -272,7 +272,7 @@ None. No external service configuration is required.
 
 ## Next Phase Readiness
 
-- Ready for 03-10, the phase gate after 03-07, 03-08 and 03-09 merge. 03-10 cites `51a6efc` (IN-06, IN-07) and `09781cf` (IN-01, IN-02, IN-03, VN-01).
+- Ready for 03-10, the phase gate after 03-07, 03-08 and 03-09 merge. 03-10 cites `15a1e4f` (IN-06, IN-07) and `e9fb075` (IN-01, IN-02, IN-03, VN-01).
 - 03-09 edits tests/test_splice_real.py in parallel. Its object-1 label expectation holds before and after IN-01, as the plan predicted.
 
 ---
@@ -282,5 +282,5 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/targets.py, tools/reverseapoc/splice.py, tests/test_targets.py, tests/test_splice.py, tests/test_cli.py
-- FOUND commits on this branch: 284b321, 51a6efc, e1b02ca, 09781cf
+- FOUND commits on this branch: 30b7740, 15a1e4f, 548bd8c, e9fb075
 - Acceptance re-run: test-diff check OK (only an import line removed), `isreserved` and `TOMLDecodeError` in targets.py, `(logical page ` in splice.py, the old texts gone, the untouched files unchanged, the tree clean, the full suite and ruff green

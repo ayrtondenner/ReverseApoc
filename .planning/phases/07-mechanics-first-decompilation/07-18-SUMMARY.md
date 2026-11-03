@@ -20,8 +20,8 @@ actuals:
   tokens: 15200
   tasks: 3
   commits: 6
-plan_head_before: 945dd716d7fe95aab6025b64ccd7a0b358685783
-plan_head_after: 3f35e7447fe8ded1ba8bcfbde1d995f6eb6b4dd4
+plan_head_before: 606c45151d76d18c267b60db5d53028a13ae3d0f
+plan_head_after: 68d4d1f4a04819f9a52dc1ca63603e3f9826ee03
 
 tech-stack:
   added: []
@@ -139,11 +139,11 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): drive.lock, unit claims, the landing under the gate lock.** RED `1c128c1`, GREEN `5657280`.
+1. **Task 1 (tracer): drive.lock, unit claims, the landing under the gate lock.** RED `b4b653f`, GREEN `be6bfbe`.
    - Tracer feedback gate: the run is interactive, in end-of-phase mode, with an automated-only verify.
    - I re-ran `uv run pytest -q tests/test_locks.py tests/test_driver_workers.py tests/test_driver.py tests/test_drive.py`: 244 passed, 2 skipped, the pre-existing skips. Then I expanded.
-2. **Task 2: stale-claim recovery, the O_EXCL race, the no-PID-probe guard.** RED `3cf68be`, GREEN `23d9ec5`.
-3. **Task 3: the git lock, GIT_OPTIONAL_LOCKS=0, the index.lock retry, appends under the gate lock.** RED `a69df09`, GREEN `3f35e74`.
+2. **Task 2: stale-claim recovery, the O_EXCL race, the no-PID-probe guard.** RED `4f9b753`, GREEN `23dd64d`.
+3. **Task 3: the git lock, GIT_OPTIONAL_LOCKS=0, the index.lock retry, appends under the gate lock.** RED `89727a4`, GREEN `68d4d1f`.
 
 ## TDD evidence (RED)
 
@@ -192,25 +192,25 @@ See `key-decisions` in the frontmatter.
 
 No orchestrator ruling applied: rulings.md has no 07-18 section. "Rules for every plan" R-A to R-D are followed. No new test skips. Docker was not run (R-B). No driver command was run. No subagents were used.
 
-**Orchestrator dispatch note (07-13 as built), applied:** the gate lock covers the whole F19 window. That window runs from the MATCHED append through `_commit_with_retry` to `_undo_match`'s truncation. Another worker of the same `_Night` appends only through `_Night._append`, which takes the gate lock. The test is `test_gate_lock_keeps_other_appends_out_of_the_match_undo_window`. Commits `a69df09` and `3f35e74`.
+**Orchestrator dispatch note (07-13 as built), applied:** the gate lock covers the whole F19 window. That window runs from the MATCHED append through `_commit_with_retry` to `_undo_match`'s truncation. Another worker of the same `_Night` appends only through `_Night._append`, which takes the gate lock. The test is `test_gate_lock_keeps_other_appends_out_of_the_match_undo_window`. Commits `89727a4` and `68d4d1f`.
 
 **1. [Rule 3 - Blocking] `gate_lock` is a `threading.RLock`, not the plan's `threading.Lock`.**
 - **Why:** the landing section writes its own attempt record through `_append`, which takes the gate lock (Task 3). A plain Lock would deadlock on the first match.
 - **How the tests check "held":** from another thread (`_held_elsewhere`), which is correct for an RLock.
-- **Commits:** `5657280` and `3f35e74`.
+- **Commits:** `be6bfbe` and `68d4d1f`.
 
 **2. [Rule 2 - Missing critical] `Claims.recover` enforces the drive.lock precondition.**
 - **Why:** the plan only says recover is "only callable with drive.lock held". Called without the lock, recover could move a live drive's claims.
 - **What:** recover now probes the lock with a second `ProcessLock` and raises DriverError when the probe gets it.
 - **Test:** `test_stale_recover_needs_the_drive_lock`.
-- **Commit:** `23d9ec5`.
+- **Commit:** `23dd64d`.
 
-**3. [Rule 2 - Missing critical] A claim's exe and unit are validated against the record schema's patterns before they form a file name.** No path can leave `claims/`. Commit `5657280`.
+**3. [Rule 2 - Missing critical] A claim's exe and unit are validated against the record schema's patterns before they form a file name.** No path can leave `claims/`. Commit `be6bfbe`.
 
 **4. [Rule 1 - Ordering] The attempt's reset runs before its claim is released.**
 - **The problem:** first draft, `_guarded`'s `except` reset ran after the `with` released the claim.
 - **The risk:** a later worker could claim the unit while the old attempt's `git restore` still ran.
-- **Fix:** I moved the try/except inside the `with`. Commit `5657280`.
+- **Fix:** I moved the try/except inside the `with`. Commit `be6bfbe`.
 
 **5. [Plan clarification] Claim field values.**
 - With one worker, `worker` is 0, `pass` is 1, `kind` is "matching", and `model` is null. The driver does not choose a model yet; 07-2x escalation will fill it.
@@ -218,7 +218,7 @@ No orchestrator ruling applied: rulings.md has no 07-18 section. "Rules for ever
 
 **6. [Plan clarification] The chore commit uses the same retry.** `_commit_log` goes through `_commit_with_retry`, so an index.lock at the end of a night no longer makes `drive()` raise. Before this, the night's DriverError escaped `drive()`, as RED t3 showed.
 
-**7. [Test change, behaviour change] `test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged` now fails the commit twice** (`fail_verbs commit: 2`). One index.lock failure is now retried and succeeds. Commit `3f35e74`.
+**7. [Test change, behaviour change] `test_a_lock_held_through_the_undo_still_records_and_names_what_stays_staged` now fails the commit twice** (`fail_verbs commit: 2`). One index.lock failure is now retried and succeeds. Commit `68d4d1f`.
 
 ---
 
@@ -272,7 +272,7 @@ Execution context nonce: f621a742369d20ae
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/locks.py, tests/test_locks.py, tests/test_driver_workers.py, tools/reverseapoc/driver.py, tests/test_driver.py
-- FOUND commits: 1c128c1, 5657280, 3cf68be, 23d9ec5, a69df09, 3f35e74. `git rev-list --count 945dd71..HEAD` was 6 before the SUMMARY commit.
+- FOUND commits: b4b653f, be6bfbe, 4f9b753, 23dd64d, 89727a4, 68d4d1f. `git rev-list --count 606c451..HEAD` was 6 before the SUMMARY commit.
 - No STATE.md or ROADMAP.md change.
 
 ## Fix round 1
@@ -287,7 +287,7 @@ Execution context nonce: f621a742369d20ae
 - a held lock refuses with exit 2 before any preflight step;
 - `--dry-run` takes it too.
 
-**What changed (`tools/reverseapoc/driver.py`, `7d92ea6`):**
+**What changed (`tools/reverseapoc/driver.py`, `d00a4aa`):**
 - **`_reset` now holds the gate lock** (an RLock, so a nested take is safe). This covers every caller: the landing, `_reset_live`, the TRANSIENT relaunch, stops and containment.
 - **New `_landing(session)`** wraps the gate lock for `_counted` and `_salvage`. On an unexpected exception (not a `_Stop`, since every stop path has already reset) it puts the unit back while the lock is still held, then re-raises. A failing reset there is left to `_guarded`'s reset, which names it.
 - **New `take_drive_lock(repo)`** returns the held lock, or raises `Refused("drive lock", "refusing to start: another reverseapoc drive is running (build/driver/drive.lock is held)")`.
@@ -296,7 +296,7 @@ Execution context nonce: f621a742369d20ae
 - **`run_canary(..., lock=None)`** takes drive.lock itself when called alone (Refused while held); its old body is `_run_canary_locked`.
 - **The module docstring is updated.**
 
-**Tests (RED `3c45736`, then the fix `7d92ea6`), all in `tests/test_driver_workers.py`:**
+**Tests (RED `8be4091`, then the fix `d00a4aa`), all in `tests/test_driver_workers.py`:**
 - `test_an_unexpected_landing_error_resets_the_unit_under_the_gate_lock`: tracked unit, `git restore`.
 - `test_an_unexpected_landing_error_removes_an_untracked_unit_under_the_gate_lock`: the landed copy is deleted.
 - `test_a_transient_reset_runs_under_the_gate_lock`

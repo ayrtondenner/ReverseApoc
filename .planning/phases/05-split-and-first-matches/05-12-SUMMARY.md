@@ -20,8 +20,8 @@ actuals:
   tokens: 8809
   tasks: 3
   commits: 7
-plan_head_before: 39c20feca0ed6815d53718dc335b1c0c67125050
-plan_head_after: 17017869190cd63520272c5a0e89138797da66c1
+plan_head_before: e94cdc79308a2c90fabe9c1a755b85add804907c
+plan_head_after: d0e282153dc883be179627691cae78d74272ca71
 
 tech-stack:
   added: ["Ghidra 12.1.4 PUBLIC (image)", "lastonesky ghidra-lx-loader v12.1.4-1 (image)", "openjdk-21-jdk-headless 21.0.12.1 (image)", "clang 18.1.3 (image)"]
@@ -140,14 +140,14 @@ Execution context nonce: d8367eef6ceffb36
 
 ## Task Commits
 
-1. **Task 1 (tracer): the Ghidra stage, pinned; synthetic LE imports headless**: `5cafd4b` (test, RED), `e2b86e1` (feat, GREEN). Tracer gate (interactive, end-of-phase, automated-only verify): I re-ran the hygiene tests (58 passed) and the container smoke test (3 passed, no skip), then expanded.
-2. **Task 2: ghidra-export verb, real exports, drafts, D-20 strip**: `5aa890c` (test, RED), `ab42674` (feat, GREEN), `fefd7f9` (perf, D-20 strip kept).
-3. **Task 3: C89 lint gate**: `cd08f43` (test, RED), `1701786` (feat, GREEN).
+1. **Task 1 (tracer): the Ghidra stage, pinned; synthetic LE imports headless**: `bbd6e71` (test, RED), `8efc98e` (feat, GREEN). Tracer gate (interactive, end-of-phase, automated-only verify): I re-ran the hygiene tests (58 passed) and the container smoke test (3 passed, no skip), then expanded.
+2. **Task 2: ghidra-export verb, real exports, drafts, D-20 strip**: `676328b` (test, RED), `0cd1844` (feat, GREEN), `190d134` (perf, D-20 strip kept).
+3. **Task 3: C89 lint gate**: `37ed12e` (test, RED), `d0e2821` (feat, GREEN).
 
 ## TDD notes (RED evidence, semantic assessment)
-- Task 1 RED `5cafd4b`: 7 failed, all `test_dockerfile_pins_ghidra[...]` asserting a missing pin. That is the planned behaviour. `test_dockerfile_checks_every_download` and `test_dockerfile_copies_nothing_from_the_context` already passed at RED: they guard properties today's Dockerfile already had (2 curls and 2 checks, only COPY --from). They pin those properties against the new stage. The Ghidra tests skipped on the host, as planned.
-- Task 2 RED `5aa890c`: 2 failed (`ghidra-export` was an invalid argparse choice, SystemExit 2, so no verb existed), 12 skipped on the host. That is an assertion-level absence of the verb.
-- Task 3 RED `cd08f43`: collection ImportError, because `reverseapoc.lint` did not exist. That is load-level, not an assertion. The plan is `type: execute` and `workflow.tdd_mode` is unset, so the plan-level gate does not apply. Recorded for the end-of-phase TDD review, as in 05-03 and 05-10.
+- Task 1 RED `bbd6e71`: 7 failed, all `test_dockerfile_pins_ghidra[...]` asserting a missing pin. That is the planned behaviour. `test_dockerfile_checks_every_download` and `test_dockerfile_copies_nothing_from_the_context` already passed at RED: they guard properties today's Dockerfile already had (2 curls and 2 checks, only COPY --from). They pin those properties against the new stage. The Ghidra tests skipped on the host, as planned.
+- Task 2 RED `676328b`: 2 failed (`ghidra-export` was an invalid argparse choice, SystemExit 2, so no verb existed), 12 skipped on the host. That is an assertion-level absence of the verb.
+- Task 3 RED `37ed12e`: collection ImportError, because `reverseapoc.lint` did not exist. That is load-level, not an assertion. The plan is `type: execute` and `workflow.tdd_mode` is unset, so the plan-level gate does not apply. Recorded for the end-of-phase TDD review, as in 05-03 and 05-10.
 
 ## Files Created/Modified
 - `docker/Dockerfile`: ghidra stage, Ghidra/loader ARG pins, JDK and clang apt pins, COPY --from=ghidra, GHIDRA_INSTALL_DIR, D-20 strip, updated header comment.
@@ -172,7 +172,7 @@ No orchestrator ruling amends 05-12. I followed the "For 05-12 (notes)" items: n
 - **Fix:** I followed the Dockerfile's own documented procedure: `apt-cache policy` in a fresh pinned ubuntu:24.04. Then I moved both pins to the current candidates, `ca-certificates=20260816ubuntu0.24.04.1` and `xz-utils=5.6.1+really5.4.5-1ubuntu0.4`, and added a dated comment. The other pins (curl, unzip, git, binutils, ninja, clang-format, clangd) and the plan's new JDK and clang pins were still the archive candidates. The base digest and every SHA-256 are unchanged.
 - **Files modified:** docker/Dockerfile
 - **Verification:** a clean `docker compose build` succeeds, and the hygiene tests pass.
-- **Committed in:** `e2b86e1`
+- **Committed in:** `8efc98e`
 
 **2. [Rule 1 - Test oracle vs measured fact] One Ghidra function in each EXE's data object**
 - **Found during:** Task 2 (first real run)
@@ -180,13 +180,13 @@ No orchestrator ruling amends 05-12. I followed the "For 05-12 (notes)" items: n
 - **Fix:** `test_export_real_entries_in_code_object` now allows at most `DATA_OBJECT_NOISE = 1` entry outside the code object per EXE, and only one inside the data object with a one-address body. Every other entry must be in the code object. The raw export is unchanged. It is raw, and the adapter does not drop rows silently. Reconcile (05-16) must drop entries outside the code object.
 - **Files modified:** tests/test_ghidra_real.py
 - **Verification:** 14 passed in the container. A second data-object entry, or a longer body, would fail the test.
-- **Committed in:** `ab42674`
+- **Committed in:** `0cd1844`
 
 **3. [Rule 2 - Missing critical] Extra tests beyond the plan's list**
 - **Found during:** Tasks 1-3
 - **Issue:** The plan listed one synthetic import test, one host verb test and six lint tests. The review note on `toAddr(long)`, the unknown-EXE path, the `--stamp` contract and `collect_sources` were untested.
 - **Fix:** I added these tests: `test_headless_drafts_a_synthetic_le`, `test_ghidra_export_verb_refuses_an_unknown_exe`, the cmain386 address in `test_drafts_real`, `test_lint_flags_are_the_d14_command`, `test_lint_reports_a_failing_file`, `test_collect_sources`, `test_collect_sources_refuses_a_missing_path`, `test_lint_verb_writes_the_stamp_only_when_ok` and `test_lint_verb_without_clang_names_the_container`.
-- **Committed in:** `5cafd4b`, `5aa890c`, `cd08f43`
+- **Committed in:** `bbd6e71`, `676328b`, `37ed12e`
 
 ---
 
@@ -209,7 +209,7 @@ No orchestrator ruling amends 05-12. I followed the "For 05-12 (notes)" items: n
 
 ## Self-Check: PASSED
 - FOUND: docker/Dockerfile, tests/test_hygiene.py, tests/test_ghidra_real.py, tools/reverseapoc/cli.py, include/watcom_compat.h, tools/reverseapoc/lint.py, tests/test_lint.py, build/gate/05-image-size.txt, build/ghidra/ufo2p/functions.raw.csv, build/ghidra/tacp/functions.raw.csv
-- FOUND commits: 5cafd4b, e2b86e1, 5aa890c, ab42674, fefd7f9, cd08f43, 1701786 (7 = `git rev-list --count 39c20fe..HEAD` before this SUMMARY commit)
+- FOUND commits: bbd6e71, 8efc98e, 676328b, 0cd1844, 190d134, 37ed12e, d0e2821 (7 = `git rev-list --count e94cdc7..HEAD` before this SUMMARY commit)
 - Acceptance: `grep -n "__clang__" include/watcom_compat.h` gives lines 21 and 41. `grep -n "1060" tools/reverseapoc/lint.py` shows `WATCOMC_VALUE = "1060"` on line 24. `git check-ignore -q build/ghidra/ufo2p/functions.raw.csv` exits 0.
 
 ---

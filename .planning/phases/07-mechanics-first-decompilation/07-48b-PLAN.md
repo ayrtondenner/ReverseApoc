@@ -121,7 +121,7 @@ record, the docs, and the SUMMARY.
 @.superpowers/sdd/let-s-execute-gsd-execute-phase-7-sorted-harp/rulings.md
 
 <interfaces>
-As built after 07-48 (its SUMMARY names the final commits). The line numbers below are from 8943cce and move with
+As built after 07-48 (its SUMMARY names the final commits). The line numbers below are from feac4c9 and move with
 07-48's edits, so find each by name.
 
 **relocs.py (after 07-48)**

@@ -19,8 +19,8 @@ affects: [phase-5-landing, phase-6-driver]
 actuals:
   tasks: 3
   commits: 4
-plan_head_before: 9158a037746bdba4163ebfc631b2be1eb2fd3893
-plan_head_after: ee1dcaa
+plan_head_before: 651909b796e0f21527aefc890a1eac9e76d329e5
+plan_head_after: 86699bc
 
 tech-stack:
   added: []
@@ -108,7 +108,7 @@ completed: 2026-10-20
 ## Performance
 
 - **Tasks:** 3 (Tasks 1-2 by the worktree executor, Task 3 by the orchestrator on the main checkout)
-- **Commits:** 4 (21d372a, 918b4f9, 9f880bb, ee1dcaa), merged in 53a94d4
+- **Commits:** 4 (173ee3b, cda43f2, eb3e2f1, 86699bc), merged in 17545ce
 - **Files:** 5 source/test/doc files modified (+230 / -11) plus the disposition record
 
 ## Accomplishments
@@ -129,16 +129,16 @@ completed: 2026-10-20
 ## Task Commits
 
 1. **Task 1 (tracer, TDD): WR-05 and WR-06 in configure.py.**
-   - RED `21d372a`: test(03-06): add failing tests for --orig in check-orig/verify and unsafe build.ninja paths.
-   - GREEN `918b4f9`: fix(03-06): pass --orig to check-orig and verify, refuse paths build.ninja cannot carry.
+   - RED `173ee3b`: test(03-06): add failing tests for --orig in check-orig/verify and unsafe build.ninja paths.
+   - GREEN `cda43f2`: fix(03-06): pass --orig to check-orig and verify, refuse paths build.ninja cannot carry.
 2. **Task 2 (TDD): WR-02 in splice.py.**
-   - RED `9f880bb`: test(03-06): add failing test for masked_fields counting distinct fixup fields.
-   - GREEN `ee1dcaa`: fix(03-06): count distinct fixup fields in masked_fields.
+   - RED `eb3e2f1`: test(03-06): add failing test for masked_fields counting distinct fixup fields.
+   - GREEN `86699bc`: fix(03-06): count distinct fixup fields in masked_fields.
 3. **Task 3: gate on the main checkout and the disposition update.** No source commit; the record is this SUMMARY plus the ledger, committed together.
 
 ## TDD record
 
-**Task 1 RED at 21d372a:** 20 failed, 9 passed, 2 skipped.
+**Task 1 RED at 173ee3b:** 20 failed, 9 passed, 2 skipped.
 - The line-73 expectation now asks for `--orig orig`.
 - `render() got an unexpected keyword argument 'orig'`.
 - The `check-orig` command lacked `--orig elsewhere` / `--orig ../elsewhere`.
@@ -148,7 +148,7 @@ completed: 2026-10-20
 
 `gsd-tools check tdd-red-evidence` gave RED_EVIDENCE_OK for `test_generated_commands_read_the_orig_dir` and `test_main_passes_orig_to_check_orig_and_rebuild[same-dir]`. GREEN: test_configure.py 29 passed, 2 skipped (Windows-only skipif).
 
-**Task 2 RED at 9f880bb:** 4 failed and the two-fields control passed.
+**Task 2 RED at eb3e2f1:** 4 failed and the two-fields control passed.
 - touching: `assert 2 == 1`
 - three-patches: `assert 3 == 1`
 - straddling: `assert 2 == 1`
@@ -330,7 +330,7 @@ Gap G-03-3 is closed and ready for `/gsd-verify-work 3`. WR-01 and WR-03 (Phase 
 
 ## Self-Check: PASSED
 
-- Commits 21d372a, 918b4f9, 9f880bb and ee1dcaa are on main, merged in 53a94d4.
+- Commits 173ee3b, cda43f2, eb3e2f1 and 86699bc are on main, merged in 17545ce.
 - `class ConfigureError`, `test_mask_count_counts_distinct_fields` and `rebuild --orig orig` are present.
 - The seven gate logs each end `exit=0` and are reproduced above.
 - 03-REVIEW-DISPOSITION.md shows 3 fixed and 3 deferred, with `open: 8`.

@@ -17,8 +17,8 @@ actuals:
   tokens: 20255
   tasks: 3
   commits: 7
-plan_head_before: aaa81213cfcc46c1f9028bfa077e5ce67b41d9c3
-plan_head_after: 8133e34121c444f0cdb45c326f243801e74e4830
+plan_head_before: 663f26491b0240be9d82862e52c8545ad2814059
+plan_head_after: d1ffc8886e3c0ae98eec920532d4c7edf7e4cbbb
 
 tech-stack:
   added: []
@@ -186,9 +186,9 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): pilot_hits, the queue, propose, the verb.** RED `ddfdd12`, GREEN `5e0db1a`.
-2. **Task 2 (TDD): merging, tie-break, failed proposals, siblings.** RED `f9d4597`, GREEN `e63f367`.
-3. **Task 3 (TDD): flags regate.** RED `809b271`, GREEN `8943b01`, REFACTOR `8133e34`.
+1. **Task 1 (tracer, TDD): pilot_hits, the queue, propose, the verb.** RED `009ab66`, GREEN `c86c517`.
+2. **Task 2 (TDD): merging, tie-break, failed proposals, siblings.** RED `5a9fdb9`, GREEN `933eabd`.
+3. **Task 3 (TDD): flags regate.** RED `708cf04`, GREEN `27c0a37`, REFACTOR `d1ffc88`.
 
 ## TDD evidence
 
@@ -209,7 +209,7 @@ Each RED commit carried API stubs only (the 07-10/07-12 precedent), so the new t
 
 - `uv run pytest -q tests/test_flags.py`: 33 passed, 0 skipped.
 - `uv run pytest -q tests/test_flags.py -k "merge or tie or intersection or stage2 or siblings"`: 7 passed.
-- `uv run pytest -q` (worktree, at HEAD `8133e34`): **3140 passed, 246 skipped**. This plan adds no skip; all 246 are pre-existing platform or owner-file skips (no orig/ or third_party/ in the worktree).
+- `uv run pytest -q` (worktree, at HEAD `d1ffc88`): **3140 passed, 246 skipped**. This plan adds no skip; all 246 are pre-existing platform or owner-file skips (no orig/ or third_party/ in the worktree).
 - `uv run ruff check .`: All checks passed.
 - Acceptance:
   - `QUEUE = Path("config/cflags-proposals.toml")`, `def propose(`, `def regate(`, `def _reduced(` and `def pilot_hits(` are present.
@@ -243,13 +243,13 @@ See key-decisions in the frontmatter. Three need a word more:
 - `pilot_hits(log)` drops functions with a MATCHED attempt record and never reads status.csv.
 - `propose` skips status-matched functions separately: `test_propose_skips_a_status_matched_function`, and in the real dry run func_0008A100.
 - The committed-data test pins the six from the log alone, so it keeps passing after 07-29's approvals write matched rows.
-- Commits: `ddfdd12`, `5e0db1a`.
+- Commits: `009ab66`, `c86c517`.
 
 **2. [Plan clarification] `landed_commit` is not a field.** The truth's field list ends at `reason` and says the landing commit is found from its `Flags-Approved-By:` trailer. The research draft's `landed_commit` key was therefore left out.
 
 **3. [Plan clarification] regate takes `orig_dir`, `build_dir` and `watcom_dir` keywords.** These are the plan's "usual check roots for the container". The defaults are `<repo>/orig` and `build/flags/<id>/build`, so check's `check-custom` objects stay per proposal. `--repo` was added to all three verbs so the CLI tests run on a tmp checkout.
 
-**4. [Rule 1 - test fixture] Two Task 3 fixture errors fixed in the GREEN commit (`8943b01`).**
+**4. [Rule 1 - test fixture] Two Task 3 fixture errors fixed in the GREEN commit (`27c0a37`).**
 - The fixture's functions.csv evidence value `made-up` is not one of the allowed tags. It is now `call`.
 - `write_status` did not sort rows by start.
 - Both only surfaced once the real regate read those files. At RED the stub never read them, and the target's failure was the planned one.
@@ -291,11 +291,11 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/flags.py, tests/test_flags.py, tools/reverseapoc/cli.py (modified)
-- FOUND commits: ddfdd12, 5e0db1a, f9d4597, e63f367, 809b271, 8943b01, 8133e34 (7 = `git rev-list --count aaa8121..HEAD`)
+- FOUND commits: 009ab66, c86c517, 5a9fdb9, 933eabd, 708cf04, 27c0a37, d1ffc88 (7 = `git rev-list --count 663f264..HEAD`)
 
 ## Fix round 1
 
-The orchestrator's task review raised two Important findings. Both rulings were applied test-first: RED `b11bbb2`, GREEN `e4a83e4`.
+The orchestrator's task review raised two Important findings. Both rulings were applied test-first: RED `2e9e2ee`, GREEN `6f2f70f`.
 
 **1. Siblings left out the never-attempted rows of the unit (D-32).**
 - **Before:** `_Context.siblings` listed only status.csv partial rows. u_00060c50 has 16 game rows but listed 2 siblings. u_0006fbd0 listed none, not even its D-28 neighbour func_0006FC00.

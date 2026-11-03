@@ -21,8 +21,8 @@ actuals:
   tokens: 15800
   tasks: 3
   commits: 8
-plan_head_before: 5f2d1866396e45929706467c19f53ad018b4e985
-plan_head_after: a246bf482185164faa70621b65846fcb5bcb0cf4
+plan_head_before: bb3000a56bb6ae7426947db63d5c1c0a11c6769c
+plan_head_after: 8a698b1c0ec13a629c9139e76e660110b5e100a9
 
 tech-stack:
   added: []
@@ -174,9 +174,9 @@ The same probe found the call-graph check flagging some true matches: `initfile`
 
 ## Task Commits
 
-1. **Task 1: Tracer - libmatch finds a planted module and writes runtime.csv** - `1cda9d4` (test, RED), `ab039e2` (feat, GREEN). Tracer gate: interactive, `end-of-phase`, automated-only verify. I re-ran it (257 passed, ruff clean, real UFO2P smoke exit 0 with `_cstart_` at the entry VA) and continued.
-2. **Task 2: Rejection rules, skip records, merge and overlaps** - `3590650` (test, RED), `15df920` (feat, GREEN), then `1dfcaae` (test, RED) and `551aa0f` (fix, GREEN) for the version union.
-3. **Task 3: Disambiguation** - `83b7d9b` (test, RED), `a246bf4` (feat, GREEN).
+1. **Task 1: Tracer - libmatch finds a planted module and writes runtime.csv** - `d94f3fb` (test, RED), `281a770` (feat, GREEN). Tracer gate: interactive, `end-of-phase`, automated-only verify. I re-ran it (257 passed, ruff clean, real UFO2P smoke exit 0 with `_cstart_` at the entry VA) and continued.
+2. **Task 2: Rejection rules, skip records, merge and overlaps** - `57d4834` (test, RED), `859b123` (feat, GREEN), then `071b004` (test, RED) and `a55d03b` (fix, GREEN) for the version union.
+3. **Task 3: Disambiguation** - `ae33292` (test, RED), `8a698b1` (feat, GREEN).
 
 ### RED evidence (semantic assessment)
 
@@ -208,13 +208,13 @@ See `key-decisions` in the frontmatter. The version union needs a reviewer's eye
 - **Fix:** libraries, versions and publics are the union over every candidate left after disambiguation; module and alternatives are unchanged.
 - **Files modified:** tools/reverseapoc/libmatch.py, tests/test_libmatch.py
 - **Verification:** `test_row_versions_and_libraries_cover_every_candidate` went RED, then GREEN. Real runs: no row without 10.6.
-- **Committed in:** `1dfcaae` (test), `551aa0f` (fix)
+- **Committed in:** `071b004` (test), `a55d03b` (fix)
 
 **2. [Rule 2 - Missing critical] Verb input and output guards**
 - **Found during:** Task 1
 - **Issue:** T-04-21 asks that output never lands in orig/ or third_party/. A wrong `--watcom-dir` would also have written an empty runtime.csv.
 - **Fix:** `refuse_output` (inside `--orig` or `--watcom-dir`), `check_versions` (bare directory names), and a refusal when no OMF library loads. `read_target` reads the orig file once, hashes it and then parses those same bytes.
-- **Committed in:** `ab039e2`
+- **Committed in:** `281a770`
 
 **3. [Minor] tests/libtree.py added**
 - It holds the synthetic tree and EXE builders shared by `test_libmatch.py` and `test_cli.py` (the plan's file list named only the test files).
@@ -245,7 +245,7 @@ None.
 ## Self-Check: PASSED
 
 - Files: tools/reverseapoc/libmatch.py, tests/test_libmatch.py, tests/libtree.py, this SUMMARY: present. `head -n 1 tools/reverseapoc/libmatch.py` starts with `# Derived from KKND-Decomp tools/lib_match.py (CC0 1.0)`. `grep -n "def config_dir" tools/reverseapoc/targets.py` prints a line.
-- Commits on this branch since 5f2d186: 1cda9d4, ab039e2, 3590650, 15df920, 1dfcaae, 551aa0f, 83b7d9b, a246bf4 (8 task commits), plus this SUMMARY's docs commit.
+- Commits on this branch since bb3000a: d94f3fb, 281a770, 57d4834, 859b123, 071b004, a55d03b, ae33292, 8a698b1 (8 task commits), plus this SUMMARY's docs commit.
 - Acceptance: the plan's pytest selections for Tasks 1-3 exit 0; `libmatch --help` lists all seven options (`test_libmatch_help_lists_options`); both real runs exit 0 with `_cstart_` at the entry VA; no unique undefmbr/undefed/fatalerr row.
 
 ## Review fix round 1 (2026-10-21)
@@ -254,8 +254,8 @@ The plan review found one defect in rule (b) (Q1), two SUMMARY claims the eviden
 
 ### Changes
 
-- `c95e950` fix(04-05): rule (b) keyed each candidate's publics by range start only, and built that map from every group, including ranges later dropped as contained. Containment is now decided on the raw (start, end) groups first (`_split_contained`). The rule (b) map (`_public_addresses`) is built from the surviving groups, with each public at its range start plus its offset. New tests: `test_call_graph_target_is_a_public_inside_a_range` (on the old code the row stayed ambiguous) and `test_call_graph_ignores_a_contained_range` (on the old code the wrong module came out unique).
-- `cc5f52c` test(04-05): `read_runtime_csv` refuses a wrong header and a start cell that is not hex (bad digit, empty, `h` suffix). Both tests fail when the header check or the ValueError wrap is removed.
+- `136aa33` fix(04-05): rule (b) keyed each candidate's publics by range start only, and built that map from every group, including ranges later dropped as contained. Containment is now decided on the raw (start, end) groups first (`_split_contained`). The rule (b) map (`_public_addresses`) is built from the surviving groups, with each public at its range start plus its offset. New tests: `test_call_graph_target_is_a_public_inside_a_range` (on the old code the row stayed ambiguous) and `test_call_graph_ignores_a_contained_range` (on the old code the wrong module came out unique).
+- `17ed993` test(04-05): `read_runtime_csv` refuses a wrong header and a start cell that is not hex (bad digit, empty, `h` suffix). Both tests fail when the header check or the ValueError wrap is removed.
 
 ### Corrections
 

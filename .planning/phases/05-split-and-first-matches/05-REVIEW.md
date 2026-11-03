@@ -95,7 +95,7 @@ status: issues_found
 
 ## Summary
 
-Scope: the phase's changes since 688168c. The match oracle (`relocs.py`, `check.py`, `land.py`)
+Scope: the phase's changes since 138853d. The match oracle (`relocs.py`, `check.py`, `land.py`)
 and the D-12 parser in `configure.py` were read line by line. The other tools modules were read
 in full. Tests, docs and the generated CSVs were spot-checked. The CSVs were loaded through
 their own readers: headers are exact, the rows parse, `check_unit_assignment` reports no

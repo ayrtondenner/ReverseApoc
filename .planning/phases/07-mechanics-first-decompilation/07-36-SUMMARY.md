@@ -18,8 +18,8 @@ actuals:
   tokens: 8300
   tasks: 2
   commits: 3
-plan_head_before: 5f5bbb2f564847cc9863bfa887e76cfa40aa7c6a
-plan_head_after: b1eca061ee5ca91767e6c725b6a4c013701bb7db
+plan_head_before: 8f8ca5832faa99e97ca981985010be2891e9fc69
+plan_head_after: 8fcdcd80bd6ed44bff4a063a0e62b4aa02cca8b5
 
 tech-stack:
   added: []
@@ -97,9 +97,9 @@ Execution context nonce: 692cf2bc786291ac
 
 ## Task Commits
 
-1. **Task 1 RED: skill test** - `a504b54` (test)
-2. **Task 1 GREEN: the skill (and the test aligned to the final example unit)** - `07f69d6` (docs)
-3. **Task 2: readability pass in ceremonies, docs/tools.md F29** - `b1eca06` (docs)
+1. **Task 1 RED: skill test** - `b4f6cb7` (test)
+2. **Task 1 GREEN: the skill (and the test aligned to the final example unit)** - `c2d3375` (docs)
+3. **Task 2: readability pass in ceremonies, docs/tools.md F29** - `8fcdcd8` (docs)
 
 ## writing-skills: RED baseline gaps and what closes them
 
@@ -145,7 +145,7 @@ RED is the orchestrator's baseline in `.superpowers/sdd/let-s-execute-gsd-execut
 
 ## Issues Encountered
 
-- The worktree harness refused compound git commands and runtime-computed sed. The worktree guard was run as separate commands (all checks passed: branch `worktree-agent-a69307fce5b235cd9`, base 5f5bbb2), and the mutation check ran as a scratch Python script that restored the skill byte for byte.
+- The worktree harness refused compound git commands and runtime-computed sed. The worktree guard was run as separate commands (all checks passed: branch `worktree-agent-a69307fce5b235cd9`, base 8f8ca58), and the mutation check ran as a scratch Python script that restored the skill byte for byte.
 
 ## Verification
 
@@ -169,17 +169,17 @@ None. The owner may optionally add `watcom-readability` to `.claude/rules/workfl
 
 - FOUND: .claude/skills/watcom-readability/SKILL.md (tracked)
 - FOUND: tests/test_skill_readability.py
-- FOUND: commits a504b54, 07f69d6, b1eca06 on HEAD
+- FOUND: commits b4f6cb7, c2d3375, 8fcdcd8 on HEAD
 
 ## Fix round 1
 
-Source: the orchestrator's review (`review-07-36.md`, FIX_BASE e1da3be). The GREEN run passed: S1 to S4 made the right choices in 9, 4, 6 and 5 tool uses (RED: 23, 21, 21 and 13). The two Important issues were fixed as the writing-skills REFACTOR step, test first.
+Source: the orchestrator's review (`review-07-36.md`, FIX_BASE 38a0fa0). The GREEN run passed: S1 to S4 made the right choices in 9, 4, 6 and 5 tool uses (RED: 23, 21, 21 and 13). The two Important issues were fixed as the writing-skills REFACTOR step, test first.
 
-- **RED** `e508953` test(07-36): 3 new tests, failing as expected:
+- **RED** `311744f` test(07-36): 3 new tests, failing as expected:
   - every prose block (outside fences) that states what the driver does after a session (lands, applies, writes, rewrites, commits, landing) carries "planned";
   - the constants section states `unsigned int` and `unsigned long`, never "a decimal one is long", and keeps "exact spelling and suffix";
   - the wrapper section says where line numbers come from.
-- **GREEN** `9b4dcd1` docs(skill):
+- **GREEN** `f802244` docs(skill):
   - Important 1: three statements are now marked "(planned, not built yet)":
     - the header write (07-34);
     - strict readlint at landing (07-38);

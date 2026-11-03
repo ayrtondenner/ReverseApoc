@@ -20,8 +20,8 @@ actuals:
   tokens: 126947  # chars/4 over the realized diff: 2,404 (mechanics.toml) + 124,543 (members CSV)
   tasks: 3
   commits: 2
-plan_head_before: ce7fc2dacd79b9f2cfefe62b4aea4676d34c2c13
-plan_head_after: 176f96e0f69dd5682dd6794779488ef4483ed070
+plan_head_before: 32f56215d7896962cfd1857c5f4a54437366345d
+plan_head_after: 4775161db1a20d14d33e981c1a394158879b79a8
 
 tech-stack:
   added: []
@@ -70,7 +70,7 @@ coverage:
         ref: "Task 3 verify (mechanics check; 4 signed tiers; 82 mechanics tests passed); host suite uv run pytest -q -rs 4078 passed, 40 skipped; ruff clean"
         status: pass
     human_judgment: true
-    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit 176f96e"
+    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit 4775161"
 
 duration: 112min
 completed: 2026-10-30
@@ -178,9 +178,9 @@ EXECUTION-CONTEXT-END-NONCE: d6815002154bf5b2
 
 ## Task Commits
 
-1. **Task 1: draft Tier 4 (tracer).** Commit `01b1b03`: `data(07-32): draft Tier 4 (#265)`. It holds config/mechanics.toml and config/mechanics-members.csv. The tracer verify was re-run before the checkpoint and passed (end-of-phase mode, automated verify only).
+1. **Task 1: draft Tier 4 (tracer).** Commit `c349a64`: `data(07-32): draft Tier 4 (#265)`. It holds config/mechanics.toml and config/mechanics-members.csv. The tracer verify was re-run before the checkpoint and passed (end-of-phase mode, automated verify only).
 2. **Task 2: the owner's ruling.** This was a blocking-human checkpoint, so there was nothing to commit.
-3. **Task 3: record the sign-off.** Commit `176f96e`: `data(07-32): Tier 4 signed off by ayrtondenner (D-04); every tier located and signed (D-05)`. Its body quotes the ruling and the guard results.
+3. **Task 3: record the sign-off.** Commit `4775161`: `data(07-32): Tier 4 signed off by ayrtondenner (D-04); every tier located and signed (D-05)`. Its body quotes the ruling and the guard results.
 
 Neither commit was pushed; the orchestrator pushes them.
 
@@ -226,7 +226,7 @@ Neither commit was pushed; the orchestrator pushes them.
 - **Issue:** the generator's output was written with CRLF on Windows. The repo uses `eol=lf`.
 - **Fix:** normalised config/mechanics.toml to LF before the first write. The CR count is 0 after each edit.
 - **Files modified:** config/mechanics.toml.
-- **Committed in:** 01b1b03.
+- **Committed in:** c349a64.
 
 **2. [Rule 3 - Blocking] Evidence scripts written through a scratch file**
 - **Issue:** the project hook blocks the Write tool in build/ (D-16).
@@ -277,7 +277,7 @@ None.
 ## Self-Check: PASSED
 
 - config/mechanics.toml, config/mechanics-members.csv and build/gate/07-evidence/32-tier4-summary.txt exist.
-- Commits 01b1b03 and 176f96e are ancestors of HEAD.
+- Commits c349a64 and 4775161 are ancestors of HEAD.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

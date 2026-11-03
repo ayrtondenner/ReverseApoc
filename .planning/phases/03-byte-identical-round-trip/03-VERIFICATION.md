@@ -51,26 +51,26 @@ re_verification:
     - "Previous human items 1-2 (03-06 judgment prohibitions): passed by the owner in UAT tests 4 and 5"
   gaps_remaining: []
   regressions:
-    - "Behaviour regression on malformed input only (WR-08, reproduced by the verifier): with an LE header whose last_page_size exceeds page_size, splice() of a byte past vsize beyond the page slot raised SpliceError at 0269b2a and raises TypeError at HEAD (03-08 rewrote _unwritable_reason). No must-have truth fails on a well-formed LE; see human_verification item 1"
+    - "Behaviour regression on malformed input only (WR-08, reproduced by the verifier): with an LE header whose last_page_size exceeds page_size, splice() of a byte past vsize beyond the page slot raised SpliceError at ae1cc12 and raises TypeError at HEAD (03-08 rewrote _unwritable_reason). No must-have truth fails on a well-formed LE; see human_verification item 1"
 coincidental_reliance_items:
   - truth: "splice(le, {va: bytes}) applies linear-address patches in flat address space (D-01) and the rebuild gate reports any patched byte as a mismatch"
     reason: undeclared-precondition
     harden: "Objects must own disjoint logical pages and disjoint VA ranges, and every page must hold at most page_size bytes; layout()/splice() enforce neither (03-REVIEW WR-01, deferred to Phase 5; WR-08, open). The three real targets satisfy both (FACTS pins the identity page map and page sizes)."
 human_verification:
   - test: "Owner triage of the two open review findings in 03-REVIEW-DISPOSITION.md: WR-08 (warning) and IN-12 (info)"
-    expected: "Each set to fixed, deferred (with phase and reason) or skipped. Verifier judgment: neither breaks a Phase 3 must-have or ROADMAP success criterion. WR-08 is real and was introduced by 03-08 (verifier reproduced it at HEAD and confirmed SpliceError at 0269b2a), but it needs a header that violates the LE format (last_page_size > page_size), it only affects the error type of a refusal (nothing is written; the round-trip half yields MISMATCH, never a false OK), and the Phase 3 CLI passes no patches. It belongs naturally with WR-01/WR-03 before Phase 5 feeds real patches through splice(). IN-12 is a hint-text issue next to VN-01"
+    expected: "Each set to fixed, deferred (with phase and reason) or skipped. Verifier judgment: neither breaks a Phase 3 must-have or ROADMAP success criterion. WR-08 is real and was introduced by 03-08 (verifier reproduced it at HEAD and confirmed SpliceError at ae1cc12), but it needs a header that violates the LE format (last_page_size > page_size), it only affects the error type of a refusal (nothing is written; the round-trip half yields MISMATCH, never a false OK), and the Phase 3 CLI passes no patches. It belongs naturally with WR-01/WR-03 before Phase 5 feeds real patches through splice(). IN-12 is a hint-text issue next to VN-01"
     why_human: "Disposition is an owner decision; the review is advisory."
   - test: "Judgment-tier prohibition (03-07): orig/, config/targets.toml and the Docker files were not edited, and no test holds game bytes"
-    expected: "`git diff --stat 0269b2a HEAD -- config docker compose.yaml` is empty; the new tests use build_le_image, b\"x\" or b\"not the game\" markers only; test_hygiene's manifest-hash guard passes"
+    expected: "`git diff --stat ae1cc12 HEAD -- config docker compose.yaml` is empty; the new tests use build_le_image, b\"x\" or b\"not the game\" markers only; test_hygiene's manifest-hash guard passes"
     why_human: "verification: judgment. Non-authoritative verifier verdict: HOLDS (all three checks run). unverified-prohibition - human review recommended."
   - test: "Judgment-tier prohibition (03-08): WR-01, WR-03 and WR-04 were not implemented"
-    expected: "`git diff 0269b2a HEAD -- tools/reverseapoc/splice.py` adds no shared-page or overlapping-object refusal, leaves the write path (out_path.write_bytes, the path-based orig guard, the double read) as it was apart from source=/common, and tools/reverseapoc/cli.py is unchanged"
-    why_human: "verification: judgment. Non-authoritative verifier verdict: HOLDS (diff read line by line; cli.py unchanged since 0269b2a). unverified-prohibition - human review recommended."
+    expected: "`git diff ae1cc12 HEAD -- tools/reverseapoc/splice.py` adds no shared-page or overlapping-object refusal, leaves the write path (out_path.write_bytes, the path-based orig guard, the double read) as it was apart from source=/common, and tools/reverseapoc/cli.py is unchanged"
+    why_human: "verification: judgment. Non-authoritative verifier verdict: HOLDS (diff read line by line; cli.py unchanged since ae1cc12). unverified-prohibition - human review recommended."
   - test: "Judgment-tier prohibition (03-09): real-file tests never print or assert on byte slices of the real files"
     expected: "tests/test_splice_real.py asserts on offsets, VAs, counts, booleans and filecmp only; the new _page_at assert message names the VA only"
     why_human: "verification: judgment. Non-authoritative verifier verdict: HOLDS. unverified-prohibition - human review recommended."
   - test: "Judgment-tier prohibitions (03-10): no source, test, config or Docker edit to make a gate step pass; no game bytes in the gate logs or SUMMARY"
-    expected: "No file outside .planning/ changed after edd85b5 (the gate HEAD); the eight build/gate/03-10/ logs are stamped 23:41 local, after the last source merge (51b6f07, 23:40:05) and before the docs(03-10) commit (23:43:20); the logs hold pytest/ruff summaries, command lines, file sizes and manifest SHA-1s only"
+    expected: "No file outside .planning/ changed after 701dc96 (the gate HEAD); the eight build/gate/03-10/ logs are stamped 23:41 local, after the last source merge (6b76f28, 23:40:05) and before the docs(03-10) commit (23:43:20); the logs hold pytest/ruff summaries, command lines, file sizes and manifest SHA-1s only"
     why_human: "verification: judgment. Non-authoritative verifier verdict: HOLDS (all checks run by the verifier). unverified-prohibition - human review recommended."
 ---
 
@@ -79,11 +79,11 @@ human_verification:
 **Phase Goal:** UFO2P.EXE and TACP.EXE (plus SMKP.EXE, as a second layout without a trailer) are rebuilt from decomposed parts through a KKND-style in-place page splice and proven SHA-1 identical to the originals, by a gate that demonstrably fails on any one-byte change.
 **Verified:** 2026-10-21T02:59:43Z
 **Status:** human_needed
-**Re-verification:** Yes. The previous report (human_needed, 63/63, HEAD 83bc0b3) went stale when gap-closure plans 03-07..03-10 changed configure.py, targets.py, splice.py, their tests, test_splice_real.py and docs/toolchain.md. This report covers the current tree (HEAD 39b835e) and adds the must-haves of 03-07..03-10.
+**Re-verification:** Yes. The previous report (human_needed, 63/63, HEAD 36cd6f2) went stale when gap-closure plans 03-07..03-10 changed configure.py, targets.py, splice.py, their tests, test_splice_real.py and docs/toolchain.md. This report covers the current tree (HEAD 00c7a49) and adds the must-haves of 03-07..03-10.
 
 The verifier ran every check below in its own process on the main checkout. orig/ was only read.
 Outputs went to build/verify-03/ and build/cfg-verify-03/ (gitignored) and to the session
-scratchpad. A temporary git worktree of 0269b2a (used to confirm the WR-08 regression) was
+scratchpad. A temporary git worktree of ae1cc12 (used to confirm the WR-08 regression) was
 removed afterwards. build.ninja has the same SHA-1 before and after the container runs. No
 source file was edited. SUMMARY claims were used as leads, not as evidence.
 
@@ -93,11 +93,11 @@ source file was edited. SUMMARY claims were used as leads, not as evidence.
 
 | # | Success criterion | Status | Evidence (verifier-run, this session) |
 |---|---|---|---|
-| SC1 | `rebuild` writes build/UFO2P.EXE, TACP.EXE, SMKP.EXE; `cmp` silent; SHA-1 == manifest; reassembled, not copied (RT-01, RT-03) | VERIFIED | Deleted the three build/*.EXE, ran `uv run reverseapoc rebuild`: three `OK ... == manifest` lines, exit 0. `cmp` exit 0 for all three; `sha1sum` of build/ equals orig/ and config/targets.toml lines 19/29/38. `git diff 83bc0b3 HEAD -- tools/reverseapoc/splice.py` leaves decompose/assemble/reassemble untouched (only labels, `_unwritable_reason`, the report fields and the bare-name delegate changed), so the fresh-buffer assembly verified earlier still produces the output |
+| SC1 | `rebuild` writes build/UFO2P.EXE, TACP.EXE, SMKP.EXE; `cmp` silent; SHA-1 == manifest; reassembled, not copied (RT-01, RT-03) | VERIFIED | Deleted the three build/*.EXE, ran `uv run reverseapoc rebuild`: three `OK ... == manifest` lines, exit 0. `cmp` exit 0 for all three; `sha1sum` of build/ equals orig/ and config/targets.toml lines 19/29/38. `git diff 36cd6f2 HEAD -- tools/reverseapoc/splice.py` leaves decompose/assemble/reassemble untouched (only labels, `_unwritable_reason`, the report fields and the bare-name delegate changed), so the fresh-buffer assembly verified earlier still produces the output |
 | SC2 | Round-trip pytest for both EXEs, skipped without orig/, passes on host and in `docker compose run --rm test` (RT-03) | VERIFIED | Host `uv run pytest -q -rs`: 401 passed, 6 skipped (2 Windows-only `\|`/LF, 1 Linux-only non-UTF-8, 3 container-only hygiene); no real-file skip. `docker compose run --rm test`: 407 passed, 0 skipped, exit 0. `tests/test_splice_real.py tests/test_le_real.py`: 33 passed with orig/, 33 skipped with `REVERSEAPOC_ORIG=<empty dir>` |
 | SC3 | One-byte mutations change the SHA-1 and name the offset; splice refuses out-of-page writes and length change; straddlers in flat space (RT-02, RT-04) | VERIFIED | D-13 synthetic suite and the real-file control mutation (now located through the independent `le.page_va` index) pass in the runs above. End to end, a container `ninja verify` against a fake orig dir (a 12-byte non-game marker) fails with REFUSED/MISSING and exit 1. WR-08 (malformed header, wrong exception type for a refused write) does not touch this criterion: the write is still refused and the gate still fails rather than passing; see Anti-Patterns |
 | SC4 | Region map tiles every byte; coverage test fails on unassigned or double-assigned byte (RT-05) | VERIFIED | `layout()` code unchanged (docstring only, IN-03; the new text matches `_page_regions` and the `end > start` filter). test_check_tiling_rejects_gap/_overlap and test_layout_tiles_real_file pass |
-| SC5 | docs/toolchain.md records confirmed edge cases as offsets, lengths, hashes only; EOF and "To be confirmed" lines removed (RT-05) | VERIFIED | `git diff -U0 0269b2a HEAD -- docs/toolchain.md` changes exactly one line (the container orig/ row now lists SMKP.EXE, IN-04). test_toolchain_records_the_confirmed_le_layout passes |
+| SC5 | docs/toolchain.md records confirmed edge cases as offsets, lengths, hashes only; EOF and "To be confirmed" lines removed (RT-05) | VERIFIED | `git diff -U0 ae1cc12 HEAD -- docs/toolchain.md` changes exactly one line (the container orig/ row now lists SMKP.EXE, IN-04). test_toolchain_records_the_confirmed_le_layout passes |
 
 ### Plan must-have truths
 
@@ -107,7 +107,7 @@ source file was edited. SUMMARY claims were used as leads, not as evidence.
 | 03-02 | 4 | 4 VERIFIED | `rule rebuild` in the console pool, phony `verify`, header lists `ninja verify`. The command now reads `rebuild --orig orig --out build` (03-06 and 03-07 superseded the bare form on purpose). Hash guard and planted-hash self-test pass |
 | 03-03 | 14 | 14 VERIFIED | splice()/masking unchanged. The pinned 03-03 refusal substrings (`BSS of object 2`, `0x11800 is past the end of object 1`, `is not in any object`, `crosses from object 1 into object 2`) and every object-1 label still pass. WR-08 is a malformed-header edge outside these truths (owner triage, human item 1) |
 | 03-04 | 7 | 7 VERIFIED | tests/test_cli.py JSON_KEYS unchanged; test_rebuild_json_* pass, including the new refused-JSON control |
-| 03-05 | 8 | 8 VERIFIED | FACTS block byte-identical to 0269b2a (`cmp` of the extracted block); real-file round trip, control, straddler and cut-field sweeps pass |
+| 03-05 | 8 | 8 VERIFIED | FACTS block byte-identical to ae1cc12 (`cmp` of the extracted block); real-file round trip, control, straddler and cut-field sweeps pass |
 | 03-06 | 8 | 8 VERIFIED | WR-05/WR-06 tests still pass after 03-07 edited HEADER and `_check_orig_dir`; the 03-06 gate logs remain under build/gate/03-06/ |
 | 03-07 | 7 | 7 VERIFIED | See next table |
 | 03-08 | 7 | 7 VERIFIED | See next table |
@@ -124,7 +124,7 @@ source file was edited. SUMMARY claims were used as leads, not as evidence.
 | 4 | IN-10: `CHECK-ORIG <orig>` description; no header comment names a fixed `orig/` | VERIFIED | configure.py:37; header lines 25-26 say "the orig dir". CLI smoke output: `description = CHECK-ORIG elsewhere`. Container run: `[0/1] CHECK-ORIG ../../orig` |
 | 5 | IN-11: rebuild rule passes `--out build`; `ninja verify` writes into the builddir next to its build.ninja | VERIFIED | configure.py:46. test_generated_rebuild_writes_into_builddir passes. Verifier re-ran the gate-step-8 shape in the container (ninja 1.11.1): build.ninja in build/cfg-verify-03/, command `uv run reverseapoc rebuild --orig ../../orig --out build`, three OK lines, and `cmp` of build/cfg-verify-03/build/<NAME> against orig/ silent for all three. Mutant (drop `--out build`): 15 tests fail |
 | 6 | IN-08: no earlier-phase skeleton wording; Phase 5 note, `REBUILD build/`, `builddir = build`, unquoted `parse-le $in` kept | VERIFIED | Lines 4, 24, 29, 33, 41, 47; test_no_stale_phase_wording passes; no quoted `$in`, `--orig=` or `--` separator in configure.py |
-| 7 | test_configure.py removes exactly five lines, all rebuild-command pins | VERIFIED | `git diff -U0 0269b2a HEAD -- tests/test_configure.py` removes exactly the five `rebuild` assertions (:80, :115, :118, :146, :214 forms); every other change is an added line |
+| 7 | test_configure.py removes exactly five lines, all rebuild-command pins | VERIFIED | `git diff -U0 ae1cc12 HEAD -- tests/test_configure.py` removes exactly the five `rebuild` assertions (:80, :115, :118, :146, :214 forms); every other change is an added line |
 
 #### 03-08 truths (tooling half of G-03-6)
 
@@ -143,8 +143,8 @@ source file was edited. SUMMARY claims were used as leads, not as evidence.
 | # | Truth | Status | Evidence |
 |---|---|---|---|
 | 1 | IN-05: helpers derive from le.py's reader, not splice.py's arithmetic | VERIFIED | `_page_index` (`le.page_va`), `_page_at` (bisect), `_page_offset`, `_page_backed_end` (object-table page range), `_straddles` (page identity), `_covered` (plain scan) in tests/test_splice_real.py:125-176. No `page_count - 2`, `MAX_FIELD` or `SRC_SIZE` left |
-| 2 | FACTS and expected values unchanged; 21 real-file tests, no skip | VERIFIED | FACTS block `cmp`-identical to 0269b2a; real-file run passes with no SKIPPED line |
-| 3 | The suite still catches an implementation error, and FACTS pins the helpers (mutants reverted) | VERIFIED | Re-run by the verifier in process (no file edited): `splice._page_backed_end` treating the last page as full fails test_fields_cut_by_page_data_are_clipped for all three EXEs (3 failed); the test helper `_page_backed_end` + 1 fails test_measured_facts x3, test_straddling_fields_are_masked x3 and the SMKP cut-field test (7 failed). Both counts equal the SUMMARY's. `git diff 0269b2a HEAD -- tools/` shows no leftover |
+| 2 | FACTS and expected values unchanged; 21 real-file tests, no skip | VERIFIED | FACTS block `cmp`-identical to ae1cc12; real-file run passes with no SKIPPED line |
+| 3 | The suite still catches an implementation error, and FACTS pins the helpers (mutants reverted) | VERIFIED | Re-run by the verifier in process (no file edited): `splice._page_backed_end` treating the last page as full fails test_fields_cut_by_page_data_are_clipped for all three EXEs (3 failed); the test helper `_page_backed_end` + 1 fails test_measured_facts x3, test_straddling_fields_are_masked x3 and the SMKP cut-field test (7 failed). Both counts equal the SUMMARY's. `git diff ae1cc12 HEAD -- tools/` shows no leftover |
 | 4 | Control test expects `page K of object 1`, K within the object | VERIFIED | test_control_mutation_is_reported computes K from `(va - obj.base) // page_size + 1` and passes for all three EXEs |
 | 5 | IN-04: toolchain.md ninja row lists the three EXEs; nothing else changed | VERIFIED | One-line diff (see SC5) |
 
@@ -156,7 +156,7 @@ source file was edited. SUMMARY claims were used as leads, not as evidence.
 | 2 | Step 7: alt `--orig` reaches rebuild (with `--out build`) and check-orig; `CHECK-ORIG ../tmp/alt-orig`, `checking ../tmp/alt-orig` | VERIFIED | 07-container-ninja-alt-orig.log holds both command lines, three OK lines, the CHECK-ORIG status line, `checking ../tmp/alt-orig` and `3 ok, 0 mismatched, 0 missing` |
 | 3 | Step 8: build.ninja in build/cfg-03-10/ writes build/cfg-03-10/build/<NAME> byte-identical | VERIFIED | 08 log holds `--orig ../../orig --out build` and three OK lines; build/cfg-03-10/build/ holds the three EXEs. Re-run independently in build/cfg-verify-03/ with the same result |
 | 4 | Each step logged with `exit=STATUS`; SUMMARY reproduces the eight logs verbatim | VERIFIED | Scripted line check: every line of every 03-10 log appears verbatim in the SUMMARY's "## Phase gate output" section (0 missing); 8 `exit=0`, no non-zero exit |
-| 5 | Disposition: WR-07, IN-01..IN-11, VN-01 fixed with plan, commit and build/gate/03-10/; WR-01/03/04 deferred; WR-02/05/06 fixed; `open: 0` | VERIFIED | 13 fixed rows, 3 deferred, 3 earlier-fixed rows (grep counts). The six cited commits are ancestors of HEAD. `open: 0`, `total: 19` at 7c603f0; the re-review then added WR-08 and IN-12 as new open rows (`open: 2`, `total: 21`), which is new scope, not a reopening. The rows the ledger script dropped (IN-08 decision, VN-01) are present again after 39b835e |
+| 5 | Disposition: WR-07, IN-01..IN-11, VN-01 fixed with plan, commit and build/gate/03-10/; WR-01/03/04 deferred; WR-02/05/06 fixed; `open: 0` | VERIFIED | 13 fixed rows, 3 deferred, 3 earlier-fixed rows (grep counts). The six cited commits are ancestors of HEAD. `open: 0`, `total: 19` at a1444d4; the re-review then added WR-08 and IN-12 as new open rows (`open: 2`, `total: 21`), which is new scope, not a reopening. The rows the ledger script dropped (IN-08 decision, VN-01) are present again after 00c7a49 |
 
 **Score:** 87/87 truths verified (5 SCs + 82 plan truths; 0 present-but-behavior-unverified).
 The behaviour-dependent truths each have a passing named test in this session's suite run, and
@@ -172,15 +172,15 @@ each falsified with an in-process mutant. Source was left untouched.
 | 03-01/03-03 | No copy-then-overwrite of the original buffer | test | VERIFIED (assembly code unchanged since the previous verification) |
 | 03-01/03-05 | Trailer never regenerated | test | VERIFIED |
 | all | No game bytes in messages, reports, JSON, docs, tests, logs | test | VERIFIED: report-level guards pass; new tests use synthetic images and short markers; gate logs hold summaries, sizes and manifest SHA-1s |
-| 03-02/03-05/03-06 | No edit to config/targets.toml or the Docker files; no copied hashes | test | VERIFIED: `git diff --stat 0269b2a HEAD -- config docker compose.yaml` empty; manifest-hash guard passes |
+| 03-02/03-05/03-06 | No edit to config/targets.toml or the Docker files; no copied hashes | test | VERIFIED: `git diff --stat ae1cc12 HEAD -- config docker compose.yaml` empty; manifest-hash guard passes |
 | 03-06 | No rename of masked_fields, no --json key change | test | VERIFIED |
 | 03-06/03-07 | No quoted `$in`; no `--orig=PATH` or `--` separator | test | VERIFIED: the exact parse_le rule is pinned; grep finds neither form in a rule |
-| 03-07 | No edit under tools/ | test | VERIFIED: 231ee0d and bf341b5 touch configure.py only (their test commits touch tests/test_configure.py) |
+| 03-07 | No edit under tools/ | test | VERIFIED: f248f9b and 310be05 touch configure.py only (their test commits touch tests/test_configure.py) |
 | 03-08 | No --json key added; new fields out of to_json | test | VERIFIED: JSON_KEYS tests and test_rebuild_result_names_the_input_path's 8-key assertion |
-| 03-08 | No object-1 label or 03-03 substring change; le.py and watcom.py untouched | test | VERIFIED: `git diff 0269b2a HEAD -- tools/reverseapoc/le.py tools/reverseapoc/watcom.py tools/reverseapoc/cli.py` empty |
+| 03-08 | No object-1 label or 03-03 substring change; le.py and watcom.py untouched | test | VERIFIED: `git diff ae1cc12 HEAD -- tools/reverseapoc/le.py tools/reverseapoc/watcom.py tools/reverseapoc/cli.py` empty |
 | 03-08 | No manifest hash or game bytes in tests; no orig/config/Docker edit | test | VERIFIED |
 | 03-09 | FACTS, expected values and the D-15 rule unchanged | test | VERIFIED (FACTS `cmp`) |
-| 03-09 | No edit under tools/, the Watcom docs section, orig/, config, Docker | test | VERIFIED (e3abcc6 and 154a73c touch one file each; toolchain.md diff is one line) |
+| 03-09 | No edit under tools/, the Watcom docs section, orig/, config, Docker | test | VERIFIED (8ded749 and 29e8118 touch one file each; toolchain.md diff is one line) |
 | 03-10 | WR-01/03/04 and WR-02/05/06 rows unchanged | test | VERIFIED |
 | 03-07 | No orig/config/Docker edit; no game bytes in a test | judgment | FLAGGED: non-authoritative verdict HOLDS; human review recommended |
 | 03-08 | WR-01, WR-03, WR-04 not implemented | judgment | FLAGGED: non-authoritative verdict HOLDS; human review recommended |
@@ -195,7 +195,7 @@ each falsified with an in-process mutant. Source was left untouched.
 | `configure.py` | refusals, encode before open, CHECK-ORIG {orig}, `--out build` | VERIFIED | verify.artifacts passes for 03-02/06/07; contains `--out build`, `class ConfigureError`, `build verify: phony` |
 | `tools/reverseapoc/targets.py` | manifest wrap and shape, `check_bare_name` | VERIFIED | contains `isreserved`, `TOMLDecodeError` |
 | `tools/reverseapoc/splice.py` | region map, assembly, splice, rebuild, page labels, source/manifest | VERIFIED | contains `(logical page `, `m.fixup for m in result.masked` |
-| `tools/reverseapoc/le.py`, `tools/reverseapoc/cli.py` | helpers, rebuild verb | VERIFIED | unchanged since 0269b2a |
+| `tools/reverseapoc/le.py`, `tools/reverseapoc/cli.py` | helpers, rebuild verb | VERIFIED | unchanged since ae1cc12 |
 | `tests/test_configure.py`, `tests/test_targets.py`, `tests/test_splice.py`, `tests/test_cli.py`, `tests/test_splice_real.py`, `tests/test_hygiene.py`, `tests/conftest.py`, `tests/test_le.py` | plan-named tests | VERIFIED | verify.artifacts 35/35 across the ten plans |
 | `docs/toolchain.md`, `docs/learnings.md` | confirmed LE layout, SMKP row, ninja-quoting entry | VERIFIED | |
 | `03-05/03-06/03-10-SUMMARY.md` | "## Phase gate output" | VERIFIED | 03-10 section matches its logs line for line |
@@ -246,7 +246,7 @@ links were checked by hand as listed.
 | Mutants (in-process, not committed) | option-like, UTF-8, `--out build`, bare name, manifest wrap/shape, page label, REFUSED/MISSING source | 7, 2(+1 expected pass), 15, 14, 6, 3, 3 failures | PASS (tests can fail) |
 | Mutant (source-level, in memory) | open and write build.ninja before encoding | test_main_never_truncates_on_an_encoding_failure fails | PASS |
 | 03-09 mutants (in-process) | splice full last page; test helper page-backed end + 1 | 3 failed; 7 failed (equal to the SUMMARY) | PASS (real-file suite can fail, FACTS pins the helpers) |
-| WR-08 reproduction | synthetic LE with last_page_size 0x1400 > page_size; splice at 0x21000/0x21200 | HEAD: TypeError; 0269b2a: SpliceError | Confirms the review finding and that 03-08 introduced it |
+| WR-08 reproduction | synthetic LE with last_page_size 0x1400 > page_size; splice at 0x21000/0x21200 | HEAD: TypeError; ae1cc12: SpliceError | Confirms the review finding and that 03-08 introduced it |
 
 ### Probe Execution
 
@@ -272,12 +272,12 @@ No TBD/FIXME/XXX/TODO/HACK/PLACEHOLDER marker in any file changed by 03-07..03-1
 
 | File | Line | Pattern | Severity | Impact on must-haves |
 |---|---|---|---|---|
-| tools/reverseapoc/splice.py | 344-345 | WR-08 (open): `off, page = _page_slot(...)` unpacks None when an LE header declares last_page_size > page_size, raising TypeError instead of SpliceError. The verifier reproduced it at HEAD and confirmed the same input gave SpliceError at 0269b2a, so 03-08's IN-02 rewrite introduced it. The round-trip half (an oversized page that is not its object's last page) predates Phase 3 gap closure and shows as MISMATCH | Warning | No truth fails on a well-formed LE. The header violates the LE format; nothing is written; the gate never reports a false OK; the Phase 3 CLI passes no patches; FACTS pins the real page sizes. It does weaken the 03-03 "refused with SpliceError" contract on input `layout()` accepts, which Phase 5 callers will rely on. Owner triage |
+| tools/reverseapoc/splice.py | 344-345 | WR-08 (open): `off, page = _page_slot(...)` unpacks None when an LE header declares last_page_size > page_size, raising TypeError instead of SpliceError. The verifier reproduced it at HEAD and confirmed the same input gave SpliceError at ae1cc12, so 03-08's IN-02 rewrite introduced it. The round-trip half (an oversized page that is not its object's last page) predates Phase 3 gap closure and shows as MISMATCH | Warning | No truth fails on a well-formed LE. The header violates the LE format; nothing is written; the gate never reports a false OK; the Phase 3 CLI passes no patches; FACTS pins the real page sizes. It does weaken the 03-03 "refused with SpliceError" contract on input `layout()` accepts, which Phase 5 callers will rely on. Owner triage |
 | tools/reverseapoc/splice.py | 564, 566-569 | IN-12 (open): REFUSED/MISSING hints say `run uv run reverseapoc check-orig` / `ingest` without the `--orig`/`--manifest` that produced the line (seen in the container fake-orig run) | Info | The VN-01 truth covers the named path and manifest, which are correct. Hint text only |
 | tools/reverseapoc/splice.py | 159-174, 259-278 | WR-01 (deferred to Phase 5) | Warning (deferred) | Recorded as coincidental reliance |
 | tools/reverseapoc/splice.py | 617-619, 655-670 | WR-03 (deferred to Phase 5) | Warning (deferred) | Backstop truth accepted by the owner (UAT test 2) |
 | tools/reverseapoc/cli.py | 52-58 | WR-04 (deferred to Phase 6) | Warning (deferred) | No real target hits the path |
-| .planning/.../03-REVIEW-DISPOSITION.md | - | The ledger helper recognises only CR/BL/WR/IN ids and dropped the IN-08 decision and the VN-01 row on re-run; restored by hand in 39b835e | Info | Record is correct now (13 fixed rows). A future re-run of the helper may drop VN-01 again |
+| .planning/.../03-REVIEW-DISPOSITION.md | - | The ledger helper recognises only CR/BL/WR/IN ids and dropped the IN-08 decision and the VN-01 row on re-run; restored by hand in 00c7a49 | Info | Record is correct now (13 fixed rows). A future re-run of the helper may drop VN-01 again |
 | tests/test_splice_real.py | 129, 159 | `LE.page_va` and `splice._page_regions` share the `base + (logical - page_index) * page_size` formula (review residual note) | Info | FACTS guards it |
 
 **Does WR-08 or IN-12 undermine a must-have or a ROADMAP SC?** No, in the verifier's judgment.
@@ -296,18 +296,18 @@ Verification rather than as a gap. IN-12 is hint text and touches no truth.
 #### 1. Owner triage of WR-08 and IN-12
 
 **Test:** Set WR-08 and IN-12 in 03-REVIEW-DISPOSITION.md to fixed, deferred (with phase and reason) or skipped.
-**Expected:** Verifier judgment: neither breaks a Phase 3 must-have or SC. WR-08 was introduced by 03-08 (TypeError at HEAD, SpliceError at 0269b2a on the same synthetic header). It fits with the Phase 5 WR-01/WR-03 work: refuse last_page_size > page_size in `_check_mappable` or the LE constructor, and turn a None `_page_slot` into a SpliceError. IN-12 is a hint-text follow-up to VN-01.
+**Expected:** Verifier judgment: neither breaks a Phase 3 must-have or SC. WR-08 was introduced by 03-08 (TypeError at HEAD, SpliceError at ae1cc12 on the same synthetic header). It fits with the Phase 5 WR-01/WR-03 work: refuse last_page_size > page_size in `_check_mappable` or the LE constructor, and turn a None `_page_slot` into a SpliceError. IN-12 is a hint-text follow-up to VN-01.
 **Why human:** Disposition is an owner decision; the review is advisory.
 
 #### 2. Judgment-tier prohibition (03-07): no protected edits, no game bytes in tests
 
-**Test:** Check `git diff --stat 0269b2a HEAD -- config docker compose.yaml` and the new tests in tests/test_configure.py.
+**Test:** Check `git diff --stat ae1cc12 HEAD -- config docker compose.yaml` and the new tests in tests/test_configure.py.
 **Expected:** Empty diff; tests use build_le_image and short non-game markers.
 **Why human:** `verification: judgment`. Non-authoritative verifier verdict: HOLDS.
 
 #### 3. Judgment-tier prohibition (03-08): WR-01/03/04 not implemented
 
-**Test:** Read `git diff 0269b2a HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py`.
+**Test:** Read `git diff ae1cc12 HEAD -- tools/reverseapoc/splice.py tools/reverseapoc/cli.py`.
 **Expected:** No shared-page/overlap refusal, write path unchanged apart from `source=`/`common`, cli.py unchanged.
 **Why human:** `verification: judgment`. Non-authoritative verifier verdict: HOLDS.
 
@@ -319,7 +319,7 @@ Verification rather than as a gap. IN-12 is hint text and touches no truth.
 
 #### 5. Judgment-tier prohibitions (03-10): gate integrity and no game bytes in logs
 
-**Test:** Confirm no file outside .planning/ changed after edd85b5, the 03-10 logs postdate the last source merge, and the logs hold only summaries, command lines, sizes and manifest SHA-1s.
+**Test:** Confirm no file outside .planning/ changed after 701dc96, the 03-10 logs postdate the last source merge, and the logs hold only summaries, command lines, sizes and manifest SHA-1s.
 **Expected:** All hold (logs 23:41 local; last source merge 23:40:05; docs commit 23:43:20).
 **Why human:** `verification: judgment`. Non-authoritative verifier verdict: HOLDS.
 

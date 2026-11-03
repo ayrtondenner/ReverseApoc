@@ -19,8 +19,8 @@ actuals:
   tokens: 4700
   tasks: 2
   commits: 3
-plan_head_before: 5f2d1866396e45929706467c19f53ad018b4e985
-plan_head_after: 6967d76fec8df23d1e4426d16dec5f6644372dda
+plan_head_before: bb3000a56bb6ae7426947db63d5c1c0a11c6769c
+plan_head_after: ad2beaa19c6bbeed7cc799050dc8871369528d59
 
 tech-stack:
   added: []
@@ -126,9 +126,9 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): a real compile per version reports banner, compiler hashes and object hashes**
-   - RED `edecc34` (test): unit tests for the object hashes, FakeCompiler writing a synthetic OMF module, and the new real test file
-   - GREEN `40ec06c` (feat): object hashes in CompileResult, format, to_json and the log; a non-OMF object is refused
-2. **Task 2: real codegen proves env scrub, -bt=dos, per-file rules, error path** - `6967d76` (test). The tests pin behaviour that already existed, so compiler.py needed no fix.
+   - RED `d392006` (test): unit tests for the object hashes, FakeCompiler writing a synthetic OMF module, and the new real test file
+   - GREEN `2faa0ff` (feat): object hashes in CompileResult, format, to_json and the log; a non-OMF object is refused
+2. **Task 2: real codegen proves env scrub, -bt=dos, per-file rules, error path** - `ad2beaa` (test). The tests pin behaviour that already existed, so compiler.py needed no fix.
 
 ## TDD notes
 
@@ -164,14 +164,14 @@ status: complete
 - **Issue:** FakeCompiler wrote `b"fake object"`. Hashing every successful object with `omf.normalized_object_sha1` would have broken every existing unit and cli compile test.
 - **Fix:** FakeCompiler now writes `FAKE_OBJECT` by default: a tiny synthetic OMF module built with tests/omfimage.py, whose literals are made up there. The plan's behaviour block already asked for that object. tests/watcomtree.py was not in the plan's file list.
 - **Files modified:** tests/watcomtree.py
-- **Commit:** edecc34
+- **Commit:** d392006
 
 **2. [Rule 2 - Missing critical] Non-OMF object is deleted, not left behind**
 - **Found during:** Task 1
 - **Issue:** The plan said only that an OMFError becomes a CompilerError. A raise alone would leave an object that cannot be hashed on disk, even though the wrapper already promises that a failed compile leaves no object.
 - **Fix:** `_object_hashes` deletes the object before raising. Pinned by `test_object_that_is_not_omf_is_refused`.
 - **Files modified:** tools/reverseapoc/compiler.py, tests/test_compiler.py
-- **Commit:** 40ec06c, test in edecc34
+- **Commit:** 2faa0ff, test in d392006
 
 ---
 
@@ -205,5 +205,5 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - Files present: tests/test_compiler_real.py, tools/reverseapoc/compiler.py, tests/test_compiler.py, tests/watcomtree.py
-- Commits on this branch: edecc34, 40ec06c, 6967d76
+- Commits on this branch: d392006, 2faa0ff, ad2beaa
 - Re-run before this SUMMARY: `uv run pytest -q` (627 passed, 68 skipped), `uv run ruff check .` (clean), the real file natively (11 passed, 1 skipped: 10.5 gate refused), no `./*.err` in the worktree root

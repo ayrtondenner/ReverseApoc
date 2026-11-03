@@ -17,8 +17,8 @@ actuals:
   tokens: 3653
   tasks: 3
   commits: 1
-plan_head_before: 540379493cb944b41fe202f51885892858168a2c
-plan_head_after: e4a242bfe29c1593b788cba4ae978cb28c5d76c0
+plan_head_before: db05c1d840ac511d854cc74cbfa4adf5c78ef234
+plan_head_after: 0a62173fb8c3de983207216fb4039947fbb220b2
 
 tech-stack:
   added: []
@@ -166,7 +166,7 @@ Task 2 verify as amended by F6:
 
 1. **Task 1 (tracer): the pipeline in the container, both checks, rebuild, spike verdict.** It made no commit, because its only output is gitignored evidence. Tracer gate: an interactive run, `human_verify_mode` end-of-phase, automated-only verify. I re-ran both plan verifies and the F4 JSON check, and all three passed (verify1=0, verify2=0, verify2_F4=0), so I expanded.
 2. **Task 2: both suites with the skip audit, and hygiene.** It made no commit: gitignored evidence only.
-3. **Task 3: validation sign-off and the STATE.md blocker:** `e4a242b` (docs)
+3. **Task 3: validation sign-off and the STATE.md blocker:** `0a62173` (docs)
 
 ## Files Created/Modified
 
@@ -209,7 +209,7 @@ See key-decisions in the frontmatter.
 - **Issue:** `pytest -q` output names no test files, so 06/07 alone cannot show that each row's command passes. The plan forbids marking a row green without the command output that proves it.
 - **Fix:** 09-rows.log runs each row's exact pytest command in the container (where real tests run) with `-rs` and one exit line per row. It also adds 10-wave0.log and 11-signoff.log for the Wave 0 list and the sign-off checklist.
 - **Verification:** 13/13 `SPL-xx exit=0`, no SKIPPED line, overall `exit=0`.
-- **Committed in:** nothing (gitignored evidence). The rows citing these logs are in `e4a242b`.
+- **Committed in:** nothing (gitignored evidence). The rows citing these logs are in `0a62173`.
 
 **3. [Minor] The STATE.md blocker line was already rewritten as RESOLVED by 05-12.**
 - 05-12 replaced the original text. I appended the plan's RESOLVED sentence as written, with a short re-proof note, and changed nothing else (`git diff --numstat`: 1 1).
@@ -251,7 +251,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: .planning/phases/05-split-and-first-matches/05-VALIDATION.md, .planning/STATE.md, and build/gate/05-evidence/01-ninja.log, 02-check-ufo2p.json, 03-check-tacp.json, 04-rebuild.log, 05-spike.log, 06-host.log, 07-container.log, 08-hygiene.log
-- FOUND commit e4a242b (ancestor of HEAD). `git rev-list --count 5403794..HEAD` = 1 before this SUMMARY commit.
+- FOUND commit 0a62173 (ancestor of HEAD). `git rev-list --count db05c1d..HEAD` = 1 before this SUMMARY commit.
 - Re-ran all acceptance criteria: Task 1 verify1/verify2/F4 = 0; Task 2 host_verify/container_verify/hygiene = 0; Task 3 verify1/verify2 = 0, 13/13 rows cite 05-evidence.
 
 ---

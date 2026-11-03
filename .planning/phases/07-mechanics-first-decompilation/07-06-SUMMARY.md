@@ -18,8 +18,8 @@ actuals:
   tokens: 4761      # chars/4 over the realized diff (19,045 chars, git diff base..HEAD)
   tasks: 2
   commits: 4        # git rev-list --count plan_head_before..HEAD
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: 839f71667e25168331c56936d6517bfd096da7cb
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: aca3665c9fddc9c59b515c7de5bacc02aa9a4e35
 
 tech-stack:
   added: []
@@ -145,11 +145,11 @@ Execution context nonce: db06144bddddd442
 ## Task Commits
 
 1. **Task 1 (tracer): scrollable mosaic region and HTML legend**
-   - RED `7973c6f` test(07-06): add failing tests for the scrollable mosaic region and HTML legend
-   - GREEN `a64a8ff` feat(07-06): scroll the mosaic sideways on a phone, with an HTML legend
+   - RED `229d8a9` test(07-06): add failing tests for the scrollable mosaic region and HTML legend
+   - GREEN `f172243` feat(07-06): scroll the mosaic sideways on a phone, with an HTML legend
 2. **Task 2: tooltip list and visible non-zero bar**
-   - RED `3ee9db3` test(07-06): add failing tests for the tooltip list and the visible non-zero bar
-   - GREEN `839f716` feat(07-06): list the tooltips as text and keep a non-zero bar visible
+   - RED `8fc106b` test(07-06): add failing tests for the tooltip list and the visible non-zero bar
+   - GREEN `aca3665` feat(07-06): list the tooltips as text and keep a non-zero bar visible
 
 No REFACTOR commits (nothing to clean up after GREEN).
 
@@ -214,7 +214,7 @@ No REFACTOR commits (nothing to clean up after GREEN).
 - **Fix:** added `.mosaic:focus-visible` and `summary:focus-visible` with the link outline. The first is pinned in
   test_mosaic_region_is_focusable.
 - **Files modified:** tools/progress.py, tests/test_progress_page.py
-- **Committed in:** 7973c6f / a64a8ff (Task 1), 839f716 (Task 2)
+- **Committed in:** 229d8a9 / f172243 (Task 1), aca3665 (Task 2)
 
 **2. [Scope addition] Extra tests beyond the plan's list**
 - test_details_on_committed_csvs (the tooltip list matches the committed CSVs) and test_details_escapes_names (threat
@@ -229,7 +229,7 @@ no scope creep. The page is still static: no script, no new link.
 ## Issues Encountered
 
 - The worktree harness refuses compound or `source`d git commands, so the guards and the classifier ran as separate plain
-  commands. The commit ledger base was recorded from the spawn-time HEAD (0f9de36) instead of a ledger file.
+  commands. The commit ledger base was recorded from the spawn-time HEAD (99f4659) instead of a ledger file.
 
 ## Threat Flags
 
@@ -254,7 +254,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tools/progress.py, tests/test_progress_page.py
-- FOUND commits: 7973c6f, a64a8ff, 3ee9db3, 839f716 (ancestors of HEAD)
+- FOUND commits: 229d8a9, f172243, 8fc106b, aca3665 (ancestors of HEAD)
 
 ---
 *Phase: 07-mechanics-first-decompilation*

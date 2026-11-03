@@ -22,8 +22,8 @@ actuals:
   tokens: 5668
   tasks: 2
   commits: 4
-plan_head_before: 0269b2ae4057c5a94e96266de82d24e510915def
-plan_head_after: bf341b578ae96b04c9dfb4cc046782dfd486c59b
+plan_head_before: ae1cc12d0a417e05eef89b4fa17677d39606dd4a
+plan_head_after: 310be056a8af29240c65698183a956ef81ae7282
 
 tech-stack:
   added: []
@@ -150,19 +150,19 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): non-UTF-8 and option-like paths (WR-07, IN-09)**
-   - RED: `9939f81` test(03-07): add failing tests for non-UTF-8 and option-like paths
-   - GREEN: `231ee0d` fix(03-07): refuse non-UTF-8 and option-like paths without truncating build.ninja (WR-07, IN-09)
+   - RED: `156fbed` test(03-07): add failing tests for non-UTF-8 and option-like paths
+   - GREEN: `f248f9b` fix(03-07): refuse non-UTF-8 and option-like paths without truncating build.ninja (WR-07, IN-09)
 2. **Task 2: orig-dir description, --out build, stale wording (IN-10, IN-11, IN-08)**
-   - RED: `1553453` test(03-07): add failing tests for the orig-dir description, --out build and stale wording
-   - GREEN: `bf341b5` fix(03-07): name the orig dir in check-orig, write verify into the builddir, drop stale wording (IN-10, IN-11, IN-08)
+   - RED: `bfef5b6` test(03-07): add failing tests for the orig-dir description, --out build and stale wording
+   - GREEN: `310be05` fix(03-07): name the orig dir in check-orig, write verify into the builddir, drop stale wording (IN-10, IN-11, IN-08)
 
-GREEN hashes for 03-REVIEW-DISPOSITION.md: WR-07 and IN-09 are `231ee0d`. IN-10, IN-11 and IN-08 are `bf341b5`.
+GREEN hashes for 03-REVIEW-DISPOSITION.md: WR-07 and IN-09 are `f248f9b`. IN-10, IN-11 and IN-08 are `310be05`.
 
 No REFACTOR commit was needed.
 
 ## RED Results
 
-### Task 1 (at `0269b2a`, after adding the tests only): 11 failed, 29 passed, 3 skipped
+### Task 1 (at `ae1cc12`, after adding the tests only): 11 failed, 29 passed, 3 skipped
 
 | Test | Failure at HEAD |
 |------|-----------------|
@@ -179,7 +179,7 @@ No REFACTOR commit was needed.
 - Machine check: `gsd-tools check tdd-red-evidence` on pytest's JUnit XML report returned `RED_EVIDENCE_OK`. The target was `tests.test_configure#test_main_never_truncates_on_an_encoding_failure`, with exit 1 and 11 failing tests.
 - Semantic assessment: each target ran and failed on its planned assertion or on the planned uncaught exception. There were no collection, import or fixture errors. The 29 passing tests are the unchanged controls.
 
-### Task 2 (at `231ee0d`, after the test edits only): 18 failed, 27 passed, 3 skipped
+### Task 2 (at `f248f9b`, after the test edits only): 18 failed, 27 passed, 3 skipped
 
 | Test | Failure at HEAD |
 |------|-----------------|
@@ -264,22 +264,22 @@ None.
 
 ## Next Phase Readiness
 
-- Ready for 03-10, the phase gate after 03-07, 03-08 and 03-09 merge. 03-10 cites the GREEN hashes `231ee0d` and `bf341b5`. Its container run (step 5) is where test_main_refuses_real_names_that_are_not_utf8 goes green.
+- Ready for 03-10, the phase gate after 03-07, 03-08 and 03-09 merge. 03-10 cites the GREEN hashes `f248f9b` and `310be05`. Its container run (step 5) is where test_main_refuses_real_names_that_are_not_utf8 goes green.
 - RT-03 is left Pending in REQUIREMENTS.md. Sibling plans that are still running share it, and the orchestrator and 03-10 own that update.
 
 ## TDD Gate Compliance
 
 | Task | RED commit | GREEN commit | REFACTOR |
 |------|-----------|--------------|----------|
-| 1 | 9939f81 test(03-07) | 231ee0d fix(03-07) | not needed |
-| 2 | 1553453 test(03-07) | bf341b5 fix(03-07) | not needed |
+| 1 | 156fbed test(03-07) | f248f9b fix(03-07) | not needed |
+| 2 | bfef5b6 test(03-07) | 310be05 fix(03-07) | not needed |
 
 - The plan names the GREEN commits `fix(03-07)`, not `feat`, because they are review-finding fixes. Each RED commit comes before its GREEN commit.
 
 ## Self-Check: PASSED
 
 - FOUND: configure.py, tests/test_configure.py, 03-07-SUMMARY.md
-- FOUND on this branch (git log 0269b2a..HEAD): 9939f81, 231ee0d, 1553453, bf341b5 (4 commits, the measured `commits:` value)
+- FOUND on this branch (git log ae1cc12..HEAD): 156fbed, f248f9b, bfef5b6, 310be05 (4 commits, the measured `commits:` value)
 
 ---
 *Phase: 03-byte-identical-round-trip*

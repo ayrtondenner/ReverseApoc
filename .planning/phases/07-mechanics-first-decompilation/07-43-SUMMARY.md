@@ -19,8 +19,8 @@ actuals:
   tokens: 133339  # chars/4 over the realized diff: 8,100 (code, tests, TOML) + 125,239 (members CSV)
   tasks: 4
   commits: 3
-plan_head_before: 3201acece585a61cf16e52855aa84eb6843aa043
-plan_head_after: eea8a05fbcf9974d17db903528cc37f301207646
+plan_head_before: 8d6f05c22dab13a84c417c72403c98c3022b224e
+plan_head_after: 4b628ea696705d043a174db85e32a6bb9a7c8462
 
 tech-stack:
   added: []
@@ -152,7 +152,7 @@ status: complete
 ## RED evidence assessment
 
 - **Target:** `tests/test_mechanics.py::test_later_tier_entry_keeps_an_earlier_digest`.
-- **Run:** against HEAD 3201ace's code with only the new tests applied: `--junitxml=build/gate/07-evidence/43-red.xml`; 182 tests, 17 failed. `gsd-tools check tdd-red-evidence build/gate/07-evidence/43-red-record.json --raw` returned **RED_EVIDENCE_OK** (`target_test_failed`).
+- **Run:** against HEAD 8d6f05c's code with only the new tests applied: `--junitxml=build/gate/07-evidence/43-red.xml`; 182 tests, 17 failed. `gsd-tools check tdd-red-evidence build/gate/07-evidence/43-red-record.json --raw` returned **RED_EVIDENCE_OK** (`target_test_failed`).
 - **Semantic assessment:** the target ran and failed on its first planned assertion, the Tier 1 digest equality at tests/test_mechanics.py:719. The cause is the intended one: HEAD's `_tier_role` classes the later-tier entry row X as a hub, which changes the projection. There was no collection, import or fixture fault.
 - **Other new tests that failed on assertions:**
   - both `test_projection_only_change_keeps_the_digest` cases;
@@ -175,9 +175,9 @@ Only the three that the plan's verify names: `tests/test_mechanics.py::test_comm
 
 ## Task Commits
 
-1. **Tasks 1-2 (built, parked, landed in Task 4): tests (RED)**: `c6a2d40` (test)
-2. **Tasks 1-2: mechanics.py and progress.py**: `531daee` (feat)
-3. **Tasks 2-4: regenerated members file and Tiers 1-3 re-sign**: `eea8a05` (data). It is pinned in build/gate/07-evidence/43-data-commit.txt.
+1. **Tasks 1-2 (built, parked, landed in Task 4): tests (RED)**: `86ecfaf` (test)
+2. **Tasks 1-2: mechanics.py and progress.py**: `9361a71` (feat)
+3. **Tasks 2-4: regenerated members file and Tiers 1-3 re-sign**: `4b628ea` (data). It is pinned in build/gate/07-evidence/43-data-commit.txt.
 4. **Task 3:** the owner's checkpoint, with no commit.
 
 `git log -3` from the data commit shows data, feat and test, newest first, and they are consecutive. Together the three commits touch exactly the seven files in files_modified outside build/. None was pushed; the orchestrator pushes them.
@@ -214,7 +214,7 @@ Only the three that the plan's verify names: `tests/test_mechanics.py::test_comm
 - **Issue:** `test_members_from_one_entry` and `test_cli_write_with_injected_graphs` assert exact members lines, so the hub column breaks them.
 - **Fix:** appended `,no` to their six literal lines. The plan's behaviour list does not name them.
 - **Files modified:** tests/test_mechanics.py.
-- **Committed in:** c6a2d40.
+- **Committed in:** 86ecfaf.
 
 **3. [Rule 3 - Blocking] Evidence scripts are written through a scratch file.**
 - **Issue:** the project hook blocks the Write tool in build/ (D-16).
@@ -258,7 +258,7 @@ EXECUTION-CONTEXT-END-NONCE: aa34b3f6d48a52aa
 
 ## Self-Check: PASSED
 
-All seven modified files exist. Commits c6a2d40, 531daee and eea8a05 are ancestors of HEAD. Evidence files 43-red-record.json, 43-compare-final.txt, 43-variants.txt, 43-host.log, 43-container.log and 43-data-commit.txt exist.
+All seven modified files exist. Commits 86ecfaf, 9361a71 and 4b628ea are ancestors of HEAD. Evidence files 43-red-record.json, 43-compare-final.txt, 43-variants.txt, 43-host.log, 43-container.log and 43-data-commit.txt exist.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

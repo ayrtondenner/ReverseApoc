@@ -538,8 +538,8 @@ def test_stats_runs_on_the_committed_data(capsys):
 
 
 # The Phase 6 pilot's unattended matches (research R2 section 7) and the Phase 5 hand matches
-# seeded into status.csv by fc7d1cd (UFO2P func_000A3980, TACP func_00055080).
-_PILOT = ("c83cf4e", "d288ad6", "955931f")
+# seeded into status.csv by 58eba4d (UFO2P func_000A3980, TACP func_00055080).
+_PILOT = ("07e3ecc", "3d005bb", "558f35a")
 _PHASE5 = (("ufo2p", "0x000A3980"), ("tacp", "0x00055080"))
 
 
@@ -554,7 +554,7 @@ def test_committed_history_classes():
     written = {(e.exe, f"0x{e.start:08X}") for e in events if e.cls == "human-written"}
     assert set(_PHASE5) <= written
     seed = [e for e in events if (e.exe, f"0x{e.start:08X}") in _PHASE5]
-    assert {e.commit[:7] for e in seed} == {"fc7d1cd"}
+    assert {e.commit[:7] for e in seed} == {"58eba4d"}
 
 
 # ---- fix round 1: a merged status.csv history ----

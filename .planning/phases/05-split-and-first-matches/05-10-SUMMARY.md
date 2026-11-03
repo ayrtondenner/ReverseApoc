@@ -18,8 +18,8 @@ actuals:
   tokens: 8200
   tasks: 2
   commits: 5
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: 3b43ab6ec779e41b71bac6473fa3f510837c58f7
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: 794027b95f046ba4816fe2c5b011781a760d8a1e
 
 tech-stack:
   added: []
@@ -125,12 +125,12 @@ Execution context nonce: af7337b7c571c187
 
 ## Task Commits
 
-1. **Task 1 (tracer): driver runs analyzeHeadless (faked), adapter reads the export**: `c3bc166` (test, RED), `a758ec5` (feat, GREEN). Tracer gate (interactive, end-of-phase, automated-only verify): I re-ran `uv run pytest -q tests/test_ghidra.py` (1 passed) and `uv run ruff check .` (clean), then expanded.
-2. **Task 2: adapter validation, version, drafts and refusals**: `baf7e68` (test, RED), `884d9de` (feat, GREEN), `3b43ab6` (feat, default output roots; see Deviations).
+1. **Task 1 (tracer): driver runs analyzeHeadless (faked), adapter reads the export**: `bae6822` (test, RED), `0742a84` (feat, GREEN). Tracer gate (interactive, end-of-phase, automated-only verify): I re-ran `uv run pytest -q tests/test_ghidra.py` (1 passed) and `uv run ruff check .` (clean), then expanded.
+2. **Task 2: adapter validation, version, drafts and refusals**: `fbd5cd2` (test, RED), `b510cf8` (feat, GREEN), `794027b` (feat, default output roots; see Deviations).
 
 ## TDD notes (RED evidence, semantic assessment)
-- Task 1 RED (`c3bc166`): collection ImportError, because `reverseapoc.ghidra` did not exist yet. That is a load-level failure, not an assertion-level RED. The plan is `type: execute` and `workflow.tdd_mode` is unset, so the plan-level TDD gate does not apply. Noted for the end-of-phase TDD review, as 05-03 did.
-- Task 2 RED (`baf7e68`): 19 failed, 4 passed. The failures were the planned behaviour: no GhidraError for header-only, duplicate, non-hex, bad-thunk, short and unprefixed rows; no refusal for a missing install, orig/ output or missing EXE; no exit-code check; and `ghidra_version`/`export_drafts` absent (AttributeError). Four already passed at RED. Task 1's tracer, the wrong-header case and the quoted-name case passed because Task 1's adapter already checked the header and used the csv module. The unknown-target case passed because `select_target` was already in Task 1. GREEN `884d9de`: 23 passed.
+- Task 1 RED (`bae6822`): collection ImportError, because `reverseapoc.ghidra` did not exist yet. That is a load-level failure, not an assertion-level RED. The plan is `type: execute` and `workflow.tdd_mode` is unset, so the plan-level TDD gate does not apply. Noted for the end-of-phase TDD review, as 05-03 did.
+- Task 2 RED (`fbd5cd2`): 19 failed, 4 passed. The failures were the planned behaviour: no GhidraError for header-only, duplicate, non-hex, bad-thunk, short and unprefixed rows; no refusal for a missing install, orig/ output or missing EXE; no exit-code check; and `ghidra_version`/`export_drafts` absent (AttributeError). Four already passed at RED. Task 1's tracer, the wrong-header case and the quoted-name case passed because Task 1's adapter already checked the header and used the csv module. The unknown-target case passed because `select_target` was already in Task 1. GREEN `b510cf8`: 23 passed.
 
 ## Files Created/Modified
 - `tools/reverseapoc/ghidra.py`: driver, preflight refusals, drafts, adapter, version.
@@ -152,28 +152,28 @@ No orchestrator ruling amends 05-10, so none was applied.
 - **Issue:** analyzeHeadless can exit 0 when a post-script fails. A CSV or draft left by an earlier run would then pass as this run's output.
 - **Fix:** `export_functions` unlinks `functions.raw.csv`, and `export_drafts` unlinks each requested `func_X.c`, before the run.
 - **Verification:** `test_runner_failure_never_reads_a_stale_export`, `test_drafts_report_written_and_missing`
-- **Committed in:** `a758ec5`, `884d9de`
+- **Committed in:** `0742a84`, `b510cf8`
 
 **2. [Rule 2 - Missing critical] Extra refusals beyond the plan's list**
 - **Found during:** Task 2
 - **Issue:** The plan named the install and orig/ refusals only. A missing EXE or a free-text target name would have reached the runner.
 - **Fix:** `_preflight` also refuses a missing `orig/<EXE>` (with the `reverseapoc ingest` hint) and a name not in the manifest. `export_drafts` also refuses an empty address list and addresses outside 0..0xFFFFFFFF. The adapter refuses an empty name and `body_min > body_max`.
 - **Verification:** `test_missing_exe_is_refused`, `test_unknown_target_is_refused`, `test_drafts_refuse_bad_addresses[none,negative,too-big]`
-- **Committed in:** `884d9de`
+- **Committed in:** `b510cf8`
 
 **3. [Rule 2 - Missing critical] CSV quoting in ExportFunctions.java**
 - **Found during:** Task 1
 - **Issue:** The research skeleton joins cells with bare commas. A Ghidra name holding a comma would shift the columns.
 - **Fix:** The Java `cell()` quotes a cell that holds a comma, a quote or a line break, and the adapter reads it with `csv.reader`.
 - **Verification:** `test_quoted_name_reads_back`
-- **Committed in:** `a758ec5`
+- **Committed in:** `0742a84`
 
 **4. [Rule 2 - Missing critical] Named gitignored default roots**
 - **Found during:** after Task 2
 - **Issue:** The plan states the defaults `build/ghidra/<exe>/` and `asm/<exe>/ghidra/`, but no constant held them for the 05-12 verb.
 - **Fix:** `DEFAULT_EXPORT_DIR` and `DEFAULT_ASM_DIR`, with a test that both sit under a gitignored top-level directory. The test went in with the constants (it passed on first run), so this addition has no separate RED commit.
 - **Verification:** `test_default_outputs_are_gitignored`
-- **Committed in:** `3b43ab6`
+- **Committed in:** `794027b`
 
 ---
 
@@ -196,7 +196,7 @@ None.
 
 ## Self-Check: PASSED
 - FOUND: tools/reverseapoc/ghidra.py, tools/reverseapoc/ghidra_scripts/ExportFunctions.java, tools/reverseapoc/ghidra_scripts/ExportDrafts.java, tests/test_ghidra.py
-- FOUND commits: c3bc166, a758ec5, baf7e68, 884d9de, 3b43ab6 (5 = `git rev-list --count 532a745..HEAD` before this SUMMARY commit)
+- FOUND commits: bae6822, 0742a84, fbd5cd2, b510cf8, 794027b (5 = `git rev-list --count c6dc6b8..HEAD` before this SUMMARY commit)
 - `uv run pytest -q`: 1024 passed, 177 skipped; `uv run ruff check .`: clean
 - Acceptance: `-k "header_only or sorted or bad_rows or version or missing_install or orig or runner_failure or drafts"` selected 19 and all passed (needed at least 8); `grep "extends GhidraScript"` gives 1 line in ExportFunctions.java; `grep DecompInterface` gives 3 lines in ExportDrafts.java
 

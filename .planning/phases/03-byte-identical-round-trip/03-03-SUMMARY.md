@@ -18,8 +18,8 @@ actuals:
   tokens: 8200
   tasks: 3
   commits: 7
-plan_head_before: 2c4e815430f1d6f638d15ac3a830cc9a82c0be04
-plan_head_after: 17ced9f867c641e6abfe6b2b2c9177e6d21327c3
+plan_head_before: 45909a2abdd0821bc08604e3d2b6a006cf6caaf0
+plan_head_after: a253aa7f4fb7ea25011242a3644429cd1012fe92
 
 tech-stack:
   added: []
@@ -144,15 +144,15 @@ status: complete
 ## Task Commits
 
 1. **Task 1 (tracer): one linear-address patch lands and the report names it**
-   - RED `5492154` test(03-03): add failing tests for the linear-address splice tracer
-   - GREEN `9ee09ee` feat(03-03): splice linear-address patches and name the first difference
+   - RED `a1047a7` test(03-03): add failing tests for the linear-address splice tracer
+   - GREEN `d04f25f` feat(03-03): splice linear-address patches and name the first difference
 2. **Task 2: refusals and D-13 edges**
-   - RED `01c6205` test(03-03): add failing tests for splice refusals and D-13 page edges
-   - GREEN `567670a` feat(03-03): refuse unwritable, overlapping and malformed splice patches
+   - RED `1520a3d` test(03-03): add failing tests for splice refusals and D-13 page edges
+   - GREEN `5259c72` feat(03-03): refuse unwritable, overlapping and malformed splice patches
 3. **Task 3: fixup masking (D-02)**
-   - RED `d0fa7e0` test(03-03): add failing tests for fixup-field masking
-   - GREEN `ed1877a` feat(03-03): mask fixup fields in flat address space and report them
-4. **Pins:** `17ced9f` test(03-03): pin touching patches and the reassembled splice output
+   - RED `f59fbfb` test(03-03): add failing tests for fixup-field masking
+   - GREEN `10d1d36` feat(03-03): mask fixup fields in flat address space and report them
+4. **Pins:** `a253aa7` test(03-03): pin touching patches and the reassembled splice output
 
 ## TDD record
 
@@ -195,7 +195,7 @@ status: complete
 - **Issue:** a copy-then-overwrite `splice()` (the plan's prohibition) was caught only indirectly by a CLI test, and nothing pinned that touching patches are not an overlap.
 - **Fix:** `test_splice_output_is_reassembled` and `test_touching_patches_are_not_an_overlap`, proven by mutants E and F.
 - **Files modified:** tests/test_splice.py
-- **Committed in:** `17ced9f`
+- **Committed in:** `a253aa7`
 
 ### Additions within scope
 
@@ -233,7 +233,7 @@ None - no external service configuration required.
 
 ## Self-Check: PASSED
 
-Both modified files exist; all 7 commits (5492154, 9ee09ee, 01c6205, 567670a, d0fa7e0, ed1877a, 17ced9f) are ancestors of HEAD; `git rev-list --count 2c4e815..17ced9f` = 7.
+Both modified files exist; all 7 commits (a1047a7, d04f25f, 1520a3d, 5259c72, f59fbfb, 10d1d36, a253aa7) are ancestors of HEAD; `git rev-list --count 45909a2..a253aa7` = 7.
 
 ---
 *Phase: 03-byte-identical-round-trip*

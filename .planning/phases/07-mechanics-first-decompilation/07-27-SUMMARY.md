@@ -18,8 +18,8 @@ actuals:
   tokens: 18192
   tasks: 3
   commits: 6
-plan_head_before: 5d3d5845003feb67bdf06520403f2f3772c33bfb
-plan_head_after: f9aa4d6ecae07370a8e3f2a94e68629ade516b74
+plan_head_before: ce7427bae03245cc2332ca0372a6fef747be50e3
+plan_head_after: 72ce3859e2259e7fa5f6bfc1f0f6fb1282af1041
 
 tech-stack:
   added: []
@@ -136,14 +136,14 @@ Execution context nonce: 5b0f71ccd80b9afa
 ## Task Commits
 
 1. **Task 1: Tracer - tokenizer, structure and RL01 through the verb**
-   - `161104b` (test, RED; tests plus an API skeleton so the tests fail on assertions)
-   - `bd63f26` (feat)
+   - `5f62793` (test, RED; tests plus an API skeleton so the tests fail on assertions)
+   - `0687da7` (feat)
 2. **Task 2: RL02-RL06, the tagged waiver and floats in report mode**
-   - `9d0d605` (test)
-   - `ad256be` (feat)
+   - `e7a114f` (test)
+   - `83e4a45` (feat)
 3. **Task 3: Allowlist, selectors, headers, report mode and the committed-tree pin**
-   - `d30f39a` (test)
-   - `f9aa4d6` (feat)
+   - `6d4ed24` (test)
+   - `72ce385` (feat)
 
 No REFACTOR commits: the cleanups (ruff line lengths, `yield from`) were folded into each GREEN commit before it was made.
 
@@ -300,7 +300,7 @@ Both declare a row that is defined in another unit, and C89 needs them to refere
 
 The behaviour sits in one place, `_Declarations._declarator`: the `OUTSIDE` return for `extern` and for prototypes. If the owner wants those declarations refused too, flipping it is a one-line change, and `REFERENCES` in tests/test_readlint.py pins today's choice.
 
-**Tests (RED first, `f171a59`).** Each name below is a test function in tests/test_readlint.py.
+**Tests (RED first, `667474f`).** Each name below is a test function in tests/test_readlint.py.
 - I1:
   - `test_allowlist_never_exempts_a_declaration[...]` covers 16 shapes. They include the reviewer's three probes (function pointer, block static, local), a parameter and a typedef, as the ruling asks.
   - `test_allowlist_exempts_references[...]` covers 7 reference forms.
@@ -321,7 +321,7 @@ The behaviour sits in one place, `_Declarations._declarator`: the `OUTSIDE` retu
   - every reference form;
   - `test_header_allowlist_follows_the_including_exe`, since headers got no allowlist before.
 
-**Fix:** `0595ecc`.
+**Fix:** `184dfaf`.
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_readlint.py tests/test_unitdefs.py`: **191 passed**.
@@ -338,11 +338,11 @@ The finding came from the scoped re-review (N1). The orchestrator accepted the r
 
 **N1.** The `extern` exemption hid real definitions. `_declarator` returned OUTSIDE as soon as it saw `extern`, and it only checked the tokens before the declarator for an initializer.
 
-**Fix (`ceebe3d`).**
+**Fix (`446a45c`).**
 - A new method, `_Declarations._defines`, looks past the declarator's `[...]` and `(...)` suffixes. For a declarator group it starts after the group.
 - If an `=` or a `{` follows, the declaration is a definition (OWN), even under `extern`.
 
-**Tests (RED first, `9fd4c75`).** Six new cases in `test_allowlist_never_exempts_a_declaration`. The first five are the reviewer's shapes; the sixth is an initialized second declarator.
+**Tests (RED first, `89f29f9`).** Six new cases in `test_allowlist_never_exempts_a_declaration`. The first five are the reviewer's shapes; the sixth is an initialized second declarator.
 
 | Case | C |
 |------|---|

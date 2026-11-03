@@ -22,8 +22,8 @@ actuals:
   tokens: 16500
   tasks: 3
   commits: 7
-plan_head_before: 3201acece585a61cf16e52855aa84eb6843aa043
-plan_head_after: 0b1a665c63bbe32c5ed4cd71c9e4360f0a6bf14e
+plan_head_before: 8d6f05c22dab13a84c417c72403c98c3022b224e
+plan_head_after: 89e479991da51ad2dc918b338afe015bb0b26f32
 
 tech-stack:
   added: []
@@ -169,27 +169,27 @@ Execution context nonce: 9114c98bfc361942
 
 ## Task Commits
 
-1. **Task 1 (tracer): escalation, budgets, the requested-model init check.** RED `2d47364`, GREEN `ffee7bf`, harness fix `b6532e9` (see Deviations 2).
+1. **Task 1 (tracer): escalation, budgets, the requested-model init check.** RED `49add86`, GREEN `878149e`, harness fix `db9441f` (see Deviations 2).
    - Tracer feedback gate: row 3 (interactive, `human_verify_mode` end-of-phase, automated-only verify). After the GREEN commit I re-ran `uv run pytest -q tests/test_escalation.py tests/test_driver.py tests/test_drive.py`: 242 passed, 2 skipped. Tracer verified end-to-end; expanded.
-2. **Task 2: the canary's requested model; co-author by model.** RED `04a07dc`, GREEN `91e05f3`.
-3. **Task 3: the drive flags and the canary's `--model`; the orchestrator's deferred minors.** RED `68096f1`, GREEN `0b1a665`.
+2. **Task 2: the canary's requested model; co-author by model.** RED `4e6edb0`, GREEN `c565828`.
+3. **Task 3: the drive flags and the canary's `--model`; the orchestrator's deferred minors.** RED `9150396`, GREEN `89e4799`.
 
 ## TDD Gate Compliance
 
 `workflow.tdd_mode` is not set, so the `tdd-red-evidence` classifier gate does not apply. The phase-7 rule holds: each task has a `test(07-30)` commit before its `feat(07-30)` commit.
 
-- **Task 1 RED (`2d47364`): 7 failed.**
+- **Task 1 RED (`49add86`): 7 failed.**
   - The night tests failed in the driver: `Argv.__call__() missing 3 required keyword-only arguments: 'model', 'max_budget_usd', and 'max_turns'`. The driver still called `argv(prompt)`, so the night STOPPED `error` where ENDED or STOPPED `init` was expected.
   - The config test failed with `DriveConfig.__init__() got an unexpected keyword argument 'fable_budget_usd'`.
   - Semantic assessment: each failure is the missing feature. There was no collection or import fault.
-- **Task 2 RED (`04a07dc`): 5 failed, 9 passed.**
+- **Task 2 RED (`4e6edb0`): 5 failed, 9 passed.**
   - `driver.coauthor` did not exist (AttributeError).
   - `commit_message` had no `requested_model`.
   - A Fable match carried the Opus trailer.
   - An unknown model was committed.
   - The canary called `check_init` with no `expected_model` (`seen == [None]`).
   - Two new tests passed from the start, as pins. `test_canary_fails_when_its_init_names_another_model` passed because `check_init` already defaults to Opus. `test_an_opus_match_commit_keeps_the_opus_line` passed because the Opus trailer was already the default.
-- **Task 3 RED (`68096f1`): 7 failed, 1 passed.**
+- **Task 3 RED (`9150396`): 7 failed, 1 passed.**
   - The parser had no `model`, `max_budget_usd` and so on.
   - `DriveOptions` had no `canary_model`.
   - `TierQueue.finish` had no `capped` keyword.
@@ -228,7 +228,7 @@ See `key-decisions` in the frontmatter.
 - Every launched session counts toward the cap, aborted ones included. A LIMIT relaunch keeps its slot.
 - The same stale words ("counted sessions of all workers") were in `drive --max-sessions --help` and the `DriveOptions` docstring, so I fixed them there too.
 - The workflow.md table also had stale defaults (`--max-sessions` 30, `--target-matched` 10). It now shows 60 and 0, and lists `--workers` and the new flags.
-- Commit `0b1a665`.
+- Commit `89e4799`.
 
 **Orchestrator ruling (deferred minors) (2): 07-26's abort count is never cleared.**
 - `TierQueue.finish(key, *, matched, aborted=False, capped=False)` drops the key's abort count when the pass finished (matched or capped). A pass cut short (no outcome) keeps it.
@@ -238,7 +238,7 @@ See `key-decisions` in the frontmatter.
   - `test_a_pass_cut_short_keeps_the_abort_count`;
   - `test_the_coordinator_tells_the_tier_queue_a_pass_finished_capped`. I added this one to pin the driver wiring after the GREEN code, in the same commit.
 - `picker.py` and `test_driver_pick.py` are outside files_modified; the ruling required both.
-- Commits `68096f1` (RED) and `0b1a665` (GREEN).
+- Commits `9150396` (RED) and `89e4799` (GREEN).
 
 **Orchestrator notes (07-42, 07-26, 07-23 as built): applied as planned.**
 - The driver uses `model_for_pass`, `build_argv(model=, max_budget_usd=, max_turns=)`, `FABLE_BUDGET_USD`, `MODEL_NAMES` and `check_init(expected_model=)`.
@@ -249,13 +249,13 @@ See `key-decisions` in the frontmatter.
 **1. [Rule 3 - Blocking] `tests/test_driver_workers.py` is outside files_modified.**
 - Its `_argv` fake took only the prompt. After Task 1 every worker night would raise TypeError.
 - It now takes the keyword signature, and its assertions are unchanged.
-- Commit `ffee7bf`.
+- Commit `878149e`.
 
 **2. [Rule 1 - Bug, test harness] The night harness's stand-in did not echo a Fable request.**
 - `test_driver_records::test_next_pass_number` (07-23) runs a function on pass 3. That pass now asks for Fable, but the fixtures' init names Opus, so the night STOPPED `init`.
 - `Night._argv` in `tests/test_driver.py` now passes `--model <model>` to fakeclaude for any requested model other than Opus.
 - Opus sessions still replay byte for byte, so the `bad_init_*` cases are unchanged. The test's assertions are unchanged.
-- Commit `b6532e9`.
+- Commit `db9441f`.
 
 **3. [Plan clarification] `commit_message` keeps `model` and adds `requested_model`.**
 - The body's `model ...` line still shows the init event's string, as Phase 6 D-25 has it. The trailer uses the requested model.
@@ -321,12 +321,12 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tests/test_escalation.py, tools/reverseapoc/driver.py, tools/reverseapoc/cli.py, tools/reverseapoc/picker.py, tests/fakeclaude.py.
-- FOUND on this branch (3201ace..HEAD, 7 commits): 2d47364, ffee7bf, b6532e9, 04a07dc, 91e05f3, 68096f1, 0b1a665.
+- FOUND on this branch (8d6f05c..HEAD, 7 commits): 49add86, 878149e, db9441f, 4e6edb0, c565828, 9150396, 89e4799.
 - No change to STATE.md, ROADMAP.md or REQUIREMENTS.md (the orchestrator owns them after the merge).
 
 ## Fix round 1
 
-The task review (`review-07-30.md`) found one Important issue and one Minor issue I was asked to fix. FIX_BASE was 0e656bb. The branch guard passed (branch `worktree-agent-aabe21fd8e0241174`, agent namespace).
+The task review (`review-07-30.md`) found one Important issue and one Minor issue I was asked to fix. FIX_BASE was 8fd1ac6. The branch guard passed (branch `worktree-agent-aabe21fd8e0241174`, agent namespace).
 
 **Orchestrator ruling F33: flag-approved landings name the co-author of each model that wrote them.**
 - The problem: `flags.KNOWN_MODEL` and `flags._coauthor` still refused any attempt that was not Opus, so a Fable-written candidate could never be flag-approved. The "07-30 widens" comment was false.
@@ -350,14 +350,14 @@ The task review (`review-07-30.md`) found one Important issue and one Minor issu
 - `_run_canary_locked` builds its `_Claim` with `model=options.canary_model` and that model's budget. The canary argv now reads both from the claim.
 - Test: `tests/test_escalation.py::test_the_canary_claim_carries_its_requested_model`.
 
-**RED** (`5842529`): 4 failed.
+**RED** (`b714240`): 4 failed.
 - The three approve tests were refused with "only claude-opus-5-5 has a known co-author line". The C-name case reported "model unknown".
 - The canary claim test got `('claude-opus-5-5', 5)` where `('claude-fable-5-1', 20.0)` was expected.
 - The new refusal case passed from the start, as a pin.
 
 **Commits:**
-- `5842529` test(07-30): add failing tests for per-model flag-approval co-authors and the canary claim's model
-- `637c113` fix(07-30): flag approvals name each model's co-author; the canary claim carries its model
+- `b714240` test(07-30): add failing tests for per-model flag-approval co-authors and the canary claim's model
+- `f00016f` fix(07-30): flag approvals name each model's co-author; the canary claim carries its model
 - this SUMMARY commit
 
 **Counts:**

@@ -96,27 +96,27 @@ recorded: 2026-10-21T03:16:11.038Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-02 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
-| WR-05 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
-| WR-06 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (918b4f9, ee1dcaa), gate logs build/gate/03-06/ |
-| WR-07 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (231ee0d), gate logs build/gate/03-10/ |
-| IN-09 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (231ee0d), gate logs build/gate/03-10/ |
-| IN-10 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| IN-11 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| IN-01 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
-| IN-02 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ |
-| IN-03 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/; proof: docstring-only change, grep for the old sentence fails at HEAD |
-| IN-04 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-09 (154a73c), gate logs build/gate/03-10/; proof: docs-only change, grep fails at HEAD |
-| IN-05 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-09 (e3abcc6), gate logs build/gate/03-10/; proof: test refactor, reverted mutants (no RED test) |
-| IN-06 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
-| IN-07 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (51a6efc), gate logs build/gate/03-10/ |
-| IN-08 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (bf341b5), gate logs build/gate/03-10/ |
-| WR-08 | warning | fixed | owner 2026-10-21: deferred to Phase 5 - refuse last_page_size > page_size when the LE is read and handle the no-page case, so every splice refusal is a SpliceError before patches flow (regression from 03-08); owner 2026-10-21: fix now, before Phase 4; fixed in ee5cdb6, TDD, gate logs build/gate/03-leftovers/ |
-| IN-12 | info | fixed | owner 2026-10-21: deferred to Phase 5 - carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints; owner 2026-10-21: fix now, before Phase 4; fixed in 0a51a92, TDD, gate logs build/gate/03-leftovers/ |
-| WR-01 | warning | fixed | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches; owner 2026-10-21: fix now, before Phase 4; fixed in 88c6a94, TDD, gate logs build/gate/03-leftovers/ |
-| WR-03 | warning | fixed | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches; owner 2026-10-21: fix now, before Phase 4; fixed in d4de0d8 (+2493b95 shared hash helpers), TDD, gate logs build/gate/03-leftovers/ |
-| WR-04 | warning | fixed | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver; owner 2026-10-21: fix now, before Phase 4; fixed in 2eea90f (+2493b95 name once in ERROR lines), TDD, gate logs build/gate/03-leftovers/ |
-| IN-13 | info | fixed | renamed from VN-01 (owner 2026-10-21); verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (09781cf), gate logs build/gate/03-10/ (not in the current review) |
+| WR-02 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (cda43f2, 86699bc), gate logs build/gate/03-06/ |
+| WR-05 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (cda43f2, 86699bc), gate logs build/gate/03-06/ |
+| WR-06 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 3); fixed in plan 03-06 (cda43f2, 86699bc), gate logs build/gate/03-06/ |
+| WR-07 | warning | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (f248f9b), gate logs build/gate/03-10/ |
+| IN-09 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (f248f9b), gate logs build/gate/03-10/ |
+| IN-10 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (310be05), gate logs build/gate/03-10/ |
+| IN-11 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (310be05), gate logs build/gate/03-10/ |
+| IN-01 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (e9fb075), gate logs build/gate/03-10/ |
+| IN-02 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (e9fb075), gate logs build/gate/03-10/ |
+| IN-03 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (e9fb075), gate logs build/gate/03-10/; proof: docstring-only change, grep for the old sentence fails at HEAD |
+| IN-04 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-09 (29e8118), gate logs build/gate/03-10/; proof: docs-only change, grep fails at HEAD |
+| IN-05 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-09 (8ded749), gate logs build/gate/03-10/; proof: test refactor, reverted mutants (no RED test) |
+| IN-06 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (15a1e4f), gate logs build/gate/03-10/ |
+| IN-07 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (15a1e4f), gate logs build/gate/03-10/ |
+| IN-08 | info | fixed | owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-07 (310be05), gate logs build/gate/03-10/ |
+| WR-08 | warning | fixed | owner 2026-10-21: deferred to Phase 5 - refuse last_page_size > page_size when the LE is read and handle the no-page case, so every splice refusal is a SpliceError before patches flow (regression from 03-08); owner 2026-10-21: fix now, before Phase 4; fixed in 2d20bf3, TDD, gate logs build/gate/03-leftovers/ |
+| IN-12 | info | fixed | owner 2026-10-21: deferred to Phase 5 - carry --orig/--manifest into the REFUSED/MISSING check-orig and ingest hints; owner 2026-10-21: fix now, before Phase 4; fixed in 3af2ebb, TDD, gate logs build/gate/03-leftovers/ |
+| WR-01 | warning | fixed | owner 2026-10-20: deferred to Phase 5 - refuse shared logical pages and overlapping objects in layout() before splice() lands real patches; owner 2026-10-21: fix now, before Phase 4; fixed in 6b5f797, TDD, gate logs build/gate/03-leftovers/ |
+| WR-03 | warning | fixed | owner 2026-10-20: deferred to Phase 5 - samefile guard, atomic write, single read of the input before splice() lands real patches; owner 2026-10-21: fix now, before Phase 4; fixed in eae690a (+a1cbc4d shared hash helpers), TDD, gate logs build/gate/03-leftovers/ |
+| WR-04 | warning | fixed | owner 2026-10-20: deferred to Phase 6 - per-target error status so --json always prints, for the Phase 6 driver; owner 2026-10-21: fix now, before Phase 4; fixed in 0bd562b (+a1cbc4d name once in ERROR lines), TDD, gate logs build/gate/03-leftovers/ |
+| IN-13 | info | fixed | renamed from VN-01 (owner 2026-10-21); verifier note, 03-VERIFICATION.md (tools/reverseapoc/splice.py:527, :531); owner 2026-10-20: fix now (Phase 3 gap closure, UAT test 6); fixed in plan 03-08 (e9fb075), gate logs build/gate/03-10/ (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.

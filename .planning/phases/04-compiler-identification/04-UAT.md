@@ -45,9 +45,9 @@ result: pass
 note: "Owner accepted (2026-10-23). Observed: `--log .` refused before the compile (exit 1, no object); `--log /dev/null` compiles, exit 0, no /dev/null.lock; an existing folder as --log compiles then fails with 'Is a directory' (exit 1, object kept), same as before 04-13. docs/toolchain.md:321 is accurate but does not spell out the nameless/folder cases: deferred as a doc follow-up."
 
 ### 6. Prohibitions of 04-13 without wired enforcement (P1 --log part, P2, P5, P6)
-expected: Owner confirms the verifier's observations: pyproject `dependencies = []` and uv.lock unchanged since c2d4054~1; no 'debug-cclog' reference in the committed tests; config/, docker/, tests/test_compiler.py, tests/test_cli.py unchanged since c2d4054~1 (beyond the 04 review fixes); check-orig 3 OK; every gate step logged with exit=0
+expected: Owner confirms the verifier's observations: pyproject `dependencies = []` and uv.lock unchanged since 0513942~1; no 'debug-cclog' reference in the committed tests; config/, docker/, tests/test_compiler.py, tests/test_cli.py unchanged since 0513942~1 (beyond the 04 review fixes); check-orig 3 OK; every gate step logged with exit=0
 result: pass
-note: "Re-checked 2026-10-23 at HEAD: dependencies = [], pyproject.toml and uv.lock unchanged since c2d4054~1; no debug-cclog reference in tests/; config/, docker/, tests/test_compiler.py unchanged, tests/test_cli.py +17 lines only from review fix WR-01 (37b104f); check-orig 3 ok; build/gate/04-13/01..05 all exit=0 (every exit=1 in 04-13-SUMMARY is a deliberate mutant)."
+note: "Re-checked 2026-10-23 at HEAD: dependencies = [], pyproject.toml and uv.lock unchanged since 0513942~1; no debug-cclog reference in tests/; config/, docker/, tests/test_compiler.py unchanged, tests/test_cli.py +17 lines only from review fix WR-01 (e1a6384); check-orig 3 ok; build/gate/04-13/01..05 all exit=0 (every exit=1 in 04-13-SUMMARY is a deliberate mutant)."
 
 ## Summary
 

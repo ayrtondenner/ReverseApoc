@@ -20,8 +20,8 @@ actuals:
   tokens: 7300
   tasks: 3
   commits: 6
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: b82c1915880fb0e5a2c5b25051df5912b3281122
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: 7d6771fd82cf4c049a3fe1aa3c2a57b75bcf96ee
 
 tech-stack:
   added: []
@@ -116,23 +116,23 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1: tracer, view-mode sessions.** RED `8522065` (test), GREEN `49834ed` (feat). The tracer gate ran in interactive end-of-phase mode with an automated-only verify: I re-ran `uv run pytest -q tests/test_hooks.py` (272 passed) before Task 2 started.
-2. **Task 2: owner-only cflags files and D-19 denies.** RED `1e3bee3` (test), GREEN `2ccd926` (feat).
-3. **Task 3: readability kind and shape checks.** RED `80de2ea` (test), GREEN `b82c191` (feat).
+1. **Task 1: tracer, view-mode sessions.** RED `7563b56` (test), GREEN `c57d63d` (feat). The tracer gate ran in interactive end-of-phase mode with an automated-only verify: I re-ran `uv run pytest -q tests/test_hooks.py` (272 passed) before Task 2 started.
+2. **Task 2: owner-only cflags files and D-19 denies.** RED `41ca070` (test), GREEN `7b3f746` (feat).
+3. **Task 3: readability kind and shape checks.** RED `979fa59` (test), GREEN `7d6771f` (feat).
 
 ## TDD evidence (RED)
 
 GSD's `check tdd-red-evidence` classifier has no pytest adapter (it supports TAP, JUnit XML, swift-testing, unittest and go test). The RED evidence below is the real pytest result, and I checked each failure by hand to confirm it failed for the planned reason.
 
-- **Task 1 RED (`8522065`):** `uv run pytest -q tests/test_hooks.py -k "view_unit or view_mode or proposals_file"` gave 4 failed. Each one failed on its planned assertion:
+- **Task 1 RED (`7563b56`):** `uv run pytest -q tests/test_hooks.py -k "view_unit or view_mode or proposals_file"` gave 4 failed. Each one failed on its planned assertion:
   - the view unit and proposals.jsonl were denied as `build/ is protected`;
   - the asm edit was denied with the build/ reason instead of the asm rule;
   - in view mode, src/ufo2p/u_000a34f0.c was still allowed.
   None of the failures was an import, collection or fixture error.
-- **Task 2 RED (`1e3bee3`):** the plan's `-k "cflags or proposal_queue or d19 or legacy"` gave 7 failed and 4 passed.
+- **Task 2 RED (`41ca070`):** the plan's `-k "cflags or proposal_queue or d19 or legacy"` gave 7 failed and 4 passed.
   - Failures: both cflags files were allowed (the Write payload was not denied), and the five D-19 cases got the D-24 reason.
   - The 4 passes are pins, not RED targets: `test_legacy_mode_unchanged` holds by design (it pins Phase 6 behaviour), and the F9 near-miss `.bak` cases are allowed both before and after the change.
-- **Task 3 RED (`80de2ea`):** 5 failed, 23 passed.
+- **Task 3 RED (`979fa59`):** 5 failed, 23 passed.
   - Failures: readability without a unit file was still allowed src/ and include/, and all four unknown-kind values were allowed to write.
   - Passes: the shape tests (`another_unit`, `outside_build_driver`, `view_unit_include_rule`) and `test_session_env_names` already passed at RED. Task 1's GREEN had implemented the exact-claim and view-shape checks as its action text required, so these tests pin T-07-12 and T-07-11 rather than drive new code.
 
@@ -152,7 +152,7 @@ See `key-decisions` in the frontmatter. All five are fail-closed choices inside 
 
 ## Deviations from Plan
 
-**Orchestrator ruling F9:** `test_always_allows_near_miss_paths` no longer lists `config/cflags.txt`, which is now protected. I added `config/cflags.txt.bak` and `config/cflags-proposals.toml.bak` as near misses. Commit `1e3bee3`.
+**Orchestrator ruling F9:** `test_always_allows_near_miss_paths` no longer lists `config/cflags.txt`, which is now protected. I added `config/cflags.txt.bak` and `config/cflags-proposals.toml.bak` as near misses. Commit `41ca070`.
 
 ### Auto-fixed Issues
 
@@ -161,19 +161,19 @@ See `key-decisions` in the frontmatter. All five are fail-closed choices inside 
 - **Issue:** If `_session_relative` could not place the env unit file, it returned None, which put the session into legacy mode. That would allow `src/<exe>/<unit>.c` and new headers for a session that was meant to be confined to its view.
 - **Fix:** `_matching_write` now denies every write when `REVERSEAPOC_UNIT_FILE` is set but unusable.
 - **Files modified:** tools/reverseapoc/hooks.py
-- **Committed in:** 49834ed
+- **Committed in:** c57d63d
 
 **2. [Rule 2 - Missing critical] Readability without a view unit**
 - **Found during:** Task 3
 - **Issue:** The plan says readability "uses the view-mode allowlist unchanged" but does not say what happens when the unit file env is missing. Without that env, the session would get the legacy allowlist, which includes new include/ headers (D-19 naming state).
 - **Fix:** A readability session without `REVERSEAPOC_UNIT_FILE` is denied every write, and the reason names the env variable. Covered by `test_readability_kind_same_allowlist`.
-- **Committed in:** 80de2ea (test), b82c191 (fix)
+- **Committed in:** 979fa59 (test), 7d6771f (fix)
 
 **3. [Plan clarification] "Tighten `_session_paths`" made concrete**
 - **Found during:** Task 3
 - **Issue:** Task 1 already required the shape and the claim, so Task 3's "tighten" had no obvious target left.
 - **Fix:** An env path now counts only when every repo-relative form of it under build/ fits the shape, instead of any one form (for example, a nested checkout under build/). `test_session_paths_need_every_build_form_to_fit` covers this. It was written in the GREEN step, not in a separate RED commit. I confirmed it bites by switching `all` back to `any`, seeing it fail, and restoring `all`.
-- **Committed in:** b82c191
+- **Committed in:** 7d6771f
 
 ---
 
@@ -204,7 +204,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/hooks.py, tests/test_hooks.py
-- FOUND commits: 8522065, 49834ed, 1e3bee3, 2ccd926, 80de2ea, b82c191 (`git rev-list --count 0f9de36..HEAD` = 6 before this SUMMARY commit)
+- FOUND commits: 7563b56, c57d63d, 41ca070, 7b3f746, 979fa59, 7d6771f (`git rev-list --count 99f4659..HEAD` = 6 before this SUMMARY commit)
 - Acceptance criteria:
   - `UNIT_FILE_ENV = "REVERSEAPOC_UNIT_FILE"` and `def _session_paths(` are in hooks.py.
   - `matching_write_allowed` has the `unit_file` and `proposals` keywords.
@@ -215,7 +215,7 @@ None.
 
 **Finding (Important):** the guard in `_matching_write` that denies every write when `REVERSEAPOC_UNIT_FILE` is set but unusable (hooks.py, `if view and unit_rel is None`) had no test. With the guard removed, the suite stayed green, and such a session would have fallen back to the legacy src/ and include/ allowlist.
 
-**Tests added (commit `777fb76`, tests only, no production change):**
+**Tests added (commit `6a6da6e`, tests only, no production change):**
 - `test_unusable_unit_file_denies_every_write[outside|home|nul|symlink-inside|symlink-outside]`. For each unusable env value, a write to the legacy src/ unit, a new include/fx.h or notes.md is denied, and the reason names `REVERSEAPOC_UNIT_FILE`. The view unit and proposals.jsonl are denied too. The symlink cases skip on this host with the R-A reason "symlink creation needs privileges on this host"; they run in the container.
 - `test_unit_file_with_two_forms_denies_every_write`. This covers the symlink branch on this host. A patched `os.path.realpath` maps an alias in the checkout to the view unit, so the env path has two forms and does not name a single path. Every write is denied.
 - `test_wrong_shape_unit_file_keeps_the_view_allowlist`. A unit file under build/ with the wrong shape can be placed, so the guard does not handle it. The session stays in view mode and never gets the legacy allowlist: src/, include/, the wrong-shape file and the real view path are all denied. notes.md stays writable, as the view allowlist intends.

@@ -16,19 +16,19 @@ provides:
 affects: [06-26 pilot checkpoint (the owner runs drive --dry-run, drive --canary, then the pilot), 06-27 phase gate]
 
 actuals:
-  tokens: 26500   # chars/4 over git diff d86e673..dc3c34f (106,017 chars)
+  tokens: 26500   # chars/4 over git diff 9edce61..d3f55b2 (106,017 chars)
   tasks: 3
-  commits: 12     # measured: git rev-list --count d86e673..HEAD before this SUMMARY commit
-plan_head_before: d86e673dc3ab71512445f2349cbc7888b7543fac
-plan_head_after: dc3c34f60cc881959d603f084327e802563c7295
+  commits: 12     # measured: git rev-list --count 9edce61..HEAD before this SUMMARY commit
+plan_head_before: 9edce61cac0404e15709bb2b3341030d4b5aec78
+plan_head_after: d3f55b2cbb8dd86dcdb13a0790f04af79085f67e
 fix_round_1:
-  base: d73dbb949f5f89cb5cf45d356aca10742642986e
-  head_before_summary: a4615bc
-  commits: 7  # git rev-list --count d73dbb9..a4615bc; the round's SUMMARY commit is one more
+  base: baab8fa27437ad6adaf52f7e689bdddc30ae2b11
+  head_before_summary: 57ad56f
+  commits: 7  # git rev-list --count baab8fa..57ad56f; the round's SUMMARY commit is one more
 fix_round_2:
-  base: 967625b230357ed24a13cfa40715cf03461630f4
-  head_before_summary: ad5f6ec
-  commits: 3  # git rev-list --count 967625b..ad5f6ec; the round's SUMMARY commit is one more
+  base: 3b544a5b25a24d500e623198cec48d280a6fbd9f
+  head_before_summary: 2593371
+  commits: 3  # git rev-list --count 3b544a5..2593371; the round's SUMMARY commit is one more
 
 tech-stack:
   added: []
@@ -155,22 +155,22 @@ Execution context nonce: cd3096eb7531c5d5
 ## Task Commits
 
 1. **Task 1 (tracer): dry run, real Deps, gate argv**
-   - RED `f0c241d` (test): 7 failed on assertions (interface skeletons only), 1 pin passed.
-   - GREEN `69cedc1` (feat): 8 passed. Tracer gate (interactive, end-of-phase, automated-only verify): `uv run pytest -q tests/test_drive.py` re-run, 8 passed, expanded.
-   - REFACTOR `d7e6cb1` (refactor): picker's TODO(06-25) closed, see Deviations.
+   - RED `92bf40c` (test): 7 failed on assertions (interface skeletons only), 1 pin passed.
+   - GREEN `be88689` (feat): 8 passed. Tracer gate (interactive, end-of-phase, automated-only verify): `uv run pytest -q tests/test_drive.py` re-run, 8 passed, expanded.
+   - REFACTOR `50653ae` (refactor): picker's TODO(06-25) closed, see Deviations.
 2. **Task 2: preflight, canary, container cleanup**
-   - RED `eff0014` (test): 29 failed, all on assertions (skeleton `preflight`/`compose_project`).
-   - GREEN `77a0d6a` (feat): 38 passed.
-   - Rule 2 extension: RED `8f78d1e` (test, 5 assertion failures: the missing fifth call, the crash escape reported through `pytest.fail`), GREEN `53ca925` (fix), docs `56827a3`.
+   - RED `9376938` (test): 29 failed, all on assertions (skeleton `preflight`/`compose_project`).
+   - GREEN `c8b2d6b` (feat): 38 passed.
+   - Rule 2 extension: RED `a315b41` (test, 5 assertion failures: the missing fifth call, the crash escape reported through `pytest.fail`), GREEN `a727c2c` (fix), docs `d3423c6`.
 3. **Task 3: end of run and docs**
-   - RED `5e74574` (test): 4 failed on assertions (skeleton `finish`).
-   - GREEN `ca68c96` (feat): 42 passed.
-   - Docs `c2b0a9c` (docs). Baseline at d86e673: none of the three grep strings were in workflow.md.
-4. **Real-file test** `dc3c34f` (test): see Deviations.
+   - RED `41e3097` (test): 4 failed on assertions (skeleton `finish`).
+   - GREEN `99684cf` (feat): 42 passed.
+   - Docs `951d72c` (docs). Baseline at 9edce61: none of the three grep strings were in workflow.md.
+4. **Real-file test** `d3f55b2` (test): see Deviations.
 
 ## TDD Gate Compliance
 
-Every tdd task has a `test(06-25)` commit before its `feat(06-25)` commit: f0c241d -> 69cedc1, eff0014 -> 77a0d6a, 5e74574 -> ca68c96, and 8f78d1e -> 53ca925 for the canary extension. pytest's console report is not a format `check tdd-red-evidence` reads; as in 06-15 and 06-23 I judged RED by reading each failure, and each RED commit carried only interface skeletons so the failures were assertions, not imports. `d7e6cb1` is a REFACTOR with no behaviour change, pinned by tests/test_driver_pick.py's matched_starts test.
+Every tdd task has a `test(06-25)` commit before its `feat(06-25)` commit: 92bf40c -> be88689, 9376938 -> c8b2d6b, 41e3097 -> 99684cf, and a315b41 -> a727c2c for the canary extension. pytest's console report is not a format `check tdd-red-evidence` reads; as in 06-15 and 06-23 I judged RED by reading each failure, and each RED commit carried only interface skeletons so the failures were assertions, not imports. `50653ae` is a REFACTOR with no behaviour change, pinned by tests/test_driver_pick.py's matched_starts test.
 
 ## Files Created/Modified
 
@@ -215,9 +215,9 @@ See key-decisions in the frontmatter.
 
 **Auto-fixed / added:**
 
-15. **[Rule 2 - Missing critical] The canary also runs `attempt check`.** Found after Task 2: a container check during a session writes Python bytecode into the bind-mounted tools/ if the container's interpreter rejects the host's .pyc, which would stop the pilot's first night on the fingerprint; 06-15 also left the first real `docker compose run -T --name` check unproven. The prompt gains a fifth call on the matched claim; PASS needs it allowed and its checks.jsonl line at exit 0. A raising session is now a FAIL line with the tree still measured, never an escape. `CANARY_TIMEOUT_S` 1200. Commits 8f78d1e, 53ca925, 56827a3.
-16. **[Rule 2 - Missing critical] A real-file test of the verb's world** (`tests/test_drive_real.py`, a file outside files_modified): `load_world` on both real EXEs and the real pilot over the committed config/. A probe with the exclusion removed puts both Phase 5 matches into the pilot, so the test can fail. It skips only with the existing `orig/<name> not present` reason (no new skip reason, R-A). Commit dc3c34f.
-17. **[Plan reading] picker.py joins the files.** rulings ## 06-15 left the picker's TODO(06-25) for this plan: `STATUS_MATCHED` now imports `status.MATCHED` (refactor d7e6cb1).
+15. **[Rule 2 - Missing critical] The canary also runs `attempt check`.** Found after Task 2: a container check during a session writes Python bytecode into the bind-mounted tools/ if the container's interpreter rejects the host's .pyc, which would stop the pilot's first night on the fingerprint; 06-15 also left the first real `docker compose run -T --name` check unproven. The prompt gains a fifth call on the matched claim; PASS needs it allowed and its checks.jsonl line at exit 0. A raising session is now a FAIL line with the tree still measured, never an escape. `CANARY_TIMEOUT_S` 1200. Commits a315b41, a727c2c, d3423c6.
+16. **[Rule 2 - Missing critical] A real-file test of the verb's world** (`tests/test_drive_real.py`, a file outside files_modified): `load_world` on both real EXEs and the real pilot over the committed config/. A probe with the exclusion removed puts both Phase 5 matches into the pilot, so the test can fail. It skips only with the existing `orig/<name> not present` reason (no new skip reason, R-A). Commit d3f55b2.
+17. **[Plan reading] picker.py joins the files.** rulings ## 06-15 left the picker's TODO(06-25) for this plan: `STATUS_MATCHED` now imports `status.MATCHED` (refactor 50653ae).
 18. **[Plan reading] Two more synthetic fixtures** than the plan lists: `canary_wrapper_denied.jsonl` (ruling F12) and `canary_unknown_error.jsonl` (06-23 notes).
 19. **[Rule 2 - Fail closed] Extra refusals, each tested:** `host sync`, `compile` and `asm` failures refuse; a world-load failure refuses (`world`); a pilot that cannot be filled refuses (`picks`); a run id outside `[A-Za-z0-9_.-]+` refuses; `ghidra-export` exit other than 0/1 refuses (`drafts`).
 
@@ -235,19 +235,19 @@ See key-decisions in the frontmatter.
 - **Compose project name** is the checkout directory name normalized (`reverseapoc`). If the owner sets `COMPOSE_PROJECT_NAME`, the cleanup filter finds no container (no error).
 - **A leaky canary leaves its files** (for example tools/x.py) for inspection; restore them before the pilot.
 
-## Fix round 1 (FIX_BASE d73dbb9; review-06-25.md, rulings fixround-06-25-r1.md)
+## Fix round 1 (FIX_BASE baab8fa; review-06-25.md, rulings fixround-06-25-r1.md)
 
 | Item | Finding | Fix | Tests | Commits (RED, GREEN) |
 |---|---|---|---|---|
-| I1 | ghidra-export exit 1 was taken as "some drafts missing", but every ghidra-export tool error, a traceback and many docker failures exit 1 too: a broken Ghidra let the dry run exit 0 | The drafts call is `ghidra-export EXE --json --drafts ...`. Exit 0 is done. Exit 1 passes only with a parseable GhidraDrafts document whose `missing` list is non-empty, logged per EXE. Anything else is REFUSED `drafts`, naming the exit code and the last output line | `test_preflight_accepts_exit_1_only_with_missing_drafts_named`, `test_preflight_refuses_any_other_drafts_failure` (6 cases: traceback, empty `missing`, non-JSON, malformed `missing`, exit 2, exit 125), `test_preflight_regenerates_listings_and_drafts` (argv carries `--json`) | 2f74f9e, 8bd5d3b |
-| I2 | A corrupt difficult.json, a malformed committed status.csv, a runner raising PermissionError, a missing git and a failing dry-run pack escaped as exit 1 with no JSON document | `run_drive` runs each step in a `_phase(reason)` that turns any error into `Refused` (preflight, canary, picks, drafts, pack; world was already covered). Result: exit 2 and one JSON document (F13). The night itself keeps 06-23's STOPPED handling. `command_runner` maps every OSError (127 for a missing program, 126 otherwise); `git_runner` maps one to a failed call the same way | `test_a_corrupt_difficult_list_is_refused`, `test_a_malformed_committed_status_table_is_refused`, `test_a_runner_that_raises_is_refused`, `test_a_missing_git_is_refused`, `test_a_failing_pack_in_the_dry_run_is_refused`, `test_command_runner_maps_every_os_error` (3 cases), `test_git_runner_maps_an_os_error` | 9d55132, 5496511 |
-| Minor 2 | The canary did not check HEAD or refs: a commit leaves `git status` clean | HEAD and every ref (`for-each-ref`) are recorded before and after the session; any move is a FAIL naming it | `test_canary_fails_when_head_moves` | 090e404, 95b7ad1 |
-| Minor 3 | The canary removed no containers | After the session, `container_remover(repo, run)(attempt.container_prefix(attempt_dir))` runs before the tree is measured, as the night does. A failed removal is a FAIL line | `test_canary_removes_its_containers_by_the_attempt_prefix`, `test_canary_names_a_failed_container_removal` | 090e404, 95b7ad1 |
-| Minor 1 | A reused `--run ID` could pass on an earlier canary's context.md or checks.jsonl | An existing canary attempt directory is REFUSED `run id` (`mkdir` without exist_ok), and no session starts | `test_canary_refuses_a_reused_run_id` | 090e404, 95b7ad1 |
-| Minor 4, 5 | docs/workflow.md was inaccurate (the canary precomputing drafts), the refusal list was incomplete, there was no recovery after a leaky canary, nothing said that a STOPPED night skips the end checks, and the open assumptions were only in this SUMMARY | Changes: one table of every refusal reason; the drafts rule, and a note that the canary does not precompute drafts; the canary's new checks and its literal `CANARY PASS` / `CANARY FAIL` line; a fresh `--run ID` per canary; "After a FAILed or leaky canary" (git status, `git restore --source=HEAD -- <paths>`, delete untracked strays, check by hand the pinned/fingerprinted paths git cannot see, `docker rm -f`); "A STOPPED night skips both end checks"; "Open assumptions to watch at the pilot checkpoint", with all nine items | docs: the three plan greps and test_hygiene | a4615bc (docs) |
+| I1 | ghidra-export exit 1 was taken as "some drafts missing", but every ghidra-export tool error, a traceback and many docker failures exit 1 too: a broken Ghidra let the dry run exit 0 | The drafts call is `ghidra-export EXE --json --drafts ...`. Exit 0 is done. Exit 1 passes only with a parseable GhidraDrafts document whose `missing` list is non-empty, logged per EXE. Anything else is REFUSED `drafts`, naming the exit code and the last output line | `test_preflight_accepts_exit_1_only_with_missing_drafts_named`, `test_preflight_refuses_any_other_drafts_failure` (6 cases: traceback, empty `missing`, non-JSON, malformed `missing`, exit 2, exit 125), `test_preflight_regenerates_listings_and_drafts` (argv carries `--json`) | f743c85, 8df2098 |
+| I2 | A corrupt difficult.json, a malformed committed status.csv, a runner raising PermissionError, a missing git and a failing dry-run pack escaped as exit 1 with no JSON document | `run_drive` runs each step in a `_phase(reason)` that turns any error into `Refused` (preflight, canary, picks, drafts, pack; world was already covered). Result: exit 2 and one JSON document (F13). The night itself keeps 06-23's STOPPED handling. `command_runner` maps every OSError (127 for a missing program, 126 otherwise); `git_runner` maps one to a failed call the same way | `test_a_corrupt_difficult_list_is_refused`, `test_a_malformed_committed_status_table_is_refused`, `test_a_runner_that_raises_is_refused`, `test_a_missing_git_is_refused`, `test_a_failing_pack_in_the_dry_run_is_refused`, `test_command_runner_maps_every_os_error` (3 cases), `test_git_runner_maps_an_os_error` | 4b4bd10, 1e33f4c |
+| Minor 2 | The canary did not check HEAD or refs: a commit leaves `git status` clean | HEAD and every ref (`for-each-ref`) are recorded before and after the session; any move is a FAIL naming it | `test_canary_fails_when_head_moves` | 4c4ecbb, 7b7830e |
+| Minor 3 | The canary removed no containers | After the session, `container_remover(repo, run)(attempt.container_prefix(attempt_dir))` runs before the tree is measured, as the night does. A failed removal is a FAIL line | `test_canary_removes_its_containers_by_the_attempt_prefix`, `test_canary_names_a_failed_container_removal` | 4c4ecbb, 7b7830e |
+| Minor 1 | A reused `--run ID` could pass on an earlier canary's context.md or checks.jsonl | An existing canary attempt directory is REFUSED `run id` (`mkdir` without exist_ok), and no session starts | `test_canary_refuses_a_reused_run_id` | 4c4ecbb, 7b7830e |
+| Minor 4, 5 | docs/workflow.md was inaccurate (the canary precomputing drafts), the refusal list was incomplete, there was no recovery after a leaky canary, nothing said that a STOPPED night skips the end checks, and the open assumptions were only in this SUMMARY | Changes: one table of every refusal reason; the drafts rule, and a note that the canary does not precompute drafts; the canary's new checks and its literal `CANARY PASS` / `CANARY FAIL` line; a fresh `--run ID` per canary; "After a FAILed or leaky canary" (git status, `git restore --source=HEAD -- <paths>`, delete untracked strays, check by hand the pinned/fingerprinted paths git cannot see, `docker rm -f`); "A STOPPED night skips both end checks"; "Open assumptions to watch at the pilot checkpoint", with all nine items | docs: the three plan greps and test_hygiene | 57ad56f (docs) |
 | Minor 6, 7 | `_chk_targets`/`_runtime_starts` are duplicated from cli.py; driver.py is large | Not in the work order; left as they are | - | - |
 
-RED evidence: each RED commit failed on assertions only. Escapes were reported through `pytest.fail`. 2f74f9e had 5 failures: the argv without `--json`, and 4 × `assert 0 == 2`; exit 2 and exit 125 passed as pins. 9d55132 had 8 failures: `run_drive let DriverError/StatusError/PermissionError/FileNotFoundError/OSError escape`, `command_runner let PermissionError/OSError escape` and `git_runner let FileNotFoundError escape`; the FileNotFoundError case of command_runner passed as a pin. 090e404 had 4 failures: `(0, 'PASS') == (1, 'FAIL')` × 2, `[] == [['docker', 'ps', ...]]` and `assert 0 == 2`.
+RED evidence: each RED commit failed on assertions only. Escapes were reported through `pytest.fail`. f743c85 had 5 failures: the argv without `--json`, and 4 × `assert 0 == 2`; exit 2 and exit 125 passed as pins. 4b4bd10 had 8 failures: `run_drive let DriverError/StatusError/PermissionError/FileNotFoundError/OSError escape`, `command_runner let PermissionError/OSError escape` and `git_runner let FileNotFoundError escape`; the FileNotFoundError case of command_runner passed as a pin. 4c4ecbb had 4 failures: `(0, 'PASS') == (1, 'FAIL')` × 2, `[] == [['docker', 'ps', ...]]` and `assert 0 == 2`.
 
 Verification after fix round 1 (host, worktree):
 - `uv run pytest -q tests/test_drive.py tests/test_drive_real.py` with REVERSEAPOC_ORIG at the main checkout: 66 passed, no skips.
@@ -255,17 +255,17 @@ Verification after fix round 1 (host, worktree):
 - `uv run ruff check .`: All checks passed.
 - Nothing reached the network. No `drive` without `--dry-run`, no `--canary`, no real claude and no docker were run; every command went through fakes.
 
-## Fix round 2 (FIX_BASE 967625b; rereview-06-25-r1-report.md approved r1, rulings in the coordinator's message)
+## Fix round 2 (FIX_BASE 3b544a5; rereview-06-25-r1-report.md approved r1, rulings in the coordinator's message)
 
 | Item | Finding | Fix | Tests | Commits (RED, GREEN) |
 |---|---|---|---|---|
-| 1 (re-review minor 4) | A canary error after its session had run (git failing while measuring the tree or comparing refs) became REFUSED `canary`, exit 2 ("never started"), and the PASS/FAIL lines gathered so far were lost | Once the session has run, errors in the stream checks (`_after_session`), in measuring the tree and in comparing the refs become FAIL lines after the lines gathered so far. The canary then prints `CANARY FAIL` and exits 1. REFUSED 2 stays for refusals before the session (preflight, an existing attempt dir). The exit-code texts of `run_canary` and `_cmd_drive` now say this | `test_a_canary_error_after_the_session_is_a_fail_not_a_refusal[status, for-each-ref]`, `test_a_canary_error_after_the_session_ends_the_text_with_canary_fail` | db362dd, bf2c5d3 |
-| 2a (minor 1) | "the canary checks the first five" was false | Now reads: the canary checks items 1, 4, 5 and 6; items 2 (hook timing) and 3 (`CLAUDE_PROJECT_DIR`, partly shown) stay open after `CANARY PASS`; items 7 to 9 are operational | docs | ad5f6ec |
-| 2b (minor 2) | The `preflight` / `canary` row said a runner or git that cannot start lands there | Now reads: any other unexpected error. With the real runners, a git or docker that cannot start gives `worktree` or `docker`; a canary error after its session is a `CANARY FAIL`, exit 1 | docs | ad5f6ec |
-| 2c (minor 3) | Owner warnings were missing | Three warnings added: do not edit the checkout during a night (it stops on a guardrail, and the file is restored or quarantined); Ctrl+C gives STOPPED `interrupted` with no end checks; the canary is a real paid session whose `attempt check` can take up to 10 minutes | docs | ad5f6ec |
-| 2d (question 1) | No prerequisites and no ordered steps | "Before you start": Docker running and `docker compose build`, `ingest` + `check-orig`, `install-watcom` + `check-watcom`, `claude --version` major 2 and at least 2.1.302 (upgrade with `claude install stable`), a clean `git status`. Then the steps: `drive --dry-run`, then `drive --canary --run <fresh id>` until `CANARY PASS`, then the pilot command. Then where to read the results: the exit code, `progress/attempts.jsonl` records and the last `run` record, both status.csv files, the commits (`--grep='^Matched-By: reverseapoc drive$'`, `chore(driver): attempt log`), and `build/driver/<run>/`. Pushing `main` is the owner's step | docs | ad5f6ec |
+| 1 (re-review minor 4) | A canary error after its session had run (git failing while measuring the tree or comparing refs) became REFUSED `canary`, exit 2 ("never started"), and the PASS/FAIL lines gathered so far were lost | Once the session has run, errors in the stream checks (`_after_session`), in measuring the tree and in comparing the refs become FAIL lines after the lines gathered so far. The canary then prints `CANARY FAIL` and exits 1. REFUSED 2 stays for refusals before the session (preflight, an existing attempt dir). The exit-code texts of `run_canary` and `_cmd_drive` now say this | `test_a_canary_error_after_the_session_is_a_fail_not_a_refusal[status, for-each-ref]`, `test_a_canary_error_after_the_session_ends_the_text_with_canary_fail` | f9e9ccf, c8a7c99 |
+| 2a (minor 1) | "the canary checks the first five" was false | Now reads: the canary checks items 1, 4, 5 and 6; items 2 (hook timing) and 3 (`CLAUDE_PROJECT_DIR`, partly shown) stay open after `CANARY PASS`; items 7 to 9 are operational | docs | 2593371 |
+| 2b (minor 2) | The `preflight` / `canary` row said a runner or git that cannot start lands there | Now reads: any other unexpected error. With the real runners, a git or docker that cannot start gives `worktree` or `docker`; a canary error after its session is a `CANARY FAIL`, exit 1 | docs | 2593371 |
+| 2c (minor 3) | Owner warnings were missing | Three warnings added: do not edit the checkout during a night (it stops on a guardrail, and the file is restored or quarantined); Ctrl+C gives STOPPED `interrupted` with no end checks; the canary is a real paid session whose `attempt check` can take up to 10 minutes | docs | 2593371 |
+| 2d (question 1) | No prerequisites and no ordered steps | "Before you start": Docker running and `docker compose build`, `ingest` + `check-orig`, `install-watcom` + `check-watcom`, `claude --version` major 2 and at least 2.1.302 (upgrade with `claude install stable`), a clean `git status`. Then the steps: `drive --dry-run`, then `drive --canary --run <fresh id>` until `CANARY PASS`, then the pilot command. Then where to read the results: the exit code, `progress/attempts.jsonl` records and the last `run` record, both status.csv files, the commits (`--grep='^Matched-By: reverseapoc drive$'`, `chore(driver): attempt log`), and `build/driver/<run>/`. Pushing `main` is the owner's step | docs | 2593371 |
 
-RED evidence (db362dd): 3 failures, all on assertions: `(2, 'REFUSED', None) == (1, None, 'FAIL')` twice and `assert 2 == 1`.
+RED evidence (f9e9ccf): 3 failures, all on assertions: `(2, 'REFUSED', None) == (1, None, 'FAIL')` twice and `assert 2 == 1`.
 
 Verification after fix round 2 (host, worktree):
 - `uv run pytest -q tests/test_drive.py`: 67 passed.
@@ -300,7 +300,7 @@ None beyond 06-26's checkpoint (CLI upgrade to major 2, at least 2.1.302).
 ## Self-Check: PASSED
 
 - Files exist: tools/reverseapoc/driver.py, tools/reverseapoc/cli.py, tools/reverseapoc/picker.py, docs/workflow.md, tests/test_drive.py, tests/test_drive_real.py and the four canary fixtures.
-- Commits f0c241d, 69cedc1, d7e6cb1, eff0014, 77a0d6a, 5e74574, ca68c96, c2b0a9c, 8f78d1e, 53ca925, 56827a3, dc3c34f are on this branch (`git rev-list --count d86e673..HEAD` = 12 before this SUMMARY).
+- Commits 92bf40c, be88689, 50653ae, 9376938, c8b2d6b, 41e3097, 99684cf, 951d72c, a315b41, a727c2c, d3423c6, d3f55b2 are on this branch (`git rev-list --count 9edce61..HEAD` = 12 before this SUMMARY).
 - No modification to STATE.md, ROADMAP.md, orig/, config/, status.csv, hooks.py or the build scripts.
 
 ---

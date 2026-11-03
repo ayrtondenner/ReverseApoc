@@ -19,8 +19,8 @@ affects: [phase-4-compiler-id, phase-5-landing, phase-6-driver]
 actuals:
   tasks: 3
   commits: 3
-plan_head_before: 8ac57f79f6dc90db27b7436e0f445faa3fe8f468
-plan_head_after: 0a9e8d2
+plan_head_before: 118089f87ffecae898b0f6eb8abc1fda510250f3
+plan_head_after: cacbf21
 
 tech-stack:
   added: []
@@ -111,7 +111,7 @@ completed: 2026-10-20
 ## Performance
 
 - **Tasks:** 3 (Tasks 1-2 by the worktree executor, Task 3 by the orchestrator on the main checkout)
-- **Commits:** 3 (9d93101, 2f47759, 0a9e8d2), merged in 2347cea
+- **Commits:** 3 (bc16106, bfe6f54, cacbf21), merged in cbcaf13
 - **Files:** 1 created, 2 modified
 
 ## Accomplishments
@@ -127,10 +127,10 @@ completed: 2026-10-20
 
 ## Task Commits
 
-1. **Task 1: real-file round trip, control mutation and masking (tracer).** Commit `9d93101`: test(03-05): round-trip, control mutation and masking on the real EXEs.
+1. **Task 1: real-file round trip, control mutation and masking (tracer).** Commit `bc16106`: test(03-05): round-trip, control mutation and masking on the real EXEs.
 2. **Task 2: pin the confirmed facts, correct docs/toolchain.md.**
-   - RED `2f47759`: test(03-05): pin the spike-confirmed LE facts and add a failing doc check.
-   - GREEN `0a9e8d2`: docs(03-05): record the spike-confirmed LE layout and byte-region map.
+   - RED `bfe6f54`: test(03-05): pin the spike-confirmed LE facts and add a failing doc check.
+   - GREEN `cacbf21`: docs(03-05): record the spike-confirmed LE layout and byte-region map.
 3. **Task 3: phase gate on the main checkout.** No commit by design: `build/` is gitignored, and the logs are reproduced below.
 
 ## Mutants and negative proofs (Tasks 1-2, never committed)
@@ -160,7 +160,7 @@ completed: 2026-10-20
 
 - `tests/test_splice_real.py` (new, 324 lines): helpers `_page_offset`, `_file_offset`, `_page_backed_end`, `_covered`, `_straddlers` and `_cut_fields`; the six real-file tests; FACTS and `test_measured_facts`.
 - `tests/test_hygiene.py` (+9): `test_toolchain_records_the_confirmed_le_layout`.
-- `docs/toolchain.md` (+36 / -15): LE layout section only. "Getting the Watcom compilers" and "OpenApoc CRC mismatch" are byte-identical to base 8ac57f7.
+- `docs/toolchain.md` (+36 / -15): LE layout section only. "Getting the Watcom compilers" and "OpenApoc CRC mismatch" are byte-identical to base 118089f.
 
 ## Decisions Made
 
@@ -309,6 +309,6 @@ Phase complete; ready for `/gsd-verify-work 3`. The `splice(le, {va: bytes})` pr
 ## Self-Check: PASSED
 
 - `tests/test_splice_real.py` exists, and `test_measured_facts` is present.
-- Commits 9d93101, 2f47759 and 0a9e8d2 are on main, merged in 2347cea.
+- Commits bc16106, bfe6f54 and cacbf21 are on main, merged in cbcaf13.
 - Every acceptance criterion of Tasks 1-3 was re-run and passes.
 - The six gate logs each end `exit=0` and are reproduced above.

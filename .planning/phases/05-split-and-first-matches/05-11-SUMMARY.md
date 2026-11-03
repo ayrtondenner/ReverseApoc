@@ -18,8 +18,8 @@ actuals:
   tokens: 13100
   tasks: 2
   commits: 4
-plan_head_before: 532a74582239727dd92c0ee200d1d3e8d81b87cf
-plan_head_after: f60f88058ce037f966187a4bd252313ac92e1c39
+plan_head_before: c6dc6b86ab9add7bb291f4ddc553996d8b61eacb
+plan_head_after: 80ca556429c7242d5d6a5bf73951206f9e121b9a
 
 tech-stack:
   added: []
@@ -134,8 +134,8 @@ Execution context nonce: b71f353e8c66840c
 
 ## Task Commits
 
-1. **Task 1 (tracer): `reverseapoc asm` writes a symbolic listing for a synthetic EXE into asm/** - RED `b933e9b` (test), GREEN `c0f9bae` (feat)
-2. **Task 2: the P16 filter, the easiest-first score and the `score` verb** - RED `2b720c5` (test), GREEN `f60f880` (feat)
+1. **Task 1 (tracer): `reverseapoc asm` writes a symbolic listing for a synthetic EXE into asm/** - RED `5fb959e` (test), GREEN `215cbe4` (feat)
+2. **Task 2: the P16 filter, the easiest-first score and the `score` verb** - RED `f072f74` (test), GREEN `80ca556` (feat)
 
 Tracer gate (Task 1): interactive, `human_verify_mode` end-of-phase, automated-only verify. Both verify commands were re-run and passed: `uv run pytest -q tests/test_asm.py`, and `asm --help` holds `--only`. Expansion then went ahead.
 
@@ -157,9 +157,9 @@ See key-decisions in the frontmatter. The KKND weights were read from score_func
 
 ## Deviations from Plan
 
-**Orchestrator ruling F11: the P16 filter excludes any function with a non-off32 LE fixup.** `Features.other_fixups` counts them, and `rejections` names `non-off32 fixup`. Test: `test_filter_rejects_a_non_off32_fixup` (a sel16 site). Commit `f60f880`.
+**Orchestrator ruling F11: the P16 filter excludes any function with a non-off32 LE fixup.** `Features.other_fixups` counts them, and `rejections` names `non-off32 fixup`. Test: `test_filter_rejects_a_non_off32_fixup` (a sel16 site). Commit `80ca556`.
 
-**Orchestrator ruling F3: `asm --only ADDR` lists the row that CONTAINS ADDR** through `SymbolTable.containing`. It refuses only when no row contains the address (`AsmError: no functions.csv row contains 0x...`). Tests: `test_only_lists_the_row_containing_the_address`, `test_only_refuses_an_address_in_no_row`, `test_asm_verb_only`. Commit `c0f9bae`.
+**Orchestrator ruling F3: `asm --only ADDR` lists the row that CONTAINS ADDR** through `SymbolTable.containing`. It refuses only when no row contains the address (`AsmError: no functions.csv row contains 0x...`). Tests: `test_only_lists_the_row_containing_the_address`, `test_only_refuses_an_address_in_no_row`, `test_asm_verb_only`. Commit `215cbe4`.
 
 ### Auto-fixed Issues
 
@@ -169,14 +169,14 @@ See key-decisions in the frontmatter. The KKND weights were read from score_func
 - **Fix:** A target is code only when a functions.csv row (not data-in-code) contains it. Every other target is data, and `data_exact` requires its `_D_` name to resolve back to it.
 - **Files modified:** tools/reverseapoc/score.py
 - **Verification:** `test_filter_rejects_a_data_target_in_no_data_object`, `test_filter_rejects_a_jump_table`
-- **Committed in:** `f60f880`
+- **Committed in:** `80ca556`
 
 **2. [Rule 1 - Bug] Quadratic fixup scan per instruction in `listing`**
 - **Found during:** Task 2 (smoke run on real UFO2P, counts only)
 - **Issue:** Each instruction scanned every fixup near its row.
 - **Fix:** Each instruction now looks up only the field addresses that can overlap it. The full-object listing time fell from 19.8 s to 8.0 s.
 - **Files modified:** tools/reverseapoc/asm.py
-- **Committed in:** `f60f880`
+- **Committed in:** `80ca556`
 
 **3. Signature and key-link notes (no behaviour beyond the plan)**
 - `features()` has no `functions` parameter: `SymbolTable` already holds the rows. Two keyword arguments were added: `page_size` (straddler pages) and `chk_targets`. `Features` also has `other_fixups` (F11) and `far_return` (the KKND retf/iretd weight).
@@ -214,7 +214,7 @@ None. No external service configuration is required.
 
 ## Review fixes (round 1)
 
-**Important: `_branch_target` was duplicated in score.py.** asm.py now holds the only copy, as the public `branch_target(insn, fixups)`. score.py imports it with the other asm helpers, and its copy is gone. Behaviour is unchanged. Commit `03af90b`.
+**Important: `_branch_target` was duplicated in score.py.** asm.py now holds the only copy, as the public `branch_target(insn, fixups)`. score.py imports it with the other asm helpers, and its copy is gone. Behaviour is unchanged. Commit `cc2ac42`.
 
 Commands and output:
 - `uv run pytest -q tests/test_asm.py tests/test_score.py`: `27 passed in 0.93s`

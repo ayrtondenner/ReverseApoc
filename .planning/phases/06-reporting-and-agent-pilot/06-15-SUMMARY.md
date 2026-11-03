@@ -26,16 +26,16 @@ actuals:
   tokens: 18000   # chars/4 over the realized diff (~72 KB)
   tasks: 3
   commits: 11
-plan_head_before: ca93eb245503a8aa89ef88959f255403313f4e3c
-plan_head_after: f47261b97e2b3fb991e91c37b502ab41cb4452a2
+plan_head_before: 7820f3204fb4f58181dfb4428da8cef3a7624881
+plan_head_after: 4d9ed767f2a84390e1b863dc536428e5136d0f37
 fix_round_1:
-  base: 53d6127ce961b02296ad5bd516415bcfe09a0957
-  head: d09bebc5cf0e491d65c440485a79357ced6fb22c
-  commits: 15  # git rev-list --count 53d6127..d09bebc: 14 code/test/docs commits through ebb6fa0 + the SUMMARY commit d09bebc
+  base: e56ad49ddaf062a355302b1ea81c6775e12a413f
+  head: 6573700f31fb308eea1347b3c6c8b15373c2ff88
+  commits: 15  # git rev-list --count e56ad49..6573700: 14 code/test/docs commits through 46ffc9f + the SUMMARY commit 6573700
 fix_round_2:
-  base: d09bebc5cf0e491d65c440485a79357ced6fb22c
-  head_before_summary: 577952a
-  commits: 9  # git rev-list --count d09bebc..577952a; the round's SUMMARY commit is one more
+  base: 6573700f31fb308eea1347b3c6c8b15373c2ff88
+  head_before_summary: dd0d872
+  commits: 9  # git rev-list --count 6573700..dd0d872; the round's SUMMARY commit is one more
 
 tech-stack:
   added: []
@@ -162,16 +162,16 @@ Execution context nonce: e4dfac9bbd917dd4
 ## Task Commits
 
 1. **Task 1 (tracer): attempt check**
-   - RED `ccedbaa` (test), GREEN `cce58ca` (feat).
+   - RED `5fbb8ae` (test), GREEN `fa18f68` (feat).
    - Tracer gate: interactive, `end-of-phase`, verify automated only. The verify re-ran green (32 passed), then expansion continued.
 2. **Task 2: context verb, attempt asm/context**
-   - RED `100bca9` (test), GREEN `7f8552a` (feat).
+   - RED `2072a2a` (test), GREEN `7554e37` (feat).
 3. **Security finding 1 (orchestrator ruling, in Task 1's code)**
-   - RED `474c9d2` (test), GREEN `457e83a` (fix).
+   - RED `e9b326b` (test), GREEN `011fc46` (fix).
 4. **Rule 2: the attempt dir in the wrapper output (for Task 3's recipe)**
-   - RED `1cf25c1` (test), GREEN `b8e8517` (fix). `b8e8517` was committed with two tests still red; `511619c` (fix) repairs it, see Deviations.
+   - RED `02d9bcf` (test), GREEN `7744269` (fix). `7744269` was committed with two tests still red; `8437148` (fix) repairs it, see Deviations.
 5. **Task 3: watcom-decomp skill + D-18**
-   - RED `cc25102` (test), GREEN `f47261b` (docs).
+   - RED `75863b6` (test), GREEN `4d9ed76` (docs).
 
 ## TDD and RED evidence
 
@@ -254,7 +254,7 @@ See `key-decisions` in the frontmatter. In addition:
 - **Orchestrator note (wave 4): close the contextpack TODO.** `tools/reverseapoc/contextpack.py` is added to the plan's files. `STATUS_MATCHED` and `STATUS_PARTIAL` now import `status.MATCHED` and `status.PARTIAL`. `STATUS_UNMATCHED` stays local, commented. `STATUSES` keeps its three values. The picker's TODO(06-25) is untouched.
 - **Orchestrator ruling (security finding 1, VALID): check budget TOCTOU.**
   - **Threat:** concurrent `attempt check` runs started with Bash `run_in_background` all read the same count before a ~580 s container run, so they bypassed D-07's 25 runs and collided in build/.
-  - **Fix** (`474c9d2` RED, `457e83a` GREEN):
+  - **Fix** (`e9b326b` RED, `011fc46` GREEN):
     - `<attempt dir>/check.lock` is created with O_CREAT|O_EXCL and held for the whole run. A held lock exits 2 at once with "another check is running in this attempt".
     - Under the lock, the run number is reserved by creating `checks/NNNN.c` with O_EXCL. The budget is the highest reserved number.
     - The lock is released in a `finally`.
@@ -270,19 +270,19 @@ See `key-decisions` in the frontmatter. In addition:
    - Fix: `attempt check` prints the absolute POSIX paths of `NNNN.json`, `NNNN.c` and `<attempt dir>/notes.md`. `attempt context` names the pack and notes paths on stderr; stdout stays the pack.
    - Files: tools/reverseapoc/attempt.py, tests/test_attempt_wrapper.py.
    - Verification: `test_attempt_check_names_the_attempt_dir`, and an extra assertion in `test_attempt_context_rebuilds_into_the_attempt_dir`.
-   - Commits: `1cf25c1`, `b8e8517`, `511619c`.
-2. **[Rule 1 - Bug] `b8e8517` was committed with two tests red.**
+   - Commits: `02d9bcf`, `7744269`, `8437148`.
+2. **[Rule 1 - Bug] `7744269` was committed with two tests red.**
    - Issue: my verify command piped pytest into `tail`, so its exit code was lost. On Windows the new paths printed with backslashes, so `checks/0001.json` was not found. The context test also read stderr after an earlier `readouterr()` had consumed it.
-   - Fix: `511619c` prints paths with `as_posix()` (the Read tool takes forward slashes on every host) and captures once in the test.
+   - Fix: `8437148` prints paths with `as_posix()` (the Read tool takes forward slashes on every host) and captures once in the test.
    - Verification: the wrapper and skill tests re-ran with a real exit code (49 passed, rc=0). Every later verify kept pytest's own exit code.
 3. **[Rule 2 - Missing critical] Earlier notes are bounded to the newest 6144 bytes (`NOTES_CAP`).** Superseded by fix round 1 M11 (see "Fix round 1" below): the fixed cap is gone.
    - Issue: notes are a required pack section, which build_pack never cuts. An attempt that wrote long notes would make every later pack of that function fail the 24 KB cap.
    - Fix: the newest 6144 bytes are kept, with a marker for what was cut.
-   - Commit: `7f8552a`.
+   - Commit: `7554e37`.
 4. **[Rule 3 - Blocking, test-only] The `Build/driver/...` environment case was dropped from `test_attempt_refuses_a_bad_environment`.**
    - Issue: on Windows, `Build/` is the same directory as `build/`, so that case cannot fail there.
    - Fix: it is replaced by the pure-path `test_attempt_dir_is_compared_with_exact_case`, which holds on every host. R-A: no platform skip was added.
-   - Commit: `cce58ca`.
+   - Commit: `fa18f68`.
 
 **Assumptions recorded for 06-23 (not deviations, no code depends on them beyond a filter):**
 - `progress/attempts.jsonl` records join the notes when `kind == "attempt"`, `exe == <stem>` and `function == func_XXXXXXXX`. The schema is 06-23's. If 06-23 names these keys differently, `_attempt_records` needs one line changed.
@@ -323,28 +323,28 @@ None.
 
 ## Fix round 1
 
-Rulings: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/fixround-06-15-r1.md` (answering review-06-15.md). Base `53d6127`. Every behaviour change had a RED test commit that failed on its assertion (or on the missing name the test wished for) before its GREEN commit.
+Rulings: `.superpowers/sdd/let-s-work-on-phase-effervescent-nebula/fixround-06-15-r1.md` (answering review-06-15.md). Base `e56ad49`. Every behaviour change had a RED test commit that failed on its assertion (or on the missing name the test wished for) before its GREEN commit.
 
 | Item | Change | Tests (RED commit -> GREEN commit) |
 |---|---|---|
-| I1(a) | `claimed_row`: FUNC must be a game or thunk row of the claimed unit in functions.csv (the rows check accounts for), read once per call; else exit 2 before the lock and before any slot. asm/context reuse it on check's loaded rows. | `test_attempt_refuses_a_func_that_is_no_game_row_of_the_claimed_unit` x3 (another unit, a runtime row, no row; plain and `--sweep`) (`be64d46` -> `31c1470`) |
+| I1(a) | `claimed_row`: FUNC must be a game or thunk row of the claimed unit in functions.csv (the rows check accounts for), read once per call; else exit 2 before the lock and before any slot. asm/context reuse it on check's loaded rows. | `test_attempt_refuses_a_func_that_is_no_game_row_of_the_claimed_unit` x3 (another unit, a runtime row, no row; plain and `--sweep`) (`327c01a` -> `0ed265b`) |
 | I1(b) | `_verdict`: exit 0 only when check exits 0 agreeing with `ok` and the claimed function has objdiff 100, reloc ok and bytes ok. A stub or absent claimed function is exit 1, prints "func_X was not compiled (still INCLUDE_ASM?)" and logs `best_percent`/`reloc_ok`/`bytes_ok` as null. check's own 2 passes through. | `test_attempt_check_a_stub_claim_is_not_a_match`, `..._missing_from_the_json_is_not_a_match`, `..._must_pass_and_check_exit_0` (same commits) |
 | I1(c) | A sweep's 0 reads "SWEEP RAN (a diagnostic: never a match)"; exit rule 0 ran / 2 did not / never 1, stated in the skill and tested. | `test_attempt_sweep_exit_is_never_a_match`; skill: `test_skill_states_the_exit_codes_in_the_wrapper_section` |
 | I1(d) | cli.py `attempt` description and `_cmd_attempt` docstring; SKILL.md quick-reference row. | `test_attempt_help_states_the_claimed_function_rule`; `test_skill_states_the_exit_codes_in_the_wrapper_section` |
-| M1 | Skill: timeout 600000 on every `attempt check`, plain or `--sweep`; the wrapper's 580 s stays below it. | `test_skill_states_the_timing_rules` (`2a92322` -> `ebb6fa0`) |
-| M2 | "90 s / 15 checks" removed. The summary head is `attempt check 7/25, 41 s (18 left) ...`, timed by `attempt.CLOCK` around the runner; the skill says to budget by it. | `test_attempt_check_prints_elapsed_seconds_and_checks_left` (`a53a670` -> `f817490`); `test_skill_states_the_timing_rules` |
+| M1 | Skill: timeout 600000 on every `attempt check`, plain or `--sweep`; the wrapper's 580 s stays below it. | `test_skill_states_the_timing_rules` (`a9e9056` -> `46ffc9f`) |
+| M2 | "90 s / 15 checks" removed. The summary head is `attempt check 7/25, 41 s (18 left) ...`, timed by `attempt.CLOCK` around the runner; the skill says to budget by it. | `test_attempt_check_prints_elapsed_seconds_and_checks_left` (`f71b313` -> `75070a0`); `test_skill_states_the_timing_rules` |
 | M3 | Skill: "C89 is required: the driver lints the unit before it commits a match" (06-23 makes it true). | `test_skill_states_the_lint_and_file_order_rules` |
 | M4 / R2 | Skill: the ruling's file-order wording, with `docs/matching.md#relocation-rules`. | same test |
 | M5 | test_skill: `anchors_problems` (every `path#anchor` is a `##`/`###` heading slug of the file), `attempt_form_problems` (every backticked span with an `attempt` token, short or full, is an ATTEMPT_FORMS entry), `json_field_problems` (every dotted JSON path in the skill and every bare key in its JSON block is a key path of a real `to_json` of a made-up CheckResult and SweepReport, or a checks.jsonl key). | `test_skill_anchors_resolve`, `test_skill_short_attempt_forms_are_wrapper_forms`, `test_skill_json_fields_exist`. Mutation probe on in-memory copies (scratch script, the file never written): `#flags`->`#flagz` CAUGHT; `#relocation-rules`->`#relocation-rule` CAUGHT; `` `attempt asm` ``->`` `attempt disasm` `` CAUGHT; `` `attempt check --sweep` ``->`` `attempt sweep` `` CAUGHT; `` `reverseapoc attempt chek` `` CAUGHT; `bytes.first_va`->`bytes.first_addr` CAUGHT; `reloc.problems`->`reloc.problem` CAUGHT; `splice[]`->`splices[]` CAUGHT; `differing`->`different` CAUGHT (9/9). |
 | M6 | checks.jsonl sweep lines carry `sweep: true` (plain lines `false`); 06-23 must skip them when picking the best C (rulings ## 06-23). | `test_attempt_sweep_exit_is_never_a_match` asserts every sweep line's `sweep` is true; `test_attempt_check_sweep_logs_a_hit` already did |
-| M7 | `docker compose run --rm -T --name reverseapoc-attempt-<8 hex of sha256(attempt dir)>-<NNNN> build ...`. `Ran.timed_out` (the default runner sets it on TimeoutExpired) triggers `docker rm -f <name>` through the same runner before the lock is released; a failed removal (non-zero or an exception) keeps `check.lock`. | `test_attempt_check_builds_the_container_argv`, `test_container_names_differ_per_attempt_dir`, `test_a_timed_out_run_removes_its_container`, `test_a_container_that_cannot_be_removed_keeps_the_lock`, `test_the_default_runner_reports_a_timeout` (`2219bdf` -> `9c6288e`) |
-| M8 | `Claim.notes` from `REVERSEAPOC_ATTEMPT_NOTES`; it must resolve to `<attempt dir>/notes.md` (part by part, exact case), else exit 2; that value is the path printed by `attempt check` and `attempt context`. | `test_attempt_refuses_a_notes_path_that_is_not_the_attempt_dirs` x3 (unset, other.md, ../notes.md), `test_attempt_check_prints_the_notes_env_path` (`a53a670` -> `f817490`) |
+| M7 | `docker compose run --rm -T --name reverseapoc-attempt-<8 hex of sha256(attempt dir)>-<NNNN> build ...`. `Ran.timed_out` (the default runner sets it on TimeoutExpired) triggers `docker rm -f <name>` through the same runner before the lock is released; a failed removal (non-zero or an exception) keeps `check.lock`. | `test_attempt_check_builds_the_container_argv`, `test_container_names_differ_per_attempt_dir`, `test_a_timed_out_run_removes_its_container`, `test_a_container_that_cannot_be_removed_keeps_the_lock`, `test_the_default_runner_reports_a_timeout` (`6975647` -> `df42d9d`) |
+| M8 | `Claim.notes` from `REVERSEAPOC_ATTEMPT_NOTES`; it must resolve to `<attempt dir>/notes.md` (part by part, exact case), else exit 2; that value is the path printed by `attempt check` and `attempt context`. | `test_attempt_refuses_a_notes_path_that_is_not_the_attempt_dirs` x3 (unset, other.md, ../notes.md), `test_attempt_check_prints_the_notes_env_path` (`f71b313` -> `75070a0`) |
 | M9 | `_cmd_attempt` catches any `Exception` after `_ERRORS`: one stderr line `reverseapoc attempt: error: <Type>: <msg>`, exit 2, no traceback. | `test_an_unexpected_exception_is_a_tool_error`, `test_attempt_asm_an_undecodable_listing_is_a_tool_error`; `test_attempt_check_releases_the_lock_after_a_runner_exception` now expects exit 2 (same commits) |
 | M10 | Exit codes moved into "## The attempt wrapper" (D-19 section 8); the quick-reference row points there. | `test_skill_states_the_exit_codes_in_the_wrapper_section` |
-| M11 | `attempt.NOTES_CAP` and `_bounded` removed. `earlier_notes` returns `contextpack.Notes(texts, records, records_label)`; `build_pack` cuts notes as a fourth step after look-alikes, callers and the draft: records oldest first, then texts oldest first. Texts render before records; the header counts both; the section starts `... N older notes and M attempt records cut`. | `test_notes_render_texts_before_records`, `test_notes_are_cut_only_after_the_d14_cuts_records_first`, `test_notes_cut_the_oldest_first_and_keep_the_newest`, `test_notes_as_text_stay_one_uncut_block`, `test_context_verb_keeps_long_notes_whole_when_the_pack_fits` (`5598c15` -> `81efed9`) |
-| M12 | `attempt.load_exe`/`ExeData` removed; `attempt.exe_inputs` wraps `check.select_exe` + `check.load_exe` (ExeInputs has the same `stem/rows/symbols/flat/fixups`). | `test_attempt_reads_the_exe_with_checks_loader`, `test_context_verb_reads_config_like_check` (`15d29f9` -> `f6de682`) |
+| M11 | `attempt.NOTES_CAP` and `_bounded` removed. `earlier_notes` returns `contextpack.Notes(texts, records, records_label)`; `build_pack` cuts notes as a fourth step after look-alikes, callers and the draft: records oldest first, then texts oldest first. Texts render before records; the header counts both; the section starts `... N older notes and M attempt records cut`. | `test_notes_render_texts_before_records`, `test_notes_are_cut_only_after_the_d14_cuts_records_first`, `test_notes_cut_the_oldest_first_and_keep_the_newest`, `test_notes_as_text_stay_one_uncut_block`, `test_context_verb_keeps_long_notes_whole_when_the_pack_fits` (`4aa364b` -> `1989581`) |
+| M12 | `attempt.load_exe`/`ExeData` removed; `attempt.exe_inputs` wraps `check.select_exe` + `check.load_exe` (ExeInputs has the same `stem/rows/symbols/flat/fixups`). | `test_attempt_reads_the_exe_with_checks_loader`, `test_context_verb_reads_config_like_check` (`ef83382` -> `85c9ad1`) |
 | M13 | No change (recorded). | - |
-| M14(a) | Matching layer: a Bash call whose `tool_input.run_in_background` is anything but absent or false is denied, "checks run in the foreground, one at a time". | `test_matching_denies_a_background_bash` x3 (True, "true", 1), `test_matching_allows_a_foreground_bash`, `test_always_ignores_background_bash` (`e8ec804` -> `73a2426`) |
+| M14(a) | Matching layer: a Bash call whose `tool_input.run_in_background` is anything but absent or false is denied, "checks run in the foreground, one at a time". | `test_matching_denies_a_background_bash` x3 (True, "true", 1), `test_matching_allows_a_foreground_bash`, `test_always_ignores_background_bash` (`f68904e` -> `60c2236`) |
 | M14(b) | Matching layer: src/ and include/ writes with any `#pragma` directive are denied (`_PRAGMA` on configure's blanked, spliced logical lines; `any_pragma=True` only from `_matching_write`). The always layer is unchanged (`any_pragma` defaults to False). Skill, `.claude/rules/src.md` and `docs/coding-style.md` say "no `#pragma` of any kind". | `test_matching_denies_every_pragma` x8 (`#pragma on/off (check_stack)`, `pack(1)`, `warning`, spaced `once`, continued, comment-split, trigraph `??=pragma`), each also asserting the always layer does not deny; `test_matching_allows_pragma_words_outside_code`; `test_pragma_policy_is_every_pragma` |
 | R1 | Skill: each sweep cell reports `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields) under its `compiler` and `flags` (SweepCell.to_json); "A sweep hit is never a match until a plain `attempt check` under the new rule passes". | `test_skill_states_what_a_sweep_cell_reports` |
 | R2 | Covered by M4. | - |
@@ -357,22 +357,22 @@ The skill change is the REFACTOR step of superpowers:writing-skills (invoked): o
 - **M14 scope addition.** `tools/reverseapoc/hooks.py` and `tests/test_hooks.py` join this plan's files. Matching layer only; the always layer's behaviour is byte-for-byte the same (its call passes no `any_pragma`), and no tooling write outside a matching session is newly denied.
 - **M12 is not a pure move**, so it is recorded here: check's loader requires `config/<exe>/units.csv` (the old loader did not) and treats symbols.csv as optional (the old one required it); the `context` verb now reads every CSV from `--config` as check does and no longer takes `--functions`/`--symbols` (it used `_add_split_inputs` before). The test fixture gained a units.csv. No cli loader was reused: `cli._split_inputs` takes an argparse namespace and ignores `--config`.
 - **I1(a) reads functions.csv only** for `attempt check`, not units.csv or the LE, so a check needs no orig/ read on the host; asm/context validate on check's already-loaded rows. A unit missing from units.csv still fails in the container (check's exit 2 passes through).
-- **Test edits inside GREEN commits** (lint only): `81efed9` turned a `%` format in the RED helper into an f-string (ruff UP031).
+- **Test edits inside GREEN commits** (lint only): `1989581` turned a `%` format in the RED helper into an f-string (ruff UP031).
 - **06-23 consumers (notes, not code):** a not-compiled check line has `exit` 1 and null `best_percent`; skip null percents when picking the best C. `REVERSEAPOC_ATTEMPT_NOTES` is now required by every `attempt` subcommand. The container-name prefix is `attempt.CONTAINER_PREFIX` + 8 hex of sha256 of the RESOLVED attempt dir's POSIX path; since fix round 2 (N3) the driver gets it only from `attempt.container_prefix(attempt_dir)`.
 
 ## Fix round 2
 
-Rulings: `fixround-06-15-r2.md` (answering `rereview-06-15-r1-report.md`, approved with no Critical or Important findings), plus N7 from the security finding at the end of `security-findings-06-15.md`. Base `d09bebc`. Each behaviour change has a RED commit that failed on its assertions before its GREEN commit. The RED `test_the_default_runner_takes_a_timeout` turns the missing keyword's TypeError into an explicit `pytest.fail`.
+Rulings: `fixround-06-15-r2.md` (answering `rereview-06-15-r1-report.md`, approved with no Critical or Important findings), plus N7 from the security finding at the end of `security-findings-06-15.md`. Base `6573700`. Each behaviour change has a RED commit that failed on its assertions before its GREEN commit. The RED `test_the_default_runner_takes_a_timeout` turns the missing keyword's TypeError into an explicit `pytest.fail`.
 
 | Item | Change | Tests (RED -> GREEN) |
 |---|---|---|
-| N1 | `_cmd_attempt` prints every tool error (both the `_ERRORS` and the `Exception` branch) through `_one_line`: each CR/LF run becomes a space, so it is exactly one stderr line. | `test_a_multi_line_error_is_printed_as_one_line` x2 (RuntimeError, OSError) (`c2fae6c` -> `d647046`) |
-| N2 | After a timeout, the run's `NNNN.json` and its checks.jsonl line (exit 2) are written BEFORE `docker rm -f`. The removal has its own `RM_TIMEOUT = 15` s (580 + 15 < 600). `default_runner(argv, *, timeout=CHECK_TIMEOUT)` passes the timeout on. A failed, slow (timed-out) or raising removal keeps the lock. | `test_the_evidence_is_written_before_the_removal`, `test_the_removal_has_its_own_short_timeout`, `test_the_default_runner_takes_a_timeout`; `TimeoutRunner` now records kwargs and the on-disk evidence at the removal (`6eda63f` -> `cee76e7`) |
+| N1 | `_cmd_attempt` prints every tool error (both the `_ERRORS` and the `Exception` branch) through `_one_line`: each CR/LF run becomes a space, so it is exactly one stderr line. | `test_a_multi_line_error_is_printed_as_one_line` x2 (RuntimeError, OSError) (`9b42adc` -> `92453dc`) |
+| N2 | After a timeout, the run's `NNNN.json` and its checks.jsonl line (exit 2) are written BEFORE `docker rm -f`. The removal has its own `RM_TIMEOUT = 15` s (580 + 15 < 600). `default_runner(argv, *, timeout=CHECK_TIMEOUT)` passes the timeout on. A failed, slow (timed-out) or raising removal keeps the lock. | `test_the_evidence_is_written_before_the_removal`, `test_the_removal_has_its_own_short_timeout`, `test_the_default_runner_takes_a_timeout`; `TimeoutRunner` now records kwargs and the on-disk evidence at the removal (`6f947e6` -> `2f7ae4a`) |
 | N3 | `attempt.container_prefix(attempt_dir)` resolves the directory and is the single source of container names; `container_name` is `container_prefix(...) + NNNN`. The 06-23 note above says the driver reuses it. | `test_container_prefix_is_the_names_single_source` (the argv name equals `prefix(repo) + "0001"`; `prefix(repo/sub/..) == prefix(repo)`) (same commits) |
-| N4 | `CheckLogLine` docstring: null measurements for a no-JSON run (exit 2) and for a not-compiled claimed function (exit 1); `sweep` lines are never the best C. | docstring only (`8610669`) |
-| N5 | Frontmatter commit counts corrected: fix round 1 has 15 commits (14 through `ebb6fa0`, plus the SUMMARY `d09bebc`); fix round 2's count is recorded the same way. | - |
-| N6 | Matching layer `_PRAGMA` also matches the `%:` digraph (`\s*(#\|%:)\s*pragma`), with or without spaces after `%:`. The always layer is unchanged. SKILL.md is left alone: "no `#pragma` of any kind" already covers the spelling. | `test_matching_denies_every_pragma` gains `%:pragma off (check_stack)`, `%:  pragma pack(1)`, `  %: pragma once` (each also asserting the always layer allows it); `test_matching_allows_pragma_words_outside_code` gains a comment and a string holding `%:pragma` (`2acc61a` -> `5284a29`) |
-| N7 | Security finding (MEDIUM fail-open): a raising evidence write skipped the removal and released the lock with the orphan running. Now `held.keep = True` the moment `ran.timed_out` is seen, before any evidence write. Only a removal that succeeded clears it. The removal runs in a `finally`, so a failed write still removes the container, and the write error then surfaces as exit 2. The evidence writing moved unchanged into `_record`. | `test_a_failed_evidence_write_still_removes_the_container` x4 (`write_atomic` or `_append` raises; removal ok: lock released; removal fails: lock kept), `test_a_failed_evidence_write_and_a_raising_removal_keep_the_lock` x2 (`3c70fa3` -> `577952a`) |
+| N4 | `CheckLogLine` docstring: null measurements for a no-JSON run (exit 2) and for a not-compiled claimed function (exit 1); `sweep` lines are never the best C. | docstring only (`b90debe`) |
+| N5 | Frontmatter commit counts corrected: fix round 1 has 15 commits (14 through `46ffc9f`, plus the SUMMARY `6573700`); fix round 2's count is recorded the same way. | - |
+| N6 | Matching layer `_PRAGMA` also matches the `%:` digraph (`\s*(#\|%:)\s*pragma`), with or without spaces after `%:`. The always layer is unchanged. SKILL.md is left alone: "no `#pragma` of any kind" already covers the spelling. | `test_matching_denies_every_pragma` gains `%:pragma off (check_stack)`, `%:  pragma pack(1)`, `  %: pragma once` (each also asserting the always layer allows it); `test_matching_allows_pragma_words_outside_code` gains a comment and a string holding `%:pragma` (`9138409` -> `bf01c40`) |
+| N7 | Security finding (MEDIUM fail-open): a raising evidence write skipped the removal and released the lock with the orphan running. Now `held.keep = True` the moment `ran.timed_out` is seen, before any evidence write. Only a removal that succeeded clears it. The removal runs in a `finally`, so a failed write still removes the container, and the write error then surfaces as exit 2. The evidence writing moved unchanged into `_record`. | `test_a_failed_evidence_write_still_removes_the_container` x4 (`write_atomic` or `_append` raises; removal ok: lock released; removal fails: lock kept), `test_a_failed_evidence_write_and_a_raising_removal_keep_the_lock` x2 (`d28b337` -> `dd0d872`) |
 
 Verification after fix round 2 (measured, pytest's own exit code kept):
 - **focused** (test_attempt_wrapper, test_hooks, test_skill, test_contextpack): 336 passed, 1 skipped (the R-A symlink reason), rc 0;
@@ -395,7 +395,7 @@ Verification after fix round 2 (measured, pytest's own exit code kept):
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/attempt.py, tests/test_attempt_wrapper.py, tests/test_skill.py, .claude/skills/watcom-decomp/SKILL.md.
-- FOUND on this branch (`git log ca93eb2..HEAD`): ccedbaa, cce58ca, 100bca9, 474c9d2, 457e83a, 7f8552a, cc25102, 1cf25c1, b8e8517, 511619c, f47261b (11 plan commits), 53d6127 (plan SUMMARY), and the 14 fix-round-1 commits be64d46, 31c1470, a53a670, f817490, 2219bdf, 9c6288e, 5598c15, 81efed9, 15d29f9, f6de682, e8ec804, 73a2426, 2a92322, ebb6fa0.
+- FOUND on this branch (`git log 7820f32..HEAD`): 5fbb8ae, fa18f68, 2072a2a, e9b326b, 011fc46, 7554e37, 75863b6, 02d9bcf, 7744269, 8437148, 4d9ed76 (11 plan commits), e56ad49 (plan SUMMARY), and the 14 fix-round-1 commits 327c01a, 0ed265b, f71b313, 75070a0, 6975647, df42d9d, 4aa364b, 1989581, ef83382, 85c9ad1, f68904e, 60c2236, a9e9056, 46ffc9f.
 - Acceptance:
   - `CHECK_BUDGET = 25` is in attempt.py, and `REVERSEAPOC_CLAIM` is read from the environment only (via `hooks.CLAIM_ENV`);
   - `uv run reverseapoc attempt check --cflags x` exits 2;

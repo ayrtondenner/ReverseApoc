@@ -9,14 +9,14 @@
   "total_tasks": 42,
   "status": "paused",
   "completed_tasks": [
-    {"id": "07-01..07-20", "name": "waves 1-4 (all 20 plans)", "status": "done", "commit": "merged; last 945dd71 (07-13), ccff87e (07-20 asm list signed)"},
-    {"id": "07-22", "name": "Tier 1 located, drafted and signed (owner sign-recommended)", "status": "done_review_pending", "commit": "4d82148 + ca01a69"},
-    {"id": "07-24", "name": "flags approve / flags default", "status": "done", "commit": "d2a072d (merge)"},
-    {"id": "07-27", "name": "readlint", "status": "done", "commit": "f50d69b (merge)"}
+    {"id": "07-01..07-20", "name": "waves 1-4 (all 20 plans)", "status": "done", "commit": "merged; last 606c451 (07-13), ff1a0b1 (07-20 asm list signed)"},
+    {"id": "07-22", "name": "Tier 1 located, drafted and signed (owner sign-recommended)", "status": "done_review_pending", "commit": "ac9eb69 + 385bc4d"},
+    {"id": "07-24", "name": "flags approve / flags default", "status": "done", "commit": "c8aac1f (merge)"},
+    {"id": "07-27", "name": "readlint", "status": "done", "commit": "23e4b99 (merge)"}
   ],
   "remaining_tasks": [
     {"id": "07-21", "name": "concurrent driver: fix round 2 (N1 eol-normalised blob compare, N2 new^1==old guard) then scoped re-review, then merge", "status": "in_progress"},
-    {"id": "07-22", "name": "task review (SDD reviewer) of 4d82148/ca01a69", "status": "not_started"},
+    {"id": "07-22", "name": "task review (SDD reviewer) of ac9eb69/385bc4d", "status": "not_started"},
     {"id": "07-23", "name": "wave 6", "status": "not_started"},
     {"id": "07-25", "name": "Tier 2 (main, owner checkpoint)", "status": "not_started"},
     {"id": "07-26", "name": "tier picker", "status": "not_started"},
@@ -37,6 +37,6 @@
     {"decision": "All other orchestrator rulings are in .superpowers/sdd/let-s-execute-gsd-execute-phase-7-sorted-harp/rulings.md and progress.md", "rationale": "SDD ledger", "phase": "07"}
   ],
   "uncommitted_files": [],
-  "next_action": "Read .planning/phases/07-mechanics-first-decompilation/.continue-here.md, then the SDD ledger tail; send 07-21 fix round 2 (findings in rereview-07-21-r1.md) to a fresh executor in the existing worktree agent-ad0edafecf1fbf516 (FIX_BASE 26875a9), and dispatch the 07-22 task review in parallel.",
-  "context_notes": "Orchestrated via GSD execute-phase + SDD (bundle nonce per plan, reviewer per plan, fix rounds) + unlazy GATES.md (20 gates, owner-approved). main is 29 commits ahead of origin (last push 0fd6877); last full gate reverify at 0fd6877 (G3-G10, G15, G18 met); host suite green on 4d82148 (3834/38) but container not re-run since 07-24/07-27/07-22 merged. Placeholder grep hits in 07-09/13/16/19/27 SUMMARYs are the domain word 'placeholder' (func_ names), not unfinished summaries."
+  "next_action": "Read .planning/phases/07-mechanics-first-decompilation/.continue-here.md, then the SDD ledger tail; send 07-21 fix round 2 (findings in rereview-07-21-r1.md) to a fresh executor in the existing worktree agent-ad0edafecf1fbf516 (FIX_BASE ea693d9), and dispatch the 07-22 task review in parallel.",
+  "context_notes": "Orchestrated via GSD execute-phase + SDD (bundle nonce per plan, reviewer per plan, fix rounds) + unlazy GATES.md (20 gates, owner-approved). main is 29 commits ahead of origin (last push 7e46eae); last full gate reverify at 7e46eae (G3-G10, G15, G18 met); host suite green on ac9eb69 (3834/38) but container not re-run since 07-24/07-27/07-22 merged. Placeholder grep hits in 07-09/13/16/19/27 SUMMARYs are the domain word 'placeholder' (func_ names), not unfinished summaries."
 }

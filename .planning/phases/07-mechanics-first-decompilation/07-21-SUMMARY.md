@@ -21,8 +21,8 @@ actuals:
   tokens: 19250
   tasks: 3
   commits: 6
-plan_head_before: 0fd68778633ad39c153ad7d3e7093c3e340240fa
-plan_head_after: d247ee7abc7bcfb9498f2e0dc6dd20ac4dfdd007
+plan_head_before: 7e46eae32981ab076a2cddc0d35f9b3dda7edba2
+plan_head_after: dc0192132cf985d84829ab2927948d0f257febb4
 
 tech-stack:
   added: []
@@ -150,10 +150,10 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): workers overlap sessions, one gate at a time.** RED `18ca25f`, GREEN `ad04001`.
+1. **Task 1 (tracer): workers overlap sessions, one gate at a time.** RED `caa7756`, GREEN `2418c46`.
    - Tracer feedback gate: the run is interactive, in end-of-phase mode, with an automated-only verify. I re-ran `uv run pytest -q tests/test_driver_workers.py` (36 passed) and `uv run ruff check .`, then expanded. Tracer verified end-to-end.
-2. **Task 2: the shared pause, stop-all with the pid registry, KeyboardInterrupt.** RED `3d0dc7a`, GREEN `d83a28c`.
-3. **Task 3: the shared night cap, `--workers`, the new defaults.** RED `5ca097e`, GREEN `d247ee7`.
+2. **Task 2: the shared pause, stop-all with the pid registry, KeyboardInterrupt.** RED `9192f52`, GREEN `a519e7e`.
+3. **Task 3: the shared night cap, `--workers`, the new defaults.** RED `fea2422`, GREEN `dc01921`.
 
 ## TDD evidence (RED)
 
@@ -203,30 +203,30 @@ See `key-decisions` in the frontmatter.
   - `WIDEN_S` = 0.05 s inside the fake gate gives an unlocked second gate room to overlap. A correct driver passes regardless.
   - `fakeclaude --sleep 60` stands for a live session that must be killed. The assertion is on the registry's kill calls, not on time.
 - Every wait has a 30 s timeout, so a broken driver fails instead of hanging.
-- Commits `18ca25f`, `3d0dc7a`, `5ca097e`.
+- Commits `caa7756`, `9192f52`, `fea2422`.
 
 **1. [Rule 2 - Missing critical] The pre-session snapshot and the audit hold the gate lock.**
 - **Why:** without it, worker A's audit could run while worker B's landing had its unit in src/ or its gate writing status.csv. Both read as strays under D-24 (a), and the night would stop as a guardrail breach.
-- **Commit:** `ad04001`.
+- **Commit:** `2418c46`.
 
 **2. [Rule 2 - Missing critical] J2 holds across workers.**
 - **Why:** before, nothing stopped worker A's match commit from running after worker B's breach.
 - **Fix:** `_verify_landing` refuses the commit (undo, STOPPED `guardrail`) once `breached` is set.
-- **Commit:** `ad04001`.
+- **Commit:** `2418c46`.
 
 **3. [Rule 2 - Missing critical] A session that starts as the night stops is killed.**
 - **Why:** the stop could otherwise miss a session that starts at that moment.
 - **Fix:** `_on_start` registers the pid and reads the stop flag under one lock, and `_stop_all` sets the flag before it reads the registry, so neither order loses a kill.
-- **Commit:** `d83a28c`.
+- **Commit:** `a519e7e`.
 
 **4. [Rule 2 - Missing critical] The backoff wait ends early on a stop.**
 - **Why:** a stop or Ctrl+C should not wait out a 300 s poll on another worker.
 - **Fix:** `_nap` waits on the stop event when `Deps.sleep` is the real `time.sleep`. An injected sleep (the tests' fake clock) is called as before, so `night.sleeps` stays exact.
-- **Commit:** `d83a28c`.
+- **Commit:** `a519e7e`.
 
-**5. [Rule 3 - Blocking] `tests/test_driver.py` (not in files_modified): `Night._session` accepts and forwards `on_start`/`on_end`.** The driver now passes them to every session. Commit `d83a28c`.
+**5. [Rule 3 - Blocking] `tests/test_driver.py` (not in files_modified): `Night._session` accepts and forwards `on_start`/`on_end`.** The driver now passes them to every session. Commit `a519e7e`.
 
-**6. [Rule 3 - Test harness] `fakeclaude --any-unit`.** The stream fixtures' Edit names `src/ufo2p/u_00010000.c`. With the flag, a session claiming any other unit replays that write as its own view unit; without it, the transcript audit would call every other unit's session a stray. Commit `18ca25f`.
+**6. [Rule 3 - Test harness] `fakeclaude --any-unit`.** The stream fixtures' Edit names `src/ufo2p/u_00010000.c`. With the flag, a session claiming any other unit replays that write as its own view unit; without it, the transcript audit would call every other unit's session a stray. Commit `caa7756`.
 
 **7. [Plan clarification] Slot reservation is per attempt.**
 - The plan says "a slot is reserved before each launch".
@@ -246,7 +246,7 @@ See `key-decisions` in the frontmatter.
 
 **11. [Plan clarification] Records stay v1, as the plan says.** No `worker` field and no `limit` record yet; 07-23 adds the v2 records.
 
-**12. [Test change] `tests/test_drive.py::test_drive_defaults`** now expects (60, 0, 3) instead of (30, 10) (D-07). Commit `5ca097e`.
+**12. [Test change] `tests/test_drive.py::test_drive_defaults`** now expects (60, 0, 3) instead of (30, 10) (D-07). Commit `fea2422`.
 
 ---
 
@@ -298,7 +298,7 @@ Execution context nonce: 36b3c54a172149c8
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/driver.py, tools/reverseapoc/session.py, tools/reverseapoc/cli.py, tests/test_driver_workers.py, tests/test_session.py, tests/test_cli.py, tests/test_drive.py, tests/test_driver.py, tests/fakeclaude.py
-- FOUND commits on this branch: 18ca25f, ad04001, 3d0dc7a, d83a28c, 5ca097e, d247ee7. `git rev-list --count 0fd6877..HEAD` = 6 before this SUMMARY commit.
+- FOUND commits on this branch: caa7756, 2418c46, 9192f52, a519e7e, fea2422, dc01921. `git rev-list --count 7e46eae..HEAD` = 6 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
 ## Fix round 1
@@ -318,7 +318,7 @@ Execution context nonce: 36b3c54a172149c8
   - Its strays were missing from the STOPPED `interrupted` record.
   - Ruling: list them.
 
-**What changed (`tools/reverseapoc/driver.py`, `c119c09`):**
+**What changed (`tools/reverseapoc/driver.py`, `ce3564d`):**
 - **C1, the baseline:**
   - `_loop` takes `pinned_base = _pinned_state()` once, before the first launch.
   - `_measure`, `_contain_one` and `_still_changed` compare with it and restore to it, through `_pinned_baseline`. Outside a night (the canary's probe) the snapshot is used as before.
@@ -333,7 +333,7 @@ Execution context nonce: 36b3c54a172149c8
   - The night is then marked breached and the commit refused through `_Breach`. A new helper, `_contained_text`, writes the detail.
 - **I2:** `_stopped_workers` adds the night's `failure` (a halted worker's `_Stop` reason and detail) to the interrupted text.
 
-**Tests (RED `2f4bb5b` and `4d5199a`, then the fix `c119c09`), all in tests/test_driver_workers.py:**
+**Tests (RED `065ada8` and `f06cf57`, then the fix `ce3564d`), all in tests/test_driver_workers.py:**
 - **C1:**
   - `test_a_later_sessions_baseline_never_restores_anothers_stray` follows the reviewer's sequence: A writes a stray to `.claude/settings.local.json`, then B launches; A's session waits for B's start or the night's stop. It checks that the file ends with its pre-night bytes and that the stray is in the quarantine.
   - `test_containment_restores_the_night_baseline_not_the_launch_snapshot` covers the audit half: `_measure` and `_contain` against the baseline. I added it in the second RED commit once the launch check meant the integration test no longer reaches B's audit.
@@ -418,8 +418,8 @@ Execution context nonce: 36b3c54a172149c8
 - N4: STOPPED `tool` through the undo path.
 
 **Commits:**
-- `09e8e01` test(07-21): add failing tests for fix round 2 (N1-N4)
-- `cabf847` fix(07-21): anchored, attribute-aware post-commit check; tracked pinned paths back to the night baseline
+- `265ee8a` test(07-21): add failing tests for fix round 2 (N1-N4)
+- `f878b86` fix(07-21): anchored, attribute-aware post-commit check; tracked pinned paths back to the night baseline
 - this SUMMARY commit
 
 **Deviations:**

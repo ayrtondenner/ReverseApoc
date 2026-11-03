@@ -16,8 +16,8 @@ actuals:
   tokens: 8669
   tasks: 3
   commits: 8
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: 1d640d5715addfae899b4c8c1d89dac737767b91
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: b2349ab12342b6247476e97c075166cecd90e2ce
 
 tech-stack:
   added: []
@@ -113,10 +113,10 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): direct and pointer edges, closure.** RED `8b42043` (test), GREEN `ec1b368` (feat). Tracer gate: interactive run, `end-of-phase` mode, verify is automated-only. The verify was re-run and passed (11/11), so expansion went ahead.
-2. **Task 2: table runs, mid-row refs, indirect counts, orphans.** RED `a71f595` (test), GREEN `b5ae488` (feat).
-3. **Task 3: SCCs and `reach`.** RED `95635d7` (test), GREEN `25e9731` (feat).
-4. **Slot-rule fix (Rule 1).** RED `6a93e98` (test), fix `1d640d5` (fix).
+1. **Task 1 (tracer): direct and pointer edges, closure.** RED `6c33831` (test), GREEN `2806c39` (feat). Tracer gate: interactive run, `end-of-phase` mode, verify is automated-only. The verify was re-run and passed (11/11), so expansion went ahead.
+2. **Task 2: table runs, mid-row refs, indirect counts, orphans.** RED `7127f40` (test), GREEN `5812b9f` (feat).
+3. **Task 3: SCCs and `reach`.** RED `8a6a915` (test), GREEN `fd48899` (feat).
+4. **Slot-rule fix (Rule 1).** RED `8c6801a` (test), fix `b2349ab` (fix).
 
 ## TDD Gate Compliance
 
@@ -149,11 +149,11 @@ See key-decisions above. Also:
 - **Fix:** a slot is any off32 or ptr16:32 data fixup onto any row start. Runtime and data-in-code slots shape the runs but add no edge. A run's span ends at its last slot's own size (6 bytes for ptr16:32; the plan's "+4" for off32). Orphan roots must point at a game/thunk row.
 - **Files modified:** tools/reverseapoc/callgraph.py, tests/test_callgraph.py.
 - **Verification:** new `test_table_runs_count_every_row_start_slot` (RED then green). The real-file counts now equal research: 67/13 and 35/12.
-- **Committed in:** `6a93e98` (test), `1d640d5` (fix).
+- **Committed in:** `8c6801a` (test), `b2349ab` (fix).
 
 **2. [Rule 3 - Blocking] Plan commit ledger not written to the git dir**
 - **Issue:** the worktree sandbox refuses writes under `.git/worktrees/...`, so the gsd-executor ledger file could not be created.
-- **Fix:** the commit count was measured against the dispatch base: `git rev-list --count 0f9de36..1d640d5` = 8. Both heads are recorded in the frontmatter.
+- **Fix:** the commit count was measured against the dispatch base: `git rev-list --count 99f4659..b2349ab` = 8. Both heads are recorded in the frontmatter.
 
 ### Orchestrator rulings applied
 
@@ -187,4 +187,4 @@ Execution context nonce: c489e306bef405d4
 ## Self-Check: PASSED
 
 - tools/reverseapoc/callgraph.py, tests/test_callgraph.py exist; contain `class CallGraph`, `def closure(`, `TABLE_SLOT_GAP = 16`, `class MidRowRef`, `def sccs(`, `def reach(`.
-- Commits 8b42043, ec1b368, a71f595, b5ae488, 95635d7, 25e9731, 6a93e98, 1d640d5 are on HEAD.
+- Commits 6c33831, 2806c39, 7127f40, 5812b9f, 8a6a915, fd48899, 8c6801a, b2349ab are on HEAD.

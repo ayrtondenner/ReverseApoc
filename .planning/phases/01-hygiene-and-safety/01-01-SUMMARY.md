@@ -80,9 +80,9 @@ status: complete
 
 ## Retroactive note
 
-Built before GSD had project state: commit `d7d4d65` (repository hygiene, research, docs and
+Built before GSD had project state: commit `1543145` (repository hygiene, research, docs and
 workflow setup, 70 files) and follow-ups
-`f767758` (Tavily key in the user environment, not `.env`) and `e50784f` (bot-based discord plugin
+`c010d51` (Tavily key in the user environment, not `.env`) and `9754497` (bot-based discord plugin
 dropped). This SUMMARY was written on 2026-10-19 when GSD was bootstrapped; the evidence below is
 fresh command output from that day, not a recollection.
 

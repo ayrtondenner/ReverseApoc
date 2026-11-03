@@ -17,8 +17,8 @@ actuals:
   tokens: 26010
   tasks: 7
   commits: 3
-plan_head_before: de936e9e964f356fb31ebb9702afaba743eb87f8
-plan_head_after: 69041410a9132a4e3a2d63301c5ff28906835b9c
+plan_head_before: 715750dee62d8f51bc502538a29d13f9a5f701ea
+plan_head_after: 4f4272804952c080ea21d31af9cce2994d177a8d
 tech-stack:
   added: []
   patterns:
@@ -137,9 +137,9 @@ Execution context nonce: a530f5bd60cfbd6d
 
 ## Task Commits
 
-1. **Tasks 1-2 tests (RED):** `c99c094` test(07-44): data-in-code evidence and the tier-queue hold (RED)
-2. **Tasks 1-3 implementation and docs:** `5fa6806` feat(07-44): data-in-code evidence tags; the tier queue holds unclear data rows until the owner rules (owner ruling 2026-10-31)
-3. **Tasks 3, 5 and 7 data and sign-offs:** `6904141` data(07-44): asm list with data-in-code evidence signed by ayrtondenner; tiers 1, 2, 3, 4 re-signed (D-23, F36)
+1. **Tasks 1-2 tests (RED):** `b22406e` test(07-44): data-in-code evidence and the tier-queue hold (RED)
+2. **Tasks 1-3 implementation and docs:** `1b3b890` feat(07-44): data-in-code evidence tags; the tier queue holds unclear data rows until the owner rules (owner ruling 2026-10-31)
+3. **Tasks 3, 5 and 7 data and sign-offs:** `4f42728` data(07-44): asm list with data-in-code evidence signed by ayrtondenner; tiers 1, 2, 3, 4 re-signed (D-23, F36)
 
 **Plan metadata:** this SUMMARY commit (docs). Nothing is pushed: the orchestrator pushes.
 
@@ -221,7 +221,7 @@ Signed tiers: (1, 2, 3, 4). `mechanics status --tier 1 --require-matched` exits 
 - **Missing-API failures:** the other failures name the planned API (`held_pairs`, `signed_held`, and the `held` dry-run key).
 - **No unrelated test failed.**
 - **Task 2's RED run:** 10 failed and 100 passed, failing on the missing tags, the missing status fields and `data_facts`.
-- **TDD gate compliance:** the RED commit c99c094 comes before the GREEN commit 5fa6806. Its tree is HEAD's code plus the new tests.
+- **TDD gate compliance:** the RED commit b22406e comes before the GREEN commit 1b3b890. Its tree is HEAD's code plus the new tests.
 
 ## Deviations from Plan
 
@@ -296,7 +296,7 @@ The hold and the signed data are in place. 07-39 Task 3 can resume. The 4 held T
 ## Self-Check: PASSED
 
 - Files: all 13 modified tracked files exist and are committed. Evidence files 44-data-commit.txt, 44-status-after.json/.txt, 44-tier1-require.txt, 44-host.log, 44-ruff.log, 44-container.log, 44-check-signed.txt and 44-write-final.txt exist.
-- Commits: c99c094, 5fa6806 and 6904141 are ancestors of HEAD, newest first and consecutive; `git rev-list --count de936e9..HEAD` = 3 before this SUMMARY commit.
+- Commits: b22406e, 1b3b890 and 4f42728 are ancestors of HEAD, newest first and consecutive; `git rev-list --count 715750d..HEAD` = 3 before this SUMMARY commit.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

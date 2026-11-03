@@ -20,8 +20,8 @@ actuals:
   tokens: 6583
   tasks: 3
   commits: 6
-plan_head_before: 8a8f98e5278614aa181fd6101c5ecb58ef29bead
-plan_head_after: 4e3906378db82ab6c567826da0cdd0ec7a1a45f3
+plan_head_before: e4988ecb4646bcd3811bfc6ae8fb881aa7501ff2
+plan_head_after: 2f964e8f91eb8f9e70604992239ffb52e58fe0cf
 
 tech-stack:
   added: []
@@ -156,25 +156,25 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): a near miss runs stage 2 and the wrapper reports its hit.** RED `c853ab8` (test), GREEN `70c6be4` (feat).
+1. **Task 1 (tracer, TDD): a near miss runs stage 2 and the wrapper reports its hit.** RED `c9ffcc0` (test), GREEN `d1b691a` (feat).
    - Tracer feedback gate: the run is interactive with `human_verify_mode` end-of-phase, and the verify is automated only. I re-ran `uv run pytest -q tests/test_check.py tests/test_attempt_wrapper.py -k "sweep or stage2"` on the committed GREEN (16 passed), then continued.
-2. **Task 2 (TDD): composition, trigger edges, flag safety.** RED `90ff858` (test), GREEN `0e8b6d5` (feat).
-3. **Task 3 (TDD, ruling F28): the `-zm` spike and the docs note.** RED `cc298ee` (test), GREEN `4e39063` (feat).
+2. **Task 2 (TDD): composition, trigger edges, flag safety.** RED `865e97b` (test), GREEN `3e6084c` (feat).
+3. **Task 3 (TDD, ruling F28): the `-zm` spike and the docs note.** RED `429b9e2` (test), GREEN `2f964e8` (feat).
 
 ## TDD evidence (RED)
 
 Each RED run wrote a pytest JUnit report (`build/red/07-14-t{1,2,3}.xml`, gitignored). `gsd-tools check tdd-red-evidence` returned `RED_EVIDENCE_OK` / `target_test_failed` for each.
 
-- **Task 1 (`c853ab8`):** 3 failed, 0 passed. Target: `test_stage2_runs_on_a_near_miss`.
+- **Task 1 (`c9ffcc0`):** 3 failed, 0 passed. Target: `test_stage2_runs_on_a_near_miss`.
   - The near-miss and skip tests failed because `to_json()` had no `stage2` key (`assert None is not None`, `assert 'stage2' in doc`).
   - The wrapper test failed with `sweep_hit` None instead of the stage-2 spec.
   - Semantic assessment: every target ran and failed on its planned assertion. There was no import or collection fault.
-- **Task 2 (`90ff858`):** 4 failed, 3 passed. Target: `test_sweep2_cells_from_ot`.
+- **Task 2 (`865e97b`):** 4 failed, 3 passed. Target: `test_sweep2_cells_from_ot`.
   - The two composition tests failed because the O2/Z/F slices were empty (assertion).
   - `test_trigger_edges[reloc-failed-not]` failed because stage 2 still ran from a reloc-failed 95.0 cell (assertion).
   - `test_trigger_edges_perfect_needs_zero_differing` failed with AttributeError: `sweep2_trigger` was not public yet.
   - The 3 passes were characterization of the tracer's behaviour: 90.0 runs, 89.99 does not, every cell rule parses.
-- **Task 3 (`cc298ee`):** 3 failed, 7 passed. Target: `test_zm_object_accounting`.
+- **Task 3 (`429b9e2`):** 3 failed, 7 passed. Target: `test_zm_object_accounting`.
   - Per ruling F28, the core failure is the missing M cell and `SWEEP2_ZM`: the `-zm` cell was absent from `sweep2_cells` (assertion). The two composition tests failed on the missing `-zm` slot.
   - The accounting and relocation parts of `test_zm_object_accounting` are characterization of existing check behaviour. They passed in the exploration run before the constant existed.
 - Record note: I first entered `runStartedAt` by hand as estimates, and two of them were later than the real reports. I rebuilt all three records with the plan's start time (17:44:22Z), a true lower bound for every run, and re-classified them: all `RED_EVIDENCE_OK`. The records are in gitignored `build/red/`.
@@ -217,22 +217,22 @@ See `key-decisions` in the frontmatter. None of them lets a cell land, write con
 **1. Orchestrator ruling F11: `stage2` and `stage2_best` default to None, after `log_path`.**
 - The ruling keeps `tests/test_skill.py:224`'s 7-argument positional `SweepReport` construction working, and that file is unchanged.
 - I added `stage2_from` as a property derived from `best[0]` rather than as a field, so the field list is exactly what the ruling names.
-- Commit: `70c6be4`.
+- Commit: `d1b691a`.
 
 **2. Orchestrator ruling F28: Task 3's RED holds the failing core test (the missing `-zm` cell / `SWEEP2_ZM`).**
 - The rest of `test_zm_object_accounting` (accounting and relocation) is characterization, as stated in the TDD evidence above.
-- Commits: `cc298ee` (RED), `4e39063` (GREEN).
+- Commits: `429b9e2` (RED), `2f964e8` (GREEN).
 
 **3. [Plan clarification] The "100.0 with one differing byte" trigger edge is tested at the cell level.**
 - **Found during:** Task 2.
 - **Issue:** check's relocation check compares bytes too. A compiled object with one differing byte therefore fails its relocation check, so the edge cannot be built end to end through `sweep`.
 - **Fix:** The trigger became a public function, `check.sweep2_trigger(cells)`. `test_trigger_edges_perfect_needs_zero_differing` tests it on `SweepCell`s, including empty and unmeasured stage-1 input. The other three edges stay end to end in `test_trigger_edges`.
-- **Commits:** `90ff858`, `0e8b6d5`.
+- **Commits:** `865e97b`, `3e6084c`.
 
 **4. [Rule 2 - Missing critical] Stage-2 cells are numbered on from stage 1.**
 - **Issue:** Numbering stage 2 from 1 would overwrite stage 1's `cell-NN.cflags`, `.obj` and `.elf` in the work directory and make the log ambiguous.
 - **Fix:** Stage-2 cells are numbered on from stage 1. The tracer test asserts numbers 31.. for a non-`__CHK` function.
-- **Commit:** `70c6be4`.
+- **Commit:** `d1b691a`.
 
 **5. [Finding, recorded, no code change] `-zm` and calls into the same unit.**
 - In the synthetic `-zm` layout, a call from one function into another function's own segment is a fixup to a module-local segment. relocs refuses it as a "local segment reference". A `-zm` cell of a function that calls a sibling in its own unit therefore always fails its relocation check: it fails safe and is never a hit.
@@ -266,7 +266,7 @@ Execution context nonce: 02135080c6292877
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/check.py, tools/reverseapoc/attempt.py, tests/test_check.py, tests/test_attempt_wrapper.py, docs/toolchain.md
-- FOUND commits on this branch: c853ab8, 70c6be4, 90ff858, 0e8b6d5, cc298ee, 4e39063 (`git rev-list --count 8a8f98e..4e39063` = 6 before the SUMMARY commit)
+- FOUND commits on this branch: c9ffcc0, d1b691a, 865e97b, 3e6084c, 429b9e2, 2f964e8 (`git rev-list --count e4988ec..2f964e8` = 6 before the SUMMARY commit)
 - No STATE.md or ROADMAP.md change. The working tree was clean after the SUMMARY commit.
 
 ---

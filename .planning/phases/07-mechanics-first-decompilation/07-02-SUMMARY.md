@@ -20,8 +20,8 @@ actuals:
   tokens: 22049
   tasks: 3
   commits: 3
-plan_head_before: 0f9de364337258572e5dcddb10a133cd2c95c821
-plan_head_after: f8744612c9e2ed312cabd49c00af318ad02cd323
+plan_head_before: 99f4659dcc3a4bfbe1970ea7331c1e87b4fe86c9
+plan_head_after: c99022e899693a9c9e120c368e97a7fbd41a654a
 
 tech-stack:
   added: []
@@ -160,9 +160,9 @@ below, with each statement marked script / hand / assumption.
 
 ## Task Commits
 
-1. **Task 1: Tracer - README skeleton and q1_timebase.py** - `510b6cf` (spike)
-2. **Task 2: q2_tickrule.py** - `2b3c193` (spike)
-3. **Task 3: q3_training.py** - `f874461` (spike)
+1. **Task 1: Tracer - README skeleton and q1_timebase.py** - `9998ff2` (spike)
+2. **Task 2: q2_tickrule.py** - `4570409` (spike)
+3. **Task 3: q3_training.py** - `c99022e` (spike)
 
 Tracer gate (Task 1): interactive end-of-phase mode, automated-only verify. The verify was re-run
 and passed before Task 2 started (q1 ALL PASS exit 0, plant and mutant exit 1, ruff clean).
@@ -211,12 +211,12 @@ and passed before Task 2 started (q1 ALL PASS exit 0, plant and mutant exit 1, r
   (`int1a-pinned-readers`) separately. `EXPECTED["pinned_readers"]` = {0x00010940} is marked as
   this spike's finding.
 - **Files modified:** q1_timebase.py, README.md
-- **Commit:** 510b6cf
+- **Commit:** 9998ff2
 
 **2. [Rule 1 - Bug] The tracker treated movsx/movzx as string instructions**
 - **Found during:** Task 1
 - **Fix:** string mnemonics are matched exactly (a regex on the last word of the mnemonic).
-- **Commit:** 510b6cf
+- **Commit:** 9998ff2
 
 **3. [Rule 1 - Bug] Research's loop and speed-table candidates were wrong (A2)**
 - **Found during:** Task 2
@@ -225,14 +225,14 @@ and passed before Task 2 started (q1 ALL PASS exit 0, plant and mutant exit 1, r
 - **Fix:** `EXPECTED` pins the located loop, clock, accumulator and speed variable. The research
   candidates go to a `research-candidates-refuted` claim. TACP `EXPECTED` stays `None` as
   planned, and the claim reports what it finds.
-- **Commit:** 2b3c193
+- **Commit:** 4570409
 
 **4. [Rule 2 - Missing critical] q2 has more claims than the plan names**
 - **Found during:** Task 2
 - **Added:** `one-second-per-frame`, `speed-values` and `get-text-sections`. The #997 answer
   needs them: they show that a frame cannot add several seconds, and which values the speed
   takes.
-- **Commit:** 2b3c193
+- **Commit:** 4570409
 
 **5. [Rule 1 - Bug] The plan's Learning AI claim is false as written**
 - **Found during:** Task 3
@@ -241,13 +241,13 @@ and passed before Task 2 started (q1 ALL PASS exit 0, plant and mutant exit 1, r
   reader calls first.
 - **Fix:** the claim pins the reached set ({0x000A6040}) and checks that the reader reaches
   none of them without `func_000A49D0`.
-- **Commit:** f874461
+- **Commit:** c99022e
 
 **6. [Rule 1 - Bug] The accrual heuristic counted stack locals**
 - **Found during:** Task 3
 - **Fix:** esp-based operands are excluded, which takes the candidates from 10 rows to 2. The
   remaining 2 rows are pinned as a heuristic. The TACP accrual is recorded as not located.
-- **Commit:** f874461
+- **Commit:** c99022e
 
 ---
 
@@ -297,7 +297,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: .planning/spikes/007-locate-997-training/README.md, q1_timebase.py, q2_tickrule.py, q3_training.py
-- FOUND commits: 510b6cf, 2b3c193, f874461 (ancestors of HEAD)
+- FOUND commits: 9998ff2, 4570409, c99022e (ancestors of HEAD)
 
 ## Fix round 1
 
@@ -329,8 +329,8 @@ Orchestrator fix round after the task review. Findings and what changed:
      value of 1 is used up before the test, so steady play waits every frame, is hand-read.
 
 Commits:
-- `e3ca02b` spike(007): prove the BIOS-tick cadence and the no-wait guard
-- `adb0ec2` spike(007): pin the no-wait counter's stored constants
+- `68a37a9` spike(007): prove the BIOS-tick cadence and the no-wait guard
+- `fb0ad05` spike(007): pin the no-wait counter's stored constants
 - the README and SUMMARY commit (docs(07-02))
 
 Re-runs (host):

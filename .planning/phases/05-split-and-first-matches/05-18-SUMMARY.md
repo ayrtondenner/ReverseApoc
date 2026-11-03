@@ -19,8 +19,8 @@ actuals:
   tokens: 6860
   tasks: 3
   commits: 5
-plan_head_before: 705c4b687bcbe5a2ae15e06966dd4fe509f4ef0c
-plan_head_after: 28aaf039c636d5ff866fb4b4eec68468520251f2
+plan_head_before: de022e1b7f0a91f2bb3112c807f6c24d97873ca2
+plan_head_after: 14bab130b82f316f7a152b4d7f5708dd3b6b3387
 
 tech-stack:
   added: []
@@ -162,11 +162,11 @@ The original C was restored from a scratchpad copy, and the committed file is th
 ## Task Commits
 
 1. **Task 1 (tracer): cmain386 re-proof and the objdiff blind spot.**
-   - `77e6709` (test): the two real-test modules.
-   - `c891b3e` (test, RED) and `e5120a9` (fix, GREEN): the target writer fix the baseline graph needed (see Deviations).
+   - `f78614a` (test): the two real-test modules.
+   - `7da9a7e` (test, RED) and `4c98ca0` (fix, GREEN): the target writer fix the baseline graph needed (see Deviations).
    - Tracer gate: an interactive run, `human_verify_mode` end-of-phase, automated-only verify. After the fix I re-ran the Task 1 verify in the container: 24 passed with tests/test_target.py, no SKIPPED. Then I expanded.
-2. **Task 2: the first UFO2P game function:** `5ab2e79` (feat)
-3. **Task 3: evidence in the docs:** `28aaf03` (docs)
+2. **Task 2: the first UFO2P game function:** `f73b50e` (feat)
+3. **Task 3: evidence in the docs:** `14bab13` (docs)
 
 ## TDD notes
 
@@ -175,8 +175,8 @@ The original C was restored from a scratchpad copy, and the committed file is th
   - `test_second_relocation_blind_spot` passed at once. It pins behaviour that the production writers from 05-02/05-06/05-08/05-09 already had.
   - After the fix: 4 passed, no SKIPPED (build/gate/05-cmain-real.out).
 - **target.py fix:**
-  - RED `c891b3e`: the three rewritten tests failed with the old `TargetError` (`... in no functions.csv row`, `... outside the code object`).
-  - GREEN `e5120a9`: 20 of 20 passed.
+  - RED `7da9a7e`: the three rewritten tests failed with the old `TargetError` (`... in no functions.csv row`, `... outside the code object`).
+  - GREEN `4c98ca0`: 20 of 20 passed.
 - The plan is `type: execute` and `workflow.tdd_mode` is off, so the tdd-red-evidence classifier does not apply.
 
 ## Verification
@@ -232,13 +232,13 @@ No orchestrator ruling amends 05-18. I applied the notes addressed to 05-18 as i
 - **Fix:** such a field keeps its raw bytes, gets no relocation, and is named in `raw_fields`, exactly as ruling F11 does for non-off32 fixups. A function holding one is no first-match candidate: score already rejects calls to non-row starts, and 05-18/05-19 skip any target with raw fields. It cannot pass falsely, because our side relocates the field, so objdiff and the relocation check both disagree with the raw target. The refusals for a row outside the code object and for a field split by a row boundary stay.
 - **Files modified:** tools/reverseapoc/target.py, tests/test_target.py
 - **Verification:** 3 rewritten unit tests; the baseline graph exits 0; the full host and container suites pass.
-- **Committed in:** c891b3e (RED), e5120a9 (GREEN)
+- **Committed in:** 7da9a7e (RED), 4c98ca0 (GREEN)
 
 **2. [Rule 3 - Blocking] The real compile tests write under build/test-check/, not tmp_path**
 - **Found during:** Task 1 RED run.
 - **Issue:** `reverseapoc cc` refuses an object outside the repository root.
 - **Fix:** a `build_dir` fixture creating `build/test-check/<test name>`.
-- **Committed in:** 77e6709
+- **Committed in:** f78614a
 
 **3. [Minor] No Ghidra draft read for the candidate**
 - The plan's step 3 reads both `asm --only` and the container `ghidra-export --drafts`. The listing of the 13-byte function was unambiguous (a call, a sign-extending byte load, a return), so I skipped the Ghidra draft. Only check's output decides a match (D-16), so this changes no verdict.
@@ -273,7 +273,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: tests/test_check_real.py, tests/test_objdiff_real.py, src/ufo2p/u_000a34f0.c, tools/reverseapoc/target.py, docs/toolchain.md, docs/learnings.md
-- FOUND commits (ancestors of HEAD): 77e6709, c891b3e, e5120a9, 5ab2e79, 28aaf03. `git rev-list --count 705c4b6..HEAD` = 5 before this SUMMARY commit.
+- FOUND commits (ancestors of HEAD): f78614a, 7da9a7e, 4c98ca0, f73b50e, 14bab13. `git rev-list --count de022e1..HEAD` = 5 before this SUMMARY commit.
 
 ---
 *Phase: 05-split-and-first-matches*

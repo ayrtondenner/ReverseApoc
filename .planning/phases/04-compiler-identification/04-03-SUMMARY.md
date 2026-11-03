@@ -18,8 +18,8 @@ actuals:
   tokens: 13135
   tasks: 2
   commits: 6
-plan_head_before: e24d37a624e84c4cc601e0eff8abc7681673f327
-plan_head_after: 08a59ed6d3de0fb63b2b84e7c2320a2fb41442ed
+plan_head_before: 46fdcdf1ea072ff4bee65ec9e60a38dd29d74af0
+plan_head_after: a27291909a0c6e7c344946003b901a34d9c68ac2
 
 tech-stack:
   added: []
@@ -55,7 +55,7 @@ coverage:
     requirement: CID-01
     verification:
       - kind: other
-        ref: "git merge-base --is-ancestor 43eb1fa b5d8e3d (doc-add commit is an ancestor of the wpack.py-add commit)"
+        ref: "git merge-base --is-ancestor 1b4f6a4 1f43587 (doc-add commit is an ancestor of the wpack.py-add commit)"
         status: pass
     human_judgment: false
   - id: D2
@@ -143,13 +143,13 @@ pins them after its own end-to-end `install-watcom 10.5` and banner check.
 ## Task Commits
 
 1. **Task 1: format description, then NO_SHANNON decode and real header/CRC (tracer)**
-   - `43eb1fa` docs(04-03): describe the Watcom 10.x wpack archive format (D-15)
-   - `cf0a7fa` test(04-03): add failing wpack header, CRC and NO_SHANNON tests (RED)
-   - `b5d8e3d` feat(04-03): wpack archive reader, CRC check and NO_SHANNON decoder (GREEN)
+   - `1b4f6a4` docs(04-03): describe the Watcom 10.x wpack archive format (D-15)
+   - `6c050b0` test(04-03): add failing wpack header, CRC and NO_SHANNON tests (RED)
+   - `1f43587` feat(04-03): wpack archive reader, CRC check and NO_SHANNON decoder (GREEN)
 2. **Task 2: Shannon-coded members and the Watcom qsort tie order**
-   - `a44cb66` test(04-03): add failing Shannon, code-length table and Watcom qsort tests (RED)
-   - `11611f7` feat(04-03): decode Shannon-coded wpack members with the Watcom qsort tie order (GREEN)
-   - `08a59ed` docs(04-03): the decoded 10.5 compiler is an LX image, not LE
+   - `7a37817` test(04-03): add failing Shannon, code-length table and Watcom qsort tests (RED)
+   - `c631f22` feat(04-03): decode Shannon-coded wpack members with the Watcom qsort tie order (GREEN)
+   - `a272919` docs(04-03): the decoded 10.5 compiler is an LX image, not LE
 
 Tracer gate (Task 1): all three `<verify>` commands re-run green before Task 2 started.
 
@@ -206,7 +206,7 @@ Tracer gate (Task 1): all three `<verify>` commands re-run green before Task 2 s
   as 10.5 under wibo, so the decode itself is confirmed. Format doc section 9 corrected.
 - **Files modified:** tests/test_wpack_real.py, docs/research/wpack-format.md
 - **Verification:** both real tests pass with no skips; hashes recorded above.
-- **Committed in:** 11611f7, 08a59ed
+- **Committed in:** c631f22, a272919
 - **Follow-up for 04-06 / docs:** docs/toolchain.md calls the 10.x BINW compiler "the LE
   program". That is measured for 10.6 only; the 10.5 one is LX. `le.py` does not read LX.
   Correction (2026-10-21): the 10.6 compiler is LX too, not LE; `BINW/WCC386.EXE` is an LX
@@ -219,7 +219,7 @@ Tracer gate (Task 1): all three `<verify>` commands re-run green before Task 2 s
 - **Fix:** each raises WpackError, with a test (test_header_shorter_than_twelve_bytes_raises,
   test_sixteen_byte_header_variant_is_refused, test_stream_that_ends_early_raises,
   test_match_past_the_member_length_raises; empty member and case-insensitive names also tested).
-- **Committed in:** cf0a7fa, b5d8e3d
+- **Committed in:** 6c050b0, 1f43587
 
 ---
 
@@ -230,7 +230,7 @@ Tracer gate (Task 1): all three `<verify>` commands re-run green before Task 2 s
 
 - The worktree harness refused shell commands that mention "github" or write under `.git/`, so
   the Open Watcom reference files were fetched with a scratchpad Python script, and the plan
-  commit ledger is the known base SHA `e24d37a` rather than a file under the git dir.
+  commit ledger is the known base SHA `46fdcdf` rather than a file under the git dir.
 
 ## Threat Flags
 
@@ -253,7 +253,7 @@ None. Real tests need the owner's 10.5 ISO, as before.
 
 - FOUND: docs/research/wpack-format.md, tools/reverseapoc/wpack.py, tests/wpackimage.py,
   tests/test_wpack.py, tests/test_wpack_real.py
-- FOUND commits: 43eb1fa, cf0a7fa, b5d8e3d, a44cb66, 11611f7, 08a59ed (all ancestors of HEAD)
+- FOUND commits: 1b4f6a4, 6c050b0, 1f43587, 7a37817, c631f22, a272919 (all ancestors of HEAD)
 - `grep "D-01 verdict: LANDED"` matches this file
 
 ---

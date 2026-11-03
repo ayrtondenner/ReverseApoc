@@ -19,10 +19,10 @@ actuals:
   tokens: 20900
   tasks: 3
   commits: 5
-plan_head_before: d73427f8500018ff3be6d6b8c5f4394ecdd587c5
-plan_head_after: 601d42d
-# fix round 1: fd7d973 (README, MANIFEST) and this SUMMARY's update
-# Measured `git rev-list --count d73427f..HEAD` is 35 (HEAD 8a8f98e): main also took the wave-2
+plan_head_before: 9eec04a99f5e7c6ea9dc7296e66a01c95a44fdbb
+plan_head_after: 82eaac3
+# fix round 1: 3bcd25c (README, MANIFEST) and this SUMMARY's update
+# Measured `git rev-list --count 9eec04a..HEAD` is 35 (HEAD e4988ec): main also took the wave-2
 # merges and other plans' commits while this sequential plan ran. This executor's own commits in
 # that range are the 5 spike(007) commits listed under Task Commits (F35), plus this SUMMARY.
 
@@ -147,11 +147,11 @@ Execution context nonce: bba450d10c530859
 
 ## Task Commits
 
-1. **Task 1: Tracer - q4_strings.py**: `97c33f4` (spike)
-2. **Ruling (07-02 re-review): pin wait-skip guards, retag the lead**: `6ab9c34` (spike)
-3. **Task 2: q5, q6, verdict, MANIFEST**: `7c9a85b` (spike)
-4. **Ruling: q1 chain detail text**: `6a750da` (spike)
-5. **Ruling: per-interrupt adder call tagged hand-read in q1's text**: `601d42d` (spike)
+1. **Task 1: Tracer - q4_strings.py**: `f0b192f` (spike)
+2. **Ruling (07-02 re-review): pin wait-skip guards, retag the lead**: `e7e3cf8` (spike)
+3. **Task 2: q5, q6, verdict, MANIFEST**: `90f253f` (spike)
+4. **Ruling: q1 chain detail text**: `11305be` (spike)
+5. **Ruling: per-interrupt adder call tagged hand-read in q1's text**: `82eaac3` (spike)
 6. **Task 3: owner checkpoint**: no commit. The report was delivered in the checkpoint return.
 
 The tracer gate for Task 1 ran in interactive end-of-phase mode with an automated-only verify.
@@ -189,7 +189,7 @@ The draft comment the owner asked for was written in the executor's return messa
 not in any file and was not posted.
 
 **Verification (read-only, F35 wording).**
-- `git log d73427f..HEAD` holds other plans' commits and merges as well. This executor's own
+- `git log 9eec04a..HEAD` holds other plans' commits and merges as well. This executor's own
   commits are only the five spike(007) commits above, plus this SUMMARY.
 - No network command (`git push`, `gh`, curl/wget), no docker and no subagent was run by this
   executor.
@@ -246,7 +246,7 @@ not in any file and was not posted.
   - The guard tags say "pinned since plan 07-08", and the trail records all of this.
   - The 07-02 SUMMARY was not edited.
 - Files modified outside files_modified: `q2_tickrule.py`, `q1_timebase.py`.
-- Commits: `6ab9c34`, `6a750da`, `601d42d`.
+- Commits: `e7e3cf8`, `11305be`, `82eaac3`.
 - Verification: q1 and q2 ALL PASS; their plants exit 1; q3 ALL PASS.
 - The owner relay quoted the current README lead, not the plan's "18.2065 Hz" wording.
 
@@ -258,7 +258,7 @@ not in any file and was not posted.
   50 and 51 are called. 50 is the dump loop's bound.
 - Fix: EXPECTED `slots: 52` ("this spike") plus `dump_bound: 50` (research's number, verified).
 - Note: q2's `get-text-sections 50 of 50` checked only the first 50; it is left as is.
-- Committed in: `97c33f4`.
+- Committed in: `f0b192f`.
 
 **4. [Rule 1 - Bug] q6 table edges: record lead-in**
 - Found during: Task 2.
@@ -267,7 +267,7 @@ not in any file and was not posted.
 - Fix: count references up to 64 bytes before a run, because code addresses record bases. This
   reproduces research exactly. The strict-rule numbers are kept as an INFO line.
 - Consequence: plan 07-22 decides this rule for `callgraph.py`.
-- Committed in: `7c9a85b`.
+- Committed in: `90f253f`.
 
 **5. [Rule 2 - Missing critical] q5 header-independent claims and a synthetic-header self-test**
 - Issue: with no headers, q5 as planned would only print SKIP, and its plant could not be
@@ -275,7 +275,7 @@ not in any file and was not posted.
 - Fix: added the `cd-build` and `data-object-identity` claims, which the no-header plant fails.
   The header path was run with a scratchpad header of our own two locators; this run exposed
   and fixed a "match in either EXE" flaw.
-- Committed in: `7c9a85b`.
+- Committed in: `90f253f`.
 
 ---
 
@@ -313,7 +313,7 @@ None.
 ## Self-Check: PASSED
 
 - Created files exist: q4_strings.py, q5_tables.py and q6_callgraph.py.
-- Commits 97c33f4, 6ab9c34, 7c9a85b, 6a750da and 601d42d are ancestors of HEAD.
+- Commits f0b192f, e7e3cf8, 90f253f, 11305be and 82eaac3 are ancestors of HEAD.
 
 ## Fix round 1
 
@@ -354,7 +354,7 @@ because the clock "is called only from the frame code that waits on the BIOS tic
 carries the same overclaim. The corrected wording goes to the owner through the orchestrator; the
 draft was never in a file.
 
-Commits: `fd7d973` (README, MANIFEST) and the docs(07-08) commit of this section.
+Commits: `3bcd25c` (README, MANIFEST) and the docs(07-08) commit of this section.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

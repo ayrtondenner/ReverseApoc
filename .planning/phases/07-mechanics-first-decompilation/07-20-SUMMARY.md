@@ -51,7 +51,7 @@ coverage:
     requirement: DEC-03
     verification: []
     human_judgment: true
-    rationale: "Only the owner decides which rows leave the must-match sets; the ruling is quoted verbatim below and in commit ccff87e"
+    rationale: "Only the owner decides which rows leave the must-match sets; the ruling is quoted verbatim below and in commit ff1a0b1"
   - id: D3
     description: "The signed [asm_list] in config/mechanics.toml, checked by `mechanics check`"
     requirement: DEC-01
@@ -70,8 +70,8 @@ coverage:
 duration: 24min
 completed: 2026-10-27
 status: complete
-plan_head_before: aaa81213cfcc46c1f9028bfa077e5ce67b41d9c3
-plan_head_after: ccff87efab1ea4ae341771dd627ccbe0a7f28b66
+plan_head_before: 663f26491b0240be9d82862e52c8545ad2814059
+plan_head_after: ff1a0b1fce82334dc76fe6ac8410da47cb1156f6
 ---
 
 # Phase 7 Plan 20: The D-23 asm list, signed off Summary
@@ -84,7 +84,7 @@ Execution context nonce: 1dbb74bac9b90928
 
 - **Duration:** about 24 min of work, over two dispatches:
   - Task 1: 2026-10-27T18:52:52Z to 18:57:42Z, then the checkpoint;
-  - Task 3: resumed after the owner's ruling, committed `ccff87e`, then a 14-minute host suite.
+  - Task 3: resumed after the owner's ruling, committed `ff1a0b1`, then a 14-minute host suite.
 - **Tasks:** 3. Task 1 was the tracer, Task 2 the owner's checkpoint, Task 3 the sign-off.
 - **Files:** 2 created.
 
@@ -127,7 +127,7 @@ Final list:
    - No commit, by ruling F38: both files stayed uncommitted until the ruling.
    - Tracer gate: the run was interactive in end-of-phase mode with an automated-only verify, so I re-ran it. It was green.
 2. **Task 2: the owner's ruling.** A checkpoint; nothing to commit.
-3. **Task 3: record the sign-off.** `ccff87e`: `data(07-20): asm list signed off by ayrtondenner (D-23)`. It contains exactly config/asm-functions.csv and config/mechanics.toml, and the body quotes the ruling.
+3. **Task 3: record the sign-off.** `ff1a0b1`: `data(07-20): asm list signed off by ayrtondenner (D-23)`. It contains exactly config/asm-functions.csv and config/mechanics.toml, and the body quotes the ruling.
 
 ## Files Created/Modified
 
@@ -163,7 +163,7 @@ Final list:
   - 0x000C6287: compiler-like, the pilot capped at 61.87%.
 - **Files modified:** config/asm-functions.csv.
 - **Verification:** the script asserted that no exe, address, evidence or verdict changed. The list reads back clean.
-- **Committed in:** `ccff87e`.
+- **Committed in:** `ff1a0b1`.
 
 **2. Plan text "Run the asm drift real test"**
 - This ran in Task 1 inside `tests/test_asmclass.py` against the main checkout's orig/: 19 passed, 0 skipped.
@@ -184,7 +184,7 @@ Final list:
 - They stay in the C queue, where they cannot match as functions. A functions.csv re-cut or a new verdict would be the remedy; neither is in this plan's scope.
 - The verdict counts in this summary come from the committed file. The heuristic breakdown is not committed anywhere.
 
-**Host suite, run once on main after `ccff87e` (no container):**
+**Host suite, run once on main after `ff1a0b1` (no container):**
 - `uv run pytest -q`: 3315 passed, 38 skipped.
 - `uv run ruff check .`: All checks passed.
 - The skips are the existing F2-allowed reasons:
@@ -222,7 +222,7 @@ T-07-59 is mitigated: the notes are in our own words, with no instruction text, 
 ## Self-Check: PASSED
 
 - config/asm-functions.csv, config/mechanics.toml and this SUMMARY exist.
-- Commit `ccff87e` is on HEAD (`git rev-list --count aaa8121..HEAD` = 1 before this SUMMARY's commit).
+- Commit `ff1a0b1` is on HEAD (`git rev-list --count 663f264..HEAD` = 1 before this SUMMARY's commit).
 - `mechanics check` reports no problems, and 77 mechanics and asm tests pass.
 
 ---

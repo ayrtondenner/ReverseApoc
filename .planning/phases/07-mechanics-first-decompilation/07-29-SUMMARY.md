@@ -9,7 +9,7 @@ requires:
     provides: "07-17: flags propose/regate/list and the queue; 07-24: flags approve (owner verb); 07-03: rule by logical path and the K4 real view-compile test"
 provides:
   - "config/cflags-proposals.toml: F-0001..F-0006, the D-13 pilot-hit proposals, with their re-gate results (F-0001, F-0003 landed; the other four failed)"
-  - "Four flag-approved matches landed by the owner: tacp func_0006FBD0 + func_0006FC00 (864fb46), ufo2p func_00026FD0 + func_00026FF0 (6adc5c8)"
+  - "Four flag-approved matches landed by the owner: tacp func_0006FBD0 + func_0006FC00 (9c95c07), ufo2p func_00026FD0 + func_00026FF0 (21edaca)"
   - "docs/toolchain.md ### Phase 7 flag rules (one row per proposal, the re-gate findings, D-33)"
 affects: [07-33, 07-37, 07-41]
 
@@ -17,8 +17,8 @@ actuals:
   tokens: 4100
   tasks: 3
   commits: 4
-plan_head_before: c802fcc54b1d22922ca0918240845e895a3635ae
-plan_head_after: 50721ce6d865ef574d3ef8ed62e1942a78bbf003
+plan_head_before: fa7ce187fb6657edeb371ea1cea85e15a3d1fbb6
+plan_head_after: a0796e6500022e2286d4b74acaacbc81d089d732
 
 tech-stack:
   added: []
@@ -83,7 +83,7 @@ status: complete
 
 # Phase 7 Plan 29: D-13 pilot sweep hits Summary
 
-**Six pilot sweep hits became proposals. Two of them (F-0001: tacp u_0006fbd0, and F-0003: ufo2p u_00026dd0, both under `-4r -oneatx`) passed the whole-unit container re-gate as written, each with its co-defined neighbour matching too. The owner approved both, which landed 4 flag-approved functions in 864fb46 and 6adc5c8. The re-gate of each commit and the final `gate --all` passed with both EXEs SHA-1 identical. The other four hits failed: each target matched only alongside a neighbour that did not match.**
+**Six pilot sweep hits became proposals. Two of them (F-0001: tacp u_0006fbd0, and F-0003: ufo2p u_00026dd0, both under `-4r -oneatx`) passed the whole-unit container re-gate as written, each with its co-defined neighbour matching too. The owner approved both, which landed 4 flag-approved functions in 9c95c07 and 21edaca. The re-gate of each commit and the final `gate --all` passed with both EXEs SHA-1 identical. The other four hits failed: each target matched only alongside a neighbour that did not match.**
 
 ## Performance
 
@@ -99,36 +99,36 @@ status: complete
     - F-0001 and F-0003 regated as written, with both the target and the neighbour at 100.0.
     - F-0002, F-0004, F-0005 and F-0006 failed both variants.
   - The K4 real view-compile test passed in the container.
-  - config/cflags.txt was byte-identical to c802fcc at the Task 1 commit.
+  - config/cflags.txt was byte-identical to fa7ce18 at the Task 1 commit.
 - **Task 2 (owner):** the owner ran `uv run reverseapoc flags approve F-0001 F-0003 --by ayrtondenner`. Owner's report, quoted:
-  > "approved F-0001, F-0003 (landed: F-0001 in 864fb46, F-0003 in 6adc5c8; failed: none of the approved; not approvable: F-0002, F-0004, F-0005, F-0006, which failed the re-gate)"
+  > "approved F-0001, F-0003 (landed: F-0001 in 9c95c07, F-0003 in 21edaca; failed: none of the approved; not approvable: F-0002, F-0004, F-0005, F-0006, which failed the re-gate)"
 
   The orchestrator then checked, read-only:
   - the two `Flags-Approved-By:` commits;
   - config/cflags.txt lines 38-39 (`# F-0001 approved ayrtondenner 2026-10-30`, `# F-0003 ...`);
   - `flags list`, which shows F-0001 and F-0003 as landed and the other four as failed.
 - **Task 3:**
-  - 29-approvals.txt lists 864fb46 and 6adc5c8.
+  - 29-approvals.txt lists 9c95c07 and 21edaca.
   - Each was checked out detached and re-gated in the container (`gate --all` exit 0; UFO2P e7488bf3…, TACP 48ef0096…). After that: back to main, and the final gate on main exited 0.
   - 29-agt11.txt = **5** `Matched-By: reverseapoc drive` commits: 3 pilot commits and 2 flag-approved ones. Those 5 commits matched **7** functions, because each approval landed 2.
   - docs/toolchain.md gained `### Phase 7 flag rules`.
 
 | Proposal | Function | Unit | Rule | Re-gate | Outcome |
 |---|---|---|---|---|---|
-| F-0001 | tacp func_0006FBD0 (48 B) | u_0006fbd0 | `-4r -oneatx` | exit 0, as written (+ func_0006FC00 64 B) | landed 864fb46 |
+| F-0001 | tacp func_0006FBD0 (48 B) | u_0006fbd0 | `-4r -oneatx` | exit 0, as written (+ func_0006FC00 64 B) | landed 9c95c07 |
 | F-0002 | tacp func_000779C0 | u_000778d0 | `-4r -ot` | exit 1 (neighbour 1.03; reduced 66.67) | not approvable |
-| F-0003 | ufo2p func_00026FD0 (32 B) | u_00026dd0 | `-4r -oneatx` | exit 0, as written (+ func_00026FF0 43 B) | landed 6adc5c8 |
+| F-0003 | ufo2p func_00026FD0 (32 B) | u_00026dd0 | `-4r -oneatx` | exit 0, as written (+ func_00026FF0 43 B) | landed 21edaca |
 | F-0004 | ufo2p func_0004DFD0 | u_0004dfd0 | `-4r -ot` | exit 1 (33.19; reduced 66.67) | not approvable |
 | F-0005 | ufo2p func_00061F30 | u_00060c50 | `-4r -ot` | exit 1 (53.50; reduced 68.57) | not approvable |
 | F-0006 | ufo2p func_0009C3A0 | u_0009c1a0 | `-4r -oneatx` | exit 1 (85.64; reduced 75.00) | not approvable |
 
 ## Task Commits
 
-1. **Task 1: proposals and re-gates.** `609a4bf` (data). Commit flag: config/cflags-proposals.toml only.
-2. **Task 2: the owner's approvals** (not this executor's commits): `864fb46` (F-0001) and `6adc5c8` (F-0003). Both are `feat(<exe>): match ... under approved flags`, with `Matched-By:` and `Flags-Approved-By:`.
-3. **Task 3: evidence.** `50721ce` (docs).
+1. **Task 1: proposals and re-gates.** `44e8207` (data). Commit flag: config/cflags-proposals.toml only.
+2. **Task 2: the owner's approvals** (not this executor's commits): `9c95c07` (F-0001) and `21edaca` (F-0003). Both are `feat(<exe>): match ... under approved flags`, with `Matched-By:` and `Flags-Approved-By:`.
+3. **Task 3: evidence.** `a0796e6` (docs).
 
-Commits measured: `git rev-list --count c802fcc..50721ce` = 4, which includes the owner's 2.
+Commits measured: `git rev-list --count fa7ce18..a0796e6` = 4, which includes the owner's 2.
 
 ## Verification
 
@@ -137,13 +137,13 @@ Commits measured: `git rev-list --count c802fcc..50721ce` = 4, which includes th
   - regate exit=1, which the verify allows (0 or 1);
   - `[[proposal]]` is present and the batch summary is non-empty;
   - the tree was empty except ` M .planning/config.json` (R-C).
-  - AC: `git diff --quiet c802fcc -- config/cflags.txt` passed.
+  - AC: `git diff --quiet fa7ce18 -- config/cflags.txt` passed.
 - Task 3 verify passed:
   - 29-final-gate.log and both 29-regate-N.log end `exit=0`;
   - the heading is present;
   - tests/test_hygiene.py: 77 passed, 3 skipped (the pre-existing "only inside the container").
   - AC: on main, the tree is empty except the flag line, and 29-agt11.txt holds 5.
-- Host suite at 50721ce: `uv run pytest -q` gave **3933 passed, 38 skipped** (29-host-suite.log). `uv run ruff check .`: All checks passed.
+- Host suite at a0796e6: `uv run pytest -q` gave **3933 passed, 38 skipped** (29-host-suite.log). `uv run ruff check .`: All checks passed.
 - No host suite ran at the same time as a container command.
 
 ## Files Created/Modified
@@ -196,7 +196,7 @@ Execution context nonce: EXECUTION-CONTEXT-END-NONCE: 101e86c341b2e5f0
 ## Self-Check: PASSED
 
 - FOUND: config/cflags-proposals.toml, docs/toolchain.md (### Phase 7 flag rules), build/gate/07-evidence/29-batch-summary.txt, 29-agt11.txt.
-- FOUND commits (ancestors of HEAD): 609a4bf, 864fb46, 6adc5c8, 50721ce.
+- FOUND commits (ancestors of HEAD): 44e8207, 9c95c07, 21edaca, a0796e6.
 - No STATE.md or ROADMAP.md change (the orchestrator does those).
 
 ---

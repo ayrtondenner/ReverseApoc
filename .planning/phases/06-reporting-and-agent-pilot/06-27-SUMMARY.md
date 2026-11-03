@@ -7,7 +7,7 @@ status: complete
 
 requires:
   - phase: 06-reporting-and-agent-pilot
-    provides: "06-26 owner pilot run 20261026-005209 (3 MATCHED: c83cf4e, d288ad6, 955931f; chore 398515d); 06-11..06-25 gate, drift, progress, report, Pages, hooks, wrapper, pack, picker, driver, skill; 06-DEFERRED-LEDGER.md"
+    provides: "06-26 owner pilot run 20261026-005209 (3 MATCHED: 07e3ecc, 3d005bb, 558f35a; chore 0c2fcd5); 06-11..06-25 gate, drift, progress, report, Pages, hooks, wrapper, pack, picker, driver, skill; 06-DEFERRED-LEDGER.md"
 provides:
   - "Independent proof of the pilot: each of the 3 match commits re-gated in the container in order (gate --all exit 0, both EXEs SHA-1 identical), final tree from clean (ninja verify + gate --all exit 0), drift and attempt-log schema green, no guardrail record"
   - "docs/toolchain.md `### Phase 6 match evidence`: one row per pilot match with the 30-cell sweep result; versions and -4r/-5r stay tied, -os drops for both UFO2P functions; `*` default unchanged"
@@ -16,11 +16,11 @@ provides:
 affects: [/gsd-verify-work 6, Phase 7 (the 10-match target carries over), recomp.fyi listing (status in-progress)]
 
 actuals:
-  tokens: 9500    # chars/4 over git diff f4056f1..1722b1a (37,903 chars), before this SUMMARY
+  tokens: 9500    # chars/4 over git diff 7e4b71e..a979139 (37,903 chars), before this SUMMARY
   tasks: 3
-  commits: 2      # MEASURED: git rev-list --count f4056f1..HEAD before this SUMMARY commit (03b63e2, 1722b1a)
-plan_head_before: f4056f1e8cf4f14c2957a3d047348d4f4a84b431
-plan_head_after: 1722b1a537abd3669c5c0a7bdce3decc971f0d4b
+  commits: 2      # MEASURED: git rev-list --count 7e4b71e..HEAD before this SUMMARY commit (06e3aa3, a979139)
+plan_head_before: 7e4b71e115c44af7630140b4b448a300d2a07128
+plan_head_after: a97913945193b185423ab86fd9d6794eaee05a28
 
 tech-stack:
   added: []
@@ -120,10 +120,10 @@ Execution context nonce: e92135e16b8ef800
 
 | Log | What | Result |
 |-----|------|--------|
-| 10-commits.txt | F30 form: `git log --reverse --format=%H%x09%s --grep="^Matched-By: reverseapoc drive$"` | 3 commits, oldest first: c83cf4e feat(ufo2p) func_0008A0E0, d288ad6 feat(tacp) func_0006EE30, 955931f feat(ufo2p) func_0008A100. Each changes exactly one src/<exe>/<unit>.c plus only status.csv, decomphub.progress.json and progress/attempts.jsonl |
-| 11-regate-1.log | c83cf4e, container `gate --all` | UFO2P landed 2, TACP landed 1, both SHA-1 OK, `exit=0` |
-| 11-regate-2.log | d288ad6 | UFO2P landed 2, TACP landed 2, `exit=0` |
-| 11-regate-3.log | 955931f | UFO2P landed 3, TACP landed 2, `exit=0` |
+| 10-commits.txt | F30 form: `git log --reverse --format=%H%x09%s --grep="^Matched-By: reverseapoc drive$"` | 3 commits, oldest first: 07e3ecc feat(ufo2p) func_0008A0E0, 3d005bb feat(tacp) func_0006EE30, 558f35a feat(ufo2p) func_0008A100. Each changes exactly one src/<exe>/<unit>.c plus only status.csv, decomphub.progress.json and progress/attempts.jsonl |
+| 11-regate-1.log | 07e3ecc, container `gate --all` | UFO2P landed 2, TACP landed 1, both SHA-1 OK, `exit=0` |
+| 11-regate-2.log | 3d005bb | UFO2P landed 2, TACP landed 2, `exit=0` |
+| 11-regate-3.log | 558f35a | UFO2P landed 3, TACP landed 2, `exit=0` |
 | 12-final-ninja.log | main: configure.py, `ninja -t clean` (16 files), `ninja verify` | UFO2P, TACP and SMKP sha1 == manifest, `exit=0` |
 | 13-final-gate.log | main: container `gate --all` | 5 matched functions at objdiff 100%, reloc ok, bytes ok; both SHA-1 OK, `exit=0` |
 | 14-drift.log | host `pytest -q tests/test_drift.py tests/test_attempts_schema.py` | 42 passed, `exit=0` |
@@ -133,7 +133,7 @@ Execution context nonce: e92135e16b8ef800
 | 30-host.log | host `uv run pytest -q -rs` + `uv run ruff check .` | 2780 passed, 35 skipped, `exit=0`; ruff "All checks passed!" (`ruff_exit=0`); F2 host audit passes |
 | 31-container.log | `docker compose run --rm build bash -lc "uv sync --locked && uv run pytest -q -rs && uv run ruff check ."` (after the host run finished) | 2813 passed, 2 skipped, ruff clean, `exit=0`; F2 container audit passes |
 | 32-hygiene.log | `git ls-files` check from the Task 3 verify | 504 tracked files, no offender, `exit=0` |
-| 33-live.log | written by the orchestrator (ruling F37), main at f4056f1; not run by this executor | latest pages.yml run on main `success`; `/`, `/index.html`, progress.json, progress-shield.json, progress-shield-ufo2p.json, progress-shield-tacp.json, progress.svg and raw decomphub.progress.json 200; `/progress.html` 404 (expected, removed in f4056f1); artifact `X-COM_Apocalypse_DOS_report` for f4056f1, `expired: false` |
+| 33-live.log | written by the orchestrator (ruling F37), main at 7e4b71e; not run by this executor | latest pages.yml run on main `success`; `/`, `/index.html`, progress.json, progress-shield.json, progress-shield-ufo2p.json, progress-shield-tacp.json, progress.svg and raw decomphub.progress.json 200; `/progress.html` 404 (expected, removed in 7e4b71e); artifact `X-COM_Apocalypse_DOS_report` for 7e4b71e, `expired: false` |
 
 Other Task 1 checks: progress/attempts.jsonl has exactly one STARTED record (line 1, run 20261026-005209), and each match has a MATCHED attempt record. `grep '"reason": *"guardrail"'` finds nothing. After the re-gates, git was back on main with an empty `git status --porcelain` and an empty stash list.
 
@@ -173,8 +173,8 @@ No `_real.py` line is skipped in the container.
 ## Task Commits
 
 1. **Task 1: tracer, pilot vs D-37 with re-gates**: no commit (gitignored evidence only, ruling F38, Phase A)
-2. **Task 2: match evidence, recomp status, spike 005 line, ledger**: `03b63e2` (docs)
-3. **Task 3: suites, hygiene, live check citation, validation sign-off, STATE decisions**: `1722b1a` (docs)
+2. **Task 2: match evidence, recomp status, spike 005 line, ledger**: `06e3aa3` (docs)
+3. **Task 3: suites, hygiene, live check citation, validation sign-off, STATE decisions**: `a979139` (docs)
 
 **Plan metadata:** this docs(06-27) commit (SUMMARY, ROADMAP, REQUIREMENTS)
 
@@ -185,13 +185,13 @@ Tracer gate: `end-of-phase` mode with an automated-only verify. The Task 1 verif
 - `docs/toolchain.md`: the `### Phase 6 match evidence` table and the separation notes
 - `.recomp.json`: `status` changed from exploring to in-progress
 - `.planning/phases/05-split-and-first-matches/05-VALIDATION.md`: the owner's spike 005 line, with dates
-- `.planning/phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md`: 17 rows filled (recounted from `git diff f4056f1..d070e72`), with every hash checked by `git cat-file -e`; the rows this plan closes cite 03b63e2
+- `.planning/phases/06-reporting-and-agent-pilot/06-DEFERRED-LEDGER.md`: 17 rows filled (recounted from `git diff 7e4b71e..7d24ffd`), with every hash checked by `git cat-file -e`; the rows this plan closes cite 06e3aa3
 - `.planning/phases/06-reporting-and-agent-pilot/06-VALIDATION.md`: every row green with its evidence log, an AGT-11 partial row, the Wave 0 F31 note, the manual-only results, the sign-off and the approval
 - `.planning/STATE.md`: two Phase 06 Decisions lines (the pilot result and the PARTIAL ruling); the Deferred Items status; the repo-visibility blocker marked RESOLVED (review fix round 1)
 
 ## Decisions Made
 
-See key-decisions in the frontmatter. RPT-05 is settled by owner ruling F40 (2026-10-26): it is complete. Its automated row (the .recomp.json schema and the DecompHub feed) is green; .recomp.json is updated (a9011c7/e360d32, 03b63e2 status in-progress; listed and claimed on recomp.fyi 2026-10-25); and the owner submitted the DecompHub form on 2026-10-24 (pending DecompHub review, 06-CONTEXT.md). The requirement asks for the submission, not the approval, so REQUIREMENTS.md marks RPT-05 Complete (review fix round 1). These stay open owner items, outside RPT-05's text: the D-31 DecompHub maintainer claim, the awesome-list PRs and the decomp.me preset issue.
+See key-decisions in the frontmatter. RPT-05 is settled by owner ruling F40 (2026-10-26): it is complete. Its automated row (the .recomp.json schema and the DecompHub feed) is green; .recomp.json is updated (33887f7/0d6c98e, 06e3aa3 status in-progress; listed and claimed on recomp.fyi 2026-10-25); and the owner submitted the DecompHub form on 2026-10-24 (pending DecompHub review, 06-CONTEXT.md). The requirement asks for the submission, not the approval, so REQUIREMENTS.md marks RPT-05 Complete (review fix round 1). These stay open owner items, outside RPT-05's text: the D-31 DecompHub maintainer claim, the awesome-list PRs and the decomp.me preset issue.
 
 ## Deviations from Plan
 
@@ -199,7 +199,7 @@ See key-decisions in the frontmatter. RPT-05 is settled by owner ruling F40 (202
 
 1. **Owner ruling 2026-10-26: PARTIAL pilot accepted (D-37).** The run reached 3 MATCHED, not 10. Task 1 did not stop at its checkpoint:decision for the count, but every re-gate, final and drift check still ran and could have stopped it. None failed.
 2. **Owner ruling 2026-10-26: count checks replaced.** Task 1's `>= 10` and `>= 3 per EXE` verify checks became the same checks against the actual count: `test "$n" -eq 3`, feat(ufo2p) = 2, feat(tacp) = 1. They pass, and so do the per-log `exit=0` checks and the check that there is one log per commit.
-3. **Orchestrator ruling F37: 33-live.log written by the orchestrator.** This executor made no network call. It cites the orchestrator's 33-live.log, whose URL list (site root, index.html, progress.json, the three shield files, progress.svg and the raw feed) replaces the plan's "three Pages URLs". `/progress.html` 404 is expected after the owner's f4056f1.
+3. **Orchestrator ruling F37: 33-live.log written by the orchestrator.** This executor made no network call. It cites the orchestrator's 33-live.log, whose URL list (site root, index.html, progress.json, the three shield files, progress.svg and the raw feed) replaces the plan's "three Pages URLs". `/progress.html` 404 is expected after the owner's 7e4b71e.
 4. **Orchestrator ruling F2: skip audit forms.** The plan's container verify (`! grep -q "SKIPPED"`) would fail on the 2 `Windows-only: msvcrt lock path` skips. The 06-16 F2 form allows exactly those and passes. The host form uses the full F2 allow-list.
 5. **Orchestrator ruling F30:** 10-commits.txt uses `git log --reverse` (oldest first), and the guardrail grep uses the pinned key `"reason": *"guardrail"`.
 6. **Orchestrator ruling F31:** in 06-VALIDATION.md the Wave 0 conftest helpers are recorded as not needed rather than ticked, and the RPT-05 feed row points at tests/test_progress.py.
@@ -227,6 +227,6 @@ See key-decisions in the frontmatter. RPT-05 is settled by owner ruling F40 (202
 ## Self-Check: PASSED
 
 - All 14 evidence files listed above exist in build/gate/06-evidence/, along with docs/toolchain.md, .recomp.json and this SUMMARY.
-- Commits 03b63e2 and 1722b1a (this plan) and c83cf4e, d288ad6 and 955931f (the pilot) are ancestors of HEAD. `check evaluation-scope --plan 06-27 --commits-only` resolves both 06-27 commits.
-- `git diff f4056f1..HEAD` touches nothing under src/, orig/ or config/. `grep -n '^\*' config/cflags.txt` prints `37:*  wcc386@10.6  -4r -s -fpi`.
+- Commits 06e3aa3 and a979139 (this plan) and 07e3ecc, 3d005bb and 558f35a (the pilot) are ancestors of HEAD. `check evaluation-scope --plan 06-27 --commits-only` resolves both 06-27 commits.
+- `git diff 7e4b71e..HEAD` touches nothing under src/, orig/ or config/. `grep -n '^\*' config/cflags.txt` prints `37:*  wcc386@10.6  -4r -s -fpi`.
 - Acceptance re-run: the Task 1 verify (adjusted per the ruling), the Task 2 verify and acceptance checks, and the Task 3 verifies (F2 host and container forms, hygiene, validation flags) all exit 0.

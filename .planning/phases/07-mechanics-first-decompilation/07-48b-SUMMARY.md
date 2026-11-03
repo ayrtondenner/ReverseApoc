@@ -20,8 +20,8 @@ actuals:
   tokens: 6800  # chars/4 over the tools/tests/docs diff (27201 chars)
   tasks: 3
   commits: 5  # git rev-list --count plan_head_before..plan_head_after; the SUMMARY commit follows
-plan_head_before: 03b28bb6428697470f537789bd544f82f06f15dc
-plan_head_after: ab2e374154f2ad7c8b9a268548ff6d279a46a55e
+plan_head_before: b21bf435a65782328c87c59fb1fbada33241c5bc
+plan_head_after: 9011660f79b558d80422e5a2e77536de5e8e1596
 
 tech-stack:
   added: []
@@ -124,7 +124,7 @@ Bundle nonce: b4ebb4f46aef
 
 ## RED evidence assessment (Task 1)
 
-The record is build/gate/07-evidence/48b-red-record.json (JUnit from 48b-red.xml). The classifier returned `RED_EVIDENCE_OK`, target `tests/test_check.py::test_table_gap_accepts_original_filler_before_the_head`. On HEAD 03b28bb, 5 tests failed and 227 passed.
+The record is build/gate/07-evidence/48b-red-record.json (JUnit from 48b-red.xml). The classifier returned `RED_EVIDENCE_OK`, target `tests/test_check.py::test_table_gap_accepts_original_filler_before_the_head`. On HEAD b21bf43, 5 tests failed and 227 passed.
 
 - The TARGET ran and failed on its planned assertion (`head.ok`) for the intended reason: `0x0001010C: length differs: ours 12 bytes, original 16 bytes; ours does not decode to a terminal instruction at its end`. That is condition 4 applied to a data span. There was no collection, import or fixture fault.
 - test_table_gap_lands_the_head_only failed with the same span refusal.
@@ -162,11 +162,11 @@ Both judge runs exited normally (exit 0 and exit 1); neither was a tool error. C
 
 ## Suites and gate
 
-- **Host suite** at ab2e374: 4390 passed, 41 skipped (R-A reasons only), exit=0 (1012 s). Ruff exit=0.
-- **Container suite** at ab2e374, image rebuilt: 4429 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff clean, exit=0.
+- **Host suite** at 9011660: 4390 passed, 41 skipped (R-A reasons only), exit=0 (1012 s). Ruff exit=0.
+- **Container suite** at 9011660, image rebuilt: 4429 passed, 2 skipped (`Windows-only: msvcrt lock path`), ruff clean, exit=0.
 - **Real tests:** host 2 passed, 1 skipped (objdiff-cli not on PATH, run in the container); container 3 passed with no skip.
-- **gate --all, before (03b28bb):** exit=0, `OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 57`, `OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 38`.
-- **gate --all, after (ab2e374):** exit=0 with the same two SHA-1 lines, landed 57 and 38, no MISMATCH.
+- **gate --all, before (b21bf43):** exit=0, `OK UFO2P.EXE sha1 e7488bf3de2efeaa3c1c72d3763eeeb35f727c56 landed 57`, `OK TACP.EXE sha1 48ef00969d8880a0a152de1b652853fa7ac27393 landed 38`.
+- **gate --all, after (9011660):** exit=0 with the same two SHA-1 lines, landed 57 and 38, no MISMATCH.
 - **48b-gate-all.diff:** 4 lines on each side. They are the container run name (the `Creating` and `Created` lines) and uv's `Resolved 9 packages` / `Checked 8 packages` timings. No function line differs.
 - **Newly passing functions:** none. As expected, no src/ file changed.
 - `git status --porcelain -- config/ decomphub.progress.json` stayed empty.
@@ -174,11 +174,11 @@ Both judge runs exited normally (exit 0 and exit 1); neither was a tool error. C
 
 ## Task Commits
 
-1. **Task 1 RED:** `2cf9627` test(07-48b): failing tests for filler between a leading table and its head
-2. **Task 1 GREEN:** `d190385` feat(07-48b): accept original filler between a leading table and its head
-3. **Task 2 fixture and real test:** `1451b69` test(07-48b): real-file leading-table gap fixture for tacp func_0001E860
-4. **Task 2 docs:** `cf92c74` docs(07-48b): the leading-table gap rule
-5. **Task 2 fix-forward:** `ab2e374` fix(07-48b): the func_0001E860 fixture is LF, its provenance says so
+1. **Task 1 RED:** `5f9a8f6` test(07-48b): failing tests for filler between a leading table and its head
+2. **Task 1 GREEN:** `7b63cf3` feat(07-48b): accept original filler between a leading table and its head
+3. **Task 2 fixture and real test:** `1ddee86` test(07-48b): real-file leading-table gap fixture for tacp func_0001E860
+4. **Task 2 docs:** `3906669` docs(07-48b): the leading-table gap rule
+5. **Task 2 fix-forward:** `9011660` fix(07-48b): the func_0001E860 fixture is LF, its provenance says so
 
 ## Files Created/Modified
 
@@ -193,9 +193,9 @@ Both judge runs exited normally (exit 0 and exit 1); neither was a tool error. C
 
 ## Review
 
-Code review is deferred to the orchestrator: this executor does not run `/code-review` (R-D: it may dispatch reviewer subagents). The command is `/code-review` on `git diff 03b28bb...HEAD`, at the default level, never max or ultra.
+Code review is deferred to the orchestrator: this executor does not run `/code-review` (R-D: it may dispatch reviewer subagents). The command is `/code-review` on `git diff b21bf43...HEAD`, at the default level, never max or ultra.
 
-The executor read `git diff 03b28bb HEAD -- tools/` by hand and found no defect:
+The executor read `git diff b21bf43 HEAD -- tools/` by hand and found no defect:
 - there is exactly one `table=True` call, inside `_head_reloc`;
 - both keywords default to False;
 - the condition order is unchanged;
@@ -215,11 +215,11 @@ The executor read `git diff 03b28bb HEAD -- tools/` by hand and found no defect:
 - **Issue:** The agent file has CRLF line ends, and `.gitattributes` (`* text=auto eol=lf`) stores the copy as LF. The plain `cmp` against the agent file can only hold for the working copy written before commit.
 - **Fix:** Refreshed the working copy from git (`git checkout -- <fixture>`, now LF). The docstring now says the copy is byte-identical except for line ends. Host and container real tests were re-run on the LF copy and passed.
 - **Verification:** `tr -d '\r' < build/spike-011/agents/b064/f_0001e860.c | cmp - tests/fixtures/filler/tacp/f_0001e860.c` exits 0. Real tests: host exit=0, container 3 passed, exit=0.
-- **Committed in:** ab2e374
+- **Committed in:** 9011660
 
 ### Plan-text deviations (no code impact)
 
-- **Branch:** the plan names `gsd/07-48-filler-rule`. Per the orchestrator ruling, the work ran on `gsd/07-48b-table-filler`, cut from main at 03b28bb.
+- **Branch:** the plan names `gsd/07-48-filler-rule`. Per the orchestrator ruling, the work ran on `gsd/07-48b-table-filler`, cut from main at b21bf43.
 - **Three negatives were regression pins, not RED.** The plan says each negative was RED on 07-48's HEAD. That holds only for the condition-5 negative (not filler). The unaligned head (condition 2), the 16-byte gap (condition 1) and the LE fixup in the gap (condition 3) are checked before condition 4, so on HEAD they already failed with their own reasons. They were kept as written, and their teeth are shown by mutants 4 to 6. Nothing was widened or distorted to force a RED.
 - **The acceptance criterion `cmp tests/fixtures/... build/spike-011/...`** holds modulo CRLF to LF only (see auto-fix 1).
 
@@ -239,7 +239,7 @@ None. No external service configuration is required.
 ## Next Phase Readiness
 
 - Orchestrator steps, not run here:
-  - run `/code-review` on `git diff 03b28bb...HEAD`;
+  - run `/code-review` on `git diff b21bf43...HEAD`;
   - fast-forward main, push, `gh run watch`;
   - add tacp 0x0001E860 (f_0001e860.c, cell `-4r -oneatx -s -fpi`) to Task 2b's D-12 proposal list.
 - 07-48c runs next, never at the same time.
@@ -248,7 +248,7 @@ None. No external service configuration is required.
 ## Self-Check: PASSED
 
 - FOUND: tests/fixtures/filler/tacp/f_0001e860.c, tests/test_filler_real.py, tools/reverseapoc/relocs.py, tools/reverseapoc/check.py
-- FOUND commits: 2cf9627, d190385, 1451b69, cf92c74, ab2e374 (each an ancestor of HEAD)
+- FOUND commits: 5f9a8f6, 7b63cf3, 1ddee86, 3906669, 9011660 (each an ancestor of HEAD)
 - Task 1, 2 and 3 automated verify commands passed. Task 3's ran before this SUMMARY and is re-run after its commit.
 
 ---

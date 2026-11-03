@@ -20,8 +20,8 @@ actuals:
   tokens: 10840
   tasks: 2
   commits: 2
-plan_head_before: 688168c02902006e43f072efe6e0b8f6f45e300b
-plan_head_after: d8c73c0df89e50ca290f8439c90373f54fe469d2
+plan_head_before: 138853dd49a7fbd2897f815a99e1c20482db24fc
+plan_head_after: 0eb46512de963617f83521151cb93d6d3e88da82
 
 tech-stack:
   added: []
@@ -177,8 +177,8 @@ objdiff-cli diff -1 build/spike005/<exe>/target.o -2 build/spike005/<exe>/base.o
 
 ## Task Commits
 
-1. **Task 1: Tracer, UFO2P cmain386 pair at 100%** - `c2ae8cc` (feat)
-2. **Task 2: Both EXEs, plants, name map record, verdict** - `d8c73c0` (docs)
+1. **Task 1: Tracer, UFO2P cmain386 pair at 100%** - `f02cf65` (feat)
+2. **Task 2: Both EXEs, plants, name map record, verdict** - `0eb4651` (docs)
 
 ## Files Created/Modified
 
@@ -203,14 +203,14 @@ objdiff-cli diff -1 build/spike005/<exe>/target.o -2 build/spike005/<exe>/base.o
 - **Fix:** `ELFDATA2LSB = 1`.
 - **Files modified:** .planning/spikes/005-objdiff-omf-elf/mkelf.py
 - **Verification:** both objects load and `__CMain` scores 100.0.
-- **Committed in:** c2ae8cc
+- **Committed in:** f02cf65
 
 **2. [Rule 2 - Missing evidence] Compile claim names the cflags rule**
 - **Found during:** Task 1
 - **Issue:** the `OK` line carries only `wcc386@10.6`, so it did not show that `-4r -s -fpi` applied.
 - **Fix:** an added `rule` PASS line from `cflags.select_rule(load_cflags(), SOURCE)`.
 - **Files modified:** spike.py
-- **Committed in:** c2ae8cc
+- **Committed in:** f02cf65
 
 ---
 
@@ -244,7 +244,7 @@ None.
 ## Self-Check: PASSED
 
 - FOUND: .planning/spikes/005-objdiff-omf-elf/mkelf.py, spike.py, README.md; .planning/spikes/MANIFEST.md has the 005 row
-- FOUND: c2ae8cc, d8c73c0 (ancestors of HEAD); `git rev-list --count 688168c..HEAD` = 2
+- FOUND: f02cf65, 0eb4651 (ancestors of HEAD); `git rev-list --count 138853d..HEAD` = 2
 
 ---
 *Phase: 05-split-and-first-matches*

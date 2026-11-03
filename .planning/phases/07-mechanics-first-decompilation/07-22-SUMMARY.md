@@ -18,8 +18,8 @@ actuals:
   tokens: 33000
   tasks: 3
   commits: 1
-plan_head_before: f50d69b607c9ef7ead91cc9b1d30cc043341e607
-plan_head_after: 4d821482f9a43341b846099b9759097da63db01e
+plan_head_before: 23e4b998df26424c01ac1d6681506b6c70e8bf11
+plan_head_after: ac9eb69df9cb3aa97cd076b39fd89f9a5993070d
 
 tech-stack:
   added: []
@@ -72,7 +72,7 @@ coverage:
         ref: "uv run reverseapoc mechanics check; uv run pytest -q tests/test_mechanics.py tests/test_mechanics_real.py (63 passed)"
         status: pass
     human_judgment: true
-    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit 4d82148"
+    rationale: "D-04: the sign-off is the owner's ruling, quoted verbatim below and in commit ac9eb69"
 
 duration: 60min
 completed: 2026-10-27
@@ -176,7 +176,7 @@ After the re-sign, `uv run reverseapoc mechanics status --tier 1` reports `tier 
 
 1. **Task 1: tracer (classify, draft, members, hub candidates).** Not committed, by dispatch: the commit flag was not set and the precondition needed a fully clean tree. The draft went to the owner uncommitted.
 2. **Task 2: the owner's ruling.** A checkpoint; nothing to commit.
-3. **Task 3: record the hub rule and the sign-off.** Commit `4d82148`: `data(07-22): Tier 1 signed off by ayrtondenner with hub rule callers>=20, closure share>0.2 (D-04, D-22)`. It holds exactly config/mechanics.toml and config/mechanics-members.csv, and its body quotes the ruling.
+3. **Task 3: record the hub rule and the sign-off.** Commit `ac9eb69`: `data(07-22): Tier 1 signed off by ayrtondenner with hub rule callers>=20, closure share>0.2 (D-04, D-22)`. It holds exactly config/mechanics.toml and config/mechanics-members.csv, and its body quotes the ruling.
 
 ## Files Created/Modified
 
@@ -206,7 +206,7 @@ After the re-sign, `uv run reverseapoc mechanics status --tier 1` reports `tier 
 - **Issue:** spike 007 left the TACP accrual unlocated, and the plan asks for it to be located with the call graph.
 - **Fix:** added 0x000B2510 (call-graph), plus 0x00064B60 and 0x00067B60 (data-field). Each has `22-locate-tacp-unit-array.txt` and the `22-accrual-*.txt` evidence.
 - **Verification:** `mechanics check` passes, and the owner signed the draft with these entries.
-- **Committed in:** 4d82148.
+- **Committed in:** ac9eb69.
 
 **Total deviations:** 1 auto-fixed (Rule 2), plus the F2/F36 rulings, notes a-e and the dispatch's no-commit Task 1.
 **Impact:** none on scope; the owner saw every entry before signing.
@@ -231,7 +231,7 @@ After the re-sign, `uv run reverseapoc mechanics status --tier 1` reports `tier 
 
 ## Review fix round 1
 
-The task review (f50d69b..ca01a69) found two Important issues; the owner decided both on 2026-10-30.
+The task review (23e4b99..385bc4d) found two Important issues; the owner decided both on 2026-10-30.
 
 - **I1: closure share counted midrow edges.**
   - The first record applied Q1 to the SCC only. The signed closure-share test walked midrow edges. Those switch-table pairs weld separate subtrees into one blob of about 980 (UFO2P) / 1,120 (TACP) rows, so 75 / 54 rows were hubs only because of them.
@@ -255,16 +255,16 @@ The task review (f50d69b..ca01a69) found two Important issues; the owner decided
   - The midrow-free largest SCC (UFO2P 32 rows, TACP 159) keeps only entries as members (1 / 5).
 - **Review M1:** recorded under "Decisions Made" as a note for 07-32 (0x000B26F0 may belong to #265).
 - **Deviation: Orchestrator ruling (owner I1).** tools/reverseapoc/mechanics.py, tools/reverseapoc/cli.py and tests/test_mechanics.py were edited outside files_modified.
-- **TDD.** Four new tests were added and `test_graph_report` was updated. Against the tooling at a5047e3 they fail for the expected reasons (`22r1/r1-red.txt`): 5 failed, 57 passed. The failures are:
+- **TDD.** Four new tests were added and `test_graph_report` was updated. Against the tooling at 6e5da06 they fail for the expected reasons (`22r1/r1-red.txt`): 5 failed, 57 passed. The failures are:
   - closure share 0.4, not 0.1;
   - largest SCC {A, B, Y}, not {C, D};
   - min_items gives hub, not member;
   - graph report key `all` and a cycle of 2.
   After the fix, 62 passed.
 - **Commits:**
-  - `32a2f80` test (RED, tests only);
-  - `0860838` fix (mechanics.py and cli.py);
-  - `8b570c3` data (mechanics.toml and members CSV; the body quotes the owner rulings and the re-sign).
+  - `d74537b` test (RED, tests only);
+  - `cd473ba` fix (mechanics.py and cli.py);
+  - `de86dd6` data (mechanics.toml and members CSV; the body quotes the owner rulings and the re-sign).
 - **Verification:**
   - `mechanics check`: `mechanics: no problems`.
   - `mechanics digest --tier 1`: 7f892df5...d39294.
@@ -290,7 +290,7 @@ None.
 ## Self-Check: PASSED
 
 - config/mechanics.toml, config/mechanics-members.csv and build/gate/07-evidence/22-tier1-status.json exist.
-- Commit 4d82148 is on HEAD.
+- Commit ac9eb69 is on HEAD.
 
 ---
 *Phase: 07-mechanics-first-decompilation*

@@ -30,7 +30,7 @@ uv run reverseapoc drive --session readability --workers 3 --max-sessions 9
   referenced a placeholder that is not a matched definition, so strict readlint would have kept
   them from landing.
 - Owner ruling 2026-11-01: allowlist first. config/readlint-allow.csv got 5 function references
-  (2 closures, 2 hubs, 1 member) and 39 data globals (359011e). Strict readlint RL01 179 -> 53.
+  (2 closures, 2 hubs, 1 member) and 39 data globals (9d7b5e0). Strict readlint RL01 179 -> 53.
 - Slice (run 20261101-164853): 3 sessions, 3 LANDED, 3 renames, ENDED cleanly with the end-of-run ninja verify
   and gate --all. Names were checked by hand before the rest: each header cites real call sites
   (for example a caller registering the function as a button callback).

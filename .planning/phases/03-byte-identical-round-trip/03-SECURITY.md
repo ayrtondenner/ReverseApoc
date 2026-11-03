@@ -71,7 +71,7 @@ created: "2026-10-20"
 | T-03-37 | Tampering | gate steps 7 and 8 (container) | low | mitigate | orig/ `:ro`; /tmp/alt-orig symlinks only; step 8 writes only build/cfg-03-10/ (gitignored); default build.ninja regenerated | closed |
 | T-03-38 | Information disclosure | gate logs build/gate/03-10/ and 03-10-SUMMARY | low | mitigate | build/ gitignored; cmp without -l; 0 runs of 5+ hex bytes in the eight logs | closed |
 | T-03-39 | Repudiation | 03-REVIEW-DISPOSITION.md | low | mitigate | each fixed row cites plan, GREEN commit (`git merge-base --is-ancestor` checked) and build/gate/03-10/; 03-10 Task 2 verify passed | closed |
-| T-03-SC | Tampering | package installs | low | accept | no dependency change in the phase (`git diff 547faf8..HEAD -- uv.lock pyproject.toml` is empty; 03-06 adds only the stdlib `re` and `sys`) | closed |
+| T-03-SC | Tampering | package installs | low | accept | no dependency change in the phase (`git diff af06697..HEAD -- uv.lock pyproject.toml` is empty; 03-06 adds only the stdlib `re` and `sys`) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*

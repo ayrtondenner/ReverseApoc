@@ -20,8 +20,8 @@ actuals:
   tokens: 6900
   tasks: 2
   commits: 4
-plan_head_before: aaa81213cfcc46c1f9028bfa077e5ce67b41d9c3
-plan_head_after: 375e8ab268243e92d3a8a4a2c1c8eaf7beca0f58
+plan_head_before: 663f26491b0240be9d82862e52c8545ad2814059
+plan_head_after: 11e73c663c54da7e7eac3811c7e828f02cd177cc
 
 tech-stack:
   added: []
@@ -132,14 +132,14 @@ Execution context nonce: f557261d8877a5ab
 
 ## Task Commits
 
-1. **Task 1 (tracer, TDD): the proposal line format.** RED `e63ff65` (test), GREEN `253a1af` (feat).
-2. **Task 2 (TDD): name, rename and header validation.** RED `479f1ee` (test), GREEN `375e8ab` (feat).
+1. **Task 1 (tracer, TDD): the proposal line format.** RED `7fa1687` (test), GREEN `5da2c9a` (feat).
+2. **Task 2 (TDD): name, rename and header validation.** RED `5805b33` (test), GREEN `11e73c6` (feat).
 
 No REFACTOR commits were needed.
 
 ## TDD evidence
 
-- **Task 1 RED (`e63ff65`).**
+- **Task 1 RED (`7fa1687`).**
   - Target: `tests/test_proposals.py::test_parse_rename_and_header`. It failed on its assertion `[] == [Rename(...), Header(...)]`.
   - JUnit report: `build/red/07-19-t1.xml` (gitignored). Record: `build/red/07-19-t1.json`, with `runStartedAt` captured by `date` before the run.
   - Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (42 tests: 37 failed, 5 passed).
@@ -147,7 +147,7 @@ No REFACTOR commits were needed.
   - The RED commit holds an interface skeleton of `proposals.py`: the constants, the error class and the two dataclasses, plus `parse_line`/`read_proposals` stubs that return nothing. Without it, the new module's absence would fail collection with ModuleNotFoundError, which is INVALID_RED.
   - The 5 tests that passed in RED are edge characterizations the stub satisfies by accident: missing/empty file -> `[]` (4) and the constants test (1).
 - **Tracer feedback gate.** The run was interactive, `human_verify_mode` was end-of-phase, and the verify step was automated only. After GREEN I re-ran `uv run pytest -q tests/test_proposals.py`: 42 passed. Then I expanded to Task 2.
-- **Task 2 RED (`479f1ee`).**
+- **Task 2 RED (`5805b33`).**
   - Target: `tests/test_proposals.py::test_name_problems[while]`. It failed on its assertion: no problem was reported for a C keyword.
   - JUnit report: `build/red/07-19-t2.xml`. Record: `build/red/07-19-t2.json`.
   - Classifier: `RED_EVIDENCE_OK` / `target_test_failed` (105 tests: 53 failed, 52 passed).
@@ -196,7 +196,7 @@ R5 (owner answer) is applied as researched: `LAB_`, `PTR_` and `UNK_` are placeh
   - a func `exit` links as `exit_`, the runtime public.
 - `rename_problem` therefore compares the proposal's C and linker spellings with each symbols.csv row's C and linker name. It reads runtime publics fail-closed, as both func and data C names.
 - Tests: `test_rename_unique[symbols-linker|symbols-cross-kind|runtime-*]`.
-- Committed in `375e8ab`.
+- Committed in `11e73c6`.
 
 **2. [Rule 2 - Correctness] A rename to the row's current name is refused.**
 - Without this, the driver could make a rename commit that changes nothing.
@@ -290,14 +290,14 @@ The findings came from the task review (I1, I2) and an automated security review
 - No committed src/ unit (`src/ufo2p/*.c`, `src/tacp/*.c`, 4 files) defines a macro with `#` or `##`.
 - No src/ file uses `%:`, and no `#` follows a directive's own `#`. So every committed unit passes the new strict rule.
 
-**RED evidence (`26107a8`).**
+**RED evidence (`a197140`).**
 - Target: `tests/test_proposals.py::test_header_problems[paste]`. `header_problem` returned None for a header that pastes `__a##sm`.
 - JUnit report: `build/red/07-19-fr1.xml`. Record: `build/red/07-19-fr1.json`.
 - Classifier: `RED_EVIDENCE_OK` / `target_test_failed`. 481 tests ran and 57 failed: every new rule failed, and the deep-nesting case raised `RecursionError`, not a ProposalError.
 - Characterization tests that passed before the fix: `test_largest_header_line_parses` and `test_matching_allows_hashes_outside_code`.
 - `test_header_allowed_forms_pass` was added with the fix commit as a pass-case pin.
 
-**Commits:** `26107a8` (test), `c7b466e` (fix: hooks), `ab9d04e` (fix: proposals).
+**Commits:** `a197140` (test), `13a6f4c` (fix: hooks), `af26f44` (fix: proposals).
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_proposals.py tests/test_hooks.py`: 480 passed, 2 skipped. The 2 skips are the existing "symlink creation needs privileges on this host"; none is new.
@@ -314,19 +314,19 @@ Main had merged plan 07-13, and that broke this branch on merge.
 - The findings came from the scoped re-review (C1, I3, M1) and a further automated security review (S3). M2 is a minor.
 - The orchestrator promoted M1 to a fix.
 
-**Step 0: merge.** `git merge --no-ff main -m "merge: bring main (07-13) into 07-19"` gave merge commit `c760efc`.
+**Step 0: merge.** `git merge --no-ff main -m "merge: bring main (07-13) into 07-19"` gave merge commit `dd12e65`.
 - It merged without conflicts. There was no reset, rebase or force.
 - The repo's commit hook added the trailer `Co-Authored-By: Claude <noreply@anthropic.com>` to the merge commit, because its `-m` message carried none.
 
 **Changes.**
-- **C1.** 07-13 deleted `hooks._RESERVED_HEADERS`, so importing proposals raised AttributeError and test_proposals failed at collection. `proposals.RESERVED_HEADERS = ("common.h", "watcom_compat.h")` is now its own tuple, pinned in `test_reserved_macros_are_read_from_the_reserved_headers`. Commit `78aa8e2`.
+- **C1.** 07-13 deleted `hooks._RESERVED_HEADERS`, so importing proposals raised AttributeError and test_proposals failed at collection. `proposals.RESERVED_HEADERS = ("common.h", "watcom_compat.h")` is now its own tuple, pinned in `test_reserved_macros_are_read_from_the_reserved_headers`. Commit `b82ef7f`.
 - **I3.** `test_matching_denies_preprocessor_operators` and `test_matching_allows_hashes_outside_code` now write the view unit (`_view_unit`), as main's other matching tests do.
   - On main, a src/ unit is denied for the view-mode reason before the scan runs.
   - Run against the pre-fix test text, 9 cases fail; with `_view_unit` all of them pass.
   - The operator test also asserts that the always layer still allows the view unit (with `view_env`) and the src/ unit.
 - **S3 (hooks).** The strict scan (`any_pragma=True`: matching layer and header proposals) refuses the `__pragma` and `__emit` keywords in code: `_PRAGMA_KEYWORDS` plus one branch in `_inline_asm`. The always layer is unchanged.
   - Tests: `test_matching_denies_pragma_and_emit_keywords[pragma|emit]` and `test_matching_allows_pragma_and_emit_words_outside_code` (comments, strings, `emit_count`, `my__pragma`).
-  - Commit `a68cf2f`.
+  - Commit `dbe02a6`.
 - **S3 (headers).** Header code that names `INCLUDE_ASM`, `_Pragma`, `__pragma`, `__emit`, `asm`, `_asm` or `__asm` anywhere is refused.
   - This covers a `#define` body, a declaration, a marker line, and a name spliced across a continuation.
   - The check runs on blanked code, so comments and strings may still mention these words.
@@ -334,13 +334,13 @@ Main had merged plan 07-13, and that broke this branch on merge.
 - **M1.** A `#define` or `#undef` of any C89-reserved `_X`/`__x` name is refused, for example `__WATCOMC__`, `__clang__`, `__INLINE_FUNCTIONS__` or `_Foo`. Such a line could flip branches in watcom_compat.h or the Watcom headers.
   - A view unit can still write such a line in its own text. That is out of scope here; the gate's byte match is the backstop.
 - **M2.** An object-like `#define` body containing `[` or `]`, or the digraphs `<%`, `%>`, `<:` or `:>`, is not a constant expression. `{`, `}` and `;` were already refused.
-- The header-rule fixes (S3 headers, M1, M2) are commit `5b9c0bc`.
+- The header-rule fixes (S3 headers, M1, M2) are commit `752796a`.
 
 **Deviations (fix round 2).**
 - `tools/reverseapoc/hooks.py` and `tests/test_hooks.py` were edited again, outside files_modified, as the ruling asks. The edit stays local to the scan function.
 - M2 also refuses plain `[` and `]` in an object-like body (`tbl[0]`). The ruling's "like `{`, `}`, `[`" implies it, but the round 1 code did not refuse brackets yet.
 
-**RED evidence (`e816609`).**
+**RED evidence (`5899332`).**
 - On the merged tree, `tests/test_proposals.py` failed at collection (C1, AttributeError). That is a load failure, so it is evidence for C1 only and was not classified as RED.
 - The classified target is `tests/test_hooks.py::test_matching_denies_pragma_and_emit_keywords[pragma]`: the matching layer allowed `__pragma(pack(1))` in a view unit.
   - JUnit report: `build/red/07-19-fr2.xml`. Record: `build/red/07-19-fr2.json`.
@@ -348,11 +348,11 @@ Main had merged plan 07-13, and that broke this branch on merge.
 - After the C1 fix alone, test_proposals ran with 18 failed and 156 passed. Every S3, M1 and M2 header case failed on its assertion.
 
 **Commits:**
-- `c760efc` (merge);
-- `e816609` (test);
-- `78aa8e2` (fix C1);
-- `a68cf2f` (fix S3, hooks);
-- `5b9c0bc` (fix S3 headers, M1, M2).
+- `dd12e65` (merge);
+- `5899332` (test);
+- `b82ef7f` (fix C1);
+- `dbe02a6` (fix S3, hooks);
+- `752796a` (fix S3 headers, M1, M2).
 
 **Commands and output after the fix.**
 - `uv run pytest -q tests/test_proposals.py tests/test_hooks.py`: 502 passed, 2 skipped (the existing symlink-privilege skips).

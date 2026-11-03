@@ -18,8 +18,8 @@ actuals:
   tokens: 3290
   tasks: 2
   commits: 4
-plan_head_before: 5d391a95fc7e771f05cab9d5985e9a315bc99097
-plan_head_after: cf5dec3103dba6fb94cad5eb6a20b230a59c3456
+plan_head_before: 1c48675aac13d363ce5011a7b4e83c195f3d2922
+plan_head_after: e0d3891881008ac79cbd8b5c15ba1d5aba908dd7
 
 tech-stack:
   added: []
@@ -69,7 +69,7 @@ coverage:
     description: "README retrokit row and GhidraMCP cell keep their original text and gain an annotation"
     verification:
       - kind: other
-        ref: "git diff -U0 5d391a9..cf5dec3 README.md (both rows: original cell text followed by the annotation)"
+        ref: "git diff -U0 1c48675..e0d3891 README.md (both rows: original cell text followed by the annotation)"
         status: pass
     human_judgment: false
   - id: D4
@@ -114,17 +114,17 @@ Execution context nonce: c54711309345e4b2
 
 ## Task Commits
 
-1. **Task 1 RED** - `8b8fa37` test(06-22): add failing recomp.fyi schema and notes tests for .recomp.json
-2. **Task 1 GREEN** - `a9011c7` feat(06-22): list the progress page and the current pipeline in .recomp.json
-3. **Task 2 RED** - `3b250ce` test(06-22): add failing README progress and DecompHub verification tests
-4. **Task 2 GREEN** - `cf5dec3` docs(06-22): README progress section, retrokit/GhidraMCP annotations, DecompHub verification
+1. **Task 1 RED** - `b50542e` test(06-22): add failing recomp.fyi schema and notes tests for .recomp.json
+2. **Task 1 GREEN** - `33887f7` feat(06-22): list the progress page and the current pipeline in .recomp.json
+3. **Task 2 RED** - `1774ace` test(06-22): add failing README progress and DecompHub verification tests
+4. **Task 2 GREEN** - `e0d3891` docs(06-22): README progress section, retrokit/GhidraMCP annotations, DecompHub verification
 
 ## TDD Gate Compliance
 
-- **RED 1** (`8b8fa37`): `uv run pytest -q tests/test_listings.py --junitxml=build/06-22/red1-junit.xml`, exit 1, 9 passed / 2 failed. Classifier `check tdd-red-evidence` on the JUnit record (target `test_recomp_json_lists_the_progress_page`): `RED_EVIDENCE_OK`, `target_test_failed`. Semantic assessment: both failures are the planned assertions; the progress link was missing (`links` held only the OpenApoc URL) and the notes test reported `['retrokit', 'decomp.wtf']`. No collection, import or fixture fault.
-- **GREEN 1** (`a9011c7`): 11 passed. Tracer gate (interactive, `end-of-phase`, automated-only verify): verify re-run green, expanded to Task 2.
-- **RED 2** (`3b250ce`): `uv run pytest -q tests/test_listings.py --junitxml=build/06-22/red2-junit.xml`, exit 1, 14 passed / 2 failed. Classifier on both targets (`test_readme_progress_section`, `test_decomphub_verification_file`): `RED_EVIDENCE_OK`, `target_test_failed`. Semantic assessment: README failed on the missing `[Progress data](decomphub.progress.json)` link; the verification test failed on `assert VERIFICATION.is_file()`. A first run failed with FileNotFoundError from `read_text`, which is not an assertion, so I added the `is_file()` assertion before committing RED.
-- **GREEN 2** (`cf5dec3`): 16 passed. The plan names this commit `docs(06-22)` rather than `feat(...)`; it is the GREEN for Task 2.
+- **RED 1** (`b50542e`): `uv run pytest -q tests/test_listings.py --junitxml=build/06-22/red1-junit.xml`, exit 1, 9 passed / 2 failed. Classifier `check tdd-red-evidence` on the JUnit record (target `test_recomp_json_lists_the_progress_page`): `RED_EVIDENCE_OK`, `target_test_failed`. Semantic assessment: both failures are the planned assertions; the progress link was missing (`links` held only the OpenApoc URL) and the notes test reported `['retrokit', 'decomp.wtf']`. No collection, import or fixture fault.
+- **GREEN 1** (`33887f7`): 11 passed. Tracer gate (interactive, `end-of-phase`, automated-only verify): verify re-run green, expanded to Task 2.
+- **RED 2** (`1774ace`): `uv run pytest -q tests/test_listings.py --junitxml=build/06-22/red2-junit.xml`, exit 1, 14 passed / 2 failed. Classifier on both targets (`test_readme_progress_section`, `test_decomphub_verification_file`): `RED_EVIDENCE_OK`, `target_test_failed`. Semantic assessment: README failed on the missing `[Progress data](decomphub.progress.json)` link; the verification test failed on `assert VERIFICATION.is_file()`. A first run failed with FileNotFoundError from `read_text`, which is not an assertion, so I added the `is_file()` assertion before committing RED.
+- **GREEN 2** (`e0d3891`): 16 passed. The plan names this commit `docs(06-22)` rather than `feat(...)`; it is the GREEN for Task 2.
 - RED records are in the gitignored `build/06-22/` (red1-record.json, red2-test_*.json). Their `runStartedAt` values are estimates a few seconds before the report mtime; `reportModifiedAt` is the file's real mtime.
 
 ## Verification
@@ -152,14 +152,14 @@ Execution context nonce: c54711309345e4b2
 
 No orchestrator ruling applies to 06-22 (rulings.md has no "## 06-22" section). R-A: no new skips. R-B: build/06-22 evidence was written only by shell redirection and by the programs' own writes.
 
-1. **[Rule 2 - test strength] Planted-defect tests added.** I added three small parametrized tests so that each check can be shown to fail (the project's "a check is only worth something if it can fail" pattern from test_hygiene.py). The six planned tests are unchanged. Files: tests/test_listings.py. Commits: 8b8fa37, 3b250ce.
+1. **[Rule 2 - test strength] Planted-defect tests added.** I added three small parametrized tests so that each check can be shown to fail (the project's "a check is only worth something if it can fail" pattern from test_hygiene.py). The six planned tests are unchanged. Files: tests/test_listings.py. Commits: b50542e, 1774ace.
 2. **[Plan detail] tools/progress.py was not on this base.** Task 2's read_first names it, but it is 06-18's output and runs in the same wave. I took the category meanings from 06-CONTEXT D-26/D-50, tools/reverseapoc/status.py (a matched or partial row; a missing row means unmatched) and gate.py `_merge_partial` (partial means objdiff above 0%, not matched).
 3. **[Plan detail] README line numbers.** The annotated rows are now at L69 and L146; the plan named L62 and L139 before the Progress section grew. (After fix round 1 the annotations moved again; the tests find the rows by section, not by line number.)
 4. **Owner ruling 2026-10-25: no `help` field (removes recomp.fyi's 'wants help' tag).**
    - The `help` array was removed from .recomp.json, and nothing else in the file changed.
    - `test_recomp_json_asks_for_no_help` pins the absence. `help` stays in the pinned v1 property set, because the schema allows it.
    - No test or live doc expected the field. Only the dated research snapshot docs/research/notes-progress-reporting-recompfyi.md lists `help` among the schema fields, and it is left as written.
-   - Commits: e6656f0 (RED), e360d32 (GREEN).
+   - Commits: 5f39237 (RED), 0d6c98e (GREEN).
 
 **Total deviations:** 1 auto-added (Rule 2), 2 recorded plan details, 1 owner ruling (fix round 2); fix round 1 is in its own section below. **Impact:** none on scope; no file outside files_modified was touched besides this SUMMARY.
 
@@ -179,40 +179,40 @@ None. The owner files the DecompHub maintainer claim citing docs/DECOMPHUB_VERIF
 
 ## Fix round 1
 
-FIX_BASE 32314b5. Source: review-06-22.md, the coordinator's rulings, and an addition with the definitions tools/progress.py (06-18) implements. Each change has a RED test commit before its docs commit.
+FIX_BASE d92d01c. Source: review-06-22.md, the coordinator's rulings, and an addition with the definitions tools/progress.py (06-18) implements. Each change has a RED test commit before its docs commit.
 
 | Item | Change | Test (tests/test_listings.py) | Commits |
 |---|---|---|---|
-| I1 | The percentage's denominator is game + thunk bytes plus the uncovered bytes (D-50) | `test_readme_percentage_counts_uncovered_bytes` (`DENOMINATOR`) | df8d641, 0c858b0 |
-| I2 | Unmatched now means no gate-written matched or partial row, and the rebuilt EXE keeps that function's original bytes through the in-place splice. The INCLUDE_ASM stub claim is gone. | `test_readme_progress_makes_no_stub_claim` | df8d641, 0c858b0 |
-| I3 | The four Approach lines that name decomp.wtf fork mode or an MCP server keep their text and gain a note, as with D-41: spike 006 INVALIDATED (06-01), the agent layer is our own (D-03, D-04), there is no MCP server (D-44), and agents call the Bash-allowlisted attempt wrapper | `test_readme_approach_annotates_the_agent_layer`, `test_agent_line_check_catches_unannotated_lines` | df8d641, 0c858b0 |
-| Minor | Category needles are matched as bold `**name**:` items, so "unmatched" no longer satisfies "matched" | `test_readme_progress_section` (`CATEGORIES`) | df8d641 |
-| Minor | The Progress section names data-in-code (excluded) and its inputs: status.csv plus functions.csv and units.csv | `test_readme_progress_section` (`PROGRESS_NEEDLES`) | df8d641, 0c858b0 |
-| Minor | Toolchain summary uses the DI-25 wording: 10.6 default rule; 10.5, 10.6 and 11.0 tied on game code after the two Phase 5 leaf matches; links docs/toolchain.md | `test_readme_toolchain_summary_is_current` | df8d641, 0c858b0 |
-| Minor | The second block of test constants moved to the top of the file | (structure only) | df8d641 |
-| Addition | The combined figure comes from summed bytes; thunks count as code; the function ratio is defined | `test_readme_percentage_counts_uncovered_bytes` (`COMBINED`), `test_readme_partial_gets_no_credit` (`RATIO`) | 3e118fc, 364f8ed |
-| Addition | Partial counts for nothing in the percentage or the ratio; only report.json's fuzzy percent credits it | `test_readme_partial_gets_no_credit` (`PARTIAL_RULE`) | 3e118fc, 364f8ed |
-| Addition | Uncovered means no functions.csv row of any kind covers the bytes; library is outside both sides of the percentage; Pages regenerates progress.json, the shield and report.json on push; decomphub.progress.json changes only when a `gate EXE/UNIT` run passes | (text only, brief) | 364f8ed |
+| I1 | The percentage's denominator is game + thunk bytes plus the uncovered bytes (D-50) | `test_readme_percentage_counts_uncovered_bytes` (`DENOMINATOR`) | 66cfcdd, bf12d71 |
+| I2 | Unmatched now means no gate-written matched or partial row, and the rebuilt EXE keeps that function's original bytes through the in-place splice. The INCLUDE_ASM stub claim is gone. | `test_readme_progress_makes_no_stub_claim` | 66cfcdd, bf12d71 |
+| I3 | The four Approach lines that name decomp.wtf fork mode or an MCP server keep their text and gain a note, as with D-41: spike 006 INVALIDATED (06-01), the agent layer is our own (D-03, D-04), there is no MCP server (D-44), and agents call the Bash-allowlisted attempt wrapper | `test_readme_approach_annotates_the_agent_layer`, `test_agent_line_check_catches_unannotated_lines` | 66cfcdd, bf12d71 |
+| Minor | Category needles are matched as bold `**name**:` items, so "unmatched" no longer satisfies "matched" | `test_readme_progress_section` (`CATEGORIES`) | 66cfcdd |
+| Minor | The Progress section names data-in-code (excluded) and its inputs: status.csv plus functions.csv and units.csv | `test_readme_progress_section` (`PROGRESS_NEEDLES`) | 66cfcdd, bf12d71 |
+| Minor | Toolchain summary uses the DI-25 wording: 10.6 default rule; 10.5, 10.6 and 11.0 tied on game code after the two Phase 5 leaf matches; links docs/toolchain.md | `test_readme_toolchain_summary_is_current` | 66cfcdd, bf12d71 |
+| Minor | The second block of test constants moved to the top of the file | (structure only) | 66cfcdd |
+| Addition | The combined figure comes from summed bytes; thunks count as code; the function ratio is defined | `test_readme_percentage_counts_uncovered_bytes` (`COMBINED`), `test_readme_partial_gets_no_credit` (`RATIO`) | aa2b776, c279d42 |
+| Addition | Partial counts for nothing in the percentage or the ratio; only report.json's fuzzy percent credits it | `test_readme_partial_gets_no_credit` (`PARTIAL_RULE`) | aa2b776, c279d42 |
+| Addition | Uncovered means no functions.csv row of any kind covers the bytes; library is outside both sides of the percentage; Pages regenerates progress.json, the shield and report.json on push; decomphub.progress.json changes only when a `gate EXE/UNIT` run passes | (text only, brief) | c279d42 |
 
-- **RED evidence:** df8d641 failed 5 of 24 tests and 3e118fc failed 2 of 25. Every failure was the planned assertion; there were no collection or import errors. The reports are `build/06-22/fix1-red.out` and `build/06-22/fix1b-red.out`.
+- **RED evidence:** 66cfcdd failed 5 of 24 tests and aa2b776 failed 2 of 25. Every failure was the planned assertion; there were no collection or import errors. The reports are `build/06-22/fix1-red.out` and `build/06-22/fix1b-red.out`.
 - **After the round:** tests/test_listings.py has 25 passed. With hygiene: 90 passed, 3 skipped (`only inside the container`). Host suite: 2291 passed, 41 skipped, exit 0, with the same skip reasons as before and none in tests/test_listings.py. ruff: All checks passed.
 - **Unchanged:** the present-tense Pages and report wording, as ruled. The README's goal framing and its honesty: two matched functions, and the EXEs are not rebuilt from C.
 
 ## Fix round 2
 
-FIX_BASE 39e27d0. Source: owner ruling 2026-10-25, relayed by the coordinator. Nothing was sent to recomp.fyi and nothing was pushed.
+FIX_BASE 67dc513. Source: owner ruling 2026-10-25, relayed by the coordinator. Nothing was sent to recomp.fyi and nothing was pushed.
 
 | Item | Change | Test (tests/test_listings.py) | Commits |
 |---|---|---|---|
-| Owner ruling 2026-10-25 | No `help` field in .recomp.json, which removes recomp.fyi's 'wants help' tag. No other key changed, and the file still validates against the pinned schema. | `test_recomp_json_asks_for_no_help` | e6656f0, e360d32 |
+| Owner ruling 2026-10-25 | No `help` field in .recomp.json, which removes recomp.fyi's 'wants help' tag. No other key changed, and the file still validates against the pinned schema. | `test_recomp_json_asks_for_no_help` | 5f39237, 0d6c98e |
 
-- **RED evidence:** e6656f0 failed 1 of 26 tests, on `assert 'help' not in {...}` (`build/06-22/fix2-red.out`).
+- **RED evidence:** 5f39237 failed 1 of 26 tests, on `assert 'help' not in {...}` (`build/06-22/fix2-red.out`).
 - **After the round:** tests/test_listings.py has 26 passed. Host suite: 2292 passed, 41 skipped, exit 0 (`build/06-22/fix2-host-suite.log`), with the same skip reasons as before and none in tests/test_listings.py. ruff: All checks passed.
 
 ## Self-Check: PASSED
 
-- All four files in files_modified and this SUMMARY exist; `git diff --name-status 5d391a9 HEAD` shows only them (3 added, 2 modified, no deletions).
-- Commits 8b8fa37, a9011c7, 3b250ce and cf5dec3 are on this branch (`git log 5d391a9..HEAD`); the working tree is clean.
+- All four files in files_modified and this SUMMARY exist; `git diff --name-status 1c48675 HEAD` shows only them (3 added, 2 modified, no deletions).
+- Commits b50542e, 33887f7, 1774ace and e0d3891 are on this branch (`git log 1c48675..HEAD`); the working tree is clean.
 
 ---
 *Phase: 06-reporting-and-agent-pilot*

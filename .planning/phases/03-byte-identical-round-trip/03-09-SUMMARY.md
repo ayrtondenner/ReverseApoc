@@ -19,8 +19,8 @@ actuals:
   tokens: 8700      # chars/4 over the two changed files (34,925 chars); the diff itself is 9,285 chars
   tasks: 2
   commits: 2
-plan_head_before: 0269b2ae4057c5a94e96266de82d24e510915def
-plan_head_after: 154a73c601f523dfbd25a8ca83425be0797ba19e
+plan_head_before: ae1cc12d0a417e05eef89b4fa17677d39606dd4a
+plan_head_after: 29e811817bf71f980ccfb03af2034c18daecb7b8
 
 tech-stack:
   added: []
@@ -121,10 +121,10 @@ status: complete
 
 | Run | Result |
 |---|---|
-| Baseline at 0269b2a, before the refactor | `21 passed in 1.47s`, no SKIPPED |
-| After the refactor (e3abcc6) | `21 passed in 1.62s`, no SKIPPED |
+| Baseline at ae1cc12, before the refactor | `21 passed in 1.47s`, no SKIPPED |
+| After the refactor (8ded749) | `21 passed in 1.62s`, no SKIPPED |
 | After all mutants were reverted (tracer gate re-run) | `21 passed in 1.67s`, 0 SKIPPED lines |
-| After the docs commit (154a73c) | `21 passed in 1.64s` |
+| After the docs commit (29e8118) | `21 passed in 1.64s` |
 
 Full suite in the worktree (no orig/): `310 passed, 44 skipped`. Full suite with REVERSEAPOC_ORIG: `343 passed, 11 skipped`. None of those 11 skips involve orig/: they are Windows file names, container-only and Watcom media. `uv run ruff check .`: `All checks passed!`
 
@@ -141,8 +141,8 @@ After the last revert, `git diff --exit-code -- tools/reverseapoc/splice.py test
 
 ## Task Commits
 
-1. **Task 1: real-file helpers derived from le.py's reader (IN-05, IN-01 label)**: `e3abcc6` (refactor). Plan 03-10 cites this for IN-05.
-2. **Task 2: docs/toolchain.md lists SMKP.EXE (IN-04)**: `154a73c` (docs). Plan 03-10 cites this for IN-04.
+1. **Task 1: real-file helpers derived from le.py's reader (IN-05, IN-01 label)**: `8ded749` (refactor). Plan 03-10 cites this for IN-05.
+2. **Task 2: docs/toolchain.md lists SMKP.EXE (IN-04)**: `29e8118` (docs). Plan 03-10 cites this for IN-04.
 
 **Plan metadata:** the SUMMARY commit that follows these two.
 
@@ -191,13 +191,13 @@ None. No external service configuration required.
 
 ## Next Phase Readiness
 
-- Plan 03-10 (phase gate) can cite `e3abcc6` for IN-05 and `154a73c` for IN-04 once 03-07, 03-08 and 03-09 are merged.
+- Plan 03-10 (phase gate) can cite `8ded749` for IN-05 and `29e8118` for IN-04 once 03-07, 03-08 and 03-09 are merged.
 - The control test's within-object label matches both the current `Region.describe` and 03-08's within-object count for object 1.
 
 ## Self-Check: PASSED
 
 - FOUND: tests/test_splice_real.py, docs/toolchain.md, this SUMMARY
-- FOUND: e3abcc6 and 154a73c are ancestors of HEAD
+- FOUND: 8ded749 and 29e8118 are ancestors of HEAD
 - `uv run pytest -q` (310 passed, 44 skipped), `uv run ruff check .` (clean), the real-file run (21 passed, 0 SKIPPED) and tests/test_hygiene.py (27 passed) all green
 
 ---

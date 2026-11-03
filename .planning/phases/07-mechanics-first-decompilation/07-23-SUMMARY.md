@@ -21,8 +21,8 @@ actuals:
   tokens: 16190
   tasks: 3
   commits: 6
-plan_head_before: a5047e3521ecae15a67151287e4cd51c8360af58
-plan_head_after: e87b1467aa083b0a389e4d86c205d3c1ccc7a10a
+plan_head_before: 6e5da060adcfffd7f79e1bf8e83a3993642d2de9
+plan_head_after: 35a182225fdbc83090bbb602406484f704ae25a2
 
 tech-stack:
   added: []
@@ -135,10 +135,10 @@ status: complete
 
 ## Task Commits
 
-1. **Task 1 (tracer): v2 attempt and abort records.** RED `ce61d3e`, GREEN `e81e945`.
+1. **Task 1 (tracer): v2 attempt and abort records.** RED `c9bfac6`, GREEN `601541d`.
    - Tracer feedback gate: the run is interactive in end-of-phase mode, and the verify is automated only. I re-ran `uv run pytest -q tests/test_driver_records.py tests/test_attempts_schema.py` (120 passed) and the driver suites (exit 0), then expanded. Tracer verified end-to-end.
-2. **Task 2: pass counting from the committed log.** RED `40b5098`, GREEN `9da36af`.
-3. **Task 3: v2 run and limit records, nightly totals, the log commit after the drain.** RED `6fcb76f`, GREEN `e87b146`.
+2. **Task 2: pass counting from the committed log.** RED `4cd7cbc`, GREEN `fecbc19`.
+3. **Task 3: v2 run and limit records, nightly totals, the log commit after the drain.** RED `0967d02`, GREEN `35a1822`.
 
 ## TDD Gate Compliance
 
@@ -171,38 +171,38 @@ See `key-decisions` in the frontmatter.
 **Orchestrator ruling F12: aborts use the same C-name rule as attempts.**
 - `_base` sets `function` through `c_name(pick)` for both kinds.
 - `test_abort_record_is_v2_with_the_c_name` checks that a pick named `GetMadeUpVolume` gives an abort record with that name, schema 2, session `matching`, pass 1, worker 0 and retries 3.
-- Commits `ce61d3e` (RED) and `e81e945` (GREEN).
+- Commits `c9bfac6` (RED) and `601541d` (GREEN).
 
 **1. [Plan clarification] The C name comes from `Pick.name`, with no new seam.**
 - `score.candidates` already names every pick with `symbols.c_name(start)`, which is the EXE's symbol table, so the plan's "C name through the EXE's symbol table" is `pick.name`.
 - A name that is not a C identifier falls back to the placeholder, so the record still validates.
 - The attempt directory, the claim file and the match commit subject keep the placeholder (`_Claim.function`).
-- Commit `e81e945`.
+- Commit `601541d`.
 
 **2. [Plan clarification] A limit record's streak counts from 1.**
 - The plan's test says "streaks 0 and 1", but 07-07's committed schema pins `streak >= 1` (`_at_least_one`).
 - Every record must pass `validate_record` (a must-have truth), so the record carries the streak after the wait is counted: 1, then 2.
 - `test_limit_record_per_wait` expects `[(0, 60, 1), (0, 120, 2)]`.
-- Commits `6fcb76f` and `e87b146`.
+- Commits `0967d02` and `35a1822`.
 
 **3. [Plan clarification] The limit record is appended by `_Night._limited`, right after `_Pause.on_limit` returns, not inside it.**
 - `on_limit` holds the night's condition, and an append takes the gate lock. The lock order is gate lock, then condition (07-21), so appending inside `on_limit` could deadlock against a landing.
 - `on_limit` now returns `(seconds, streak)`. The record is written inside the `try` whose `finally` calls `backoff_done`, so a failed append never leaves the pause stuck.
-- Commit `e87b146`.
+- Commit `35a1822`.
 
 **4. [Test change, TDD sequencing] `test_every_record_of_a_night_is_v2` was narrowed in Task 1's GREEN commit and restored in Task 3.**
 - Run records cannot be v2 without totals (Task 3). The Task 1 GREEN commit therefore renamed the committed RED test to `test_every_attempt_record_of_a_night_is_v2`, limited to attempt records.
-- Task 3's RED commit `6fcb76f` added `test_every_record_of_a_night_is_v2` back over every kind (run, limit, attempt).
+- Task 3's RED commit `0967d02` added `test_every_record_of_a_night_is_v2` back over every kind (run, limit, attempt).
 
 **5. [Test fix inside a GREEN commit] `test_a_stopped_night_has_totals` assumed one attempt record.**
 - A guardrail stop also records its counted session as GAVE_UP `guardrail`, so the night has two attempt records.
 - The test now asserts both records and sums the turns over them. The behaviour it pins (a STOPPED record carries totals) is unchanged.
-- Commit `e87b146`.
+- Commit `35a1822`.
 
 **6. [Rule 3 - Blocking] `tests/test_driver.py` and `tests/test_driver_workers.py` are not in files_modified.**
 - Eight assertions checked "no MATCHED record" with `"MATCHED" not in <log text>`. The v2 STOPPED/ENDED totals name every outcome (`"sessions":{"MATCHED":0,...}`), so a bare-word search fails on any log.
 - They now look for `'"outcome":"MATCHED"'`, the form `test_match_record_is_appended` already used.
-- Commit `e87b146`.
+- Commit `35a1822`.
 
 **7. [Plan clarification] STARTED keeps its detail.** The detail still names the recovered claims (`recovered_detail`), and the new `recovered` field lists them as `{exe, unit, run}`, so 07-18's tests stay as they are. ENDED and STOPPED records carry `recovered: []`.
 
@@ -262,7 +262,7 @@ Execution context nonce: 4f4de4badc053944
 ## Self-Check: PASSED
 
 - FOUND: tools/reverseapoc/driver.py, tests/test_driver_records.py, tests/test_driver.py, tests/test_driver_workers.py
-- FOUND commits on this branch: ce61d3e, e81e945, 40b5098, 9da36af, 6fcb76f, e87b146. `git rev-list --count a5047e3..HEAD` = 6 before this SUMMARY commit.
+- FOUND commits on this branch: c9bfac6, 601541d, 4cd7cbc, fecbc19, 0967d02, 35a1822. `git rev-list --count 6e5da06..HEAD` = 6 before this SUMMARY commit.
 - No STATE.md, ROADMAP.md or REQUIREMENTS.md change (the orchestrator owns them after the merge).
 
 ## Fix round 1
@@ -286,8 +286,8 @@ Execution context nonce: 4f4de4badc053944
 **RED evidence:** (a) and (b) failed on their assertions with regressions 0 (`build/red/f1.xml`). The classifier returned `RED_EVIDENCE_OK` for target (a).
 
 **Commits:**
-- `d7b63e2` test(07-23): add failing tests for regressions the gate names only in problems
-- `81f1a31` fix(07-23): count a refused unit's reverted matched functions as regressions
+- `1f68a78` test(07-23): add failing tests for regressions the gate names only in problems
+- `46de1d2` fix(07-23): count a refused unit's reverted matched functions as regressions
 - this SUMMARY commit
 
 **Counts:**

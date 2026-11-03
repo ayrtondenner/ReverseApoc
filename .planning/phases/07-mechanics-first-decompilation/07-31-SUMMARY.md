@@ -18,8 +18,8 @@ actuals:
   tokens: 8543
   tasks: 2
   commits: 4
-plan_head_before: a5047e3521ecae15a67151287e4cd51c8360af58
-plan_head_after: 20c634d828d9712dfd3f60647d0c823d65d97b5d
+plan_head_before: 6e5da060adcfffd7f79e1bf8e83a3993642d2de9
+plan_head_after: b8e7d71ce5bac98663b8d28451514019806cca4f
 
 tech-stack:
   added: []
@@ -115,12 +115,12 @@ Execution context nonce: 03a0e7f738a50a92
 ## Task Commits
 
 1. **Task 1: Tracer - a readability check prints the check verdict and readlint**
-   - `2e0f7c2` (test, RED)
-   - `5dc33bc` (feat, GREEN)
+   - `8178a32` (test, RED)
+   - `60e2cc7` (feat, GREEN)
    - Tracer gate: interactive mode, `end-of-phase`, verify is automated only. The verify (`uv run pytest -q tests/test_attempt_wrapper.py`, 114 passed) was re-run and passed before expanding.
 2. **Task 2: The checks.jsonl record, tool errors, the forms guard (plus F11 and F18)**
-   - `2ad0b5d` (test, RED)
-   - `20c634d` (feat, GREEN)
+   - `e2bb947` (test, RED)
+   - `b8e7d71` (feat, GREEN)
 
 No REFACTOR commits. The ruff fixes (one long line, import order) were made before each GREEN commit.
 
@@ -189,7 +189,7 @@ See key-decisions in the frontmatter.
 
 ## Issues Encountered
 
-- The harness refused compound shell commands in this worktree, including the branch guard script. The guard's assertions were run as separate plain commands instead: branch `worktree-agent-a129ce18aa902e713`, HEAD `a5047e35...`, base matched.
+- The harness refused compound shell commands in this worktree, including the branch guard script. The guard's assertions were run as separate plain commands instead: branch `worktree-agent-a129ce18aa902e713`, HEAD `6e5da060...`, base matched.
 - Another agent rewrote `red_record.py` in the shared scratchpad while I was using it. I left it alone and used `red_record_0731.py` for Task 2.
 
 ## Container step deferred to the orchestrator
@@ -215,7 +215,7 @@ None.
 
 ## Self-Check: PASSED
 
-- The modified files exist. Commits 2e0f7c2, 5dc33bc, 2ad0b5d and 20c634d are on this branch (`git log`), and the working tree is clean.
+- The modified files exist. Commits 8178a32, 60e2cc7, e2bb947 and b8e7d71 are on this branch (`git log`), and the working tree is clean.
 - Acceptance criteria hold: attempt.py imports `run_readlint`, and tests/test_attempt_wrapper.py contains `test_readlint_tool_error`.
 
 ---
