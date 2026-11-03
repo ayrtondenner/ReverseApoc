@@ -40,6 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE (completed 2026-10-24)
 - [x] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions (completed 2026-10-26; pilot 3/10, partial accepted by the owner, the target carries to Phase 7)
 - [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
+- [ ] **Phase 07.1: Matching tooling (INSERTED)** - Permutation search, stack-slot model, converter v1, failure classifier and disassembly view upgrades, measured after each plan; watcom-decomp skill updated last
 - [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0; findings docs (bugs, cut content, cheats and easter eggs, Learning AI)
 
 ## Phase Details
@@ -376,6 +377,23 @@ Plans:
 **Wave 17** *(blocked on Wave 16 completion; main checkout)*
 - [ ] 07-41-PLAN.md — phase gate: done rule, sampled re-gates, rebuild + cmp, both suites, validation sign-off (all Phase 7 requirements)
 
+### Phase 07.1: Matching tooling (INSERTED)
+
+**Goal:** Build the deterministic tooling that moves Tier 1 matching past what agents reach alone on functions of 256 B and up (about 445 functions, where they fail on stack slots, registers and types): a permutation search, a stack-slot model, converter v1, a failure classifier and better disassembly views, with the watcom-decomp skill updated last. The target is about 6-8 weeks to Tier 1 matched.
+**Requirements**: TBD
+**Depends on:** Phase 7 (plans 07-48, 07-48b and 07-48c and the F-0045 to F-0057 landings; Phase 7's close gate 07-41 stays open and needs this phase's tools)
+**Success Criteria** (what must be TRUE):
+  1. After each plan, the converter's exact count per bucket over all of Tier 1 and over a fixed, seeded 64 B+ sample (seed and rows committed) is recorded in the plan's SUMMARY and in `07.1-CURVE.md`
+  2. The phase stops after two plans in a row that move neither number
+  3. New code sits in `tools/reverseapoc/` beside `batch.py`, extending batch and judge, never forking them; a tooling commit changes nothing under `src/` or `include/`, and C from these tools lands only through the gate as match commits
+  4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
+  5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
+
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 07.1 to break down)
+
 ### Phase 8: Clean-room specs for OpenApoc
 
 **Goal**: Every mechanic decompiled in Phase 7 has a clean-room spec in OpenSpec format, written in our own words, citing function addresses and dated community sources, checked by a linter that can fail, reviewed by the owner and licensed CC0-1.0 so OpenApoc can use it without conditions.
@@ -397,7 +415,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -408,6 +426,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
+| 7.1. Matching tooling (INSERTED) | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
