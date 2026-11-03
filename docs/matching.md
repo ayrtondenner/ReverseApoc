@@ -26,6 +26,7 @@ Phase 4 recorded the compiler and the default flags per EXE (whole-binary scans,
 | src/ufo2p/u_000b76d0.c | UFO2P.EXE | wcc386@10.6 | -4r -ox -s -fpi | F-0044 approved by ayrtondenner (re-gate log under build/flags/) | 2026-11-01 |
 | src/tacp/u_00015f80.c | TACP.EXE | wcc386@10.6 | -4r -oneatx -s -fpi | F-0045 approved by ayrtondenner (re-gate log under build/flags/) | 2026-11-03 |
 | src/tacp/u_000a6100.c | TACP.EXE | wcc386@10.6 | -4r -oneatx -s -fpi | F-0046 approved by ayrtondenner (re-gate log under build/flags/) | 2026-11-03 |
+| src/tacp/u_000a87c0.c | TACP.EXE | wcc386@10.6 | -4r -oneatx -s -fpi | F-0048 approved by ayrtondenner (re-gate log under build/flags/) | 2026-11-03 |
 
 Both rows are the `*` default of `config/cflags.txt`, a whole-binary result per EXE (D-09). 10.5 gives the same objects as 10.6 on the probe, and 11.0 ties with 10.6 at `-4r` on the decisive idioms (still tied after the two Phase 5 leaf matches, which separate no candidate; Phase 6 records the evidence of each pilot match). The 40 (UFO2P) and 32 (TACP) functions that call `__CHK` were built without `-s`; they get their own rows once a match reaches one (neither Phase 5 match calls `__CHK`). The first two hand matches (UFO2P func_000A3980 in `src/ufo2p/u_000a34f0.c`, TACP func_00055080 in `src/tacp/u_00054f20.c`) both matched under the `*` default, so no per-glob rule exists yet ([toolchain.md "Phase 5 match evidence"](toolchain.md#phase-5-match-evidence)). The flags table with the evidence for each flag is [toolchain.md "Flags"](toolchain.md#flags).
 
