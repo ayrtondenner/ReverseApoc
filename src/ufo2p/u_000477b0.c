@@ -14,7 +14,53 @@ INCLUDE_ASM(func_00047D70);
 INCLUDE_ASM(func_00047FB0);
 INCLUDE_ASM(func_000480B0);
 INCLUDE_ASM(func_00048250);
-INCLUDE_ASM(func_000483A0);
+#include "common.h"
+
+struct tile_483a0 {
+    s16 sprite;
+    u8 pad[50];
+};
+
+extern s16 D_000D4D74;
+extern s16 D_000D4D72;
+extern u16 (*D_00182DFC)[100];
+extern struct tile_483a0 D_0015309A[];
+extern int *D_00182D68;
+extern int D_000E7188;
+extern char *D_00182DB4;
+void func_00017C79(void);
+void func_00016F2B(char *, int, int);
+
+void func_000483A0(s16 rows)
+{
+    s16 j;
+    s16 col;
+    u16 x;
+    u16 *p;
+    s16 s;
+
+    if (D_000D4D74 < 99) {
+        D_000D4D74++;
+        func_00017C79();
+        p = &D_00182DFC[D_000D4D74 + 43][D_000D4D72];
+        for (j = 0; j < rows; j++) {
+            for (col = D_000D4D72, x = 0; col < D_000D4D72 + 80; col++, p++, x += 8) {
+                if (col < 100 && D_000D4D74 + 43 < 100 && col >= 0 && D_000D4D74 + 43 >= 0) {
+                    if (*p != 0) {
+                        s = D_0015309A[*p].sprite;
+                        if (s != 0) {
+                            func_00016F2B(D_00182DB4 + D_00182D68[s], x, 344);
+                        }
+                    }
+                } else if (j == 0) {
+                    func_00016F2B(D_00182DB4 + D_00182D68[D_000E7188], x, 344);
+                }
+            }
+            p += 9920;
+        }
+    }
+}
+
 INCLUDE_ASM(func_000484F0);
 INCLUDE_ASM(func_00048640);
 INCLUDE_ASM(func_000487A0);
