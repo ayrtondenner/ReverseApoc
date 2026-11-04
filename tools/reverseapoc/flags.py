@@ -844,11 +844,10 @@ def _batch_groups(ctx: _Context, records: Sequence[Mapping[str, Any]], cell: str
     return {key: [rows[s] for s in sorted(rows)] for key, rows in sorted(groups.items())}
 
 
-def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_BatchRow],
-                rel: str) -> str | None:  # fmt: skip
+def _group_skip(ctx: _Context, proposals: Sequence[Proposal],
+                rows: Sequence[_BatchRow]) -> str | None:  # fmt: skip
     """Why a unit's rows add no proposal, or None: the cell is the committed rule, a function is
-    matched, the queue already holds (exe, unit, rule), the owner rejected (exe, unit, rule) on
-    this same results file `rel`, or the unit has a proposal in review."""
+    matched, the queue already holds (exe, unit, rule), or the unit has a proposal in review."""
     exe, unit, rule = rows[0].exe, rows[0].unit, rows[0].rule
     where = f"{exe}/{unit} {', '.join(r.name for r in rows)}"
     if rule == ctx.base(exe, unit):
@@ -860,16 +859,28 @@ def _group_skip(ctx: _Context, proposals: Sequence[Proposal], rows: Sequence[_Ba
     same = next((p for p in unit_ps if p.rule == rule and p.status not in _NOT_HELD), None)
     if same is not None:
         return f"{where}: duplicate of {same.id} ({exe}/{unit} under {rule}, {same.status})"
-    rejected = next((p for p in unit_ps if p.rule == rule and p.status == REJECTED
-                     and rel in p.evidence), None)  # fmt: skip
-    if rejected is not None:  # 07-48c review: only new evidence brings it back to the owner
-        return f"{where}: {rejected.id} ({exe}/{unit} under {rule}) was rejected on {rel}"
     held = next((p for p in unit_ps if p.status in (*OPEN_STATUSES, APPROVED)), None)
     if held is not None:
         state = "approved and awaits landing" if held.status == APPROVED else (
             f"open ({held.status})")  # fmt: skip
         return f"{where}: {held.id} for {unit} is {state}"
     return None
+
+
+def _rejected_skip(proposals: Sequence[Proposal], rows: Sequence[_BatchRow], rel: str,
+                   text: str) -> str | None:  # fmt: skip
+    """Why the candidate `text` adds no proposal, or None: the owner rejected this same candidate
+    on this same results file `rel` (07-48c review: only new evidence brings it back to the
+    owner). The path alone is no evidence: search writes one fixed path per row."""
+    exe, unit, rule = rows[0].exe, rows[0].unit, rows[0].rule
+    sha = lf_sha256(text)
+    rejected = next((p for p in proposals if (p.exe, p.unit, p.rule) == (exe, unit, rule)
+                     and p.status == REJECTED and rel in p.evidence
+                     and p.candidate_sha256 == sha), None)  # fmt: skip
+    if rejected is None:
+        return None
+    where = f"{exe}/{unit} {', '.join(r.name for r in rows)}"
+    return f"{where}: {rejected.id} ({exe}/{unit} under {rule}) was rejected on {rel}"
 
 
 def _unit_text(ctx: _Context, exe: str, unit: str) -> str:
@@ -946,9 +957,10 @@ def propose_batch(results: Path, cell: str, author: str, *, repo: Path,
     skipped: list[str] = []
     planned: list[tuple[Proposal, str]] = []
     for rows in _batch_groups(ctx, records, cell, rel, skipped).values():
-        why = _group_skip(ctx, proposals, rows, rel)
+        why = _group_skip(ctx, proposals, rows)
         text, why = (None, why) if why else _batch_candidate(ctx, rows)
-        if text is None:
+        why = why or _rejected_skip(proposals, rows, rel, text)
+        if why:
             skipped.append(why)
             continue
         proposal = _batch_proposal(ctx, _next_id(proposals), rows, rel, author, text)

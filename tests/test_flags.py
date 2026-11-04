@@ -1774,20 +1774,39 @@ def test_propose_batch_skips_a_file_that_does_not_define_the_row(tmp_path):
     assert _queue_bytes(repo) is None
 
 
+def _reject_the_only_proposal(repo: Path) -> None:
+    (proposal,) = flags.read_queue(queue_of(repo))
+    flags.write_queue(queue_of(repo), [dataclasses.replace(proposal, status="rejected")])
+
+
 def test_propose_batch_does_not_repropose_rejected_evidence(tmp_path):
     """07-48c review: a proposal the owner rejected comes back only with new evidence."""
     repo = batch_repo(tmp_path)
     row_file(repo, 0x10000, row_c(A1))
     results = results_file(repo, [batch_record(repo, 0x10000)])
-    rejected = dataclasses.replace(_held("rejected", CELL_RULE), source="batch", author=LIFT,
-                                   evidence=(RESULTS,))  # fmt: skip
-    flags.write_queue(queue_of(repo), [rejected])
+    assert flags.propose_batch(results, CELL, LIFT, repo=repo).added == ("F-0001",)
+    _reject_the_only_proposal(repo)
     before = _queue_bytes(repo)
     report = flags.propose_batch(results, CELL, LIFT, repo=repo)
     assert report.added == () and _queue_bytes(repo) == before
     assert any("F-0001" in text and "rejected" in text for text in report.skipped)
     other = results_file(repo, [batch_record(repo, 0x10000)], "build/batch/48c-again.jsonl")
     assert flags.propose_batch(other, CELL, LIFT, repo=repo).added == ("F-0002",)
+
+
+def test_propose_batch_takes_a_new_candidate_on_a_rejected_path(tmp_path):
+    """search writes one fixed results path per row, so the path alone is no evidence: a
+    different winner on it is new, and reaches the owner."""
+    repo = batch_repo(tmp_path)
+    row_file(repo, 0x10000, row_c(A1))
+    results = results_file(repo, [batch_record(repo, 0x10000)])
+    assert flags.propose_batch(results, CELL, LIFT, repo=repo).added == ("F-0001",)
+    _reject_the_only_proposal(repo)
+    row_file(repo, 0x10000, row_c(A1, "a different winner"))
+    results = results_file(repo, [batch_record(repo, 0x10000)])
+    report = flags.propose_batch(results, CELL, LIFT, repo=repo)
+    assert report.added == ("F-0002",)
+    assert report.skipped == ()
 
 
 def test_queue_refuses_author_rules(tmp_path):
