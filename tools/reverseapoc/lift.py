@@ -499,7 +499,9 @@ class Lifter:
         args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
         name = self.exe.symbols.c_name(self.row.start)
         decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
-        decls += [f"    {t} {n};" for n, t in sorted(self.locals.items())]
+        # Nearest the entry first: a frame of one size puts the first declared highest (probe M2).
+        slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
+        decls += [f"    {t} {n};" for n, t in slots]
         lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
         if decls:
             lines.append("")

@@ -115,3 +115,13 @@ def test_a_bad_callee_leaves_its_signature_unknown():
     assert lift.lift_row(exe, VA, callee_first) == text
     assert callee_second[bad] is None
     assert f"func_{bad:08x}(1)" in text
+
+
+# ---- declaration order ----
+
+
+def test_locals_declare_by_distance_from_entry():
+    # sub esp, 10h; mov [esp], eax; mov [esp + 8], edx; mov eax, [esp]; add eax, [esp + 8];
+    # add esp, 10h; ret
+    text = lift.lift_row(stub_exe("83ec10 890424 89542408 8b0424 03442408 83c410 c3"), VA)
+    assert text.index("int s_8;") < text.index("int s_10;")
