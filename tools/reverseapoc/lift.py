@@ -582,7 +582,7 @@ class Block_:
         t = SIZE_TYPE[size, signed]
         fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
         base = ci.reg_name(m.base) if m.base else None
-        if fx is not None and base not in ("esp", "ebp") and self.lf.array:
+        if fx is not None and base != "esp" and self.lf.array:
             arr = var(self.lf.data_name(fx.target_va))
             if m.index and m.scale == size and size in (2, 4) and not base:
                 i = self.get(ci.reg_name(m.index))
@@ -600,7 +600,7 @@ class Block_:
         parts: list[E] = []
         fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
         base = ci.reg_name(m.base) if m.base else None
-        if base in ("esp", "ebp"):
+        if base == "esp":  # -4r code uses ebp as a general register; frame() refuses real frames
             raise Unliftable("mem: stack-relative address arithmetic")
         if fx is not None:
             parts.append(var(self.lf.data_name(fx.target_va)))
@@ -721,7 +721,7 @@ class Block_:
                 src = cast(SIZE_TYPE[ops[1].size, signed], src, ops[1].size, signed)
             self.write(ci, ops[0], E(src.text, src.atom, src.pure, src.const, ops[1].size, signed))
         elif mn == "lea":
-            if ops[1].mem.base and ci.reg_name(ops[1].mem.base) in ("esp", "ebp"):
+            if ops[1].mem.base and ci.reg_name(ops[1].mem.base) == "esp":
                 raise Unliftable("lea: address of a stack slot")
             m = ops[1].mem
             if (
