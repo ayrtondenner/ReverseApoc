@@ -13,10 +13,13 @@ from pathlib import Path
 
 from conftest import REPO_ROOT, WATCOM_DIR
 from reverseapoc import batch, lift
+from reverseapoc.cli import main
 from test_batch_real import _require
 
 BUILD_ROOT = REPO_ROOT / "build" / "test-lift"
 JUDGED = ("ufo2p", 0x00048860)  # matched, and judge-exact from the lifter at point 0
+PRINTED = 0x000108E0  # a ufo2p row the lifter takes
+REFUSED = 0x00075630  # a ufo2p row with a real ebp frame
 
 
 def _fresh(*parts: str) -> Path:
@@ -37,3 +40,15 @@ def test_the_lifter_reaches_the_judge():
     (compiled,) = batch.compile_batch(jobs, 1, watcom_dir=WATCOM_DIR).compiled
     assert compiled.ok
     assert batch.judge(exe, compiled.job.obj, start).exact
+
+
+def test_lift_verb_prints_c(capsys):
+    _require()
+    assert main(["lift", "ufo2p", f"0x{PRINTED:08X}"]) == 0
+    text = capsys.readouterr().out
+    printed = "\n{\n" in text and text.endswith("}\n")  # a bool: no C reaches a pytest report
+    assert printed
+    assert main(["lift", "ufo2p", f"0x{REFUSED:08X}"]) == 1
+    assert "frame: ebp frame" in capsys.readouterr().err
+    assert main(["lift", "ufo2p", "0x00000001"]) == 2
+    assert "no functions.csv row" in capsys.readouterr().err

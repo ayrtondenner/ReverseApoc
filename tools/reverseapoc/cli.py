@@ -21,6 +21,7 @@ from . import (
     batch,
     driver,
     flags,
+    lift,
     locate,
     mechanics,
     probe,
@@ -1302,6 +1303,40 @@ def _add_search_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_search)
 
 
+def _run_lift(args: argparse.Namespace) -> int:
+    start = batch.parse_address(args.address)
+    exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
+                                config_root=args.config)  # fmt: skip
+    batch.row_at(exe, start)  # an address with no row is a tool error, not a refusal
+    sys.stdout.write(lift.lift_row(exe, start))
+    return 0
+
+
+def _cmd_lift(args: argparse.Namespace) -> int:
+    """Exit 0 when the draft printed, 1 when the lifter refused the row, 2 for a tool error."""
+    try:
+        return _run_lift(args)
+    except lift.Unliftable as exc:
+        print(f"reverseapoc lift: refused: {exc}", file=sys.stderr)
+        return 1
+    except (*_ERRORS, batch.BatchError) as exc:
+        print(f"reverseapoc lift: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_lift_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    about = ("print one function's C draft from the converter to the terminal; a game function's "
+             "C is never committed (exit 0 printed, 1 refused, 2 tool error)")  # fmt: skip
+    p = sub.add_parser("lift", help=about, description=about)
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("address", metavar="ADDR", help="the function's start, hex (0x optional)")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.set_defaults(func=_cmd_lift)
+
+
 def _cmd_target(args: argparse.Namespace) -> int:
     # The target object is cut from the game: never written inside orig/ or the Watcom tree.
     refuse_output(args.output, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
@@ -2366,6 +2401,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_judge_command(sub)
     _add_batch_command(sub)
     _add_search_command(sub)
+    _add_lift_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)
