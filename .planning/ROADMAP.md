@@ -383,8 +383,8 @@ Plans:
 **Requirements**: TBD
 **Depends on:** Phase 7 (plans 07-48, 07-48b and 07-48c and the F-0045 to F-0057 landings; Phase 7's close gate 07-41 stays open and needs this phase's tools)
 **Success Criteria** (what must be TRUE):
-  1. After each plan, the converter's exact count per bucket over all of Tier 1 and over a fixed, seeded 64 B+ sample (seed and rows committed) is recorded in the plan's SUMMARY and in `07.1-CURVE.md`
-  2. The phase stops after two plans in a row that move neither number
+  1. After each plan, the converter's count per bucket over all of Tier 1, and a fixed, seeded 64 B+ sample (seed and rows committed) run through every tool built so far, are recorded in the plan's SUMMARY and in `07.1-CURVE.md`
+  2. The phase stops after two plans in a row, among plans 1 to 3, that move neither number; a change in the `exact` or `near` bucket counts as movement, and plans 4, 5 and 6 are exempt (owner ruling, 2026-11-03)
   3. New code sits in `tools/reverseapoc/` beside `batch.py`, extending batch and judge, never forking them; a tooling commit changes nothing under `src/` or `include/`, and C from these tools lands only through the gate as match commits
   4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
   5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
