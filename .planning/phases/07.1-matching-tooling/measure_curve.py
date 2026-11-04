@@ -30,13 +30,9 @@ from pathlib import Path
 from reverseapoc import batch, cli, mechanics, search
 from reverseapoc.cflags import load_cflags
 from reverseapoc.check import DEFAULT_CONFIG
+from reverseapoc.lift import CACHE_DIR, Lifter, Unliftable, result_used
 from reverseapoc.targets import REPO_ROOT
 from reverseapoc.watcom import DEFAULT_INSTALL
-
-# The lifter stays in spike 010 until plan 3, and it imports `common` from there at call time.
-sys.path.insert(0, str(REPO_ROOT / ".planning" / "spikes" / "010-deterministic-matching"))
-
-from lift import Lifter, Unliftable  # noqa: E402  (spike 010)
 
 SEED = 20261103
 PER_BUCKET = 40
@@ -72,7 +68,6 @@ SAMPLE = PHASE_DIR / "07.1-SAMPLE.csv"
 CURVE = PHASE_DIR / "07.1-CURVE.md"
 BUILD = REPO_ROOT / "build" / "curve"
 CFLAGS = DEFAULT_CONFIG / "cflags.txt"
-RESULT_USED = REPO_ROOT / "build" / "spike-010"
 
 
 def summary_row(cells) -> str:
@@ -342,7 +337,7 @@ def point_row(point: int, previous: dict | None, current: dict) -> tuple[list, s
         streak = next_streak(point, int(previous["flat streak"]), is_moved)
     stop = stop_line(point, streak)
     used = " ".join(
-        f"{stem} {sha256_of(RESULT_USED / f'result-used-{stem}.json')}" for stem in mechanics.EXES
+        f"{stem} {sha256_of(CACHE_DIR / f'result-used-{stem}.json')}" for stem in mechanics.EXES
     )
     moved_cell = f"yes {', '.join(changes(previous, current))}" if is_moved else "no"
     plan = f"07.1-{point:02d}" if point else "none"
@@ -395,8 +390,9 @@ def measure(point: int) -> int:
         shutil.rmtree(root)  # a row refused this run must not keep an older run's C
     src = root / "src"
     sigs = {stem: {} for stem in exes}
-    for stem in exes:
+    for stem, exe in exes.items():
         (src / stem).mkdir(parents=True)
+        result_used(exe, {})  # a rebuilt census ends before any row lifts, and its sigs stay out
     for row in tier:
         lift_into(row, exes[row["exe"]], sigs[row["exe"]], src)
     records = run_batch(src, root / "results.jsonl")
