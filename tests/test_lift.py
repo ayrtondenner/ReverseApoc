@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from reverseapoc import lift
+from reverseapoc import fileio, lift
 from reverseapoc.functions import KIND_DATA_IN_CODE, FunctionRow
 from reverseapoc.le import Fixup
 
@@ -1151,3 +1151,47 @@ def test_a_cold_census_gives_the_warm_draft():
 def test_the_census_asks_for_no_signatures():
     exe = stub_exe("c3")
     assert lift.result_used(exe) == (set(), set())
+
+
+def census_file():
+    return lift.CACHE_DIR / "result-used-stub.json"
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        '{"used": [',
+        '{"called": []}',
+        "[]",
+        '{"used": 1, "called": 2}',
+        '{"used": [[]], "called": []}',
+    ],
+    ids=["truncated", "wrong keys", "a list", "not lists", "unhashable"],
+)
+def test_a_bad_census_file_reads_as_no_census(bad):
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"{call_to(VA, callee)} c3", "c3")
+    census_file().write_text(bad, encoding="utf-8")
+    assert callee in lift.result_used(exe)[1]
+    assert str(callee) in census_file().read_text(encoding="utf-8")
+
+
+def test_a_failed_census_write_leaves_no_file(monkeypatch):
+    def refuse(*_args):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(fileio.os, "replace", refuse)
+    with pytest.raises(OSError, match="disk full"):
+        lift.result_used(stub_exe("c3"))
+    assert list(lift.CACHE_DIR.iterdir()) == []
+
+
+def test_a_failed_census_build_keeps_the_demotion_on(monkeypatch):
+    def crash(*_args, **_kwargs):
+        raise RuntimeError("bug")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(lift.Lifter, "prepare", crash)
+        with pytest.raises(RuntimeError, match="bug"):
+            lift.result_used(stub_exe("c3"))
+    assert lift.result_used(stub_exe("c3")) is not None

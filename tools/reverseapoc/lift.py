@@ -25,6 +25,7 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from .asm import FixupIndex
 from .check import ExeInputs
+from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, FunctionRow
 from .targets import REPO_ROOT
 from .x86 import _disassembler, decode, is_filler
@@ -1495,10 +1496,25 @@ def result_used(exe: ExeInputs) -> tuple[set, set] | None:
         return None
     cache = CACHE_DIR / f"result-used-{stem}.json"
     if cache.is_file():
-        data = json.loads(cache.read_text(encoding="utf-8"))
-        _RESULT_USED[stem] = (set(data["used"]), set(data["called"]))
-        return _RESULT_USED[stem]
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            _RESULT_USED[stem] = (set(data["used"]), set(data["called"]))
+            return _RESULT_USED[stem]
+        except ValueError, KeyError, TypeError:
+            pass  # a truncated file, or one of another shape, is no census: build it again
     _BUILDING.add(stem)
+    try:
+        used, called = _census(exe)
+    finally:
+        _BUILDING.discard(stem)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    census = {"used": sorted(used), "called": sorted(called)}
+    write_atomic(cache, json.dumps(census).encode("ascii"))
+    _RESULT_USED[stem] = (used, called)
+    return _RESULT_USED[stem]
+
+
+def _census(exe: ExeInputs) -> tuple[set, set]:
     used, called = set(), set()
     census_sigs: dict[int, Sig] = {}
     for row in exe.rows:
@@ -1517,11 +1533,7 @@ def result_used(exe: ExeInputs) -> tuple[set, set] | None:
                 called.add(t)
                 if "eax" in after.get(ci.address, set()):
                     used.add(t)
-    _BUILDING.discard(stem)
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps({"used": sorted(used), "called": sorted(called)}), encoding="utf-8")
-    _RESULT_USED[stem] = (used, called)
-    return _RESULT_USED[stem]
+    return used, called
 
 
 _INDEX: dict[int, tuple] = {}
