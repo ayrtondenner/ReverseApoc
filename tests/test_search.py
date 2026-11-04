@@ -1208,7 +1208,12 @@ def test_memory_locals_take_a_pointer_whose_address_is_taken():
     assert (local.name, local.size) == ("p", 4)
 
 
-@pytest.mark.parametrize("use", ["b = a & b;", "b = (a) & b;", "b = a && b;", "b = t[0] & b;"])
+@pytest.mark.parametrize(
+    "use",
+    ["b = a & b;", "b = (a) & b;", "b = a && b;", "b = t[0] & b;", "b = a++ & b;", "b = a-- & b;",
+     "b = sizeof(int) & b;", "b = sizeof (int *) & b;", "b = sizeof(struct pos) & b;",
+     "b = 'a' & b;", "b = '&' & b;"],
+)  # fmt: skip
 def test_a_bitwise_and_takes_no_address(use):
     assert _locals_of("int b;", "", use, "return b;") == ()
 
@@ -1216,10 +1221,34 @@ def test_a_bitwise_and_takes_no_address(use):
 @pytest.mark.parametrize(
     "use",
     ["take(&b);", "p = &b;", "take(a, &b);", "take(&b.x);", "return &b;", "take(*&b);",
-     "take((char *)&b);", "take((struct pos *) &b);", "take((u32)&b);", "take((int)&b);"],
+     "take((char *)&b);", "take((struct pos *) &b);", "take((u32)&b);", "take((int)&b);",
+     "take(a && &b);", "take(a + &b);", "take(a - &b);", "take((unsigned char)&b);",
+     "take((unsigned long) &b);", "take(a++, &b);", "take(sizeof(int), &b);", "p = /* it's */ &b;"],
 )  # fmt: skip
 def test_a_unary_and_takes_the_address(use):
     assert [local.name for local in _locals_of("int b;", "", use)] == ["b"]
+
+
+def test_a_cast_to_a_type_the_table_lacks_cannot_be_told_from_a_bitwise_and():
+    """Only the types could: the search must not answer from a read that may miss a slot."""
+    text = _body("int b;", "int d;", "", "take((DWORD)&b, &d);", "return a;")
+    moves = _axis(text, _pairs((0, 4), (4, 0)))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+@pytest.mark.parametrize("use", ["take((int)&b, &d);", "take(&b, &d); a = g(a) & 3;"])
+def test_a_known_cast_or_a_literal_operand_is_not_ambiguous(use):
+    lines = ("int b;", "int d;", "", use, "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
+    assert move.text == _body("int d;", "int b;", *lines[2:])
+
+
+@pytest.mark.parametrize("use", ["(DWORD)&b", "(a) & b"])
+def test_scalars_are_not_reported_beside_an_ambiguous_and(monkeypatch, stubs, use):
+    _map_is(monkeypatch, SCALAR_MAP)
+    text = _body("int b;", "int c;", "", f"c = {use};", "return c;")
+    assert _run(text.replace("int f(", f"int {A1}(")).scalars == ()
 
 
 @pytest.mark.parametrize(

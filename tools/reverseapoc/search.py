@@ -33,7 +33,7 @@ import math
 import random
 import re
 import shutil
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -86,10 +86,15 @@ _WORD = re.compile(r"[A-Za-z_]\w*")
 _LABEL = re.compile(r"\s*[A-Za-z_]\w*\s*:")
 _ENDS_A_STATEMENT = (";", "{", "}", ":")  # what the line above a statement of its own ends in
 _DIMENSION = re.compile(r"\[([^\]]*)\]")
-# What stands before a unary `&`: an operator, an opening, `return`, or a cast. Anything else
-# leaves a binary `&`, as a name, a `)` or a `]` does.
+# What stands before a unary `&`: an operator, an opening, `return`, or a cast. A name, a `)`, a
+# `]` and a postfix `++` or `--` leave a binary `&`, and so does an operand _operands stands in
+# for. `(word) &` with a word outside _SIZES could be either: _ambiguous_and refuses that frame.
 _CAST = "|".join(re.escape(spec) for spec in sorted(_SIZES, key=len, reverse=True))
-_BEFORE_ADDRESS = rf"(?:[(,=!?:;{{}}\[+\-*/%|^<>~]|\breturn|\*\s*\)|\(\s*(?:{_CAST})\s*\))"
+_BEFORE_ADDRESS = (r"(?:[(,=!?:;{}\[*/%|^<>~]|(?<!\+)\+|(?<!-)-|&&|\breturn|\*\s*\)"
+                   rf"|\(\s*(?:{_CAST})\s*\))")  # fmt: skip
+_ITSELF = r"\b(?!\s*(?:->|\[))"  # not `&p->x` or `&p[1]`, the address of what a pointer points at
+_SIZEOF = re.compile(r"\bsizeof\s*\([^()]*\)")
+_OPERAND = "0"
 
 
 @dataclass(frozen=True)
@@ -390,19 +395,39 @@ def _volatile(found: re.Match[str]) -> bool:
     return "volatile" in found["spec"].split() and "*" not in found["declarators"].split("=")[0]
 
 
+def _operands(text: str, span: tuple[int, int]) -> str:
+    """The code inside `span` as the `&` rules read it. _code leaves nothing of a literal, and a
+    `sizeof(int)` reads as a cast, so each stands here as the operand it is."""
+    code = list(_code(text))
+    for found in check._configure()._NOT_CODE.pattern.finditer(text):
+        if not found.group().startswith("/"):
+            code[found.end() - 1] = _OPERAND
+    lines = "".join(code).split("\n")
+    return _SIZEOF.sub(_OPERAND, "\n".join(lines[span[0] + 1 : span[1]]))
+
+
 def _address_taken(name: str, body: str) -> bool:
-    """`body` takes the address of `name` itself: `&p->x` and `&p[1]` take that of what a pointer
-    points at. An array needs neither, because _in_frame holds it by its use."""
-    return re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b(?!\s*(?:->|\[))", body) is not None
+    """`body`, from _operands, takes the address of `name` itself. An array needs no such read of
+    `&v[1]`, because _in_frame holds it by its use."""
+    return re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}{_ITSELF}", body) is not None
 
 
-def _in_frame(found: re.Match[str], code: Sequence[str], n: int, span: tuple[int, int]) -> bool:
+def _ambiguous_and(names: Iterable[str], body: str) -> bool:
+    """`body`, from _operands, has `(word) & name` for a word _SIZES does not hold: a cast taking
+    the address of `name`, or a binary `&`. Only the types could tell."""
+    hits = (re.finditer(rf"\(\s*([A-Za-z_]\w*)\s*\)\s*&\s*{name}{_ITSELF}", body) for name in names)
+    return any(hit[1] not in _SIZES for hit in itertools.chain.from_iterable(hits))
+
+
+def _in_frame(
+    found: re.Match[str], code: Sequence[str], n: int, span: tuple[int, int], body: str
+) -> bool:
     """The local declared on line `n` is held in memory: its address is taken, or it is an array,
     a plain float or double, or a volatile that something uses (pr_slot_unused: nothing else takes
     a slot); a volatile's initializer is a use (pr_slot_volatile_init). The 8087 can hold a float
-    with no slot at all: the map then does not place it, and _computable falls back."""
+    with no slot at all: the map then does not place it, and _computable falls back. `body` comes
+    from _operands."""
     name = _name(found)
-    body = "\n".join(code[span[0] + 1 : span[1]])
     if _address_taken(name, body) or (_volatile(found) and "=" in found["declarators"]):
         return True
     word = re.compile(rf"\b{name}\b")
@@ -417,11 +442,12 @@ def memory_locals(text: str, span: tuple[int, int]) -> tuple[slots.Local, ...]:
     split_declarators leaves it."""
     code = _code(text).split("\n")
     stacks = _block_stacks(code, span)
+    body = _operands(text, span)
     found_locals = []
     for n in declarations(text, span):
         found = _declaration(code[n])
         size = _size(found)
-        if size is not None and _in_frame(found, code, n, span):
+        if size is not None and _in_frame(found, code, n, span, body):
             scope = stacks[n][-1] if stacks[n] else 0
             found_locals.append(slots.Local(_name(found), size, scope))
     return tuple(found_locals)
@@ -439,17 +465,17 @@ def _float_in_a_tie(found: re.Match[str], memory: Sequence[slots.Local], body: s
 
 def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -> bool:
     """A frame can be read from `span`: every local has a size and a name of its own, no float
-    stands in a tie, and none outside `memory` is under a slot, because a spilled short can move
-    with its declaration (pr_spill_short) and then scalars are not out of reach of declaration
-    moves."""
+    stands in a tie, no `&` is ambiguous, and none outside `memory` is under a slot, because a
+    spilled short can move with its declaration (pr_spill_short) and then scalars are not out of
+    reach of declaration moves."""
     code = _code(text).split("\n")
     found = [_declaration(code[n]) for n in declarations(text, span)]
     names = [_name(one) for one in found]
     sizes = [_size(one) for one in found]
     if len(set(names)) != len(names) or None in sizes:
         return False
-    body = "\n".join(code[span[0] + 1 : span[1]])
-    if any(_float_in_a_tie(one, memory, body) for one in found):
+    body = _operands(text, span)
+    if any(_float_in_a_tie(one, memory, body) for one in found) or _ambiguous_and(names, body):
         return False
     held = {local.name for local in memory}
     return all(size >= slots.SLOT_ALIGN or name in held
