@@ -32,6 +32,22 @@ def _fresh(*parts: str) -> Path:
     return path
 
 
+@pytest.fixture(scope="module", autouse=True)
+def fresh_census():
+    """A census of this run's own: these tests neither read build/lift nor write it, so a draft
+    judged here does not depend on what an earlier run left there."""
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(lift, "CACHE_DIR", _fresh("census"))
+        lift._RESULT_USED.clear()
+        yield
+    lift._RESULT_USED.clear()
+
+
+def test_the_census_here_is_a_cold_one_of_its_own():
+    assert lift.CACHE_DIR == BUILD_ROOT / "census"
+    assert not lift._RESULT_USED
+
+
 def test_the_lifter_reaches_the_judge():
     rules = _require()
     stem, start = JUDGED
