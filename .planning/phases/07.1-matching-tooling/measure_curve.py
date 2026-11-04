@@ -8,7 +8,8 @@
 a refused row with holes, runs
 `reverseapoc batch` on them under the committed rule and CELL, runs `search.run_search` on each
 sample row with a compiled draft that is not exact (the Tier 1 number stays converter-only, D-27),
-and writes the point's row and section into 07.1-CURVE.md. The first run also draws
+and writes the point's row and section into 07.1-CURVE.md, with the not-matched rows by class and
+route from the batch records and the lift's refusals. The first run also draws
 07.1-SAMPLE.csv, which is never redrawn.
 `--self-check` runs the pure functions on canned records; `--plant` flips one expectation, so the
 self-check must fail. Generated C stays under the gitignored build/. Run from anywhere.
@@ -28,7 +29,7 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from reverseapoc import batch, cli, mechanics, search
+from reverseapoc import batch, classify, cli, mechanics, search
 from reverseapoc.cflags import load_cflags
 from reverseapoc.check import DEFAULT_CONFIG
 from reverseapoc.lift import CACHE_DIR, HOLE_MARK, Lifter, Unliftable, result_used
@@ -43,7 +44,8 @@ NEAR = 90.0
 BUCKETS = ((0, 64, "<64"), (64, 256, "64-255"), (256, 1024, "256-1023"), (1024, 1 << 30, ">=1024"))
 SAMPLED = BUCKETS[1:]
 OUTCOMES = ("exact", "near", "compiled", "compile-failed", "hole-draft", "refused", "crash")
-TOOLS = ("converter", "search", "slots")
+TOOLS = ("converter", "search", "slots", "classify")
+NO_CLASS = "none"  # an exact, refused or failed row: nothing to class
 SEARCHED = ("near", "compiled")  # a compiled draft that is not exact: the rows search runs on
 NUMBERS = ("t1 exact", "t1 near", "s exact", "s near")
 COLUMNS = (
@@ -334,6 +336,33 @@ def numbers(tier: list[dict], sample: list[dict]) -> dict[str, int]:
     }
 
 
+def row_labels(row: dict, records: dict) -> tuple[str, str]:
+    """A row's class and route, read from its best cell. A row with no record has no draft: a
+    refused row is the converter's to widen, and a crash falls to the table's last line, an
+    agent."""
+    cells = records.get((row["exe"], row["address"]))
+    if cells is None:
+        return NO_CLASS, "converter" if row["outcome"] == "refused" else "agent"
+    best = classify.best_cell(cells)
+    return best.get("class", NO_CLASS), best["route"]
+
+
+def route_table(rows: list[dict], records: dict) -> str:
+    """Not-matched rows by class and route, each row once. It moves neither curve number."""
+    counts = Counter(row_labels(row, records) for row in rows if not row["matched"])
+    classes = (*classify.CLASSES, NO_CLASS)
+    lines = [
+        summary_row(["class", *classify.ROUTES, "all"]),
+        summary_row(["---"] * (len(classify.ROUTES) + 2)),
+    ]
+    for klass in classes:
+        cells = [counts[klass, route] for route in classify.ROUTES]
+        lines.append(summary_row([klass, *cells, sum(cells)]))
+    totals = [sum(counts[klass, route] for klass in classes) for route in classify.ROUTES]
+    lines.append(summary_row(["rows", *totals, sum(totals)]))
+    return "\n".join(lines)
+
+
 def reasons_table(rows: list[dict]) -> str:
     """Why the lifter gave up on not-matched rows, most common first."""
     counts = Counter(row["reason"] for row in rows if not row["matched"] and "reason" in row)
@@ -381,7 +410,7 @@ def point_row(point: int, previous: dict | None, current: dict) -> tuple[list, s
     return cells, stop
 
 
-def point_section(point: int, tier: list[dict], sample: list[dict]) -> str:
+def point_section(point: int, tier: list[dict], sample: list[dict], records: dict) -> str:
     return "\n\n".join(
         [
             f"## Point {point}",
@@ -390,6 +419,8 @@ def point_section(point: int, tier: list[dict], sample: list[dict]) -> str:
             f"Sample, {len(sample)} rows, tools: {', '.join(TOOLS)}:",
             table(sample),
             HOLE_NOTE,
+            "Not-matched Tier 1 rows by class and route:",
+            route_table(tier, records),
             "Refusal reasons over the not-matched Tier 1 rows:",
             reasons_table(tier),
         ]
@@ -431,7 +462,7 @@ def measure(point: int) -> int:
     current = numbers(tier, sample)
     previous = previous_numbers(known[point - 1]) if point else None
     cells, stop = point_row(point, previous, current)
-    section = point_section(point, tier, sample)
+    section = point_section(point, tier, sample, records)
     updated = with_row(text, summary_row(cells)).rstrip("\n")
     CURVE.write_text(f"{updated}\n\n{section}\n", encoding="ascii", newline="\n")
     print(section)
@@ -475,6 +506,35 @@ def _canned_table() -> str:
     return table(rows)
 
 
+def _labelled(score: float, route: str, klass: str | None = None, *, exact: bool = False) -> dict:
+    labels = {"route": route} if klass is None else {"route": route, "class": klass}
+    return {**_record(score, exact=exact), **labels}
+
+
+def _route_row(outcome: str, index: int = 0, *, matched: bool = False) -> dict:
+    return {"exe": "ufo2p", "address": f"0x{index:08X}", "outcome": outcome, "matched": matched}
+
+
+def _canned_routes() -> str:
+    """Eight not-matched rows and a matched one. Row 3's two cells disagree, and its best cell
+    says register and converter; row 5 is a hole draft whose record says agent."""
+    cells = {
+        1: [_labelled(100.0, "converter", exact=True)],
+        2: [_labelled(40.0, "search", "slot")],
+        3: [_labelled(50.0, "agent", "size"), _labelled(93.0, "converter", "register")],
+        4: [_labelled(30.0, "agent", "size")],
+        5: [_labelled(70.0, "agent", "size")],
+        6: [_labelled(0.0, "agent")],
+        9: [_labelled(100.0, "converter", exact=True)],
+    }
+    outcomes = {1: "exact", 2: "compiled", 3: "near", 4: "compiled", 5: "hole-draft",
+                6: "compile-failed", 7: "refused", 8: "crash"}  # fmt: skip
+    rows = [_route_row(outcome, index) for index, outcome in outcomes.items()]
+    rows.append(_route_row("exact", 9, matched=True))
+    records = {("ufo2p", f"0x{index:08X}"): value for index, value in cells.items()}
+    return route_table(rows, records)
+
+
 def _point_numbers(t1_exact: int, t1_near: int, s_exact: int, s_near: int) -> dict[str, int]:
     return dict(zip(NUMBERS, (t1_exact, t1_near, s_exact, s_near), strict=True))
 
@@ -499,6 +559,10 @@ def cases() -> list[tuple[str, object, object]]:
     canned = _canned_table().split("\n")
     holed = f"{HOLE_MARK}0x1000: op: movsd */"
     strict = {"matched": False, "outcome": "hole-draft", "reason": "op: movsd"}
+    routes = _canned_routes().split("\n")
+    exact_row = _route_row("exact")
+    refused = _route_row("refused")
+    cells = {(exact_row["exe"], exact_row["address"]): [_labelled(100.0, "converter", exact=True)]}
     return [
         ("exact when any cell is", outcome_of([_record(10.0), _record(100, exact=True)]), "exact"),
         ("near at the threshold", outcome_of([_record(NEAR), _record(10.0)]), "near"),
@@ -527,7 +591,7 @@ def cases() -> list[tuple[str, object, object]]:
             "compiled",
         ),
         ("only a compiled draft is searched", SEARCHED, ("near", "compiled")),
-        ("the tools named are all three", TOOLS, ("converter", "search", "slots")),
+        ("the tools named are all four", TOOLS, ("converter", "search", "slots", "classify")),
         ("table counts an outcome by bucket", canned[2], "| exact | 1 | 0 | 0 | 0 | 1 |"),
         ("table totals its rows", canned[9], "| rows | 1 | 0 | 1 | 1 | 3 |"),
         ("hole-draft has its own row", canned[6], "| hole-draft | 0 | 0 | 1 | 0 | 1 |"),
@@ -581,6 +645,15 @@ def cases() -> list[tuple[str, object, object]]:
             False,
         ),
         ("the sample is the same every time", draw(_canned_rows()), picked),
+        ("a class counts by route", routes[2], "| tail | 0 | 0 | 0 | 0 |"),
+        ("slot goes to the search", routes[3], "| slot | 0 | 1 | 0 | 1 |"),
+        ("size goes to an agent", routes[4], "| size | 0 | 0 | 2 | 2 |"),
+        ("a row counts once, by its best cell", routes[5], "| register | 1 | 0 | 0 | 1 |"),
+        ("rows with no class count too", routes[8], "| none | 2 | 0 | 2 | 4 |"),
+        ("the totals are the not-matched rows", routes[9], "| rows | 3 | 1 | 4 | 8 |"),
+        ("an exact row is the converter's", row_labels(exact_row, cells), ("none", "converter")),
+        ("a refused row is the converter's", row_labels(refused, {}), ("none", "converter")),
+        ("a crash has no record", row_labels(_route_row("crash"), {}), ("none", "agent")),
     ]
 
 

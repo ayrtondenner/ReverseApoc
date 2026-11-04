@@ -141,7 +141,7 @@ def test_stack_and_register_together_are_class_register():
 
 def test_esp_is_no_register_choice():
     """`[esp + N]` must not read as a relocated `[ebx + N]`: no allocator picks esp."""
-    theirs = body("8b8300000000")  # mov eax, [ebx + disp32], with a relocated displacement
+    theirs = body("8b8345230100")  # mov eax, [ebx + 0x12345], its displacement relocated
     field = set(range(VA + 6, VA + 10))
     assert classify.classify_pair(body(LOAD_SLOT_4), theirs, VA, field) == "size"
 

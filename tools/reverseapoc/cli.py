@@ -1181,13 +1181,23 @@ def _file_records(item: _BatchFile, compiled: dict) -> list[dict]:
         for (name, _rule), cell in zip(item.cells, done, strict=True)
     ]  # fmt: skip
     cells = done or [None] * len(records)  # a refused file compiled nothing
-    classed = [classify.with_class(record, item.exe, item.start, cell)
+    hole = lift.HOLE_MARK in (item.text or "")
+    classed = [classify.with_class(record, item.exe, item.start, cell, hole=hole)
                for record, cell in zip(records, cells, strict=True)]  # fmt: skip
     return [batch.with_source(record, item.path, item.text) for record in classed]
 
 
+def _route_line(records: list[dict]) -> str:
+    """Rows per route, each row counted once, by its best cell."""
+    rows: dict[tuple[str, str], list[dict]] = {}
+    for record in records:
+        rows.setdefault((record["exe"], record["address"]), []).append(record)
+    counts = Counter(classify.best_cell(cells)["route"] for cells in rows.values())
+    return "routes: " + ", ".join(f"{name} {counts[name]}" for name in classify.ROUTES)
+
+
 def _cell_summary(records: list[dict]) -> list[str]:
-    """Per cell: compiled C/N, exact E, exact_trim T, refused R."""
+    """Per cell: compiled C/N, exact E, exact_trim T, refused R. Then the rows per route."""
     lines = []
     for cell in dict.fromkeys(record["cell"] for record in records):
         mine = [record for record in records if record["cell"] == cell]
@@ -1199,6 +1209,7 @@ def _cell_summary(records: list[dict]) -> list[str]:
             f"exact {sum(r['exact'] for r in mine)}, exact_trim "
             f"{sum(r['exact_trim'] for r in mine)}, refused {refused}"
         )
+    lines.append(_route_line(records))
     return lines
 
 
