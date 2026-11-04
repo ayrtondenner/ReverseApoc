@@ -51,7 +51,11 @@ def _jump_shape(code: bytes, va: int, masked: set[int]) -> list[int | None]:
 
 
 def _strict_prefix(short: list[str], long: list[str]) -> bool:
-    return len(short) < len(long) and long[: len(short)] == short
+    return 0 < len(short) < len(long) and long[: len(short)] == short
+
+
+def _decodes_whole(code: bytes, va: int) -> bool:
+    return sum(insn.size for insn in decode(code, va)) == len(code)
 
 
 def _widest_mask(ours: list[str], theirs: list[str]) -> str | None:
@@ -76,10 +80,16 @@ def classify_pair(
     once stack offsets, then register names, then jump mnemonics are masked; `slot` also needs
     every jump to land on the same instruction, because tokens hide jump targets. `mixed`: none
     of these. Equal tokens mean no mask has anything to explain, as in a relocation-only failure,
-    so such a pair is `size` or `mixed` and never `slot`."""
+    so such a pair is `size` or `mixed` and never `slot`. So is a body that does not decode to its
+    end: decode stops there, and what it read says nothing about what it did not."""
+    if exact_trim:
+        return "tail"
+    unmasked = "size" if len(ours) != len(theirs) else "mixed"
+    if not (_decodes_whole(ours, va) and _decodes_whole(theirs, va)):
+        return unmasked
     a = _texts(ours, va, masked)
     b = _texts(theirs, va, masked)
-    if exact_trim or _strict_prefix(a, b) or _strict_prefix(b, a):
+    if _strict_prefix(a, b) or _strict_prefix(b, a):
         return "tail"
     if _frames(a) != _frames(b):
         return "size"
@@ -89,7 +99,7 @@ def classify_pair(
                              _texts(theirs, va, masked, stack=True))  # fmt: skip
     if klass == "slot" and _jump_shape(ours, va, masked) != _jump_shape(theirs, va, masked):
         klass = None
-    return klass or ("size" if len(ours) != len(theirs) else "mixed")
+    return klass or unmasked
 
 
 def route(record: dict[str, Any], klass: str | None, *, hole: bool = False) -> str:

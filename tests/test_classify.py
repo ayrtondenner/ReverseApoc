@@ -228,3 +228,36 @@ def test_a_relocated_jump_is_left_to_the_relocation_check():
 )
 def test_an_add_esp_difference_alone_is_not_class_slot(ours, theirs):
     assert classed(ours, theirs) == "size"
+
+
+# ---- what decoded is all a class may read ----
+
+UNREADABLE = "ffff"  # capstone stops here
+
+
+@pytest.mark.parametrize("swap", [False, True])
+def test_an_empty_body_is_not_class_tail(swap):
+    pair = (b"", body(LOAD_SLOT_4))
+    assert classed(*(reversed(pair) if swap else pair)) == "size"
+
+
+def test_a_decode_that_stops_short_is_not_class_tail():
+    """Equal lengths, and `theirs` reads as `ours` cut after the frame."""
+    ours = body(f"{INC_EAX} {INC_EAX} {LOAD_SLOT_4}")
+    theirs = body(f"{UNREADABLE} {LOAD_SLOT_4}")
+    assert classed(ours, theirs) == "mixed"
+
+
+@pytest.mark.parametrize(
+    ("after", "klass"), [(DEC_EAX, "mixed"), (DEC_EAX * 3, "size")], ids=["equal", "longer"]
+)
+def test_a_decode_that_stops_short_is_not_class_slot(after, klass):
+    """Only a stack offset differs before the stop, and other code follows it."""
+    ours = body(f"{LOAD_SLOT_4} {UNREADABLE} {INC_EAX}")
+    theirs = body(f"{LOAD_SLOT_8} {UNREADABLE} {after}")
+    assert classed(ours, theirs) == klass
+
+
+def test_exact_trim_needs_no_decode():
+    """exact_trim is check's own verdict on the bytes, so it stands on an unreadable body."""
+    assert classed(body(UNREADABLE), body(INC_EAX), exact_trim=True) == "tail"
