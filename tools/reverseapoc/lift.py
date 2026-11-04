@@ -204,7 +204,6 @@ class Lifter:
         self.externs: dict[str, str] = {}
         self.locals: dict[str, str] = {}
         self.taken: set[int] = set()  # the slots whose address the row takes, by frame offset
-        self.out: list[str] = []
         self.labels: set[int] = set()
         self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
         self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
@@ -700,7 +699,7 @@ class Block_:
             raise Unliftable("op: cdq")
         return e
 
-    def set(self, name: str, e: E, ci) -> None:
+    def set(self, name: str, e: E) -> None:
         if name in SUB:
             full, size = SUB[name]
             if name in HIGH_BYTES:
@@ -856,8 +855,6 @@ class Block_:
         parts: list[E] = []
         fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
         base = ci.reg_name(m.base) if m.base else None
-        if base == "esp":  # -4r code uses ebp as a general register; frame() refuses real frames
-            raise Unliftable("mem: stack-relative address arithmetic")
         if fx is not None:
             parts.append(var(self.lf.data_name(fx.target_va)))
         if base:
@@ -969,7 +966,7 @@ class Block_:
         """Put `e` in `op`, and return where it reads from now: a store has already flushed, in
         `step`, because the operands it reads must see what the flush assigned."""
         if op.type == X86_OP_REG:
-            self.set(ci.reg_name(op.reg), e, ci)
+            self.set(ci.reg_name(op.reg), e)
             return e
         if op.type == X86_OP_MEM:
             esp = op.mem.base and ci.reg_name(op.mem.base) == "esp"
@@ -983,9 +980,9 @@ class Block_:
     def run(self, blocks, live_in) -> list[str]:
         for k, ci in enumerate(self.insns):
             self.attempt(ci, k)
-        last = self.insns[-1] if self.insns else None
-        if last is None or not (last.group(1) or last.group(3)):
-            self.needed = self.lf.after.get(last.address, set()) if last else set()
+        last = self.insns[-1]
+        if not (last.group(1) or last.group(3)):
+            self.needed = self.lf.after.get(last.address, set())
             self.flags = None  # only a block ending in a jump hands its flags on
             self.end_assign(live_in, blocks)
         return self.out
@@ -1027,7 +1024,7 @@ class Block_:
             self.flush(ci)
             self.keep_slot(ci, ops[0])
         if mn == "ret":
-            self.ret(ci)
+            self.ret()
             return
         if mn == "pop":
             self.pop(ci, k)
@@ -1088,14 +1085,14 @@ class Block_:
             a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
             self.flags = ("test", a if a.text == b.text else binop("&", a, b))
         elif mn == "cwde":
-            self.set("eax", cast("short", self.widened("ax"), 2, True), ci)
+            self.set("eax", cast("short", self.widened("ax"), 2, True))
         elif mn == "cdq":
             a = self.get("eax")
             self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
         elif mn in ("idiv", "div"):
             self.divide(ci, mn, ops)
         elif mn == "call":
-            self.call(ci, k)
+            self.call(ci)
         elif mn == "jmp" and ci.address in self.lf.tables:
             self.switch(ci)
         elif mn == "jmp":
@@ -1380,7 +1377,7 @@ class Block_:
         nxt = next((x for x in sorted(self.lf.live_in) if x > ci.address), None)
         return nxt is not None and nxt in self.lf.merge
 
-    def call(self, ci, k) -> None:
+    def call(self, ci) -> None:
         t = _branch_target(ci)
         if t is None:
             raise Unliftable("call: indirect")
@@ -1436,7 +1433,7 @@ class Block_:
         )
         return f"return {name}({args});" if returns else f"{name}({args}); return;"
 
-    def ret(self, ci) -> None:
+    def ret(self) -> None:
         if self.lf.sig.returns:
             self.out.append(f"return {self.get('eax')};")
         else:
