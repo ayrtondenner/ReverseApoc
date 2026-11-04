@@ -67,6 +67,7 @@ _SIZES = {"char": 1, "signed char": 1, "unsigned char": 1, "s8": 1, "u8": 1, "sh
           "unsigned": 4, "signed int": 4, "unsigned int": 4, "long": 4, "signed long": 4,
           "unsigned long": 4, "s32": 4, "u32": 4, "float": 4, "double": 8}  # fmt: skip
 _QUALIFIERS = frozenset(("const", "volatile", "register"))
+_FLOATING = frozenset(("float", "double"))
 
 # A declaration line, read on text with its comments and literals blanked. `static` and `extern`
 # locals hold no stack slot, so they are left out by not being specifiers here.
@@ -378,22 +379,40 @@ def _size(found: re.Match[str]) -> int | None:
     return math.prod(map(int, dimensions), start=element)
 
 
+def _plain_float(found: re.Match[str]) -> bool:
+    """A float or a double itself, not an array of them or a pointer to one."""
+    declarator = found["declarators"].split("=")[0]
+    return found["spec"].split()[-1] in _FLOATING and not set("*[") & set(declarator)
+
+
+def _volatile(found: re.Match[str]) -> bool:
+    """A volatile local itself, not a pointer to a volatile."""
+    return "volatile" in found["spec"].split() and "*" not in found["declarators"].split("=")[0]
+
+
+def _address_taken(name: str, body: str) -> bool:
+    return re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b", body) is not None
+
+
 def _in_frame(found: re.Match[str], code: Sequence[str], n: int, span: tuple[int, int]) -> bool:
-    """The local declared on line `n` is held in memory: its address is taken, or it is an array
-    something uses (pr_slot_unused: nothing else takes a slot)."""
+    """The local declared on line `n` is held in memory: its address is taken, or it is an array,
+    a plain float or double, or a volatile that something uses (pr_slot_unused: nothing else takes
+    a slot); a volatile's initializer is a use (pr_slot_volatile_init). The 8087 can hold a float
+    with no slot at all: the map then does not place it, and _computable falls back."""
     name = _name(found)
     body = "\n".join(code[span[0] + 1 : span[1]])
-    if re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b", body) is not None:
+    if _address_taken(name, body) or (_volatile(found) and "=" in found["declarators"]):
         return True
     word = re.compile(rf"\b{name}\b")
     others = (code[i] for i in range(span[0] + 1, span[1]) if i != n)
-    return "[" in found["declarators"].split("=")[0] and any(map(word.search, others))
+    framed = "[" in found["declarators"].split("=")[0] or _plain_float(found) or _volatile(found)
+    return framed and any(map(word.search, others))
 
 
 def memory_locals(text: str, span: tuple[int, int]) -> tuple[slots.Local, ...]:
-    """The locals inside `span` held in memory, in declaration order: those whose address is taken
-    and the arrays. A size _size cannot read leaves its local out. `text` holds one declarator per
-    line, as split_declarators leaves it."""
+    """The locals inside `span` held in memory, in declaration order: those _in_frame names. A
+    size _size cannot read leaves its local out. `text` holds one declarator per line, as
+    split_declarators leaves it."""
     code = _code(text).split("\n")
     stacks = _block_stacks(code, span)
     found_locals = []
@@ -406,15 +425,29 @@ def memory_locals(text: str, span: tuple[int, int]) -> tuple[slots.Local, ...]:
     return tuple(found_locals)
 
 
+def _float_in_a_tie(found: re.Match[str], memory: Sequence[slots.Local], body: str) -> bool:
+    """`found` declares a float of `memory` that ties with another local, its address not taken.
+    M2 does not place it and declarations still move it (pr_float_tie), so neither the model nor
+    the scalars can speak for that frame."""
+    name = _name(found)
+    tie = [local.name for local in memory if local.size == _size(found)]
+    return (_plain_float(found) and name in tie and len(tie) > 1
+            and not _address_taken(name, body))  # fmt: skip
+
+
 def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -> bool:
-    """A frame can be read from `span`: every local has a size and a name of its own, and none
-    outside `memory` is under a slot, because a spilled short can move with its declaration
-    (pr_spill_short) and then scalars are not out of reach of declaration moves."""
+    """A frame can be read from `span`: every local has a size and a name of its own, no float
+    stands in a tie, and none outside `memory` is under a slot, because a spilled short can move
+    with its declaration (pr_spill_short) and then scalars are not out of reach of declaration
+    moves."""
     code = _code(text).split("\n")
     found = [_declaration(code[n]) for n in declarations(text, span)]
     names = [_name(one) for one in found]
     sizes = [_size(one) for one in found]
     if len(set(names)) != len(names) or None in sizes:
+        return False
+    body = "\n".join(code[span[0] + 1 : span[1]])
+    if any(_float_in_a_tie(one, memory, body) for one in found):
         return False
     held = {local.name for local in memory}
     return all(size >= slots.SLOT_ALIGN or name in held

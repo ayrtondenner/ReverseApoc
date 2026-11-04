@@ -47,6 +47,9 @@ STRUCT = (Marked("a", 3, 0x11), Marked("b", 6, 0x22), Marked("c", 12, 0x33), Mar
 ODD = (Marked("a", 3, 0x11), Marked("b", 5, 0x22), Marked("c", 7, 0x33), Marked("d", 4, 0x44))
 BYTES = (Marked("a", 1, 0x11), Marked("b", 1, 0x22), Marked("c", 1, 0x33))
 SHORTS = (Marked("a", 2, 0x11), Marked("b", 2, 0x22), Marked("c", 2, 0x33))
+VOLATILE = (Marked("a", 4, 0x11), Marked("v", 4, 0x22), Marked("b", 4, 0x33))
+FLOAT_1_5, FLOAT_2_5, FLOAT_3_5 = 0x3FC00000, 0x40200000, 0x40600000
+FLOATS = (Marked("a", 4, FLOAT_1_5), Marked("b", 4, FLOAT_2_5), Marked("c", 4, FLOAT_3_5))
 # Each function's locals in declaration order. A scope counts blocks in source order.
 SHAPES = {
     "pr_slot_same_size": SAME_SIZE,
@@ -73,8 +76,14 @@ SHAPES = {
     "pr_slot_block_order": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("d", 4, 0x44, 2),
                             Marked("c", 4, 0x33, 3)),  # fmt: skip
     "pr_slot_unused": (Marked("a", 4, 0x11),),
+    "pr_slot_volatile": VOLATILE,
+    "pr_slot_volatile_rev": VOLATILE[::-1],
+    "pr_slot_volatile_init": (Marked("v", 4, 0x22), Marked("a", 4, 0x11)),
+    "pr_slot_float_taken": FLOATS,
+    "pr_slot_float_array": (Marked("f", 4, FLOAT_1_5), Marked("v", 8, 0x11)),
+    "pr_slot_double_int": (Marked("a", 4, 0x11), DOUBLE),
 }
-PAIR = (Marked("a", 8, 0x11), Marked("b", 8, 0x22))
+PAIR =(Marked("a", 8, 0x11), Marked("b", 8, 0x22))
 THREE = (*PAIR, Marked("c", 8, 0x33))
 # What the model refuses: every one of these leaves declaration order.
 TIES = {
@@ -90,6 +99,12 @@ TIES = {
                            Marked("c", 4, 0x33, 1), Marked("d", 2, 0x44, 1),
                            Marked("e", 4, 0x55, 2), Marked("f", 2, 0x66, 2)),  # fmt: skip
     "pr_tie_scope_shorts": (Marked("a", 2, 0x11), Marked("b", 2, 0x22, 1), Marked("c", 2, 0x33, 2)),
+}
+# A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
+FLOAT_TIES = {
+    "pr_float_ints": (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("f", 4, FLOAT_1_5)),
+    "pr_float_tie": FLOATS,
+    "pr_float_tie_rev": FLOATS[::-1],
 }
 SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722))
 SPILL_SMALL = (Marked("m", 2, 0x711), Marked("n", 2, 0x722))
@@ -233,6 +248,33 @@ def test_a_local_outside_the_tie_changes_it(modules, cell):
     alone = _offsets(modules[cell], "pr_tie_three", cell, TIES["pr_tie_three"])
     beside = _offsets(modules[cell], "pr_tie_three_int", cell, TIES["pr_tie_three_int"])
     assert alone != {name: beside[name] for name in alone}
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("name", FLOAT_TIES)
+def test_a_float_in_a_tie_leaves_declaration_order(modules, cell, name):
+    """Why search._readable refuses these: M2 would be wrong, and the frame is still as padded."""
+    shape = FLOAT_TIES[name]
+    declared = _declared(shape)
+    assert _offsets(modules[cell], name, cell, shape) != slots.frame_layout(declared)
+    assert _frame(modules[cell], name) == slots.frame_size(declared)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_declarations_still_move_a_float_in_a_tie(modules, cell):
+    """So those slots are not out of reach, and the search must keep its plain moves for them."""
+    module = modules[cell]
+    tie = _offsets(module, "pr_float_tie", cell, FLOATS)
+    assert tie != _offsets(module, "pr_float_tie_rev", cell, FLOATS[::-1])
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_a_double_changes_a_tie_of_ints_by_its_use_alone(modules, cell):
+    """One declaration list, and a and b swap: order_is_known must see d to refuse this frame."""
+    ints = (Marked("b", 4, 0x22), Marked("a", 4, 0x11))
+    called = _offsets(modules[cell], "pr_double_called", cell, ints)
+    assert called != _offsets(modules[cell], "pr_double_stored", cell, ints)
+    assert slots.order_is_known((*_declared(ints), slots.Local("d", 8))) is False
 
 
 def test_a_short_beside_a_short_moves_with_its_declaration(modules):

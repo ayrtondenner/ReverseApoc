@@ -14,7 +14,11 @@ Offsets count from esp after the prologue. What the probe measured, the same in 
   use order, type and loop weight move it, which is the register allocator. What can be said is
   where it lands: a spill sorts by size with the memory locals, above an int and below a short.
   One exception: shorts spilled beside a short in memory do move with their declarations
-  (pr_spill_short), so a caller must not read M5 as covering locals under 4 bytes.
+  (pr_spill_short), so a caller must not read M5 as covering locals under 4 bytes. M5 covers
+  integers and pointers. A volatile sits in the frame like a memory local (pr_slot_volatile).
+  So does a float or a double live across a call, sorted by size, but with no address taken a
+  float in a tie leaves M2 (pr_float_tie), and a double moves the ints beside it by its use alone
+  (pr_double_called): a caller must keep a float in a tie away from order_is_known.
 
 M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to

@@ -108,6 +108,10 @@ It stays out of `probe.PROBE_SOURCES`, and neither cell joins `probe.FLAG_SETS`:
 | `pr_slot_flat`, `pr_slot_scope`, `pr_slot_scope_pairs` | three ints flat and in nested blocks | M4: an earlier block sits lower, the first declared of a block highest, and the frame stays 0xC |
 | `pr_slot_siblings`, `pr_slot_block_order` | sibling blocks | M4: siblings share nothing, and the key is the place of the block in the source, not its depth |
 | `pr_slot_unused` | locals nothing uses | they take no slot, an array included |
+| `pr_slot_volatile`, `_volatile_rev`, `_volatile_init` | a volatile beside ints, and one with only an initializer | a volatile takes a slot with no address taken, and M2 places it |
+| `pr_slot_float_taken`, `pr_slot_float_array`, `pr_slot_double_int` | floats and doubles in memory, or in no tie | M2 holds for an address-taken float, and M1 for a float or a double with no tie |
+| `pr_float_ints`, `pr_float_tie`, `_tie_rev` | a float with no address taken, in a tie | it leaves M2, yet declarations still move it, so the search keeps its plain moves |
+| `pr_double_called`, `pr_double_stored` | one declaration list, two uses of a double | the ints beside it swap, so no rule on declarations places them |
 | `pr_tie_*` | ties the model refuses | where M2 and M4 stop: each is proven to leave declaration order, and M1 and M3 still hold |
 | `pr_spill_decl`, `_decl_rev`, `_scoped` | eight values live across calls | M5: declaration and scope leave the code identical |
 | `pr_spill_assign`, `_use`, `_type`, `_loop`, `_loop_late` | one change each | M5: assignment order, use order, type and loop weight change the code |

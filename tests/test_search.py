@@ -1227,6 +1227,33 @@ def test_an_unused_array_takes_no_slot():
     assert _locals_of("int b[4];", "", "return a;") == ()
 
 
+@pytest.mark.parametrize(
+    ("line", "size"),
+    [("float b;", 4), ("double b;", 8), ("const float b;", 4), ("volatile int b;", 4),
+     ("volatile short b;", 2)],
+)  # fmt: skip
+def test_memory_locals_take_a_plain_float_double_or_volatile(line, size):
+    """They sit in the frame with no address taken: neither is a register candidate."""
+    (local,) = _locals_of(line, "", "b = a;", "return a;")
+    assert (local.name, local.size) == ("b", size)
+
+
+@pytest.mark.parametrize("line", ["float *b;", "double *b;", "volatile int *b;"])
+def test_a_pointer_to_a_float_or_a_volatile_stays_a_register_candidate(line):
+    assert _locals_of(line, "", "take(b);", "return a;") == ()
+
+
+@pytest.mark.parametrize("line", ["float b;", "double b;", "volatile int b;", "float b = 1;"])
+def test_an_unused_float_double_or_volatile_takes_no_slot(line):
+    assert _locals_of(line, "", "return a;") == ()
+
+
+def test_the_initializer_alone_gives_a_volatile_its_slot():
+    """pr_slot_volatile_init."""
+    (local,) = _locals_of("volatile int b = 1;", "", "return a;")
+    assert local.name == "b"
+
+
 def test_memory_locals_leave_out_a_size_they_cannot_read():
     found = _locals_of("struct pos s;", "int v[N];", "int b;", "", "take(&s, v, &b);", "return a;")
     assert [local.name for local in found] == ["b"]
@@ -1314,6 +1341,58 @@ def test_declaration_axis_falls_back_when_no_slot_was_compared():
 def test_declaration_axis_falls_back_when_two_blocks_reuse_a_name():
     text = _body("int b;", "take(&b);", "if (a) {", "    int b;", "    take(&b);", "}", "return a;")
     assert _axis(text, _pairs((0, 4), (4, 0))) == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_beside_a_plain_double():
+    """order_is_known sees the double, so the tie of ints beside it is refused."""
+    text = _body("int b;", "int d;", "double p;", "", "take(&b, &d);", "p = a;", "return a;")
+    moves = _axis(text, batch.SlotMap(((8, 0xC), (0xC, 8)), True, 0x10, 0x10))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [("float p;", "float q;", "float r;", "", "p = a;", "q = a;", "r = a;", "return a;"),
+     ("int b;", "int d;", "float p;", "", "take(&b, &d);", "p = a;", "return a;"),
+     ("float b;", "float d;", "", "take(&b);", "d = a;", "return a;")],
+)  # fmt: skip
+def test_declaration_axis_falls_back_for_a_float_in_a_tie(lines):
+    """pr_float_tie: declarations move it, by no order the model knows."""
+    text = _body(*lines)
+    moves = _axis(text, batch.SlotMap(((0, 8), (4, 4), (8, 0)), True, 0xC, 0xC))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_declaration_axis_computes_for_floats_whose_address_is_taken():
+    lines = ("float b;", "float d;", "", "take(&b, &d);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
+    assert move.text == _body("float d;", "float b;", *lines[2:])
+
+
+def test_declaration_axis_computes_for_a_float_with_no_tie():
+    """M1 places it: pr_slot_float_array."""
+    lines = ("float p;", "int v[2];", "", "v[0] = a;", "take(v);", "p = a;", "return a;")
+    assert _axis(_body(*lines), batch.SlotMap(((0, 0), (8, 8)), True, 0xC, 0xC)) == []
+
+
+def test_declaration_axis_moves_a_tie_around_a_volatile():
+    """pr_slot_volatile: M2 places it, so it holds a place in the order."""
+    lines = ("int b;", "volatile int v;", "int d;", "", "v = a;", "take(&b, &d);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 8), (4, 4), (8, 0)))
+    assert move.text == _body("int d;", "volatile int v;", "int b;", *lines[3:])
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [("int b;", "int c;", "double p;", "", "take(&b, &c);", "p = a;", "return p;"),
+     ("float p;", "float q;", "", "p = a;", "q = a;", "return a;")],
+)  # fmt: skip
+def test_scalars_are_not_reported_for_a_float_or_a_double(monkeypatch, stubs, lines):
+    """Declarations do reach those slots, so saying they cannot would be false."""
+    _map_is(monkeypatch, batch.SlotMap(((0, 8), (8, 0), (0xC, 8)), True, 0x10, 0x10))
+    assert _run(_body(*lines).replace("int f(", f"int {A1}(")).scalars == ()
 
 
 def test_scalar_slots_skip_declaration_moves_and_are_reported(monkeypatch, stubs):

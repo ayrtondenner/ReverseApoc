@@ -15,6 +15,9 @@
 extern void pr_take(void *first, ...);
 extern int pr_get(void);
 extern void pr_put(int a, int b, int c, int d);
+extern double pr_getd(void);
+extern void pr_putd(double a);
+extern void pr_putf(float a);
 
 struct pr_three {
     char a;
@@ -348,6 +351,168 @@ void pr_slot_unused(void)
 
     a = 0x11;
     pr_take(&a);
+}
+
+/* A volatile sits in the frame like a memory local, with no address taken: M2 places it. */
+void pr_slot_volatile(void)
+{
+    int a;
+    volatile int v;
+    int b;
+
+    a = 0x11;
+    v = 0x22;
+    b = 0x33;
+    pr_take(&a, &b);
+}
+
+void pr_slot_volatile_rev(void)
+{
+    int b;
+    volatile int v;
+    int a;
+
+    a = 0x11;
+    v = 0x22;
+    b = 0x33;
+    pr_take(&a, &b);
+}
+
+/* The initializer alone gives a volatile its slot. */
+void pr_slot_volatile_init(void)
+{
+    volatile int v = 0x22;
+    int a;
+
+    a = 0x11;
+    pr_take(&a);
+}
+
+/* Floats whose address is taken follow M2 like any memory local. */
+void pr_slot_float_taken(void)
+{
+    float a;
+    float b;
+    float c;
+
+    a = 1.5f;
+    b = 2.5f;
+    c = 3.5f;
+    pr_take(&a, &b, &c);
+}
+
+/* With no tie a float or a double live across a call sort by size: M1. */
+void pr_slot_float_array(void)
+{
+    float f;
+    int v[2];
+
+    v[0] = 0x11;
+    f = 1.5f;
+    if (pr_get()) {
+        f = 2.5f;
+    }
+    pr_take(v);
+    pr_putf(f);
+}
+
+void pr_slot_double_int(void)
+{
+    int a;
+    double d;
+
+    a = 0x11;
+    d = 2.5;
+    if (pr_get()) {
+        d = 3.5;
+    }
+    pr_take(&a);
+    pr_putd(d);
+}
+
+/* In a tie a float with no address taken leaves M2, though the twins show declarations move it. */
+void pr_float_ints(void)
+{
+    int a;
+    int b;
+    float f;
+
+    a = 0x11;
+    b = 0x22;
+    f = 1.5f;
+    if (pr_get()) {
+        f = 2.5f;
+    }
+    pr_take(&a, &b);
+    pr_putf(f);
+}
+
+void pr_float_tie(void)
+{
+    float a;
+    float b;
+    float c;
+
+    a = 1.5f;
+    b = 2.5f;
+    c = 3.5f;
+    if (pr_get()) {
+        a = 4.5f;
+        b = 5.5f;
+        c = 6.5f;
+    }
+    pr_putf(a);
+    pr_putf(b);
+    pr_putf(c);
+}
+
+void pr_float_tie_rev(void)
+{
+    float c;
+    float b;
+    float a;
+
+    a = 1.5f;
+    b = 2.5f;
+    c = 3.5f;
+    if (pr_get()) {
+        a = 4.5f;
+        b = 5.5f;
+        c = 6.5f;
+    }
+    pr_putf(a);
+    pr_putf(b);
+    pr_putf(c);
+}
+
+/* One declaration list, two uses of d: a and b swap, so no rule on declarations can place them. */
+void pr_double_called(void)
+{
+    double d;
+    int b;
+    int a;
+
+    a = 0x11;
+    b = 0x22;
+    d = pr_getd();
+    pr_take(&a, &b);
+    pr_putd(d);
+}
+
+void pr_double_stored(void)
+{
+    double d;
+    int b;
+    int a;
+
+    a = 0x11;
+    b = 0x22;
+    d = 2.5;
+    if (pr_get()) {
+        d = 3.5;
+    }
+    pr_take(&a, &b);
+    pr_putd(d);
 }
 
 /*
