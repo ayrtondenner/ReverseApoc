@@ -1050,3 +1050,80 @@ def test_a_call_argument_is_read_after_the_flush():
     callee = VA + ROW_SPACING
     exe = stub_exe(f"8b12 {call_to(VA + 2, callee)} 89d0 c3", "c3")
     assert f"func_{callee:08x}(r_eax, r_edx);" in lift.lift_row(exe, VA)
+
+
+# ---- readers of an overwritten name ----
+
+
+def test_a_copy_outlives_the_call_that_overwrites_eax():
+    # mov ebx, eax; call f; add eax, ebx; ret
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"89c3 {call_to(VA + 2, callee)} 01d8 c3", "b801000000 c3")
+    text = lift.lift_row(exe, VA)
+    assert text.index("r_ebx = r_eax;") < text.index(f"r_eax = func_{callee:08x}(")
+    assert "return r_eax + r_ebx;" in text
+
+
+def test_an_argument_nothing_reads_later_stays_in_the_call():
+    # mov ebx, eax; call f; ret: the call reads ebx, and its own statement overwrites eax after
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"89c3 {call_to(VA + 2, callee)} c3", "b801000000 c3")
+    assert "r_ebx =" not in lift.lift_row(exe, VA)
+
+
+def test_a_copy_of_the_node_survives_the_step_to_the_next():
+    # mov ecx, eax; mov eax, [eax]; mov [edx], ecx; ret
+    text = lift.lift_row(stub_exe("89c1 8b00 890a c3"), VA)
+    assert text.index("r_ecx = r_eax;") < text.index("r_eax = *(int *)")
+    assert "*(int *)((char *)r_edx) = r_ecx;" in text
+
+
+def test_a_swap_across_a_merge_goes_through_a_temporary():
+    # test ebx, ebx; je L; mov ecx, eax; mov eax, edx; mov edx, ecx; L: add eax, edx; ret
+    text = lift.lift_row(stub_exe("85db 7406 89c1 89d0 89ca 01d0 c3"), VA)
+    assert "int t_0;" in text
+    order = ("t_0 = r_edx;", "r_edx = r_eax;", "r_eax = t_0;")
+    assert sorted(order, key=text.index) == list(order)
+
+
+def test_a_slot_read_outlives_the_store_to_the_slot():
+    # mov eax, [esp + 8]; mov [esp + 8], edx
+    text = in_frame("8b442408 89542408")
+    assert text.index("r_eax = s_8;") < text.index("s_8 = r_edx;")
+    assert "return r_eax;" in text
+
+
+def test_a_flag_that_read_a_slot_goes_stale_with_the_store():
+    # mov ecx, [esp + 8]; test ecx, ecx; mov [esp + 8], edx; je +0
+    with pytest.raises(lift.Unliftable, match="flags: operand reassigned before the jump"):
+        in_frame("8b4c2408 85c9 89542408 7400")
+
+
+def test_a_pending_push_keeps_the_value_it_pushed():
+    # inc ecx; push eax; mov eax, [eax]; mov [edx], ecx; call f; ret, f taking one stack argument
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"41 50 8b00 890a {call_to(VA + 6, callee)} c3", "b801000000 c20400")
+    text = lift.lift_row(exe, VA)
+    assert text.index("t_0 = r_eax;") < text.index("r_eax = *(int *)")
+    assert ", t_0);" in text
+
+
+def test_a_loaded_float_keeps_the_address_it_was_loaded_from():
+    # fld dword ptr [eax]; mov eax, [edx]; mov [edx], ecx; fstp c
+    text = in_frame(f"d900 8b02 890a {FSTP_C}")
+    assert text.index("t_0 = r_eax;") < text.index("r_eax = *(int *)")
+    assert "s_c = *(float *)((char *)t_0);" in text
+
+
+def test_a_float_stored_over_its_own_slot_needs_no_temporary():
+    # fld a; fadd dword ptr [esp + 0Ch]; fstp a
+    text = in_frame(f"{FLD_A} d844240c d95c2408")
+    assert "s_8 = s_8 + s_4;" in text
+    assert "t_0" not in text
+
+
+def test_a_float_kept_past_the_store_to_its_slot_reads_a_float_temporary():
+    # fld a; fadd dword ptr [esp + 0Ch]; fst a; fstp c
+    text = in_frame(f"{FLD_A} d844240c d9542408 {FSTP_C}")
+    assert "float t_0;" in text
+    assert "s_c = t_0 + s_4;" in text

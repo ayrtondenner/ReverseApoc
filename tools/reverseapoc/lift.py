@@ -18,7 +18,7 @@ from __future__ import annotations
 import bisect
 import itertools
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
@@ -102,7 +102,8 @@ X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "
 X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
 X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
                        "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
-X87_STORES = frozenset({"fst", "fstp", "fistp"})  # capstone calls these operands reads
+X87_POPPING_STORES = frozenset({"fstp", "fistp"})
+X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
 STALE_FLAGS = ("stale",)  # the flags of a compare whose operand has been overwritten since
 
 
@@ -215,6 +216,8 @@ class Lifter:
         self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
         self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
         self.hole_vars: set[str] = set()  # the h_<va> locals a hole left behind
+        self.temps: dict[str, str] = {}  # t_<n> -> its C type, for a value kept past an overwrite
+        self.before: dict[int, set] = {}  # the registers an instruction, or anything after, reads
         self.word_reads: dict[str, bool] = {}  # slot -> was every read a sign-extended word?
 
     # -- decoding and frame --
@@ -497,6 +500,7 @@ class Lifter:
                 after[ci.address] = set(live)
                 u, d = use_def[ci.address]
                 live = (live - d) | u
+                self.before[ci.address] = set(live)
         return live_in, after
 
     # -- the lift --
@@ -597,6 +601,7 @@ class Lifter:
         dims = self.array_dims()
         decls += [f"    {t} {n}{dims.get(n, '')};" for n, t in slots]
         decls += [f"    int {n};" for n in sorted(self.hole_vars)]
+        decls += [f"    {t} {n};" for n, t in self.temps.items()]
         lines = [f"/* IDIOM {hit} */" for hit in self.idioms()]
         lines += list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
         if decls:
@@ -608,7 +613,7 @@ class Lifter:
     def emit(self, blocks, order, preds) -> list[str]:
         """Run every block into C statements. An address-taken slot found here is in `taken`."""
         self.locals = {_slot_name(off): "char" for off in self.taken}
-        self.hole_vars, self.word_reads = set(), {}
+        self.hole_vars, self.word_reads, self.temps = set(), {}, {}
         end_state: dict[int, dict] = {}
         body: list[str] = []
         targets = {t for b in blocks.values() if b.insns[-1].group(1) for t in self.jumped_to(b)}
@@ -681,6 +686,8 @@ class Block_:
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
         self.fcompare: tuple | None = None  # the last x87 compare, for `fnstsw ax`
         self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
+        self.needed: set[str] = set()  # the registers still read from here on
+        self.assigning: set[str] = set()  # registers whose assignment waits on their readers
 
     # registers
 
@@ -703,7 +710,7 @@ class Block_:
             and name in self.lf.after.get(ci.address, set())
             and name not in _use_def(ci)[1]
         ):
-            self.assign(name, e)  # used here and later: compute it once into its variable
+            self.assign(name)  # used here and later: compute it once into its variable
             e = self.regs[name]
         return e
 
@@ -723,28 +730,87 @@ class Block_:
         """Before a side effect: registers holding an impure value that is still needed become
         their variable."""
         live = self.lf.after.get(ci.address, set())
-        for r, e in list(self.regs.items()):
-            if e.pure or r not in live or (keep and r in keep):
+        for r in list(self.regs):
+            if self.regs[r].pure or r not in live or (keep and r in keep):
                 continue
-            self.assign(r, e)
+            self.assign(r)
 
-    def assign(self, r: str, e: E) -> None:
-        if e.text == f"r_{r}":
+    def assign(self, r: str) -> None:
+        name = f"r_{r}"
+        if self.regs[r].text == name:
             return
+        self.assigning.add(r)
+        self.keep_readers(name, r, self.needed)
+        self.assigning.discard(r)
+        e = self.regs[r]
+        self.keep_held(name, e.text)
         self.lf.regvars.add(r)
-        self.out.append(f"r_{r} = {e};")
-        self.regs[r] = var(f"r_{r}", e.size, e.signed)
-        self.rebind_flags(e, self.regs[r])
+        self.out.append(f"{name} = {e};")
+        self.regs[r] = var(name, e.size, e.signed)
+        self.rebind(e, self.regs[r])
 
-    def rebind_flags(self, value: E, new: E) -> None:
-        """`new` holds `value` now. A flag operand that was `value` reads it from there, and one
+    def keep_readers(self, name: str, owner: str | None, needed: set[str]) -> None:
+        """`name` is about to change. Every other needed register reading it becomes its own
+        variable first; one already waiting on this assignment is a cycle, and reads a temporary."""
+        for other in list(self.regs):
+            if other == owner or not _reads(self.regs[other], name):
+                continue
+            if other in self.assigning:
+                self.regs[other] = _renamed(self.regs[other], name, self.temp(name))
+            elif other in needed:
+                self.assign(other)
+
+    def keep_held(self, name: str, value: str = "") -> None:
+        """`name` is about to change: a pending push or x87 register reading it reads a temporary,
+        unless it is the `value` that takes the name."""
+        for held in (self.pushes, self.fstack):
+            stale = [n for n, e in enumerate(held) if e.text != value and _reads(e, name)]
+            for n in stale:
+                held[n] = _renamed(held[n], name, self.temp(name))
+
+    def temp(self, name: str) -> str:
+        """A new variable holding what `name` holds now."""
+        t = f"t_{len(self.lf.temps)}"
+        self.lf.temps[t] = self.lf.locals.get(name, "int")
+        self.out.append(f"{t} = {name};")
+        return t
+
+    def rebind(self, value: E, new: E) -> None:
+        """`new` holds `value` now. What held `value` reads it from there, and a flag operand
         that read what `new` held before has nothing left to read."""
+        same = not value.atom
+
+        def moved(e: E) -> E:
+            return new if same and e.text == value.text else e
+
+        self.pushes[:] = map(moved, self.pushes)
+        self.fstack[:] = map(moved, self.fstack)
         if self.flags is None:
             return
-        same = not value.atom
-        held = [new if same and e.text == value.text else e for e in self.flags[1:]]
+        held = [moved(e) for e in self.flags[1:]]
         stale = any(e is not new and _reads(e, new.text) for e in held)
         self.flags = STALE_FLAGS if stale else (self.flags[0], *held)
+
+    def keep_slot(self, ci, op) -> None:
+        """A store to a scalar slot overwrites a name as an assignment does. Its own statement
+        reads the value first, so only what is read after it needs keeping."""
+        name = self.scalar_name(ci, op)
+        if name is None:
+            return
+        self.keep_readers(name, None, self.lf.after.get(ci.address, set()))
+        popping = ci.mnemonic in X87_POPPING_STORES and self.fstack
+        self.keep_held(name, self.fstack[-1].text if popping else "")
+        self.rebind(var(name), var(name))
+
+    def scalar_name(self, ci, op) -> str | None:
+        """The C variable a store to the memory operand `op` overwrites, if it has one."""
+        m = op.mem
+        if not m.base or ci.reg_name(m.base) != "esp" or m.index:
+            return None
+        off = self.esp + m.disp
+        if self.lf.array_at(off) is not None:
+            return None
+        return f"r_p{(off - 4) // 4 + 5}" if off >= 4 else _slot_name(off)
 
     # operands
 
@@ -899,6 +965,7 @@ class Block_:
             self.attempt(ci, k)
         last = self.insns[-1] if self.insns else None
         if last is None or not (last.group(1) or last.group(3)):
+            self.needed = self.lf.after.get(last.address, set()) if last else set()
             self.end_assign(live_in, blocks)
         return self.out
 
@@ -929,13 +996,15 @@ class Block_:
         live = set().union(*(live_in[t] for t in succ)) if succ else set()
         for r in sorted(live & set(GP)):
             if r in self.regs:
-                self.assign(r, self.regs[r])
+                self.assign(r)
 
     def step(self, ci, k) -> None:
         self.cur, self.k = ci, k
+        self.needed = self.lf.before.get(ci.address, set())
         mn, ops = ci.mnemonic, ci.operands
         if _stores(ci):
             self.flush(ci)
+            self.keep_slot(ci, ops[0])
         if mn in ("pop", "ret") or (mn == "add" and ci.op_str.startswith("esp, ")):
             if mn == "ret":
                 self.ret(ci)
@@ -1209,7 +1278,7 @@ class Block_:
         live = set().union(*(self.lf.live_in[t] for t in merged))
         for r in sorted(live & set(GP)):
             if r in self.regs:
-                self.assign(r, self.regs[r])
+                self.assign(r)
         self.out.append(f"switch ({self.get(ci.reg_name(ci.operands[0].mem.index))}) {{")
         self.out += [f"case {k}: goto L{t:X};" for k, t in cases.items()]
         guard = self.lf.guards.get(ci.address)
@@ -1244,7 +1313,7 @@ class Block_:
         live = set().union(*(self.lf.live_in[x] for x in succ)) if succ else set()
         for r in sorted(live & set(GP)):
             if r in self.regs:
-                self.assign(r, self.regs[r])
+                self.assign(r)
 
     def _falls_into_merge(self, ci) -> bool:
         nxt = next((x for x in sorted(self.lf.live_in) if x > ci.address), None)
@@ -1261,6 +1330,11 @@ class Block_:
         if len(self.pushes) < sig.nstack:
             raise Unliftable("call: stack arguments not pushed in the block")
         self.flush(ci, keep=set())
+        live = self.lf.after.get(ci.address, set())
+        if "eax" in live:
+            if not sig.returns:
+                raise Unliftable("call: result of a void callee is used")
+            self.keep_readers("r_eax", "eax", live)
         args = [self.get(r) for r in ARG_REGS[: min(nregs, 4)]]
         if sig.nstack:
             stack = self.pushes[-sig.nstack :][::-1]
@@ -1277,10 +1351,8 @@ class Block_:
         for r in list(self.regs):
             if r == "eax":
                 del self.regs[r]
-        live = self.lf.after.get(ci.address, set())
         if "eax" in live:
-            if not sig.returns:
-                raise Unliftable("call: result of a void callee is used")
+            self.keep_held("r_eax")
             self.lf.regvars.add("eax")
             self.out.append(f"r_eax = {text};")
             self.regs["eax"] = var("r_eax")
@@ -1322,6 +1394,10 @@ def _full(name: str) -> str:
 
 def _reads(e: E, name: str) -> bool:
     return re.search(rf"\b{name}\b", e.text) is not None
+
+
+def _renamed(e: E, name: str, new: str) -> E:
+    return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None)
 
 
 def _stores(ci) -> bool:
