@@ -389,7 +389,7 @@ Plans:
   4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
   5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
 
-**Plans:** 2/6 plans executed
+**Plans:** 3/6 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -399,7 +399,7 @@ Plans:
 - [x] 07.1-02-PLAN.md — wcc386 10.6 stack-slot model for `-4r -s` and `-4r -oneatx -s`, calibrated on `probe/`; first YAGNI verdict (D-02, D-24)
 
 **Wave 3** *(blocked on Wave 2 completion; main checkout)*
-- [ ] 07.1-03-PLAN.md — converter v1: `lift.py` moved to `tools/` with its listed extensions (D-03)
+- [x] 07.1-03-PLAN.md — converter v1: `lift.py` moved to `tools/` with its listed extensions (D-03)
 
 **Wave 4** *(blocked on Wave 3 completion; main checkout)*
 - [ ] 07.1-04-PLAN.md — failure classifier routing rows to the converter, the search or an agent (D-04)
@@ -442,7 +442,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
-| 7.1. Matching tooling (INSERTED) | 2/6 | In Progress | - |
+| 7.1. Matching tooling (INSERTED) | 3/6 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
