@@ -16,6 +16,7 @@ else raises Unliftable with a short reason, which the harness counts as a failur
 from __future__ import annotations
 
 import bisect
+import itertools
 from dataclasses import dataclass, field
 
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
@@ -188,6 +189,7 @@ class Lifter:
         self.fix = {f.src_va: f for f in _fixup_index(exe).overlapping(row.start, row.end)}
         self.externs: dict[str, str] = {}
         self.locals: dict[str, str] = {}
+        self.taken: set[int] = set()  # the slots whose address the row takes, by frame offset
         self.out: list[str] = []
         self.labels: set[int] = set()
 
@@ -478,7 +480,8 @@ class Lifter:
         ret_live = frozenset({"eax"}) if sig.returns else frozenset()
         insns, saved, frame, blocks, order, live_in, self.after = self.prepare(ret_live)
         self.saved = saved
-        self.esp0 = -4 * len(saved) - frame  # esp after the prologue, relative to entry esp
+        self.frame_top = -4 * len(saved)
+        self.esp0 = self.frame_top - frame  # esp after the prologue, relative to entry esp
         params = list(ARG_REGS[: sig.nregs])
         self.vartype = self.param_types(blocks[order[0]].insns, params) if self.narrow else {}
         self.regvars = set(params)
@@ -490,6 +493,34 @@ class Lifter:
         for s in self.merge:
             self.regvars |= live_in[s] & set(GP)
         self.live_in = live_in
+        regvars = set(self.regvars)
+        body = self.emit(blocks, order, preds)
+        if self.taken:  # that run was the pre-pass: with every array known, run again
+            self.regvars = regvars
+            body = self.emit(blocks, order, preds)
+        used = {lab for lab in self.labels if any(f"goto L{lab:X};" in line for line in body)}
+        body = [
+            line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
+        ]
+        ret = (self.ret_type(blocks, order) if self.narrow else "int") if sig.returns else "void"
+        params += [f"p{n + 5}" for n in range(sig.nstack)]
+        args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
+        name = self.exe.symbols.c_name(self.row.start)
+        decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
+        # Nearest the entry first: a frame of one size puts the first declared highest (probe M2).
+        slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
+        dims = self.array_dims()
+        decls += [f"    {t} {n}{dims.get(n, '')};" for n, t in slots]
+        lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
+        if decls:
+            lines.append("")
+        lines += [("    " + line if not line.endswith(":;") else line) for line in body]
+        lines.append("}")
+        return "\n".join(lines) + "\n"
+
+    def emit(self, blocks, order, preds) -> list[str]:
+        """Run every block into C statements. An address-taken slot found here is in `taken`."""
+        self.locals = {_slot_name(off): "char" for off in self.taken}
         end_state: dict[int, dict] = {}
         body: list[str] = []
         targets = {t for b in blocks.values() for t in b.succ[:1] if b.insns[-1].group(1)}
@@ -504,28 +535,24 @@ class Lifter:
                 run.regs = dict(end_state[preds[s][0]])  # one forward predecessor: inherit
             if carried is not None and s not in targets:
                 run.flags = carried
-            body += run.run(blocks, live_in)
+            body += run.run(blocks, self.live_in)
             end_state[s] = dict(run.regs)
             last = b.insns[-1]
             carried = run.flags if last.mnemonic in JCC else None
-        used = {lab for lab in self.labels if any(f"goto L{lab:X};" in line for line in body)}
-        body = [
-            line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
-        ]
-        ret = (self.ret_type(blocks, order) if self.narrow else "int") if sig.returns else "void"
-        params += [f"p{n + 5}" for n in range(sig.nstack)]
-        args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
-        name = self.exe.symbols.c_name(self.row.start)
-        decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
-        # Nearest the entry first: a frame of one size puts the first declared highest (probe M2).
-        slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
-        decls += [f"    {t} {n};" for n, t in slots]
-        lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
-        if decls:
-            lines.append("")
-        lines += [("    " + line if not line.endswith(":;") else line) for line in body]
-        lines.append("}")
-        return "\n".join(lines) + "\n"
+        return body
+
+    # -- address-taken slots --
+
+    def array_at(self, off: int) -> int | None:
+        """The address-taken slot whose array holds the frame offset `off`, if any: an array runs
+        to the next address-taken slot or the frame's end, because no single access shows its
+        extent."""
+        below = [t for t in self.taken if t <= off]
+        return max(below) if below and off < self.frame_top else None
+
+    def array_dims(self) -> dict[str, str]:
+        edges = sorted(self.taken) + [self.frame_top]
+        return {_slot_name(a): f"[{b - a}]" for a, b in itertools.pairwise(edges)}
 
 
 class Block_:
@@ -658,19 +685,45 @@ class Block_:
             return None
         return self.lf.fix.get(ci.address + offset)
 
-    def slot(self, ci, op) -> tuple[str, int]:
+    def take(self, off: int) -> str:
+        """The array local at the frame offset `off`, noted for the run that declares it."""
+        if not self.lf.esp0 <= off < self.lf.frame_top:
+            raise Unliftable("stack: address outside the frame")
+        self.lf.taken.add(off)
+        return _slot_name(off)
+
+    def slot(self, ci, op, signed: bool) -> E:
+        """The C lvalue for an esp-based operand: a parameter, a scalar local, or a typed access
+        through the array that holds it."""
         m = op.mem
-        if m.index:
-            raise Unliftable("stack: indexed slot")
         off = self.esp + m.disp
+        if m.index:
+            self.take(off)
+        base = self.lf.array_at(off)
+        if base is not None:
+            return self.element(ci, op, base, off, signed)
         if off >= 4:
             n = (off - 4) // 4
             if (off - 4) % 4 or n >= self.lf.sig.nstack:
                 raise Unliftable("stack: slot above the frame that is no parameter")
-            return f"r_p{n + 5}", 0
+            return var(f"r_p{n + 5}", 4, signed)
         if off >= 0:
             raise Unliftable("stack: return address slot")
-        return f"s_{-off:x}", op.size
+        name = _slot_name(off)
+        self.lf.locals.setdefault(name, SIZE_TYPE[op.size, signed])
+        return var(name, op.size, signed)
+
+    def element(self, ci, op, base: int, off: int, signed: bool) -> E:
+        """The access `op` makes at `off`, inside the array at `base`."""
+        m, size = op.mem, op.size
+        array = var(_slot_name(base))
+        if not m.index:
+            return load(binop("+", array, const(off - base)), size, signed)
+        i = self.get(ci.reg_name(m.index))
+        if m.scale == size:
+            t = SIZE_TYPE[size, signed]
+            return E(f"(({t} *){array.text})[{i}]", pure=False, size=size, signed=signed)
+        return load(binop("+", array, binop("*", i, const(m.scale))), size, signed)
 
     def read(self, ci, op, signed: bool = True) -> E:
         if op.type == X86_OP_REG:
@@ -682,10 +735,7 @@ class Block_:
             return const(op.imm)
         if op.type == X86_OP_MEM:
             if op.mem.base and ci.reg_name(op.mem.base) == "esp":
-                name, size = self.slot(ci, op)
-                if size:
-                    self.lf.locals.setdefault(name, SIZE_TYPE[size, signed])
-                return var(name, size or 4, signed)
+                return self.slot(ci, op, signed)
             return self.lvalue(ci, op, signed)
         raise Unliftable("operand: unknown")
 
@@ -695,11 +745,8 @@ class Block_:
             return
         if op.type == X86_OP_MEM:
             if op.mem.base and ci.reg_name(op.mem.base) == "esp":
-                name, size = self.slot(ci, op)
-                if size:
-                    self.lf.locals.setdefault(name, SIZE_TYPE[size, True])
                 self.flush(ci)
-                self.out.append(f"{name} = {e};")
+                self.out.append(f"{self.slot(ci, op, True)} = {e};")
                 return
             self.flush(ci)
             target = self.lvalue(ci, op, e.signed)
@@ -735,7 +782,9 @@ class Block_:
             elif mn == "pop":
                 self.esp += 4
             return
-        if mn == "mov":
+        if mn == "mov" and ops[1].type == X86_OP_REG and ci.reg_name(ops[1].reg) == "esp":
+            self.write(ci, ops[0], E(f"(int){self.take(self.esp)}", atom=True))
+        elif mn == "mov":
             self.write(ci, ops[0], self.read(ci, ops[1], ops[1].size == 4))
         elif mn in ("movsx", "movzx"):
             signed = mn == "movsx"
@@ -744,9 +793,12 @@ class Block_:
                 src = cast(SIZE_TYPE[ops[1].size, signed], src, ops[1].size, signed)
             self.write(ci, ops[0], E(src.text, src.atom, src.pure, src.const, ops[1].size, signed))
         elif mn == "lea":
-            if ops[1].mem.base and ci.reg_name(ops[1].mem.base) == "esp":
-                raise Unliftable("lea: address of a stack slot")
             m = ops[1].mem
+            if m.base and ci.reg_name(m.base) == "esp":
+                if m.index:
+                    raise Unliftable("lea: indexed stack address")
+                self.write(ci, ops[0], E(f"(int){self.take(self.esp + m.disp)}", atom=True))
+                return
             if (
                 m.index
                 and not m.base
@@ -976,6 +1028,10 @@ class Block_:
 
 def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
+
+
+def _slot_name(off: int) -> str:
+    return f"s_{-off:x}"
 
 
 def _reach(name: str, size: int) -> int:

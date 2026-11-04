@@ -188,3 +188,89 @@ def test_arithmetic_on_a_high_byte_stays_in_that_byte():
     # add ah, 1; ret
     text = lift.lift_row(stub_exe("80c401 c3"), VA)
     assert "(r_eax & 0xffff00ff) | (((((r_eax >> 8) & 255) + 1) & 255) << 8)" in text
+
+
+# ---- stack structs ----
+
+FRAME = "83ec10"  # sub esp, 10h
+UNFRAME = "83c410 c3"  # add esp, 10h; ret
+
+
+def in_frame(code: str) -> str:
+    return lift.lift_row(stub_exe(f"{FRAME} {code} {UNFRAME}"), VA)
+
+
+def test_esp_read_is_the_address_of_the_lowest_local():
+    # mov eax, esp
+    text = in_frame("89e0")
+    assert "char s_10[16];" in text
+    assert "return (int)s_10;" in text
+
+
+def test_lea_of_a_stack_slot_makes_a_memory_local():
+    # lea eax, [esp + 8]; mov [esp + 8], edx; mov edx, [esp + 0Ch]; add eax, edx
+    text = in_frame("8d442408 89542408 8b54240c 01d0")
+    assert "char s_8[8];" in text
+    assert "*(int *)s_8 = r_edx;" in text
+    assert "(int)s_8" in text
+    assert "*(int *)(s_8 + 4)" in text
+
+
+def test_a_word_inside_an_array_reads_at_its_own_width():
+    # lea eax, [esp + 8]; movsx eax, word ptr [esp + 0Ah]
+    assert "*(short *)(s_8 + 2)" in in_frame("8d442408 0fbf44240a")
+
+
+def test_an_array_runs_to_the_next_address_taken_slot():
+    # lea eax, [esp + 4]; lea edx, [esp + 8]; add eax, edx
+    text = in_frame("8d442404 8d542408 01d0")
+    assert "char s_c[4];" in text
+    assert "char s_8[8];" in text
+
+
+def test_an_array_found_late_still_covers_an_earlier_access():
+    # mov [esp + 0Ch], edx; lea eax, [esp + 8]: the store comes first, and is still inside it
+    assert "*(int *)(s_8 + 4) = r_edx;" in in_frame("8954240c 8d442408")
+
+
+def test_a_slot_below_every_array_stays_a_scalar():
+    # mov [esp], edx; lea eax, [esp + 8]; add eax, [esp]
+    text = in_frame("891424 8d442408 030424")
+    assert "int s_10;" in text
+    assert "s_10 = r_edx;" in text
+
+
+def test_indexed_slot_reads_through_the_local():
+    # mov eax, [esp + ecx*4 + 8]
+    text = in_frame("8b448c08")
+    assert "char s_8[8];" in text
+    assert "return ((int *)s_8)[r_ecx];" in text
+
+
+def test_indexed_slot_writes_through_the_local():
+    # mov [esp + ecx*4 + 8], eax
+    assert "((int *)s_8)[r_ecx] = r_eax;" in in_frame("89448c08")
+
+
+def test_an_indexed_slot_of_another_scale_is_an_address():
+    # mov eax, [esp + ecx*2 + 8]
+    assert "*(int *)(s_8 + (r_ecx * 2))" in in_frame("8b444c08")
+
+
+def test_a_store_through_the_array_keeps_its_order_with_a_read():
+    # lea ecx, [esp + 8]; mov eax, [esp + 8]; mov [ecx], edx: eax must not read after the store
+    text = in_frame("8d4c2408 8b442408 8911")
+    assert text.index("r_eax = *(int *)s_8;") < text.index("= r_edx;")
+
+
+def test_a_row_with_no_address_taken_keeps_its_scalars():
+    # mov [esp + 8], eax; mov eax, [esp + 8]
+    text = in_frame("89442408 8b442408")
+    assert "int s_8;" in text
+    assert "char" not in text
+
+
+def test_an_address_outside_the_frame_refuses():
+    # push eax; mov edx, esp; pop eax; ret: this esp is the pushed value, below the frame
+    with pytest.raises(lift.Unliftable, match="stack: address outside the frame"):
+        lift.lift_row(stub_exe("50 89e2 58 c3"), VA)
