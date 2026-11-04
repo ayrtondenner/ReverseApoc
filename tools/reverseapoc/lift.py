@@ -51,6 +51,7 @@ HIGH_BYTES = frozenset(name for name, (_, size) in SUB.items() if size < 0)
 HIGH_SHIFT = 8
 BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
+TABLE_ENTRY = 4  # a jump table's entry: one off32 fixup
 SIZE_TYPE = {
     (1, True): "signed char",
     (1, False): "unsigned char",
@@ -193,6 +194,8 @@ class Lifter:
         self.taken: set[int] = set()  # the slots whose address the row takes, by frame offset
         self.out: list[str] = []
         self.labels: set[int] = set()
+        self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
+        self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
 
     # -- decoding and frame --
 
@@ -298,10 +301,13 @@ class Lifter:
             raise Unliftable("jump: indirect (switch table)")
         return self.row.start <= va < self.row.end
 
-    def _is_code(self, va: int) -> bool:
+    def _row_holding(self, va: int) -> FunctionRow | None:
         starts, rows = _index(self.exe)[1:]
         k = bisect.bisect_right(starts, va) - 1
-        return k >= 0 and rows[k].start <= va < rows[k].end
+        return rows[k] if k >= 0 and rows[k].start <= va < rows[k].end else None
+
+    def _is_code(self, va: int) -> bool:
+        return self._row_holding(va) is not None
 
     def callee(self, va: int) -> tuple[str, Sig]:
         row = _index(self.exe)[0].get(va)
@@ -333,9 +339,61 @@ class Lifter:
             return 4
         return max(sig.nregs if sig else 0, _evidence(insns, ci))
 
+    # -- switch tables --
+
+    def table_start(self, ci) -> int | None:
+        """Where the table of `jmp [index*4 + table]` starts, when a data-in-code row holds it."""
+        if ci.mnemonic != "jmp" or ci.operands[0].type != X86_OP_MEM:
+            return None
+        m = ci.operands[0].mem
+        fx = self.fix.get(ci.address + ci.disp_offset) if ci.disp_offset else None
+        if fx is None or m.base or not m.index or m.scale != TABLE_ENTRY:
+            return None
+        row = self._row_holding(fx.target_va)
+        return fx.target_va if row is not None and row.kind == KIND_DATA_IN_CODE else None
+
+    def table_cases(self, start: int, end: int) -> dict[int, int]:
+        """{case: target} from the off32 fixups of [start, end). Empty when a field there is no
+        entry: sizes and places come from the binary, so a bent table is no table."""
+        fields = _fixup_index(self.exe).overlapping(start, end)
+        if any(fx.size != TABLE_ENTRY or (fx.src_va - start) % TABLE_ENTRY for fx in fields):
+            return {}
+        return {(fx.src_va - start) // TABLE_ENTRY: fx.target_va for fx in fields}
+
+    def find_tables(self, insns) -> None:
+        """Fill `tables` and `guards`. A table runs to the next table of this row or to the end
+        of the row that holds it: one data-in-code row can hold several."""
+        heads = {ci.address: self.table_start(ci) for ci in insns}
+        heads = {address: start for address, start in heads.items() if start is not None}
+        self.tables, self.guards = {}, {}
+        for k, ci in enumerate(insns):
+            start = heads.get(ci.address)
+            if start is None:
+                continue
+            later = [s for s in heads.values() if s > start]
+            cases = self.table_cases(start, min([*later, self._row_holding(start).end]))
+            if cases:
+                self.tables[ci.address] = cases
+                guard = self.table_guard(insns, k)
+                if guard is not None:
+                    self.guards[ci.address] = guard
+
+    def table_guard(self, insns, k: int):
+        """The `cmp r, imm; ja` closing the block before the table jump insns[k], if there is
+        one: Watcom writes that compare for a switch with a `default:`."""
+        for n in range(k - 1, 0, -1):
+            ci = insns[n]
+            if not (ci.group(1) or ci.group(3) or ci.mnemonic == "call"):
+                continue
+            before = insns[n - 1]
+            bounded = before.mnemonic == "cmp" and before.operands[1].type == X86_OP_IMM
+            return ci if ci.mnemonic == "ja" and bounded and not self._tail_jump(ci) else None
+        return None
+
     # -- CFG and liveness --
 
     def blocks(self, insns, strict: bool = True):
+        self.find_tables(insns)
         starts = {insns[0].address}
         for k, ci in enumerate(insns):
             if ci.group(1) or ci.group(3):  # jump / ret
@@ -344,7 +402,8 @@ class Lifter:
                 if ci.group(1):
                     t = _branch_target(ci)
                     if t is None:
-                        if strict:
+                        starts.update(self.tables.get(ci.address, {}).values())
+                        if strict and ci.address not in self.tables:
                             raise Unliftable("jump: indirect (switch table)")
                         continue
                     if not (self.row.start <= t < self.row.end):
@@ -363,6 +422,10 @@ class Lifter:
             if last.group(1):
                 t = _branch_target(last)
                 if t is not None and self.row.start <= t < self.row.end:
+                    if t not in blocks:
+                        raise Unliftable("jump: into an instruction")
+                    b.succ.append(t)
+                for t in dict.fromkeys(self.tables.get(last.address, {}).values()):
                     if t not in blocks:
                         raise Unliftable("jump: into an instruction")
                     b.succ.append(t)
@@ -524,7 +587,7 @@ class Lifter:
         self.locals = {_slot_name(off): "char" for off in self.taken}
         end_state: dict[int, dict] = {}
         body: list[str] = []
-        targets = {t for b in blocks.values() for t in b.succ[:1] if b.insns[-1].group(1)}
+        targets = {t for b in blocks.values() if b.insns[-1].group(1) for t in self.jumped_to(b)}
         carried = None
         for s in order:
             b = blocks[s]
@@ -541,6 +604,10 @@ class Lifter:
             last = b.insns[-1]
             carried = run.flags if last.mnemonic in JCC else None
         return body
+
+    def jumped_to(self, b) -> list[int]:
+        """The successors the jump closing `b` reaches, past any fall through."""
+        return b.succ if b.insns[-1].address in self.tables else b.succ[:1]
 
     # -- address-taken slots --
 
@@ -838,6 +905,8 @@ class Block_:
             self.divide(ci, mn, ops)
         elif mn == "call":
             self.call(ci, k)
+        elif mn == "jmp" and ci.address in self.lf.tables:
+            self.switch(ci)
         elif mn == "jmp":
             t = _branch_target(ci)
             if not self.lf.in_row(t):
@@ -946,7 +1015,27 @@ class Block_:
         self.write(ci, ops[0], e)
         self.flags = ("res", e)
 
+    def switch(self, ci) -> None:
+        """A table jump: one `case` per entry, and the guard's target as the `default:`."""
+        self.flush(ci)
+        cases = self.lf.tables[ci.address]
+        merged = [t for t in cases.values() if t in self.lf.merge]
+        live = set().union(*(self.lf.live_in[t] for t in merged))
+        for r in sorted(live & set(GP)):
+            if r in self.regs:
+                self.assign(r, self.regs[r])
+        self.out.append(f"switch ({self.get(ci.reg_name(ci.operands[0].mem.index))}) {{")
+        self.out += [f"case {k}: goto L{t:X};" for k, t in cases.items()]
+        guard = self.lf.guards.get(ci.address)
+        if guard is not None:
+            self.out.append(f"default: goto L{_branch_target(guard):X};")
+        self.out.append("}")
+
     def jcc(self, ci, mn) -> None:
+        if any(guard.address == ci.address for guard in self.lf.guards.values()):
+            self.flush(ci)
+            self.end_assign_jump(ci)  # its test is the switch's own: the compiler writes it again
+            return
         c = self.cond(mn)
         t = _branch_target(ci)
         if not self.lf.in_row(t):

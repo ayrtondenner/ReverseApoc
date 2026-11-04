@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import pytest
 
 from reverseapoc import lift
-from reverseapoc.functions import FunctionRow
+from reverseapoc.functions import KIND_DATA_IN_CODE, FunctionRow
 from reverseapoc.le import Fixup
 
 VA = 0x1000
@@ -364,3 +364,169 @@ def test_sbb_after_a_result_keeps_its_refusal():
     # add eax, edx; sbb ecx, ecx; mov eax, ecx; ret. The carry of an add is not a compare.
     with pytest.raises(lift.Unliftable, match="op: sbb"):
         lift.lift_row(stub_exe("01d0 19c9 89c8 c3"), VA)
+
+
+# ---- switch tables ----
+
+TABLE_AT = VA - 0x40  # the data-in-code row, right before the function as Watcom lays it out
+
+
+def table_jump(register: int = 0, table: int = TABLE_AT) -> str:
+    """`jmp dword ptr cs:[reg*4 + table]`, the form the game's -4r code has."""
+    sib = 0x85 | register << 3
+    return f"2eff24{sib:02x}" + table.to_bytes(FIELD_SIZE, "little").hex()
+
+
+JUMP_SIZE = len(bytes.fromhex(table_jump()))
+JUMP_FIELD = JUMP_SIZE - FIELD_SIZE  # the displacement closes the instruction
+
+
+def with_table(exe: StubExe, entries: tuple[int, ...], jump_at: int, start: int = TABLE_AT):
+    """`exe` with a data-in-code row at `start` holding `entries` as off32 fixups, and the fixup
+    on the displacement of the jump at `jump_at`."""
+    end = start + FIELD_SIZE * len(entries)
+    table = FunctionRow(start, end, "table", KIND_DATA_IN_CODE, "u_stub", "test")
+    fields = tuple(
+        data_fixup(start + FIELD_SIZE * n, target) for n, target in enumerate(entries)
+    )
+    fixups = (*exe.fixups, data_fixup(jump_at + JUMP_FIELD, start), *fields)
+    return StubExe(exe.flat, (table, *exe.rows), fixups, exe.symbols)
+
+
+# cmp eax, 1; ja DEFAULT; jmp [eax*4 + table]; each target then returns its own constant
+GUARDED = f"83f801 7708 {table_jump()} b801000000 c3 b802000000 c3 b803000000 c3"
+GUARD_JUMP = VA + 5
+CASE_0 = GUARD_JUMP + JUMP_SIZE
+CASE_1 = CASE_0 + 6
+DEFAULT = CASE_1 + 6
+
+
+def test_switch_table_lifts_to_a_switch():
+    exe = with_table(stub_exe(GUARDED.replace("7708", f"77{DEFAULT - GUARD_JUMP:02x}")),
+                     (CASE_0, CASE_1), GUARD_JUMP)  # fmt: skip
+    text = lift.lift_row(exe, VA)
+    assert "switch (r_eax) {" in text
+    assert f"case 0: goto L{CASE_0:X};" in text
+    assert f"case 1: goto L{CASE_1:X};" in text
+    assert f"default: goto L{DEFAULT:X};" in text
+    assert "if (" not in text  # the guard is the default, not a test of its own
+
+
+def test_a_switch_with_no_guard_has_no_default():
+    # jmp [eax*4 + table]; two targets that return
+    code = f"{table_jump()} b801000000 c3 b802000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (VA + JUMP_SIZE, VA + JUMP_SIZE + 6), VA), VA)
+    assert "switch (r_eax) {" in text
+    assert "default:" not in text
+
+
+def test_a_guard_some_instructions_before_the_jump_still_folds():
+    # cmp eax, 1; ja DEFAULT; and eax, 0FFFFh; jmp [eax*4 + table]
+    mask = "25ffff0000"
+    jump_at = VA + 5 + 5
+    first = jump_at + JUMP_SIZE
+    default = first + 6
+    code = f"83f801 77{default - (VA + 5):02x} {mask} {table_jump()} b801000000 c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first, first), jump_at), VA)
+    assert f"default: goto L{default:X};" in text
+    assert "switch (r_eax & 65535) {" in text
+    assert "if (" not in text
+
+
+def test_a_ja_with_no_compare_stays_a_branch():
+    # test eax, eax; ja DEFAULT; jmp [eax*4 + table]: this `ja` bounds nothing
+    jump_at = VA + 4
+    first = jump_at + JUMP_SIZE
+    default = first + 6
+    code = f"85c0 77{default - jump_at:02x} {table_jump()} b801000000 c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first,), jump_at), VA)
+    assert f"goto L{default:X};" in text
+    assert "if (" in text
+    assert "default:" not in text
+
+
+def test_two_tables_of_one_row_each_end_where_the_next_starts():
+    # test ecx, ecx; je SECOND; jmp [eax*4 + first]; A; SECOND: jmp [edx*4 + second]; B
+    second_table = TABLE_AT + FIELD_SIZE * 2
+    first_jump = VA + 4
+    target_a = first_jump + JUMP_SIZE
+    second_jump = target_a + 6
+    target_b = second_jump + JUMP_SIZE
+    code = (f"85c9 74{second_jump - first_jump:02x} {table_jump()} b801000000 c3 "
+            f"{table_jump(2, second_table)} b802000000 c3")  # fmt: skip
+    exe = with_table(stub_exe(code), (target_a, target_a, target_b, target_b), first_jump)
+    field = data_fixup(second_jump + JUMP_FIELD, second_table)
+    exe = StubExe(exe.flat, exe.rows, (*exe.fixups, field), exe.symbols)
+    text = lift.lift_row(exe, VA)
+    assert text.count("switch (") == 2
+    assert text.count("case 0:") == 2
+    assert text.count("case 1:") == 2
+    assert "case 2:" not in text
+
+
+def test_an_indirect_jump_with_no_table_row_refuses():
+    # jmp [eax*4 + table], its displacement naming a game row
+    code = f"{table_jump(table=VA + ROW_SPACING)} c3"
+    exe = stub_exe(code, "c3", fixups=(data_fixup(VA + JUMP_FIELD, VA + ROW_SPACING),))
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        lift.lift_row(exe, VA)
+
+
+def test_an_indirect_jump_with_no_fixup_refuses():
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        lift.lift_row(stub_exe(f"{table_jump()} c3"), VA)
+
+
+def test_a_table_jump_of_another_scale_refuses():
+    # jmp [eax*2 + table]: no table of dwords is read this way
+    code = "2eff2445" + TABLE_AT.to_bytes(FIELD_SIZE, "little").hex() + " c3"
+    exe = with_table(stub_exe(code), (VA + JUMP_SIZE,), VA)
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        lift.lift_row(exe, VA)
+
+
+def test_a_table_whose_fields_are_not_dwords_in_step_refuses():
+    # one entry, then a field two bytes on: the row cannot be a table of dwords
+    target = VA + JUMP_SIZE
+    exe = with_table(stub_exe(f"{table_jump()} c3"), (target, target), VA)
+    bent = data_fixup(TABLE_AT + 2, target)
+    exe = StubExe(exe.flat, exe.rows, (*exe.fixups, bent), exe.symbols)
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        lift.lift_row(exe, VA)
+
+
+def test_a_case_inside_an_instruction_is_unliftable():
+    exe = with_table(stub_exe(f"{table_jump()} b801000000 c3"), (VA + JUMP_SIZE + 1,), VA)
+    with pytest.raises(lift.Unliftable, match="jump: into an instruction"):
+        lift.lift_row(exe, VA)
+
+
+def test_a_case_outside_the_row_is_unliftable():
+    exe = with_table(stub_exe(f"{table_jump()} c3", "c3"), (VA + ROW_SPACING,), VA)
+    with pytest.raises(lift.Unliftable, match="jump: into an instruction"):
+        lift.lift_row(exe, VA)
+
+
+def test_a_register_a_case_reads_is_an_argument():
+    # jmp [eax*4 + table]; mov eax, edx; ret: edx is read only past the jump
+    exe = with_table(stub_exe(f"{table_jump()} 89d0 c3"), (VA + JUMP_SIZE,), VA)
+    assert lift.Lifter(exe, exe.rows[1]).signature().nregs == 2
+
+
+def test_a_register_live_into_a_merged_case_is_assigned_before_the_switch():
+    # mov ecx, 5; jmp [eax*4 + table]; A: inc ecx; B: mov eax, ecx; ret. B has two ways in.
+    jump_at = VA + 5
+    first = jump_at + JUMP_SIZE
+    code = f"b905000000 {table_jump()} 41 89c8 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first, first + 1), jump_at), VA)
+    assert text.index("r_ecx = 5;") < text.index("switch (")
+
+
+def test_a_case_never_inherits_the_flags_of_the_block_above_it():
+    # jmp [eax*4 + table]; A: test eax, eax; je +0; B: jne: B is entered from the table too
+    first = VA + JUMP_SIZE
+    second = first + 4
+    code = f"{table_jump()} 85c0 7400 7500 c3"
+    exe = with_table(stub_exe(code), (first, second), VA)
+    with pytest.raises(lift.Unliftable, match="jcc: no flag source"):
+        lift.lift_row(exe, VA)
