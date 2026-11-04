@@ -680,7 +680,7 @@ class Block_:
         self.flags: tuple | None = None
         self.esp = lf.esp0
         self.pushes: list[E] = []
-        self.k = 0  # the place of `cur` in this block
+        self.k = 0  # the place in this block of the instruction being run
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
         self.fcompare: tuple | None = None  # the last x87 compare, for `fnstsw ax`
         self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
