@@ -183,11 +183,11 @@ def test_search_bad_address_is_a_tool_error(tmp_path, capsys, no_load):
 # ---- the verb -----------------------------------------------------------------------------------
 
 
-def _cli(tmp_path, monkeypatch) -> int:
-    """`reverseapoc search` on TEXT, the EXE loader stubbed, under a one-rule cflags file."""
+def _cli(tmp_path, monkeypatch, text: str = TEXT) -> int:
+    """`reverseapoc search` on `text`, the EXE loader stubbed, under a one-rule cflags file."""
     monkeypatch.setattr(batch, "load_exe_inputs", lambda *_args, **_kwargs: _exe())
     source = tmp_path / "f.c"
-    source.write_text(TEXT, encoding="ascii")
+    source.write_text(text, encoding="ascii")
     cflags = tmp_path / "cflags.txt"
     cflags.write_text("*  wcc386@10.6  -4r -s -fpi\n", encoding="ascii")
     return main(["search", "ufo2p", ADDRESS, str(source), "--cflags", str(cflags)])
@@ -952,17 +952,21 @@ INITIALIZED = """int func_00010000(int a)
 }
 """
 INITIALIZERS_SWAPPED = "    int c = h(a);\n    int b = g(a);\n"
+NOTHING_COMPARED = batch.SlotMap((), True, 0, 0)  # so the declaration axis keeps its plain moves
 
 
-def test_reordered_initializers_are_dropped_unless_exact(stubs):
+def test_reordered_initializers_are_dropped_unless_exact(monkeypatch, stubs):
     """D-26's rule, reached through the declaration axis: not the result, whatever its score."""
+    _map_is(monkeypatch, NOTHING_COMPARED)
     stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(99.0, 99.0)})
     result = _run(INITIALIZED)
     assert _best(result) == INITIALIZED
     assert result.axes == ()
+    assert any(INITIALIZERS_SWAPPED in job.src.read_text(encoding="ascii") for job in stubs.jobs)
 
 
-def test_reordered_initializers_that_are_exact_are_kept(stubs):
+def test_reordered_initializers_that_are_exact_are_kept(monkeypatch, stubs):
+    _map_is(monkeypatch, NOTHING_COMPARED)
     stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(exact=True)})
     result = _run(INITIALIZED)
     assert result.exact is True
@@ -1151,7 +1155,7 @@ def test_a_unit_already_on_the_search_cell_has_no_queue_path(monkeypatch, repo):
 
 
 TAKEN = ("int b;", "int c;", "int d;", "", "take(&b, &c, &d);", "return a;")
-# Slots 0xC and 0x10 are mismatched, and TEXT's and SCALAR_TEXT's memory locals end below them.
+# Slots 0xC and 0x10 are mismatched, and SCALAR_TEXT's one memory local ends below them.
 SCALAR_MAP = batch.SlotMap(((0, 0), (0xC, 0x10), (0x10, 0xC)), True, 0x14, 0x14)
 SCALAR_LINES = ("int b;", "int c;", "int d;", "int e;", "", "take(&b);", "c = a + 1;", "d = c + 1;",
                 "e = d + 1;", "return e;")  # fmt: skip
@@ -1210,8 +1214,10 @@ def test_a_bitwise_and_takes_no_address(use):
 
 
 @pytest.mark.parametrize(
-    "use", ["take(&b);", "p = &b;", "take(a, &b);", "take(&b.x);", "return &b;", "take(*&b);"]
-)
+    "use",
+    ["take(&b);", "p = &b;", "take(a, &b);", "take(&b.x);", "return &b;", "take(*&b);",
+     "take((char *)&b);", "take((struct pos *) &b);", "take((u32)&b);", "take((int)&b);"],
+)  # fmt: skip
 def test_a_unary_and_takes_the_address(use):
     assert [local.name for local in _locals_of("int b;", "", use)] == ["b"]
 
@@ -1260,7 +1266,7 @@ def test_declaration_axis_yields_nothing_when_the_slots_agree():
 
 def test_declaration_axis_yields_nothing_when_size_rules_the_target_out():
     lines = ("int b;", "short c;", "", "take(&b, &c);", "return a;")
-    assert _axis(_body(*lines), _pairs((0, 4), (4, 0))) == []
+    assert _axis(_body(*lines), batch.SlotMap(((0, 4), (4, 0)), True, 8, 8)) == []
 
 
 def test_declaration_axis_tags_a_computed_order_that_moves_an_initializer():
@@ -1281,6 +1287,24 @@ def test_declaration_axis_falls_back_when_the_order_is_not_known():
     """Two 8-byte arrays beside an int: the probe found no rule, so plan 1's moves stand."""
     text = _body("int v[2];", "int w[2];", "int b;", "", "take(v, w, &b);", "return a;")
     assert _axis(text, _pairs((0, 8), (8, 0))) == _plan_1_moves(text)
+
+
+def test_declaration_axis_computes_for_small_locals_when_nothing_spilled():
+    lines = ("short b;", "short d;", "", "take(&b, &d);", "return a;")
+    (move,) = _axis(_body(*lines), batch.SlotMap(((0, 4), (4, 0)), True, 8, 8))
+    assert move.text == _body("short d;", "short b;", *lines[2:])
+
+
+def test_declaration_axis_falls_back_for_small_locals_beside_spills():
+    """Spills push a short up the frame, and the model has no offset for that."""
+    text = _body("short b;", "short d;", "", "take(&b, &d);", "return a;")
+    assert _axis(text, batch.SlotMap(((0, 4), (4, 0)), True, 0xC, 0xC)) == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_beside_a_plain_small_local():
+    """A spilled short can move with its declaration (pr_spill_short), so nothing is skipped."""
+    text = _body("int b;", "int d;", "short s;", "", "take(&b, &d);", "return s;")
+    assert _axis(text, _pairs((0, 4), (4, 0))) == _plan_1_moves(text)
 
 
 def test_declaration_axis_falls_back_when_no_slot_was_compared():
@@ -1314,9 +1338,16 @@ def test_scalars_are_not_reported_when_a_size_is_unknown(monkeypatch, stubs):
     assert _run(text.replace("int f(", f"int {A1}(")).scalars == ()
 
 
+def test_scalars_are_not_reported_beside_a_plain_small_local(monkeypatch, stubs):
+    """Declarations may reach that slot, so saying they cannot would be wrong."""
+    _map_is(monkeypatch, SCALAR_MAP)
+    text = _body("int b;", "short s;", "", "take(&b);", "return s;")
+    assert _run(text.replace("int f(", f"int {A1}(")).scalars == ()
+
+
 def test_search_prints_which_slots_hold_scalars(tmp_path, monkeypatch, capsys, stubs):
     _map_is(monkeypatch, SCALAR_MAP)
-    assert _cli(tmp_path, monkeypatch) == 1
+    assert _cli(tmp_path, monkeypatch, SCALAR_TEXT) == 1
     (line,) = [one for one in capsys.readouterr().out.splitlines() if one.startswith("scalars:")]
     assert line == "scalars: slots 0xc, 0x10; declaration moves cannot reach them"
 

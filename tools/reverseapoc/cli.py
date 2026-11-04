@@ -1267,6 +1267,9 @@ def _run_search(args: argparse.Namespace) -> int:
     for ours, theirs in slots.pairs:
         if ours != theirs:
             print(f"slot {ours:#x} -> {theirs:#x}")
+    if result.scalars:
+        held = ", ".join(f"{slot:#x}" for slot in result.scalars)
+        print(f"scalars: slots {held}; declaration moves cannot reach them")
     return 0 if result.exact else 1
 
 

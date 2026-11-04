@@ -94,6 +94,34 @@ What the table says, and where it differs from 04-RESEARCH Pattern 6:
   requests a CLIB library (clib3r or clib3s), so the research's "`-5s` gives clib3s" does not
   show here. The probe calls no CLIB function, which may be why; this was not tested.
 
+## Stack slots (Phase 7.1)
+
+`cg_slots.c` measures the frame of wcc386 10.6 under `-4r -s -fpi` and `-4r -oneatx -s -fpi`, and `tools/reverseapoc/slots.py` is the model it calibrates (D-02). No game code and no matched row is an input. `tests/test_slots_real.py` compiles it through `batch.compile_batch` and reads each local's offset from a marker constant.
+
+It stays out of `probe.PROBE_SOURCES`, and neither cell joins `probe.FLAG_SETS`: `calibrate` sums over both, so adding either would change the Phase 4 table above.
+
+| Functions | Construct | What they measure |
+|---|---|---|
+| `pr_slot_same_size`, `pr_slot_bytes`, `pr_slot_shorts` | ties of one size, each with a `_rev` twin | M2: the first declared sits highest |
+| `pr_slot_mixed`, `pr_slot_array`, `pr_slot_struct`, `pr_slot_odd`, each with a `_rev` twin | distinct sizes | M1 and M3: the largest lowest, by total size, each padded to 4, whatever the declaration order |
+| `pr_slot_unaligned` | `char[12]`, `double`, `int` | nothing aligns past 4: the double sits at 0xC |
+| `pr_slot_flat`, `pr_slot_scope`, `pr_slot_scope_pairs` | three ints flat and in nested blocks | M4: an earlier block sits lower, the first declared of a block highest, and the frame stays 0xC |
+| `pr_slot_siblings`, `pr_slot_block_order` | sibling blocks | M4: siblings share nothing, and the key is the place of the block in the source, not its depth |
+| `pr_slot_unused` | locals nothing uses | they take no slot, an array included |
+| `pr_tie_*` | ties the model refuses | where M2 and M4 stop: each is proven to leave declaration order, and M1 and M3 still hold |
+| `pr_spill_decl`, `_decl_rev`, `_scoped` | eight values live across calls | M5: declaration and scope leave the code identical |
+| `pr_spill_assign`, `_use`, `_type`, `_loop`, `_loop_late` | one change each | M5: assignment order, use order, type and loop weight change the code |
+| `pr_spill_short`, `_short_rev` | shorts spilled beside a short in memory | the exception to M5: declarations move them under `-oneatx` |
+| `pr_spill_memory`, `pr_spill_small` | spills beside memory locals | a spill sorts by size: above an int or an array, below a short |
+
+What it measured, and where that differs from the preview in 07.1-RESEARCH:
+
+- **M1 and M3 always held,** ties or not, in both cells.
+- **M2 is narrower than the preview.** A tie follows declaration order only when the whole frame has that one size, of 1, 2 or 4 bytes, or, for ints, across blocks. `int[2]` ties are not reversed even alone (`pr_tie_three`); a pair of them flips beside one `int` (`pr_tie_pair`); plain ints flip beside larger locals (`pr_tie_small`); `int a; int b; short c; short d;` reverses the ints and not the shorts (`pr_tie_sizes`). A local outside a tie changes it (`pr_tie_three_int`), so these orders are not a table by count. Common sort algorithms, tried against the counts up to 13, did not reproduce them, and `slots.order_is_known` refuses them.
+- **M4's key is the block's place in the source,** not its depth, and it holds for ints only: chars and shorts do not follow their blocks (`pr_tie_scope_shorts`).
+- **M5 has one exception** (`pr_spill_short`), and spill slots do not always start at 0: they start above the memory locals of 4 bytes or more.
+- `-4r -s` folds byte-identical functions onto one offset and merges identical tails across functions, so a reader of this object must take a function's end from the next greater public offset, and a shape needs its own tail to keep its markers.
+
 ## Running the calibration
 
 `uv run reverseapoc probe calibrate [--output build/probe/calibration.json]` (plan 04-10); the

@@ -16,6 +16,11 @@ highest (exact, stack_score, score) of its cells. A better variant becomes the b
 starts again from it. A statement-order variant stands only when it is exact: reordering can
 change behaviour, so byte identity is the only evidence for it (D-26).
 
+The declaration axis asks the slot model first (slots.py). Where it knows the order of the memory
+locals it computes the one order the original's slots need, and it moves nothing for the slots
+that hold scalars, which declarations cannot reach; the result names those. Where it cannot say,
+because a size is unknown or a tie has no known order, the plain moves of declaration_moves stand.
+
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). All output lies under build/.
 """
@@ -24,6 +29,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import math
 import random
 import re
 import shutil
@@ -32,7 +38,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import batch, check, contextpack, omf2elf, relocs, unitdefs
+from . import batch, check, contextpack, omf2elf, relocs, slots, unitdefs
 from .cflags import Rule
 from .check import ExeInputs
 from .fileio import write_atomic
@@ -55,6 +61,13 @@ _SAME_TYPE = {"char": "unsigned char", "u8": "unsigned char", "s16": "short",
 TYPE_MOVES = {local: tuple(t for t in _INT_TYPES if t != _SAME_TYPE.get(local, local))
               for local in (*_INT_TYPES, *_SAME_TYPE)}  # fmt: skip
 
+POINTER_SIZE = 4
+_SIZES = {"char": 1, "signed char": 1, "unsigned char": 1, "s8": 1, "u8": 1, "short": 2,
+          "signed short": 2, "unsigned short": 2, "s16": 2, "u16": 2, "int": 4, "signed": 4,
+          "unsigned": 4, "signed int": 4, "unsigned int": 4, "long": 4, "signed long": 4,
+          "unsigned long": 4, "s32": 4, "u32": 4, "float": 4, "double": 8}  # fmt: skip
+_QUALIFIERS = frozenset(("const", "volatile", "register"))
+
 # A declaration line, read on text with its comments and literals blanked. `static` and `extern`
 # locals hold no stack slot, so they are left out by not being specifiers here.
 _SPECIFIER = (r"(?:(?:unsigned|signed|short|long|const|volatile|register|struct|union|enum)\s+)*"
@@ -71,6 +84,11 @@ _BODY_OPEN = re.compile(r"\s*\{")
 _WORD = re.compile(r"[A-Za-z_]\w*")
 _LABEL = re.compile(r"\s*[A-Za-z_]\w*\s*:")
 _ENDS_A_STATEMENT = (";", "{", "}", ":")  # what the line above a statement of its own ends in
+_DIMENSION = re.compile(r"\[([^\]]*)\]")
+# What stands before a unary `&`: an operator, an opening, `return`, or a cast. Anything else
+# leaves a binary `&`, as a name, a `)` or a `]` does.
+_CAST = "|".join(re.escape(spec) for spec in sorted(_SIZES, key=len, reverse=True))
+_BEFORE_ADDRESS = rf"(?:[(,=!?:;{{}}\[+\-*/%|^<>~]|\breturn|\*\s*\)|\(\s*(?:{_CAST})\s*\))"
 
 
 @dataclass(frozen=True)
@@ -91,6 +109,7 @@ class SearchResult:
     compiles: int
     bodies: int  # distinct function bodies judged
     slots: batch.SlotMap  # the winner's best cell against the row
+    scalars: tuple[int, ...]  # the winner's mismatched slots that hold scalars
 
     @property
     def exact(self) -> bool:
@@ -347,6 +366,123 @@ def declaration_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
             yield _declaration_move(moved, rows, initialised)
 
 
+def _size(found: re.Match[str]) -> int | None:
+    """The bytes of the local declared by `found`, or None: a struct, or a size that is not a
+    plain number here."""
+    declarator = found["declarators"].split("=")[0]
+    spec = " ".join(word for word in found["spec"].split() if word not in _QUALIFIERS)
+    element = POINTER_SIZE if "*" in declarator else _SIZES.get(spec)
+    dimensions = _DIMENSION.findall(declarator)
+    if element is None or not all(text.strip().isdecimal() for text in dimensions):
+        return None
+    return math.prod(map(int, dimensions), start=element)
+
+
+def _in_frame(found: re.Match[str], code: Sequence[str], n: int, span: tuple[int, int]) -> bool:
+    """The local declared on line `n` is held in memory: its address is taken, or it is an array
+    something uses (pr_slot_unused: nothing else takes a slot)."""
+    name = _name(found)
+    body = "\n".join(code[span[0] + 1 : span[1]])
+    if re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b", body) is not None:
+        return True
+    word = re.compile(rf"\b{name}\b")
+    others = (code[i] for i in range(span[0] + 1, span[1]) if i != n)
+    return "[" in found["declarators"].split("=")[0] and any(map(word.search, others))
+
+
+def memory_locals(text: str, span: tuple[int, int]) -> tuple[slots.Local, ...]:
+    """The locals inside `span` held in memory, in declaration order: those whose address is taken
+    and the arrays. A size _size cannot read leaves its local out. `text` holds one declarator per
+    line, as split_declarators leaves it."""
+    code = _code(text).split("\n")
+    stacks = _block_stacks(code, span)
+    found_locals = []
+    for n in declarations(text, span):
+        found = _declaration(code[n])
+        size = _size(found)
+        if size is not None and _in_frame(found, code, n, span):
+            scope = stacks[n][-1] if stacks[n] else 0
+            found_locals.append(slots.Local(_name(found), size, scope))
+    return tuple(found_locals)
+
+
+def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -> bool:
+    """A frame can be read from `span`: every local has a size and a name of its own, and none
+    outside `memory` is under a slot, because a spilled short can move with its declaration
+    (pr_spill_short) and then scalars are not out of reach of declaration moves."""
+    code = _code(text).split("\n")
+    found = [_declaration(code[n]) for n in declarations(text, span)]
+    names = [_name(one) for one in found]
+    sizes = [_size(one) for one in found]
+    if len(set(names)) != len(names) or None in sizes:
+        return False
+    held = {local.name for local in memory}
+    return all(size >= slots.SLOT_ALIGN or name in held
+               for name, size in zip(names, sizes, strict=True))  # fmt: skip
+
+
+def _computable(
+    text: str, span: tuple[int, int], memory: Sequence[slots.Local], slot_map: batch.SlotMap
+) -> bool:
+    """The model can place `memory` in this frame: a map to read, every size, a known order, and
+    no spill under a local smaller than a slot, which a spill pushes up the frame."""
+    fits = (all(local.size >= slots.SLOT_ALIGN for local in memory)
+            or slot_map.frame_ours == slots.frame_size(memory))  # fmt: skip
+    return (bool(slot_map.pairs) and _readable(text, span, memory)
+            and slots.order_is_known(memory) and fits)  # fmt: skip
+
+
+def _target(memory: Sequence[slots.Local], slot_map: batch.SlotMap) -> dict[str, int]:
+    """Where the original holds each of `memory`. Any slot of a local places all of it: the map may
+    show only an element of an array. A local the map does not show stays where it is."""
+    layout = slots.frame_layout(memory)
+    target = {}
+    for local in memory:
+        start = layout[local.name]
+        moved = [theirs - ours for ours, theirs in slot_map.pairs
+                 if start <= ours < start + local.size]  # fmt: skip
+        target[local.name] = start + (moved[0] if moved else 0)
+    return target
+
+
+def _ordered(text: str, span: tuple[int, int], order: Sequence[str]) -> Candidate:
+    """`text` with the declarations of `order` standing in that order, on the lines they hold."""
+    lines = text.split("\n")
+    code = _code(text).split("\n")
+    rows = declarations(text, span)
+    held = {_name(_declaration(code[n])): n for n in rows}
+    moved = list(lines)
+    for n, name in zip(sorted(held[name] for name in order), order, strict=True):
+        moved[n] = lines[held[name]]
+    initialised = [lines[n] for n in rows if _initialised(code[n])]
+    return _declaration_move("\n".join(moved), rows, initialised)
+
+
+def declaration_axis(
+    text: str, span: tuple[int, int], slot_map: batch.SlotMap
+) -> Iterator[Candidate]:
+    """The one order the memory locals need, if it differs from theirs; nothing for slots that
+    hold scalars. Where the model cannot place them, declaration_moves stand."""
+    memory = memory_locals(text, span)
+    if not _computable(text, span, memory, slot_map):
+        yield from declaration_moves(text, span)
+        return
+    order = slots.declaration_order(memory, _target(memory, slot_map))
+    if order is not None and order != tuple(local.name for local in memory):
+        yield _ordered(text, span, order)
+
+
+def _scalars(text: str, name: str, slot_map: batch.SlotMap) -> tuple[int, ...]:
+    """The mismatched slots of `slot_map` that hold scalars and that declarations cannot reach.
+    A frame _readable refuses may hold them otherwise, so nothing is said of it."""
+    span = function_span(text, name)
+    memory = memory_locals(text, span)
+    if not _readable(text, span, memory):
+        return ()
+    mismatched = [ours for ours, theirs in slot_map.pairs if ours != theirs]
+    return slots.scalar_slots(memory, mismatched, slot_map.frame_ours)
+
+
 # ---- the waves ----
 
 
@@ -442,19 +578,27 @@ def _take(moves: Iterator[Candidate], seen: set[str], limit: int) -> list[Candid
     return wave
 
 
-def _axis_moves(axis: str, best: _Scored, name: str) -> Iterator[Candidate]:
+def _best_cell(records: Sequence[dict[str, Any]]) -> int:
+    return max(range(len(records)), key=lambda n: _rank(records[n]))
+
+
+def _axis_moves(run: _Run, axis: str, best: _Scored) -> Iterator[Candidate]:
     """The moves of `axis` from `best`, each naming every axis its text moved along."""
-    by_axis = {"type": type_moves, "statement": statement_moves, "scope": scope_moves,
-               "declaration": declaration_moves}  # fmt: skip
+    by_axis = {"type": type_moves, "statement": statement_moves, "scope": scope_moves}
     text, axes = best.candidate.text, best.candidate.axes
-    for move in by_axis[axis](text, function_span(text, name)):
+    span = function_span(text, run.name)
+    if axis == "declaration":
+        moves = declaration_axis(text, span, _slots(run, best.objects[_best_cell(best.records)]))
+    else:
+        moves = by_axis[axis](text, span)
+    for move in moves:
         yield Candidate(move.text, (*axes, *(a for a in move.axes if a not in axes)))
 
 
 def _walk(run: _Run, seen: set[str], best: _Scored, axis: str) -> _Scored:
     """Walk `axis` from `best`: a variant that stands and beats it becomes the base, and the axis
     starts again from there. It ends on exact, at the budget or when the moves run out."""
-    moves = _axis_moves(axis, best, run.name)
+    moves = _axis_moves(run, axis, best)
     while not best.rank[0]:
         wave = _take(moves, seen, min(WAVE, (BUDGET - run.compiles) // len(run.cells)))
         if not wave:
@@ -463,7 +607,7 @@ def _walk(run: _Run, seen: set[str], best: _Scored, axis: str) -> _Scored:
         found = max([best, *standing], key=lambda scored: scored.rank)
         if found is not best:
             best = found
-            moves = _axis_moves(axis, best, run.name)
+            moves = _axis_moves(run, axis, best)
     return best
 
 
@@ -493,9 +637,9 @@ def _result(run: _Run, best: _Scored) -> SearchResult:
                     for record in best.records)  # fmt: skip
     lines = "".join(json.dumps(record) + "\n" for record in records)
     write_atomic(run.root / "results.jsonl", lines.encode("utf-8"))
-    cell = max(range(len(records)), key=lambda n: _rank(records[n]))
-    slots = _slots(run, best.objects[cell])
-    return SearchResult(path, axes, records, run.compiles, len(run.verdicts), slots)
+    slot_map = _slots(run, best.objects[_best_cell(records)])
+    return SearchResult(path, axes, records, run.compiles, len(run.verdicts), slot_map,
+                        _scalars(text, run.name, slot_map))  # fmt: skip
 
 
 def run_search(

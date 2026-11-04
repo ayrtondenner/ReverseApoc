@@ -3,8 +3,23 @@
 under `-4r -s -fpi` and `-4r -oneatx -s -fpi` (D-02); `-fpi` matches the real rules, and
 docs/matching.md measured `-fpi` and `-fpi87` identical. No matched row is an input to it.
 
-Offsets count from esp after the prologue. Locals sort by size, the largest at the lowest offset
-(M1), the first declared of equal sizes highest (M2), and each takes its size padded to 4 (M3).
+Offsets count from esp after the prologue. What the probe measured, the same in both cells:
+
+- M1: memory locals sort by size, the largest at the lowest offset.
+- M2: among equal sizes the first declared takes the highest offset.
+- M3: each takes its size padded to 4, and nothing aligns past that (a double sits at 0xC).
+- M4: an earlier block sits lower, by its place in the source and not by its depth, and blocks
+  share no slot, siblings included.
+- M5: a register candidate ignores declaration and scope. It is not modelled: assignment order,
+  use order, type and loop weight move it, which is the register allocator. What can be said is
+  where it lands: a spill sorts by size with the memory locals, above an int and below a short.
+  One exception: shorts spilled beside a short in memory do move with their declarations
+  (pr_spill_short), so a caller must not read M5 as covering locals under 4 bytes.
+
+M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
+declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
+pr_tie_three, and its three arrays take other offsets. No standard sort reproduces these orders
+and a table by count would not hold either, so the model refuses them.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
@@ -12,10 +27,12 @@ is still claimed only by `reverseapoc check` / `gate` (D-16).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 
 SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
+_ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
+_BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
 
 
 @dataclass(frozen=True)
@@ -24,19 +41,68 @@ class Local:
 
     name: str
     size: int
-    scope: int = 0
+    scope: int = 0  # orders blocks as the source does: a later block has a greater one
+
+
+def order_is_known(locals_: Sequence[Local]) -> bool:
+    """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
+    and only size 4 keeps its order across blocks."""
+    sizes = {local.size for local in locals_}
+    if len(sizes) == len(locals_):
+        return True
+    if len(sizes) != 1 or not sizes <= _ORDERED_SIZES:
+        return False
+    return sizes == {_BLOCK_ORDERED_SIZE} or len({local.scope for local in locals_}) == 1
 
 
 def _padded(size: int) -> int:
     return -(-size // SLOT_ALIGN) * SLOT_ALIGN
 
 
+def frame_size(locals_: Iterable[Local]) -> int:
+    """What the memory locals take: M1 and M3 alone, so it holds with no known order too."""
+    return sum(_padded(local.size) for local in locals_)
+
+
 def frame_layout(locals_: Sequence[Local]) -> dict[str, int]:
-    """Each local's offset from esp after the prologue: pr_slot_same_size and pr_slot_mixed."""
-    ascending = sorted(enumerate(locals_), key=lambda pair: (-pair[1].size, -pair[0]))
+    """Each local's offset from esp after the prologue, with no spill in the frame. ValueError
+    past order_is_known: an offset the probe proves wrong is worse than none."""
+    if not order_is_known(locals_):
+        sizes = sorted(local.size for local in locals_)
+        raise ValueError(f"no known order for a tie among the sizes {sizes}")
+    ascending = sorted(enumerate(locals_),
+                       key=lambda pair: (-pair[1].size, pair[1].scope, -pair[0]))  # fmt: skip
     layout = {}
     offset = 0
     for _, local in ascending:
         layout[local.name] = offset
         offset += _padded(local.size)
     return layout
+
+
+def declaration_order(
+    locals_: Sequence[Local], target: Mapping[str, int]
+) -> tuple[str, ...] | None:
+    """The names of `locals_` in the order whose frame_layout equals `target`, or None when no
+    order can reach it. Only a tie has anything to move, and no local leaves its block. `locals_`
+    must have a known order."""
+    ties: dict[tuple[int, int], list[Local]] = {}
+    for local in locals_:
+        ties.setdefault((local.size, local.scope), []).append(local)
+    for tie in ties.values():
+        tie.sort(key=lambda local: -target[local.name])  # M2: the first declared is highest
+    order = [ties[local.size, local.scope].pop(0) for local in locals_]
+    return tuple(local.name for local in order) if frame_layout(order) == target else None
+
+
+def scalar_slots(
+    locals_: Iterable[Local], mismatched: Iterable[int], frame: int
+) -> tuple[int, ...]:
+    """The offsets of `mismatched` no memory local explains, in order. These hold scalars, and
+    declaration moves cannot reach them. Spills sort by size with the locals, so they lie between
+    the locals of 4 bytes or more and the smaller ones at the top of a `frame` this size
+    (pr_spill_memory, pr_spill_small). What falls outside it is slot_map's shifted reading."""
+    locals_ = tuple(locals_)
+    bottom = frame_size(local for local in locals_ if local.size >= SLOT_ALIGN)
+    top = frame - frame_size(local for local in locals_ if local.size < SLOT_ALIGN)
+    return tuple(sorted(offset for offset in mismatched if bottom <= offset < top))

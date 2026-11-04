@@ -188,41 +188,53 @@ void pr_slot_unaligned(void)
     pr_take(a, &d, &b);
 }
 
-/* Ties of 1, 2 and 4 bytes together, scalars beside arrays of the same size. */
-void pr_slot_small(void)
+/* Ties of one small size, in a frame of that size alone: scalars beside arrays. */
+void pr_slot_bytes(void)
 {
     char a;
     char b[1];
-    short c;
-    short d[1];
-    int e;
-    int f[1];
+    char c;
 
     a = 0x11;
     b[0] = 0x22;
     c = 0x33;
-    d[0] = 0x44;
-    e = 0x55;
-    f[0] = 0x66;
-    pr_take(&a, b, &c, d, &e, f);
+    pr_take(&a, b, &c);
 }
 
-void pr_slot_small_rev(void)
+void pr_slot_bytes_rev(void)
 {
-    int f[1];
-    int e;
-    short d[1];
-    short c;
+    char c;
     char b[1];
     char a;
 
     a = 0x11;
     b[0] = 0x22;
     c = 0x33;
-    d[0] = 0x44;
-    e = 0x55;
-    f[0] = 0x66;
-    pr_take(&a, b, &c, d, &e, f);
+    pr_take(&a, b, &c);
+}
+
+void pr_slot_shorts(void)
+{
+    short a;
+    short b[1];
+    short c;
+
+    a = 0x11;
+    b[0] = 0x22;
+    c = 0x33;
+    pr_take(&a, b, &c);
+}
+
+void pr_slot_shorts_rev(void)
+{
+    short c;
+    short b[1];
+    short a;
+
+    a = 0x11;
+    b[0] = 0x22;
+    c = 0x33;
+    pr_take(&a, b, &c);
 }
 
 /* The flat form of pr_slot_scope. */
@@ -272,31 +284,6 @@ void pr_slot_scope_pairs(int x)
         c = 0x33;
         d = 0x44;
         pr_take(&a, &b, &c, &d);
-    }
-}
-
-/* Size comes before scope: every int sits below every short. */
-void pr_slot_scope_sizes(int x)
-{
-    int a;
-    short b;
-
-    a = 0x11;
-    b = 0x22;
-    if (x) {
-        int c;
-        short d;
-
-        c = 0x33;
-        d = 0x44;
-        if (x > 1) {
-            int e;
-            short f;
-
-            e = 0x55;
-            f = 0x66;
-            pr_take(&a, &b, &c, &d, &e, &f);
-        }
     }
 }
 
@@ -364,9 +351,10 @@ void pr_slot_unused(void)
 }
 
 /*
- * The limit of the model. A tie that shares the frame with a local of another size, or a tie of
- * a size other than 1, 2 and 4, does not follow declaration order, and locals that are not part
- * of it change it. M1 and M3 still hold: each size stays together, in order, padded.
+ * The limit of the model. A tie beside a local of another size, a tie of a size other than 1, 2
+ * and 4, or a tie of chars or shorts across blocks does not follow declaration order, and locals
+ * that are not part of it change it. M1 and M3 still hold: each size stays together, in order,
+ * padded.
  */
 
 /* Three equal aggregates alone: not reversed. */
@@ -438,6 +426,65 @@ void pr_tie_double(void)
     b[0] = 0x22;
     d = 2.5;
     pr_take(a, b, &d);
+}
+
+/* Two ints and two shorts: the ints reverse, the shorts do not. */
+void pr_tie_sizes(void)
+{
+    int a;
+    int b;
+    short c;
+    short d;
+
+    a = 0x11;
+    b = 0x22;
+    c = 0x33;
+    d = 0x44;
+    pr_take(&a, &b, &c, &d);
+}
+
+/* Ints and shorts across blocks: every int stays below every short, whose order breaks. */
+void pr_tie_scope_sizes(int x)
+{
+    int a;
+    short b;
+
+    a = 0x11;
+    b = 0x22;
+    if (x) {
+        int c;
+        short d;
+
+        c = 0x33;
+        d = 0x44;
+        if (x > 1) {
+            int e;
+            short f;
+
+            e = 0x55;
+            f = 0x66;
+            pr_take(&a, &b, &c, &d, &e, &f);
+        }
+    }
+}
+
+/* Shorts across blocks alone: only ints follow the blocks. */
+void pr_tie_scope_shorts(int x)
+{
+    short a;
+
+    a = 0x11;
+    if (x) {
+        short b;
+
+        b = 0x22;
+        if (x > 1) {
+            short c;
+
+            c = 0x33;
+            pr_take(&a, &b, &c);
+        }
+    }
 }
 
 /* Register candidates: eight values live across calls, more than the registers can hold. */
@@ -656,7 +703,7 @@ void pr_spill_loop_late(int n)
     pr_put(e, f, g, h);
 }
 
-/* Spills sit above the memory locals: m and q keep their offsets from 0. */
+/* Spills sort by size with the memory locals: m and q sit below them, from 0. */
 void pr_spill_memory(void)
 {
     int a;
@@ -681,6 +728,96 @@ void pr_spill_memory(void)
     g = pr_get();
     h = pr_get();
     pr_take(&m, q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+/* Shorts sit above the int spills, at the top of the frame. */
+void pr_spill_small(void)
+{
+    int a;
+    int b;
+    int c;
+    int d;
+    int e;
+    int f;
+    int g;
+    int h;
+    short m;
+    short n;
+
+    m = 0x711;
+    n = 0x722;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&m, &n);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+/* The one case where declaration moves a register candidate: shorts spilled beside a short in
+   memory. Under -oneatx these two differ, and every other pair of this file with declarations
+   alone changed gives the same code. */
+void pr_spill_short(void)
+{
+    short q;
+    short a;
+    short b;
+    short c;
+    short d;
+    int e;
+    int f;
+    int g;
+    int h;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
+    pr_put(a, b, c, d);
+    pr_put(e, f, g, h);
+    pr_put(a, c, e, g);
+    pr_put(b, d, f, h);
+}
+
+void pr_spill_short_rev(void)
+{
+    short q;
+    int h;
+    int g;
+    int f;
+    int e;
+    short d;
+    short c;
+    short b;
+    short a;
+
+    q = 0x711;
+    a = pr_get();
+    b = pr_get();
+    c = pr_get();
+    d = pr_get();
+    e = pr_get();
+    f = pr_get();
+    g = pr_get();
+    h = pr_get();
+    pr_take(&q);
     pr_put(a, b, c, d);
     pr_put(e, f, g, h);
     pr_put(a, c, e, g);

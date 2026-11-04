@@ -45,8 +45,8 @@ MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBL
 ARRAY = (Marked("a", 12, 0x11), Marked("b", 8, 0x22), Marked("c", 6, 0x33))
 STRUCT = (Marked("a", 3, 0x11), Marked("b", 6, 0x22), Marked("c", 12, 0x33), Marked("d", 4, 0x44))
 ODD = (Marked("a", 3, 0x11), Marked("b", 5, 0x22), Marked("c", 7, 0x33), Marked("d", 4, 0x44))
-SMALL = (Marked("a", 1, 0x11), Marked("b", 1, 0x22), Marked("c", 2, 0x33), Marked("d", 2, 0x44),
-         Marked("e", 4, 0x55), Marked("f", 4, 0x66))  # fmt: skip
+BYTES = (Marked("a", 1, 0x11), Marked("b", 1, 0x22), Marked("c", 1, 0x33))
+SHORTS = (Marked("a", 2, 0x11), Marked("b", 2, 0x22), Marked("c", 2, 0x33))
 # Each function's locals in declaration order. A scope counts blocks in source order.
 SHAPES = {
     "pr_slot_same_size": SAME_SIZE,
@@ -60,15 +60,14 @@ SHAPES = {
     "pr_slot_odd": ODD,
     "pr_slot_odd_rev": ODD[::-1],
     "pr_slot_unaligned": (Marked("a", 12, 0x11), DOUBLE, Marked("b", 4, 0x22)),
-    "pr_slot_small": SMALL,
-    "pr_slot_small_rev": SMALL[::-1],
+    "pr_slot_bytes": BYTES,
+    "pr_slot_bytes_rev": BYTES[::-1],
+    "pr_slot_shorts": SHORTS,
+    "pr_slot_shorts_rev": SHORTS[::-1],
     "pr_slot_flat": SAME_SIZE[:3],
     "pr_slot_scope": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("c", 4, 0x33, 2)),
     "pr_slot_scope_pairs": (Marked("a", 4, 0x11), Marked("b", 4, 0x22),
                             Marked("c", 4, 0x33, 1), Marked("d", 4, 0x44, 1)),  # fmt: skip
-    "pr_slot_scope_sizes": (Marked("a", 4, 0x11), Marked("b", 2, 0x22),
-                            Marked("c", 4, 0x33, 1), Marked("d", 2, 0x44, 1),
-                            Marked("e", 4, 0x55, 2), Marked("f", 2, 0x66, 2)),  # fmt: skip
     "pr_slot_siblings": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("c", 4, 0x33, 2),
                          Marked("d", 4, 0x44, 3)),  # fmt: skip
     "pr_slot_block_order": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("d", 4, 0x44, 2),
@@ -85,8 +84,15 @@ TIES = {
     "pr_tie_small": (Marked("d", 8, 0x44), Marked("e", 8, 0x55), Marked("c", 4, 0x33),
                      Marked("b", 4, 0x22), Marked("a", 4, 0x11)),  # fmt: skip
     "pr_tie_double": (DOUBLE, *PAIR),
+    "pr_tie_sizes": (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33),
+                     Marked("d", 2, 0x44)),  # fmt: skip
+    "pr_tie_scope_sizes": (Marked("a", 4, 0x11), Marked("b", 2, 0x22),
+                           Marked("c", 4, 0x33, 1), Marked("d", 2, 0x44, 1),
+                           Marked("e", 4, 0x55, 2), Marked("f", 2, 0x66, 2)),  # fmt: skip
+    "pr_tie_scope_shorts": (Marked("a", 2, 0x11), Marked("b", 2, 0x22, 1), Marked("c", 2, 0x33, 2)),
 }
 SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722))
+SPILL_SMALL = (Marked("m", 2, 0x711), Marked("n", 2, 0x722))
 SAME_CODE = (("pr_spill_decl", "pr_spill_decl_rev"), ("pr_spill_decl", "pr_spill_scoped"))
 MOVED_CODE = (
     ("pr_spill_decl", "pr_spill_assign"),
@@ -183,7 +189,8 @@ def _text(module: omf.Module, name: str) -> list[str]:
 
 def _by_declaration(shape: Sequence[Marked]) -> dict[str, int]:
     """M1 to M3 applied to a tie the model refuses: what declaration order alone would give."""
-    ascending = sorted(enumerate(shape), key=lambda pair: (-pair[1].size, -pair[0]))
+    ascending = sorted(enumerate(shape),
+                       key=lambda pair: (-pair[1].size, pair[1].scope, -pair[0]))  # fmt: skip
     layout = {}
     offset = 0
     for _, one in ascending:
@@ -228,6 +235,12 @@ def test_a_local_outside_the_tie_changes_it(modules, cell):
     assert alone != {name: beside[name] for name in alone}
 
 
+def test_a_short_beside_a_short_moves_with_its_declaration(modules):
+    """The exception to M5, and why the search leaves plain locals under 4 bytes to its moves."""
+    one, other = "pr_spill_short", "pr_spill_short_rev"
+    assert any(_text(module, one) != _text(module, other) for module in modules.values())
+
+
 @pytest.mark.parametrize("cell", CELLS)
 @pytest.mark.parametrize("pair", SAME_CODE)
 def test_scalars_ignore_declarations_and_scope(modules, cell, pair):
@@ -241,17 +254,39 @@ def test_assignment_use_and_type_move_scalars(modules, pair):
     assert any(_text(module, one) != _text(module, other) for module in modules.values())
 
 
+def _other_slots(module: omf.Module, name: str, measured: dict[str, int]) -> set[int]:
+    """Every slot `name` reads or writes that is not the start of a memory local."""
+    read, _ = batch._frame_slots(_function(module, name), 0)
+    return {slot for slot in read if slot is not None} - set(measured.values())
+
+
 @pytest.mark.parametrize("cell", CELLS)
-def test_spills_sit_above_the_memory_locals(modules, cell):
-    """The memory locals keep the model's offsets from 0, and every other slot lies above them:
-    so the top of the memory locals is where the scalars start."""
+def test_spills_sit_above_locals_of_four_bytes_or_more(modules, cell):
+    """The memory locals keep the model's offsets from 0, and scalar_slots names the rest."""
     module = modules[cell]
     measured = _offsets(module, "pr_spill_memory", cell, SPILL_MEMORY)
     declared = _declared(SPILL_MEMORY)
     assert measured == slots.frame_layout(declared)
-    top = slots.frame_size(declared)
-    read, frame = batch._frame_slots(_function(module, "pr_spill_memory"), 0)
-    others = {slot for slot in read if slot is not None} - set(measured.values())
+    others = _other_slots(module, "pr_spill_memory", measured)
     assert others
-    assert min(others) >= top
-    assert frame > top
+    frame = _frame(module, "pr_spill_memory")
+    assert slots.scalar_slots(declared, others, frame) == tuple(sorted(others))
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_spills_sit_below_smaller_locals(modules, cell):
+    """Spills sort by size too: these shorts take the top of the frame, in the model's order,
+    and scalar_slots keeps both the slots below them and none of theirs."""
+    module = modules[cell]
+    measured = _offsets(module, "pr_spill_small", cell, SPILL_SMALL)
+    declared = _declared(SPILL_SMALL)
+    frame = _frame(module, "pr_spill_small")
+    base = frame - slots.frame_size(declared)
+    assert base > 0
+    layout = slots.frame_layout(declared)
+    assert measured == {name: base + offset for name, offset in layout.items()}
+    others = _other_slots(module, "pr_spill_small", measured)
+    assert others
+    assert max(others) < base
+    mismatched = [*others, *measured.values()]
+    assert slots.scalar_slots(declared, mismatched, frame) == tuple(sorted(others))

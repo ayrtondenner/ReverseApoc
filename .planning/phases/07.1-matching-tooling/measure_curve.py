@@ -46,7 +46,7 @@ NEAR = 90.0
 BUCKETS = ((0, 64, "<64"), (64, 256, "64-255"), (256, 1024, "256-1023"), (1024, 1 << 30, ">=1024"))
 SAMPLED = BUCKETS[1:]
 OUTCOMES = ("exact", "near", "compiled", "compile-failed", "refused", "crash")
-TOOLS = ("converter", "search")
+TOOLS = ("converter", "search", "slots")
 SEARCHED = ("near", "compiled")  # a compiled draft that is not exact: the rows search runs on
 NUMBERS = ("t1 exact", "t1 near", "s exact", "s near")
 COLUMNS = (
@@ -502,7 +502,7 @@ def cases() -> list[tuple[str, object, object]]:
             "compiled",
         ),
         ("only a compiled draft is searched", SEARCHED, ("near", "compiled")),
-        ("the tools named are both", TOOLS, ("converter", "search")),
+        ("the tools named are all three", TOOLS, ("converter", "search", "slots")),
         ("table counts an outcome by bucket", canned[2], "| exact | 1 | 0 | 0 | 0 | 1 |"),
         ("table totals its rows", canned[8], "| rows | 1 | 0 | 0 | 1 | 2 |"),
         (
