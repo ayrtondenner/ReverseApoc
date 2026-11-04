@@ -90,7 +90,7 @@ _PLAIN_DIMENSION = re.compile(r"(?P<octal>0[0-7]*)|[1-9]\d*")
 # What stands before a unary `&`: an operator, an opening, `return`, or a cast. A name, a `)`, a
 # `]` and a postfix `++` or `--` leave a binary `&`, and so does an operand _operands stands in
 # for. `(word) &` with a word outside _SIZES could be either: _ambiguous_and refuses that frame.
-_CAST = "|".join(re.escape(spec) for spec in sorted(_SIZES, key=len, reverse=True))
+_CAST = "|".join(re.escape(spec) for spec in _SIZES)
 _BEFORE_ADDRESS = (r"(?:[(,=!?:;{}\[*/%|^<>~]|(?<!\+)\+|(?<!-)-|&&|\breturn|\*\s*\)"
                    rf"|\(\s*(?:{_CAST})\s*\))")  # fmt: skip
 _ITSELF = r"\b(?!\s*(?:->|\[))"  # not `&p->x` or `&p[1]`, the address of what a pointer points at
