@@ -1247,3 +1247,31 @@ def test_an_epilogue_may_end_in_a_tail_jump():
     callee = VA + ROW_SPACING
     jump = "e9" + (callee - (VA + 12)).to_bytes(4, "little", signed=True).hex()
     assert f"func_{callee:08x}(" in lift.lift_row(stub_exe(f"56 b801000000 5e {jump}", "c3"), VA)
+
+
+# ---- cdq ----
+
+
+def test_cdq_reaches_the_divide():
+    # cdq; idiv ecx; ret
+    assert "return r_eax / r_ecx;" in lift.lift_row(stub_exe("99 f7f9 c3"), VA)
+
+
+def test_a_sign_made_by_sar_reaches_the_divide():
+    # mov edx, eax; sar edx, 31; idiv ecx; ret
+    assert "return r_eax / r_ecx;" in lift.lift_row(stub_exe("89c2 c1fa1f f7f9 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "99 31d0 29d0 c3",  # cdq; xor eax, edx; sub eax, edx; ret: abs
+        "89c2 c1fa1f 01d0 c3",  # mov edx, eax; sar edx, 31; add eax, edx; ret
+        "99 8911 c3",  # cdq; mov [ecx], edx; ret
+        "99 85c9 7401 41 f7f9 c3",  # cdq; test ecx, ecx; je L; inc ecx; L: idiv ecx; ret
+    ],
+    ids=["abs", "sar", "store", "merge"],
+)
+def test_only_a_divide_reads_a_cdq(code):
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.lift_row(stub_exe(code), VA)

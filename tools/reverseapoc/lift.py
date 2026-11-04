@@ -125,6 +125,7 @@ class E:
     signed: bool = True
     scaled: tuple | None = None  # (index E, scale) for a value made by lea r, [index*scale]
     boolean: bool = False  # a compare's 0 or 1, which masking to a byte leaves as it is
+    sign_of: bool = False  # edx after a cdq of eax, which C can only say as part of a divide
 
     def __str__(self) -> str:
         return self.text
@@ -702,6 +703,8 @@ class Block_:
         if name not in self.regs:
             raise Unliftable(f"reg: {name} read before any write")
         e = self.regs[name]
+        if e.sign_of:
+            raise Unliftable("op: cdq")
         ci = self.cur
         if (
             self.lf.once
@@ -740,6 +743,8 @@ class Block_:
         name = f"r_{r}"
         if self.regs[r].text == name:
             return
+        if self.regs[r].sign_of:
+            raise Unliftable("op: cdq")
         self.assigning.add(r)
         self.keep_readers(name, r, self.needed)
         self.assigning.discard(r)
@@ -1068,7 +1073,7 @@ class Block_:
             self.set("eax", cast("short", a, 2, True), ci)
         elif mn == "cdq":
             a = self.get("eax")
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure)  # only idiv may read it
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
         elif mn in ("idiv", "div"):
             self.divide(ci, mn, ops)
         elif mn == "call":
@@ -1242,7 +1247,7 @@ class Block_:
             and "eax" in self.regs
             and self.regs["eax"].text == a.text
         ):
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure)
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
             self.flags = None
             return
         sym = {
