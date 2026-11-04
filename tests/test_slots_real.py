@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import pytest
 
 from conftest import REPO_ROOT, WATCOM_DIR, requires_capstone, requires_runner, requires_version
-from reverseapoc import batch, omf, slots, x86
+from reverseapoc import batch, omf, search, slots, x86
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate
 from reverseapoc.probe import PROBE_DIR
@@ -114,6 +114,13 @@ MOVED_CODE = (
     ("pr_spill_decl", "pr_spill_use"),
     ("pr_spill_decl", "pr_spill_type"),
     ("pr_spill_loop", "pr_spill_loop_late"),
+)
+# Real maps of two clean-room functions, ours then theirs: batch.slot_map needs no EXE.
+COMPUTED_TWIN = ("pr_twin_abc", "pr_twin_bca")
+FALLBACK_TWINS = (
+    ("pr_twin_ints_double", "pr_twin_double_ints"),  # a double beside the tie
+    ("pr_float_tie", "pr_float_tie_rev"),  # a float in the tie
+    ("pr_thin_ours", "pr_thin_theirs"),  # a map that cannot place c
 )
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
@@ -332,3 +339,39 @@ def test_spills_sit_below_smaller_locals(modules, cell):
     assert max(others) < base
     mismatched = [*others, *measured.values()]
     assert slots.scalar_slots(declared, mismatched, frame) == tuple(sorted(others))
+
+
+@pytest.fixture(scope="module")
+def source() -> str:
+    return (PROBE_DIR / "cg_slots.c").read_text(encoding="ascii")
+
+
+def _real_map(module: omf.Module, ours: str, theirs: str) -> batch.SlotMap:
+    return batch.slot_map(_function(module, ours), _function(module, theirs), 0, set())
+
+
+def _declaration_lines(text: str, name: str) -> list[str]:
+    lines = text.split("\n")
+    return [lines[n].strip() for n in search.declarations(text, search.function_span(text, name))]
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_the_axis_computes_a_declaration_twin_from_a_real_map(modules, source, cell):
+    """Must-have truth 4 on real input: the one order the other function's slots need."""
+    ours, theirs = COMPUTED_TWIN
+    slot_map = _real_map(modules[cell], ours, theirs)
+    (move,) = search.declaration_axis(source, search.function_span(source, ours), slot_map)
+    assert _declaration_lines(move.text, ours) == _declaration_lines(source, theirs)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("twin", FALLBACK_TWINS)
+def test_the_axis_keeps_its_plain_moves_on_a_real_map_it_cannot_answer(modules, source, cell, twin):
+    """Real maps are partial and conflicting where stubbed ones are tidy."""
+    ours, theirs = twin
+    slot_map = _real_map(modules[cell], ours, theirs)
+    assert any(one != other for one, other in slot_map.pairs)
+    span = search.function_span(source, ours)
+    moves = list(search.declaration_axis(source, span, slot_map))
+    assert moves
+    assert moves == list(search.declaration_moves(source, span))

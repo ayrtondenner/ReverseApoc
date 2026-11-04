@@ -515,6 +515,85 @@ void pr_double_stored(void)
     pr_putd(d);
 }
 
+/* Declaration twins for the search on a real slot map: only the order of the locals differs. */
+void pr_twin_abc(void)
+{
+    int a;
+    int b;
+    int c;
+
+    a = 0x11;
+    b = 0x22;
+    c = 0x33;
+    pr_take(&a, &b, &c);
+}
+
+void pr_twin_bca(void)
+{
+    int b;
+    int c;
+    int a;
+
+    a = 0x11;
+    b = 0x22;
+    c = 0x33;
+    pr_take(&a, &b, &c);
+}
+
+/* The ints swap between these twins, and the double beside them leaves their order unknown. */
+void pr_twin_ints_double(void)
+{
+    int a;
+    int b;
+    double p;
+
+    a = 0x11;
+    b = 0x22;
+    p = pr_getd();
+    pr_take(&a, &b);
+    pr_putd(p);
+}
+
+void pr_twin_double_ints(void)
+{
+    double p;
+    int a;
+    int b;
+
+    a = 0x11;
+    b = 0x22;
+    p = pr_getd();
+    pr_take(&a, &b);
+    pr_putd(p);
+}
+
+/* Twins whose bodies differ in c, so the slot map cannot place it. */
+void pr_thin_ours(void)
+{
+    int a;
+    int b;
+    int c;
+
+    a = 0x11;
+    b = 0x22;
+    c = 0x33;
+    pr_take(&a, &b);
+    pr_put((int)&c, 2, 3, 4);
+}
+
+void pr_thin_theirs(void)
+{
+    int b;
+    int c;
+    int a;
+
+    c = pr_get();
+    a = 0x11;
+    b = 0x22;
+    pr_take(&a, &b);
+    pr_put(1, (int)&c, 3, 4);
+}
+
 /*
  * The limit of the model. A tie beside a local of another size, a tie of a size other than 1, 2
  * and 4, or a tie of chars or shorts across blocks does not follow declaration order, and locals

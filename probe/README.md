@@ -112,6 +112,7 @@ It stays out of `probe.PROBE_SOURCES`, and neither cell joins `probe.FLAG_SETS`:
 | `pr_slot_float_taken`, `pr_slot_float_array`, `pr_slot_double_int` | floats and doubles in memory, or in no tie | M2 holds for an address-taken float, and M1 for a float or a double with no tie |
 | `pr_float_ints`, `pr_float_tie`, `_tie_rev` | a float with no address taken, in a tie | it leaves M2, yet declarations still move it, so the search keeps its plain moves |
 | `pr_double_called`, `pr_double_stored` | one declaration list, two uses of a double | the ints beside it swap, so no rule on declarations places them |
+| `pr_twin_abc`, `_bca`, `pr_twin_ints_double`, `_double_ints`, `pr_thin_ours`, `_theirs` | twins for the search | on a real slot map it computes the first pair and keeps its plain moves for the others: a double beside the tie, and a map that cannot place `c` |
 | `pr_tie_*` | ties the model refuses | where M2 and M4 stop: each is proven to leave declaration order, and M1 and M3 still hold |
 | `pr_spill_decl`, `_decl_rev`, `_scoped` | eight values live across calls | M5: declaration and scope leave the code identical |
 | `pr_spill_assign`, `_use`, `_type`, `_loop`, `_loop_late` | one change each | M5: assignment order, use order, type and loop weight change the code |
