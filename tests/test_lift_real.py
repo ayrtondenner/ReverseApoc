@@ -12,6 +12,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+
 from conftest import REPO_ROOT, WATCOM_DIR
 from reverseapoc import batch, lift
 from reverseapoc.cli import main
