@@ -1676,3 +1676,62 @@ def test_a_store_to_a_saved_register_refuses():
     # push ebx; mov [esp], eax; pop ebx; ret
     with pytest.raises(lift.Unliftable, match="stack: saved register slot"):
         lift.lift_row(stub_exe("53 890424 5b c3"), VA)
+
+
+# ---- shapes no Tier 1 row has ----
+
+
+def test_a_jump_to_the_first_block_has_its_label():
+    # L: dec eax; jne L; ret
+    text = lift.lift_row(stub_exe("48 75fd c3"), VA)
+    assert f"L{VA:X}:;" in text
+    assert text.index(f"L{VA:X}:;") < text.index("r_eax = r_eax - 1;")
+    assert f"if (r_eax != 0) goto L{VA:X};" in text
+
+
+def test_a_first_block_nothing_jumps_to_has_no_label():
+    assert f"L{VA:X}" not in lift.lift_row(stub_exe("89d0 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["29c4 c3", "01cc c3"],  # sub esp, eax; ret and add esp, ecx; ret
+    ids=["sub", "add"],
+)
+def test_esp_moved_by_a_register_refuses(code):
+    with pytest.raises(lift.Unliftable, match="stack: esp moved by a register"):
+        lift.lift_row(stub_exe(code), VA)
+
+
+def test_a_lea_with_a_fixup_on_a_zero_field_is_no_filler():
+    # lea eax, [eax + D]; ret, the field holding 0 until the loader relocates it
+    exe = stub_exe("8d8000000000 c3", fixups=(data_fixup(VA + DISP32_OFFSET, FLOAT_GLOBAL),))
+    assert f"D_{FLOAT_GLOBAL:08x}" in lift.lift_row(exe, VA)
+
+
+def test_a_table_with_a_gap_is_no_table():
+    target = VA + JUMP_SIZE
+    exe = with_table(stub_exe(f"{table_jump()} c3"), (target, target, target), VA)
+    gap = TABLE_AT + FIELD_SIZE
+    kept = tuple(fixup for fixup in exe.fixups if fixup.src_va != gap)
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        lift.lift_row(StubExe(exe.flat, exe.rows, kept, exe.symbols), VA)
+
+
+def test_neg_of_a_negative_constant_is_c():
+    # mov eax, -5; neg eax; ret
+    assert "return -(-5);" in lift.lift_row(stub_exe("b8fbffffff f7d8 c3"), VA)
+
+
+class TrailingSymbols(StubSymbols):
+    def c_name(self, va: int, *, data: bool = False) -> str:
+        return super().c_name(va, data=data) + "_"
+
+
+def test_the_address_of_a_function_names_the_function_a_call_names():
+    # mov eax, offset g; ret, g's symbol carrying the runtime's trailing underscore
+    callee = VA + ROW_SPACING
+    exe = stub_exe("b800000000 c3", "c3", fixups=(data_fixup(VA + 1, callee),))
+    text = lift.lift_row(StubExe(exe.flat, exe.rows, exe.fixups, TrailingSymbols()), VA)
+    assert f"return (int)func_{callee:08x};" in text
+    assert f"func_{callee:08x}_" not in text

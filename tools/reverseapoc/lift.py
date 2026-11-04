@@ -246,10 +246,14 @@ class Lifter:
         # Watcom alignment filler (lea eax,[eax], mov ebx,ebx, ...) is a no-op: drop it all,
         # trailing and mid-function, so it reads no register.
         filler = {i.va for i in decode(code, self.row.start) if is_filler(i)}
-        body = [ci for ci in insns if ci.address not in filler and not _self_move(ci)]
+        body = [ci for ci in insns if ci.address not in filler and not self.self_move(ci)]
         if not body:
             raise Unliftable("decode: empty")
         return body
+
+    def self_move(self, ci) -> bool:
+        """Filler, unless a fixup sits on its displacement: then the field only reads as 0."""
+        return _self_move(ci) and not (ci.disp_offset and ci.address + ci.disp_offset in self.fix)
 
     def frame(self, insns):
         saved, i = [], 0
@@ -269,7 +273,7 @@ class Lifter:
             raise Unliftable("frame: ebp frame")
         frame = 0
         if i < len(insns) and insns[i].mnemonic == "sub" and insns[i].op_str.startswith("esp, "):
-            frame = insns[i].operands[1].imm
+            frame = _esp_step(insns[i])
             i += 1
         return saved, frame, i
 
@@ -327,7 +331,7 @@ class Lifter:
             row = _index(self.exe)[0].get(va)
             if row is None or row.kind == KIND_DATA_IN_CODE:
                 raise Unliftable("ref: code address not at a function start")
-            name = self.exe.symbols.c_name(va)
+            name = _called_name(self.exe.symbols.c_name(va))
             self.externs.setdefault(name, f"int {name}();")
             return name
         name = self.exe.symbols.c_name(va, data=True)
@@ -354,8 +358,7 @@ class Lifter:
         name = self.exe.symbols.c_name(va)
         if name.startswith("_") or not name.replace("_", "a").isidentifier():
             raise Unliftable("call: stack-convention or odd callee name")
-        if name.endswith("_"):
-            name = name[:-1]
+        name = _called_name(name)
         if va in self.sigs:
             return name, self.sigs[va]  # None: unknown or still being computed (a cycle)
         self.sigs[va] = None
@@ -396,7 +399,8 @@ class Lifter:
         fields = _fixup_index(self.exe).overlapping(start, end)
         if any(fx.size != TABLE_ENTRY or (fx.src_va - start) % TABLE_ENTRY for fx in fields):
             return {}
-        return {(fx.src_va - start) // TABLE_ENTRY: fx.target_va for fx in fields}
+        cases = {(fx.src_va - start) // TABLE_ENTRY: fx.target_va for fx in fields}
+        return cases if sorted(cases) == list(range(len(cases))) else {}
 
     def find_tables(self, insns) -> None:
         """Fill `tables` and `guards`. A table runs to the next table of this row or to the end
@@ -589,6 +593,8 @@ class Lifter:
             for t in blocks[s].succ:
                 preds[t].append(s)
         self.merge = {s for s in order[1:] if len(preds[s]) != 1 or preds[s][0] >= s}
+        if preds[order[0]]:  # a jump back to the top: the entry is one way in of several
+            self.merge.add(order[0])
         for s in self.merge:
             self.regvars |= live_in[s] & set(GP)
         self.live_in = live_in
@@ -634,7 +640,7 @@ class Lifter:
         carried = None
         for s in order:
             b = blocks[s]
-            if s != order[0]:
+            if s != order[0] or s in self.merge:
                 self.labels.add(s)
                 body.append(f"L{s:X}:;")
             run = Block_(self, b.insns, s)
@@ -1061,8 +1067,9 @@ class Block_:
             self.pop(ci, k)
             return
         if _frees_stack(ci):
-            self.esp += ops[1].imm
-            del self.pushes[max(len(self.pushes) - ops[1].imm // 4, 0) :]
+            step = _esp_step(ci)
+            self.esp += step
+            del self.pushes[max(len(self.pushes) - step // 4, 0) :]
             return
         if mn == "mov" and ops[1].type == X86_OP_REG and ci.reg_name(ops[1].reg) == "esp":
             self.write(ci, ops[0], E(f"(int){self.take(self.esp)}", atom=True))
@@ -1103,7 +1110,7 @@ class Block_:
             e = {
                 "inc": lambda: binop("+", a, const(1)),
                 "dec": lambda: binop("-", a, const(1)),
-                "neg": lambda: E(f"-{paren(a)}", pure=a.pure),
+                "neg": lambda: E(f"-({a})", pure=a.pure),
                 "not": lambda: E(f"~{paren(a)}", pure=a.pure),
             }[mn]()
             target = self.write(ci, ops[0], e)
@@ -1501,6 +1508,18 @@ def _narrowed(v: int, size: int, signed: bool) -> int:
     bits = 8 * size
     v &= (1 << bits) - 1
     return v - (1 << bits) if signed and v >> (bits - 1) else v
+
+
+def _called_name(name: str) -> str:
+    """The C name of a function, whose symbol may carry the register convention's `_`."""
+    return name.removesuffix("_")
+
+
+def _esp_step(ci) -> int:
+    """The N of `sub esp, N` or `add esp, N`."""
+    if ci.operands[1].type != X86_OP_IMM:
+        raise Unliftable("stack: esp moved by a register")
+    return ci.operands[1].imm
 
 
 def _frees_stack(ci) -> bool:
