@@ -9,6 +9,7 @@ to judge. The diff, filler and pad tests decode clean-room instruction encodings
 
 from __future__ import annotations
 
+import dataclasses
 import subprocess
 import threading
 from pathlib import Path
@@ -19,6 +20,9 @@ import pytest
 from relocpair import filler_pair, our_object, table
 from reverseapoc import batch, compiler
 from reverseapoc.cflags import CflagsError, Rule
+from reverseapoc.check import Defined
+from reverseapoc.functions import FunctionRow
+from reverseapoc.omf import OMFFixup, Segment
 from reverseapoc.x86 import decode_one
 
 FLAGS = ("-4r", "-s", "-fpi")
@@ -414,3 +418,213 @@ def test_with_source_names_the_path_and_lf_sha256(tmp_path):
         outside.resolve().as_posix())  # fmt: skip
     assert batch.with_source(record, outside, None)["source_sha256"] == ""
     assert "source" not in record  # the record itself is unchanged
+
+
+# ---- the stack mask (07.1, D-01: it ranks, it decides nothing) ----------------------------------
+#
+# Clean-room encodings, written here. The bodies with a prologue and an epilogue are the shape
+# real rows have (R5): push, sub esp, an esp operand, add esp, pop, ret.
+
+PUSH_EBX, POP_EBX, RET = "53", "5b", "c3"
+SUB_ESP_10, SUB_ESP_14 = "83ec10", "83ec14"
+ADD_ESP_10, ADD_ESP_14 = "83c410", "83c414"
+LOAD_EAX_ESP, LOAD_EAX_ESP_4, LOAD_EAX_ESP_8, LOAD_EAX_ESP_C = (
+    "8b0424", "8b442404", "8b442408", "8b44240c"
+)  # fmt: skip
+LOAD_ECX_ESP, LOAD_ECX_ESP_4 = "8b0c24", "8b4c2404"
+
+
+def _code(*parts: str) -> bytes:
+    return bytes.fromhex("".join(parts))
+
+
+def _both_scores(ours: bytes, theirs: bytes) -> tuple[float, float]:
+    """(raw score, stack score) of one pair at VA, nothing relocated."""
+    raw, _key = batch.diff_summary(ours, theirs, VA, set())
+    return raw, batch.stack_score(ours, theirs, VA, set())
+
+
+def test_stack_mask_equalises_esp_displacements():
+    raw, stack = _both_scores(_code(LOAD_EAX_ESP_8, RET), _code(LOAD_EAX_ESP_C, RET))
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_equalises_the_frame_size():
+    raw, stack = _both_scores(_code(SUB_ESP_10, RET), _code(SUB_ESP_14, RET))
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_equalises_the_frame_release():
+    raw, stack = _both_scores(_code(ADD_ESP_10, RET), _code(ADD_ESP_14, RET))
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_normalises_a_bare_esp_operand():
+    """`[esp]` is slot 0: it compares equal to `[esp + N]`."""
+    raw, stack = _both_scores(_code(LOAD_EAX_ESP, RET), _code(LOAD_EAX_ESP_8, RET))
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_covers_a_negative_displacement():
+    raw, stack = _both_scores(_code("8b4424fc", RET), _code(LOAD_EAX_ESP_8, RET))  # [esp - 4]
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_on_a_full_prologue_and_epilogue():
+    ours = _code(PUSH_EBX, SUB_ESP_10, LOAD_EAX_ESP_8, ADD_ESP_10, POP_EBX, RET)
+    theirs = _code(PUSH_EBX, SUB_ESP_14, LOAD_EAX_ESP_C, ADD_ESP_14, POP_EBX, RET)
+    raw, stack = _both_scores(ours, theirs)
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_on_a_slot_swap_with_slot_zero():
+    ours = _code(PUSH_EBX, SUB_ESP_10, LOAD_EAX_ESP, LOAD_ECX_ESP_4, ADD_ESP_10, POP_EBX, RET)
+    theirs = _code(PUSH_EBX, SUB_ESP_10, LOAD_EAX_ESP_4, LOAD_ECX_ESP, ADD_ESP_10, POP_EBX, RET)
+    raw, stack = _both_scores(ours, theirs)
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_on_a_prologue_still_sees_a_different_instruction():
+    ours = _code(PUSH_EBX, SUB_ESP_10, LOAD_EAX_ESP_8, ADD_ESP_10, POP_EBX, RET)
+    theirs = _code(PUSH_EBX, SUB_ESP_10, LOAD_ECX_ESP_4, ADD_ESP_10, POP_EBX, RET)
+    assert batch.stack_score(ours, theirs, VA, set()) < 100.0
+
+
+def test_stack_mask_keeps_the_index_register():
+    ours = _code("8b448c08", RET)  # mov eax, [esp + ecx*4 + 8]
+    assert batch.stack_score(ours, _code("8b448c0c", RET), VA, set()) == 100.0
+    assert batch.stack_score(ours, _code("8b048c", RET), VA, set()) == 100.0  # [esp + ecx*4]
+    assert batch.stack_score(ours, _code("8b449408", RET), VA, set()) < 100.0  # edx*4
+
+
+def test_stack_mask_on_a_relocated_store_to_a_bare_esp_operand():
+    """An instruction with a relocated field is shown as its shape: the bare `[esp]` of that
+    shape still compares equal to `[esp + N]`."""
+    ours = _code("c7042400000000", RET)  # mov dword ptr [esp], imm32
+    theirs = _code("c744240800000000", RET)  # mov dword ptr [esp + 8], imm32
+    masked = set(range(VA + 3, VA + 8))  # covers the imm32 of either: only the hit matters
+    assert batch.stack_score(ours, theirs, VA, masked) == 100.0
+
+
+def test_stack_mask_touches_nothing_else():
+    other_base = _both_scores(_code("8b4308", RET), _code("8b430c", RET))  # [ebx + N]
+    other_add = _both_scores(_code("83c310", RET), _code("83c314", RET))  # add ebx, N
+    other_sub = _both_scores(_code("83eb10", RET), _code("83eb14", RET))  # sub ebx, N
+    immediates = _both_scores(MOV_EAX_1_RET, MOV_EAX_2_RET)
+    for raw, stack in (other_base, other_add, other_sub, immediates):
+        assert raw < 100.0
+        assert stack == raw
+
+
+def test_cell_record_keys_are_unchanged():
+    """A guard: the stack score is a Verdict field, and the JSONL of `batch` and `judge` keeps
+    its keys."""
+    record = batch.cell_record("tacp", 0x10, "committed", RULE_106, _compiled(True),
+                               batch.unjudged(4))  # fmt: skip
+    assert list(record) == ["exe", "address", "cell", "flags", "compiled", "exact", "exact_trim",
+                            "score", "len", "key"]  # fmt: skip
+
+
+def test_verdict_stack_score_defaults_after_exact_trim():
+    assert batch.unjudged(4).stack_score == 0.0
+    names = [field.name for field in dataclasses.fields(batch.Verdict)]
+    assert names[-2:] == ["exact_trim", "stack_score"]
+
+
+def test_judge_fills_the_stack_score_and_keeps_the_raw_score(tmp_path):
+    body = _code(PUSH_EBX, SUB_ESP_10, LOAD_EAX_ESP_8, ADD_ESP_10, POP_EBX, RET)
+    other = _code(PUSH_EBX, SUB_ESP_14, LOAD_EAX_ESP_C, ADD_ESP_14, POP_EBX, RET)
+    verdict = _judged(tmp_path, filler_pair(b"", body=other, ours=body))
+    assert verdict.exact is False
+    assert verdict.score < 100.0
+    assert verdict.stack_score == 100.0
+
+
+# ---- the function body: the failure keys of judge and the key that dedupes a search -------------
+
+
+
+def _synth_exe(pair) -> SimpleNamespace:
+    return SimpleNamespace(rows=(pair.row,), flat=pair.orig.flat, fixups=tuple(pair.orig.fixups),
+                           symbols=table(pair.row),
+                           target=SimpleNamespace(name="SYNTH.EXE"))  # fmt: skip
+
+
+def test_function_body_holds_the_defined_function(tmp_path):
+    pair = filler_pair()
+    exe = _synth_exe(pair)
+    obj = tmp_path / "f.obj"
+    obj.write_bytes(our_object(pair.ours, publics=[(exe.symbols.linker_name(pair.row.start), 0)]))
+    body = batch.function_body(exe, obj, pair.row.start)
+    assert body.defined.row == pair.row
+    assert body.defined.ours == pair.ours
+    assert pair.row in body.rows
+
+
+def test_function_body_names_a_missing_object(tmp_path):
+    pair = filler_pair()
+    found = batch.function_body(_synth_exe(pair), tmp_path / "missing.obj", pair.row.start)
+    assert found.startswith("no object: ")
+    verdict = batch.judge(_synth_exe(pair), tmp_path / "missing.obj", pair.row.start)
+    assert (verdict.exact, verdict.key) == (False, found)
+    assert (verdict.differing, verdict.len_ours, verdict.score) == (-1, 0, 0.0)
+
+
+def test_function_body_names_an_undefined_function(tmp_path):
+    pair = filler_pair()
+    obj = tmp_path / "f.obj"
+    obj.write_bytes(our_object(pair.ours, publics=[("other_", 0)]))
+    assert batch.function_body(_synth_exe(pair), obj, pair.row.start) == "not defined"
+    assert batch.judge(_synth_exe(pair), obj, pair.row.start).key == "not defined"
+
+
+def _fixup(offset: int, name: str = "_D_00020004", displacement: int = 0) -> OMFFixup:
+    return OMFFixup(offset, 4, True, 9, 1, 2, "extern", 1, name, displacement)
+
+
+def _body(data: bytes, fixups: tuple[OMFFixup, ...] = (), *, off: int = 0,
+          size: int | None = None):  # fmt: skip
+    """A FunctionBody of `size` bytes at `off` in one code segment holding `data` and `fixups`."""
+    segment = Segment(1, "_TEXT", "CODE", len(data), True, data, fixups)
+    row = FunctionRow(0x1000, 0x1010, "func_00001000", "game", "unit", "call")
+    size = len(data) - off if size is None else size
+    return batch.FunctionBody(None, (row,), Defined(row, "f_", segment, off, size))
+
+
+def test_body_key_is_equal_for_equal_bytes_and_relocations():
+    data = bytes(16)
+    assert batch.body_key(_body(data, (_fixup(4),))) == batch.body_key(_body(data, (_fixup(4),)))
+
+
+def test_body_key_reads_the_bytes():
+    assert batch.body_key(_body(bytes(16))) != batch.body_key(_body(bytes(15) + b"\x01"))
+
+
+def test_body_key_tells_equal_bytes_that_relocate_differently():
+    data = bytes(16)
+    base = batch.body_key(_body(data, (_fixup(4),)))
+    assert base != batch.body_key(_body(data, (_fixup(8),)))
+    assert base != batch.body_key(_body(data, (_fixup(4, "_D_00020008"),)))
+    assert base != batch.body_key(_body(data, (_fixup(4, displacement=4),)))
+    assert base != batch.body_key(_body(data))
+
+
+def test_body_key_takes_fixup_offsets_from_the_function():
+    data = bytes(32)
+    first = _body(data, (_fixup(4),), off=0, size=16)
+    second = _body(data, (_fixup(20),), off=16, size=16)
+    assert batch.body_key(first) == batch.body_key(second)
+
+
+def test_body_key_skips_a_fixup_outside_the_function():
+    data = bytes(32)
+    alone = _body(data, off=0, size=16)
+    with_neighbour = _body(data, (_fixup(16), _fixup(20)), off=0, size=16)
+    assert batch.body_key(alone) == batch.body_key(with_neighbour)

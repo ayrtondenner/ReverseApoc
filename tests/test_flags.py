@@ -1962,6 +1962,16 @@ def test_approve_a_batch_proposal_writes_matched_by_author(tmp_path):
     assert (p.status, p.author, p.approved_by) == ("landed", SPIKE, OWNER)
 
 
+def test_search_is_an_author_and_gets_its_trailer(tmp_path):
+    """D-12: a search result lands with its own author, and the trailer follows from it."""
+    search = "reverseapoc search"
+    assert search in flags.AUTHORS
+    a = approve_repo(tmp_path, records=(_attempt_record(F26, U2, 2),), source="batch",
+                     author=search, evidence=(RESULTS,), alternatives=())  # fmt: skip
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert f"Matched-By: {search}" in _message(a)
+
+
 def test_list_shows_the_author(tmp_path):
     p = _proposal(source="batch", author=SPIKE, evidence=(RESULTS,))
     assert f"  author {SPIKE}" in p.line().splitlines()
