@@ -109,11 +109,11 @@ def test_a_bad_callee_leaves_its_signature_unknown():
     exe = stub_exe(caller, BAD_ROW)
     bad = VA + ROW_SPACING
     callee_second: dict = {}
-    text = lift.lift_row(exe, VA, callee_second)
+    text = lift.Lifter(exe, exe.rows[0], callee_second).lift()
     callee_first: dict = {}
     with pytest.raises(lift.Unliftable):
-        lift.lift_row(exe, bad, callee_first)
-    assert lift.lift_row(exe, VA, callee_first) == text
+        lift.Lifter(exe, exe.rows[1], callee_first).lift()
+    assert lift.Lifter(exe, exe.rows[0], callee_first).lift() == text
     assert callee_second[bad] is None
     assert f"func_{bad:08x}(1)" in text
 
@@ -1237,8 +1237,8 @@ def test_a_cold_census_gives_the_warm_draft():
     # call B; call D; xor eax, eax; ret. Nobody reads what D leaves in eax, so D is void.
     b, d = VA + ROW_SPACING, VA + 2 * ROW_SPACING
     exe = stub_exe(f"{call_to(VA, b)} {call_to(VA + 5, d)} 31c0 c3", "c3", "b801000000 c3")
-    cold = lift.lift_row(exe, VA, {})
-    assert lift.lift_row(exe, VA, {}) == cold
+    cold = lift.lift_row(exe, VA)
+    assert lift.lift_row(exe, VA) == cold
     assert f"void func_{d:08x}(void);" in cold
 
 

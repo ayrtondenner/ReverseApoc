@@ -84,21 +84,6 @@ JCC = {
     "js": "<0",
     "jns": ">=0",
 }
-NEG = {
-    "==": "!=",
-    "!=": "==",
-    "<": ">=",
-    ">=": "<",
-    ">": "<=",
-    "<=": ">",
-    "<u": ">=u",
-    ">=u": "<u",
-    ">u": "<=u",
-    "<=u": ">u",
-    "<0": ">=0",
-    ">=0": "<0",
-}
-
 
 MIN_SKIP = frozenset({"jle", "jl", "jbe", "jb"})  # `cmp a, b` then one of these skips `mov a, b`
 MAX_SKIP = frozenset({"jge", "jg", "jae", "ja"})
@@ -210,15 +195,10 @@ class Lifter:
         row: FunctionRow,
         sigs: dict[int, Sig] | None = None,
         *,
-        once: bool = False,
-        force_ret: str | None = None,
-        narrow: bool = True,
-        array: bool = True,
         holes: bool = False,
     ):
         self.exe, self.row = exe, row
         self.holes = holes
-        self.once, self.force_ret, self.narrow, self.array = once, force_ret, narrow, array
         self.sigs = sigs if sigs is not None else {}
         self.fix = {f.src_va: f for f in _fixup_index(exe).overlapping(row.start, row.end)}
         self.externs: dict[str, str] = {}
@@ -577,8 +557,6 @@ class Lifter:
 
     def lift(self) -> str:
         sig = self.signature()
-        if self.force_ret is not None:
-            sig = Sig(sig.nregs, sig.nstack, self.force_ret != "void")
         self.sig = sig
         ret_live = frozenset({"eax"}) if sig.returns else frozenset()
         insns, saved, frame, blocks, order, live_in, self.after = self.prepare(ret_live)
@@ -586,7 +564,7 @@ class Lifter:
         self.frame_top = -4 * len(saved)
         self.esp0 = self.frame_top - frame  # esp after the prologue, relative to entry esp
         params = list(ARG_REGS[: sig.nregs])
-        self.vartype = self.param_types(blocks, order[0], params) if self.narrow else {}
+        self.vartype = self.param_types(blocks, order[0], params)
         self.regvars = set(params)
         preds: dict[int, list[int]] = {s: [] for s in order}
         for s in order:
@@ -610,7 +588,7 @@ class Lifter:
             line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
         ]
         self.locals |= {name: "short" for name, short in self.word_reads.items() if short}
-        ret = (self.ret_type(blocks, order) if self.narrow else "int") if sig.returns else "void"
+        ret = self.ret_type(blocks, order) if sig.returns else "void"
         params += [f"p{n + 5}" for n in range(sig.nstack)]
         args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
         name = self.exe.symbols.c_name(self.row.start)
@@ -701,7 +679,6 @@ class Block_:
         self.flags: tuple | None = None
         self.esp = lf.esp0
         self.pushes: list[E] = []
-        self.cur = None
         self.k = 0  # the place of `cur` in this block
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
         self.fcompare: tuple | None = None  # the last x87 compare, for `fnstsw ax`
@@ -721,17 +698,6 @@ class Block_:
         e = self.regs[name]
         if e.sign_of:
             raise Unliftable("op: cdq")
-        ci = self.cur
-        if (
-            self.lf.once
-            and not e.atom
-            and ci is not None
-            and ci.mnemonic != "ret"
-            and name in self.lf.after.get(ci.address, set())
-            and name not in _use_def(ci)[1]
-        ):
-            self.assign(name)  # used here and later: compute it once into its variable
-            e = self.regs[name]
         return e
 
     def set(self, name: str, e: E, ci) -> None:
@@ -750,12 +716,12 @@ class Block_:
         """What a cast to the width of `al`, `ax` or `ah` reads: the cast does the narrowing."""
         return self.get(name) if name in HIGH_BYTES else self.get(_full(name))
 
-    def flush(self, ci, keep: set[str] | None = None) -> None:
+    def flush(self, ci) -> None:
         """Before a side effect: registers holding an impure value that is still needed become
         their variable."""
         live = self.lf.after.get(ci.address, set())
         for r in list(self.regs):
-            if self.regs[r].pure or r not in live or (keep and r in keep):
+            if self.regs[r].pure or r not in live:
                 continue
             self.assign(r)
 
@@ -872,7 +838,7 @@ class Block_:
         t = SIZE_TYPE[size, signed]
         fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
         base = ci.reg_name(m.base) if m.base else None
-        if fx is not None and base != "esp" and self.lf.array:
+        if fx is not None and base != "esp":
             arr = var(self.lf.data_name(fx.target_va))
             if m.index and m.scale == size and size in (2, 4) and not base:
                 i = self.get(ci.reg_name(m.index))
@@ -1054,7 +1020,7 @@ class Block_:
                 self.assign(r)
 
     def step(self, ci, k) -> None:
-        self.cur, self.k = ci, k
+        self.k = k
         self.needed = self.lf.before.get(ci.address, set())
         mn, ops = ci.mnemonic, ci.operands
         if _stores(ci):
@@ -1419,12 +1385,12 @@ class Block_:
         if t is None:
             raise Unliftable("call: indirect")
         name, sig = self.lf.callee(t)
-        nregs = max(sig.nregs if sig else 0, self.set_for_call(ci))
+        nregs = max(sig.nregs if sig else 0, _evidence(self.insns, ci))
         if sig is None:
             sig = Sig(nregs, 0, True)
         if len(self.pushes) < sig.nstack:
             raise Unliftable("call: stack arguments not pushed in the block")
-        self.flush(ci, keep=set())
+        self.flush(ci)
         live = self.lf.after.get(ci.address, set())
         if "eax" in live:
             if not sig.returns:
@@ -1458,7 +1424,7 @@ class Block_:
     def tail(self, ci, t: int) -> str:
         """`return f(args);` for a tail jump to the row at `t`."""
         name, sig = self.lf.callee(t)
-        nregs = max(sig.nregs if sig else 0, self.set_for_call(ci))
+        nregs = max(sig.nregs if sig else 0, _evidence(self.insns, ci))
         if sig is not None and sig.nstack:
             raise Unliftable("tail: callee with stack arguments")
         args = ", ".join(str(self.get(r)) for r in ARG_REGS[:nregs])
@@ -1469,9 +1435,6 @@ class Block_:
             f"({', '.join('int' for _ in range(nregs)) or 'void'});",
         )
         return f"return {name}({args});" if returns else f"{name}({args}); return;"
-
-    def set_for_call(self, call) -> int:
-        return _evidence(self.insns, call)
 
     def ret(self, ci) -> None:
         if self.lf.sig.returns:
@@ -1765,6 +1728,6 @@ def _use_def(ci) -> tuple[set, set]:
     return u, d
 
 
-def lift_row(exe: ExeInputs, start: int, sigs: dict | None = None) -> str:
+def lift_row(exe: ExeInputs, start: int) -> str:
     row = next(r for r in exe.rows if r.start == start)
-    return Lifter(exe, row, sigs).lift()
+    return Lifter(exe, row).lift()
