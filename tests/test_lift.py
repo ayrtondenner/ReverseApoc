@@ -1195,3 +1195,55 @@ def test_a_failed_census_build_keeps_the_demotion_on(monkeypatch):
         with pytest.raises(RuntimeError, match="bug"):
             lift.result_used(stub_exe("c3"))
     assert lift.result_used(stub_exe("c3")) is not None
+
+
+# ---- pop and add esp ----
+
+
+def test_a_pop_restores_what_was_pushed():
+    # mov ecx, edx; push eax; mov eax, 1; pop eax; ret
+    assert "return r_eax;" in lift.lift_row(stub_exe("89d1 50 b801000000 58 c3"), VA)
+
+
+def test_add_esp_moves_esp_with_a_push_pending():
+    # sub esp, 10h; push eax; call f; add esp, 4; mov eax, [esp]; add esp, 10h; ret
+    callee = VA + ROW_SPACING
+    code = f"83ec10 50 {call_to(VA + 4, callee)} 83c404 8b0424 83c410 c3"
+    text = lift.lift_row(stub_exe(code, "c3"), VA)
+    assert "return s_10;" in text
+    assert "s_14" not in text
+
+
+def test_add_esp_drops_the_pushes_it_releases():
+    # mov eax, 1; push edx; push eax; add esp, 4; pop eax; ret: the pop finds edx's value
+    assert "return r_edx;" in lift.lift_row(stub_exe("b801000000 52 50 83c404 58 c3"), VA)
+
+
+def test_a_pop_of_nothing_pushed_refuses():
+    # mov ecx, edx; pop eax; inc eax; ret
+    with pytest.raises(lift.Unliftable, match="pop: value not pushed in the block"):
+        lift.lift_row(stub_exe("89d1 58 40 c3"), VA)
+
+
+def test_a_pop_of_a_register_the_prologue_did_not_save_refuses():
+    # mov ecx, edx; pop eax; ret
+    with pytest.raises(lift.Unliftable, match="pop: value not pushed in the block"):
+        lift.lift_row(stub_exe("89d1 58 c3"), VA)
+
+
+def test_a_pop_of_a_saved_register_read_later_refuses():
+    # push ebx; mov ebx, 1; pop ebx; mov eax, ebx; ret
+    with pytest.raises(lift.Unliftable, match="pop: value not pushed in the block"):
+        lift.lift_row(stub_exe("53 bb01000000 5b 89d8 c3"), VA)
+
+
+def test_epilogue_pops_restore_nothing_the_draft_shows():
+    # push ebx; push ecx; mov eax, 1; pop ecx; pop ebx; ret
+    assert "return 1;" in lift.lift_row(stub_exe("53 51 b801000000 59 5b c3"), VA)
+
+
+def test_an_epilogue_may_end_in_a_tail_jump():
+    # push esi; mov eax, 1; pop esi; jmp g
+    callee = VA + ROW_SPACING
+    jump = "e9" + (callee - (VA + 12)).to_bytes(4, "little", signed=True).hex()
+    assert f"func_{callee:08x}(" in lift.lift_row(stub_exe(f"56 b801000000 5e {jump}", "c3"), VA)

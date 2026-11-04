@@ -1007,13 +1007,15 @@ class Block_:
         if _stores(ci):
             self.flush(ci)
             self.keep_slot(ci, ops[0])
-        if mn in ("pop", "ret") or (mn == "add" and ci.op_str.startswith("esp, ")):
-            if mn == "ret":
-                self.ret(ci)
-            elif mn == "add" and not self.pushes:
-                self.esp += ops[1].imm
-            elif mn == "pop":
-                self.esp += 4
+        if mn == "ret":
+            self.ret(ci)
+            return
+        if mn == "pop":
+            self.pop(ci, k)
+            return
+        if _frees_stack(ci):
+            self.esp += ops[1].imm
+            del self.pushes[max(len(self.pushes) - ops[1].imm // 4, 0) :]
             return
         if mn == "mov" and ops[1].type == X86_OP_REG and ci.reg_name(ops[1].reg) == "esp":
             self.write(ci, ops[0], E(f"(int){self.take(self.esp)}", atom=True))
@@ -1093,6 +1095,24 @@ class Block_:
             self.x87(ci, mn, ops)
         else:
             raise Unliftable(f"op: {mn}")
+
+    def pop(self, ci, k: int) -> None:
+        """The value pushed in this block, or a saved register on the way out of the row."""
+        if self.pushes:
+            self.write(ci, ci.operands[0], self.pushes.pop())
+        elif not self.restores_saved(ci, k):
+            raise Unliftable("pop: value not pushed in the block")
+        self.esp += 4
+
+    def restores_saved(self, ci, k: int) -> bool:
+        """True for a pop of a register the prologue saved, with only the row's end after it."""
+        op = ci.operands[0]
+        if op.type != X86_OP_REG or ci.reg_name(op.reg) not in self.lf.saved:
+            return False
+        return all(
+            after.mnemonic in ("pop", "ret") or _frees_stack(after) or self.lf._tail_jump(after)
+            for after in self.insns[k + 1 :]
+        )
 
     # the x87
 
@@ -1400,6 +1420,10 @@ def _reads(e: E, name: str) -> bool:
 
 def _renamed(e: E, name: str, new: str) -> E:
     return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None)
+
+
+def _frees_stack(ci) -> bool:
+    return ci.mnemonic == "add" and ci.op_str.startswith("esp, ")
 
 
 def _stores(ci) -> bool:
