@@ -274,3 +274,93 @@ def test_an_address_outside_the_frame_refuses():
     # push eax; mov edx, esp; pop eax; ret: this esp is the pushed value, below the frame
     with pytest.raises(lift.Unliftable, match="stack: address outside the frame"):
         lift.lift_row(stub_exe("50 89e2 58 c3"), VA)
+
+
+# ---- setcc and sbb ----
+
+COMPARE = "39d0"  # cmp eax, edx
+MASK_EAX = "25ff000000"  # and eax, 0FFh
+UNSIGNED = "((unsigned)r_eax) {} ((unsigned)r_edx)"
+SETCC = {  # the condition: the setcc opcode's second byte, and the C it reads as
+    "je": ("94", "r_eax == r_edx"),
+    "jne": ("95", "r_eax != r_edx"),
+    "jl": ("9c", "r_eax < r_edx"),
+    "jge": ("9d", "r_eax >= r_edx"),
+    "jg": ("9f", "r_eax > r_edx"),
+    "jle": ("9e", "r_eax <= r_edx"),
+    "jb": ("92", UNSIGNED.format("<")),
+    "jae": ("93", UNSIGNED.format(">=")),
+    "ja": ("97", UNSIGNED.format(">")),
+    "jbe": ("96", UNSIGNED.format("<=")),
+    "js": ("98", "(r_eax - r_edx) < 0"),
+    "jns": ("99", "(r_eax - r_edx) >= 0"),
+}
+
+
+def test_setcc_covers_every_condition():
+    assert set(SETCC) == set(lift.JCC)
+
+
+@pytest.mark.parametrize(("opcode", "expected"), SETCC.values(), ids=SETCC)
+def test_sete_and_mask_is_a_compare(opcode, expected):
+    # cmp eax, edx; set<cc> al; and eax, 0FFh; ret
+    text = lift.lift_row(stub_exe(f"{COMPARE} 0f{opcode}c0 {MASK_EAX} c3"), VA)
+    assert f"return {expected};" in text
+
+
+def test_setcc_on_a_result_compares_it_with_zero():
+    # test eax, eax; sete al; and eax, 0FFh; ret
+    assert "return r_eax == 0;" in lift.lift_row(stub_exe(f"85c0 0f94c0 {MASK_EAX} c3"), VA)
+
+
+def test_setcc_of_another_register_masks_that_register():
+    # cmp eax, edx; sete cl; and ecx, 0FFh; mov eax, ecx; ret
+    text = lift.lift_row(stub_exe(f"{COMPARE} 0f94c1 81e1ff000000 89c8 c3"), VA)
+    assert "return r_eax == r_edx;" in text
+
+
+def test_a_byte_mask_still_masks_any_other_value():
+    # and eax, 0FFh; ret
+    assert "return r_eax & 255;" in lift.lift_row(stub_exe(f"{MASK_EAX} c3"), VA)
+
+
+def test_setcc_without_a_flag_source_refuses():
+    # sete al; ret
+    with pytest.raises(lift.Unliftable, match="jcc: no flag source"):
+        lift.lift_row(stub_exe("0f94c0 c3"), VA)
+
+
+def test_a_setcc_with_no_jcc_keeps_its_own_refusal():
+    # cmp eax, edx; seto al; ret
+    with pytest.raises(lift.Unliftable, match="op: seto"):
+        lift.lift_row(stub_exe(f"{COMPARE} 0f90c0 c3"), VA)
+
+
+def test_sign_jump_after_a_compare_is_the_sign_of_the_difference():
+    # cmp eax, edx; js +1; inc eax; ret
+    text = lift.lift_row(stub_exe(f"{COMPARE} 7801 40 c3"), VA)
+    assert "if ((r_eax - r_edx) < 0) goto" in text
+
+
+def test_sbb_same_register_after_a_compare():
+    # cmp eax, edx; sbb eax, eax; ret
+    text = lift.lift_row(stub_exe(f"{COMPARE} 19c0 c3"), VA)
+    assert f"return -({UNSIGNED.format('<')});" in text
+
+
+def test_sbb_without_a_flag_source_still_refuses():
+    # sbb eax, eax; ret
+    with pytest.raises(lift.Unliftable, match="jcc: no flag source"):
+        lift.lift_row(stub_exe("19c0 c3"), VA)
+
+
+def test_sbb_of_two_registers_keeps_its_refusal():
+    # cmp eax, edx; sbb eax, edx; ret
+    with pytest.raises(lift.Unliftable, match="op: sbb"):
+        lift.lift_row(stub_exe(f"{COMPARE} 19d0 c3"), VA)
+
+
+def test_sbb_after_a_result_keeps_its_refusal():
+    # add eax, edx; sbb ecx, ecx; mov eax, ecx; ret. The carry of an add is not a compare.
+    with pytest.raises(lift.Unliftable, match="op: sbb"):
+        lift.lift_row(stub_exe("01d0 19c9 89c8 c3"), VA)

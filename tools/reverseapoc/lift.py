@@ -105,6 +105,7 @@ class E:
     size: int = 4
     signed: bool = True
     scaled: tuple | None = None  # (index E, scale) for a value made by lea r, [index*scale]
+    boolean: bool = False  # a compare's 0 or 1, which masking to a byte leaves as it is
 
     def __str__(self) -> str:
         return self.text
@@ -599,10 +600,8 @@ class Block_:
                 self.regs[full] = with_high_byte(self.get(full), e)
                 return
             old = self.regs.get(full)
-            if old is not None and old.const == 0:
-                self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, False)
-            else:
-                self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, e.signed)
+            signed = False if old is not None and old.const == 0 else e.signed
+            self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, signed, boolean=e.boolean)
             return
         self.regs[name] = e
 
@@ -851,8 +850,10 @@ class Block_:
         elif mn == "push":
             self.pushes.append(self.read(ci, ops[0]))
             self.esp -= 4
-        elif mn.startswith("set"):
-            raise Unliftable("op: setcc")
+        elif mn.startswith("set") and f"j{mn[3:]}" in JCC:
+            self.write(ci, ops[0], self.compare(f"j{mn[3:]}"))
+        elif mn == "sbb":
+            self.sbb(ci, ops)
         else:
             raise Unliftable(f"op: {mn}")
 
@@ -884,6 +885,10 @@ class Block_:
             raise Unliftable("op: one-operand imul")
         else:
             a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
+        if mn == "and" and a.boolean and b.const == BYTE_MASK:  # the `-4r` end of a setcc
+            self.write(ci, ops[0], E(a.text, pure=a.pure, boolean=True))
+            self.flags = ("res", a)
+            return
         if (
             mn == "sar"
             and b.const == 31
@@ -918,16 +923,28 @@ class Block_:
         rel = JCC[mn]
         unsigned = rel.endswith("u")
         rel = rel.rstrip("u")
-        if self.flags[0] == "cmp":
-            a, b = self.flags[1], self.flags[2]
-        else:
-            a, b = self.flags[1], const(0)
-            if rel in ("<0", ">=0"):
-                rel = rel[:-1]
+        a, b = self.flags[1], self.flags[2] if self.flags[0] == "cmp" else const(0)
+        if rel in ("<0", ">=0"):  # the sign of the result, which after a cmp is a - b
+            a, b, rel = binop("-", a, b), const(0), rel[:-1]
         if unsigned:
             a = cast("unsigned", a, 4, False)
             b = cast("unsigned", b, 4, False) if not b.atom or b.const is None else b
         return f"{paren(a)} {rel} {paren(b)}"
+
+    def compare(self, mn) -> E:
+        """The condition of the jump `mn` as a 0-or-1 value."""
+        c = self.cond(mn)
+        return E(c, pure=all(e.pure for e in self.flags[1:]), boolean=True)
+
+    def sbb(self, ci, ops) -> None:
+        """`sbb r, r` after a compare is minus the unsigned borrow. No other form lifts."""
+        same = ops[0].type == ops[1].type == X86_OP_REG and ops[0].reg == ops[1].reg
+        if not same or (self.flags is not None and self.flags[0] != "cmp"):
+            raise Unliftable("op: sbb")
+        borrow = self.compare("jb")
+        e = E(f"-({borrow})", pure=borrow.pure)
+        self.write(ci, ops[0], e)
+        self.flags = ("res", e)
 
     def jcc(self, ci, mn) -> None:
         c = self.cond(mn)
