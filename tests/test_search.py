@@ -1040,6 +1040,21 @@ def test_a_missing_function_leaves_the_row_output_alone(stubs):
     assert stubs.waves == []
 
 
+def test_a_refused_cell_leaves_the_row_output_alone(monkeypatch, stubs):
+    kept = reverseapoc.search.OUT / "ufo2p" / f"{START:08x}" / "best.c"
+    kept.parent.mkdir(parents=True)
+    kept.write_text("kept", encoding="ascii")
+
+    def refused(_base: Rule, _flags: str) -> Rule:
+        raise batch.BatchError("made up")
+
+    monkeypatch.setattr(batch, "cell_rule", refused)
+    with pytest.raises(batch.BatchError, match="made up"):
+        _run()
+    assert kept.is_file()
+    assert stubs.waves == []
+
+
 # ---- the route into the D-12 queue (flags.propose_batch on run_search's own file) ---------------
 
 

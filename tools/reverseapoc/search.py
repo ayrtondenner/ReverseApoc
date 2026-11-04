@@ -508,10 +508,10 @@ def run_search(
     only scores 0."""
     name = exe.symbols.c_name(row.start)
     base = split_declarators(text, function_span(text, name))
+    cells = _cells(batch.committed_rule(rules, exe.stem, row.unit))
     root = OUT / exe.stem / f"{row.start:08x}"
     if root.exists():
         shutil.rmtree(root)
-    cells = _cells(batch.committed_rule(rules, exe.stem, row.unit))
     run = _Run(exe, row, name, cells, root, watcom_dir)
     seen = {base}
     (best,) = _wave(run, [Candidate(base, ())])
