@@ -1735,3 +1735,12 @@ def test_the_address_of_a_function_names_the_function_a_call_names():
     text = lift.lift_row(StubExe(exe.flat, exe.rows, exe.fixups, TrailingSymbols()), VA)
     assert f"return (int)func_{callee:08x};" in text
     assert f"func_{callee:08x}_" not in text
+
+
+# ---- filler ----
+
+
+def test_filler_in_any_register_reads_nothing():
+    # mov ebx, ebx; lea ecx, [ecx + 0]; nop; mov eax, edx; ret. Read as code, ecx is an argument.
+    exe = stub_exe("89db 8d4900 90 89d0 c3")
+    assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 2

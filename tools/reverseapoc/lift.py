@@ -28,7 +28,7 @@ from .check import ExeInputs
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, FunctionRow
 from .targets import REPO_ROOT
-from .x86 import _disassembler, decode, is_filler
+from .x86 import _disassembler, decode, is_alignment_filler
 
 CACHE_DIR = REPO_ROOT / "build" / "lift"
 ARG_REGS = ("eax", "edx", "ebx", "ecx")
@@ -223,16 +223,17 @@ class Lifter:
         if not insns or insns[-1].address + insns[-1].size != self.row.end:
             raise Unliftable("decode: row does not decode to its end")
         # Watcom alignment filler (lea eax,[eax], mov ebx,ebx, ...) is a no-op: drop it all,
-        # trailing and mid-function, so it reads no register.
-        filler = {i.va for i in decode(code, self.row.start) if is_filler(i)}
-        body = [ci for ci in insns if ci.address not in filler and not self.self_move(ci)]
+        # trailing and mid-function, so it reads no register. A fixup on the displacement means
+        # the field only reads as 0, so that one is no filler.
+        filler = {
+            i.va
+            for i in decode(code, self.row.start)
+            if is_alignment_filler(i) and not (i.disp_offset and i.va + i.disp_offset in self.fix)
+        }
+        body = [ci for ci in insns if ci.address not in filler]
         if not body:
             raise Unliftable("decode: empty")
         return body
-
-    def self_move(self, ci) -> bool:
-        """Filler, unless a fixup sits on its displacement: then the field only reads as 0."""
-        return _self_move(ci) and not (ci.disp_offset and ci.address + ci.disp_offset in self.fix)
 
     def frame(self, insns):
         saved, i = [], 0
@@ -1692,18 +1693,6 @@ def _evidence(insns, call) -> int:
         if reg in pending:
             n = idx + 1
     return n
-
-
-def _self_move(ci) -> bool:
-    """Filler in any register: nop, mov r,r and lea r,[r] (no index, displacement 0)."""
-    ops = ci.operands
-    if ci.mnemonic == "nop":
-        return True
-    if ci.mnemonic == "mov" and len(ops) == 2 and ops[0].type == ops[1].type == X86_OP_REG:
-        return ops[0].reg == ops[1].reg
-    if ci.mnemonic == "lea" and ops[1].mem.index == 0 and ops[1].mem.disp == 0:
-        return ops[1].mem.base == ops[0].reg
-    return False
 
 
 def _use_def(ci) -> tuple[set, set]:
