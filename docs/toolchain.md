@@ -418,6 +418,7 @@ Result (spike [004](../.planning/spikes/004-wibo-watcom/README.md), verdict VALI
 - A source holding `#pragma`, `_asm` or `__asm`, or one that is not ASCII, is refused before anything compiles (`judge` exit 2, a `refused` record in `batch`).
 - Sources, objects and the JSONL go under `build/batch/`; `--out` outside `build/` is refused.
 - Neither verb lands, writes `status.csv` or edits `config/cflags.txt`. A match is still claimed only by `reverseapoc check` / `gate` (D-16). No new dependency.
+- `uv run reverseapoc search EXE ADDR FILE` searches one function's C for a better variant along four axes, in this order: type, statement order, scope and declaration order. It runs at most 600 compile jobs through the same compile and judge, under the unit's committed rule and `-4r -oneatx -s -fpi`, and ranks by exact, then the stack-masked score, then the raw score. A better variant becomes the base, and a round that improved brings another while budget remains. A statement-order variant stands only when it is exact, because reordering can change behaviour. It writes `v<nnnn>/`, `best.c` and `results.jsonl` under `build/batch/search/<exe>/<addr8>/`, and prints a summary line, both frame sizes, whether the slot map is a bijection and each slot that differs. Exit 0 when a cell is exact, 1 when none is, 2 for a refusal or a tool error. It never lands and never writes `status.csv`; [workflow.md](workflow.md) says how a result reaches the flag queue.
 
 ### Open Watcom v2
 

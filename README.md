@@ -139,7 +139,7 @@ The order of work follows Abahbob's rule: get a byte-identical rebuild of raw by
 |---|---|---|
 | [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp) | CC0-1.0 | LE reader, in-place page splice with SHA-1 gate, function discovery tools |
 | [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) | GPLv3 | `omf2elf.py`, the `configure.py` + ninja + objdiff pattern; the reference for a 100% matched Watcom 10.6 DOS/4GW game |
-| [NHL95PC](https://github.com/abdulahmad/NHL95PC) | No licence file; used with the owner's permission, with attribution | `tools/reverseapoc/search.py` adapts the declaration pattern and the type-move loop of its `tools/permute.py` |
+| [NHL95PC](https://github.com/abdulahmad/NHL95PC) | No licence file; used with the owner's permission, with attribution | `tools/reverseapoc/search.py` adapts the declaration pattern and the type-move loop of its `tools/permute.py`, the block search of `tools/scope_decls.py` and the seeded shuffles of `tools/permute_decls.py` |
 | [retrokit](https://github.com/nemo22/retrokit) | Apache-2.0 | Headless Ghidra LE loader, Watcom calling conventions, function export, MCP server (external tool) (not used: Phase 5 runs Ghidra headless in the Docker image with the lastonesky loader) |
 | [decomp.wtf](https://github.com/i12bp8/decomp.wtf) | MIT (archived 2026-10-15) | Agent harness, claims, guardrails, dashboard; used in fork mode as a separate tool (not used in Phase 6: spike 006 INVALIDATED fork mode; the agent layer is our own, D-03/D-04) |
 

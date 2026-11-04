@@ -11,8 +11,8 @@ compiler.build_argv commands in a thread pool. There is no cc.log and no provena
 function is exact when both pass: check's own verdict, which accepts the original's trailing
 Watcom filler under the 07-48 rule (relocs.py rule 1, docs/matching.md). `score` (difflib over
 decoded instructions, relocated fields masked), `stack_score` (the same ratio with stack offsets
-masked too) and `key` (the first differing instruction as mnemonic shapes) only rank and diagnose;
-they decide nothing.
+masked too), `key` (the first differing instruction as mnemonic shapes) and `slot_map` (our stack
+slots against the original's) only rank and diagnose; they decide nothing.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). Records hold addresses, counts,
@@ -57,7 +57,7 @@ from .check import (
 from .fileio import write_atomic
 from .functions import KIND_DATA_IN_CODE, FunctionRow
 from .omf import Module, OMFError
-from .relocs import FIELD_SIZE
+from .relocs import FIELD_SIZE, RelocResult
 from .status import lf_sha256
 from .targets import DEFAULT_MANIFEST, DEFAULT_ORIG, REPO_ROOT, load_manifest
 from .watcom import DEFAULT_INSTALL
@@ -235,8 +235,9 @@ def shape(mnemonic: str, op_str: str) -> str:
 
 # An esp-based operand with its index and displacement, as a token shows either: `[esp]`,
 # `[esp + 8]`, `[esp - 4]`, `[esp + ecx*4 + 0xc]`, or `[esp + N]` in a shape.
-_ESP_OPERAND = re.compile(r"\[esp(?P<index> \+ [a-z]+(?:\*\w+)?)?(?: [-+] \w+)?\]")
-_ESP_FRAME = re.compile(r"^(sub|add) esp, (?:0x[0-9a-f]+|\d+|N)$")
+_ESP_OPERAND = re.compile(r"\[esp(?P<index> \+ [a-z]+(?:\*\w+)?)?(?P<disp> [-+] \w+)?\]")
+_ESP_FRAME = re.compile(r"^(sub|add) esp, (?P<size>0x[0-9a-f]+|\d+|N)$")
+PUSH_SIZE = 4  # bytes a 32-bit push takes
 
 
 def _stack_masked(token: str) -> str:
@@ -291,6 +292,69 @@ def stack_score(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> float:
     a = _tokens(ours, va, masked, stack=True)
     b = _tokens(theirs, va, masked, stack=True)
     return round(100.0 * _matcher(a, b).ratio(), 2)
+
+
+@dataclass(frozen=True)
+class SlotMap:
+    """Our stack slots against the original's: offsets, never bytes. It reports and decides
+    nothing."""
+
+    pairs: tuple[tuple[int, int], ...]  # (our slot, their slot), each pair once, sorted
+    bijection: bool  # no slot on either side stands in two pairs
+    frame_ours: int  # the N of `sub esp, N`, 0 with no frame
+    frame_theirs: int
+
+
+def _depth_after(insn: Insn, depth: int) -> int:
+    """`depth` past `insn`, inside the frame: a call ends it whether the callee popped or the
+    caller cleans up after it."""
+    if insn.mnemonic == "push":
+        return depth + PUSH_SIZE
+    if insn.mnemonic == "pop":
+        return max(depth - PUSH_SIZE, 0)
+    return 0 if insn.is_call else depth
+
+
+def _frame_size(insn: Insn) -> int | None:
+    """The N of `sub esp, N`, or None for any other instruction."""
+    found = _ESP_FRAME.match(f"{insn.mnemonic} {insn.op_str}")
+    return int(found["size"], 0) if found is not None and found[1] == "sub" else None
+
+
+def _displacement(operand: re.Match[str]) -> int:
+    return int(operand["disp"].replace(" ", ""), 0) if operand["disp"] else 0
+
+
+def _frame_slots(code: bytes, va: int) -> tuple[list[int | None], int]:
+    """The frame-relative slot of each instruction's esp operand (None when it has none), and
+    the frame size. Depth starts after `sub esp, N`, so saved registers shift nothing, and an
+    operand is read before its own instruction's push moves esp."""
+    slots: list[int | None] = []
+    frame = None
+    depth = 0
+    for insn in decode(code, va):
+        operand = _ESP_OPERAND.search(insn.op_str)
+        slots.append(None if operand is None else _displacement(operand) - depth)
+        if frame is None:
+            frame = _frame_size(insn)
+        else:
+            depth = _depth_after(insn, depth)
+    return slots, frame or 0
+
+
+def slot_map(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> SlotMap:
+    """Pair the stack slots of the instructions `diff_summary`'s matcher aligns, on stack-masked
+    tokens, each slot relative to the frame by a linear depth. Known limit: a slot read between
+    two calls while an outer argument is still pushed comes out shifted and shows up as a
+    conflict, which reports and decides nothing."""
+    our_slots, frame_ours = _frame_slots(ours, va)
+    their_slots, frame_theirs = _frame_slots(theirs, va)
+    matcher = _matcher(_tokens(ours, va, masked, stack=True),
+                       _tokens(theirs, va, masked, stack=True))  # fmt: skip
+    aligned = [(i + n, j + n) for i, j, size in matcher.get_matching_blocks() for n in range(size)]
+    pairs = {(our_slots[i], their_slots[j]) for i, j in aligned if our_slots[i] is not None}
+    bijection = len(pairs) == len({a for a, _ in pairs}) == len({b for _, b in pairs})
+    return SlotMap(tuple(sorted(pairs)), bijection, frame_ours, frame_theirs)
 
 
 # ---- Watcom alignment filler and the pad ----
@@ -417,6 +481,11 @@ def body_key(body: FunctionBody) -> str:
     return hashlib.sha256(d.ours + repr(fixups).encode("ascii")).hexdigest()
 
 
+def _reloc_mask(reloc: RelocResult) -> set[int]:
+    """Every address inside a relocated field of either side."""
+    return {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
+
+
 def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
     """check's verdict for the row at `start` from our object `obj`: the relocation check (with
     the data-in-code row right before it as its leading table) and the byte compare. `exact` is
@@ -430,7 +499,7 @@ def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
     module, rows = body.module, body.rows
     ((d, reloc),) = with_relocs(module, [body.defined], rows, exe)
     cmp = compare_bytes(d.ours, row, exe.flat, reloc)
-    masked = {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
+    masked = _reloc_mask(reloc)
     theirs = exe.flat[row.start : row.end]
     score, key = diff_summary(d.ours, theirs, row.start, masked)
     stack = stack_score(d.ours, theirs, row.start, masked)
@@ -445,6 +514,18 @@ def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
     if exact or not 0 < n < length or not filler_tail(theirs, row.start, n):
         return verdict
     return dataclasses.replace(verdict, exact_trim=_trimmed_exact(module, exe, rows, row, n))
+
+
+def function_slots(exe: ExeInputs, obj: Path, start: int) -> SlotMap:
+    """slot_map of the row at `start` against our object `obj`. With no function in `obj`, the
+    map holds no pairs and our frame reads 0: the row's frame size is still worth reporting."""
+    row = row_at(exe, start)
+    theirs = exe.flat[row.start : row.end]
+    body = function_body(exe, obj, start)
+    if isinstance(body, str):
+        return slot_map(b"", theirs, start, set())
+    ((d, reloc),) = with_relocs(body.module, [body.defined], body.rows, exe)
+    return slot_map(d.ours, theirs, start, _reloc_mask(reloc))
 
 
 def _trimmed_exact(

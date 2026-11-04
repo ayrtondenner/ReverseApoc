@@ -1259,6 +1259,12 @@ def _run_search(args: argparse.Namespace) -> int:
     print(f"search: {result.compiles} compiles, {result.bodies} distinct bodies, "
           f"exact {result.exact}, score {result.score}, stack score {result.stack_score}, "
           f"axes {','.join(result.axes) or '-'}, best {result.best}")  # fmt: skip
+    slots = result.slots
+    print(f"frame: ours {slots.frame_ours:#x}, theirs {slots.frame_theirs:#x}")
+    print(f"slots: bijection {slots.bijection}")
+    for ours, theirs in slots.pairs:
+        if ours != theirs:
+            print(f"slot {ours:#x} -> {theirs:#x}")
     return 0 if result.exact else 1
 
 

@@ -87,7 +87,7 @@ class Stubs:
         monkeypatch.setattr(batch, "function_body", lambda _exe, obj, _start: obj)
         monkeypatch.setattr(batch, "body_key", lambda obj: self.key(*_source(obj)))
         monkeypatch.setattr(batch, "judge", self._judge)
-        monkeypatch.setattr(batch, "function_slots", self._function_slots, raising=False)
+        monkeypatch.setattr(batch, "function_slots", self._function_slots)
 
     def _function_slots(self, _exe, obj: Path, _start: int) -> batch.SlotMap:
         self.slot_objects.append(obj)
@@ -400,11 +400,18 @@ def test_statement_moves_swap_adjacent_simple_statements_only():
         _swapped(lines, 3, 4), _swapped(lines, 6, 7), _swapped(lines, 11, 12)]  # fmt: skip
 
 
-@pytest.mark.parametrize("control", ["switch (a) {", "do {", "} else {", "case 1:", "default:",
-                                     "break;", "continue;", "return 0;"])  # fmt: skip
-def test_statement_moves_never_cross_a_control_line(control):
-    text = _body("a = 1;", control, "a = 2;")
-    assert _moves_of(reverseapoc.search.statement_moves, text) == []
+@pytest.mark.parametrize("lines", [
+    ("a = 1;", "switch (a) {", "a = 2;", "}"),
+    ("a = 1;", "do {", "a = 2;", "} while (a);"),
+    ("if (a) {", "a = 1;", "} else {", "a = 2;", "}"),
+    ("a = 1;", "case 1:", "a = 2;"),
+    ("a = 1;", "default:", "a = 2;"),
+    ("a = 1;", "break;", "a = 2;"),
+    ("a = 1;", "continue;", "a = 2;"),
+    ("a = 1;", "return 0;", "a = 2;"),
+])  # fmt: skip
+def test_statement_moves_never_cross_a_control_line(lines):
+    assert _moves_of(reverseapoc.search.statement_moves, _body(*lines)) == []
 
 
 def test_statement_moves_leave_a_statement_split_across_lines():
@@ -724,7 +731,7 @@ def test_an_axis_that_improved_brings_a_second_round(stubs):
 
 
 def test_axes_name_each_axis_the_winner_moved_along(stubs):
-    stubs.decide = _scored({"    int c;\n    short b;\n": verdict(exact=True),
+    stubs.decide = _scored({"    short c;\n    short b;\n": verdict(exact=True),
                             "    short b;": verdict(60.0, 60.0)})  # fmt: skip
     result = _run()
     assert result.exact is True

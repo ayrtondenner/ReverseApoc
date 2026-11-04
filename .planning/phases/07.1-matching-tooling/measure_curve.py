@@ -5,8 +5,10 @@
     uv run python .planning/phases/07.1-matching-tooling/measure_curve.py --self-check [--plant]
 
 `--point N` lifts every Tier 1 member with the lifter's defaults into build/curve/<N>/src, runs
-`reverseapoc batch` on them under the committed rule and CELL, and writes the point's row and
-section into 07.1-CURVE.md. The first run also draws 07.1-SAMPLE.csv, which is never redrawn.
+`reverseapoc batch` on them under the committed rule and CELL, runs `search.run_search` on each
+sample row with a compiled draft that is not exact (the Tier 1 number stays converter-only, D-27),
+and writes the point's row and section into 07.1-CURVE.md. The first run also draws
+07.1-SAMPLE.csv, which is never redrawn.
 `--self-check` runs the pure functions on canned records; `--plant` flips one expectation, so the
 self-check must fail. Generated C stays under the gitignored build/. Run from anywhere.
 """
@@ -25,9 +27,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from reverseapoc import batch, cli, mechanics
+from reverseapoc import batch, cli, mechanics, search
+from reverseapoc.cflags import load_cflags
 from reverseapoc.check import DEFAULT_CONFIG
 from reverseapoc.targets import REPO_ROOT
+from reverseapoc.watcom import DEFAULT_INSTALL
 
 # The lifter stays in spike 010 until plan 3, and it imports `common` from there at call time.
 sys.path.insert(0, str(REPO_ROOT / ".planning" / "spikes" / "010-deterministic-matching"))
@@ -42,7 +46,8 @@ NEAR = 90.0
 BUCKETS = ((0, 64, "<64"), (64, 256, "64-255"), (256, 1024, "256-1023"), (1024, 1 << 30, ">=1024"))
 SAMPLED = BUCKETS[1:]
 OUTCOMES = ("exact", "near", "compiled", "compile-failed", "refused", "crash")
-TOOLS = ("converter",)
+TOOLS = ("converter", "search")
+SEARCHED = ("near", "compiled")  # a compiled draft that is not exact: the rows search runs on
 NUMBERS = ("t1 exact", "t1 near", "s exact", "s near")
 COLUMNS = (
     "point",
@@ -116,6 +121,13 @@ def outcome_of(records: list[dict]) -> str:
     if not scores:
         return "compile-failed"
     return "near" if max(scores) >= NEAR else "compiled"
+
+
+def searched_outcome(draft: list[dict], winner: list[dict]) -> str:
+    """A searched row counts what the tools hand over, the draft and the winner together. Read
+    alone, a winner ranked on the stack score could drop a draft out of `near`, and D-27 would
+    count that side effect of the ranking as movement."""
+    return outcome_of([*draft, *winner])
 
 
 def _matched_line(rows: list[dict]) -> str:
@@ -273,6 +285,22 @@ def run_batch(src: Path, out: Path) -> dict[tuple[str, str], list[dict]]:
     return found
 
 
+def search_sample(sample: list[dict], records: dict, exes: dict, src: Path) -> None:
+    """Replace the outcome of each sample row with a compiled draft that is not exact. `refused`,
+    `crash` and `compile-failed` rows have no object to search and keep theirs. `sample` holds
+    its own row dicts, so the Tier 1 rows stay converter-only."""
+    rules = load_cflags()
+    for row in sample:
+        if row["outcome"] not in SEARCHED:
+            continue
+        path = src / row["exe"] / f"f_{row['row'].start:08x}.c"
+        text = path.read_text(encoding="ascii")
+        result = search.run_search(exes[row["exe"]], row["row"], text, rules,
+                                   watcom_dir=DEFAULT_INSTALL)  # fmt: skip
+        draft = records[row["exe"], row["address"]]
+        row["outcome"] = searched_outcome(draft, list(result.records))
+
+
 def _waiting_count(rows: list[dict], outcome: str) -> int:
     return sum(1 for row in rows if not row["matched"] and row["outcome"] == outcome)
 
@@ -377,6 +405,7 @@ def measure(point: int) -> int:
             row["outcome"] = outcome_of(records[row["exe"], row["address"]])
     by_key = {(row["exe"], row["address"]): row for row in tier}
     sample = [{**by_key[key], "matched": False} for key in keys]  # rows stay fixed: D-27
+    search_sample(sample, records, exes, src)
     current = numbers(tier, sample)
     previous = previous_numbers(known[point - 1]) if point else None
     cells, stop = point_row(point, previous, current)
@@ -456,6 +485,24 @@ def cases() -> list[tuple[str, object, object]]:
             outcome_of([_record(0.0, compiled=False), _record(91.0)]),
             "near",
         ),
+        (
+            "a draft at raw 91 and a winner at raw 88 stay near",
+            searched_outcome([_record(91.0)], [_record(88.0)]),
+            "near",
+        ),
+        (
+            "an exact winner makes the row exact",
+            searched_outcome([_record(50.0)], [_record(100.0, exact=True)]),
+            "exact",
+        ),
+        ("a near winner lifts a draft", searched_outcome([_record(50.0)], [_record(92.0)]), "near"),
+        (
+            "a winner under NEAR adds nothing",
+            searched_outcome([_record(50.0)], [_record(60.0)]),
+            "compiled",
+        ),
+        ("only a compiled draft is searched", SEARCHED, ("near", "compiled")),
+        ("the tools named are both", TOOLS, ("converter", "search")),
         ("table counts an outcome by bucket", canned[2], "| exact | 1 | 0 | 0 | 0 | 1 |"),
         ("table totals its rows", canned[8], "| rows | 1 | 0 | 0 | 1 | 2 |"),
         (
