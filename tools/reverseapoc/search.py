@@ -95,6 +95,7 @@ _BEFORE_ADDRESS = (r"(?:[(,=!?:;{}\[*/%|^<>~]|(?<!\+)\+|(?<!-)-|&&|\breturn|\*\s
 _ITSELF = r"\b(?!\s*(?:->|\[))"  # not `&p->x` or `&p[1]`, the address of what a pointer points at
 _SIZEOF = re.compile(r"\bsizeof\s*\([^()]*\)")
 _OPERAND = "0"
+_INITIALIZED_AGGREGATE = re.compile(r"=\s*\{")  # _DECLARATION leaves it out, by its `{`
 
 
 @dataclass(frozen=True)
@@ -463,11 +464,19 @@ def _float_in_a_tie(found: re.Match[str], memory: Sequence[slots.Local], body: s
             and not _address_taken(name, body))  # fmt: skip
 
 
+def _parameter_words(code: Sequence[str], span: tuple[int, int]) -> set[str]:
+    """Every word of the parameter list of the body at `span`: the names, and their types too,
+    which cost nothing, because only a name can follow a `&`."""
+    head = "\n".join([*code[: span[0]], code[span[0]].split("{")[0]]).rstrip()
+    return set(_WORD.findall(head[len(head) - 1 - _closing(head[::-1], 0, ")", "(") :]))
+
+
 def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -> bool:
     """A frame can be read from `span`: every local has a size and a name of its own, no float
-    stands in a tie, no `&` is ambiguous, and none outside `memory` is under a slot, because a
-    spilled short can move with its declaration (pr_spill_short) and then scalars are not out of
-    reach of declaration moves."""
+    stands in a tie, no `&` is ambiguous, no slot lies outside the declarations, as a parameter
+    whose address is taken and an initialized aggregate do, and no local outside `memory` is under
+    a slot, because a spilled short can move with its declaration (pr_spill_short) and then
+    scalars are not out of reach of declaration moves."""
     code = _code(text).split("\n")
     found = [_declaration(code[n]) for n in declarations(text, span)]
     names = [_name(one) for one in found]
@@ -475,7 +484,11 @@ def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -
     if len(set(names)) != len(names) or None in sizes:
         return False
     body = _operands(text, span)
-    if any(_float_in_a_tie(one, memory, body) for one in found) or _ambiguous_and(names, body):
+    parameters = _parameter_words(code, span)
+    if (any(_float_in_a_tie(one, memory, body) for one in found)
+            or _ambiguous_and({*names, *parameters}, body)
+            or any(_address_taken(word, body) for word in parameters)
+            or _INITIALIZED_AGGREGATE.search(body) is not None):  # fmt: skip
         return False
     held = {local.name for local in memory}
     return all(size >= slots.SLOT_ALIGN or name in held

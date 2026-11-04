@@ -1426,6 +1426,63 @@ def test_a_map_with_no_memory_local_to_place_still_skips_the_axis():
     assert _axis(text, _pairs((0, 4), (4, 0))) == []
 
 
+def _takes(header: str, *lines: str) -> str:
+    return f"{header}\n{{\n" + "".join(f"    {line}\n" for line in lines) + "}\n"
+
+
+_SWAP = batch.SlotMap(((0, 4), (4, 0)), True, 8, 8)  # b and d, the two ints of these functions
+
+
+@pytest.mark.parametrize("header", ["int f(int a)", "int f(int z, int a)", "int f(int z,\n int a)"])
+def test_declaration_axis_falls_back_when_a_parameter_has_its_address_taken(header):
+    """It takes a slot beside the locals, and no declaration line shows it."""
+    text = _takes(header, "int b;", "int d;", "", "take(&a, &b, &d);", "return a;")
+    moves = _axis(text, _SWAP)
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_a_cast_of_a_parameter_to_an_unknown_type_is_ambiguous_too():
+    text = _takes("int f(int a)", "int b;", "int d;", "", "take((DWORD)&a, &b, &d);", "return a;")
+    assert _axis(text, _SWAP) == _plan_1_moves(text)
+
+
+@pytest.mark.parametrize("use", ["take(&s->y, &b, &d);", "take(&s[1], &b, &d);"])
+def test_what_a_pointer_parameter_points_at_needs_no_fallback(use):
+    lines = ("int b;", "int d;", "", use, "return 0;")
+    (move,) = _axis(_takes("int f(struct pos *s)", *lines), _SWAP)
+    assert move.text == _takes("int f(struct pos *s)", "int d;", "int b;", *lines[2:])
+
+
+def test_a_function_with_no_parameter_list_to_read_still_computes():
+    lines = ("int b;", "int d;", "", "take(&b, &d);", "return 0;")
+    (move,) = _axis(_takes("int f(void)", *lines), _SWAP)
+    assert move.text == _takes("int f(void)", "int d;", "int b;", *lines[2:])
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [("int v[2] = {0x555, 0x666};",), ("int v[2] =", "{0x555, 0x666};"),
+     ("struct pos s = {1, 2};",)],
+)  # fmt: skip
+def test_declaration_axis_falls_back_beside_an_initialized_aggregate(lines):
+    """No declaration line shows it, and it changes the offsets of the locals beside it."""
+    text = _takes("int f(int a)", *lines, "int b;", "int d;", "", "take(&b, &d);", "return a;")
+    moves = _axis(text, _SWAP)
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+@pytest.mark.parametrize(
+    "lines",
+    [("int b;", "", "take(&a, &b);", "return a;"),
+     ("int v[2] = {1, 2};", "int b;", "", "take(v, &b);", "return a;")],
+)  # fmt: skip
+def test_scalars_are_not_reported_beside_a_slot_no_declaration_shows(monkeypatch, stubs, lines):
+    _map_is(monkeypatch, SCALAR_MAP)
+    assert _run(_body(*lines).replace("int f(", f"int {A1}(")).scalars == ()
+
+
 def test_declaration_axis_falls_back_beside_a_plain_double():
     """order_is_known sees the double, so the tie of ints beside it is refused."""
     text = _body("int b;", "int d;", "double p;", "", "take(&b, &d);", "p = a;", "return a;")
