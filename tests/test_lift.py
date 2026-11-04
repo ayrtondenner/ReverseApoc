@@ -1637,3 +1637,42 @@ def test_another_callee_keeps_its_prototype():
     callee = VA + ROW_SPACING
     text = lift.lift_row(stub_exe(f"{call_to(VA, callee)} c3", "b801000000 c3"), VA)
     assert f"int func_{callee:08x}(void);" in text
+
+
+# ---- slot widths ----
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "88442408 8b442408",  # mov byte ptr [esp + 8], al; mov eax, [esp + 8]
+        "6689442408 8b442408",  # mov word ptr [esp + 8], ax; mov eax, [esp + 8]
+        f"{FLD_A} dd442408 {FSTP_C} {FSTP_C}",  # fld dword, then fld qword, of the slot at 8
+    ],
+    ids=["byte", "word", "float"],
+)
+def test_a_slot_read_wider_than_its_declaration_refuses(code):
+    with pytest.raises(lift.Unliftable, match="stack: slot read at two widths"):
+        in_frame(code)
+
+
+def test_a_slot_read_narrower_than_its_declaration_keeps_it():
+    # mov [esp + 8], eax; movzx eax, byte ptr [esp + 8]
+    assert "int s_8;" in in_frame("89442408 0fb6442408")
+
+
+def test_the_short_hint_covers_a_word_read_of_a_byte_store():
+    # mov byte ptr [esp + 8], al; movsx eax, word ptr [esp + 8]
+    assert "short s_8;" in in_frame(f"88442408 {READ_MOVSX}")
+
+
+def test_a_saved_register_is_no_local():
+    # push ebx; mov eax, [esp]; pop ebx; ret
+    with pytest.raises(lift.Unliftable, match="stack: saved register slot"):
+        lift.lift_row(stub_exe("53 8b0424 5b c3"), VA)
+
+
+def test_a_store_to_a_saved_register_refuses():
+    # push ebx; mov [esp], eax; pop ebx; ret
+    with pytest.raises(lift.Unliftable, match="stack: saved register slot"):
+        lift.lift_row(stub_exe("53 890424 5b c3"), VA)

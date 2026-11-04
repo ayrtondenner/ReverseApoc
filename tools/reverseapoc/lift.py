@@ -69,6 +69,7 @@ SIZE_TYPE = {
     (4, FLOAT): "float",
     (8, FLOAT): "double",
 }
+TYPE_SIZE = {name: size for (size, _), name in SIZE_TYPE.items()}
 JCC = {
     "je": "==",
     "jne": "!=",
@@ -942,6 +943,8 @@ class Block_:
             return var(f"r_p{n + 5}", 4, signed)
         if off >= 0:
             raise Unliftable("stack: return address slot")
+        if off >= self.lf.frame_top:
+            raise Unliftable("stack: saved register slot")
         name = _slot_name(off)
         self.lf.locals.setdefault(name, SIZE_TYPE[op.size, signed])
         return var(name, op.size, signed)
@@ -977,6 +980,8 @@ class Block_:
             if e.text in self.lf.locals:
                 short = self.lf.word_reads.get(e.text, True) and self.sign_extends_word(ci, op)
                 self.lf.word_reads[e.text] = short
+                if op.size > TYPE_SIZE[self.lf.locals[e.text]] and not short:
+                    raise Unliftable("stack: slot read at two widths")
             return e
         raise Unliftable("operand: unknown")
 
