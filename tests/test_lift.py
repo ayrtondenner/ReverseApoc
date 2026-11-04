@@ -4,6 +4,7 @@ bytes. The lifter reads five things of an EXE: `flat`, `rows`, `fixups`, `symbol
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import pytest
@@ -530,3 +531,238 @@ def test_a_case_never_inherits_the_flags_of_the_block_above_it():
     exe = with_table(stub_exe(code), (first, second), VA)
     with pytest.raises(lift.Unliftable, match="jcc: no flag source"):
         lift.lift_row(exe, VA)
+
+
+# ---- x87 ----
+
+FLD_A = "d9442408"  # fld dword ptr [esp + 8]: s_8
+FLD_B = "d944240c"  # fld dword ptr [esp + 0Ch]: s_4
+FSTP_C = "d95c2404"  # fstp dword ptr [esp + 4]: s_c
+FLOAT_GLOBAL = 0x9000
+
+
+def float_global(opcode: str, code_before: str = "") -> StubExe:
+    """`opcode [disp32]` with a fixup on the displacement, inside a frame."""
+    field = VA + len(bytes.fromhex(FRAME + code_before)) + len(bytes.fromhex(opcode))
+    disp = FLOAT_GLOBAL.to_bytes(FIELD_SIZE, "little").hex()
+    code = f"{FRAME} {code_before} {opcode} {disp} {FSTP_C} {UNFRAME}"
+    return stub_exe(code, fixups=(data_fixup(field, FLOAT_GLOBAL),))
+
+
+def test_x87_load_operate_store():
+    # fld a; fadd dword ptr [esp + 0Ch]; fstp c
+    text = in_frame(f"{FLD_A} d844240c {FSTP_C}")
+    assert "s_c = s_8 + s_4;" in text
+    assert "float s_c;" in text
+    assert "float s_8;" in text
+    assert "float s_4;" in text
+
+
+def test_a_qword_operand_is_a_double():
+    # fld qword ptr [esp + 8]; fstp qword ptr [esp]
+    text = in_frame("dd442408 dd1c24")
+    assert "double s_8;" in text
+    assert "double s_10;" in text
+    assert "s_10 = s_8;" in text
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("d864240c", "s_8 - s_4"),  # fsub dword ptr [esp + 0Ch]
+        ("d86c240c", "s_4 - s_8"),  # fsubr dword ptr [esp + 0Ch]
+        ("d874240c", "s_8 / s_4"),  # fdiv dword ptr [esp + 0Ch]
+        ("d87c240c", "s_4 / s_8"),  # fdivr dword ptr [esp + 0Ch]
+        ("d84c240c", "s_8 * s_4"),  # fmul dword ptr [esp + 0Ch]
+    ],
+)
+def test_x87_arithmetic_with_memory(code, expected):
+    assert f"s_c = {expected};" in in_frame(f"{FLD_A} {code} {FSTP_C}")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("dec1", "s_8 + s_4"),  # faddp st(1)
+        ("dec9", "s_8 * s_4"),  # fmulp st(1)
+        ("dee9", "s_8 - s_4"),  # fsubp st(1): st(1) - st(0)
+        ("dee1", "s_4 - s_8"),  # fsubrp st(1): st(0) - st(1)
+        ("def9", "s_8 / s_4"),  # fdivp st(1)
+        ("def1", "s_4 / s_8"),  # fdivrp st(1)
+    ],
+)
+def test_x87_arithmetic_that_pops(code, expected):
+    # fld a; fld b; <op>; fstp c
+    assert f"s_c = {expected};" in in_frame(f"{FLD_A} {FLD_B} {code} {FSTP_C}")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("d8e1", "s_4 - s_8"),  # fsub st(1): st(0) - st(1)
+        ("d8e9", "s_8 - s_4"),  # fsubr st(1): st(1) - st(0)
+    ],
+)
+def test_x87_arithmetic_into_the_top(code, expected):
+    # fld a; fld b; <op>; fstp c; fstp st(0)
+    assert f"s_c = {expected};" in in_frame(f"{FLD_A} {FLD_B} {code} {FSTP_C} ddd8")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("dce9", "s_8 - s_4"),  # fsub st(1), st(0): st(1) - st(0)
+        ("dce1", "s_4 - s_8"),  # fsubr st(1), st(0): st(0) - st(1)
+    ],
+)
+def test_x87_arithmetic_into_a_lower_register(code, expected):
+    # fld a; fld b; <op>; fstp st(0); fstp c
+    assert f"s_c = {expected};" in in_frame(f"{FLD_A} {FLD_B} {code} ddd8 {FSTP_C}")
+
+
+def test_fld_of_a_register_copies_it():
+    # fld a; fld st(0); faddp st(1); fstp c
+    assert "s_c = s_8 + s_8;" in in_frame(f"{FLD_A} d9c0 dec1 {FSTP_C}")
+
+
+def test_fstp_of_a_register_overwrites_it():
+    # fld a; fld b; fstp st(1); fstp c: b replaces a
+    assert "s_c = s_4;" in in_frame(f"{FLD_A} {FLD_B} ddd9 {FSTP_C}")
+
+
+def test_fst_keeps_the_value_on_the_stack():
+    # fld a; fst dword ptr [esp + 4]; fstp dword ptr [esp]
+    text = in_frame(f"{FLD_A} d9542404 d91c24")
+    assert "s_c = s_8;" in text
+    assert "s_10 = s_8;" in text
+
+
+def test_fild_reads_an_integer():
+    # fild dword ptr [esp + 8]; fstp c
+    text = in_frame(f"db442408 {FSTP_C}")
+    assert "int s_8;" in text
+    assert "s_c = (double)s_8;" in text
+
+
+def test_fild_of_a_word_reads_a_short():
+    # fild word ptr [esp + 8]; fstp c
+    assert "short s_8;" in in_frame(f"df442408 {FSTP_C}")
+
+
+def test_fistp_stores_an_integer():
+    # fld a; fistp dword ptr [esp + 4]
+    text = in_frame(f"{FLD_A} db5c2404")
+    assert "int s_c;" in text
+    assert "s_c = (int)s_8;" in text
+
+
+def test_fchs_and_fabs_wrap():
+    # fld a; fchs; fabs; fstp c
+    text = in_frame(f"{FLD_A} d9e0 d9e1 {FSTP_C}")
+    assert "s_c = fabs(-s_8);" in text
+    assert "double fabs(double);" in text
+
+
+def test_a_float_inside_an_array_reads_at_its_own_type():
+    # lea eax, [esp + 8]; fld dword ptr [esp + 0Ch]; fstp c
+    text = in_frame(f"8d442408 d944240c {FSTP_C}")
+    assert "s_c = *(float *)(s_8 + 4);" in text
+
+
+def test_float_constant_is_an_extern():
+    # fld dword ptr [D]; fstp c
+    text = lift.lift_row(float_global("d905"), VA)
+    assert f"extern char D_{FLOAT_GLOBAL:08x}[];" in text
+    assert "*(float *)" in text
+    assert not re.search(r"\d\.\d", text)
+
+
+def test_a_double_constant_operates_through_its_extern():
+    # fld a; fmul qword ptr [D]; fstp c
+    text = lift.lift_row(float_global("dc0d", FLD_A), VA)
+    assert "*(double *)" in text
+    assert f"D_{FLOAT_GLOBAL:08x}" in text
+    assert not re.search(r"\d\.\d", text)
+
+
+def test_a_float_array_of_a_global_reads_as_an_element():
+    # fld dword ptr [eax*4 + D]; fstp c
+    text = lift.lift_row(float_global("d90485"), VA)
+    assert f"s_c = ((float *)D_{FLOAT_GLOBAL:08x})[r_eax];" in text
+
+
+def compare_row(compare: str, jump: str = "72") -> StubExe:
+    """`compare; fnstsw ax; sahf; j<cc> +0` in a frame."""
+    return stub_exe(f"{FRAME} {compare} dfe0 9e {jump}00 {UNFRAME}")
+
+
+def test_x87_compare_drives_a_branch():
+    # fld a; fcomp dword ptr [esp + 0Ch]; fnstsw ax; sahf; jb
+    text = lift.lift_row(compare_row(f"{FLD_A} d85c240c"), VA)
+    assert "if (s_8 < s_4) goto" in text
+    assert "unsigned" not in text
+
+
+def test_fcompp_compares_the_two_top_registers():
+    # fld a; fld b; fcompp; fnstsw ax; sahf; jae: st(0) is b
+    text = lift.lift_row(compare_row(f"{FLD_A} {FLD_B} ded9", "73"), VA)
+    assert "if (s_4 >= s_8) goto" in text
+
+
+def test_fcomp_of_a_register_pops_one():
+    # fld a; fld b; fcomp st(1); fnstsw ax; sahf; jbe: a stays loaded past the block's end
+    with pytest.raises(lift.Unliftable, match="x87: stack live across a block end"):
+        lift.lift_row(compare_row(f"{FLD_A} {FLD_B} d8d9", "76"), VA)
+
+
+def test_the_status_word_is_no_return_value():
+    # the compare row writes ax through fnstsw and nothing else of eax
+    assert lift.lift_row(compare_row(f"{FLD_A} d85c240c"), VA).startswith("\nvoid func_")
+
+
+def test_the_status_word_is_nothing_else_can_read():
+    # fld a; fcomp b; fnstsw ax; test ah, 41h; ret
+    code = f"{FRAME} {FLD_A} d85c240c dfe0 f6c441 {UNFRAME}"
+    with pytest.raises(lift.Unliftable, match="reg: eax read before any write"):
+        lift.lift_row(stub_exe(code), VA)
+
+
+def test_fnstsw_with_no_compare_keeps_its_refusal():
+    with pytest.raises(lift.Unliftable, match="op: fnstsw"):
+        lift.lift_row(stub_exe("dfe0 9e c3"), VA)
+
+
+def test_sahf_with_no_status_word_keeps_its_refusal():
+    with pytest.raises(lift.Unliftable, match="op: sahf"):
+        lift.lift_row(stub_exe("9e c3"), VA)
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        ("d9e8", "op: fld1"),
+        ("d9ee", "op: fldz"),
+        ("d9c9", "op: fxch"),
+        ("d9fa", "op: fsqrt"),
+        ("db6c2408", "op: fld"),  # a ten-byte load
+        ("df6c2408", "op: fild"),  # a qword integer load
+    ],
+)
+def test_other_x87_forms_keep_their_refusal(code, reason):
+    with pytest.raises(lift.Unliftable, match=reason):
+        in_frame(f"{FLD_A} {code}")
+
+
+def test_a_qword_fistp_keeps_its_refusal():
+    with pytest.raises(lift.Unliftable, match="op: fistp"):
+        in_frame(f"{FLD_A} df7c2404")
+
+
+def test_a_pop_of_the_empty_stack_refuses():
+    with pytest.raises(lift.Unliftable, match="x87: stack read before any load"):
+        in_frame(FSTP_C)
+
+
+def test_a_stack_left_at_a_block_end_refuses():
+    with pytest.raises(lift.Unliftable, match="x87: stack live across a block end"):
+        in_frame(FLD_A)

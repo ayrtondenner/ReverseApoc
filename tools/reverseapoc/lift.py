@@ -52,6 +52,7 @@ HIGH_SHIFT = 8
 BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
 TABLE_ENTRY = 4  # a jump table's entry: one off32 fixup
+FLOAT = None  # the third kind of number SIZE_TYPE names, beside signed and unsigned
 SIZE_TYPE = {
     (1, True): "signed char",
     (1, False): "unsigned char",
@@ -59,6 +60,8 @@ SIZE_TYPE = {
     (2, False): "unsigned short",
     (4, True): "int",
     (4, False): "unsigned",
+    (4, FLOAT): "float",
+    (8, FLOAT): "double",
 }
 JCC = {
     "je": "==",
@@ -88,6 +91,12 @@ NEG = {
     "<0": ">=0",
     ">=0": "<0",
 }
+
+
+X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "/", "fdivr": "/"}
+X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
+X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
+                       "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
 
 
 class Unliftable(Exception):
@@ -253,7 +262,7 @@ class Lifter:
         written = set()
         for s in order:
             for ci in blocks[s].insns:
-                if ci.mnemonic in ("pop", "ret"):
+                if ci.mnemonic in ("pop", "ret", "fnstsw"):  # a status word returns nothing
                     continue
                 written |= _use_def(ci)[1]
         entry = live_in[order[0]]
@@ -519,7 +528,7 @@ class Lifter:
         for s in order:
             for ci in blocks[s].insns:
                 if (
-                    ci.mnemonic in ("call", "pop", "push", "ret", "cdq", "idiv", "div")
+                    ci.mnemonic in ("call", "pop", "push", "ret", "cdq", "idiv", "div", "fnstsw")
                     or not ci.operands
                 ):
                     continue
@@ -634,6 +643,9 @@ class Block_:
         self.esp = lf.esp0
         self.pushes: list[E] = []
         self.cur = None
+        self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
+        self.fcompare: tuple | None = None  # the last x87 compare, for `fnstsw ax`
+        self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
 
     # registers
 
@@ -791,6 +803,12 @@ class Block_:
             return E(f"(({t} *){array.text})[{i}]", pure=False, size=size, signed=signed)
         return load(binop("+", array, binop("*", i, const(m.scale))), size, signed)
 
+    def place(self, ci, op, signed: bool | None) -> E:
+        """The C lvalue of a memory operand."""
+        if op.mem.base and ci.reg_name(op.mem.base) == "esp":
+            return self.slot(ci, op, signed)
+        return self.lvalue(ci, op, signed)
+
     def read(self, ci, op, signed: bool = True) -> E:
         if op.type == X86_OP_REG:
             return self.get(ci.reg_name(op.reg))
@@ -800,9 +818,7 @@ class Block_:
                 return E(f"(int){self.lf.data_name(fx.target_va)}", atom=True)
             return const(op.imm)
         if op.type == X86_OP_MEM:
-            if op.mem.base and ci.reg_name(op.mem.base) == "esp":
-                return self.slot(ci, op, signed)
-            return self.lvalue(ci, op, signed)
+            return self.place(ci, op, signed)
         raise Unliftable("operand: unknown")
 
     def write(self, ci, op, e: E) -> None:
@@ -825,6 +841,8 @@ class Block_:
     def run(self, blocks, live_in) -> list[str]:
         for k, ci in enumerate(self.insns):
             self.step(ci, k)
+        if self.fstack:
+            raise Unliftable("x87: stack live across a block end")
         last = self.insns[-1] if self.insns else None
         if last is None or not (last.group(1) or last.group(3)):
             self.end_assign(live_in, blocks)
@@ -923,8 +941,97 @@ class Block_:
             self.write(ci, ops[0], self.compare(f"j{mn[3:]}"))
         elif mn == "sbb":
             self.sbb(ci, ops)
+        elif mn in X87_FORMS:
+            self.x87(ci, mn, ops)
         else:
             raise Unliftable(f"op: {mn}")
+
+    # the x87
+
+    def st(self, n: int) -> E:
+        if n >= len(self.fstack):
+            raise Unliftable("x87: stack read before any load")
+        return self.fstack[-1 - n]
+
+    def float_read(self, ci, op) -> E:
+        """An x87 operand: a stack register, or memory at the size it names."""
+        if op.type == X86_OP_REG:
+            return self.st(_st_number(ci, op))
+        if (op.size, FLOAT) not in SIZE_TYPE:
+            raise Unliftable(f"op: {ci.mnemonic}")
+        return self.place(ci, op, FLOAT)
+
+    def float_store(self, ci, op, e: E, signed: bool | None) -> None:
+        if (op.size, signed) not in SIZE_TYPE:
+            raise Unliftable(f"op: {ci.mnemonic}")
+        self.flush(ci)
+        self.out.append(f"{self.place(ci, op, signed)} = {e};")
+
+    def x87(self, ci, mn, ops) -> None:
+        if mn in X87_ARITHMETIC or mn in X87_POPPING:
+            self.float_arith(ci, mn, ops)
+        elif mn == "fld":
+            self.fstack.append(self.float_read(ci, ops[0]))
+        elif mn == "fild":
+            if (ops[0].size, True) not in SIZE_TYPE:
+                raise Unliftable("op: fild")
+            self.fstack.append(cast("double", self.place(ci, ops[0], True), 8, FLOAT))
+        elif mn in ("fst", "fstp"):
+            self.float_move(ci, mn, ops[0])
+        elif mn == "fistp":
+            if (ops[0].size, True) not in SIZE_TYPE:
+                raise Unliftable("op: fistp")
+            t = SIZE_TYPE[ops[0].size, True]
+            self.float_store(ci, ops[0], cast(t, self.st(0), ops[0].size, True), True)
+            self.fstack.pop()
+        elif mn == "fchs":
+            self.fstack[-1] = E(f"-{paren(self.st(0))}", pure=self.st(0).pure)
+        elif mn == "fabs":
+            self.lf.externs.setdefault("fabs", "double fabs(double);")
+            self.fstack[-1] = E(f"fabs({self.st(0)})", pure=self.st(0).pure)
+        else:
+            self.float_status(ci, mn, ops)
+
+    def float_arith(self, ci, mn, ops) -> None:
+        """`op st(0), x` by default; two registers, or a popping form, write `st(i)` instead."""
+        name = X87_POPPING.get(mn, mn)
+        popping = mn in X87_POPPING
+        into = _st_number(ci, ops[0]) if popping or len(ops) == 2 else 0
+        a = self.st(into)
+        b = self.st(0) if popping else self.float_read(ci, ops[-1])
+        if name.endswith("r"):
+            a, b = b, a
+        self.fstack[-1 - into] = binop(X87_ARITHMETIC[name], a, b)
+        if popping:
+            self.fstack.pop()
+
+    def float_move(self, ci, mn, op) -> None:
+        """`fst` and `fstp`, to memory or to a stack register."""
+        e = self.st(0)
+        if op.type == X86_OP_REG:
+            self.fstack[-1 - _st_number(ci, op)] = e
+        else:
+            self.float_store(ci, op, e, FLOAT)
+        if mn == "fstp":
+            self.fstack.pop()
+
+    def float_status(self, ci, mn, ops) -> None:
+        """A compare reaches the flags in three steps: fcomp, `fnstsw ax`, sahf."""
+        if mn == "fcomp":
+            self.fcompare = ("fcmp", self.st(0), self.float_read(ci, ops[0]))
+            self.fstack.pop()
+        elif mn == "fcompp":
+            self.fcompare = ("fcmp", self.st(0), self.st(1))
+            del self.fstack[-2:]
+        elif mn == "fnstsw":
+            if self.fcompare is None or ops[0].type != X86_OP_REG:
+                raise Unliftable("op: fnstsw")
+            self.status, self.fcompare = self.fcompare, None
+            self.regs.pop("eax", None)  # ax holds the status word now, which only sahf may read
+        else:
+            if self.status is None:
+                raise Unliftable("op: sahf")
+            self.flags, self.status = self.status, None
 
     def divide(self, ci, mn, ops) -> None:
         a, hi, b = self.get("eax"), self.regs.get("edx"), self.read(ci, ops[0])
@@ -992,10 +1099,11 @@ class Block_:
         rel = JCC[mn]
         unsigned = rel.endswith("u")
         rel = rel.rstrip("u")
-        a, b = self.flags[1], self.flags[2] if self.flags[0] == "cmp" else const(0)
+        float_compare = self.flags[0] == "fcmp"  # sahf reads it through the unsigned conditions
+        a, b = self.flags[1], self.flags[2] if len(self.flags) == 3 else const(0)
         if rel in ("<0", ">=0"):  # the sign of the result, which after a cmp is a - b
             a, b, rel = binop("-", a, b), const(0), rel[:-1]
-        if unsigned:
+        if unsigned and not float_compare:
             a = cast("unsigned", a, 4, False)
             b = cast("unsigned", b, 4, False) if not b.atom or b.const is None else b
         return f"{paren(a)} {rel} {paren(b)}"
@@ -1134,6 +1242,11 @@ class Block_:
 
 def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
+
+
+def _st_number(ci, op) -> int:
+    """3 for the register `st(3)`."""
+    return int(ci.reg_name(op.reg).removeprefix("st(").removesuffix(")"))
 
 
 def _slot_name(off: int) -> str:
