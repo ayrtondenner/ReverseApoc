@@ -1222,6 +1222,28 @@ def test_a_unary_and_takes_the_address(use):
     assert [local.name for local in _locals_of("int b;", "", use)] == ["b"]
 
 
+@pytest.mark.parametrize(
+    ("line", "use"),
+    [("struct pos *p;", "take(&p->y);"), ("struct pos *p;", "take(& p -> y);"),
+     ("int *p;", "take(&p[1]);"), ("int *p;", "take(&p [1]);")],
+)  # fmt: skip
+def test_the_address_of_what_a_pointer_points_at_leaves_the_pointer_out(line, use):
+    """p stays in a register: only what it points at has its address taken."""
+    assert _locals_of(line, "", use, "return a;") == ()
+
+
+def test_an_element_of_an_array_still_holds_the_array():
+    (local,) = _locals_of("int v[2];", "", "take(&v[1]);", "return a;")
+    assert (local.name, local.size) == ("v", 8)
+
+
+def test_declaration_axis_leaves_a_pointer_out_of_the_tie():
+    """b and c swap, and the pointer beside them holds no slot to swap with."""
+    lines = ("int b;", "int c;", "struct pos *p;", "", "take(&p->y, &b, &c);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
+    assert move.text == _body("int c;", "int b;", *lines[2:])
+
+
 def test_an_unused_array_takes_no_slot():
     """pr_slot_unused: a local nothing uses is not in the frame."""
     assert _locals_of("int b[4];", "", "return a;") == ()

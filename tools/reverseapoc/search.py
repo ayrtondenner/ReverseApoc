@@ -391,7 +391,9 @@ def _volatile(found: re.Match[str]) -> bool:
 
 
 def _address_taken(name: str, body: str) -> bool:
-    return re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b", body) is not None
+    """`body` takes the address of `name` itself: `&p->x` and `&p[1]` take that of what a pointer
+    points at. An array needs neither, because _in_frame holds it by its use."""
+    return re.search(rf"{_BEFORE_ADDRESS}\s*&\s*{name}\b(?!\s*(?:->|\[))", body) is not None
 
 
 def _in_frame(found: re.Match[str], code: Sequence[str], n: int, span: tuple[int, int]) -> bool:
