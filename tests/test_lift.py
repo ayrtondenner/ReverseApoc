@@ -9,7 +9,8 @@ from dataclasses import dataclass
 
 import pytest
 
-from reverseapoc import fileio, lift
+from reverseapoc import batch, fileio, lift
+from reverseapoc.cli import main
 from reverseapoc.functions import KIND_DATA_IN_CODE, FunctionRow
 from reverseapoc.le import Fixup
 
@@ -1744,3 +1745,13 @@ def test_filler_in_any_register_reads_nothing():
     # mov ebx, ebx; lea ecx, [ecx + 0]; nop; mov eax, edx; ret. Read as code, ecx is an argument.
     exe = stub_exe("89db 8d4900 90 89d0 c3")
     assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 2
+
+
+# ---- the verb ----
+
+
+def test_the_verb_lifts_no_data_in_code_row(monkeypatch, capsys):
+    exe = with_table(stub_exe(f"{table_jump()} c3"), (VA + JUMP_SIZE,), VA)
+    monkeypatch.setattr(batch, "load_exe_inputs", lambda *_args, **_kwargs: exe)
+    assert main(["lift", "stub", f"0x{TABLE_AT:08X}"]) == 2
+    assert "data-in-code" in capsys.readouterr().err

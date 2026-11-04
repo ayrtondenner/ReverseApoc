@@ -1,6 +1,7 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
-cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, check, target, land,
-gate, context, attempt, drive, mechanics, fetch-watcom, install-watcom, check-watcom."""
+cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
+batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats,
+fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -55,6 +56,7 @@ from .discover import DiscoverError, discover
 from .elf import ElfError
 from .fileio import write_atomic
 from .functions import (
+    KIND_DATA_IN_CODE,
     KINDS,
     RUNTIME_VERSION,
     VERDICT_RULE,
@@ -1307,7 +1309,9 @@ def _run_lift(args: argparse.Namespace) -> int:
     start = batch.parse_address(args.address)
     exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
                                 config_root=args.config)  # fmt: skip
-    batch.row_at(exe, start)  # an address with no row is a tool error, not a refusal
+    row = batch.row_at(exe, start)  # an address with no row is a tool error, not a refusal
+    if row.kind == KIND_DATA_IN_CODE:
+        raise batch.BatchError(f"0x{start:08X} is a data-in-code row, which holds no code to lift")
     sys.stdout.write(lift.lift_row(exe, start))
     return 0
 
