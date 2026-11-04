@@ -854,3 +854,51 @@ def test_a_hole_appears_once_when_the_row_runs_twice():
 def test_a_row_with_nothing_to_refuse_has_no_hole():
     exe = stub_exe("89d0 c3")
     assert with_holes(exe) == lift.lift_row(exe, VA)
+
+
+# ---- the short hint ----
+
+STORE = "89442408"  # mov [esp + 8], eax
+READ_MOVSX = "0fbf442408"  # movsx eax, word ptr [esp + 8]
+
+
+def test_short_hint_types_a_slot_read_only_as_a_word():
+    assert "short s_8;" in in_frame(f"{STORE} {READ_MOVSX}")
+
+
+def test_one_dword_read_keeps_the_slot_as_it_was():
+    # the same, then mov edx, [esp + 8]
+    text = in_frame(f"{STORE} {READ_MOVSX} 8b542408")
+    assert "int s_8;" in text
+    assert "short" not in text
+
+
+def test_a_word_load_widened_by_cwde_is_a_sign_extending_read():
+    # mov ax, word ptr [esp + 8]; cwde
+    assert "short s_8;" in in_frame(f"{STORE} 668b442408 98")
+
+
+def test_a_plain_word_load_is_no_sign_extending_read():
+    # mov ax, word ptr [esp + 8]
+    assert "int s_8;" in in_frame(f"{STORE} 668b442408")
+
+
+def test_a_zero_extending_read_keeps_the_slot_as_it_was():
+    # movsx eax, word ptr [esp + 8]; movzx edx, word ptr [esp + 8]
+    assert "int s_8;" in in_frame(f"{STORE} {READ_MOVSX} 0fb7542408")
+
+
+def test_a_float_read_keeps_the_slot_as_it_was():
+    # movsx eax, word ptr [esp + 8]; fild dword ptr [esp + 8]; fstp c
+    assert "int s_8;" in in_frame(f"{STORE} {READ_MOVSX} db442408 {FSTP_C}")
+
+
+def test_a_slot_nothing_reads_keeps_its_type():
+    assert "int s_8;" in in_frame(STORE)
+
+
+def test_a_slot_that_turns_out_to_be_an_array_stays_one():
+    # the word read comes before lea eax, [esp + 8], which the first run has not seen yet
+    text = in_frame(f"{STORE} 0fbf542408 8d442408")
+    assert "char s_8[8];" in text
+    assert "short" not in text

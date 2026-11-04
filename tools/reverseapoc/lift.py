@@ -209,6 +209,7 @@ class Lifter:
         self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
         self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
         self.hole_vars: set[str] = set()  # the h_<va> locals a hole left behind
+        self.word_reads: dict[str, bool] = {}  # slot -> was every read a sign-extended word?
 
     # -- decoding and frame --
 
@@ -579,6 +580,7 @@ class Lifter:
         body = [
             line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
         ]
+        self.locals |= {name: "short" for name, short in self.word_reads.items() if short}
         ret = (self.ret_type(blocks, order) if self.narrow else "int") if sig.returns else "void"
         params += [f"p{n + 5}" for n in range(sig.nstack)]
         args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
@@ -599,7 +601,7 @@ class Lifter:
     def emit(self, blocks, order, preds) -> list[str]:
         """Run every block into C statements. An address-taken slot found here is in `taken`."""
         self.locals = {_slot_name(off): "char" for off in self.taken}
-        self.hole_vars = set()
+        self.hole_vars, self.word_reads = set(), {}
         end_state: dict[int, dict] = {}
         body: list[str] = []
         targets = {t for b in blocks.values() if b.insns[-1].group(1) for t in self.jumped_to(b)}
@@ -649,6 +651,7 @@ class Block_:
         self.esp = lf.esp0
         self.pushes: list[E] = []
         self.cur = None
+        self.k = 0  # the place of `cur` in this block
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
         self.fcompare: tuple | None = None  # the last x87 compare, for `fnstsw ax`
         self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
@@ -824,8 +827,20 @@ class Block_:
                 return E(f"(int){self.lf.data_name(fx.target_va)}", atom=True)
             return const(op.imm)
         if op.type == X86_OP_MEM:
-            return self.place(ci, op, signed)
+            e = self.place(ci, op, signed)
+            if e.text in self.lf.locals:
+                short = self.lf.word_reads.get(e.text, True) and self.sign_extends_word(ci, op)
+                self.lf.word_reads[e.text] = short
+            return e
         raise Unliftable("operand: unknown")
+
+    def sign_extends_word(self, ci, op) -> bool:
+        """`movsx r, word ptr`, or a word load into ax that the next instruction's cwde widens."""
+        if op.size != 2:
+            return False
+        following = self.insns[self.k + 1 : self.k + 2]
+        widened = bool(following) and following[0].mnemonic == "cwde"
+        return ci.mnemonic == "movsx" or (widened and ci.op_str.startswith("ax, "))
 
     def write(self, ci, op, e: E) -> None:
         if op.type == X86_OP_REG:
@@ -882,7 +897,7 @@ class Block_:
                 self.assign(r, self.regs[r])
 
     def step(self, ci, k) -> None:
-        self.cur = ci
+        self.cur, self.k = ci, k
         mn, ops = ci.mnemonic, ci.operands
         if mn in ("pop", "ret") or (mn == "add" and ci.op_str.startswith("esp, ")):
             if mn == "ret":
@@ -985,7 +1000,7 @@ class Block_:
             return self.st(_st_number(ci, op))
         if (op.size, FLOAT) not in SIZE_TYPE:
             raise Unliftable(f"op: {ci.mnemonic}")
-        return self.place(ci, op, FLOAT)
+        return self.read(ci, op, FLOAT)
 
     def float_store(self, ci, op, e: E, signed: bool | None) -> None:
         if (op.size, signed) not in SIZE_TYPE:
@@ -1001,7 +1016,7 @@ class Block_:
         elif mn == "fild":
             if (ops[0].size, True) not in SIZE_TYPE:
                 raise Unliftable("op: fild")
-            self.fstack.append(cast("double", self.place(ci, ops[0], True), 8, FLOAT))
+            self.fstack.append(cast("double", self.read(ci, ops[0], True), 8, FLOAT))
         elif mn in ("fst", "fstp"):
             self.float_move(ci, mn, ops[0])
         elif mn == "fistp":
