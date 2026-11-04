@@ -4,7 +4,8 @@
     uv run python .planning/phases/07.1-matching-tooling/measure_curve.py --point N
     uv run python .planning/phases/07.1-matching-tooling/measure_curve.py --self-check [--plant]
 
-`--point N` lifts every Tier 1 member with the lifter's defaults into build/curve/<N>/src, runs
+`--point N` lifts every Tier 1 member with the lifter's defaults into build/curve/<N>/src, retrying
+a refused row with holes, runs
 `reverseapoc batch` on them under the committed rule and CELL, runs `search.run_search` on each
 sample row with a compiled draft that is not exact (the Tier 1 number stays converter-only, D-27),
 and writes the point's row and section into 07.1-CURVE.md. The first run also draws
@@ -30,7 +31,7 @@ from pathlib import Path
 from reverseapoc import batch, cli, mechanics, search
 from reverseapoc.cflags import load_cflags
 from reverseapoc.check import DEFAULT_CONFIG
-from reverseapoc.lift import CACHE_DIR, Lifter, Unliftable, result_used
+from reverseapoc.lift import CACHE_DIR, HOLE_MARK, Lifter, Unliftable, result_used
 from reverseapoc.targets import REPO_ROOT
 from reverseapoc.watcom import DEFAULT_INSTALL
 
@@ -41,7 +42,7 @@ CELL = "-4r -oneatx -s -fpi"
 NEAR = 90.0
 BUCKETS = ((0, 64, "<64"), (64, 256, "64-255"), (256, 1024, "256-1023"), (1024, 1 << 30, ">=1024"))
 SAMPLED = BUCKETS[1:]
-OUTCOMES = ("exact", "near", "compiled", "compile-failed", "refused", "crash")
+OUTCOMES = ("exact", "near", "compiled", "compile-failed", "hole-draft", "refused", "crash")
 TOOLS = ("converter", "search", "slots")
 SEARCHED = ("near", "compiled")  # a compiled draft that is not exact: the rows search runs on
 NUMBERS = ("t1 exact", "t1 near", "s exact", "s near")
@@ -75,6 +76,11 @@ def summary_row(cells) -> str:
     return f"| {' | '.join(str(cell) for cell in cells)} |"
 
 
+HOLE_NOTE = (
+    "`hole-draft` rows are refused rows that lifted with holes. They can never be exact and are "
+    "never searched, so `refused` falls by them with no real gain. The reasons below count each "
+    "such row's strict lift, so the retry lowers no first-refusal count."
+)
 HEADER = f"""# Phase 7.1 curve
 
 What the tools reach, point by point. `measure_curve.py` writes this file; point 0 is the base,
@@ -85,7 +91,8 @@ recorded before the phase's first tooling commit, and each plan adds one point (
   later, and named near-miss targets stay out of it.
 - **Cells:** the unit's committed rule and `{CELL}`. A row is exact when either cell is.
 - **Outcomes:** `exact`; `near`, compiled with a raw score of at least {NEAR:.0f}; `compiled`, with
-  a lower score; `compile-failed`; `refused`, the lifter raised `Unliftable`; `crash`, the lifter
+  a lower score; `compile-failed`; `hole-draft`, a refused row that lifted with holes, which can
+  never be exact; `refused`, the lifter raised `Unliftable` with holes too; `crash`, the lifter
   raised anything else. `matched` is a status, not an outcome, so matched rows get their own line.
 - **Judge-exact:** every `exact` here is the judge's. A row can be judge-exact and still not land:
   tail merging and sibling regressions are the gate's to find.
@@ -116,6 +123,12 @@ def outcome_of(records: list[dict]) -> str:
     if not scores:
         return "compile-failed"
     return "near" if max(scores) >= NEAR else "compiled"
+
+
+def draft_outcome(text: str, records: list[dict]) -> str:
+    """A draft's outcome. No C stands for a hole, so a draft holding one can never be exact, and
+    counting it as `compiled` would flatter the plan: its records decide nothing."""
+    return "hole-draft" if HOLE_MARK in text else outcome_of(records)
 
 
 def searched_outcome(draft: list[dict], winner: list[dict]) -> str:
@@ -253,16 +266,28 @@ def sample_keys(rows: list[dict]) -> list[tuple[str, str]]:
         return [(row["exe"], row["address"]) for row in csv.DictReader(fh)]
 
 
-def lift_into(row: dict, exe, sigs: dict, src: Path) -> None:
-    """Write the row's C, or set its outcome and reason. Every row is counted, never dropped."""
+def lifted(row: dict, exe, sigs: dict, **options) -> str | None:
+    """The row's C, or None with its outcome and reason set."""
     try:
-        text = Lifter(exe, row["row"], sigs).lift()
+        return Lifter(exe, row["row"], sigs, **options).lift()
     except Unliftable as exc:
         row.update(outcome="refused", reason=str(exc))
-        return
     except Exception as exc:  # a crash is an outcome of this measurement, not an error
         row.update(outcome="crash", reason=f"{type(exc).__name__}: {exc}")
+    return None
+
+
+def lift_into(row: dict, exe, sigs: dict, src: Path) -> None:
+    """Write the row's C, or set its outcome and reason. Every row is counted, never dropped. A
+    refused row is retried with holes on a copy of `sigs`, so a later row's strict lift reads what
+    it would have read without the retry, and its strict reason stays in `reason`: the retry must
+    not lower a first-refusal count."""
+    text = lifted(row, exe, sigs)
+    if text is None and row["outcome"] == "refused":
+        text = lifted(row, exe, dict(sigs), holes=True)
+    if text is None:
         return
+    row["draft"] = text
     path = src / row["exe"] / f"f_{row['row'].start:08x}.c"
     path.write_text(text, encoding="ascii", newline="\n")
 
@@ -364,6 +389,7 @@ def point_section(point: int, tier: list[dict], sample: list[dict]) -> str:
             table(tier),
             f"Sample, {len(sample)} rows, tools: {', '.join(TOOLS)}:",
             table(sample),
+            HOLE_NOTE,
             "Refusal reasons over the not-matched Tier 1 rows:",
             reasons_table(tier),
         ]
@@ -397,8 +423,8 @@ def measure(point: int) -> int:
         lift_into(row, exes[row["exe"]], sigs[row["exe"]], src)
     records = run_batch(src, root / "results.jsonl")
     for row in tier:
-        if "outcome" not in row:
-            row["outcome"] = outcome_of(records[row["exe"], row["address"]])
+        if "draft" in row:
+            row["outcome"] = draft_outcome(row.pop("draft"), records[row["exe"], row["address"]])
     by_key = {(row["exe"], row["address"]): row for row in tier}
     sample = [{**by_key[key], "matched": False} for key in keys]  # rows stay fixed: D-27
     search_sample(sample, records, exes, src)
@@ -444,6 +470,7 @@ def _canned_table() -> str:
         {"bucket": ">=1024", "outcome": "crash", "matched": False},
         {"bucket": "64-255", "outcome": "exact", "matched": True},
         {"bucket": "64-255", "outcome": "near", "matched": True},
+        {"bucket": "256-1023", "outcome": "hole-draft", "matched": False},
     ]
     return table(rows)
 
@@ -470,6 +497,8 @@ def cases() -> list[tuple[str, object, object]]:
     rise = _point_numbers(17, 4, 3, 2)
     picked = draw(_canned_rows())
     canned = _canned_table().split("\n")
+    holed = f"{HOLE_MARK}0x1000: op: movsd */"
+    strict = {"matched": False, "outcome": "hole-draft", "reason": "op: movsd"}
     return [
         ("exact when any cell is", outcome_of([_record(10.0), _record(100, exact=True)]), "exact"),
         ("near at the threshold", outcome_of([_record(NEAR), _record(10.0)]), "near"),
@@ -500,7 +529,22 @@ def cases() -> list[tuple[str, object, object]]:
         ("only a compiled draft is searched", SEARCHED, ("near", "compiled")),
         ("the tools named are all three", TOOLS, ("converter", "search", "slots")),
         ("table counts an outcome by bucket", canned[2], "| exact | 1 | 0 | 0 | 0 | 1 |"),
-        ("table totals its rows", canned[8], "| rows | 1 | 0 | 0 | 1 | 2 |"),
+        ("table totals its rows", canned[9], "| rows | 1 | 0 | 1 | 1 | 3 |"),
+        ("hole-draft has its own row", canned[6], "| hole-draft | 0 | 0 | 1 | 0 | 1 |"),
+        (
+            "a hole draft is never exact, whatever its record says",
+            draft_outcome(holed, [_record(100.0, exact=True)]),
+            "hole-draft",
+        ),
+        ("a hole draft is never compiled", draft_outcome(holed, [_record(50.0)]), "hole-draft"),
+        ("a hole draft is never near", draft_outcome(holed, [_record(95.0)]), "hole-draft"),
+        ("a draft with no hole is judged", draft_outcome("int f;", [_record(95.0)]), "near"),
+        ("a hole draft is never searched", "hole-draft" in SEARCHED, False),
+        (
+            "a hole draft's strict reason still counts",
+            reasons_table([strict]).split("\n")[2],
+            "| op: movsd | 1 |",
+        ),
         (
             "matched rows have their own line",
             canned[-1],
