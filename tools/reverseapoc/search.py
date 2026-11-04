@@ -50,8 +50,8 @@ _UNREADABLE = (omf2elf.Omf2ElfError, relocs.RelocError)
 
 _INT_TYPES = ("int", "unsigned", "short", "unsigned short", "signed char", "unsigned char")
 # Spellings our C also uses, as the type each one is; `char` is unsigned, as wcc386 takes it.
-_SAME_TYPE = {"char": "unsigned char", "s8": "signed char", "u8": "unsigned char", "s16": "short",
-              "u16": "unsigned short", "s32": "int", "u32": "unsigned"}  # fmt: skip
+_SAME_TYPE = {"char": "unsigned char", "u8": "unsigned char", "s16": "short",
+              "u16": "unsigned short"}  # fmt: skip
 TYPE_MOVES = {local: tuple(t for t in _INT_TYPES if t != _SAME_TYPE.get(local, local))
               for local in (*_INT_TYPES, *_SAME_TYPE)}  # fmt: skip
 
@@ -86,7 +86,6 @@ def _rank(record: dict[str, Any]) -> tuple[bool, float, float]:
 @dataclass(frozen=True)
 class SearchResult:
     best: Path  # best.c: the winner's text, which every record names
-    text: str
     axes: tuple[str, ...]
     records: tuple[dict[str, Any], ...]  # one per cell of the winner, as results.jsonl holds them
     compiles: int
@@ -496,7 +495,7 @@ def _result(run: _Run, best: _Scored) -> SearchResult:
     write_atomic(run.root / "results.jsonl", lines.encode("utf-8"))
     cell = max(range(len(records)), key=lambda n: _rank(records[n]))
     slots = _slots(run, best.objects[cell])
-    return SearchResult(path, text, axes, records, run.compiles, len(run.verdicts), slots)
+    return SearchResult(path, axes, records, run.compiles, len(run.verdicts), slots)
 
 
 def run_search(

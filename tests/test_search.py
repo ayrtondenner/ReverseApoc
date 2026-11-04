@@ -124,6 +124,10 @@ def _run(text: str = TEXT, rule: Rule = COMMITTED):
     return reverseapoc.search.run_search(_exe(), ROW, text, (rule,), watcom_dir=Path("watcom"))
 
 
+def _best(result) -> str:
+    return result.best.read_text(encoding="ascii")
+
+
 def _records(result) -> list[dict]:
     path = result.best.parent / "results.jsonl"
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
@@ -443,7 +447,7 @@ def test_type_moves_skip_a_type_outside_the_table():
 def test_type_table_reads_the_local_types_of_our_c():
     table = reverseapoc.search.TYPE_MOVES
     drawn = {"int", "unsigned", "short", "unsigned short", "signed char", "unsigned char"}
-    assert set(table) >= drawn | {"char", "s8", "u8", "s16", "u16", "s32", "u32"}
+    assert set(table) >= drawn | {"char", "u8", "s16", "u16"}
     for local, moves in table.items():
         assert set(moves) <= drawn
         assert local not in moves
@@ -744,8 +748,8 @@ def test_a_variant_with_no_function_scores_0_and_the_search_goes_on(monkeypatch,
     stubs.decide = _scored({"    short b;": verdict(99.0, 99.0),
                             "    unsigned b;": verdict(60.0, 60.0)})  # fmt: skip
     result = _run()
-    assert "    unsigned b;" in result.text
-    assert "    short b;" not in result.text
+    assert "    unsigned b;" in _best(result)
+    assert "    short b;" not in _best(result)
 
 
 def test_a_winner_with_no_function_scores_0_and_says_why(monkeypatch, stubs):
@@ -764,7 +768,7 @@ def test_a_failed_compile_is_not_judged(stubs):
     stubs.decide = lambda text, _cell: verdict(99.0, 99.0) if "short b;" in text else verdict()
     result = _run()
     assert all("    short b;" not in _source(obj)[0] for obj in stubs.judged)
-    assert "    short b;" not in result.text
+    assert "    short b;" not in _best(result)
 
 
 def _fails_conversion(monkeypatch, line: str) -> None:
@@ -782,7 +786,7 @@ def test_a_variant_that_fails_conversion_only_scores_0(monkeypatch, stubs):
     _fails_conversion(monkeypatch, "    short b;")
     stubs.decide = _scored({"    unsigned b;": verdict(90.0, 90.0)})
     result = _run()
-    assert "    unsigned b;" in result.text
+    assert "    unsigned b;" in _best(result)
     assert result.best.is_file()
 
 
@@ -794,7 +798,7 @@ def test_a_variant_that_fails_its_relocation_check_only_scores_0(stubs):
 
     stubs.decide = decide
     result = _run()
-    assert "    unsigned b;" in result.text
+    assert "    unsigned b;" in _best(result)
     assert result.best.is_file()
 
 
@@ -819,21 +823,21 @@ def test_the_base_is_compiled_first_and_comes_back_when_nothing_beats_it(stubs):
     result = _run()
     assert stubs.waves[0][0].src.read_text(encoding="ascii") == TEXT
     assert len(stubs.waves[0]) == 2  # the base alone, under its two cells
-    assert result.text == TEXT
+    assert _best(result) == TEXT
     assert result.axes == ()
 
 
 def test_the_search_starts_from_one_declarator_per_line(stubs):
     text = "int func_00010000(void)\n{\n    int a, b;\n\n    return a;\n}\n"
     result = _run(text)
-    assert "    int a;\n    int b;\n" in result.text
-    assert stubs.waves[0][0].src.read_text(encoding="ascii") == result.text
+    assert "    int a;\n    int b;\n" in _best(result)
+    assert stubs.waves[0][0].src.read_text(encoding="ascii") == _best(result)
 
 
 def test_a_one_line_function_keeps_its_text_and_has_no_moves(stubs):
     text = "int func_00010000(void) { int a; return 0; }\n"
     result = _run(text)
-    assert result.text == text
+    assert _best(result) == text
     assert len(stubs.waves) == 1
 
 
@@ -849,20 +853,20 @@ def _scored(table: dict[str, batch.Verdict]):
 def test_rank_is_exact_then_stack_then_raw(stubs):
     stubs.decide = _scored({"    unsigned b;": verdict(95.0, 60.0),
                             "    short b;": verdict(60.0, 90.0)})  # fmt: skip
-    assert "    short b;" in _run().text  # the higher stack score beats the higher raw score
+    assert "    short b;" in _best(_run())  # the higher stack score beats the higher raw score
 
 
 def test_rank_breaks_a_stack_tie_on_the_raw_score(stubs):
     stubs.decide = _scored({"    unsigned b;": verdict(70.0, 90.0),
                             "    short b;": verdict(80.0, 90.0)})  # fmt: skip
-    assert "    short b;" in _run().text
+    assert "    short b;" in _best(_run())
 
 
 def test_rank_puts_exact_first(stubs):
     stubs.decide = _scored({"    unsigned b;": verdict(99.0, 99.0),
                             "    short b;": verdict(exact=True)})  # fmt: skip
     result = _run()
-    assert "    short b;" in result.text
+    assert "    short b;" in _best(result)
     assert result.exact is True
     assert result.axes == ("type",)
 
@@ -870,7 +874,7 @@ def test_rank_puts_exact_first(stubs):
 def test_a_tie_keeps_the_earlier_variant(stubs):
     stubs.decide = _scored({"    unsigned b;": verdict(70.0, 70.0),
                             "    short b;": verdict(70.0, 70.0)})  # fmt: skip
-    assert "    unsigned b;" in _run().text
+    assert "    unsigned b;" in _best(_run())
 
 
 def test_the_best_cell_ranks_a_variant(stubs):
@@ -882,7 +886,7 @@ def test_the_best_cell_ranks_a_variant(stubs):
 
     stubs.decide = decide
     result = _run()
-    assert "    short b;" in result.text
+    assert "    short b;" in _best(result)
     assert (result.score, result.stack_score) == (90.0, 95.0)
 
 
@@ -909,7 +913,7 @@ def test_statement_variant_with_a_higher_score_is_dropped(stubs):
     """D-26: not the result, and not the next wave's base, whatever its score."""
     stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0)})
     result = _run()
-    assert result.text == TEXT
+    assert _best(result) == TEXT
     assert result.axes == ()
     only_the_swap = TEXT.replace("    b = a + 1;\n    c = b;\n", SWAPPED)
     texts = {job.src.read_text(encoding="ascii") for job in stubs.jobs}
@@ -920,8 +924,8 @@ def test_statement_variant_with_a_higher_score_is_dropped(stubs):
 def test_a_dropped_statement_variant_does_not_hide_a_lower_standing_one(stubs):
     stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0), DECLS_SWAPPED: verdict(60.0, 60.0)})
     result = _run()
-    assert DECLS_SWAPPED in result.text
-    assert SWAPPED not in result.text
+    assert DECLS_SWAPPED in _best(result)
+    assert SWAPPED not in _best(result)
     assert result.axes == ("declaration",)
 
 
@@ -929,7 +933,7 @@ def test_statement_variant_that_is_exact_is_kept(stubs):
     stubs.decide = _scored({SWAPPED: verdict(exact=True)})
     result = _run()
     assert result.exact is True
-    assert SWAPPED in result.text
+    assert SWAPPED in _best(result)
     assert "statement" in result.axes
 
 
@@ -953,7 +957,7 @@ def test_reordered_initializers_are_dropped_unless_exact(stubs):
     """D-26's rule, reached through the declaration axis: not the result, whatever its score."""
     stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(99.0, 99.0)})
     result = _run(INITIALIZED)
-    assert result.text == INITIALIZED
+    assert _best(result) == INITIALIZED
     assert result.axes == ()
 
 
@@ -961,14 +965,14 @@ def test_reordered_initializers_that_are_exact_are_kept(stubs):
     stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(exact=True)})
     result = _run(INITIALIZED)
     assert result.exact is True
-    assert INITIALIZERS_SWAPPED in result.text
+    assert INITIALIZERS_SWAPPED in _best(result)
     assert "statement" in result.axes
 
 
 def test_a_better_variant_becomes_the_base_and_its_axis_repeats(stubs):
     stubs.decide = _scored({"    short b;": verdict(60.0, 60.0)})
     result = _run()
-    assert "    short b;" in result.text
+    assert "    short b;" in _best(result)
     assert result.axes == ("type",)
     both = "    short b;\n    int c;\n"
     assert any(both in job.src.read_text(encoding="ascii") for job in stubs.jobs)
@@ -1009,8 +1013,9 @@ def test_same_input_gives_the_same_result(stubs):
 
     stubs.decide = decide
     first = _run()
+    text = _best(first)  # the second run overwrites this file
     second = _run()
-    assert first.text == second.text
+    assert text == _best(second)
     assert first.axes == second.axes
     assert first.records == second.records
     assert first.compiles == second.compiles
@@ -1033,9 +1038,8 @@ def test_best_source_survives_later_waves(monkeypatch, stubs):
     stubs.decide = _scored({"    unsigned b;": verdict(90.0, 90.0)})
     result = _run()
     assert len(stubs.waves) > 2
-    best = result.best.read_text(encoding="ascii")
+    best = _best(result)
     assert "    unsigned b;" in best
-    assert result.text == best
     assert result.best.name == "best.c"
     assert result.best.parent == reverseapoc.search.OUT / "ufo2p" / f"{START:08x}"
     for record in _records(result):
@@ -1121,7 +1125,7 @@ def test_a_search_result_reaches_the_queue(monkeypatch, repo):
     assert proposal.author == AUTHOR
     assert proposal.source == flags.BATCH
     candidate = (repo / proposal.candidate).read_text(encoding="utf-8")
-    assert result.best.read_text(encoding="ascii") in candidate
+    assert _best(result) in candidate
     assert f"INCLUDE_ASM({A1}" not in candidate
 
 
