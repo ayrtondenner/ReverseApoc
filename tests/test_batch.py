@@ -513,6 +513,32 @@ def test_stack_mask_on_a_relocated_store_to_a_bare_esp_operand():
     assert batch.stack_score(ours, theirs, VA, masked) == 100.0
 
 
+MOV_EAX_ESP, LEA_EAX_ESP_4, LEA_ECX_ESP_4 = "89e0", "8d442404", "8d4c2404"
+MOV_EBP_ESP, LEA_EBP_ESP_4 = "89e5", "8d6c2404"
+MOV_ESP_ESP = "89e4"
+
+
+def test_stack_mask_reads_a_copy_of_esp_as_the_address_of_slot_0():
+    """Watcom takes the address of slot 0 with `mov r, esp`, not `lea r, [esp]`."""
+    ours = _code(SUB_ESP_10, MOV_EAX_ESP, "e800000000", ADD_ESP_10, RET)
+    theirs = _code(SUB_ESP_10, LEA_EAX_ESP_4, "e800000000", ADD_ESP_10, RET)
+    raw, stack = _both_scores(ours, theirs)
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_keeps_the_register_of_a_copy_of_esp():
+    ours, theirs = _code(MOV_EAX_ESP, RET), _code(LEA_ECX_ESP_4, RET)
+    assert batch.stack_score(ours, theirs, VA, set()) < 100.0
+
+
+@pytest.mark.parametrize("copy", [MOV_EBP_ESP, MOV_ESP_ESP], ids=["ebp", "esp"])
+def test_stack_mask_leaves_a_copy_that_is_no_address(copy):
+    """`mov ebp, esp` opens a frame, and `mov esp, esp` is filler: neither takes slot 0."""
+    raw, stack = _both_scores(_code(copy, RET), _code(LEA_EBP_ESP_4, RET))
+    assert stack == raw
+
+
 def test_stack_mask_touches_nothing_else():
     other_base = _both_scores(_code("8b4308", RET), _code("8b430c", RET))  # [ebx + N]
     other_add = _both_scores(_code("83c310", RET), _code("83c314", RET))  # add ebx, N
@@ -677,6 +703,23 @@ def test_slot_map_reads_a_relocated_store():
     theirs = _code("c744240400200000")  # mov dword ptr [esp + 4], 0x2000
     masked = frozenset({VA + 3, VA + 4, VA + 5, VA + 6, VA + 7})
     assert _slots(ours, theirs, masked).pairs == ((0, 4),)
+
+
+def test_slot_map_reads_a_copy_of_esp_as_slot_0():
+    ours = _code(*FRAME, MOV_EAX_ESP, *LEAVE)
+    theirs = _code(*FRAME, LEA_EAX_ESP_4, *LEAVE)
+    assert _slots(ours, theirs).pairs == ((0, 4),)
+
+
+def test_slot_map_follows_a_pushed_argument_to_a_copy_of_esp():
+    ours = _code(*FRAME, PUSH_EAX, MOV_EAX_ESP, CALL, *LEAVE)
+    theirs = _code(*FRAME, PUSH_EAX, "8d442408", CALL, *LEAVE)  # lea eax, [esp + 8]
+    assert _slots(ours, theirs).pairs == ((-4, 4),)
+
+
+@pytest.mark.parametrize("copy", [MOV_EBP_ESP, MOV_ESP_ESP], ids=["ebp", "esp"])
+def test_slot_map_leaves_a_copy_that_is_no_address(copy):
+    assert _slots(_code(*FRAME, copy, *LEAVE), _code(*FRAME, copy, *LEAVE)).pairs == ()
 
 
 def test_slot_map_skips_other_base_registers():
