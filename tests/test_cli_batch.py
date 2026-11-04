@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from reverseapoc import batch, cli
+from reverseapoc import batch, cli, lift
 from reverseapoc.cli import main
 from reverseapoc.functions import FunctionRow
 
@@ -207,7 +207,7 @@ def _stub_verdict() -> batch.Verdict:
                          "mov R, N | mov R, N", stack_score=100.0)  # fmt: skip
 
 
-def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True):
+def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=()):
     """`reverseapoc batch` over one source, with a stub EXE, a stub compile and a stub judge: no
     compiler and no object. Returns the records and the Compiled of each job."""
     source = tmp_path / "in" / "ufo2p" / "f_000108e0.c"
@@ -235,7 +235,8 @@ def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True):
     monkeypatch.setattr(batch, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(cli, "DEFAULT_BUILD", tmp_path / "build")
     out = tmp_path / "build" / "out.jsonl"
-    assert _batch(tmp_path, tmp_path / "in", "--out", str(out)) == 0
+    cell_args = [arg for cell in cells for arg in ("--cell", cell)]
+    assert _batch(tmp_path, tmp_path / "in", "--out", str(out), *cell_args) == 0
     lines = out.read_text(encoding="utf-8").splitlines()
     return [json.loads(line) for line in lines], done
 
@@ -259,3 +260,17 @@ def test_a_failed_compile_routes_to_an_agent(tmp_path, monkeypatch):
     assert record["compiled"] is False
     assert "class" not in record
     assert record["route"] == "agent"
+
+
+def test_batch_prints_the_routes(tmp_path, monkeypatch, capsys):
+    """Two cells of one row: the row counts once."""
+    _stubbed_run(tmp_path, monkeypatch, cells=("-4r -ot -s -fpi",))
+    assert "routes: converter 0, search 1, agent 0" in capsys.readouterr().out
+
+
+def test_batch_routes_a_hole_draft_to_an_agent(tmp_path, monkeypatch):
+    (plain,), _ = _stubbed_run(tmp_path, monkeypatch)
+    assert plain["route"] == "search"
+    holed = f"{PLAIN_C}{lift.HOLE_MARK}0x108E0: op: movsd */\n"
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, holed)
+    assert (record["class"], record["route"]) == ("slot", "agent")
