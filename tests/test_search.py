@@ -724,6 +724,21 @@ def test_equal_body_reuses_the_verdict(stubs):
     assert [record["stack_score"] for record in _records(result)] == [88.0, 88.0]
 
 
+def _not_defined_in(monkeypatch, line: str) -> None:
+    """function_body names judge's failure key for the variants that hold `line`."""
+
+    def function_body(_exe, obj: Path, _start: int) -> Path | str:
+        return "not defined" if line in _source(obj)[0] else obj
+
+    monkeypatch.setattr(batch, "function_body", function_body)
+
+
+def test_bodies_counts_no_failure_key(monkeypatch, stubs, type_axis):
+    _not_defined_in(monkeypatch, "    short b;")
+    stubs.key = lambda _text, cell: cell
+    assert _run().bodies == 2  # one per cell: "not defined" is no body
+
+
 def test_a_failed_compile_is_not_judged(stubs):
     stubs.compiles = lambda text: "    short b;" not in text
     stubs.decide = lambda text, _cell: verdict(99.0, 99.0) if "short b;" in text else verdict()

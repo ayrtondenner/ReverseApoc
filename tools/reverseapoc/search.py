@@ -382,14 +382,16 @@ class _Scored:
 
 def _verdict(run: _Run, compiled: batch.Compiled) -> batch.Verdict:
     """judge's verdict of one compiled cell: one judge per distinct body. A body that cannot be
-    read is keyed by its failure, which judge reports the same way, and one that fails conversion
-    scores as unjudged, so the search goes on."""
+    read scores as judge scores it, under its failure key, and one that fails conversion scores
+    as unjudged, so the search goes on. Neither counts as a body."""
     start = run.row.start
     if not compiled.ok:
         return batch.unjudged(run.row.end - start)
     try:
         body = batch.function_body(run.exe, compiled.job.obj, start)
-        key = body if isinstance(body, str) else batch.body_key(body)
+        if isinstance(body, str):
+            return batch.unjudged(run.row.end - start, body)
+        key = batch.body_key(body)
         if key not in run.verdicts:
             run.verdicts[key] = batch.judge(run.exe, compiled.job.obj, start)
     except _UNREADABLE as exc:
