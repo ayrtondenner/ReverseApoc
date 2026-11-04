@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import re
 from dataclasses import dataclass, field
 
+from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 
 from .asm import FixupIndex
@@ -100,6 +102,8 @@ X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "
 X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
 X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
                        "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
+X87_STORES = frozenset({"fst", "fstp", "fistp"})  # capstone calls these operands reads
+STALE_FLAGS = ("stale",)  # the flags of a compare whose operand has been overwritten since
 
 
 class Unliftable(Exception):
@@ -730,6 +734,17 @@ class Block_:
         self.lf.regvars.add(r)
         self.out.append(f"r_{r} = {e};")
         self.regs[r] = var(f"r_{r}", e.size, e.signed)
+        self.rebind_flags(e, self.regs[r])
+
+    def rebind_flags(self, value: E, new: E) -> None:
+        """`new` holds `value` now. A flag operand that was `value` reads it from there, and one
+        that read what `new` held before has nothing left to read."""
+        if self.flags is None:
+            return
+        same = not value.atom
+        held = [new if same and e.text == value.text else e for e in self.flags[1:]]
+        stale = any(e is not new and _reads(e, new.text) for e in held)
+        self.flags = STALE_FLAGS if stale else (self.flags[0], *held)
 
     # operands
 
@@ -864,19 +879,17 @@ class Block_:
         widened = bool(following) and following[0].mnemonic == "cwde"
         return ci.mnemonic == "movsx" or (widened and ci.op_str.startswith("ax, "))
 
-    def write(self, ci, op, e: E) -> None:
+    def write(self, ci, op, e: E) -> E:
+        """Put `e` in `op`, and return where it reads from now: a store has already flushed, in
+        `step`, because the operands it reads must see what the flush assigned."""
         if op.type == X86_OP_REG:
             self.set(ci.reg_name(op.reg), e, ci)
-            return
+            return e
         if op.type == X86_OP_MEM:
-            if op.mem.base and ci.reg_name(op.mem.base) == "esp":
-                self.flush(ci)
-                self.out.append(f"{self.slot(ci, op, True)} = {e};")
-                return
-            self.flush(ci)
-            target = self.lvalue(ci, op, e.signed)
+            esp = op.mem.base and ci.reg_name(op.mem.base) == "esp"
+            target = self.slot(ci, op, True) if esp else self.lvalue(ci, op, e.signed)
             self.out.append(f"{target} = {e};")
-            return
+            return target
         raise Unliftable("write: operand")
 
     # the run
@@ -921,6 +934,8 @@ class Block_:
     def step(self, ci, k) -> None:
         self.cur, self.k = ci, k
         mn, ops = ci.mnemonic, ci.operands
+        if _stores(ci):
+            self.flush(ci)
         if mn in ("pop", "ret") or (mn == "add" and ci.op_str.startswith("esp, ")):
             if mn == "ret":
                 self.ret(ci)
@@ -969,8 +984,7 @@ class Block_:
                 "neg": lambda: E(f"-{paren(a)}", pure=a.pure),
                 "not": lambda: E(f"~{paren(a)}", pure=a.pure),
             }[mn]()
-            self.write(ci, ops[0], e)
-            self.flags = ("res", e)
+            self.flags = ("res", self.write(ci, ops[0], e))
         elif mn == "cmp":
             self.flags = ("cmp", self.read(ci, ops[0]), self.read(ci, ops[1]))
         elif mn == "test":
@@ -1027,7 +1041,6 @@ class Block_:
     def float_store(self, ci, op, e: E, signed: bool | None) -> None:
         if (op.size, signed) not in SIZE_TYPE:
             raise Unliftable(f"op: {ci.mnemonic}")
-        self.flush(ci)
         self.out.append(f"{self.place(ci, op, signed)} = {e};")
 
     def x87(self, ci, mn, ops) -> None:
@@ -1154,13 +1167,13 @@ class Block_:
         }[mn]
         if mn == "shr":
             a = cast("unsigned", a, 4, False)
-        e = binop(sym, a, b)
-        self.write(ci, ops[0], e)
-        self.flags = ("res", e)
+        self.flags = ("res", self.write(ci, ops[0], binop(sym, a, b)))
 
     def cond(self, mn) -> str:
         if self.flags is None:
             raise Unliftable("jcc: no flag source")
+        if self.flags == STALE_FLAGS:
+            raise Unliftable("flags: operand reassigned before the jump")
         rel = JCC[mn]
         unsigned = rel.endswith("u")
         rel = rel.rstrip("u")
@@ -1209,15 +1222,13 @@ class Block_:
             self.flush(ci)
             self.end_assign_jump(ci)  # its test is the switch's own: the compiler writes it again
             return
-        c = self.cond(mn)
+        self.flush(ci)
         t = _branch_target(ci)
         if not self.lf.in_row(t):
-            self.flush(ci)
-            self.out.append(f"if ({c}) {{ {self.tail(ci, t)} }}")
+            self.out.append(f"if ({self.cond(mn)}) {{ {self.tail(ci, t)} }}")
             return
-        self.flush(ci)
         self.end_assign_jump(ci)
-        self.out.append(f"if ({c}) goto L{_branch_target(ci):X};")
+        self.out.append(f"if ({self.cond(mn)}) goto L{t:X};")
 
     def end_assign_jump(self, ci) -> None:
         """Before leaving the block: every register live into a merge successor is its variable
@@ -1247,15 +1258,15 @@ class Block_:
         nregs = max(sig.nregs if sig else 0, self.set_for_call(ci))
         if sig is None:
             sig = Sig(nregs, 0, True)
+        if len(self.pushes) < sig.nstack:
+            raise Unliftable("call: stack arguments not pushed in the block")
+        self.flush(ci, keep=set())
         args = [self.get(r) for r in ARG_REGS[: min(nregs, 4)]]
         if sig.nstack:
-            if len(self.pushes) < sig.nstack:
-                raise Unliftable("call: stack arguments not pushed in the block")
             stack = self.pushes[-sig.nstack :][::-1]
             del self.pushes[-sig.nstack :]
             args += stack
             self.esp += 4 * sig.nstack
-        self.flush(ci, keep=set())
         text = f"{name}({', '.join(str(a) for a in args)})"
         self.lf.externs.setdefault(
             name,
@@ -1307,6 +1318,17 @@ class Block_:
 
 def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
+
+
+def _reads(e: E, name: str) -> bool:
+    return re.search(rf"\b{name}\b", e.text) is not None
+
+
+def _stores(ci) -> bool:
+    """True when `ci` writes memory through its first operand."""
+    if not ci.operands or ci.operands[0].type != X86_OP_MEM:
+        return False
+    return bool(ci.operands[0].access & CS_AC_WRITE) or ci.mnemonic in X87_STORES
 
 
 def _st_number(ci, op) -> int:

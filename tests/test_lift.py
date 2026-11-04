@@ -992,3 +992,61 @@ def test_idioms_change_no_code(monkeypatch):
 
 def test_a_row_with_no_idiom_has_no_comment():
     assert "IDIOM" not in lift.lift_row(stub_exe("89d0 c3"), VA)
+
+
+# ---- statement order ----
+
+
+def test_a_counted_loop_steps_once():
+    # xor eax, eax; L: inc eax; dec edx; jne L; ret
+    text = lift.lift_row(stub_exe("31c0 40 4a 75fc c3"), VA)
+    assert "r_edx = r_edx - 1;" in text
+    assert f"if (r_edx != 0) goto L{VA + 2:X};" in text
+
+
+def test_a_jump_reads_the_variable_its_register_just_became():
+    # dec edx; jne L; inc eax; L: mov eax, edx; ret
+    text = lift.lift_row(stub_exe("4a 7501 40 89d0 c3"), VA)
+    assert text.index("r_edx = r_edx - 1;") < text.index("if (r_edx != 0) goto")
+
+
+def test_an_operand_overwritten_before_the_jump_never_prints():
+    # cmp eax, edx; mov eax, 5; je L; mov eax, 6; L: ret. L is a merge, so r_eax = 5 comes first.
+    with pytest.raises(lift.Unliftable, match="flags: operand reassigned before the jump"):
+        lift.lift_row(stub_exe("39d0 b805000000 7405 b806000000 c3"), VA)
+
+
+def test_an_operand_left_in_its_variable_still_compares():
+    # cmp eax, edx; mov eax, 5; je L; ret; L: ret. No merge: r_eax keeps the value compared.
+    assert "if (r_eax == r_edx) goto" in lift.lift_row(stub_exe("39d0 b805000000 7401 c3 c3"), VA)
+
+
+def test_a_flag_nothing_reads_refuses_nothing():
+    # cmp eax, edx; jne L; mov eax, 5; L: ret. The compare's flags reach the fall through unread.
+    assert "r_eax = 5;" in lift.lift_row(stub_exe("39d0 7505 b805000000 c3"), VA)
+
+
+def test_a_list_walk_dereferences_once():
+    # mov eax, [eax]; test eax, eax; je L; inc eax; L: ret
+    text = lift.lift_row(stub_exe("8b00 85c0 7401 40 c3"), VA)
+    assert text.count("*(int *)") == 1
+    assert "if (r_eax == 0) goto" in text
+
+
+def test_a_store_to_memory_is_what_the_jump_reads():
+    # mov esi, eax; dec dword ptr [esi + 4]; jne L; inc eax; L: ret
+    text = lift.lift_row(stub_exe("89c6 ff4e04 7501 40 c3"), VA)
+    assert text.count(" - 1") == 1
+
+
+def test_a_stored_value_is_read_after_the_flush():
+    # mov eax, [eax]; mov [edx], eax; inc eax; ret
+    text = lift.lift_row(stub_exe("8b00 8902 40 c3"), VA)
+    assert "*(int *)((char *)r_edx) = r_eax;" in text
+
+
+def test_a_call_argument_is_read_after_the_flush():
+    # mov edx, [edx]; call f; mov eax, edx; ret
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"8b12 {call_to(VA + 2, callee)} 89d0 c3", "c3")
+    assert f"func_{callee:08x}(r_eax, r_edx);" in lift.lift_row(exe, VA)
