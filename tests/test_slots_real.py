@@ -226,6 +226,8 @@ def _by_declaration(shape: Sequence[Marked]) -> dict[str, int]:
 @pytest.mark.parametrize("cell", CELLS)
 @pytest.mark.parametrize("name", SHAPES)
 def test_model_reproduces_every_memory_shape(modules, cell, name):
+    """Every shape the model accepts. The `pr_tie_` shapes it refuses are held by
+    test_a_refused_tie_leaves_declaration_order_and_keeps_sizes."""
     shape = SHAPES[name]
     measured = _offsets(modules[cell], name, cell, shape)
     declared = _declared(shape)
