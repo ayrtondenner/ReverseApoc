@@ -1035,7 +1035,9 @@ class Block_:
         """`fst` and `fstp`, to memory or to a stack register."""
         e = self.st(0)
         if op.type == X86_OP_REG:
-            self.fstack[-1 - _st_number(ci, op)] = e
+            n = _st_number(ci, op)
+            self.st(n)  # the register must hold something for the store to replace
+            self.fstack[-1 - n] = e
         else:
             self.float_store(ci, op, e, FLOAT)
         if mn == "fstp":

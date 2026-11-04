@@ -763,6 +763,12 @@ def test_a_pop_of_the_empty_stack_refuses():
         in_frame(FSTP_C)
 
 
+def test_fstp_to_a_register_below_the_stack_refuses():
+    # fld a; fstp st(1): nothing was loaded under a
+    with pytest.raises(lift.Unliftable, match="x87: stack read before any load"):
+        in_frame(f"{FLD_A} ddd9")
+
+
 def test_a_stack_left_at_a_block_end_refuses():
     with pytest.raises(lift.Unliftable, match="x87: stack live across a block end"):
         in_frame(FLD_A)
