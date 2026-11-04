@@ -1261,7 +1261,7 @@ def _run_search(args: argparse.Namespace) -> int:
           f"axes {','.join(result.axes) or '-'}, best {result.best}")  # fmt: skip
     slots = result.slots
     print(f"frame: ours {slots.frame_ours:#x}, theirs {slots.frame_theirs:#x}")
-    print(f"slots: bijection {slots.bijection}")
+    print(f"slots: bijection {slots.bijection}" if slots.pairs else "slots: none compared")
     for ours, theirs in slots.pairs:
         if ours != theirs:
             print(f"slot {ours:#x} -> {theirs:#x}")

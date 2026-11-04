@@ -539,6 +539,56 @@ def test_stack_mask_leaves_a_copy_that_is_no_address(copy):
     assert stack == raw
 
 
+FRAMED = (PUSH_EBX, "55", MOV_EBP_ESP, SUB_ESP_10)  # push ebx; push ebp; mov ebp, esp; sub esp, N
+UNFRAMED = (PUSH_EBX, "55", SUB_ESP_10)
+UNFRAMED_LEAVE = (ADD_ESP_10, "5d", POP_EBX, RET)  # add esp, N; pop ebp; pop ebx; ret
+FRAMED_LEAVE = ("89ec", "5d", POP_EBX, RET)  # mov esp, ebp; pop ebp; pop ebx; ret
+
+
+def _ebp_local(slot: int) -> str:
+    """mov eax, dword ptr [ebp - slot]"""
+    return f"8b45{256 - slot:02x}"
+
+
+def test_stack_mask_equalises_ebp_locals_when_mov_ebp_esp_opens_the_body():
+    ours = _code(*FRAMED, _ebp_local(8), *FRAMED_LEAVE)
+    theirs = _code(*FRAMED, _ebp_local(0xC), *FRAMED_LEAVE)
+    raw, stack = _both_scores(ours, theirs)
+    assert raw < 100.0
+    assert stack == 100.0
+
+
+def test_stack_mask_keeps_the_index_register_of_an_ebp_local():
+    ours = _code(*FRAMED, "8b448df8", *FRAMED_LEAVE)  # mov eax, [ebp + ecx*4 - 8]
+    assert batch.stack_score(ours, _code(*FRAMED, "8b448df4", *FRAMED_LEAVE), VA, set()) == 100.0
+    other = _code(*FRAMED, "8b4495f8", *FRAMED_LEAVE)  # edx*4
+    assert batch.stack_score(ours, other, VA, set()) < 100.0
+
+
+def test_stack_mask_leaves_an_argument_of_an_ebp_frame():
+    """`[ebp + N]` is a stack argument, not a local: its offset is not the frame's to choose."""
+    ours = _code(*FRAMED, "8b4508", *FRAMED_LEAVE)  # mov eax, [ebp + 8]
+    raw, stack = _both_scores(ours, _code(*FRAMED, "8b450c", *FRAMED_LEAVE))
+    assert stack == raw
+
+
+def test_stack_mask_leaves_ebp_as_a_general_register():
+    """`-4r` code uses ebp freely: with no `mov ebp, esp` to open the body, `[ebp - N]` stays."""
+    ours = _code(*UNFRAMED, _ebp_local(8), *UNFRAMED_LEAVE)
+    raw, stack = _both_scores(ours, _code(*UNFRAMED, _ebp_local(0xC), *UNFRAMED_LEAVE))
+    assert raw < 100.0
+    assert stack == raw
+
+
+def test_stack_mask_leaves_ebp_after_a_late_copy_of_esp():
+    """A `mov ebp, esp` behind anything but saved registers does not open the body."""
+    late = (LOAD_EAX_ESP_8, MOV_EBP_ESP)
+    ours = _code(*late, _ebp_local(8), RET)
+    raw, stack = _both_scores(ours, _code(*late, _ebp_local(0xC), RET))
+    assert raw < 100.0
+    assert stack == raw
+
+
 def test_stack_mask_touches_nothing_else():
     other_base = _both_scores(_code("8b4308", RET), _code("8b430c", RET))  # [ebx + N]
     other_add = _both_scores(_code("83c310", RET), _code("83c314", RET))  # add ebx, N
@@ -720,6 +770,29 @@ def test_slot_map_follows_a_pushed_argument_to_a_copy_of_esp():
 @pytest.mark.parametrize("copy", [MOV_EBP_ESP, MOV_ESP_ESP], ids=["ebp", "esp"])
 def test_slot_map_leaves_a_copy_that_is_no_address(copy):
     assert _slots(_code(*FRAME, copy, *LEAVE), _code(*FRAME, copy, *LEAVE)).pairs == ()
+
+
+def test_slot_map_reads_an_ebp_local_as_a_slot():
+    ours = _code(*FRAMED, _ebp_local(8), *FRAMED_LEAVE)
+    theirs = _code(*FRAMED, _ebp_local(0xC), *FRAMED_LEAVE)
+    assert _slots(ours, theirs).pairs == ((-8, -0xC),)
+
+
+def test_slot_map_reads_the_frame_size_of_an_ebp_frame():
+    slots = _slots(_code(*FRAMED, *FRAMED_LEAVE), _code(*FRAMED, *FRAMED_LEAVE))
+    assert (slots.frame_ours, slots.frame_theirs) == (0x10, 0x10)
+
+
+def test_slot_map_does_not_shift_an_ebp_local_by_a_push():
+    """A push moves esp, never ebp."""
+    ours = _code(*FRAMED, PUSH_EAX, _ebp_local(8), CALL, *FRAMED_LEAVE)
+    theirs = _code(*FRAMED, PUSH_EAX, _ebp_local(0xC), CALL, *FRAMED_LEAVE)
+    assert _slots(ours, theirs).pairs == ((-8, -0xC),)
+
+
+def test_slot_map_skips_ebp_as_a_general_register():
+    ours = _code(*UNFRAMED, _ebp_local(8), *UNFRAMED_LEAVE)
+    assert _slots(ours, ours).pairs == ()
 
 
 def test_slot_map_skips_other_base_registers():

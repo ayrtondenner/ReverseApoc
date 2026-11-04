@@ -220,6 +220,15 @@ def test_search_prints_the_slot_map(tmp_path, monkeypatch, capsys, stubs):
     assert lines == ["frame: ours 0x10, theirs 0x14", "slots: bijection True", "slot 0x8 -> 0xc"]
 
 
+def test_search_says_when_no_slot_was_compared(tmp_path, monkeypatch, capsys, stubs):
+    """An empty map is no bijection: nothing was compared."""
+    none = batch.SlotMap((), True, 0, 0x14)
+    monkeypatch.setattr(batch, "function_slots", lambda _exe, _obj, _start: none)
+    assert _cli(tmp_path, monkeypatch) == 1
+    lines = capsys.readouterr().out.splitlines()[1:]
+    assert lines == ["frame: ours 0x0, theirs 0x14", "slots: none compared"]
+
+
 def test_search_parses_its_arguments():
     args = cli.build_parser().parse_args(["search", "ufo2p", ADDRESS, "f.c"])
     assert (args.exe, args.address, str(args.file)) == ("ufo2p", ADDRESS, "f.c")

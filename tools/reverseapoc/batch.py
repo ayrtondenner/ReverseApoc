@@ -240,15 +240,35 @@ _ESP_FRAME = re.compile(r"^(sub|add) esp, (?P<size>0x[0-9a-f]+|\d+|N)$")
 # Watcom's address of slot 0, beside `lea r, [esp + N]` for the others. `mov ebp, esp` opens a
 # frame and `mov esp, esp` is filler, so neither takes an address.
 _ESP_COPY = re.compile(r"^mov (?!ebp|esp)(?P<reg>e[a-z]{2}), esp$")
+# A local of an ebp frame, as a token shows it: `[ebp - 8]`, `[ebp + ecx*4 - 0xc]`, `[ebp - N]`.
+# `[ebp + N]` is a stack argument, so a local is only ever below ebp.
+_EBP_LOCAL = re.compile(r"\[ebp(?P<index> \+ [a-z]+(?:\*\w+)?)?(?P<disp> - \w+)\]")
+_FRAME_OPENING = "mov ebp, esp"
+_SAVED_REGISTER = re.compile(r"^push e[a-z]{2}$")
 PUSH_SIZE = 4  # bytes a 32-bit push takes
 
 
-def _stack_masked(token: str) -> str:
+def _ebp_framed(insns: Iterable[Insn]) -> bool:
+    """`mov ebp, esp` opens the body, with only saved registers pushed before it. Anywhere else
+    ebp is a general register, as `-4r` code uses it, and `[ebp - N]` is no slot."""
+    for insn in insns:
+        text = f"{insn.mnemonic} {insn.op_str}"
+        if text == _FRAME_OPENING:
+            return True
+        if _SAVED_REGISTER.match(text) is None:
+            return False
+    return False
+
+
+def _stack_masked(token: str, framed: bool) -> str:
     """`token` with the displacement of an esp-based operand and the immediate of `sub esp, N`
     or `add esp, N` shown as N. A bare `[esp]` is slot 0, so it reads `[esp + N]` too, and
-    `mov r, esp`, the address of slot 0, reads `lea r, [esp + N]`."""
+    `mov r, esp`, the address of slot 0, reads `lea r, [esp + N]`. In a body `framed` by ebp,
+    the displacement of a local is shown as N as well."""
     token = _ESP_COPY.sub(r"lea \g<reg>, [esp + N]", token)
     token = _ESP_OPERAND.sub(lambda hit: f"[esp{hit['index'] or ''} + N]", token)
+    if framed:
+        token = _EBP_LOCAL.sub(lambda hit: f"[ebp{hit['index'] or ''} - N]", token)
     return _ESP_FRAME.sub(r"\1 esp, N", token)
 
 
@@ -258,13 +278,15 @@ def _tokens(
     """(token, shape, va) per instruction; a token drops operand text when any of its bytes is a
     relocated field, so two references to different-but-relocated targets compare equal. With
     `stack`, it also drops stack offsets (_stack_masked)."""
+    insns = list(decode(code, va))
+    framed = _ebp_framed(insns)
     out = []
-    for insn in decode(code, va):
+    for insn in insns:
         hit = any(a in masked for a in range(insn.va, insn.va + insn.size))
         form = shape(insn.mnemonic, insn.op_str)
         exact_text = f"{insn.mnemonic} {insn.op_str}"
         token = form if (hit or insn.branch_target is not None) else exact_text
-        out.append((_stack_masked(token) if stack else token, form, insn.va))
+        out.append((_stack_masked(token, framed) if stack else token, form, insn.va))
     return out
 
 
@@ -330,23 +352,29 @@ def _displacement(operand: re.Match[str]) -> int:
     return int(operand["disp"].replace(" ", ""), 0) if operand["disp"] else 0
 
 
-def _slot(insn: Insn, depth: int) -> int | None:
-    """The frame-relative slot `insn` reads or takes the address of, at `depth`, or None."""
+def _slot(insn: Insn, depth: int, framed: bool) -> int | None:
+    """The slot `insn` reads or takes the address of, at `depth`, or None: frame-relative for
+    esp, and in a body `framed` by ebp the displacement of a local, which no push moves."""
     if _ESP_COPY.match(f"{insn.mnemonic} {insn.op_str}") is not None:
         return -depth
     operand = _ESP_OPERAND.search(insn.op_str)
-    return None if operand is None else _displacement(operand) - depth
+    if operand is not None:
+        return _displacement(operand) - depth
+    local = _EBP_LOCAL.search(insn.op_str) if framed else None
+    return None if local is None else _displacement(local)
 
 
 def _frame_slots(code: bytes, va: int) -> tuple[list[int | None], int]:
-    """The frame-relative slot of each instruction's esp operand or copy of esp (None when it
-    has none), and the frame size. Depth starts after `sub esp, N`, so saved registers shift
+    """The slot of each instruction's esp operand, copy of esp or ebp local (None when it has
+    none), and the frame size. Depth starts after `sub esp, N`, so saved registers shift
     nothing, and an operand is read before its own instruction's push moves esp."""
+    insns = list(decode(code, va))
+    framed = _ebp_framed(insns)
     slots: list[int | None] = []
     frame = None
     depth = 0
-    for insn in decode(code, va):
-        slots.append(_slot(insn, depth))
+    for insn in insns:
+        slots.append(_slot(insn, depth, framed))
         if frame is None:
             frame = _frame_size(insn)
         else:
