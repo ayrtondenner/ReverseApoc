@@ -627,3 +627,143 @@ def test_body_key_skips_a_fixup_outside_the_function():
     alone = _body(data, off=0, size=16)
     with_neighbour = _body(data, (_fixup(16), _fixup(20)), off=0, size=16)
     assert batch.body_key(alone) == batch.body_key(with_neighbour)
+
+
+# ---- the slot map (07.1, D-01: it reports, it decides nothing) ----------------------------------
+#
+# Clean-room encodings, written here. A frame opens with a saved register and `sub esp, N` (R9).
+
+PUSH_EAX, PUSH_ECX, POP_ECX = "50", "51", "59"
+CALL = "e800000000"
+ADD_ESP_4 = "83c404"
+FRAME = (PUSH_EBX, SUB_ESP_10)
+LEAVE = (ADD_ESP_10, POP_EBX, RET)
+
+
+def _load(slot: int) -> str:
+    """mov eax, dword ptr [esp + slot]"""
+    return f"8b4424{slot:02x}"
+
+
+def _load_ecx(slot: int) -> str:
+    """mov ecx, dword ptr [esp + slot]"""
+    return f"8b4c24{slot:02x}"
+
+
+def _slots(ours: bytes, theirs: bytes, masked: frozenset[int] = frozenset()) -> batch.SlotMap:
+    return batch.slot_map(ours, theirs, VA, set(masked))
+
+
+def test_slot_map_pairs_aligned_esp_operands():
+    assert _slots(_code(LOAD_EAX_ESP_8), _code(LOAD_EAX_ESP_C)).pairs == ((8, 0xC),)
+
+
+def test_slot_map_keeps_a_slot_that_matches():
+    assert _slots(_code(LOAD_EAX_ESP_8), _code(LOAD_EAX_ESP_8)).pairs == ((8, 8),)
+
+
+def test_slot_map_reads_a_bare_esp_operand_as_slot_0():
+    assert _slots(_code(LOAD_EAX_ESP), _code(LOAD_EAX_ESP_4)).pairs == ((0, 4),)
+
+
+def test_slot_map_reads_an_indexed_operand():
+    ours, theirs = _code("8b448c08"), _code("8b448c0c")  # mov eax, [esp + ecx*4 + 8], then + 0xc
+    assert _slots(ours, theirs).pairs == ((8, 0xC),)
+
+
+def test_slot_map_reads_a_relocated_store():
+    """The immediate is relocated, so the two stores align whatever it holds."""
+    ours = _code("c7042400100000")  # mov dword ptr [esp], 0x1000
+    theirs = _code("c744240400200000")  # mov dword ptr [esp + 4], 0x2000
+    masked = frozenset({VA + 3, VA + 4, VA + 5, VA + 6, VA + 7})
+    assert _slots(ours, theirs, masked).pairs == ((0, 4),)
+
+
+def test_slot_map_skips_other_base_registers():
+    assert _slots(_code("8b4308"), _code("8b430c")).pairs == ()  # mov eax, [ebx + 8], then + 0xc
+
+
+def test_slot_map_follows_a_pushed_argument():
+    """The saved register before `sub esp, N` shifts nothing: depth starts at the frame (R9)."""
+    ours = _code(*FRAME, _load(8), PUSH_EAX, _load_ecx(0xC), CALL, *LEAVE)
+    theirs = _code(*FRAME, _load(0xC), PUSH_EAX, _load_ecx(0x10), CALL, *LEAVE)
+    assert _slots(ours, theirs).pairs == ((8, 0xC),)
+
+
+def test_slot_map_reads_a_pushed_slot_before_the_push_moves_esp():
+    push_slot = "ff742408"  # push dword ptr [esp + 8]
+    ours = _code(*FRAME, push_slot, push_slot, CALL, *LEAVE)
+    theirs = _code(*FRAME, "ff74240c", "ff74240c", CALL, *LEAVE)
+    assert _slots(ours, theirs).pairs == ((4, 8), (8, 0xC))
+
+
+@pytest.mark.parametrize("cleanup", [(), (ADD_ESP_4,)], ids=["callee pops", "caller cleans"])
+def test_slot_map_returns_to_the_frame_after_a_call(cleanup):
+    def body(slot: int) -> bytes:
+        return _code(*FRAME, _load(slot), PUSH_ECX, CALL, *cleanup, _load(slot), *LEAVE)
+
+    assert _slots(body(8), body(0xC)).pairs == ((8, 0xC),)
+
+
+def test_slot_map_follows_a_pop():
+    """`push` and `pop` with no call between them, as a small constant is loaded."""
+
+    def body(slot: int) -> bytes:
+        return _code(*FRAME, _load(slot), PUSH_EAX, POP_ECX, _load(slot), *LEAVE)
+
+    assert _slots(body(8), body(0xC)).pairs == ((8, 0xC),)
+
+
+def test_slot_map_reports_a_bijection():
+    ours = _code(*FRAME, _load(8), _load_ecx(0xC), *LEAVE)
+    theirs = _code(*FRAME, _load(0xC), _load_ecx(8), *LEAVE)
+    slots = _slots(ours, theirs)
+    assert slots.pairs == ((8, 0xC), (0xC, 8))
+    assert slots.bijection is True
+
+
+def test_slot_map_reports_a_conflict():
+    """One of our slots on two of theirs: slot sharing or a different frame, not a permutation."""
+    ours = _code(*FRAME, _load(8), _load_ecx(8), *LEAVE)
+    theirs = _code(*FRAME, _load(8), _load_ecx(0xC), *LEAVE)
+    slots = _slots(ours, theirs)
+    assert slots.pairs == ((8, 8), (8, 0xC))
+    assert slots.bijection is False
+
+
+def test_slot_map_reports_two_of_our_slots_on_one_of_theirs():
+    ours = _code(*FRAME, _load(8), _load_ecx(0xC), *LEAVE)
+    theirs = _code(*FRAME, _load(8), _load_ecx(8), *LEAVE)
+    assert _slots(ours, theirs).bijection is False
+
+
+def test_slot_map_reports_both_frame_sizes():
+    ours = _code(PUSH_EBX, SUB_ESP_10, _load(8), ADD_ESP_10, POP_EBX, RET)
+    theirs = _code(PUSH_EBX, SUB_ESP_14, _load(8), ADD_ESP_14, POP_EBX, RET)
+    slots = _slots(ours, theirs)
+    assert (slots.frame_ours, slots.frame_theirs) == (0x10, 0x14)
+
+
+def test_slot_map_gives_a_body_with_no_frame_size_0():
+    slots = _slots(_code(RET), _code(SUB_ESP_10, ADD_ESP_10, RET))
+    assert (slots.frame_ours, slots.frame_theirs) == (0, 0x10)
+    assert slots.pairs == ()
+    assert slots.bijection is True
+
+
+def test_function_slots_reads_our_object_against_the_row(tmp_path):
+    pair = filler_pair(b"", body=_code(SUB_ESP_14, _load(0xC), ADD_ESP_14, RET),
+                       ours=_code(SUB_ESP_10, _load(8), ADD_ESP_10, RET))  # fmt: skip
+    exe = _synth_exe(pair)
+    obj = tmp_path / "f.obj"
+    obj.write_bytes(our_object(pair.ours, publics=[(exe.symbols.linker_name(pair.row.start), 0)]))
+    slots = batch.function_slots(exe, obj, pair.row.start)
+    assert slots.pairs == ((8, 0xC),)
+    assert (slots.frame_ours, slots.frame_theirs) == (0x10, 0x14)
+
+
+def test_function_slots_of_a_missing_object_still_reads_the_row(tmp_path):
+    pair = filler_pair(b"", body=_code(SUB_ESP_14, _load(0xC), ADD_ESP_14, RET))
+    slots = batch.function_slots(_synth_exe(pair), tmp_path / "missing.obj", pair.row.start)
+    assert slots.pairs == ()
+    assert (slots.frame_ours, slots.frame_theirs) == (0, 0x14)

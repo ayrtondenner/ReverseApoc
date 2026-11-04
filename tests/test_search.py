@@ -1,4 +1,4 @@
-"""`reverseapoc search`: refusals, the type axis, the waves and the route into the D-12 queue.
+"""`reverseapoc search`: refusals, the four axes, the waves, the slot map and the D-12 queue route.
 
 No compiler runs here: batch.compile_batch, function_body, body_key and judge are stubbed, and a
 stubbed verdict is decided by the text of the variant and the cell it was compiled under. The C
@@ -8,6 +8,7 @@ below is made up. New names are reached as attributes of `reverseapoc.search`.
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -45,7 +46,12 @@ int func_00010000(int a)
     return *p;
 }
 """
-MOVES = 10  # b and c, five types each; the pointer and the array do not move
+MOVES = 10  # on the type axis: b and c, five types each; the pointer and the array do not move
+
+
+def _slots():
+    """The stubbed slot map: one pair differs, one does not."""
+    return batch.SlotMap(((8, 0xC), (0x10, 0x10)), True, 0x10, 0x14)
 
 
 def _exe() -> SimpleNamespace:
@@ -75,11 +81,17 @@ class Stubs:
         self.compiles = lambda _text: True
         self.waves: list[tuple[batch.Job, ...]] = []
         self.judged: list[Path] = []
+        self.slot_objects: list[Path] = []
         monkeypatch.setattr(reverseapoc.search, "OUT", out)
         monkeypatch.setattr(batch, "compile_batch", self._compile_batch)
         monkeypatch.setattr(batch, "function_body", lambda _exe, obj, _start: obj)
         monkeypatch.setattr(batch, "body_key", lambda obj: self.key(*_source(obj)))
         monkeypatch.setattr(batch, "judge", self._judge)
+        monkeypatch.setattr(batch, "function_slots", self._function_slots, raising=False)
+
+    def _function_slots(self, _exe, obj: Path, _start: int) -> batch.SlotMap:
+        self.slot_objects.append(obj)
+        return _slots()
 
     def _compile_batch(self, jobs, _workers, **_kwargs) -> batch.BatchResult:
         jobs = tuple(jobs)
@@ -100,6 +112,12 @@ class Stubs:
 @pytest.fixture
 def stubs(monkeypatch, tmp_path) -> Stubs:
     return Stubs(monkeypatch, tmp_path / "out")
+
+
+@pytest.fixture
+def type_axis(monkeypatch):
+    """Only the type axis, for tests that count its moves."""
+    monkeypatch.setattr(reverseapoc.search, "AXES", ("type",))
 
 
 def _run(text: str = TEXT, rule: Rule = COMMITTED):
@@ -186,16 +204,20 @@ def test_search_function_missing_from_file_is_a_tool_error(tmp_path, monkeypatch
     assert stubs.waves == []
 
 
-def test_search_prints_one_summary_line(tmp_path, monkeypatch, capsys, stubs):
+def test_search_prints_one_summary_line(tmp_path, monkeypatch, capsys, stubs, type_axis):
     stubs.key = lambda _text, cell: cell
     stubs.decide = lambda _text, _cell: verdict(91.5, 97.25)
     assert _cli(tmp_path, monkeypatch) == 1
-    lines = capsys.readouterr().out.splitlines()
-    assert len(lines) == 1
-    line = lines[0]
+    line = capsys.readouterr().out.splitlines()[0]
     for part in (f"{(MOVES + 1) * 2} compiles", "2 distinct bodies", "exact False", "score 91.5",
                  "stack score 97.25", "axes -", "best.c"):  # fmt: skip
         assert part in line
+
+
+def test_search_prints_the_slot_map(tmp_path, monkeypatch, capsys, stubs):
+    assert _cli(tmp_path, monkeypatch) == 1
+    lines = capsys.readouterr().out.splitlines()[1:]
+    assert lines == ["frame: ours 0x10, theirs 0x14", "slots: bijection True", "slot 0x8 -> 0xc"]
 
 
 def test_search_parses_its_arguments():
@@ -342,8 +364,165 @@ def test_type_table_reads_the_local_types_of_our_c():
 
 def test_moves_add_no_banned_text():
     search = reverseapoc.search
-    for move in search.type_moves(TEXT, search.function_span(TEXT, A1)):
+    span = search.function_span(TEXT, A1)
+    moves = [*search.type_moves(TEXT, span), *search.statement_moves(TEXT, span),
+             *search.scope_moves(TEXT, span), *search.declaration_moves(TEXT, span)]  # fmt: skip
+    assert moves
+    for move in moves:
         assert batch.refusal(move.text) is None
+
+
+def test_axes_run_type_then_statement_then_scope_then_declaration():
+    assert reverseapoc.search.AXES == ("type", "statement", "scope", "declaration")
+
+
+def _body(*lines: str) -> str:
+    return "int f(int a)\n{\n" + "".join(f"    {line}\n" for line in lines) + "}\n"
+
+
+def _swapped(lines: list[str], first: int, second: int) -> str:
+    moved = list(lines)
+    moved[first], moved[second] = moved[second], moved[first]
+    return _body(*moved)
+
+
+def _moves_of(moves, text: str) -> list[str]:
+    return [move.text for move in moves(text, reverseapoc.search.function_span(text, "f"))]
+
+
+def test_statement_moves_swap_adjacent_simple_statements_only():
+    lines = ["int b;", "int c;", "", "b = 1;", "c = 2;", "if (a) {", "    b = 3;", "    c = 4;",
+             "}", "a = 5;", "top:", "b = 6;", "c = 7;", "for (c = 0; c < 2; c++)", "    b = 8;",
+             "c = 9;", "goto top;", "c = 10;", "while (c) {", "    c--;", "}", "c = 11;",
+             "return c;"]  # fmt: skip
+    text = _body(*lines)
+    assert _moves_of(reverseapoc.search.statement_moves, text) == [
+        _swapped(lines, 3, 4), _swapped(lines, 6, 7), _swapped(lines, 11, 12)]  # fmt: skip
+
+
+@pytest.mark.parametrize("control", ["switch (a) {", "do {", "} else {", "case 1:", "default:",
+                                     "break;", "continue;", "return 0;"])  # fmt: skip
+def test_statement_moves_never_cross_a_control_line(control):
+    text = _body("a = 1;", control, "a = 2;")
+    assert _moves_of(reverseapoc.search.statement_moves, text) == []
+
+
+def test_statement_moves_leave_a_statement_split_across_lines():
+    text = _body("a = g(a,", "      1);", "a = 2;")
+    assert _moves_of(reverseapoc.search.statement_moves, text) == []
+
+
+def test_statement_moves_leave_the_body_of_a_braceless_if():
+    text = _body("if (a)", "    a = 1;", "a = 2;")
+    assert _moves_of(reverseapoc.search.statement_moves, text) == []
+
+
+def test_statement_moves_swap_across_a_comment_and_keep_it_in_place():
+    text = _body("a = 1;", "/* why */", "", "a = sizeof(a);")
+    assert _moves_of(reverseapoc.search.statement_moves, text) == [
+        _body("a = sizeof(a);", "/* why */", "", "a = 1;")]  # fmt: skip
+
+
+def test_statement_moves_read_a_ternary_as_a_statement():
+    text = _body("a = a ? 1 : 2;", "a = 3;")
+    assert _moves_of(reverseapoc.search.statement_moves, text) == [
+        _body("a = 3;", "a = a ? 1 : 2;")]  # fmt: skip
+
+
+def test_statement_moves_are_tagged_with_their_axis():
+    search = reverseapoc.search
+    moves = list(search.statement_moves(TEXT, search.function_span(TEXT, A1)))
+    assert moves
+    assert {move.axes for move in moves} == {("statement",)}
+
+
+def test_scope_move_puts_a_declaration_at_the_top_of_the_block_holding_its_uses():
+    text = _body("int b;", "int c;", "", "b = a;", "if (a) {", "    int d;", "", "    c = 1;",
+                 "    d = c;", "    b = d;", "}", "return b;")  # fmt: skip
+    moved = _body("int b;", "", "b = a;", "if (a) {", "    int c;", "    int d;", "", "    c = 1;",
+                  "    d = c;", "    b = d;", "}", "return b;")  # fmt: skip
+    assert _moves_of(reverseapoc.search.scope_moves, text) == [moved]
+
+
+def test_scope_move_takes_the_innermost_block_of_all_the_uses():
+    text = _body("int c;", "", "if (a) {", "    while (a) {", "        c = 1;", "        a = c;",
+                 "    }", "}", "return a;")  # fmt: skip
+    moved = _body("", "if (a) {", "    while (a) {", "        int c;", "        c = 1;",
+                  "        a = c;", "    }", "}", "return a;")  # fmt: skip
+    assert _moves_of(reverseapoc.search.scope_moves, text) == [moved]
+
+
+def test_scope_move_keeps_a_local_with_a_use_outside_the_block():
+    text = _body("int c;", "", "c = 0;", "if (a) {", "    c = 1;", "}", "return c;")
+    assert _moves_of(reverseapoc.search.scope_moves, text) == []
+
+
+def test_scope_move_keeps_a_local_used_in_the_block_header():
+    text = _body("int c;", "", "for (c = 0; c < a; c++) {", "    a = c;", "}", "return a;")
+    assert _moves_of(reverseapoc.search.scope_moves, text) == []
+
+
+def test_scope_move_keeps_a_local_with_no_use():
+    assert _moves_of(reverseapoc.search.scope_moves, _body("int c;", "", "return a;")) == []
+
+
+def test_scope_move_leaves_a_block_that_opens_inside_a_line():
+    text = _body("int c;", "", "if (a) { c = 1;", "    a = c; }", "return a;")
+    assert _moves_of(reverseapoc.search.scope_moves, text) == []
+
+
+def test_scope_moves_are_tagged_with_their_axis():
+    search = reverseapoc.search
+    text = _body("int c;", "", "if (a) {", "    c = 1;", "}", "return a;")
+    (move,) = search.scope_moves(text, search.function_span(text, "f"))
+    assert move.axes == ("scope",)
+
+
+def test_declaration_moves_lead_with_address_taken_locals_and_aggregates():
+    """b is address-taken and d is an array; c and p are neither."""
+    search = reverseapoc.search
+    lines = TEXT.split("\n")
+    names = {5: "b", 6: "c", 7: "p", 8: "d"}
+    moves = list(search.declaration_moves(TEXT, search.function_span(TEXT, A1)))
+    swaps = []
+    for move in moves[:6]:
+        changed = [n for n, line in enumerate(move.text.split("\n")) if line != lines[n]]
+        swaps.append("".join(names[n] for n in changed))
+    assert swaps == ["bd", "bc", "bp", "cd", "pd", "cp"]
+    assert {move.axes for move in moves} == {("declaration",)}
+
+
+def test_declaration_moves_lead_with_a_struct_local():
+    search = reverseapoc.search
+    text = _body("int b;", "int c;", "struct pos d;", "int *e;", "", "return a;")
+    first = next(search.declaration_moves(text, search.function_span(text, "f")))
+    assert first.text == _body("struct pos d;", "int c;", "int b;", "int *e;", "", "return a;")
+
+
+def test_declaration_moves_stay_inside_one_block():
+    search = reverseapoc.search
+    text = _body("int b;", "int c;", "", "if (a) {", "    int d;", "    int e;", "", "    d = e;",
+                 "}", "return b;")  # fmt: skip
+    for move in search.declaration_moves(text, search.function_span(text, "f")):
+        lines = move.text.split("\n")
+        assert {lines[2].strip(), lines[3].strip()} == {"int b;", "int c;"}
+        assert {lines[6].strip(), lines[7].strip()} == {"int d;", "int e;"}
+
+
+def test_declaration_moves_go_on_to_seeded_shuffles_and_end():
+    search = reverseapoc.search
+    decls = [f"int v{n};" for n in range(5)]
+    text = _body(*decls, "", "return a;")
+    span = search.function_span(text, "f")
+    moves = [move.text for move in search.declaration_moves(text, span)]
+    pairs = 10
+    assert len(moves) == pairs + search.BUDGET
+    assert len(set(moves[pairs:])) > pairs
+    assert moves == [move.text for move in search.declaration_moves(text, span)]
+
+
+def test_declaration_moves_of_one_declaration_are_none():
+    assert _moves_of(reverseapoc.search.declaration_moves, _body("int b;", "", "return a;")) == []
 
 
 # ---- the search ---------------------------------------------------------------------------------
@@ -358,7 +537,7 @@ def test_budget_caps_the_compiles(stubs):
     assert all(len(wave) <= search.WAVE * 2 for wave in stubs.waves)
 
 
-def test_each_variant_has_its_own_directory(stubs):
+def test_each_variant_has_its_own_directory(stubs, type_axis):
     _run()
     directories = [job.src.parent for job in stubs.jobs]
     assert len(set(directories)) == MOVES + 1
@@ -367,13 +546,13 @@ def test_each_variant_has_its_own_directory(stubs):
     assert directories[0].parent == reverseapoc.search.OUT / "ufo2p" / f"{START:08x}"
 
 
-def test_a_cell_equal_to_the_committed_rule_is_dropped(stubs):
+def test_a_cell_equal_to_the_committed_rule_is_dropped(stubs, type_axis):
     result = _run(rule=ONEATX)
     assert len(stubs.jobs) == MOVES + 1
     assert [record["cell"] for record in _records(result)] == [batch.COMMITTED_CELL]
 
 
-def test_equal_text_is_compiled_once(monkeypatch, stubs):
+def test_equal_text_is_compiled_once(monkeypatch, stubs, type_axis):
     search = reverseapoc.search
     other = TEXT.replace("    int b;", "    short b;")
     twice = [search.Candidate(TEXT, ("type",)), search.Candidate(other, ("type",)),
@@ -384,7 +563,7 @@ def test_equal_text_is_compiled_once(monkeypatch, stubs):
     assert result.compiles == 4
 
 
-def test_equal_body_is_judged_once(stubs):
+def test_equal_body_is_judged_once(stubs, type_axis):
     stubs.key = lambda _text, cell: cell
     result = _run()
     assert len(stubs.jobs) == (MOVES + 1) * 2
@@ -493,6 +672,101 @@ def test_an_exact_base_compiles_nothing_else(stubs):
     result = _run()
     assert len(stubs.waves) == 1
     assert result.axes == ()
+
+
+SWAPPED = "    c = b;\n    b = a + 1;\n"  # the first two statements of TEXT, swapped
+DECLS_SWAPPED = "    short c;\n    int b;\n"  # its first two declarations, swapped
+
+
+def test_statement_variant_with_a_higher_score_is_dropped(stubs):
+    """D-26: not the result, and not the next wave's base, whatever its score."""
+    stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0)})
+    result = _run()
+    assert result.text == TEXT
+    assert result.axes == ()
+    only_the_swap = TEXT.replace("    b = a + 1;\n    c = b;\n", SWAPPED)
+    texts = {job.src.read_text(encoding="ascii") for job in stubs.jobs}
+    assert only_the_swap in texts
+    assert [text for text in texts if SWAPPED in text and text != only_the_swap] == []
+
+
+def test_a_dropped_statement_variant_does_not_hide_a_lower_standing_one(stubs):
+    stubs.decide = _scored({SWAPPED: verdict(99.0, 99.0), DECLS_SWAPPED: verdict(60.0, 60.0)})
+    result = _run()
+    assert DECLS_SWAPPED in result.text
+    assert SWAPPED not in result.text
+    assert result.axes == ("declaration",)
+
+
+def test_statement_variant_that_is_exact_is_kept(stubs):
+    stubs.decide = _scored({SWAPPED: verdict(exact=True)})
+    result = _run()
+    assert result.exact is True
+    assert SWAPPED in result.text
+    assert "statement" in result.axes
+
+
+def test_a_better_variant_becomes_the_base_and_its_axis_repeats(stubs):
+    stubs.decide = _scored({"    short b;": verdict(60.0, 60.0)})
+    result = _run()
+    assert "    short b;" in result.text
+    assert result.axes == ("type",)
+    both = "    short b;\n    int c;\n"
+    assert any(both in job.src.read_text(encoding="ascii") for job in stubs.jobs)
+
+
+def test_an_axis_that_improved_brings_a_second_round(stubs):
+    """A declaration move lands last in the first round, so a type move on it is the second's."""
+    stubs.decide = _scored({DECLS_SWAPPED: verdict(60.0, 60.0)})
+    _run()
+    second = "    int c;\n    int b;\n"
+    assert any(second in job.src.read_text(encoding="ascii") for job in stubs.jobs)
+
+
+def test_axes_name_each_axis_the_winner_moved_along(stubs):
+    stubs.decide = _scored({"    int c;\n    short b;\n": verdict(exact=True),
+                            "    short b;": verdict(60.0, 60.0)})  # fmt: skip
+    result = _run()
+    assert result.exact is True
+    assert result.axes == ("type", "declaration")
+    assert [record["axes"] for record in _records(result)] == [["type", "declaration"]] * 2
+
+
+def test_no_text_is_compiled_twice_across_rounds(stubs):
+    stubs.decide = _scored({DECLS_SWAPPED: verdict(60.0, 60.0),
+                            "    short b;": verdict(50.0, 55.0)})  # fmt: skip
+    _run()
+    committed = [job.src.read_text(encoding="ascii") for job in stubs.jobs
+                 if job.src.stem == "committed"]  # fmt: skip
+    assert len(committed) == len(set(committed))
+
+
+def test_same_input_gives_the_same_result(stubs):
+    """A drifting tool makes the curve meaningless."""
+
+    def decide(text: str, cell: str) -> batch.Verdict:
+        digest = sha256(f"{cell}{text}".encode("ascii")).digest()
+        return verdict(float(digest[0] % 90), float(digest[1] % 90))
+
+    stubs.decide = decide
+    first = _run()
+    second = _run()
+    assert first.text == second.text
+    assert first.axes == second.axes
+    assert first.records == second.records
+    assert first.compiles == second.compiles
+
+
+def test_result_carries_the_slot_map_of_the_winners_best_cell(stubs):
+    def decide(text: str, cell: str) -> batch.Verdict:
+        return verdict(90.0, 95.0) if "    short b;" in text and cell == "cell-1" else verdict()
+
+    stubs.decide = decide
+    result = _run()
+    assert result.slots == _slots()
+    (obj,) = stubs.slot_objects
+    assert obj.stem == "cell-1"
+    assert "    short b;" in obj.with_suffix(".c").read_text(encoding="ascii")
 
 
 def test_best_source_survives_later_waves(monkeypatch, stubs):
