@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import json
 import re
 from dataclasses import dataclass, field, replace
 
@@ -26,7 +27,7 @@ from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
 from .asm import FixupIndex
 from .check import ExeInputs
 from .fileio import write_atomic
-from .functions import KIND_DATA_IN_CODE, FunctionRow
+from .functions import KIND_DATA_IN_CODE, KIND_GAME, KIND_THUNK, FunctionRow
 from .targets import REPO_ROOT
 from .x86 import _disassembler, decode, is_alignment_filler
 
@@ -1599,8 +1600,6 @@ def result_used(exe: ExeInputs) -> tuple[set, set] | None:
     """(callees whose result some caller reads, callees with any direct caller) over every
     game row of the EXE, cached in CACHE_DIR / result-used-<exe>.json. Signatures made during
     the build skip the demotion this census feeds, so they stay in a dict of its own."""
-    import json
-
     stem = exe.stem
     if stem in _RESULT_USED:
         return _RESULT_USED[stem]
@@ -1630,7 +1629,7 @@ def _census(exe: ExeInputs) -> tuple[set, set]:
     used, called = set(), set()
     census_sigs: dict[int, Sig] = {}
     for row in exe.rows:
-        if row.kind not in ("game", "thunk"):
+        if row.kind not in (KIND_GAME, KIND_THUNK):
             continue
         try:
             lf = Lifter(exe, row, census_sigs)
