@@ -41,7 +41,7 @@
     {
       "number": "7.1",
       "name": "Matching tooling (INSERTED)",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "8",
@@ -54,5 +54,5 @@
     "label": "Advance to the next step",
     "reason": "Phase 8 of 9 · executing"
   },
-  "updated_at": "2026-11-04T01:25:53.389Z"
+  "updated_at": "2026-11-04T13:06:51.096Z"
 }
