@@ -134,3 +134,57 @@ def test_sbb_of_a_register_with_itself_reads_nothing():
     # cmp eax, edx; sbb ecx, ecx; mov eax, ecx; ret. A read of ecx would invent a parameter.
     exe = stub_exe("39d0 19c9 89c8 c3")
     assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 2
+
+
+# ---- high bytes ----
+
+
+def first_insn(code: str):
+    exe = stub_exe(code)
+    return lift.Lifter(exe, exe.rows[0]).decode()[0]
+
+
+def test_high_byte_read_lifts():
+    # movzx eax, ah; ret
+    assert "(r_eax >> 8) & 255" in lift.lift_row(stub_exe("0fb6c4 c3"), VA)
+
+
+def test_high_byte_read_is_a_byte_of_any_register():
+    # mov eax, 0; mov al, dh; ret: dh reads edx, and the result is that one byte
+    text = lift.lift_row(stub_exe("b800000000 88f0 c3"), VA)
+    assert "(r_edx >> 8) & 255" in text
+
+
+def test_a_parameter_read_through_its_high_byte_stays_wide():
+    # movzx eax, ah; ret. As an `unsigned char` the parameter would have no high byte to read.
+    assert "unsigned char r_eax" not in lift.lift_row(stub_exe("0fb6c4 c3"), VA)
+
+
+def test_high_byte_write_keeps_the_low_bytes():
+    # mov eax, edx; mov ah, 1; ret
+    text = lift.lift_row(stub_exe("89d0 b401 c3"), VA)
+    assert "(r_edx & 0xffff00ff) | ((1 & 255) << 8)" in text
+    assert lift._use_def(first_insn("b401 c3")) == ({"eax"}, {"eax"})
+
+
+def test_a_high_byte_write_is_a_use_so_the_register_is_an_argument():
+    # mov dh, 1; mov eax, edx; ret. As a plain def, the write would end edx's liveness.
+    exe = stub_exe("b601 89d0 c3")
+    assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 2
+
+
+def test_a_high_byte_write_returns_the_full_register():
+    # mov ah, 1; ret. A byte return type would drop the byte just written.
+    assert lift.lift_row(stub_exe("b401 c3"), VA).startswith("\nint func_")
+
+
+def test_clearing_a_high_byte_keeps_the_rest_and_reads_it():
+    # xor ah, ah; ret. `xor r, r` reads nothing, but this one keeps three bytes of eax.
+    assert lift._use_def(first_insn("30e4 c3")) == ({"eax"}, {"eax"})
+    assert "return r_eax & 0xffff00ff;" in lift.lift_row(stub_exe("30e4 c3"), VA)
+
+
+def test_arithmetic_on_a_high_byte_stays_in_that_byte():
+    # add ah, 1; ret
+    text = lift.lift_row(stub_exe("80c401 c3"), VA)
+    assert "(r_eax & 0xffff00ff) | (((((r_eax >> 8) & 255) + 1) & 255) << 8)" in text

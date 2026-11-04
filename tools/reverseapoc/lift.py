@@ -46,6 +46,10 @@ SUB = {
     "di": ("edi", 2),
     "bp": ("ebp", 2),
 }
+HIGH_BYTES = frozenset(name for name, (_, size) in SUB.items() if size < 0)
+HIGH_SHIFT = 8
+BYTE_MASK = 0xFF
+HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
 SIZE_TYPE = {
     (1, True): "signed char",
     (1, False): "unsigned char",
@@ -133,6 +137,20 @@ def cast(type_: str, e: E, size: int, signed: bool) -> E:
 
 def load(addr: E, size: int, signed: bool) -> E:
     return E(f"*({SIZE_TYPE[size, signed]} *){paren(addr)}", pure=False, size=size, signed=signed)
+
+
+def high_byte(full: E) -> E:
+    """The value of `ah`, given `eax`."""
+    e = binop("&", binop(">>", full, const(HIGH_SHIFT)), const(BYTE_MASK))
+    return E(e.text, pure=e.pure, size=1, signed=False)
+
+
+def with_high_byte(full: E, byte: E) -> E:
+    """`eax` after a write of `byte` to `ah`: its other bytes stay."""
+    keep = binop("&", full, const(HIGH_KEEP))
+    if byte.const == 0:
+        return keep
+    return binop("|", keep, binop("<<", binop("&", byte, const(BYTE_MASK)), const(HIGH_SHIFT)))
 
 
 # ---- the converter ----
@@ -414,7 +432,7 @@ class Lifter:
                 name = ci.reg_name(op.reg)
                 full = _full(name)
                 if full in reads and full not in written:
-                    reads[full].add((op.size, ci.mnemonic == "movsx"))
+                    reads[full].add((_reach(name, op.size), ci.mnemonic == "movsx"))
             written |= _use_def(ci)[1]
         out = {}
         for r, seen in reads.items():
@@ -445,7 +463,7 @@ class Lifter:
                     and _full(ci.reg_name(op.reg)) == "eax"
                     and ci.mnemonic not in ("cmp", "test")
                 ):
-                    sizes.add(op.size)
+                    sizes.add(_reach(ci.reg_name(op.reg), op.size))
         if sizes == {1}:
             return "unsigned char"
         if sizes == {2}:
@@ -527,9 +545,9 @@ class Block_:
     def get(self, name: str) -> E:
         if name in SUB:
             full, size = SUB[name]
-            if size < 0:
-                raise Unliftable("reg: high byte register read")
             e = self.get(full)
+            if name in HIGH_BYTES:
+                return high_byte(e)
             return E(e.text, e.atom, e.pure, e.const, size, e.signed, e.scaled)
         if name not in self.regs:
             raise Unliftable(f"reg: {name} read before any write")
@@ -550,8 +568,9 @@ class Block_:
     def set(self, name: str, e: E, ci) -> None:
         if name in SUB:
             full, size = SUB[name]
-            if size < 0:
-                raise Unliftable("reg: high byte register write")
+            if name in HIGH_BYTES:
+                self.regs[full] = with_high_byte(self.get(full), e)
+                return
             old = self.regs.get(full)
             if old is not None and old.const == 0:
                 self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, False)
@@ -959,6 +978,12 @@ def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
 
 
+def _reach(name: str, size: int) -> int:
+    """The width a value needs to hold this operand: `ah` is one byte, but no byte or word holds
+    it, because it sits above the low byte."""
+    return 4 if name in HIGH_BYTES else size
+
+
 def _branch_target(ci) -> int | None:
     ops = ci.operands
     if len(ops) == 1 and ops[0].type == X86_OP_IMM:
@@ -1080,6 +1105,8 @@ def _use_def(ci) -> tuple[set, set]:
         and ci.operands[0].reg == ci.operands[1].reg
     ):
         u = set()
+    # A high byte write keeps the register's other bytes: it is a use of the full register too.
+    u |= {_full(ci.reg_name(r)) for r in regs_write if ci.reg_name(r) in HIGH_BYTES}
     if ci.mnemonic == "call":
         u = {"eax", "edx", "ebx", "ecx"} & u  # refined per callee in the run
         d = {"eax"}
