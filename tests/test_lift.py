@@ -1312,3 +1312,41 @@ def test_a_sign_made_by_sar_reaches_the_divide():
 def test_only_a_divide_reads_a_cdq(code):
     with pytest.raises(lift.Unliftable, match="op: cdq"):
         lift.lift_row(stub_exe(code), VA)
+
+
+# ---- low parts ----
+
+
+def test_a_low_read_of_a_wide_value_narrows_it():
+    # call f; test al, al; sete al; ret
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"{call_to(VA, callee)} 84c0 0f94c0 c3", "b801000000 c3")
+    assert "((unsigned char)r_eax) == 0" in lift.lift_row(exe, VA)
+
+
+def test_a_word_read_of_a_wide_value_narrows_it():
+    # mov eax, edx; cmp ax, 5; je +0; ret
+    assert "if (((short)r_edx) == 5) goto" in lift.lift_row(stub_exe("89d0 6683f805 7400 c3"), VA)
+
+
+def test_a_low_read_of_a_narrow_parameter_is_the_parameter():
+    # test al, al; je +0; ret
+    assert "if (r_eax == 0) goto" in lift.lift_row(stub_exe("84c0 7400 c3"), VA)
+
+
+def test_a_low_read_of_a_constant_is_the_constant():
+    # mov eax, 5; mov [edx], al; ret
+    assert "((char *)r_edx) = 5;" in lift.lift_row(stub_exe("b805000000 8802 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("89d0 0fb6c8 89c8 c3", "return (unsigned char)r_edx;"),  # movzx ecx, al
+        ("89d0 0fbec8 89c8 c3", "return (signed char)r_edx;"),  # movsx ecx, al
+        ("89d0 98 c3", "return (short)r_edx;"),  # cwde
+    ],
+)
+def test_a_widening_read_casts_once(code, expected):
+    # mov eax, edx; <widen>; ret
+    assert expected in lift.lift_row(stub_exe(code), VA)

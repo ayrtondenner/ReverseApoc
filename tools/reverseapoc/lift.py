@@ -174,6 +174,13 @@ def with_high_byte(full: E, byte: E) -> E:
     return binop("|", keep, binop("<<", binop("&", byte, const(BYTE_MASK)), const(HIGH_SHIFT)))
 
 
+def low_part(e: E, size: int) -> E:
+    """The value of `al` or `ax`, given `eax`: a value of that width or less reads as it is."""
+    if e.const is not None or e.size <= size or e.boolean:
+        return E(e.text, e.atom, e.pure, e.const, size, e.signed, e.scaled, e.boolean)
+    return cast(SIZE_TYPE[size, size != 1], e, size, size != 1)
+
+
 # ---- the converter ----
 
 
@@ -696,9 +703,7 @@ class Block_:
         if name in SUB:
             full, size = SUB[name]
             e = self.get(full)
-            if name in HIGH_BYTES:
-                return high_byte(e)
-            return E(e.text, e.atom, e.pure, e.const, size, e.signed, e.scaled)
+            return high_byte(e) if name in HIGH_BYTES else low_part(e, size)
         if name not in self.regs:
             raise Unliftable(f"reg: {name} read before any write")
         e = self.regs[name]
@@ -728,6 +733,10 @@ class Block_:
             self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, signed, boolean=e.boolean)
             return
         self.regs[name] = e
+
+    def widened(self, name: str) -> E:
+        """What a cast to the width of `al`, `ax` or `ah` reads: the cast does the narrowing."""
+        return self.get(name) if name in HIGH_BYTES else self.get(_full(name))
 
     def flush(self, ci, keep: set[str] | None = None) -> None:
         """Before a side effect: registers holding an impure value that is still needed become
@@ -1050,9 +1059,11 @@ class Block_:
             self.write(ci, ops[0], self.read(ci, ops[1], ops[1].size == 4))
         elif mn in ("movsx", "movzx"):
             signed = mn == "movsx"
-            src = self.read(ci, ops[1], signed)
             if ops[1].type == X86_OP_REG:
+                src = self.widened(ci.reg_name(ops[1].reg))
                 src = cast(SIZE_TYPE[ops[1].size, signed], src, ops[1].size, signed)
+            else:
+                src = self.read(ci, ops[1], signed)
             self.write(ci, ops[0], E(src.text, src.atom, src.pure, src.const, ops[1].size, signed))
         elif mn == "lea":
             m = ops[1].mem
@@ -1091,8 +1102,7 @@ class Block_:
             a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
             self.flags = ("res", a if a.text == b.text else binop("&", a, b))
         elif mn == "cwde":
-            a = self.get("ax")
-            self.set("eax", cast("short", a, 2, True), ci)
+            self.set("eax", cast("short", self.widened("ax"), 2, True), ci)
         elif mn == "cdq":
             a = self.get("eax")
             self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
