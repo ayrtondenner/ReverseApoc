@@ -86,6 +86,7 @@ _WORD = re.compile(r"[A-Za-z_]\w*")
 _LABEL = re.compile(r"\s*[A-Za-z_]\w*\s*:")
 _ENDS_A_STATEMENT = (";", "{", "}", ":")  # what the line above a statement of its own ends in
 _DIMENSION = re.compile(r"\[([^\]]*)\]")
+_PLAIN_DIMENSION = re.compile(r"(?P<octal>0[0-7]*)|[1-9]\d*")
 # What stands before a unary `&`: an operator, an opening, `return`, or a cast. A name, a `)`, a
 # `]` and a postfix `++` or `--` leave a binary `&`, and so does an operand _operands stands in
 # for. `(word) &` with a word outside _SIZES could be either: _ambiguous_and refuses that frame.
@@ -373,16 +374,24 @@ def declaration_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
             yield _declaration_move(moved, rows, initialised)
 
 
+def _dimension(text: str) -> int | None:
+    """A dimension as C reads it, a leading 0 making it octal, or None past a plain number."""
+    plain = _PLAIN_DIMENSION.fullmatch(text.strip())
+    if plain is None:
+        return None
+    return int(plain[0], 8 if plain["octal"] else 10)
+
+
 def _size(found: re.Match[str]) -> int | None:
     """The bytes of the local declared by `found`, or None: a struct, or a size that is not a
     plain number here."""
     declarator = found["declarators"].split("=")[0]
     spec = " ".join(word for word in found["spec"].split() if word not in _QUALIFIERS)
     element = POINTER_SIZE if "*" in declarator else _SIZES.get(spec)
-    dimensions = _DIMENSION.findall(declarator)
-    if element is None or not all(text.strip().isdecimal() for text in dimensions):
+    dimensions = [_dimension(text) for text in _DIMENSION.findall(declarator)]
+    if element is None or None in dimensions:
         return None
-    return math.prod(map(int, dimensions), start=element)
+    return math.prod(dimensions, start=element)
 
 
 def _plain_float(found: re.Match[str]) -> bool:

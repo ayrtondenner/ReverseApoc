@@ -1203,6 +1203,20 @@ def test_memory_locals_read_the_size_of_each_declared_type(line, size):
     assert local.size == size
 
 
+@pytest.mark.parametrize(
+    ("line", "size"),
+    [("int v[010];", 32), ("char v[0100];", 64), ("int v[2][010];", 64), ("int v[ 010 ];", 32)],
+)
+def test_an_octal_dimension_reads_as_c_reads_it(line, size):
+    (local,) = _locals_of(line, "", "take(v);", "return a;")
+    assert local.size == size
+
+
+@pytest.mark.parametrize("line", ["int v[0x10];", "int v[09];", "int v[N];", "int v[];"])
+def test_a_dimension_that_is_not_a_plain_number_has_no_size(line):
+    assert _locals_of(line, "", "take(v);", "return a;") == ()
+
+
 def test_memory_locals_take_a_pointer_whose_address_is_taken():
     (local,) = _locals_of("int *p;", "", "take(&p);", "return a;")
     assert (local.name, local.size) == ("p", 4)
