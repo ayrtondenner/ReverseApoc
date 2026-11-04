@@ -1259,6 +1259,8 @@ def _run_search(args: argparse.Namespace) -> int:
     print(f"search: {result.compiles} compiles, {result.bodies} distinct bodies, "
           f"exact {result.exact}, score {result.score}, stack score {result.stack_score}, "
           f"axes {','.join(result.axes) or '-'}, best {result.best}")  # fmt: skip
+    if not any(record["compiled"] for record in result.records):
+        print(f"not compiled: {result.records[0]['key']}")
     slots = result.slots
     print(f"frame: ours {slots.frame_ours:#x}, theirs {slots.frame_theirs:#x}")
     print(f"slots: bijection {slots.bijection}" if slots.pairs else "slots: none compared")

@@ -229,6 +229,17 @@ def test_search_says_when_no_slot_was_compared(tmp_path, monkeypatch, capsys, st
     assert lines == ["frame: ours 0x0, theirs 0x14", "slots: none compared"]
 
 
+def test_search_prints_why_nothing_compiled(tmp_path, monkeypatch, capsys, stubs):
+    stubs.compiles = lambda _text: False
+    assert _cli(tmp_path, monkeypatch) == 1
+    assert "not compiled: compile failed: Error! E0: made up" in capsys.readouterr().out
+
+
+def test_search_says_nothing_of_a_compile_that_worked(tmp_path, monkeypatch, capsys, stubs):
+    assert _cli(tmp_path, monkeypatch) == 1
+    assert "not compiled" not in capsys.readouterr().out
+
+
 def test_search_parses_its_arguments():
     args = cli.build_parser().parse_args(["search", "ufo2p", ADDRESS, "f.c"])
     assert (args.exe, args.address, str(args.file)) == ("ufo2p", ADDRESS, "f.c")
