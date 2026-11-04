@@ -1134,3 +1134,20 @@ def test_a_flag_on_a_copy_reads_the_variable_the_copy_became():
     text = lift.lift_row(stub_exe("89c3 b805000000 85db 7405 b806000000 01d8 c3"), VA)
     assert text.index("r_ebx = r_eax;") < text.index("r_eax = 5;")
     assert "if (r_ebx == 0) goto" in text
+
+
+# ---- the census ----
+
+
+def test_a_cold_census_gives_the_warm_draft():
+    # call B; call D; xor eax, eax; ret. Nobody reads what D leaves in eax, so D is void.
+    b, d = VA + ROW_SPACING, VA + 2 * ROW_SPACING
+    exe = stub_exe(f"{call_to(VA, b)} {call_to(VA + 5, d)} 31c0 c3", "c3", "b801000000 c3")
+    cold = lift.lift_row(exe, VA, {})
+    assert lift.lift_row(exe, VA, {}) == cold
+    assert f"void func_{d:08x}(void);" in cold
+
+
+def test_the_census_asks_for_no_signatures():
+    exe = stub_exe("c3")
+    assert lift.result_used(exe) == (set(), set())

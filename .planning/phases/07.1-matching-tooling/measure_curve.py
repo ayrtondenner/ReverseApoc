@@ -418,7 +418,7 @@ def measure(point: int) -> int:
     sigs = {stem: {} for stem in exes}
     for stem, exe in exes.items():
         (src / stem).mkdir(parents=True)
-        result_used(exe, {})  # a rebuilt census ends before any row lifts, and its sigs stay out
+        result_used(exe)  # a rebuilt census ends before any row lifts
     for row in tier:
         lift_into(row, exes[row["exe"]], sigs[row["exe"]], src)
     records = run_batch(src, root / "results.jsonl")

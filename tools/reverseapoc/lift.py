@@ -291,7 +291,7 @@ class Lifter:
         if nstack:
             nregs = 4
         returns = "eax" in written and "eax" not in saved
-        used = result_used(self.exe, self.sigs)
+        used = result_used(self.exe)
         if (
             returns
             and used is not None
@@ -1482,9 +1482,10 @@ _RESULT_USED: dict[str, tuple] = {}
 _BUILDING: set[str] = set()
 
 
-def result_used(exe: ExeInputs, sigs: dict) -> tuple[set, set] | None:
+def result_used(exe: ExeInputs) -> tuple[set, set] | None:
     """(callees whose result some caller reads, callees with any direct caller) over every
-    game row of the EXE, cached in CACHE_DIR / result-used-<exe>.json."""
+    game row of the EXE, cached in CACHE_DIR / result-used-<exe>.json. Signatures made during
+    the build skip the demotion this census feeds, so they stay in a dict of its own."""
     import json
 
     stem = exe.stem
@@ -1499,11 +1500,12 @@ def result_used(exe: ExeInputs, sigs: dict) -> tuple[set, set] | None:
         return _RESULT_USED[stem]
     _BUILDING.add(stem)
     used, called = set(), set()
+    census_sigs: dict[int, Sig] = {}
     for row in exe.rows:
         if row.kind not in ("game", "thunk"):
             continue
         try:
-            lf = Lifter(exe, row, sigs)
+            lf = Lifter(exe, row, census_sigs)
             _, _, _, blocks, order, _, after = lf.prepare(frozenset({"eax"}), strict=False)
         except Unliftable, StopIteration, AttributeError, RecursionError:
             continue
