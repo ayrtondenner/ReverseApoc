@@ -39,6 +39,11 @@
       "status": "in_progress"
     },
     {
+      "number": "7.1",
+      "name": "Matching tooling (INSERTED)",
+      "status": "pending"
+    },
+    {
       "number": "8",
       "name": "Clean-room specs for OpenApoc",
       "status": "pending"
@@ -47,7 +52,7 @@
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step",
-    "reason": "Phase 7 of 9 · executing"
+    "reason": "Phase 8 of 9 · executing"
   },
-  "updated_at": "2026-11-03T23:26:21.318Z"
+  "updated_at": "2026-11-04T01:25:53.389Z"
 }

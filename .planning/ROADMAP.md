@@ -389,10 +389,26 @@ Plans:
   4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
   5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
 
-**Plans:** 0 plans
+**Plans:** 6 plans
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 07.1 to break down)
+**Wave 1** *(main checkout)*
+- [ ] 07.1-01-PLAN.md — `reverseapoc search`: declaration-order, scope, type and statement-order search through `batch.compile_batch`, stack-masked score, slot map; curve point 0 first (D-01, D-09, D-26)
+
+**Wave 2** *(blocked on Wave 1 completion; main checkout)*
+- [ ] 07.1-02-PLAN.md — wcc386 10.6 stack-slot model for `-4r -s` and `-4r -oneatx -s`, calibrated on `probe/`; first YAGNI verdict (D-02, D-24)
+
+**Wave 3** *(blocked on Wave 2 completion; main checkout)*
+- [ ] 07.1-03-PLAN.md — converter v1: `lift.py` moved to `tools/` with its listed extensions (D-03)
+
+**Wave 4** *(blocked on Wave 3 completion; main checkout)*
+- [ ] 07.1-04-PLAN.md — failure classifier routing rows to the converter, the search or an agent (D-04)
+
+**Wave 5** *(blocked on Wave 4 completion; main checkout)*
+- [ ] 07.1-05-PLAN.md — disassembly view upgrades: jump-table case targets and call registers, terminal only (D-05)
+
+**Wave 6** *(blocked on Wave 5 completion; main checkout)*
+- [ ] 07.1-06-PLAN.md — watcom-decomp skill through `writing-skills`, after the owner checkpoint that shows the curve (D-06)
 
 ### Phase 8: Clean-room specs for OpenApoc
 
@@ -426,7 +442,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
-| 7.1. Matching tooling (INSERTED) | 0/TBD | Not started | - |
+| 7.1. Matching tooling (INSERTED) | 0/6 | Planned | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
