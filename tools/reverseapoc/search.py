@@ -328,9 +328,9 @@ def scope_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
             yield Candidate(_moved_into(lines, n, block), axes)
 
 
-def _in_memory(found: re.Match[str], body: str) -> bool:
-    """An address-taken local or an aggregate: the only locals declaration order moves (RESEARCH).
-    A bitwise `&` before the name counts too, which only reorders the moves."""
+def _moves_first(found: re.Match[str], body: str) -> bool:
+    """An address-taken local or an aggregate, whose pairs declaration_moves tries first. A bitwise
+    `&` before the name counts too, which only reorders the moves: the model trusts _in_frame."""
     declarators = found["declarators"]
     if "[" in declarators or re.search(rf"&\s*{_name(found)}\b", body) is not None:
         return True
@@ -368,10 +368,10 @@ def declaration_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
     blocks = [list(group) for _, group in itertools.groupby(rows, key=stacks.__getitem__)]
     blocks = [block for block in blocks if len(block) > 1]
     body = "\n".join(code[span[0] + 1 : span[1]])
-    memory = {n for n in rows if _in_memory(_declaration(code[n]), body)}
+    first = {n for n in rows if _moves_first(_declaration(code[n]), body)}
     pairs = [pair for block in blocks for pair in itertools.combinations(block, 2)]
     initialised = [lines[n] for n in rows if _initialised(code[n])]
-    for one, two in sorted(pairs, key=lambda pair: -len(memory.intersection(pair))):
+    for one, two in sorted(pairs, key=lambda pair: -len(first.intersection(pair))):
         yield _declaration_move(_swapped(lines, one, two), rows, initialised)
     if blocks:
         for moved in _shuffles(lines, blocks):
