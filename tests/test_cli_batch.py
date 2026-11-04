@@ -166,10 +166,6 @@ def test_batch_records_name_their_source(tmp_path, monkeypatch):
     """07-48c: every record of `batch` names its input C file (repo-relative POSIX) and the
     file's LF sha256, a refused record too. The EXE loader is a stub holding one row, and
     nothing compiles (a #pragma source is refused before any compile)."""
-    import json
-    from types import SimpleNamespace
-
-    from reverseapoc.functions import FunctionRow
     from reverseapoc.status import lf_sha256
 
     text = '#pragma aux f "*"\nint func_000108E0(void) { return 0; }\n'
