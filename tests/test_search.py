@@ -331,6 +331,75 @@ def test_split_declarators_leaves_the_other_functions_alone():
     assert "    int c;\n    int d;\n" in split
 
 
+DEAD_COPY = """#if 0
+int f(int a)
+{
+    int dead;
+
+    return 0;
+}
+#endif
+
+int f(int a)
+{
+    int live;
+
+    return live;
+}
+"""
+
+
+def test_function_span_skips_a_dead_copy():
+    assert reverseapoc.search.function_span(DEAD_COPY, "f") == (10, 14)
+
+
+def test_function_span_skips_a_macro_of_the_same_name():
+    text = "#define f(x) { x; }\nint f(int a)\n{\n    return a;\n}\n"
+    assert reverseapoc.search.function_span(text, "f") == (2, 4)
+
+
+def test_declarations_skip_a_dead_branch_inside_the_body():
+    search = reverseapoc.search
+    text = _body("int b;", "#if 0", "int dead;", "#endif", "int c;", "", "return b + c;")
+    lines = text.split("\n")
+    found = [lines[n].strip() for n in search.declarations(text, search.function_span(text, "f"))]
+    assert found == ["int b;", "int c;"]
+
+
+def test_a_conditional_the_check_refuses_is_a_batch_error():
+    with pytest.raises(batch.BatchError, match="ifdef"):
+        reverseapoc.search.function_span("#ifdef X\nint f(void)\n{\n}\n#endif\n", "f")
+
+
+def test_the_blanked_code_keeps_every_line_and_column_of_the_text():
+    """`_split_line` slices the text at columns read from the code. A trigraph, which translation
+    shortens, and a splice, which it joins, must move nothing."""
+    text = ("#define M 1 \\\n    2\n#if 0\nint dead;\n#endif\nint f(void)\n{\n"
+            "    int a = '??=', b; /* ??/ */\n"
+            "    int c = 1 + \\\n        2;\n\n    return 0;\n}\n")  # fmt: skip
+    code = reverseapoc.search._code(text).split("\n")
+    assert [len(line) for line in code] == [len(line) for line in text.split("\n")]
+    assert "        2;" in code  # the rest of a spliced statement is live
+    assert "    2" not in code  # the rest of a spliced directive is not
+
+
+def test_split_declarators_stays_aligned_past_a_trigraph():
+    search = reverseapoc.search
+    text = "int f(void)\n{\n    int a = '??=', b; /* two */\n\n    return a;\n}\n"
+    assert search.split_declarators(text, search.function_span(text, "f")) == (
+        "int f(void)\n{\n    int a = '??=';\n    int b; /* two */\n\n    return a;\n}\n"
+    )  # fmt: skip
+
+
+def test_a_search_of_a_dead_copy_moves_the_live_function(stubs, type_axis):
+    text = DEAD_COPY.replace("int f(int a)", "int func_00010000(int a)")
+    _run(text)
+    moved = {job.src.read_text(encoding="ascii") for job in stubs.jobs} - {text}
+    assert moved
+    assert all("    int dead;\n" in variant for variant in moved)
+    assert all("    int live;\n" not in variant for variant in moved)
+
+
 def test_type_moves_change_one_declaration():
     search = reverseapoc.search
     base = TEXT.split("\n")

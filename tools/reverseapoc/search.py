@@ -108,8 +108,16 @@ class SearchResult:
 
 
 def _code(text: str) -> str:
-    """`text` with comments and literals blanked, line for line and column for column."""
-    return contextpack._blanked(text, check._configure())[0]
+    """`text` with comments, literals, directives and dead #if 0 branches blanked, line for line
+    and column for column; BatchError for a conditional the D-12 parser refuses. These are
+    contextpack.definitions' phases, on `text` itself: normalised text would shorten a trigraph
+    and shift the columns _split_line slices at, and _live reads whole lines only."""
+    cfg = check._configure()
+    try:
+        live = cfg.code_text(text)
+    except cfg._ConditionalError as exc:
+        raise batch.BatchError(f"the source cannot be read: {exc}") from None
+    return contextpack._live(*contextpack._blanked(text, cfg), live)
 
 
 def _closing(code: str, at: int, opening: str, closing: str) -> int | None:
