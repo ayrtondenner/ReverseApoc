@@ -902,3 +902,93 @@ def test_a_slot_that_turns_out_to_be_an_array_stays_one():
     text = in_frame(f"{STORE} 0fbf542408 8d442408")
     assert "char s_8[8];" in text
     assert "short" not in text
+
+
+# ---- the idiom check ----
+
+# cmp eax, edx; jne T; mov eax, 1; jmp J; T: xor eax, eax; J: ret
+BOOLEAN = "39d0 7507 b801000000 eb02 31c0 c3"
+BRANCH_AT = VA + 2  # the conditional jump an idiom is named at
+
+
+def idioms(code: str) -> list[str]:
+    exe = stub_exe(code)
+    return lift.Lifter(exe, exe.rows[0]).idioms()
+
+
+def test_idiom_check_names_a_boolean_helper():
+    assert idioms(BOOLEAN) == [f"0x{BRANCH_AT:X}: inlined boolean helper"]
+    assert f"/* IDIOM 0x{BRANCH_AT:X}: inlined boolean helper */" in lift.lift_row(
+        stub_exe(BOOLEAN), VA
+    )
+
+
+def test_a_boolean_helper_may_write_its_values_either_way_round():
+    # cmp eax, edx; jne T; xor eax, eax; jmp J; T: mov eax, 1; J: ret
+    assert len(idioms("39d0 7504 31c0 eb05 b801000000 c3")) == 1
+
+
+def test_two_other_constants_are_no_boolean_helper():
+    # cmp eax, edx; jne T; mov eax, 2; jmp J; T: xor eax, eax; J: ret
+    assert idioms("39d0 7507 b802000000 eb02 31c0 c3") == []
+
+
+def test_two_registers_are_no_boolean_helper():
+    # cmp eax, edx; jne T; mov eax, 1; jmp J; T: xor edx, edx; J: ret
+    assert idioms("39d0 7507 b801000000 eb02 31d2 c3") == []
+
+
+def test_arms_that_do_not_join_are_no_boolean_helper():
+    # cmp eax, edx; jne T; mov eax, 1; ret; T: xor eax, eax; ret
+    assert idioms("39d0 7506 b801000000 c3 31c0 c3") == []
+
+
+@pytest.mark.parametrize(
+    ("code", "name"),
+    [
+        ("39d0 7e02 89d0 c3", "MIN"),  # cmp eax, edx; jle +2; mov eax, edx; ret
+        ("39d0 7c02 89d0 c3", "MIN"),  # jl
+        ("39d0 7602 89d0 c3", "MIN"),  # jbe
+        ("39d0 7d02 89d0 c3", "MAX"),  # jge
+        ("39d0 7f02 89d0 c3", "MAX"),  # jg
+        ("39d0 7302 89d0 c3", "MAX"),  # jae
+        ("39c2 7e02 89d0 c3", "MAX"),  # cmp edx, eax; jle +2; mov eax, edx: the compare swapped
+    ],
+)
+def test_idiom_check_names_min_and_max(code, name):
+    assert idioms(code) == [f"0x{BRANCH_AT:X}: {name} written out"]
+
+
+def test_a_skip_of_two_moves_is_no_min_or_max():
+    # cmp eax, edx; jle +4; mov eax, edx; mov ecx, edx; ret
+    assert idioms("39d0 7e04 89d0 89d1 c3") == []
+
+
+def test_a_move_of_something_else_is_no_min_or_max():
+    # cmp eax, edx; jle +2; mov eax, ecx; ret
+    assert idioms("39d0 7e02 89c8 c3") == []
+
+
+def test_an_equality_skip_is_no_min_or_max():
+    # cmp eax, edx; je +2; mov eax, edx; ret
+    assert idioms("39d0 7402 89d0 c3") == []
+
+
+def test_a_skip_with_no_compare_is_no_min_or_max():
+    # test eax, eax; jle +2; mov eax, edx; ret
+    assert idioms("85c0 7e02 89d0 c3") == []
+
+
+def test_idioms_change_no_code(monkeypatch):
+    # a draft is its idiom comments, then what it would be with none
+    named = lift.lift_row(stub_exe(BOOLEAN), VA)
+    clear_caches()
+    monkeypatch.setattr(lift.Lifter, "idioms", lambda self: [])
+    plain = lift.lift_row(stub_exe(BOOLEAN), VA)
+    first, rest = named.split("\n", 1)
+    assert first.startswith("/* IDIOM ")
+    assert rest == plain
+
+
+def test_a_row_with_no_idiom_has_no_comment():
+    assert "IDIOM" not in lift.lift_row(stub_exe("89d0 c3"), VA)

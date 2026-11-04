@@ -94,6 +94,8 @@ NEG = {
 }
 
 
+MIN_SKIP = frozenset({"jle", "jl", "jbe", "jb"})  # `cmp a, b` then one of these skips `mov a, b`
+MAX_SKIP = frozenset({"jge", "jg", "jae", "ja"})
 X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "/", "fdivr": "/"}
 X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
 X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
@@ -591,7 +593,8 @@ class Lifter:
         dims = self.array_dims()
         decls += [f"    {t} {n}{dims.get(n, '')};" for n, t in slots]
         decls += [f"    int {n};" for n in sorted(self.hole_vars)]
-        lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
+        lines = [f"/* IDIOM {hit} */" for hit in self.idioms()]
+        lines += list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
         if decls:
             lines.append("")
         lines += [("    " + line if not line.endswith(":;") else line) for line in body]
@@ -625,6 +628,25 @@ class Lifter:
     def jumped_to(self, b) -> list[int]:
         """The successors the jump closing `b` reaches, past any fall through."""
         return b.succ if b.insns[-1].address in self.tables else b.succ[:1]
+
+    # -- idioms --
+
+    def idioms(self) -> list[str]:
+        """One line per inlined boolean helper or written-out MIN/MAX, with the address of its
+        conditional jump. It detects and names, and rewrites nothing."""
+        insns = self.decode()
+        blocks, order = self.blocks(insns[self.frame(insns)[2] :])
+        hits = []
+        for s, nxt in itertools.pairwise(order):
+            b = blocks[s]
+            last = b.insns[-1]
+            if last.mnemonic not in JCC:
+                continue
+            taken = blocks.get(_branch_target(last))
+            name = None if taken is None else _idiom(b, blocks[nxt], taken)
+            if name is not None:
+                hits.append(f"0x{last.address:X}: {name}")
+        return hits
 
     # -- address-taken slots --
 
@@ -1300,6 +1322,54 @@ def _reach(name: str, size: int) -> int:
     """The width a value needs to hold this operand: `ah` is one byte, but no byte or word holds
     it, because it sits above the low byte."""
     return 4 if name in HIGH_BYTES else size
+
+
+def _const_write(b: Block) -> tuple[str, int] | None:
+    """(register, value) when `b` only writes a constant to a register, and perhaps jumps."""
+    body = b.insns[:-1] if b.insns[-1].mnemonic == "jmp" else b.insns
+    if len(body) != 1:
+        return None
+    ci = body[0]
+    ops = ci.operands
+    if len(ops) != 2 or ops[0].type != X86_OP_REG:
+        return None
+    if ci.mnemonic == "mov" and ops[1].type == X86_OP_IMM:
+        return ci.reg_name(ops[0].reg), ops[1].imm
+    if ci.mnemonic == "xor" and ops[1].type == X86_OP_REG and ops[0].reg == ops[1].reg:
+        return ci.reg_name(ops[0].reg), 0
+    return None
+
+
+def _boolean_helper(fall: Block, taken: Block) -> bool:
+    """Both arms of a diamond write 0 and 1 to one register, then join."""
+    a, b = _const_write(fall), _const_write(taken)
+    if a is None or b is None or a[0] != b[0] or {a[1], b[1]} != {0, 1}:
+        return False
+    return len(fall.succ) == len(taken.succ) == 1 and fall.succ == taken.succ
+
+
+def _min_max(b: Block, fall: Block, taken: Block) -> str | None:
+    """`cmp a, b`, a conditional skip of one `mov a, b`. A swapped compare swaps the name."""
+    compare, skip = (b.insns[-2], b.insns[-1]) if len(b.insns) > 1 else (None, None)
+    move = fall.insns[0]
+    if compare is None or compare.mnemonic != "cmp" or len(fall.insns) != 1:
+        return None
+    if move.mnemonic != "mov" or fall.succ != [taken.start]:
+        return None
+    swapped = ", ".join(reversed(compare.op_str.split(", ")))
+    if move.op_str not in (compare.op_str, swapped):
+        return None
+    if skip.mnemonic not in MIN_SKIP | MAX_SKIP:
+        return None
+    least = (skip.mnemonic in MIN_SKIP) == (move.op_str == compare.op_str)
+    return "MIN" if least else "MAX"
+
+
+def _idiom(b: Block, fall: Block, taken: Block) -> str | None:
+    if _boolean_helper(fall, taken):
+        return "inlined boolean helper"
+    name = _min_max(b, fall, taken)
+    return None if name is None else f"{name} written out"
 
 
 def _branch_target(ci) -> int | None:
