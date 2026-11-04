@@ -84,8 +84,9 @@ STATUSES = (PROPOSED, REGATED, FAILED, APPROVED, LANDED, REJECTED, SUPERSEDED)
 OPEN_STATUSES = (PROPOSED, REGATED, FAILED)  # a unit has at most one; a new hit merges into it
 SWEEP, SWEEP2, OWNER, BATCH = "sweep", "sweep2", "owner", "batch"
 SOURCES = (SWEEP, SWEEP2, OWNER, BATCH)
-# 07-48c: who wrote a batch proposal's C (the design's two names); a batch landing names it.
-AUTHORS = ("reverseapoc lift", "claude subagent (spike 011)")
+# 07-48c: who wrote a batch proposal's C (the design's two names, and the search of D-12); a
+# batch landing names it.
+AUTHORS = ("reverseapoc lift", "claude subagent (spike 011)", "reverseapoc search")
 OPTIONAL_FIELDS: dict[str, str] = {"author": ""}  # key -> default; written only when set
 AS_WRITTEN, REDUCED, EMPTY = "as-written", "reduced", "empty"
 VARIANTS = (AS_WRITTEN, REDUCED, EMPTY)  # EMPTY: no re-gate has run
