@@ -105,7 +105,6 @@ X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fst
                        "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
 X87_POPPING_STORES = frozenset({"fstp", "fistp"})
 X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
-STALE_FLAGS = ("stale",)  # the flags of a compare whose operand has been overwritten since
 
 
 class Unliftable(Exception):
@@ -750,6 +749,7 @@ class Block_:
         self.assigning.discard(r)
         e = self.regs[r]
         self.keep_held(name, e.text)
+        self.keep_flags(name, e.text)
         self.lf.regvars.add(r)
         self.out.append(f"{name} = {e};")
         self.regs[r] = var(name, e.size, e.signed)
@@ -774,6 +774,31 @@ class Block_:
             for n in stale:
                 held[n] = _renamed(held[n], name, self.temp(name))
 
+    def keep_flags(self, name: str, value: str = "") -> None:
+        """`name` is about to change: a flag operand reading it reads a temporary, unless it is the
+        `value` that takes the name. Flags nothing reads go, since no temporary should print."""
+        if self.flags is None:
+            return
+        held = self.flags[1:]
+        if not any(e.text != value and _reads(e, name) for e in held):
+            return
+        if not self.flags_read():
+            self.flags = None
+            return
+        t = self.temp(name)
+        kept = (e if e.text == value else _renamed(e, name, t) for e in held)
+        self.flags = (self.flags[0], *kept)
+
+    def flags_read(self) -> bool:
+        """True when this block reads the flags, from `cur` on, before anything writes them."""
+        for ci in self.insns[self.k :]:
+            regs_read, regs_write = ci.regs_access()
+            if any(ci.reg_name(r) == "eflags" for r in regs_read):
+                return True
+            if ci.mnemonic == "call" or any(ci.reg_name(r) == "eflags" for r in regs_write):
+                return False
+        return False
+
     def temp(self, name: str) -> str:
         """A new variable holding what `name` holds now."""
         t = f"t_{len(self.lf.temps)}"
@@ -782,9 +807,8 @@ class Block_:
         return t
 
     def rebind(self, value: E, new: E) -> None:
-        """`new` holds `value` now. What held `value` reads it from there, and a flag operand
-        that read what `new` held before has nothing left to read. A name or a constant repeats
-        freely, so only a name about to change moves."""
+        """`new` holds `value` now, and what held `value` reads it from there. A name or a
+        constant repeats freely, so only a name about to change moves."""
         same = not value.atom or value.text in {f"r_{r}" for r in self.assigning}
 
         def moved(e: E) -> E:
@@ -792,11 +816,8 @@ class Block_:
 
         self.pushes[:] = map(moved, self.pushes)
         self.fstack[:] = map(moved, self.fstack)
-        if self.flags is None:
-            return
-        held = [moved(e) for e in self.flags[1:]]
-        stale = any(e is not new and _reads(e, new.text) for e in held)
-        self.flags = STALE_FLAGS if stale else (self.flags[0], *held)
+        if self.flags is not None:
+            self.flags = (self.flags[0], *map(moved, self.flags[1:]))
 
     def keep_slot(self, ci, op) -> None:
         """A store to a scalar slot overwrites a name as an assignment does. Its own statement
@@ -807,7 +828,7 @@ class Block_:
         self.keep_readers(name, None, self.lf.after.get(ci.address, set()))
         popping = ci.mnemonic in X87_POPPING_STORES and self.fstack
         self.keep_held(name, self.fstack[-1].text if popping else "")
-        self.rebind(var(name), var(name))
+        self.keep_flags(name)
 
     def scalar_name(self, ci, op) -> str | None:
         """The C variable a store to the memory operand `op` overwrites, if it has one."""
@@ -973,6 +994,7 @@ class Block_:
         last = self.insns[-1] if self.insns else None
         if last is None or not (last.group(1) or last.group(3)):
             self.needed = self.lf.after.get(last.address, set()) if last else set()
+            self.flags = None  # only a block ending in a jump hands its flags on
             self.end_assign(live_in, blocks)
         return self.out
 
@@ -1268,8 +1290,6 @@ class Block_:
     def cond(self, mn) -> str:
         if self.flags is None:
             raise Unliftable("jcc: no flag source")
-        if self.flags == STALE_FLAGS:
-            raise Unliftable("flags: operand reassigned before the jump")
         rel = JCC[mn]
         unsigned = rel.endswith("u")
         rel = rel.rstrip("u")

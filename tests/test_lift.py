@@ -1010,10 +1010,44 @@ def test_a_jump_reads_the_variable_its_register_just_became():
     assert text.index("r_edx = r_edx - 1;") < text.index("if (r_edx != 0) goto")
 
 
-def test_an_operand_overwritten_before_the_jump_never_prints():
+def test_an_operand_overwritten_before_the_jump_compares_a_temporary():
     # cmp eax, edx; mov eax, 5; je L; mov eax, 6; L: ret. L is a merge, so r_eax = 5 comes first.
-    with pytest.raises(lift.Unliftable, match="flags: operand reassigned before the jump"):
-        lift.lift_row(stub_exe("39d0 b805000000 7405 b806000000 c3"), VA)
+    text = lift.lift_row(stub_exe("39d0 b805000000 7405 b806000000 c3"), VA)
+    order = ("t_0 = r_eax;", "r_eax = 5;", "if (t_0 == r_edx) goto")
+    assert sorted(order, key=text.index) == list(order)
+
+
+def test_both_operands_of_a_compare_share_the_temporary():
+    # cmp eax, eax; mov eax, 5; je L; mov eax, 6; L: ret
+    text = lift.lift_row(stub_exe("39c0 b805000000 7405 b806000000 c3"), VA)
+    assert "if (t_0 == t_0) goto" in text
+    assert "t_1" not in text
+
+
+def test_a_flag_overwritten_before_a_store_keeps_its_temporary():
+    # cmp eax, edx; mov eax, [ecx]; mov [ecx], edx; je L; inc eax; L: ret
+    text = lift.lift_row(stub_exe("39d0 8b01 8911 7401 40 c3"), VA)
+    assert text.index("t_0 = r_eax;") < text.index("r_eax = *(int *)")
+    assert "if (t_0 == r_edx) goto" in text
+
+
+def test_the_fall_through_reads_the_temporary_too():
+    # cmp eax, edx; mov eax, 5; je L; jb M; inc eax; L: ret; M: ret. Both jumps read one compare.
+    text = lift.lift_row(stub_exe("39d0 b805000000 7403 7202 40 c3 c3"), VA)
+    assert "if (t_0 == r_edx) goto" in text
+    assert "((unsigned)t_0) < ((unsigned)r_edx)" in text
+
+
+def test_a_flag_written_again_keeps_no_temporary():
+    # cmp eax, edx; mov eax, [ecx]; mov [ecx], edx; test eax, eax; je L; inc eax; L: ret
+    assert "t_0" not in lift.lift_row(stub_exe("39d0 8b01 8911 85c0 7401 40 c3"), VA)
+
+
+def test_a_flag_a_call_ends_keeps_no_temporary():
+    # cmp eax, edx; mov eax, [ecx]; mov [ecx], edx; call f; ret
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"39d0 8b01 8911 {call_to(VA + 6, callee)} c3", "b801000000 c3")
+    assert "t_0" not in lift.lift_row(exe, VA)
 
 
 def test_an_operand_left_in_its_variable_still_compares():
@@ -1021,9 +1055,11 @@ def test_an_operand_left_in_its_variable_still_compares():
     assert "if (r_eax == r_edx) goto" in lift.lift_row(stub_exe("39d0 b805000000 7401 c3 c3"), VA)
 
 
-def test_a_flag_nothing_reads_refuses_nothing():
+def test_a_flag_nothing_reads_keeps_no_temporary():
     # cmp eax, edx; jne L; mov eax, 5; L: ret. The compare's flags reach the fall through unread.
-    assert "r_eax = 5;" in lift.lift_row(stub_exe("39d0 7505 b805000000 c3"), VA)
+    text = lift.lift_row(stub_exe("39d0 7505 b805000000 c3"), VA)
+    assert "r_eax = 5;" in text
+    assert "t_0" not in text
 
 
 def test_a_list_walk_dereferences_once():
@@ -1093,10 +1129,11 @@ def test_a_slot_read_outlives_the_store_to_the_slot():
     assert "return r_eax;" in text
 
 
-def test_a_flag_that_read_a_slot_goes_stale_with_the_store():
+def test_a_flag_that_read_a_slot_keeps_it_past_the_store():
     # mov ecx, [esp + 8]; test ecx, ecx; mov [esp + 8], edx; je +0
-    with pytest.raises(lift.Unliftable, match="flags: operand reassigned before the jump"):
-        in_frame("8b4c2408 85c9 89542408 7400")
+    text = in_frame("8b4c2408 85c9 89542408 7400")
+    assert text.index("t_0 = s_8;") < text.index("s_8 = r_edx;")
+    assert "if (t_0 == 0) goto" in text
 
 
 def test_a_pending_push_keeps_the_value_it_pushed():
