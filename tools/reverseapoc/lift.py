@@ -517,34 +517,29 @@ class Lifter:
 
     # -- the lift --
 
-    def param_types(self, insns, params) -> dict[str, str]:
-        """A register parameter the entry block only reads through its low byte or word is
-        `unsigned char` / `short` (movsx: signed, a plain or zero-extending read: unsigned)."""
+    def param_types(self, blocks, start: int, params) -> dict[str, str]:
+        """A register parameter that every path only reads through its low byte or word, until
+        it is written, is `unsigned char` / `short` (movsx: signed, a plain or zero-extending
+        read: unsigned)."""
         reads: dict[str, set] = {r: set() for r in params}
-        written: set[str] = set()
-        for ci in insns:
-            src_ops = (
-                ci.operands[1:]
-                if len(ci.operands) > 1 and ci.mnemonic in ("mov", "movsx", "movzx", "lea")
-                else ci.operands
-            )
-            for op in src_ops:
-                if op.type != X86_OP_REG:
-                    continue
-                name = ci.reg_name(op.reg)
-                full = _full(name)
-                if full in reads and full not in written:
-                    reads[full].add((_reach(name, op.size), ci.mnemonic == "movsx"))
-            written |= _use_def(ci)[1]
+        seen = set()
+        todo = [(start, frozenset())]
+        while todo:
+            s, written = todo.pop()
+            if (s, written) in seen:
+                continue
+            seen.add((s, written))
+            written = _note_reads(blocks[s].insns, reads, written)
+            todo += [(t, written) for t in blocks[s].succ]
         out = {}
-        for r, seen in reads.items():
-            sizes = {size for size, _ in seen}
+        for r, found in reads.items():
+            sizes = {size for size, _ in found}
             if len(sizes) == 1 and sizes < {1, 2}:
                 (size,) = sizes
                 signed = (
-                    all(sx for _, sx in seen)
+                    all(mn == "movsx" for _, mn in found)
                     if size == 1
-                    else not any(ci.mnemonic == "movzx" for ci in insns)
+                    else not any(mn == "movzx" for _, mn in found)
                 )
                 out[r] = SIZE_TYPE[size, signed]
         return out
@@ -583,7 +578,7 @@ class Lifter:
         self.frame_top = -4 * len(saved)
         self.esp0 = self.frame_top - frame  # esp after the prologue, relative to entry esp
         params = list(ARG_REGS[: sig.nregs])
-        self.vartype = self.param_types(blocks[order[0]].insns, params) if self.narrow else {}
+        self.vartype = self.param_types(blocks, order[0], params) if self.narrow else {}
         self.regvars = set(params)
         preds: dict[int, list[int]] = {s: [] for s in order}
         for s in order:
@@ -1510,6 +1505,33 @@ def _st_number(ci, op) -> int:
 
 def _slot_name(off: int) -> str:
     return f"s_{-off:x}"
+
+
+def _operand_reads(ci):
+    """(register name, width) of what `ci` reads through its operands: a memory operand's base
+    and index are read whole, whatever the access's width."""
+    moves = len(ci.operands) > 1 and ci.mnemonic in ("mov", "movsx", "movzx", "lea")
+    for op in ci.operands[1:] if moves else ci.operands:
+        if op.type == X86_OP_REG:
+            name = ci.reg_name(op.reg)
+            yield name, _reach(name, op.size)
+    for op in ci.operands:
+        if op.type == X86_OP_MEM:
+            for reg in (op.mem.base, op.mem.index):
+                if reg:
+                    yield ci.reg_name(reg), 4
+
+
+def _note_reads(insns, reads: dict, written: frozenset) -> frozenset:
+    """Add what `insns` read of the registers in `reads` and not in `written`, as (width,
+    mnemonic). Returns `written` with what they write."""
+    for ci in insns:
+        for name, width in _operand_reads(ci):
+            full = _full(name)
+            if full in reads and full not in written:
+                reads[full].add((width, ci.mnemonic))
+        written |= _use_def(ci)[1] & reads.keys()
+    return written
 
 
 def _reach(name: str, size: int) -> int:

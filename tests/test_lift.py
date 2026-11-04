@@ -1490,3 +1490,38 @@ def test_a_large_negative_compare_stays_signed():
 )
 def test_a_constant_prints_as_its_signed_value(value, text):
     assert lift.const(value).text == text
+
+
+# ---- parameter types ----
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "88c2 8b08 c3",  # mov dl, al; mov ecx, [eax]; ret
+        "88c2 8908 c3",  # mov dl, al; mov [eax], ecx; ret
+        "88c2 8b0c82 c3",  # mov dl, al; mov ecx, [edx + eax*4]; ret
+        "88c2 8d4801 c3",  # mov dl, al; lea ecx, [eax + 1]; ret
+        "84c0 7402 8b00 c3",  # test al, al; je L; mov eax, [eax]; L: ret
+        "84c0 7402 89d0 8b00 c3",  # test al, al; je L; mov eax, edx; L: mov eax, [eax]; ret
+    ],
+    ids=["base", "store base", "index", "lea", "next block", "one path written"],
+)
+def test_a_parameter_read_whole_anywhere_stays_wide(code):
+    assert "int r_eax" in lift.lift_row(stub_exe(code), VA)
+
+
+def test_a_parameter_written_before_a_later_block_stays_narrow():
+    # test al, al; je L; ret; L: mov eax, 1; mov eax, [eax]; ret
+    assert "unsigned char r_eax" in lift.lift_row(stub_exe("84c0 7401 c3 b801000000 8b00 c3"), VA)
+
+
+def test_a_loop_of_narrow_reads_stays_narrow():
+    # L: test al, al; jne L; ret
+    assert "unsigned char r_eax" in lift.lift_row(stub_exe("84c0 75fc c3"), VA)
+
+
+def test_a_word_parameter_takes_its_sign_from_its_own_reads():
+    # movsx eax, ax; movzx ecx, dx; add eax, ecx; ret
+    text = lift.lift_row(stub_exe("0fbfc0 0fb7ca 01c8 c3"), VA)
+    assert "(short r_eax, unsigned short r_edx)" in text
