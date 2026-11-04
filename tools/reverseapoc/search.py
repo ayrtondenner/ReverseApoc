@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from . import batch, check, contextpack, unitdefs
+from . import batch, check, contextpack, omf2elf, relocs, unitdefs
 from .cflags import Rule
 from .check import ExeInputs
 from .fileio import write_atomic
@@ -45,6 +45,8 @@ WORKERS = 12
 SEARCH_CELLS = ("-4r -oneatx -s -fpi",)
 OUT = batch.BUILD_ROOT / "search"
 AXES = ("type", "statement", "scope", "declaration")  # type first: it moves spills (RESEARCH)
+# What reading a compiled body can raise past batch.function_body's own failure keys.
+_UNREADABLE = (omf2elf.Omf2ElfError, relocs.RelocError)
 
 _INT_TYPES = ("int", "unsigned", "short", "unsigned short", "signed char", "unsigned char")
 # Spellings our C also uses, as the type each one is; `char` is unsigned, as wcc386 takes it.
@@ -380,14 +382,18 @@ class _Scored:
 
 def _verdict(run: _Run, compiled: batch.Compiled) -> batch.Verdict:
     """judge's verdict of one compiled cell: one judge per distinct body. A body that cannot be
-    read is keyed by its failure, which judge reports the same way."""
+    read is keyed by its failure, which judge reports the same way, and one that fails conversion
+    scores as unjudged, so the search goes on."""
     start = run.row.start
     if not compiled.ok:
         return batch.unjudged(run.row.end - start)
-    body = batch.function_body(run.exe, compiled.job.obj, start)
-    key = body if isinstance(body, str) else batch.body_key(body)
-    if key not in run.verdicts:
-        run.verdicts[key] = batch.judge(run.exe, compiled.job.obj, start)
+    try:
+        body = batch.function_body(run.exe, compiled.job.obj, start)
+        key = body if isinstance(body, str) else batch.body_key(body)
+        if key not in run.verdicts:
+            run.verdicts[key] = batch.judge(run.exe, compiled.job.obj, start)
+    except _UNREADABLE as exc:
+        return batch.unjudged(run.row.end - start, f"not judged: {exc}")
     return run.verdicts[key]
 
 
@@ -467,6 +473,16 @@ def _cells(committed: Rule) -> list[tuple[str, Rule]]:
     return batch.cells_for(committed, texts)
 
 
+def _slots(run: _Run, obj: Path) -> batch.SlotMap:
+    """function_slots of the winner. One that fails conversion holds no slot to read, so its map
+    is that of an object with no function: the row's frame size is still worth reporting."""
+    row = run.row
+    try:
+        return batch.function_slots(run.exe, obj, row.start)
+    except _UNREADABLE:
+        return batch.slot_map(b"", run.exe.flat[row.start : row.end], row.start, set())
+
+
 def _result(run: _Run, best: _Scored) -> SearchResult:
     """Write the winner to best.c, which no wave touches, and its records to results.jsonl."""
     text, axes = best.candidate.text, best.candidate.axes
@@ -477,7 +493,7 @@ def _result(run: _Run, best: _Scored) -> SearchResult:
     lines = "".join(json.dumps(record) + "\n" for record in records)
     write_atomic(run.root / "results.jsonl", lines.encode("utf-8"))
     cell = max(range(len(records)), key=lambda n: _rank(records[n]))
-    slots = batch.function_slots(run.exe, best.objects[cell], run.row.start)
+    slots = _slots(run, best.objects[cell])
     return SearchResult(path, text, axes, records, run.compiles, len(run.verdicts), slots)
 
 
@@ -488,7 +504,8 @@ def run_search(
     SEARCH_CELLS: walk AXES, and walk them again while a round improves the base. It stops on an
     exact variant, at BUDGET compile jobs or when the moves run out.
     OUT/<stem>/<start:08x>/ is cleared first: it holds v<nnnn>/, best.c and results.jsonl.
-    BatchError when `text` does not define the function; a compile that fails only scores 0."""
+    BatchError when `text` does not define the function; a compile or a conversion that fails
+    only scores 0."""
     name = exe.symbols.c_name(row.start)
     base = split_declarators(text, function_span(text, name))
     root = OUT / exe.stem / f"{row.start:08x}"

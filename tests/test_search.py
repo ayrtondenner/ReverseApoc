@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 import reverseapoc
-from reverseapoc import batch, cli, flags
+from reverseapoc import batch, cli, flags, omf2elf, relocs
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main
 from reverseapoc.functions import FunctionRow
@@ -719,6 +719,54 @@ def test_a_failed_compile_is_not_judged(stubs):
     result = _run()
     assert all("    short b;" not in _source(obj)[0] for obj in stubs.judged)
     assert "    short b;" not in result.text
+
+
+def _fails_conversion(monkeypatch, line: str) -> None:
+    """function_body raises as `defined_functions` does, for the variants that hold `line`."""
+
+    def function_body(_exe, obj: Path, _start: int) -> Path:
+        if line in _source(obj)[0]:
+            raise omf2elf.Omf2ElfError("made up")
+        return obj
+
+    monkeypatch.setattr(batch, "function_body", function_body)
+
+
+def test_a_variant_that_fails_conversion_only_scores_0(monkeypatch, stubs):
+    _fails_conversion(monkeypatch, "    short b;")
+    stubs.decide = _scored({"    unsigned b;": verdict(90.0, 90.0)})
+    result = _run()
+    assert "    unsigned b;" in result.text
+    assert result.best.is_file()
+
+
+def test_a_variant_that_fails_its_relocation_check_only_scores_0(stubs):
+    def decide(text: str, _cell: str) -> batch.Verdict:
+        if "    short b;" in text:
+            raise relocs.RelocError("made up")
+        return verdict(90.0, 90.0) if "    unsigned b;" in text else verdict()
+
+    stubs.decide = decide
+    result = _run()
+    assert "    unsigned b;" in result.text
+    assert result.best.is_file()
+
+
+def test_a_winner_that_fails_conversion_reports_why_and_reads_no_slot(monkeypatch, stubs):
+    """Every variant fails, so the base stands: unjudged, and the row's frame is still read."""
+    _fails_conversion(monkeypatch, "int func_00010000")
+
+    def function_slots(_exe, _obj: Path, _start: int) -> batch.SlotMap:
+        raise omf2elf.Omf2ElfError("made up")
+
+    monkeypatch.setattr(batch, "function_slots", function_slots)
+    result = _run()
+    assert result.best.is_file()
+    assert result.axes == ()
+    assert result.exact is False
+    assert {record["key"] for record in result.records} == {"not judged: made up"}
+    assert {record["score"] for record in result.records} == {0.0}
+    assert (result.slots.pairs, result.slots.frame_ours) == ((), 0)
 
 
 def test_the_base_is_compiled_first_and_comes_back_when_nothing_beats_it(stubs):
