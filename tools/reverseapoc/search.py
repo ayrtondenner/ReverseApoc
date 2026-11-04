@@ -454,28 +454,45 @@ def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -
                for name, size in zip(names, sizes, strict=True))  # fmt: skip
 
 
+def _moved(local: slots.Local, start: int, slot_map: batch.SlotMap) -> set[int]:
+    """How far `slot_map` moves the slots of `local`, which ours holds at `start`."""
+    return {theirs - ours for ours, theirs in slot_map.pairs
+            if start <= ours < start + local.size}  # fmt: skip
+
+
+def _places_all(memory: Sequence[slots.Local], slot_map: batch.SlotMap) -> bool:
+    """The map shows every local of `memory`, each moved one way and still inside the frame. The
+    map of a function that is not exact is often partial, and a local it leaves out would make
+    the inverse answer from nothing."""
+    layout = slots.frame_layout(memory)
+    for local in memory:
+        start = layout[local.name]
+        moved = _moved(local, start, slot_map)
+        if len(moved) != 1 or start + min(moved) < 0:
+            return False
+    return True
+
+
 def _computable(
     text: str, span: tuple[int, int], memory: Sequence[slots.Local], slot_map: batch.SlotMap
 ) -> bool:
-    """The model can place `memory` in this frame: a map to read, every size, a known order, and
-    no spill under a local smaller than a slot, which a spill pushes up the frame."""
+    """The model can place `memory` in this frame: a map to read, every size, a known order, a map
+    that places each local, and no spill on either side under a local smaller than a slot, which
+    a spill pushes up the frame."""
+    size = slots.frame_size(memory)
     fits = (all(local.size >= slots.SLOT_ALIGN for local in memory)
-            or slot_map.frame_ours == slots.frame_size(memory))  # fmt: skip
+            or slot_map.frame_ours == slot_map.frame_theirs == size)  # fmt: skip
     return (bool(slot_map.pairs) and _readable(text, span, memory)
-            and slots.order_is_known(memory) and fits)  # fmt: skip
+            and slots.order_is_known(memory) and _places_all(memory, slot_map)
+            and fits)  # fmt: skip
 
 
 def _target(memory: Sequence[slots.Local], slot_map: batch.SlotMap) -> dict[str, int]:
-    """Where the original holds each of `memory`. Any slot of a local places all of it: the map may
-    show only an element of an array. A local the map does not show stays where it is."""
+    """Where the original holds each of `memory`, which _places_all has passed. Any slot of a local
+    places all of it: the map may show only an element of an array."""
     layout = slots.frame_layout(memory)
-    target = {}
-    for local in memory:
-        start = layout[local.name]
-        moved = [theirs - ours for ours, theirs in slot_map.pairs
-                 if start <= ours < start + local.size]  # fmt: skip
-        target[local.name] = start + (moved[0] if moved else 0)
-    return target
+    return {local.name: layout[local.name] + min(_moved(local, layout[local.name], slot_map))
+            for local in memory}  # fmt: skip
 
 
 def _ordered(text: str, span: tuple[int, int], order: Sequence[str]) -> Candidate:

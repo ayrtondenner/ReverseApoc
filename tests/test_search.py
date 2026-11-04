@@ -1343,6 +1343,38 @@ def test_declaration_axis_falls_back_when_two_blocks_reuse_a_name():
     assert _axis(text, _pairs((0, 4), (4, 0))) == _plan_1_moves(text)
 
 
+@pytest.mark.parametrize(
+    "slot_map",
+    [
+        batch.SlotMap(((4, 8), (8, 0)), True, 0xC, 0xC),  # d, at 0, is not shown
+        batch.SlotMap(((0, 0), (0, 8), (4, 4), (8, 0)), False, 0xC, 0xC),  # d goes two ways
+        batch.SlotMap(((0, -4), (4, -8), (8, -0xC)), True, 0xC, 0xC),  # theirs reads [ebp - N]
+        batch.SlotMap(((-4, 0), (-8, 4), (-0xC, 8)), True, 0xC, 0xC),  # so does ours
+    ],
+    ids=["partial", "conflict", "ebp theirs", "ebp ours"],
+)
+def test_declaration_axis_falls_back_on_a_map_that_cannot_place_every_local(slot_map):
+    """Plan 1's moves stand, where the inverse would give up with nothing to try."""
+    text = _body(*TAKEN)
+    moves = _axis(text, slot_map)
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_when_only_theirs_has_spills():
+    """Spills push a short up the frame, and having fewer than the original is usual."""
+    text = _body("short b;", "short d;", "", "take(&b, &d);", "return a;")
+    moves = _axis(text, batch.SlotMap(((0, 0xC), (4, 8)), True, 8, 0x10))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_a_map_with_no_memory_local_to_place_still_skips_the_axis():
+    """Pairs outside every local do not count against the map: there is nothing to move."""
+    text = _body("int b;", "int c;", "", "b = a;", "c = b;", "return c;")
+    assert _axis(text, _pairs((0, 4), (4, 0))) == []
+
+
 def test_declaration_axis_falls_back_beside_a_plain_double():
     """order_is_known sees the double, so the tie of ints beside it is refused."""
     text = _body("int b;", "int d;", "double p;", "", "take(&b, &d);", "p = a;", "return a;")
