@@ -52,6 +52,7 @@ HIGH_SHIFT = 8
 BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
 TABLE_ENTRY = 4  # a jump table's entry: one off32 fixup
+HOLE_MARK = "/* HOLE "  # the one spelling of a hole, for whatever asks if a draft holds one
 FLOAT = None  # the third kind of number SIZE_TYPE names, beside signed and unsigned
 SIZE_TYPE = {
     (1, True): "signed char",
@@ -193,8 +194,10 @@ class Lifter:
         force_ret: str | None = None,
         narrow: bool = True,
         array: bool = True,
+        holes: bool = False,
     ):
         self.exe, self.row = exe, row
+        self.holes = holes
         self.once, self.force_ret, self.narrow, self.array = once, force_ret, narrow, array
         self.sigs = sigs if sigs is not None else {}
         self.fix = {f.src_va: f for f in _fixup_index(exe).overlapping(row.start, row.end)}
@@ -205,6 +208,7 @@ class Lifter:
         self.labels: set[int] = set()
         self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
         self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
+        self.hole_vars: set[str] = set()  # the h_<va> locals a hole left behind
 
     # -- decoding and frame --
 
@@ -584,6 +588,7 @@ class Lifter:
         slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
         dims = self.array_dims()
         decls += [f"    {t} {n}{dims.get(n, '')};" for n, t in slots]
+        decls += [f"    int {n};" for n in sorted(self.hole_vars)]
         lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
         if decls:
             lines.append("")
@@ -594,6 +599,7 @@ class Lifter:
     def emit(self, blocks, order, preds) -> list[str]:
         """Run every block into C statements. An address-taken slot found here is in `taken`."""
         self.locals = {_slot_name(off): "char" for off in self.taken}
+        self.hole_vars = set()
         end_state: dict[int, dict] = {}
         body: list[str] = []
         targets = {t for b in blocks.values() if b.insns[-1].group(1) for t in self.jumped_to(b)}
@@ -840,13 +846,33 @@ class Block_:
 
     def run(self, blocks, live_in) -> list[str]:
         for k, ci in enumerate(self.insns):
-            self.step(ci, k)
-        if self.fstack:
-            raise Unliftable("x87: stack live across a block end")
+            self.attempt(ci, k)
         last = self.insns[-1] if self.insns else None
         if last is None or not (last.group(1) or last.group(3)):
             self.end_assign(live_in, blocks)
         return self.out
+
+    def attempt(self, ci, k) -> None:
+        """One step. With `holes`, a refusal here costs this instruction, not the row."""
+        try:
+            self.step(ci, k)
+            if self.fstack and k == len(self.insns) - 1:
+                raise Unliftable("x87: stack live across a block end")
+        except Unliftable as exc:
+            if not self.lf.holes:
+                raise
+            self.hole(ci, str(exc))
+
+    def hole(self, ci, reason: str) -> None:
+        """What `ci` wrote is unknown, so each register it wrote reads as a fresh local, and the
+        flags are gone. No C stands for the instruction, so this draft can never be exact."""
+        self.out.append(f"{HOLE_MARK}0x{ci.address:X}: {reason} */")
+        name = f"h_{ci.address:x}"
+        written = _use_def(ci)[1]
+        self.regs.update(dict.fromkeys(written, var(name)))
+        if written:
+            self.lf.hole_vars.add(name)
+        self.flags = None
 
     def end_assign(self, live_in, blocks) -> None:
         succ = [t for t in blocks[self.start].succ if t in self.lf.merge]

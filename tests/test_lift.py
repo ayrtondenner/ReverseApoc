@@ -766,3 +766,85 @@ def test_a_pop_of_the_empty_stack_refuses():
 def test_a_stack_left_at_a_block_end_refuses():
     with pytest.raises(lift.Unliftable, match="x87: stack live across a block end"):
         in_frame(FLD_A)
+
+
+# ---- holes ----
+
+MOVSD = "a5"  # a form the converter does not take: esi and edi move
+HOLED = f"b801000000 {MOVSD} b802000000 c3"  # mov eax, 1; movsd; mov eax, 2; ret
+HOLE_AT = VA + 5
+
+
+def with_holes(exe: StubExe) -> str:
+    return lift.Lifter(exe, exe.rows[0], holes=True).lift()
+
+
+def test_a_hole_keeps_the_lift_going():
+    text = with_holes(stub_exe(HOLED))
+    assert f"/* HOLE 0x{HOLE_AT:X}: op: movsd */" in text
+    assert "return 2;" in text
+
+
+def test_holes_stay_off_by_default():
+    with pytest.raises(lift.Unliftable, match="op: movsd"):
+        lift.lift_row(stub_exe(HOLED), VA)
+
+
+def test_a_frame_refusal_is_never_a_hole():
+    # push ebp; mov ebp, esp; pop ebp; ret
+    with pytest.raises(lift.Unliftable, match="frame: ebp frame"):
+        with_holes(stub_exe("55 89e5 5d c3"))
+
+
+def test_a_decode_refusal_is_never_a_hole():
+    # the row ends inside mov eax, imm32
+    with pytest.raises(lift.Unliftable, match="decode: row does not decode to its end"):
+        with_holes(stub_exe("b801"))
+
+
+def test_a_jump_with_no_table_is_never_a_hole():
+    with pytest.raises(lift.Unliftable, match=r"jump: indirect \(switch table\)"):
+        with_holes(stub_exe(f"{table_jump()} c3"))
+
+
+def test_the_mark_is_the_spelling_of_a_hole():
+    assert lift.HOLE_MARK in with_holes(stub_exe(HOLED))
+    assert lift.HOLE_MARK == "/* HOLE "
+
+
+def test_each_register_a_hole_writes_reads_as_its_local():
+    # movsd; mov eax, esi; ret
+    text = with_holes(stub_exe(f"{MOVSD} 89f0 c3"))
+    assert "int h_1000;" in text
+    assert "return h_1000;" in text
+
+
+def test_a_hole_that_writes_no_register_declares_nothing():
+    # fld1 writes no general register: fld1; ret, the stack left behind is its own hole
+    text = with_holes(stub_exe("d9e8 c3"))
+    assert "op: fld1" in text
+    assert "h_" not in text
+
+
+def test_the_flags_do_not_survive_a_hole():
+    # cmp eax, edx; movsd; je +0; ret: movsd may not have kept what je reads, so je is a hole too
+    text = with_holes(stub_exe(f"39d0 {MOVSD} 7400 c3"))
+    assert "jcc: no flag source" in text
+    assert "if (" not in text
+
+
+def test_a_stack_left_at_a_block_end_is_a_hole():
+    assert "x87: stack live across a block end" in with_holes(
+        stub_exe(f"{FRAME} {FLD_A} {UNFRAME}")
+    )
+
+
+def test_a_hole_appears_once_when_the_row_runs_twice():
+    # lea eax, [esp + 8] takes an address, so the blocks run again with the array known
+    text = with_holes(stub_exe(f"{FRAME} 8d442408 {MOVSD} {UNFRAME}"))
+    assert text.count(lift.HOLE_MARK) == 1
+
+
+def test_a_row_with_nothing_to_refuse_has_no_hole():
+    exe = stub_exe("89d0 c3")
+    assert with_holes(exe) == lift.lift_row(exe, VA)
