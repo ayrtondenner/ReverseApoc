@@ -173,6 +173,8 @@ def _stores(code: bytes) -> Iterator[tuple[int, int]]:
     frame_slots, _ = batch._frame_slots(code, 0)
     constants: dict[str, int] = {}
     for insn, slot in zip(x86.decode(code, 0), frame_slots, strict=True):
+        if insn.is_call:
+            constants.clear()
         if insn.mnemonic != "mov":
             continue
         target, source = insn.op_str.split(", ", 1)
