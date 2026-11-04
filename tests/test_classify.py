@@ -188,3 +188,43 @@ def test_the_best_cell_is_exact_then_the_higher_raw_score():
     near, low, exact = record(score=92.0), record(score=40.0), record(exact=True, score=99.0)
     assert classify.best_cell([low, near]) is near
     assert classify.best_cell([near, exact]) is exact
+
+
+# ---- what a mask must not hide from class slot ----
+
+JE_OVER_THE_MOVE = "7402"  # lands on INC_EAX
+JE_OVER_BOTH = "7403"  # lands on the load after INC_EAX
+JMP_RELOCATED = {"ours": "e900000000", "theirs": "e940000000"}  # rel32, at RELOCATED_FIELD
+
+
+def test_another_jump_target_is_not_class_slot():
+    tail = f"{MOVE_EBX_TO_EAX} {INC_EAX}"
+    ours = body(f"{JE_OVER_THE_MOVE} {tail} {LOAD_SLOT_4}")
+    theirs = body(f"{JE_OVER_BOTH} {tail} {LOAD_SLOT_8}")
+    assert classed(ours, theirs) == "mixed"
+
+
+def test_a_jump_over_a_shifted_slot_is_class_slot():
+    """The bare `[esp]` is one byte shorter, so the jump's bytes differ and its target does not."""
+    ours = body(f"7403 {LOAD_SLOT_0} {INC_EAX}")
+    theirs = body(f"7404 {LOAD_SLOT_4} {INC_EAX}")
+    assert classed(ours, theirs) == "slot"
+
+
+def test_a_relocated_jump_is_left_to_the_relocation_check():
+    """Our rel32 is a placeholder until it links, so its target says nothing."""
+    ours = body(f"{JMP_RELOCATED['ours']} {LOAD_SLOT_4}")
+    theirs = body(f"{JMP_RELOCATED['theirs']} {LOAD_SLOT_8}")
+    assert classify.classify_pair(ours, theirs, VA, RELOCATED_FIELD) == "slot"
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs"),
+    [
+        (body(f"{LOAD_SLOT_4} 83c408"), body(f"{LOAD_SLOT_4} 83c40c")),
+        (bytes.fromhex("53 83ec10 83c410 5b c3"), bytes.fromhex("53 83ec10 83c414 5b c3")),
+    ],
+    ids=["after a call", "in the epilogue"],
+)
+def test_an_add_esp_difference_alone_is_not_class_slot(ours, theirs):
+    assert classed(ours, theirs) == "size"

@@ -200,6 +200,7 @@ START = 0x108E0
 PLAIN_C = "int func_000108E0(void) { return 0; }\n"
 OURS = bytes.fromhex("53 83ec10 8b442404 83c410 5b c3")  # the two differ in one stack offset
 THEIRS = bytes.fromhex("53 83ec10 8b442408 83c410 5b c3")
+NO_RELOCS = SimpleNamespace(ok=True, ours=set(), theirs=set())
 
 
 def _stub_verdict() -> batch.Verdict:
@@ -207,7 +208,7 @@ def _stub_verdict() -> batch.Verdict:
                          "mov R, N | mov R, N", stack_score=100.0)  # fmt: skip
 
 
-def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=()):
+def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=(), relocs=NO_RELOCS):
     """`reverseapoc batch` over one source, with a stub EXE, a stub compile and a stub judge: no
     compiler and no object. Returns the records and the Compiled of each job."""
     source = tmp_path / "in" / "ufo2p" / "f_000108e0.c"
@@ -223,7 +224,6 @@ def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=()):
         done.extend(batch.Compiled(job, ok, 0.0, "" if ok else "Error! E1000") for job in jobs)
         return batch.BatchResult(tuple(done), 0.0, 0.0)
 
-    relocs = SimpleNamespace(ours=set(), theirs=set())
     defined = SimpleNamespace(ours=OURS)
     body = batch.FunctionBody(None, (row,), defined)
     monkeypatch.setattr(batch, "load_exe_inputs", lambda *a, **kw: stub)
@@ -246,6 +246,14 @@ def test_batch_records_carry_class_and_route(tmp_path, monkeypatch):
     assert (record["class"], record["route"]) == ("slot", "search")
     expected = batch.cell_record("ufo2p", START, "committed", done.job.rule, done, _stub_verdict())
     assert {name: record[name] for name in expected} == expected
+
+
+def test_a_failed_relocation_check_is_not_class_slot(tmp_path, monkeypatch):
+    """Relocated operands are masked before any class is chosen, and the search permutes
+    declarations, so it reaches no relocation."""
+    failed = SimpleNamespace(ok=False, ours=set(), theirs=set())
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, relocs=failed)
+    assert (record["class"], record["route"]) == ("mixed", "agent")
 
 
 def test_a_refused_record_has_no_class(tmp_path, monkeypatch):
