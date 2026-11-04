@@ -144,6 +144,11 @@ def test_with_no_memory_local_every_slot_is_a_scalar():
     assert slots.scalar_slots((), (8, 0), 0x10) == (0, 8)
 
 
+def test_scalar_slots_name_a_slot_with_two_targets_once():
+    """SlotMap.pairs can hold one of our slots twice: the conflict `bijection` reports."""
+    assert slots.scalar_slots(_locals(("b", 4)), [8, 8], 0x10) == (8,)
+
+
 def test_scalar_slots_leave_out_a_slot_outside_the_frame():
     """Negative or past the frame: slot_map's shifted reading, not a place in it."""
     assert slots.scalar_slots((), (-4, 4, 0x10), 0x10) == (4,)

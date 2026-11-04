@@ -1571,6 +1571,13 @@ def test_search_prints_which_slots_hold_scalars(tmp_path, monkeypatch, capsys, s
     assert line == "scalars: slots 0xc, 0x10; declaration moves cannot reach them"
 
 
+def test_search_prints_a_slot_with_two_targets_once(tmp_path, monkeypatch, capsys, stubs):
+    _map_is(monkeypatch, batch.SlotMap(((0, 0), (0xC, 8), (0xC, 0x10)), False, 0x14, 0x14))
+    assert _cli(tmp_path, monkeypatch, SCALAR_TEXT) == 1
+    (line,) = [one for one in capsys.readouterr().out.splitlines() if one.startswith("scalars:")]
+    assert line == "scalars: slots 0xc; declaration moves cannot reach them"
+
+
 def test_search_says_nothing_of_scalars_when_there_are_none(tmp_path, monkeypatch, capsys, stubs):
     _map_is(monkeypatch, batch.SlotMap(((0, 0),), True, 8, 8))
     assert _cli(tmp_path, monkeypatch) == 1

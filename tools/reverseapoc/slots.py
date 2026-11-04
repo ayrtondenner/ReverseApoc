@@ -102,11 +102,11 @@ def declaration_order(
 def scalar_slots(
     locals_: Iterable[Local], mismatched: Iterable[int], frame: int
 ) -> tuple[int, ...]:
-    """The offsets of `mismatched` no memory local explains, in order. These hold scalars, and
-    declaration moves cannot reach them. Spills sort by size with the locals, so they lie between
-    the locals of 4 bytes or more and the smaller ones at the top of a `frame` this size
-    (pr_spill_memory, pr_spill_small). What falls outside it is slot_map's shifted reading."""
+    """The offsets of `mismatched` no memory local explains, in order and each once. These hold
+    scalars, and declaration moves cannot reach them. Spills sort by size with the locals, so they
+    lie between the locals of 4 bytes or more and the smaller ones at the top of a `frame` this
+    size (pr_spill_memory, pr_spill_small). What falls outside it is slot_map's shifted reading."""
     locals_ = tuple(locals_)
     bottom = frame_size(local for local in locals_ if local.size >= SLOT_ALIGN)
     top = frame - frame_size(local for local in locals_ if local.size < SLOT_ALIGN)
-    return tuple(sorted(offset for offset in mismatched if bottom <= offset < top))
+    return tuple(sorted({offset for offset in mismatched if bottom <= offset < top}))
