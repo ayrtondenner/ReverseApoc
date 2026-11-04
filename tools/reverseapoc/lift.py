@@ -227,6 +227,8 @@ class Lifter:
         self.labels: set[int] = set()
         self.tables: dict[int, dict[int, int]] = {}  # table jump -> {case: target}
         self.guards: dict[int, object] = {}  # table jump -> the `ja` its `default:` stands for
+        self.compared: dict[int, str | None] = {}  # table jump -> what its guard compared
+        self.unfolded = False  # a guard turned out to test something else: run the blocks again
         self.hole_vars: set[str] = set()  # the h_<va> locals a hole left behind
         self.temps: dict[str, str] = {}  # t_<n> -> its C type, for a value kept past an overwrite
         self.before: dict[int, set] = {}  # the registers an instruction, or anything after, reads
@@ -415,7 +417,8 @@ class Lifter:
 
     def table_guard(self, insns, k: int):
         """The `cmp r, imm; ja` closing the block before the table jump insns[k], if there is
-        one: Watcom writes that compare for a switch with a `default:`."""
+        one: Watcom writes that compare for a switch with a `default:`. The run drops it if it
+        turns out to compare anything but the switch's index."""
         for n in range(k - 1, 0, -1):
             ci = insns[n]
             if not (ci.group(1) or ci.group(3) or ci.mnemonic == "call"):
@@ -590,8 +593,10 @@ class Lifter:
         self.live_in = live_in
         regvars = set(self.regvars)
         body = self.emit(blocks, order, preds)
-        if self.taken:  # that run was the pre-pass: with every array known, run again
-            self.regvars = regvars
+        again = bool(self.taken)  # that run was the pre-pass: with every array known, run again
+        while again or self.unfolded:
+            again, self.unfolded = False, False
+            self.regvars = set(regvars)
             body = self.emit(blocks, order, preds)
         used = {lab for lab in self.labels if any(f"goto L{lab:X};" in line for line in body)}
         body = [
@@ -1344,6 +1349,10 @@ class Block_:
 
     def switch(self, ci) -> None:
         """A table jump: one `case` per entry, and the guard's target as the `default:`."""
+        index = ci.reg_name(ci.operands[0].mem.index)
+        if ci.address in self.lf.guards and self.lf.compared[ci.address] != self.get(index).text:
+            del self.lf.guards[ci.address]
+            self.lf.unfolded = True
         self.flush(ci)
         cases = self.lf.tables[ci.address]
         merged = [t for t in cases.values() if t in self.lf.merge]
@@ -1351,7 +1360,7 @@ class Block_:
         for r in sorted(live & set(GP)):
             if r in self.regs:
                 self.assign(r)
-        self.out.append(f"switch ({self.get(ci.reg_name(ci.operands[0].mem.index))}) {{")
+        self.out.append(f"switch ({self.get(index)}) {{")
         self.out += [f"case {k}: goto L{t:X};" for k, t in cases.items()]
         guard = self.lf.guards.get(ci.address)
         if guard is not None:
@@ -1359,11 +1368,12 @@ class Block_:
         self.out.append("}")
 
     def jcc(self, ci, mn) -> None:
-        if any(guard.address == ci.address for guard in self.lf.guards.values()):
-            self.flush(ci)
-            self.end_assign_jump(ci)  # its test is the switch's own: the compiler writes it again
-            return
         self.flush(ci)
+        jump = next((j for j, g in self.lf.guards.items() if g.address == ci.address), None)
+        if jump is not None:
+            self.end_assign_jump(ci)  # its test is the switch's own: the compiler writes it again
+            self.lf.compared[jump] = self.flags[1].text if self.flags else None
+            return
         t = _branch_target(ci)
         if not self.lf.in_row(t):
             self.out.append(f"if ({self.cond(mn)}) {{ {self.tail(ci, t)} }}")

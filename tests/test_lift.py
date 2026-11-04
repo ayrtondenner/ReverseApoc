@@ -422,16 +422,73 @@ def test_a_switch_with_no_guard_has_no_default():
 
 
 def test_a_guard_some_instructions_before_the_jump_still_folds():
-    # cmp eax, 1; ja DEFAULT; and eax, 0FFFFh; jmp [eax*4 + table]
-    mask = "25ffff0000"
+    # cmp eax, 1; ja DEFAULT; mov ecx, 5; jmp [eax*4 + table]
+    other = "b905000000"
     jump_at = VA + 5 + 5
     first = jump_at + JUMP_SIZE
     default = first + 6
-    code = f"83f801 77{default - (VA + 5):02x} {mask} {table_jump()} b801000000 c3 b803000000 c3"
+    code = f"83f801 77{default - (VA + 5):02x} {other} {table_jump()} b801000000 c3 b803000000 c3"
     text = lift.lift_row(with_table(stub_exe(code), (first, first), jump_at), VA)
     assert f"default: goto L{default:X};" in text
-    assert "switch (r_eax & 65535) {" in text
+    assert "switch (r_eax) {" in text
     assert "if (" not in text
+
+
+def test_a_guard_on_another_register_stays_a_branch():
+    # cmp ebx, 1; ja DEFAULT; jmp [eax*4 + table]
+    default = GUARD_JUMP + JUMP_SIZE + 6
+    code = f"83fb01 77{default - GUARD_JUMP:02x} {table_jump()} b801000000 c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (GUARD_JUMP + JUMP_SIZE,), GUARD_JUMP), VA)
+    assert f"if (((unsigned)r_ebx) > 1) goto L{default:X};" in text
+    assert "switch (r_eax) {" in text
+    assert "default:" not in text
+
+
+def test_a_guard_on_a_copy_of_the_index_still_folds():
+    # mov eax, ebx; cmp ebx, 1; ja DEFAULT; jmp [eax*4 + table]
+    jump_at = VA + 2 + 5
+    first = jump_at + JUMP_SIZE
+    default = first + 6
+    code = f"89d8 83fb01 77{default - jump_at:02x} {table_jump()} b801000000 c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first,), jump_at), VA)
+    assert f"default: goto L{default:X};" in text
+    assert "if (" not in text
+
+
+def test_a_guard_on_a_load_still_folds():
+    # mov eax, [ecx]; cmp eax, 1; ja DEFAULT; jmp [eax*4 + table]; the cases read eax
+    jump_at = VA + 2 + 5
+    first = jump_at + JUMP_SIZE
+    default = first + 1
+    code = f"8b01 83f801 77{default - jump_at:02x} {table_jump()} c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first,), jump_at), VA)
+    assert f"default: goto L{default:X};" in text
+    assert "if (" not in text
+
+
+def test_an_index_changed_after_the_guard_stays_a_branch():
+    # cmp eax, 1; ja DEFAULT; and eax, 0FFFFh; jmp [eax*4 + table]
+    jump_at = VA + 5 + 5
+    first = jump_at + JUMP_SIZE
+    default = first + 6
+    mask = "25ffff0000"
+    code = f"83f801 77{default - (VA + 5):02x} {mask} {table_jump()} b801000000 c3 b803000000 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first,), jump_at), VA)
+    assert "switch (r_eax & 65535) {" in text
+    assert f"if (((unsigned)r_eax) > 1) goto L{default:X};" in text
+    assert "default:" not in text
+
+
+def test_a_guard_dropped_in_a_row_with_an_array_stays_a_branch():
+    # sub esp, 10h; lea ecx, [esp + 8]; cmp ebx, 1; ja DEFAULT; jmp [eax*4 + table]
+    guard = VA + 3 + 4 + 3
+    jump_at = guard + 2
+    first = jump_at + JUMP_SIZE
+    default = first + 4
+    code = f"83ec10 8d4c2408 83fb01 77{default - jump_at:02x} {table_jump()} 83c410 c3 83c410 c3"
+    text = lift.lift_row(with_table(stub_exe(code), (first,), jump_at), VA)
+    assert f"if (((unsigned)r_ebx) > 1) goto L{default:X};" in text
+    assert "default:" not in text
 
 
 def test_a_ja_with_no_compare_stays_a_branch():
