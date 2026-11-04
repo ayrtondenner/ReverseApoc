@@ -201,21 +201,26 @@ PLAIN_C = "int func_000108E0(void) { return 0; }\n"
 OURS = bytes.fromhex("53 83ec10 8b442404 83c410 5b c3")  # the two differ in one stack offset
 THEIRS = bytes.fromhex("53 83ec10 8b442408 83c410 5b c3")
 NO_RELOCS = SimpleNamespace(ok=True, ours=set(), theirs=set())
+LOAD_RELOCATED = SimpleNamespace(ok=True, ours={START + 4}, theirs=set())  # the one difference
+PAST_THE_ROW = b"\xc3" * 0x20  # a byte of this read as the row would be one more ret
 
 
-def _stub_verdict() -> batch.Verdict:
-    return batch.Verdict(False, True, False, 1, len(OURS), len(THEIRS), 50.0,
-                         "mov R, N | mov R, N", stack_score=100.0)  # fmt: skip
+def _stub_verdict(score: float = 50.0, exact_trim: bool = False) -> batch.Verdict:
+    return batch.Verdict(False, True, False, 1, len(OURS), len(THEIRS), score,
+                         "mov R, N | mov R, N", exact_trim, 100.0)  # fmt: skip
 
 
-def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=(), relocs=NO_RELOCS):
+def _stubbed_run(
+    tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=(), relocs=NO_RELOCS, verdicts=()
+):
     """`reverseapoc batch` over one source, with a stub EXE, a stub compile and a stub judge: no
-    compiler and no object. Returns the records and the Compiled of each job."""
+    compiler and no object. `verdicts` are the judge's, one per cell in order, then the plain
+    stub's. Returns the records and the Compiled of each job."""
     source = tmp_path / "in" / "ufo2p" / "f_000108e0.c"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text(text, encoding="ascii", newline="\n")
     row = FunctionRow(START, START + len(THEIRS), "func_000108E0", "game", "u_000108e0", "call")
-    flat = b"\0" * START + THEIRS + b"\0" * 0x20
+    flat = b"\0" * START + THEIRS + PAST_THE_ROW
     stub = SimpleNamespace(stem="ufo2p", rows=(row,), flat=flat,
                            target=SimpleNamespace(name="UFO2P.EXE"))  # fmt: skip
     done = []
@@ -226,9 +231,10 @@ def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True, cells=(), relo
 
     defined = SimpleNamespace(ours=OURS)
     body = batch.FunctionBody(None, (row,), defined)
+    queue = iter(verdicts)
     monkeypatch.setattr(batch, "load_exe_inputs", lambda *a, **kw: stub)
     monkeypatch.setattr(batch, "compile_batch", compile_batch)
-    monkeypatch.setattr(batch, "judge", lambda *a: _stub_verdict())
+    monkeypatch.setattr(batch, "judge", lambda *a: next(queue, _stub_verdict()))
     monkeypatch.setattr(batch, "function_body", lambda *a: body)
     monkeypatch.setattr(batch, "with_relocs", lambda *a: [(defined, relocs)])
     monkeypatch.setattr(batch, "BUILD_ROOT", tmp_path / "build" / "batch")
@@ -256,6 +262,18 @@ def test_a_failed_relocation_check_is_not_class_slot(tmp_path, monkeypatch):
     assert (record["class"], record["route"]) == ("mixed", "agent")
 
 
+def test_the_class_reads_the_verdicts_exact_trim(tmp_path, monkeypatch):
+    verdict = _stub_verdict(exact_trim=True)
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, verdicts=[verdict])
+    assert record["class"] == "tail"
+
+
+def test_the_class_reads_the_relocation_mask(tmp_path, monkeypatch):
+    """The mask takes the one differing operand away, so no stack offset is left to explain."""
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, relocs=LOAD_RELOCATED)
+    assert record["class"] == "mixed"
+
+
 def test_a_refused_record_has_no_class(tmp_path, monkeypatch):
     (record,), _ = _stubbed_run(tmp_path, monkeypatch, f'#pragma aux f "*"\n{PLAIN_C}')
     assert record["key"].startswith("refused: ")
@@ -274,6 +292,15 @@ def test_batch_prints_the_routes(tmp_path, monkeypatch, capsys):
     """Two cells of one row: the row counts once."""
     _stubbed_run(tmp_path, monkeypatch, cells=("-4r -ot -s -fpi",))
     assert "routes: converter 0, search 1, agent 0" in capsys.readouterr().out
+
+
+def test_the_route_line_reads_the_best_cell(tmp_path, monkeypatch, capsys):
+    """The first cell routes to an agent and the second, near, to the converter."""
+    verdicts = [_stub_verdict(score=50.0), _stub_verdict(score=95.0)]
+    records, _ = _stubbed_run(tmp_path, monkeypatch, cells=("-4r -ot -s -fpi",),
+                              relocs=LOAD_RELOCATED, verdicts=verdicts)  # fmt: skip
+    assert [record["route"] for record in records] == ["agent", "converter"]
+    assert "routes: converter 1, search 0, agent 0" in capsys.readouterr().out
 
 
 def test_batch_routes_a_hole_draft_to_an_agent(tmp_path, monkeypatch):

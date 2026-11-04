@@ -9,7 +9,8 @@ The mutant: the first committed unit (in sorted order) whose `extern int` turned
 `extern short` breaks one of its matched functions must judge not exact. It proves the judge
 can fail, so the control's "all exact" does not come from a judge that passes everything.
 
-The verbs end to end: `reverseapoc judge` and `reverseapoc batch` on one matched function.
+The verbs end to end: `reverseapoc judge` and `reverseapoc batch` on one matched function, and
+`reverseapoc batch` on a clean-room draft that is not exact, so a real object gets a class.
 
 These tests skip unless orig/UFO2P.EXE and orig/TACP.EXE, capstone, a compiler runner and every
 Watcom version config/cflags.txt names are present and the gate accepts them. They write only
@@ -35,7 +36,7 @@ from conftest import (
     requires_runner,
     requires_version,
 )
-from reverseapoc import batch
+from reverseapoc import batch, classify
 from reverseapoc.cflags import Rule, load_cflags
 from reverseapoc.check import ExeInputs
 from reverseapoc.cli import main
@@ -47,6 +48,7 @@ CONFIG = REPO_ROOT / "config"
 BUILD_ROOT = REPO_ROOT / "build" / "test-batch"
 JUDGED = ("ufo2p", 0x000108E0, "u_000105d0")  # a matched function under the `*` rule
 MUTATION = (re.compile(r"\bextern int\b"), "extern short")
+NOT_EXACT = "int confirm_flag_set(void) { return 1234; }\n"  # clean-room, under JUDGED's name
 
 
 def _require() -> list[Rule]:
@@ -171,3 +173,19 @@ def test_judge_and_batch_verbs_end_to_end(control):
     records = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
     (record,) = [r for r in records if r["address"] == f"0x{start:08X}"]
     assert (record["cell"], record["compiled"], record["exact"]) == ("committed", True, True)
+
+
+def test_batch_classes_a_real_object_that_is_not_exact(control, monkeypatch):
+    stem, start, _unit = JUDGED
+    monkeypatch.setattr(batch, "BUILD_ROOT", BUILD_ROOT)
+    root = _fresh("notexact")
+    (root / stem).mkdir()
+    (root / stem / f"f_{start:08x}.c").write_text(NOT_EXACT, encoding="ascii")
+    out = BUILD_ROOT / "notexact.jsonl"
+    out.unlink(missing_ok=True)
+    assert main(["batch", str(root), "--out", str(out), *_roots()]) == 0
+    (record,) = [json.loads(line) for line in out.read_text(encoding="utf-8").splitlines()]
+    assert (record["compiled"], record["exact"]) == (True, False)
+    assert record["key"] != "not defined"  # the object held the function, so both bytes were read
+    assert record["class"] in classify.CLASSES
+    print(f"not exact: class {record['class']}, route {record['route']}")
