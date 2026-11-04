@@ -164,7 +164,7 @@ def test_a_parameter_read_through_its_high_byte_stays_wide():
 def test_high_byte_write_keeps_the_low_bytes():
     # mov eax, edx; mov ah, 1; ret
     text = lift.lift_row(stub_exe("89d0 b401 c3"), VA)
-    assert "(r_edx & 0xffff00ff) | ((1 & 255) << 8)" in text
+    assert "(r_edx & -65281) | ((1 & 255) << 8)" in text
     assert lift._use_def(first_insn("b401 c3")) == ({"eax"}, {"eax"})
 
 
@@ -182,13 +182,13 @@ def test_a_high_byte_write_returns_the_full_register():
 def test_clearing_a_high_byte_keeps_the_rest_and_reads_it():
     # xor ah, ah; ret. `xor r, r` reads nothing, but this one keeps three bytes of eax.
     assert lift._use_def(first_insn("30e4 c3")) == ({"eax"}, {"eax"})
-    assert "return r_eax & 0xffff00ff;" in lift.lift_row(stub_exe("30e4 c3"), VA)
+    assert "return r_eax & -65281;" in lift.lift_row(stub_exe("30e4 c3"), VA)
 
 
 def test_arithmetic_on_a_high_byte_stays_in_that_byte():
     # add ah, 1; ret
     text = lift.lift_row(stub_exe("80c401 c3"), VA)
-    assert "(r_eax & 0xffff00ff) | (((((r_eax >> 8) & 255) + 1) & 255) << 8)" in text
+    assert "(r_eax & -65281) | (((((r_eax >> 8) & 255) + 1) & 255) << 8)" in text
 
 
 # ---- stack structs ----
@@ -1404,3 +1404,89 @@ def test_not_changes_no_flag():
 def test_a_xor_of_a_register_with_itself_sets_the_flags():
     # cmp eax, edx; xor ecx, ecx; je +0; ret: the jump is always taken
     assert "if (0 == 0) goto" in lift.lift_row(stub_exe("39d0 31c9 7400 c3"), VA)
+
+
+# ---- compares and constants ----
+
+
+def compare_global(opcode: str, imm: str, jump: str) -> str:
+    """`cmp <width> ptr [D], imm; j<cc> +0; ret`, with a fixup on the displacement."""
+    field = VA + len(bytes.fromhex(opcode))
+    disp = FLOAT_GLOBAL.to_bytes(FIELD_SIZE, "little").hex()
+    code = f"{opcode} {disp} {imm} {jump}00 c3"
+    return lift.lift_row(stub_exe(code, fixups=(data_fixup(field, FLOAT_GLOBAL),)), VA)
+
+
+BYTE_COMPARE = "803d"
+WORD_COMPARE = "66813d"
+SHORT_WORD_COMPARE = "66833d"
+
+
+@pytest.mark.parametrize(
+    ("opcode", "imm", "jump", "read", "expected"),
+    [
+        (BYTE_COMPARE, "ff", "74", "signed char", "== -1"),  # je: a compare that can be true
+        (BYTE_COMPARE, "ff", "7c", "signed char", "< -1"),  # jl
+        (BYTE_COMPARE, "80", "72", "unsigned char", "< 128"),  # jb: no sign extension first
+        (BYTE_COMPARE, "ff", "77", "unsigned char", "> 255"),  # ja
+        (WORD_COMPARE, "0080", "73", "unsigned short", ">= 32768"),  # jae
+        (WORD_COMPARE, "ffff", "75", "short", "!= -1"),  # jne
+        (SHORT_WORD_COMPARE, "ff", "74", "short", "== -1"),  # je, the immediate sign-extended
+        (SHORT_WORD_COMPARE, "ff", "76", "unsigned short", "<= 65535"),  # jbe, the same
+    ],
+)
+def test_a_narrow_compare_reads_memory_as_its_condition_does(opcode, imm, jump, read, expected):
+    text = compare_global(opcode, imm, jump)
+    assert f"*({read} *)" in text
+    assert f" {expected}) goto" in text
+
+
+def test_a_setcc_is_the_condition_of_its_compare():
+    # cmp byte ptr [D], 80h; setb al; and eax, 0FFh; ret
+    disp = FLOAT_GLOBAL.to_bytes(FIELD_SIZE, "little").hex()
+    code = f"803d {disp} 80 0f92c0 {MASK_EAX} c3"
+    text = lift.lift_row(stub_exe(code, fixups=(data_fixup(VA + 2, FLOAT_GLOBAL),)), VA)
+    assert "*(unsigned char *)" in text
+    assert " < 128;" in text
+
+
+def test_a_dword_compare_keeps_its_read():
+    # cmp dword ptr [D], 5; jb +0; ret
+    disp = FLOAT_GLOBAL.to_bytes(FIELD_SIZE, "little").hex()
+    code = f"833d {disp} 05 7200 c3"
+    text = lift.lift_row(stub_exe(code, fixups=(data_fixup(VA + 2, FLOAT_GLOBAL),)), VA)
+    assert "*(int *)" in text
+
+
+def test_a_byte_register_compare_keeps_the_whole_immediate():
+    # mov eax, edx; cmp al, 0FFh; je +0; ret
+    assert "((unsigned char)r_edx) == 255" in lift.lift_row(stub_exe("89d0 3cff 7400 c3"), VA)
+
+
+def test_a_word_register_compare_is_a_signed_immediate():
+    # mov eax, edx; cmp ax, 0FFFFh; je +0; ret
+    assert "((short)r_edx) == -1" in lift.lift_row(stub_exe("89d0 6683f8ff 7400 c3"), VA)
+
+
+def test_a_large_negative_compare_stays_signed():
+    # cmp eax, -5000; jl +0; ret
+    assert "if (r_eax < -5000) goto" in lift.lift_row(stub_exe("3d78ecffff 7c00 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [
+        (5, "5"),
+        (-1, "-1"),
+        (-5000, "-5000"),
+        (0xFFFFEC78, "-5000"),
+        (65535, "65535"),
+        (0x10000, "0x10000"),
+        (0x7FFFFFFF, "0x7fffffff"),
+        (-0x7FFFFFFF, "-2147483647"),
+        (-0x80000000, "(-2147483647 - 1)"),
+        (0x80000000, "(-2147483647 - 1)"),
+    ],
+)
+def test_a_constant_prints_as_its_signed_value(value, text):
+    assert lift.const(value).text == text

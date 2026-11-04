@@ -56,6 +56,8 @@ BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
 TABLE_ENTRY = 4  # a jump table's entry: one off32 fixup
 HOLE_MARK = "/* HOLE "  # the one spelling of a hole, for whatever asks if a draft holds one
+INT_MIN = -(1 << 31)
+INT_MIN_TEXT = "(-2147483647 - 1)"
 FLOAT = None  # the third kind of number SIZE_TYPE names, beside signed and unsigned
 SIZE_TYPE = {
     (1, True): "signed char",
@@ -133,7 +135,9 @@ class E:
 def const(v: int) -> E:
     v &= 0xFFFFFFFF
     s = v - (1 << 32) if v & 0x80000000 else v
-    return E(str(s) if -4096 < s < 65536 else f"0x{v:x}", atom=True, const=s)
+    if s == INT_MIN:
+        return E(INT_MIN_TEXT, atom=True, const=s)  # C has no negative literal this wide
+    return E(str(s) if s < 65536 else f"0x{v:x}", atom=True, const=s)
 
 
 def var(name: str, size: int = 4, signed: bool = True) -> E:
@@ -791,22 +795,23 @@ class Block_:
         held = self.flags[1:]
         if not any(e.text != value and _reads(e, name) for e in held):
             return
-        if not self.flags_read():
+        if self.flags_reader(self.k) is None:
             self.flags = None
             return
         t = self.temp(name)
         kept = (e if e.text == value else _renamed(e, name, t) for e in held)
         self.flags = (self.flags[0], *kept)
 
-    def flags_read(self) -> bool:
-        """True when this block reads the flags, from `cur` on, before anything writes them."""
-        for ci in self.insns[self.k :]:
+    def flags_reader(self, k: int):
+        """The instruction of this block that reads the flags, from place `k` on, before anything
+        writes them."""
+        for ci in self.insns[k:]:
             regs_read, regs_write = ci.regs_access()
             if any(ci.reg_name(r) == "eflags" for r in regs_read):
-                return True
+                return ci
             if ci.mnemonic == "call" or any(ci.reg_name(r) == "eflags" for r in regs_write):
-                return False
-        return False
+                return None
+        return None
 
     def temp(self, name: str) -> str:
         """A new variable holding what `name` holds now."""
@@ -1099,7 +1104,7 @@ class Block_:
             if mn != "not":  # the one of these that leaves the flags alone
                 self.flags = ("res", target)
         elif mn == "cmp":
-            self.flags = ("cmp", self.read(ci, ops[0]), self.read(ci, ops[1]))
+            self.cmp(ci, ops)
         elif mn == "test":
             a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
             self.flags = ("test", a if a.text == b.text else binop("&", a, b))
@@ -1134,6 +1139,15 @@ class Block_:
             self.x87(ci, mn, ops)
         else:
             raise Unliftable(f"op: {mn}")
+
+    def cmp(self, ci, ops) -> None:
+        """A narrow memory operand reads as the condition does, and the immediate fits what it
+        is compared with: a C compare widens both first."""
+        unsigned = _unsigned_reader(self.flags_reader(self.k + 1))
+        a, b = (self.read(ci, op, op.size == 4 or not unsigned) for op in ops)
+        if b.const is not None and ops[0].size < 4:
+            b = const(_narrowed(b.const, ops[0].size, a.signed))
+        self.flags = ("cmp", a, b)
 
     def pop(self, ci, k: int) -> None:
         """The value pushed in this block, or a saved register on the way out of the row."""
@@ -1461,6 +1475,21 @@ def _reads(e: E, name: str) -> bool:
 
 def _renamed(e: E, name: str, new: str) -> E:
     return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None)
+
+
+def _unsigned_reader(ci) -> bool:
+    """True for a flag reader that takes the carry: `jb`, `seta`, `sbb` and their kind."""
+    if ci is None:
+        return False
+    mn = ci.mnemonic
+    return mn == "sbb" or JCC.get(f"j{mn[3:]}" if mn.startswith("set") else mn, "").endswith("u")
+
+
+def _narrowed(v: int, size: int, signed: bool) -> int:
+    """The `size`-byte immediate `v` as a C value of that width."""
+    bits = 8 * size
+    v &= (1 << bits) - 1
+    return v - (1 << bits) if signed and v >> (bits - 1) else v
 
 
 def _frees_stack(ci) -> bool:
