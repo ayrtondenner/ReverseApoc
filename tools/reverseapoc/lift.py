@@ -1095,12 +1095,14 @@ class Block_:
                 "neg": lambda: E(f"-{paren(a)}", pure=a.pure),
                 "not": lambda: E(f"~{paren(a)}", pure=a.pure),
             }[mn]()
-            self.flags = ("res", self.write(ci, ops[0], e))
+            target = self.write(ci, ops[0], e)
+            if mn != "not":  # the one of these that leaves the flags alone
+                self.flags = ("res", target)
         elif mn == "cmp":
             self.flags = ("cmp", self.read(ci, ops[0]), self.read(ci, ops[1]))
         elif mn == "test":
             a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
-            self.flags = ("res", a if a.text == b.text else binop("&", a, b))
+            self.flags = ("test", a if a.text == b.text else binop("&", a, b))
         elif mn == "cwde":
             self.set("eax", cast("short", self.widened("ax"), 2, True), ci)
         elif mn == "cdq":
@@ -1259,7 +1261,7 @@ class Block_:
             and ops[1].type == X86_OP_REG
             and ops[0].reg == ops[1].reg
         ):
-            self.write(ci, ops[0], const(0))
+            self.flags = ("res", self.write(ci, ops[0], const(0)))
             return
         if mn == "imul" and len(ops) == 3:
             a, b = self.read(ci, ops[1]), self.read(ci, ops[2])
@@ -1295,13 +1297,17 @@ class Block_:
         }[mn]
         if mn == "shr":
             a = cast("unsigned", a, 4, False)
-        self.flags = ("res", self.write(ci, ops[0], binop(sym, a, b)))
+        target = self.write(ci, ops[0], binop(sym, a, b))
+        # A sub is its compare, carry and all, while its first operand can still be read.
+        self.flags = ("cmp", a, b) if mn == "sub" and ops[0].type == X86_OP_REG else ("res", target)
 
     def cond(self, mn) -> str:
         if self.flags is None:
             raise Unliftable("jcc: no flag source")
         rel = JCC[mn]
         unsigned = rel.endswith("u")
+        if unsigned and self.flags[0] == "res":
+            raise Unliftable("jcc: carry of a result")
         rel = rel.rstrip("u")
         float_compare = self.flags[0] == "fcmp"  # sahf reads it through the unsigned conditions
         a, b = self.flags[1], self.flags[2] if len(self.flags) == 3 else const(0)

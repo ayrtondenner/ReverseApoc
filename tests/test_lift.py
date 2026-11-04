@@ -1350,3 +1350,57 @@ def test_a_low_read_of_a_constant_is_the_constant():
 def test_a_widening_read_casts_once(code, expected):
     # mov eax, edx; <widen>; ret
     assert expected in lift.lift_row(stub_exe(code), VA)
+
+
+# ---- flags ----
+
+
+@pytest.mark.parametrize(
+    ("jump", "expected"),
+    [
+        ("77", "((unsigned)t_0) > ((unsigned)r_edx)"),  # ja
+        ("72", "((unsigned)t_0) < ((unsigned)r_edx)"),  # jb
+        ("74", "t_0 == r_edx"),  # je
+        ("7c", "t_0 < r_edx"),  # jl
+    ],
+    ids=["ja", "jb", "je", "jl"],
+)
+def test_a_jump_after_a_sub_compares_its_operands(jump, expected):
+    # sub eax, edx; j<cc> +0; ret
+    assert f"if ({expected}) goto" in lift.lift_row(stub_exe(f"29d0 {jump}00 c3"), VA)
+
+
+def test_a_sub_of_memory_keeps_its_result():
+    # sub [ecx], edx; je +0; ret: the first operand is gone by the jump
+    assert "if ((*(int *)((char *)r_ecx)) == 0) goto" in lift.lift_row(stub_exe("2911 7400 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "01d0 7700 c3",  # add eax, edx; ja +0; ret
+        "01d0 7200 c3",  # add eax, edx; jb +0; ret
+        "40 7600 c3",  # inc eax; jbe +0; ret: inc keeps the carry of whatever came before
+        "2911 7700 c3",  # sub [ecx], edx; ja +0; ret
+        "01d0 0f92c0 c3",  # add eax, edx; setb al; ret
+    ],
+    ids=["add ja", "add jb", "inc jbe", "sub memory", "add setb"],
+)
+def test_an_unsigned_condition_on_a_result_refuses(code):
+    with pytest.raises(lift.Unliftable, match="jcc: carry of a result"):
+        lift.lift_row(stub_exe(code), VA)
+
+
+def test_an_unsigned_condition_on_a_test_reads_no_carry():
+    # test eax, eax; ja +0; ret: test clears the carry, so this is a compare with zero
+    assert "if (((unsigned)r_eax) > 0) goto" in lift.lift_row(stub_exe("85c0 7700 c3"), VA)
+
+
+def test_not_changes_no_flag():
+    # cmp eax, edx; not ecx; je +0; ret
+    assert "if (r_eax == r_edx) goto" in lift.lift_row(stub_exe("39d0 f7d1 7400 c3"), VA)
+
+
+def test_a_xor_of_a_register_with_itself_sets_the_flags():
+    # cmp eax, edx; xor ecx, ecx; je +0; ret: the jump is always taken
+    assert "if (0 == 0) goto" in lift.lift_row(stub_exe("39d0 31c9 7400 c3"), VA)
