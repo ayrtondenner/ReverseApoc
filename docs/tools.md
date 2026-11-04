@@ -98,6 +98,7 @@ Not rows in the report's table, but evaluated in the research notes. How they ar
 | ghidra-headless (trailofbits), ghidra (mitsuhiko) skills | Later | Useful for function discovery drafts if Ghidra automation needs a skill |
 | [mosura](https://github.com/jdmichaud/mosura) | Use (probe) | Watcom version detection and codegen fingerprint for Phase 4 |
 | [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp), [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) | Use (source of copied tools) | See the README's "Projects we build on" |
+| [NHL95PC](https://github.com/abdulahmad/NHL95PC) | Use (source of adapted code) | `tools/reverseapoc/search.py` adapts the declaration pattern and the type-move loop of its `tools/permute.py`, with a header naming the origin. The repo has no licence file: this is attribution and the owner's permission (D-13), and the code is read, never run |
 
 ## Skill installation decisions
 

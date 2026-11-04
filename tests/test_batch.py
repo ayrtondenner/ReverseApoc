@@ -509,7 +509,7 @@ def test_stack_mask_on_a_relocated_store_to_a_bare_esp_operand():
     shape still compares equal to `[esp + N]`."""
     ours = _code("c7042400000000", RET)  # mov dword ptr [esp], imm32
     theirs = _code("c744240800000000", RET)  # mov dword ptr [esp + 8], imm32
-    masked = set(range(VA + 3, VA + 8))  # covers the imm32 of either: only the hit matters
+    masked = set(range(VA + 3, VA + 7))  # inside either store, and short of the ret after it
     assert batch.stack_score(ours, theirs, VA, masked) == 100.0
 
 
@@ -548,7 +548,6 @@ def test_judge_fills_the_stack_score_and_keeps_the_raw_score(tmp_path):
 
 
 # ---- the function body: the failure keys of judge and the key that dedupes a search -------------
-
 
 
 def _synth_exe(pair) -> SimpleNamespace:

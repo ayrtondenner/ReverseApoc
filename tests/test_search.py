@@ -424,6 +424,13 @@ def test_the_search_starts_from_one_declarator_per_line(stubs):
     assert stubs.waves[0][0].src.read_text(encoding="ascii") == result.text
 
 
+def test_a_one_line_function_keeps_its_text_and_has_no_moves(stubs):
+    text = "int func_00010000(void) { int a; return 0; }\n"
+    result = _run(text)
+    assert result.text == text
+    assert len(stubs.waves) == 1
+
+
 def _scored(table: dict[str, batch.Verdict]):
     """A decide function: the verdict of the first line of `table` the text holds."""
 

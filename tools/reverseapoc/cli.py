@@ -24,6 +24,7 @@ from . import (
     locate,
     mechanics,
     probe,
+    search,
     session,
     splits,
     stats,
@@ -1247,6 +1248,49 @@ def _add_batch_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_batch)
 
 
+def _run_search(args: argparse.Namespace) -> int:
+    text = _judged_text(args.file)
+    start = batch.parse_address(args.address)
+    rules = load_cflags(args.cflags)
+    exe = batch.load_exe_inputs(args.exe, orig_dir=args.orig, manifest=args.manifest,
+                                config_root=args.config)  # fmt: skip
+    row = batch.row_at(exe, start)
+    result = search.run_search(exe, row, text, rules, watcom_dir=args.watcom_dir)
+    print(f"search: {result.compiles} compiles, {result.bodies} distinct bodies, "
+          f"exact {result.exact}, score {result.score}, stack score {result.stack_score}, "
+          f"axes {','.join(result.axes) or '-'}, best {result.best}")  # fmt: skip
+    return 0 if result.exact else 1
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    """Exit 0 when a cell is exact, 1 when none is, 2 for a refusal or a tool error."""
+    try:
+        return _run_search(args)
+    except _Refused as exc:
+        print(f"reverseapoc search: refused: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    except (*_ERRORS, batch.BatchError) as exc:
+        print(f"reverseapoc search: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+
+
+def _add_search_command(sub: argparse._SubParsersAction) -> None:
+    default = "default: %(default)s"
+    about = ("search one function's C for a better variant, ranked by the stack-masked score, "
+             "and write the best to build/; never lands, never writes status.csv "
+             "(exit 0 exact, 1 not, 2 tool error)")  # fmt: skip
+    p = sub.add_parser("search", help=about, description=about)
+    p.add_argument("exe", metavar="EXE", help="manifest name or its stem (case-insensitive)")
+    p.add_argument("address", metavar="ADDR", help="the function's start, hex (0x optional)")
+    p.add_argument("file", type=Path, metavar="FILE", help="C89 source: no #pragma, no asm")
+    p.add_argument("--orig", type=Path, default=DEFAULT_ORIG, help=default)
+    p.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST, help=default)
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help=default)
+    p.add_argument("--cflags", type=Path, default=DEFAULT_CFLAGS, help=default)
+    p.add_argument("--watcom-dir", type=Path, default=DEFAULT_INSTALL, help=default)
+    p.set_defaults(func=_cmd_search)
+
+
 def _cmd_target(args: argparse.Namespace) -> int:
     # The target object is cut from the game: never written inside orig/ or the Watcom tree.
     refuse_output(args.output, args.orig, DEFAULT_ORIG, DEFAULT_INSTALL)
@@ -2310,6 +2354,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_check_command(sub)
     _add_judge_command(sub)
     _add_batch_command(sub)
+    _add_search_command(sub)
     _add_target_command(sub)
     _add_land_command(sub)
     _add_gate_command(sub)

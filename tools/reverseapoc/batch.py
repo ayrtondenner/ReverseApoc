@@ -10,8 +10,9 @@ compiler.build_argv commands in a thread pool. There is no cc.log and no provena
 (the relocation check with the unit's public map and a leading jump table) and compare_bytes. A
 function is exact when both pass: check's own verdict, which accepts the original's trailing
 Watcom filler under the 07-48 rule (relocs.py rule 1, docs/matching.md). `score` (difflib over
-decoded instructions, relocated fields masked) and `key` (the first differing instruction as
-mnemonic shapes) only rank and diagnose; they decide nothing.
+decoded instructions, relocated fields masked), `stack_score` (the same ratio with stack offsets
+masked too) and `key` (the first differing instruction as mnemonic shapes) only rank and diagnose;
+they decide nothing.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). Records hold addresses, counts,
@@ -26,6 +27,7 @@ from __future__ import annotations
 import dataclasses
 import difflib
 import functools
+import hashlib
 import os
 import re
 import subprocess
@@ -42,6 +44,7 @@ from .cflags import Rule, parse_cflags, select_rule
 from .check import (
     DEFAULT_CONFIG,
     CheckError,
+    Defined,
     ExeInputs,
     compare_bytes,
     defined_functions,
@@ -230,16 +233,32 @@ def shape(mnemonic: str, op_str: str) -> str:
     return f"{mnemonic} {_NUM.sub('N', op_str)}".strip()
 
 
-def _tokens(code: bytes, va: int, masked: set[int]) -> list[tuple[str, str, int]]:
+# An esp-based operand with its index and displacement, as a token shows either: `[esp]`,
+# `[esp + 8]`, `[esp - 4]`, `[esp + ecx*4 + 0xc]`, or `[esp + N]` in a shape.
+_ESP_OPERAND = re.compile(r"\[esp(?P<index> \+ [a-z]+(?:\*\w+)?)?(?: [-+] \w+)?\]")
+_ESP_FRAME = re.compile(r"^(sub|add) esp, (?:0x[0-9a-f]+|\d+|N)$")
+
+
+def _stack_masked(token: str) -> str:
+    """`token` with the displacement of an esp-based operand and the immediate of `sub esp, N`
+    or `add esp, N` shown as N. A bare `[esp]` is slot 0, so it reads `[esp + N]` too."""
+    token = _ESP_OPERAND.sub(lambda hit: f"[esp{hit['index'] or ''} + N]", token)
+    return _ESP_FRAME.sub(r"\1 esp, N", token)
+
+
+def _tokens(
+    code: bytes, va: int, masked: set[int], *, stack: bool = False
+) -> list[tuple[str, str, int]]:
     """(token, shape, va) per instruction; a token drops operand text when any of its bytes is a
-    relocated field, so two references to different-but-relocated targets compare equal."""
+    relocated field, so two references to different-but-relocated targets compare equal. With
+    `stack`, it also drops stack offsets (_stack_masked)."""
     out = []
     for insn in decode(code, va):
         hit = any(a in masked for a in range(insn.va, insn.va + insn.size))
         form = shape(insn.mnemonic, insn.op_str)
         exact_text = f"{insn.mnemonic} {insn.op_str}"
         token = form if (hit or insn.branch_target is not None) else exact_text
-        out.append((token, form, insn.va))
+        out.append((_stack_masked(token) if stack else token, form, insn.va))
     return out
 
 
@@ -253,13 +272,25 @@ def _first_diff(a, b, sm: difflib.SequenceMatcher) -> str:
     return "length" if len(a) != len(b) else ""
 
 
+def _matcher(a, b) -> difflib.SequenceMatcher:
+    return difflib.SequenceMatcher(a=[t for t, _, _ in a], b=[t for t, _, _ in b], autojunk=False)
+
+
 def diff_summary(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> tuple[float, str]:
     """(score, key): difflib's ratio of the decoded instruction tokens in percent (2 places)
     and the first differing pair as `ours | theirs` mnemonic shapes ("" when none differ)."""
     a = _tokens(ours, va, masked)
     b = _tokens(theirs, va, masked)
-    sm = difflib.SequenceMatcher(a=[t for t, _, _ in a], b=[t for t, _, _ in b], autojunk=False)
+    sm = _matcher(a, b)
     return round(100.0 * sm.ratio(), 2), _first_diff(a, b, sm)
+
+
+def stack_score(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> float:
+    """diff_summary's score over stack-masked tokens: two bodies that differ only in stack
+    offsets and frame size score 100. It ranks variants and decides nothing."""
+    a = _tokens(ours, va, masked, stack=True)
+    b = _tokens(theirs, va, masked, stack=True)
+    return round(100.0 * _matcher(a, b).ratio(), 2)
 
 
 # ---- Watcom alignment filler and the pad ----
@@ -337,6 +368,9 @@ class Verdict:
     # tail the 07-48 rule refused (an end off 16-byte alignment, more than 15 bytes, an LE fixup
     # in the tail, or our last instruction not terminal, so our code would run into the filler).
     exact_trim: bool = False
+    # A diagnostic, never a match: `score` with stack offsets masked too (stack_score). `score`
+    # keeps its meaning, because the curve's `near` bucket reads it.
+    stack_score: float = 0.0
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -348,33 +382,67 @@ def _reloc_key(problems: Sequence[str]) -> str:
     return "reloc: " + _NUM.sub("N", problems[0].split(": ", 1)[-1])
 
 
+@dataclass(frozen=True)
+class FunctionBody:
+    """The row's function in our object: what `judge` reads, and what `body_key` hashes."""
+
+    module: Module
+    rows: tuple[FunctionRow, ...]  # the row, after the data-in-code row that leads it
+    defined: Defined
+
+
+def function_body(exe: ExeInputs, obj: Path, start: int) -> FunctionBody | str:
+    """The row at `start` in our object `obj`, or judge's failure key: "no object: ..." when
+    the object cannot be read, "not defined" when it holds no such function."""
+    row = row_at(exe, start)
+    rows = tuple(r for r in (table_row(exe, row), row) if r is not None)
+    try:
+        module = parse_module(obj.read_bytes(), obj)
+    except (OSError, CheckError, OMFError) as exc:
+        return f"no object: {exc}"
+    defined = [d for d in defined_functions(module, rows, exe.symbols) if d.row.start == start]
+    if not defined:
+        return "not defined"
+    (found,) = defined
+    return FunctionBody(module, rows, found)
+
+
+def body_key(body: FunctionBody) -> str:
+    """A sha256 of the function's bytes and of each OMF fixup inside it, as (offset from the
+    function, target name, displacement): two objects can hold equal bytes and relocate
+    differently, so bytes alone would give them one verdict."""
+    d = body.defined
+    fixups = sorted((f.offset - d.off, f.target_name, f.displacement) for f in d.segment.fixups
+                    if d.off <= f.offset < d.off + d.size)  # fmt: skip
+    return hashlib.sha256(d.ours + repr(fixups).encode("ascii")).hexdigest()
+
+
 def judge(exe: ExeInputs, obj: Path, start: int) -> Verdict:
     """check's verdict for the row at `start` from our object `obj`: the relocation check (with
     the data-in-code row right before it as its leading table) and the byte compare. `exact` is
     check's own verdict, so it accepts original trailing filler under the 07-48 rule;
     `exact_trim` is only looked for when that rule refused a filler tail."""
     row = row_at(exe, start)
-    rows = [r for r in (table_row(exe, row), row) if r is not None]
     length = row.end - row.start
-    try:
-        module = parse_module(obj.read_bytes(), obj)
-    except (OSError, CheckError, OMFError) as exc:
-        return Verdict(False, False, False, -1, 0, length, 0.0, f"no object: {exc}")
-    defined = [d for d in defined_functions(module, rows, exe.symbols) if d.row.start == start]
-    if not defined:
-        return Verdict(False, False, False, -1, 0, length, 0.0, "not defined")
-    ((d, reloc),) = with_relocs(module, defined, rows, exe)
+    body = function_body(exe, obj, start)
+    if isinstance(body, str):
+        return unjudged(length, body)
+    module, rows = body.module, body.rows
+    ((d, reloc),) = with_relocs(module, [body.defined], rows, exe)
     cmp = compare_bytes(d.ours, row, exe.flat, reloc)
     masked = {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
-    score, key = diff_summary(d.ours, exe.flat[row.start : row.end], row.start, masked)
+    theirs = exe.flat[row.start : row.end]
+    score, key = diff_summary(d.ours, theirs, row.start, masked)
+    stack = stack_score(d.ours, theirs, row.start, masked)
     exact = reloc.ok and cmp.ok
     if exact:
         key = ""
     elif not key and not reloc.ok:
         key = _reloc_key(reloc.problems)
-    verdict = Verdict(exact, reloc.ok, cmp.ok, cmp.differing, len(d.ours), length, score, key)
+    verdict = Verdict(exact, reloc.ok, cmp.ok, cmp.differing, len(d.ours), length, score, key,
+                      stack_score=stack)  # fmt: skip
     n = len(d.ours)
-    if exact or not 0 < n < length or not filler_tail(exe.flat[row.start : row.end], row.start, n):
+    if exact or not 0 < n < length or not filler_tail(theirs, row.start, n):
         return verdict
     return dataclasses.replace(verdict, exact_trim=_trimmed_exact(module, exe, rows, row, n))
 
