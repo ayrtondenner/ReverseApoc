@@ -7,10 +7,14 @@ with functions that fail the test, so a refusal that came too late would show.
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from reverseapoc import batch, cli
 from reverseapoc.cli import main
+from reverseapoc.functions import FunctionRow
 
 ADDRESS = "0x000108E0"
 
@@ -188,3 +192,70 @@ def test_batch_records_name_their_source(tmp_path, monkeypatch):
         assert record["key"].startswith("refused: ")
         assert record["source"] == "in/ufo2p/f_000108e0.c"
         assert record["source_sha256"] == lf_sha256(text)
+
+
+# ---- class and route, end to end through the batch ----
+
+START = 0x108E0
+PLAIN_C = "int func_000108E0(void) { return 0; }\n"
+OURS = bytes.fromhex("53 83ec10 8b442404 83c410 5b c3")  # the two differ in one stack offset
+THEIRS = bytes.fromhex("53 83ec10 8b442408 83c410 5b c3")
+
+
+def _stub_verdict() -> batch.Verdict:
+    return batch.Verdict(False, True, False, 1, len(OURS), len(THEIRS), 50.0,
+                         "mov R, N | mov R, N", stack_score=100.0)  # fmt: skip
+
+
+def _stubbed_run(tmp_path, monkeypatch, text=PLAIN_C, *, ok=True):
+    """`reverseapoc batch` over one source, with a stub EXE, a stub compile and a stub judge: no
+    compiler and no object. Returns the records and the Compiled of each job."""
+    source = tmp_path / "in" / "ufo2p" / "f_000108e0.c"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(text, encoding="ascii", newline="\n")
+    row = FunctionRow(START, START + len(THEIRS), "func_000108E0", "game", "u_000108e0", "call")
+    flat = b"\0" * START + THEIRS + b"\0" * 0x20
+    stub = SimpleNamespace(stem="ufo2p", rows=(row,), flat=flat,
+                           target=SimpleNamespace(name="UFO2P.EXE"))  # fmt: skip
+    done = []
+
+    def compile_batch(jobs, *args, **kwargs):
+        done.extend(batch.Compiled(job, ok, 0.0, "" if ok else "Error! E1000") for job in jobs)
+        return batch.BatchResult(tuple(done), 0.0, 0.0)
+
+    relocs = SimpleNamespace(ours=set(), theirs=set())
+    defined = SimpleNamespace(ours=OURS)
+    body = batch.FunctionBody(None, (row,), defined)
+    monkeypatch.setattr(batch, "load_exe_inputs", lambda *a, **kw: stub)
+    monkeypatch.setattr(batch, "compile_batch", compile_batch)
+    monkeypatch.setattr(batch, "judge", lambda *a: _stub_verdict())
+    monkeypatch.setattr(batch, "function_body", lambda *a: body)
+    monkeypatch.setattr(batch, "with_relocs", lambda *a: [(defined, relocs)])
+    monkeypatch.setattr(batch, "BUILD_ROOT", tmp_path / "build" / "batch")
+    monkeypatch.setattr(batch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli, "DEFAULT_BUILD", tmp_path / "build")
+    out = tmp_path / "build" / "out.jsonl"
+    assert _batch(tmp_path, tmp_path / "in", "--out", str(out)) == 0
+    lines = out.read_text(encoding="utf-8").splitlines()
+    return [json.loads(line) for line in lines], done
+
+
+def test_batch_records_carry_class_and_route(tmp_path, monkeypatch):
+    (record,), (done,) = _stubbed_run(tmp_path, monkeypatch)
+    assert (record["class"], record["route"]) == ("slot", "search")
+    expected = batch.cell_record("ufo2p", START, "committed", done.job.rule, done, _stub_verdict())
+    assert {name: record[name] for name in expected} == expected
+
+
+def test_a_refused_record_has_no_class(tmp_path, monkeypatch):
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, f'#pragma aux f "*"\n{PLAIN_C}')
+    assert record["key"].startswith("refused: ")
+    assert "class" not in record
+    assert record["route"] == "converter"
+
+
+def test_a_failed_compile_routes_to_an_agent(tmp_path, monkeypatch):
+    (record,), _ = _stubbed_run(tmp_path, monkeypatch, ok=False)
+    assert record["compiled"] is False
+    assert "class" not in record
+    assert record["route"] == "agent"
