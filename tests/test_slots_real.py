@@ -15,9 +15,8 @@ from dataclasses import dataclass
 
 import pytest
 
-import reverseapoc
 from conftest import REPO_ROOT, WATCOM_DIR, requires_capstone, requires_runner, requires_version
-from reverseapoc import batch, omf, x86
+from reverseapoc import batch, omf, slots, x86
 from reverseapoc.cflags import Rule
 from reverseapoc.compiler import CompilerError, check_gate
 from reverseapoc.probe import PROBE_DIR
@@ -94,9 +93,9 @@ def _stores(code: bytes) -> Iterator[tuple[int, int]]:
     """(value, slot) of each constant stored in a slot. -oneatx loads a marker into a register
     first and may store it after pushes, so register constants are followed and each slot comes
     from batch._frame_slots, which keeps track of the depth."""
-    slots, _ = batch._frame_slots(code, 0)
+    frame_slots, _ = batch._frame_slots(code, 0)
     constants: dict[str, int] = {}
-    for insn, slot in zip(x86.decode(code, 0), slots, strict=True):
+    for insn, slot in zip(x86.decode(code, 0), frame_slots, strict=True):
         if insn.mnemonic != "mov":
             continue
         target, source = insn.op_str.split(", ", 1)
@@ -125,5 +124,5 @@ def _offsets(module: omf.Module, name: str, cell: str, shape: tuple[Marked, ...]
 def test_model_reproduces_every_memory_shape(modules, cell, name):
     shape = SHAPES[name]
     measured = _offsets(modules[cell], name, cell, shape)
-    declared = tuple(reverseapoc.slots.Local(one.name, one.size) for one in shape)
-    assert measured == reverseapoc.slots.frame_layout(declared)
+    declared = tuple(slots.Local(one.name, one.size) for one in shape)
+    assert measured == slots.frame_layout(declared)
