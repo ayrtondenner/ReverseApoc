@@ -739,6 +739,26 @@ def test_bodies_counts_no_failure_key(monkeypatch, stubs, type_axis):
     assert _run().bodies == 2  # one per cell: "not defined" is no body
 
 
+def test_a_variant_with_no_function_scores_0_and_the_search_goes_on(monkeypatch, stubs):
+    _not_defined_in(monkeypatch, "    short b;")
+    stubs.decide = _scored({"    short b;": verdict(99.0, 99.0),
+                            "    unsigned b;": verdict(60.0, 60.0)})  # fmt: skip
+    result = _run()
+    assert "    unsigned b;" in result.text
+    assert "    short b;" not in result.text
+
+
+def test_a_winner_with_no_function_scores_0_and_says_why(monkeypatch, stubs):
+    _not_defined_in(monkeypatch, "int func_00010000")
+    stubs.decide = lambda _text, _cell: verdict(99.0, 99.0)
+    result = _run()
+    assert result.exact is False
+    assert result.axes == ()
+    assert {record["key"] for record in result.records} == {"not defined"}
+    assert {record["score"] for record in result.records} == {0.0}
+    assert {record["stack_score"] for record in result.records} == {0.0}
+
+
 def test_a_failed_compile_is_not_judged(stubs):
     stubs.compiles = lambda text: "    short b;" not in text
     stubs.decide = lambda text, _cell: verdict(99.0, 99.0) if "short b;" in text else verdict()
