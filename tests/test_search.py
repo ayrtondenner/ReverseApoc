@@ -221,7 +221,8 @@ def test_search_prints_one_summary_line(tmp_path, monkeypatch, capsys, stubs, ty
 def test_search_prints_the_slot_map(tmp_path, monkeypatch, capsys, stubs):
     assert _cli(tmp_path, monkeypatch) == 1
     lines = capsys.readouterr().out.splitlines()[1:]
-    assert lines == ["frame: ours 0x10, theirs 0x14", "slots: bijection True", "slot 0x8 -> 0xc"]
+    assert lines[:3] == ["frame: ours 0x10, theirs 0x14", "slots: bijection True",
+                         "slot 0x8 -> 0xc"]  # fmt: skip
 
 
 def test_search_says_when_no_slot_was_compared(tmp_path, monkeypatch, capsys, stubs):
@@ -1028,7 +1029,7 @@ def test_result_carries_the_slot_map_of_the_winners_best_cell(stubs):
     stubs.decide = decide
     result = _run()
     assert result.slots == _slots()
-    (obj,) = stubs.slot_objects
+    obj = stubs.slot_objects[-1]  # the declaration axis reads the map of each base before it
     assert obj.stem == "cell-1"
     assert "    short b;" in obj.with_suffix(".c").read_text(encoding="ascii")
 
@@ -1144,3 +1145,183 @@ def test_a_unit_already_on_the_search_cell_has_no_queue_path(monkeypatch, repo):
     with pytest.raises(flags.FlagsError, match=CELL):
         flags.propose_batch(result.best.parent / "results.jsonl", CELL, AUTHOR, repo=repo)
     assert not queue_of(repo).exists()
+
+
+# ---- the declaration axis asks the slot model (plan 2) ----
+
+
+TAKEN = ("int b;", "int c;", "int d;", "", "take(&b, &c, &d);", "return a;")
+# Slots 0xC and 0x10 are mismatched, and TEXT's and SCALAR_TEXT's memory locals end below them.
+SCALAR_MAP = batch.SlotMap(((0, 0), (0xC, 0x10), (0x10, 0xC)), True, 0x14, 0x14)
+SCALAR_LINES = ("int b;", "int c;", "int d;", "int e;", "", "take(&b);", "c = a + 1;", "d = c + 1;",
+                "e = d + 1;", "return e;")  # fmt: skip
+SCALAR_TEXT = _body(*SCALAR_LINES).replace("int f(", f"int {A1}(")
+
+
+def _pairs(*pairs: tuple[int, int]) -> batch.SlotMap:
+    return batch.SlotMap(tuple(sorted(pairs)), True, 0xC, 0xC)
+
+
+def _axis(text: str, slot_map: batch.SlotMap) -> list:
+    search = reverseapoc.search
+    return list(search.declaration_axis(text, search.function_span(text, "f"), slot_map))
+
+
+def _plan_1_moves(text: str) -> list:
+    search = reverseapoc.search
+    return list(search.declaration_moves(text, search.function_span(text, "f")))
+
+
+def _locals_of(*lines: str) -> tuple:
+    search = reverseapoc.search
+    text = _body(*lines)
+    return search.memory_locals(text, search.function_span(text, "f"))
+
+
+def _map_is(monkeypatch, slot_map: batch.SlotMap) -> None:
+    monkeypatch.setattr(batch, "function_slots", lambda _exe, _obj, _start: slot_map)
+
+
+def test_memory_locals_are_the_address_taken_and_the_arrays():
+    found = _locals_of("int b;", "short c[3];", "int d;", "", "c[0] = a;", "take(&b);", "return d;")
+    assert [(local.name, local.size) for local in found] == [("b", 4), ("c", 6)]
+
+
+@pytest.mark.parametrize(
+    ("line", "size"),
+    [("char v[3];", 3), ("unsigned char v[2];", 2), ("u8 v[5];", 5), ("s16 v[2];", 4),
+     ("u16 v[3];", 6), ("long v[2];", 8), ("unsigned long v[1];", 4), ("double v[2];", 16),
+     ("float v[2];", 8), ("int v[2][3];", 24), ("int *v[2];", 8), ("struct pos *v[3];", 12),
+     ("const int v[2];", 8), ("s32 v[2];", 8), ("u32 v[3];", 12)],
+)  # fmt: skip
+def test_memory_locals_read_the_size_of_each_declared_type(line, size):
+    (local,) = _locals_of(line, "", "take(v);", "return a;")
+    assert local.size == size
+
+
+def test_memory_locals_take_a_pointer_whose_address_is_taken():
+    (local,) = _locals_of("int *p;", "", "take(&p);", "return a;")
+    assert (local.name, local.size) == ("p", 4)
+
+
+@pytest.mark.parametrize("use", ["b = a & b;", "b = (a) & b;", "b = a && b;", "b = t[0] & b;"])
+def test_a_bitwise_and_takes_no_address(use):
+    assert _locals_of("int b;", "", use, "return b;") == ()
+
+
+@pytest.mark.parametrize(
+    "use", ["take(&b);", "p = &b;", "take(a, &b);", "take(&b.x);", "return &b;", "take(*&b);"]
+)
+def test_a_unary_and_takes_the_address(use):
+    assert [local.name for local in _locals_of("int b;", "", use)] == ["b"]
+
+
+def test_an_unused_array_takes_no_slot():
+    """pr_slot_unused: a local nothing uses is not in the frame."""
+    assert _locals_of("int b[4];", "", "return a;") == ()
+
+
+def test_memory_locals_leave_out_a_size_they_cannot_read():
+    found = _locals_of("struct pos s;", "int v[N];", "int b;", "", "take(&s, v, &b);", "return a;")
+    assert [local.name for local in found] == ["b"]
+
+
+def test_memory_locals_order_blocks_as_the_source_does():
+    found = _locals_of("int b;", "if (a) {", "    int c;", "    take(&c);", "}", "if (a > 1) {",
+                       "    int d;", "    take(&d);", "}", "take(&b);", "return a;")  # fmt: skip
+    b, c, d = found
+    assert b.scope < c.scope < d.scope
+
+
+def test_declaration_axis_computes_one_order_for_memory_locals():
+    """b and d swap: slots.declaration_order gives d, c, b, and no other order is tried."""
+    (move,) = _axis(_body(*TAKEN), _pairs((0, 8), (4, 4), (8, 0)))
+    assert move.text == _body("int d;", "int c;", "int b;", *TAKEN[3:])
+    assert move.axes == ("declaration",)
+
+
+def test_declaration_axis_moves_only_the_tie_that_needs_it():
+    """The plain scalar between them stays where it is."""
+    lines = ("int b;", "int s;", "int d;", "", "take(&b, &d);", "return s;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
+    assert move.text == _body("int d;", "int s;", "int b;", *lines[3:])
+
+
+def test_declaration_axis_places_an_array_from_one_element():
+    """The map shows only v[1], at 0xA: that places the whole array, which ours has at 8."""
+    lines = ("short v[2];", "int b;", "int d;", "", "v[1] = a;", "take(&b, &d);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 8), (4, 4), (0xA, 2)))
+    assert move.text == _body("int d;", "int b;", "short v[2];", *lines[3:])
+
+
+def test_declaration_axis_yields_nothing_when_the_slots_agree():
+    assert _axis(_body(*TAKEN), _pairs((0, 0), (4, 4), (8, 8))) == []
+
+
+def test_declaration_axis_yields_nothing_when_size_rules_the_target_out():
+    lines = ("int b;", "short c;", "", "take(&b, &c);", "return a;")
+    assert _axis(_body(*lines), _pairs((0, 4), (4, 0))) == []
+
+
+def test_declaration_axis_tags_a_computed_order_that_moves_an_initializer():
+    lines = ("int b = 1;", "int d = 2;", "", "take(&b, &d);", "return a;")
+    (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
+    assert move.axes == ("declaration", "statement")
+
+
+def test_declaration_axis_falls_back_when_a_size_is_unknown():
+    """The struct's size is unknown, so nothing can be computed: plan 1's moves stand."""
+    text = _body("struct pos s;", "int b;", "int d;", "", "take(&s, &b, &d);", "return a;")
+    moves = _axis(text, _pairs((0, 4), (4, 0)))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_when_the_order_is_not_known():
+    """Two 8-byte arrays beside an int: the probe found no rule, so plan 1's moves stand."""
+    text = _body("int v[2];", "int w[2];", "int b;", "", "take(v, w, &b);", "return a;")
+    assert _axis(text, _pairs((0, 8), (8, 0))) == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_when_no_slot_was_compared():
+    assert _axis(_body(*TAKEN), _pairs()) == _plan_1_moves(_body(*TAKEN))
+
+
+def test_declaration_axis_falls_back_when_two_blocks_reuse_a_name():
+    text = _body("int b;", "take(&b);", "if (a) {", "    int b;", "    take(&b);", "}", "return a;")
+    assert _axis(text, _pairs((0, 4), (4, 0))) == _plan_1_moves(text)
+
+
+def test_scalar_slots_skip_declaration_moves_and_are_reported(monkeypatch, stubs):
+    """b sits at 0, and 0xC and 0x10 lie above it: they hold scalars, so no declaration candidate
+    is made for them, and the result names them."""
+    _map_is(monkeypatch, SCALAR_MAP)
+    monkeypatch.setattr(reverseapoc.search, "AXES", ("declaration",))
+    result = _run(SCALAR_TEXT)
+    assert result.scalars == (0xC, 0x10)
+    assert result.compiles == 2  # the base under each cell, and no candidate
+
+
+def test_a_map_that_agrees_reports_no_scalar(monkeypatch, stubs):
+    _map_is(monkeypatch, batch.SlotMap(((0x10, 0x10),), True, 0x14, 0x14))
+    assert _run().scalars == ()
+
+
+def test_scalars_are_not_reported_when_a_size_is_unknown(monkeypatch, stubs):
+    """A struct of unknown size may hold the slot, so nothing can be said of it."""
+    _map_is(monkeypatch, SCALAR_MAP)
+    text = _body("struct pos s;", "int c;", "", "take(&s);", "return c;")
+    assert _run(text.replace("int f(", f"int {A1}(")).scalars == ()
+
+
+def test_search_prints_which_slots_hold_scalars(tmp_path, monkeypatch, capsys, stubs):
+    _map_is(monkeypatch, SCALAR_MAP)
+    assert _cli(tmp_path, monkeypatch) == 1
+    (line,) = [one for one in capsys.readouterr().out.splitlines() if one.startswith("scalars:")]
+    assert line == "scalars: slots 0xc, 0x10; declaration moves cannot reach them"
+
+
+def test_search_says_nothing_of_scalars_when_there_are_none(tmp_path, monkeypatch, capsys, stubs):
+    _map_is(monkeypatch, batch.SlotMap(((0, 0),), True, 8, 8))
+    assert _cli(tmp_path, monkeypatch) == 1
+    assert "scalars:" not in capsys.readouterr().out

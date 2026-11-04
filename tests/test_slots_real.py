@@ -4,13 +4,16 @@ These tests skip without capstone, a compiler runner or an installed Watcom 10.6
 They write only under build/test-slots/ (the compiler refuses objects outside the repository, so
 pytest's tmp_path cannot be used) and assert on offsets and counts, never on bytes. The C is our
 own clean-room probe: no game byte is read here.
+
+Besides the shapes the model reproduces, TIES holds the shapes it refuses: their order is proven
+here to break declaration order, so the refusal cannot outlive the measurement behind it.
 """
 
 from __future__ import annotations
 
 import re
 import shutil
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 
 import pytest
@@ -32,19 +35,65 @@ class Marked:
     name: str
     size: int
     marker: int  # the constant the probe stores in it
+    scope: int = 0
     at: int = 0  # where in the local the marker lies
 
 
-DOUBLE = Marked("d", 8, 0x40040000, HIGH_DWORD)  # 2.5
+DOUBLE = Marked("d", 8, 0x40040000, at=HIGH_DWORD)  # 2.5
 SAME_SIZE = (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 4, 0x33), Marked("d", 4, 0x44))
 MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBLE)
-# Each function's locals in declaration order.
+ARRAY = (Marked("a", 12, 0x11), Marked("b", 8, 0x22), Marked("c", 6, 0x33))
+STRUCT = (Marked("a", 3, 0x11), Marked("b", 6, 0x22), Marked("c", 12, 0x33), Marked("d", 4, 0x44))
+ODD = (Marked("a", 3, 0x11), Marked("b", 5, 0x22), Marked("c", 7, 0x33), Marked("d", 4, 0x44))
+SMALL = (Marked("a", 1, 0x11), Marked("b", 1, 0x22), Marked("c", 2, 0x33), Marked("d", 2, 0x44),
+         Marked("e", 4, 0x55), Marked("f", 4, 0x66))  # fmt: skip
+# Each function's locals in declaration order. A scope counts blocks in source order.
 SHAPES = {
     "pr_slot_same_size": SAME_SIZE,
     "pr_slot_same_size_rev": SAME_SIZE[::-1],
     "pr_slot_mixed": MIXED,
     "pr_slot_mixed_rev": MIXED[::-1],
+    "pr_slot_array": ARRAY,
+    "pr_slot_array_rev": ARRAY[::-1],
+    "pr_slot_struct": STRUCT,
+    "pr_slot_struct_rev": STRUCT[::-1],
+    "pr_slot_odd": ODD,
+    "pr_slot_odd_rev": ODD[::-1],
+    "pr_slot_unaligned": (Marked("a", 12, 0x11), DOUBLE, Marked("b", 4, 0x22)),
+    "pr_slot_small": SMALL,
+    "pr_slot_small_rev": SMALL[::-1],
+    "pr_slot_flat": SAME_SIZE[:3],
+    "pr_slot_scope": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("c", 4, 0x33, 2)),
+    "pr_slot_scope_pairs": (Marked("a", 4, 0x11), Marked("b", 4, 0x22),
+                            Marked("c", 4, 0x33, 1), Marked("d", 4, 0x44, 1)),  # fmt: skip
+    "pr_slot_scope_sizes": (Marked("a", 4, 0x11), Marked("b", 2, 0x22),
+                            Marked("c", 4, 0x33, 1), Marked("d", 2, 0x44, 1),
+                            Marked("e", 4, 0x55, 2), Marked("f", 2, 0x66, 2)),  # fmt: skip
+    "pr_slot_siblings": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("c", 4, 0x33, 2),
+                         Marked("d", 4, 0x44, 3)),  # fmt: skip
+    "pr_slot_block_order": (Marked("a", 4, 0x11), Marked("b", 4, 0x22, 1), Marked("d", 4, 0x44, 2),
+                            Marked("c", 4, 0x33, 3)),  # fmt: skip
+    "pr_slot_unused": (Marked("a", 4, 0x11),),
 }
+PAIR = (Marked("a", 8, 0x11), Marked("b", 8, 0x22))
+THREE = (*PAIR, Marked("c", 8, 0x33))
+# What the model refuses: every one of these leaves declaration order.
+TIES = {
+    "pr_tie_three": THREE,
+    "pr_tie_three_int": (*THREE, Marked("d", 4, 0x44)),
+    "pr_tie_pair": (*PAIR, Marked("c", 4, 0x33)),
+    "pr_tie_small": (Marked("d", 8, 0x44), Marked("e", 8, 0x55), Marked("c", 4, 0x33),
+                     Marked("b", 4, 0x22), Marked("a", 4, 0x11)),  # fmt: skip
+    "pr_tie_double": (DOUBLE, *PAIR),
+}
+SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722))
+SAME_CODE = (("pr_spill_decl", "pr_spill_decl_rev"), ("pr_spill_decl", "pr_spill_scoped"))
+MOVED_CODE = (
+    ("pr_spill_decl", "pr_spill_assign"),
+    ("pr_spill_decl", "pr_spill_use"),
+    ("pr_spill_decl", "pr_spill_type"),
+    ("pr_spill_loop", "pr_spill_loop_late"),
+)
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
 _MEMORY_STORE = re.compile(r"\w+ ptr \[esp[^\]]*\], (?P<source>\w+)$")
@@ -119,10 +168,90 @@ def _offsets(module: omf.Module, name: str, cell: str, shape: tuple[Marked, ...]
     return {one.name: found[one.marker] - one.at for one in shape}
 
 
+def _declared(shape: Sequence[Marked]) -> tuple[slots.Local, ...]:
+    return tuple(slots.Local(one.name, one.size, one.scope) for one in shape)
+
+
+def _frame(module: omf.Module, name: str) -> int:
+    return batch._frame_slots(_function(module, name), 0)[1]
+
+
+def _text(module: omf.Module, name: str) -> list[str]:
+    """The function's instructions as text: equal text is equal code here."""
+    return [f"{insn.mnemonic} {insn.op_str}" for insn in x86.decode(_function(module, name), 0)]
+
+
+def _by_declaration(shape: Sequence[Marked]) -> dict[str, int]:
+    """M1 to M3 applied to a tie the model refuses: what declaration order alone would give."""
+    ascending = sorted(enumerate(shape), key=lambda pair: (-pair[1].size, -pair[0]))
+    layout = {}
+    offset = 0
+    for _, one in ascending:
+        layout[one.name] = offset
+        offset += slots.frame_size(_declared([one]))
+    return layout
+
+
 @pytest.mark.parametrize("cell", CELLS)
 @pytest.mark.parametrize("name", SHAPES)
 def test_model_reproduces_every_memory_shape(modules, cell, name):
     shape = SHAPES[name]
     measured = _offsets(modules[cell], name, cell, shape)
-    declared = tuple(slots.Local(one.name, one.size) for one in shape)
+    declared = _declared(shape)
+    assert slots.order_is_known(declared) is True
     assert measured == slots.frame_layout(declared)
+    assert _frame(modules[cell], name) == slots.frame_size(declared)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("name", TIES)
+def test_a_refused_tie_leaves_declaration_order_and_keeps_sizes(modules, cell, name):
+    """The limit is real: the model refuses it, declaration order would be wrong, and M1 and M3
+    still hold, each size together, the largest lowest, the frame as padded."""
+    shape = TIES[name]
+    measured = _offsets(modules[cell], name, cell, shape)
+    declared = _declared(shape)
+    assert slots.order_is_known(declared) is False
+    assert measured != _by_declaration(shape)
+    sizes = {one.name: one.size for one in shape}
+    ascending = sorted(measured, key=measured.__getitem__)
+    assert [sizes[local] for local in ascending] == sorted(sizes.values(), reverse=True)
+    assert _frame(modules[cell], name) == slots.frame_size(declared)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_a_local_outside_the_tie_changes_it(modules, cell):
+    """pr_tie_three_int only adds an int after pr_tie_three, and a, b and c take other offsets:
+    so no table of orders by count can hold."""
+    alone = _offsets(modules[cell], "pr_tie_three", cell, TIES["pr_tie_three"])
+    beside = _offsets(modules[cell], "pr_tie_three_int", cell, TIES["pr_tie_three_int"])
+    assert alone != {name: beside[name] for name in alone}
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("pair", SAME_CODE)
+def test_scalars_ignore_declarations_and_scope(modules, cell, pair):
+    one, other = pair
+    assert _text(modules[cell], one) == _text(modules[cell], other)
+
+
+@pytest.mark.parametrize("pair", MOVED_CODE)
+def test_assignment_use_and_type_move_scalars(modules, pair):
+    one, other = pair
+    assert any(_text(module, one) != _text(module, other) for module in modules.values())
+
+
+@pytest.mark.parametrize("cell", CELLS)
+def test_spills_sit_above_the_memory_locals(modules, cell):
+    """The memory locals keep the model's offsets from 0, and every other slot lies above them:
+    so the top of the memory locals is where the scalars start."""
+    module = modules[cell]
+    measured = _offsets(module, "pr_spill_memory", cell, SPILL_MEMORY)
+    declared = _declared(SPILL_MEMORY)
+    assert measured == slots.frame_layout(declared)
+    top = slots.frame_size(declared)
+    read, frame = batch._frame_slots(_function(module, "pr_spill_memory"), 0)
+    others = {slot for slot in read if slot is not None} - set(measured.values())
+    assert others
+    assert min(others) >= top
+    assert frame > top
