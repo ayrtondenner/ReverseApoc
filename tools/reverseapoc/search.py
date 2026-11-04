@@ -179,6 +179,11 @@ def declarations(text: str, span: tuple[int, int]) -> list[int]:
     return [n for n in range(first + 1, last) if _declaration(code[n]) is not None]
 
 
+def _initialised(code: str) -> bool:
+    """The declaration on the blanked line `code` runs an initializer."""
+    return "=" in _declaration(code)["declarators"]
+
+
 def _local_type(found: re.Match[str]) -> str | None:
     """The type a move may replace: that of a plain scalar local, or None."""
     local = " ".join(found["spec"].split())
@@ -271,14 +276,16 @@ def _moved_into(lines: Sequence[str], n: int, block: int) -> str:
 
 def scope_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
     """Each declaration moved to the top of the innermost block holding all its uses, when that
-    block is inner. Nothing checks that the C keeps its meaning: only the bytes can say so."""
+    block is inner. Nothing checks that the C keeps its meaning: only the bytes can say so, so an
+    initialized one, whose initializer now runs elsewhere, is a statement move too (D-26)."""
     lines = text.split("\n")
     code = _code(text).split("\n")
     stacks = _block_stacks(code, span)
     for n in declarations(text, span):
         block = _scope_block(code, stacks, n)
         if block is not None:
-            yield Candidate(_moved_into(lines, n, block), ("scope",))
+            axes = ("scope", "statement") if _initialised(code[n]) else ("scope",)
+            yield Candidate(_moved_into(lines, n, block), axes)
 
 
 def _in_memory(found: re.Match[str], body: str) -> bool:
@@ -290,7 +297,7 @@ def _in_memory(found: re.Match[str], body: str) -> bool:
     return "*" not in declarators and _local_type(found) is None
 
 
-def _shuffles(lines: Sequence[str], blocks: Sequence[list[int]]) -> Iterator[Candidate]:
+def _shuffles(lines: Sequence[str], blocks: Sequence[list[int]]) -> Iterator[str]:
     """BUDGET seeded orders of each block's declarations: never more are needed, and the walk
     drops an order it has seen, so a block with few orders still ends."""
     rng = random.Random(SEED)
@@ -299,12 +306,21 @@ def _shuffles(lines: Sequence[str], blocks: Sequence[list[int]]) -> Iterator[Can
         for block in blocks:
             for n, source in zip(block, rng.sample(block, len(block)), strict=True):
                 moved[n] = lines[source]
-        yield Candidate("\n".join(moved), ("declaration",))
+        yield "\n".join(moved)
+
+
+def _declaration_move(text: str, rows: Sequence[int], initialised: Sequence[str]) -> Candidate:
+    """`text` as a declaration move, and a statement move too when the lines of `initialised`,
+    the initializers in their old order, stand in another order in it (D-26)."""
+    lines = text.split("\n")
+    same = [lines[n] for n in rows if lines[n] in initialised] == list(initialised)
+    return Candidate(text, ("declaration",) if same else ("declaration", "statement"))
 
 
 def declaration_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
     """Pairwise swaps of the declarations of one block, the pairs with the most address-taken
-    locals and aggregates first, then seeded shuffles."""
+    locals and aggregates first, then seeded shuffles. A move that runs the initializers in
+    another order is a statement move too (D-26)."""
     lines = text.split("\n")
     code = _code(text).split("\n")
     stacks = _block_stacks(code, span)
@@ -314,10 +330,12 @@ def declaration_moves(text: str, span: tuple[int, int]) -> Iterator[Candidate]:
     body = "\n".join(code[span[0] + 1 : span[1]])
     memory = {n for n in rows if _in_memory(_declaration(code[n]), body)}
     pairs = [pair for block in blocks for pair in itertools.combinations(block, 2)]
+    initialised = [lines[n] for n in rows if _initialised(code[n])]
     for one, two in sorted(pairs, key=lambda pair: -len(memory.intersection(pair))):
-        yield Candidate(_swapped(lines, one, two), ("declaration",))
+        yield _declaration_move(_swapped(lines, one, two), rows, initialised)
     if blocks:
-        yield from _shuffles(lines, blocks)
+        for moved in _shuffles(lines, blocks):
+            yield _declaration_move(moved, rows, initialised)
 
 
 # ---- the waves ----

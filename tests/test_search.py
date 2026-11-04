@@ -485,6 +485,14 @@ def test_scope_moves_are_tagged_with_their_axis():
     assert move.axes == ("scope",)
 
 
+def test_scope_move_of_an_initialized_local_is_a_statement_move():
+    """D-26: moved into a loop, the initializer runs on every iteration."""
+    search = reverseapoc.search
+    text = _body("int c = 0;", "", "while (a) {", "    c = c + 1;", "    a = c;", "}", "return a;")
+    (move,) = search.scope_moves(text, search.function_span(text, "f"))
+    assert move.axes == ("scope", "statement")
+
+
 def test_declaration_moves_lead_with_address_taken_locals_and_aggregates():
     """b is address-taken and d is an array; c and p are neither."""
     search = reverseapoc.search
@@ -526,6 +534,46 @@ def test_declaration_moves_go_on_to_seeded_shuffles_and_end():
     assert len(moves) == pairs + search.BUDGET
     assert len(set(moves[pairs:])) > pairs
     assert moves == [move.text for move in search.declaration_moves(text, span)]
+
+
+def test_declaration_swap_of_two_initializers_is_a_statement_move():
+    """D-26: `int b = g(); int c = h();` swapped runs the two calls in the other order."""
+    search = reverseapoc.search
+    text = _body("int b = g(a);", "int c = h(a);", "", "return b + c;")
+    (move, *_shuffled) = search.declaration_moves(text, search.function_span(text, "f"))
+    assert move.text == _body("int c = h(a);", "int b = g(a);", "", "return b + c;")
+    assert move.axes == ("declaration", "statement")
+
+
+def test_declaration_swap_across_an_initializer_is_a_statement_move():
+    """`b` and `d` swap, and `c`'s initializer now runs before `b`'s."""
+    search = reverseapoc.search
+    text = _body("int b = 1;", "int c = 2;", "int d;", "", "return b + c + d;")
+    span = search.function_span(text, "f")
+    moves = {move.text: move.axes for move in search.declaration_moves(text, span)}
+    assert moves[_body("int d;", "int c = 2;", "int b = 1;", "", "return b + c + d;")] == (
+        "declaration", "statement")  # fmt: skip
+
+
+def test_declaration_swap_that_keeps_the_order_of_initializers_stays_on_its_axis():
+    search = reverseapoc.search
+    text = _body("int b = 1;", "int c;", "", "return b + c;")
+    (move, *_shuffled) = search.declaration_moves(text, search.function_span(text, "f"))
+    assert move.text == _body("int c;", "int b = 1;", "", "return b + c;")
+    assert move.axes == ("declaration",)
+
+
+def test_declaration_shuffles_tag_each_order_by_its_initializers():
+    search = reverseapoc.search
+    decls = ["int v0 = g(a);", "int v1 = h(a);", "int v2;", "int v3;"]
+    text = _body(*decls, "", "return a;")
+    moves = list(search.declaration_moves(text, search.function_span(text, "f")))
+    pairs = 6
+    tagged = {move.axes for move in moves[pairs:]}
+    assert tagged == {("declaration",), ("declaration", "statement")}
+    for move in moves[pairs:]:
+        kept = move.text.index("int v0") < move.text.index("int v1")
+        assert ("statement" in move.axes) is not kept
 
 
 def test_declaration_moves_of_one_declaration_are_none():
@@ -710,6 +758,38 @@ def test_statement_variant_that_is_exact_is_kept(stubs):
     result = _run()
     assert result.exact is True
     assert SWAPPED in result.text
+    assert "statement" in result.axes
+
+
+INITIALIZED = """int func_00010000(int a)
+{
+    int b = g(a);
+    int c = h(a);
+
+    if (a) {
+        int d = 1;
+
+        a = d;
+    }
+    return b + c + a;
+}
+"""
+INITIALIZERS_SWAPPED = "    int c = h(a);\n    int b = g(a);\n"
+
+
+def test_reordered_initializers_are_dropped_unless_exact(stubs):
+    """D-26's rule, reached through the declaration axis: not the result, whatever its score."""
+    stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(99.0, 99.0)})
+    result = _run(INITIALIZED)
+    assert result.text == INITIALIZED
+    assert result.axes == ()
+
+
+def test_reordered_initializers_that_are_exact_are_kept(stubs):
+    stubs.decide = _scored({INITIALIZERS_SWAPPED: verdict(exact=True)})
+    result = _run(INITIALIZED)
+    assert result.exact is True
+    assert INITIALIZERS_SWAPPED in result.text
     assert "statement" in result.axes
 
 
