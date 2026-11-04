@@ -125,3 +125,12 @@ def test_locals_declare_by_distance_from_entry():
     # add esp, 10h; ret
     text = lift.lift_row(stub_exe("83ec10 890424 89542408 8b0424 03442408 83c410 c3"), VA)
     assert text.index("int s_8;") < text.index("int s_10;")
+
+
+# ---- use and def ----
+
+
+def test_sbb_of_a_register_with_itself_reads_nothing():
+    # cmp eax, edx; sbb ecx, ecx; mov eax, ecx; ret. A read of ecx would invent a parameter.
+    exe = stub_exe("39d0 19c9 89c8 c3")
+    assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 2

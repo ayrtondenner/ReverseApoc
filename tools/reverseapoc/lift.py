@@ -1074,7 +1074,7 @@ def _use_def(ci) -> tuple[set, set]:
     u = {_full(ci.reg_name(r)) for r in regs_read} & set(GP)
     d = {_full(ci.reg_name(r)) for r in regs_write} & set(GP)
     if (
-        ci.mnemonic == "xor"
+        ci.mnemonic in ("xor", "sbb")  # sbb r, r reads the carry flag, never r
         and len(ci.operands) == 2
         and ci.operands[0].type == X86_OP_REG
         and ci.operands[0].reg == ci.operands[1].reg
