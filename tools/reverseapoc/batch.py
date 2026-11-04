@@ -272,7 +272,7 @@ def _stack_masked(token: str, framed: bool) -> str:
     return _ESP_FRAME.sub(r"\1 esp, N", token)
 
 
-def _tokens(
+def tokens(
     code: bytes, va: int, masked: set[int], *, stack: bool = False
 ) -> list[tuple[str, str, int]]:
     """(token, shape, va) per instruction; a token drops operand text when any of its bytes is a
@@ -307,8 +307,8 @@ def _matcher(a, b) -> difflib.SequenceMatcher:
 def diff_summary(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> tuple[float, str]:
     """(score, key): difflib's ratio of the decoded instruction tokens in percent (2 places)
     and the first differing pair as `ours | theirs` mnemonic shapes ("" when none differ)."""
-    a = _tokens(ours, va, masked)
-    b = _tokens(theirs, va, masked)
+    a = tokens(ours, va, masked)
+    b = tokens(theirs, va, masked)
     sm = _matcher(a, b)
     return round(100.0 * sm.ratio(), 2), _first_diff(a, b, sm)
 
@@ -316,8 +316,8 @@ def diff_summary(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> tuple
 def stack_score(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> float:
     """diff_summary's score over stack-masked tokens: two bodies that differ only in stack
     offsets and frame size score 100. It ranks variants and decides nothing."""
-    a = _tokens(ours, va, masked, stack=True)
-    b = _tokens(theirs, va, masked, stack=True)
+    a = tokens(ours, va, masked, stack=True)
+    b = tokens(theirs, va, masked, stack=True)
     return round(100.0 * _matcher(a, b).ratio(), 2)
 
 
@@ -390,8 +390,8 @@ def slot_map(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> SlotMap:
     followed at all, so a slot read on both sides of a push reads as two slots."""
     our_slots, frame_ours = _frame_slots(ours, va)
     their_slots, frame_theirs = _frame_slots(theirs, va)
-    matcher = _matcher(_tokens(ours, va, masked, stack=True),
-                       _tokens(theirs, va, masked, stack=True))  # fmt: skip
+    matcher = _matcher(tokens(ours, va, masked, stack=True),
+                       tokens(theirs, va, masked, stack=True))  # fmt: skip
     aligned = [(i + n, j + n) for i, j, size in matcher.get_matching_blocks() for n in range(size)]
     pairs = {(our_slots[i], their_slots[j]) for i, j in aligned if our_slots[i] is not None}
     bijection = len(pairs) == len({a for a, _ in pairs}) == len({b for _, b in pairs})

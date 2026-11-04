@@ -20,6 +20,7 @@ from . import (
     asmclass,
     attempt,
     batch,
+    classify,
     driver,
     flags,
     lift,
@@ -1174,11 +1175,15 @@ def _batch_file(args, rules, exe, start: int, path: Path) -> _BatchFile:
 
 
 def _file_records(item: _BatchFile, compiled: dict) -> list[dict]:
+    done = [compiled[job] for job in item.jobs]
     records = item.refused or [
-        batch.judged_record(item.exe, item.start, name, compiled[job])
-        for (name, _rule), job in zip(item.cells, item.jobs, strict=True)
+        batch.judged_record(item.exe, item.start, name, cell)
+        for (name, _rule), cell in zip(item.cells, done, strict=True)
     ]  # fmt: skip
-    return [batch.with_source(record, item.path, item.text) for record in records]
+    cells = done or [None] * len(records)  # a refused file compiled nothing
+    classed = [classify.with_class(record, item.exe, item.start, cell)
+               for record, cell in zip(records, cells, strict=True)]  # fmt: skip
+    return [batch.with_source(record, item.path, item.text) for record in classed]
 
 
 def _cell_summary(records: list[dict]) -> list[str]:
