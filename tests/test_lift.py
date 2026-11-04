@@ -84,3 +84,34 @@ def test_ebp_holding_a_scaled_index_reads_an_array_element():
     field = VA + 7 + DISP32_OFFSET
     exe = stub_exe("8d2c8d00000000 8b8500000000 c3", fixups=(data_fixup(field, TABLE_VA),))
     assert f"((int *)D_{TABLE_VA:08x})[r_ecx]" in lift.lift_row(exe, VA)
+
+
+# ---- a jump into an instruction ----
+
+BAD_ROW = "31c0 75fd c3"  # xor eax, eax; jne into the xor's second byte; ret
+
+
+def call_to(src: int, target: int) -> str:
+    """`call target` at `src`, as hex."""
+    size = 5
+    return "e8" + (target - (src + size)).to_bytes(4, "little", signed=True).hex()
+
+
+def test_a_jump_into_an_instruction_is_unliftable():
+    with pytest.raises(lift.Unliftable, match="jump: into an instruction"):
+        lift.lift_row(stub_exe(BAD_ROW), VA)
+
+
+def test_a_bad_callee_leaves_its_signature_unknown():
+    # mov eax, 1; call the bad row; ret
+    caller = f"b801000000 {call_to(VA + 5, VA + ROW_SPACING)} c3"
+    exe = stub_exe(caller, BAD_ROW)
+    bad = VA + ROW_SPACING
+    callee_second: dict = {}
+    text = lift.lift_row(exe, VA, callee_second)
+    callee_first: dict = {}
+    with pytest.raises(lift.Unliftable):
+        lift.lift_row(exe, bad, callee_first)
+    assert lift.lift_row(exe, VA, callee_first) == text
+    assert callee_second[bad] is None
+    assert f"func_{bad:08x}(1)" in text

@@ -342,6 +342,8 @@ class Lifter:
             if last.group(1):
                 t = _branch_target(last)
                 if t is not None and self.row.start <= t < self.row.end:
+                    if t not in blocks:
+                        raise Unliftable("jump: into an instruction")
                     b.succ.append(t)
                 if last.mnemonic != "jmp" and n + 1 < len(order):
                     b.succ.append(order[n + 1])
@@ -989,7 +991,7 @@ def result_used(exe: ExeInputs, sigs: dict) -> tuple[set, set] | None:
         try:
             lf = Lifter(exe, row, sigs)
             _, _, _, blocks, order, _, after = lf.prepare(frozenset({"eax"}), strict=False)
-        except Unliftable, StopIteration, AttributeError, RecursionError, KeyError:
+        except Unliftable, StopIteration, AttributeError, RecursionError:
             continue
         for b in blocks.values():
             for ci in b.insns:
