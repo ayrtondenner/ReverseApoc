@@ -18,8 +18,12 @@ change behaviour, so byte identity is the only evidence for it (D-26).
 
 The declaration axis asks the slot model first (slots.py). Where it knows the order of the memory
 locals it computes the one order the original's slots need, and it moves nothing for the slots
-that hold scalars, which declarations cannot reach; the result names those. Where it cannot say,
-because a size is unknown or a tie has no known order, the plain moves of declaration_moves stand.
+that hold scalars, which declarations cannot reach; the result names those. The plain moves of
+declaration_moves stand where it cannot say: the map is empty, or does not place every memory
+local; a size is unknown; two blocks reuse a name; a tie has no known order; a float with no
+address taken stands in a tie; a plain local is under a slot; a memory local is, and either side
+has spills; a parameter has its address taken; an aggregate is initialized; or `(word) & local`
+could be a cast.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16). All output lies under build/.
