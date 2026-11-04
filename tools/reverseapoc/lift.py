@@ -777,8 +777,9 @@ class Block_:
 
     def rebind(self, value: E, new: E) -> None:
         """`new` holds `value` now. What held `value` reads it from there, and a flag operand
-        that read what `new` held before has nothing left to read."""
-        same = not value.atom
+        that read what `new` held before has nothing left to read. A name or a constant repeats
+        freely, so only a name about to change moves."""
+        same = not value.atom or value.text in {f"r_{r}" for r in self.assigning}
 
         def moved(e: E) -> E:
             return new if same and e.text == value.text else e

@@ -1127,3 +1127,10 @@ def test_a_float_kept_past_the_store_to_its_slot_reads_a_float_temporary():
     text = in_frame(f"{FLD_A} d844240c d9542408 {FSTP_C}")
     assert "float t_0;" in text
     assert "s_c = t_0 + s_4;" in text
+
+
+def test_a_flag_on_a_copy_reads_the_variable_the_copy_became():
+    # mov ebx, eax; mov eax, 5; test ebx, ebx; je L; mov eax, 6; L: add eax, ebx; ret
+    text = lift.lift_row(stub_exe("89c3 b805000000 85db 7405 b806000000 01d8 c3"), VA)
+    assert text.index("r_ebx = r_eax;") < text.index("r_eax = 5;")
+    assert "if (r_ebx == 0) goto" in text
