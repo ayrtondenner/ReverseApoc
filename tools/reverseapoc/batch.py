@@ -384,9 +384,10 @@ def _frame_slots(code: bytes, va: int) -> tuple[list[int | None], int]:
 
 def slot_map(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> SlotMap:
     """Pair the stack slots of the instructions `diff_summary`'s matcher aligns, on stack-masked
-    tokens, each slot relative to the frame by a linear depth. Known limit: a slot read between
-    two calls while an outer argument is still pushed comes out shifted and shows up as a
-    conflict, which reports and decides nothing."""
+    tokens, each slot relative to the frame by a linear depth. Known limits, which report and
+    decide nothing: a slot read between two calls while an outer argument is still pushed comes
+    out shifted and shows up as a conflict, and in a body with no `sub esp, N` depth is not
+    followed at all, so a slot read on both sides of a push reads as two slots."""
     our_slots, frame_ours = _frame_slots(ours, va)
     their_slots, frame_theirs = _frame_slots(theirs, va)
     matcher = _matcher(_tokens(ours, va, masked, stack=True),
@@ -514,7 +515,9 @@ def function_body(exe: ExeInputs, obj: Path, start: int) -> FunctionBody | str:
 def body_key(body: FunctionBody) -> str:
     """A sha256 of the function's bytes and of each OMF fixup inside it, as (offset from the
     function, target name, displacement): two objects can hold equal bytes and relocate
-    differently, so bytes alone would give them one verdict."""
+    differently, so bytes alone would give them one verdict. A jump table that leads the row
+    (table_row) lies before the function and is not hashed, though judge reads it: this assumes
+    no two variants hold equal bodies and different tables."""
     d = body.defined
     fixups = sorted((f.offset - d.off, f.target_name, f.displacement) for f in d.segment.fixups
                     if d.off <= f.offset < d.off + d.size)  # fmt: skip
