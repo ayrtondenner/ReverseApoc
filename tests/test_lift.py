@@ -1620,3 +1620,20 @@ def test_a_row_the_census_cannot_read_is_left_out():
     callee = VA + 2 * ROW_SPACING
     exe = stub_exe(BAD_ROW, f"{call_to(VA + ROW_SPACING, callee)} c3", "c3")
     assert lift.result_used(exe)[1] == {callee}
+
+
+# ---- a row that calls itself ----
+
+
+def test_a_recursive_row_is_declared_by_its_definition_alone():
+    # test al, al; je +5; call self; ret
+    text = lift.lift_row(stub_exe(f"84c0 7405 {call_to(VA + 4, VA)} c3"), VA)
+    assert f"func_{VA:08x}(r_eax);" in text
+    assert text.count(f"func_{VA:08x}(") == 2  # the definition and the call, no prototype
+
+
+def test_another_callee_keeps_its_prototype():
+    # call f; ret
+    callee = VA + ROW_SPACING
+    text = lift.lift_row(stub_exe(f"{call_to(VA, callee)} c3", "b801000000 c3"), VA)
+    assert f"int func_{callee:08x}(void);" in text

@@ -607,6 +607,7 @@ class Lifter:
         params += [f"p{n + 5}" for n in range(sig.nstack)]
         args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
         name = self.exe.symbols.c_name(self.row.start)
+        self.externs.pop(name, None)  # the definition is its own declaration
         decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
         # Nearest the entry first: a frame of one size puts the first declared highest (probe M2).
         slots = sorted(self.locals.items(), key=lambda local: int(local[0].removeprefix("s_"), 16))
