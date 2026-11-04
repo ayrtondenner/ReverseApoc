@@ -360,7 +360,7 @@ class Lifter:
         self.sigs[va] = None
         try:
             sig = Lifter(self.exe, row, self.sigs).signature()
-        except Unliftable, StopIteration, AttributeError, RecursionError:
+        except Unliftable:
             sig = None
         self.sigs[va] = sig
         return name, sig  # None: unknown, the call site decides
@@ -1649,7 +1649,7 @@ def _census(exe: ExeInputs) -> tuple[set, set]:
         try:
             lf = Lifter(exe, row, census_sigs)
             _, _, _, blocks, order, _, after = lf.prepare(frozenset({"eax"}), strict=False)
-        except Unliftable, StopIteration, AttributeError, RecursionError:
+        except Unliftable:
             continue
         for b in blocks.values():
             for ci in b.insns:

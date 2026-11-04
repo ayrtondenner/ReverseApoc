@@ -1582,3 +1582,41 @@ def test_a_word_parameter_takes_its_sign_from_its_own_reads():
     # movsx eax, ax; movzx ecx, dx; add eax, ecx; ret
     text = lift.lift_row(stub_exe("0fbfc0 0fb7ca 01c8 c3"), VA)
     assert "(short r_eax, unsigned short r_edx)" in text
+
+
+# ---- what the excepts let through ----
+
+BUGS = (AttributeError, StopIteration, RecursionError)
+
+
+@pytest.mark.parametrize("bug", BUGS)
+def test_a_bug_in_a_callee_is_no_unknown_signature(monkeypatch, bug):
+    callee = VA + ROW_SPACING
+    exe = stub_exe(f"{call_to(VA, callee)} c3", "c3")
+    signature = lift.Lifter.signature
+
+    def broken(self):
+        if self.row.start == callee:
+            raise bug("bug")
+        return signature(self)
+
+    monkeypatch.setattr(lift.Lifter, "signature", broken)
+    with pytest.raises(bug):
+        lift.Lifter(exe, exe.rows[0]).callee(callee)
+
+
+@pytest.mark.parametrize("bug", BUGS)
+def test_a_bug_in_a_row_is_no_shorter_census(monkeypatch, bug):
+    def broken(*_args, **_kwargs):
+        raise bug("bug")
+
+    monkeypatch.setattr(lift.Lifter, "prepare", broken)
+    with pytest.raises(bug):
+        lift.result_used(stub_exe("c3"))
+
+
+def test_a_row_the_census_cannot_read_is_left_out():
+    # the bad row refuses, and the row beside it still counts
+    callee = VA + 2 * ROW_SPACING
+    exe = stub_exe(BAD_ROW, f"{call_to(VA + ROW_SPACING, callee)} c3", "c3")
+    assert lift.result_used(exe)[1] == {callee}
