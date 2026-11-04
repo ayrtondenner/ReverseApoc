@@ -1,0 +1,1087 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The converter: one Watcom 10.6 `-4r` function row to C89, from le.py bytes and fixups, decoded
+with capstone (the same pinned instance as reverseapoc.x86).
+
+Moved from spike 010 (.planning/spikes/010-deterministic-matching/lift.py), which keeps its own
+copy.
+
+Design (the spike's README, "Q3"): basic blocks; symbolic execution per block, where a register
+holds a C expression tree; registers live across a block edge become C variables named after the
+register (`r_ebx`), and register arguments are parameters with those names; stores, calls,
+branches and returns become statements; branches are `if (c) goto L;`. Stack slots are locals
+typed by their access width. Globals are `extern char D_<target>[]` read through casts. Anything
+else raises Unliftable with a short reason, which the harness counts as a failure group.
+"""
+
+from __future__ import annotations
+
+import bisect
+from dataclasses import dataclass, field
+
+from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
+
+from .asm import FixupIndex
+from .check import ExeInputs
+from .functions import KIND_DATA_IN_CODE, FunctionRow
+from .targets import REPO_ROOT
+from .x86 import _disassembler, decode, is_filler
+
+CACHE_DIR = REPO_ROOT / "build" / "lift"
+ARG_REGS = ("eax", "edx", "ebx", "ecx")
+GP = ("eax", "ebx", "ecx", "edx", "esi", "edi", "ebp")
+SUB = {
+    "al": ("eax", 1),
+    "ah": ("eax", -1),
+    "ax": ("eax", 2),
+    "bl": ("ebx", 1),
+    "bh": ("ebx", -1),
+    "bx": ("ebx", 2),
+    "cl": ("ecx", 1),
+    "ch": ("ecx", -1),
+    "cx": ("ecx", 2),
+    "dl": ("edx", 1),
+    "dh": ("edx", -1),
+    "dx": ("edx", 2),
+    "si": ("esi", 2),
+    "di": ("edi", 2),
+    "bp": ("ebp", 2),
+}
+SIZE_TYPE = {
+    (1, True): "signed char",
+    (1, False): "unsigned char",
+    (2, True): "short",
+    (2, False): "unsigned short",
+    (4, True): "int",
+    (4, False): "unsigned",
+}
+JCC = {
+    "je": "==",
+    "jne": "!=",
+    "jl": "<",
+    "jge": ">=",
+    "jg": ">",
+    "jle": "<=",
+    "jb": "<u",
+    "jae": ">=u",
+    "ja": ">u",
+    "jbe": "<=u",
+    "js": "<0",
+    "jns": ">=0",
+}
+NEG = {
+    "==": "!=",
+    "!=": "==",
+    "<": ">=",
+    ">=": "<",
+    ">": "<=",
+    "<=": ">",
+    "<u": ">=u",
+    ">=u": "<u",
+    ">u": "<=u",
+    "<=u": ">u",
+    "<0": ">=0",
+    ">=0": "<0",
+}
+
+
+class Unliftable(Exception):
+    """The converter cannot express this function (yet); str(exc) is the failure group."""
+
+
+# ---- expressions ----
+
+
+@dataclass(frozen=True)
+class E:
+    text: str
+    atom: bool = False  # a name or a constant: free to repeat
+    pure: bool = True  # no memory read or call inside (may move across a store)
+    const: int | None = None
+    size: int = 4
+    signed: bool = True
+    scaled: tuple | None = None  # (index E, scale) for a value made by lea r, [index*scale]
+
+    def __str__(self) -> str:
+        return self.text
+
+
+def const(v: int) -> E:
+    v &= 0xFFFFFFFF
+    s = v - (1 << 32) if v & 0x80000000 else v
+    return E(str(s) if -4096 < s < 65536 else f"0x{v:x}", atom=True, const=s)
+
+
+def var(name: str, size: int = 4, signed: bool = True) -> E:
+    return E(name, atom=True, size=size, signed=signed)
+
+
+def paren(e: E) -> str:
+    return e.text if e.atom else f"({e.text})"
+
+
+def binop(op: str, a: E, b: E) -> E:
+    if op in "+-" and b.const == 0:
+        return a
+    if op == "*" and b.const == 1:
+        return a
+    return E(f"{paren(a)} {op} {paren(b)}", pure=a.pure and b.pure)
+
+
+def cast(type_: str, e: E, size: int, signed: bool) -> E:
+    return E(f"({type_}){paren(e)}", pure=e.pure, size=size, signed=signed)
+
+
+def load(addr: E, size: int, signed: bool) -> E:
+    return E(f"*({SIZE_TYPE[size, signed]} *){paren(addr)}", pure=False, size=size, signed=signed)
+
+
+# ---- the converter ----
+
+
+@dataclass
+class Sig:
+    nregs: int
+    nstack: int
+    returns: bool
+
+
+@dataclass
+class Block:
+    start: int
+    insns: list = field(default_factory=list)
+    succ: list = field(default_factory=list)
+
+
+class Lifter:
+    def __init__(
+        self,
+        exe: ExeInputs,
+        row: FunctionRow,
+        sigs: dict[int, Sig] | None = None,
+        *,
+        once: bool = False,
+        force_ret: str | None = None,
+        narrow: bool = True,
+        array: bool = True,
+    ):
+        self.exe, self.row = exe, row
+        self.once, self.force_ret, self.narrow, self.array = once, force_ret, narrow, array
+        self.sigs = sigs if sigs is not None else {}
+        self.fix = {f.src_va: f for f in _fixup_index(exe).overlapping(row.start, row.end)}
+        self.externs: dict[str, str] = {}
+        self.locals: dict[str, str] = {}
+        self.out: list[str] = []
+        self.labels: set[int] = set()
+
+    # -- decoding and frame --
+
+    def decode(self):
+        md = _disassembler()
+        code = self.exe.flat[self.row.start : self.row.end]
+        insns = list(md.disasm(code, self.row.start))
+        if not insns or insns[-1].address + insns[-1].size != self.row.end:
+            raise Unliftable("decode: row does not decode to its end")
+        # Watcom alignment filler (lea eax,[eax], mov ebx,ebx, ...) is a no-op: drop it all,
+        # trailing and mid-function, so it reads no register.
+        filler = {i.va for i in decode(code, self.row.start) if is_filler(i)}
+        body = [ci for ci in insns if ci.address not in filler and not _self_move(ci)]
+        if not body:
+            raise Unliftable("decode: empty")
+        return body
+
+    def frame(self, insns):
+        saved, i = [], 0
+        while (
+            i < len(insns)
+            and insns[i].mnemonic == "push"
+            and insns[i].operands[0].type == X86_OP_REG
+        ):
+            saved.append(insns[i].reg_name(insns[i].operands[0].reg))
+            i += 1
+        if (
+            "ebp" in saved
+            and i < len(insns)
+            and insns[i].mnemonic == "mov"
+            and insns[i].op_str == "ebp, esp"
+        ):
+            raise Unliftable("frame: ebp frame")
+        frame = 0
+        if i < len(insns) and insns[i].mnemonic == "sub" and insns[i].op_str.startswith("esp, "):
+            frame = insns[i].operands[1].imm
+            i += 1
+        return saved, frame, i
+
+    # -- the signature pass --
+
+    def prepare(self, ret_live: frozenset = frozenset({"eax"}), strict: bool = True):
+        insns = self.decode()
+        saved, frame, first = self.frame(insns)
+        body = insns[first:]
+        if not body:
+            raise Unliftable("decode: prologue only")
+        blocks, order = self.blocks(body, strict)
+        live_in, after = self.liveness(blocks, order, ret_live)
+        return insns, saved, frame, blocks, order, live_in, after
+
+    def signature(self) -> Sig:
+        """Tolerant: a switch or a tail jump ends its block instead of refusing the row."""
+        insns, saved, _, blocks, order, live_in, _ = self.prepare(frozenset(), strict=False)
+        written = set()
+        for s in order:
+            for ci in blocks[s].insns:
+                if ci.mnemonic in ("pop", "ret"):
+                    continue
+                written |= _use_def(ci)[1]
+        entry = live_in[order[0]]
+        nregs = 0
+        for idx, reg in enumerate(ARG_REGS):
+            if reg in entry:
+                nregs = idx + 1
+        nstack = 0
+        last = insns[-1]
+        if last.mnemonic == "ret" and last.operands:
+            nstack = last.operands[0].imm // 4
+        if nstack:
+            nregs = 4
+        returns = "eax" in written and "eax" not in saved
+        used = result_used(self.exe, self.sigs)
+        if (
+            returns
+            and used is not None
+            and self.row.start in used[1]
+            and self.row.start not in used[0]
+        ):
+            returns = False
+        if returns:  # a path that returns an argument unchanged makes eax live at entry
+            live_in = self.prepare(frozenset({"eax"}), strict=False)[5]
+            if "eax" in live_in[order[0]]:
+                nregs = max(nregs, 1)
+        return Sig(nregs, nstack, returns)
+
+    # -- names --
+
+    def data_name(self, va: int) -> str:
+        if self._is_code(va):
+            row = _index(self.exe)[0].get(va)
+            if row is None or row.kind == KIND_DATA_IN_CODE:
+                raise Unliftable("ref: code address not at a function start")
+            name = self.exe.symbols.c_name(va)
+            self.externs.setdefault(name, f"int {name}();")
+            return name
+        name = self.exe.symbols.c_name(va, data=True)
+        self.externs.setdefault(name, f"extern char {name}[];")
+        return name
+
+    def in_row(self, va: int | None) -> bool:
+        if va is None:
+            raise Unliftable("jump: indirect (switch table)")
+        return self.row.start <= va < self.row.end
+
+    def _is_code(self, va: int) -> bool:
+        starts, rows = _index(self.exe)[1:]
+        k = bisect.bisect_right(starts, va) - 1
+        return k >= 0 and rows[k].start <= va < rows[k].end
+
+    def callee(self, va: int) -> tuple[str, Sig]:
+        row = _index(self.exe)[0].get(va)
+        if row is None:
+            raise Unliftable("call: target is not a row start")
+        name = self.exe.symbols.c_name(va)
+        if name.startswith("_") or not name.replace("_", "a").isidentifier():
+            raise Unliftable("call: stack-convention or odd callee name")
+        if name.endswith("_"):
+            name = name[:-1]
+        if va in self.sigs:
+            return name, self.sigs[va]  # None: unknown or still being computed (a cycle)
+        self.sigs[va] = None
+        try:
+            sig = Lifter(self.exe, row, self.sigs).signature()
+        except Unliftable, StopIteration, AttributeError, RecursionError:
+            sig = None
+        self.sigs[va] = sig
+        return name, sig  # None: unknown, the call site decides
+
+    def call_nregs(self, ci, insns) -> int:
+        """How many argument registers the call `ci` (in the block `insns`) passes."""
+        t = _branch_target(ci)
+        try:
+            sig = self.callee(t)[1] if t is not None else None
+        except Unliftable:
+            sig = None
+        if sig is not None and sig.nstack:
+            return 4
+        return max(sig.nregs if sig else 0, _evidence(insns, ci))
+
+    # -- CFG and liveness --
+
+    def blocks(self, insns, strict: bool = True):
+        starts = {insns[0].address}
+        for k, ci in enumerate(insns):
+            if ci.group(1) or ci.group(3):  # jump / ret
+                if k + 1 < len(insns):
+                    starts.add(insns[k + 1].address)
+                if ci.group(1):
+                    t = _branch_target(ci)
+                    if t is None:
+                        if strict:
+                            raise Unliftable("jump: indirect (switch table)")
+                        continue
+                    if not (self.row.start <= t < self.row.end):
+                        continue  # a tail jump: no successor in the row
+                    starts.add(t)
+        blocks: dict[int, Block] = {}
+        cur = None
+        for ci in insns:
+            if ci.address in starts:
+                cur = blocks.setdefault(ci.address, Block(ci.address))
+            cur.insns.append(ci)
+        order = sorted(blocks)
+        for n, s in enumerate(order):
+            b = blocks[s]
+            last = b.insns[-1]
+            if last.group(1):
+                t = _branch_target(last)
+                if t is not None and self.row.start <= t < self.row.end:
+                    b.succ.append(t)
+                if last.mnemonic != "jmp" and n + 1 < len(order):
+                    b.succ.append(order[n + 1])
+            elif not last.group(3) and n + 1 < len(order):
+                b.succ.append(order[n + 1])
+        return blocks, order
+
+    def _tail_jump(self, ci) -> bool:
+        t = _branch_target(ci) if ci.group(1) else None
+        return t is not None and not (self.row.start <= t < self.row.end)
+
+    def _tail_end(self, b) -> bool:
+        last = b.insns[-1]
+        t = _branch_target(last) if last.mnemonic == "jmp" else None
+        return t is not None and not (self.row.start <= t < self.row.end)
+
+    def liveness(self, blocks, order, ret_live=frozenset({"eax"})):
+        """Live-in register sets per instruction address (full 32-bit names)."""
+        use_def = {}
+        for s in order:
+            for ci in blocks[s].insns:
+                use_def[ci.address] = _use_def(ci)
+                if ci.mnemonic == "call" or self._tail_jump(ci):
+                    n = self.call_nregs(ci, blocks[s].insns)
+                    use_def[ci.address] = (set(ARG_REGS[:n]), {"eax"})
+        live_in: dict[int, set] = {s: set() for s in order}
+        changed = True
+        while changed:
+            changed = False
+            for s in reversed(order):
+                b = blocks[s]
+                live = set().union(*(live_in[t] for t in b.succ)) if b.succ else set()
+                if b.insns[-1].group(3) or self._tail_end(b):
+                    live = set(ret_live) if b.insns[-1].group(3) else set()
+                for ci in reversed(b.insns):
+                    u, d = use_def[ci.address]
+                    live = (live - d) | u
+                if live != live_in[s]:
+                    live_in[s], changed = live, True
+        after: dict[int, set] = {}
+        for s in order:
+            b = blocks[s]
+            live = set().union(*(live_in[t] for t in b.succ)) if b.succ else set()
+            if b.insns[-1].group(3) or self._tail_end(b):
+                live = set(ret_live) if b.insns[-1].group(3) else set()
+            for ci in reversed(b.insns):
+                after[ci.address] = set(live)
+                u, d = use_def[ci.address]
+                live = (live - d) | u
+        return live_in, after
+
+    # -- the lift --
+
+    def param_types(self, insns, params) -> dict[str, str]:
+        """A register parameter the entry block only reads through its low byte or word is
+        `unsigned char` / `short` (movsx: signed, a plain or zero-extending read: unsigned)."""
+        reads: dict[str, set] = {r: set() for r in params}
+        written: set[str] = set()
+        for ci in insns:
+            src_ops = (
+                ci.operands[1:]
+                if len(ci.operands) > 1 and ci.mnemonic in ("mov", "movsx", "movzx", "lea")
+                else ci.operands
+            )
+            for op in src_ops:
+                if op.type != X86_OP_REG:
+                    continue
+                name = ci.reg_name(op.reg)
+                full = _full(name)
+                if full in reads and full not in written:
+                    reads[full].add((op.size, ci.mnemonic == "movsx"))
+            written |= _use_def(ci)[1]
+        out = {}
+        for r, seen in reads.items():
+            sizes = {size for size, _ in seen}
+            if len(sizes) == 1 and sizes < {1, 2}:
+                (size,) = sizes
+                signed = (
+                    all(sx for _, sx in seen)
+                    if size == 1
+                    else not any(ci.mnemonic == "movzx" for ci in insns)
+                )
+                out[r] = SIZE_TYPE[size, signed]
+        return out
+
+    def ret_type(self, blocks, order) -> str:
+        """`unsigned char` / `short` when every non-call write of eax writes only al / ax."""
+        sizes = set()
+        for s in order:
+            for ci in blocks[s].insns:
+                if (
+                    ci.mnemonic in ("call", "pop", "push", "ret", "cdq", "idiv", "div")
+                    or not ci.operands
+                ):
+                    continue
+                op = ci.operands[0]
+                if (
+                    op.type == X86_OP_REG
+                    and _full(ci.reg_name(op.reg)) == "eax"
+                    and ci.mnemonic not in ("cmp", "test")
+                ):
+                    sizes.add(op.size)
+        if sizes == {1}:
+            return "unsigned char"
+        if sizes == {2}:
+            return "short"
+        return "int"
+
+    def lift(self) -> str:
+        sig = self.signature()
+        if self.force_ret is not None:
+            sig = Sig(sig.nregs, sig.nstack, self.force_ret != "void")
+        self.sig = sig
+        ret_live = frozenset({"eax"}) if sig.returns else frozenset()
+        insns, saved, frame, blocks, order, live_in, self.after = self.prepare(ret_live)
+        self.saved = saved
+        self.esp0 = -4 * len(saved) - frame  # esp after the prologue, relative to entry esp
+        params = list(ARG_REGS[: sig.nregs])
+        self.vartype = self.param_types(blocks[order[0]].insns, params) if self.narrow else {}
+        self.regvars = set(params)
+        preds: dict[int, list[int]] = {s: [] for s in order}
+        for s in order:
+            for t in blocks[s].succ:
+                preds[t].append(s)
+        self.merge = {s for s in order[1:] if len(preds[s]) != 1 or preds[s][0] >= s}
+        for s in self.merge:
+            self.regvars |= live_in[s] & set(GP)
+        self.live_in = live_in
+        end_state: dict[int, dict] = {}
+        body: list[str] = []
+        targets = {t for b in blocks.values() for t in b.succ[:1] if b.insns[-1].group(1)}
+        carried = None
+        for s in order:
+            b = blocks[s]
+            if s != order[0]:
+                self.labels.add(s)
+                body.append(f"L{s:X}:;")
+            run = Block_(self, b.insns, s)
+            if s != order[0] and s not in self.merge:
+                run.regs = dict(end_state[preds[s][0]])  # one forward predecessor: inherit
+            if carried is not None and s not in targets:
+                run.flags = carried
+            body += run.run(blocks, live_in)
+            end_state[s] = dict(run.regs)
+            last = b.insns[-1]
+            carried = run.flags if last.mnemonic in JCC else None
+        used = {lab for lab in self.labels if any(f"goto L{lab:X};" in line for line in body)}
+        body = [
+            line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
+        ]
+        ret = (self.ret_type(blocks, order) if self.narrow else "int") if sig.returns else "void"
+        params += [f"p{n + 5}" for n in range(sig.nstack)]
+        args = ", ".join(f"{self.vartype.get(r, 'int')} r_{r}" for r in params) or "void"
+        name = self.exe.symbols.c_name(self.row.start)
+        decls = [f"    int r_{r};" for r in sorted(self.regvars - set(params))]
+        decls += [f"    {t} {n};" for n, t in sorted(self.locals.items())]
+        lines = list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
+        if decls:
+            lines.append("")
+        lines += [("    " + line if not line.endswith(":;") else line) for line in body]
+        lines.append("}")
+        return "\n".join(lines) + "\n"
+
+
+class Block_:
+    """The symbolic run of one basic block."""
+
+    def __init__(self, lf: Lifter, insns, start: int):
+        self.lf, self.insns, self.start = lf, insns, start
+        self.regs: dict[str, E] = {r: _typed_var(lf, r) for r in lf.regvars}
+        self.out: list[str] = []
+        self.flags: tuple | None = None
+        self.esp = lf.esp0
+        self.pushes: list[E] = []
+        self.cur = None
+
+    # registers
+
+    def get(self, name: str) -> E:
+        if name in SUB:
+            full, size = SUB[name]
+            if size < 0:
+                raise Unliftable("reg: high byte register read")
+            e = self.get(full)
+            return E(e.text, e.atom, e.pure, e.const, size, e.signed, e.scaled)
+        if name not in self.regs:
+            raise Unliftable(f"reg: {name} read before any write")
+        e = self.regs[name]
+        ci = self.cur
+        if (
+            self.lf.once
+            and not e.atom
+            and ci is not None
+            and ci.mnemonic != "ret"
+            and name in self.lf.after.get(ci.address, set())
+            and name not in _use_def(ci)[1]
+        ):
+            self.assign(name, e)  # used here and later: compute it once into its variable
+            e = self.regs[name]
+        return e
+
+    def set(self, name: str, e: E, ci) -> None:
+        if name in SUB:
+            full, size = SUB[name]
+            if size < 0:
+                raise Unliftable("reg: high byte register write")
+            old = self.regs.get(full)
+            if old is not None and old.const == 0:
+                self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, False)
+            else:
+                self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, e.signed)
+            return
+        self.regs[name] = e
+
+    def flush(self, ci, keep: set[str] | None = None) -> None:
+        """Before a side effect: registers holding an impure value that is still needed become
+        their variable."""
+        live = self.lf.after.get(ci.address, set())
+        for r, e in list(self.regs.items()):
+            if e.pure or r not in live or (keep and r in keep):
+                continue
+            self.assign(r, e)
+
+    def assign(self, r: str, e: E) -> None:
+        if e.text == f"r_{r}":
+            return
+        self.lf.regvars.add(r)
+        self.out.append(f"r_{r} = {e};")
+        self.regs[r] = var(f"r_{r}", e.size, e.signed)
+
+    # operands
+
+    def lvalue(self, ci, op, signed: bool) -> E:
+        """The C lvalue for a memory operand: an array element `((T *)base)[i]` when the address
+        is base + index*size (as an index or a lea-scaled register), else `*(T *)addr`."""
+        m = op.mem
+        size = op.size
+        t = SIZE_TYPE[size, signed]
+        fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
+        base = ci.reg_name(m.base) if m.base else None
+        if fx is not None and base not in ("esp", "ebp") and self.lf.array:
+            arr = var(self.lf.data_name(fx.target_va))
+            if m.index and m.scale == size and size in (2, 4) and not base:
+                i = self.get(ci.reg_name(m.index))
+                return E(f"(({t} *){arr.text})[{i}]", pure=False, size=size, signed=signed)
+            if base and not m.index:
+                b = self.get(base)
+                if b.scaled is not None and b.scaled[1] == size:
+                    return E(
+                        f"(({t} *){arr.text})[{b.scaled[0]}]", pure=False, size=size, signed=signed
+                    )
+        return load(self.mem_addr(ci, op), size, signed)
+
+    def mem_addr(self, ci, op) -> E:
+        m = op.mem
+        parts: list[E] = []
+        fx = self._field(ci, ci.disp_offset) if m.disp or ci.disp_offset else None
+        base = ci.reg_name(m.base) if m.base else None
+        if base in ("esp", "ebp"):
+            raise Unliftable("mem: stack-relative address arithmetic")
+        if fx is not None:
+            parts.append(var(self.lf.data_name(fx.target_va)))
+        if base:
+            parts.append(self.get(base))
+        if m.index:
+            idx = self.get(ci.reg_name(m.index))
+            parts.append(binop("*", idx, const(m.scale)) if m.scale != 1 else idx)
+        if fx is None and m.disp:
+            if not parts:
+                raise Unliftable("mem: absolute address without a fixup")
+            parts.append(const(m.disp))
+        if not parts:
+            raise Unliftable("mem: empty address")
+        addr = parts[0]
+        if fx is not None:
+            addr = E(f"({addr.text}" + "".join(f" + {paren(p)}" for p in parts[1:]) + ")")
+            return E(addr.text, pure=all(p.pure for p in parts))
+        for p in parts[1:]:
+            addr = binop("+", addr, p)
+        if len(parts) > 1 or not addr.atom:
+            return E(
+                f"(char *){paren(addr)}"
+                if len(parts) == 1
+                else "(char *)" + paren(parts[0]) + "".join(f" + {paren(p)}" for p in parts[1:]),
+                pure=all(p.pure for p in parts),
+            )
+        return E(f"(char *){addr.text}", pure=addr.pure)
+
+    def _field(self, ci, offset: int):
+        if not offset:
+            return None
+        return self.lf.fix.get(ci.address + offset)
+
+    def slot(self, ci, op) -> tuple[str, int]:
+        m = op.mem
+        if m.index:
+            raise Unliftable("stack: indexed slot")
+        off = self.esp + m.disp
+        if off >= 4:
+            n = (off - 4) // 4
+            if (off - 4) % 4 or n >= self.lf.sig.nstack:
+                raise Unliftable("stack: slot above the frame that is no parameter")
+            return f"r_p{n + 5}", 0
+        if off >= 0:
+            raise Unliftable("stack: return address slot")
+        return f"s_{-off:x}", op.size
+
+    def read(self, ci, op, signed: bool = True) -> E:
+        if op.type == X86_OP_REG:
+            return self.get(ci.reg_name(op.reg))
+        if op.type == X86_OP_IMM:
+            fx = self._field(ci, ci.imm_offset)
+            if fx is not None:
+                return E(f"(int){self.lf.data_name(fx.target_va)}", atom=True)
+            return const(op.imm)
+        if op.type == X86_OP_MEM:
+            if op.mem.base and ci.reg_name(op.mem.base) == "esp":
+                name, size = self.slot(ci, op)
+                if size:
+                    self.lf.locals.setdefault(name, SIZE_TYPE[size, signed])
+                return var(name, size or 4, signed)
+            return self.lvalue(ci, op, signed)
+        raise Unliftable("operand: unknown")
+
+    def write(self, ci, op, e: E) -> None:
+        if op.type == X86_OP_REG:
+            self.set(ci.reg_name(op.reg), e, ci)
+            return
+        if op.type == X86_OP_MEM:
+            if op.mem.base and ci.reg_name(op.mem.base) == "esp":
+                name, size = self.slot(ci, op)
+                if size:
+                    self.lf.locals.setdefault(name, SIZE_TYPE[size, True])
+                self.flush(ci)
+                self.out.append(f"{name} = {e};")
+                return
+            self.flush(ci)
+            target = self.lvalue(ci, op, e.signed)
+            self.out.append(f"{target} = {e};")
+            return
+        raise Unliftable("write: operand")
+
+    # the run
+
+    def run(self, blocks, live_in) -> list[str]:
+        for k, ci in enumerate(self.insns):
+            self.step(ci, k)
+        last = self.insns[-1] if self.insns else None
+        if last is None or not (last.group(1) or last.group(3)):
+            self.end_assign(live_in, blocks)
+        return self.out
+
+    def end_assign(self, live_in, blocks) -> None:
+        succ = [t for t in blocks[self.start].succ if t in self.lf.merge]
+        live = set().union(*(live_in[t] for t in succ)) if succ else set()
+        for r in sorted(live & set(GP)):
+            if r in self.regs:
+                self.assign(r, self.regs[r])
+
+    def step(self, ci, k) -> None:
+        self.cur = ci
+        mn, ops = ci.mnemonic, ci.operands
+        if mn in ("pop", "ret") or (mn == "add" and ci.op_str.startswith("esp, ")):
+            if mn == "ret":
+                self.ret(ci)
+            elif mn == "add" and not self.pushes:
+                self.esp += ops[1].imm
+            elif mn == "pop":
+                self.esp += 4
+            return
+        if mn == "mov":
+            self.write(ci, ops[0], self.read(ci, ops[1], ops[1].size == 4))
+        elif mn in ("movsx", "movzx"):
+            signed = mn == "movsx"
+            src = self.read(ci, ops[1], signed)
+            if ops[1].type == X86_OP_REG:
+                src = cast(SIZE_TYPE[ops[1].size, signed], src, ops[1].size, signed)
+            self.write(ci, ops[0], E(src.text, src.atom, src.pure, src.const, ops[1].size, signed))
+        elif mn == "lea":
+            if ops[1].mem.base and ci.reg_name(ops[1].mem.base) in ("esp", "ebp"):
+                raise Unliftable("lea: address of a stack slot")
+            m = ops[1].mem
+            if (
+                m.index
+                and not m.base
+                and not m.disp
+                and m.scale in (2, 4)
+                and not self._field(ci, ci.disp_offset)
+            ):
+                i = self.get(ci.reg_name(m.index))
+                e = binop("*", i, const(m.scale))
+                self.write(ci, ops[0], E(e.text, pure=e.pure, scaled=(i, m.scale)))
+                return
+            addr = self.mem_addr(ci, ops[1])
+            self.write(ci, ops[0], E(f"(int){paren(addr)}", pure=addr.pure))
+        elif mn in ("add", "sub", "and", "or", "xor", "imul", "shl", "sar", "shr"):
+            self.arith(ci, mn, ops)
+        elif mn in ("inc", "dec", "neg", "not"):
+            a = self.read(ci, ops[0])
+            e = {
+                "inc": lambda: binop("+", a, const(1)),
+                "dec": lambda: binop("-", a, const(1)),
+                "neg": lambda: E(f"-{paren(a)}", pure=a.pure),
+                "not": lambda: E(f"~{paren(a)}", pure=a.pure),
+            }[mn]()
+            self.write(ci, ops[0], e)
+            self.flags = ("res", e)
+        elif mn == "cmp":
+            self.flags = ("cmp", self.read(ci, ops[0]), self.read(ci, ops[1]))
+        elif mn == "test":
+            a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
+            self.flags = ("res", a if a.text == b.text else binop("&", a, b))
+        elif mn == "cwde":
+            a = self.get("ax")
+            self.set("eax", cast("short", a, 2, True), ci)
+        elif mn == "cdq":
+            a = self.get("eax")
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure)  # only idiv may read it
+        elif mn in ("idiv", "div"):
+            self.divide(ci, mn, ops)
+        elif mn == "call":
+            self.call(ci, k)
+        elif mn == "jmp":
+            t = _branch_target(ci)
+            if not self.lf.in_row(t):
+                self.out.append(self.tail(ci, t))
+                return
+            self.end_assign_jump(ci)
+            self.out.append(f"goto L{t:X};")
+        elif mn in JCC:
+            self.jcc(ci, mn)
+        elif mn == "push":
+            self.pushes.append(self.read(ci, ops[0]))
+            self.esp -= 4
+        elif mn.startswith("set"):
+            raise Unliftable("op: setcc")
+        else:
+            raise Unliftable(f"op: {mn}")
+
+    def divide(self, ci, mn, ops) -> None:
+        a, hi, b = self.get("eax"), self.regs.get("edx"), self.read(ci, ops[0])
+        if mn == "idiv":
+            if hi is None or hi.text != f"__cdq({a.text})":
+                raise Unliftable("idiv: dividend is not a cdq of eax")
+        else:
+            if hi is None or hi.const != 0:
+                raise Unliftable("div: edx is not zero")
+            a, b = cast("unsigned", a, 4, False), cast("unsigned", b, 4, False)
+        self.regs["eax"] = binop("/", a, b)
+        self.regs["edx"] = binop("%", a, b)
+        self.flags = None
+
+    def arith(self, ci, mn, ops) -> None:
+        if (
+            mn == "xor"
+            and ops[0].type == X86_OP_REG
+            and ops[1].type == X86_OP_REG
+            and ops[0].reg == ops[1].reg
+        ):
+            self.write(ci, ops[0], const(0))
+            return
+        if mn == "imul" and len(ops) == 3:
+            a, b = self.read(ci, ops[1]), self.read(ci, ops[2])
+        elif mn == "imul" and len(ops) == 1:
+            raise Unliftable("op: one-operand imul")
+        else:
+            a, b = self.read(ci, ops[0]), self.read(ci, ops[1])
+        if (
+            mn == "sar"
+            and b.const == 31
+            and ops[0].type == X86_OP_REG
+            and ci.reg_name(ops[0].reg) == "edx"
+            and "eax" in self.regs
+            and self.regs["eax"].text == a.text
+        ):
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure)
+            self.flags = None
+            return
+        sym = {
+            "add": "+",
+            "sub": "-",
+            "and": "&",
+            "or": "|",
+            "xor": "^",
+            "imul": "*",
+            "shl": "<<",
+            "sar": ">>",
+            "shr": ">>",
+        }[mn]
+        if mn == "shr":
+            a = cast("unsigned", a, 4, False)
+        e = binop(sym, a, b)
+        self.write(ci, ops[0], e)
+        self.flags = ("res", e)
+
+    def cond(self, mn) -> str:
+        if self.flags is None:
+            raise Unliftable("jcc: no flag source")
+        rel = JCC[mn]
+        unsigned = rel.endswith("u")
+        rel = rel.rstrip("u")
+        if self.flags[0] == "cmp":
+            a, b = self.flags[1], self.flags[2]
+        else:
+            a, b = self.flags[1], const(0)
+            if rel in ("<0", ">=0"):
+                rel = rel[:-1]
+        if unsigned:
+            a = cast("unsigned", a, 4, False)
+            b = cast("unsigned", b, 4, False) if not b.atom or b.const is None else b
+        return f"{paren(a)} {rel} {paren(b)}"
+
+    def jcc(self, ci, mn) -> None:
+        c = self.cond(mn)
+        t = _branch_target(ci)
+        if not self.lf.in_row(t):
+            self.flush(ci)
+            self.out.append(f"if ({c}) {{ {self.tail(ci, t)} }}")
+            return
+        self.flush(ci)
+        self.end_assign_jump(ci)
+        self.out.append(f"if ({c}) goto L{_branch_target(ci):X};")
+
+    def end_assign_jump(self, ci) -> None:
+        """Before leaving the block: every register live into a merge successor is its variable
+        (a successor with this block as its only predecessor inherits the expressions)."""
+        t = _branch_target(ci)
+        succ = [x for x in (t,) if x is not None and x in self.lf.merge]
+        if ci.mnemonic != "jmp":
+            succ += (
+                [x for x in self.lf.live_in if x > ci.address and x in self.lf.merge][:1]
+                if self._falls_into_merge(ci)
+                else []
+            )
+        live = set().union(*(self.lf.live_in[x] for x in succ)) if succ else set()
+        for r in sorted(live & set(GP)):
+            if r in self.regs:
+                self.assign(r, self.regs[r])
+
+    def _falls_into_merge(self, ci) -> bool:
+        nxt = next((x for x in sorted(self.lf.live_in) if x > ci.address), None)
+        return nxt is not None and nxt in self.lf.merge
+
+    def call(self, ci, k) -> None:
+        t = _branch_target(ci)
+        if t is None:
+            raise Unliftable("call: indirect")
+        name, sig = self.lf.callee(t)
+        nregs = max(sig.nregs if sig else 0, self.set_for_call(ci))
+        if sig is None:
+            sig = Sig(nregs, 0, True)
+        args = [self.get(r) for r in ARG_REGS[: min(nregs, 4)]]
+        if sig.nstack:
+            if len(self.pushes) < sig.nstack:
+                raise Unliftable("call: stack arguments not pushed in the block")
+            stack = self.pushes[-sig.nstack :][::-1]
+            del self.pushes[-sig.nstack :]
+            args += stack
+            self.esp += 4 * sig.nstack
+        self.flush(ci, keep=set())
+        text = f"{name}({', '.join(str(a) for a in args)})"
+        self.lf.externs.setdefault(
+            name,
+            f"{'int' if sig.returns else 'void'} {name}"
+            f"({', '.join('int' for _ in args) or 'void'});",
+        )
+        # Watcom callees keep every register but eax.
+        for r in list(self.regs):
+            if r == "eax":
+                del self.regs[r]
+        live = self.lf.after.get(ci.address, set())
+        if "eax" in live:
+            if not sig.returns:
+                raise Unliftable("call: result of a void callee is used")
+            self.lf.regvars.add("eax")
+            self.out.append(f"r_eax = {text};")
+            self.regs["eax"] = var("r_eax")
+        else:
+            self.out.append(f"{text};")
+        self.flags = None
+
+    def tail(self, ci, t: int) -> str:
+        """`return f(args);` for a tail jump to the row at `t`."""
+        name, sig = self.lf.callee(t)
+        nregs = max(sig.nregs if sig else 0, self.set_for_call(ci))
+        if sig is not None and sig.nstack:
+            raise Unliftable("tail: callee with stack arguments")
+        args = ", ".join(str(self.get(r)) for r in ARG_REGS[:nregs])
+        returns = self.lf.sig.returns
+        self.lf.externs.setdefault(
+            name,
+            f"{'int' if returns else 'void'} {name}"
+            f"({', '.join('int' for _ in range(nregs)) or 'void'});",
+        )
+        return f"return {name}({args});" if returns else f"{name}({args}); return;"
+
+    def set_for_call(self, call) -> int:
+        return _evidence(self.insns, call)
+
+    def ret(self, ci) -> None:
+        if self.lf.sig.returns:
+            self.out.append(f"return {self.get('eax')};")
+        else:
+            self.out.append("return;")
+
+
+# ---- helpers ----
+
+
+def _full(name: str) -> str:
+    return SUB[name][0] if name in SUB else name
+
+
+def _branch_target(ci) -> int | None:
+    ops = ci.operands
+    if len(ops) == 1 and ops[0].type == X86_OP_IMM:
+        return ops[0].imm & 0xFFFFFFFF
+    return None
+
+
+_RESULT_USED: dict[str, tuple] = {}
+_BUILDING: set[str] = set()
+
+
+def result_used(exe: ExeInputs, sigs: dict) -> tuple[set, set] | None:
+    """(callees whose result some caller reads, callees with any direct caller) over every
+    game row of the EXE, cached in CACHE_DIR / result-used-<exe>.json."""
+    import json
+
+    stem = exe.stem
+    if stem in _RESULT_USED:
+        return _RESULT_USED[stem]
+    if stem in _BUILDING:
+        return None
+    cache = CACHE_DIR / f"result-used-{stem}.json"
+    if cache.is_file():
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        _RESULT_USED[stem] = (set(data["used"]), set(data["called"]))
+        return _RESULT_USED[stem]
+    _BUILDING.add(stem)
+    used, called = set(), set()
+    for row in exe.rows:
+        if row.kind not in ("game", "thunk"):
+            continue
+        try:
+            lf = Lifter(exe, row, sigs)
+            _, _, _, blocks, order, _, after = lf.prepare(frozenset({"eax"}), strict=False)
+        except Unliftable, StopIteration, AttributeError, RecursionError, KeyError:
+            continue
+        for b in blocks.values():
+            for ci in b.insns:
+                t = _branch_target(ci) if ci.mnemonic == "call" else None
+                if t is None:
+                    continue
+                called.add(t)
+                if "eax" in after.get(ci.address, set()):
+                    used.add(t)
+    _BUILDING.discard(stem)
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache.write_text(json.dumps({"used": sorted(used), "called": sorted(called)}), encoding="utf-8")
+    _RESULT_USED[stem] = (used, called)
+    return _RESULT_USED[stem]
+
+
+_INDEX: dict[int, tuple] = {}
+
+
+def _index(exe: ExeInputs) -> tuple[dict, list, list]:
+    """{start: row}, sorted starts and rows of an EXE, built once."""
+    key = id(exe)
+    if key not in _INDEX:
+        rows = sorted(exe.rows, key=lambda r: r.start)
+        _INDEX[key] = ({r.start: r for r in rows}, [r.start for r in rows], rows)
+    return _INDEX[key]
+
+
+_FIXUPS: dict[int, FixupIndex] = {}
+
+
+def _fixup_index(exe: ExeInputs) -> FixupIndex:
+    """The EXE's fixups by field address, built once."""
+    key = id(exe)
+    if key not in _FIXUPS:
+        _FIXUPS[key] = FixupIndex(exe.fixups)
+    return _FIXUPS[key]
+
+
+def _typed_var(lf, r: str) -> E:
+    t = lf.vartype.get(r, "int")
+    size = {"unsigned char": 1, "signed char": 1, "short": 2, "unsigned short": 2}.get(t, 4)
+    return var(f"r_{r}", size, not t.startswith("unsigned"))
+
+
+def _evidence(insns, call) -> int:
+    """1 + the index of the last argument register written since the previous call (or the
+    block start) and not read before `call`: the call site's own evidence of its arguments."""
+    n, pending = 0, set()
+    for ci in insns:
+        if ci.address == call.address:
+            break
+        if ci.mnemonic == "call":
+            pending = set()
+            continue
+        u, d = _use_def(ci)
+        pending = (pending - (u - d)) | (d & set(ARG_REGS))
+    for idx, reg in enumerate(ARG_REGS):
+        if reg in pending:
+            n = idx + 1
+    return n
+
+
+def _self_move(ci) -> bool:
+    """Filler in any register: nop, mov r,r and lea r,[r] (no index, displacement 0)."""
+    ops = ci.operands
+    if ci.mnemonic == "nop":
+        return True
+    if ci.mnemonic == "mov" and len(ops) == 2 and ops[0].type == ops[1].type == X86_OP_REG:
+        return ops[0].reg == ops[1].reg
+    if ci.mnemonic == "lea" and ops[1].mem.index == 0 and ops[1].mem.disp == 0:
+        return ops[1].mem.base == ops[0].reg
+    return False
+
+
+def _use_def(ci) -> tuple[set, set]:
+    regs_read, regs_write = ci.regs_access()
+    u = {_full(ci.reg_name(r)) for r in regs_read} & set(GP)
+    d = {_full(ci.reg_name(r)) for r in regs_write} & set(GP)
+    if (
+        ci.mnemonic == "xor"
+        and len(ci.operands) == 2
+        and ci.operands[0].type == X86_OP_REG
+        and ci.operands[0].reg == ci.operands[1].reg
+    ):
+        u = set()
+    if ci.mnemonic == "call":
+        u = {"eax", "edx", "ebx", "ecx"} & u  # refined per callee in the run
+        d = {"eax"}
+    return u, d
+
+
+def lift_row(exe: ExeInputs, start: int, sigs: dict | None = None) -> str:
+    row = next(r for r in exe.rows if r.start == start)
+    return Lifter(exe, row, sigs).lift()
