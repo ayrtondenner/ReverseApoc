@@ -20,6 +20,7 @@ from typing import Any
 
 from . import batch
 from .check import ExeInputs
+from .relocs import RelocResult
 from .x86 import decode
 
 CLASSES = ("tail", "slot", "size", "register", "branch", "mixed")
@@ -30,6 +31,8 @@ _FRAME = ("sub esp, ", "add esp, ")
 # Every general register but esp, which no allocator picks: a stack operand stays one.
 _REGISTER = re.compile(r"\b(?:e?[abcd]x|[abcd][lh]|e?[sd]i|e?bp)\b")
 _JUMP = re.compile(r"^j\w+")
+_BYTES_PROBLEM = "differing bytes outside the relocated fields"  # relocs.check_function's words
+_LENGTH_PROBLEM = "length differs:"
 
 
 def _texts(code: bytes, va: int, masked: set[int], *, stack: bool = False) -> list[str]:
@@ -121,10 +124,21 @@ def best_cell(records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     return max(records, key=lambda record: (record["exact"], record["score"]))
 
 
+def _may_hide_a_difference(reloc: RelocResult) -> bool:
+    """Whether a relocated field may hide what differs. The check fails on any byte outside a
+    field, which is what a class explains, so that problem says nothing of the fields. A length
+    problem stops it before it reads them, so a row holding any stays unknown."""
+    problems = [problem for problem in reloc.problems if _BYTES_PROBLEM not in problem]
+    if any(_LENGTH_PROBLEM in problem for problem in problems):
+        return bool(reloc.ours or reloc.theirs)
+    return bool(problems)
+
+
 def _class_of(exe: ExeInputs, start: int, compiled: batch.Compiled, exact_trim: bool) -> str:
     """The class of a compiled cell, from both byte strings and the relocation mask as `judge`
     reads them. No function in the object leaves nothing to compare, and no class fits that. Nor
-    is a failed relocation check `slot`: the mask hid that difference, and no search reaches it."""
+    is `slot` a row whose relocated fields may differ: the mask hid them, and no search reaches
+    them."""
     body = batch.function_body(exe, compiled.job.obj, start)
     if isinstance(body, str):
         return "mixed"
@@ -132,7 +146,7 @@ def _class_of(exe: ExeInputs, start: int, compiled: batch.Compiled, exact_trim: 
     ((defined, reloc),) = batch.with_relocs(body.module, [body.defined], body.rows, exe)
     theirs = exe.flat[row.start : row.end]
     klass = classify_pair(defined.ours, theirs, start, batch._reloc_mask(reloc), exact_trim)
-    return "mixed" if klass == "slot" and not reloc.ok else klass
+    return "mixed" if klass == "slot" and _may_hide_a_difference(reloc) else klass
 
 
 def with_class(

@@ -196,8 +196,8 @@ START = 0x108E0
 PLAIN_C = "int func_000108E0(void) { return 0; }\n"
 OURS = bytes.fromhex("53 83ec10 8b442404 83c410 5b c3")  # the two differ in one stack offset
 THEIRS = bytes.fromhex("53 83ec10 8b442408 83c410 5b c3")
-NO_RELOCS = SimpleNamespace(ok=True, ours=set(), theirs=set())
-LOAD_RELOCATED = SimpleNamespace(ok=True, ours={START + 4}, theirs=set())  # the one difference
+NO_RELOCS = SimpleNamespace(problems=(), ours=set(), theirs=set())
+LOAD_RELOCATED = SimpleNamespace(problems=(), ours={START + 4}, theirs=set())  # the one difference
 PAST_THE_ROW = b"\xc3" * 0x20  # a byte of this read as the row would be one more ret
 
 
@@ -253,7 +253,7 @@ def test_batch_records_carry_class_and_route(tmp_path, monkeypatch):
 def test_a_failed_relocation_check_is_not_class_slot(tmp_path, monkeypatch):
     """Relocated operands are masked before any class is chosen, and the search permutes
     declarations, so it reaches no relocation."""
-    failed = SimpleNamespace(ok=False, ours=set(), theirs=set())
+    failed = SimpleNamespace(problems=("a fixup to the wrong target",), ours=set(), theirs=set())
     (record,), _ = _stubbed_run(tmp_path, monkeypatch, relocs=failed)
     assert (record["class"], record["route"]) == ("mixed", "agent")
 

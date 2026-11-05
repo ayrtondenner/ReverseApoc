@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from relocpair import CALLEES, CODE_BASE, call, game_row, original, our_object, table
 from reverseapoc import batch, classify
 
 VA = 0x1000
@@ -261,3 +262,56 @@ def test_a_decode_that_stops_short_is_not_class_slot(after, klass):
 def test_exact_trim_needs_no_decode():
     """exact_trim is check's own verdict on the bytes, so it stands on an unreadable body."""
     assert classed(body(UNREADABLE), body(INC_EAX), exact_trim=True) == "tail"
+
+
+# ---- the class of an object, through the real relocation check ----
+
+ROW = CODE_BASE + 0x30  # clear of the CALLEES rows
+CALLED, OTHER = CALLEES[1], CALLEES[0]
+CALL_AT = 4  # behind push ebx and sub esp, 0x10
+CALL_FIELD = CALL_AT + 1
+PLACEHOLDER = "e800000000"  # a call until it links
+LINKED = b"\xe8" + (CALLED.start - (ROW + CALL_FIELD + 4)).to_bytes(4, "little", signed=True)
+
+
+def class_of_object(tmp_path, ours: bytes, theirs: bytes, callee: str | None = None) -> str:
+    """`_class_of` with `ours` in an OMF object on disk and `theirs` as the row of a synthetic EXE.
+    `callee` is the extern our call at CALL_FIELD names."""
+    row = game_row(ROW, ROW + len(theirs))
+    orig = original({ROW: theirs})
+    symbols = table(row)
+    exe = SimpleNamespace(rows=(row,), flat=orig.flat, fixups=tuple(orig.fixups), symbols=symbols,
+                          target=SimpleNamespace(name="SYNTH.EXE"))  # fmt: skip
+    obj = tmp_path / "f.obj"
+    fixups, externs = ([call(CALL_FIELD, 1)], [callee]) if callee else ([], [])
+    publics = [(symbols.linker_name(ROW), 0)]
+    obj.write_bytes(our_object(ours, fixups, externs, publics=publics))
+    return classify._class_of(exe, ROW, SimpleNamespace(job=SimpleNamespace(obj=obj)), False)
+
+
+def test_a_stack_offset_fails_the_relocation_check_and_stays_class_slot(tmp_path):
+    """The check fails on any byte outside a field, so `reloc.ok` alone would end class slot."""
+    assert class_of_object(tmp_path, body(LOAD_SLOT_4), body(LOAD_SLOT_8)) == "slot"
+
+
+def test_a_shifted_body_with_no_relocation_stays_class_slot(tmp_path):
+    assert class_of_object(tmp_path, body(LOAD_SLOT_0), body(LOAD_SLOT_4)) == "slot"
+
+
+def test_a_right_relocation_stays_class_slot(tmp_path):
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_8}")
+    assert class_of_object(tmp_path, ours, theirs, f"{CALLED.name}_") == "slot"
+
+
+def test_a_wrong_relocation_is_not_class_slot(tmp_path):
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_8}")
+    assert class_of_object(tmp_path, ours, theirs, f"{OTHER.name}_") == "mixed"
+
+
+def test_a_shift_leaves_a_relocation_unread_so_it_is_not_class_slot(tmp_path):
+    """Another length stops the check before any field, so the mask may hide a wrong target."""
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_0}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_4}")
+    assert class_of_object(tmp_path, ours, theirs, f"{CALLED.name}_") == "mixed"
