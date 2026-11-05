@@ -1105,11 +1105,15 @@ def _claimed_row() -> tuple[Claim, check.ExeInputs, FunctionRow]:
 
 
 def cmd_asm(name: str | None) -> int:
-    """Print the claimed function's listing, or that of NAME (another row of the same EXE)."""
+    """Print the claimed function's listing, or that of NAME (another row of the same EXE), with
+    its notes on the lines they belong to. They reach the terminal only: D-05."""
     _, data, row = _claimed_row()
     if name is not None:
         row = resolve_row(data, name)
-    sys.stdout.write(listing_text(data, row, ROOTS.asm))
+    text = listing_text(data, row, ROOTS.asm)
+    notes = asm.case_notes(row, flat=data.flat, fixups=data.fixups, rows=data.rows,
+                           symbols=data.symbols)  # fmt: skip
+    sys.stdout.write(asm.annotated(text, notes))
     return EXIT_OK
 
 

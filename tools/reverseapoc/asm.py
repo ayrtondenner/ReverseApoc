@@ -30,8 +30,8 @@ from pathlib import Path
 from typing import Any
 
 from .fileio import write_atomic
-from .functions import FunctionRow
-from .le import LE, Fixup
+from .functions import KIND_DATA_IN_CODE, FunctionRow
+from .le import LE, SRC_OFF32, SRC_SIZE, Fixup
 from .symbols import SymbolTable
 from .x86 import Insn, decode
 
@@ -48,6 +48,10 @@ _MEMORY_OPEN = "["  # opens a memory operand; its displacement is the last numbe
 _DISPLACEMENT = "displacement"  # the fixup field is the memory operand's displacement
 _IMMEDIATE = "immediate"  # the fixup field is the immediate operand
 _FAR_POINTER_MNEMONICS = frozenset({"ljmp", "lcall"})  # capstone's names for jmp/call ptr16:32
+_TABLE_ENTRY = SRC_SIZE[SRC_OFF32]  # a jump table's entry: one off32 fixup
+# The operand of a table jump, with or without Watcom's cs override: an index, no base.
+_TABLE_OPERAND = re.compile(rf"dword ptr (cs:)?\[\w+\*{_TABLE_ENTRY}\b")
+_LISTED_ADDRESS = re.compile(r"  0x([0-9A-F]{8})  ")  # how _line opens an address's line
 
 
 class AsmError(ValueError):
@@ -257,6 +261,78 @@ def listing(
             lines.append(f"{_label(item.va)}:")
         lines.append(_item_line(item, row, near, symbols))
     return "\n".join(lines) + "\n"
+
+
+# ---- notes beside a listing (attempt asm prints them; no listing file carries them) ----
+
+
+def _table_field(item: Item, sites: Mapping[int, Fixup]) -> Fixup | None:
+    """The fixup on the displacement of a table jump, if `item` is one."""
+    if not isinstance(item, Insn) or item.mnemonic != "jmp" or not item.disp_offset:
+        return None
+    return sites.get(item.va + item.disp_offset) if _TABLE_OPERAND.match(item.op_str) else None
+
+
+def _data_row(rows: Sequence[FunctionRow], va: int) -> FunctionRow | None:
+    return next((r for r in rows if r.kind == KIND_DATA_IN_CODE and r.start <= va < r.end), None)
+
+
+def _table_targets(start: int, end: int, index: FixupIndex) -> list[int]:
+    """The targets of the table at [start, end), by case. Empty when a field there is no entry:
+    sizes and places come from the binary, so a bent table is no table."""
+    fields = index.overlapping(start, end)
+    grid = range(start, start + _TABLE_ENTRY * len(fields), _TABLE_ENTRY)
+    if any(fx.kind != SRC_OFF32 or fx.src_va + fx.size > end for fx in fields):
+        return []
+    return [fx.target_va for fx in fields] if [fx.src_va for fx in fields] == list(grid) else []
+
+
+def case_notes(
+    row: FunctionRow,
+    *,
+    flat: bytes | bytearray,
+    fixups: Iterable[Fixup],
+    rows: Sequence[FunctionRow],
+    symbols: SymbolTable,
+) -> dict[int, str]:
+    """`cases: 0: <name>, 1: <name>, ...` by the address of each table jump in `row` whose table
+    sits in a data-in-code row. A table runs to the next table this row jumps through or to the
+    end of the row that holds it: one data-in-code row can hold several."""
+    index = FixupIndex(fixups)
+    sites = row_sites(row, index.overlapping(row.start, row.end))
+    tables = {}
+    for item in walk(bytes(flat[row.start : row.end]), row.start, sites):
+        field = _table_field(item, sites)
+        holder = _data_row(rows, field.target_va) if field is not None else None
+        if holder is not None:
+            tables[item.va] = (field.target_va, holder.end)
+
+    def name(va: int) -> str:
+        return _label(va) if row.start <= va < row.end else target_name(symbols, va, code=True)
+
+    notes = {}
+    for va, (start, holder_end) in tables.items():
+        end = min([holder_end, *(other for other, _ in tables.values() if other > start)])
+        cases = [f"{n}: {name(t)}" for n, t in enumerate(_table_targets(start, end, index))]
+        if cases:
+            notes[va] = f"cases: {', '.join(cases)}"
+    return notes
+
+
+def _listed_address(line: str) -> int | None:
+    found = _LISTED_ADDRESS.match(line)
+    return int(found.group(1), 16) if found else None
+
+
+def annotated(text: str, notes: Mapping[int, str]) -> str:
+    """Listing `text` with each note after its address's line, as `  ; <note>`. A note whose
+    address has no line is left out, and every other line stays as it was."""
+    lines = text.split("\n")
+    for n, line in enumerate(lines):
+        note = notes.get(_listed_address(line))
+        if note is not None:
+            lines[n] = f"{line}  ; {note}"
+    return "\n".join(lines)
 
 
 # ---- writing ----
