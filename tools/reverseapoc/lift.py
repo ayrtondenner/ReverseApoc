@@ -97,6 +97,7 @@ X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fst
                        "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
 X87_POPPING_STORES = frozenset({"fstp", "fistp"})
 X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
+_STACK_NAME = re.compile(r"\b(?:s_[0-9a-f]+|r_p\d+)\b")  # a local slot or a stack parameter
 
 
 class Unliftable(Exception):
@@ -219,6 +220,7 @@ class Lifter:
         self.before: dict[int, set] = {}  # the registers an instruction, or anything after, reads
         self.word_reads: dict[str, bool] = {}  # slot -> was every read a sign-extended word?
         self.call_values: dict[int, dict[str, str]] = {}  # call -> argument register -> its text
+        self.drifted: set[int] = set()  # the blocks not entered at esp0, as far as anything says
 
     # -- decoding and frame --
 
@@ -360,13 +362,17 @@ class Lifter:
         self.sigs[va] = sig
         return name, sig  # None: unknown, the call site decides
 
-    def call_nregs(self, ci, insns) -> int:
-        """How many argument registers the call `ci` (in the block `insns`) passes."""
+    def call_sig(self, ci) -> Sig | None:
+        """The signature of what the call `ci` reaches, if anything says."""
         t = _branch_target(ci)
         try:
-            sig = self.callee(t)[1] if t is not None else None
+            return self.callee(t)[1] if t is not None else None
         except Unliftable:
-            sig = None
+            return None
+
+    def call_nregs(self, ci, insns) -> int:
+        """How many argument registers the call `ci` (in the block `insns`) passes."""
+        sig = self.call_sig(ci)
         if sig is not None and sig.nstack:
             return 4
         return max(sig.nregs if sig else 0, _evidence(insns, ci))
@@ -514,6 +520,37 @@ class Lifter:
                 self.before[ci.address] = set(live)
         return live_in, after
 
+    # -- esp across blocks --
+
+    def esp_after(self, b: Block, esp: int) -> int | None:
+        """esp at the end of `b`, entered at `esp`: None when an instruction leaves it unknown."""
+        for ci in b.insns:
+            step = _esp_change(ci)
+            if ci.mnemonic == "call":
+                sig = self.call_sig(ci)
+                step = None if sig is None else 4 * sig.nstack
+            if step is None:
+                return None
+            esp += step
+        return esp
+
+    def drifted_blocks(self, blocks, order) -> set[int]:
+        """The blocks entered with esp other than esp0, or with nothing to say what it is. A run
+        starts every block at esp0: a draft proves that by compiling, and a note cannot, so this
+        says which blocks a note must not trust. It changes no draft."""
+        entry: dict[int, int | None] = {order[0]: self.esp0}
+        todo = [order[0]]
+        while todo:
+            s = todo.pop()
+            esp = entry[s]
+            out = None if esp is None else self.esp_after(blocks[s], esp)
+            for t in blocks[s].succ:
+                met = out if t not in entry or entry[t] == out else None
+                if t not in entry or entry[t] != met:
+                    entry[t] = met
+                    todo.append(t)
+        return {s for s in order if entry.get(s) != self.esp0}
+
     # -- the lift --
 
     def param_types(self, blocks, start: int, params) -> dict[str, str]:
@@ -574,6 +611,7 @@ class Lifter:
         self.saved = saved
         self.frame_top = -4 * len(saved)
         self.esp0 = self.frame_top - frame  # esp after the prologue, relative to entry esp
+        self.drifted = self.drifted_blocks(blocks, order)
         params = list(ARG_REGS[: sig.nregs])
         self.vartype = self.param_types(blocks, order[0], params)
         self.regvars = set(params)
@@ -624,6 +662,7 @@ class Lifter:
         self.locals = {_slot_name(off): "char" for off in self.taken}
         self.hole_vars, self.word_reads, self.temps = set(), {}, {}
         end_state: dict[int, dict] = {}
+        lost: set[int] = set()  # the blocks that ended with esp_lost
         body: list[str] = []
         targets = {t for b in blocks.values() if b.insns[-1].group(1) for t in self.jumped_to(b)}
         carried = None
@@ -633,12 +672,16 @@ class Lifter:
                 self.labels.add(s)
                 body.append(f"L{s:X}:;")
             run = Block_(self, b.insns, s)
+            run.esp_lost = s in self.drifted
             if s != order[0] and s not in self.merge:
                 run.regs = dict(end_state[preds[s][0]])  # one forward predecessor: inherit
+                run.esp_lost |= preds[s][0] in lost  # its text comes along
             if carried is not None and s not in targets:
                 run.flags = carried
             body += run.run(blocks, self.live_in)
             end_state[s] = dict(run.regs)
+            if run.esp_lost:
+                lost.add(s)
             last = b.insns[-1]
             carried = run.flags if last.mnemonic in JCC else None
         return body
@@ -689,6 +732,7 @@ class Block_:
         self.out: list[str] = []
         self.flags: tuple | None = None
         self.esp = lf.esp0
+        self.esp_lost = False  # esp may not be what `self.esp` says: no slot name is vouched for
         self.pushes: list[E] = []
         self.k = 0  # the place in this block of the instruction being run
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
@@ -1015,8 +1059,10 @@ class Block_:
 
     def hole(self, ci, reason: str) -> None:
         """What `ci` wrote is unknown, so each register it wrote reads as a fresh local, and the
-        flags are gone. No C stands for the instruction, so this draft can never be exact."""
+        flags are gone. No C stands for the instruction, so this draft can never be exact. A
+        stack effect the run did not apply makes every later slot name a guess."""
         self.out.append(f"{HOLE_MARK}0x{ci.address:X}: {reason} */")
+        self.esp_lost |= _writes_esp(ci)
         name = f"h_{ci.address:x}"
         written = _use_def(ci)[1]
         self.regs.update(dict.fromkeys(written, var(name)))
@@ -1035,6 +1081,8 @@ class Block_:
         self.k = k
         self.needed = self.lf.before.get(ci.address, set())
         mn, ops = ci.mnemonic, ci.operands
+        if mn in ("mov", "lea") and _writes_esp(ci):
+            self.esp_lost = True  # these lift, and self.esp does not follow them
         if _stores(ci):
             self.flush(ci)
             self.keep_slot(ci, ops[0])
@@ -1396,9 +1444,15 @@ class Block_:
         """What each argument register holds at the call `ci`, for call_notes. Only a register
         something still reads: every block starts with the name of each variable, and only a
         needed register is kept right when a name it reads changes, so any other text here would
-        be a guess. A narrow write prints at its width: `al=5` is true where `eax=5` is not. A
-        later run overwrites an earlier one."""
-        known = [r for r in ARG_REGS if r in self.regs and r in self.needed]
+        be a guess. A narrow write prints at its width: `al=5` is true where `eax=5` is not, and
+        once esp is lost, text reading a stack name goes. A later run overwrites an earlier one."""
+        known = [
+            r
+            for r in ARG_REGS
+            if r in self.regs
+            and r in self.needed
+            and not (self.esp_lost and _STACK_NAME.search(self.regs[r].text))
+        ]
         self.lf.call_values[ci.address] = {
             LOW_PARTS.get((r, self.regs[r].written), r): self.regs[r].text for r in known
         }
@@ -1411,6 +1465,7 @@ class Block_:
         name, sig = self.lf.callee(t)
         nregs = max(sig.nregs if sig else 0, _evidence(self.insns, ci))
         if sig is None:
+            self.esp_lost = True  # nothing says what the callee pops
             sig = Sig(nregs, 0, True)
         if len(self.pushes) < sig.nstack:
             raise Unliftable("call: stack arguments not pushed in the block")
@@ -1511,6 +1566,22 @@ def _esp_step(ci) -> int:
 
 def _frees_stack(ci) -> bool:
     return ci.mnemonic == "add" and ci.op_str.startswith("esp, ")
+
+
+def _writes_esp(ci) -> bool:
+    return any(ci.reg_name(r) == "esp" for r in ci.regs_access()[1])
+
+
+def _esp_change(ci) -> int | None:
+    """What `ci` adds to esp, or None when the instruction alone does not say."""
+    if not _writes_esp(ci):
+        return 0
+    if ci.mnemonic in ("push", "pop"):
+        return 4 if ci.mnemonic == "pop" else -4
+    moved = ci.mnemonic in ("add", "sub") and ci.op_str.startswith("esp, ")
+    if not moved or ci.operands[1].type != X86_OP_IMM:
+        return None
+    return _esp_step(ci) if ci.mnemonic == "add" else -_esp_step(ci)
 
 
 def _stores(ci) -> bool:

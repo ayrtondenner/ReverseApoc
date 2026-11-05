@@ -2009,3 +2009,105 @@ def test_call_notes_follow_a_callee_that_pops_before_its_last_ret():
     code = (f"{FRAME_AND_STORE} 51 51 {call_to(pops_at, CALLEE)} {READ_SLOT_8} "
             f"{call_to(call_at, TAKES_TWO_AT)} 83c410 c3")  # fmt: skip
     assert notes_of(stub_exe(code, POPS_8, TAKES_TWO))[call_at].endswith("edx=s_8")
+
+
+def test_call_notes_name_a_slot_the_lifter_can_vouch_for():
+    call_at = VA + FRAME_AND_STORE_SIZE + READ_SIZE
+    code = f"{FRAME_AND_STORE} {READ_SLOT_8} {call_to(call_at, CALLEE)} 83c410 c3"
+    assert notes_of(stub_exe(code, TAKES_TWO)) == {call_at: "eax=r_eax edx=s_8"}
+
+
+def test_call_notes_leave_out_a_slot_after_a_block_entered_off_the_frame():
+    """The REVIEW's first row. Nothing is a hole: the push sits before the branch, and each block
+    starts at esp0."""
+    # ...; push ecx; test ecx, ecx; je +1; nop; mov edx, [esp + 0Ch]; call; add esp, 14h; ret
+    call_at = VA + FRAME_AND_STORE_SIZE + 1 + 2 + 2 + 1 + READ_SIZE
+    code = (f"{FRAME_AND_STORE} 51 85c9 7401 90 {READ_SLOT_C} {call_to(call_at, CALLEE)} "
+            "83c414 c3")  # fmt: skip
+    assert notes_of(stub_exe(code, TAKES_TWO)) == {call_at: "eax=r_eax"}
+
+
+def test_call_notes_leave_out_a_slot_after_a_hole_that_moves_esp():
+    """The REVIEW's second row."""
+    # ...; push esi (read before any write: a hole); mov edx, [esp + 0Ch]; call; add esp, 14h; ret
+    call_at = VA + FRAME_AND_STORE_SIZE + 1 + READ_SIZE
+    code = f"{FRAME_AND_STORE} 56 {READ_SLOT_C} {call_to(call_at, CALLEE)} 83c414 c3"
+    assert notes_of(stub_exe(code, TAKES_TWO)) == {call_at: "eax=r_eax"}
+
+
+def test_call_notes_leave_out_a_stack_parameter_after_a_hole_that_moves_esp():
+    # mov eax, ecx; push esi (a hole); mov edx, [esp + 4]; call; add esp, 4; ret 4
+    call_at = VA + 2 + 1 + READ_SIZE
+    code = f"89c8 56 8b542404 {call_to(call_at, CALLEE)} 83c404 c20400"
+    assert notes_of(stub_exe(code, TAKES_TWO)) == {call_at: "eax=r_ecx"}
+
+
+def test_call_notes_leave_out_a_slot_a_block_inherits_from_a_lost_block():
+    """Read before the hole, but the block after it has the text and no hole of its own. The two
+    holes cancel on the machine, so only the block before can say the name is unvouched."""
+    # ...; mov edx, [esp + 8]; push esi; pop esi; test ecx, ecx; je +5; call; add esp, 10h; ret
+    call_at = VA + FRAME_AND_STORE_SIZE + READ_SIZE + 1 + 1 + 2 + 2
+    code = (f"{FRAME_AND_STORE} {READ_SLOT_8} 56 5e 85c9 7405 {call_to(call_at, CALLEE)} "
+            "83c410 c3")  # fmt: skip
+    assert notes_of(stub_exe(code, TAKES_TWO)) == {call_at: "eax=r_eax"}
+
+
+def test_call_notes_keep_a_slot_across_a_block_edge_the_stack_is_level_at():
+    """A callee popping its own argument leaves esp at esp0, so the next block is on the frame."""
+    # ...; push ecx; call pops 4; test ecx, ecx; je +1; nop; mov edx, [esp + 8]; call; ...
+    pops_at = VA + FRAME_AND_STORE_SIZE + 1
+    call_at = pops_at + CALL_SIZE + 2 + 2 + 1 + READ_SIZE
+    code = (f"{FRAME_AND_STORE} 51 {call_to(pops_at, CALLEE)} 85c9 7401 90 {READ_SLOT_8} "
+            f"{call_to(call_at, TAKES_TWO_AT)} 83c410 c3")  # fmt: skip
+    assert notes_of(stub_exe(code, "b801000000 c20400", TAKES_TWO))[call_at].endswith("edx=s_8")
+
+
+@pytest.mark.parametrize(
+    "callee",
+    [BAD_ROW, "85c0 7403 c20800 c20c00"],
+    ids=["no signature", "returns that disagree"],
+)
+def test_call_notes_leave_out_a_slot_after_a_call_with_an_unknown_signature(callee):
+    """No signature says what the callee pops, so esp after it is a guess."""
+    # ...; call; mov edx, [esp + 8]; call; add esp, 10h; ret
+    first = VA + FRAME_AND_STORE_SIZE
+    call_at = first + CALL_SIZE + READ_SIZE
+    code = (f"{FRAME_AND_STORE} {call_to(first, CALLEE)} {READ_SLOT_8} "
+            f"{call_to(call_at, TAKES_TWO_AT)} 83c410 c3")  # fmt: skip
+    assert "edx" not in notes_of(stub_exe(code, callee, TAKES_TWO))[call_at]
+
+
+def test_call_notes_leave_out_a_slot_in_the_block_after_an_unknown_signature():
+    # ...; call; test ecx, ecx; je +1; nop; mov edx, [esp + 8]; call; add esp, 10h; ret
+    first = VA + FRAME_AND_STORE_SIZE
+    call_at = first + CALL_SIZE + 2 + 2 + 1 + READ_SIZE
+    code = (f"{FRAME_AND_STORE} {call_to(first, CALLEE)} 85c9 7401 90 {READ_SLOT_8} "
+            f"{call_to(call_at, TAKES_TWO_AT)} 83c410 c3")  # fmt: skip
+    assert "edx" not in notes_of(stub_exe(code, BAD_ROW, TAKES_TWO))[call_at]
+
+
+def test_call_notes_leave_out_a_slot_after_an_indirect_call():
+    # ...; call ebx (a hole); mov edx, [esp + 8]; call; add esp, 10h; ret
+    call_at = VA + FRAME_AND_STORE_SIZE + 2 + READ_SIZE
+    code = f"{FRAME_AND_STORE} ffd3 {READ_SLOT_8} {call_to(call_at, CALLEE)} 83c410 c3"
+    assert "edx" not in notes_of(stub_exe(code, TAKES_TWO))[call_at]
+
+
+@pytest.mark.parametrize(
+    "move",
+    ["89dc", "8d642404", "8d6304"],
+    ids=["mov esp, ebx", "lea esp, [esp + 4]", "lea esp, [ebx + 4]"],
+)
+def test_call_notes_leave_out_a_slot_after_esp_is_moved_outright(move):
+    """No hole: these lift, and Block_.esp does not follow them."""
+    call_at = VA + FRAME_AND_STORE_SIZE + len(bytes.fromhex(move)) + READ_SIZE
+    code = f"{FRAME_AND_STORE} {move} {READ_SLOT_8} {call_to(call_at, CALLEE)} 83c410 c3"
+    assert "edx" not in notes_of(stub_exe(code, TAKES_TWO))[call_at]
+
+
+def test_call_notes_leave_out_a_slot_in_the_block_after_esp_is_moved_outright():
+    # ...; mov esp, ebx; test ecx, ecx; je +1; nop; mov edx, [esp + 8]; call; add esp, 10h; ret
+    call_at = VA + FRAME_AND_STORE_SIZE + 2 + 2 + 2 + 1 + READ_SIZE
+    code = (f"{FRAME_AND_STORE} 89dc 85c9 7401 90 {READ_SLOT_8} {call_to(call_at, CALLEE)} "
+            "83c410 c3")  # fmt: skip
+    assert "edx" not in notes_of(stub_exe(code, TAKES_TWO))[call_at]
