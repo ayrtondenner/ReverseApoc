@@ -214,6 +214,7 @@ class Lifter:
         self.temps: dict[str, str] = {}  # t_<n> -> its C type, for a value kept past an overwrite
         self.before: dict[int, set] = {}  # the registers an instruction, or anything after, reads
         self.word_reads: dict[str, bool] = {}  # slot -> was every read a sign-extended word?
+        self.call_values: dict[int, dict[str, str]] = {}  # call -> argument register -> its text
 
     # -- decoding and frame --
 
@@ -1379,7 +1380,16 @@ class Block_:
         nxt = next((x for x in sorted(self.lf.live_in) if x > ci.address), None)
         return nxt is not None and nxt in self.lf.merge
 
+    def note_values(self, ci) -> None:
+        """What each argument register holds at the call `ci`, for call_notes. Only a register
+        something still reads: every block starts with the name of each variable, and only a
+        needed register is kept right when a name it reads changes, so any other text here would
+        be a guess. A later run overwrites an earlier one."""
+        known = [r for r in ARG_REGS if r in self.regs and r in self.needed]
+        self.lf.call_values[ci.address] = {r: self.regs[r].text for r in known}
+
     def call(self, ci) -> None:
+        self.note_values(ci)
         t = _branch_target(ci)
         if t is None:
             raise Unliftable("call: indirect")
@@ -1716,3 +1726,25 @@ def _use_def(ci) -> tuple[set, set]:
 def lift_row(exe: ExeInputs, start: int) -> str:
     row = next(r for r in exe.rows if r.start == start)
     return Lifter(exe, row).lift()
+
+
+def call_notes(exe: ExeInputs, row: FunctionRow) -> dict[int, str]:
+    """`eax=<expr> edx=<expr>` by the address of each call of `row` with a known register. A
+    refusal costs what comes after it, never what came before. This runs in a live session, so
+    it must not build the census, and a stem in _BUILDING is what stops result_used doing so,
+    whatever the cache holds: the census only decides `void`, so no value here depends on it."""
+    if row.kind == KIND_DATA_IN_CODE:
+        return {}  # its bytes only happen to decode
+    lifter = Lifter(exe, row, holes=True)
+    _BUILDING.add(exe.stem)
+    try:
+        lifter.lift()
+    except Unliftable:
+        pass  # the lifter's own refusal: the notes gathered so far are the answer
+    finally:
+        _BUILDING.discard(exe.stem)
+    return {
+        va: " ".join(f"{reg}={text}" for reg, text in values.items())
+        for va, values in lifter.call_values.items()
+        if values
+    }

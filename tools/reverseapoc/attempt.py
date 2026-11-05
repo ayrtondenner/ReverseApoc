@@ -40,7 +40,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, unitdefs
+from . import asm, check, contextpack, lift, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -1104,16 +1104,28 @@ def _claimed_row() -> tuple[Claim, check.ExeInputs, FunctionRow]:
     return claim, data, claimed_row(data.rows, claim)
 
 
+def _register_notes(data: check.ExeInputs, row: FunctionRow) -> dict[int, str]:
+    """The call notes of `row`. A lifter fault costs them and one stderr line, never the
+    listing: past here cli's M9 handler would turn it into exit 2 in a live session."""
+    try:
+        return lift.call_notes(data, row)
+    except Exception as exc:
+        text = re.sub(r"[\r\n]+", " ", str(exc))
+        print(f"attempt asm: no call notes: {type(exc).__name__}: {text}", file=sys.stderr)
+        return {}
+
+
 def cmd_asm(name: str | None) -> int:
     """Print the claimed function's listing, or that of NAME (another row of the same EXE), with
-    its notes on the lines they belong to. They reach the terminal only: D-05."""
+    its notes on the lines they belong to. They reach the terminal only: D-05. A jump and a call
+    never share an address, so the merge loses nothing."""
     _, data, row = _claimed_row()
     if name is not None:
         row = resolve_row(data, name)
     text = listing_text(data, row, ROOTS.asm)
     notes = asm.case_notes(row, flat=data.flat, fixups=data.fixups, rows=data.rows,
                            symbols=data.symbols)  # fmt: skip
-    sys.stdout.write(asm.annotated(text, notes))
+    sys.stdout.write(asm.annotated(text, notes | _register_notes(data, row)))
     return EXIT_OK
 
 

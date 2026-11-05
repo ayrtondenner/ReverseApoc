@@ -1781,7 +1781,7 @@ def test_call_notes_show_a_value_before_the_call_names_it():
     call_at = VA + MOV_EAX_SIZE
     exe = stub_exe(f"a100800000 {call_to(call_at, CALLEE)} c3", "c3",
                    fixups=(data_fixup(VA + 1, TABLE_VA),))  # fmt: skip
-    assert notes_of(exe) == {call_at: f"eax=*(int *)D_{TABLE_VA:08x}"}
+    assert notes_of(exe) == {call_at: f"eax=*(int *)((D_{TABLE_VA:08x}))"}
 
 
 def test_call_notes_leave_out_an_unknown_register():
