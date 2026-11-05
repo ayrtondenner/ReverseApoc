@@ -3,12 +3,14 @@ every byte below is made up."""
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 from pathlib import Path
 
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
+from reverseapoc import asm, le
 from reverseapoc.asm import AsmError, file_name, listing, select_rows, write_listings
 from reverseapoc.cli import main as cli_main
 from reverseapoc.functions import (
@@ -283,3 +285,138 @@ def test_far_pointer_fixups_stay_notes(opcode: bytes, text: str):
     assert _one_line(opcode + FAR_POINTER, selector).endswith(f"{text}  ; sel16 -> D_00020000")
     offset = Fixup(CODE + FAR_OFFSET_AT, SRC_OFF32, DATA + 4, 2, 4, 4)
     assert _one_line(opcode + FAR_POINTER, offset).endswith(f"{text}  ; off32 -> D_00020004")
+
+
+# ---- case targets of a table jump, and notes on a listing's text (07.1-05, D-05) ----
+
+TABLE_ROW = CODE  # a data-in-code row before the function: two tables of two entries
+SECOND_TABLE = TABLE_ROW + 8
+JUMPS = CODE + 0x10  # func_00010010: two table jumps, then the cases
+AFTER = CODE + 0x30  # func_00010030
+AFTER_END = CODE + 0x40
+FIRST_JUMP_FIELD = 0x014  # page offset of the first jump's displacement
+SECOND_JUMP_FIELD = 0x01C
+SECOND_JUMP = JUMPS + 8
+CS_OVERRIDE = b"\x2e"  # Watcom writes its table jumps through cs, as the real rows do
+TABLE_JUMP = b"\xff\x24\x85"  # jmp dword ptr [eax*4 + disp32]
+SECOND_TABLE_JUMP = b"\xff\x24\x95"  # jmp dword ptr [edx*4 + disp32]
+UNSCALED_JUMP = b"\xff\xa0"  # jmp dword ptr [eax + disp32]
+NOP = b"\x90"
+FIRST_CASE = JUMPS + 0x10
+SECOND_CASE = JUMPS + 0x11
+ENTRY = le.SRC_SIZE[SRC_OFF32]
+
+
+def _jumps(first: bytes) -> bytes:
+    """Two table jumps, each with its table's object-relative offset in the field, then rets."""
+    return (
+        first + struct.pack("<I", TABLE_ROW - CODE)
+        + CS_OVERRIDE + SECOND_TABLE_JUMP + struct.pack("<I", SECOND_TABLE - CODE)
+        + b"\xc3" * 16
+    )  # fmt: skip
+
+
+def _table_fixups(jump_object: int) -> bytes:
+    entries = (FIRST_CASE, AFTER, AFTER + 1, SECOND_CASE)
+    records = b"".join(
+        fixup_record(SRC_OFF32, ENTRY * n, 1, target - CODE) for n, target in enumerate(entries)
+    )
+    return (
+        records
+        + fixup_record(SRC_OFF32, FIRST_JUMP_FIELD, jump_object, TABLE_ROW - CODE)
+        + fixup_record(SRC_OFF32, SECOND_JUMP_FIELD, 1, SECOND_TABLE - CODE)
+    )
+
+
+def _table_rows() -> list[FunctionRow]:
+    return [
+        FunctionRow(TABLE_ROW, JUMPS, "D_00010000", "data-in-code", "", "fixup"),
+        FunctionRow(JUMPS, AFTER, "func_00010010", "game", "", "call"),
+        FunctionRow(AFTER, AFTER_END, "func_00010030", "game", "", "call"),
+    ]
+
+
+def _case_notes(*, first: bytes = CS_OVERRIDE + TABLE_JUMP, jump_object: int = 1, edit=None):
+    """case_notes of func_00010010; `edit` changes the fixup list first."""
+    image = build_le_image(fixups=[_table_fixups(jump_object), b"", b""],
+                           patches={JUMPS: _jumps(first)}).data  # fmt: skip
+    parsed = LE(image)
+    rows = _table_rows()
+    fixups = parsed.fixups()
+    symbols = SymbolTable.build(
+        rows, data_ranges=[(obj.base, obj.end) for obj in parsed.objects if not obj.flags & 0x4]
+    )
+    return asm.case_notes(rows[1], flat=parsed.load_flat(relocate=False),
+                          fixups=edit(fixups) if edit else fixups, rows=rows,
+                          symbols=symbols)  # fmt: skip
+
+
+def _changed(where: int, **fields):
+    """An `edit` for _case_notes: the fixup at `where` with `fields` replaced."""
+
+    def edit(fixups):
+        return [dataclasses.replace(fx, **fields) if fx.src_va == where else fx for fx in fixups]
+
+    return edit
+
+
+def test_case_notes_name_each_table_entry():
+    assert _case_notes()[JUMPS] == f"cases: 0: .L{FIRST_CASE:08X}, 1: func_00010030"
+
+
+def test_case_notes_read_a_jump_without_the_cs_override():
+    assert _case_notes(first=NOP + TABLE_JUMP)[JUMPS + 1].startswith("cases: 0: .L")
+
+
+def test_case_notes_stop_at_the_next_table_of_the_row():
+    """One data-in-code row can hold several tables: each jump reads its own, from case 0."""
+    notes = _case_notes()
+    assert notes[SECOND_JUMP] == f"cases: 0: func_00010030+0x1, 1: .L{SECOND_CASE:08X}"
+    assert "2:" not in notes[JUMPS]
+
+
+def test_case_notes_skip_a_jump_with_no_table_row():
+    notes = _case_notes(jump_object=2)  # the field names the data object: no row holds it
+    assert list(notes) == [SECOND_JUMP]
+
+
+def test_case_notes_skip_a_jump_that_indexes_no_table():
+    """`jmp [eax + disp]` with a fixup into the row: a real form that is no switch."""
+    assert list(_case_notes(first=NOP * 2 + UNSCALED_JUMP)) == [SECOND_JUMP]
+
+
+@pytest.mark.parametrize(
+    "edit",
+    [
+        _changed(TABLE_ROW + ENTRY, kind=le.SRC_REL32),
+        _changed(TABLE_ROW + ENTRY, src_va=TABLE_ROW + ENTRY + 1),
+        lambda fixups: [fx for fx in fixups if fx.src_va != TABLE_ROW],
+    ],
+    ids=["no off32", "off the grid", "no case 0"],
+)
+def test_case_notes_refuse_a_bent_table(edit):
+    """Sizes and places come from the binary, and a note is read as fact: no guess at a table."""
+    assert JUMPS not in _case_notes(edit=edit)
+
+
+def test_case_notes_refuse_an_entry_past_the_row_end():
+    """The second table's last field reaches over the end of the row that holds it."""
+    edit = _changed(SECOND_TABLE + ENTRY, src_va=SECOND_TABLE + ENTRY + ENTRY - 1)
+    assert SECOND_JUMP not in _case_notes(edit=edit)
+
+
+def test_annotated_appends_to_the_matching_line():
+    text = "# made-up\n.L00010000:\n  0x00010000  jmp eax\n  0x00010002  ret\n"
+    assert asm.annotated(text, {0x00010000: "cases: 0: f"}) == (
+        "# made-up\n.L00010000:\n  0x00010000  jmp eax  ; cases: 0: f\n  0x00010002  ret\n"
+    )
+
+
+def test_annotated_leaves_out_a_note_with_no_line():
+    text = "# made-up 0x00010000\n  0x00010002  ret\n"
+    assert asm.annotated(text, {0x00010000: "cases: 0: f"}) == text
+
+
+def test_annotated_with_no_notes_is_the_same_text():
+    text = "# made-up\n  0x00010000  ret\n\n"
+    assert asm.annotated(text, {}) == text

@@ -937,6 +937,69 @@ def test_attempt_asm_an_undecodable_listing_is_a_tool_error(tree: attempt.Roots,
     assert "UnicodeDecodeError" in captured.err
 
 
+# A made-up EXE for the notes: a table row where func_00010000 was, a claimed func_00010010 with
+# a table jump, then func_00010020. The table's two entries land in the row and on the next one.
+TABLE_ROW_NAME = "D_00010000"
+TABLE_JUMP_BYTES = (
+    b"\x2e\xff\x24\x85\x00\x00\x00\x00"  # jmp dword ptr cs:[eax*4 + table] (off32 field at +4)
+    + b"\xc3"  # ret: case 0
+)
+CASE_ZERO = FUNC_B + 8
+TABLE_RECORDS = (
+    fixup_record(7, 0x00, 1, CASE_ZERO - FUNC_A)
+    + fixup_record(7, 0x04, 1, FUNC_C - FUNC_A)
+    + fixup_record(7, 0x14, 1, 0)
+)
+LISTING_TABLE = (
+    f"# func_00010010  made-up listing with a table jump\n"
+    f"  0x{FUNC_B:08X}  jmp dword ptr cs:[eax*4 + {TABLE_ROW_NAME}]\n"
+    f"  0x{CASE_ZERO:08X}  ret\n"
+)
+CASES_NOTE = f"cases: 0: .L{CASE_ZERO:08X}, 1: func_00010020"
+LISTING_TABLE_NOTED = LISTING_TABLE.replace("]\n", f"]  ; {CASES_NOTE}\n")
+
+
+def _rebuild(roots: attempt.Roots, records: bytes, patches: dict[int, bytes], listing: str) -> None:
+    """The tree's EXE and CSVs replaced: `patches` on a table row, func_00010010 and
+    func_00010020, with `listing` as func_00010010's listing."""
+    data = build_le_image(fixups=[records, b"", b""], patches=patches).data
+    (roots.orig / "UFO2P.EXE").write_bytes(data)
+    write_manifest(roots.manifest, {"UFO2P.EXE": data})
+    rows = [
+        FunctionRow(FUNC_A, FUNC_B, TABLE_ROW_NAME, "data-in-code", "", "fixup"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "call"),
+    ]
+    write_functions_csv(roots.config / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+    _write(roots.asm / "ufo2p" / "func_00010010.s", listing)
+
+
+def _claim_table(roots: attempt.Roots, monkeypatch: pytest.MonkeyPatch) -> Path:
+    _rebuild(roots, TABLE_RECORDS, {FUNC_B: TABLE_JUMP_BYTES, FUNC_C: C_BYTES}, LISTING_TABLE)
+    return _claim_b(roots, monkeypatch)
+
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {path.relative_to(root).as_posix(): path.read_bytes()
+            for path in root.rglob("*") if path.is_file()}  # fmt: skip
+
+
+def test_attempt_asm_prints_case_targets(tree: attempt.Roots, monkeypatch, capsys):
+    """D-05: the table sits in a data-in-code row, outside the listing of the row that jumps."""
+    _claim_table(tree, monkeypatch)
+    assert _run(["attempt", "asm"]) == 0
+    assert capsys.readouterr().out == LISTING_TABLE_NOTED
+
+
+def test_attempt_asm_writes_no_file(tree: attempt.Roots, monkeypatch, capsys):
+    """T-07.1-20: the notes reach stdout and nothing else, and the listing on disk stays."""
+    _claim_table(tree, monkeypatch)
+    before = _files(tree.repo)
+    assert _run(["attempt", "asm"]) == 0
+    assert CASES_NOTE in capsys.readouterr().out
+    assert _files(tree.repo) == before
+
+
 def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monkeypatch, capsys):
     attempt_dir = _claim_b(tree, monkeypatch)
     assert _run(["attempt", "context"]) == 0
