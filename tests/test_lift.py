@@ -5,7 +5,7 @@ bytes. The lifter reads five things of an EXE: `flat`, `rows`, `fixups`, `symbol
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import pytest
 
@@ -1755,3 +1755,117 @@ def test_the_verb_lifts_no_data_in_code_row(monkeypatch, capsys):
     monkeypatch.setattr(batch, "load_exe_inputs", lambda *_args, **_kwargs: exe)
     assert main(["lift", "stub", f"0x{TABLE_AT:08X}"]) == 2
     assert "data-in-code" in capsys.readouterr().err
+
+
+# ---- the argument registers at each call (attempt asm, 07.1-05, D-05) ----
+
+RETURNS = "b807000000 c3"  # mov eax, 7; ret
+CALLEE = VA + ROW_SPACING
+MOV_EAX_5 = "b805000000"
+MOV_EAX_SIZE = 5
+
+
+def notes_of(exe: StubExe) -> dict[int, str]:
+    return lift.call_notes(exe, exe.rows[0])
+
+
+def test_call_notes_show_the_argument_registers():
+    # mov eax, 5; mov edx, ebx; call; ret
+    call_at = VA + MOV_EAX_SIZE + 2
+    exe = stub_exe(f"{MOV_EAX_5} 89da {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=5 edx=r_ebx"}
+
+
+def test_call_notes_show_a_value_before_the_call_names_it():
+    # mov eax, [D]; call; ret: the load, not the r_eax the call's own flush would leave
+    call_at = VA + MOV_EAX_SIZE
+    exe = stub_exe(f"a100800000 {call_to(call_at, CALLEE)} c3", "c3",
+                   fixups=(data_fixup(VA + 1, TABLE_VA),))  # fmt: skip
+    assert notes_of(exe) == {call_at: f"eax=*(int *)D_{TABLE_VA:08x}"}
+
+
+def test_call_notes_leave_out_an_unknown_register():
+    # mov eax, 5; call; call; ret: eax is gone after the first call, and nothing else was known
+    first = VA + MOV_EAX_SIZE
+    second = first + 5
+    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(second, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {first: "eax=5"}
+
+
+def test_call_notes_leave_out_a_register_the_lifter_only_named():
+    """edx is a variable for the merge below, so the entry block holds its name too. Nothing
+    wrote it and nothing reads it at the call: `edx=r_edx` would be read as a value."""
+    # mov eax, 1; call; mov edx, 2; test eax, eax; je M; mov edx, 3; M: mov eax, edx; ret
+    call_at = VA + MOV_EAX_SIZE
+    code = f"b801000000 {call_to(call_at, CALLEE)} ba02000000 85c0 7405 ba03000000 89d0 c3"
+    assert notes_of(stub_exe(code, RETURNS)) == {call_at: "eax=1"}
+
+
+def test_call_notes_survive_a_hole():
+    # mov eax, 5; bswap eax (no such step: a hole); mov edx, 7; call; ret
+    hole_at = VA + MOV_EAX_SIZE
+    call_at = hole_at + 2 + MOV_EAX_SIZE
+    exe = stub_exe(f"{MOV_EAX_5} 0fc8 ba07000000 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: f"eax=h_{hole_at:x} edx=7"}
+
+
+def test_call_notes_show_a_call_the_lifter_refuses():
+    # mov eax, 5; call ebx; ret: an indirect call is a hole, and its registers are still known
+    call_at = VA + MOV_EAX_SIZE
+    assert notes_of(stub_exe(f"{MOV_EAX_5} ffd3 c3")) == {call_at: "eax=5"}
+
+
+def test_call_notes_keep_what_came_before_a_refusal():
+    """A refusal outside any one instruction ends the run: `cdq` falling into a merge."""
+    # mov eax, 5; call; test eax, eax; je M; cdq; M: mov eax, edx; ret
+    call_at = VA + MOV_EAX_SIZE
+    code = f"{MOV_EAX_5} {call_to(call_at, CALLEE)} 85c0 7401 99 89d0 c3"
+    exe = stub_exe(code, RETURNS)
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.Lifter(exe, exe.rows[0], holes=True).lift()
+    assert notes_of(exe)[call_at].startswith("eax=5")
+
+
+def test_call_notes_are_empty_for_a_row_that_cannot_start():
+    # push ebp; mov ebp, esp; mov eax, 5; call; pop ebp; ret
+    call_at = VA + 3 + MOV_EAX_SIZE
+    exe = stub_exe(f"55 89e5 {MOV_EAX_5} {call_to(call_at, CALLEE)} 5d c3", "c3")
+    assert notes_of(exe) == {}
+
+
+def test_call_notes_are_empty_for_a_data_in_code_row():
+    """Its bytes only happen to decode, as the `lift` verb knows."""
+    call_at = VA + MOV_EAX_SIZE
+    exe = stub_exe(f"{MOV_EAX_5} {call_to(call_at, CALLEE)} c3", "c3")
+    data_row = replace(exe.rows[0], kind=KIND_DATA_IN_CODE)
+    assert lift.call_notes(exe, data_row) == {}
+
+
+@pytest.mark.parametrize("cache", [None, "{"], ids=["absent", "truncated"])
+def test_call_notes_never_build_the_census(monkeypatch, cache):
+    """A live session must not walk every row of the EXE, nor write under CACHE_DIR."""
+    if cache is not None:
+        census_file().write_text(cache, encoding="utf-8")
+    before = sorted(path.name for path in lift.CACHE_DIR.iterdir())
+
+    def no_census(_exe):
+        raise AssertionError("call_notes built the census")
+
+    monkeypatch.setattr(lift, "_census", no_census)
+    call_at = VA + MOV_EAX_SIZE
+    exe = stub_exe(f"{MOV_EAX_5} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=5"}
+    assert sorted(path.name for path in lift.CACHE_DIR.iterdir()) == before
+    assert lift._BUILDING == set()
+
+
+def test_call_notes_let_a_fault_through(monkeypatch):
+    """Only the lifter's refusal is an answer: a fault is cmd_asm's to report."""
+    def fault(_self):
+        raise KeyError("made-up")
+
+    monkeypatch.setattr(lift.Lifter, "lift", fault)
+    exe = stub_exe("c3")
+    with pytest.raises(KeyError):
+        notes_of(exe)
+    assert lift._BUILDING == set()

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import REPO_ROOT, build_le_image, fixup_record, write_manifest
-from reverseapoc import attempt, check, hooks
+from reverseapoc import attempt, check, hooks, lift
 from reverseapoc.cli import build_parser, main
 from reverseapoc.functions import (
     FunctionRow,
@@ -93,6 +93,14 @@ def _sweep_doc(*cells: dict) -> dict:
     return {"exe": "ufo2p", "unit": "u_000a34f0", "function": FUNC, "chk": False,
             "cells": list(cells), "best": [cells[0]["cell"]] if cells else [],
             "log": "/repo/build/logs/sweep.log"}  # fmt: skip
+
+
+@pytest.fixture(autouse=True)
+def fresh_lifter():
+    """attempt asm lifts, and the lifter's row and fixup caches key on id(exe): one command is
+    one process, but here a later test's EXE could inherit a dead one's id."""
+    lift._INDEX.clear()
+    lift._FIXUPS.clear()
 
 
 @pytest.fixture
@@ -992,12 +1000,61 @@ def test_attempt_asm_prints_case_targets(tree: attempt.Roots, monkeypatch, capsy
 
 
 def test_attempt_asm_writes_no_file(tree: attempt.Roots, monkeypatch, capsys):
-    """T-07.1-20: the notes reach stdout and nothing else, and the listing on disk stays."""
+    """T-07.1-20: the notes reach stdout and nothing else, and the listing on disk stays. The
+    census file would land in this tree too, so a session's lift is under the same check."""
     _claim_table(tree, monkeypatch)
+    monkeypatch.setattr(lift, "CACHE_DIR", tree.repo / "build" / "lift")
     before = _files(tree.repo)
     assert _run(["attempt", "asm"]) == 0
     assert CASES_NOTE in capsys.readouterr().out
     assert _files(tree.repo) == before
+
+
+def test_attempt_asm_prints_call_registers(tree: attempt.Roots, monkeypatch, capsys):
+    """D-05: `mov eax, 5` then a call: the note lands on the call's line."""
+    call_at = FUNC_B + 5
+    code = b"\xb8\x05\x00\x00\x00\xe8\x06\x00\x00\x00\xc3" + b"\x90" * 5  # rel32 to FUNC_C
+    listing = (f"# func_00010010  made-up listing with a call\n"
+               f"  0x{FUNC_B:08X}  mov eax, 5\n"
+               f"  0x{call_at:08X}  call func_00010020\n"
+               f"  0x{call_at + 5:08X}  ret\n")  # fmt: skip
+    _rebuild(tree, b"", {FUNC_B: code, FUNC_C: C_BYTES}, listing)
+    _claim_b(tree, monkeypatch)
+    assert _run(["attempt", "asm"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == listing.replace("func_00010020\n", "func_00010020  ; eax=5\n")
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [KeyError("made-up"), AttributeError("made-up"), RecursionError("made\nup"), StopIteration()],
+    ids=lambda fault: type(fault).__name__,
+)
+def test_attempt_asm_keeps_the_listing_on_a_lifter_fault(tree: attempt.Roots, monkeypatch, capsys,
+                                                         fault):  # fmt: skip
+    """T-07.1-23: cli's M9 handler would make this exit 2 and cost a live session its listing."""
+    def raises(_data, _row):
+        raise fault
+
+    _claim_table(tree, monkeypatch)
+    monkeypatch.setattr(lift, "call_notes", raises)
+    assert _run(["attempt", "asm"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == LISTING_TABLE_NOTED
+    (line,) = captured.err.splitlines()
+    assert line.startswith(f"attempt asm: no call notes: {type(fault).__name__}:")
+
+
+def test_attempt_asm_asks_the_lifter_nothing_without_a_listing(tree: attempt.Roots, monkeypatch,
+                                                               capsys):  # fmt: skip
+    """The listing's own errors stay as they were: exit 2, and no line about the notes."""
+    _claim_table(tree, monkeypatch)
+    (tree.asm / "ufo2p" / "func_00010010.s").unlink()
+    assert _run(["attempt", "asm"]) == 2
+    captured = capsys.readouterr()
+    assert "reverseapoc asm" in captured.err
+    assert "no call notes" not in captured.err
 
 
 def test_attempt_context_rebuilds_into_the_attempt_dir(tree: attempt.Roots, monkeypatch, capsys):
