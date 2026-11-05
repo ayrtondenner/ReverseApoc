@@ -1777,11 +1777,12 @@ def test_call_notes_show_the_argument_registers():
 
 
 def test_call_notes_show_a_value_before_the_call_names_it():
-    # mov eax, [D]; call; ret: the load, not the r_eax the call's own flush would leave
-    call_at = VA + MOV_EAX_SIZE
-    exe = stub_exe(f"a100800000 {call_to(call_at, CALLEE)} c3", "c3",
-                   fixups=(data_fixup(VA + 1, TABLE_VA),))  # fmt: skip
-    assert notes_of(exe) == {call_at: f"eax=*(int *)((D_{TABLE_VA:08x}))"}
+    # mov ebx, [D]; call; mov eax, ebx; ret: ebx is read after the call, so the call's own flush
+    # turns the load into r_ebx, and the note must show the load
+    call_at = VA + 6
+    exe = stub_exe(f"8b1d00800000 {call_to(call_at, CALLEE)} 89d8 c3", "c3",
+                   fixups=(data_fixup(VA + DISP32_OFFSET, TABLE_VA),))  # fmt: skip
+    assert notes_of(exe)[call_at].endswith(f"ebx=*(int *)((D_{TABLE_VA:08x}))")
 
 
 def test_call_notes_leave_out_an_unknown_register():

@@ -336,12 +336,15 @@ def _table_rows() -> list[FunctionRow]:
     ]
 
 
-def _case_notes(*, first: bytes = CS_OVERRIDE + TABLE_JUMP, jump_object: int = 1, edit=None):
-    """case_notes of func_00010010; `edit` changes the fixup list first."""
+def _case_notes(*, first: bytes = CS_OVERRIDE + TABLE_JUMP, jump_object: int = 1, edit=None,
+                table_end: int = JUMPS):  # fmt: skip
+    """case_notes of func_00010010; `edit` changes the fixup list first, and `table_end` is where
+    the table row stops."""
     image = build_le_image(fixups=[_table_fixups(jump_object), b"", b""],
                            patches={JUMPS: _jumps(first)}).data  # fmt: skip
     parsed = LE(image)
     rows = _table_rows()
+    rows[0] = dataclasses.replace(rows[0], end=table_end)
     fixups = parsed.fixups()
     symbols = SymbolTable.build(
         rows, data_ranges=[(obj.base, obj.end) for obj in parsed.objects if not obj.flags & 0x4]
@@ -400,9 +403,8 @@ def test_case_notes_refuse_a_bent_table(edit):
 
 
 def test_case_notes_refuse_an_entry_past_the_row_end():
-    """The second table's last field reaches over the end of the row that holds it."""
-    edit = _changed(SECOND_TABLE + ENTRY, src_va=SECOND_TABLE + ENTRY + ENTRY - 1)
-    assert SECOND_JUMP not in _case_notes(edit=edit)
+    """The second table's last field sits on the grid, but its row stops inside it."""
+    assert SECOND_JUMP not in _case_notes(table_end=JUMPS - 2)
 
 
 def test_annotated_appends_to_the_matching_line():
