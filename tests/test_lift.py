@@ -1960,3 +1960,52 @@ def test_call_notes_read_a_census_that_exists(monkeypatch):
     assert notes_of(exe) == {}
     assert census_file().read_text(encoding="utf-8") == census
     assert lift._BUILDING == set()
+
+
+# ---- a note names no stack slot the lifter cannot vouch for (07.1-05 review, CR-01) ----
+
+TAKES_TWO = "01d0 c3"  # add eax, edx; ret
+POPS_8 = "b801000000 c20800 c3"  # mov eax, 1; ret 8; ret (no path reaches the last one)
+FRAME_AND_STORE = "83ec10 894c2408"  # sub esp, 10h; mov [esp + 8], ecx
+FRAME_AND_STORE_SIZE = 7
+READ_SLOT_8 = "8b542408"  # mov edx, [esp + 8]
+READ_SLOT_C = "8b54240c"  # mov edx, [esp + 0Ch]
+READ_SIZE = 4
+CALL_SIZE = 5
+TAKES_TWO_AT = VA + 2 * ROW_SPACING  # where a row's second callee sits
+
+
+def nstack_of(code: str) -> int:
+    exe = stub_exe(code)
+    return lift.Lifter(exe, exe.rows[0]).signature().nstack
+
+
+def test_a_reachable_ret_n_counts_the_stack_arguments_before_a_last_ret():
+    assert nstack_of(POPS_8) == 2
+
+
+def test_an_unreachable_ret_n_counts_nothing():
+    """Bytes past the row's last path can decode as anything."""
+    # ret; ret 8
+    assert nstack_of("c3 c20800") == 0
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["85c0 7403 c20800 c20c00", "85c0 7403 c20800 c3"],
+    ids=["ret 8 and ret 0Ch", "ret 8 and ret"],
+)
+def test_returns_that_pop_different_amounts_leave_the_signature_unknown(code):
+    """test eax, eax; je +3; then two returns. One function has one stack count: no pick."""
+    with pytest.raises(lift.Unliftable, match="stack: reachable returns pop different amounts"):
+        nstack_of(code)
+
+
+def test_call_notes_follow_a_callee_that_pops_before_its_last_ret():
+    """The caller's esp comes back up after a `ret 8` that is not the callee's last instruction."""
+    # ...; push ecx; push ecx; call; mov edx, [esp + 8]; call; add esp, 10h; ret
+    pops_at = VA + FRAME_AND_STORE_SIZE + 2
+    call_at = pops_at + CALL_SIZE + READ_SIZE
+    code = (f"{FRAME_AND_STORE} 51 51 {call_to(pops_at, CALLEE)} {READ_SLOT_8} "
+            f"{call_to(call_at, TAKES_TWO_AT)} 83c410 c3")  # fmt: skip
+    assert notes_of(stub_exe(code, POPS_8, TAKES_TWO))[call_at].endswith("edx=s_8")

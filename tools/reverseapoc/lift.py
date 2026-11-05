@@ -277,7 +277,7 @@ class Lifter:
 
     def signature(self) -> Sig:
         """Tolerant: a switch or a tail jump ends its block instead of refusing the row."""
-        insns, saved, _, blocks, order, live_in, _ = self.prepare(frozenset(), strict=False)
+        _, saved, _, blocks, order, live_in, _ = self.prepare(frozenset(), strict=False)
         written = set()
         for s in order:
             for ci in blocks[s].insns:
@@ -289,10 +289,15 @@ class Lifter:
         for idx, reg in enumerate(ARG_REGS):
             if reg in entry:
                 nregs = idx + 1
-        nstack = 0
-        last = insns[-1]
-        if last.mnemonic == "ret" and last.operands:
-            nstack = last.operands[0].imm // 4
+        pops = {
+            ci.operands[0].imm if ci.operands else 0
+            for s in _reachable(blocks, order[0])
+            for ci in blocks[s].insns
+            if ci.mnemonic == "ret"
+        }
+        if len(pops) > 1:  # one function has one stack count: no value here is the row's
+            raise Unliftable("stack: reachable returns pop different amounts")
+        nstack = max(pops, default=0) // 4
         if nstack:
             nregs = 4
         returns = "eax" in written and "eax" not in saved
@@ -1603,6 +1608,17 @@ def _idiom(b: Block, fall: Block, taken: Block) -> str | None:
         return "inlined boolean helper"
     name = _min_max(b, fall, taken)
     return None if name is None else f"{name} written out"
+
+
+def _reachable(blocks, start: int) -> set[int]:
+    """The blocks a path from `start` reaches."""
+    seen, todo = set(), [start]
+    while todo:
+        s = todo.pop()
+        if s not in seen:
+            seen.add(s)
+            todo += blocks[s].succ
+    return seen
 
 
 def _branch_target(ci) -> int | None:
