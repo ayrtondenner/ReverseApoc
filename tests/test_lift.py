@@ -1870,3 +1870,70 @@ def test_call_notes_let_a_fault_through(monkeypatch):
     with pytest.raises(KeyError):
         notes_of(exe)
     assert lift._BUILDING == set()
+
+
+# ---- a note prints the width written (07.1-05 review, WR-01) ----
+
+MOV_EAX_1234 = "b834120000"
+MOV_AL_5 = "b005"
+
+
+@pytest.mark.parametrize(
+    ("write", "name"),
+    [(MOV_AL_5, "al"), ("66ba0500", "dx"), ("b305", "bl"), ("66b90500", "cx")],
+    ids=["al", "dx", "bl", "cx"],
+)
+def test_call_notes_print_a_narrow_write_at_its_width(write, name):
+    """The rest of the register is whatever it held, so the full name would state a false value."""
+    call_at = VA + len(bytes.fromhex(write))
+    exe = stub_exe(f"{write} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe)[call_at].split()[-1] == f"{name}=5"
+
+
+def test_call_notes_print_a_byte_written_over_a_known_register_at_its_width():
+    # mov eax, 1234h; mov al, 5; call; ret: the machine holds 0x1205
+    call_at = VA + MOV_EAX_SIZE + 2
+    exe = stub_exe(f"{MOV_EAX_1234} {MOV_AL_5} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "al=5"}
+
+
+def test_call_notes_print_a_word_load_at_its_width():
+    # mov dx, [eax]; call; ret
+    call_at = VA + 3
+    exe = stub_exe(f"668b10 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=r_eax dx=*(unsigned short *)((char *)r_eax)"}
+
+
+def test_call_notes_keep_the_full_name_of_a_movzx_result():
+    # movzx edx, word ptr [eax]; call; ret: the zero extension writes all of edx
+    call_at = VA + 3
+    exe = stub_exe(f"0fb710 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=r_eax edx=*(unsigned short *)((char *)r_eax)"}
+
+
+def test_call_notes_keep_the_full_name_after_a_full_write():
+    # mov al, 5; mov eax, 7; call; ret
+    call_at = VA + 2 + MOV_EAX_SIZE
+    exe = stub_exe(f"{MOV_AL_5} b807000000 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=7"}
+
+
+def test_call_notes_carry_the_width_through_a_copy():
+    # mov eax, 1234h; mov al, 5; mov edx, eax; call; ret: edx holds 0x1205, not 5
+    call_at = VA + MOV_EAX_SIZE + 2 + 2
+    exe = stub_exe(f"{MOV_EAX_1234} {MOV_AL_5} 89c2 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "al=5 dl=5"}
+
+
+def test_call_notes_widen_a_low_byte_to_the_word_a_high_byte_write_makes():
+    # mov eax, 1234h; mov al, 5; xor ah, ah; call; ret: the top half is still not in the text
+    call_at = VA + MOV_EAX_SIZE + 2 + 2
+    exe = stub_exe(f"{MOV_EAX_1234} {MOV_AL_5} 30e4 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe)[call_at].startswith("ax=5 ")
+
+
+def test_call_notes_keep_the_full_name_of_a_high_byte_write_on_a_whole_value():
+    # mov eax, 1234h; xor ah, ah; call; ret: every byte of eax is in the text
+    call_at = VA + MOV_EAX_SIZE + 2
+    exe = stub_exe(f"{MOV_EAX_1234} 30e4 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe)[call_at].startswith("eax=")

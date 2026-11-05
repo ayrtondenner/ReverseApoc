@@ -52,6 +52,8 @@ SUB = {
     "bp": ("ebp", 2),
 }
 HIGH_BYTES = frozenset(name for name, (_, size) in SUB.items() if size < 0)
+LOW_PARTS = {(full, size): name for name, (full, size) in SUB.items() if size > 0}
+WORD = 2  # the bytes of `ax`, which a high byte write reaches
 HIGH_SHIFT = 8
 BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
@@ -114,6 +116,7 @@ class E:
     scaled: tuple | None = None  # (index E, scale) for a value made by lea r, [index*scale]
     boolean: bool = False  # a compare's 0 or 1, which masking to a byte leaves as it is
     sign_of: bool = False  # edx after a cdq of eax, which C can only say as part of a divide
+    written: int = 0  # the bytes a narrow write set: the register's other bytes are not in the text
 
     def __str__(self) -> str:
         return self.text
@@ -706,11 +709,14 @@ class Block_:
         if name in SUB:
             full, size = SUB[name]
             if name in HIGH_BYTES:
-                self.regs[full] = with_high_byte(self.get(full), e)
+                old = self.get(full)
+                new = with_high_byte(old, e)
+                self.regs[full] = replace(new, written=WORD) if old.written else new
                 return
             old = self.regs.get(full)
             signed = False if old is not None and old.const == 0 else e.signed
-            self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, signed, boolean=e.boolean)
+            self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, signed, boolean=e.boolean,
+                                written=size)  # fmt: skip
             return
         self.regs[name] = e
 
@@ -1384,9 +1390,12 @@ class Block_:
         """What each argument register holds at the call `ci`, for call_notes. Only a register
         something still reads: every block starts with the name of each variable, and only a
         needed register is kept right when a name it reads changes, so any other text here would
-        be a guess. A later run overwrites an earlier one."""
+        be a guess. A narrow write prints at its width: `al=5` is true where `eax=5` is not. A
+        later run overwrites an earlier one."""
         known = [r for r in ARG_REGS if r in self.regs and r in self.needed]
-        self.lf.call_values[ci.address] = {r: self.regs[r].text for r in known}
+        self.lf.call_values[ci.address] = {
+            LOW_PARTS.get((r, self.regs[r].written), r): self.regs[r].text for r in known
+        }
 
     def call(self, ci) -> None:
         self.note_values(ci)
@@ -1729,7 +1738,7 @@ def lift_row(exe: ExeInputs, start: int) -> str:
 
 
 def call_notes(exe: ExeInputs, row: FunctionRow) -> dict[int, str]:
-    """`eax=<expr> edx=<expr>` by the address of each call of `row` with a known register. A
+    """`eax=<expr> dl=<expr>` by the address of each call of `row` with a known register. A
     refusal costs what comes after it, never what came before. This runs in a live session, so
     it must not build the census, and a stem in _BUILDING is what stops result_used doing so,
     whatever the cache holds: the census only decides `void`, so no value here depends on it."""
