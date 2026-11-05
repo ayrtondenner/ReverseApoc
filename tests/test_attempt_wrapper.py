@@ -1046,6 +1046,17 @@ def test_attempt_asm_keeps_the_listing_on_a_lifter_fault(tree: attempt.Roots, mo
     assert line.startswith(f"attempt asm: no call notes: {type(fault).__name__}:")
 
 
+def test_attempt_asm_folds_a_lifter_fault_onto_one_line(tree: attempt.Roots, monkeypatch, capsys):
+    """`_one_line`, as lint_view has it: every run of whitespace reads as one space."""
+    def raises(_data, _row):
+        raise ValueError("made  up\tthere\r\n")
+
+    _claim_table(tree, monkeypatch)
+    monkeypatch.setattr(lift, "call_notes", raises)
+    assert _run(["attempt", "asm"]) == 0
+    assert capsys.readouterr().err == "attempt asm: no call notes: ValueError: made up there\n"
+
+
 def test_attempt_asm_asks_the_lifter_nothing_without_a_listing(tree: attempt.Roots, monkeypatch,
                                                                capsys):  # fmt: skip
     """The listing's own errors stay as they were: exit 2, and no line about the notes."""

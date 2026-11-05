@@ -1110,8 +1110,8 @@ def _register_notes(data: check.ExeInputs, row: FunctionRow) -> dict[int, str]:
     try:
         return lift.call_notes(data, row)
     except Exception as exc:
-        text = re.sub(r"[\r\n]+", " ", str(exc))
-        print(f"attempt asm: no call notes: {type(exc).__name__}: {text}", file=sys.stderr)
+        print(f"attempt asm: no call notes: {type(exc).__name__}: {_one_line(exc)}",
+              file=sys.stderr)  # fmt: skip
         return {}
 
 
