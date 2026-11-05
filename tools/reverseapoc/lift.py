@@ -731,7 +731,9 @@ class Block_:
 
     def __init__(self, lf: Lifter, insns, start: int):
         self.lf, self.insns, self.start = lf, insns, start
-        self.regs: dict[str, E] = {r: _typed_var(lf, r) for r in lf.regvars}
+        # Sorted: this order is the order `flush` writes statements in, and a set's follows the
+        # string hash, which would make the draft differ from run to run.
+        self.regs: dict[str, E] = {r: _typed_var(lf, r) for r in sorted(lf.regvars)}
         self.out: list[str] = []
         self.flags: tuple | None = None
         self.esp = lf.esp0
@@ -1088,7 +1090,7 @@ class Block_:
         self.esp_lost |= _writes_esp(ci)
         name = f"h_{ci.address:x}"
         written = _use_def(ci)[1]
-        self.regs.update(dict.fromkeys(written, var(name)))
+        self.regs.update(dict.fromkeys(sorted(written), var(name)))
         if written:
             self.lf.hole_vars.add(name)
         self.flags = None

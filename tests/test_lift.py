@@ -4,8 +4,12 @@ bytes. The lifter reads five things of an EXE: `flat`, `rows`, `fixups`, `symbol
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
+import sys
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 import pytest
 
@@ -2190,3 +2194,43 @@ def test_call_notes_show_the_result_of_a_call_given_a_derived_value():
     code = (f"{NARROW_EAX} {ADD_EAX_1} {call_to(first, CALLEE)} 89c2 "
             f"{call_to(call_at, TAKES_TWO_AT)} c3")  # fmt: skip
     assert notes_of(stub_exe(code, RETURNS, TAKES_TWO)) == {call_at: "eax=r_eax edx=r_eax"}
+
+
+# ---- a draft is a function of its input, not of the string hash (07.1-05 review, IN-05) ----
+
+SEEDS = ("0", "1", "2", "3", "4", "5")
+# Lift one stub row and print the draft. A child process, because the seed is read at its start.
+LIFT_ONE_ROW = """
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import test_lift
+from reverseapoc import lift
+lift.CACHE_DIR = Path(sys.argv[2])
+exe = test_lift.stub_exe(sys.argv[3])
+print(lift.Lifter(exe, exe.rows[0], holes=True).lift())
+"""
+# mov ebx, [eax]; mov ecx, [eax + 4]; mov edx, [eax + 8]; mov esi, [eax + 0Ch]
+LOADS = "8b18 8b4804 8b5008 8b700c"
+SUMS = "01cb 01d3 01f3 89d8 c3"  # add ebx, ecx; add ebx, edx; add ebx, esi; mov eax, ebx; ret
+
+
+def draft_under(seed: str, code: str, cache) -> str:
+    args = [sys.executable, "-c", LIFT_ONE_ROW, str(Path(__file__).parent), str(cache), code]
+    env = {**os.environ, "PYTHONHASHSEED": seed}
+    return subprocess.run(args, env=env, check=True, capture_output=True, text=True,
+                          timeout=120).stdout  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        f"{LOADS} 894010 85c0 7400 {SUMS}",  # ...; mov [eax + 10h], eax; test eax, eax; je +0; ...
+        f"61 {LOADS} 894010 {SUMS}",  # popad (a hole writing them all); ...; mov [eax + 10h], eax
+    ],
+    ids=["registers live into a merge", "registers a hole wrote"],
+)
+def test_a_draft_does_not_depend_on_the_string_hash(tmp_path, code):
+    """The store makes the loads assign, one statement each, in the order `regs` holds them."""
+    drafts = {draft_under(seed, code, tmp_path) for seed in SEEDS}
+    assert len(drafts) == 1
