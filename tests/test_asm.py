@@ -402,6 +402,13 @@ def test_case_notes_refuse_a_bent_table(edit):
     assert JUMPS not in _case_notes(edit=edit)
 
 
+def test_case_notes_print_a_target_in_no_row_as_its_address():
+    """A D_ name would call code data: the bare address says only what the fixup says."""
+    nowhere = AFTER_END + 0x10
+    note = _case_notes(edit=_changed(TABLE_ROW + ENTRY, target_va=nowhere))[JUMPS]
+    assert note.endswith(f"1: 0x{nowhere:08X}")
+
+
 def test_case_notes_refuse_an_entry_past_the_row_end():
     """The second table's last field sits on the grid, but its row stops inside it."""
     assert SECOND_JUMP not in _case_notes(table_end=JUMPS - 2)
