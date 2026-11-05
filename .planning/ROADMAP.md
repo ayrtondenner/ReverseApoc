@@ -389,7 +389,7 @@ Plans:
   4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
   5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
 
-**Plans:** 4/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -405,7 +405,7 @@ Plans:
 - [x] 07.1-04-PLAN.md — failure classifier routing rows to the converter, the search or an agent (D-04)
 
 **Wave 5** *(blocked on Wave 4 completion; main checkout)*
-- [ ] 07.1-05-PLAN.md — disassembly view upgrades: jump-table case targets and call registers, terminal only (D-05)
+- [x] 07.1-05-PLAN.md — disassembly view upgrades: jump-table case targets and call registers, terminal only (D-05)
 
 **Wave 6** *(blocked on Wave 5 completion; main checkout)*
 - [ ] 07.1-06-PLAN.md — watcom-decomp skill through `writing-skills`, after the owner checkpoint that shows the curve (D-06)
@@ -442,7 +442,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
-| 7.1. Matching tooling (INSERTED) | 4/6 | In Progress | - |
+| 7.1. Matching tooling (INSERTED) | 5/6 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
