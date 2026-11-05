@@ -2111,3 +2111,82 @@ def test_call_notes_leave_out_a_slot_in_the_block_after_esp_is_moved_outright():
     code = (f"{FRAME_AND_STORE} 89dc 85c9 7401 90 {READ_SLOT_8} {call_to(call_at, CALLEE)} "
             "83c410 c3")  # fmt: skip
     assert "edx" not in notes_of(stub_exe(code, TAKES_TWO))[call_at]
+
+
+# ---- a value derived from a partial write leaves the note (07.1-05 review, WR-01) ----
+
+ADD_EAX_1 = "83c001"
+XOR_EAX = "31c0"
+NARROW_EAX = f"{MOV_EAX_1234} {MOV_AL_5}"  # eax holds 0x1205, and the text says 5
+NARROW_EAX_SIZE = MOV_EAX_SIZE + 2
+
+
+def test_call_notes_leave_out_arithmetic_on_a_partial_write():
+    # ...; add eax, 1; call; ret: the machine holds 0x1206, and `5 + 1` is false
+    call_at = VA + NARROW_EAX_SIZE + 3
+    exe = stub_exe(f"{NARROW_EAX} {ADD_EAX_1} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {}
+
+
+def test_call_notes_keep_arithmetic_on_a_write_over_a_known_zero():
+    # xor eax, eax; mov al, 5; add eax, 1; call; ret: every byte is in the text
+    call_at = VA + 2 + 2 + 3
+    exe = stub_exe(f"{XOR_EAX} {MOV_AL_5} {ADD_EAX_1} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "eax=5 + 1"}
+
+
+def test_call_notes_keep_a_second_byte_over_a_known_zero():
+    # xor eax, eax; mov al, 5; mov al, 6; add eax, 1; call; ret
+    call_at = VA + 2 + 2 + 2 + 3
+    code = f"{XOR_EAX} {MOV_AL_5} b006 {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {call_at: "eax=6 + 1"}
+
+
+def test_call_notes_keep_arithmetic_at_the_width_written():
+    # ...; add al, 1; call; ret: al is 6 whatever the rest of eax holds
+    call_at = VA + NARROW_EAX_SIZE + 2
+    exe = stub_exe(f"{NARROW_EAX} 0401 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "al=5 + 1"}
+
+
+def test_call_notes_keep_a_sign_extension_of_the_width_written():
+    # ...; movsx edx, al; call; ret
+    call_at = VA + NARROW_EAX_SIZE + 3
+    exe = stub_exe(f"{NARROW_EAX} 0fbed0 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "al=5 edx=(signed char)5"}
+
+
+def test_call_notes_leave_out_a_copy_of_a_derived_value():
+    # ...; add eax, 1; mov edx, eax; call; ret
+    call_at = VA + NARROW_EAX_SIZE + 3 + 2
+    exe = stub_exe(f"{NARROW_EAX} {ADD_EAX_1} 89c2 {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {}
+
+
+@pytest.mark.parametrize(
+    ("read", "size"),
+    [("8b10", 2), ("88e2", 2), ("6689c2", 3)],
+    ids=["an address", "the high byte", "a word past the byte"],
+)
+def test_call_notes_leave_out_a_read_past_the_width_written(read, size):
+    # ...; mov edx, [eax], or mov dl, ah, or mov dx, ax; call; ret
+    call_at = VA + NARROW_EAX_SIZE + size
+    exe = stub_exe(f"{NARROW_EAX} {read} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {call_at: "al=5"}
+
+
+def test_call_notes_leave_out_arithmetic_after_a_high_byte_write_on_a_partial_write():
+    # ...; xor ah, ah; add eax, 1; call; ret: the top half is still not in the text
+    call_at = VA + NARROW_EAX_SIZE + 2 + 3
+    exe = stub_exe(f"{NARROW_EAX} 30e4 {ADD_EAX_1} {call_to(call_at, CALLEE)} c3", "c3")
+    assert notes_of(exe) == {}
+
+
+def test_call_notes_show_the_result_of_a_call_given_a_derived_value():
+    """The callee's result is the callee's, whatever it was passed."""
+    # ...; add eax, 1; call; mov edx, eax; call; ret
+    first = VA + NARROW_EAX_SIZE + 3
+    call_at = first + CALL_SIZE + 2
+    code = (f"{NARROW_EAX} {ADD_EAX_1} {call_to(first, CALLEE)} 89c2 "
+            f"{call_to(call_at, TAKES_TWO_AT)} c3")  # fmt: skip
+    assert notes_of(stub_exe(code, RETURNS, TAKES_TWO)) == {call_at: "eax=r_eax edx=r_eax"}

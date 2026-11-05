@@ -55,6 +55,7 @@ SUB = {
 HIGH_BYTES = frozenset(name for name, (_, size) in SUB.items() if size < 0)
 LOW_PARTS = {(full, size): name for name, (full, size) in SUB.items() if size > 0}
 WORD = 2  # the bytes of `ax`, which a high byte write reaches
+FULL_WIDTH = 4
 HIGH_SHIFT = 8
 BYTE_MASK = 0xFF
 HIGH_KEEP = ~(BYTE_MASK << HIGH_SHIFT) & 0xFFFFFFFF  # every byte of a register but the high byte
@@ -118,7 +119,9 @@ class E:
     scaled: tuple | None = None  # (index E, scale) for a value made by lea r, [index*scale]
     boolean: bool = False  # a compare's 0 or 1, which masking to a byte leaves as it is
     sign_of: bool = False  # edx after a cdq of eax, which C can only say as part of a divide
-    written: int = 0  # the bytes a narrow write set: the register's other bytes are not in the text
+    written: int = 0  # the bytes a narrow write set: a note prints the value at that width
+    partial: bool = False  # the register's other bytes hold something the text does not say
+    guess: bool = False  # worked out from bytes the text does not say: no note prints it
 
     def __str__(self) -> str:
         return self.text
@@ -733,6 +736,7 @@ class Block_:
         self.flags: tuple | None = None
         self.esp = lf.esp0
         self.esp_lost = False  # esp may not be what `self.esp` says: no slot name is vouched for
+        self.read_guess = False  # this instruction read a guess, or past a partial write
         self.pushes: list[E] = []
         self.k = 0  # the place in this block of the instruction being run
         self.fstack: list[E] = []  # the x87 stack's expressions, st(0) last
@@ -743,11 +747,8 @@ class Block_:
 
     # registers
 
-    def get(self, name: str) -> E:
-        if name in SUB:
-            full, size = SUB[name]
-            e = self.get(full)
-            return high_byte(e) if name in HIGH_BYTES else low_part(e, size)
+    def held(self, name: str) -> E:
+        """What the full register `name` holds, as a value to look at, not an operand read."""
         if name not in self.regs:
             raise Unliftable(f"reg: {name} read before any write")
         e = self.regs[name]
@@ -755,24 +756,35 @@ class Block_:
             raise Unliftable("op: cdq")
         return e
 
+    def get(self, name: str) -> E:
+        full, size = SUB.get(name, (name, FULL_WIDTH))
+        e = self.held(full)
+        self.read_guess |= e.guess or (e.partial and not 0 < size <= e.written)
+        if name not in SUB:
+            return e
+        return high_byte(e) if name in HIGH_BYTES else low_part(e, size)
+
     def set(self, name: str, e: E) -> None:
         if name in SUB:
             full, size = SUB[name]
             if name in HIGH_BYTES:
-                old = self.get(full)
+                old = self.held(full)
                 new = with_high_byte(old, e)
-                self.regs[full] = replace(new, written=WORD) if old.written else new
+                self.regs[full] = replace(new, written=WORD if old.written else 0,
+                                          partial=old.partial, guess=old.guess)  # fmt: skip
                 return
             old = self.regs.get(full)
-            signed = False if old is not None and old.const == 0 else e.signed
-            self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, signed, boolean=e.boolean,
-                                written=size)  # fmt: skip
+            zero = old is not None and old.const == 0
+            over_zero = zero or (old is not None and old.written > 0 and not old.partial)
+            self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, False if zero else e.signed,
+                                boolean=e.boolean, written=size, partial=not over_zero)  # fmt: skip
             return
         self.regs[name] = e
 
     def widened(self, name: str) -> E:
         """What a cast to the width of `al`, `ax` or `ah` reads: the cast does the narrowing."""
-        return self.get(name) if name in HIGH_BYTES else self.get(_full(name))
+        e = self.get(name)
+        return e if name in HIGH_BYTES else self.held(_full(name))
 
     def flush(self, ci) -> None:
         """Before a side effect: registers holding an impure value that is still needed become
@@ -1049,13 +1061,24 @@ class Block_:
     def attempt(self, ci, k) -> None:
         """One step. With `holes`, a refusal here costs this instruction, not the row."""
         try:
+            self.read_guess = False
             self.step(ci, k)
+            self.keep_guess(ci)
             if self.fstack and k == len(self.insns) - 1:
                 raise Unliftable("x87: stack live across a block end")
         except Unliftable as exc:
             if not self.lf.holes:
                 raise
             self.hole(ci, str(exc))
+
+    def keep_guess(self, ci) -> None:
+        """What `ci` worked out from a guess is one too. A call's result is the callee's, and a
+        whole register's copy is the same value, at the width it already prints."""
+        copied = ci.mnemonic == "mov" and ci.operands[1].type == X86_OP_REG
+        if not self.read_guess or ci.mnemonic == "call" or (copied and ci.operands[1].size == 4):
+            return
+        for r in _use_def(ci)[1] & self.regs.keys():
+            self.regs[r] = replace(self.regs[r], guess=True)
 
     def hole(self, ci, reason: str) -> None:
         """What `ci` wrote is unknown, so each register it wrote reads as a fresh local, and the
@@ -1445,12 +1468,14 @@ class Block_:
         something still reads: every block starts with the name of each variable, and only a
         needed register is kept right when a name it reads changes, so any other text here would
         be a guess. A narrow write prints at its width: `al=5` is true where `eax=5` is not, and
-        once esp is lost, text reading a stack name goes. A later run overwrites an earlier one."""
+        once esp is lost, text reading a stack name goes, as a guess always does. A later run
+        overwrites an earlier one."""
         known = [
             r
             for r in ARG_REGS
             if r in self.regs
             and r in self.needed
+            and not self.regs[r].guess
             and not (self.esp_lost and _STACK_NAME.search(self.regs[r].text))
         ]
         self.lf.call_values[ci.address] = {
