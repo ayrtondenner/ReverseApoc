@@ -421,6 +421,16 @@ def test_annotated_appends_to_the_matching_line():
     )
 
 
+def test_annotated_finds_the_line_a_real_listing_writes():
+    """The address pattern repeats the format of a listing's line, and a note with no line goes
+    quietly, so only a real listing shows the two still agree."""
+    flat, fixups, symbols, rows = _inputs(_image())
+    text = listing(rows[0], flat=flat, fixups=fixups, symbols=symbols)
+    call = FUNC1 + 3
+    (noted,) = [ln for ln in asm.annotated(text, {call: "x"}).splitlines() if ln.endswith("  ; x")]
+    assert noted.startswith(f"  0x{call:08X}  call ")
+
+
 def test_annotated_leaves_out_a_note_with_no_line():
     text = "# made-up 0x00010000\n  0x00010002  ret\n"
     assert asm.annotated(text, {0x00010000: "cases: 0: f"}) == text
