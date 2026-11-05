@@ -1937,3 +1937,26 @@ def test_call_notes_keep_the_full_name_of_a_high_byte_write_on_a_whole_value():
     call_at = VA + MOV_EAX_SIZE + 2
     exe = stub_exe(f"{MOV_EAX_1234} 30e4 {call_to(call_at, CALLEE)} c3", "c3")
     assert notes_of(exe)[call_at].startswith("eax=")
+
+
+# ---- a census that exists reaches the notes (07.1-05 review, WR-03) ----
+
+VOID_WITH_A_CENSUS = "85f6 7405 b801000000 c3"  # test esi, esi; je +5; mov eax, 1; ret
+
+
+def test_call_notes_read_a_census_that_exists(monkeypatch):
+    """Nobody reads what the callee leaves in eax, so the census makes it void. Without that, a
+    path that keeps eax reads as returning an argument, and eax reads as passed to the call."""
+    def no_census(_exe):
+        raise AssertionError("call_notes built the census")
+
+    monkeypatch.setattr(lift, "_census", no_census)
+    # test edx, edx; je +0; call; xor eax, eax; ret
+    call_at = VA + 4
+    exe = stub_exe(f"85d2 7400 {call_to(call_at, CALLEE)} 31c0 c3", VOID_WITH_A_CENSUS)
+    assert notes_of(exe) == {call_at: "eax=r_eax"}
+    census = f'{{"used": [], "called": [{CALLEE}]}}'
+    census_file().write_text(census, encoding="utf-8")
+    assert notes_of(exe) == {}
+    assert census_file().read_text(encoding="utf-8") == census
+    assert lift._BUILDING == set()

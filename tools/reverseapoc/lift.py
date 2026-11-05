@@ -20,6 +20,7 @@ import itertools
 import json
 import re
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 
 from capstone import CS_AC_WRITE
 from capstone.x86 import X86_OP_IMM, X86_OP_MEM, X86_OP_REG
@@ -1620,18 +1621,11 @@ def result_used(exe: ExeInputs) -> tuple[set, set] | None:
     game row of the EXE, cached in CACHE_DIR / result-used-<exe>.json. Signatures made during
     the build skip the demotion this census feeds, so they stay in a dict of its own."""
     stem = exe.stem
-    if stem in _RESULT_USED:
-        return _RESULT_USED[stem]
     if stem in _BUILDING:
-        return None
-    cache = CACHE_DIR / f"result-used-{stem}.json"
-    if cache.is_file():
-        try:
-            data = json.loads(cache.read_text(encoding="utf-8"))
-            _RESULT_USED[stem] = (set(data["used"]), set(data["called"]))
-            return _RESULT_USED[stem]
-        except ValueError, KeyError, TypeError:
-            pass  # a truncated file, or one of another shape, is no census: build it again
+        return _RESULT_USED.get(stem)
+    found = _read_census(stem)
+    if found is not None:
+        return found
     _BUILDING.add(stem)
     try:
         used, called = _census(exe)
@@ -1639,8 +1633,27 @@ def result_used(exe: ExeInputs) -> tuple[set, set] | None:
         _BUILDING.discard(stem)
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     census = {"used": sorted(used), "called": sorted(called)}
-    write_atomic(cache, json.dumps(census).encode("ascii"))
+    write_atomic(_census_file(stem), json.dumps(census).encode("ascii"))
     _RESULT_USED[stem] = (used, called)
+    return _RESULT_USED[stem]
+
+
+def _census_file(stem: str) -> Path:
+    return CACHE_DIR / f"result-used-{stem}.json"
+
+
+def _read_census(stem: str) -> tuple[set, set] | None:
+    """The census of `stem` from memory or from a valid file, or None. It never builds one."""
+    if stem in _RESULT_USED:
+        return _RESULT_USED[stem]
+    cache = _census_file(stem)
+    if not cache.is_file():
+        return None
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        _RESULT_USED[stem] = (set(data["used"]), set(data["called"]))
+    except ValueError, KeyError, TypeError:
+        return None  # a truncated file, or one of another shape, is no census
     return _RESULT_USED[stem]
 
 
@@ -1740,12 +1753,14 @@ def lift_row(exe: ExeInputs, start: int) -> str:
 def call_notes(exe: ExeInputs, row: FunctionRow) -> dict[int, str]:
     """`eax=<expr> dl=<expr>` by the address of each call of `row` with a known register. A
     refusal costs what comes after it, never what came before. This runs in a live session, so
-    it must not build the census, and a stem in _BUILDING is what stops result_used doing so,
-    whatever the cache holds: the census only decides `void`, so no value here depends on it."""
+    it must not build the census, and a stem in _BUILDING is what stops result_used doing so. A
+    valid census is read: it decides `void`, and through that which registers are arguments, so
+    the notes can differ without one."""
     if row.kind == KIND_DATA_IN_CODE:
         return {}  # its bytes only happen to decode
     lifter = Lifter(exe, row, holes=True)
-    _BUILDING.add(exe.stem)
+    if _read_census(exe.stem) is None:
+        _BUILDING.add(exe.stem)
     try:
         lifter.lift()
     except Unliftable:
