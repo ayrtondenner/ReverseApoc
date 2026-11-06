@@ -197,7 +197,7 @@ After a sweep hit, record it in notes.md first. Then stop, or try C shapes under
 notes.md holds, in this order:
 1. The outcome: matched, or the best objdiff with its check number (`checks/NNNN.c` is that C).
 2. Each shape tried: one line each, with its best percent and check number.
-3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`. If every difference you can read is a stack slot, write `slots only`, with the stores or loads you read: the owner runs the search outside sessions, and a session never does.
+3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`. You see the first difference and a count, never the rest, so if `first_va` falls on a stack operand write `slots only?`, with that instruction and `differing`. The owner runs the search outside sessions, and a session never does.
 4. The sweep result, if one ran: the best cell, and any hit as "needs flags <spec>" with its cell number and stage (as printed).
 5. Name ideas for callees, globals or the function, each with its evidence.
 6. What to try next, most promising first.
