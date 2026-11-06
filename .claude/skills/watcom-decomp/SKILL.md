@@ -64,11 +64,13 @@ Extern types, from how the target listing touches the data:
 
 - Declare every local at the start of its block, before any statement. No `for (int i...)`, no mixed declarations and code.
 - `/* */` comments only, never `//`. No `inline`, `bool`, VLAs, designated initializers or compound literals.
-- In a function you are matching, declaration order moves only address-taken locals and aggregates. They sort by size, the largest lowest, each padded to 4. Declaration order breaks ties only when the frame has one size, of 1, 2 or 4 bytes: the first declared sits highest, so swapping two declarations swaps their slots.
-- Register-candidate scalars ignore declaration order and scope. Assignment order, use order, type and loop weight move them, so change those. One exception: shorts spilled beside a short in memory do move with their declarations.
+- In a function you are matching, address-taken locals, aggregates and volatiles live in memory. They sort by size, the largest lowest, each padded to 4.
+- Among those, declaration order breaks ties only when the frame has one size, of 1, 2 or 4 bytes. Inside a block the first declared sits highest, so swapping two declarations swaps their slots. Across blocks, ints sit by the block's place in the source, an earlier block lower, and chars and shorts do not follow their blocks. In any other tie the order is not known: it is not the declaration order, and only a check can say whether a swap moves it.
+- Register-candidate scalars, integers and pointers of 4 bytes, ignore declaration order and scope. Assignment order, use order, type and loop weight move them, so change those. Under 4 bytes this need not hold: shorts spilled beside a short in memory do move with their declarations.
+- Floats and doubles are not covered: a float with no address taken in a tie still moves with its declarations, and a double moves the ints beside it by its use alone.
 - A function that already matches is never reordered.
 - C89 is required: the driver lints the unit before it commits a match (`reverseapoc lint`, clang `-std=gnu89 -Werror=declaration-after-statement`). A C89 slip fails the attempt even when check passes.
-- Depth: `docs/coding-style.md`, and `docs/matching.md` for the slot rules.
+- Depth: `docs/coding-style.md`; `docs/matching.md` for the slot rules, which win where the two differ.
 
 ## Pragmas
 
