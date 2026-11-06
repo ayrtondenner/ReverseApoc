@@ -315,3 +315,56 @@ def test_a_shift_leaves_a_relocation_unread_so_it_is_not_class_slot(tmp_path):
     ours = body(f"{PLACEHOLDER} {LOAD_SLOT_0}")
     theirs = body(f"{LINKED.hex()} {LOAD_SLOT_4}")
     assert class_of_object(tmp_path, ours, theirs, f"{CALLED.name}_") == "mixed"
+
+
+# ---- a row's trailing filler changes no class ----
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs", "klass"),
+    [
+        (body(LOAD_SLOT_4), body(LOAD_SLOT_4), "tail"),
+        (body(LOAD_SLOT_4), body(LOAD_SLOT_8), "slot"),
+        (body(MOVE_EBX_TO_EAX), body(MOVE_EBX_TO_EDX), "register"),
+        (body(f"{JE} {MOVE_EBX_TO_EAX} {INC_EAX}"), body(f"{JNE} {MOVE_EBX_TO_EAX} {INC_EAX}"),
+         "branch"),
+        (body(LOAD_SLOT_4, 0x10), body(LOAD_SLOT_4, 0x14), "size"),
+        (body(INC_EAX), body(DEC_EAX + DEC_EAX), "size"),
+        (body(INC_EAX), body(DEC_EAX), "mixed"),
+    ],
+    ids=["tail", "slot", "register", "branch", "frame", "length", "mixed"],
+)  # fmt: skip
+def test_a_filler_tail_changes_no_class(tmp_path, ours, theirs, klass):
+    assert class_of_object(tmp_path, ours, theirs + FILLER) == klass
+
+
+def test_an_undecodable_tail_is_not_cut(tmp_path):
+    """Decode stops at the unread bytes, so the filler before them is no row's end."""
+    theirs = body(LOAD_SLOT_8) + FILLER + bytes.fromhex(UNREADABLE)
+    assert class_of_object(tmp_path, body(LOAD_SLOT_4), theirs) == "size"
+
+
+def test_a_right_relocation_on_a_filler_row_is_class_slot(tmp_path):
+    """18 bytes and 14 of filler end the row 16-aligned at ROW, so the filler rule accepts it."""
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_8}") + FILLER * 7
+    assert class_of_object(tmp_path, ours, theirs, f"{CALLED.name}_") == "slot"
+
+
+def test_a_wrong_relocation_on_a_filler_row_is_not_class_slot(tmp_path):
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_8}") + FILLER * 7
+    assert class_of_object(tmp_path, ours, theirs, f"{OTHER.name}_") == "mixed"
+
+
+def test_a_relocation_on_a_row_ending_off_16_stays_mixed(tmp_path):
+    """The row's end is off 16, so the length problem stops the check before it reads the fields,
+    and the mask may hide a wrong target."""
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_8}") + FILLER
+    assert class_of_object(tmp_path, ours, theirs, f"{CALLED.name}_") == "mixed"
+
+
+def test_classify_pair_still_reads_a_filler_tail_as_another_length():
+    """The cut lives in _class_of, and classify_pair's contract does not change."""
+    assert classed(body(LOAD_SLOT_4), body(LOAD_SLOT_8) + FILLER) == "size"
