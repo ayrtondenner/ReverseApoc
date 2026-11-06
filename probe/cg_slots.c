@@ -731,6 +731,291 @@ void pr_tie_scope_shorts(int x)
     }
 }
 
+/*
+ * Arrays of one total size, alone or beside scalars. Three or more multi-element arrays leave
+ * M2 even in a frame of one size; up to two keep it. Each function has markers of its own, and a
+ * _rev twin shares its base's, so each shape keeps its own last store.
+ */
+
+/* Three char[4]: the middle one sits highest. */
+void pr_arr_char4_x3(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+
+    a[0] = 0x12;
+    b[0] = 0x13;
+    c[0] = 0x14;
+    pr_take(a, b, c);
+}
+
+/* Its twin, declared backwards. */
+void pr_arr_char4_x3_rev(void)
+{
+    char c[4];
+    char b[4];
+    char a[4];
+
+    a[0] = 0x12;
+    b[0] = 0x13;
+    c[0] = 0x14;
+    pr_take(a, b, c);
+}
+
+/* Four char[4]. */
+void pr_arr_char4_x4(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    char d[4];
+
+    a[0] = 0x15;
+    b[0] = 0x16;
+    c[0] = 0x17;
+    d[0] = 0x18;
+    pr_take(a, b, c, d);
+}
+
+/* Three unsigned char[4]. */
+void pr_arr_uchar4_x3(void)
+{
+    unsigned char a[4];
+    unsigned char b[4];
+    unsigned char c[4];
+
+    a[0] = 0x19;
+    b[0] = 0x1a;
+    c[0] = 0x1b;
+    pr_take(a, b, c);
+}
+
+/* Three short[2]. */
+void pr_arr_short2_x3(void)
+{
+    short a[2];
+    short b[2];
+    short c[2];
+
+    a[0] = 0x1c;
+    b[0] = 0x1d;
+    c[0] = 0x1e;
+    pr_take(a, b, c);
+}
+
+/* Three char[2]: another order again. */
+void pr_arr_char2_x3(void)
+{
+    char a[2];
+    char b[2];
+    char c[2];
+
+    a[0] = 0x1f;
+    b[0] = 0x20;
+    c[0] = 0x21;
+    pr_take(a, b, c);
+}
+
+/* Two char[4] keep the rule. */
+void pr_arr_char4_x2(void)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0x23;
+    b[0] = 0x24;
+    pr_take(a, b);
+}
+
+/* One char[4] beside two ints. */
+void pr_arr_one_int(void)
+{
+    char a[4];
+    int b;
+    int c;
+
+    a[0] = 0x25;
+    b = 0x26;
+    c = 0x27;
+    pr_take(a, &b, &c);
+}
+
+/* The same with int[1]: one element is no array. */
+void pr_arr_one_int1(void)
+{
+    char a[4];
+    int b[1];
+    int c[1];
+
+    a[0] = 0x28;
+    b[0] = 0x29;
+    c[0] = 0x2a;
+    pr_take(a, b, c);
+}
+
+/* Two char[4] beside an int. */
+void pr_arr_two_int(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+
+    a[0] = 0x2b;
+    b[0] = 0x2c;
+    c = 0x2d;
+    pr_take(a, b, &c);
+}
+
+/* The same with int[1]. */
+void pr_arr_two_int1(void)
+{
+    char a[4];
+    char b[4];
+    int c[1];
+
+    a[0] = 0x2e;
+    b[0] = 0x2f;
+    c[0] = 0x30;
+    pr_take(a, b, c);
+}
+
+/* Two short[2]. */
+void pr_arr_short2_x2(void)
+{
+    short a[2];
+    short b[2];
+
+    a[0] = 0x31;
+    b[0] = 0x32;
+    pr_take(a, b);
+}
+
+/* Two char[2]. */
+void pr_arr_char2_x2(void)
+{
+    char a[2];
+    char b[2];
+
+    a[0] = 0x34;
+    b[0] = 0x35;
+    pr_take(a, b);
+}
+
+/* One short[2] beside two ints. */
+void pr_arr_short2_int(void)
+{
+    short a[2];
+    int b;
+    int c;
+
+    a[0] = 0x36;
+    b = 0x37;
+    c = 0x38;
+    pr_take(a, &b, &c);
+}
+
+/* One char[4] beside one int. */
+void pr_arr_one_one(void)
+{
+    char a[4];
+    int b;
+
+    a[0] = 0x39;
+    b = 0x3a;
+    pr_take(a, &b);
+}
+
+/* The boundary: two char[4] beside two ints. */
+void pr_arr_two_two(void)
+{
+    char a[4];
+    char b[4];
+    int c;
+    int d;
+
+    a[0] = 0x3b;
+    b[0] = 0x3c;
+    c = 0x3d;
+    d = 0x3e;
+    pr_take(a, b, &c, &d);
+}
+
+/* Its twin, declared backwards. */
+void pr_arr_two_two_rev(void)
+{
+    int d;
+    int c;
+    char b[4];
+    char a[4];
+
+    a[0] = 0x3b;
+    b[0] = 0x3c;
+    c = 0x3d;
+    d = 0x3e;
+    pr_take(a, b, &c, &d);
+}
+
+/* The boundary: one char[4] beside three ints. */
+void pr_arr_one_three(void)
+{
+    char a[4];
+    int b;
+    int c;
+    int d;
+
+    a[0] = 0x3f;
+    b = 0x40;
+    c = 0x41;
+    d = 0x42;
+    pr_take(a, &b, &c, &d);
+}
+
+/* Its twin, declared backwards. */
+void pr_arr_one_three_rev(void)
+{
+    int d;
+    int c;
+    int b;
+    char a[4];
+
+    a[0] = 0x3f;
+    b = 0x40;
+    c = 0x41;
+    d = 0x42;
+    pr_take(a, &b, &c, &d);
+}
+
+/* The boundary at size 2: two char[2] beside two shorts. */
+void pr_arr_two_two_small(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+    short d;
+
+    a[0] = 0x43;
+    b[0] = 0x45;
+    c = 0x46;
+    d = 0x47;
+    pr_take(a, b, &c, &d);
+}
+
+/* The boundary at size 2: one char[2] beside three shorts. */
+void pr_arr_one_three_small(void)
+{
+    char a[2];
+    short b;
+    short c;
+    short d;
+
+    a[0] = 0x48;
+    b = 0x49;
+    c = 0x4a;
+    d = 0x4b;
+    pr_take(a, &b, &c, &d);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {

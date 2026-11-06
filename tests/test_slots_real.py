@@ -37,19 +37,30 @@ class Marked:
     marker: int  # the constant the probe stores in it
     scope: int = 0
     at: int = 0  # where in the local the marker lies
+    array: bool = False  # it holds more than one element
+
+
+def _arrays(size: int, *markers: int) -> tuple[Marked, ...]:
+    """Arrays of `size` bytes each, named from a, as the `pr_arr_` shapes declare them."""
+    return tuple(Marked(name, size, marker, array=True)
+                 for name, marker in zip("abcd", markers, strict=False))  # fmt: skip
 
 
 DOUBLE = Marked("d", 8, 0x40040000, at=HIGH_DWORD)  # 2.5
 SAME_SIZE = (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 4, 0x33), Marked("d", 4, 0x44))
 MIXED = (Marked("a", 1, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33), DOUBLE)
-ARRAY = (Marked("a", 12, 0x11), Marked("b", 8, 0x22), Marked("c", 6, 0x33))
+ARRAY = (Marked("a", 12, 0x11, array=True), Marked("b", 8, 0x22, array=True),
+         Marked("c", 6, 0x33, array=True))  # fmt: skip
 STRUCT = (Marked("a", 3, 0x11), Marked("b", 6, 0x22), Marked("c", 12, 0x33), Marked("d", 4, 0x44))
-ODD = (Marked("a", 3, 0x11), Marked("b", 5, 0x22), Marked("c", 7, 0x33), Marked("d", 4, 0x44))
+ODD = (Marked("a", 3, 0x11, array=True), Marked("b", 5, 0x22, array=True),
+       Marked("c", 7, 0x33, array=True), Marked("d", 4, 0x44))  # fmt: skip
 BYTES = (Marked("a", 1, 0x11), Marked("b", 1, 0x22), Marked("c", 1, 0x33))
 SHORTS = (Marked("a", 2, 0x11), Marked("b", 2, 0x22), Marked("c", 2, 0x33))
 VOLATILE = (Marked("a", 4, 0x11), Marked("v", 4, 0x22), Marked("b", 4, 0x33))
 FLOAT_1_5, FLOAT_2_5, FLOAT_3_5 = 0x3FC00000, 0x40200000, 0x40600000
 FLOATS = (Marked("a", 4, FLOAT_1_5), Marked("b", 4, FLOAT_2_5), Marked("c", 4, FLOAT_3_5))
+TWO_TWO = (*_arrays(4, 0x3B, 0x3C), Marked("c", 4, 0x3D), Marked("d", 4, 0x3E))
+ONE_THREE = (*_arrays(4, 0x3F), Marked("b", 4, 0x40), Marked("c", 4, 0x41), Marked("d", 4, 0x42))
 # Each function's locals in declaration order. A scope counts blocks in source order.
 SHAPES = {
     "pr_slot_same_size": SAME_SIZE,
@@ -62,7 +73,7 @@ SHAPES = {
     "pr_slot_struct_rev": STRUCT[::-1],
     "pr_slot_odd": ODD,
     "pr_slot_odd_rev": ODD[::-1],
-    "pr_slot_unaligned": (Marked("a", 12, 0x11), DOUBLE, Marked("b", 4, 0x22)),
+    "pr_slot_unaligned": (Marked("a", 12, 0x11, array=True), DOUBLE, Marked("b", 4, 0x22)),
     "pr_slot_bytes": BYTES,
     "pr_slot_bytes_rev": BYTES[::-1],
     "pr_slot_shorts": SHORTS,
@@ -80,18 +91,35 @@ SHAPES = {
     "pr_slot_volatile_rev": VOLATILE[::-1],
     "pr_slot_volatile_init": (Marked("v", 4, 0x22), Marked("a", 4, 0x11)),
     "pr_slot_float_taken": FLOATS,
-    "pr_slot_float_array": (Marked("f", 4, FLOAT_1_5), Marked("v", 8, 0x11)),
+    "pr_slot_float_array": (Marked("f", 4, FLOAT_1_5), Marked("v", 8, 0x11, array=True)),
     "pr_slot_double_int": (Marked("a", 4, 0x11), DOUBLE),
+    "pr_arr_char4_x2": _arrays(4, 0x23, 0x24),
+    "pr_arr_one_int": (*_arrays(4, 0x25), Marked("b", 4, 0x26), Marked("c", 4, 0x27)),
+    "pr_arr_one_int1": (*_arrays(4, 0x28), Marked("b", 4, 0x29), Marked("c", 4, 0x2A)),
+    "pr_arr_two_int": (*_arrays(4, 0x2B, 0x2C), Marked("c", 4, 0x2D)),
+    "pr_arr_two_int1": (*_arrays(4, 0x2E, 0x2F), Marked("c", 4, 0x30)),
+    "pr_arr_short2_x2": _arrays(4, 0x31, 0x32),
+    "pr_arr_char2_x2": _arrays(2, 0x34, 0x35),
+    "pr_arr_short2_int": (*_arrays(4, 0x36), Marked("b", 4, 0x37), Marked("c", 4, 0x38)),
+    "pr_arr_one_one": (*_arrays(4, 0x39), Marked("b", 4, 0x3A)),
+    "pr_arr_two_two": TWO_TWO,
+    "pr_arr_two_two_rev": TWO_TWO[::-1],
+    "pr_arr_one_three": ONE_THREE,
+    "pr_arr_one_three_rev": ONE_THREE[::-1],
+    "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
+    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
+                               Marked("d", 2, 0x4B)),  # fmt: skip
 }
-PAIR =(Marked("a", 8, 0x11), Marked("b", 8, 0x22))
-THREE = (*PAIR, Marked("c", 8, 0x33))
+PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
+THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
+CHAR4_X3 = _arrays(4, 0x12, 0x13, 0x14)
 # What the model refuses: every one of these leaves declaration order.
 TIES = {
     "pr_tie_three": THREE,
     "pr_tie_three_int": (*THREE, Marked("d", 4, 0x44)),
     "pr_tie_pair": (*PAIR, Marked("c", 4, 0x33)),
-    "pr_tie_small": (Marked("d", 8, 0x44), Marked("e", 8, 0x55), Marked("c", 4, 0x33),
-                     Marked("b", 4, 0x22), Marked("a", 4, 0x11)),  # fmt: skip
+    "pr_tie_small": (Marked("d", 8, 0x44, array=True), Marked("e", 8, 0x55, array=True),
+                     Marked("c", 4, 0x33), Marked("b", 4, 0x22), Marked("a", 4, 0x11)),  # fmt: skip
     "pr_tie_double": (DOUBLE, *PAIR),
     "pr_tie_sizes": (Marked("a", 4, 0x11), Marked("b", 4, 0x22), Marked("c", 2, 0x33),
                      Marked("d", 2, 0x44)),  # fmt: skip
@@ -99,6 +127,21 @@ TIES = {
                            Marked("c", 4, 0x33, 1), Marked("d", 2, 0x44, 1),
                            Marked("e", 4, 0x55, 2), Marked("f", 2, 0x66, 2)),  # fmt: skip
     "pr_tie_scope_shorts": (Marked("a", 2, 0x11), Marked("b", 2, 0x22, 1), Marked("c", 2, 0x33, 2)),
+    "pr_arr_char4_x3": CHAR4_X3,
+    "pr_arr_char4_x3_rev": CHAR4_X3[::-1],
+    "pr_arr_char4_x4": _arrays(4, 0x15, 0x16, 0x17, 0x18),
+    "pr_arr_uchar4_x3": _arrays(4, 0x19, 0x1A, 0x1B),
+    "pr_arr_short2_x3": _arrays(4, 0x1C, 0x1D, 0x1E),
+    "pr_arr_char2_x3": _arrays(2, 0x1F, 0x20, 0x21),
+}
+# Where the refused array ties sit, the same in both cells.
+ARRAY_TIES = {
+    "pr_arr_char4_x3": {"a": 4, "b": 8, "c": 0},
+    "pr_arr_char4_x3_rev": {"c": 4, "b": 8, "a": 0},
+    "pr_arr_char4_x4": {"a": 4, "b": 0xC, "c": 8, "d": 0},
+    "pr_arr_uchar4_x3": {"a": 4, "b": 8, "c": 0},
+    "pr_arr_short2_x3": {"a": 4, "b": 8, "c": 0},
+    "pr_arr_char2_x3": {"a": 0, "b": 8, "c": 4},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {
@@ -106,7 +149,7 @@ FLOAT_TIES = {
     "pr_float_tie": FLOATS,
     "pr_float_tie_rev": FLOATS[::-1],
 }
-SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722))
+SPILL_MEMORY = (Marked("m", 4, 0x711), Marked("q", 12, 0x722, array=True))
 SPILL_SMALL = (Marked("m", 2, 0x711), Marked("n", 2, 0x722))
 SAME_CODE = (("pr_spill_decl", "pr_spill_decl_rev"), ("pr_spill_decl", "pr_spill_scoped"))
 MOVED_CODE = (
@@ -121,6 +164,7 @@ FALLBACK_TWINS = (
     ("pr_twin_ints_double", "pr_twin_double_ints"),  # a double beside the tie
     ("pr_float_tie", "pr_float_tie_rev"),  # a float in the tie
     ("pr_thin_ours", "pr_thin_theirs"),  # a map that cannot place c
+    ("pr_arr_char4_x3", "pr_arr_char4_x3_rev"),  # three arrays in a tie
 )
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
@@ -199,7 +243,7 @@ def _offsets(module: omf.Module, name: str, cell: str, shape: tuple[Marked, ...]
 
 
 def _declared(shape: Sequence[Marked]) -> tuple[slots.Local, ...]:
-    return tuple(slots.Local(one.name, one.size, one.scope) for one in shape)
+    return tuple(slots.Local(one.name, one.size, one.scope, one.array) for one in shape)
 
 
 def _frame(module: omf.Module, name: str) -> int:
@@ -226,7 +270,7 @@ def _by_declaration(shape: Sequence[Marked]) -> dict[str, int]:
 @pytest.mark.parametrize("cell", CELLS)
 @pytest.mark.parametrize("name", SHAPES)
 def test_model_reproduces_every_memory_shape(modules, cell, name):
-    """Every shape the model accepts. The `pr_tie_` shapes it refuses are held by
+    """Every shape the model accepts. The `pr_tie_` and `pr_arr_` shapes it refuses are held by
     test_a_refused_tie_leaves_declaration_order_and_keeps_sizes."""
     shape = SHAPES[name]
     measured = _offsets(modules[cell], name, cell, shape)
@@ -250,6 +294,13 @@ def test_a_refused_tie_leaves_declaration_order_and_keeps_sizes(modules, cell, n
     ascending = sorted(measured, key=measured.__getitem__)
     assert [sizes[local] for local in ascending] == sorted(sizes.values(), reverse=True)
     assert _frame(modules[cell], name) == slots.frame_size(declared)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("name", ARRAY_TIES)
+def test_array_ties_sit_where_measured(modules, cell, name):
+    """Three or more arrays of one size leave M2, and these offsets say how."""
+    assert _offsets(modules[cell], name, cell, TIES[name]) == ARRAY_TIES[name]
 
 
 @pytest.mark.parametrize("cell", CELLS)
