@@ -1217,6 +1217,21 @@ def test_a_dimension_that_is_not_a_plain_number_has_no_size(line):
     assert _locals_of(line, "", "take(v);", "return a;") == ()
 
 
+@pytest.mark.parametrize(
+    ("line", "array"),
+    [("char v[4];", True), ("short v[2];", True), ("char v[2][2];", True), ("int *v[2];", True),
+     ("char v[1];", False), ("int v[1];", False), ("int v[1][1];", False)],
+)  # fmt: skip
+def test_memory_locals_mark_more_than_one_element_as_an_array(line, array):
+    (local,) = _locals_of(line, "", "take(v);", "return a;")
+    assert local.array is array
+
+
+def test_a_scalar_is_no_array():
+    (local,) = _locals_of("int b;", "", "take(&b);", "return a;")
+    assert local.array is False
+
+
 def test_memory_locals_take_a_pointer_whose_address_is_taken():
     (local,) = _locals_of("int *p;", "", "take(&p);", "return a;")
     assert (local.name, local.size) == ("p", 4)
@@ -1379,6 +1394,21 @@ def test_declaration_axis_falls_back_when_the_order_is_not_known():
     """Two 8-byte arrays beside an int: the probe found no rule, so plan 1's moves stand."""
     text = _body("int v[2];", "int w[2];", "int b;", "", "take(v, w, &b);", "return a;")
     assert _axis(text, _pairs((0, 8), (8, 0))) == _plan_1_moves(text)
+
+
+def test_declaration_axis_falls_back_for_three_arrays_of_one_size():
+    """pr_arr_char4_x3: three `char[4]` leave M2, so the model has no order to compute."""
+    text = _body("char v[4];", "char w[4];", "char x[4];", "", "take(v, w, x);", "return a;")
+    moves = _axis(text, _pairs((0, 4), (4, 8), (8, 0)))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+def test_declaration_axis_keeps_computing_for_arrays_of_distinct_sizes():
+    """pr_slot_array: no tie, so the slots agree and there is nothing to move."""
+    lines = ("int v[3];", "int w[2];", "char x[6];", "", "take(v, w, x);", "return a;")
+    slot_map = batch.SlotMap(((0, 0), (0xC, 0xC), (0x14, 0x14)), True, 0x1C, 0x1C)
+    assert _axis(_body(*lines), slot_map) == []
 
 
 def test_declaration_axis_computes_for_small_locals_when_nothing_spilled():

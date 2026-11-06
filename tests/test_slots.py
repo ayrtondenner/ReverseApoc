@@ -91,6 +91,42 @@ def test_frame_layout_refuses_an_order_nothing_measured():
         slots.frame_layout(_locals(("a", 8), ("b", 8)))
 
 
+@pytest.mark.parametrize(("size", "count"), [(4, 3), (4, 4), (2, 3), (4, 14)])
+def test_three_or_more_arrays_in_one_size_have_no_known_order(size, count):
+    declared = tuple(slots.Local(f"v{n}", size, array=True) for n in range(count))
+    assert slots.order_is_known(declared) is False
+
+
+def test_frame_layout_refuses_three_arrays_of_one_size():
+    declared = tuple(slots.Local(name, 4, array=True) for name in "abc")
+    with pytest.raises(ValueError, match="no known order"):
+        slots.frame_layout(declared)
+
+
+def test_three_arrays_beside_a_scalar_have_no_known_order():
+    declared = (*(slots.Local(name, 4, array=True) for name in "abc"), slots.Local("d", 4))
+    assert slots.order_is_known(declared) is False
+
+
+@pytest.mark.parametrize(
+    ("size", "arrays", "plain"), [(4, 2, 0), (2, 2, 0), (4, 2, 1), (4, 1, 2)]
+)
+def test_two_arrays_in_one_size_keep_the_rule(size, arrays, plain):
+    declared = (*(slots.Local(f"v{n}", size, array=True) for n in range(arrays)),
+                *(slots.Local(f"p{n}", size) for n in range(plain)))  # fmt: skip
+    assert slots.order_is_known(declared) is True
+    layout = slots.frame_layout(declared)
+    assert max(layout, key=layout.__getitem__) == declared[0].name
+
+
+def test_arrays_of_distinct_sizes_stay_known():
+    """pr_slot_array holds three arrays and no tie, so M1 places them."""
+    declared = (slots.Local("a", 12, array=True), slots.Local("b", 8, array=True),
+                slots.Local("c", 6, array=True))  # fmt: skip
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == {"a": 0, "b": 0xC, "c": 0x14}
+
+
 def test_frame_size_needs_no_order():
     assert slots.frame_size(_locals(("a", 8), ("b", 8), ("c", 3))) == 0x14
 
