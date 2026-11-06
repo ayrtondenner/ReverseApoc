@@ -22,9 +22,11 @@ Offsets count from esp after the prologue. What the probe measured, the same in 
 
 M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
-pr_tie_three, and its three arrays take other offsets. Three or more multi-element arrays leave M2
-even alone in a frame of one size (pr_arr_char4_x3): Local.array carries that shape. No standard
-sort reproduces these orders and a table by count would not hold either, so the model refuses them.
+pr_tie_three, and its three arrays take other offsets. Local.array carries the shapes that leave
+M2 or M4 in a frame of one size: three or more multi-element arrays alone (pr_arr_char4_x3), an
+array of 2 bytes beside plain locals (pr_arr_two_one_small, pr_arr_one_two_small), and two arrays
+beside a later block (pr_arr_two_block). No standard sort reproduces these orders and a table by
+count would not hold either, so the model refuses them, and some frames it refuses hold.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
@@ -37,7 +39,7 @@ from dataclasses import dataclass
 
 SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
 _ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
-_MEASURED_ARRAYS = 2  # the most multi-element arrays a frame of one size was measured to keep M2
+_MEASURED_ARRAYS = 2  # the most multi-element arrays one frame of one size kept M2 with
 _BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
 
 
@@ -53,16 +55,20 @@ class Local:
 
 def order_is_known(locals_: Sequence[Local]) -> bool:
     """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
-    no more than _MEASURED_ARRAYS of them are arrays, and only size 4 keeps its order across
-    blocks."""
+    and no more than _MEASURED_ARRAYS of them are arrays. Only size 4 keeps its order across
+    blocks, with at most one array, and under size 4 the locals are all arrays or none."""
     sizes = {local.size for local in locals_}
     if len(sizes) == len(locals_):
         return True
     if len(sizes) != 1 or not sizes <= _ORDERED_SIZES:
         return False
-    if sum(local.array for local in locals_) > _MEASURED_ARRAYS:
+    arrays = sum(local.array for local in locals_)
+    one_block = len({local.scope for local in locals_}) == 1
+    if arrays > _MEASURED_ARRAYS:
         return False
-    return sizes == {_BLOCK_ORDERED_SIZE} or len({local.scope for local in locals_}) == 1
+    if sizes == {_BLOCK_ORDERED_SIZE}:
+        return one_block or arrays < 2
+    return one_block and arrays in (0, len(locals_))
 
 
 def _padded(size: int) -> int:

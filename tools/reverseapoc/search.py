@@ -524,9 +524,10 @@ def _moved(local: slots.Local, start: int, slot_map: batch.SlotMap) -> set[int]:
 def _places_all(memory: Sequence[slots.Local], slot_map: batch.SlotMap) -> bool:
     """The map shows every local of `memory`, each moved one way, and their targets are exactly
     the layout's own offsets. The map of a function that is not exact is often partial, and a
-    local it leaves out would make the inverse answer from nothing. The model places a tie only
-    among its own offsets, so a target off them is a frame it cannot place, not one that no order
-    reaches: past this, a None from slots.declaration_order means size or a block rules it out."""
+    local it leaves out would make the inverse answer from nothing. The model places locals only
+    among its own offsets, so it cannot speak for a target off them, and the plain moves stand,
+    whether or not an order reaches it: past this, a None from slots.declaration_order means size
+    or a block rules the target out."""
     layout = slots.frame_layout(memory)
     targets = set()
     for local in memory:
