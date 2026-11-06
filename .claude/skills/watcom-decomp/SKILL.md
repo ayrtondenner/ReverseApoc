@@ -129,11 +129,11 @@ struct unk_002C {
 `attempt asm` prints a note after some lines, past a `  ; `. Notes reach this command's output only, so `attempt context` and the listing files do not show them. The exception is a `<kind> -> <name>` note, such as `off32 -> D_00091000`: that is the listing's own, a fact from an LE fixup, and the listing files show it too.
 
 - `cases: 0: .L00034590, 1: .L000345A0` on a table jump is read from the original's fixups, so it is exact. Each number is the entry's place in the table, always from 0, not your `case` value: read the `sub`, `dec` or `add` on the index above the jump and add that bias back (after `sub eax, 5`, entry 0 is `case 5`), and entries that share the default's target take no `case`. `.L00034590` names address 0x00034590: most targets have no label line, so find the line that starts with that address. A target written any other way (a row's name, `func_X+0x1` or a bare address) lands outside your function: check refuses the table, so stop and say so in notes.md. A table jump with no note has a table the tool could not read.
-- `eax=<expr> edx=<expr>` on a call: what each argument register holds, for the registers the converter knows and something still reads. A register left out is unknown, not zero and not absent: find it in the listing.
+- `eax=<expr> edx=<expr>` on a call comes from the converter's symbolic state: a hint to check against the listing, with `attempt check` as the proof. It shows what those registers hold when something still reads them, the call or code after it, and it leaves out what the converter does not know. A shown register is no proof of an argument, and a missing one is no proof of none: take the argument count from the callee's listing.
 - `r_<reg>` in a note is the value that register held at the last point the converter named it, not the register now: `eax=5 edx=r_eax` says `edx` holds what `eax` held before the 5. That point can be the start of a block, so it need not be the function's entry value either: read back up the listing before you write the argument.
 - `h_<address>` is a hole: the converter could not read the instruction at that hex address, so the value is unknown.
 - `al=<expr>` is a byte or word write at that width: the rest of the register is not in the text.
-- `s_<hex>` is a stack slot and `r_p<n>` a stack parameter.
+- `s_<hex>` is a stack slot. `r_p<n>` is the n-th argument, passed on the stack: `r_p5` is the first.
 
 `attempt check` exits:
 - `0`: the claimed function matches (objdiff 100, reloc and bytes ok) and check passes its whole unit. Only this is a match.
