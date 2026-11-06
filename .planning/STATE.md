@@ -6,10 +6,10 @@ current_phase: "07.1"
 current_phase_name: Matching tooling (INSERTED)
 status: executing
 stopped_at: "Phase 07.1 verification: gaps_found; close stopped for the owner's rulings"
-last_updated: "2026-11-06T23:12:12.467Z"
-last_activity: 2026-11-04
+last_updated: "2026-11-06T23:13:25.248Z"
+last_activity: 2026-11-06
 last_activity_desc: Phase 07.1 execution started
-state_head: cde134c5da37c1d0951caab99ce1ad31c03fca94
+state_head: e61954fa959500d936f80b6e938e2b18d21847b9
 progress:
   total_phases: 9
   completed_phases: 6
@@ -24,14 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-26)
 
 **Core value:** Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to the original, objdiff 100% for the function), never by an agent's own judgement.
-**Current focus:** Phase 07.1 — Matching tooling
+**Current focus:** Phase 07.1 — Matching tooling (INSERTED)
 
 ## Current Position
 
-Phase: 07.1 (Matching tooling (INSERTED)) — READY TO EXECUTE
-Plan: 6 of 6
-Status: Ready to execute
-Last activity: 2026-11-04 — Phase 07.1 execution started
+Phase: 07.1 (Matching tooling (INSERTED)) — EXECUTING
+Plan: 7 of 7
+Status: Executing Phase 07.1
+Last activity: 2026-11-06 — Phase 07.1 execution started
 
 Progress: [████████░░] 75%
 
