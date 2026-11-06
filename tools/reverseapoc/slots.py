@@ -22,8 +22,9 @@ Offsets count from esp after the prologue. What the probe measured, the same in 
 
 M1 and M3 always held. M2 and M4 hold only where order_is_known says so: past that a tie leaves
 declaration order, and locals outside the tie change how. pr_tie_three_int only adds an int to
-pr_tie_three, and its three arrays take other offsets. No standard sort reproduces these orders
-and a table by count would not hold either, so the model refuses them.
+pr_tie_three, and its three arrays take other offsets. Three or more multi-element arrays leave M2
+even alone in a frame of one size (pr_arr_char4_x3): Local.array carries that shape. No standard
+sort reproduces these orders and a table by count would not hold either, so the model refuses them.
 
 This is never a match: nothing here lands, writes status.csv or edits config/cflags.txt. A match
 is still claimed only by `reverseapoc check` / `gate` (D-16).
@@ -36,6 +37,7 @@ from dataclasses import dataclass
 
 SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
 _ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
+_MEASURED_ARRAYS = 2  # the most multi-element arrays a frame of one size was measured to keep M2
 _BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
 
 
@@ -46,15 +48,19 @@ class Local:
     name: str
     size: int
     scope: int = 0  # orders blocks as the source does: a later block has a greater one
+    array: bool = False  # it holds more than one element: `char v[1]` does not count
 
 
 def order_is_known(locals_: Sequence[Local]) -> bool:
     """M2 and M4 decide this frame: no two sizes tie, or every local has one size, 1, 2 or 4,
-    and only size 4 keeps its order across blocks."""
+    no more than _MEASURED_ARRAYS of them are arrays, and only size 4 keeps its order across
+    blocks."""
     sizes = {local.size for local in locals_}
     if len(sizes) == len(locals_):
         return True
     if len(sizes) != 1 or not sizes <= _ORDERED_SIZES:
+        return False
+    if sum(local.array for local in locals_) > _MEASURED_ARRAYS:
         return False
     return sizes == {_BLOCK_ORDERED_SIZE} or len({local.scope for local in locals_}) == 1
 

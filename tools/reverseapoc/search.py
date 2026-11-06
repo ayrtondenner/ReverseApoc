@@ -398,6 +398,13 @@ def _size(found: re.Match[str]) -> int | None:
     return math.prod(dimensions, start=element)
 
 
+def _elements(found: re.Match[str]) -> int:
+    """The elements of the local declared by `found`, whose size _size has read: 1 with no
+    dimension."""
+    declarator = found["declarators"].split("=")[0]
+    return math.prod(_dimension(text) for text in _DIMENSION.findall(declarator))
+
+
 def _plain_float(found: re.Match[str]) -> bool:
     """A float or a double itself, not an array of them or a pointer to one."""
     declarator = found["declarators"].split("=")[0]
@@ -463,7 +470,7 @@ def memory_locals(text: str, span: tuple[int, int]) -> tuple[slots.Local, ...]:
         size = _size(found)
         if size is not None and _in_frame(found, code, n, span, body):
             scope = stacks[n][-1] if stacks[n] else 0
-            found_locals.append(slots.Local(_name(found), size, scope))
+            found_locals.append(slots.Local(_name(found), size, scope, _elements(found) > 1))
     return tuple(found_locals)
 
 
