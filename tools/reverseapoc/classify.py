@@ -134,18 +134,36 @@ def _may_hide_a_difference(reloc: RelocResult) -> bool:
     return bool(problems)
 
 
+def _without_filler(code: bytes, va: int) -> bytes:
+    """`code` without its trailing alignment filler. A body that does not decode to its end stays
+    whole: decode stops at what it cannot read, and a cut there would hide those bytes from
+    classify_pair's own decode check."""
+    if not _decodes_whole(code, va):
+        return code
+    end = len(code)
+    for insn in reversed(list(decode(code, va))):
+        if not batch.is_alignment_filler(insn):
+            break
+        end -= insn.size
+    return code[:end]
+
+
 def _class_of(exe: ExeInputs, start: int, compiled: batch.Compiled, exact_trim: bool) -> str:
     """The class of a compiled cell, from both byte strings and the relocation mask as `judge`
     reads them. No function in the object leaves nothing to compare, and no class fits that. Nor
     is `slot` a row whose relocated fields may differ: the mask hid them, and no search reaches
-    them."""
+    them. `judge` takes the row's filler as no difference, so no class may read it as one: only
+    `tail` needs the whole row, where a pair that differs by filler alone is a strict prefix."""
     body = batch.function_body(exe, compiled.job.obj, start)
     if isinstance(body, str):
         return "mixed"
     row = batch.row_at(exe, start)
     ((defined, reloc),) = batch.with_relocs(body.module, [body.defined], body.rows, exe)
     theirs = exe.flat[row.start : row.end]
-    klass = classify_pair(defined.ours, theirs, start, batch._reloc_mask(reloc), exact_trim)
+    masked = batch._reloc_mask(reloc)
+    klass = classify_pair(defined.ours, theirs, start, masked, exact_trim)
+    if klass != "tail":
+        klass = classify_pair(defined.ours, _without_filler(theirs, start), start, masked)
     return "mixed" if klass == "slot" and _may_hide_a_difference(reloc) else klass
 
 
