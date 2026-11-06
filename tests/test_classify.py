@@ -338,6 +338,35 @@ def test_a_filler_tail_changes_no_class(tmp_path, ours, theirs, klass):
     assert class_of_object(tmp_path, ours, theirs + FILLER) == klass
 
 
+LEA_EDX = bytes.fromhex("8d5200")  # lea edx, [edx + 0]: filler our object's trim does not take
+
+
+@pytest.mark.parametrize(
+    ("ours", "theirs", "klass"),
+    [(LOAD_SLOT_4, LOAD_SLOT_8, "slot"), (MOVE_EBX_TO_EAX, MOVE_EBX_TO_EDX, "register")],
+)
+def test_filler_on_both_sides_changes_no_class(tmp_path, ours, theirs, klass):
+    """Our object keeps filler of another register or form, so both sides are cut."""
+    assert class_of_object(tmp_path, body(ours) + LEA_EDX, body(theirs) + LEA_EDX) == klass
+
+
+@pytest.mark.parametrize("filler", [b"", FILLER, FILLER * 7])
+def test_a_wrong_relocation_is_mixed_with_or_without_filler(tmp_path, filler):
+    ours = body(f"{PLACEHOLDER} {LOAD_SLOT_4}")
+    theirs = body(f"{LINKED.hex()} {LOAD_SLOT_4}") + filler
+    assert class_of_object(tmp_path, ours, theirs, f"{OTHER.name}_") == "mixed"
+
+
+def test_equal_bytes_with_no_filler_are_not_tail(tmp_path):
+    """Only filler makes a pair tail: equal bytes that are not exact still say nothing."""
+    assert class_of_object(tmp_path, body(LOAD_SLOT_4), body(LOAD_SLOT_4)) == "mixed"
+
+
+def test_without_filler_keeps_a_body_that_does_not_decode_to_its_end():
+    code = body(LOAD_SLOT_8) + FILLER + bytes.fromhex(UNREADABLE)
+    assert classify._without_filler(code, VA) == code
+
+
 def test_an_undecodable_tail_is_not_cut(tmp_path):
     """Decode stops at the unread bytes, so the filler before them is no row's end."""
     theirs = body(LOAD_SLOT_8) + FILLER + bytes.fromhex(UNREADABLE)
