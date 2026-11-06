@@ -84,14 +84,15 @@ check passes a function only when all of these hold (`docs/matching.md#relocatio
 - objdiff 100%, every non-relocated byte identical, and the same length;
 - every `call rel32` hits the same function;
 - every absolute fixup resolves to the same target as the original's LE fixup;
-- no reference to data of the unit's own segments, such as a string literal.
+- no reference to data of the unit's own segments, such as a string literal. The one exception is a leading jump table (see "Strings, statics and jump tables").
 
 ## Strings, statics and jump tables
 
 - A string or any other constant data the target addresses becomes its extern `D_` symbol (`extern char D_0012F3A0[];`). Never write the literal: it emits new data in our object and fails the relocation check.
-- A `switch` that compiles to a jump table (`jmp cs:[eax*4+...]`) matches only when its table leads the unit. wcc386 puts the table at the start of the object, so three things must hold: the table's `D_XXXXXXXX` data-in-code row sits right before your function's row in `config/<exe>/functions.csv`, your function is the first thing the unit compiles (rows still `INCLUDE_ASM` emit nothing, so they may stand before it), and only your function jumps through the table. Write the `switch` in C: the compiler emits the table.
-- A table between two publics fails closed: a table compiled after another function belongs to no row, and check refuses the function that jumps through it. If your function cannot come first, stop and say so in notes.md.
-- A static function is named after its row: `static <type> func_XXXXXXXX(...)`. Any other name fails check, and so does static data.
+- A `switch` that compiles to a jump table (`jmp cs:[eax*4+...]`) matches only when its table leads the unit. wcc386 puts the table at the start of the object, so three things must hold: the table's `D_XXXXXXXX` data-in-code row sits right before your function's row in `config/<exe>/functions.csv`, with the same `unit`; your definition is the first in the file that compiles (rows still `INCLUDE_ASM` emit nothing, so they may stand before it); and only your function jumps through the table. Write the `switch` in C: the compiler emits the table.
+- A table between two publics fails closed: a table compiled after another function belongs to no row, and check refuses the function that jumps through it. So put your definition above any compiled function of the unit: that moves yours and leaves its text alone.
+- Stop and say so in notes.md when the table's row is in another unit, or when a compiled function of the unit has its own leading table. A unit leads with one table only: if a row still `INCLUDE_ASM` has a table too, go on and note that it can no longer lead.
+- A static function keeps its row's name: `static <type> func_XXXXXXXX(...)`, or its symbols.csv name. Any other name fails check, and so does static data.
 
 ## Replacing INCLUDE_ASM
 
