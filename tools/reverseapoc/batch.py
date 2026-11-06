@@ -393,7 +393,8 @@ def slot_map(ours: bytes, theirs: bytes, va: int, masked: set[int]) -> SlotMap:
     matcher = _matcher(tokens(ours, va, masked, stack=True),
                        tokens(theirs, va, masked, stack=True))  # fmt: skip
     aligned = [(i + n, j + n) for i, j, size in matcher.get_matching_blocks() for n in range(size)]
-    pairs = {(our_slots[i], their_slots[j]) for i, j in aligned if our_slots[i] is not None}
+    pairs = {(our_slots[i], their_slots[j]) for i, j in aligned
+             if our_slots[i] is not None and their_slots[j] is not None}  # fmt: skip
     bijection = len(pairs) == len({a for a, _ in pairs}) == len({b for _, b in pairs})
     return SlotMap(tuple(sorted(pairs)), bijection, frame_ours, frame_theirs)
 
