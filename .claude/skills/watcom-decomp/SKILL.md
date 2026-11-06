@@ -64,9 +64,11 @@ Extern types, from how the target listing touches the data:
 
 - Declare every local at the start of its block, before any statement. No `for (int i...)`, no mixed declarations and code.
 - `/* */` comments only, never `//`. No `inline`, `bool`, VLAs, designated initializers or compound literals.
-- Never reorder declarations: their order decides the stack slots.
+- In a function you are matching, declaration order moves only address-taken locals and aggregates. They sort by size, the largest lowest, each padded to 4. Declaration order breaks ties only when the frame has one size, of 1, 2 or 4 bytes: the first declared sits highest, so swapping two declarations swaps their slots.
+- Register-candidate scalars ignore declaration order and scope. Assignment order, use order, type and loop weight move them, so change those. One exception: shorts spilled beside a short in memory do move with their declarations.
+- A function that already matches is never reordered.
 - C89 is required: the driver lints the unit before it commits a match (`reverseapoc lint`, clang `-std=gnu89 -Werror=declaration-after-statement`). A C89 slip fails the attempt even when check passes.
-- Depth: `docs/coding-style.md`.
+- Depth: `docs/coding-style.md`, and `docs/matching.md` for the slot rules.
 
 ## Pragmas
 
@@ -85,7 +87,9 @@ check passes a function only when all of these hold (`docs/matching.md#relocatio
 ## Strings, statics and jump tables
 
 - A string or any other constant data the target addresses becomes its extern `D_` symbol (`extern char D_0012F3A0[];`). Never write the literal: it emits new data in our object and fails the relocation check.
-- No `static`, and no `switch` that compiles to a jump table, during the pilot. If the target jumps through a table (`jmp cs:[eax*4+...]`), stop: the function is outside the pilot pool.
+- A `switch` that compiles to a jump table (`jmp cs:[eax*4+...]`) matches only when its table leads the unit. wcc386 puts the table at the start of the object, so three things must hold: the table's `D_XXXXXXXX` data-in-code row sits right before your function's row in `config/<exe>/functions.csv`, your function is the first thing the unit compiles (rows still `INCLUDE_ASM` emit nothing, so they may stand before it), and only your function jumps through the table. Write the `switch` in C: the compiler emits the table.
+- A table between two publics fails closed: a table compiled after another function belongs to no row, and check refuses the function that jumps through it. If your function cannot come first, stop and say so in notes.md.
+- A static function is named after its row: `static <type> func_XXXXXXXX(...)`. Any other name fails check, and so does static data.
 
 ## Replacing INCLUDE_ASM
 
@@ -93,7 +97,7 @@ Work in your view unit, `$REVERSEAPOC_UNIT_FILE`. The view is the driver's priva
 
 - Delete the claimed function's `INCLUDE_ASM(func_XXXXXXXX);` line. Leave every other marker as it is.
 - Put the types, prototypes and externs it needs, then its definition, after the marker block, as in `src/ufo2p/u_000a34f0.c`. All of them at file scope, each before its first use.
-- File order does not change check's verdict (calls resolve through fixups), except for a jump-table function, whose table must come first in the unit (`docs/matching.md#relocation-rules`). The pilot has none.
+- File order does not change check's verdict (calls resolve through fixups), except for a jump-table function, whose table must come first in the unit (`docs/matching.md#relocation-rules`).
 - The definition keeps the row's name (`func_XXXXXXXX`, or its symbols.csv name).
 - Use `D_XXXXXXXX` and `func_XXXXXXXX` placeholders for data and callees. Never invent names, and never rename one: a rename in a matching session is not applied anywhere. Naming is the readability pass's work (D-19), through its proposals, which the driver applies after readability sessions only; a name idea, with its evidence, goes in notes.md.
 
@@ -114,13 +118,22 @@ struct unk_002C {
 |---|---|
 | `uv run --frozen reverseapoc attempt check` | compiles your view unit (`$REVERSEAPOC_UNIT_FILE`) in the container under the view's rule and runs the full check; prints a summary |
 | `uv run --frozen reverseapoc attempt check --sweep` | the flag matrix for the claimed function (stage 1, and stage 2 after a near miss); a diagnostic, never a match |
-| `uv run --frozen reverseapoc attempt asm` | prints the claimed function's original listing (no check run) |
-| `uv run --frozen reverseapoc attempt asm <NAME>` | the listing of another function of the same EXE, e.g. a callee |
+| `uv run --frozen reverseapoc attempt asm` | prints the claimed function's original listing, with the converter's notes (no check run) |
+| `uv run --frozen reverseapoc attempt asm <NAME>` | the listing of another function of the same EXE, e.g. a callee, with its notes |
 | `uv run --frozen reverseapoc attempt context` | rebuilds and prints the context pack (callers, callees, externs, draft, look-alikes, earlier notes); it is printed, so no Read of context.md is needed |
 
 - Run every `attempt check`, plain or `--sweep`, with the Bash tool's `timeout` set to 600000. The wrapper stops a run at 580 s and logs it as exit `2`.
 - "another check is running in this attempt" means a check is still running, or one was killed. Do not retry. Work from the last result, then stop.
 - The arguments are fixed: the wrapper takes the unit, function and flags from the driver, and refuses anything else with exit `2`.
+
+`attempt asm` prints a note after some lines, past a `  ; `. Notes come from the converter's symbolic state, not from the original bytes: read them as hints, check them against the listing, and let `attempt check` prove the C. No note means the converter knows nothing there. Notes reach this command's output only, so `attempt context` and the listing files do not show them.
+
+- `cases: 0: .L00034590, 1: func_00034700` on a table jump: the target of each case number, a `.L` label of the listing or a row's name. They are your `switch`'s cases. Every target must land inside your function: check refuses a table with a target in another row.
+- `eax=<expr> edx=<expr>` on a call: what each argument register holds, for the registers the converter knows and something still reads. A register left out is unknown, not zero and not absent: find it in the listing.
+- `r_<reg>` in a note is the value that register held at the last point the converter named it, not the register now: `eax=5 edx=r_eax` says `edx` holds what `eax` held before the 5. That point can be the start of a block, so it need not be the function's entry value either: read back up the listing before you write the argument.
+- `h_<address>` is a hole: the converter could not read the instruction at that hex address, so the value is unknown.
+- `al=<expr>` is a byte or word write at that width: the rest of the register is not in the text.
+- `s_<hex>` is a stack slot and `r_p<n>` a stack parameter.
 
 `attempt check` exits:
 - `0`: the claimed function matches (objdiff 100, reloc and bytes ok) and check passes its whole unit. Only this is a match.
@@ -158,7 +171,7 @@ A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the
 
 1. Read the newest `checks/NNNN.json` and find the claimed function in `functions[]`.
 2. Take `bytes.first_va`, and each address named in `reloc.problems`.
-3. Find those addresses in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`. The line at `first_va` is the first original instruction your object gets wrong.
+3. Find those addresses in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`, some with a note after it. The line at `first_va` is the first original instruction your object gets wrong.
 4. Change the C shape behind that instruction, one change per check, using the idioms in `docs/matching.md`.
 
 You get no disassembly of your own object. If that blocks you, write it in notes.md as a tooling request.
@@ -181,7 +194,7 @@ After a sweep hit, record it in notes.md first. Then stop, or try C shapes under
 notes.md holds, in this order:
 1. The outcome: matched, or the best objdiff with its check number (`checks/NNNN.c` is that C).
 2. Each shape tried: one line each, with its best percent and check number.
-3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`.
+3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`. If every difference you can read is a stack slot, write `slots only`, with the stores or loads you read: the owner runs the search outside sessions, and a session never does.
 4. The sweep result, if one ran: the best cell, and any hit as "needs flags <spec>" with its cell number and stage (as printed).
 5. Name ideas for callees, globals or the function, each with its evidence.
 6. What to try next, most promising first.
