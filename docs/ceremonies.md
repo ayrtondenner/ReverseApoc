@@ -4,7 +4,7 @@ Byte-matching code is not the end goal on its own: the source should also read l
 
 ## The one rule: matched C keeps its shape
 
-Matched C is frozen by the binary. Any change of shape changes what Watcom generates: register allocation, stack-slot order (declaration order decides it), loop layout, branch order, which temporaries get spilled. A "simpler" function that behaves the same will almost always compile to different bytes and break the match.
+Matched C is frozen by the binary. Any change of shape changes what Watcom generates: register allocation, stack-slot order (size sorts the memory locals and declaration order can break their ties, while assignment order, use order, type and loop weight move the spills: see [matching.md](matching.md)), loop layout, branch order, which temporaries get spilled. A "simpler" function that behaves the same will almost always compile to different bytes and break the match.
 
 So on matched functions the only allowed edits are:
 

@@ -380,6 +380,7 @@ Plans:
 ### Phase 07.1: Matching tooling (INSERTED)
 
 **Goal:** Build the deterministic tooling that moves Tier 1 matching past what agents reach alone on functions of 256 B and up (about 445 functions, where they fail on stack slots, registers and types): a permutation search, a stack-slot model, converter v1, a failure classifier and better disassembly views, with the watcom-decomp skill updated last. The target is about 6-8 weeks to Tier 1 matched.
+**Goal restated (owner, 2026-11-06):** This phase delivers the tools and their measurements, not the outcome: 0 exact, 0 near at 256 B and up. The 256 B+ result is the job of the first matching night after close, tracked in `.planning/todos/pending/first-matching-night-256b.md`.
 **Requirements**: TBD
 **Depends on:** Phase 7 (plans 07-48, 07-48b and 07-48c and the F-0045 to F-0057 landings; Phase 7's close gate 07-41 stays open and needs this phase's tools)
 **Success Criteria** (what must be TRUE):

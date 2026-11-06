@@ -11,7 +11,7 @@ The game is C compiled with `wcc386` (see [toolchain.md](toolchain.md#c-not-c)).
 - Declare every local at the start of its block, before any statement. No mixed declarations and code, no `for (int i = 0; ...)`.
 - Use `/* */` comments only. Watcom accepts `//` as an extension; we stay strict.
 - No variable-length arrays, no `inline`, no `bool`, no designated initializers, no compound literals.
-- **Never reorder declarations** in a matched function. Order decides stack slots and the layout of statics (Theme Hospital's rule).
+- **Never reorder declarations** in a matched function. Moving a declaration can move a stack slot ([matching.md](matching.md)), and order decides the layout of statics (Theme Hospital's rule).
 - Mid-block declarations are the most common AI mistake on C89 targets (Macabeus, Lewis). The lint gate below catches them.
 
 If a module turns out to be C++, it is compiled with `wpp386` per file and gets its own rules then.
@@ -59,7 +59,7 @@ Common advice that we reject for matched code, and why:
 
 | Advice | Source | Why it conflicts |
 |---|---|---|
-| Declare variables in the narrowest scope and initialize them at declaration | Google C++ Style Guide | C89 needs block-top declarations, and declaration order decides stack slots |
+| Declare variables in the narrowest scope and initialize them at declaration | Google C++ Style Guide | C89 needs block-top declarations, and moving a declaration can move a stack slot ([matching.md](matching.md)) |
 | `modernize-*` and `cppcoreguidelines-*` checks | clang-tidy | They propose C++11 rewrites that cannot compile under `wcc386` or change codegen |
 | Smart pointers, RAII, STL, concepts, ranges, replacing C arrays and `NULL` | cpp-pro, Mindrally cpp | Modern C++ idioms; the target is 1997 C |
 | `-Wconversion`-driven explicit casts and fixed-width types everywhere | OpenSSF hardening, general advice | Casts and type changes alter integer promotion and the instructions emitted |

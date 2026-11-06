@@ -11,6 +11,11 @@ Entry format:
 - Why it matters and what we will do differently.
 ```
 
+## 2026-11-06: where Phase 7.1 spent its plans (Phase 7.1, owner rulings at the close)
+
+- **Measure where the bottleneck is before ordering plans.** Search and slots ran first and moved 0 rows: at point 1, 77 of 120 sample rows were refused before a search could run, and class `slot` holds none of the 841 not-matched rows. Only the converter moved the curve. Next time, read point 0 for what stops rows, and order the tools by that.
+- **Run a cross-plan review before the last plan closes.** Six per-plan reviews missed the array ties, because the fault lay between the model, the search and the lifter. The phase review found it after plan 06, which may write no Python, so it took a gap plan. Next time, run that review while a plan can still fix what it finds.
+
 ## 2026-11-01: original trailing filler passes `check` (Phase 7, plan 07-48, spike 011)
 
 - **A row may end in the original linker's alignment filler that we never emit.** Each original object held one function and the linker aligned its `_TEXT` to 16; in our unit the next function is an `INCLUDE_ASM` stub, so our object stops at the last `ret`. `check` refused that byte-correct C with `length differs`. The owner ruled option A: accept a 1-15 byte shortfall under five conditions (16-aligned row end, no LE fixup in the tail, ours ends in a terminal instruction, the tail decodes to the row end as filler in any register). Rule: [matching.md "Relocation rules"](matching.md#relocation-rules).
