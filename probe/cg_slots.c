@@ -1016,6 +1016,185 @@ void pr_arr_one_three_small(void)
     pr_take(a, &b, &c, &d);
 }
 
+/*
+ * The plan review's frames: size 2 beside plain locals, two arrays beside a later block, and
+ * three arrays beside an int. The compiler's line runs through none of them by count, so the
+ * model refuses these. Some leave declaration order and some hold.
+ */
+
+/* Two char[2] beside a short: a frame of three breaks where a frame of four held. */
+void pr_arr_two_one_small(void)
+{
+    char a[2];
+    char b[2];
+    short c;
+
+    a[0] = 0x4c;
+    b[0] = 0x4d;
+    c = 0x4e;
+    pr_take(a, b, &c);
+}
+
+/* Its twin, declared backwards. */
+void pr_arr_two_one_small_rev(void)
+{
+    short c;
+    char b[2];
+    char a[2];
+
+    a[0] = 0x4c;
+    b[0] = 0x4d;
+    c = 0x4e;
+    pr_take(a, b, &c);
+}
+
+/* One char[2] after two shorts: a single array is enough at this size. */
+void pr_arr_one_two_small(void)
+{
+    short a;
+    short b;
+    char c[2];
+
+    a = 0x4f;
+    b = 0x50;
+    c[0] = 0x51;
+    pr_take(&a, &b, c);
+}
+
+/* Two char[4] beside a later block: M4 holds for ints, and this leaves it. */
+void pr_arr_two_block(int x)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0x52;
+    b[0] = 0x53;
+    pr_take(a, b);
+    if (x) {
+        int c;
+
+        c = 0x54;
+        pr_take(&c);
+    }
+}
+
+/* Its twin, with the two arrays swapped. */
+void pr_arr_two_block_rev(int x)
+{
+    char b[4];
+    char a[4];
+
+    a[0] = 0x52;
+    b[0] = 0x53;
+    pr_take(a, b);
+    if (x) {
+        int c;
+
+        c = 0x54;
+        pr_take(&c);
+    }
+}
+
+/* The same with short[2]. */
+void pr_arr_short2_block(int x)
+{
+    short a[2];
+    short b[2];
+
+    a[0] = 0x56;
+    b[0] = 0x57;
+    pr_take(a, b);
+    if (x) {
+        int c;
+
+        c = 0x58;
+        pr_take(&c);
+    }
+}
+
+/* An int before the two arrays, and a later block. */
+void pr_arr_int_two_block(int x)
+{
+    int a;
+    char b[4];
+    char c[4];
+
+    a = 0x59;
+    b[0] = 0x5a;
+    c[0] = 0x5b;
+    pr_take(&a, b, c);
+    if (x) {
+        int d;
+
+        d = 0x5c;
+        pr_take(&d);
+    }
+}
+
+/* An int before three char[4]: it leaves declaration order. */
+void pr_arr_int_three(void)
+{
+    int a;
+    char b[4];
+    char c[4];
+    char d[4];
+
+    a = 0x5d;
+    b[0] = 0x5e;
+    c[0] = 0x5f;
+    d[0] = 0x60;
+    pr_take(&a, b, c, d);
+}
+
+/* Three char[4] before an int: it holds, and the model refuses it all the same. */
+void pr_arr_three_int(void)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+    int d;
+
+    a[0] = 0x61;
+    b[0] = 0x62;
+    c[0] = 0x63;
+    d = 0x64;
+    pr_take(a, b, c, &d);
+}
+
+/* Two char[4] beside a block of two ints: it holds, and the model refuses it all the same. */
+void pr_arr_two_two_block(int x)
+{
+    char a[4];
+    char b[4];
+
+    a[0] = 0x65;
+    b[0] = 0x67;
+    pr_take(a, b);
+    if (x) {
+        int c;
+        int d;
+
+        c = 0x68;
+        d = 0x69;
+        pr_take(&c, &d);
+    }
+}
+
+/* One char[4] beside a later block: one array keeps M4. */
+void pr_arr_one_block(int x)
+{
+    char a[4];
+
+    a[0] = 0x6a;
+    pr_take(a);
+    if (x) {
+        int b;
+
+        b = 0x6b;
+        pr_take(&b);
+    }
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {

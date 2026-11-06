@@ -106,13 +106,13 @@ SHAPES = {
     "pr_arr_two_two_rev": TWO_TWO[::-1],
     "pr_arr_one_three": ONE_THREE,
     "pr_arr_one_three_rev": ONE_THREE[::-1],
-    "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
-    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
-                               Marked("d", 2, 0x4B)),  # fmt: skip
+    "pr_arr_one_block": (*_arrays(4, 0x6A), Marked("b", 4, 0x6B, 1)),
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
 CHAR4_X3 = _arrays(4, 0x12, 0x13, 0x14)
+TWO_ONE_SMALL = (*_arrays(2, 0x4C, 0x4D), Marked("c", 2, 0x4E))
+TWO_BLOCK = (*_arrays(4, 0x52, 0x53), Marked("c", 4, 0x54, 1))
 # What the model refuses: every one of these leaves declaration order.
 TIES = {
     "pr_tie_three": THREE,
@@ -133,6 +133,29 @@ TIES = {
     "pr_arr_uchar4_x3": _arrays(4, 0x19, 0x1A, 0x1B),
     "pr_arr_short2_x3": _arrays(4, 0x1C, 0x1D, 0x1E),
     "pr_arr_char2_x3": _arrays(2, 0x1F, 0x20, 0x21),
+    "pr_arr_two_one_small": TWO_ONE_SMALL,
+    "pr_arr_two_one_small_rev": TWO_ONE_SMALL[::-1],
+    "pr_arr_one_two_small": (Marked("a", 2, 0x4F), Marked("b", 2, 0x50),
+                             Marked("c", 2, 0x51, array=True)),  # fmt: skip
+    "pr_arr_two_block": TWO_BLOCK,
+    "pr_arr_two_block_rev": (TWO_BLOCK[1], TWO_BLOCK[0], TWO_BLOCK[2]),
+    "pr_arr_short2_block": (*_arrays(4, 0x56, 0x57), Marked("c", 4, 0x58, 1)),
+    "pr_arr_int_two_block": (Marked("a", 4, 0x59), Marked("b", 4, 0x5A, array=True),
+                             Marked("c", 4, 0x5B, array=True),
+                             Marked("d", 4, 0x5C, 1)),  # fmt: skip
+    "pr_arr_int_three": (Marked("a", 4, 0x5D), Marked("b", 4, 0x5E, array=True),
+                         Marked("c", 4, 0x5F, array=True),
+                         Marked("d", 4, 0x60, array=True)),  # fmt: skip
+}
+# Frames the model refuses though they keep declaration order: the compiler's line runs through
+# no count, so the refusal is wider than it, on the safe side.
+REFUSED_HOLDING = {
+    "pr_arr_two_two_small": (*_arrays(2, 0x43, 0x45), Marked("c", 2, 0x46), Marked("d", 2, 0x47)),
+    "pr_arr_one_three_small": (*_arrays(2, 0x48), Marked("b", 2, 0x49), Marked("c", 2, 0x4A),
+                               Marked("d", 2, 0x4B)),  # fmt: skip
+    "pr_arr_three_int": (*_arrays(4, 0x61, 0x62, 0x63), Marked("d", 4, 0x64)),
+    "pr_arr_two_two_block": (*_arrays(4, 0x65, 0x67), Marked("c", 4, 0x68, 1),
+                             Marked("d", 4, 0x69, 1)),  # fmt: skip
 }
 # Where the refused array ties sit, the same in both cells.
 ARRAY_TIES = {
@@ -142,6 +165,11 @@ ARRAY_TIES = {
     "pr_arr_uchar4_x3": {"a": 4, "b": 8, "c": 0},
     "pr_arr_short2_x3": {"a": 4, "b": 8, "c": 0},
     "pr_arr_char2_x3": {"a": 0, "b": 8, "c": 4},
+    "pr_arr_two_one_small": {"a": 4, "b": 8, "c": 0},
+    "pr_arr_two_block": {"a": 8, "b": 4, "c": 0},
+    "pr_arr_short2_block": {"a": 8, "b": 4, "c": 0},
+    "pr_arr_int_two_block": {"a": 0xC, "b": 8, "c": 4, "d": 0},
+    "pr_arr_int_three": {"a": 4, "b": 0xC, "c": 8, "d": 0},
 }
 # A float with no address taken in a tie: order_is_known cannot see that, so the search refuses it.
 FLOAT_TIES = {
@@ -165,6 +193,8 @@ FALLBACK_TWINS = (
     ("pr_float_tie", "pr_float_tie_rev"),  # a float in the tie
     ("pr_thin_ours", "pr_thin_theirs"),  # a map that cannot place c
     ("pr_arr_char4_x3", "pr_arr_char4_x3_rev"),  # three arrays in a tie
+    ("pr_arr_two_one_small", "pr_arr_two_one_small_rev"),  # an array beside a short
+    ("pr_arr_two_block", "pr_arr_two_block_rev"),  # two arrays beside a later block
 )
 
 _IMMEDIATE = re.compile(r"(?:0x[0-9a-f]+|\d+)$")
@@ -294,6 +324,16 @@ def test_a_refused_tie_leaves_declaration_order_and_keeps_sizes(modules, cell, n
     ascending = sorted(measured, key=measured.__getitem__)
     assert [sizes[local] for local in ascending] == sorted(sizes.values(), reverse=True)
     assert _frame(modules[cell], name) == slots.frame_size(declared)
+
+
+@pytest.mark.parametrize("cell", CELLS)
+@pytest.mark.parametrize("name", REFUSED_HOLDING)
+def test_a_frame_the_model_refuses_may_still_hold(modules, cell, name):
+    """The refusal is wider than the compiler's line: these keep declaration order, and the
+    model refuses them anyway, because no count separates them from the ones that leave it."""
+    shape = REFUSED_HOLDING[name]
+    assert slots.order_is_known(_declared(shape)) is False
+    assert _offsets(modules[cell], name, cell, shape) == _by_declaration(shape)
 
 
 @pytest.mark.parametrize("cell", CELLS)

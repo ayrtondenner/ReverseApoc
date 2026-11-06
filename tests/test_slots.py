@@ -108,6 +108,25 @@ def test_three_arrays_beside_a_scalar_have_no_known_order():
     assert slots.order_is_known(declared) is False
 
 
+@pytest.mark.parametrize(("arrays", "plain"), [(1, 1), (1, 2), (2, 1), (2, 2), (1, 7)])
+def test_an_array_beside_plain_locals_of_two_bytes_has_no_known_order(arrays, plain):
+    declared = (*(slots.Local(f"v{n}", 2, array=True) for n in range(arrays)),
+                *(slots.Local(f"p{n}", 2) for n in range(plain)))  # fmt: skip
+    assert slots.order_is_known(declared) is False
+
+
+def test_two_arrays_across_blocks_have_no_known_order():
+    declared = (slots.Local("a", 4, array=True), slots.Local("b", 4, array=True),
+                slots.Local("c", 4, 1))  # fmt: skip
+    assert slots.order_is_known(declared) is False
+
+
+def test_one_array_across_blocks_keeps_the_rule():
+    declared = (slots.Local("a", 4, array=True), slots.Local("b", 4, 1))
+    assert slots.order_is_known(declared) is True
+    assert slots.frame_layout(declared) == {"a": 0, "b": 4}
+
+
 @pytest.mark.parametrize(
     ("size", "arrays", "plain"), [(4, 2, 0), (2, 2, 0), (4, 2, 1), (4, 1, 2)]
 )
