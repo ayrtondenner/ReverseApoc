@@ -1376,6 +1376,15 @@ def test_declaration_axis_yields_nothing_when_size_rules_the_target_out():
     assert _axis(_body(*lines), batch.SlotMap(((0, 4), (4, 0)), True, 8, 8)) == []
 
 
+def test_declaration_axis_falls_back_on_a_tie_held_above_ours():
+    """The original holds b and d at 12 and 8: no order of ours reaches a target off our offsets,
+    and that is a frame the model cannot place, so plan 1's moves stand."""
+    text = _body("int b;", "int d;", "", "take(&b, &d);", "return a;")
+    moves = _axis(text, batch.SlotMap(((0, 12), (4, 8)), True, 8, 20))
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
 def test_declaration_axis_tags_a_computed_order_that_moves_an_initializer():
     lines = ("int b = 1;", "int d = 2;", "", "take(&b, &d);", "return a;")
     (move,) = _axis(_body(*lines), _pairs((0, 4), (4, 0)))
