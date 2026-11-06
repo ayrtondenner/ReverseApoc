@@ -853,6 +853,16 @@ def test_slot_map_reports_two_of_our_slots_on_one_of_theirs():
     assert _slots(ours, theirs).bijection is False
 
 
+def test_slot_map_leaves_out_a_slot_only_ours_has():
+    """Only ours is framed by ebp, so the load is a slot on our side alone. The mask covers its
+    bytes on both sides, because ours opens two bytes longer, and that is what aligns the two."""
+    ours = _code(*FRAMED, _ebp_local(8), *FRAMED_LEAVE)
+    theirs = _code(*UNFRAMED, _ebp_local(8), *UNFRAMED_LEAVE)
+    slots = _slots(ours, theirs, frozenset(range(VA + 5, VA + 10)))
+    assert slots.pairs == ()
+    assert slots.bijection is True
+
+
 def test_slot_map_reports_both_frame_sizes():
     ours = _code(PUSH_EBX, SUB_ESP_10, _load(8), ADD_ESP_10, POP_EBX, RET)
     theirs = _code(PUSH_EBX, SUB_ESP_14, _load(8), ADD_ESP_14, POP_EBX, RET)
