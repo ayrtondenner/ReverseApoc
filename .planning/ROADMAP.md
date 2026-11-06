@@ -410,6 +410,9 @@ Plans:
 **Wave 6** *(blocked on Wave 5 completion; main checkout)*
 - [x] 07.1-06-PLAN.md — watcom-decomp skill through `writing-skills`, after the owner checkpoint that shows the curve (D-06)
 
+**Wave 7** *(blocked on Wave 6 completion; main checkout)*
+- [ ] 07.1-07-PLAN.md — gap closure: array ties refused and measured, shifted-tie fallback, filler-tailed classes, the slot pair filter, docs and todos from the owner's rulings, curve point 7 (D-08, D-27)
+
 ### Phase 8: Clean-room specs for OpenApoc
 
 **Goal**: Every mechanic decompiled in Phase 7 has a clean-room spec in OpenSpec format, written in our own words, citing function addresses and dated community sources, checked by a linter that can fail, reviewed by the owner and licensed CC0-1.0 so OpenApoc can use it without conditions.
