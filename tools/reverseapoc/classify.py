@@ -152,18 +152,19 @@ def _class_of(exe: ExeInputs, start: int, compiled: batch.Compiled, exact_trim: 
     """The class of a compiled cell, from both byte strings and the relocation mask as `judge`
     reads them. No function in the object leaves nothing to compare, and no class fits that. Nor
     is `slot` a row whose relocated fields may differ: the mask hid them, and no search reaches
-    them. `judge` takes the row's filler as no difference, so no class may read it as one: only
-    `tail` needs the whole row, where a pair that differs by filler alone is a strict prefix."""
+    them. Filler explains a length difference, whether or not `judge` accepts it, so no class
+    reads it as one. Both sides are cut, because our object keeps filler of another register or
+    form, and a pair that differs by filler alone is `tail`."""
     body = batch.function_body(exe, compiled.job.obj, start)
     if isinstance(body, str):
         return "mixed"
     row = batch.row_at(exe, start)
     ((defined, reloc),) = batch.with_relocs(body.module, [body.defined], body.rows, exe)
     theirs = exe.flat[row.start : row.end]
-    masked = batch._reloc_mask(reloc)
-    klass = classify_pair(defined.ours, theirs, start, masked, exact_trim)
-    if klass != "tail":
-        klass = classify_pair(defined.ours, _without_filler(theirs, start), start, masked)
+    ours, cut = _without_filler(defined.ours, start), _without_filler(theirs, start)
+    if ours == cut and defined.ours != theirs:
+        return "tail"
+    klass = classify_pair(ours, cut, start, batch._reloc_mask(reloc), exact_trim)
     return "mixed" if klass == "slot" and _may_hide_a_difference(reloc) else klass
 
 
