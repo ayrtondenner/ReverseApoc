@@ -672,7 +672,7 @@ def self_check(plant: bool) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 7.1 measurement gate")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--point", type=int, choices=range(7), help="the curve point to measure")
+    mode.add_argument("--point", type=int, choices=range(8), help="the curve point to measure")
     mode.add_argument("--self-check", action="store_true", help="run the pure functions")
     parser.add_argument("--plant", action="store_true", help="flip one self-check expectation")
     args = parser.parse_args()
