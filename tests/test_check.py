@@ -49,7 +49,7 @@ from reverseapoc import check
 from reverseapoc.asm import data_ranges
 from reverseapoc.cflags import Rule
 from reverseapoc.cli import main as cli_main
-from reverseapoc.compiler import provenance_path, source_rule
+from reverseapoc.compiler import provenance, provenance_path, source_rule
 from reverseapoc.functions import (
     FunctionRow,
     SymbolRow,
@@ -2152,3 +2152,241 @@ def test_check_source_drops_a_stale_target(env, monkeypatch):
     with pytest.raises(check.CheckError, match="planted"):
         run_check(env)
     assert not target.exists()
+
+
+# ---- 261107-qzx: a view check reuses a sibling's object while its stamp is fresh ----
+
+TWO_EXE = "TWO.EXE"
+TWO_STEM = "two"
+VIEW_CFLAGS = "*  wcc386@10.6  -4r -s -fpi\n"
+VIEW_PARTS = ("build", "driver", "run1", STEM, "func_00010000", "attempt-1", "view")
+BOTH = [(STEM, f"{UNIT}.c"), (TWO_STEM, f"{UNIT}.c")]
+
+
+class StampingCompiler(FakeCompiler):
+    """FakeCompiler plus the provenance stamp compile_source writes after a successful compile,
+    computed with compiler's public functions from the call's own cflags, manifest, root and
+    rule path."""
+
+    def __call__(self, src, obj, **kwargs):
+        result = super().__call__(src, obj, **kwargs)
+        if not self.ok:
+            return result
+        files = {"cflags": kwargs["cflags"], "manifest": kwargs["manifest"],
+                 "root": kwargs["root"]}  # fmt: skip
+        rule = source_rule(src, **files, rule_path=kwargs["rule_path"])
+        doc = provenance(rule, src, Path(obj).read_bytes(), **files)
+        provenance_path(obj).write_text(json.dumps(doc), encoding="utf-8")
+        return result
+
+
+@pytest.fixture
+def two_exes(tmp_path, monkeypatch):
+    """SYN.EXE and TWO.EXE, each with unit u_00010000 and the same source, standing in for the
+    committed tree as the env fixture does."""
+    env = make_env(tmp_path, exes=(EXE, TWO_EXE), with_units=(EXE, TWO_EXE))
+    check._configure()
+    monkeypatch.setattr(check, "DEFAULT_SRC", env.src)
+    monkeypatch.setattr(check, "DEFAULT_CONFIG", env.config)
+    monkeypatch.setattr(check, "REPO_ROOT", env.root)
+    return env
+
+
+def make_view(env: Env) -> Path:
+    """A D-24 view of the env: src/ and config/ copied, include/common.h, and a one-rule
+    config/cflags.txt."""
+    view = env.root.joinpath(*VIEW_PARTS)
+    shutil.copytree(env.src, view / "src")
+    shutil.copytree(env.config, view / "config")
+    (view / "include").mkdir()
+    (view / "include" / "common.h").write_text("#define COMMON 1\n", encoding="utf-8")
+    (view / "config" / "cflags.txt").write_text(VIEW_CFLAGS, encoding="utf-8")
+    return view
+
+
+def view_roots(view: Path) -> dict[str, Path]:
+    """The five roots attempt._view_argv passes, as check_unit keywords."""
+    return {"src_root": view / "src", "config_root": view / "config",
+            "build_dir": view / "build", "cflags": view / "config" / "cflags.txt",
+            "log": view / "build" / "logs" / "cc.log"}  # fmt: skip
+
+
+def view_argv(env: Env, view: Path) -> list[str]:
+    roots = view_roots(view)
+    options = {"--orig": env.orig, "--manifest": env.manifest, "--config": roots["config_root"],
+               "--src": roots["src_root"], "--build": roots["build_dir"],
+               "--cflags": roots["cflags"], "--log": roots["log"]}  # fmt: skip
+    return [part for option, path in options.items() for part in (option, str(path))]
+
+
+def compiled(compiler: FakeCompiler) -> list[tuple[str, str]]:
+    """(exe stem, file name) per compile."""
+    return [(src.parent.name, src.name) for src, _, _ in compiler.calls]
+
+
+def assert_both_land(out: str) -> None:
+    doc = json.loads(out)
+    assert [(s["exe"], s["ok"], s["landed"]) for s in doc["splice"]] == [
+        (EXE, True, 1), (TWO_EXE, True, 1)]  # fmt: skip
+
+
+def test_view_check_reuses_an_unchanged_sibling(two_exes, monkeypatch, capsys):
+    """A second check of the same view (attempt's five roots, through the CLI) compiles only
+    the claimed unit: the sibling's object is fresh by its stamp, so it lands as stored."""
+    view = make_view(two_exes)
+    argv = ["check", f"{STEM}/{UNIT}", *view_argv(two_exes, view), "--json"]
+    first = StampingCompiler()
+    patch_tools(monkeypatch, compiler=first)
+    assert cli_main(argv) == 0
+    assert_both_land(capsys.readouterr().out)
+    sources = [view / "src" / stem / name for stem, name in BOTH]
+    assert [src for src, _, _ in first.calls] == sources
+
+    second = StampingCompiler()
+    patch_tools(monkeypatch, compiler=second)
+    assert cli_main(argv) == 0
+    assert_both_land(capsys.readouterr().out)
+    assert compiled(second) == [(STEM, f"{UNIT}.c")]
+
+
+def view_check(env: Env, compiler: FakeCompiler, **roots):
+    """check_unit of the claimed unit with `roots` (check_unit keywords) over the env's."""
+    return check.check_unit(STEM, UNIT, **{**env.kwargs(), **roots}, compile_fn=compiler,
+                            objdiff_runner=FakeObjdiff())  # fmt: skip
+
+
+def assert_all_ok(result) -> None:
+    assert result.ok, result.format()
+    assert [(s.exe, s.ok, len(s.result.landed)) for s in result.splices] == [
+        (EXE, True, 1), (TWO_EXE, True, 1)]  # fmt: skip
+
+
+def sibling_object(view: Path) -> Path:
+    return view / "build" / check.CUSTOM_ROOT / TWO_STEM / "obj" / f"{UNIT}.obj"
+
+
+def _append(path: Path, text: str) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def manifest_copy(env: Env) -> Path:
+    return env.root / "watcom.toml"
+
+
+def no_setup(env: Env) -> dict:
+    return {}
+
+
+def with_manifest_copy(env: Env) -> dict:
+    shutil.copyfile(DEFAULT_WATCOM_MANIFEST, manifest_copy(env))
+    return {"watcom_manifest": manifest_copy(env)}
+
+
+SIBLING_RULE = f"src/{TWO_STEM}/{UNIT}.c"
+
+
+def edit_source(env: Env, view: Path) -> None:
+    _append(view / "src" / TWO_STEM / f"{UNIT}.c", "/* edited */\n")
+
+
+def edit_rule(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", f"{SIBLING_RULE}  wcc386@10.6  -4r -s -fpi -ot\n")
+
+
+def edit_compiler(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", f"{SIBLING_RULE}  wcc386@10.5  -4r -s -fpi\n")
+
+
+def edit_table(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", "# comment\n")  # the rule is unchanged
+
+
+def edit_header(env: Env, view: Path) -> None:
+    _append(view / "include" / "common.h", "#define EDITED 1\n")
+
+
+def edit_manifest(env: Env, view: Path) -> None:
+    _append(manifest_copy(env), "# edited\n")
+
+
+def edit_object(env: Env, view: Path) -> None:
+    # Reusing this object would be refused by the relocation check, so `ok` proves a recompile.
+    sibling_object(view).write_bytes(omf_object(callee="func_00010020_"))
+
+
+def delete_stamp(env: Env, view: Path) -> None:
+    provenance_path(sibling_object(view)).unlink()
+
+
+def tear_stamp(env: Env, view: Path) -> None:
+    provenance_path(sibling_object(view)).write_text("{torn", encoding="utf-8")
+
+
+CHANGES = {"source": (no_setup, edit_source), "rule": (no_setup, edit_rule),
+           "compiler": (no_setup, edit_compiler), "table": (no_setup, edit_table),
+           "header": (no_setup, edit_header), "manifest": (with_manifest_copy, edit_manifest),
+           "object": (no_setup, edit_object), "stamp-missing": (no_setup, delete_stamp),
+           "stamp-torn": (no_setup, tear_stamp)}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", list(CHANGES))
+def test_view_check_recompiles_a_changed_sibling(two_exes, case):
+    """Anything the sibling's stamp records that changed since run 1 (its source, its rule's
+    flags or compiler, the cflags table, a view header, the Watcom manifest, its object, its
+    stamp) makes run 2 compile it again; the stored object never lands."""
+    setup, change = CHANGES[case]
+    view = make_view(two_exes)
+    roots = {**view_roots(view), **setup(two_exes)}
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    change(two_exes, view)
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == BOTH
+
+
+def committed_tree(env: Env) -> dict:
+    return {}
+
+
+def flags_copy(env: Env) -> dict:
+    return {"src_root": view_tree(env, "build", "flags", "p1", include=False)}
+
+
+def driver_not_view(env: Env) -> dict:
+    return {"src_root": view_tree(env, "build", "driver", "run1", "notview")}
+
+
+@pytest.mark.parametrize("tree", [committed_tree, flags_copy, driver_not_view],
+                         ids=["committed", "flags-copy", "driver-not-view"])  # fmt: skip
+def test_check_outside_a_view_compiles_every_sibling(two_exes, tree):
+    """Only a D-24 view reuses: the committed src/ (plain check, `gate EXE/UNIT`, `gate --all`),
+    a flag re-gate's copy and a driver tree that is no view compile every unit on every check,
+    though every stamp is fresh."""
+    roots = tree(two_exes)
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == BOTH
+
+
+def test_view_reuse_reads_the_object_once(two_exes, monkeypatch):
+    """Fix round 2, N3, for a reused object: the bytes the stamp check hashes are the bytes
+    parsed and landed."""
+    view = make_view(two_exes)
+    roots = view_roots(view)
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    obj = sibling_object(view)
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == obj:
+            reads.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == [(STEM, f"{UNIT}.c")]
+    assert len(reads) == 1

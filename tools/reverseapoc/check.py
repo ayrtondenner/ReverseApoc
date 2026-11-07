@@ -17,7 +17,13 @@ config/<exe>/units.csv through land.py, the same land step `ninja verify` runs (
 and compares each landed EXE's SHA-1 with config/targets.toml. A function whose relocation check
 fails is refused, never landed, and makes its EXE's splice fail. `ninja verify`'s land step (no
 compile) lands an object only while its provenance stamp `<obj>.prov.json` matches today's
-source, cflags table, Watcom manifest and rule (`check_provenance`, DI-06 part a).
+source, cflags table, Watcom manifest and rule (`check_provenance`, DI-06 part a). A check of a
+D-24 view (`attempt check`) compiles every other unit once per attempt; a later check lands each
+other unit's object from the view's build/check-custom/ without compiling it while
+check_provenance's comparison holds for its bytes (the unit's source and rule, the cflags table,
+the Watcom manifest, the view's headers, the object itself), and recompiles it otherwise
+(261107-qzx). Any other tree compiles every unit on every check, so the gate and `ninja verify`
+are unchanged.
 
 Exit codes (`CheckResult.exit_code`): 0 only when every defined function scores 100.0, passes the
 relocation check and the byte comparison, and every splice SHA-1 matches with nothing refused;
@@ -1115,10 +1121,27 @@ def check_provenance(
     source's own path) and _compile_root_for(`src_root`) (D-27 P1). A stamp that is missing,
     unreadable, of another shape or format, or stale is a CheckError naming the object. Nothing
     turns this off: the land step has no option or variable that skips it."""
+    why = _stale_reasons(obj, src, options, src_root=src_root, data=data, rule_path=rule_path)
+    if why:
+        raise _stale(obj, src, "; ".join(why))
+
+
+def _stale_reasons(
+    obj: Path,
+    src: Path,
+    options: CompileOptions,
+    *,
+    src_root: Path,
+    data: bytes,
+    rule_path: str | None = None,
+) -> list[str]:
+    """check_provenance's comparison, returned instead of raised: why `obj`'s stamp is not what
+    a compile of `src` would record today for the bytes `data`, empty when it is. A file the
+    comparison cannot read is a CheckError, as a compile reading it would fail."""
     stamp = provenance_path(obj)
     found = read_provenance(obj)
     if found is None:
-        raise _stale(obj, src, f"no provenance stamp: {stamp} is {_unread_state(stamp)}")
+        return [f"no provenance stamp: {stamp} is {_unread_state(stamp)}"]
     cflags = Path(options.cflags) if options.cflags is not None else DEFAULT_CFLAGS
     manifest = (Path(options.watcom_manifest) if options.watcom_manifest is not None
                 else DEFAULT_WATCOM_MANIFEST)  # fmt: skip
@@ -1135,8 +1158,42 @@ def check_provenance(
     why = [f"{', '.join(changed)} changed since it was built"] if changed else []
     if found.get("object_sha256") != today["object_sha256"]:
         why.append("the object is not the one its stamp was written for (its bytes changed)")
-    if why:
-        raise _stale(obj, src, "; ".join(why))
+    return why
+
+
+def _reused_object(
+    obj: Path, src: Path, options: CompileOptions, *, src_root: Path, rule_path: str
+) -> bytes | None:
+    """The stored bytes of a sibling unit's object when a check may land them without compiling
+    (261107-qzx): only for a D-24 view (_is_view), so the gate, `gate --all`, a flag re-gate and
+    `ninja verify` never reuse, and only while _stale_reasons over exactly these bytes is empty,
+    so the stamp's PROV_KEYS (source, rule compiler and flags, cflags table, Watcom manifest,
+    headers, the object's own hash, the stamp format) are what check_provenance compares. None
+    means compile it. The object is read once: the bytes compared are the bytes landed."""
+    if not _is_view(Path(src_root).resolve()) or not obj.is_file():
+        return None
+    data = obj.read_bytes()
+    stale = _stale_reasons(obj, src, options, src_root=src_root, data=data, rule_path=rule_path)
+    return None if stale else data
+
+
+def _sibling_object(
+    compile_fn: Callable[..., Any],
+    src: Path,
+    obj: Path,
+    options: CompileOptions,
+    *,
+    src_root: Path,
+    rule_path: str,
+) -> bytes:
+    """The bytes of a unit the land step compiles: its stored object while _reused_object takes
+    it, else a fresh compile's."""
+    data = _reused_object(obj, src, options, src_root=src_root, rule_path=rule_path)
+    if data is not None:
+        return data
+    _compile(compile_fn, src, obj, options, rule_path=rule_path,
+             root=_compile_root_for(src_root))  # fmt: skip
+    return obj.read_bytes()
 
 
 def _land_exe(
@@ -1150,7 +1207,9 @@ def _land_exe(
 ) -> ExeLand:
     landed, refused = [], []
     # Without compile_fn the objects are ninja's; compiled here, they go where check_source puts
-    # them for the same options, never over ninja's with other options (WR-01).
+    # them for the same options, never over ninja's with other options (WR-01). In a D-24 view a
+    # unit not in `fresh` lands its stored object while its stamp is fresh, and is compiled
+    # otherwise (_sibling_object, 261107-qzx).
     root = Path(build_dir) if compile_fn is None else object_root(build_dir, options)
     for unit in exe.units:
         src = Path(src_root) / exe.stem / f"{unit.unit}{SOURCE_SUFFIX}"
@@ -1159,14 +1218,16 @@ def _land_exe(
         obj = UnitPaths.of(root, exe.stem, unit.unit).obj
         text = read_source(src)
         rule_path = unit_rule_path(exe.stem, unit.unit)
+        # Each object is read once: the stamp check hashes what is parsed and landed.
         if compile_fn is not None and (exe.target.name, unit.unit) not in fresh:
             refuse_includes(src, text)
-            _compile(compile_fn, src, obj, options, rule_path=rule_path,
-                     root=_compile_root_for(src_root))  # fmt: skip
+            data = _sibling_object(compile_fn, src, obj, options, src_root=src_root,
+                                   rule_path=rule_path)  # fmt: skip
         elif not obj.is_file():
             raise CheckError(f"{obj} not found: run ninja first (`ninja objects`) to compile "
                              f"{src}")  # fmt: skip
-        data = obj.read_bytes()  # read once: the stamp check hashes what is parsed and landed
+        else:
+            data = obj.read_bytes()
         if compile_fn is None:
             check_provenance(obj, src, options, src_root=src_root, data=data, rule_path=rule_path)
         rows = [row for row in exe.rows if row.unit == unit.unit]
@@ -1198,10 +1259,11 @@ def land_all(
     every manifest target that has config/<exe>/units.csv (orchestrator ruling F4: an EXE
     without units.csv is skipped, so SMKP.EXE never appears). With `compile_fn` each unit is
     compiled first, into object_root(build_dir, options), except the (name, unit) pairs in
-    `fresh` whose object is already built there; without it, the objects ninja built under
-    `build_dir` are landed. `loaded` reuses ExeInputs by manifest name. `src_root` and
-    `config_root` go into the options (with_roots), so compiling another tree never writes
-    ninja's objects (DI-06 part b)."""
+    `fresh` whose object is already built there, and, when `src_root` is a D-24 view, a unit
+    whose stored object's stamp is still fresh (_reused_object, 261107-qzx); without it, the
+    objects ninja built under `build_dir` are landed. `loaded` reuses ExeInputs by manifest name.
+    `src_root` and `config_root` go into the options (with_roots), so compiling another tree
+    never writes ninja's objects (DI-06 part b)."""
     loaded = loaded or {}
     options = with_roots(options or CompileOptions(), src_root=src_root, config_root=config_root)
     out = []
