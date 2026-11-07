@@ -36,3 +36,8 @@ Recorded cost is $52.09, a lower bound: timed-out sessions are estimated from th
 - 10 notes files name `slots only?`, and all 10 deny it. The phrase is new in the updated skill, so its text reached sessions, but no row reached the search.
 
 **Sweep hits.** 16 functions had a sweep hit, and 2 of them later matched under the default rule. The other 14 are open: 9 at `-4r -oneatx -s -fpi`, 3 at `-4r -ox -s -fpi` and 2 at `-4r -ot -s -fpi`. A hit alone does not prove a row needs flags, as `func_00089060` showed. None has been proposed to the D-12 queue.
+
+**D-12 queue (2026-11-07).** `flags propose --from-attempts 20261107-030004` added F-0058 to F-0068 and merged hits into F-0013, F-0028 and F-0029. The queue also picked up `func_00050D00`, a hit from a cut-off session, so 15 rows had open hits rather than 14.
+- Regated, waiting for the owner's `flags approve`: F-0058 to F-0068, all as written.
+- Failed regate on a compile error: F-0013, F-0028, F-0029.
+- Skipped: `func_000A6EA0`, because F-0047 stays open for its unit.
