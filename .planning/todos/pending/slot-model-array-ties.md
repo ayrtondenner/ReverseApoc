@@ -14,7 +14,7 @@ Plan 07.1-07 built and closed CR-01, WR-01, WR-03, WR-04 and IN-04. This is what
 
 **How the lifter declares slots.** `lift.py:649` sorts on M2 for array slots, and it declares address-taken slots as `char` arrays. A change there needs its own measurement.
 
-**Frames past the measured boundary.** Two arrays beside three or more scalars and one array beside four or more are not measured, and the model calls them known.
+**Frames past the sweep.** `build/gate/07.1-evidence/07-verify-review.py` swept 246 frames in both cells, and none it calls known is placed wrongly. It covers `char[4]` and `short[2]` beside up to nine and five ints, and frames of up to three blocks. Past that the model still calls some frames known unmeasured: more blocks, and a `char[4]` beside other multi-element shapes. The refusal is wider than the compiler's line on the safe side, and narrowing it needs its own measurement.
 
 **A skill's wording.** `.claude/skills/watcom-readability/SKILL.md:41` says the order of declarations decides the stack slots. Correct it later through `writing-skills`, RED first.
 

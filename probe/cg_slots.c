@@ -733,8 +733,9 @@ void pr_tie_scope_shorts(int x)
 
 /*
  * Arrays of one total size, alone or beside scalars. Three or more multi-element arrays leave
- * M2 even in a frame of one size; up to two keep it. Each function has markers of its own, and a
- * _rev twin shares its base's, so each shape keeps its own last store.
+ * M2 even alone in a frame of one size; beside other locals no count draws the line. Each
+ * function has markers of its own, and a _rev twin shares its base's, so each shape keeps its
+ * own last store.
  */
 
 /* Three char[4]: the middle one sits highest. */
