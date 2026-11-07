@@ -128,6 +128,20 @@ What it measured, and where that differs from the preview in 07.1-RESEARCH:
 - **M5 has one exception** (`pr_spill_short`), and spill slots do not always start at 0: they start above the memory locals of 4 bytes or more.
 - `-4r -s` folds byte-identical functions onto one offset and merges identical tails across functions, so a reader of this object must take a function's end from the next greater public offset, and a shape needs its own tail to keep its markers.
 
+## Signed divide by a power of two (quick task 261107-qkb)
+
+`cg_divide.c` measures the form wcc386 10.6 gives `x / 2^n` for a signed `int`, which `tools/reverseapoc/lift.py` turns back into that divide. No game code and no matched row is an input. `tests/test_lift_divide_real.py` compiles it through `batch.compile_batch` under the `*` rule of `config/cflags.txt` (`-4r -s -fpi`), lifts each function's bytes from a stub row, and compiles the draft back to the same bytes. It stays out of `probe.PROBE_SOURCES` and `probe.FLAG_SETS`, so the Phase 4 table above does not change.
+
+| Function | Construct | Form it compiled to |
+|---|---|---|
+| `pr_div2` | `x / 2` | `push edx; mov edx, eax; sar edx, 31; sub eax, edx; sar eax, 1; pop edx; ret` |
+| `pr_div4` | `x / 4` | `push edx; mov edx, eax; sar edx, 31; shl edx, 2; sbb eax, edx; sar eax, 2; pop edx; ret` |
+| `pr_div16` | `x / 16` | `push edx; mov edx, eax; sar edx, 31; shl edx, 4; sbb eax, edx; sar eax, 4; pop edx; ret` |
+| `pr_div8_load` | `*p / 8` | `push edx; mov edx, eax; mov eax, [eax]; mov edx, [edx]; sar edx, 31; shl edx, 3; sbb eax, edx; sar eax, 3; pop edx; ret`: the sign comes from a second load, not a copy |
+| `pr_div2_second` | `a + b / 2` | `push ebx; mov ebx, eax; mov eax, edx; sar edx, 31; sub eax, edx; sar eax, 1; add eax, ebx; pop ebx; ret` |
+
+`cdq; xor eax, edx` (abs) is not in the probe, and the lifter still refuses it.
+
 ## Running the calibration
 
 `uv run reverseapoc probe calibrate [--output build/probe/calibration.json]` (plan 04-10); the

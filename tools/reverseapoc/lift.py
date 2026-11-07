@@ -63,6 +63,8 @@ TABLE_ENTRY = 4  # a jump table's entry: one off32 fixup
 HOLE_MARK = "/* HOLE "  # the one spelling of a hole, for whatever asks if a draft holds one
 INT_MIN = -(1 << 31)
 INT_MIN_TEXT = "(-2147483647 - 1)"
+SIGN_SHIFT = 31  # `sar r, 31` leaves the sign of r: 0 or -1
+MAX_SIGN_SHIFT = 30  # const(1 << 31) prints INT_MIN, which would turn the quotient's sign
 FLOAT = None  # the third kind of number SIZE_TYPE names, beside signed and unsigned
 SIZE_TYPE = {
     (1, True): "signed char",
@@ -122,6 +124,8 @@ class E:
     written: int = 0  # the bytes a narrow write set: a note prints the value at that width
     partial: bool = False  # the register's other bytes hold something the text does not say
     guess: bool = False  # worked out from bytes the text does not say: no note prints it
+    sign: tuple | None = None  # (value E, n): the value's sign, 0 or -1, shifted left by n bits
+    bias: tuple | None = None  # (value E, n): the value plus 2^n - 1 when negative, for a sar n
 
     def __str__(self) -> str:
         return self.text
@@ -1176,7 +1180,7 @@ class Block_:
             self.set("eax", cast("short", self.widened("ax"), 2, True))
         elif mn == "cdq":
             a = self.get("eax")
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True, sign=(a, 0))
         elif mn in ("idiv", "div"):
             self.divide(ci, mn, ops)
         elif mn == "call":
@@ -1341,6 +1345,12 @@ class Block_:
         ):
             self.flags = ("res", self.write(ci, ops[0], const(0)))
             return
+        if mn == "sub" and self.biases(ci, ops, shift=0, count=1):
+            return
+        if mn == "sar" and self.quotient(ci, ops):
+            return
+        if mn == "shl" and self.shifts_sign(ci, ops):
+            return
         if mn == "imul" and len(ops) == 3:
             a, b = self.read(ci, ops[1]), self.read(ci, ops[2])
         elif mn == "imul" and len(ops) == 1:
@@ -1359,7 +1369,7 @@ class Block_:
             and "eax" in self.regs
             and self.regs["eax"].text == a.text
         ):
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True, sign=(a, 0))
             self.flags = None
             return
         sym = {
@@ -1375,9 +1385,85 @@ class Block_:
         }[mn]
         if mn == "shr":
             a = cast("unsigned", a, 4, False)
-        target = self.write(ci, ops[0], binop(sym, a, b))
+        e = binop(sym, a, b)
+        if mn == "sar" and b.const == SIGN_SHIFT and _full_reg(ci, ops[0]) is not None:
+            e = replace(e, sign=(a, 0))
+        target = self.write(ci, ops[0], e)
         # A sub is its compare, carry and all, while its first operand can still be read.
         self.flags = ("cmp", a, b) if mn == "sub" and ops[0].type == X86_OP_REG else ("res", target)
+
+    # signed divide by a power of two: `sar 31` or cdq, then `sub; sar 1` or `shl n; sbb; sar n`
+
+    def biases(self, ci, ops, shift: int, count: int) -> bool:
+        """`sub r, s` or `sbb r, s`, where s holds the sign of r's value shifted left by `shift`
+        and the next instruction is `sar r, count`: r holds the value biased toward zero, which
+        only that sar reads. Anything else reading it refuses `op: cdq`."""
+        regs = _full_regs(ci, ops)
+        if regs is None or regs[0] == regs[1] or not self.closed_by_sar(regs[0], count):
+            return False
+        r, s = regs
+        sign = self.regs.get(s)  # peeked: get refuses a sign
+        if sign is None or sign.sign is None or sign.sign[1] != shift:
+            return False
+        v = sign.sign[0]
+        if self.get(r).text != v.text:
+            return False
+        self.regs[r] = E(f"__bias({v.text})", pure=v.pure, sign_of=True, bias=(v, count))
+        self.flags = None
+        return True
+
+    def shifts_sign(self, ci, ops) -> bool:
+        """`shl s, n` of a sign: still that sign, n bits up, whose carry an sbb may read. A cdq's
+        sign stays one only a divide may read, now under a text no idiv takes for a cdq."""
+        s = _full_reg(ci, ops[0])
+        if s is None or ops[1].type != X86_OP_IMM or not 1 <= ops[1].imm <= MAX_SIGN_SHIFT:
+            return False
+        e = self.regs.get(s)  # peeked: get refuses a cdq's sign
+        if e is None or e.sign is None or e.sign[1] != 0:
+            return False
+        v, n = e.sign[0], ops[1].imm
+        if e.sign_of:
+            new = E(f"__cdq({v.text}) << {n}", pure=v.pure, sign_of=True, guess=e.guess)
+        else:
+            new = binop("<<", self.get(s), const(n))
+        self.regs[s] = replace(new, sign=(v, n))
+        self.flags = ("res", self.regs[s])
+        return True
+
+    def borrows_sign(self, ci, ops) -> bool:
+        """`sbb r, s` right after the `shl s, n` of r's sign, closed by `sar r, n`."""
+        regs = _full_regs(ci, ops)
+        if regs is None:
+            return False
+        sign = self.regs.get(regs[1])
+        if sign is None or sign.sign is None or sign.sign[1] < 1:
+            return False
+        carried = self.flags is not None and self.flags[0] == "res" and self.flags[1] is sign
+        n = sign.sign[1]
+        return carried and self.biases(ci, ops, shift=n, count=n)
+
+    def closed_by_sar(self, r: str, count: int) -> bool:
+        """The next instruction of the block is `sar r, count`."""
+        following = self.insns[self.k + 1 : self.k + 2]
+        if not following or following[0].mnemonic != "sar" or len(following[0].operands) != 2:
+            return False
+        nxt = following[0]
+        dst, n = nxt.operands
+        same = dst.type == X86_OP_REG and nxt.reg_name(dst.reg) == r
+        return same and n.type == X86_OP_IMM and n.imm == count
+
+    def quotient(self, ci, ops) -> bool:
+        """`sar r, n` of a value biased for it: the value divided by 2^n."""
+        if ops[0].type != X86_OP_REG or ops[1].type != X86_OP_IMM:
+            return False
+        e = self.regs.get(ci.reg_name(ops[0].reg))
+        if e is None or e.bias is None or e.bias[1] != ops[1].imm:
+            return False
+        v, n = e.bias
+        self.read_guess |= e.guess
+        target = self.write(ci, ops[0], binop("/", v, const(1 << n)))
+        self.flags = ("res", target)
+        return True
 
     def cond(self, mn) -> str:
         if self.flags is None:
@@ -1402,7 +1488,10 @@ class Block_:
         return E(c, pure=all(e.pure for e in self.flags[1:]), boolean=True)
 
     def sbb(self, ci, ops) -> None:
-        """`sbb r, r` after a compare is minus the unsigned borrow. No other form lifts."""
+        """`sbb r, r` after a compare is minus the unsigned borrow, and `sbb r, s` the bias of a
+        divide by a power of two. No other form lifts."""
+        if self.borrows_sign(ci, ops):
+            return
         same = ops[0].type == ops[1].type == X86_OP_REG and ops[0].reg == ops[1].reg
         if not same or (self.flags is not None and self.flags[0] != "cmp"):
             raise Unliftable("op: sbb")
@@ -1556,12 +1645,28 @@ def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
 
 
+def _full_reg(ci, op) -> str | None:
+    """The full general register the operand `op` names, or None."""
+    if op.type != X86_OP_REG:
+        return None
+    name = ci.reg_name(op.reg)
+    return name if name in GP else None
+
+
+def _full_regs(ci, ops) -> tuple[str, str] | None:
+    """The two full general registers a two-operand instruction names, or None."""
+    if len(ops) != 2:
+        return None
+    names = (_full_reg(ci, ops[0]), _full_reg(ci, ops[1]))
+    return None if None in names else names
+
+
 def _reads(e: E, name: str) -> bool:
     return re.search(rf"\b{name}\b", e.text) is not None
 
 
 def _renamed(e: E, name: str, new: str) -> E:
-    return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None)
+    return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None, sign=None, bias=None)
 
 
 def _unsigned_reader(ci) -> bool:

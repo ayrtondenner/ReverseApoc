@@ -1376,6 +1376,94 @@ def test_only_a_divide_reads_a_cdq(code):
         lift.lift_row(stub_exe(code), VA)
 
 
+def test_a_power_of_two_divide_by_two_lifts():
+    # mov edx, eax; sar edx, 31; sub eax, edx; sar eax, 1; ret
+    assert "return r_eax / 2;" in lift.lift_row(stub_exe("89c2 c1fa1f 29d0 d1f8 c3"), VA)
+
+
+def test_a_power_of_two_divide_by_two_after_cdq_lifts():
+    # cdq; sub eax, edx; sar eax, 1; ret
+    assert "return r_eax / 2;" in lift.lift_row(stub_exe("99 29d0 d1f8 c3"), VA)
+
+
+def test_a_power_of_two_sub_with_no_closing_sar_refuses():
+    # mov edx, eax; sar edx, 31; sub eax, edx; ret
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.lift_row(stub_exe("89c2 c1fa1f 29d0 c3"), VA)
+
+
+def test_a_power_of_two_sub_then_another_count_refuses():
+    # mov edx, eax; sar edx, 31; sub eax, edx; sar eax, 2; ret
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.lift_row(stub_exe("89c2 c1fa1f 29d0 c1f802 c3"), VA)
+
+
+def test_a_power_of_two_divide_by_four_lifts():
+    # mov edx, eax; sar edx, 31; shl edx, 2; sbb eax, edx; sar eax, 2; ret
+    assert "return r_eax / 4;" in lift.lift_row(stub_exe("89c2 c1fa1f c1e202 19d0 c1f802 c3"), VA)
+
+
+def test_a_power_of_two_divide_by_sixteen_lifts():
+    # mov edx, eax; sar edx, 31; shl edx, 4; sbb eax, edx; sar eax, 4; ret
+    assert "return r_eax / 16;" in lift.lift_row(stub_exe("89c2 c1fa1f c1e204 19d0 c1f804 c3"), VA)
+
+
+def test_a_power_of_two_divide_after_cdq_lifts():
+    # cdq; shl edx, 2; sbb eax, edx; sar eax, 2; ret
+    assert "return r_eax / 4;" in lift.lift_row(stub_exe("99 c1e202 19d0 c1f802 c3"), VA)
+
+
+@pytest.mark.parametrize(
+    ("code", "text"),
+    [
+        # mov ecx, ebx; sar ecx, 31; sub ebx, ecx; sar ebx, 1; mov eax, ebx; ret
+        ("89d9 c1f91f 29cb d1fb 89d8 c3", "return r_ebx / 2;"),
+        # mov ecx, ebx; sar ecx, 31; shl ecx, 3; sbb ebx, ecx; sar ebx, 3; mov eax, ebx; ret
+        ("89d9 c1f91f c1e103 19cb c1fb03 89d8 c3", "return r_ebx / 8;"),
+    ],
+    ids=["sub", "sbb"],
+)
+def test_a_power_of_two_divide_in_other_registers_lifts(code, text):
+    assert text in lift.lift_row(stub_exe(code), VA)
+
+
+def test_a_power_of_two_divide_of_a_load_lifts():
+    # mov eax, [eax]; mov edx, eax; sar edx, 31; shl edx, 3; sbb eax, edx; sar eax, 3; ret
+    text = lift.lift_row(stub_exe("8b00 89c2 c1fa1f c1e203 19d0 c1f803 c3"), VA)
+    assert "return (*(int *)((char *)r_eax)) / 8;" in text  # a load prints as every load does
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        # mov edx, eax; sar edx, 31; shl edx, 2; sbb eax, edx; sar eax, 3; ret
+        ("89c2 c1fa1f c1e202 19d0 c1f803 c3", "op: sbb"),
+        # mov edx, eax; sar edx, 31; shl edx, 2; test eax, eax; sbb eax, edx; sar eax, 2; ret
+        ("89c2 c1fa1f c1e202 85c0 19d0 c1f802 c3", "op: sbb"),
+        # mov edx, eax; sar edx, 31; shl edx, 2; mov eax, edx; ret
+        ("89c2 c1fa1f c1e202 89d0 c3", "op: cdq"),
+        # mov ecx, ebx; sar ecx, 31; shl ecx, 2; sbb ebx, ecx; sar ebx, 3; mov eax, ebx; ret
+        ("89d9 c1f91f c1e102 19cb c1fb03 89d8 c3", "op: sbb"),
+    ],
+    ids=["another-count", "flags-between", "shifted-sign-read", "ebx-another-count"],
+)
+def test_a_power_of_two_partial_form_refuses(code, reason):
+    with pytest.raises(lift.Unliftable, match=reason):
+        lift.lift_row(stub_exe(code), VA)
+
+
+def test_a_power_of_two_shifted_cdq_is_no_dividend():
+    # cdq; shl edx, 2; idiv ecx; ret
+    with pytest.raises(lift.Unliftable, match="idiv: dividend is not a cdq of eax"):
+        lift.lift_row(stub_exe("99 c1e202 f7f9 c3"), VA)
+
+
+def test_a_power_of_two_sub_in_other_registers_with_no_sar_keeps_its_text():
+    # mov ecx, ebx; sar ecx, 31; sub ebx, ecx; mov eax, ebx; ret
+    text = lift.lift_row(stub_exe("89d9 c1f91f 29cb 89d8 c3"), VA)
+    assert "return r_ebx - (r_ebx >> 31);" in text
+
+
 # ---- low parts ----
 
 
