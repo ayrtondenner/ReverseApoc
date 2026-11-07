@@ -1492,7 +1492,7 @@ class Block_:
         divide by a power of two. No other form lifts."""
         if self.borrows_sign(ci, ops):
             return
-        same =ops[0].type == ops[1].type == X86_OP_REG and ops[0].reg == ops[1].reg
+        same = ops[0].type == ops[1].type == X86_OP_REG and ops[0].reg == ops[1].reg
         if not same or (self.flags is not None and self.flags[0] != "cmp"):
             raise Unliftable("op: sbb")
         borrow = self.compare("jb")
