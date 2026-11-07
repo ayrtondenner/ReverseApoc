@@ -11,7 +11,6 @@ INCLUDE_ASM(func_00021A90);
 INCLUDE_ASM(func_00021B30);
 INCLUDE_ASM(func_00021BB0);
 INCLUDE_ASM(func_00021E30);
-INCLUDE_ASM(func_00021F50);
 INCLUDE_ASM(func_00021FD0);
 INCLUDE_ASM(func_00022110);
 INCLUDE_ASM(func_00022140);
@@ -41,6 +40,60 @@ int func_00021B70(short a, short b)
     result = 0;
     if ((short)D_001D3428[a][b] >= (short)D_002818B9) {
         result = 1;
+    }
+    return result;
+}
+
+struct unk_000D {
+    /* 0x00 */ u8 pad_00[2];
+    /* 0x02 */ s8 byte_02;
+    /* 0x03 */ u8 pad_03[9];
+    /* 0x0C */ s8 byte_0C;
+}; /* size: 0x0D (at least) */
+
+struct unk_0012 {
+    /* 0x00 */ u8 pad_00[2];
+    /* 0x02 */ u8 kind;
+    /* 0x03 */ u8 index;
+    /* 0x04 */ u8 pad_04[0x0E];
+}; /* size: 0x12 */
+
+struct unk_0010 {
+    /* 0x00 */ s8 key[3];
+    /* 0x03 */ s8 value[3];
+    /* 0x06 */ u8 pad_06[0x0A];
+}; /* size: 0x10 */
+
+struct unk_000C {
+    /* 0x00 */ s8 value;
+    /* 0x01 */ u8 pad_01[0x0B];
+}; /* size: 0x0C */
+
+extern struct unk_0012 D_002B2852[];
+extern struct unk_0010 D_002B2612[];
+extern struct unk_000C D_002B2E71[];
+
+int func_00021F50(struct unk_000D *p)
+{
+    struct unk_0012 *entry;
+    struct unk_0010 *table;
+    int i;
+    int result;
+
+    result = 0;
+    entry = &D_002B2852[p->byte_02];
+    if (entry->kind == 1) {
+        table = &D_002B2612[entry->index];
+        for (i = 0; i < 3; i++) {
+            if (table->key[i] == p->byte_0C) {
+                result = table->value[i];
+            }
+        }
+    } else if (entry->kind == 2) {
+        result = D_002B2E71[entry->index].value;
+    }
+    if (result == 0) {
+        result = -1;
     }
     return result;
 }
