@@ -86,6 +86,7 @@ Every match is proven by a deterministic oracle (rebuilt EXE SHA-1 identical to 
 | Milestone 1 phases numbered 1-6 [Owner, 2026-10-19] | GSD phase ids start at 1 | ✓ Good |
 | Add Phase 7 (mechanics-first decomp) and Phase 8 (clean-room specs) to Milestone 1; Phase 6 keeps its 10-function pilot gate; specs use the OpenSpec format, not the tool; specs are CC0-1.0; no OpenApoc contact during Milestone 1 [Owner, 2026-10-21] | Only about 12 leaf functions are matched by the end of Phase 6, so mechanics must be decompiled before they can be specced; CC0 lets OpenApoc (GPL-3.0) use spec text without attribution; clean room needs the author/implementer split (see `docs/clean-room.md`) | — Pending |
 | Phase 5 context deferrals (DI-09): no Ghidra GUI guide in Phase 6; the `-zp`/`-zm`/`-fp` and 11.0a/b flag sweeps run only if a pilot miss needs them; GhidraMCP stays "Later (Phase 7 or later)" [Owner, 2026-10-24, D-41] | The pilot needs neither a GUI guide nor extra sweeps unless a function fails to match under the default rule; the context pack is built by our own `context` command (D-13) | — Pending (Phase 6 pilot) |
+| Phase 7.1 delivered its tools without the goal's outcome (owner override, 2026-11-06) | 0 exact, 0 near at 256 B and up: only the converter moved the curve, and search and slots moved no row | Goal restated in the roadmap; the 256 B+ result is the first matching night's job |
 
 ## Left to the builder (decided in the phase that needs it)
 
@@ -113,4 +114,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-26 after Phase 6 (verification passed, UAT passed 3/3; pilot 3/10 accepted as partial)*
+*Last updated: 2026-11-06 after Phase 7.1 (verification passed, 44 of 44, two by owner override; the tools shipped, the outcome at 256 B and up did not)*
