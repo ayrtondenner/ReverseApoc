@@ -70,3 +70,4 @@ src/ufo2p/u_00073000.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0065 approved ayrto
 src/ufo2p/u_000989d0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0066 approved ayrtondenner 2026-11-07
 src/ufo2p/u_000a74d0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0068 approved ayrtondenner 2026-11-07
 src/ufo2p/u_000130b0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0062 approved ayrtondenner 2026-11-07
+src/ufo2p/u_00050c60.c  wcc386@10.6 -4r -ot -s -fpi  # F-0063 approved ayrtondenner 2026-11-07
