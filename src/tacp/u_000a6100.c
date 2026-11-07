@@ -21,7 +21,42 @@ INCLUDE_ASM(func_000A6480);
 INCLUDE_ASM(func_000A64C0);
 INCLUDE_ASM(func_000A6500);
 INCLUDE_ASM(func_000A6580);
-INCLUDE_ASM(func_000A65D0);
+
+struct unk_0010 {
+    /* 0x00 */ u8 pad_00[4];
+    /* 0x04 */ u8 kind;
+    /* 0x05 */ u8 unit;
+    /* 0x06 */ u8 pad_06[8];
+    /* 0x0E */ s16 field_0E;
+}; /* size: 0x10 */
+
+extern char D_000E6D42[];
+extern char D_001B24AC[];
+extern struct unk_0010 *func_00021180(void);
+int func_000AF990(int, int, int, int, int);
+
+/* int with no return: the matched callers in this unit read EAX through int func_000A65D0(int, int). */
+int func_000A65D0(int a, int b)
+{
+    struct unk_0010 *p;
+    int i;
+    int j;
+
+    if (*(short *)D_000E6D42 != 0) {
+        for (i = 0, j = 0; i < *(short *)D_000E6D42; i++) {
+            p = func_00021180();
+            if (p != 0) {
+                p->unit = *(u8 *)((char *)D_001B24AC + j);
+                p->field_0E = b;
+                p->kind = a;
+            }
+            j += 2;
+        }
+    } else {
+        func_000AF990(185, -11, -1, -1, 0);
+    }
+}
+
 int func_000A65D0(int, int);
 extern char D_00284CEE[];
 extern char D_000E6CC0[];
