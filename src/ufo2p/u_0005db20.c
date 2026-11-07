@@ -17,7 +17,41 @@ INCLUDE_ASM(func_0005E230);
 INCLUDE_ASM(func_0005E3C0);
 INCLUDE_ASM(func_0005E430);
 INCLUDE_ASM(func_0005E500);
-INCLUDE_ASM(func_0005E550);
+
+struct unk_0276 {
+    /* 0x000 */ s16 pad_000;
+    /* 0x002 */ s16 unk_002;
+    /* 0x004 */ u8 pad_004[0x128];
+    /* 0x12C */ s16 unk_12C;
+    /* 0x12E */ u8 pad_12E[0x46];
+    /* 0x174 */ u8 unk_174;
+    /* 0x175 */ u8 pad_175[0xFC];
+    /* 0x271 */ u8 unk_271;
+    /* 0x272 */ u8 pad_272[4];
+}; /* size: 0x276 */
+
+extern struct unk_0276 D_00160FD8[];
+
+int func_0005E550(s16 arg0)
+{
+    s16 index;
+    int result;
+    struct unk_0276 *rec;
+
+    rec = D_00160FD8;
+    result = 0;
+    index = 0;
+    do {
+        if ((int)rec->unk_002 != -1 && (s16)rec->unk_174 == arg0 && rec->unk_12C == 1
+            && rec->unk_271 == 0) {
+            result = 1;
+            break;
+        }
+        index++;
+        rec++;
+    } while (index < 0x50);
+    return result;
+}
 
 /* Records of 0x15E bytes; an id of -1 marks a free slot. Only offset 0 is read so far. */
 #define REC15E_BODY_SIZE 0x15C
