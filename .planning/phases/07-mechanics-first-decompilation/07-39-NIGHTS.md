@@ -38,6 +38,7 @@ Recorded cost is $52.09, a lower bound: timed-out sessions are estimated from th
 **Sweep hits.** 16 functions had a sweep hit, and 2 of them later matched under the default rule. The other 14 are open: 9 at `-4r -oneatx -s -fpi`, 3 at `-4r -ox -s -fpi` and 2 at `-4r -ot -s -fpi`. A hit alone does not prove a row needs flags, as `func_00089060` showed. None has been proposed to the D-12 queue.
 
 **D-12 queue (2026-11-07).** `flags propose --from-attempts 20261107-030004` added F-0058 to F-0068 and merged hits into F-0013, F-0028 and F-0029. The queue also picked up `func_00050D00`, a hit from a cut-off session, so 15 rows had open hits rather than 14.
-- Regated, waiting for the owner's `flags approve`: F-0058 to F-0068, all as written.
+- Landed by the owner: F-0058, F-0059, F-0060, F-0061, F-0064, F-0065, F-0066 and F-0068 (`07e3b528` to `16b497c5`).
+- Regated, waiting for the owner's `flags approve`: F-0062, F-0063 and F-0067. Their evidence includes a cut-off session with no attempt record, which `flags approve` refused until `ed9081d8` let it read the model from the transcript. They were regated again on the new `cflags.txt`.
 - Failed regate on a compile error: F-0013, F-0028, F-0029.
 - Skipped: `func_000A6EA0`, because F-0047 stays open for its unit.
