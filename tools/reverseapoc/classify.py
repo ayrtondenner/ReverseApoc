@@ -154,7 +154,7 @@ def _class_of(exe: ExeInputs, start: int, compiled: batch.Compiled, exact_trim: 
     is `slot` a row whose relocated fields may differ: the mask hid them, and no search reaches
     them. Filler explains a length difference, whether or not `judge` accepts it, so no class
     reads it as one. Both sides are cut, because our object keeps filler of another register or
-    form, and a pair that differs by filler alone is `tail`."""
+    form, and a pair whose bytes differ by filler alone is `tail`."""
     body = batch.function_body(exe, compiled.job.obj, start)
     if isinstance(body, str):
         return "mixed"

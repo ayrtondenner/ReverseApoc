@@ -39,7 +39,7 @@ from dataclasses import dataclass
 
 SLOT_ALIGN = 4  # M3: a `char` and a `short` each took a 4-byte slot
 _ORDERED_SIZES = frozenset((1, 2, 4))  # the only sizes a tie follows M2 at, alone in the frame
-_MEASURED_ARRAYS = 2  # the most multi-element arrays one frame of one size kept M2 with
+_MEASURED_ARRAYS = 2  # the most multi-element arrays the model calls known at one size
 _BLOCK_ORDERED_SIZE = 4  # M4: chars and shorts do not follow their blocks
 
 
