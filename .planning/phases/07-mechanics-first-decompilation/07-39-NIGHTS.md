@@ -63,7 +63,7 @@ Recorded cost is $52.09, a lower bound: timed-out sessions are estimated from th
 | 256 B and up | 0 | 0 | 0 | none | none |
 | Total | 100 | 41 | 11 | 11.0% | $1.12 |
 
-Recorded cost is $112.04. 41 of the 100 sessions hit the 1,800 s limit (9 of 57 the night before), and the rate per session at 64-255 B fell from 23.1% to 8.4%. The weekly bar was 17% at the start.
+Recorded cost is $112.04. 41 of the 100 sessions hit the 1,800 s limit (9 of 57 the night before), and the rate per session at 64-255 B fell from 23.1% to 8.4%. The weekly bar went from 17% to 27%, so 10 points for 100 sessions.
 
 **Match commits:** `e2f21708`, `071b176c`, `3f813f8c`, `ab029123`, `5fa52871`, `9037a98b`, `9cd8851b`, `9476608c`, `95bad271`, `eac3eb43`, `541449d3`. Attempt log: `cfa21ed9`.
 
