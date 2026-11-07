@@ -2247,3 +2247,146 @@ def test_view_check_reuses_an_unchanged_sibling(two_exes, monkeypatch, capsys):
     assert cli_main(argv) == 0
     assert_both_land(capsys.readouterr().out)
     assert compiled(second) == [(STEM, f"{UNIT}.c")]
+
+
+def view_check(env: Env, compiler: FakeCompiler, **roots):
+    """check_unit of the claimed unit with `roots` (check_unit keywords) over the env's."""
+    return check.check_unit(STEM, UNIT, **{**env.kwargs(), **roots}, compile_fn=compiler,
+                            objdiff_runner=FakeObjdiff())  # fmt: skip
+
+
+def assert_all_ok(result) -> None:
+    assert result.ok, result.format()
+    assert [(s.exe, s.ok, len(s.result.landed)) for s in result.splices] == [
+        (EXE, True, 1), (TWO_EXE, True, 1)]  # fmt: skip
+
+
+def sibling_object(view: Path) -> Path:
+    return view / "build" / check.CUSTOM_ROOT / TWO_STEM / "obj" / f"{UNIT}.obj"
+
+
+def _append(path: Path, text: str) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def manifest_copy(env: Env) -> Path:
+    return env.root / "watcom.toml"
+
+
+def no_setup(env: Env) -> dict:
+    return {}
+
+
+def with_manifest_copy(env: Env) -> dict:
+    shutil.copyfile(DEFAULT_WATCOM_MANIFEST, manifest_copy(env))
+    return {"watcom_manifest": manifest_copy(env)}
+
+
+SIBLING_RULE = f"src/{TWO_STEM}/{UNIT}.c"
+
+
+def edit_source(env: Env, view: Path) -> None:
+    _append(view / "src" / TWO_STEM / f"{UNIT}.c", "/* edited */\n")
+
+
+def edit_rule(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", f"{SIBLING_RULE}  wcc386@10.6  -4r -s -fpi -ot\n")
+
+
+def edit_compiler(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", f"{SIBLING_RULE}  wcc386@10.5  -4r -s -fpi\n")
+
+
+def edit_table(env: Env, view: Path) -> None:
+    _append(view / "config" / "cflags.txt", "# comment\n")  # the rule is unchanged
+
+
+def edit_header(env: Env, view: Path) -> None:
+    _append(view / "include" / "common.h", "#define EDITED 1\n")
+
+
+def edit_manifest(env: Env, view: Path) -> None:
+    _append(manifest_copy(env), "# edited\n")
+
+
+def edit_object(env: Env, view: Path) -> None:
+    # Reusing this object would be refused by the relocation check, so `ok` proves a recompile.
+    sibling_object(view).write_bytes(omf_object(callee="func_00010020_"))
+
+
+def delete_stamp(env: Env, view: Path) -> None:
+    provenance_path(sibling_object(view)).unlink()
+
+
+def tear_stamp(env: Env, view: Path) -> None:
+    provenance_path(sibling_object(view)).write_text("{torn", encoding="utf-8")
+
+
+CHANGES = {"source": (no_setup, edit_source), "rule": (no_setup, edit_rule),
+           "compiler": (no_setup, edit_compiler), "table": (no_setup, edit_table),
+           "header": (no_setup, edit_header), "manifest": (with_manifest_copy, edit_manifest),
+           "object": (no_setup, edit_object), "stamp-missing": (no_setup, delete_stamp),
+           "stamp-torn": (no_setup, tear_stamp)}  # fmt: skip
+
+
+@pytest.mark.parametrize("case", list(CHANGES))
+def test_view_check_recompiles_a_changed_sibling(two_exes, case):
+    """Anything the sibling's stamp records that changed since run 1 (its source, its rule's
+    flags or compiler, the cflags table, a view header, the Watcom manifest, its object, its
+    stamp) makes run 2 compile it again; the stored object never lands."""
+    setup, change = CHANGES[case]
+    view = make_view(two_exes)
+    roots = {**view_roots(view), **setup(two_exes)}
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    change(two_exes, view)
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == BOTH
+
+
+def committed_tree(env: Env) -> dict:
+    return {}
+
+
+def flags_copy(env: Env) -> dict:
+    return {"src_root": view_tree(env, "build", "flags", "p1", include=False)}
+
+
+def driver_not_view(env: Env) -> dict:
+    return {"src_root": view_tree(env, "build", "driver", "run1", "notview")}
+
+
+@pytest.mark.parametrize("tree", [committed_tree, flags_copy, driver_not_view],
+                         ids=["committed", "flags-copy", "driver-not-view"])  # fmt: skip
+def test_check_outside_a_view_compiles_every_sibling(two_exes, tree):
+    """Only a D-24 view reuses: the committed src/ (plain check, `gate EXE/UNIT`, `gate --all`),
+    a flag re-gate's copy and a driver tree that is no view compile every unit on every check,
+    though every stamp is fresh."""
+    roots = tree(two_exes)
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == BOTH
+
+
+def test_view_reuse_reads_the_object_once(two_exes, monkeypatch):
+    """Fix round 2, N3, for a reused object: the bytes the stamp check hashes are the bytes
+    parsed and landed."""
+    view = make_view(two_exes)
+    roots = view_roots(view)
+    assert_all_ok(view_check(two_exes, StampingCompiler(), **roots))
+    obj = sibling_object(view)
+    reads = []
+    real = Path.read_bytes
+
+    def counting(self):
+        if self == obj:
+            reads.append(self)
+        return real(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    second = StampingCompiler()
+    assert_all_ok(view_check(two_exes, second, **roots))
+    assert compiled(second) == [(STEM, f"{UNIT}.c")]
+    assert len(reads) == 1
