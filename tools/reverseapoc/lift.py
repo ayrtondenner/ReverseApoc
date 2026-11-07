@@ -122,6 +122,8 @@ class E:
     written: int = 0  # the bytes a narrow write set: a note prints the value at that width
     partial: bool = False  # the register's other bytes hold something the text does not say
     guess: bool = False  # worked out from bytes the text does not say: no note prints it
+    sign: tuple | None = None  # (value E, n): the value's sign, 0 or -1, shifted left by n bits
+    bias: tuple | None = None  # (value E, n): the value plus 2^n - 1 when negative, for a sar n
 
     def __str__(self) -> str:
         return self.text
@@ -1176,7 +1178,7 @@ class Block_:
             self.set("eax", cast("short", self.widened("ax"), 2, True))
         elif mn == "cdq":
             a = self.get("eax")
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True, sign=(a, 0))
         elif mn in ("idiv", "div"):
             self.divide(ci, mn, ops)
         elif mn == "call":
@@ -1341,6 +1343,10 @@ class Block_:
         ):
             self.flags = ("res", self.write(ci, ops[0], const(0)))
             return
+        if mn == "sub" and self.biases(ci, ops, shift=0, count=1):
+            return
+        if mn == "sar" and self.quotient(ci, ops):
+            return
         if mn == "imul" and len(ops) == 3:
             a, b = self.read(ci, ops[1]), self.read(ci, ops[2])
         elif mn == "imul" and len(ops) == 1:
@@ -1359,7 +1365,7 @@ class Block_:
             and "eax" in self.regs
             and self.regs["eax"].text == a.text
         ):
-            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True)
+            self.regs["edx"] = E(f"__cdq({a.text})", pure=a.pure, sign_of=True, sign=(a, 0))
             self.flags = None
             return
         sym = {
@@ -1378,6 +1384,49 @@ class Block_:
         target = self.write(ci, ops[0], binop(sym, a, b))
         # A sub is its compare, carry and all, while its first operand can still be read.
         self.flags = ("cmp", a, b) if mn == "sub" and ops[0].type == X86_OP_REG else ("res", target)
+
+    # signed divide by a power of two: `sar 31` or cdq, then `sub; sar 1` or `shl n; sbb; sar n`
+
+    def biases(self, ci, ops, shift: int, count: int) -> bool:
+        """`sub r, s` or `sbb r, s`, where s holds the sign of r's value shifted left by `shift`
+        and the next instruction is `sar r, count`: r holds the value biased toward zero, which
+        only that sar reads. Anything else reading it refuses `op: cdq`."""
+        regs = _full_regs(ci, ops)
+        if regs is None or regs[0] == regs[1] or not self.closed_by_sar(regs[0], count):
+            return False
+        r, s = regs
+        sign = self.regs.get(s)  # peeked: get refuses a sign
+        if sign is None or sign.sign is None or sign.sign[1] != shift:
+            return False
+        v = sign.sign[0]
+        if self.get(r).text != v.text:
+            return False
+        self.regs[r] = E(f"__bias({v.text})", pure=v.pure, sign_of=True, bias=(v, count))
+        self.flags = None
+        return True
+
+    def closed_by_sar(self, r: str, count: int) -> bool:
+        """The next instruction of the block is `sar r, count`."""
+        following = self.insns[self.k + 1 : self.k + 2]
+        if not following or following[0].mnemonic != "sar" or len(following[0].operands) != 2:
+            return False
+        nxt = following[0]
+        dst, n = nxt.operands
+        same = dst.type == X86_OP_REG and nxt.reg_name(dst.reg) == r
+        return same and n.type == X86_OP_IMM and n.imm == count
+
+    def quotient(self, ci, ops) -> bool:
+        """`sar r, n` of a value biased for it: the value divided by 2^n."""
+        if ops[0].type != X86_OP_REG or ops[1].type != X86_OP_IMM:
+            return False
+        e = self.regs.get(ci.reg_name(ops[0].reg))
+        if e is None or e.bias is None or e.bias[1] != ops[1].imm:
+            return False
+        v, n = e.bias
+        self.read_guess |= e.guess
+        target = self.write(ci, ops[0], binop("/", v, const(1 << n)))
+        self.flags = ("res", target)
+        return True
 
     def cond(self, mn) -> str:
         if self.flags is None:
@@ -1556,12 +1605,20 @@ def _full(name: str) -> str:
     return SUB[name][0] if name in SUB else name
 
 
+def _full_regs(ci, ops) -> tuple[str, str] | None:
+    """The two full general registers a two-operand instruction names, or None."""
+    if len(ops) != 2 or any(op.type != X86_OP_REG for op in ops):
+        return None
+    names = (ci.reg_name(ops[0].reg), ci.reg_name(ops[1].reg))
+    return names if all(name in GP for name in names) else None
+
+
 def _reads(e: E, name: str) -> bool:
     return re.search(rf"\b{name}\b", e.text) is not None
 
 
 def _renamed(e: E, name: str, new: str) -> E:
-    return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None)
+    return replace(e, text=re.sub(rf"\b{name}\b", new, e.text), scaled=None, sign=None, bias=None)
 
 
 def _unsigned_reader(ci) -> bool:

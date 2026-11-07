@@ -1376,6 +1376,28 @@ def test_only_a_divide_reads_a_cdq(code):
         lift.lift_row(stub_exe(code), VA)
 
 
+def test_a_power_of_two_divide_by_two_lifts():
+    # mov edx, eax; sar edx, 31; sub eax, edx; sar eax, 1; ret
+    assert "return r_eax / 2;" in lift.lift_row(stub_exe("89c2 c1fa1f 29d0 d1f8 c3"), VA)
+
+
+def test_a_power_of_two_divide_by_two_after_cdq_lifts():
+    # cdq; sub eax, edx; sar eax, 1; ret
+    assert "return r_eax / 2;" in lift.lift_row(stub_exe("99 29d0 d1f8 c3"), VA)
+
+
+def test_a_power_of_two_sub_with_no_closing_sar_refuses():
+    # mov edx, eax; sar edx, 31; sub eax, edx; ret
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.lift_row(stub_exe("89c2 c1fa1f 29d0 c3"), VA)
+
+
+def test_a_power_of_two_sub_then_another_count_refuses():
+    # mov edx, eax; sar edx, 31; sub eax, edx; sar eax, 2; ret
+    with pytest.raises(lift.Unliftable, match="op: cdq"):
+        lift.lift_row(stub_exe("89c2 c1fa1f 29d0 c1f802 c3"), VA)
+
+
 # ---- low parts ----
 
 
