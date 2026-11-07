@@ -1136,6 +1136,19 @@ def _bad_variant(a: Approval) -> dict:
 
 NOT_REGATED = dict(status="proposed", regate_exit=-1, regate_variant="empty",
                    regate_cflags_sha256="", regate_log="")  # fmt: skip
+
+
+def _transcript(a: Approval, lines: list[str]) -> None:
+    """The saved stream of attempt 3 of F30, the attempt F-0001's evidence names."""
+    path = a.repo / "build" / "driver" / RUN / "ufo2p" / F30 / "attempt-3" / "transcript.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(line + "\n" for line in lines), encoding="utf-8", newline="\n")
+
+
+def _init_line(model: str) -> str:
+    return json.dumps({"type": "system", "subtype": "init", "model": model})
+
+
 REFUSALS = {
     "proposed": (NOT_REGATED, None, None, "proposed"),
     "regate exit 1": (dict(regate_exit=1), None, None, "re-gate exit 1"),
@@ -1154,6 +1167,14 @@ REFUSALS = {
     "other model": ({}, (_attempt_record(F30, UNIT, 3, model="claude-other-1"),), None,
                     "claude-other-1"),
     "no attempt record": ({}, (_attempt_record(F30, UNIT, 2),), None, "model unknown"),
+    # a cut-off attempt: the transcript speaks only for an attempt with no record, only through
+    # its init event, and the model it names must still be one the co-author table names
+    "record without a model": ({}, (_attempt_record(F30, UNIT, 3, model=None),),
+                               lambda a: _transcript(a, [_init_line(OPUS)]), "model unknown"),
+    "transcript without init": ({}, (), lambda a: _transcript(a, ['{"type":"assistant"}']),
+                                "model unknown"),
+    "transcript unknown model": ({}, (), lambda a: _transcript(a, [_init_line("claude-other-1")]),
+                                 "claude-other-1"),
     # 07-30 fix round 1 (ruling F33): a v2 record's requested model the table does not name
     "v2 unknown model": ({}, (_v2_attempt(F30, 3, requested="claude-made-up-1"),), None,
                          "claude-made-up-1"),
@@ -1165,7 +1186,7 @@ def test_approve_refusals(tmp_path, case):
     """D-12 refusals: each is a FlagsError (exit 2) before any write."""
     changes, records, prepare, match = REFUSALS[case]
     a = approve_repo(tmp_path, records=records, **changes)
-    extra = prepare(a) if prepare else {}
+    extra = (prepare(a) if prepare else None) or {}
     ids = extra.pop("ids", ["F-0001"])
     base, before = a.head(), a.files()
     with pytest.raises(flags.FlagsError, match=match):
@@ -1206,6 +1227,22 @@ def test_approve_a_mixed_candidate_gets_one_trailer_per_model_in_pass_order(tmp_
     a = approve_repo(tmp_path, records=records, evidence=evidence)
     assert a.approve(["F-0001"]).landed == ("F-0001",)
     assert _trailers(a) == [OPUS_LINE, FABLE_LINE]
+
+
+def test_approve_a_cut_off_attempt_names_the_model_of_its_transcript(tmp_path):
+    """A session cut off when the night stopped has no record, only its saved stream, whose
+    last line may be torn; its init event names the model, here not the default one."""
+    a = approve_repo(tmp_path, records=())
+    _transcript(a, [_init_line(FABLE), '{"type":"assistant","mess'])
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [FABLE_LINE]
+
+
+def test_approve_prefers_the_record_to_the_transcript(tmp_path):
+    a = approve_repo(tmp_path, records=(_v2_attempt(F30, 3, requested=OPUS),))
+    _transcript(a, [_init_line(FABLE)])
+    assert a.approve(["F-0001"]).landed == ("F-0001",)
+    assert _trailers(a) == [OPUS_LINE]
 
 
 def test_approve_refuses_while_a_drive_holds_the_lock(tmp_path):

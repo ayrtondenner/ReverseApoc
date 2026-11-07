@@ -53,7 +53,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from . import batch, check, contextpack, driver, gate, x86
+from . import batch, check, contextpack, driver, gate, streamjson, x86
 from .cflags import DEFAULT_CFLAGS, CflagsError, load_cflags, parse_cflags, select_rule
 from .check import unit_rule_path
 from .fileio import write_atomic
@@ -1300,6 +1300,7 @@ MATCHING_DOC = Path("docs") / "matching.md"
 MATCHING_SECTION = "## Compiler and flags per module"
 # Ruling F33 (07-30): the co-author of a flag-approved landing is driver.coauthor of each model
 # that wrote the candidate (session.MODEL_NAMES); a model that table does not name is refused.
+# An attempt with no record takes its model from its transcript (owner ruling, 2026-11-07).
 _PLACEHOLDER = re.compile(r"func_([0-9A-Fa-f]{8})")  # driver._Claim's attempt directory name
 COMMIT_MSG = "commit-msg.txt"  # build/flags/<id>/commit-msg.txt
 APPROVED_TRAILER = "Flags-Approved-By:"
@@ -1400,13 +1401,30 @@ def _attempt_models(log: Path) -> dict[AttemptKey, AttemptModel]:
     return models
 
 
-def _coauthors(p: Proposal, models: Mapping[AttemptKey, AttemptModel]) -> tuple[str, ...]:
+def _transcript_model(repo: Path, run: str, exe: str, function: str, n: int) -> str | None:
+    """The model the init event of an attempt's saved stream names, else None. A session cut
+    off when its night stopped never gets a record, but its stream is already on disk."""
+    path = repo / DRIVER_DIR / run / exe / function / f"attempt-{n}" / driver.TRANSCRIPT
+    if not path.is_file():
+        return None
+    init = streamjson.init_event(streamjson.parse(path.read_bytes().splitlines()).events)
+    model = init.get("model") if init else None
+    return model if isinstance(model, str) else None
+
+
+def _coauthors(repo: Path, p: Proposal,
+               models: Mapping[AttemptKey, AttemptModel]) -> tuple[str, ...]:  # fmt: skip
     """Ruling F33 (07-30): the Co-Authored-By line of each model that wrote the candidate,
     through driver.coauthor, one per distinct model in pass order (then evidence order). An
-    attempt with no record, or a model the co-author table does not name, is refused."""
+    attempt with no record is a cut-off session: its transcript names the model (owner ruling,
+    2026-11-07) and, its pass unknown, it sorts first. With neither, or with a model the
+    co-author table does not name, it is refused."""
     found: list[tuple[int, int, str]] = []
     for index, (run, exe, function, n) in enumerate(_hitting_attempts(p)):
-        pass_n, model = models.get(_evidence_key(run, exe, function, n), (0, None))
+        key = _evidence_key(run, exe, function, n)
+        pass_n, model = models.get(key, (0, None))
+        if key not in models:
+            model = _transcript_model(repo, run, exe, function, n)
         try:
             driver.coauthor(model)
         except driver.DriverError as exc:
@@ -1477,7 +1495,7 @@ def _approvable(repo: Path, proposals: Sequence[Proposal], ids: Sequence[str],
         if models is None:
             models = _attempt_models(repo / driver.ATTEMPT_LOG)
         attempts = max(n for *_, n in _hitting_attempts(p))
-        out.append(_Landing(p, _landing_source(repo, p), _coauthors(p, models), attempts))
+        out.append(_Landing(p, _landing_source(repo, p), _coauthors(repo, p, models), attempts))
     return out
 
 
