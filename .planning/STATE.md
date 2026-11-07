@@ -2,19 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v1.0
 milestone_name: Milestone 1
-current_phase: "07.1"
-current_phase_name: Matching tooling (INSERTED)
+current_phase: 7
+current_phase_name: Mechanics-first decompilation
 status: executing
-stopped_at: "Phase 07.1 verification: gaps_found; close stopped for the owner's rulings"
-last_updated: "2026-11-06T23:13:25.248Z"
+stopped_at: Phase 07.1 complete, ready to execute Phase 7
+last_updated: "2026-11-07T01:43:26.073Z"
 last_activity: 2026-11-06
-last_activity_desc: Phase 07.1 execution started
-state_head: e61954fa959500d936f80b6e938e2b18d21847b9
+last_activity_desc: Phase 07.1 complete, transitioned to Phase 7
+state_head: 6eb35b3a911bca98834c7f001ac062ff464b0f5f
 progress:
   total_phases: 9
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 129
-  completed_plans: 125
+  completed_plans: 126
+  percent: 78
 ---
 
 # Project State
@@ -28,12 +29,12 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 
 ## Current Position
 
-Phase: 07.1 (Matching tooling (INSERTED)) — EXECUTING
-Plan: 7 of 7
-Status: Executing Phase 07.1
-Last activity: 2026-11-06 — Phase 07.1 execution started
+Phase: 7 — Mechanics-first decompilation
+Plan: 46
+Status: Ready to execute
+Last activity: 2026-11-06 — Phase 07.1 complete, transitioned to Phase 7
 
-Progress: [████████░░] 75%
+Progress: [████████░░] 78%
 
 Next steps:
 1. Phases 1-6 complete (Phase 6: VERIFICATION.md passed, UAT passed 3/3 by the owner on 2026-10-26; pilot 3/10 accepted as partial, AGT-11 carries to Phase 7).
@@ -42,7 +43,7 @@ Next steps:
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 74
+- Total plans completed: 81
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -56,6 +57,7 @@ Next steps:
 | 04 | 13 | - | - |
 | 05 | 20 | - | - |
 | 06 | 27 | - | - |
+| 07.1 | 7 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -154,5 +156,5 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-11-06T21:44:31.681Z
-Stopped at: Phase 07.1 verification: gaps_found; close stopped for the owner's rulings
+Stopped at: Phase 07.1 complete, ready to execute Phase 7
 Resume file: .planning/phases/07.1-matching-tooling/.continue-here.md

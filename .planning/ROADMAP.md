@@ -40,7 +40,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 5: Split and first matches** - Ghidra split, omf2elf, configure.py + ninja + objdiff, relocation check; one verified match per EXE (completed 2026-10-24)
 - [x] **Phase 6: Reporting and agent pilot** - Self-hosted progress, guardrail hooks, per-function driver; 10 easy functions matched unattended with zero regressions (completed 2026-10-26; pilot 3/10, partial accepted by the owner, the target carries to Phase 7)
 - [ ] **Phase 7: Mechanics-first decompilation** - Functions behind the OpenApoc checklist items matched byte for byte, named and commented by the driver at scale; readability lint
-- [ ] **Phase 07.1: Matching tooling (INSERTED)** - Permutation search, stack-slot model, converter v1, failure classifier and disassembly view upgrades, measured after each plan; watcom-decomp skill updated last
+- [x] **Phase 07.1: Matching tooling (INSERTED)** - Permutation search, stack-slot model, converter v1, failure classifier and disassembly view upgrades, measured after each plan; watcom-decomp skill updated last (completed 2026-11-06)
 - [ ] **Phase 8: Clean-room specs for OpenApoc** - OpenSpec-format specs per mechanic with template, `speclint`, `wikifetch`, `apoc-spec` skill, claim inventory and owner review; CC0-1.0; findings docs (bugs, cut content, cheats and easter eggs, Learning AI)
 
 ## Phase Details
@@ -390,7 +390,7 @@ Plans:
   4. Each plan's SUMMARY has a "Seen, not built" list, its review records YAGNI breaks as `IN-` findings, and its row in `07.1-YAGNI-RESULTS.md` follows the rule frozen in `07.1-YAGNI-MEASURE.md`
   5. The watcom-decomp skill is updated through `writing-skills` only after the owner has seen the curve
 
-**Plans:** 6/6 plans executed
+**Plans:** 7/7 plans complete
 
 Plans:
 **Wave 1** *(main checkout)*
@@ -412,7 +412,7 @@ Plans:
 - [x] 07.1-06-PLAN.md — watcom-decomp skill through `writing-skills`, after the owner checkpoint that shows the curve (D-06)
 
 **Wave 7** *(blocked on Wave 6 completion; main checkout)*
-- [ ] 07.1-07-PLAN.md — gap closure: array ties refused and measured, shifted-tie fallback, filler-tailed classes, the slot pair filter, docs and todos from the owner's rulings, curve point 7 (D-08, D-27)
+- [x] 07.1-07-PLAN.md — gap closure: array ties refused and measured, shifted-tie fallback, filler-tailed classes, the slot pair filter, docs and todos from the owner's rulings, curve point 7 (D-08, D-27)
 
 ### Phase 8: Clean-room specs for OpenApoc
 
@@ -446,7 +446,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 | 5. Split and first matches | 20/20 | Complete    | 2026-10-24 |
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
-| 7.1. Matching tooling (INSERTED) | 6/6 | In Progress | - |
+| 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
