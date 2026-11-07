@@ -6,7 +6,7 @@ One entry per owner-started night, for the plan's SUMMARY when it closes. Matche
 
 Two consecutive ENDED nights with the Tier 1 matched count unchanged stop the loop. A STOPPED night neither counts toward the rule nor resets it.
 
-Count so far: 0 flat nights.
+Count so far: 0 flat nights (run 20261107-170844 moved Tier 1 from 125 to 136).
 
 ## Run 20261107-030004 (2026-11-07)
 
@@ -45,3 +45,26 @@ Recorded cost is $52.09, a lower bound: timed-out sessions are estimated from th
 - Tier 1 after all 11 landings: 125 matched.
 - Failed regate on a compile error: F-0013, F-0028, F-0029.
 - Skipped: `func_000A6EA0`, because F-0047 stays open for its unit.
+
+## Run 20261107-170844 (2026-11-07)
+
+`uv run reverseapoc drive --workers 10 --max-sessions 100`, all on `claude-opus-5-5`. It is the first night started from a Claude Code session, at the owner's request, after a clean dry run and `CANARY PASS` (run `ccsession-canary1`). The launcher removed every `CLAUDE*` variable and `GIT_EDITOR` first, so the sessions got a plain terminal's environment.
+
+**Outcome.** ENDED `max sessions`: 100 sessions, 11 matched, in 4 h 23 min. No failed check, nothing uncommitted, nothing quarantined. It is the first night to run to its end since the docker removal fix (`e3c6648a`).
+
+**End checks (the driver's).** `ninja verify` exit 0, both EXEs at their SHA-1, landed units 83 and 62. `gate --all` exit 0.
+
+**Tier 1.** 125 matched before, 136 after. All 11 matches are Tier 1.
+
+| Size | Sessions | Functions | Matched | Rate per session | Cost per session |
+|---|---|---|---|---|---|
+| Under 64 B | 5 | 3 | 3 | 60.0% | $0.82 |
+| 64-255 B | 95 | 38 | 8 | 8.4% | $1.14 |
+| 256 B and up | 0 | 0 | 0 | none | none |
+| Total | 100 | 41 | 11 | 11.0% | $1.12 |
+
+Recorded cost is $112.04. 41 of the 100 sessions hit the 1,800 s limit (9 of 57 the night before), and the rate per session at 64-255 B fell from 23.1% to 8.4%. The weekly bar was 17% at the start.
+
+**Match commits:** `e2f21708`, `071b176c`, `3f813f8c`, `ab029123`, `5fa52871`, `9037a98b`, `9cd8851b`, `9476608c`, `95bad271`, `eac3eb43`, `541449d3`. Attempt log: `cfa21ed9`.
+
+**Sweep hits.** 47 sessions logged one. 25 functions with a hit stay unmatched, waiting for `flags propose --from-attempts 20261107-170844`: 17 at `-4r -oneatx -s -fpi`, 5 at `-4r -ox -s -fpi` and 4 at `-4r -ot -s -fpi` (`func_00041660` hit two).
