@@ -16,3 +16,27 @@ int pr_div2(int x)
 {
     return x / 2;
 }
+
+/* x / 4: the sign, shifted left, is the borrow sbb subtracts with it. */
+int pr_div4(int x)
+{
+    return x / 4;
+}
+
+/* x / 16: the same form with a wider shift. */
+int pr_div16(int x)
+{
+    return x / 16;
+}
+
+/* A dividend loaded from memory. */
+int pr_div8_load(int *p)
+{
+    return *p / 8;
+}
+
+/* A dividend that arrives in edx, not eax, beside a parameter the sum still reads. */
+int pr_div2_second(int a, int b)
+{
+    return a + b / 2;
+}

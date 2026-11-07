@@ -24,6 +24,10 @@ BUILD_ROOT = REPO_ROOT / "build" / "test-lift-divide"
 # Each probe function, by name, and the quotient its draft must hold.
 QUOTIENTS = {
     "pr_div2": " / 2",
+    "pr_div4": " / 4",
+    "pr_div16": " / 16",
+    "pr_div8_load": " / 8",
+    "pr_div2_second": " / 2",
 }
 
 
