@@ -10,7 +10,45 @@
 INCLUDE_ASM(func_000AB090);
 INCLUDE_ASM(func_000AB240);
 INCLUDE_ASM(func_000AB5F0);
-INCLUDE_ASM(func_000AB6D0);
+
+/* Size not known: only the fields up to 0x7F are read here. */
+struct unk_0080 {
+    /* 0x00 */ u8 pad_00[0x21];
+    /* 0x21 */ u8 unk_21;
+    /* 0x22 */ u8 pad_22;
+    /* 0x23 */ u8 unk_23;
+    /* 0x24 */ s16 unk_24;
+    /* 0x26 */ u8 pad_26[0x15];
+    /* 0x3B */ u8 unk_3B;
+    /* 0x3C */ u8 unk_3C;
+    /* 0x3D */ u8 pad_3D[0x3F];
+    /* 0x7C */ u8 unk_7C;
+    /* 0x7D */ u8 unk_7D;
+    /* 0x7E */ s16 unk_7E;
+};
+
+struct unk_02BE {
+    /* 0x000 */ s16 unk_000;
+    /* 0x002 */ u8 pad_002[0x2BC];
+}; /* size: 0x2BE */
+
+extern u8 D_000D5060;
+extern struct unk_02BE D_000D942E[];
+
+/* Defined above func_000AB6A0: under -oneatx wcc386 pads a function that has another
+ * after it, and func_000AB6A0's row holds no padding. */
+int func_000AB6D0(struct unk_0080 *arg0)
+{
+    int result;
+
+    result = 0;
+    if (arg0->unk_7D == 1 && arg0->unk_7C == D_000D5060 && arg0->unk_21 == 0
+        && arg0->unk_23 != 0 && arg0->unk_7E == D_000D942E[arg0->unk_24].unk_000
+        && arg0->unk_3C == arg0->unk_3B) {
+        result = 1;
+    }
+    return result;
+}
 
 /* An id of -1 names no flag record (a rule input left unused). */
 #define FLAG_ID_NONE -1
