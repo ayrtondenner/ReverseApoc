@@ -32,8 +32,30 @@ INCLUDE_ASM(func_00042790);
 INCLUDE_ASM(func_00042C10);
 INCLUDE_ASM(func_00043A20);
 INCLUDE_ASM(func_00046400);
-INCLUDE_ASM(func_00046800);
 INCLUDE_ASM(func_00046840);
 INCLUDE_ASM(func_000469C0);
 INCLUDE_ASM(func_00046F30);
 INCLUDE_ASM(func_00047340);
+
+struct unk_0006 {
+    /* 0x00 */ u8 * volatile ptr;
+    /* 0x04 */ u8 value;
+    /* 0x05 */ u8 pad_05;
+}; /* size: 0x06 */
+
+extern int D_000D4D4C;
+extern struct unk_0006 *D_00182CC0;
+
+/* void: EAX just holds a scratch pointer at ret; the callers decide. */
+void func_00046800(void)
+{
+    int n;
+
+    D_00182CC0--;
+    while ((n = (int)D_00182CC0->ptr) != 0) {
+        *D_00182CC0->ptr = D_00182CC0->value;
+        D_00182CC0--;
+    }
+    D_000D4D4C = n;
+    D_00182CC0++;
+}
