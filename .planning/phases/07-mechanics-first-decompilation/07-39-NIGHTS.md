@@ -67,4 +67,4 @@ Recorded cost is $112.04. 41 of the 100 sessions hit the 1,800 s limit (9 of 57 
 
 **Match commits:** `e2f21708`, `071b176c`, `3f813f8c`, `ab029123`, `5fa52871`, `9037a98b`, `9cd8851b`, `9476608c`, `95bad271`, `eac3eb43`, `541449d3`. Attempt log: `cfa21ed9`.
 
-**Sweep hits.** 47 sessions logged one. 25 functions with a hit stay unmatched, waiting for `flags propose --from-attempts 20261107-170844`: 17 at `-4r -oneatx -s -fpi`, 5 at `-4r -ox -s -fpi` and 4 at `-4r -ot -s -fpi` (`func_00041660` hit two).
+**Sweep hits.** 47 sessions logged one. 25 functions with a hit stay unmatched, waiting for `flags propose --from-attempts 20261107-170844`: 17 at `-4r -oneatx -s -fpi`, 4 at `-4r -ox -s -fpi` and 5 at `-4r -ot -s -fpi` (`func_00041660` hit both `-oneatx` and `-ot`).
