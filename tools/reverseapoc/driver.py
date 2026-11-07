@@ -4912,25 +4912,44 @@ def compose_project(repo: Path) -> str:
     return re.sub(r"[^a-z0-9_-]", "", Path(repo).name.lower())
 
 
+REMOVAL_RACE = "is already in progress"  # docker's words when a `--rm` container removes itself
+REMOVAL_TRIES = 5  # with REMOVAL_WAIT_S: a dead container's removal gets about 4 s to finish
+REMOVAL_WAIT_S = 1
+
+
 def container_remover(repo: Path, run: Runner) -> Callable[[str], None]:
     """Pitfall 7: after a session, remove every container of the checkout's compose project
     whose name starts with the attempt's prefix (attempt.container_prefix), such as a check
-    container left running after a timeout. A failing docker call is a DriverError; the driver
-    records it and stops the night after the audit (06-23 S1)."""
+    container left running after a timeout. A failing docker call is a DriverError naming
+    docker's stderr; the driver records it and stops the night after the audit (06-23 S1).
+    Check containers run with `--rm`, so one that dies with its session can be mid-removal when
+    `docker rm -f` arrives (run 20261107-030004). That refusal alone is no failure: the list is
+    read again, and only a container still there after REMOVAL_TRIES stops the night."""
     project = compose_project(repo)
 
-    def remove(prefix: str) -> None:
+    def listed(prefix: str) -> list[str]:
         done = run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={project}",
                     "--filter", f"name={prefix}", "--format", "{{.Names}}"])  # fmt: skip
         if done.returncode != 0:
             raise DriverError(f"docker ps failed: exit {done.returncode} "
                               f"{(done.stderr or '').strip()}")  # fmt: skip
-        names = [name for name in (done.stdout or "").split() if name.startswith(prefix)]
-        if not names:
-            return
-        gone = run(["docker", "rm", "-f", *names])
-        if gone.returncode != 0:
-            raise DriverError(f"docker rm -f {' '.join(names)} failed: exit {gone.returncode}")
+        return [name for name in (done.stdout or "").split() if name.startswith(prefix)]
+
+    def remove(prefix: str) -> None:
+        failure = ""
+        for _ in range(REMOVAL_TRIES):
+            names = listed(prefix)
+            if not names:
+                return
+            gone = run(["docker", "rm", "-f", *names])
+            if gone.returncode == 0:
+                return
+            why = (gone.stderr or "").strip()
+            failure = f"docker rm -f {' '.join(names)} failed: exit {gone.returncode} {why}"
+            if REMOVAL_RACE not in why:
+                break
+            time.sleep(REMOVAL_WAIT_S)
+        raise DriverError(failure)
 
     return remove
 

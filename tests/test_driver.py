@@ -1337,6 +1337,63 @@ def test_a_failed_container_removal_on_the_raise_path_still_contains(tmp_path):
     assert (night.quarantine / "tools" / "x.py").is_file()
 
 
+_RACED_NAME = "reverseapoc-attempt-b1f0f84c-0013"
+_RACED = f"Error response from daemon: removal of container {_RACED_NAME} is already in progress\n"
+
+
+class _Docker:
+    """A made-up docker CLI: each `ps` prints the next of `listed`, each `rm` gives the next of
+    `removals` (exit, stderr). The last of each repeats."""
+
+    def __init__(self, listed: list[str], removals: list[tuple[int, str]]):
+        self.listed, self.removals, self.rm_calls = listed, removals, 0
+
+    def __call__(self, argv):
+        if argv[1] == "ps":
+            out = self.listed.pop(0) if len(self.listed) > 1 else self.listed[0]
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        self.rm_calls += 1
+        code, err = self.removals.pop(0) if len(self.removals) > 1 else self.removals[0]
+        return subprocess.CompletedProcess(argv, code, "", err)
+
+
+@pytest.fixture
+def no_wait(monkeypatch):
+    monkeypatch.setattr(driver.time, "sleep", lambda _seconds: None)
+
+
+def _remove(tmp_path, docker: _Docker) -> None:
+    driver.container_remover(tmp_path, docker)("reverseapoc-attempt-b1f0f84c-")
+
+
+def test_a_container_docker_is_already_removing_does_not_fail_the_removal(tmp_path, no_wait):
+    """Run 20261107-030004: a `--rm` check container died with its killed session, and the
+    driver's `docker rm -f` met docker's own removal. It is gone, so nothing is wrong."""
+    docker = _Docker([f"{_RACED_NAME}\n", ""], [(1, _RACED)])
+    _remove(tmp_path, docker)
+    assert docker.rm_calls == 1
+
+
+def test_a_container_still_listed_after_the_race_is_removed_again(tmp_path, no_wait):
+    docker = _Docker([f"{_RACED_NAME}\n", f"{_RACED_NAME}\n", ""], [(1, _RACED), (0, "")])
+    _remove(tmp_path, docker)
+    assert docker.rm_calls == 2
+
+
+def test_a_removal_that_never_finishes_still_fails_with_dockers_words(tmp_path, no_wait):
+    """An attempt's container that will not go may still write build/: the night stops."""
+    docker = _Docker([f"{_RACED_NAME}\n"], [(1, _RACED)])
+    with pytest.raises(driver.DriverError, match="already in progress"):
+        _remove(tmp_path, docker)
+
+
+def test_any_other_removal_failure_fails_at_once_with_dockers_words(tmp_path, no_wait):
+    docker = _Docker([f"{_RACED_NAME}\n"], [(1, "Error response from daemon: made-up fault\n")])
+    with pytest.raises(driver.DriverError, match="made-up fault"):
+        _remove(tmp_path, docker)
+    assert docker.rm_calls == 1
+
+
 def test_a_pinned_file_replaced_by_a_junction_or_symlink_dir_comes_back(tmp_path):
     """S2: a leaf link is replaced, not refused: the pinned file is restored to its bytes as a
     regular file (a junction on Windows, a directory symlink elsewhere); the target is never
