@@ -2239,8 +2239,8 @@ def test_view_check_reuses_an_unchanged_sibling(two_exes, monkeypatch, capsys):
     patch_tools(monkeypatch, compiler=first)
     assert cli_main(argv) == 0
     assert_both_land(capsys.readouterr().out)
-    assert [src for src, _, _ in first.calls] == [view / "src" / STEM / f"{UNIT}.c",
-                                                  view / "src" / TWO_STEM / f"{UNIT}.c"]  # fmt: skip
+    sources = [view / "src" / stem / name for stem, name in BOTH]
+    assert [src for src, _, _ in first.calls] == sources
 
     second = StampingCompiler()
     patch_tools(monkeypatch, compiler=second)
