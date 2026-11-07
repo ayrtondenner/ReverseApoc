@@ -9,7 +9,6 @@
 
 INCLUDE_ASM(func_00021A90);
 INCLUDE_ASM(func_00021B30);
-INCLUDE_ASM(func_00021B70);
 INCLUDE_ASM(func_00021BB0);
 INCLUDE_ASM(func_00021E30);
 INCLUDE_ASM(func_00021F50);
@@ -32,6 +31,20 @@ INCLUDE_ASM(func_00023940);
 INCLUDE_ASM(func_00023A40);
 INCLUDE_ASM(func_00023AA0);
 INCLUDE_ASM(func_00023BB0);
+
+extern signed char D_001D3428[][28];
+extern signed char D_002818B9;
+
+int func_00021B70(short a, short b)
+{
+    int result;
+
+    result = 0;
+    if ((short)D_001D3428[a][b] >= (short)D_002818B9) {
+        result = 1;
+    }
+    return result;
+}
 
 /* Slots per record: the loop below walks 6 slot bytes at +0x27A and 6 flags at +0x280. */
 #define TACREC_SLOT_COUNT 6
