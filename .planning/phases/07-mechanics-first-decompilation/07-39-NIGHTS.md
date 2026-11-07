@@ -20,6 +20,8 @@ Count so far: 0 flat nights.
 
 **Tier 1.** 102 matched before, 114 after, of 943 members. All 12 matches are Tier 1.
 
+The 943 members above could not be reproduced on 2026-11-07: Tier 1 rows with role `member` in `config/mechanics-members.csv` number 1,269. That filter does give 114 matched at the night's end, so the matched count stands.
+
 | Size | Sessions | Functions | Matched | Rate per session | Cost per session |
 |---|---|---|---|---|---|
 | Under 64 B | 18 | 8 | 3 | 16.7% | $0.95 |
@@ -39,6 +41,7 @@ Recorded cost is $52.09, a lower bound: timed-out sessions are estimated from th
 
 **D-12 queue (2026-11-07).** `flags propose --from-attempts 20261107-030004` added F-0058 to F-0068 and merged hits into F-0013, F-0028 and F-0029. The queue also picked up `func_00050D00`, a hit from a cut-off session, so 15 rows had open hits rather than 14.
 - Landed by the owner: F-0058, F-0059, F-0060, F-0061, F-0064, F-0065, F-0066 and F-0068 (`07e3b528` to `16b497c5`).
-- Regated, waiting for the owner's `flags approve`: F-0062, F-0063 and F-0067. Their evidence includes a cut-off session with no attempt record, which `flags approve` refused until `ed9081d8` let it read the model from the transcript. They were regated again on the new `cflags.txt`.
+- Landed by the owner after `ed9081d8`, which lets `flags approve` read a cut-off session's model from its transcript: F-0062, F-0063 and F-0067 (`0011d6bd` to `42cbe57e`). They were regated again on the new `cflags.txt` first.
+- Tier 1 after all 11 landings: 125 matched.
 - Failed regate on a compile error: F-0013, F-0028, F-0029.
 - Skipped: `func_000A6EA0`, because F-0047 stays open for its unit.
