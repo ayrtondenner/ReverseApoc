@@ -17,7 +17,13 @@ config/<exe>/units.csv through land.py, the same land step `ninja verify` runs (
 and compares each landed EXE's SHA-1 with config/targets.toml. A function whose relocation check
 fails is refused, never landed, and makes its EXE's splice fail. `ninja verify`'s land step (no
 compile) lands an object only while its provenance stamp `<obj>.prov.json` matches today's
-source, cflags table, Watcom manifest and rule (`check_provenance`, DI-06 part a).
+source, cflags table, Watcom manifest and rule (`check_provenance`, DI-06 part a). A check of a
+D-24 view (`attempt check`) compiles every other unit once per attempt; a later check lands each
+other unit's object from the view's build/check-custom/ without compiling it while
+check_provenance's comparison holds for its bytes (the unit's source and rule, the cflags table,
+the Watcom manifest, the view's headers, the object itself), and recompiles it otherwise
+(261107-qzx). Any other tree compiles every unit on every check, so the gate and `ninja verify`
+are unchanged.
 
 Exit codes (`CheckResult.exit_code`): 0 only when every defined function scores 100.0, passes the
 relocation check and the byte comparison, and every splice SHA-1 matches with nothing refused;
