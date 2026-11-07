@@ -99,6 +99,7 @@ Not rows in the report's table, but evaluated in the research notes. How they ar
 | [mosura](https://github.com/jdmichaud/mosura) | Use (probe) | Watcom version detection and codegen fingerprint for Phase 4 |
 | [KKND-Decomp](https://github.com/Wyrelade/KKND-Decomp), [Theme Hospital decomp](https://github.com/matteo-pacini/theme-hospital-decomp) | Use (source of copied tools) | See the README's "Projects we build on" |
 | [NHL95PC](https://github.com/abdulahmad/NHL95PC) | Use (source of adapted code) | `tools/reverseapoc/search.py` adapts the declaration pattern and the type-move loop of its `tools/permute.py`, the search for the block holding every use from `tools/scope_decls.py` and the seeded declaration shuffles from `tools/permute_decls.py`, and `tools/reverseapoc/classify.py` adapts the register pattern of its `tools/match/classify_diff.py`, each with a header naming the origin. The repo has no licence file: this is attribution and the owner's permission (D-13), and the code is read, never run |
+| [MS-DOS source](https://github.com/microsoft/ms-dos) | Skip | MIT, but v1.25, v2.0 and v4.0 only, mostly 16-bit assembly. None of it is in our EXEs and it says nothing about Watcom codegen, so it cannot help matching. For DOS call behaviour in specs, prefer Ralf Brown's Interrupt List |
 
 ## Skill installation decisions
 
