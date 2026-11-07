@@ -20,11 +20,14 @@ here writes the closed Phase 7.1 directory. Run from anywhere.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import csv
 import hashlib
+import io
 import itertools
 import json
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -67,6 +70,7 @@ WORKERS = "12"
 STOP_STREAK = 2
 LAST_CHECKED = 3  # D-27: the stop rule is checked through plan 3 only
 STOP_RULE = "stop the phase after two plans in a row that move nothing"
+FIRST_POINT = 8  # point 7 is the closed curve's last row, copied here as the anchor
 
 PHASE_DIR = Path(__file__).resolve().parent
 SAMPLE = PHASE_DIR / "SAMPLE.csv"
@@ -391,7 +395,7 @@ def head() -> str:
     ).stdout.strip()
 
 
-def point_row(point: int, previous: dict | None, current: dict) -> tuple[list, str]:
+def point_row(point: int, plan: str, previous: dict | None, current: dict) -> tuple[list, str]:
     """The point's summary row and the stop-rule cell. Read after the lift: the lifter reads the
     result-used caches, and rebuilds one that is absent."""
     is_moved = previous is not None and moved(previous, current)
@@ -403,7 +407,6 @@ def point_row(point: int, previous: dict | None, current: dict) -> tuple[list, s
         f"{stem} {sha256_of(CACHE_DIR / f'result-used-{stem}.json')}" for stem in mechanics.EXES
     )
     moved_cell = f"yes {', '.join(changes(previous, current))}" if is_moved else "no"
-    plan = f"07.1-{point:02d}" if point else "none"
     cells = [
         point,
         plan,
@@ -441,7 +444,7 @@ def previous_numbers(row: dict[str, str]) -> dict:
     return {**row, **{name: int(row[name]) for name in NUMBERS}}
 
 
-def measure(point: int) -> int:
+def measure(point: int, plan: str) -> int:
     text = CURVE.read_text(encoding="ascii") if CURVE.is_file() else HEADER
     known = summary_rows(text)
     if point in known:
@@ -470,7 +473,7 @@ def measure(point: int) -> int:
     search_sample(sample, records, exes, src)
     current = numbers(tier, sample)
     previous = previous_numbers(known[point - 1]) if point else None
-    cells, stop = point_row(point, previous, current)
+    cells, stop = point_row(point, plan, previous, current)
     section = point_section(point, tier, sample, records)
     updated = with_row(text, summary_row(cells)).rstrip("\n")
     CURVE.write_text(f"{updated}\n\n{section}\n", encoding="ascii", newline="\n")
@@ -557,6 +560,24 @@ def _round_trip() -> list[str]:
     text = with_row(with_row(HEADER, summary_row([0, *cells[1:]])), summary_row(cells))
     text += "\n## Point 0\n\n| exact | 1 | 2 | 3 | 4 | 10 |\n"
     return [str(point) for point in summary_rows(text)]
+
+
+def _parsed(argv: list[str]) -> tuple | str:
+    """(point, plan) as parse_args reads `argv`, or "refused" when argparse exits."""
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            args = parse_args(argv)
+    except SystemExit:
+        return "refused"
+    return args.point, args.plan
+
+
+def _refuses(check, text: str) -> bool:
+    try:
+        check(text)
+    except argparse.ArgumentTypeError:
+        return True
+    return False
 
 
 def cases() -> list[tuple[str, object, object]]:
@@ -689,6 +710,20 @@ def cases() -> list[tuple[str, object, object]]:
             (next(iter(summary_rows(inserted))), list(summary_rows(inserted))[-1]),
             (7, 9999),
         ),
+        ("point 8 is the first measured", _parsed(["--point", "8", "--plan", "261107-qka"]),
+         (8, "261107-qka")),  # fmt: skip
+        ("the range does not stop at 7", _parsed(["--point", "40", "--plan", "261107-qkb"]),
+         (40, "261107-qkb")),  # fmt: skip
+        ("point 7 is the anchor, never measured", _refuses(point_number, "7"), True),
+        ("point 0 is refused", _refuses(point_number, "0"), True),
+        ("--point needs --plan", _parsed(["--point", "8"]), "refused"),
+        ("a pipe would split the table", _refuses(plan_name, "a|b"), True),
+        ("an empty plan is refused", _refuses(plan_name, ""), True),
+        ("a space in a plan is refused", _refuses(plan_name, "261107 qkb"), True),
+        ("a quick id is kept", plan_name("261107-qkb"), "261107-qkb"),
+        ("a dotted plan name is kept", plan_name("07.1-07"), "07.1-07"),
+        ("--self-check has no point or plan", _parsed(["--self-check"]), (None, None)),
+        ("--self-check --plant parses", _parsed(["--self-check", "--plant"]), (None, None)),
     ]
 
 
@@ -704,14 +739,43 @@ def self_check(plant: bool) -> int:
     return 1 if failed else 0
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Phase 7.1 measurement gate")
+def point_number(text: str) -> int:
+    point = int(text)
+    if point < FIRST_POINT:
+        raise argparse.ArgumentTypeError(f"the first point measured here is {FIRST_POINT}")
+    return point
+
+
+def plan_name(text: str) -> str:
+    """The plan cell goes into a markdown table in an ASCII file, so a pipe, a space, a non-ASCII
+    letter or an empty name is refused here, before any lift starts."""
+    if re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.-]*", text) is None:
+        raise argparse.ArgumentTypeError(f"{text!r} is not ASCII letters, digits, dots and hyphens")
+    return text
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="converter follow-ups measurement harness")
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--point", type=int, choices=range(8), help="the curve point to measure")
+    mode.add_argument(
+        "--point",
+        type=point_number,
+        help=f"the curve point to measure, from {FIRST_POINT} up with no upper bound",
+    )
     mode.add_argument("--self-check", action="store_true", help="run the pure functions")
+    parser.add_argument(
+        "--plan", type=plan_name, help="the quick id that names the point's row; needs --point"
+    )
     parser.add_argument("--plant", action="store_true", help="flip one self-check expectation")
-    args = parser.parse_args()
-    return self_check(args.plant) if args.self_check else measure(args.point)
+    args = parser.parse_args(argv)
+    if args.point is not None and args.plan is None:
+        parser.error("--point needs --plan QUICK_ID")
+    return args
+
+
+def main() -> int:
+    args = parse_args(sys.argv[1:])
+    return self_check(args.plant) if args.self_check else measure(args.point, args.plan)
 
 
 if __name__ == "__main__":
