@@ -9,9 +9,24 @@
 
 INCLUDE_ASM(func_000520A0);
 INCLUDE_ASM(func_000520C0);
-INCLUDE_ASM(func_000520E0);
 INCLUDE_ASM(func_00052100);
 INCLUDE_ASM(func_00052150);
+
+/* Sibling of button_group_select_1: stores index 4 as the group's selection.
+ * The block-scope externs come before the file-scope ones on purpose: they give
+ * this function its own symbols, so wcc386 does not merge its tail with the
+ * sibling's identical one. The fixups still name the same variables.
+ */
+void func_000520E0(void)
+{
+    extern int D_000E12F0;
+    extern short D_00183A80;
+    extern short hover_info_changed;
+
+    D_000E12F0 = 4;
+    D_00183A80 = 1;
+    hover_info_changed = 1;
+}
 
 extern int D_000E12F0;
 extern short D_00183A80;
