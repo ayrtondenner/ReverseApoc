@@ -228,6 +228,8 @@ class Lifter:
         self.word_reads: dict[str, bool] = {}  # slot -> was every read a sign-extended word?
         self.call_values: dict[int, dict[str, str]] = {}  # call -> argument register -> its text
         self.drifted: set[int] = set()  # the blocks not entered at esp0, as far as anything says
+        self.sig: Sig | None = None  # the row's own signature, once lift() has it
+        self.arg_counts: dict[int, int] = {}  # call or tail-jump site -> its callee's one count
 
     # -- decoding and frame --
 
@@ -384,6 +386,29 @@ class Lifter:
             return 4
         return max(sig.nregs if sig else 0, _evidence(insns, ci))
 
+    def call_sites(self, blocks, order):
+        """(ci, the insns of its block) for every call and tail jump of the pass."""
+        for s in order:
+            for ci in blocks[s].insns:
+                if ci.mnemonic == "call" or self._tail_jump(ci):
+                    yield ci, blocks[s].insns
+
+    def agreed_counts(self, blocks, order) -> dict[int, int]:
+        """{call or tail-jump site: the one argument count of its callee in this pass}, so the
+        prototype, every call and liveness read the same count (no E1151). A site with no direct
+        target keeps its own count."""
+        counts: dict[int, int] = {}
+        by_target: dict[int, list] = {}
+        for ci, insns in self.call_sites(blocks, order):
+            counts[ci.address] = self.call_nregs(ci, insns)
+            t = _branch_target(ci)
+            if t is not None:
+                by_target.setdefault(t, []).append(ci)
+        for sites in by_target.values():
+            n = _agreed([counts[ci.address] for ci in sites], self.call_sig(sites[0]))
+            counts |= dict.fromkeys((ci.address for ci in sites), n)
+        return counts
+
     # -- switch tables --
 
     def table_start(self, ci) -> int | None:
@@ -493,13 +518,13 @@ class Lifter:
 
     def liveness(self, blocks, order, ret_live=frozenset({"eax"})):
         """Live-in register sets per instruction address (full 32-bit names)."""
+        self.arg_counts = self.agreed_counts(blocks, order)
         use_def = {}
         for s in order:
             for ci in blocks[s].insns:
                 use_def[ci.address] = _use_def(ci)
-                if ci.mnemonic == "call" or self._tail_jump(ci):
-                    n = self.call_nregs(ci, blocks[s].insns)
-                    use_def[ci.address] = (set(ARG_REGS[:n]), {"eax"})
+                if ci.address in self.arg_counts:
+                    use_def[ci.address] = (set(ARG_REGS[: self.arg_counts[ci.address]]), {"eax"})
         live_in: dict[int, set] = {s: set() for s in order}
         changed = True
         while changed:
@@ -1579,7 +1604,7 @@ class Block_:
         if t is None:
             raise Unliftable("call: indirect")
         name, sig = self.lf.callee(t)
-        nregs = max(sig.nregs if sig else 0, _evidence(self.insns, ci))
+        nregs = self.lf.arg_counts[ci.address]
         if sig is None:
             self.esp_lost = True  # nothing says what the callee pops
             sig = Sig(nregs, 0, True)
@@ -1925,6 +1950,15 @@ def _typed_var(lf, r: str) -> E:
     t = lf.vartype.get(r, "int")
     size = {"unsigned char": 1, "signed char": 1, "short": 2, "unsigned short": 2}.get(t, 4)
     return var(f"r_{r}", size, not t.startswith("unsigned"))
+
+
+def _agreed(counts: list[int], sig: Sig | None) -> int:
+    """One count for a callee whose sites gave `counts`: theirs when they agree, else its own
+    signature's, else the fewest a site shows. A site's excess is a register loaded to survive
+    the call (callees keep every register but eax); lowering a count never makes a register live."""
+    if len(set(counts)) == 1:
+        return counts[0]
+    return sig.nregs if sig is not None else min(counts)
 
 
 def _evidence(insns, call) -> int:

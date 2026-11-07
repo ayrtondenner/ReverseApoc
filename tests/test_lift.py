@@ -1732,6 +1732,71 @@ def test_another_callee_keeps_its_prototype():
     assert f"int func_{callee:08x}(void);" in text
 
 
+# ---- one argument count per callee (E1151) ----
+
+
+def arities(text: str, name: str) -> set[int]:
+    """The argument count at every `name(` in `text`: the prototype, the definition and each
+    call. E1151 is a call whose count differs from the declaration in scope, so a set of one
+    member means the draft has none."""
+    counts = set()
+    for m in re.finditer(rf"\b{re.escape(name)}\(", text):
+        depth, commas, k = 1, 0, m.end()
+        while depth:
+            ch = text[k]
+            depth += (ch == "(") - (ch == ")")
+            commas += ch == "," and depth == 1
+            k += 1
+        inside = text[m.end() : k - 1].strip()
+        counts.add(0 if inside in ("", "void") else commas + 1)
+    return counts
+
+
+COUNTED = VA + ROW_SPACING  # the callee of every one-count row
+ADD_ARGS = "01d0 c3"  # add eax, edx; ret
+ONE_COUNT_ROWS: dict[str, tuple[str, ...]] = {
+    # mov eax, 1; mov edx, 2; call C; mov ecx, eax; mov eax, 5; mov edx, 6; call C;
+    # add eax, ecx; ret (ecx holds the first result across the second call)
+    "later_site": (
+        f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c1 b805000000 ba06000000"
+        f" {call_to(VA + 27, COUNTED)} 01c8 c3",
+        ADD_ARGS,
+    ),
+    # mov ecx, 7; mov eax, 1; mov edx, 2; call C; mov edx, 6; call C; add eax, ecx; ret
+    # (ecx is loaded before the first call to survive both)
+    "first_site": (
+        f"b907000000 b801000000 ba02000000 {call_to(VA + 15, COUNTED)} ba06000000"
+        f" {call_to(VA + 25, COUNTED)} 01c8 c3",
+        ADD_ARGS,
+    ),
+}
+
+
+def one_count_exe(name: str) -> StubExe:
+    return stub_exe(*ONE_COUNT_ROWS[name])
+
+
+def test_one_count_when_a_later_site_holds_a_register_across_the_call():
+    text = lift.lift_row(one_count_exe("later_site"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+    assert f"func_{COUNTED:08x}(1, 2)" in text
+    assert f"func_{COUNTED:08x}(5, 6)" in text
+    assert f"int func_{VA:08x}(void)" in text  # no invented r_ebx parameter
+
+
+def test_one_count_when_the_first_site_holds_a_register_across_the_call():
+    text = lift.lift_row(one_count_exe("first_site"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_kept_where_every_site_agrees():
+    # mov edx, 1; call C; mov edx, 2; call C; ret, with C `mov eax, 1; ret` (no arguments)
+    caller = f"ba01000000 {call_to(VA + 5, COUNTED)} ba02000000 {call_to(VA + 15, COUNTED)} c3"
+    text = lift.lift_row(stub_exe(caller, "b801000000 c3"), VA)
+    assert f"int func_{COUNTED:08x}(int, int);" in text
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
 # ---- slot widths ----
 
 
