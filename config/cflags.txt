@@ -62,3 +62,4 @@ src/tacp/u_00098010.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0055 approved ayrton
 src/ufo2p/u_000477b0.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0056 approved ayrtondenner 2026-11-03
 src/ufo2p/u_0005f750.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0057 approved ayrtondenner 2026-11-03
 src/tacp/u_00048350.c  wcc386@10.6 -4r -oneatx -s -fpi  # F-0058 approved ayrtondenner 2026-11-07
+src/tacp/u_0004b8b0.c  wcc386@10.6 -4r -ox -s -fpi  # F-0059 approved ayrtondenner 2026-11-07
