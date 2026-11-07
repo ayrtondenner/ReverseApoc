@@ -54,5 +54,22 @@ INCLUDE_ASM(func_000A7200);
 INCLUDE_ASM(func_000A72F0);
 INCLUDE_ASM(func_000A73D0);
 INCLUDE_ASM(func_000A7440);
-INCLUDE_ASM(func_000A7460);
+
+extern int D_0027EFD8;
+extern short D_00284CEE;
+extern short D_000E6CC0;
+
+int func_000A7460(void)
+{
+    int flag;
+    int one;
+
+    flag = D_0027EFD8 == 0;
+    one = 1;
+    D_0027EFD8 = flag;
+    D_00284CEE = one;
+    D_000E6CC0 = one;
+    return flag;
+}
+
 INCLUDE_ASM(func_000A7490);
