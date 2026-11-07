@@ -13,7 +13,6 @@ INCLUDE_ASM(func_00021BB0);
 INCLUDE_ASM(func_00021E30);
 INCLUDE_ASM(func_00021F50);
 INCLUDE_ASM(func_00021FD0);
-INCLUDE_ASM(func_00022060);
 INCLUDE_ASM(func_00022110);
 INCLUDE_ASM(func_00022140);
 INCLUDE_ASM(func_00022210);
@@ -44,6 +43,39 @@ int func_00021B70(short a, short b)
         result = 1;
     }
     return result;
+}
+
+struct unk_00D0 {
+    /* 0x00 */ u8 pad_00[0xAE];
+    /* 0xAE */ s16 word_AE;
+    /* 0xB0 */ u8 pad_B0[0x0E];
+    /* 0xBE */ s16 word_BE;
+    /* 0xC0 */ u8 pad_C0[0x0E];
+    /* 0xCE */ s16 word_CE;
+}; /* size: 0xD0 (at least) */
+
+extern int D_000E4C18;
+
+int func_00022060(struct unk_00D0 *p)
+{
+    int value;
+    int percent;
+
+    value = p->word_AE;
+    percent = p->word_BE % 40 + p->word_CE - 40;
+    if (percent < 0) {
+        percent = 0;
+    } else {
+        percent = percent * 100 / p->word_CE;
+    }
+    if (percent > 50) {
+        value++;
+    }
+    percent = D_000E4C18 - 1;
+    if (value < percent) {
+        percent = value;
+    }
+    return percent;
 }
 
 /* Slots per record: the loop below walks 6 slot bytes at +0x27A and 6 flags at +0x280. */
