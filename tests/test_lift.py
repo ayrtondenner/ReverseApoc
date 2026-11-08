@@ -1920,6 +1920,7 @@ RETURNS = "b807000000 c3"  # mov eax, 7; ret
 CALLEE = VA + ROW_SPACING
 MOV_EAX_5 = "b805000000"
 MOV_EAX_SIZE = 5
+TAKES_EAX = "89c2 c3"  # mov edx, eax; ret: one argument, void
 
 
 def notes_of(exe: StubExe) -> dict[int, str]:
@@ -1943,11 +1944,22 @@ def test_call_notes_show_a_value_before_the_call_names_it():
 
 
 def test_call_notes_leave_out_an_unknown_register():
-    # mov eax, 5; call; call; ret: eax is gone after the first call, and nothing else was known
+    # mov eax, 5; call C; call D; ret: eax is gone after the first call, and nothing else was
+    # known. C takes eax and D takes nothing, so each callee's sites agree on its count.
     first = VA + MOV_EAX_SIZE
     second = first + 5
-    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(second, CALLEE)} c3"
-    assert notes_of(stub_exe(code, "c3")) == {first: "eax=5"}
+    takes_nothing = CALLEE + ROW_SPACING
+    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(second, takes_nothing)} c3"
+    assert notes_of(stub_exe(code, TAKES_EAX, "c3")) == {first: "eax=5"}
+
+
+def test_call_notes_drop_eax_a_callee_without_arguments_never_reads():
+    """The callee takes nothing and its sites show 1 and 0: its own count, 0, is the one count,
+    so eax loaded before the first call is no argument and gets no note (the E1151 over-count)."""
+    # mov eax, 5; call C; call C; ret, with C `ret`
+    first = VA + MOV_EAX_SIZE
+    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(first + 5, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {}
 
 
 def test_call_notes_leave_out_a_register_the_lifter_only_named():
