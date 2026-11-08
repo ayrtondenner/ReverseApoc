@@ -2658,3 +2658,85 @@ def test_an_impure_memcpy_count_is_read_before_the_copy():
 def test_a_repne_movsb_outside_the_memcpy_keeps_its_refusal():
     with pytest.raises(lift.Unliftable, match="^op: repne movsb$"):
         lift.lift_row(stub_exe("f2a4 c3"), VA)
+
+
+# ---- a hole on a switch guard (07.1 review, IN-03) ----
+
+SWITCH_CALL_AT = VA + MOV_EAX_SIZE
+SWITCH_GUARD = SWITCH_CALL_AT + CALL_SIZE + 3  # after `cmp eax, 1`
+SWITCH_JUMP = SWITCH_GUARD + 2
+SWITCH_CASE_0 = SWITCH_JUMP + JUMP_SIZE
+SWITCH_DEFAULT = SWITCH_CASE_0 + MOV_EAX_SIZE + 1
+
+
+def switch_guard_row(monkeypatch) -> tuple[StubExe, FunctionRow]:
+    """mov eax, 5; call; cmp eax, 1; ja DEFAULT; jmp [eax*4 + table]; case 0 and DEFAULT return,
+    with the flush at the guard refusing."""
+    guard = f"83f801 77{SWITCH_DEFAULT - SWITCH_JUMP:02x}"  # cmp eax, 1; ja DEFAULT
+    code = f"{MOV_EAX_5} {call_to(SWITCH_CALL_AT, CALLEE)} {guard} {table_jump()}"
+    code += " b801000000 c3 b803000000 c3"
+    exe = with_table(stub_exe(code, "c3"), (SWITCH_CASE_0,), SWITCH_JUMP)
+    flush = lift.Block_.flush
+
+    def refusing(self, ci):
+        if ci.address == SWITCH_GUARD:
+            raise lift.Unliftable("op: refused at the guard")
+        return flush(self, ci)
+
+    monkeypatch.setattr(lift.Block_, "flush", refusing)
+    return exe, next(r for r in exe.rows if r.start == VA)
+
+
+def test_call_notes_survive_a_hole_on_a_switch_guard(monkeypatch):
+    """Patched, not real bytes: whichever form refuses in that flush today may lift tomorrow,
+    and the contract holds for any refusal there."""
+    exe, row = switch_guard_row(monkeypatch)
+    assert lift.call_notes(exe, row) == {SWITCH_CALL_AT: "eax=5"}
+
+
+def test_a_switch_guard_that_is_a_hole_does_not_fold(monkeypatch):
+    """Patched, not real bytes, as above: a guard whose compare was never recorded."""
+    exe, row = switch_guard_row(monkeypatch)
+    text = lift.Lifter(exe, row, holes=True).lift()
+    assert f"/* HOLE 0x{SWITCH_GUARD:X}: op: refused at the guard */" in text
+    assert "switch (" in text
+    assert f"case 0: goto L{SWITCH_CASE_0:X};" in text
+    assert "default:" not in text
+
+
+# ---- a conditional tail jump defines nothing on the fall-through (07.1 review, IN-01) ----
+
+TAIL_AT = VA + 2 * ROW_SPACING
+
+
+def jne_to(src: int, target: int) -> str:
+    """`jne target` at `src` in its rel32 form, as hex."""
+    size = 6
+    return "0f85" + (target - (src + size)).to_bytes(4, "little", signed=True).hex()
+
+
+def test_a_conditional_tail_jump_keeps_eax_live_on_the_path_that_falls_through():
+    # call; test ebx, ebx; jne TAIL_AT; ret: the ret reads the call's eax
+    code = f"{call_to(VA, CALLEE)} 85db {jne_to(VA + CALL_SIZE + 2, TAIL_AT)} c3"
+    text = lift.lift_row(stub_exe(code, RETURNS, "c3"), VA)
+    assert f"r_eax = func_{CALLEE:08x}();" in text
+    assert "return r_eax;" in text
+
+
+# ---- a byte written over a known word is a partial write (07.1 review, IN-02) ----
+
+MOV_AX_1234 = "66b83412"
+
+
+def test_call_notes_leave_out_arithmetic_on_a_byte_written_over_a_known_word():
+    # xor eax, eax; mov ax, 1234h; mov al, 5; add eax, 1; call; ret: the machine holds 0x1206
+    call_at = VA + 2 + 4 + 2 + 3
+    code = f"{XOR_EAX} {MOV_AX_1234} {MOV_AL_5} {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {}
+
+
+def test_call_notes_keep_arithmetic_on_a_word_written_over_a_known_word():
+    # xor eax, eax; mov ax, 1234h; mov ax, 5; add eax, 1; call; ret: the word covers the word
+    call_at = VA + 2 + 4 + 4 + 3
+    code = f"{XOR_EAX} {MOV_AX_1234} 66b80500 {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {call_at: "eax=5 + 1"}
