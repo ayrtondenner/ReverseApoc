@@ -1732,6 +1732,100 @@ def test_another_callee_keeps_its_prototype():
     assert f"int func_{callee:08x}(void);" in text
 
 
+# ---- one argument count per callee (E1151) ----
+
+
+def arities(text: str, name: str) -> set[int]:
+    """The argument count at every `name(` in `text`: the prototype, the definition and each
+    call. E1151 is a call whose count differs from the declaration in scope, so a set of one
+    member means the draft has none."""
+    counts = set()
+    for m in re.finditer(rf"\b{re.escape(name)}\(", text):
+        depth, commas, k = 1, 0, m.end()
+        while depth:
+            ch = text[k]
+            depth += (ch == "(") - (ch == ")")
+            commas += ch == "," and depth == 1
+            k += 1
+        inside = text[m.end() : k - 1].strip()
+        counts.add(0 if inside in ("", "void") else commas + 1)
+    return counts
+
+
+COUNTED = VA + ROW_SPACING  # the callee of every one-count row
+ADD_ARGS = "01d0 c3"  # add eax, edx; ret
+# mov eax, 1; mov edx, 2; call C; mov ecx, eax; mov eax, 5; mov edx, 6; call C;
+# add eax, ecx; ret (ecx holds the first result across the second call)
+LATER_SITE = (
+    f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c1 b805000000 ba06000000"
+    f" {call_to(VA + 27, COUNTED)} 01c8 c3"
+)
+ONE_COUNT_ROWS: dict[str, tuple[str, ...]] = {
+    "later_site": (LATER_SITE, ADD_ARGS),
+    # mov ecx, 7; mov eax, 1; mov edx, 2; call C; mov edx, 6; call C; add eax, ecx; ret
+    # (ecx is loaded before the first call to survive both)
+    "first_site": (
+        f"b907000000 b801000000 ba02000000 {call_to(VA + 15, COUNTED)} ba06000000"
+        f" {call_to(VA + 25, COUNTED)} 01c8 c3",
+        ADD_ARGS,
+    ),
+    "unknown_callee": (LATER_SITE, BAD_ROW),  # the later_site caller; the callee's Sig is None
+    # test eax, eax; je L; mov ebx, eax; dec eax; call self; add eax, ebx; L: ret
+    "row_itself": (f"85c0 740a 89c3 48 {call_to(VA + 7, VA)} 01d8 c3",),
+}
+
+
+def one_count_exe(name: str) -> StubExe:
+    return stub_exe(*ONE_COUNT_ROWS[name])
+
+
+def test_one_count_when_a_later_site_holds_a_register_across_the_call():
+    text = lift.lift_row(one_count_exe("later_site"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+    assert f"func_{COUNTED:08x}(1, 2)" in text
+    assert f"func_{COUNTED:08x}(5, 6)" in text
+    assert f"int func_{VA:08x}(void)" in text  # no invented r_ebx parameter
+
+
+def test_one_count_when_the_first_site_holds_a_register_across_the_call():
+    text = lift.lift_row(one_count_exe("first_site"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_kept_where_every_site_agrees():
+    # mov edx, 1; call C; mov edx, 2; call C; ret, with C `mov eax, 1; ret` (no arguments)
+    caller = f"ba01000000 {call_to(VA + 5, COUNTED)} ba02000000 {call_to(VA + 15, COUNTED)} c3"
+    text = lift.lift_row(stub_exe(caller, "b801000000 c3"), VA)
+    assert f"int func_{COUNTED:08x}(int, int);" in text
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_for_an_unknown_callee_is_the_fewest_a_site_shows():
+    text = lift.lift_row(one_count_exe("unknown_callee"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_reaches_a_tail_jump():
+    # mov eax, 1; mov edx, 2; call C; mov ebx, eax; mov eax, 5; mov edx, 6; jmp C
+    tail = "e9" + call_to(VA + 27, COUNTED)[2:]
+    caller = f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c3 b805000000 ba06000000 {tail}"
+    text = lift.lift_row(stub_exe(caller, ADD_ARGS), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+    assert f"return func_{COUNTED:08x}(5, 6);" in text
+
+
+def test_one_count_for_a_call_to_the_row_itself_is_the_definition_count():
+    text = lift.lift_row(one_count_exe("row_itself"), VA)
+    assert len(arities(text, f"func_{VA:08x}")) == 1  # the definition and the call
+
+
+def test_one_count_for_a_stack_argument_callee_is_four_registers_and_its_stack():
+    # push 1; call C; push 2; call C; ret, with C `mov eax, 1; ret 4`
+    caller = f"6a01 {call_to(VA + 2, COUNTED)} 6a02 {call_to(VA + 9, COUNTED)} c3"
+    text = lift.lift_row(stub_exe(caller, "b801000000 c20400"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {5}
+
+
 # ---- slot widths ----
 
 
@@ -1855,6 +1949,7 @@ RETURNS = "b807000000 c3"  # mov eax, 7; ret
 CALLEE = VA + ROW_SPACING
 MOV_EAX_5 = "b805000000"
 MOV_EAX_SIZE = 5
+TAKES_EAX = "89c2 c3"  # mov edx, eax; ret: one argument, void
 
 
 def notes_of(exe: StubExe) -> dict[int, str]:
@@ -1878,11 +1973,22 @@ def test_call_notes_show_a_value_before_the_call_names_it():
 
 
 def test_call_notes_leave_out_an_unknown_register():
-    # mov eax, 5; call; call; ret: eax is gone after the first call, and nothing else was known
+    # mov eax, 5; call C; call D; ret: eax is gone after the first call, and nothing else was
+    # known. C takes eax and D takes nothing, so each callee's sites agree on its count.
     first = VA + MOV_EAX_SIZE
     second = first + 5
-    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(second, CALLEE)} c3"
-    assert notes_of(stub_exe(code, "c3")) == {first: "eax=5"}
+    takes_nothing = CALLEE + ROW_SPACING
+    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(second, takes_nothing)} c3"
+    assert notes_of(stub_exe(code, TAKES_EAX, "c3")) == {first: "eax=5"}
+
+
+def test_call_notes_drop_eax_a_callee_without_arguments_never_reads():
+    """The callee takes nothing and its sites show 1 and 0: its own count, 0, is the one count,
+    so eax loaded before the first call is no argument and gets no note (the E1151 over-count)."""
+    # mov eax, 5; call C; call C; ret, with C `ret`
+    first = VA + MOV_EAX_SIZE
+    code = f"{MOV_EAX_5} {call_to(first, CALLEE)} {call_to(first + 5, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {}
 
 
 def test_call_notes_leave_out_a_register_the_lifter_only_named():
