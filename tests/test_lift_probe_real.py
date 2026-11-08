@@ -50,6 +50,12 @@ CASES = {
     "pr_lift_strlen": ONEATX,
     "pr_lift_strlen_store": ONEATX,
     "pr_lift_memcpy": ONEATX,
+    "pr_lift_sqrt": ONEATX,
+    "pr_lift_log": ONEATX,  # carries the general fxch through the round trip
+    "pr_lift_fabs": BOTH,
+    "pr_lift_one_minus": BOTH,
+    "pr_lift_plus_one": BOTH,
+    "pr_lift_below_zero": BOTH,
 }
 PAIRS = [(cell, name) for name, cells in CASES.items() for cell in cells]
 

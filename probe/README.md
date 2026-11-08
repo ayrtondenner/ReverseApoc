@@ -160,6 +160,17 @@ What it measured, and where that differs from the preview in 07.1-RESEARCH:
 
 The inline forms come only under oneatx: string.h's intrinsic pragma needs `-oi`, which `-ox` and `-oneatx` hold. A stub row has no caller to say its eax goes unread, so what a void function leaves in eax reads back as returned: the strlen template leaves 0, so the store case returns 0, and a memcpy leaves its count, so the memcpy case returns its destination. A game row gets `void` from the census when no caller reads eax. Inline strcat (`push edi; sub ecx, ecx; dec ecx; mov al, 0; repne scasb; dec edi`, then a copy loop over three blocks) is not in the probe, and the lifter still refuses it as `op: repne scasb`.
 
+| Function | C form, with `#include <math.h>` | Bytes |
+|---|---|---|
+| `pr_lift_sqrt` | `*(double *)r_eax = sqrt(*(double *)r_edx);` | oneatx: `push ebx; mov ebx, eax; fld qword ptr [edx]; fsqrt; fstp qword ptr [ebx]; pop ebx; ret`; plain calls `IF@DSQRT` |
+| `pr_lift_log` | the same with `log` | oneatx: `fldln2; fxch st(1); fyl2x` in place of `fsqrt`; plain calls `IF@DLOG` |
+| `pr_lift_fabs` | the same with `fabs` | both cells: `fabs` in place of `fsqrt` |
+| `pr_lift_one_minus` | `*(double *)r_eax = 1.0 - *(double *)r_edx;` | both: `fld qword ptr [edx]; fld1; fsubrp st(1); fstp qword ptr [eax]; ret` |
+| `pr_lift_plus_one` | `*(double *)r_edx = *(double *)r_eax + 1.0;` | both: `fld qword ptr [eax]; fld1; faddp st(1); fstp qword ptr [edx]; ret` |
+| `pr_lift_below_zero` | `return *(double *)r_eax < 0.0;` | both: `fldz; fcomp qword ptr [eax]; fnstsw ax; sahf; jbe L; mov eax, 1; ret; L: xor eax, eax; ret` |
+
+math.h's intrinsic pragma inlines sqrt and log only with `-om`, which `-ox` and `-oneatx` hold. A bare prototype with no header compiles sqrt, log, fabs, strlen and memcpy to calls in both cells, with the double argument pushed, so every math form the lifter writes declares itself through `#include <math.h>`. The lifter writes `fldln2` as `log(2.0)`, the C89 value of ln 2, and lifts `fyl2x` only over it. `1.0 - x` and `x + 1.0` give `fld1` on doubles and floats alike; `x + 0.0`, `0.0 - x` and `x * 0.0` fold away and give no `fldz`. The lifter's goto form of the compare, `if (0.0 <= *(double *)r_eax) goto L; return 1; L:; return 0;`, compiles to the same bytes as `< 0.0`. A free `fxch` came only from doubles passed on the stack under oneatx, which the lifter reads as `int r_pN` parameters, so the log case carries the round trip's fxch and the unit tests cover the other registers. math.h declares `y0`, `y1`, `yn`, `j0`, `j1` and `jn`, so no probe function takes those names.
+
 A char struct gives the same bytes as an int struct of that size. Up to four dwords are unrolled and five or more take `rep movsd`; S = 1, 2 and 4 copy through a register, with no string op, and the lifter refuses a lone `movsd`, `movsw` or `movsb`. Plain `-4r -s` merges identical tails across the functions of one file, so the test refuses a function with a jump outside itself and names it.
 
 ## Running the calibration

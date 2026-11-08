@@ -14,6 +14,7 @@
  * calibration table sums over that list. See probe/README.md.
  */
 
+#include <math.h>
 #include <string.h>
 
 /* Struct copies: up to four dwords unrolled, a rep movsd from five, then movsw and movsb. */
@@ -148,4 +149,39 @@ int pr_lift_memcpy(int r_eax, int r_edx, int r_ebx)
 {
     memcpy((void *)r_eax, (void *)r_edx, r_ebx);
     return r_eax;
+}
+
+/*
+ * x87 forms. math.h's intrinsic pragma inlines sqrt and log only with -om, which -oneatx holds
+ * (plain calls IF@DSQRT and IF@DLOG); fabs inlines in both cells, but only through math.h: a
+ * bare prototype compiles to call fabs_. log is fldln2; fxch st(1); fyl2x.
+ */
+void pr_lift_sqrt(int r_eax, int r_edx)
+{
+    *(double *)r_eax = sqrt(*(double *)r_edx);
+}
+
+void pr_lift_log(int r_eax, int r_edx)
+{
+    *(double *)r_eax = log(*(double *)r_edx);
+}
+
+void pr_lift_fabs(int r_eax, int r_edx)
+{
+    *(double *)r_eax = fabs(*(double *)r_edx);
+}
+
+void pr_lift_one_minus(int r_eax, int r_edx)
+{
+    *(double *)r_eax = 1.0 - *(double *)r_edx;
+}
+
+void pr_lift_plus_one(int r_eax, int r_edx)
+{
+    *(double *)r_edx = *(double *)r_eax + 1.0;
+}
+
+int pr_lift_below_zero(int r_eax)
+{
+    return *(double *)r_eax < 0.0;
 }

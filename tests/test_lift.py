@@ -722,7 +722,8 @@ def test_fchs_and_fabs_wrap():
     # fld a; fchs; fabs; fstp c
     text = in_frame(f"{FLD_A} d9e0 d9e1 {FSTP_C}")
     assert "s_c = fabs(-s_8);" in text
-    assert "double fabs(double);" in text
+    assert "#include <math.h>" in text  # a bare prototype compiles to call fabs_
+    assert "double fabs(double);" not in text
 
 
 def test_a_float_inside_an_array_reads_at_its_own_type():
@@ -802,10 +803,8 @@ def test_sahf_with_no_status_word_keeps_its_refusal():
 @pytest.mark.parametrize(
     ("code", "reason"),
     [
-        ("d9e8", "op: fld1"),
-        ("d9ee", "op: fldz"),
-        ("d9c9", "op: fxch"),
-        ("d9fa", "op: fsqrt"),
+        ("d9eb", "op: fldpi"),
+        ("d9ec", "op: fldlg2"),
         ("db6c2408", "op: fld"),  # a ten-byte load
         ("df6c2408", "op: fild"),  # a qword integer load
     ],
@@ -813,6 +812,63 @@ def test_sahf_with_no_status_word_keeps_its_refusal():
 def test_other_x87_forms_keep_their_refusal(code, reason):
     with pytest.raises(lift.Unliftable, match=reason):
         in_frame(f"{FLD_A} {code}")
+
+
+FLD_D = "d90424"  # fld dword ptr [esp]: s_10
+FLDLN2, FXCH_1, FYL2X = "d9ed", "d9c9", "d9f1"
+FLD1, FLDZ = "d9e8", "d9ee"
+
+
+def test_fsqrt_is_sqrt():
+    text = in_frame(f"{FLD_A} d9fa {FSTP_C}")
+    assert "s_c = sqrt(s_8);" in text
+    assert "#include <math.h>" in text
+
+
+def test_fldln2_fxch_fyl2x_is_log():
+    text = in_frame(f"{FLD_A} {FLDLN2} {FXCH_1} {FYL2X} {FSTP_C}")
+    assert "s_c = log(s_8);" in text
+    assert "#include <math.h>" in text
+
+
+def test_fldln2_alone_is_the_value_of_ln_2():
+    assert "s_c = log(2.0);" in in_frame(f"{FLDLN2} {FSTP_C}")
+
+
+def test_fyl2x_over_anything_but_ln_2_refuses():
+    with pytest.raises(lift.Unliftable, match="^op: fyl2x$"):
+        in_frame(f"{FLD_A} {FLD_B} {FYL2X} {FSTP_C}")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [(f"{FLD1} dee1", "1.0 - s_8"), (f"{FLD1} dec1", "s_8 + 1.0")],  # fsubrp / faddp st(1)
+)
+def test_fld1_pushes_one(code, expected):
+    assert f"s_c = {expected};" in in_frame(f"{FLD_A} {code} {FSTP_C}")
+
+
+def test_fldz_pushes_zero():
+    # fldz; fcomp dword ptr [esp + 0Ch]; fnstsw ax; sahf; jbe
+    text = lift.lift_row(compare_row(f"{FLDZ} d85c240c", "76"), VA)
+    assert "if (0.0 <= s_4) goto" in text
+
+
+def test_fxch_swaps_the_top_with_st1():
+    # fld a; fld b; fxch st(1); fsubp st(1); fstp c: without the fxch it is s_8 - s_4
+    assert "s_c = s_4 - s_8;" in in_frame(f"{FLD_A} {FLD_B} {FXCH_1} dee9 {FSTP_C}")
+
+
+def test_fxch_swaps_the_top_with_any_register():
+    # fld a; fld b; fld d; fxch st(2); fstp c three times: s_8, s_4, then s_10
+    text = in_frame(f"{FLD_A} {FLD_B} {FLD_D} d9ca {FSTP_C} {FSTP_C} {FSTP_C}")
+    stores = [line.strip() for line in text.splitlines() if line.strip().startswith("s_c =")]
+    assert stores == ["s_c = s_8;", "s_c = s_4;", "s_c = s_10;"]
+
+
+def test_fxch_with_one_value_loaded_refuses():
+    with pytest.raises(lift.Unliftable, match="x87: stack read before any load"):
+        in_frame(f"{FLD_A} {FXCH_1} {FSTP_C}")
 
 
 def test_a_qword_fistp_keeps_its_refusal():
@@ -888,9 +944,9 @@ def test_each_register_a_hole_writes_reads_as_its_local():
 
 
 def test_a_hole_that_writes_no_register_declares_nothing():
-    # fld1 writes no general register: fld1; ret, the stack left behind is its own hole
-    text = with_holes(stub_exe("d9e8 c3"))
-    assert "op: fld1" in text
+    # fldpi writes no general register: fldpi; ret, the stack left behind is its own hole
+    text = with_holes(stub_exe("d9eb c3"))
+    assert "op: fldpi" in text
     assert "h_" not in text
 
 

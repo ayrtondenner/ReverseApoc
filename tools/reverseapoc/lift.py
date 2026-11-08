@@ -97,7 +97,11 @@ MAX_SKIP = frozenset({"jge", "jg", "jae", "ja"})
 X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "/", "fdivr": "/"}
 X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
 X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
-                       "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
+                       "fabs", "fcomp", "fcompp", "fnstsw", "sahf", "fsqrt", "fxch", "fldln2",
+                       "fyl2x", "fld1", "fldz"})  # fmt: skip
+X87_MATH = {"fabs": "fabs", "fsqrt": "sqrt"}  # the math.h function each one is, on st(0)
+X87_CONSTANTS = {"fld1": "1.0", "fldz": "0.0", "fldln2": "log(2.0)"}  # what each pushes, in C89
+LN2 = X87_CONSTANTS["fldln2"]  # fyl2x over it is the natural log
 X87_POPPING_STORES = frozenset({"fstp", "fistp"})
 X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
 _STACK_NAME = re.compile(r"\b(?:s_[0-9a-f]+|r_p\d+)\b")  # a local slot or a stack parameter
@@ -1399,11 +1403,43 @@ class Block_:
             self.fstack.pop()
         elif mn == "fchs":
             self.fstack[-1] = E(f"-{paren(self.st(0))}", pure=self.st(0).pure)
-        elif mn == "fabs":
-            self.lf.externs.setdefault("fabs", "double fabs(double);")
-            self.fstack[-1] = E(f"fabs({self.st(0)})", pure=self.st(0).pure)
+        elif mn in X87_MATH:
+            self.math(f"{X87_MATH[mn]}({self.st(0)})", self.st(0).pure)
+        elif mn in X87_CONSTANTS:
+            self.float_constant(mn)
+        elif mn == "fyl2x":
+            self.natural_log()
+        elif mn == "fxch":
+            self.float_swap(ci, ops)
         else:
             self.float_status(ci, mn, ops)
+
+    def math(self, text: str, pure: bool) -> None:
+        """st(0) becomes the math.h call `text`. A bare prototype compiles to a call, so the
+        header declares it, as its intrinsic."""
+        self.lf.include("math.h")
+        self.fstack[-1] = E(text, pure=pure)
+
+    def float_constant(self, mn: str) -> None:
+        """fld1, fldz and fldln2 push a double."""
+        if mn == "fldln2":
+            self.lf.include("math.h")
+        self.fstack.append(E(X87_CONSTANTS[mn], atom=True, size=8, signed=FLOAT))
+
+    def natural_log(self) -> None:
+        """`fldln2; fxch st(1); fyl2x`: st(1) * log2(st(0)) over ln 2 is log(st(0))."""
+        if self.st(1).text != LN2:
+            raise Unliftable("op: fyl2x")
+        x = self.st(0)
+        self.fstack.pop()
+        self.math(f"log({x})", x.pure)
+
+    def float_swap(self, ci, ops) -> None:
+        """fxch st(i): st(0) and st(i) trade places."""
+        named = [op for op in ops if op.type == X86_OP_REG and _st_number(ci, op) != 0]
+        n = _st_number(ci, named[0]) if named else 1
+        top, other = self.st(0), self.st(n)
+        self.fstack[-1], self.fstack[-1 - n] = other, top
 
     def float_arith(self, ci, mn, ops) -> None:
         """`op st(0), x` by default; two registers, or a popping form, write `st(i)` instead."""
@@ -1888,7 +1924,7 @@ def _copy_run(insns, k: int) -> tuple[int, tuple[bool, int, int]] | None:
         if j < len(insns) and _is_move(insns[j], mnemonic):
             tail += MOVE_BYTES[mnemonic]
             j += 1
-    if j == k or (j < len(insns) and _string_move(insns[j])):
+    if j < len(insns) and _string_move(insns[j]):
         return None
     if not rep and (dwords > UNROLLED_DWORDS or DWORD * dwords + tail in REGISTER_COPIES):
         return None
