@@ -2702,3 +2702,41 @@ def test_a_switch_guard_that_is_a_hole_does_not_fold(monkeypatch):
     assert "switch (" in text
     assert f"case 0: goto L{SWITCH_CASE_0:X};" in text
     assert "default:" not in text
+
+
+# ---- a conditional tail jump defines nothing on the fall-through (07.1 review, IN-01) ----
+
+TAIL_AT = VA + 2 * ROW_SPACING
+
+
+def jne_to(src: int, target: int) -> str:
+    """`jne target` at `src` in its rel32 form, as hex."""
+    size = 6
+    return "0f85" + (target - (src + size)).to_bytes(4, "little", signed=True).hex()
+
+
+def test_a_conditional_tail_jump_keeps_eax_live_on_the_path_that_falls_through():
+    # call; test ebx, ebx; jne TAIL_AT; ret: the ret reads the call's eax
+    code = f"{call_to(VA, CALLEE)} 85db {jne_to(VA + CALL_SIZE + 2, TAIL_AT)} c3"
+    text = lift.lift_row(stub_exe(code, RETURNS, "c3"), VA)
+    assert f"r_eax = func_{CALLEE:08x}();" in text
+    assert "return r_eax;" in text
+
+
+# ---- a byte written over a known word is a partial write (07.1 review, IN-02) ----
+
+MOV_AX_1234 = "66b83412"
+
+
+def test_call_notes_leave_out_arithmetic_on_a_byte_written_over_a_known_word():
+    # xor eax, eax; mov ax, 1234h; mov al, 5; add eax, 1; call; ret: the machine holds 0x1206
+    call_at = VA + 2 + 4 + 2 + 3
+    code = f"{XOR_EAX} {MOV_AX_1234} {MOV_AL_5} {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {}
+
+
+def test_call_notes_keep_arithmetic_on_a_word_written_over_a_known_word():
+    # xor eax, eax; mov ax, 1234h; mov ax, 5; add eax, 1; call; ret: the word covers the word
+    call_at = VA + 2 + 4 + 4 + 3
+    code = f"{XOR_EAX} {MOV_AX_1234} 66b80500 {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
+    assert notes_of(stub_exe(code, "c3")) == {call_at: "eax=5 + 1"}
