@@ -6,10 +6,10 @@ current_phase: 7
 current_phase_name: Mechanics-first decompilation
 status: executing
 stopped_at: Phase 07.1 complete, ready to execute Phase 7
-last_updated: "2026-11-07T01:43:26.073Z"
+last_updated: "2026-11-08T05:29:56.061Z"
 last_activity: 2026-11-06
 last_activity_desc: Phase 07.1 complete, transitioned to Phase 7
-state_head: 6eb35b3a911bca98834c7f001ac062ff464b0f5f
+state_head: 47b09fa04c762960b32bfa0f9edab8805d7d1f69
 progress:
   total_phases: 9
   completed_phases: 7
@@ -138,6 +138,12 @@ None yet.
 | 261101-b5f | drive --fable-trial: opt-in Fable night on Opus-PARTIAL functions (D-09 owner opt-in, A/B) | 2026-11-01 | df0519d | — | [261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh](./quick/261101-b5f-opt-in-drive-flag-for-a-fable-trial-nigh/) |
 | 261101-js8 | Timed-out drive sessions record a stream cost lower bound instead of zeros | 2026-11-01 | 6fde4ef | — | [261101-js8-record-a-lower-bound-cost-for-timed-out-](./quick/261101-js8-record-a-lower-bound-cost-for-timed-out-/) |
 | 261101-qvp | Batch harness in tools/reverseapoc/batch.py with reverseapoc judge and batch verbs (spike 010/011 port, TDD) | 2026-11-01 | d9d370f | complete | [261101-qvp-move-the-spike-010-011-batch-harness-int](./quick/261101-qvp-move-the-spike-010-011-batch-harness-int/) |
+| 261107-qka | Converter curve harness in .planning/converter-curve (point 8 baseline reproduces Point 7 by the matched-row control) | 2026-11-08 | 6924bd53 | — | .planning/quick/261107-qka-measurement-harness-for-the-converter-follow-ups-copy-planni |
+| 261107-qkb | Lift signed divide by a power of two (point 9: op cdq 125 to 31, exact 18 near 12 unchanged) | 2026-11-08 | 67c25cf1 | — | .planning/quick/261107-qkb-lift-signed-divide-by-a-power-of-two-in-tools-reverseapoc-li |
+| 261107-qkc | One argument count per callee, no E1151 (point 10: compile-failed 27 to 0, exact 18 near 12 unchanged) | 2026-11-08 | 19b2245f | — | .planning/quick/261107-qkc-fix-e1151-in-the-lifter-externs-setdefault-keeps-the-first-c |
+| 261107-qkd | Lift struct copies, inline strlen and memcpy, x87 forms; header prototype fix 47b09fa0 (point 11 and 13) | 2026-11-08 | 370a652d | — | .planning/quick/261107-qkd-lift-string-ops-movsd-repne-scasb-rep-movsd-movsw-45-first-r |
+| 261107-qke | Close the Phase 7.1 review leftovers WR-02, IN-01, IN-02, IN-03 (point 12) | 2026-11-08 | d865e156 | — | .planning/quick/261107-qke-close-the-phase-7-1-review-leftovers-in-planning-todos-pendi |
+| 261107-qzx | Cache unchanged sibling unit objects in attempt check (second check 86 s to 19 s, cc.log +1) | 2026-11-08 | d7bfbee7 | complete | [261107-qzx-cache-unchanged-sibling-unit-objects-in-](./quick/261107-qzx-cache-unchanged-sibling-unit-objects-in-/) |
 
 ### Roadmap Evolution
 

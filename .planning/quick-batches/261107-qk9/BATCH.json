@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "batch_id": "261107-qk9",
+  "created_at": "2026-11-07T22:07:31.225Z",
+  "options": {},
+  "base_revision": "450a5dcac7a5d44a1527a25942b350e5c69a8bf2",
+  "items": [
+    {
+      "quick_id": "261107-qka",
+      "client_id": null,
+      "description": "Measurement harness for the converter follow-ups: copy .planning/phases/07.1-matching-tooling/measure_curve.py to the batch's own quick directory with its own curve file and a point number range that does not stop at 7; it must never write .planning/phases/07.1-matching-tooling/07.1-CURVE.md and the closed 07.1 files stay unchanged. Keep its self-check and --plant. The coordinator runs the baseline on the main checkout (it needs orig/ and docker): it must reproduce Point 7's Tier 1 converter-only table, 21 exact and 14 near, with the matched-row control.",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        ".planning/converter-curve/measure_curve.py",
+        ".planning/converter-curve/SAMPLE.csv",
+        ".planning/converter-curve/CURVE.md",
+        ".planning/quick/261107-qka-measurement-harness-for-the-converter-follow-ups-copy-planni/261107-qka-SUMMARY.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "6924bd53",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261107-qkb",
+      "client_id": null,
+      "description": "Lift signed divide by a power of two in tools/reverseapoc/lift.py: the forms `mov; sar; sub; sar` and `mov; sar; shl; sbb; sar` become x / 2^n, and `cdq; xor eax, edx` is abs and stays out of scope unless it falls out. Test first. Todo: .planning/todos/pending/signed-divide-power-of-two.md (largest refusal: op cdq 124 first refusals, op sbb 134 uses).",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/lift.py",
+        "tests/test_lift.py",
+        "tests/test_lift_divide_real.py",
+        "probe/cg_divide.c",
+        "probe/README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "67c25cf1",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261107-qkc",
+      "client_id": null,
+      "description": "Fix E1151 in the lifter: `externs.setdefault` keeps the first call's argument count, so 30 Tier 1 rows fail to compile with \"Parameter count does not agree with previous definition\". Test first. See .planning/phases/07.1-matching-tooling/07.1-03-SUMMARY.md, section \"Seen, not built\".",
+      "status": "complete",
+      "depends_on": [
+        "261107-qkb"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/lift.py",
+        "tests/test_lift.py",
+        "tests/test_lift_prototype_real.py"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "19b2245f",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261107-qkd",
+      "client_id": null,
+      "description": "Lift string ops (movsd, repne scasb, rep movsd, movsw: 45 first refusals) and x87 forms (fsqrt, fxch, fldln2, fldz, fld1, fyl2x) in tools/reverseapoc/lift.py. Test first. Same 07.1-03-SUMMARY.md section; the C must be what Watcom 10.6 -4r turns back into those bytes.",
+      "status": "complete",
+      "depends_on": [
+        "261107-qkc"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/lift.py",
+        "tests/test_lift.py",
+        "tests/test_lift_probe_real.py",
+        "probe/cg_lift.c",
+        "probe/README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 2,
+      "commit": "370a652d",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261107-qke",
+      "client_id": null,
+      "description": "Close the Phase 7.1 review leftovers in .planning/todos/pending/slot-model-array-ties.md: search.py WR-02 and lift.py IN-01, IN-02, IN-03, with the detail and suggested fixes in .planning/phases/07.1-matching-tooling/07.1-REVIEW.md. Test first. The watcom-readability skill wording it mentions is out of scope (skills change only through writing-skills).",
+      "status": "complete",
+      "depends_on": [
+        "261107-qkd"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/lift.py",
+        "tools/reverseapoc/search.py",
+        "tests/test_lift.py",
+        "tests/test_search.py",
+        ".planning/todos/pending/slot-model-array-ties.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 3,
+      "commit": "d865e156",
+      "failure_reason": null
+    }
+  ]
+}
