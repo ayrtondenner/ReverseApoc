@@ -152,6 +152,14 @@ What it measured, and where that differs from the preview in 07.1-RESEARCH:
 | `pr_lift_copy_20`, `_21`, `_46` | the same, 20, 21 and 46 bytes | `push ecx` first, `mov ecx, S / 4` ... `rep movsd`, then the same tail, `pop ecx` last |
 | `pr_lift_copy_24` | eax to edx, then `return *(int *)r_edx;` | the rep form, then the load: a rep with no tail ends the same way whatever the registers, and plain jumps into the 20-byte copy's `rep movsd` without it |
 
+| Function | C form | Bytes under oneatx (plain: `call strlen_` or `call memcpy_`) |
+|---|---|---|
+| `pr_lift_strlen` | `return strlen((char *)r_eax);` with `#include <string.h>` | `push ecx; push edi; mov edi, eax; sub ecx, ecx; dec ecx; xor eax, eax; repne scasb; not ecx; dec ecx; mov eax, ecx; pop edi; pop ecx; ret` |
+| `pr_lift_strlen_store` | `*(unsigned *)r_edx = strlen((char *)r_eax); return 0;` | the same template, then `mov [edx], ecx` |
+| `pr_lift_memcpy` | `memcpy((void *)r_eax, (void *)r_edx, r_ebx); return r_eax;` | `push ecx; push esi; push edi; push ebp; mov ebp, eax; mov ecx, ebx; mov esi, edx; mov edi, eax; push edi; mov eax, ecx; shr ecx, 2; repne movsd (F2 A5); mov cl, al; and cl, 3; repne movsb; pop edi; mov eax, ebp; pop ebp; pop edi; pop esi; pop ecx; ret` |
+
+The inline forms come only under oneatx: string.h's intrinsic pragma needs `-oi`, which `-ox` and `-oneatx` hold. A stub row has no caller to say its eax goes unread, so what a void function leaves in eax reads back as returned: the strlen template leaves 0, so the store case returns 0, and a memcpy leaves its count, so the memcpy case returns its destination. A game row gets `void` from the census when no caller reads eax. Inline strcat (`push edi; sub ecx, ecx; dec ecx; mov al, 0; repne scasb; dec edi`, then a copy loop over three blocks) is not in the probe, and the lifter still refuses it as `op: repne scasb`.
+
 A char struct gives the same bytes as an int struct of that size. Up to four dwords are unrolled and five or more take `rep movsd`; S = 1, 2 and 4 copy through a register, with no string op, and the lifter refuses a lone `movsd`, `movsw` or `movsb`. Plain `-4r -s` merges identical tails across the functions of one file, so the test refuses a function with a jump outside itself and names it.
 
 ## Running the calibration

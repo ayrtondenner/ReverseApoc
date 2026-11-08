@@ -2539,3 +2539,66 @@ def test_a_repne_movsd_reads_and_writes_ecx():
 def test_a_plain_movsd_leaves_ecx_alone():
     u, d = lift._use_def(first_insn(f"{DWORD_MOVE} c3"))
     assert "ecx" not in u | d
+
+
+def test_sub_of_a_register_from_itself_is_zero_and_reads_nothing():
+    # sub ecx, ecx; mov eax, ecx; ret. A read of ecx would invent a fourth argument.
+    exe = stub_exe("29c9 89c8 c3")
+    assert lift.Lifter(exe, exe.rows[0]).signature().nregs == 0
+    assert "return 0;" in lift.lift_row(exe, VA)
+    assert lift._use_def(first_insn("29c9 c3"))[0] == set()
+
+
+# push ecx; push edi; mov edi, eax; sub ecx, ecx; dec ecx; xor eax, eax; repne scasb; not ecx;
+# dec ecx, then pop edi; pop ecx; ret around what reads the length
+STRLEN_HEAD = "51 57 89c7 29c9 49 31c0 f2ae f7d1 49"
+STRLEN_END = "5f 59 c3"
+# push ecx; push esi; push edi; mov ecx, <count>; mov esi, edx; mov edi, eax; push edi;
+# mov eax, ecx; shr ecx, 2; repne movsd; mov cl, al; and cl, 3; repne movsb; pop edi; pop edi;
+# pop esi; pop ecx; ret
+MEMCPY_ROW = "51 56 57 {count} 89d6 89c7 57 89c8 c1e902 f2a5 8ac8 80e103 f2a4 5f 5f 5e 59 c3"
+
+
+def test_the_inline_strlen_lifts_to_strlen():
+    text = lift.lift_row(stub_exe(f"{STRLEN_HEAD} 89c8 {STRLEN_END}"), VA)  # mov eax, ecx
+    assert "#include <string.h>" in text
+    assert text.index("#include <string.h>") < text.index(f"func_{VA:08x}(")
+    assert f"int func_{VA:08x}(int r_eax)" in text
+    assert "return strlen((char *)r_eax);" in text
+
+
+def test_a_jump_after_the_inline_strlen_tests_the_length():
+    # ...; je L; pop edi; pop ecx; ret; L: pop edi; pop ecx; ret: the flags are the last dec ecx
+    text = lift.lift_row(stub_exe(f"{STRLEN_HEAD} 7403 {STRLEN_END} {STRLEN_END}"), VA)
+    assert "if ((strlen((char *)r_eax)) == 0) goto" in text
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "57 2bc9 49 b000 f2ae 4f 5f c3",  # the strcat head: mov al, 0 and dec edi
+        "57 89c7 29c9 49 b000 f2ae f7d1 49 89c8 5f c3",  # mov al, 0 in place of xor eax, eax
+        "f2ae c3",
+    ],
+    ids=["strcat head", "another neighbour", "alone"],
+)
+def test_any_other_repne_scasb_keeps_its_refusal(code):
+    with pytest.raises(lift.Unliftable, match="^op: repne scasb$"):
+        lift.lift_row(stub_exe(code), VA)
+
+
+def test_the_inline_memcpy_lifts_to_memcpy():
+    text = lift.lift_row(stub_exe(MEMCPY_ROW.format(count="89d9")), VA)  # mov ecx, ebx
+    assert "#include <string.h>" in text
+    assert "memcpy((void *)r_eax, (void *)r_edx, r_ebx);" in text
+
+
+def test_an_impure_memcpy_count_is_read_before_the_copy():
+    text = lift.lift_row(stub_exe(MEMCPY_ROW.format(count="8b0b")), VA)  # mov ecx, [ebx]
+    assert "memcpy((void *)r_eax, (void *)r_edx, r_ecx);" in text
+    assert text.index("r_ecx = *(int *)") < text.index("memcpy(")
+
+
+def test_a_repne_movsb_outside_the_memcpy_keeps_its_refusal():
+    with pytest.raises(lift.Unliftable, match="^op: repne movsb$"):
+        lift.lift_row(stub_exe("f2a4 c3"), VA)

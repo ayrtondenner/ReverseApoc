@@ -14,6 +14,8 @@
  * calibration table sums over that list. See probe/README.md.
  */
 
+#include <string.h>
+
 /* Struct copies: up to four dwords unrolled, a rep movsd from five, then movsw and movsb. */
 struct copy_3 { char b[3]; };
 struct copy_5 { char b[5]; };
@@ -122,4 +124,28 @@ int pr_lift_copy_24(int r_eax, int r_edx)
 void pr_lift_copy_46(int r_eax, int r_edx)
 {
     *(struct copy_46 *)r_eax = *(struct copy_46 *)r_edx;
+}
+
+/*
+ * Inline strlen and memcpy: string.h's intrinsic pragma needs -oi, which -oneatx holds. Plain
+ * -4r -s calls strlen_ and memcpy_. A stub row has no caller to say its eax goes unread, so
+ * what a void function leaves in eax reads back as returned: the inline strlen leaves 0, and the
+ * store case returns that 0; a memcpy leaves its count, so the memcpy case returns its
+ * destination.
+ */
+int pr_lift_strlen(int r_eax)
+{
+    return strlen((char *)r_eax);
+}
+
+int pr_lift_strlen_store(int r_eax, int r_edx)
+{
+    *(unsigned *)r_edx = strlen((char *)r_eax);
+    return 0;
+}
+
+int pr_lift_memcpy(int r_eax, int r_edx, int r_ebx)
+{
+    memcpy((void *)r_eax, (void *)r_edx, r_ebx);
+    return r_eax;
 }

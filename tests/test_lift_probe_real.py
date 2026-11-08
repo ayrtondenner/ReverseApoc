@@ -27,6 +27,7 @@ BUILD_ROOT = REPO_ROOT / "build" / "test-lift-probe"
 VERSION = "10.6"
 CELLS = {"plain": ("-4r", "-s", "-fpi"), "oneatx": ("-4r", "-oneatx", "-s", "-fpi")}
 BOTH = tuple(CELLS)
+ONEATX = ("oneatx",)  # string.h and math.h inline only with -oi and -om, which -oneatx holds
 # Each probe function and the cells it round-trips under.
 CASES = {
     "pr_lift_copy_3": BOTH,
@@ -46,6 +47,9 @@ CASES = {
     "pr_lift_copy_21": BOTH,
     "pr_lift_copy_24": BOTH,
     "pr_lift_copy_46": BOTH,
+    "pr_lift_strlen": ONEATX,
+    "pr_lift_strlen_store": ONEATX,
+    "pr_lift_memcpy": ONEATX,
 }
 PAIRS = [(cell, name) for name, cells in CASES.items() for cell in cells]
 

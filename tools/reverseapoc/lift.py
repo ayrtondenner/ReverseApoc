@@ -108,6 +108,15 @@ DWORD = MOVE_BYTES["movsd"]
 REP_MOVE = "rep movsd"
 UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
 REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
+# Watcom 10.6 -oi inlines string.h's strlen and memcpy as these (mnemonic, operands), in one block.
+INLINE_STRLEN = (("sub", "ecx, ecx"), ("dec", "ecx"), ("xor", "eax, eax"),
+                 ("repne scasb", "al, byte ptr es:[edi]"), ("not", "ecx"),
+                 ("dec", "ecx"))  # fmt: skip
+INLINE_MEMCPY = (("push", "edi"), ("mov", "eax, ecx"), ("shr", "ecx, 2"),
+                 ("movsd", "dword ptr es:[edi], dword ptr [esi]"), ("mov", "cl, al"),
+                 ("and", "cl, 3"), ("repne movsb", "byte ptr es:[edi], byte ptr [esi]"),
+                 ("pop", "edi"))  # fmt: skip
+MEMCPY_DWORDS = 3  # the place in INLINE_MEMCPY of the dword move, a movsd behind REPNE
 
 
 class Unliftable(Exception):
@@ -346,6 +355,11 @@ class Lifter:
         name = self.exe.symbols.c_name(va, data=True)
         self.externs.setdefault(name, f"extern char {name}[];")
         return name
+
+    def include(self, header: str) -> None:
+        """`#include <header>` once, among the draft's file-scope declarations."""
+        line = f"#include <{header}>"
+        self.externs.setdefault(line, line)
 
     def in_row(self, va: int | None) -> bool:
         if va is None:
@@ -1146,7 +1160,7 @@ class Block_:
     def step(self, ci, k) -> None:
         self.k = k
         self.needed = self.lf.before.get(ci.address, set())
-        if ci.address in self.consumed:
+        if ci.address in self.consumed or self.inline_call(k):
             return
         mn, ops = ci.mnemonic, ci.operands
         if mn in ("mov", "lea") and _writes_esp(ci):
@@ -1274,7 +1288,50 @@ class Block_:
             self.regs["ecx"] = const(0)
         if self.flags is not None and not all(e.pure for e in self.flags[1:]):
             self.flags = None  # a flag read after the copy must not read memory it overwrote
+        self.consume(k, end)
+
+    def consume(self, k: int, end: int) -> None:
+        """insns[k] lifted insns[k + 1 : end] with it."""
         self.consumed.update(later.address for later in self.insns[k + 1 : end])
+
+    def inline_call(self, k: int) -> bool:
+        """An inline strlen or memcpy starting at insns[k], lifted as that call."""
+        if _matches(self.insns, k, INLINE_STRLEN):
+            self.inline_strlen(k)
+            return True
+        if not _matches(self.insns, k, INLINE_MEMCPY):
+            return False
+        if self.insns[k + MEMCPY_DWORDS].bytes[0] != REPNE:
+            return False
+        self.inline_memcpy(k)
+        return True
+
+    def inline_strlen(self, k: int) -> None:
+        """ecx is the length of the string at edi, and the flags are its; edi is past the 0."""
+        p = self.get("edi")
+        n = E(f"strlen((char *){paren(p)})", pure=False, signed=False)
+        self.lf.include("string.h")
+        self.regs["ecx"] = n
+        self.regs["eax"] = const(0)
+        self.regs["edi"] = binop("+", binop("+", p, n), const(1))
+        self.flags = ("res", n)
+        self.consume(k, k + len(INLINE_STRLEN))
+
+    def inline_memcpy(self, k: int) -> None:
+        """ecx bytes from esi to edi: eax holds the count after it, ecx 0 and esi its end. Its
+        push and pop of edi cancel, so esp and edi stay."""
+        end = k + len(INLINE_MEMCPY)
+        self.flush(self.insns[end - 1])  # a push is no store, so `step` flushed nothing
+        if not self.held("ecx").pure:
+            self.assign("ecx")  # nothing may read the count's memory after the copy
+        d, s, n = self.get("edi"), self.get("esi"), self.get("ecx")
+        self.lf.include("string.h")
+        self.out.append(f"memcpy((void *){paren(d)}, (void *){paren(s)}, {n});")
+        self.regs["eax"] = n
+        self.regs["ecx"] = const(0)
+        self.regs["esi"] = binop("+", s, n)
+        self.flags = None
+        self.consume(k, end)
 
     def cmp(self, ci, ops) -> None:
         """A narrow memory operand reads as the condition does, and the immediate fits what it
@@ -1406,7 +1463,7 @@ class Block_:
 
     def arith(self, ci, mn, ops) -> None:
         if (
-            mn == "xor"
+            mn in ("xor", "sub")
             and ops[0].type == X86_OP_REG
             and ops[1].type == X86_OP_REG
             and ops[0].reg == ops[1].reg
@@ -1796,6 +1853,14 @@ def _st_number(ci, op) -> int:
     return int(ci.reg_name(op.reg).removeprefix("st(").removesuffix(")"))
 
 
+def _matches(insns, k: int, template) -> bool:
+    """insns[k:] starts with the (mnemonic, operands) of `template`."""
+    found = insns[k : k + len(template)]
+    return len(found) == len(template) and all(
+        (ci.mnemonic, ci.op_str) == want for ci, want in zip(found, template, strict=True)
+    )
+
+
 def _string_move(ci) -> bool:
     """Any movs, with or without a prefix."""
     return ci.mnemonic.split()[-1] in MOVE_BYTES
@@ -2061,7 +2126,7 @@ def _use_def(ci) -> tuple[set, set]:
     u = {_full(ci.reg_name(r)) for r in regs_read} & set(GP)
     d = {_full(ci.reg_name(r)) for r in regs_write} & set(GP)
     if (
-        ci.mnemonic in ("xor", "sbb")  # sbb r, r reads the carry flag, never r
+        ci.mnemonic in ("xor", "sbb", "sub")  # sbb r, r reads the carry flag, never r
         and len(ci.operands) == 2
         and ci.operands[0].type == X86_OP_REG
         and ci.operands[0].reg == ci.operands[1].reg
