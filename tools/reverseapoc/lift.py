@@ -97,10 +97,30 @@ MAX_SKIP = frozenset({"jge", "jg", "jae", "ja"})
 X87_ARITHMETIC = {"fadd": "+", "fsub": "-", "fsubr": "-", "fmul": "*", "fdiv": "/", "fdivr": "/"}
 X87_POPPING = {f"{name}p": name for name in X87_ARITHMETIC}
 X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fstp", "fistp", "fchs",
-                       "fabs", "fcomp", "fcompp", "fnstsw", "sahf"})  # fmt: skip
+                       "fabs", "fcomp", "fcompp", "fnstsw", "sahf", "fsqrt", "fxch", "fldln2",
+                       "fyl2x", "fld1", "fldz"})  # fmt: skip
+X87_MATH = {"fabs": "fabs", "fsqrt": "sqrt"}  # the math.h function each one is, on st(0)
+X87_CONSTANTS = {"fld1": "1.0", "fldz": "0.0", "fldln2": "log(2.0)"}  # what each pushes, in C89
+LN2 = X87_CONSTANTS["fldln2"]  # fyl2x over it is the natural log
 X87_POPPING_STORES = frozenset({"fstp", "fistp"})
 X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
 _STACK_NAME = re.compile(r"\b(?:s_[0-9a-f]+|r_p\d+)\b")  # a local slot or a stack parameter
+REPNE = 0xF2  # the x86 prefix bytes: capstone shows F2 A5 as a plain movsd, with no ecx
+REP = 0xF3
+MOVE_BYTES = {"movsd": 4, "movsw": 2, "movsb": 1}  # what one string move copies
+DWORD = MOVE_BYTES["movsd"]
+REP_MOVE = "rep movsd"
+UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
+REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
+# Watcom 10.6 -oi inlines string.h's strlen and memcpy as these (mnemonic, operands), in one block.
+INLINE_STRLEN = (("sub", "ecx, ecx"), ("dec", "ecx"), ("xor", "eax, eax"),
+                 ("repne scasb", "al, byte ptr es:[edi]"), ("not", "ecx"),
+                 ("dec", "ecx"))  # fmt: skip
+INLINE_MEMCPY = (("push", "edi"), ("mov", "eax, ecx"), ("shr", "ecx, 2"),
+                 ("movsd", "dword ptr es:[edi], dword ptr [esi]"), ("mov", "cl, al"),
+                 ("and", "cl, 3"), ("repne movsb", "byte ptr es:[edi], byte ptr [esi]"),
+                 ("pop", "edi"))  # fmt: skip
+MEMCPY_DWORDS = 3  # the place in INLINE_MEMCPY of the dword move, a movsd behind REPNE
 
 
 class Unliftable(Exception):
@@ -339,6 +359,11 @@ class Lifter:
         name = self.exe.symbols.c_name(va, data=True)
         self.externs.setdefault(name, f"extern char {name}[];")
         return name
+
+    def include(self, header: str) -> None:
+        """`#include <header>` once, among the draft's file-scope declarations."""
+        line = f"#include <{header}>"
+        self.externs.setdefault(line, line)
 
     def in_row(self, va: int | None) -> bool:
         if va is None:
@@ -779,6 +804,7 @@ class Block_:
         self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
         self.needed: set[str] = set()  # the registers still read from here on
         self.assigning: set[str] = set()  # registers whose assignment waits on their readers
+        self.consumed: set[int] = set()  # instructions an earlier one lifted as part of its own
 
     # registers
 
@@ -1138,6 +1164,8 @@ class Block_:
     def step(self, ci, k) -> None:
         self.k = k
         self.needed = self.lf.before.get(ci.address, set())
+        if ci.address in self.consumed or self.inline_call(k):
+            return
         mn, ops = ci.mnemonic, ci.operands
         if mn in ("mov", "lea") and _writes_esp(ci):
             self.esp_lost = True  # these lift, and self.esp does not follow them
@@ -1234,8 +1262,80 @@ class Block_:
             self.sbb(ci, ops)
         elif mn in X87_FORMS:
             self.x87(ci, mn, ops)
+        elif mn in MOVE_BYTES or mn == REP_MOVE:
+            self.struct_copy(ci, k)
         else:
             raise Unliftable(f"op: {mn}")
+
+    def struct_copy(self, ci, k: int) -> None:
+        """The run of string moves Watcom writes for `*(T *)edi = *(T *)esi` of a struct: one
+        assignment of a `struct copy_<size>`. Any other run refuses before it reads a register."""
+        if ci.bytes[0] == REPNE:
+            raise Unliftable(f"op: repne {ci.mnemonic}")
+        run = _copy_run(self.insns, k)
+        if run is None:
+            raise Unliftable(f"op: {ci.mnemonic}")
+        end, (rep, dwords, tail) = run
+        if rep:
+            count = self.regs.get("ecx")  # peeked: only a constant count is a struct's
+            if count is None or count.const is None or count.const <= UNROLLED_DWORDS:
+                raise Unliftable(f"op: {REP_MOVE}")
+            dwords = count.const
+        size = DWORD * dwords + tail
+        dst, src = self.get("edi"), self.get("esi")
+        name = f"struct copy_{size}"
+        self.lf.externs.setdefault(name, f"{name} {{ char b[{size}]; }};")
+        self.out.append(f"*({name} *){paren(dst)} = *({name} *){paren(src)};")
+        self.regs["edi"] = binop("+", dst, const(size))
+        self.regs["esi"] = binop("+", src, const(size))
+        if rep:
+            self.regs["ecx"] = const(0)
+        if self.flags is not None and not all(e.pure for e in self.flags[1:]):
+            self.flags = None  # a flag read after the copy must not read memory it overwrote
+        self.consume(k, end)
+
+    def consume(self, k: int, end: int) -> None:
+        """insns[k] lifted insns[k + 1 : end] with it."""
+        self.consumed.update(later.address for later in self.insns[k + 1 : end])
+
+    def inline_call(self, k: int) -> bool:
+        """An inline strlen or memcpy starting at insns[k], lifted as that call."""
+        if _matches(self.insns, k, INLINE_STRLEN):
+            self.inline_strlen(k)
+            return True
+        if not _matches(self.insns, k, INLINE_MEMCPY):
+            return False
+        if self.insns[k + MEMCPY_DWORDS].bytes[0] != REPNE:
+            return False
+        self.inline_memcpy(k)
+        return True
+
+    def inline_strlen(self, k: int) -> None:
+        """ecx is the length of the string at edi, and the flags are its; edi is past the 0."""
+        p = self.get("edi")
+        n = E(f"strlen((char *){paren(p)})", pure=False, signed=False)
+        self.lf.include("string.h")
+        self.regs["ecx"] = n
+        self.regs["eax"] = const(0)
+        self.regs["edi"] = binop("+", binop("+", p, n), const(1))
+        self.flags = ("res", n)
+        self.consume(k, k + len(INLINE_STRLEN))
+
+    def inline_memcpy(self, k: int) -> None:
+        """ecx bytes from esi to edi: eax holds the count after it, ecx 0 and esi its end. Its
+        push and pop of edi cancel, so esp and edi stay."""
+        end = k + len(INLINE_MEMCPY)
+        self.flush(self.insns[end - 1])  # a push is no store, so `step` flushed nothing
+        if not self.held("ecx").pure:
+            self.assign("ecx")  # nothing may read the count's memory after the copy
+        d, s, n = self.get("edi"), self.get("esi"), self.get("ecx")
+        self.lf.include("string.h")
+        self.out.append(f"memcpy((void *){paren(d)}, (void *){paren(s)}, {n});")
+        self.regs["eax"] = n
+        self.regs["ecx"] = const(0)
+        self.regs["esi"] = binop("+", s, n)
+        self.flags = None
+        self.consume(k, end)
 
     def cmp(self, ci, ops) -> None:
         """A narrow memory operand reads as the condition does, and the immediate fits what it
@@ -1303,11 +1403,43 @@ class Block_:
             self.fstack.pop()
         elif mn == "fchs":
             self.fstack[-1] = E(f"-{paren(self.st(0))}", pure=self.st(0).pure)
-        elif mn == "fabs":
-            self.lf.externs.setdefault("fabs", "double fabs(double);")
-            self.fstack[-1] = E(f"fabs({self.st(0)})", pure=self.st(0).pure)
+        elif mn in X87_MATH:
+            self.math(f"{X87_MATH[mn]}({self.st(0)})", self.st(0).pure)
+        elif mn in X87_CONSTANTS:
+            self.float_constant(mn)
+        elif mn == "fyl2x":
+            self.natural_log()
+        elif mn == "fxch":
+            self.float_swap(ci, ops)
         else:
             self.float_status(ci, mn, ops)
+
+    def math(self, text: str, pure: bool) -> None:
+        """st(0) becomes the math.h call `text`. A bare prototype compiles to a call, so the
+        header declares it, as its intrinsic."""
+        self.lf.include("math.h")
+        self.fstack[-1] = E(text, pure=pure)
+
+    def float_constant(self, mn: str) -> None:
+        """fld1, fldz and fldln2 push a double."""
+        if mn == "fldln2":
+            self.lf.include("math.h")
+        self.fstack.append(E(X87_CONSTANTS[mn], atom=True, size=8, signed=FLOAT))
+
+    def natural_log(self) -> None:
+        """`fldln2; fxch st(1); fyl2x`: st(1) * log2(st(0)) over ln 2 is log(st(0))."""
+        if self.st(1).text != LN2:
+            raise Unliftable("op: fyl2x")
+        x = self.st(0)
+        self.fstack.pop()
+        self.math(f"log({x})", x.pure)
+
+    def float_swap(self, ci, ops) -> None:
+        """fxch st(i): st(0) and st(i) trade places."""
+        named = [op for op in ops if op.type == X86_OP_REG and _st_number(ci, op) != 0]
+        n = _st_number(ci, named[0]) if named else 1
+        top, other = self.st(0), self.st(n)
+        self.fstack[-1], self.fstack[-1 - n] = other, top
 
     def float_arith(self, ci, mn, ops) -> None:
         """`op st(0), x` by default; two registers, or a popping form, write `st(i)` instead."""
@@ -1367,7 +1499,7 @@ class Block_:
 
     def arith(self, ci, mn, ops) -> None:
         if (
-            mn == "xor"
+            mn in ("xor", "sub")
             and ops[0].type == X86_OP_REG
             and ops[1].type == X86_OP_REG
             and ops[0].reg == ops[1].reg
@@ -1757,6 +1889,48 @@ def _st_number(ci, op) -> int:
     return int(ci.reg_name(op.reg).removeprefix("st(").removesuffix(")"))
 
 
+def _matches(insns, k: int, template) -> bool:
+    """insns[k:] starts with the (mnemonic, operands) of `template`."""
+    found = insns[k : k + len(template)]
+    return len(found) == len(template) and all(
+        (ci.mnemonic, ci.op_str) == want for ci, want in zip(found, template, strict=True)
+    )
+
+
+def _string_move(ci) -> bool:
+    """Any movs, with or without a prefix."""
+    return ci.mnemonic.split()[-1] in MOVE_BYTES
+
+
+def _is_move(ci, mnemonic: str) -> bool:
+    """`ci` is the string move `mnemonic` with no REPNE before it."""
+    return ci.mnemonic == mnemonic and ci.bytes[0] != REPNE
+
+
+def _copy_run(insns, k: int) -> tuple[int, tuple[bool, int, int]] | None:
+    """(the index past the run, (rep, unrolled dwords, tail bytes)) of the string moves from
+    insns[k], or None when they are no Watcom struct copy: one `rep movsd` or up to four `movsd`,
+    then at most one `movsw`, then at most one `movsb`, and no other move right after. A copy of
+    1, 2 or 4 bytes goes through a register, so no run of that size is one."""
+    j = k
+    rep = insns[k].mnemonic == REP_MOVE and insns[k].bytes[0] == REP
+    if rep:
+        j += 1
+    while not rep and j < len(insns) and _is_move(insns[j], "movsd"):
+        j += 1
+    dwords = j - k if not rep else 0
+    tail = 0
+    for mnemonic in ("movsw", "movsb"):
+        if j < len(insns) and _is_move(insns[j], mnemonic):
+            tail += MOVE_BYTES[mnemonic]
+            j += 1
+    if j < len(insns) and _string_move(insns[j]):
+        return None
+    if not rep and (dwords > UNROLLED_DWORDS or DWORD * dwords + tail in REGISTER_COPIES):
+        return None
+    return j, (rep, dwords, tail)
+
+
 def _slot_name(off: int) -> str:
     return f"s_{-off:x}"
 
@@ -1988,12 +2162,14 @@ def _use_def(ci) -> tuple[set, set]:
     u = {_full(ci.reg_name(r)) for r in regs_read} & set(GP)
     d = {_full(ci.reg_name(r)) for r in regs_write} & set(GP)
     if (
-        ci.mnemonic in ("xor", "sbb")  # sbb r, r reads the carry flag, never r
+        ci.mnemonic in ("xor", "sbb", "sub")  # sbb r, r reads the carry flag, never r
         and len(ci.operands) == 2
         and ci.operands[0].type == X86_OP_REG
         and ci.operands[0].reg == ci.operands[1].reg
     ):
         u = set()
+    if ci.mnemonic in ("movsd", "movsw") and ci.bytes[0] == REPNE:  # capstone leaves out ecx
+        u, d = u | {"ecx"}, d | {"ecx"}
     # A high byte write keeps the register's other bytes: it is a use of the full register too.
     u |= {_full(ci.reg_name(r)) for r in regs_write if ci.reg_name(r) in HIGH_BYTES}
     if ci.mnemonic == "call":
