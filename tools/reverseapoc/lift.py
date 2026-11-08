@@ -1664,7 +1664,8 @@ class Block_:
     def switch(self, ci) -> None:
         """A table jump: one `case` per entry, and the guard's target as the `default:`."""
         index = ci.reg_name(ci.operands[0].mem.index)
-        if ci.address in self.lf.guards and self.lf.compared[ci.address] != self.get(index).text:
+        compared = self.lf.compared.get(ci.address)  # None: the guard's jcc became a hole
+        if ci.address in self.lf.guards and compared != self.get(index).text:
             del self.lf.guards[ci.address]
             self.lf.unfolded = True
         self.flush(ci)
