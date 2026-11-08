@@ -553,7 +553,9 @@ class Lifter:
             for ci in blocks[s].insns:
                 use_def[ci.address] = _use_def(ci)
                 if ci.address in self.arg_counts:
-                    use_def[ci.address] = (set(ARG_REGS[: self.arg_counts[ci.address]]), {"eax"})
+                    # a conditional tail jump defines nothing: only its taken path leaves
+                    result = {"eax"} if ci.mnemonic in ("call", "jmp") else set()
+                    use_def[ci.address] = (set(ARG_REGS[: self.arg_counts[ci.address]]), result)
         live_in: dict[int, set] = {s: set() for s in order}
         changed = True
         while changed:
@@ -836,7 +838,8 @@ class Block_:
                 return
             old = self.regs.get(full)
             zero = old is not None and old.const == 0
-            over_zero = zero or (old is not None and old.written > 0 and not old.partial)
+            covered = old is not None and 0 < old.written <= size and not old.partial
+            over_zero = zero or covered  # a byte over a known word leaves the word's high byte
             self.regs[full] = E(e.text, e.atom, e.pure, e.const, size, False if zero else e.signed,
                                 boolean=e.boolean, written=size, partial=not over_zero)  # fmt: skip
             return
