@@ -71,6 +71,9 @@ _SIZES = {"char": 1, "signed char": 1, "unsigned char": 1, "s8": 1, "u8": 1, "sh
           "unsigned": 4, "signed int": 4, "unsigned int": 4, "long": 4, "signed long": 4,
           "unsigned long": 4, "s32": 4, "u32": 4, "float": 4, "double": 8}  # fmt: skip
 _QUALIFIERS = frozenset(("const", "volatile", "register"))
+# A declaration that holds a slot opens with one of these; C89 opens no statement with one.
+_TYPE_WORDS = frozenset((*(word for key in _SIZES for word in key.split()), *_QUALIFIERS,
+                         "struct", "union", "enum", "void"))  # fmt: skip
 _FLOATING = frozenset(("float", "double"))
 
 # A declaration line, read on text with its comments and literals blanked. `static` and `extern`
@@ -491,13 +494,22 @@ def _parameter_words(code: Sequence[str], span: tuple[int, int]) -> set[str]:
     return set(_WORD.findall(head[len(head) - 1 - _closing(head[::-1], 0, ")", "(") :]))
 
 
+def _unread_declaration(code: str) -> bool:
+    """The blanked line `code` opens with a type word, and _declaration does not read it."""
+    first = _WORD.match(code.lstrip())
+    return first is not None and first[0] in _TYPE_WORDS and _declaration(code) is None
+
+
 def _readable(text: str, span: tuple[int, int], memory: Sequence[slots.Local]) -> bool:
     """A frame can be read from `span`: every local has a size and a name of its own, no float
     stands in a tie, no `&` is ambiguous, no slot lies outside the declarations, as a parameter
-    whose address is taken and an initialized aggregate do, and no local outside `memory` is under
-    a slot, because a spilled short can move with its declaration (pr_spill_short) and then
-    scalars are not out of reach of declaration moves."""
+    whose address is taken and an initialized aggregate do, no line that opens with a type word
+    is one the reader cannot read, because it hides a local (WR-02), and no local outside
+    `memory` is under a slot, because a spilled short can move with its declaration
+    (pr_spill_short) and then scalars are not out of reach of declaration moves."""
     code = _code(text).split("\n")
+    if any(_unread_declaration(code[n]) for n in range(span[0] + 1, span[1])):
+        return False
     found = [_declaration(code[n]) for n in declarations(text, span)]
     names = [_name(one) for one in found]
     sizes = [_size(one) for one in found]
