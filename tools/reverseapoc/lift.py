@@ -396,7 +396,8 @@ class Lifter:
     def agreed_counts(self, blocks, order) -> dict[int, int]:
         """{call or tail-jump site: the one argument count of its callee in this pass}, so the
         prototype, every call and liveness read the same count (no E1151). A site with no direct
-        target keeps its own count."""
+        target keeps its own count. A call to the row itself takes the definition's count, once
+        lift() has it: the definition is that call's only declaration."""
         counts: dict[int, int] = {}
         by_target: dict[int, list] = {}
         for ci, insns in self.call_sites(blocks, order):
@@ -404,8 +405,11 @@ class Lifter:
             t = _branch_target(ci)
             if t is not None:
                 by_target.setdefault(t, []).append(ci)
-        for sites in by_target.values():
-            n = _agreed([counts[ci.address] for ci in sites], self.call_sig(sites[0]))
+        for t, sites in by_target.items():
+            if t == self.row.start and self.sig is not None:
+                n = self.sig.nregs
+            else:
+                n = _agreed([counts[ci.address] for ci in sites], self.call_sig(sites[0]))
             counts |= dict.fromkeys((ci.address for ci in sites), n)
         return counts
 
@@ -1644,7 +1648,7 @@ class Block_:
     def tail(self, ci, t: int) -> str:
         """`return f(args);` for a tail jump to the row at `t`."""
         name, sig = self.lf.callee(t)
-        nregs = max(sig.nregs if sig else 0, _evidence(self.insns, ci))
+        nregs = self.lf.arg_counts[ci.address]
         if sig is not None and sig.nstack:
             raise Unliftable("tail: callee with stack arguments")
         args = ", ".join(str(self.get(r)) for r in ARG_REGS[:nregs])

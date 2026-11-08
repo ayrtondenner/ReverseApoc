@@ -46,9 +46,8 @@ def fresh_lifter(monkeypatch, tmp_path):
     clear_caches()
 
 
-@pytest.mark.parametrize("name", ["later_site"])
+@pytest.mark.parametrize("name", ONE_COUNT_ROWS)
 def test_one_count_draft_compiles(rule, name):
-    assert name in ONE_COUNT_ROWS
     exe = one_count_exe(name)
     text = lift.lift_row(exe, VA)
     row = exe.rows[0]

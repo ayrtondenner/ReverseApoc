@@ -1754,14 +1754,14 @@ def arities(text: str, name: str) -> set[int]:
 
 COUNTED = VA + ROW_SPACING  # the callee of every one-count row
 ADD_ARGS = "01d0 c3"  # add eax, edx; ret
+# mov eax, 1; mov edx, 2; call C; mov ecx, eax; mov eax, 5; mov edx, 6; call C;
+# add eax, ecx; ret (ecx holds the first result across the second call)
+LATER_SITE = (
+    f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c1 b805000000 ba06000000"
+    f" {call_to(VA + 27, COUNTED)} 01c8 c3"
+)
 ONE_COUNT_ROWS: dict[str, tuple[str, ...]] = {
-    # mov eax, 1; mov edx, 2; call C; mov ecx, eax; mov eax, 5; mov edx, 6; call C;
-    # add eax, ecx; ret (ecx holds the first result across the second call)
-    "later_site": (
-        f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c1 b805000000 ba06000000"
-        f" {call_to(VA + 27, COUNTED)} 01c8 c3",
-        ADD_ARGS,
-    ),
+    "later_site": (LATER_SITE, ADD_ARGS),
     # mov ecx, 7; mov eax, 1; mov edx, 2; call C; mov edx, 6; call C; add eax, ecx; ret
     # (ecx is loaded before the first call to survive both)
     "first_site": (
@@ -1769,6 +1769,9 @@ ONE_COUNT_ROWS: dict[str, tuple[str, ...]] = {
         f" {call_to(VA + 25, COUNTED)} 01c8 c3",
         ADD_ARGS,
     ),
+    "unknown_callee": (LATER_SITE, BAD_ROW),  # the later_site caller; the callee's Sig is None
+    # test eax, eax; je L; mov ebx, eax; dec eax; call self; add eax, ebx; L: ret
+    "row_itself": (f"85c0 740a 89c3 48 {call_to(VA + 7, VA)} 01d8 c3",),
 }
 
 
@@ -1795,6 +1798,32 @@ def test_one_count_kept_where_every_site_agrees():
     text = lift.lift_row(stub_exe(caller, "b801000000 c3"), VA)
     assert f"int func_{COUNTED:08x}(int, int);" in text
     assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_for_an_unknown_callee_is_the_fewest_a_site_shows():
+    text = lift.lift_row(one_count_exe("unknown_callee"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+
+
+def test_one_count_reaches_a_tail_jump():
+    # mov eax, 1; mov edx, 2; call C; mov ebx, eax; mov eax, 5; mov edx, 6; jmp C
+    tail = "e9" + call_to(VA + 27, COUNTED)[2:]
+    caller = f"b801000000 ba02000000 {call_to(VA + 10, COUNTED)} 89c3 b805000000 ba06000000 {tail}"
+    text = lift.lift_row(stub_exe(caller, ADD_ARGS), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {2}
+    assert f"return func_{COUNTED:08x}(5, 6);" in text
+
+
+def test_one_count_for_a_call_to_the_row_itself_is_the_definition_count():
+    text = lift.lift_row(one_count_exe("row_itself"), VA)
+    assert len(arities(text, f"func_{VA:08x}")) == 1  # the definition and the call
+
+
+def test_one_count_for_a_stack_argument_callee_is_four_registers_and_its_stack():
+    # push 1; call C; push 2; call C; ret, with C `mov eax, 1; ret 4`
+    caller = f"6a01 {call_to(VA + 2, COUNTED)} 6a02 {call_to(VA + 9, COUNTED)} c3"
+    text = lift.lift_row(stub_exe(caller, "b801000000 c20400"), VA)
+    assert arities(text, f"func_{COUNTED:08x}") == {5}
 
 
 # ---- slot widths ----
