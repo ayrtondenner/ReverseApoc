@@ -2740,3 +2740,54 @@ def test_call_notes_keep_arithmetic_on_a_word_written_over_a_known_word():
     call_at = VA + 2 + 4 + 4 + 3
     code = f"{XOR_EAX} {MOV_AX_1234} 66b80500 {ADD_EAX_1} {call_to(call_at, CALLEE)} c3"
     assert notes_of(stub_exe(code, "c3")) == {call_at: "eax=5 + 1"}
+
+
+# ---- a callee an included header declares keeps the header's prototype (261107-qkd) ----
+
+FABS_ROW = f"{FLD_A} d9e1 {FSTP_C}"  # fld a; fabs; fstp c: the draft includes math.h
+SET_ARGS = "b801000000 ba02000000 bb03000000"  # mov eax, 1; mov edx, 2; mov ebx, 3
+MEMSET_ROW = "01d8 01d0 c3"  # add eax, ebx; add eax, edx; ret: three arguments, a result
+FLOOR_ROW = "40 c3"  # inc eax; ret: one argument, a result
+
+
+class NamedSymbols(StubSymbols):
+    """StubSymbols, but the rows in `names` carry a library function's name."""
+
+    def __init__(self, names: dict[int, str]):
+        self.names = names
+
+    def c_name(self, va: int, *, data: bool = False) -> str:
+        return self.names.get(va) or super().c_name(va, data=data)
+
+
+HEADER_CALLERS = {  # header -> (the code before the calls, the code after them, what it declares)
+    "string.h": (f"{STRLEN_HEAD} 89c8", STRLEN_END, "memset"),  # the inline strlen; mov eax, ecx
+    "math.h": (f"{FRAME} {FABS_ROW}", UNFRAME, "floor"),
+}
+
+
+def header_callee_exe(header: str) -> StubExe:
+    """A row that includes `header` and calls rows named memset and floor."""
+    memset_at, floor_at = VA + ROW_SPACING, VA + 2 * ROW_SPACING
+    before, after, _ = HEADER_CALLERS[header]
+    head = f"{before} {SET_ARGS}"
+    call_memset = VA + len(bytes.fromhex(head))
+    call_floor = call_memset + CALL_SIZE
+    code = f"{head} {call_to(call_memset, memset_at)} {call_to(call_floor, floor_at)} {after}"
+    exe = stub_exe(code, MEMSET_ROW, FLOOR_ROW)
+    return replace(exe, symbols=NamedSymbols({memset_at: "memset_", floor_at: "floor_"}))
+
+
+@pytest.mark.parametrize("header", HEADER_CALLERS)
+def test_a_callee_an_included_header_declares_has_no_prototype_of_its_own(header):
+    text = lift.lift_row(header_callee_exe(header), VA)
+    assert f"#include <{header}>" in text
+    assert "r_eax = memset(1, 2, 3);" in text
+    assert "r_eax = floor(r_eax);" in text
+    declared = HEADER_CALLERS[header][2]
+    assert not re.search(rf"^\w+ {declared}\(", text, re.M), text
+
+
+@pytest.mark.parametrize(("header", "name"), [("string.h", "memset"), ("math.h", "floor")])
+def test_the_header_table_names_the_functions_the_lifter_can_meet(header, name):
+    assert name in lift.HEADER_DECLARES[header]
