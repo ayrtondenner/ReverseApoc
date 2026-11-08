@@ -6,11 +6,9 @@ source: 07.1-REVIEW.md, the phase-end review; plan 07.1-06 writes no Python, so 
 
 # Slot model and search fixes from Phase 7.1's phase review
 
-Plan 07.1-07 built and closed CR-01, WR-01, WR-03, WR-04 and IN-04. This is what the owner's ruling 3 left. Each finding is deferred in `07.1-REVIEW-DISPOSITION.md`, and none can land a wrong match, because `check` and the gate are untouched. The review holds the detail and suggested fixes.
+Plan 07.1-07 built and closed CR-01, WR-01, WR-03, WR-04 and IN-04. This is what the owner's ruling 3 left. The review holds the detail and suggested fixes, and none of these could land a wrong match, because `check` and the gate are untouched.
 
-**The findings left, by file:**
-- `search.py`: WR-02 (three declaration forms leave `_readable` true on an incomplete frame).
-- `lift.py`: IN-01, IN-02, IN-03.
+**The findings, closed.** Quick task 261107-qke closed `search.py` WR-02 and `lift.py` IN-01, IN-02 and IN-03, test first, with the commits in its SUMMARY. `07.1-REVIEW-DISPOSITION.md` still reads deferred, because Phase 7.1's files stay closed.
 
 **How the lifter declares slots.** `lift.py:649` sorts on M2 for array slots, and it declares address-taken slots as `char` arrays. A change there needs its own measurement.
 
