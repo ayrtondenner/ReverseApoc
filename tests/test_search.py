@@ -1536,6 +1536,37 @@ def test_scalars_are_not_reported_beside_a_slot_no_declaration_shows(monkeypatch
     assert _run(_body(*lines).replace("int f(", f"int {A1}(")).scalars == ()
 
 
+# Three C89 declarations of `v` that _declaration does not read (07.1 review, WR-02).
+UNSEEN = [("int volatile v;",), ("int (*v)(int);",), ("int v,", "    w;")]
+UNSEEN_IDS = ["a qualifier after the type", "a function pointer", "a declarator list across lines"]
+
+
+@pytest.mark.parametrize("lines", UNSEEN, ids=UNSEEN_IDS)
+def test_declaration_axis_falls_back_beside_a_declaration_the_reader_cannot_see(lines):
+    """`v` holds a slot no declaration line shows, so the model would place the frame without it."""
+    text = _body("int b;", "int d;", *lines, "", "take(&b, &d, &v);", "return a;")
+    moves = _axis(text, _SWAP)
+    assert moves
+    assert moves == _plan_1_moves(text)
+
+
+@pytest.mark.parametrize("lines", UNSEEN, ids=UNSEEN_IDS)
+def test_scalars_are_not_reported_beside_a_declaration_the_reader_cannot_see(
+    monkeypatch, stubs, lines
+):
+    _map_is(monkeypatch, SCALAR_MAP)
+    text = _body("int b;", "int c;", "int d;", "int e;", *lines, "", "take(&b, &v);",
+                 *SCALAR_LINES[6:])  # fmt: skip
+    assert _run(text.replace("int f(", f"int {A1}(")).scalars == ()
+
+
+def test_declaration_axis_computes_beside_a_static_local():
+    """A storage class that holds no slot is not a type word."""
+    text = _body("static int s;", "int b;", "int d;", "", "take(&b, &d);", "return s;")
+    (move,) = _axis(text, _SWAP)
+    assert move.text == _body("static int s;", "int d;", "int b;", "", "take(&b, &d);", "return s;")
+
+
 def test_declaration_axis_falls_back_beside_a_plain_double():
     """order_is_known sees the double, so the tie of ints beside it is refused."""
     text = _body("int b;", "int d;", "double p;", "", "take(&b, &d);", "p = a;", "return a;")
