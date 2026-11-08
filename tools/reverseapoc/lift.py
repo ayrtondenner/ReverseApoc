@@ -112,6 +112,15 @@ DWORD = MOVE_BYTES["movsd"]
 REP_MOVE = "rep movsd"
 UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
 REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
+# The functions a header the lifter includes declares, among the callees a draft can meet: a draft
+# that includes the header gives them no prototype of its own (one that disagrees is E1062/E1071).
+# tests/test_lift_headers_real.py checks every name against the real Watcom 10.6 header.
+HEADER_DECLARES = {
+    "string.h": frozenset({"memset", "memcpy", "memmove", "memcmp", "strlen", "strcpy", "strcat",
+                           "strcmp", "strncpy", "strncmp", "strchr", "strrchr"}),  # fmt: skip
+    "math.h": frozenset({"floor", "ceil", "sqrt", "log", "log10", "exp", "pow", "fabs", "sin",
+                         "cos", "tan", "atan", "atan2", "fmod"}),  # fmt: skip
+}
 # Watcom 10.6 -oi inlines string.h's strlen and memcpy as these (mnemonic, operands), in one block.
 INLINE_STRLEN = (("sub", "ecx, ecx"), ("dec", "ecx"), ("xor", "eax, eax"),
                  ("repne scasb", "al, byte ptr es:[edi]"), ("not", "ecx"),
@@ -364,6 +373,12 @@ class Lifter:
         """`#include <header>` once, among the draft's file-scope declarations."""
         line = f"#include <{header}>"
         self.externs.setdefault(line, line)
+
+    def declarations(self) -> list[str]:
+        """The file-scope declarations, less the prototypes an included header already gives."""
+        given = set().union(*(names for header, names in HEADER_DECLARES.items()
+                              if f"#include <{header}>" in self.externs))  # fmt: skip
+        return [line for key, line in self.externs.items() if key not in given]
 
     def in_row(self, va: int | None) -> bool:
         if va is None:
@@ -713,7 +728,7 @@ class Lifter:
         decls += [f"    int {n};" for n in sorted(self.hole_vars)]
         decls += [f"    {t} {n};" for n, t in self.temps.items()]
         lines = [f"/* IDIOM {hit} */" for hit in self.idioms()]
-        lines += list(self.externs.values()) + ["", f"{ret} {name}({args})", "{"] + decls
+        lines += self.declarations() + ["", f"{ret} {name}({args})", "{"] + decls
         if decls:
             lines.append("")
         lines += [("    " + line if not line.endswith(":;") else line) for line in body]
