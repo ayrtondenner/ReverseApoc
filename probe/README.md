@@ -142,6 +142,18 @@ What it measured, and where that differs from the preview in 07.1-RESEARCH:
 
 `cdq; xor eax, edx` (abs) is not in the probe, and the lifter still refuses it.
 
+## Lifter round trip (quick 261107-qkd)
+
+`cg_lift.c` measures the C forms `tools/reverseapoc/lift.py` writes for string moves and x87 forms, each function written in the shape the lifter writes, with register-named parameters. No game code and no matched row is an input. `tests/test_lift_probe_real.py` compiles it through `batch.compile_batch` under `-4r -s -fpi` ("plain") and `-4r -oneatx -s -fpi` ("oneatx", the search cell), lifts each function's bytes from a stub row, and compiles the draft under the same cell back to the same bytes. No function calls or reads a global, since the stub row has no fixups. It stays out of `probe.PROBE_SOURCES` and `probe.FLAG_SETS`, so the Phase 4 table above does not change.
+
+| Function | C form | Bytes, plain and oneatx alike |
+|---|---|---|
+| `pr_lift_copy_<S>`, S = 3, 5-12, 16-19 | `*(struct copy_S *)r_eax = *(struct copy_S *)r_edx;` with `struct copy_S { char b[S]; };` | `push esi; push edi; mov edi, eax; mov esi, edx`, then S / 4 `movsd`, a `movsw` when S % 4 >= 2 and a `movsb` when S is odd, then `pop edi; pop esi; ret` |
+| `pr_lift_copy_20`, `_21`, `_46` | the same, 20, 21 and 46 bytes | `push ecx` first, `mov ecx, S / 4` ... `rep movsd`, then the same tail, `pop ecx` last |
+| `pr_lift_copy_24` | eax to edx, then `return *(int *)r_edx;` | the rep form, then the load: a rep with no tail ends the same way whatever the registers, and plain jumps into the 20-byte copy's `rep movsd` without it |
+
+A char struct gives the same bytes as an int struct of that size. Up to four dwords are unrolled and five or more take `rep movsd`; S = 1, 2 and 4 copy through a register, with no string op, and the lifter refuses a lone `movsd`, `movsw` or `movsb`. Plain `-4r -s` merges identical tails across the functions of one file, so the test refuses a function with a jump outside itself and names it.
+
 ## Running the calibration
 
 `uv run reverseapoc probe calibrate [--output build/probe/calibration.json]` (plan 04-10); the

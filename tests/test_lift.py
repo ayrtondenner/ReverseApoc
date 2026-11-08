@@ -838,8 +838,8 @@ def test_a_stack_left_at_a_block_end_refuses():
 
 # ---- holes ----
 
-MOVSD = "a5"  # a form the converter does not take: esi and edi move
-HOLED = f"b801000000 {MOVSD} b802000000 c3"  # mov eax, 1; movsd; mov eax, 2; ret
+CMPSD = "a7"  # a form the converter does not take: esi, edi and the flags move
+HOLED = f"b801000000 {CMPSD} b802000000 c3"  # mov eax, 1; cmpsd; mov eax, 2; ret
 HOLE_AT = VA + 5
 
 
@@ -849,12 +849,12 @@ def with_holes(exe: StubExe) -> str:
 
 def test_a_hole_keeps_the_lift_going():
     text = with_holes(stub_exe(HOLED))
-    assert f"/* HOLE 0x{HOLE_AT:X}: op: movsd */" in text
+    assert f"/* HOLE 0x{HOLE_AT:X}: op: cmpsd */" in text
     assert "return 2;" in text
 
 
 def test_holes_stay_off_by_default():
-    with pytest.raises(lift.Unliftable, match="op: movsd"):
+    with pytest.raises(lift.Unliftable, match="op: cmpsd"):
         lift.lift_row(stub_exe(HOLED), VA)
 
 
@@ -881,8 +881,8 @@ def test_the_mark_is_the_spelling_of_a_hole():
 
 
 def test_each_register_a_hole_writes_reads_as_its_local():
-    # movsd; mov eax, esi; ret
-    text = with_holes(stub_exe(f"{MOVSD} 89f0 c3"))
+    # cmpsd; mov eax, esi; ret
+    text = with_holes(stub_exe(f"{CMPSD} 89f0 c3"))
     assert "int h_1000;" in text
     assert "return h_1000;" in text
 
@@ -895,8 +895,8 @@ def test_a_hole_that_writes_no_register_declares_nothing():
 
 
 def test_the_flags_do_not_survive_a_hole():
-    # cmp eax, edx; movsd; je +0; ret: movsd may not have kept what je reads, so je is a hole too
-    text = with_holes(stub_exe(f"39d0 {MOVSD} 7400 c3"))
+    # cmp eax, edx; cmpsd; je +0; ret: cmpsd may not have kept what je reads, so je is a hole too
+    text = with_holes(stub_exe(f"39d0 {CMPSD} 7400 c3"))
     assert "jcc: no flag source" in text
     assert "if (" not in text
 
@@ -909,7 +909,7 @@ def test_a_stack_left_at_a_block_end_is_a_hole():
 
 def test_a_hole_appears_once_when_the_row_runs_twice():
     # lea eax, [esp + 8] takes an address, so the blocks run again with the array known
-    text = with_holes(stub_exe(f"{FRAME} 8d442408 {MOVSD} {UNFRAME}"))
+    text = with_holes(stub_exe(f"{FRAME} 8d442408 {CMPSD} {UNFRAME}"))
     assert text.count(lift.HOLE_MARK) == 1
 
 
@@ -2428,3 +2428,114 @@ def test_a_draft_does_not_depend_on_the_string_hash(tmp_path, code):
     """The store makes the loads assign, one statement each, in the order `regs` holds them."""
     drafts = {draft_under(seed, code, tmp_path) for seed in SEEDS}
     assert len(drafts) == 1
+
+
+# ---- string ops ----
+
+COPY_SETUP = "56 57 89c7 89d6"  # push esi; push edi; mov edi, eax; mov esi, edx
+COPY_END = "5f 5e c3"  # pop edi; pop esi; ret
+REP_SETUP = "51 56 57 b9{count} 89c7 89d6"  # push ecx; push esi; push edi; mov ecx, N; ...
+REP_END = "5f 5e 59 c3"  # pop edi; pop esi; pop ecx; ret
+DWORD_MOVE, WORD_MOVE, BYTE_MOVE = "a5", "66a5", "a4"  # movsd, movsw, movsb
+REP_MOVE = "f3a5"  # rep movsd
+REPNE_MOVE = "f2a5"  # movsd behind REPNE, as the inline memcpy writes it
+COPY_GLOBAL = 0x9000
+
+
+def unrolled(size: int) -> str:
+    """The run Watcom 10.6 -4r writes for a copy of `size` bytes, up to four dwords."""
+    words, rest = divmod(size, 4)
+    return " ".join([DWORD_MOVE] * words + [WORD_MOVE] * (rest >= 2) + [BYTE_MOVE] * (rest % 2))
+
+
+def rep_copy(count: int, tail: str = "", between: str = "") -> str:
+    setup = REP_SETUP.format(count=count.to_bytes(4, "little").hex())
+    return f"{setup} {REP_MOVE} {tail} {between} {REP_END}"
+
+
+def copy_statement(size: int, dst: str = "r_eax", src: str = "r_edx") -> str:
+    return f"*(struct copy_{size} *){dst} = *(struct copy_{size} *){src};"
+
+
+def test_an_unrolled_struct_copy_lifts_to_one_assignment():
+    text = lift.lift_row(stub_exe(f"{COPY_SETUP} a5 a5 66a5 {COPY_END}"), VA)
+    assert f"void func_{VA:08x}(int r_eax, int r_edx)" in text
+    assert "struct copy_10 { char b[10]; };" in text
+    assert text.index("struct copy_10 {") < text.index(f"func_{VA:08x}(")
+    assert copy_statement(10) in text
+
+
+@pytest.mark.parametrize(
+    ("count", "tail", "size"), [(5, "", 20), (0xB, WORD_MOVE, 46), (5, BYTE_MOVE, 21)]
+)
+def test_a_rep_struct_copy_lifts_to_one_assignment(count, tail, size):
+    text = lift.lift_row(stub_exe(rep_copy(count, tail)), VA)
+    assert f"struct copy_{size} {{ char b[{size}]; }};" in text
+    assert copy_statement(size) in text
+
+
+@pytest.mark.parametrize("size", [s for s in range(3, 20) if s != 4])
+def test_every_unrolled_size_lifts(size):
+    text = lift.lift_row(stub_exe(f"{COPY_SETUP} {unrolled(size)} {COPY_END}"), VA)
+    assert copy_statement(size) in text
+
+
+def test_after_a_copy_the_pointers_have_moved_by_its_size():
+    # ...; movsd; movsd; mov eax, esi; pop edi; pop esi; ret
+    text = lift.lift_row(stub_exe(f"{COPY_SETUP} a5 a5 89f0 {COPY_END}"), VA)
+    assert "return r_edx + 8;" in text
+
+
+def test_after_a_rep_copy_the_count_is_zero():
+    # ...; rep movsd; mov eax, ecx; pop edi; pop esi; pop ecx; ret
+    text = lift.lift_row(stub_exe(rep_copy(5, between="89c8")), VA)
+    assert "return 0;" in text
+
+
+def test_a_copy_from_a_global_reads_its_extern():
+    # push esi; push edi; mov edi, eax; mov esi, D; movsd; movsd; movsw; pop edi; pop esi; ret
+    field = VA + len(bytes.fromhex("5657 89c7 be"))
+    imm = COPY_GLOBAL.to_bytes(FIELD_SIZE, "little").hex()
+    code = f"56 57 89c7 be{imm} a5 a5 66a5 {COPY_END}"
+    text = lift.lift_row(stub_exe(code, fixups=(data_fixup(field, COPY_GLOBAL),)), VA)
+    assert f"extern char D_{COPY_GLOBAL:08x}[];" in text
+    assert copy_statement(10, src=f"(int)D_{COPY_GLOBAL:08x}") in text
+
+
+@pytest.mark.parametrize(
+    ("code", "reason"),
+    [
+        (DWORD_MOVE, "op: movsd"),  # four bytes go through a register
+        (WORD_MOVE, "op: movsw"),
+        (BYTE_MOVE, "op: movsb"),
+        (" ".join([DWORD_MOVE] * 5), "op: movsd"),  # five dwords are a rep
+        (f"{BYTE_MOVE} {DWORD_MOVE}", "op: movsb"),  # a tail before a dword
+        (f"{DWORD_MOVE} {BYTE_MOVE} {WORD_MOVE}", "op: movsd"),  # the tail out of order
+        (REPNE_MOVE, "op: repne movsd"),
+    ],
+)
+def test_a_move_no_struct_copy_makes_refuses_before_any_read(code, reason):
+    # esi and edi are never written, so any register read would refuse another way
+    with pytest.raises(lift.Unliftable, match=f"^{reason}$"):
+        lift.lift_row(stub_exe(f"{code} c3"), VA)
+
+
+@pytest.mark.parametrize(
+    "code",
+    [f"b904000000 {REP_MOVE}", f"89d9 {REP_MOVE}"],  # mov ecx, 4 / mov ecx, ebx; rep movsd
+    ids=["short count", "count not constant"],
+)
+def test_a_rep_copy_of_no_struct_copy_count_refuses(code):
+    with pytest.raises(lift.Unliftable, match="^op: rep movsd$"):
+        lift.lift_row(stub_exe(f"{COPY_SETUP} {code} {COPY_END}"), VA)
+
+
+def test_a_repne_movsd_reads_and_writes_ecx():
+    u, d = lift._use_def(first_insn(f"{REPNE_MOVE} c3"))
+    assert "ecx" in u
+    assert "ecx" in d
+
+
+def test_a_plain_movsd_leaves_ecx_alone():
+    u, d = lift._use_def(first_insn(f"{DWORD_MOVE} c3"))
+    assert "ecx" not in u | d

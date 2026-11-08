@@ -101,6 +101,13 @@ X87_FORMS = frozenset({*X87_ARITHMETIC, *X87_POPPING, "fld", "fild", "fst", "fst
 X87_POPPING_STORES = frozenset({"fstp", "fistp"})
 X87_STORES = X87_POPPING_STORES | {"fst"}  # capstone calls these operands reads
 _STACK_NAME = re.compile(r"\b(?:s_[0-9a-f]+|r_p\d+)\b")  # a local slot or a stack parameter
+REPNE = 0xF2  # the x86 prefix bytes: capstone shows F2 A5 as a plain movsd, with no ecx
+REP = 0xF3
+MOVE_BYTES = {"movsd": 4, "movsw": 2, "movsb": 1}  # what one string move copies
+DWORD = MOVE_BYTES["movsd"]
+REP_MOVE = "rep movsd"
+UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
+REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
 
 
 class Unliftable(Exception):
@@ -779,6 +786,7 @@ class Block_:
         self.status: tuple | None = None  # what `fnstsw ax` read, for `sahf`
         self.needed: set[str] = set()  # the registers still read from here on
         self.assigning: set[str] = set()  # registers whose assignment waits on their readers
+        self.consumed: set[int] = set()  # instructions an earlier one lifted as part of its own
 
     # registers
 
@@ -1138,6 +1146,8 @@ class Block_:
     def step(self, ci, k) -> None:
         self.k = k
         self.needed = self.lf.before.get(ci.address, set())
+        if ci.address in self.consumed:
+            return
         mn, ops = ci.mnemonic, ci.operands
         if mn in ("mov", "lea") and _writes_esp(ci):
             self.esp_lost = True  # these lift, and self.esp does not follow them
@@ -1234,8 +1244,37 @@ class Block_:
             self.sbb(ci, ops)
         elif mn in X87_FORMS:
             self.x87(ci, mn, ops)
+        elif mn in MOVE_BYTES or mn == REP_MOVE:
+            self.struct_copy(ci, k)
         else:
             raise Unliftable(f"op: {mn}")
+
+    def struct_copy(self, ci, k: int) -> None:
+        """The run of string moves Watcom writes for `*(T *)edi = *(T *)esi` of a struct: one
+        assignment of a `struct copy_<size>`. Any other run refuses before it reads a register."""
+        if ci.bytes[0] == REPNE:
+            raise Unliftable(f"op: repne {ci.mnemonic}")
+        run = _copy_run(self.insns, k)
+        if run is None:
+            raise Unliftable(f"op: {ci.mnemonic}")
+        end, (rep, dwords, tail) = run
+        if rep:
+            count = self.regs.get("ecx")  # peeked: only a constant count is a struct's
+            if count is None or count.const is None or count.const <= UNROLLED_DWORDS:
+                raise Unliftable(f"op: {REP_MOVE}")
+            dwords = count.const
+        size = DWORD * dwords + tail
+        dst, src = self.get("edi"), self.get("esi")
+        name = f"struct copy_{size}"
+        self.lf.externs.setdefault(name, f"{name} {{ char b[{size}]; }};")
+        self.out.append(f"*({name} *){paren(dst)} = *({name} *){paren(src)};")
+        self.regs["edi"] = binop("+", dst, const(size))
+        self.regs["esi"] = binop("+", src, const(size))
+        if rep:
+            self.regs["ecx"] = const(0)
+        if self.flags is not None and not all(e.pure for e in self.flags[1:]):
+            self.flags = None  # a flag read after the copy must not read memory it overwrote
+        self.consumed.update(later.address for later in self.insns[k + 1 : end])
 
     def cmp(self, ci, ops) -> None:
         """A narrow memory operand reads as the condition does, and the immediate fits what it
@@ -1757,6 +1796,40 @@ def _st_number(ci, op) -> int:
     return int(ci.reg_name(op.reg).removeprefix("st(").removesuffix(")"))
 
 
+def _string_move(ci) -> bool:
+    """Any movs, with or without a prefix."""
+    return ci.mnemonic.split()[-1] in MOVE_BYTES
+
+
+def _is_move(ci, mnemonic: str) -> bool:
+    """`ci` is the string move `mnemonic` with no REPNE before it."""
+    return ci.mnemonic == mnemonic and ci.bytes[0] != REPNE
+
+
+def _copy_run(insns, k: int) -> tuple[int, tuple[bool, int, int]] | None:
+    """(the index past the run, (rep, unrolled dwords, tail bytes)) of the string moves from
+    insns[k], or None when they are no Watcom struct copy: one `rep movsd` or up to four `movsd`,
+    then at most one `movsw`, then at most one `movsb`, and no other move right after. A copy of
+    1, 2 or 4 bytes goes through a register, so no run of that size is one."""
+    j = k
+    rep = insns[k].mnemonic == REP_MOVE and insns[k].bytes[0] == REP
+    if rep:
+        j += 1
+    while not rep and j < len(insns) and _is_move(insns[j], "movsd"):
+        j += 1
+    dwords = j - k if not rep else 0
+    tail = 0
+    for mnemonic in ("movsw", "movsb"):
+        if j < len(insns) and _is_move(insns[j], mnemonic):
+            tail += MOVE_BYTES[mnemonic]
+            j += 1
+    if j == k or (j < len(insns) and _string_move(insns[j])):
+        return None
+    if not rep and (dwords > UNROLLED_DWORDS or DWORD * dwords + tail in REGISTER_COPIES):
+        return None
+    return j, (rep, dwords, tail)
+
+
 def _slot_name(off: int) -> str:
     return f"s_{-off:x}"
 
@@ -1994,6 +2067,8 @@ def _use_def(ci) -> tuple[set, set]:
         and ci.operands[0].reg == ci.operands[1].reg
     ):
         u = set()
+    if ci.mnemonic in ("movsd", "movsw") and ci.bytes[0] == REPNE:  # capstone leaves out ecx
+        u, d = u | {"ecx"}, d | {"ecx"}
     # A high byte write keeps the register's other bytes: it is a use of the full register too.
     u |= {_full(ci.reg_name(r)) for r in regs_write if ci.reg_name(r) in HIGH_BYTES}
     if ci.mnemonic == "call":
