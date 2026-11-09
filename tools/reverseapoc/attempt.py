@@ -43,7 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, lift, unitdefs
+from . import asm, check, contextpack, ghidra, lift, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
@@ -1095,13 +1095,19 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
 
 
+def _unit_paths(src: Path, data: check.ExeInputs) -> dict[str, Path]:
+    """The file of each unit a functions.csv row names, in sorted order: what _unit_texts reads
+    and the context cache digests."""
+    units = sorted({row.unit for row in data.rows if row.unit})
+    return {unit: Path(src) / data.stem / f"{unit}.c" for unit in units}
+
+
 def _unit_texts(src: Path, data: check.ExeInputs, claimed: str) -> dict[str, str]:
     """Every unit file of the EXE (06-13 note a: neighbours in other units need their C), read
     as bytes decoded as strict UTF-8 (note b: a lone CR stays refused, never translated). A
     unit that is not UTF-8 is left out, unless it is the claimed one."""
     texts = {}
-    for unit in sorted({row.unit for row in data.rows if row.unit}):
-        path = Path(src) / data.stem / f"{unit}.c"
+    for unit, path in _unit_paths(src, data).items():
         if not path.is_file():
             continue
         try:
@@ -1134,7 +1140,7 @@ def make_pack(
     inputs = contextpack.gather(
         row, rows=data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
         status=status, unit_texts=_unit_texts(src, data, row.unit), listing_dir=listing_dir,
-        draft_dir=listing_dir / "ghidra", common_h=_optional_text(roots.common_h),
+        draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
     )  # fmt: skip
@@ -1212,7 +1218,17 @@ def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
     config = Path(ROOTS.config) / claim.exe
     paths = [Path(ROOTS.manifest), Path(ROOTS.orig) / target.name,
              *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
+    if form == "context":
+        facts["notes"] = _notes_digest(claim)
+        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching]
     return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
+
+
+def _notes_digest(claim: Claim) -> str:
+    """The earlier notes and records make_pack packs, as earlier_notes reads them: the claimed
+    row's placeholder is claim.function (claimed_row requires row.start == claim.address)."""
+    notes = earlier_notes(ROOTS.repo, claim.exe, claim.function)
+    return hashlib.sha256(repr(notes).encode()).hexdigest()
 
 
 def _entry_valid(entry: Any, key: CacheKey) -> bool:
@@ -1284,12 +1300,36 @@ def cmd_asm(name: str | None) -> int:
 
 
 def cmd_context() -> int:
-    """Rebuild the claimed function's pack into <attempt dir>/context.md and print it."""
+    """Rebuild the claimed function's pack into <attempt dir>/context.md and print it. In a view
+    a repeat whose inputs are unchanged writes and prints the stored pack without loading the
+    EXE (261109-gzw)."""
     claim = Claim.from_env(os.environ, roots=ROOTS)
-    data, row = _claimed_row(claim)
-    pack = make_pack(data, row, src=src_root(claim, ROOTS), config=ROOTS.config,
-                     asm_root=ROOTS.asm, roots=ROOTS)  # fmt: skip
-    path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
-    sys.stdout.write(pack.text)
+    key, entry = _lookup(claim, "context", None)
+    if entry is not None:
+        text = entry["stdout"]
+        # Claim.from_env proved the attempt dir an existing directory below build/driver/ with
+        # exact case: write_pack's T-06-29 guard.
+        path = claim.attempt_dir / contextpack.PACK_FILE
+        write_atomic(path, text.encode("utf-8"))
+        derived = None
+    else:
+        text, path, derived = _rebuild_pack(claim)
+    sys.stdout.write(text)
     print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)
+    if key is not None and derived is not None:
+        _cache_store(key, derived, text, "")  # the `wrote` line is printed fresh each run
     return EXIT_OK
+
+
+def _rebuild_pack(claim: Claim) -> tuple[str, Path, dict[str, str | None]]:
+    """The pack built and written as before the cache, with the digests of the listing, the
+    draft and every unit file it reads, taken before make_pack reads them."""
+    data, row = _claimed_row(claim)
+    src = src_root(claim, ROOTS)
+    listing = listing_path(data, row, ROOTS.asm)
+    read = [listing, listing.parent / ghidra.DRAFTS_DIR / ghidra.draft_name(row.start),
+            *_unit_paths(src, data).values()]  # fmt: skip
+    derived = _digests(read)
+    pack = make_pack(data, row, src=src, config=ROOTS.config, asm_root=ROOTS.asm, roots=ROOTS)
+    path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
+    return pack.text, path, derived
