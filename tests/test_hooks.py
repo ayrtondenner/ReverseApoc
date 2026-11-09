@@ -6,6 +6,7 @@ platform's own path form picks it by sys.platform inside one test (rulings R-A).
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import subprocess
@@ -1209,6 +1210,118 @@ def test_worktree_command_entry_point_end_to_end(repo, worktree):
     assert (main.returncode, main.stdout) == (0, b""), main.stderr
     no_cwd = {k: v for k, v in bash("ls", worktree).items() if k != "cwd"}
     assert run(no_cwd).returncode == 2
+
+
+# R11-R14: the script files a worktree command names are read too (the 261107-qk9 incident).
+SCRIPT_FORMS = {
+    "python": ("Bash", "uv run python {w}", "x.py"),
+    "bash": ("Bash", "bash {w}", "x.sh"),
+    "node": ("Bash", "node {w}", "x.mjs"),
+    "powershell": ("PowerShell", "& {w}", "x.ps1"),
+}
+
+
+def script_denial(decision: hooks.Decision, word: str, name: str = "Bash") -> bool:
+    return decision.deny and f"the script {word} that a {name} command" in decision.reason
+
+
+def refuse_open(monkeypatch, script: Path) -> None:
+    """Path.open raises PermissionError for `script` only and delegates every other path."""
+    real_open = Path.open
+
+    def guarded(self, *args, **kwargs):
+        if Path(self) == script:
+            raise PermissionError(13, "refused by the test", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded)
+
+
+@pytest.mark.parametrize(("name", "template", "file"), SCRIPT_FORMS.values(),
+                         ids=SCRIPT_FORMS.keys())  # fmt: skip
+def test_worktree_command_reads_the_scripts_it_runs(repo, worktree, name, template, file):
+    """R11, R12: the script a command runs is denied when it spells the main checkout, by its
+    relative name or by its absolute path inside the worktree."""
+    script = worktree / file
+    word = (".\\" if WINDOWS else "./") + file if name == "PowerShell" else file
+    for named in (word, native(script)):
+        command = template.format(w=named)
+        script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+        decision = always(shell(name, command, worktree))
+        assert script_denial(decision, named, name) and SPELLS_MAIN in decision.reason, command
+        script.write_text(f'WATCOM = "{RELATIVE_WATCOM}"\n', encoding="utf-8")
+        assert not always(shell(name, command, worktree)).deny, command
+
+
+def test_worktree_command_reads_scripts_outside_the_checkout(tmp_path, repo, worktree):
+    """R11: a script in the scratchpad or temp, named by its absolute path, is read too."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    script = scratch / "x.py"
+    script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    decision = always(shell("Bash", f"uv run python {native(script)}", worktree))
+    assert script_denial(decision, native(script))
+
+
+def test_worktree_command_reads_escaped_and_utf16_scripts(repo, worktree):
+    """R11: a string literal's doubled backslashes, and UTF-16 text with a BOM."""
+    script = worktree / "x.py"
+    escaped = main_watcom(repo).replace("\\", "\\\\")
+    script.write_text(f'WATCOM = "{escaped}"\n', encoding="utf-8")
+    assert script_denial(always(shell("Bash", "uv run python x.py", worktree)), "x.py")
+    script.write_bytes(f'WATCOM = "{main_watcom(repo)}"\n'.encode("utf-16"))
+    assert script_denial(always(shell("Bash", "uv run python x.py", worktree)), "x.py")
+
+
+def test_worktree_command_skips_missing_scripts(worktree):
+    """R12: a script not written yet, or a directory with a script suffix, says nothing."""
+    (worktree / "d.py").mkdir()
+    for command in ("uv run python not_yet.py", "uv run python d.py"):
+        assert not always(shell("Bash", command, worktree)).deny, command
+
+
+def test_worktree_command_refuses_a_script_over_the_cap(worktree, monkeypatch):
+    """R13: a script over _SCRIPT_CAP bytes cannot be scanned, so it is denied."""
+    monkeypatch.setattr(hooks, "_SCRIPT_CAP", 64)
+    script = worktree / "x.py"
+    script.write_bytes(b"#" * 65)
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and "cannot be scanned" in decision.reason
+    script.write_bytes(b"#" * 64)
+    assert not always(shell("Bash", "uv run python x.py", worktree)).deny
+
+
+def test_worktree_command_fails_closed_on_unreadable_scripts(worktree, monkeypatch):
+    """R14: a script that exists but cannot be read or decoded, or cannot be placed, blocks."""
+    script = worktree / "x.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    refuse_open(monkeypatch, script)
+    with pytest.raises(hooks.HookError, match="cannot be read"):
+        always(shell("Bash", "uv run python x.py", worktree))
+    monkeypatch.undo()
+    script.write_bytes(codecs.BOM_UTF16_LE + b"abc")
+    with pytest.raises(hooks.HookError, match="cannot be read"):
+        always(shell("Bash", "uv run python x.py", worktree))
+    if WINDOWS:
+        with pytest.raises(hooks.HookError):
+            always(shell("Bash", "uv run python Q:x.py", worktree))
+
+
+def test_worktree_command_main_session_reads_no_script(repo, monkeypatch):
+    """R4: outside a worktree no script is read at all."""
+    script = repo / "x.py"
+    script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    assert not always(shell("Bash", "uv run python x.py", repo)).deny
+    refuse_open(monkeypatch, script)
+    assert not always(shell("Bash", "uv run python x.py", repo)).deny
+
+
+def test_worktree_command_entry_point_reads_scripts(repo, worktree):
+    (worktree / "x.py").write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    done = _run_entry(json.dumps(bash("uv run python x.py", worktree)).encode("utf-8"))
+    assert done.returncode == 0, done.stderr
+    reason = json.loads(done.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "the script x.py that a Bash command" in reason and SPELLS_MAIN in reason
 
 
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------

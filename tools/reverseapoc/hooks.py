@@ -49,6 +49,7 @@ checkout too."""
 from __future__ import annotations
 
 import argparse
+import codecs
 import itertools
 import json
 import math
@@ -653,6 +654,12 @@ _RELATIVE_HINT = (
     "the main checkout is read-only for worktree agents: spell it relative to the worktree "
     "root, as in REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom"
 )
+# A word of the command naming a script, taken as written (no shell expansion).
+_SCRIPT_WORD = re.compile(
+    r"""[^\s"'`;&|<>(){}=,*?\[\]]*\.(?:py|sh|bash|js|mjs|cjs|ps1)(?![A-Za-z0-9_])""", re.IGNORECASE
+)
+_SCRIPT_CAP = 1 << 20  # 1 MiB, more than three times the largest tracked tool (driver.py, ~300 KB)
+_UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
 
 
 def _worktree_pairs(cwd: str) -> list[tuple[str, str]]:
@@ -700,10 +707,51 @@ def _spells_main(text: str, pairs: Sequence[tuple[str, str]]) -> bool:
     return any(_hit(folded, _needle(main), _WORKTREES + name.casefold()) for main, name in pairs)
 
 
+def _spells(main: str) -> str:
+    return f"spells the main checkout's absolute path {main} (261109-gzy); {_RELATIVE_HINT}"
+
+
+def _script_bytes(word: str, cwd: str) -> bytes | None:
+    """The first _SCRIPT_CAP + 1 bytes of the file script `word` names, or None when it names
+    no regular file. Raises HookError when the word cannot be placed."""
+    path = Path(canonical(word, cwd))
+    if not path.is_file():
+        return None
+    with path.open("rb") as handle:
+        return handle.read(_SCRIPT_CAP + 1)
+
+
+def _script_text(data: bytes) -> str:
+    """A script's text: strict UTF-16 after a UTF-16 BOM, else UTF-8 with surrogateescape."""
+    if data.startswith(_UTF16_BOMS):
+        return data.decode("utf-16")
+    return data.decode("utf-8", "surrogateescape")
+
+
+def _script_denial(word: str, cwd: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Why the script `word` names is refused, or '': over _SCRIPT_CAP, or its text spells the
+    main checkout's absolute path."""
+    try:
+        data = _script_bytes(word, cwd)
+        over = data is not None and len(data) > _SCRIPT_CAP
+        text = "" if data is None or over else _script_text(data)
+    except (OSError, UnicodeDecodeError) as exc:
+        raise HookError(f"script {word!r} cannot be read: {exc}") from None
+    main, name = pairs[0]  # case kept, for the message
+    where = f"the script {word} that a {tool} command from the harness worktree {name} runs"
+    if over:
+        return (f"{where} is over {_SCRIPT_CAP} bytes, so it cannot be scanned for the main "
+                "checkout's absolute path (261109-gzy)")  # fmt: skip
+    if _spells_main(text, pairs):
+        return f"{where} {_spells(main)}"
+    return ""
+
+
 def _worktree_command(payload: Mapping) -> Decision:
     """A Bash or PowerShell call from a harness worktree (the payload cwd under
-    .claude/worktrees/<name>/) is denied when its command spells the main checkout's absolute
-    path; every other shell call gets no opinion, decided before tool_input is read."""
+    .claude/worktrees/<name>/) is denied when its command, or a script file it names, spells
+    the main checkout's absolute path; every other shell call gets no opinion, decided before
+    tool_input is read."""
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         raise HookError("the payload has no cwd string, so the hook cannot tell a worktree "
@@ -718,8 +766,11 @@ def _worktree_command(payload: Mapping) -> Decision:
         raise HookError(f"the {tool} payload has no command string")
     main, name = pairs[0]
     if _spells_main(command, pairs):
-        return _deny(f"a {tool} command from the harness worktree {name} spells the main "
-                     f"checkout's absolute path {main} (261109-gzy); {_RELATIVE_HINT}")  # fmt: skip
+        return _deny(f"a {tool} command from the harness worktree {name} {_spells(main)}")
+    for word in dict.fromkeys(found.group() for found in _SCRIPT_WORD.finditer(command)):
+        reason = _script_denial(word, cwd, tool, pairs)
+        if reason:
+            return _deny(reason)
     return NO_OPINION
 
 
