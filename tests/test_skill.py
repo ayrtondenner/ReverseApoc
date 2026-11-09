@@ -213,7 +213,10 @@ def _made_up_json_keys() -> set[str]:
     from reverseapoc.relocs import RelocResult
 
     reloc = RelocResult(False, ("0x00010004: made-up problem",), frozenset(), frozenset())
-    fn = check.FunctionCheck("func_00010000", 0x10000, 16, 87.5, reloc, False, 3, 0x10004)
+    first = check.WindowRow(True, check.WindowInsn(0x10004, "inc", "ecx", False),
+                            check.WindowInsn(0x10004, "inc", "edx", False))  # fmt: skip
+    fn = check.FunctionCheck("func_00010000", 0x10000, 16, 87.5, reloc, False, 3, 0x10004,
+                             window=(first,))  # fmt: skip
     land = check.ExeLand("UFO2P.EXE", LandResult(b"", "0" * 40, "1" * 40, (), 0, 0x10004))
     row = FunctionRow(0x10010, 0x10020, "func_00010010", "game", "u_00010000", "call")
     result = check.CheckResult(
@@ -319,8 +322,8 @@ def _stage2_sweep():
     with its relocation check passing, so stage 2 ran (from cell 31) and its cell 42 hit."""
     from reverseapoc import check
 
-    best = check.SweepCell(1, "10.6", ("-4r", "-s", "-fpi"), "", 98.9, True, 6)
-    hit = check.SweepCell(42, "10.6", ("-4r", "-s", "-fpi", "-zp4"), "", 100.0, True, 0)
+    best = check.SweepCell(1, "10.6", ("-4r", "-s", "-fpi"), "", 98.9, True, 6, 0x0008AB14, 180)
+    hit = check.SweepCell(42, "10.6", ("-4r", "-s", "-fpi", "-zp4"), "", 100.0, True, 0, None, 180)
     return check.SweepReport("ufo2p", "u_00089980", "func_0008AAF0", False, (best,), (best,),
                              Path("sweep.log"), (hit,), (hit,))  # fmt: skip
 
@@ -386,6 +389,17 @@ def test_skill_quotes_the_real_sweep_output():
     wrapper = _section(_text(), "The attempt wrapper")
     for printed in attempt._sweep_summary(doc, line):
         assert printed in wrapper, printed
+
+
+def test_skill_describes_the_difference_window():
+    """261109-gzv: check's summary prints our instructions beside the original's at the first
+    difference (functions[].window), and each sweep cell reports first_va and size; the skill
+    says so and no longer tells the session it has no view of its own object."""
+    text = _text()
+    wrapper = _section(text, "The attempt wrapper")
+    for name in ("`window[]`", "`(relocated)`", "`first_va`", "`size`"):
+        assert name in wrapper, name
+    assert "no disassembly of your own object" not in text
 
 
 def test_skill_keeps_names_placeholders():

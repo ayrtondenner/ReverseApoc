@@ -573,9 +573,14 @@ def _check_summary(doc: Mapping[str, Any]) -> list[str]:
 
 
 def _best_text(label: str, best: Mapping[str, Any]) -> str:
-    return (f"  {label} {int(best['cell']):02d}  {_cell_spec(best)}  objdiff "
+    text = (f"  {label} {int(best['cell']):02d}  {_cell_spec(best)}  objdiff "
             f"{best['objdiff_percent']:g}%  reloc {_ok(best['reloc_ok'])}  "
             f"differing {best['differing']}")  # fmt: skip
+    if "first_va" not in best and "size" not in best:
+        return text  # a cell from before 261109-gzv
+    first_va, size = best.get("first_va"), best.get("size")
+    return (f"{text}  first_va {'none' if first_va is None else first_va}  "
+            f"size {'none' if size is None else size}")  # fmt: skip
 
 
 def _sweep_summary(doc: Mapping[str, Any], line: CheckLogLine) -> list[str]:

@@ -155,8 +155,8 @@ A sweep after a near miss, as it prints (stage 2 cell 42 hit):
 ```
 attempt check --sweep 16/25, 388 s (9 left) ufo2p/u_00089980 func_0008AAF0: exit 0 SWEEP RAN (a diagnostic: never a match)
   a sweep is a diagnostic: it never lands and never edits config/cflags.txt
-  best cell 01  wcc386@10.6 -4r -s -fpi  objdiff 98.9%  reloc ok  differing 6
-  stage 2 best cell 42  wcc386@10.6 -4r -s -fpi -zp4  objdiff 100%  reloc ok  differing 0
+  best cell 01  wcc386@10.6 -4r -s -fpi  objdiff 98.9%  reloc ok  differing 6  first_va 0x0008AB14  size 180
+  stage 2 best cell 42  wcc386@10.6 -4r -s -fpi -zp4  objdiff 100%  reloc ok  differing 0  first_va none  size 180
   sweep hit: needs flags wcc386@10.6 -4r -s -fpi -zp4 (the owner decides; cflags.txt is owner-only)
 saved <attempt dir>/checks/0016.json (full JSON) and <attempt dir>/checks/0016.c (the C checked)
 notes: <attempt dir>/notes.md
@@ -164,20 +164,20 @@ notes: <attempt dir>/notes.md
 
 check's JSON, in `checks/NNNN.json`:
 - `ok`;
-- per function in `functions[]`: `name`, `va`, `objdiff_percent`, `reloc.ok`, `reloc.problems` (one sentence per wrong field), `bytes.ok`, `bytes.differing` and `bytes.first_va`;
+- per function in `functions[]`: `name`, `va`, `objdiff_percent`, `reloc.ok`, `reloc.problems` (one sentence per wrong field), `bytes.ok`, `bytes.differing` and `bytes.first_va`; and `window[]`, the rows the summary prints when the bytes differ (empty when they match): each row has `first`, `ours` and `original` (null where that side has no instruction), and each of those has `va`, `mnemonic`, `operands` and `relocated`;
 - `problems[]`: the unit's account, e.g. a row that is neither defined nor marked;
 - `splice[]`: per EXE, `ok` and `first_difference`.
 
-A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the stage-1 cell it varied, its own `cells`, and its `best` cell numbers). Each cell reports, for the claimed function under its `compiler` and `flags`, `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields that differ). A cell at 100% with `reloc_ok` and `differing` 0 under other flags than the unit's rule is logged as `sweep_hit`: stage 1's first hit, else stage 2's. A sweep hit is never a match until a plain `attempt check` under the new rule passes, and only the owner adds that rule.
+A sweep's JSON has `cells[]`, and `stage2` (null unless stage 2 ran: `from`, the stage-1 cell it varied, its own `cells`, and its `best` cell numbers). Each cell reports, for the claimed function under its `compiler` and `flags`, `objdiff_percent`, `reloc_ok` and `differing` (bytes outside relocated fields that differ), `first_va` (its first differing byte, null when none) and `size` (your function's bytes under that cell). A cell at 100% with `reloc_ok` and `differing` 0 under other flags than the unit's rule is logged as `sweep_hit`: stage 1's first hit, else stage 2's. A sweep hit is never a match until a plain `attempt check` under the new rule passes, and only the owner adds that rule.
 
 ### From a mismatch to the instruction
 
-1. Read the newest `checks/NNNN.json` and find the claimed function in `functions[]`.
-2. Take `bytes.first_va`, and each address named in `reloc.problems`.
-3. Find those addresses in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`, some with a note after it. The line at `first_va` is the first original instruction your object gets wrong.
+1. Read the window the summary prints under the claimed function, after `first difference at`: your instructions on the left, the original's on the right, one per row. The row marked `>` is the first differing instruction; `-` means that side has no instruction there.
+2. An instruction that ends in `(relocated)` covers a relocated field: the byte compare ignores that operand, and yours shows the unlinked placeholder. A wrong target there shows in `reloc.problems`, never in the window.
+3. For the rest of the original, take `bytes.first_va` and each address named in `reloc.problems` and find them in the `attempt asm` listing. Each line is `  0xADDRESS  instruction`, some with a note after it.
 4. Change the C shape behind that instruction, one change per check, using the idioms in `docs/matching.md`.
 
-You get no disassembly of your own object. If that blocks you, write it in notes.md as a tooling request.
+The window is all you see of your own object: at most 8 rows around the first difference, never the whole function. If that blocks you, write it in notes.md as a tooling request.
 
 ## When to give up
 
