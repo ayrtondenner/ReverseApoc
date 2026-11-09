@@ -10,7 +10,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   `Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell`; the driver's copy keeps the edit matcher,
   since its matching layer handles Bash): blocks edits under orig/, asm/ and build/ (except the
   driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and its
-  giveup.json sibling, D-26, and the REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS
+  giveup.json, plan.json and check-note.json siblings, D-26, and the REVERSEAPOC_UNIT_FILE view
+  unit and REVERSEAPOC_PROPOSALS
   file, D-24), of
   config/targets.toml, config/watcom.toml, any *.sha1 and the owner-only config/cflags.txt and
   config/cflags-proposals.toml (D-12, D-27 P3), and inline asm (`_asm`, `__asm`,
@@ -24,8 +25,9 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
-  proposals.jsonl, and a matching session also the giveup.json beside its notes.md (07.2-02,
-  D-26) (`matching_write_allowed`, which the driver's audit reuses); without the unit
+  proposals.jsonl, and a matching session also the giveup.json, plan.json and check-note.json
+  beside its notes.md (07.2-02, 07.2-03, D-26) (`matching_write_allowed`, which the driver's
+  audit reuses); without the unit
   file it writes nothing (07-13 removed the Phase 6 single-session allowlist of src/<exe>/<unit>.c
   and new include/*.h), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix
   round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
@@ -112,6 +114,11 @@ _NOTES_DIR = "build/driver"
 _NOTES_NAME = "notes.md"
 # 07.2-02 (999.5, D-04, D-26): a matching session's give-up record, the sibling of its notes.md.
 GIVEUP_NAME = "giveup.json"
+# 07.2-03 (999.6, D-01..D-03, D-26): its plan before code and its note before each check, the
+# other siblings of notes.md; the wrapper validates them (attempt plan, attempt check).
+PLAN_NAME = "plan.json"
+CHECK_NOTE_NAME = "check-note.json"
+SESSION_FILE_NAMES = (GIVEUP_NAME, PLAN_NAME, CHECK_NOTE_NAME)
 # D-24 (P6): a session's private view unit and its proposals file, set per claude process by the
 # driver. The always layer exempts them from build/ like the notes file, at these shapes only,
 # and scans the unit file as it scans src/.
@@ -398,8 +405,9 @@ def _is_notes(rel: str) -> bool:
 
 
 def _is_session_file(rel: str) -> bool:
-    """giveup.json under build/driver/ (07.2-02, D-26), the shape of the notes file's sibling."""
-    return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == GIVEUP_NAME
+    """One of SESSION_FILE_NAMES under build/driver/ (giveup.json, 07.2-02; plan.json and
+    check-note.json, 07.2-03; D-26), the shape of the notes file's siblings."""
+    return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] in SESSION_FILE_NAMES
 
 
 def _is_proposals(rel: str) -> bool:
@@ -414,17 +422,18 @@ def _is_view_unit(rel: str, claim: str | None = None) -> bool:
 
 def _exempt(rel: str, *, notes: bool, session: bool) -> bool:
     """Whether `rel` under build/ is one of the driver's per-session files: the notes file
-    (D-46) or its giveup.json sibling (07.2-02, D-26), or the view unit or proposals file
-    (D-24), each at its shape only. The matching layer then decides who may write giveup.json."""
+    (D-46) or its giveup.json, plan.json and check-note.json siblings (07.2-02, 07.2-03, D-26),
+    or the view unit or proposals file (D-24), each at its shape only. The matching layer then
+    decides who may write the siblings."""
     notes_file = notes and (_is_notes(rel) or _is_session_file(rel))
     return notes_file or (session and (_is_view_unit(rel) or _is_proposals(rel)))
 
 
 def _protected(rel: str, *, notes: bool = False, session: bool = False) -> str | None:
     """Why the always layer refuses an edit of repo-relative `rel`, or None. `notes`: the path
-    is the driver's REVERSEAPOC_ATTEMPT_NOTES or its giveup.json sibling (exempt only under
-    build/driver/, D-46, D-26); `session`: it is one of `_session_paths` (exempt only at the
-    view-unit or proposals shape, D-24)."""
+    is the driver's REVERSEAPOC_ATTEMPT_NOTES or one of its SESSION_FILE_NAMES siblings (exempt
+    only under build/driver/, D-46, D-26); `session`: it is one of `_session_paths` (exempt only
+    at the view-unit or proposals shape, D-24)."""
     for directory, why in _PROTECTED_DIRS.items():
         if _under(rel, directory) and not _exempt(rel, notes=notes, session=session):
             return f"{directory}/ is protected for every session (D-16): {why}"
@@ -441,15 +450,16 @@ def _cwd(payload: Mapping) -> str:
 
 
 def _notes_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
-    """The casefolded forms of the driver's notes path and of its giveup.json sibling (07.2-02),
-    or none when it is unset or unusable."""
+    """The casefolded forms of the driver's notes path and of its SESSION_FILE_NAMES siblings
+    (07.2-02, 07.2-03), or none when it is unset or unusable."""
     raw = env.get(NOTES_ENV, "")
     try:
         paths = [path.casefold() for path in candidates(raw, cwd)] if raw else []
     except HookError:
         return frozenset()
-    siblings = (posixpath.join(posixpath.dirname(path), GIVEUP_NAME) for path in paths
-                if posixpath.basename(path) == _NOTES_NAME)  # fmt: skip
+    siblings = (posixpath.join(posixpath.dirname(path), name) for path in paths
+                if posixpath.basename(path) == _NOTES_NAME
+                for name in SESSION_FILE_NAMES)  # fmt: skip
     return frozenset((*paths, *siblings))
 
 
@@ -994,11 +1004,11 @@ def _fold(rel: str) -> str:
     return rel.replace("\\", "/").casefold()
 
 
-def _giveup_beside(rel: str, notes: str) -> bool:
-    """Whether folded `rel` is the giveup.json in the directory of the folded notes.md `notes`
-    (07.2-02, D-26): that exact path, at the build/driver/ shape."""
-    beside = posixpath.join(posixpath.dirname(notes), GIVEUP_NAME)
-    return _is_notes(notes) and _is_session_file(rel) and rel == beside
+def _session_file_beside(rel: str, notes: str) -> bool:
+    """Whether folded `rel` is one of SESSION_FILE_NAMES in the directory of the folded notes.md
+    `notes` (07.2-02, 07.2-03, D-26): that exact path, at the build/driver/ shape."""
+    beside = posixpath.dirname(notes) == posixpath.dirname(rel)
+    return _is_notes(notes) and _is_session_file(rel) and beside
 
 
 def matching_write_allowed(
@@ -1015,7 +1025,8 @@ def matching_write_allowed(
     post-attempt audit; every path is repo-relative and compared casefolded. With a valid claim
     `<exe>/<unit>` and the view unit `unit_file` (at its shape, naming the claim): only that view
     unit, the attempt's notes.md under build/driver/ (`notes`), for a matching session (`kind`)
-    the giveup.json in the same directory as that notes.md (07.2-02, D-26), and its
+    the giveup.json, plan.json and check-note.json in the same directory as that notes.md
+    (07.2-02, 07.2-03, D-26), and its
     proposals.jsonl under build/driver/ (`proposals`), never src/, include/ or
     config/<exe>/symbols.csv (D-19). No `unit_file`, nothing (07-13 removed the Phase 6
     allowlist of src/<exe>/<unit>.c and new include/*.h). `tracked` is kept for the callers'
@@ -1025,7 +1036,7 @@ def matching_write_allowed(
     rel = _fold(rel_path)
     if notes is not None and rel == _fold(notes) and _is_notes(rel):
         return True
-    if kind == SESSION_KINDS[0] and notes is not None and _giveup_beside(rel, _fold(notes)):
+    if kind == SESSION_KINDS[0] and notes is not None and _session_file_beside(rel, _fold(notes)):
         return True
     if rel == _fold(unit_file) and _is_view_unit(rel, claim):
         return True

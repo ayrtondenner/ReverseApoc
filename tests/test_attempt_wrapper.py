@@ -945,7 +945,8 @@ def test_attempt_check_refuses_a_concurrent_run(repo: Path, monkeypatch, capsys)
     assert len(calls) == 1
     assert "another check is running in this attempt" in capsys.readouterr().err
     assert [line["n"] for line in _lines(repo)] == [1]
-    assert sorted(p.name for p in (repo / "checks").iterdir()) == ["0001.c", "0001.json"]
+    assert sorted(p.name for p in (repo / "checks").iterdir()) == ["0001.c", "0001.json",
+                                                                   "0001.note.json"]  # fmt: skip
     assert not (repo / "check.lock").exists()
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0

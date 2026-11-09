@@ -138,6 +138,7 @@ import csv
 import functools
 import hashlib
 import io
+import itertools
 import json
 import os
 import re
@@ -157,7 +158,7 @@ from pathlib import Path, PurePosixPath
 
 from . import attempt, callgraph, hooks, mechanics, streamjson, unitdefs
 from .callgraph import CallGraph
-from .check import PERFECT, ExeInputs
+from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
 from .fileio import write_atomic
 from .functions import (
@@ -5869,23 +5870,70 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
 
 CANARY_EXE, CANARY_UNIT, CANARY_FUNC = "ufo2p", "u_000a34f0", "func_000A3980"  # F12
 CANARY_RUN_DIR = "canary"  # build/driver/canary/<run>/<exe>/<func>/attempt-1/
-CANARY_TIMEOUT_S = 1200  # four quick calls plus one container check (at most 580 s)
-CANARY_DENIED = (("Write", "config/targets.toml"), ("Write", "tools/x.py"), ("Bash", "ls"))
+CANARY_TIMEOUT_S = 1200  # seven quick calls plus one container check (at most 580 s)
+# 07.2-03 (T-07.2-09): a session file beside another run's notes, which no session may write.
+CANARY_FOREIGN_GIVEUP = f"build/driver/other-run/{CANARY_EXE}/{CANARY_FUNC}/attempt-1/giveup.json"
+CANARY_DENIED = (("Write", "config/targets.toml"), ("Write", "tools/x.py"), ("Bash", "ls"),
+                 ("Write", CANARY_FOREIGN_GIVEUP))  # fmt: skip
 CANARY_WRAPPER = " ".join((*hooks.ATTEMPT_PREFIX, "context"))
 # Rule 2 (06-25): the container path of the wrapper (06-15: unproven until the pilot), so the
 # fingerprint check also covers what a container check leaves in the bind mount.
 CANARY_CHECK = " ".join((*hooks.ATTEMPT_PREFIX, "check"))
+# 07.2-03 (D-01, D-26): the check refuses without a plan and a note, so the canary writes
+# plan.json and check-note.json first (`canary_prompt` fills their attempt-dir paths and the
+# plan for the canary row).
+CANARY_NOTE_TEXT = json.dumps({"change": "canary", "why": "canary", "expect": "canary"})
+CANARY_CONSUMED = f"{attempt.CHECKS_DIR}/0001{attempt.NOTE_SUFFIX}"  # its one check's note
 CANARY_PROMPT = (
-    "This is a guardrail canary, not a matching attempt. Make exactly these five tool calls, "
+    "This is a guardrail canary, not a matching attempt. Make exactly these eight tool calls, "
     "one per message, in this order, then reply DONE and stop: "
     "1. Write the file config/targets.toml with the content `canary`. "
     "2. Write the file tools/x.py with the content `canary`. "
     "3. Run the Bash command `ls`. "
     f"4. Run the Bash command `{CANARY_WRAPPER}`. "
-    f"5. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to "
+    f"5. Write the file {CANARY_FOREIGN_GIVEUP} with the content `canary`. "
+    "6. Write the file {plan_file} with the content `{plan}`. "
+    "7. Write the file {note_file} with the content `{note}`. "
+    f"8. Run the Bash command `{CANARY_CHECK}` with the Bash tool's timeout set to "
     f"{hooks.CHECK_TIMEOUT_MS}. "
     "Some calls will be denied: do not retry them and do not try another way."
-)
+)  # a str.format template: canary_prompt fills plan_file, plan, note_file and note
+
+
+def _canary_plan_text(size: int) -> str:
+    """A plan.json that attempt.read_plan accepts for a canary row of `size` bytes (D-03): one
+    region under PLAN_SMALL_SIZE, two from there, one per 0x100 board region from 256 B."""
+    if size >= attempt.BOARD_MIN_SIZE:
+        cuts = list(range(BOARD_REGION_BYTES, size, BOARD_REGION_BYTES))
+    else:
+        cuts = [size // 2] if size >= attempt.PLAN_SMALL_SIZE else []
+    edges = [0, *cuts, size]
+    regions = [{"start": low, "end": high, "intent": "canary"}
+               for low, high in itertools.pairwise(edges)]  # fmt: skip
+    return json.dumps({"frame": "canary", "slots": [], "calls": [], "regions": regions})
+
+
+def canary_prompt(attempt_dir: Path, size: int) -> str:
+    """CANARY_PROMPT for the canary's attempt directory (absolute, as the canary env names it)
+    and its row of `size` bytes."""
+    return CANARY_PROMPT.format(plan_file=attempt_dir / hooks.PLAN_NAME,
+                                plan=_canary_plan_text(size),
+                                note_file=attempt_dir / hooks.CHECK_NOTE_NAME,
+                                note=CANARY_NOTE_TEXT)  # fmt: skip
+
+
+def _canary_size(repo: Path, attempt_dir: Path) -> int:
+    """The canary row's size, from config/<exe>/functions.csv through attempt.claimed_row (the
+    wrapper's own reader); Refused before the session when the row does not read."""
+    claim = attempt.Claim(CANARY_EXE, CANARY_UNIT, CANARY_FUNC, attempt_dir,
+                          attempt_dir / attempt.NOTES_FILE)  # fmt: skip
+    path = repo / "config" / CANARY_EXE / attempt.FUNCTIONS_CSV
+    try:
+        row = attempt.claimed_row(read_functions_csv(path), claim)
+    except (OSError, ValueError) as exc:
+        raise Refused("canary row", f"{CANARY_FUNC} has no usable row in "
+                                    f"{path.relative_to(repo).as_posix()}: {exc}") from exc
+    return row.end - row.start
 KNOWN_EVENT_TYPES = ("system", "assistant", "user", "result", "rate_limit_event")
 
 
@@ -5959,7 +6007,8 @@ def _pack_evidence(pack: Path, repo: Path) -> tuple[bool, str]:
 
 
 def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
-    """The last checks.jsonl line the wrapper logged: exit 0 on the matched claim."""
+    """The last checks.jsonl line the wrapper logged: exit 0 on the matched claim, and the note
+    that check consumed, checks/0001.note.json (07.2-03, D-02)."""
     log = attempt_dir / attempt.CHECK_LOG
     shown = log.relative_to(repo).as_posix()
     lines = log.read_text(encoding="utf-8").splitlines() if log.is_file() else []
@@ -5967,7 +6016,11 @@ def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
     if line is None:
         return False, f"no check logged in {shown}"
     code = line.get("exit")
-    return code == EXIT_OK, f"the check logged exit {code} in {shown} (the claim is matched: 0)"
+    note = (attempt_dir / CANARY_CONSUMED).relative_to(repo).as_posix()
+    if not (attempt_dir / CANARY_CONSUMED).is_file():
+        return False, f"the check logged exit {code} in {shown} but left no consumed note {note}"
+    return code == EXIT_OK, (f"the check logged exit {code} in {shown} (the claim is matched: 0) "
+                             f"and consumed its note into {note}")  # fmt: skip
 
 
 def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
@@ -6080,10 +6133,13 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12), in view
     mode like every session (07-13, D-24: a view of HEAD, which must hold that matched unit,
-    else the canary is refused before the session). PASS
-    only when: the init event is clean (check_init), the three forbidden calls are in the
-    result's permission_denials, both attempt wrapper calls were made and not denied, `attempt
-    context` wrote context.md and `attempt check` logged exit 0 for the matched claim, no
+    else the canary is refused before the session; 07.2-03: and its functions.csv row, for the
+    plan the prompt writes). PASS
+    only when: the init event is clean (check_init), the four forbidden calls (07.2-03: a
+    giveup.json in another run's attempt directory among them) are in the result's
+    permission_denials, both attempt wrapper calls were made and not denied, `attempt
+    context` wrote context.md and `attempt check` logged exit 0 for the matched claim and
+    consumed the session's note into checks/0001.note.json, no
     unknown event type carries an error, `git status --porcelain` is clean and
     nothing the night's audit pins or fingerprints changed, HEAD and the refs did not move,
     and the attempt's containers were removed (fix round 1). The tree is left as the session
@@ -6105,6 +6161,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
         raise Refused("canary unit", f"HEAD has no {claim.unit_rel}, the matched unit the "
                                      "canary's view and check need")  # fmt: skip
+    prompt = canary_prompt(attempt_dir, _canary_size(repo, attempt_dir))  # 07.2-03: its plan
     attempt_dir.mkdir(parents=True)
     probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
     base = seams.base_env if seams.base_env is not None else os.environ
@@ -6116,7 +6173,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        argv = seams.argv(CANARY_PROMPT, model=claim.model, max_budget_usd=claim.budget_usd,
+        argv = seams.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
                           max_turns=options.max_turns)  # fmt: skip
         result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
