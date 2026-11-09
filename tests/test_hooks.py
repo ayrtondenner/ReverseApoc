@@ -6,6 +6,7 @@ platform's own path form picks it by sys.platform inside one test (rulings R-A).
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import subprocess
@@ -144,7 +145,7 @@ def test_project_settings_wire_the_always_layer():
     assert settings["hooks"] == {
         "PreToolUse": [
             {
-                "matcher": EDIT_TOOLS,
+                "matcher": ALWAYS_TOOLS,
                 "hooks": [ALWAYS_HANDLER],
             }
         ]
@@ -576,7 +577,8 @@ def test_matching_needs_no_bash_timeout_for_the_quick_forms(repo, form):
 
 
 def test_always_ignores_background_bash(repo):
-    """The always layer has no opinion on Bash, background or not (M14 is matching-only)."""
+    """Outside a harness worktree the always layer has no opinion on Bash, background or not
+    (M14 is matching-only)."""
     assert not always(_background("ls", repo, True)).deny
 
 
@@ -750,9 +752,14 @@ def test_driver_settings_shape():
     assert driver["disableClaudeAiConnectors"] is True
     assert "mcpServers" not in driver and "disableAllHooks" not in driver
     entries = _hook_entries(driver)
-    (always_entry,) = _hook_entries(project)
-    assert always_entry in entries
-    (matching_entry,) = [e for e in entries if e != always_entry]
+    (project_entry,) = _hook_entries(project)
+    # 261109-gzy: the project matcher adds Bash and PowerShell; the driver's copy keeps the edit
+    # matcher, since its matching layer handles Bash and refuses PowerShell.
+    assert project_entry == {"matcher": ALWAYS_TOOLS, "hooks": [ALWAYS_HANDLER]}
+    (matching_entry,) = [e for e in entries if e["hooks"] != [ALWAYS_HANDLER]]
+    assert [e for e in entries if e != matching_entry] == [
+        {"matcher": EDIT_TOOLS, "hooks": [ALWAYS_HANDLER]}
+    ]
     assert matching_entry["matcher"] == "*"
     (handler,) = matching_entry["hooks"]
     assert handler == {"type": "command", "command": MATCHING_COMMAND, "timeout": 120,
@@ -1042,6 +1049,468 @@ def test_settings_commands_fail_closed_through_the_hook_shell(tmp_path, index):
     assert _through_shell(command, protected, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, allowed, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, protected, cwd=tmp_path, env=_without_uv(env))[0] == 2, name
+
+
+# --- 261109-gzy: a worktree's shell command never spells the main checkout's absolute path ----
+
+ALWAYS_TOOLS = EDIT_TOOLS + "|Bash|PowerShell"
+SHELL_TOOLS = ("Bash", "PowerShell")
+RELATIVE_WATCOM = "../../../third_party/watcom"
+SPELLS_MAIN = "spells the main checkout's absolute path"
+PLAN_DIR = ".planning/quick/261109-gzy-x"
+RELATIVE_COMMANDS = [  # the batch briefs' sanctioned relative read-only uses (R10)
+    f"REVERSEAPOC_WATCOM_DIR={RELATIVE_WATCOM} uv run pytest -q",
+    f'mkdir -p "{PLAN_DIR}" && cp "../../../{PLAN_DIR}/PLAN.md" "{PLAN_DIR}/PLAN.md"',
+    "cat ../../../.planning/quick-batches/261109-gzs/RULINGS.md",
+    f"$env:REVERSEAPOC_WATCOM_DIR = '{RELATIVE_WATCOM}'",
+]
+
+
+@pytest.fixture
+def worktree(repo: Path) -> Path:
+    """A harness worktree of the scratch checkout: repo/.claude/worktrees/agent-x, `.git` file."""
+    root = repo / ".claude" / "worktrees" / "agent-x"
+    root.mkdir(parents=True)
+    (root / ".git").write_text("gitdir: ../../../.git/worktrees/agent-x\n", encoding="utf-8")
+    return root
+
+
+def shell(name: str, command: str, cwd: Path) -> dict:
+    """A Bash or PowerShell payload."""
+    return tool(name, cwd, command=command, description="x")
+
+
+def watcom_command(name: str, raw: str) -> str:
+    """The Watcom path set the way each shell spells it."""
+    if name == "Bash":
+        return f"REVERSEAPOC_WATCOM_DIR={raw} uv run pytest -q"
+    return f"$env:REVERSEAPOC_WATCOM_DIR = '{raw}'; uv run pytest -q"
+
+
+def main_watcom(repo: Path) -> str:
+    return native(repo / "third_party" / "watcom")
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("form", PATH_FORMS)
+def test_worktree_command_spelling_the_main_checkout_is_denied(repo, worktree, name, form):
+    """R6: every drive, slash, device and case spelling of the main checkout is denied; only
+    the relative one passes."""
+    raw = path_form(form, repo / "third_party" / "watcom", worktree)
+    decision = always(shell(name, watcom_command(name, raw), worktree))
+    if form == "relative":
+        assert not decision.deny, raw
+        return
+    assert decision.deny and SPELLS_MAIN in decision.reason, (form, raw)
+    text = main_watcom(repo)
+    for variant in (text.upper(), text.swapcase(), text.replace("\\", "\\\\")):
+        assert always(shell(name, watcom_command(name, variant), worktree)).deny, variant
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_allows_its_own_worktree(repo, worktree, name):
+    """R7: the worktree's own absolute path, in any form, is not the main checkout's."""
+    script = worktree / "tools" / "x.py"
+    commands = [f'cd "{native(worktree)}" && uv run pytest -q', f"uv run python {native(script)}",
+                f"uv run python {script.as_posix()}"]  # fmt: skip
+    if WINDOWS:
+        posix = worktree.as_posix()
+        commands.append(f"cd /{posix[0].lower()}{posix[2:]} && uv run pytest -q")
+    for command in commands:
+        assert not always(shell(name, command, worktree)).deny, command
+    below = worktree / "tools"
+    below.mkdir()
+    assert always(shell(name, watcom_command(name, main_watcom(repo)), below)).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("other", ["agent-y", "agent-x2", "agent-x.bak", ""])
+def test_worktree_command_denies_other_worktrees(repo, worktree, name, other):
+    """R8: another worktree, or the worktrees directory itself, is the main checkout's path."""
+    target = repo / ".claude" / "worktrees" / other
+    decision = always(shell(name, f'ls "{native(target)}"', worktree))
+    assert decision.deny and SPELLS_MAIN in decision.reason, target
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("sibling", ["repo-old", "repo2", "repo_x"])
+def test_worktree_command_allows_sibling_names(tmp_path, worktree, name, sibling):
+    """R9: a directory beside the checkout whose name only starts with the checkout's."""
+    raw = native(tmp_path / sibling / "third_party" / "watcom")
+    assert not always(shell(name, watcom_command(name, raw), worktree)).deny, raw
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("command", RELATIVE_COMMANDS)
+def test_worktree_command_allows_the_relative_forms(worktree, name, command):
+    """R10: the briefs' relative `../../../` uses stay allowed (the hook resolves no `..`)."""
+    assert not always(shell(name, command, worktree)).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_main_session_has_no_opinion(tmp_path, repo, name):
+    """R4: outside a worktree (the main session, a driver session, anywhere else) a shell call
+    gets no opinion, decided before its tool_input is read."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (repo / "tools").mkdir()
+    command = watcom_command(name, main_watcom(repo))
+    for cwd in (repo, repo / "tools", elsewhere):
+        assert not always(shell(name, command, cwd)).deny, cwd
+    for tool_input in (None, "x", {"command": 3}):
+        assert not always({**shell(name, "ls", repo), "tool_input": tool_input}).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_fails_closed(worktree, name):
+    """R3: a cwd that cannot be placed; R5: a worktree payload with no command string."""
+    payload = shell(name, "ls", worktree)
+    cwds = [3, "", "x", *(["\\\\.\\pipe\\x"] if WINDOWS else [])]
+    for cwd in cwds:
+        with pytest.raises(hooks.HookError):
+            always({**payload, "cwd": cwd})
+    with pytest.raises(hooks.HookError):
+        always({key: value for key, value in payload.items() if key != "cwd"})
+    for tool_input in (None, {}, {"command": 3}):
+        with pytest.raises(hooks.HookError):
+            always({**payload, "tool_input": tool_input})
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_reason(repo, worktree, name):
+    decision = always(shell(name, f'cd "{native(repo)}"', worktree))
+    assert decision.reason.startswith("reverseapoc hooks: ")
+    for part in (name, "agent-x", SPELLS_MAIN, RELATIVE_WATCOM, "261109-gzy"):
+        assert part in decision.reason, part
+
+
+def test_worktree_command_matching_layer_unchanged(repo, worktree):
+    """R16: the matching layer's Bash rule (D-44) decides before the always layer could."""
+    for form in hooks.ATTEMPT_FORMS:
+        args = " ".join("func_000A3980" if a == hooks.ATTEMPT_NAME_SLOT else a for a in form)
+        assert not always(bash(f"{WRAPPER} {args}", repo)).deny, form
+    decision = matching(bash(f'cd "{native(repo)}"', worktree))
+    assert decision.deny and "runs only the attempt wrapper" in decision.reason
+    assert SPELLS_MAIN not in decision.reason
+    assert not matching(bash(f"{WRAPPER} check", repo)).deny
+
+
+def test_worktree_command_entry_point_end_to_end(repo, worktree):
+    def run(payload: dict) -> subprocess.CompletedProcess[bytes]:
+        return _run_entry(json.dumps(payload).encode("utf-8"))
+
+    denied = run(bash(watcom_command("Bash", main_watcom(repo)), worktree))
+    assert denied.returncode == 0, denied.stderr
+    specific = json.loads(denied.stdout)["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert SPELLS_MAIN in specific["permissionDecisionReason"]
+    relative = run(bash(watcom_command("Bash", RELATIVE_WATCOM), worktree))
+    assert (relative.returncode, relative.stdout) == (0, b""), relative.stderr
+    main = run(bash(watcom_command("Bash", main_watcom(repo)), repo))
+    assert (main.returncode, main.stdout) == (0, b""), main.stderr
+    no_cwd = {k: v for k, v in bash("ls", worktree).items() if k != "cwd"}
+    assert run(no_cwd).returncode == 2
+
+
+# R11-R14: the script files a worktree command names are read too (the 261107-qk9 incident).
+SCRIPT_FORMS = {
+    "python": ("Bash", "uv run python {w}", "x.py"),
+    "bash": ("Bash", "bash {w}", "x.sh"),
+    "node": ("Bash", "node {w}", "x.mjs"),
+    "powershell": ("PowerShell", "& {w}", "x.ps1"),
+}
+
+
+def script_denial(decision: hooks.Decision, word: str, name: str = "Bash") -> bool:
+    return decision.deny and f"the script {word} that a {name} command" in decision.reason
+
+
+def ps_word(file: str) -> str:
+    """A PowerShell call names a script in the worktree with a leading .\\ (./ on POSIX)."""
+    return (".\\" if WINDOWS else "./") + file
+
+
+def refuse_open(monkeypatch, script: Path) -> None:
+    """Path.open raises PermissionError for `script` only and delegates every other path."""
+    real_open = Path.open
+
+    def guarded(self, *args, **kwargs):
+        if Path(self) == script:
+            raise PermissionError(13, "refused by the test", str(self))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", guarded)
+
+
+@pytest.mark.parametrize(("name", "template", "file"), SCRIPT_FORMS.values(),
+                         ids=SCRIPT_FORMS.keys())  # fmt: skip
+def test_worktree_command_reads_the_scripts_it_runs(repo, worktree, name, template, file):
+    """R11, R12: the script a command runs is denied when it spells the main checkout, by its
+    relative name or by its absolute path inside the worktree."""
+    script = worktree / file
+    word = ps_word(file) if name == "PowerShell" else file
+    for named, written in ((word, word), (native(script), f'"{native(script)}"')):
+        command = template.format(w=written)
+        script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+        decision = always(shell(name, command, worktree))
+        assert script_denial(decision, named, name) and SPELLS_MAIN in decision.reason, command
+        script.write_text(f'WATCOM = "{RELATIVE_WATCOM}"\n', encoding="utf-8")
+        assert not always(shell(name, command, worktree)).deny, command
+
+
+def test_worktree_command_reads_scripts_outside_the_checkout(tmp_path, repo, worktree):
+    """R11: a script in the scratchpad or temp, named by its absolute path, is read too."""
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    script = scratch / "x.py"
+    script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    decision = always(shell("Bash", f'uv run python "{native(script)}"', worktree))
+    assert script_denial(decision, native(script))
+
+
+def test_worktree_command_reads_escaped_and_utf16_scripts(repo, worktree):
+    """R11: a string literal's doubled backslashes, and UTF-16 text with a BOM."""
+    script = worktree / "x.py"
+    escaped = main_watcom(repo).replace("\\", "\\\\")
+    script.write_text(f'WATCOM = "{escaped}"\n', encoding="utf-8")
+    assert script_denial(always(shell("Bash", "uv run python x.py", worktree)), "x.py")
+    script.write_bytes(f'WATCOM = "{main_watcom(repo)}"\n'.encode("utf-16"))
+    assert script_denial(always(shell("Bash", "uv run python x.py", worktree)), "x.py")
+
+
+def test_worktree_command_skips_missing_scripts(worktree):
+    """R12: a script not written yet, or a directory with a script suffix, says nothing."""
+    (worktree / "d.py").mkdir()
+    for command in ("uv run python not_yet.py", "uv run python d.py"):
+        assert not always(shell("Bash", command, worktree)).deny, command
+
+
+def test_worktree_command_refuses_a_script_over_the_cap(worktree, monkeypatch):
+    """R13: a script over _SCRIPT_CAP bytes cannot be scanned, so it is denied."""
+    monkeypatch.setattr(hooks, "_SCRIPT_CAP", 64)
+    script = worktree / "x.py"
+    script.write_bytes(b"#" * 65)
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and "cannot be scanned" in decision.reason
+    script.write_bytes(b"#" * 64)
+    assert not always(shell("Bash", "uv run python x.py", worktree)).deny
+
+
+def test_worktree_command_fails_closed_on_unreadable_scripts(worktree, monkeypatch):
+    """R14: a script that exists but cannot be read or decoded, or cannot be placed, blocks."""
+    script = worktree / "x.py"
+    script.write_text("x = 1\n", encoding="utf-8")
+    refuse_open(monkeypatch, script)
+    with pytest.raises(hooks.HookError, match="cannot be read"):
+        always(shell("Bash", "uv run python x.py", worktree))
+    monkeypatch.undo()
+    shell_script = worktree / "x.sh"
+    shell_script.write_bytes(codecs.BOM_UTF16_LE + b"abc")
+    with pytest.raises(hooks.HookError, match="cannot be read"):
+        always(shell("Bash", "bash x.sh", worktree))
+    if WINDOWS:
+        with pytest.raises(hooks.HookError):
+            always(shell("Bash", "uv run python Q:x.py", worktree))
+
+
+def test_worktree_command_main_session_reads_no_script(repo, monkeypatch):
+    """R4: outside a worktree no script is read at all."""
+    script = repo / "x.py"
+    script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    assert not always(shell("Bash", "uv run python x.py", repo)).deny
+    refuse_open(monkeypatch, script)
+    assert not always(shell("Bash", "uv run python x.py", repo)).deny
+
+
+def test_worktree_command_entry_point_reads_scripts(repo, worktree):
+    (worktree / "x.py").write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    done = _run_entry(json.dumps(bash("uv run python x.py", worktree)).encode("utf-8"))
+    assert done.returncode == 0, done.stderr
+    reason = json.loads(done.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "the script x.py that a Bash command" in reason and SPELLS_MAIN in reason
+
+
+# Security review of 261109-gzy (coordinator ruling): expansion, encodings, written scripts.
+
+
+def test_worktree_command_reads_every_tool_script():
+    """No script under tools/ or tests/, nor configure.py, is locked out from a worktree: each
+    reads as one text that does not spell a main checkout (hooks.py itself included)."""
+    pairs = [(native(REPO_ROOT.parent / "zz-no-such-main"), "agent-x")]
+    scripts = [*REPO_ROOT.glob("tools/**/*.py"), *REPO_ROOT.glob("tests/**/*.py"),
+               REPO_ROOT / "configure.py"]  # fmt: skip
+    assert REPO_ROOT / "tools" / "reverseapoc" / "hooks.py" in scripts
+    for script in scripts:
+        path = hooks.canonical(native(script))
+        assert hooks._script_denial(script.name, path, "Bash", pairs) == "", script
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "uv run python $HOME/x.py"), ("Bash", 'uv run python "${TMP}/x.py"'),
+    ("Bash", "uv run python ~/x.py"), ("Bash", "bash `pwd`/x.sh"),
+    ("Bash", "node tests/*.mjs"), ("Bash", "uv run python %TEMP%/x.py"),
+    ("Bash", "X=$PWD/x.py uv run pytest -q"),
+    ("PowerShell", "& $env:TEMP\\x.ps1"), ("PowerShell", '& "$PWD\\x.ps1"'),
+    ("PowerShell", "& ~\\x.ps1"), ("PowerShell", "& .\\my` dir\\x.ps1"),
+])  # fmt: skip
+def test_worktree_command_denies_scripts_named_through_expansion(worktree, name, command):
+    """Ruling 1: a script word the shell would expand cannot be read as written, so it is
+    denied rather than skipped."""
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason, command
+
+
+def test_worktree_command_resolves_quotes_and_escapes_literally(repo, worktree):
+    """Ruling 1: Bash quotes and backslash escapes, and PowerShell quotes, resolve to a literal
+    path, which is read."""
+    folder = worktree / "my dir"
+    folder.mkdir()
+    for file in ("x.py", "x.ps1"):
+        (folder / file).write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    cases = [("Bash", 'uv run python "my dir/x.py"', "my dir/x.py"),
+             ("Bash", "uv run python my\\ dir/x.py", "my dir/x.py"),
+             ("Bash", "uv run python 'my dir'/x.py", "my dir/x.py"),
+             ("PowerShell", f"& '{ps_word('my dir/x.ps1')}'", ps_word("my dir/x.ps1")),
+             ("PowerShell", f'& "{ps_word("my dir/x.ps1")}"', ps_word("my dir/x.ps1"))]  # fmt: skip
+    for name, command, word in cases:
+        assert script_denial(always(shell(name, command, worktree)), word, name), command
+
+
+def test_worktree_command_bash_split_fails_closed(worktree):
+    """Ruling 1: a Bash command that cannot be split blocks; a here-document body with an
+    apostrophe is data, not words."""
+    with pytest.raises(hooks.HookError, match="cannot be split"):
+        always(shell("Bash", 'uv run python "x.py', worktree))
+    heredoc = "cat > notes.txt <<'EOF'\ndon't\nEOF\nls"
+    assert not always(shell("Bash", heredoc, worktree)).deny
+
+
+@pytest.mark.parametrize("file", ["x.sh", "x.ps1"])
+def test_worktree_command_decodes_utf32_and_refuses_mixed_text(repo, worktree, file):
+    """Ruling 2: UTF-32 after its BOM (checked before UTF-16); a NUL, UTF-16 without a BOM or a
+    BOM inside the text is not one text, so it is denied; a leading UTF-8 BOM is dropped."""
+    script = worktree / file
+    word = file if file == "x.sh" else ps_word(file)
+    name, command = ("Bash", f"bash {word}") if file == "x.sh" else ("PowerShell", f"& {word}")
+    text = f'WATCOM = "{main_watcom(repo)}"\n'
+    script.write_bytes(text.encode("utf-32"))
+    decision = always(shell(name, command, worktree))
+    assert script_denial(decision, word, name) and SPELLS_MAIN in decision.reason
+    for data in (b"a\0b\n", "x\n".encode("utf-16-le"), "a\ufeffb\n".encode("utf-8")):
+        script.write_bytes(data)
+        decision = always(shell(name, command, worktree))
+        assert script_denial(decision, word, name) and "not one text" in decision.reason, data
+    script.write_bytes(f"\ufeffWATCOM = '{RELATIVE_WATCOM}'\n".encode())
+    assert not always(shell(name, command, worktree)).deny
+
+
+def test_worktree_command_reads_python_in_its_source_encoding(repo, worktree):
+    """Ruling 3: a .py file is decoded as Python decodes it (its coding cookie), and one whose
+    encoding Python cannot detect is denied."""
+    script = worktree / "x.py"
+    body = f'WATCOM = "{main_watcom(repo)}"\n'.encode("utf-7")
+    needle = hooks._needle(hooks.canonical(native(repo)))
+    assert needle not in hooks._normalised(body.decode("utf-8"))  # UTF-8 would miss it
+    script.write_bytes(b"# coding: utf-7\n" + body)
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and SPELLS_MAIN in decision.reason
+    script.write_bytes(b"# coding: no-such-codec\nx = 1\n")
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and "no source encoding" in decision.reason
+
+
+WRITTEN_AND_RUN = [
+    ("Bash", 'echo "$X" > x.py && uv run python x.py'), ("Bash", "curl -s u >> x.sh; bash x.sh"),
+    ("Bash", "cp ../y.py x.py && uv run python ./x.py"),
+    ("Bash", "printf x | tee x.mjs\nnode x.mjs"),
+    ("PowerShell", "Set-Content x.ps1 $v; & {w}"),
+    ("PowerShell", "$v | Out-File -FilePath x.ps1; & {w}"), ("PowerShell", "$v > x.ps1; & {w}"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), WRITTEN_AND_RUN)
+@pytest.mark.parametrize("exists", [False, True])
+def test_worktree_command_denies_a_script_it_writes_and_runs(worktree, name, command, exists):
+    """Ruling 4: a script the same command writes (a redirection, tee, cp, Out-File...) and
+    names again would run unscanned, whether or not an older copy exists."""
+    command = command.format(w=ps_word("x.ps1"))
+    if exists:
+        for file in ("x.py", "x.sh", "x.mjs", "x.ps1"):
+            (worktree / file).write_text(f"W = '{RELATIVE_WATCOM}'\n", encoding="utf-8")
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "the same command writes it" in decision.reason, command
+
+
+@pytest.mark.parametrize("command", ["uv run python x.py > out.txt", "cp a.py b.py",
+                                     "tee x.sh < /dev/null"])  # fmt: skip
+def test_worktree_command_allows_a_write_it_does_not_run(worktree, command):
+    """Ruling 4: a missing script that is only written, or only run, still gets no opinion."""
+    assert not always(shell("Bash", command, worktree)).deny, command
+
+
+# Second security review of 261109-gzy (coordinator ruling 2): fail closed, no parser cleverness.
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "cat > notes.txt <<'EOF'\n{main}\nEOF"), ("Bash", "ls # {main}"),
+    ("Bash", 'uv run python -c "print(\'{main}\')"'), ("Bash", "echo '{main}'\"x\""),
+    ("PowerShell", "@'\n{main}\n'@ | Out-File notes.txt"), ("PowerShell", "<# {main} #> ls"),
+])  # fmt: skip
+def test_worktree_command_raw_text_check_is_independent(repo, worktree, name, command):
+    """Ruling 2 item 1: the whole command text is scanned as written, before any tokenizing,
+    so a heredoc body, a comment or a -c string still denies; so does a script's whole text."""
+    decision = always(shell(name, command.format(main=main_watcom(repo)), worktree))
+    assert decision.deny and f"a {name} command from the harness worktree" in decision.reason
+    (worktree / "x.sh").write_text(f"# {main_watcom(repo)}\necho ok\n", encoding="utf-8")
+    assert script_denial(always(shell("Bash", "bash x.sh", worktree)), "x.sh")
+
+
+def test_worktree_command_bash_has_no_comments(worktree):
+    """Ruling 2 item 2: `#` starts no comment for the split, so nothing after it is skipped,
+    and an apostrophe after it breaks the split, which blocks."""
+    decision = always(shell("Bash", "echo ok # && bash $HOME/x.sh", worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason
+    with pytest.raises(hooks.HookError, match="cannot be split"):
+        always(shell("Bash", "ls # it's", worktree))
+
+
+INDIRECTION = [
+    ("Bash", "cat > x.py <<'EOF'\nprint(1)\nEOF"), ("Bash", "bash <<EOF\nbash x.sh\nEOF"),
+    ("Bash", "uv run python <<< 'import x' x.py"), ("Bash", "cd tools && uv run python x.py"),
+    ("Bash", "pushd tools; bash x.sh"), ("Bash", "bash -c 'node x.mjs'"),
+    ("Bash", 'eval "uv run python x.py"'), ("Bash", "uv run python \\\n  x.py"),
+    ("PowerShell", "Set-Location tools; & ./x.ps1"), ("PowerShell", "Push-Location t; & ./x.ps1"),
+    ("PowerShell", "pwsh -Command ./x.ps1"), ("PowerShell", "pwsh -EncodedCommand AAAA x.ps1"),
+    ("PowerShell", "Invoke-Expression './x.ps1'"), ("PowerShell", "iex './x.ps1'"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), INDIRECTION)
+def test_worktree_command_denies_scripts_beside_indirection(worktree, name, command):
+    """Ruling 2 item 3: a command that names a script and also holds a heredoc marker, a
+    directory change, inline code or eval, or a backslash-newline is denied: the hook cannot
+    tell which file runs."""
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "cannot tell which file runs" in decision.reason, command
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "uv run python x.py > build/log.txt"), ("Bash", "bash x.sh >> /tmp/x/log.txt 2>&1"),
+    ("PowerShell", "& ./x.ps1 > build/log.txt"), ("Bash", "cd tools && ls"),
+    ("Bash", "cat > notes.txt <<'EOF'\nx\nEOF"),
+])  # fmt: skip
+def test_worktree_command_allows_plain_output_redirection(worktree, name, command):
+    """Ruling 2 item 3: a script's stdout redirected to a file stays allowed, and a heredoc or a
+    cd with no script named says nothing."""
+    assert not always(shell(name, command, worktree)).deny, command
+
+
+def test_worktree_command_expansion_covers_braces_and_continuations(worktree):
+    """Ruling 2 item 4: a brace or a backslash-newline in a script word is an expansion."""
+    for word in ("x{1,2}.sh", "x\\\n.sh"):
+        assert hooks._EXPANSION.search(word), word
+    decision = always(shell("Bash", "bash x{1,2}.sh", worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason
 
 
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
