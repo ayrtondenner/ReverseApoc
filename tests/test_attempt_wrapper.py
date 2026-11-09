@@ -5,6 +5,7 @@ directory, and every LE byte, listing and check result below is made up."""
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import re
 import subprocess
@@ -2048,6 +2049,25 @@ def test_view_asm_cache_replays_the_lifter_line(tree: attempt.Roots, monkeypatch
     assert first == (0, LISTING_B, "attempt asm: no call notes: ValueError: made-up\n")
     assert _attempt(capsys, "asm") == first
     assert len(loads) == 1
+
+
+def test_view_asm_prints_the_lifter_line_before_the_listing(tree: attempt.Roots, monkeypatch):
+    """One terminal shows both streams: the line comes first, as before 261109-gzw, on a miss
+    and on a hit alike."""
+    def raises(_data, _row):
+        raise ValueError("made-up")
+
+    _claim_b_view(tree, monkeypatch)
+    monkeypatch.setattr(lift, "call_notes", raises)
+    terminal = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    line = "attempt asm: no call notes: ValueError: made-up\n"
+    for _ in range(2):  # a miss, then a hit
+        assert _run(["attempt", "asm"]) == 0
+        assert terminal.getvalue() == line + LISTING_B
+        terminal.seek(0)
+        terminal.truncate()
 
 
 def test_legacy_asm_is_never_cached(tree: attempt.Roots, monkeypatch, capsys, loads):

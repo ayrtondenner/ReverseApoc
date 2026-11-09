@@ -1277,8 +1277,8 @@ def cmd_asm(name: str | None) -> int:
     claim = Claim.from_env(os.environ, roots=ROOTS)
     key, entry = _lookup(claim, "asm", name)
     if entry is not None:
+        sys.stderr.write(entry["stderr"])  # before the listing, as on a miss
         sys.stdout.write(entry["stdout"])
-        sys.stderr.write(entry["stderr"])
         return EXIT_OK
     data, row = _claimed_row(claim)
     if name is not None:
@@ -1292,8 +1292,8 @@ def cmd_asm(name: str | None) -> int:
                            symbols=data.symbols)  # fmt: skip
     calls, line = _register_notes(data, row)
     out = asm.annotated(text, notes | calls)
+    sys.stderr.write(line)  # the lifter's line comes before the listing, as before 261109-gzw
     sys.stdout.write(out)
-    sys.stderr.write(line)
     if key is not None:
         _cache_store(key, derived, out, line)
     return EXIT_OK
