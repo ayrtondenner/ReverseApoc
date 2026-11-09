@@ -399,7 +399,10 @@ class Lifter:
         return frozenset(h for h in HEADER_DECLARES if f"#include <{h}>" in self.externs)
 
     def header_params(self, va: int) -> tuple[str, ...] | None:
-        """The parameter types an included header gives the function at `va`, if one declares it."""
+        """The parameter types an included header gives the function at `va`, if one declares it.
+        A target that is no row start has no name, so no header declares it."""
+        if _index(self.exe)[0].get(va) is None:
+            return None
         name = _called_name(self.exe.symbols.c_name(va))
         given = (HEADER_DECLARES[h][name] for h in self.headers() if name in HEADER_DECLARES[h])
         return next(given, None)
