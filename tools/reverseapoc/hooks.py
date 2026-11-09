@@ -7,14 +7,18 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
 "onFailure": "block"` turns a slow or hung run into one). Two layers:
 
 - **always** (`.claude/settings.json`, every session in the repo, matcher
-  `Edit|Write|MultiEdit|NotebookEdit`): blocks edits under orig/, asm/ and build/ (except the
+  `Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell`; the driver's copy keeps the edit matcher,
+  since its matching layer handles Bash): blocks edits under orig/, asm/ and build/ (except the
   driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and the
   REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS file, D-24), of
   config/targets.toml, config/watcom.toml, any *.sha1 and the owner-only config/cflags.txt and
   config/cflags-proposals.toml (D-12, D-27 P3), and inline asm (`_asm`, `__asm`,
   `_Pragma`, a code-emitting `#pragma aux`) in src/, include/ and the view unit (D-16, P6).
   Every other path stays editable, so GSD executors and the owner keep working on tools/,
-  tests/, configure.py, docs/ and .planning/.
+  tests/, configure.py, docs/ and .planning/. The worktree rule (261109-gzy): from a harness
+  worktree cwd (.claude/worktrees/<name>/) it denies a Bash or PowerShell command, or a script
+  the command names, that spells the main checkout's absolute path. Every other shell call gets
+  no opinion.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
