@@ -18,9 +18,9 @@ from pathlib import Path
 import pytest
 
 from conftest import REPO_ROOT
-from reverseapoc import session
+from reverseapoc import driver, session
 from reverseapoc.session import build_argv, goal_prompt, kill_tree, run_session
-from reverseapoc.streamjson import ACCEPTED_INIT_MODELS, Disposition, classify
+from reverseapoc.streamjson import ACCEPTED_INIT_MODELS, PRICES_PER_MTOK, Disposition, classify
 
 FAKECLAUDE = REPO_ROOT / "tests" / "fakeclaude.py"
 STREAMS = REPO_ROOT / "tests" / "fixtures" / "stream"
@@ -107,11 +107,24 @@ def test_model_for_pass_refuses_a_pass_below_one(pass_number):
 
 
 def test_model_tables_agree():
-    """T-07-125: every model the init check accepts has a co-author name, and no other."""
-    models = {session.OPUS_MODEL, session.FABLE_MODEL}
+    """T-07-125: every model the init check accepts has a co-author name and a price, and no
+    other (Phase 07.2 D-16: Haiku 5.5 and Sonnet 5.5 join the three tables)."""
+    models = {session.OPUS_MODEL, session.FABLE_MODEL, session.HAIKU_MODEL, session.SONNET_MODEL}
     assert set(session.MODEL_NAMES) == set(ACCEPTED_INIT_MODELS) == models
+    assert set(ACCEPTED_INIT_MODELS) <= set(PRICES_PER_MTOK)
     assert session.MODEL_NAMES[session.OPUS_MODEL] == "Claude Opus 5.5"
     assert session.MODEL_NAMES[session.FABLE_MODEL] == "Claude Fable 5.1"
+
+
+def test_haiku_and_sonnet_ids():
+    """D-18's Claude arms: the literal ids, their display names and their co-author line."""
+    assert (session.HAIKU_MODEL, session.SONNET_MODEL) == ("claude-haiku-5-5", "claude-sonnet-5-5")
+    assert session.MODEL_NAMES["claude-haiku-5-5"] == "Claude Haiku 5.5"
+    assert session.MODEL_NAMES["claude-sonnet-5-5"] == "Claude Sonnet 5.5"
+    assert driver.coauthor("claude-haiku-5-5") == (
+        "Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>")  # fmt: skip
+    assert driver.coauthor("claude-sonnet-5-5") == (
+        "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")  # fmt: skip
 
 
 VIEW_UNIT ="build/driver/r1/ufo2p/func_00010000/attempt-1/view/src/ufo2p/u_00010000.c"

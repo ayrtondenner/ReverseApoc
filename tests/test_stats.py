@@ -302,6 +302,10 @@ def _on_v2(start: int, **change) -> dict:
     return _attempt_v2(start=f"0x{start:08X}", function=f"func_{start:08X}", **change)
 
 
+def _on_v3(start: int, **change) -> dict:
+    return _attempt_v3(start=f"0x{start:08X}", function=f"func_{start:08X}", **change)
+
+
 def _report(capsys, tmp_path: Path, *records: dict, config: Path | None = None) -> dict:
     repo, _ = _repo(tmp_path)
     return _json(capsys, repo, _log(tmp_path, *records), config=config or tmp_path / "config")
@@ -671,3 +675,106 @@ def test_a_revert_on_one_branch_is_not_counted(tmp_path, capsys):
     report = _json(capsys, repo, _empty_log(tmp_path))
     assert report["reverted"] == ["ufo2p 0x00000100"]
     assert report["classes"] == {"human-hints": 0, "human-written": 0, "unattended": 1}
+
+
+# ---- Phase 07.2 (D-16, D-22): stats --run and the model x size-bucket table ----
+
+
+def test_run_selected():
+    selected = reverseapoc.stats.run_selected
+    assert selected("a", ["a"]) and not selected("ab", ["a"])
+    assert selected("spike012-haiku", ["spike012-*"]) and not selected("a", ["spike012-*"])
+    assert selected("spike012-", ["spike012-*"])
+    assert selected("b", ["a", "b"]) and not selected("c", ["a", "b"])
+
+
+def _three_runs() -> tuple[dict, ...]:
+    return (_on_v3(0x10000, run="a"),
+            _attempt_v3(run="spike012-haiku", model_requested="claude-haiku-5-5"),
+            _attempt_v3(run="spike012-sonnet", model_requested="claude-sonnet-5-5"))  # fmt: skip
+
+
+def test_run_filter(tmp_path, capsys):
+    """--run keeps the records of the named runs; a trailing `*` names a prefix and the flag
+    repeats; an unknown run gives an empty report, not an error."""
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, *_three_runs())
+    config = tmp_path / "config"
+    spike = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    assert spike["attempts"]["records"] == 2
+    assert set(spike["by_model"]["models"]) == {"claude-haiku-5-5", "claude-sonnet-5-5"}
+    assert _json(capsys, repo, log, "--run", "a", config=config)["attempts"]["records"] == 1
+    both = _json(capsys, repo, log, "--run", "a", "--run", "spike012-haiku", config=config)
+    assert both["attempts"]["records"] == 2
+    none = _json(capsys, repo, log, "--run", "nope", config=config)
+    assert (none["attempts"]["records"], none["by_model_size"]) == (0, {})
+    assert _json(capsys, repo, log, config=config)["attempts"]["records"] == 3
+
+
+def test_run_filter_keeps_a_landing_of_its_run(tmp_path, capsys):
+    """A landing record is kept when its own run or the run it lands from is selected."""
+    repo, _ = _repo(tmp_path)
+    held = _attempt_v3(run="spike012-haiku", outcome="HOLD_EXACT", hold_run=True)
+    landing = {**_landing(0x10010), "from_run": "spike012-haiku"}
+    log = _log(tmp_path, held, landing, _attempt_v3(run="other", attempt=2))
+    config = tmp_path / "config"
+    by_from = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    assert by_from["attempts"]["records"] == 2
+    assert by_from["per_match"]["matched_functions"] == 1
+    by_own = _json(capsys, repo, log, "--run", "land1", config=config)
+    assert by_own["attempts"]["records"] == 1
+
+
+def test_by_model_size(tmp_path, capsys):
+    """Per requested model and size bucket: the distinct functions attempted, matched (a MATCHED
+    attempt or landing) and held exact (a HOLD_EXACT attempt); readability sessions are out."""
+    _functions(tmp_path / "config", "ufo2p", {0x10000: 32, 0x10100: 300})
+    haiku, sonnet = "claude-haiku-5-5", "claude-sonnet-5-5"
+    records = (
+        _on_v3(0x10000, model_requested=haiku, outcome="MATCHED"),
+        _on_v3(0x10100, model_requested=haiku, outcome="HOLD_EXACT", hold_run=True),
+        _on_v3(0x10100, model_requested=haiku, outcome="HOLD_EXACT", hold_run=True, attempt=2),
+        _on_v3(0x10000, model_requested=sonnet),
+        _on_v3(0x10100, model_requested=sonnet, outcome="HOLD_EXACT", hold_run=True),
+        {**_landing(0x10100), "model": sonnet},
+        _on_v3(0x10000, model_requested=sonnet, session="readability", outcome="LANDED"),
+    )  # fmt: skip
+    report = _report(capsys, tmp_path, *records)
+    small, large = "[0, 64)", "[256, 1024)"
+    assert report["by_model_size"] == {
+        haiku: {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
+                large: {"attempted": 1, "matched": 0, "hold_exact": 1}},
+        sonnet: {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
+                 large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
+    }  # fmt: skip
+    assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
+    lines = capsys.readouterr().out.splitlines()
+    block = lines[lines.index("per model and size:") + 1:][:2]
+    assert [line.split(":")[0].strip() for line in block] == [haiku, sonnet]
+    assert "[0, 64) 1 of 1 matched, 0 hold exact" in block[0]
+
+
+def test_by_model_size_names_an_unsized_function_unknown(tmp_path, capsys):
+    report = _report(capsys, tmp_path, _on_v3(0x10000))
+    assert report["by_model_size"] == {
+        "claude-opus-5-5": {"unknown": {"attempted": 1, "matched": 0, "hold_exact": 0}}}
+
+
+def test_run_filter_uses_run_outcomes(tmp_path, capsys):
+    """With --run, `matched` is the runs' own logged matches, not the git history of other
+    runs; the class lines still come from git."""
+    repo, env = _repo(tmp_path)
+    _commit(repo, env, "ufo2p", {0x10000: "matched"}, "feat: an earlier night's match", _DRIVE)
+    log = _log(tmp_path, _on_v3(0x10000, run="a"))
+    config = tmp_path / "config"
+    assert _json(capsys, repo, log, config=config)["per_match"]["matched_functions"] == 1
+    mine = _json(capsys, repo, log, "--run", "a", config=config)
+    assert mine["per_match"]["matched_functions"] == 0
+    assert mine["classes"]["unattended"] == 1
+
+
+def test_help_lists_run(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["stats", "--help"])
+    out = capsys.readouterr().out
+    assert "--run" in out and "*" in out
