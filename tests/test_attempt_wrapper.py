@@ -2102,3 +2102,22 @@ def test_view_asm_cache_store_fault_keeps_the_output(tree: attempt.Roots, monkey
     assert (code, out) == (0, LISTING_B)
     (line,) = err.splitlines()
     assert line == "attempt asm: cache not written: OSError: made-up fault"
+
+
+def _pack(attempt_dir: Path) -> bytes:
+    return (attempt_dir / "context.md").read_bytes()
+
+
+def test_view_context_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkeypatch, capsys,
+                                                     loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert first[2] == (f"wrote {(attempt_dir / 'context.md').as_posix()}; "
+                        f"notes: {(attempt_dir / 'notes.md').as_posix()}\n")  # fmt: skip
+    saved = _pack(attempt_dir)
+    assert saved == first[1].encode("utf-8") and len(loads) == 1
+    (attempt_dir / "context.md").unlink()
+    assert _attempt(capsys, "context") == first
+    assert _pack(attempt_dir) == saved
+    assert len(loads) == 1  # run 2 never loads the EXE
