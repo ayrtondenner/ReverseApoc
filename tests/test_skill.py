@@ -111,13 +111,21 @@ def _commands(text: str) -> list[list[str]]:
     return commands
 
 
+# The forms the skill quotes, and the matching-only forms it does not quote yet (RULINGS "The
+# five pinned-form tests": 07.2-03 adds ("plan",) here, 07.2-09 teaches them and empties it).
+SKILL_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",))
+PENDING_SKILL_FORMS = (("giveup",),)
+
+
 def test_skill_commands_are_the_wrapper_forms():
     commands = _commands(_text())
     for argv in commands:
-        literal = tuple(argv) in hooks.ATTEMPT_FORMS  # `asm <NAME>` is quoted literally (F27)
-        assert literal or hooks.attempt_form_matches(argv), argv
+        literal = tuple(argv) in SKILL_FORMS  # `asm <NAME>` is quoted literally (F27)
+        assert literal or hooks.attempt_form_matches(argv, SKILL_FORMS), argv
     quoted = {tuple(argv) for argv in commands}
-    assert set(hooks.ATTEMPT_FORMS) <= quoted, "every wrapper form is quoted"
+    assert quoted == set(SKILL_FORMS), "every quoted form is a skill form, and each is quoted"
+    assert set(SKILL_FORMS) | set(PENDING_SKILL_FORMS) == set(hooks.MATCHING_FORMS)
+    assert not set(SKILL_FORMS) & set(PENDING_SKILL_FORMS)
 
 
 def test_skill_settles_the_baseline_facts():

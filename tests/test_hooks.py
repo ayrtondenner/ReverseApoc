@@ -587,6 +587,15 @@ def test_attempt_forms_are_the_shared_constants():
     assert hooks.ATTEMPT_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
     )  # fmt: skip
+    # 07.2-02 (D-26): the verbs only a matching session runs; readability keeps the five
+    assert hooks.MATCHING_FORMS == (
+        ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
+        ("giveup",),
+    )  # fmt: skip
+    assert hooks.forms_for("matching") == hooks.MATCHING_FORMS
+    assert hooks.forms_for("readability") == hooks.ATTEMPT_FORMS
+    assert not hooks.attempt_form_matches(("giveup",))
+    assert hooks.attempt_form_matches(("giveup",), hooks.MATCHING_FORMS)
     assert hooks.attempt_form_matches(("asm", "func_000A3980"))
     assert hooks.attempt_form_matches(["check", "--sweep"])
     assert not hooks.attempt_form_matches(("asm", "<NAME>"))
@@ -1801,6 +1810,77 @@ def test_readability_kind_same_allowlist(repo):
     for target in [_unit(repo), repo / "include" / "fx.h"]:
         decision = matching(in_repo(write(native(target), SCAFFOLD), repo), legacy)
         assert decision.deny and "REVERSEAPOC_UNIT_FILE" in decision.reason, decision.reason
+
+
+# ---- 07.2-02 (999.5, D-04, D-26): giveup.json and the matching-only `attempt giveup` ----
+
+GIVEUP_JSON = '{"category": "other", "tried": "a", "still_differs": "b", "suspected_cause": "c"}'
+
+
+def test_bash_allows_giveup_only_in_a_matching_session(repo):
+    command = f"{WRAPPER} giveup"
+    assert hooks.bash_allowed(command, kind="matching")
+    assert hooks.bash_allowed(command)  # absent kind: a matching run
+    assert not hooks.bash_allowed(command, kind="readability")
+    assert not hooks.bash_allowed(f"{WRAPPER} giveup x", kind="matching")
+    _view_unit(repo)
+    assert not matching(bash(command, repo, None)).deny
+    decision = matching(bash(command, repo, None), view_env(repo, kind="readability"))
+    assert decision.deny and "giveup" not in decision.reason, decision.reason
+    assert f"{WRAPPER} context" in decision.reason
+
+
+def test_bash_chars_unchanged():
+    """T-07.2-04: the injection boundary is not loosened for the new form."""
+    assert hooks._BASH_CHARS.pattern == r"[A-Za-z0-9_ -]+"
+
+
+def test_matching_allows_the_giveup_json_beside_the_notes(repo):
+    """D-26: a matching session may write giveup.json beside its notes.md, a readability
+    session may not, and a giveup.json anywhere else under build/driver/ is denied."""
+    _view_unit(repo)
+    giveup = _attempt(repo) / "giveup.json"
+    assert hooks.GIVEUP_NAME == "giveup.json"
+    assert not matching(in_repo(write(native(giveup), GIVEUP_JSON), repo)).deny
+    upper = repo / giveup.relative_to(repo).as_posix().upper()
+    assert not matching(in_repo(write(native(upper), GIVEUP_JSON), repo)).deny
+    readability = view_env(repo, kind="readability")
+    assert matching(in_repo(write(native(giveup), GIVEUP_JSON), repo), readability).deny
+    elsewhere = [_attempt(repo).parent / "attempt-2" / "giveup.json",
+                 _attempt(repo) / "view" / "giveup.json",
+                 repo / "build" / "driver" / "giveup.json",
+                 _attempt(repo) / "giveup.json.bak"]  # fmt: skip
+    for target in elsewhere:
+        assert matching(in_repo(write(native(target), GIVEUP_JSON), repo)).deny, target
+
+
+def test_always_exempts_only_the_notes_sibling_giveup(repo):
+    notes = repo / "build" / "driver" / "run1" / "ufo2p" / "func_000A3980" / "a-1" / "notes.md"
+    env = {"REVERSEAPOC_ATTEMPT_NOTES": native(notes)}
+    giveup = notes.with_name("giveup.json")
+    assert not always(write(native(giveup)), env).deny
+    assert always(write(native(giveup)), {}).deny
+    assert always(write(native(notes.parent.parent / "giveup.json")), env).deny
+    assert always(write(native(notes.with_name("giveup.jsonl"))), env).deny
+
+
+def test_matching_write_allowed_takes_the_session_kind():
+    claim = "ufo2p/u_000a34f0"
+    base = "build/driver/r/ufo2p/func_000A3980/attempt-1"
+    paths = {"notes": f"{base}/notes.md", "unit_file": f"{base}/view/src/ufo2p/u_000a34f0.c",
+             "proposals": f"{base}/proposals.jsonl"}  # fmt: skip
+
+    def allowed(rel: str, **kind) -> bool:
+        return hooks.matching_write_allowed(rel, claim=claim, tracked=lambda _: False,
+                                            **paths, **kind)  # fmt: skip
+
+    assert allowed(f"{base}/giveup.json")
+    assert allowed(f"{base}/GIVEUP.JSON")
+    assert allowed(f"{base}/giveup.json", kind="matching")
+    assert not allowed(f"{base}/giveup.json", kind="readability")
+    assert allowed(f"{base}/notes.md", kind="readability")
+    assert not allowed("build/driver/r/ufo2p/func_000A3980/giveup.json")
+    assert not allowed(f"{base}/view/giveup.json")
 
 
 @pytest.mark.parametrize("kind", ["other", "", "Matching", "readability "])

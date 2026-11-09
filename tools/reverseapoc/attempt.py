@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The attempt wrapper (D-44): the only commands a matching session runs through Bash.
 
-`uv run --frozen reverseapoc attempt check|asm|context` is bound to the claimed function. The
-claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
+`uv run --frozen reverseapoc attempt check|asm|context|giveup` is bound to the claimed function.
+The claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
 REVERSEAPOC_ATTEMPT_DIR), each validated here; no agent argument chooses the unit, the
 function, the flags, the Watcom tree or the source root. The accepted argument shapes are
-exactly hooks.ATTEMPT_FORMS (ruling F27), which the matching-session hook allows.
+exactly hooks.forms_for(kind) (ruling F27), which the matching-session hook allows:
+hooks.MATCHING_FORMS in a matching session, the five hooks.ATTEMPT_FORMS in a readability one.
+
+`attempt giveup` (07.2-02, 999.5, D-04, D-26) validates the session's giveup.json, the sibling
+of notes.md, with `read_giveup`, the validator the driver reuses when it records the give-up;
+it reserves no check slot and runs no container.
 
 `attempt check` runs `reverseapoc check <claim> --json` in the container through an injectable
 runner, at most CHECK_BUDGET times per attempt (D-07). One run at a time: each holds
@@ -56,15 +61,16 @@ from .functions import (
     read_symbols_csv,
 )
 from .hooks import (
-    ATTEMPT_FORMS,
     ATTEMPT_PREFIX,
     CLAIM_ENV,
+    GIVEUP_NAME,
     NOTES_ENV,
     PROPOSALS_ENV,
     SESSION_KIND_ENV,
     SESSION_KINDS,
     UNIT_FILE_ENV,
     attempt_form_matches,
+    forms_for,
 )
 from .proposals import Rename, read_proposals, rename_problem
 from .readlint import ReadlintResult, Violation, run_readlint
@@ -111,6 +117,17 @@ READABILITY = SESSION_KINDS[1]  # the session kind whose check adds readlint (07
 FUNCTIONS_CSV = "functions.csv"  # config/<exe>/ tables a check and a rename proposal read
 SYMBOLS_CSV = "symbols.csv"
 UNITS_CSV = "units.csv"  # read by check.load_exe; the asm/context cache digests it
+# 07.2-02 (999.5): the give-up record a matching session leaves in giveup.json. D-04's survey
+# categories (narrowed by D-26: no `difficult.json` category), in RULINGS order; the driver's
+# GIVEUP_CATEGORIES is this object (the wrapper cannot import the driver).
+GIVEUP_CATEGORIES = ("flags", "block_layout", "stack_layout", "register_allocation",
+                     "instruction_idiom", "types_or_struct", "call_convention", "compile_error",
+                     "other")  # fmt: skip
+GIVEUP_TEXTS = ("tried", "still_differs", "suspected_cause")
+GIVEUP_KEYS = ("category", *GIVEUP_TEXTS)
+GIVEUP_TEXT_CAP = 200  # the driver's _TEXT_CAP, so a validated text fits the record unchanged
+_C_CHARS = "{};"  # no C text in a give-up (D-04, D-23): a brace or a semicolon is refused
+_LONG_HEX = re.compile(r"[0-9A-Fa-f]{65,}")  # the driver's record-wide rule (D-23)
 
 
 class AttemptError(ValueError):
@@ -172,13 +189,14 @@ RUNNER: Runner = default_runner  # read at call time; tests replace it
 CLOCK: Callable[[], float] = time.monotonic  # times each run (M2); tests replace it
 
 
-def form_allowed(argv: Sequence[str]) -> bool:
-    """Whether `argv` (after `attempt`) is one of hooks.ATTEMPT_FORMS (ruling F27)."""
-    return attempt_form_matches(argv)
+def form_allowed(argv: Sequence[str], kind: str = SESSION_KINDS[0]) -> bool:
+    """Whether `argv` (after `attempt`) is one of hooks.forms_for(kind) (ruling F27, D-26: a
+    readability session gets no matching-only form)."""
+    return attempt_form_matches(argv, forms_for(kind))
 
 
-def forms_text() -> str:
-    return "; ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in ATTEMPT_FORMS)
+def forms_text(kind: str = SESSION_KINDS[0]) -> str:
+    return "; ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in forms_for(kind))
 
 
 # ---- the claim (D-44: from the driver's environment only) ----
@@ -1128,6 +1146,77 @@ def cmd_check(*, sweep: bool) -> int:
     return code
 
 
+# ---- the give-up record (07.2-02, 999.5; D-04, D-26: a file, not flags) ----
+
+
+def _giveup_text_problem(value: object) -> str:
+    """Why a give-up text is refused, or ''."""
+    if not isinstance(value, str) or not value.strip():
+        return "must be a non-empty string"
+    if len(value) > GIVEUP_TEXT_CAP:
+        return f"is {len(value)} characters, over the cap of {GIVEUP_TEXT_CAP}"
+    found = next((char for char in _C_CHARS if char in value), None)
+    if found is not None:
+        return f"holds {found!r}: no C text in a give-up (D-04), describe it in words"
+    if _LONG_HEX.search(value):
+        return "holds a hex run of 65 or more characters (D-23)"
+    return ""
+
+
+def _giveup_doc(path: Path) -> dict:
+    """giveup.json as one JSON object; AttemptError naming the file otherwise."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise AttemptError(f"no readable {path} ({type(exc).__name__}); write {GIVEUP_NAME} "
+                           "beside notes.md first") from None  # fmt: skip
+    except ValueError as exc:
+        raise AttemptError(f"{GIVEUP_NAME} is not UTF-8 JSON: {_one_line(exc)}") from None
+    if not isinstance(doc, dict):
+        raise AttemptError(f"{GIVEUP_NAME} must be one JSON object with exactly "
+                           f"{', '.join(GIVEUP_KEYS)}")  # fmt: skip
+    return doc
+
+
+def read_giveup(path: Path) -> dict:
+    """The give-up a session wrote at `path` (D-04), the one validator of `attempt giveup` and
+    the driver: a JSON object with exactly GIVEUP_KEYS, `category` one of GIVEUP_CATEGORIES, and
+    each of GIVEUP_TEXTS a non-empty string of at most GIVEUP_TEXT_CAP characters with no `{`,
+    `}` or `;` and no hex run of 65 or more. Returns the four fields; every problem raises
+    AttemptError naming the field and the rule."""
+    doc = _giveup_doc(path)
+    missing = [key for key in GIVEUP_KEYS if key not in doc]
+    if missing:
+        raise AttemptError(f"{GIVEUP_NAME} lacks {', '.join(missing)} (it holds exactly "
+                           f"{', '.join(GIVEUP_KEYS)})")  # fmt: skip
+    extra = sorted(key for key in doc if key not in GIVEUP_KEYS)
+    if extra:
+        raise AttemptError(f"{GIVEUP_NAME} has the unknown key {', '.join(extra)} (it holds "
+                           f"exactly {', '.join(GIVEUP_KEYS)})")  # fmt: skip
+    if not isinstance(doc["category"], str) or doc["category"] not in GIVEUP_CATEGORIES:
+        raise AttemptError(f"{GIVEUP_NAME} category {doc['category']!r} is not one of "
+                           f"{', '.join(GIVEUP_CATEGORIES)}")  # fmt: skip
+    for key in GIVEUP_TEXTS:
+        problem = _giveup_text_problem(doc[key])
+        if problem:
+            raise AttemptError(f"{GIVEUP_NAME} {key} {problem}")
+    return {key: doc[key] for key in GIVEUP_KEYS}
+
+
+def cmd_giveup() -> int:
+    """`attempt giveup`: validate <attempt dir>/giveup.json (the notes file's sibling) and print
+    what the driver will record. A matching session only (D-26); no check slot, no container."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    if claim.kind != SESSION_KINDS[0]:
+        raise AttemptError(f"attempt giveup is a matching-session verb; a {claim.kind} session "
+                           "leaves no give-up (D-26)")  # fmt: skip
+    doc = read_giveup(claim.attempt_dir / GIVEUP_NAME)
+    print(f"attempt giveup: accepted {doc['category']}")
+    for key in GIVEUP_TEXTS:
+        print(f"  {key}: {doc[key]}")
+    return EXIT_OK
+
+
 # ---- listings and the context pack (attempt asm, attempt context, the context verb; D-13) ----
 
 IDIOM_HEADINGS = ("Known idioms", "Relocation rules")  # the matching.md sections a pack holds
@@ -1183,11 +1272,11 @@ def idioms(text: str | None) -> str | None:
 _FUNC_PLACEHOLDER = re.compile(r"func_([0-9A-F]{8})")
 
 
-def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
-    """This function's attempt records: those naming `func`, and, when `func` is its func_
-    placeholder (the driver's attempt directories keep it), those naming its start. v2 records
-    name the C name (07-23), so after a D-19 rename one function's records carry two names
-    (ruling note, 07-34)."""
+def _attempt_docs(log: Path, stem: str, func: str) -> list[dict]:
+    """This function's attempt records, oldest first: those naming `func`, and, when `func` is
+    its func_ placeholder (the driver's attempt directories keep it), those naming its start.
+    v2 records name the C name (07-23), so after a D-19 rename one function's records carry
+    two names (ruling note, 07-34)."""
     if not log.is_file():
         return []
     found = _FUNC_PLACEHOLDER.fullmatch(func)
@@ -1203,15 +1292,82 @@ def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
         same = record.get("function") == func or (start is not None
                                                   and record.get("start") == start)
         if record.get("exe") == stem and same:
-            records.append(json.dumps(record, sort_keys=True))
+            records.append(record)
     return records
+
+
+def _giveup_line(record: Mapping) -> str | None:
+    """One pack line of a committed record's give-up (07.2-02), each text on one line as the
+    pack shows C heads; None for a record without a give-up object."""
+    giveup = record.get("giveup")
+    if not isinstance(giveup, dict):
+        return None
+    texts = {key: contextpack.one_line(str(giveup.get(key))) for key in GIVEUP_TEXTS}
+    best = giveup.get("best_code") or "none"
+    return (f"{record.get('run')} attempt {record.get('attempt')}: {giveup.get('category')}; "
+            f"still differs: {texts['still_differs']}; suspected: {texts['suspected_cause']}; "
+            f"best {best}")  # fmt: skip
+
+
+_RUN_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a run id as a build/driver/ directory
+_UNIT_NAME = re.compile(r"[a-z0-9_]+")
+_START = re.compile(r"0x([0-9A-F]{8})")
+
+
+def _best_path(driver: Path, stem: str, record: Mapping) -> Path | None:
+    """<driver>/<run>/<exe>/func_<start>/attempt-<n>/best/<unit>.c of a committed record (the
+    driver's _best_file), or None when a field cannot name that path."""
+    run, start, unit, n = (record.get(key) for key in ("run", "start", "unit", "attempt"))
+    if not (isinstance(run, str) and _RUN_DIR.fullmatch(run) and ".." not in run):
+        return None
+    found = _START.fullmatch(start) if isinstance(start, str) else None
+    if found is None or not isinstance(unit, str) or not _UNIT_NAME.fullmatch(unit):
+        return None
+    if type(n) is not int:
+        return None
+    return driver / run / stem / f"func_{found.group(1)}" / f"attempt-{n}" / "best" / f"{unit}.c"
+
+
+def _percent(record: Mapping) -> float | None:
+    check_field = record.get("check")
+    value = check_field.get("best_percent") if isinstance(check_field, dict) else None
+    number = isinstance(value, int | float) and not isinstance(value, bool)
+    return float(value) if number else None
+
+
+def _best_definition(driver: Path, stem: str, record: Mapping) -> str | None:
+    """The record's function as its best/<unit>.c defines it (contextpack.definitions under
+    the record's C name), or None: no such file, not UTF-8, or no such definition."""
+    path = _best_path(driver, stem, record)
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    found = contextpack.definitions(text).get(str(record.get("function")))
+    return found.source if found is not None else None
+
+
+def _earlier_best_c(driver: Path, stem: str, records: Sequence[Mapping]) -> str | None:
+    """07.2-02: the definition from the record with the highest check.best_percent (ties: the
+    latest) whose best/<unit>.c gives one; a record without a readable one is skipped."""
+    ranked = [(percent, index) for index, record in enumerate(records)
+              if (percent := _percent(record)) is not None]  # fmt: skip
+    for _percent_value, index in sorted(ranked, reverse=True):
+        source = _best_definition(driver, stem, records[index])
+        if source is not None:
+            return source
+    return None
 
 
 def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     """Ruling F9: build/driver/*/<exe>/<func>/attempt-*/notes.md (the driver's layout) and
     build/driver/*/<exe>/<func>/notes.md (manual packs), sorted by path, then this function's
-    attempt records in progress/attempts.jsonl. Nothing is cut here: build_pack cuts notes
-    only when the pack is over the cap (M11, records first, then the oldest texts)."""
+    attempt records in progress/attempts.jsonl. 07.2-02 (999.5): from those records (the
+    source of truth, not giveup.json files) the give-up lines, oldest first, and the earlier
+    best C. Nothing is cut here: build_pack cuts notes only when the pack is over the cap (M11,
+    records first, then the give-ups, then the oldest texts)."""
     driver = Path(repo).joinpath(*DRIVER_PARTS)
     found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
              *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
@@ -1219,10 +1375,14 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     for path in sorted(found, key=lambda p: p.relative_to(driver).as_posix()):
         text = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
         texts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
-    records = _attempt_records(Path(repo) / ATTEMPT_LOG, stem, func)
-    if not texts and not records:
+    docs = _attempt_docs(Path(repo) / ATTEMPT_LOG, stem, func)
+    records = [json.dumps(record, sort_keys=True) for record in docs]
+    giveups = tuple(line for record in docs if (line := _giveup_line(record)) is not None)
+    best_c = _earlier_best_c(driver, stem, docs)
+    if not texts and not records and not giveups and best_c is None:
         return None
-    return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
+    return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}",
+                             giveups, best_c)  # fmt: skip
 
 
 def _unit_paths(src: Path, data: check.ExeInputs) -> dict[str, Path]:

@@ -760,10 +760,8 @@ SESSION_OUTCOMES_V3 = {  # a hold run's exit-0 outcome is a matching one (D-26)
 }
 _V3_OUTCOMES = (*_V2_OUTCOMES, HOLD_EXACT)
 # D-04 (narrowed by D-26: no `difficult.json` category), in RULINGS order. 07.2-02 moves the
-# tuple to attempt.py, which the wrapper can import, and makes this name the same object.
-GIVEUP_CATEGORIES = ("flags", "block_layout", "stack_layout", "register_allocation",
-                     "instruction_idiom", "types_or_struct", "call_convention", "compile_error",
-                     "other")  # fmt: skip
+# tuple to attempt.py, which the wrapper can import; this name is the same object.
+GIVEUP_CATEGORIES = attempt.GIVEUP_CATEGORIES
 
 
 def _capped(value: object) -> bool:
@@ -771,7 +769,7 @@ def _capped(value: object) -> bool:
     return isinstance(value, str) and 0 < len(value) <= _TEXT_CAP
 
 
-# The give-up object (D-04). No C text in records (D-04, D-23): 07.2-02's validator enforces
+# The give-up object (D-04). No C text in records (D-04, D-23): attempt.read_giveup enforces
 # that on the session's giveup.json; here each text is only capped, and the record-wide
 # _LONG_HEX refusal still applies.
 _GIVEUP = _shaped({
@@ -2924,7 +2922,8 @@ class _Night:
         def allowed(rel: str) -> bool:  # view mode (07-13, D-24): the hook's own allowlist
             return hooks.matching_write_allowed(rel, claim=claim.target, notes=claim.notes_rel,
                                                 tracked=is_tracked, unit_file=claim.view_unit_rel,
-                                                proposals=claim.proposals_rel)  # fmt: skip
+                                                proposals=claim.proposals_rel,
+                                                kind=claim.session)  # fmt: skip
 
         return allowed
 
@@ -4528,8 +4527,9 @@ class _Night:
         followed the timeout) carries the stream lower bound of `streamjson.stream_usage` in
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
         "estimate". A night passes no effort (null: the CLI default, D-17) and runs the Claude
-        harness on the Claude Code login (`backend` DEFAULT_BACKEND); `giveup` is null and
-        `hold_run` false. Committed records are never rewritten (D-23)."""
+        harness on the Claude Code login (`backend` DEFAULT_BACKEND); `giveup` is the session's
+        validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` false. Committed
+        records are never rewritten (D-23)."""
         use = session.usage
         measured = session.measured
         source, cells = _sweep_evidence(session.claim.attempt_dir)
@@ -4551,12 +4551,28 @@ class _Night:
                   "effort": None, "harness": "claude", "backend": DEFAULT_BACKEND,
                   "duration_ms": use.duration_ms if measured else None,
                   "cost_source": "cli" if measured else "estimate",
-                  "giveup": None, "hold_run": False}  # fmt: skip
+                  "giveup": self._giveup(session.claim), "hold_run": False}  # fmt: skip
         self._append(record)
         if _parks(record):  # quick 261109-gzu; lock order gate, then cond (_append holds gate)
             with self.cond:
                 key = (session.claim.pick.exe, session.claim.pick.start)
                 self.parked.setdefault(key, record["check"]["sweep_hit"])
+
+    def _giveup(self, claim: _Claim) -> dict | None:
+        """999.5 (D-04, D-26): a matching session's giveup.json beside its notes.md, validated
+        again with the wrapper's own attempt.read_giveup, plus `best_code`, the best check's C
+        (checks/NNNN.c, or null). No file, or a readability session: null. A refused file is
+        null too, with one console line naming why: the record stays valid."""
+        path = claim.attempt_dir / hooks.GIVEUP_NAME
+        if claim.session != MATCHING_KIND or not path.is_file():
+            return None
+        try:
+            giveup = attempt.read_giveup(path)
+        except attempt.AttemptError as exc:
+            self.deps.say(f"{claim.target} {claim.function} attempt {claim.n}: "
+                          f"{hooks.GIVEUP_NAME} not recorded: {exc}")  # fmt: skip
+            return None
+        return {**giveup, "best_code": read_checks(claim.attempt_dir).best_source}
 
     def _record_abort(self, claim: _Claim, retries: int) -> None:
         record = {**self._base(claim, KIND_ABORT), "abort_reason": TRANSIENT, "retries": retries,

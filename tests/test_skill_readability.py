@@ -119,10 +119,16 @@ def test_skill_verbs_exist():
     assert found <= set(sub.choices), sorted(found - set(sub.choices))
 
 
+# The five forms a readability session runs (D-26: readability gets no new form, so no
+# matching-only form of hooks.MATCHING_FORMS is quoted here).
+READABILITY_SKILL_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"),
+                           ("context",))  # fmt: skip
+
+
 def test_skill_commands_are_the_wrapper_forms():
-    """Every `uv run ...` span is ATTEMPT_PREFIX plus one of hooks.ATTEMPT_FORMS, every short
-    `attempt ...` span is a form, and every form is quoted."""
-    quoted = set()
+    """Every `uv run ...` span is ATTEMPT_PREFIX plus one of READABILITY_SKILL_FORMS, every
+    short `attempt ...` span is a form, every form is quoted, and no matching-only form is."""
+    quoted, named = set(), set()
     for span in _spans(_text()):
         tokens = span.split()
         if span.startswith("uv run"):
@@ -130,10 +136,15 @@ def test_skill_commands_are_the_wrapper_forms():
         if "attempt" not in tokens:
             continue
         argv = tuple(tokens[tokens.index("attempt") + 1 :])
-        assert argv in hooks.ATTEMPT_FORMS or hooks.attempt_form_matches(argv), span
+        named.add(argv)
+        literal = argv in READABILITY_SKILL_FORMS
+        assert literal or hooks.attempt_form_matches(argv, READABILITY_SKILL_FORMS), span
         if span.startswith(_PREFIX + " "):
             quoted.add(argv)
-    assert set(hooks.ATTEMPT_FORMS) <= quoted, "every wrapper form is quoted in full"
+    assert quoted == set(READABILITY_SKILL_FORMS), "every wrapper form is quoted in full"
+    assert set(READABILITY_SKILL_FORMS) == set(hooks.ATTEMPT_FORMS)
+    matching_only = set(hooks.MATCHING_FORMS) - set(hooks.ATTEMPT_FORMS)
+    assert matching_only and not named & matching_only
 
 
 def test_skill_names_the_required_terms():

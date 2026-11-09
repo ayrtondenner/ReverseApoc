@@ -272,6 +272,56 @@ def test_sweep_evidence_without_a_saved_json_keeps_the_source(tmp_path):
     assert (record["sweep_source"], record["sweep_cells_100"]) == ("checks/0001.c", [])
 
 
+# ---- 07.2-02 (999.5, D-04, D-26): the session's giveup.json in the record ----
+
+GIVEUP = {"category": "stack_layout", "tried": "made-up: reordered the locals",
+          "still_differs": "made-up: the frame is 4 bytes larger",
+          "suspected_cause": "made-up: a spilled temporary"}  # fmt: skip
+
+
+def _giveup_night(tmp_path, text: str | None) -> tuple[list[str], dict]:
+    """A one-session night with two checks (the second the best) whose session leaves
+    giveup.json holding `text` (None: no file): its console lines and its attempt record."""
+    checks = (check_line(1, 40.0), check_line(2, 70.0))
+    night = Night(tmp_path, sessions=[Sess(checks=checks)])
+    said: list[str] = []
+
+    def session(argv, **kw):
+        result = night._session(argv, **kw)
+        if text is not None:
+            path = Path(kw["env"][attempt.DIR_ENV]) / "giveup.json"
+            path.write_text(text, encoding="utf-8")
+        return result
+
+    night.run(config={"attempts_per_function": 1}, session=session, say=said.append)
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    return said, record
+
+
+def test_giveup_recorded(tmp_path):
+    """A valid giveup.json becomes the record's giveup, plus best_code: the best check's C."""
+    said, record = _giveup_night(tmp_path, json.dumps(GIVEUP))
+    assert record["giveup"] == {**GIVEUP, "best_code": "checks/0002.c"}
+    assert not [line for line in said if "giveup.json" in line]
+
+
+@pytest.mark.parametrize("text", ['{"category": "eh"}', "not json",
+                                  json.dumps({**GIVEUP, "tried": "int x;"})])  # fmt: skip
+def test_an_invalid_giveup_records_null(tmp_path, text):
+    """The driver re-validates with the wrapper's own validator: a refused file records null,
+    the record stays valid, and one console line names the refusal."""
+    said, record = _giveup_night(tmp_path, text)
+    assert record["giveup"] is None
+    assert len([line for line in said if "giveup.json" in line]) == 1, said
+
+
+def test_no_giveup_records_null(tmp_path):
+    said, record = _giveup_night(tmp_path, None)
+    assert record["giveup"] is None
+    assert not [line for line in said if "giveup.json" in line]
+
+
 def test_abort_record_is_v2_with_the_c_name(tmp_path):
     """Orchestrator ruling F12: a v2 abort takes the same C-name rule as an attempt."""
     pick = Pick(EXE, START, "GetMadeUpVolume", UNIT, 20, 100)

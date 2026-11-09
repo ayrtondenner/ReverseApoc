@@ -995,13 +995,14 @@ def test_attempt_forms_match_the_hook(repo: Path, monkeypatch):
     """F27: the wrapper accepts exactly hooks.ATTEMPT_FORMS (after ATTEMPT_PREFIX)."""
     assert hooks.ATTEMPT_PREFIX[-1] == "attempt"
     parser = build_parser()
-    for form in hooks.ATTEMPT_FORMS:
+    for form in hooks.MATCHING_FORMS:
         argv = [FUNC if token == hooks.ATTEMPT_NAME_SLOT else token for token in form]
-        assert hooks.attempt_form_matches(argv)
-        assert attempt.form_allowed(argv)
+        assert hooks.attempt_form_matches(argv, hooks.MATCHING_FORMS)
+        assert attempt.form_allowed(argv, "matching")
         parser.parse_args(["attempt", *argv])  # no SystemExit
     for bad in (["check", "--sweep", "--sweep"], ["asm", "9x"], ["asm", "--", FUNC],
-                ["asm", FUNC, FUNC], ["context", FUNC], ["context", "--json"], []):  # fmt: skip
+                ["asm", FUNC, FUNC], ["context", FUNC], ["context", "--json"], [],
+                ["giveup", "x"], ["giveup", "--json"]):  # fmt: skip
         assert not attempt.form_allowed(bad), bad
         runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
         assert _run(["attempt", *bad]) == 2, bad
@@ -1357,6 +1358,7 @@ VIEW_TEXT = UNIT_TEXT + b"/* the view unit, private to this session */\n"
 VIEW_CFLAGS = "* wcc386@10.6 -4r -s -fpi\nsrc/ufo2p/u_000a34f0.c wcc386@10.6 -4r -ot -s -fpi\n"
 PHASE6_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", hooks.ATTEMPT_NAME_SLOT),
                 ("context",))  # fmt: skip
+MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",))  # 07.2-02: the matching-only verbs (D-26)
 
 
 @pytest.fixture
@@ -1556,8 +1558,12 @@ def test_sweep_default_rule_from_view_cflags(view: Path, monkeypatch):
 def test_forms_unchanged():
     """D-15, T-07-32: views add no agent form; the roots come only from the driver's env."""
     assert hooks.ATTEMPT_FORMS == PHASE6_FORMS
+    assert hooks.MATCHING_FORMS == MATCHING_FORMS_07_2
     for flag in ("--src", "--config", "--cflags", "--build", "--log"):
-        assert not attempt.form_allowed(["check", flag, "x"])
+        for kind in hooks.SESSION_KINDS:
+            assert not attempt.form_allowed(["check", flag, "x"], kind)
+    assert attempt.form_allowed(["giveup"], "matching")
+    assert not attempt.form_allowed(["giveup"], "readability")
 
 
 VIEW_MARK = "/* made-up view text of unit {unit} */\n"
@@ -1785,7 +1791,103 @@ def test_readability_forms_unchanged(readable: Path, monkeypatch, capsys):
     runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     for extra in (["--readlint"], ["readlint"], ["check", "--units", CLAIM]):
         assert _run(["attempt", *extra]) == 2
+    matching_only = [form for form in hooks.MATCHING_FORMS if form not in hooks.ATTEMPT_FORMS]
+    assert matching_only == [("giveup",)]
+    for form in matching_only:  # 07.2-02 (D-26): no matching-only verb in a readability session
+        assert _run(["attempt", *form]) == 2, form
     assert runner.calls == []
+
+
+# ---- 07.2-02 (999.5, D-04, D-26): giveup.json and `attempt giveup` ----
+
+GIVEUP = {"category": "stack_layout", "tried": "made-up: reordered the two locals",
+          "still_differs": "made-up: the frame is 4 bytes larger",
+          "suspected_cause": "made-up: a temporary the compiler spills"}  # fmt: skip
+
+
+def _giveup(attempt_dir: Path, doc: object) -> Path:
+    path = attempt_dir / "giveup.json"
+    text = doc if isinstance(doc, str) else json.dumps(doc)
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def test_giveup_validates_the_file(repo: Path, monkeypatch, capsys):
+    """A valid giveup.json: exit 0, the accepted category and the three texts printed."""
+    _giveup(repo, GIVEUP)
+    assert _run(["attempt", "giveup"]) == 0
+    out = capsys.readouterr().out
+    assert "attempt giveup: accepted stack_layout" in out
+    for key in ("tried", "still_differs", "suspected_cause"):
+        assert GIVEUP[key] in out
+    assert attempt.read_giveup(repo / "giveup.json") == GIVEUP
+
+
+@pytest.mark.parametrize(
+    ("change", "named"),
+    [({"category": "eh"}, "category"), ({"tried": None}, "tried"),
+     ({"still_differs": ""}, "still_differs"), ({"suspected_cause": "x" * 201}, "suspected_cause"),
+     ({"tried": "made-up { brace"}, "tried"), ({"tried": "made-up } brace"}, "tried"),
+     ({"still_differs": "return 0;"}, "still_differs"), ({"tried": 7}, "tried"),
+     ({"suspected_cause": "0" * 65}, "suspected_cause"), ({"extra": "x"}, "extra")],
+)  # fmt: skip
+def test_giveup_refuses_a_bad_field(repo: Path, capsys, change, named):
+    """Each problem exits 2 naming the field (D-04: no C text, capped texts, fixed keys)."""
+    doc = {key: value for key, value in {**GIVEUP, **change}.items() if value is not None}
+    _giveup(repo, doc)
+    assert _run(["attempt", "giveup"]) == 2
+    err = capsys.readouterr().err
+    assert named in err, err
+    with pytest.raises(attempt.AttemptError, match=named):
+        attempt.read_giveup(repo / "giveup.json")
+
+
+def test_giveup_accepts_the_cap_and_every_category(repo: Path):
+    for category in attempt.GIVEUP_CATEGORIES:
+        doc = {**GIVEUP, "category": category, "tried": "x" * attempt.GIVEUP_TEXT_CAP}
+        assert attempt.read_giveup(_giveup(repo, doc))["category"] == category
+
+
+@pytest.mark.parametrize("text", [None, "not json", "[1, 2]", '"a string"'])
+def test_giveup_refuses_a_missing_or_unreadable_file(repo: Path, capsys, text):
+    if text is not None:
+        _giveup(repo, text)
+    assert _run(["attempt", "giveup"]) == 2
+    assert "giveup.json" in capsys.readouterr().err
+
+
+def test_giveup_uses_no_check(repo: Path, monkeypatch):
+    """`attempt giveup` reserves no check slot and runs no container."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _giveup(repo, GIVEUP)
+    assert _run(["attempt", "giveup"]) == 0
+    assert runner.calls == []
+    assert not (repo / "checks").exists() and not (repo / "checks.jsonl").exists()
+
+
+def test_readability_session_has_no_giveup(readable: Path, monkeypatch, capsys):
+    """T-07-92, D-26: a readability session's `attempt giveup` exits 2 before any run, even
+    with a valid giveup.json, and ATTEMPT_FORMS is still the five Phase 6 forms."""
+    assert hooks.ATTEMPT_FORMS == PHASE6_FORMS
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _giveup(readable.parent, GIVEUP)
+    assert _run(["attempt", "giveup"]) == 2
+    assert "accepted" not in capsys.readouterr().out
+    assert runner.calls == []
+    with pytest.raises(attempt.AttemptError, match="readability"):
+        attempt.cmd_giveup()  # the verb refuses on its own too, past the form check
+
+
+def test_giveup_constants_are_the_driver_s():
+    from reverseapoc import driver
+
+    assert driver.GIVEUP_CATEGORIES is attempt.GIVEUP_CATEGORIES
+    assert attempt.GIVEUP_TEXT_CAP == driver._TEXT_CAP == 200
+
+
+def test_attempt_help_names_giveup(capsys):
+    assert _run(["attempt", "--help"]) == 0
+    assert "giveup" in capsys.readouterr().out
 
 
 def test_check_log_line_positional_construction():
@@ -2366,3 +2468,123 @@ def test_legacy_context_is_never_cached(tree: attempt.Roots, monkeypatch, capsys
     assert _attempt(capsys, "context") == _attempt(capsys, "context")
     assert len(loads) == 2
     assert not [path for path in tree.repo.rglob("*") if "attempt-cache" in path.as_posix()]
+
+
+# ---- 07.2-02 (999.5): earlier give-ups and the earlier best C in the pack ----
+
+
+def _attempt_record(run: str, n: int, *, percent: float | None = None,
+                    giveup: dict | None = None) -> dict:  # fmt: skip
+    """A made-up committed attempt record of func_00010010 (unit UNIT_AB)."""
+    return {"kind": "attempt", "exe": "ufo2p", "function": "func_00010010",
+            "start": "0x00010010", "unit": UNIT_AB, "run": run, "attempt": n,
+            "outcome": "GAVE_UP", "check": {"best_percent": percent}, "giveup": giveup}  # fmt: skip
+
+
+def _log_records(repo: Path, *records: dict) -> Path:
+    return _add_line(repo / "progress" / "attempts.jsonl",
+                     "".join(json.dumps(record) + "\n" for record in records))  # fmt: skip
+
+
+def _made_up_giveup(category: str, best: str | None) -> dict:
+    return {"category": category, "tried": "made-up: reordered",
+            "still_differs": f"made-up  {category}\nframe", "suspected_cause": "made-up cause",
+            "best_code": best}  # fmt: skip
+
+
+def _best_file(repo: Path, run: str, n: int, value: int) -> Path:
+    """<attempt dir>/best/<unit>.c of `run` attempt `n`, func_00010010 returning `value`."""
+    text = UNIT_AB_TEXT.replace("return D_00020100;", f"return {value};")
+    return _write(repo.joinpath("build", "driver", run, "ufo2p", "func_00010010", f"attempt-{n}",
+                                "best", f"{UNIT_AB}.c"), text)  # fmt: skip
+
+
+def _best_definition(value: int) -> str:
+    return f"int func_00010010(void)\n{{\n    return {value};\n}}"
+
+
+def test_earlier_notes_gives_giveups(tmp_path: Path):
+    """The give-up lines come from the committed records' giveup, oldest first, each text on
+    one line; a record without one gives none."""
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, giveup=_made_up_giveup("flags", None)),
+                 _attempt_record("run1", 2),
+                 _attempt_record("run2", 1, giveup=_made_up_giveup("stack_layout",
+                                                                   "checks/0002.c")))  # fmt: skip
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert notes.giveups == (
+        "run1 attempt 1: flags; still differs: made-up flags frame; suspected: made-up cause; "
+        "best none",
+        "run2 attempt 1: stack_layout; still differs: made-up stack_layout frame; suspected: "
+        "made-up cause; best checks/0002.c",
+    )
+    assert notes.best_c is None
+
+
+def test_earlier_best_c(tmp_path: Path):
+    """The record with the highest best_percent (ties: the latest) whose best/<unit>.c exists
+    gives only that function's definition; a record without the file is skipped."""
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, percent=40.0),
+                 _attempt_record("run1", 2, percent=70.0), _attempt_record("run2", 1, percent=70.0),
+                 _attempt_record("run2", 2, percent=90.0),
+                 _attempt_record("run2", 3, percent=None))  # fmt: skip
+    for run, n, value in (("run1", 1, 40), ("run1", 2, 70), ("run2", 1, 71), ("run2", 3, 99)):
+        _best_file(repo, run, n, value)
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert notes.best_c == _best_definition(71)
+    assert "func_00010000" not in notes.best_c
+    assert notes.giveups == ()
+
+
+def test_earlier_best_c_alone_makes_notes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    record = _attempt_record("run1", 1, percent=40.0)
+    _best_file(repo, "run1", 1, 40)
+    _log_records(repo, record)
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_c == _best_definition(40)
+    _write(repo / "progress" / "attempts.jsonl", "")
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010") is None
+
+
+def test_no_earlier_best_c_without_a_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, percent=40.0))
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_c is None
+
+
+def _section(pack: str, title: str) -> str:
+    return pack.split(f"\n## {title}\n", 1)[1].split("\n## ", 1)[0]
+
+
+def test_context_cache_misses_on_a_new_giveup(tree: attempt.Roots, monkeypatch, capsys, loads):
+    """A new give-up record joins gzw's cache key through earlier_notes (RULINGS)."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    assert _section(first[1], "Earlier give-ups").strip() == "none"
+    _log_records(tree.repo, _attempt_record("run3", 1, giveup=_made_up_giveup("flags", None)))
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert "run3 attempt 1: flags" in _section(after[1], "Earlier give-ups")
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    assert _attempt(capsys, "context") == after and len(loads) == 2
+
+
+def test_context_cache_misses_on_a_changed_best_c(tree: attempt.Roots, monkeypatch, capsys,
+                                                  loads):  # fmt: skip
+    """An edit of the earlier best/<unit>.c rebuilds the pack; unchanged, it is a hit."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _log_records(tree.repo, _attempt_record("run3", 1, percent=60.0))
+    _best_file(tree.repo, "run3", 1, 60)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _best_definition(60) in _section(first[1], "Earlier best C")
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    _best_file(tree.repo, "run3", 1, 61)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert _best_definition(61) in _section(after[1], "Earlier best C")
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    assert _attempt(capsys, "context") == after and len(loads) == 2
