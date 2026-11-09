@@ -1051,3 +1051,103 @@ def test_transient_aborts_are_bounded_by_the_night_cap(tmp_path):
     assert (report.event, report.reason) == ("ENDED", "max sessions")
     aborts = night.kinds("abort")
     assert [(a["attempt"], a["retries"]) for a in aborts] == [(1, 1)]
+
+
+# ---- parking (quick 261109-gzu) ----
+
+
+def _tier_night(tmp_path, starts, *, sessions=(), edges=(), unit=None, night_cls=None, **kw):
+    """A night over a signed tier of UFO2P members `starts` (in `unit`, else each in its own),
+    with the call `edges`, and the deps whose queue is that tier's."""
+    from test_driver import RUN, Night
+    from test_driver_records import _commit
+
+    rows = [_member(a) for a in starts]
+    night = (night_cls or Night)(tmp_path / "night", sessions=list(sessions), **kw)
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world(starts, edges, unit=unit)
+    deps = driver.real_deps(driver.DriveOptions(repo=night.repo, run_id=RUN),
+                            _seams(night, worlds), worlds)  # fmt: skip
+    return night, deps
+
+
+def _attempts_of(night) -> list[tuple[int, int, int]]:
+    """Tonight's attempt records as (start, pass, attempt)."""
+    from test_driver import RUN
+
+    return [(int(r["start"], 16), r["pass"], r["attempt"]) for r in night.kinds("attempt")
+            if r["run"] == RUN]  # fmt: skip
+
+
+def _hit() -> dict:
+    """A checks.jsonl sweep line with a hit under the made-up SPEC_A."""
+    from test_driver import check_line
+    from test_driver_records import SPEC_A
+
+    return check_line(1, 80.0, sweep=True, exit_code=0, sweep_hit=SPEC_A)
+
+
+def test_a_tier_night_parks_a_function_after_its_first_sweep_hit(tmp_path):
+    """RULINGS gzu: A's first counted session records a sweep hit without matching, so A gets
+    no further session tonight (not its pass's attempts 2 and 3, not a later pass); B goes on,
+    pass 1 then pass 2, and the console names the park once."""
+    from test_driver import START, UNIT, Sess
+    from test_driver_records import SPEC_A
+
+    a, b = START, START + 0x10
+    lines: list[str] = []
+    night, deps = _tier_night(tmp_path, (a, b), sessions=[Sess(checks=(_hit(),))], unit=UNIT)
+    report = night.run(config={"attempts_per_function": 3, "max_sessions": 5},
+                       queue=deps.queue, requeue=deps.requeue, say=lines.append)  # fmt: skip
+    assert _attempts_of(night) == [(a, 1, 1), (b, 1, 1), (b, 1, 2), (b, 1, 3), (b, 2, 1)]
+    assert (report.event, report.reason) == ("ENDED", "max sessions")
+    parked = driver.PARKED_LINE.format(label="ufo2p func_00010010 attempt 1/3", spec=SPEC_A)
+    assert lines.count(parked) == 1
+
+
+def test_the_coordinator_tells_the_tier_queue_a_pass_parked(tmp_path):
+    """The parked pass reaches TierQueue.finish as parked (not capped); every other pass is not
+    parked."""
+    from test_driver import START, UNIT, Sess
+
+    a, b = START, START + 0x10
+    night, deps = _tier_night(tmp_path, (a, b), sessions=[Sess(checks=(_hit(),))], unit=UNIT)
+    finished: list[tuple[int, dict]] = []
+
+    def queue(difficult):
+        tiers = deps.queue(difficult)
+        real = tiers.finish
+
+        def finish(key, **kw):
+            finished.append((key[1], kw))
+            real(key, **kw)
+
+        tiers.finish = finish
+        return tiers
+
+    night.run(config={"attempts_per_function": 3, "max_sessions": 5}, queue=queue,
+              requeue=deps.requeue)  # fmt: skip
+    assert [(start, kw["parked"], kw["capped"]) for start, kw in finished] == [
+        (a, True, False), (b, False, True), (b, False, False)]  # fmt: skip
+
+
+def test_tier_queue_never_offers_a_parked_key_again():
+    """`finish(..., parked=True)` keeps TA out of next_item and preview for the queue's life,
+    while TB keeps coming back for its next pass; finish without `parked` is as before."""
+    passes: dict = {}
+    q = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90}, passes=passes)
+    assert q.next_eligible().start == TA
+    q.take((UFO2P, TA))
+    q.finish((UFO2P, TA), matched=False, parked=True)
+    assert q.next_eligible().start == TB
+    for n in (1, 2):
+        q.take((UFO2P, TB))
+        passes[(UFO2P, TB)] = n
+        q.finish((UFO2P, TB), matched=False, capped=True)
+        item = q.next_item()
+        assert (item.pick.start, item.pass_n) == (TB, n + 1)
+    assert [i.pick.start for i in q.preview(10)] == [TB]
+    plain = _tq([_member(TA), _member(TB)], scores={TA: 10, TB: 90})
+    plain.take((UFO2P, TA))
+    plain.finish((UFO2P, TA), matched=False)
+    assert plain.next_eligible().start == TA
