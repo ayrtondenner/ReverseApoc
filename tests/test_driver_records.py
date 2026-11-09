@@ -412,7 +412,7 @@ def test_next_pass_number(tmp_path, monkeypatch):
 # ---- Task 3: run records, limit records, totals, the log commit after the drain (DEC-06) ----
 
 DENIAL = {"tool_name": "Bash", "tool_use_id": "toolu_made_up", "tool_input": {}}
-OUTCOMES = ("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED")
+OUTCOMES = ("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED", "HOLD_EXACT")  # schema 3
 
 
 def _run_records(night: Night, event: str) -> list[dict]:

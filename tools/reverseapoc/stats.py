@@ -381,7 +381,10 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
     for event in hist.events:
         seen[(event.exe, event.start)] = seen.get((event.exe, event.start), 0) + 1
     reverted = {key for key in seen if key not in counted}
-    logged = {_key(r) for r in matching if r["outcome"] == driver.MATCHED}
+    # A MATCHED landing (`--land-held`, D-26) is a logged match too; it has no cost of its own,
+    # so `_sums` stays over the attempt records and the held attempt's cost is counted once.
+    landed = [r for r in records if r["kind"] == driver.KIND_LANDING]
+    logged = {_key(r) for r in [*matching, *landed] if r["outcome"] == driver.MATCHED}
     matched = (logged - reverted) | set(counted)
     attempted = {_key(r) for r in matching}
     sums = _sums(attempts)

@@ -326,8 +326,10 @@ def write_queue(path: Path, proposals: Sequence[Proposal]) -> None:
 
 def pilot_hits(log: Path) -> list[tuple[str, str]]:
     """(exe, function) of every function with an attempt record holding a sweep_hit and no
-    MATCHED attempt record, sorted by (exe, start). Read from attempts.jsonl alone (D-16, ruling
-    F15): status.csv is not consulted, so the list does not change when the owner approves."""
+    MATCHED attempt or landing record, sorted by (exe, start). Read from attempts.jsonl alone
+    (D-16, ruling F15): status.csv is not consulted, so the list does not change when the owner
+    approves. Phase 07.2 (D-26): a MATCHED landing (`--land-held`) is a match like a MATCHED
+    attempt record."""
     hits: dict[tuple[str, int], str] = {}
     matched: set[tuple[str, int]] = set()
     text = Path(log).read_text(encoding="utf-8")
@@ -337,11 +339,13 @@ def pilot_hits(log: Path) -> list[tuple[str, str]]:
             driver.validate_record(record)
         except ValueError as exc:  # json and RecordError
             raise FlagsError(f"{log} line {number}: {exc}") from None
-        if record["kind"] != driver.KIND_ATTEMPT:
+        if record["kind"] not in (driver.KIND_ATTEMPT, driver.KIND_LANDING):
             continue
         key = (record["exe"], int(record["start"], _HEX))
         if record["outcome"] == driver.MATCHED:
             matched.add(key)
+        if record["kind"] == driver.KIND_LANDING:
+            continue
         if record["check"]["sweep_hit"]:
             hits[key] = record["function"]
     return [(exe, hits[(exe, start)]) for exe, start in sorted(set(hits) - matched)]
