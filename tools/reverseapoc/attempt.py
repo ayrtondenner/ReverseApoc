@@ -562,7 +562,86 @@ def _window_lines(fn: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _check_summary(doc: Mapping[str, Any]) -> list[str]:
+# ---- the region board (07.2-05; 999.7) ----
+
+BOARD_MIN_SIZE = 256  # the owner's line: the region board appears for a row of 256 B and up
+BOARD_HEAD = f"    region board (0x{check.BOARD_REGION_BYTES:X} bytes per region):"
+
+
+def _regions(fn: Mapping[str, Any]) -> list[int] | None:
+    """check's functions[].bytes.regions (differing bytes per 0x100 region), or None for an
+    older document without the key or a malformed value."""
+    same = fn.get("bytes")
+    regions = same.get("regions") if isinstance(same, Mapping) else None
+    if not isinstance(regions, list) or not all(type(k) is int and k >= 0 for k in regions):
+        return None
+    return regions
+
+
+def _function_regions(doc: object, function: str) -> list[int] | None:
+    """The regions of `function`'s entry (by name) in one check document, or None."""
+    functions = doc.get("functions") if isinstance(doc, Mapping) else None
+    for fn in functions if isinstance(functions, list) else ():
+        if isinstance(fn, Mapping) and fn.get("name") == function:
+            return _regions(fn)
+    return None
+
+
+def _board_row(index: int, count: int, n: int) -> str:
+    low = index * check.BOARD_REGION_BYTES
+    bounds = f"0x{low:03X}-0x{low + check.BOARD_REGION_BYTES - 1:03X}"
+    if count == 0:
+        return f"    {bounds}  exact in {n:04d}"
+    return f"    {bounds}  closest {n:04d} ({count} differ)"
+
+
+def region_board(
+    attempt_dir: Path, claim: Claim, size: int, *,
+    current: tuple[int, Mapping[str, Any]] | None = None,
+) -> list[str]:  # fmt: skip
+    """The region board of a claimed row of `size` bytes (none under BOARD_MIN_SIZE): per
+    0x100 region from the row start, the check with the fewest differing bytes there, "exact
+    in NNNN" at 0, else "closest NNNN (k differ)"; ties go to the earliest. `current` is the
+    run being summarised as (number, document), not saved yet when the summary is built. Only
+    the region counts check recorded are read: addresses on an implicit grid, never a byte."""
+    if size < BOARD_MIN_SIZE or current is None:
+        return []
+    n, doc = current
+    regions = _function_regions(doc, claim.function)
+    if regions is None:
+        return []
+    entries = [(n, regions)]
+    width = max(-(-size // check.BOARD_REGION_BYTES), *(len(r) for _, r in entries))
+    lines = [BOARD_HEAD]
+    for index in range(width):
+        # Past a check's last region neither side has a byte there: 0 differ.
+        count, best = min((r[index] if index < len(r) else 0, k) for k, r in entries)
+        lines.append(_board_row(index, count, best))
+    return lines
+
+
+def _claimed_size(claim: Claim) -> int:
+    """The claimed row's size, from the functions.csv cmd_check validated the claim against."""
+    row = claimed_row(read_functions_csv(config_root(claim, ROOTS) / claim.exe / FUNCTIONS_CSV),
+                      claim)  # fmt: skip
+    return row.end - row.start
+
+
+def _board(claim: Claim, n: int, doc: Mapping[str, Any]) -> list[str]:
+    """The board for `attempt check`'s summary. A functions.csv that no longer reads is said in
+    one line: the board only advises, and the run's evidence must still be saved."""
+    try:
+        size = _claimed_size(claim)
+    except (OSError, ValueError) as exc:
+        return [f"    region board: not shown ({_one_line(exc)})"]
+    return region_board(claim.attempt_dir, claim, size, current=(n, doc))
+
+
+def _check_summary(
+    doc: Mapping[str, Any], function: str | None = None, board: Sequence[str] = ()
+) -> list[str]:
+    """One line per function with its relocation problems and window; `board` (the region
+    board) follows the window of `function`, the claimed one."""
     lines = []
     for fn in doc["functions"]:
         same = fn["bytes"]
@@ -572,6 +651,8 @@ def _check_summary(doc: Mapping[str, Any]) -> list[str]:
                      f"reloc {reloc}  bytes {_ok(same['ok'])}{differ}")  # fmt: skip
         lines += [f"    reloc: {problem}" for problem in fn["reloc"]["problems"]]
         lines += _window_lines(fn)
+        if fn["name"] == function:
+            lines += board
     lines += [f"  problem: {p['name']} {p['va'] or ''} {p['reason']}" for p in doc["problems"]]
     lines += [f"  stub: {s['name']} {s['va']}" for s in doc.get("stubs", ())]
     lines += [f"  splice {s['exe']} {_ok(s['ok'])}" for s in doc["splice"]]
@@ -802,7 +883,8 @@ def _summary(
         body = _sweep_summary(doc, line)
     elif doc is not None:
         missing = [_not_compiled(claim)] if _claimed(doc, claim) is None else []
-        body = missing + _check_summary(doc)
+        board = _board(claim, line.n, doc)
+        body = missing + _check_summary(doc, claim.function, board)
     else:
         body = ["  the check printed no usable JSON"] + _tail(ran.stdout)
     if check_exit == EXIT_TOOL or doc is None:
