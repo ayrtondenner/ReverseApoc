@@ -2802,9 +2802,19 @@ def test_the_header_table_names_the_functions_the_lifter_can_meet(header, name):
 HEADER_CALLEE = VA + ROW_SPACING  # the one callee of every HEADER_ARGUMENT_ROWS row
 
 
+STRCMP_ROW = "29d0 c3"  # sub eax, edx; ret: two arguments, a result
+STRLEN_BODY = "89c7 29c9 49 31c0 f2ae f7d1 49"  # STRLEN_HEAD past its push ecx; push edi
+MOV_EAX_1_EDX_2 = "b801000000 ba02000000"  # mov eax, 1; mov edx, 2
+
+
 def _then_call(head: str) -> str:
     """`head`, then `call HEADER_CALLEE` at its end."""
     return f"{head} {call_to(VA + len(bytes.fromhex(head)), HEADER_CALLEE)}"
+
+
+def _then_jump(head: str) -> str:
+    """`head`, then a tail jump to HEADER_CALLEE at its end."""
+    return f"{head} e9{call_to(VA + len(bytes.fromhex(head)), HEADER_CALLEE)[2:]}"
 
 
 HEADER_ARGUMENT_ROWS = {  # case -> (caller code, callee code, callee symbol)
@@ -2815,6 +2825,32 @@ HEADER_ARGUMENT_ROWS = {  # case -> (caller code, callee code, callee symbol)
         MEMSET_ROW,
         "memset_",
     ),
+    # mov eax, 1; mov edx, 2; mov ebx, 3; mov ecx, 4; call memset_; add eax, ecx; ret: no header
+    "memset_no_header": (f"{_then_call(f'{SET_ARGS} b904000000')} 01c8 c3", MEMSET_ROW, "memset_"),
+    # sub esp, 10h; fld a; fabs; fstp c; mov eax, 1; mov edx, 2; call floor_; add esp, 10h; ret:
+    # math.h first, a callee with no signature and two registers set
+    "floor_two": (
+        f"{_then_call(f'{FRAME} {FABS_ROW} {MOV_EAX_1_EDX_2}')} {UNFRAME}",
+        BAD_ROW,
+        "floor_",
+    ),
+    # sub esp, 10h; mov eax, 1; mov edx, 2; call floor_; fld a; fabs; fstp c; add esp, 10h; ret:
+    # the call comes before the instruction that includes math.h
+    "floor_before": (
+        f"{_then_call(f'{FRAME} {MOV_EAX_1_EDX_2}')} {FABS_ROW} {UNFRAME}",
+        BAD_ROW,
+        "floor_",
+    ),
+    # push ecx; push edi; call strcmp_; the strlen body; mov eax, ecx; pop edi; pop ecx; ret:
+    # strcmp on the int parameters, before the inline strlen includes string.h
+    "strcmp_before": (
+        f"{_then_call('51 57')} {STRLEN_BODY} 89c8 {STRLEN_END}",
+        STRCMP_ROW,
+        "strcmp_",
+    ),
+    # push ecx; push edi; the strlen body; mov edx, ecx; mov eax, edi; pop edi; pop ecx;
+    # jmp strcmp_: string.h first, then a tail jump
+    "strcmp_tail": (_then_jump(f"51 57 {STRLEN_BODY} 89ca 89f8 5f 59"), STRCMP_ROW, "strcmp_"),
 }
 
 
@@ -2828,3 +2864,48 @@ def test_header_args_take_the_header_count():
     text = lift.lift_row(header_argument_exe("memset_extra"), VA)
     assert "r_eax = memset((void *)1, 2, 3);" in text, text
     assert "return r_eax + 4;" in text, text  # ecx survives the call
+
+
+def test_header_args_cast_a_double():
+    text = lift.lift_row(header_argument_exe("floor_two"), VA)
+    assert "r_eax = floor((double)1);" in text, text
+
+
+@pytest.mark.parametrize(
+    ("name", "call"),
+    [
+        ("floor_before", "r_eax = floor((double)1);"),
+        ("strcmp_before", "r_eax = strcmp((const char *)r_eax, (const char *)r_edx);"),
+    ],
+)
+def test_header_args_reach_a_call_before_the_include(name, call):
+    text = lift.lift_row(header_argument_exe(name), VA)
+    assert call in text, text
+
+
+def _top_level_args(inside: str) -> list[str]:
+    """The arguments of a call whose text between its outer parentheses is `inside`."""
+    args, depth, start = [], 0, 0
+    for n, ch in enumerate(inside):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if ch == "," and depth == 0:
+            args.append(inside[start:n].strip())
+            start = n + 1
+    return [*args, inside[start:].strip()]
+
+
+def test_header_args_reach_a_tail_jump():
+    text = lift.lift_row(header_argument_exe("strcmp_tail"), VA)
+    m = re.search(r"return strcmp\((.*)\);", text)
+    assert m, text
+    args = _top_level_args(m[1])
+    assert len(args) == 2, text
+    assert all(a.startswith("(const char *)") for a in args), text
+    assert "r_ebx" not in re.search(r"^int func_\w+\((.*)\)$", text, re.M)[1], text
+
+
+def test_header_args_leave_a_draft_without_the_header_alone():
+    text = lift.lift_row(header_argument_exe("memset_no_header"), VA)
+    assert "int memset(int, int, int, int);" in text, text
+    assert "r_eax = memset(1, 2, 3, 4);" in text, text
+    assert "#include" not in text, text

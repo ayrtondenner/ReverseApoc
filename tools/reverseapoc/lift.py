@@ -1846,7 +1846,8 @@ class Block_:
         nregs = self.lf.arg_counts[ci.address]
         if sig is not None and sig.nstack:
             raise Unliftable("tail: callee with stack arguments")
-        args = ", ".join(str(self.get(r)) for r in ARG_REGS[:nregs])
+        regs = [self.get(r) for r in ARG_REGS[:nregs]]
+        args = ", ".join(str(a) for a in _header_args(regs, self.lf.arg_types.get(ci.address)))
         returns = self.lf.sig.returns
         self.lf.externs.setdefault(
             name,
