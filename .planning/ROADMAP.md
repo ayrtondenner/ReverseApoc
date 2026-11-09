@@ -437,10 +437,47 @@ tooling, and build the harness for measuring model and effort by function size. 
   1. Each item has its plan, and each plan is done, partial or deferred with commits and tests; host and container suites green
   2. Matched bytes unchanged: `gate --all` and `ninja verify` exit 0 on the final main
   3. `drive --canary` passes with the new verbs and backends, and spike 012 can run from the shipped harness
-**Plans:** 0 plans
+**Plans:** 16 plans in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 07.2 to break down)
+
+**Wave 1**
+- [ ] 07.2-01-PLAN.md — schema-3 attempt record (ledger fields, hold-run state, HOLD_EXACT, landing record), Haiku/Sonnet ids, `stats --run` model x size table (PIPE-01)
+- [ ] 07.2-05-PLAN.md — region board: per-0x100 counts in check JSON, the board and the closest saved check at 256 B and up (PIPE-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 07.2-02-PLAN.md — give-up records: giveup.json, `attempt giveup`, the record's giveup, earlier give-ups and best C in the pack (PIPE-02)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 07.2-03-PLAN.md — plan and notes: plan.json, check-note.json, the exit-2 refusal using no check, the tool-recorded observed note, the canary (PIPE-03)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 07.2-07-PLAN.md — RL07 provenance markers, the byte-identity proof, the readability skill (PIPE-07)
+- [ ] 07.2-04-PLAN.md — `reverseapoc causes`: per-try rates, Watcom codes, mismatch classes, header gaps (PIPE-04)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 07.2-06-PLAN.md — harness: `--night-model`, `--picks`, `--stratify --write-picks`, `--hold`, `--land-held` (PIPE-06)
+- [ ] 07.2-14-PLAN.md — slot-model and lifter follow-ups on the converter curve; readability skill line 41 (PIPE-13; main checkout)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 07.2-12-PLAN.md — hosted backends: backends.toml, per-arm env, `--allow-egress`, token-leak guard, legal.md, the local arm last (PIPE-11)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 07.2-13-PLAN.md — Codex CLI adapter, its guard set, canary and the scoped runtime exception (PIPE-12)
+- [ ] 07.2-08-PLAN.md — base-vs-head CI: `compare-objects`, match.yml (disabled, label-gated), docs/ci.md (PIPE-08)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 07.2-15-PLAN.md — Antigravity (agy) adapter for Gemini on AI Plus, quota canary, OpenRouter fallback (PIPE-14)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 07.2-16-PLAN.md — multi-arm drive `--arm name=workers` (PIPE-15)
+- [ ] 07.2-09-PLAN.md — watcom-decomp skill: plan, notes, giveup, region board, through writing-skills RED first (PIPE-09)
+
+**Wave 10** *(blocked on Wave 9 completion; main checkout)*
+- [ ] 07.2-10-PLAN.md — evidence docs 9a-9d and the docs/tools.md rows (PIPE-10)
+
+**Wave 11** *(blocked on Wave 10 completion; main checkout)*
+- [ ] 07.2-11-PLAN.md — phase gate: suites, `gate --all`, `ninja verify`, dry runs, canary and refusals (PIPE-16)
 
 ### Phase 8: Clean-room specs for OpenApoc
 
@@ -475,7 +512,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
 | 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
-| 7.2. FNV-inspired matching pipeline (INSERTED) | 0/TBD | Not started | - |
+| 7.2. FNV-inspired matching pipeline (INSERTED) | 0/16 | Planned | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
