@@ -1460,6 +1460,8 @@ class SweepCell:
     percent: float = 0.0
     reloc_ok: bool = False
     differing: int = 0
+    first_va: int | None = None  # the first differing byte; None when exact or not measured
+    size: int | None = None  # our function's bytes under this cell; None when not measured
 
     @property
     def measured(self) -> bool:
@@ -1474,10 +1476,14 @@ class SweepCell:
         if not self.measured:
             return f"{head}  {self.status}"
         reloc = "reloc ok" if self.reloc_ok else "reloc FAILED"
-        return f"{head}  objdiff {self.percent:g}%  {reloc}  differing {self.differing}"
+        first = "none" if self.first_va is None else _hex(self.first_va)
+        size = "none" if self.size is None else self.size
+        return (f"{head}  objdiff {self.percent:g}%  {reloc}  differing {self.differing}  "
+                f"first_va {first}  size {size}")  # fmt: skip
 
     def to_json(self) -> dict[str, Any]:
         measured = self.measured
+        first_va = self.first_va if measured else None
         return {
             "cell": self.number,
             "compiler": f"{SWEEP_COMPILER}@{self.version}",
@@ -1486,6 +1492,8 @@ class SweepCell:
             "objdiff_percent": self.percent if measured else None,
             "reloc_ok": self.reloc_ok if measured else None,
             "differing": self.differing if measured else None,
+            "first_va": None if first_va is None else _hex(first_va),
+            "size": self.size if measured else None,
         }
 
 
@@ -1601,7 +1609,8 @@ def _measure(setup: _SweepSetup, number: int, version: str, flags: tuple[str, ..
     same = compare_bytes(d.ours, d.row, setup.exe.flat, reloc)
     percent = objdiff_percent(_cell_target(setup, number, d, reloc), base, d.symbol,
                               runner=setup.runner)  # fmt: skip
-    return SweepCell(number, version, flags, "", percent, reloc.ok, same.differing)
+    return SweepCell(number, version, flags, "", percent, reloc.ok, same.differing, same.first_va,
+                     d.size)
 
 
 def _cell_target(setup: _SweepSetup, number: int, d: Defined, reloc: RelocResult) -> Path:

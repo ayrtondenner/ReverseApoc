@@ -533,6 +533,62 @@ def test_sweep_log_carries_no_bytes(env):
         assert not re.search(r"\b[0-9a-f]{8,}\b", line)  # no hex dumps, no SHA-1s
 
 
+SWEEP_FLAGS = ("-4r", "-s", "-fpi")
+
+
+def test_sweep_cell_line_shows_first_va_and_size():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3, 0x0001000A, 11)
+    assert cell.line().endswith("differing 3  first_va 0x0001000A  size 11")
+    exact = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 100.0, True, 0, None, 11)
+    assert exact.line().endswith("differing 0  first_va none  size 11")
+    for status in (check.NOT_INSTALLED, check.COMPILE_FAILED, check.NOT_DEFINED):
+        line = check.SweepCell(1, "10.6", SWEEP_FLAGS, status).line()
+        assert line == f"cell 01  wcc386@10.6  -4r -s -fpi  {status}"
+
+
+def test_sweep_cell_json_carries_first_va_and_size():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3, 0x0001000A, 11).to_json()
+    assert (cell["first_va"], cell["size"]) == ("0x0001000A", 11)
+    assert list(cell)[:7] == ["cell", "compiler", "flags", "status", "objdiff_percent",
+                              "reloc_ok", "differing"]  # fmt: skip
+    assert cell["differing"] == 3 and cell["reloc_ok"] is True
+    exact = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 100.0, True, 0, None, 11).to_json()
+    assert (exact["first_va"], exact["size"]) == (None, 11)
+    failed = check.SweepCell(1, "10.6", SWEEP_FLAGS, check.COMPILE_FAILED).to_json()
+    assert (failed["first_va"], failed["size"]) == (None, None)
+
+
+def test_sweep_cell_first_va_defaults_for_seven_arguments():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3)
+    assert (cell.first_va, cell.size) == (None, None)
+
+
+class DifferingCompiler(FakeCompiler):
+    """Writes the matching object under `-ox`, else the object whose final ret is `inc eax`."""
+
+    def __call__(self, src, obj, **kwargs):
+        good = "-ox" in Path(kwargs["cflags"]).read_text(encoding="utf-8").split()
+        self.data = omf_object() if good else omf_object(code=DIFFERING_OURS)
+        return super().__call__(src, obj, **kwargs)
+
+
+def test_sweep_cells_report_first_va_and_size(env):
+    report = run_sweep(env, DifferingCompiler())
+    cells = report.to_json()["cells"]
+    assert len(cells) == 30 and all(cell["size"] == 11 for cell in cells)
+    ox = [cell for cell in cells if "-ox" in cell["flags"]]
+    assert len(ox) == 6 and all(cell["first_va"] is None for cell in ox)
+    others = [cell for cell in cells if "-ox" not in cell["flags"]]
+    assert all(cell["first_va"] == "0x0001000A" for cell in others)
+    text = report.log_path.read_text(encoding="utf-8")
+    lines = cell_lines(text)
+    assert all(line.endswith("  size 11") for line in lines)
+    assert sum(line.endswith("first_va 0x0001000A  size 11") for line in lines) == 24
+    assert sum(line.endswith("first_va none  size 11") for line in lines) == 6
+    for line in lines:
+        assert not re.search(r"\b[0-9a-f]{8,}\b", line)
+
+
 def test_sweep_leaves_cflags_alone(env):
     cflags = env.config / "cflags.txt"
     original_text = Path(check.DEFAULT_CFLAGS).read_bytes()
