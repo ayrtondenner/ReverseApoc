@@ -18,8 +18,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   tests/, configure.py, docs/ and .planning/. The worktree rule (261109-gzy): from a harness
   worktree cwd (.claude/worktrees/<name>/) it denies a Bash or PowerShell command, or a script
   the command names, that spells the main checkout's absolute path, and a script it cannot scan
-  (named through shell expansion, not one text, written and run by the same command). Every
-  other shell call gets no opinion.
+  (named through shell expansion, not one text, written and run by the same command, or named
+  beside a heredoc marker, cd, inline code or eval). Every other shell call gets no opinion.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
@@ -666,8 +666,20 @@ _RELATIVE_HINT = (
 _SCRIPT_SUFFIX = re.compile(r"\.(?:py|sh|bash|js|mjs|cjs|ps1)$", re.IGNORECASE)
 _PYTHON_SUFFIX = re.compile(r"\.py$", re.IGNORECASE)
 # What a shell would expand in a script word, so the hook cannot read it as written: a variable
-# ($, $env:, %VAR%), a command substitution or PowerShell escape (`), a glob, a leading ~.
-_EXPANSION = re.compile(r"[$`%*?\[]|^~")
+# ($, $env:, %VAR%), a command substitution or PowerShell escape (`), a glob, a brace, a
+# backslash-newline continuation, a leading ~.
+_EXPANSION = re.compile(r"[$`%*?\[{]|\\\n|^~")
+# Ruling 2: a command that names a script (anywhere in its text) and holds one of these is
+# denied, since the hook cannot tell which file runs: a heredoc or here-string marker, a
+# directory change, inline code or eval, a backslash-newline continuation.
+_SCRIPT_MENTION = re.compile(r"\.(?:py|sh|bash|js|mjs|cjs|ps1)(?![A-Za-z0-9_])", re.IGNORECASE)
+_INDIRECTION = re.compile(
+    r"<<"
+    r"|(?<![\w-])(?:cd|pushd|set-location|push-location|eval|invoke-expression|iex)(?![\w-])"
+    r"|(?<![\w-])-(?:c|command|encodedcommand)(?![\w-])"
+    r"|\\\r?\n",
+    re.IGNORECASE,
+)
 _SCRIPT_CAP = 1 << 20  # 1 MiB, more than three times the largest tracked tool (driver.py, ~300 KB)
 # UTF-32 first: its little-endian BOM (FF FE 00 00) starts with UTF-16's.
 _UTF32_BOMS = (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)
@@ -748,6 +760,7 @@ def _bash_tokens(command: str) -> list[tuple[str, bool]]:
                         punctuation_chars=_BASH_OPERATORS)  # fmt: skip
     lexer.whitespace = " \t\r"  # a newline separates commands, like `;`
     lexer.whitespace_split = True
+    lexer.commenters = ""  # ruling 2: no `#` comment hides a word from the split
     try:
         texts = list(lexer)
     except ValueError as exc:
@@ -850,11 +863,12 @@ def _script_denial(word: str, path: str, tool: str, pairs: Sequence[tuple[str, s
     return f"{where} {_spells(pairs[0][0])}" if _spells_main(text, pairs) else ""
 
 
-def _scripts_denial(command: str, cwd: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Why a script the command names is refused, or '': it needs shell expansion, the command
+def _scripts_denial(
+    words: Sequence[tuple[str, bool]], cwd: str, tool: str, pairs: Sequence[tuple[str, str]]
+) -> str:
+    """Why a script word of the command is refused, or '': it needs shell expansion, the command
     also writes it and names it again (it would run unscanned), or _script_denial refuses it.
     Each word is placed as written; a placing failure blocks (exit 2)."""
-    words = _script_words(tool, command)
     for word, _written in words:
         if _EXPANSION.search(word):
             return (f"{_where(word, tool, pairs)} needs shell expansion ($, %, a backtick, a glob "
@@ -877,6 +891,13 @@ def _scripts_denial(command: str, cwd: str, tool: str, pairs: Sequence[tuple[str
     return ""
 
 
+def _indirect(tool: str, name: str, trigger: str) -> str:
+    return (f"a {tool} command from the harness worktree {name} names a script and also holds "
+            f"{trigger!r} (a heredoc marker, a directory change, inline code or eval, or a "
+            "backslash-newline), so the hook cannot tell which file runs (261109-gzy); run the "
+            "script by a plain path from the worktree root, in a call of its own")  # fmt: skip
+
+
 def _worktree_command(payload: Mapping) -> Decision:
     """A Bash or PowerShell call from a harness worktree (the payload cwd under
     .claude/worktrees/<name>/) is denied when its command, or a script file it names, spells
@@ -897,7 +918,13 @@ def _worktree_command(payload: Mapping) -> Decision:
     main, name = pairs[0]
     if _spells_main(command, pairs):
         return _deny(f"a {tool} command from the harness worktree {name} {_spells(main)}")
-    reason = _scripts_denial(command, cwd, tool, pairs)
+    trigger = _INDIRECTION.search(command)
+    if trigger is not None and _SCRIPT_MENTION.search(command):
+        return _deny(_indirect(tool, name, trigger.group()))
+    words = _script_words(tool, command)
+    if trigger is not None and words:
+        return _deny(_indirect(tool, name, trigger.group()))
+    reason = _scripts_denial(words, cwd, tool, pairs)
     return _deny(reason) if reason else NO_OPINION
 
 

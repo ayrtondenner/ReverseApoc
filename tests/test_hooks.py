@@ -1349,7 +1349,7 @@ def test_worktree_command_reads_every_tool_script():
     ("Bash", "uv run python $HOME/x.py"), ("Bash", 'uv run python "${TMP}/x.py"'),
     ("Bash", "uv run python ~/x.py"), ("Bash", "bash `pwd`/x.sh"),
     ("Bash", "node tests/*.mjs"), ("Bash", "uv run python %TEMP%/x.py"),
-    ("Bash", "X=$PWD/x.py uv run python -c 1"),
+    ("Bash", "X=$PWD/x.py uv run pytest -q"),
     ("PowerShell", "& $env:TEMP\\x.ps1"), ("PowerShell", '& "$PWD\\x.ps1"'),
     ("PowerShell", "& ~\\x.ps1"), ("PowerShell", "& .\\my` dir\\x.ps1"),
 ])  # fmt: skip
@@ -1441,12 +1441,76 @@ def test_worktree_command_denies_a_script_it_writes_and_runs(worktree, name, com
     assert decision.deny and "the same command writes it" in decision.reason, command
 
 
-@pytest.mark.parametrize("command", ["cat > x.py <<'EOF'\nprint(1)\nEOF",
-                                     "uv run python x.py > out.txt", "cp a.py b.py",
+@pytest.mark.parametrize("command", ["uv run python x.py > out.txt", "cp a.py b.py",
                                      "tee x.sh < /dev/null"])  # fmt: skip
 def test_worktree_command_allows_a_write_it_does_not_run(worktree, command):
     """Ruling 4: a missing script that is only written, or only run, still gets no opinion."""
     assert not always(shell("Bash", command, worktree)).deny, command
+
+
+# Second security review of 261109-gzy (coordinator ruling 2): fail closed, no parser cleverness.
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "cat > notes.txt <<'EOF'\n{main}\nEOF"), ("Bash", "ls # {main}"),
+    ("Bash", 'uv run python -c "print(\'{main}\')"'), ("Bash", "echo '{main}'\"x\""),
+    ("PowerShell", "@'\n{main}\n'@ | Out-File notes.txt"), ("PowerShell", "<# {main} #> ls"),
+])  # fmt: skip
+def test_worktree_command_raw_text_check_is_independent(repo, worktree, name, command):
+    """Ruling 2 item 1: the whole command text is scanned as written, before any tokenizing,
+    so a heredoc body, a comment or a -c string still denies; so does a script's whole text."""
+    decision = always(shell(name, command.format(main=main_watcom(repo)), worktree))
+    assert decision.deny and f"a {name} command from the harness worktree" in decision.reason
+    (worktree / "x.sh").write_text(f"# {main_watcom(repo)}\necho ok\n", encoding="utf-8")
+    assert script_denial(always(shell("Bash", "bash x.sh", worktree)), "x.sh")
+
+
+def test_worktree_command_bash_has_no_comments(worktree):
+    """Ruling 2 item 2: `#` starts no comment for the split, so nothing after it is skipped,
+    and an apostrophe after it breaks the split, which blocks."""
+    decision = always(shell("Bash", "echo ok # && bash $HOME/x.sh", worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason
+    with pytest.raises(hooks.HookError, match="cannot be split"):
+        always(shell("Bash", "ls # it's", worktree))
+
+
+INDIRECTION = [
+    ("Bash", "cat > x.py <<'EOF'\nprint(1)\nEOF"), ("Bash", "bash <<EOF\nbash x.sh\nEOF"),
+    ("Bash", "uv run python <<< 'import x' x.py"), ("Bash", "cd tools && uv run python x.py"),
+    ("Bash", "pushd tools; bash x.sh"), ("Bash", "bash -c 'node x.mjs'"),
+    ("Bash", 'eval "uv run python x.py"'), ("Bash", "uv run python \\\n  x.py"),
+    ("PowerShell", "Set-Location tools; & ./x.ps1"), ("PowerShell", "Push-Location t; & ./x.ps1"),
+    ("PowerShell", "pwsh -Command ./x.ps1"), ("PowerShell", "pwsh -EncodedCommand AAAA x.ps1"),
+    ("PowerShell", "Invoke-Expression './x.ps1'"), ("PowerShell", "iex './x.ps1'"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), INDIRECTION)
+def test_worktree_command_denies_scripts_beside_indirection(worktree, name, command):
+    """Ruling 2 item 3: a command that names a script and also holds a heredoc marker, a
+    directory change, inline code or eval, or a backslash-newline is denied: the hook cannot
+    tell which file runs."""
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "cannot tell which file runs" in decision.reason, command
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "uv run python x.py > build/log.txt"), ("Bash", "bash x.sh >> /tmp/x/log.txt 2>&1"),
+    ("PowerShell", "& ./x.ps1 > build/log.txt"), ("Bash", "cd tools && ls"),
+    ("Bash", "cat > notes.txt <<'EOF'\nx\nEOF"),
+])  # fmt: skip
+def test_worktree_command_allows_plain_output_redirection(worktree, name, command):
+    """Ruling 2 item 3: a script's stdout redirected to a file stays allowed, and a heredoc or a
+    cd with no script named says nothing."""
+    assert not always(shell(name, command, worktree)).deny, command
+
+
+def test_worktree_command_expansion_covers_braces_and_continuations(worktree):
+    """Ruling 2 item 4: a brace or a backslash-newline in a script word is an expansion."""
+    for word in ("x{1,2}.sh", "x\\\n.sh"):
+        assert hooks._EXPANSION.search(word), word
+    decision = always(shell("Bash", "bash x{1,2}.sh", worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason
 
 
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
