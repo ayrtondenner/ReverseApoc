@@ -276,7 +276,7 @@ Agents have gamed verifiers before: Claude rewrote a SHA-1 to force a "match" an
 
 - **view mode (Phase 7, D-24):** with the driver's `REVERSEAPOC_CLAIM` and `REVERSEAPOC_UNIT_FILE` (at the view shape `build/driver/.../view/src/<exe>/<unit>.c`, naming the claim), a session writes only its view unit, the attempt's `notes.md` and its `proposals.jsonl` (`REVERSEAPOC_PROPOSALS`). Without `REVERSEAPOC_UNIT_FILE` it writes nothing: Phase 7 removed the Phase 6 allowlist of `src/<exe>/<unit>.c` and new `include/*.h`. A write to `include/` or a `config/<exe>/symbols.csv` is denied as shared naming state, which only the driver writes (D-19). `REVERSEAPOC_SESSION_KIND` is `matching` or `readability`; any other value writes nothing, and a readability session writes only in view mode. The driver's post-session audit applies the same allowlist to every path a write tool names in the transcript;
 - **agents write no `#pragma aux` of any kind in the pilot, and no other `#pragma` either** (D-18); calling-convention pragmas come only in human-reviewed commits;
-- Read, Glob and Grep only inside the checkout, never `.env*`;
+- Read, Glob and Grep only inside the checkout, never `.env*`. A Glob pattern or Grep glob may hold plain `{a,b}` alternatives, each expansion judged by the same rule, while nested, escaped or range braces and `[...]` classes are refused (261109-gzw);
 - Bash only as one of the attempt wrapper's exact forms, never in the background, and `attempt check` (plain or `--sweep`) only with the Bash tool's `timeout` set to 600000: at the tool's 120 s default the tool kills the wrapper mid-run and its `check.lock` refuses every later check of the attempt;
 - every other tool is denied, and without a valid claim every write and every Bash call is denied.
 
