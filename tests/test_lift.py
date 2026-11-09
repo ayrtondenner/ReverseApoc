@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import batch, fileio, lift
+from reverseapoc import batch, fileio, lift, symbols
 from reverseapoc.cli import main
 from reverseapoc.functions import KIND_DATA_IN_CODE, FunctionRow
 from reverseapoc.le import Fixup
@@ -2909,3 +2909,26 @@ def test_header_args_leave_a_draft_without_the_header_alone():
     assert "int memset(int, int, int, int);" in text, text
     assert "r_eax = memset(1, 2, 3, 4);" in text, text
     assert "#include" not in text, text
+
+
+class RowStartSymbols(StubSymbols):
+    """StubSymbols, but a function name exists only at a row start, as in symbols.SymbolTable."""
+
+    def __init__(self, starts: set[int]):
+        self.starts = starts
+
+    def c_name(self, va: int, *, data: bool = False) -> str:
+        if not data and va not in self.starts:
+            raise symbols.SymbolError(f"no functions.csv row starts at {va:#010x}")
+        return super().c_name(va, data=data)
+
+
+def test_a_call_into_a_row_with_a_header_included_is_unliftable():
+    # the inline strlen; mov eax, ecx; mov eax, 1; mov edx, 2; mov ebx, 3; call one byte into
+    # the next row; pop edi; pop ecx; ret: string.h is included, the target has no name
+    head = f"{STRLEN_HEAD} 89c8 {SET_ARGS}"
+    code = f"{head} {call_to(VA + len(bytes.fromhex(head)), HEADER_CALLEE + 1)} {STRLEN_END}"
+    exe = stub_exe(code, MEMSET_ROW)
+    exe = replace(exe, symbols=RowStartSymbols({row.start for row in exe.rows}))
+    with pytest.raises(lift.Unliftable, match="call: target is not a row start"):
+        lift.lift_row(exe, VA)
