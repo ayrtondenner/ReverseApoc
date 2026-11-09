@@ -28,6 +28,7 @@ from omfimage import (
     segdef32,
 )
 from relocpair import (
+    CALL_FIELD,
     CODE_BASE,
     FILLER_TAIL,
     FLAT_LNAME,
@@ -530,6 +531,62 @@ def test_sweep_log_carries_no_bytes(env):
         words = line.split()
         assert words[0] == "cell" and words[2].startswith("wcc386@")
         assert not re.search(r"\b[0-9a-f]{8,}\b", line)  # no hex dumps, no SHA-1s
+
+
+SWEEP_FLAGS = ("-4r", "-s", "-fpi")
+
+
+def test_sweep_cell_line_shows_first_va_and_size():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3, 0x0001000A, 11)
+    assert cell.line().endswith("differing 3  first_va 0x0001000A  size 11")
+    exact = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 100.0, True, 0, None, 11)
+    assert exact.line().endswith("differing 0  first_va none  size 11")
+    for status in (check.NOT_INSTALLED, check.COMPILE_FAILED, check.NOT_DEFINED):
+        line = check.SweepCell(1, "10.6", SWEEP_FLAGS, status).line()
+        assert line == f"cell 01  wcc386@10.6  -4r -s -fpi  {status}"
+
+
+def test_sweep_cell_json_carries_first_va_and_size():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3, 0x0001000A, 11).to_json()
+    assert (cell["first_va"], cell["size"]) == ("0x0001000A", 11)
+    assert list(cell)[:7] == ["cell", "compiler", "flags", "status", "objdiff_percent",
+                              "reloc_ok", "differing"]  # fmt: skip
+    assert cell["differing"] == 3 and cell["reloc_ok"] is True
+    exact = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 100.0, True, 0, None, 11).to_json()
+    assert (exact["first_va"], exact["size"]) == (None, 11)
+    failed = check.SweepCell(1, "10.6", SWEEP_FLAGS, check.COMPILE_FAILED).to_json()
+    assert (failed["first_va"], failed["size"]) == (None, None)
+
+
+def test_sweep_cell_first_va_defaults_for_seven_arguments():
+    cell = check.SweepCell(1, "10.6", SWEEP_FLAGS, "", 87.5, True, 3)
+    assert (cell.first_va, cell.size) == (None, None)
+
+
+class DifferingCompiler(FakeCompiler):
+    """Writes the matching object under `-ox`, else the object whose final ret is `inc eax`."""
+
+    def __call__(self, src, obj, **kwargs):
+        good = "-ox" in Path(kwargs["cflags"]).read_text(encoding="utf-8").split()
+        self.data = omf_object() if good else omf_object(code=DIFFERING_OURS)
+        return super().__call__(src, obj, **kwargs)
+
+
+def test_sweep_cells_report_first_va_and_size(env):
+    report = run_sweep(env, DifferingCompiler())
+    cells = report.to_json()["cells"]
+    assert len(cells) == 30 and all(cell["size"] == 11 for cell in cells)
+    ox = [cell for cell in cells if "-ox" in cell["flags"]]
+    assert len(ox) == 6 and all(cell["first_va"] is None for cell in ox)
+    others = [cell for cell in cells if "-ox" not in cell["flags"]]
+    assert all(cell["first_va"] == "0x0001000A" for cell in others)
+    text = report.log_path.read_text(encoding="utf-8")
+    lines = cell_lines(text)
+    assert all(line.endswith("  size 11") for line in lines)
+    assert sum(line.endswith("first_va 0x0001000A  size 11") for line in lines) == 24
+    assert sum(line.endswith("first_va none  size 11") for line in lines) == 6
+    for line in lines:
+        assert not re.search(r"\b[0-9a-f]{8,}\b", line)
 
 
 def test_sweep_leaves_cflags_alone(env):
@@ -2026,6 +2083,21 @@ def _function_check(pair, verdict):
                                cmp.ok, cmp.differing, cmp.first_va)  # fmt: skip
 
 
+def test_compare_bytes_ignores_every_relocated_field():
+    """The placeholders of GOOD_OURS differ from GOOD_ORIGINAL only inside the call and load
+    fields; masking ours' and theirs' fields (either side's set) hides them all, and an
+    unmasked field counts each differing byte."""
+    from reverseapoc.relocs import RelocResult
+
+    flat = bytes(CODE_BASE) + GOOD_ORIGINAL
+    both = RelocResult(True, (), frozenset({CALL_FIELD}), frozenset({LOAD_FIELD}))
+    cmp = check.compare_bytes(GOOD_OURS, ROW, flat, both)
+    assert (cmp.ok, cmp.differing, cmp.first_va) == (True, 0, None)
+    call_only = RelocResult(True, (), frozenset({CALL_FIELD}), frozenset())
+    cmp = check.compare_bytes(GOOD_OURS, ROW, flat, call_only)
+    assert (cmp.ok, cmp.differing, cmp.first_va) == (False, 1, LOAD_FIELD)
+
+
 def test_compare_bytes_without_kept_filler_counts_the_shortfall():
     pair = filler_pair()
     verdict = replace(_filler_verdict(pair), filler=0)
@@ -2390,3 +2462,134 @@ def test_view_reuse_reads_the_object_once(two_exes, monkeypatch):
     assert_all_ok(view_check(two_exes, second, **roots))
     assert compiled(second) == [(STEM, f"{UNIT}.c")]
     assert len(reads) == 1
+
+
+# ---- 261109-gzv: the window of ours beside the original's at the first difference -----------
+
+DIFFERING_OURS = GOOD_OURS[:-1] + b"\x40"  # the final ret made `inc eax`: never filler (not 90)
+WINDOW_BASE = 0x10000
+NO_RELOC = check.RelocResult(False, (), frozenset(), frozenset())
+INC = {0x40: "eax", 0x41: "ecx", 0x42: "edx"}  # one-byte `inc r32`, made-up code
+
+
+def _window(ours: bytes, original: bytes, first_va: int, reloc=NO_RELOC):
+    row = FunctionRow(WINDOW_BASE, WINDOW_BASE + len(original), "func_00010000", "game", UNIT,
+                      "call")  # fmt: skip
+    return check.difference_window(ours, row, bytes(WINDOW_BASE) + original, reloc, first_va)
+
+
+def _cell(cell) -> tuple[int, str, str, bool] | None:
+    return None if cell is None else (cell.va, cell.mnemonic, cell.operands, cell.relocated)
+
+
+def _inc(va: int, code: int) -> tuple[int, str, str, bool]:
+    return (va, "inc", INC[code], False)
+
+
+def test_window_check_json_and_attempt_summary(env, monkeypatch, capsys):
+    """The tracer: a synthetic differing object -> check's verdict as before -> functions[].window
+    in check --json -> attempt's printed block."""
+    from reverseapoc import attempt
+
+    compiler = FakeCompiler(omf_object(code=DIFFERING_OURS))
+    result = run_check(env, compiler)
+    (fn,) = result.functions
+    assert result.exit_code == check.EXIT_MISMATCH
+    assert (fn.bytes_ok, fn.differing, fn.first_va) == (False, 1, CODE_BASE + 10)
+    assert fn.objdiff_percent == 100.0  # FakeObjdiff's score: the window never feeds it
+    assert fn.reloc.problems == ("0x0001000A: first of 1 differing bytes outside the relocated "
+                                 "fields",)  # fmt: skip
+    assert [row.first for row in fn.window] == [False, False, True]
+    assert [row.ours.va for row in fn.window] == [CODE_BASE, CODE_BASE + 5, CODE_BASE + 10]
+    assert [row.original.va for row in fn.window] == [CODE_BASE, CODE_BASE + 5, CODE_BASE + 10]
+    assert [(r.ours.relocated, r.original.relocated) for r in fn.window] == [
+        (True, True), (True, True), (False, False)]  # fmt: skip
+    assert _cell(fn.window[2].ours) == (CODE_BASE + 10, "inc", "eax", False)
+    assert _cell(fn.window[2].original) == (CODE_BASE + 10, "ret", "", False)
+
+    patch_tools(monkeypatch, compiler)
+    assert cli_main(["check", f"{STEM}/{UNIT}", *env.argv(), "--json"]) == 1
+    doc = json.loads(capsys.readouterr().out)
+    (fn_doc,) = doc["functions"]
+    assert fn_doc["window"] == [row.to_json() for row in fn.window]
+    for row in fn_doc["window"]:
+        assert set(row) == {"first", "ours", "original"}
+        assert set(row["ours"]) == set(row["original"]) == {"va", "mnemonic", "operands",
+                                                            "relocated"}  # fmt: skip
+    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler"}
+    lines = attempt._check_summary(doc)
+    assert "    first difference at 0x0001000A: ours | original" in lines
+    (first,) = [line for line in lines if line.startswith("    > ")]
+    assert first.startswith("    > 0x0001000A  inc eax")
+    assert first.split(" | ")[1] == "0x0001000A  ret"
+
+
+def test_window_is_empty_when_the_bytes_match(env):
+    (fn,) = run_check(env).functions
+    assert fn.window == ()
+    fn_doc = fn.to_json()
+    assert fn_doc["window"] == []
+    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler"}
+
+
+def test_window_holds_three_before_and_four_after():
+    ours = bytes([0x40] * 6 + [0x41] + [0x40] * 5 + [0xC3])
+    original = bytes([0x40] * 6 + [0x42] + [0x40] * 5 + [0xC3])
+    window = _window(ours, original, WINDOW_BASE + 6)
+    assert len(window) == check.WINDOW_BEFORE + 1 + check.WINDOW_AFTER == 8
+    assert [row.first for row in window] == [False] * 3 + [True] + [False] * 4
+    assert _cell(window[3].ours) == _inc(WINDOW_BASE + 6, 0x41)
+    assert _cell(window[3].original) == _inc(WINDOW_BASE + 6, 0x42)
+    for row in window[:3] + window[4:]:
+        assert _cell(row.ours) == _cell(row.original)
+    assert [row.ours.va for row in window] == list(range(WINDOW_BASE + 3, WINDOW_BASE + 11))
+
+
+def test_window_clips_at_the_function_start():
+    ours = bytes([0x40, 0x41, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC3])
+    original = bytes([0x40, 0x42, 0x40, 0x40, 0x40, 0x40, 0x40, 0xC3])
+    window = _window(ours, original, WINDOW_BASE + 1)
+    assert [row.first for row in window] == [False, True, False, False, False, False]
+    assert window[0].ours.va == WINDOW_BASE
+
+
+def test_window_when_ours_is_shorter():
+    original = bytes([0x40] * 12 + [0xC3])
+    ours = original[:-3]
+    window = _window(ours, original, WINDOW_BASE + len(ours))
+    first = [row.first for row in window].index(True)
+    assert first == 3
+    assert all(row.ours is not None for row in window[:first])
+    assert all(_cell(row.ours) == _cell(row.original) for row in window[:first])
+    assert all(row.ours is None for row in window[first:])
+    assert window[first].original.va == WINDOW_BASE + len(ours)
+    assert window[-1].original.mnemonic == "ret"
+
+
+def test_window_when_ours_is_longer():
+    original = bytes([0x40] * 4 + [0xC3])
+    ours = original + bytes([0x40, 0x40])
+    window = _window(ours, original, WINDOW_BASE + len(original))
+    (first,) = [row for row in window if row.first]
+    assert first.original is None
+    assert _cell(first.ours) == _inc(WINDOW_BASE + len(original), 0x40)
+    assert window[-1].original is None and window[-1].ours is not None
+
+
+def test_window_marks_relocated_instructions_on_both_sides():
+    """An instruction over a field of either side is relocated on both: the union mask
+    compare_bytes ignores (batch.tokens' rule)."""
+    ours = bytes.fromhex("b800000000" "40" "c3")  # mov eax, imm32 with a placeholder
+    original = bytes.fromhex("b807000000" "41" "c3")
+    reloc = check.RelocResult(True, (), frozenset({WINDOW_BASE + 1}), frozenset())
+    window = _window(ours, original, WINDOW_BASE + 5, reloc)
+    assert [row.first for row in window] == [False, True, False]
+    assert (window[0].ours.mnemonic, window[0].original.mnemonic) == ("mov", "mov")
+    assert window[0].ours.relocated and window[0].original.relocated
+    assert not any(cell.relocated for row in window[1:] for cell in (row.ours, row.original))
+
+
+def test_window_defaults_for_an_eight_argument_function_check():
+    fn = check.FunctionCheck("func_00010000", CODE_BASE, 11, 100.0, NO_RELOC, True, 0, None)
+    assert fn.window == ()
+    assert fn.to_json()["window"] == []

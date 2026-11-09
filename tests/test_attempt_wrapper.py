@@ -82,11 +82,21 @@ def _check_doc(*, ok: bool, percent: float = 100.0) -> dict:
     }  # fmt: skip
 
 
-def _cell(number: int, version: str, flags: list[str], percent: float, *, reloc_ok: bool = True,
-          differing: int = 0) -> dict:  # fmt: skip
-    return {"cell": number, "compiler": f"wcc386@{version}", "flags": flags,
+_NO_KEY = object()  # a cell from before 261109-gzv: no first_va, no size
+
+
+def _cell(
+    number: int, version: str, flags: list[str], percent: float, *, reloc_ok: bool = True,
+    differing: int = 0, first_va: object = _NO_KEY, size: object = _NO_KEY,
+) -> dict:  # fmt: skip
+    cell = {"cell": number, "compiler": f"wcc386@{version}", "flags": flags,
             "status": "measured", "objdiff_percent": percent, "reloc_ok": reloc_ok,
             "differing": differing}  # fmt: skip
+    if first_va is not _NO_KEY:
+        cell["first_va"] = first_va
+    if size is not _NO_KEY:
+        cell["size"] = size
+    return cell
 
 
 def _sweep_doc(*cells: dict) -> dict:
@@ -426,6 +436,81 @@ def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
     runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(same, near)), "")
     assert _run(["attempt", "check", "--sweep"]) == 0
     assert _lines(repo)[1]["sweep_hit"] is None
+
+
+# ---- 261109-gzv: the window of ours beside the original's ----
+
+_LOG_KEYS = {"n", "exit", "sweep", "best_percent", "reloc_ok", "bytes_ok", "splice_ok",
+             "sweep_hit", "source", "readlint_violations", "readlint_waivers"}  # fmt: skip
+
+
+def _insn(va: str, mnemonic: str, operands: str, relocated: bool = False) -> dict:
+    return {"va": va, "mnemonic": mnemonic, "operands": operands, "relocated": relocated}
+
+
+def _window_doc() -> dict:
+    """A mismatch whose function carries three made-up window rows: an equal lead-in, the first
+    differing pair (ours over a relocated field), and a row only the original has."""
+    doc = _check_doc(ok=False)
+    fn = doc["functions"][0]
+    fn["bytes"]["first_va"] = "0x000A3985"
+    fn["window"] = [
+        {"first": False, "ours": _insn("0x000A3980", "push", "ebx"),
+         "original": _insn("0x000A3980", "push", "ebx")},
+        {"first": True, "ours": _insn("0x000A3985", "mov", "eax, dword ptr [0]", True),
+         "original": _insn("0x000A3985", "mov", "eax, 1")},
+        {"first": False, "ours": None, "original": _insn("0x000A398A", "ret", "")},
+    ]  # fmt: skip
+    return doc
+
+
+def test_attempt_check_prints_the_window(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_window_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    head = out.index("    first difference at 0x000A3985: ours | original")
+    wide = "0x000A3985  mov eax, dword ptr [0]  (relocated)"  # the widest ours cell
+    assert out[head + 1 : head + 4] == [
+        f"      {'0x000A3980  push ebx':<{len(wide)}} | 0x000A3980  push ebx",
+        f"    > {wide} | 0x000A3985  mov eax, 1",
+        f"      {'-':<{len(wide)}} | 0x000A398A  ret",
+    ]
+    assert len(out) > head + 4 and not out[head + 4].startswith("      0x")
+    assert out[head - 1].startswith("    reloc: made-up relocation problem")
+
+
+def test_attempt_check_without_a_window_prints_no_window(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "first difference at" not in capsys.readouterr().out
+
+
+def test_attempt_check_window_never_reaches_the_log(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_window_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    (line,) = _lines(repo)
+    assert set(line) == _LOG_KEYS
+    saved = json.loads((repo / "checks" / "0001.json").read_text(encoding="utf-8"))
+    assert saved["functions"][0]["window"] == _window_doc()["functions"][0]["window"]
+
+
+def test_attempt_sweep_best_cells_show_first_va_and_size(repo: Path, monkeypatch, capsys):
+    best = _cell(1, "10.6", ["-4r", "-s", "-fpi"], 62.5, differing=3, first_va="0x000A3985",
+                 size=16)  # fmt: skip
+    staged = _cell(31, "10.6", ["-4r", "-od", "-s", "-fpi"], 50.0, first_va=None, size=16)
+    doc = {**_sweep_doc(best), "stage2": {"from": 1, "cells": [staged], "best": [31]}}
+    runner = _use(monkeypatch, FakeRunner(json.dumps(doc)))
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert ("  best cell 01  wcc386@10.6 -4r -s -fpi  objdiff 62.5%  reloc ok  differing 3  "
+            "first_va 0x000A3985  size 16") in out  # fmt: skip
+    assert ("  stage 2 best cell 31  wcc386@10.6 -4r -od -s -fpi  objdiff 50%  reloc ok  "
+            "differing 0  first_va none  size 16") in out  # fmt: skip
+
+    runner.answer = attempt.Ran(0, json.dumps(_sweep_doc(_cell(1, "10.6", ["-4r"], 62.5))), "")
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    out = capsys.readouterr().out.splitlines()
+    assert "  best cell 01  wcc386@10.6 -4r  objdiff 62.5%  reloc ok  differing 0" in out
 
 
 def _stub_doc() -> dict:
