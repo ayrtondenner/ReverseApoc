@@ -8,7 +8,8 @@ wrapper use. `--bare` is never passed: it needs ANTHROPIC_API_KEY and would drop
 subscription login (D-06). `--settings` and `--append-system-prompt-file` are relative to the
 repository root, so the driver runs the session with `cwd` set to it (ruling F11).
 
-`goal_prompt` is the /goal prompt for one claim (D-07); `readability_goal` that of a
+`goal_prompt` is the /goal prompt for one claim (D-07), its stop clause the skill's STOP_RULES
+(261109-gzx); `readability_goal` that of a
 readability session, whose argv appends READABILITY_SKILL (07-38, D-18). `run_session` runs
 the argv, saves every stdout line as it arrives to the attempt's transcript.jsonl and parses it
 with streamjson. At
@@ -46,6 +47,16 @@ MAX_TURNS = 40  # D-07
 MAX_BUDGET_USD = 5  # D-06 (Phase 7 D-07: per Opus session), a runaway guard
 FABLE_BUDGET_USD = 12.5  # Phase 7 D-25: per Fable session
 MAX_CHECK_RUNS = 25  # D-07's /goal clause
+# The watcom-decomp skill's "When to give up" stops after exit `0`, in the skill's order and
+# words; tests/test_skill.py pins the equality (261109-gzx).
+STOP_RULES = (
+    "a sweep printed `sweep hit: needs flags`",
+    "three different C shapes leave objdiff below 100",
+    f"all {MAX_CHECK_RUNS} check runs are used",
+    "about 25 of 30 minutes or 35 of 40 turns are gone",
+    "needs flags (no -s), a jump table that cannot lead the unit or has a target outside the "
+    "function, or another check running in this attempt",
+)
 TIMEOUT_S = 30 * 60  # D-07's wall clock per session
 _POLL_S = 1.0  # how often the reader looks at the clock while no line comes
 _DRAIN_S = 5.0  # after a kill, how long to wait for each line the dying tree still wrote
@@ -139,7 +150,9 @@ def goal_prompt(function: str, unit: str, exe: str, *, unit_path: str) -> str:
     """The /goal prompt for the claim `exe`/`unit` and its function (D-07). The session edits
     its private view unit (07-13, D-24), so the prompt names `unit_path`, the repo-relative view
     unit, as the file the function is in. The names and the path are checked first, so nothing
-    but a plain identifier or the view unit's exact shape reaches the prompt."""
+    but a plain identifier or the view unit's exact shape reaches the prompt. Its stop clause is
+    STOP_RULES, the skill's own stop list, so the /goal Stop hook admits the stops the skill asks
+    for and blocks the rest (261109-gzx)."""
     if exe not in EXES:
         raise ValueError(f"unknown EXE {exe!r}; expected one of {', '.join(EXES)}")
     if not _UNIT.fullmatch(unit):
@@ -152,8 +165,10 @@ def goal_prompt(function: str, unit: str, exe: str, *, unit_path: str) -> str:
     return (
         f"/goal Make `{_CHECK}` exit 0 for {function}, the claimed function in your private "
         f"copy {unit_path} of the unit (claim {exe}/{unit}); edit only that file, and write this "
-        "attempt's notes.md (its path follows `notes:` in the check output); or stop after "
-        f"{MAX_CHECK_RUNS} check runs, with notes.md written."
+        "attempt's notes.md (its path follows `notes:` in the check output). Or stop with "
+        "notes.md written once one of these holds, naming it and its evidence (check numbers or "
+        f"the printed line) in your last message: {'; '.join(STOP_RULES)}. No other stop meets "
+        "this goal."
     )
 
 
