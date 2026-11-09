@@ -515,6 +515,62 @@ def test_attempt_sweep_best_cells_show_first_va_and_size(repo: Path, monkeypatch
     assert "  best cell 01  wcc386@10.6 -4r  objdiff 62.5%  reloc ok  differing 0" in out
 
 
+# ---- 07.2-05: the region board (999.7), at 256 B and up ----
+
+BOARD_HEAD = "    region board (0x100 bytes per region):"
+
+
+def _claimed_length(length: int) -> None:
+    """Rewrite the made-up functions.csv so the claimed row is `length` bytes long."""
+    start = 0x000A3980
+    rows = [CHECK_ROWS[0],
+            FunctionRow(start, start + length, FUNC, "game", "u_000a34f0", "call"),
+            FunctionRow(start + length, start + length + 0x10, "func_000A3990", "runtime",
+                        "u_000a34f0", "runtime"),
+            CHECK_ROWS[3]]  # fmt: skip
+    write_functions_csv(attempt.ROOTS.config / "ufo2p" / "functions.csv", rows, "UFO2P.EXE")
+
+
+def _regions_doc(regions: list[int] | None) -> dict:
+    """A mismatch whose claimed function carries made-up per-region counts (none: an older
+    document without the key)."""
+    doc = _window_doc()
+    if regions is not None:
+        doc["functions"][0]["bytes"]["regions"] = regions
+        doc["functions"][0]["bytes"]["differing"] = sum(regions)
+    return doc
+
+
+def test_region_board_printed_at_256(repo: Path, monkeypatch, capsys):
+    assert attempt.BOARD_MIN_SIZE == 256
+    _claimed_length(0x200)
+    _use(monkeypatch, FakeRunner(json.dumps(_regions_doc([0, 5])), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    head = out.index(BOARD_HEAD)
+    assert out[head + 1 : head + 3] == ["    0x000-0x0FF  exact in 0001",
+                                        "    0x100-0x1FF  closest 0001 (5 differ)"]  # fmt: skip
+    assert head > out.index("    > 0x000A3985  mov eax, dword ptr [0]  (relocated) | "
+                            "0x000A3985  mov eax, 1")  # after the window  # fmt: skip
+    saved = json.loads((repo / "checks" / "0001.json").read_text(encoding="utf-8"))
+    assert saved["functions"][0]["bytes"]["regions"] == [0, 5]
+
+
+@pytest.mark.parametrize(("length", "shown"), [(0xF0, False), (0xFF, False), (0x100, True)])
+def test_no_region_board_under_256(repo: Path, monkeypatch, capsys, length, shown):
+    _claimed_length(length)
+    _use(monkeypatch, FakeRunner(json.dumps(_regions_doc([5])), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert (BOARD_HEAD in capsys.readouterr().out.splitlines()) is shown
+
+
+def test_no_region_board_without_regions(repo: Path, monkeypatch, capsys):
+    _claimed_length(0x200)
+    _use(monkeypatch, FakeRunner(json.dumps(_regions_doc(None)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "region board" not in capsys.readouterr().out
+
+
 def _stub_doc() -> dict:
     """check's JSON for a unit whose other function matched while the claimed one is still
     INCLUDE_ASM: check's unit-wide ok is true and the claimed function is only a stub."""
