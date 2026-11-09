@@ -44,6 +44,11 @@
       "status": "complete"
     },
     {
+      "number": "7.2",
+      "name": "FNV-inspired matching pipeline (INSERTED)",
+      "status": "in_progress"
+    },
+    {
       "number": "8",
       "name": "Clean-room specs for OpenApoc",
       "status": "pending"
@@ -52,7 +57,7 @@
   "next": {
     "command": "/gsd-progress --next",
     "label": "Advance to the next step",
-    "reason": "Phase 7 of 10 · 78% · executing"
+    "reason": "Phase 9 of 10 · executing"
   },
-  "updated_at": "2026-11-09T15:41:41.406Z"
+  "updated_at": "2026-11-09T19:00:57.928Z"
 }
