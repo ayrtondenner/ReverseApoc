@@ -206,6 +206,7 @@ The Substack archive gives the same date for Macabeus's first two chapters, so c
 - [NHL95PC](https://github.com/abdulahmad/NHL95PC): Watcom 10.0 DOS game, compiler pinned by library matching.
 - [Blood-RE](https://github.com/NBlood/Blood-RE): matching decomp built with Watcom 10.6 and TASM 3.1.
 - [f15se2-re](https://github.com/neuviemeporte/f15se2-re): F-15 Strike Eagle II, the only MicroProse DOS reconstruction found (Microsoft C 5.1).
+- [fnv_decomp](https://github.com/momusdigital/fnv_decomp): Fallout: New Vegas, matched function by function with MSVC 2005/2008 by about 50 volunteers' AI agents through a claim server ([fnvdecomp.com](https://fnvdecomp.com/); agent rules at [f3decomp.com/agents.md](https://f3decomp.com/agents.md)). What we take from it: [research note](docs/research/2026-11-09-fnv-decomp.md).
 - [OpenApoc](https://github.com/OpenApoc/OpenApoc): the reimplementation this project serves.
 - [OpenXcom](https://github.com/OpenXcom/OpenXcom): reimplementation of UFO: Enemy Unknown and Terror from the Deep, not Apocalypse.
 

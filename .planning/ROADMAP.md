@@ -484,3 +484,66 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 **Deferred at:** 2026-10-26 during /gsd-verify-work 06 session completion
 **Follow-ups:**
 - [ ] Test 3: on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
+
+### Phase 999.5: Structured give-up records for PARTIAL attempts (BACKLOG)
+
+**Goal:** A PARTIAL attempt leaves a machine-readable record (category such as register_allocation, stack_layout or eh; what it tried; what still differs; suspected cause; best code) that the next attempt's context pack and the difficult list read, in place of free-form notes. Idea from fnv_decomp's give-up schema ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.6: Plan-before-code and per-check work notes enforced by the attempt check (BACKLOG)
+
+**Goal:** The attempt check refuses to run until the agent has written a plan covering the whole function (frame, slots, calls, byte regions) and records change / why / expect / observed for each check. Idea from f3decomp's mandatory work notes ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.7: Region board for large functions (BACKLOG)
+
+**Goal:** For functions of 256 B and up, the attempt check reports which 0x100-byte regions are already exact and which saved draft is closest for each region, so an agent can work region by region. Fits the 256 B+ result queued from Phase 7.1. Idea from f3check's region output ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.8: Struct gaps as a first-class blocker (BACKLOG)
+
+**Goal:** Count failed builds and mismatches by cause across drive nights and rank shared-header gaps (missing struct fields, wrong offsets) by how many functions each blocks, so the header fix that unblocks the most goes first. In fnv_decomp, declaration gaps caused about 34% of failed builds; their 28% duplicate-declaration case is already closed here by quick task 261107-qkd ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.9: Effort and model by function size, with a per-function token ledger (BACKLOG)
+
+**Goal:** Record model, effort, harness and tokens for every attempt, then measure match rate per size bucket at different thinking efforts and models (for example a cheaper lane for tiny functions). fnv_decomp saw Claude match 12 of 20 big functions at its lowest effort and 17 of 20 at its highest. Also feeds the night usage calibration and the paper idea ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.10: Name provenance markers for the readability pass (BACKLOG)
+
+**Goal:** Every name the readability pass gives carries a marker such as `// src: OPENAPOC|GHIDRA|GUESS 0xADDR (confidence: high|medium|low)`, so a whole class of guessed names can be found and replaced with grep. Idea from fnv_decomp's `// src:` markers ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
+### Phase 999.11: Base-vs-head CI on a self-hosted runner (BACKLOG)
+
+**Goal:** Once main is proven against the retail EXEs, a pull request only has to compile to the same bytes as main, so renames and comments can be checked without a game copy. Our Watcom compiler is user-supplied, so this needs a self-hosted runner that holds it. Idea from fnv_decomp's `match.yml` ([research](../docs/research/2026-11-09-fnv-decomp.md)).
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd-review-backlog when ready)
