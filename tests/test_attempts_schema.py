@@ -370,6 +370,31 @@ BAD_V2.update({
 })  # fmt: skip
 
 
+def _parked_run_v2(parked: object = 2) -> dict:
+    """Quick 261109-gzu's run totals: the committed shape plus `parked`."""
+    return _mutated(_run_v2, lambda r: r["totals"].update(parked=parked))
+
+
+BAD_V2.update({
+    "totals parked negative": _parked_run_v2(-1),
+    "totals parked text": _parked_run_v2("2"),
+    "totals parked bool": _parked_run_v2(True),
+    "totals parked null": _parked_run_v2(None),
+})
+
+
+def test_run_totals_with_and_without_parked():
+    """Quick 261109-gzu: `parked` is additive. A run record with it validates, and the totals
+    written before it (no `parked`, the committed shape) still do; `schema` stays 2."""
+    assert _problem(_parked_run_v2()) is None
+    assert _problem(_parked_run_v2(0)) is None
+    assert _problem(_run_v2()) is None
+    assert "parked" not in _totals()
+    stopped = _mutated(lambda: _run_v2("STOPPED", "guardrail"),
+                       lambda r: r["totals"].update(parked=1))  # fmt: skip
+    assert _problem(stopped) is None and stopped["schema"] == 2
+
+
 @pytest.mark.parametrize("name", sorted(BAD_V2))
 def test_schema_refuses_bad_v2_records(name):
     with pytest.raises(RecordError):

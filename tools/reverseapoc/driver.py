@@ -443,6 +443,7 @@ class DriveReport:
     matched: int
     detail: str | None = None
     checks_failed: tuple[str, ...] = ()  # the end-of-run checks that failed (L1)
+    parked: int = 0  # quick 261109-gzu: the functions a sweep hit parked tonight
 
     @property
     def exit_code(self) -> int:
@@ -661,7 +662,7 @@ def _at_least_one(value: object) -> bool:
 
 
 _SHARE = _shaped({"sessions": _is_int, "matched": _is_int, "cost_usd": _is_number})
-_TOTALS = _shaped({
+_TOTALS_FIELDS = {
     "sessions": _shaped(dict.fromkeys(_V2_OUTCOMES, _is_int)),  # counted sessions by outcome
     "turns": _is_int,
     "tokens": _shaped(dict.fromkeys(_COUNT_KEYS, _is_int)),
@@ -674,7 +675,17 @@ _TOTALS = _shaped({
     "aborts": _is_int,
     "by_model": _mapping_of(_is_text, _SHARE),
     "by_session": _mapping_of(_one_of(*SESSIONS), _SHARE),
-})  # fmt: skip
+}  # fmt: skip
+_TOTALS_BEFORE_PARKED = _shaped(_TOTALS_FIELDS)  # written before quick 261109-gzu (D-23)
+_TOTALS_PARKED = _shaped({**_TOTALS_FIELDS, "parked": _is_int})  # quick 261109-gzu on
+
+
+def _totals_shape(value: object) -> bool:
+    """A run record's totals in one of its two shapes: without `parked` (before quick
+    261109-gzu; never rewritten, D-23) or with it."""
+    return _TOTALS_BEFORE_PARKED(value) or _TOTALS_PARKED(value)
+
+
 _RECOVERED = _shaped({key: _CLAIM_FIELDS[key] for key in ("exe", "unit", "run")})
 RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
     KIND_ABORT: {
@@ -687,7 +698,9 @@ RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
         **_SCHEMA_V2_FIELD,
         "workers": _at_least_one,
         "recovered": _list_of(_RECOVERED),  # stale claims recovered at STARTED
-        "totals": _optional(_TOTALS),  # null on STARTED only (_run_problem)
+        # null on STARTED only (_run_problem); two shapes, with and without `parked` (quick
+        # 261109-gzu: the key is additive, `schema` stays 2, committed lines keep validating)
+        "totals": _optional(_totals_shape),
     },
     KIND_LIMIT: {
         "kind": _one_of(KIND_LIMIT),
@@ -2300,7 +2313,10 @@ class _Night:
             not self.breached
         ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
-        return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed))
+        with self.cond:  # after the drain: every worker's parks are in
+            parked = len(self.parked)
+        return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed),
+                           parked)  # fmt: skip
 
     def _uncommitted_rows(self) -> list[str]:
         """Fix round 4 L2: each status.csv row that differs from HEAD (`<path>: <start>
@@ -4692,9 +4708,11 @@ def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Ma
     its limit records, `wall_seconds` the night's wall clock. Counted sessions by outcome,
     turns, the four token classes, cost and session seconds are sums over the attempt
     records; hook blocks and the regressions the gate stopped too; then the limit waits, the
-    aborts, and sessions, matches and cost per requested model and per session kind."""
+    aborts, and sessions, matches and cost per requested model and per session kind. Quick
+    261109-gzu: `parked`, the distinct functions among the attempt records `_parks` accepts."""
     attempts = [r for r in records if r["kind"] == KIND_ATTEMPT]
     gates = [r["gate"] for r in attempts if r["gate"] is not None]
+    parked = {(r["exe"], r["start"]) for r in attempts if _parks(r)}
     return {
         "sessions": {o: sum(r["outcome"] == o for r in attempts) for o in _V2_OUTCOMES},
         "turns": sum(r["turns"] for r in attempts),
@@ -4709,6 +4727,7 @@ def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Ma
         "aborts": sum(r["kind"] == KIND_ABORT for r in records),
         "by_model": _group(attempts, "model_requested"),
         "by_session": _group(attempts, "session"),
+        "parked": len(parked),
     }  # fmt: skip
 
 
@@ -5683,11 +5702,12 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                                                          budget=options.fable_budget_usd))
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
-           "matched": report.matched, "detail": report.detail,
+           "matched": report.matched, "parked": report.parked, "detail": report.detail,
            "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
     detail = f" ({report.detail})" if report.detail else ""
+    parked = f", {report.parked} parked" if report.parked else ""  # quick 261109-gzu
     _emit(options, doc, [f"{stamp(seams.now())}{report.event} {report.reason}: "
-                         f"{report.sessions} sessions, {report.matched} matched{detail}"])
+                         f"{report.sessions} sessions, {report.matched} matched{parked}{detail}"])
     return report.exit_code
 
 
