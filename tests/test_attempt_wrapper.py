@@ -428,6 +428,62 @@ def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
     assert _lines(repo)[1]["sweep_hit"] is None
 
 
+# ---- 261109-gzv: the window of ours beside the original's ----
+
+_LOG_KEYS = {"n", "exit", "sweep", "best_percent", "reloc_ok", "bytes_ok", "splice_ok",
+             "sweep_hit", "source", "readlint_violations", "readlint_waivers"}  # fmt: skip
+
+
+def _insn(va: str, mnemonic: str, operands: str, relocated: bool = False) -> dict:
+    return {"va": va, "mnemonic": mnemonic, "operands": operands, "relocated": relocated}
+
+
+def _window_doc() -> dict:
+    """A mismatch whose function carries three made-up window rows: an equal lead-in, the first
+    differing pair (ours over a relocated field), and a row only the original has."""
+    doc = _check_doc(ok=False)
+    fn = doc["functions"][0]
+    fn["bytes"]["first_va"] = "0x000A3985"
+    fn["window"] = [
+        {"first": False, "ours": _insn("0x000A3980", "push", "ebx"),
+         "original": _insn("0x000A3980", "push", "ebx")},
+        {"first": True, "ours": _insn("0x000A3985", "mov", "eax, dword ptr [0]", True),
+         "original": _insn("0x000A3985", "mov", "eax, 1")},
+        {"first": False, "ours": None, "original": _insn("0x000A398A", "ret", "")},
+    ]  # fmt: skip
+    return doc
+
+
+def test_attempt_check_prints_the_window(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_window_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    out = capsys.readouterr().out.splitlines()
+    head = out.index("    first difference at 0x000A3985: ours | original")
+    wide = "0x000A3985  mov eax, dword ptr [0]  (relocated)"  # the widest ours cell
+    assert out[head + 1 : head + 4] == [
+        f"      {'0x000A3980  push ebx':<{len(wide)}} | 0x000A3980  push ebx",
+        f"    > {wide} | 0x000A3985  mov eax, 1",
+        f"      {'-':<{len(wide)}} | 0x000A398A  ret",
+    ]
+    assert len(out) > head + 4 and not out[head + 4].startswith("      0x")
+    assert out[head - 1].startswith("    reloc: made-up relocation problem")
+
+
+def test_attempt_check_without_a_window_prints_no_window(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=False)), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    assert "first difference at" not in capsys.readouterr().out
+
+
+def test_attempt_check_window_never_reaches_the_log(repo: Path, monkeypatch, capsys):
+    _use(monkeypatch, FakeRunner(json.dumps(_window_doc()), returncode=1))
+    assert _run(["attempt", "check"]) == 1
+    (line,) = _lines(repo)
+    assert set(line) == _LOG_KEYS
+    saved = json.loads((repo / "checks" / "0001.json").read_text(encoding="utf-8"))
+    assert saved["functions"][0]["window"] == _window_doc()["functions"][0]["window"]
+
+
 def _stub_doc() -> dict:
     """check's JSON for a unit whose other function matched while the claimed one is still
     INCLUDE_ASM: check's unit-wide ok is true and the claimed function is only a stub."""

@@ -12,7 +12,10 @@ runner, at most CHECK_BUDGET times per attempt (D-07). One run at a time: each h
 `check.lock` and reserves its number by creating the snapshot of the C it checks
 (`checks/NNNN.c`, ruling F10, O_EXCL), so a reserved slot counts even if the run then fails.
 Each run keeps the JSON (`checks/NNNN.json`) and appends one line to `checks.jsonl`, all under
-the gitignored attempt directory in build/driver/. `--sweep` runs the
+the gitignored attempt directory in build/driver/. Under a function whose bytes differ the
+summary prints check's window (`functions[].window`: addresses, mnemonics and operands of ours
+beside the original's around the first difference, never bytes); it reaches the terminal and
+checks/NNNN.json only, never checks.jsonl. `--sweep` runs the
 D-17 flag matrix as a diagnostic: a cell at 100% under flags other than the unit's cflags.txt
 rule is logged as `sweep_hit`, for the owner to decide (D-18 of Phase 5; cflags.txt is
 owner-only).
@@ -530,6 +533,29 @@ def _ok(value: object) -> str:
     return "ok" if value is True else "FAILED"
 
 
+def _window_cell(cell: Mapping[str, Any] | None) -> str:
+    if cell is None:
+        return "-"
+    text = f"{cell['va']}  {cell['mnemonic']} {cell['operands']}".rstrip()
+    return f"{text}  (relocated)" if cell["relocated"] else text
+
+
+def _window_lines(fn: Mapping[str, Any]) -> list[str]:
+    """check's window (functions[].window): ours on the left, the original on the right, the
+    first differing row marked `>`. Nothing for a function without one (bytes ok, or an older
+    document)."""
+    window = fn.get("window")
+    if not window:
+        return []
+    ours = [_window_cell(row["ours"]) for row in window]
+    width = max(len(text) for text in ours)
+    lines = [f"    first difference at {fn['bytes']['first_va']}: ours | original"]
+    for row, mine in zip(window, ours, strict=True):
+        mark = "    > " if row["first"] else "      "
+        lines.append(f"{mark}{mine:<{width}} | {_window_cell(row['original'])}".rstrip())
+    return lines
+
+
 def _check_summary(doc: Mapping[str, Any]) -> list[str]:
     lines = []
     for fn in doc["functions"]:
@@ -539,6 +565,7 @@ def _check_summary(doc: Mapping[str, Any]) -> list[str]:
         lines.append(f"  {fn['name']}  {fn['va']}  objdiff {fn['objdiff_percent']:g}%  "
                      f"reloc {reloc}  bytes {_ok(same['ok'])}{differ}")  # fmt: skip
         lines += [f"    reloc: {problem}" for problem in fn["reloc"]["problems"]]
+        lines += _window_lines(fn)
     lines += [f"  problem: {p['name']} {p['va'] or ''} {p['reason']}" for p in doc["problems"]]
     lines += [f"  stub: {s['name']} {s['va']}" for s in doc.get("stubs", ())]
     lines += [f"  splice {s['exe']} {_ok(s['ok'])}" for s in doc["splice"]]

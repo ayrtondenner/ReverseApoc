@@ -41,7 +41,10 @@ same temporary rule file. The sweep never lands, never edits config/cflags.txt (
 and decides no match: a cell worth keeping becomes a per-glob rule (D-18) and is then proven by a
 plain `check`.
 
-Output carries names, addresses, percentages, counts and SHA-1s, never game bytes or disassembly.
+Output carries names, addresses, percentages, counts and SHA-1s, never game bytes. The JSON's
+functions[].window adds the addresses, mnemonics and operands of at most 8 instructions per side
+around the first differing byte, ours beside the original's, for attempt check's summary
+(`difference_window`); attempt keeps it in the gitignored checks/NNNN.json, and no record holds it.
 Outputs go to build/<exe>/obj|base|target/<unit>.*, the paths of build.ninja's edges, when check
 compiles the committed src/ and config/ with the committed config/cflags.txt, config/watcom.toml
 and Watcom tree. With any other --cflags, --watcom-manifest, --watcom-dir, --src or --config they
@@ -101,6 +104,7 @@ from .symbols import SymbolTable
 from .target import RawField, TargetResult, branch_fields, build_target
 from .targets import REPO_ROOT, Target, check_bare_name, load_manifest
 from .watcom import DEFAULT_INSTALL, DEFAULT_WATCOM_MANIFEST
+from .x86 import decode
 
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 OBJDIFF = "objdiff-cli"
@@ -743,12 +747,24 @@ class ByteCompare:
     first_va: int | None
 
 
+# The window around the first differing byte, in instructions per side: the lead-in decodes the
+# same bytes, so 3 only place it and show the operand setup; a divergence shows within 4; and
+# attempt prints it after every check, so the agent re-reads it each time (261109-gzv).
+WINDOW_BEFORE = 3
+WINDOW_AFTER = 4
+
+
+def _masked(reloc: RelocResult) -> set[int]:
+    """Every VA inside a relocated field of either side: the bytes compare_bytes ignores."""
+    return {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
+
+
 def compare_bytes(ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult) -> ByteCompare:
     """Our bytes against the row, ignoring every relocated field of either side (as land.py's
     patch builder keeps the original there). The verdict's kept filler (`reloc.filler`) is the
     original's trailing Watcom filler, judged by relocs (07-48): land keeps those bytes, so they
     count as ours; any other length difference counts as differing bytes."""
-    masked = {va + i for va in reloc.ours | reloc.theirs for i in range(FIELD_SIZE)}
+    masked = _masked(reloc)
     length = row.end - row.start
     common = min(len(ours), length)
     diffs = [row.start + i for i in range(common)
@@ -756,6 +772,72 @@ def compare_bytes(ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult
     extra = abs(len(ours) + reloc.filler - length)
     first = diffs[0] if diffs else (row.start + common if extra else None)
     return ByteCompare(not diffs and not extra, len(diffs) + extra, first)
+
+
+@dataclass(frozen=True)
+class WindowInsn:
+    """One instruction of the difference window: its address, mnemonic and operands, never its
+    bytes. `relocated`: one of its bytes is in a relocated field of either side (the union
+    compare_bytes ignores, batch.tokens' rule)."""
+
+    va: int
+    mnemonic: str
+    operands: str
+    relocated: bool
+
+    def to_json(self) -> dict[str, Any]:
+        return {"va": _hex(self.va), "mnemonic": self.mnemonic, "operands": self.operands,
+                "relocated": self.relocated}  # fmt: skip
+
+
+@dataclass(frozen=True)
+class WindowRow:
+    """One row of the window: our instruction beside the original's, None where that side has
+    none. `first` marks the row of the first differing instruction."""
+
+    first: bool
+    ours: WindowInsn | None
+    original: WindowInsn | None
+
+    def to_json(self) -> dict[str, Any]:
+        return {"first": self.first,
+                "ours": None if self.ours is None else self.ours.to_json(),
+                "original": None if self.original is None else self.original.to_json()}  # fmt: skip
+
+
+def _window_side(
+    code: bytes, va: int, sites: frozenset[int], masked: set[int], first_va: int
+) -> tuple[int, list[WindowInsn]]:
+    """(before-count, cells) of one side: the instruction that ends past `first_va` (or none,
+    when the side ends first), up to WINDOW_BEFORE before it and WINDOW_AFTER after it.
+    `sites` are that side's fixup fields, inline data for the decode (as relocs decodes)."""
+    insns = list(decode(code, va, data_sites=sites))
+    at = next((i for i, insn in enumerate(insns) if insn.va + insn.size > first_va), len(insns))
+    start = max(0, at - WINDOW_BEFORE)
+    cells = [WindowInsn(insn.va, insn.mnemonic, insn.op_str,
+                        any(a in masked for a in range(insn.va, insn.va + insn.size)))
+             for insn in insns[start : at + WINDOW_AFTER + 1]]  # fmt: skip
+    return at - start, cells
+
+
+def difference_window(
+    ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult, first_va: int
+) -> tuple[WindowRow, ...]:
+    """Our instructions beside the original's around `first_va`, the first differing byte, at
+    most WINDOW_BEFORE + 1 + WINDOW_AFTER rows. The two sides are aligned on the instruction
+    that holds the difference (the `first` row); a side with fewer instructions before it gets
+    None cells at the top. Feeds no verdict: attempt prints it (261109-gzv)."""
+    masked = _masked(reloc)
+    sides = (_window_side(ours, row.start, reloc.ours, masked, first_va),
+             _window_side(flat[row.start : row.end], row.start, reloc.theirs, masked, first_va))
+    before = max(count for count, _ in sides)
+    columns = [[None] * (before - count) + cells for count, cells in sides]
+    height = max(len(column) for column in columns)
+    ours_col, original_col = (column + [None] * (height - len(column)) for column in columns)
+    rows = list(zip(ours_col, original_col, strict=True))
+    while rows and rows[-1] == (None, None):
+        rows.pop()
+    return tuple(WindowRow(i == before, mine, theirs) for i, (mine, theirs) in enumerate(rows))
 
 
 # ---- objdiff ----
@@ -830,6 +912,7 @@ class FunctionCheck:
     differing: int
     first_va: int | None
     raw_fields: tuple[RawField, ...] = ()  # the unit's raw fields inside this row (18b)
+    window: tuple[WindowRow, ...] = ()  # ours beside the original at the first difference
 
     @property
     def ok(self) -> bool:
@@ -852,6 +935,7 @@ class FunctionCheck:
                       "first_va": None if self.first_va is None else _hex(self.first_va),
                       "filler": self.filler},
             "raw_fields": _raw_fields_json(self.raw_fields),
+            "window": [row.to_json() for row in self.window],
         }  # fmt: skip
 
     def _bytes_line(self) -> str:
@@ -1070,10 +1154,14 @@ def check_source(
     functions = []
     for d, reloc in checked:
         same = compare_bytes(d.ours, d.row, exe.flat, reloc)
+        window = ()
+        if same.first_va is not None:
+            window = difference_window(d.ours, d.row, exe.flat, reloc, same.first_va)
         percent = objdiff_percent(paths.target, paths.base, d.symbol, runner=objdiff_runner)
         raw = tuple(f for f in target.raw_fields if d.row.start <= f.va < d.row.end)
         functions.append(FunctionCheck(d.row.name, d.row.start, d.size, percent, reloc,
-                                       same.ok, same.differing, same.first_va, raw))  # fmt: skip
+                                       same.ok, same.differing, same.first_va, raw,
+                                       window=window))  # fmt: skip
     return SourceCheck(compiled.rule.spec, tuple(compiled.rule.flags), tuple(functions), target,
                        compiled.output, account.problems, account.stubs)  # fmt: skip
 
