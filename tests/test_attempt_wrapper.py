@@ -1409,7 +1409,7 @@ VIEW_TEXT = UNIT_TEXT + b"/* the view unit, private to this session */\n"
 VIEW_CFLAGS = "* wcc386@10.6 -4r -s -fpi\nsrc/ufo2p/u_000a34f0.c wcc386@10.6 -4r -ot -s -fpi\n"
 PHASE6_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", hooks.ATTEMPT_NAME_SLOT),
                 ("context",))  # fmt: skip
-MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",))  # 07.2-02: the matching-only verbs (D-26)
+MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",), ("plan",))  # the matching-only verbs (D-26)
 
 
 @pytest.fixture
@@ -1843,8 +1843,8 @@ def test_readability_forms_unchanged(readable: Path, monkeypatch, capsys):
     for extra in (["--readlint"], ["readlint"], ["check", "--units", CLAIM]):
         assert _run(["attempt", *extra]) == 2
     matching_only = [form for form in hooks.MATCHING_FORMS if form not in hooks.ATTEMPT_FORMS]
-    assert matching_only == [("giveup",)]
-    for form in matching_only:  # 07.2-02 (D-26): no matching-only verb in a readability session
+    assert matching_only == [("giveup",), ("plan",)]
+    for form in matching_only:  # 07.2-02, 07.2-03 (D-26): none in a readability session
         assert _run(["attempt", *form]) == 2, form
     assert runner.calls == []
 
@@ -2090,6 +2090,100 @@ def test_readability_check_needs_no_plan(readable: Path, monkeypatch, capsys):
     (line,) = _lines(readable.parent)
     assert line["note"] is None
     assert sorted(p.name for p in (readable.parent / "checks").iterdir()) == ["0001.c", "0001.json"]
+
+
+# ---- 07.2-03 (D-03): `attempt plan` validates plan.json ----
+
+
+def _cut(edges: list[int], **change) -> dict:
+    """A made-up plan whose regions run between `edges`, with `change` over its keys."""
+    regions = [{"start": low, "end": high, "intent": f"made-up part {i}"}
+               for i, (low, high) in enumerate(itertools.pairwise(edges))]  # fmt: skip
+    return {**_plan(0x10), "regions": regions, **change}
+
+
+def test_plan_verb(repo: Path, monkeypatch, capsys):
+    """A valid plan exits 0 and prints the accepted regions in hex; no slot, no container."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _claimed_length(0x300)
+    _session_file(repo, "plan.json", _plan(0x300))
+    assert _run(["attempt", "plan"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "attempt plan: accepted",
+        "  0x000-0x0FF  made-up part 0",
+        "  0x100-0x1FF  made-up part 1",
+        "  0x200-0x2FF  made-up part 2",
+    ]
+    assert runner.calls == []
+    assert not (repo / "checks").exists() and not (repo / "checks.jsonl").exists()
+
+
+@pytest.mark.parametrize(("size", "doc", "named"), [
+    (0x30, _cut([0, 0x10, 0x18, 0x30]), "a gap"),
+    (0x30, _cut([0x4, 0x30]), "a gap"),
+    (0x30, {**_cut([0, 0x30]), "regions": [{"start": 0, "end": 0x20, "intent": "a"},
+                                           {"start": 0x10, "end": 0x30, "intent": "b"}]},
+     "an overlap"),
+    (0x30, _cut([0, 0x10, 0x40]), "run past 0x30"),
+    (0x30, _cut([0, 0x20]), "do not reach 0x30"),
+    (0x300, _cut([0, 0x180, 0x300]), "0x180"),
+    (0x40, _cut([0, 0x40]), "at least 2"),
+    (0x180, _cut([0, 0x180]), "at least 2"),
+    (0x30, _cut([0, 0x30], frame=""), "frame"),
+    (0x30, _cut([0, 0x30], slots="ebp-4"), "slots"),
+    (0x30, _cut([0, 0x30], calls=[""]), "calls[0]"),
+    (0x30, {key: value for key, value in _cut([0, 0x30]).items() if key != "calls"}, "calls"),
+    (0x30, _cut([0, 0x30], extra="x"), "extra"),
+    (0x30, _cut([0, 0x30], regions=[]), "regions"),
+    (0x30, _cut([0, 0x30], regions=[{"start": 0, "end": 0x30}]), "regions[0] lacks intent"),
+    (0x30, _cut([0, 0x30], regions=[{"start": True, "end": 0x30, "intent": "a"}]), "start"),
+    (0x30, _cut([0, 0x30], regions=[{"start": 0x30, "end": 0x30, "intent": "a"}]), "end"),
+    (0x30, "not json", "plan.json"),
+])  # fmt: skip
+def test_plan_verb_refuses_each_d03_violation(repo: Path, monkeypatch, capsys, size, doc, named):
+    """Each D-03 violation exits 2 naming it, and the same validator refuses it for a check."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _claimed_length(size)
+    path = _session_file(repo, "plan.json", doc)
+    assert _run(["attempt", "plan"]) == 2
+    assert named in capsys.readouterr().err
+    with pytest.raises(attempt.AttemptError, match=re.escape(named)):
+        attempt.read_plan(path, size)
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(("size", "edges"), [
+    (0x30, [0, 0x30]), (0x30, [0, 0x10, 0x30]), (0x3F, [0, 0x3F]), (0x40, [0, 0x8, 0x40]),
+    (0x100, [0, 0x100]), (0x300, [0, 0x200, 0x300]), (0x101, [0, 0x100, 0x101]),
+])  # fmt: skip
+def test_plan_verb_accepts(repo: Path, monkeypatch, size, edges):
+    """Two regions in a 0x30 function are allowed, one is enough under 64 B and at exactly 0x100
+    (the grid has no room for an inner boundary), and a grid boundary need not be every one."""
+    _claimed_length(size)
+    _session_file(repo, "plan.json", _cut(edges))
+    assert _run(["attempt", "plan"]) == 0
+
+
+def test_plan_verb_without_a_file(repo: Path, capsys):
+    assert _run(["attempt", "plan"]) == 2
+    assert "plan.json" in capsys.readouterr().err
+
+
+def test_plan_verb_refused_in_readability(readable: Path, monkeypatch, capsys):
+    """D-26: a readability session's `attempt plan` exits 2 before any run, even with a valid
+    plan.json, and the verb refuses on its own past the form check."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _session_file(readable.parent, "plan.json", _plan(0x10))
+    assert _run(["attempt", "plan"]) == 2
+    assert "accepted" not in capsys.readouterr().out
+    assert runner.calls == []
+    with pytest.raises(attempt.AttemptError, match="readability"):
+        attempt.cmd_plan()
+
+
+def test_attempt_help_names_plan(capsys):
+    assert _run(["attempt", "--help"]) == 0
+    assert "plan" in capsys.readouterr().out
 
 
 # ---- ruling F18: an RL01 hit that the session's own valid rename proposal covers ----

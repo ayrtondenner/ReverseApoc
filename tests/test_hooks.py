@@ -587,10 +587,10 @@ def test_attempt_forms_are_the_shared_constants():
     assert hooks.ATTEMPT_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
     )  # fmt: skip
-    # 07.2-02 (D-26): the verbs only a matching session runs; readability keeps the five
+    # 07.2-02, 07.2-03 (D-26): the verbs only a matching session runs; readability keeps the five
     assert hooks.MATCHING_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
-        ("giveup",),
+        ("giveup",), ("plan",),
     )  # fmt: skip
     assert hooks.forms_for("matching") == hooks.MATCHING_FORMS
     assert hooks.forms_for("readability") == hooks.ATTEMPT_FORMS
@@ -1886,6 +1886,17 @@ def test_matching_write_allowed_takes_the_session_kind():
 # ---- 07.2-03 (999.6, D-01, D-26): plan.json and check-note.json beside the notes ----
 
 SESSION_JSON = '{"change": "a", "why": "b", "expect": "c"}'
+
+
+def test_bash_allows_plan_only_in_a_matching_session(repo):
+    command = f"{WRAPPER} plan"
+    assert hooks.bash_allowed(command, kind="matching")
+    assert hooks.bash_allowed(command)  # absent kind: a matching run
+    assert not hooks.bash_allowed(command, kind="readability")
+    assert not hooks.bash_allowed(f"{WRAPPER} plan x", kind="matching")  # it takes no argument
+    _view_unit(repo)
+    assert not matching(bash(command, repo, None)).deny
+    assert matching(bash(command, repo, None), view_env(repo, kind="readability")).deny
 
 
 def test_session_file_names():
