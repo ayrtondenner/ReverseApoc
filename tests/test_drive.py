@@ -1191,6 +1191,24 @@ def test_console_night_json_is_one_unstamped_document(tmp_path, capsys):
     assert err == ""
 
 
+@pytest.mark.parametrize("as_json", [False, True])
+def test_the_night_summary_reports_what_it_parked(tmp_path, capsys, monkeypatch, as_json):
+    """Quick 261109-gzu: a night that parked 2 functions ends its summary line with
+    `, 2 parked`, and the --json document carries `parked`."""
+    rig = Rig(tmp_path)
+
+    def fake_drive(config, deps, *, lock=None):
+        return driver.DriveReport(driver.ENDED, driver.MAX_SESSIONS, 5, 1, parked=2)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    code, out, _ = rig.drive(capsys, json=as_json, seams=dict(now=_fixed_now))
+    assert code == 0
+    if as_json:
+        assert json.loads(out)["parked"] == 2
+    else:
+        assert out == "[21:04:05] ENDED max sessions: 5 sessions, 1 matched, 2 parked\n"
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     [

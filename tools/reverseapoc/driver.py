@@ -84,6 +84,13 @@ holds the signed asm list's `unclear` rows with data-in-code evidence (07-44, ow
 2026-10-31; `mechanics.signed_held`): no pass is spent on them, and the dry run reports them as
 `held` (an unsigned or changed list refuses the picks).
 
+Parking (quick 261109-gzu): once a counted matching session's attempt record carries a sweep
+hit (check.sweep_hit: an exact cell under flags other than the unit's rule) and no match, the
+function is parked for the rest of the night. Its pass ends at once (a finished pass: its
+callers may follow), no worker runs it again tonight and the tier queue never offers it again.
+Nothing is written for it beyond the attempt's own record and landing: no difficult.json entry,
+no cflags change, no proposal; flags propose/regate stay the owner's. It returns next night.
+
 Naming proposals (07-34; D-19, D-29): the driver is the only writer of naming state. After a
 readability session (DriveConfig.session; ruling F34: never after a matching one) and before
 its landing, `_apply_proposals` reads the session's proposals.jsonl and applies each proposal
@@ -252,6 +259,10 @@ MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": th
 MATCHED, PARTIAL, GAVE_UP = "MATCHED", "PARTIAL", "GAVE_UP"
 CAPPED = "capped"  # a pass that used every attempt without a match (never a record outcome)
 ABORTED = "aborted"  # an attempt a transient abort ended (an abort record; no attempt outcome)
+PARKED = "parked"  # quick 261109-gzu: a pass a sweep hit ended (never a record outcome)
+# The console line of a park: `label` is _label(pick, n), `spec` the record's check.sweep_hit.
+PARKED_LINE = ("{label}: parked for the night (sweep hit: needs flags {spec}); left for flags "
+               "propose/regate")  # fmt: skip
 KIND_ATTEMPT, KIND_ABORT, KIND_RUN = "attempt", "abort", "run"
 STARTED, STOPPED, ENDED = "STARTED", "STOPPED", "ENDED"
 REFUSED = "REFUSED"  # a report only: the night did not start, so no run record is written
@@ -432,6 +443,7 @@ class DriveReport:
     matched: int
     detail: str | None = None
     checks_failed: tuple[str, ...] = ()  # the end-of-run checks that failed (L1)
+    parked: int = 0  # quick 261109-gzu: the functions a sweep hit parked tonight
 
     @property
     def exit_code(self) -> int:
@@ -650,7 +662,7 @@ def _at_least_one(value: object) -> bool:
 
 
 _SHARE = _shaped({"sessions": _is_int, "matched": _is_int, "cost_usd": _is_number})
-_TOTALS = _shaped({
+_TOTALS_FIELDS = {
     "sessions": _shaped(dict.fromkeys(_V2_OUTCOMES, _is_int)),  # counted sessions by outcome
     "turns": _is_int,
     "tokens": _shaped(dict.fromkeys(_COUNT_KEYS, _is_int)),
@@ -663,7 +675,17 @@ _TOTALS = _shaped({
     "aborts": _is_int,
     "by_model": _mapping_of(_is_text, _SHARE),
     "by_session": _mapping_of(_one_of(*SESSIONS), _SHARE),
-})  # fmt: skip
+}  # fmt: skip
+_TOTALS_BEFORE_PARKED = _shaped(_TOTALS_FIELDS)  # written before quick 261109-gzu (D-23)
+_TOTALS_PARKED = _shaped({**_TOTALS_FIELDS, "parked": _is_int})  # quick 261109-gzu on
+
+
+def _totals_shape(value: object) -> bool:
+    """A run record's totals in one of its two shapes: without `parked` (before quick
+    261109-gzu; never rewritten, D-23) or with it."""
+    return _TOTALS_BEFORE_PARKED(value) or _TOTALS_PARKED(value)
+
+
 _RECOVERED = _shaped({key: _CLAIM_FIELDS[key] for key in ("exe", "unit", "run")})
 RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
     KIND_ABORT: {
@@ -676,7 +698,9 @@ RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
         **_SCHEMA_V2_FIELD,
         "workers": _at_least_one,
         "recovered": _list_of(_RECOVERED),  # stale claims recovered at STARTED
-        "totals": _optional(_TOTALS),  # null on STARTED only (_run_problem)
+        # null on STARTED only (_run_problem); two shapes, with and without `parked` (quick
+        # 261109-gzu: the key is additive, `schema` stays 2, committed lines keep validating)
+        "totals": _optional(_totals_shape),
     },
     KIND_LIMIT: {
         "kind": _one_of(KIND_LIMIT),
@@ -1208,6 +1232,16 @@ def _sweep_evidence(attempt_dir: Path) -> tuple[str | None, list[str]]:
              *_items(stage2.get("cells") if isinstance(stage2, Mapping) else None)]  # fmt: skip
     specs = [_record_text(_cell_spec(cell)) for cell in cells if _perfect_cell(cell)]
     return source, list(dict.fromkeys(specs))
+
+
+def _parks(record: Mapping) -> bool:
+    """Quick 261109-gzu (RULINGS gzu's sweep hit): a matching attempt record that did not match
+    and whose check.sweep_hit is set, the attempt record's existing signal (attempt._is_hit: an
+    exact cell under flags other than the unit's rule). Read from the record only, so the
+    night's scheduling and its totals agree by construction."""
+    return (record.get("kind") == KIND_ATTEMPT and record.get("session") == MATCHING
+            and record.get("outcome") != MATCHED
+            and record["check"]["sweep_hit"] is not None)  # fmt: skip
 
 
 def _hook_blocks(events: Sequence[Mapping]) -> int:
@@ -1929,7 +1963,8 @@ class _Coordinator:
                 self.tiers.finish((worker.pick.exe, worker.pick.start),
                                   matched=worker.outcome == MATCHED,
                                   aborted=worker.outcome == ABORTED,
-                                  capped=worker.outcome == CAPPED)  # fmt: skip
+                                  capped=worker.outcome == CAPPED,
+                                  parked=worker.outcome == PARKED)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -2047,6 +2082,8 @@ class _Night:
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
         self.passes: dict[Key, int] = {}  # D-08: finished passes per function (pass_index)
+        # quick 261109-gzu: tonight's parked functions, each with its hit's flag spec (under cond)
+        self.parked: dict[Key, str] = {}
         # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
         # totals are the sums over the night's own records (F19's cut drops a line from both).
         self.night_records: list[tuple[int, dict]] = []
@@ -2276,7 +2313,10 @@ class _Night:
             not self.breached
         ):  # fix round 2 J2: after any breach commit nothing, whatever the reason
             self._commit_log(stopped=event == STOPPED)
-        return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed))
+        with self.cond:  # after the drain: every worker's parks are in
+            parked = len(self.parked)
+        return DriveReport(event, reason, self.sessions, self.matched, detail, tuple(failed),
+                           parked)  # fmt: skip
 
     def _uncommitted_rows(self) -> list[str]:
         """Fix round 4 L2: each status.csv row that differs from HEAD (`<path>: <start>
@@ -2416,8 +2456,11 @@ class _Night:
         MATCHED, CAPPED, ABORTED (a transient abort ended the pass; a tier queue sends it
         behind its group's other work) or None when the pass was cut short (the night cap, a
         stop). 07-38 (D-17): a readability night runs one session per unit and returns its
-        outcome; nothing goes to the difficult list."""
+        outcome; nothing goes to the difficult list. Quick 261109-gzu: PARKED when an attempt's
+        record parks the function (`_parks`): a finished pass (its count in `passes` goes up,
+        so its callers may follow) but no difficult-list entry; it comes back next night."""
         readability = self.config.session == READABILITY
+        key = (pick.exe, pick.start)
         for n in range(1, self._attempts() + 1):
             if not self._reserve():  # D-07: no slot of the night cap is left, or a stop
                 return None
@@ -2427,13 +2470,25 @@ class _Night:
                 self._release()  # not counted (a stop): a slot still held goes back
             if readability or outcome in (MATCHED, ABORTED, None):
                 return outcome
+            with self.cond:
+                spec = self.parked.get(key)
+            if spec is not None:
+                return self._park(key, self._label(pick, n), spec)
         callees = tuple(self.deps.matched_callees(pick))
-        key = (pick.exe, pick.start)
         with self.cond:  # the list and the pass counts are shared by every worker
             difficult[key] = callees
             save_difficult(self.repo / DIFFICULT, difficult)
             self.passes[key] = self.passes.get(key, 0) + 1
         return CAPPED
+
+    def _park(self, key: Key, label: str, spec: str) -> str:
+        """Quick 261109-gzu: end a parked function's pass. It counts as a finished pass (the
+        tier queue reads `passes`, so a caller waiting on it becomes eligible, D-08); nothing
+        is written for it: no difficult-list entry, no flags."""
+        with self.cond:
+            self.passes[key] = self.passes.get(key, 0) + 1
+        self.deps.say(PARKED_LINE.format(label=label, spec=spec))
+        return PARKED
 
     def _attempts(self) -> int:
         """Sessions per pass: attempts_per_function (D-07); one per unit on a readability night
@@ -4361,6 +4416,10 @@ class _Night:
                   "gate": _gate_field(gate, session.claim.pick),
                   "sweep_source": source, "sweep_cells_100": cells}  # fmt: skip
         self._append(record)
+        if _parks(record):  # quick 261109-gzu; lock order gate, then cond (_append holds gate)
+            with self.cond:
+                key = (session.claim.pick.exe, session.claim.pick.start)
+                self.parked.setdefault(key, record["check"]["sweep_hit"])
 
     def _record_abort(self, claim: _Claim, retries: int) -> None:
         record = {**self._base(claim, KIND_ABORT), "abort_reason": TRANSIENT, "retries": retries,
@@ -4649,9 +4708,11 @@ def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Ma
     its limit records, `wall_seconds` the night's wall clock. Counted sessions by outcome,
     turns, the four token classes, cost and session seconds are sums over the attempt
     records; hook blocks and the regressions the gate stopped too; then the limit waits, the
-    aborts, and sessions, matches and cost per requested model and per session kind."""
+    aborts, and sessions, matches and cost per requested model and per session kind. Quick
+    261109-gzu: `parked`, the distinct functions among the attempt records `_parks` accepts."""
     attempts = [r for r in records if r["kind"] == KIND_ATTEMPT]
     gates = [r["gate"] for r in attempts if r["gate"] is not None]
+    parked = {(r["exe"], r["start"]) for r in attempts if _parks(r)}
     return {
         "sessions": {o: sum(r["outcome"] == o for r in attempts) for o in _V2_OUTCOMES},
         "turns": sum(r["turns"] for r in attempts),
@@ -4666,6 +4727,7 @@ def _totals(records: Sequence[Mapping], wall_seconds: float, limits: Sequence[Ma
         "aborts": sum(r["kind"] == KIND_ABORT for r in records),
         "by_model": _group(attempts, "model_requested"),
         "by_session": _group(attempts, "session"),
+        "parked": len(parked),
     }  # fmt: skip
 
 
@@ -5640,11 +5702,12 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                                                          budget=options.fable_budget_usd))
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
-           "matched": report.matched, "detail": report.detail,
+           "matched": report.matched, "parked": report.parked, "detail": report.detail,
            "checks_failed": list(report.checks_failed), "exit_code": report.exit_code}  # fmt: skip
     detail = f" ({report.detail})" if report.detail else ""
+    parked = f", {report.parked} parked" if report.parked else ""  # quick 261109-gzu
     _emit(options, doc, [f"{stamp(seams.now())}{report.event} {report.reason}: "
-                         f"{report.sessions} sessions, {report.matched} matched{detail}"])
+                         f"{report.sessions} sessions, {report.matched} matched{parked}{detail}"])
     return report.exit_code
 
 

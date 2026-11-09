@@ -517,6 +517,59 @@ def test_a_stopped_night_has_totals(tmp_path):
     assert totals["turns"] == sum(r["turns"] for r in attempts)
 
 
+def _hit_record(start: int, outcome: str, *, session: str = "matching",
+                hit: str | None = SPEC_A) -> dict:  # fmt: skip
+    """A v2 attempt record of `start` (the schema test's template, edited) with the sweep hit
+    `hit` in its check."""
+    record = _v2_template()
+    record.update(start=f"0x{start:08X}", function=f"func_{start:08X}", outcome=outcome,
+                  session=session)  # fmt: skip
+    needs = None if hit is None else f"needs flags {hit}"
+    record["check"] = {**record["check"], "sweep_hit": hit, "needs": needs}
+    return record
+
+
+def test_totals_count_the_parked_functions():
+    """Quick 261109-gzu: `parked` counts the distinct functions among the night's matching
+    attempt records with a sweep hit and no match; a MATCHED record with a hit, a readability
+    record with a hit and a record without a hit count nothing."""
+    two = [_hit_record(START, "PARTIAL"), _hit_record(START, "PARTIAL")]
+    assert driver._totals(two, 0.0, [])["parked"] == 1
+    three = [*two, _hit_record(OTHER_START, "GAVE_UP")]
+    assert driver._totals(three, 0.0, [])["parked"] == 2
+    none = [_hit_record(START + 0x20, "MATCHED"),
+            _hit_record(START + 0x30, "PARTIAL", session="readability"),
+            _hit_record(START + 0x40, "PARTIAL", hit=None)]  # fmt: skip
+    assert driver._totals([*three, *none], 0.0, [])["parked"] == 2
+
+
+PICK_B = Pick(EXE, START + 0x10, "func_00010020", UNIT, 20, 100)
+_PARK_HIT = check_line(1, 80.0, sweep=True, exit_code=0, sweep_hit=SPEC_A)
+
+
+@pytest.mark.parametrize(("hit", "parked"), [(True, 1), (False, 0)])
+def test_an_ended_night_reports_what_it_parked(tmp_path, hit, parked):
+    """ENDED totals.parked equals the report's parked: 1 when PICK's first session hits (then
+    PICK_B runs), 0 without the hit."""
+    first = Sess(checks=(_PARK_HIT,)) if hit else Sess()
+    night = Night(tmp_path, sessions=[first], picks=(PICK, PICK_B))
+    report = night.run()
+    ended = _one(_run_records(night, "ENDED"))
+    driver.validate_record(ended)
+    assert ended["totals"]["parked"] == report.parked == parked
+
+
+def test_a_stopped_night_reports_what_it_parked(tmp_path):
+    """STOPPED totals carry `parked` too: PICK parks, then PICK_B's session writes a stray."""
+    sessions = [Sess(checks=(_PARK_HIT,)), Sess(write="tools/x.py")]
+    night = Night(tmp_path, sessions=sessions, picks=(PICK, PICK_B))
+    report = night.run()
+    assert (report.event, report.reason) == ("STOPPED", "guardrail")
+    stopped = _one(_run_records(night, "STOPPED"))
+    driver.validate_record(stopped)
+    assert stopped["totals"]["parked"] == report.parked == 1
+
+
 def test_an_interrupted_night_has_totals(tmp_path):
     """The STOPPED `interrupted` record (written before the interrupt is re-raised) is v2."""
     night = Night(tmp_path, sessions=[Sess(raises=KeyboardInterrupt())])

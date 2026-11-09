@@ -334,7 +334,8 @@ class TierQueue:
     `matched` is every matched key; `passes` maps a key to its finished passes and is read live,
     never written (the night counts the passes, `use_passes` binds the night's own index).
     `take` marks an item in flight, `finish` ends that (`matched` adds it to the matched set;
-    `aborted`, a pass a transient abort ended, sends it behind its group's other work)."""
+    `aborted`, a pass a transient abort ended, sends it behind its group's other work;
+    `parked`, a pass a sweep hit ended, quick 261109-gzu, keeps it out for the queue's life)."""
 
     def __init__(self, items: Iterable[TierItem], callees: Mapping[Key, Iterable[Key]], *,
                  matched: Iterable[Key] = (), passes: Passes | None = None,
@@ -346,6 +347,7 @@ class TierQueue:
         self._passes: Passes = {} if passes is None else passes
         self._flight: set[Key] = set()
         self._aborts: Counter[Key] = Counter()  # passes a transient abort ended, this queue's life
+        self._parked: set[Key] = set()  # quick 261109-gzu: a sweep hit parked it for the night
 
     @property
     def items(self) -> tuple[TierItem, ...]:
@@ -366,7 +368,7 @@ class TierQueue:
 
     def _eligible(self, item: TierItem, claimed: Container[tuple[str, str]]) -> bool:
         key = item.key
-        if key in self._matched or key in self._flight:
+        if key in self._matched or key in self._flight or key in self._parked:
             return False
         if (item.pick.exe, item.pick.unit) in claimed:
             return False
@@ -404,6 +406,7 @@ class TierQueue:
                           held=self._held)  # fmt: skip
         trial._flight = set(self._flight)
         trial._aborts = Counter(self._aborts)
+        trial._parked = set(self._parked)
         out: list[TierItem] = []
         while len(out) < count and (item := trial.next_item()) is not None:
             out.append(item)
@@ -426,13 +429,16 @@ class TierQueue:
         self._flight.add(key)
 
     def finish(self, key: Key, *, matched: bool, aborted: bool = False,
-               capped: bool = False) -> None:  # fmt: skip
+               capped: bool = False, parked: bool = False) -> None:  # fmt: skip
         """End `key`'s pass. A finished pass (matched or `capped`) clears its abort count, so an
         earlier transient abort sends it behind its group only until then (orchestrator ruling,
-        07-30); a pass cut short (neither) keeps it."""
+        07-30); a pass cut short (neither) keeps it. A `parked` key (quick 261109-gzu: a sweep
+        hit ended its pass) is never eligible again in this queue."""
         self._flight.discard(key)
         if matched:
             self._matched.add(key)
+        if parked:
+            self._parked.add(key)
         if aborted:
             self._aborts[key] += 1
         elif matched or capped:
