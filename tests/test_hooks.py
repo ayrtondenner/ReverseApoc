@@ -611,7 +611,9 @@ def test_matching_bash_allows_exact_wrapper_forms(repo, command):
      f"{WRAPPER} 'check'", f'{WRAPPER} "check"', f"{WRAPPER} asm func-x", f"{WRAPPER} asm 1abc",
      "uv run reverseapoc attempt check", f"{WRAPPER} check --sweep --sweep", f"{WRAPPER}\tcheck",
      f"{WRAPPER} check &", f"{WRAPPER} asm x*", f"{WRAPPER} asm ~", f"{WRAPPER} context # x",
-     f"FOO=1 {WRAPPER} check", f"{WRAPPER} asm fé", f"{WRAPPER} check\r", f"{WRAPPER}", ""],
+     f"FOO=1 {WRAPPER} check", f"{WRAPPER} asm fé", f"{WRAPPER} check\r", f"{WRAPPER}", "",
+     f"{WRAPPER} asm {{func_00010000,func_00010010}}", "cat src/{a,b}.c",
+     f"{WRAPPER} {{check,context}}"],
 )  # fmt: skip
 def test_matching_bash_denies_everything_else(repo, command):
     assert matching(bash(command, repo)).deny
@@ -904,11 +906,47 @@ def test_matching_denies_the_guardrail_files(repo, rel):
     assert not always(write(native(target), "{}\n")).deny
 
 
-@pytest.mark.parametrize("pattern", ["src/**/*.{c,h}", "{.env,x}", ".[e]nv", "*[!a].c", "a]b"])
-def test_matching_refuses_brace_and_class_globs(repo, pattern):
-    """M2: a pattern with { } [ ] is refused rather than judged."""
-    assert matching(tool("Glob", repo, pattern=pattern)).deny
-    assert matching(tool("Grep", repo, pattern="x", glob=pattern)).deny
+def _glob_decisions(repo: Path, pattern: str) -> list[hooks.Decision]:
+    """The matching layer on `pattern` as a Glob pattern and as a Grep glob."""
+    return [matching(tool("Glob", repo, pattern=pattern)),
+            matching(tool("Grep", repo, pattern="x", glob=pattern))]  # fmt: skip
+
+
+@pytest.mark.parametrize("pattern", ["src/**/*.{c,h}", "{src,include}/**/*.h",
+                                     "src/{ufo2p,tacp}/*.c", "{a,b}{c,d}.txt",
+                                     "src/**/{x,y,z}.c"])  # fmt: skip
+def test_matching_accepts_plain_brace_globs(repo, pattern):
+    """261109-gzw: plain {a,b} alternatives, each expansion inside the repo and no .env."""
+    assert not any(decision.deny for decision in _glob_decisions(repo, pattern))
+
+
+_ENV = ("names a .env file",)
+_LEAVES = ("can leave the repository", "not plain {a,b} alternatives")
+_NOT_PLAIN = ("not plain {a,b} alternatives",)
+
+
+@pytest.mark.parametrize(("pattern", "reasons"), [
+    ("{.env,x}", _ENV), (".e{n,x}v", _ENV), ("src/{a,.ENV}", _ENV),
+    ("{/etc,src}/*", _LEAVES), ("{~,src}/x", _LEAVES), ("{C:,src}/x", _LEAVES),
+    ("{..,src}/x", _LEAVES), ("{src,a/../..}/x", _LEAVES),
+    ("{a..c}", _NOT_PLAIN), ("{-..0}x", _NOT_PLAIN), ("{a,{b,c}}", _NOT_PLAIN),
+    ("{a}", _NOT_PLAIN), ("{a,}", _NOT_PLAIN), ("{}", _NOT_PLAIN), ("{a,b", _NOT_PLAIN),
+    ("a}b", _NOT_PLAIN), ("\\{a,b}", _NOT_PLAIN), ("src\\{a,b}", _NOT_PLAIN),
+    ("{a,b}" * 7, _NOT_PLAIN),  # 128 expansions, over the cap of 64
+])  # fmt: skip
+def test_matching_refuses_unsafe_brace_globs(repo, pattern, reasons):
+    """Every brace shape outside one level of plain alternatives, and every expansion that
+    leaves the repository or names a .env file, is refused."""
+    for decision in _glob_decisions(repo, pattern):
+        assert decision.deny
+        assert any(reason in decision.reason for reason in reasons), decision.reason
+
+
+@pytest.mark.parametrize("pattern", [".[e]nv", "*[!a].c", "a]b", "{a,b}[c]"])
+def test_matching_refuses_class_globs(repo, pattern):
+    """M2: a character class could spell .env, so it is refused rather than judged."""
+    for decision in _glob_decisions(repo, pattern):
+        assert decision.deny and "character class" in decision.reason
 
 
 def _hook_shell() -> str:
