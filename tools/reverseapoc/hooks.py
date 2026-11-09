@@ -69,6 +69,7 @@ LAYER_ALWAYS = "always"
 LAYER_MATCHING = "matching"
 LAYERS = (LAYER_ALWAYS, LAYER_MATCHING)
 EDIT_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+SHELL_TOOLS = ("Bash", "PowerShell")  # judged only from a harness worktree (261109-gzy)
 _PATH_FIELD = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path",
                "NotebookEdit": "notebook_path"}  # fmt: skip
 
@@ -598,6 +599,8 @@ def _source_problem(
 
 def _always(payload: Mapping, env: Mapping[str, str]) -> Decision:
     tool = payload.get("tool_name")
+    if tool in SHELL_TOOLS:
+        return _worktree_command(payload)
     if tool not in EDIT_TOOLS:
         return NO_OPINION
     raw, tool_input = _target(payload)
@@ -636,6 +639,88 @@ def decide(
     if layer == LAYER_MATCHING:
         return _matching(payload, env, tracked)
     raise HookError(f"unknown layer {layer!r}")
+
+
+# --- the worktree command rule (261109-gzy) --------------------------------------------------
+
+# A harness worktree's cwd: <main>/.claude/worktrees/<name>, or a directory below it.
+_WORKTREE_CWD = re.compile(r"(.*?)/\.claude/worktrees/([^/]+)(?:/|$)", re.IGNORECASE)
+_WORKTREES = "/.claude/worktrees/"
+_SLASHES = re.compile(r"/+")
+_SIBLING_CHAR = re.compile(r"[a-z0-9_-]")  # after the main path: a sibling such as <main>-old
+_NAME_CHAR = re.compile(r"[a-z0-9_.-]")  # after the own worktree: another (<name>2, <name>.bak)
+_RELATIVE_HINT = (
+    "the main checkout is read-only for worktree agents: spell it relative to the worktree "
+    "root, as in REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom"
+)
+
+
+def _worktree_pairs(cwd: str) -> list[tuple[str, str]]:
+    """(main checkout, worktree name), case kept, for every form of `cwd` that is a harness
+    worktree or lies below one; empty outside a worktree."""
+    pairs = []
+    for form in candidates(cwd):
+        found = _WORKTREE_CWD.match(form)
+        if found is not None:
+            pairs.append((found.group(1), found.group(2)))
+    return pairs
+
+
+def _normalised(text: str) -> str:
+    """`text` casefolded, every backslash a `/`, each run of `/` one `/`."""
+    return _SLASHES.sub("/", text.casefold().replace("\\", "/"))
+
+
+def _needle(main: str) -> str:
+    """The main checkout's path without its drive letter, so every drive and device prefix
+    spelling (`C:`, `/c`, `//./C:`, a rooted `\\Users`) holds it."""
+    return _normalised(main[2:] if _DRIVE.match(main) else main)
+
+
+def _follows(text: str, index: int, char: re.Pattern[str]) -> bool:
+    return index < len(text) and char.match(text, index) is not None
+
+
+def _hit(text: str, needle: str, own: str) -> bool:
+    """Whether normalised `text` holds `needle` not followed by a sibling's name character, nor
+    by this session's own worktree `own` (`/.claude/worktrees/<name>`, casefolded) as a whole
+    component."""
+    start = text.find(needle)
+    while start >= 0:
+        end = start + len(needle)
+        mine = text.startswith(own, end) and not _follows(text, end + len(own), _NAME_CHAR)
+        if not mine and not _follows(text, end, _SIBLING_CHAR):
+            return True
+        start = text.find(needle, start + 1)
+    return False
+
+
+def _spells_main(text: str, pairs: Sequence[tuple[str, str]]) -> bool:
+    folded = _normalised(text)
+    return any(_hit(folded, _needle(main), _WORKTREES + name.casefold()) for main, name in pairs)
+
+
+def _worktree_command(payload: Mapping) -> Decision:
+    """A Bash or PowerShell call from a harness worktree (the payload cwd under
+    .claude/worktrees/<name>/) is denied when its command spells the main checkout's absolute
+    path; every other shell call gets no opinion, decided before tool_input is read."""
+    cwd = payload.get("cwd")
+    if not isinstance(cwd, str) or not cwd:
+        raise HookError("the payload has no cwd string, so the hook cannot tell a worktree "
+                        "session from the main one")  # fmt: skip
+    pairs = _worktree_pairs(cwd)
+    if not pairs:
+        return NO_OPINION
+    tool = payload["tool_name"]
+    tool_input = payload.get("tool_input")
+    command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
+    if not isinstance(command, str):
+        raise HookError(f"the {tool} payload has no command string")
+    main, name = pairs[0]
+    if _spells_main(command, pairs):
+        return _deny(f"a {tool} command from the harness worktree {name} spells the main "
+                     f"checkout's absolute path {main} (261109-gzy); {_RELATIVE_HINT}")  # fmt: skip
+    return NO_OPINION
 
 
 # --- the matching-session layer (D-17, D-18, D-44, D-45, DI-07) ------------------------------

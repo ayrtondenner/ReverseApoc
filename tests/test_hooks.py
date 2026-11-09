@@ -144,7 +144,7 @@ def test_project_settings_wire_the_always_layer():
     assert settings["hooks"] == {
         "PreToolUse": [
             {
-                "matcher": EDIT_TOOLS,
+                "matcher": ALWAYS_TOOLS,
                 "hooks": [ALWAYS_HANDLER],
             }
         ]
@@ -576,7 +576,8 @@ def test_matching_needs_no_bash_timeout_for_the_quick_forms(repo, form):
 
 
 def test_always_ignores_background_bash(repo):
-    """The always layer has no opinion on Bash, background or not (M14 is matching-only)."""
+    """Outside a harness worktree the always layer has no opinion on Bash, background or not
+    (M14 is matching-only)."""
     assert not always(_background("ls", repo, True)).deny
 
 
@@ -750,9 +751,14 @@ def test_driver_settings_shape():
     assert driver["disableClaudeAiConnectors"] is True
     assert "mcpServers" not in driver and "disableAllHooks" not in driver
     entries = _hook_entries(driver)
-    (always_entry,) = _hook_entries(project)
-    assert always_entry in entries
-    (matching_entry,) = [e for e in entries if e != always_entry]
+    (project_entry,) = _hook_entries(project)
+    # 261109-gzy: the project matcher adds Bash and PowerShell; the driver's copy keeps the edit
+    # matcher, since its matching layer handles Bash and refuses PowerShell.
+    assert project_entry == {"matcher": ALWAYS_TOOLS, "hooks": [ALWAYS_HANDLER]}
+    (matching_entry,) = [e for e in entries if e["hooks"] != [ALWAYS_HANDLER]]
+    assert [e for e in entries if e != matching_entry] == [
+        {"matcher": EDIT_TOOLS, "hooks": [ALWAYS_HANDLER]}
+    ]
     assert matching_entry["matcher"] == "*"
     (handler,) = matching_entry["hooks"]
     assert handler == {"type": "command", "command": MATCHING_COMMAND, "timeout": 120,
@@ -1042,6 +1048,167 @@ def test_settings_commands_fail_closed_through_the_hook_shell(tmp_path, index):
     assert _through_shell(command, protected, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, allowed, cwd=tmp_path, env=base)[0] == 2, name
     assert _through_shell(command, protected, cwd=tmp_path, env=_without_uv(env))[0] == 2, name
+
+
+# --- 261109-gzy: a worktree's shell command never spells the main checkout's absolute path ----
+
+ALWAYS_TOOLS = EDIT_TOOLS + "|Bash|PowerShell"
+SHELL_TOOLS = ("Bash", "PowerShell")
+RELATIVE_WATCOM = "../../../third_party/watcom"
+SPELLS_MAIN = "spells the main checkout's absolute path"
+PLAN_DIR = ".planning/quick/261109-gzy-x"
+RELATIVE_COMMANDS = [  # the batch briefs' sanctioned relative read-only uses (R10)
+    f"REVERSEAPOC_WATCOM_DIR={RELATIVE_WATCOM} uv run pytest -q",
+    f'mkdir -p "{PLAN_DIR}" && cp "../../../{PLAN_DIR}/PLAN.md" "{PLAN_DIR}/PLAN.md"',
+    "cat ../../../.planning/quick-batches/261109-gzs/RULINGS.md",
+    f"$env:REVERSEAPOC_WATCOM_DIR = '{RELATIVE_WATCOM}'",
+]
+
+
+@pytest.fixture
+def worktree(repo: Path) -> Path:
+    """A harness worktree of the scratch checkout: repo/.claude/worktrees/agent-x, `.git` file."""
+    root = repo / ".claude" / "worktrees" / "agent-x"
+    root.mkdir(parents=True)
+    (root / ".git").write_text("gitdir: ../../../.git/worktrees/agent-x\n", encoding="utf-8")
+    return root
+
+
+def shell(name: str, command: str, cwd: Path) -> dict:
+    """A Bash or PowerShell payload."""
+    return tool(name, cwd, command=command, description="x")
+
+
+def watcom_command(name: str, raw: str) -> str:
+    """The Watcom path set the way each shell spells it."""
+    if name == "Bash":
+        return f"REVERSEAPOC_WATCOM_DIR={raw} uv run pytest -q"
+    return f"$env:REVERSEAPOC_WATCOM_DIR = '{raw}'; uv run pytest -q"
+
+
+def main_watcom(repo: Path) -> str:
+    return native(repo / "third_party" / "watcom")
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("form", PATH_FORMS)
+def test_worktree_command_spelling_the_main_checkout_is_denied(repo, worktree, name, form):
+    """R6: every drive, slash, device and case spelling of the main checkout is denied; only
+    the relative one passes."""
+    raw = path_form(form, repo / "third_party" / "watcom", worktree)
+    decision = always(shell(name, watcom_command(name, raw), worktree))
+    if form == "relative":
+        assert not decision.deny, raw
+        return
+    assert decision.deny and SPELLS_MAIN in decision.reason, (form, raw)
+    text = main_watcom(repo)
+    for variant in (text.upper(), text.swapcase(), text.replace("\\", "\\\\")):
+        assert always(shell(name, watcom_command(name, variant), worktree)).deny, variant
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_allows_its_own_worktree(repo, worktree, name):
+    """R7: the worktree's own absolute path, in any form, is not the main checkout's."""
+    script = worktree / "tools" / "x.py"
+    commands = [f'cd "{native(worktree)}" && uv run pytest -q', f"uv run python {native(script)}",
+                f"uv run python {script.as_posix()}"]  # fmt: skip
+    if WINDOWS:
+        posix = worktree.as_posix()
+        commands.append(f"cd /{posix[0].lower()}{posix[2:]} && uv run pytest -q")
+    for command in commands:
+        assert not always(shell(name, command, worktree)).deny, command
+    below = worktree / "tools"
+    below.mkdir()
+    assert always(shell(name, watcom_command(name, main_watcom(repo)), below)).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("other", ["agent-y", "agent-x2", "agent-x.bak", ""])
+def test_worktree_command_denies_other_worktrees(repo, worktree, name, other):
+    """R8: another worktree, or the worktrees directory itself, is the main checkout's path."""
+    target = repo / ".claude" / "worktrees" / other
+    decision = always(shell(name, f'ls "{native(target)}"', worktree))
+    assert decision.deny and SPELLS_MAIN in decision.reason, target
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("sibling", ["repo-old", "repo2", "repo_x"])
+def test_worktree_command_allows_sibling_names(tmp_path, worktree, name, sibling):
+    """R9: a directory beside the checkout whose name only starts with the checkout's."""
+    raw = native(tmp_path / sibling / "third_party" / "watcom")
+    assert not always(shell(name, watcom_command(name, raw), worktree)).deny, raw
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+@pytest.mark.parametrize("command", RELATIVE_COMMANDS)
+def test_worktree_command_allows_the_relative_forms(worktree, name, command):
+    """R10: the briefs' relative `../../../` uses stay allowed (the hook resolves no `..`)."""
+    assert not always(shell(name, command, worktree)).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_main_session_has_no_opinion(tmp_path, repo, name):
+    """R4: outside a worktree (the main session, a driver session, anywhere else) a shell call
+    gets no opinion, decided before its tool_input is read."""
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (repo / "tools").mkdir()
+    command = watcom_command(name, main_watcom(repo))
+    for cwd in (repo, repo / "tools", elsewhere):
+        assert not always(shell(name, command, cwd)).deny, cwd
+    for tool_input in (None, "x", {"command": 3}):
+        assert not always({**shell(name, "ls", repo), "tool_input": tool_input}).deny
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_fails_closed(worktree, name):
+    """R3: a cwd that cannot be placed; R5: a worktree payload with no command string."""
+    payload = shell(name, "ls", worktree)
+    cwds = [3, "", "x", *(["\\\\.\\pipe\\x"] if WINDOWS else [])]
+    for cwd in cwds:
+        with pytest.raises(hooks.HookError):
+            always({**payload, "cwd": cwd})
+    with pytest.raises(hooks.HookError):
+        always({key: value for key, value in payload.items() if key != "cwd"})
+    for tool_input in (None, {}, {"command": 3}):
+        with pytest.raises(hooks.HookError):
+            always({**payload, "tool_input": tool_input})
+
+
+@pytest.mark.parametrize("name", SHELL_TOOLS)
+def test_worktree_command_reason(repo, worktree, name):
+    decision = always(shell(name, f'cd "{native(repo)}"', worktree))
+    assert decision.reason.startswith("reverseapoc hooks: ")
+    for part in (name, "agent-x", SPELLS_MAIN, RELATIVE_WATCOM, "261109-gzy"):
+        assert part in decision.reason, part
+
+
+def test_worktree_command_matching_layer_unchanged(repo, worktree):
+    """R16: the matching layer's Bash rule (D-44) decides before the always layer could."""
+    for form in hooks.ATTEMPT_FORMS:
+        args = " ".join("func_000A3980" if a == hooks.ATTEMPT_NAME_SLOT else a for a in form)
+        assert not always(bash(f"{WRAPPER} {args}", repo)).deny, form
+    decision = matching(bash(f'cd "{native(repo)}"', worktree))
+    assert decision.deny and "runs only the attempt wrapper" in decision.reason
+    assert SPELLS_MAIN not in decision.reason
+    assert not matching(bash(f"{WRAPPER} check", repo)).deny
+
+
+def test_worktree_command_entry_point_end_to_end(repo, worktree):
+    def run(payload: dict) -> subprocess.CompletedProcess[bytes]:
+        return _run_entry(json.dumps(payload).encode("utf-8"))
+
+    denied = run(bash(watcom_command("Bash", main_watcom(repo)), worktree))
+    assert denied.returncode == 0, denied.stderr
+    specific = json.loads(denied.stdout)["hookSpecificOutput"]
+    assert specific["permissionDecision"] == "deny"
+    assert SPELLS_MAIN in specific["permissionDecisionReason"]
+    relative = run(bash(watcom_command("Bash", RELATIVE_WATCOM), worktree))
+    assert (relative.returncode, relative.stdout) == (0, b""), relative.stderr
+    main = run(bash(watcom_command("Bash", main_watcom(repo)), repo))
+    assert (main.returncode, main.stdout) == (0, b""), main.stderr
+    no_cwd = {k: v for k, v in bash("ls", worktree).items() if k != "cwd"}
+    assert run(no_cwd).returncode == 2
 
 
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
