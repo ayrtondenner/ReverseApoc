@@ -34,6 +34,7 @@ quick id.
 | 11 | 261107-qkd | 370a652d078dcc2c9049f3c3d1525cec7a1de74b | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 12 | 261107-qke | d865e156347cb08f4a11e7e9bfcc279387e2b03a | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 13 | 261107-qkd | 47b09fa04c762960b32bfa0f9edab8805d7d1f69 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
+| 14 | 261109-gzt | 8ce53b74490b30912d67b91ddc2def91de66a02c | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 
 ## Point 8
 
@@ -507,3 +508,99 @@ Refusal reasons over the not-matched Tier 1 rows:
 | op: one-operand imul | 1 |
 
 Open after point 13 (batch 261107-qk9): with the header prototype fix (`47b09fa0`), calls to a function an included header declares go through the header's prototype, but the lifter still passes its own agreed count and types. Outside the Tier 1 table this leaves 3 compile failures in the batch records: tacp 0x0008C110 and ufo2p 0x00014A30 (E1151, floor and memset called with another count) and ufo2p 0x00073EE0 (E1071, a parameter type). The fix is for `agreed_counts` to take the header's count and types for those names. tacp 0x00064050 (E1079) is older.
+
+## Point 14
+
+Tier 1, 943 members, converter only:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 15 | 3 | 0 | 0 | 18 |
+| near | 4 | 8 | 0 | 0 | 12 |
+| compiled | 37 | 236 | 205 | 42 | 520 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 4 | 31 | 100 | 59 | 194 |
+| refused | 0 | 3 | 12 | 9 | 24 |
+| crash | 11 | 10 | 8 | 10 | 39 |
+| rows | 71 | 291 | 325 | 120 | 807 |
+
+Matched rows (136): 73 exact, 59 compiled, 0 refused, 4 hole-draft.
+
+Sample, 120 rows, tools: converter, search, slots, classify:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 0 | 1 | 0 | 0 | 1 |
+| near | 0 | 0 | 0 | 0 | 0 |
+| compiled | 0 | 36 | 27 | 16 | 79 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 0 | 3 | 11 | 18 | 32 |
+| refused | 0 | 0 | 1 | 3 | 4 |
+| crash | 0 | 0 | 1 | 3 | 4 |
+| rows | 0 | 40 | 40 | 40 | 120 |
+
+`hole-draft` rows are refused rows that lifted with holes. They can never be exact and are never searched, so `refused` falls by them with no real gain. The reasons below count each such row's strict lift, so the retry lowers no first-refusal count.
+
+Not-matched Tier 1 rows by class and route:
+
+| class | converter | search | agent | all |
+| --- | --- | --- | --- | --- |
+| tail | 0 | 0 | 3 | 3 |
+| slot | 0 | 0 | 0 | 0 |
+| size | 2 | 0 | 694 | 696 |
+| register | 2 | 0 | 1 | 3 |
+| branch | 1 | 0 | 0 | 1 |
+| mixed | 7 | 0 | 15 | 22 |
+| none | 42 | 0 | 40 | 82 |
+| rows | 54 | 0 | 753 | 807 |
+
+Refusal reasons over the not-matched Tier 1 rows:
+
+| reason | rows |
+| --- | --- |
+| call: stack-convention or odd callee name | 41 |
+| op: cdq | 31 |
+| pop: value not pushed in the block | 23 |
+| call: stack arguments not pushed in the block | 18 |
+| jcc: no flag source | 15 |
+| call: result of a void callee is used | 13 |
+| reg: esp read before any write | 12 |
+| call: indirect | 11 |
+| jump: indirect (switch table) | 11 |
+| idiv: dividend is not a cdq of eax | 8 |
+| stack: slot read at two widths | 8 |
+| decode: row does not decode to its end | 7 |
+| x87: stack live across a block end | 5 |
+| SymbolError: no functions.csv row starts at 0x00051E35 | 4 |
+| frame: ebp frame | 4 |
+| SymbolError: no functions.csv row starts at 0x00050EF0 | 3 |
+| SymbolError: no functions.csv row starts at 0x00051FB0 | 3 |
+| SymbolError: no functions.csv row starts at 0x00013520 | 2 |
+| SymbolError: no functions.csv row starts at 0x00013AC0 | 2 |
+| SymbolError: no functions.csv row starts at 0x000180D7 | 2 |
+| SymbolError: no functions.csv row starts at 0x0001D7A0 | 2 |
+| SymbolError: no functions.csv row starts at 0x00021E90 | 2 |
+| SymbolError: no functions.csv row starts at 0x0002E271 | 2 |
+| SymbolError: no functions.csv row starts at 0x000B63B8 | 2 |
+| SymbolError: no functions.csv row starts at 0x000B6CF0 | 2 |
+| op: repne scasb | 2 |
+| reg: esi read before any write | 2 |
+| stack: address outside the frame | 2 |
+| stack: saved register slot | 2 |
+| stack: slot above the frame that is no parameter | 2 |
+| SymbolError: no functions.csv row starts at 0x0001862C | 1 |
+| SymbolError: no functions.csv row starts at 0x00028CA7 | 1 |
+| SymbolError: no functions.csv row starts at 0x0002CB90 | 1 |
+| SymbolError: no functions.csv row starts at 0x0002E310 | 1 |
+| SymbolError: no functions.csv row starts at 0x00039360 | 1 |
+| SymbolError: no functions.csv row starts at 0x00050E97 | 1 |
+| SymbolError: no functions.csv row starts at 0x00051F35 | 1 |
+| SymbolError: no functions.csv row starts at 0x00052167 | 1 |
+| SymbolError: no functions.csv row starts at 0x000638D0 | 1 |
+| SymbolError: no functions.csv row starts at 0x0007C11C | 1 |
+| SymbolError: no functions.csv row starts at 0x0009A7F0 | 1 |
+| SymbolError: no functions.csv row starts at 0x000C16C9 | 1 |
+| SymbolError: no functions.csv row starts at 0x000C3B0D | 1 |
+| op: cwd | 1 |
+| op: enter | 1 |
+| op: in | 1 |
