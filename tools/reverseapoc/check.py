@@ -745,6 +745,7 @@ class ByteCompare:
     ok: bool
     differing: int  # bytes outside the relocated fields that differ, plus any length difference
     first_va: int | None
+    regions: tuple[int, ...] = ()  # `differing` per BOARD_REGION_BYTES region; they sum to it
 
 
 # The window around the first differing byte, in instructions per side: the lead-in decodes the
@@ -752,6 +753,9 @@ class ByteCompare:
 # attempt prints it after every check, so the agent re-reads it each time (261109-gzv).
 WINDOW_BEFORE = 3
 WINDOW_AFTER = 4
+# The region board's grid, counted from the row start (999.7; D-03's plan REGIONs at 256 B and up
+# use the same grid). Not flags.py's REGION_SIZE, the 0x10000 fixup-region size (D-33).
+BOARD_REGION_BYTES = 0x100
 
 
 def _masked(reloc: RelocResult) -> set[int]:
@@ -771,7 +775,24 @@ def compare_bytes(ours: bytes, row: FunctionRow, flat: bytes, reloc: RelocResult
              if row.start + i not in masked and ours[i] != flat[row.start + i]]  # fmt: skip
     extra = abs(len(ours) + reloc.filler - length)
     first = diffs[0] if diffs else (row.start + common if extra else None)
-    return ByteCompare(not diffs and not extra, len(diffs) + extra, first)
+    regions = _region_counts(diffs, row, len(ours) + reloc.filler, length)
+    return ByteCompare(not diffs and not extra, len(diffs) + extra, first, regions)
+
+
+def _region_counts(
+    diffs: Sequence[int], row: FunctionRow, ours_length: int, length: int
+) -> tuple[int, ...]:
+    """compare_bytes' differing count per BOARD_REGION_BYTES region from the row start: each
+    differing VA in its region, and the length difference byte by byte from the shorter side's
+    end to the longer side's (`ours_length` counts the kept filler as ours, as `extra` does). The
+    tuple covers the longer side; counts only, never a byte (999.7)."""
+    longer = max(ours_length, length)
+    counts = [0] * -(-longer // BOARD_REGION_BYTES)
+    for va in diffs:
+        counts[(va - row.start) // BOARD_REGION_BYTES] += 1
+    for offset in range(min(ours_length, length), longer):
+        counts[offset // BOARD_REGION_BYTES] += 1
+    return tuple(counts)
 
 
 @dataclass(frozen=True)
@@ -913,6 +934,7 @@ class FunctionCheck:
     first_va: int | None
     raw_fields: tuple[RawField, ...] = ()  # the unit's raw fields inside this row (18b)
     window: tuple[WindowRow, ...] = ()  # ours beside the original at the first difference
+    regions: tuple[int, ...] = ()  # compare_bytes' differing count per 0x100 region (999.7)
 
     @property
     def ok(self) -> bool:
@@ -933,7 +955,7 @@ class FunctionCheck:
             "reloc": {"ok": self.reloc.ok, "problems": list(self.reloc.problems)},
             "bytes": {"ok": self.bytes_ok, "differing": self.differing,
                       "first_va": None if self.first_va is None else _hex(self.first_va),
-                      "filler": self.filler},
+                      "filler": self.filler, "regions": list(self.regions)},
             "raw_fields": _raw_fields_json(self.raw_fields),
             "window": [row.to_json() for row in self.window],
         }  # fmt: skip
@@ -1161,7 +1183,7 @@ def check_source(
         raw = tuple(f for f in target.raw_fields if d.row.start <= f.va < d.row.end)
         functions.append(FunctionCheck(d.row.name, d.row.start, d.size, percent, reloc,
                                        same.ok, same.differing, same.first_va, raw,
-                                       window=window))  # fmt: skip
+                                       window=window, regions=same.regions))  # fmt: skip
     return SourceCheck(compiled.rule.spec, tuple(compiled.rule.flags), tuple(functions), target,
                        compiled.output, account.problems, account.stubs)  # fmt: skip
 

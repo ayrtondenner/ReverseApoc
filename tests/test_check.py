@@ -251,7 +251,8 @@ def test_check_passes_a_matching_unit(env, monkeypatch, capsys):
     assert set(fn_doc) >= {"name", "va", "size", "objdiff_percent", "reloc", "bytes"}
     assert fn_doc["objdiff_percent"] == 100.0
     assert fn_doc["reloc"] == {"ok": True, "problems": []}
-    assert fn_doc["bytes"] == {"ok": True, "differing": 0, "first_va": None, "filler": 0}
+    assert fn_doc["bytes"] == {"ok": True, "differing": 0, "first_va": None, "filler": 0,
+                               "regions": [0]}  # fmt: skip
     (splice,) = doc["splice"]
     assert set(splice) >= {"exe", "sha1", "expected", "ok", "landed"}
     assert splice["exe"] == EXE and splice["ok"] is True and splice["landed"] == 1
@@ -2516,7 +2517,7 @@ def test_window_check_json_and_attempt_summary(env, monkeypatch, capsys):
         assert set(row) == {"first", "ours", "original"}
         assert set(row["ours"]) == set(row["original"]) == {"va", "mnemonic", "operands",
                                                             "relocated"}  # fmt: skip
-    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler"}
+    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler", "regions"}
     lines = attempt._check_summary(doc)
     assert "    first difference at 0x0001000A: ours | original" in lines
     (first,) = [line for line in lines if line.startswith("    > ")]
@@ -2529,7 +2530,7 @@ def test_window_is_empty_when_the_bytes_match(env):
     assert fn.window == ()
     fn_doc = fn.to_json()
     assert fn_doc["window"] == []
-    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler"}
+    assert set(fn_doc["bytes"]) == {"ok", "differing", "first_va", "filler", "regions"}
 
 
 def test_window_holds_three_before_and_four_after():
@@ -2593,3 +2594,70 @@ def test_window_defaults_for_an_eight_argument_function_check():
     fn = check.FunctionCheck("func_00010000", CODE_BASE, 11, 100.0, NO_RELOC, True, 0, None)
     assert fn.window == ()
     assert fn.to_json()["window"] == []
+
+
+# ---- 07.2-05: differing bytes per 0x100 region, the region board's input (999.7) ----
+
+REGION_BASE = 0x10000
+CLEAN = check.RelocResult(True, (), frozenset(), frozenset())
+REGION_BODY = bytes([0x40] * 0x300)  # three regions of made-up `inc eax`
+
+
+def _flipped(original: bytes, *offsets: int) -> bytes:
+    """`original` with the byte at each offset changed."""
+    ours = bytearray(original)
+    for offset in offsets:
+        ours[offset] ^= 0xFF
+    return bytes(ours)
+
+
+def _regions(ours: bytes, original: bytes = REGION_BODY, reloc=CLEAN) -> tuple[int, ...]:
+    """compare_bytes' regions of `ours` against a row holding `original`; every call also
+    checks that the regions sum to the differing count."""
+    row = FunctionRow(REGION_BASE, REGION_BASE + len(original), "func_00010000", "game", UNIT,
+                      "call")  # fmt: skip
+    cmp = check.compare_bytes(ours, row, bytes(REGION_BASE) + original, reloc)
+    assert sum(cmp.regions) == cmp.differing
+    return cmp.regions
+
+
+def test_board_region_is_0x100_bytes():
+    assert check.BOARD_REGION_BYTES == 0x100
+
+
+def test_regions_count_differences_per_0x100():
+    assert _regions(_flipped(REGION_BODY, 0x10, 0x110, 0x111)) == (1, 2, 0)
+    assert _regions(REGION_BODY) == (0, 0, 0)
+
+
+def test_regions_ignore_relocated_fields():
+    field = REGION_BASE + 0x104  # one made-up field of ours: 0x104..0x107 are not compared
+    reloc = check.RelocResult(True, (), frozenset({field}), frozenset())
+    assert _regions(_flipped(REGION_BODY, 0x10, 0x105), reloc=reloc) == (1, 0, 0)
+
+
+def test_regions_count_a_short_body():
+    """The 0x180 missing bytes count where ours ends (0x80 of region 1) and in region 2."""
+    ours = _flipped(REGION_BODY[:0x180], 0x20, 0x120)
+    assert _regions(ours) == (1, 1 + 0x80, 0x100)
+
+
+def test_regions_count_a_long_body():
+    assert _regions(REGION_BODY + bytes([0x40] * 0x10)) == (0, 0, 0, 0x10)
+    assert _regions(REGION_BODY + bytes([0x40] * 0x110)) == (0, 0, 0, 0x100, 0x10)
+
+
+def test_regions_count_kept_filler_as_ours():
+    kept = replace(CLEAN, filler=0x10)
+    assert _regions(REGION_BODY[:0x2F0], reloc=kept) == (0, 0, 0)
+    assert _regions(REGION_BODY[:0x2F0]) == (0, 0, 0x10)
+
+
+def test_regions_in_json(env):
+    (fn,) = run_check(env).functions
+    regions = fn.to_json()["bytes"]["regions"]
+    assert regions == [0] and all(type(count) is int for count in regions)
+    differing = check.FunctionCheck("func_00010000", CODE_BASE, 0x300, 100.0, NO_RELOC, False, 3,
+                                    CODE_BASE + 0x10, regions=(1, 2, 0))  # fmt: skip
+    assert differing.to_json()["bytes"]["regions"] == [1, 2, 0]
+    assert sum(differing.regions) == differing.differing
