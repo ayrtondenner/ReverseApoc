@@ -10,7 +10,7 @@ import re
 from pathlib import Path
 
 from conftest import REPO_ROOT
-from reverseapoc import hooks
+from reverseapoc import hooks, session
 from reverseapoc.cli import build_parser
 
 SKILL = REPO_ROOT / ".claude" / "skills" / "watcom-decomp" / "SKILL.md"
@@ -438,3 +438,44 @@ def test_skill_states_the_naming_landing_as_built():
     section = _section(text, "Replacing INCLUDE_ASM")
     for phrase in ("through its proposals", "through readability proposals"):
         assert phrase in section, phrase
+
+
+# ---- 261109-gzx: the stop rules are the /goal's ----
+
+
+def _stop_bullets(section: str) -> list[str]:
+    """The bullets (without `- `) right after the section's first line that starts `Stop `."""
+    lines = section.splitlines()
+    lead = next(i for i, line in enumerate(lines) if line.startswith("Stop "))
+    bullets = []
+    for line in lines[lead + 1 :]:
+        if not line.startswith("- "):
+            break
+        bullets.append(line[2:])
+    return bullets
+
+
+def test_skill_stop_rules_are_the_goal_stop_rules():
+    """261109-gzx: "When to give up" lists exit 0 and then session.STOP_RULES, in the /goal's
+    order and words, so the /goal's Stop hook admits every stop the skill asks for."""
+    section = _section(_text(), "When to give up")
+    bullets = _stop_bullets(section)
+    assert len(bullets) == 1 + len(session.STOP_RULES), bullets
+    assert "Stop only when one of these holds" in section
+    assert bullets[0].startswith("`attempt check` exited `0`")
+    for bullet, rule in zip(bullets[1:], session.STOP_RULES, strict=True):
+        assert bullet.startswith(rule), (bullet, rule)
+
+
+def test_skill_stops_after_a_sweep_hit():
+    """261109-gzx: after a sweep hit the session writes it in notes.md and stops, because the
+    driver parks the function (261109-gzu); a stop names its rule in the last message, and a
+    blocked stop with no rule holding goes back to the next C shape."""
+    text = _text()
+    section = _section(text, "When to give up")
+    assert "no new session on the function for the rest of the night" in section
+    assert "last message" in section
+    assert "next C shape" in section
+    assert "write it in notes.md and stop" in _section(text, "Flags")
+    assert "or try C shapes under the unit's rule within the budget" not in text  # today's L195
+    assert "editing on loses nothing" not in text  # today's L60

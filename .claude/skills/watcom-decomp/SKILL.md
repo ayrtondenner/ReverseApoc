@@ -57,7 +57,7 @@ Extern types, from how the target listing touches the data:
 - Your check compiles with the unit's rule in the view's `config/cflags.txt`, which is HEAD's copy: the unit's own line if it has one (a few units have per-unit `-oneatx` rules), else the `*` default above.
 - That file is the check's oracle. Editing it, or its view copy, would make a check pass that the gate refuses; both hook layers deny it, and the driver's audit would stop the night.
 - A function whose target starts with `push imm32; call __CHK` was built without `-s`. It needs a per-file rule only the owner can add. Note it as "needs flags (no -s)" and stop.
-- Flags are never your choice. A sweep hit (under "The attempt wrapper") is evidence: the driver records it in the attempt record, and an executor later turns it into a proposal with `reverseapoc flags propose`, which reads every sweep's saved `checks/NNNN.c`. Only the owner lands a rule, with `reverseapoc flags approve`. So once a sweep with a hit has run, the hit is safe: editing on loses nothing.
+- Flags are never your choice. A sweep hit (under "The attempt wrapper") is evidence: the driver records it in the attempt record, and an executor later turns it into a proposal with `reverseapoc flags propose`, which reads every sweep's saved `checks/NNNN.c`. Only the owner lands a rule, with `reverseapoc flags approve`. So once a sweep with a hit has run, the hit is safe: write it in notes.md and stop (see "When to give up").
 - Depth: `docs/toolchain.md#flags` and `docs/toolchain.md#phase-7-flag-rules`.
 
 ## C89 and the lint
@@ -181,23 +181,26 @@ The window is all you see of your own object: at most 8 rows around the first di
 
 ## When to give up
 
-Stop when any of these holds:
+Stop only when one of these holds:
 - `attempt check` exited `0`: stop editing, because the driver gates the view unit as you leave it;
+- a sweep printed `sweep hit: needs flags`: write the hit in notes.md and stop, because the driver starts no new session on the function for the rest of the night;
 - three different C shapes leave objdiff below 100;
-- the check budget is used;
-- about 25 of 30 minutes or 35 of 40 turns are gone.
+- all 25 check runs are used;
+- about 25 of 30 minutes or 35 of 40 turns are gone;
+- needs flags (no -s), a jump table that cannot lead the unit or has a target outside the function, or another check running in this attempt, each as its section above says.
+
+When the /goal blocks a stop: if a rule above holds, name it in one message with the printed line that shows it; if none holds, the attempt is not done, so make the next C shape.
 
 On stopping:
 1. Write notes.md first, before any optional last step.
 2. If the remaining difference is register allocation or instruction choice and time remains, you may run one `attempt check --sweep`, then add its result to notes.md.
 3. Leave the view unit as it is. Do not restore `INCLUDE_ASM` and do not re-check to confirm. The driver keeps every `checks/NNNN.c`, scores the best run, and abandons the view; the repo-root unit is never yours to reset.
-
-After a sweep hit, record it in notes.md first. Then stop, or try C shapes under the unit's rule within the budget; either way, end with notes.md written.
+4. End with one last message that names the rule that holds, in its words above, and its evidence (check numbers or the printed line): the /goal's judge reads only the conversation.
 
 notes.md holds, in this order:
 1. The outcome: matched, or the best objdiff with its check number (`checks/NNNN.c` is that C).
 2. Each shape tried: one line each, with its best percent and check number.
-3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`. You see the first difference and a count, never the rest, so if `first_va` falls on a stack operand write `slots only?`, with that instruction and `differing`. The owner runs the search outside sessions, and a session never does.
+3. The remaining difference: `first_va`, the original instruction there, and any `reloc.problems`. The summary shows at most 8 rows around the first difference and a count, never the rest of your object, so if `first_va` falls on a stack operand write `slots only?`, with that instruction and `differing`. The owner runs the search outside sessions, and a session never does.
 4. The sweep result, if one ran: the best cell, and any hit as "needs flags <spec>" with its cell number and stage (as printed).
 5. Name ideas for callees, globals or the function, each with its evidence.
 6. What to try next, most promising first.
