@@ -35,6 +35,7 @@ quick id.
 | 12 | 261107-qke | d865e156347cb08f4a11e7e9bfcc279387e2b03a | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 13 | 261107-qkd | 47b09fa04c762960b32bfa0f9edab8805d7d1f69 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 | 14 | 261109-gzt | 8ce53b74490b30912d67b91ddc2def91de66a02c | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
+| 15 | 261109-gzt | 83a884b6048dc1d57ac271f02c18c6a1f56d99b6 | 14d0275ed305145592f46189576a1b6ea90f6808a6110fb85b0fc2ce26900b69 | ufo2p eb5be9576e5a8d18a4d8b0bc2bdf04bade46792818a399916ac73f540c892b29 tacp 31295a584f8f2008729341c22ddf43237bdcc7eafe07b4f2a14e65b0c70df73a | converter, search, slots, classify | 18 | 12 | 1 | 0 | no | 0 | exempt (D-27) |
 
 ## Point 8
 
@@ -511,6 +512,8 @@ Open after point 13 (batch 261107-qk9): with the header prototype fix (`47b09fa0
 
 ## Point 14
 
+**Superseded by point 15.** This run had a regression from gzt: `header_params` raised SymbolError for a call target that is not a row start, so 24 lifts errored and rows dropped out (compiled 530 to 520, hole-draft 221 to 194). Fixed in 8204bae1 (merge 9749898d) and re-measured as point 15. The headline numbers (18 exact, 12 near) were the same in both.
+
 Tier 1, 943 members, converter only:
 
 | outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
@@ -604,3 +607,80 @@ Refusal reasons over the not-matched Tier 1 rows:
 | op: cwd | 1 |
 | op: enter | 1 |
 | op: in | 1 |
+
+## Point 15
+
+Re-measure of point 14 after the fix 8204bae1. Tier 1 is identical to point 13 (530 compiled, 221 hole drafts, 26 refused), so the header-prototype change costs Tier 1 nothing. The three target rows outside Tier 1 (tacp 0x0008C110, ufo2p 0x00014A30, ufo2p 0x00073EE0) now compile in both cells, where point 13 failed them with E1151 and E1071.
+
+Tier 1, 943 members, converter only:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 15 | 3 | 0 | 0 | 18 |
+| near | 4 | 8 | 0 | 0 | 12 |
+| compiled | 37 | 240 | 209 | 44 | 530 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 15 | 36 | 104 | 66 | 221 |
+| refused | 0 | 4 | 12 | 10 | 26 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 71 | 291 | 325 | 120 | 807 |
+
+Matched rows (136): 73 exact, 59 compiled, 0 refused, 4 hole-draft.
+
+Sample, 120 rows, tools: converter, search, slots, classify:
+
+| outcome | <64 | 64-255 | 256-1023 | >=1024 | all |
+| --- | --- | --- | --- | --- | --- |
+| exact | 0 | 1 | 0 | 0 | 1 |
+| near | 0 | 0 | 0 | 0 | 0 |
+| compiled | 0 | 36 | 28 | 17 | 81 |
+| compile-failed | 0 | 0 | 0 | 0 | 0 |
+| hole-draft | 0 | 3 | 11 | 19 | 33 |
+| refused | 0 | 0 | 1 | 4 | 5 |
+| crash | 0 | 0 | 0 | 0 | 0 |
+| rows | 0 | 40 | 40 | 40 | 120 |
+
+`hole-draft` rows are refused rows that lifted with holes. They can never be exact and are never searched, so `refused` falls by them with no real gain. The reasons below count each such row's strict lift, so the retry lowers no first-refusal count.
+
+Not-matched Tier 1 rows by class and route:
+
+| class | converter | search | agent | all |
+| --- | --- | --- | --- | --- |
+| tail | 0 | 0 | 3 | 3 |
+| slot | 0 | 0 | 0 | 0 |
+| size | 2 | 0 | 732 | 734 |
+| register | 2 | 0 | 1 | 3 |
+| branch | 1 | 0 | 0 | 1 |
+| mixed | 7 | 0 | 14 | 21 |
+| none | 44 | 0 | 1 | 45 |
+| rows | 56 | 0 | 751 | 807 |
+
+Refusal reasons over the not-matched Tier 1 rows:
+
+| reason | rows |
+| --- | --- |
+| call: stack-convention or odd callee name | 43 |
+| op: cdq | 31 |
+| pop: value not pushed in the block | 23 |
+| reg: esp read before any write | 21 |
+| call: stack arguments not pushed in the block | 18 |
+| call: result of a void callee is used | 15 |
+| jcc: no flag source | 15 |
+| jump: indirect (switch table) | 13 |
+| call: indirect | 11 |
+| call: target is not a row start | 9 |
+| idiv: dividend is not a cdq of eax | 8 |
+| stack: slot read at two widths | 8 |
+| decode: row does not decode to its end | 7 |
+| x87: stack live across a block end | 5 |
+| frame: ebp frame | 4 |
+| op: repne scasb | 3 |
+| reg: esi read before any write | 3 |
+| stack: saved register slot | 3 |
+| stack: address outside the frame | 2 |
+| stack: slot above the frame that is no parameter | 2 |
+| op: cwd | 1 |
+| op: enter | 1 |
+| op: in | 1 |
+| op: iretd | 1 |
+| op: one-operand imul | 1 |
