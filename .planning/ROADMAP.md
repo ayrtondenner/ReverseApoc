@@ -437,13 +437,14 @@ tooling, and build the harness for measuring model and effort by function size. 
   1. Each item has its plan, and each plan is done, partial or deferred with commits and tests; host and container suites green
   2. Matched bytes unchanged: `gate --all` and `ninja verify` exit 0 on the final main
   3. `drive --canary` passes with the new verbs and backends, and spike 012 can run from the shipped harness
-**Plans:** 16 plans in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
+
+**Plans:** 2/16 plans executed in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
 
 Plans:
 
 **Wave 1**
-- [ ] 07.2-01-PLAN.md — schema-3 attempt record (ledger fields, hold-run state, HOLD_EXACT, landing record), Haiku/Sonnet ids, `stats --run` model x size table (PIPE-01)
-- [ ] 07.2-05-PLAN.md — region board: per-0x100 counts in check JSON, the board and the closest saved check at 256 B and up (PIPE-05)
+- [x] 07.2-01-PLAN.md — schema-3 attempt record (ledger fields, hold-run state, HOLD_EXACT, landing record), Haiku/Sonnet ids, `stats --run` model x size table (PIPE-01)
+- [x] 07.2-05-PLAN.md — region board: per-0x100 counts in check JSON, the board and the closest saved check at 256 B and up (PIPE-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 07.2-02-PLAN.md — give-up records: giveup.json, `attempt giveup`, the record's giveup, earlier give-ups and best C in the pack (PIPE-02)
@@ -512,7 +513,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
 | 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
-| 7.2. FNV-inspired matching pipeline (INSERTED) | 0/16 | Planned | - |
+| 7.2. FNV-inspired matching pipeline (INSERTED) | 2/16 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
