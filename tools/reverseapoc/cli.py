@@ -2326,7 +2326,7 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     log = args.log if args.log is not None else repo / attempt.ATTEMPT_LOG
     config = args.config if args.config is not None else repo / "config"
     try:
-        report = stats.collect(repo, log, config)
+        report = stats.collect(repo, log, config, runs=args.run)
     except stats.StatsError as exc:
         print(f"reverseapoc stats: error: {exc}", file=sys.stderr)
         return EXIT_TOOL
@@ -2355,6 +2355,9 @@ def _add_stats_command(sub: argparse._SubParsersAction) -> None:
                    help="functions.csv sizes and the members file; default: <repo>/config")
     p.add_argument("--min-unattended", type=_non_negative, default=None, metavar="N",
                    help="exit 1 when fewer than N matches are unattended (AGT-11)")
+    p.add_argument("--run", action="append", default=None, metavar="RUN",
+                   help="only the records of run RUN (repeatable; a trailing * names a prefix, "
+                   "as in spike012-*), matched by their own logged matches")  # fmt: skip
     p.set_defaults(func=_cmd_stats)
 
 

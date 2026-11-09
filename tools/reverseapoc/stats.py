@@ -314,8 +314,7 @@ def _by_size(attempted: set[Key], matched: set[Key], sizes: Mapping[Key, int]) -
     functions.csv does not size (only when there are some)."""
     groups: dict[str, list[Key]] = {_bucket_label(i): [] for i in range(len(SIZE_BUCKETS))}
     for key in sorted(attempted):
-        label = _bucket_label(size_bucket(sizes[key])) if key in sizes else UNKNOWN
-        groups.setdefault(label, []).append(key)
+        groups.setdefault(_size_label(key, sizes), []).append(key)
     return [{"bucket": label, "attempted": len(keys),
              "matched": sum(k in matched for k in keys),
              "rate_percent": _rate(sum(k in matched for k in keys), len(keys))}
@@ -369,9 +368,64 @@ def _by_tier(counted: Mapping[Key, MatchEvent], tiers: Mapping[Key, int] | None)
     return out
 
 
+def _size_label(key: Key, sizes: Mapping[Key, int]) -> str:
+    """The SIZE_BUCKETS label of a function, `unknown` when functions.csv does not size it."""
+    return _bucket_label(size_bucket(sizes[key])) if key in sizes else UNKNOWN
+
+
+_LABEL_ORDER = (*(_bucket_label(i) for i in range(len(SIZE_BUCKETS))), UNKNOWN)
+_MODEL_SIZE_COUNTS = ("attempted", "matched", "hold_exact")
+
+
+def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
+                   sizes: Mapping[Key, int]) -> dict:  # fmt: skip
+    """Phase 07.2 D-16: per requested model (v2 and v3 records) and size bucket, the distinct
+    functions attempted, matched (a MATCHED attempt, or a MATCHED landing credited to that
+    model) and held exact (a HOLD_EXACT attempt); only the buckets that occur, smallest
+    first."""
+    cells: dict[str, dict[str, dict[str, set[Key]]]] = {}
+
+    def add(model: str, key: Key, count: str) -> None:
+        buckets = cells.setdefault(model, {})
+        cell = buckets.setdefault(_size_label(key, sizes), {c: set() for c in _MODEL_SIZE_COUNTS})
+        cell[count].add(key)
+
+    for r in matching:
+        if "model_requested" not in r:
+            continue  # a v1 record names no requested model
+        add(r["model_requested"], _key(r), "attempted")
+        if r["outcome"] in (driver.MATCHED, driver.HOLD_EXACT):
+            add(r["model_requested"], _key(r),
+                "matched" if r["outcome"] == driver.MATCHED else "hold_exact")  # fmt: skip
+    for r in landed:
+        if r["outcome"] == driver.MATCHED:
+            add(r["model"], _key(r), "matched")
+    return {model: {label: {c: len(buckets[label][c]) for c in _MODEL_SIZE_COUNTS}
+                    for label in sorted(buckets, key=_LABEL_ORDER.index)}
+            for model, buckets in sorted(cells.items())}  # fmt: skip
+
+
+def run_selected(run_id: str, names: Sequence[str]) -> bool:
+    """Phase 07.2 D-22: `run_id` equals one of `names`, or starts with a name's prefix before
+    its trailing `*` (`spike012-*`). The one rule `stats --run` and `drive --land-held`
+    share."""
+    return any(run_id.startswith(name[:-1]) if name.endswith("*") else run_id == name
+               for name in names)  # fmt: skip
+
+
+def _selected(record: Mapping, runs: Sequence[str]) -> bool:
+    """A record of the selected runs; a landing is selected by its own run or the run it lands
+    from."""
+    if record["kind"] == driver.KIND_LANDING and run_selected(record["from_run"], runs):
+        return True
+    return run_selected(record["run"], runs)  # every record kind names its run
+
+
 def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, int],
-                 tiers: Mapping[Key, int] | None) -> Report:  # fmt: skip
-    """The DEC-07 report of validated `records` and a match history."""
+                 tiers: Mapping[Key, int] | None, *, own: bool = False) -> Report:  # fmt: skip
+    """The DEC-07 report of validated `records` and a match history. `own` (`stats --run`): a
+    function is matched by the records' own logged matches only, not by the git history of
+    other runs; the class lines still come from git."""
     attempts = [r for r in records if r["kind"] == driver.KIND_ATTEMPT]
     v1 = [r for r in attempts if "schema" not in r]
     v2 = [r for r in attempts if "schema" in r]  # v2 and v3 alike: both carry model_requested
@@ -385,7 +439,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
     # so `_sums` stays over the attempt records and the held attempt's cost is counted once.
     landed = [r for r in records if r["kind"] == driver.KIND_LANDING]
     logged = {_key(r) for r in [*matching, *landed] if r["outcome"] == driver.MATCHED}
-    matched = (logged - reverted) | set(counted)
+    matched = logged if own else (logged - reverted) | set(counted)
     attempted = {_key(r) for r in matching}
     sums = _sums(attempts)
     data = {
@@ -410,6 +464,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
             v2, lambda r: r["gate"]["regressions"] if r["gate"] else 0, len(v1)),
         "hook_blocks": _v2_sum(v2, lambda r: r["hook_blocks"], len(v1)),
         "by_model": _split(v2, "model_requested", len(v1)),
+        "by_model_size": _by_model_size(matching, landed, sizes),
         "by_session": _split(v2, "session", len(v1)),
         "by_tier": _by_tier(counted, tiers),
     }  # fmt: skip
@@ -469,6 +524,17 @@ def _metric_lines(d: Mapping) -> list[str]:
     return lines
 
 
+def _model_size_lines(by_model_size: Mapping) -> list[str]:
+    """One line per requested model: each bucket's matched, attempted and hold-exact counts."""
+    if not by_model_size:
+        return ["per model and size: none"]
+    return ["per model and size:"] + [
+        f"  {model}: " + "; ".join(
+            f"{label} {c['matched']} of {c['attempted']} matched, {c['hold_exact']} hold exact"
+            for label, c in buckets.items())
+        for model, buckets in by_model_size.items()]  # fmt: skip
+
+
 def _tier_lines(by_tier: Mapping | None) -> list[str]:
     if by_tier is None:
         return [f"per tier: no {MEMBERS_CSV}"]
@@ -496,12 +562,18 @@ class Report:
         return "\n".join([
             *_class_lines(d), *_metric_lines(d),
             *_split_lines("per model", d["by_model"], d["by_model"]["models"]),
+            *_model_size_lines(d["by_model_size"]),
             *_split_lines("per session kind", d["by_session"], d["by_session"]["kinds"]),
             *_tier_lines(d["by_tier"]),
         ])  # fmt: skip
 
 
-def collect(repo: Path, log: Path, config: Path) -> Report:
-    """The report of `log`, `repo`'s history and `config`'s sizes and tiers."""
+def collect(repo: Path, log: Path, config: Path, *, runs: Sequence[str] | None = None) -> Report:
+    """The report of `log`, `repo`'s history and `config`'s sizes and tiers. `runs` (`stats
+    --run`, D-16, D-22): only the records of those runs (run_selected), matched by their own
+    logged matches."""
     records = read_attempts(log)
-    return build_report(records, history(repo), read_sizes(config), read_tiers(config))
+    if runs is not None:
+        records = [r for r in records if _selected(r, runs)]
+    return build_report(records, history(repo), read_sizes(config), read_tiers(config),
+                        own=runs is not None)  # fmt: skip

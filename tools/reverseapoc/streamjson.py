@@ -68,6 +68,8 @@ EXPECTED_MODEL = "claude-opus-5-5"  # D-35; session.MODEL passes the same id
 ACCEPTED_INIT_MODELS: Mapping[str, tuple[str, ...]] = {
     "claude-opus-5-5": ("claude-opus-5-5",),
     "claude-fable-5-1": ("claude-fable-5-1",),
+    "claude-haiku-5-5": ("claude-haiku-5-5",),  # Phase 07.2 D-16, D-18
+    "claude-sonnet-5-5": ("claude-sonnet-5-5",),
 }
 
 
@@ -83,9 +85,17 @@ class Price(NamedTuple):
 # The price of each init model, for `stream_usage`'s lower bound of a session with no result.
 # Literal ids, like ACCEPTED_INIT_MODELS; a model added there needs its price here. Fitted with
 # zero residual from the CLI's own modelUsage costUSD (orchestrator, 2026-11-01).
+# Haiku 5.5 and Sonnet 5.5 (Phase 07.2 D-16): input and output from the models table (07.2
+# RESEARCH Q1, cited), Haiku's cache read from the owner's plan, Sonnet's as Opus's;
+# cache_creation at 2x input is assumed (RESEARCH A1) and is refitted against the CLI's
+# modelUsage costUSD at the first real Haiku and Sonnet canary, as Opus's were. Haiku's second
+# price tier above 100K-token prompts is not modelled, which leaves `stream_usage` the lower
+# bound it is documented to be.
 PRICES_PER_MTOK: Mapping[str, Price] = {
     "claude-opus-5-5": Price(input=4.0, output=20.0, cache_read=0.20, cache_creation=8.0),
     "claude-fable-5-1": Price(input=10.0, output=50.0, cache_read=0.25, cache_creation=20.0),
+    "claude-haiku-5-5": Price(input=0.10, output=0.50, cache_read=0.01, cache_creation=0.20),
+    "claude-sonnet-5-5": Price(input=2.00, output=10.00, cache_read=0.20, cache_creation=4.00),
 }
 TOKENS_PER_MTOK = 1_000_000
 EXPECTED_TOOLS = ("Read", "Edit", "Write", "Glob", "Grep", "Bash")  # D-45's --tools

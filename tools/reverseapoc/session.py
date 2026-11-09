@@ -37,10 +37,14 @@ from .streamjson import EXPECTED_TOOLS, parse_line
 
 OPUS_MODEL = "claude-opus-5-5"  # D-35, the literal id
 FABLE_MODEL = "claude-fable-5-1"  # Phase 7 D-09, the escalation model
+HAIKU_MODEL = "claude-haiku-5-5"  # Phase 07.2 D-18: a Claude arm of spike 012
+SONNET_MODEL = "claude-sonnet-5-5"  # Phase 07.2 D-18: a Claude arm of spike 012
 MODEL = OPUS_MODEL  # the default model of a session (passes 1 and 2)
 MODEL_NAMES = {  # the display name per model id, for the Co-Authored-By line (07-30)
     OPUS_MODEL: "Claude Opus 5.5",
     FABLE_MODEL: "Claude Fable 5.1",
+    HAIKU_MODEL: "Claude Haiku 5.5",
+    SONNET_MODEL: "Claude Sonnet 5.5",
 }
 ESCALATE_AFTER_PASSES = 2  # Phase 7 D-09: two capped Opus passes, then Fable
 MAX_TURNS = 40  # D-07
