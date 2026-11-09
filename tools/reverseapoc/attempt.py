@@ -1,11 +1,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The attempt wrapper (D-44): the only commands a matching session runs through Bash.
 
-`uv run --frozen reverseapoc attempt check|asm|context` is bound to the claimed function. The
-claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
+`uv run --frozen reverseapoc attempt check|asm|context|giveup` is bound to the claimed function.
+The claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
 REVERSEAPOC_ATTEMPT_DIR), each validated here; no agent argument chooses the unit, the
 function, the flags, the Watcom tree or the source root. The accepted argument shapes are
-exactly hooks.ATTEMPT_FORMS (ruling F27), which the matching-session hook allows.
+exactly hooks.forms_for(kind) (ruling F27), which the matching-session hook allows:
+hooks.MATCHING_FORMS in a matching session, the five hooks.ATTEMPT_FORMS in a readability one.
+
+`attempt giveup` (07.2-02, 999.5, D-04, D-26) validates the session's giveup.json, the sibling
+of notes.md, with `read_giveup`, the validator the driver reuses when it records the give-up;
+it reserves no check slot and runs no container.
 
 `attempt check` runs `reverseapoc check <claim> --json` in the container through an injectable
 runner, at most CHECK_BUDGET times per attempt (D-07). One run at a time: each holds
@@ -56,15 +61,16 @@ from .functions import (
     read_symbols_csv,
 )
 from .hooks import (
-    ATTEMPT_FORMS,
     ATTEMPT_PREFIX,
     CLAIM_ENV,
+    GIVEUP_NAME,
     NOTES_ENV,
     PROPOSALS_ENV,
     SESSION_KIND_ENV,
     SESSION_KINDS,
     UNIT_FILE_ENV,
     attempt_form_matches,
+    forms_for,
 )
 from .proposals import Rename, read_proposals, rename_problem
 from .readlint import ReadlintResult, Violation, run_readlint
@@ -111,6 +117,17 @@ READABILITY = SESSION_KINDS[1]  # the session kind whose check adds readlint (07
 FUNCTIONS_CSV = "functions.csv"  # config/<exe>/ tables a check and a rename proposal read
 SYMBOLS_CSV = "symbols.csv"
 UNITS_CSV = "units.csv"  # read by check.load_exe; the asm/context cache digests it
+# 07.2-02 (999.5): the give-up record a matching session leaves in giveup.json. D-04's survey
+# categories (narrowed by D-26: no `difficult.json` category), in RULINGS order; the driver's
+# GIVEUP_CATEGORIES is this object (the wrapper cannot import the driver).
+GIVEUP_CATEGORIES = ("flags", "block_layout", "stack_layout", "register_allocation",
+                     "instruction_idiom", "types_or_struct", "call_convention", "compile_error",
+                     "other")  # fmt: skip
+GIVEUP_TEXTS = ("tried", "still_differs", "suspected_cause")
+GIVEUP_KEYS = ("category", *GIVEUP_TEXTS)
+GIVEUP_TEXT_CAP = 200  # the driver's _TEXT_CAP, so a validated text fits the record unchanged
+_C_CHARS = "{};"  # no C text in a give-up (D-04, D-23): a brace or a semicolon is refused
+_LONG_HEX = re.compile(r"[0-9A-Fa-f]{65,}")  # the driver's record-wide rule (D-23)
 
 
 class AttemptError(ValueError):
@@ -172,13 +189,14 @@ RUNNER: Runner = default_runner  # read at call time; tests replace it
 CLOCK: Callable[[], float] = time.monotonic  # times each run (M2); tests replace it
 
 
-def form_allowed(argv: Sequence[str]) -> bool:
-    """Whether `argv` (after `attempt`) is one of hooks.ATTEMPT_FORMS (ruling F27)."""
-    return attempt_form_matches(argv)
+def form_allowed(argv: Sequence[str], kind: str = SESSION_KINDS[0]) -> bool:
+    """Whether `argv` (after `attempt`) is one of hooks.forms_for(kind) (ruling F27, D-26: a
+    readability session gets no matching-only form)."""
+    return attempt_form_matches(argv, forms_for(kind))
 
 
-def forms_text() -> str:
-    return "; ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in ATTEMPT_FORMS)
+def forms_text(kind: str = SESSION_KINDS[0]) -> str:
+    return "; ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in forms_for(kind))
 
 
 # ---- the claim (D-44: from the driver's environment only) ----
@@ -1126,6 +1144,77 @@ def cmd_check(*, sweep: bool) -> int:
     code, text = run_check(claim, sweep=sweep, runner=RUNNER, roots=ROOTS)
     print(text)
     return code
+
+
+# ---- the give-up record (07.2-02, 999.5; D-04, D-26: a file, not flags) ----
+
+
+def _giveup_text_problem(value: object) -> str:
+    """Why a give-up text is refused, or ''."""
+    if not isinstance(value, str) or not value.strip():
+        return "must be a non-empty string"
+    if len(value) > GIVEUP_TEXT_CAP:
+        return f"is {len(value)} characters, over the cap of {GIVEUP_TEXT_CAP}"
+    found = next((char for char in _C_CHARS if char in value), None)
+    if found is not None:
+        return f"holds {found!r}: no C text in a give-up (D-04), describe it in words"
+    if _LONG_HEX.search(value):
+        return "holds a hex run of 65 or more characters (D-23)"
+    return ""
+
+
+def _giveup_doc(path: Path) -> dict:
+    """giveup.json as one JSON object; AttemptError naming the file otherwise."""
+    try:
+        doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise AttemptError(f"no readable {path} ({type(exc).__name__}); write {GIVEUP_NAME} "
+                           "beside notes.md first") from None  # fmt: skip
+    except ValueError as exc:
+        raise AttemptError(f"{GIVEUP_NAME} is not UTF-8 JSON: {_one_line(exc)}") from None
+    if not isinstance(doc, dict):
+        raise AttemptError(f"{GIVEUP_NAME} must be one JSON object with exactly "
+                           f"{', '.join(GIVEUP_KEYS)}")  # fmt: skip
+    return doc
+
+
+def read_giveup(path: Path) -> dict:
+    """The give-up a session wrote at `path` (D-04), the one validator of `attempt giveup` and
+    the driver: a JSON object with exactly GIVEUP_KEYS, `category` one of GIVEUP_CATEGORIES, and
+    each of GIVEUP_TEXTS a non-empty string of at most GIVEUP_TEXT_CAP characters with no `{`,
+    `}` or `;` and no hex run of 65 or more. Returns the four fields; every problem raises
+    AttemptError naming the field and the rule."""
+    doc = _giveup_doc(path)
+    missing = [key for key in GIVEUP_KEYS if key not in doc]
+    if missing:
+        raise AttemptError(f"{GIVEUP_NAME} lacks {', '.join(missing)} (it holds exactly "
+                           f"{', '.join(GIVEUP_KEYS)})")  # fmt: skip
+    extra = sorted(key for key in doc if key not in GIVEUP_KEYS)
+    if extra:
+        raise AttemptError(f"{GIVEUP_NAME} has the unknown key {', '.join(extra)} (it holds "
+                           f"exactly {', '.join(GIVEUP_KEYS)})")  # fmt: skip
+    if not isinstance(doc["category"], str) or doc["category"] not in GIVEUP_CATEGORIES:
+        raise AttemptError(f"{GIVEUP_NAME} category {doc['category']!r} is not one of "
+                           f"{', '.join(GIVEUP_CATEGORIES)}")  # fmt: skip
+    for key in GIVEUP_TEXTS:
+        problem = _giveup_text_problem(doc[key])
+        if problem:
+            raise AttemptError(f"{GIVEUP_NAME} {key} {problem}")
+    return {key: doc[key] for key in GIVEUP_KEYS}
+
+
+def cmd_giveup() -> int:
+    """`attempt giveup`: validate <attempt dir>/giveup.json (the notes file's sibling) and print
+    what the driver will record. A matching session only (D-26); no check slot, no container."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    if claim.kind != SESSION_KINDS[0]:
+        raise AttemptError(f"attempt giveup is a matching-session verb; a {claim.kind} session "
+                           "leaves no give-up (D-26)")  # fmt: skip
+    doc = read_giveup(claim.attempt_dir / GIVEUP_NAME)
+    print(f"attempt giveup: accepted {doc['category']}")
+    for key in GIVEUP_TEXTS:
+        print(f"  {key}: {doc[key]}")
+    return EXIT_OK
 
 
 # ---- listings and the context pack (attempt asm, attempt context, the context verb; D-13) ----

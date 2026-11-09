@@ -9,8 +9,9 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
 - **always** (`.claude/settings.json`, every session in the repo, matcher
   `Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell`; the driver's copy keeps the edit matcher,
   since its matching layer handles Bash): blocks edits under orig/, asm/ and build/ (except the
-  driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and the
-  REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS file, D-24), of
+  driver's per-session files at their shapes: REVERSEAPOC_ATTEMPT_NOTES, D-46, and its
+  giveup.json sibling, D-26, and the REVERSEAPOC_UNIT_FILE view unit and REVERSEAPOC_PROPOSALS
+  file, D-24), of
   config/targets.toml, config/watcom.toml, any *.sha1 and the owner-only config/cflags.txt and
   config/cflags-proposals.toml (D-12, D-27 P3), and inline asm (`_asm`, `__asm`,
   `_Pragma`, a code-emitting `#pragma aux`) in src/, include/ and the view unit (D-16, P6).
@@ -23,14 +24,16 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
-  proposals.jsonl (`matching_write_allowed`, which the driver's audit reuses); without the unit
+  proposals.jsonl, and a matching session also the giveup.json beside its notes.md (07.2-02,
+  D-26) (`matching_write_allowed`, which the driver's audit reuses); without the unit
   file it writes nothing (07-13 removed the Phase 6 single-session allowlist of src/<exe>/<unit>.c
   and new include/*.h), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix
   round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
   inside the repository and never a .env* file (a Glob pattern or Grep glob may hold plain
   {a,b} alternatives, each expansion judged by the same rule; [ ] classes are refused,
   261109-gzw); and run Bash only as an exact attempt-wrapper form
-  (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`),
+  (ATTEMPT_PREFIX plus one of `forms_for(kind)`: MATCHING_FORMS for a matching session,
+  ATTEMPT_FORMS for a readability one, D-44, D-26), in the foreground (no `run_in_background`),
   and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
   Every other tool is denied. The always rules apply here too, so a
   matching session never depends on how Claude Code merges the two settings files.
@@ -107,6 +110,8 @@ _SCANNED_DIRS = ("src", "include")
 NOTES_ENV = "REVERSEAPOC_ATTEMPT_NOTES"
 _NOTES_DIR = "build/driver"
 _NOTES_NAME = "notes.md"
+# 07.2-02 (999.5, D-04, D-26): a matching session's give-up record, the sibling of its notes.md.
+GIVEUP_NAME = "giveup.json"
 # D-24 (P6): a session's private view unit and its proposals file, set per claude process by the
 # driver. The always layer exempts them from build/ like the notes file, at these shapes only,
 # and scans the unit file as it scans src/.
@@ -149,6 +154,9 @@ ATTEMPT_FORMS = (
     ("asm", ATTEMPT_NAME_SLOT),
     ("context",),
 )
+# 07.2-02 (D-26): the verbs only a matching session runs; a readability session gets no new form
+# and keeps ATTEMPT_FORMS (forms_for).
+MATCHING_FORMS = ATTEMPT_FORMS + (("giveup",),)
 # Review WR-04: the Bash tool's timeout an `attempt check` needs (a run lasts up to 580 s plus
 # its clean-up); at the tool's 120 s default the wrapper is killed and check.lock stays behind.
 CHECK_TIMEOUT_MS = 600_000
@@ -389,6 +397,11 @@ def _is_notes(rel: str) -> bool:
     return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == _NOTES_NAME
 
 
+def _is_session_file(rel: str) -> bool:
+    """giveup.json under build/driver/ (07.2-02, D-26), the shape of the notes file's sibling."""
+    return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == GIVEUP_NAME
+
+
 def _is_proposals(rel: str) -> bool:
     return rel.startswith(_NOTES_DIR + "/") and rel.rsplit("/", 1)[-1] == _PROPOSALS_NAME
 
@@ -401,15 +414,17 @@ def _is_view_unit(rel: str, claim: str | None = None) -> bool:
 
 def _exempt(rel: str, *, notes: bool, session: bool) -> bool:
     """Whether `rel` under build/ is one of the driver's per-session files: the notes file
-    (D-46), or the view unit or proposals file (D-24), each at its shape only."""
-    return (notes and _is_notes(rel)) or (session and (_is_view_unit(rel) or _is_proposals(rel)))
+    (D-46) or its giveup.json sibling (07.2-02, D-26), or the view unit or proposals file
+    (D-24), each at its shape only. The matching layer then decides who may write giveup.json."""
+    notes_file = notes and (_is_notes(rel) or _is_session_file(rel))
+    return notes_file or (session and (_is_view_unit(rel) or _is_proposals(rel)))
 
 
 def _protected(rel: str, *, notes: bool = False, session: bool = False) -> str | None:
     """Why the always layer refuses an edit of repo-relative `rel`, or None. `notes`: the path
-    is the driver's REVERSEAPOC_ATTEMPT_NOTES (exempt only under build/driver/, D-46);
-    `session`: it is one of `_session_paths` (exempt only at the view-unit or proposals
-    shape, D-24)."""
+    is the driver's REVERSEAPOC_ATTEMPT_NOTES or its giveup.json sibling (exempt only under
+    build/driver/, D-46, D-26); `session`: it is one of `_session_paths` (exempt only at the
+    view-unit or proposals shape, D-24)."""
     for directory, why in _PROTECTED_DIRS.items():
         if _under(rel, directory) and not _exempt(rel, notes=notes, session=session):
             return f"{directory}/ is protected for every session (D-16): {why}"
@@ -426,12 +441,16 @@ def _cwd(payload: Mapping) -> str:
 
 
 def _notes_paths(env: Mapping[str, str], cwd: str) -> frozenset[str]:
-    """The casefolded forms of the driver's notes path, or none when it is unset or unusable."""
+    """The casefolded forms of the driver's notes path and of its giveup.json sibling (07.2-02),
+    or none when it is unset or unusable."""
     raw = env.get(NOTES_ENV, "")
     try:
-        return frozenset(path.casefold() for path in candidates(raw, cwd)) if raw else frozenset()
+        paths = [path.casefold() for path in candidates(raw, cwd)] if raw else []
     except HookError:
         return frozenset()
+    siblings = (posixpath.join(posixpath.dirname(path), GIVEUP_NAME) for path in paths
+                if posixpath.basename(path) == _NOTES_NAME)  # fmt: skip
+    return frozenset((*paths, *siblings))
 
 
 def _env_forms(
@@ -936,13 +955,21 @@ def _claim(env: Mapping[str, str]) -> str | None:
     return claim if isinstance(claim, str) and _CLAIM.fullmatch(claim) else None
 
 
-def attempt_form_matches(argv: Sequence[str]) -> bool:
-    """Whether `argv` (the arguments after ATTEMPT_PREFIX) is exactly one of ATTEMPT_FORMS:
-    the same length, the same tokens, and a name matching ATTEMPT_NAME where the form holds
+def forms_for(kind: str) -> tuple[tuple[str, ...], ...]:
+    """The wrapper forms a session of `kind` may run: MATCHING_FORMS for a matching session,
+    ATTEMPT_FORMS for any other (D-26: readability gets no new form)."""
+    return MATCHING_FORMS if kind == SESSION_KINDS[0] else ATTEMPT_FORMS
+
+
+def attempt_form_matches(
+    argv: Sequence[str], forms: Sequence[tuple[str, ...]] = ATTEMPT_FORMS
+) -> bool:
+    """Whether `argv` (the arguments after ATTEMPT_PREFIX) is exactly one of `forms`: the same
+    length, the same tokens, and a name matching ATTEMPT_NAME where the form holds
     ATTEMPT_NAME_SLOT. Shared with the attempt wrapper (06-15)."""
     args = tuple(argv)
     return any(len(form) == len(args) and all(map(_token_matches, form, args, strict=True))
-               for form in ATTEMPT_FORMS)  # fmt: skip
+               for form in forms)  # fmt: skip
 
 
 def _token_matches(expected: str, given: str) -> bool:
@@ -951,19 +978,27 @@ def _token_matches(expected: str, given: str) -> bool:
     return expected == given
 
 
-def bash_allowed(command: object) -> bool:
-    """Whether a matching session may run `command`: only the characters of the wrapper forms
+def bash_allowed(command: object, *, kind: str = SESSION_KINDS[0]) -> bool:
+    """Whether a session of `kind` may run `command`: only the characters of the wrapper forms
     (so no shell metacharacter, quote, newline or tab can reach a shell), and its split argv
-    is ATTEMPT_PREFIX followed by one of ATTEMPT_FORMS (D-44)."""
+    is ATTEMPT_PREFIX followed by one of `forms_for(kind)` (D-44, D-26)."""
     if not isinstance(command, str) or not _BASH_CHARS.fullmatch(command):
         return False
     argv = shlex.split(command)
     prefix = len(ATTEMPT_PREFIX)
-    return tuple(argv[:prefix]) == ATTEMPT_PREFIX and attempt_form_matches(argv[prefix:])
+    forms = forms_for(kind)
+    return tuple(argv[:prefix]) == ATTEMPT_PREFIX and attempt_form_matches(argv[prefix:], forms)
 
 
 def _fold(rel: str) -> str:
     return rel.replace("\\", "/").casefold()
+
+
+def _giveup_beside(rel: str, notes: str) -> bool:
+    """Whether folded `rel` is the giveup.json in the directory of the folded notes.md `notes`
+    (07.2-02, D-26): that exact path, at the build/driver/ shape."""
+    beside = posixpath.join(posixpath.dirname(notes), GIVEUP_NAME)
+    return _is_notes(notes) and _is_session_file(rel) and rel == beside
 
 
 def matching_write_allowed(
@@ -974,18 +1009,23 @@ def matching_write_allowed(
     tracked: Callable[[str], bool],
     unit_file: str | None = None,
     proposals: str | None = None,
+    kind: str = SESSION_KINDS[0],
 ) -> bool:
     """The session write allowlist (D-17, D-24), one predicate for the hook and the driver's
     post-attempt audit; every path is repo-relative and compared casefolded. With a valid claim
     `<exe>/<unit>` and the view unit `unit_file` (at its shape, naming the claim): only that view
-    unit, the attempt's notes.md under build/driver/ (`notes`) and its proposals.jsonl under
-    build/driver/ (`proposals`), never src/, include/ or config/<exe>/symbols.csv (D-19). No
-    `unit_file`, nothing (07-13 removed the Phase 6 allowlist of src/<exe>/<unit>.c and new
-    include/*.h). `tracked` is kept for the callers' signature; no rule reads it any more."""
+    unit, the attempt's notes.md under build/driver/ (`notes`), for a matching session (`kind`)
+    the giveup.json in the same directory as that notes.md (07.2-02, D-26), and its
+    proposals.jsonl under build/driver/ (`proposals`), never src/, include/ or
+    config/<exe>/symbols.csv (D-19). No `unit_file`, nothing (07-13 removed the Phase 6
+    allowlist of src/<exe>/<unit>.c and new include/*.h). `tracked` is kept for the callers'
+    signature; no rule reads it any more."""
     if claim is None or not _CLAIM.fullmatch(claim) or unit_file is None:
         return False
     rel = _fold(rel_path)
     if notes is not None and rel == _fold(notes) and _is_notes(rel):
+        return True
+    if kind == SESSION_KINDS[0] and notes is not None and _giveup_beside(rel, _fold(notes)):
         return True
     if rel == _fold(unit_file) and _is_view_unit(rel, claim):
         return True
@@ -1150,7 +1190,7 @@ def _matching_write(
     if unit_rel is None:  # set but unusable: never a looser allowlist
         return _deny(f"{UNIT_FILE_ENV} names no single path in the checkout, so the session "
                      "writes nothing (D-24)")  # fmt: skip
-    paths = {"notes": notes_rel, "unit_file": unit_rel, "proposals": proposals_rel}
+    paths = {"notes": notes_rel, "unit_file": unit_rel, "proposals": proposals_rel, "kind": kind}
     allowed = rels is not None and all(
         matching_write_allowed(rel, claim=claim, tracked=tracked, **paths) for rel in rels
     )
@@ -1175,7 +1215,8 @@ def _view_denial(rels: Sequence[str] | None) -> str:
     if rels is not None and any(map(_naming_state, rels)):
         return ("the driver is the only writer of shared naming state (D-19); write a proposal "
                 "to proposals.jsonl instead")  # fmt: skip
-    return "a session writes only its view unit, notes.md and proposals.jsonl (D-24)"
+    return ("a session writes only its view unit, notes.md and proposals.jsonl (D-24), and a "
+            "matching session also the giveup.json beside its notes.md (D-26)")  # fmt: skip
 
 
 def _session_relative(
@@ -1226,8 +1267,9 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
             return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session runs nothing")
         tool_input = payload.get("tool_input")
         command = tool_input.get("command") if isinstance(tool_input, Mapping) else None
-        if not bash_allowed(command):
-            forms = ", ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in ATTEMPT_FORMS)
+        kind = env.get(SESSION_KIND_ENV, SESSION_KINDS[0])  # absent: a matching run
+        if not bash_allowed(command, kind=kind):
+            forms = ", ".join(" ".join((*ATTEMPT_PREFIX, *form)) for form in forms_for(kind))
             return _deny(f"a matching session runs only the attempt wrapper: {forms} (D-44)")
         if _backgrounded(tool_input):
             return _deny("checks run in the foreground, one at a time: no run_in_background "
