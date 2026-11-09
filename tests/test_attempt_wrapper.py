@@ -2121,3 +2121,71 @@ def test_view_context_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkey
     assert _attempt(capsys, "context") == first
     assert _pack(attempt_dir) == saved
     assert len(loads) == 1  # run 2 never loads the EXE
+
+
+CONTEXT_READS = [  # one change per input attempt context reads (design answer 4)
+    _orig_and_manifest, _manifest, _functions_csv, _units_csv, _symbols_csv, _status_csv,
+    _listing_b, _draft, _draft_removed, _view_unit_ab, _view_unit_c, _view_unit_c_removed,
+    _common_h, _matching_md, _own_notes, _earlier_notes, _new_earlier_notes, _record_b, _python,
+]
+CONTEXT_UNREAD = [_header_added, _header_changed, _view_cflags, _stray_unit, _census, _listing_a,
+                  _other_notes]  # fmt: skip
+
+
+@pytest.mark.parametrize("change", CONTEXT_READS, ids=_ids)
+def test_view_context_cache_misses_on_each_change(tree: attempt.Roots, monkeypatch, capsys,
+                                                  loads, change):  # fmt: skip
+    """An input context reads, changed: one more EXE load, and the pack printed and written is
+    the one a run with no entry at all builds."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    change(attempt_dir, monkeypatch)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    _entry(attempt_dir, "context.json").unlink()
+    assert _attempt(capsys, "context") == after  # the new pack, not the stored one
+
+
+@pytest.mark.parametrize("change", CONTEXT_UNREAD, ids=_ids)
+def test_view_context_cache_ignores_unread_inputs(tree: attempt.Roots, monkeypatch, capsys, loads,
+                                                  change):  # fmt: skip
+    """RULINGS gzw amendment: a file attempt context never reads stays out of its key."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    saved = _pack(attempt_dir)
+    _really_changed(change, attempt_dir, monkeypatch)
+    (attempt_dir / "context.md").unlink()
+    assert _attempt(capsys, "context") == first
+    assert _pack(attempt_dir) == saved
+    assert len(loads) == 1
+
+
+def test_view_context_cache_ignores_other_functions_records(tree: attempt.Roots, monkeypatch,
+                                                            capsys, loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    _really_changed(_record_other, attempt_dir, monkeypatch)
+    assert _attempt(capsys, "context") == first
+    assert len(loads) == 1
+
+
+def test_view_asm_and_context_entries_are_separate(tree: attempt.Roots, monkeypatch, capsys,
+                                                   loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    listing, pack = _attempt(capsys, "asm"), _attempt(capsys, "context")
+    assert listing[1] == LISTING_B and pack[1].startswith("# Context pack: func_00010010")
+    assert _attempt(capsys, "asm") == listing and _attempt(capsys, "context") == pack
+    assert len(loads) == 2
+    assert sorted(path.name for path in _entry(attempt_dir, "").iterdir()) == ["asm.json",
+                                                                             "context.json"]
+
+
+def test_legacy_context_is_never_cached(tree: attempt.Roots, monkeypatch, capsys, loads):
+    _claim_b(tree, monkeypatch)
+    assert _attempt(capsys, "context") == _attempt(capsys, "context")
+    assert len(loads) == 2
+    assert not [path for path in tree.repo.rglob("*") if "attempt-cache" in path.as_posix()]
