@@ -2468,3 +2468,123 @@ def test_legacy_context_is_never_cached(tree: attempt.Roots, monkeypatch, capsys
     assert _attempt(capsys, "context") == _attempt(capsys, "context")
     assert len(loads) == 2
     assert not [path for path in tree.repo.rglob("*") if "attempt-cache" in path.as_posix()]
+
+
+# ---- 07.2-02 (999.5): earlier give-ups and the earlier best C in the pack ----
+
+
+def _attempt_record(run: str, n: int, *, percent: float | None = None,
+                    giveup: dict | None = None) -> dict:  # fmt: skip
+    """A made-up committed attempt record of func_00010010 (unit UNIT_AB)."""
+    return {"kind": "attempt", "exe": "ufo2p", "function": "func_00010010",
+            "start": "0x00010010", "unit": UNIT_AB, "run": run, "attempt": n,
+            "outcome": "GAVE_UP", "check": {"best_percent": percent}, "giveup": giveup}  # fmt: skip
+
+
+def _log_records(repo: Path, *records: dict) -> Path:
+    return _add_line(repo / "progress" / "attempts.jsonl",
+                     "".join(json.dumps(record) + "\n" for record in records))  # fmt: skip
+
+
+def _made_up_giveup(category: str, best: str | None) -> dict:
+    return {"category": category, "tried": "made-up: reordered",
+            "still_differs": f"made-up  {category}\nframe", "suspected_cause": "made-up cause",
+            "best_code": best}  # fmt: skip
+
+
+def _best_file(repo: Path, run: str, n: int, value: int) -> Path:
+    """<attempt dir>/best/<unit>.c of `run` attempt `n`, func_00010010 returning `value`."""
+    text = UNIT_AB_TEXT.replace("return D_00020100;", f"return {value};")
+    return _write(repo.joinpath("build", "driver", run, "ufo2p", "func_00010010", f"attempt-{n}",
+                                "best", f"{UNIT_AB}.c"), text)  # fmt: skip
+
+
+def _best_definition(value: int) -> str:
+    return f"int func_00010010(void)\n{{\n    return {value};\n}}"
+
+
+def test_earlier_notes_gives_giveups(tmp_path: Path):
+    """The give-up lines come from the committed records' giveup, oldest first, each text on
+    one line; a record without one gives none."""
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, giveup=_made_up_giveup("flags", None)),
+                 _attempt_record("run1", 2),
+                 _attempt_record("run2", 1, giveup=_made_up_giveup("stack_layout",
+                                                                   "checks/0002.c")))  # fmt: skip
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert notes.giveups == (
+        "run1 attempt 1: flags; still differs: made-up flags frame; suspected: made-up cause; "
+        "best none",
+        "run2 attempt 1: stack_layout; still differs: made-up stack_layout frame; suspected: "
+        "made-up cause; best checks/0002.c",
+    )
+    assert notes.best_c is None
+
+
+def test_earlier_best_c(tmp_path: Path):
+    """The record with the highest best_percent (ties: the latest) whose best/<unit>.c exists
+    gives only that function's definition; a record without the file is skipped."""
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, percent=40.0),
+                 _attempt_record("run1", 2, percent=70.0), _attempt_record("run2", 1, percent=70.0),
+                 _attempt_record("run2", 2, percent=90.0),
+                 _attempt_record("run2", 3, percent=None))  # fmt: skip
+    for run, n, value in (("run1", 1, 40), ("run1", 2, 70), ("run2", 1, 71), ("run2", 3, 99)):
+        _best_file(repo, run, n, value)
+    notes = attempt.earlier_notes(repo, "ufo2p", "func_00010010")
+    assert notes.best_c == _best_definition(71)
+    assert "func_00010000" not in notes.best_c
+    assert notes.giveups == ()
+
+
+def test_earlier_best_c_alone_makes_notes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    record = _attempt_record("run1", 1, percent=40.0)
+    _best_file(repo, "run1", 1, 40)
+    _log_records(repo, record)
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_c == _best_definition(40)
+    _write(repo / "progress" / "attempts.jsonl", "")
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010") is None
+
+
+def test_no_earlier_best_c_without_a_file(tmp_path: Path):
+    repo = tmp_path / "repo"
+    _log_records(repo, _attempt_record("run1", 1, percent=40.0))
+    assert attempt.earlier_notes(repo, "ufo2p", "func_00010010").best_c is None
+
+
+def _section(pack: str, title: str) -> str:
+    return pack.split(f"\n## {title}\n", 1)[1].split("\n## ", 1)[0]
+
+
+def test_context_cache_misses_on_a_new_giveup(tree: attempt.Roots, monkeypatch, capsys, loads):
+    """A new give-up record joins gzw's cache key through earlier_notes (RULINGS)."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    assert _section(first[1], "Earlier give-ups").strip() == "none"
+    _log_records(tree.repo, _attempt_record("run3", 1, giveup=_made_up_giveup("flags", None)))
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert "run3 attempt 1: flags" in _section(after[1], "Earlier give-ups")
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    assert _attempt(capsys, "context") == after and len(loads) == 2
+
+
+def test_context_cache_misses_on_a_changed_best_c(tree: attempt.Roots, monkeypatch, capsys,
+                                                  loads):  # fmt: skip
+    """An edit of the earlier best/<unit>.c rebuilds the pack; unchanged, it is a hit."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    _log_records(tree.repo, _attempt_record("run3", 1, percent=60.0))
+    _best_file(tree.repo, "run3", 1, 60)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _best_definition(60) in _section(first[1], "Earlier best C")
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    _best_file(tree.repo, "run3", 1, 61)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert _best_definition(61) in _section(after[1], "Earlier best C")
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    assert _attempt(capsys, "context") == after and len(loads) == 2

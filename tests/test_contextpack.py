@@ -31,7 +31,9 @@ ORDER = (
     "D_ externs",
     "include/common.h",
     "Ghidra draft",
+    "Earlier best C",
     "Matching idioms",
+    "Earlier give-ups",
     "Earlier notes",
     "Look-alikes",
 )
@@ -165,7 +167,7 @@ def test_empty_inputs_say_none():
                                 lookalikes=()))  # fmt: skip
     body = {section.title: section.body for section in pack.sections}
     for title in ("Callers", "Callees", "D_ externs", "Ghidra draft", "Earlier notes",
-                  "Look-alikes"):  # fmt: skip
+                  "Look-alikes", "Earlier best C", "Earlier give-ups"):  # fmt: skip
         assert body[title] == "none", title
     assert pack.truncated == ()
 
@@ -531,6 +533,77 @@ def test_notes_cut_the_oldest_first_and_keep_the_newest():
     body = {s.title: s.body for s in pack.sections}["Earlier notes"]
     assert "NEWEST" in body and "OLDEST" not in body and "MIDDLE" not in body
     assert body.startswith("... 2 older notes and 2 attempt records cut")
+
+
+# ---- 07.2-02 (999.5): the earlier give-ups and the earlier best C ----
+
+GIVEUP_LINES = ("run1 attempt 1: stack_layout; still differs: made-up frame; suspected: made-up "
+                "spill; best checks/0002.c",
+                "run2 attempt 1: flags; still differs: made-up -ot; suspected: made-up flag; "
+                "best none")  # fmt: skip
+BEST_C = "int func_00010010(void)\n{\n    return 1; /* made-up best C */\n}"
+
+
+def test_titles_of_the_new_sections():
+    assert contextpack.TITLE_GIVEUPS == "Earlier give-ups"
+    assert contextpack.TITLE_BEST_C == "Earlier best C"
+    assert contextpack.ORDER == ORDER
+
+
+def test_giveups_section():
+    """Two give-up lines render just before the earlier notes, one line each, fenced."""
+    pack = build_pack(**_inputs(notes=contextpack.Notes(giveups=GIVEUP_LINES)))
+    titles = [s.title for s in pack.sections]
+    assert titles.index("Earlier give-ups") == titles.index("Earlier notes") - 1
+    body = {s.title: s.body for s in pack.sections}["Earlier give-ups"]
+    assert body.startswith("```text\n") and body.endswith("\n```")
+    assert body.splitlines()[1:-1] == list(GIVEUP_LINES)
+    assert {s.title: s.body for s in pack.sections}["Earlier notes"] == "none"
+
+
+def test_best_c_section():
+    """The earlier best C sits after the draft and before the idioms, fenced like the draft."""
+    pack = build_pack(**_inputs(notes=contextpack.Notes(best_c=BEST_C)))
+    titles = [s.title for s in pack.sections]
+    assert titles.index("Ghidra draft") + 1 == titles.index("Earlier best C")
+    assert titles.index("Earlier best C") + 1 == titles.index("Matching idioms")
+    body = {s.title: s.body for s in pack.sections}["Earlier best C"]
+    assert body == f"```c\n{BEST_C}\n```"
+
+
+def test_cut_order_with_giveups_and_best_c():
+    """Over the cap: look-alikes from the last, the earlier best C, callers from the last, the
+    draft, attempt records oldest first, give-ups oldest first, then notes texts oldest first;
+    the header names each cut and the pack fits."""
+    giveups = tuple(f"run{n} attempt 1: other; still differs: {'g' * 600}; suspected: x; best none"
+                    for n in (1, 2))  # fmt: skip
+    notes = dataclasses.replace(_notes("OLDEST" + "o" * 3000, "NEWEST" + "n" * 3000),
+                                giveups=giveups, best_c="int " + "b" * 3000)  # fmt: skip
+    newest = contextpack.Notes(texts=notes.texts[-1:])
+    bare = _size(**_big_inputs(lookalikes=(), callers=(), draft=None, notes=newest))
+    pack = build_pack(**_big_inputs(PACK_CAP - bare - 400, notes=notes))
+    assert pack.pack_bytes <= PACK_CAP
+    assert pack.truncated == (*LOOKS, "earlier best C", *CALLERS, "draft", "attempt record 1",
+                              "attempt record 2", "give-up 1", "give-up 2", "earlier note 1")
+    header = pack.text.split("\n## ")[0]
+    assert ("Truncated: 3 of 3 look-alikes, earlier best C, 3 of 3 callers, draft, "
+            "2 of 2 attempt records, 2 of 2 give-ups, 1 of 2 earlier notes") in header
+    body = {s.title: s.body for s in pack.sections}
+    assert (body["Earlier best C"], body["Earlier give-ups"]) == ("cut (1 item)", "cut (2 items)")
+    assert "NEWEST" in body["Earlier notes"] and "OLDEST" not in body["Earlier notes"]
+
+
+def test_giveups_cut_the_oldest_first():
+    giveups = tuple(f"run{n} attempt 1: other; still differs: {'g' * 600}; suspected: x; best none"
+                    for n in (1, 2, 3))  # fmt: skip
+    notes = contextpack.Notes(giveups=giveups)
+    bare = _size(**_big_inputs(lookalikes=(), callers=(), draft=None,
+                               notes=contextpack.Notes(giveups=giveups[-1:])))  # fmt: skip
+    pack = build_pack(**_big_inputs(PACK_CAP - bare - 300, notes=notes))
+    assert pack.truncated[-2:] == ("give-up 1", "give-up 2")
+    body = {s.title: s.body for s in pack.sections}["Earlier give-ups"]
+    assert body.startswith("... 2 older give-ups cut\n\n```text\nrun3 attempt 1")
+    assert "run1 attempt" not in body and "run2 attempt" not in body
 
 
 def test_notes_as_text_stay_one_uncut_block():
