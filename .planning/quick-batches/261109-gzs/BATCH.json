@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "batch_id": "261109-gzs",
+  "created_at": "2026-11-09T15:14:08.726Z",
+  "options": {},
+  "base_revision": "b2b044b335d5b22a958e7f8dbeca59fc45dc7cd8",
+  "items": [
+    {
+      "quick_id": "261109-gzt",
+      "client_id": null,
+      "description": "Lifter header-prototype argument counts: agreed_counts in tools/reverseapoc/lift.py takes an included header's prototype count and parameter types for callees the header declares, so the 3 compile failures outside Tier 1 (tacp 0x0008C110 E1151 floor/memset, ufo2p 0x00014A30 E1151, ufo2p 0x00073EE0 E1071) compile; measured as converter curve point 14 in .planning/converter-curve/CURVE.md (see CURVE.md:509), TDD",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/lift.py",
+        "tests/test_lift.py",
+        "tests/test_lift_headers_real.py"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "febd017e",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzu",
+      "client_id": null,
+      "description": "Driver parks a function for the rest of the night once a sweep of one of its sessions has hit (an exact sweep cell): no further sessions are launched on it that night; it is left for flags propose/regate; survey estimate about 570 s per session saved (tools/reverseapoc/driver.py pick/requeue path), TDD",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/driver.py",
+        "tools/reverseapoc/picker.py",
+        "tests/test_driver_pick.py",
+        "tests/test_driver_records.py",
+        "tests/test_attempts_schema.py",
+        "tests/test_drive.py",
+        "docs/workflow.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "03123eb8",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzv",
+      "client_id": null,
+      "description": "attempt check output shows the session's own compiled object disassembly next to the original's around the first differing instruction, and each sweep cell line shows first_va and size; addresses and mnemonics only, never raw game bytes (tools/reverseapoc/attempt.py _summary, tools/reverseapoc/check.py JSON fields), TDD",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "tools/reverseapoc/check.py",
+        "tools/reverseapoc/attempt.py",
+        "tests/test_check.py",
+        "tests/test_attempt_wrapper.py",
+        "tests/test_skill.py",
+        ".claude/skills/watcom-decomp/SKILL.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "77a2b668",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzw",
+      "client_id": null,
+      "description": "Hooks accept brace globs (e.g. {a,b}) in the attempt command forms, and attempt asm / attempt context output is cached per attempt view and reused while its inputs are unchanged (tools/reverseapoc/hooks.py, tools/reverseapoc/attempt.py asm/context only), TDD",
+      "status": "complete",
+      "depends_on": [
+        "261109-gzv"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/attempt.py",
+        "tests/test_attempt_wrapper.py",
+        "tools/reverseapoc/hooks.py",
+        "tests/test_hooks.py",
+        "docs/workflow.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": "9c8a875f",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzx",
+      "client_id": null,
+      "description": "The /goal stop condition in session.goal_prompt matches the watcom-decomp skill's stop rules (stop after a sweep hit; avoid the 9-consecutive-Stop-block streak); the SKILL.md change goes only through superpowers:writing-skills with a RED baseline first; tests/test_skill.py stays green (tools/reverseapoc/session.py, .claude/skills/watcom-decomp/SKILL.md), TDD",
+      "status": "pending",
+      "depends_on": [
+        "261109-gzu"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/session.py",
+        "tests/test_session.py",
+        "tests/test_skill.py",
+        ".claude/skills/watcom-decomp/SKILL.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 1,
+      "commit": null,
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzy",
+      "client_id": null,
+      "description": "Project PreToolUse hook (tools/reverseapoc/hooks.py via .claude/settings.json) refuses a Bash/PowerShell command run from a harness worktree, or a script file such a command runs, that spells the main checkout's absolute path; the sanctioned relative REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom stays allowed; brainstorm the exact rule first, TDD",
+      "status": "complete",
+      "depends_on": [
+        "261109-gzw"
+      ],
+      "planned_files": [
+        "tools/reverseapoc/hooks.py",
+        "tests/test_hooks.py",
+        ".claude/settings.json",
+        "docs/workflow.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": "C:/Users/Ayrton/Documents/Gitprojects/ReverseApoc/.claude/worktrees/agent-aad0bd1ba9ddf6622",
+      "dispatched_branch": "worktree-agent-aad0bd1ba9ddf6622",
+      "dispatched_base": "be8cfb08ed53b888dd998e334d786dbbd72ff0d1",
+      "wave": 2,
+      "commit": "bf8a7f56",
+      "failure_reason": null
+    },
+    {
+      "quick_id": "261109-gzz",
+      "client_id": null,
+      "description": "probe/README.md: identify the lines taken from 07.1-RESEARCH preview or planner measurements (around lines 123-126) and either re-measure them with the probe tooling or mark them explicitly as preview figures; docs only, no tooling change",
+      "status": "complete",
+      "depends_on": [],
+      "planned_files": [
+        "probe/README.md"
+      ],
+      "directory": null,
+      "worktree": null,
+      "dispatched_worktree": null,
+      "dispatched_branch": null,
+      "dispatched_base": null,
+      "wave": 0,
+      "commit": "03c1d99b",
+      "failure_reason": null
+    }
+  ]
+}

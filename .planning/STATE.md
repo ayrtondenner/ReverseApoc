@@ -143,6 +143,12 @@ None yet.
 | 261107-qkd | Lift struct copies, inline strlen and memcpy, x87 forms; header prototype fix 47b09fa0 (point 11 and 13) | 2026-11-08 | 370a652d | — | .planning/quick/261107-qkd-lift-string-ops-movsd-repne-scasb-rep-movsd-movsw-45-first-r |
 | 261107-qke | Close the Phase 7.1 review leftovers WR-02, IN-01, IN-02, IN-03 (point 12) | 2026-11-08 | d865e156 | — | .planning/quick/261107-qke-close-the-phase-7-1-review-leftovers-in-planning-todos-pendi |
 | 261107-qzx | Cache unchanged sibling unit objects in attempt check (second check 86 s to 19 s, cc.log +1) | 2026-11-08 | d7bfbee7 | complete | [261107-qzx-cache-unchanged-sibling-unit-objects-in-](./quick/261107-qzx-cache-unchanged-sibling-unit-objects-in-/) |
+| 261109-gzt | Lifter takes header prototype counts and types (curve point 15: three outside-Tier-1 compile failures fixed, Tier 1 18/12 unchanged; post-merge fix 9749898d) | 2026-11-09 | febd017e | — | .planning/quick/261109-gzt-lifter-header-prototype-argument-counts-agreed-counts-in-too |
+| 261109-gzu | Driver parks a function for the night after a sweep hit (totals.parked) | 2026-11-09 | 03123eb8 | — | .planning/quick/261109-gzu-driver-parks-a-function-for-the-rest-of-the-night-once-a-swe |
+| 261109-gzv | attempt check shows our disassembly beside the original at the first difference; sweep cells show first_va and size | 2026-11-09 | 77a2b668 | — | .planning/quick/261109-gzv-attempt-check-output-shows-the-session-s-own-compiled-object |
+| 261109-gzw | Brace globs in Glob/Grep; attempt asm/context cache per view (asm 1.03 to 0.70 s, context 8.24 to 0.75 s) | 2026-11-09 | 9c8a875f | — | .planning/quick/261109-gzw-hooks-accept-brace-globs-e-g-a-b-in-the-attempt-command-form |
+| 261109-gzy | Worktree shell commands that spell the main checkout are denied, fail closed (two security rounds; residual risk todo) | 2026-11-09 | bf8a7f56 | — | .planning/quick/261109-gzy-project-pretooluse-hook-tools-reverseapoc-hooks-py-via-claud |
+| 261109-gzz | probe/README.md figures re-read or marked as preview | 2026-11-09 | 03c1d99b | — | .planning/quick/261109-gzz-probe-readme-md-identify-the-lines-taken-from-07-1-research |
 
 ### Roadmap Evolution
 
