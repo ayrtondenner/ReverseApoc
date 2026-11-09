@@ -2,8 +2,8 @@
 data only, so CI can run it.
 
 - The attempt log (progress/attempts.jsonl) is read through the driver's own validator
-  (`driver.validate_record`, v1 and v2 lines together); a line that is not JSON, not an object
-  or fails its version's schema is a StatsError naming its line number (exit 2).
+  (`driver.validate_record`, v1, v2 and v3 lines together); a line that is not JSON, not an
+  object or fails its version's schema is a StatsError naming its line number (exit 2).
 - Every match is classed from git, not from gitignored files. Walking the commits that change
   config/<exe>/status.csv oldest first, a start that becomes `matched` in a commit is a match
   event, classed by that commit's trailers: `Matched-By: reverseapoc drive` without
@@ -374,7 +374,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
     """The DEC-07 report of validated `records` and a match history."""
     attempts = [r for r in records if r["kind"] == driver.KIND_ATTEMPT]
     v1 = [r for r in attempts if "schema" not in r]
-    v2 = [r for r in attempts if "schema" in r]
+    v2 = [r for r in attempts if "schema" in r]  # v2 and v3 alike: both carry model_requested
     matching = [r for r in attempts if r.get("session", driver.MATCHING) == driver.MATCHING]
     counted = _counted(hist)
     seen: dict[Key, int] = {}
@@ -394,7 +394,8 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "reverted": [_key_text(k) for k in sorted(reverted)],
         "shallow": hist.shallow,
         "attempts": {"records": len(records), "v1_records": sum("schema" not in r for r in records),
-                     "v2_records": sum("schema" in r for r in records),
+                     "v2_records": sum(r.get("schema") == driver.SCHEMA_V2 for r in records),
+                     "v3_records": sum(r.get("schema") == driver.SCHEMA_V3 for r in records),
                      "sessions": len(attempts),
                      "matching_sessions": len(matching)},  # fmt: skip
         "totals": {"turns": sums["turns"], "tokens": sums["tokens"],
@@ -445,8 +446,9 @@ def _class_lines(d: Mapping) -> list[str]:
 def _metric_lines(d: Mapping) -> list[str]:
     a, t, per = d["attempts"], d["totals"], d["per_match"]
     tokens = ", ".join(f"{k} {t['tokens'][k]}" for k in _TOKENS)
-    lines = [f"attempt log: {a['records']} records (v1 {a['v1_records']}, v2 {a['v2_records']}),"
-             f" {a['sessions']} sessions ({a['matching_sessions']} matching)",
+    lines = [f"attempt log: {a['records']} records (v1 {a['v1_records']}, v2 {a['v2_records']}, "
+             f"v3 {a['v3_records']}), {a['sessions']} sessions ({a['matching_sessions']} "
+             "matching)",
              f"totals: turns {t['turns']}, tokens {tokens}, cost ${t['cost_usd']}, "
              f"seconds {t['seconds']}", "match rate by function size (bytes):"]  # fmt: skip
     lines += [f"  {b['bucket']}: {b['matched']} of {b['attempted']} attempted matched "

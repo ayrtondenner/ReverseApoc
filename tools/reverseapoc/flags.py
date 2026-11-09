@@ -1378,9 +1378,10 @@ def _evidence_key(run: str, exe: str, function: str, n: int) -> AttemptKey:
 
 def _attempt_models(log: Path) -> dict[AttemptKey, AttemptModel]:
     """(run, exe, start, attempt) and (run, exe, function, attempt) -> (pass, model) of every
-    attempt record of attempts.jsonl. Ruling F33 (07-30): the model is a v2 record's
+    attempt record of attempts.jsonl. Ruling F33 (07-30): the model is a v2 or v3 record's
     `model_requested` (the session's, which its init check matched), else v1's `model`; a v1
-    record is pass 1 (the Phase 6 pilot)."""
+    record is pass 1 (the Phase 6 pilot). Phase 07.2: a v3 record is read as v2 is, never as
+    v1 (RESEARCH Pitfall 4)."""
     models: dict[AttemptKey, AttemptModel] = {}
     if not log.is_file():
         return models
@@ -1392,9 +1393,9 @@ def _attempt_models(log: Path) -> dict[AttemptKey, AttemptModel]:
             raise FlagsError(f"{log} line {number}: {exc}") from None
         if record["kind"] != driver.KIND_ATTEMPT:
             continue
-        v2 = record.get("schema") == driver.SCHEMA_V2
-        entry = (record["pass"] if v2 else 1,
-                 record["model_requested"] if v2 else record["model"])  # fmt: skip
+        versioned = record.get("schema") in (driver.SCHEMA_V2, driver.SCHEMA_V3)
+        entry = (record["pass"] if versioned else 1,
+                 record["model_requested"] if versioned else record["model"])  # fmt: skip
         run, exe, n = record["run"], record["exe"], int(record["attempt"])
         models[(run, exe, int(record["start"], 16), n)] = entry
         models.setdefault((run, exe, record["function"], n), entry)

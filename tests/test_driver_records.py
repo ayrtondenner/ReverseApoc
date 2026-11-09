@@ -71,7 +71,7 @@ def test_attempt_record_is_v2(tmp_path):
     assert report.matched == 1, report.detail
     record = _one(night.kinds("attempt"))
     driver.validate_record(record)
-    assert record["schema"] == driver.SCHEMA_V2 == 2
+    assert record["schema"] == driver.SCHEMA_V3 == 3  # Phase 07.2: v2 fields in a schema-3 record
     assert (record["session"], record["pass"], record["worker"]) == ("matching", 1, 0)
     assert (record["model_requested"], record["budget_usd"]) == (MODEL, MAX_BUDGET_USD)
     assert (MODEL, MAX_BUDGET_USD) == ("claude-opus-5-5", 5)
@@ -116,7 +116,7 @@ def test_every_attempt_record_of_a_night_is_v2(tmp_path):
     assert len(attempts) == 3
     for record in attempts:
         driver.validate_record(record)
-        assert record["schema"] == 2, record["kind"]
+        assert record["schema"] == 3, record["kind"]
 
 
 def test_function_is_the_rows_c_name(tmp_path):
@@ -281,7 +281,7 @@ def test_abort_record_is_v2_with_the_c_name(tmp_path):
     abort = _one(night.kinds("abort"))
     driver.validate_record(abort)
     assert (abort["schema"], abort["function"], abort["session"], abort["pass"],
-            abort["worker"], abort["retries"]) == (2, "GetMadeUpVolume", "matching", 1, 0, 3)
+            abort["worker"], abort["retries"]) == (3, "GetMadeUpVolume", "matching", 1, 0, 3)
 
 
 # ---- Task 2: pass counting from the committed log (D-08, D-09) ----
@@ -428,7 +428,7 @@ def test_every_record_of_a_night_is_v2(tmp_path):
     assert kinds == ["run", "limit", "attempt", "attempt", "run"]
     for record in night.records():
         driver.validate_record(record)
-        assert record["schema"] == 2, record["kind"]
+        assert record["schema"] == 3, record["kind"]
 
 
 def test_started_record_v2(tmp_path):

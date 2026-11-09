@@ -740,6 +740,42 @@ RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
     },  # fmt: skip
 }
 
+# Schema 3 (Phase 07.2, D-16, D-26): the token ledger. A v3 line carries "schema": 3 and
+# validates against RECORD_FIELDS_V3; v1 and v2 lines keep their own tables, so no committed
+# line is rewritten (D-23). Every record the driver writes from here on is schema 3, so a night
+# never mixes shapes.
+SCHEMA_V3 = 3
+HARNESSES = ("claude", "codex", "agy")  # the agent CLI a session ran under
+COST_SOURCES = ("cli", "estimate")  # the CLI's own result figure, or our price-table estimate
+DEFAULT_BACKEND = "anthropic"  # the Claude Code login, no base URL
+_BACKEND = re.compile(r"[a-z][a-z0-9-]{0,31}")
+_SCHEMA_V3_FIELD = {"schema": lambda value: type(value) is int and value == SCHEMA_V3}
+_V3_SESSION_FIELDS = {**_V2_SESSION_FIELDS, **_SCHEMA_V3_FIELD}
+
+
+def _as_v3(fields: Mapping[str, Callable[[object], bool]]) -> dict:
+    """A v2 field table with the schema-3 `schema` field in place of the v2 one."""
+    return {**fields, **_SCHEMA_V3_FIELD}
+
+
+RECORD_FIELDS_V3: dict[str, dict[str, Callable[[object], bool]]] = {
+    KIND_ABORT: _as_v3(RECORD_FIELDS_V2[KIND_ABORT]),
+    KIND_RUN: _as_v3(RECORD_FIELDS_V2[KIND_RUN]),
+    KIND_LIMIT: _as_v3(RECORD_FIELDS_V2[KIND_LIMIT]),
+    KIND_RENAME: _as_v3(RECORD_FIELDS_V2[KIND_RENAME]),
+    KIND_ATTEMPT: {
+        **RECORD_FIELDS_V2[KIND_ATTEMPT],
+        **_V3_SESSION_FIELDS,
+        "effort": _optional(_is_text),  # the requested effort; null: the CLI default (D-17)
+        "harness": _one_of(*HARNESSES),
+        "backend": _matches(_BACKEND),  # the arm's provider (RULINGS "Schema 3")
+        "duration_ms": _optional(_is_int),  # the result event's; null: no result event
+        "cost_source": _one_of(*COST_SOURCES),
+        "giveup": _one_of(None),
+        "hold_run": _is_bool,  # D-26: never "held", which names the signed asm hold
+    },  # fmt: skip
+}
+
 
 def _strings(value: object) -> Iterable[str]:
     if isinstance(value, str):
@@ -754,18 +790,20 @@ def _strings(value: object) -> Iterable[str]:
 
 
 def _record_fields(obj: dict) -> dict[str, Callable[[object], bool]]:
-    """The field table of `obj`'s schema and kind: no `schema` key is v1, `"schema": 2` (an
-    int, not a bool or a float) is v2, anything else is a RecordError."""
+    """The field table of `obj`'s schema and kind: no `schema` key is v1, `"schema": 2` or
+    `"schema": 3` (an int, not a bool or a float) is v2 or v3, anything else is a
+    RecordError."""
     if "schema" not in obj:
-        table = RECORD_FIELDS
+        version, table = "v1", RECORD_FIELDS
     elif _SCHEMA_V2_FIELD["schema"](obj["schema"]):
-        table = RECORD_FIELDS_V2
+        version, table = "v2", RECORD_FIELDS_V2
+    elif _SCHEMA_V3_FIELD["schema"](obj["schema"]):
+        version, table = "v3", RECORD_FIELDS_V3
     else:
         raise RecordError(f"unknown schema {obj['schema']!r}")
     kind = obj.get("kind")
     fields = table.get(kind) if isinstance(kind, str) else None
     if fields is None:
-        version = "v1" if table is RECORD_FIELDS else "v2"
         raise RecordError(f"unknown {version} record kind {kind!r}")
     return fields
 
@@ -813,10 +851,10 @@ def _kind_problem(obj: dict) -> str | None:
 
 def validate_record(obj: object) -> None:
     """Raise RecordError unless `obj` is one attempts.jsonl record (D-23): the exact key set
-    of its schema and kind (v1 `attempt`, `abort`, `run`; v2 lines carry `"schema": 2`), every
-    value of the pinned type or enum, a run record's `reason` one of its event's (F30), a v2
-    outcome one of its session's (D-18), and no string anywhere holding a hex run longer than
-    64 characters (no game bytes, T-06-55)."""
+    of its schema and kind (v1 `attempt`, `abort`, `run`; v2 lines carry `"schema": 2`, v3
+    lines `"schema": 3`), every value of the pinned type or enum, a run record's `reason` one
+    of its event's (F30), a v2 or v3 outcome one of its session's (D-18), and no string
+    anywhere holding a hex run longer than 64 characters (no game bytes, T-06-55)."""
     if not isinstance(obj, dict):
         raise RecordError(f"a record is a JSON object, not {type(obj).__name__}")
     fields = _record_fields(obj)
@@ -1643,6 +1681,12 @@ class _Session:
     @property
     def init(self) -> Mapping:
         return streamjson.init_event(self.events) or {}
+
+    @property
+    def measured(self) -> bool:
+        """The CLI ended the session with a result event, so `usage` holds its own figures
+        (else stream_usage's lower bound)."""
+        return any(e.get("type") == "result" for e in self.events)
 
     @property
     def usage(self) -> streamjson.Usage:
@@ -4345,11 +4389,11 @@ class _Night:
     def _record_rename(self, proposal: Rename | Header | None, outcome: str, *,
                        old: str | None = None, reason: str | None = None,
                        commit: str | None = None) -> None:  # fmt: skip
-        """One v2 `rename` record in ruling F12's per-op shape: op rename fills exe, address,
+        """One v3 `rename` record in ruling F12's per-op shape: op rename fills exe, address,
         old and new (C identifiers); op header fills path; a line that is not a proposal (or a
         proposal those fields cannot hold, such as a name that is no C identifier) has op null
         and is REFUSED, its reason naming it. A commit exactly when APPLIED."""
-        base = {"kind": KIND_RENAME, "schema": SCHEMA_V2, "run": self.config.run_id,
+        base = {"kind": KIND_RENAME, "schema": SCHEMA_V3, "run": self.config.run_id,
                 "exe": None, "address": None, "old": None, "new": None, "op": None,
                 "path": None, "outcome": outcome, "reason": _detail(reason) if reason else None,
                 "commit": commit, "date": self.deps.today()}  # fmt: skip
@@ -4377,9 +4421,9 @@ class _Night:
         return self.passes.get((pick.exe, pick.start), 0) + 1
 
     def _base(self, claim: _Claim, kind: str) -> dict:
-        """The fields every v2 attempt and abort record shares (DEC-07): `function` is the
+        """The fields every v3 attempt and abort record shares (DEC-07): `function` is the
         pick's C name (ruling F12: aborts too), `start` its address key."""
-        return {"kind": kind, "schema": SCHEMA_V2, "run": claim.run, "exe": claim.pick.exe,
+        return {"kind": kind, "schema": SCHEMA_V3, "run": claim.run, "exe": claim.pick.exe,
                 "function": c_name(claim.pick), "unit": claim.pick.unit,
                 "start": f"0x{claim.pick.start:08X}", "attempt": claim.n,
                 "session": claim.session, "pass": claim.pass_n,
@@ -4388,17 +4432,21 @@ class _Night:
     def _record_attempt(self, session: _Session, outcome: str, abort: str | None,
                         summary: CheckSummary, *, gate: GateRun | None = None
                         ) -> None:  # fmt: skip
-        """A v2 attempt record (DEC-07): v1's fields plus the requested model and budget (the
-        session's argv, session.build_argv; 07-30: the pass's, D-09, D-25), the hook blocks,
-        the gate's verdict (null when no gate ran) and the sweep evidence (P10). No
-        transcript, C text or game bytes (D-23).
+        """A schema-3 attempt record (Phase 07.2, D-16): v2's fields (DEC-07: v1's plus the
+        requested model and budget, the session's argv, session.build_argv; 07-30: the pass's,
+        D-09, D-25; the hook blocks, the gate's verdict, null when no gate ran, and the sweep
+        evidence, P10) plus the ledger keys. No transcript, C text or game bytes (D-23).
 
-        turns, tokens and cost_usd are the CLI's result figures. A session that ended without
-        a CLI result event (the wall clock killed it: abort_reason timeout, or lint, tool or
-        guardrail when one of those followed the timeout) carries the stream lower bound of
-        `streamjson.stream_usage` in them instead, not the CLI's totals. The record shape does
-        not change, and committed records are never rewritten (D-23)."""
+        turns, tokens and cost_usd are the CLI's result figures, `duration_ms` the result
+        event's and `cost_source` "cli". A session that ended without a CLI result event (the
+        wall clock killed it: abort_reason timeout, or lint, tool or guardrail when one of those
+        followed the timeout) carries the stream lower bound of `streamjson.stream_usage` in
+        them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
+        "estimate". A night passes no effort (null: the CLI default, D-17) and runs the Claude
+        harness on the Claude Code login (`backend` DEFAULT_BACKEND); `giveup` is null and
+        `hold_run` false. Committed records are never rewritten (D-23)."""
         use = session.usage
+        measured = session.measured
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
                   "abort_reason": abort, "turns": use.turns,
@@ -4414,7 +4462,11 @@ class _Night:
                   "budget_usd": session.claim.budget_usd,
                   "hook_blocks": _hook_blocks(session.events),
                   "gate": _gate_field(gate, session.claim.pick),
-                  "sweep_source": source, "sweep_cells_100": cells}  # fmt: skip
+                  "sweep_source": source, "sweep_cells_100": cells,
+                  "effort": None, "harness": "claude", "backend": DEFAULT_BACKEND,
+                  "duration_ms": use.duration_ms if measured else None,
+                  "cost_source": "cli" if measured else "estimate",
+                  "giveup": None, "hold_run": False}  # fmt: skip
         self._append(record)
         if _parks(record):  # quick 261109-gzu; lock order gate, then cond (_append holds gate)
             with self.cond:
@@ -4428,7 +4480,7 @@ class _Night:
 
     def _record_limit(self, seconds: int, streak: int) -> None:
         """DEC-06: one usage-limit wait of this worker (D-07: it pauses every worker)."""
-        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V2, "run": self.config.run_id,
+        record = {"kind": KIND_LIMIT, "schema": SCHEMA_V3, "run": self.config.run_id,
                   "worker": self.worker, "seconds": seconds, "streak": streak,
                   "date": self.deps.today()}  # fmt: skip
         self._append(record)
@@ -4436,11 +4488,11 @@ class _Night:
     def _record_run(self, event: str, reason: str, detail: str | None = None, *,
                     checks_failed: Sequence[str] = (), uncommitted: Sequence[str] = (),
                     guard: bool = True, recovered: Sequence[Mapping] = ()) -> None:  # fmt: skip
-        """A v2 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
+        """A v3 run record (DEC-06): the night's workers, the stale claims recovered at STARTED
         and, on ENDED and STOPPED, the totals over the night's own records."""
         with self.gate_lock:  # the totals and the append see the same records
             totals = None if event == STARTED else self._night_totals()
-            record = {"kind": KIND_RUN, "schema": SCHEMA_V2, "run": self.config.run_id,
+            record = {"kind": KIND_RUN, "schema": SCHEMA_V3, "run": self.config.run_id,
                       "event": event, "reason": reason, "detail": detail,
                       "sessions": self.sessions, "matched": self.matched,
                       "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
