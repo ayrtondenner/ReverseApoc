@@ -1712,3 +1712,66 @@ def test_unreadable_proposals_count_no_pending_rename(readable: Path, monkeypatc
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 1
     assert "proposals.jsonl" in capsys.readouterr().out
+
+
+# ---- 261109-gzw: attempt asm/context output cached per view ----
+
+VIEW_HEADER = "made_up.h"
+
+
+def _claim_b_view(tree: attempt.Roots, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """_claim_b in a D-24 view: both unit texts, one made-up header and a cflags.txt under
+    <attempt dir>/view/, the lifter's census in the tmp tree and tmp copies of common.h and
+    matching.md, so every input a form may read sits in tree.repo."""
+    attempt_dir = _claim_b(tree, monkeypatch)
+    view = attempt_dir / "view"
+    unit = _write(view / "src" / "ufo2p" / f"{UNIT_AB}.c", UNIT_AB_TEXT)
+    _write(view / "src" / "ufo2p" / f"{UNIT_C}.c", UNIT_C_TEXT)
+    _write(view / "include" / VIEW_HEADER, "/* a made-up view header */\n")
+    _write(view / "config" / "cflags.txt", "* wcc386@10.6 -4r -s -fpi\n")
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(unit))
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(attempt_dir / "proposals.jsonl"))
+    monkeypatch.setattr(lift, "CACHE_DIR", tree.repo / "build" / "lift")
+    monkeypatch.setattr(lift, "_RESULT_USED", {})
+    common_h = tree.repo / "include" / "common.h"
+    matching = tree.repo / "docs" / "matching.md"
+    for copy, real in ((common_h, attempt.ROOTS.common_h), (matching, attempt.ROOTS.matching)):
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(Path(real).read_bytes())
+    roots = dataclasses.replace(attempt.ROOTS, common_h=common_h, matching=matching)
+    monkeypatch.setattr(attempt, "ROOTS", roots)
+    return attempt_dir
+
+
+@pytest.fixture
+def loads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """A spy on attempt.exe_inputs: one entry per EXE load."""
+    calls: list[int] = []
+    real = attempt.exe_inputs
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(attempt, "exe_inputs", spy)
+    return calls
+
+
+def _attempt(capsys, *argv: str) -> tuple[int, str, str]:
+    """One `attempt` command as its own process would run it: the lifter's id(exe) caches start
+    empty, and the exit code, stdout and stderr come back."""
+    lift._INDEX.clear()
+    lift._FIXUPS.clear()
+    code = _run(["attempt", *argv])
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_view_asm_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkeypatch, capsys,
+                                                 loads):  # fmt: skip
+    _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "asm")
+    assert first[0] == 0 and first[1] == LISTING_B, first[2]
+    assert len(loads) == 1
+    assert _attempt(capsys, "asm") == first
+    assert len(loads) == 1  # run 2 never loads the EXE
