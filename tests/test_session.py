@@ -124,7 +124,7 @@ def test_goal_prompt_names_the_claim():
     assert "u_00010000" in prompt
     assert "uv run --frozen reverseapoc attempt check" in prompt
     assert "notes.md" in prompt
-    assert "stop after 25 check runs" in prompt
+    assert "all 25 check runs are used" in prompt
 
 
 def test_goal_prompt_names_the_view_unit():
@@ -134,6 +134,30 @@ def test_goal_prompt_names_the_view_unit():
     assert VIEW_UNIT in prompt
     assert "src/ufo2p/u_00010000.c (claim" not in prompt
     assert "claim ufo2p/u_00010000" in prompt
+
+
+_GOAL_CAP = 4000  # the /goal docs' limit on a condition (docs/research/notes-automation-loops.md)
+
+
+def test_goal_prompt_stops_on_the_skill_rules():
+    """261109-gzx: the /goal's stop clause is STOP_RULES, the watcom-decomp skill's own stop list
+    after exit 0, so the Stop hook admits the stops the skill asks for and no other, the session
+    names the rule in its last message, and the prompt reaches the session's argv whole."""
+    assert session.STOP_RULES == (
+        "a sweep printed `sweep hit: needs flags`",
+        "three different C shapes leave objdiff below 100",
+        "all 25 check runs are used",
+        "about 25 of 30 minutes or 35 of 40 turns are gone",
+        "needs flags (no -s), a jump table that cannot lead the unit or has a target outside the "
+        "function, or another check running in this attempt",
+    )
+    prompt = goal_prompt("func_00010000", "u_00010000", "ufo2p", unit_path=VIEW_UNIT)
+    assert "; ".join(session.STOP_RULES) in prompt
+    assert "last message" in prompt
+    assert "No other stop meets this goal" in prompt
+    assert len(prompt) <= _GOAL_CAP
+    argv = build_argv(prompt, claude="claude")
+    assert argv[argv.index("-p") + 1] == prompt
 
 
 @pytest.mark.parametrize("unit_path", [
