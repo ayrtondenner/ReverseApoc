@@ -432,6 +432,33 @@ Used for `wdis`, `wlink` and `wlib` only, as Theme Hospital does. Never for matc
 
 Pinned to 3.14 for host and container parity. Python 3.15.0 shipped on 2026-10-09; the move is a one-line change once dependencies have wheels. 3.15 makes UTF-8 the default encoding, so tools always pass `encoding=` explicitly when reading DOS-era files (latin-1 or CP437).
 
+## Model API keys and sign-ins
+
+`reverseapoc drive` can run sessions on several model families (Phase 07.2, `--night-model` and `--arm`). No key is
+kept in the repo, in `.env`, or in any log or record (CLAUDE.md, hard rules). Each credential is one of two kinds:
+
+| Arm | Credential | Where it lives |
+|---|---|---|
+| Claude (Haiku, Sonnet, Opus) | the Claude Code login | Claude Code itself; no variable |
+| OpenRouter (Muse Spark Open, hosted Qwen3.6-35B-A3B) | `OPENROUTER_API_KEY` | Windows user environment variable |
+| DeepSeek V4.1-Flash | `DEEPSEEK_API_KEY` | Windows user environment variable |
+| z.ai GLM-5.x | `ZAI_API_KEY` | Windows user environment variable |
+| GPT-6 Luna / GPT-6.1 Sol | the ChatGPT sign-in of the Codex CLI (`codex login`) | the Codex CLI's own store |
+| Gemini 3.8 Flash, GPT-OSS 120B | the Google sign-in of the Antigravity CLI (run `agy` once) | the Antigravity CLI's own store |
+| Local Qwen3.6-35B-A3B | none | llama.cpp on localhost |
+
+Set a variable once, in PowerShell, then restart the shell or launcher that runs `drive`:
+
+```powershell
+[Environment]::SetEnvironmentVariable('OPENROUTER_API_KEY', '<key>', 'User')
+```
+
+`config/driver/backends.toml` names the variable each arm reads, never its value. The driver copies the key into
+that one session's environment only. It refuses an arm whose variable is missing or empty before any session starts.
+That guard is not just a convenience: Claude Code pointed at a base URL with no key would send the owner's claude.ai
+login to that endpoint. Which arms send game disassembly to which provider is listed in `docs/legal.md`. The same
+pattern already holds `TAVILY_API_KEY` for `.mcp.json`. `.env.example` lists the variable names.
+
 ## Version pins
 
 | Component | Version | Status |
