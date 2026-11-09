@@ -1151,3 +1151,96 @@ def test_tier_queue_never_offers_a_parked_key_again():
     plain.take((UFO2P, TA))
     plain.finish((UFO2P, TA), matched=False)
     assert plain.next_eligible().start == TA
+
+
+def test_the_phase_6_list_path_parks_a_function_and_keeps_it_off_the_difficult_list(tmp_path):
+    """No signed tier: PICK's first session hits, so its pass ends there; PICK_B runs its three
+    attempts and is capped. Only PICK_B goes to build/driver/difficult.json."""
+    from test_driver import EXE, PICK, START, UNIT, Night, Sess
+
+    pick_b = Pick(EXE, START + 0x10, "func_00010020", UNIT, 20, 100)
+    night = Night(tmp_path, sessions=[Sess(checks=(_hit(),))], picks=(PICK, pick_b))
+    report = night.run()
+    assert _attempts_of(night) == [(START, 1, 1), *((pick_b.start, 1, n) for n in (1, 2, 3))]
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted")
+    difficult = driver.load_difficult(night.repo / driver.DIFFICULT)
+    assert (EXE, pick_b.start) in difficult and (EXE, START) not in difficult
+
+
+def test_a_hit_at_the_last_attempt_parks_instead_of_a_next_pass(tmp_path):
+    """The hit comes at attempt 3 of pass 1: the pass ends parked, so the tier queue offers no
+    pass 2 tonight (without parking a capped pass 2 would follow), and nothing goes to the
+    difficult list."""
+    from test_driver import EXE, START, UNIT, Sess
+
+    sessions = [Sess(), Sess(), Sess(checks=(_hit(),))]
+    night, deps = _tier_night(tmp_path, (START,), sessions=sessions, unit=UNIT)
+    report = night.run(config={"max_sessions": 6}, queue=deps.queue, requeue=deps.requeue)
+    assert [(p, n) for _, p, n in _attempts_of(night)] == [(1, 1), (1, 2), (1, 3)]
+    assert (report.event, report.reason) == ("ENDED", "queue exhausted")
+    assert (EXE, START) not in driver.load_difficult(night.repo / driver.DIFFICULT)
+
+
+def test_two_workers_park_one_function_and_the_other_goes_on(tmp_path):
+    """Two workers, two members in their own units: A's first session hits and A never runs
+    again, on either worker; B runs pass 1 and starts pass 2; no unit ever runs twice at once."""
+    from test_driver import START, Sess
+    from test_driver_workers import WNight
+
+    a, b = START, START + 0x10000
+    night, deps = _tier_night(tmp_path, (a, b), night_cls=WNight,
+                              by_unit={f"u_{a:08x}": [Sess(checks=(_hit(),))]})  # fmt: skip
+    report = night.run(config={"workers": 2, "attempts_per_function": 3, "max_sessions": 5},
+                       queue=deps.queue, requeue=deps.requeue)  # fmt: skip
+    got = _attempts_of(night)
+    assert [(p, n) for s, p, n in got if s == a] == [(1, 1)]
+    assert [(p, n) for s, p, n in got if s == b] == [(1, 1), (1, 2), (1, 3), (2, 1)]
+    assert (report.event, report.reason) == ("ENDED", "max sessions"), report.detail
+    assert night.overlaps == []
+
+
+def test_a_parked_callee_frees_its_caller(tmp_path):
+    """The caller waits on its callee; the callee parks on its first session, which counts as a
+    finished pass, so the caller runs its pass the same night."""
+    from test_driver import START, UNIT, Sess
+
+    callee, caller = START, START + 0x10
+    night, deps = _tier_night(tmp_path, (callee, caller), sessions=[Sess(checks=(_hit(),))],
+                              edges=[(caller, callee)], unit=UNIT)  # fmt: skip
+    night.run(config={"max_sessions": 4}, queue=deps.queue, requeue=deps.requeue)
+    assert _attempts_of(night) == [(callee, 1, 1), *((caller, 1, n) for n in (1, 2, 3))]
+
+
+def _earlier_hit_log() -> str:
+    """An earlier night's committed record of PICK (pass 1, attempt 1) with a sweep hit."""
+    from test_driver_records import SPEC_A, _lines, _v2
+
+    record = _v2("night0", 1, 1)
+    record["check"] = {**record["check"], "sweep_hit": SPEC_A, "needs": f"needs flags {SPEC_A}"}
+    return _lines([record])
+
+
+@pytest.mark.parametrize("case", ["no hit", "limit launch", "matched", "earlier night"])
+def test_what_does_not_park(tmp_path, case):
+    """A sweep line without a hit, a hit only in a LIMIT (uncounted) launch, a MATCHED session
+    that also logged a hit, and a hit in an earlier night's committed record park nothing: the
+    function gets its attempts (MATCHED ends the pass at once) and no parked line is printed."""
+    from test_driver import LOG, START, Night, Sess, check_line
+    from test_driver_records import _commit
+
+    no_hit = check_line(1, 80.0, sweep=True, exit_code=0)
+    sessions = {"no hit": [Sess(checks=(no_hit,))] * 2,
+                "limit launch": [Sess("rate_limit", write=None, checks=(_hit(),)), Sess(),
+                                 Sess()],
+                "matched": [Sess(checks=(_hit(),))], "earlier night": [Sess(checks=(no_hit,))]}
+    night = Night(tmp_path, sessions=sessions[case], gate_exits=[0] if case == "matched" else [])
+    if case == "earlier night":
+        _commit(night, {LOG: _earlier_hit_log()})
+    lines: list[str] = []
+    night.run(config={"attempts_per_function": 2}, say=lines.append)
+    pass_n = 2 if case == "earlier night" else 1
+    attempts = (1,) if case == "matched" else (1, 2)
+    assert _attempts_of(night) == [(START, pass_n, n) for n in attempts]
+    assert not [line for line in lines if "parked for the night" in line]
+    if case == "limit launch":
+        assert len(night.launched) == 3
