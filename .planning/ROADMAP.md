@@ -414,6 +414,34 @@ Plans:
 **Wave 7** *(blocked on Wave 6 completion; main checkout)*
 - [x] 07.1-07-PLAN.md — gap closure: array ties refused and measured, shifted-tie fallback, filler-tailed classes, the slot pair filter, docs and todos from the owner's rulings, curve point 7 (D-08, D-27)
 
+### Phase 07.2: FNV-inspired matching pipeline (INSERTED)
+
+**Goal:** Turn the fnv_decomp lessons ([research](../docs/research/2026-11-09-fnv-decomp.md)) into matching
+tooling, and build the harness for measuring model and effort by function size. Promoted from backlog 999.5 to
+999.11 on 2026-11-09 (owner).
+- **999.5:** structured give-up records that the next context pack and the difficult list read.
+- **999.6:** a plan before code, and change/why/expect/observed notes enforced on every check.
+- **999.7:** a region board for functions of 256 B and up.
+- **999.8:** failed builds and mismatches counted by cause, and shared-header gaps ranked by how many functions they
+  block.
+- **999.9:** a per-attempt token ledger, plus model, effort and backend routing. This covers hosted open-weight
+  models, a local model, and Codex CLI arms on the owner's ChatGPT Plus, the last as a runtime exception scoped to
+  spike 012's drive sessions.
+- **999.10:** name provenance markers for the readability pass.
+- **999.11:** base-vs-head CI on a self-hosted runner; the workflow and docs only, the owner registers the runner.
+- **Evidence items:** the Codex audit, the permuter's 0 of 40, bytes-first progress, and our per-try rates.
+
+**Requirements**: TBD (set in /gsd-discuss-phase 07.2)
+**Depends on:** Phase 7 (quick batch 261109-gzs lands first: sweep-hit parking, own disassembly in check, brace globs, asm/context cache, goal stop rules, worktree path hook)
+**Success Criteria** (what must be TRUE):
+  1. Each item has its plan, and each plan is done, partial or deferred with commits and tests; host and container suites green
+  2. Matched bytes unchanged: `gate --all` and `ninja verify` exit 0 on the final main
+  3. `drive --canary` passes with the new verbs and backends, and spike 012 can run from the shipped harness
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 07.2 to break down)
+
 ### Phase 8: Clean-room specs for OpenApoc
 
 **Goal**: Every mechanic decompiled in Phase 7 has a clean-room spec in OpenSpec format, written in our own words, citing function addresses and dated community sources, checked by a linter that can fail, reviewed by the owner and licensed CC0-1.0 so OpenApoc can use it without conditions.
@@ -435,7 +463,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
+Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -> 8
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
@@ -447,6 +475,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
 | 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
+| 7.2. FNV-inspired matching pipeline (INSERTED) | 0/TBD | Not started | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
@@ -484,66 +513,3 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 8
 **Deferred at:** 2026-10-26 during /gsd-verify-work 06 session completion
 **Follow-ups:**
 - [ ] Test 3: on a 390 px phone the progress-page mosaic shrinks to ~31% and its unit labels and legend are unreadable; let `.mosaic` scroll sideways with a minimum SVG width (~48rem) or move the legend into HTML (06-UI-REVIEW.md fix #2). Also there: tooltips are `title`-only, so mouse-only (fix #1), and the percent bar draws nothing at current values (fix #3) (deferred 2026-10-26)
-
-### Phase 999.5: Structured give-up records for PARTIAL attempts (BACKLOG)
-
-**Goal:** A PARTIAL attempt leaves a machine-readable record (category such as register_allocation, stack_layout or eh; what it tried; what still differs; suspected cause; best code) that the next attempt's context pack and the difficult list read, in place of free-form notes. Idea from fnv_decomp's give-up schema ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.6: Plan-before-code and per-check work notes enforced by the attempt check (BACKLOG)
-
-**Goal:** The attempt check refuses to run until the agent has written a plan covering the whole function (frame, slots, calls, byte regions) and records change / why / expect / observed for each check. Idea from f3decomp's mandatory work notes ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.7: Region board for large functions (BACKLOG)
-
-**Goal:** For functions of 256 B and up, the attempt check reports which 0x100-byte regions are already exact and which saved draft is closest for each region, so an agent can work region by region. Fits the 256 B+ result queued from Phase 7.1. Idea from f3check's region output ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.8: Struct gaps as a first-class blocker (BACKLOG)
-
-**Goal:** Count failed builds and mismatches by cause across drive nights and rank shared-header gaps (missing struct fields, wrong offsets) by how many functions each blocks, so the header fix that unblocks the most goes first. In fnv_decomp, declaration gaps caused about 34% of failed builds; their 28% duplicate-declaration case is already closed here by quick task 261107-qkd ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.9: Effort and model by function size, with a per-function token ledger (BACKLOG)
-
-**Goal:** Record model, effort, harness and tokens for every attempt, then measure match rate per size bucket at different thinking efforts and models (for example a cheaper lane for tiny functions). fnv_decomp saw Claude match 12 of 20 big functions at its lowest effort and 17 of 20 at its highest. Also feeds the night usage calibration and the paper idea ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.10: Name provenance markers for the readability pass (BACKLOG)
-
-**Goal:** Every name the readability pass gives carries a marker such as `// src: OPENAPOC|GHIDRA|GUESS 0xADDR (confidence: high|medium|low)`, so a whole class of guessed names can be found and replaced with grep. Idea from fnv_decomp's `// src:` markers ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)
-
-### Phase 999.11: Base-vs-head CI on a self-hosted runner (BACKLOG)
-
-**Goal:** Once main is proven against the retail EXEs, a pull request only has to compile to the same bytes as main, so renames and comments can be checked without a game copy. Our Watcom compiler is user-supplied, so this needs a self-hosted runner that holds it. Idea from fnv_decomp's `match.yml` ([research](../docs/research/2026-11-09-fnv-decomp.md)).
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd-review-backlog when ready)

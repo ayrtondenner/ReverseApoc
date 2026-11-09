@@ -6,16 +6,15 @@ current_phase: 7
 current_phase_name: Mechanics-first decompilation
 status: executing
 stopped_at: Phase 07.1 complete, ready to execute Phase 7
-last_updated: "2026-11-08T05:29:56.061Z"
+last_updated: "2026-11-09T15:42:33.448Z"
 last_activity: 2026-11-06
 last_activity_desc: Phase 07.1 complete, transitioned to Phase 7
-state_head: 47b09fa04c762960b32bfa0f9edab8805d7d1f69
+state_head: b2b044b335d5b22a958e7f8dbeca59fc45dc7cd8
 progress:
-  total_phases: 9
+  total_phases: 10
   completed_phases: 7
   total_plans: 129
   completed_plans: 126
-  percent: 78
 ---
 
 # Project State
@@ -150,6 +149,7 @@ None yet.
 - Phase 7 added: Mechanics-first decompilation (owner decision 2026-10-21; DEC-01..06)
 - Phase 8 added: Clean-room specs for OpenApoc (owner decision 2026-10-21; SPEC-01..09, CC0-1.0, OpenSpec format)
 - Phase 07.1 inserted after Phase 7: Matching tooling (URGENT)
+- Phase 07.2 inserted after Phase 7: FNV-inspired matching pipeline: backlog 999.5-999.11 promoted (owner, 2026-11-09) (URGENT)
 
 ## Deferred Items
 
