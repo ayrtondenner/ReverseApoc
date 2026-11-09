@@ -235,6 +235,35 @@ def test_v3_records_counted(tmp_path, capsys):
     assert "(v1 1, v2 1, v3 2)" in capsys.readouterr().out
 
 
+def _landing(start: int, outcome: str = "MATCHED") -> dict:
+    """A schema-3 landing record (Phase 07.2, D-26): no tokens and no cost of its own."""
+    return {"kind": "landing", "schema": 3, "run": "land1", "date": "2026-11-09", "exe": "ufo2p",
+            "unit": "u_00010000", "start": f"0x{start:08X}", "function": f"func_{start:08X}",
+            "from_run": "night1", "from_attempt": 1, "model": "claude-opus-5-5",
+            "backend": "anthropic", "harness": "claude", "outcome": outcome,
+            "reason": None if outcome == "MATCHED" else "gate failed",
+            "gate": {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []},
+            "commit": "0123456789abcdef0123456789abcdef01234567" if outcome == "MATCHED"
+            else None}  # fmt: skip
+
+
+def test_landing_counts_as_logged_match_once(tmp_path, capsys):
+    """A held attempt (cost 1.0) and its MATCHED landing: one matched function, and the cost
+    counted once, in the attempt record (the landing has none)."""
+    held = _attempt_v3(outcome="HOLD_EXACT", hold_run=True, cost_usd=1.0)
+    report = _report(capsys, tmp_path, held, _landing(0x10010))
+    assert report["per_match"]["matched_functions"] == 1
+    assert report["per_match"]["cost_usd"] == "1.00"
+    assert report["totals"]["cost_usd"] == "1.00"
+    assert (report["attempts"]["records"], report["attempts"]["sessions"]) == (2, 1)
+
+
+def test_a_refused_landing_is_no_match(tmp_path, capsys):
+    held = _attempt_v3(outcome="HOLD_EXACT", hold_run=True)
+    report = _report(capsys, tmp_path, held, _landing(0x10010, "REFUSED"))
+    assert report["per_match"]["matched_functions"] == 0
+
+
 def test_empty(tmp_path, capsys):
     repo, _ = _repo(tmp_path)
     report = _json(capsys, repo, _empty_log(tmp_path))

@@ -180,6 +180,28 @@ def test_pilot_hits_drops_a_later_match_and_ignores_status(tmp_path):
     assert flags.pilot_hits(log) == [("ufo2p", F30)]
 
 
+def _landing(function: str, outcome: str = "MATCHED") -> dict:
+    """A schema-3 landing record (Phase 07.2, D-26) of `function`: `--land-held` landed it."""
+    return {"kind": "landing", "schema": 3, "run": "land1", "date": "2026-11-09", "exe": "ufo2p",
+            "unit": UNIT, "start": "0x" + function.removeprefix("func_"), "function": function,
+            "from_run": RUN, "from_attempt": 1, "model": "claude-haiku-5-5",
+            "backend": "anthropic", "harness": "claude", "outcome": outcome,
+            "reason": None if outcome == "MATCHED" else "gate failed",
+            "gate": {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []},
+            "commit": "0123456789abcdef0123456789abcdef01234567" if outcome == "MATCHED"
+            else None}  # fmt: skip
+
+
+def test_pilot_hits_sees_a_landed_match(tmp_path):
+    """A function whose hold run hit and then landed through `--land-held` (a MATCHED landing
+    record) is no pilot hit; a REFUSED landing leaves the hit in."""
+    log = tmp_path / "attempts.jsonl"
+    records = [_record(F30, "PARTIAL", spec(4)), _record(F50, "PARTIAL", spec(5)),
+               _landing(F30), _landing(F50, "REFUSED")]  # fmt: skip
+    log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    assert flags.pilot_hits(log) == [("ufo2p", F50)]
+
+
 def test_pilot_hits_refuses_a_malformed_record(tmp_path):
     log = tmp_path / "attempts.jsonl"
     log.write_text(json.dumps({"kind": "attempt"}) + "\n", encoding="utf-8")
