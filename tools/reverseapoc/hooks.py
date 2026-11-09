@@ -17,8 +17,9 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   Every other path stays editable, so GSD executors and the owner keep working on tools/,
   tests/, configure.py, docs/ and .planning/. The worktree rule (261109-gzy): from a harness
   worktree cwd (.claude/worktrees/<name>/) it denies a Bash or PowerShell command, or a script
-  the command names, that spells the main checkout's absolute path. Every other shell call gets
-  no opinion.
+  the command names, that spells the main checkout's absolute path, and a script it cannot scan
+  (named through shell expansion, not one text, written and run by the same command). Every
+  other shell call gets no opinion.
 - **matching** (`config/driver/claude-settings.json`, matcher `*`, matching sessions only):
   denies by default (D-17). With the driver's REVERSEAPOC_CLAIM=<exe>/<unit> and
   REVERSEAPOC_UNIT_FILE (D-24) a session may write only its view unit, notes.md and
@@ -54,6 +55,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import io
 import itertools
 import json
 import math
@@ -63,6 +65,8 @@ import posixpath
 import re
 import shlex
 import sys
+import tokenize
+from collections import Counter
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -658,12 +662,34 @@ _RELATIVE_HINT = (
     "the main checkout is read-only for worktree agents: spell it relative to the worktree "
     "root, as in REVERSEAPOC_WATCOM_DIR=../../../third_party/watcom"
 )
-# A word of the command naming a script, taken as written (no shell expansion).
-_SCRIPT_WORD = re.compile(
-    r"""[^\s"'`;&|<>(){}=,*?\[\]]*\.(?:py|sh|bash|js|mjs|cjs|ps1)(?![A-Za-z0-9_])""", re.IGNORECASE
-)
+# Words that name a script: the text after a word's last `=` (an assignment, --opt=) ends so.
+_SCRIPT_SUFFIX = re.compile(r"\.(?:py|sh|bash|js|mjs|cjs|ps1)$", re.IGNORECASE)
+_PYTHON_SUFFIX = re.compile(r"\.py$", re.IGNORECASE)
+# What a shell would expand in a script word, so the hook cannot read it as written: a variable
+# ($, $env:, %VAR%), a command substitution or PowerShell escape (`), a glob, a leading ~.
+_EXPANSION = re.compile(r"[$`%*?\[]|^~")
 _SCRIPT_CAP = 1 << 20  # 1 MiB, more than three times the largest tracked tool (driver.py, ~300 KB)
+# UTF-32 first: its little-endian BOM (FF FE 00 00) starts with UTF-16's.
+_UTF32_BOMS = (codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE)
 _UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+_UNSCANNABLE_CHARS = ("\0", "\ufeff")  # a NUL, or a byte-order mark left inside the text
+# Bash: a here-document body is data, not words (an apostrophe in it must not break the split).
+_HEREDOC = re.compile(r"<<-?[ \t]*(['\"]?)([A-Za-z_]\w*)\1([^\n]*\n).*?^[ \t]*\2[ \t]*$",
+                      re.MULTILINE | re.DOTALL)  # fmt: skip
+_BASH_OPERATORS = ";&|()<>\n"
+# PowerShell: an operator (a redirection or a separator), else a word of quoted runs, backtick
+# escapes (an escaped space stays in the word) and plain characters.
+_POWERSHELL_TOKEN = re.compile(
+    r"""(?P<op>[0-9*]?>>?(?:&[0-9])?|<|[;|&(){}\n]+)"""
+    r"""|(?P<word>(?:'[^']*'|"(?:`.|[^"`])*"|`.|[^\s'";|&<>(){}`])+)"""
+)
+_QUOTES = re.compile(r"['\"]")
+# Commands that write the files they name; every word of such a command counts as written.
+_WRITERS = frozenset({
+    "tee", "cp", "mv", "install", "ln", "touch", "dd", "curl", "wget",
+    "out-file", "set-content", "add-content", "new-item", "copy-item", "move-item", "tee-object",
+    "invoke-webrequest", "ni", "sc", "ac", "copy", "move", "cpi", "mi", "iwr",
+})  # fmt: skip
 
 
 def _worktree_pairs(cwd: str) -> list[tuple[str, str]]:
@@ -715,47 +741,147 @@ def _spells(main: str) -> str:
     return f"spells the main checkout's absolute path {main} (261109-gzy); {_RELATIVE_HINT}"
 
 
-def _script_bytes(word: str, cwd: str) -> bytes | None:
-    """The first _SCRIPT_CAP + 1 bytes of the file script `word` names, or None when it names
-    no regular file. Raises HookError when the word cannot be placed."""
-    path = Path(canonical(word, cwd))
-    if not path.is_file():
+def _bash_tokens(command: str) -> list[tuple[str, bool]]:
+    """(token, is an operator) as Bash splits the command: quotes removed, escapes resolved,
+    here-document bodies dropped. A command it cannot split blocks (exit 2)."""
+    lexer = shlex.shlex(_HEREDOC.sub(r"<<\1\2\1\3", command), posix=True,
+                        punctuation_chars=_BASH_OPERATORS)  # fmt: skip
+    lexer.whitespace = " \t\r"  # a newline separates commands, like `;`
+    lexer.whitespace_split = True
+    try:
+        texts = list(lexer)
+    except ValueError as exc:
+        raise HookError(f"the Bash command cannot be split as the shell splits it: {exc}") from None
+    return [(text, bool(text) and all(c in _BASH_OPERATORS for c in text)) for text in texts]
+
+
+def _powershell_tokens(command: str) -> list[tuple[str, bool]]:
+    """(token, is an operator) for a PowerShell command, each word with its quotes removed; a
+    word that needed them for `$` or a backtick escape is caught by _EXPANSION."""
+    tokens = []
+    for found in _POWERSHELL_TOKEN.finditer(command):
+        op = found.group("op")
+        tokens.append((op, True) if op is not None else (_QUOTES.sub("", found.group()), False))
+    return tokens
+
+
+def _redirection(op: str) -> bool:
+    return "<" in op or ">" in op
+
+
+def _command_name(word: str) -> str:
+    return posixpath.basename(word.replace("\\", "/")).casefold().removesuffix(".exe")
+
+
+def _segment_words(segment: Sequence[tuple[str, bool]]) -> Iterator[tuple[str, bool]]:
+    """(word, written) for the words of one simple command: written after an output redirection,
+    or every word when the command is one of _WRITERS."""
+    verb = next((text for text, op in segment if not op and "=" not in text), "")
+    writer = _command_name(verb) in _WRITERS
+    for index, (text, op) in enumerate(segment):
+        if op:
+            continue
+        before, before_op = segment[index - 1] if index else ("", False)
+        yield text, writer or (before_op and ">" in before)
+
+
+def _script_words(tool: str, command: str) -> list[tuple[str, bool]]:
+    """(script word, written) for every word of the command that names a script, split by
+    commands at each separator (a redirection stays in its command)."""
+    tokens = _bash_tokens(command) if tool == "Bash" else _powershell_tokens(command)
+    words, segment = [], []
+    for text, op in [*tokens, (";", True)]:
+        if op and not _redirection(text):
+            words.extend(_segment_words(segment))
+            segment = []
+            continue
+        segment.append((text, op))
+    tails = ((text.rsplit("=", 1)[-1], written) for text, written in words)
+    return [(tail, written) for tail, written in tails if _SCRIPT_SUFFIX.search(tail)]
+
+
+def _script_bytes(path: str) -> bytes | None:
+    """The first _SCRIPT_CAP + 1 bytes of the file at placed `path`, or None when it is not a
+    regular file."""
+    if not Path(path).is_file():
         return None
-    with path.open("rb") as handle:
+    with Path(path).open("rb") as handle:
         return handle.read(_SCRIPT_CAP + 1)
 
 
-def _script_text(data: bytes) -> str:
-    """A script's text: strict UTF-16 after a UTF-16 BOM, else UTF-8 with surrogateescape."""
+def _script_text(data: bytes, path: str) -> str:
+    """A script's text as its interpreter reads it: a .py file strictly in the encoding Python
+    detects (its BOM or coding cookie; SyntaxError when it finds none it can use), else strict
+    UTF-32 or UTF-16 after their BOM, else UTF-8 (a UTF-8 BOM dropped) with surrogateescape."""
+    if _PYTHON_SUFFIX.search(path):
+        return data.decode(tokenize.detect_encoding(io.BytesIO(data).readline)[0])
+    if data.startswith(_UTF32_BOMS):
+        return data.decode("utf-32")
     if data.startswith(_UTF16_BOMS):
         return data.decode("utf-16")
-    return data.decode("utf-8", "surrogateescape")
+    return data.decode("utf-8-sig", "surrogateescape")
 
 
-def _script_denial(word: str, cwd: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
-    """Why the script `word` names is refused, or '': over _SCRIPT_CAP, or its text spells the
-    main checkout's absolute path."""
+def _where(word: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
+    return f"the script {word} that a {tool} command from the harness worktree {pairs[0][1]} runs"
+
+
+def _unscannable(where: str, why: str) -> str:
+    return f"{where} {why}, so it cannot be scanned for the main checkout's path (261109-gzy)"
+
+
+def _script_denial(word: str, path: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Why the script at placed `path` (named `word`) is refused, or '': over _SCRIPT_CAP, not
+    one text (no Python source encoding, a NUL, an inner BOM), or its text spells the main
+    checkout's absolute path."""
+    where = _where(word, tool, pairs)
     try:
-        data = _script_bytes(word, cwd)
+        data = _script_bytes(path)
         over = data is not None and len(data) > _SCRIPT_CAP
-        text = "" if data is None or over else _script_text(data)
+        text = "" if data is None or over else _script_text(data, path)
+    except SyntaxError as exc:
+        return _unscannable(where, f"has no source encoding Python can use ({exc})")
     except (OSError, UnicodeDecodeError) as exc:
         raise HookError(f"script {word!r} cannot be read: {exc}") from None
-    main, name = pairs[0]  # case kept, for the message
-    where = f"the script {word} that a {tool} command from the harness worktree {name} runs"
     if over:
-        return (f"{where} is over {_SCRIPT_CAP} bytes, so it cannot be scanned for the main "
-                "checkout's absolute path (261109-gzy)")  # fmt: skip
-    if _spells_main(text, pairs):
-        return f"{where} {_spells(main)}"
+        return _unscannable(where, f"is over {_SCRIPT_CAP} bytes")
+    if any(char in text for char in _UNSCANNABLE_CHARS):
+        return _unscannable(where, "holds a NUL or an inner byte-order mark (it is not one text)")
+    return f"{where} {_spells(pairs[0][0])}" if _spells_main(text, pairs) else ""
+
+
+def _scripts_denial(command: str, cwd: str, tool: str, pairs: Sequence[tuple[str, str]]) -> str:
+    """Why a script the command names is refused, or '': it needs shell expansion, the command
+    also writes it and names it again (it would run unscanned), or _script_denial refuses it.
+    Each word is placed as written; a placing failure blocks (exit 2)."""
+    words = _script_words(tool, command)
+    for word, _written in words:
+        if _EXPANSION.search(word):
+            return (f"{_where(word, tool, pairs)} needs shell expansion ($, %, a backtick, a glob "
+                    "or a leading ~), so it cannot be read as written (261109-gzy); name it by a "
+                    "literal path")  # fmt: skip
+    placed = [(word, canonical(word, cwd), written) for word, written in words]
+    mentions = Counter(path.casefold() for _word, path, _written in placed)
+    rewritten = {path.casefold() for _word, path, written in placed if written}
+    first: dict[str, tuple[str, str]] = {}
+    for word, path, _written in placed:
+        first.setdefault(path.casefold(), (word, path))
+    for key, (word, path) in first.items():
+        if key in rewritten and mentions[key] > 1:
+            return (f"{_where(word, tool, pairs)} and the same command writes it, so it "
+                    "would run unscanned (261109-gzy); write it in one call, run it in the "
+                    "next")  # fmt: skip
+        reason = _script_denial(word, path, tool, pairs)
+        if reason:
+            return reason
     return ""
 
 
 def _worktree_command(payload: Mapping) -> Decision:
     """A Bash or PowerShell call from a harness worktree (the payload cwd under
     .claude/worktrees/<name>/) is denied when its command, or a script file it names, spells
-    the main checkout's absolute path; every other shell call gets no opinion, decided before
-    tool_input is read."""
+    the main checkout's absolute path, or when such a script cannot be scanned (_scripts_denial);
+    every other shell call gets no opinion, decided before tool_input is read."""
     cwd = payload.get("cwd")
     if not isinstance(cwd, str) or not cwd:
         raise HookError("the payload has no cwd string, so the hook cannot tell a worktree "
@@ -771,11 +897,8 @@ def _worktree_command(payload: Mapping) -> Decision:
     main, name = pairs[0]
     if _spells_main(command, pairs):
         return _deny(f"a {tool} command from the harness worktree {name} {_spells(main)}")
-    for word in dict.fromkeys(found.group() for found in _SCRIPT_WORD.finditer(command)):
-        reason = _script_denial(word, cwd, tool, pairs)
-        if reason:
-            return _deny(reason)
-    return NO_OPINION
+    reason = _scripts_denial(command, cwd, tool, pairs)
+    return _deny(reason) if reason else NO_OPINION
 
 
 # --- the matching-session layer (D-17, D-18, D-44, D-45, DI-07) ------------------------------

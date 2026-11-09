@@ -1225,6 +1225,11 @@ def script_denial(decision: hooks.Decision, word: str, name: str = "Bash") -> bo
     return decision.deny and f"the script {word} that a {name} command" in decision.reason
 
 
+def ps_word(file: str) -> str:
+    """A PowerShell call names a script in the worktree with a leading .\\ (./ on POSIX)."""
+    return (".\\" if WINDOWS else "./") + file
+
+
 def refuse_open(monkeypatch, script: Path) -> None:
     """Path.open raises PermissionError for `script` only and delegates every other path."""
     real_open = Path.open
@@ -1243,9 +1248,9 @@ def test_worktree_command_reads_the_scripts_it_runs(repo, worktree, name, templa
     """R11, R12: the script a command runs is denied when it spells the main checkout, by its
     relative name or by its absolute path inside the worktree."""
     script = worktree / file
-    word = (".\\" if WINDOWS else "./") + file if name == "PowerShell" else file
-    for named in (word, native(script)):
-        command = template.format(w=named)
+    word = ps_word(file) if name == "PowerShell" else file
+    for named, written in ((word, word), (native(script), f'"{native(script)}"')):
+        command = template.format(w=written)
         script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
         decision = always(shell(name, command, worktree))
         assert script_denial(decision, named, name) and SPELLS_MAIN in decision.reason, command
@@ -1259,7 +1264,7 @@ def test_worktree_command_reads_scripts_outside_the_checkout(tmp_path, repo, wor
     scratch.mkdir()
     script = scratch / "x.py"
     script.write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
-    decision = always(shell("Bash", f"uv run python {native(script)}", worktree))
+    decision = always(shell("Bash", f'uv run python "{native(script)}"', worktree))
     assert script_denial(decision, native(script))
 
 
@@ -1299,9 +1304,10 @@ def test_worktree_command_fails_closed_on_unreadable_scripts(worktree, monkeypat
     with pytest.raises(hooks.HookError, match="cannot be read"):
         always(shell("Bash", "uv run python x.py", worktree))
     monkeypatch.undo()
-    script.write_bytes(codecs.BOM_UTF16_LE + b"abc")
+    shell_script = worktree / "x.sh"
+    shell_script.write_bytes(codecs.BOM_UTF16_LE + b"abc")
     with pytest.raises(hooks.HookError, match="cannot be read"):
-        always(shell("Bash", "uv run python x.py", worktree))
+        always(shell("Bash", "bash x.sh", worktree))
     if WINDOWS:
         with pytest.raises(hooks.HookError):
             always(shell("Bash", "uv run python Q:x.py", worktree))
@@ -1322,6 +1328,125 @@ def test_worktree_command_entry_point_reads_scripts(repo, worktree):
     assert done.returncode == 0, done.stderr
     reason = json.loads(done.stdout)["hookSpecificOutput"]["permissionDecisionReason"]
     assert "the script x.py that a Bash command" in reason and SPELLS_MAIN in reason
+
+
+# Security review of 261109-gzy (coordinator ruling): expansion, encodings, written scripts.
+
+
+def test_worktree_command_reads_every_tool_script():
+    """No script under tools/ or tests/, nor configure.py, is locked out from a worktree: each
+    reads as one text that does not spell a main checkout (hooks.py itself included)."""
+    pairs = [(native(REPO_ROOT.parent / "zz-no-such-main"), "agent-x")]
+    scripts = [*REPO_ROOT.glob("tools/**/*.py"), *REPO_ROOT.glob("tests/**/*.py"),
+               REPO_ROOT / "configure.py"]  # fmt: skip
+    assert REPO_ROOT / "tools" / "reverseapoc" / "hooks.py" in scripts
+    for script in scripts:
+        path = hooks.canonical(native(script))
+        assert hooks._script_denial(script.name, path, "Bash", pairs) == "", script
+
+
+@pytest.mark.parametrize(("name", "command"), [
+    ("Bash", "uv run python $HOME/x.py"), ("Bash", 'uv run python "${TMP}/x.py"'),
+    ("Bash", "uv run python ~/x.py"), ("Bash", "bash `pwd`/x.sh"),
+    ("Bash", "node tests/*.mjs"), ("Bash", "uv run python %TEMP%/x.py"),
+    ("Bash", "X=$PWD/x.py uv run python -c 1"),
+    ("PowerShell", "& $env:TEMP\\x.ps1"), ("PowerShell", '& "$PWD\\x.ps1"'),
+    ("PowerShell", "& ~\\x.ps1"), ("PowerShell", "& .\\my` dir\\x.ps1"),
+])  # fmt: skip
+def test_worktree_command_denies_scripts_named_through_expansion(worktree, name, command):
+    """Ruling 1: a script word the shell would expand cannot be read as written, so it is
+    denied rather than skipped."""
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "needs shell expansion" in decision.reason, command
+
+
+def test_worktree_command_resolves_quotes_and_escapes_literally(repo, worktree):
+    """Ruling 1: Bash quotes and backslash escapes, and PowerShell quotes, resolve to a literal
+    path, which is read."""
+    folder = worktree / "my dir"
+    folder.mkdir()
+    for file in ("x.py", "x.ps1"):
+        (folder / file).write_text(f'WATCOM = "{main_watcom(repo)}"\n', encoding="utf-8")
+    cases = [("Bash", 'uv run python "my dir/x.py"', "my dir/x.py"),
+             ("Bash", "uv run python my\\ dir/x.py", "my dir/x.py"),
+             ("Bash", "uv run python 'my dir'/x.py", "my dir/x.py"),
+             ("PowerShell", f"& '{ps_word('my dir/x.ps1')}'", ps_word("my dir/x.ps1")),
+             ("PowerShell", f'& "{ps_word("my dir/x.ps1")}"', ps_word("my dir/x.ps1"))]  # fmt: skip
+    for name, command, word in cases:
+        assert script_denial(always(shell(name, command, worktree)), word, name), command
+
+
+def test_worktree_command_bash_split_fails_closed(worktree):
+    """Ruling 1: a Bash command that cannot be split blocks; a here-document body with an
+    apostrophe is data, not words."""
+    with pytest.raises(hooks.HookError, match="cannot be split"):
+        always(shell("Bash", 'uv run python "x.py', worktree))
+    heredoc = "cat > notes.txt <<'EOF'\ndon't\nEOF\nls"
+    assert not always(shell("Bash", heredoc, worktree)).deny
+
+
+@pytest.mark.parametrize("file", ["x.sh", "x.ps1"])
+def test_worktree_command_decodes_utf32_and_refuses_mixed_text(repo, worktree, file):
+    """Ruling 2: UTF-32 after its BOM (checked before UTF-16); a NUL, UTF-16 without a BOM or a
+    BOM inside the text is not one text, so it is denied; a leading UTF-8 BOM is dropped."""
+    script = worktree / file
+    word = file if file == "x.sh" else ps_word(file)
+    name, command = ("Bash", f"bash {word}") if file == "x.sh" else ("PowerShell", f"& {word}")
+    text = f'WATCOM = "{main_watcom(repo)}"\n'
+    script.write_bytes(text.encode("utf-32"))
+    decision = always(shell(name, command, worktree))
+    assert script_denial(decision, word, name) and SPELLS_MAIN in decision.reason
+    for data in (b"a\0b\n", "x\n".encode("utf-16-le"), "a\ufeffb\n".encode("utf-8")):
+        script.write_bytes(data)
+        decision = always(shell(name, command, worktree))
+        assert script_denial(decision, word, name) and "not one text" in decision.reason, data
+    script.write_bytes(f"\ufeffWATCOM = '{RELATIVE_WATCOM}'\n".encode())
+    assert not always(shell(name, command, worktree)).deny
+
+
+def test_worktree_command_reads_python_in_its_source_encoding(repo, worktree):
+    """Ruling 3: a .py file is decoded as Python decodes it (its coding cookie), and one whose
+    encoding Python cannot detect is denied."""
+    script = worktree / "x.py"
+    body = f'WATCOM = "{main_watcom(repo)}"\n'.encode("utf-7")
+    needle = hooks._needle(hooks.canonical(native(repo)))
+    assert needle not in hooks._normalised(body.decode("utf-8"))  # UTF-8 would miss it
+    script.write_bytes(b"# coding: utf-7\n" + body)
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and SPELLS_MAIN in decision.reason
+    script.write_bytes(b"# coding: no-such-codec\nx = 1\n")
+    decision = always(shell("Bash", "uv run python x.py", worktree))
+    assert script_denial(decision, "x.py") and "no source encoding" in decision.reason
+
+
+WRITTEN_AND_RUN = [
+    ("Bash", 'echo "$X" > x.py && uv run python x.py'), ("Bash", "curl -s u >> x.sh; bash x.sh"),
+    ("Bash", "cp ../y.py x.py && uv run python ./x.py"),
+    ("Bash", "printf x | tee x.mjs\nnode x.mjs"),
+    ("PowerShell", "Set-Content x.ps1 $v; & {w}"),
+    ("PowerShell", "$v | Out-File -FilePath x.ps1; & {w}"), ("PowerShell", "$v > x.ps1; & {w}"),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(("name", "command"), WRITTEN_AND_RUN)
+@pytest.mark.parametrize("exists", [False, True])
+def test_worktree_command_denies_a_script_it_writes_and_runs(worktree, name, command, exists):
+    """Ruling 4: a script the same command writes (a redirection, tee, cp, Out-File...) and
+    names again would run unscanned, whether or not an older copy exists."""
+    command = command.format(w=ps_word("x.ps1"))
+    if exists:
+        for file in ("x.py", "x.sh", "x.mjs", "x.ps1"):
+            (worktree / file).write_text(f"W = '{RELATIVE_WATCOM}'\n", encoding="utf-8")
+    decision = always(shell(name, command, worktree))
+    assert decision.deny and "the same command writes it" in decision.reason, command
+
+
+@pytest.mark.parametrize("command", ["cat > x.py <<'EOF'\nprint(1)\nEOF",
+                                     "uv run python x.py > out.txt", "cp a.py b.py",
+                                     "tee x.sh < /dev/null"])  # fmt: skip
+def test_worktree_command_allows_a_write_it_does_not_run(worktree, command):
+    """Ruling 4: a missing script that is only written, or only run, still gets no opinion."""
+    assert not always(shell("Bash", command, worktree)).deny, command
 
 
 # --- 06-REVIEW CR-02: an #include names a bare header, never a path --------------------------
