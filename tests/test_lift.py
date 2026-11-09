@@ -2782,8 +2782,12 @@ def header_callee_exe(header: str) -> StubExe:
 def test_a_callee_an_included_header_declares_has_no_prototype_of_its_own(header):
     text = lift.lift_row(header_callee_exe(header), VA)
     assert f"#include <{header}>" in text
-    assert "r_eax = memset(1, 2, 3);" in text
-    assert "r_eax = floor(r_eax);" in text
+    memset_call, floor_call = {  # the included header's own argument casts (261109-gzt)
+        "string.h": ("r_eax = memset((void *)1, 2, 3);", "r_eax = floor(r_eax);"),
+        "math.h": ("r_eax = memset(1, 2, 3);", "r_eax = floor((double)r_eax);"),
+    }[header]
+    assert memset_call in text, text
+    assert floor_call in text, text
     declared = HEADER_CALLERS[header][2]
     assert not re.search(rf"^\w+ {declared}\(", text, re.M), text
 
@@ -2791,3 +2795,36 @@ def test_a_callee_an_included_header_declares_has_no_prototype_of_its_own(header
 @pytest.mark.parametrize(("header", "name"), [("string.h", "memset"), ("math.h", "floor")])
 def test_the_header_table_names_the_functions_the_lifter_can_meet(header, name):
     assert name in lift.HEADER_DECLARES[header]
+
+
+# ---- a callee an included header declares takes the header's count and types (261109-gzt) ----
+
+HEADER_CALLEE = VA + ROW_SPACING  # the one callee of every HEADER_ARGUMENT_ROWS row
+
+
+def _then_call(head: str) -> str:
+    """`head`, then `call HEADER_CALLEE` at its end."""
+    return f"{head} {call_to(VA + len(bytes.fromhex(head)), HEADER_CALLEE)}"
+
+
+HEADER_ARGUMENT_ROWS = {  # case -> (caller code, callee code, callee symbol)
+    # the inline strlen; mov eax, ecx; mov eax, 1; mov edx, 2; mov ebx, 3; mov ecx, 4;
+    # call memset_; add eax, ecx; pop edi; pop ecx; ret: string.h first, one register too many
+    "memset_extra": (
+        f"{_then_call(f'{STRLEN_HEAD} 89c8 {SET_ARGS} b904000000')} 01c8 {STRLEN_END}",
+        MEMSET_ROW,
+        "memset_",
+    ),
+}
+
+
+def header_argument_exe(name: str) -> StubExe:
+    """The HEADER_ARGUMENT_ROWS row `name` at VA, its callee at HEADER_CALLEE under its symbol."""
+    code, callee, symbol = HEADER_ARGUMENT_ROWS[name]
+    return replace(stub_exe(code, callee), symbols=NamedSymbols({HEADER_CALLEE: symbol}))
+
+
+def test_header_args_take_the_header_count():
+    text = lift.lift_row(header_argument_exe("memset_extra"), VA)
+    assert "r_eax = memset((void *)1, 2, 3);" in text, text
+    assert "return r_eax + 4;" in text, text  # ecx survives the call
