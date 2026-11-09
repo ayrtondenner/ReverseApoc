@@ -112,15 +112,33 @@ DWORD = MOVE_BYTES["movsd"]
 REP_MOVE = "rep movsd"
 UNROLLED_DWORDS = 4  # Watcom 10.6 -4r unrolls a struct copy up to four dwords, and uses rep from 5
 REGISTER_COPIES = frozenset({1, 2, 4})  # the sizes it copies through a register, with no string op
-# The functions a header the lifter includes declares, among the callees a draft can meet: a draft
-# that includes the header gives them no prototype of its own (one that disagrees is E1062/E1071).
-# tests/test_lift_headers_real.py checks every name against the real Watcom 10.6 header.
+# The functions a header the lifter includes declares, among the callees a draft can meet, with the
+# parameter types its prototype spells. A draft that includes the header gives them no prototype of
+# its own (one that disagrees is E1062/E1071), and each call passes the header's count (else E1151)
+# with each argument cast as UNCAST_TYPES says (else E1071). tests/test_lift_headers_real.py
+# checks every name and parameter list against the real Watcom 10.6 header.
 HEADER_DECLARES = {
-    "string.h": frozenset({"memset", "memcpy", "memmove", "memcmp", "strlen", "strcpy", "strcat",
-                           "strcmp", "strncpy", "strncmp", "strchr", "strrchr"}),  # fmt: skip
-    "math.h": frozenset({"floor", "ceil", "sqrt", "log", "log10", "exp", "pow", "fabs", "sin",
-                         "cos", "tan", "atan", "atan2", "fmod"}),  # fmt: skip
+    "string.h": {
+        "memset": ("void *", "int", "size_t"),
+        "memcpy": ("void *", "const void *", "size_t"),
+        "memmove": ("void *", "const void *", "size_t"),
+        "memcmp": ("const void *", "const void *", "size_t"),
+        "strlen": ("const char *",),
+        "strcpy": ("char *", "const char *"),
+        "strcat": ("char *", "const char *"),
+        "strcmp": ("const char *", "const char *"),
+        "strncpy": ("char *", "const char *", "size_t"),
+        "strncmp": ("const char *", "const char *", "size_t"),
+        "strchr": ("const char *", "int"),
+        "strrchr": ("const char *", "int"),
+    },
+    "math.h": dict.fromkeys(
+        ("floor", "ceil", "sqrt", "log", "log10", "exp", "fabs", "sin", "cos", "tan", "atan"),
+        ("double",),
+    )
+    | dict.fromkeys(("pow", "atan2", "fmod"), ("double", "double")),
 }
+UNCAST_TYPES = frozenset({"int", "size_t"})  # an int argument converts to these with no cast
 # Watcom 10.6 -oi inlines string.h's strlen and memcpy as these (mnemonic, operands), in one block.
 INLINE_STRLEN = (("sub", "ecx, ecx"), ("dec", "ecx"), ("xor", "eax, eax"),
                  ("repne scasb", "al, byte ptr es:[edi]"), ("not", "ecx"),
@@ -259,6 +277,8 @@ class Lifter:
         self.drifted: set[int] = set()  # the blocks not entered at esp0, as far as anything says
         self.sig: Sig | None = None  # the row's own signature, once lift() has it
         self.arg_counts: dict[int, int] = {}  # call or tail-jump site -> its callee's one count
+        # call or tail-jump site -> the header parameter types of its callee
+        self.arg_types: dict[int, tuple[str, ...]] = {}
 
     # -- decoding and frame --
 
@@ -374,10 +394,19 @@ class Lifter:
         line = f"#include <{header}>"
         self.externs.setdefault(line, line)
 
+    def headers(self) -> frozenset[str]:
+        """The HEADER_DECLARES headers the draft includes so far."""
+        return frozenset(h for h in HEADER_DECLARES if f"#include <{h}>" in self.externs)
+
+    def header_params(self, va: int) -> tuple[str, ...] | None:
+        """The parameter types an included header gives the function at `va`, if one declares it."""
+        name = _called_name(self.exe.symbols.c_name(va))
+        given = (HEADER_DECLARES[h][name] for h in self.headers() if name in HEADER_DECLARES[h])
+        return next(given, None)
+
     def declarations(self) -> list[str]:
         """The file-scope declarations, less the prototypes an included header already gives."""
-        given = set().union(*(names for header, names in HEADER_DECLARES.items()
-                              if f"#include <{header}>" in self.externs))  # fmt: skip
+        given = set().union(*(HEADER_DECLARES[h] for h in self.headers()))
         return [line for key, line in self.externs.items() if key not in given]
 
     def in_row(self, va: int | None) -> bool:
@@ -433,12 +462,15 @@ class Lifter:
                 if ci.mnemonic == "call" or self._tail_jump(ci):
                     yield ci, blocks[s].insns
 
-    def agreed_counts(self, blocks, order) -> dict[int, int]:
+    def agreed_counts(self, blocks, order) -> tuple[dict[int, int], dict[int, tuple[str, ...]]]:
         """{call or tail-jump site: the one argument count of its callee in this pass}, so the
         prototype, every call and liveness read the same count (no E1151). A site with no direct
         target keeps its own count. A call to the row itself takes the definition's count, once
-        lift() has it: the definition is that call's only declaration."""
+        lift() has it: the definition is that call's only declaration. A callee an included header
+        declares takes the header's count, and its sites carry, in the second map, the parameter
+        types the calls cast to."""
         counts: dict[int, int] = {}
+        types: dict[int, tuple[str, ...]] = {}
         by_target: dict[int, list] = {}
         for ci, insns in self.call_sites(blocks, order):
             counts[ci.address] = self.call_nregs(ci, insns)
@@ -448,10 +480,13 @@ class Lifter:
         for t, sites in by_target.items():
             if t == self.row.start and self.sig is not None:
                 n = self.sig.nregs
+            elif (params := self.header_params(t)) is not None:
+                n = len(params)
+                types |= dict.fromkeys((ci.address for ci in sites), params)
             else:
                 n = _agreed([counts[ci.address] for ci in sites], self.call_sig(sites[0]))
             counts |= dict.fromkeys((ci.address for ci in sites), n)
-        return counts
+        return counts, types
 
     # -- switch tables --
 
@@ -562,7 +597,7 @@ class Lifter:
 
     def liveness(self, blocks, order, ret_live=frozenset({"eax"})):
         """Live-in register sets per instruction address (full 32-bit names)."""
-        self.arg_counts = self.agreed_counts(blocks, order)
+        self.arg_counts, self.arg_types = self.agreed_counts(blocks, order)
         use_def = {}
         for s in order:
             for ci in blocks[s].insns:
@@ -682,6 +717,7 @@ class Lifter:
         return "int"
 
     def lift(self) -> str:
+        headers = self.headers()
         sig = self.signature()
         self.sig = sig
         ret_live = frozenset({"eax"}) if sig.returns else frozenset()
@@ -710,6 +746,13 @@ class Lifter:
             again, self.unfolded = False, False
             self.regvars = set(regvars)
             body = self.emit(blocks, order, preds)
+        if self.headers() != headers:
+            # The run included a header, which agreed_counts (before any run) could not know:
+            # run again, from the signature on, so every call sees it from the first instruction.
+            # Includes only grow and there are two headers, so this ends within three runs. A
+            # run's call notes overwrite the run before's, as the emit loop's already do.
+            self.sig = None
+            return self.lift()
         used = {lab for lab in self.labels if any(f"goto L{lab:X};" in line for line in body)}
         body = [
             line for line in body if not (line.endswith(":;") and int(line[1:-2], 16) not in used)
@@ -1772,6 +1815,7 @@ class Block_:
                 raise Unliftable("call: result of a void callee is used")
             self.keep_readers("r_eax", "eax", live)
         args = [self.get(r) for r in ARG_REGS[: min(nregs, 4)]]
+        args = _header_args(args, self.lf.arg_types.get(ci.address))
         if sig.nstack:
             stack = self.pushes[-sig.nstack :][::-1]
             del self.pushes[-sig.nstack :]
@@ -1802,7 +1846,8 @@ class Block_:
         nregs = self.lf.arg_counts[ci.address]
         if sig is not None and sig.nstack:
             raise Unliftable("tail: callee with stack arguments")
-        args = ", ".join(str(self.get(r)) for r in ARG_REGS[:nregs])
+        regs = [self.get(r) for r in ARG_REGS[:nregs]]
+        args = ", ".join(str(a) for a in _header_args(regs, self.lf.arg_types.get(ci.address)))
         returns = self.lf.sig.returns
         self.lf.externs.setdefault(
             name,
@@ -1862,6 +1907,17 @@ def _narrowed(v: int, size: int, signed: bool) -> int:
     bits = 8 * size
     v &= (1 << bits) - 1
     return v - (1 << bits) if signed and v >> (bits - 1) else v
+
+
+def _header_args(args: list[E], params: tuple[str, ...] | None) -> list[E]:
+    """The register arguments of a call, each cast to the pointer or double type `params` (the
+    header parameter types of its site) gives it; an int or size_t parameter takes it uncast."""
+    if params is None:
+        return args
+    return [
+        a if p in UNCAST_TYPES else cast(p, a, a.size, a.signed)
+        for a, p in zip(args, params, strict=True)
+    ]
 
 
 def _called_name(name: str) -> str:
