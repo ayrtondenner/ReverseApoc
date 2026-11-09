@@ -578,6 +578,16 @@ def _regions(fn: Mapping[str, Any]) -> list[int] | None:
     return regions
 
 
+def region_summary(fn: Mapping[str, Any]) -> str | None:
+    """One check entry's regions as `regions 0:0 1:3 2:12` (region index: differing bytes), or
+    None for an entry without them. 07.2-03 records this string in each check's observed note
+    (D-02), beside the exit, objdiff % and first difference."""
+    regions = _regions(fn)
+    if regions is None:
+        return None
+    return " ".join(["regions", *(f"{i}:{count}" for i, count in enumerate(regions))])
+
+
 def _function_regions(doc: object, function: str) -> list[int] | None:
     """The regions of `function`'s entry (by name) in one check document, or None."""
     functions = doc.get("functions") if isinstance(doc, Mapping) else None
@@ -585,6 +595,40 @@ def _function_regions(doc: object, function: str) -> list[int] | None:
         if isinstance(fn, Mapping) and fn.get("name") == function:
             return _regions(fn)
     return None
+
+
+_SAVED_SOURCE = re.compile(rf"{CHECKS_DIR}/{_SNAPSHOT.pattern}")  # checks/NNNN.c, as logged
+
+
+def _plain_runs(attempt_dir: Path) -> Iterator[int]:
+    """The run numbers of the plain checks in checks.jsonl: a line whose `sweep` is false (the
+    test driver.read_checks tells sweeps apart by) and whose source is this attempt's own
+    checks/NNNN.c. Malformed lines are skipped: the board only advises."""
+    log = attempt_dir / CHECK_LOG
+    if not log.is_file():
+        return
+    for raw in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        line = _parse(raw)
+        if line is None or line.get("sweep") is not False:
+            continue
+        source = line.get("source")
+        match = _SAVED_SOURCE.fullmatch(source) if isinstance(source, str) else None
+        if match is not None:
+            yield int(match.group(1))
+
+
+def _saved_regions(attempt_dir: Path, function: str) -> Iterator[tuple[int, list[int]]]:
+    """(run number, regions) of `function` in each plain check this attempt saved under
+    <attempt dir>/checks/. A missing, malformed or tool-error document, or one without
+    regions, is skipped."""
+    for n in dict.fromkeys(_plain_runs(attempt_dir)):
+        path = attempt_dir / CHECKS_DIR / f"{n:04d}.json"
+        if not path.is_file():
+            continue
+        regions = _function_regions(_parse(path.read_text(encoding="utf-8", errors="replace")),
+                                    function)  # fmt: skip
+        if regions is not None:
+            yield n, regions
 
 
 def _board_row(index: int, count: int, n: int) -> str:
@@ -600,17 +644,21 @@ def region_board(
     current: tuple[int, Mapping[str, Any]] | None = None,
 ) -> list[str]:  # fmt: skip
     """The region board of a claimed row of `size` bytes (none under BOARD_MIN_SIZE): per
-    0x100 region from the row start, the check with the fewest differing bytes there, "exact
-    in NNNN" at 0, else "closest NNNN (k differ)"; ties go to the earliest. `current` is the
-    run being summarised as (number, document), not saved yet when the summary is built. Only
-    the region counts check recorded are read: addresses on an implicit grid, never a byte."""
-    if size < BOARD_MIN_SIZE or current is None:
+    0x100 region from the row start, the plain check of this attempt with the fewest differing
+    bytes there, "exact in NNNN" at 0, else "closest NNNN (k differ)"; ties go to the earliest.
+    The checks are the ones the wrapper saved in <attempt dir>/checks/, plus `current`, the run
+    being summarised as (number, document), which is not saved yet when the summary is built.
+    Only the region counts check recorded are read: addresses on an implicit grid, never a
+    byte. Earlier attempts are not read: the context pack carries their notes."""
+    if size < BOARD_MIN_SIZE:
         return []
-    n, doc = current
-    regions = _function_regions(doc, claim.function)
-    if regions is None:
+    entries = [(n, regions) for n, regions in _saved_regions(attempt_dir, claim.function)
+               if current is None or n != current[0]]  # fmt: skip
+    if current is not None:
+        regions = _function_regions(current[1], claim.function)
+        entries += [] if regions is None else [(current[0], regions)]
+    if not entries:
         return []
-    entries = [(n, regions)]
     width = max(-(-size // check.BOARD_REGION_BYTES), *(len(r) for _, r in entries))
     lines = [BOARD_HEAD]
     for index in range(width):
@@ -628,13 +676,13 @@ def _claimed_size(claim: Claim) -> int:
 
 
 def _board(claim: Claim, n: int, doc: Mapping[str, Any]) -> list[str]:
-    """The board for `attempt check`'s summary. A functions.csv that no longer reads is said in
-    one line: the board only advises, and the run's evidence must still be saved."""
+    """The board for `attempt check`'s summary. A functions.csv or saved check that no longer
+    reads is said in one line: the board only advises, and the run's evidence must still be
+    saved (an error escaping here would turn the run into a tool error)."""
     try:
-        size = _claimed_size(claim)
+        return region_board(claim.attempt_dir, claim, _claimed_size(claim), current=(n, doc))
     except (OSError, ValueError) as exc:
         return [f"    region board: not shown ({_one_line(exc)})"]
-    return region_board(claim.attempt_dir, claim, size, current=(n, doc))
 
 
 def _check_summary(
