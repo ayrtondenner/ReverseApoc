@@ -832,6 +832,18 @@ def _v2_attempt(function: str, attempt: int, *, requested: str, pass_n: int = 3,
     return record
 
 
+def test_attempt_models_reads_schema_3(tmp_path):
+    """Phase 07.2 (RESEARCH Pitfall 4): a schema-3 record is read as v2 is, its pass and
+    requested model, never as v1 (pass 1 and the init `model`)."""
+    record = _v2_attempt(F30, 2, requested=FABLE, pass_n=3)
+    record.update(schema=3, model=OPUS, effort=None, harness="claude", backend="anthropic",
+                  duration_ms=1000, cost_source="cli", giveup=None, hold_run=False)  # fmt: skip
+    log = tmp_path / "attempts.jsonl"
+    log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    models = flags._attempt_models(log)
+    assert models[(RUN, "ufo2p", int(F30.removeprefix("func_"), 16), 2)] == (3, FABLE)
+
+
 def _evidence(run: str, function: str, attempt: int) -> str:
     return f"build/driver/{run}/ufo2p/{function}/attempt-{attempt}/checks/0005.json"
 

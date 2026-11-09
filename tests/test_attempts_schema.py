@@ -399,3 +399,63 @@ def test_run_totals_with_and_without_parked():
 def test_schema_refuses_bad_v2_records(name):
     with pytest.raises(RecordError):
         validate_record(BAD_V2[name])
+
+
+# ---- schema 3 (Phase 07.2, D-16, D-26): the v2 record plus the ledger keys ----
+
+V3_KEYS = ("effort", "harness", "backend", "duration_ms", "cost_source", "giveup", "hold_run")
+
+
+def _attempt_v3() -> dict:
+    record = _attempt_v2()
+    record.update({"schema": 3, "effort": None, "harness": "claude", "backend": "anthropic",
+                   "duration_ms": 1234, "cost_source": "cli", "giveup": None,
+                   "hold_run": False})  # fmt: skip
+    return record
+
+
+def test_v3_attempt_accepted():
+    assert _problem(_attempt_v3()) is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(duration_ms=None, cost_source="estimate"),
+    lambda r: r.update(effort="high", harness="codex", backend="openai"),
+    lambda r: r.update(harness="agy", backend="google", duration_ms=0),
+])  # fmt: skip
+def test_v3_attempt_optional_parts(change):
+    assert _problem(_mutated(_attempt_v3, change)) is None
+
+
+@pytest.mark.parametrize("key", V3_KEYS)
+def test_v3_attempt_refuses_a_missing_key(key):
+    with pytest.raises(RecordError, match=key):
+        validate_record(_mutated(_attempt_v3, lambda r: r.pop(key)))
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("harness", "gemini"), ("cost_source", "guess"), ("duration_ms", 1.5),
+    ("duration_ms", -1), ("hold_run", 1), ("hold_run", None), ("backend", "Bad Name"),
+    ("backend", ""), ("effort", 3),
+])  # fmt: skip
+def test_v3_attempt_refuses_bad_fields(key, value):
+    with pytest.raises(RecordError, match=key):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update({key: value})))
+
+
+def test_v2_line_with_v3_field_refused():
+    """Schema 2 stays exact: a v2 attempt carrying a v3 key is an extra key."""
+    with pytest.raises(RecordError, match="extra"):
+        validate_record(_mutated(_attempt_v2, lambda r: r.update(hold_run=False)))
+
+
+def test_unknown_schema_still_refused():
+    with pytest.raises(RecordError, match="unknown schema 4"):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update(schema=4)))
+
+
+@pytest.mark.parametrize("make", [_abort_v2, _limit, _rename, _started_v2])
+def test_v3_kinds_without_new_fields(make):
+    """Every kind is written as schema 3 (a night never mixes shapes); the kinds with no new
+    field are their v2 tables with `schema` 3."""
+    assert _problem(_mutated(make, lambda r: r.update(schema=3))) is None

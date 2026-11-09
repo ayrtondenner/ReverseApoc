@@ -177,6 +177,15 @@ def _attempt_v2(**change) -> dict:
     return record
 
 
+def _attempt_v3(**change) -> dict:
+    record = _attempt_v2()
+    record.update({"schema": 3, "effort": None, "harness": "claude", "backend": "anthropic",
+                   "duration_ms": 1000, "cost_source": "cli", "giveup": None,
+                   "hold_run": False})  # fmt: skip
+    record.update(change)
+    return record
+
+
 def _log(tmp_path: Path, *records: dict, name: str = "attempts.jsonl") -> Path:
     log = tmp_path / name
     log.write_bytes(b"".join((json.dumps(r) + "\n").encode("ascii") for r in records))
@@ -212,6 +221,18 @@ def test_a_missing_log_is_refused(tmp_path, capsys):
 def test_v1_and_v2_lines_read_together(tmp_path):
     log = _log(tmp_path, _attempt_v1(), _attempt_v2())
     assert [("schema" in r) for r in reverseapoc.stats.read_attempts(log)] == [False, True]
+
+
+def test_v3_records_counted(tmp_path, capsys):
+    """Phase 07.2: v3_records counts schema-3 lines and v2_records schema 2 only; the model
+    split reads v2 and v3 alike (both carry model_requested)."""
+    records = (_attempt_v1(), _attempt_v2(), _attempt_v3(), _attempt_v3(attempt=2))
+    report = _report(capsys, tmp_path, *records)
+    assert {k: report["attempts"][k] for k in ("v1_records", "v2_records", "v3_records")} == {
+        "v1_records": 1, "v2_records": 1, "v3_records": 2}  # fmt: skip
+    assert report["by_model"]["models"]["claude-opus-5-5"]["sessions"] == 3
+    assert _run(tmp_path / "repo", tmp_path / "attempts.jsonl", config=tmp_path / "config") == 0
+    assert "(v1 1, v2 1, v3 2)" in capsys.readouterr().out
 
 
 def test_empty(tmp_path, capsys):

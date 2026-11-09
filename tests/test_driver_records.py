@@ -82,6 +82,31 @@ def test_attempt_record_is_v2(tmp_path):
         "MATCHED", FUNC, f"0x{START:08X}")  # fmt: skip
 
 
+def test_attempt_record_is_schema_3(tmp_path):
+    """Phase 07.2 (D-16, D-17): the attempt record is schema 3. A night passes no effort and
+    runs the Claude harness on the Anthropic login, never a hold run; duration_ms is the result
+    event's and the cost the CLI's (the success fixture's result says 45000 ms)."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.run()
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    assert record["schema"] == driver.SCHEMA_V3 == 3
+    assert (record["harness"], record["backend"]) == ("claude", "anthropic")
+    assert (record["effort"], record["hold_run"], record["giveup"]) == (None, False, None)
+    assert (record["duration_ms"], record["cost_source"]) == (45000, "cli")
+
+
+def test_a_timed_out_attempt_has_no_duration_and_an_estimated_cost(tmp_path):
+    """The wall clock killed the session, so there is no result event: no duration was
+    measured (null, not 0 ms) and the figures are stream_usage's estimate."""
+    night = Night(tmp_path, sessions=[Sess("no_result", write=None, timeout=True)])
+    night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    assert record["abort_reason"] == "timeout"
+    assert (record["duration_ms"], record["cost_source"]) == (None, "estimate")
+
+
 def test_every_attempt_record_of_a_night_is_v2(tmp_path):
     """From this plan on the driver writes only v2 attempt records (the run records follow in
     Task 3, test_every_record_of_a_night_is_v2)."""
