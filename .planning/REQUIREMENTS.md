@@ -87,6 +87,25 @@ Sources: the verification gates in `docs/workflow.md` (Milestone 1 roadmap), the
 - [ ] **DEC-06**: The Phase 6 usage caps and per-attempt logging carry over, and nightly totals (turns, tokens, time) are recorded
 - [ ] **DEC-07**: A stdlib `reverseapoc stats` (TDD) reads `progress/attempts.jsonl` and the git commit trailers and reports match rate by function size, attempts per match, turns, tokens, cost and time per matched function, regressions the gate stopped, and guardrail-hook blocks; every match is classed `unattended`, `human-hints` or `human-written` (from the `Matched-By` trailer and owner notes in manual packs), and from Phase 7 on each attempt record carries its hook-block count. The numbers are kept for a later paper (owner, 2026-10-25)
 
+### FNV-inspired matching pipeline (Phase 7.2)
+
+- [ ] **PIPE-01**: Schema-3 attempt record (effort, harness, backend, duration_ms, cost_source, giveup, a held state and a landing record); Haiku and Sonnet ids in the three model tables; `stats --run` with a model x size-bucket table; every committed line still validates (07.2-CONTEXT D-16, D-26)
+- [ ] **PIPE-02**: `attempt giveup` validates a session-written `giveup.json` (survey categories); the record carries the giveup; the context pack gains an "earlier give-ups" section and the earlier best C within the 24 KB cap (D-04, D-26)
+- [ ] **PIPE-03**: `attempt plan` validates `plan.json` (FRAME/SLOT/CALL/REGION covering 0..size); `attempt check` refuses with exit 2, using no run, without a plan or a `check-note.json` (change/why/expect); the observed outcome is recorded by the tool (D-01..D-03, D-26)
+- [ ] **PIPE-04**: A stdlib `reverseapoc causes` reports per-try build-fail/mismatch/match rates, Watcom error codes, mismatch classes and shared-header gaps ranked by functions blocked, over drive run dirs (999.8)
+- [ ] **PIPE-05**: Region board: per-0x100 region difference counts in check JSON (addresses only), and at 256 B and up the board plus the closest saved draft per region (999.7)
+- [ ] **PIPE-06**: `drive --night-model`, `--picks FILE`, `--dry-run --stratify A,B,C --write-picks FILE`, a hold mode that never lands, and `drive --land-held RUN...` landing each function once from the cheapest arm through the normal land and gate (D-17)
+- [ ] **PIPE-07**: readlint RL07 requires `/* src: TAG 0xADDR (confidence: high|medium|low) */` on every identifier the readability pass renames from a placeholder, rejects a malformed marker, and a test proves the objects byte-identical; the watcom-readability skill learns the form (D-14, D-15)
+- [ ] **PIPE-08**: Base-vs-head CI: `match.yml` (disabled by default, label-gated, pull_request_target with main's tools, PR as data, inside the Docker image, no orig/), a tested `reverseapoc compare-objects`, and `docs/ci.md`; the owner registers the runner (D-06..D-09, D-23)
+- [ ] **PIPE-09**: The watcom-decomp skill teaches plan, notes, giveup and the region board, through superpowers:writing-skills, RED first (D-05)
+- [ ] **PIPE-10**: Evidence docs 9a-9d (Codex audit, permuter 0 of 40, bytes-first confirmation, our per-try rates beside FNV's) and docs/tools.md rows for every new backend and CLI (D-19)
+- [ ] **PIPE-11**: `config/driver/backends.toml`, per-arm session env, the token-leak guard, an explicit `--allow-egress` per hosted arm, the docs/legal.md backends section, and an endpoint preflight (D-10..D-12, D-26)
+- [ ] **PIPE-12**: A Codex CLI harness adapter (GPT-6 Luna, GPT-6.1 Sol on the owner's ChatGPT Plus) with its own canary, audit of every command run, and the scoped runtime exception written into CLAUDE.md and .claude/rules/workflow.md (D-13, D-26)
+- [ ] **PIPE-13**: Slot model and lifter follow-ups from the Phase 7.1 review, measured on the converter curve (folded todo)
+- [ ] **PIPE-14**: An Antigravity CLI (agy) harness adapter for Gemini on the owner's Google AI Plus, with a quota canary, per-session settings first, and the OpenRouter fallback (D-21, D-24, D-25)
+- [ ] **PIPE-15**: Multi-arm drive: `drive --arm <name>=<workers>` runs several arms in parallel in one process, each with its own run id, pick queue and usage pause (D-22, D-26)
+- [ ] **PIPE-16**: Phase gate: host and container suites green, `gate --all` and `ninja verify` exit 0, `drive --canary` passes, matched bytes unchanged (D-20)
+
 ### Clean-room specs (Phase 8)
 
 - [ ] **SPEC-01**: A spec template `specs/_template/spec.md` in OpenSpec format (`## Purpose`, `## Requirements`, `### Requirement:` with SHALL/MUST, `#### Scenario:` with WHEN/THEN) plus OpenApoc issue, constants and formulas, functions (EXE + address), evidence, sources and a status ladder `drafted -> cited -> backed-by-matched-code -> dosbox-verified -> reviewed-by-openapoc`
@@ -190,6 +209,22 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | DEC-05 | Phase 7 | Pending |
 | DEC-06 | Phase 7 | Pending |
 | DEC-07 | Phase 7 | Pending |
+| PIPE-01 | Phase 7.2 | Pending |
+| PIPE-02 | Phase 7.2 | Pending |
+| PIPE-03 | Phase 7.2 | Pending |
+| PIPE-04 | Phase 7.2 | Pending |
+| PIPE-05 | Phase 7.2 | Pending |
+| PIPE-06 | Phase 7.2 | Pending |
+| PIPE-07 | Phase 7.2 | Pending |
+| PIPE-08 | Phase 7.2 | Pending |
+| PIPE-09 | Phase 7.2 | Pending |
+| PIPE-10 | Phase 7.2 | Pending |
+| PIPE-11 | Phase 7.2 | Pending |
+| PIPE-12 | Phase 7.2 | Pending |
+| PIPE-13 | Phase 7.2 | Pending |
+| PIPE-14 | Phase 7.2 | Pending |
+| PIPE-15 | Phase 7.2 | Pending |
+| PIPE-16 | Phase 7.2 | Pending |
 | SPEC-01 | Phase 8 | Pending |
 | SPEC-02 | Phase 8 | Pending |
 | SPEC-03 | Phase 8 | Pending |
@@ -202,10 +237,10 @@ Deferred to a later milestone. Tracked but not in the current roadmap.
 | SPEC-10 | Phase 8 | Pending |
 
 **Coverage:**
-- v1 requirements: 66 total
-- Mapped to phases: 66
+- v1 requirements: 82 total
+- Mapped to phases: 82
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-19*
-*Last updated: 2026-10-25 after adding SPEC-10 (findings docs) to Phase 8 and DEC-07 (research metrics) to Phase 7*
+*Last updated: 2026-11-09 after adding PIPE-01..PIPE-16 (Phase 7.2, FNV-inspired matching pipeline)*

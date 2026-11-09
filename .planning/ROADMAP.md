@@ -431,7 +431,7 @@ tooling, and build the harness for measuring model and effort by function size. 
 - **999.11:** base-vs-head CI on a self-hosted runner; the workflow and docs only, the owner registers the runner.
 - **Evidence items:** the Codex audit, the permuter's 0 of 40, bytes-first progress, and our per-try rates.
 
-**Requirements**: TBD (set in /gsd-discuss-phase 07.2)
+**Requirements**: PIPE-01, PIPE-02, PIPE-03, PIPE-04, PIPE-05, PIPE-06, PIPE-07, PIPE-08, PIPE-09, PIPE-10, PIPE-11, PIPE-12, PIPE-13, PIPE-14, PIPE-15, PIPE-16
 **Depends on:** Phase 7 (quick batch 261109-gzs lands first: sweep-hit parking, own disassembly in check, brace globs, asm/context cache, goal stop rules, worktree path hook)
 **Success Criteria** (what must be TRUE):
   1. Each item has its plan, and each plan is done, partial or deferred with commits and tests; host and container suites green
