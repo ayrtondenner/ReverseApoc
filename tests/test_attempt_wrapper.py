@@ -571,6 +571,107 @@ def test_no_region_board_without_regions(repo: Path, monkeypatch, capsys):
     assert "region board" not in capsys.readouterr().out
 
 
+def _board_claim(attempt_dir: Path) -> attempt.Claim:
+    attempt_dir.mkdir(parents=True, exist_ok=True)
+    return attempt.Claim("ufo2p", "u_000a34f0", FUNC, attempt_dir, attempt_dir / "notes.md")
+
+
+def _save(
+    attempt_dir: Path, n: int, regions: list[int] | None, *, sweep: bool = False,
+    name: str = FUNC, doc: dict | None = None, exit_code: int = 1,
+) -> None:  # fmt: skip
+    """Lay out run `n` the way the wrapper does: checks/NNNN.json and one checks.jsonl line."""
+    checks = attempt_dir / "checks"
+    checks.mkdir(parents=True, exist_ok=True)
+    if doc is None:
+        doc = _regions_doc(regions)
+        doc["functions"][0]["name"] = name
+    (checks / f"{n:04d}.json").write_text(json.dumps(doc), encoding="utf-8")
+    line = {"n": n, "exit": exit_code, "sweep": sweep, "best_percent": 50.0, "reloc_ok": True,
+            "bytes_ok": False, "splice_ok": False, "sweep_hit": None,
+            "source": f"checks/{n:04d}.c"}  # fmt: skip
+    with (attempt_dir / "checks.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(line) + "\n")
+
+
+def test_region_board_picks_the_closest_saved_check(tmp_path: Path):
+    claim = _board_claim(tmp_path / "attempt-1")
+    _save(claim.attempt_dir, 1, [0, 9])
+    _save(claim.attempt_dir, 2, [4, 1])
+    board = attempt.region_board(claim.attempt_dir, claim, 0x200,
+                                 current=(3, _regions_doc([2, 3])))  # fmt: skip
+    assert board == [BOARD_HEAD, "    0x000-0x0FF  exact in 0001",
+                     "    0x100-0x1FF  closest 0002 (1 differ)"]  # fmt: skip
+    _save(claim.attempt_dir, 3, [2, 3])
+    assert attempt.region_board(claim.attempt_dir, claim, 0x200) == board  # all saved
+
+
+def test_region_board_ties_go_to_the_earliest(tmp_path: Path):
+    claim = _board_claim(tmp_path / "attempt-1")
+    _save(claim.attempt_dir, 1, [3, 0])
+    _save(claim.attempt_dir, 2, [3, 0])
+    board = attempt.region_board(claim.attempt_dir, claim, 0x200,
+                                 current=(3, _regions_doc([3, 0])))  # fmt: skip
+    assert board[1:] == ["    0x000-0x0FF  closest 0001 (3 differ)",
+                         "    0x100-0x1FF  exact in 0001"]  # fmt: skip
+
+
+def test_region_board_skips_sweeps_and_old_docs(tmp_path: Path):
+    claim = _board_claim(tmp_path / "attempt-1")
+    _save(claim.attempt_dir, 1, [0, 0], sweep=True)  # never a plain check, whatever its JSON
+    _save(claim.attempt_dir, 2, None)  # a document from before 07.2-05
+    _save(claim.attempt_dir, 3, [0, 0], name=OTHER)  # another function of the unit
+    _save(claim.attempt_dir, 4, [5, 5])
+    board = attempt.region_board(claim.attempt_dir, claim, 0x200)
+    assert board[1:] == ["    0x000-0x0FF  closest 0004 (5 differ)",
+                         "    0x100-0x1FF  closest 0004 (5 differ)"]  # fmt: skip
+
+
+def test_region_board_ignores_tool_errors(tmp_path: Path):
+    claim = _board_claim(tmp_path / "attempt-1")
+    error = {"error": "no usable JSON", "returncode": 2, "stdout": "", "stderr": "made up"}
+    _save(claim.attempt_dir, 1, None, doc=error, exit_code=2)
+    _save(claim.attempt_dir, 2, [1, 1])
+    _save(claim.attempt_dir, 3, None, doc=error, exit_code=2)
+    (claim.attempt_dir / "checks" / "0003.json").write_text("{not json", encoding="utf-8")
+    with (claim.attempt_dir / "checks.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write("not a line\n")
+    board = attempt.region_board(claim.attempt_dir, claim, 0x200)
+    assert board[1:] == ["    0x000-0x0FF  closest 0002 (1 differ)",
+                         "    0x100-0x1FF  closest 0002 (1 differ)"]  # fmt: skip
+    assert attempt.region_board(_board_claim(tmp_path / "empty").attempt_dir, claim, 0x200) == []
+
+
+def test_region_board_reads_only_its_own_checks(tmp_path: Path):
+    """A decoy checks/ beside the attempt dir, and a forged source that points at it, are never
+    read: the board opens <attempt dir>/checks/NNNN.json only."""
+    claim = _board_claim(tmp_path / "attempt-1")
+    _save(tmp_path, 9, [0, 0])  # the decoy: tmp_path/checks/0009.json and its checks.jsonl
+    _save(claim.attempt_dir, 1, [2, 2])
+    forged = {"n": 9, "exit": 1, "sweep": False, "best_percent": 99.0, "reloc_ok": True,
+              "bytes_ok": False, "splice_ok": False, "sweep_hit": None,
+              "source": "../checks/0009.c"}  # fmt: skip
+    with (claim.attempt_dir / "checks.jsonl").open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(forged) + "\n")
+    board = attempt.region_board(claim.attempt_dir, claim, 0x200)
+    assert board[1:] == ["    0x000-0x0FF  closest 0001 (2 differ)",
+                         "    0x100-0x1FF  closest 0001 (2 differ)"]  # fmt: skip
+    assert "0009" not in "\n".join(board)
+
+
+def test_region_board_under_256_is_empty(tmp_path: Path):
+    claim = _board_claim(tmp_path / "attempt-1")
+    _save(claim.attempt_dir, 1, [5])
+    assert attempt.region_board(claim.attempt_dir, claim, 0xFF) == []
+    assert attempt.region_board(claim.attempt_dir, claim, 0x100) != []
+
+
+def test_region_summary():
+    entry = _regions_doc([0, 3, 12])["functions"][0]
+    assert attempt.region_summary(entry) == "regions 0:0 1:3 2:12"
+    assert attempt.region_summary(_regions_doc(None)["functions"][0]) is None
+
+
 def _stub_doc() -> dict:
     """check's JSON for a unit whose other function matched while the claimed one is still
     INCLUDE_ASM: check's unit-wide ok is true and the claimed function is only a stub."""
