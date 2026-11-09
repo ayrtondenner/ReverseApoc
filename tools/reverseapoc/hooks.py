@@ -22,7 +22,9 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   file it writes nothing (07-13 removed the Phase 6 single-session allowlist of src/<exe>/<unit>.c
   and new include/*.h), with no `#pragma` of any kind during the pilot (D-18, 06-15 fix
   round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
-  inside the repository and never a .env* file; and run Bash only as an exact attempt-wrapper form
+  inside the repository and never a .env* file (a Glob pattern or Grep glob may hold plain
+  {a,b} alternatives, each expansion judged by the same rule; [ ] classes are refused,
+  261109-gzw); and run Bash only as an exact attempt-wrapper form
   (ATTEMPT_PREFIX plus one of ATTEMPT_FORMS, D-44), in the foreground (no `run_in_background`),
   and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
   Every other tool is denied. The always rules apply here too, so a
@@ -47,7 +49,9 @@ checkout too."""
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
+import math
 import ntpath
 import os
 import posixpath
@@ -120,7 +124,11 @@ _WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
 _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _SYMBOLS = re.compile(r"config/[^/]+/symbols\.csv")  # D-19: shared naming state, driver-only
 _SECRET_PREFIX = ".env"
-_GLOB_SETS = "{}[]"  # brace alternatives and character classes could spell .env
+# A character class could spell .env and is never judged, only refused (fix round 1 M2). Brace
+# alternatives are expanded and each expansion judged (261109-gzw).
+_GLOB_CLASSES = "[]"
+_MAX_BRACE_EXPANSIONS = 64  # the most paths one Glob pattern or Grep glob may spell
+_BRACE_GROUP = re.compile(r"(\{[^{}]*\})")  # one group with no brace inside it
 # D-44: the attempt wrapper's argv forms, shared with the wrapper itself (06-15, ruling F27).
 ATTEMPT_PREFIX = ("uv", "run", "--frozen", "reverseapoc", "attempt")
 ATTEMPT_NAME_SLOT = "<NAME>"
@@ -756,19 +764,75 @@ def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
 
 
 def _pattern_problem(pattern: object) -> str:
-    """Why a Glob pattern or Grep glob could leave the checkout or name a .env file, or ''."""
+    """Why a Glob pattern or Grep glob could leave the checkout or name a .env file, or ''. A
+    character class is refused. Braces must be one level of plain {a,b} alternatives
+    (_brace_expansions); the pattern as written and every expansion are judged, so the call is
+    safe whether or not the tool expands braces."""
     if pattern is None:
         return ""
     if not isinstance(pattern, str):
         return "that is not a string"
-    if any(char in pattern for char in _GLOB_SETS):  # fix round 1 M2: refused, never judged
-        return f"{pattern!r}, which holds a brace or class set,"
-    parts = pattern.replace("\\", "/").split("/")
-    if pattern.startswith(("/", "\\", "~")) or _DRIVE.match(pattern) or ".." in parts:
-        return f"{pattern!r}, which can leave the repository,"
-    if any(part.casefold().startswith(_SECRET_PREFIX) for part in parts):
-        return f"{pattern!r}, which names a .env file,"
+    if any(char in pattern for char in _GLOB_CLASSES):
+        return f"{pattern!r}, which holds a character class,"
+    expansions = _brace_expansions(pattern)
+    if expansions is None:
+        return f"{pattern!r}, whose braces are not plain {{a,b}} alternatives,"
+    for text in (pattern, *expansions):
+        problem = _expansion_problem(text)
+        if problem:
+            return f"{pattern!r}{problem}"
     return ""
+
+
+def _expansion_problem(text: str) -> str:
+    """The leave-repo and .env rules for one pattern text, as the wording that follows it."""
+    parts = text.replace("\\", "/").split("/")
+    if text.startswith(("/", "\\", "~")) or _DRIVE.match(text) or ".." in parts:
+        return ", which can leave the repository,"
+    if any(part.casefold().startswith(_SECRET_PREFIX) for part in parts):
+        return ", which names a .env file,"
+    return ""
+
+
+def _brace_group(inside: str) -> tuple[str, ...] | None:
+    """The alternatives of one group, or None unless there are two or more, none empty, and no
+    `..` (a range such as {a..c}, or a `..` component)."""
+    alternatives = tuple(inside.split(","))
+    if len(alternatives) < 2 or "" in alternatives or ".." in inside:
+        return None
+    return alternatives
+
+
+def _brace_parts(pattern: str) -> list[tuple[str, ...]] | None:
+    """The pattern as literal runs (1-tuples) and groups (their alternatives), or None for any
+    other shape: a backslash (it could escape a brace past this hook), a nested group, a stray
+    `}` or an unclosed `{`, or a group _brace_group refuses."""
+    if "\\" in pattern:
+        return None
+    parts = []
+    for index, token in enumerate(_BRACE_GROUP.split(pattern)):
+        if index % 2 == 0:  # a literal run between groups: no brace may be left in it
+            if "{" in token or "}" in token:
+                return None
+            parts.append((token,))
+            continue
+        group = _brace_group(token[1:-1])
+        if group is None:
+            return None
+        parts.append(group)
+    return parts
+
+
+def _brace_expansions(pattern: str) -> list[str] | None:
+    """Every text `pattern` spells: [pattern] with no brace, None for a refused brace shape or
+    more than _MAX_BRACE_EXPANSIONS expansions (counted before expanding), else each choice of
+    alternatives in order."""
+    if "{" not in pattern and "}" not in pattern:
+        return [pattern]
+    parts = _brace_parts(pattern)
+    if parts is None or math.prod(len(part) for part in parts) > _MAX_BRACE_EXPANSIONS:
+        return None
+    return ["".join(choice) for choice in itertools.product(*parts)]
 
 
 def _matching_write(

@@ -37,17 +37,18 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import asm, check, contextpack, lift, unitdefs
+from . import asm, check, contextpack, ghidra, lift, unitdefs
 from .cflags import DEFAULT_CFLAGS, load_cflags, select_rule
 from .check import DEFAULT_CONFIG, DEFAULT_SRC, EXIT_MISMATCH, EXIT_OK, EXIT_TOOL, PERFECT
 from .fileio import write_atomic
 from .functions import (
+    KIND_DATA_IN_CODE,
     KIND_GAME,
     KIND_THUNK,
     FunctionRow,
@@ -90,6 +91,10 @@ VIEW_BUILD = "build"
 VIEW_CFLAGS = Path(VIEW_CONFIG) / "cflags.txt"
 VIEW_LOG = Path(VIEW_BUILD) / "logs" / "cc.log"
 PROPOSALS_FILE = "proposals.jsonl"  # REVERSEAPOC_PROPOSALS must be <attempt dir>/proposals.jsonl
+# 261109-gzw: <attempt dir>/view/build/attempt-cache/ keeps attempt asm/context output. It sits in
+# the view's build/ (VIEW_BUILD), which the driver's audit invariant (b) skips.
+CACHE_DIR = "attempt-cache"
+CACHE_FORMAT = 1
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -105,6 +110,7 @@ MEASURED = "measured"  # a sweep cell's status once compiled and diffed
 READABILITY = SESSION_KINDS[1]  # the session kind whose check adds readlint (07-31)
 FUNCTIONS_CSV = "functions.csv"  # config/<exe>/ tables a check and a rename proposal read
 SYMBOLS_CSV = "symbols.csv"
+UNITS_CSV = "units.csv"  # read by check.load_exe; the asm/context cache digests it
 
 
 class AttemptError(ValueError):
@@ -1020,8 +1026,13 @@ def resolve_row(data: check.ExeInputs, name: str) -> FunctionRow:
     raise AttemptError(f"{name} is no functions.csv row of {data.stem}")
 
 
+def listing_path(data: check.ExeInputs, row: FunctionRow, asm_root: Path) -> Path:
+    """The listing of `row` under `asm_root`: the file listing_text reads and the cache digests."""
+    return Path(asm_root) / data.stem / asm.file_name(data.symbols, row)
+
+
 def listing_text(data: check.ExeInputs, row: FunctionRow, asm_root: Path) -> str:
-    path = Path(asm_root) / data.stem / asm.file_name(data.symbols, row)
+    path = listing_path(data, row, asm_root)
     if not path.is_file():
         raise AttemptError(f"no listing {path}; the owner writes them with "
                            f"`uv run reverseapoc asm {data.stem}`")  # fmt: skip
@@ -1084,13 +1095,19 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
 
 
+def _unit_paths(src: Path, data: check.ExeInputs) -> dict[str, Path]:
+    """The file of each unit a functions.csv row names, in sorted order: what _unit_texts reads
+    and the context cache digests."""
+    units = sorted({row.unit for row in data.rows if row.unit})
+    return {unit: Path(src) / data.stem / f"{unit}.c" for unit in units}
+
+
 def _unit_texts(src: Path, data: check.ExeInputs, claimed: str) -> dict[str, str]:
     """Every unit file of the EXE (06-13 note a: neighbours in other units need their C), read
     as bytes decoded as strict UTF-8 (note b: a lone CR stays refused, never translated). A
     unit that is not UTF-8 is left out, unless it is the claimed one."""
     texts = {}
-    for unit in sorted({row.unit for row in data.rows if row.unit}):
-        path = Path(src) / data.stem / f"{unit}.c"
+    for unit, path in _unit_paths(src, data).items():
         if not path.is_file():
             continue
         try:
@@ -1123,50 +1140,196 @@ def make_pack(
     inputs = contextpack.gather(
         row, rows=data.rows, flat=data.flat, fixups=data.fixups, symbols=data.symbols,
         status=status, unit_texts=_unit_texts(src, data, row.unit), listing_dir=listing_dir,
-        draft_dir=listing_dir / "ghidra", common_h=_optional_text(roots.common_h),
+        draft_dir=listing_dir / ghidra.DRAFTS_DIR, common_h=_optional_text(roots.common_h),
         idioms=idioms(_optional_text(roots.matching)),
         notes=earlier_notes(roots.repo, data.stem, placeholder(row)), calls=calls,
     )  # fmt: skip
     return contextpack.build_pack(**inputs)
 
 
-def _claimed_row() -> tuple[Claim, check.ExeInputs, FunctionRow]:
-    claim = Claim.from_env(os.environ, roots=ROOTS)
+def _claimed_row(claim: Claim) -> tuple[check.ExeInputs, FunctionRow]:
     data = exe_inputs(claim.exe, orig=ROOTS.orig, manifest=ROOTS.manifest, config=ROOTS.config)
-    return claim, data, claimed_row(data.rows, claim)
+    return data, claimed_row(data.rows, claim)
 
 
-def _register_notes(data: check.ExeInputs, row: FunctionRow) -> dict[int, str]:
-    """The call notes of `row`. A lifter fault costs them and one stderr line, never the
-    listing: past here cli's M9 handler would turn it into exit 2 in a live session."""
+def _register_notes(data: check.ExeInputs, row: FunctionRow) -> tuple[dict[int, str], str]:
+    """The call notes of `row`, and the stderr text to print with them ("" when none). A lifter
+    fault costs the notes and that one line, never the listing: past here cli's M9 handler
+    would turn it into exit 2 in a live session."""
     try:
-        return lift.call_notes(data, row)
+        return lift.call_notes(data, row), ""
     except Exception as exc:
-        print(f"attempt asm: no call notes: {type(exc).__name__}: {_one_line(exc)}",
-              file=sys.stderr)  # fmt: skip
-        return {}
+        return {}, f"attempt asm: no call notes: {type(exc).__name__}: {_one_line(exc)}\n"
+
+
+# ---- the per-view cache of attempt asm and attempt context (261109-gzw) ----
+
+
+@dataclass(frozen=True)
+class CacheKey:
+    """Where one form's entry lives and what a hit must match: `facts` are values, `inputs` the
+    digest of each file the form reads whose path is known before the EXE loads."""
+
+    path: Path
+    facts: dict[str, Any]
+    inputs: dict[str, str | None]
+
+
+def _digest(path: Path) -> str | None:
+    """The sha256 hex of the file's bytes, or None when `path` is not a file."""
+    path = Path(path)
+    return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+
+
+def _digests(paths: Iterable[Path]) -> dict[str, str | None]:
+    return {Path(path).as_posix(): _digest(path) for path in paths}
+
+
+def _tool_files() -> list[Path]:
+    """The code an output depends on: every module of this package, the checkout's
+    configure.py (contextpack.definitions loads it) and uv.lock (the locked dependencies)."""
+    return [*sorted(Path(__file__).parent.glob("*.py")), REPO_ROOT / "configure.py",
+            REPO_ROOT / "uv.lock"]  # fmt: skip
+
+
+def _tool_version() -> str:
+    """sha256 over the Python version, then each tool file's name and digest."""
+    version = hashlib.sha256(sys.version.encode())
+    for path in _tool_files():
+        version.update(f"\0{path.name}\0{_digest(path)}".encode())
+    return version.hexdigest()
+
+
+def _entry_path(claim: Claim, form: str, name: str | None) -> Path:
+    stem = form if name is None else f"{form}.{name}"
+    return claim.view_root / VIEW_BUILD / CACHE_DIR / f"{stem}.json"
+
+
+def _cache_key(claim: Claim, form: str, name: str | None) -> CacheKey | None:
+    """The key of `form` (asm or context) with NAME `name`: exactly the inputs that form reads
+    (RULINGS gzw and its amendment). None outside a view: a legacy session recomputes every
+    time. Neither form reads the view's include/ or config/cflags.txt (only check and sweep
+    compile), and asm never reads the view unit, so none of them is in a key."""
+    if claim.unit_file is None:
+        return None
+    facts = {"format": CACHE_FORMAT, "form": form, "name": name, "exe": claim.exe,
+             "unit": claim.unit, "function": claim.function, "tool": _tool_version()}  # fmt: skip
+    target = check.select_exe(load_manifest(ROOTS.manifest), claim.exe, ROOTS.manifest)
+    config = Path(ROOTS.config) / claim.exe
+    paths = [Path(ROOTS.manifest), Path(ROOTS.orig) / target.name,
+             *(config / table for table in (FUNCTIONS_CSV, UNITS_CSV, SYMBOLS_CSV))]  # fmt: skip
+    if form == "context":
+        facts["notes"] = _notes_digest(claim)
+        paths += [status_path(ROOTS.config, claim.exe), ROOTS.common_h, ROOTS.matching]
+    return CacheKey(_entry_path(claim, form, name), facts, _digests(paths))
+
+
+def _notes_digest(claim: Claim) -> str:
+    """The earlier notes and records make_pack packs, as earlier_notes reads them: the claimed
+    row's placeholder is claim.function (claimed_row requires row.start == claim.address)."""
+    notes = earlier_notes(ROOTS.repo, claim.exe, claim.function)
+    return hashlib.sha256(repr(notes).encode()).hexdigest()
+
+
+def _entry_valid(entry: Any, key: CacheKey) -> bool:
+    if entry["facts"] != key.facts or entry["inputs"] != key.inputs:
+        return False
+    if not isinstance(entry["stdout"], str) or not isinstance(entry["stderr"], str):
+        return False
+    return all(_digest(Path(path)) == digest for path, digest in entry["derived"].items())
+
+
+def _cache_hit(key: CacheKey) -> dict[str, Any] | None:
+    """The stored entry when its facts and inputs equal the key's and every derived file still
+    has the digest it had; else None. A missing entry, or one of another shape (a torn write),
+    is a miss, as lift._read_census treats a torn census; any other error propagates."""
+    if not key.path.is_file():
+        return None
+    try:
+        entry = json.loads(key.path.read_text(encoding="utf-8"))
+        return entry if _entry_valid(entry, key) else None
+    except ValueError, KeyError, TypeError, AttributeError:
+        return None
+
+
+def _cache_store(key: CacheKey, derived: dict[str, str | None], stdout: str, stderr: str) -> None:
+    """Keep one form's output. A fault costs the entry and one stderr line, never the output."""
+    entry = {"facts": key.facts, "inputs": key.inputs, "derived": derived, "stdout": stdout,
+             "stderr": stderr}  # fmt: skip
+    try:
+        key.path.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(key.path, json.dumps(entry, sort_keys=True).encode("utf-8"))
+    except OSError as exc:
+        print(f"attempt {key.facts['form']}: cache not written: {type(exc).__name__}: "
+              f"{_one_line(exc)}", file=sys.stderr)  # fmt: skip
+
+
+def _lookup(claim: Claim, form: str, name: str | None) -> tuple[CacheKey | None, dict | None]:
+    key = _cache_key(claim, form, name)
+    return key, (_cache_hit(key) if key is not None else None)
 
 
 def cmd_asm(name: str | None) -> int:
     """Print the claimed function's listing, or that of NAME (another row of the same EXE), with
     its notes on the lines they belong to. They reach the terminal only: D-05. A jump and a call
-    never share an address, so the merge loses nothing."""
-    _, data, row = _claimed_row()
+    never share an address, so the merge loses nothing. In a view a repeat whose inputs are
+    unchanged prints the stored output without loading the EXE (261109-gzw)."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    key, entry = _lookup(claim, "asm", name)
+    if entry is not None:
+        sys.stderr.write(entry["stderr"])  # before the listing, as on a miss
+        sys.stdout.write(entry["stdout"])
+        return EXIT_OK
+    data, row = _claimed_row(claim)
     if name is not None:
         row = resolve_row(data, name)
+    read = [listing_path(data, row, ROOTS.asm)]
+    if row.kind != KIND_DATA_IN_CODE:  # lift.call_notes returns before its census read
+        read.append(lift._census_file(data.stem))
+    derived = _digests(read)  # taken before the reads: a change mid-run is a later miss
     text = listing_text(data, row, ROOTS.asm)
     notes = asm.case_notes(row, flat=data.flat, fixups=data.fixups, rows=data.rows,
                            symbols=data.symbols)  # fmt: skip
-    sys.stdout.write(asm.annotated(text, notes | _register_notes(data, row)))
+    calls, line = _register_notes(data, row)
+    out = asm.annotated(text, notes | calls)
+    sys.stderr.write(line)  # the lifter's line comes before the listing, as before 261109-gzw
+    sys.stdout.write(out)
+    if key is not None:
+        _cache_store(key, derived, out, line)
     return EXIT_OK
 
 
 def cmd_context() -> int:
-    """Rebuild the claimed function's pack into <attempt dir>/context.md and print it."""
-    claim, data, row = _claimed_row()
-    pack = make_pack(data, row, src=src_root(claim, ROOTS), config=ROOTS.config,
-                     asm_root=ROOTS.asm, roots=ROOTS)  # fmt: skip
-    path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
-    sys.stdout.write(pack.text)
+    """Rebuild the claimed function's pack into <attempt dir>/context.md and print it. In a view
+    a repeat whose inputs are unchanged writes and prints the stored pack without loading the
+    EXE (261109-gzw)."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    key, entry = _lookup(claim, "context", None)
+    if entry is not None:
+        text = entry["stdout"]
+        # Claim.from_env proved the attempt dir an existing directory below build/driver/ with
+        # exact case: write_pack's T-06-29 guard.
+        path = claim.attempt_dir / contextpack.PACK_FILE
+        write_atomic(path, text.encode("utf-8"))
+        derived = None
+    else:
+        text, path, derived = _rebuild_pack(claim)
+    sys.stdout.write(text)
     print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)
+    if key is not None and derived is not None:
+        _cache_store(key, derived, text, "")  # the `wrote` line is printed fresh each run
     return EXIT_OK
+
+
+def _rebuild_pack(claim: Claim) -> tuple[str, Path, dict[str, str | None]]:
+    """The pack built and written as before the cache, with the digests of the listing, the
+    draft and every unit file it reads, taken before make_pack reads them."""
+    data, row = _claimed_row(claim)
+    src = src_root(claim, ROOTS)
+    listing = listing_path(data, row, ROOTS.asm)
+    read = [listing, listing.parent / ghidra.DRAFTS_DIR / ghidra.draft_name(row.start),
+            *_unit_paths(src, data).values()]  # fmt: skip
+    derived = _digests(read)
+    pack = make_pack(data, row, src=src, config=ROOTS.config, asm_root=ROOTS.asm, roots=ROOTS)
+    path = contextpack.write_pack(pack, claim.attempt_dir, root=ROOTS.repo)
+    return pack.text, path, derived

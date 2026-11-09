@@ -5,9 +5,11 @@ directory, and every LE byte, listing and check result below is made up."""
 from __future__ import annotations
 
 import dataclasses
+import io
 import json
 import re
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1712,3 +1714,498 @@ def test_unreadable_proposals_count_no_pending_rename(readable: Path, monkeypatc
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 1
     assert "proposals.jsonl" in capsys.readouterr().out
+
+
+# ---- 261109-gzw: attempt asm/context output cached per view ----
+
+VIEW_HEADER = "made_up.h"
+
+
+def _claim_b_view(tree: attempt.Roots, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """_claim_b in a D-24 view: both unit texts, one made-up header and a cflags.txt under
+    <attempt dir>/view/, the lifter's census in the tmp tree and tmp copies of common.h and
+    matching.md, so every input a form may read sits in tree.repo."""
+    attempt_dir = _claim_b(tree, monkeypatch)
+    view = attempt_dir / "view"
+    unit = _write(view / "src" / "ufo2p" / f"{UNIT_AB}.c", UNIT_AB_TEXT)
+    _write(view / "src" / "ufo2p" / f"{UNIT_C}.c", UNIT_C_TEXT)
+    _write(view / "include" / VIEW_HEADER, "/* a made-up view header */\n")
+    _write(view / "config" / "cflags.txt", "* wcc386@10.6 -4r -s -fpi\n")
+    monkeypatch.setenv(hooks.UNIT_FILE_ENV, str(unit))
+    monkeypatch.setenv(hooks.PROPOSALS_ENV, str(attempt_dir / "proposals.jsonl"))
+    monkeypatch.setattr(lift, "CACHE_DIR", tree.repo / "build" / "lift")
+    monkeypatch.setattr(lift, "_RESULT_USED", {})
+    common_h = tree.repo / "include" / "common.h"
+    matching = tree.repo / "docs" / "matching.md"
+    for copy, real in ((common_h, attempt.ROOTS.common_h), (matching, attempt.ROOTS.matching)):
+        copy.parent.mkdir(parents=True, exist_ok=True)
+        copy.write_bytes(Path(real).read_bytes())
+    roots = dataclasses.replace(attempt.ROOTS, common_h=common_h, matching=matching)
+    monkeypatch.setattr(attempt, "ROOTS", roots)
+    return attempt_dir
+
+
+@pytest.fixture
+def loads(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """A spy on attempt.exe_inputs: one entry per EXE load."""
+    calls: list[int] = []
+    real = attempt.exe_inputs
+
+    def spy(*args, **kwargs):
+        calls.append(1)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(attempt, "exe_inputs", spy)
+    return calls
+
+
+def _attempt(capsys, *argv: str) -> tuple[int, str, str]:
+    """One `attempt` command as its own process would run it: the lifter's id(exe) caches start
+    empty, and the exit code, stdout and stderr come back."""
+    lift._INDEX.clear()
+    lift._FIXUPS.clear()
+    code = _run(["attempt", *argv])
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_view_asm_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkeypatch, capsys,
+                                                 loads):  # fmt: skip
+    _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "asm")
+    assert first[0] == 0 and first[1] == LISTING_B, first[2]
+    assert len(loads) == 1
+    assert _attempt(capsys, "asm") == first
+    assert len(loads) == 1  # run 2 never loads the EXE
+
+
+CENSUS = '{"used": [], "called": []}'  # a valid, empty lifter census
+
+
+def _add_line(path: Path, text: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes((path.read_bytes() if path.is_file() else b"") + text.encode("utf-8"))
+    return path
+
+
+def _view(attempt_dir: Path, *parts: str) -> Path:
+    return attempt_dir.joinpath("view", *parts)
+
+
+def _driver(*parts: str) -> Path:
+    return attempt.ROOTS.repo.joinpath("build", "driver", *parts)
+
+
+# Each change below edits one input and returns the file it wrote (None: no file). Named
+# functions, not lambdas, so the tables stay within the line limit (261107-qzx's CHANGES).
+
+
+def _orig_and_manifest(attempt_dir: Path, monkeypatch) -> Path:
+    patches = {FUNC_A: A_BYTES, FUNC_B: B_BYTES, FUNC_C: C_BYTES}
+    data = build_le_image(fixups=[b"", b"", b""], patches=patches).data  # no fixups this time
+    write_manifest(attempt.ROOTS.manifest, {"UFO2P.EXE": data})
+    path = attempt.ROOTS.orig / "UFO2P.EXE"
+    path.write_bytes(data)
+    return path
+
+
+def _manifest(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(Path(attempt.ROOTS.manifest), "# a made-up comment\n")
+
+
+def _functions_csv(attempt_dir: Path, monkeypatch) -> Path:
+    path = attempt.ROOTS.config / "ufo2p" / "functions.csv"
+    write_functions_csv(path, [
+        FunctionRow(FUNC_A, FUNC_B, "func_00010000", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "func_00010020", "game", UNIT_C, "fixup"),
+    ], "UFO2P.EXE")  # fmt: skip
+    return path
+
+
+def _units_csv(attempt_dir: Path, monkeypatch) -> Path:
+    path = attempt.ROOTS.config / "ufo2p" / "units.csv"
+    write_units_csv(path, [UnitRow(UNIT_AB, FUNC_A, FUNC_C, "first"),
+                    UnitRow(UNIT_C, FUNC_C, END, "data-order")], "UFO2P.EXE")  # fmt: skip
+    return path
+
+
+def _symbols_csv(attempt_dir: Path, monkeypatch) -> Path:
+    path = attempt.ROOTS.config / "ufo2p" / "symbols.csv"
+    write_symbols_csv(path, [SymbolRow(FUNC_C, "made_up_c_", "func")], "UFO2P.EXE")
+    return path
+
+
+def _status_csv(attempt_dir: Path, monkeypatch) -> Path:
+    path = status_path(attempt.ROOTS.config, "ufo2p")
+    write_status(path, [StatusRow(FUNC_A, "func_00010000", UNIT_AB, "matched", 100.0, 0,
+                                  lf_sha256(UNIT_AB_TEXT), "2026-10-26")])  # fmt: skip
+    return path
+
+
+def _listing_b(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.asm / "ufo2p" / "func_00010010.s", "# a made-up line\n")
+
+
+def _listing_a(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.asm / "ufo2p" / "func_00010000.s", "# a made-up line\n")
+
+
+def _draft(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.asm / "ufo2p" / "ghidra" / "func_00010010.c", "/* made up */\n")
+
+
+def _draft_removed(attempt_dir: Path, monkeypatch) -> Path:
+    path = attempt.ROOTS.asm / "ufo2p" / "ghidra" / "func_00010010.c"
+    path.unlink()
+    return path
+
+
+def _census(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(lift._census_file("ufo2p"), CENSUS)
+
+
+def _python(attempt_dir: Path, monkeypatch) -> None:
+    monkeypatch.setattr(sys, "version", sys.version + " made-up")
+
+
+def _view_unit_ab(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_view(attempt_dir, "src", "ufo2p", f"{UNIT_AB}.c"), "/* edited */\n")
+
+
+def _view_unit_c(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_view(attempt_dir, "src", "ufo2p", f"{UNIT_C}.c"), "/* edited */\n")
+
+
+def _view_unit_c_removed(attempt_dir: Path, monkeypatch) -> Path:
+    path = _view(attempt_dir, "src", "ufo2p", f"{UNIT_C}.c")
+    path.unlink()
+    return path
+
+
+def _stray_unit(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(_view(attempt_dir, "src", "ufo2p", "extra.c"), "int made_up;\n")
+
+
+def _header_added(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(_view(attempt_dir, "include", "other.h"), "/* another made-up header */\n")
+
+
+def _header_changed(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_view(attempt_dir, "include", VIEW_HEADER), "#define MADE_UP 1\n")
+
+
+def _view_cflags(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(_view(attempt_dir, "config", "cflags.txt"), "* wcc386@10.6 -4r -ot -s -fpi\n")
+
+
+def _common_h(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.common_h, "/* made up */\n")
+
+
+def _matching_md(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.matching, "\nA made-up line.\n")
+
+
+def _own_notes(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(attempt_dir / "notes.md", "a made-up note of this attempt\n")
+
+
+def _earlier_notes(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_driver("run0", "ufo2p", "func_00010010", "attempt-1", "notes.md"),
+                     "more of note one\n")  # fmt: skip
+
+
+def _new_earlier_notes(attempt_dir: Path, monkeypatch) -> Path:
+    return _write(_driver("run0", "ufo2p", "func_00010010", "attempt-3", "notes.md"), "three\n")
+
+
+def _other_notes(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(_driver("run0", "ufo2p", "func_00010020", "attempt-1", "notes.md"), "more\n")
+
+
+def _record(function: str) -> str:
+    return json.dumps({"kind": "attempt", "exe": "ufo2p", "function": function,
+                       "outcome": "GAVE_UP", "run": "run1", "attempt": 1}) + "\n"  # fmt: skip
+
+
+def _record_b(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.repo / "progress" / "attempts.jsonl", _record("func_00010010"))
+
+
+def _record_other(attempt_dir: Path, monkeypatch) -> Path:
+    return _add_line(attempt.ROOTS.repo / "progress" / "attempts.jsonl", _record("func_00010020"))
+
+
+def _ids(case) -> str:
+    return case.__name__.lstrip("_") if callable(case) else " ".join(case) or "plain"
+
+
+def _entry(attempt_dir: Path, name: str) -> Path:
+    return _view(attempt_dir, "build", "attempt-cache", name)
+
+
+ASM_READS = [  # (NAME argv, change) for each input attempt asm reads (design answer 4)
+    ((), _orig_and_manifest), ((), _manifest), ((), _functions_csv), ((), _units_csv),
+    ((), _symbols_csv), ((), _listing_b), (("func_00010000",), _listing_a), ((), _census),
+    (("func_00010000",), _census), ((), _python),
+]
+ASM_UNREAD = [_view_unit_ab, _header_added, _header_changed, _view_cflags, _view_unit_c,
+              _status_csv, _common_h, _matching_md, _draft, _listing_a, _own_notes, _record_b]
+
+
+@pytest.mark.parametrize(("args", "change"), ASM_READS, ids=_ids)
+def test_view_asm_cache_misses_on_each_change(tree: attempt.Roots, monkeypatch, capsys, loads,
+                                              args, change):  # fmt: skip
+    """An input asm reads, changed: one more EXE load, and what it prints is what a run with no
+    entry at all prints."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "asm", *args)
+    assert first[0] == 0, first[2]
+    assert _attempt(capsys, "asm", *args) == first and len(loads) == 1
+    change(attempt_dir, monkeypatch)
+    after = _attempt(capsys, "asm", *args)
+    assert after[0] == 0 and len(loads) == 2
+    _entry(attempt_dir, ".".join(("asm", *args, "json"))).unlink()
+    assert _attempt(capsys, "asm", *args) == after  # the new output, not the stored one
+
+
+def _really_changed(change, attempt_dir: Path, monkeypatch) -> None:
+    """Applies `change` and fails unless the file it names is new or holds other bytes."""
+    repo = attempt.ROOTS.repo
+    before = _files(repo)
+    path = change(attempt_dir, monkeypatch)
+    assert path is not None and path.is_file()
+    assert before.get(path.relative_to(repo).as_posix()) != path.read_bytes()
+
+
+@pytest.mark.parametrize("change", ASM_UNREAD, ids=_ids)
+def test_view_asm_cache_ignores_unread_inputs(tree: attempt.Roots, monkeypatch, capsys, loads,
+                                              change):  # fmt: skip
+    """RULINGS gzw amendment: a file attempt asm never reads stays out of its key."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "asm")
+    assert first[0] == 0, first[2]
+    _really_changed(change, attempt_dir, monkeypatch)
+    assert _attempt(capsys, "asm") == first
+    assert len(loads) == 1
+
+
+def test_view_asm_cache_keys_on_the_name(tree: attempt.Roots, monkeypatch, capsys, loads):
+    _claim_b_view(tree, monkeypatch)
+    plain = _attempt(capsys, "asm")
+    named = _attempt(capsys, "asm", "func_00010000")
+    assert plain[1] == LISTING_B and named[1] == LISTING_A
+    assert len(loads) == 2
+    assert _attempt(capsys, "asm") == plain
+    assert _attempt(capsys, "asm", "func_00010000") == named
+    assert len(loads) == 2
+
+
+def test_view_asm_data_in_code_name_ignores_the_census(tree: attempt.Roots, monkeypatch, capsys,
+                                                       loads):  # fmt: skip
+    """lift.call_notes returns before its census read for a data-in-code row, so that row's
+    key leaves the census out."""
+    _claim_b_view(tree, monkeypatch)
+    write_functions_csv(tree.config / "ufo2p" / "functions.csv", [
+        FunctionRow(FUNC_A, FUNC_B, "func_00010000", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_B, FUNC_C, "func_00010010", "game", UNIT_AB, "call"),
+        FunctionRow(FUNC_C, END, "D_00010020", "data-in-code", UNIT_C, "fixup"),
+    ], "UFO2P.EXE")  # fmt: skip
+    roots = attempt.ROOTS
+    data = attempt.exe_inputs("ufo2p", orig=roots.orig, manifest=roots.manifest,
+                              config=roots.config)  # fmt: skip
+    row = attempt.resolve_row(data, "D_00010020")
+    _write(attempt.listing_path(data, row, roots.asm), "# D_00010020  a made-up table\n")
+    base = len(loads)
+    first = _attempt(capsys, "asm", "D_00010020")
+    assert first[0] == 0, first[2]
+    assert len(loads) == base + 1
+    _write(lift._census_file("ufo2p"), CENSUS)
+    assert _attempt(capsys, "asm", "D_00010020") == first
+    assert len(loads) == base + 1
+
+
+def test_tool_version_reads_the_tool_files(tmp_path: Path, monkeypatch):
+    names = {path.name for path in attempt._tool_files()}
+    assert {"attempt.py", "asm.py", "lift.py", "contextpack.py", "check.py", "configure.py",
+            "uv.lock"} <= names  # fmt: skip
+    files = [_write(tmp_path / "one.py", "a\n"), _write(tmp_path / "two.lock", "b\n")]
+    monkeypatch.setattr(attempt, "_tool_files", lambda: files)
+    version = attempt._tool_version()
+    for path in files:
+        _add_line(path, "changed\n")
+        assert attempt._tool_version() != version
+        version = attempt._tool_version()
+
+
+def test_view_asm_cache_replays_the_lifter_line(tree: attempt.Roots, monkeypatch, capsys, loads):
+    def raises(_data, _row):
+        raise ValueError("made-up")
+
+    _claim_b_view(tree, monkeypatch)
+    monkeypatch.setattr(lift, "call_notes", raises)
+    first = _attempt(capsys, "asm")
+    assert first == (0, LISTING_B, "attempt asm: no call notes: ValueError: made-up\n")
+    assert _attempt(capsys, "asm") == first
+    assert len(loads) == 1
+
+
+def test_view_asm_prints_the_lifter_line_before_the_listing(tree: attempt.Roots, monkeypatch):
+    """One terminal shows both streams: the line comes first, as before 261109-gzw, on a miss
+    and on a hit alike."""
+    def raises(_data, _row):
+        raise ValueError("made-up")
+
+    _claim_b_view(tree, monkeypatch)
+    monkeypatch.setattr(lift, "call_notes", raises)
+    terminal = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    line = "attempt asm: no call notes: ValueError: made-up\n"
+    for _ in range(2):  # a miss, then a hit
+        assert _run(["attempt", "asm"]) == 0
+        assert terminal.getvalue() == line + LISTING_B
+        terminal.seek(0)
+        terminal.truncate()
+
+
+def test_legacy_asm_is_never_cached(tree: attempt.Roots, monkeypatch, capsys, loads):
+    _claim_b(tree, monkeypatch)
+    monkeypatch.setattr(lift, "CACHE_DIR", tree.repo / "build" / "lift")
+    assert _attempt(capsys, "asm") == _attempt(capsys, "asm")
+    assert len(loads) == 2
+    assert not [path for path in tree.repo.rglob("*") if "attempt-cache" in path.as_posix()]
+
+
+def test_view_asm_cache_location(tree: attempt.Roots, monkeypatch, capsys):
+    """The entry is the one new file, in the view's build/ that the driver's audit skips."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    before = _files(tree.repo)
+    assert _attempt(capsys, "asm")[0] == 0
+    after = _files(tree.repo)
+    entry = _entry(attempt_dir, "asm.json")
+    assert set(after) - set(before) == {entry.relative_to(tree.repo).as_posix()}
+    assert all(after[name] == data for name, data in before.items())
+    assert entry.relative_to(attempt_dir / attempt.VIEW_DIR).parts[0] == attempt.VIEW_BUILD
+
+
+def test_view_asm_cache_torn_entry_is_a_miss(tree: attempt.Roots, monkeypatch, capsys, loads):
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "asm")
+    entry = _entry(attempt_dir, "asm.json")
+    entry.write_text("{", encoding="utf-8")
+    assert _attempt(capsys, "asm") == first
+    assert len(loads) == 2
+    assert isinstance(json.loads(entry.read_text(encoding="utf-8")), dict)
+
+
+def test_view_asm_failed_run_stores_nothing(tree: attempt.Roots, monkeypatch, capsys, loads):
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    listing = tree.asm / "ufo2p" / "func_00010010.s"
+    saved = listing.read_bytes()
+    listing.unlink()
+    assert _attempt(capsys, "asm")[0] == 2
+    assert not _entry(attempt_dir, "asm.json").exists()
+    listing.write_bytes(saved)
+    assert _attempt(capsys, "asm") == (0, LISTING_B, "")
+    assert len(loads) == 2
+
+
+def test_view_asm_cache_store_fault_keeps_the_output(tree: attempt.Roots, monkeypatch, capsys):
+    def fails(_path, _data):
+        raise OSError("made-up\nfault")
+
+    _claim_b_view(tree, monkeypatch)
+    monkeypatch.setattr(attempt, "write_atomic", fails)
+    code, out, err = _attempt(capsys, "asm")
+    assert (code, out) == (0, LISTING_B)
+    (line,) = err.splitlines()
+    assert line == "attempt asm: cache not written: OSError: made-up fault"
+
+
+def _pack(attempt_dir: Path) -> bytes:
+    return (attempt_dir / "context.md").read_bytes()
+
+
+def test_view_context_cache_hits_on_unchanged_inputs(tree: attempt.Roots, monkeypatch, capsys,
+                                                     loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert first[2] == (f"wrote {(attempt_dir / 'context.md').as_posix()}; "
+                        f"notes: {(attempt_dir / 'notes.md').as_posix()}\n")  # fmt: skip
+    saved = _pack(attempt_dir)
+    assert saved == first[1].encode("utf-8") and len(loads) == 1
+    (attempt_dir / "context.md").unlink()
+    assert _attempt(capsys, "context") == first
+    assert _pack(attempt_dir) == saved
+    assert len(loads) == 1  # run 2 never loads the EXE
+
+
+CONTEXT_READS = [  # one change per input attempt context reads (design answer 4)
+    _orig_and_manifest, _manifest, _functions_csv, _units_csv, _symbols_csv, _status_csv,
+    _listing_b, _draft, _draft_removed, _view_unit_ab, _view_unit_c, _view_unit_c_removed,
+    _common_h, _matching_md, _own_notes, _earlier_notes, _new_earlier_notes, _record_b, _python,
+]
+CONTEXT_UNREAD = [_header_added, _header_changed, _view_cflags, _stray_unit, _census, _listing_a,
+                  _other_notes]  # fmt: skip
+
+
+@pytest.mark.parametrize("change", CONTEXT_READS, ids=_ids)
+def test_view_context_cache_misses_on_each_change(tree: attempt.Roots, monkeypatch, capsys,
+                                                  loads, change):  # fmt: skip
+    """An input context reads, changed: one more EXE load, and the pack printed and written is
+    the one a run with no entry at all builds."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    assert _attempt(capsys, "context") == first and len(loads) == 1
+    change(attempt_dir, monkeypatch)
+    after = _attempt(capsys, "context")
+    assert after[0] == 0 and len(loads) == 2
+    assert _pack(attempt_dir) == after[1].encode("utf-8")
+    _entry(attempt_dir, "context.json").unlink()
+    assert _attempt(capsys, "context") == after  # the new pack, not the stored one
+
+
+@pytest.mark.parametrize("change", CONTEXT_UNREAD, ids=_ids)
+def test_view_context_cache_ignores_unread_inputs(tree: attempt.Roots, monkeypatch, capsys, loads,
+                                                  change):  # fmt: skip
+    """RULINGS gzw amendment: a file attempt context never reads stays out of its key."""
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    assert first[0] == 0, first[2]
+    saved = _pack(attempt_dir)
+    _really_changed(change, attempt_dir, monkeypatch)
+    (attempt_dir / "context.md").unlink()
+    assert _attempt(capsys, "context") == first
+    assert _pack(attempt_dir) == saved
+    assert len(loads) == 1
+
+
+def test_view_context_cache_ignores_other_functions_records(tree: attempt.Roots, monkeypatch,
+                                                            capsys, loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    first = _attempt(capsys, "context")
+    _really_changed(_record_other, attempt_dir, monkeypatch)
+    assert _attempt(capsys, "context") == first
+    assert len(loads) == 1
+
+
+def test_view_asm_and_context_entries_are_separate(tree: attempt.Roots, monkeypatch, capsys,
+                                                   loads):  # fmt: skip
+    attempt_dir = _claim_b_view(tree, monkeypatch)
+    listing, pack = _attempt(capsys, "asm"), _attempt(capsys, "context")
+    assert listing[1] == LISTING_B and pack[1].startswith("# Context pack: func_00010010")
+    assert _attempt(capsys, "asm") == listing and _attempt(capsys, "context") == pack
+    assert len(loads) == 2
+    assert sorted(path.name for path in _entry(attempt_dir, "").iterdir()) == ["asm.json",
+                                                                             "context.json"]
+
+
+def test_legacy_context_is_never_cached(tree: attempt.Roots, monkeypatch, capsys, loads):
+    _claim_b(tree, monkeypatch)
+    assert _attempt(capsys, "context") == _attempt(capsys, "context")
+    assert len(loads) == 2
+    assert not [path for path in tree.repo.rglob("*") if "attempt-cache" in path.as_posix()]
