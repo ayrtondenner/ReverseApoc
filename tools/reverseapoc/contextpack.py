@@ -4,8 +4,9 @@ matching attempt starts from.
 
 A pack holds, in this fixed order (D-13): the target asm listing, the unit file, the callers and
 callees with their match status (and a matched one's C prototype), the `D_` externs the function
-touches, include/common.h, the Ghidra draft, the matching.md idioms, earlier PARTIAL notes, and
-up to 3 matched look-alike functions with their C.
+touches, include/common.h, the Ghidra draft, the earlier best C (07.2-02), the matching.md
+idioms, the earlier give-ups (07.2-02), earlier PARTIAL notes, and up to 3 matched look-alike
+functions with their C.
 
 Listings and drafts are game-derived, so a pack is written only under the gitignored
 build/driver/ (D-14, docs/legal.md "Generated files stay local") and never committed. Every
@@ -44,11 +45,14 @@ TITLE_CALLEES = "Callees"
 TITLE_EXTERNS = "D_ externs"
 TITLE_COMMON_H = "include/common.h"
 TITLE_DRAFT = "Ghidra draft"
+TITLE_BEST_C = "Earlier best C"  # 07.2-02 (999.5): the best earlier attempt's definition
 TITLE_IDIOMS = "Matching idioms"
+TITLE_GIVEUPS = "Earlier give-ups"  # 07.2-02 (999.5): one line per committed give-up
 TITLE_NOTES = "Earlier notes"
 TITLE_LOOKALIKES = "Look-alikes"
 ORDER = (TITLE_LISTING, TITLE_UNIT, TITLE_CALLERS, TITLE_CALLEES, TITLE_EXTERNS, TITLE_COMMON_H,
-         TITLE_DRAFT, TITLE_IDIOMS, TITLE_NOTES, TITLE_LOOKALIKES)  # fmt: skip
+         TITLE_DRAFT, TITLE_BEST_C, TITLE_IDIOMS, TITLE_GIVEUPS, TITLE_NOTES,
+         TITLE_LOOKALIKES)  # fmt: skip
 LOOKALIKE_FLOOR = 0.6  # research A10: a starting metric, tuned from attempts.jsonl later
 LOOKALIKE_TOP = 3  # D-13: up to 3 look-alikes
 
@@ -81,7 +85,12 @@ class Neighbour:
         text = f"- {self.name} ({self.kind}, {self.status})"
         if not self.prototype:
             return text
-        return f"{text}: {' '.join(self.prototype.split())};"
+        return f"{text}: {one_line(self.prototype)};"
+
+
+def one_line(text: str) -> str:
+    """`text` with each whitespace run (line breaks and CRs included) one space."""
+    return " ".join(text.split())
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,11 +115,15 @@ class Notes:
     under `records_label`, rendered in that order. Fix round 1 M11, an extension of D-14: when
     the pack is still over the cap after its three cuts, the records are cut first, oldest
     first, so they never crowd out a note; then the texts, oldest first, so the newest note is
-    the last thing cut."""
+    the last thing cut. 07.2-02 (999.5): `giveups`, one line per committed give-up (their own
+    section, cut after the records and before the texts), and `best_c`, the best earlier
+    attempt's definition of the function (its own section, cut right after the look-alikes)."""
 
     texts: tuple[str, ...] = ()
     records: tuple[str, ...] = ()
     records_label: str = ""
+    giveups: tuple[str, ...] = ()
+    best_c: str | None = None
 
     @classmethod
     def of(cls, notes: str | Notes | None) -> Notes:
@@ -202,6 +215,18 @@ def _notes_body(notes: Notes, texts_cut: int, records_cut: int) -> str:
     return f"... {older} and {held} cut\n\n{fenced}"
 
 
+def _giveups_body(giveups: Sequence[str], cut: int) -> str:
+    """The give-ups section (07.2-02): the kept lines, fenced (agent text); a first line says
+    how many older ones were cut, and `cut (N items)` when none is left."""
+    if not giveups:
+        return NONE
+    kept = giveups[cut:]
+    if not kept:
+        return _cut_mark(len(giveups))
+    fenced = _fenced("\n".join(kept), "text")
+    return f"... {cut} older give-up{'' if cut == 1 else 's'} cut\n\n{fenced}" if cut else fenced
+
+
 def _render(function: str, sections: Sequence[Section], cut: str) -> str:
     parts = [f"# Context pack: {function}", f"{_PREAMBLE}\nTruncated: {cut}"]
     parts += [f"## {section.title}\n\n{section.body}" for section in sections]
@@ -225,9 +250,11 @@ def build_pack(
 ) -> Pack:
     """The pack of one function, its sections in the D-13 order, at most `cap` bytes of UTF-8
     (D-14). Required sections are never cut. Until the pack fits, the optional ones are cut in
-    a fixed order: look-alikes from the last (least similar) one, then callers from the last,
-    then the draft, then (fix round 1 M11, an extension of D-14) the earlier notes: their
-    attempt records oldest first, then their notes.md texts oldest first. Each cut item is
+    a fixed order: look-alikes from the last (least similar) one, then the earlier best C
+    (07.2-02), then callers from the last, then the draft, then (fix round 1 M11, an extension
+    of D-14) the earlier notes: their attempt records oldest first, then the give-ups oldest
+    first (07.2-02: the dense signal, kept over the records), then their notes.md texts oldest
+    first. Each cut item is
     listed in `truncated` (and to_json); the header line `Truncated:` only counts them per
     section, so it stays a few dozen bytes however many are cut (review I-1). A cut section
     says so in place: `cut (N items)` when nothing is left, `... N more cut` after the items
@@ -262,9 +289,11 @@ def build_pack(
 
 @dataclass
 class _Optional:
-    """The sections build_pack may cut, in D-14 order: look-alikes, callers, the draft, then
-    the earlier notes (M11). Look-alikes and callers are cut from the end of their lists, notes
-    from the start (the oldest); the `*_kept` and `*_cut` counts say where each stands."""
+    """The sections build_pack may cut, in D-14 order: look-alikes, the earlier best C
+    (07.2-02), callers, the draft, then the earlier notes (M11: records, then the give-ups,
+    then the texts). Look-alikes and callers are cut from the end of their lists, notes and
+    give-ups from the start (the oldest); the `*_kept` and `*_cut` counts say where each
+    stands."""
 
     lookalikes: tuple[Lookalike, ...]
     callers: tuple[Neighbour, ...]
@@ -273,9 +302,11 @@ class _Optional:
 
     def __post_init__(self) -> None:
         self.lookalikes_kept = len(self.lookalikes)
+        self.best_c_kept = bool(self.notes.best_c)
         self.callers_kept = len(self.callers)
         self.draft_kept = bool(self.draft)
         self.records_cut = 0
+        self.giveups_cut = 0
         self.texts_cut = 0
 
     def cut(self) -> str | None:
@@ -283,15 +314,25 @@ class _Optional:
         if self.lookalikes_kept:
             self.lookalikes_kept -= 1
             return f"look-alike {self.lookalikes[self.lookalikes_kept].name}"
+        if self.best_c_kept:
+            self.best_c_kept = False
+            return "earlier best C"
         if self.callers_kept:
             self.callers_kept -= 1
             return f"caller {self.callers[self.callers_kept].name}"
         if self.draft_kept:
             self.draft_kept = False
             return "draft"
+        return self._cut_notes()
+
+    def _cut_notes(self) -> str | None:
+        """The earlier notes' cuts (M11): records, give-ups (07.2-02), texts, oldest first."""
         if self.records_cut < len(self.notes.records):
             self.records_cut += 1
             return f"attempt record {self.records_cut}"
+        if self.giveups_cut < len(self.notes.giveups):
+            self.giveups_cut += 1
+            return f"give-up {self.giveups_cut}"
         if self.texts_cut < len(self.notes.texts):
             self.texts_cut += 1
             return f"earlier note {self.texts_cut}"
@@ -303,12 +344,16 @@ class _Optional:
         if self.lookalikes_kept < len(self.lookalikes):
             cut = len(self.lookalikes) - self.lookalikes_kept
             parts.append(f"{cut} of {len(self.lookalikes)} look-alikes")
+        if self.notes.best_c and not self.best_c_kept:
+            parts.append("earlier best C")
         if self.callers_kept < len(self.callers):
             parts.append(f"{len(self.callers) - self.callers_kept} of {len(self.callers)} callers")
         if self.draft and not self.draft_kept:
             parts.append("draft")
         if self.records_cut:
             parts.append(f"{self.records_cut} of {len(self.notes.records)} attempt records")
+        if self.giveups_cut:
+            parts.append(f"{self.giveups_cut} of {len(self.notes.giveups)} give-ups")
         if self.texts_cut:
             parts.append(f"{self.texts_cut} of {len(self.notes.texts)} earlier notes")
         return ", ".join(parts) if parts else NONE
@@ -317,10 +362,14 @@ class _Optional:
         callers = [n.line() for n in self.callers[: self.callers_kept]]
         lookalikes = [_lookalike(item) for item in self.lookalikes[: self.lookalikes_kept]]
         draft = _fenced(self.draft, "c") if self.draft_kept or not self.draft else _cut_mark(1)
+        best_c = self.notes.best_c
+        best = _fenced(best_c, "c") if self.best_c_kept or not best_c else _cut_mark(1)
         bodies = {
             **required,
             TITLE_CALLERS: _kept(callers, len(self.callers), "\n"),
             TITLE_DRAFT: draft,
+            TITLE_BEST_C: best,
+            TITLE_GIVEUPS: _giveups_body(self.notes.giveups, self.giveups_cut),
             TITLE_NOTES: _notes_body(self.notes, self.texts_cut, self.records_cut),
             TITLE_LOOKALIKES: _kept(lookalikes, len(self.lookalikes), "\n\n"),
         }

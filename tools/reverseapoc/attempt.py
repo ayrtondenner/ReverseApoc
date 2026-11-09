@@ -1272,11 +1272,11 @@ def idioms(text: str | None) -> str | None:
 _FUNC_PLACEHOLDER = re.compile(r"func_([0-9A-F]{8})")
 
 
-def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
-    """This function's attempt records: those naming `func`, and, when `func` is its func_
-    placeholder (the driver's attempt directories keep it), those naming its start. v2 records
-    name the C name (07-23), so after a D-19 rename one function's records carry two names
-    (ruling note, 07-34)."""
+def _attempt_docs(log: Path, stem: str, func: str) -> list[dict]:
+    """This function's attempt records, oldest first: those naming `func`, and, when `func` is
+    its func_ placeholder (the driver's attempt directories keep it), those naming its start.
+    v2 records name the C name (07-23), so after a D-19 rename one function's records carry
+    two names (ruling note, 07-34)."""
     if not log.is_file():
         return []
     found = _FUNC_PLACEHOLDER.fullmatch(func)
@@ -1292,15 +1292,82 @@ def _attempt_records(log: Path, stem: str, func: str) -> list[str]:
         same = record.get("function") == func or (start is not None
                                                   and record.get("start") == start)
         if record.get("exe") == stem and same:
-            records.append(json.dumps(record, sort_keys=True))
+            records.append(record)
     return records
+
+
+def _giveup_line(record: Mapping) -> str | None:
+    """One pack line of a committed record's give-up (07.2-02), each text on one line as the
+    pack shows C heads; None for a record without a give-up object."""
+    giveup = record.get("giveup")
+    if not isinstance(giveup, dict):
+        return None
+    texts = {key: contextpack.one_line(str(giveup.get(key))) for key in GIVEUP_TEXTS}
+    best = giveup.get("best_code") or "none"
+    return (f"{record.get('run')} attempt {record.get('attempt')}: {giveup.get('category')}; "
+            f"still differs: {texts['still_differs']}; suspected: {texts['suspected_cause']}; "
+            f"best {best}")  # fmt: skip
+
+
+_RUN_DIR = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")  # a run id as a build/driver/ directory
+_UNIT_NAME = re.compile(r"[a-z0-9_]+")
+_START = re.compile(r"0x([0-9A-F]{8})")
+
+
+def _best_path(driver: Path, stem: str, record: Mapping) -> Path | None:
+    """<driver>/<run>/<exe>/func_<start>/attempt-<n>/best/<unit>.c of a committed record (the
+    driver's _best_file), or None when a field cannot name that path."""
+    run, start, unit, n = (record.get(key) for key in ("run", "start", "unit", "attempt"))
+    if not (isinstance(run, str) and _RUN_DIR.fullmatch(run) and ".." not in run):
+        return None
+    found = _START.fullmatch(start) if isinstance(start, str) else None
+    if found is None or not isinstance(unit, str) or not _UNIT_NAME.fullmatch(unit):
+        return None
+    if type(n) is not int:
+        return None
+    return driver / run / stem / f"func_{found.group(1)}" / f"attempt-{n}" / "best" / f"{unit}.c"
+
+
+def _percent(record: Mapping) -> float | None:
+    check_field = record.get("check")
+    value = check_field.get("best_percent") if isinstance(check_field, dict) else None
+    number = isinstance(value, int | float) and not isinstance(value, bool)
+    return float(value) if number else None
+
+
+def _best_definition(driver: Path, stem: str, record: Mapping) -> str | None:
+    """The record's function as its best/<unit>.c defines it (contextpack.definitions under
+    the record's C name), or None: no such file, not UTF-8, or no such definition."""
+    path = _best_path(driver, stem, record)
+    if path is None or not path.is_file():
+        return None
+    try:
+        text = path.read_bytes().decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    found = contextpack.definitions(text).get(str(record.get("function")))
+    return found.source if found is not None else None
+
+
+def _earlier_best_c(driver: Path, stem: str, records: Sequence[Mapping]) -> str | None:
+    """07.2-02: the definition from the record with the highest check.best_percent (ties: the
+    latest) whose best/<unit>.c gives one; a record without a readable one is skipped."""
+    ranked = [(percent, index) for index, record in enumerate(records)
+              if (percent := _percent(record)) is not None]  # fmt: skip
+    for _percent_value, index in sorted(ranked, reverse=True):
+        source = _best_definition(driver, stem, records[index])
+        if source is not None:
+            return source
+    return None
 
 
 def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     """Ruling F9: build/driver/*/<exe>/<func>/attempt-*/notes.md (the driver's layout) and
     build/driver/*/<exe>/<func>/notes.md (manual packs), sorted by path, then this function's
-    attempt records in progress/attempts.jsonl. Nothing is cut here: build_pack cuts notes
-    only when the pack is over the cap (M11, records first, then the oldest texts)."""
+    attempt records in progress/attempts.jsonl. 07.2-02 (999.5): from those records (the
+    source of truth, not giveup.json files) the give-up lines, oldest first, and the earlier
+    best C. Nothing is cut here: build_pack cuts notes only when the pack is over the cap (M11,
+    records first, then the give-ups, then the oldest texts)."""
     driver = Path(repo).joinpath(*DRIVER_PARTS)
     found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
              *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
@@ -1308,10 +1375,14 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     for path in sorted(found, key=lambda p: p.relative_to(driver).as_posix()):
         text = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
         texts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
-    records = _attempt_records(Path(repo) / ATTEMPT_LOG, stem, func)
-    if not texts and not records:
+    docs = _attempt_docs(Path(repo) / ATTEMPT_LOG, stem, func)
+    records = [json.dumps(record, sort_keys=True) for record in docs]
+    giveups = tuple(line for record in docs if (line := _giveup_line(record)) is not None)
+    best_c = _earlier_best_c(driver, stem, docs)
+    if not texts and not records and not giveups and best_c is None:
         return None
-    return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}")
+    return contextpack.Notes(tuple(texts), tuple(records), f"--- {ATTEMPT_LOG.as_posix()}",
+                             giveups, best_c)  # fmt: skip
 
 
 def _unit_paths(src: Path, data: check.ExeInputs) -> dict[str, Path]:
