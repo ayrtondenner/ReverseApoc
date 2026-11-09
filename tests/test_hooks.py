@@ -1408,7 +1408,11 @@ def test_worktree_command_reads_python_in_its_source_encoding(repo, worktree):
     """Ruling 3: a .py file is decoded as Python decodes it (its coding cookie), and one whose
     encoding Python cannot detect is denied."""
     script = worktree / "x.py"
-    body = f'WATCOM = "{main_watcom(repo)}"\n'.encode("utf-7")
+    # Backslashes on every platform: UTF-7 escapes "\" but writes "/" and letters as-is,
+    # so only the backslash form makes a UTF-8 reading miss the path on Linux too
+    # (the hook folds "\" to "/").
+    backslashed = main_watcom(repo).replace("/", chr(92))
+    body = f'WATCOM = "{backslashed}"\n'.encode("utf-7")
     needle = hooks._needle(hooks.canonical(native(repo)))
     assert needle not in hooks._normalised(body.decode("utf-8"))  # UTF-8 would miss it
     script.write_bytes(b"# coding: utf-7\n" + body)
