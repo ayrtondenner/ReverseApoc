@@ -9,8 +9,10 @@ import pytest
 from conftest import REPO_ROOT
 from reverseapoc import session
 from reverseapoc.streamjson import (
+    ACCEPTED_INIT_MODELS,
     EXPECTED_MODEL,
     EXPECTED_TOOLS,
+    PRICES_PER_MTOK,
     Disposition,
     ToolUse,
     Usage,
@@ -20,6 +22,7 @@ from reverseapoc.streamjson import (
     parse,
     parse_line,
     parse_version,
+    stream_usage,
     tool_uses,
     usage,
 )
@@ -214,6 +217,35 @@ def test_check_init_passes_the_success_init():
     assert _problems("success") == []
     init = init_event(_events("success"))
     assert check_init(init, tested_major=2, min_version="2.1.240") == []
+
+
+HAIKU, SONNET = "claude-haiku-5-5", "claude-sonnet-5-5"
+
+
+@pytest.mark.parametrize("model", [HAIKU, SONNET])
+def test_check_init_accepts_haiku_and_sonnet_for_their_own_request(model):
+    """Phase 07.2 D-16: a Haiku or Sonnet init passes for its own request and fails for an
+    Opus one (D-35: the init must name the requested model)."""
+    init = dict(init_event(_events("success")), model=model)
+    assert check_init(init, tested_major=2, min_version=MIN_VERSION, expected_model=model) == []
+    problems = check_init(init, tested_major=2, min_version=MIN_VERSION)
+    assert len(problems) == 1 and "model" in problems[0]
+
+
+def test_every_accepted_model_has_a_price():
+    init_ids = {i for ids in ACCEPTED_INIT_MODELS.values() for i in ids}
+    assert set(ACCEPTED_INIT_MODELS) | init_ids <= set(PRICES_PER_MTOK)
+    assert {HAIKU, SONNET} <= set(ACCEPTED_INIT_MODELS)
+
+
+def test_stream_usage_prices_a_sonnet_stream():
+    """Sonnet at 2.00/10.00 USD per MTok input/output: one million of each is 12 USD."""
+    message = {"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [],
+               "usage": {"input_tokens": 1_000_000, "output_tokens": 1_000_000,
+                         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}}}
+    assert stream_usage((message,), SONNET).cost_usd == pytest.approx(12.0)
+    assert tuple(PRICES_PER_MTOK[SONNET])[:2] == (2.00, 10.00)
+    assert tuple(PRICES_PER_MTOK[HAIKU])[:2] == (0.10, 0.50)
 
 
 def test_check_init_fails_closed_on_a_missing_or_unreadable_init():

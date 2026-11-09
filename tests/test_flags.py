@@ -180,6 +180,28 @@ def test_pilot_hits_drops_a_later_match_and_ignores_status(tmp_path):
     assert flags.pilot_hits(log) == [("ufo2p", F30)]
 
 
+def _landing(function: str, outcome: str = "MATCHED") -> dict:
+    """A schema-3 landing record (Phase 07.2, D-26) of `function`: `--land-held` landed it."""
+    return {"kind": "landing", "schema": 3, "run": "land1", "date": "2026-11-09", "exe": "ufo2p",
+            "unit": UNIT, "start": "0x" + function.removeprefix("func_"), "function": function,
+            "from_run": RUN, "from_attempt": 1, "model": "claude-haiku-5-5",
+            "backend": "anthropic", "harness": "claude", "outcome": outcome,
+            "reason": None if outcome == "MATCHED" else "gate failed",
+            "gate": {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []},
+            "commit": "0123456789abcdef0123456789abcdef01234567" if outcome == "MATCHED"
+            else None}  # fmt: skip
+
+
+def test_pilot_hits_sees_a_landed_match(tmp_path):
+    """A function whose hold run hit and then landed through `--land-held` (a MATCHED landing
+    record) is no pilot hit; a REFUSED landing leaves the hit in."""
+    log = tmp_path / "attempts.jsonl"
+    records = [_record(F30, "PARTIAL", spec(4)), _record(F50, "PARTIAL", spec(5)),
+               _landing(F30), _landing(F50, "REFUSED")]  # fmt: skip
+    log.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+    assert flags.pilot_hits(log) == [("ufo2p", F50)]
+
+
 def test_pilot_hits_refuses_a_malformed_record(tmp_path):
     log = tmp_path / "attempts.jsonl"
     log.write_text(json.dumps({"kind": "attempt"}) + "\n", encoding="utf-8")
@@ -830,6 +852,18 @@ def _v2_attempt(function: str, attempt: int, *, requested: str, pass_n: int = 3,
                   budget_usd=12.5 if requested == FABLE else 5, hook_blocks=0, gate=None,
                   sweep_source=None, sweep_cells_100=[], **{"pass": pass_n})  # fmt: skip
     return record
+
+
+def test_attempt_models_reads_schema_3(tmp_path):
+    """Phase 07.2 (RESEARCH Pitfall 4): a schema-3 record is read as v2 is, its pass and
+    requested model, never as v1 (pass 1 and the init `model`)."""
+    record = _v2_attempt(F30, 2, requested=FABLE, pass_n=3)
+    record.update(schema=3, model=OPUS, effort=None, harness="claude", backend="anthropic",
+                  duration_ms=1000, cost_source="cli", giveup=None, hold_run=False)  # fmt: skip
+    log = tmp_path / "attempts.jsonl"
+    log.write_text(json.dumps(record) + "\n", encoding="utf-8")
+    models = flags._attempt_models(log)
+    assert models[(RUN, "ufo2p", int(F30.removeprefix("func_"), 16), 2)] == (3, FABLE)
 
 
 def _evidence(run: str, function: str, attempt: int) -> str:

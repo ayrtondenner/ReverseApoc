@@ -71,7 +71,7 @@ def test_attempt_record_is_v2(tmp_path):
     assert report.matched == 1, report.detail
     record = _one(night.kinds("attempt"))
     driver.validate_record(record)
-    assert record["schema"] == driver.SCHEMA_V2 == 2
+    assert record["schema"] == driver.SCHEMA_V3 == 3  # Phase 07.2: v2 fields in a schema-3 record
     assert (record["session"], record["pass"], record["worker"]) == ("matching", 1, 0)
     assert (record["model_requested"], record["budget_usd"]) == (MODEL, MAX_BUDGET_USD)
     assert (MODEL, MAX_BUDGET_USD) == ("claude-opus-5-5", 5)
@@ -80,6 +80,31 @@ def test_attempt_record_is_v2(tmp_path):
     assert (record["sweep_source"], record["sweep_cells_100"]) == (None, [])
     assert (record["outcome"], record["function"], record["start"]) == (
         "MATCHED", FUNC, f"0x{START:08X}")  # fmt: skip
+
+
+def test_attempt_record_is_schema_3(tmp_path):
+    """Phase 07.2 (D-16, D-17): the attempt record is schema 3. A night passes no effort and
+    runs the Claude harness on the Anthropic login, never a hold run; duration_ms is the result
+    event's and the cost the CLI's (the success fixture's result says 45000 ms)."""
+    night = Night(tmp_path, sessions=[Sess()], gate_exits=[0])
+    night.run()
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    assert record["schema"] == driver.SCHEMA_V3 == 3
+    assert (record["harness"], record["backend"]) == ("claude", "anthropic")
+    assert (record["effort"], record["hold_run"], record["giveup"]) == (None, False, None)
+    assert (record["duration_ms"], record["cost_source"]) == (45000, "cli")
+
+
+def test_a_timed_out_attempt_has_no_duration_and_an_estimated_cost(tmp_path):
+    """The wall clock killed the session, so there is no result event: no duration was
+    measured (null, not 0 ms) and the figures are stream_usage's estimate."""
+    night = Night(tmp_path, sessions=[Sess("no_result", write=None, timeout=True)])
+    night.run(config={"attempts_per_function": 1})
+    record = _one(night.kinds("attempt"))
+    driver.validate_record(record)
+    assert record["abort_reason"] == "timeout"
+    assert (record["duration_ms"], record["cost_source"]) == (None, "estimate")
 
 
 def test_every_attempt_record_of_a_night_is_v2(tmp_path):
@@ -91,7 +116,7 @@ def test_every_attempt_record_of_a_night_is_v2(tmp_path):
     assert len(attempts) == 3
     for record in attempts:
         driver.validate_record(record)
-        assert record["schema"] == 2, record["kind"]
+        assert record["schema"] == 3, record["kind"]
 
 
 def test_function_is_the_rows_c_name(tmp_path):
@@ -256,7 +281,7 @@ def test_abort_record_is_v2_with_the_c_name(tmp_path):
     abort = _one(night.kinds("abort"))
     driver.validate_record(abort)
     assert (abort["schema"], abort["function"], abort["session"], abort["pass"],
-            abort["worker"], abort["retries"]) == (2, "GetMadeUpVolume", "matching", 1, 0, 3)
+            abort["worker"], abort["retries"]) == (3, "GetMadeUpVolume", "matching", 1, 0, 3)
 
 
 # ---- Task 2: pass counting from the committed log (D-08, D-09) ----
@@ -387,7 +412,7 @@ def test_next_pass_number(tmp_path, monkeypatch):
 # ---- Task 3: run records, limit records, totals, the log commit after the drain (DEC-06) ----
 
 DENIAL = {"tool_name": "Bash", "tool_use_id": "toolu_made_up", "tool_input": {}}
-OUTCOMES = ("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED")
+OUTCOMES = ("MATCHED", "PARTIAL", "GAVE_UP", "LANDED", "REFUSED", "HOLD_EXACT")  # schema 3
 
 
 def _run_records(night: Night, event: str) -> list[dict]:
@@ -403,7 +428,7 @@ def test_every_record_of_a_night_is_v2(tmp_path):
     assert kinds == ["run", "limit", "attempt", "attempt", "run"]
     for record in night.records():
         driver.validate_record(record)
-        assert record["schema"] == 2, record["kind"]
+        assert record["schema"] == 3, record["kind"]
 
 
 def test_started_record_v2(tmp_path):

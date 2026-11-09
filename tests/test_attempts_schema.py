@@ -10,6 +10,7 @@ import json
 import pytest
 
 from conftest import REPO_ROOT
+from reverseapoc import driver
 from reverseapoc.driver import RecordError, append_record, validate_record
 from test_driver import Night, Sess, check_line
 
@@ -399,3 +400,206 @@ def test_run_totals_with_and_without_parked():
 def test_schema_refuses_bad_v2_records(name):
     with pytest.raises(RecordError):
         validate_record(BAD_V2[name])
+
+
+# ---- schema 3 (Phase 07.2, D-16, D-26): the v2 record plus the ledger keys ----
+
+V3_KEYS = ("effort", "harness", "backend", "duration_ms", "cost_source", "giveup", "hold_run")
+
+
+def _attempt_v3() -> dict:
+    record = _attempt_v2()
+    record.update({"schema": 3, "effort": None, "harness": "claude", "backend": "anthropic",
+                   "duration_ms": 1234, "cost_source": "cli", "giveup": None,
+                   "hold_run": False})  # fmt: skip
+    return record
+
+
+def test_v3_attempt_accepted():
+    assert _problem(_attempt_v3()) is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda r: r.update(duration_ms=None, cost_source="estimate"),
+    lambda r: r.update(effort="high", harness="codex", backend="openai"),
+    lambda r: r.update(harness="agy", backend="google", duration_ms=0),
+])  # fmt: skip
+def test_v3_attempt_optional_parts(change):
+    assert _problem(_mutated(_attempt_v3, change)) is None
+
+
+@pytest.mark.parametrize("key", V3_KEYS)
+def test_v3_attempt_refuses_a_missing_key(key):
+    with pytest.raises(RecordError, match=key):
+        validate_record(_mutated(_attempt_v3, lambda r: r.pop(key)))
+
+
+@pytest.mark.parametrize(("key", "value"), [
+    ("harness", "gemini"), ("cost_source", "guess"), ("duration_ms", 1.5),
+    ("duration_ms", -1), ("hold_run", 1), ("hold_run", None), ("backend", "Bad Name"),
+    ("backend", ""), ("effort", 3),
+])  # fmt: skip
+def test_v3_attempt_refuses_bad_fields(key, value):
+    with pytest.raises(RecordError, match=key):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update({key: value})))
+
+
+def test_v2_line_with_v3_field_refused():
+    """Schema 2 stays exact: a v2 attempt carrying a v3 key is an extra key."""
+    with pytest.raises(RecordError, match="extra"):
+        validate_record(_mutated(_attempt_v2, lambda r: r.update(hold_run=False)))
+
+
+def test_unknown_schema_still_refused():
+    with pytest.raises(RecordError, match="unknown schema 4"):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update(schema=4)))
+
+
+@pytest.mark.parametrize("make", [_abort_v2, _limit, _rename, _started_v2])
+def test_v3_kinds_without_new_fields(make):
+    """Every kind is written as schema 3 (a night never mixes shapes); the kinds with no new
+    field are their v2 tables with `schema` 3."""
+    assert _problem(_mutated(make, lambda r: r.update(schema=3))) is None
+
+
+# ---- schema 3: hold runs, HOLD_EXACT, the give-up object, the landing record (D-17, D-26) ----
+
+
+def test_hold_state_is_not_named_held():
+    """D-26: `held` already names the signed asm hold, so the hold-run state is `hold_run`."""
+    fields = driver.RECORD_FIELDS_V3[driver.KIND_ATTEMPT]
+    assert "hold_run" in fields and "held" not in fields
+    with pytest.raises(RecordError, match="extra"):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update(held=True)))
+
+
+@pytest.mark.parametrize(("outcome", "hold_run", "ok"), [
+    ("HOLD_EXACT", True, True), ("HOLD_EXACT", False, False), ("MATCHED", True, False),
+    ("MATCHED", False, True), ("PARTIAL", True, True), ("GAVE_UP", True, True),
+])  # fmt: skip
+def test_hold_exact_needs_a_hold_run(outcome, hold_run, ok):
+    """HOLD_EXACT only on a hold run; a hold run never lands, so it is never MATCHED (D-26)."""
+    record = _mutated(_attempt_v3, lambda r: r.update(outcome=outcome, hold_run=hold_run))
+    assert (_problem(record) is None) is ok
+
+
+def test_hold_exact_is_v3_and_matching_only():
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_attempt_v2, lambda r: r.update(outcome="HOLD_EXACT")))
+    readability = _mutated(_attempt_v3, lambda r: r.update(
+        session="readability", outcome="HOLD_EXACT", hold_run=True))  # fmt: skip
+    with pytest.raises(RecordError, match="readability"):
+        validate_record(readability)
+
+
+def test_a_hold_run_never_matches_names_the_rule():
+    with pytest.raises(RecordError, match="hold run"):
+        validate_record(_mutated(_attempt_v3, lambda r: r.update(outcome="MATCHED",
+                                                                 hold_run=True)))
+
+
+D04 = ("flags", "block_layout", "stack_layout", "register_allocation", "instruction_idiom",
+       "types_or_struct", "call_convention", "compile_error", "other")  # fmt: skip
+
+
+def test_giveup_categories_are_d04():
+    assert driver.GIVEUP_CATEGORIES == D04
+
+
+def _giveup() -> dict:
+    return {"category": "stack_layout", "tried": "reordered the locals",
+            "still_differs": "the frame is 4 bytes larger", "suspected_cause": "a spilled temp",
+            "best_code": "checks/0007.c"}  # fmt: skip
+
+
+def _gave_up_v3(change=lambda g: None) -> dict:
+    giveup = _giveup()
+    change(giveup)
+    return _mutated(_attempt_v3, lambda r: r.update(outcome="GAVE_UP", giveup=giveup))
+
+
+@pytest.mark.parametrize("change", [
+    lambda g: None, lambda g: g.update(best_code=None),
+    *(lambda g, c=c: g.update(category=c) for c in D04),
+    lambda g: g.update(tried="x" * 200),
+])  # fmt: skip
+def test_v3_giveup_shape(change):
+    assert _problem(_gave_up_v3(change)) is None
+
+
+@pytest.mark.parametrize("change", [
+    lambda g: g.update(category="eh"), lambda g: g.pop("tried"),
+    lambda g: g.update(notes="more"), lambda g: g.update(tried="x" * 201),
+    lambda g: g.update(still_differs=""), lambda g: g.update(suspected_cause=None),
+    lambda g: g.update(best_code="src/ufo2p/u_00010000.c"), lambda g: g.update(category=None),
+])  # fmt: skip
+def test_v3_giveup_refused(change):
+    with pytest.raises(RecordError, match="giveup"):
+        validate_record(_gave_up_v3(change))
+
+
+_GATE_PASS = {"exit": 0, "claimed_ok": True, "regressions": 0, "problems": []}
+
+
+def _landing(outcome: str = "MATCHED") -> dict:
+    record = {"kind": "landing", "schema": 3, "run": "land1", "date": "2026-11-09",
+              "exe": "ufo2p", "unit": "u_00010000", "start": "0x00010010",
+              "function": "GetMadeUpVolume", "from_run": "spike012-haiku", "from_attempt": 2,
+              "model": "claude-haiku-5-5", "backend": "anthropic", "harness": "claude",
+              "outcome": outcome, "reason": None, "gate": dict(_GATE_PASS),
+              "commit": _SHA}  # fmt: skip
+    if outcome == "REFUSED":
+        record.update(commit=None, reason="gate failed: u_00010000 regressed")
+    return record
+
+
+def test_landing_record():
+    assert _problem(_landing()) is None
+    assert _problem(_landing("REFUSED")) is None
+    assert _problem(_mutated(_landing, lambda r: r.update(gate=None))) is None
+    assert "tokens" not in driver.RECORD_FIELDS_V3[driver.KIND_LANDING]
+    assert "cost_usd" not in driver.RECORD_FIELDS_V3[driver.KIND_LANDING]
+
+
+BAD_LANDING = {
+    "matched without commit": _mutated(_landing, lambda r: r.update(commit=None)),
+    "matched with a reason": _mutated(_landing, lambda r: r.update(reason="why")),
+    "refused with commit": _mutated(lambda: _landing("REFUSED"), lambda r: r.update(commit=_SHA)),
+    "refused without reason": _mutated(lambda: _landing("REFUSED"),
+                                       lambda r: r.update(reason=None)),
+    "from_attempt 0": _mutated(_landing, lambda r: r.update(from_attempt=0)),
+    "tokens": _mutated(_landing, lambda r: r.update(
+        tokens={"input": 1, "output": 1, "cache_read": 0, "cache_creation": 0})),
+    "cost_usd": _mutated(_landing, lambda r: r.update(cost_usd=0.5)),
+    "outcome PARTIAL": _mutated(_landing, lambda r: r.update(outcome="PARTIAL")),
+    "unknown harness": _mutated(_landing, lambda r: r.update(harness="gemini")),
+    "bad commit": _mutated(_landing, lambda r: r.update(commit="abc123")),
+    "schema 2": _mutated(_landing, lambda r: r.update(schema=2)),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", sorted(BAD_LANDING))
+def test_landing_record_refused(name):
+    with pytest.raises(RecordError):
+        validate_record(BAD_LANDING[name])
+
+
+def _run_v3() -> dict:
+    record = _run_v2()
+    record["schema"] = 3
+    record["totals"].update(parked=0)
+    record["totals"]["sessions"]["HOLD_EXACT"] = 1
+    return record
+
+
+def test_v3_run_totals_count_hold_exact():
+    assert _problem(_run_v3()) is None
+    assert _problem(_mutated(_run_v3, lambda r: r.update(event="STOPPED",
+                                                         reason="guardrail"))) is None
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_run_v3, lambda r: r["totals"]["sessions"].pop("HOLD_EXACT")))
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_run_v3, lambda r: r["totals"].pop("parked")))
+    with pytest.raises(RecordError):
+        validate_record(_mutated(_run_v2, lambda r: r["totals"]["sessions"].update(HOLD_EXACT=0)))
+    assert _problem(_run_v2()) is None and _problem(_parked_run_v2()) is None
