@@ -1266,10 +1266,18 @@ def _write_targets(events: Sequence[dict]) -> list[str | None]:
     return [use.target for use in streamjson.tool_uses(events) if use.name in hooks.EDIT_TOOLS]
 
 
-def _write_ids(events: Sequence[dict]) -> list[str | None]:
-    """The tool_use id of every write-tool call, in `_write_targets`' order."""
-    uses = zip(streamjson.tool_uses(events), streamjson.tool_use_ids(events), strict=True)
-    return [use_id for use, use_id in uses if use.name in hooks.EDIT_TOOLS]
+def _denied_writes(events: Sequence[dict]) -> list[bool]:
+    """Whether the hook denied each write-tool call, in `_write_targets`' order (owner ruling
+    2026-11-10, hardened by the security review of cdfdf6b5): its tool_use id is the only
+    tool_use block with that id in the transcript, and a permission_denials entry with that id
+    names the same tool and target (`_hook_denials`). Hosted arms' ids come from the provider,
+    so any id two tool_use blocks share denies no write of the session."""
+    ids = streamjson.tool_use_ids(events)
+    uses = zip(streamjson.tool_uses(events), ids, strict=True)
+    known = [use_id for use_id in ids if use_id is not None]
+    denied = _hook_denials(events) if len(set(known)) == len(known) else frozenset()
+    return [use.target is not None and (use_id, use) in denied
+            for use, use_id in uses if use.name in hooks.EDIT_TOOLS]  # fmt: skip
 
 
 def _roots(repo: Path, cwd: object) -> list[str]:
@@ -1840,14 +1848,24 @@ def _hook_blocks(events: Sequence[Mapping]) -> int:
     return len(_items(results[-1].get("permission_denials"))) if results else 0
 
 
-def _denied_ids(events: Sequence[Mapping]) -> frozenset[str]:
-    """Owner ruling 2026-11-10: the tool_use ids in the last result event's
-    `permission_denials` (`_hook_blocks`' list), the calls the hook or the permission mode
-    denied; a session without a result event denied none we can prove."""
+def _hook_denials(events: Sequence[dict]) -> frozenset[tuple[str, streamjson.ToolUse]]:
+    """Owner ruling 2026-11-10: each entry of the last result event's `permission_denials`
+    (`_hook_blocks`' list), the calls the hook or the permission mode denied, as its tool_use
+    id and the call its tool_name and tool_input name, read as the transcript's tool_use
+    blocks are (`streamjson.tool_uses`); a session without a result event denied none we can
+    prove."""
     results = [e for e in events if isinstance(e, Mapping) and e.get("type") == "result"]
     denials = _items(results[-1].get("permission_denials")) if results else []
-    ids = (d.get("tool_use_id") for d in denials if isinstance(d, Mapping))
-    return frozenset(use_id for use_id in ids if isinstance(use_id, str))
+    entries = [d for d in denials if isinstance(d, Mapping)]
+    return frozenset((d["tool_use_id"], _denied_use(d)) for d in entries
+                     if isinstance(d.get("tool_use_id"), str))  # fmt: skip
+
+
+def _denied_use(denial: Mapping) -> streamjson.ToolUse:
+    """The call a permission_denials entry names, read as a tool_use block of the transcript."""
+    block = {"type": "tool_use", "name": denial.get("tool_name"), "input": denial.get("tool_input")}
+    (use,) = streamjson.tool_uses([{"type": "assistant", "message": {"content": [block]}}])
+    return use
 
 
 def matched_starts(data: bytes | None, unit: str | None = None) -> frozenset[int]:
@@ -3842,7 +3860,8 @@ class _Night:
     def _audited(self, session: _Session) -> tuple[list[str], list[tuple[str, bool]]]:
         """`_strays` in two parts (owner ruling 2026-11-10): every stray but a Claude
         transcript write, then each transcript write stray with whether the hook denied it
-        (its tool_use id is in the result event's permission_denials, `_denied_ids`)."""
+        (`_denied_writes`: its unique tool_use id, tool and target are in the result event's
+        permission_denials)."""
         allowed = self._allowed(session.claim, self._tracked())
         stray = [p for p in self._unexplained(session.after) if not allowed(p)]
         stray += [name for name in self._view_changes(session) if name not in stray]
@@ -3853,10 +3872,9 @@ class _Night:
             stray += [s for s in self._signed_in_strays(session, allowed) if s not in stray]
             return stray, []
         events = session.events
-        denied = _denied_ids(events)
-        uses = zip(_write_targets(events), transcript_paths(events, self.repo), _write_ids(events),
-                   strict=True)  # fmt: skip
-        writes = [(f"{raw}{_TRANSCRIPT_MARK}", use_id in denied) for raw, rels, use_id in uses
+        uses = zip(_write_targets(events), transcript_paths(events, self.repo),
+                   _denied_writes(events), strict=True)  # fmt: skip
+        writes = [(f"{raw}{_TRANSCRIPT_MARK}", denied) for raw, rels, denied in uses
                   if rels is None or not all(allowed(rel) for rel in rels)]  # fmt: skip
         return stray, writes
 

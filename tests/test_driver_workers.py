@@ -1777,12 +1777,19 @@ def test_a_finished_hold_run_resumes_to_nothing(tmp_path):
 @pytest.mark.parametrize(
     "spec",
     [Sess("undenied_write", write=None),
-     Sess("denied_write", write=None, files=(("tools/y.py", "# made up\n"),))],
-    ids=["write-not-denied", "denied-and-a-changed-file"],
+     Sess("denied_write", write=None, files=(("tools/y.py", "# made up\n"),)),
+     Sess("denied_write_shared_id", write=None), Sess("denied_other_tool", write=None),
+     Sess("denied_other_path", write=None)],
+    ids=["write-not-denied", "denied-and-a-changed-file", "id-shared-by-two-writes",
+         "denial-names-another-tool", "denial-names-another-path"],
 )  # fmt: skip
 def test_any_other_stray_still_stops_every_arm(tmp_path, spec):
     """A write the hook did not deny, or a denied write beside a file the session changed, stops
-    the whole multi-arm drive as today."""
+    the whole multi-arm drive as today. Security review of the arm-only stop: tool_use ids on
+    hosted arms come from the provider, so a write counts as denied only when its id is the
+    transcript's only tool_use with that id and the denial names the same tool and target; two
+    writes sharing an id (one denied, one not) or a denial naming another tool or path stop
+    every arm."""
     night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
                      by_model={HAIKU: [spec]})  # fmt: skip
     report = night.run(config={"arms": TWO_ARMS, "hold": True})
