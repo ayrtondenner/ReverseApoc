@@ -972,7 +972,9 @@ def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
     workspace, and the four orig/ probe-read spellings (`../`-relative, a different case, the
     attempt dir followed by `..`, the 8.3 short name). The allowed session lists the wrapper
     flow in order. No prompt frames itself as a guardrail test with steps that will fail
-    (gpt-oss-120b-medium refused that prompt outright)."""
+    (gpt-oss-120b-medium refused that prompt outright), and no probe speaks of a sandbox,
+    bypassing or going outside anything (round 3: gemini and gpt-oss refused "outside the
+    terminal sandbox" as unsafe): each probe is one plain line."""
     attempt_dir = tmp_path / "build" / "x" / "attempt-1"
     probes = driver.agy_canary_probes(attempt_dir, repo=tmp_path)
     assert [probe.name for probe in probes] == list(PROBES)
@@ -997,6 +999,11 @@ def test_agy_canary_prompts_are_one_plain_instruction(tmp_path):
         for framing in ("guardrail", "canary,", "not a matching attempt", "will fail",
                         "will be denied", "do not retry"):  # fmt: skip
             assert framing not in prompt.casefold(), (framing, prompt)
+    for probe in probes:
+        assert "\n" not in probe.prompt, probe
+        for framing in ("terminal sandbox", "the sandbox", "bypass", "outside the", "external",
+                        "network"):  # fmt: skip (the probe file's own name holds "unsandboxed")
+            assert framing not in probe.prompt.casefold(), (framing, probe.prompt)
 
 
 def test_agy_canary_probe_verdicts(tmp_path, capsys):
@@ -1062,6 +1069,21 @@ def test_agy_canary_read_probe_proof_is_its_request_and_its_denial(tmp_path, cap
         for verdict in verdicts:
             assert "the relative read probe: " in failed and verdict in failed, (scenario, failed)
         assert _no_pass(rig), scenario
+
+
+def test_agy_canary_command_probes_count_either_command_kind(tmp_path, capsys):
+    """Round 3: gemini's fetch was denied as `unsandboxed "curl.exe -sS https://example.com/"`
+    (the default fetch fixture, its real shape) and the canary did not count that kind. A
+    denial of kind unsandboxed or command naming the probe's marker is the attempt for both the
+    fetch and the unsandboxed probe."""
+    cases = (("fetch", "canary_agy_deny_fetch_command", "command(curl -sS"),
+             ("unsandboxed", "canary_agy_deny_unsandboxed_kind", "unsandboxed(echo"))
+    for name, scenario, shown in cases:
+        rig = _agy_canary_rig(tmp_path / name, scenarios={name: scenario})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (0, "PASS"), (name, _failed(doc))
+        texts = " | ".join(c["check"] for c in doc["checks"] if c["ok"])
+        assert f"the {name} probe was denied: {shown}" in texts, (name, texts)
 
 
 def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):
