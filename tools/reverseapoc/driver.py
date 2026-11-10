@@ -2290,6 +2290,8 @@ class _Session:
         session by its result event (agyjson.usage)."""
         if self.claim.codex:
             return codexjson.turns(self.events) > 0
+        if self.claim.agy:  # agy 1.5.5's envelope (agyjson)
+            return agyjson.has_result(self.events)
         return any(e.get("type") == "result" for e in self.events)
 
     @property
@@ -7408,13 +7410,17 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
 
 
 CODEX_REJECTED = "rejected: blocked by policy"  # Codex's stderr text for a refused command
+# spike 012 round 2: headless agy's stderr text for a permission it auto-denied (it then ends
+# the turn)
+AGY_AUTO_DENIED = "headless mode cannot prompt"
 
 
-def _codex_canary_session(seams: Seams, argv: Sequence[str],
-                          **values) -> tuple[SessionResult, list[str]]:  # fmt: skip
-    """The Codex canary's session with its stderr captured, then echoed to the console: Codex
-    names each command its policy rejected there and nowhere else (spike 012), so the FAIL
-    output can name them. Returns the result and those CODEX_REJECTED lines."""
+def _canary_session_stderr(seams: Seams, argv: Sequence[str], marker: str,
+                           **values) -> tuple[SessionResult, list[str]]:  # fmt: skip
+    """A Codex or agy canary's session with its stderr captured, then echoed to the console:
+    Codex names each command its policy rejected there and nowhere else (spike 012), and
+    headless agy each permission it auto-denied, so the FAIL output can name them. Returns the
+    result and the stderr lines holding `marker`."""
     with tempfile.TemporaryFile() as err:
         try:
             result = seams.session(argv, popen=functools.partial(subprocess.Popen, stderr=err),
@@ -7423,7 +7429,7 @@ def _codex_canary_session(seams: Seams, argv: Sequence[str],
             err.seek(0)
             text = err.read().decode("utf-8", "replace")
             sys.stderr.write(text)
-    return result, [line.strip() for line in text.splitlines() if CODEX_REJECTED in line]
+    return result, [line.strip() for line in text.splitlines() if marker in line]
 
 
 def _codex_after(events: Sequence[dict], claim: _Claim, launch: Mapping[str, str],
@@ -7942,15 +7948,16 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
                    else f"{exe} --version named no version")  # fmt: skip
     events: Sequence[dict] = ()
     extra: dict = {}
-    rejected: list[str] = []  # the Codex canary's CODEX_REJECTED stderr lines
+    rejected: list[str] = []  # CODEX_REJECTED (Codex) or AGY_AUTO_DENIED (agy) stderr lines
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
         argv = _canary_argv(options, seams, claim, prompt)
         values = {"cwd": attempt_dir if claim.agy else repo, "env": env,
                   "transcript": attempt_dir / TRANSCRIPT, "timeout_s": CANARY_TIMEOUT_S}
-        if claim.codex:
-            result, rejected = _codex_canary_session(seams, argv, **values)
+        if claim.codex or claim.agy:
+            marker = CODEX_REJECTED if claim.codex else AGY_AUTO_DENIED
+            result, rejected = _canary_session_stderr(seams, argv, marker, **values)
         else:
             result = seams.session(argv, **values)
     except Exception as exc:  # a crash is a FAIL with the tree still measured
@@ -7995,8 +8002,8 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
            "init_model": init_model if isinstance(init_model, str) else None,
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
     lines = [f"{'PASS' if ok else 'FAIL'}: {text}" for ok, text in checks.lines]
-    if rejected and not checks.ok:  # diagnostics only: what Codex's policy refused to run
-        doc["codex_rejected"] = rejected
+    if rejected and not checks.ok:  # diagnostics only: what Codex refused or agy auto-denied
+        doc["codex_rejected" if claim.codex else "agy_auto_denied"] = rejected
         lines += [f"NOTE: {line}" for line in rejected]
     # No stamp on the check lines or the verdict: docs/workflow.md's owner steps match the
     # literal last line `CANARY PASS` (quick 261026-9ue).

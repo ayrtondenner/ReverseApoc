@@ -13,10 +13,13 @@ in that order (session.build_agy_argv after the executable), and:
    environment as its variable NAMES only, so no value (and never a credential) is written;
 3. replays tests/fixtures/agy/NAME.jsonl to stdout, flushing after every line, the way
    `agy -p --output-format stream-json` streams; NAME is FAKEAGY_SCENARIO ([a-z0-9_]+, no path
-   can be spelled). In an `init` event, a `cwd` of "@cwd" becomes this process's working
-   directory and a `model` of "@model" the --model value, as the real CLI reports them; every
-   other line is written byte for byte;
-4. exits 0.
+   can be spelled). Each line is agy 1.5.5's envelope, {"event": kind, kind: {...}}; in an
+   `init` event's payload, a `cwd` of "@cwd" becomes this process's working directory and a
+   `model` of "@model" the --model value, as the real CLI reports them; every other line is
+   written byte for byte;
+4. replays tests/fixtures/agy/NAME.stderr to stderr, byte for byte, when that file exists
+   (headless agy names a permission it auto-denied there and nowhere else, spike 012);
+5. exits 0.
 
 It imports no tool module. The fixtures hold synthetic events only, never game bytes.
 """
@@ -64,12 +67,13 @@ def _line(raw: bytes, model: str) -> bytes:
         event = json.loads(raw)
     except ValueError:
         return raw
-    if not isinstance(event, dict) or event.get("type") != "init":
+    init = event.get("init") if isinstance(event, dict) and event.get("event") == "init" else None
+    if not isinstance(init, dict):
         return raw
-    if event.get("cwd") == _CWD:
-        event["cwd"] = os.getcwd()
-    if event.get("model") == _MODEL_SLOT:
-        event["model"] = model
+    if init.get("cwd") == _CWD:
+        init["cwd"] = os.getcwd()
+    if init.get("model") == _MODEL_SLOT:
+        init["model"] = model
     return (json.dumps(event) + "\n").encode("utf-8")
 
 
@@ -92,6 +96,10 @@ def main(argv: list[str] | None = None) -> int:
     for raw in path.read_bytes().splitlines(keepends=True):
         out.write(_line(raw, argv[_MODEL]))
         out.flush()
+    err = path.with_suffix(".stderr")
+    if err.is_file():
+        sys.stderr.buffer.write(err.read_bytes())
+        sys.stderr.buffer.flush()
     return 0
 
 
