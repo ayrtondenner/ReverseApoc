@@ -13,8 +13,10 @@
 # Claude login), sends_disassembly (true: the context pack leaves the machine, so a
 # non-Anthropic arm needs --allow-egress, D-11), accepted_init (the init `model` strings
 # accepted), prices (USD per million tokens, for the cost estimate), coauthor (the commit
-# credit line, D-26), max_workers. The Claude arms are keyed by their model id and keep
-# streamjson's tables and driver.coauthor (RULINGS "Harness").
+# credit line, D-26), max_workers, and the optional max_sessions (07.2-16, D-22: the sessions
+# the arm may launch in one night; absent, only the night's --max-sessions caps it). The Claude
+# arms are keyed by their model id and keep streamjson's tables and driver.coauthor (RULINGS
+# "Harness").
 
 [arms."claude-opus-5-5"]
 harness = "claude"
@@ -94,7 +96,10 @@ cache_creation = 0.0
 # Plus subscription is measured in its weekly quota, not in dollars (the canary measures it).
 # One worker each. An agy arm runs only after its canary passed on the installed CLI
 # (build/driver/canary/<arm>.json). GPT-OSS is open-weight, but the session still sends the
-# pack to Google, so it needs --allow-egress like every hosted arm.
+# pack to Google, so it needs --allow-egress like every hosted arm. max_sessions caps each arm's
+# sessions in one night (07.2-16, D-22). 20 is the canary's planning estimate (RESEARCH A8: "a
+# 20-session arm fits if tokens x 20 is under the observed weekly bucket"); the owner sets it
+# from the quota the agy canary measures, before the arm's first night.
 [arms."gemini-flash"]
 harness = "agy"
 backend = "google"
@@ -103,6 +108,7 @@ sends_disassembly = true
 accepted_init = ["gemini-3.8-flash-medium"]
 coauthor = "Gemini 3.8 Flash <noreply@google.com>"
 max_workers = 1
+max_sessions = 20
 
 [arms."gemini-flash".prices]
 input = 0.0
@@ -118,6 +124,7 @@ sends_disassembly = true
 accepted_init = ["gpt-oss-120b-medium"]
 coauthor = "gpt-oss-120b <noreply@openai.com>"
 max_workers = 1
+max_sessions = 20
 
 [arms."gpt-oss".prices]
 input = 0.0

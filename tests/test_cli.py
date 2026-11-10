@@ -1401,3 +1401,67 @@ def test_harness_flags_in_help(capsys):
     for flag in ("--night-model", "--picks", "--stratify", "--write-picks", "--hold",
                  "--land-held"):  # fmt: skip
         assert flag in text, flag
+
+
+# ---- 07.2-16 (D-22): drive --arm NAME=WORKERS ----
+
+SONNET = "claude-sonnet-5-5"
+DEEPSEEK = "deepseek-flash"
+
+
+def test_arm_flag(monkeypatch):
+    """`--arm NAME=WORKERS` (repeatable) parses to (name, workers) pairs, which reach
+    DriveOptions.arms with the sum of their workers."""
+    args = build_parser().parse_args(["drive", "--arm", f"{HAIKU}=2"])
+    assert args.arm == [(HAIKU, 2)]
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--arm", f"{HAIKU}=2", "--arm", f"{SONNET}=1", "--hold",
+                 "--run", "spike012"]) == 0  # fmt: skip
+    assert (seen[-1].arms, seen[-1].workers, seen[-1].night_model) == (
+        ((HAIKU, 2), (SONNET, 1)), 3, None)  # fmt: skip
+    assert main(["drive", "--arm", f"{HAIKU}=1", "--arm", f"{DEEPSEEK}=1",
+                 "--allow-egress", DEEPSEEK]) == 0  # fmt: skip
+    assert seen[-1].allow_egress == (DEEPSEEK,)
+
+
+@pytest.mark.parametrize("value", ["x", f"{HAIKU}", f"{HAIKU}=0", f"{HAIKU}=-1", f"{HAIKU}=two",
+                                   "gpt-x=1", "=1"])  # fmt: skip
+def test_arm_flag_refuses_a_bad_spec(value, capsys):
+    with pytest.raises(SystemExit) as exc:
+        build_parser().parse_args(["drive", "--arm", value])
+    assert exc.value.code == 2
+    assert "--arm" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(("argv", "conflict"), [
+    (["--arm", f"{HAIKU}=1", "--arm", f"{HAIKU}=2"], f"--arm {HAIKU}"),
+    (["--arm", f"{HAIKU}=1", "--night-model", SONNET], "--night-model"),
+    (["--arm", f"{HAIKU}=1", "--workers", "2"], "--workers"),
+    (["--arm", f"{HAIKU}=1", "--workers", "3"], "--workers"),
+    (["--arm", f"{HAIKU}=1", "--session", "readability"], "--session readability"),
+    (["--arm", f"{HAIKU}=1", "--fable-trial"], "--fable-trial"),
+    (["--arm", f"{HAIKU}=1", "--land-held", "spike012-*"], "--arm"),
+    (["--arm", f"{HAIKU}=1", "--canary"], "--canary"),
+    (["--arm", f"{HAIKU}=1", "--allow-egress", DEEPSEEK], DEEPSEEK),
+])  # fmt: skip
+def test_arm_flag_refusals(argv, conflict, capsys, monkeypatch):
+    """Each flag --arm cannot run with exits 2 naming it, before any preflight."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc drive: error:" in err and conflict in err, err
+    assert seen == []
+
+
+def test_night_model_becomes_one_arm(monkeypatch):
+    """D-22: `--night-model X --workers N` is the one-arm shorthand: DriveOptions.arms holds
+    (X, N), so the driver runs one code path for both."""
+    seen = _recorded_drive(monkeypatch)
+    assert main(["drive", "--night-model", HAIKU, "--workers", "2"]) == 0
+    assert (seen[-1].arms, seen[-1].night_model, seen[-1].workers) == (((HAIKU, 2),), HAIKU, 2)
+    assert main(["drive"]) == 0
+    assert seen[-1].arms == ()
+
+
+def test_arm_flag_in_help(capsys):
+    assert "--arm NAME=WORKERS" in _drive_help(capsys)

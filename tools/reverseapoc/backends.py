@@ -78,7 +78,8 @@ _GOOGLE_KEY = re.compile(r"(?:GOOGLE|GEMINI)[A-Z0-9_]*_(?:KEY|CREDENTIALS)", re.
 _REQUIRED = ("harness", "backend", "model", "sends_disassembly", "max_workers")
 _HOSTED = ("accepted_init", "prices", "coauthor")  # required off the Claude login
 _ENDPOINT = ("base_url", "key_env")  # a claude-harness arm off the Claude login
-_FIELDS = (*_REQUIRED, *_ENDPOINT, *_HOSTED)
+_OPTIONAL = ("max_sessions",)  # 07.2-16 (D-22): the arm's own session cap in a night
+_FIELDS = (*_REQUIRED, *_ENDPOINT, *_HOSTED, *_OPTIONAL)
 _PRICE_FIELDS = Price._fields
 _NAME = re.compile(r"[a-z0-9][a-z0-9.-]{0,63}")
 _MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/:-]{0,63}")
@@ -106,6 +107,9 @@ class Arm:
     accepted_init: tuple[str, ...] = ()
     prices: Price | None = None
     coauthor: str | None = None
+    # 07.2-16 (D-22): the sessions this arm may launch in one night (a Plus window, a weekly
+    # quota); None: no cap of its own, the night's --max-sessions only
+    max_sessions: int | None = None
 
     @property
     def egress(self) -> bool:
@@ -190,6 +194,14 @@ def _present(table: Mapping, hosted: bool, harness: str) -> None:
                            "(its model keeps streamjson's tables and driver.coauthor)")  # fmt: skip
 
 
+def _count(table: Mapping, key: str) -> int:
+    """A whole number of 1 or more (max_workers; 07.2-16: max_sessions)."""
+    value = table[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ArmError(f"{key}: {value!r} is not an integer >= 1")
+    return value
+
+
 def _arm(name: str, table: object) -> Arm:
     if not _NAME.fullmatch(name):
         raise ArmError(f"the arm name is not {_NAME.pattern}")
@@ -202,9 +214,7 @@ def _arm(name: str, table: object) -> Arm:
     _present(table, backend != ANTHROPIC, harness)
     if not isinstance(table["sends_disassembly"], bool):
         raise ArmError(f"sends_disassembly: {table['sends_disassembly']!r} is not true or false")
-    workers = table["max_workers"]
-    if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
-        raise ArmError(f"max_workers: {workers!r} is not an integer >= 1")
+    workers = _count(table, "max_workers")
     url = table.get("base_url")
     if url is not None and "key_env" not in table and not _loopback(_base_url(url)):
         raise ArmError("key_env: missing; only a loopback base_url runs without a key variable "
@@ -218,6 +228,8 @@ def _arm(name: str, table: object) -> Arm:
                else (),
                prices=_prices(table["prices"]) if "prices" in table else None,
                coauthor=_text(table, "coauthor", _COAUTHOR) if "coauthor" in table
+               else None,
+               max_sessions=_count(table, "max_sessions") if "max_sessions" in table
                else None)  # fmt: skip
 
 
@@ -297,6 +309,19 @@ def estimate_cost(usage: Usage, arm: Arm) -> float:
     return round(total, _COST_DIGITS)
 
 
+def refuse_stray_egress(allow_egress: Sequence[str], night: Sequence[Arm]) -> None:
+    """07.2-16 (D-11, D-22): every `--allow-egress` name must be an arm the night runs that
+    sends the context pack off the machine; ArmError naming the first that is not. With one
+    arm this is `preflight`'s own rule; a multi-arm night checks it once over all its arms,
+    then runs `preflight` per arm with that arm's own name."""
+    for name in allow_egress:
+        if not any(arm.name == name and arm.egress for arm in night):
+            raise ArmError(f"--allow-egress {name} names no arm of this night that sends the "
+                           "context pack off the machine (the night runs "
+                           f"{', '.join(arm.name for arm in night)}); refused so that a typo "
+                           "opens no backend (D-11)")  # fmt: skip
+
+
 def preflight(arm: Arm, env: Mapping[str, str], *, allow_egress: Sequence[str]) -> None:
     """Before any session (D-11, D-26): every `--allow-egress` name must be this arm, and this
     arm one that sends disassembly off the machine; such an arm needs its name there; and an
@@ -308,6 +333,7 @@ def preflight(arm: Arm, env: Mapping[str, str], *, allow_egress: Sequence[str]) 
                            "so that a typo opens no backend (D-11)")  # fmt: skip
     if arm.egress and arm.name not in allow_egress:
         raise ArmError(f"arm {arm.name} sends the context pack to {arm.backend}: give "
-                       f"--allow-egress {arm.name} as well as --night-model {arm.name} (D-11)")
+                       f"--allow-egress {arm.name} as well as the arm (--night-model "
+                       f"{arm.name} or --arm {arm.name}=N, D-11)")  # fmt: skip
     if arm.base_url is not None:
         _token(arm, env)

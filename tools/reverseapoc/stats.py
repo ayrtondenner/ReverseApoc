@@ -377,29 +377,68 @@ _LABEL_ORDER = (*(_bucket_label(i) for i in range(len(SIZE_BUCKETS))), UNKNOWN)
 _MODEL_SIZE_COUNTS = ("attempted", "matched", "hold_exact")
 
 
+def arm_key(record: Mapping) -> str:
+    """Phase 07.2 D-22: the arm of an attempt or landing record, `backend/harness/model`: the
+    requested model (a landing's `model`, the held attempt's requested model). v1 and v2
+    records name no backend or harness: they ran on the Claude Code login
+    (`anthropic/claude/<model>`, a v1 record's model being its init model)."""
+    model = record.get("model_requested", record.get("model")) or UNKNOWN
+    backend = record.get("backend", driver.DEFAULT_BACKEND)
+    return f"{backend}/{record.get('harness', driver.HARNESSES[0])}/{model}"
+
+
+def _matched_by_arm(matching: Sequence[Mapping], landed: Sequence[Mapping]) -> dict[str, set]:
+    """The functions each arm matched: its MATCHED attempts and the MATCHED landings credited
+    to it."""
+    out: dict[str, set[Key]] = {}
+    for r in [*matching, *landed]:
+        if r["outcome"] == driver.MATCHED:
+            out.setdefault(arm_key(r), set()).add(_key(r))
+    return out
+
+
+def _by_arm(matching: Sequence[Mapping], landed: Sequence[Mapping]) -> dict:
+    """Phase 07.2 D-22 (`stats --run` splits by arm): per arm (`arm_key`), the distinct
+    functions attempted, matched and held exact, and the tokens and cost of its attempts."""
+    groups: dict[str, list[Mapping]] = {}
+    for r in matching:
+        groups.setdefault(arm_key(r), []).append(r)
+    matched = _matched_by_arm(matching, landed)
+    out = {}
+    for arm in sorted({*groups, *matched}):
+        records = groups.get(arm, [])
+        sums = _sums(records)
+        out[arm] = {"attempted": len({_key(r) for r in records}),
+                    "matched": len(matched.get(arm, ())),
+                    "hold_exact": len({_key(r) for r in records
+                                       if r["outcome"] == driver.HOLD_EXACT}),
+                    "tokens": sums["tokens"], "cost_usd": money(sums["cost_usd"])}  # fmt: skip
+    return out
+
+
 def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
                    sizes: Mapping[Key, int]) -> dict:  # fmt: skip
     """Phase 07.2 D-16: per requested model (v2 and v3 records) and size bucket, the distinct
     functions attempted, matched (a MATCHED attempt, or a MATCHED landing credited to that
     model) and held exact (a HOLD_EXACT attempt); only the buckets that occur, smallest
-    first."""
+    first. D-22: the rows are arms (`arm_key`), so one model on two backends is two rows."""
     cells: dict[str, dict[str, dict[str, set[Key]]]] = {}
 
-    def add(model: str, key: Key, count: str) -> None:
-        buckets = cells.setdefault(model, {})
+    def add(arm: str, key: Key, count: str) -> None:
+        buckets = cells.setdefault(arm, {})
         cell = buckets.setdefault(_size_label(key, sizes), {c: set() for c in _MODEL_SIZE_COUNTS})
         cell[count].add(key)
 
     for r in matching:
         if "model_requested" not in r:
             continue  # a v1 record names no requested model
-        add(r["model_requested"], _key(r), "attempted")
+        add(arm_key(r), _key(r), "attempted")
         if r["outcome"] in (driver.MATCHED, driver.HOLD_EXACT):
-            add(r["model_requested"], _key(r),
+            add(arm_key(r), _key(r),
                 "matched" if r["outcome"] == driver.MATCHED else "hold_exact")  # fmt: skip
     for r in landed:
         if r["outcome"] == driver.MATCHED:
-            add(r["model"], _key(r), "matched")
+            add(arm_key(r), _key(r), "matched")
     return {model: {label: {c: len(buckets[label][c]) for c in _MODEL_SIZE_COUNTS}
                     for label in sorted(buckets, key=_LABEL_ORDER.index)}
             for model, buckets in sorted(cells.items())}  # fmt: skip
@@ -465,6 +504,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "hook_blocks": _v2_sum(v2, lambda r: r["hook_blocks"], len(v1)),
         "by_model": _split(v2, "model_requested", len(v1)),
         "by_model_size": _by_model_size(matching, landed, sizes),
+        "by_arm": _by_arm(matching, landed),
         "by_session": _split(v2, "session", len(v1)),
         "by_tier": _by_tier(counted, tiers),
     }  # fmt: skip
@@ -524,11 +564,22 @@ def _metric_lines(d: Mapping) -> list[str]:
     return lines
 
 
+def _arm_lines(by_arm: Mapping) -> list[str]:
+    """D-22: one line per arm: functions attempted, matched and held exact, tokens and cost."""
+    if not by_arm:
+        return ["per arm: none"]
+    return ["per arm:"] + [
+        f"  {arm}: attempted {a['attempted']}, matched {a['matched']}, hold exact "
+        f"{a['hold_exact']}, tokens {', '.join(f'{k} {a['tokens'][k]}' for k in _TOKENS)}, "
+        f"cost ${a['cost_usd']}"
+        for arm, a in by_arm.items()]  # fmt: skip
+
+
 def _model_size_lines(by_model_size: Mapping) -> list[str]:
-    """One line per requested model: each bucket's matched, attempted and hold-exact counts."""
+    """One line per arm (D-22): each bucket's matched, attempted and hold-exact counts."""
     if not by_model_size:
-        return ["per model and size: none"]
-    return ["per model and size:"] + [
+        return ["per arm and size: none"]
+    return ["per arm and size:"] + [
         f"  {model}: " + "; ".join(
             f"{label} {c['matched']} of {c['attempted']} matched, {c['hold_exact']} hold exact"
             for label, c in buckets.items())
@@ -562,6 +613,7 @@ class Report:
         return "\n".join([
             *_class_lines(d), *_metric_lines(d),
             *_split_lines("per model", d["by_model"], d["by_model"]["models"]),
+            *_arm_lines(d["by_arm"]),
             *_model_size_lines(d["by_model_size"]),
             *_split_lines("per session kind", d["by_session"], d["by_session"]["kinds"]),
             *_tier_lines(d["by_tier"]),

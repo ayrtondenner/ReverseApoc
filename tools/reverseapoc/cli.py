@@ -1725,6 +1725,24 @@ def _arm_name(value: str) -> str:
     return value
 
 
+def _arm_spec(value: str) -> tuple[str, int]:
+    """07.2-16 (D-22): `--arm NAME=WORKERS`, an arm of config/driver/backends.toml and its
+    worker count, a whole number of 1 or more."""
+    name, sep, workers = value.partition("=")
+    if not sep:
+        raise argparse.ArgumentTypeError(f"{value!r} is not NAME=WORKERS")
+    return _arm_name(name), _positive(workers)
+
+
+class _Given(argparse.Action):
+    """Store the value and note that the flag was given (07.2-16: --arm refuses --workers,
+    whose default is still shown)."""
+
+    def __call__(self, parser, namespace, values, option_string=None) -> None:
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_given", True)
+
+
 def _run_id(value: str | None) -> str:
     """The run's id: `--run ID`, else the UTC time it starts (YYYYMMDD-HHMMSS)."""
     if value is None:
@@ -1755,9 +1773,13 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     if conflict is not None:
         print(FABLE_TRIAL_REFUSED.format(conflict=conflict), file=sys.stderr)
         return 2
+    # 07.2-16 (D-22): `--arm`'s arms, or `--night-model X` as the one arm (X, --workers)
+    arms = tuple(args.arm or ()) or (
+        ((args.night_model, args.workers),) if args.night_model is not None else ())
+    workers = sum(n for _, n in arms) if args.arm else args.workers
     options = driver.DriveOptions(repo=REPO_ROOT, run_id=args.run or _run_id(None),
                                   max_sessions=args.max_sessions,
-                                  target_matched=args.target_matched, workers=args.workers,
+                                  target_matched=args.target_matched, workers=workers,
                                   dry_run=args.dry_run,
                                   canary=args.canary, json=args.json,
                                   max_budget_usd=args.max_budget_usd,
@@ -1771,7 +1793,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   picks=args.picks, stratify=args.stratify,
                                   write_picks=args.write_picks, hold=args.hold,
                                   land_held=tuple(args.land_held or ()),
-                                  allow_egress=tuple(args.allow_egress or ()))  # fmt: skip
+                                  allow_egress=tuple(args.allow_egress or ()),
+                                  arms=arms)  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1793,22 +1816,44 @@ def _fable_trial_conflict(args: argparse.Namespace) -> str | None:
 HARNESS_FLAGS_REFUSED = "reverseapoc drive: error: {conflict}"  # 07.2-06 (D-17)
 _LAND_HELD_WITH = (("picks", "--picks"), ("hold", "--hold"), ("night_model", "--night-model"),
                    ("stratify", "--stratify"), ("dry_run", "--dry-run"), ("canary", "--canary"),
-                   ("fable_trial", "--fable-trial"))  # fmt: skip
+                   ("fable_trial", "--fable-trial"), ("arm", "--arm"))  # fmt: skip
+# 07.2-16 (D-22): what `--arm` cannot run with; --night-model is its one-arm shorthand and
+# each --arm names its own workers
+_ARM_WITH = (("night_model", "--night-model"), ("workers_given", "--workers"),
+             ("fable_trial", "--fable-trial"), ("canary", "--canary"))  # fmt: skip
+
+
+def _arm_conflict(args: argparse.Namespace) -> str | None:
+    """07.2-16 (D-22): an arm named twice, or a flag --arm cannot run with, or None."""
+    names = [name for name, _ in args.arm or ()]
+    twice = sorted({name for name in names if names.count(name) > 1})
+    if twice:
+        return f"--arm {twice[0]} is given twice; name each arm once"
+    if not names:
+        return None
+    clash = [flag for name, flag in _ARM_WITH if getattr(args, name, False)]
+    if args.session == driver.READABILITY:
+        clash.append("--session readability")
+    return f"--arm cannot be used with {', '.join(clash)}" if clash else None
 
 
 def _harness_conflict(args: argparse.Namespace) -> str | None:
     """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
     model is for a matching night that is no Fable trial; a hold run is a matching night that
     launches sessions; --stratify writes its picks file from a dry run; --land-held lands
-    and launches nothing. 07.2-12 (D-11): each --allow-egress names the --night-model arm, and
-    that arm sends the context pack to a non-Anthropic backend."""
+    and launches nothing. 07.2-12 (D-11): each --allow-egress names an arm of the night (07.2-16:
+    the --night-model arm or an --arm), and that arm sends the context pack to a
+    non-Anthropic backend."""
     readability = args.session == driver.READABILITY
+    night = [name for name, _ in args.arm or ()] or [args.night_model]
     for name in args.allow_egress or ():
-        if name != args.night_model:
-            return f"--allow-egress {name} names no --night-model arm of this run (D-11)"
+        if name not in night:
+            return f"--allow-egress {name} names no --night-model or --arm arm of this run (D-11)"
         if not backends.load_arms()[name].egress:
             return (f"--allow-egress {name}: that arm sends nothing to a non-Anthropic backend, "
                     "so it takes no --allow-egress (D-11)")  # fmt: skip
+    if (arm := _arm_conflict(args)) is not None:
+        return arm
     if args.land_held:
         clash = [flag for name, flag in _LAND_HELD_WITH if getattr(args, name)]
         if clash:
@@ -1857,10 +1902,17 @@ def _add_harness_flags(p: argparse.ArgumentParser) -> None:
                    "config/driver/backends.toml (a Claude model id is its own arm), instead of "
                    "the pass's model; with --canary, the canary's arm; refused with "
                    "--fable-trial and --session readability")  # fmt: skip
+    p.add_argument("--arm", type=_arm_spec, action="append", default=None,
+                   metavar="NAME=WORKERS",
+                   help="repeatable: run arm NAME of config/driver/backends.toml with WORKERS "
+                   "sessions at once, beside the other --arm arms in this one drive (one lock, "
+                   "one audit, one commit queue), each under run id <run>-NAME with its own "
+                   "queue, usage pause and limits (D-22); refused with --night-model, --workers, "
+                   "--fable-trial, --canary, --land-held and --session readability")
     p.add_argument("--allow-egress", action="append", default=None, metavar="ARM",
-                   help="the owner's opt-in for --night-model ARM to send context packs to its "
-                   "non-Anthropic backend (D-11); without it such an arm is refused, and one "
-                   "naming any other arm is refused (docs/legal.md)")  # fmt: skip
+                   help="the owner's opt-in for --night-model or --arm ARM to send context "
+                   "packs to its non-Anthropic backend (D-11); without it such an arm is "
+                   "refused, and one naming any other arm is refused (docs/legal.md)")
     p.add_argument("--picks", type=Path, default=None, metavar="FILE",
                    help="queue only the functions FILE lists, one `<exe> 0x<8 hex digits>` "
                    "per line; a pick outside the queue or already matched is refused")
@@ -1890,7 +1942,7 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
         f"{'.'.join(map(str, driver.MIN_CLI_VERSION))}, when Docker does not answer or the "
         "container's uv sync fails.",
     )
-    p.add_argument("--workers", type=_positive, default=3, metavar="N",
+    p.add_argument("--workers", type=_positive, default=3, metavar="N", action=_Given,
                    help="sessions at once, one unit each (D-06, D-07); " + default)  # fmt: skip
     p.add_argument("--max-sessions", type=_positive, default=60, metavar="N",
                    help="sessions all workers launch before the night ends, a transient one "

@@ -115,8 +115,9 @@ The drive refuses (exit 2), before any preflight, each of these combinations:
 - `--picks` with `--stratify`;
 - `--land-held` with `--picks`, `--hold`, `--night-model`, `--stratify`, `--dry-run`,
   `--canary` or `--fable-trial`;
-- `--allow-egress ARM` when ARM is not the `--night-model` arm, or when ARM sends nothing to a
-  non-Anthropic backend.
+- `--allow-egress ARM` when ARM is not the `--night-model` arm or an `--arm` arm, or when ARM
+  sends nothing to a non-Anthropic backend;
+- `--arm` with the flags listed under "Several arms in one drive" below.
 
 An unknown `--night-model` arm exits 2 and names the known arms.
 
@@ -364,3 +365,75 @@ weights early through OpenRouter as a fast check.
   no `--allow-egress` and one naming it is refused. Its cost is 0, recorded as an estimate.
 - **Order.** `reverseapoc drive --canary --night-model qwen-local --run canary-qwen-local`, then
   the hold run: `reverseapoc drive --night-model qwen-local --workers 1 --picks build/driver/spike012-picks.txt --hold --run spike012-qwen-local`.
+
+## Several arms in one drive
+
+Plan 07.2-16 (D-22) runs several arms side by side in one drive process, so spike 012's arms
+need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an arm of
+`config/driver/backends.toml` and WORKERS is how many of its sessions run at once.
+
+- **One process.** The night keeps one drive lock, one post-session audit under the gate lock,
+  and one commit queue, whatever the arms. A second `reverseapoc drive` on the same checkout
+  is still refused while one runs: separate processes would trip each other's lock, git index
+  and audit. Run the arms in one drive, never in two.
+- **Run ids.** With several arms, each arm runs under its own run id `<run>-<NAME>`, for
+  example `spike012-claude-haiku-5-5`. Its attempt directories, claims, records and limit
+  records name that run id, so two arms never share an attempt directory. The night's own
+  STARTED and ENDED records keep the base run id `<run>`, and their totals count every arm's
+  sessions. Under `--hold`, every arm's run directory gets the `HELD` marker.
+- **One queue per arm.** Each arm builds its own queue over the same picks (with `--picks`, the
+  same frozen list), with its own passes. Under `--hold` each function is therefore attempted
+  once per arm. A free worker takes the next pick of its own arm, and the arms are served in
+  turn. Claims stay per unit across arms, so two arms never run one unit at the same time. On a
+  night without `--hold`, a function one arm matches is dropped from the other arms' queues.
+- **Workers and caps.** The night's workers are the sum of the arms' WORKERS. Each arm's
+  WORKERS must stay within its `max_workers`, which is checked before any command. An arm may
+  also carry `max_sessions` in backends.toml, which caps that arm's launches for the night. The
+  Antigravity arms carry 20, the canary's planning estimate; the owner sets it from the quota
+  the agy canary measures. When an arm reaches its cap, it stops launching while the others go
+  on. `--max-sessions` still caps the night's total.
+- **Usage pauses.** Each arm has its own usage-limit pause. A LIMIT session of one arm (a Codex
+  Plus window, the Antigravity quota, an Anthropic limit) starts that arm's backoff only. The
+  other arms keep launching, and the arm's own probe clears its pause.
+- **Every per-arm gate still holds.** Each arm resolves through backends.toml. A Codex or agy
+  arm needs its own canary PASS for the installed CLI. An arm that sends the pack off the
+  machine needs its own `--allow-egress NAME`, and an `--allow-egress` naming an arm the night
+  does not run, or one that sends nothing, is refused. A hosted arm needs its key, and each
+  arm's sessions get that arm's own environment (the token-leak guard, the stripped env of the
+  Codex and agy arms). Each session is audited by its own harness's audit.
+- **The local arm.** `qwen-local` may run beside the cloud arms, at its one worker:
+  `--arm qwen-local=1`. `--arm qwen-local=2` is refused. Its CPU still competes with the check
+  compiles of the cloud arms' sessions.
+- **The one-arm shorthand.** `--night-model X --workers N` is the same night as `--arm X=N`,
+  under the base run id (one arm needs no suffix).
+- **Refusals.** `--arm` is refused (exit 2, before any preflight) with `--night-model`,
+  `--workers`, `--fable-trial`, `--canary`, `--land-held` and `--session readability`, and
+  when an arm is named twice. A canary runs one arm at a time, with `--canary --night-model X`.
+- **Console.** The night prints one `arms:` line naming each arm, its workers and its run id,
+  and each attempt line names its arm.
+
+The spike 012 night over the frozen pick list, every arm at once (canaries passed first):
+
+```
+reverseapoc drive --picks build/driver/spike012-picks.txt --hold --run spike012 \
+  --arm claude-haiku-5-5=2 --arm claude-sonnet-5-5=2 \
+  --arm gpt-6-luna=1 --allow-egress gpt-6-luna \
+  --arm gemini-flash=1 --allow-egress gemini-flash \
+  --arm deepseek-flash=2 --allow-egress deepseek-flash \
+  --arm qwen-local=1
+```
+
+Then compare the arms with `reverseapoc stats --run spike012-*`, which splits by arm (below),
+and land the exact results once each, from the cheapest arm, with
+`reverseapoc drive --land-held spike012-*`.
+
+### Stats by arm
+
+`stats --run` splits the selected records by arm, keyed `backend/harness/model`, for example
+`google/agy/gemini-3.8-flash-medium` or `anthropic/claude/claude-haiku-5-5`. Two arms that
+share a model id but differ in backend or harness (Gemini through agy and through OpenRouter)
+are two arms. Each arm holds the distinct functions attempted, matched (an attempt, or a
+landing credited to that arm) and held exact, and its tokens and cost. The JSON field is
+`by_arm`, and the text prints a "per arm" block. The model x size table (`by_model_size`,
+"per arm and size") is keyed by arm too. v1 and v2 records name no backend or harness, so they
+group under `anthropic/claude/<model>`.

@@ -766,22 +766,27 @@ def test_by_model_size(tmp_path, capsys):
     report = _json(capsys, repo, log, "--run", "night1", config=config)
     small, large = "[0, 64)", "[256, 1024)"
     assert report["by_model_size"] == {
-        haiku: {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
-                large: {"attempted": 1, "matched": 0, "hold_exact": 1}},
-        sonnet: {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
-                 large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
+        _arm(haiku): {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
+                      large: {"attempted": 1, "matched": 0, "hold_exact": 1}},
+        _arm(sonnet): {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
+                       large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
     }  # fmt: skip
     assert _run(repo, log, "--run", "night1", config=config) == 0
     lines = capsys.readouterr().out.splitlines()
-    block = lines[lines.index("per model and size:") + 1:][:2]
-    assert [line.split(":")[0].strip() for line in block] == [haiku, sonnet]
+    block = lines[lines.index("per arm and size:") + 1:][:2]
+    assert [line.split(": ")[0].strip() for line in block] == [_arm(haiku), _arm(sonnet)]
     assert "[0, 64) 1 of 1 matched, 0 hold exact" in block[0]
+
+
+def _arm(model: str, backend: str = "anthropic", harness: str = "claude") -> str:
+    """07.2-16 (D-22): the arm key of stats' split by arm."""
+    return f"{backend}/{harness}/{model}"
 
 
 def test_by_model_size_names_an_unsized_function_unknown(tmp_path, capsys):
     report = _report(capsys, tmp_path, _on_v3(0x10000))
     assert report["by_model_size"] == {
-        "claude-opus-5-5": {"unknown": {"attempted": 1, "matched": 0, "hold_exact": 0}}}
+        _arm("claude-opus-5-5"): {"unknown": {"attempted": 1, "matched": 0, "hold_exact": 0}}}
 
 
 def test_run_filter_uses_run_outcomes(tmp_path, capsys):
@@ -823,7 +828,8 @@ def test_default_report_leaves_hold_runs_out(tmp_path, capsys):
     assert report["totals"]["cost_usd"] == "0.25"
     assert [b["attempted"] for b in report["by_size"] if b["attempted"]] == [1]
     assert set(report["by_model"]["models"]) == {"claude-opus-5-5"}
-    assert set(report["by_model_size"]) == {"claude-opus-5-5"}
+    assert set(report["by_model_size"]) == {_arm("claude-opus-5-5")}
+    assert set(report["by_arm"]) == {_arm("claude-opus-5-5")}
 
 
 def test_run_filter_keeps_hold_runs(tmp_path, capsys):
@@ -833,5 +839,85 @@ def test_run_filter_keeps_hold_runs(tmp_path, capsys):
                    config=tmp_path / "config")  # fmt: skip
     assert (report["attempts"]["records"], report["attempts"]["sessions"]) == (2, 2)
     assert report["totals"]["cost_usd"] == "0.50"
-    cells = report["by_model_size"]["claude-haiku-5-5"]["unknown"]
+    cells = report["by_model_size"][_arm("claude-haiku-5-5")]["unknown"]
     assert cells == {"attempted": 2, "matched": 0, "hold_exact": 1}
+
+
+# ---- 07.2-16 (D-22): stats --run splits by arm ----
+
+GEMINI = "gemini-3.8-flash"
+
+
+def _arm_runs() -> tuple[dict, ...]:
+    """A multi-arm night: two Gemini arms that share the model id (agy on Google, the Claude
+    harness on OpenRouter), a Haiku arm with a match and its landing, plus a v1 and a v2 record
+    of Opus."""
+    agy = {"backend": "google", "harness": "agy", "model_requested": GEMINI, "hold_run": True}
+    routed = {"backend": "openrouter", "harness": "claude", "model_requested": GEMINI,
+              "hold_run": True}  # fmt: skip
+    haiku = "claude-haiku-5-5"
+    return (
+        _on_v3(0x10000, run="spike012-gemini-flash", outcome="HOLD_EXACT", cost_usd=0.0, **agy),
+        _on_v3(0x10100, run="spike012-gemini-flash", cost_usd=0.0, **agy),
+        _on_v3(0x10000, run="spike012-gemini-or", cost_usd=0.5, **routed),
+        _on_v3(0x10200, run="spike012-haiku", model_requested=haiku, outcome="HOLD_EXACT",
+               hold_run=True, cost_usd=0.1),
+        {**_landing(0x10200), "run": "spike012-land", "from_run": "spike012-haiku",
+         "model": haiku},
+        _attempt_v2(run="spike012-v2"),
+        _attempt_v1(run="spike012-v1"),
+    )  # fmt: skip
+
+
+def test_by_arm(tmp_path, capsys):
+    """D-22: `stats --run spike012-*` splits by arm, keyed `backend/harness/model`: arms that
+    share a model id but differ in backend or harness are two arms. Each holds the distinct
+    functions attempted, matched (an attempt or a landing credited to that arm) and held exact,
+    and its tokens and cost; v1 and v2 records group under anthropic/claude/<model>."""
+    repo, _ = _repo(tmp_path)
+    log, config = _log(tmp_path, *_arm_runs()), tmp_path / "config"
+    report = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    one = {"input": 10, "output": 20, "cache_read": 30, "cache_creation": 40}
+    two = {key: 2 * value for key, value in one.items()}
+    assert report["by_arm"] == {
+        _arm(GEMINI, "google", "agy"): {"attempted": 2, "matched": 0, "hold_exact": 1,
+                                         "tokens": two, "cost_usd": "0.00"},
+        _arm("claude-haiku-5-5"): {"attempted": 1, "matched": 1, "hold_exact": 1,
+                                   "tokens": one, "cost_usd": "0.10"},
+        _arm("claude-opus-5-5"): {"attempted": 1, "matched": 0, "hold_exact": 0,
+                                  "tokens": two, "cost_usd": "0.50"},
+        _arm(GEMINI, "openrouter", "claude"): {"attempted": 1, "matched": 0, "hold_exact": 0,
+                                                "tokens": one, "cost_usd": "0.50"},
+    }  # fmt: skip
+    assert list(report["by_arm"]) == sorted(report["by_arm"])
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    lines = capsys.readouterr().out.splitlines()
+    block = lines[lines.index("per arm:") + 1:][:4]
+    assert [line.split(": ")[0].strip() for line in block] == list(report["by_arm"])
+    assert block[2] == (f"  {_arm(GEMINI, 'google', 'agy')}: attempted 2, matched 0, hold exact "
+                        "1, tokens input 20, output 40, cache_read 60, cache_creation 80, "
+                        "cost $0.00")  # fmt: skip
+
+
+def test_by_model_size_by_arm(tmp_path, capsys):
+    """D-22: the model x size table splits by arm: one model id on two backends is two rows."""
+    repo, _ = _repo(tmp_path)
+    log, config = _log(tmp_path, *_arm_runs()), tmp_path / "config"
+    by_model_size = _json(capsys, repo, log, "--run", "spike012-*",
+                          config=config)["by_model_size"]  # fmt: skip
+    assert set(by_model_size) == {_arm(GEMINI, "google", "agy"),
+                                  _arm(GEMINI, "openrouter", "claude"),
+                                  _arm("claude-haiku-5-5"), _arm("claude-opus-5-5")}  # fmt: skip
+    assert by_model_size[_arm(GEMINI, "google", "agy")] == {
+        "unknown": {"attempted": 2, "matched": 0, "hold_exact": 1}}
+    assert by_model_size[_arm("claude-haiku-5-5")] == {
+        "unknown": {"attempted": 1, "matched": 1, "hold_exact": 1}}
+
+
+def test_by_arm_of_no_run_is_empty(tmp_path, capsys):
+    repo, _ = _repo(tmp_path)
+    log = _log(tmp_path, *_arm_runs())
+    report = _json(capsys, repo, log, "--run", "nonexistent-*", config=tmp_path / "config")
+    assert report["by_arm"] == {}
+    assert _run(repo, log, "--run", "nonexistent-*", config=tmp_path / "config") == 0
+    assert "per arm: none" in capsys.readouterr().out.splitlines()
