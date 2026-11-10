@@ -2,10 +2,11 @@
 agy).
 
 `python tests/fakeagy.py --output-format stream-json --model M --sandbox --add-dir DIR
---settings FILE --disable-slash-commands --print-timeout N -p PROMPT` takes exactly that argv,
+--settings FILE --disable-slash-commands --print-timeout Ns -p PROMPT` takes exactly that argv,
 in that order (session.build_agy_argv after the executable), and:
 
-1. checks the shape: every flag above in its place, N a positive integer, a non-empty model and
+1. checks the shape: every flag above in its place, N a positive integer with the `s` unit (agy
+   parses a Go duration and exits on a bare number), a non-empty model and
    PROMPT, and never `--dangerously-skip-permissions`; any other argv exits 64 naming what
    differs;
 2. FAKEAGY_RECORD (a file path): writes {"argv": [...], "env": [names], "cwd": ...} there, the
@@ -30,6 +31,7 @@ from pathlib import Path
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "agy"
 _SCENARIO = re.compile(r"[a-z0-9_]+")
+_SECONDS = re.compile(r"[1-9][0-9]*s")  # agy 1.5.5 parses a Go duration: a bare number exits
 SCENARIO_ENV = "FAKEAGY_SCENARIO"
 RECORD_ENV = "FAKEAGY_RECORD"
 BAD_ARGV = 64
@@ -50,8 +52,8 @@ def _problem(argv: list[str]) -> str | None:
     for index, token in _FIXED.items():
         if argv[index] != token:
             return f"argument {index} is {argv[index]!r}, expected {token!r}"
-    if not argv[_TIMEOUT].isdigit() or int(argv[_TIMEOUT]) < 1:
-        return f"--print-timeout {argv[_TIMEOUT]!r} is not a positive number of seconds"
+    if not _SECONDS.fullmatch(argv[_TIMEOUT]):
+        return f"--print-timeout {argv[_TIMEOUT]!r} is not a whole number of seconds like 1800s"
     if not argv[_MODEL] or not argv[_PROMPT]:
         return "an empty model or prompt"
     return None

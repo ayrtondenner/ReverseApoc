@@ -7643,6 +7643,32 @@ def _is_call(entry: Mapping, tool: str, target: str, repo: Path, roots: Sequence
     return _names_path(entry, target, repo, roots)
 
 
+def _tool_results(events: Sequence[dict]) -> dict[str, object]:
+    """Each user tool_result block's content by its tool_use_id."""
+    results: dict[str, object] = {}
+    for event in events:
+        message = event.get("message") if event.get("type") == "user" else None
+        content = message.get("content") if isinstance(message, dict) else None
+        for block in content if isinstance(content, list) else ():
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                results[str(block.get("tool_use_id"))] = block.get("content")
+    return results
+
+
+def _wrapper_allowed(shown: str, calls: int, denied: Sequence[Mapping],
+                     results: Mapping[str, object]) -> tuple[bool, str]:  # fmt: skip
+    """Canary 2026-11-10: the wrapper is allowed when at least one of its `calls` was not
+    `denied`; a denial whose tool_result is exactly the hook's timeout rule
+    (hooks.CHECK_TIMEOUT_DENIAL) is the hook working, any other denial a blocked wrapper."""
+    if not denied:
+        return True, f"{shown} was allowed"
+    timeout_only = all(results.get(str(d.get("tool_use_id"))) == hooks.CHECK_TIMEOUT_DENIAL.reason
+                       for d in denied)  # fmt: skip
+    if timeout_only and calls > len(denied):
+        return True, f"{shown} was first refused for its missing timeout, then allowed"
+    return False, f"{shown} was denied"
+
+
 def _error_keys(event: Mapping) -> list[str]:
     return [str(key) for key in event if "error" in str(key).lower()]
 
@@ -7697,10 +7723,10 @@ def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: P
     for command, (ok, evidence) in ((CANARY_WRAPPER, _pack_evidence(pack, repo)),
                                     (CANARY_CHECK, _check_evidence(attempt_dir, repo))):
         shown = f"the attempt wrapper `{command}`"
-        tried = any(u.name == "Bash" and (u.target or "").strip() == command for u in uses)
-        denied = any(_is_call(d, "Bash", command, repo, roots) for d in denials)
-        checks.add(tried, f"{shown} was " + ("called" if tried else "never called"))
-        checks.add(not denied, f"{shown} " + ("was denied" if denied else "was allowed"))
+        calls = sum(u.name == "Bash" and (u.target or "").strip() == command for u in uses)
+        denied = [d for d in denials if _is_call(d, "Bash", command, repo, roots)]
+        checks.add(calls > 0, f"{shown} was " + ("called" if calls else "never called"))
+        checks.add(*_wrapper_allowed(shown, calls, denied, _tool_results(events)))
         checks.add(ok, f"{shown}: {evidence}")
     carrying = False
     for event in events:

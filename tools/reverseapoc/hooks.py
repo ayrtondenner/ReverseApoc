@@ -210,6 +210,13 @@ def _deny(reason: str) -> Decision:
     return Decision(True, f"reverseapoc hooks: {reason}")
 
 
+# Review WR-04: the denial of an `attempt check` whose Bash timeout is short; the driver's canary
+# tells this refusal (the hook working) from a blocked wrapper by its exact reason.
+CHECK_TIMEOUT_DENIAL = _deny("attempt check needs the Bash tool's timeout at its maximum, or the "
+                             "tool kills the run and leaves check.lock behind: rerun it with "
+                             f"`timeout: {CHECK_TIMEOUT_MS}`")  # fmt: skip
+
+
 # --- paths -----------------------------------------------------------------------------------
 
 
@@ -1401,9 +1408,7 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
             return _deny("checks run in the foreground, one at a time: no run_in_background "
                          "in a matching session (M14)")  # fmt: skip
         if _short_check(command, tool_input):
-            return _deny("attempt check needs the Bash tool's timeout at its maximum, or the "
-                         "tool kills the run and leaves check.lock behind: rerun it with "
-                         f"`timeout: {CHECK_TIMEOUT_MS}`")  # fmt: skip
+            return CHECK_TIMEOUT_DENIAL
         return NO_OPINION
     decision = _always(payload, env)
     return decision if decision.deny else _matching_write(payload, env, tracked, root)
