@@ -1970,3 +1970,48 @@ def test_egress_env_set_for_hosted_arms(tmp_path):
     claude.run(config={"attempts_per_function": 1,
                        "base_env": {**claude.env, hooks.EGRESS_ENV: "1"}})  # fmt: skip
     assert hooks.EGRESS_ENV not in set(claude.launched[0].env)
+
+
+# ---- 07.2-12 Task 3 (D-18): the local llama.cpp arm, last ----
+
+LOCAL = "qwen-local"
+
+
+def test_local_arm_runs_on_loopback(tmp_path, capsys, monkeypatch):
+    """The local arm needs no --allow-egress and no key: its session gets the loopback URL and
+    the fixed loopback token, its record says backend local and costs nothing."""
+    from test_driver import Sess
+
+    rig, night, seen = _hosted_night(tmp_path, monkeypatch, [Sess()])
+    code, _, err = rig.drive(capsys, seams={"base_env": _keyed(rig.env)}, night_model=LOCAL,
+                             workers=1)  # fmt: skip
+    assert code == 0, err
+    launched = night.launched[0]
+    assert launched.env.get("ANTHROPIC_BASE_URL") == "http://127.0.0.1:8080"
+    assert launched.env.get("ANTHROPIC_AUTH_TOKEN") == driver.backends.LOOPBACK_TOKEN
+    assert launched.argv[launched.argv.index("--model") + 1] == "qwen3.6-35b-a3b"
+    record = night.kinds("attempt")[0]
+    assert (record["backend"], record["cost_usd"], record["cost_source"]) == (
+        "local", 0.0, "estimate")  # fmt: skip
+
+
+@pytest.mark.parametrize(("over", "words"), [
+    ({"workers": 2}, "max_workers"),
+    ({"workers": 1, "allow_egress": (LOCAL,)}, LOCAL),
+])  # fmt: skip
+def test_local_arm_refusals(tmp_path, capsys, over, words):
+    """One worker only (the server has one slot), and no --allow-egress: refused, exit 2,
+    before any command."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, night_model=LOCAL, **over)
+    assert code == 2
+    assert words in _refusal(out)["detail"]
+    assert rig.runner.calls == []
+
+
+def test_cli_refuses_allow_egress_for_the_local_arm(capsys, monkeypatch):
+    seen = []
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: seen.append(options) or 0)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: None)
+    assert cli.main(["drive", "--night-model", LOCAL, "--allow-egress", LOCAL]) == 2
+    assert LOCAL in capsys.readouterr().err and seen == []

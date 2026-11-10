@@ -252,6 +252,62 @@ def test_estimate_cost():
     assert backends.estimate_cost(usage, _arms()[DEEPSEEK]) == pytest.approx(0.30 + 1.20 + 0.30)
 
 
+LOCAL = "qwen-local"
+LOCAL_URL = "http://127.0.0.1:8080"
+
+
+def test_local_arm():
+    """D-18: the local llama.cpp arm on loopback, one worker, sending nothing off the machine,
+    free, and needing no key variable."""
+    arm = _arms()[LOCAL]
+    assert (arm.backend, arm.base_url, arm.key_env, arm.model) == (
+        "local", LOCAL_URL, None, "qwen3.6-35b-a3b")  # fmt: skip
+    assert arm.sends_disassembly is False and not arm.egress
+    assert arm.max_workers == 1 and arm.prices == (0.0, 0.0, 0.0, 0.0)
+    assert arm.accepted_init == ("qwen3.6-35b-a3b",) and arm.coauthor
+
+
+def test_both_qwen_entries_are_one_model_family():
+    """The owner's Qwen ruling: the hosted and the local Qwen run the same weights, and differ
+    in backend (and so in endpoint, key, egress, price and workers), not in model family."""
+    arms = _arms()
+    hosted, local = arms["qwen-hosted"], arms[LOCAL]
+    assert hosted.model.rsplit("/", 1)[-1] == local.model
+    assert (hosted.backend, local.backend) == ("openrouter", "local")
+    assert (hosted.harness, hosted.coauthor) == (local.harness, local.coauthor)
+
+
+def test_session_env_local():
+    """RESEARCH Q7: llama-server ignores the token without --api-key, but the token-leak guard
+    needs a non-empty one, so a loopback arm with no key variable gets LOOPBACK_TOKEN."""
+    arms = _arms()
+    env = session_env(arms[LOCAL], {"PATH": "made-up", "OPENROUTER_API_KEY": "made-up"}, arms)
+    assert backends.LOOPBACK_TOKEN == "local"
+    assert env["ANTHROPIC_BASE_URL"] == LOCAL_URL
+    assert env["ANTHROPIC_AUTH_TOKEN"] == backends.LOOPBACK_TOKEN
+    assert env["ANTHROPIC_API_KEY"] == "" and "OPENROUTER_API_KEY" not in env
+    assert [env[pin] for pin in PINS] == ["qwen3.6-35b-a3b"] * 3
+
+
+@pytest.mark.parametrize("url", ["https://llm.example.invalid/anthropic",
+                                 "http://192.168.1.5:8080"])  # fmt: skip
+def test_no_key_variable_needs_a_loopback_url(tmp_path, url):
+    """Without key_env the fixed loopback token would be sent: allowed for loopback only."""
+    text = (_DEEPSEEK_TOML.replace('key_env = "DEEPSEEK_API_KEY"\n', "")
+            .replace(DEEPSEEK_URL, url))  # fmt: skip
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, text))
+    assert DEEPSEEK in str(exc.value) and "key_env" in str(exc.value)
+
+
+def test_the_local_arm_takes_no_allow_egress():
+    arm = _arms()[LOCAL]
+    preflight(arm, {}, allow_egress=())
+    with pytest.raises(ArmError) as exc:
+        preflight(arm, {}, allow_egress=(LOCAL,))
+    assert LOCAL in str(exc.value)
+
+
 def test_session_env_marks_egress_sessions():
     """D-10: a hosted arm's session carries REVERSEAPOC_EGRESS=1, so the hook denies its reads
     of orig/ and third_party/; a Claude arm's never does, even when the variable is inherited."""
