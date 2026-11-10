@@ -33,7 +33,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
   inside the repository and never a .env* file (a Glob pattern or Grep glob may hold plain
   {a,b} alternatives, each expansion judged by the same rule; [ ] classes are refused,
-  261109-gzw); and run Bash only as an exact attempt-wrapper form
+  261109-gzw), and, in a session of a non-Anthropic arm (REVERSEAPOC_EGRESS=1, 07.2-12, D-10),
+  nothing under orig/ or third_party/; and run Bash only as an exact attempt-wrapper form
   (ATTEMPT_PREFIX plus one of `forms_for(kind)`: MATCHING_FORMS for a matching session,
   ATTEMPT_FORMS for a readability one, D-44, D-26), in the foreground (no `run_in_background`),
   and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
@@ -142,6 +143,10 @@ _PRAGMA = re.compile(r"\s*(#|%:)\s*pragma(?![A-Za-z0-9_])")
 CLAIM_ENV = "REVERSEAPOC_CLAIM"
 _CLAIM = re.compile(r"(ufo2p|tacp)/[a-z0-9_]+")
 _READ_TOOLS = ("Read", "Glob", "Grep")
+# 07.2-12 (D-10): "1" on a session whose arm sends the context pack to a non-Anthropic backend
+# (backends.session_env sets it); such a session reads nothing under these directories.
+EGRESS_ENV = "REVERSEAPOC_EGRESS"
+_EGRESS_DENIED = ("orig", "third_party")
 _WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
 _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _SYMBOLS = re.compile(r"config/[^/]+/symbols\.csv")  # D-19: shared naming state, driver-only
@@ -1081,8 +1086,27 @@ def _secret(rel: str) -> bool:
     return any(part.startswith(_SECRET_PREFIX) for part in rel.split("/"))
 
 
-def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
-    """Read, Glob and Grep: inside the session's checkout and never a .env* file."""
+def _egress_problem(rels: Sequence[str], tool_input: Mapping, tool: str) -> str:
+    """07.2-12 (D-10): why an egress session's read names orig/ or third_party/, or ''. The path
+    is judged in every form; a Glob pattern or Grep glob, as written and in every brace
+    expansion, when any of its parts is one of those directories (casefolded, as NTFS opens
+    it). A recursive Grep or Glob from a parent directory with no such pattern is not judged
+    here: both tools skip gitignored trees by default, and both directories are gitignored."""
+    if any(_under(rel, name) for rel in rels for name in _EGRESS_DENIED):
+        return "names orig/ or third_party/"
+    for key in ("pattern", "glob") if tool == "Glob" else ("glob",):
+        pattern = tool_input.get(key)
+        texts = (_brace_expansions(pattern) or [pattern]) if isinstance(pattern, str) else []
+        for text in texts:
+            parts = {part.casefold() for part in text.replace("\\", "/").split("/")}
+            if parts & set(_EGRESS_DENIED):
+                return f"{key} {pattern!r} names orig/ or third_party/"
+    return ""
+
+
+def _read(payload: Mapping, root: tuple[str, ...], env: Mapping[str, str]) -> Decision:
+    """Read, Glob and Grep: inside the session's checkout and never a .env* file; in an egress
+    session (EGRESS_ENV "1", 07.2-12) nothing under orig/ or third_party/ either."""
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, Mapping):
         raise HookError("the payload has no tool_input object")
@@ -1101,6 +1125,11 @@ def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
         problem = _pattern_problem(tool_input.get(key))
         if problem:
             return _deny(f"{tool} {key} {problem} is not allowed in a matching session")
+    problem = _egress_problem(rels, tool_input, tool) if env.get(EGRESS_ENV) == "1" else ""
+    if problem:
+        return _deny(f"{tool} that {problem} is not allowed in a session whose model is not "
+                     "Anthropic's: the game files and the compiler never leave the machine "
+                     "(D-10, docs/legal.md)")  # fmt: skip
     return NO_OPINION
 
 
@@ -1272,7 +1301,7 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
         return _deny(f"{tool} is not available in a matching session (D-17, D-45)")
     root = _session_root(payload)
     if tool in _READ_TOOLS:
-        return _read(payload, root)
+        return _read(payload, root, env)
     if tool == "Bash":
         if _claim(env) is None:
             return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session runs nothing")

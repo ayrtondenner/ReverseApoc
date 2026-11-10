@@ -62,3 +62,67 @@ input = 0.30
 output = 1.20
 cache_read = 0.30
 cache_creation = 0.30
+
+# The co-author addresses below and above are the vendors' noreply forms, an assumption the
+# owner confirms at setup. Every hosted arm prices both cache classes as input until the
+# provider's cache prices are recorded (an estimate may overstate, never understate).
+
+# GLM-5.x on z.ai. The id `glm-5.3` (z.ai also lists `glm-5.3-flash` and `[1m]` forms) and the
+# price (LiteLLM, November 2026, medium confidence) are confirmed at setup.
+[arms."glm-5.3"]
+harness = "claude"
+backend = "zai"
+model = "glm-5.3"
+base_url = "https://api.z.ai/api/anthropic"
+key_env = "ZAI_API_KEY"
+sends_disassembly = true
+accepted_init = ["glm-5.3"]
+coauthor = "GLM-5.3 <noreply@z.ai>"
+max_workers = 3
+
+[arms."glm-5.3".prices]
+input = 1.40
+output = 4.40
+cache_read = 1.40
+cache_creation = 1.40
+
+# Muse Spark Open through OpenRouter (released 2026-10-15). The OpenRouter id and the price are
+# confirmed at setup.
+[arms."muse-spark-open"]
+harness = "claude"
+backend = "openrouter"
+model = "meta/muse-spark-open"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["meta/muse-spark-open"]
+coauthor = "Muse Spark Open <noreply@meta.com>"
+max_workers = 3
+
+[arms."muse-spark-open".prices]
+input = 1.25
+output = 4.25
+cache_read = 1.25
+cache_creation = 1.25
+
+# Qwen3.6-35B-A3B hosted through OpenRouter (owner, 2026-11-09): the same weights as the local
+# arm, run early with the other hosted arms as a fast check before the slow local run.
+# ASSUMPTION, confirm at setup: the OpenRouter id `qwen/qwen3.6-35b-a3b` and the prices, which
+# are placeholders set above what a 3B-active model usually costs there, so the estimate does
+# not understate until the owner copies OpenRouter's listing.
+[arms."qwen-hosted"]
+harness = "claude"
+backend = "openrouter"
+model = "qwen/qwen3.6-35b-a3b"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["qwen/qwen3.6-35b-a3b"]
+coauthor = "Qwen3.6-35B-A3B <noreply@qwen.ai>"
+max_workers = 3
+
+[arms."qwen-hosted".prices]
+input = 0.20
+output = 0.80
+cache_read = 0.20
+cache_creation = 0.20

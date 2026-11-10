@@ -1003,12 +1003,13 @@ def commit_message(
     seconds: float,
     sha1s: Sequence[tuple[str, str]],
     requested_model: str,
+    arm: backends.Arm | None = None,
 ) -> str:
     """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers.
     `model` is the init event's (the `model` line); `requested_model` the session's, which the
     init check has matched, and names the co-author (07-30: coauthor raises DriverError for a
-    model it does not know, before anything is committed)."""
-    trailer = coauthor(requested_model)
+    model it does not know, before anything is committed). 07.2-12: a non-Anthropic `arm` is
+    credited by `credit` instead."""
     lines = [
         f"feat({exe}): match {function} in {unit} (C89)",
         "",
@@ -1022,10 +1023,19 @@ def commit_message(
         "relocation ok",
         *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
         "",
-        trailer,
-        MATCHED_BY,
+        *credit(requested_model, arm),
     ]
     return "\n".join(lines) + "\n"
+
+
+def credit(requested_model: str, arm: backends.Arm | None = None) -> list[str]:
+    """The trailers of a match commit (D-25, D-26). A Claude model: its co-author line, then
+    MATCHED_BY. A non-Anthropic arm: MATCHED_BY (so stats still classes the match unattended),
+    `Matched-By: <model id>` and the arm's own co-author line, never a Claude one; the commit
+    hook adds its Claude line only to a message with no Co-Authored-By (RULINGS)."""
+    if arm is None or arm.backend == backends.ANTHROPIC:
+        return [coauthor(requested_model), MATCHED_BY]
+    return [MATCHED_BY, f"Matched-By: {arm.model}", f"Co-Authored-By: {arm.coauthor}"]
 
 
 def readability_message(
@@ -3958,7 +3968,8 @@ class _Night:
         if claim.session == READABILITY:
             return readability_message(**figures)
         return commit_message(function=claim.function,
-                              attempts=self.config.attempts_per_function, **figures)
+                              attempts=self.config.attempts_per_function,
+                              arm=claim.arm_in(self.arms), **figures)  # fmt: skip
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None, *,
@@ -4118,7 +4129,7 @@ class _Night:
         pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
         source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
         claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
-                       model=held["model_requested"])  # fmt: skip
+                       model=held["model_requested"], arm=self._held_arm(held))  # fmt: skip
         head, exact = _view_head(source), exact_source(source)
         if head is None or exact is None or _is_link(source / exact) or not (
                 source / exact).is_file():  # fmt: skip
@@ -4156,7 +4167,8 @@ class _Night:
 
     def _held_message(self, held: Mapping, gate: GateRun) -> str:
         """D-25's match message from the held attempt's own figures, with the hold run named;
-        the co-author is its requested model (`coauthor`, 07.2-12 adds other arms')."""
+        the credit is its requested model's (`coauthor`), or its hosted arm's (`credit`,
+        07.2-12)."""
         tokens = held["tokens"]
         usage = streamjson.Usage(tokens["input"], tokens["output"], tokens["cache_read"],
                                  tokens["cache_creation"], held["turns"], held["cost_usd"],
@@ -4166,9 +4178,22 @@ class _Night:
                                  attempts=self.config.attempts_per_function,
                                  model=held["model"], usage=usage, seconds=held["seconds"],
                                  sha1s=gate_sha1s(gate.doc),
-                                 requested_model=held["model_requested"])  # fmt: skip
+                                 requested_model=held["model_requested"],
+                                 arm=self._held_arm(held))  # fmt: skip
         return message.replace("\n\nattempt ", f"\n\nlanded from hold run {held['run']}\n"
                                                "attempt ", 1)  # fmt: skip
+
+    def _held_arm(self, held: Mapping) -> backends.Arm | None:
+        """07.2-12 (D-26): the arm a held attempt ran on, by its requested model and backend;
+        None on the Claude login (coauthor names it). A hosted record no arm of backends.toml
+        matches raises DriverError, so nothing is committed under an unknown arm."""
+        if held["backend"] == DEFAULT_BACKEND:
+            return None
+        for arm in self.arms.values():
+            if (arm.model, arm.backend) == (held["model_requested"], held["backend"]):
+                return arm
+        raise DriverError(f"no arm of {backends.ARMS_TOML.name} runs {held['model_requested']} "
+                          f"on {held['backend']}; nothing is committed under an unknown arm")
 
     def _record_landing(self, held: Mapping, outcome: str, *, reason: str | None = None,
                         gate: GateRun | None = None,
@@ -4806,19 +4831,23 @@ class _Night:
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
         "estimate". A night passes no effort (null: the CLI default, D-17); `harness` and
         `backend` are the session's arm's (07.2-12: DEFAULT_BACKEND on the Claude Code login,
-        else the backends.toml entry's provider); `giveup` is the session's
+        else the backends.toml entry's provider). A hosted arm's `cost_usd` is always
+        backends.estimate_cost over its tokens, `cost_source` "estimate" (RESEARCH A3: the
+        CLI's figure for a model it does not know is not trusted); `giveup` is the session's
         validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` true exactly on a
         hold run (`drive --hold`, 07.2-06). Committed records are never rewritten (D-23)."""
         use = session.usage
         measured = session.measured
         arm = session.claim.arm_in(self.arms)  # 07.2-12: the arm's harness and backend
+        hosted = arm.backend != DEFAULT_BACKEND  # RESEARCH A3: its CLI cost is not trusted
+        cost = backends.estimate_cost(use, arm) if hosted else use.cost_usd
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
                   "abort_reason": abort, "turns": use.turns,
                   "tokens": {"input": use.input_tokens, "output": use.output_tokens,
                              "cache_read": use.cache_read_tokens,
                              "cache_creation": use.cache_creation_tokens},
-                  "cost_usd": use.cost_usd, "seconds": round(session.seconds, 1),
+                  "cost_usd": cost, "seconds": round(session.seconds, 1),
                   "model": session.text("model"),
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
@@ -4830,7 +4859,7 @@ class _Night:
                   "sweep_source": source, "sweep_cells_100": cells,
                   "effort": None, "harness": arm.harness, "backend": arm.backend,
                   "duration_ms": use.duration_ms if measured else None,
-                  "cost_source": "cli" if measured else "estimate",
+                  "cost_source": "cli" if measured and not hosted else "estimate",
                   "giveup": self._giveup(session.claim),
                   "hold_run": self.config.hold}  # fmt: skip
         self._append(record)

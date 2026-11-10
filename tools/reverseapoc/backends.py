@@ -12,7 +12,9 @@ key variable and every inherited endpoint, token and default-model variable are 
 session sees another arm's key and a Claude arm never inherits a base URL that would route the
 owner's claude.ai login elsewhere (D-12); a hosted arm then gets its endpoint, its own key as
 the bearer token (ANTHROPIC_AUTH_TOKEN), an empty ANTHROPIC_API_KEY, no nonessential traffic
-and the three default-model pins set to its model.
+and the three default-model pins set to its model. Every non-Anthropic arm's session also gets
+hooks.EGRESS_ENV=1, so the matching hook denies its reads of orig/ and third_party/ (D-10).
+`estimate_cost` prices a session's tokens at its arm's backends.toml prices (RESEARCH A3).
 
 `preflight` runs before any session (D-11, D-26): a non-Anthropic arm that sends disassembly
 runs only when it is also named by `--allow-egress`, an `--allow-egress` naming anything else is
@@ -31,7 +33,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from .streamjson import Price
+from .hooks import EGRESS_ENV
+from .streamjson import _COST_DIGITS, TOKENS_PER_MTOK, Price, Usage
 from .targets import REPO_ROOT
 
 ARMS_TOML = REPO_ROOT / "config" / "driver" / "backends.toml"
@@ -45,7 +48,7 @@ API_KEY_ENV = "ANTHROPIC_API_KEY"
 NONESSENTIAL_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 MODEL_PINS = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_HAIKU_MODEL")  # fmt: skip
-INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS)  # stripped from every session
+INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped from every session
 
 _REQUIRED = ("harness", "backend", "model", "sends_disassembly", "max_workers")
 _HOSTED = ("accepted_init", "prices", "coauthor")  # required off the Claude login
@@ -217,12 +220,24 @@ def session_env(arm: Arm, base_env: Mapping[str, str],
     table = load_arms() if arms is None else arms
     drop = {*INHERITED, *(a.key_env for a in (*table.values(), arm) if a.key_env)}
     env = {key: value for key, value in base_env.items() if key not in drop}
+    if arm.backend != ANTHROPIC:  # D-10: the hook then denies its reads of orig/, third_party/
+        env[EGRESS_ENV] = "1"
     if arm.base_url is None:
         return env
     env.update({BASE_URL_ENV: arm.base_url, AUTH_TOKEN_ENV: _token(arm, base_env),
                 API_KEY_ENV: "", NONESSENTIAL_ENV: "1"})  # fmt: skip
     env.update(dict.fromkeys(MODEL_PINS, arm.model))
     return env
+
+
+def estimate_cost(usage: Usage, arm: Arm) -> float:
+    """`usage`'s four token classes at the arm's prices per million tokens, rounded like the
+    driver's totals: a hosted session's cost (RESEARCH A3: the CLI's own figure for a model it
+    does not know is not trusted)."""
+    counts = (usage.input_tokens, usage.output_tokens, usage.cache_read_tokens,
+              usage.cache_creation_tokens)  # fmt: skip
+    total = sum(n * p for n, p in zip(counts, arm.prices, strict=True)) / TOKENS_PER_MTOK
+    return round(total, _COST_DIGITS)
 
 
 def preflight(arm: Arm, env: Mapping[str, str], *, allow_egress: Sequence[str]) -> None:
