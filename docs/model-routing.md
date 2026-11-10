@@ -193,7 +193,9 @@ The model ids are assumptions to confirm at setup.
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
   -c sandbox_workspace_write.network_access=false -c projects."<attempt dir>".trust_level="trusted"
   <prompt>`. Codex loads no skill and runs no hook, so the prompt carries the goal, the
-  watcom-decomp skill's body and the session rules. Codex streams no event that names the
+  watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
+  through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
+  read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
   model: the record keeps `model_requested` and a null `model`, and there is no init check.
   Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
   added to output); the cost is 0 on Plus, recorded as an estimate.
