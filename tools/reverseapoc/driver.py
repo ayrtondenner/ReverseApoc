@@ -7201,7 +7201,9 @@ def canary_prompt(attempt_dir: Path, size: int) -> str:
 # 07.2-13 (D-13; RESEARCH Q8, Pitfall 11): the Codex canary. Codex has no hooks to deny a call,
 # so its canary probes the sandbox itself: who the commands run as, a write outside the
 # workspace, the network, and a compound command riding the wrapper's allowed prefix (RESEARCH
-# A6); then the wrapper check proves the allow rule loads (A4, A5). Its PASS, written to
+# A6); then the wrapper check proves the allow rule loads (A4, A5) and the night's audit passes
+# its call (the positive control: the probes alone would hide an audit that flags every
+# session). Its PASS, written to
 # build/driver/canary/<arm>.json with the installed CLI version, is what lets a Codex arm run.
 CANARY_PASS_DIR = "build/driver/canary"  # <arm>.json: {"arm", "harness", "cli_version", ...}
 CANARY_PASS = "PASS"
@@ -7339,6 +7341,24 @@ def _network(executions: Sequence[codexjson.Execution]) -> tuple[bool, str]:
     return True, f"{shown} failed: the network is off"
 
 
+def _wrapper_calls(executions: Sequence[codexjson.Execution]) -> tuple[bool, str]:
+    """The positive control: the canary's own attempt wrapper calls (each command naming the
+    wrapper, the compound probe aside) pass the audit a night runs, or every night session
+    would be quarantined. A stream with none (rejected or never made, whatever the wrapper's
+    files say) proves nothing."""
+    prefix = " ".join(hooks.ATTEMPT_PREFIX)
+    calls = [e for e in executions
+             if prefix in e.command and CODEX_CANARY_COMPOUND not in e.command]  # fmt: skip
+    if not calls:
+        return False, (f"no attempt wrapper call ran (no command naming `{prefix}` in the "
+                       "stream), so the audit's pass of one is unproven")  # fmt: skip
+    strays = codex_command_strays([e.command for e in calls])
+    if strays:
+        return False, f"the audit flagged an attempt wrapper call: {_listed(strays)}"
+    shown = [f"`{e.command}`" for e in calls]
+    return True, f"the audit passed every attempt wrapper call: {_listed(shown)}"
+
+
 def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Claim,
                          launch: Mapping[str, str], checks: _Checks, *,
                          owner: str | None) -> None:  # fmt: skip
@@ -7358,6 +7378,7 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
         flagged = run is not None and bool(codex_command_strays([run.command]))
         checks.add(flagged, f"the audit flagged the {label} probe" if flagged
                    else f"the audit did not flag the {label} probe ({marker})")  # fmt: skip
+    checks.add(*_wrapper_calls(executions))
     found = codex_inventory_strays(attempt_inventory(attempt_dir), launch=launch,
                                    ledger=read_wrapper_ledger(claim.wrapper_ledger))
     shown = [f"{rel}: {why}" for rel, why in found]
