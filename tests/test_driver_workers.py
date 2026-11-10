@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1399,12 +1399,25 @@ TWO_ARMS = ((HAIKU, 1), (SONNET, 1))
 @dataclass
 class ArmNight(WNight):
     """WNight whose stand-in claude echoes the requested model into its init event, as the
-    real CLI does, so a session of any Claude or hosted arm passes the init check."""
+    real CLI does, so a session of any Claude or hosted arm passes the init check. A model's
+    scripts in `by_model` come before the unit's (07.2-16 Task 2: one arm's LIMIT)."""
+
+    by_model: dict[str, list[Sess]] = field(default_factory=dict)
 
     def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
               max_turns: int) -> list[str]:  # fmt: skip
-        argv = super()._argv(prompt, model=model, max_budget_usd=max_budget_usd,
-                             max_turns=max_turns)  # fmt: skip
+        with self.lock:
+            scripted = self.by_model.get(model)
+            spec = scripted.pop(0) if scripted else None
+        if spec is None:
+            argv = super()._argv(prompt, model=model, max_budget_usd=max_budget_usd,
+                                 max_turns=max_turns)  # fmt: skip
+        else:
+            with self.lock:
+                self.prompts.append(prompt)
+            self.local.current = spec
+            argv = [sys.executable, str(FAKE), "--scenario", spec.scenario, "--env-unit-paths",
+                    "--any-unit"]  # fmt: skip
         return argv + (["--model", model] if model != driver.OPUS_MODEL else [])
 
 
@@ -1535,3 +1548,122 @@ def test_each_arm_gets_its_own_session_env(tmp_path):
                  hooks.EGRESS_ENV):  # fmt: skip
         assert name not in set(claude), name
     assert "DEEPSEEK_API_KEY" not in set(hosted)
+
+
+# ---- 07.2-16 Task 2 (D-22): each arm's own usage pause and limits ----
+
+LOCAL = "qwen-local"
+
+
+def _runs_launched(night: Night, run: str) -> int:
+    with night.lock:
+        return sum(_run_of(night, launch) == run for launch in night.launched)
+
+
+def _until(predicate) -> bool:
+    deadline = time.monotonic() + WAIT_S
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def _one_arm_limited(tmp_path, monkeypatch):
+    """Two arms over four picks under --hold. The Sonnet arm's first session ends LIMIT while
+    the Haiku arm's first session runs; that Haiku session ends only once Sonnet's pause has
+    begun (its backoff sleep was called), and the backoff lasts until the Haiku arm has
+    launched again twice (or WAIT_S passed)."""
+    nights = _capture_nights(monkeypatch)
+    picks = tuple(_wpick(i) for i in range(4))
+    night = ArmNight(tmp_path, picks=picks, by_model={SONNET: [Sess("rate_limit", write=None)]})
+    paused = threading.Event()
+    seen: dict = {}
+
+    def after(unit, index):
+        if _run_of(night, night.launched[index]) == _arm_run(HAIKU) and not paused.is_set():
+            assert paused.wait(WAIT_S), "the Sonnet arm's pause never began"
+
+    def sleep(seconds):
+        paused.set()
+        seen["haiku_launched_while_paused"] = _until(
+            lambda: _runs_launched(night, _arm_run(HAIKU)) >= 3)
+        seen["sonnet_launched_while_paused"] = _runs_launched(night, _arm_run(SONNET))
+        night._sleep(seconds)
+
+    night.after = after
+    report = night.run(config={"arms": ((SONNET, 1), (HAIKU, 1)), "hold": True}, sleep=sleep)
+    return night, nights, seen, report
+
+
+def test_limit_pauses_only_its_arm(tmp_path, monkeypatch):
+    """D-22: one arm's LIMIT (a Codex Plus window, an Antigravity quota) starts that arm's pause
+    only: the other arm keeps launching while it holds, the paused arm launches nothing until
+    its backoff passed, and its probe clears its own pause."""
+    night, nights, seen, report = _one_arm_limited(tmp_path, monkeypatch)
+    assert report.event == "ENDED", report.detail
+    assert seen["haiku_launched_while_paused"], "the Haiku arm stopped launching under Sonnet's pause"
+    assert seen["sonnet_launched_while_paused"] == 1
+    assert night.sleeps == [60]
+    assert _runs_launched(night, _arm_run(SONNET)) == 5  # the LIMIT launch, then four attempts
+    assert _runs_launched(night, _arm_run(HAIKU)) == 4
+    lanes = nights[-1].lanes
+    assert [lane.pause.paused for lane in lanes] == [False, False]
+    assert lanes[0].pause is not lanes[1].pause
+
+
+def test_limit_record_names_its_arm(tmp_path, monkeypatch):
+    """The limit record of an arm's wait carries that arm's run id and its worker."""
+    night, _, _, report = _one_arm_limited(tmp_path, monkeypatch)
+    assert report.event == "ENDED", report.detail
+    (limit,) = night.kinds("limit")
+    assert (limit["run"], limit["worker"], limit["seconds"]) == (_arm_run(SONNET), 0, 60)
+    driver.validate_record(limit)
+
+
+def test_arm_caps(tmp_path, capsys):
+    """D-22: an arm's workers above its max_workers are refused before any session; an arm's
+    max_sessions stops that arm's launches at its cap while the other arm goes on; the night's
+    --max-sessions still caps the total."""
+    rig = Rig(tmp_path / "rig")
+    code, out, _ = rig.drive(capsys, json=True, arms=((HAIKU, 1), (SONNET, 11)))
+    assert code == 2 and "max_workers" in json.loads(out)["detail"]
+    assert rig.runner.calls == []
+    table = driver.backends.load_arms()
+    table[HAIKU] = replace(table[HAIKU], max_sessions=2)
+    picks = tuple(_wpick(i) for i in range(3))
+    capped = ArmNight(tmp_path / "capped", picks=picks)
+    report = capped.run(config={"arms": TWO_ARMS, "hold": True, "arm_table": table})
+    assert report.event == "ENDED", report.detail
+    assert _runs_launched(capped, _arm_run(HAIKU)) == 2
+    assert _runs_launched(capped, _arm_run(SONNET)) == 3
+    total = ArmNight(tmp_path / "total", picks=picks)
+    report = total.run(config={"arms": TWO_ARMS, "hold": True, "max_sessions": 4})
+    assert (report.event, report.reason) == ("ENDED", driver.MAX_SESSIONS), report.detail
+    assert len(total.launched) == 4
+
+
+def test_local_arm_beside_cloud(tmp_path, capsys):
+    """D-22: the local arm (max_workers 1) runs beside a cloud arm of two workers, three
+    sessions at once, but never two local sessions at once; `qwen-local=2` is refused."""
+    from test_drive import _keyed
+
+    rig = Rig(tmp_path / "rig")
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             arms=((LOCAL, 2), (HAIKU, 1)))  # fmt: skip
+    assert code == 2 and "max_workers" in json.loads(out)["detail"]
+    picks = tuple(_wpick(i) for i in range(4))
+    night = ArmNight(tmp_path / "night", picks=picks)
+    together = threading.Barrier(3, timeout=WAIT_S)
+    night.before = lambda unit, index: together.wait() if index < 3 else None
+    report = night.run(config={"arms": ((LOCAL, 1), (HAIKU, 2)), "hold": True,
+                               "base_env": _keyed(night.env)})  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert night.peak == 3
+    local = {i for i, launch in enumerate(night.launched) if _run_of(night, launch) == _arm_run(LOCAL)}
+    active = peak = 0
+    for event, index in night.events:
+        if index in local:
+            active += 1 if event == "start" else -1
+            peak = max(peak, active)
+    assert peak == 1 and len(local) == 4

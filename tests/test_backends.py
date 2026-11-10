@@ -395,3 +395,34 @@ def test_a_claude_harness_arm_still_needs_init_ids(tmp_path):
     with pytest.raises(ArmError) as exc:
         load_arms(_table(tmp_path, _DEEPSEEK_TOML.replace('["deepseek-flash"]', "[]")))
     assert "accepted_init" in str(exc.value)
+
+
+# ---- 07.2-16 (D-22): an arm's own session cap ----
+
+
+def test_max_sessions_is_optional(tmp_path):
+    """`max_sessions` is optional: absent, the arm has no cap of its own (None); present, a
+    whole number of 1 or more."""
+    assert load_arms(_table(tmp_path, _DEEPSEEK_TOML))[DEEPSEEK].max_sessions is None
+    text = _DEEPSEEK_TOML.replace("max_workers = 3\n", "max_workers = 3\nmax_sessions = 5\n")
+    assert load_arms(_table(tmp_path, text))[DEEPSEEK].max_sessions == 5
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"5"', "1.5"])
+def test_a_bad_max_sessions_is_refused(tmp_path, value):
+    text = _DEEPSEEK_TOML.replace("max_workers = 3\n", f"max_workers = 3\nmax_sessions = {value}\n")
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, text))
+    assert DEEPSEEK in str(exc.value) and "max_sessions" in str(exc.value)
+
+
+def test_agy_arms_carry_the_cap_their_canary_sizes():
+    """The Antigravity arms carry a session cap the owner sets from the quota the agy canary
+    measures (a comment in backends.toml says so); the Claude arms have none."""
+    arms = _arms()
+    for name in ("gemini-flash", "gpt-oss"):
+        assert isinstance(arms[name].max_sessions, int) and arms[name].max_sessions >= 1, name
+    assert [name for name in CLAUDE_ARMS if arms[name].max_sessions is not None] == []
+    text = backends.ARMS_TOML.read_text(encoding="utf-8")
+    comment = text[:text.index('[arms."gemini-flash"]')].rsplit("\n\n", 1)[-1]
+    assert "max_sessions" in comment and "canary" in comment and "quota" in comment
