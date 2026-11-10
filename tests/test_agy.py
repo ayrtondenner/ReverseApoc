@@ -198,6 +198,30 @@ def test_agyjson_commands_writes_denied():
     assert agyjson.denied_actions(_events("gemini_success")) == ["command(type notes.md)"]
 
 
+def _step(index: int, tool: str, **info) -> dict:
+    return {"type": "step_update", "step_index": index, "tool_name": tool, "tool_info": info}
+
+
+def test_agyjson_a_denial_hides_only_its_own_kind_and_count():
+    """A denied action hides one step of its own kind with its target, never a step of another
+    kind and never a second step: a denied command or read of a path must not hide a read or a
+    write of it that ran (security review, fail-open audit)."""
+    target = "../../../orig/UFO2P.EXE"
+    events = [_step(1, "run_command", command=target),
+              _step(2, "view_file", path=target),
+              _step(3, "view_file", path=target),
+              _step(4, "write_to_file", path=target),
+              {"type": "result", "status": "SUCCESS",
+               "denied_actions": [f"command({target})", f"read_file({target})"]}]
+    assert agyjson.commands(events) == []
+    assert agyjson.read_targets(events) == [target]
+    assert agyjson.write_targets(events) == [target]
+    unsandboxed = [_step(1, "run_command", command="type notes.md"),
+                   {"type": "result", "status": "SUCCESS",
+                    "denied_actions": ["unsandboxed(type notes.md)"]}]
+    assert agyjson.commands(unsandboxed) == []
+
+
 def test_drive_agy_arm_records(tmp_path, capsys, monkeypatch):
     """A Gemini night launches tests/fakeagy.py in its attempt dir under a settings file the
     driver wrote outside it, and records harness agy, backend google, the requested slug, the
