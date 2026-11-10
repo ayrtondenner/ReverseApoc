@@ -21,6 +21,7 @@ import pytest
 
 from reverseapoc import cli, driver
 from reverseapoc.driver import DriveOptions, ExeWorld, PackInfo, Seams
+from reverseapoc.functions import FunctionRow, write_functions_csv
 from reverseapoc.picker import Pick
 from reverseapoc.score import Candidate
 from reverseapoc.session import run_session
@@ -643,25 +644,35 @@ class Launch:
 
 PASSING_CHECK = {"n": 1, "exit": 0, "sweep": False, "best_percent": 100.0, "reloc_ok": True,
                  "bytes_ok": True, "splice_ok": True, "sweep_hit": None,
-                 "source": "checks/0001.c"}  # fmt: skip
+                 "source": "checks/0001.c", "note": "checks/0001.note.json"}  # fmt: skip
+CANARY_FUNCTIONS = "config/ufo2p/functions.csv"
+CANARY_SIZE = 0xD  # the made-up canary row below, as long as the real one (func_000A3980)
+CANARY_ROW = FunctionRow(0x000A3980, 0x000A3980 + CANARY_SIZE, "func_000A3980", "game",
+                         "u_000a34f0", "call")  # fmt: skip
+CONSUMED_NOTE = {"change": "canary", "why": "canary", "expect": "canary",
+                 "observed": {"exit": 0, "objdiff_percent": 100.0, "bytes_differing": 0,
+                              "first_va": None, "window_first_row": None,
+                              "regions": "regions 0:0"}}  # fmt: skip
 
 
 def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None,
                 check: dict | None = PASSING_CHECK, raises: BaseException | None = None,
-                unit: bool = True) -> Rig:  # fmt: skip
+                unit: bool = True, note: bool = True) -> Rig:  # fmt: skip
     """A rig whose session is fakeclaude replaying `scenario` through the real run_session,
     writing `write` (repo-relative) like a tool call that went through; `check` is the
-    checks.jsonl line the wrapper's `attempt check` would have logged (None: no log);
+    checks.jsonl line the wrapper's `attempt check` would have logged (None: no log) and `note`
+    whether it also left the consumed note checks/0001.note.json (07.2-03);
     `after(repo)` runs once the stream ended (a stray the session left); `raises` is raised by
-    the session instead. `unit`: HEAD holds the canary's matched unit and include/common.h, so
-    its view (07-13) has them."""
+    the session instead. `unit`: HEAD holds the canary's matched unit, include/common.h and its
+    functions.csv row, so its view (07-13) has them and its plan has a size (07.2-03)."""
     rig = Rig(tmp_path)
     rig.launches = []
     rig.views = []  # (view unit exists, its bytes, include/ exists) at session time
     if unit:
         _write(rig.repo / CANARY_UNIT, CANARY_TEXT)
         _write(rig.repo / "include" / "common.h", "/* made up */\n")
-        _git(rig.repo, rig.env, "add", "--", CANARY_UNIT, "include/common.h")
+        write_functions_csv(rig.repo / CANARY_FUNCTIONS, [CANARY_ROW], "UFO2P.EXE")
+        _git(rig.repo, rig.env, "add", "--", CANARY_UNIT, "include/common.h", CANARY_FUNCTIONS)
         _git(rig.repo, rig.env, "commit", "-q", "-m", "the canary's matched unit")
 
     def argv(prompt: str, *, model: str, max_budget_usd: float, max_turns: int):
@@ -679,8 +690,11 @@ def _canary_rig(tmp_path, scenario: str, *, write: str | None = None, after=None
         if raises is not None:
             raise raises
         result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        attempt_dir = Path(env["REVERSEAPOC_ATTEMPT_DIR"])
         if check is not None:
-            _write(Path(env["REVERSEAPOC_ATTEMPT_DIR"]) / "checks.jsonl", json.dumps(check) + "\n")
+            _write(attempt_dir / "checks.jsonl", json.dumps(check) + "\n")
+        if check is not None and note:
+            _write(attempt_dir / "checks" / "0001.note.json", json.dumps(CONSUMED_NOTE) + "\n")
         if after is not None:
             after(Path(cwd))
         return result
@@ -705,7 +719,8 @@ def test_canary_pass(tmp_path, capsys):
     assert (code, doc.get("canary")) == (0, "PASS"), _failed(doc)
     texts = " | ".join(c["check"] for c in doc["checks"])
     for needle in ("config/targets.toml", "tools/x.py", "`ls`", "attempt context",
-                   "attempt check", "git status"):  # fmt: skip
+                   "attempt check", "git status", driver.CANARY_FOREIGN_GIVEUP,
+                   "0001.note.json"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1
     assert not rig.commands("gate")
@@ -716,9 +731,79 @@ def test_canary_prompt_asks_for_the_check_timeout_the_hook_requires():
     at hooks.CHECK_TIMEOUT_MS, so the canary's fifth call must ask for exactly that."""
     from reverseapoc import hooks
 
-    step = (f"5. Run the Bash command `{driver.CANARY_CHECK}` with the Bash tool's timeout set "
+    step = (f"8. Run the Bash command `{driver.CANARY_CHECK}` with the Bash tool's timeout set "
             f"to {hooks.CHECK_TIMEOUT_MS}.")  # fmt: skip
     assert step in driver.CANARY_PROMPT
+
+
+def _content(prompt: str, step: str) -> str:
+    """The backquoted content the prompt's `step` asks to write."""
+    assert step in prompt, step
+    return prompt.split(step, 1)[1].split("`", 1)[0]
+
+
+def test_canary_prompt_writes_plan_and_note(tmp_path):
+    """07.2-03 (D-26): in order, the context wrapper, a forbidden session-file Write, a Write of
+    plan.json valid for the canary row, a Write of check-note.json, then the check; both files
+    named by their absolute attempt-dir paths."""
+    from reverseapoc import attempt
+
+    attempt_dir = tmp_path / "attempt-1"
+    attempt_dir.mkdir()
+    prompt = driver.canary_prompt(attempt_dir, CANARY_SIZE)
+    steps = [f"4. Run the Bash command `{driver.CANARY_WRAPPER}`.",
+             f"5. Write the file {driver.CANARY_FOREIGN_GIVEUP} with the content `canary`.",
+             f"6. Write the file {attempt_dir / 'plan.json'} with the content `",
+             f"7. Write the file {attempt_dir / 'check-note.json'} with the content `",
+             f"8. Run the Bash command `{driver.CANARY_CHECK}`"]  # fmt: skip
+    places = [prompt.index(step) for step in steps]
+    assert places == sorted(places)
+    assert "exactly these eight tool calls" in prompt
+    plan = attempt_dir / "plan.json"
+    plan.write_text(_content(prompt, steps[2]), encoding="utf-8")
+    regions = attempt.read_plan(plan, CANARY_SIZE)["regions"]
+    assert [(r["start"], r["end"]) for r in regions] == [(0, CANARY_SIZE)]
+    note = attempt_dir / "check-note.json"
+    note.write_text(_content(prompt, steps[3]), encoding="utf-8")
+    assert set(attempt.read_check_note(note)) == {"change", "why", "expect"}
+
+
+@pytest.mark.parametrize("size", [1, 0x3F, 0x40, 0xFF, 0x100, 0x101, 0x180, 0x300])
+def test_canary_plan_is_valid_at_every_size(tmp_path, size):
+    from reverseapoc import attempt
+
+    plan = tmp_path / "plan.json"
+    plan.write_text(driver._canary_plan_text(size), encoding="utf-8")
+    assert attempt.read_plan(plan, size)["regions"][-1]["end"] == size
+
+
+def test_canary_needs_the_consumed_note(tmp_path, capsys):
+    """07.2-03 (D-02): a check line without its consumed note checks/0001.note.json is FAIL."""
+    rig = _canary_rig(tmp_path, "canary_pass", write=f"{CANARY_DIR}/context.md", note=False)
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any("no consumed note" in text and "0001.note.json" in text
+               for text in _failed(doc)), _failed(doc)  # fmt: skip
+
+
+def test_canary_probes_a_forbidden_session_file(tmp_path, capsys):
+    """07.2-03 (T-07.2-09): the canary writes a giveup.json in another run's attempt directory,
+    which the hooks deny, and FAILs when that Write went through."""
+    from reverseapoc import hooks
+
+    target = driver.CANARY_FOREIGN_GIVEUP
+    assert ("Write", target) in driver.CANARY_DENIED
+    assert target.startswith("build/driver/") and target.endswith("/giveup.json")
+    assert not target.startswith("build/driver/canary/")
+    base = f"{CANARY_DIR}"
+    assert not hooks.matching_write_allowed(
+        target, claim="ufo2p/u_000a34f0", notes=f"{base}/notes.md", tracked=lambda _: False,
+        unit_file=f"{base}/view/{CANARY_UNIT}", proposals=f"{base}/proposals.jsonl")
+    rig = _canary_rig(tmp_path, "canary_session_file_allowed",
+                      write=f"{CANARY_DIR}/context.md")  # fmt: skip
+    code, doc = _canary(rig, capsys)
+    assert (code, doc.get("canary")) == (1, "FAIL")
+    assert any(target in text and "NOT denied" in text for text in _failed(doc)), _failed(doc)
 
 
 @pytest.mark.parametrize("check", [dict(PASSING_CHECK, exit=2, best_percent=None), None])
@@ -758,7 +843,9 @@ def test_canary_env_names_the_claim_with_absolute_paths(tmp_path, capsys):
     assert cwd == rig.repo
     for words in ("config/targets.toml", "tools/x.py", "`ls`",
                   "uv run --frozen reverseapoc attempt context",
-                  "uv run --frozen reverseapoc attempt check"):  # fmt: skip
+                  "uv run --frozen reverseapoc attempt check",
+                  str(attempt_dir / "plan.json"),
+                  str(attempt_dir / "check-note.json")):  # fmt: skip
         assert words in rig.prompt, words
 
 

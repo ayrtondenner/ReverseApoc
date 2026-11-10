@@ -587,10 +587,10 @@ def test_attempt_forms_are_the_shared_constants():
     assert hooks.ATTEMPT_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
     )  # fmt: skip
-    # 07.2-02 (D-26): the verbs only a matching session runs; readability keeps the five
+    # 07.2-02, 07.2-03 (D-26): the verbs only a matching session runs; readability keeps the five
     assert hooks.MATCHING_FORMS == (
         ("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",),
-        ("giveup",),
+        ("giveup",), ("plan",),
     )  # fmt: skip
     assert hooks.forms_for("matching") == hooks.MATCHING_FORMS
     assert hooks.forms_for("readability") == hooks.ATTEMPT_FORMS
@@ -1881,6 +1881,73 @@ def test_matching_write_allowed_takes_the_session_kind():
     assert allowed(f"{base}/notes.md", kind="readability")
     assert not allowed("build/driver/r/ufo2p/func_000A3980/giveup.json")
     assert not allowed(f"{base}/view/giveup.json")
+
+
+# ---- 07.2-03 (999.6, D-01, D-26): plan.json and check-note.json beside the notes ----
+
+SESSION_JSON = '{"change": "a", "why": "b", "expect": "c"}'
+
+
+def test_bash_allows_plan_only_in_a_matching_session(repo):
+    command = f"{WRAPPER} plan"
+    assert hooks.bash_allowed(command, kind="matching")
+    assert hooks.bash_allowed(command)  # absent kind: a matching run
+    assert not hooks.bash_allowed(command, kind="readability")
+    assert not hooks.bash_allowed(f"{WRAPPER} plan x", kind="matching")  # it takes no argument
+    _view_unit(repo)
+    assert not matching(bash(command, repo, None)).deny
+    assert matching(bash(command, repo, None), view_env(repo, kind="readability")).deny
+
+
+def test_session_file_names():
+    assert (hooks.PLAN_NAME, hooks.CHECK_NOTE_NAME) == ("plan.json", "check-note.json")
+    assert hooks.SESSION_FILE_NAMES == ("giveup.json", "plan.json", "check-note.json")
+
+
+@pytest.mark.parametrize("name", ["plan.json", "check-note.json"])
+def test_matching_allows_the_plan_and_note_beside_the_notes(repo, name):
+    """D-26: a matching session may write plan.json and check-note.json beside its notes.md, a
+    readability session may not, and either name anywhere else under build/driver/ is denied."""
+    _view_unit(repo)
+    target = _attempt(repo) / name
+    assert not matching(in_repo(write(native(target), SESSION_JSON), repo)).deny
+    upper = repo / target.relative_to(repo).as_posix().upper()
+    assert not matching(in_repo(write(native(upper), SESSION_JSON), repo)).deny
+    readability = view_env(repo, kind="readability")
+    assert matching(in_repo(write(native(target), SESSION_JSON), repo), readability).deny
+    elsewhere = [_attempt(repo).parent / "attempt-2" / name, _attempt(repo) / "view" / name,
+                 _attempt(repo) / "checks" / name, repo / "build" / "driver" / name,
+                 _attempt(repo) / f"{name}.bak"]  # fmt: skip
+    for path in elsewhere:
+        assert matching(in_repo(write(native(path), SESSION_JSON), repo)).deny, path
+
+
+@pytest.mark.parametrize("name", ["plan.json", "check-note.json"])
+def test_always_exempts_only_the_notes_sibling_plan_and_note(repo, name):
+    notes = repo / "build" / "driver" / "run1" / "ufo2p" / "func_000A3980" / "a-1" / "notes.md"
+    env = {"REVERSEAPOC_ATTEMPT_NOTES": native(notes)}
+    assert not always(write(native(notes.with_name(name))), env).deny
+    assert always(write(native(notes.with_name(name))), {}).deny
+    assert always(write(native(notes.parent.parent / name)), env).deny
+    assert always(write(native(notes.parent / "checks" / name)), env).deny
+
+
+@pytest.mark.parametrize("name", ["plan.json", "check-note.json"])
+def test_matching_write_allowed_admits_the_plan_and_note(name):
+    claim = "ufo2p/u_000a34f0"
+    base = "build/driver/r/ufo2p/func_000A3980/attempt-1"
+    paths = {"notes": f"{base}/notes.md", "unit_file": f"{base}/view/src/ufo2p/u_000a34f0.c",
+             "proposals": f"{base}/proposals.jsonl"}  # fmt: skip
+
+    def allowed(rel: str, **kind) -> bool:
+        return hooks.matching_write_allowed(rel, claim=claim, tracked=lambda _: False,
+                                            **paths, **kind)  # fmt: skip
+
+    assert allowed(f"{base}/{name}")
+    assert allowed(f"{base}/{name.upper()}")
+    assert not allowed(f"{base}/{name}", kind="readability")
+    assert not allowed(f"build/driver/r/ufo2p/func_000A3980/{name}")
+    assert not allowed(f"{base}/checks/0001.note.json")
 
 
 @pytest.mark.parametrize("kind", ["other", "", "Matching", "readability "])

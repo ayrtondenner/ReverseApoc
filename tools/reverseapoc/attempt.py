@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The attempt wrapper (D-44): the only commands a matching session runs through Bash.
 
-`uv run --frozen reverseapoc attempt check|asm|context|giveup` is bound to the claimed function.
+`uv run --frozen reverseapoc attempt check|asm|context|giveup|plan` is bound to the claimed
+function.
 The claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
 REVERSEAPOC_ATTEMPT_DIR), each validated here; no agent argument chooses the unit, the
 function, the flags, the Watcom tree or the source root. The accepted argument shapes are
@@ -11,6 +12,15 @@ hooks.MATCHING_FORMS in a matching session, the five hooks.ATTEMPT_FORMS in a re
 `attempt giveup` (07.2-02, 999.5, D-04, D-26) validates the session's giveup.json, the sibling
 of notes.md, with `read_giveup`, the validator the driver reuses when it records the give-up;
 it reserves no check slot and runs no container.
+
+A matching session's `attempt check` (07.2-03, 999.6, D-01..D-03, D-26) first needs the
+session's plan.json (`read_plan`: FRAME, SLOT, CALL and REGION entries, the regions covering the
+claimed row) and a check-note.json (`read_check_note`: change, why and expect), both siblings of
+notes.md; `attempt plan` validates the plan alone, with no slot and no container. They are
+validated after the budget test and before the slot is reserved, so a
+refusal (exit 2) uses none of the checks. After the run the note moves to checks/NNNN.note.json
+with what the run observed, written by the tool (D-02); checks.jsonl points at it. A readability
+check needs neither.
 
 `attempt check` runs `reverseapoc check <claim> --json` in the container through an injectable
 runner, at most CHECK_BUDGET times per attempt (D-07). One run at a time: each holds
@@ -62,9 +72,11 @@ from .functions import (
 )
 from .hooks import (
     ATTEMPT_PREFIX,
+    CHECK_NOTE_NAME,
     CLAIM_ENV,
     GIVEUP_NAME,
     NOTES_ENV,
+    PLAN_NAME,
     PROPOSALS_ENV,
     SESSION_KIND_ENV,
     SESSION_KINDS,
@@ -420,6 +432,9 @@ class CheckLogLine:
     # line, and when readlint itself failed (a tool line).
     readlint_violations: int | None = None
     readlint_waivers: int | None = None
+    # 07.2-03 (ruling F11): a matching run's consumed note, checks/NNNN.note.json relative to the
+    # attempt directory; None for a readability line. The window stays out of this log (gzv).
+    note: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -686,9 +701,9 @@ def region_board(
     return lines
 
 
-def _claimed_size(claim: Claim) -> int:
+def _claimed_size(claim: Claim, roots: Roots) -> int:
     """The claimed row's size, from the functions.csv cmd_check validated the claim against."""
-    row = claimed_row(read_functions_csv(config_root(claim, ROOTS) / claim.exe / FUNCTIONS_CSV),
+    row = claimed_row(read_functions_csv(config_root(claim, roots) / claim.exe / FUNCTIONS_CSV),
                       claim)  # fmt: skip
     return row.end - row.start
 
@@ -698,7 +713,8 @@ def _board(claim: Claim, n: int, doc: Mapping[str, Any]) -> list[str]:
     reads is said in one line: the board only advises, and the run's evidence must still be
     saved (an error escaping here would turn the run into a tool error)."""
     try:
-        return region_board(claim.attempt_dir, claim, _claimed_size(claim), current=(n, doc))
+        return region_board(claim.attempt_dir, claim, _claimed_size(claim, ROOTS),
+                            current=(n, doc))  # fmt: skip
     except (OSError, ValueError) as exc:
         return [f"    region board: not shown ({_one_line(exc)})"]
 
@@ -1054,6 +1070,7 @@ def _locked_check(
     if n > CHECK_BUDGET:
         raise AttemptError(f"check budget used: {CHECK_BUDGET} check runs in this attempt "
                            "(D-07); write notes.md and stop")  # fmt: skip
+    note = _plan_and_note(claim, roots)  # D-01: refused here, no checks/NNNN.c exists yet
     default = _default_spec(claim, roots) if sweep else ""
     unit = unit_path(claim, roots)
     try:
@@ -1074,8 +1091,10 @@ def _locked_check(
         # 07-31: the readability half, in the same run and slot (one budget step).
         lint = lint_view(claim) if claim.kind == READABILITY and not sweep else None
         line, summary = _record(claim, ran, n, source, seconds, sweep=sweep, default=default,
-                                saved_path=checks / f"{stem}.json", log=log,
-                                lint=lint)  # fmt: skip
+                                saved_path=checks / f"{stem}.json", log=log, lint=lint,
+                                note=note)  # fmt: skip
+        if note is not None:  # consumed: the next check needs a new note (D-02)
+            (claim.attempt_dir / CHECK_NOTE_NAME).unlink(missing_ok=True)
     finally:
         # N2: the evidence is written first, so a slow removal cannot lose it; N7: the
         # removal still runs when that write raised (whose error then surfaces as exit 2).
@@ -1087,9 +1106,12 @@ def _locked_check(
 def _record(
     claim: Claim, ran: Ran, n: int, source: str, seconds: float, *, sweep: bool, default: str,
     saved_path: Path, log: Path, lint: Lint | None = None,
+    note: Mapping[str, str] | None = None,
 ) -> tuple[CheckLogLine, str]:
     """The run's log line and summary, with its JSON saved and its line appended. With `lint`
-    (a readability check) the line's exit is both halves combined."""
+    (a readability check) the line's exit is both halves combined. With `note` (a matching
+    check's validated check-note.json) checks/NNNN.note.json is written before the line, which
+    then points at it."""
     doc = _parse(ran.stdout)
     try:
         if doc is None:
@@ -1104,6 +1126,8 @@ def _record(
     saved = doc if doc is not None else {"error": "no usable JSON", "returncode": ran.returncode,
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(saved_path, (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
+    if note is not None:
+        line = dataclasses.replace(line, note=_write_note(claim, line, doc, note))
     _append(log, line)
     return line, summary
 
@@ -1163,19 +1187,31 @@ def _giveup_text_problem(value: object) -> str:
     return ""
 
 
-def _giveup_doc(path: Path) -> dict:
-    """giveup.json as one JSON object; AttemptError naming the file otherwise."""
+def _session_object(path: Path, name: str, keys: Sequence[str]) -> dict:
+    """A session file beside notes.md (giveup.json, plan.json, check-note.json) as one JSON
+    object; AttemptError naming the file otherwise."""
     try:
         doc = json.loads(Path(path).read_text(encoding="utf-8"))
     except OSError as exc:
-        raise AttemptError(f"no readable {path} ({type(exc).__name__}); write {GIVEUP_NAME} "
-                           "beside notes.md first") from None  # fmt: skip
+        raise AttemptError(f"no readable {path} ({type(exc).__name__}); write {name} beside "
+                           "notes.md first") from None  # fmt: skip
     except ValueError as exc:
-        raise AttemptError(f"{GIVEUP_NAME} is not UTF-8 JSON: {_one_line(exc)}") from None
+        raise AttemptError(f"{name} is not UTF-8 JSON: {_one_line(exc)}") from None
     if not isinstance(doc, dict):
-        raise AttemptError(f"{GIVEUP_NAME} must be one JSON object with exactly "
-                           f"{', '.join(GIVEUP_KEYS)}")  # fmt: skip
+        raise AttemptError(f"{name} must be one JSON object with exactly {', '.join(keys)}")
     return doc
+
+
+def _exact_keys(doc: Mapping[str, Any], name: str, keys: Sequence[str]) -> None:
+    """AttemptError naming what `doc` (from the file `name`) lacks or adds to exactly `keys`."""
+    missing = [key for key in keys if key not in doc]
+    if missing:
+        raise AttemptError(f"{name} lacks {', '.join(missing)} (it holds exactly "
+                           f"{', '.join(keys)})")  # fmt: skip
+    extra = sorted(key for key in doc if key not in keys)
+    if extra:
+        raise AttemptError(f"{name} has the unknown key {', '.join(extra)} (it holds exactly "
+                           f"{', '.join(keys)})")  # fmt: skip
 
 
 def read_giveup(path: Path) -> dict:
@@ -1184,15 +1220,8 @@ def read_giveup(path: Path) -> dict:
     each of GIVEUP_TEXTS a non-empty string of at most GIVEUP_TEXT_CAP characters with no `{`,
     `}` or `;` and no hex run of 65 or more. Returns the four fields; every problem raises
     AttemptError naming the field and the rule."""
-    doc = _giveup_doc(path)
-    missing = [key for key in GIVEUP_KEYS if key not in doc]
-    if missing:
-        raise AttemptError(f"{GIVEUP_NAME} lacks {', '.join(missing)} (it holds exactly "
-                           f"{', '.join(GIVEUP_KEYS)})")  # fmt: skip
-    extra = sorted(key for key in doc if key not in GIVEUP_KEYS)
-    if extra:
-        raise AttemptError(f"{GIVEUP_NAME} has the unknown key {', '.join(extra)} (it holds "
-                           f"exactly {', '.join(GIVEUP_KEYS)})")  # fmt: skip
+    doc = _session_object(path, GIVEUP_NAME, GIVEUP_KEYS)
+    _exact_keys(doc, GIVEUP_NAME, GIVEUP_KEYS)
     if not isinstance(doc["category"], str) or doc["category"] not in GIVEUP_CATEGORIES:
         raise AttemptError(f"{GIVEUP_NAME} category {doc['category']!r} is not one of "
                            f"{', '.join(GIVEUP_CATEGORIES)}")  # fmt: skip
@@ -1215,6 +1244,196 @@ def cmd_giveup() -> int:
     for key in GIVEUP_TEXTS:
         print(f"  {key}: {doc[key]}")
     return EXIT_OK
+
+
+# ---- the plan and the check notes (07.2-03, 999.6; D-01..D-03, D-26: files, not flags) ----
+
+PLAN_SMALL_SIZE = 64  # D-03: under 64 B one region covering the whole function is enough
+NOTE_TEXT_CAP = 400  # no committed record holds these texts (the 200 cap does not bind); a bound
+PLAN_LISTS = ("slots", "calls")
+PLAN_KEYS = ("frame", *PLAN_LISTS, "regions")
+REGION_KEYS = ("start", "end", "intent")
+NOTE_KEYS = ("change", "why", "expect")
+OBSERVED = "observed"  # D-02: what the check observed, written by the tool, never the session
+NOTE_SUFFIX = ".note.json"  # checks/NNNN.note.json: a consumed check-note.json
+_WINDOW_SIDES = ("ours", "original")
+
+
+def _text_problem(value: object) -> str:
+    """Why a plan or note text is refused, or ''."""
+    if not isinstance(value, str) or not value.strip():
+        return "must be a non-empty string"
+    if len(value) > NOTE_TEXT_CAP:
+        return f"is {len(value)} characters, over the cap of {NOTE_TEXT_CAP}"
+    return ""
+
+
+def _plan_texts(value: object, key: str) -> list[str]:
+    """plan.json's `slots` or `calls`: a list (possibly empty) of non-empty texts."""
+    if not isinstance(value, list):
+        raise AttemptError(f"{PLAN_NAME} {key} must be a list of strings (an empty list is fine)")
+    for index, item in enumerate(value):
+        problem = _text_problem(item)
+        if problem:
+            raise AttemptError(f"{PLAN_NAME} {key}[{index}] {problem}")
+    return list(value)
+
+
+def _plan_region(value: object, index: int) -> dict:
+    """One `{"start", "end", "intent"}` of plan.json's regions: offsets from the row start,
+    end after start."""
+    name = f"{PLAN_NAME} regions[{index}]"
+    if not isinstance(value, dict):
+        raise AttemptError(f"{name} must be an object with exactly {', '.join(REGION_KEYS)}")
+    _exact_keys(value, name, REGION_KEYS)
+    start, end = value["start"], value["end"]
+    if type(start) is not int or type(end) is not int or start < 0:
+        raise AttemptError(f"{name} start and end must be byte offsets (integers from 0)")
+    if end <= start:
+        raise AttemptError(f"{name} end 0x{end:X} is not after its start 0x{start:X}")
+    problem = _text_problem(value["intent"])
+    if problem:
+        raise AttemptError(f"{name} intent {problem}")
+    return {key: value[key] for key in REGION_KEYS}
+
+
+def _regions_needed(size: int) -> int:
+    """D-03: one region under PLAN_SMALL_SIZE, else two, except where the region board's grid
+    leaves no room for an inner boundary (a row of exactly 0x100 bytes)."""
+    if size < PLAN_SMALL_SIZE:
+        return 1
+    blocks = -(-size // check.BOARD_REGION_BYTES)
+    return min(2, blocks) if size >= BOARD_MIN_SIZE else 2
+
+
+def _check_cover(regions: Sequence[Mapping[str, Any]], size: int) -> None:
+    """D-03: the regions are sorted and contiguous from 0 to `size`, numerous enough, and at
+    BOARD_MIN_SIZE and up every inner boundary is on the board's 0x100 grid."""
+    edge = 0
+    for index, region in enumerate(regions):
+        if region["start"] != edge:
+            what = "a gap" if region["start"] > edge else "an overlap"
+            raise AttemptError(f"{PLAN_NAME} regions leave {what}: regions[{index}] starts at "
+                               f"0x{region['start']:X}, not at 0x{edge:X} (D-03: sorted and "
+                               "contiguous from 0)")  # fmt: skip
+        edge = region["end"]
+    if edge != size:
+        verb = "run past" if edge > size else "do not reach"
+        raise AttemptError(f"{PLAN_NAME} regions {verb} 0x{size:X}: the last end is 0x{edge:X} "
+                           "(D-03: they cover the whole function)")  # fmt: skip
+    off_grid = [r["start"] for r in regions[1:] if r["start"] % check.BOARD_REGION_BYTES]
+    if size >= BOARD_MIN_SIZE and off_grid:
+        raise AttemptError(f"{PLAN_NAME} region boundary 0x{off_grid[0]:X} is not a multiple of "
+                           f"0x{check.BOARD_REGION_BYTES:X} (D-03: from {BOARD_MIN_SIZE} B the "
+                           "regions line up with the region board)")  # fmt: skip
+    needed = _regions_needed(size)
+    if len(regions) < needed:
+        raise AttemptError(f"{PLAN_NAME} has {len(regions)} region for a 0x{size:X}-byte "
+                           f"function, which needs at least {needed} (D-03: one region is "
+                           f"enough only under {PLAN_SMALL_SIZE} B)")  # fmt: skip
+
+
+def read_plan(path: Path, size: int) -> dict:
+    """The plan a matching session wrote at `path` for a claimed row of `size` bytes (D-03),
+    the one validator of `attempt plan` and `attempt check`: a JSON object with exactly
+    PLAN_KEYS, `frame` a non-empty text, `slots` and `calls` lists of non-empty texts, and
+    `regions` a non-empty list of {start, end, intent} covering 0..size (`_check_cover`). Texts
+    are capped at NOTE_TEXT_CAP. Every problem raises AttemptError naming the field."""
+    doc = _session_object(path, PLAN_NAME, PLAN_KEYS)
+    _exact_keys(doc, PLAN_NAME, PLAN_KEYS)
+    problem = _text_problem(doc["frame"])
+    if problem:
+        raise AttemptError(f"{PLAN_NAME} frame {problem}")
+    lists = {key: _plan_texts(doc[key], key) for key in PLAN_LISTS}
+    if not isinstance(doc["regions"], list) or not doc["regions"]:
+        raise AttemptError(f"{PLAN_NAME} regions must be a non-empty list of "
+                           f"{{{', '.join(REGION_KEYS)}}} objects")  # fmt: skip
+    regions = [_plan_region(value, index) for index, value in enumerate(doc["regions"])]
+    _check_cover(regions, size)
+    return {"frame": doc["frame"], **lists, "regions": regions}
+
+
+def read_check_note(path: Path) -> dict:
+    """The note a matching session writes at `path` before each check (D-01, D-02): exactly
+    NOTE_KEYS, each a non-empty text of at most NOTE_TEXT_CAP. `observed` is refused by name,
+    and so is any other key: the tool records what the check observed."""
+    doc = _session_object(path, CHECK_NOTE_NAME, NOTE_KEYS)
+    if OBSERVED in doc:
+        raise AttemptError(f"{CHECK_NOTE_NAME} holds {OBSERVED}: the tool records what the check "
+                           f"observed (D-02); write only {', '.join(NOTE_KEYS)}")  # fmt: skip
+    _exact_keys(doc, CHECK_NOTE_NAME, NOTE_KEYS)
+    for key in NOTE_KEYS:
+        problem = _text_problem(doc[key])
+        if problem:
+            raise AttemptError(f"{CHECK_NOTE_NAME} {key} {problem}")
+    return {key: doc[key] for key in NOTE_KEYS}
+
+
+def _region_text(region: Mapping[str, Any]) -> str:
+    return f"  0x{region['start']:03X}-0x{region['end'] - 1:03X}  {region['intent']}"
+
+
+def cmd_plan() -> int:
+    """`attempt plan`: validate <attempt dir>/plan.json (the notes file's sibling) against the
+    claimed row's size and print the accepted regions. A matching session only (D-26); no check
+    slot, no container."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    if claim.kind != SESSION_KINDS[0]:
+        raise AttemptError(f"attempt plan is a matching-session verb; a {claim.kind} session "
+                           "writes no plan (D-26)")  # fmt: skip
+    plan = read_plan(claim.attempt_dir / PLAN_NAME, _claimed_size(claim, ROOTS))
+    print("attempt plan: accepted")
+    for region in plan["regions"]:
+        print(_region_text(region))
+    return EXIT_OK
+
+
+def _plan_and_note(claim: Claim, roots: Roots) -> dict | None:
+    """D-01, D-26: a matching check's plan, checked against the claimed row's size, and its
+    note, validated after the budget test and before the slot is reserved, so a refusal uses no
+    check. None for a readability check, which needs neither."""
+    if claim.kind != SESSION_KINDS[0]:
+        return None
+    read_plan(claim.attempt_dir / PLAN_NAME, _claimed_size(claim, roots))
+    return read_check_note(claim.attempt_dir / CHECK_NOTE_NAME)
+
+
+def _insn_text(cell: object) -> dict | None:
+    """A window cell's mnemonic and operands only (no address, no byte)."""
+    if not isinstance(cell, Mapping):
+        return None
+    return {"mnemonic": cell.get("mnemonic"), "operands": cell.get("operands")}
+
+
+def _first_row(fn: Mapping[str, Any] | None) -> dict | None:
+    """The window row check marked `first` (the first difference), ours and the original."""
+    window = fn.get("window") if fn is not None else None
+    rows = window if isinstance(window, list) else []
+    row = next((r for r in rows if isinstance(r, Mapping) and r.get("first") is True), None)
+    return None if row is None else {side: _insn_text(row.get(side)) for side in _WINDOW_SIDES}
+
+
+def _observed(doc: Mapping[str, Any] | None, claim: Claim, line: CheckLogLine) -> dict:
+    """D-02: what the run observed, from its log line and the claimed function's entry of the
+    check document; null where the run gave none (a tool error, a sweep's cells)."""
+    fn = _claimed(doc, claim) if doc is not None and not line.sweep else None
+    same = fn.get("bytes") if fn is not None else None
+    same = same if isinstance(same, Mapping) else {}
+    return {"exit": line.exit, "objdiff_percent": line.best_percent,
+            "bytes_differing": same.get("differing"), "first_va": same.get("first_va"),
+            "window_first_row": _first_row(fn),
+            "regions": region_summary(fn) if fn is not None else None}  # fmt: skip
+
+
+def _write_note(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None,
+                note: Mapping[str, str]) -> str:  # fmt: skip
+    """checks/NNNN.note.json with O_EXCL, never overwritten (T-07.2-07): the session's change,
+    why and expect beside what the run observed. Returns its path relative to the attempt
+    directory, for the log line."""
+    rel = f"{CHECKS_DIR}/{line.n:04d}{NOTE_SUFFIX}"
+    text = json.dumps({**note, OBSERVED: _observed(doc, claim, line)}, indent=2) + "\n"
+    _reserve(claim.attempt_dir / rel, text.encode("utf-8"))
+    return rel
 
 
 # ---- listings and the context pack (attempt asm, attempt context, the context verb; D-13) ----

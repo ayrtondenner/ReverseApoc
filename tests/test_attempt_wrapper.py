@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import dataclasses
 import io
+import itertools
 import json
 import re
 import subprocess
@@ -22,6 +23,7 @@ from reverseapoc.functions import (
     FunctionRow,
     SymbolRow,
     UnitRow,
+    read_functions_csv,
     write_functions_csv,
     write_symbols_csv,
     write_units_csv,
@@ -140,8 +142,55 @@ def _use(monkeypatch: pytest.MonkeyPatch, runner: FakeRunner) -> FakeRunner:
     return runner
 
 
-def _run(argv: list[str]) -> int:
-    """main's exit code, with argparse's SystemExit turned into its code."""
+PLAN_FRAME = "made-up: an ebp frame with two dword locals"
+NOTE = {"change": "made-up: swapped the two locals", "why": "made-up: the frame offsets differ",
+        "expect": "made-up: the first difference moves past the prologue"}  # fmt: skip
+
+
+def _plan(size: int) -> dict:
+    """A valid made-up plan.json for a claimed row of `size` bytes (D-03): one region under
+    64 B, two from 64 B, one per 0x100 board region from 256 B."""
+    if size >= attempt.BOARD_MIN_SIZE:
+        cuts = list(range(check.BOARD_REGION_BYTES, size, check.BOARD_REGION_BYTES))
+    else:
+        cuts = [size // 2] if size >= attempt.PLAN_SMALL_SIZE else []
+    edges = [0, *cuts, size]
+    regions = [{"start": low, "end": high, "intent": f"made-up part {i}"}
+               for i, (low, high) in enumerate(itertools.pairwise(edges))]  # fmt: skip
+    return {"frame": PLAN_FRAME, "slots": ["made-up: ebp-4 the count"], "calls": [],
+            "regions": regions}  # fmt: skip
+
+
+def _session_file(attempt_dir: Path, name: str, doc: object) -> Path:
+    path = attempt_dir / name
+    path.write_text(doc if isinstance(doc, str) else json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def _session_files() -> None:
+    """The matching session's two Writes before a check (07.2-03, D-26): a plan for the claimed
+    row's size and a fresh check-note.json. Nothing for a readability session or an environment
+    the wrapper will refuse anyway."""
+    env = attempt.os.environ
+    if env.get(hooks.SESSION_KIND_ENV) == "readability":
+        return
+    try:
+        claim = attempt.Claim.from_env(env, roots=attempt.ROOTS)
+        rows = read_functions_csv(attempt.config_root(claim, attempt.ROOTS) / "ufo2p"
+                                  / "functions.csv")  # fmt: skip
+        row = attempt.claimed_row(rows, claim)
+    except (ValueError, OSError):
+        return
+    _session_file(claim.attempt_dir, "plan.json", _plan(row.end - row.start))
+    _session_file(claim.attempt_dir, "check-note.json", NOTE)
+
+
+def _run(argv: list[str], *, ready: bool = True) -> int:
+    """main's exit code, with argparse's SystemExit turned into its code. `ready`: before an
+    `attempt check`, write the plan and note a matching session writes (07.2-03); False runs
+    the command over the session files exactly as the test left them."""
+    if ready and argv[:2] == ["attempt", "check"]:
+        _session_files()
     try:
         return main(argv)
     except SystemExit as exc:
@@ -443,7 +492,8 @@ def test_attempt_check_sweep_logs_a_hit(repo: Path, monkeypatch, capsys):
 # ---- 261109-gzv: the window of ours beside the original's ----
 
 _LOG_KEYS = {"n", "exit", "sweep", "best_percent", "reloc_ok", "bytes_ok", "splice_ok",
-             "sweep_hit", "source", "readlint_violations", "readlint_waivers"}  # fmt: skip
+             "sweep_hit", "source", "readlint_violations", "readlint_waivers",
+             "note"}  # fmt: skip
 
 
 def _insn(va: str, mnemonic: str, operands: str, relocated: bool = False) -> dict:
@@ -895,7 +945,8 @@ def test_attempt_check_refuses_a_concurrent_run(repo: Path, monkeypatch, capsys)
     assert len(calls) == 1
     assert "another check is running in this attempt" in capsys.readouterr().err
     assert [line["n"] for line in _lines(repo)] == [1]
-    assert sorted(p.name for p in (repo / "checks").iterdir()) == ["0001.c", "0001.json"]
+    assert sorted(p.name for p in (repo / "checks").iterdir()) == ["0001.c", "0001.json",
+                                                                   "0001.note.json"]  # fmt: skip
     assert not (repo / "check.lock").exists()
     _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
     assert _run(["attempt", "check"]) == 0
@@ -1358,7 +1409,7 @@ VIEW_TEXT = UNIT_TEXT + b"/* the view unit, private to this session */\n"
 VIEW_CFLAGS = "* wcc386@10.6 -4r -s -fpi\nsrc/ufo2p/u_000a34f0.c wcc386@10.6 -4r -ot -s -fpi\n"
 PHASE6_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", hooks.ATTEMPT_NAME_SLOT),
                 ("context",))  # fmt: skip
-MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",))  # 07.2-02: the matching-only verbs (D-26)
+MATCHING_FORMS_07_2 = (*PHASE6_FORMS, ("giveup",), ("plan",))  # the matching-only verbs (D-26)
 
 
 @pytest.fixture
@@ -1792,8 +1843,8 @@ def test_readability_forms_unchanged(readable: Path, monkeypatch, capsys):
     for extra in (["--readlint"], ["readlint"], ["check", "--units", CLAIM]):
         assert _run(["attempt", *extra]) == 2
     matching_only = [form for form in hooks.MATCHING_FORMS if form not in hooks.ATTEMPT_FORMS]
-    assert matching_only == [("giveup",)]
-    for form in matching_only:  # 07.2-02 (D-26): no matching-only verb in a readability session
+    assert matching_only == [("giveup",), ("plan",)]
+    for form in matching_only:  # 07.2-02, 07.2-03 (D-26): none in a readability session
         assert _run(["attempt", *form]) == 2, form
     assert runner.calls == []
 
@@ -1891,12 +1942,250 @@ def test_attempt_help_names_giveup(capsys):
 
 
 def test_check_log_line_positional_construction():
-    """Ruling F11: the two readlint fields come after `source` with default None, so a
-    nine-argument positional CheckLogLine (tests/test_skill.py) still builds."""
+    """Ruling F11: the two readlint fields and 07.2-03's note come after `source` with default
+    None, so a nine-argument positional CheckLogLine (tests/test_skill.py) still builds."""
     line = attempt.CheckLogLine(1, 0, False, 100.0, True, True, True, None, "checks/0001.c")
-    assert (line.readlint_violations, line.readlint_waivers) == (None, None)
+    assert (line.readlint_violations, line.readlint_waivers, line.note) == (None, None, None)
     names = [f.name for f in dataclasses.fields(attempt.CheckLogLine)]
-    assert names[-3:] == ["source", "readlint_violations", "readlint_waivers"]
+    assert names[-4:] == ["source", "readlint_violations", "readlint_waivers", "note"]
+
+
+# ---- 07.2-03 (999.6, D-01, D-02, D-26): no check without a plan and a note ----
+
+
+def _no_slot(attempt_dir: Path) -> None:
+    checks = attempt_dir / "checks"
+    assert not checks.exists() or not any(checks.glob("*.c")), sorted(checks.iterdir())
+
+
+def test_check_refuses_without_a_plan(repo: Path, monkeypatch, capsys):
+    """D-01: a matching check with a note but no plan.json exits 2 naming plan.json, before any
+    run and without reserving checks/0001.c (no check used)."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _session_file(repo, "check-note.json", NOTE)
+    assert _run(["attempt", "check"], ready=False) == 2
+    assert "plan.json" in capsys.readouterr().err
+    assert runner.calls == []
+    _no_slot(repo)
+
+
+@pytest.mark.parametrize(("note", "named"), [
+    (None, "check-note.json"),
+    ({key: NOTE[key] for key in ("change", "expect")}, "why"),
+    ({**NOTE, "expect": ""}, "expect"),
+    ({**NOTE, "change": "   "}, "change"),
+    ({**NOTE, "why": 7}, "why"),
+    ({**NOTE, "expect": "x" * 401}, "expect"),
+    ("not json", "check-note.json"),
+    ("[1]", "check-note.json"),
+])  # fmt: skip
+def test_check_refuses_without_a_note(repo: Path, monkeypatch, capsys, note, named):
+    """D-01: with a valid plan, a missing note or one lacking change, why or expect (or holding
+    an empty one) exits 2 naming exactly that, and uses no check."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _session_file(repo, "plan.json", _plan(0x10))
+    if note is not None:
+        _session_file(repo, "check-note.json", note)
+    assert _run(["attempt", "check"], ready=False) == 2
+    assert named in capsys.readouterr().err
+    assert runner.calls == []
+    _no_slot(repo)
+
+
+def test_note_cap_is_400():
+    assert attempt.NOTE_TEXT_CAP == 400 and attempt.PLAN_SMALL_SIZE == 64
+
+
+def test_refused_checks_leave_the_budget_whole(repo: Path, monkeypatch, capsys):
+    """D-01: thirty refused checks use none of the 25: the next real check is 1/25."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    for _ in range(30):
+        assert _run(["attempt", "check"], ready=False) == 2
+    capsys.readouterr()
+    assert _run(["attempt", "check"]) == 0
+    head = capsys.readouterr().out.splitlines()[0]
+    assert head.startswith("attempt check 1/25") and "(24 left)" in head
+    assert [line["n"] for line in _lines(repo)] == [1]
+
+
+def test_check_consumes_the_note(repo: Path, monkeypatch, capsys):
+    """D-02: after the check the note moves to checks/0001.note.json, with the tool's observed
+    outcome beside the agent's three fields; checks.jsonl points at it; the next check needs a
+    new note."""
+    _use(monkeypatch, FakeRunner(json.dumps(_regions_doc([3])), returncode=1))
+    _session_file(repo, "plan.json", _plan(0x10))
+    _session_file(repo, "check-note.json", NOTE)
+    assert _run(["attempt", "check"], ready=False) == 1
+    text = (repo / "checks" / "0001.note.json").read_text(encoding="utf-8")
+    assert json.loads(text) == {**NOTE, "observed": {
+        "exit": 1, "objdiff_percent": 100.0, "bytes_differing": 3, "first_va": "0x000A3985",
+        "window_first_row": {"ours": {"mnemonic": "mov", "operands": "eax, dword ptr [0]"},
+                             "original": {"mnemonic": "mov", "operands": "eax, 1"}},
+        "regions": "regions 0:3"}}  # fmt: skip
+    assert '"bytes"' not in text and not re.search(r"[0-9A-Fa-f]{65,}", text)
+    assert not (repo / "check-note.json").exists()
+    assert (repo / "plan.json").is_file()  # the plan stays for every later check
+    assert _lines(repo)[0]["note"] == "checks/0001.note.json"
+    capsys.readouterr()
+    assert _run(["attempt", "check"], ready=False) == 2
+    assert "check-note.json" in capsys.readouterr().err
+    assert not (repo / "checks" / "0002.c").exists()
+
+
+def test_a_tool_error_note_has_no_measurement(repo: Path, monkeypatch):
+    """The slot is used, so the note is consumed; what the run did not measure is null."""
+    _use(monkeypatch, FakeRunner("not json", returncode=2))
+    assert _run(["attempt", "check"]) == 2
+    note = json.loads((repo / "checks" / "0001.note.json").read_text(encoding="utf-8"))
+    assert note["observed"] == {"exit": 2, "objdiff_percent": None, "bytes_differing": None,
+                                "first_va": None, "window_first_row": None,
+                                "regions": None}  # fmt: skip
+    assert _lines(repo)[0]["note"] == "checks/0001.note.json"
+
+
+def test_a_timed_out_check_consumes_the_note(repo: Path, monkeypatch):
+    _use(monkeypatch, TimeoutRunner())
+    assert _run(["attempt", "check"]) == 2
+    assert (repo / "checks" / "0001.note.json").is_file()
+    assert not (repo / "check-note.json").exists()
+
+
+def test_observed_is_never_self_reported(repo: Path, monkeypatch, capsys):
+    """D-02: a note carrying `observed` (or any other key) is refused, naming it."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _session_file(repo, "plan.json", _plan(0x10))
+    for extra in ({"observed": {"exit": 0}}, {"verdict": "made-up"}):
+        _session_file(repo, "check-note.json", {**NOTE, **extra})
+        assert _run(["attempt", "check"], ready=False) == 2
+        assert next(iter(extra)) in capsys.readouterr().err
+    assert runner.calls == []
+    _no_slot(repo)
+
+
+def test_sweep_needs_plan_and_note(repo: Path, monkeypatch, capsys):
+    """D-01: a sweep uses a slot, so it needs both files too; its note keeps the best cell's
+    percent and nothing from a claimed-function entry (a sweep has none)."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_sweep_doc(_cell(1, "10.6", ["-4r"], 62.5)))))
+    _session_file(repo, "check-note.json", NOTE)
+    assert _run(["attempt", "check", "--sweep"], ready=False) == 2
+    assert "plan.json" in capsys.readouterr().err
+    (repo / "check-note.json").unlink()
+    _session_file(repo, "plan.json", _plan(0x10))
+    assert _run(["attempt", "check", "--sweep"], ready=False) == 2
+    assert "check-note.json" in capsys.readouterr().err
+    assert runner.calls == []
+    _no_slot(repo)
+    assert _run(["attempt", "check", "--sweep"]) == 0
+    note = json.loads((repo / "checks" / "0001.note.json").read_text(encoding="utf-8"))
+    assert note["observed"] == {"exit": 0, "objdiff_percent": 62.5, "bytes_differing": None,
+                                "first_va": None, "window_first_row": None,
+                                "regions": None}  # fmt: skip
+
+
+def test_readability_check_needs_no_plan(readable: Path, monkeypatch, capsys):
+    """D-26: a readability session's check runs as before, with neither file and no note."""
+    _readable_unit(readable, NAMED, renamed=True)
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"], ready=False) == 0
+    (line,) = _lines(readable.parent)
+    assert line["note"] is None
+    assert sorted(p.name for p in (readable.parent / "checks").iterdir()) == ["0001.c", "0001.json"]
+
+
+# ---- 07.2-03 (D-03): `attempt plan` validates plan.json ----
+
+
+def _cut(edges: list[int], **change) -> dict:
+    """A made-up plan whose regions run between `edges`, with `change` over its keys."""
+    regions = [{"start": low, "end": high, "intent": f"made-up part {i}"}
+               for i, (low, high) in enumerate(itertools.pairwise(edges))]  # fmt: skip
+    return {**_plan(0x10), "regions": regions, **change}
+
+
+def test_plan_verb(repo: Path, monkeypatch, capsys):
+    """A valid plan exits 0 and prints the accepted regions in hex; no slot, no container."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _claimed_length(0x300)
+    _session_file(repo, "plan.json", _plan(0x300))
+    assert _run(["attempt", "plan"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "attempt plan: accepted",
+        "  0x000-0x0FF  made-up part 0",
+        "  0x100-0x1FF  made-up part 1",
+        "  0x200-0x2FF  made-up part 2",
+    ]
+    assert runner.calls == []
+    assert not (repo / "checks").exists() and not (repo / "checks.jsonl").exists()
+
+
+@pytest.mark.parametrize(("size", "doc", "named"), [
+    (0x30, {**_cut([0, 0x30]), "regions": [{"start": 0, "end": 0x10, "intent": "a"},
+                                           {"start": 0x18, "end": 0x30, "intent": "b"}]},
+     "a gap"),
+    (0x30, _cut([0x4, 0x30]), "a gap"),
+    (0x30, {**_cut([0, 0x30]), "regions": [{"start": 0, "end": 0x20, "intent": "a"},
+                                           {"start": 0x10, "end": 0x30, "intent": "b"}]},
+     "an overlap"),
+    (0x30, _cut([0, 0x10, 0x40]), "run past 0x30"),
+    (0x30, _cut([0, 0x20]), "do not reach 0x30"),
+    (0x300, _cut([0, 0x180, 0x300]), "0x180"),
+    (0x40, _cut([0, 0x40]), "at least 2"),
+    (0x180, _cut([0, 0x180]), "at least 2"),
+    (0x30, _cut([0, 0x30], frame=""), "frame"),
+    (0x30, _cut([0, 0x30], slots="ebp-4"), "slots"),
+    (0x30, _cut([0, 0x30], calls=[""]), "calls[0]"),
+    (0x30, {key: value for key, value in _cut([0, 0x30]).items() if key != "calls"}, "calls"),
+    (0x30, _cut([0, 0x30], extra="x"), "extra"),
+    (0x30, _cut([0, 0x30], regions=[]), "regions"),
+    (0x30, _cut([0, 0x30], regions=[{"start": 0, "end": 0x30}]), "regions[0] lacks intent"),
+    (0x30, _cut([0, 0x30], regions=[{"start": True, "end": 0x30, "intent": "a"}]), "start"),
+    (0x30, _cut([0, 0x30], regions=[{"start": 0x30, "end": 0x30, "intent": "a"}]), "end"),
+    (0x30, "not json", "plan.json"),
+])  # fmt: skip
+def test_plan_verb_refuses_each_d03_violation(repo: Path, monkeypatch, capsys, size, doc, named):
+    """Each D-03 violation exits 2 naming it, and the same validator refuses it for a check."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _claimed_length(size)
+    path = _session_file(repo, "plan.json", doc)
+    assert _run(["attempt", "plan"]) == 2
+    assert named in capsys.readouterr().err
+    with pytest.raises(attempt.AttemptError, match=re.escape(named)):
+        attempt.read_plan(path, size)
+    assert runner.calls == []
+
+
+@pytest.mark.parametrize(("size", "edges"), [
+    (0x30, [0, 0x30]), (0x30, [0, 0x10, 0x30]), (0x3F, [0, 0x3F]), (0x40, [0, 0x8, 0x40]),
+    (0x100, [0, 0x100]), (0x300, [0, 0x200, 0x300]), (0x101, [0, 0x100, 0x101]),
+])  # fmt: skip
+def test_plan_verb_accepts(repo: Path, monkeypatch, size, edges):
+    """Two regions in a 0x30 function are allowed, one is enough under 64 B and at exactly 0x100
+    (the grid has no room for an inner boundary), and a grid boundary need not be every one."""
+    _claimed_length(size)
+    _session_file(repo, "plan.json", _cut(edges))
+    assert _run(["attempt", "plan"]) == 0
+
+
+def test_plan_verb_without_a_file(repo: Path, capsys):
+    assert _run(["attempt", "plan"]) == 2
+    assert "plan.json" in capsys.readouterr().err
+
+
+def test_plan_verb_refused_in_readability(readable: Path, monkeypatch, capsys):
+    """D-26: a readability session's `attempt plan` exits 2 before any run, even with a valid
+    plan.json, and the verb refuses on its own past the form check."""
+    runner = _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    _session_file(readable.parent, "plan.json", _plan(0x10))
+    assert _run(["attempt", "plan"]) == 2
+    assert "accepted" not in capsys.readouterr().out
+    assert runner.calls == []
+    with pytest.raises(attempt.AttemptError, match="readability"):
+        attempt.cmd_plan()
+
+
+def test_attempt_help_names_plan(capsys):
+    assert _run(["attempt", "--help"]) == 0
+    assert "plan" in capsys.readouterr().out
 
 
 # ---- ruling F18: an RL01 hit that the session's own valid rename proposal covers ----

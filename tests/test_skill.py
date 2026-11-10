@@ -112,9 +112,10 @@ def _commands(text: str) -> list[list[str]]:
 
 
 # The forms the skill quotes, and the matching-only forms it does not quote yet (RULINGS "The
-# five pinned-form tests": 07.2-03 adds ("plan",) here, 07.2-09 teaches them and empties it).
+# five pinned-form tests": 07.2-02 added ("giveup",), 07.2-03 ("plan",); 07.2-09 teaches them and
+# empties it).
 SKILL_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",))
-PENDING_SKILL_FORMS = (("giveup",),)
+PENDING_SKILL_FORMS = (("giveup",), ("plan",))
 
 
 def test_skill_commands_are_the_wrapper_forms():
