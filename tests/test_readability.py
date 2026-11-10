@@ -59,6 +59,8 @@ HEADER = (f"/*\n * {NAME}: returns the current tick count.\n * Address: UFO2P.EX
 HEAD_TEXT = '#include "common.h"\n\n' + BODY  # matched, named, but no header comment (RL02)
 READABLE = '#include "common.h"\n\n' + HEADER + BODY  # what a good session leaves
 STILL_BAD = HEAD_TEXT + "\n/* a comment after the function is no header */\n"
+MARK = f"/* src: OPENAPOC 0x{START:08X} (confidence: high) */"  # 07.2-07 (D-14)
+MARKED = READABLE.replace(f"int {NAME}(void)\n", f"int {NAME}(void) {MARK}\n")
 READ_PICK = Pick(EXE, START, NAME, UNIT, 0x10, 0)  # the unit's lowest matched function, by C name
 
 
@@ -303,7 +305,7 @@ def test_proposals_applied_first(tmp_path):
     unit, then lands the unit's readability commit under the new name."""
     line = json.dumps({"op": "rename", "exe": EXE, "kind": "func", "address": f"0x{START:08X}",
                        "name": NAME, "evidence": "call: read by the timer loop"})  # fmt: skip
-    text = READABLE.replace(NAME, FUNC)
+    text = MARKED.replace(NAME, FUNC)  # 07.2-07: the marker rides the old name's line
     night = RdNight(tmp_path, named=False, head_text=HEAD_TEXT.replace(NAME, FUNC),
                     picks=(Pick(EXE, START, FUNC, UNIT, 0x10, 0),),
                     sessions=[Sess(unit_text=text, files=((_proposals_rel(), line + "\n"),))],
@@ -311,9 +313,53 @@ def test_proposals_applied_first(tmp_path):
     night.readability()
     rename = f"refactor({EXE}): rename {FUNC} to {NAME}"
     assert night.refactors() == [rename, SUBJECT]
-    assert night.file_at(SUBJECT, UNIT_REL) == READABLE
+    assert night.file_at(SUBJECT, UNIT_REL) == MARKED
     assert [r["outcome"] for r in night.kinds(driver.KIND_RENAME)] == [driver.APPLIED]
     assert night.attempts()[0]["outcome"] == driver.LANDED
+
+
+PARAM_HEAD = HEAD_TEXT.replace("(void)", "(int param_1)").replace("return 0;", "return param_1;")
+
+
+def test_driver_writes_the_unit_base(tmp_path):
+    """07.2-07 (D-15): a readability session's attempt dir holds unit-base.c, the view unit at
+    launch, so its `attempt check` judges renames on the readability diff; a matching session
+    gets none."""
+    night = RdNight(tmp_path, sessions=[Sess(unit_text=READABLE)], gate_exits=[0])
+    night.readability()
+    base = night.attempt_dir(1) / "unit-base.c"
+    assert base.read_bytes() == HEAD_TEXT.encode("utf-8")
+    matching = Night(tmp_path / "m", sessions=[Sess()], gate_exits=[0])
+    matching.run()
+    assert not (matching.attempt_dir(1) / "unit-base.c").exists()
+
+
+def test_landing_readlint_uses_head_as_base(tmp_path):
+    """07.2-07 (D-15): the landing's strict readlint judges the landed unit against HEAD's: a
+    parameter renamed from its placeholder without a marker is PARTIAL, nothing committed;
+    with the marker beside its declaration the unit lands."""
+    renamed = READABLE.replace("(void)", "(int count)").replace("return 0;", "return count;")
+    night = RdNight(tmp_path / "bare", head_text=PARAM_HEAD, sessions=[Sess(unit_text=renamed)],
+                    gate_exits=[0])  # fmt: skip
+    night.readability()
+    assert night.refactors() == [] and night.attempts()[0]["outcome"] == driver.PARTIAL
+    marked = renamed.replace("(int count)\n", f"(int count) {MARK}\n")
+    night = RdNight(tmp_path / "marked", head_text=PARAM_HEAD, sessions=[Sess(unit_text=marked)],
+                    gate_exits=[0])  # fmt: skip
+    night.readability()
+    assert night.refactors() == [SUBJECT]
+    assert night.file_at(SUBJECT, UNIT_REL) == marked
+
+
+def test_a_forged_unit_base_is_a_stray(tmp_path):
+    """07.2-07 (T-07.2-18): unit-base.c is the driver's; a session that rewrites it is a
+    guardrail stop, and nothing lands."""
+    base_rel = f"build/driver/night1/{EXE}/{FUNC}/attempt-1/unit-base.c"
+    sess = Sess(unit_text=READABLE, files=((base_rel, READABLE),))
+    night = RdNight(tmp_path, sessions=[sess], gate_exits=[0])
+    report = night.readability()
+    assert report.event == driver.STOPPED and "unit-base.c" in report.detail
+    assert night.refactors() == []
 
 
 def test_read_checks_picks_the_latest_readlint_clean_run(tmp_path):
