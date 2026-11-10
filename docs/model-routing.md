@@ -208,10 +208,14 @@ The model ids are assumptions to confirm at setup.
 
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
-  -c sandbox_workspace_write.network_access=false -c windows.sandbox="elevated"
+  -c sandbox_workspace_write.network_access=false -c windows.sandbox="unelevated"
   -c projects."<attempt dir>".trust_level="trusted" <prompt>`. The Windows sandbox is set in
   the argv because `--ignore-user-config` drops the user config that enabled it: with none,
-  Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). Codex loads no skill and runs no hook, so the prompt carries the goal, the
+  Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). It is
+  unelevated by the owner's ruling (2026-11-10), the mode the owner's own Codex runs: elevated
+  needs an admin setup the owner declined, and without it every command of the round-2
+  canaries failed to start (exit -1, `helper_sandbox_lock_failed ... SetNamedSecurityInfoW
+  sandbox dir failed: 5`). Codex loads no skill and runs no hook, so the prompt carries the goal, the
   watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
   through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
   read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
@@ -260,13 +264,25 @@ The model ids are assumptions to confirm at setup.
   in the workspace (Codex reads project rules from `<--cd>/.codex/rules/`), so if Codex re-read
   a session-edited rules file within the same session, only the audit would catch it.
 - **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
-  (and the same for `gpt-6.1-sol`) asks the session, in order, to run `whoami`, write a file
-  one directory above its workspace, fetch `https://example.com/`, run the wrapper's context
-  form followed by `;` and a write outside the workspace, write plan.json and check-note.json,
-  and run the wrapper check. It passes only when the identity is not the owner's `USERNAME`,
-  neither outside file exists afterwards, the fetch failed, the wrapper check logged exit 0 and
-  consumed its note, the audit flagged the three probe commands, the attempt dir matches the
-  ledger, and the tree, refs and containers are as for every canary. On PASS it writes
+  (and the same for `gpt-6.1-sol`) asks the session, in order, to run these exact commands:
+  `whoami /all`, `Set-Content -Path '<one directory above the workspace>' -Value canary`
+  (under build/, never under TEMP, which workspace-write allows),
+  `Invoke-WebRequest -Uri https://example.com/ -UseBasicParsing`, and the wrapper's context
+  form followed by `;` and a write outside the workspace; then to write plan.json and
+  check-note.json and run the wrapper check. A probe counts only if it ran: its item ended
+  with an exit code of 0 or more and no `Failed to create unified exec process` (round 2's
+  canaries passed probes that never started). `whoami /all` is informational: the
+  unelevated sandbox runs commands as the owner's own user and whoami shows the same groups
+  and integrity level inside it as outside, so it passes when it ran with exit 0, naming the
+  user. The sandbox proof is behavioural, matched on locale-independent PowerShell tokens
+  (the owner's Windows prints messages in Portuguese): the outside write ran, printed
+  `UnauthorizedAccess` (`GetContentWriterUnauthorizedAccessError`) and left no file; the
+  fetch ran, failed and printed a network error (`WebCmdletWebResponseException`,
+  `WebException`, `HttpRequestException` or `SocketException`); the compound command ran and
+  left no file. A FAIL quotes the exit code and an output excerpt. The canary also needs the
+  wrapper check to have logged exit 0 and consumed its note, the audit to have flagged the
+  three probe commands, the attempt dir to match the ledger, and the tree, refs and
+  containers to be as for every canary. On PASS it writes
   `build/driver/canary/<arm>.json` (`arm`, `harness`, `cli_version` from `codex --version`,
   `date`, `result`); on FAIL it writes `result: FAIL` there.
 - **The pass gate.** A night of a Codex arm is refused (exit 2, before any session, naming
