@@ -308,9 +308,13 @@ retired for consumer plans, so agy is the route.
   the attempt dir may hold only the session files, the transcript, the driver's own files as
   they were at launch and wrapper output its ledger names. A session-written `.gemini/` file, a
   linked `view` or `view/build` and a forged `checks.jsonl` are strays. Anything else is
-  quarantined, the attempt is recorded as a guardrail give-up and the night stops. A step agy
-  soft-denied (named in `denied_actions`) never ran, so it is a block, not a stray. What a
-  session sent to Google before it ended has left the machine.
+  quarantined, the attempt is recorded as a guardrail give-up and the night stops. The audit
+  fails closed: a tool step that ran and is not `run_command` with a command, or `read_file` or
+  `write_file` with a path (an unknown tool, a missing name, another shape, a subagent), is a
+  stray, and only `read_file` counts as a read; any other path step is judged as a write. A
+  step whose own last state is `DENIED` never ran, so it is a block, not a stray; the result's
+  `denied_actions` count as hook blocks and never stand for a step. What a session sent to
+  Google before it ended has left the machine.
 - **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
   gemini-flash --run canary-gemini` (and the same for `gpt-oss`) asks the session, in order, to
   write a file one directory above its workspace, fetch `https://example.com/`, run an
