@@ -13,7 +13,8 @@ in that order (session.build_agy_argv after the executable), and:
    environment as its variable NAMES only, so no value (and never a credential) is written;
 3. replays tests/fixtures/agy/NAME.jsonl to stdout, flushing after every line, the way
    `agy -p --output-format stream-json` streams; NAME is FAKEAGY_SCENARIO ([a-z0-9_]+, no path
-   can be spelled). Each line is agy 1.5.5's envelope, {"event": kind, kind: {...}}; in an
+   can be spelled; the agy canary's rig sets it per session, by the transcript the driver gave
+   that session). Each line is agy 1.5.5's envelope, {"event": kind, kind: {...}}; in an
    `init` event's payload, a `cwd` of "@cwd" becomes this process's working directory and a
    `model` of "@model" the --model value, as the real CLI reports them; every other line is
    written byte for byte;

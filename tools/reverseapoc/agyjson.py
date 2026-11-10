@@ -32,7 +32,6 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   command, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
   the audit counts each as a stray (WR-02).
 - `denied_actions`: the result's denied actions as `action(target)` strings.
-- `executions`: every command step with its exit code.
 - `denials`, `undenied_steps`, `response` (the agy canary's evidence): each tool step agy's
   permission check refused, with its action and target read from the step's own error message
   (spike 012: `permission check failed for write_file "<path>": user denied permission for
@@ -232,27 +231,6 @@ def _path(info: Mapping) -> str | None:
         return None
     value = found[0][found[1]]
     return value if isinstance(value, str) else repr(value)
-
-
-class Execution(NamedTuple):
-    """One command step: its command and its exit code (None when the stream holds none)."""
-
-    command: str
-    exit_code: int | None
-
-
-def executions(events: Sequence[dict]) -> list[Execution]:
-    """Every command step, denied ones included, in order, as it ended (the agy canary)."""
-    out = []
-    for step in _steps(events):
-        info = _mapping(step.get("tool_info"))
-        if "command" not in info:
-            continue
-        code = info.get("exit_code")
-        out.append(Execution(_command_text(info["command"]),
-                             code if isinstance(code, int) and not isinstance(code, bool)
-                             else None))  # fmt: skip
-    return out
 
 
 def commands(events: Sequence[dict]) -> list[str]:
