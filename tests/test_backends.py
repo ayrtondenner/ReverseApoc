@@ -502,3 +502,68 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
     text = backends.ARMS_TOML.read_text(encoding="utf-8")
     comment = text[:text.index('[arms."gemini-flash"]')].rsplit("\n\n", 1)[-1]
     assert "max_sessions" in comment and "canary" in comment and "quota" in comment
+
+
+# ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
+
+SUBSCRIBED = (*CLAUDE_ARMS, "gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss")
+METERED_ARMS = ("deepseek-flash", "glm-5.3", "muse-spark-open", "gemini-3.8-flash-openrouter",
+                "qwen-hosted")  # fmt: skip
+
+
+def test_billing_comes_from_the_base_url():
+    """No base_url: a CLI's own sign-in (subscription); a loopback one: the local server
+    (free); any other: paid per token (metered). backends.toml has no billing field."""
+    arms = _arms()
+    assert backends.BILLINGS == ("subscription", "metered", "free")
+    assert {name: arms[name].billing for name in SUBSCRIBED} == dict.fromkeys(
+        SUBSCRIBED, backends.SUBSCRIPTION)  # fmt: skip
+    assert {name: arms[name].billing for name in METERED_ARMS} == dict.fromkeys(
+        METERED_ARMS, backends.METERED)  # fmt: skip
+    assert arms[LOCAL].billing == backends.FREE
+    assert set(arms) == {*SUBSCRIBED, *METERED_ARMS, LOCAL}
+
+
+def test_list_price():
+    """A Claude arm's list price is streamjson's table (RULINGS "Harness"); a hosted arm's is
+    its backends.toml prices."""
+    from reverseapoc.streamjson import PRICES_PER_MTOK
+
+    arms = _arms()
+    for name in CLAUDE_ARMS:
+        assert arms[name].list_price == PRICES_PER_MTOK[name], name
+    assert arms[DEEPSEEK].list_price == arms[DEEPSEEK].prices
+
+
+def _v3(**change) -> dict:
+    record = {"schema": 3, "model": "claude-haiku-5-5", "model_requested": "claude-haiku-5-5",
+              "backend": "anthropic", "harness": "claude"}  # fmt: skip
+    record.update(change)
+    return record
+
+
+def test_record_arm():
+    """The record's (backend, harness, requested model); v1 and v2 records default to the
+    Claude Code login, as stats.arm_key does, and a landing names its model."""
+    arms = _arms()
+    haiku = arms["claude-haiku-5-5"]
+    assert backends.record_arm({"model": "claude-haiku-5-5"}, arms) is haiku  # v1
+    assert backends.record_arm({"schema": 2, "model": None,
+                                "model_requested": "claude-haiku-5-5"}, arms) is haiku  # fmt: skip
+    assert backends.record_arm(_v3(), arms) is haiku
+    luna = _v3(backend="openai", harness="codex", model_requested="gpt-6-luna", model=None)
+    assert backends.record_arm(luna, arms) is arms["gpt-6-luna"]
+    landing = {"kind": "landing", "model": DEEPSEEK, "backend": "deepseek", "harness": "claude"}
+    assert backends.record_arm(landing, arms) is arms[DEEPSEEK]
+    gemini = _v3(backend="google", harness="agy", model_requested="gemini-3.8-flash")
+    assert backends.record_arm(gemini, arms) is None
+
+
+def test_token_cost_is_exact():
+    from decimal import Decimal
+
+    from reverseapoc.streamjson import Price
+
+    tokens = {"input": 1_000_000, "output": 100_000, "cache_read": 2_000_000, "cache_creation": 0}
+    cost = backends.token_cost(tokens, Price(0.10, 0.50, 0.01, 0.20))
+    assert cost == Decimal("0.17") and isinstance(cost, Decimal)
