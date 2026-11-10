@@ -2161,6 +2161,20 @@ def test_egress_session_cannot_read_orig_through_any_form(repo):
     assert passed == []
 
 
+@pytest.mark.parametrize("pattern", ["@(orig)/*", "+(o)rig/**", "!(src)/**", "!src/**",
+                                     "orig|src/*", "third@(_party)/**",
+                                     ".claude/@(worktrees)/x/*", "*(x)/UFO2P.EXE"])  # fmt: skip
+def test_egress_patterns_fail_closed_on_other_glob_syntax(repo, pattern):
+    """Security review (MEDIUM): fnmatch does not model extglob, alternation or negation, so a
+    pattern segment holding anything but [A-Za-z0-9._-] and the plain wildcards * and ? is
+    judged as one that can match any run of segments."""
+    egress = {**view_env(repo), hooks.EGRESS_ENV: "1"}
+    assert matching(tool("Glob", repo, pattern=pattern), egress).deny, pattern
+    assert not matching(tool("Glob", repo, pattern=pattern)).deny, pattern  # as today
+    scoped = tool("Glob", repo, pattern="src/@(ufo2p)/*.c")  # below src/: cannot reach either
+    assert not matching(scoped, egress).deny
+
+
 def test_egress_session_keeps_scoped_searches(repo):
     """What an egress session still may do: read and search below src/, include/ and its own
     attempt directory, with globs that stay there."""
