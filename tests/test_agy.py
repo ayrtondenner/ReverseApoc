@@ -314,14 +314,28 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
     files = {(attempt_dir / rel).as_posix() for rel in
              ("notes.md", "plan.json", "check-note.json", "giveup.json",
               f"view/src/{EXE}/{UNIT}.c")}  # fmt: skip
-    assert set(_rule(allow, "write_file")) == files and len(allow) == 1 + len(files)
+    assert set(_rule(allow, "write_file")) == files
+    # security review round 2: reads are allowed in the attempt dir only (an allow list:
+    # headless agy soft-denies the unconfigured rest)
+    assert _rule(allow, "read_file") == [f"{attempt_dir.as_posix()}/**"]
+    assert len(allow) == 2 + len(files)
     named = re.compile(_rule(deny, "command")[0].removeprefix("regex:"))
     for text in (f"{WRAPPER} asm orig", "type ..\\ORIG\\x", "ls third_party/watcom"):
         assert named.fullmatch(text), text
     assert not named.fullmatch(f"{WRAPPER} check")
     root = night.repo.as_posix()
     for action in ("read_file", "write_file"):
-        assert set(_rule(deny, action)) == {f"{root}/orig/**", f"{root}/third_party/**"}
+        rules = _rule(deny, action)
+        assert {f"{root}/orig/**", f"{root}/third_party/**"} <= set(rules), rules
+        for part in ("orig", "third_party"):  # the backslash form of the same roots
+            assert f"{str(night.repo)}\\{part}\\**" in rules, (action, part)
+        spelled = [re.compile(r.removeprefix("regex:")) for r in rules if r.startswith("regex:")]
+        assert len(spelled) == 1, rules
+        for text in ("../../../../../../orig/UFO2P.EXE", "C:\\x\\ORIG\\TACP.EXE",
+                     "c:/x/Third_Party/watcom/h/stdio.h", "..\\..\\orig"):  # fmt: skip
+            assert spelled[0].fullmatch(text), (action, text)
+        for text in ("view/src/ufo2p/original_x.c", "notes.md", "../origins/x"):
+            assert not spelled[0].fullmatch(text), (action, text)
     assert _rule(deny, "unsandboxed") == ["regex:.*"]
     assert not path.is_relative_to(attempt_dir)
     assert not (night.repo / ".gemini").exists() and not (rig.repo / ".gemini").exists()
@@ -481,7 +495,8 @@ def test_agy_canary_pass(tmp_path, capsys):
     texts = " | ".join(c["check"] for c in doc["checks"])
     for needle in ("init", driver.AGY_CANARY_OUTSIDE, "example.com",
                    driver.AGY_CANARY_UNSANDBOXED, "attempt check", "0001.note.json", "ledger",
-                   "settings", "1500000", AGY_VERSION):  # fmt: skip
+                   "settings", "1500000", AGY_VERSION, "relative read",
+                   "different-case read"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "--output-format"
     assert rig.launches[0].cwd == rig.repo / doc["attempt_dir"]
@@ -499,12 +514,34 @@ def test_agy_canary_prompt_asks_for_every_probe(tmp_path):
     """The prompt asks, in order: a write one directory above the workspace, a URL fetch, an
     unsandboxed command, the plan and the note, then the wrapper check."""
     attempt_dir = tmp_path / "attempt-1"
-    prompt = driver.agy_canary_prompt(attempt_dir, 0xD)
+    prompt = driver.agy_canary_prompt(attempt_dir, 0xD, repo=tmp_path)
     order = [str(attempt_dir.parent / driver.AGY_CANARY_OUTSIDE), driver.CODEX_CANARY_URL,
              "unsandboxed", str(attempt_dir.parent / driver.AGY_CANARY_UNSANDBOXED),
              "plan.json", "check-note.json", f"{WRAPPER} check"]  # fmt: skip
     places = [prompt.index(needle) for needle in order]
     assert places == sorted(places), places
+
+
+def test_agy_canary_probes_the_orig_deny_rules(tmp_path):
+    """Security review round 2: the deny rules for orig/ are unconfirmed, so the canary asks for
+    a `../`-relative read and a different-case absolute read of a probe file under orig/, which
+    does not exist (a read that goes through finds nothing, so no game byte can leave); both
+    must be among the denied actions, else FAIL."""
+    attempt_dir = tmp_path / "build" / "x" / "attempt-1"
+    prompt = driver.agy_canary_prompt(attempt_dir, 0xD, repo=tmp_path)
+    assert f"../../../orig/{driver.AGY_CANARY_PROBE}" in prompt
+    assert str(tmp_path / "ORIG" / driver.AGY_CANARY_PROBE) in prompt
+    assert prompt.index(driver.AGY_CANARY_PROBE) < prompt.index("plan.json")
+
+
+def test_agy_canary_fails_when_an_orig_read_is_not_denied(tmp_path, capsys):
+    """A probe read of orig/ that agy did not deny (it ran, or it never appeared) is a FAIL."""
+    rig = _agy_canary_rig(tmp_path)
+    code, doc = _agy_canary(rig, capsys, "canary_agy_reads_allowed")
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+    assert "relative read" in failed and "different-case read" in failed, failed
+    assert _no_pass(rig)
 
 
 def _no_pass(rig: Rig, arm: str = GEMINI) -> bool:
@@ -593,6 +630,37 @@ def test_an_unknown_harness_is_refused(tmp_path):
     with pytest.raises(driver.Refused) as exc:
         driver.refuse_unproven(options, rig.seams(), {arm.name: arm})
     assert "made-up-cli" in str(exc.value)
+
+
+def _linked_repo(tmp_path: Path, part: str) -> tuple[Path, Path]:
+    """A made-up checkout whose attempt dir holds `v`, a directory link (a junction on
+    Windows) to the checkout's `part`/ directory: a raw path through `v` names no forbidden
+    part, its resolved form does."""
+    from test_driver import _plant_dir_link
+
+    repo = tmp_path / "repo"
+    root = repo / ATTEMPT
+    root.mkdir(parents=True)
+    (repo / part / "watcom").mkdir(parents=True)
+    _plant_dir_link(root / "v", repo / part)
+    return repo, root
+
+
+def test_agy_read_through_a_link_into_third_party_is_a_stray(tmp_path):
+    """Security review round 2: a read is judged on every resolved form, not only on the raw
+    string: `v/watcom/x.h` through a link into third_party/ is a stray naming third_party."""
+    repo, root = _linked_repo(tmp_path, "third_party")
+    strays = driver.read_strays(["v/watcom/x.h", "context.md"], attempt_dir=root, repo=repo)
+    assert len(strays) == 1 and "third_party" in strays[0], strays
+
+
+def test_codex_write_through_a_link_into_orig_names_it(tmp_path):
+    """The same for Codex's (and agy's) writes: a write whose resolved form lies under orig/ is
+    a stray naming orig/, even when the allowlist would pass every form."""
+    repo, root = _linked_repo(tmp_path, "orig")
+    strays = driver.codex_write_strays(["v/watcom/x.c", "notes.md"], attempt_dir=root,
+                                       repo=repo, allowed=lambda rel: True)  # fmt: skip
+    assert len(strays) == 1 and "orig/" in strays[0], strays
 
 
 def test_exception_names_antigravity():
