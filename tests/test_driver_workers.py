@@ -1386,3 +1386,152 @@ def test_a_failed_check_after_the_match_commit_keeps_the_commit_and_reverts_noth
     assert (night.repo / status_rel).read_text(encoding="utf-8") == head_status
     head_log = night.git("show", f"HEAD:{LOG}")
     assert (night.repo / LOG).read_text(encoding="utf-8").startswith(head_log)
+
+
+# ---- 07.2-16 (D-22, D-26): several arms in one drive ----
+
+HAIKU = "claude-haiku-5-5"
+SONNET = "claude-sonnet-5-5"
+DEEPSEEK = "deepseek-flash"
+TWO_ARMS = ((HAIKU, 1), (SONNET, 1))
+
+
+@dataclass
+class ArmNight(WNight):
+    """WNight whose stand-in claude echoes the requested model into its init event, as the
+    real CLI does, so a session of any Claude or hosted arm passes the init check."""
+
+    def _argv(self, prompt: str, *, model: str, max_budget_usd: float,
+              max_turns: int) -> list[str]:  # fmt: skip
+        argv = super()._argv(prompt, model=model, max_budget_usd=max_budget_usd,
+                             max_turns=max_turns)  # fmt: skip
+        return argv + (["--model", model] if model != driver.OPUS_MODEL else [])
+
+
+def _arm_run(arm: str) -> str:
+    return f"{RUN}-{arm}"
+
+
+def _driver_dir(night: Night) -> Path:
+    return night.repo / "build" / "driver"
+
+
+def _run_of(night: Night, launch: Launch) -> str:
+    """The run directory a launch's attempt dir lies in (build/driver/<run>/...)."""
+    return Path(launch.env[attempt.DIR_ENV]).relative_to(_driver_dir(night)).parts[0]
+
+
+def test_two_arms_one_process(tmp_path):
+    """D-22, D-26: two arms of one worker each over three picks under --hold: six sessions,
+    three per arm, each arm's records under its own run id with its model, backend and harness,
+    one attempt directory per function per arm under build/driver/<run>-<arm>/, none shared or
+    moved aside as uncounted; the night's own run records keep the base run id and count every
+    arm's attempts."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert len(night.launched) == 6 and report.sessions == 6
+    attempts = night.kinds("attempt")
+    for arm in (HAIKU, SONNET):
+        mine = [r for r in attempts if r["run"] == _arm_run(arm)]
+        assert sorted(r["function"] for r in mine) == sorted(p.name for p in picks), arm
+        assert {(r["model_requested"], r["backend"], r["harness"], r["hold_run"])
+                for r in mine} == {(arm, "anthropic", "claude", True)}  # fmt: skip
+        for pick in picks:
+            assert (_driver_dir(night) / _arm_run(arm) / EXE / pick.name / "attempt-1").is_dir()
+        assert (_driver_dir(night) / _arm_run(arm) / driver.HOLD_RUN_MARKER).is_file()
+    assert {r["run"] for r in attempts} == {_arm_run(HAIKU), _arm_run(SONNET)}
+    runs = sorted(p.name for p in _driver_dir(night).iterdir() if p.name.startswith(f"{RUN}-"))
+    assert runs == [_arm_run(HAIKU), _arm_run(SONNET)]
+    assert list(_driver_dir(night).rglob("*-uncounted-*")) == []
+    run_records = night.kinds("run")
+    assert [r["run"] for r in run_records] == [RUN, RUN]
+    assert run_records[-1]["workers"] == 2
+    totals = run_records[-1]["totals"]
+    assert sum(totals["sessions"].values()) == 6
+    assert {name: share["sessions"] for name, share in totals["by_model"].items()} == {
+        HAIKU: 3, SONNET: 3}  # fmt: skip
+
+
+def test_two_arms_one_lock(tmp_path, monkeypatch):
+    """D-22: one drive lock for the whole process, whatever the arms; while it runs, a second
+    drive on the same checkout is refused as today."""
+    taken: list[object] = []
+    real = driver.take_drive_lock
+
+    def counted(repo):
+        lock = real(repo)
+        taken.append(lock)
+        return lock
+
+    monkeypatch.setattr(driver, "take_drive_lock", counted)
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
+    second: list[driver.DriveReport] = []
+
+    def before(unit, index):
+        if index == 0:
+            second.append(driver.drive(night.config(arms=TWO_ARMS), night.deps()))
+
+    night.before = before
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert len(taken) == 1, "the night took more than one drive lock"
+    assert [(r.event, r.exit_code) for r in second] == [("REFUSED", 2)]
+    assert "another reverseapoc drive is running" in second[0].detail
+
+
+def test_two_arms_never_share_a_unit(tmp_path):
+    """Claims stay per unit across arms: two arms' sessions on functions of one unit never run
+    at the same time, and each arm still attempts every function once."""
+    picks = tuple(_wpick(i, unit=_unit(0)) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks)
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert night.overlaps == [] and night.peak == 1
+    assert len(night.launched) == 6
+    runs = sorted(r["run"] for r in night.kinds("attempt"))
+    assert runs == [_arm_run(HAIKU)] * 3 + [_arm_run(SONNET)] * 3
+
+
+def _shape(night: Night) -> list[tuple]:
+    return sorted((r["run"], r["function"], r["model_requested"], r["outcome"], r["attempt"])
+                  for r in night.kinds("attempt"))  # fmt: skip
+
+
+def test_night_model_is_one_arm(tmp_path):
+    """D-22: `--night-model X --workers 2` is the one-arm shorthand: the same night as
+    `--arm X=2`, under the base run id."""
+    picks = tuple(_wpick(i) for i in range(2))
+    short = ArmNight(tmp_path / "short", picks=picks)
+    short.run(config={"night_model": HAIKU, "workers": 2, "hold": True})
+    arm = ArmNight(tmp_path / "arm", picks=picks)
+    report = arm.run(config={"arms": ((HAIKU, 2),), "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert _shape(short) == _shape(arm)
+    assert {r["run"] for r in arm.kinds("attempt")} == {RUN}
+
+
+def test_each_arm_gets_its_own_session_env(tmp_path):
+    """RULINGS token-leak guard, inside a multi-arm night: the hosted arm's session gets its
+    endpoint, its own key as the bearer token and REVERSEAPOC_EGRESS; the Claude arm's session
+    beside it gets none of them and no arm's key variable."""
+    from reverseapoc import hooks
+    from test_drive import DEEPSEEK_URL, FAKE_KEY, _keyed
+
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
+    env = _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    report = night.run(config={"arms": ((HAIKU, 1), (DEEPSEEK, 1)), "hold": True,
+                               "base_env": env})  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    by_run: dict[str, dict] = {}
+    for launch in night.launched:
+        by_run.setdefault(_run_of(night, launch), launch.env)
+    hosted, claude = by_run[_arm_run(DEEPSEEK)], by_run[_arm_run(HAIKU)]
+    assert hosted.get("ANTHROPIC_BASE_URL") == DEEPSEEK_URL
+    assert hosted.get("ANTHROPIC_AUTH_TOKEN") == FAKE_KEY
+    assert hosted.get(hooks.EGRESS_ENV) == "1"
+    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "DEEPSEEK_API_KEY",
+                 hooks.EGRESS_ENV):  # fmt: skip
+        assert name not in set(claude), name
+    assert "DEEPSEEK_API_KEY" not in set(hosted)

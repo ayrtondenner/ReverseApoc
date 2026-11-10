@@ -2017,3 +2017,109 @@ def test_cli_refuses_allow_egress_for_the_local_arm(capsys, monkeypatch):
     monkeypatch.setattr(driver, "default_seams", lambda repo: None)
     assert cli.main(["drive", "--night-model", LOCAL, "--allow-egress", LOCAL]) == 2
     assert LOCAL in capsys.readouterr().err and seen == []
+
+
+# ---- 07.2-16 (D-22, D-26): every per-arm gate still holds inside a multi-arm drive ----
+
+LUNA = "gpt-6-luna"
+GEMINI = "gemini-flash"
+
+
+def _no_session_ran(rig: Rig) -> None:
+    assert list((rig.repo / "build").rglob("attempt-*")) == []
+
+
+@pytest.mark.parametrize("arm", [LUNA, GEMINI])
+def test_multi_arm_needs_each_signed_in_arms_canary_pass(tmp_path, capsys, arm):
+    """D-13, D-21: a Codex or agy arm beside a Claude arm still runs only after its own canary
+    passed: refused with exit 2 before any session, naming that arm's canary command."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                             arms=((HAIKU, 1), (arm, 1)), allow_egress=(arm,))  # fmt: skip
+    assert code == 2
+    assert f"--canary --night-model {arm} --allow-egress {arm}" in _refusal(out)["detail"]
+    _no_session_ran(rig)
+
+
+@pytest.mark.parametrize(("allow", "words"), [
+    ((), f"--allow-egress {DEEPSEEK}"),
+    (("glm-5.3",), "glm-5.3"),
+    ((HAIKU,), HAIKU),
+    ((DEEPSEEK, "glm-5.3"), "glm-5.3"),
+])  # fmt: skip
+def test_multi_arm_egress_is_per_arm(tmp_path, capsys, allow, words):
+    """D-11: each egress arm of a multi-arm night needs its own --allow-egress, and an
+    --allow-egress naming an arm the night does not run, or one that sends nothing off the
+    machine, is refused: exit 2 before any command."""
+    rig = Rig(tmp_path)
+    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env},
+                             arms=((HAIKU, 1), (DEEPSEEK, 1)), allow_egress=allow)  # fmt: skip
+    assert code == 2
+    assert words in _refusal(out)["detail"]
+    assert rig.runner.calls == []
+    _no_session_ran(rig)
+
+
+@pytest.mark.parametrize("key", ["", "   ", None])
+def test_multi_arm_token_leak_guard(tmp_path, capsys, key):
+    """D-26: a hosted arm beside a Claude arm with a missing, empty or blank key is refused
+    before any command (the claude.ai login would go to its endpoint)."""
+    rig = Rig(tmp_path)
+    env = _keyed(rig.env) if key is None else _keyed(rig.env, DEEPSEEK_API_KEY=key)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env},
+                             arms=((HAIKU, 1), (DEEPSEEK, 1)), allow_egress=(DEEPSEEK,))
+    assert code == 2
+    assert "DEEPSEEK_API_KEY" in _refusal(out)["detail"]
+    assert rig.runner.calls == []
+
+
+@pytest.mark.parametrize(("arms", "named"), [
+    (((HAIKU, 1), (LUNA, 2)), LUNA),
+    (((LOCAL, 2), (HAIKU, 1)), LOCAL),
+    (((HAIKU, 11),), HAIKU),
+])  # fmt: skip
+def test_multi_arm_max_workers_per_arm(tmp_path, capsys, arms, named):
+    """Each arm's workers stay within its backends.toml max_workers: refused before any
+    command, naming the arm."""
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)}, arms=arms,
+                             allow_egress=tuple(a for a, _ in arms if a == LUNA))  # fmt: skip
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert "max_workers" in detail and named in detail, detail
+    assert rig.runner.calls == []
+
+
+def test_multi_arm_reaches_the_night(tmp_path, capsys, monkeypatch):
+    """run_drive hands the arms to the night, with the sum of their workers."""
+    seen = []
+
+    def fake_drive(config, deps, *, lock=None):
+        seen.append(config)
+        return driver.DriveReport(driver.ENDED, driver.NOTHING_TO_DO, 0, 0)
+
+    monkeypatch.setattr(driver, "drive", fake_drive)
+    rig = Rig(tmp_path)
+    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    code, _, err = rig.drive(capsys, json=True, seams={"base_env": env},
+                             arms=((HAIKU, 2), (DEEPSEEK, 1)), allow_egress=(DEEPSEEK,))
+    assert code == 0, err
+    assert (seen[0].arms, seen[0].workers, seen[0].night_model) == (
+        ((HAIKU, 2), (DEEPSEEK, 1)), 3, None)  # fmt: skip
+
+
+def test_multi_arm_keeps_the_codex_audit(tmp_path, capsys, monkeypatch):
+    """D-26: a Codex arm's session in a multi-arm night goes through the Codex audit: a stray
+    command stops the whole night as a guardrail, and the Claude arm launches nothing after."""
+    from test_codex import codex_night, write_pass
+
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="stray_command")
+    write_pass(rig.repo)
+    code, _, _ = rig.drive(capsys, seams={"base_env": env}, arms=((LUNA, 1), (HAIKU, 1)),
+                           allow_egress=(LUNA,))  # fmt: skip
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "type notes.md" in stopped["detail"]
+    assert len(night.launched) == 1
+    assert night.kinds("attempt")[0]["run"] == f"{RUN}-{LUNA}"
