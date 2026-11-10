@@ -167,13 +167,14 @@ def build_agy_argv(prompt: str, *, agy: str, model: str, attempt_dir: Path, sett
     the CLI executable: stream-json output, the model slug (an unknown one exits 1, so a wrong
     slug fails closed), the terminal sandbox, the attempt dir as the added workspace, the
     per-session settings file the driver wrote under build/ outside that workspace, no slash
-    commands, and the session's wall clock (`timeout_s`, whole seconds) as the print timeout.
+    commands, and the session's wall clock (`timeout_s`) as the print timeout, a Go duration in
+    whole seconds (`1800s`: agy 1.5.5 exits on a bare number, canary 2026-11-10).
     `-p` and the prompt come last (agy reads no stdin and wants `-p` last). Never the flag that
     skips permissions (tests/test_agy.py pins the list). The driver runs it with cwd = the
     attempt dir."""
     return [agy, "--output-format", "stream-json", "--model", model, "--sandbox",
             "--add-dir", str(attempt_dir), "--settings", str(settings),
-            "--disable-slash-commands", "--print-timeout", str(int(timeout_s)),
+            "--disable-slash-commands", "--print-timeout", f"{int(timeout_s)}s",
             "-p", prompt]  # fmt: skip
 
 

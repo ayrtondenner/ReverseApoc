@@ -293,8 +293,9 @@ retired for consumer plans, so agy is the route.
   vary per account, and agy exits 1 on an unknown one, so a wrong id fails the canary. For an
   effort comparison, set `gemini-3.8-flash-high` or `-low` as the `gemini-flash` model.
 - **The session.** `agy --output-format stream-json --model <slug> --sandbox --add-dir <attempt
-  dir> --settings <settings file> --disable-slash-commands --print-timeout <wall clock s> -p
-  <prompt>`, with the attempt dir as its working directory. The flag that skips permissions is
+  dir> --settings <settings file> --disable-slash-commands --print-timeout <wall clock>s -p
+  <prompt>`, with the attempt dir as its working directory. The timeout is a Go duration
+  (`1800s`): agy 1.5.5 exits on a bare number. The flag that skips permissions is
   never passed. agy loads no skill and runs no hook, so the prompt is the Codex prompt (goal,
   skill body, session rules). The init event must name the attempt dir as cwd, the requested
   slug and no bypass permission mode, else the night stops (reason init). Tokens come from the

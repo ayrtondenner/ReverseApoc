@@ -106,7 +106,7 @@ def test_build_agy_argv(tmp_path):
                                   timeout_s=1800)  # fmt: skip
     assert argv == ["agy.exe", "--output-format", "stream-json", "--model", GEMINI_MODEL,
                     "--sandbox", "--add-dir", str(attempt_dir), "--settings", str(settings),
-                    "--disable-slash-commands", "--print-timeout", "1800", "-p",
+                    "--disable-slash-commands", "--print-timeout", "1800s", "-p",
                     "the prompt"]  # fmt: skip
     assert argv[-2:] == ["-p", "the prompt"]
     assert "--dangerously-skip-permissions" not in argv
@@ -143,6 +143,22 @@ def test_each_agy_arm_builds_a_valid_argv(tmp_path):
                                       timeout_s=session.TIMEOUT_S)  # fmt: skip
         assert fakeagy._problem(argv[1:]) is None, name
         assert argv[argv.index("--model") + 1] == model
+
+
+def test_fake_agy_rejects_a_unitless_print_timeout(tmp_path):
+    """Canary 2026-11-10: agy 1.5.5 parses --print-timeout as a Go duration and exits on
+    `invalid value "1200" for flag -print-timeout: time: missing unit in duration`, so the fake
+    refuses a bare number the same way; the driver's whole seconds carry an `s` unit."""
+    import fakeagy
+
+    argv = session.build_agy_argv("p", agy="agy", model=GEMINI_MODEL, attempt_dir=tmp_path,
+                                  settings=tmp_path / "s.json", timeout_s=1200)[1:]  # fmt: skip
+    assert argv[argv.index("--print-timeout") + 1] == "1200s"
+    assert fakeagy._problem(argv) is None
+    timeout = argv.index("--print-timeout") + 1
+    for bad in ("1200", "0s", "12.5s", "20m"):
+        argv[timeout] = bad
+        assert "--print-timeout" in fakeagy._problem(argv), bad
 
 
 def test_agy_prompt(tmp_path):
