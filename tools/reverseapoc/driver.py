@@ -6274,7 +6274,8 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
 def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     """07.2-12 (D-11, D-12, D-26): backends.toml, read and checked before any command, session
     or attempt directory. The run's arm (the canary's model on a canary, else `--night-model`,
-    else the default Claude arm) must be in the table, and backends.preflight must pass for it: a
+    else the default Claude arm) must be in the table, a `--night-model` night may not run more
+    `--workers` than the arm's max_workers, and backends.preflight must pass for it: a
     non-Anthropic arm that sends the pack needs --allow-egress, a stray --allow-egress is
     refused, and a base URL needs a non-blank key in the sessions' environment."""
     shown = backends.ARMS_TOML.relative_to(backends.REPO_ROOT).as_posix()
@@ -6285,9 +6286,13 @@ def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     name = options.canary_model if options.canary else (options.night_model or MODEL)
     if name not in arms:
         raise Refused("night model", f"{name!r} is not an arm of {shown}: {', '.join(arms)}")
+    arm = arms[name]
+    if options.night_model is not None and not options.canary and options.workers > arm.max_workers:
+        raise Refused("workers", f"--workers {options.workers} is above arm {name}'s max_workers "
+                                 f"{arm.max_workers} in {shown} (the local server has one slot)")
     base = seams.base_env if seams.base_env is not None else os.environ
     try:
-        backends.preflight(arms[name], base, allow_egress=options.allow_egress)
+        backends.preflight(arm, base, allow_egress=options.allow_egress)
     except backends.ArmError as exc:
         raise Refused("backends", str(exc)) from exc
     return arms

@@ -126,3 +126,24 @@ input = 0.20
 output = 0.80
 cache_read = 0.20
 cache_creation = 0.20
+
+# Qwen3.6-35B-A3B on the owner's own llama-server under C:\llm\ (D-18: last, one worker). The
+# plan's working name for this arm was qwen3.6-35b-a3b-local; the owner's ruling of 2026-11-09
+# names it qwen-local. `model` is the llama-server --alias the owner sets. No key variable: the
+# session gets the fixed loopback token (backends.LOOPBACK_TOKEN), which llama-server ignores
+# without --api-key. Nothing leaves the machine, so it takes no --allow-egress.
+[arms."qwen-local"]
+harness = "claude"
+backend = "local"
+model = "qwen3.6-35b-a3b"
+base_url = "http://127.0.0.1:8080"
+sends_disassembly = false
+accepted_init = ["qwen3.6-35b-a3b"]
+coauthor = "Qwen3.6-35B-A3B <noreply@qwen.ai>"
+max_workers = 1
+
+[arms."qwen-local".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0

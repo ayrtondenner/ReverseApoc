@@ -292,12 +292,14 @@ def test_session_env_local():
 @pytest.mark.parametrize("url", ["https://llm.example.invalid/anthropic",
                                  "http://192.168.1.5:8080"])  # fmt: skip
 def test_no_key_variable_needs_a_loopback_url(tmp_path, url):
-    """Without key_env the fixed loopback token would be sent: allowed for loopback only."""
+    """Without key_env the fixed loopback token would be sent: allowed for loopback only (plain
+    http to another host is refused by the base_url rule first)."""
     text = (_DEEPSEEK_TOML.replace('key_env = "DEEPSEEK_API_KEY"\n', "")
             .replace(DEEPSEEK_URL, url))  # fmt: skip
     with pytest.raises(ArmError) as exc:
         load_arms(_table(tmp_path, text))
-    assert DEEPSEEK in str(exc.value) and "key_env" in str(exc.value)
+    field = "key_env" if url.startswith("https://") else "base_url"
+    assert DEEPSEEK in str(exc.value) and field in str(exc.value), str(exc.value)
 
 
 def test_the_local_arm_takes_no_allow_egress():

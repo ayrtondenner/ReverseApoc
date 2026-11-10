@@ -20,7 +20,9 @@ hooks.EGRESS_ENV=1, so the matching hook denies its reads of orig/ and third_par
 runs only when it is also named by `--allow-egress`, an `--allow-egress` naming anything else is
 refused, and an arm with a base URL whose key variable is missing, empty or blank is refused,
 because Claude Code would otherwise send the claude.ai login to that endpoint (Pitfall 5). The
-env builder refuses the same empty token on its own. No message ever holds a key's value.
+env builder refuses the same empty token on its own. No message ever holds a key's value. A
+loopback arm with no key variable (the local llama.cpp server, D-18) gets the fixed
+LOOPBACK_TOKEN instead; a non-loopback base URL always needs a key variable.
 """
 
 from __future__ import annotations
@@ -40,6 +42,9 @@ from .targets import REPO_ROOT
 ARMS_TOML = REPO_ROOT / "config" / "driver" / "backends.toml"
 HARNESSES = ("claude", "codex", "agy")  # the agent CLI a session runs under (schema 3)
 ANTHROPIC = "anthropic"  # the backend of the Claude Code login (no base URL, no key variable)
+# D-18, D-26: the bearer token of a loopback arm with no key variable (the local llama.cpp
+# server), non-empty so Claude Code never falls back to the claude.ai login; loopback only.
+LOOPBACK_TOKEN = "local"
 BACKEND_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")  # a record's `backend` (RULINGS "Schema 3")
 
 BASE_URL_ENV = "ANTHROPIC_BASE_URL"
@@ -104,12 +109,16 @@ def _key_env(value: object) -> str:
     return value
 
 
+def _loopback(url: str) -> bool:
+    return urlsplit(url).hostname in _LOOPBACK
+
+
 def _base_url(value: object) -> str:
     """https://, or plain http:// to a loopback host only (a local server)."""
     if not isinstance(value, str):
         raise ArmError(f"base_url: {value!r} is not a string")
     parts = urlsplit(value)
-    loopback = parts.scheme == "http" and parts.hostname in _LOOPBACK
+    loopback = parts.scheme == "http" and _loopback(value)
     if not (parts.scheme == "https" and parts.hostname) and not loopback:
         raise ArmError(f"base_url: {value!r} is neither https:// nor http:// to a loopback host")
     return value
@@ -142,8 +151,8 @@ def _present(table: Mapping, hosted: bool, harness: str) -> None:
     if unknown:
         raise ArmError(f"{', '.join(unknown)}: unknown field (fields: {', '.join(_FIELDS)})")
     need = [*_REQUIRED, *(_HOSTED if hosted else ())]
-    if hosted and harness == "claude":
-        need += _ENDPOINT
+    if hosted and harness == "claude":  # key_env too, unless the endpoint is loopback (_arm)
+        need.append("base_url")
     missing = [key for key in need if key not in table]
     if missing:
         raise ArmError(f"{', '.join(missing)}: missing")
@@ -169,6 +178,10 @@ def _arm(name: str, table: object) -> Arm:
     workers = table["max_workers"]
     if isinstance(workers, bool) or not isinstance(workers, int) or workers < 1:
         raise ArmError(f"max_workers: {workers!r} is not an integer >= 1")
+    url = table.get("base_url")
+    if url is not None and "key_env" not in table and not _loopback(_base_url(url)):
+        raise ArmError("key_env: missing; only a loopback base_url runs without a key variable "
+                       "(it gets LOOPBACK_TOKEN, D-26)")  # fmt: skip
     return Arm(name=name, harness=harness, backend=backend, model=_text(table, "model", _MODEL),
                sends_disassembly=table["sends_disassembly"], max_workers=workers,
                base_url=_base_url(table["base_url"]) if "base_url" in table else None,
@@ -202,7 +215,11 @@ def load_arms(path: Path = ARMS_TOML) -> dict[str, Arm]:
 
 def _token(arm: Arm, env: Mapping[str, str]) -> str:
     """The value of the arm's key variable; ArmError, naming the variable and the endpoint but
-    never the value, when it is missing, empty or blank (the token-leak guard, D-26)."""
+    never the value, when it is missing, empty or blank (the token-leak guard, D-26). An arm
+    with no key variable (load_arms allows that on a loopback base URL only) gets
+    LOOPBACK_TOKEN: llama-server ignores it without --api-key (RESEARCH Q7)."""
+    if arm.key_env is None and arm.base_url is not None and _loopback(arm.base_url):
+        return LOOPBACK_TOKEN
     value = env.get(arm.key_env, "") if arm.key_env else ""
     if not value.strip():
         raise ArmError(f"arm {arm.name}: {arm.key_env} is missing or empty, so the session would "
