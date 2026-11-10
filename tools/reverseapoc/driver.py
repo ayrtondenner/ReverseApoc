@@ -5513,16 +5513,20 @@ class _Night:
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
         "estimate". A night passes no effort (null: the CLI default, D-17); `harness` and
         `backend` are the session's arm's (07.2-12: DEFAULT_BACKEND on the Claude Code login,
-        else the backends.toml entry's provider). A hosted arm's `cost_usd` is always
-        backends.estimate_cost over its tokens, `cost_source` "estimate" (RESEARCH A3: the
-        CLI's figure for a model it does not know is not trusted); `giveup` is the session's
+        else the backends.toml entry's provider). A hosted arm's `cost_usd` is what it really
+        pays, `cost_source` "estimate" (RESEARCH A3: the CLI's figure for a model it does not
+        know is not trusted): a metered arm's tokens at its prices (backends.estimate_cost), and
+        0 on a subscription or free arm (quick 261110-f30, backends.Arm.billing), whose prices
+        serve only the API-equivalent figure of `stats --run` and the `--land-held` ranking;
+        `giveup` is the session's
         validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` true exactly on a
         hold run (`drive --hold`, 07.2-06). Committed records are never rewritten (D-23)."""
         use = session.usage
         measured = session.measured
         arm = session.claim.arm_in(self.arms)  # 07.2-12: the arm's harness and backend
         hosted = arm.backend != DEFAULT_BACKEND  # RESEARCH A3: its CLI cost is not trusted
-        cost = backends.estimate_cost(use, arm) if hosted else use.cost_usd
+        metered = arm.billing == backends.METERED  # quick 261110-f30: list prices are not paid
+        cost = (backends.estimate_cost(use, arm) if metered else 0.0) if hosted else use.cost_usd
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
                   "abort_reason": abort, "turns": use.turns,
