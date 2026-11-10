@@ -326,3 +326,58 @@ def test_session_env_marks_egress_sessions():
     base = {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK, hooks.EGRESS_ENV: "1"}
     assert session_env(arms[DEEPSEEK], base, arms)[hooks.EGRESS_ENV] == "1"
     assert hooks.EGRESS_ENV not in session_env(arms[OPUS], base, arms)
+
+
+# ---- 07.2-13 (D-12, D-13, D-26): the Codex arms ----
+
+CODEX_ARMS = {"gpt-6-luna": "GPT-6 Luna <noreply@openai.com>",
+              "gpt-6.1-sol": "GPT-6.1 Sol <noreply@openai.com>"}  # fmt: skip
+
+
+def test_codex_arms_load():
+    """GPT-6 Luna and GPT-6.1 Sol run through the Codex CLI on the owner's ChatGPT login: no
+    endpoint, no key variable, no init ids (Codex streams no init event), free on Plus (counted
+    in tokens), one worker, sending the pack to OpenAI (so --allow-egress)."""
+    arms = _arms()
+    for name, credit in CODEX_ARMS.items():
+        arm = arms[name]
+        assert (arm.harness, arm.backend, arm.model) == ("codex", "openai", name)
+        assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, ())
+        assert arm.prices == (0.0, 0.0, 0.0, 0.0) and arm.coauthor == credit
+        assert arm.max_workers == 1 and arm.egress
+
+
+_CODEX_TOML = """\
+[arms."gpt-6-luna"]
+harness = "codex"
+backend = "openai"
+model = "gpt-6-luna"
+sends_disassembly = true
+accepted_init = []
+coauthor = "GPT-6 Luna <noreply@openai.com>"
+max_workers = 1
+
+[arms."gpt-6-luna".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+"""
+
+
+@pytest.mark.parametrize("extra", ['base_url = "https://api.openai.com/v1"\n',
+                                   'key_env = "OPENAI_API_KEY"\n'])  # fmt: skip
+def test_a_codex_arm_takes_no_endpoint_or_key(tmp_path, extra):
+    """D-12: a Codex arm uses the ChatGPT login; an endpoint or key variable is refused."""
+    load_arms(_table(tmp_path, _CODEX_TOML))
+    text = _CODEX_TOML.replace("max_workers = 1\n", f"max_workers = 1\n{extra}")
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, text))
+    assert "gpt-6-luna" in str(exc.value) and extra.split(" ")[0] in str(exc.value)
+
+
+def test_a_claude_harness_arm_still_needs_init_ids(tmp_path):
+    """Only an arm with no init event may list no init ids."""
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, _DEEPSEEK_TOML.replace('["deepseek-flash"]', "[]")))
+    assert "accepted_init" in str(exc.value)

@@ -1,0 +1,6 @@
+{"type":"thread.started","thread_id":"made-up-thread-0002"}
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":200,"reasoning_output_tokens":50}}
+this line is not JSON
+{"type":"turn.started"}
+{"type":"turn.completed","usage":{"input_tokens":2000,"cached_input_tokens":1500,"output_tokens":300,"reasoning_output_tokens":100}}

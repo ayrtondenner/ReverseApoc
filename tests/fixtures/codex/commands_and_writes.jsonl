@@ -1,0 +1,8 @@
+{"type":"thread.started","thread_id":"made-up-thread-0003"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"uv run --frozen reverseapoc attempt context","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"item.completed","item":{"id":"item_0","type":"command_execution","command":"uv run --frozen reverseapoc attempt context","aggregated_output":"made-up\n","exit_code":0,"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_1","type":"file_change","changes":[{"path":"notes.md","kind":"add"},{"path":"view/src/ufo2p/u_00010000.c","kind":"update"}],"status":"completed"}}
+{"type":"item.completed","item":{"id":"item_2","type":"command_execution","command":["uv","run","--frozen","reverseapoc","attempt","asm"],"aggregated_output":"made-up\n","exit_code":0,"status":"completed"}}
+{"type":"item.started","item":{"id":"item_3","type":"command_execution","command":"type notes.md","aggregated_output":"","exit_code":null,"status":"in_progress"}}
+{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0}}

@@ -1,0 +1,3 @@
+{"type":"thread.started","thread_id":"made-up-thread-0004"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"made-up turn failure"}}
