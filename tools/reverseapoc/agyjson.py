@@ -35,6 +35,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -136,13 +137,30 @@ def denied_actions(events: Sequence[dict]) -> list[str]:
     return [_denied(entry) for entry in found] if isinstance(found, list) else []
 
 
-def _denied_targets(events: Sequence[dict]) -> set[str]:
-    out = set()
+# The denied-action names that can stand for a step of each kind (agy's settings actions).
+_COMMAND_ACTIONS = frozenset({"command", "unsandboxed"})
+_READ_ACTIONS = frozenset({"read_file"})
+_WRITE_ACTIONS = frozenset({"write_file"})
+
+
+def _denied_pairs(events: Sequence[dict]) -> Counter[tuple[str, str]]:
+    """How many times each (action, target) was denied: a denial accounts for one step of its
+    own kind only, so a denied command or read never hides a read or a write that ran."""
+    out: Counter[tuple[str, str]] = Counter()
     for text in denied_actions(events):
         match = _ACTION.fullmatch(text)
         if match is not None:
-            out.add(match.group("target"))
+            out[match.group("action"), match.group("target")] += 1
     return out
+
+
+def _take(denied: Counter[tuple[str, str]], actions: frozenset[str], target: str) -> bool:
+    """Whether one denial of `target` under one of `actions` is left; it is used up if so."""
+    for action in actions:
+        if denied[action, target] > 0:
+            denied[action, target] -= 1
+            return True
+    return False
 
 
 def _steps(events: Sequence[dict]) -> list[Mapping]:
@@ -204,19 +222,21 @@ def executions(events: Sequence[dict]) -> list[Execution]:
 
 def commands(events: Sequence[dict]) -> list[str]:
     """Every command step that was not denied (see the module docstring)."""
-    denied = _denied_targets(events)
-    return [e.command for e in executions(events) if e.command not in denied]
+    denied = _denied_pairs(events)
+    return [e.command for e in executions(events)
+            if not _take(denied, _COMMAND_ACTIONS, e.command)]
 
 
 def _paths(events: Sequence[dict], *, writes: bool) -> list[str]:
-    denied = _denied_targets(events)
+    denied = _denied_pairs(events)
+    actions = _WRITE_ACTIONS if writes else _READ_ACTIONS
     out = []
     for step in _steps(events):
         info = _mapping(step.get("tool_info"))
         path = None if "command" in info else _path(info)
-        if path is None or path in denied:
+        if path is None or bool(_WRITE_TOOL.search(step["tool_name"])) != writes:
             continue
-        if bool(_WRITE_TOOL.search(step["tool_name"])) == writes:
+        if not _take(denied, actions, path):
             out.append(path)
     return out
 
