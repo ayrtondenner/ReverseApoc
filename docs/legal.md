@@ -44,6 +44,32 @@ AI tools, Claude Code in particular, are used openly for research, tooling and d
 
 From the Phase 6 driver (plan 06-23) on, the public record of every agent attempt is the committed `progress/attempts.jsonl` (D-23). It holds one line per attempt with the function, the attempt number, the outcome (matched, partial or gave up), the abort reason, turns, tokens, a cost estimate, the time taken, the model and CLI version, and a check summary. It holds no game bytes. Failed attempts are committed too, so the log shows what the agent could not do as well as what it matched. Transcripts and full check output stay in the gitignored `build/`.
 
+## Model backends and what they receive
+
+A matching session sends its model provider three things:
+
+- the context pack: one function's disassembly listing, its Ghidra draft and our unit's C;
+- the output of the attempt wrapper for the functions the session names (check results, byte and relocation differences);
+- the repository files the session reads.
+
+A session never sends a whole executable, and never anything under `orig/`. Every arm is listed in `config/driver/backends.toml`, and `sends_disassembly` there marks whether that arm's context packs leave the machine.
+
+| Backend | Arms | What it receives |
+|---|---|---|
+| Anthropic | the Claude Code login: Opus, Fable, Haiku and Sonnet | the three items above, as since Phase 6 |
+| DeepSeek | `deepseek-flash` (DeepSeek V4.1-Flash), through DeepSeek's Anthropic-compatible endpoint | the same three items; no read of `orig/` or `third_party/` |
+| z.ai | `glm-5.3` (GLM-5.x), through z.ai's Anthropic-compatible endpoint | the same; no read of `orig/` or `third_party/` |
+| OpenRouter | `muse-spark-open` (Muse Spark Open), `qwen-hosted` (Qwen3.6-35B-A3B), and the Gemini fallback of D-21 if the Antigravity canary fails | the same; no read of `orig/` or `third_party/` |
+| OpenAI | Codex CLI on the owner's ChatGPT Plus plan (plan 07.2-13) | the same; the session is sandboxed, and every command it ran is audited after it ends |
+| Google | Antigravity CLI on the owner's Google AI Plus plan (plan 07.2-15) | the same; the session is sandboxed, and every command it ran is audited after it ends |
+| local llama.cpp server | `qwen-local` (Qwen3.6-35B-A3B on the owner's machine) | nothing leaves the machine: the server listens on loopback only, and `sends_disassembly = false` |
+
+The rules:
+
+- **Opt-in.** The owner opted in on 2026-11-09 to send context packs to the non-Anthropic backends above for spike 012. A non-Anthropic arm whose `sends_disassembly` is true runs only when both `--night-model <arm>` and `--allow-egress <arm>` are given. An `--allow-egress` that names any other arm is refused, so a typo can never send packs to a new backend (D-11).
+- **No game files or compiler.** A Claude Code session of a non-Anthropic arm runs with `REVERSEAPOC_EGRESS=1`. The matching hook then denies every Read, Glob and Grep that can reach `orig/` or `third_party/`, by any path form or wildcard, without relying on `.gitignore`. The Codex and Antigravity sessions have no such hook. Their sandbox keeps them to the attempt directory, and the driver's audit after the session treats any command or read naming `orig/` or `third_party/` as a stray (plans 07.2-13 and 07.2-15).
+- **Keys.** A hosted arm's key comes only from the user environment variable that `backends.toml` names (`DEEPSEEK_API_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`; see [Model API keys and sign-ins](toolchain.md#model-api-keys-and-sign-ins)). The driver copies it into that one session's environment and never logs, records or writes it. A missing or empty key stops the run before any session, because Claude Code would otherwise send the owner's claude.ai login to that endpoint (D-12, D-26). Codex and Antigravity use their own sign-ins and need no key.
+
 ## Why not IDA Free
 
 IDA Free was rejected. Its decompiler runs in Hex-Rays' cloud, so function bytes would leave the machine, and the owner wants analysis to stay local. It also cannot load LE executables (its file formats are PE, ELF and Mach-O), has no IDAPython and is not supported by ida-pro-mcp. Ghidra with an LE loader runs fully locally.
