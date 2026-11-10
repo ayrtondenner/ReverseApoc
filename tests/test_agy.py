@@ -693,6 +693,42 @@ def test_dot_dot_and_short_name_segments_are_strays(tmp_path):
     assert [s.split(": a write")[0] for s in writes] == bad, writes
 
 
+def _query_envs(runner, argv: list[str]) -> list[dict | None]:
+    return [env for call, env in zip(runner.calls, runner.envs, strict=True) if call == argv]
+
+
+def _clean(env: dict | None) -> bool:
+    """The stripped session env: given at all, and holding no ANTHROPIC_* name, no arm key and
+    no OpenAI or Google key variable."""
+    return env is not None and not [n for n in env if n.upper().startswith("ANTHROPIC_")
+                                    or n in LEAKS]  # fmt: skip
+
+
+def test_cli_queries_run_with_the_stripped_session_env(tmp_path, capsys):
+    """RULINGS token-leak guard, orchestrator follow-up: `agy --version` and `agy -p /usage`
+    (the canary and the pass gate) and `codex --version` (the gate) run with the env an agy or
+    Codex session gets, never the driver's own: no ANTHROPIC_* and no arm key variable."""
+    import pytest
+
+    rig = _agy_canary_rig(tmp_path / "canary")
+    env = _keyed(rig.env, FAKEAGY_SCENARIO="canary_agy_pass", **LEAKS)
+    code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=GEMINI,
+                             canary_model=GEMINI, allow_egress=(GEMINI,),
+                             seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip
+    assert code == 0, out
+    for argv in (["agy", "--version"], USAGE_ARGV):
+        envs = _query_envs(rig.runner, argv)
+        assert envs and all(_clean(e) for e in envs), argv
+    arms = backends.load_arms()
+    for name, cli in ((GEMINI, "agy"), ("gpt-6-luna", "codex")):
+        gate = Rig(tmp_path / name)
+        seams = gate.seams(base_env=_keyed(gate.env, **LEAKS))
+        with pytest.raises(driver.Refused):  # no pass file: refused after the version query
+            driver.refuse_unproven(gate.options(night_model=name), seams, arms)
+        envs = _query_envs(gate.runner, [cli, "--version"])
+        assert envs and all(_clean(e) for e in envs), name
+
+
 def test_exception_names_antigravity():
     """CLAUDE.md and .claude/rules/workflow.md keep Claude Code as the only agent runtime and
     name the one scoped exception: Codex CLI and Antigravity CLI `reverseapoc drive` sessions,
