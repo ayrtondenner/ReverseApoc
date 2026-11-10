@@ -11,4 +11,8 @@
   `writing-skills` skill. This covers `watcom-decomp` (Phase 6) and `apoc-spec` (Phase 8).
   A third-party skill kept as installed (such as `unlazy`) is updated from its upstream
   instead, with the new source and hash recorded in `docs/tools.md`.
-- Claude Code is the only agent runtime in this repo. Do not generate files for other runtimes.
+- Claude Code is the only agent runtime in this repo, with one scoped exception: Codex CLI runs
+  only as `reverseapoc drive` arms for spike 012 (D-13), launched and audited by the driver
+  under its guard set; its per-session config is generated under gitignored build/. Do not
+  generate or commit files for other runtimes (no `.codex/`, no AGENTS.md); anything else
+  stays Claude Code only.

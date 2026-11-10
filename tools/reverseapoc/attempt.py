@@ -114,6 +114,10 @@ UNIT_BASE = "unit-base.c"  # 07.2-07: <attempt dir>/unit-base.c, the view unit a
 # the view's build/ (VIEW_BUILD), which the driver's audit invariant (b) skips.
 CACHE_DIR = "attempt-cache"
 CACHE_FORMAT = 1
+# 07.2-13 (D-26, RULINGS "Harness"): set by the driver for a Codex session, outside its
+# workspace; after each file the wrapper writes in the attempt dir it appends {"path", "sha256"}
+# there, so the driver's audit can tell its own output from a forged one.
+WRAPPER_LEDGER_ENV = "REVERSEAPOC_WRAPPER_LEDGER"
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
@@ -239,6 +243,7 @@ class Claim:
     unit_file: Path | None = None
     proposals: Path | None = None  # REVERSEAPOC_PROPOSALS: <attempt dir>/proposals.jsonl
     kind: str = SESSION_KINDS[0]  # REVERSEAPOC_SESSION_KIND; absent means matching
+    ledger: Path | None = None  # 07.2-13: REVERSEAPOC_WRAPPER_LEDGER, resolved; None: no ledger
 
     @property
     def view_root(self) -> Path:
@@ -268,7 +273,37 @@ class Claim:
         view = unit_file is not None
         return cls(exe, unit, function, attempt_dir, _notes(env, roots, attempt_dir), unit_file,
                    _proposals(env, roots, attempt_dir, view=view),
-                   _kind(env, view=view))  # fmt: skip
+                   _kind(env, view=view), _ledger_path(env, roots, attempt_dir))  # fmt: skip
+
+
+def _ledger_path(env: Mapping[str, str], roots: Roots, attempt_dir: Path) -> Path | None:
+    """07.2-13: REVERSEAPOC_WRAPPER_LEDGER, which must lie below build/driver/ and outside the
+    attempt dir (the session's workspace, where it could be forged with the files it vouches
+    for); unset or empty: None."""
+    value = env.get(WRAPPER_LEDGER_ENV) or ""
+    if not value:
+        return None
+    path = (Path(roots.repo) / value).resolve()
+    if not _inside(path, roots.driver) or path == attempt_dir or _inside(path, attempt_dir):
+        raise AttemptError(f"{WRAPPER_LEDGER_ENV} {value!r} is not a file below {roots.driver} "
+                           f"outside the attempt dir {attempt_dir}")  # fmt: skip
+    return path
+
+
+def _ledgered(claim: Claim, path: Path) -> None:
+    """07.2-13 (D-26): append `path`'s attempt-dir-relative name and the sha256 of its bytes now
+    to the claim's ledger (nothing without one). A failed append is an AttemptError, never
+    silent: the audit would otherwise take the wrapper's own output for a forgery."""
+    if claim.ledger is None:
+        return
+    try:
+        line = {"path": path.relative_to(claim.attempt_dir).as_posix(),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}  # fmt: skip
+        with claim.ledger.open("a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(line, sort_keys=True) + "\n")
+    except (OSError, ValueError) as exc:
+        raise AttemptError(f"the wrapper ledger {claim.ledger} was not appended for {path}: "
+                           f"{_one_line(exc)}") from exc  # fmt: skip
 
 
 def _attempt_dir(env: Mapping[str, str], roots: Roots) -> Path:
@@ -1087,6 +1122,7 @@ def _remove_container(name: str, runner: Runner, held: _Held) -> list[str]:
 def _locked_check(
     claim: Claim, *, sweep: bool, runner: Runner, roots: Roots, held: _Held
 ) -> tuple[int, str]:
+    _ledgered(claim, held.path)  # 07.2-13: a lock kept after a timeout is the wrapper's too
     log = claim.attempt_dir / CHECK_LOG
     checks = claim.attempt_dir / CHECKS_DIR
     checks.mkdir(exist_ok=True)
@@ -1104,6 +1140,7 @@ def _locked_check(
     stem = f"{n:04d}"
     source = f"{CHECKS_DIR}/{stem}.c"
     _reserve(claim.attempt_dir / source, text)
+    _ledgered(claim, claim.attempt_dir / source)
     name = container_name(claim, stem)
     started = CLOCK()
     ran = runner(container_check_argv(claim, sweep=sweep, name=name, roots=roots))
@@ -1150,9 +1187,11 @@ def _record(
     saved = doc if doc is not None else {"error": "no usable JSON", "returncode": ran.returncode,
                                          "stdout": ran.stdout, "stderr": ran.stderr}  # fmt: skip
     write_atomic(saved_path, (json.dumps(saved, indent=2) + "\n").encode("utf-8"))
+    _ledgered(claim, saved_path)
     if note is not None:
         line = dataclasses.replace(line, note=_write_note(claim, line, doc, note))
     _append(log, line)
+    _ledgered(claim, log)
     return line, summary
 
 
@@ -1457,6 +1496,7 @@ def _write_note(claim: Claim, line: CheckLogLine, doc: Mapping[str, Any] | None,
     rel = f"{CHECKS_DIR}/{line.n:04d}{NOTE_SUFFIX}"
     text = json.dumps({**note, OBSERVED: _observed(doc, claim, line)}, indent=2) + "\n"
     _reserve(claim.attempt_dir / rel, text.encode("utf-8"))
+    _ledgered(claim, claim.attempt_dir / rel)
     return rel
 
 
@@ -1835,7 +1875,15 @@ def cmd_asm(name: str | None) -> int:
     sys.stdout.write(out)
     if key is not None:
         _cache_store(key, derived, out, line)
+        _ledger_cache(claim, key)
     return EXIT_OK
+
+
+def _ledger_cache(claim: Claim, key: CacheKey) -> None:
+    """07.2-13: a cache entry the wrapper just stored goes into the ledger (a failed store,
+    which _cache_store reports, leaves none)."""
+    if key.path.is_file():
+        _ledgered(claim, key.path)
 
 
 def cmd_context() -> int:
@@ -1853,10 +1901,12 @@ def cmd_context() -> int:
         derived = None
     else:
         text, path, derived = _rebuild_pack(claim)
+    _ledgered(claim, path)
     sys.stdout.write(text)
     print(f"wrote {path.as_posix()}; notes: {claim.notes.as_posix()}", file=sys.stderr)
     if key is not None and derived is not None:
         _cache_store(key, derived, text, "")  # the `wrote` line is printed fresh each run
+        _ledger_cache(claim, key)
     return EXIT_OK
 
 

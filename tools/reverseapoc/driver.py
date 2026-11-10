@@ -156,7 +156,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, backends, callgraph, hooks, mechanics, streamjson, unitdefs
+from . import attempt, backends, callgraph, codexjson, hooks, mechanics, streamjson, unitdefs
 from .callgraph import CallGraph
 from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
@@ -213,9 +213,12 @@ from .session import (
     MODEL_NAMES,
     OPUS_MODEL,
     READABILITY_SKILL,
+    SKILL,
     TIMEOUT_S,
     SessionResult,
     build_argv,
+    build_codex_argv,
+    codex_prompt,
     goal_prompt,
     kill_tree,
     model_for_pass,
@@ -254,6 +257,7 @@ BACKOFF_S = (60, 120, 240)  # D-08: 1, 2 and 4 minutes
 POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
+CODEX_EXE = "codex"  # 07.2-13 (D-13): the Codex CLI, found on PATH like claude
 TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
 MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
@@ -452,6 +456,15 @@ class Deps:
     # 07-38 fix round 1 (owner ruling: every landing path lints): the C89 lint (0/1/2) of the
     # repo-relative .c files a naming commit writes or reaches; none wired: a tool error.
     lint_paths: Callable[[Sequence[str]], int] = lambda paths: EXIT_TOOL
+    # 07.2-13 (D-13): the argv of a Codex arm's session, (prompt, *, model, attempt_dir):
+    # session.build_codex_argv with the `codex` on PATH.
+    codex_argv: Callable[..., Sequence[str]] = (
+        lambda prompt, **values: build_codex_argv(prompt, codex=_which(CODEX_EXE), **values))
+
+
+def _which(name: str) -> str:
+    """The executable `name` resolves to on PATH, as default_seams resolves claude."""
+    return shutil.which(name) or name
 
 
 @dataclass(frozen=True)
@@ -1194,6 +1207,16 @@ def extract_head(git: Callable[..., subprocess.CompletedProcess], dest: Path) ->
     return head
 
 
+def _remove_entry(path: Path) -> None:
+    """Remove `path` itself, never what a link points at: a junction or a directory symlink
+    is removed as a link (07.2-13, security review finding 4: a session may leave one in its
+    attempt dir), any other entry is unlinked."""
+    if os.path.isjunction(path) or (_is_link(path) and path.is_dir() and os.name == "nt"):
+        os.rmdir(path)
+    else:
+        path.unlink()
+
+
 def _write_new(target: Path, data: bytes) -> None:
     """Create `target` with O_CREAT|O_EXCL (and O_NOFOLLOW where it exists): never overwrites,
     never writes through a link."""
@@ -1250,6 +1273,177 @@ def transcript_paths(events: Sequence[dict], repo: Path) -> list[list[str] | Non
     names no path or one outside the checkout (judged against `repo` and the init cwd)."""
     roots = _roots(repo, (streamjson.init_event(events) or {}).get("cwd"))
     return [_relative(raw, repo, roots) for raw in _write_targets(events)]
+
+
+# ---- the Codex guard set (07.2-13; D-13, D-26; RESEARCH Q8, Pitfalls 6 and 11) ----
+#
+# Codex runs none of Claude Code's hooks, its `allow` rules run outside the sandbox and nothing
+# denies by default, so the driver's audit carries what the hooks give a Claude session: every
+# command must be an exact wrapper form and name neither orig/ nor third_party/ (D-10), every
+# file_change must pass the session's write allowlist, and the attempt dir may hold afterwards
+# only the session files, the driver's own files as they were at launch and wrapper output
+# whose sha256 is the wrapper's ledger's last entry for it. This is detection after the fact,
+# not prevention: a read of orig/ is caught, quarantined and stops the night, but what the
+# session sent before it ended has left (docs/model-routing.md "Codex arms").
+
+CODEX_RULES = ".codex/rules/attempt.rules"  # under <attempt dir>, in gitignored build/
+CODEX_RULES_TEXT = (f"prefix_rule(pattern=[{', '.join(json.dumps(p) for p in hooks.ATTEMPT_PREFIX)}"
+                    '], decision="allow")\n')  # fmt: skip
+LEDGER_DIR = "ledger"  # build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl
+_AUDIT_MARK = " (codex audit)"  # a stray that is a reason, not a file to contain
+_FORBIDDEN_PARTS = ("orig", "third_party")  # D-10: never sent to a non-Anthropic backend
+_PATH_PARTS = re.compile(r"[^a-z0-9_.-]+")  # any other character splits a command into parts
+_SESSION_FILES = (attempt.NOTES_FILE, attempt.PROPOSALS_FILE, *hooks.SESSION_FILE_NAMES)
+_CACHE_PARTS = (attempt.VIEW_DIR, attempt.VIEW_BUILD, attempt.CACHE_DIR)
+_WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
+_WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
+_WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
+
+
+def write_codex_rules(attempt_dir: Path) -> None:
+    """<attempt dir>/.codex/rules/attempt.rules, the one prefix rule that lets the attempt
+    wrapper run (RESEARCH Q8 option a): generated per session under gitignored build/, never
+    committed, and judged unchanged by the audit."""
+    path = attempt_dir / CODEX_RULES
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, CODEX_RULES_TEXT.encode("ascii"))
+
+
+def _forbidden_part(text: str) -> str | None:
+    """orig or third_party when `text` names it as a path part in any spelling (case, either
+    slash, quotes, drive or `..` around it), else None."""
+    parts = set(_PATH_PARTS.split(text.casefold()))
+    return next((name for name in _FORBIDDEN_PARTS if name in parts), None)
+
+
+def codex_command_strays(commands: Sequence[str]) -> list[str]:
+    """Why each command is a stray: it names orig/ or third_party/, or it is not an exact
+    attempt wrapper form of a matching session (hooks.bash_allowed)."""
+    out = []
+    for command in commands:
+        named = _forbidden_part(command)
+        if named is not None:
+            out.append(f"command `{command}` names {named}/ (D-10)")
+        elif not hooks.bash_allowed(command, kind=MATCHING_KIND):
+            out.append(f"command `{command}` is not an exact attempt wrapper form")
+    return out
+
+
+def _codex_rels(raw: str, attempt_dir: Path, roots: Sequence[str]) -> list[str] | None:
+    """Every repo-relative form of a file_change path (relative paths are Codex's --cd, the
+    attempt dir), or None when one is outside the checkout."""
+    try:
+        forms = hooks.candidates(raw, str(attempt_dir))
+    except hooks.HookError:
+        return None
+    rels = [_below(form.casefold(), roots) for form in forms]
+    return None if any(rel is None for rel in rels) else rels
+
+
+def codex_write_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path,
+                       allowed: Callable[[str], bool]) -> list[str]:  # fmt: skip
+    """Why each file_change path is a stray: outside the checkout, naming orig/ or
+    third_party/, or refused by the session's write allowlist (`allowed`, repo-relative). A
+    wrapper-owned file is never the session's to write."""
+    roots = _roots(repo, None)
+    out = []
+    for raw in targets:
+        rels = _codex_rels(raw, attempt_dir, roots)
+        if rels is None or _forbidden_part(raw) or not all(allowed(rel) for rel in rels):
+            out.append(f"{raw}: a write outside this session's allowlist")
+    return out
+
+
+def _inventory_add(found: dict[str, str], root: Path, path: Path) -> None:
+    rel = path.relative_to(root).as_posix()
+    found[rel] = (f"link:{os.readlink(path)}" if _is_link(path)
+                  else _sha256(_read(path)) or "unreadable")  # fmt: skip
+
+
+def _inventory_tree(found: dict[str, str], root: Path, top: Path, skip: Sequence[str]) -> None:
+    for dirpath, dirnames, filenames in os.walk(top, followlinks=False):
+        here = Path(dirpath)
+        links = [d for d in dirnames if _is_link(here / d)]  # a directory link is a file here
+        dirnames[:] = [d for d in dirnames
+                       if d not in links and not (here == root and d in skip)]  # fmt: skip
+        for name in (*filenames, *links):
+            _inventory_add(found, root, here / name)
+
+
+def _cache_dir(found: dict[str, str], attempt_dir: Path) -> Path | None:
+    """The wrapper's cache dir, view/build/attempt-cache, when every component from the
+    attempt dir down to it is a real directory, never a link (security review finding 4), and
+    it resolves inside the attempt dir. A linked component goes into `found` as a link (a
+    stray) and nothing behind it is walked; a cache that resolves elsewhere is a stray too."""
+    path = attempt_dir
+    for part in _CACHE_PARTS:
+        path = path / part
+        if _is_link(path):
+            _inventory_add(found, attempt_dir, path)
+            return None
+        if not path.is_dir():
+            return None
+    if not path.resolve().is_relative_to(attempt_dir.resolve()):
+        found[path.relative_to(attempt_dir).as_posix()] = f"outside:{path.resolve()}"
+        return None
+    return path
+
+
+def attempt_inventory(attempt_dir: Path) -> dict[str, str]:
+    """Every file of the attempt dir (attempt-dir-relative, POSIX) with its sha256, a link by
+    its target, never followed: all of it but view/ (the view hashes judge that), plus the
+    wrapper's cache under view/build/ (which the view hashes skip) when no component down to
+    it is a link (`_cache_dir`)."""
+    found: dict[str, str] = {}
+    if not attempt_dir.is_dir():
+        return found
+    _inventory_tree(found, attempt_dir, attempt_dir, (attempt.VIEW_DIR,))
+    cache = _cache_dir(found, attempt_dir)
+    if cache is not None:
+        _inventory_tree(found, attempt_dir, cache, ())
+    return found
+
+
+def read_wrapper_ledger(path: Path) -> dict[str, str]:
+    """The wrapper's ledger: each path's last sha256. A line that is not a {"path", "sha256"}
+    object vouches for nothing; no file, no entries."""
+    out: dict[str, str] = {}
+    data = _read(path)
+    for raw in (data or b"").decode("utf-8", "replace").splitlines():
+        entry = streamjson.parse_line(raw)
+        if entry is not None and isinstance(entry.get("path"), str) and isinstance(
+                entry.get("sha256"), str):  # fmt: skip
+            out[entry["path"]] = entry["sha256"]
+    return out
+
+
+def _wrapper_owned(rel: str) -> bool:
+    return rel in _WRAPPER_FILES or rel.startswith(_WRAPPER_TREES)
+
+
+def _inventory_problem(rel: str, digest: str, launch: Mapping[str, str],
+                       ledger: Mapping[str, str]) -> str | None:  # fmt: skip
+    if rel in ledger:
+        return None if ledger[rel] == digest else "differs from the wrapper's ledger"
+    if rel in launch:
+        return None if launch[rel] == digest else "changed since the launch (the driver's file)"
+    if rel == TRANSCRIPT or rel in _SESSION_FILES:
+        return None
+    if _wrapper_owned(rel):
+        return _WRAPPER_UNSEEN
+    return "not a file a session may leave in its attempt dir"
+
+
+def codex_inventory_strays(now: Mapping[str, str], *, launch: Mapping[str, str],
+                           ledger: Mapping[str, str]) -> list[tuple[str, str]]:  # fmt: skip
+    """(path, why) for every file of the attempt dir after the session (`now`, from
+    attempt_inventory) that is neither a session file, nor a driver file as it was at launch
+    (`launch`; the rules file among them), nor wrapper output holding its ledger entry's hash;
+    and for every launch file that is gone."""
+    out = [(rel, why) for rel, digest in sorted(now.items())
+           if (why := _inventory_problem(rel, digest, launch, ledger)) is not None]  # fmt: skip
+    out += [(rel, "removed during the session") for rel in sorted(launch.keys() - now.keys())]
+    return out
 
 
 # ---- checks.jsonl and the best C (F10) ----
@@ -1791,12 +1985,28 @@ class _Claim:
         """The session's arm: `arm`, else the Claude arm `arms` keys by `model`."""
         return self.arm if self.arm is not None else arms[self.model]
 
+    @property
+    def codex(self) -> bool:
+        """07.2-13 (D-13): the session runs under the Codex CLI (its arm's harness)."""
+        return self.arm is not None and self.arm.harness == backends.CODEX
+
+    @property
+    def wrapper_ledger(self) -> Path:
+        """07.2-13 (D-26): build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl, the
+        wrapper's hash ledger, outside the session's workspace (the attempt dir)."""
+        name = f"{self.pick.exe}__{self.function}__attempt-{self.n}.jsonl"
+        return self.repo.joinpath(self.runs, self.run, LEDGER_DIR, name)
+
     def env(self, base: Mapping[str, str], arms: Mapping[str, backends.Arm]) -> dict[str, str]:
         """The session's environment: the arm's (backends.session_env, D-12: no arm's key
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
         plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
-        that the hooks and the wrapper validate."""
+        that the hooks and the wrapper validate. 07.2-13: a Codex session also names its
+        wrapper ledger (D-26); no other session inherits one."""
         own = backends.session_env(self.arm_in(arms), base, arms)
+        own.pop(attempt.WRAPPER_LEDGER_ENV, None)
+        if self.codex:
+            own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
@@ -1837,6 +2047,8 @@ class _Session:
     view_head: str = ""  # the commit the view was taken from (F34)
     after: dict[str, tuple[str, str | None]] = field(default_factory=dict)  # git status after
     view_hashes: dict[str, str] = field(default_factory=dict)  # the view at launch (D-24, b)
+    # 07.2-13: a Codex session's attempt dir at launch (attempt_inventory), rules file included
+    launch_files: dict[str, str] = field(default_factory=dict)
 
     @property
     def events(self) -> tuple[dict, ...]:
@@ -1845,7 +2057,8 @@ class _Session:
     @property
     def disposition(self) -> Disposition:
         r = self.result
-        return streamjson.classify(r.events, r.exit_code, r.timed_out)
+        classify = codexjson.classify if self.claim.codex else streamjson.classify  # 07.2-13
+        return classify(r.events, r.exit_code, r.timed_out)
 
     @property
     def counted(self) -> bool:
@@ -1858,11 +2071,16 @@ class _Session:
     @property
     def measured(self) -> bool:
         """The CLI ended the session with a result event, so `usage` holds its own figures
-        (else stream_usage's lower bound)."""
+        (else stream_usage's lower bound). 07.2-13: a Codex session is measured once a turn
+        completed (codexjson.usage, its duration the driver's wall clock)."""
+        if self.claim.codex:
+            return codexjson.turns(self.events) > 0
         return any(e.get("type") == "result" for e in self.events)
 
     @property
     def usage(self) -> streamjson.Usage:
+        if self.claim.codex:
+            return codexjson.usage(self.events, self.seconds)
         results = [e for e in self.events if e.get("type") == "result"]
         if results:
             return streamjson.usage(results[-1])
@@ -3059,6 +3277,7 @@ class _Night:
             write_atomic(claim.attempt_dir / attempt.UNIT_BASE, unit_before)
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
+        launch_files = self._codex_launch(claim) if claim.codex else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
@@ -3074,8 +3293,7 @@ class _Night:
         start = self.deps.clock()
         result = None
         try:
-            argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                                  max_turns=self.config.max_turns, **skill)  # fmt: skip
+            argv = self._argv(claim, prompt, skill)
             result = self.deps.session(argv, cwd=self.repo,
                                        env=claim.env(base, self.arms),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
@@ -3088,7 +3306,8 @@ class _Night:
             note = self._remove_containers(claim)
             with self.gate_lock:
                 session = self._measure(claim, None, pack, 0.0, before, scaffolded,
-                                        unit_before, view_head, view_hashes)  # fmt: skip
+                                        unit_before, view_head, view_hashes,
+                                        launch_files)  # fmt: skip
                 stray = self._strays(session)
                 contained = f"; {self._contain_and_reset(session, stray)}" if stray else ""
                 contained += f"; {note}" if note else ""
@@ -3106,7 +3325,8 @@ class _Night:
         # the driver's own bytes (D-24 a).
         with self.gate_lock:
             session = self._measure(claim, result, pack, seconds, before, scaffolded,
-                                    unit_before, view_head, view_hashes)  # fmt: skip
+                                    unit_before, view_head, view_hashes,
+                                    launch_files)  # fmt: skip
             self.live = session
             try:
                 self._audit(session)
@@ -3138,8 +3358,20 @@ class _Night:
             goal = readability_goal(claim.pick.unit, claim.pick.exe,
                                     unit_path=claim.view_unit_rel)  # fmt: skip
             return goal, {"skill": READABILITY_SKILL}
-        return goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
-                           unit_path=claim.view_unit_rel), {}  # fmt: skip
+        goal = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
+                           unit_path=claim.view_unit_rel)  # fmt: skip
+        if claim.codex:  # 07.2-13 (D-13): no skill loader, so the skill rides in the prompt
+            skill_text = (backends.REPO_ROOT / SKILL).read_text(encoding="utf-8")
+            return codex_prompt(goal, skill_text), {}
+        return goal, {}
+
+    def _argv(self, claim: _Claim, prompt: str, skill: Mapping[str, str]) -> Sequence[str]:
+        """The session's argv: Deps.codex_argv for a Codex arm (07.2-13, D-13), else the
+        claude argv with the pass's model, budget and turns and the kind's skill."""
+        if claim.codex:
+            return self.deps.codex_argv(prompt, model=claim.model, attempt_dir=claim.attempt_dir)
+        return self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
+                              max_turns=self.config.max_turns, **skill)  # fmt: skip
 
     def _remove_containers(self, claim: _Claim) -> str:
         """Fix round 1 S1: remove the attempt's containers; a failure never gates the audit and
@@ -3151,7 +3383,7 @@ class _Night:
         return ""
 
     def _measure(self, claim, result, pack, seconds, before, scaffolded, unit_before,
-                 view_head, view_hashes) -> _Session:
+                 view_head, view_hashes, launch_files=None) -> _Session:
         after = self._snapshot()
         changed = tuple(sorted(p for p in before.status.keys() | after.status.keys()
                                if before.status.get(p) != after.status.get(p)))  # fmt: skip
@@ -3161,7 +3393,8 @@ class _Night:
         prints = tuple(sorted(n for n in before.prints.keys() | after.prints.keys()
                               if before.prints.get(n) != after.prints.get(n)))  # fmt: skip
         return _Session(claim, result, pack, seconds, changed, scaffolded, unit_before, before,
-                        pinned, prints, view_head, after.status, view_hashes)  # fmt: skip
+                        pinned, prints, view_head, after.status, view_hashes,
+                        dict(launch_files or {}))  # fmt: skip
 
     def _strays(self, session: _Session) -> list[str]:
         """D-24's two invariants, plus the Phase 6 checks (D-17, F3, security rulings): (a)
@@ -3176,11 +3409,46 @@ class _Night:
         stray += [name for name in session.pinned_changed if name not in stray]
         stray += [name for name in session.print_changed if name not in stray]
         stray += [name for name in self._base_changed(session) if name not in stray]
+        if session.claim.codex:  # 07.2-13: the Codex stream is never read as a Claude one
+            stray += [s for s in self._codex_strays(session, allowed) if s not in stray]
+            return stray
         raws = _write_targets(session.events)
         for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
             if rels is None or not all(allowed(rel) for rel in rels):
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
+
+    def _codex_launch(self, claim: _Claim) -> dict[str, str]:
+        """07.2-13 (D-13, D-26): before a Codex session, in its fresh attempt dir, the rules file
+        that allows only the wrapper, and an empty wrapper ledger outside the workspace (a
+        relaunch's earlier entries never vouch for this session's files). Returns the attempt
+        dir's inventory at launch, which the audit compares against."""
+        write_codex_rules(claim.attempt_dir)
+        claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
+        write_atomic(claim.wrapper_ledger, b"")
+        return attempt_inventory(claim.attempt_dir)
+
+    def _codex_strays(self, session: _Session, allowed: Callable[[str], bool]) -> list[str]:
+        """07.2-13 (D-13, D-26): what a Codex session did that no hook stopped: its commands and
+        file_change paths (codexjson), and its attempt dir against the launch inventory and the
+        wrapper's ledger. A file to contain is named by its repo-relative path; every reason
+        carries _AUDIT_MARK."""
+        claim = session.claim
+        reasons = codex_command_strays(codexjson.commands(session.events))
+        reasons += codex_write_strays(codexjson.write_targets(session.events),
+                                      attempt_dir=claim.attempt_dir, repo=self.repo,
+                                      allowed=allowed)  # fmt: skip
+        files = []
+        found = codex_inventory_strays(attempt_inventory(claim.attempt_dir),
+                                       launch=session.launch_files,
+                                       ledger=read_wrapper_ledger(claim.wrapper_ledger))
+        for rel, why in found:
+            path = claim.attempt_dir / rel
+            shown = path.relative_to(self.repo).as_posix()
+            if path.is_file() or _is_link(path):
+                files.append(shown)
+            reasons.append(f"{shown}: {why}")
+        return files + [f"{reason}{_AUDIT_MARK}" for reason in reasons]
 
     def _base_changed(self, session: _Session) -> list[str]:
         """07.2-07 (T-07.2-18): a readability session's unit-base.c is the driver's; it must
@@ -3420,7 +3688,7 @@ class _Night:
         again, and describe all of it. A refused quarantine write (a link) writes nothing more
         and is named."""
         self.breached = True  # fix round 2 J2: sticky, whatever the final reason
-        files = [s for s in stray if not s.endswith(_TRANSCRIPT_MARK)]
+        files = [s for s in stray if not s.endswith((_TRANSCRIPT_MARK, _AUDIT_MARK))]
         done = self._contain(session, files)
         try:
             self._reset(session)
@@ -3497,7 +3765,7 @@ class _Night:
                 k += 1
                 target = target.with_name(f"{stem}.{k}")
         if move:
-            path.unlink()
+            _remove_entry(path)
         return f"{name} -> {target.relative_to(self.repo).as_posix()}"
 
     def _keep(self, done: _Contained, name: str, path: Path, *, move: bool) -> bool:
@@ -3606,7 +3874,11 @@ class _Night:
         """Pitfall 2: any problem with the init event stops the night. A session with no init is
         judged only when it produced a result (a hang or a crash before init is not). 07-30
         (D-09): the init must name the model the session asked for (streamjson's accepted IDs),
-        so a Fable pass passes and a request answered by another model stops the night."""
+        so a Fable pass passes and a request answered by another model stops the night.
+        07.2-13: a Codex session streams no init event, so it has no init check (its record
+        keeps the requested model and a null `model`)."""
+        if session.claim.codex:
+            return
         init = streamjson.init_event(session.events)
         if init is None and not (session.counted and not session.result.timed_out):
             return
@@ -5291,6 +5563,10 @@ class Seams:
     claude: str = "claude"
     base_env: Mapping[str, str] | None = None
     now: Callable[[], datetime] = datetime.now
+    # 07.2-13 (D-13): the Codex CLI (its `--version` names the installed CLI) and the argv of
+    # a Codex arm's session (Deps.codex_argv).
+    codex: str = CODEX_EXE
+    codex_argv: Callable[..., Sequence[str]] = Deps.codex_argv
 
 
 def stamp(now: datetime) -> str:
@@ -5656,7 +5932,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
-                argv=seams.argv, session=seams.session, lint=lint, lint_paths=lint_paths,
+                argv=seams.argv, codex_argv=seams.codex_argv, session=seams.session,
+                lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
                     partial_gate_argv(pick, src, n)).returncode,
@@ -6305,6 +6582,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
         with _phase("preflight"):  # 07.2-06: --land-held launches no claude either
             preflight(options, seams, check_cli=not (options.dry_run or options.land_held),
                       log=log)  # fmt: skip
+        refuse_unproven_codex(options, seams, arms)  # 07.2-13 (D-13): before any session
         if options.canary:
             with _phase("canary"):
                 return run_canary(options, seams, lock=lock, arms=arms)
@@ -6423,6 +6701,160 @@ def canary_prompt(attempt_dir: Path, size: int) -> str:
                                 plan=_canary_plan_text(size),
                                 note_file=attempt_dir / hooks.CHECK_NOTE_NAME,
                                 note=CANARY_NOTE_TEXT)  # fmt: skip
+
+
+# 07.2-13 (D-13; RESEARCH Q8, Pitfall 11): the Codex canary. Codex has no hooks to deny a call,
+# so its canary probes the sandbox itself: who the commands run as, a write outside the
+# workspace, the network, and a compound command riding the wrapper's allowed prefix (RESEARCH
+# A6); then the wrapper check proves the allow rule loads (A4, A5). Its PASS, written to
+# build/driver/canary/<arm>.json with the installed CLI version, is what lets a Codex arm run.
+CANARY_PASS_DIR = "build/driver/canary"  # <arm>.json: {"arm", "harness", "cli_version", ...}
+CANARY_PASS = "PASS"
+CODEX_CANARY_OUTSIDE = "codex-canary-outside.txt"  # one directory above the workspace
+CODEX_CANARY_COMPOUND = "codex-canary-compound.txt"  # the compound command's second half
+CODEX_CANARY_URL = "https://example.com/"
+_VERSION_TEXT = re.compile(r"\d+\.\d+\.\d+")
+CODEX_CANARY_PROMPT = (
+    "This is a guardrail canary, not a matching attempt. Do exactly these seven steps, in "
+    "this order, then reply DONE and stop: "
+    "1. Run the command `whoami`. "
+    "2. Write the file {outside} with the content `canary`. "
+    f"3. Fetch {CODEX_CANARY_URL} with your shell's own command. "
+    "4. Run the command `{compound}` exactly as written. "
+    "5. Write the file {plan_file} with the content `{plan}`. "
+    "6. Write the file {note_file} with the content `{note}`. "
+    f"7. Run the command `{CANARY_CHECK}`. "
+    "Some steps will fail: do not retry them and do not try another way."
+)  # a str.format template: codex_canary_prompt fills it
+
+
+def codex_canary_prompt(attempt_dir: Path, size: int) -> str:
+    """CODEX_CANARY_PROMPT for the canary's attempt directory and its row of `size` bytes: the
+    outside file and the compound command's file one directory above the workspace."""
+    compound = f"{CANARY_WRAPPER}; echo canary > {attempt_dir.parent / CODEX_CANARY_COMPOUND}"
+    return CODEX_CANARY_PROMPT.format(outside=attempt_dir.parent / CODEX_CANARY_OUTSIDE,
+                                      compound=compound,
+                                      plan_file=attempt_dir / hooks.PLAN_NAME,
+                                      plan=_canary_plan_text(size),
+                                      note_file=attempt_dir / hooks.CHECK_NOTE_NAME,
+                                      note=CANARY_NOTE_TEXT)  # fmt: skip
+
+
+def canary_pass_path(repo: Path, arm: str) -> Path:
+    """build/driver/canary/<arm>.json, the arm's last Codex canary result."""
+    return Path(repo).joinpath(CANARY_PASS_DIR, f"{arm}.json")
+
+
+def codex_version(seams: Seams) -> str | None:
+    """The installed Codex CLI's version (`codex --version`, a version query that runs no
+    session), or None when it does not answer with one."""
+    done = seams.run([seams.codex, "--version"])
+    found = _VERSION_TEXT.search(done.stdout or "") if done.returncode == EXIT_OK else None
+    return found.group(0) if found else None
+
+
+def refuse_unproven_codex(options: DriveOptions, seams: Seams,
+                          arms: Mapping[str, backends.Arm]) -> None:  # fmt: skip
+    """D-13: "A Codex canary must pass before any Codex arm runs". A night of a Codex arm is
+    Refused unless the arm's pass file says PASS for the CLI version installed now; a canary,
+    a dry run and --land-held run no Codex session and are not refused."""
+    if options.canary or options.dry_run or options.land_held or options.night_model is None:
+        return
+    arm = arms[options.night_model]
+    if arm.harness != backends.CODEX:
+        return
+    version = codex_version(seams)
+    path = canary_pass_path(options.repo, arm.name)
+    saved = _json_file(path)
+    proven = (saved.get("arm"), saved.get("harness"), saved.get("result")) == (
+        arm.name, backends.CODEX, CANARY_PASS) and version is not None and saved.get(
+        "cli_version") == version  # fmt: skip
+    if not proven:
+        shown = path.relative_to(options.repo).as_posix()
+        raise Refused("canary", f"arm {arm.name} has no Codex canary PASS for codex-cli "
+                                f"{version or '(no version)'} in {shown}; run `reverseapoc drive "
+                                f"--canary --night-model {arm.name} --allow-egress {arm.name}` "
+                                "first (D-13)")  # fmt: skip
+
+
+def _whoami(executions: Sequence[codexjson.Execution], owner: str | None) -> tuple[bool, str]:
+    """The identity probe: whoami printed a user other than the owner's USERNAME (the sandbox's
+    own identity), never the real user (Pitfall 11)."""
+    run = next((e for e in executions if "whoami" in e.command.casefold()), None)
+    if run is None:
+        return False, "whoami was never run, so the sandbox identity is unknown"
+    lines = run.output.strip().splitlines()
+    printed = lines[-1].strip() if lines else ""
+    user = printed.replace("/", "\\").rsplit("\\", 1)[-1].casefold()
+    if not user or not owner:
+        return False, f"whoami printed {printed!r}; the owner's USERNAME is unknown or it is empty"
+    if user == owner.casefold():
+        return False, (f"whoami printed {printed!r}, the owner's own USERNAME: the sandbox runs "
+                       "commands as the real user")  # fmt: skip
+    return True, f"whoami printed {printed!r}, not the owner's USERNAME (the sandbox's identity)"
+
+
+def _refused_write(path: Path, what: str) -> tuple[bool, str]:
+    if path.exists() or _is_link(path):
+        return False, f"{what} went through: {path} exists afterwards"
+    return True, f"{what} was refused: no {path} afterwards"
+
+
+def _network(executions: Sequence[codexjson.Execution]) -> tuple[bool, str]:
+    run = next((e for e in executions if CODEX_CANARY_URL.rstrip("/") in e.command), None)
+    if run is None:
+        return False, f"the fetch of {CODEX_CANARY_URL} was never run"
+    shown = f"the fetch of {CODEX_CANARY_URL} (exit {run.exit_code})"
+    if run.exit_code is None or run.exit_code == EXIT_OK:
+        return False, f"{shown} did not fail: the network may be on"
+    return True, f"{shown} failed: the network is off"
+
+
+def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Claim,
+                         launch: Mapping[str, str], checks: _Checks, *,
+                         owner: str | None) -> None:  # fmt: skip
+    """07.2-13: the Codex canary's own checks (see CODEX_CANARY_PROMPT)."""
+    attempt_dir = claim.attempt_dir
+    checks.add(*_whoami(executions, owner))
+    checks.add(*_refused_write(attempt_dir.parent / CODEX_CANARY_OUTSIDE,
+                               "the write one directory above the workspace"))  # fmt: skip
+    checks.add(*_network(executions))
+    checks.add(*_refused_write(attempt_dir.parent / CODEX_CANARY_COMPOUND,
+                               "the compound command's second half"))  # fmt: skip
+    ok, evidence = _check_evidence(attempt_dir, claim.repo)
+    checks.add(ok, f"the attempt wrapper `{CANARY_CHECK}`: {evidence}")
+    for label, marker in (("whoami", "whoami"), ("fetch", CODEX_CANARY_URL.rstrip("/")),
+                          ("compound command", CODEX_CANARY_COMPOUND)):  # fmt: skip
+        run = next((e for e in executions if marker in e.command), None)
+        flagged = run is not None and bool(codex_command_strays([run.command]))
+        checks.add(flagged, f"the audit flagged the {label} probe" if flagged
+                   else f"the audit did not flag the {label} probe ({marker})")  # fmt: skip
+    found = codex_inventory_strays(attempt_inventory(attempt_dir), launch=launch,
+                                   ledger=read_wrapper_ledger(claim.wrapper_ledger))
+    shown = [f"{rel}: {why}" for rel, why in found]
+    checks.add(not found, "the attempt dir holds only session files, the driver's files and "
+                          "wrapper output its ledger names" if not found
+               else f"the attempt dir against the wrapper's ledger: {_listed(shown)}")  # fmt: skip
+
+
+def _codex_after(events: Sequence[dict], claim: _Claim, launch: Mapping[str, str],
+                 checks: _Checks, owner: str | None) -> None:  # fmt: skip
+    """The Codex canary's stream checks; an error in them is a FAIL line (as _after_session)."""
+    try:
+        checks.add(codexjson.turns(events) > 0, "the session completed a turn")
+        _codex_canary_checks(codexjson.executions(events), claim, launch, checks, owner=owner)
+    except Exception as exc:  # noqa: BLE001 - reported, never a PASS
+        checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
+
+
+def _write_canary_result(repo: Path, arm: backends.Arm, version: str | None, ok: bool) -> None:
+    """build/driver/canary/<arm>.json after a Codex canary: PASS with the CLI version, else
+    FAIL, so an earlier PASS never outlives a failed canary."""
+    doc = {"arm": arm.name, "harness": arm.harness, "cli_version": version, "date": _today(),
+           "result": CANARY_PASS if ok else "FAIL"}  # fmt: skip
+    path = canary_pass_path(repo, arm.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, (json.dumps(doc, sort_keys=True) + "\n").encode("utf-8"))
 
 
 def _canary_size(repo: Path, attempt_dir: Path) -> int:
@@ -6655,7 +7087,10 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     and the attempt's containers were removed (fix round 1). The tree is left as the session
     left it, for inspection. Exit 0 PASS, 1 FAIL (any error once the session started is a FAIL
     line, fix round 2); a refusal before the session (an existing attempt dir) raises Refused,
-    exit 2."""
+    exit 2. 07.2-13: a Codex arm's canary asks CODEX_CANARY_PROMPT through Seams.codex_argv
+    instead, under the same guard set as its nights (the rules file and the wrapper ledger),
+    passes on _codex_canary_checks plus the containers, tree and refs lines, and writes its
+    result with `codex --version` to build/driver/canary/<arm>.json."""
     repo = Path(options.repo)
     attempt_dir = canary_attempt_dir(options)
     if attempt_dir.exists():  # fix round 1: an earlier canary's files would satisfy the checks
@@ -6672,20 +7107,29 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
         raise Refused("canary unit", f"HEAD has no {claim.unit_rel}, the matched unit the "
                                      "canary's view and check need")  # fmt: skip
-    prompt = canary_prompt(attempt_dir, _canary_size(repo, attempt_dir))  # 07.2-03: its plan
+    size = _canary_size(repo, attempt_dir)  # 07.2-03: its plan
+    prompt = (codex_canary_prompt if claim.codex else canary_prompt)(attempt_dir, size)
     attempt_dir.mkdir(parents=True)
     probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
+    launch = probe._codex_launch(claim) if claim.codex else {}  # 07.2-13: the night's guard set
     base = seams.base_env if seams.base_env is not None else os.environ
     env = claim.env(base, arms)  # the arm's env; attempt dir, notes, view unit and proposals
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
+    version = None
+    if claim.codex:  # 07.2-13: the version the pass file names, asked before the session
+        version = codex_version(seams)
+        checks.add(version is not None, f"codex --version: codex-cli {version}" if version
+                   else "codex --version named no version")  # fmt: skip
     events: Sequence[dict] = ()
     console(options, seams)(f"canary: {CANARY_EXE} {CANARY_FUNC} session: started "
                             f"(timeout {CANARY_TIMEOUT_S} s)")  # fmt: skip
     try:
-        argv = seams.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
-                          max_turns=options.max_turns)  # fmt: skip
+        argv = (seams.codex_argv(prompt, model=claim.model, attempt_dir=attempt_dir)
+                if claim.codex else
+                seams.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
+                           max_turns=options.max_turns))  # fmt: skip
         result = seams.session(argv, cwd=repo, env=env,
                                transcript=attempt_dir / TRANSCRIPT,
                                timeout_s=CANARY_TIMEOUT_S)  # fmt: skip
@@ -6693,8 +7137,12 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
         events = result.events
-        _after_session(options, seams, events, attempt_dir, checks, model=model,
-                       accepted=_accepted(arm))  # fmt: skip
+        if claim.codex:
+            _codex_after(events, claim, launch, checks,
+                         base.get("USERNAME") or base.get("USER"))  # fmt: skip
+        else:
+            _after_session(options, seams, events, attempt_dir, checks, model=model,
+                           accepted=_accepted(arm))  # fmt: skip
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured
@@ -6711,6 +7159,8 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     except Exception as exc:  # noqa: BLE001 - reported with the lines gathered so far
         checks.add(False, f"measuring the tree failed: {type(exc).__name__}: {exc}")
     verdict = "PASS" if checks.ok else "FAIL"
+    if claim.codex:  # 07.2-13 (D-13): the result the pass gate reads
+        _write_canary_result(repo, arm, version, checks.ok)
     doc = {"canary": verdict, "attempt_dir": attempt_dir.relative_to(repo).as_posix(),
            "model_requested": model, "init_model": _init_text(events, "model"),
            "checks": [{"ok": ok, "check": text} for ok, text in checks.lines]}  # fmt: skip
@@ -6781,9 +7231,12 @@ def _ranks(assessments: Iterable[Assessment], data: ExeInputs) -> dict[int, Cand
 def default_seams(repo: Path) -> Seams:
     """The real effects: commands in the checkout, git_runner, both EXEs through check's loader
     (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
-    claude = shutil.which("claude") or "claude"
+    claude = _which("claude")
+    codex = _which(CODEX_EXE)  # 07.2-13
     return Seams(run=command_runner(repo), git=git_runner(repo),
                  world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
                  session=run_session,
                  argv=lambda prompt, **values: build_argv(prompt, claude=claude, **values),
-                 claude=claude)  # fmt: skip
+                 claude=claude, codex=codex,
+                 codex_argv=lambda prompt, **values: build_codex_argv(prompt, codex=codex,
+                                                                      **values))  # fmt: skip

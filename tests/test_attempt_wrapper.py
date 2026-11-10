@@ -2032,6 +2032,52 @@ def test_check_consumes_the_note(repo: Path, monkeypatch, capsys):
     assert not (repo / "checks" / "0002.c").exists()
 
 
+def test_wrapper_ledger(repo: Path, monkeypatch, capsys):
+    """07.2-13 (D-26): with REVERSEAPOC_WRAPPER_LEDGER set (outside the attempt dir), a check
+    appends one {"path", "sha256"} line per file it wrote: the check lock, the reserved C, the
+    saved JSON, the consumed note and checks.jsonl, each hash that of the bytes it wrote.
+    Without the variable nothing is written there."""
+    import hashlib
+
+    ledger = repo.parents[2] / "ledger" / f"ufo2p__{FUNC}__attempt-1.jsonl"
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    assert _run(["attempt", "check"]) == 0
+    assert not ledger.parent.exists()  # no variable: no ledger
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"")
+    monkeypatch.setenv(attempt.WRAPPER_LEDGER_ENV, str(ledger))
+    assert _run(["attempt", "check"]) == 0
+    entries = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert all(set(entry) == {"path", "sha256"} for entry in entries)
+    paths = [entry["path"] for entry in entries]
+    assert sorted(paths) == sorted(["check.lock", "checks/0002.c", "checks/0002.json",
+                                    "checks/0002.note.json", "checks.jsonl"])  # fmt: skip
+    for entry in entries:
+        path = repo / entry["path"]
+        if path.is_file():
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"], path
+
+
+def test_wrapper_ledger_must_lie_outside_the_attempt_dir(repo: Path, monkeypatch, capsys):
+    """A ledger inside the session's workspace could be forged with the files it vouches for:
+    refused, exit 2, before any check is used; so is one outside build/driver/."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    for bad in (repo / "ledger.jsonl", repo.parents[5] / "ledger.jsonl"):
+        monkeypatch.setenv(attempt.WRAPPER_LEDGER_ENV, str(bad))
+        assert _run(["attempt", "check"]) == 2
+        assert attempt.WRAPPER_LEDGER_ENV in capsys.readouterr().err
+        assert not (repo / "checks" / "0001.c").exists()
+
+
+def test_a_failed_ledger_append_is_an_error(repo: Path, monkeypatch, capsys):
+    """A ledger that cannot be appended (its directory is missing) is exit 2, never silent."""
+    _use(monkeypatch, FakeRunner(json.dumps(_check_doc(ok=True))))
+    monkeypatch.setenv(attempt.WRAPPER_LEDGER_ENV,
+                       str(repo.parents[2] / "missing" / "ledger.jsonl"))  # fmt: skip
+    assert _run(["attempt", "check"]) == 2
+    assert "ledger" in capsys.readouterr().err
+
+
 def test_a_tool_error_note_has_no_measurement(repo: Path, monkeypatch):
     """The slot is used, so the note is consumed; what the run did not measure is null."""
     _use(monkeypatch, FakeRunner("not json", returncode=2))
