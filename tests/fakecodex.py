@@ -2,7 +2,7 @@
 
 `python tests/fakecodex.py exec --json --model M --sandbox workspace-write --cd DIR
 --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
--c sandbox_workspace_write.network_access=false -c windows.sandbox="elevated"
+-c sandbox_workspace_write.network_access=false -c windows.sandbox="unelevated"
 -c projects."DIR".trust_level="trusted" PROMPT`
 takes exactly that argv, in that order (session.build_codex_argv after the executable), and:
 
@@ -37,7 +37,7 @@ _FIXED = {0: "exec", 1: "--json", 2: "--model", 4: "--sandbox", 5: "workspace-wr
           8: "--skip-git-repo-check", 9: "--ephemeral", 10: "--ignore-user-config", 11: "-c",
           12: 'approval_policy="never"', 13: "-c",
           14: "sandbox_workspace_write.network_access=false", 15: "-c",
-          16: 'windows.sandbox="elevated"', 17: "-c"}  # fmt: skip
+          16: 'windows.sandbox="unelevated"', 17: "-c"}  # fmt: skip
 _TRUST = 18
 _PROMPT = _TRUST + 1
 _LENGTH = _PROMPT + 1  # the fixed tokens, the model, DIR, the trust entry and the prompt

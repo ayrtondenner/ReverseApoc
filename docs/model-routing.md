@@ -208,10 +208,14 @@ The model ids are assumptions to confirm at setup.
 
 - **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
-  -c sandbox_workspace_write.network_access=false -c windows.sandbox="elevated"
+  -c sandbox_workspace_write.network_access=false -c windows.sandbox="unelevated"
   -c projects."<attempt dir>".trust_level="trusted" <prompt>`. The Windows sandbox is set in
   the argv because `--ignore-user-config` drops the user config that enabled it: with none,
-  Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). Codex loads no skill and runs no hook, so the prompt carries the goal, the
+  Codex ran no sandbox and rejected every command (spike 012 canaries, 2026-11-10). It is
+  unelevated by the owner's ruling (2026-11-10), the mode the owner's own Codex runs: elevated
+  needs an admin setup the owner declined, and without it every command of the round-2
+  canaries failed to start (exit -1, `helper_sandbox_lock_failed ... SetNamedSecurityInfoW
+  sandbox dir failed: 5`). Codex loads no skill and runs no hook, so the prompt carries the goal, the
   watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
   through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
   read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
