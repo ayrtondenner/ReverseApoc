@@ -1062,13 +1062,13 @@ def test_comparison_text(tmp_path, capsys):
     heads = [line for line in block if line.startswith("  ") and not line.startswith("    ")]
     assert heads == [
         f"  {_arm(HAIKU)} ({HAIKU}, subscription): {SUBSCRIPTION_WORDS}",
-        f"  {_arm(DEEPSEEK_MODEL, 'openrouter')} (deepseek-flash, metered): real paid: its "
-        "tokens at its list price (a metered arm)",
         f"  {_arm('qwen3.6-35b-a3b', 'local')} (qwen-local, free): real paid $0.00: a local arm "
         "pays nothing",
+        f"  {_arm(DEEPSEEK_MODEL, 'openrouter')} (deepseek-flash, metered): real paid: its "
+        "tokens at its list price (a metered arm)",
     ]  # fmt: skip
     assert len(block) == 1 + 3 * (1 + len(COLUMNS))
-    deepseek = block[block.index(heads[1]) + 1:][:len(COLUMNS)]
+    deepseek = block[block.index(heads[2]) + 1:][:len(COLUMNS)]
     assert [line.split(":")[0].strip() for line in deepseek] == COLUMNS
     assert deepseek[2] == (
         "    256 B and up: attempted 1, exact 1 (hold exact 1, matched 0), sessions 1, turns 7, "
