@@ -157,16 +157,24 @@ output = 0.18
 cache_read = 0.04
 cache_creation = 0.04
 
-# DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
-# yet, so both cache classes are priced as input: the estimate may overstate, never understate.
+# The OpenRouter arms below: the owner runs DeepSeek and GLM only through OpenRouter (ruling of
+# 2026-11-10: no direct DeepSeek or z.ai arm), so DEEPSEEK_API_KEY and ZAI_API_KEY are named by
+# no arm and the driver strips them from every session (backends.RETIRED_KEY_ENVS). Their ids
+# and prices come from OpenRouter's public model list (https://openrouter.ai/api/v1/models),
+# read 2026-11-10. Each comment records OpenRouter's listed cache-read price, but both cache
+# classes stay priced as input (an estimate may overstate, never understate) until a real
+# session shows that OpenRouter's Anthropic endpoint applies the cache discount. The co-author
+# addresses are the vendors' noreply forms, an assumption the owner confirms at setup.
+
+# DeepSeek V4.1-Flash through OpenRouter. OpenRouter lists cache reads at 0.006.
 [arms."deepseek-flash"]
 harness = "claude"
-backend = "deepseek"
-model = "deepseek-flash"
-base_url = "https://api.deepseek.com/anthropic"
-key_env = "DEEPSEEK_API_KEY"
+backend = "openrouter"
+model = "deepseek/deepseek-v4.1-flash"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
 sends_disassembly = true
-accepted_init = ["deepseek-flash"]
+accepted_init = ["deepseek/deepseek-v4.1-flash"]
 coauthor = "DeepSeek V4.1-Flash <noreply@deepseek.com>"
 max_workers = 3
 
@@ -176,31 +184,48 @@ output = 1.20
 cache_read = 0.30
 cache_creation = 0.30
 
-# The co-author addresses below and above are the vendors' noreply forms, an assumption the
-# owner confirms at setup. Every hosted arm prices both cache classes as input until the
-# provider's cache prices are recorded (an estimate may overstate, never understate).
-
-# GLM-5.x on z.ai. The id `glm-5.3` (z.ai also lists `glm-5.3-flash` and `[1m]` forms) and the
-# price (LiteLLM, November 2026, medium confidence) are confirmed at setup.
+# GLM-5.3 through OpenRouter. OpenRouter lists cache reads at 0.069.
 [arms."glm-5.3"]
 harness = "claude"
-backend = "zai"
-model = "glm-5.3"
-base_url = "https://api.z.ai/api/anthropic"
-key_env = "ZAI_API_KEY"
+backend = "openrouter"
+model = "z-ai/glm-5.3"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
 sends_disassembly = true
-accepted_init = ["glm-5.3"]
+accepted_init = ["z-ai/glm-5.3"]
 coauthor = "GLM-5.3 <noreply@z.ai>"
 max_workers = 3
 
 [arms."glm-5.3".prices]
-input = 1.40
-output = 4.40
-cache_read = 1.40
-cache_creation = 1.40
+input = 0.07
+output = 1.40
+cache_read = 0.07
+cache_creation = 0.07
 
-# Muse Spark Open through OpenRouter (released 2026-10-15). The OpenRouter id and the price are
-# confirmed at setup.
+# GLM-4.7-Flash through OpenRouter (owner, 2026-11-10). The owner wants small, fast models that
+# can later run on his machine: GLM-4.7-Flash is a 31.2B-parameter MoE (Hugging Face
+# zai-org/GLM-4.7-Flash, MIT), the size class of Qwen3.6-35B-A3B, so it can get a local twin
+# later. GLM-5.3-Flash (321B) and DeepSeek V4/V4.1-Flash (291B/763B) were checked and are
+# hosted-only, so they are not added. OpenRouter lists no cache price for this model.
+[arms."glm-4.7-flash"]
+harness = "claude"
+backend = "openrouter"
+model = "z-ai/glm-4.7-flash"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["z-ai/glm-4.7-flash"]
+coauthor = "GLM-4.7-Flash <noreply@z.ai>"
+max_workers = 3
+
+[arms."glm-4.7-flash".prices]
+input = 0.061
+output = 0.40
+cache_read = 0.061
+cache_creation = 0.061
+
+# Muse Spark Open through OpenRouter (released 2026-10-15). The id and the price are confirmed
+# from OpenRouter's list (2026-11-10). OpenRouter lists cache reads at 0.15.
 [arms."muse-spark-open"]
 harness = "claude"
 backend = "openrouter"
@@ -245,10 +270,9 @@ cache_read = 0.75
 cache_creation = 0.75
 
 # Qwen3.6-35B-A3B hosted through OpenRouter (owner, 2026-11-09): the same weights as the local
-# arm, run early with the other hosted arms as a fast check before the slow local run.
-# ASSUMPTION, confirm at setup: the OpenRouter id `qwen/qwen3.6-35b-a3b` and the prices, which
-# are placeholders set above what a 3B-active model usually costs there, so the estimate does
-# not understate until the owner copies OpenRouter's listing.
+# arm, run early with the other hosted arms as a fast check before the slow local run. The id
+# and the prices are confirmed from OpenRouter's list (2026-11-10). OpenRouter lists cache
+# reads at 0.025.
 [arms."qwen-hosted"]
 harness = "claude"
 backend = "openrouter"
@@ -261,10 +285,10 @@ coauthor = "Qwen3.6-35B-A3B <noreply@qwen.ai>"
 max_workers = 3
 
 [arms."qwen-hosted".prices]
-input = 0.20
-output = 0.80
-cache_read = 0.20
-cache_creation = 0.20
+input = 0.10
+output = 0.90
+cache_read = 0.10
+cache_creation = 0.10
 
 # Qwen3.6-35B-A3B on the owner's own llama-server under C:\llm\ (D-18: last, one worker). The
 # plan's working name for this arm was qwen3.6-35b-a3b-local; the owner's ruling of 2026-11-09
