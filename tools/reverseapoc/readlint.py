@@ -1226,21 +1226,42 @@ def unmarked_declarations(
 ) -> tuple[Violation, ...]:
     """RL07 for the renames a readability session proposes (attempt.lint_view, D-15): the
     driver applies them after the session, so each of `names` the unit at `path` declares, at
-    any scope, needs a marker on one of its declaration lines in the view. A name the unit only
-    uses, or does not hold, needs none. ReadlintError for anything unreadable."""
+    any scope, needs a marker on one of its declaration lines in the view. 07.2 review WR-11: a
+    name the unit only uses but a project header it includes declares needs the marker on that
+    header's declaration line (which only the owner or a header proposal can add). A name
+    declared nowhere needs none. ReadlintError for anything unreadable."""
     path, src_root = Path(path), Path(src_root)
     try:
         run = _Run(src_root, Path(config_root), False, _configure(), {})
         found = _unit_of(path, src_root)
         src = _read(path, _shown(path, src_root), found[0] if found else "", run.cfg)
-        declared = _declared(src, run.types(src, run.closure(src, path.parent)))
+        closure = run.closure(src, path.parent)
+        types = run.types(src, closure)
+        declared = _names_declared(src, types)
+        headers = [run.headers[key] for key in closure]
+        in_headers = [(header, _names_declared(header, types)) for header in headers]
     except _READ_ERRORS as exc:
         raise ReadlintError(str(exc)) from exc
-    lines: dict[str, list[int]] = {}
-    for (_scope_index, name), at in declared.items():
-        lines.setdefault(name, []).extend(at)
-    marked = _marker_lines(src)
     why = f"your proposal renames it: put {MARKER_FORM} on its declaration line (D-15)"
-    return tuple(sorted(Violation(src.path, min(lines[name]), "RL07", f"{name} {why}")
-                        for name in set(names)
-                        if name in lines and not marked.intersection(lines[name])))  # fmt: skip
+    there = (f"your proposal renames it and this header declares it: its declaration line needs "
+             f"{MARKER_FORM}, which only the owner or a header proposal adds (D-15)")  # fmt: skip
+    out = [_unmarked(src, name, declared[name], why) for name in set(names) if name in declared]
+    for name in set(names) - declared.keys():
+        out += [_unmarked(header, name, lines[name], there)
+                for header, lines in in_headers if name in lines]  # fmt: skip
+    return tuple(sorted(v for v in out if v is not None))
+
+
+def _names_declared(src: _Source, types: Collection[str]) -> dict[str, list[int]]:
+    """Each name `src` declares, at any scope, with its declaration lines."""
+    lines: dict[str, list[int]] = {}
+    for (_scope_index, name), at in _declared(src, types).items():
+        lines.setdefault(name, []).extend(at)
+    return lines
+
+
+def _unmarked(src: _Source, name: str, lines: Sequence[int], why: str) -> Violation | None:
+    """RL07 on `name`'s first declaration line in `src`, unless one of `lines` holds a marker."""
+    if _marker_lines(src).intersection(lines):
+        return None
+    return Violation(src.path, min(lines), "RL07", f"{name} {why}")
