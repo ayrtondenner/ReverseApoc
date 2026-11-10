@@ -305,6 +305,11 @@ def _ran(*commands: object) -> list[dict]:
             for n, command in enumerate(commands)]  # fmt: skip
 
 
+def _audited_as(inner: str) -> re.Pattern:
+    """A stray finding's `(audited as: <inner>)`, the inner text in backticks or not."""
+    return re.compile(r"\(audited as: `?" + re.escape(inner) + r"`?\)")
+
+
 def test_codexjson_unwraps_the_windows_shell():
     """The Windows CLI reports each command wrapped in its shell, `"<...>\\powershell.exe"
     -Command <cmd>` (spike 012's rejected-command lines): commands() gives <cmd>, one layer."""
@@ -480,6 +485,21 @@ def test_audit_stops_the_night_on_a_stray_command_or_write(tmp_path, capsys, mon
         assert stopped["reason"] == driver.GUARDRAIL and words in stopped["detail"], stopped
 
 
+def test_a_stray_names_the_command_as_the_session_ran_it(tmp_path, capsys, monkeypatch):
+    """A stray command is named as the session ran it, the Windows shell's path included, and,
+    with that one layer taken off, by what the audit judged: `<original> (audited as:
+    <inner>)` in the night's STOPPED detail (the quarantine reason), never the inner text
+    alone."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="stray_command_wrapped")
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    detail = stopped["detail"]
+    assert stopped["reason"] == driver.GUARDRAIL, stopped
+    assert f"{POWERSHELL} -Command 'whoami'" in detail, detail
+    assert _audited_as("whoami").search(detail), detail
+
+
 def test_audit_quarantines_a_session_written_codex_config(tmp_path, capsys, monkeypatch):
     """Finding 3: a .codex/config.toml the session writes into its trusted workspace is a
     stray: quarantined, the night stops, and no later launch ever sees it (each launch also
@@ -554,9 +574,10 @@ def _pass_file(rig: Rig) -> Path:
 def test_codex_canary_pass(tmp_path, capsys, scenario):
     """A sandbox identity that is not the owner, a refused outside write, a refused network
     call, a compound command whose second half did nothing, and a wrapper check that logged
-    exit 0 with its consumed note: CANARY PASS, and the pass file names the arm, the harness,
-    the installed CLI version (from `codex --version`, never `codex exec`), the date and PASS.
-    The same with every command wrapped in the Windows shell, as the real CLI reports it."""
+    exit 0 with its consumed note and that the audit passed: CANARY PASS, and the pass file
+    names the arm, the harness, the installed CLI version (from `codex --version`, never `codex
+    exec`), the date and PASS. The same with every command wrapped in the Windows shell, as the
+    real CLI reports it."""
     rig = _codex_canary_rig(tmp_path)
     code, doc = _codex_canary(rig, capsys, scenario)
     failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
@@ -564,7 +585,7 @@ def test_codex_canary_pass(tmp_path, capsys, scenario):
     texts = " | ".join(c["check"] for c in doc["checks"])
     for needle in ("whoami", "codexsandbox", driver.CODEX_CANARY_OUTSIDE, "example.com",
                    driver.CODEX_CANARY_COMPOUND, "attempt check", "0001.note.json", "ledger",
-                   CODEX_VERSION):  # fmt: skip
+                   CODEX_VERSION, "the audit passed every attempt wrapper call"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "exec"
     assert ["codex", "--version"] in rig.runner.calls
@@ -608,6 +629,44 @@ def test_codex_canary_fails_on_each_escape(tmp_path, capsys, scenario, rig_args,
     assert needle in failed, failed
     path = _pass_file(rig)
     assert not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+@pytest.mark.parametrize(("scenario", "needles"), [
+    ("canary_codex_wrapper_stray", ("the audit flagged an attempt wrapper call",
+                                    f"powershell.exe -Command '{WRAPPER} check'")),
+    ("canary_codex_no_wrapper", ("no attempt wrapper call ran",)),
+])  # fmt: skip
+def test_codex_canary_proves_the_audit_passes_its_wrapper_call(tmp_path, capsys, scenario,
+                                                                needles):  # fmt: skip
+    """The positive control. Every probe is flagged, and the canary's own attempt wrapper calls
+    (each command naming the wrapper, the compound probe aside) must pass the audit a night
+    runs. A wrapper call the audit flags (here a bare `powershell.exe`, which the unwrap
+    refuses: every night session would be quarantined) is a CANARY FAIL naming the command
+    text it saw; a stream with no wrapper call (rejected or never made, whatever the wrapper's
+    files say) proves nothing and fails too. That is the only failing line; the pass file says
+    FAIL."""
+    rig = _codex_canary_rig(tmp_path)
+    code, doc = _codex_canary(rig, capsys, scenario)
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert (code, doc["canary"], len(failed)) == (1, "FAIL", 1), failed
+    for needle in needles:
+        assert needle in failed[0], (needle, failed)
+    assert json.loads(_pass_file(rig).read_text(encoding="utf-8"))["result"] == "FAIL"
+
+
+def test_codex_canary_names_each_flagged_probe_as_it_ran(tmp_path, capsys):
+    """A canary line for a flagged probe carries its stray finding: the command as the session
+    ran it, the Windows shell's path included, and what the audit judged once that one layer
+    came off (`<original> (audited as: <inner>)`)."""
+    events = _events("canary_codex_pass_wrapped")
+    originals = [e["item"]["command"] for e in events
+                 if e["type"] == "item.completed" and e["item"]["type"] == "command_execution"]
+    audited = codexjson.commands(events)
+    _, doc = _codex_canary(_codex_canary_rig(tmp_path), capsys, "canary_codex_pass_wrapped")
+    for label, index in (("whoami", 0), ("fetch", 2), ("compound command", 3)):
+        [line] = [c["check"] for c in doc["checks"] if f"flagged the {label} probe" in c["check"]]
+        assert originals[index] in line, (label, line)
+        assert _audited_as(audited[index]).search(line), (label, line)
 
 
 def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
