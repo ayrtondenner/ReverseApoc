@@ -504,9 +504,10 @@ def _codex_canary_rig(tmp_path: Path, *, check: dict | None = None, outside: boo
     codex_version_reply(rig)
     line = PASSING_CHECK if check is None else check
 
-    def session(argv, *, cwd, env, transcript, timeout_s):
+    def session(argv, *, cwd, env, transcript, timeout_s, popen=subprocess.Popen):
         rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
-        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s,
+                             popen=popen)  # fmt: skip
         attempt_dir = Path(env[driver.attempt.DIR_ENV])
         wrote = {"checks.jsonl": json.dumps(line) + "\n",
                  "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
@@ -596,6 +597,43 @@ def test_codex_canary_fails_on_each_escape(tmp_path, capsys, scenario, rig_args,
     assert needle in failed, failed
     path = _pass_file(rig)
     assert not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+def test_codex_canary_fail_names_what_the_policy_rejected(tmp_path, capsys):
+    """Spike 012: Codex rejected every command, so none ran and the probes are FAILs (a
+    rejection is never a pass: each probe must run and be flagged), and the FAIL output adds,
+    as diagnostics only, the CLI's stderr lines saying `rejected: blocked by policy` (Codex
+    names them nowhere else); the stderr still reaches the console."""
+    rig = _codex_canary_rig(tmp_path / "json")
+    code, doc = _codex_canary(rig, capsys, "canary_codex_rejected")
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+    for needle in ("whoami was never run", "fetch of https://example.com/ was never run",
+                   "did not flag the whoami probe", "did not flag the fetch probe",
+                   "did not flag the compound command probe"):  # fmt: skip
+        assert needle in failed, failed
+    rejected = doc["codex_rejected"]
+    assert len(rejected) == 2, rejected
+    assert all("rejected: blocked by policy" in line for line in rejected)
+    assert "-Command whoami" in rejected[0] and "attempt check" in rejected[1]
+    assert not any("rejected: blocked by policy" in c["check"] for c in doc["checks"])
+    assert json.loads(_pass_file(rig).read_text(encoding="utf-8"))["result"] == "FAIL"
+    text = _codex_canary_rig(tmp_path / "text")
+    env = _keyed(text.env, FAKECODEX_SCENARIO="canary_codex_rejected", USERNAME=OWNER)
+    code, out, err = text.drive(capsys, canary=True, night_model=LUNA, canary_model=LUNA,
+                                allow_egress=(LUNA,),
+                                seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+    lines = out.splitlines()
+    assert (code, lines[-1]) == (1, "CANARY FAIL")
+    notes = [line for line in lines if line.startswith("NOTE: ")]
+    assert len(notes) == 2 and all("rejected: blocked by policy" in n for n in notes), notes
+    assert "an unrelated warning" in err and "-Command whoami" in err
+
+
+def test_codex_canary_pass_adds_no_rejections(tmp_path, capsys):
+    """A PASS carries no rejected-command diagnostics."""
+    code, doc = _codex_canary(_codex_canary_rig(tmp_path), capsys)
+    assert (code, "codex_rejected" in doc) == (0, False)
 
 
 @pytest.mark.parametrize("state", ["none", "fail", "other-version"])

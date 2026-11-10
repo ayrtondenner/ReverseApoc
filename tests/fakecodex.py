@@ -13,7 +13,9 @@ takes exactly that argv, in that order (session.build_codex_argv after the execu
 3. replays tests/fixtures/codex/NAME.jsonl to stdout, byte for byte, flushing after every
    line, the way `codex exec --json` streams; NAME is FAKECODEX_SCENARIO ([a-z0-9_]+, no path
    can be spelled);
-4. exits 0.
+4. replays tests/fixtures/codex/NAME.stderr to stderr, byte for byte, when that file exists
+   (the real CLI names each command its policy rejected there and nowhere else);
+5. exits 0.
 
 It imports no tool module. The fixtures hold synthetic events only, never game bytes.
 """
@@ -74,6 +76,10 @@ def main(argv: list[str] | None = None) -> int:
     for line in path.read_bytes().splitlines(keepends=True):
         out.write(line)
         out.flush()
+    err = path.with_suffix(".stderr")
+    if err.is_file():
+        sys.stderr.buffer.write(err.read_bytes())
+        sys.stderr.buffer.flush()
     return 0
 
 
