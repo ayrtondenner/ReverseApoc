@@ -1312,6 +1312,8 @@ CODEX_RULES = ".codex/rules/attempt.rules"  # under <attempt dir>, in gitignored
 CODEX_RULES_TEXT = (f"prefix_rule(pattern=[{', '.join(json.dumps(p) for p in hooks.ATTEMPT_PREFIX)}"
                     '], decision="allow")\n')  # fmt: skip
 LEDGER_DIR = "ledger"  # build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl
+UV_PROJECT_ENV = "UV_PROJECT"  # 07.2 review CR-01: uv's --project, never found from the cwd
+UV_NO_CONFIG_ENV = "UV_NO_CONFIG"  # and its --no-config: no uv.toml or pyproject.toml settings
 _AUDIT_MARK = " (codex audit)"  # a stray that is a reason, not a file to contain
 _FORBIDDEN_PARTS = ("orig", "third_party")  # D-10: never sent to a non-Anthropic backend
 _PATH_PARTS = re.compile(r"[^a-z0-9_.-]+")  # any other character splits a command into parts
@@ -2166,11 +2168,16 @@ class _Claim:
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
         plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
         that the hooks and the wrapper validate. 07.2-13: a Codex session (07.2-15: and an agy
-        one) also names its wrapper ledger (D-26); no other session inherits one."""
+        one) also names its wrapper ledger (D-26); no other session inherits one. 07.2 review
+        CR-01: its commands run in its writable attempt dir, so uv is pinned to the checkout
+        (UV_PROJECT) and finds no config there (UV_NO_CONFIG): a pyproject.toml, uv.lock or
+        uv.toml the session planted never becomes what `uv run --frozen reverseapoc` runs."""
         own = backends.session_env(self.arm_in(arms), base, arms)
         own.pop(attempt.WRAPPER_LEDGER_ENV, None)
         if self.signed_in:
             own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
+            own[UV_PROJECT_ENV] = str(self.repo)
+            own[UV_NO_CONFIG_ENV] = "1"
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),

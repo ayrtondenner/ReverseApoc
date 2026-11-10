@@ -199,7 +199,11 @@ The model ids are assumptions to confirm at setup.
   and an empty wrapper ledger outside the workspace,
   `build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl`, named to the session by
   `REVERSEAPOC_WRAPPER_LEDGER`. The wrapper appends `{"path", "sha256"}` there for every file
-  it writes. Nothing Codex-specific is committed: no `.codex/`, no AGENTS.md.
+  it writes. The session env pins uv to the checkout (`UV_PROJECT=<checkout>`,
+  `UV_NO_CONFIG=1`, for agy sessions too): the session's commands run in its attempt dir, so
+  without the pin a `pyproject.toml`, `uv.lock` or `uv.toml` it wrote there would be the
+  project the allowed `uv run --frozen reverseapoc attempt` runs. Nothing Codex-specific is
+  committed: no `.codex/`, no AGENTS.md.
 - **The audit.** After the session, besides the checks every session gets (git status, the
   view, pinned and fingerprinted files): every command must be an exact wrapper form and may
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
