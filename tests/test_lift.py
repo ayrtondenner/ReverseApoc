@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from reverseapoc import batch, fileio, lift, symbols
+from reverseapoc import batch, fileio, lift, slots, symbols
 from reverseapoc.cli import main
 from reverseapoc.functions import KIND_DATA_IN_CODE, FunctionRow
 from reverseapoc.le import Fixup
@@ -230,8 +230,47 @@ def test_a_word_inside_an_array_reads_at_its_own_width():
 def test_an_array_runs_to_the_next_address_taken_slot():
     # lea eax, [esp + 4]; lea edx, [esp + 8]; add eax, edx
     text = in_frame("8d442404 8d542408 01d0")
-    assert "char s_c[4];" in text
+    assert "int s_c[1];" in text  # 4 bytes: one int, which keeps M2 where char[4] does not
     assert "char s_8[8];" in text
+
+
+# lea eax, [esp + 4]; lea edx, [esp + 8]; lea ecx, [esp + 0Ch]; add eax, edx; add eax, ecx
+THREE_TAKEN = "8d442404 8d542408 8d4c240c 01d0 01c8"
+
+
+def _slot_declarations(text: str) -> list[str]:
+    return [line.strip() for line in text.split("\n") if re.match(r"\s+\w+ s_\w+\[\d+\];$", line)]
+
+
+def test_a_four_byte_taken_slot_is_one_int():
+    # three char[4] leave M2 on wcc386 10.6 (07.1-REVIEW CR-01); int[1] keeps it
+    text = in_frame(THREE_TAKEN)
+    assert "int s_c[1];" in text
+    assert "int s_8[1];" in text
+    assert "int s_4[1];" in text
+    assert "char s_c[4];" not in text
+    # lea eax, [esp]; lea edx, [esp + 8]; add eax, edx: slots of 8 bytes stay char arrays
+    wide = in_frame("8d0424 8d542408 01d0")
+    assert "char s_10[8];" in wide
+    assert "char s_8[8];" in wide
+
+
+def test_four_byte_slots_follow_m2():
+    """The declarations put each slot where slots.frame_layout places `int[1]` locals: the first
+    declared highest, and frame_layout counts from the lowest of them, at esp + 4."""
+    declared = _slot_declarations(in_frame(THREE_TAKEN))
+    assert declared == ["int s_4[1];", "int s_8[1];", "int s_c[1];"]
+    names = [line.split()[1].split("[")[0] for line in declared]
+    layout = slots.frame_layout([slots.Local(name, 4) for name in names])
+    assert layout == {"s_4": 8, "s_8": 4, "s_c": 0}
+
+
+def test_a_byte_inside_a_one_int_slot_is_reached_through_char():
+    # lea eax, [esp + 4]; lea edx, [esp + 8]; movsx ecx, byte ptr [esp + 5]; add eax, ecx:
+    # `s_c + 1` on an int array would step 4 bytes, so the offset is added to a char pointer
+    text = in_frame("8d442404 8d542408 0fbe4c2405 01c8")
+    assert "int s_c[1];" in text
+    assert "*(signed char *)((char *)s_c + 1)" in text
 
 
 def test_an_array_found_late_still_covers_an_earlier_access():

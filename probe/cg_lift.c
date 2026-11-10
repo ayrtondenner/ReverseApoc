@@ -185,3 +185,53 @@ int pr_lift_below_zero(int r_eax)
 {
     return *(double *)r_eax < 0.0;
 }
+
+/*
+ * Address-taken stack slots of 4 bytes (07.2-14). The lifter declares each one int[1], which
+ * keeps M2 on wcc386 10.6 where three char[4] in a call's frame do not (probe/cg_slots.c,
+ * pr_arr_char4_x3). Each address is stored through r_eax, which keeps the slots in memory without
+ * a call. The byte case reaches inside a slot, which on an int array steps through a char
+ * pointer. The chars case is a char[4] original: plain only, because -oneatx builds its byte
+ * constants in one register, a form the lifter writes as a mask that does not compile back.
+ */
+void pr_lift_taken_x3(int r_eax)
+{
+    int a[1];
+    int b[1];
+    int c[1];
+
+    a[0] = 0x11;
+    b[0] = 0x22;
+    c[0] = 0x33;
+    ((int *)r_eax)[0] = (int)a;
+    ((int *)r_eax)[1] = (int)b;
+    ((int *)r_eax)[2] = (int)c;
+}
+
+void pr_lift_taken_byte(int r_eax)
+{
+    int a[1];
+    int b[1];
+    int c[1];
+
+    a[0] = 0x44;
+    ((char *)b)[1] = 0x55;
+    c[0] = 0x66;
+    ((int *)r_eax)[3] = (int)a;
+    ((int *)r_eax)[4] = (int)b;
+    ((int *)r_eax)[5] = (int)c;
+}
+
+void pr_lift_taken_chars(int r_eax)
+{
+    char a[4];
+    char b[4];
+    char c[4];
+
+    a[0] = 0x21;
+    b[0] = 0x22;
+    c[0] = 0x23;
+    ((int *)r_eax)[6] = (int)a;
+    ((int *)r_eax)[7] = (int)b;
+    ((int *)r_eax)[8] = (int)c;
+}

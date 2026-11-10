@@ -1196,6 +1196,33 @@ void pr_arr_one_block(int x)
     }
 }
 
+/* Three int[1], the lifter's form for a 4-byte address-taken slot (07.2-14): one element is no
+ * array, so M2 holds where three char[4] leave it. */
+void pr_arr_int1_x3(void)
+{
+    int a[1];
+    int b[1];
+    int c[1];
+
+    a[0] = 0x6c;
+    b[0] = 0x6d;
+    c[0] = 0x6e;
+    pr_take(a, b, c);
+}
+
+/* Its twin, declared backwards. */
+void pr_arr_int1_x3_rev(void)
+{
+    int c[1];
+    int b[1];
+    int a[1];
+
+    a[0] = 0x6c;
+    b[0] = 0x6d;
+    c[0] = 0x6e;
+    pr_take(a, b, c);
+}
+
 /* Register candidates: eight values live across calls, more than the registers can hold. */
 void pr_spill_decl(void)
 {

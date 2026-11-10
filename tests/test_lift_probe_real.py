@@ -56,6 +56,9 @@ CASES = {
     "pr_lift_one_minus": BOTH,
     "pr_lift_plus_one": BOTH,
     "pr_lift_below_zero": BOTH,
+    "pr_lift_taken_x3": BOTH,  # three 4-byte taken slots, declared int[1]
+    "pr_lift_taken_byte": BOTH,
+    "pr_lift_taken_chars": ("plain",),  # a char[4] original; see probe/cg_lift.c
 }
 PAIRS = [(cell, name) for name, cells in CASES.items() for cell in cells]
 

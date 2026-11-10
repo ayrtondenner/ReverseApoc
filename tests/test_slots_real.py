@@ -60,6 +60,7 @@ VOLATILE = (Marked("a", 4, 0x11), Marked("v", 4, 0x22), Marked("b", 4, 0x33))
 FLOAT_1_5, FLOAT_2_5, FLOAT_3_5 = 0x3FC00000, 0x40200000, 0x40600000
 FLOATS = (Marked("a", 4, FLOAT_1_5), Marked("b", 4, FLOAT_2_5), Marked("c", 4, FLOAT_3_5))
 TWO_TWO = (*_arrays(4, 0x3B, 0x3C), Marked("c", 4, 0x3D), Marked("d", 4, 0x3E))
+INT1_X3 = (Marked("a", 4, 0x6C), Marked("b", 4, 0x6D), Marked("c", 4, 0x6E))  # int x[1]
 ONE_THREE = (*_arrays(4, 0x3F), Marked("b", 4, 0x40), Marked("c", 4, 0x41), Marked("d", 4, 0x42))
 # Each function's locals in declaration order. A scope counts blocks in source order.
 SHAPES = {
@@ -107,6 +108,8 @@ SHAPES = {
     "pr_arr_one_three": ONE_THREE,
     "pr_arr_one_three_rev": ONE_THREE[::-1],
     "pr_arr_one_block": (*_arrays(4, 0x6A), Marked("b", 4, 0x6B, 1)),
+    "pr_arr_int1_x3": INT1_X3,  # the lifter's 4-byte taken slot keeps M2 (07.2-14)
+    "pr_arr_int1_x3_rev": INT1_X3[::-1],
 }
 PAIR = (Marked("a", 8, 0x11, array=True), Marked("b", 8, 0x22, array=True))
 THREE = (*PAIR, Marked("c", 8, 0x33, array=True))
