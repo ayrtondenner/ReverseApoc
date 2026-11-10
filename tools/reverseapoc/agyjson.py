@@ -457,6 +457,14 @@ def rejections(events: Sequence[dict]) -> list[Rejection]:
     return [found for step in _steps(events) if (found := _rejection(step)) is not None]
 
 
+def denied_writes(events: Sequence[dict]) -> list[str]:
+    """The request (the path the model asked for) of every write step agy's permission check
+    refused (`denials`: a write_file step, its write action, its own target), in order: the
+    night audit's denied writes (owner ruling 2026-11-10, "extend it")."""
+    return [d.request for d in denials(events)
+            if d.tool in _WRITE_TOOLS and d.action == d.tool and d.request is not None]
+
+
 def _undenied(step: Mapping) -> str:
     message = _mapping(_mapping(step.get("tool_info")).get(_ERROR)).get(_MESSAGE)
     why = f": {message.splitlines()[0]}" if isinstance(message, str) and message else ""

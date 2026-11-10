@@ -406,6 +406,7 @@ def test_agyjson_a_soft_denied_step_never_ran():
     assert agyjson.read_targets(events) == [relative]
     assert agyjson.unknown_steps(events) == []
     assert [d.step for d in agyjson.denials(events)] == [1, 2, 3]
+    assert agyjson.denied_writes(events) == ["C:\\x\\tools\\x.py"]  # writes only, as requested
 
 
 def test_agyjson_a_denial_must_be_exact():
@@ -803,27 +804,43 @@ def test_agy_audit_clean_session(tmp_path, capsys, monkeypatch):
     assert night.kinds("attempt")[0]["abort_reason"] != driver.GUARDRAIL
 
 
+def _denied_write_stop(night: Night, path: str) -> None:
+    """The one-arm night stopped at the guardrail on a write agy refused (owner ruling
+    2026-11-10, "extend it": a denied write, as a Claude hook-denied one; with one arm,
+    stopping its arm is stopping the night), naming the write, quarantining nothing."""
+    (stopped,) = [r for r in night.kinds("run") if r["event"] == "STOPPED"]
+    assert stopped["reason"] == driver.GUARDRAIL, stopped
+    assert f"{path} (transcript)" in stopped["detail"], stopped
+    assert "quarantined: none" in stopped["detail"], stopped
+
+
 def test_agy_denied_actions_are_not_strays(tmp_path, capsys, monkeypatch):
     """Headless agy soft-denies what its settings do not allow: a denied command and a denied
-    write never ran, so they count as hook blocks, not strays."""
+    write never ran, so they count as hook blocks, never as steps that ran. A denied command
+    stops nothing; a denied write is a denied write (`_denied_write_stop`)."""
     rig, night, env = agy_night(tmp_path, monkeypatch, scenario="denied_steps")
     code, _, err = _run_agy(capsys, rig, env)
-    assert code == 0, err
-    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    assert code != 0, err
+    _denied_write_stop(night, "tools/x.py")
     assert night.kinds("attempt")[0]["hook_blocks"] == 2
 
 
 def test_agy_soft_denied_steps_are_not_strays(tmp_path, capsys, monkeypatch):
     """Spike 012: agy 1.5.5 ends a soft-denied step ERROR with its permission check's message,
     never DENIED; such a step never ran, so at night it is a hook block like a DENIED step, not
-    a stray that ran: a soft-denied command naming orig/ and a soft-denied write outside the
-    checkout (each the session's last step, as headless agy then ends the turn) stop nothing."""
+    a stray that ran: a soft-denied command naming orig/ (the session's last step, as headless
+    agy then ends the turn) stops nothing, and a soft-denied write outside the checkout is a
+    denied write (`_denied_write_stop`)."""
     for scenario in ("soft_denied_command", "soft_denied_write"):
         rig, night, env = agy_night(tmp_path / scenario, monkeypatch, scenario=scenario)
         code, _, err = _run_agy(capsys, rig, env)
+        assert night.kinds("attempt")[0]["hook_blocks"] == 1, scenario
+        if scenario == "soft_denied_write":
+            assert code != 0, scenario
+            _denied_write_stop(night, "C:\\made-up\\tools\\x.py")
+            continue
         assert code == 0, (scenario, err)
         assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == [], scenario
-        assert night.kinds("attempt")[0]["hook_blocks"] == 1, scenario
 
 
 # ---- Task 3: the quota canary, its pass gate, the fallback arm and the exception text ----

@@ -3918,7 +3918,9 @@ class _Night:
         """`_strays` in two parts (owner ruling 2026-11-10): every stray but a Claude
         transcript write, then each transcript write stray with whether the hook denied it
         (`_denied_writes`: its unique tool_use id, tool and target are in the result event's
-        permission_denials)."""
+        permission_denials). For an agy session (owner ruling 2026-11-10, "extend it") the
+        second part is each write agy's permission check provably refused
+        (agyjson.denied_writes), all denied; a Codex session has none."""
         allowed = self._allowed(session.claim, self._tracked())
         stray = [p for p in self._unexplained(session.after) if not allowed(p)]
         stray += [name for name in self._view_changes(session) if name not in stray]
@@ -3927,7 +3929,8 @@ class _Night:
         stray += [name for name in self._base_changed(session) if name not in stray]
         if session.claim.harness != backends.CLAUDE:  # 07.2-13, 07.2-15: never read as Claude's
             stray += [s for s in self._signed_in_strays(session, allowed) if s not in stray]
-            return stray, []
+            refused = agyjson.denied_writes(session.events) if session.claim.agy else []
+            return stray, [(f"{path}{_TRANSCRIPT_MARK}", True) for path in refused]
         events = session.events
         uses = zip(_write_targets(events), transcript_paths(events, self.repo),
                    _denied_writes(events), strict=True)  # fmt: skip
@@ -4208,8 +4211,9 @@ class _Night:
 
     def _audit(self, session: _Session, *, note: str = "") -> None:
         """Any stray stops the night (`_guardrail`), but (owner ruling 2026-11-10) one whose
-        strays are all transcript writes the hook denied, with no containers `note`, stops
-        its arm only (`_stop_arm`), and its worker leaves quietly (_Halt)."""
+        strays are all transcript writes the hook denied (or, on an agy arm, writes agy's
+        permission check refused), with no containers `note`, stops its arm only
+        (`_stop_arm`), and its worker leaves quietly (_Halt)."""
         other, writes = self._audited(session)
         stray = [*other, *(text for text, _ in writes)]
         if not stray:
@@ -4243,8 +4247,9 @@ class _Night:
             return False
         claim = session.claim
         paths = [text.removesuffix(_TRANSCRIPT_MARK) for text in stray]
+        denier = "agy's permission check" if claim.agy else "the hook"
         line = (f"{self._label(claim.pick, claim.n)}: arm {self.lane.arm} stopped (guardrail): "
-                f"the hook denied its write to {_listed(paths)} and nothing changed; the other "
+                f"{denier} denied its write to {_listed(paths)} and nothing changed; the other "
                 "arms go on")  # fmt: skip
         with self.cond:
             self.lane.stopped = True
