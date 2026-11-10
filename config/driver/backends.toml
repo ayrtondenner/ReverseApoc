@@ -12,7 +12,9 @@
 # login), model (the --model id), base_url (absent on the Claude login), key_env (absent on the
 # Claude login), sends_disassembly (true: the context pack leaves the machine, so a
 # non-Anthropic arm needs --allow-egress, D-11), accepted_init (the init `model` strings
-# accepted), prices (USD per million tokens, for the cost estimate), coauthor (the commit
+# accepted), prices (USD per million tokens: a metered arm's recorded cost estimate, and every
+# arm's list price for the API-equivalent figure of `stats --run` and the `--land-held` ranking;
+# a subscription or free arm records cost 0, backends.Arm.billing), coauthor (the commit
 # credit line, D-26), max_workers, and the optional max_sessions (07.2-16, D-22: the sessions
 # the arm may launch in one night; absent, only the night's --max-sessions caps it). The Claude
 # arms are keyed by their model id and keep streamjson's tables and driver.coauthor (RULINGS
@@ -50,9 +52,12 @@ max_workers = 10
 # D-12, D-13, D-18: third and fourth in the run order). No base_url and no key_env: Codex signs
 # in with its own login, and the driver strips OPENAI_API_KEY and OPENAI_BASE_URL from the
 # session. No init ids: `codex exec --json` streams no event naming the model, so the record
-# keeps the requested model and a null `model`. Prices are 0: a Plus subscription is measured
-# in tokens and its 5-hour windows, not in dollars. One worker for the Plus windows (the owner
-# may raise max_workers). A Codex arm runs only after its canary passed on the installed CLI
+# keeps the requested model and a null `model`. A session's recorded cost stays 0: with no
+# base_url this is a subscription arm (backends.Arm.billing), which pays no per-token price, and
+# Plus is measured in tokens and its 5-hour windows. Its prices are public API list prices, for
+# the comparison of `stats --run` and the `--land-held` ranking. One worker for the Plus
+# windows (the owner may raise max_workers). A Codex arm runs only after its canary passed on
+# the installed CLI
 # (build/driver/canary/<arm>.json). ASSUMPTION, confirm at setup: the ids `gpt-6-luna` and
 # `gpt-6.1-sol` (RESEARCH Q8, from OpenAI's help page and CLI 0.159.1's catalogue) and the
 # noreply@openai.com co-author address.
@@ -65,11 +70,15 @@ accepted_init = []
 coauthor = "GPT-6 Luna <noreply@openai.com>"
 max_workers = 1
 
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: third-party price trackers, read 2026-11-10.
+# cache_creation is priced as input, this file's rule for an unrecorded cache class (it may
+# overstate, never understate).
 [arms."gpt-6-luna".prices]
-input = 0.0
-output = 0.0
-cache_read = 0.0
-cache_creation = 0.0
+input = 0.10
+output = 0.50
+cache_read = 0.01
+cache_creation = 0.10
 
 [arms."gpt-6.1-sol"]
 harness = "codex"
@@ -80,11 +89,15 @@ accepted_init = []
 coauthor = "GPT-6.1 Sol <noreply@openai.com>"
 max_workers = 1
 
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: third-party price trackers, read 2026-11-10.
+# The price holds for prompts up to 272K tokens. cache_creation is priced as input, this file's
+# rule for an unrecorded cache class (it may overstate, never understate).
 [arms."gpt-6.1-sol".prices]
-input = 0.0
-output = 0.0
-cache_read = 0.0
-cache_creation = 0.0
+input = 2.00
+output = 10.00
+cache_read = 0.10
+cache_creation = 2.00
 
 # Gemini 3.8 Flash and GPT-OSS 120B through the Antigravity CLI (agy) on the owner's Google AI
 # Plus sign-in (07.2-15; D-21, D-24, D-25, D-25a: Gemini is fifth in the run order). No base_url
@@ -92,9 +105,11 @@ cache_creation = 0.0
 # OpenAI variable from the session. The model ids are the exact slugs the owner's `agy models`
 # listed on 2026-11-09 (agy 1.5.3); slugs vary per account and agy exits 1 on an unknown one,
 # so a wrong id fails closed in the canary. The Gemini arm runs the medium effort; the owner may
-# set `gemini-3.8-flash-high` or `-low` here for an effort comparison. Prices are 0: the AI
-# Plus subscription is measured in its weekly quota, not in dollars (the canary measures it).
-# One worker each. An agy arm runs only after its canary passed on the installed CLI
+# set `gemini-3.8-flash-high` or `-low` here for an effort comparison. A session's recorded
+# cost stays 0: with no base_url this is a subscription arm (backends.Arm.billing), which pays
+# no per-token price, and AI Plus is measured in its weekly quota (the canary measures it). Its
+# prices are public API list prices, for the comparison of `stats --run` and the `--land-held`
+# ranking. One worker each. An agy arm runs only after its canary passed on the installed CLI
 # (build/driver/canary/<arm>.json). GPT-OSS is open-weight, but the session still sends the
 # pack to Google, so it needs --allow-egress like every hosted arm. max_sessions caps each arm's
 # sessions in one night (07.2-16, D-22). 20 is the canary's planning estimate (RESEARCH A8: "a
@@ -110,11 +125,16 @@ coauthor = "Gemini 3.8 Flash <noreply@google.com>"
 max_workers = 1
 max_sessions = 20
 
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: third-party price trackers, read 2026-11-10.
+# The price is introductory until 2026-12-31, then input 1.50 and output 7.50. cache_creation
+# is priced as input, this file's rule for an unrecorded cache class (it may overstate, never
+# understate).
 [arms."gemini-flash".prices]
-input = 0.0
-output = 0.0
-cache_read = 0.0
-cache_creation = 0.0
+input = 0.75
+output = 3.75
+cache_read = 0.075
+cache_creation = 0.75
 
 [arms."gpt-oss"]
 harness = "agy"
@@ -126,11 +146,16 @@ coauthor = "gpt-oss-120b <noreply@openai.com>"
 max_workers = 1
 max_sessions = 20
 
+# List prices (USD per MTok), used only for the API-equivalent figure of `stats --run` and the
+# `--land-held` ranking; confirm at setup. Source: third-party price trackers, read 2026-11-10:
+# the OpenRouter listing, about 0.04 input and about 0.18 output; the trackers disagree. There
+# is no cached price, so cache_read is priced as input, and cache_creation too, this file's rule
+# for an unrecorded cache class (it may overstate, never understate).
 [arms."gpt-oss".prices]
-input = 0.0
-output = 0.0
-cache_read = 0.0
-cache_creation = 0.0
+input = 0.04
+output = 0.18
+cache_read = 0.04
+cache_creation = 0.04
 
 # DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
 # yet, so both cache classes are priced as input: the estimate may overstate, never understate.
@@ -196,8 +221,7 @@ cache_creation = 1.25
 # Gemini 3.8 Flash through OpenRouter in the Claude Code harness: D-21's fallback, run only when
 # the agy canary finds no usable AI Plus quota (it names this arm). A paid entry, so it needs
 # --allow-egress and OPENROUTER_API_KEY like Muse Spark. A paid Gemini Pro arm is not added
-# (D-25 defers it). ASSUMPTION, confirm at setup: the OpenRouter id `google/gemini-3.8-flash`
-# and the prices, placeholders above Flash-class prices so the estimate does not understate.
+# (D-25 defers it). ASSUMPTION, confirm at setup: the OpenRouter id `google/gemini-3.8-flash`.
 [arms."gemini-3.8-flash-openrouter"]
 harness = "claude"
 backend = "openrouter"
@@ -209,11 +233,16 @@ accepted_init = ["google/gemini-3.8-flash"]
 coauthor = "Gemini 3.8 Flash <noreply@google.com>"
 max_workers = 3
 
+# OpenRouter's listed price for google/gemini-3.8-flash (USD per MTok), the same as the agy
+# arm's list price: a metered arm, so it is also the recorded cost estimate of its sessions;
+# confirm at setup. Source: third-party price trackers, read 2026-11-10. The price is
+# introductory until 2026-12-31, then input 1.50 and output 7.50. Both cache classes are priced
+# as input until OpenRouter's cache prices are recorded (it may overstate, never understate).
 [arms."gemini-3.8-flash-openrouter".prices]
-input = 0.60
-output = 3.60
-cache_read = 0.60
-cache_creation = 0.60
+input = 0.75
+output = 3.75
+cache_read = 0.75
+cache_creation = 0.75
 
 # Qwen3.6-35B-A3B hosted through OpenRouter (owner, 2026-11-09): the same weights as the local
 # arm, run early with the other hosted arms as a fast check before the slow local run.

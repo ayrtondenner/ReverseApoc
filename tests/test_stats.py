@@ -749,7 +749,8 @@ def test_run_filter_keeps_a_landing_of_its_run(tmp_path, capsys):
 def test_by_model_size(tmp_path, capsys):
     """Per requested model and size bucket: the distinct functions attempted, matched (a MATCHED
     attempt or landing) and held exact (a HOLD_EXACT attempt); readability sessions are out.
-    07.2-06: the hold runs' records are read through `--run`."""
+    07.2-06: the hold runs' records are read through `--run`. Quick 261110-f30: Sonnet's
+    landing of the 300 B function is matched for Haiku too, which also held it exact."""
     _functions(tmp_path / "config", "ufo2p", {0x10000: 32, 0x10100: 300})
     haiku, sonnet = "claude-haiku-5-5", "claude-sonnet-5-5"
     records = (
@@ -767,7 +768,7 @@ def test_by_model_size(tmp_path, capsys):
     small, large = "[0, 64)", "[256, 1024)"
     assert report["by_model_size"] == {
         _arm(haiku): {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
-                      large: {"attempted": 1, "matched": 0, "hold_exact": 1}},
+                      large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
         _arm(sonnet): {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
                        large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
     }  # fmt: skip
@@ -921,3 +922,324 @@ def test_by_arm_of_no_run_is_empty(tmp_path, capsys):
     assert report["by_arm"] == {}
     assert _run(repo, log, "--run", "nonexistent-*", config=tmp_path / "config") == 0
     assert "per arm: none" in capsys.readouterr().out.splitlines()
+
+
+# ---- quick 261110-f30 (spike 012, owner ruling 2026-11-10): the comparison table ----
+
+HAIKU = "claude-haiku-5-5"
+SONNET = "claude-sonnet-5-5"
+COLUMNS = ["under 64 B", "64 to 255 B", "256 B and up", "total"]
+SMALL, MIDDLE, LARGE, TOTAL = COLUMNS
+SUBSCRIPTION_WORDS = ("real paid $0.00: a subscription arm (the Claude Code login, ChatGPT Plus "
+                      "or Google AI Plus) pays no per-token price")  # fmt: skip
+_TOKEN_KINDS = ("input", "output", "cache_read", "cache_creation")
+
+
+def _tok(i: int = 0, o: int = 0, r: int = 0, c: int = 0) -> dict:
+    return {"input": i, "output": o, "cache_read": r, "cache_creation": c}
+
+
+def _plus(*tokens: dict) -> dict:
+    return {k: sum(t[k] for t in tokens) for k in _TOKEN_KINDS}
+
+
+def _api(tokens: dict, price) -> Decimal:
+    """The API-equivalent by plain arithmetic over the loaded Price's fields."""
+    total = sum(Decimal(tokens[k]) * Decimal(str(getattr(price, k))) for k in _TOKEN_KINDS)
+    return total / 1_000_000
+
+
+def _usd(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.01")))
+
+
+def _hk(start: int, **change) -> dict:
+    """A Haiku v3 attempt of a spike012 hold run."""
+    fields = {"run": "spike012-haiku", "model_requested": HAIKU, "model": HAIKU,
+              "hold_run": True}  # fmt: skip
+    fields.update(change)
+    return _on_v3(start, **fields)
+
+
+DEEPSEEK_ARM = {"backend": "deepseek", "harness": "claude", "model_requested": "deepseek-flash",
+                "model": "deepseek-flash", "cost_source": "estimate"}  # fmt: skip
+LOCAL_ARM = {"backend": "local", "harness": "claude", "model_requested": "qwen3.6-35b-a3b",
+             "model": "qwen3.6-35b-a3b", "cost_source": "estimate"}  # fmt: skip
+T1, T2, T3, T4 = (_tok(1_000_000, 200_000, 3_000_000, 400_000), _tok(500_000, 100_000),
+                  _tok(2_000_000, 300_000, 1_000_000, 100_000), _tok(100_000, 10_000))  # fmt: skip
+TD = _tok(2_000_000, 500_000, 1_000_000)
+
+
+def _spike_records() -> tuple[dict, ...]:
+    """Haiku: HOLD_EXACT at 32 B, PARTIAL and (on an ordinary night) MATCHED at 100 B, PARTIAL
+    at 300 B; deepseek-flash: HOLD_EXACT at 300 B."""
+    return (
+        _hk(0x10000, outcome="HOLD_EXACT", tokens=T1, turns=5, duration_ms=60_000),
+        _hk(0x10100, outcome="PARTIAL", tokens=T2, turns=4, duration_ms=30_000),
+        _hk(0x10100, outcome="MATCHED", tokens=T3, turns=6, duration_ms=90_000,
+            run="spike012-night", hold_run=False, attempt=2),
+        _hk(0x10200, outcome="PARTIAL", tokens=T4, turns=2, duration_ms=10_000),
+        _on_v3(0x10200, run="spike012-deepseek", outcome="HOLD_EXACT", hold_run=True, tokens=TD,
+               turns=7, duration_ms=120_000, **DEEPSEEK_ARM),
+    )  # fmt: skip
+
+
+def _spike(tmp_path: Path, *records: dict, sizes: dict | None = None) -> tuple[Path, Path, Path]:
+    config = tmp_path / "config"
+    _functions(config, "ufo2p", {0x10000: 32, 0x10100: 100, 0x10200: 300} if sizes is None
+               else sizes)  # fmt: skip
+    repo, _ = _repo(tmp_path)
+    return repo, _log(tmp_path, *records), config
+
+
+def _cell(cell: dict) -> dict:
+    keep = ("attempted", "exact", "hold_exact", "matched", "sessions", "turns", "wall_ms",
+            "tokens")  # fmt: skip
+    return {k: cell[k] for k in keep}
+
+
+def test_comparison_row_per_arm(tmp_path, capsys):
+    """The tracer: one row per arm over every selected run, the three STRATA size columns and
+    a total; API-equivalent is the tokens at the arm's list price, real paid 0 on a
+    subscription arm and the API-equivalent on a metered one."""
+    from reverseapoc import backends
+
+    repo, log, config = _spike(tmp_path, *_spike_records())
+    comparison = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]
+    assert comparison["columns"] == COLUMNS
+    haiku_key, deepseek_key = _arm(HAIKU), _arm("deepseek-flash", "deepseek")
+    assert list(comparison["arms"]) == sorted([haiku_key, deepseek_key])
+    haiku = comparison["arms"][haiku_key]
+    assert (haiku["arm"], haiku["billing"]) == (HAIKU, "subscription")
+    cells = haiku["cells"]
+    zero = {"attempted": 0, "exact": 0, "hold_exact": 0, "matched": 0, "sessions": 0, "turns": 0,
+            "wall_ms": 0, "tokens": _tok()}  # fmt: skip
+    assert _cell(cells[SMALL]) == {"attempted": 1, "exact": 1, "hold_exact": 1, "matched": 0,
+                                   "sessions": 1, "turns": 5, "wall_ms": 60_000, "tokens": T1}
+    assert _cell(cells[MIDDLE]) == {"attempted": 1, "exact": 1, "hold_exact": 0, "matched": 1,
+                                    "sessions": 2, "turns": 10, "wall_ms": 120_000,
+                                    "tokens": _plus(T2, T3)}  # fmt: skip
+    assert _cell(cells[LARGE]) == {"attempted": 1, "exact": 0, "hold_exact": 0, "matched": 0,
+                                   "sessions": 1, "turns": 2, "wall_ms": 10_000, "tokens": T4}
+    assert _cell(cells[TOTAL]) == {"attempted": 3, "exact": 2, "hold_exact": 1, "matched": 1,
+                                   "sessions": 4, "turns": 17, "wall_ms": 190_000,
+                                   "tokens": _plus(T1, T2, T3, T4)}  # fmt: skip
+    arms = backends.load_arms()
+    price = arms[HAIKU].list_price
+    for column, tokens in ((SMALL, T1), (MIDDLE, _plus(T2, T3)), (TOTAL, _plus(T1, T2, T3, T4))):
+        assert cells[column]["api_usd"] == _usd(_api(tokens, price)), column
+        assert cells[column]["paid_usd"] == "0.00", column
+    deepseek = comparison["arms"][deepseek_key]
+    assert (deepseek["arm"], deepseek["billing"]) == ("deepseek-flash", "metered")
+    total = deepseek["cells"][TOTAL]
+    assert _cell(total) == {"attempted": 1, "exact": 1, "hold_exact": 1, "matched": 0,
+                            "sessions": 1, "turns": 7, "wall_ms": 120_000, "tokens": TD}
+    assert total["api_usd"] == _usd(_api(TD, arms["deepseek-flash"].prices))
+    assert total["paid_usd"] == total["api_usd"] != "0.00"
+    assert _cell(deepseek["cells"][SMALL]) == zero
+
+
+def _block(out: str) -> list[str]:
+    """The comparison's title line and the indented lines under it."""
+    lines = out.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("comparison per arm"))
+    end = next((i for i in range(start + 1, len(lines)) if not lines[i].startswith("  ")),
+               len(lines))  # fmt: skip
+    return lines[start:end]
+
+
+def test_comparison_text(tmp_path, capsys):
+    """The text: the title, one head line per arm with the real-paid case in words, then one
+    line per column."""
+    local = _on_v3(0x10000, run="spike012-qwen-local", hold_run=True, tokens=_tok(1000),
+                   **LOCAL_ARM)  # fmt: skip
+    repo, log, config = _spike(tmp_path, *_spike_records(), local)
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    block = _block(capsys.readouterr().out)
+    assert block[0] == ("comparison per arm (columns: under 64 B, 64 to 255 B, 256 B and up, "
+                        "total; API-equivalent: tokens at the arm's list price):")  # fmt: skip
+    heads = [line for line in block if line.startswith("  ") and not line.startswith("    ")]
+    assert heads == [
+        f"  {_arm(HAIKU)} ({HAIKU}, subscription): {SUBSCRIPTION_WORDS}",
+        f"  {_arm('deepseek-flash', 'deepseek')} (deepseek-flash, metered): real paid: its "
+        "tokens at its list price (a metered arm)",
+        f"  {_arm('qwen3.6-35b-a3b', 'local')} (qwen-local, free): real paid $0.00: a local arm "
+        "pays nothing",
+    ]  # fmt: skip
+    assert len(block) == 1 + 3 * (1 + len(COLUMNS))
+    deepseek = block[block.index(heads[1]) + 1:][:len(COLUMNS)]
+    assert [line.split(":")[0].strip() for line in deepseek] == COLUMNS
+    assert deepseek[2] == (
+        "    256 B and up: attempted 1, exact 1 (hold exact 1, matched 0), sessions 1, turns 7, "
+        "wall 2.0 min, tokens input 2000000, output 500000, cache_read 1000000, cache_creation "
+        "0, API-equivalent $1.50, real paid $1.50, per try no saved checks, exact per "
+        "API-equivalent $ 0.67, per wall hour 30.00, per million tokens 0.29")  # fmt: skip
+    assert deepseek[0].endswith("per try no saved checks, exact per API-equivalent $ n/a, "
+                                "per wall hour n/a, per million tokens n/a")  # fmt: skip
+
+
+def test_comparison_per_try_rates(tmp_path, capsys):
+    """Per-try rates from the attempts' saved checks.jsonl, by causes' own rule; an arm with
+    no saved evidence has none."""
+    held = _hk(0x10000, outcome="HOLD_EXACT")
+    other = _on_v3(0x10000, run="spike012-sonnet", model_requested=SONNET, model=SONNET,
+                   hold_run=True)  # fmt: skip
+    repo, log, config = _spike(tmp_path, held, other)
+    checks = repo / "build" / "driver" / "spike012-haiku" / "ufo2p" / "func_00010000"
+    lines = [{"sweep": False, "exit": 2}, {"sweep": False, "exit": 1},
+             {"sweep": False, "exit": 0}, {"sweep": True, "exit": 0}]  # fmt: skip
+    _write(checks / "attempt-1" / "checks.jsonl", "".join(json.dumps(x) + "\n" for x in lines))
+    arms = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]["arms"]
+    per_try = arms[_arm(HAIKU)]["cells"][SMALL]["per_try"]
+    assert (per_try["checks"], per_try["sweeps"], per_try["malformed"]) == (3, 1, 0)
+    assert [per_try[f"{k}_percent"] for k in ("build_failure", "mismatch", "match")] == [
+        "33.3"] * 3  # fmt: skip
+    assert "run" not in per_try
+    assert arms[_arm(HAIKU)]["cells"][TOTAL]["per_try"] == per_try
+    none = arms[_arm(SONNET)]["cells"][TOTAL]["per_try"]
+    assert none["checks"] == 0
+    assert [none[f"{k}_percent"] for k in ("build_failure", "mismatch", "match")] == [None] * 3
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    block = _block(capsys.readouterr().out)
+    haiku = block[block.index(next(x for x in block if x.startswith(f"  {_arm(HAIKU)}"))) + 1]
+    assert "per try (3 checks) build failure 33.3%, mismatch 33.3%, match 33.3%," in haiku
+    sonnet = next(x for x in block if x.startswith(f"  {_arm(SONNET)}"))
+    assert "per try no saved checks" in block[block.index(sonnet) + 4]
+
+
+def test_comparison_ratios_and_wall(tmp_path, capsys):
+    """exact per API-equivalent $, per wall hour and per million tokens, from the unrounded
+    figures; wall time from duration_ms, the record's seconds when it is null or absent (v2),
+    counted; a zero denominator gives null."""
+    from reverseapoc import backends
+
+    tokens = _tok(1_000_000, 0, 1_000_000)
+    held = _hk(0x10000, outcome="HOLD_EXACT", tokens=tokens, duration_ms=1_800_000)
+    timed_out = _on_v3(0x10100, run="spike012-sonnet", model_requested=SONNET, model=SONNET,
+                       hold_run=True, duration_ms=None, cost_source="estimate", seconds=90.0)
+    v2 = _on_v2(0x10200, run="spike012-sonnet-v2", model_requested=SONNET, seconds=45.0)
+    idle = _on_v3(0x10000, run="spike012-qwen-local", hold_run=True, tokens=_tok(),
+                  duration_ms=0, **LOCAL_ARM)  # fmt: skip
+    repo, log, config = _spike(tmp_path, held, timed_out, v2, idle)
+    arms = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]["arms"]
+    haiku = arms[_arm(HAIKU)]["cells"][TOTAL]
+    assert (haiku["exact_per_wall_hour"], haiku["exact_per_mtok"]) == ("2.00", "0.50")
+    api = _api(tokens, backends.load_arms()[HAIKU].list_price)
+    assert haiku["exact_per_api_usd"] == _usd(Decimal(1) / api)
+    assert haiku["wall_estimated_sessions"] == 0
+    sonnet = arms[_arm(SONNET)]["cells"][TOTAL]
+    assert (sonnet["wall_ms"], sonnet["wall_estimated_sessions"]) == (135_000, 2)
+    assert arms[_arm(SONNET)]["cells"][MIDDLE]["wall_ms"] == 90_000
+    local = arms[_arm("qwen3.6-35b-a3b", "local")]["cells"][TOTAL]
+    assert (local["api_usd"], local["paid_usd"]) == ("0.00", "0.00")
+    assert [local[k] for k in ("exact_per_api_usd", "exact_per_wall_hour", "exact_per_mtok")] == [
+        None] * 3  # fmt: skip
+
+
+def test_comparison_unknown_arm(tmp_path, capsys):
+    """An arm with no backends.toml entry has no list price: no API-equivalent and no real
+    paid figure, and the text says why."""
+    gemini = _on_v3(0x10000, run="spike012-gemini", backend="google", harness="agy",
+                    model_requested=GEMINI, model=GEMINI, hold_run=True)  # fmt: skip
+    repo, log, config = _spike(tmp_path, gemini)
+    row = _json(capsys, repo, log, "--run", "spike012-*",
+                config=config)["comparison"]["arms"][_arm(GEMINI, "google", "agy")]  # fmt: skip
+    assert (row["arm"], row["billing"]) == (None, None)
+    total = row["cells"][TOTAL]
+    assert (total["api_usd"], total["paid_usd"], total["exact_per_api_usd"]) == (None,) * 3
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    block = _block(capsys.readouterr().out)
+    assert block[1] == (f"  {_arm(GEMINI, 'google', 'agy')} (no backends.toml arm, no price): "
+                        "no list price, so no API-equivalent or real paid figure")  # fmt: skip
+    assert "API-equivalent n/a, real paid n/a," in block[2]
+
+
+def test_comparison_unknown_size(tmp_path, capsys):
+    """An attempted function functions.csv does not size adds an `unknown` column before
+    `total`; without one there is none."""
+    repo, log, config = _spike(tmp_path, _hk(0x10000), _hk(0x10300))
+    comparison = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]
+    assert comparison["columns"] == [SMALL, MIDDLE, LARGE, "unknown", TOTAL]
+    assert comparison["arms"][_arm(HAIKU)]["cells"]["unknown"]["attempted"] == 1
+    sized = _json(capsys, repo, _log(tmp_path, _hk(0x10000), name="sized.jsonl"), "--run",
+                  "spike012-*", config=config)["comparison"]  # fmt: skip
+    assert sized["columns"] == COLUMNS
+
+
+def test_comparison_only_with_run(tmp_path, capsys):
+    """The default report has no comparison (JSON null, no text line); a --run that selects
+    nothing has an empty one."""
+    repo, log, config = _spike(tmp_path, *_spike_records())
+    assert _json(capsys, repo, log, config=config)["comparison"] is None
+    assert _run(repo, log, config=config) == 0
+    assert "comparison per arm" not in capsys.readouterr().out
+    empty = _json(capsys, repo, log, "--run", "nonexistent-*", config=config)["comparison"]
+    assert (empty["columns"], empty["arms"]) == (COLUMNS, {})
+    assert _run(repo, log, "--run", "nonexistent-*", config=config) == 0
+    assert "comparison per arm: none" in capsys.readouterr().out.splitlines()
+
+
+def test_comparison_prices_a_subscription_arm_at_list_price(tmp_path, capsys):
+    """Task 2: a Codex session records cost 0 on ChatGPT Plus, but the comparison prices its
+    tokens at the arm's list price; real paid stays 0."""
+    from reverseapoc import backends
+
+    tokens = _tok(3_000_000, 400_000, 2_000_000, 0)
+    luna = _on_v3(0x10000, run="spike012-gpt-6-luna", backend="openai", harness="codex",
+                  model_requested="gpt-6-luna", model=None, cost_usd=0.0,
+                  cost_source="estimate", hold_run=True, outcome="HOLD_EXACT", tokens=tokens)
+    repo, log, config = _spike(tmp_path, luna)
+    key = _arm("gpt-6-luna", "openai", "codex")
+    row = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]["arms"][key]
+    expected = _usd(_api(tokens, backends.load_arms()["gpt-6-luna"].prices))
+    assert row["cells"][TOTAL]["api_usd"] == expected and Decimal(expected) > 0
+    assert row["cells"][TOTAL]["paid_usd"] == "0.00"
+    assert _run(repo, log, "--run", "spike012-*", config=config) == 0
+    assert f"  {key} (gpt-6-luna, subscription): {SUBSCRIPTION_WORDS}" in _block(
+        capsys.readouterr().out)  # fmt: skip
+
+
+def test_landing_credited_to_every_holder(tmp_path, capsys):
+    """Task 3: a MATCHED landing counts as matched for its own arm and for every arm with a
+    HOLD_EXACT attempt of the function among the selected records, never for an arm whose
+    attempt was not exact; the function still counts once. The default report leaves the hold
+    runs out, so there the landing is its own arm's only."""
+    luna_fields = {"backend": "openai", "harness": "codex", "model_requested": "gpt-6-luna",
+                   "model": None, "cost_source": "estimate", "cost_usd": 0.0}  # fmt: skip
+    records = (
+        _hk(0x10000, outcome="HOLD_EXACT"),
+        _on_v3(0x10000, run="spike012-gpt-6-luna", outcome="HOLD_EXACT", hold_run=True,
+               **luna_fields),
+        _on_v3(0x10000, run="spike012-sonnet", model_requested=SONNET, model=SONNET,
+               hold_run=True),
+        {**_landing(0x10000), "run": "spike012-land", "from_run": "spike012-haiku",
+         "model": HAIKU, "start": "0x00010000", "function": "func_00010000"},
+    )  # fmt: skip
+    repo, log, config = _spike(tmp_path, *records)
+    report = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    haiku, luna, sonnet = _arm(HAIKU), _arm("gpt-6-luna", "openai", "codex"), _arm(SONNET)
+    assert {arm: report["by_arm"][arm]["matched"] for arm in (haiku, luna, sonnet)} == {
+        haiku: 1, luna: 1, sonnet: 0}  # fmt: skip
+    for arm in (haiku, luna):
+        assert report["by_model_size"][arm]["[0, 64)"]["matched"] == 1, arm
+        assert report["comparison"]["arms"][arm]["cells"][TOTAL]["matched"] == 1, arm
+        assert report["comparison"]["arms"][arm]["cells"][SMALL]["exact"] == 1, arm
+    assert report["by_model_size"][sonnet]["[0, 64)"]["matched"] == 0
+    assert report["comparison"]["arms"][sonnet]["cells"][TOTAL]["matched"] == 0
+    assert report["per_match"]["matched_functions"] == 1
+    default = _json(capsys, repo, log, config=config)
+    assert {arm: row["matched"] for arm, row in default["by_arm"].items()} == {haiku: 1}
+
+
+def test_comparison_arm_table_error(tmp_path, capsys, monkeypatch):
+    """A broken backends.toml stops `stats --run` with exit 2 and the table's message."""
+    from reverseapoc import backends, stats
+
+    def broken(*_args, **_kwargs):
+        raise backends.ArmError("made-up table problem")
+
+    monkeypatch.setattr(stats.backends, "load_arms", broken)
+    repo, log, config = _spike(tmp_path, _hk(0x10000))
+    assert _run(repo, log, "--run", "x", config=config) == 2
+    err = capsys.readouterr().err
+    assert "reverseapoc stats: error:" in err and "made-up table problem" in err

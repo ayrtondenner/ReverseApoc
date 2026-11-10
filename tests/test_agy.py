@@ -114,16 +114,21 @@ def test_build_agy_argv(tmp_path):
 
 def test_agy_arms_load():
     """D-25, D-25a and RULINGS: the two Antigravity arms on the owner's AI Plus sign-in: no
-    endpoint, no key variable, their exact init id, free on the subscription, one worker,
-    sending the pack to Google (so --allow-egress)."""
+    endpoint, no key variable, their exact init id, a subscription arm, one worker, sending
+    the pack to Google (so --allow-egress). Quick 261110-f30: their prices are the public API
+    list prices, for the comparison only (gpt-oss has no cached price: cache_read as input)."""
+    from reverseapoc.streamjson import Price
+
     arms = backends.load_arms()
+    prices = {GEMINI: Price(0.75, 3.75, 0.075, 0.75), GPT_OSS: Price(0.04, 0.18, 0.04, 0.04)}
     for name, model, credit in ((GEMINI, GEMINI_MODEL, "Gemini 3.8 Flash <noreply@google.com>"),
                                 (GPT_OSS, GPT_OSS_MODEL, "gpt-oss-120b <noreply@openai.com>")):
         arm = arms[name]
         assert (arm.harness, arm.backend, arm.model) == ("agy", "google", model), name
         assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, (model,))
-        assert arm.prices == (0.0, 0.0, 0.0, 0.0) and arm.coauthor == credit
+        assert arm.prices == prices[name] and arm.coauthor == credit
         assert arm.max_workers == 1 and arm.egress
+        assert arm.billing == backends.SUBSCRIPTION
 
 
 def test_each_agy_arm_builds_a_valid_argv(tmp_path):

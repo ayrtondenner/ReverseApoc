@@ -18,19 +18,34 @@ data only, so CI can run it.
 Every git call passes `-c safe.directory=*` (ruling F13: the container's bind mount is owned by
 another user); a git failure is a StatsError, never an empty history. In a shallow clone the
 oldest listed commit's parent is missing, so its table is the baseline and gives no events.
+
+Quick 261110-f30 (spike 012, owner ruling 2026-11-10): `stats --run` adds the comparison table,
+one row per arm (`arm_key`) over every selected run and both EXEs, with driver.STRATA's three
+size groups and a total as columns (an `unknown` column only when a function has no
+functions.csv size). A cell holds the functions attempted and exact (held exact or matched),
+sessions, turns, wall time, tokens, the API-equivalent USD (the tokens at the arm's list price,
+backends.Arm.list_price), the real paid USD (0 on a subscription or free arm, the
+API-equivalent on a metered one, backends.Arm.billing), the per-try rates over the attempts'
+saved checks.jsonl (causes' rule) and exact per API-equivalent $, per wall hour and per million
+tokens. The recorded `cost_usd` is never read by it: it is 0 on every subscription arm. A
+MATCHED landing counts as matched for its own arm and for every arm that held the function
+exact among the selected records (`_holders`), in by_arm, by_model_size and the comparison; the
+function still counts once in the matched totals and per_match.
 """
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 
-from . import driver
+from . import backends, driver
 from .functions import FunctionsError, read_functions_csv
 from .mechanics import EXES, MEMBERS_CSV, MechanicsError, read_members
+from .streamjson import TOKENS_PER_MTOK
 
 CLASSES = ("unattended", "human-hints", "human-written")
 UNATTENDED, HUMAN_HINTS, HUMAN_WRITTEN = CLASSES
@@ -49,6 +64,18 @@ _TENTH = Decimal("0.1")
 SIZE_BUCKETS = ((0, 64), (64, 256), (256, 1024), (1024, None))
 UNKNOWN = "unknown"  # the size bucket of a function functions.csv does not hold
 NO_TIER = "none"  # the tier of a matched function the members file does not hold
+TOTAL = "total"  # the comparison's column over every size (quick 261110-f30)
+_MS_PER_SECOND = 1000
+_MS_PER_MINUTE = 60 * _MS_PER_SECOND
+_MS_PER_HOUR = 60 * _MS_PER_MINUTE
+_PER_TRY = (("build_failure", "build failure"), ("mismatch", "mismatch"), ("match", "match"))
+_PAID_WORDS = {
+    backends.SUBSCRIPTION: "real paid $0.00: a subscription arm (the Claude Code login, ChatGPT "
+                           "Plus or Google AI Plus) pays no per-token price",
+    backends.FREE: "real paid $0.00: a local arm pays nothing",
+    backends.METERED: "real paid: its tokens at its list price (a metered arm)",
+}  # fmt: skip
+_NO_PRICE = "no list price, so no API-equivalent or real paid figure"
 
 Key = tuple[str, int]  # (exe, start)
 
@@ -387,13 +414,35 @@ def arm_key(record: Mapping) -> str:
     return f"{backend}/{record.get('harness', driver.HARNESSES[0])}/{model}"
 
 
+def _holders(matching: Sequence[Mapping]) -> dict[Key, set[str]]:
+    """Quick 261110-f30: the arm (`arm_key`) of every HOLD_EXACT attempt, per function."""
+    out: dict[Key, set[str]] = {}
+    for r in matching:
+        if r["outcome"] == driver.HOLD_EXACT:
+            out.setdefault(_key(r), set()).add(arm_key(r))
+    return out
+
+
+def _landing_arms(landing: Mapping, holders: Mapping[Key, set[str]]) -> set[str]:
+    """The arms a MATCHED landing is credited to (owner ruling 2026-11-10): its own and every
+    arm that held the function exact among the selected records, as the commit credits them
+    (`drive --land-held`)."""
+    return {arm_key(landing), *holders.get(_key(landing), set())}
+
+
 def _matched_by_arm(matching: Sequence[Mapping], landed: Sequence[Mapping]) -> dict[str, set]:
     """The functions each arm matched: its MATCHED attempts and the MATCHED landings credited
-    to it."""
+    to it (quick 261110-f30: to the landing's arm and to every holder, `_landing_arms`)."""
     out: dict[str, set[Key]] = {}
-    for r in [*matching, *landed]:
+    for r in matching:
         if r["outcome"] == driver.MATCHED:
             out.setdefault(arm_key(r), set()).add(_key(r))
+    holders = _holders(matching)
+    for r in landed:
+        if r["outcome"] != driver.MATCHED:
+            continue
+        for arm in _landing_arms(r, holders):
+            out.setdefault(arm, set()).add(_key(r))
     return out
 
 
@@ -421,7 +470,8 @@ def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
     """Phase 07.2 D-16: per requested model (v2 and v3 records) and size bucket, the distinct
     functions attempted, matched (a MATCHED attempt, or a MATCHED landing credited to that
     model) and held exact (a HOLD_EXACT attempt); only the buckets that occur, smallest
-    first. D-22: the rows are arms (`arm_key`), so one model on two backends is two rows."""
+    first. D-22: the rows are arms (`arm_key`), so one model on two backends is two rows.
+    Quick 261110-f30: a MATCHED landing is matched for every arm `_landing_arms` names."""
     cells: dict[str, dict[str, dict[str, set[Key]]]] = {}
 
     def add(arm: str, key: Key, count: str) -> None:
@@ -436,12 +486,131 @@ def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
         if r["outcome"] in (driver.MATCHED, driver.HOLD_EXACT):
             add(arm_key(r), _key(r),
                 "matched" if r["outcome"] == driver.MATCHED else "hold_exact")  # fmt: skip
+    holders = _holders(matching)
     for r in landed:
-        if r["outcome"] == driver.MATCHED:
-            add(arm_key(r), _key(r), "matched")
+        if r["outcome"] != driver.MATCHED:
+            continue
+        for arm in _landing_arms(r, holders):
+            add(arm, _key(r), "matched")
     return {model: {label: {c: len(buckets[label][c]) for c in _MODEL_SIZE_COUNTS}
                     for label in sorted(buckets, key=_LABEL_ORDER.index)}
             for model, buckets in sorted(cells.items())}  # fmt: skip
+
+
+# ---- quick 261110-f30 (spike 012): the comparison table of `stats --run` ----
+
+
+def _stratum(key: Key, sizes: Mapping[Key, int]) -> str:
+    """The driver.STRATA_NAMES group [low, high) holding the function's size (high None: no
+    bound), UNKNOWN when functions.csv does not size it."""
+    if key not in sizes:
+        return UNKNOWN
+    for name, (low, high) in zip(driver.STRATA_NAMES, driver.STRATA, strict=True):
+        if low <= sizes[key] and (high is None or sizes[key] < high):
+            return name
+    raise StatsError(f"a function size of {sizes[key]} bytes is in no size group")
+
+
+def _in(column: str, key: Key, sizes: Mapping[Key, int]) -> bool:
+    return column == TOTAL or _stratum(key, sizes) == column
+
+
+def _wall_ms(record: Mapping) -> tuple[int, bool]:
+    """The session's wall time in ms and whether it is estimated: `duration_ms`, or the
+    record's `seconds` when that is null (a timeout) or absent (v1, v2)."""
+    ms = record.get("duration_ms")
+    if ms is None:
+        return int(round(_dec(record["seconds"]) * _MS_PER_SECOND)), True
+    return ms, False
+
+
+def _attempt_dir(repo: Path | None, record: Mapping) -> Path | None:
+    """<repo>/build/driver/<run>/<exe>/<function>/attempt-<n>; None without a repo or for a
+    run of "." or ".." (flags._run_dirs' rule). The fields passed driver.validate_record."""
+    if repo is None or record["run"] in (".", ".."):
+        return None
+    return (Path(repo) / driver.DRIVER_DIR / record["run"] / record["exe"] / record["function"]
+            / f"attempt-{record['attempt']}")  # fmt: skip
+
+
+def _per_try(records: Sequence[Mapping], repo: Path | None, column: str) -> dict:
+    """causes' per-try counters and rates over the records' saved checks.jsonl."""
+    from . import causes  # causes imports this module
+
+    counts: Counter[str] = Counter()
+    for record in records:
+        directory = _attempt_dir(repo, record)
+        if directory is not None:
+            counts.update(causes.attempt_counts(directory))
+    doc = causes.Tally(column, **counts).to_json()
+    del doc["run"]
+    return doc
+
+
+def _ratio(exact: int, denominator: Decimal | None) -> str | None:
+    """exact / denominator to 2 decimals; None when the denominator is None or 0."""
+    return money(Decimal(exact) / denominator) if denominator else None
+
+
+def _paid(api: Decimal | None, arm: backends.Arm | None) -> str | None:
+    """What the arm really pays: nothing on a subscription or free arm, its API-equivalent on
+    a metered one; None without a price."""
+    if api is None or arm is None:
+        return None
+    return money(api if arm.billing == backends.METERED else Decimal(0))
+
+
+def _cell(records: Sequence[Mapping], matched: set[Key], arm: backends.Arm | None,
+          repo: Path | None, column: str) -> dict:  # fmt: skip
+    """One arm's figures over `records` (its attempts in the column) and `matched` (the
+    functions `_matched_by_arm` credits it with, in the column)."""
+    sums = _sums(records)
+    held = {_key(r) for r in records if r["outcome"] == driver.HOLD_EXACT}
+    walls = [_wall_ms(r) for r in records]
+    wall = sum(ms for ms, _ in walls)
+    price = arm.list_price if arm is not None else None
+    api = None if price is None else sum(
+        (backends.token_cost(r["tokens"], price) for r in records), Decimal(0))  # fmt: skip
+    exact = len(held | matched)
+    return {"attempted": len({_key(r) for r in records}), "exact": exact,
+            "hold_exact": len(held), "matched": len(matched), "sessions": len(records),
+            "turns": sums["turns"], "tokens": sums["tokens"], "wall_ms": wall,
+            "wall_estimated_sessions": sum(estimated for _, estimated in walls),
+            "api_usd": None if api is None else money(api), "paid_usd": _paid(api, arm),
+            "per_try": _per_try(records, repo, column),
+            "exact_per_api_usd": _ratio(exact, api),
+            "exact_per_wall_hour": _ratio(exact, Decimal(wall) / _MS_PER_HOUR),
+            "exact_per_mtok": _ratio(exact, Decimal(sum(sums["tokens"].values()))
+                                     / TOKENS_PER_MTOK)}  # fmt: skip
+
+
+def _row(records: Sequence[Mapping], matched: set[Key], arm: backends.Arm | None,
+         columns: Sequence[str], sizes: Mapping[Key, int], repo: Path | None) -> dict:  # fmt: skip
+    cells = {column: _cell([r for r in records if _in(column, _key(r), sizes)],
+                           {k for k in matched if _in(column, k, sizes)}, arm, repo, column)
+             for column in columns}  # fmt: skip
+    return {"arm": arm.name if arm is not None else None,
+            "billing": arm.billing if arm is not None else None, "cells": cells}  # fmt: skip
+
+
+def _comparison(matching: Sequence[Mapping], landed: Sequence[Mapping], sizes: Mapping[Key, int],
+                arms: Mapping[str, backends.Arm], repo: Path | None) -> dict:  # fmt: skip
+    """Spike 012's table: one row per arm (`arm_key`, sorted) of the matching attempts and the
+    arms `_matched_by_arm` credits; each row's arm, list price and billing come from the arm
+    table (backends.record_arm), never from a recorded cost."""
+    groups: dict[str, list[Mapping]] = {}
+    for r in matching:
+        groups.setdefault(arm_key(r), []).append(r)
+    matched = _matched_by_arm(matching, landed)
+    sample = {}
+    for r in [*matching, *landed]:
+        sample.setdefault(arm_key(r), r)
+    used = {_stratum(k, sizes) for k in {*map(_key, matching), *set().union(*matched.values())}}
+    columns = [*driver.STRATA_NAMES, *([UNKNOWN] if UNKNOWN in used else []), TOTAL]
+    rows = {name: _row(groups.get(name, []), matched.get(name, set()),
+                       backends.record_arm(sample[name], arms), columns, sizes, repo)
+            for name in sorted({*groups, *matched})}  # fmt: skip
+    return {"columns": columns, "arms": rows}
 
 
 def run_selected(run_id: str, names: Sequence[str]) -> bool:
@@ -461,10 +630,14 @@ def _selected(record: Mapping, runs: Sequence[str]) -> bool:
 
 
 def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, int],
-                 tiers: Mapping[Key, int] | None, *, own: bool = False) -> Report:  # fmt: skip
+                 tiers: Mapping[Key, int] | None, *, own: bool = False,
+                 arms: Mapping[str, backends.Arm] | None = None,
+                 repo: Path | None = None) -> Report:  # fmt: skip
     """The DEC-07 report of validated `records` and a match history. `own` (`stats --run`): a
     function is matched by the records' own logged matches only, not by the git history of
-    other runs; the class lines still come from git."""
+    other runs; the class lines still come from git. `arms` (quick 261110-f30, `stats --run`):
+    the arm table the comparison prices by, None for no comparison; `repo` holds the attempts'
+    saved checks (None: no saved evidence)."""
     attempts = [r for r in records if r["kind"] == driver.KIND_ATTEMPT]
     v1 = [r for r in attempts if "schema" not in r]
     v2 = [r for r in attempts if "schema" in r]  # v2 and v3 alike: both carry model_requested
@@ -507,6 +680,7 @@ def build_report(records: Sequence[Mapping], hist: History, sizes: Mapping[Key, 
         "by_arm": _by_arm(matching, landed),
         "by_session": _split(v2, "session", len(v1)),
         "by_tier": _by_tier(counted, tiers),
+        "comparison": None if arms is None else _comparison(matching, landed, sizes, arms, repo),
     }  # fmt: skip
     return Report(data)
 
@@ -586,6 +760,52 @@ def _model_size_lines(by_model_size: Mapping) -> list[str]:
         for model, buckets in by_model_size.items()]  # fmt: skip
 
 
+def _shown(value: str | None, unit: str = "") -> str:
+    """A comparison figure as text: `n/a` (no unit sign) for None."""
+    return "n/a" if value is None else f"{unit}{value}"
+
+
+def _per_try_text(per_try: Mapping) -> str:
+    if not per_try["checks"]:
+        return "no saved checks"
+    return f"({per_try['checks']} checks) " + ", ".join(
+        f"{label} {per_try[f'{name}_percent']}%" for name, label in _PER_TRY)  # fmt: skip
+
+
+def _column_line(column: str, c: Mapping) -> str:
+    tokens = ", ".join(f"{k} {c['tokens'][k]}" for k in _TOKENS)
+    return (f"    {column}: attempted {c['attempted']}, exact {c['exact']} (hold exact "
+            f"{c['hold_exact']}, matched {c['matched']}), sessions {c['sessions']}, turns "
+            f"{c['turns']}, wall {tenth(Decimal(c['wall_ms']) / _MS_PER_MINUTE)} min, tokens "
+            f"{tokens}, API-equivalent {_shown(c['api_usd'], '$')}, real paid "
+            f"{_shown(c['paid_usd'], '$')}, per try {_per_try_text(c['per_try'])}, exact per "
+            f"API-equivalent $ {_shown(c['exact_per_api_usd'])}, per wall hour "
+            f"{_shown(c['exact_per_wall_hour'])}, per million tokens "
+            f"{_shown(c['exact_per_mtok'])}")  # fmt: skip
+
+
+def _head_line(key: str, row: Mapping) -> str:
+    """The arm's name and billing, and its real-paid case in words."""
+    priced = row["cells"][TOTAL]["api_usd"] is not None
+    words = _PAID_WORDS[row["billing"]] if priced else _NO_PRICE
+    return (f"  {key} ({row['arm'] or 'no backends.toml arm'}, "
+            f"{row['billing'] if priced else 'no price'}): {words}")  # fmt: skip
+
+
+def _comparison_lines(comparison: Mapping | None) -> list[str]:
+    """Quick 261110-f30: the comparison per arm, only with `--run`."""
+    if comparison is None:
+        return []
+    if not comparison["arms"]:
+        return ["comparison per arm: none"]
+    lines = [f"comparison per arm (columns: {', '.join(comparison['columns'])}; "
+             "API-equivalent: tokens at the arm's list price):"]  # fmt: skip
+    for key, row in comparison["arms"].items():
+        lines.append(_head_line(key, row))
+        lines += [_column_line(column, cell) for column, cell in row["cells"].items()]
+    return lines
+
+
 def _tier_lines(by_tier: Mapping | None) -> list[str]:
     if by_tier is None:
         return [f"per tier: no {MEMBERS_CSV}"]
@@ -615,6 +835,7 @@ class Report:
             *_split_lines("per model", d["by_model"], d["by_model"]["models"]),
             *_arm_lines(d["by_arm"]),
             *_model_size_lines(d["by_model_size"]),
+            *_comparison_lines(d["comparison"]),
             *_split_lines("per session kind", d["by_session"], d["by_session"]["kinds"]),
             *_tier_lines(d["by_tier"]),
         ])  # fmt: skip
@@ -624,11 +845,18 @@ def collect(repo: Path, log: Path, config: Path, *, runs: Sequence[str] | None =
     """The report of `log`, `repo`'s history and `config`'s sizes and tiers. `runs` (`stats
     --run`, D-16, D-22): only the records of those runs (run_selected), matched by their own
     logged matches. 07.2-06 (D-17): without `runs`, a hold run's attempt records are left out
-    (a spike's arms are read through `--run`); a landing from one is still a logged match."""
+    (a spike's arms are read through `--run`); a landing from one is still a logged match.
+    Quick 261110-f30 (spike 012, owner ruling 2026-11-10): with `runs`, the report adds the
+    comparison per arm, priced by backends.toml (an unreadable table is a StatsError) and with
+    the per-try rates of <repo>/build/driver; without `runs`, `comparison` is null."""
     records = read_attempts(log)
-    if runs is not None:
-        records = [r for r in records if _selected(r, runs)]
-    else:
+    if runs is None:
         records = [r for r in records if r.get("hold_run") is not True]
+        return build_report(records, history(repo), read_sizes(config), read_tiers(config))
+    records = [r for r in records if _selected(r, runs)]
+    try:
+        arms = backends.load_arms()
+    except backends.ArmError as exc:
+        raise StatsError(f"the arm table: {exc}") from None
     return build_report(records, history(repo), read_sizes(config), read_tiers(config),
-                        own=runs is not None)  # fmt: skip
+                        own=True, arms=arms, repo=Path(repo))  # fmt: skip

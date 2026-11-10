@@ -311,11 +311,15 @@ def test_hosted_arms_load(name, backend, url, key_env, model):
 
 
 def test_every_hosted_cache_price_is_at_least_the_input_price():
-    """Until the owner records the providers' cache prices, both cache classes are priced as
-    input, so an estimate may overstate and never understate."""
+    """Until the owner records the providers' cache prices, a metered arm prices both cache
+    classes as input, so an estimate may overstate and never understate. Quick 261110-f30: a
+    subscription arm's prices are public list prices with their published cache-read price,
+    and only its unrecorded cache_creation class is priced as input."""
     for arm in _arms().values():
         if arm.egress:
-            assert arm.prices.cache_read == arm.prices.input == arm.prices.cache_creation, arm.name
+            assert arm.prices.cache_creation == arm.prices.input, arm.name
+        if arm.billing == backends.METERED:
+            assert arm.prices.cache_read == arm.prices.input, arm.name
 
 
 def test_estimate_cost():
@@ -341,6 +345,7 @@ def test_local_arm():
     assert arm.sends_disassembly is False and not arm.egress
     assert arm.max_workers == 1 and arm.prices == (0.0, 0.0, 0.0, 0.0)
     assert arm.accepted_init == ("qwen3.6-35b-a3b",) and arm.coauthor
+    assert arm.billing == backends.FREE
 
 
 def test_claude_arms_take_a_night_of_ten_workers():
@@ -412,15 +417,53 @@ CODEX_ARMS = {"gpt-6-luna": "GPT-6 Luna <noreply@openai.com>",
 
 def test_codex_arms_load():
     """GPT-6 Luna and GPT-6.1 Sol run through the Codex CLI on the owner's ChatGPT login: no
-    endpoint, no key variable, no init ids (Codex streams no init event), free on Plus (counted
-    in tokens), one worker, sending the pack to OpenAI (so --allow-egress)."""
+    endpoint, no key variable, no init ids (Codex streams no init event), a subscription arm
+    (counted in tokens), one worker, sending the pack to OpenAI (so --allow-egress). Quick
+    261110-f30: their prices are the public API list prices (input, output, cache_read,
+    cache_creation; cache_creation priced as input), for the comparison only."""
+    from reverseapoc.streamjson import Price
+
     arms = _arms()
+    prices = {"gpt-6-luna": Price(0.10, 0.50, 0.01, 0.10),
+              "gpt-6.1-sol": Price(2.00, 10.00, 0.10, 2.00)}  # fmt: skip
     for name, credit in CODEX_ARMS.items():
         arm = arms[name]
         assert (arm.harness, arm.backend, arm.model) == ("codex", "openai", name)
         assert (arm.base_url, arm.key_env, arm.accepted_init) == (None, None, ())
-        assert arm.prices == (0.0, 0.0, 0.0, 0.0) and arm.coauthor == credit
+        assert arm.prices == prices[name] and arm.coauthor == credit
         assert arm.max_workers == 1 and arm.egress
+        assert arm.billing == backends.SUBSCRIPTION
+
+
+LIST_PRICED = ("gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss",
+               "gemini-3.8-flash-openrouter")  # fmt: skip
+
+
+def _price_comment(text: str, name: str) -> str:
+    """The comment lines right above `[arms."<name>".prices]`."""
+    head = text[:text.index(f'[arms."{name}".prices]')].rstrip("\n").splitlines()
+    lines = []
+    for line in reversed(head):
+        if not line.startswith("#"):
+            break
+        lines.insert(0, line)
+    return " ".join(line.lstrip("# ") for line in lines)
+
+
+def test_list_prices_are_marked_confirm_at_setup():
+    """Quick 261110-f30: each list price read from third-party trackers names its source and
+    date and is marked for the owner to confirm at setup; Gemini's notes its introductory
+    price; gpt-oss notes that trackers disagree."""
+    text = backends.ARMS_TOML.read_text(encoding="utf-8")
+    for name in LIST_PRICED:
+        comment = _price_comment(text, name)
+        assert "confirm at setup" in comment and "2026-11-10" in comment, name
+        assert "price trackers" in comment, name
+    assert "272K" in _price_comment(text, "gpt-6.1-sol")
+    for name in ("gemini-flash", "gemini-3.8-flash-openrouter"):
+        assert "introductory" in _price_comment(text, name), name
+        assert "2026-12-31" in _price_comment(text, name), name
+    assert "disagree" in _price_comment(text, "gpt-oss")
 
 
 _CODEX_TOML = """\
@@ -461,7 +504,8 @@ def test_gemini_openrouter_fallback_arm_loads():
         "claude", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
         "google/gemini-3.8-flash")  # fmt: skip
     assert arm.egress and arm.accepted_init == ("google/gemini-3.8-flash",)
-    assert arm.prices.input > 0 and arm.prices.output > 0
+    # quick 261110-f30: OpenRouter's listed price (the agy arm's), cache priced as input
+    assert arm.prices == (0.75, 3.75, 0.75, 0.75) and arm.billing == backends.METERED
     assert arm.coauthor == "Gemini 3.8 Flash <noreply@google.com>"
     assert not [name for name in _arms() if "gemini-4" in name or name.endswith("pro")]
 
@@ -502,3 +546,68 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
     text = backends.ARMS_TOML.read_text(encoding="utf-8")
     comment = text[:text.index('[arms."gemini-flash"]')].rsplit("\n\n", 1)[-1]
     assert "max_sessions" in comment and "canary" in comment and "quota" in comment
+
+
+# ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
+
+SUBSCRIBED = (*CLAUDE_ARMS, "gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss")
+METERED_ARMS = ("deepseek-flash", "glm-5.3", "muse-spark-open", "gemini-3.8-flash-openrouter",
+                "qwen-hosted")  # fmt: skip
+
+
+def test_billing_comes_from_the_base_url():
+    """No base_url: a CLI's own sign-in (subscription); a loopback one: the local server
+    (free); any other: paid per token (metered). backends.toml has no billing field."""
+    arms = _arms()
+    assert backends.BILLINGS == ("subscription", "metered", "free")
+    assert {name: arms[name].billing for name in SUBSCRIBED} == dict.fromkeys(
+        SUBSCRIBED, backends.SUBSCRIPTION)  # fmt: skip
+    assert {name: arms[name].billing for name in METERED_ARMS} == dict.fromkeys(
+        METERED_ARMS, backends.METERED)  # fmt: skip
+    assert arms[LOCAL].billing == backends.FREE
+    assert set(arms) == {*SUBSCRIBED, *METERED_ARMS, LOCAL}
+
+
+def test_list_price():
+    """A Claude arm's list price is streamjson's table (RULINGS "Harness"); a hosted arm's is
+    its backends.toml prices."""
+    from reverseapoc.streamjson import PRICES_PER_MTOK
+
+    arms = _arms()
+    for name in CLAUDE_ARMS:
+        assert arms[name].list_price == PRICES_PER_MTOK[name], name
+    assert arms[DEEPSEEK].list_price == arms[DEEPSEEK].prices
+
+
+def _v3(**change) -> dict:
+    record = {"schema": 3, "model": "claude-haiku-5-5", "model_requested": "claude-haiku-5-5",
+              "backend": "anthropic", "harness": "claude"}  # fmt: skip
+    record.update(change)
+    return record
+
+
+def test_record_arm():
+    """The record's (backend, harness, requested model); v1 and v2 records default to the
+    Claude Code login, as stats.arm_key does, and a landing names its model."""
+    arms = _arms()
+    haiku = arms["claude-haiku-5-5"]
+    assert backends.record_arm({"model": "claude-haiku-5-5"}, arms) is haiku  # v1
+    assert backends.record_arm({"schema": 2, "model": None,
+                                "model_requested": "claude-haiku-5-5"}, arms) is haiku  # fmt: skip
+    assert backends.record_arm(_v3(), arms) is haiku
+    luna = _v3(backend="openai", harness="codex", model_requested="gpt-6-luna", model=None)
+    assert backends.record_arm(luna, arms) is arms["gpt-6-luna"]
+    landing = {"kind": "landing", "model": DEEPSEEK, "backend": "deepseek", "harness": "claude"}
+    assert backends.record_arm(landing, arms) is arms[DEEPSEEK]
+    gemini = _v3(backend="google", harness="agy", model_requested="gemini-3.8-flash")
+    assert backends.record_arm(gemini, arms) is None
+
+
+def test_token_cost_is_exact():
+    from decimal import Decimal
+
+    from reverseapoc.streamjson import Price
+
+    tokens = {"input": 1_000_000, "output": 100_000, "cache_read": 2_000_000, "cache_creation": 0}
+    cost = backends.token_cost(tokens, Price(0.10, 0.50, 0.01, 0.20))
+    assert cost == Decimal("0.17") and isinstance(cost, Decimal)

@@ -44,6 +44,14 @@ key variable, before the arm's own endpoint, token and pins are set. The Claude 
 token (CLAUDE_CODE_OAUTH_TOKEN) reaches only an Anthropic-login session. The env stays a
 strip list, not an allow list: what Claude Code, git, uv, Docker and the wrapper need from a
 Windows environment cannot be proven offline.
+
+Quick 261110-f30 (spike 012, owner ruling 2026-11-10): `Arm.list_price` is an arm's public API
+list price, its backends.toml `prices` or, for a Claude arm, streamjson.PRICES_PER_MTOK (RULINGS
+"Harness"). `Arm.billing` is derived from `base_url` alone (subscription, metered or free), so
+the table has no billing field. `record_arm` finds the arm of an attempt or landing record and
+`token_cost` prices its tokens exactly: the API-equivalent figure of `stats --run`'s comparison
+table and the ranking of `drive --land-held`. A record's `cost_usd` stays what the arm really
+pays.
 """
 
 from __future__ import annotations
@@ -53,11 +61,12 @@ import re
 import tomllib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from urllib.parse import urlsplit
 
 from .hooks import EGRESS_ENV
-from .streamjson import _COST_DIGITS, TOKENS_PER_MTOK, Price, Usage
+from .streamjson import _COST_DIGITS, PRICES_PER_MTOK, TOKENS_PER_MTOK, Price, Usage
 from .targets import REPO_ROOT
 
 ARMS_TOML = REPO_ROOT / "config" / "driver" / "backends.toml"
@@ -67,6 +76,9 @@ ANTHROPIC = "anthropic"  # the backend of the Claude Code login (no base URL, no
 # server), non-empty so Claude Code never falls back to the claude.ai login; loopback only.
 LOOPBACK_TOKEN = "local"
 BACKEND_RE = re.compile(r"[a-z][a-z0-9-]{0,31}")  # a record's `backend` (RULINGS "Schema 3")
+# quick 261110-f30: how an arm pays, derived from its base_url (Arm.billing)
+BILLINGS = ("subscription", "metered", "free")
+SUBSCRIPTION, METERED, FREE = BILLINGS
 
 BASE_URL_ENV = "ANTHROPIC_BASE_URL"
 AUTH_TOKEN_ENV = "ANTHROPIC_AUTH_TOKEN"
@@ -124,6 +136,22 @@ class Arm:
     def egress(self) -> bool:
         """The arm sends the context pack to a backend other than Anthropic (D-11)."""
         return self.sends_disassembly and self.backend != ANTHROPIC
+
+    @property
+    def billing(self) -> str:
+        """How the arm pays (quick 261110-f30), from `base_url` alone, so backends.toml needs
+        no billing field: none is a CLI's own sign-in (the Claude Code login, Codex on ChatGPT
+        Plus, agy on Google AI Plus), SUBSCRIPTION; a loopback one is the local llama-server,
+        FREE; any other is paid per token with the arm's key, METERED."""
+        if self.base_url is None:
+            return SUBSCRIPTION
+        return FREE if _loopback(self.base_url) else METERED
+
+    @property
+    def list_price(self) -> Price | None:
+        """The arm's public API list price (USD per MTok): its backends.toml `prices`, or for a
+        Claude arm streamjson.PRICES_PER_MTOK (RULINGS "Harness"); None when neither has one."""
+        return self.prices if self.prices is not None else PRICES_PER_MTOK.get(self.model)
 
 
 def _text(table: Mapping, key: str, pattern: re.Pattern) -> str:
@@ -327,6 +355,25 @@ def estimate_cost(usage: Usage, arm: Arm) -> float:
               usage.cache_creation_tokens)  # fmt: skip
     total = sum(n * p for n, p in zip(counts, arm.prices, strict=True)) / TOKENS_PER_MTOK
     return round(total, _COST_DIGITS)
+
+
+def record_arm(record: Mapping, arms: Mapping[str, Arm]) -> Arm | None:
+    """Quick 261110-f30: the first arm whose (backend, harness, model) is the record's: its
+    `backend` (default ANTHROPIC), `harness` (default CLAUDE) and `model_requested`, else its
+    `model` (a v1 record's init model, a landing's requested one), as stats.arm_key reads
+    them; None when no arm matches."""
+    model = record.get("model_requested", record.get("model"))
+    key = (record.get("backend", ANTHROPIC), record.get("harness", CLAUDE), model)
+    return next((arm for arm in arms.values() if (arm.backend, arm.harness, arm.model) == key),
+                None)  # fmt: skip
+
+
+def token_cost(tokens: Mapping[str, int], price: Price) -> Decimal:
+    """Quick 261110-f30: a record's `tokens` at `price` per million tokens, exactly (the
+    API-equivalent figure; never rounded here, unlike `estimate_cost`)."""
+    total = sum((Decimal(tokens[name]) * Decimal(str(getattr(price, name)))
+                 for name in _PRICE_FIELDS), Decimal(0))  # fmt: skip
+    return total / TOKENS_PER_MTOK
 
 
 def refuse_stray_egress(allow_egress: Sequence[str], night: Sequence[Arm]) -> None:
