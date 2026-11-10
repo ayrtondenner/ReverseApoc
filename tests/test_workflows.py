@@ -279,7 +279,8 @@ PR_NUMBER = "${{ github.event.pull_request.number || inputs.pr }}"
 MATCH_ENV = ("PR_NUMBER: " + PR_NUMBER, "BASE_SHA: ${{ github.sha }}",
              "LABELED_HEAD: ${{ github.event.pull_request.head.sha }}",
              "IMAGE: reverseapoc-build:local", "VENV_VOLUME: reverseapoc-match-venv")  # fmt: skip
-PATHS_STEP = "List the changed paths; refuse any outside the src units, symbols.csv and Markdown"
+PATHS_STEP = ("List the changed paths; refuse any outside the src units, symbols.csv, docs/ and "
+              "README.md")  # fmt: skip
 UNITS_STEP = "Refuse a new, removed or linked unit"
 PIN_STEP = "Refuse a head that moved after the label"
 COMPILE_STEP = "Compile each touched unit at base and at head, then compare"
@@ -437,8 +438,9 @@ def test_match_compiles_in_the_image_offline():
 def test_match_refuses_other_paths():
     """D-08, T-07.2-21: the paths the pull request changed since its merge base with main may be
     src/<exe>/<unit>.c units, the two symbols.csv files (a rename's new names, read as data) and
-    Markdown; anything else (cflags, tools, config, headers, workflows) fails the job and goes to
-    the owner."""
+    the Markdown of docs/ and the root README.md; anything else (cflags, tools, config, headers,
+    workflows, and 07.2 review WR-07: CLAUDE.md, .claude/ rules and skills, any Markdown a
+    session reads as instructions) fails the job and goes to the owner."""
     run = script(match_step(PATHS_STEP))
     assert run[0] == "set -euo pipefail"
     # main's commit reaches head/'s repository from the local checkout, not over the network.
@@ -449,18 +451,26 @@ def test_match_refuses_other_paths():
             '> "$RUNNER_TEMP/changed.txt"')  # fmt: skip
     assert diff in run
     case = run[run.index('case "$path" in') + 1:run.index("esac")]
-    assert case == ["*.md) continue ;;",
+    assert case == ["docs/*.md|README.md) continue ;;",
                     "config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;"]  # fmt: skip
+    assert not any(line.startswith("*.md)") for line in run)
     assert f"if printf '%s\\n' \"$path\" | grep -Eq {UNIT_PATTERN}; then" in run
     assert "refused=1" in run and run[-1] == '[ "$refused" -eq 0 ]'
 
 
 def test_match_refuses_new_removed_and_linked_units():
     """A new unit is a new match (the owner's gate, D-08); a removed one cannot be compared; a
-    symbolic link is never followed."""
+    symbolic link is never followed. 07.2 review WR-07: a pull request with no src unit to
+    compare (only symbols.csv, only docs) fails, naming that nothing was compared, so a green
+    result always means a compared unit."""
     run = script(match_step(UNITS_STEP))
     pick = f'grep -E {UNIT_PATTERN} "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true'
     assert pick in run
+    empty = 'if [ ! -s "$RUNNER_TEMP/units.txt" ]; then'
+    assert run[run.index(pick) + 1] == empty
+    assert run[run.index(empty) + 1] == ('echo "::error::no src unit changed, so nothing was '
+                                         'compared: the owner checks this pull request"')
+    assert run[run.index(empty) + 2] == "exit 1"
     assert 'if [ ! -f "$unit" ] || [ -L "$unit" ]; then' in run
     assert 'if [ ! -f "head/$unit" ] || [ -L "head/$unit" ]; then' in run
-    assert run.count("exit 1") == 2
+    assert run.count("exit 1") == 3
