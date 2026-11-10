@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import fnmatch
 import io
 import itertools
 import json
@@ -1086,21 +1087,95 @@ def _secret(rel: str) -> bool:
     return any(part.startswith(_SECRET_PREFIX) for part in rel.split("/"))
 
 
-def _egress_problem(rels: Sequence[str], tool_input: Mapping, tool: str) -> str:
-    """07.2-12 (D-10): why an egress session's read names orig/ or third_party/, or ''. The path
-    is judged in every form; a Glob pattern or Grep glob, as written and in every brace
-    expansion, when any of its parts is one of those directories (casefolded, as NTFS opens
-    it). A recursive Grep or Glob from a parent directory with no such pattern is not judged
-    here: both tools skip gitignored trees by default, and both directories are gitignored."""
-    if any(_under(rel, name) for rel in rels for name in _EGRESS_DENIED):
+def _segments(text: str) -> list[str]:
+    return [part.casefold() for part in text.replace("\\", "/").split("/") if part not in ("", ".")]
+
+
+def _fits(name: str, segment: str) -> bool:
+    """Whether a path segment `segment` (a glob segment or a plain name) can match `name`."""
+    return fnmatch.fnmatchcase(name, segment)
+
+
+def _wild(segment: str) -> bool:
+    return any(char in segment for char in "*?[")
+
+
+_WORKTREE_LEAD = (".claude", "worktrees", "*")  # the segments before a worktree's checkout
+
+
+def _leads_to_worktree(segs: Sequence[str]) -> bool:
+    """Whether `segs` (at most three) can be the start of `.claude/worktrees/<name>`: each one
+    fits its place, or is a glob that can match it."""
+    return len(segs) <= len(_WORKTREE_LEAD) and all(
+        _fits(s, want) or _fits(want, s) for want, s in zip(_WORKTREE_LEAD, segs, strict=False))
+
+
+def _root_positions(segs: Sequence[str]) -> set[int]:
+    """The indexes where a checkout root's top level can sit in `segs`: 0 (the session's own),
+    and 3 when the first two can be `.claude/worktrees` (a worktree's checkout)."""
+    roots = {0}
+    if len(segs) > 2 and _fits(".claude", segs[0]) and _fits("worktrees", segs[1]):
+        roots.add(3)
+    return roots
+
+
+def _reaches_egress_dir(segs: Sequence[str]) -> bool:
+    """07.2-12 (D-10, the security review): whether a path or glob of these repo-relative
+    segments can name or enter orig/ or third_party/ of this checkout or of a worktree in it.
+    A plain segment naming either directory at any depth does; so does a wildcard segment that
+    fits either one where a checkout's top level can sit; and so does a `**` before that point
+    (it can stand for the segments leading there). Over-refusal is the safe side."""
+    roots = _root_positions(segs)
+    for i, seg in enumerate(segs):
+        fits = any(_fits(name, seg) for name in _EGRESS_DENIED)
+        if fits and (not _wild(seg) or i in roots):
+            return True
+        if "**" in seg and _leads_to_worktree(segs[:i]):
+            return True
+    return False
+
+
+def _at_root(segs: Sequence[str]) -> bool:
+    """Whether a directory of these segments holds a checkout's top level below it: the
+    session's root, `.claude`, `.claude/worktrees` or one worktree's checkout."""
+    return _leads_to_worktree(segs)
+
+
+def _egress_forms(raw: str, payload: Mapping, root: tuple[str, ...],
+                  env: Mapping[str, str]) -> set[str]:  # fmt: skip
+    """Every repo-relative form of `raw` the hook can name: against the session's checkout and,
+    as the always-on layer judges paths, against the project root and every `.git` anchor, each
+    also with a worktree's prefix stripped (`_repo_forms`)."""
+    forms = set()
+    for path in candidates(raw, _cwd(payload)):
+        inside = _inside(path, root)
+        forms.update(() if inside is None else (inside,))
+        forms.update(_repo_forms(path, (*root, *project_roots(env))))
+    return forms
+
+
+def _egress_problem(raw: str, payload: Mapping, root: tuple[str, ...],
+                    env: Mapping[str, str]) -> str:  # fmt: skip
+    """07.2-12 (D-10): why an egress session's read can reach orig/ or third_party/, or ''.
+    Every form of the path is judged (`_egress_forms`). A Grep from a directory that holds a
+    checkout's top level is refused whatever its glob (a ripgrep glob without a slash matches
+    at any depth); a Glob pattern is judged joined to each form of its base, as written and in
+    every brace expansion, and a pattern without a slash as one that may match at any depth.
+    gitignore is never relied on."""
+    tool, tool_input = payload["tool_name"], payload["tool_input"]
+    forms = [_segments(form) for form in _egress_forms(raw, payload, root, env)]
+    if any(_reaches_egress_dir(segs) for segs in forms):
         return "names orig/ or third_party/"
-    for key in ("pattern", "glob") if tool == "Glob" else ("glob",):
-        pattern = tool_input.get(key)
-        texts = (_brace_expansions(pattern) or [pattern]) if isinstance(pattern, str) else []
-        for text in texts:
-            parts = {part.casefold() for part in text.replace("\\", "/").split("/")}
-            if parts & set(_EGRESS_DENIED):
-                return f"{key} {pattern!r} names orig/ or third_party/"
+    if tool == "Grep" and any(_at_root(segs) for segs in forms):
+        return "searches a directory that holds orig/ or third_party/"
+    patterns = [tool_input.get(key) for key in ("pattern", "glob") if tool == "Glob"]
+    patterns += [tool_input.get("glob")] if tool == "Grep" else []
+    for pattern in (p for p in patterns if isinstance(p, str)):
+        for text in _brace_expansions(pattern) or [pattern]:
+            tail = _segments(text)
+            tail = tail if "/" in text.replace("\\", "/") else ["**", *tail]
+            if any(_reaches_egress_dir([*segs, *tail]) for segs in forms):
+                return f"has a pattern {pattern!r} that can reach orig/ or third_party/"
     return ""
 
 
@@ -1125,7 +1200,7 @@ def _read(payload: Mapping, root: tuple[str, ...], env: Mapping[str, str]) -> De
         problem = _pattern_problem(tool_input.get(key))
         if problem:
             return _deny(f"{tool} {key} {problem} is not allowed in a matching session")
-    problem = _egress_problem(rels, tool_input, tool) if env.get(EGRESS_ENV) == "1" else ""
+    problem = _egress_problem(raw, payload, root, env) if env.get(EGRESS_ENV) == "1" else ""
     if problem:
         return _deny(f"{tool} that {problem} is not allowed in a session whose model is not "
                      "Anthropic's: the game files and the compiler never leave the machine "

@@ -2169,5 +2169,6 @@ def test_egress_session_keeps_scoped_searches(repo):
                     tool("Glob", repo, pattern="*.h", path=native(repo / "include")),
                     tool("Glob", repo, pattern="src/**/*.c"),
                     tool("Grep", repo, pattern="x", path=native(repo / "src"), glob="*.c"),
-                    tool("Read", repo, file_path=native(repo / "docs" / "matching.md"))):  # fmt: skip
+                    tool("Read", repo,
+                         file_path=native(repo / "docs" / "matching.md"))):  # fmt: skip
         assert not matching(payload, egress).deny, payload["tool_input"]
