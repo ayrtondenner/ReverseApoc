@@ -749,7 +749,8 @@ def test_run_filter_keeps_a_landing_of_its_run(tmp_path, capsys):
 def test_by_model_size(tmp_path, capsys):
     """Per requested model and size bucket: the distinct functions attempted, matched (a MATCHED
     attempt or landing) and held exact (a HOLD_EXACT attempt); readability sessions are out.
-    07.2-06: the hold runs' records are read through `--run`."""
+    07.2-06: the hold runs' records are read through `--run`. Quick 261110-f30: Sonnet's
+    landing of the 300 B function is matched for Haiku too, which also held it exact."""
     _functions(tmp_path / "config", "ufo2p", {0x10000: 32, 0x10100: 300})
     haiku, sonnet = "claude-haiku-5-5", "claude-sonnet-5-5"
     records = (
@@ -767,7 +768,7 @@ def test_by_model_size(tmp_path, capsys):
     small, large = "[0, 64)", "[256, 1024)"
     assert report["by_model_size"] == {
         _arm(haiku): {small: {"attempted": 1, "matched": 1, "hold_exact": 0},
-                      large: {"attempted": 1, "matched": 0, "hold_exact": 1}},
+                      large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
         _arm(sonnet): {small: {"attempted": 1, "matched": 0, "hold_exact": 0},
                        large: {"attempted": 1, "matched": 1, "hold_exact": 1}},
     }  # fmt: skip

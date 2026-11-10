@@ -154,6 +154,7 @@ from collections.abc import Callable, Container, Iterable, Iterator, Mapping, Se
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path, PurePosixPath
 
 from . import (
@@ -4617,15 +4618,16 @@ class _Night:
                               arm=claim.arm_in(self.arms), **figures)  # fmt: skip
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
-                      abort: str | None = None, *,
-                      held: Mapping | None = None) -> None:  # fmt: skip
+                      abort: str | None = None, *, held: Mapping | None = None,
+                      holders: Sequence[Mapping] = ()) -> None:  # fmt: skip
         """One match commit of explicit paths (D-25): the landed unit, status.csv, the feed and
         the log; a matching session adds no header (D-19). 07-38: a readability session's
         landing is the same commit with its own message and a LANDED record; only a match
         counts toward `matched`. 07.2-06 (D-26): `held`, a hold run's HOLD_EXACT record that
         `--land-held` lands, writes no attempt record (its cost is in `held` already) and takes
         that attempt's figures and model in the message; its MATCHED landing record names the
-        commit, so it is appended after it (the attempt-log commit takes it)."""
+        commit, so it is appended after it (the attempt-log commit takes it). Quick
+        261110-f30: `holders`, every HOLD_EXACT record of the function, adds their credit."""
         claim = session.claim
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
         log_size = self.log.stat().st_size if self.log.is_file() else 0
@@ -4634,7 +4636,7 @@ class _Night:
             self._record_attempt(session, outcome, abort, summary, gate=gate)
         try:
             message = (self._landing_message(session, gate) if held is None
-                       else self._held_message(held, gate))  # fmt: skip
+                       else self._held_message(held, gate, holders))  # fmt: skip
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -4744,29 +4746,49 @@ class _Night:
 
     def land_held(self) -> str:
         """`drive --land-held RUN...`: each function a selected hold run checked exactly
-        (`held_exact`) lands once, from its cheapest such attempt (cost, then run id, then
-        attempt), in (exe, unit, start) order so same-unit landings report one after the other.
-        A function status.csv already matches is skipped. Each landing goes through the night's
-        own land, lint and gate (`_land_one`), never a path of its own. 07.2 review WR-06: every
-        held function of a unit can land, one after the other: `bases` keeps, per unit, HEAD
-        before this run's first landing of it. The end of run (ninja verify, gate --all) and
-        the attempt-log commit follow as after a night."""
+        (`held_exact`) lands once, in (exe, unit, start) order so same-unit landings report one
+        after the other. Quick 261110-f30 (owner ruling 2026-11-10): it lands from the attempt
+        with the lowest API-equivalent cost (`_api_cost`: its tokens at its arm's list price;
+        never the recorded `cost_usd`, which is 0 on a subscription arm), then the earlier run
+        id, then the lower attempt; every HOLD_EXACT record of the function (`holders`) is
+        credited in the commit. A function status.csv already matches is skipped. Each landing
+        goes through the night's own land, lint and gate (`_land_one`), never a path of its
+        own. 07.2 review WR-06: every held function of a unit can land, one after the other:
+        `bases` keeps, per unit, HEAD before this run's first landing of it. The end of run
+        (ninja verify, gate --all) and the attempt-log commit follow as after a night."""
         matched = matched_keys(self.repo / "config")
         best: dict[Key, tuple[tuple, Mapping]] = {}
+        holders: dict[Key, list[Mapping]] = {}
         with self.gate_lock:  # the log is read while no record is appended
             for record in held_exact(self.log, self.config.land_held):
                 key = (record["exe"], int(record["start"], 16))
-                rank = (record["cost_usd"], record["run"], record["attempt"])
-                if key not in matched and (key not in best or rank < best[key][0]):
+                if key in matched:
+                    continue
+                holders.setdefault(key, []).append(record)
+                rank = (self._api_cost(record), record["run"], record["attempt"])
+                if key not in best or rank < best[key][0]:
                     best[key] = (rank, record)
         landings = sorted((record for _, record in best.values()),
                           key=lambda r: (r["exe"], r["unit"], int(r["start"], 16)))  # fmt: skip
         bases: dict[str, str] = {}
         for record in landings:
-            self._land_one(record, bases)
+            self._land_one(record, bases, holders[(record["exe"], int(record["start"], 16))])
         return QUEUE_EXHAUSTED if landings else NOTHING_TO_DO
 
-    def _land_one(self, held: Mapping, bases: dict[str, str]) -> None:
+    def _api_cost(self, held: Mapping) -> Decimal:
+        """Quick 261110-f30: a held attempt's API-equivalent cost, its tokens at its arm's list
+        price (backends.record_arm, Arm.list_price). An attempt no arm of backends.toml prices
+        raises DriverError: nothing lands under an unknown price (as `_held_arm`)."""
+        arm = backends.record_arm(held, self.arms)
+        price = None if arm is None else arm.list_price
+        if price is None:
+            raise DriverError(f"no arm of {backends.ARMS_TOML.name} prices "
+                              f"{held['model_requested']} on {held['backend']}; nothing lands "
+                              "under an unknown price")  # fmt: skip
+        return backends.token_cost(held["tokens"], price)
+
+    def _land_one(self, held: Mapping, bases: dict[str, str],
+                  holders: Sequence[Mapping] = ()) -> None:  # fmt: skip
         """One held function: the C of its attempt's latest plain check that exited 0
         (`exact_source`) goes into a fresh view unit under this run's own attempt directory
         (the hold run's stays as it was), with the hold run's view head. A unit or include/
@@ -4776,7 +4798,9 @@ class _Night:
         REFUSED landing. 07.2 review WR-06: once this run landed a function of the unit
         (`bases` names HEAD before that first landing), the head is judged against that base
         instead, and only the held function's definition is spliced onto the unit as HEAD now
-        has it, so the earlier landing stays; the gate proves the result."""
+        has it, so the earlier landing stays; the gate proves the result. Quick 261110-f30:
+        `holders`, every HOLD_EXACT record of the function, are credited in the commit
+        (`_held_message`)."""
         pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
         source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
         claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
@@ -4803,7 +4827,7 @@ class _Night:
         with self._landing(session):
             gate = self._judge(session)
             if self._gate_matched(session, gate):
-                self._commit_match(session, gate, CheckSummary(), held=held)
+                self._commit_match(session, gate, CheckSummary(), held=held, holders=holders)
                 bases.setdefault(claim.unit_rel, before)
                 return
             self._reset(session)
@@ -4846,10 +4870,11 @@ class _Night:
                         "checkout; re-run")  # fmt: skip
         return None
 
-    def _held_message(self, held: Mapping, gate: GateRun) -> str:
+    def _held_message(self, held: Mapping, gate: GateRun, holders: Sequence[Mapping] = ()) -> str:
         """D-25's match message from the held attempt's own figures, with the hold run named;
         the credit is its requested model's (`coauthor`), or its hosted arm's (`credit`,
-        07.2-12)."""
+        07.2-12). Quick 261110-f30 (owner ruling 2026-11-10): then one Co-Authored-By line per
+        other arm that held the function exact (`_holder_lines`)."""
         tokens = held["tokens"]
         usage = streamjson.Usage(tokens["input"], tokens["output"], tokens["cache_read"],
                                  tokens["cache_creation"], held["turns"], held["cost_usd"],
@@ -4861,8 +4886,23 @@ class _Night:
                                  sha1s=gate_sha1s(gate.doc),
                                  requested_model=held["model_requested"],
                                  arm=self._held_arm(held))  # fmt: skip
-        return message.replace("\n\nattempt ", f"\n\nlanded from hold run {held['run']}\n"
-                                               "attempt ", 1)  # fmt: skip
+        message = message.replace("\n\nattempt ", f"\n\nlanded from hold run {held['run']}\n"
+                                                  "attempt ", 1)  # fmt: skip
+        return self._holder_lines(message, holders)
+
+    def _holder_lines(self, message: str, holders: Sequence[Mapping]) -> str:
+        """`message` with one Co-Authored-By line per holder, in (run, attempt) order, after
+        its credit lines (the same final trailer paragraph), when the message does not carry
+        that exact line yet: `coauthor` for an attempt on the Claude login, else its arm's
+        `coauthor` (`_held_arm` raises DriverError for an unknown arm). The landing arm's own
+        lines stay as `credit` wrote them."""
+        lines = message.rstrip("\n").split("\n")
+        for holder in sorted(holders, key=lambda r: (r["run"], r["attempt"])):
+            line = (coauthor(holder["model_requested"]) if holder["backend"] == DEFAULT_BACKEND
+                    else f"Co-Authored-By: {self._held_arm(holder).coauthor}")  # fmt: skip
+            if line not in lines:
+                lines.append(line)
+        return "\n".join(lines) + "\n"
 
     def _held_arm(self, held: Mapping) -> backends.Arm | None:
         """07.2-12 (D-26): the arm a held attempt ran on, by its requested model and backend;

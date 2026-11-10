@@ -1,8 +1,9 @@
 # Model routing: the spike 012 harness
 
 Spike 012 compares model arms on the same frozen set of functions. Each arm attempts each
-function once, and no arm's match lands before every arm has run. The landing then credits
-the cheapest arm that matched. Phase 07.2 plan 06 built the flags below (D-17). Plans 12, 13,
+function once, and no arm's match lands before every arm has run. The landing then lands from
+the arm with the lowest API-equivalent cost and credits every arm that matched. Phase 07.2
+plan 06 built the flags below (D-17). Plans 12, 13,
 15 and 16 add their own sections to this page: the backends file, the Codex and Antigravity
 harnesses, and several arms in one drive.
 
@@ -80,8 +81,12 @@ it.
 
 - **Once per function.** Each function lands at most once, and one that status.csv already
   matches is skipped. A second `--land-held` over the same runs therefore lands nothing new.
-- **The cheapest rule.** Of a function's exact attempts, the one with the lowest `cost_usd`
-  lands. Equal costs go to the earlier run id, then to the lower attempt number.
+- **The cheapest rule.** Of a function's exact attempts, the one with the lowest
+  API-equivalent cost lands: its tokens at its arm's list price (backends.toml `prices`; a
+  Claude arm's come from streamjson's table). It is never the recorded `cost_usd`, which is 0
+  on a subscription arm. Equal costs go to the earlier run id, then to the lower attempt
+  number. An attempt that no arm of backends.toml prices stops the landing before anything
+  lands.
 - **What lands.** The C is the attempt's latest plain check that exited 0 (its
   `checks/NNNN.c`). It is copied into a fresh view under the landing run's own directory, so
   the hold run's files stay as they were. Every rename committed since the attempt's view head
@@ -100,9 +105,15 @@ it.
   other commit still refuses it as stale; a definition that cannot be spliced is REFUSED and
   named.
 - **Credit.** The match commit carries `Matched-By: reverseapoc drive` and the co-author line
-  of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. A hosted
-  arm's attempt is credited to its arm instead, as in "Backends" below. The commit message
-  gives that attempt's own turns, tokens and seconds, and names the hold run.
+  of the landing attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. A
+  hosted arm's attempt is credited to its arm instead, as in "Backends" below. Then it adds one
+  `Co-Authored-By` line for every other arm that held the function exact, each from that arm's
+  co-author (the Claude name for a Claude arm, the backends.toml `coauthor` otherwise), in run
+  order and once each. An arm whose attempt was not exact gets no line. The commit message
+  gives the landing attempt's own turns, tokens and seconds, and names the hold run.
+  `stats --run <the same prefix>` counts the function as matched for each of those arms (and
+  once in the totals). The default report leaves hold runs out, so there the landing is
+  credited to the landing arm only.
 - **Records.** Each function gets one `landing` record: MATCHED with its commit, or REFUSED
   with its reason (a lint failure or a gate refusal leaves the unit as HEAD has it). No second
   attempt record is written. A landing record has no tokens and no cost, so `stats` counts the
@@ -198,7 +209,9 @@ The model ids are assumptions to confirm at setup.
   read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
   model: the record keeps `model_requested` and a null `model`, and there is no init check.
   Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
-  added to output); the cost is 0 on Plus, recorded as an estimate.
+  added to output); the cost is 0 on Plus, recorded as an estimate. `stats --run`'s
+  comparison prices the tokens at the arm's list price in backends.toml (marked confirm at
+  setup) as its API-equivalent figure.
 - **The login.** No key is read. The session loses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, every
   arm's key variable, every `ANTHROPIC_*` variable and every Google key variable, so Codex
   stays on the ChatGPT login and never sees another vendor's credential. `CODEX_HOME` is not
@@ -286,8 +299,9 @@ retired for consumer plans, so agy is the route.
   skill body, session rules). The init event must name the attempt dir as cwd, the requested
   slug and no bypass permission mode, else the night stops (reason init). Tokens come from the
   result's `usage` (thinking tokens added to output), turns from `num_turns`, and the duration
-  from `duration_seconds`. The cost is 0 on AI Plus, recorded as an estimate. The result's
-  `denied_actions` count as hook blocks.
+  from `duration_seconds`. The cost is 0 on AI Plus, recorded as an estimate; `stats --run`'s
+  comparison prices the tokens at the arm's list price in backends.toml (marked confirm at
+  setup) as its API-equivalent figure. The result's `denied_actions` count as hook blocks.
 - **The sign-in.** No key is read. The session loses every `ANTHROPIC_*` variable,
   `OPENAI_API_KEY`, `OPENAI_BASE_URL`, every arm's key variable and every Google key variable
   (`GEMINI_API_KEY`, `GOOGLE_API_KEY` among them), so agy stays on the AI Plus sign-in.
@@ -449,7 +463,7 @@ reverseapoc drive --picks build/driver/spike012-picks.txt --hold --run spike012 
 ```
 
 Then compare the arms with `reverseapoc stats --run spike012-*`, which splits by arm (below),
-and land the exact results once each, from the cheapest arm, with
+and land the exact results once each, from the lowest API-equivalent cost, with
 `reverseapoc drive --land-held spike012-*`.
 
 ### Stats by arm
@@ -461,4 +475,45 @@ are two arms. Each arm holds the distinct functions attempted, matched (an attem
 landing credited to that arm) and held exact, and its tokens and cost. The JSON field is
 `by_arm`, and the text prints a "per arm" block. The model x size table (`by_model_size`,
 "per arm and size") is keyed by arm too. v1 and v2 records name no backend or harness, so they
-group under `anthropic/claude/<model>`.
+group under `anthropic/claude/<model>`. A MATCHED landing is matched for its own arm and for
+every arm that held the function exact among the selected records, as the landing commit
+credits them.
+
+### The comparison table
+
+`stats --run RUN...` also prints spike 012's comparison table (owner ruling 2026-11-10). It
+spans every run the names select and both EXEs, with one row per arm (`backend/harness/model`).
+Without `--run` there is none: the JSON field `comparison` is null and the text is unchanged.
+
+- **JSON.** `comparison` holds `columns` (in order), and `arms`, which maps each arm key to its
+  backends.toml arm name (`arm`), its `billing` and `cells`, one cell per column. An arm with no
+  backends.toml entry has `arm` and `billing` null.
+- **Columns.** The three size groups of the stratified pick list (`under 64 B`, `64 to 255 B`,
+  `256 B and up`, driver.STRATA_NAMES, sizes from `config/<exe>/functions.csv`), then `total`.
+  An `unknown` column comes before `total` only when a function has no functions.csv size.
+- **Counts.** `attempted`: the distinct functions the arm's matching attempts cover. `hold_exact`:
+  those with a HOLD_EXACT attempt. `matched`: those the arm matched (a MATCHED attempt, or a
+  MATCHED landing credited to it, as in "Stats by arm"). `exact`: the union of the last two.
+  `sessions`: the attempt records. `turns` and `tokens` (input, output, cache_read,
+  cache_creation): their sums.
+- **Wall time.** `wall_ms` sums the records' `duration_ms`. A record whose `duration_ms` is null
+  (a session the wall clock killed) or absent (v1 and v2) adds its `seconds` instead, and
+  `wall_estimated_sessions` counts those records. The text shows minutes.
+- **API-equivalent.** `api_usd`: the tokens at the arm's list price, for every arm. A non-Claude
+  arm's price is its backends.toml `prices`; a Claude arm's is streamjson's table, which
+  backends.toml defers to. The Codex and agy prices are public API list prices marked "confirm
+  at setup" in backends.toml. The recorded `cost_usd` is never read here.
+- **Billing and real paid.** Billing is derived from `base_url`, and backends.toml has no
+  billing field: no base URL is a CLI's own sign-in (the Claude Code login, Codex on ChatGPT
+  Plus, agy on Google AI Plus), `subscription`; a loopback one is the local server, `free`; any
+  other is paid per token with the arm's key, `metered`. `paid_usd` is 0.00 on a subscription
+  or free arm and the API-equivalent on a metered one. The text says the zero case in words.
+  An arm with no backends.toml entry or no price shows null for both figures and says why.
+- **Per-try rates.** `per_try` counts the plain checks of the attempts' saved
+  `build/driver/<run>/<exe>/<function>/attempt-<n>/checks.jsonl` by `reverseapoc causes`' rule
+  (exit 2 a build failure, 1 a mismatch, 0 a match; sweeps and malformed lines apart), with
+  each outcome's percent. Where build/driver holds no saved checks (as in CI), the count is 0,
+  the percents are null and the text says "no saved checks".
+- **Ratios.** `exact_per_api_usd`, `exact_per_wall_hour` and `exact_per_mtok`: exact functions
+  per API-equivalent dollar, per wall hour and per million tokens, from the unrounded figures,
+  shown to 2 decimals; null when the denominator is 0 or missing.

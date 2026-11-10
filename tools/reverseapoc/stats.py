@@ -27,7 +27,10 @@ sessions, turns, wall time, tokens, the API-equivalent USD (the tokens at the ar
 backends.Arm.list_price), the real paid USD (0 on a subscription or free arm, the
 API-equivalent on a metered one, backends.Arm.billing), the per-try rates over the attempts'
 saved checks.jsonl (causes' rule) and exact per API-equivalent $, per wall hour and per million
-tokens. The recorded `cost_usd` is never read by it: it is 0 on every subscription arm.
+tokens. The recorded `cost_usd` is never read by it: it is 0 on every subscription arm. A
+MATCHED landing counts as matched for its own arm and for every arm that held the function
+exact among the selected records (`_holders`), in by_arm, by_model_size and the comparison; the
+function still counts once in the matched totals and per_match.
 """
 
 from __future__ import annotations
@@ -411,13 +414,35 @@ def arm_key(record: Mapping) -> str:
     return f"{backend}/{record.get('harness', driver.HARNESSES[0])}/{model}"
 
 
+def _holders(matching: Sequence[Mapping]) -> dict[Key, set[str]]:
+    """Quick 261110-f30: the arm (`arm_key`) of every HOLD_EXACT attempt, per function."""
+    out: dict[Key, set[str]] = {}
+    for r in matching:
+        if r["outcome"] == driver.HOLD_EXACT:
+            out.setdefault(_key(r), set()).add(arm_key(r))
+    return out
+
+
+def _landing_arms(landing: Mapping, holders: Mapping[Key, set[str]]) -> set[str]:
+    """The arms a MATCHED landing is credited to (owner ruling 2026-11-10): its own and every
+    arm that held the function exact among the selected records, as the commit credits them
+    (`drive --land-held`)."""
+    return {arm_key(landing), *holders.get(_key(landing), set())}
+
+
 def _matched_by_arm(matching: Sequence[Mapping], landed: Sequence[Mapping]) -> dict[str, set]:
     """The functions each arm matched: its MATCHED attempts and the MATCHED landings credited
-    to it."""
+    to it (quick 261110-f30: to the landing's arm and to every holder, `_landing_arms`)."""
     out: dict[str, set[Key]] = {}
-    for r in [*matching, *landed]:
+    for r in matching:
         if r["outcome"] == driver.MATCHED:
             out.setdefault(arm_key(r), set()).add(_key(r))
+    holders = _holders(matching)
+    for r in landed:
+        if r["outcome"] != driver.MATCHED:
+            continue
+        for arm in _landing_arms(r, holders):
+            out.setdefault(arm, set()).add(_key(r))
     return out
 
 
@@ -445,7 +470,8 @@ def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
     """Phase 07.2 D-16: per requested model (v2 and v3 records) and size bucket, the distinct
     functions attempted, matched (a MATCHED attempt, or a MATCHED landing credited to that
     model) and held exact (a HOLD_EXACT attempt); only the buckets that occur, smallest
-    first. D-22: the rows are arms (`arm_key`), so one model on two backends is two rows."""
+    first. D-22: the rows are arms (`arm_key`), so one model on two backends is two rows.
+    Quick 261110-f30: a MATCHED landing is matched for every arm `_landing_arms` names."""
     cells: dict[str, dict[str, dict[str, set[Key]]]] = {}
 
     def add(arm: str, key: Key, count: str) -> None:
@@ -460,9 +486,12 @@ def _by_model_size(matching: Sequence[Mapping], landed: Sequence[Mapping],
         if r["outcome"] in (driver.MATCHED, driver.HOLD_EXACT):
             add(arm_key(r), _key(r),
                 "matched" if r["outcome"] == driver.MATCHED else "hold_exact")  # fmt: skip
+    holders = _holders(matching)
     for r in landed:
-        if r["outcome"] == driver.MATCHED:
-            add(arm_key(r), _key(r), "matched")
+        if r["outcome"] != driver.MATCHED:
+            continue
+        for arm in _landing_arms(r, holders):
+            add(arm, _key(r), "matched")
     return {model: {label: {c: len(buckets[label][c]) for c in _MODEL_SIZE_COUNTS}
                     for label in sorted(buckets, key=_LABEL_ORDER.index)}
             for model, buckets in sorted(cells.items())}  # fmt: skip
