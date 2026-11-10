@@ -153,6 +153,7 @@ assumptions to confirm at setup.
 | `deepseek-flash` | openrouter | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY` |
 | `glm-5.3` | openrouter | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
 | `glm-4.7-flash` | openrouter | `z-ai/glm-4.7-flash` | `OPENROUTER_API_KEY` |
+| `gpt-oss-20b` | openrouter | `openai/gpt-oss-20b` | `OPENROUTER_API_KEY` |
 | `muse-spark-open` | openrouter | `meta/muse-spark-open` | `OPENROUTER_API_KEY` |
 | `qwen-hosted` | openrouter | `qwen/qwen3.6-35b-a3b` | `OPENROUTER_API_KEY` |
 | `qwen-local` | local | `qwen3.6-35b-a3b` (the llama-server `--alias`) | none (loopback only) |
@@ -162,7 +163,8 @@ audit, against OpenRouter's Anthropic-compatible endpoint. Since 2026-11-10 the 
 DeepSeek and GLM only through OpenRouter, not through DeepSeek's or z.ai's own endpoints. The
 ids and prices of the OpenRouter arms come from OpenRouter's public model list, read on
 2026-11-10. `glm-4.7-flash` is a 31.2B MoE, the size class of Qwen3.6-35B-A3B, so it can get
-a local twin later.
+a local twin later; so can `gpt-oss-20b` (GPT-OSS 20B, open weights, an MoE of about 21B
+total parameters), which is not the Antigravity `gpt-oss` arm (GPT-OSS 120B).
 
 - **Two flags.** A non-Anthropic arm that sends disassembly needs both `--night-model ARM`
   and `--allow-egress ARM`, for a night and for a canary alike:
@@ -440,7 +442,8 @@ weights early through OpenRouter as a fast check.
 - **Gated on its hosted twin (owner, 2026-11-10).** The hosted arms run first, through
   OpenRouter. Only then does the owner decide what runs locally, because local runs on his
   machine (GTX 1660 6 GB, 32 GB RAM) are slow. `qwen-hosted` is the twin of `qwen-local`, and
-  `glm-4.7-flash` is the twin of a possible later local GLM-4.7-Flash arm. If the twin matches
+  `glm-4.7-flash` and `gpt-oss-20b` are the twins of possible later local GLM-4.7-Flash and
+  GPT-OSS 20B arms. If the twin matches
   about nothing on the frozen picks, the local arm is skipped: no llama.cpp setup and no model
   download. If the twin does well, the local arm runs a short check, not 20 sessions: only
   the 3 to 5 picks the twin matched, at Q4 quantization and local speed, with 30-minute

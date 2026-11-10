@@ -317,6 +317,8 @@ def test_preflight_passes():
     ("glm-5.3", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY", "z-ai/glm-5.3"),
     ("glm-4.7-flash", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
      "z-ai/glm-4.7-flash"),
+    ("gpt-oss-20b", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+     "openai/gpt-oss-20b"),
     ("muse-spark-open", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
      "meta/muse-spark-open"),
     ("qwen-hosted", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
@@ -324,8 +326,8 @@ def test_preflight_passes():
 ])  # fmt: skip
 def test_hosted_arms_load(name, backend, url, key_env, model):
     """D-18, the owner's Qwen ruling and his OpenRouter ruling of 2026-11-10: DeepSeek, both
-    GLMs, Muse Spark Open and the hosted Qwen all through OpenRouter, each with its prices, its
-    own init id and its vendor's credit line."""
+    GLMs, GPT-OSS 20B, Muse Spark Open and the hosted Qwen all through OpenRouter, each with
+    its prices, its own init id and its vendor's credit line."""
     arm = _arms()[name]
     assert (arm.backend, arm.base_url, arm.key_env, arm.model) == (backend, url, key_env, model)
     assert arm.egress and arm.accepted_init == (model,)
@@ -337,6 +339,7 @@ def test_hosted_arms_load(name, backend, url, key_env, model):
     ("deepseek-flash", 0.30, 1.20),
     ("glm-5.3", 0.07, 1.40),
     ("glm-4.7-flash", 0.061, 0.40),
+    ("gpt-oss-20b", 0.03, 0.13),
     ("muse-spark-open", 1.25, 4.25),
     ("qwen-hosted", 0.10, 0.90),
 ])  # fmt: skip
@@ -589,7 +592,7 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
 # ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
 
 SUBSCRIBED = (*CLAUDE_ARMS, "gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss")
-METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "muse-spark-open",
+METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "gpt-oss-20b", "muse-spark-open",
                 "gemini-3.8-flash-openrouter", "qwen-hosted")  # fmt: skip
 
 

@@ -57,7 +57,7 @@ A session never sends a whole executable, and never anything under `orig/`. Ever
 | Backend | Arms | What it receives |
 |---|---|---|
 | Anthropic | the Claude Code login: Opus, Fable, Haiku and Sonnet | the three items above, as since Phase 6 |
-| OpenRouter | `deepseek-flash` (DeepSeek V4.1-Flash), `glm-5.3` (GLM-5.3), `glm-4.7-flash` (GLM-4.7-Flash), `muse-spark-open` (Muse Spark Open), `qwen-hosted` (Qwen3.6-35B-A3B), and the Gemini fallback of D-21 if the Antigravity canary fails, all through OpenRouter's Anthropic-compatible endpoint. Since 2026-11-10 DeepSeek and GLM run only through OpenRouter, never through their own endpoints | the same three items; no read of `orig/` or `third_party/` |
+| OpenRouter | `deepseek-flash` (DeepSeek V4.1-Flash), `glm-5.3` (GLM-5.3), `glm-4.7-flash` (GLM-4.7-Flash), `gpt-oss-20b` (GPT-OSS 20B), `muse-spark-open` (Muse Spark Open), `qwen-hosted` (Qwen3.6-35B-A3B), and the Gemini fallback of D-21 if the Antigravity canary fails, all through OpenRouter's Anthropic-compatible endpoint. Since 2026-11-10 DeepSeek and GLM run only through OpenRouter, never through their own endpoints | the same three items; no read of `orig/` or `third_party/` |
 | OpenAI | Codex CLI on the owner's ChatGPT Plus plan (plan 07.2-13) | the same; the session is sandboxed, and every command it ran is audited after it ends |
 | Google | Antigravity CLI on the owner's Google AI Plus plan (plan 07.2-15) | the same; the session is sandboxed, and every command it ran is audited after it ends |
 | local llama.cpp server | `qwen-local` (Qwen3.6-35B-A3B on the owner's machine) | nothing leaves the machine: the server listens on loopback only, and `sends_disassembly = false` |
