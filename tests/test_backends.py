@@ -108,6 +108,50 @@ def test_a_key_pasted_into_key_env_is_not_repeated(tmp_path):
     assert "key_env" in str(exc.value) and "made-up-pasted-value-0005" not in str(exc.value)
 
 
+_SIGNED_IN_TOML = """\
+[arms."made-up-arm"]
+harness = "{harness}"
+backend = "{backend}"
+model = "made-up-model"
+sends_disassembly = false
+accepted_init = []
+coauthor = "Made Up <noreply@example.invalid>"
+max_workers = 1
+
+[arms."made-up-arm".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+"""
+
+
+@pytest.mark.parametrize("text", [
+    _SIGNED_IN_TOML.format(harness="codex", backend="openai"),
+    _SIGNED_IN_TOML.format(harness="agy", backend="google"),
+    _DEEPSEEK_TOML.replace("sends_disassembly = true", "sends_disassembly = false"),
+    _DEEPSEEK_TOML.replace("sends_disassembly = true", "sends_disassembly = false").replace(
+        "https://api.deepseek.com/anthropic", "https://127.0.0.1.example.invalid/anthropic"),
+], ids=["codex", "agy", "https", "loopback-lookalike"])  # fmt: skip
+def test_a_sending_arm_cannot_declare_it_sends_nothing(tmp_path, text):
+    """07.2 review WR-01 (D-11): `sends_disassembly = false` is believed only of an arm that
+    keeps the pack on the machine: the Claude Code harness on the Claude login or on a
+    loopback endpoint. A Codex or agy arm (its CLI sends the prompt to OpenAI or Google) or an
+    arm on a non-loopback endpoint that says false is refused at load time, so one wrong
+    boolean never lets it run without --allow-egress."""
+    with pytest.raises(ArmError) as exc:
+        load_arms(_table(tmp_path, text))
+    assert "sends_disassembly" in str(exc.value), str(exc.value)
+
+
+def test_a_loopback_arm_may_send_nothing(tmp_path):
+    """WR-01's one exception: the local arm on loopback keeps sends_disassembly = false."""
+    text = (_DEEPSEEK_TOML.replace("sends_disassembly = true", "sends_disassembly = false")
+            .replace("https://api.deepseek.com/anthropic", "http://127.0.0.1:8080"))
+    arm = load_arms(_table(tmp_path, text))[DEEPSEEK]
+    assert arm.sends_disassembly is False and not arm.egress
+
+
 def test_an_anthropic_arm_has_no_endpoint_or_key(tmp_path):
     text = ('[arms."claude-opus-5-5"]\nharness = "claude"\nbackend = "anthropic"\n'
             'model = "claude-opus-5-5"\nsends_disassembly = true\nmax_workers = 3\n'
