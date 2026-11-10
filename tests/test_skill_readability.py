@@ -349,6 +349,36 @@ def test_line_numbers_come_from_the_check_output():
     assert "line number" in _section(_text(), "The attempt wrapper")
 
 
+# ---- 07.2-07 (D-14, D-15): the name provenance marker ----
+
+PLACEHOLDER_PREFIXES = ("func_", "D_", "param_", "local_")
+
+
+def test_skill_quotes_a_marker_readlint_accepts():
+    """The form the skill teaches is readlint's own: at least one backticked span, and every
+    `/* src: ...` comment in its fenced blocks, is a well-formed RL07 marker."""
+    marked = [span for span in _spans(_text()) if readlint.MARKER.fullmatch(span)]
+    assert marked, "no backticked marker readlint accepts"
+    for block in _fenced(_text()):
+        for comment in re.findall(r"/\*\s*src:.*?\*/", block):
+            assert readlint.MARKER.fullmatch(comment), comment
+
+
+def test_skill_names_every_marker_tag_and_confidence():
+    names = _section(_text(), "Names, evidence and proposals")
+    for word in (*readlint.MARKER_TAGS, *readlint.MARKER_CONFIDENCES):
+        assert f"`{word}`" in names, word
+
+
+def test_skill_says_when_a_marker_is_required():
+    text = _text()
+    assert "RL07" in _section(text, "Readlint") and "RL07" in _section(
+        text, "Names, evidence and proposals")
+    for prefix in PLACEHOLDER_PREFIXES:
+        assert f"`{prefix}`" in _section(text, "Names, evidence and proposals"), prefix
+    assert "RL07" in _frontmatter(text)["description"]
+
+
 def test_readlint_reports_the_example_unit_as_the_output_example_shows(tmp_path):
     """The example unit, linted for real as a matched unit, gives exactly the readlint hits and
     the waiver the output example shows (pending ones are RL01 hits a proposal covers)."""
