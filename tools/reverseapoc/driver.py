@@ -350,6 +350,10 @@ class DriveConfig:
     # quick 261101-b5f: the owner's opt-in to D-09 (`drive --fable-trial`): every matching
     # session on FABLE_MODEL with the Fable budget; off, each pass takes model_for_pass.
     fable_trial: bool = False
+    # 07.2-06 (D-17): `drive --night-model`: every matching session on this model (None: each
+    # pass's); `drive --hold`: a hold run, which lands nothing and attempts each function once.
+    night_model: str | None = None
+    hold: bool = False
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -763,6 +767,7 @@ _V3_OUTCOMES = (*_V2_OUTCOMES, HOLD_EXACT)
 # D-04 (narrowed by D-26: no `difficult.json` category), in RULINGS order. 07.2-02 moves the
 # tuple to attempt.py, which the wrapper can import; this name is the same object.
 GIVEUP_CATEGORIES = attempt.GIVEUP_CATEGORIES
+HOLD_RUN_MARKER = attempt.HOLD_RUN_MARKER  # 07.2-06 (D-17): build/driver/<run>/HELD
 
 
 def _capped(value: object) -> bool:
@@ -1297,6 +1302,19 @@ def read_checks(attempt_dir: Path, *, readability: bool = False) -> CheckSummary
     if best is None:
         return CheckSummary(len(lines), None, None, hit)
     return CheckSummary(len(lines), float(best["best_percent"]), best["source"], hit)
+
+
+def exact_source(attempt_dir: Path) -> str | None:
+    """07.2-06 (D-26): the C (checks/NNNN.c) of the latest plain check in checks.jsonl that
+    exited 0, or None: a hold run's attempt with one is HOLD_EXACT, and `--land-held` lands
+    that C. A sweep line never counts (its percent is under other flags)."""
+    path = Path(attempt_dir) / attempt.CHECK_LOG
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = [line for raw in text.splitlines() if (line := _check_line(raw)) is not None]
+    exact = [line["source"] for line in lines if not line["sweep"] and line["exit"] == EXIT_OK]
+    return exact[-1] if exact else None
 
 
 # ---- the v2 record's evidence (07-23; DEC-07, research section J, P10) ----
@@ -2084,7 +2102,10 @@ class _Coordinator:
         return QUEUE_EXHAUSTED if self.picked else NOTHING_TO_DO
 
     def release(self, worker: _Worker) -> None:
-        """A worker's pass ended: its unit and its number are free again."""
+        """A worker's pass ended: its unit and its number are free again. 07.2-06 (D-17): a
+        hold run's function that had its attempt leaves the tier queue as a parked one does,
+        so it is attempted once."""
+        hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
         with self.night.cond:
             self.busy.pop((worker.pick.exe, worker.pick.unit), None)
             if self.tiers is not None:
@@ -2092,7 +2113,7 @@ class _Coordinator:
                                   matched=worker.outcome == MATCHED,
                                   aborted=worker.outcome == ABORTED,
                                   capped=worker.outcome == CAPPED,
-                                  parked=worker.outcome == PARKED)  # fmt: skip
+                                  parked=worker.outcome == PARKED or hold_done)  # fmt: skip
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
@@ -2413,6 +2434,11 @@ class _Night:
             why = _detail("refusing to start: stale claims could not be recovered: "
                           f"{type(exc).__name__}: {exc}")  # fmt: skip
             return DriveReport(REFUSED, "claims", 0, 0, why)
+        if self.config.hold:  # 07.2-06 (D-17): the run directory says it is a hold run
+            run_dir = self.repo.joinpath(DRIVER_DIR, self.config.run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            write_atomic(run_dir / HOLD_RUN_MARKER,
+                         b"hold run: its attempts never land and stay out of later packs\n")
         self.night_start = self.deps.clock()
         try:
             self._record_run(STARTED, START, recovered_detail(recovered), recovered=recovered)
@@ -2586,7 +2612,8 @@ class _Night:
         stop). 07-38 (D-17): a readability night runs one session per unit and returns its
         outcome; nothing goes to the difficult list. Quick 261109-gzu: PARKED when an attempt's
         record parks the function (`_parks`): a finished pass (its count in `passes` goes up,
-        so its callers may follow) but no difficult-list entry; it comes back next night."""
+        so its callers may follow) but no difficult-list entry; it comes back next night.
+        07.2-06 (D-17, D-22): a hold run attempts each function once (`_hold_done`)."""
         readability = self.config.session == READABILITY
         key = (pick.exe, pick.start)
         for n in range(1, self._attempts() + 1):
@@ -2598,6 +2625,8 @@ class _Night:
                 self._release()  # not counted (a stop): a slot still held goes back
             if readability or outcome in (MATCHED, ABORTED, None):
                 return outcome
+            if self.config.hold:
+                return self._hold_done(key, outcome)
             with self.cond:
                 spec = self.parked.get(key)
             if spec is not None:
@@ -2618,6 +2647,15 @@ class _Night:
         self.deps.say(PARKED_LINE.format(label=label, spec=spec))
         return PARKED
 
+    def _hold_done(self, key: Key, outcome: str) -> str:
+        """07.2-06 (D-17): a hold run's function is done after its one counted attempt. Its pass
+        counts as finished, so a caller waiting on it may follow (D-08), and the coordinator
+        keeps it out of the queue for the rest of the night (`release`); no difficult-list
+        entry is written."""
+        with self.cond:
+            self.passes[key] = self.passes.get(key, 0) + 1
+        return outcome
+
     def _attempts(self) -> int:
         """Sessions per pass: attempts_per_function (D-07); one per unit on a readability night
         (07-38, D-17)."""
@@ -2626,9 +2664,12 @@ class _Night:
     def _model(self, pick: Pick) -> str:
         """The requested model of `pick`'s session: Opus on a readability night (07-38:
         escalation is a matching rule), Fable on a Fable trial night (quick 261101-b5f, the
-        owner's opt-in to D-09), else the pass's (D-09)."""
+        owner's opt-in to D-09), else the pass's (D-09). 07.2-06 (D-17): `--night-model`'s
+        model on a matching night."""
         if self.config.session == READABILITY:
             return OPUS_MODEL
+        if self.config.night_model is not None:
+            return self.config.night_model
         if self.config.fable_trial:
             return FABLE_MODEL
         return model_for_pass(self._pass(pick))
@@ -3591,9 +3632,11 @@ class _Night:
         Otherwise it is reset. The whole landing runs under the gate lock (D-06). 07-38: a
         readability session is never salvaged (it is reset, and the relaunch redoes it; its
         proposals were applied already), so a LIMIT launch writes no readability record.
-        Hotfix 2026-10-31: a unit that still defines no C is reset unjudged (`_defines_c`)."""
+        Hotfix 2026-10-31: a unit that still defines no C is reset unjudged (`_defines_c`).
+        07.2-06 (D-17): a hold run lands nothing, so its LIMIT session is reset unjudged too."""
         with self._landing(session):
-            judged = session.has_work() and session.claim.session != READABILITY
+            judged = (session.has_work() and session.claim.session != READABILITY
+                      and not self.config.hold)  # fmt: skip
             if judged and self._defines_c(session):
                 gate = self._judge(session)
                 if self._gate_matched(session, gate):
@@ -3628,13 +3671,16 @@ class _Night:
         decision, so F19's log truncation can only drop this landing's own MATCHED line. A
         readability session has its own landing (07-38, `_land_readability`). Hotfix
         2026-10-31: a unit that defines no C is not landed, linted or gated (`_defines_c`); it
-        ends as any other no-match, with no gate verdict in its record."""
+        ends as any other no-match, with no gate verdict in its record. 07.2-06 (D-17): a hold
+        run's session is never landed (`_hold_counted`)."""
         if session.claim.session == READABILITY:
             return self._land_readability(session)
         self._count()
         claim = session.claim
         summary = read_checks(claim.attempt_dir)
         abort = TIMEOUT if session.result.timed_out else None
+        if self.config.hold:
+            return self._hold_counted(session, summary, abort)
         with self._landing(session):
             gate = None
             if self._defines_c(session):
@@ -3652,6 +3698,21 @@ class _Night:
                     self._record_attempt(session, outcome, TOOL, summary, gate=gate)
                     raise _Stop(TOOL, "gate --partial exited 2")
             self._record_attempt(session, outcome, abort, summary, gate=gate)
+            return outcome
+
+    def _hold_counted(self, session: _Session, summary: CheckSummary, abort: str | None) -> str:
+        """07.2-06 (D-17, D-26): a hold run's counted session lands nothing: no copy into src/,
+        no lint, no gate, no `gate --partial` and no status.csv write. It is reset as a no-match
+        is, under the gate lock, and recorded as a hold run: HOLD_EXACT when a plain check of
+        the attempt exited 0 (`exact_source`), else PARTIAL or GAVE_UP by best percent. Never
+        MATCHED: only `--land-held` turns it into a match, through the land and gate."""
+        with self._landing(session):
+            self._reset(session)
+            if exact_source(session.claim.attempt_dir) is not None:
+                outcome = HOLD_EXACT
+            else:
+                outcome = PARTIAL if (summary.best_percent or 0.0) > 0.0 else GAVE_UP
+            self._record_attempt(session, outcome, abort, summary)
             return outcome
 
     def _partial_gate(self, session: _Session, summary: CheckSummary) -> int | None:
@@ -4549,8 +4610,8 @@ class _Night:
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
         "estimate". A night passes no effort (null: the CLI default, D-17) and runs the Claude
         harness on the Claude Code login (`backend` DEFAULT_BACKEND); `giveup` is the session's
-        validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` false. Committed
-        records are never rewritten (D-23)."""
+        validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` true exactly on a
+        hold run (`drive --hold`, 07.2-06). Committed records are never rewritten (D-23)."""
         use = session.usage
         measured = session.measured
         source, cells = _sweep_evidence(session.claim.attempt_dir)
@@ -4572,7 +4633,8 @@ class _Night:
                   "effort": None, "harness": "claude", "backend": DEFAULT_BACKEND,
                   "duration_ms": use.duration_ms if measured else None,
                   "cost_source": "cli" if measured else "estimate",
-                  "giveup": self._giveup(session.claim), "hold_run": False}  # fmt: skip
+                  "giveup": self._giveup(session.claim),
+                  "hold_run": self.config.hold}  # fmt: skip
         self._append(record)
         if _parks(record):  # quick 261109-gzu; lock order gate, then cond (_append holds gate)
             with self.cond:
@@ -4941,6 +5003,14 @@ class DriveOptions:
     canary_model: str = MODEL  # D-25: the owner's canary may ask for Fable
     session: str = MATCHING  # 07-38 (D-18): `drive --session matching|readability`
     fable_trial: bool = False  # quick 261101-b5f: `drive --fable-trial`
+    # 07.2-06 (D-17), the spike 012 harness: the night's model, a frozen picks file, the
+    # stratified pick list a dry run writes, a hold run, and the hold runs to land.
+    night_model: str | None = None  # `--night-model MODEL`
+    picks: Path | None = None  # `--picks FILE` (read_picks)
+    stratify: tuple[int, int, int] | None = None  # `--stratify A,B,C` (STRATA), dry run only
+    write_picks: Path | None = None  # `--write-picks FILE`, with --stratify
+    hold: bool = False  # `--hold`
+    land_held: tuple[str, ...] = ()  # `--land-held RUN...` (stats.run_selected names)
 
     @property
     def config_root(self) -> Path:
@@ -5091,13 +5161,84 @@ def fable_trial_keys(config_root: Path) -> frozenset[Key]:
     return frozenset(partial - matched_keys(config_root))
 
 
+_PICK_LINE = re.compile(r"([A-Za-z0-9]+)\s+0x([0-9A-Fa-f]{8})")  # `ufo2p 0x0008A0E0`
+# 07.2-06 (D-17, RULINGS): `--stratify A,B,C` takes A rows under 64 B, B of 64 to 255 B and C of
+# 256 B and up: stats.SIZE_BUCKETS with its last two buckets merged (the 256 B todo's six rows).
+STRATA = ((0, 64), (64, 256), (256, None))
+
+
+def read_picks(path: Path) -> frozenset[Key]:
+    """07.2-06 (D-17): a picks file (RULINGS): one function per line, `<exe> 0x<8 hex
+    digits>`; `#` starts a comment and blank lines are ignored. An unknown EXE, an address that
+    is not 0x and 8 hex digits, anything else on the line, or a pick listed twice is a
+    DriverError naming the line number. Nothing else is read from the file (no path, no
+    command)."""
+    path = Path(path)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DriverError(f"{path}: cannot read the picks file: {exc}") from exc
+    seen: dict[Key, int] = {}
+    for number, raw in enumerate(text.splitlines(), start=1):
+        line = raw.split("#", 1)[0].strip()
+        if not line:
+            continue
+        found = _PICK_LINE.fullmatch(line)
+        if found is None or found.group(1) not in EXE_ORDER:
+            raise DriverError(f"{path} line {number}: {line!r} is not `<exe> 0x<8 hex digits>` "
+                              f"with exe one of {', '.join(EXE_ORDER)}")  # fmt: skip
+        key = (found.group(1), int(found.group(2), 16))
+        if key in seen:
+            raise DriverError(f"{path} line {number}: {key[0]} 0x{key[1]:08X} is listed again "
+                              f"(first on line {seen[key]})")  # fmt: skip
+        seen[key] = number
+    return frozenset(seen)
+
+
+def restricted_keys(options: DriveOptions) -> frozenset[Key] | None:
+    """The only functions a night may queue, or None for the whole queue: a Fable trial's
+    (`fable_trial_keys`, quick 261101-b5f) and, 07.2-06 (D-17), the `--picks` file's; with
+    both, the functions in both."""
+    keys = fable_trial_keys(options.config_root) if options.fable_trial else None
+    if options.picks is None:
+        return keys
+    picks = read_picks(options.picks)
+    return picks if keys is None else keys & picks
+
+
+def _key_list(keys: Iterable[Key]) -> str:
+    return _listed([f"{exe} 0x{start:08X}" for exe, start in sorted(keys)])
+
+
+def refuse_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> None:
+    """07.2-06 (D-17): before the night starts, every pick must be in the queue the night
+    builds (the signed tier's items, else the Phase 6 pools) and not yet matched; otherwise a
+    Refused names every pick that is not."""
+    picks = read_picks(options.picks)
+    source = tier_source(options.config_root, worlds)
+    if source is not None:
+        members = {item.key for item in source(None).items}
+    else:
+        members = {(exe, c.address) for exe in EXE_ORDER for c in worlds[exe].pool}
+    matched = matched_keys(options.config_root)
+    outside, done = picks - members - matched, picks & matched
+    problems = []
+    if outside:
+        problems.append(f"not in the queue: {_key_list(outside)}")
+    if done:
+        problems.append(f"already matched: {_key_list(done)}")
+    if problems:
+        raise Refused("picks", f"{options.picks}: " + "; ".join(problems))
+
+
 def _pools(worlds: Mapping[str, ExeWorld]) -> dict[str, Sequence[Candidate]]:
     return {exe: worlds[exe].pool for exe in EXE_ORDER}
 
 
 def _trial_pools(worlds: Mapping[str, ExeWorld],
                  keys: Container[Key]) -> dict[str, Sequence[Candidate]]:  # fmt: skip
-    """Quick 261101-b5f: each EXE's pool candidates a Fable trial may queue (`keys`)."""
+    """Quick 261101-b5f: each EXE's pool candidates a restricted night may queue (`keys`: a
+    Fable trial's, or 07.2-06's picks)."""
     return {exe: [c for c in worlds[exe].pool if (exe, c.address) in keys] for exe in EXE_ORDER}
 
 
@@ -5238,12 +5379,13 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     261101-b5f, OD-3) both queues keep only `fable_trial_keys`: the tier queue in its own
     order, the pools without a signed tier with only the matched rows excluded (a partial row
     of today is a trial row), and `requeue` gives back trial keys only, so the night never
-    takes another function off the difficult list."""
+    takes another function off the difficult list. 07.2-06 (D-17): a `--picks` night is
+    restricted the same way, to its picks (`restricted_keys`)."""
     day = today or _today()
     config_root = options.config_root
     say = console(options, seams)
     readability = options.session == READABILITY
-    trial = fable_trial_keys(config_root) if options.fable_trial else None
+    trial = restricted_keys(options)
     excluded = excluded_keys(config_root, day) if trial is None else matched_keys(config_root)
     tiers = None if readability else tier_source(config_root, worlds, only=trial)
     units_queue = readability_source(options.repo, _world_callees(worlds),
@@ -5333,14 +5475,15 @@ def tier_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     return source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count)
 
 
-def fable_trial_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
-                      count: int) -> list[DryPick]:  # fmt: skip
-    """Quick 261101-b5f (OD-3, OD-5): a Fable trial's first `count` picks, from
-    `fable_trial_keys` only: the signed tier queue's (TierQueue.only, each at its next pass by
-    the committed log's pass index) when a tier is signed, else the Phase 6 pools' minus the
-    matched rows and the difficult list. The trial dry run and the night's drafts both list
-    them (discretion (b): no 5 + 5 pilot, which a short partial set could not fill)."""
-    keys = fable_trial_keys(options.config_root)
+def restricted_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
+                     count: int) -> list[DryPick]:  # fmt: skip
+    """Quick 261101-b5f (OD-3, OD-5): a restricted night's first `count` picks, from
+    `restricted_keys` only (a Fable trial's partial rows; 07.2-06: the `--picks` file's): the
+    signed tier queue's (TierQueue.only, each at its next pass by the committed log's pass
+    index) when a tier is signed, else the Phase 6 pools' minus the matched rows and the
+    difficult list. The dry run and the night's drafts both list them (discretion (b): no
+    5 + 5 pilot, which a short set could not fill)."""
+    keys = restricted_keys(options)
     source = tier_source(options.config_root, worlds, only=keys)
     if source is not None:
         return list(source(pass_index(Path(options.repo) / ATTEMPT_LOG)).preview(count))
@@ -5363,9 +5506,10 @@ def pilot_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
     """D-10: the pilot's 10 picks (5 + 5, interleaved, variety rule), skipping status.csv's
     matched and this pass's partial rows and the difficult list. With a signed tier (07-26,
     ruling F8): the tier queue's first 10 picks instead, with their tier, level and pass. On a
-    Fable trial (quick 261101-b5f): `fable_trial_picks` up to `max_sessions`."""
-    if options.fable_trial:
-        return fable_trial_picks(options, worlds, options.max_sessions)
+    Fable trial (quick 261101-b5f) or a `--picks` night (07.2-06): `restricted_picks` up to
+    `max_sessions`."""
+    if options.fable_trial or options.picks is not None:
+        return restricted_picks(options, worlds, options.max_sessions)
     tiers = tier_picks(options, worlds, DRY_RUN_TIER_PICKS)
     if tiers is not None:
         return list(tiers)
@@ -5380,10 +5524,11 @@ def night_top_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld], *,
     """The queue's first `max_sessions` picks: no night attempts more functions than that, so
     their Ghidra drafts are the ones worth precomputing (D-13). With a signed tier (07-26,
     ruling F8): the tier queue's first `max_sessions` distinct picks. On a Fable trial (quick
-    261101-b5f, discretion (b)): the picks of `fable_trial_picks`, as its dry run lists them."""
-    if options.fable_trial:
+    261101-b5f, discretion (b)) or a `--picks` night (07.2-06): the picks of
+    `restricted_picks`, as its dry run lists them."""
+    if options.fable_trial or options.picks is not None:
         return [_pick_of(entry) for entry in
-                fable_trial_picks(options, worlds, options.max_sessions)]  # fmt: skip
+                restricted_picks(options, worlds, options.max_sessions)]  # fmt: skip
     tiers = tier_picks(options, worlds, options.max_sessions)
     if tiers is not None:
         return [item.pick for item in tiers]
@@ -5570,6 +5715,11 @@ FABLE_TRIAL_DRY_RUN = ("fable trial: {count} picks, every session would run on {
                        "{budget:g} per session; queued from partial status.csv rows only")
 FABLE_TRIAL_NIGHT = ("fable trial: every session runs on {model} at USD {budget:g} per "
                      "session; queued from partial status.csv rows only")
+# 07.2-06 (D-17): the night console lines of `--night-model` and `--hold` ("hold run", never
+# "held", which names the signed asm hold of the dry run's `held:` line)
+NIGHT_MODEL_LINE = "night model: every matching session runs on {model}"
+HOLD_RUN_LINE = ("hold run: nothing lands and each function is attempted once; marked by "
+                 "build/driver/{run}/" + HOLD_RUN_MARKER)
 
 
 def dry_run(options: DriveOptions, worlds: Mapping[str, ExeWorld],
@@ -5849,6 +5999,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                     return readability_dry_run(options, worlds, git=seams.git)
         else:
             with _phase("picks"):
+                if options.picks is not None:  # 07.2-06: refused before anything is built
+                    refuse_picks(options, worlds)
                 picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
                                                                                today=today)
                 held = tier_held(options, worlds) if options.dry_run else None
@@ -5871,10 +6023,15 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          max_turns=options.max_turns,
                          wall_clock_s=options.session_minutes * 60,
                          session=options.session,
-                         fable_trial=options.fable_trial)  # fmt: skip
+                         fable_trial=options.fable_trial,
+                         night_model=options.night_model, hold=options.hold)  # fmt: skip
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))
+    if options.night_model is not None:  # 07.2-06 (D-17)
+        console(options, seams)(NIGHT_MODEL_LINE.format(model=options.night_model))
+    if options.hold:
+        console(options, seams)(HOLD_RUN_LINE.format(run=options.run_id))
     report = drive(config, deps, lock=lock)
     doc = {"event": report.event, "reason": report.reason, "sessions": report.sessions,
            "matched": report.matched, "parked": report.parked, "detail": report.detail,

@@ -1728,6 +1728,10 @@ def _cmd_drive(args: argparse.Namespace) -> int:
     without `--canary` is refused (exit 2): a night takes each pass's model from D-09.
     `--fable-trial` (quick 261101-b5f) is for a matching night: with `--canary` or
     `--session readability` it is refused (exit 2) before any preflight."""
+    harness = _harness_conflict(args)  # 07.2-06: before --model's own rule names it
+    if harness is not None:
+        print(HARNESS_FLAGS_REFUSED.format(conflict=harness), file=sys.stderr)
+        return 2
     if args.model is not None and not args.canary:
         print("reverseapoc drive: error: --model needs --canary (a night runs passes 1-2 on "
               f"{session.OPUS_MODEL} and later passes on {session.FABLE_MODEL}, D-09)",
@@ -1746,9 +1750,13 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   fable_budget_usd=args.fable_budget_usd,
                                   max_turns=args.max_turns,
                                   session_minutes=args.session_minutes,
-                                  canary_model=args.model or session.MODEL,
+                                  canary_model=args.night_model or args.model or session.MODEL,
                                   session=args.session,
-                                  fable_trial=args.fable_trial)  # fmt: skip
+                                  fable_trial=args.fable_trial,
+                                  night_model=args.night_model,
+                                  picks=args.picks, stratify=args.stratify,
+                                  write_picks=args.write_picks, hold=args.hold,
+                                  land_held=tuple(args.land_held or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1765,6 +1773,83 @@ def _fable_trial_conflict(args: argparse.Namespace) -> str | None:
     if args.session == driver.READABILITY:
         return "--session readability"
     return None
+
+
+HARNESS_FLAGS_REFUSED = "reverseapoc drive: error: {conflict}"  # 07.2-06 (D-17)
+_LAND_HELD_WITH = (("picks", "--picks"), ("hold", "--hold"), ("night_model", "--night-model"),
+                   ("stratify", "--stratify"), ("dry_run", "--dry-run"), ("canary", "--canary"),
+                   ("fable_trial", "--fable-trial"))  # fmt: skip
+
+
+def _harness_conflict(args: argparse.Namespace) -> str | None:
+    """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
+    model is for a matching night that is no Fable trial; a hold run is a matching night that
+    launches sessions; --stratify writes its picks file from a dry run; --land-held lands
+    and launches nothing."""
+    readability = args.session == driver.READABILITY
+    if args.land_held:
+        clash = [flag for name, flag in _LAND_HELD_WITH if getattr(args, name)]
+        if clash:
+            return f"--land-held cannot be used with {', '.join(clash)}"
+    if args.night_model is not None and (args.fable_trial or readability):
+        return ("--night-model cannot be used with "
+                f"{'--fable-trial' if args.fable_trial else '--session readability'}")
+    if args.night_model is not None and args.model is not None:
+        return "--night-model cannot be used with --model (--canary --night-model X asks for X)"
+    if args.hold and (readability or args.canary or args.dry_run):
+        return ("--hold cannot be used with " + ("--session readability" if readability
+                                                 else "--canary" if args.canary
+                                                 else "--dry-run"))  # fmt: skip
+    if args.write_picks is not None and args.stratify is None:
+        return "--write-picks needs --stratify"
+    if args.stratify is not None and (args.write_picks is None or not args.dry_run):
+        return f"--stratify needs {'--write-picks' if args.write_picks is None else '--dry-run'}"
+    if args.picks is not None and args.stratify is not None:
+        return "--picks cannot be used with --stratify (which writes a picks file)"
+    return None
+
+
+def _stratify(value: str) -> tuple[int, int, int]:
+    """`A,B,C`: the rows to take under 64 B, of 64 to 255 B and of 256 B and up (STRATA)."""
+    parts = value.split(",")
+    if len(parts) != len(driver.STRATA):
+        raise argparse.ArgumentTypeError(f"{value!r} is not three counts A,B,C")
+    try:
+        return tuple(_non_negative(part) for part in parts)
+    except argparse.ArgumentTypeError as exc:
+        raise argparse.ArgumentTypeError(f"{value!r}: {exc}") from exc
+
+
+def _run_name(value: str) -> str:
+    """A run id, or a run id prefix ending in `*` (stats.run_selected)."""
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+\*?", value):
+        raise argparse.ArgumentTypeError(f"run name {value!r} is not [A-Za-z0-9_.-]+ with an "
+                                         "optional trailing *")  # fmt: skip
+    return value
+
+
+def _add_harness_flags(p: argparse.ArgumentParser) -> None:
+    """07.2-06 (D-17): the spike 012 harness (docs/model-routing.md)."""
+    p.add_argument("--night-model", type=_model, default=None, metavar="MODEL",
+                   help="every matching session of the night on MODEL instead of the pass's "
+                   f"({', '.join(session.MODEL_NAMES)}); with --canary, the canary's model; "
+                   "refused with --fable-trial and --session readability")  # fmt: skip
+    p.add_argument("--picks", type=Path, default=None, metavar="FILE",
+                   help="queue only the functions FILE lists, one `<exe> 0x<8 hex digits>` "
+                   "per line; a pick outside the queue or already matched is refused")
+    p.add_argument("--stratify", type=_stratify, default=None, metavar="A,B,C",
+                   help="with --dry-run and --write-picks: take the first A unattempted rows "
+                   "under 64 B, B of 64 to 255 B and C of 256 B and up, in queue order")
+    p.add_argument("--write-picks", type=Path, default=None, metavar="FILE",
+                   help="with --stratify: write the stratified picks to FILE")
+    p.add_argument("--hold", action="store_true",
+                   help="a hold run: nothing lands (no lint, gate or status.csv write), each "
+                   "function is attempted once, the records say hold_run; refused with "
+                   "--canary, --dry-run and --session readability")  # fmt: skip
+    p.add_argument("--land-held", type=_run_name, nargs="+", default=None, metavar="RUN",
+                   help="land each function a hold run checked exactly, once, from the "
+                   "cheapest attempt of the named runs (a trailing * is a prefix), through "
+                   "the land, lint and gate")  # fmt: skip
 
 
 def _add_drive_command(sub: argparse._SubParsersAction) -> None:
@@ -1820,6 +1905,7 @@ def _add_drive_command(sub: argparse._SubParsersAction) -> None:
     p.add_argument("--run", type=_run_id, default=None, metavar="ID",
                    help="the run id under build/driver/; default: the UTC start time")
     p.add_argument("--json", action="store_true", help="print exactly one JSON document")
+    _add_harness_flags(p)
     p.set_defaults(func=_cmd_drive)
 
 

@@ -117,6 +117,10 @@ CACHE_FORMAT = 1
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
+# 07.2-06 (D-17): build/driver/<run>/HELD marks a hold run, whose attempts never land and stay
+# out of later packs. Defined here because earlier_notes reads it and the wrapper cannot import
+# the driver; driver.HOLD_RUN_MARKER is this object.
+HOLD_RUN_MARKER = "HELD"
 CONTAINER_RUN = ("docker", "compose", "run", "--rm", "-T")
 CONTAINER_CHECK = ("build", "uv", "run", "--frozen", "reverseapoc", "check")
 CONTAINER_PREFIX = "reverseapoc-attempt-"  # + 8 hex of the attempt dir + -NNNN (M7, 06-23)
