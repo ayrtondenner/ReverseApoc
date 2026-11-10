@@ -448,6 +448,65 @@ def test_agyjson_a_denial_must_be_exact():
         "step 8", "step 9", "step 10"]
 
 
+def _not_absolute(path: str) -> str:
+    """agy 1.5.5's whole message for a relative path it rejects before its permission check
+    (round 3, gemini's relative read: the path as the model requested it, unquoted)."""
+    return (f"declaring permissions: failed to parse path: {path} must be an absolute path: "
+            "path is not absolute")
+
+
+def _rejected(index: int, tool: str, path: str, *, message: str | None = None,
+              **over) -> dict:  # fmt: skip
+    """A path step agy 1.5.5 rejected for its relative path, as round 3 shows it: ERROR,
+    TOOL_ERROR, `_not_absolute(path)` (`message`, else)."""
+    error = {"type": "TOOL_ERROR", "message": message or _not_absolute(path)}
+    return _step(index, tool, state=over.pop("state", "ERROR"), name=tool,
+                 parameters={"Path": path}, error=error, **over)  # fmt: skip
+
+
+def test_agyjson_a_relative_path_rejection_must_be_exact():
+    """Owner ruling 2026-11-10 ("count the rejection"), round 3: agy 1.5.5 rejects a relative
+    path before its permission check, ending the step ERROR with `declaring permissions:
+    failed to parse path: <path> must be an absolute path: path is not absolute`.
+    `rejections` names each such step by its index, tool and request, and only agy's exact
+    rejection: a known path tool in its known shape (its error aside), no subagent, ERROR,
+    TOOL_ERROR, the whole message in that format with the step's own request as written. A
+    rejection is no denial: it stays in the reads and writes the night audit judges (fail
+    closed) and in `undenied_steps`, unless the caller names it as one it counts (`rejected`).
+    Anything less exact is no rejection: another path in the message (even one differing only
+    in slash direction), text before it, its tail cut, another error type, a step that ended
+    DONE, a subagent's step, a command step."""
+    relative = "../../../orig/x.txt"
+    events = [_rejected(1, "read_file", relative), _rejected(2, "write_file", relative)]
+    assert agyjson.rejections(events) == [agyjson.Rejection(1, "read_file", relative),
+                                          agyjson.Rejection(2, "write_file", relative)]
+    assert agyjson.denials(events) == []
+    assert agyjson.read_targets(events) == [relative]
+    assert agyjson.write_targets(events) == [relative]
+    assert agyjson.undenied_steps(events) == [
+        f"step 1: read_file (ERROR: {_not_absolute(relative)})",
+        f"step 2: write_file (ERROR: {_not_absolute(relative)})"]
+    counted = agyjson.rejections(events)[:1]
+    assert agyjson.undenied_steps(events, rejected=counted) == [
+        f"step 2: write_file (ERROR: {_not_absolute(relative)})"]
+    command = "type ..\\x.txt"
+    inexact = [_rejected(3, "read_file", relative, message=_not_absolute("../orig/x.txt")),
+               _rejected(4, "read_file", relative,
+                         message=_not_absolute(relative.replace("/", "\\"))),
+               _rejected(5, "read_file", relative, message="made-up: " + _not_absolute(relative)),
+               _rejected(6, "read_file", relative,
+                         message=_not_absolute(relative).removesuffix(": path is not absolute")),
+               _rejected(7, "read_file", relative, state="DONE"),
+               _rejected(8, "read_file", relative, subagent={"name": "made-up"}),
+               _run(9, command, state="ERROR",
+                    error={"type": "TOOL_ERROR", "message": _not_absolute(command)})]
+    other_type = _rejected(10, "read_file", relative)
+    other_type["step_update"]["tool_info"]["error"]["type"] = "MADE_UP_ERROR"
+    inexact.append(other_type)
+    assert agyjson.rejections(inexact) == []
+    assert len(agyjson.undenied_steps(inexact)) == len(inexact)
+
+
 def test_agyjson_ignores_a_line_outside_the_envelope():
     """A line that is not agy 1.5.5's envelope (the flat shape RESEARCH assumed) is no event:
     no init, no result, no step."""
@@ -1054,21 +1113,47 @@ def test_agy_canary_read_probe_proof_is_its_request_and_its_denial(tmp_path, cap
     """A read probe passes on two facts of one step: its request is the asked spelling, and
     agy's permission check denied it naming the probe file (in agy's canonical spelling,
     test_agy_canary_pass). The asked spelling "denied" naming some other file is no denial of
-    that step (agyjson: the target must be the step's own request), so it counts as run.
-    Gemini's round-3 relative read (agy refused the relative path before its permission check,
-    `must be an absolute path`, then the model requested the plain path and that was denied)
-    FAILs naming the refused step and agy's error: never a PASS."""
-    cases = (("canary_agy_deny_read_elsewhere", ("not denied by agy's permission check",)),
-             ("canary_agy_read_not_absolute", ("not denied by agy's permission check",
-                                               "must be an absolute path")))  # fmt: skip
-    for scenario, verdicts in cases:
-        rig = _agy_canary_rig(tmp_path / scenario, scenarios={"relative-read": scenario})
+    that step (agyjson: the target must be the step's own request), so it counts as run."""
+    scenario = "canary_agy_deny_read_elsewhere"
+    rig = _agy_canary_rig(tmp_path / scenario, scenarios={"relative-read": scenario})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (1, "FAIL"), scenario
+    failed = _failed(doc)
+    assert ("the relative read probe: " in failed
+            and "not denied by agy's permission check" in failed), failed
+    assert _no_pass(rig), scenario
+
+
+def test_agy_canary_relative_read_counts_the_rejection(tmp_path, capsys):
+    """Owner ruling 2026-11-10 ("count the rejection"): agy 1.5.5 rejects a relative path
+    before its permission check (round 3, gemini's relative read: `declaring permissions:
+    failed to parse path: <path> must be an absolute path: path is not absolute`), so the
+    relative read probe also passes when the step's request is exactly the asked relative
+    spelling (slash direction aside) and that very step ended with agy's exact rejection; the
+    model's later read of the plain path, denied, changes nothing. Any other outcome FAILs as
+    a step that ran: a rejection of a rewritten path, another error, and the same rejection in
+    any other read probe (only the relative one counts it; the rest need a real denial)."""
+    scenario = "canary_agy_read_not_absolute"
+    rig = _agy_canary_rig(tmp_path / scenario, scenarios={"relative-read": scenario})
+    code, doc = _agy_canary(rig, capsys)
+    assert (code, doc["canary"]) == (0, "PASS"), _failed(doc)
+    texts = " | ".join(c["check"] for c in doc["checks"] if c["ok"])
+    asked, _ = _read_spellings(rig.repo / doc["attempt_dir"], rig.repo)["relative-read"]
+    assert ("the relative read probe was rejected" in texts and "at step 2" in texts
+            and repr(asked.replace("/", "\\")) in texts), texts  # fmt: skip
+    fails = (("relative-read", "canary_agy_read_not_absolute_rewritten"),
+             ("relative-read", "canary_agy_read_not_absolute_other"),
+             ("dot-dot-read", "canary_agy_read_not_absolute"),
+             ("different-case-read", "canary_agy_read_not_absolute"))  # fmt: skip
+    for name, scenario in fails:
+        here = tmp_path / f"{name}-{scenario}"
+        rig = _agy_canary_rig(here, scenarios={name: scenario})
         code, doc = _agy_canary(rig, capsys)
-        assert (code, doc["canary"]) == (1, "FAIL"), scenario
+        assert (code, doc["canary"]) == (1, "FAIL"), (name, scenario)
         failed = _failed(doc)
-        for verdict in verdicts:
-            assert "the relative read probe: " in failed and verdict in failed, (scenario, failed)
-        assert _no_pass(rig), scenario
+        assert (f"the {name.replace('-', ' ')} probe: " in failed
+                and "not denied by agy's permission check" in failed), (name, scenario, failed)
+        assert _no_pass(rig), (name, scenario)
 
 
 def test_agy_canary_command_probes_count_either_command_kind(tmp_path, capsys):
