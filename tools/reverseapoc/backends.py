@@ -67,6 +67,7 @@ NONESSENTIAL_ENV = "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
 MODEL_PINS = ("ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",
               "ANTHROPIC_DEFAULT_HAIKU_MODEL")  # fmt: skip
 INHERITED = (BASE_URL_ENV, AUTH_TOKEN_ENV, *MODEL_PINS, EGRESS_ENV)  # stripped from every session
+CLAUDE = HARNESSES[0]  # the Claude Code harness: hooks, its login or an Anthropic endpoint
 CODEX = "codex"  # the Codex CLI harness (07.2-13, D-13)
 AGY = "agy"  # the Antigravity CLI harness (07.2-15, D-21)
 SIGNED_IN = (CODEX, AGY)  # harnesses on their own CLI login: no endpoint, no key, env stripped

@@ -1341,20 +1341,55 @@ def _wrapper_regex() -> str:
     return f"^{prefix} (?:{'|'.join(_form_regex(f) for f in hooks.MATCHING_FORMS)})$"
 
 
+def _any_case(word: str) -> str:
+    """`word` as a regex of either case per letter, with no inline flag (agy's regex engine is
+    not known to take one)."""
+    return "".join(f"[{c.upper()}{c.lower()}]" if c.isalpha() else c for c in word)
+
+
 def agy_settings(claim: _Claim) -> dict:
-    """07.2-15 (D-24): the agy session's permission rules: allow only the attempt wrapper's
-    forms (headless agy soft-denies everything unconfigured, so the allow list is the whole
-    surface, RESEARCH "Permissions")."""
-    return {"permissions": {"allow": [f"command(regex:{_wrapper_regex()})"], "deny": []}}
+    """07.2-15 (D-24): the agy session's permission rules (Deny > Ask > Allow). Allow: the
+    attempt wrapper's forms only, and write_file of exactly the session's own files (its view
+    unit, notes.md and the three session files beside it). Headless agy soft-denies everything
+    unconfigured, so the allow list is the whole surface (RESEARCH "Permissions"). Deny: any
+    command naming orig or third_party (either case), reads and writes under the checkout's
+    orig/ and third_party/ (D-10), and every unsandboxed command."""
+    files = [claim.view_unit, claim.notes,
+             *(claim.attempt_dir / name for name in hooks.SESSION_FILE_NAMES)]
+    named = "|".join(_any_case(part) for part in _FORBIDDEN_PARTS)
+    roots = [f"{claim.repo.as_posix()}/{part}/**" for part in _FORBIDDEN_PARTS]
+    allow = [f"command(regex:{_wrapper_regex()})",
+             *(f"write_file({path.as_posix()})" for path in files)]
+    deny = [f"command(regex:.*({named}).*)",
+            *(f"{action}({root})" for action in ("read_file", "write_file") for root in roots),
+            "unsandboxed(regex:.*)"]  # fmt: skip
+    return {"permissions": {"allow": allow, "deny": deny}}
+
+
+def agy_settings_bytes(claim: _Claim) -> bytes:
+    """The settings file's bytes: the driver writes them at launch and the audit expects them
+    unchanged afterwards (the same claim always gives the same bytes)."""
+    return (json.dumps(agy_settings(claim), indent=2) + "\n").encode("utf-8")
 
 
 def write_agy_settings(claim: _Claim) -> None:
     """build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json, written by the driver before
     each agy session, outside its workspace (the attempt dir) and never in the repo or the
-    user's settings: passed with `--settings`."""
+    user's settings: passed with `--settings`. The driver never writes agy's user-global
+    settings (D-24's fallback is the owner's step, docs/legal.md)."""
     path = claim.agy_settings
     path.parent.mkdir(parents=True, exist_ok=True)
-    write_atomic(path, (json.dumps(agy_settings(claim), indent=2) + "\n").encode("utf-8"))
+    write_atomic(path, agy_settings_bytes(claim))
+
+
+def read_strays(targets: Sequence[str], *, attempt_dir: Path, repo: Path) -> list[str]:
+    """07.2-15 (D-10): why each path an agy tool step read is a stray: it names orig/ or
+    third_party/ in any spelling, or lies outside the checkout (relative paths are agy's cwd,
+    the attempt dir)."""
+    roots = _roots(repo, None)
+    return [f"{raw}: a read naming {_forbidden_part(raw) or 'a path outside the checkout'}"
+            for raw in targets
+            if _forbidden_part(raw) or _codex_rels(raw, attempt_dir, roots) is None]  # fmt: skip
 
 
 def _forbidden_part(text: str) -> str | None:
@@ -2042,6 +2077,11 @@ class _Claim:
     def agy(self) -> bool:
         """07.2-15 (D-21): the session runs under the Antigravity CLI (its arm's harness)."""
         return self.arm is not None and self.arm.harness == backends.AGY
+
+    @property
+    def harness(self) -> str:
+        """The agent CLI the session runs under: its arm's harness, `claude` with no arm."""
+        return self.arm.harness if self.arm is not None else backends.CLAUDE
 
     @property
     def signed_in(self) -> bool:
@@ -3490,8 +3530,8 @@ class _Night:
         stray += [name for name in session.pinned_changed if name not in stray]
         stray += [name for name in session.print_changed if name not in stray]
         stray += [name for name in self._base_changed(session) if name not in stray]
-        if session.claim.codex:  # 07.2-13: the Codex stream is never read as a Claude one
-            stray += [s for s in self._codex_strays(session, allowed) if s not in stray]
+        if session.claim.harness != backends.CLAUDE:  # 07.2-13, 07.2-15: never read as Claude's
+            stray += [s for s in self._signed_in_strays(session, allowed) if s not in stray]
             return stray
         raws = _write_targets(session.events)
         for raw, rels in zip(raws, transcript_paths(session.events, self.repo), strict=True):
@@ -3514,15 +3554,32 @@ class _Night:
         write_atomic(claim.wrapper_ledger, b"")
         return attempt_inventory(claim.attempt_dir)
 
-    def _codex_strays(self, session: _Session, allowed: Callable[[str], bool]) -> list[str]:
-        """07.2-13 (D-13, D-26): what a Codex session did that no hook stopped: its commands and
-        file_change paths (codexjson), and its attempt dir against the launch inventory and the
-        wrapper's ledger. A file to contain is named by its repo-relative path; every reason
-        carries _AUDIT_MARK."""
+    def _signed_in_strays(self, session: _Session, allowed: Callable[[str], bool]) -> list[str]:
+        """07.2-13 (D-13, D-26), 07.2-15 (D-21, D-24): what a Codex or agy session did that no
+        hook stopped, read from that harness's own stream (never the Claude transcript
+        reader): its commands, its written paths (relative ones from the attempt dir, Codex's
+        --cd and agy's cwd) and, for agy, its read paths and its settings file; then its attempt
+        dir against the launch inventory and the wrapper's ledger. A harness the audit does not
+        know is a stray (fail closed). A file to contain is named by its repo-relative path;
+        every reason carries _AUDIT_MARK."""
         claim = session.claim
-        reasons = codex_command_strays(codexjson.commands(session.events))
-        reasons += codex_write_strays(codexjson.write_targets(session.events),
-                                      attempt_dir=claim.attempt_dir, repo=self.repo,
+        events = session.events
+        reasons: list[str] = []
+        if claim.agy:
+            commands, writes = agyjson.commands(events), agyjson.write_targets(events)
+            reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
+                                   repo=self.repo)  # fmt: skip
+            if _read(claim.agy_settings) != agy_settings_bytes(claim):
+                shown = claim.agy_settings.relative_to(self.repo).as_posix()
+                reasons.append(f"{shown}: changed since the launch (the driver's settings file)")
+        elif claim.codex:
+            commands, writes = codexjson.commands(events), codexjson.write_targets(events)
+        else:
+            commands, writes = [], []
+            reasons.append(f"harness {claim.harness!r}: no audit for it, so nothing it did is "
+                           "trusted")  # fmt: skip
+        reasons += codex_command_strays(commands)
+        reasons += codex_write_strays(writes, attempt_dir=claim.attempt_dir, repo=self.repo,
                                       allowed=allowed)  # fmt: skip
         files = []
         found = codex_inventory_strays(attempt_inventory(claim.attempt_dir),
