@@ -10,6 +10,7 @@ reach an assertion or a log.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -145,6 +146,37 @@ def test_codex_prompt():
         assert name in prompt, name
     assert "uv run --frozen reverseapoc attempt" in prompt
     assert "orig/" not in prompt and "orig\\" not in prompt
+
+
+def _note(prompt: str) -> str:
+    [note] = [part for part in prompt.split("\n\n") if part.startswith("Harness note:")]
+    return note
+
+
+def test_codex_prompt_harness_note():
+    """07.2 review WR-10: the skill says to look around with Read, Grep and Glob, which a Codex
+    session does not have. One harness note after the skill body, before the session rules,
+    says so and names where files are read instead: the wrapper forms that print (context,
+    asm, asm <NAME>, check), each of them a form the rules allow. The session rules forbid any
+    other command, reads, listings and searches included; nothing names a read tool."""
+    from reverseapoc import hooks
+
+    goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
+    skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
+    prompt = session.codex_prompt(goal, skill)
+    note = _note(prompt)
+    assert "no Read, Grep or Glob tool" in note
+    assert prompt.index("# Matching one Watcom function") < prompt.index(note)
+    assert prompt.index(note) < prompt.index("Session rules:")
+    forms = re.findall(r"`(attempt [^`]+)`", note)
+    assert sorted(forms) == ["attempt asm", "attempt asm <NAME>", "attempt check",
+                             "attempt context"]  # fmt: skip
+    for form in forms:
+        command = f"uv run --frozen reverseapoc {form.replace('<NAME>', 'func_00010020')}"
+        assert hooks.bash_allowed(command, kind="matching"), command
+    closing = prompt[prompt.index("Session rules:"):]
+    assert "not even to read, list or search a file" in closing
+    assert "read_file" not in prompt
 
 
 def test_drive_codex_arm_records(tmp_path, capsys, monkeypatch):

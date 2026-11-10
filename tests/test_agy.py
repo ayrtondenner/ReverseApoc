@@ -140,15 +140,27 @@ def test_each_agy_arm_builds_a_valid_argv(tmp_path):
         assert argv[argv.index("--model") + 1] == model
 
 
-def test_agy_prompt():
+def test_agy_prompt(tmp_path):
     """Built as the Codex prompt is: the matching goal without /goal, the watcom-decomp skill's
-    body without its front matter, and the session rules; no orig/ path."""
+    body without its front matter, the harness note and the session rules; no orig/ path.
+    07.2 review WR-10: agy's settings also allow its read_file tool inside the attempt dir and
+    nowhere else, so its harness note says exactly that, besides the Codex note's wrapper
+    forms; the rest of the prompt is the Codex one."""
     goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
     skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
     prompt = session.agy_prompt(goal, skill)
-    assert prompt == session.codex_prompt(goal, skill)
+    codex = session.codex_prompt(goal, skill)
     assert goal.removeprefix("/goal ") in prompt and "# Matching one Watcom function" in prompt
     assert "orig/" not in prompt
+    [note] = [part for part in prompt.split("\n\n") if part.startswith("Harness note:")]
+    [codex_note] = [part for part in codex.split("\n\n") if part.startswith("Harness note:")]
+    assert prompt == codex.replace(codex_note, note)
+    assert note.startswith(codex_note)
+    assert "read_file" in note and "inside this attempt's directory" in note
+    claim = driver._Claim(driver.Pick(EXE, 0x1000, "func_00001000", UNIT, 20, 1), RUN,
+                          tmp_path / "repo", 1, arm=backends.load_arms()[GEMINI])  # fmt: skip
+    reads = _rule(driver.agy_settings(claim)["permissions"]["allow"], "read_file")
+    assert reads == [f"{claim.attempt_dir.as_posix()}/**"]
 
 
 def test_agyjson_init_problems(tmp_path):
