@@ -199,6 +199,38 @@ def test_session_env_anthropic_strips():
     assert env == {"PATH": "made-up"}
 
 
+_VENDOR_LEAKS = {
+    "ANTHROPIC_CUSTOM_HEADERS": "X-Made-Up: 1", "ANTHROPIC_MODEL": "made-up",
+    "ANTHROPIC_SMALL_FAST_MODEL": "made-up", "ANTHROPIC_API_KEY": "made-up-0010",
+    "ANTHROPIC_BEDROCK_BASE_URL": "https://bedrock.invalid", "CLAUDE_CODE_USE_BEDROCK": "1",
+    "CLAUDE_CODE_USE_VERTEX": "1", "OPENAI_API_KEY": "made-up-0011",
+    "OPENAI_ORG_ID": "made-up-org", "GOOGLE_API_KEY": "made-up-0012",
+    "GEMINI_API_KEY": "made-up-0013", "GOOGLE_APPLICATION_CREDENTIALS": "C:/made-up.json",
+}  # fmt: skip
+_OAUTH = "CLAUDE_CODE_OAUTH_TOKEN"
+
+
+@pytest.mark.parametrize("name", [OPUS, DEEPSEEK, "qwen-local", "gpt-6-luna", "gemini-flash"])
+def test_session_env_strips_every_vendor_routing_and_credential_variable(name):
+    """07.2 review WR-09: no session inherits a vendor's routing or credential variable that is
+    not its arm's own: every ANTHROPIC_* (custom headers, model, Bedrock and Vertex URLs among
+    them), every CLAUDE_CODE_USE_* (which would reroute a Claude session off its base URL),
+    every OPENAI_* and every Google key or credentials variable. The Claude Code login's own
+    token (CLAUDE_CODE_OAUTH_TOKEN) reaches only an Anthropic-login session. What is left is
+    the base's other variables plus what the arm itself sets."""
+    arms = _arms()
+    arm = arms[name]
+    base = {"PATH": "made-up", "DEEPSEEK_API_KEY": FAKE_DEEPSEEK, **_VENDOR_LEAKS,
+            _OAUTH: "made-up-oauth-0014"}  # fmt: skip
+    env = session_env(arm, base, arms)
+    own = session_env(arm, {"PATH": "made-up", "DEEPSEEK_API_KEY": FAKE_DEEPSEEK}, arms)
+    if arm.backend == "anthropic":
+        own[_OAUTH] = "made-up-oauth-0014"
+    assert env == own, sorted(set(env) ^ set(own))
+    for leak, value in _VENDOR_LEAKS.items():
+        assert env.get(leak) != value, leak
+
+
 def test_session_env_without_the_table_uses_the_committed_one():
     """RULINGS names session_env(arm, base_env): the table defaults to the committed one."""
     arms = _arms()
