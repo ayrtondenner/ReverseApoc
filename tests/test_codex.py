@@ -575,6 +575,20 @@ def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
     assert (outside / "attempt-cache" / "x.json").is_file()
 
 
+# ---- 07.2 review WR-04: a session file or the transcript passes only as a regular file ----
+
+
+@pytest.mark.parametrize("name", ["notes.md", "plan.json", "check-note.json", "giveup.json",
+                                  "proposals.jsonl", "transcript.jsonl"])  # fmt: skip
+@pytest.mark.parametrize("digest", ["link:C:/made-up/orig/UFO2P.EXE", "outside:C:/made-up"])
+def test_a_linked_session_file_is_a_stray(name, digest):
+    """WR-04: attempt_inventory records a link by its target, never followed. A session file
+    or the transcript recorded as a link (or as resolving outside the attempt dir) is a stray,
+    whatever its name: the driver and the wrapper would read through it."""
+    strays = dict(driver.codex_inventory_strays({name: digest}, launch={}, ledger={}))
+    assert name in strays, strays
+
+
 # ---- 07.2 review WR-03: the Codex audit fails closed on item types it does not know ----
 
 
