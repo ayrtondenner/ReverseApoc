@@ -161,9 +161,9 @@ ATTEMPT_FORMS = (
     ("asm", ATTEMPT_NAME_SLOT),
     ("context",),
 )
-# 07.2-02 (D-26): the verbs only a matching session runs; a readability session gets no new form
-# and keeps ATTEMPT_FORMS (forms_for).
-MATCHING_FORMS = ATTEMPT_FORMS + (("giveup",),)
+# 07.2-02, 07.2-03 (D-26): the verbs only a matching session runs; a readability session gets no
+# new form and keeps ATTEMPT_FORMS (forms_for).
+MATCHING_FORMS = ATTEMPT_FORMS + (("giveup",), ("plan",))
 # Review WR-04: the Bash tool's timeout an `attempt check` needs (a run lasts up to 580 s plus
 # its clean-up); at the tool's 120 s default the wrapper is killed and check.lock stays behind.
 CHECK_TIMEOUT_MS = 600_000

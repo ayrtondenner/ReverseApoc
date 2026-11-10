@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The attempt wrapper (D-44): the only commands a matching session runs through Bash.
 
-`uv run --frozen reverseapoc attempt check|asm|context|giveup` is bound to the claimed function.
+`uv run --frozen reverseapoc attempt check|asm|context|giveup|plan` is bound to the claimed
+function.
 The claim comes only from the driver's environment (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC,
 REVERSEAPOC_ATTEMPT_DIR), each validated here; no agent argument chooses the unit, the
 function, the flags, the Watcom tree or the source root. The accepted argument shapes are
@@ -15,7 +16,8 @@ it reserves no check slot and runs no container.
 A matching session's `attempt check` (07.2-03, 999.6, D-01..D-03, D-26) first needs the
 session's plan.json (`read_plan`: FRAME, SLOT, CALL and REGION entries, the regions covering the
 claimed row) and a check-note.json (`read_check_note`: change, why and expect), both siblings of
-notes.md. They are validated after the budget test and before the slot is reserved, so a
+notes.md; `attempt plan` validates the plan alone, with no slot and no container. They are
+validated after the budget test and before the slot is reserved, so a
 refusal (exit 2) uses none of the checks. After the run the note moves to checks/NNNN.note.json
 with what the run observed, written by the tool (D-02); checks.jsonl points at it. A readability
 check needs neither.
@@ -1365,6 +1367,25 @@ def read_check_note(path: Path) -> dict:
         if problem:
             raise AttemptError(f"{CHECK_NOTE_NAME} {key} {problem}")
     return {key: doc[key] for key in NOTE_KEYS}
+
+
+def _region_text(region: Mapping[str, Any]) -> str:
+    return f"  0x{region['start']:03X}-0x{region['end'] - 1:03X}  {region['intent']}"
+
+
+def cmd_plan() -> int:
+    """`attempt plan`: validate <attempt dir>/plan.json (the notes file's sibling) against the
+    claimed row's size and print the accepted regions. A matching session only (D-26); no check
+    slot, no container."""
+    claim = Claim.from_env(os.environ, roots=ROOTS)
+    if claim.kind != SESSION_KINDS[0]:
+        raise AttemptError(f"attempt plan is a matching-session verb; a {claim.kind} session "
+                           "writes no plan (D-26)")  # fmt: skip
+    plan = read_plan(claim.attempt_dir / PLAN_NAME, _claimed_size(claim, ROOTS))
+    print("attempt plan: accepted")
+    for region in plan["regions"]:
+        print(_region_text(region))
+    return EXIT_OK
 
 
 def _plan_and_note(claim: Claim, roots: Roots) -> dict | None:

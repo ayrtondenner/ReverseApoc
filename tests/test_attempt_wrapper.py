@@ -2119,7 +2119,9 @@ def test_plan_verb(repo: Path, monkeypatch, capsys):
 
 
 @pytest.mark.parametrize(("size", "doc", "named"), [
-    (0x30, _cut([0, 0x10, 0x18, 0x30]), "a gap"),
+    (0x30, {**_cut([0, 0x30]), "regions": [{"start": 0, "end": 0x10, "intent": "a"},
+                                           {"start": 0x18, "end": 0x30, "intent": "b"}]},
+     "a gap"),
     (0x30, _cut([0x4, 0x30]), "a gap"),
     (0x30, {**_cut([0, 0x30]), "regions": [{"start": 0, "end": 0x20, "intent": "a"},
                                            {"start": 0x10, "end": 0x30, "intent": "b"}]},

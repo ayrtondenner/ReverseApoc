@@ -1540,7 +1540,8 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
     """`attempt check`: exit 0 only when the claimed function matches and check passes its
     unit, 1 for a mismatch or a claimed function that was not compiled, 2 for a refusal or any
     tool error (never a pass). `attempt check --sweep` exits 0 when it ran (never a match) and
-    2 when it did not. `attempt giveup` exits 0 when giveup.json is valid, 2 otherwise. The
+    2 when it did not. `attempt giveup` and `attempt plan` exit 0 when giveup.json or plan.json
+    is valid, 2 otherwise. The
     arguments after `attempt` must be one of hooks.forms_for(kind) exactly (ruling F27), the
     session kind read as the hook reads it (D-26: no matching-only verb in a readability
     session; Claim.from_env then validates the kind itself)."""
@@ -1556,6 +1557,8 @@ def _cmd_attempt(args: argparse.Namespace) -> int:
             return attempt.cmd_asm(args.name)
         if args.attempt_command == "giveup":
             return attempt.cmd_giveup()
+        if args.attempt_command == "plan":
+            return attempt.cmd_plan()
         return attempt.cmd_context()
     except _ERRORS as exc:
         print(f"reverseapoc attempt: error: {_one_line(exc)}", file=sys.stderr)
@@ -1614,17 +1617,18 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser(
         "attempt",
         allow_abbrev=False,
-        help="the matching session's wrapper: check, asm, context or giveup for the function "
+        help="the matching session's wrapper: check, asm, context, giveup or plan for the function "
         "the driver claimed (REVERSEAPOC_CLAIM, REVERSEAPOC_FUNC, REVERSEAPOC_ATTEMPT_DIR; D-44)",
         description="Takes its target only from the driver's environment. attempt check: exit "
         "0 only when the claimed function matches (objdiff 100, relocations and bytes ok) and "
         "check passes its unit; 1 for a mismatch or a claimed function that was not compiled "
         "(still INCLUDE_ASM); 2 refused or tool error. attempt check --sweep: 0 when it ran, "
-        "2 when it did not; a sweep is a diagnostic, never a match. attempt giveup (matching "
-        "sessions only): 0 when giveup.json is valid, 2 otherwise.",
+        "2 when it did not; a sweep is a diagnostic, never a match. attempt giveup and attempt "
+        "plan (matching sessions only): 0 when giveup.json or plan.json is valid, 2 otherwise. "
+        "A matching check also needs plan.json and check-note.json beside notes.md.",
     )
     asub = p.add_subparsers(dest="attempt_command", required=True,
-                            metavar="{check,asm,context,giveup}")  # fmt: skip
+                            metavar="{check,asm,context,giveup,plan}")  # fmt: skip
     c = asub.add_parser(
         "check",
         allow_abbrev=False,
@@ -1653,6 +1657,12 @@ def _add_attempt_command(sub: argparse._SubParsersAction) -> None:
         allow_abbrev=False,
         help="validate giveup.json beside notes.md (category, tried, still_differs, "
         "suspected_cause) and print what the driver records; a matching session only",
+    )
+    asub.add_parser(
+        "plan",
+        allow_abbrev=False,
+        help="validate plan.json beside notes.md (frame, slots, calls, regions covering the "
+        "claimed function) and print the accepted regions; a matching session only",
     )
     p.set_defaults(func=_cmd_attempt)
 
