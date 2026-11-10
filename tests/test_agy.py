@@ -332,7 +332,7 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
         spelled = [re.compile(r.removeprefix("regex:")) for r in rules if r.startswith("regex:")]
         assert len(spelled) == 3, rules
 
-        def denied(text: str) -> bool:
+        def denied(text: str, spelled=spelled) -> bool:
             return any(rule.fullmatch(text) for rule in spelled)
 
         for text in ("../../../../../../orig/UFO2P.EXE", "C:\\x\\ORIG\\TACP.EXE",
