@@ -10,7 +10,18 @@ from pathlib import Path
 
 import pytest
 
-from omfimage import coment, extdef, fixup, fixupp32, ledata32, lnames, module, pubdef32, segdef32
+from omfimage import (
+    comdat32,
+    coment,
+    extdef,
+    fixup,
+    fixupp32,
+    ledata32,
+    lnames,
+    module,
+    pubdef32,
+    segdef32,
+)
 from reverseapoc import cli
 from reverseapoc.compare_objects import CompareError, compare
 from reverseapoc.functions import (
@@ -63,6 +74,7 @@ def obj(
     data: bytes = DATA_BYTES,
     source: str = "src/ufo2p/u_0008a0e0.c",
     stamp: bytes = b"\x00\x00\x00\x00",
+    extra: tuple[bytes, ...] = (),
 ) -> bytes:
     """_TEXT (segment 1, code) and _DATA (segment 2), the public at `public_at`, externs
     1 `data_name`, 2 `callee`, 3 `runtime`. The fixup at 0 reads extern 1 (a 32-bit offset), the
@@ -71,7 +83,7 @@ def obj(
         source,
         coment(COMENT_DEPENDENCY, stamp + source.encode("latin-1")),
         lnames("", "_TEXT", "CODE", "_DATA", "DATA"),
-        segdef32(2, 3, TEXT_LEN),
+        segdef32(2, 3, len(code)),
         segdef32(4, 5, len(data)),
         extdef(data_name, callee, runtime),
         pubdef32(1, [(public, public_at)]),
@@ -80,6 +92,7 @@ def obj(
                  fixup(4, segment_relative=False, target=(2, 2))),  # fmt: skip
         ledata32(2, 0, data),
         fixupp32(fixup(0, target=(2, 3), displacement=0)),
+        *extra,
     )
 
 
@@ -152,6 +165,35 @@ def test_public_moved_fails():
     head = renamed_obj(public_at=2)
     diff = compare(obj(), head, base_symbols=BASE_TABLE, head_symbols=HEAD_TABLE).first_difference
     assert (diff.segment, diff.kind) == ("_TEXT", "public")
+
+
+def test_extra_fixup_differs():
+    """A fixup only the head has (bytes 8-11 rewritten unchanged under it)."""
+    relocated = (ledata32(1, 8, CODE[8:]), fixupp32(fixup(0, target=(2, 3), displacement=0)))
+    head = obj(extra=relocated)
+    diff = compare(obj(), head, base_symbols=BASE_TABLE, head_symbols=BASE_TABLE).first_difference
+    assert (diff.segment, diff.offset, diff.kind) == ("_TEXT", 8, "relocation")
+    assert diff.detail == "2 fixups at base, 3 at head"
+
+
+def test_extra_public_differs():
+    head = obj(extra=(pubdef32(1, [("entry_", 8)]),))
+    diff = compare(obj(), head, base_symbols=BASE_TABLE, head_symbols=BASE_TABLE).first_difference
+    assert (diff.segment, diff.offset, diff.kind) == ("_TEXT", 8, "public")
+    assert diff.detail == "1 publics at base, 2 at head"
+
+
+def test_segment_length_differs():
+    head = obj(code=CODE + bytes(1))
+    diff = compare(obj(), head, base_symbols=BASE_TABLE, head_symbols=BASE_TABLE).first_difference
+    assert (diff.segment, diff.offset, diff.kind) == ("_TEXT", None, "length")
+
+
+def test_comdat_is_refused():
+    """COMDAT blocks are not compared, so an object holding one is a tool error, never a pass."""
+    with pytest.raises(CompareError, match="COMDAT"):
+        compare(obj(), obj(extra=(comdat32(2, bytes(2)),)), base_symbols=BASE_TABLE,
+                head_symbols=BASE_TABLE)  # fmt: skip
 
 
 def test_truncated_object_raises():

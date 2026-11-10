@@ -1,7 +1,7 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
 batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats, causes,
-fetch-watcom, install-watcom, check-watcom."""
+compare-objects, fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ from . import (
     batch,
     causes,
     classify,
+    compare_objects,
     driver,
     flags,
     lift,
@@ -2532,6 +2533,46 @@ def _add_causes_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_causes)
 
 
+# ---- compare-objects: one unit's base and head objects, names by address (D-23; plan 07.2-08) ----
+
+
+def _cmd_compare_objects(args: argparse.Namespace) -> int:
+    """Exit 0 same, 1 differ, 2 when an object or a config tree cannot be read or judged."""
+    try:
+        result = compare_objects.compare_files(
+            args.base, args.head, base_config=args.base_config, head_config=args.head_config,
+            exe=args.exe,
+        )
+    except compare_objects.CompareError as exc:
+        print(f"reverseapoc compare-objects: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    print(json.dumps(result.to_json(), indent=2, sort_keys=True) if args.json
+          else result.format())  # fmt: skip
+    return 0 if result.ok else 1
+
+
+def _add_compare_objects_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "compare-objects",
+        help="compare two compiles of one unit (the match check's base and head): segment bytes, "
+        "relocations and public offsets, with names resolved to addresses through each tree's "
+        "functions.csv and symbols.csv, so a rename-only or comment-only change compares equal "
+        "(D-23; host, stdlib)",
+        description="Reads the two objects and <DIR>/<exe>/functions.csv and symbols.csv of each "
+        "tree only. The report names the first difference by segment, offset and kind, never a "
+        "byte value.",
+    )
+    p.add_argument("base", type=Path, help="the object compiled from the base tree")
+    p.add_argument("head", type=Path, help="the object compiled from the head tree")
+    p.add_argument("--base-config", type=Path, required=True, metavar="DIR",
+                   help="the base tree's config/ directory")  # fmt: skip
+    p.add_argument("--head-config", type=Path, required=True, metavar="DIR",
+                   help="the head tree's config/ directory (only its names are read)")  # fmt: skip
+    p.add_argument("--exe", choices=mechanics.EXES, required=True, help="the unit's EXE")
+    p.add_argument("--json", action="store_true", help="print the result as JSON (sorted keys)")
+    p.set_defaults(func=_cmd_compare_objects)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -2606,6 +2647,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_flags_command(sub)
     _add_stats_command(sub)
     _add_causes_command(sub)
+    _add_compare_objects_command(sub)
     _add_watcom_commands(sub)
     return parser
 
