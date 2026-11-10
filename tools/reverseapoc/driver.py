@@ -1533,11 +1533,12 @@ def pass_index(log: Path) -> dict[Key, int]:
     the count survives runs; build/driver/difficult.json is only a cache). A v2 attempt
     record names its pass; for v1 lines (the Phase 6 pilot) each run's attempts on a function
     form one pass. A function's count is the larger of the two, since the first v2 pass after
-    v1 runs is numbered after them. Abort, run, limit and rename records are no sessions."""
+    v1 runs is numbered after them. Abort, run, limit, rename and landing records are no
+    sessions, and 07.2-06 (D-17): a hold run's attempt finishes no pass."""
     v1_runs: dict[Key, set[str]] = {}
     v2_pass: dict[Key, int] = {}
     for record in _log_records(log):
-        if record["kind"] != KIND_ATTEMPT:
+        if record["kind"] != KIND_ATTEMPT or record.get("hold_run") is True:
             continue
         key = (record["exe"], int(record["start"], 16))
         if "schema" in record:
@@ -5494,6 +5495,64 @@ def restricted_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld],
     return [pick for _, pick in zip(range(count), stream, strict=False)]
 
 
+STRATIFY_PREVIEW = 400  # tier picks a stratified list reads: past the 256 B todo's pick 289
+STRATA_NAMES = ("under 64 B", "64 to 255 B", "256 B and up")  # one per STRATA group
+
+
+def _stratum(size: int) -> int:
+    """The index of the STRATA group holding a function of `size` bytes."""
+    return next(i for i, (low, high) in enumerate(STRATA)
+                if low <= size and (high is None or size < high))  # fmt: skip
+
+
+def stratified_picks(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> list[TierItem]:
+    """07.2-06 (D-17, the 256 B todo): `--stratify A,B,C`'s picks. The signed tier queue's
+    first STRATIFY_PREVIEW picks (TierQueue.preview, each at its next pass by the committed
+    log's pass index, which leaves hold runs out) are read in order; a pick no pass ever
+    finished is taken while its STRATA group (by the size stats.read_sizes gives,
+    functions.csv end - start) still wants one. A Refused names every group left short and how
+    many it found; without a signed tier there is no queue order to stratify."""
+    from .stats import read_sizes  # stats imports this module
+
+    source = tier_source(options.config_root, worlds)
+    if source is None:
+        raise Refused("stratify", "--stratify reads the signed tier queue, and no tier is "
+                                  "signed")  # fmt: skip
+    passes = pass_index(Path(options.repo) / ATTEMPT_LOG)
+    sizes = read_sizes(options.config_root)
+    wanted, taken, out = options.stratify, [0] * len(STRATA), []
+    for item in source(passes).preview(STRATIFY_PREVIEW):
+        if passes.get(item.key, 0) or item.key not in sizes:
+            continue
+        group = _stratum(sizes[item.key])
+        if taken[group] < wanted[group]:
+            taken[group] += 1
+            out.append(item)
+    short = [f"{STRATA_NAMES[i]}: {taken[i]} of {wanted[i]}"
+             for i in range(len(STRATA)) if taken[i] < wanted[i]]  # fmt: skip
+    if short:
+        raise Refused("stratify", f"too few unattempted rows in the first {STRATIFY_PREVIEW} "
+                                  f"picks of the tier queue: {'; '.join(short)}")  # fmt: skip
+    return out
+
+
+def write_picks(path: Path, picks: Sequence[Key], header: Sequence[str]) -> None:
+    """07.2-06 (D-17): a picks file read_picks reads back: each `header` line as a `#` comment,
+    then one `<exe> 0x<8 hex digits>` line per pick, in the order given."""
+    lines = [*(f"# {line}" for line in header), *(f"{exe} 0x{start:08X}" for exe, start in picks)]
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, ("\n".join(lines) + "\n").encode("utf-8"))
+
+
+def _stratified_header(options: DriveOptions) -> list[str]:
+    counts = ", ".join(f"{name} {n}" for name, n in zip(STRATA_NAMES, options.stratify,
+                                                         strict=True))  # fmt: skip
+    return [f"reverseapoc drive --dry-run --stratify {','.join(map(str, options.stratify))} "
+            f"(run {options.run_id}, {_today()})",
+            f"unattempted tier rows in queue order per size group: {counts}"]
+
+
 def tier_held(options: DriveOptions, worlds: Mapping[str, ExeWorld]) -> tuple[Key, ...] | None:
     """07-44: the rows the tier queue holds (TierQueue.held, queue order); None without a
     signed tier."""
@@ -6001,8 +6060,13 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
             with _phase("picks"):
                 if options.picks is not None:  # 07.2-06: refused before anything is built
                     refuse_picks(options, worlds)
-                picks = (pilot_picks if options.dry_run else night_top_picks)(options, worlds,
-                                                                               today=today)
+                if options.stratify is not None:  # 07.2-06: a dry run only (cli refuses else)
+                    picks = stratified_picks(options, worlds)
+                    write_picks(options.write_picks, [item.key for item in picks],
+                                _stratified_header(options))  # fmt: skip
+                else:
+                    picks = (pilot_picks if options.dry_run else night_top_picks)(
+                        options, worlds, today=today)  # fmt: skip
                 held = tier_held(options, worlds) if options.dry_run else None
             with _phase("drafts"):
                 _drafts(log, [_pick_of(entry) for entry in picks])
