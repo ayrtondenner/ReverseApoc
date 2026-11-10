@@ -438,7 +438,7 @@ tooling, and build the harness for measuring model and effort by function size. 
   2. Matched bytes unchanged: `gate --all` and `ninja verify` exit 0 on the final main
   3. `drive --canary` passes with the new verbs and backends, and spike 012 can run from the shipped harness
 
-**Plans:** 13/16 plans executed in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
+**Plans:** 15/16 plans executed in 11 waves (cross-plan rulings: [07.2-RULINGS.md](phases/07.2-fnv-inspired-matching-pipeline/07.2-RULINGS.md))
 
 Plans:
 
@@ -471,11 +471,11 @@ Plans:
 - [x] 07.2-15-PLAN.md — Antigravity (agy) adapter for Gemini on AI Plus, quota canary, OpenRouter fallback (PIPE-14)
 
 **Wave 9** *(blocked on Wave 8 completion)*
-- [ ] 07.2-16-PLAN.md — multi-arm drive `--arm name=workers` (PIPE-15)
+- [x] 07.2-16-PLAN.md — multi-arm drive `--arm name=workers` (PIPE-15)
 - [x] 07.2-09-PLAN.md — watcom-decomp skill: plan, notes, giveup, region board, through writing-skills RED first (PIPE-09)
 
 **Wave 10** *(blocked on Wave 9 completion; main checkout)*
-- [ ] 07.2-10-PLAN.md — evidence docs 9a-9d and the docs/tools.md rows (PIPE-10)
+- [x] 07.2-10-PLAN.md — evidence docs 9a-9d and the docs/tools.md rows (PIPE-10)
 
 **Wave 11** *(blocked on Wave 10 completion; main checkout)*
 - [ ] 07.2-11-PLAN.md — phase gate: suites, `gate --all`, `ninja verify`, dry runs, canary and refusals (PIPE-16)
@@ -513,7 +513,7 @@ Phases execute in numeric order: 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 7.1 -> 7.2 -
 | 6. Reporting and agent pilot | 27/27 | Complete    | 2026-10-26 |
 | 7. Mechanics-first decompilation | 45/48 | In Progress | - |
 | 7.1. Matching tooling (INSERTED) | 7/7 | Complete    | 2026-11-06 |
-| 7.2. FNV-inspired matching pipeline (INSERTED) | 13/16 | In Progress | - |
+| 7.2. FNV-inspired matching pipeline (INSERTED) | 15/16 | In Progress | - |
 | 8. Clean-room specs for OpenApoc | 0/TBD | Not started | - |
 
 ## Backlog
