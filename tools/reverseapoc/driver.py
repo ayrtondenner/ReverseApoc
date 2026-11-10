@@ -78,11 +78,11 @@ whose digest still matches, `real_deps` queues picker.tier_queue instead of the 
 signed tiers' members callees first, then their hubs, never an asm row. The coordinator asks it
 for the best eligible pick each time a worker is free; a capped function goes back for its next
 pass the same night (the arm's `_Lane.passes` counts it, and is the pass index the queue
-reads, so the queue never reads difficult.json). The dry run and the night's draft picks are the tier
-queue's first picks (`tier_picks`), the dry run's with their tier, level and pass. The queue
-holds the signed asm list's `unclear` rows with data-in-code evidence (07-44, owner ruling
-2026-10-31; `mechanics.signed_held`): no pass is spent on them, and the dry run reports them as
-`held` (an unsigned or changed list refuses the picks).
+reads, so the queue never reads difficult.json). The dry run and the night's draft picks are
+the tier queue's first picks (`tier_picks`), the dry run's with their tier, level and pass. The
+queue holds the signed asm list's `unclear` rows with data-in-code evidence (07-44, owner
+ruling 2026-10-31; `mechanics.signed_held`): no pass is spent on them, and the dry run reports
+them as `held` (an unsigned or changed list refuses the picks).
 
 Parking (quick 261109-gzu): once a counted matching session's attempt record carries a sweep
 hit (check.sweep_hit: an exact cell under flags other than the unit's rule) and no match, the
