@@ -206,8 +206,8 @@ def test_agyjson_reads_the_agy_1_5_5_envelope():
     """Spike 012 round-2 canaries: agy 1.5.5 streams each event as {"event": kind, kind:
     {...}}, and a write step names its path as tool_info.parameters.Path. The fixture copies
     that real stream's shape (made-up paths and numbers): its init, its one turn, its usage, its
-    soft-denied write (the step itself ends ERROR, so it counts as a write the audit judges) and
-    its result are all read; no step is unknown."""
+    soft-denied write (the step ends ERROR with the permission check's message: it never ran,
+    so it is a denial, not a write) and its result are all read; no step is unknown."""
     events = _events("canary_agy_soft_denied")
     init = agyjson.init_event(events)
     assert init is not None and init["permission_mode"] == "request-review", init
@@ -216,9 +216,10 @@ def test_agyjson_reads_the_agy_1_5_5_envelope():
     assert agyjson.usage(events) == Usage(
         input_tokens=9000, output_tokens=2100, cache_read_tokens=0, cache_creation_tokens=0,
         turns=1, cost_usd=0.0, duration_ms=10500)  # fmt: skip
-    assert agyjson.write_targets(events) == ["C:\\made-up\\func_000A3980\\agy-canary-outside.txt"]
+    assert agyjson.write_targets(events) == []
     assert agyjson.read_targets(events) == [] and agyjson.commands(events) == []
     assert agyjson.unknown_steps(events) == []
+    assert [d.step for d in agyjson.denials(events)] == [2]
     assert agyjson.failure(events) is None
     assert agyjson.classify(events, 0, False) == Disposition.ATTEMPT_DONE
 
@@ -345,6 +346,44 @@ def test_agyjson_denials_read_the_permission_error():
     assert agyjson.undenied_steps(mixed) == ["step 3: read_file (ERROR)",
                                              "step 4: write_file (DONE)"]  # fmt: skip
     assert agyjson.response(_events("canary_agy_refused")) == "I'm sorry, but I can't help."
+
+
+def _soft_denied(index: int, tool: str, action: str, target: str, **info) -> dict:
+    """A step agy 1.5.5's permission check refused, as round 3's probes show it: ERROR, with
+    the check's message naming the action and the (canonical) target."""
+    message = (f"permission check failed for {action} {json.dumps(target)}: user denied "
+               f"permission for {action}({target})\nDo not attempt to circumvent this denial.")
+    error = {"type": "TOOL_ERROR", "message": message}
+    if tool == "run_command":
+        return _run(index, info.pop("command"), state="ERROR", error=error)
+    return _step(index, tool, state="ERROR", name=tool, error=error, **info)
+
+
+def test_agyjson_a_soft_denied_step_never_ran():
+    """Spike 012: a step agy's permission check refused ends ERROR with that check's message
+    and never ran, as a step ending DENIED: it is in no list the audit judges as run (commands,
+    writes, reads, unknown steps), whatever its tool, and only in `denials`. An ERROR with any
+    other message (round 3: gemini's relative read, `declaring permissions: failed to parse
+    path: ... must be an absolute path`) may have run: it stays a read the audit judges (fail
+    closed)."""
+    relative = "../../../orig/x.txt"
+    events = [_soft_denied(1, "run_command", "unsandboxed", "curl.exe -sS https://x.invalid/",
+                           command="curl.exe -sS https://x.invalid/"),
+              _soft_denied(2, "write_file", "write_file", "C:/x/tools/x.py",
+                           parameters={"Path": "C:\\x\\tools\\x.py"}),
+              _soft_denied(3, "read_file", "read_file", "C:/x/orig/x.txt",
+                           parameters={"Path": f"C:/x/a/{relative}"}),
+              _soft_denied(4, "web_fetch", "read_url", "https://x.invalid/",
+                           parameters={"Url": "https://x.invalid/"}),
+              _step(5, "read_file", state="ERROR", name="read_file",
+                    parameters={"Path": relative},
+                    error={"type": "TOOL_ERROR", "message": "declaring permissions: failed to "
+                           f"parse path: {relative} must be an absolute path: path is not "
+                           "absolute"})]  # fmt: skip
+    assert agyjson.commands(events) == [] and agyjson.write_targets(events) == []
+    assert agyjson.read_targets(events) == [relative]
+    assert agyjson.unknown_steps(events) == []
+    assert [d.step for d in agyjson.denials(events)] == [1, 2, 3, 4]
 
 
 def test_agyjson_ignores_a_line_outside_the_envelope():
@@ -649,6 +688,19 @@ def test_agy_denied_actions_are_not_strays(tmp_path, capsys, monkeypatch):
     assert code == 0, err
     assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
     assert night.kinds("attempt")[0]["hook_blocks"] == 2
+
+
+def test_agy_soft_denied_steps_are_not_strays(tmp_path, capsys, monkeypatch):
+    """Spike 012: agy 1.5.5 ends a soft-denied step ERROR with its permission check's message,
+    never DENIED; such a step never ran, so at night it is a hook block like a DENIED step, not
+    a stray that ran: a soft-denied command naming orig/ and a soft-denied write outside the
+    checkout (each the session's last step, as headless agy then ends the turn) stop nothing."""
+    for scenario in ("soft_denied_command", "soft_denied_write"):
+        rig, night, env = agy_night(tmp_path / scenario, monkeypatch, scenario=scenario)
+        code, _, err = _run_agy(capsys, rig, env)
+        assert code == 0, (scenario, err)
+        assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == [], scenario
+        assert night.kinds("attempt")[0]["hook_blocks"] == 1, scenario
 
 
 # ---- Task 3: the quota canary, its pass gate, the fallback arm and the exception text ----

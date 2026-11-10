@@ -26,11 +26,11 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   <n>.`; a command step of any other shape is an unknown step and no command run), or its path
   (`path`, `file_path`, `target_file` or `absolute_path`), a read only for a known read-only
   tool (`read_file`) and a write for every other tool (07.2 review WR-02: fail closed). A step
-  whose own last state is DENIED was soft-denied (RESEARCH "Permissions"): it never ran, so it
-  is in none of the three lists. Spike 012 saw otherwise: agy 1.5.5 ends a soft-denied step
-  ERROR, so it stays in the lists (fail closed), and then ends the turn. A result's
-  `denied_actions` never stand for a step; they are hook blocks. The driver's audit reads them
-  (D-26).
+  agy soft-denied never ran, so it is in none of the three lists: its own last state is DENIED
+  (RESEARCH "Permissions") or, as spike 012 saw agy 1.5.5 do, ERROR with the permission
+  check's message (`denials`); agy then ends the turn. An ERROR with any other message stays
+  in the lists (fail closed). A result's `denied_actions` never stand for a step; they are hook
+  blocks. The driver's audit reads them (D-26).
 - `unknown_steps`: each tool step that ran and is not a known tool (`run_command` in agy
   1.5.5's shape, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
   the audit counts each as a stray (WR-02).
@@ -201,9 +201,10 @@ def _tool_step(event: Mapping) -> bool:
 
 
 def _ran(step: Mapping) -> bool:
-    """WR-02: a step never ran only when it itself ends DENIED; a result's denied action is a
-    hook block and never stands for a step."""
-    return step.get("state") != _DENIED_STATE
+    """WR-02: a step never ran only when it itself is a denial (`_denial`: it ends DENIED, or
+    ERROR with agy's permission-check message, spike 012); a result's denied action is a hook
+    block and never stands for a step."""
+    return _denial(step) is None
 
 
 def _steps(events: Sequence[dict]) -> list[Mapping]:
