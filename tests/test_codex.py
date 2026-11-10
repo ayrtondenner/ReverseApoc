@@ -14,7 +14,10 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from reverseapoc import backends, codexjson, driver, session
+from reverseapoc.session import run_session
 from reverseapoc.streamjson import Usage
 from reverseapoc.targets import REPO_ROOT
 from test_drive import Rig, _keyed
@@ -386,3 +389,144 @@ def test_audit_quarantines_a_session_written_codex_config(tmp_path, capsys, monk
     assert stopped["reason"] == driver.GUARDRAIL and ".codex/config.toml" in stopped["detail"]
     assert not (night.attempt_dir() / ".codex" / "config.toml").exists()
     assert list(night.quarantine.rglob("config.toml"))
+
+
+# ---- Task 3: the Codex canary, its pass gate and the exception text (D-13; Pitfall 11) ----
+
+OWNER = "made-up-owner"  # the owner's USERNAME in these tests; never the real one
+
+
+def _codex_canary_rig(tmp_path: Path, *, check: dict | None = None, outside: bool = False,
+                      compound: bool = False) -> Rig:  # fmt: skip
+    """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
+    a Codex session: fakecodex through the real run_session, then what the real wrapper would
+    have left (its check line, the consumed note and their ledger entries) and, when asked, a
+    probe's escape outside the workspace."""
+    import hashlib
+
+    from test_drive import CONSUMED_NOTE, PASSING_CHECK, Launch, _canary_rig
+
+    rig = _canary_rig(tmp_path, "canary_pass")
+    codex_version_reply(rig)
+    line = PASSING_CHECK if check is None else check
+
+    def session(argv, *, cwd, env, transcript, timeout_s):
+        rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        attempt_dir = Path(env[driver.attempt.DIR_ENV])
+        wrote = {"checks.jsonl": json.dumps(line) + "\n",
+                 "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
+        with Path(env[driver.attempt.WRAPPER_LEDGER_ENV]).open("a", encoding="utf-8") as fh:
+            for rel, text in wrote.items():
+                (attempt_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+                (attempt_dir / rel).write_text(text, encoding="utf-8", newline="\n")
+                digest = hashlib.sha256((attempt_dir / rel).read_bytes()).hexdigest()
+                fh.write(json.dumps({"path": rel, "sha256": digest}) + "\n")
+        for wanted, name in ((outside, driver.CODEX_CANARY_OUTSIDE),
+                             (compound, driver.CODEX_CANARY_COMPOUND)):  # fmt: skip
+            if wanted:
+                (attempt_dir.parent / name).write_text("canary\n", encoding="utf-8")
+        return result
+
+    rig.session = session
+    return rig
+
+
+def _codex_canary(rig: Rig, capsys, scenario: str = "canary_codex_pass") -> tuple[int, dict]:
+    env = _keyed(rig.env, FAKECODEX_SCENARIO=scenario, USERNAME=OWNER)
+    code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=LUNA, canary_model=LUNA,
+                             allow_egress=(LUNA,),
+                             seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+    return code, json.loads(out)
+
+
+def _pass_file(rig: Rig) -> Path:
+    return rig.repo / driver.CANARY_PASS_DIR / f"{LUNA}.json"
+
+
+def test_codex_canary_pass(tmp_path, capsys):
+    """A sandbox identity that is not the owner, a refused outside write, a refused network
+    call, a compound command whose second half did nothing, and a wrapper check that logged
+    exit 0 with its consumed note: CANARY PASS, and the pass file names the arm, the harness,
+    the installed CLI version (from `codex --version`, never `codex exec`), the date and PASS."""
+    rig = _codex_canary_rig(tmp_path)
+    code, doc = _codex_canary(rig, capsys)
+    failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
+    assert (code, doc.get("canary")) == (0, "PASS"), failed
+    texts = " | ".join(c["check"] for c in doc["checks"])
+    for needle in ("whoami", "codexsandbox", driver.CODEX_CANARY_OUTSIDE, "example.com",
+                   driver.CODEX_CANARY_COMPOUND, "attempt check", "0001.note.json", "ledger",
+                   CODEX_VERSION):  # fmt: skip
+        assert needle in texts, needle
+    assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "exec"
+    assert ["codex", "--version"] in rig.runner.calls
+    saved = json.loads(_pass_file(rig).read_text(encoding="utf-8"))
+    assert {k: saved[k] for k in ("arm", "harness", "cli_version", "result")} == {
+        "arm": LUNA, "harness": "codex", "cli_version": CODEX_VERSION, "result": "PASS"}
+    assert isinstance(saved["date"], str) and len(saved["date"]) == len("2026-11-10")
+
+
+def test_codex_canary_prompt_asks_for_every_probe(tmp_path):
+    """The prompt asks, in order: whoami, a write one directory above the workspace, a URL
+    fetch, the compound command riding the wrapper prefix, the plan and the note, then the
+    wrapper check."""
+    attempt_dir = tmp_path / "attempt-1"
+    prompt = driver.codex_canary_prompt(attempt_dir, 0xD)
+    order = ["whoami", str(attempt_dir.parent / driver.CODEX_CANARY_OUTSIDE),
+             driver.CODEX_CANARY_URL, f"{WRAPPER} context; ", "plan.json", "check-note.json",
+             f"{WRAPPER} check"]  # fmt: skip
+    places = [prompt.index(needle) for needle in order]
+    assert places == sorted(places), places
+
+
+@pytest.mark.parametrize(("scenario", "rig_args", "needle"), [
+    ("canary_codex_owner", {}, "whoami"),
+    ("canary_codex_pass", {"outside": True}, "codex-canary-outside.txt"),
+    ("canary_codex_network_ok", {}, "example.com"),
+    ("canary_codex_pass", {"compound": True}, "codex-canary-compound.txt"),
+    ("canary_codex_pass", {"check": {"n": 1, "exit": 1, "sweep": False, "best_percent": 90.0,
+                                     "reloc_ok": False, "bytes_ok": False, "splice_ok": True,
+                                     "sweep_hit": None, "source": "checks/0001.c",
+                                     "note": "checks/0001.note.json"}}, "attempt check"),
+])  # fmt: skip
+def test_codex_canary_fails_on_each_escape(tmp_path, capsys, scenario, rig_args, needle):
+    """Pitfall 11: the owner's identity, an outside file afterwards, a network call that
+    succeeded, the compound command's file, or a check without exit 0: CANARY FAIL naming it,
+    and no PASS file."""
+    rig = _codex_canary_rig(tmp_path, **rig_args)
+    code, doc = _codex_canary(rig, capsys, scenario)
+    assert (code, doc["canary"]) == (1, "FAIL")
+    failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+    assert needle in failed, failed
+    path = _pass_file(rig)
+    assert not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+@pytest.mark.parametrize("state", ["none", "fail", "other-version"])
+def test_codex_arm_refused_without_a_pass(tmp_path, capsys, state):
+    """D-13: no Codex arm runs before its canary passed on the installed CLI: no pass file, a
+    FAIL one, or one naming another version exits 2 before any session, naming the canary
+    command to run."""
+    rig = Rig(tmp_path)
+    codex_version_reply(rig)
+    if state == "fail":
+        write_pass(rig.repo, result="FAIL")
+    elif state == "other-version":
+        write_pass(rig.repo, version="0.166.0")
+    env = _keyed(rig.env)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env}, night_model=LUNA,
+                             allow_egress=(LUNA,), workers=1)  # fmt: skip
+    assert code == 2
+    detail = json.loads(out)["detail"]
+    assert f"--canary --night-model {LUNA} --allow-egress {LUNA}" in detail, detail
+    assert list((rig.repo / "build").rglob("attempt-*")) == []
+
+
+def test_claude_md_states_the_exception():
+    """CLAUDE.md and .claude/rules/workflow.md keep Claude Code as the only agent runtime and
+    name the one scoped exception: Codex as `reverseapoc drive` arms for spike 012, its
+    per-session config generated under build/."""
+    for rel in ("CLAUDE.md", ".claude/rules/workflow.md"):
+        text = " ".join((REPO_ROOT / rel).read_text(encoding="utf-8").split())
+        for needle in ("only agent runtime", "Codex", "reverseapoc drive", "spike 012", "build/"):
+            assert needle in text, (rel, needle)
