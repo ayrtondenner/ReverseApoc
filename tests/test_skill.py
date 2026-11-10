@@ -113,16 +113,16 @@ def _commands(text: str) -> list[list[str]]:
 
 # The forms the skill quotes, and the matching-only forms it does not quote yet (RULINGS "The
 # five pinned-form tests": 07.2-02 added ("giveup",), 07.2-03 ("plan",); 07.2-09 teaches them and
-# empties it).
-SKILL_FORMS = (("check",), ("check", "--sweep"), ("asm",), ("asm", "<NAME>"), ("context",))
-PENDING_SKILL_FORMS = (("giveup",), ("plan",))
+# empties it, D-26).
+SKILL_FORMS = hooks.MATCHING_FORMS
+PENDING_SKILL_FORMS = ()
 
 
 def test_skill_commands_are_the_wrapper_forms():
     commands = _commands(_text())
     for argv in commands:
-        literal = tuple(argv) in SKILL_FORMS  # `asm <NAME>` is quoted literally (F27)
-        assert literal or hooks.attempt_form_matches(argv, SKILL_FORMS), argv
+        literal = tuple(argv) in hooks.MATCHING_FORMS  # `asm <NAME>` is quoted literally (F27)
+        assert literal or hooks.attempt_form_matches(argv, hooks.MATCHING_FORMS), argv
     quoted = {tuple(argv) for argv in commands}
     assert quoted == set(SKILL_FORMS), "every quoted form is a skill form, and each is quoted"
     assert set(SKILL_FORMS) | set(PENDING_SKILL_FORMS) == set(hooks.MATCHING_FORMS)
@@ -177,14 +177,15 @@ def test_skill_anchors_resolve():
 
 def attempt_form_problems(text: str) -> list[str]:
     """Every backticked span naming `attempt <sub>` (short or full form) whose argv after
-    `attempt` is not one of the wrapper's forms."""
+    `attempt` is not one of a matching session's wrapper forms (07.2-09: MATCHING_FORMS)."""
+    forms = hooks.MATCHING_FORMS
     problems = []
     for span in _spans(text):
         tokens = span.split()
         if "attempt" not in tokens:
             continue
         argv = tokens[tokens.index("attempt") + 1 :]
-        if tuple(argv) not in hooks.ATTEMPT_FORMS and not hooks.attempt_form_matches(argv):
+        if tuple(argv) not in forms and not hooks.attempt_form_matches(argv, forms):
             problems.append(span)
     return problems
 
@@ -488,3 +489,62 @@ def test_skill_stops_after_a_sweep_hit():
     assert "write it in notes.md and stop" in _section(text, "Flags")
     assert "or try C shapes under the unit's rule within the budget" not in text  # today's L195
     assert "editing on loses nothing" not in text  # today's L60
+
+
+# ---- 07.2-09: plan, notes, give-up and the region board (999.5-999.7, D-01..D-05) ----
+
+
+def _quoted(section: str) -> set[str]:
+    return set(_spans(section))
+
+
+def test_skill_teaches_the_session_files():
+    """D-01..D-04: the skill names plan.json and check-note.json (with `attempt plan`) where it
+    teaches the wrapper, and giveup.json (with `attempt giveup`) where it teaches stopping, each
+    with the exact fields the validators take; the tool writes `observed`, never the session."""
+    from reverseapoc import attempt
+
+    text = _text()
+    wrapper = _quoted(_section(text, "The attempt wrapper"))
+    stop = _quoted(_section(text, "When to give up"))
+    for name in (hooks.PLAN_NAME, hooks.CHECK_NOTE_NAME, "attempt plan", "checks/NNNN.note.json",
+                 *attempt.PLAN_KEYS, *attempt.REGION_KEYS, *attempt.NOTE_KEYS, attempt.OBSERVED):
+        assert name in wrapper, name
+    for name in (hooks.GIVEUP_NAME, "attempt giveup", *attempt.GIVEUP_KEYS):
+        assert name in stop, name
+
+
+def test_skill_names_every_giveup_category():
+    """D-04: the `category` line of "When to give up" lists exactly attempt.GIVEUP_CATEGORIES,
+    in order, so a later change to the categories breaks this test, not a night (T-07.2-25)."""
+    from reverseapoc import attempt
+
+    section = _section(_text(), "When to give up")
+    line = next((line for line in section.splitlines() if line.startswith("- `category`")), "")
+    assert tuple(_SPAN.findall(line)[1:]) == attempt.GIVEUP_CATEGORIES, line
+    assert "no C" in section  # T-07.2-26: the texts are prose, never code
+
+
+def test_skill_names_the_region_board():
+    """999.7 (07.2-05): at BOARD_MIN_SIZE and up the check summary prints the region board; the
+    skill says when, what `exact in` means, and names the pack's earlier give-ups and best C."""
+    from reverseapoc import attempt, contextpack
+
+    wrapper = _section(_text(), "The attempt wrapper")
+    assert "region board" in wrapper
+    assert f"{attempt.BOARD_MIN_SIZE} B" in wrapper
+    assert "exact in" in wrapper and "closest" in wrapper
+    for title in (contextpack.TITLE_GIVEUPS, contextpack.TITLE_BEST_C):
+        assert f'"{title}"' in wrapper, title
+
+
+def test_skill_says_a_refused_check_costs_nothing():
+    """D-01: a check without a plan or a note is refused with exit 2 and uses none of the 25
+    runs; the quick reference's budget row and the wrapper section both say so."""
+    text = _text()
+    budget = next(line for line in text.splitlines() if line.startswith("| Check budget"))
+    assert hooks.PLAN_NAME in budget and hooks.CHECK_NOTE_NAME in budget, budget
+    assert "counts nothing" in budget
+    wrapper = _section(text, "The attempt wrapper")
+    assert f"none of the {session.MAX_CHECK_RUNS}" in wrapper
+    assert "write plan.json beside notes.md first" in wrapper  # the refusal as it prints
