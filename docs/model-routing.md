@@ -152,9 +152,12 @@ audit, against its provider's Anthropic-compatible endpoint.
   and `--allow-egress ARM`, for a night and for a canary alike:
   `reverseapoc drive --canary --night-model deepseek-flash --allow-egress deepseek-flash --run canary-deepseek`.
   What each backend receives is in [legal.md](legal.md#model-backends-and-what-they-receive).
-- **The session environment.** Every session loses every arm's key variable and any inherited
-  `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_DEFAULT_*_MODEL`, so a Claude
-  arm always runs on the claude.ai login and no session sees another arm's key. A hosted
+- **The session environment.** Every session loses every arm's key variable, every inherited
+  `ANTHROPIC_*` variable (custom headers, model, Bedrock and Vertex URLs among them), every
+  `CLAUDE_CODE_USE_*` variable, every `OPENAI_*` variable and every Google key or credentials
+  variable, so a Claude arm always runs on the claude.ai login, nothing reroutes a session off
+  its base URL and no session sees another arm's or vendor's key. `CLAUDE_CODE_OAUTH_TOKEN`
+  reaches only a session on the Claude login. A hosted
   arm's session then gets its `ANTHROPIC_BASE_URL`, its own key as `ANTHROPIC_AUTH_TOKEN`, an
   empty `ANTHROPIC_API_KEY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, the three
   `ANTHROPIC_DEFAULT_*_MODEL` pins set to its model, and `REVERSEAPOC_EGRESS=1`. Under it the
