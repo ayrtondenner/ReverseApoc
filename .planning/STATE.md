@@ -6,10 +6,10 @@ current_phase: "07.2"
 current_phase_name: FNV-inspired matching pipeline
 status: executing
 stopped_at: Phase 07.2 context gathered
-last_updated: "2026-11-09T21:44:07.680Z"
+last_updated: "2026-11-10T15:33:29.851Z"
 last_activity: 2026-11-09
 last_activity_desc: Phase 07.2 execution started
-state_head: c2eb43def70a64393d019d06b66efdc46e36e018
+state_head: 725fce51069580d8b314fae8e63300e7527e55cf
 progress:
   total_phases: 10
   completed_phases: 7
@@ -31,7 +31,7 @@ See: .planning/PROJECT.md (updated 2026-10-26)
 Phase: 07.2 (FNV-inspired matching pipeline) — EXECUTING
 Plan: 1 of 16
 Status: Executing Phase 07.2
-Last activity: 2026-11-09 — Phase 07.2 execution started
+Last activity: 2026-11-10 - Completed quick task 261110-f30: spike 012 comparison table and multi-arm landing credit; Phase 07.2 awaiting UAT (/gsd-verify-work 07.2)
 
 Progress: [████████░░] 78%
 
@@ -149,6 +149,7 @@ None yet.
 | 261109-gzw | Brace globs in Glob/Grep; attempt asm/context cache per view (asm 1.03 to 0.70 s, context 8.24 to 0.75 s) | 2026-11-09 | 9c8a875f | — | .planning/quick/261109-gzw-hooks-accept-brace-globs-e-g-a-b-in-the-attempt-command-form |
 | 261109-gzy | Worktree shell commands that spell the main checkout are denied, fail closed (two security rounds; residual risk todo) | 2026-11-09 | bf8a7f56 | — | .planning/quick/261109-gzy-project-pretooluse-hook-tools-reverseapoc-hooks-py-via-claud |
 | 261109-gzz | probe/README.md figures re-read or marked as preview | 2026-11-09 | 03c1d99b | — | .planning/quick/261109-gzz-probe-readme-md-identify-the-lines-taken-from-07-1-research |
+| 261110-f30 | Spike 012 per-arm comparison table (stats --run), list prices for Codex/agy arms, land-held credits every arm that matched | 2026-11-10 | 725fce51 | — | [261110-f30-spike-012-comparison-table-and-multi-arm](./quick/261110-f30-spike-012-comparison-table-and-multi-arm/) |
 
 ### Roadmap Evolution
 
