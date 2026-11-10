@@ -360,6 +360,24 @@ def test_cell_record_of_a_failed_compile():
     assert record["key"] == "compile failed: a.c(3): Error! E1011: Symbol 'x' has not been declared"
 
 
+@pytest.mark.parametrize(("output", "key"), [
+    ("x.c(3): Error! E1011: Symbol 'foo' has not been declared\n",
+     "compile failed: x.c(3): Error! E1011: Symbol 'foo' has not been declared"),
+    ("\n  banner  \nx.c(4): Warning! W101: Non-portable\nx.c(5): Error! E1009: Expecting\n",
+     "compile failed: x.c(5): Error! E1009: Expecting"),
+    ("\n  first line  \nsecond\n", "compile failed: first line"),
+    ("", "compile failed: no output"),
+])  # fmt: skip
+def test_compile_output_key_is_the_cell_record_rule(output, key):
+    """One rule for batch and causes (07.2-04): the first line holding "Error", else the first
+    line, else "no output"."""
+    assert batch.compile_output_key(output) == key
+    verdict = batch.unjudged(11)
+    record = batch.cell_record("tacp", 0x10, "committed", RULE_106, _compiled(False, output),
+                               verdict)  # fmt: skip
+    assert record["key"] == key
+
+
 def test_cell_record_of_a_refused_source():
     record = batch.cell_record("tacp", 0x10, "committed", RULE_106, None, batch.unjudged(4),
                                key="refused: '#pragma'")  # fmt: skip

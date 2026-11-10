@@ -596,10 +596,16 @@ def unjudged(len_row: int, key: str = "") -> Verdict:
 COMMITTED_CELL = "committed"
 
 
-def _compile_key(compiled: Compiled) -> str:
-    lines = [ln.strip() for ln in compiled.output.splitlines() if ln.strip()]
+def compile_output_key(output: str) -> str:
+    """The failure key of a compile's output: "compile failed: " and the first line holding
+    "Error", else the first line. `reverseapoc causes` keys saved build failures with it."""
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
     first = next((ln for ln in lines if "Error" in ln), lines[0] if lines else "no output")
     return f"compile failed: {first}"
+
+
+def _compile_key(compiled: Compiled) -> str:
+    return compile_output_key(compiled.output)
 
 
 def cell_record(

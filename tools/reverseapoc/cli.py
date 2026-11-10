@@ -1,6 +1,6 @@
 """`reverseapoc` command line: ingest, check-orig, parse-le, rebuild, cc, omf2elf, libmatch,
 cppscan, probe, asm, score, discover, functions, units, ghidra-export, lint, readlint, check, judge,
-batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats,
+batch, search, lift, target, land, gate, context, attempt, drive, mechanics, flags, stats, causes,
 fetch-watcom, install-watcom, check-watcom."""
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from . import (
     asmclass,
     attempt,
     batch,
+    causes,
     classify,
     driver,
     flags,
@@ -2385,6 +2386,40 @@ def _add_stats_command(sub: argparse._SubParsersAction) -> None:
     p.set_defaults(func=_cmd_stats)
 
 
+# ---- causes: failed builds and mismatches by cause over drive runs (999.8; plan 07.2-04) ----
+
+
+def _cmd_causes(args: argparse.Namespace) -> int:
+    """Exit 0 done, 2 when a named run does not exist."""
+    try:
+        report = causes.collect(args.repo, args.run)
+    except causes.CausesError as exc:
+        print(f"reverseapoc causes: error: {exc}", file=sys.stderr)
+        return EXIT_TOOL
+    print(json.dumps(report.to_json(), indent=2, sort_keys=True) if args.json
+          else report.format())  # fmt: skip
+    return 0
+
+
+def _add_causes_command(sub: argparse._SubParsersAction) -> None:
+    p = sub.add_parser(
+        "causes",
+        help="failed builds and mismatches counted by cause over drive runs (999.8): per-try "
+        "build-failure, mismatch and match rates over plain checks (sweeps apart), Watcom codes, "
+        "mismatch classes and shared-header gaps ranked by the functions they block; reads saved "
+        "evidence under build/driver/ only and never compiles (host, stdlib)",
+        description="Reads checks.jsonl and checks/NNNN.json under build/driver/<RUN>/ and "
+        "config/<exe>/functions.csv only: it never compiles and never reads orig/.",
+    )
+    p.add_argument("run", nargs="*", metavar="RUN",
+                   help="a run under build/driver/ (repeatable); default: every run")  # fmt: skip
+    p.add_argument("--json", action="store_true", help="print the report as JSON (sorted keys)")
+    p.add_argument("--repo", type=Path, default=REPO_ROOT, metavar="PATH",
+                   help="the checkout whose build/driver/ and config/ are read; "
+                   "default: %(default)s")  # fmt: skip
+    p.set_defaults(func=_cmd_causes)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="reverseapoc", description="ReverseApoc tooling for the X-COM Apocalypse executables."
@@ -2458,6 +2493,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_mechanics_command(sub)
     _add_flags_command(sub)
     _add_stats_command(sub)
+    _add_causes_command(sub)
     _add_watcom_commands(sub)
     return parser
 
