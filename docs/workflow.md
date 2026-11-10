@@ -6,7 +6,7 @@ Work runs at three levels:
 2. **Phase**: GSD's discuss, plan, execute, verify loop, with superpowers skills inside it.
 3. **Function**: the per-function matching loop, from Phase 5 on.
 
-The rule that ties them together: deterministic checks decide what is done. An agent never judges its own result. Every documented failure in the research (false match claims, rewritten hashes, permuter overfitting) came from letting the agent judge itself ([report](research/2026-10-19-kickoff-research-report.md)).
+The rule that ties them together: deterministic checks decide what is done. An agent never judges its own result. Every documented failure in the research (false match claims, rewritten hashes, permuter overfitting) came from letting the agent judge itself ([report](research/2026-10-19-kickoff-research-report.md)), and in the Fallout: New Vegas decomp a $20 Claude plan audited a stalled Codex run and found about 3 KB proven of 11.54 MB ([FNV research](research/2026-11-09-fnv-decomp.md#what-the-video-adds-frames-and-transcript)).
 
 ## The per-function loop
 
