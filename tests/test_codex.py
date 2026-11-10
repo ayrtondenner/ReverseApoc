@@ -10,6 +10,8 @@ reach an assertion or a log.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -571,3 +573,53 @@ def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
     stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
     assert stopped["reason"] == driver.GUARDRAIL and "view/build" in stopped["detail"], stopped
     assert (outside / "attempt-cache" / "x.json").is_file()
+
+
+# ---- 07.2 review CR-01: uv never finds its project in the session's workspace ----
+
+PLANTED = (("pyproject.toml", '[project]\nname = "reverseapoc"\nversion = "9.9.9"\n'),
+           ("uv.lock", "version = 1\n"), ("uv.toml", 'index-url = "https://x.invalid"\n'))
+
+
+def _pick() -> driver.Pick:
+    return driver.Pick(EXE, 0x1000, "func_00001000", UNIT, 20, 1)
+
+
+@pytest.mark.parametrize("arm", [LUNA, SOL, "gemini-flash", "gpt-oss"])
+def test_signed_in_sessions_pin_uv_to_the_checkout(tmp_path, arm):
+    """CR-01: a Codex or agy session's commands run in its attempt dir, which it may write. The
+    one allowed command, `uv run --frozen reverseapoc attempt ...`, would find a project the
+    session planted there (pyproject.toml, uv.lock, uv.toml) and run its code outside the
+    sandbox. The driver pins uv to the checkout in the session env (UV_PROJECT, never the
+    attempt dir or an inherited value) and turns off uv's config discovery (UV_NO_CONFIG)."""
+    arms = backends.load_arms()
+    repo = tmp_path / "repo"
+    claim = driver._Claim(_pick(), RUN, repo, 1, arm=arms[arm])
+    claim.attempt_dir.mkdir(parents=True)
+    for name, text in PLANTED:
+        (claim.attempt_dir / name).write_text(text, encoding="utf-8")
+    base = {"PATH": "made-up-path", "UV_PROJECT": str(claim.attempt_dir), "UV_NO_CONFIG": "0"}
+    env = claim.env(base, arms)
+    assert env["UV_PROJECT"] == str(repo)
+    assert env["UV_NO_CONFIG"] == "1"
+
+
+def test_a_claude_session_gets_no_uv_pin(tmp_path):
+    """CR-01 scope: a Claude Code session runs in the checkout, its hooks allow only exact
+    wrapper forms (no `cd`) and writes only to its own files, so uv already finds the
+    checkout's project; the pin is the signed-in harnesses' alone."""
+    claim = driver._Claim(_pick(), RUN, tmp_path / "repo", 1)
+    env = claim.env({"PATH": "made-up-path"}, backends.load_arms())
+    assert "UV_PROJECT" not in env and "UV_NO_CONFIG" not in env
+
+
+def test_the_installed_uv_knows_the_pin_variables():
+    """CR-01: the two variables the pin sets are the ones the installed uv reads (`uv run
+    --help` names each beside its flag), so a renamed variable cannot silently undo it."""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not on PATH")
+    shown = subprocess.run([uv, "run", "--help"], capture_output=True, text=True, check=True,
+                           timeout=60).stdout  # fmt: skip
+    assert "[env: UV_PROJECT=]" in shown
+    assert "[env: UV_NO_CONFIG=]" in shown
