@@ -1,8 +1,10 @@
 """.github/workflows/pages.yml (RPT-02..RPT-05, D-27, D-28, D-30): GitHub Pages is built from the
 committed CSVs by tools/progress.py and deployed by GitHub's own actions, the recomp.fyi report
 is uploaded as one combined artifact, and the DecompHub refresh POST runs only when the owner
-turns it on. Pinned by text, like tests/test_hygiene.py: no YAML library. Nothing here touches
-the network."""
+turns it on. .github/workflows/match.yml (PIPE-08, D-06 to D-09, plan 07.2-08): the disabled,
+label-gated base-vs-head match check runs main's tools on the pull request as data, compiling in
+the image with no network. Pinned by text, like tests/test_hygiene.py: no YAML library. Nothing
+here touches the network."""
 
 from __future__ import annotations
 
@@ -124,7 +126,7 @@ def test_every_checkout_drops_its_credentials():
     """Fix round 1, review WR-01: no checkout in any workflow leaves the job token in .git/config
     for later steps (ci.yml runs a pull request's own code with it)."""
     workflows = sorted(PAGES.parent.glob("*.yml"))
-    assert [w.name for w in workflows] == ["ci.yml", "pages.yml"]
+    assert [w.name for w in workflows] == ["ci.yml", "match.yml", "pages.yml"]
     for workflow in workflows:
         text = workflow.read_text(encoding="utf-8")
         lines = text.splitlines()
@@ -263,3 +265,202 @@ def test_no_other_outward_url():
     assert text.count("curl ") == 1 and "curl " in "\n".join(job("notify-decomphub"))
     for tool in ("wget", "Invoke-WebRequest", "Invoke-RestMethod", "urllib", "requests"):
         assert tool not in text, tool
+
+
+# ---- match.yml: the base-vs-head match check (PIPE-08; D-06 to D-09, D-23; plan 07.2-08) ----
+
+MATCH = PAGES.parent / "match.yml"
+# The job runs only once the owner sets the repository variable, only as main's own workflow, and
+# a labeled run only for the match-check label (D-06, D-09).
+MATCH_GATE = ("if: vars.MATCH_CHECK_ENABLED == 'true' && github.ref == 'refs/heads/main' && "
+              "(github.event_name == 'workflow_dispatch' || "
+              "github.event.label.name == 'match-check')")  # fmt: skip
+PR_NUMBER = "${{ github.event.pull_request.number || inputs.pr }}"
+MATCH_ENV = ("PR_NUMBER: " + PR_NUMBER, "BASE_SHA: ${{ github.sha }}",
+             "LABELED_HEAD: ${{ github.event.pull_request.head.sha }}",
+             "IMAGE: reverseapoc-build:local", "VENV_VOLUME: reverseapoc-match-venv")  # fmt: skip
+PATHS_STEP = "List the changed paths; refuse any outside the src units, symbols.csv and Markdown"
+UNITS_STEP = "Refuse a new, removed or linked unit"
+PIN_STEP = "Refuse a head that moved after the label"
+COMPILE_STEP = "Compile each touched unit at base and at head, then compare"
+UNIT_PATTERN = r"'^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'"
+# D-07: the image, no network, the base tree and Watcom read-only, no game files, the uv venv
+# the owner prepared; only the outputs are writable, under the runner's temp directory.
+DOCKER_RUN = "docker run --rm --network none \\"
+MOUNTS = ('-v "$GITHUB_WORKSPACE:/work:ro" \\', '-v "$RUNNER_TEMP/match:/work/build/match" \\',
+          '-v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \\', '-v "$VENV_VOLUME:/opt/venv" \\',
+          '-w /work "$@" < /dev/null')  # fmt: skip
+HEAD_SRC = '-v "$GITHUB_WORKSPACE/head/src:/work/src:ro"'
+IN_IMAGE = '"$IMAGE" uv run --frozen --offline reverseapoc '
+CC_FLAGS = "--cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log"
+COMPARE = (f'image {IN_IMAGE}compare-objects "build/match/base/$name.obj" '
+           '"build/match/head/$name.obj" --base-config config --head-config head/config '
+           '--exe "$exe" || status=1')  # fmt: skip
+
+
+def match_lines() -> list[str]:
+    """match.yml's lines without comment lines."""
+    assert MATCH.is_file(), f"{MATCH} does not exist"
+    text = MATCH.read_text(encoding="utf-8")
+    return [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+
+
+def match_top(header: str) -> list[str]:
+    lines = match_lines()
+    assert header in lines, f"match.yml has no top-level {header!r}"
+    return [line.strip() for line in block(lines[lines.index(header):], header) if line.strip()]
+
+
+def match_job() -> list[str]:
+    return [line.strip() for line in block(block(match_lines(), "jobs:"), "match:")
+            if line.strip()]  # fmt: skip
+
+
+def match_steps() -> list[list[str]]:
+    """The stripped lines of each step, its leading `- ` dropped."""
+    raw = [line for line in block(block(block(match_lines(), "jobs:"), "match:"), "steps:")
+           if line.strip()]  # fmt: skip
+    least = min(indent(line) for line in raw)
+    steps: list[list[str]] = []
+    for line in raw:
+        if indent(line) == least and line.lstrip().startswith("- "):
+            steps.append([])
+        steps[-1].append(line.strip().removeprefix("- "))
+    return steps
+
+
+def match_step(name: str) -> list[str]:
+    [step] = [s for s in match_steps() if s[0] == f"name: {name}"]
+    return step
+
+
+def script(step: list[str]) -> list[str]:
+    """The lines of a step's `run: |` script."""
+    return step[step.index("run: |") + 1:]
+
+
+def test_match_triggers():
+    """D-09: a label on a pull request (pull_request_target: main's workflow) or a dispatch
+    naming the pull request; never a push or a plain pull_request, which would run the PR's own
+    copy of the workflow."""
+    lines = match_lines()
+    on = block(lines[lines.index("on:"):], "on:")
+    assert keys(on) == ["pull_request_target", "workflow_dispatch"]
+    target = [line.strip() for line in block(on, "pull_request_target:") if line.strip()]
+    assert target == ["types: [labeled]"]
+    dispatch = [line.strip() for line in block(on, "workflow_dispatch:") if line.strip()]
+    assert dispatch[:2] == ["inputs:", "pr:"]
+    assert {"required: true", "type: number"} <= set(dispatch)
+    assert not any(re.match(r"\s*(push|pull_request|schedule):", line) for line in lines)
+
+
+def test_match_gates():
+    """Off until the owner sets MATCH_CHECK_ENABLED; a labeled run needs the match-check label,
+    and each new push needs it again (only `labeled` triggers). One check per pull request."""
+    job = match_job()
+    assert MATCH_GATE in job
+    assert job.index(MATCH_GATE) < job.index("steps:"), "the gate is on the job, not a step"
+    assert match_top("concurrency:") == [f"group: match-{PR_NUMBER}", "cancel-in-progress: true"]
+    env = block(block(block(match_lines(), "jobs:"), "match:"), "env:")
+    assert [line.strip() for line in env if line.strip()] == list(MATCH_ENV)
+
+
+def test_match_permissions():
+    """T-07.2-22: the job token reads the repository and nothing else; no secret is named; the
+    job runs on the owner's self-hosted runner."""
+    assert match_top("permissions:") == ["contents: read"]
+    text = "\n".join(match_lines())
+    assert text.count("permissions:") == 1
+    assert re.search(r"\bwrite\b", text) is None
+    assert "secrets." not in MATCH.read_text(encoding="utf-8")
+    assert "runs-on: [self-hosted]" in match_job()
+
+
+def test_match_runs_main_tools():
+    """D-06: the first checkout is main's commit (its workflow and tools); the pull request head
+    goes to head/ as data, without credentials, and nothing under head/ is ever run: every
+    `uv run` runs main's reverseapoc inside the image, and no step changes into head/."""
+    steps = match_steps()
+    checkouts = [step for step in steps if "uses: actions/checkout@v7" in step]
+    assert len(checkouts) == 2 and steps[0] is checkouts[0]
+    base, head = checkouts
+    assert "ref: ${{ github.sha }}" in base
+    assert not any(line.startswith("path:") for line in base)
+    assert f"ref: refs/pull/{PR_NUMBER}/head" in head and "path: head" in head
+    assert all("persist-credentials: false" in step for step in checkouts)
+    text = "\n".join(match_lines())
+    assert "working-directory" not in text
+    assert re.search(r"(^|[\s;&|(])(cd|pushd)\s", text, re.MULTILINE) is None
+    assert re.search(r"(bash|sh|source|python3?|node|make|ninja|perl)\s+\S*head/", text) is None
+    assert "./head" not in text and "python" not in text and "setup-uv" not in text
+    uv_lines = [line for line in match_lines() if "uv run" in line]
+    assert uv_lines and all(IN_IMAGE in line for line in uv_lines)
+
+
+def test_match_pins_the_labeled_head():
+    """A push after the label brings code nobody labeled: the labeled run checks that the head it
+    checked out is the one the label event named, and fails otherwise."""
+    pin = match_step(PIN_STEP)
+    assert "if: github.event_name == 'pull_request_target'" in pin
+    run = script(pin)
+    moved = 'if [ "$(git -C head rev-parse HEAD)" != "$LABELED_HEAD" ]; then'
+    assert moved in run
+    assert run[run.index(moved) + 1].startswith('echo "::error::')
+    assert run[run.index(moved) + 2] == "exit 1"
+
+
+def test_match_compiles_in_the_image_offline():
+    """D-07, D-08: one `docker run --rm --network none` helper with read-only mounts and no game
+    files; each unit compiles at base and at head (head/src mounted over src/, so the base tree's
+    cflags rule applies to the unit's own path) with main's `reverseapoc cc` and the base tree's
+    config/cflags.txt, then main's compare-objects judges the pair; any failure fails the job."""
+    text = MATCH.read_text(encoding="utf-8")
+    assert text.count("docker run") == 1 and "docker compose" not in text
+    assert "orig" not in text
+    run = script(match_step(COMPILE_STEP))
+    assert run[0] == "set -euo pipefail"
+    assert ': "${REVERSEAPOC_WATCOM_DIR:?set it in the .env file of the runner, see docs/ci.md}"' \
+        in run
+    start = run.index(DOCKER_RUN)
+    assert run[start + 1:start + 1 + len(MOUNTS)] == list(MOUNTS)
+    ccs = [line for line in run if "reverseapoc cc " in line]
+    assert len(ccs) == 2
+    assert all(line.startswith("image ") and IN_IMAGE + "cc " in line and CC_FLAGS in line
+               for line in ccs)  # fmt: skip
+    base_cc, head_cc = ccs
+    assert HEAD_SRC not in base_cc and '-o "build/match/base/$name.obj"' in base_cc
+    assert HEAD_SRC in head_cc and '-o "build/match/head/$name.obj"' in head_cc
+    assert [line for line in run if "compare-objects" in line] == [COMPARE]
+    assert run[-1] == 'exit "$status"'
+
+
+def test_match_refuses_other_paths():
+    """D-08, T-07.2-21: the paths the pull request changed since its merge base with main may be
+    src/<exe>/<unit>.c units, the two symbols.csv files (a rename's new names, read as data) and
+    Markdown; anything else (cflags, tools, config, headers, workflows) fails the job and goes to
+    the owner."""
+    run = script(match_step(PATHS_STEP))
+    assert run[0] == "set -euo pipefail"
+    # main's commit reaches head/'s repository from the local checkout, not over the network.
+    fetch = 'git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD'
+    assert run[1:3] == [fetch, 'test "$(git -C head rev-parse FETCH_HEAD)" = "$BASE_SHA"']
+    assert 'merge_base="$(git -C head merge-base "$BASE_SHA" HEAD)"' in run
+    diff = ('git -C head diff --name-only --no-renames "$merge_base" HEAD '
+            '> "$RUNNER_TEMP/changed.txt"')  # fmt: skip
+    assert diff in run
+    case = run[run.index('case "$path" in') + 1:run.index("esac")]
+    assert case == ["*.md) continue ;;",
+                    "config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;"]  # fmt: skip
+    assert f"if printf '%s\\n' \"$path\" | grep -Eq {UNIT_PATTERN}; then" in run
+    assert "refused=1" in run and run[-1] == '[ "$refused" -eq 0 ]'
+
+
+def test_match_refuses_new_removed_and_linked_units():
+    """A new unit is a new match (the owner's gate, D-08); a removed one cannot be compared; a
+    symbolic link is never followed."""
+    run = script(match_step(UNITS_STEP))
+    pick = f'grep -E {UNIT_PATTERN} "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true'
+    assert pick in run
+    assert 'if [ ! -f "$unit" ] || [ -L "$unit" ]; then' in run
+    assert 'if [ ! -f "head/$unit" ] || [ -L "head/$unit" ]; then' in run
+    assert run.count("exit 1") == 2
