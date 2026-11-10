@@ -118,7 +118,9 @@ jobs:
       # Each unit compiles twice with main's tools and main's config/cflags.txt: once from main's
       # src/, once with head/src mounted over src/, so the cflags rule for the unit's own path
       # applies to both. main's compare-objects then reads each tree's names (head/config is
-      # data). Any compile failure, difference or tool error fails the job.
+      # data). Any compile failure, difference or tool error fails the job. The venv volume the
+      # owner filled is mounted read-only and never synced (07.2 review WR-08), so nothing a
+      # compile of the pull request's C runs can change what a later compare executes.
       - name: Compile each touched unit at base and at head, then compare
         run: |
           set -euo pipefail
@@ -130,7 +132,7 @@ jobs:
               -v "$GITHUB_WORKSPACE:/work:ro" \
               -v "$RUNNER_TEMP/match:/work/build/match" \
               -v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \
-              -v "$VENV_VOLUME:/opt/venv" \
+              -v "$VENV_VOLUME:/opt/venv:ro" \
               -w /work "$@" < /dev/null
           }
           status=0
@@ -138,8 +140,8 @@ jobs:
             exe="${unit#src/}"
             exe="${exe%%/*}"
             name="$(basename "$unit" .c)"
-            image "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/base/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
-            image -v "$GITHUB_WORKSPACE/head/src:/work/src:ro" "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/head/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
-            image "$IMAGE" uv run --frozen --offline reverseapoc compare-objects "build/match/base/$name.obj" "build/match/head/$name.obj" --base-config config --head-config head/config --exe "$exe" || status=1
+            image "$IMAGE" uv run --frozen --offline --no-sync reverseapoc cc "$unit" -o "build/match/base/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image -v "$GITHUB_WORKSPACE/head/src:/work/src:ro" "$IMAGE" uv run --frozen --offline --no-sync reverseapoc cc "$unit" -o "build/match/head/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image "$IMAGE" uv run --frozen --offline --no-sync reverseapoc compare-objects "build/match/base/$name.obj" "build/match/head/$name.obj" --base-config config --head-config head/config --exe "$exe" || status=1
           done < "$RUNNER_TEMP/units.txt"
           exit "$status"
