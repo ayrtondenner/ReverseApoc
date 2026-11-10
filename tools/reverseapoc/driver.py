@@ -156,7 +156,17 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, backends, callgraph, codexjson, hooks, mechanics, streamjson, unitdefs
+from . import (
+    agyjson,
+    attempt,
+    backends,
+    callgraph,
+    codexjson,
+    hooks,
+    mechanics,
+    streamjson,
+    unitdefs,
+)
 from .callgraph import CallGraph
 from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
@@ -216,6 +226,8 @@ from .session import (
     SKILL,
     TIMEOUT_S,
     SessionResult,
+    agy_prompt,
+    build_agy_argv,
     build_argv,
     build_codex_argv,
     codex_prompt,
@@ -258,6 +270,7 @@ POLL_S = 300  # D-08: then every 5 minutes
 TRANSIENT_RETRIES = 3  # D-08: "3 retries, then the attempt is aborted": 1 launch + 3 retries
 EXIT_OK, EXIT_MISMATCH, EXIT_TOOL = 0, 1, 2
 CODEX_EXE = "codex"  # 07.2-13 (D-13): the Codex CLI, found on PATH like claude
+AGY_EXE = "agy"  # 07.2-15 (D-21): the Antigravity CLI, found on PATH like claude
 TESTED_MAJOR = 2  # D-36: the Claude CLI major the driver was tested with
 MIN_CLI_VERSION = (2, 1, 302)  # D-36, research "Pilot checkpoint preflight": the -p default
 
@@ -460,6 +473,10 @@ class Deps:
     # session.build_codex_argv with the `codex` on PATH.
     codex_argv: Callable[..., Sequence[str]] = (
         lambda prompt, **values: build_codex_argv(prompt, codex=_which(CODEX_EXE), **values))
+    # 07.2-15 (D-21, D-24): the argv of an agy arm's session, (prompt, *, model, attempt_dir,
+    # settings, timeout_s): session.build_agy_argv with the `agy` on PATH.
+    agy_argv: Callable[..., Sequence[str]] = (
+        lambda prompt, **values: build_agy_argv(prompt, agy=_which(AGY_EXE), **values))
 
 
 def _which(name: str) -> str:
@@ -1309,6 +1326,37 @@ def write_codex_rules(attempt_dir: Path) -> None:
     write_atomic(path, CODEX_RULES_TEXT.encode("ascii"))
 
 
+AGY_DIR = "agy"  # 07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json
+
+
+def _form_regex(tokens: Sequence[str]) -> str:
+    return " ".join(f"(?:{hooks.ATTEMPT_NAME.pattern})" if t == hooks.ATTEMPT_NAME_SLOT
+                    else t for t in tokens)  # fmt: skip
+
+
+def _wrapper_regex() -> str:
+    """One regex matching exactly the matching session's wrapper forms (hooks.MATCHING_FORMS,
+    <NAME> as hooks.ATTEMPT_NAME), anchored; every token is plain [A-Za-z0-9_-] text."""
+    prefix = " ".join(hooks.ATTEMPT_PREFIX)
+    return f"^{prefix} (?:{'|'.join(_form_regex(f) for f in hooks.MATCHING_FORMS)})$"
+
+
+def agy_settings(claim: _Claim) -> dict:
+    """07.2-15 (D-24): the agy session's permission rules: allow only the attempt wrapper's
+    forms (headless agy soft-denies everything unconfigured, so the allow list is the whole
+    surface, RESEARCH "Permissions")."""
+    return {"permissions": {"allow": [f"command(regex:{_wrapper_regex()})"], "deny": []}}
+
+
+def write_agy_settings(claim: _Claim) -> None:
+    """build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json, written by the driver before
+    each agy session, outside its workspace (the attempt dir) and never in the repo or the
+    user's settings: passed with `--settings`."""
+    path = claim.agy_settings
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_atomic(path, (json.dumps(agy_settings(claim), indent=2) + "\n").encode("utf-8"))
+
+
 def _forbidden_part(text: str) -> str | None:
     """orig or third_party when `text` names it as a path part in any spelling (case, either
     slash, quotes, drive or `..` around it), else None."""
@@ -1991,21 +2039,40 @@ class _Claim:
         return self.arm is not None and self.arm.harness == backends.CODEX
 
     @property
+    def agy(self) -> bool:
+        """07.2-15 (D-21): the session runs under the Antigravity CLI (its arm's harness)."""
+        return self.arm is not None and self.arm.harness == backends.AGY
+
+    @property
+    def signed_in(self) -> bool:
+        """A Codex or agy session: no hooks, so the driver's guard set and audit (D-26)."""
+        return self.codex or self.agy
+
+    def _per_session(self, directory: str, suffix: str) -> Path:
+        name = f"{self.pick.exe}__{self.function}__attempt-{self.n}{suffix}"
+        return self.repo.joinpath(self.runs, self.run, directory, name)
+
+    @property
     def wrapper_ledger(self) -> Path:
         """07.2-13 (D-26): build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl, the
         wrapper's hash ledger, outside the session's workspace (the attempt dir)."""
-        name = f"{self.pick.exe}__{self.function}__attempt-{self.n}.jsonl"
-        return self.repo.joinpath(self.runs, self.run, LEDGER_DIR, name)
+        return self._per_session(LEDGER_DIR, ".jsonl")
+
+    @property
+    def agy_settings(self) -> Path:
+        """07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json, the
+        agy session's permission settings, outside its workspace (the attempt dir)."""
+        return self._per_session(AGY_DIR, ".json")
 
     def env(self, base: Mapping[str, str], arms: Mapping[str, backends.Arm]) -> dict[str, str]:
         """The session's environment: the arm's (backends.session_env, D-12: no arm's key
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
         plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
-        that the hooks and the wrapper validate. 07.2-13: a Codex session also names its
-        wrapper ledger (D-26); no other session inherits one."""
+        that the hooks and the wrapper validate. 07.2-13: a Codex session (07.2-15: and an agy
+        one) also names its wrapper ledger (D-26); no other session inherits one."""
         own = backends.session_env(self.arm_in(arms), base, arms)
         own.pop(attempt.WRAPPER_LEDGER_ENV, None)
-        if self.codex:
+        if self.signed_in:
             own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
@@ -2057,7 +2124,9 @@ class _Session:
     @property
     def disposition(self) -> Disposition:
         r = self.result
-        classify = codexjson.classify if self.claim.codex else streamjson.classify  # 07.2-13
+        classify = (codexjson.classify if self.claim.codex  # 07.2-13
+                    else agyjson.classify if self.claim.agy  # 07.2-15
+                    else streamjson.classify)  # fmt: skip
         return classify(r.events, r.exit_code, r.timed_out)
 
     @property
@@ -2066,13 +2135,16 @@ class _Session:
 
     @property
     def init(self) -> Mapping:
+        if self.claim.agy:  # 07.2-15: agy's own `init` event
+            return agyjson.init_event(self.events) or {}
         return streamjson.init_event(self.events) or {}
 
     @property
     def measured(self) -> bool:
         """The CLI ended the session with a result event, so `usage` holds its own figures
         (else stream_usage's lower bound). 07.2-13: a Codex session is measured once a turn
-        completed (codexjson.usage, its duration the driver's wall clock)."""
+        completed (codexjson.usage, its duration the driver's wall clock). 07.2-15: an agy
+        session by its result event (agyjson.usage)."""
         if self.claim.codex:
             return codexjson.turns(self.events) > 0
         return any(e.get("type") == "result" for e in self.events)
@@ -2081,6 +2153,8 @@ class _Session:
     def usage(self) -> streamjson.Usage:
         if self.claim.codex:
             return codexjson.usage(self.events, self.seconds)
+        if self.claim.agy:
+            return agyjson.usage(self.events)
         results = [e for e in self.events if e.get("type") == "result"]
         if results:
             return streamjson.usage(results[-1])
@@ -3277,7 +3351,7 @@ class _Night:
             write_atomic(claim.attempt_dir / attempt.UNIT_BASE, unit_before)
         view_hashes = self._view_hashes(claim)
         pack = self.deps.pack(claim.pick, claim.attempt_dir, claim.view_root / attempt.VIEW_SRC)
-        launch_files = self._codex_launch(claim) if claim.codex else {}
+        launch_files = self._guard_launch(claim) if claim.signed_in else {}
         prompt, skill = self._prompt(claim)
         base =self.config.base_env if self.config.base_env is not None else os.environ
         with self.gate_lock:  # 07-21: never while another worker's landing has src/ dirty
@@ -3294,7 +3368,9 @@ class _Night:
         result = None
         try:
             argv = self._argv(claim, prompt, skill)
-            result = self.deps.session(argv, cwd=self.repo,
+            # 07.2-15 (D-21): agy's workspace is its cwd, so an agy session runs in its attempt
+            # dir; every other session runs in the checkout (F11)
+            result = self.deps.session(argv, cwd=claim.attempt_dir if claim.agy else self.repo,
                                        env=claim.env(base, self.arms),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
                                        timeout_s=self.config.wall_clock_s,
@@ -3360,16 +3436,21 @@ class _Night:
             return goal, {"skill": READABILITY_SKILL}
         goal = goal_prompt(claim.function, claim.pick.unit, claim.pick.exe,
                            unit_path=claim.view_unit_rel)  # fmt: skip
-        if claim.codex:  # 07.2-13 (D-13): no skill loader, so the skill rides in the prompt
+        if claim.signed_in:  # 07.2-13, 07.2-15: no skill loader, so the skill rides in the prompt
             skill_text = (backends.REPO_ROOT / SKILL).read_text(encoding="utf-8")
-            return codex_prompt(goal, skill_text), {}
+            return (agy_prompt if claim.agy else codex_prompt)(goal, skill_text), {}
         return goal, {}
 
     def _argv(self, claim: _Claim, prompt: str, skill: Mapping[str, str]) -> Sequence[str]:
-        """The session's argv: Deps.codex_argv for a Codex arm (07.2-13, D-13), else the
+        """The session's argv: Deps.codex_argv for a Codex arm (07.2-13, D-13), Deps.agy_argv
+        for an agy arm (07.2-15, D-21: its settings file and the night's wall clock), else the
         claude argv with the pass's model, budget and turns and the kind's skill."""
         if claim.codex:
             return self.deps.codex_argv(prompt, model=claim.model, attempt_dir=claim.attempt_dir)
+        if claim.agy:
+            return self.deps.agy_argv(prompt, model=claim.model, attempt_dir=claim.attempt_dir,
+                                      settings=claim.agy_settings,
+                                      timeout_s=self.config.wall_clock_s)  # fmt: skip
         return self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
                               max_turns=self.config.max_turns, **skill)  # fmt: skip
 
@@ -3418,12 +3499,17 @@ class _Night:
                 stray.append(f"{raw}{_TRANSCRIPT_MARK}")
         return stray
 
-    def _codex_launch(self, claim: _Claim) -> dict[str, str]:
+    def _guard_launch(self, claim: _Claim) -> dict[str, str]:
         """07.2-13 (D-13, D-26): before a Codex session, in its fresh attempt dir, the rules file
         that allows only the wrapper, and an empty wrapper ledger outside the workspace (a
         relaunch's earlier entries never vouch for this session's files). Returns the attempt
-        dir's inventory at launch, which the audit compares against."""
-        write_codex_rules(claim.attempt_dir)
+        dir's inventory at launch, which the audit compares against. 07.2-15 (D-24): an agy
+        session gets its settings file under build/driver/<run>/agy/ instead of the rules file,
+        outside its workspace, and the same empty ledger."""
+        if claim.agy:
+            write_agy_settings(claim)
+        else:
+            write_codex_rules(claim.attempt_dir)
         claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(claim.wrapper_ledger, b"")
         return attempt_inventory(claim.attempt_dir)
@@ -3876,17 +3962,23 @@ class _Night:
         (D-09): the init must name the model the session asked for (streamjson's accepted IDs),
         so a Fable pass passes and a request answered by another model stops the night.
         07.2-13: a Codex session streams no init event, so it has no init check (its record
-        keeps the requested model and a null `model`)."""
+        keeps the requested model and a null `model`). 07.2-15 (D-21): an agy session's init
+        must name its attempt dir as cwd, the requested slug and no bypass mode
+        (agyjson.init_problems)."""
         if session.claim.codex:
             return
-        init = streamjson.init_event(session.events)
+        init = session.init or None
         if init is None and not (session.counted and not session.result.timed_out):
             return
-        problems = streamjson.check_init(init, tested_major=self.config.tested_major,
-                                         min_version=self.config.min_cli_version,
-                                         expected_model=session.claim.model,
-                                         accepted=_accepted(session.claim.arm_in(self.arms))
-                                         )  # fmt: skip
+        if session.claim.agy:
+            problems = agyjson.init_problems(init, cwd=session.claim.attempt_dir,
+                                             model=session.claim.model)  # fmt: skip
+        else:
+            problems = streamjson.check_init(init, tested_major=self.config.tested_major,
+                                             min_version=self.config.min_cli_version,
+                                             expected_model=session.claim.model,
+                                             accepted=_accepted(session.claim.arm_in(self.arms))
+                                             )  # fmt: skip
         if problems:
             self._reset(session)
             raise _Stop(INIT, "; ".join(problems))
@@ -5126,7 +5218,8 @@ class _Night:
                   "truncated": list(session.pack.truncated), "date": self.deps.today(),
                   "model_requested": session.claim.model,
                   "budget_usd": session.claim.budget_usd,
-                  "hook_blocks": _hook_blocks(session.events),
+                  "hook_blocks": (len(agyjson.denied_actions(session.events))  # 07.2-15
+                                  if session.claim.agy else _hook_blocks(session.events)),
                   "gate": _gate_field(gate, session.claim.pick),
                   "sweep_source": source, "sweep_cells_100": cells,
                   "effort": None, "harness": arm.harness, "backend": arm.backend,
@@ -5567,6 +5660,10 @@ class Seams:
     # a Codex arm's session (Deps.codex_argv).
     codex: str = CODEX_EXE
     codex_argv: Callable[..., Sequence[str]] = Deps.codex_argv
+    # 07.2-15 (D-21): the agy CLI (its `--version` and `-p /usage`) and the argv of an agy
+    # arm's session (Deps.agy_argv).
+    agy: str = AGY_EXE
+    agy_argv: Callable[..., Sequence[str]] = Deps.agy_argv
 
 
 def stamp(now: datetime) -> str:
@@ -5932,7 +6029,8 @@ def real_deps(options: DriveOptions, seams: Seams, worlds: Mapping[str, ExeWorld
     return Deps(queue=queue, requeue=requeue, matched_callees=matched_callees,
                 scaffold=lambda pick, dest: worlds[pick.exe].scaffold(pick, dest),
                 pack=lambda pick, directory, src: worlds[pick.exe].pack(pick, directory, src),
-                argv=seams.argv, codex_argv=seams.codex_argv, session=seams.session,
+                argv=seams.argv, codex_argv=seams.codex_argv, agy_argv=seams.agy_argv,
+                session=seams.session,
                 lint=lint, lint_paths=lint_paths,
                 gate=lambda pick, n: _container_gate(seams.run, gate_argv(pick, n)),
                 partial_gate=lambda pick, src, n: seams.run(
@@ -7111,7 +7209,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     prompt = (codex_canary_prompt if claim.codex else canary_prompt)(attempt_dir, size)
     attempt_dir.mkdir(parents=True)
     probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
-    launch = probe._codex_launch(claim) if claim.codex else {}  # 07.2-13: the night's guard set
+    launch = probe._guard_launch(claim) if claim.signed_in else {}  # the night's guard set
     base = seams.base_env if seams.base_env is not None else os.environ
     env = claim.env(base, arms)  # the arm's env; attempt dir, notes, view unit and proposals
     before = probe._snapshot()
@@ -7233,10 +7331,14 @@ def default_seams(repo: Path) -> Seams:
     (attempt.ROOTS), session.run_session with D-06's argv for the `claude` on PATH."""
     claude = _which("claude")
     codex = _which(CODEX_EXE)  # 07.2-13
+    agy = _which(AGY_EXE)  # 07.2-15
     return Seams(run=command_runner(repo), git=git_runner(repo),
                  world=lambda: {exe: load_world(exe, roots=attempt.ROOTS) for exe in EXE_ORDER},
                  session=run_session,
                  argv=lambda prompt, **values: build_argv(prompt, claude=claude, **values),
                  claude=claude, codex=codex,
                  codex_argv=lambda prompt, **values: build_codex_argv(prompt, codex=codex,
-                                                                      **values))  # fmt: skip
+                                                                      **values),
+                 agy=agy,
+                 agy_argv=lambda prompt, **values: build_agy_argv(prompt, agy=agy,
+                                                                  **values))  # fmt: skip

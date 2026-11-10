@@ -84,6 +84,47 @@ output = 0.0
 cache_read = 0.0
 cache_creation = 0.0
 
+# Gemini 3.8 Flash and GPT-OSS 120B through the Antigravity CLI (agy) on the owner's Google AI
+# Plus sign-in (07.2-15; D-21, D-24, D-25, D-25a: Gemini is fifth in the run order). No base_url
+# and no key_env: agy signs in with its own login, and the driver strips every Google key and
+# OpenAI variable from the session. The model ids are the exact slugs the owner's `agy models`
+# listed on 2026-11-09 (agy 1.5.3); slugs vary per account and agy exits 1 on an unknown one,
+# so a wrong id fails closed in the canary. The Gemini arm runs the medium effort; the owner may
+# set `gemini-3.8-flash-high` or `-low` here for an effort comparison. Prices are 0: the AI
+# Plus subscription is measured in its weekly quota, not in dollars (the canary measures it).
+# One worker each. An agy arm runs only after its canary passed on the installed CLI
+# (build/driver/canary/<arm>.json). GPT-OSS is open-weight, but the session still sends the
+# pack to Google, so it needs --allow-egress like every hosted arm.
+[arms."gemini-flash"]
+harness = "agy"
+backend = "google"
+model = "gemini-3.8-flash-medium"
+sends_disassembly = true
+accepted_init = ["gemini-3.8-flash-medium"]
+coauthor = "Gemini 3.8 Flash <noreply@google.com>"
+max_workers = 1
+
+[arms."gemini-flash".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+
+[arms."gpt-oss"]
+harness = "agy"
+backend = "google"
+model = "gpt-oss-120b-medium"
+sends_disassembly = true
+accepted_init = ["gpt-oss-120b-medium"]
+coauthor = "gpt-oss-120b <noreply@openai.com>"
+max_workers = 1
+
+[arms."gpt-oss".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0
+
 # DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
 # yet, so both cache classes are priced as input: the estimate may overstate, never understate.
 [arms."deepseek-flash"]

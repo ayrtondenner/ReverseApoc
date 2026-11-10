@@ -19,6 +19,9 @@ reports `timed_out`; streamjson.classify counts that as an attempt.
 07.2-13 (D-13): `build_codex_argv` is a Codex arm's `codex exec --json` argv and `codex_prompt`
 its prompt (the goal, the watcom-decomp skill's body and the session rules, since Codex loads
 no skill and runs no hook); run_session runs it the same way.
+
+07.2-15 (D-21, D-24): `build_agy_argv` is an Antigravity arm's `agy -p --output-format
+stream-json` argv and `agy_prompt` its prompt (codex_prompt's).
 """
 
 from __future__ import annotations
@@ -158,6 +161,22 @@ def build_codex_argv(prompt: str, *, codex: str, model: str, attempt_dir: Path) 
             prompt]  # fmt: skip
 
 
+def build_agy_argv(prompt: str, *, agy: str, model: str, attempt_dir: Path, settings: Path,
+                   timeout_s: float) -> list[str]:  # fmt: skip
+    """07.2-15 (D-21, D-24; RESEARCH "D-21"): the argv of one Antigravity session, `agy` being
+    the CLI executable: stream-json output, the model slug (an unknown one exits 1, so a wrong
+    slug fails closed), the terminal sandbox, the attempt dir as the added workspace, the
+    per-session settings file the driver wrote under build/ outside that workspace, no slash
+    commands, and the session's wall clock (`timeout_s`, whole seconds) as the print timeout.
+    `-p` and the prompt come last (agy reads no stdin and wants `-p` last). Never the flag that
+    skips permissions (tests/test_agy.py pins the list). The driver runs it with cwd = the
+    attempt dir."""
+    return [agy, "--output-format", "stream-json", "--model", model, "--sandbox",
+            "--add-dir", str(attempt_dir), "--settings", str(settings),
+            "--disable-slash-commands", "--print-timeout", str(int(timeout_s)),
+            "-p", prompt]  # fmt: skip
+
+
 def _skill_body(skill_text: str) -> str:
     """A SKILL.md without its `---` front matter (the name and description lines)."""
     lines = skill_text.splitlines(keepends=True)
@@ -183,6 +202,12 @@ def codex_prompt(goal: str, skill_text: str) -> str:
                "write is checked after the session; anything else stops the night.")  # fmt: skip
     return "\n\n".join((goal.removeprefix(_GOAL_COMMAND), _skill_body(skill_text).strip(),
                         closing))  # fmt: skip
+
+
+def agy_prompt(goal: str, skill_text: str) -> str:
+    """07.2-15 (D-21): the prompt of an Antigravity session, which like Codex has no skill
+    loader, no /goal and no hooks: codex_prompt's body, unchanged (one text for both)."""
+    return codex_prompt(goal, skill_text)
 
 
 def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:
