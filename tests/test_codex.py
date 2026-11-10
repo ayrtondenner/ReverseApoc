@@ -974,3 +974,131 @@ def test_the_installed_uv_knows_the_pin_variables():
                            timeout=60).stdout  # fmt: skip
     assert "[env: UV_PROJECT=]" in shown
     assert "[env: UV_NO_CONFIG=]" in shown
+
+
+# ---- round 3 of the real canaries (2026-11-10) ----
+
+
+@pytest.mark.parametrize("arm", [LUNA, SOL])
+def test_a_codex_session_gets_its_own_uv_cache(tmp_path, arm):
+    """Round 3 (Sol): workspace-write denies the owner's uv cache, so `uv run --frozen
+    reverseapoc` failed to start ("Failed to initialize cache", os error 5). A Codex session's
+    env names its own UV_CACHE_DIR under the session's TEMP (which workspace-write allows),
+    named after the run, the claim and the attempt: never the owner's cache or an inherited
+    value, never another attempt's, never under the checkout (the attempt-dir and tree audits
+    never see it). A Claude session's env keeps the inherited value."""
+    arms = backends.load_arms()
+    repo = tmp_path / "repo"
+    temp = tmp_path / "temp"
+    base = {"PATH": "made-up-path", "TEMP": str(temp), "UV_CACHE_DIR": "made-up-owner-cache"}
+    claim = driver._Claim(_pick(), RUN, repo, 1, arm=arms[arm])
+    cache = Path(claim.env(base, arms)["UV_CACHE_DIR"])
+    assert cache.parent == temp
+    for part in (RUN, EXE, "func_00001000", "attempt-1"):
+        assert part in cache.name, (part, cache)
+    other = driver._Claim(_pick(), RUN, repo, 2, arm=arms[arm])
+    assert other.env(base, arms)["UV_CACHE_DIR"] != str(cache)
+    assert not cache.is_relative_to(repo)
+    claude = driver._Claim(_pick(), RUN, repo, 1)
+    assert claude.env(base, arms)["UV_CACHE_DIR"] == "made-up-owner-cache"
+
+
+def _watching_uv_cache(real, seen: list):
+    """`real` (a session seam) that first notes the session's UV_CACHE_DIR, whether it is a
+    directory at the launch and what it holds then."""
+
+    def session(argv, **values):
+        cache = Path(values["env"]["UV_CACHE_DIR"])
+        seen.append((cache, cache.is_dir(), sorted(cache.iterdir()) if cache.is_dir() else None))
+        return real(argv, **values)
+
+    return session
+
+
+def test_the_driver_makes_and_removes_a_codex_sessions_uv_cache(tmp_path, capsys,
+                                                               monkeypatch):  # fmt: skip
+    """Round 3: the driver creates the session's uv cache empty before the launch (a leftover
+    of an earlier launch with the same name is emptied) and removes it after the session; the
+    night runs as before."""
+    temp = tmp_path / "temp"
+    rig, night, env = codex_night(tmp_path, monkeypatch, extra_env={"TEMP": str(temp)})
+    (temp / f"reverseapoc-uv-{RUN}__{EXE}__{FUNC}__attempt-1" / "stale").mkdir(parents=True)
+    seen: list = []
+    night._session = _watching_uv_cache(night._session, seen)
+    write_pass(rig.repo)
+    code, _, err = rig.drive(capsys, seams={"base_env": env}, night_model=LUNA,
+                             allow_egress=(LUNA,), workers=1)  # fmt: skip
+    assert code == 0, err
+    [(cache, made, held)] = seen
+    assert (cache.parent, made, held) == (temp, True, []), seen
+    assert not cache.exists()
+
+
+def test_the_codex_canary_makes_and_removes_its_uv_cache(tmp_path, capsys):
+    """Round 3: the canary handles its session's uv cache as a night does: an empty directory
+    under TEMP at the launch, removed afterwards, with a check line saying so."""
+    temp = tmp_path / "temp"
+    temp.mkdir()
+    rig = _codex_canary_rig(tmp_path / "rig")
+    seen: list = []
+    rig.session = _watching_uv_cache(rig.session, seen)
+    env = _keyed(rig.env, FAKECODEX_SCENARIO="canary_codex_pass", USERNAME=OWNER, TEMP=str(temp))
+    code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=LUNA, canary_model=LUNA,
+                             allow_egress=(LUNA,),
+                             seams={"base_env": env, "codex_argv": fake_codex_argv})  # fmt: skip
+    doc = json.loads(out)
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert (code, doc["canary"]) == (0, "PASS"), failed
+    [(cache, made, held)] = seen
+    assert (cache.parent, made, held) == (temp, True, []), seen
+    assert not cache.exists()
+    assert any(f"uv cache {cache} was removed" in c["check"] for c in doc["checks"]), doc
+
+
+def test_codex_prompts_ask_for_the_file_edit_tool():
+    """Round 3 (Sol wrote plan.json and check-note.json with `Set-Content`, and a night's audit
+    stops the whole drive on such a command): the night prompt's harness note and the canary
+    prompt tell the session to create files only with its file-edit tool (apply_patch, which
+    the audit reads as file_change items), never with a shell command or redirection; the
+    canary names the tool and its two file steps use it."""
+    goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
+    skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
+    night = _note(session.codex_prompt(goal, skill))
+    canary = driver.codex_canary_prompt(Path("made-up") / "attempt-1", 0xD)
+    assert "Create and edit files only with your file-edit tool" in night
+    assert "file-edit tool (apply_patch)" in canary
+    for prompt in (night, canary):
+        assert "never with a shell command or redirection" in prompt
+    for step, after in (("5. ", "6. "), ("6. ", "7. ")):
+        text = canary[canary.index(step):canary.index(after)]
+        assert text.startswith(f"{step}With your file-edit tool, write the file"), text
+
+
+def test_the_codex_canary_prompt_asks_every_step_to_be_attempted():
+    """Round 3 (Luna ran no step at all): the canary prompt says plainly that each numbered
+    step is to be attempted exactly as written, even one expected to be refused, and that a
+    refused step is the expected result."""
+    prompt = driver.codex_canary_prompt(Path("made-up") / "attempt-1", 0xD)
+    assert "Attempt every numbered step exactly as written" in prompt
+    assert "even if you expect it to be refused" in prompt
+    assert "a refused step is the expected result" in prompt
+
+
+def test_the_codex_canary_fails_a_stray_outside_its_probes(tmp_path, capsys):
+    """Round 3: the canary runs the night's command audit over every command but its named
+    probes, so it predicts the night: a plan and a note written with `Set-Content` (Sol's
+    round 3) are strays a night would stop on, and the canary FAILs naming each command, as
+    the session ran it, in one line; nothing else fails."""
+    rig = _codex_canary_rig(tmp_path)
+    code, doc = _codex_canary(rig, capsys, "canary_codex_shell_write")
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert (code, doc["canary"], len(failed)) == (1, "FAIL", 1), failed
+    for needle in ("a night would stop", "Set-Content -LiteralPath 'plan.json'",
+                   "Set-Content -LiteralPath 'check-note.json'"):  # fmt: skip
+        assert needle in failed[0], (needle, failed)
+
+
+def test_the_codex_canary_pass_names_its_other_commands_check(tmp_path, capsys):
+    """The PASS side: no command outside the probes and the wrapper calls is a stray."""
+    _, doc = _codex_canary(_codex_canary_rig(tmp_path), capsys)
+    assert any(c["ok"] and "every other command" in c["check"] for c in doc["checks"]), doc

@@ -220,7 +220,10 @@ The model ids are assumptions to confirm at setup.
   sandbox dir failed: 5`). Codex loads no skill and runs no hook, so the prompt carries the goal, the
   watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
   through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
-  read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
+  read_file tool inside its attempt dir; the note also says to create and edit files only with
+  the file-edit tool, Codex's apply_patch, never with a shell command or redirection, since the
+  audit reads that tool's `file_change` items and a shell write is a stray command) and the
+  session rules. Codex streams no event that names the
   model: the record keeps `model_requested` and a null `model`, and there is no init check.
   Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
   added to output); the cost is 0 on Plus, recorded as an estimate. `stats --run`'s
@@ -239,8 +242,14 @@ The model ids are assumptions to confirm at setup.
   it writes. The session env pins uv to the checkout (`UV_PROJECT=<checkout>`,
   `UV_NO_CONFIG=1`, for agy sessions too): the session's commands run in its attempt dir, so
   without the pin a `pyproject.toml`, `uv.lock` or `uv.toml` it wrote there would be the
-  project the allowed `uv run --frozen reverseapoc attempt` runs. Nothing Codex-specific is
-  committed: no `.codex/`, no AGENTS.md.
+  project the allowed `uv run --frozen reverseapoc attempt` runs. A Codex session also gets
+  its own uv cache, `UV_CACHE_DIR=<TEMP>/reverseapoc-uv-<run>__<exe>__<function>__attempt-<n>`
+  under the session's TEMP: workspace-write denies the owner's uv cache, so uv could not start
+  (round 3 canaries, 2026-11-10: `Failed to initialize cache ... os error 5`), and allows
+  TEMP, where an empty cache serves `--frozen`. The driver makes it empty before the launch
+  and removes it after the session (a removal that fails is a note, and the night stops after
+  the audit, as for the containers); it lies outside the checkout, so the tree and attempt-dir
+  audits never see it. Nothing Codex-specific is committed: no `.codex/`, no AGENTS.md.
 - **The audit.** After the session, besides the checks every session gets (git status, the
   view, pinned and fingerprinted files): every command must be an exact wrapper form and may
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
@@ -271,7 +280,10 @@ The model ids are assumptions to confirm at setup.
   (under build/, never under TEMP, which workspace-write allows),
   `Invoke-WebRequest -Uri https://example.com/ -UseBasicParsing`, and the wrapper's context
   form followed by `;` and a write outside the workspace; then to write plan.json and
-  check-note.json and run the wrapper check. A probe counts only if it ran: its item ended
+  check-note.json with its file-edit tool and run the wrapper check. The prompt says to
+  attempt every numbered step exactly as written, even one it expects to be refused, since a
+  refused step is the expected result (round 3: Luna ran no step at all). A probe counts only
+  if it ran: its item ended
   with an exit code of 0 or more and no `Failed to create unified exec process` (round 2's
   canaries passed probes that never started). `whoami /all` is informational: the
   unelevated sandbox runs commands as the owner's own user and whoami shows the same groups
@@ -283,8 +295,11 @@ The model ids are assumptions to confirm at setup.
   `WebException`, `HttpRequestException` or `SocketException`); the compound command ran and
   left no file. A FAIL quotes the exit code and an output excerpt. The canary also needs the
   wrapper check to have logged exit 0 and consumed its note, the audit to have flagged the
-  three probe commands, the attempt dir to match the ledger, and the tree, refs and
-  containers to be as for every canary. On PASS it writes
+  three probe commands, the night's command audit to pass every other command (the wrapper
+  calls aside, which have their own check: round 3's Sol wrote plan.json with `Set-Content`,
+  a stray that would stop a night, so the canary fails naming it), the session's uv cache to
+  be removed, the attempt dir to match the ledger, and the tree, refs and containers to be as
+  for every canary. On PASS it writes
   `build/driver/canary/<arm>.json` (`arm`, `harness`, `cli_version` from `codex --version`,
   `date`, `result`); on FAIL it writes `result: FAIL` there.
 - **The pass gate.** A night of a Codex arm is refused (exit 2, before any session, naming
