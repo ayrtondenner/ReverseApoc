@@ -330,12 +330,21 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
         for part in ("orig", "third_party"):  # the backslash form of the same roots
             assert f"{str(night.repo)}\\{part}\\**" in rules, (action, part)
         spelled = [re.compile(r.removeprefix("regex:")) for r in rules if r.startswith("regex:")]
-        assert len(spelled) == 1, rules
+        assert len(spelled) == 3, rules
+
+        def denied(text: str) -> bool:
+            return any(rule.fullmatch(text) for rule in spelled)
+
         for text in ("../../../../../../orig/UFO2P.EXE", "C:\\x\\ORIG\\TACP.EXE",
-                     "c:/x/Third_Party/watcom/h/stdio.h", "..\\..\\orig"):  # fmt: skip
-            assert spelled[0].fullmatch(text), (action, text)
-        for text in ("view/src/ufo2p/original_x.c", "notes.md", "../origins/x"):
-            assert not spelled[0].fullmatch(text), (action, text)
+                     "c:/x/Third_Party/watcom/h/stdio.h", "..\\..\\orig",
+                     # round 3: a `..` segment behind the allowed prefix, and 8.3 short names
+                     f"{attempt_dir.as_posix()}/../../../../../../x/UFO2P.EXE",
+                     f"{attempt_dir}\\..\\notes.md", "C:/x/THIRD_~1/watcom/x.h",
+                     "c:\\x\\ORIGIN~2\\a"):  # fmt: skip
+            assert denied(text), (action, text)
+        for text in ("view/src/ufo2p/original_x.c", "notes.md", "origins/x",
+                     f"{attempt_dir.as_posix()}/..x/y", *sorted(files)):  # fmt: skip
+            assert not denied(text), (action, text)
     assert _rule(deny, "unsandboxed") == ["regex:.*"]
     assert not path.is_relative_to(attempt_dir)
     assert not (night.repo / ".gemini").exists() and not (rig.repo / ".gemini").exists()
@@ -496,7 +505,7 @@ def test_agy_canary_pass(tmp_path, capsys):
     for needle in ("init", driver.AGY_CANARY_OUTSIDE, "example.com",
                    driver.AGY_CANARY_UNSANDBOXED, "attempt check", "0001.note.json", "ledger",
                    "settings", "1500000", AGY_VERSION, "relative read",
-                   "different-case read"):  # fmt: skip
+                   "different-case read", "dot-dot read", "short-name read"):  # fmt: skip
         assert needle in texts, needle
     assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "--output-format"
     assert rig.launches[0].cwd == rig.repo / doc["attempt_dir"]
@@ -531,7 +540,10 @@ def test_agy_canary_probes_the_orig_deny_rules(tmp_path):
     prompt = driver.agy_canary_prompt(attempt_dir, 0xD, repo=tmp_path)
     assert f"../../../orig/{driver.AGY_CANARY_PROBE}" in prompt
     assert str(tmp_path / "ORIG" / driver.AGY_CANARY_PROBE) in prompt
-    assert prompt.index(driver.AGY_CANARY_PROBE) < prompt.index("plan.json")
+    # round 3: `..` behind the allowed attempt-dir prefix, and an 8.3 short name
+    assert f"{attempt_dir.as_posix()}/../../../orig/{driver.AGY_CANARY_PROBE}" in prompt
+    assert str(tmp_path / "THIRD_~1" / driver.AGY_CANARY_PROBE) in prompt
+    assert prompt.rindex(driver.AGY_CANARY_PROBE) < prompt.index("plan.json")
 
 
 def test_agy_canary_fails_when_an_orig_read_is_not_denied(tmp_path, capsys):
@@ -540,7 +552,8 @@ def test_agy_canary_fails_when_an_orig_read_is_not_denied(tmp_path, capsys):
     code, doc = _agy_canary(rig, capsys, "canary_agy_reads_allowed")
     assert (code, doc["canary"]) == (1, "FAIL")
     failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
-    assert "relative read" in failed and "different-case read" in failed, failed
+    for label in ("relative read", "different-case read", "dot-dot read", "short-name read"):
+        assert label in failed, (label, failed)
     assert _no_pass(rig)
 
 
@@ -661,6 +674,23 @@ def test_codex_write_through_a_link_into_orig_names_it(tmp_path):
     strays = driver.codex_write_strays(["v/watcom/x.c", "notes.md"], attempt_dir=root,
                                        repo=repo, allowed=lambda rel: True)  # fmt: skip
     assert len(strays) == 1 and "orig/" in strays[0], strays
+
+
+def test_dot_dot_and_short_name_segments_are_strays(tmp_path):
+    """Security review round 3: a read or write path holding a `..` segment, or an 8.3 short
+    name segment (`~<digit>`) below the checkout, is a stray even when it resolves inside the
+    allowlist; a name that merely holds dots or a tilde is not."""
+    repo = tmp_path / "repo"
+    root = repo / ATTEMPT
+    (root / "view").mkdir(parents=True)
+    bad = ["view/../notes.md", f"{root}\\view\\..\\notes.md", "VIEW~1/src/x.c",
+           f"{root.as_posix()}/NOTES~1.MD"]  # fmt: skip
+    good = ["notes.md", "..notes/x.md", "view/a~b.c"]
+    reads = driver.read_strays([*bad, *good], attempt_dir=root, repo=repo)
+    assert [s.split(": a read")[0] for s in reads] == bad, reads
+    writes = driver.codex_write_strays([*bad, *good], attempt_dir=root, repo=repo,
+                                       allowed=lambda rel: True)  # fmt: skip
+    assert [s.split(": a write")[0] for s in writes] == bad, writes
 
 
 def test_exception_names_antigravity():
