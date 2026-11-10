@@ -321,13 +321,15 @@ def test_codexjson_unwraps_the_windows_shell():
     f"{POWERSHELL} -NoProfile -Command '{WRAPPER} asm func_00010010'",
     r'"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe" -Command "' + WRAPPER
     + ' context"',
-    f"powershell.exe -Command '{WRAPPER} plan'",
-    f"PowerShell.EXE -noprofile -command '{WRAPPER} giveup'",
-    f"pwsh.exe -NoProfile -Command '{WRAPPER} check'",
+    r"c:\WINDOWS\system32\windowspowershell\V1.0\PowerShell.EXE -noprofile -command '"
+    + WRAPPER + " giveup'",
+    f"C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command '{WRAPPER} plan'",
+    r'"C:\Program Files\PowerShell\7\pwsh.exe" -NoProfile -Command "' + WRAPPER + ' check"',
     ["C:\\Program Files\\PowerShell\\7\\pwsh.exe", "-Command", f"{WRAPPER} check"],
 ])  # fmt: skip
 def test_audit_passes_a_shell_wrapped_wrapper_call(command):
-    """One Windows shell layer around an exact wrapper form is audited as the wrapper form."""
+    """One layer of the real Windows shell (its absolute path, any case, either slash, quoted
+    or not) around an exact wrapper form is audited as the wrapper form."""
     assert driver.codex_command_strays(codexjson.commands(_ran(command))) == []
 
 
@@ -335,19 +337,28 @@ def test_audit_passes_a_shell_wrapped_wrapper_call(command):
     f"{POWERSHELL} -Command '{WRAPPER} check; echo x > f'",
     f"{POWERSHELL} -Command whoami",
     f"{POWERSHELL} -Command \"{POWERSHELL} -Command '{WRAPPER} check'\"",
-    f"powershell.exe -Command powershell.exe -Command '{WRAPPER} check'",
-    f"powershell.exe -Command {WRAPPER} check",
-    f"powershell.exe -EncodedCommand '{WRAPPER} check'",
-    f"powershell.exe -NoProfile -NoProfile -Command '{WRAPPER} check'",
+    f"{POWERSHELL} -Command {WRAPPER} check",
+    f"{POWERSHELL} -EncodedCommand '{WRAPPER} check'",
+    f"{POWERSHELL} -NoProfile -NoProfile -Command '{WRAPPER} check'",
+    f"{POWERSHELL} -Command '{WRAPPER} check",
+    f'.\\powershell.exe -Command "{WRAPPER} check"',
+    f'".\\powershell.exe" -Command "{WRAPPER} check"',
+    f"powershell.exe -Command '{WRAPPER} check'",
+    f"pwsh -Command '{WRAPPER} check'",
+    f"pwsh.exe -NoProfile -Command '{WRAPPER} check'",
+    f'C:\\Users\\x\\powershell.exe -Command "{WRAPPER} check"',
+    f'"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\x\\..\\powershell.exe" -Command '
+    f'"{WRAPPER} check"',
+    f'"D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command "{WRAPPER} check"',
     f"cmd.exe /c '{WRAPPER} check'",
     f"bash -lc '{WRAPPER} check'",
-    f"notpowershell.exe -Command '{WRAPPER} check'",
-    f"powershell.exe -Command '{WRAPPER} check",
 ])  # fmt: skip
 def test_audit_flags_a_shell_wrapped_stray(command):
     """A wrapped compound or non-wrapper command, a doubly wrapped one (one layer comes off, the
-    shell left is a stray), a -Command with more than one argument, another flag or another
-    shell, or an unbalanced quote: each still a stray."""
+    shell left is a stray), a -Command with more than one argument, another flag or an
+    unbalanced quote; and a shell that is not the real one at its absolute path (a planted
+    `.\\powershell.exe`, a bare name the current directory could resolve, another directory or
+    drive, a `..` path, cmd or bash): each still a stray, judged as the whole text."""
     assert len(driver.codex_command_strays(codexjson.commands(_ran(command)))) == 1
 
 

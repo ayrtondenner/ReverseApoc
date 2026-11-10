@@ -275,9 +275,13 @@ The model ids are assumptions to confirm at setup.
   commands as the real user. The canary's identity, outside-write and network probes exist
   for this; budget the 30-minute wall clock accordingly. The Windows CLI reports each command
   wrapped in its shell (`"<...>\powershell.exe" -Command <cmd>`, seen in the spike 012
-  canaries' rejected-command lines). The audit takes exactly one such layer off
-  (powershell.exe or pwsh.exe, at most one `-NoProfile`, one argument after `-Command`) and
-  audits `<cmd>`; a shell left inside, a compound `<cmd>` or any other shape is a stray.
+  canaries' rejected-command lines). The audit takes exactly one such layer off and audits
+  `<cmd>`, only for the real shells at their absolute paths
+  (`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+  `C:\Program Files\PowerShell\7\pwsh.exe`; any case, either slash), at most one `-NoProfile`
+  and one argument after `-Command`. A bare `powershell.exe`, a relative path or any other
+  directory could be a binary the session planted, so it is audited as the whole text (a
+  stray), as are a shell left inside, a compound `<cmd>` and any other shape.
   Offline, `codex execpolicy check` (0.167.0) matches tokens literally: the driver's prefix
   rule allows `uv run --frozen reverseapoc attempt check` but matches neither its
   `powershell.exe -Command '...'` nor its `bash -lc '...'` form, so it cannot show whether a

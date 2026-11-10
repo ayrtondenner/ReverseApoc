@@ -50,8 +50,11 @@ KNOWN_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", _COMMAND, _F
 _MS_PER_S = 1000
 # _unwrapped: the shell's program (double-quoted, single-quoted or bare), then its arguments
 _SHELL = re.compile(r"""\s*(?:"(?P<dq>[^"]+)"|'(?P<sq>[^']+)'|(?P<bare>[^\s"']+))\s""")
-_PATH_SEPARATORS = re.compile(r"[\\/]")
-_WINDOWS_SHELLS = frozenset({"powershell.exe", "pwsh.exe"})
+_PATH_SEPARATORS = re.compile(r"[\\/]+")  # a run of either slash, POSIX-escaped `\\` too
+# Only the real shells by absolute path: a bare name, a relative path or another directory could
+# be a binary the session planted, run while the audit judged only its harmless argument
+_WINDOWS_SHELLS = frozenset({r"c:\windows\system32\windowspowershell\v1.0\powershell.exe",
+                             r"c:\program files\powershell\7\pwsh.exe"})  # fmt: skip
 _SHELL_FLAGS = (["-command"], ["-noprofile", "-command"])  # casefolded, before the one <cmd>
 
 
@@ -144,14 +147,15 @@ def _command_text(command: object) -> str:
 def _unwrapped(text: str) -> str:
     """The Windows CLI reports a command wrapped in the shell that ran it, `"<...>\\powershell
     .exe" -Command <cmd>` (spike 012's rejected-command lines, a POSIX-quoted argv): that is
-    <cmd>. The shell is powershell.exe or pwsh.exe by any path, quoted or not, with at most one
-    -NoProfile before -Command and exactly one argument after it. One layer only: a shell left
-    inside stays as written, and any other shape is `text` unchanged, so the audit sees it."""
+    <cmd>. The shell is one of _WINDOWS_SHELLS at its absolute path (any case, either slash,
+    quoted or not), never a bare name or another path; at most one -NoProfile comes before
+    -Command and exactly one argument after it. One layer only: a shell left inside stays as
+    written, and any other shape is `text` unchanged, so the audit sees it."""
     found = _SHELL.match(text)
     if found is None:
         return text
     program = found.group("dq") or found.group("sq") or found.group("bare")
-    if _PATH_SEPARATORS.split(program)[-1].casefold() not in _WINDOWS_SHELLS:
+    if _PATH_SEPARATORS.sub(r"\\", program).casefold() not in _WINDOWS_SHELLS:
         return text
     try:
         args = shlex.split(text[found.end():])
