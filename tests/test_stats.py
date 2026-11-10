@@ -1198,6 +1198,38 @@ def test_comparison_prices_a_subscription_arm_at_list_price(tmp_path, capsys):
         capsys.readouterr().out)  # fmt: skip
 
 
+def test_landing_credited_to_every_holder(tmp_path, capsys):
+    """Task 3: a MATCHED landing counts as matched for its own arm and for every arm with a
+    HOLD_EXACT attempt of the function among the selected records, never for an arm whose
+    attempt was not exact; the function still counts once. The default report leaves the hold
+    runs out, so there the landing is its own arm's only."""
+    luna_fields = {"backend": "openai", "harness": "codex", "model_requested": "gpt-6-luna",
+                   "model": None, "cost_source": "estimate", "cost_usd": 0.0}  # fmt: skip
+    records = (
+        _hk(0x10000, outcome="HOLD_EXACT"),
+        _on_v3(0x10000, run="spike012-gpt-6-luna", outcome="HOLD_EXACT", hold_run=True,
+               **luna_fields),
+        _on_v3(0x10000, run="spike012-sonnet", model_requested=SONNET, model=SONNET,
+               hold_run=True),
+        {**_landing(0x10000), "run": "spike012-land", "from_run": "spike012-haiku",
+         "model": HAIKU, "start": "0x00010000", "function": "func_00010000"},
+    )  # fmt: skip
+    repo, log, config = _spike(tmp_path, *records)
+    report = _json(capsys, repo, log, "--run", "spike012-*", config=config)
+    haiku, luna, sonnet = _arm(HAIKU), _arm("gpt-6-luna", "openai", "codex"), _arm(SONNET)
+    assert {arm: report["by_arm"][arm]["matched"] for arm in (haiku, luna, sonnet)} == {
+        haiku: 1, luna: 1, sonnet: 0}  # fmt: skip
+    for arm in (haiku, luna):
+        assert report["by_model_size"][arm]["[0, 64)"]["matched"] == 1, arm
+        assert report["comparison"]["arms"][arm]["cells"][TOTAL]["matched"] == 1, arm
+        assert report["comparison"]["arms"][arm]["cells"][SMALL]["exact"] == 1, arm
+    assert report["by_model_size"][sonnet]["[0, 64)"]["matched"] == 0
+    assert report["comparison"]["arms"][sonnet]["cells"][TOTAL]["matched"] == 0
+    assert report["per_match"]["matched_functions"] == 1
+    default = _json(capsys, repo, log, config=config)
+    assert {arm: row["matched"] for arm, row in default["by_arm"].items()} == {haiku: 1}
+
+
 def test_comparison_arm_table_error(tmp_path, capsys, monkeypatch):
     """A broken backends.toml stops `stats --run` with exit 2 and the table's message."""
     from reverseapoc import backends, stats

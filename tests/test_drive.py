@@ -1503,10 +1503,12 @@ def _table_gate(night: Night):
 
 def _hold_attempt(night: Night, run: str, n: int, *, cost: float, model: str = HAIKU,
                   text: str | None = None, outcome: str = "HOLD_EXACT",
-                  start: int | None = None) -> dict:  # fmt: skip
+                  start: int | None = None, tokens: dict | None = None,
+                  change: dict | None = None) -> dict:  # fmt: skip
     """One hold-run attempt of FUNC (or of the function at `start`): its committed record (to
     commit) and its attempt directory, with a 60% check, then a plain check that exited 0 on
-    `text`, and the view head (HEAD now)."""
+    `text`, and the view head (HEAD now). Quick 261110-f30: `tokens` replaces the record's
+    tokens, and `change` sets other record fields last (backend, harness, model)."""
     from test_attempts_schema import _attempt_v3
     from test_driver import START, UNIT, check_line
 
@@ -1523,6 +1525,9 @@ def _hold_attempt(night: Night, run: str, n: int, *, cost: float, model: str = H
     record.update(run=run, exe="ufo2p", start=f"0x{start:08X}", function=func, unit=UNIT,
                   attempt=n, outcome=outcome, hold_run=True, cost_usd=cost,
                   model_requested=model, model=model, gate=None, **{"pass": 1})  # fmt: skip
+    if tokens is not None:
+        record["tokens"] = dict(tokens)
+    record.update(change or {})
     return record
 
 
@@ -1541,9 +1546,15 @@ def _new(night: Night, before: int, kind: str) -> list[dict]:
     return [r for r in night.records()[before:] if r["kind"] == kind]
 
 
+SONNET_COAUTHOR = "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>"
+OPUS_COAUTHOR = "Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
+LUNA_COAUTHOR = "Co-Authored-By: GPT-6 Luna <noreply@openai.com>"
+
+
 def test_land_held_cheapest_arm(tmp_path):
-    """Two hold runs matched FUNC exactly; the cheaper one (Haiku, 0.10 against 0.90) lands its
-    exit-0 checks/NNNN.c through the land, lint and gate: one match commit credited to Haiku,
+    """Two hold runs matched FUNC exactly; on equal tokens the cheaper one at list price
+    (Haiku against Sonnet; quick 261110-f30) lands its exit-0 checks/NNNN.c through the land,
+    lint and gate: one match commit credited to Haiku, then to Sonnet, which held it exact too,
     one MATCHED landing record naming the attempt and the commit, no attempt record, and the
     cost is counted once (in the held records)."""
     from reverseapoc import stats
@@ -1561,7 +1572,8 @@ def test_land_held_cheapest_arm(tmp_path):
     assert [s for s in night.commits() if s.startswith("feat(")] == [MATCH_SUBJECT]
     assert night.file_at("feat(", UNIT_REL) == _held_c(1)
     body = night.message("feat(")
-    assert body.rstrip("\n").splitlines()[-2:] == [HAIKU_COAUTHOR, driver.MATCHED_BY]
+    assert body.rstrip("\n").splitlines()[-3:] == [HAIKU_COAUTHOR, driver.MATCHED_BY,
+                                                   SONNET_COAUTHOR]  # fmt: skip
     assert len(night.gate_calls) == 1 and len(night.lint_calls) == 1
     (landing,) = _new(night, before, "landing")
     assert (landing["outcome"], landing["from_run"], landing["from_attempt"]) == (
@@ -1578,7 +1590,9 @@ def test_land_held_cheapest_arm(tmp_path):
 
 def test_land_held_across_arms(tmp_path):
     """07.2-16 (D-22): the hold runs of three arms of one multi-arm night (`<run>-<arm>`) land
-    each function once, from the cheapest arm, with `--land-held <run>-*`."""
+    each function once, with `--land-held <run>-*`. Quick 261110-f30: from the lowest
+    API-equivalent cost (Haiku at equal tokens), not the recorded cost, and every arm that held
+    it exact is credited once."""
     from test_driver import MATCH_SUBJECT, UNIT_REL
 
     night = _table_night(tmp_path, gate_exits=[0])
@@ -1590,11 +1604,60 @@ def test_land_held_across_arms(tmp_path):
     report = _land(night, "spike012-*")
     assert (report.event, report.matched) == ("ENDED", 1), report.detail
     assert [s for s in night.commits() if s.startswith("feat(")] == [MATCH_SUBJECT]
-    assert night.file_at("feat(", UNIT_REL) == _held_c(2)
-    assert "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>" in night.message("feat(")
+    assert night.file_at("feat(", UNIT_REL) == _held_c(1)
+    lines = night.message("feat(").splitlines()
+    assert [lines.count(line) for line in (HAIKU_COAUTHOR, SONNET_COAUTHOR, OPUS_COAUTHOR)] == [
+        1, 1, 1]  # fmt: skip
     (landing,) = _new(night, before, "landing")
-    assert (landing["from_run"], landing["model"]) == (f"spike012-{SONNET}", SONNET)
+    assert (landing["from_run"], landing["model"]) == (f"spike012-{HAIKU}", HAIKU)
     assert len(night.gate_calls) == 1
+
+
+def test_land_held_ranks_by_api_equivalent_not_recorded_cost(tmp_path):
+    """Quick 261110-f30: a Codex attempt records cost 0 on Plus, but its tokens at its list
+    price cost more than Haiku's (recorded 0.90, few tokens), so Haiku lands; Luna, which held
+    the function exact too, gets its own co-author line."""
+    night = _table_night(tmp_path, gate_exits=[0])
+    luna = _hold_attempt(night, "spike012-gpt-6-luna", 1, cost=0.0, model="gpt-6-luna",
+                         text=_held_c(2),
+                         tokens={"input": 10_000_000, "output": 1_000_000, "cache_read": 0,
+                                 "cache_creation": 0},
+                         change={"backend": "openai", "harness": "codex", "model": None,
+                                 "cost_source": "estimate"})  # fmt: skip
+    haiku = _hold_attempt(night, "spike012-haiku", 1, cost=0.90,
+                          tokens={"input": 1000, "output": 100, "cache_read": 0,
+                                  "cache_creation": 0})  # fmt: skip
+    _commit_log(night, [luna, haiku])
+    before = len(night.records())
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    body = night.message("feat(").rstrip("\n").splitlines()
+    assert body[-3:] == [HAIKU_COAUTHOR, driver.MATCHED_BY, LUNA_COAUTHOR]
+    (landing,) = _new(night, before, "landing")
+    assert (landing["from_run"], landing["model"]) == ("spike012-haiku", HAIKU)
+
+
+def test_land_held_credits_every_holder_once(tmp_path):
+    """Haiku held FUNC exact on two hold runs and DeepSeek on one; Sonnet's attempt was only
+    PARTIAL. Haiku is the cheapest (its list price is below DeepSeek's on the same tokens), so
+    it lands: one Haiku line, one DeepSeek line, no Sonnet line."""
+    night = _table_night(tmp_path, gate_exits=[0])
+    _commit_log(night, [
+        _hold_attempt(night, "spike012-haiku-a", 1, cost=0.10),
+        _hold_attempt(night, "spike012-haiku-b", 1, cost=0.10),
+        _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK,
+                      change={"backend": "deepseek", "cost_source": "estimate"}),
+        _hold_attempt(night, "spike012-sonnet", 1, cost=0.01, model=SONNET, outcome="PARTIAL"),
+    ])  # fmt: skip
+    before = len(night.records())
+    report = _land(night, "spike012-*")
+    assert (report.event, report.matched) == ("ENDED", 1), report.detail
+    (landing,) = _new(night, before, "landing")
+    assert landing["from_run"] == "spike012-haiku-a"
+    lines = night.message("feat(").rstrip("\n").splitlines()
+    assert (lines.count(HAIKU_COAUTHOR), lines.count(DEEPSEEK_COAUTHOR)) == (1, 1)
+    assert SONNET_COAUTHOR not in lines
+    assert lines[-3:] == [HAIKU_COAUTHOR, driver.MATCHED_BY, DEEPSEEK_COAUTHOR]
 
 
 @pytest.mark.parametrize(("runs", "winner"), [
@@ -1717,10 +1780,13 @@ def test_land_held_gate_refusal(tmp_path):
 
 def test_land_held_each_function_once(tmp_path):
     """HOLD_EXACT in three runs lands once; a second --land-held over the same runs skips the
-    function as matched (no gate, no landing record)."""
+    function as matched (no gate, no landing record). Quick 261110-f30: b has the fewest
+    tokens, so the lowest API-equivalent cost."""
     night = _table_night(tmp_path, gate_exits=[0, 0])
-    _commit_log(night, [_hold_attempt(night, f"spike012-{arm}", 1, cost=cost)
-                        for arm, cost in (("a", 0.3), ("b", 0.2), ("c", 0.4))])  # fmt: skip
+    fewer = {"input": 600, "output": 150, "cache_read": 2500, "cache_creation": 400}
+    _commit_log(night, [_hold_attempt(night, f"spike012-{arm}", 1, cost=cost, tokens=tokens)
+                        for arm, cost, tokens in (("a", 0.3, None), ("b", 0.2, fewer),
+                                                  ("c", 0.4, None))])  # fmt: skip
     before = len(night.records())
     assert _land(night, "spike012-*").matched == 1
     (landing,) = _new(night, before, "landing")
