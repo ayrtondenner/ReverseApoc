@@ -279,19 +279,22 @@ PR_NUMBER = "${{ github.event.pull_request.number || inputs.pr }}"
 MATCH_ENV = ("PR_NUMBER: " + PR_NUMBER, "BASE_SHA: ${{ github.sha }}",
              "LABELED_HEAD: ${{ github.event.pull_request.head.sha }}",
              "IMAGE: reverseapoc-build:local", "VENV_VOLUME: reverseapoc-match-venv")  # fmt: skip
-PATHS_STEP = "List the changed paths; refuse any outside the src units, symbols.csv and Markdown"
+PATHS_STEP = ("List the changed paths; refuse any outside the src units, symbols.csv, docs/ and "
+              "README.md")  # fmt: skip
 UNITS_STEP = "Refuse a new, removed or linked unit"
 PIN_STEP = "Refuse a head that moved after the label"
 COMPILE_STEP = "Compile each touched unit at base and at head, then compare"
 UNIT_PATTERN = r"'^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'"
 # D-07: the image, no network, the base tree and Watcom read-only, no game files, the uv venv
-# the owner prepared; only the outputs are writable, under the runner's temp directory.
+# the owner prepared, read-only (07.2 review WR-08: no container that compiles a pull request's
+# C can change what a later run executes) and never synced (`--no-sync`); only the outputs are
+# writable, under the runner's temp directory.
 DOCKER_RUN = "docker run --rm --network none \\"
 MOUNTS = ('-v "$GITHUB_WORKSPACE:/work:ro" \\', '-v "$RUNNER_TEMP/match:/work/build/match" \\',
-          '-v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \\', '-v "$VENV_VOLUME:/opt/venv" \\',
+          '-v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \\', '-v "$VENV_VOLUME:/opt/venv:ro" \\',
           '-w /work "$@" < /dev/null')  # fmt: skip
 HEAD_SRC = '-v "$GITHUB_WORKSPACE/head/src:/work/src:ro"'
-IN_IMAGE = '"$IMAGE" uv run --frozen --offline reverseapoc '
+IN_IMAGE = '"$IMAGE" uv run --frozen --offline --no-sync reverseapoc '
 CC_FLAGS = "--cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log"
 COMPARE = (f'image {IN_IMAGE}compare-objects "build/match/base/$name.obj" '
            '"build/match/head/$name.obj" --base-config config --head-config head/config '
@@ -434,11 +437,32 @@ def test_match_compiles_in_the_image_offline():
     assert run[-1] == 'exit "$status"'
 
 
+def test_match_never_writes_the_venv_volume():
+    """07.2 review WR-08: the persistent venv volume is mounted read-only in every container
+    the job starts, so a compile of hostile C cannot plant code that a later compare runs;
+    the owner fills it in a separate step (docs/ci.md)."""
+    text = MATCH.read_text(encoding="utf-8")
+    mounts = re.findall(r'-v "\$VENV_VOLUME:[^"]*"', text)
+    assert mounts == ['-v "$VENV_VOLUME:/opt/venv:ro"']
+    assert "uv sync" not in text
+
+
+def test_ci_doc_asks_the_owner_to_pin_checkout_by_sha():
+    """WR-08: actions/checkout is a mutable tag; no commit SHA can be checked offline, so the
+    owner pins it by full SHA as a setup step, before the runner is registered."""
+    doc = (REPO_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    setup = doc[doc.index("## Runner setup (owner only)"):doc.index("## Security model")]
+    pin = setup.index("Pin `actions/checkout`")
+    assert pin < setup.index("Register a runner for this repository only")
+    assert "full commit SHA" in setup[pin:pin + 600]
+
+
 def test_match_refuses_other_paths():
     """D-08, T-07.2-21: the paths the pull request changed since its merge base with main may be
     src/<exe>/<unit>.c units, the two symbols.csv files (a rename's new names, read as data) and
-    Markdown; anything else (cflags, tools, config, headers, workflows) fails the job and goes to
-    the owner."""
+    the Markdown of docs/ and the root README.md; anything else (cflags, tools, config, headers,
+    workflows, and 07.2 review WR-07: CLAUDE.md, .claude/ rules and skills, any Markdown a
+    session reads as instructions) fails the job and goes to the owner."""
     run = script(match_step(PATHS_STEP))
     assert run[0] == "set -euo pipefail"
     # main's commit reaches head/'s repository from the local checkout, not over the network.
@@ -449,18 +473,26 @@ def test_match_refuses_other_paths():
             '> "$RUNNER_TEMP/changed.txt"')  # fmt: skip
     assert diff in run
     case = run[run.index('case "$path" in') + 1:run.index("esac")]
-    assert case == ["*.md) continue ;;",
+    assert case == ["docs/*.md|README.md) continue ;;",
                     "config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;"]  # fmt: skip
+    assert not any(line.startswith("*.md)") for line in run)
     assert f"if printf '%s\\n' \"$path\" | grep -Eq {UNIT_PATTERN}; then" in run
     assert "refused=1" in run and run[-1] == '[ "$refused" -eq 0 ]'
 
 
 def test_match_refuses_new_removed_and_linked_units():
     """A new unit is a new match (the owner's gate, D-08); a removed one cannot be compared; a
-    symbolic link is never followed."""
+    symbolic link is never followed. 07.2 review WR-07: a pull request with no src unit to
+    compare (only symbols.csv, only docs) fails, naming that nothing was compared, so a green
+    result always means a compared unit."""
     run = script(match_step(UNITS_STEP))
     pick = f'grep -E {UNIT_PATTERN} "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true'
     assert pick in run
+    empty = 'if [ ! -s "$RUNNER_TEMP/units.txt" ]; then'
+    assert run[run.index(pick) + 1] == empty
+    assert run[run.index(empty) + 1] == ('echo "::error::no src unit changed, so nothing was '
+                                         'compared: the owner checks this pull request"')
+    assert run[run.index(empty) + 2] == "exit 1"
     assert 'if [ ! -f "$unit" ] || [ -L "$unit" ]; then' in run
     assert 'if [ ! -f "head/$unit" ] || [ -L "head/$unit" ]; then' in run
-    assert run.count("exit 1") == 2
+    assert run.count("exit 1") == 3

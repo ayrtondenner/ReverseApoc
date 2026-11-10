@@ -71,9 +71,11 @@ jobs:
             exit 1
           fi
 
-      # Only the C of src/ units, a rename's symbols.csv rows and Markdown are judged here;
-      # cflags, tools, config, headers and workflows need the owner.
-      - name: List the changed paths; refuse any outside the src units, symbols.csv and Markdown
+      # Only the C of src/ units, a rename's symbols.csv rows and the Markdown of docs/ and the
+      # root README.md are judged here; cflags, tools, config, headers, workflows and any
+      # Markdown a session reads as instructions (CLAUDE.md, .claude/ rules and skills) need
+      # the owner (07.2 review WR-07).
+      - name: List the changed paths; refuse any outside the src units, symbols.csv, docs/ and README.md
         run: |
           set -euo pipefail
           git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD
@@ -83,13 +85,13 @@ jobs:
           refused=0
           while IFS= read -r path; do
             case "$path" in
-              *.md) continue ;;
+              docs/*.md|README.md) continue ;;
               config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;
             esac
             if printf '%s\n' "$path" | grep -Eq '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'; then
               continue
             fi
-            echo "::error::$path is not a src unit, a symbols.csv or Markdown: the owner checks it"
+            echo "::error::$path is not a src unit, a symbols.csv, docs/ Markdown or README.md: the owner checks it"
             refused=1
           done < "$RUNNER_TEMP/changed.txt"
           [ "$refused" -eq 0 ]
@@ -98,6 +100,10 @@ jobs:
         run: |
           set -euo pipefail
           grep -E '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$' "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true
+          if [ ! -s "$RUNNER_TEMP/units.txt" ]; then
+            echo "::error::no src unit changed, so nothing was compared: the owner checks this pull request"
+            exit 1
+          fi
           while IFS= read -r unit; do
             if [ ! -f "$unit" ] || [ -L "$unit" ]; then
               echo "::error::$unit is no unit on main: a new unit is a new match, for the owner's gate"
@@ -112,7 +118,9 @@ jobs:
       # Each unit compiles twice with main's tools and main's config/cflags.txt: once from main's
       # src/, once with head/src mounted over src/, so the cflags rule for the unit's own path
       # applies to both. main's compare-objects then reads each tree's names (head/config is
-      # data). Any compile failure, difference or tool error fails the job.
+      # data). Any compile failure, difference or tool error fails the job. The venv volume the
+      # owner filled is mounted read-only and never synced (07.2 review WR-08), so nothing a
+      # compile of the pull request's C runs can change what a later compare executes.
       - name: Compile each touched unit at base and at head, then compare
         run: |
           set -euo pipefail
@@ -124,7 +132,7 @@ jobs:
               -v "$GITHUB_WORKSPACE:/work:ro" \
               -v "$RUNNER_TEMP/match:/work/build/match" \
               -v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \
-              -v "$VENV_VOLUME:/opt/venv" \
+              -v "$VENV_VOLUME:/opt/venv:ro" \
               -w /work "$@" < /dev/null
           }
           status=0
@@ -132,8 +140,8 @@ jobs:
             exe="${unit#src/}"
             exe="${exe%%/*}"
             name="$(basename "$unit" .c)"
-            image "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/base/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
-            image -v "$GITHUB_WORKSPACE/head/src:/work/src:ro" "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/head/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
-            image "$IMAGE" uv run --frozen --offline reverseapoc compare-objects "build/match/base/$name.obj" "build/match/head/$name.obj" --base-config config --head-config head/config --exe "$exe" || status=1
+            image "$IMAGE" uv run --frozen --offline --no-sync reverseapoc cc "$unit" -o "build/match/base/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image -v "$GITHUB_WORKSPACE/head/src:/work/src:ro" "$IMAGE" uv run --frozen --offline --no-sync reverseapoc cc "$unit" -o "build/match/head/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image "$IMAGE" uv run --frozen --offline --no-sync reverseapoc compare-objects "build/match/base/$name.obj" "build/match/head/$name.obj" --base-config config --head-config head/config --exe "$exe" || status=1
           done < "$RUNNER_TEMP/units.txt"
           exit "$status"

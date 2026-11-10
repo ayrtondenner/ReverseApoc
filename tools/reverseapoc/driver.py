@@ -162,6 +162,7 @@ from . import (
     backends,
     callgraph,
     codexjson,
+    contextpack,
     hooks,
     mechanics,
     streamjson,
@@ -1312,6 +1313,8 @@ CODEX_RULES = ".codex/rules/attempt.rules"  # under <attempt dir>, in gitignored
 CODEX_RULES_TEXT = (f"prefix_rule(pattern=[{', '.join(json.dumps(p) for p in hooks.ATTEMPT_PREFIX)}"
                     '], decision="allow")\n')  # fmt: skip
 LEDGER_DIR = "ledger"  # build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl
+UV_PROJECT_ENV = "UV_PROJECT"  # 07.2 review CR-01: uv's --project, never found from the cwd
+UV_NO_CONFIG_ENV = "UV_NO_CONFIG"  # and its --no-config: no uv.toml or pyproject.toml settings
 _AUDIT_MARK = " (codex audit)"  # a stray that is a reason, not a file to contain
 _FORBIDDEN_PARTS = ("orig", "third_party")  # D-10: never sent to a non-Anthropic backend
 _PATH_PARTS = re.compile(r"[^a-z0-9_.-]+")  # any other character splits a command into parts
@@ -1320,6 +1323,7 @@ _CACHE_PARTS = (attempt.VIEW_DIR, attempt.VIEW_BUILD, attempt.CACHE_DIR)
 _WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
 _WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
 _WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
+_NOT_A_FILE = ("link:", "outside:")  # attempt_inventory's digests of a link and a far cache
 
 
 def write_codex_rules(attempt_dir: Path) -> None:
@@ -1329,6 +1333,22 @@ def write_codex_rules(attempt_dir: Path) -> None:
     path = attempt_dir / CODEX_RULES
     path.parent.mkdir(parents=True, exist_ok=True)
     write_atomic(path, CODEX_RULES_TEXT.encode("ascii"))
+
+
+def codex_rules_problem(attempt_dir: Path) -> str | None:
+    """07.2 review WR-05: why <attempt dir>/.codex/rules/attempt.rules is not the driver's
+    rules file, else None. It must be a regular file, reached through no link, holding
+    CODEX_RULES_TEXT exactly: judged against the driver's own bytes, never against what a
+    launch inventory saw. The driver checks it right after writing it (no session launches
+    otherwise) and again in the audit, where any other state is a stray."""
+    path = attempt_dir
+    for part in PurePosixPath(CODEX_RULES).parts:
+        path = path / part
+        if _is_link(path):
+            return f"{CODEX_RULES}: {path.relative_to(attempt_dir).as_posix()} is a link"
+    if _read(path) != CODEX_RULES_TEXT.encode("ascii"):
+        return f"{CODEX_RULES}: does not hold the driver's rules (changed or removed)"
+    return None
 
 
 AGY_DIR = "agy"  # 07.2-15 (D-24): build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json
@@ -1563,6 +1583,8 @@ def _wrapper_owned(rel: str) -> bool:
 
 def _inventory_problem(rel: str, digest: str, launch: Mapping[str, str],
                        ledger: Mapping[str, str]) -> str | None:  # fmt: skip
+    if digest.startswith(_NOT_A_FILE):  # 07.2 review WR-04: before any name is allowed
+        return "a link or a path outside the attempt dir, never a regular file"
     if rel in ledger:
         return None if ledger[rel] == digest else "differs from the wrapper's ledger"
     if rel in launch:
@@ -2166,11 +2188,16 @@ class _Claim:
         variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
         plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
         that the hooks and the wrapper validate. 07.2-13: a Codex session (07.2-15: and an agy
-        one) also names its wrapper ledger (D-26); no other session inherits one."""
+        one) also names its wrapper ledger (D-26); no other session inherits one. 07.2 review
+        CR-01: its commands run in its writable attempt dir, so uv is pinned to the checkout
+        (UV_PROJECT) and finds no config there (UV_NO_CONFIG): a pyproject.toml, uv.lock or
+        uv.toml the session planted never becomes what `uv run --frozen reverseapoc` runs."""
         own = backends.session_env(self.arm_in(arms), base, arms)
         own.pop(attempt.WRAPPER_LEDGER_ENV, None)
         if self.signed_in:
             own[attempt.WRAPPER_LEDGER_ENV] = str(self.wrapper_ledger)
+            own[UV_PROJECT_ENV] = str(self.repo)
+            own[UV_NO_CONFIG_ENV] = "1"
         return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
@@ -3740,6 +3767,9 @@ class _Night:
             write_agy_settings(claim)
         else:
             write_codex_rules(claim.attempt_dir)
+            problem = codex_rules_problem(claim.attempt_dir)  # 07.2 review WR-05
+            if problem is not None:
+                raise DriverError(f"{claim.target}: no Codex session launches: {problem}")
         claim.wrapper_ledger.parent.mkdir(parents=True, exist_ok=True)
         write_atomic(claim.wrapper_ledger, b"")
         return attempt_inventory(claim.attempt_dir)
@@ -3757,6 +3787,7 @@ class _Night:
         reasons: list[str] = []
         if claim.agy:
             commands, writes = agyjson.commands(events), agyjson.write_targets(events)
+            reasons += agyjson.unknown_steps(events)  # 07.2 review WR-02: fail closed
             reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
                                    repo=self.repo)  # fmt: skip
             if _read(claim.agy_settings) != agy_settings_bytes(claim):
@@ -3764,6 +3795,9 @@ class _Night:
                 reasons.append(f"{shown}: changed since the launch (the driver's settings file)")
         elif claim.codex:
             commands, writes = codexjson.commands(events), codexjson.write_targets(events)
+            reasons += codexjson.unknown_items(events)  # 07.2 review WR-03: fail closed
+            rules = codex_rules_problem(claim.attempt_dir)  # WR-05: the driver's own bytes
+            reasons += [rules] if rules is not None else []
         else:
             commands, writes = [], []
             reasons.append(f"harness {claim.harness!r}: no audit for it, so nothing it did is "
@@ -4713,8 +4747,10 @@ class _Night:
         (`held_exact`) lands once, from its cheapest such attempt (cost, then run id, then
         attempt), in (exe, unit, start) order so same-unit landings report one after the other.
         A function status.csv already matches is skipped. Each landing goes through the night's
-        own land, lint and gate (`_land_one`), never a path of its own. The end of run (ninja
-        verify, gate --all) and the attempt-log commit follow as after a night."""
+        own land, lint and gate (`_land_one`), never a path of its own. 07.2 review WR-06: every
+        held function of a unit can land, one after the other: `bases` keeps, per unit, HEAD
+        before this run's first landing of it. The end of run (ninja verify, gate --all) and
+        the attempt-log commit follow as after a night."""
         matched = matched_keys(self.repo / "config")
         best: dict[Key, tuple[tuple, Mapping]] = {}
         with self.gate_lock:  # the log is read while no record is appended
@@ -4725,56 +4761,90 @@ class _Night:
                     best[key] = (rank, record)
         landings = sorted((record for _, record in best.values()),
                           key=lambda r: (r["exe"], r["unit"], int(r["start"], 16)))  # fmt: skip
+        bases: dict[str, str] = {}
         for record in landings:
-            self._land_one(record)
+            self._land_one(record, bases)
         return QUEUE_EXHAUSTED if landings else NOTHING_TO_DO
 
-    def _land_one(self, held: Mapping) -> None:
+    def _land_one(self, held: Mapping, bases: dict[str, str]) -> None:
         """One held function: the C of its attempt's latest plain check that exited 0
         (`exact_source`) goes into a fresh view unit under this run's own attempt directory
         (the hold run's stays as it was), with the hold run's view head. A unit or include/
         changed since that head is refused unlanded (RESEARCH Pitfall 8); otherwise `_judge`
         (renames since the head, the copy into src/, the lint, the gate) under the gate lock,
         then `_commit_match` credited to the attempt's requested model, or a reset and a
-        REFUSED landing."""
+        REFUSED landing. 07.2 review WR-06: once this run landed a function of the unit
+        (`bases` names HEAD before that first landing), the head is judged against that base
+        instead, and only the held function's definition is spliced onto the unit as HEAD now
+        has it, so the earlier landing stays; the gate proves the result."""
         pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
         source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
         claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
                        model=held["model_requested"], arm=self._held_arm(held))  # fmt: skip
         head, exact = _view_head(source), exact_source(source)
+        base = bases.get(claim.unit_rel)
+        text = None
         if head is None or exact is None or _is_link(source / exact) or not (
                 source / exact).is_file():  # fmt: skip
             reason = "the hold run's attempt has no view head or no exact check C; re-run"
         else:
-            reason = self._stale_reason(head, claim)
+            reason = self._stale_reason(head, claim, base)
+        if reason is None:
+            text, reason = self._held_text(claim, (source / exact).read_bytes(), base)
         if reason is not None:
             self._record_landing(held, REFUSED, reason=reason)
             return
         self._fresh_dir(claim)
         claim.view_unit.parent.mkdir(parents=True)
-        write_atomic(claim.view_unit, (source / exact).read_bytes())
+        write_atomic(claim.view_unit, text)
         empty = _Snapshot({}, {}, {}, {})
         session = _Session(claim, None, PackInfo(0), 0.0, (), False, b"", empty, view_head=head)
+        before = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
         with self._landing(session):
             gate = self._judge(session)
             if self._gate_matched(session, gate):
                 self._commit_match(session, gate, CheckSummary(), held=held)
+                bases.setdefault(claim.unit_rel, before)
                 return
             self._reset(session)
             why = ("the C89 lint failed" if gate is None
                    else f"the gate refused it (exit {gate.exit_code})")  # fmt: skip
             self._record_landing(held, REFUSED, reason=why, gate=gate)
 
-    def _stale_reason(self, head: str, claim: _Claim) -> str | None:
+    def _held_text(self, claim: _Claim, exact: bytes,
+                   base: str | None) -> tuple[bytes | None, str | None]:  # fmt: skip
+        """WR-06: the unit the held function lands as, or the reason it cannot: the exact
+        check's whole unit file when this run landed nothing of the unit yet (`base` None),
+        else HEAD's unit with only the held function's definition spliced in."""
+        if base is None:
+            return exact, None
+        now = self._head_bytes(claim.unit_rel)
+        try:
+            spliced = None if now is None else contextpack.splice_definition(
+                now.decode("utf-8"), claim.function, exact.decode("utf-8"))  # fmt: skip
+        except UnicodeDecodeError:
+            spliced = None
+        if spliced is None:
+            return None, (f"{claim.function}: its definition cannot be spliced onto "
+                          f"{claim.unit_rel} as this run left it; re-run")  # fmt: skip
+        return spliced.encode("utf-8"), None
+
+    def _stale_reason(self, head: str, claim: _Claim, base: str | None = None) -> str | None:
         """Pitfall 8: why the held C may not land on today's src/: the unit or include/ changed
-        between the view head and HEAD (`git diff --quiet`), or the head is no commit here."""
-        done = self._git([LITERAL, "diff", "--quiet", head, "HEAD", "--", claim.unit_rel,
-                          "include"])  # fmt: skip
-        if done.returncode == 0:
-            return None
-        if done.returncode == 1:
-            return LAND_HELD_STALE
-        return f"the hold run's view head {head[:12]} is not a commit of this checkout; re-run"
+        between the view head and HEAD (`git diff --quiet`), or the head is no commit here.
+        WR-06: after this run's own landing of the unit, the unit and include/ are judged
+        between the head and `base` (HEAD before that landing), and include/ between `base`
+        and HEAD, so only this run's landings of the unit are not a change."""
+        checks = [(head, "HEAD", (claim.unit_rel, "include"))] if base is None else [
+            (head, base, (claim.unit_rel, "include")), (base, "HEAD", ("include",))]
+        for old, new, paths in checks:
+            done = self._git([LITERAL, "diff", "--quiet", old, new, "--", *paths])
+            if done.returncode == 1:
+                return LAND_HELD_STALE
+            if done.returncode != 0:
+                return (f"the hold run's view head {head[:12]} is not a commit of this "
+                        "checkout; re-run")  # fmt: skip
+        return None
 
     def _held_message(self, held: Mapping, gate: GateRun) -> str:
         """D-25's match message from the held attempt's own figures, with the hold run named;

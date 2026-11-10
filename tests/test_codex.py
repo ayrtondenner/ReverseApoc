@@ -10,6 +10,9 @@ reach an assertion or a log.
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -143,6 +146,37 @@ def test_codex_prompt():
         assert name in prompt, name
     assert "uv run --frozen reverseapoc attempt" in prompt
     assert "orig/" not in prompt and "orig\\" not in prompt
+
+
+def _note(prompt: str) -> str:
+    [note] = [part for part in prompt.split("\n\n") if part.startswith("Harness note:")]
+    return note
+
+
+def test_codex_prompt_harness_note():
+    """07.2 review WR-10: the skill says to look around with Read, Grep and Glob, which a Codex
+    session does not have. One harness note after the skill body, before the session rules,
+    says so and names where files are read instead: the wrapper forms that print (context,
+    asm, asm <NAME>, check), each of them a form the rules allow. The session rules forbid any
+    other command, reads, listings and searches included; nothing names a read tool."""
+    from reverseapoc import hooks
+
+    goal = session.goal_prompt(FUNC, UNIT, EXE, unit_path=UNIT_PATH)
+    skill = (REPO_ROOT / session.SKILL).read_text(encoding="utf-8")
+    prompt = session.codex_prompt(goal, skill)
+    note = _note(prompt)
+    assert "no Read, Grep or Glob tool" in note
+    assert prompt.index("# Matching one Watcom function") < prompt.index(note)
+    assert prompt.index(note) < prompt.index("Session rules:")
+    forms = re.findall(r"`(attempt [^`]+)`", note)
+    assert sorted(forms) == ["attempt asm", "attempt asm <NAME>", "attempt check",
+                             "attempt context"]  # fmt: skip
+    for form in forms:
+        command = f"uv run --frozen reverseapoc {form.replace('<NAME>', 'func_00010020')}"
+        assert hooks.bash_allowed(command, kind="matching"), command
+    closing = prompt[prompt.index("Session rules:"):]
+    assert "not even to read, list or search a file" in closing
+    assert "read_file" not in prompt
 
 
 def test_drive_codex_arm_records(tmp_path, capsys, monkeypatch):
@@ -571,3 +605,167 @@ def test_a_linked_view_build_stops_the_night(tmp_path, capsys, monkeypatch):
     stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
     assert stopped["reason"] == driver.GUARDRAIL and "view/build" in stopped["detail"], stopped
     assert (outside / "attempt-cache" / "x.json").is_file()
+
+
+# ---- 07.2 review WR-05: the rules file is the driver's bytes at every launch and after ----
+
+
+def test_codex_rules_problem(tmp_path):
+    """WR-05: the rules file is judged against the driver's own bytes (never against what the
+    launch inventory happened to see): written by the driver it is fine; changed, extended,
+    removed or reached through a linked .codex/ it is not."""
+    root = tmp_path / "attempt-1"
+    root.mkdir()
+    driver.write_codex_rules(root)
+    assert driver.codex_rules_problem(root) is None
+    rules = root / driver.CODEX_RULES
+    rules.write_text(RULES_TEXT + 'prefix_rule(pattern=["cmd"], decision="allow")\n',
+                     encoding="utf-8")  # fmt: skip
+    assert "attempt.rules" in driver.codex_rules_problem(root)
+    rules.unlink()
+    assert "attempt.rules" in driver.codex_rules_problem(root)
+    from test_driver import _plant_dir_link
+
+    elsewhere = tmp_path / "elsewhere"
+    driver.write_codex_rules(elsewhere)
+    linked = tmp_path / "attempt-2"
+    linked.mkdir()
+    _plant_dir_link(linked / ".codex", elsewhere / ".codex")
+    assert driver.codex_rules_problem(linked) is not None
+
+
+def test_no_session_launches_on_a_rules_file_that_is_not_the_drivers(tmp_path, capsys,
+                                                                       monkeypatch):  # fmt: skip
+    """WR-05: right after writing the rules file, before the session, the driver checks it
+    holds its own bytes; when it does not, no Codex session launches and the night stops."""
+
+    def tampered(attempt_dir: Path) -> None:
+        path = attempt_dir / driver.CODEX_RULES
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(RULES_TEXT + 'prefix_rule(pattern=["cmd"], decision="allow")\n',
+                        encoding="utf-8")  # fmt: skip
+
+    monkeypatch.setattr(driver, "write_codex_rules", tampered)
+    rig, night, env = codex_night(tmp_path, monkeypatch)
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    assert night.launched == []
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert "attempt.rules" in stopped["detail"], stopped
+
+
+def test_a_session_edit_of_the_rules_file_stops_the_night(tmp_path, capsys, monkeypatch):
+    """WR-05: any session write to the rules file (an added allow rule) is a stray: the night
+    stops at the guardrail and the detail names the file."""
+    edit = (f"{ATTEMPT}/{driver.CODEX_RULES}", 'prefix_rule(pattern=["cmd"], decision="allow")\n')
+    rig, night, env = codex_night(tmp_path, monkeypatch, spec=Sess(write=None, append=(edit,)))
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "attempt.rules" in stopped["detail"], stopped
+
+
+# ---- 07.2 review WR-04: a session file or the transcript passes only as a regular file ----
+
+
+@pytest.mark.parametrize("name", ["notes.md", "plan.json", "check-note.json", "giveup.json",
+                                  "proposals.jsonl", "transcript.jsonl"])  # fmt: skip
+@pytest.mark.parametrize("digest", ["link:C:/made-up/orig/UFO2P.EXE", "outside:C:/made-up"])
+def test_a_linked_session_file_is_a_stray(name, digest):
+    """WR-04: attempt_inventory records a link by its target, never followed. A session file
+    or the transcript recorded as a link (or as resolving outside the attempt dir) is a stray,
+    whatever its name: the driver and the wrapper would read through it."""
+    strays = dict(driver.codex_inventory_strays({name: digest}, launch={}, ledger={}))
+    assert name in strays, strays
+
+
+# ---- 07.2 review WR-03: the Codex audit fails closed on item types it does not know ----
+
+
+def _item(ident: str, kind: object, **fields) -> dict:
+    return {"type": "item.completed", "item": {"id": ident, "type": kind, **fields}}
+
+
+def test_codexjson_unknown_items():
+    """WR-03: every item outside the known harmless set (agent_message, reasoning, todo_list,
+    command_execution, file_change) is named once by its type: an MCP tool call, a web search,
+    an item with no type or a non-mapping item; the known ones are not."""
+    events = [_item("a", "agent_message", text="made-up"), _item("b", "reasoning", text="x"),
+              _item("c", "todo_list", items=[]),
+              _item("d", "command_execution", command="uv run --frozen reverseapoc attempt asm"),
+              _item("e", "file_change", changes=[{"path": "notes.md", "kind": "add"}]),
+              {"type": "item.started", "item": {"id": "f", "type": "mcp_tool_call"}},
+              _item("f", "mcp_tool_call", server="made-up", tool="fetch"),
+              _item("g", "web_search", query="made-up"), _item("h", None),
+              {"type": "item.completed", "item": "made-up"}]  # fmt: skip
+    found = codexjson.unknown_items(events)
+    assert len(found) == 4, found
+    for words in ("mcp_tool_call", "web_search", "None", "made-up"):
+        assert any(words in text for text in found), (words, found)
+
+
+def test_an_unknown_codex_item_stops_the_night(tmp_path, capsys, monkeypatch):
+    """WR-03 at night: an MCP tool call in a Codex session's stream stops the night at the
+    guardrail, named in the detail."""
+    rig, night, env = codex_night(tmp_path, monkeypatch, scenario="mcp_tool_call")
+    code, _, _ = _run_codex(capsys, rig, env)
+    assert code != 0
+    stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+    assert stopped["reason"] == driver.GUARDRAIL and "mcp_tool_call" in stopped["detail"], stopped
+
+
+# ---- 07.2 review CR-01: uv never finds its project in the session's workspace ----
+
+PLANTED = (("pyproject.toml", '[project]\nname = "reverseapoc"\nversion = "9.9.9"\n'),
+           ("uv.lock", "version = 1\n"), ("uv.toml", 'index-url = "https://x.invalid"\n'))
+
+
+def _pick() -> driver.Pick:
+    return driver.Pick(EXE, 0x1000, "func_00001000", UNIT, 20, 1)
+
+
+@pytest.mark.parametrize("arm", [LUNA, SOL, "gemini-flash", "gpt-oss"])
+def test_signed_in_sessions_pin_uv_to_the_checkout(tmp_path, arm):
+    """CR-01: a Codex or agy session's commands run in its attempt dir, which it may write. The
+    one allowed command, `uv run --frozen reverseapoc attempt ...`, would find a project the
+    session planted there (pyproject.toml, uv.lock, uv.toml) and run its code outside the
+    sandbox. The driver pins uv to the checkout in the session env (UV_PROJECT, never the
+    attempt dir or an inherited value) and turns off uv's config discovery (UV_NO_CONFIG)."""
+    arms = backends.load_arms()
+    repo = tmp_path / "repo"
+    claim = driver._Claim(_pick(), RUN, repo, 1, arm=arms[arm])
+    claim.attempt_dir.mkdir(parents=True)
+    for name, text in PLANTED:
+        (claim.attempt_dir / name).write_text(text, encoding="utf-8")
+    base = {"PATH": "made-up-path", "UV_PROJECT": str(claim.attempt_dir), "UV_NO_CONFIG": "0"}
+    env = claim.env(base, arms)
+    assert env["UV_PROJECT"] == str(repo)
+    assert env["UV_NO_CONFIG"] == "1"
+
+
+def test_the_audit_still_flags_a_planted_project():
+    """CR-01: the pin prevents; the after-the-fact audit still names each planted file."""
+    now = {name: "made-up-digest" for name, _ in PLANTED}
+    strays = dict(driver.codex_inventory_strays(now, launch={}, ledger={}))
+    assert sorted(strays) == sorted(name for name, _ in PLANTED)
+
+
+def test_a_claude_session_gets_no_uv_pin(tmp_path):
+    """CR-01 scope: a Claude Code session runs in the checkout, its hooks allow only exact
+    wrapper forms (no `cd`) and writes only to its own files, so uv already finds the
+    checkout's project; the pin is the signed-in harnesses' alone."""
+    claim = driver._Claim(_pick(), RUN, tmp_path / "repo", 1)
+    env = claim.env({"PATH": "made-up-path"}, backends.load_arms())
+    assert "UV_PROJECT" not in env and "UV_NO_CONFIG" not in env
+
+
+def test_the_installed_uv_knows_the_pin_variables():
+    """CR-01: the two variables the pin sets are the ones the installed uv reads (`uv run
+    --help` names each beside its flag), so a renamed variable cannot silently undo it."""
+    uv = shutil.which("uv")
+    if uv is None:
+        pytest.skip("uv is not on PATH")
+    shown = subprocess.run([uv, "run", "--help"], capture_output=True, text=True, check=True,
+                           timeout=60).stdout  # fmt: skip
+    assert "[env: UV_PROJECT=]" in shown
+    assert "[env: UV_NO_CONFIG=]" in shown

@@ -623,23 +623,9 @@ def _new_proposal(repo: Path, ctx: _Context, pid: str, hit: Hit) -> Proposal:
     )  # fmt: skip
 
 
-_MARKER = r"\bINCLUDE_ASM\s*\(\s*{name}\s*\)\s*;"
-
-
-def _spliced(candidate: str, function: str, hitting: str) -> str | None:
-    """`candidate` with `function` defined as `hitting` (the C that hit for it) defines it:
-    its definition slice (contextpack.definitions) replaces the candidate's own definition or
-    INCLUDE_ASM marker. None when either is not there."""
-    new = contextpack.definitions(hitting).get(function)
-    if new is None:
-        return None
-    old = contextpack.definitions(candidate).get(function)
-    if old is not None:
-        return candidate.replace(old.source, new.source, 1)
-    marker = re.search(_MARKER.format(name=re.escape(function)), candidate)
-    if marker is None:
-        return None
-    return candidate[: marker.start()] + new.source + candidate[marker.end() :]
+_MARKER = contextpack.INCLUDE_ASM_MARKER
+# `candidate` with `function` defined as `hitting` (the C that hit for it) defines it, or None
+_spliced = contextpack.splice_definition
 
 
 def _failed(p: Proposal, reason: str) -> Proposal:

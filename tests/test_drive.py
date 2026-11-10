@@ -1502,14 +1502,17 @@ def _table_gate(night: Night):
 
 
 def _hold_attempt(night: Night, run: str, n: int, *, cost: float, model: str = HAIKU,
-                  text: str | None = None, outcome: str = "HOLD_EXACT") -> dict:  # fmt: skip
-    """One hold-run attempt of FUNC: its committed record (to commit) and its attempt
-    directory, with a 60% check, then a plain check that exited 0 on `text`, and the view head
-    (HEAD now)."""
+                  text: str | None = None, outcome: str = "HOLD_EXACT",
+                  start: int | None = None) -> dict:  # fmt: skip
+    """One hold-run attempt of FUNC (or of the function at `start`): its committed record (to
+    commit) and its attempt directory, with a 60% check, then a plain check that exited 0 on
+    `text`, and the view head (HEAD now)."""
     from test_attempts_schema import _attempt_v3
-    from test_driver import FUNC, START, UNIT, check_line
+    from test_driver import START, UNIT, check_line
 
-    directory = night.repo / "build" / "driver" / run / "ufo2p" / FUNC / f"attempt-{n}"
+    start = START if start is None else start
+    func = f"func_{start:08X}"
+    directory = night.repo / "build" / "driver" / run / "ufo2p" / func / f"attempt-{n}"
     lines = (check_line(1, 60.0), check_line(2, 100.0, exit_code=0))
     for line, body in zip(lines, ("/* made-up 60% */\n", text or _held_c(1)), strict=True):
         _write(directory / line["source"], body)
@@ -1517,7 +1520,7 @@ def _hold_attempt(night: Night, run: str, n: int, *, cost: float, model: str = H
     _write(directory / driver.VIEW_HEAD, night.git("rev-parse", "HEAD").strip() + "\n")
     _write(night.repo / "build" / "driver" / run / driver.HOLD_RUN_MARKER, "hold run\n")
     record = _attempt_v3()
-    record.update(run=run, exe="ufo2p", start=f"0x{START:08X}", function=FUNC, unit=UNIT,
+    record.update(run=run, exe="ufo2p", start=f"0x{start:08X}", function=func, unit=UNIT,
                   attempt=n, outcome=outcome, hold_run=True, cost_usd=cost,
                   model_requested=model, model=model, gate=None, **{"pass": 1})  # fmt: skip
     return record
@@ -1629,6 +1632,69 @@ def test_land_held_refuses_a_changed_unit(tmp_path, rel):
     assert not [s for s in night.commits() if s.startswith("feat(")]
     if rel == UNIT_REL:
         assert SCAFFOLD in (night.repo / UNIT_REL).read_text(encoding="utf-8")
+
+
+START2 = 0x00010020  # a second function of the test unit (made up)
+FUNC2 = f"func_{START2:08X}"
+
+
+def _two_function_unit(first: str, second: str) -> str:
+    return f'#include "common.h"\n\n{first}\n\n{second}\n'
+
+
+def _body(func: str, value: int) -> str:
+    return f"int {func}(void)\n{{\n    return {value};\n}}"
+
+
+def _two_held(tmp_path: Path, *, stale: bool = False) -> tuple[Night, int]:
+    """A unit with two INCLUDE_ASM functions, each held exact by its own hold-run attempt (its
+    exact check C: the whole unit with its own function defined, the other still asm), both
+    from one view head; `stale`: the unit then changes in a commit of its own."""
+    from test_driver import FUNC, UNIT_REL
+    from test_driver_records import _commit
+
+    night = _table_night(tmp_path, gate_exits=[0, 0])
+    asm1, asm2 = f"INCLUDE_ASM({FUNC});", f"INCLUDE_ASM({FUNC2});"
+    _commit(night, {UNIT_REL: _two_function_unit(asm1, asm2)}, "made-up two-function unit")
+    held = [_hold_attempt(night, "spike012-haiku", 1, cost=0.10,
+                          text=_two_function_unit(_body(FUNC, 1), asm2)),
+            _hold_attempt(night, "spike012-haiku", 1, cost=0.10, start=START2,
+                          text=_two_function_unit(asm1, _body(FUNC2, 2)))]  # fmt: skip
+    if stale:
+        _commit(night, {UNIT_REL: (night.repo / UNIT_REL).read_text(encoding="utf-8")
+                         + "/* changed */\n"})  # fmt: skip
+    _commit_log(night, held)
+    return night, len(night.records())
+
+
+def test_land_held_lands_two_functions_of_one_unit(tmp_path):
+    """07.2 review WR-06: two held functions of one unit both land, one after the other. The
+    second is not stale: the unit changed since its view head only by this run's own landing
+    of the first, so its definition is spliced onto the unit as it now is (the first
+    function's landed C kept) and the gate proves the result."""
+    from test_driver import FUNC, UNIT_REL
+
+    night, before = _two_held(tmp_path)
+    report = _land(night, "spike012-haiku")
+    assert (report.event, report.matched) == ("ENDED", 2), report.detail
+    landings = _new(night, before, "landing")
+    assert [(r["function"], r["outcome"], r["reason"]) for r in landings] == [
+        (FUNC, "MATCHED", None), (FUNC2, "MATCHED", None)]  # fmt: skip
+    assert len(night.gate_calls) == 2
+    assert (night.repo / UNIT_REL).read_text(encoding="utf-8") == _two_function_unit(
+        _body(FUNC, 1), _body(FUNC2, 2))  # fmt: skip
+
+
+def test_land_held_still_refuses_two_functions_of_a_unit_changed_elsewhere(tmp_path):
+    """WR-06 keeps Pitfall 8: when the unit changed since the hold run by a commit that is not
+    this run's landing, neither held function lands."""
+    night, before = _two_held(tmp_path, stale=True)
+    report = _land(night, "spike012-haiku")
+    assert (report.event, report.matched) == ("ENDED", 0), report.detail
+    landings = _new(night, before, "landing")
+    assert [(r["outcome"], r["reason"]) for r in landings] == [
+        ("REFUSED", driver.LAND_HELD_STALE)] * 2  # fmt: skip
+    assert night.gate_calls == []
 
 
 def test_land_held_gate_refusal(tmp_path):

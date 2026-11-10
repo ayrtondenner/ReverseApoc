@@ -30,8 +30,11 @@ offset and kind. It never prints a byte value, so no game byte reaches a public 
 It proves one thing: the pull request changed no byte of any matched object. It does not land
 anything, and it is not the matching gate. A new match, a new unit, a flag change or anything
 else still goes through the owner's gate on the owner's machine (D-08). A pull request that
-changes only a `symbols.csv` compiles nothing and passes; whether the C still links under the
-new names is the owner's gate's job too.
+touches no `src/` unit (only a `symbols.csv`, only docs) compares nothing, so the job fails and
+says so ("nothing was compared: the owner checks this pull request"); a green result always
+means at least one unit was compiled and compared. A `symbols.csv` row that renames a name an
+untouched unit uses is not compiled against that unit: whether the C still links under the new
+names is the owner's gate's job.
 
 Exit codes of `compare-objects`: 0 the objects match, 1 they differ, 2 an object or a config tree
 could not be read or judged. The job fails on 1 and 2, and on any compile failure.
@@ -44,10 +47,12 @@ any path outside this list:
 - `src/ufo2p/<unit>.c` and `src/tacp/<unit>.c`, the units it compiles;
 - `config/ufo2p/symbols.csv` and `config/tacp/symbols.csv`, the new names of a rename (read as
   data, names and addresses only);
-- Markdown files.
+- Markdown under `docs/` and the root `README.md`.
 
-Cflags, tools, other config, headers under `include/` and workflows need the owner. A unit that
-is new (a new match), removed, or a symbolic link fails too.
+Cflags, tools, other config, headers under `include/`, workflows and every other Markdown file
+need the owner: `CLAUDE.md`, the rules and skills under `.claude/` and any other instruction
+file are read into agent sessions, so they steer the agents. A unit that is new (a new match),
+removed, or a symbolic link fails too, and so does a pull request with no unit to compare.
 
 ## Running it
 
@@ -71,24 +76,33 @@ up once:
 1. Pick a Linux x86-64 machine (or a VM, or a separate user account) with Docker, and put no
    game files on it: never place `orig/` on the runner, and never mount it. The job does not
    need the game; it compares two compiles with each other.
-2. Register a runner for this repository only: GitHub, repository Settings, Actions, Runners,
+2. Pin `actions/checkout` in `.github/workflows/match.yml` by its full commit SHA. The workflow
+   names the mutable tag `actions/checkout@v7`, and a tag can be moved to other code that would
+   then run on your runner under `pull_request_target`. Look up the commit the `v7` tag points
+   to on github.com/actions/checkout (its Releases or Tags page), check it is the release you
+   expect, and change both `uses:` lines to `actions/checkout@<full commit SHA> # v7` in a
+   commit of your own on main (the workflow tests read the tag, so update
+   `tests/test_workflows.py` in the same commit). Agents cannot check a SHA offline, so they
+   never write one. Do this before the runner below is registered.
+3. Register a runner for this repository only: GitHub, repository Settings, Actions, Runners,
    New self-hosted runner. An ephemeral just-in-time runner is preferred: it takes one job and
    is removed, so nothing a job leaves behind meets the next one. Run the runner service as uid
    1000, the image's `dev` user, so the container can write its objects into the job's temp
    directory. The default `self-hosted` label is the one the workflow asks for.
-3. In repository Settings, Actions, General, require approval for fork pull request workflows
+4. In repository Settings, Actions, General, require approval for fork pull request workflows
    from outside contributors. A fork can edit `ci.yml` in its own pull request, and that copy
    runs on `pull_request`; approval keeps a stranger's workflow from reaching the self-hosted
    runner. Never approve a run of a pull request that edits `.github/workflows/`.
-4. On the runner machine, in a checkout of main, build the image (`docker compose build`, which
+5. On the runner machine, in a checkout of main, build the image (`docker compose build`, which
    tags `reverseapoc-build:local`) and install Watcom (`uv run reverseapoc install-watcom`, see
    `docs/toolchain.md`), which gives `third_party/watcom/`.
-5. Tell the runner where Watcom is: add `REVERSEAPOC_WATCOM_DIR=<absolute path to
+6. Tell the runner where Watcom is: add `REVERSEAPOC_WATCOM_DIR=<absolute path to
    third_party/watcom>` to the `.env` file in the runner application's directory. The runner
    loads it into every job. The job mounts that directory read-only at `/watcom`.
-6. Prepare the uv environment volume, once and again after every dependency change on main.
-   The job runs `uv run --frozen --offline` with no network, so the venv must already be in
-   sync. From the same checkout of main:
+7. Prepare the uv environment volume, once and again after every dependency change on main.
+   The job mounts it read-only and runs `uv run --frozen --offline --no-sync` with no network,
+   so the venv must already be in sync, and this step is the only one that writes it. From the
+   same checkout of main:
 
    ```sh
    docker run --rm -v "$PWD:/work" -v reverseapoc-match-venv:/opt/venv -w /work \
@@ -96,8 +110,8 @@ up once:
    ```
 
    The checkout must be mounted at `/work`, where the job mounts its own checkout of main.
-7. Create the label: `gh label create match-check --description "run the match check"`.
-8. Turn the check on: `gh variable set MATCH_CHECK_ENABLED --body true` (repository Settings,
+8. Create the label: `gh label create match-check --description "run the match check"`.
+9. Turn the check on: `gh variable set MATCH_CHECK_ENABLED --body true` (repository Settings,
    Secrets and variables, Actions, Variables).
 
 To turn it off, set `MATCH_CHECK_ENABLED` to anything but `true` (the job is then skipped), or
@@ -127,9 +141,12 @@ requests", GitHub Security Lab). The design stays within that guidance as follow
 - **A sealed compile.** Every compile and compare runs in `docker run --rm --network none` on the
   ReverseApoc image. Main's tree and Watcom are mounted read-only, the pull request's `src/` is
   mounted read-only over `src/` for the head compile, and only the job's temp directory for the
-  objects and the prepared venv volume are writable. No game file is mounted or present.
-- **Narrow input.** Only units, the two `symbols.csv` files and Markdown may change; anything
-  else fails before a compile. New, removed and linked units fail.
+  objects is writable. The prepared venv volume is mounted read-only and never synced, so a
+  compile of hostile C cannot plant a `.pth` or patch `reverseapoc` for a later run's compare.
+  No game file is mounted or present.
+- **Narrow input.** Only units, the two `symbols.csv` files, Markdown under `docs/` and the
+  root `README.md` may change; anything else fails before a compile. New, removed and linked
+  units fail, and so does a pull request with no unit to compare.
 - **A human in front.** It ships disabled (the repository variable), a maintainer labels each
   run after reading the pull request, and a push after the label needs a new label.
 

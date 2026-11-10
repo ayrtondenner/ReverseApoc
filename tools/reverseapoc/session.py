@@ -188,26 +188,46 @@ def _skill_body(skill_text: str) -> str:
     return skill_text
 
 
+# 07.2 review WR-10: the skill tells a Claude session to look around with Read, Grep and Glob;
+# a Codex or agy session has none of them, and a shell read is a stray. Each form named here is
+# one the driver's rules allow (tests/test_codex.py checks them against hooks.bash_allowed).
+_HARNESS_NOTE = ("Harness note: this session has no Read, Grep or Glob tool, so where the skill "
+                 "says to look around with them, read through the wrapper instead: "
+                 "`attempt context` prints the context pack, `attempt asm` and "
+                 "`attempt asm <NAME>` print listings, and `attempt check` prints its summary "
+                 "and the paths of its evidence.")  # fmt: skip
+# agy's settings (driver.agy_settings) also allow read_file inside the attempt dir, nowhere else
+_AGY_READS = (" Your read_file tool may also read files inside this attempt's directory (your "
+              "unit, checks/NNNN.json); nothing outside it.")  # fmt: skip
+
+
+def _signed_in_prompt(goal: str, skill_text: str, note: str) -> str:
+    files = ", ".join((_NOTES_FILE, *SESSION_FILE_NAMES))
+    closing = (f"Session rules: the only command you may run is `{_WRAPPER}` with one of the "
+               "forms the skill quotes, exactly as written; run nothing else, not even to read, "
+               f"list or search a file. The files you may write are the private unit named "
+               f"above and, in this attempt's directory, {files}. Every command you run and "
+               "every file you write is checked after the session; anything else stops the "
+               "night.")  # fmt: skip
+    return "\n\n".join((goal.removeprefix(_GOAL_COMMAND), _skill_body(skill_text).strip(),
+                        note, closing))  # fmt: skip
+
+
 def codex_prompt(goal: str, skill_text: str) -> str:
     """07.2-13 (D-13): the prompt of a Codex session, which has no skill loader, no /goal and
     no hooks: the matching goal (goal_prompt's, without its /goal command), the watcom-decomp
-    skill's body (`skill_text`, front matter stripped), and a closing block naming the session
-    files beside notes.md and that only the attempt wrapper may be run (the driver audits every
-    command and file afterwards)."""
-    files = ", ".join((_NOTES_FILE, *SESSION_FILE_NAMES))
-    closing = (f"Session rules: the only command you may run is `{_WRAPPER}` with one of the "
-               "forms the skill quotes, exactly as written; run nothing else, not even to read "
-               f"or list a file. The files you may write are the private unit named above and, in "
-               f"this attempt's directory, {files}. Every command you run and every file you "
-               "write is checked after the session; anything else stops the night.")  # fmt: skip
-    return "\n\n".join((goal.removeprefix(_GOAL_COMMAND), _skill_body(skill_text).strip(),
-                        closing))  # fmt: skip
+    skill's body (`skill_text`, front matter stripped), the harness note (07.2 review WR-10:
+    no Read, Grep or Glob; files are read through the wrapper's printing forms) and a closing
+    block naming the session files beside notes.md and that only the attempt wrapper may be run
+    (the driver audits every command and file afterwards)."""
+    return _signed_in_prompt(goal, skill_text, _HARNESS_NOTE)
 
 
 def agy_prompt(goal: str, skill_text: str) -> str:
     """07.2-15 (D-21): the prompt of an Antigravity session, which like Codex has no skill
-    loader, no /goal and no hooks: codex_prompt's body, unchanged (one text for both)."""
-    return codex_prompt(goal, skill_text)
+    loader, no /goal and no hooks: codex_prompt's text, its harness note extended by the one
+    read agy's settings allow (read_file inside the attempt dir, WR-10)."""
+    return _signed_in_prompt(goal, skill_text, _HARNESS_NOTE + _AGY_READS)
 
 
 def _view_unit_problem(unit_path: str, function: str, unit: str, exe: str) -> str | None:

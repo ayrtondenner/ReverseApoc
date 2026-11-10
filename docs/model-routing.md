@@ -91,9 +91,14 @@ it.
   functions of one unit report one after the other.
 - **The stale-unit refusal.** A held C is the whole unit as of its view head. If
   `src/<exe>/<unit>.c` or `include/` changed between that head and HEAD, the function is not
-  landed. Its landing record is REFUSED with "unit changed since the hold run; re-run". This
-  also covers a second function of a unit that an earlier landing of the same run just
-  changed.
+  landed. Its landing record is REFUSED with "unit changed since the hold run; re-run".
+- **Several functions of one unit.** Once the run has landed one function of a unit, the next
+  held function of that unit is judged against HEAD as it was before that first landing (the
+  unit and `include/` unchanged since its view head, and `include/` unchanged since), so this
+  run's own landing is not a change. Only its definition is then spliced onto the unit as HEAD
+  now has it, keeping the earlier landing, and the gate proves the result. A change from any
+  other commit still refuses it as stale; a definition that cannot be spliced is REFUSED and
+  named.
 - **Credit.** The match commit carries `Matched-By: reverseapoc drive` and the co-author line
   of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. A hosted
   arm's attempt is credited to its arm instead, as in "Backends" below. The commit message
@@ -147,9 +152,12 @@ audit, against its provider's Anthropic-compatible endpoint.
   and `--allow-egress ARM`, for a night and for a canary alike:
   `reverseapoc drive --canary --night-model deepseek-flash --allow-egress deepseek-flash --run canary-deepseek`.
   What each backend receives is in [legal.md](legal.md#model-backends-and-what-they-receive).
-- **The session environment.** Every session loses every arm's key variable and any inherited
-  `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_DEFAULT_*_MODEL`, so a Claude
-  arm always runs on the claude.ai login and no session sees another arm's key. A hosted
+- **The session environment.** Every session loses every arm's key variable, every inherited
+  `ANTHROPIC_*` variable (custom headers, model, Bedrock and Vertex URLs among them), every
+  `CLAUDE_CODE_USE_*` variable, every `OPENAI_*` variable and every Google key or credentials
+  variable, so a Claude arm always runs on the claude.ai login, nothing reroutes a session off
+  its base URL and no session sees another arm's or vendor's key. `CLAUDE_CODE_OAUTH_TOKEN`
+  reaches only a session on the Claude login. A hosted
   arm's session then gets its `ANTHROPIC_BASE_URL`, its own key as `ANTHROPIC_AUTH_TOKEN`, an
   empty `ANTHROPIC_API_KEY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, the three
   `ANTHROPIC_DEFAULT_*_MODEL` pins set to its model, and `REVERSEAPOC_EGRESS=1`. Under it the
@@ -185,7 +193,9 @@ The model ids are assumptions to confirm at setup.
   --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
   -c sandbox_workspace_write.network_access=false -c projects."<attempt dir>".trust_level="trusted"
   <prompt>`. Codex loads no skill and runs no hook, so the prompt carries the goal, the
-  watcom-decomp skill's body and the session rules. Codex streams no event that names the
+  watcom-decomp skill's body, a harness note (no Read, Grep or Glob tool: files are read
+  through the wrapper's `context`, `asm` and `check` output; an agy session may also use its
+  read_file tool inside its attempt dir) and the session rules. Codex streams no event that names the
   model: the record keeps `model_requested` and a null `model`, and there is no init check.
   Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
   added to output); the cost is 0 on Plus, recorded as an estimate.
@@ -199,24 +209,35 @@ The model ids are assumptions to confirm at setup.
   and an empty wrapper ledger outside the workspace,
   `build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl`, named to the session by
   `REVERSEAPOC_WRAPPER_LEDGER`. The wrapper appends `{"path", "sha256"}` there for every file
-  it writes. Nothing Codex-specific is committed: no `.codex/`, no AGENTS.md.
+  it writes. The session env pins uv to the checkout (`UV_PROJECT=<checkout>`,
+  `UV_NO_CONFIG=1`, for agy sessions too): the session's commands run in its attempt dir, so
+  without the pin a `pyproject.toml`, `uv.lock` or `uv.toml` it wrote there would be the
+  project the allowed `uv run --frozen reverseapoc attempt` runs. Nothing Codex-specific is
+  committed: no `.codex/`, no AGENTS.md.
 - **The audit.** After the session, besides the checks every session gets (git status, the
   view, pinned and fingerprinted files): every command must be an exact wrapper form and may
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
-  session's write allowlist; and the attempt dir may hold only the session files (notes.md,
+  session's write allowlist; every item must be of a type the audit knows (`agent_message`,
+  `reasoning`, `todo_list`, `command_execution`, `file_change`; an MCP tool call or a web
+  search is a stray); and the attempt dir may hold only the session files (notes.md,
   plan.json, check-note.json, giveup.json, proposals.jsonl), the transcript, the driver's own
   files as they were at launch (the rules file included) and wrapper output whose hash is its
   ledger entry's. Anything else, a session-written `.codex/config.toml` among it, is a stray:
   the files are quarantined, the attempt is recorded as a guardrail give-up and the night
   stops. Each launch gets a fresh attempt dir, so nothing a session writes there reaches the
-  next one.
+  next one. The rules file is judged against the driver's own bytes, not the launch
+  inventory: right after writing it the driver checks that it is a regular file reached
+  through no link and holding exactly that rule (no session launches otherwise), and the audit
+  checks the same again, so any session write to it is a stray.
 - **What the audit cannot do.** It detects after the fact; it does not prevent. Codex's
   workspace-write sandbox restricts writes and the network, not reads, and Codex has no hook
   that could deny a read before it happens. A session that reads `orig/` or `third_party/` is
   caught by its command, quarantined and the night stops, but whatever it sent to OpenAI before
   it ended has left the machine. No read restriction of the installed CLI was confirmed
   offline, so none is assumed. The same holds for a command that runs before the audit: only
-  the sandbox and the canary's probes stand between it and the host.
+  the sandbox and the canary's probes stand between it and the host. The rules file has to sit
+  in the workspace (Codex reads project rules from `<--cd>/.codex/rules/`), so if Codex re-read
+  a session-edited rules file within the same session, only the audit would catch it.
 - **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
   (and the same for `gpt-6.1-sol`) asks the session, in order, to run `whoami`, write a file
   one directory above its workspace, fetch `https://example.com/`, run the wrapper's context
@@ -304,9 +325,13 @@ retired for consumer plans, so agy is the route.
   the attempt dir may hold only the session files, the transcript, the driver's own files as
   they were at launch and wrapper output its ledger names. A session-written `.gemini/` file, a
   linked `view` or `view/build` and a forged `checks.jsonl` are strays. Anything else is
-  quarantined, the attempt is recorded as a guardrail give-up and the night stops. A step agy
-  soft-denied (named in `denied_actions`) never ran, so it is a block, not a stray. What a
-  session sent to Google before it ended has left the machine.
+  quarantined, the attempt is recorded as a guardrail give-up and the night stops. The audit
+  fails closed: a tool step that ran and is not `run_command` with a command, or `read_file` or
+  `write_file` with a path (an unknown tool, a missing name, another shape, a subagent), is a
+  stray, and only `read_file` counts as a read; any other path step is judged as a write. A
+  step whose own last state is `DENIED` never ran, so it is a block, not a stray; the result's
+  `denied_actions` count as hook blocks and never stand for a step. What a session sent to
+  Google before it ended has left the machine.
 - **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
   gemini-flash --run canary-gemini` (and the same for `gpt-oss`) asks the session, in order, to
   write a file one directory above its workspace, fetch `https://example.com/`, run an

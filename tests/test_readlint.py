@@ -827,3 +827,27 @@ def test_unmarked_declarations(tmp_path):
         config_root=config)  # fmt: skip
     assert [(v.line, v.rule, v.message.split(" ", 1)[0]) for v in found] == [
         (1, "RL07", "D_000C1000")]
+
+
+def test_unmarked_declarations_in_a_header(tmp_path):
+    """07.2 review WR-11 (D-15): a proposed rename of a name the unit only uses, declared in a
+    project header the unit includes, needs the marker on that header's declaration line: the
+    violation names the header and says a header changes only through the owner or a header
+    proposal. A header declaration that carries the marker passes, and a name declared in the
+    unit itself is still judged there."""
+    header = "#ifndef STATE_H\n#define STATE_H\n\nextern int D_000C1000;\n\n#endif\n"
+    text = ('#include "state.h"\n\n'
+            f"int func_0008A0E0(void) {MARK}\n{{\n    return D_000C1000;\n}}\n")  # fmt: skip
+    src, config, path = write_tree(tmp_path, text)
+    include = tmp_path / "include"
+    include.mkdir()
+    (include / "state.h").write_text(header, encoding="utf-8", newline="\n")
+    found = readlint.unmarked_declarations(path, ["D_000C1000", "func_0008A0E0"], src_root=src,
+                                           config_root=config)  # fmt: skip
+    assert [(v.path, v.line, v.rule, v.message.split(" ", 1)[0]) for v in found] == [
+        ("include/state.h", 4, "RL07", "D_000C1000")]
+    assert "header proposal" in found[0].message
+    marked = header.replace("D_000C1000;", f"D_000C1000; {MARK}")
+    (include / "state.h").write_text(marked, encoding="utf-8", newline="\n")
+    assert readlint.unmarked_declarations(path, ["D_000C1000"], src_root=src,
+                                          config_root=config) == ()  # fmt: skip

@@ -17,7 +17,8 @@ the requested model and a null `model`, and runs no init check.
 - `commands`: each `command_execution` item's command, once per item id, in stream order (a
   started item the session never finished counts too), a list command joined as a POSIX shell
   would receive it; `write_targets`: every path a `file_change` item names. The driver's Codex
-  audit reads both (D-26).
+  audit reads both (D-26). `unknown_items`: every item of a type outside KNOWN_ITEMS (an MCP
+  tool call, a web search, ...), each a stray (07.2 review WR-03: fail closed).
 - `failure`: the text of the first `turn.failed` or top-level `error`, else None.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is LIMIT when its text says a usage limit was hit, else STOP (unknown fails closed);
@@ -42,6 +43,8 @@ _ERROR = "error"
 _ITEM_EVENTS = ("item.started", "item.updated", "item.completed")
 _COMMAND = "command_execution"
 _FILE_CHANGE = "file_change"
+# WR-03: the items the audit reads (the two above) or that do nothing (text, reasoning, a plan)
+KNOWN_ITEMS = frozenset({"agent_message", "reasoning", "todo_list", _COMMAND, _FILE_CHANGE})
 _MS_PER_S = 1000
 
 
@@ -144,6 +147,29 @@ def write_targets(events: Sequence[dict]) -> list[str]:
         for change in changes if isinstance(changes, list) else [changes]:
             path = _mapping(change).get("path")
             out.append(path if isinstance(path, str) else repr(change))
+    return out
+
+
+def unknown_items(events: Sequence[dict]) -> list[str]:
+    """07.2 review WR-03 (fail closed): one text per item, once per id, whose type is outside
+    KNOWN_ITEMS (an MCP tool call, a web search, an item with no type, an item that is not an
+    object): the audit has no reading of what it did, so each is a stray."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for event in events:
+        if event.get("type") not in _ITEM_EVENTS:
+            continue
+        item = event.get("item")
+        kind = item.get("type") if isinstance(item, Mapping) else None
+        if kind in KNOWN_ITEMS:
+            continue
+        ident = item.get("id") if isinstance(item, Mapping) else None
+        if isinstance(ident, str) and ident in seen:
+            continue
+        if isinstance(ident, str):
+            seen.add(ident)
+        shown = f"type {kind!r}" if isinstance(item, Mapping) else f"{item!r}, not an object"
+        out.append(f"item {ident!r}: {shown} is not an item the Codex audit knows")
     return out
 
 

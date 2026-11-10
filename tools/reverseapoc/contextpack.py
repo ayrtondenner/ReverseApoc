@@ -518,6 +518,26 @@ def _definition(text: str, origin: Sequence[int], live: str, match: re.Match[str
     return Definition(head, text[start : origin[end]] if end is not None else head)
 
 
+INCLUDE_ASM_MARKER = r"\bINCLUDE_ASM\s*\(\s*{name}\s*\)\s*;"  # `.format(name=...)` per function
+
+
+def splice_definition(unit: str, function: str, source: str) -> str | None:
+    """`unit` with `function` defined as `source` (a unit file that defines it) defines it:
+    its definition slice (`definitions`) replaces the unit's own definition or INCLUDE_ASM
+    marker. None when either is not there (flags' candidate splice; 07.2 review WR-06:
+    --land-held's second function of a unit)."""
+    new = definitions(source).get(function)
+    if new is None:
+        return None
+    old = definitions(unit).get(function)
+    if old is not None:
+        return unit.replace(old.source, new.source, 1)
+    marker = re.search(INCLUDE_ASM_MARKER.format(name=re.escape(function)), unit)
+    if marker is None:
+        return None
+    return unit[: marker.start()] + new.source + unit[marker.end() :]
+
+
 def definitions(text: str) -> dict[str, Definition]:
     """Each func_ placeholder the unit file defines at file scope (as configure.code_text reads
     it) with its head and source, sliced from `text` itself. Empty for a file the D-12 parser
