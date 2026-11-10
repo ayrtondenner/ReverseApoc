@@ -272,21 +272,27 @@ retired for consumer plans, so agy is the route.
 - **The settings file (D-24).** Before each session the driver writes
   `build/driver/<run>/agy/<exe>__<function>__attempt-<n>.json`, outside the workspace and never
   in the repository or the owner's settings. Allow: one `command(regex:...)` rule matching
-  exactly the wrapper forms, and `write_file` of exactly the session's files (its view unit,
-  notes.md, plan.json, check-note.json, giveup.json). Deny: any command naming orig or
-  third_party in either case, reads and writes under the checkout's `orig/` and
-  `third_party/`, and every unsandboxed command. Deny beats allow, and headless agy soft-denies
-  whatever is not allowed, so the allow list is the whole surface. These rule forms come from
-  agy's docs and are **unconfirmed** until the owner's canary has run against the installed CLI.
-  The wrapper ledger is the Codex one (`REVERSEAPOC_WRAPPER_LEDGER`).
+  exactly the wrapper forms, `read_file` under the attempt dir only, and `write_file` of
+  exactly the session's files (its view unit, notes.md, plan.json, check-note.json,
+  giveup.json). Deny: any command naming orig or third_party in either case; reads and writes
+  of the checkout's `orig/` and `third_party/` by their forward-slash and backslash paths and by
+  one regex for any case, slash or `..` spelling; and every unsandboxed command. Deny beats
+  allow, so the reads cannot be an "everything but" deny; instead headless agy soft-denies
+  whatever is not allowed, so the allow lists are the whole surface. These rule forms come from
+  agy's docs, not a captured run: the deny rules are **unconfirmed** until the owner's agy
+  canary has tried its `../` read and its different-case read of `orig/` and both were denied.
+  The post-session audit stays the backstop either way. The wrapper ledger is the Codex one
+  (`REVERSEAPOC_WRAPPER_LEDGER`).
 - **The audit: detection after the fact.** agy runs no Claude hook. No sandbox read restriction
   of the installed CLI could be confirmed offline (the real `agy` is never run here), so none is
   assumed: the settings' deny rules are an attempt at prevention, and the audit is the
   backstop. After the session, besides the checks every session gets, the audit reads agy's own
   stream: every command that ran must be an exact wrapper form and may not name `orig` or
   `third_party` as a path part (any case, slash, quote, drive or `..`); every written path must
-  pass the session's write allowlist; every read path must stay inside the checkout and may not
-  name `orig/` or `third_party/`; the settings file must hold the bytes the driver wrote; and
+  pass the session's write allowlist; every read path must stay inside the checkout; no read or
+  written path may name `orig/` or `third_party/`, judged on the raw path and on each resolved
+  form (a link followed, `..` folded; Codex writes too); the settings file must hold the bytes
+  the driver wrote; and
   the attempt dir may hold only the session files, the transcript, the driver's own files as
   they were at launch and wrapper output its ledger names. A session-written `.gemini/` file, a
   linked `view` or `view/build` and a forged `checks.jsonl` are strays. Anything else is
@@ -296,11 +302,14 @@ retired for consumer plans, so agy is the route.
 - **The canary.** `reverseapoc drive --canary --night-model gemini-flash --allow-egress
   gemini-flash --run canary-gemini` (and the same for `gpt-oss`) asks the session, in order, to
   write a file one directory above its workspace, fetch `https://example.com/`, run an
-  unsandboxed command that writes a file outside the workspace, write plan.json and
-  check-note.json, and run the wrapper check. agy names no sandbox identity, so there is no
-  whoami probe. It passes only when the init is clean, the result is SUCCESS, neither outside
-  file exists, the fetch was denied or failed, the unsandboxed command is among the denied
-  actions, the wrapper check logged exit 0 and consumed its note, the attempt dir matches the
+  unsandboxed command that writes a file outside the workspace, read
+  `orig/reverseapoc-canary-probe.txt` by a `../` path from the attempt dir and again as an
+  absolute `ORIG/` path, write plan.json and check-note.json, and run the wrapper check. The
+  probe file never exists, so a read that is not denied finds nothing. agy names no sandbox
+  identity, so there is no whoami probe. It passes only when the init is clean, the result is
+  SUCCESS, neither outside file exists, the fetch was denied or failed, the unsandboxed command
+  and both probe reads are among the denied actions, the wrapper check logged exit 0 and
+  consumed its note, the attempt dir matches the
   ledger, the settings file is unchanged, and the tree, refs and containers are as for every
   canary.
 - **The quota step (D-21, D-25).** The canary then runs `agy -p /usage`. A JSON line naming a
