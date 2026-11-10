@@ -29,6 +29,7 @@ from reverseapoc.session import kill_tree, run_session
 from test_drive import RUN as DRIVE_RUN
 from test_drive import Rig, _canary_rig
 from test_driver import (
+    CHORE,
     EXE,
     FAKE,
     FUNC,
@@ -1669,3 +1670,121 @@ def test_local_arm_beside_cloud(tmp_path, capsys):
             active += 1 if event == "start" else -1
             peak = max(peak, active)
     assert peak == 1 and len(local) == 4
+
+
+# ---- owner ruling 2026-11-10: a hook-denied write stops its arm only ----
+
+DENIED = Sess("denied_write", write=None)  # a Write to tools/x.py the hook denied
+DENIED_PATH = "/repo/tools/x.py"
+
+
+def test_a_denied_write_stops_its_arm_only(tmp_path):
+    """Owner ruling 2026-11-10: a session whose only stray is a write the hook denied (in the
+    result event's permission_denials) with nothing changed is recorded GAVE_UP guardrail as
+    today and stops its arm only: that arm launches nothing more, the other arm attempts every
+    pick, the night ENDS and commits its log, and the run record and one console line name the
+    arm, the attempt and the denied path. Nothing is quarantined."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks, by_model={HAIKU: [DENIED]})
+    lines: list[str] = []
+    report = night.run(config={"arms": TWO_ARMS, "hold": True}, say=lines.append)
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 1
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+    (stopped,) = [r for r in night.kinds("attempt") if r["run"] == _arm_run(HAIKU)]
+    assert (stopped["outcome"], stopped["abort_reason"]) == ("GAVE_UP", "guardrail")
+    final = night.kinds("run")[-1]
+    assert (final["event"], final["schema"]) == ("ENDED", 3)
+    for text in (final["detail"], report.detail):
+        assert HAIKU in text and picks[0].name in text and DENIED_PATH in text, text
+    said = [line for line in lines if "stopped" in line and HAIKU in line]
+    assert len(said) == 1 and DENIED_PATH in said[0] and picks[0].name in said[0], lines
+    assert night.commits() == [CHORE]
+    quarantine = _driver_dir(night) / _arm_run(HAIKU) / "quarantine"
+    assert not quarantine.exists() or list(quarantine.rglob("*")) == []
+    for record in night.records():
+        driver.validate_record(record)
+
+
+def test_a_stopped_arm_relaunches_nothing(tmp_path, monkeypatch):
+    """A session of the stopped arm still in flight finishes, but its LIMIT relaunch is a launch
+    the stopped arm no longer makes; the other arm goes on."""
+    nights = _capture_nights(monkeypatch)
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks,
+                     by_model={HAIKU: [DENIED, Sess("rate_limit", write=None)]})  # fmt: skip
+
+    def after(unit, index):  # the LIMIT session ends only once the denied write stopped its arm
+        if "rate_limit" in night.launched[index].argv:
+            assert _poll(lambda: nights[-1].lanes[0].stopped), "the Haiku arm never stopped"
+
+    night.after = after
+    report = night.run(config={"arms": ((HAIKU, 2), (SONNET, 1)), "hold": True})
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    assert _runs_launched(night, _arm_run(HAIKU)) == 2
+    assert _runs_launched(night, _arm_run(SONNET)) == 3
+
+
+def test_a_denied_write_with_one_arm_stops_the_night(tmp_path):
+    """With one arm, stopping the arm is stopping the night, exactly as before the ruling."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)),
+                     by_model={HAIKU: [DENIED]})  # fmt: skip
+    report = night.run(config={"arms": ((HAIKU, 1),), "hold": True})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert DENIED_PATH in report.detail
+    assert len(night.launched) == 1
+
+
+def test_a_hold_run_resumes(tmp_path):
+    """Owner approval 2026-11-10: the same `--hold --run` drive again resumes it. Each arm skips
+    the functions its run already attempted with a counted session in the committed log, and
+    attempts again the rest: one whose record is a GAVE_UP guardrail (the stop cut it short)
+    in a fresh attempt-2 directory beside its attempt-1, one with no record in attempt-1. An
+    arm with every pick done launches nothing."""
+    picks = tuple(_wpick(i) for i in range(3))
+    night = ArmNight(tmp_path, picks=picks, by_model={HAIKU: [DENIED]})
+    first = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert first.event == "ENDED", first.detail
+    before = len(night.launched)
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert (report.event, report.reason) == ("ENDED", driver.QUEUE_EXHAUSTED), report.detail
+    again = night.launched[before:]
+    assert sorted(_run_of(night, launch) for launch in again) == [_arm_run(HAIKU)] * 3
+    haiku = sorted((r["function"], r["attempt"], r["abort_reason"]) for r in night.kinds("attempt")
+                   if r["run"] == _arm_run(HAIKU))  # fmt: skip
+    assert haiku == [(picks[0].name, 1, "guardrail"), (picks[0].name, 2, None),
+                     (picks[1].name, 1, None), (picks[2].name, 1, None)]  # fmt: skip
+    sonnet = [r for r in night.kinds("attempt") if r["run"] == _arm_run(SONNET)]
+    assert len(sonnet) == 3
+    redo = _driver_dir(night) / _arm_run(HAIKU) / EXE / picks[0].name
+    assert sorted(p.name for p in redo.iterdir()) == ["attempt-1", "attempt-2"]
+    assert list(_driver_dir(night).rglob("*-uncounted-*")) == []
+    assert night.kinds("run")[-1]["sessions"] == 3
+    for record in night.records():
+        driver.validate_record(record)
+
+
+def test_a_finished_hold_run_resumes_to_nothing(tmp_path):
+    """Every arm's every pick counted: the same hold drive again launches nothing."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
+    assert night.run(config={"arms": TWO_ARMS, "hold": True}).event == "ENDED"
+    before = len(night.launched)
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert report.event == "ENDED", report.detail
+    assert len(night.launched) == before
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [Sess("undenied_write", write=None),
+     Sess("denied_write", write=None, files=(("tools/y.py", "# made up\n"),))],
+    ids=["write-not-denied", "denied-and-a-changed-file"],
+)  # fmt: skip
+def test_any_other_stray_still_stops_every_arm(tmp_path, spec):
+    """A write the hook did not deny, or a denied write beside a file the session changed, stops
+    the whole multi-arm drive as today."""
+    night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(3)),
+                     by_model={HAIKU: [spec]})  # fmt: skip
+    report = night.run(config={"arms": TWO_ARMS, "hold": True})
+    assert (report.event, report.reason) == ("STOPPED", "guardrail"), report.detail
+    assert DENIED_PATH in report.detail

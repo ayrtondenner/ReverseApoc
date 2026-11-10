@@ -1351,6 +1351,31 @@ def test_hold_tier_queue_offers_each_pick_once(tmp_path):
     assert [r["hold_run"] for r in night.kinds("attempt")] == [True, True, True]
 
 
+def test_a_hold_tier_night_resumes(tmp_path):
+    """Owner approval 2026-11-10: a hold tier night cut short by its cap, run again, attempts
+    only what its committed records did not count; the caller still follows its callee, whose
+    counted attempt was last night's."""
+    from test_driver import START, UNIT, Night, Sess
+    from test_driver_records import _commit
+
+    leaf, mid, top = START, START + 0x10, START + 0x20
+    rows = [_member(a) for a in (leaf, mid, top)]
+    night = Night(tmp_path / "night", sessions=[Sess() for _ in range(9)])
+    _commit(night, {**_signed_files(rows, tmp_path), **_empty_status()})
+    worlds = _world((leaf, mid, top), [(top, mid), (mid, leaf)], unit=UNIT)
+    picks = _picks_file(tmp_path, [(UFO2P, s) for s in (leaf, mid, top)])
+    options = driver.DriveOptions(repo=night.repo, run_id="night1", picks=picks, hold=True)
+    deps = driver.real_deps(options, _seams(night, worlds), worlds)
+    first = night.run(config={"max_sessions": 2, "hold": True}, queue=deps.queue,
+                      requeue=deps.requeue)  # fmt: skip
+    assert (first.event, first.reason) == ("ENDED", driver.MAX_SESSIONS), first.detail
+    report = night.run(config={"max_sessions": 9, "hold": True}, queue=deps.queue,
+                       requeue=deps.requeue)  # fmt: skip
+    assert report.event == "ENDED", report.detail
+    assert [p.start for p, _, _ in night.packed] == [leaf, mid, top]
+    assert [r["start"] for r in night.kinds("attempt")] == [f"0x{s:08X}" for s in (leaf, mid, top)]
+
+
 # ---- 07.2-06 Task 2: hold runs count no pass; the stratified pick list (D-17) ----
 
 
