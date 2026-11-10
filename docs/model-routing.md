@@ -350,8 +350,12 @@ retired for consumer plans, so agy is the route.
   one regex for any case, slash or `..` spelling; any read or write path holding a `..` segment
   (the allowed attempt-dir prefix followed by `..`, in case agy matches before it normalises) or
   an 8.3 short-name segment such as `THIRD_~1` (so the checkout itself must not sit under a
-  short-name path: its own files would then be denied, which fails closed); and every
-  unsandboxed command. Deny beats
+  short-name path: its own files would then be denied, which fails closed). There is no
+  unsandboxed rule: agy 1.5.5 logs `Invalid "unsandboxed" permission rules found; they are
+  ignored and grant nothing` (its binary: "unsandboxed is no longer a valid rule, use command()
+  instead"), and its permission kinds are `command`, `read_file`, `write_file`, `read_url`,
+  `execute_url` and `mcp`. A command the allow rule does not match soft-denies, and the
+  canary's unsandboxed probe proves it. Deny beats
   allow, so the reads cannot be an "everything but" deny; instead headless agy soft-denies
   whatever is not allowed, so the allow lists are the whole surface. These rule forms come from
   agy's docs, not a captured run: the deny rules are **unconfirmed** until the owner's agy

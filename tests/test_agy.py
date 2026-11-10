@@ -434,8 +434,11 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
     """D-24: the driver writes the session's settings under build/driver/<run>/agy/, outside
     the workspace and never in the repo or the user's settings: allow holds one command regex
     matching exactly the matching wrapper forms and write_file rules for exactly the session's
-    files; deny holds a command regex naming orig/ and third_party/, their reads and writes,
-    and unsandboxed commands. The session is told its wrapper ledger, which starts empty."""
+    files; deny holds a command regex naming orig/ and third_party/ and their reads and
+    writes. No `unsandboxed(...)` rule: agy 1.5.5 ignores it and grants nothing ("unsandboxed
+    is no longer a valid rule, use command() instead"), and an unallowed command soft-denies
+    anyway, so the canary's unsandboxed probe is the proof. The session is told its wrapper
+    ledger, which starts empty."""
     import re
 
     record = tmp_path / "fakeagy-record.json"
@@ -490,7 +493,7 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
         for text in ("view/src/ufo2p/original_x.c", "notes.md", "origins/x",
                      f"{attempt_dir.as_posix()}/..x/y", *sorted(files)):  # fmt: skip
             assert not denied(text), (action, text)
-    assert _rule(deny, "unsandboxed") == ["regex:.*"]
+    assert not [rule for rule in (*allow, *deny) if rule.startswith("unsandboxed")], deny
     assert not path.is_relative_to(attempt_dir)
     assert not (night.repo / ".gemini").exists() and not (rig.repo / ".gemini").exists()
     ledger = Path(night.launched[0].env[driver.attempt.WRAPPER_LEDGER_ENV])

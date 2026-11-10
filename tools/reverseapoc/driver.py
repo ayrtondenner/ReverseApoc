@@ -1388,8 +1388,12 @@ def agy_settings(claim: _Claim) -> dict:
     attempt wrapper's forms only, and write_file of exactly the session's own files (its view
     unit, notes.md and the three session files beside it). Headless agy soft-denies everything
     unconfigured, so the allow list is the whole surface (RESEARCH "Permissions"). Deny: any
-    command naming orig or third_party (either case), reads and writes under the checkout's
-    orig/ and third_party/ (D-10), and every unsandboxed command."""
+    command naming orig or third_party (either case) and reads and writes under the checkout's
+    orig/ and third_party/ (D-10). No unsandboxed rule: agy 1.5.5 ignores `unsandboxed(...)`
+    and grants nothing (its log: "Invalid "unsandboxed" permission rules found; they are ignored
+    and grant nothing"; its binary: "unsandboxed is no longer a valid rule, use command()
+    instead"), and a command the allow rule does not match soft-denies, so the canary's
+    unsandboxed probe is the proof."""
     files = [claim.view_unit, claim.notes,
              *(claim.attempt_dir / name for name in hooks.SESSION_FILE_NAMES)]
     named = "|".join(_any_case(part) for part in _FORBIDDEN_PARTS)
@@ -1410,8 +1414,7 @@ def agy_settings(claim: _Claim) -> dict:
              *(f"write_file({path.as_posix()})" for path in files)]
     deny = [f"command(regex:.*({named}).*)",
             *(f"{action}({target})" for action in ("read_file", "write_file")
-              for target in (*roots, spelled, dot_dot, short)),
-            "unsandboxed(regex:.*)"]  # fmt: skip
+              for target in (*roots, spelled, dot_dot, short))]  # fmt: skip
     return {"permissions": {"allow": allow, "deny": deny}}
 
 
