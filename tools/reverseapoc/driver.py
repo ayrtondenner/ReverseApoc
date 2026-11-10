@@ -354,6 +354,9 @@ class DriveConfig:
     # pass's); `drive --hold`: a hold run, which lands nothing and attempts each function once.
     night_model: str | None = None
     hold: bool = False
+    # `drive --land-held RUN...`: instead of sessions, land the named hold runs' exact
+    # attempts (stats.run_selected names), each function once (`_Night.land_held`).
+    land_held: tuple[str, ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -1315,6 +1318,43 @@ def exact_source(attempt_dir: Path) -> str | None:
     lines = [line for raw in text.splitlines() if (line := _check_line(raw)) is not None]
     exact = [line["source"] for line in lines if not line["sweep"] and line["exit"] == EXIT_OK]
     return exact[-1] if exact else None
+
+
+LAND_HELD_STALE = "unit changed since the hold run; re-run"  # RESEARCH Pitfall 8
+
+
+def _view_head(attempt_dir: Path) -> str | None:
+    """The commit of an attempt's view-head.txt (F34), or None when it is missing, a link, or
+    not one SHA-1."""
+    path = Path(attempt_dir) / VIEW_HEAD
+    data = None if _is_link(path) else _read(path)
+    text = data.decode("ascii", "replace").strip() if data is not None else ""
+    return text if _SHA1.fullmatch(text) else None
+
+
+def _hold_records(log: Path, names: Sequence[str]) -> Iterator[dict]:
+    """Each committed attempt record of a hold run (`hold_run` true) whose run `names` select
+    (stats.run_selected: a trailing `*` is a prefix)."""
+    from .stats import run_selected  # stats imports this module
+
+    for record in _log_records(log):
+        if record["kind"] == KIND_ATTEMPT and record.get("hold_run") is True and run_selected(
+                record["run"], names):  # fmt: skip
+            yield record
+
+
+def held_exact(log: Path, names: Sequence[str]) -> list[dict]:
+    """07.2-06 (D-17, D-26): the HOLD_EXACT records of the hold runs `names` select, the
+    candidates `--land-held` lands from."""
+    return [record for record in _hold_records(log, names) if record["outcome"] == HOLD_EXACT]
+
+
+def refuse_land_held(options: DriveOptions) -> None:
+    """`--land-held RUN...` with no hold run the names select: a Refused naming them."""
+    log = Path(options.repo) / ATTEMPT_LOG
+    if next(_hold_records(log, options.land_held), None) is None:
+        raise Refused("land held", f"no hold run in {ATTEMPT_LOG.as_posix()} matches "
+                                   f"{', '.join(options.land_held)}")  # fmt: skip
 
 
 # ---- the v2 record's evidence (07-23; DEC-07, research section J, P10) ----
@@ -2572,9 +2612,11 @@ class _Night:
 
     def _loop(self) -> str:
         """The coordinator hands the picks to the workers (D-06); one worker is Phase 6's
-        serial loop."""
+        serial loop. 07.2-06 (D-17): `--land-held` lands instead (`land_held`)."""
         self._safe_dir(self._quarantine_root())  # third pass: before any session
         self.pinned_base = self._pinned_state()  # fix round 1 (C1): before the first launch
+        if self.config.land_held:
+            return self.land_held()
         with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
             self.passes = pass_index(self.log)
         self.coordinator = _Coordinator(self)
@@ -3888,18 +3930,24 @@ class _Night:
                               attempts=self.config.attempts_per_function, **figures)
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
-                      abort: str | None = None) -> None:  # fmt: skip
+                      abort: str | None = None, *,
+                      held: Mapping | None = None) -> None:  # fmt: skip
         """One match commit of explicit paths (D-25): the landed unit, status.csv, the feed and
         the log; a matching session adds no header (D-19). 07-38: a readability session's
         landing is the same commit with its own message and a LANDED record; only a match
-        counts toward `matched`."""
+        counts toward `matched`. 07.2-06 (D-26): `held`, a hold run's HOLD_EXACT record that
+        `--land-held` lands, writes no attempt record (its cost is in `held` already) and takes
+        that attempt's figures and model in the message; its MATCHED landing record names the
+        commit, so it is appended after it (the attempt-log commit takes it)."""
         claim = session.claim
         paths = [claim.unit_rel, claim.status_rel, FEED, ATTEMPT_LOG.as_posix()]
         log_size = self.log.stat().st_size if self.log.is_file() else 0
         outcome = LANDED if claim.session == READABILITY else MATCHED
-        self._record_attempt(session, outcome, abort, summary, gate=gate)
+        if held is None:
+            self._record_attempt(session, outcome, abort, summary, gate=gate)
         try:
-            message = self._landing_message(session, gate)
+            message = (self._landing_message(session, gate) if held is None
+                       else self._held_message(held, gate))  # fmt: skip
             self._verify_landing(session)
             old = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode().strip()
             self._commit_with_retry(message=message, message_file=claim.attempt_dir / COMMIT_MSG,
@@ -3910,17 +3958,22 @@ class _Night:
             self.breached = True
             raise _Stop(GUARDRAIL, exc.detail) from exc
         except _Breach as exc:  # fix round 1: never commit bytes the driver did not write
-            undone = self._undo_match(session, paths, summary, exc.detail, log_size, gate=gate)
+            undone = self._undo_match(session, paths, summary, exc.detail, log_size, gate=gate,
+                                      held=held)  # fmt: skip
             raise _Stop(GUARDRAIL, undone) from exc
         except Exception as exc:  # fix round 2 J1: any failure, not only a DriverError
             why = f"{type(exc).__name__}: {exc}"
-            undone = self._undo_match(session, paths, summary, why, log_size, gate=gate)
+            undone = self._undo_match(session, paths, summary, why, log_size, gate=gate,
+                                      held=held)  # fmt: skip
             raise _Stop(self.undo_reason or TOOL, undone) from exc
         except BaseException as exc:  # minor 3: an interrupt is undone, then re-raised
             undone = self._undo_match(session, paths, summary, type(exc).__name__, log_size,
-                                      gate=gate)  # fmt: skip
+                                      gate=gate, held=held)  # fmt: skip
             self.interrupted = f" during the match commit; {undone}"
             raise
+        if held is not None:
+            commit = _git_ok(self._git, ["rev-parse", "--verify", "HEAD^{commit}"]).decode()
+            self._record_landing(held, MATCHED, gate=gate, commit=commit.strip())
         if outcome != MATCHED:
             return
         with self.cond:
@@ -3928,7 +3981,8 @@ class _Night:
             self.cond.notify_all()
 
     def _undo_match(self, session: _Session, paths: Sequence[str], summary: CheckSummary,
-                    why: str, log_size: int, *, gate: GateRun | None = None) -> str:  # fmt: skip
+                    why: str, log_size: int, *, gate: GateRun | None = None,
+                    held: Mapping | None = None) -> str:  # fmt: skip
         """Fix round 1 I2, completed in fix round 2 (J1): a match commit that failed leaves no
         trace of a match. Each step is best-effort with its own note: unstage what it added,
         put status.csv and the feed back to their pre-gate bytes, truncate the log to its
@@ -3937,7 +3991,9 @@ class _Night:
         logged GAVE_UP `tool`, and the returned detail names the original error, every step
         that failed and every path still staged. The caller stops the night. 07-13 fix round
         2: a ledger breach the pre-gate restore finds is one more note (its stop reason kept in
-        `undo_reason`), so the MATCHED line is still dropped and the attempt still recorded."""
+        `undo_reason`), so the MATCHED line is still dropped and the attempt still recorded.
+        07.2-06: a `--land-held` landing (`held`) is recorded as a REFUSED landing instead, so
+        its attempt is never recorded twice."""
         notes = [f"the match commit failed: {why}"]
         self.undo_reason = None
         try:
@@ -3958,7 +4014,10 @@ class _Night:
         if staged:
             notes.append(f"still staged: {_listed(staged)}")
         try:
-            self._record_attempt(session, GAVE_UP, TOOL, summary, gate=gate)
+            if held is None:
+                self._record_attempt(session, GAVE_UP, TOOL, summary, gate=gate)
+            else:
+                self._record_landing(held, REFUSED, reason=notes[0], gate=gate)
         except Exception as exc:  # noqa: BLE001 - named below
             notes.append(f"could not record the attempt: {type(exc).__name__}: {exc}")
         if len(notes) > 1:  # fix round 3 K1: an incomplete undo commits nothing tonight
@@ -3993,6 +4052,111 @@ class _Night:
         except Exception as exc:  # noqa: BLE001 - the caller names it
             return [f"<unknown: {type(exc).__name__}: {exc}>"]
         return [n for n in raw.decode("utf-8", "surrogateescape").split("\0") if n]
+
+    # --- landing the hold runs (07.2-06; D-17, D-26) ---
+
+    def land_held(self) -> str:
+        """`drive --land-held RUN...`: each function a selected hold run checked exactly
+        (`held_exact`) lands once, from its cheapest such attempt (cost, then run id, then
+        attempt), in (exe, unit, start) order so same-unit landings report one after the other.
+        A function status.csv already matches is skipped. Each landing goes through the night's
+        own land, lint and gate (`_land_one`), never a path of its own. The end of run (ninja
+        verify, gate --all) and the attempt-log commit follow as after a night."""
+        matched = matched_keys(self.repo / "config")
+        best: dict[Key, tuple[tuple, Mapping]] = {}
+        with self.gate_lock:  # the log is read while no record is appended
+            for record in held_exact(self.log, self.config.land_held):
+                key = (record["exe"], int(record["start"], 16))
+                rank = (record["cost_usd"], record["run"], record["attempt"])
+                if key not in matched and (key not in best or rank < best[key][0]):
+                    best[key] = (rank, record)
+        landings = sorted((record for _, record in best.values()),
+                          key=lambda r: (r["exe"], r["unit"], int(r["start"], 16)))  # fmt: skip
+        for record in landings:
+            self._land_one(record)
+        return QUEUE_EXHAUSTED if landings else NOTHING_TO_DO
+
+    def _land_one(self, held: Mapping) -> None:
+        """One held function: the C of its attempt's latest plain check that exited 0
+        (`exact_source`) goes into a fresh view unit under this run's own attempt directory
+        (the hold run's stays as it was), with the hold run's view head. A unit or include/
+        changed since that head is refused unlanded (RESEARCH Pitfall 8); otherwise `_judge`
+        (renames since the head, the copy into src/, the lint, the gate) under the gate lock,
+        then `_commit_match` credited to the attempt's requested model, or a reset and a
+        REFUSED landing."""
+        pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
+        source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
+        claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
+                       model=held["model_requested"])  # fmt: skip
+        head, exact = _view_head(source), exact_source(source)
+        if head is None or exact is None or _is_link(source / exact) or not (
+                source / exact).is_file():  # fmt: skip
+            reason = "the hold run's attempt has no view head or no exact check C; re-run"
+        else:
+            reason = self._stale_reason(head, claim)
+        if reason is not None:
+            self._record_landing(held, REFUSED, reason=reason)
+            return
+        self._fresh_dir(claim)
+        claim.view_unit.parent.mkdir(parents=True)
+        write_atomic(claim.view_unit, (source / exact).read_bytes())
+        empty = _Snapshot({}, {}, {}, {})
+        session = _Session(claim, None, PackInfo(0), 0.0, (), False, b"", empty, view_head=head)
+        with self._landing(session):
+            gate = self._judge(session)
+            if self._gate_matched(session, gate):
+                self._commit_match(session, gate, CheckSummary(), held=held)
+                return
+            self._reset(session)
+            why = ("the C89 lint failed" if gate is None
+                   else f"the gate refused it (exit {gate.exit_code})")  # fmt: skip
+            self._record_landing(held, REFUSED, reason=why, gate=gate)
+
+    def _stale_reason(self, head: str, claim: _Claim) -> str | None:
+        """Pitfall 8: why the held C may not land on today's src/: the unit or include/ changed
+        between the view head and HEAD (`git diff --quiet`), or the head is no commit here."""
+        done = self._git([LITERAL, "diff", "--quiet", head, "HEAD", "--", claim.unit_rel,
+                          "include"])  # fmt: skip
+        if done.returncode == 0:
+            return None
+        if done.returncode == 1:
+            return LAND_HELD_STALE
+        return f"the hold run's view head {head[:12]} is not a commit of this checkout; re-run"
+
+    def _held_message(self, held: Mapping, gate: GateRun) -> str:
+        """D-25's match message from the held attempt's own figures, with the hold run named;
+        the co-author is its requested model (`coauthor`, 07.2-12 adds other arms')."""
+        tokens = held["tokens"]
+        usage = streamjson.Usage(tokens["input"], tokens["output"], tokens["cache_read"],
+                                 tokens["cache_creation"], held["turns"], held["cost_usd"],
+                                 held["duration_ms"] or 0)  # fmt: skip
+        message = commit_message(exe=held["exe"], function=f"func_{int(held['start'], 16):08X}",
+                                 unit=held["unit"], attempt_n=held["attempt"],
+                                 attempts=self.config.attempts_per_function,
+                                 model=held["model"], usage=usage, seconds=held["seconds"],
+                                 sha1s=gate_sha1s(gate.doc),
+                                 requested_model=held["model_requested"])  # fmt: skip
+        return message.replace("\n\nattempt ", f"\n\nlanded from hold run {held['run']}\n"
+                                               "attempt ", 1)  # fmt: skip
+
+    def _record_landing(self, held: Mapping, outcome: str, *, reason: str | None = None,
+                        gate: GateRun | None = None,
+                        commit: str | None = None) -> None:  # fmt: skip
+        """One schema-3 landing record (D-26): no tokens and no cost, which the held attempt
+        record keeps, so stats counts them once; a console line names the outcome."""
+        pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
+        record = {"kind": KIND_LANDING, "schema": SCHEMA_V3, "run": self.config.run_id,
+                  "date": self.deps.today(), "exe": held["exe"], "unit": held["unit"],
+                  "start": held["start"], "function": held["function"],
+                  "from_run": held["run"], "from_attempt": held["attempt"],
+                  "model": held["model_requested"], "backend": held["backend"],
+                  "harness": held["harness"], "outcome": outcome,
+                  "reason": _detail(reason) if reason else None,
+                  "gate": _gate_field(gate, pick), "commit": commit}  # fmt: skip
+        self._append(record)
+        shown = f"landed ({commit[:12]})" if commit else f"refused ({record['reason']})"
+        self.deps.say(f"{held['exe']} {held['function']} from {held['run']} attempt "
+                      f"{held['attempt']}: {shown}")  # fmt: skip
 
     # --- naming proposals (07-34; D-19, D-29) ---
 
@@ -6045,14 +6209,18 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
 def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) -> int:
     log = _Log(options, seams)
     try:
-        with _phase("preflight"):
-            preflight(options, seams, check_cli=not options.dry_run, log=log)
+        with _phase("preflight"):  # 07.2-06: --land-held launches no claude either
+            preflight(options, seams, check_cli=not (options.dry_run or options.land_held),
+                      log=log)  # fmt: skip
         if options.canary:
             with _phase("canary"):
                 return run_canary(options, seams, lock=lock)
         worlds = _load_worlds(seams)
         today = _today()
-        if options.session == READABILITY:  # 07-38: no pilot picks and no Ghidra drafts
+        if options.land_held:  # 07.2-06 (D-17): no picks and no Ghidra drafts
+            with _phase("land held"):
+                refuse_land_held(options)
+        elif options.session == READABILITY:  # 07-38: no pilot picks and no Ghidra drafts
             with _phase("picks"):
                 if options.dry_run:
                     return readability_dry_run(options, worlds, git=seams.git)
@@ -6088,7 +6256,8 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          wall_clock_s=options.session_minutes * 60,
                          session=options.session,
                          fable_trial=options.fable_trial,
-                         night_model=options.night_model, hold=options.hold)  # fmt: skip
+                         night_model=options.night_model, hold=options.hold,
+                         land_held=options.land_held)  # fmt: skip
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))

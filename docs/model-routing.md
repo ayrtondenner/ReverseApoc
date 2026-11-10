@@ -69,6 +69,39 @@ say "hold run" for this harness, never "held".
 3. Compare the arms: `reverseapoc stats --run spike012-*`.
 4. Land the results: `reverseapoc drive --land-held spike012-*`.
 
+## Landing a hold run
+
+`reverseapoc drive --land-held RUN...` runs on the main checkout with the drive lock and the
+preflight a night uses, and it launches no session. It reads the committed attempt log and keeps
+the `HOLD_EXACT` records of the hold runs the names select. A trailing `*` is a prefix, so
+`spike012-*` takes every arm. A name that selects no hold run makes the drive exit 2 and name
+it.
+
+- **Once per function.** Each function lands at most once, and one that status.csv already
+  matches is skipped. A second `--land-held` over the same runs therefore lands nothing new.
+- **The cheapest rule.** Of a function's exact attempts, the one with the lowest `cost_usd`
+  lands. Equal costs go to the earlier run id, then to the lower attempt number.
+- **What lands.** The C is the attempt's latest plain check that exited 0 (its
+  `checks/NNNN.c`). It is copied into a fresh view under the landing run's own directory, so
+  the hold run's files stay as they were. Every rename committed since the attempt's view head
+  is applied, as a night's landing does. Then the normal path runs, under the gate lock: the
+  copy into src/, the C89 lint, the container gate, and the match commit of explicit paths.
+  There is no second landing path. Functions land in exe, unit and address order, so two
+  functions of one unit report one after the other.
+- **The stale-unit refusal.** A held C is the whole unit as of its view head. If
+  `src/<exe>/<unit>.c` or `include/` changed between that head and HEAD, the function is not
+  landed. Its landing record is REFUSED with "unit changed since the hold run; re-run". This
+  also covers a second function of a unit that an earlier landing of the same run just
+  changed.
+- **Credit.** The match commit carries `Matched-By: reverseapoc drive` and the co-author line
+  of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. The commit
+  message gives that attempt's own turns, tokens and seconds, and names the hold run.
+- **Records.** Each function gets one `landing` record: MATCHED with its commit, or REFUSED
+  with its reason (a lint failure or a gate refusal leaves the unit as HEAD has it). No second
+  attempt record is written. A landing record has no tokens and no cost, so `stats` counts the
+  cost once, in the held attempt. The end-of-run checks (`ninja verify`, `gate --all`) and the
+  attempt-log commit follow, as after a night.
+
 ## The refusals
 
 The drive refuses (exit 2), before any preflight, each of these combinations:
