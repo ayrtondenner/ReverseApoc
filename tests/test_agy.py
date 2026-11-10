@@ -380,10 +380,13 @@ def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
 
 
 def test_session_settings_path_is_gitignored():
-    """The settings file lies in gitignored build/ (the acceptance check's own path)."""
+    """The settings file lies in gitignored build/ (the acceptance check's own path).
+    safe.directory=* as in test_hygiene (ruling F13): the container's bind mount has another
+    owner, and git refuses it without."""
     import subprocess
 
-    done = subprocess.run(["git", "check-ignore", "-q", "build/driver/x/agy/s.json"],
+    done = subprocess.run(["git", "-c", "safe.directory=*", "check-ignore", "-q",
+                           "build/driver/x/agy/s.json"],
                           cwd=REPO_ROOT, check=False)  # fmt: skip
     assert done.returncode == 0
 
