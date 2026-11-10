@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -1707,3 +1707,147 @@ def test_run_drive_hands_land_held_to_the_night(tmp_path, capsys, monkeypatch):
     assert seen[0].land_held == ("spike012-*",)
     assert not rig.commands("ghidra-export")
     assert not [c for c in rig.runner.calls if c[1:] == ["--version"]]
+
+
+# ---- 07.2-12 (D-10, D-11, D-12, D-26): hosted arms ----
+#
+# Owner rule: no real key reaches a test. `_keyed` drops every inherited variable that could
+# hold one (any *_API_KEY, *_TOKEN or ANTHROPIC_* name) before adding made-up values, and no
+# assertion below prints a session environment (only single values or key names).
+
+DEEPSEEK = "deepseek-flash"
+DEEPSEEK_URL = "https://api.deepseek.com/anthropic"
+FAKE_KEY = "made-up-deepseek-value-0001"
+
+
+def _keyed(env: dict, **values: str) -> dict:
+    from test_driver import _Env
+
+    out = _Env((k, v) for k, v in env.items()
+               if not (k.endswith(("_API_KEY", "_TOKEN")) or k.startswith("ANTHROPIC_")))
+    out.update(values)
+    return out
+
+
+def _hosted_night(tmp_path: Path, monkeypatch, sessions: list) -> tuple[Rig, Night, list]:
+    """`drive` on a Rig whose night (run_drive's own DriveConfig, arm table and session env)
+    runs in test_driver's night harness: real sessions through fakeclaude, a fake gate."""
+    rig = Rig(tmp_path / "rig")
+    night = Night(tmp_path / "night", sessions=sessions, gate_exits=[1] * len(sessions))
+    real, seen = driver.drive, []
+
+    def drive(config, deps, *, lock=None):
+        seen.append(config)
+        moved = replace(config, repo_root=night.repo, min_cli_version=(2, 1, 240),
+                        attempts_per_function=1)  # fmt: skip
+        return real(moved, night.deps())
+
+    monkeypatch.setattr(driver, "drive", drive)
+    return rig, night, seen
+
+
+def test_hosted_arm_reaches_the_session(tmp_path, capsys, monkeypatch):
+    """D-11, D-12: chosen twice, the DeepSeek arm's session gets DeepSeek's endpoint with the
+    key as its bearer token, and the record names the arm; the key is in no record, console
+    line, commit or transcript."""
+    from test_driver import LOG, Sess
+
+    rig, night, seen = _hosted_night(tmp_path, monkeypatch, [Sess()])
+    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    code, out, err = rig.drive(capsys, seams={"base_env": env}, night_model=DEEPSEEK,
+                               allow_egress=(DEEPSEEK,), workers=1)  # fmt: skip
+    assert code == 0, err
+    assert seen[0].night_model == DEEPSEEK
+    record = night.kinds("attempt")[0]
+    assert (record["backend"], record["model_requested"], record["harness"]) == (
+        "deepseek", DEEPSEEK, "claude")  # fmt: skip
+    launched = night.launched[0]
+    assert launched.argv[launched.argv.index("--model") + 1] == DEEPSEEK
+    assert launched.env.get("ANTHROPIC_BASE_URL") == DEEPSEEK_URL
+    assert launched.env.get("ANTHROPIC_AUTH_TOKEN") == FAKE_KEY
+    assert launched.env.get("ANTHROPIC_API_KEY") == ""
+    assert launched.env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") == "1"
+    assert "DEEPSEEK_API_KEY" not in set(launched.env)
+    texts = {"record": (night.repo / LOG).read_text(encoding="utf-8"), "console": out + err,
+             "transcript": (night.attempt_dir() / driver.TRANSCRIPT).read_text(encoding="utf-8"),
+             "commits": night.git("log", "-p", "--format=%B")}  # fmt: skip
+    assert [name for name, text in texts.items() if FAKE_KEY in text] == []
+
+
+@pytest.mark.parametrize(("allow", "key", "words"), [
+    ((), FAKE_KEY, "--allow-egress"),
+    ((DEEPSEEK,), "", "DEEPSEEK_API_KEY"),
+    ((DEEPSEEK,), "   ", "DEEPSEEK_API_KEY"),
+    ((DEEPSEEK,), None, "DEEPSEEK_API_KEY"),
+    (("glm-5.3",), FAKE_KEY, "glm-5.3"),
+    ((DEEPSEEK, "glm-5.3"), FAKE_KEY, "glm-5.3"),
+])  # fmt: skip
+def test_hosted_arm_refused_before_any_session(tmp_path, capsys, allow, key, words):
+    """D-11, D-26: without --allow-egress, with a missing, empty or blank key (the claude.ai
+    login would go to DeepSeek), or with a stray --allow-egress: exit 2 before any command,
+    session or attempt directory."""
+    rig = Rig(tmp_path)
+    env = _keyed(rig.env) if key is None else _keyed(rig.env, DEEPSEEK_API_KEY=key)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env}, night_model=DEEPSEEK,
+                             allow_egress=allow)  # fmt: skip
+    assert code == 2
+    doc = _refusal(out)
+    assert words in doc["detail"], doc
+    assert FAKE_KEY not in out
+    assert rig.runner.calls == []
+    assert list((rig.repo / "build").rglob("attempt-*")) == []
+
+
+def test_canary_proves_the_egress_refusal(tmp_path, capsys):
+    """D-11: the canary of a hosted arm without --allow-egress is refused before its session."""
+    rig = Rig(tmp_path)
+    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env}, canary=True,
+                             night_model=DEEPSEEK, canary_model=DEEPSEEK)  # fmt: skip
+    assert code == 2
+    assert "--allow-egress" in _refusal(out)["detail"]
+    assert rig.runner.calls == []
+    assert not (rig.repo / "build" / "driver" / "canary").exists()
+
+
+def test_an_unknown_night_model_is_refused_naming_the_arms(tmp_path, capsys):
+    rig = Rig(tmp_path)
+    code, out, _ = rig.drive(capsys, json=True, night_model="gpt-x")
+    assert code == 2
+    detail = _refusal(out)["detail"]
+    assert "gpt-x" in detail and DEEPSEEK in detail and "claude-opus-5-5" in detail
+
+
+@pytest.mark.parametrize(("argv", "named"), [
+    (["--night-model", "claude-haiku-5-5", "--allow-egress", "claude-haiku-5-5"],
+     "claude-haiku-5-5"),
+    (["--night-model", DEEPSEEK, "--allow-egress", "glm-5.3"], "glm-5.3"),
+    (["--allow-egress", DEEPSEEK], DEEPSEEK),
+])  # fmt: skip
+def test_cli_refuses_a_stray_allow_egress(argv, named, capsys, monkeypatch):
+    """D-11: an --allow-egress naming an arm that sends nothing off the machine, or an arm the
+    night does not run, exits 2 naming it, before run_drive."""
+    seen = []
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: seen.append(options) or 0)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: None)
+    assert cli.main(["drive", *argv]) == 2
+    err = capsys.readouterr().err
+    assert "--allow-egress" in err and named in err, err
+    assert seen == []
+
+
+def test_cli_threads_allow_egress(monkeypatch):
+    seen = []
+    monkeypatch.setattr(driver, "run_drive", lambda options, seams: seen.append(options) or 0)
+    monkeypatch.setattr(driver, "default_seams", lambda repo: None)
+    assert cli.main(["drive", "--night-model", DEEPSEEK, "--allow-egress", DEEPSEEK]) == 0
+    assert (seen[0].night_model, seen[0].allow_egress) == (DEEPSEEK, (DEEPSEEK,))
+    assert cli.main(["drive", "--canary", "--night-model", DEEPSEEK, "--allow-egress",
+                     DEEPSEEK]) == 0  # fmt: skip
+    assert (seen[1].canary_model, seen[1].allow_egress) == (DEEPSEEK, (DEEPSEEK,))
+
+
+def test_drive_help_lists_allow_egress(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["drive", "--help"])
+    assert "--allow-egress" in capsys.readouterr().out

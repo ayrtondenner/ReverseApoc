@@ -305,6 +305,24 @@ def test_init_unknown_expected_model():
     assert "claude-other-1" in problems[0]
 
 
+def test_check_init_accepted_ids():
+    """07.2-12 (RESEARCH Q7): a hosted arm passes its own accepted ids from backends.toml, so
+    streamjson never imports config; without them an unknown id still fails closed."""
+    accepted = ("deepseek-flash",)
+    clean = check_init(_init_with_model("deepseek-flash"), tested_major=TESTED_MAJOR,
+                       min_version=MIN_VERSION, expected_model="deepseek-flash",
+                       accepted=accepted)  # fmt: skip
+    assert clean == []
+    problems = check_init(_init_with_model("deepseek-v4-pro"), tested_major=TESTED_MAJOR,
+                          min_version=MIN_VERSION, expected_model="deepseek-flash",
+                          accepted=accepted)  # fmt: skip
+    assert len(problems) == 1 and "deepseek-v4-pro" in problems[0], problems
+    assert "deepseek-flash" in problems[0]
+    closed = check_init(_init_with_model("deepseek-flash"), tested_major=TESTED_MAJOR,
+                        min_version=MIN_VERSION, expected_model="deepseek-flash")  # fmt: skip
+    assert len(closed) == 1 and "no accepted init IDs" in closed[0]
+
+
 @pytest.mark.parametrize(
     ("text", "version"),
     [("2.1.240", (2, 1, 240)), ("2.1.240 (Claude Code)\n", (2, 1, 240)), ("10.0.3", (10, 0, 3))],
