@@ -1,0 +1,139 @@
+name: Match check
+
+# 999.11 (PIPE-08; D-06 to D-09, D-23): a pull request that renames or comments matched C proves
+# it changed no byte of any matched object. Every touched src/ unit is compiled at main and at the
+# pull request head with main's cflags, and main's `reverseapoc compare-objects` compares the two
+# objects by code bytes, relocations and public offsets, with names resolved to addresses. New
+# matches still go through the owner's gate; this check judges only that nothing changed.
+#
+# Security model (docs/ci.md): pull_request_target runs main's copy of this workflow; the job
+# checks out main's commit for the tools and the pull request head into head/ as data, both
+# without credentials, and runs nothing from head/. The compile runs in the ReverseApoc image on
+# the owner's self-hosted runner with no network, the tree and Watcom mounted read-only and no
+# game files. The token reads the repository only and no repository secret is used. It ships
+# off: the job is skipped until the owner sets the repository variable MATCH_CHECK_ENABLED to
+# true, and a labeled run needs the match-check label, again after every push.
+
+on:
+  pull_request_target:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "The number of the pull request to check"
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: match-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  match:
+    # Off until the owner turns it on; main's workflow only (a dispatch from another branch is
+    # skipped); a labeled run only for the match-check label.
+    if: vars.MATCH_CHECK_ENABLED == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || github.event.label.name == 'match-check')
+    runs-on: [self-hosted]
+    timeout-minutes: 30
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
+      BASE_SHA: ${{ github.sha }}
+      LABELED_HEAD: ${{ github.event.pull_request.head.sha }}
+      IMAGE: reverseapoc-build:local
+      VENV_VOLUME: reverseapoc-match-venv
+    steps:
+      # main's commit: this workflow's own tools, config and cflags.
+      - name: Check out main's tools
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The pull request head, as data only: nothing under head/ is ever run.
+      - name: Check out the pull request head as data
+        uses: actions/checkout@v7
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number || inputs.pr }}/head
+          path: head
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Refuse a head that moved after the label
+        if: github.event_name == 'pull_request_target'
+        run: |
+          set -euo pipefail
+          if [ "$(git -C head rev-parse HEAD)" != "$LABELED_HEAD" ]; then
+            echo "::error::pull request $PR_NUMBER moved after it was labeled; label it again"
+            exit 1
+          fi
+
+      # Only the C of src/ units, a rename's symbols.csv rows and Markdown are judged here;
+      # cflags, tools, config, headers and workflows need the owner.
+      - name: List the changed paths; refuse any outside the src units, symbols.csv and Markdown
+        run: |
+          set -euo pipefail
+          git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD
+          test "$(git -C head rev-parse FETCH_HEAD)" = "$BASE_SHA"
+          merge_base="$(git -C head merge-base "$BASE_SHA" HEAD)"
+          git -C head diff --name-only --no-renames "$merge_base" HEAD > "$RUNNER_TEMP/changed.txt"
+          refused=0
+          while IFS= read -r path; do
+            case "$path" in
+              *.md) continue ;;
+              config/ufo2p/symbols.csv|config/tacp/symbols.csv) continue ;;
+            esac
+            if printf '%s\n' "$path" | grep -Eq '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'; then
+              continue
+            fi
+            echo "::error::$path is not a src unit, a symbols.csv or Markdown: the owner checks it"
+            refused=1
+          done < "$RUNNER_TEMP/changed.txt"
+          [ "$refused" -eq 0 ]
+
+      - name: Refuse a new, removed or linked unit
+        run: |
+          set -euo pipefail
+          grep -E '^src/(ufo2p|tacp)/[a-z0-9_]+\.c$' "$RUNNER_TEMP/changed.txt" > "$RUNNER_TEMP/units.txt" || true
+          while IFS= read -r unit; do
+            if [ ! -f "$unit" ] || [ -L "$unit" ]; then
+              echo "::error::$unit is no unit on main: a new unit is a new match, for the owner's gate"
+              exit 1
+            fi
+            if [ ! -f "head/$unit" ] || [ -L "head/$unit" ]; then
+              echo "::error::$unit is removed or not a regular file at the head"
+              exit 1
+            fi
+          done < "$RUNNER_TEMP/units.txt"
+
+      # Each unit compiles twice with main's tools and main's config/cflags.txt: once from main's
+      # src/, once with head/src mounted over src/, so the cflags rule for the unit's own path
+      # applies to both. main's compare-objects then reads each tree's names (head/config is
+      # data). Any compile failure, difference or tool error fails the job.
+      - name: Compile each touched unit at base and at head, then compare
+        run: |
+          set -euo pipefail
+          : "${REVERSEAPOC_WATCOM_DIR:?set it in the .env file of the runner, see docs/ci.md}"
+          test -d "$REVERSEAPOC_WATCOM_DIR"
+          mkdir -p build/match "$RUNNER_TEMP/match/base" "$RUNNER_TEMP/match/head"
+          image() {
+            docker run --rm --network none \
+              -v "$GITHUB_WORKSPACE:/work:ro" \
+              -v "$RUNNER_TEMP/match:/work/build/match" \
+              -v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \
+              -v "$VENV_VOLUME:/opt/venv" \
+              -w /work "$@" < /dev/null
+          }
+          status=0
+          while IFS= read -r unit; do
+            exe="${unit#src/}"
+            exe="${exe%%/*}"
+            name="$(basename "$unit" .c)"
+            image "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/base/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image -v "$GITHUB_WORKSPACE/head/src:/work/src:ro" "$IMAGE" uv run --frozen --offline reverseapoc cc "$unit" -o "build/match/head/$name.obj" --cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log
+            image "$IMAGE" uv run --frozen --offline reverseapoc compare-objects "build/match/base/$name.obj" "build/match/head/$name.obj" --base-config config --head-config head/config --exe "$exe" || status=1
+          done < "$RUNNER_TEMP/units.txt"
+          exit "$status"

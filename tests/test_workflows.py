@@ -419,7 +419,8 @@ def test_match_compiles_in_the_image_offline():
     assert "orig" not in text
     run = script(match_step(COMPILE_STEP))
     assert run[0] == "set -euo pipefail"
-    assert ': "${REVERSEAPOC_WATCOM_DIR:?set it in the runner\'s .env (docs/ci.md)}"' in run
+    assert ': "${REVERSEAPOC_WATCOM_DIR:?set it in the .env file of the runner, see docs/ci.md}"' \
+        in run
     start = run.index(DOCKER_RUN)
     assert run[start + 1:start + 1 + len(MOUNTS)] == list(MOUNTS)
     ccs = [line for line in run if "reverseapoc cc " in line]
@@ -440,7 +441,9 @@ def test_match_refuses_other_paths():
     the owner."""
     run = script(match_step(PATHS_STEP))
     assert run[0] == "set -euo pipefail"
-    assert 'git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" "$BASE_SHA"' in run
+    # main's commit reaches head/'s repository from the local checkout, not over the network.
+    fetch = 'git -C head fetch --quiet --no-tags "$GITHUB_WORKSPACE" HEAD'
+    assert run[1:3] == [fetch, 'test "$(git -C head rev-parse FETCH_HEAD)" = "$BASE_SHA"']
     assert 'merge_base="$(git -C head merge-base "$BASE_SHA" HEAD)"' in run
     diff = ('git -C head diff --name-only --no-renames "$merge_base" HEAD '
             '> "$RUNNER_TEMP/changed.txt"')  # fmt: skip
