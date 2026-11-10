@@ -2120,3 +2120,54 @@ def test_egress_session_cannot_read_orig(repo):
                     tool("Grep", repo, pattern="x", path=native(repo / "include")),
                     tool("Glob", repo, pattern="src/**/*.c")):  # fmt: skip
         assert not matching(payload, egress).deny, payload["tool_input"]
+
+
+def _egress_bypasses(repo: Path) -> list[dict]:
+    """Security review of 07.2-12 (HIGH, MEDIUM): spellings the first egress rule let through.
+    Paths through another root form (a worktree's checkout under .claude/worktrees/, an
+    ancestor holding a planted .git), and wildcard patterns or recursive searches that reach
+    orig/ or third_party/ without naming either literally. gitignore is never relied on."""
+    worktree = repo / ".claude" / "worktrees" / "agent-x"
+    (worktree / ".git").parent.mkdir(parents=True, exist_ok=True)
+    (worktree / ".git").write_text("gitdir: ../../../.git/worktrees/agent-x\n", encoding="utf-8")
+    nested = repo / "src" / "nested"
+    (nested / ".git").mkdir(parents=True, exist_ok=True)
+    return [
+        tool("Read", repo, file_path=native(worktree / "orig" / "UFO2P.EXE")),
+        tool("Read", repo, file_path=native(nested / "orig" / "UFO2P.EXE")),
+        tool("Grep", repo, pattern="x", path=native(worktree / "third_party" / "watcom")),
+        tool("Glob", repo, pattern="o*ig/**"),
+        tool("Glob", repo, pattern="or?g/*"),
+        tool("Glob", repo, pattern="third_*/**"),
+        tool("Glob", repo, pattern="{src,thi*}/**"),
+        tool("Glob", repo, pattern="*"),
+        tool("Glob", repo, pattern="**/*.EXE"),
+        tool("Glob", repo, pattern="*/UFO2P.EXE"),
+        tool("Glob", repo, pattern="*.EXE"),  # may match at any depth, as a ripgrep glob does
+        tool("Glob", repo, pattern="worktrees/*/orig/*", path=native(repo / ".claude")),
+        tool("Glob", repo, pattern=".claude/**/UFO2P.EXE"),
+        tool("Glob", repo, pattern="*", path=native(worktree)),
+        tool("Grep", repo, pattern="x"),  # the whole checkout, orig/ included
+        tool("Grep", repo, pattern="x", glob="*.EXE"),  # a basename glob at any depth
+        tool("Grep", repo, pattern="x", path=native(repo / ".claude")),
+        tool("Grep", repo, pattern="x", path=native(worktree)),
+    ]
+
+
+def test_egress_session_cannot_read_orig_through_any_form(repo):
+    egress = {**view_env(repo), hooks.EGRESS_ENV: "1"}
+    passed = [payload["tool_input"] for payload in _egress_bypasses(repo)
+              if not matching(payload, egress).deny]  # fmt: skip
+    assert passed == []
+
+
+def test_egress_session_keeps_scoped_searches(repo):
+    """What an egress session still may do: read and search below src/, include/ and its own
+    attempt directory, with globs that stay there."""
+    egress = {**view_env(repo), hooks.EGRESS_ENV: "1"}
+    for payload in (tool("Glob", repo, pattern="src/ufo2p/*.c"),
+                    tool("Glob", repo, pattern="*.h", path=native(repo / "include")),
+                    tool("Glob", repo, pattern="src/**/*.c"),
+                    tool("Grep", repo, pattern="x", path=native(repo / "src"), glob="*.c"),
+                    tool("Read", repo, file_path=native(repo / "docs" / "matching.md"))):  # fmt: skip
+        assert not matching(payload, egress).deny, payload["tool_input"]
