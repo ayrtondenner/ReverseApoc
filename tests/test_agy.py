@@ -285,6 +285,33 @@ def test_agyjson_only_a_steps_own_denied_state_hides_it():
     assert agyjson.commands(unsandboxed) == ["type notes.md"]
 
 
+def test_agyjson_denials_read_the_permission_error():
+    """Spike 012: a soft-denied step ends ERROR with tool_info.error.message `permission check
+    failed for <action> "<target>": user denied permission for ...` (agy's own format, the
+    result's denied_actions name no target), so `denials` reads the action and the target from
+    that message. A step that itself ends DENIED is a denial by its tool and its path or
+    command. An ERROR with any other message ran and failed, and a DONE step ran: neither is a
+    denial, and `undenied_steps` names both."""
+    events = _events("canary_agy_soft_denied")
+    outside = "C:/made-up/func_000A3980/agy-canary-outside.txt"
+    assert agyjson.denials(events) == [agyjson.Denial(2, "write_file", "write_file", outside)]
+    assert agyjson.undenied_steps(events) == []
+    message = 'permission check failed for command "echo \\"a\\" > C:\\\\x": user denied ...'
+    mixed = [_step(1, "run_command", state="ERROR", error={"type": "TOOL_ERROR",
+                                                           "message": message}),
+             _step(2, "read_file", state="DENIED", path="../orig/x.txt"),
+             _step(3, "read_file", state="ERROR", path="a.txt",
+                   error={"type": "TOOL_ERROR", "message": "file not found"}),
+             _step(4, "write_file", path="notes.md")]  # fmt: skip
+    assert agyjson.denials(mixed) == [agyjson.Denial(1, "run_command", "command",
+                                                     'echo "a" > C:\\x'),
+                                      agyjson.Denial(2, "read_file", "read_file",
+                                                     "../orig/x.txt")]  # fmt: skip
+    assert agyjson.undenied_steps(mixed) == ["step 3: read_file (ERROR)",
+                                             "step 4: write_file (DONE)"]  # fmt: skip
+    assert agyjson.response(_events("canary_agy_refused")) == "I'm sorry, but I can't help."
+
+
 def test_agyjson_ignores_a_line_outside_the_envelope():
     """A line that is not agy 1.5.5's envelope (the flat shape RESEARCH assumed) is no event:
     no init, no result, no step."""
