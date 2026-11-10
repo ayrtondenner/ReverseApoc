@@ -384,6 +384,11 @@ class DriveConfig:
     # 07.2-12 (D-12): config/driver/backends.toml as run_drive loaded it; None: the committed
     # table. `night_model` names one of its arms; the Claude arms are keyed by their model id.
     arm_table: Mapping[str, backends.Arm] | None = None
+    # 07.2-16 (D-22): `drive --arm NAME=WORKERS ...`: the night's arms, each a backends.toml
+    # arm and its worker count, run side by side by one coordinator (`_Lane`); the night's
+    # workers are then their sum and `workers` is not read. Empty: one arm, `night_model`'s
+    # (or each pass's Claude arm) with `workers`.
+    arms: tuple[tuple[str, int], ...] = ()
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -2463,27 +2468,83 @@ class _Pause:
                 self.cond.notify_all()
 
 
+@dataclass(eq=False)
+class _Lane:
+    """07.2-16 (D-22): one arm of the night. `arm` is its backends.toml arm (None: each pass's
+    Claude arm, a night with neither --night-model nor --arm), `run` its run id (the night's own
+    with one arm, `<run>-<arm>` with several, so two arms never share an attempt directory,
+    D-26, RESEARCH Pitfall 7), `workers` the night-wide numbers of its workers. It keeps its own
+    pick source over the same picks and what it counts on its own: the finished passes its
+    queue reads (`passes`), the picks it took (`done`) and, for a pool queue, the picks whose
+    unit was busy (`deferred`), so under --hold each function is attempted once per arm. Read
+    and written under the night's condition."""
+
+    arm: str | None
+    run: str
+    workers: tuple[int, ...]
+    passes: dict[Key, int] = field(default_factory=dict)
+    done: set[Key] = field(default_factory=set)
+    deferred: list[Pick] = field(default_factory=list)
+    picks: Iterator[Pick] = field(default_factory=lambda: iter(()))
+    tiers: TierQueue | None = None
+    exhausted: bool = False  # a pool queue read to its end
+
+    def drop(self, key: Key) -> None:
+        """A function another arm matched tonight: no more work for this arm."""
+        if self.tiers is not None:
+            self.tiers.finish(key, matched=True)
+        self.done.add(key)
+        self.deferred = [pick for pick in self.deferred if (pick.exe, pick.start) != key]
+
+
+def _lanes(config: DriveConfig) -> list[_Lane]:
+    """07.2-16 (D-22): the night's arms as lanes, numbering their workers in arm order; with
+    several arms each runs under `<run>-<arm>`. DriverError for an arm named twice, a worker
+    count below 1, or arms on a readability night (its sessions take no arm)."""
+    if config.arms and config.session != MATCHING_KIND:
+        raise DriverError(f"arms run on a {MATCHING_KIND} night only")
+    arms = config.arms or ((config.night_model, config.workers),)
+    names = [name for name, _ in arms]
+    if len(set(names)) != len(names):
+        raise DriverError(f"an arm is named twice: {', '.join(map(str, names))}")
+    lanes, first = [], 0
+    for name, workers in arms:
+        if workers < 1:
+            raise DriverError(f"arm {name}: workers {workers} is below 1")
+        run = f"{config.run_id}-{name}" if len(arms) > 1 else config.run_id
+        if not _RUN_ID.fullmatch(run):
+            raise DriverError(f"run id {run!r} is not [A-Za-z0-9_.-]+")
+        lanes.append(_Lane(name, run, tuple(range(first, first + workers))))
+        first += workers
+    return lanes
+
+
 class _Worker:
     """D-06: one worker of the night, numbered `ident` (0..workers-1, the claim's `worker`). It
     runs one function's pass (`_Night._function`: up to attempts_per_function sessions, each
     under its unit's claim) and hands any failure to the night, which stops every other
     worker (stop-all). With one worker the pass runs on the calling thread (`inline`), exactly
-    the Phase 6 driver; otherwise on its own thread."""
+    the Phase 6 driver; otherwise on its own thread. 07.2-16: it runs for its arm's `lane`."""
 
-    def __init__(self, coordinator: _Coordinator, ident: int, pick: Pick,
+    def __init__(self, coordinator: _Coordinator, ident: int, lane: _Lane, pick: Pick,
                  difficult: dict[Key, tuple[Key, ...]]) -> None:  # fmt: skip
         self.coordinator = coordinator
         self.night = coordinator.night
         self.ident = ident
+        self.lane = lane
         self.pick = pick
         self.difficult = difficult
         self.outcome: str | None = None  # the pass's end (`_Night._function`), None: cut short
         self.thread = threading.Thread(target=self._run, name=f"drive-worker-{ident}",
                                        daemon=True)  # fmt: skip
 
+    def _bind(self) -> None:
+        self.night.local.worker = self.ident
+        self.night.local.lane = self.lane
+
     def inline(self) -> None:
         """The pass on the calling thread; a failure propagates as in Phase 6."""
-        self.night.local.worker = self.ident
+        self._bind()
         try:
             self.outcome = self.night._function(self.pick, self.difficult)
         finally:
@@ -2491,7 +2552,7 @@ class _Worker:
 
     def _run(self) -> None:
         night = self.night
-        night.local.worker = self.ident
+        self._bind()
         try:
             self.outcome = night._function(self.pick, self.difficult)
         except _Halt as halt:
@@ -2516,32 +2577,35 @@ class _Coordinator:
     the pick in flight and tells the queue how the pass ended when the worker is released: a
     capped function returns for its next pass (D-08) and the night's `passes`, which the queue
     reads, already counts it. Nothing eligible while a pass runs: wait for it; nothing
-    eligible and nothing running: the queue is done."""
+    eligible and nothing running: the queue is done.
+
+    07.2-16 (D-22): each arm of the night is a lane with its own queue over the same picks
+    (`Deps.queue` builds a fresh one per lane), and a free worker takes the next eligible pick
+    of its own arm's lane; the lanes are asked in turn, so no arm waits behind another. `busy`
+    stays keyed by (exe, unit) across every arm: two arms never run one unit at once."""
 
     def __init__(self, night: _Night) -> None:
         self.night = night
-        self.free = list(range(night.config.workers))  # the idle workers' numbers
+        self.free = list(range(night.workers))  # the idle workers' numbers
         self.busy: dict[tuple[str, str], _Worker] = {}  # (exe, unit) -> the worker on it
         self.threads: list[threading.Thread] = []
-        self.deferred: list[Pick] = []  # picks whose unit was busy, in queue order
-        self.picks: Iterator[Pick] = iter(())
-        self.tiers: TierQueue | None = None  # 07-26: the tier queue, when a tier is signed
-        self.exhausted = False
+        self.turn = 0  # 07.2-16: the lane asked first next time
         self.picked = False
 
     def run(self) -> str:
         night = self.night
         difficult = night._difficult()
-        source = night.deps.queue(frozenset(difficult))
-        if isinstance(source, TierQueue):
-            source.use_passes(night.passes)  # one pass index: the records' and the queue's
-            self.tiers = source
-        else:
-            self.picks = iter(source)
+        for lane in night.lanes:
+            source = night.deps.queue(frozenset(difficult))
+            if isinstance(source, TierQueue):
+                source.use_passes(lane.passes)  # one pass index: the records' and the queue's
+                lane.tiers = source
+            else:
+                lane.picks = iter(source)
         try:
-            while (pick := self._next()) is not None:
+            while (found := self._next()) is not None:
                 self.picked = True
-                self._dispatch(pick, difficult)
+                self._dispatch(*found, difficult)
             self._drain()
         except BaseException as exc:  # an interrupt on the main thread: stop every worker first
             night._stop_all()
@@ -2559,74 +2623,98 @@ class _Coordinator:
     def release(self, worker: _Worker) -> None:
         """A worker's pass ended: its unit and its number are free again. 07.2-06 (D-17): a
         hold run's function that had its attempt leaves the tier queue as a parked one does,
-        so it is attempted once."""
+        so it is attempted once. 07.2-16: a function one arm matched is no work for the others
+        (`_Lane.drop`)."""
         hold_done = self.night.config.hold and worker.outcome not in (ABORTED, None)
+        lane, key = worker.lane, (worker.pick.exe, worker.pick.start)
         with self.night.cond:
             self.busy.pop((worker.pick.exe, worker.pick.unit), None)
-            if self.tiers is not None:
-                self.tiers.finish((worker.pick.exe, worker.pick.start),
-                                  matched=worker.outcome == MATCHED,
+            if lane.tiers is not None:
+                lane.tiers.finish(key, matched=worker.outcome == MATCHED,
                                   aborted=worker.outcome == ABORTED,
                                   capped=worker.outcome == CAPPED,
                                   parked=worker.outcome == PARKED or hold_done)  # fmt: skip
+            if worker.outcome == MATCHED:
+                for other in self.night.lanes:
+                    if other is not lane:
+                        other.drop(key)
             self.free.append(worker.ident)
             self.free.sort()
             self.night.cond.notify_all()
 
-    def _next(self) -> Pick | None:
-        """The next pick for a free worker, or None when the night hands out no more: stopping,
-        a cap reached (D-07), or no pick left (every deferred one has run)."""
+    def _next(self) -> tuple[_Lane, int, Pick] | None:
+        """The next pick and the free worker of its arm that takes it, or None when the night
+        hands out no more: stopping, a cap reached (D-07), or no lane has a pick left (every
+        deferred one has run)."""
         night = self.night
+        lanes = night.lanes
         with night.cond:
             while True:
                 if night.stop.is_set() or night._end():
                     return None
-                if self.free:
-                    pick = self._eligible()
-                    if pick is not None:
-                        return pick
-                    if self.exhausted and not self.deferred:
-                        return None
+                for step in range(len(lanes)):
+                    index = (self.turn + step) % len(lanes)
+                    found = self._offer(lanes[index])
+                    if found is not None:
+                        self.turn = index + 1
+                        return found
+                if all(self._finished(lane) for lane in lanes):
+                    return None
                 night.cond.wait(_TICK_S)
 
-    def _eligible(self) -> Pick | None:
-        """The first deferred pick whose unit is free, else the queue's next new pick; a pick
-        whose unit is busy is deferred, a pick already taken tonight is skipped."""
-        if self.tiers is not None:
-            return self._tier_pick()
-        for i, pick in enumerate(self.deferred):
+    def _offer(self, lane: _Lane) -> tuple[_Lane, int, Pick] | None:
+        """The lane's next eligible pick for the lowest free worker of its arm, or None."""
+        ident = next((n for n in self.free if n in lane.workers), None)
+        if ident is None:
+            return None
+        pick = self._tier_pick(lane) if lane.tiers is not None else self._eligible(lane)
+        return None if pick is None else (lane, ident, pick)
+
+    def _finished(self, lane: _Lane) -> bool:
+        """Nothing the lane can hand out tonight: a pool queue read to its end with nothing
+        deferred; a tier queue with no pass running anywhere (then every lane was just asked
+        with every worker free, and nothing can become eligible tonight)."""
+        if lane.tiers is not None:
+            return not self.busy
+        return lane.exhausted and not lane.deferred
+
+    def _eligible(self, lane: _Lane) -> Pick | None:
+        """The lane's first deferred pick whose unit is free, else its queue's next new pick; a
+        pick whose unit is busy is deferred, a pick the lane already took tonight is skipped."""
+        for i, pick in enumerate(lane.deferred):
             if (pick.exe, pick.unit) not in self.busy:
-                return self.deferred.pop(i)
-        while not self.exhausted:
-            pick = next(self.picks, None)
+                return lane.deferred.pop(i)
+        while not lane.exhausted:
+            pick = next(lane.picks, None)
             if pick is None:
-                self.exhausted = True
+                lane.exhausted = True
                 break
             key = (pick.exe, pick.start)
-            if key in self.night.done:
+            if key in lane.done:
                 continue
-            self.night.done.add(key)
+            lane.done.add(key)
             if (pick.exe, pick.unit) in self.busy:
-                self.deferred.append(pick)
+                lane.deferred.append(pick)
                 continue
             return pick
         return None
 
-    def _tier_pick(self) -> Pick | None:
-        """07-26: the tier queue's best eligible pick outside the busy units, now in flight.
-        None with no pass running ends the queue: nothing can become eligible tonight."""
-        pick = self.tiers.next_eligible(frozenset(self.busy))
+    def _tier_pick(self, lane: _Lane) -> Pick | None:
+        """07-26: the lane's tier queue's best eligible pick outside the busy units, now in
+        flight."""
+        pick = lane.tiers.next_eligible(frozenset(self.busy))
         if pick is None:
-            self.exhausted = not self.busy
             return None
-        self.tiers.take((pick.exe, pick.start))
+        lane.tiers.take((pick.exe, pick.start))
         return pick
 
-    def _dispatch(self, pick: Pick, difficult: dict[Key, tuple[Key, ...]]) -> None:
+    def _dispatch(self, lane: _Lane, ident: int, pick: Pick,
+                  difficult: dict[Key, tuple[Key, ...]]) -> None:  # fmt: skip
         with self.night.cond:
-            worker = _Worker(self, self.free.pop(0), pick, difficult)
+            self.free.remove(ident)
+            worker = _Worker(self, ident, lane, pick, difficult)
             self.busy[(pick.exe, pick.unit)] = worker
-        if self.night.config.workers == 1:
+        if self.night.workers == 1:
             worker.inline()
             return
         self.threads.append(worker.thread)
@@ -2652,12 +2740,14 @@ class _Night:
         self.repo = Path(config.repo_root)
         # 07.2-12 (D-12): the arm table every session's environment is built from
         self.arms = config.arm_table if config.arm_table is not None else backends.load_arms()
+        # 07.2-16 (D-22): the night's arms side by side, one lane each; the workers are theirs
+        self.lanes = _lanes(config)
+        self.workers = sum(len(lane.workers) for lane in self.lanes)
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
         self.matched = 0
         self.reserved = 0  # D-07: night-cap slots held by attempts not yet counted (_reserve)
         self.spent = 0  # 07-26 fix round 1: night-cap slots spent by transient launches (_spend)
-        self.done: set[Key] = set()
         # D-06: per worker thread: `worker` (its number), `live` (its session to reset if a
         # later step raises) and `slot` (it holds a reserved slot of the night cap, D-07).
         self.local = threading.local()
@@ -2687,7 +2777,6 @@ class _Night:
         self.landed_bytes: bytes | None = None  # what the landing section wrote to src/
         self.undo_reason: str | None = None  # a breach's stop reason met by the last match undo
         self.claims = Claims(self.repo, config.run_id)  # D-06: one claim file per unit
-        self.passes: dict[Key, int] = {}  # D-08: finished passes per function (pass_index)
         # quick 261109-gzu: tonight's parked functions, each with its hit's flag spec (under cond)
         self.parked: dict[Key, str] = {}
         # 07-23 (DEC-06): each record this night appended, with its offset in the log, so the
@@ -2717,6 +2806,12 @@ class _Night:
     def worker(self) -> int:
         """This thread's worker number (0 on the calling thread with one worker)."""
         return getattr(self.local, "worker", 0)
+
+    @property
+    def lane(self) -> _Lane:
+        """07.2-16: this worker's arm; the first lane on a thread no worker runs (the canary's
+        probe, --land-held)."""
+        return getattr(self.local, "lane", self.lanes[0])
 
     # --- workers (07-21) ---
 
@@ -2892,10 +2987,11 @@ class _Night:
                           f"{type(exc).__name__}: {exc}")  # fmt: skip
             return DriveReport(REFUSED, "claims", 0, 0, why)
         if self.config.hold:  # 07.2-06 (D-17): the run directory says it is a hold run
-            run_dir = self.repo.joinpath(DRIVER_DIR, self.config.run_id)
-            run_dir.mkdir(parents=True, exist_ok=True)
-            write_atomic(run_dir / HOLD_RUN_MARKER,
-                         b"hold run: its attempts never land and stay out of later packs\n")
+            for run in dict.fromkeys([self.config.run_id, *(lane.run for lane in self.lanes)]):
+                run_dir = self.repo.joinpath(DRIVER_DIR, run)  # 07.2-16: each arm's run too
+                run_dir.mkdir(parents=True, exist_ok=True)
+                write_atomic(run_dir / HOLD_RUN_MARKER,
+                             b"hold run: its attempts never land and stay out of later packs\n")
         self.night_start = self.deps.clock()
         try:
             self._record_run(STARTED, START, recovered_detail(recovered), recovered=recovered)
@@ -3034,7 +3130,9 @@ class _Night:
         if self.config.land_held:
             return self.land_held()
         with self.gate_lock:  # 07-23 (D-08): the log is read once, while no record is appended
-            self.passes = pass_index(self.log)
+            index = pass_index(self.log)
+        for lane in self.lanes:  # 07.2-16: each arm counts its own passes from there
+            lane.passes.update(index)
         self.coordinator = _Coordinator(self)
         end = self.coordinator.run()
         self._retry_deferred()  # 07-34: every claim of the night is released now
@@ -3094,7 +3192,7 @@ class _Night:
         with self.cond:  # the list and the pass counts are shared by every worker
             difficult[key] = callees
             save_difficult(self.repo / DIFFICULT, difficult)
-            self.passes[key] = self.passes.get(key, 0) + 1
+            self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         return CAPPED
 
     def _park(self, key: Key, label: str, spec: str) -> str:
@@ -3102,7 +3200,7 @@ class _Night:
         tier queue reads `passes`, so a caller waiting on it becomes eligible, D-08); nothing
         is written for it: no difficult-list entry, no flags."""
         with self.cond:
-            self.passes[key] = self.passes.get(key, 0) + 1
+            self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         self.deps.say(PARKED_LINE.format(label=label, spec=spec))
         return PARKED
 
@@ -3112,7 +3210,7 @@ class _Night:
         keeps it out of the queue for the rest of the night (`release`); no difficult-list
         entry is written."""
         with self.cond:
-            self.passes[key] = self.passes.get(key, 0) + 1
+            self.lane.passes[key] = self.lane.passes.get(key, 0) + 1
         return outcome
 
     def _attempts(self) -> int:
@@ -3124,24 +3222,28 @@ class _Night:
         """The requested model of `pick`'s session: Opus on a readability night (07-38:
         escalation is a matching rule), Fable on a Fable trial night (quick 261101-b5f, the
         owner's opt-in to D-09), else the pass's (D-09). 07.2-06 (D-17): `--night-model`'s
-        model on a matching night (07.2-12: the model of that backends.toml arm)."""
+        model on a matching night (07.2-12: the model of that backends.toml arm; 07.2-16: of
+        this worker's arm, `--arm`'s or `--night-model`'s)."""
         if self.config.session == READABILITY:
             return OPUS_MODEL
-        if self.config.night_model is not None:
-            return self.arms[self.config.night_model].model
+        if self.lane.arm is not None:
+            return self.arms[self.lane.arm].model
         if self.config.fable_trial:
             return FABLE_MODEL
         return model_for_pass(self._pass(pick))
 
     def _arm(self, pick: Pick) -> backends.Arm:
-        """07.2-12: the `--night-model` arm on a matching night, else the Claude arm of the
-        session's model (the table keys the Claude arms by their model id)."""
-        if self.config.night_model is not None and self.config.session != READABILITY:
-            return self.arms[self.config.night_model]
+        """07.2-12: this worker's arm (07.2-16: `--arm`'s or `--night-model`'s) on a matching
+        night, else the Claude arm of the session's model (the table keys the Claude arms by
+        their model id)."""
+        if self.lane.arm is not None and self.config.session != READABILITY:
+            return self.arms[self.lane.arm]
         return self.arms[self._model(pick)]
 
     def _label(self, pick: Pick, n: int) -> str:
-        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}"
+        """The console label of one attempt; 07.2-16: with several arms it names the arm."""
+        arm = f" ({self.lane.arm})" if len(self.lanes) > 1 else ""
+        return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}{arm}"
 
     def _announced(self, pick: Pick, n: int) -> str | None:
         """Quick 261026-9ue: one start and one outcome line per attempt. The seconds are the
@@ -3178,8 +3280,8 @@ class _Night:
         """D-06: the unit's claim file, taken before the attempt's first view is made and
         released after its landing decision, also when the night stops. A unit already claimed
         stops the night: the coordinator never hands one unit to two workers, so only a claim
-        this run failed to release can be there."""
-        record = {"run": self.config.run_id, "worker": self.worker, "exe": pick.exe,
+        this run failed to release can be there. 07.2-16: the claim names the arm's run id."""
+        record = {"run": self.lane.run, "worker": self.worker, "exe": pick.exe,
                   "unit": pick.unit,
                   "function": f"func_{pick.start:08X}", "start": f"0x{pick.start:08X}",
                   "kind": self.config.session, "pass": self._pass(pick),
@@ -3242,10 +3344,11 @@ class _Night:
         """07-30 (D-09, D-25): attempt `n` of the function's pass tonight, on the model
         session.model_for_pass gives that pass (Opus for passes 1 and 2, Fable from pass 3), or
         on Fable for every pass of a Fable trial night (quick 261101-b5f), and with that model's
-        budget (`DriveConfig.budget_for`)."""
+        budget (`DriveConfig.budget_for`). 07.2-16 (D-26, Pitfall 7): under its arm's run id, so
+        two arms never share an attempt directory."""
         pass_n = self._pass(pick)
         model = self._model(pick)
-        return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
+        return _Claim(pick, self.lane.run, self.repo, n, pass_n=pass_n, model=model,
                       budget_usd=self.config.budget_for(model),
                       session=self.config.session, arm=self._arm(pick))  # fmt: skip
 
@@ -5277,8 +5380,9 @@ class _Night:
     def _pass(self, pick: Pick) -> int:
         """D-08: this function's pass tonight, one more than its finished passes (read from
         the committed log once per night, then counted up by every capped pass: a tier queue
-        offers a capped function again the same night)."""
-        return self.passes.get((pick.exe, pick.start), 0) + 1
+        offers a capped function again the same night). 07.2-16: the passes of this worker's
+        arm (`_Lane.passes`)."""
+        return self.lane.passes.get((pick.exe, pick.start), 0) + 1
 
     def _base(self, claim: _Claim, kind: str) -> dict:
         """The fields every v3 attempt and abort record shares (DEC-07): `function` is the
@@ -5381,15 +5485,17 @@ class _Night:
                       "event": event, "reason": reason, "detail": detail,
                       "sessions": self.sessions, "matched": self.matched,
                       "checks_failed": list(checks_failed), "uncommitted": list(uncommitted),
-                      "date": self.deps.today(), "workers": self.config.workers,
+                      "date": self.deps.today(), "workers": self.workers,
                       "recovered": [{key: c[key] for key in ("exe", "unit", "run")}
                                     for c in recovered],
                       "totals": totals}  # fmt: skip
             self._append(record, guard=guard)
 
     def _night_totals(self) -> dict:
-        """`_totals` over this night's attempt, abort and limit records."""
-        mine = [r for _, r in self.night_records if r.get("run") == self.config.run_id]
+        """`_totals` over this night's attempt, abort and limit records: 07.2-16, those of every
+        arm's run id too."""
+        runs = {self.config.run_id, *(lane.run for lane in self.lanes)}
+        mine = [r for _, r in self.night_records if r.get("run") in runs]
         limits = [r for r in mine if r["kind"] == KIND_LIMIT]
         sessions = [r for r in mine if r["kind"] in (KIND_ATTEMPT, KIND_ABORT)]
         return _totals(sessions, max(0.0, self.deps.clock() - self.night_start), limits)
@@ -5715,6 +5821,9 @@ class DriveOptions:
     # 07.2-12 (D-11): `--allow-egress ARM`, each the --night-model arm that sends the context
     # pack to a non-Anthropic backend; anything else is refused (backends.preflight).
     allow_egress: tuple[str, ...] = ()
+    # 07.2-16 (D-22): `--arm NAME=WORKERS`, repeatable: several arms in this one drive process
+    # (`night_arms`); `--night-model X` is the one arm (X, --workers).
+    arms: tuple[tuple[str, int], ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -6493,6 +6602,7 @@ FABLE_TRIAL_NIGHT = ("fable trial: every session runs on {model} at USD {budget:
 # 07.2-06 (D-17): the night console lines of `--night-model` and `--hold` ("hold run", never
 # "held", which names the signed asm hold of the dry run's `held:` line)
 NIGHT_MODEL_LINE = "night model: every matching session runs on {model}"
+ARMS_LINE = "arms: {arms}, side by side in this one drive"  # 07.2-16 (D-22)
 HOLD_RUN_LINE = ("hold run: nothing lands and each function is attempted once; marked by "
                  "build/driver/{run}/" + HOLD_RUN_MARKER)
 
@@ -6758,28 +6868,47 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
         lock.release()
 
 
+def night_arms(options: DriveOptions) -> tuple[tuple[str, int], ...]:
+    """07.2-16 (D-22): the night's arms and their workers: `--arm`'s, else `--night-model`'s
+    with --workers (the one-arm shorthand); () on a night of each pass's Claude arm."""
+    if options.arms:
+        return options.arms
+    if options.night_model is not None:
+        return ((options.night_model, options.workers),)
+    return ()
+
+
 def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
     """07.2-12 (D-11, D-12, D-26): backends.toml, read and checked before any command, session
-    or attempt directory. The run's arm (the canary's model on a canary, else `--night-model`,
-    else the default Claude arm) must be in the table, a `--night-model` night may not run more
-    `--workers` than the arm's max_workers, and backends.preflight must pass for it: a
-    non-Anthropic arm that sends the pack needs --allow-egress, a stray --allow-egress is
-    refused, and a base URL needs a non-blank key in the sessions' environment."""
+    or attempt directory. The run's arms (the canary's model on a canary, else `night_arms`,
+    else the default Claude arm) must be in the table, an arm of `night_arms` may not run more
+    workers than its max_workers, and backends.preflight must pass for each: a non-Anthropic
+    arm that sends the pack needs its own --allow-egress, an --allow-egress naming no such arm
+    of the night is refused (backends.refuse_stray_egress), and a base URL needs a non-blank
+    key in the sessions' environment. 07.2-16 (D-22): every check runs per arm."""
     shown = backends.ARMS_TOML.relative_to(backends.REPO_ROOT).as_posix()
     try:
         arms = backends.load_arms()
     except backends.ArmError as exc:
         raise Refused("backends", str(exc)) from exc
-    name = options.canary_model if options.canary else (options.night_model or MODEL)
-    if name not in arms:
-        raise Refused("night model", f"{name!r} is not an arm of {shown}: {', '.join(arms)}")
-    arm = arms[name]
-    if options.night_model is not None and not options.canary and options.workers > arm.max_workers:
-        raise Refused("workers", f"--workers {options.workers} is above arm {name}'s max_workers "
-                                 f"{arm.max_workers} in {shown} (the local server has one slot)")
+    if options.canary:
+        night: tuple[tuple[str, int | None], ...] = ((options.canary_model, None),)
+    else:
+        night = night_arms(options) or ((MODEL, None),)
+    for name, _ in night:
+        if name not in arms:
+            raise Refused("night model", f"{name!r} is not an arm of {shown}: {', '.join(arms)}")
+    for name, workers in night:
+        if workers is not None and workers > arms[name].max_workers:
+            raise Refused("workers", f"{workers} workers for arm {name} are above its "
+                                     f"max_workers {arms[name].max_workers} in {shown} (the "
+                                     "local server has one slot)")  # fmt: skip
     base = seams.base_env if seams.base_env is not None else os.environ
     try:
-        backends.preflight(arm, base, allow_egress=options.allow_egress)
+        backends.refuse_stray_egress(options.allow_egress, [arms[name] for name, _ in night])
+        for name, _ in night:
+            own = tuple(allowed for allowed in options.allow_egress if allowed == name)
+            backends.preflight(arms[name], base, allow_egress=own)
     except backends.ArmError as exc:
         raise Refused("backends", str(exc)) from exc
     return arms
@@ -6826,11 +6955,13 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
             deps = real_deps(options, seams, worlds, today=today)
     except Refused as refused:
         return _refusal(options, seams, refused)
+    lanes = night_arms(options)  # 07.2-16 (D-22): the arms side by side, their workers summed
     config = DriveConfig(run_id=options.run_id, repo_root=options.repo,
                          tested_major=TESTED_MAJOR, min_cli_version=MIN_CLI_VERSION,
                          max_sessions=options.max_sessions,
                          target_matched=options.target_matched,
-                         base_env=seams.base_env, workers=options.workers,
+                         base_env=seams.base_env,
+                         workers=sum(n for _, n in lanes) if lanes else options.workers,
                          max_budget_usd=options.max_budget_usd,
                          fable_budget_usd=options.fable_budget_usd,
                          max_turns=options.max_turns,
@@ -6838,12 +6969,16 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          session=options.session,
                          fable_trial=options.fable_trial,
                          night_model=options.night_model, hold=options.hold,
-                         land_held=options.land_held, arm_table=arms)  # fmt: skip
+                         land_held=options.land_held, arm_table=arms,
+                         arms=lanes)  # fmt: skip
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))
     if options.night_model is not None:  # 07.2-06 (D-17)
         console(options, seams)(NIGHT_MODEL_LINE.format(model=options.night_model))
+    if len(lanes) > 1:  # 07.2-16 (D-22)
+        console(options, seams)(ARMS_LINE.format(arms=", ".join(
+            f"{name}={n} (run {options.run_id}-{name})" for name, n in lanes)))
     if options.hold:
         console(options, seams)(HOLD_RUN_LINE.format(run=options.run_id))
     report = drive(config, deps, lock=lock)
@@ -6992,10 +7127,15 @@ def refuse_unproven(options: DriveOptions, seams: Seams,
     A night of any arm off the Claude Code harness is Refused unless the arm's pass file says
     PASS for its harness and the CLI version installed now; a harness with no canary is always
     refused (fail closed). A canary, a dry run and --land-held run no such session and are not
-    refused."""
-    if options.canary or options.dry_run or options.land_held or options.night_model is None:
+    refused. 07.2-16 (D-22): every arm of `night_arms` is checked."""
+    if options.canary or options.dry_run or options.land_held:
         return
-    arm = arms[options.night_model]
+    for name, _ in night_arms(options):
+        _refuse_unproven_arm(options, seams, arms, arms[name])
+
+
+def _refuse_unproven_arm(options: DriveOptions, seams: Seams, arms: Mapping[str, backends.Arm],
+                         arm: backends.Arm) -> None:  # fmt: skip
     if arm.harness == backends.CLAUDE:
         return
     if arm.harness not in _GATED:

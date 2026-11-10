@@ -297,6 +297,19 @@ def estimate_cost(usage: Usage, arm: Arm) -> float:
     return round(total, _COST_DIGITS)
 
 
+def refuse_stray_egress(allow_egress: Sequence[str], night: Sequence[Arm]) -> None:
+    """07.2-16 (D-11, D-22): every `--allow-egress` name must be an arm the night runs that
+    sends the context pack off the machine; ArmError naming the first that is not. With one
+    arm this is `preflight`'s own rule; a multi-arm night checks it once over all its arms,
+    then runs `preflight` per arm with that arm's own name."""
+    for name in allow_egress:
+        if not any(arm.name == name and arm.egress for arm in night):
+            raise ArmError(f"--allow-egress {name} names no arm of this night that sends the "
+                           "context pack off the machine (the night runs "
+                           f"{', '.join(arm.name for arm in night)}); refused so that a typo "
+                           "opens no backend (D-11)")  # fmt: skip
+
+
 def preflight(arm: Arm, env: Mapping[str, str], *, allow_egress: Sequence[str]) -> None:
     """Before any session (D-11, D-26): every `--allow-egress` name must be this arm, and this
     arm one that sends disassembly off the machine; such an arm needs its name there; and an
@@ -308,6 +321,7 @@ def preflight(arm: Arm, env: Mapping[str, str], *, allow_egress: Sequence[str]) 
                            "so that a typo opens no backend (D-11)")  # fmt: skip
     if arm.egress and arm.name not in allow_egress:
         raise ArmError(f"arm {arm.name} sends the context pack to {arm.backend}: give "
-                       f"--allow-egress {arm.name} as well as --night-model {arm.name} (D-11)")
+                       f"--allow-egress {arm.name} as well as the arm (--night-model "
+                       f"{arm.name} or --arm {arm.name}=N, D-11)")  # fmt: skip
     if arm.base_url is not None:
         _token(arm, env)
