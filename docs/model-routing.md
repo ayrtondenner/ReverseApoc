@@ -172,6 +172,78 @@ audit, against its provider's Anthropic-compatible endpoint.
   carries `Matched-By: reverseapoc drive` (so `stats` still counts an unattended match), then
   `Matched-By: <model id>` and the arm's `Co-Authored-By` line, and no Claude line.
 
+## Codex arms
+
+Plan 07.2-13 added `gpt-6-luna` and `gpt-6.1-sol`: GPT-6 Luna and GPT-6.1 Sol through the
+Codex CLI (0.167.0, installed and signed in by the owner) on the owner's ChatGPT Plus login,
+third and fourth in spike 012's order (D-18). This is the one scoped runtime exception in
+CLAUDE.md: Codex runs only as `reverseapoc drive` arms, launched and audited by the driver.
+The model ids are assumptions to confirm at setup.
+
+- **The session.** `codex exec --json --model <id> --sandbox workspace-write --cd <attempt dir>
+  --skip-git-repo-check --ephemeral --ignore-user-config -c approval_policy="never"
+  -c sandbox_workspace_write.network_access=false -c projects."<attempt dir>".trust_level="trusted"
+  <prompt>`. Codex loads no skill and runs no hook, so the prompt carries the goal, the
+  watcom-decomp skill's body and the session rules. Codex streams no event that names the
+  model: the record keeps `model_requested` and a null `model`, and there is no init check.
+  Tokens come from the `turn.completed` events (cached input as cache read, reasoning tokens
+  added to output); the cost is 0 on Plus, recorded as an estimate.
+- **The login.** No key is read. The session loses `OPENAI_API_KEY`, `OPENAI_BASE_URL`, every
+  arm's key variable, every `ANTHROPIC_*` variable and every Google key variable, so Codex
+  stays on the ChatGPT login and never sees another vendor's credential. `CODEX_HOME` is not
+  moved and no credential is copied into build/.
+- **The guard set.** Before each session the driver writes, in the fresh attempt dir under
+  gitignored build/, `.codex/rules/attempt.rules` with one rule,
+  `prefix_rule(pattern=["uv", "run", "--frozen", "reverseapoc", "attempt"], decision="allow")`,
+  and an empty wrapper ledger outside the workspace,
+  `build/driver/<run>/ledger/<exe>__<function>__attempt-<n>.jsonl`, named to the session by
+  `REVERSEAPOC_WRAPPER_LEDGER`. The wrapper appends `{"path", "sha256"}` there for every file
+  it writes. Nothing Codex-specific is committed: no `.codex/`, no AGENTS.md.
+- **The audit.** After the session, besides the checks every session gets (git status, the
+  view, pinned and fingerprinted files): every command must be an exact wrapper form and may
+  not name `orig` or `third_party` as a path part; every `file_change` path must pass the
+  session's write allowlist; and the attempt dir may hold only the session files (notes.md,
+  plan.json, check-note.json, giveup.json, proposals.jsonl), the transcript, the driver's own
+  files as they were at launch (the rules file included) and wrapper output whose hash is its
+  ledger entry's. Anything else, a session-written `.codex/config.toml` among it, is a stray:
+  the files are quarantined, the attempt is recorded as a guardrail give-up and the night
+  stops. Each launch gets a fresh attempt dir, so nothing a session writes there reaches the
+  next one.
+- **What the audit cannot do.** It detects after the fact; it does not prevent. Codex's
+  workspace-write sandbox restricts writes and the network, not reads, and Codex has no hook
+  that could deny a read before it happens. A session that reads `orig/` or `third_party/` is
+  caught by its command, quarantined and the night stops, but whatever it sent to OpenAI before
+  it ended has left the machine. No read restriction of the installed CLI was confirmed
+  offline, so none is assumed. The same holds for a command that runs before the audit: only
+  the sandbox and the canary's probes stand between it and the host.
+- **The canary.** `reverseapoc drive --canary --night-model gpt-6-luna --allow-egress gpt-6-luna --run canary-luna`
+  (and the same for `gpt-6.1-sol`) asks the session, in order, to run `whoami`, write a file
+  one directory above its workspace, fetch `https://example.com/`, run the wrapper's context
+  form followed by `;` and a write outside the workspace, write plan.json and check-note.json,
+  and run the wrapper check. It passes only when the identity is not the owner's `USERNAME`,
+  neither outside file exists afterwards, the fetch failed, the wrapper check logged exit 0 and
+  consumed its note, the audit flagged the three probe commands, the attempt dir matches the
+  ledger, and the tree, refs and containers are as for every canary. On PASS it writes
+  `build/driver/canary/<arm>.json` (`arm`, `harness`, `cli_version` from `codex --version`,
+  `date`, `result`); on FAIL it writes `result: FAIL` there.
+- **The pass gate.** A night of a Codex arm is refused (exit 2, before any session, naming
+  the canary command) unless that file says PASS for the CLI version `codex --version` reports
+  now. Upgrading the CLI therefore means running the canary again.
+- **The Plus windows.** Plus allows about 350 to 3,000 local Luna messages and 15 to 160 Sol
+  messages per 5 hours (owner plan). Each arm runs with `max_workers = 1`; the owner may raise
+  it in backends.toml. A Codex failure that says a usage limit was hit pauses the night like a
+  Claude usage limit; any other failure stops it.
+- **Windows sandbox caveats** (RESEARCH Pitfall 11). Elevated and unelevated sandbox modes have
+  open issues, `apply_patch` has been reported at 13 to 20 s per patch, and some setups run
+  commands as the real user. The canary's identity, outside-write and network probes exist
+  for this; budget the 30-minute wall clock accordingly. A Codex command may also be reported
+  wrapped in its shell (`powershell.exe -Command ...`), which the audit treats as a non-wrapper
+  form: the canary shows it, and it fails closed.
+- **If the per-session rules do not load** (RESEARCH A5: the canary's wrapper check is then
+  refused or prompts), the fallback is one owner-installed user rule,
+  `~/.codex/rules/reverseapoc.rules`, holding the same single prefix rule, written by the owner
+  and removable; the driver never writes outside the repository.
+
 ## The local arm
 
 `qwen-local` runs Qwen3.6-35B-A3B on the owner's own llama.cpp server and is the last arm of

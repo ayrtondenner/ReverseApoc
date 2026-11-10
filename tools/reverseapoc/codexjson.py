@@ -27,7 +27,8 @@ the requested model and a null `model`, and runs no init check.
 from __future__ import annotations
 
 import shlex
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from typing import NamedTuple
 
 from . import streamjson
 from .streamjson import Disposition, Usage
@@ -75,9 +76,11 @@ def usage(events: Sequence[dict], seconds: float = 0.0) -> Usage:
                  duration_ms=round(seconds * _MS_PER_S))  # fmt: skip
 
 
-def _items(events: Sequence[dict], kind: str) -> Iterator[Mapping]:
-    """Each item of `kind` once (its first event; an item without an id every time)."""
-    seen: set[str] = set()
+def _items(events: Sequence[dict], kind: str) -> list[Mapping]:
+    """Each item of `kind` once, in the order it first appeared, as its last event left it
+    (an item without an id counts every time)."""
+    found: list[Mapping] = []
+    place: dict[str, int] = {}
     for event in events:
         if event.get("type") not in _ITEM_EVENTS:
             continue
@@ -85,11 +88,36 @@ def _items(events: Sequence[dict], kind: str) -> Iterator[Mapping]:
         if item.get("type") != kind:
             continue
         ident = item.get("id")
+        if isinstance(ident, str) and ident in place:
+            found[place[ident]] = item
+            continue
         if isinstance(ident, str):
-            if ident in seen:
-                continue
-            seen.add(ident)
-        yield item
+            place[ident] = len(found)
+        found.append(item)
+    return found
+
+
+class Execution(NamedTuple):
+    """One command_execution item: its command (as `commands` gives it), its output and its
+    exit code (None while it ran or when the stream holds none)."""
+
+    command: str
+    output: str
+    exit_code: int | None
+
+
+def executions(events: Sequence[dict]) -> list[Execution]:
+    """Every command_execution item, in order, as it ended (the Codex canary reads its
+    outputs and exit codes)."""
+    out = []
+    for item in _items(events, _COMMAND):
+        output = item.get("aggregated_output")
+        code = item.get("exit_code")
+        out.append(Execution(_command_text(item.get("command")),
+                             output if isinstance(output, str) else "",
+                             code if isinstance(code, int) and not isinstance(code, bool)
+                             else None))  # fmt: skip
+    return out
 
 
 def _command_text(command: object) -> str:
@@ -104,7 +132,7 @@ def _command_text(command: object) -> str:
 
 def commands(events: Sequence[dict]) -> list[str]:
     """Every `command_execution` item's command, in order (see the module docstring)."""
-    return [_command_text(item.get("command")) for item in _items(events, _COMMAND)]
+    return [execution.command for execution in executions(events)]
 
 
 def write_targets(events: Sequence[dict]) -> list[str]:
