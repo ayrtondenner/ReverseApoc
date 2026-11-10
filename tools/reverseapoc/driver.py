@@ -5796,13 +5796,16 @@ def console(options: DriveOptions, seams: Seams) -> Callable[[str], None]:
 def command_runner(repo: Path, *, timeout_s: float = COMMAND_TIMEOUT_S) -> Runner:
     """argv in `repo` (compose.yaml is at its root), never a shell, text output captured. A
     missing program is exit 127 and a timeout exit 124, so no command can raise its way past a
-    refusal or a gate."""
+    refusal or a gate. `env`: the environment to run with (07.2-15: an agy or Codex CLI query
+    gets its arm's stripped session env); None inherits the driver's."""
 
-    def run(argv: Sequence[str]) -> subprocess.CompletedProcess:
+    def run(argv: Sequence[str], env: Mapping[str, str] | None = None
+            ) -> subprocess.CompletedProcess:  # fmt: skip
         try:
             return subprocess.run(list(argv), cwd=repo, capture_output=True, text=True,
                                   encoding="utf-8", errors="replace", timeout=timeout_s,
-                                  stdin=subprocess.DEVNULL, check=False)  # fmt: skip
+                                  stdin=subprocess.DEVNULL, check=False,
+                                  env=None if env is None else dict(env))  # fmt: skip
         except OSError as exc:  # fix round 1 I2: not only a missing program
             return subprocess.CompletedProcess(list(argv), _os_error_exit(exc), "",
                                                f"{argv[0]}: {exc}")
@@ -6952,21 +6955,31 @@ def canary_pass_path(repo: Path, arm: str) -> Path:
     return Path(repo).joinpath(CANARY_PASS_DIR, f"{arm}.json")
 
 
-def _installed_version(seams: Seams, exe: str) -> str | None:
-    done = seams.run([exe, "--version"])
+def _installed_version(seams: Seams, exe: str, env: Mapping[str, str]) -> str | None:
+    done = seams.run([exe, "--version"], env=env)
     found = _VERSION_TEXT.search(done.stdout or "") if done.returncode == EXIT_OK else None
     return found.group(0) if found else None
 
 
-def codex_version(seams: Seams) -> str | None:
+def codex_version(seams: Seams, env: Mapping[str, str]) -> str | None:
     """The installed Codex CLI's version (`codex --version`, a version query that runs no
-    session), or None when it does not answer with one."""
-    return _installed_version(seams, seams.codex)
+    session), or None when it does not answer with one. 07.2-15: run with `env`, the arm's
+    stripped session env (RULINGS token-leak guard)."""
+    return _installed_version(seams, seams.codex, env)
 
 
-def agy_version(seams: Seams) -> str | None:
-    """07.2-15: the installed agy CLI's version (`agy --version`), or None."""
-    return _installed_version(seams, seams.agy)
+def agy_version(seams: Seams, env: Mapping[str, str]) -> str | None:
+    """07.2-15: the installed agy CLI's version (`agy --version`), or None; run with `env`, the
+    arm's stripped session env."""
+    return _installed_version(seams, seams.agy, env)
+
+
+def cli_query_env(seams: Seams, arm: backends.Arm,
+                  arms: Mapping[str, backends.Arm]) -> dict[str, str]:  # fmt: skip
+    """07.2-15 (RULINGS token-leak guard): the env a Codex or agy CLI query (its version, agy's
+    /usage) runs with: the arm's session env (backends.session_env), never the driver's own."""
+    base = seams.base_env if seams.base_env is not None else os.environ
+    return backends.session_env(arm, base, arms)
 
 
 _GATED = {backends.CODEX: ("Codex", "codex-cli", codex_version, "D-13"),
@@ -6989,7 +7002,7 @@ def refuse_unproven(options: DriveOptions, seams: Seams,
         raise Refused("canary", f"arm {arm.name} runs harness {arm.harness!r}, which has no "
                                 "canary and no audit: refused")  # fmt: skip
     label, cli, version_of, decision = _GATED[arm.harness]
-    version = version_of(seams)
+    version = version_of(seams, cli_query_env(seams, arm, arms))
     path = canary_pass_path(options.repo, arm.name)
     saved = _json_file(path)
     proven = (saved.get("arm"), saved.get("harness"), saved.get("result")) == (
@@ -7224,11 +7237,11 @@ def agy_quota(text: str) -> dict:
     return {"measured": False, "remaining": None, "usable": None}
 
 
-def _agy_quota_step(seams: Seams, arm: backends.Arm, usage: streamjson.Usage,
+def _agy_quota_step(seams: Seams, arm: backends.Arm, usage: streamjson.Usage, env: Mapping,
                     checks: _Checks) -> dict:  # fmt: skip
     """The quota step: one line, and the quota the pass file records (D-25). No usable quota is
     a FAIL naming the fallback arm and how to run it (D-21)."""
-    done = seams.run([seams.agy, *AGY_USAGE])
+    done = seams.run([seams.agy, *AGY_USAGE], env=env)  # the stripped session env
     quota = agy_quota(f"{done.stdout or ''}\n{done.stderr or ''}")
     tokens = (usage.input_tokens + usage.output_tokens + usage.cache_read_tokens
               + usage.cache_creation_tokens)  # fmt: skip
@@ -7544,9 +7557,11 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
     refs_before = _refs(probe)
     checks = _Checks()
     version = None
+    # 07.2-15: a Codex or agy CLI query never sees the driver's own env
+    query_env = cli_query_env(seams, arm, arms) if claim.signed_in else {}
     if claim.signed_in:  # 07.2-13, 07.2-15: the version the pass file names, before the session
-        exe, version = ((seams.agy, agy_version(seams)) if claim.agy
-                        else (seams.codex, codex_version(seams)))  # fmt: skip
+        exe, version = ((seams.agy, agy_version(seams, query_env)) if claim.agy
+                        else (seams.codex, codex_version(seams, query_env)))  # fmt: skip
         checks.add(version is not None, f"{exe} --version: {version}" if version
                    else f"{exe} --version named no version")  # fmt: skip
     events: Sequence[dict] = ()
@@ -7571,7 +7586,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams,
             extra = {"tokens": {"input": use.input_tokens, "output": use.output_tokens,
                                 "cache_read": use.cache_read_tokens,
                                 "cache_creation": use.cache_creation_tokens},
-                     "quota": _agy_quota_step(seams, arm, use, checks)}  # fmt: skip
+                     "quota": _agy_quota_step(seams, arm, use, query_env, checks)}  # fmt: skip
         else:
             _after_session(options, seams, events, attempt_dir, checks, model=model,
                            accepted=_accepted(arm))  # fmt: skip
