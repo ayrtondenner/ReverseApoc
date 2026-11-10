@@ -1322,6 +1322,7 @@ _CACHE_PARTS = (attempt.VIEW_DIR, attempt.VIEW_BUILD, attempt.CACHE_DIR)
 _WRAPPER_FILES = (attempt.CHECK_LOG, attempt.CHECK_LOCK, PACK_FILE)
 _WRAPPER_TREES = (f"{attempt.CHECKS_DIR}/", "/".join(_CACHE_PARTS) + "/")
 _WRAPPER_UNSEEN = "a wrapper-owned file the wrapper's ledger never saw"
+_NOT_A_FILE = ("link:", "outside:")  # attempt_inventory's digests of a link and a far cache
 
 
 def write_codex_rules(attempt_dir: Path) -> None:
@@ -1565,6 +1566,8 @@ def _wrapper_owned(rel: str) -> bool:
 
 def _inventory_problem(rel: str, digest: str, launch: Mapping[str, str],
                        ledger: Mapping[str, str]) -> str | None:  # fmt: skip
+    if digest.startswith(_NOT_A_FILE):  # 07.2 review WR-04: before any name is allowed
+        return "a link or a path outside the attempt dir, never a regular file"
     if rel in ledger:
         return None if ledger[rel] == digest else "differs from the wrapper's ledger"
     if rel in launch:
