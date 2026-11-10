@@ -7747,9 +7747,9 @@ def _agy_init_problems(events: Sequence[dict], claim: _Claim) -> list[str]:
 
 def _agy_allowed_checks(events: Sequence[dict], claim: _Claim, checks: _Checks) -> None:
     """The allowed session: a clean init, a SUCCESS result, no denied step, every tool step in
-    a shape the night's audit knows (the run_command step's real shape is unseen: until it is,
-    this FAILs naming the step), the three wrapper calls run, context.md written, and the check
-    logged exit 0 with its consumed note."""
+    a shape the night's audit knows (run_command in agy 1.5.5's shape, spike 012 round 3; any
+    other FAILs naming the step), the three wrapper calls run (agyjson.commands: known steps
+    only), context.md written, and the check logged exit 0 with its consumed note."""
     problems = _agy_init_problems(events, claim)
     checks.add(not problems, "init: " + ("; ".join(problems) if problems else
                                          f"cwd the attempt dir, model {claim.model}, "

@@ -223,6 +223,34 @@ def test_agyjson_reads_the_agy_1_5_5_envelope():
     assert agyjson.classify(events, 0, False) == Disposition.ATTEMPT_DONE
 
 
+CONTEXT, PLAN, CHECK = (f"uv run --frozen reverseapoc attempt {form}"
+                        for form in ("context", "plan", "check"))  # fmt: skip
+
+
+def test_agyjson_reads_the_real_run_command_step():
+    """Spike 012 round 3: agy 1.5.5's run_command step is tool_info {name: run_command,
+    parameters: {CommandLine: <the command>}, output: <text>}, the output (once DONE) reading
+    `Command exited with code <n>.` and `Command output:`. The fixture copies the real allowed
+    session's shape (placeholder output): commands() reads each CommandLine once, in order, and
+    no step is unknown. The same step with another parameter (a Cwd), another tool_info key, a
+    tool_info name that is not its tool's or a CommandLine that is no string is unknown (a
+    stray, fail closed), and its command never counts as run."""
+    events = _events("canary_agy_allowed")
+    assert agyjson.commands(events) == [CONTEXT, PLAN, CHECK]
+    assert agyjson.unknown_steps(events) == []
+    assert agyjson.write_targets(events) == ["C:\\made-up\\attempt-1\\plan.json",
+                                             "C:\\made-up\\attempt-1\\check-note.json"]
+    assert agyjson.read_targets(events) == []
+    line = {"CommandLine": CHECK}
+    odd = [_step(1, "run_command", name="run_command", parameters={**line, "Cwd": "C:\\x"}),
+           _step(2, "run_command", name="run_command", parameters=line, exit_code=0),
+           _step(3, "run_command", name="list_dir", parameters=line),
+           _step(4, "run_command", name="run_command", parameters={"CommandLine": [CHECK]})]
+    found = agyjson.unknown_steps(odd)
+    assert [text.split(":")[0] for text in found] == [f"step {n}" for n in range(1, 5)], found
+    assert agyjson.commands(odd) == []
+
+
 def test_agyjson_usage_and_turns():
     """The result's usage: input, output plus thinking, cache_read, no cache creation, no
     cost; `num_turns` gives the turns and `duration_seconds` the duration in ms; the malformed
@@ -265,12 +293,18 @@ def _step(index: int, tool: str, *, state: str = "DONE", subagent: dict | None =
     return _wrapped("step_update", **step, **({"subagent_info": subagent} if subagent else {}))
 
 
+def _run(index: int, command: str, *, state: str = "DONE", **info) -> dict:
+    """A run_command step in agy 1.5.5's real shape (spike 012 round 3)."""
+    return _step(index, "run_command", state=state, name="run_command",
+                 parameters={"CommandLine": command}, **info)  # fmt: skip
+
+
 def test_agyjson_only_a_steps_own_denied_state_hides_it():
     """07.2 review WR-02: a step is dropped as denied only when the step itself ends DENIED. A
     result's denied action never hides a step that ran, whatever its kind, target or count
     (it is a hook block, nothing more)."""
     target = "../../../orig/UFO2P.EXE"
-    events = [_step(1, "run_command", command=target),
+    events = [_run(1, target),
               _step(2, "read_file", path=target),
               _step(3, "read_file", path=target, state="DENIED"),
               _step(4, "write_file", path=target),
@@ -280,7 +314,7 @@ def test_agyjson_only_a_steps_own_denied_state_hides_it():
     assert agyjson.commands(events) == [target]
     assert agyjson.read_targets(events) == [target]
     assert agyjson.write_targets(events) == [target]
-    unsandboxed = [_step(1, "run_command", command="type notes.md"),
+    unsandboxed = [_run(1, "type notes.md"),
                    _wrapped("result", status="SUCCESS",
                             denied_actions=["unsandboxed(type notes.md)"])]  # fmt: skip
     assert agyjson.commands(unsandboxed) == ["type notes.md"]
@@ -336,28 +370,34 @@ def test_agyjson_reads_are_an_allowlist():
 
 def test_agyjson_unknown_steps():
     """WR-02: a tool step that ran is a stray unless it is a tool the audit knows in its known
-    shape: run_command with a command, read_file or write_file with a path. A missing or
-    non-string tool name, an unknown tool (a fetch, a listing, a search), a known tool without
-    its field and a subagent step are each named; a denied step and a step that is no tool
-    step (model text) are not."""
+    shape: run_command in agy 1.5.5's real shape (parameters.CommandLine), read_file or
+    write_file with a path. A missing or non-string tool name, an unknown tool (a fetch, a
+    listing, a search, the real manage_task a model polls a background command with), a known
+    tool without its field or in the documented but never seen `tool_info.command` shape, and
+    a subagent step are each named; a denied step and a step that is no tool step (model text)
+    are not."""
+    real = {"name": "run_command", "parameters": {"CommandLine": CHECK}}
     stray = [_step(1, "web_fetch", url="https://made-up.invalid/"),
              _step(2, "list_dir", path="."),
              _wrapped("step_update", step_index=3, state="DONE", step_type="TOOL",
-                      tool_info={"command": "type notes.md"}),
+                      tool_info=real),
              _wrapped("step_update", step_index=4, state="DONE", step_type="TOOL",
-                      tool_name=["run_command"], tool_info={"command": "type notes.md"}),
+                      tool_name=["run_command"], tool_info=real),
              _step(5, "read_file", query="orig"),
              _step(6, "run_command", path="notes.md"),
-             _step(7, "run_command", command="uv run --frozen reverseapoc attempt check",
-                   subagent={"name": "made-up"})]  # fmt: skip
-    fine = [_step(10, "run_command", command="uv run --frozen reverseapoc attempt check"),
+             _step(7, "run_command", **real, subagent={"name": "made-up"}),
+             _step(8, "run_command", command=CHECK),
+             _step(9, "manage_task", name="manage_task",
+                   parameters={"Action": "status", "TaskId": "made-up/task-10"},
+                   output="Status: RUNNING")]  # fmt: skip
+    fine = [_step(10, "run_command", **real, output="Command exited with code 0."),
             _step(11, "read_file", path="context.md"), _step(12, "write_file", path="notes.md"),
             _step(13, "web_fetch", state="DENIED", url="https://made-up.invalid/"),
             _wrapped("step_update", step_index=14, state="DONE", step_type="PLANNER_RESPONSE",
                      text_delta="made-up text")]  # fmt: skip
     found = agyjson.unknown_steps([*stray, *fine])
     assert len(found) == len(stray), found
-    for index, text in zip(range(1, 8), found, strict=True):
+    for index, text in zip(range(1, len(stray) + 1), found, strict=True):
         assert f"step {index}" in text, (index, text)
 
 
@@ -895,9 +935,10 @@ def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):
 
 
 def test_agy_canary_allowed_session_names_an_unseen_step_shape(tmp_path, capsys):
-    """The run_command step's real shape is unseen: an allowed session whose command steps are
-    in any shape the audit does not know FAILs naming each step, and its wrapper calls do not
-    count, even though the wrapper's files are there."""
+    """An allowed session whose command steps are in a shape the audit does not know (here a
+    Cwd parameter beside CommandLine, which the real run_command step never showed) FAILs
+    naming each step, and its wrapper calls do not count, even though the wrapper's files are
+    there."""
     rig = _agy_canary_rig(tmp_path, scenarios={ALLOWED: "canary_agy_allowed_unseen"})
     code, doc = _agy_canary(rig, capsys)
     assert (code, doc["canary"]) == (1, "FAIL")

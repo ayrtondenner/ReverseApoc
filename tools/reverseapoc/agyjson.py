@@ -20,7 +20,10 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   `thinking_tokens` as output, `cache_read_tokens` as cache read, no cache creation, no cost (an
   AI Plus subscription is measured in quota); `num_turns`; `duration_seconds` in ms.
 - `commands`, `write_targets`, `read_targets`: each tool step once (by `step_index`, as its last
-  update left it, in the order it first appeared): its `tool_info.command`, or its path
+  update left it, in the order it first appeared): a run_command step's
+  `tool_info.parameters.CommandLine` (agy 1.5.5's shape, spike 012 round 3: tool_info holds
+  `name`, `parameters` and, once DONE, `output`, whose text reads `Command exited with code
+  <n>.`; a command step of any other shape is an unknown step and no command run), or its path
   (`path`, `file_path`, `target_file` or `absolute_path`), a read only for a known read-only
   tool (`read_file`) and a write for every other tool (07.2 review WR-02: fail closed). A step
   whose own last state is DENIED was soft-denied (RESEARCH "Permissions"): it never ran, so it
@@ -28,8 +31,8 @@ the CLI's docs (RESEARCH) and the owner's canary proves them.
   ERROR, so it stays in the lists (fail closed), and then ends the turn. A result's
   `denied_actions` never stand for a step; they are hook blocks. The driver's audit reads them
   (D-26).
-- `unknown_steps`: each tool step that ran and is not a known tool (`run_command` with a
-  command, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
+- `unknown_steps`: each tool step that ran and is not a known tool (`run_command` in agy
+  1.5.5's shape, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
   the audit counts each as a stray (WR-02).
 - `denied_actions`: the result's denied actions as `action(target)` strings.
 - `denials`, `undenied_steps`, `response` (the agy canary's evidence): each tool step agy's
@@ -174,6 +177,14 @@ def denied_actions(events: Sequence[dict]) -> list[str]:
 # actions); any other tool step that ran is a stray (`unknown_steps`), and a path step is a
 # read only for a tool named here as read-only.
 _COMMAND_TOOLS = frozenset({"run_command"})
+# spike 012 round 3: agy 1.5.5's run_command step is tool_info {name, parameters:
+# {CommandLine}, output} (the output, once DONE: `Command exited with code <n>.` then `Command
+# output:`), the only command shape the audit knows
+_COMMAND_LINE = "CommandLine"
+_NAME = "name"
+_OUTPUT = "output"
+_COMMAND_INFO = frozenset({_NAME, _PARAMETERS, _OUTPUT})
+_LEGACY_COMMAND = "command"  # RESEARCH's documented tool_info.command, never seen: unknown
 _READ_TOOLS = frozenset({"read_file"})
 _WRITE_TOOLS = frozenset({"write_file"})
 _DENIED_STATE = "DENIED"  # a step's own last state when the settings soft-denied it
@@ -233,10 +244,28 @@ def _path(info: Mapping) -> str | None:
     return value if isinstance(value, str) else repr(value)
 
 
+def _command_line(info: Mapping) -> object:
+    """A step's command: agy 1.5.5's tool_info.parameters.CommandLine, else RESEARCH's
+    tool_info.command; None when it names neither."""
+    parameters = _mapping(info.get(_PARAMETERS))
+    return parameters[_COMMAND_LINE] if _COMMAND_LINE in parameters else info.get(_LEGACY_COMMAND)
+
+
+def _real_command(name: str, info: Mapping) -> bool:
+    """agy 1.5.5's run_command shape and nothing more: tool_info names the tool, holds only
+    its name, parameters and output, and its parameters only a string CommandLine."""
+    parameters = info.get(_PARAMETERS)
+    return (info.get(_NAME) == name and set(info) <= _COMMAND_INFO
+            and isinstance(parameters, Mapping) and set(parameters) == {_COMMAND_LINE}
+            and isinstance(parameters[_COMMAND_LINE], str))  # fmt: skip
+
+
 def commands(events: Sequence[dict]) -> list[str]:
-    """Every command step that ran (see the module docstring), whatever its tool's name."""
-    return [_command_text(_mapping(step.get("tool_info"))["command"]) for step in _steps(events)
-            if _ran(step) and "command" in _mapping(step.get("tool_info"))]  # fmt: skip
+    """The CommandLine of every run_command step that ran in agy 1.5.5's shape (see the module
+    docstring); a command step of any other shape is an unknown step, never a command run."""
+    return [_mapping(step["tool_info"])[_PARAMETERS][_COMMAND_LINE] for step in _steps(events)
+            if _ran(step) and step.get("tool_name") in _COMMAND_TOOLS
+            and _known(step)]  # fmt: skip
 
 
 def _paths(events: Sequence[dict], *, writes: bool) -> list[str]:
@@ -245,7 +274,7 @@ def _paths(events: Sequence[dict], *, writes: bool) -> list[str]:
     out = []
     for step in _steps(events):
         info = _mapping(step.get("tool_info"))
-        path = None if "command" in info else _path(info)
+        path = None if _command_line(info) is not None else _path(info)
         if path is None or not _ran(step):
             continue
         if (step.get("tool_name") not in _READ_TOOLS) == writes:
@@ -269,8 +298,9 @@ def _known(step: Mapping) -> bool:
     if step.get("subagent_info") or not isinstance(name, str):
         return False
     if name in _COMMAND_TOOLS:
-        return "command" in info
-    return name in _READ_TOOLS | _WRITE_TOOLS and "command" not in info and _path(info) is not None
+        return _real_command(name, info)
+    return (name in _READ_TOOLS | _WRITE_TOOLS and _command_line(info) is None
+            and _path(info) is not None)  # fmt: skip
 
 
 def unknown_steps(events: Sequence[dict]) -> list[str]:
@@ -321,8 +351,8 @@ def _denial(step: Mapping) -> Denial | None:
         return Denial(index, tool, found.group(1), _unquote(found.group(2)))
     if step.get("state") != _DENIED_STATE:
         return None
-    target = _command_text(info["command"]) if "command" in info else _path(info)
-    return Denial(index, tool, tool, target)
+    command = _command_line(info)
+    return Denial(index, tool, tool, _path(info) if command is None else _command_text(command))
 
 
 def denials(events: Sequence[dict]) -> list[Denial]:
