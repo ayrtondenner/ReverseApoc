@@ -1,0 +1,149 @@
+# The drive arms (Phase 07.2 plan 12; D-10, D-11, D-12, D-18), read by tools/reverseapoc/backends.py.
+#
+# This file holds NAMES of environment variables only, never a key. A hosted arm's key lives in
+# the Windows user environment variable its `key_env` names (docs/toolchain.md, "Model API keys
+# and sign-ins"); the driver copies it into that session's ANTHROPIC_AUTH_TOKEN and writes it
+# nowhere.
+#
+# The endpoints, model ids and prices of the non-Anthropic arms were read on 2026-11-09
+# (07.2-RESEARCH Q7) and are re-checked by the owner at setup, before each arm's canary.
+#
+# Fields: harness (claude, codex, agy), backend (the provider: anthropic is the Claude Code
+# login), model (the --model id), base_url (absent on the Claude login), key_env (absent on the
+# Claude login), sends_disassembly (true: the context pack leaves the machine, so a
+# non-Anthropic arm needs --allow-egress, D-11), accepted_init (the init `model` strings
+# accepted), prices (USD per million tokens, for the cost estimate), coauthor (the commit
+# credit line, D-26), max_workers. The Claude arms are keyed by their model id and keep
+# streamjson's tables and driver.coauthor (RULINGS "Harness").
+
+[arms."claude-opus-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-opus-5-5"
+sends_disassembly = true
+max_workers = 10
+
+[arms."claude-fable-5-1"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-fable-5-1"
+sends_disassembly = true
+max_workers = 10
+
+[arms."claude-haiku-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-haiku-5-5"
+sends_disassembly = true
+max_workers = 10
+
+[arms."claude-sonnet-5-5"]
+harness = "claude"
+backend = "anthropic"
+model = "claude-sonnet-5-5"
+sends_disassembly = true
+max_workers = 10
+
+# DeepSeek V4.1-Flash. Prices: the owner's plan (peak). DeepSeek's cache prices are not recorded
+# yet, so both cache classes are priced as input: the estimate may overstate, never understate.
+[arms."deepseek-flash"]
+harness = "claude"
+backend = "deepseek"
+model = "deepseek-flash"
+base_url = "https://api.deepseek.com/anthropic"
+key_env = "DEEPSEEK_API_KEY"
+sends_disassembly = true
+accepted_init = ["deepseek-flash"]
+coauthor = "DeepSeek V4.1-Flash <noreply@deepseek.com>"
+max_workers = 3
+
+[arms."deepseek-flash".prices]
+input = 0.30
+output = 1.20
+cache_read = 0.30
+cache_creation = 0.30
+
+# The co-author addresses below and above are the vendors' noreply forms, an assumption the
+# owner confirms at setup. Every hosted arm prices both cache classes as input until the
+# provider's cache prices are recorded (an estimate may overstate, never understate).
+
+# GLM-5.x on z.ai. The id `glm-5.3` (z.ai also lists `glm-5.3-flash` and `[1m]` forms) and the
+# price (LiteLLM, November 2026, medium confidence) are confirmed at setup.
+[arms."glm-5.3"]
+harness = "claude"
+backend = "zai"
+model = "glm-5.3"
+base_url = "https://api.z.ai/api/anthropic"
+key_env = "ZAI_API_KEY"
+sends_disassembly = true
+accepted_init = ["glm-5.3"]
+coauthor = "GLM-5.3 <noreply@z.ai>"
+max_workers = 3
+
+[arms."glm-5.3".prices]
+input = 1.40
+output = 4.40
+cache_read = 1.40
+cache_creation = 1.40
+
+# Muse Spark Open through OpenRouter (released 2026-10-15). The OpenRouter id and the price are
+# confirmed at setup.
+[arms."muse-spark-open"]
+harness = "claude"
+backend = "openrouter"
+model = "meta/muse-spark-open"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["meta/muse-spark-open"]
+coauthor = "Muse Spark Open <noreply@meta.com>"
+max_workers = 3
+
+[arms."muse-spark-open".prices]
+input = 1.25
+output = 4.25
+cache_read = 1.25
+cache_creation = 1.25
+
+# Qwen3.6-35B-A3B hosted through OpenRouter (owner, 2026-11-09): the same weights as the local
+# arm, run early with the other hosted arms as a fast check before the slow local run.
+# ASSUMPTION, confirm at setup: the OpenRouter id `qwen/qwen3.6-35b-a3b` and the prices, which
+# are placeholders set above what a 3B-active model usually costs there, so the estimate does
+# not understate until the owner copies OpenRouter's listing.
+[arms."qwen-hosted"]
+harness = "claude"
+backend = "openrouter"
+model = "qwen/qwen3.6-35b-a3b"
+base_url = "https://openrouter.ai/api"
+key_env = "OPENROUTER_API_KEY"
+sends_disassembly = true
+accepted_init = ["qwen/qwen3.6-35b-a3b"]
+coauthor = "Qwen3.6-35B-A3B <noreply@qwen.ai>"
+max_workers = 3
+
+[arms."qwen-hosted".prices]
+input = 0.20
+output = 0.80
+cache_read = 0.20
+cache_creation = 0.20
+
+# Qwen3.6-35B-A3B on the owner's own llama-server under C:\llm\ (D-18: last, one worker). The
+# plan's working name for this arm was qwen3.6-35b-a3b-local; the owner's ruling of 2026-11-09
+# names it qwen-local. `model` is the llama-server --alias the owner sets. No key variable: the
+# session gets the fixed loopback token (backends.LOOPBACK_TOKEN), which llama-server ignores
+# without --api-key. Nothing leaves the machine, so it takes no --allow-egress.
+[arms."qwen-local"]
+harness = "claude"
+backend = "local"
+model = "qwen3.6-35b-a3b"
+base_url = "http://127.0.0.1:8080"
+sends_disassembly = false
+accepted_init = ["qwen3.6-35b-a3b"]
+coauthor = "Qwen3.6-35B-A3B <noreply@qwen.ai>"
+max_workers = 1
+
+[arms."qwen-local".prices]
+input = 0.0
+output = 0.0
+cache_read = 0.0
+cache_creation = 0.0

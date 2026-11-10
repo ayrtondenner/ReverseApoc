@@ -375,12 +375,15 @@ def _names(entries: object) -> str:
     return ", ".join(str(_mapping(entry).get("name", entry)) for entry in entries)
 
 
-def _model_problem(model: object, expected_model: str) -> str | None:
+def _model_problem(model: object, expected_model: str,
+                   accepted: Sequence[str] | None = None) -> str | None:  # fmt: skip
     """Why the init's `model` is not accepted for the requested `expected_model`, or None
     (Phase 7 D-09). A requested model with no accepted init ids fails closed, even when the init
-    echoes it."""
-    accepted = ACCEPTED_INIT_MODELS.get(expected_model)
+    echoes it. 07.2-12 (RESEARCH Q7): `accepted`, a hosted arm's own ids from backends.toml,
+    replaces ACCEPTED_INIT_MODELS, so this module never reads config."""
     if accepted is None:
+        accepted = ACCEPTED_INIT_MODELS.get(expected_model)
+    if not accepted:
         return f"requested model {expected_model!r} has no accepted init IDs (D-09)"
     if model not in accepted:
         return f"model {model!r} is not accepted for the requested {expected_model} (D-09)"
@@ -393,18 +396,20 @@ def check_init(
     tested_major: int,
     min_version: tuple[int, int, int] | str,
     expected_model: str = EXPECTED_MODEL,
+    accepted: Sequence[str] | None = None,
 ) -> list[str]:
     """Every problem with a session's `system/init` event; empty when it is clean. The driver
     treats any problem as STOP (fail closed, Pitfall 2): a missing init, a version outside the
-    tested major or below `min_version` (D-36), a model not accepted for `expected_model` or an
-    unknown `expected_model` (D-35, Phase 7 D-09), tools other than exactly
+    tested major or below `min_version` (D-36), a model not accepted for `expected_model` (by
+    ACCEPTED_INIT_MODELS, or by `accepted` for a hosted arm, 07.2-12) or an unknown
+    `expected_model` (D-35, Phase 7 D-09), tools other than exactly
     D-45's six, any MCP server (D-44) or any plugin."""
     if init is None:
         return ["no system/init event"]
     if isinstance(min_version, str):
         min_version = parse_version(min_version)
     problems = [_version_problem(init, tested_major, min_version)]
-    problems.append(_model_problem(init.get("model"), expected_model))
+    problems.append(_model_problem(init.get("model"), expected_model, accepted))
     problems.append(_tools_problem(init))
     servers = init.get("mcp_servers")
     if servers != []:

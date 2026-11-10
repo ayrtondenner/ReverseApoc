@@ -8,13 +8,14 @@ harnesses, and several arms in one drive.
 
 ## The flags
 
-- `--night-model MODEL` runs every matching session of the night on MODEL instead of the
-  pass's model. MODEL is one of the Claude ids in `session.MODEL_NAMES`
-  (`claude-haiku-5-5`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`). Plan 12
-  makes the name an arm of `config/driver/backends.toml`; the Claude arms keep their model
-  ids as names, so the same command works before and after. The budget is the per-session
-  `--max-budget-usd`, as for Opus. Effort stays as nights use it today: there is no effort
-  flag. With `--canary`, `--night-model X` makes the canary session ask for X.
+- `--night-model ARM` runs every matching session of the night on ARM instead of the pass's
+  model. ARM is an arm of `config/driver/backends.toml` (see "Backends" below). The Claude
+  arms are named by their model ids (`claude-haiku-5-5`, `claude-sonnet-5-5`,
+  `claude-opus-5-5`, `claude-fable-5-1`), so a Claude id works as it did before plan 12. The
+  budget is the per-session `--max-budget-usd`, as for Opus. Effort stays as nights use it
+  today: there is no effort flag. With `--canary`, `--night-model X` makes the canary session
+  run on arm X.
+- `--allow-egress ARM` is the owner's opt-in for a non-Anthropic arm (D-11). See "Backends".
 - `--picks FILE` restricts the night to the functions FILE lists, through the same subset
   path a Fable trial uses (`TierQueue.only` on a signed tier, the matching pool candidates
   without one). Each pick waits only on callees that are also picks. A pick that is not in
@@ -94,8 +95,9 @@ it.
   also covers a second function of a unit that an earlier landing of the same run just
   changed.
 - **Credit.** The match commit carries `Matched-By: reverseapoc drive` and the co-author line
-  of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. The commit
-  message gives that attempt's own turns, tokens and seconds, and names the hold run.
+  of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. A hosted
+  arm's attempt is credited to its arm instead, as in "Backends" below. The commit message
+  gives that attempt's own turns, tokens and seconds, and names the hold run.
 - **Records.** Each function gets one `landing` record: MATCHED with its commit, or REFUSED
   with its reason (a lint failure or a gate refusal leaves the unit as HEAD has it). No second
   attempt record is written. A landing record has no tokens and no cost, so `stats` counts the
@@ -112,6 +114,83 @@ The drive refuses (exit 2), before any preflight, each of these combinations:
 - `--stratify` without `--write-picks` or `--dry-run`;
 - `--picks` with `--stratify`;
 - `--land-held` with `--picks`, `--hold`, `--night-model`, `--stratify`, `--dry-run`,
-  `--canary` or `--fable-trial`.
+  `--canary` or `--fable-trial`;
+- `--allow-egress ARM` when ARM is not the `--night-model` arm, or when ARM sends nothing to a
+  non-Anthropic backend.
 
-An unknown `--night-model` id exits 2 and names the known ids.
+An unknown `--night-model` arm exits 2 and names the known arms.
+
+## Backends
+
+Plan 07.2-12 added `config/driver/backends.toml`, the table of arms. Each `[arms.<name>]` entry
+gives the harness, the backend (the provider; `anthropic` is the Claude Code login), the model
+id, `sends_disassembly`, `max_workers`, and for a hosted arm its endpoint (`base_url`), the
+NAME of the environment variable holding its key (`key_env`), the init ids it accepts, its
+prices per million tokens and its credit line. The file holds no key. The ids, endpoints and
+prices of the hosted arms were read on 2026-11-09 and are marked in the file where they are
+assumptions to confirm at setup.
+
+| Arm | Backend | Model id | Key variable |
+|---|---|---|---|
+| `claude-opus-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`, `claude-sonnet-5-5` | anthropic | the arm name | none (the Claude Code login) |
+| `deepseek-flash` | deepseek | `deepseek-flash` | `DEEPSEEK_API_KEY` |
+| `glm-5.3` | zai | `glm-5.3` | `ZAI_API_KEY` |
+| `muse-spark-open` | openrouter | `meta/muse-spark-open` | `OPENROUTER_API_KEY` |
+| `qwen-hosted` | openrouter | `qwen/qwen3.6-35b-a3b` (to confirm) | `OPENROUTER_API_KEY` |
+| `qwen-local` | local | `qwen3.6-35b-a3b` (the llama-server `--alias`) | none (loopback only) |
+
+A hosted arm runs in the same Claude Code harness as the Claude arms, with the same hooks and
+audit, against its provider's Anthropic-compatible endpoint.
+
+- **Two flags.** A non-Anthropic arm that sends disassembly needs both `--night-model ARM`
+  and `--allow-egress ARM`, for a night and for a canary alike:
+  `reverseapoc drive --canary --night-model deepseek-flash --allow-egress deepseek-flash --run canary-deepseek`.
+  What each backend receives is in [legal.md](legal.md#model-backends-and-what-they-receive).
+- **The session environment.** Every session loses every arm's key variable and any inherited
+  `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` and `ANTHROPIC_DEFAULT_*_MODEL`, so a Claude
+  arm always runs on the claude.ai login and no session sees another arm's key. A hosted
+  arm's session then gets its `ANTHROPIC_BASE_URL`, its own key as `ANTHROPIC_AUTH_TOKEN`, an
+  empty `ANTHROPIC_API_KEY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`, the three
+  `ANTHROPIC_DEFAULT_*_MODEL` pins set to its model, and `REVERSEAPOC_EGRESS=1`. Under it the
+  hook denies any Read, Glob or Grep that can reach `orig/` or `third_party/`, of this
+  checkout or of a worktree in it: by any path form, by a wildcard that fits either name, by
+  a `**` or a slash-free Glob pattern from the top level, and any Grep from the top level. A
+  hosted session searches below `src/`, `include/` or its attempt directory instead.
+- **The refusals before any session** (exit 2, before the preflight runs any command): a
+  non-Anthropic arm without `--allow-egress`; an `--allow-egress` naming any other arm; a
+  hosted arm whose key variable is missing, empty or blank, because Claude Code would
+  otherwise send the claude.ai login to that endpoint. The message names the variable and the
+  endpoint, never a value.
+- **Keys.** The owner sets the three variables once as Windows user environment variables,
+  as [toolchain.md](toolchain.md#model-api-keys-and-sign-ins) shows, and opens a new shell.
+  Run the canary of each hosted arm through the clean-environment launcher before its first
+  night.
+- **Init, cost and credit.** A hosted session's init must name one of its arm's
+  `accepted_init` ids, or the night stops. Its `cost_usd` is estimated from its tokens and the
+  arm's prices, `cost_source: "estimate"`; the CLI's own figure for a model it does not know is
+  not trusted, and `--max-turns` and the wall clock stay the runaway guards. Its match commit
+  carries `Matched-By: reverseapoc drive` (so `stats` still counts an unattended match), then
+  `Matched-By: <model id>` and the arm's `Co-Authored-By` line, and no Claude line.
+
+## The local arm
+
+`qwen-local` runs Qwen3.6-35B-A3B on the owner's own llama.cpp server and is the last arm of
+spike 012 (D-18): it may slip without blocking the cloud arms, and `qwen-hosted` runs the same
+weights early through OpenRouter as a fast check.
+
+- **The server.** llama-server lives under `C:\llm\`, outside the repository, with the GGUF
+  the owner chose. Start it on loopback with tool calls enabled and the model name the arm
+  expects, one slot, for example:
+  `C:\llm\llama-server.exe -m <gguf> --host 127.0.0.1 --port 8080 --jinja --alias qwen3.6-35b-a3b -np 1`.
+  `--jinja` is needed for tool calls; `--alias` is the id the session asks for and the init
+  must echo. Without `--api-key` the server ignores the token.
+- **The token.** The arm has no key variable. Its session gets `ANTHROPIC_AUTH_TOKEN=local`
+  (`backends.LOOPBACK_TOKEN`), a fixed non-empty value, so Claude Code never falls back to the
+  claude.ai login. A base URL that is not loopback always needs a key variable.
+- **One worker.** The server has one slot, so `max_workers = 1` and `--workers 2` with
+  `--night-model qwen-local` is refused. Its CPU also competes with the check compiles of the
+  same night.
+- **No egress flag.** `sends_disassembly = false`: nothing leaves the machine, so the arm takes
+  no `--allow-egress` and one naming it is refused. Its cost is 0, recorded as an estimate.
+- **Order.** `reverseapoc drive --canary --night-model qwen-local --run canary-qwen-local`, then
+  the hold run: `reverseapoc drive --night-model qwen-local --workers 1 --picks build/driver/spike012-picks.txt --hold --run spike012-qwen-local`.

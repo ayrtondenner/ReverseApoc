@@ -156,7 +156,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
-from . import attempt, callgraph, hooks, mechanics, streamjson, unitdefs
+from . import attempt, backends, callgraph, hooks, mechanics, streamjson, unitdefs
 from .callgraph import CallGraph
 from .check import BOARD_REGION_BYTES, PERFECT, ExeInputs
 from .contextpack import PACK_FILE, CallIndex, write_pack
@@ -322,6 +322,12 @@ def coauthor(model: str) -> str:
 COAUTHOR = coauthor(OPUS_MODEL)  # D-25: the Opus line (passes 1 and 2), set explicitly
 
 
+def _accepted(arm: backends.Arm) -> tuple[str, ...] | None:
+    """07.2-12 (RESEARCH Q7): the init ids check_init accepts for `arm`: a hosted arm's own
+    `accepted_init`; None for a Claude arm, which keeps streamjson's ACCEPTED_INIT_MODELS."""
+    return None if arm.backend == backends.ANTHROPIC else arm.accepted_init
+
+
 @dataclass(frozen=True)
 class DriveConfig:
     """One night. `max_sessions` caps the sessions launched across every worker, aborted and
@@ -350,13 +356,17 @@ class DriveConfig:
     # quick 261101-b5f: the owner's opt-in to D-09 (`drive --fable-trial`): every matching
     # session on FABLE_MODEL with the Fable budget; off, each pass takes model_for_pass.
     fable_trial: bool = False
-    # 07.2-06 (D-17): `drive --night-model`: every matching session on this model (None: each
-    # pass's); `drive --hold`: a hold run, which lands nothing and attempts each function once.
+    # 07.2-06 (D-17): `drive --night-model`: every matching session on this arm's model (None:
+    # each pass's; 07.2-12: an arm of backends.toml); `drive --hold`: a hold run, which lands
+    # nothing and attempts each function once.
     night_model: str | None = None
     hold: bool = False
     # `drive --land-held RUN...`: instead of sessions, land the named hold runs' exact
     # attempts (stats.run_selected names), each function once (`_Night.land_held`).
     land_held: tuple[str, ...] = ()
+    # 07.2-12 (D-12): config/driver/backends.toml as run_drive loaded it; None: the committed
+    # table. `night_model` names one of its arms; the Claude arms are keyed by their model id.
+    arm_table: Mapping[str, backends.Arm] | None = None
 
     def budget_for(self, model: str) -> float:
         """The per-session budget of `model` (D-07, D-25): Fable's for FABLE_MODEL, else Opus's."""
@@ -756,10 +766,10 @@ RECORD_FIELDS_V2: dict[str, dict[str, Callable[[object], bool]]] = {
 # line is rewritten (D-23). Every record the driver writes from here on is schema 3, so a night
 # never mixes shapes.
 SCHEMA_V3 = 3
-HARNESSES = ("claude", "codex", "agy")  # the agent CLI a session ran under
+HARNESSES = backends.HARNESSES  # the agent CLI a session ran under (defined once, 07.2-12)
 COST_SOURCES = ("cli", "estimate")  # the CLI's own result figure, or our price-table estimate
-DEFAULT_BACKEND = "anthropic"  # the Claude Code login, no base URL
-_BACKEND = re.compile(r"[a-z][a-z0-9-]{0,31}")
+DEFAULT_BACKEND = backends.ANTHROPIC  # the Claude Code login, no base URL
+_BACKEND = backends.BACKEND_RE
 _SCHEMA_V3_FIELD = {"schema": lambda value: type(value) is int and value == SCHEMA_V3}
 _V3_SESSION_FIELDS = {**_V2_SESSION_FIELDS, **_SCHEMA_V3_FIELD}
 SESSION_OUTCOMES_V3 = {  # a hold run's exit-0 outcome is a matching one (D-26)
@@ -993,12 +1003,13 @@ def commit_message(
     seconds: float,
     sha1s: Sequence[tuple[str, str]],
     requested_model: str,
+    arm: backends.Arm | None = None,
 ) -> str:
     """D-25's message for one match: subject, the attempt's figures, both SHA-1s, trailers.
     `model` is the init event's (the `model` line); `requested_model` the session's, which the
     init check has matched, and names the co-author (07-30: coauthor raises DriverError for a
-    model it does not know, before anything is committed)."""
-    trailer = coauthor(requested_model)
+    model it does not know, before anything is committed). 07.2-12: a non-Anthropic `arm` is
+    credited by `credit` instead."""
     lines = [
         f"feat({exe}): match {function} in {unit} (C89)",
         "",
@@ -1012,10 +1023,19 @@ def commit_message(
         "relocation ok",
         *(f"sha1 {name} {sha1}" for name, sha1 in sha1s),
         "",
-        trailer,
-        MATCHED_BY,
+        *credit(requested_model, arm),
     ]
     return "\n".join(lines) + "\n"
+
+
+def credit(requested_model: str, arm: backends.Arm | None = None) -> list[str]:
+    """The trailers of a match commit (D-25, D-26). A Claude model: its co-author line, then
+    MATCHED_BY. A non-Anthropic arm: MATCHED_BY (so stats still classes the match unattended),
+    `Matched-By: <model id>` and the arm's own co-author line, never a Claude one; the commit
+    hook adds its Claude line only to a message with no Co-Authored-By (RULINGS)."""
+    if arm is None or arm.backend == backends.ANTHROPIC:
+        return [coauthor(requested_model), MATCHED_BY]
+    return [MATCHED_BY, f"Matched-By: {arm.model}", f"Co-Authored-By: {arm.coauthor}"]
 
 
 def readability_message(
@@ -1707,6 +1727,9 @@ class _Claim:
     model: str = MODEL  # 07-30 (D-09): the requested model, session.model_for_pass(pass_n)
     budget_usd: float = MAX_BUDGET_USD  # 07-30 (D-07, D-25): that model's per-session budget
     session: str = MATCHING_KIND  # 07-34 (D-18): the night's session kind (DriveConfig.session)
+    # 07.2-12 (D-12): the arm the session runs on (backends.toml); None: the Claude arm of
+    # `model`, which the table keys by its model id.
+    arm: backends.Arm | None = None
 
     @property
     def key(self) -> Key:
@@ -1764,10 +1787,17 @@ class _Claim:
     def proposals_rel(self) -> str:
         return self.proposals.relative_to(self.repo).as_posix()
 
-    def env(self, base: Mapping[str, str]) -> dict[str, str]:
-        """The session's environment: the base plus the four claim variables and the three
-        view variables (absolute, F28; 07-13, D-24) that the hooks and the wrapper validate."""
-        return {**base, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
+    def arm_in(self, arms: Mapping[str, backends.Arm]) -> backends.Arm:
+        """The session's arm: `arm`, else the Claude arm `arms` keys by `model`."""
+        return self.arm if self.arm is not None else arms[self.model]
+
+    def env(self, base: Mapping[str, str], arms: Mapping[str, backends.Arm]) -> dict[str, str]:
+        """The session's environment: the arm's (backends.session_env, D-12: no arm's key
+        variable and no inherited endpoint or token; a hosted arm's endpoint and bearer token)
+        plus the four claim variables and the three view variables (absolute, F28; 07-13, D-24)
+        that the hooks and the wrapper validate."""
+        own = backends.session_env(self.arm_in(arms), base, arms)
+        return {**own, attempt.CLAIM_ENV: self.target, attempt.FUNC_ENV: self.function,
                 attempt.DIR_ENV: str(self.attempt_dir),
                 attempt.NOTES_ENV: str(self.notes),
                 hooks.UNIT_FILE_ENV: str(self.view_unit),
@@ -2236,6 +2266,8 @@ class _Night:
         self.config = config
         self.deps = deps
         self.repo = Path(config.repo_root)
+        # 07.2-12 (D-12): the arm table every session's environment is built from
+        self.arms = config.arm_table if config.arm_table is not None else backends.load_arms()
         self.log = self.repo / ATTEMPT_LOG
         self.sessions = 0
         self.matched = 0
@@ -2708,14 +2740,21 @@ class _Night:
         """The requested model of `pick`'s session: Opus on a readability night (07-38:
         escalation is a matching rule), Fable on a Fable trial night (quick 261101-b5f, the
         owner's opt-in to D-09), else the pass's (D-09). 07.2-06 (D-17): `--night-model`'s
-        model on a matching night."""
+        model on a matching night (07.2-12: the model of that backends.toml arm)."""
         if self.config.session == READABILITY:
             return OPUS_MODEL
         if self.config.night_model is not None:
-            return self.config.night_model
+            return self.arms[self.config.night_model].model
         if self.config.fable_trial:
             return FABLE_MODEL
         return model_for_pass(self._pass(pick))
+
+    def _arm(self, pick: Pick) -> backends.Arm:
+        """07.2-12: the `--night-model` arm on a matching night, else the Claude arm of the
+        session's model (the table keys the Claude arms by their model id)."""
+        if self.config.night_model is not None and self.config.session != READABILITY:
+            return self.arms[self.config.night_model]
+        return self.arms[self._model(pick)]
 
     def _label(self, pick: Pick, n: int) -> str:
         return f"{pick.exe} func_{pick.start:08X} attempt {n}/{self._attempts()}"
@@ -2824,7 +2863,7 @@ class _Night:
         model = self._model(pick)
         return _Claim(pick, self.config.run_id, self.repo, n, pass_n=pass_n, model=model,
                       budget_usd=self.config.budget_for(model),
-                      session=self.config.session)  # fmt: skip
+                      session=self.config.session, arm=self._arm(pick))  # fmt: skip
 
     def _limited(self, pick: Pick, n: int, probe: bool) -> None:
         """A LIMIT session (D-07): the worker that starts or renews the shared pause waits its
@@ -3038,7 +3077,7 @@ class _Night:
             argv = self.deps.argv(prompt, model=claim.model, max_budget_usd=claim.budget_usd,
                                   max_turns=self.config.max_turns, **skill)  # fmt: skip
             result = self.deps.session(argv, cwd=self.repo,
-                                       env=claim.env(base),
+                                       env=claim.env(base, self.arms),
                                        transcript=claim.attempt_dir / TRANSCRIPT,
                                        timeout_s=self.config.wall_clock_s,
                                        on_start=self._on_start, on_end=self._on_end)  # fmt: skip
@@ -3573,7 +3612,9 @@ class _Night:
             return
         problems = streamjson.check_init(init, tested_major=self.config.tested_major,
                                          min_version=self.config.min_cli_version,
-                                         expected_model=session.claim.model)  # fmt: skip
+                                         expected_model=session.claim.model,
+                                         accepted=_accepted(session.claim.arm_in(self.arms))
+                                         )  # fmt: skip
         if problems:
             self._reset(session)
             raise _Stop(INIT, "; ".join(problems))
@@ -3927,7 +3968,8 @@ class _Night:
         if claim.session == READABILITY:
             return readability_message(**figures)
         return commit_message(function=claim.function,
-                              attempts=self.config.attempts_per_function, **figures)
+                              attempts=self.config.attempts_per_function,
+                              arm=claim.arm_in(self.arms), **figures)  # fmt: skip
 
     def _commit_match(self, session: _Session, gate: GateRun, summary: CheckSummary,
                       abort: str | None = None, *,
@@ -4087,7 +4129,7 @@ class _Night:
         pick = Pick(held["exe"], int(held["start"], 16), held["function"], held["unit"], 0, 0)
         source = _Claim(pick, held["run"], self.repo, held["attempt"]).attempt_dir
         claim = _Claim(pick, self.config.run_id, self.repo, held["attempt"],
-                       model=held["model_requested"])  # fmt: skip
+                       model=held["model_requested"], arm=self._held_arm(held))  # fmt: skip
         head, exact = _view_head(source), exact_source(source)
         if head is None or exact is None or _is_link(source / exact) or not (
                 source / exact).is_file():  # fmt: skip
@@ -4125,7 +4167,8 @@ class _Night:
 
     def _held_message(self, held: Mapping, gate: GateRun) -> str:
         """D-25's match message from the held attempt's own figures, with the hold run named;
-        the co-author is its requested model (`coauthor`, 07.2-12 adds other arms')."""
+        the credit is its requested model's (`coauthor`), or its hosted arm's (`credit`,
+        07.2-12)."""
         tokens = held["tokens"]
         usage = streamjson.Usage(tokens["input"], tokens["output"], tokens["cache_read"],
                                  tokens["cache_creation"], held["turns"], held["cost_usd"],
@@ -4135,9 +4178,22 @@ class _Night:
                                  attempts=self.config.attempts_per_function,
                                  model=held["model"], usage=usage, seconds=held["seconds"],
                                  sha1s=gate_sha1s(gate.doc),
-                                 requested_model=held["model_requested"])  # fmt: skip
+                                 requested_model=held["model_requested"],
+                                 arm=self._held_arm(held))  # fmt: skip
         return message.replace("\n\nattempt ", f"\n\nlanded from hold run {held['run']}\n"
                                                "attempt ", 1)  # fmt: skip
+
+    def _held_arm(self, held: Mapping) -> backends.Arm | None:
+        """07.2-12 (D-26): the arm a held attempt ran on, by its requested model and backend;
+        None on the Claude login (coauthor names it). A hosted record no arm of backends.toml
+        matches raises DriverError, so nothing is committed under an unknown arm."""
+        if held["backend"] == DEFAULT_BACKEND:
+            return None
+        for arm in self.arms.values():
+            if (arm.model, arm.backend) == (held["model_requested"], held["backend"]):
+                return arm
+        raise DriverError(f"no arm of {backends.ARMS_TOML.name} runs {held['model_requested']} "
+                          f"on {held['backend']}; nothing is committed under an unknown arm")
 
     def _record_landing(self, held: Mapping, outcome: str, *, reason: str | None = None,
                         gate: GateRun | None = None,
@@ -4773,19 +4829,25 @@ class _Night:
         wall clock killed it: abort_reason timeout, or lint, tool or guardrail when one of those
         followed the timeout) carries the stream lower bound of `streamjson.stream_usage` in
         them instead, `duration_ms` null (nothing measured, not 0 ms) and `cost_source`
-        "estimate". A night passes no effort (null: the CLI default, D-17) and runs the Claude
-        harness on the Claude Code login (`backend` DEFAULT_BACKEND); `giveup` is the session's
+        "estimate". A night passes no effort (null: the CLI default, D-17); `harness` and
+        `backend` are the session's arm's (07.2-12: DEFAULT_BACKEND on the Claude Code login,
+        else the backends.toml entry's provider). A hosted arm's `cost_usd` is always
+        backends.estimate_cost over its tokens, `cost_source` "estimate" (RESEARCH A3: the
+        CLI's figure for a model it does not know is not trusted); `giveup` is the session's
         validated giveup.json (`_giveup`, 07.2-02) or null, and `hold_run` true exactly on a
         hold run (`drive --hold`, 07.2-06). Committed records are never rewritten (D-23)."""
         use = session.usage
         measured = session.measured
+        arm = session.claim.arm_in(self.arms)  # 07.2-12: the arm's harness and backend
+        hosted = arm.backend != DEFAULT_BACKEND  # RESEARCH A3: its CLI cost is not trusted
+        cost = backends.estimate_cost(use, arm) if hosted else use.cost_usd
         source, cells = _sweep_evidence(session.claim.attempt_dir)
         record = {**self._base(session.claim, KIND_ATTEMPT), "outcome": outcome,
                   "abort_reason": abort, "turns": use.turns,
                   "tokens": {"input": use.input_tokens, "output": use.output_tokens,
                              "cache_read": use.cache_read_tokens,
                              "cache_creation": use.cache_creation_tokens},
-                  "cost_usd": use.cost_usd, "seconds": round(session.seconds, 1),
+                  "cost_usd": cost, "seconds": round(session.seconds, 1),
                   "model": session.text("model"),
                   "cli_version": session.text("claude_code_version"),
                   "check": summary.to_json(), "pack_bytes": session.pack.pack_bytes,
@@ -4795,9 +4857,9 @@ class _Night:
                   "hook_blocks": _hook_blocks(session.events),
                   "gate": _gate_field(gate, session.claim.pick),
                   "sweep_source": source, "sweep_cells_100": cells,
-                  "effort": None, "harness": "claude", "backend": DEFAULT_BACKEND,
+                  "effort": None, "harness": arm.harness, "backend": arm.backend,
                   "duration_ms": use.duration_ms if measured else None,
-                  "cost_source": "cli" if measured else "estimate",
+                  "cost_source": "cli" if measured and not hosted else "estimate",
                   "giveup": self._giveup(session.claim),
                   "hold_run": self.config.hold}  # fmt: skip
         self._append(record)
@@ -5170,12 +5232,15 @@ class DriveOptions:
     fable_trial: bool = False  # quick 261101-b5f: `drive --fable-trial`
     # 07.2-06 (D-17), the spike 012 harness: the night's model, a frozen picks file, the
     # stratified pick list a dry run writes, a hold run, and the hold runs to land.
-    night_model: str | None = None  # `--night-model MODEL`
+    night_model: str | None = None  # `--night-model ARM` (07.2-12: a backends.toml arm)
     picks: Path | None = None  # `--picks FILE` (read_picks)
     stratify: tuple[int, int, int] | None = None  # `--stratify A,B,C` (STRATA), dry run only
     write_picks: Path | None = None  # `--write-picks FILE`, with --stratify
     hold: bool = False  # `--hold`
     land_held: tuple[str, ...] = ()  # `--land-held RUN...` (stats.run_selected names)
+    # 07.2-12 (D-11): `--allow-egress ARM`, each the --night-model arm that sends the context
+    # pack to a non-Anthropic backend; anything else is refused (backends.preflight).
+    allow_egress: tuple[str, ...] = ()
 
     @property
     def config_root(self) -> Path:
@@ -6206,15 +6271,43 @@ def run_drive(options: DriveOptions, seams: Seams) -> int:
         lock.release()
 
 
+def refuse_arms(options: DriveOptions, seams: Seams) -> dict[str, backends.Arm]:
+    """07.2-12 (D-11, D-12, D-26): backends.toml, read and checked before any command, session
+    or attempt directory. The run's arm (the canary's model on a canary, else `--night-model`,
+    else the default Claude arm) must be in the table, a `--night-model` night may not run more
+    `--workers` than the arm's max_workers, and backends.preflight must pass for it: a
+    non-Anthropic arm that sends the pack needs --allow-egress, a stray --allow-egress is
+    refused, and a base URL needs a non-blank key in the sessions' environment."""
+    shown = backends.ARMS_TOML.relative_to(backends.REPO_ROOT).as_posix()
+    try:
+        arms = backends.load_arms()
+    except backends.ArmError as exc:
+        raise Refused("backends", str(exc)) from exc
+    name = options.canary_model if options.canary else (options.night_model or MODEL)
+    if name not in arms:
+        raise Refused("night model", f"{name!r} is not an arm of {shown}: {', '.join(arms)}")
+    arm = arms[name]
+    if options.night_model is not None and not options.canary and options.workers > arm.max_workers:
+        raise Refused("workers", f"--workers {options.workers} is above arm {name}'s max_workers "
+                                 f"{arm.max_workers} in {shown} (the local server has one slot)")
+    base = seams.base_env if seams.base_env is not None else os.environ
+    try:
+        backends.preflight(arm, base, allow_egress=options.allow_egress)
+    except backends.ArmError as exc:
+        raise Refused("backends", str(exc)) from exc
+    return arms
+
+
 def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) -> int:
     log = _Log(options, seams)
     try:
+        arms = refuse_arms(options, seams)  # 07.2-12: before the preflight's first command
         with _phase("preflight"):  # 07.2-06: --land-held launches no claude either
             preflight(options, seams, check_cli=not (options.dry_run or options.land_held),
                       log=log)  # fmt: skip
         if options.canary:
             with _phase("canary"):
-                return run_canary(options, seams, lock=lock)
+                return run_canary(options, seams, lock=lock, arms=arms)
         worlds = _load_worlds(seams)
         today = _today()
         if options.land_held:  # 07.2-06 (D-17): no picks and no Ghidra drafts
@@ -6257,7 +6350,7 @@ def _run_drive_locked(options: DriveOptions, seams: Seams, lock: ProcessLock) ->
                          session=options.session,
                          fable_trial=options.fable_trial,
                          night_model=options.night_model, hold=options.hold,
-                         land_held=options.land_held)  # fmt: skip
+                         land_held=options.land_held, arm_table=arms)  # fmt: skip
     if options.fable_trial:  # quick 261101-b5f: stamped in text mode, silent with --json
         console(options, seams)(FABLE_TRIAL_NIGHT.format(model=FABLE_MODEL,
                                                          budget=options.fable_budget_usd))
@@ -6434,13 +6527,15 @@ def _check_evidence(attempt_dir: Path, repo: Path) -> tuple[bool, str]:
 
 
 def _canary_checks(options: DriveOptions, events: Sequence[dict], attempt_dir: Path,
-                   checks: _Checks, *, model: str) -> None:  # fmt: skip
-    """07-30 (D-09, D-25): the init must name `model`, the model the canary asked for."""
+                   checks: _Checks, *, model: str,
+                   accepted: Sequence[str] | None = None) -> None:  # fmt: skip
+    """07-30 (D-09, D-25): the init must name `model`, the model the canary asked for (07.2-12:
+    one of a hosted arm's `accepted` init ids)."""
     repo = Path(options.repo)
     init = streamjson.init_event(events)
     problems = streamjson.check_init(init, tested_major=TESTED_MAJOR,
                                      min_version=MIN_CLI_VERSION,
-                                     expected_model=model)  # fmt: skip
+                                     expected_model=model, accepted=accepted)  # fmt: skip
     shown = _init_text(events, "model")  # 07-30: the owner reports this string (research A9)
     checks.add(not problems, "init: " + (f"{'; '.join(problems)} (init model {shown})" if problems
                                          else f"claude {(init or {}).get('claude_code_version')}, "
@@ -6517,29 +6612,34 @@ def _refs(probe: _Night) -> dict[str, str]:
 
 
 def _after_session(options: DriveOptions, seams: Seams, events: Sequence[dict],
-                   attempt_dir: Path, checks: _Checks, *, model: str) -> None:  # fmt: skip
+                   attempt_dir: Path, checks: _Checks, *, model: str,
+                   accepted: Sequence[str] | None = None) -> None:  # fmt: skip
     """The stream checks; an error in them is a FAIL line after the lines so far (fix round
     2: the session ran, so the canary reports, it never refuses)."""
     try:
-        _canary_checks(options, events, attempt_dir, checks, model=model)
+        _canary_checks(options, events, attempt_dir, checks, model=model, accepted=accepted)
     except Exception as exc:  # noqa: BLE001 - reported, never a PASS
         checks.add(False, f"checking the stream failed: {type(exc).__name__}: {exc}")
 
 
-def run_canary(options: DriveOptions, seams: Seams, *, lock: ProcessLock | None = None) -> int:
+def run_canary(options: DriveOptions, seams: Seams, *, lock: ProcessLock | None = None,
+               arms: Mapping[str, backends.Arm] | None = None) -> int:  # fmt: skip
     """The canary under drive.lock (D-06, 07-18 fix round 1): `lock` is the verb's, already
     held; called without one, the canary takes drive.lock itself before anything else (Refused,
-    exit 2, while a night holds it) and frees it at the end."""
+    exit 2, while a night holds it) and frees it at the end. 07.2-12: `arms` is the table
+    run_drive checked (None: the committed one); the canary runs the arm `canary_model` names."""
+    table = backends.load_arms() if arms is None else arms
     if lock is not None:
-        return _run_canary_locked(options, seams)
+        return _run_canary_locked(options, seams, table)
     own = take_drive_lock(options.repo)
     try:
-        return _run_canary_locked(options, seams)
+        return _run_canary_locked(options, seams, table)
     finally:
         own.release()
 
 
-def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
+def _run_canary_locked(options: DriveOptions, seams: Seams,
+                       arms: Mapping[str, backends.Arm]) -> int:  # fmt: skip
     """One real session (owner only) with CANARY_PROMPT under the matching settings, claiming
     ufo2p/u_000a34f0 func_000A3980 with absolute paths under build/driver/canary/ (F12), in view
     mode like every session (07-13, D-24: a view of HEAD, which must hold that matched unit,
@@ -6562,10 +6662,11 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         raise Refused("run id", f"{attempt_dir.relative_to(repo).as_posix()} exists: a canary "
                                 "already ran with this --run ID; give a new one")  # fmt: skip
     pick = Pick(CANARY_EXE, int(CANARY_FUNC[len("func_"):], 16), CANARY_FUNC, CANARY_UNIT, 0, 0)
-    model = options.canary_model  # what the canary asks for and its init check expects (D-25)
+    arm = arms[options.canary_model]  # 07.2-12: the arm the canary proves (a Claude id or not)
+    model = arm.model  # what the canary asks for and its init check expects (D-25)
     claim = _Claim(pick, options.run_id, repo, 1, runs=DRIVER_DIR / CANARY_RUN_DIR, model=model,
                    budget_usd=session_budget(model, options.max_budget_usd,
-                                             options.fable_budget_usd))  # fmt: skip
+                                             options.fable_budget_usd), arm=arm)  # fmt: skip
     probe = _probe(options, seams)
     listed = _git_ok(probe._git, ["ls-tree", "--name-only", "HEAD", "--", claim.unit_rel])
     if not listed.strip():  # 07-13: the view needs the matched unit; the canary scaffolds nothing
@@ -6575,7 +6676,7 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
     attempt_dir.mkdir(parents=True)
     probe._make_view(claim)  # 07-13 (D-24): the canary runs in view mode like every session
     base = seams.base_env if seams.base_env is not None else os.environ
-    env = claim.env(base)  # attempt dir, notes, view unit and proposals under build/driver/canary/
+    env = claim.env(base, arms)  # the arm's env; attempt dir, notes, view unit and proposals
     before = probe._snapshot()
     refs_before = _refs(probe)
     checks = _Checks()
@@ -6592,7 +6693,8 @@ def _run_canary_locked(options: DriveOptions, seams: Seams) -> int:
         checks.add(False, f"the session raised {type(exc).__name__}: {exc}")
     else:
         events = result.events
-        _after_session(options, seams, events, attempt_dir, checks, model=model)
+        _after_session(options, seams, events, attempt_dir, checks, model=model,
+                       accepted=_accepted(arm))  # fmt: skip
     try:  # like the night: the attempt's containers go before anything is measured
         container_remover(repo, seams.run)(attempt.container_prefix(attempt_dir))
     except Exception as exc:  # noqa: BLE001 - a FAIL line, the tree is still measured

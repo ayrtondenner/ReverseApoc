@@ -33,7 +33,8 @@ turns a failure of uv or the import into a block, and each handler's `"timeout":
   round 1 M14: `#pragma on/off (check_stack)` changes code the way a flag does); read only
   inside the repository and never a .env* file (a Glob pattern or Grep glob may hold plain
   {a,b} alternatives, each expansion judged by the same rule; [ ] classes are refused,
-  261109-gzw); and run Bash only as an exact attempt-wrapper form
+  261109-gzw), and, in a session of a non-Anthropic arm (REVERSEAPOC_EGRESS=1, 07.2-12, D-10),
+  nothing under orig/ or third_party/; and run Bash only as an exact attempt-wrapper form
   (ATTEMPT_PREFIX plus one of `forms_for(kind)`: MATCHING_FORMS for a matching session,
   ATTEMPT_FORMS for a readability one, D-44, D-26), in the foreground (no `run_in_background`),
   and an `attempt check` only with the Bash tool's `timeout` at CHECK_TIMEOUT_MS (WR-04).
@@ -60,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import codecs
+import fnmatch
 import io
 import itertools
 import json
@@ -142,6 +144,10 @@ _PRAGMA = re.compile(r"\s*(#|%:)\s*pragma(?![A-Za-z0-9_])")
 CLAIM_ENV = "REVERSEAPOC_CLAIM"
 _CLAIM = re.compile(r"(ufo2p|tacp)/[a-z0-9_]+")
 _READ_TOOLS = ("Read", "Glob", "Grep")
+# 07.2-12 (D-10): "1" on a session whose arm sends the context pack to a non-Anthropic backend
+# (backends.session_env sets it); such a session reads nothing under these directories.
+EGRESS_ENV = "REVERSEAPOC_EGRESS"
+_EGRESS_DENIED = ("orig", "third_party")
 _WRITE_TOOLS = ("Edit", "Write", "MultiEdit")
 _MATCHING_TOOLS = (*_READ_TOOLS, *_WRITE_TOOLS, "Bash")
 _SYMBOLS = re.compile(r"config/[^/]+/symbols\.csv")  # D-19: shared naming state, driver-only
@@ -1081,8 +1087,112 @@ def _secret(rel: str) -> bool:
     return any(part.startswith(_SECRET_PREFIX) for part in rel.split("/"))
 
 
-def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
-    """Read, Glob and Grep: inside the session's checkout and never a .env* file."""
+def _segments(text: str) -> list[str]:
+    return [part.casefold() for part in text.replace("\\", "/").split("/") if part not in ("", ".")]
+
+
+def _fits(name: str, segment: str) -> bool:
+    """Whether a path segment `segment` (a glob segment or a plain name) can match `name`."""
+    return fnmatch.fnmatchcase(name, segment)
+
+
+def _wild(segment: str) -> bool:
+    return any(char in segment for char in "*?[")
+
+
+_PLAIN_GLOB = re.compile(r"[a-z0-9._*?-]*")  # a casefolded segment fnmatch models exactly
+
+
+def _glob_segment(segment: str) -> str:
+    """A Glob pattern or Grep glob segment as the egress rule judges it. fnmatch does not model
+    extglob (`@( )`, `+( )`, `!( )`), alternation, negation or the like, so a segment holding
+    anything but letters, digits, `._-` and the plain wildcards `*` and `?` fails closed as
+    `**`: it can stand for any run of segments (security review, MEDIUM)."""
+    return segment if _PLAIN_GLOB.fullmatch(segment) else "**"
+
+
+_WORKTREE_LEAD = (".claude", "worktrees", "*")  # the segments before a worktree's checkout
+
+
+def _leads_to_worktree(segs: Sequence[str]) -> bool:
+    """Whether `segs` (at most three) can be the start of `.claude/worktrees/<name>`: each one
+    fits its place, or is a glob that can match it."""
+    return len(segs) <= len(_WORKTREE_LEAD) and all(
+        _fits(s, want) or _fits(want, s) for want, s in zip(_WORKTREE_LEAD, segs, strict=False))
+
+
+def _root_positions(segs: Sequence[str]) -> set[int]:
+    """The indexes where a checkout root's top level can sit in `segs`: 0 (the session's own),
+    and 3 when the first two can be `.claude/worktrees` (a worktree's checkout)."""
+    roots = {0}
+    if len(segs) > 2 and _fits(".claude", segs[0]) and _fits("worktrees", segs[1]):
+        roots.add(3)
+    return roots
+
+
+def _reaches_egress_dir(segs: Sequence[str]) -> bool:
+    """07.2-12 (D-10, the security review): whether a path or glob of these repo-relative
+    segments can name or enter orig/ or third_party/ of this checkout or of a worktree in it.
+    A plain segment naming either directory at any depth does; so does a wildcard segment that
+    fits either one where a checkout's top level can sit; and so does a `**` before that point
+    (it can stand for the segments leading there). Over-refusal is the safe side."""
+    roots = _root_positions(segs)
+    for i, seg in enumerate(segs):
+        fits = any(_fits(name, seg) for name in _EGRESS_DENIED)
+        if fits and (not _wild(seg) or i in roots):
+            return True
+        if "**" in seg and _leads_to_worktree(segs[:i]):
+            return True
+    return False
+
+
+def _at_root(segs: Sequence[str]) -> bool:
+    """Whether a directory of these segments holds a checkout's top level below it: the
+    session's root, `.claude`, `.claude/worktrees` or one worktree's checkout."""
+    return _leads_to_worktree(segs)
+
+
+def _egress_forms(raw: str, payload: Mapping, root: tuple[str, ...],
+                  env: Mapping[str, str]) -> set[str]:  # fmt: skip
+    """Every repo-relative form of `raw` the hook can name: against the session's checkout and,
+    as the always-on layer judges paths, against the project root and every `.git` anchor, each
+    also with a worktree's prefix stripped (`_repo_forms`)."""
+    forms = set()
+    for path in candidates(raw, _cwd(payload)):
+        inside = _inside(path, root)
+        forms.update(() if inside is None else (inside,))
+        forms.update(_repo_forms(path, (*root, *project_roots(env))))
+    return forms
+
+
+def _egress_problem(raw: str, payload: Mapping, root: tuple[str, ...],
+                    env: Mapping[str, str]) -> str:  # fmt: skip
+    """07.2-12 (D-10): why an egress session's read can reach orig/ or third_party/, or ''.
+    Every form of the path is judged (`_egress_forms`). A Grep from a directory that holds a
+    checkout's top level is refused whatever its glob (a ripgrep glob without a slash matches
+    at any depth); a Glob pattern is judged joined to each form of its base, as written and in
+    every brace expansion, and a pattern without a slash as one that may match at any depth.
+    gitignore is never relied on."""
+    tool, tool_input = payload["tool_name"], payload["tool_input"]
+    forms = [_segments(form) for form in _egress_forms(raw, payload, root, env)]
+    if any(_reaches_egress_dir(segs) for segs in forms):
+        return "names orig/ or third_party/"
+    if tool == "Grep" and any(_at_root(segs) for segs in forms):
+        return "searches a directory that holds orig/ or third_party/"
+    patterns = [tool_input.get(key) for key in ("pattern", "glob") if tool == "Glob"]
+    patterns += [tool_input.get("glob")] if tool == "Grep" else []
+    for pattern in (p for p in patterns if isinstance(p, str)):
+        for text in _brace_expansions(pattern) or [pattern]:
+            tail = [_glob_segment(seg) for seg in _segments(text)]
+            tail = tail if "/" in text.replace("\\", "/") else ["**", *tail]
+            if any(_reaches_egress_dir([*segs, *tail]) for segs in forms):
+                return f"has a pattern {pattern!r} that can reach orig/ or third_party/"
+    return ""
+
+
+def _read(payload: Mapping, root: tuple[str, ...], env: Mapping[str, str]) -> Decision:
+    """Read, Glob and Grep: inside the session's checkout and never a .env* file; in an egress
+    session (EGRESS_ENV "1", 07.2-12) nothing under orig/ or third_party/ either."""
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, Mapping):
         raise HookError("the payload has no tool_input object")
@@ -1101,6 +1211,11 @@ def _read(payload: Mapping, root: tuple[str, ...]) -> Decision:
         problem = _pattern_problem(tool_input.get(key))
         if problem:
             return _deny(f"{tool} {key} {problem} is not allowed in a matching session")
+    problem = _egress_problem(raw, payload, root, env) if env.get(EGRESS_ENV) == "1" else ""
+    if problem:
+        return _deny(f"{tool} that {problem} is not allowed in a session whose model is not "
+                     "Anthropic's: the game files and the compiler never leave the machine "
+                     "(D-10, docs/legal.md)")  # fmt: skip
     return NO_OPINION
 
 
@@ -1272,7 +1387,7 @@ def _matching(payload: Mapping, env: Mapping[str, str], tracked: Callable[[str],
         return _deny(f"{tool} is not available in a matching session (D-17, D-45)")
     root = _session_root(payload)
     if tool in _READ_TOOLS:
-        return _read(payload, root)
+        return _read(payload, root, env)
     if tool == "Bash":
         if _claim(env) is None:
             return _deny(f"no valid {CLAIM_ENV}=<exe>/<unit>, so a matching session runs nothing")

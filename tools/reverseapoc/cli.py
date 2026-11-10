@@ -20,6 +20,7 @@ from pathlib import Path
 from . import (
     asmclass,
     attempt,
+    backends,
     batch,
     causes,
     classify,
@@ -1711,6 +1712,18 @@ def _model(value: str) -> str:
     return value
 
 
+def _arm_name(value: str) -> str:
+    """07.2-12: an arm of config/driver/backends.toml (the Claude arms are keyed by their
+    model id, so a Claude id still works)."""
+    try:
+        arms = backends.load_arms()
+    except backends.ArmError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if value not in arms:
+        raise argparse.ArgumentTypeError(f"arm {value!r} is not one of {', '.join(arms)}")
+    return value
+
+
 def _run_id(value: str | None) -> str:
     """The run's id: `--run ID`, else the UTC time it starts (YYYYMMDD-HHMMSS)."""
     if value is None:
@@ -1756,7 +1769,8 @@ def _cmd_drive(args: argparse.Namespace) -> int:
                                   night_model=args.night_model,
                                   picks=args.picks, stratify=args.stratify,
                                   write_picks=args.write_picks, hold=args.hold,
-                                  land_held=tuple(args.land_held or ()))  # fmt: skip
+                                  land_held=tuple(args.land_held or ()),
+                                  allow_egress=tuple(args.allow_egress or ()))  # fmt: skip
     return driver.run_drive(options, driver.default_seams(REPO_ROOT))
 
 
@@ -1785,8 +1799,15 @@ def _harness_conflict(args: argparse.Namespace) -> str | None:
     """07.2-06 (D-17): the one refusal point of the spike 012 harness flags, or None. A night
     model is for a matching night that is no Fable trial; a hold run is a matching night that
     launches sessions; --stratify writes its picks file from a dry run; --land-held lands
-    and launches nothing."""
+    and launches nothing. 07.2-12 (D-11): each --allow-egress names the --night-model arm, and
+    that arm sends the context pack to a non-Anthropic backend."""
     readability = args.session == driver.READABILITY
+    for name in args.allow_egress or ():
+        if name != args.night_model:
+            return f"--allow-egress {name} names no --night-model arm of this run (D-11)"
+        if not backends.load_arms()[name].egress:
+            return (f"--allow-egress {name}: that arm sends nothing to a non-Anthropic backend, "
+                    "so it takes no --allow-egress (D-11)")  # fmt: skip
     if args.land_held:
         clash = [flag for name, flag in _LAND_HELD_WITH if getattr(args, name)]
         if clash:
@@ -1830,10 +1851,15 @@ def _run_name(value: str) -> str:
 
 def _add_harness_flags(p: argparse.ArgumentParser) -> None:
     """07.2-06 (D-17): the spike 012 harness (docs/model-routing.md)."""
-    p.add_argument("--night-model", type=_model, default=None, metavar="MODEL",
-                   help="every matching session of the night on MODEL instead of the pass's "
-                   f"({', '.join(session.MODEL_NAMES)}); with --canary, the canary's model; "
-                   "refused with --fable-trial and --session readability")  # fmt: skip
+    p.add_argument("--night-model", type=_arm_name, default=None, metavar="ARM",
+                   help="every matching session of the night on ARM, an arm of "
+                   "config/driver/backends.toml (a Claude model id is its own arm), instead of "
+                   "the pass's model; with --canary, the canary's arm; refused with "
+                   "--fable-trial and --session readability")  # fmt: skip
+    p.add_argument("--allow-egress", action="append", default=None, metavar="ARM",
+                   help="the owner's opt-in for --night-model ARM to send context packs to its "
+                   "non-Anthropic backend (D-11); without it such an arm is refused, and one "
+                   "naming any other arm is refused (docs/legal.md)")  # fmt: skip
     p.add_argument("--picks", type=Path, default=None, metavar="FILE",
                    help="queue only the functions FILE lists, one `<exe> 0x<8 hex digits>` "
                    "per line; a pick outside the queue or already matched is refused")

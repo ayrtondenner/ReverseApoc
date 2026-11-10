@@ -122,6 +122,24 @@ def test_partial_rows_are_no_match(tmp_path):
     ]
 
 
+def test_classify_hosted_arm_match_is_unattended(tmp_path):
+    """07.2-12 (D-26, RULINGS "Matched-By"): a hosted arm's match message keeps the driver's
+    Matched-By beside its own model id and vendor line, so it stays an unattended match."""
+    from reverseapoc import backends, driver
+    from reverseapoc.streamjson import Usage
+
+    message = driver.commit_message(exe="ufo2p", function="func_00010010", unit="u_00010000",
+                                    attempt_n=1, attempts=3, model="deepseek-flash",
+                                    usage=Usage(1, 1, 1, 1, 1, 0.0, 1), seconds=1.0, sha1s=[],
+                                    requested_model="deepseek-flash",
+                                    arm=backends.load_arms()["deepseek-flash"])  # fmt: skip
+    trailers = message.rstrip("\n").splitlines()[-3:]
+    assert trailers[0] == _DRIVE and trailers[1] == "Matched-By: deepseek-flash"
+    repo, env = _repo(tmp_path)
+    _commit(repo, env, "ufo2p", {0x10010: "matched"}, "feat(ufo2p): match", *trailers)
+    assert [e.cls for e in reverseapoc.stats.match_history(repo)] == ["unattended"]
+
+
 def test_matched_by_must_name_the_driver(tmp_path):
     repo, env = _repo(tmp_path)
     _commit(repo, env, "ufo2p", {0x10010: "matched"}, "feat: x", "Matched-By: someone else")
