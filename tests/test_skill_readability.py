@@ -178,10 +178,12 @@ def test_example_proposals_parse_and_pass_the_name_and_header_rules():
 
 
 def _header_example(text: str) -> str:
-    """The first comment in a fenced block that holds an `Address:` line."""
+    """The first comment in a fenced block that holds an `Address:` line (07.2-07: not the
+    provenance marker beside an extern above it)."""
     for block in _fenced(text):
-        if " * Address: " in block:
-            return block[block.index("/*") : block.index("*/") + 2]
+        for comment in re.findall(r"(?s)/\*.*?\*/", block):
+            if " * Address: " in comment:
+                return comment
     raise AssertionError("no RL03 header example")
 
 
@@ -396,3 +398,5 @@ def test_readlint_reports_the_example_unit_as_the_output_example_shows(tmp_path)
     seen = sorted((v.line, v.rule, v.message) for v in result.violations)
     assert seen == sorted((v.line, v.rule, v.message) for v in expected.result.violations)
     assert sum(result.waivers.values()) == expected.waiver_count == 1
+    proposed = {p.violation.message.split(" ", 1)[0] for p in expected.pending}
+    assert readlint.unmarked_declarations(path, proposed, src_root=src, config_root=config) == ()
