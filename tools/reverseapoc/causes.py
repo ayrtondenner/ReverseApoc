@@ -186,6 +186,12 @@ def _kind(line: dict | None) -> str:
     return _EXIT_OUTCOME.get(code, MALFORMED)
 
 
+def attempt_counts(attempt_dir: Path) -> Counter[str]:
+    """One attempt's per-try counters (an outcome, sweeps, malformed) over its saved
+    checks.jsonl, by the rule `collect` uses (quick 261110-f30: stats --run's comparison)."""
+    return Counter(_kind(line) for line in _log_lines(attempt_dir))
+
+
 def _plain_lines(lines: Iterable[dict | None], outcome: str) -> Iterator[dict]:
     """The plain checks of one outcome."""
     for line in lines:
