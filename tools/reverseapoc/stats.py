@@ -571,9 +571,12 @@ class Report:
 def collect(repo: Path, log: Path, config: Path, *, runs: Sequence[str] | None = None) -> Report:
     """The report of `log`, `repo`'s history and `config`'s sizes and tiers. `runs` (`stats
     --run`, D-16, D-22): only the records of those runs (run_selected), matched by their own
-    logged matches."""
+    logged matches. 07.2-06 (D-17): without `runs`, a hold run's attempt records are left out
+    (a spike's arms are read through `--run`); a landing from one is still a logged match."""
     records = read_attempts(log)
     if runs is not None:
         records = [r for r in records if _selected(r, runs)]
+    else:
+        records = [r for r in records if r.get("hold_run") is not True]
     return build_report(records, history(repo), read_sizes(config), read_tiers(config),
                         own=runs is not None)  # fmt: skip

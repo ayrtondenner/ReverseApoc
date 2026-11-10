@@ -117,6 +117,10 @@ CACHE_FORMAT = 1
 _SNAPSHOT = re.compile(r"([0-9]{4})\.c")  # checks/NNNN.c: one reserved run
 _O_BINARY = getattr(os, "O_BINARY", 0)  # Windows: no newline translation in the snapshot
 DRIVER_PARTS = ("build", "driver")
+# 07.2-06 (D-17): build/driver/<run>/HELD marks a hold run, whose attempts never land and stay
+# out of later packs. Defined here because earlier_notes reads it and the wrapper cannot import
+# the driver; driver.HOLD_RUN_MARKER is this object.
+HOLD_RUN_MARKER = "HELD"
 CONTAINER_RUN = ("docker", "compose", "run", "--rm", "-T")
 CONTAINER_CHECK = ("build", "uv", "run", "--frozen", "reverseapoc", "check")
 CONTAINER_PREFIX = "reverseapoc-attempt-"  # + 8 hex of the attempt dir + -NNNN (M7, 06-23)
@@ -1606,15 +1610,21 @@ def earlier_notes(repo: Path, stem: str, func: str) -> contextpack.Notes | None:
     attempt records in progress/attempts.jsonl. 07.2-02 (999.5): from those records (the
     source of truth, not giveup.json files) the give-up lines, oldest first, and the earlier
     best C. Nothing is cut here: build_pack cuts notes only when the pack is over the cap (M11,
-    records first, then the give-ups, then the oldest texts)."""
+    records first, then the give-ups, then the oldest texts). 07.2-06 (D-17): a hold run's
+    notes (its run directory holds HOLD_RUN_MARKER) and its records (`hold_run` true), with
+    their give-ups and best C, are left out, so one arm's work never reaches another arm."""
     driver = Path(repo).joinpath(*DRIVER_PARTS)
     found = {*driver.glob(f"*/{stem}/{func}/attempt-*/notes.md"),
              *driver.glob(f"*/{stem}/{func}/notes.md")}  # fmt: skip
     texts = []
     for path in sorted(found, key=lambda p: p.relative_to(driver).as_posix()):
+        run_dir = driver / path.relative_to(driver).parts[0]
+        if (run_dir / HOLD_RUN_MARKER).exists():
+            continue
         text = path.read_text(encoding="utf-8", errors="replace").rstrip("\n")
         texts.append(f"--- {path.relative_to(driver).as_posix()}\n{text}")
-    docs = _attempt_docs(Path(repo) / ATTEMPT_LOG, stem, func)
+    docs = [record for record in _attempt_docs(Path(repo) / ATTEMPT_LOG, stem, func)
+            if record.get("hold_run") is not True]  # fmt: skip
     records = [json.dumps(record, sort_keys=True) for record in docs]
     giveups = tuple(line for record in docs if (line := _giveup_line(record)) is not None)
     best_c = _earlier_best_c(driver, stem, docs)
