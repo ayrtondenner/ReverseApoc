@@ -286,13 +286,15 @@ PIN_STEP = "Refuse a head that moved after the label"
 COMPILE_STEP = "Compile each touched unit at base and at head, then compare"
 UNIT_PATTERN = r"'^src/(ufo2p|tacp)/[a-z0-9_]+\.c$'"
 # D-07: the image, no network, the base tree and Watcom read-only, no game files, the uv venv
-# the owner prepared; only the outputs are writable, under the runner's temp directory.
+# the owner prepared, read-only (07.2 review WR-08: no container that compiles a pull request's
+# C can change what a later run executes) and never synced (`--no-sync`); only the outputs are
+# writable, under the runner's temp directory.
 DOCKER_RUN = "docker run --rm --network none \\"
 MOUNTS = ('-v "$GITHUB_WORKSPACE:/work:ro" \\', '-v "$RUNNER_TEMP/match:/work/build/match" \\',
-          '-v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \\', '-v "$VENV_VOLUME:/opt/venv" \\',
+          '-v "$REVERSEAPOC_WATCOM_DIR:/watcom:ro" \\', '-v "$VENV_VOLUME:/opt/venv:ro" \\',
           '-w /work "$@" < /dev/null')  # fmt: skip
 HEAD_SRC = '-v "$GITHUB_WORKSPACE/head/src:/work/src:ro"'
-IN_IMAGE = '"$IMAGE" uv run --frozen --offline reverseapoc '
+IN_IMAGE = '"$IMAGE" uv run --frozen --offline --no-sync reverseapoc '
 CC_FLAGS = "--cflags config/cflags.txt --watcom-dir /watcom --log build/match/cc.log"
 COMPARE = (f'image {IN_IMAGE}compare-objects "build/match/base/$name.obj" '
            '"build/match/head/$name.obj" --base-config config --head-config head/config '
@@ -433,6 +435,26 @@ def test_match_compiles_in_the_image_offline():
     assert HEAD_SRC in head_cc and '-o "build/match/head/$name.obj"' in head_cc
     assert [line for line in run if "compare-objects" in line] == [COMPARE]
     assert run[-1] == 'exit "$status"'
+
+
+def test_match_never_writes_the_venv_volume():
+    """07.2 review WR-08: the persistent venv volume is mounted read-only in every container
+    the job starts, so a compile of hostile C cannot plant code that a later compare runs;
+    the owner fills it in a separate step (docs/ci.md)."""
+    text = MATCH.read_text(encoding="utf-8")
+    mounts = re.findall(r'-v "\$VENV_VOLUME:[^"]*"', text)
+    assert mounts == ['-v "$VENV_VOLUME:/opt/venv:ro"']
+    assert "uv sync" not in text
+
+
+def test_ci_doc_asks_the_owner_to_pin_checkout_by_sha():
+    """WR-08: actions/checkout is a mutable tag; no commit SHA can be checked offline, so the
+    owner pins it by full SHA as a setup step, before the runner is registered."""
+    doc = (REPO_ROOT / "docs" / "ci.md").read_text(encoding="utf-8")
+    setup = doc[doc.index("## Runner setup (owner only)"):doc.index("## Security model")]
+    pin = setup.index("Pin `actions/checkout`")
+    assert pin < setup.index("Register a runner for this repository only")
+    assert "full commit SHA" in setup[pin:pin + 600]
 
 
 def test_match_refuses_other_paths():
