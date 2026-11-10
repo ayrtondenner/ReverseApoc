@@ -92,8 +92,10 @@ def codex_night(tmp_path: Path, monkeypatch, *, scenario: str = "luna_success",
 
 def test_build_codex_argv(tmp_path):
     """D-13: `codex exec --json`, workspace-write limited to the attempt dir, network off,
-    approval never, no user config, the attempt dir trusted so its per-session rules load
-    (RESEARCH A4, A5: the canary proves both), the prompt last."""
+    approval never, no user config, the Windows sandbox set to elevated by the argv itself
+    (the user config that enabled it is ignored, and without it Codex ran no sandbox and
+    rejected every command), the attempt dir trusted so its per-session rules load (RESEARCH
+    A4, A5: the canary proves both), the prompt last."""
     attempt_dir = tmp_path / "attempt-1"
     argv = session.build_codex_argv("the prompt", codex="codex.exe", model=LUNA,
                                     attempt_dir=attempt_dir)  # fmt: skip
@@ -101,8 +103,8 @@ def test_build_codex_argv(tmp_path):
     assert argv == ["codex.exe", "exec", "--json", "--model", LUNA, "--sandbox",
                     "workspace-write", "--cd", str(attempt_dir), "--skip-git-repo-check",
                     "--ephemeral", "--ignore-user-config", "-c", 'approval_policy="never"', "-c",
-                    "sandbox_workspace_write.network_access=false", "-c", trust,
-                    "the prompt"]  # fmt: skip
+                    "sandbox_workspace_write.network_access=false", "-c",
+                    'windows.sandbox="elevated"', "-c", trust, "the prompt"]  # fmt: skip
     for banned in ("--full-auto", "danger-full-access", "--ignore-rules"):
         assert banned not in argv
 
