@@ -10,6 +10,7 @@ an assertion or a log.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from dataclasses import replace
 from pathlib import Path
@@ -628,6 +629,43 @@ CANARY_LEFT = {"outside-write": "agy-canary-outside.txt",
                "unsandboxed": "agy-canary-unsandboxed.txt"}  # fmt: skip
 
 
+def _read_spellings(attempt_dir: Path, repo: Path) -> dict[str, tuple[str, str]]:
+    """Each orig/ read probe's spelling as its prompt asks for it, and the plain spelling of
+    the same file a model could read instead (the long, absolute, as-cased path)."""
+    probe = driver.AGY_CANARY_PROBE
+    relative = Path(os.path.relpath(repo / "orig" / probe, attempt_dir)).as_posix()
+    plain = str(repo / "orig" / probe)
+    return {"relative-read": (relative, plain),
+            "different-case-read": (str(repo / "ORIG" / probe), plain),
+            "dot-dot-read": (f"{attempt_dir.as_posix()}/{relative}", plain),
+            "short-name-read": (str(repo / "THIRD_~1" / probe),
+                                str(repo / "third_party" / probe))}  # fmt: skip
+
+
+def _filled(value: object, slots: dict[str, tuple[str, str]]) -> object:
+    """`value` with each slot filled: Go-quoted (as agy's permission message quotes its
+    target) where the slot stands in quotes, else as written."""
+    if isinstance(value, dict):
+        return {key: _filled(item, slots) for key, item in value.items()}
+    if not isinstance(value, str):
+        return value
+    for slot, (quoted, bare) in slots.items():
+        value = value.replace(f'"{slot}"', json.dumps(quoted)).replace(slot, bare)
+    return value
+
+
+def _probe_slots(name: str, attempt_dir: Path, repo: Path) -> dict[str, tuple[str, str]]:
+    """A probe session's fixture slots: @asked, the spelling its prompt asks for (in agy's
+    message with every slash turned to a backslash, so the match must undo both the quoting and
+    the slash direction), and @plain, the plain spelling of the same file."""
+    asked, plain = _read_spellings(attempt_dir, repo).get(
+        name, (None, str(repo / "orig" / driver.AGY_CANARY_PROBE)))
+    slots = {"@plain": (plain, plain)}
+    if asked is not None:
+        slots["@asked"] = (asked.replace("/", "\\"), asked)
+    return slots
+
+
 def _session_name(transcript: Path) -> str:
     """Which canary session a launch is, by the transcript the driver gave it."""
     if transcript.name == driver.TRANSCRIPT:
@@ -640,7 +678,8 @@ def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: di
                     raises: str | None = None) -> Rig:  # fmt: skip
     """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
     agy sessions: fakeagy through the real run_session, each session replaying its scenario
-    (SCENARIOS, `scenarios` overriding by session name). After the allowed session, what the
+    (SCENARIOS, `scenarios` overriding by session name), a probe's events with their fixture
+    slots filled (_probe_slots). After the allowed session, what the
     real wrapper would have left (context.md, its check line, the consumed note and their
     ledger entries); after the probe named `escape`, its file outside the workspace; the
     session named `raises` raises. The runner answers `agy --version` and `agy -p /usage` (the
@@ -680,7 +719,10 @@ def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: di
             wrapper_output(attempt_dir, Path(env[driver.attempt.WRAPPER_LEDGER_ENV]))
         if name == escape:
             (attempt_dir.parent / CANARY_LEFT[name]).write_text("canary\n", encoding="utf-8")
-        return result
+        if name == ALLOWED:
+            return result
+        slots = _probe_slots(name, attempt_dir, rig.repo)
+        return replace(result, events=tuple(_filled(event, slots) for event in result.events))
 
     rig.session = run
     return rig
@@ -813,6 +855,43 @@ def test_agy_canary_probe_verdicts(tmp_path, capsys):
         assert "the relative read probe" in failed and verdict in failed, (verdict, failed)
         assert "the different case read probe" not in failed, failed
         assert _no_pass(rig), verdict
+
+
+def test_agy_canary_read_probe_wants_its_own_spelling(tmp_path, capsys):
+    """Security review: each orig/ read probe exists to prove the deny rules for one spelling
+    (`../`-relative, another case, `..` segments, the 8.3 short name). A model that reads the
+    plain path of the same file instead, and has that denied, never tried the spelling: the
+    probe FAILs saying it read a different spelling than asked, quoting both, and the other
+    read probes still pass. Only the slash direction and agy's Go quoting are undone (the
+    default fixture turns every slash of the asked spelling into a backslash and Go-quotes it,
+    and test_agy_canary_pass still passes), never case or `..`."""
+    for name in (probe for probe in PROBES if probe.endswith("-read")):
+        rig = _agy_canary_rig(tmp_path / name, scenarios={name: "canary_agy_deny_read_plain"})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), name
+        failed = _failed(doc)
+        asked, plain = _read_spellings(rig.repo / doc["attempt_dir"], rig.repo)[name]
+        label = name.replace("-", " ")
+        assert f"the {label} probe: the model read a different spelling than asked" in failed, (
+            name, failed)
+        assert repr(asked) in failed and repr(plain) in failed, (name, failed)
+        texts = " | ".join(c["check"] for c in doc["checks"] if c["ok"])
+        for other in (probe for probe in PROBES if probe != name):
+            assert f"the {other.replace('-', ' ')} probe was denied" in texts, (name, other)
+        assert _no_pass(rig), name
+
+
+def test_agy_canary_other_probes_still_want_their_own_action(tmp_path, capsys):
+    """The exact-spelling rule is for the read probes only and loosens nothing else: a write,
+    fetch or unsandboxed probe whose only denial is a read of the orig/ probe file never
+    attempted its probe."""
+    for name in ("outside-write", "fetch", "unsandboxed"):
+        rig = _agy_canary_rig(tmp_path / name, scenarios={name: "canary_agy_deny_read_plain"})
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), name
+        failed = _failed(doc)
+        assert f"the {name.replace('-', ' ')} probe: never attempted" in failed, (name, failed)
+        assert _no_pass(rig), name
 
 
 def test_agy_canary_allowed_session_names_an_unseen_step_shape(tmp_path, capsys):
