@@ -24,6 +24,7 @@ from test_driver import _git, _git_env, _write
 
 _SHA = "0" * 64  # a made-up source_sha256
 _DRIVE = "Matched-By: reverseapoc drive"
+DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash"  # the deepseek-flash arm's OpenRouter model id
 
 
 # ---- synthetic repositories ----
@@ -129,12 +130,12 @@ def test_classify_hosted_arm_match_is_unattended(tmp_path):
     from reverseapoc.streamjson import Usage
 
     message = driver.commit_message(exe="ufo2p", function="func_00010010", unit="u_00010000",
-                                    attempt_n=1, attempts=3, model="deepseek-flash",
+                                    attempt_n=1, attempts=3, model=DEEPSEEK_MODEL,
                                     usage=Usage(1, 1, 1, 1, 1, 0.0, 1), seconds=1.0, sha1s=[],
-                                    requested_model="deepseek-flash",
+                                    requested_model=DEEPSEEK_MODEL,
                                     arm=backends.load_arms()["deepseek-flash"])  # fmt: skip
     trailers = message.rstrip("\n").splitlines()[-3:]
-    assert trailers[0] == _DRIVE and trailers[1] == "Matched-By: deepseek-flash"
+    assert trailers[0] == _DRIVE and trailers[1] == f"Matched-By: {DEEPSEEK_MODEL}"
     repo, env = _repo(tmp_path)
     _commit(repo, env, "ufo2p", {0x10010: "matched"}, "feat(ufo2p): match", *trailers)
     assert [e.cls for e in reverseapoc.stats.match_history(repo)] == ["unattended"]
@@ -961,8 +962,8 @@ def _hk(start: int, **change) -> dict:
     return _on_v3(start, **fields)
 
 
-DEEPSEEK_ARM = {"backend": "deepseek", "harness": "claude", "model_requested": "deepseek-flash",
-                "model": "deepseek-flash", "cost_source": "estimate"}  # fmt: skip
+DEEPSEEK_ARM = {"backend": "openrouter", "harness": "claude", "model_requested": DEEPSEEK_MODEL,
+                "model": DEEPSEEK_MODEL, "cost_source": "estimate"}  # fmt: skip
 LOCAL_ARM = {"backend": "local", "harness": "claude", "model_requested": "qwen3.6-35b-a3b",
              "model": "qwen3.6-35b-a3b", "cost_source": "estimate"}  # fmt: skip
 T1, T2, T3, T4 = (_tok(1_000_000, 200_000, 3_000_000, 400_000), _tok(500_000, 100_000),
@@ -1007,7 +1008,7 @@ def test_comparison_row_per_arm(tmp_path, capsys):
     repo, log, config = _spike(tmp_path, *_spike_records())
     comparison = _json(capsys, repo, log, "--run", "spike012-*", config=config)["comparison"]
     assert comparison["columns"] == COLUMNS
-    haiku_key, deepseek_key = _arm(HAIKU), _arm("deepseek-flash", "deepseek")
+    haiku_key, deepseek_key = _arm(HAIKU), _arm(DEEPSEEK_MODEL, "openrouter")
     assert list(comparison["arms"]) == sorted([haiku_key, deepseek_key])
     haiku = comparison["arms"][haiku_key]
     assert (haiku["arm"], haiku["billing"]) == (HAIKU, "subscription")
@@ -1061,13 +1062,13 @@ def test_comparison_text(tmp_path, capsys):
     heads = [line for line in block if line.startswith("  ") and not line.startswith("    ")]
     assert heads == [
         f"  {_arm(HAIKU)} ({HAIKU}, subscription): {SUBSCRIPTION_WORDS}",
-        f"  {_arm('deepseek-flash', 'deepseek')} (deepseek-flash, metered): real paid: its "
-        "tokens at its list price (a metered arm)",
         f"  {_arm('qwen3.6-35b-a3b', 'local')} (qwen-local, free): real paid $0.00: a local arm "
         "pays nothing",
+        f"  {_arm(DEEPSEEK_MODEL, 'openrouter')} (deepseek-flash, metered): real paid: its "
+        "tokens at its list price (a metered arm)",
     ]  # fmt: skip
     assert len(block) == 1 + 3 * (1 + len(COLUMNS))
-    deepseek = block[block.index(heads[1]) + 1:][:len(COLUMNS)]
+    deepseek = block[block.index(heads[2]) + 1:][:len(COLUMNS)]
     assert [line.split(":")[0].strip() for line in deepseek] == COLUMNS
     assert deepseek[2] == (
         "    256 B and up: attempted 1, exact 1 (hold exact 1, matched 0), sessions 1, turns 7, "

@@ -1707,8 +1707,8 @@ def test_land_held_credits_every_holder_once(tmp_path):
     _commit_log(night, [
         _hold_attempt(night, "spike012-haiku-a", 1, cost=0.10),
         _hold_attempt(night, "spike012-haiku-b", 1, cost=0.10),
-        _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK,
-                      change={"backend": "deepseek", "cost_source": "estimate"}),
+        _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK_MODEL,
+                      change={"backend": "openrouter", "cost_source": "estimate"}),
         _hold_attempt(night, "spike012-sonnet", 1, cost=0.01, model=SONNET, outcome="PARTIAL"),
     ])  # fmt: skip
     before = len(night.records())
@@ -1932,8 +1932,9 @@ def test_run_drive_hands_land_held_to_the_night(tmp_path, capsys, monkeypatch):
 # hold one (any *_API_KEY, *_TOKEN or ANTHROPIC_* name) before adding made-up values, and no
 # assertion below prints a session environment (only single values or key names).
 
-DEEPSEEK = "deepseek-flash"
-DEEPSEEK_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK = "deepseek-flash"  # the arm; it runs through OpenRouter (owner, 2026-11-10)
+DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash"  # its OpenRouter model id
+DEEPSEEK_URL = "https://openrouter.ai/api"
 FAKE_KEY = "made-up-deepseek-value-0001"
 
 
@@ -1964,27 +1965,27 @@ def _hosted_night(tmp_path: Path, monkeypatch, sessions: list) -> tuple[Rig, Nig
 
 
 def test_hosted_arm_reaches_the_session(tmp_path, capsys, monkeypatch):
-    """D-11, D-12: chosen twice, the DeepSeek arm's session gets DeepSeek's endpoint with the
+    """D-11, D-12: chosen twice, the DeepSeek arm's session gets OpenRouter's endpoint with the
     key as its bearer token, and the record names the arm; the key is in no record, console
     line, commit or transcript."""
     from test_driver import LOG, Sess
 
     rig, night, seen = _hosted_night(tmp_path, monkeypatch, [Sess()])
-    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    env = _keyed(rig.env, OPENROUTER_API_KEY=FAKE_KEY)
     code, out, err = rig.drive(capsys, seams={"base_env": env}, night_model=DEEPSEEK,
                                allow_egress=(DEEPSEEK,), workers=1)  # fmt: skip
     assert code == 0, err
     assert seen[0].night_model == DEEPSEEK
     record = night.kinds("attempt")[0]
     assert (record["backend"], record["model_requested"], record["harness"]) == (
-        "deepseek", DEEPSEEK, "claude")  # fmt: skip
+        "openrouter", DEEPSEEK_MODEL, "claude")  # fmt: skip
     launched = night.launched[0]
-    assert launched.argv[launched.argv.index("--model") + 1] == DEEPSEEK
+    assert launched.argv[launched.argv.index("--model") + 1] == DEEPSEEK_MODEL
     assert launched.env.get("ANTHROPIC_BASE_URL") == DEEPSEEK_URL
     assert launched.env.get("ANTHROPIC_AUTH_TOKEN") == FAKE_KEY
     assert launched.env.get("ANTHROPIC_API_KEY") == ""
     assert launched.env.get("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC") == "1"
-    assert "DEEPSEEK_API_KEY" not in set(launched.env)
+    assert "OPENROUTER_API_KEY" not in set(launched.env)
     texts = {"record": (night.repo / LOG).read_text(encoding="utf-8"), "console": out + err,
              "transcript": (night.attempt_dir() / driver.TRANSCRIPT).read_text(encoding="utf-8"),
              "commits": night.git("log", "-p", "--format=%B")}  # fmt: skip
@@ -1993,18 +1994,18 @@ def test_hosted_arm_reaches_the_session(tmp_path, capsys, monkeypatch):
 
 @pytest.mark.parametrize(("allow", "key", "words"), [
     ((), FAKE_KEY, "--allow-egress"),
-    ((DEEPSEEK,), "", "DEEPSEEK_API_KEY"),
-    ((DEEPSEEK,), "   ", "DEEPSEEK_API_KEY"),
-    ((DEEPSEEK,), None, "DEEPSEEK_API_KEY"),
+    ((DEEPSEEK,), "", "OPENROUTER_API_KEY"),
+    ((DEEPSEEK,), "   ", "OPENROUTER_API_KEY"),
+    ((DEEPSEEK,), None, "OPENROUTER_API_KEY"),
     (("glm-5.3",), FAKE_KEY, "glm-5.3"),
     ((DEEPSEEK, "glm-5.3"), FAKE_KEY, "glm-5.3"),
 ])  # fmt: skip
 def test_hosted_arm_refused_before_any_session(tmp_path, capsys, allow, key, words):
     """D-11, D-26: without --allow-egress, with a missing, empty or blank key (the claude.ai
-    login would go to DeepSeek), or with a stray --allow-egress: exit 2 before any command,
+    login would go to OpenRouter), or with a stray --allow-egress: exit 2 before any command,
     session or attempt directory."""
     rig = Rig(tmp_path)
-    env = _keyed(rig.env) if key is None else _keyed(rig.env, DEEPSEEK_API_KEY=key)
+    env = _keyed(rig.env) if key is None else _keyed(rig.env, OPENROUTER_API_KEY=key)
     code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env}, night_model=DEEPSEEK,
                              allow_egress=allow)  # fmt: skip
     assert code == 2
@@ -2018,7 +2019,7 @@ def test_hosted_arm_refused_before_any_session(tmp_path, capsys, allow, key, wor
 def test_canary_proves_the_egress_refusal(tmp_path, capsys):
     """D-11: the canary of a hosted arm without --allow-egress is refused before its session."""
     rig = Rig(tmp_path)
-    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    env = _keyed(rig.env, OPENROUTER_API_KEY=FAKE_KEY)
     code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env}, canary=True,
                              night_model=DEEPSEEK, canary_model=DEEPSEEK)  # fmt: skip
     assert code == 2
@@ -2073,7 +2074,7 @@ def test_drive_help_lists_allow_egress(capsys):
 # ---- 07.2-12 Task 2 (D-10, D-16, D-26): init, cost, credit and reads of hosted arms ----
 
 DEEPSEEK_COAUTHOR = "Co-Authored-By: DeepSeek V4.1-Flash <noreply@deepseek.com>"
-HOSTED_TRAILERS = [driver.MATCHED_BY, f"Matched-By: {DEEPSEEK}", DEEPSEEK_COAUTHOR]
+HOSTED_TRAILERS = [driver.MATCHED_BY, f"Matched-By: {DEEPSEEK_MODEL}", DEEPSEEK_COAUTHOR]
 # hosted_success.jsonl's tokens at deepseek-flash's prices (input, output, both cache classes
 # at the input price): its result event's own total_cost_usd, 9.99, is not trusted.
 HOSTED_ESTIMATE = (1200 * 0.30 + 300 * 1.20 + 5000 * 0.30 + 800 * 0.30) / 1_000_000
@@ -2082,7 +2083,7 @@ HOSTED_ESTIMATE = (1200 * 0.30 + 300 * 1.20 + 5000 * 0.30 + 800 * 0.30) / 1_000_
 def _hosted_run(night: Night, **config) -> driver.DriveReport:
     """A night of the DeepSeek arm in the night harness, with a made-up key (D-12)."""
     fields = {"night_model": DEEPSEEK, "attempts_per_function": 1,
-              "base_env": _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)}  # fmt: skip
+              "base_env": _keyed(night.env, OPENROUTER_API_KEY=FAKE_KEY)}  # fmt: skip
     fields.update(config)
     return night.run(config=fields)
 
@@ -2097,7 +2098,7 @@ def test_hosted_record_is_an_estimate(tmp_path):
     assert report.event == "ENDED", report.detail
     record = night.kinds("attempt")[0]
     assert (record["backend"], record["cost_source"], record["model"]) == (
-        "deepseek", "estimate", DEEPSEEK)  # fmt: skip
+        "openrouter", "estimate", DEEPSEEK_MODEL)  # fmt: skip
     assert record["cost_usd"] == pytest.approx(HOSTED_ESTIMATE)
     assert record["duration_ms"] == 45000 and record["tokens"]["input"] == 1200
     driver.validate_record(record)
@@ -2108,7 +2109,7 @@ def test_hosted_record_is_an_estimate(tmp_path):
 
 
 def test_hosted_init_is_checked_against_the_arms_ids(tmp_path):
-    """A hosted session whose init names another model (DeepSeek maps claude ids to its own
+    """A hosted session whose init names another model (a provider that maps claude ids to its
     models) stops the night at the init check."""
     from test_driver import Sess
 
@@ -2119,7 +2120,7 @@ def test_hosted_init_is_checked_against_the_arms_ids(tmp_path):
         return [*real(prompt, **values), "--init-model", "deepseek-v4-pro"]
 
     report = night.run(config={"night_model": DEEPSEEK, "attempts_per_function": 1,
-                               "base_env": _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)},
+                               "base_env": _keyed(night.env, OPENROUTER_API_KEY=FAKE_KEY)},
                        argv=argv)  # fmt: skip
     assert (report.event, report.reason) == ("STOPPED", driver.INIT), report.detail
     assert "deepseek-v4-pro" in report.detail
@@ -2152,8 +2153,8 @@ def test_the_commit_hook_adds_no_claude_line_to_a_hosted_match(tmp_path):
         pytest.skip("needs sh")
     usage = driver.streamjson.Usage(1, 1, 1, 1, 1, 0.0, 1)
     message = driver.commit_message(exe="ufo2p", function="func_00010010", unit="u_00010000",
-                                    attempt_n=1, attempts=1, model=DEEPSEEK, usage=usage,
-                                    seconds=1.0, sha1s=[], requested_model=DEEPSEEK,
+                                    attempt_n=1, attempts=1, model=DEEPSEEK_MODEL, usage=usage,
+                                    seconds=1.0, sha1s=[], requested_model=DEEPSEEK_MODEL,
                                     arm=driver.backends.load_arms()[DEEPSEEK])  # fmt: skip
     msg = tmp_path / "COMMIT_EDITMSG"
     msg.write_text(message, encoding="utf-8", newline="\n")
@@ -2164,8 +2165,8 @@ def test_the_commit_hook_adds_no_claude_line_to_a_hosted_match(tmp_path):
 def test_land_held_credits_a_hosted_arm(tmp_path):
     """06's --land-held credits a hosted hold run to its arm: the same three trailers."""
     night = _table_night(tmp_path, gate_exits=[0])
-    record = _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK)
-    record["backend"] = "deepseek"
+    record = _hold_attempt(night, "spike012-deepseek", 1, cost=0.01, model=DEEPSEEK_MODEL)
+    record["backend"] = "openrouter"
     _commit_log(night, [record])
     report = _land(night, "spike012-*")
     assert (report.event, report.matched) == ("ENDED", 1), report.detail
@@ -2267,7 +2268,7 @@ def test_multi_arm_egress_is_per_arm(tmp_path, capsys, allow, words):
     --allow-egress naming an arm the night does not run, or one that sends nothing off the
     machine, is refused: exit 2 before any command."""
     rig = Rig(tmp_path)
-    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    env = _keyed(rig.env, OPENROUTER_API_KEY=FAKE_KEY)
     code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env},
                              arms=((HAIKU, 1), (DEEPSEEK, 1)), allow_egress=allow)  # fmt: skip
     assert code == 2
@@ -2281,11 +2282,11 @@ def test_multi_arm_token_leak_guard(tmp_path, capsys, key):
     """D-26: a hosted arm beside a Claude arm with a missing, empty or blank key is refused
     before any command (the claude.ai login would go to its endpoint)."""
     rig = Rig(tmp_path)
-    env = _keyed(rig.env) if key is None else _keyed(rig.env, DEEPSEEK_API_KEY=key)
+    env = _keyed(rig.env) if key is None else _keyed(rig.env, OPENROUTER_API_KEY=key)
     code, out, _ = rig.drive(capsys, json=True, seams={"base_env": env},
                              arms=((HAIKU, 1), (DEEPSEEK, 1)), allow_egress=(DEEPSEEK,))
     assert code == 2
-    assert "DEEPSEEK_API_KEY" in _refusal(out)["detail"]
+    assert "OPENROUTER_API_KEY" in _refusal(out)["detail"]
     assert rig.runner.calls == []
 
 
@@ -2316,7 +2317,7 @@ def test_multi_arm_reaches_the_night(tmp_path, capsys, monkeypatch):
 
     monkeypatch.setattr(driver, "drive", fake_drive)
     rig = Rig(tmp_path)
-    env = _keyed(rig.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    env = _keyed(rig.env, OPENROUTER_API_KEY=FAKE_KEY)
     code, _, err = rig.drive(capsys, json=True, seams={"base_env": env},
                              arms=((HAIKU, 2), (DEEPSEEK, 1)), allow_egress=(DEEPSEEK,))
     assert code == 0, err

@@ -1533,7 +1533,7 @@ def test_each_arm_gets_its_own_session_env(tmp_path):
     from test_drive import DEEPSEEK_URL, FAKE_KEY, _keyed
 
     night = ArmNight(tmp_path, picks=tuple(_wpick(i) for i in range(2)))
-    env = _keyed(night.env, DEEPSEEK_API_KEY=FAKE_KEY)
+    env = _keyed(night.env, OPENROUTER_API_KEY=FAKE_KEY)
     report = night.run(config={"arms": ((HAIKU, 1), (DEEPSEEK, 1)), "hold": True,
                                "base_env": env})  # fmt: skip
     assert report.event == "ENDED", report.detail
@@ -1544,10 +1544,10 @@ def test_each_arm_gets_its_own_session_env(tmp_path):
     assert hosted.get("ANTHROPIC_BASE_URL") == DEEPSEEK_URL
     assert hosted.get("ANTHROPIC_AUTH_TOKEN") == FAKE_KEY
     assert hosted.get(hooks.EGRESS_ENV) == "1"
-    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "DEEPSEEK_API_KEY",
+    for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "OPENROUTER_API_KEY",
                  hooks.EGRESS_ENV):  # fmt: skip
         assert name not in set(claude), name
-    assert "DEEPSEEK_API_KEY" not in set(hosted)
+    assert "OPENROUTER_API_KEY" not in set(hosted)
 
 
 # ---- 07.2-16 Task 2 (D-22): each arm's own usage pause and limits ----

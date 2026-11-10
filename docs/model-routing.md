@@ -150,20 +150,26 @@ assumptions to confirm at setup.
 | Arm | Backend | Model id | Key variable |
 |---|---|---|---|
 | `claude-opus-5-5`, `claude-fable-5-1`, `claude-haiku-5-5`, `claude-sonnet-5-5` | anthropic | the arm name | none (the Claude Code login) |
-| `deepseek-flash` | deepseek | `deepseek-flash` | `DEEPSEEK_API_KEY` |
-| `glm-5.3` | zai | `glm-5.3` | `ZAI_API_KEY` |
+| `deepseek-flash` | openrouter | `deepseek/deepseek-v4.1-flash` | `OPENROUTER_API_KEY` |
+| `glm-5.3` | openrouter | `z-ai/glm-5.3` | `OPENROUTER_API_KEY` |
+| `glm-4.7-flash` | openrouter | `z-ai/glm-4.7-flash` | `OPENROUTER_API_KEY` |
 | `muse-spark-open` | openrouter | `meta/muse-spark-open` | `OPENROUTER_API_KEY` |
-| `qwen-hosted` | openrouter | `qwen/qwen3.6-35b-a3b` (to confirm) | `OPENROUTER_API_KEY` |
+| `qwen-hosted` | openrouter | `qwen/qwen3.6-35b-a3b` | `OPENROUTER_API_KEY` |
 | `qwen-local` | local | `qwen3.6-35b-a3b` (the llama-server `--alias`) | none (loopback only) |
 
 A hosted arm runs in the same Claude Code harness as the Claude arms, with the same hooks and
-audit, against its provider's Anthropic-compatible endpoint.
+audit, against OpenRouter's Anthropic-compatible endpoint. Since 2026-11-10 the owner runs
+DeepSeek and GLM only through OpenRouter, not through DeepSeek's or z.ai's own endpoints. The
+ids and prices of the OpenRouter arms come from OpenRouter's public model list, read on
+2026-11-10. `glm-4.7-flash` is a 31.2B MoE, the size class of Qwen3.6-35B-A3B, so it can get
+a local twin later.
 
 - **Two flags.** A non-Anthropic arm that sends disassembly needs both `--night-model ARM`
   and `--allow-egress ARM`, for a night and for a canary alike:
   `reverseapoc drive --canary --night-model deepseek-flash --allow-egress deepseek-flash --run canary-deepseek`.
   What each backend receives is in [legal.md](legal.md#model-backends-and-what-they-receive).
-- **The session environment.** Every session loses every arm's key variable, every inherited
+- **The session environment.** Every session loses every arm's key variable, the retired
+  `DEEPSEEK_API_KEY` and `ZAI_API_KEY` (no arm names them since 2026-11-10), every inherited
   `ANTHROPIC_*` variable (custom headers, model, Bedrock and Vertex URLs among them), every
   `CLAUDE_CODE_USE_*` variable, every `OPENAI_*` variable and every Google key or credentials
   variable, so a Claude arm always runs on the claude.ai login, nothing reroutes a session off
@@ -415,8 +421,17 @@ weights early through OpenRouter as a fast check.
   same night.
 - **No egress flag.** `sends_disassembly = false`: nothing leaves the machine, so the arm takes
   no `--allow-egress` and one naming it is refused. Its cost is 0, recorded as an estimate.
+- **Gated on its hosted twin (owner, 2026-11-10).** The hosted arms run first, through
+  OpenRouter. Only then does the owner decide what runs locally, because local runs on his
+  machine (GTX 1660 6 GB, 32 GB RAM) are slow. `qwen-hosted` is the twin of `qwen-local`, and
+  `glm-4.7-flash` is the twin of a possible later local GLM-4.7-Flash arm. If the twin matches
+  about nothing on the frozen picks, the local arm is skipped: no llama.cpp setup and no model
+  download. If the twin does well, the local arm runs a short check, not 20 sessions: only
+  the 3 to 5 picks the twin matched, at Q4 quantization and local speed, with 30-minute
+  sessions. The check measures what the local route loses.
 - **Order.** `reverseapoc drive --canary --night-model qwen-local --run canary-qwen-local`, then
-  the hold run: `reverseapoc drive --night-model qwen-local --workers 1 --picks build/driver/spike012-picks.txt --hold --run spike012-qwen-local`.
+  the short hold run on the twin's matched picks:
+  `reverseapoc drive --night-model qwen-local --workers 1 --picks <the twin's matched picks> --hold --run spike012-qwen-local`.
 
 ## Several arms in one drive
 
@@ -464,16 +479,18 @@ need not take one night each. Give `--arm NAME=WORKERS` once per arm. NAME is an
 - **Console.** The night prints one `arms:` line naming each arm, its workers and its run id,
   and each attempt line names its arm.
 
-The spike 012 night over the frozen pick list, every arm at once (canaries passed first):
+The spike 012 night over the frozen pick list, the cloud arms at once (canaries passed first):
 
 ```
 reverseapoc drive --picks build/driver/spike012-picks.txt --hold --run spike012 \
   --arm claude-haiku-5-5=2 --arm claude-sonnet-5-5=2 \
   --arm gpt-6-luna=1 --allow-egress gpt-6-luna \
   --arm gemini-flash=1 --allow-egress gemini-flash \
-  --arm deepseek-flash=2 --allow-egress deepseek-flash \
-  --arm qwen-local=1
+  --arm deepseek-flash=2 --allow-egress deepseek-flash
 ```
+
+`qwen-local` is not in it: it runs later, and only if `qwen-hosted` did well (see
+[The local arm](#the-local-arm)).
 
 Then compare the arms with `reverseapoc stats --run spike012-*`, which splits by arm (below),
 and land the exact results once each, from the lowest API-equivalent cost, with

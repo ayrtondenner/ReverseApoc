@@ -16,7 +16,11 @@ from reverseapoc import backends
 from reverseapoc.backends import ArmError, load_arms, preflight, session_env
 
 DEEPSEEK = "deepseek-flash"
-DEEPSEEK_URL = "https://api.deepseek.com/anthropic"
+DEEPSEEK_URL = "https://api.deepseek.com/anthropic"  # the synthetic _DEEPSEEK_TOML's endpoint
+DEEPSEEK_MODEL = "deepseek/deepseek-v4.1-flash"  # the committed arm runs through OpenRouter
+ROUTER_URL = "https://openrouter.ai/api"
+ROUTER_KEY = "OPENROUTER_API_KEY"
+RETIRED_KEYS = ("DEEPSEEK_API_KEY", "ZAI_API_KEY")  # the direct providers' (owner, 2026-11-10)
 OPUS = "claude-opus-5-5"
 CLAUDE_ARMS = ("claude-opus-5-5", "claude-fable-5-1", "claude-haiku-5-5", "claude-sonnet-5-5")
 FAKE_DEEPSEEK = "made-up-deepseek-value-0001"  # never a real key
@@ -59,7 +63,8 @@ def _table(tmp_path: Path, text: str) -> Path:
 
 def test_load_arms():
     """The committed table: each Claude arm keyed by its model id on the Claude login (no base
-    URL, no key variable), and deepseek-flash on DeepSeek's endpoint with its key's NAME."""
+    URL, no key variable), and deepseek-flash through OpenRouter (owner, 2026-11-10) with its
+    key's NAME."""
     arms = _arms()
     for name in CLAUDE_ARMS:
         arm = arms[name]
@@ -68,10 +73,10 @@ def test_load_arms():
         assert (arm.base_url, arm.key_env, arm.coauthor, arm.prices) == (None, None, None, None)
         assert arm.sends_disassembly is True and not arm.egress
     arm = arms[DEEPSEEK]
-    assert (arm.backend, arm.model, arm.key_env) == ("deepseek", DEEPSEEK, "DEEPSEEK_API_KEY")
-    assert arm.base_url == DEEPSEEK_URL and arm.base_url.startswith("https://")
+    assert (arm.backend, arm.model, arm.key_env) == ("openrouter", DEEPSEEK_MODEL, ROUTER_KEY)
+    assert arm.base_url == ROUTER_URL and arm.base_url.startswith("https://")
     assert arm.sends_disassembly is True and arm.egress
-    assert arm.accepted_init == (DEEPSEEK,)
+    assert arm.accepted_init == (DEEPSEEK_MODEL,)
 
 
 def test_a_valid_table_loads(tmp_path):
@@ -168,19 +173,19 @@ def test_session_env_hosted():
     """The hosted arm's endpoint, its key as the bearer token, an empty API key, no
     nonessential traffic and the three default-model pins; no arm's key variable is left."""
     arms = _arms()
-    zai = dataclasses.replace(arms[DEEPSEEK], name="other-hosted", key_env="ZAI_API_KEY")
-    arms = {**arms, zai.name: zai}
-    base = {"PATH": "made-up", "DEEPSEEK_API_KEY": FAKE_DEEPSEEK, "ZAI_API_KEY": FAKE_ZAI}
+    other = dataclasses.replace(arms[DEEPSEEK], name="other-hosted", key_env="OTHER_API_KEY")
+    arms = {**arms, other.name: other}
+    base = {"PATH": "made-up", ROUTER_KEY: FAKE_DEEPSEEK, "OTHER_API_KEY": FAKE_ZAI}
     env = session_env(arms[DEEPSEEK], base, arms)
-    assert env["ANTHROPIC_BASE_URL"] == DEEPSEEK_URL
+    assert env["ANTHROPIC_BASE_URL"] == ROUTER_URL
     assert env["ANTHROPIC_AUTH_TOKEN"] == FAKE_DEEPSEEK
     assert env["ANTHROPIC_API_KEY"] == ""
     assert env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] == "1"
-    assert [env[pin] for pin in PINS] == [DEEPSEEK] * 3
-    assert "DEEPSEEK_API_KEY" not in env and "ZAI_API_KEY" not in env
+    assert [env[pin] for pin in PINS] == [DEEPSEEK_MODEL] * 3
+    assert ROUTER_KEY not in env and "OTHER_API_KEY" not in env
     assert FAKE_ZAI not in env.values()
     assert env["PATH"] == "made-up"
-    assert base["DEEPSEEK_API_KEY"] == FAKE_DEEPSEEK  # the base is not modified
+    assert base[ROUTER_KEY] == FAKE_DEEPSEEK  # the base is not modified
 
 
 def test_session_env_anthropic_strips():
@@ -190,7 +195,7 @@ def test_session_env_anthropic_strips():
     base = {"PATH": "made-up", "ANTHROPIC_BASE_URL": "https://example.invalid/anthropic",
             "ANTHROPIC_AUTH_TOKEN": "made-up-token-0004",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": "made-up-model",
-            "DEEPSEEK_API_KEY": FAKE_DEEPSEEK}  # fmt: skip
+            ROUTER_KEY: FAKE_DEEPSEEK}  # fmt: skip
     env = session_env(arms[OPUS], base, arms)
     for name in ("ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_DEFAULT_HAIKU_MODEL"):
         assert name not in env, name
@@ -220,10 +225,10 @@ def test_session_env_strips_every_vendor_routing_and_credential_variable(name):
     the base's other variables plus what the arm itself sets."""
     arms = _arms()
     arm = arms[name]
-    base = {"PATH": "made-up", "DEEPSEEK_API_KEY": FAKE_DEEPSEEK, **_VENDOR_LEAKS,
+    base = {"PATH": "made-up", ROUTER_KEY: FAKE_DEEPSEEK, **_VENDOR_LEAKS,
             _OAUTH: "made-up-oauth-0014"}  # fmt: skip
     env = session_env(arm, base, arms)
-    own = session_env(arm, {"PATH": "made-up", "DEEPSEEK_API_KEY": FAKE_DEEPSEEK}, arms)
+    own = session_env(arm, {"PATH": "made-up", ROUTER_KEY: FAKE_DEEPSEEK}, arms)
     if arm.backend == "anthropic":
         own[_OAUTH] = "made-up-oauth-0014"
     assert env == own, sorted(set(env) ^ set(own))
@@ -231,10 +236,23 @@ def test_session_env_strips_every_vendor_routing_and_credential_variable(name):
         assert env.get(leak) != value, leak
 
 
+@pytest.mark.parametrize("name", [OPUS, DEEPSEEK, "qwen-local", "gpt-6-luna", "gemini-flash"])
+def test_session_env_strips_the_retired_direct_provider_keys(name):
+    """Owner ruling 2026-11-10: DeepSeek and GLM run only through OpenRouter, so no arm names
+    DEEPSEEK_API_KEY or ZAI_API_KEY any more; a key the owner still has set under either name
+    reaches no session all the same."""
+    arms = _arms()
+    retired = {key: f"made-up-retired-{n:04d}" for n, key in enumerate(RETIRED_KEYS, 15)}
+    env = session_env(arms[name], {"PATH": "made-up", ROUTER_KEY: FAKE_DEEPSEEK, **retired},
+                      arms)  # fmt: skip
+    assert sorted(set(env) & set(retired)) == []
+    assert [value for value in retired.values() if value in env.values()] == []
+
+
 def test_session_env_without_the_table_uses_the_committed_one():
     """RULINGS names session_env(arm, base_env): the table defaults to the committed one."""
     arms = _arms()
-    base = {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK}
+    base = {ROUTER_KEY: FAKE_DEEPSEEK}
     assert session_env(arms[OPUS], base) == {}
 
 
@@ -242,8 +260,8 @@ def test_session_env_refuses_an_empty_token():
     """The env builder itself never sets a base URL without a token (Pitfall 5)."""
     arms = _arms()
     with pytest.raises(ArmError) as exc:
-        session_env(arms[DEEPSEEK], {"DEEPSEEK_API_KEY": ""}, arms)
-    assert "DEEPSEEK_API_KEY" in str(exc.value)
+        session_env(arms[DEEPSEEK], {ROUTER_KEY: ""}, arms)
+    assert ROUTER_KEY in str(exc.value)
 
 
 # ---- the preflight (D-11, D-26 token-leak guard) ----
@@ -254,11 +272,11 @@ def test_preflight_refusals(value):
     """A missing, empty or whitespace key: refused naming the variable and the endpoint, never
     the value."""
     arm = _arms()[DEEPSEEK]
-    env = {"PATH": "made-up"} if value is None else {"DEEPSEEK_API_KEY": value}
+    env = {"PATH": "made-up"} if value is None else {ROUTER_KEY: value}
     with pytest.raises(ArmError) as exc:
         preflight(arm, env, allow_egress=(DEEPSEEK,))
     text = str(exc.value)
-    assert "DEEPSEEK_API_KEY" in text and DEEPSEEK_URL in text, text
+    assert ROUTER_KEY in text and ROUTER_URL in text, text
     if value:
         assert value not in text
 
@@ -266,7 +284,7 @@ def test_preflight_refusals(value):
 def test_preflight_refuses_egress_without_the_flag():
     arm = _arms()[DEEPSEEK]
     with pytest.raises(ArmError) as exc:
-        preflight(arm, {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK}, allow_egress=())
+        preflight(arm, {ROUTER_KEY: FAKE_DEEPSEEK}, allow_egress=())
     text = str(exc.value)
     assert DEEPSEEK in text and "--allow-egress" in text and FAKE_DEEPSEEK not in text
 
@@ -277,7 +295,7 @@ def test_preflight_refuses_a_stray_egress_name(stray):
     never open a backend."""
     arms = _arms()
     with pytest.raises(ArmError) as exc:
-        preflight(arms[DEEPSEEK], {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK},
+        preflight(arms[DEEPSEEK], {ROUTER_KEY: FAKE_DEEPSEEK},
                   allow_egress=(DEEPSEEK, stray))  # fmt: skip
     assert stray in str(exc.value)
     with pytest.raises(ArmError):
@@ -286,7 +304,7 @@ def test_preflight_refuses_a_stray_egress_name(stray):
 
 def test_preflight_passes():
     arms = _arms()
-    preflight(arms[DEEPSEEK], {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK}, allow_egress=(DEEPSEEK,))
+    preflight(arms[DEEPSEEK], {ROUTER_KEY: FAKE_DEEPSEEK}, allow_egress=(DEEPSEEK,))
     preflight(arms[OPUS], {}, allow_egress=())
 
 
@@ -294,20 +312,40 @@ def test_preflight_passes():
 
 
 @pytest.mark.parametrize(("name", "backend", "url", "key_env", "model"), [
-    ("glm-5.3", "zai", "https://api.z.ai/api/anthropic", "ZAI_API_KEY", "glm-5.3"),
+    ("deepseek-flash", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+     "deepseek/deepseek-v4.1-flash"),
+    ("glm-5.3", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY", "z-ai/glm-5.3"),
+    ("glm-4.7-flash", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+     "z-ai/glm-4.7-flash"),
     ("muse-spark-open", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
      "meta/muse-spark-open"),
     ("qwen-hosted", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
      "qwen/qwen3.6-35b-a3b"),
 ])  # fmt: skip
 def test_hosted_arms_load(name, backend, url, key_env, model):
-    """D-18 and the owner's Qwen ruling: GLM on z.ai, Muse Spark Open and the hosted Qwen
-    through OpenRouter, each with its prices, its own init id and its vendor's credit line."""
+    """D-18, the owner's Qwen ruling and his OpenRouter ruling of 2026-11-10: DeepSeek, both
+    GLMs, Muse Spark Open and the hosted Qwen all through OpenRouter, each with its prices, its
+    own init id and its vendor's credit line."""
     arm = _arms()[name]
     assert (arm.backend, arm.base_url, arm.key_env, arm.model) == (backend, url, key_env, model)
     assert arm.egress and arm.accepted_init == (model,)
     assert arm.prices is not None and arm.prices.input > 0 and arm.prices.output > 0
     assert arm.coauthor is not None and "<noreply@" in arm.coauthor
+
+
+@pytest.mark.parametrize(("name", "input_price", "output_price"), [
+    ("deepseek-flash", 0.30, 1.20),
+    ("glm-5.3", 0.07, 1.40),
+    ("glm-4.7-flash", 0.061, 0.40),
+    ("muse-spark-open", 1.25, 4.25),
+    ("qwen-hosted", 0.10, 0.90),
+])  # fmt: skip
+def test_openrouter_list_prices(name, input_price, output_price):
+    """OpenRouter's public model list, read 2026-11-10 (USD per MTok); both cache classes stay
+    priced as input (the never-understate rule above)."""
+    prices = _arms()[name].prices
+    assert (prices.input, prices.output) == (input_price, output_price)
+    assert prices.cache_read == prices.cache_creation == input_price
 
 
 def test_every_hosted_cache_price_is_at_least_the_input_price():
@@ -404,7 +442,7 @@ def test_session_env_marks_egress_sessions():
     from reverseapoc import hooks
 
     arms = _arms()
-    base = {"DEEPSEEK_API_KEY": FAKE_DEEPSEEK, hooks.EGRESS_ENV: "1"}
+    base = {ROUTER_KEY: FAKE_DEEPSEEK, hooks.EGRESS_ENV: "1"}
     assert session_env(arms[DEEPSEEK], base, arms)[hooks.EGRESS_ENV] == "1"
     assert hooks.EGRESS_ENV not in session_env(arms[OPUS], base, arms)
 
@@ -551,8 +589,8 @@ def test_agy_arms_carry_the_cap_their_canary_sizes():
 # ---- quick 261110-f30 (spike 012): billing, list prices, the record's arm ----
 
 SUBSCRIBED = (*CLAUDE_ARMS, "gpt-6-luna", "gpt-6.1-sol", "gemini-flash", "gpt-oss")
-METERED_ARMS = ("deepseek-flash", "glm-5.3", "muse-spark-open", "gemini-3.8-flash-openrouter",
-                "qwen-hosted")  # fmt: skip
+METERED_ARMS = ("deepseek-flash", "glm-5.3", "glm-4.7-flash", "muse-spark-open",
+                "gemini-3.8-flash-openrouter", "qwen-hosted")  # fmt: skip
 
 
 def test_billing_comes_from_the_base_url():
@@ -597,7 +635,8 @@ def test_record_arm():
     assert backends.record_arm(_v3(), arms) is haiku
     luna = _v3(backend="openai", harness="codex", model_requested="gpt-6-luna", model=None)
     assert backends.record_arm(luna, arms) is arms["gpt-6-luna"]
-    landing = {"kind": "landing", "model": DEEPSEEK, "backend": "deepseek", "harness": "claude"}
+    landing = {"kind": "landing", "model": DEEPSEEK_MODEL, "backend": "openrouter",
+               "harness": "claude"}  # fmt: skip
     assert backends.record_arm(landing, arms) is arms[DEEPSEEK]
     gemini = _v3(backend="google", harness="agy", model_requested="gemini-3.8-flash")
     assert backends.record_arm(gemini, arms) is None
