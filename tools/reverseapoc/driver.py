@@ -3764,6 +3764,7 @@ class _Night:
         reasons: list[str] = []
         if claim.agy:
             commands, writes = agyjson.commands(events), agyjson.write_targets(events)
+            reasons += agyjson.unknown_steps(events)  # 07.2 review WR-02: fail closed
             reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
                                    repo=self.repo)  # fmt: skip
             if _read(claim.agy_settings) != agy_settings_bytes(claim):

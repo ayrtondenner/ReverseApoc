@@ -17,10 +17,15 @@ captured stream: the owner's canary proves them.
   AI Plus subscription is measured in quota); `num_turns`; `duration_seconds` in ms.
 - `commands`, `write_targets`, `read_targets`: each tool step once (by `step_index`, as its last
   update left it, in the order it first appeared): its `tool_info.command`, or its path
-  (`path`, `file_path`, `target_file` or `absolute_path`), a write when the tool's name says it
-  changes a file. A step the result's `denied_actions` name was soft-denied (headless agy
-  continues, RESEARCH "Permissions"): it never ran, so it is a block, in none of the three
-  lists. The driver's audit reads them (D-26).
+  (`path`, `file_path`, `target_file` or `absolute_path`), a read only for a known read-only
+  tool (`read_file`) and a write for every other tool (07.2 review WR-02: fail closed). A step
+  whose own last state is DENIED was soft-denied (headless agy continues, RESEARCH
+  "Permissions"): it never ran, so it is in none of the three lists. A result's
+  `denied_actions` never stand for a step; they are hook blocks. The driver's audit reads them
+  (D-26).
+- `unknown_steps`: each tool step that ran and is not a known tool (`run_command` with a
+  command, `read_file` or `write_file` with a path) in its known shape, a subagent's included:
+  the audit counts each as a stray (WR-02).
 - `denied_actions`: the result's denied actions as `action(target)` strings.
 - `executions`: every command step with its exit code (the canary's probes).
 - `failure`: the result's status and error when the status is not SUCCESS, else None.
@@ -35,7 +40,6 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -51,9 +55,7 @@ _STEP = "step_update"
 _RESULT = "result"
 _SUCCESS = "SUCCESS"
 _PATH_KEYS = ("path", "file_path", "target_file", "absolute_path")
-_WRITE_TOOL = re.compile(r"write|edit|replace|create|delete|move|rename|patch|apply", re.I)
 _BYPASS = re.compile(r"bypass|skip|danger|yolo|auto", re.I)  # a mode that approves by itself
-_ACTION = re.compile(r"(?P<action>[A-Za-z_]+)\((?P<target>.*)\)", re.S)
 _AUTH_TEXT = re.compile(r"authentication required|not (signed|logged) in", re.I)
 _LIMIT_TEXT = re.compile(r"quota|rate.?limit|resource.?exhausted|limit (was )?(hit|reached)",
                          re.I)  # fmt: skip
@@ -137,30 +139,28 @@ def denied_actions(events: Sequence[dict]) -> list[str]:
     return [_denied(entry) for entry in found] if isinstance(found, list) else []
 
 
-# The denied-action names that can stand for a step of each kind (agy's settings actions).
-_COMMAND_ACTIONS = frozenset({"command", "unsandboxed"})
-_READ_ACTIONS = frozenset({"read_file"})
-_WRITE_ACTIONS = frozenset({"write_file"})
+# 07.2 review WR-02: the tools the audit knows, each in its one shape (the settings' three
+# actions); any other tool step that ran is a stray (`unknown_steps`), and a path step is a
+# read only for a tool named here as read-only.
+_COMMAND_TOOLS = frozenset({"run_command"})
+_READ_TOOLS = frozenset({"read_file"})
+_WRITE_TOOLS = frozenset({"write_file"})
+_DENIED_STATE = "DENIED"  # a step's own last state when the settings soft-denied it
+_TOOL_STEP = "TOOL"
+_TOOL_FIELDS = ("tool_name", "tool_info", "subagent_info")
 
 
-def _denied_pairs(events: Sequence[dict]) -> Counter[tuple[str, str]]:
-    """How many times each (action, target) was denied: a denial accounts for one step of its
-    own kind only, so a denied command or read never hides a read or a write that ran."""
-    out: Counter[tuple[str, str]] = Counter()
-    for text in denied_actions(events):
-        match = _ACTION.fullmatch(text)
-        if match is not None:
-            out[match.group("action"), match.group("target")] += 1
-    return out
+def _tool_step(event: Mapping) -> bool:
+    """A step_update that is a tool call: its step_type says so, or it carries a tool field (a
+    text step carries none)."""
+    return event.get("type") == _STEP and (
+        event.get("step_type") == _TOOL_STEP or any(event.get(k) for k in _TOOL_FIELDS))
 
 
-def _take(denied: Counter[tuple[str, str]], actions: frozenset[str], target: str) -> bool:
-    """Whether one denial of `target` under one of `actions` is left; it is used up if so."""
-    for action in actions:
-        if denied[action, target] > 0:
-            denied[action, target] -= 1
-            return True
-    return False
+def _ran(step: Mapping) -> bool:
+    """WR-02: a step never ran only when it itself ends DENIED; a result's denied action is a
+    hook block and never stands for a step."""
+    return step.get("state") != _DENIED_STATE
 
 
 def _steps(events: Sequence[dict]) -> list[Mapping]:
@@ -169,7 +169,7 @@ def _steps(events: Sequence[dict]) -> list[Mapping]:
     found: list[Mapping] = []
     place: dict[int, int] = {}
     for event in events:
-        if event.get("type") != _STEP or not isinstance(event.get("tool_name"), str):
+        if not _tool_step(event):
             continue
         index = event.get("step_index")
         if isinstance(index, int) and index in place:
@@ -221,34 +221,55 @@ def executions(events: Sequence[dict]) -> list[Execution]:
 
 
 def commands(events: Sequence[dict]) -> list[str]:
-    """Every command step that was not denied (see the module docstring)."""
-    denied = _denied_pairs(events)
-    return [e.command for e in executions(events)
-            if not _take(denied, _COMMAND_ACTIONS, e.command)]
+    """Every command step that ran (see the module docstring), whatever its tool's name."""
+    return [_command_text(_mapping(step.get("tool_info"))["command"]) for step in _steps(events)
+            if _ran(step) and "command" in _mapping(step.get("tool_info"))]  # fmt: skip
 
 
 def _paths(events: Sequence[dict], *, writes: bool) -> list[str]:
-    denied = _denied_pairs(events)
-    actions = _WRITE_ACTIONS if writes else _READ_ACTIONS
+    """WR-02: a path step that ran is a read only when its tool is a known read-only one;
+    every other path step is a write."""
     out = []
     for step in _steps(events):
         info = _mapping(step.get("tool_info"))
         path = None if "command" in info else _path(info)
-        if path is None or bool(_WRITE_TOOL.search(step["tool_name"])) != writes:
+        if path is None or not _ran(step):
             continue
-        if not _take(denied, actions, path):
+        if (step.get("tool_name") not in _READ_TOOLS) == writes:
             out.append(path)
     return out
 
 
 def write_targets(events: Sequence[dict]) -> list[str]:
-    """Every path a writing tool step names that was not denied, in order."""
+    """Every path a tool step that ran names, but a known read-only tool's, in order."""
     return _paths(events, writes=True)
 
 
 def read_targets(events: Sequence[dict]) -> list[str]:
-    """Every path any other tool step names that was not denied, in order."""
+    """Every path a known read-only tool step that ran names, in order."""
     return _paths(events, writes=False)
+
+
+def _known(step: Mapping) -> bool:
+    """A known tool in its known shape, with no subagent behind it."""
+    name, info = step.get("tool_name"), _mapping(step.get("tool_info"))
+    if step.get("subagent_info") or not isinstance(name, str):
+        return False
+    if name in _COMMAND_TOOLS:
+        return "command" in info
+    return name in _READ_TOOLS | _WRITE_TOOLS and "command" not in info and _path(info) is not None
+
+
+def unknown_steps(events: Sequence[dict]) -> list[str]:
+    """WR-02 (fail closed): why each tool step that ran is not one the audit can judge: its
+    tool name is missing or unknown, its shape is not its tool's, or a subagent ran it."""
+    out = []
+    for step in _steps(events):
+        if _ran(step) and not _known(step):
+            keys = sorted(_mapping(step.get("tool_info")))
+            out.append(f"step {step.get('step_index')!r}: tool {step.get('tool_name')!r} with "
+                       f"{keys} is not a tool step the agy audit knows")  # fmt: skip
+    return out
 
 
 def failure(events: Sequence[dict]) -> str | None:
