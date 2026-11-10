@@ -91,9 +91,14 @@ it.
   functions of one unit report one after the other.
 - **The stale-unit refusal.** A held C is the whole unit as of its view head. If
   `src/<exe>/<unit>.c` or `include/` changed between that head and HEAD, the function is not
-  landed. Its landing record is REFUSED with "unit changed since the hold run; re-run". This
-  also covers a second function of a unit that an earlier landing of the same run just
-  changed.
+  landed. Its landing record is REFUSED with "unit changed since the hold run; re-run".
+- **Several functions of one unit.** Once the run has landed one function of a unit, the next
+  held function of that unit is judged against HEAD as it was before that first landing (the
+  unit and `include/` unchanged since its view head, and `include/` unchanged since), so this
+  run's own landing is not a change. Only its definition is then spliced onto the unit as HEAD
+  now has it, keeping the earlier landing, and the gate proves the result. A change from any
+  other commit still refuses it as stale; a definition that cannot be spliced is REFUSED and
+  named.
 - **Credit.** The match commit carries `Matched-By: reverseapoc drive` and the co-author line
   of the attempt's requested model, for example `Co-Authored-By: Claude Haiku 5.5`. A hosted
   arm's attempt is credited to its arm instead, as in "Backends" below. The commit message
