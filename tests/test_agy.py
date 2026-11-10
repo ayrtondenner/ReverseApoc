@@ -407,3 +407,201 @@ def test_agy_denied_actions_are_not_strays(tmp_path, capsys, monkeypatch):
     assert code == 0, err
     assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
     assert night.kinds("attempt")[0]["hook_blocks"] == 2
+
+
+# ---- Task 3: the quota canary, its pass gate, the fallback arm and the exception text ----
+
+FALLBACK = "gemini-3.8-flash-openrouter"
+USAGE_ARGV = ["agy", "-p", "/usage"]
+
+
+def _agy_canary_rig(tmp_path: Path, *, usage: str = "usage_remaining", check: dict | None = None,
+                    outside: bool = False, unsandboxed: bool = False) -> Rig:  # fmt: skip
+    """test_drive's canary rig (the matched canary unit and its functions.csv row in HEAD) with
+    an agy session: fakeagy through the real run_session, then what the real wrapper would have
+    left (its check line, the consumed note and their ledger entries) and, when asked, a probe's
+    escape outside the workspace. The runner answers `agy --version` and `agy -p /usage` (the
+    latter from tests/fixtures/agy/<usage>.txt)."""
+    import hashlib
+
+    from test_drive import CONSUMED_NOTE, PASSING_CHECK, Launch, _canary_rig
+
+    from reverseapoc.session import run_session
+
+    rig = _canary_rig(tmp_path, "canary_pass")
+    agy_version_reply(rig)
+    text = (FIXTURES / f"{usage}.txt").read_text(encoding="utf-8")
+    rig.runner.replies.append((lambda argv: argv == USAGE_ARGV, (0, text, "")))
+    line = PASSING_CHECK if check is None else check
+
+    def run(argv, *, cwd, env, transcript, timeout_s):
+        rig.launches.append(Launch(list(argv), dict(env), Path(cwd)))
+        result = run_session(argv, cwd=cwd, env=env, transcript=transcript, timeout_s=timeout_s)
+        attempt_dir = Path(env[driver.attempt.DIR_ENV])
+        wrote = {"checks.jsonl": json.dumps(line) + "\n",
+                 "checks/0001.note.json": json.dumps(CONSUMED_NOTE) + "\n"}  # fmt: skip
+        with Path(env[driver.attempt.WRAPPER_LEDGER_ENV]).open("a", encoding="utf-8") as fh:
+            for rel, body in wrote.items():
+                (attempt_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+                (attempt_dir / rel).write_text(body, encoding="utf-8", newline="\n")
+                digest = hashlib.sha256((attempt_dir / rel).read_bytes()).hexdigest()
+                fh.write(json.dumps({"path": rel, "sha256": digest}) + "\n")
+        for wanted, name in ((outside, driver.AGY_CANARY_OUTSIDE),
+                             (unsandboxed, driver.AGY_CANARY_UNSANDBOXED)):  # fmt: skip
+            if wanted:
+                (attempt_dir.parent / name).write_text("canary\n", encoding="utf-8")
+        return result
+
+    rig.session = run
+    return rig
+
+
+def _agy_canary(rig: Rig, capsys, scenario: str = "canary_agy_pass",
+                arm: str = GEMINI) -> tuple[int, dict]:  # fmt: skip
+    env = _keyed(rig.env, FAKEAGY_SCENARIO=scenario)
+    code, out, _ = rig.drive(capsys, canary=True, json=True, night_model=arm, canary_model=arm,
+                             allow_egress=(arm,),
+                             seams={"base_env": env, "agy_argv": fake_agy_argv})  # fmt: skip
+    return code, json.loads(out)
+
+
+def _pass_file(rig: Rig, arm: str = GEMINI) -> Path:
+    return rig.repo / driver.CANARY_PASS_DIR / f"{arm}.json"
+
+
+def test_agy_canary_pass(tmp_path, capsys):
+    """A clean init, a refused outside write, a refused network call, a denied unsandboxed
+    command, a wrapper check that logged exit 0 with its consumed note, and `/usage` reporting
+    remaining weekly quota: CANARY PASS, and the pass file records the CLI version (`agy
+    --version`), the date, the canary session's tokens and the remaining quota (D-25: the owner
+    sizes the arm to it)."""
+    rig = _agy_canary_rig(tmp_path)
+    code, doc = _agy_canary(rig, capsys)
+    failed = [c["check"] for c in doc.get("checks", []) if not c["ok"]]
+    assert (code, doc.get("canary")) == (0, "PASS"), failed
+    texts = " | ".join(c["check"] for c in doc["checks"])
+    for needle in ("init", driver.AGY_CANARY_OUTSIDE, "example.com",
+                   driver.AGY_CANARY_UNSANDBOXED, "attempt check", "0001.note.json", "ledger",
+                   "settings", "1500000", AGY_VERSION):  # fmt: skip
+        assert needle in texts, needle
+    assert len(rig.launches) == 1 and rig.launches[0].argv[2] == "--output-format"
+    assert rig.launches[0].cwd == rig.repo / doc["attempt_dir"]
+    assert ["agy", "--version"] in rig.runner.calls and USAGE_ARGV in rig.runner.calls
+    saved = json.loads(_pass_file(rig).read_text(encoding="utf-8"))
+    assert {k: saved[k] for k in ("arm", "harness", "cli_version", "result")} == {
+        "arm": GEMINI, "harness": "agy", "cli_version": AGY_VERSION, "result": "PASS"}
+    assert isinstance(saved["date"], str) and len(saved["date"]) == len("2026-11-10")
+    assert saved["tokens"] == {"input": 9000, "output": 1000, "cache_read": 3000,
+                               "cache_creation": 0}  # fmt: skip
+    assert saved["quota"]["measured"] is True and saved["quota"]["remaining"] == 1500000
+
+
+def test_agy_canary_prompt_asks_for_every_probe(tmp_path):
+    """The prompt asks, in order: a write one directory above the workspace, a URL fetch, an
+    unsandboxed command, the plan and the note, then the wrapper check."""
+    attempt_dir = tmp_path / "attempt-1"
+    prompt = driver.agy_canary_prompt(attempt_dir, 0xD)
+    order = [str(attempt_dir.parent / driver.AGY_CANARY_OUTSIDE), driver.CODEX_CANARY_URL,
+             "unsandboxed", str(attempt_dir.parent / driver.AGY_CANARY_UNSANDBOXED),
+             "plan.json", "check-note.json", f"{WRAPPER} check"]  # fmt: skip
+    places = [prompt.index(needle) for needle in order]
+    assert places == sorted(places), places
+
+
+def _no_pass(rig: Rig, arm: str = GEMINI) -> bool:
+    path = _pass_file(rig, arm)
+    return not path.exists() or json.loads(path.read_text(encoding="utf-8"))["result"] != "PASS"
+
+
+def test_agy_canary_fails_on_each_escape(tmp_path, capsys):
+    """An outside file afterwards, a network call that succeeded, an unsandboxed command that
+    ran, or a check without exit 0: CANARY FAIL naming it, and no PASS file."""
+    bad_check = {"n": 1, "exit": 1, "sweep": False, "best_percent": 90.0, "reloc_ok": False,
+                 "bytes_ok": False, "splice_ok": True, "sweep_hit": None,
+                 "source": "checks/0001.c", "note": "checks/0001.note.json"}  # fmt: skip
+    cases = (("outside", "canary_agy_pass", {"outside": True}, driver.AGY_CANARY_OUTSIDE),
+             ("network", "canary_agy_network_ok", {}, "example.com"),
+             ("unsandboxed", "canary_agy_unsandboxed_ran", {"unsandboxed": True},
+              driver.AGY_CANARY_UNSANDBOXED),
+             ("check", "canary_agy_pass", {"check": bad_check}, "attempt check"))
+    for name, scenario, rig_args, needle in cases:
+        rig = _agy_canary_rig(tmp_path / name, **rig_args)
+        code, doc = _agy_canary(rig, capsys, scenario)
+        assert (code, doc["canary"]) == (1, "FAIL"), name
+        failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+        assert needle in failed, (name, failed)
+        assert _no_pass(rig), name
+
+
+def test_agy_canary_no_quota(tmp_path, capsys):
+    """D-21: a `/usage` with no remaining quota, or a quota error status: CANARY FAIL naming
+    the fallback arm and how to run it, and no PASS file."""
+    for usage in ("usage_exhausted", "usage_quota_error"):
+        rig = _agy_canary_rig(tmp_path / usage, usage=usage)
+        code, doc = _agy_canary(rig, capsys)
+        assert (code, doc["canary"]) == (1, "FAIL"), usage
+        failed = " | ".join(c["check"] for c in doc["checks"] if not c["ok"])
+        assert FALLBACK in failed, failed
+        assert f"--night-model {FALLBACK} --allow-egress {FALLBACK}" in failed, failed
+        assert _no_pass(rig), usage
+
+
+def test_agy_canary_unmeasurable_quota(tmp_path, capsys):
+    """RESEARCH A8: a `/usage` that prints nothing machine-readable falls back to the session's
+    tokens and says the quota was estimated, not measured; the probes passed, so PASS, with the
+    estimate in the pass file."""
+    rig = _agy_canary_rig(tmp_path, usage="usage_unreadable")
+    code, doc = _agy_canary(rig, capsys)
+    failed = [c["check"] for c in doc["checks"] if not c["ok"]]
+    assert (code, doc["canary"]) == (0, "PASS"), failed
+    texts = " | ".join(c["check"] for c in doc["checks"])
+    assert "estimated, not measured" in texts and "13000" in texts, texts
+    saved = json.loads(_pass_file(rig).read_text(encoding="utf-8"))
+    assert saved["quota"]["measured"] is False and saved["quota"]["remaining"] is None
+    assert saved["quota"]["session_tokens"] == 13000
+
+
+def test_agy_arm_refused_without_a_pass(tmp_path, capsys):
+    """D-21 (as D-13 for Codex): no agy arm runs before its canary passed on the installed CLI:
+    no pass file, a FAIL one, or one naming another version exits 2 before any session, naming
+    the canary command to run."""
+    for state in ("none", "fail", "other-version"):
+        rig = Rig(tmp_path / state)
+        agy_version_reply(rig)
+        if state == "fail":
+            write_pass(rig.repo, result="FAIL")
+        elif state == "other-version":
+            write_pass(rig.repo, version="1.5.2")
+        code, out, _ = rig.drive(capsys, json=True, seams={"base_env": _keyed(rig.env)},
+                                 night_model=GEMINI, allow_egress=(GEMINI,),
+                                 workers=1)  # fmt: skip
+        assert code == 2, state
+        detail = json.loads(out)["detail"]
+        assert f"--canary --night-model {GEMINI} --allow-egress {GEMINI}" in detail, detail
+        assert list((rig.repo / "build").rglob("attempt-*")) == [], state
+
+
+def test_an_unknown_harness_is_refused(tmp_path):
+    """The pass gate fails closed: an arm on a harness the driver has no canary for is refused
+    before any session, whatever pass file exists."""
+    import pytest
+
+    arm = backends.Arm(name="made-up-arm", harness="made-up-cli", backend="made-up",
+                       model="made-up-model", sends_disassembly=False, max_workers=1)
+    rig = Rig(tmp_path)
+    write_pass(rig.repo, arm.name)
+    options = rig.options(night_model=arm.name)
+    with pytest.raises(driver.Refused) as exc:
+        driver.refuse_unproven(options, rig.seams(), {arm.name: arm})
+    assert "made-up-cli" in str(exc.value)
+
+
+def test_exception_names_antigravity():
+    """CLAUDE.md and .claude/rules/workflow.md keep Claude Code as the only agent runtime and
+    name the one scoped exception: Codex CLI and Antigravity CLI `reverseapoc drive` sessions,
+    their per-session config under build/, and no .gemini/ or Antigravity config tree."""
+    for rel in ("CLAUDE.md", ".claude/rules/workflow.md"):
+        text = " ".join((REPO_ROOT / rel).read_text(encoding="utf-8").split())
+        for needle in ("only agent runtime", "Codex", "Antigravity", "reverseapoc drive",
+                       "spike 012", "build/", ".gemini/"):  # fmt: skip
+            assert needle in text, (rel, needle)

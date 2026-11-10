@@ -376,6 +376,20 @@ def test_a_codex_arm_takes_no_endpoint_or_key(tmp_path, extra):
     assert "gpt-6-luna" in str(exc.value) and extra.split(" ")[0] in str(exc.value)
 
 
+def test_gemini_openrouter_fallback_arm_loads():
+    """D-21: if the agy canary finds no usable AI Plus quota, Gemini runs through OpenRouter in
+    the Claude Code harness instead: a paid arm with OpenRouter's endpoint and key variable,
+    its own init id and prices (cache priced as input), needing --allow-egress."""
+    arm = _arms()["gemini-3.8-flash-openrouter"]
+    assert (arm.harness, arm.backend, arm.base_url, arm.key_env, arm.model) == (
+        "claude", "openrouter", "https://openrouter.ai/api", "OPENROUTER_API_KEY",
+        "google/gemini-3.8-flash")  # fmt: skip
+    assert arm.egress and arm.accepted_init == ("google/gemini-3.8-flash",)
+    assert arm.prices.input > 0 and arm.prices.output > 0
+    assert arm.coauthor == "Gemini 3.8 Flash <noreply@google.com>"
+    assert not [name for name in _arms() if "gemini-4" in name or name.endswith("pro")]
+
+
 def test_a_claude_harness_arm_still_needs_init_ids(tmp_path):
     """Only an arm with no init event may list no init ids."""
     with pytest.raises(ArmError) as exc:
