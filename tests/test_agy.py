@@ -271,3 +271,139 @@ def test_agy_session_env_strips_every_other_vendor():
     for name in (GEMINI, GPT_OSS):
         env = backends.session_env(arms[name], base, arms)
         assert sorted(env) == ["PATH", "REVERSEAPOC_EGRESS"], name
+
+
+# ---- Task 2: per-session settings under build/ and the agy audit (D-24, D-26) ----
+
+ATTEMPT = f"build/driver/{RUN}/{EXE}/{FUNC}/attempt-1"
+WRAPPER = "uv run --frozen reverseapoc attempt"
+SETTINGS_NAME = f"{EXE}__{FUNC}__attempt-1.json"
+LEDGER_NAME = f"{EXE}__{FUNC}__attempt-1.jsonl"
+
+
+def _rule(rules: list[str], action: str) -> list[str]:
+    return [r[len(action) + 1:-1] for r in rules if r.startswith(f"{action}(") and r.endswith(")")]
+
+
+def test_session_settings_allow_only_the_wrapper(tmp_path, capsys, monkeypatch):
+    """D-24: the driver writes the session's settings under build/driver/<run>/agy/, outside
+    the workspace and never in the repo or the user's settings: allow holds one command regex
+    matching exactly the matching wrapper forms and write_file rules for exactly the session's
+    files; deny holds a command regex naming orig/ and third_party/, their reads and writes,
+    and unsandboxed commands. The session is told its wrapper ledger, which starts empty."""
+    import re
+
+    record = tmp_path / "fakeagy-record.json"
+    rig, night, env = agy_night(tmp_path, monkeypatch, extra_env={"FAKEAGY_RECORD": str(record)})
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code == 0, err
+    path = night.repo / "build" / "driver" / RUN / "agy" / SETTINGS_NAME
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert set(doc) == {"permissions"} and set(doc["permissions"]) == {"allow", "deny"}
+    allow, deny = doc["permissions"]["allow"], doc["permissions"]["deny"]
+    commands = _rule(allow, "command")
+    assert len(commands) == 1 and commands[0].startswith("regex:")
+    wrapper = re.compile(commands[0].removeprefix("regex:"))
+    for form in ("context", "check", "check --sweep", "asm", "asm func_00010010", "plan",
+                 "giveup"):  # fmt: skip
+        assert wrapper.fullmatch(f"{WRAPPER} {form}"), form
+    for bad in ("type notes.md", f"{WRAPPER} check --src x", f"{WRAPPER} check; echo x",
+                f"{WRAPPER} asm a b", f"{WRAPPER} giveup x", f"x {WRAPPER} check"):
+        assert not wrapper.fullmatch(bad), bad
+    attempt_dir = night.attempt_dir()
+    files = {(attempt_dir / rel).as_posix() for rel in
+             ("notes.md", "plan.json", "check-note.json", "giveup.json",
+              f"view/src/{EXE}/{UNIT}.c")}  # fmt: skip
+    assert set(_rule(allow, "write_file")) == files and len(allow) == 1 + len(files)
+    named = re.compile(_rule(deny, "command")[0].removeprefix("regex:"))
+    for text in (f"{WRAPPER} asm orig", "type ..\\ORIG\\x", "ls third_party/watcom"):
+        assert named.fullmatch(text), text
+    assert not named.fullmatch(f"{WRAPPER} check")
+    root = night.repo.as_posix()
+    for action in ("read_file", "write_file"):
+        assert set(_rule(deny, action)) == {f"{root}/orig/**", f"{root}/third_party/**"}
+    assert _rule(deny, "unsandboxed") == ["regex:.*"]
+    assert not path.is_relative_to(attempt_dir)
+    assert not (night.repo / ".gemini").exists() and not (rig.repo / ".gemini").exists()
+    ledger = Path(night.launched[0].env[driver.attempt.WRAPPER_LEDGER_ENV])
+    assert ledger == night.repo / "build" / "driver" / RUN / "ledger" / LEDGER_NAME
+    assert ledger.read_bytes() == b""
+    names = json.loads(record.read_text(encoding="utf-8"))["env"]
+    assert driver.attempt.WRAPPER_LEDGER_ENV in names
+
+
+def test_session_settings_path_is_gitignored():
+    """The settings file lies in gitignored build/ (the acceptance check's own path)."""
+    import subprocess
+
+    done = subprocess.run(["git", "check-ignore", "-q", "build/driver/x/agy/s.json"],
+                          cwd=REPO_ROOT, check=False)  # fmt: skip
+    assert done.returncode == 0
+
+
+def _outside(tmp_path: Path) -> Path:
+    outside = tmp_path / "outside"
+    (outside / "attempt-cache").mkdir(parents=True)
+    (outside / "attempt-cache" / "x.json").write_text("{}\n", encoding="utf-8")
+    return outside
+
+
+AUDIT_CASES = {  # name: (scenario, spec, words in the STOPPED detail)
+    "non-wrapper command": ("stray_command", None, "type notes.md"),
+    "command naming orig": ("orig_command", None, "names orig/"),
+    "read naming third_party": ("orig_read", None, "third_party"),
+    "write outside the allowlist": ("stray_write", None, "tools/x.py"),
+    "stray file": ("gemini_success", Sess(write=None, files=(("x.txt", "made up\n"),)), "x.txt"),
+    "session-written agy config": ("gemini_success",
+                                   Sess(write=None, files=((".gemini/settings.json", "{}\n"),)),
+                                   ".gemini/settings.json"),
+    "changed settings file": ("gemini_success",
+                              Sess(write=None, append=((f"../../../agy/{SETTINGS_NAME}", "\n"),)),
+                              f"agy/{SETTINGS_NAME}"),
+    "forged checks.jsonl": ("gemini_success", "checks", "checks.jsonl"),
+    "linked view/build": ("gemini_success", "link", "view/build"),
+}
+
+
+def test_agy_audit_flags(tmp_path, capsys, monkeypatch):
+    """D-26 and the Codex review's findings: the agy stream's own commands, writes and reads,
+    the attempt dir against the launch inventory and the wrapper ledger, and the settings
+    file: a non-wrapper command, a command or read naming orig/ or third_party/, a write
+    outside the allowlist, a stray file, a session-written .gemini/ config, a changed settings
+    file, a checks.jsonl the ledger never saw and a linked view/build each stop the night at
+    the guardrail; the linked directory's target keeps its files."""
+    from test_driver import check_line
+
+    for name, (scenario, spec, words) in AUDIT_CASES.items():
+        here = tmp_path / name.replace(" ", "_").replace("/", "_")
+        if spec == "checks":
+            spec = Sess(write=None, checks=(check_line(1, 100.0, exit_code=0),))
+        elif spec == "link":
+            spec = Sess(write=None, link=("view/build", _outside(here)))
+        rig, night, env = agy_night(here, monkeypatch, scenario=scenario, spec=spec)
+        code, _, _ = _run_agy(capsys, rig, env)
+        assert code != 0, name
+        stopped = [r for r in night.kinds("run") if r["event"] == "STOPPED"][0]
+        assert stopped["reason"] == driver.GUARDRAIL and words in stopped["detail"], (name, stopped)
+        if name == "linked view/build":
+            assert (here / "outside" / "attempt-cache" / "x.json").is_file()
+
+
+def test_agy_audit_clean_session(tmp_path, capsys, monkeypatch):
+    """A session that ran only wrapper forms and wrote only its allowlisted files is clean: no
+    guardrail stop, the attempt recorded."""
+    rig, night, env = agy_night(tmp_path, monkeypatch)
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code == 0, err
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    assert night.kinds("attempt")[0]["abort_reason"] != driver.GUARDRAIL
+
+
+def test_agy_denied_actions_are_not_strays(tmp_path, capsys, monkeypatch):
+    """Headless agy soft-denies what its settings do not allow: a denied command and a denied
+    write never ran, so they count as hook blocks, not strays."""
+    rig, night, env = agy_night(tmp_path, monkeypatch, scenario="denied_steps")
+    code, _, err = _run_agy(capsys, rig, env)
+    assert code == 0, err
+    assert [r for r in night.kinds("run") if r["event"] == "STOPPED"] == []
+    assert night.kinds("attempt")[0]["hook_blocks"] == 2
