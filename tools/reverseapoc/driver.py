@@ -1447,16 +1447,34 @@ def _forbidden_part(text: str) -> str | None:
     return next((name for name in _FORBIDDEN_PARTS if name in parts), None)
 
 
+def _command_stray(command: str) -> str | None:
+    """Why `command` is a stray: it names orig/ or third_party/, or it is not an exact attempt
+    wrapper form of a matching session (hooks.bash_allowed); None when it is neither."""
+    named = _forbidden_part(command)
+    if named is not None:
+        return f"names {named}/ (D-10)"
+    if not hooks.bash_allowed(command, kind=MATCHING_KIND):
+        return "is not an exact attempt wrapper form"
+    return None
+
+
 def codex_command_strays(commands: Sequence[str]) -> list[str]:
-    """Why each command is a stray: it names orig/ or third_party/, or it is not an exact
-    attempt wrapper form of a matching session (hooks.bash_allowed)."""
+    """Why each command is a stray (_command_stray), each named as given."""
+    return [f"command `{command}` {why}" for command in commands
+            if (why := _command_stray(command)) is not None]  # fmt: skip
+
+
+def codex_execution_strays(executions: Sequence[codexjson.Execution]) -> list[str]:
+    """Why each Codex command is a stray, judged as audited (one Windows shell layer off) and
+    named as the session ran it: `<reported>` (audited as: `<command>`) when the layer came
+    off, else `<reported>`."""
     out = []
-    for command in commands:
-        named = _forbidden_part(command)
-        if named is not None:
-            out.append(f"command `{command}` names {named}/ (D-10)")
-        elif not hooks.bash_allowed(command, kind=MATCHING_KIND):
-            out.append(f"command `{command}` is not an exact attempt wrapper form")
+    for run in executions:
+        why = _command_stray(run.command)
+        if why is None:
+            continue
+        audited = "" if run.reported == run.command else f" (audited as: `{run.command}`)"
+        out.append(f"command `{run.reported}`{audited} {why}")
     return out
 
 
@@ -3787,23 +3805,24 @@ class _Night:
         events = session.events
         reasons: list[str] = []
         if claim.agy:
-            commands, writes = agyjson.commands(events), agyjson.write_targets(events)
+            writes = agyjson.write_targets(events)
             reasons += agyjson.unknown_steps(events)  # 07.2 review WR-02: fail closed
             reasons += read_strays(agyjson.read_targets(events), attempt_dir=claim.attempt_dir,
                                    repo=self.repo)  # fmt: skip
             if _read(claim.agy_settings) != agy_settings_bytes(claim):
                 shown = claim.agy_settings.relative_to(self.repo).as_posix()
                 reasons.append(f"{shown}: changed since the launch (the driver's settings file)")
+            reasons += codex_command_strays(agyjson.commands(events))
         elif claim.codex:
-            commands, writes = codexjson.commands(events), codexjson.write_targets(events)
+            writes = codexjson.write_targets(events)
             reasons += codexjson.unknown_items(events)  # 07.2 review WR-03: fail closed
             rules = codex_rules_problem(claim.attempt_dir)  # WR-05: the driver's own bytes
             reasons += [rules] if rules is not None else []
+            reasons += codex_execution_strays(codexjson.executions(events))
         else:
-            commands, writes = [], []
+            writes = []
             reasons.append(f"harness {claim.harness!r}: no audit for it, so nothing it did is "
                            "trusted")  # fmt: skip
-        reasons += codex_command_strays(commands)
         reasons += codex_write_strays(writes, attempt_dir=claim.attempt_dir, repo=self.repo,
                                       allowed=allowed)  # fmt: skip
         files = []
@@ -7352,10 +7371,10 @@ def _wrapper_calls(executions: Sequence[codexjson.Execution]) -> tuple[bool, str
     if not calls:
         return False, (f"no attempt wrapper call ran (no command naming `{prefix}` in the "
                        "stream), so the audit's pass of one is unproven")  # fmt: skip
-    strays = codex_command_strays([e.command for e in calls])
+    strays = codex_execution_strays(calls)
     if strays:
         return False, f"the audit flagged an attempt wrapper call: {_listed(strays)}"
-    shown = [f"`{e.command}`" for e in calls]
+    shown = [f"`{e.reported}`" for e in calls]
     return True, f"the audit passed every attempt wrapper call: {_listed(shown)}"
 
 
@@ -7375,8 +7394,9 @@ def _codex_canary_checks(executions: Sequence[codexjson.Execution], claim: _Clai
     for label, marker in (("whoami", "whoami"), ("fetch", CODEX_CANARY_URL.rstrip("/")),
                           ("compound command", CODEX_CANARY_COMPOUND)):  # fmt: skip
         run = next((e for e in executions if marker in e.command), None)
-        flagged = run is not None and bool(codex_command_strays([run.command]))
-        checks.add(flagged, f"the audit flagged the {label} probe" if flagged
+        strays = codex_execution_strays([run]) if run is not None else []
+        checks.add(bool(strays), f"the audit flagged the {label} probe: {_listed(strays)}"
+                   if strays
                    else f"the audit did not flag the {label} probe ({marker})")  # fmt: skip
     checks.add(*_wrapper_calls(executions))
     found = codex_inventory_strays(attempt_inventory(attempt_dir), launch=launch,

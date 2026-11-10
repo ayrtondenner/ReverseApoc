@@ -16,10 +16,13 @@ the requested model and a null `model`, and runs no init check.
   the session's wall clock; there is no cost (a Plus subscription is measured in tokens).
 - `commands`: each `command_execution` item's command, once per item id, in stream order (a
   started item the session never finished counts too), a list command joined as a POSIX shell
-  would receive it, with one Windows shell layer (`powershell.exe -Command <cmd>`) taken off;
-  `write_targets`: every path a `file_change` item names. The driver's Codex
-  audit reads both (D-26). `unknown_items`: every item of a type outside KNOWN_ITEMS (an MCP
-  tool call, a web search, ...), each a stray (07.2 review WR-03: fail closed).
+  would receive it, with one Windows shell layer (`powershell.exe -Command <cmd>`) taken off
+  (the text the audit judges); `executions`: each such item with that text, its output, its
+  exit code and its command as reported (the layer still on: what a stray finding names);
+  `write_targets`: every path a `file_change` item names. The driver's Codex audit reads the
+  executions and the write targets (D-26). `unknown_items`: every item of a type outside
+  KNOWN_ITEMS (an MCP tool call, a web search, ...), each a stray (07.2 review WR-03: fail
+  closed).
 - `failure`: the text of the first `turn.failed` or top-level `error`, else None.
 - `classify`: the driver's action (streamjson.Disposition): a wall-clock timeout is counted; a
   failure is LIMIT when its text says a usage limit was hit, else STOP (unknown fails closed);
@@ -111,12 +114,14 @@ def _items(events: Sequence[dict], kind: str) -> list[Mapping]:
 
 
 class Execution(NamedTuple):
-    """One command_execution item: its command (as `commands` gives it), its output and its
-    exit code (None while it ran or when the stream holds none)."""
+    """One command_execution item: its command as audited (as `commands` gives it), its output,
+    its exit code (None while it ran or when the stream holds none) and its command as the
+    session reported it (`reported`, the Windows shell layer still on: what a stray names)."""
 
     command: str
     output: str
     exit_code: int | None
+    reported: str
 
 
 def executions(events: Sequence[dict]) -> list[Execution]:
@@ -126,22 +131,23 @@ def executions(events: Sequence[dict]) -> list[Execution]:
     for item in _items(events, _COMMAND):
         output = item.get("aggregated_output")
         code = item.get("exit_code")
-        out.append(Execution(_command_text(item.get("command")),
-                             output if isinstance(output, str) else "",
+        reported, audited = _command_texts(item.get("command"))
+        out.append(Execution(audited, output if isinstance(output, str) else "",
                              code if isinstance(code, int) and not isinstance(code, bool)
-                             else None))  # fmt: skip
+                             else None, reported))  # fmt: skip
     return out
 
 
-def _command_text(command: object) -> str:
-    """A command as one string: a list is joined the way a POSIX shell would receive it; any
-    other value is its repr, so the audit never passes it. One Windows shell layer comes off
-    (_unwrapped)."""
-    if isinstance(command, str):
-        return _unwrapped(command)
+def _command_texts(command: object) -> tuple[str, str]:
+    """A command as one string, as reported and as audited: a list is joined the way a POSIX
+    shell would receive it; any other value is its repr, so the audit never passes it. The
+    audited text has one Windows shell layer off (_unwrapped)."""
     if isinstance(command, list) and all(isinstance(part, str) for part in command):
-        return _unwrapped(shlex.join(command))
-    return repr(command)
+        command = shlex.join(command)
+    if isinstance(command, str):
+        return command, _unwrapped(command)
+    shown = repr(command)
+    return shown, shown
 
 
 def _unwrapped(text: str) -> str:
