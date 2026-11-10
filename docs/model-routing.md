@@ -207,7 +207,9 @@ The model ids are assumptions to confirm at setup.
 - **The audit.** After the session, besides the checks every session gets (git status, the
   view, pinned and fingerprinted files): every command must be an exact wrapper form and may
   not name `orig` or `third_party` as a path part; every `file_change` path must pass the
-  session's write allowlist; and the attempt dir may hold only the session files (notes.md,
+  session's write allowlist; every item must be of a type the audit knows (`agent_message`,
+  `reasoning`, `todo_list`, `command_execution`, `file_change`; an MCP tool call or a web
+  search is a stray); and the attempt dir may hold only the session files (notes.md,
   plan.json, check-note.json, giveup.json, proposals.jsonl), the transcript, the driver's own
   files as they were at launch (the rules file included) and wrapper output whose hash is its
   ledger entry's. Anything else, a session-written `.codex/config.toml` among it, is a stray:

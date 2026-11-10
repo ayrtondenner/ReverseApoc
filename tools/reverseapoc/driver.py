@@ -3772,6 +3772,7 @@ class _Night:
                 reasons.append(f"{shown}: changed since the launch (the driver's settings file)")
         elif claim.codex:
             commands, writes = codexjson.commands(events), codexjson.write_targets(events)
+            reasons += codexjson.unknown_items(events)  # 07.2 review WR-03: fail closed
         else:
             commands, writes = [], []
             reasons.append(f"harness {claim.harness!r}: no audit for it, so nothing it did is "
